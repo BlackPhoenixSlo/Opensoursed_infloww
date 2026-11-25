@@ -1,6 +1,3 @@
-"""Agency notifications: unread `agency_notifications` rows for the owner, as
-`notifications_api.notify` files them (one per Creator, kind `session_dead`, the
-sweep's sentence), without its SSE push: a page reads them on its next fetch."""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -9,7 +6,6 @@ from . import World, ts
 
 
 def seed(w: World, creators: list[dict]) -> list[int]:
-    """One unread row per Creator; returns their ids."""
     con = w.sql()
     with con:
         for i, c in enumerate(creators):

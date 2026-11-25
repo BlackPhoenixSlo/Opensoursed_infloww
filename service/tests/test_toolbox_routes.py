@@ -1,36 +1,7 @@
 #!/usr/bin/env python3
-"""Toolbox drift test (docs/plans/ultra-mode/issues/04-toolbox.md, 05-mcp-server.md, 13-send-chain.md):
-the registry (`toolbox_decide.TOOLS`) against the real app.
-
-Cases:
-  case_routes_exist        — every Tool's method + path is a route in `server.app`.
-  case_args_match_route    — every arg (by alias) and every `fixed` key is a param of that route (query /
-                             path for a GET, body field for a write); every required route param is a
-                             required arg or fixed. An untyped body (dict / Request) is allowed for a
-                             write tool only, which then must carry a `check` (its echo test).
-                             `account_id` may be no body field: build_request binds it as X-Account-Id +
-                             `?account_id=`, which the isolation middleware and `_resolve_account_id` read.
-                             A tool with a `body` builder is checked on the body it builds from BODY_SAMPLES.
-  case_paths_full_match    — a sample request to each tool's path is dispatched to exactly that route +
-                             method by the token gate's own first-FULL-match walk, and is on the token
-                             allowlist.
-  case_no_token_tool_on_a_send_route — `route_clashes` (also raised at import): no token tool on a send
-                             tool's route (the allowlist would open it), no two write tools on one route.
-  case_checks_on_writes    — only a write or send tool carries a `check`; every send tool has one.
-  case_schema_rules        — names unique + [a-z0-9_]{1,64}; descriptions set; args forbid unknown keys;
-                             each client schema is a closed object with no $ref / $defs and no top-level
-                             oneOf / anyOf / allOf; GET implies effect "read".
-  case_send_text_declared  — send tools exist (mass_send, post_create, auto_mass, auto_story); each declares a
-                             `text_kind` and `model_text` (each a str arg; none only for auto_story), and its
-                             required string args are all model_text.
-  case_open_pages_exist    — each Open path (and per-value path) is an `app/app/**/page.tsx` (a `[x]` segment
-                             takes any one segment, a trailing `[[...x]]` zero or more: /of-manager/home).
-
-Run: ./venv/bin/python service/tests/test_toolbox_routes.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 import re  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -52,20 +23,16 @@ def _route(tool: td.Tool) -> APIRoute:
 
 
 def _route_params(tool: td.Tool, route: APIRoute) -> dict[str, bool]:
-    """name (alias) → required, for what the tool can send: query + path for a GET, body fields for a write."""
     d = route.dependant
     out = {p.alias: p.field_info.is_required() for p in d.path_params}
     if tool.method in ("GET", "DELETE"):
         out.update({p.alias: p.field_info.is_required() for p in d.query_params})
         return out
-    out.update({p.alias: False for p in d.query_params})  # e.g. ?account_id= beside a body
+    out.update({p.alias: False for p in d.query_params})
     body = d.body_params
     assert len(body) <= 1, f"{tool.name}: expected one body, got {[b.name for b in body]}"
     model = body[0].field_info.annotation if body else None
     if not hasattr(model, "model_fields"):
-        # An untyped body (`payload: dict` or the raw Request): only a write tool, whose raw bearer
-        # requests token_auth.write_refusal holds to the schema. That the route reads each arg is
-        # test_toolbox_writes' job (every write tool runs there and its effect is asserted).
         assert tool.effect == "write", f"{tool.name}: untyped body needs a write tool"
         out.update({a: False for a in _args(tool) if a not in out})
         return out
@@ -118,11 +85,11 @@ def case_paths_full_match() -> None:
 
 def case_no_token_tool_on_a_send_route() -> None:
     assert td.route_clashes(td.TOOLS) == []
-    rules = next(t for t in td.TOOLS if t.name == "auto_mass")  # POST /admin/automation-rules: a send route
+    rules = next(t for t in td.TOOLS if t.name == "auto_mass")
     read = td.Tool("zz_rules_read", "x", rules.method, rules.path, td.NoArgs, "read")
     write = td.Tool("zz_folder_write", "x", "POST", "/admin/vault-ai/of-folders", td.NoArgs, "write")
-    assert any("zz_rules_read" in c for c in td.route_clashes(td.TOOLS + (read,)))  # would join the allowlist
-    assert any("two write tools" in c for c in td.route_clashes(td.TOOLS + (write,)))  # write_tool ambiguous
+    assert any("zz_rules_read" in c for c in td.route_clashes(td.TOOLS + (read,)))
+    assert any("two write tools" in c for c in td.route_clashes(td.TOOLS + (write,)))
 
 
 def case_checks_on_writes() -> None:

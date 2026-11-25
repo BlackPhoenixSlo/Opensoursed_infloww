@@ -1,5 +1,4 @@
 // @vitest-environment node
-/** local/no-fixed-polling through the app's real eslint.config.mjs. */
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { ESLint } from "eslint";
@@ -41,14 +40,12 @@ describe("local/no-fixed-polling", () => {
     expect(m[0]).toMatch(msg);
   });
 
-  // A file-wide or same-line disable would silence the rule's own "state why";
-  // this sweep catches every directive form in the tree.
   it("every disable of the rule in app/ states a reason", () => {
     let out = "";
     try {
       out = execFileSync("git", ["grep", "-n", "-E", "eslint-disable.*local/no-fixed-polling", "--", ".",
         ":!eslint-rules/"], { cwd: APP, encoding: "utf8" });
-    } catch { /* git grep exits 1 on no match */ }
+    } catch { }
     const bare = out.split("\n").filter((l) => l && !/\s--+\s+\S/.test(l.slice(l.indexOf("no-fixed-polling"))));
     expect(bare).toEqual([]);
   });

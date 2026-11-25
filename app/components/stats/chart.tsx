@@ -1,23 +1,11 @@
 "use client";
 
-/**
- * chart — the reports' shared SVG chart parts and granularity rule (Employee reports' charts, Creator reports').
- *
- *   granAllowed   Infloww's `getDisableStatus` over a range's calendar days; the relay's `stats._bucket_allowed`.
- *   granShown     the granularity picked, or the first allowed one when the range rules it out.
- *   niceMax, useChartWidth, plotFrame, ChartAxes, ChartMessage, BlankChart, fmtUsd   the axis, sizing, wording
- *                 and money parts.
- *   LineChart     2px lines, one per series, with a hover column per x that names every line's value there.
- */
 
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { fmtCents } from "@/lib/format";
 
-/** A "Shown by" granularity. */
 export type Gran = "hour" | "day" | "week" | "month";
 
-/** #29 (`getDisableStatus`) over the range's calendar days: up to 2 Hour or Day, under 14 Day, 14 to 31 Day or Week,
- *  32 to 62 Week, 63 to 365 Week or Month, over 365 Month. A report with no hourly read rules Hour out itself. */
 export function granAllowed(g: Gran, days: number): boolean {
   if (g === "hour") return days <= 2;
   if (days < 14) return g === "day";
@@ -27,34 +15,27 @@ export function granAllowed(g: Gran, days: number): boolean {
   return g === "month";
 }
 
-/** The bucket shown: the one picked, or (`autoChangeLegendBy`) the first allowed one when the range rules it out. */
 export function granShown(g: Gran, days: number): Gran {
   if (granAllowed(g, days)) return g;
   return (["day", "week", "month"] as const).find((p) => granAllowed(p, days)) ?? "day";
 }
 
-/** The calendar days of a report range sent as instants, from a midnight to the end of a day in any zone
- *  (useReportRange): its length in whole days, a millisecond added for the last day's end and a daylight-saving hour
- *  either way rounded off; the relay's `stats._range_days`. */
 export function rangeDays(fromIso: string, toIso: string): number {
   return Math.round((Date.parse(toIso) - Date.parse(fromIso) + 1) / 86_400_000);
 }
 
-/** A rounded-up axis maximum of `gridLines` even steps: 1, 2, 3, 4, 5, 6 or 8 × 10ⁿ for a whole step (whole units, or
- *  whole dollars of cents), 1, 2 or 5 × 10ⁿ below 1. 1, 2 or 5 alone left up to 2.5× headroom ($800,697 drew a $2M
- *  axis). */
 export function niceMax(maxValue: number, gridLines: number): number {
   if (maxValue <= 0) return gridLines;
   const raw = maxValue / gridLines;
   const exp = Math.floor(Math.log10(raw));
   const base = Math.pow(10, exp);
   const m = raw / base;
+  // 1, 2 or 5 alone left up to 2.5x headroom ($800,697 drew a $2M axis)
   const ladder = exp >= 0 ? [1, 2, 3, 4, 5, 6, 8, 10] : [1, 2, 5, 10];
   const step = (ladder.find((k) => m <= k) ?? 10) * base;
   return step * gridLines;
 }
 
-/** The width a chart is drawn at, so its pixel values (#80, #83) stay pixels; a fallback until it is measured. */
 export function useChartWidth() {
   const ref = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(0);
@@ -71,33 +52,21 @@ export function useChartWidth() {
   return [ref, width || 900] as const;
 }
 
-/** The plot box: room for the 14px y labels on the left (up to "$800,000", 8px off the plot; 56 clipped the "$" of
- *  "$80,000") and the x ticks and labels below. */
 export function plotFrame(W: number, H: number) {
   return { L: 72, R: W - 8, T: 8, B: H - 30 };
 }
 
-/** Cents as the house `fmtCents` prints money, whole dollars with commas as on the dashboard ("$1,235", "$8"), a
- *  loss as "-$12": a report figure's, a point's and a tooltip's money. */
 export const fmtUsd = fmtCents;
 
-/** Cents as whole dollars, "$930" / "$1,235": a report's earnings total (as the dashboard's earnings overview prints
- *  them) and the axes' default. */
-export const fmtDollars = (cents: number) => fmtCents(cents); // a loss "-$12", never "$-12" or "$-0"
+export const fmtDollars = (cents: number) => fmtCents(cents);
 export const axisDollars = fmtDollars;
 
-/** An x label centred on its tick, or right-aligned to the chart's edge when centring would run past it (a line
- *  chart's last tick sits 8px off the edge: "Nov 16" drew as "Nov"). Width estimated at 8px a character (14px text). */
 export function xLabelPos(label: string, x: number, W: number): { x: number; textAnchor: "middle" | "end" } {
   return x + label.length * 4 > W ? { x: W, textAnchor: "end" } : { x, textAnchor: "middle" };
 }
 
-/** #79, #80: horizontal 1px grid lines and 14px tick text, x tick lines 4px long with the labels 8px under them, no
- *  axis lines (our border and dim tokens, ADR-0001 colours). `fmt` writes a y tick (whole dollars of cents by
- *  default). */
 export function ChartAxes({ W, H, max, labels, xAt, labelGap = 4 + 8, fmt = axisDollars }: {
   W: number; H: number; max: number; labels: string[]; xAt: (i: number) => number;
-  /** The x labels' distance off the axis, the tick and 8px by default. */
   labelGap?: number;
   fmt?: (value: number) => string;
 }) {
@@ -126,13 +95,11 @@ export function ChartAxes({ W, H, max, labels, xAt, labelGap = 4 + 8, fmt = axis
   );
 }
 
-/** A chart with nothing to draw: the zero line. */
 export function BlankChart({ W, H }: { W: number; H: number }) {
   const f = plotFrame(W, H);
   return <line x1={f.L} y1={f.B} x2={f.R} y2={f.B} strokeWidth={1} style={{ stroke: "var(--color-border)" }} />;
 }
 
-/** A loading or failed chart's wording, centred over it; `title` labels it (Creator reports mark theirs ours). */
 export function ChartMessage({ message, title }: { message: string; title?: string }) {
   if (!message) return null;
   return (
@@ -144,8 +111,6 @@ export function ChartMessage({ message, title }: { message: string; title?: stri
 
 export type ChartLine = { name: string; color: string; values: number[] };
 
-/** A line's path: one solid path, or with `partial` (per x, a bucket the range cuts short: "2 of 7 days") the
- *  segments touching a partial x apart, to draw dashed, so a short bucket's low figure does not read as a fall. */
 export function linePaths(values: number[], at: (i: number) => string, partial?: readonly (string | undefined)[]) {
   if (!partial?.some(Boolean)) return { solid: values.map((_, i) => `${i === 0 ? "M" : "L"}${at(i)}`).join(" "), dashed: "" };
   const solid: string[] = [], dashed: string[] = [];
@@ -157,19 +122,13 @@ export function linePaths(values: number[], at: (i: number) => string, partial?:
   return { solid: solid.join(" "), dashed: dashed.join(" ") };
 }
 
-/** 2px lines, one per series over `labels`, a legend under them unless `legend` is off. Each x has a full-height
- *  hover column whose tooltip names every line's value there (`valueFmt`), however many points. `null` lines draw the
- *  blank chart with `message` (titled `messageTitle`). `partial` (per x, optional): a bucket the range cuts short, its
- *  segments dashed and its tooltip saying how short ("Nov 18 (2 of 7 days)"). */
 export function LineChart({
   labels, lines, message, messageTitle, height = 250, fmt, valueFmt = String, empty, legend = true, partial,
 }: {
   labels: string[]; lines: ChartLine[] | null; message: string; messageTitle?: string; height?: number;
   partial?: readonly (string | undefined)[];
-  /** The y ticks (ChartAxes' `fmt`). */
   fmt?: (value: number) => string;
   valueFmt?: (value: number) => string;
-  /** Laid over the axes when there are no lines to draw (an empty comparison); absolutely placed by the caller. */
   empty?: ReactNode;
   legend?: boolean;
 }) {
@@ -177,8 +136,7 @@ export function LineChart({
   const H = height;
   const f = plotFrame(W, H);
   const n = labels.length;
-  // The default ticks are whole dollars of cents: a floor of $1 a grid step keeps them distinct (an empty range read
-  // "$0" five times on a 1-cent axis).
+  // $1 floor per grid step keeps default ticks distinct (an empty range read "$0" five times)
   const max = niceMax(Math.max(fmt ? 1 : 4 * 100, ...(lines ?? []).flatMap((l) => l.values)), 4);
   const xAt = (i: number) => (n <= 1 ? (f.L + f.R) / 2 : f.L + (i / (n - 1)) * (f.R - f.L));
   const yAt = (v: number) => f.B - (v / max) * (f.B - f.T);

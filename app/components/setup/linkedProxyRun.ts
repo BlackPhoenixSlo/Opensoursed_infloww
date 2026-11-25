@@ -1,17 +1,3 @@
-/**
- * linkedProxyRun — the relay calls behind LinkedCreatorProxy's Connect (its state and copy: `linkedProxyForm`).
- *
- * The switch: a fresh `GET /admin/proxies` → create (`POST /admin/proxies`) → test (a failed one is deleted) → assign
- * (`assignProxy`: moves the account off any other proxy in one write) → reload (`reloadSession`). The account is never
- * unbound first, so its current proxy stays until the new one passed its test and is assigned.
- *   - A failed test with the fallback on keeps the creator where it is; an account on none goes on the default pool
- *     when there is one (`bindPoolProxy` + reload, the only fallback write: a failed bind fails the run, a failed
- *     reload after it is `reloadFailed`). Off: it fails with the error.
- *   - A failed assign re-reads the list: the new proxy on this account counts as assigned (reload goes on); on another
- *     account it is kept; on nobody it is deleted. A failed re-read claims nothing about the binding.
- *   - A failed reload keeps the binding; Retry reloads only (`reloadNewProxy`).
- */
-
 import { draftProblem, type ProxyDraft } from "./AddProxyModal";
 import { buildBody, failedTestText, keepTarget, type Done, type Outcome } from "./linkedProxyForm";
 import { assignProxy, bindPoolProxy, currentProxy, reloadSession, type ProxyList } from "./proxyApi";
@@ -19,7 +5,6 @@ import { relay } from "@/lib/relay";
 
 const msg = (e: unknown) => (e as Error).message;
 
-/** Reloads the session through the binding `done` names; a failure keeps the binding (Retry reloads only). */
 export async function reloadNewProxy(accountId: string, done: Done): Promise<Outcome> {
   try {
     await reloadSession(accountId);
@@ -29,9 +14,6 @@ export async function reloadNewProxy(accountId: string, done: Done): Promise<Out
   }
 }
 
-/** After a failed assign, from a fresh read: the new proxy shows on this account (the assign landed: reload), or the
- *  text for the error (deleted only when bound to nobody; kept when another account is on it; a failed re-read says
- *  the binding is unknown). */
 async function afterFailedAssign(accountId: string, label: string, error: string): Promise<{ assigned: true } | { text: string }> {
   const failed = `Couldn't assign your proxy: ${error}.`;
   const unchanged = (note: string) => ({ text: `${failed} This creator's proxy is unchanged.${note}` });
@@ -55,7 +37,7 @@ async function afterFailedAssign(accountId: string, label: string, error: string
   }
 }
 
-/** Connect: the switch above, for the typed `draft`, with the fallback box as it was at Connect. */
+// Never unbinds first: the current proxy stays until the new one passed its test and is assigned.
 export async function connectNewProxy(accountId: string, draft: ProxyDraft, fallback: boolean): Promise<Outcome> {
   let list: ProxyList;
   try {

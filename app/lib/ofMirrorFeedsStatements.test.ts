@@ -7,18 +7,15 @@ import { ofMoney, zoneNote, type Payout, type Transaction } from "./ofMirrorFeed
 import { TEMPLATES } from "./ofMirrorFeedsShared";
 import { capture, load, shown, texts, atFixtureNow, PLACEHOLDER } from "./ofMirrorData.fixtures";
 
-/** OF's own /payouts/transactions pages, captured through the Relay and scrubbed (app/lib/__fixtures__/of). */
 const fixture = <T,>(name: string): T => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/statements-${name}.json`), "utf8")) as T;
 type TxnPage = { list: Transaction[]; hasMore: boolean; nextMarker: number | null; marker: number };
-const PAGE = fixture<TxnPage>("transactions"); // six rows, no more
-const MORE = fixture<TxnPage>("transactions-more"); // OF's limit=2: two rows and hasMore
-const EMPTY_PAGE = fixture<TxnPage>("transactions-empty"); // a page past the end: no rows
+const PAGE = fixture<TxnPage>("transactions");
+const MORE = fixture<TxnPage>("transactions-more");
+const EMPTY_PAGE = fixture<TxnPage>("transactions-empty");
 const TXNS = PAGE.list;
-// The Agency's time zone (Settings): the dates read the same wherever the tests run.
 const TZ = "Europe/Ljubljana";
 const EARNINGS = "statements/earnings";
 const txns = (doc: Document) => shown(doc, ".b-table tbody > tr").filter((r) => r.querySelector(".b-table__date"));
-// [date, time, amount, fee, net, description HTML, [[tip label, icon] per status tip]] per row shown.
 const txnRows = (doc: Document) =>
   txns(doc).map((r) => [
     r.querySelector(".b-table__date__date > span")!.textContent,
@@ -42,14 +39,12 @@ const WANT_TXNS = [
 ];
 const EMPTY_ROW = ".b-table tbody .empty-message";
 const NOTE_TZ = ".b-statements__head-timezone";
-/** The page as captured outside the table's rows and its time zone note (Earnings): the balance boxes and the tabs. */
 const outsideRows = (doc: Document) => {
   const c = doc.documentElement.cloneNode(true) as Element;
   c.querySelector(".b-table tbody")!.remove();
   c.querySelector(NOTE_TZ)?.remove();
   return c.outerHTML;
 };
-/** OF's infinite loading row's prompts shown: spinner, no more, no results, error. */
 const prompts = (doc: Document) => [...doc.querySelectorAll<HTMLElement>(".infinite-loading-container > .infinite-status-prompt")].map((p) => p.style.display !== "none");
 
 describe("statements/earnings: the Creator's earning transactions (OF's captured pages)", () => {
@@ -60,13 +55,11 @@ describe("statements/earnings: the Creator's earning transactions (OF's captured
   it("one row per transaction, in order, before the loading row: OF's money, dates in the Agency's zone, descriptions as text, a deleted fan greyed", () => {
     const doc = load(EARNINGS);
     const outside = outsideRows(doc);
-    // At the fixtures' "now" (summer time), so the zone note does not follow today's date.
     atFixtureNow(() => applyData(doc, EARNINGS, { transactions: TXNS, zone: TZ }));
     expect(txnRows(doc)).toEqual(WANT_TXNS);
     const rows = txns(doc);
     expect(rows.every((r) => r.hasAttribute("data-oi-data"))).toBe(true);
     expect(rows.map((r) => r.querySelectorAll(".b-table__desc a").length)).toEqual([0, 0, 0, 0, 0, 0]);
-    // The capture's fan is active; the second fan is deleted (OF: isDeleted || !isActive).
     expect(rows.map((r) => r.querySelector(".b-field-subscription")!.classList.contains("m-disabled-username"))).toEqual([false, true, true, true, true, true]);
     for (const r of rows) expect(r.textContent).not.toMatch(PLACEHOLDER);
     expect(texts(doc, NOTE_TZ)).toEqual(["Date/Time shown in local time (UTC +02:00)"]);
@@ -146,8 +139,6 @@ describe("statements/earnings: the Creator's earning transactions (OF's captured
     expect(prompts(doc)).toEqual([false, false, false, true]);
     doc.querySelector<HTMLButtonElement>(".infinite-loading-container .btn-try-infinite")!.click();
     expect(next).toHaveBeenCalledTimes(1);
-    // In view: an IntersectionObserver on OF's loading row asks once, and stops watching. Its root is the frame's own
-    // document, so its 300px margin reaches below the frame (the top page's viewport clips a row just under the frame's end).
     const seen: Element[] = [];
     const stop = vi.fn();
     let fire: (e: { isIntersecting: boolean }[]) => void = () => {};
@@ -171,7 +162,6 @@ describe("statements/earnings: the Creator's earning transactions (OF's captured
       expect(next).toHaveBeenCalledTimes(1);
       fire([{ isIntersecting: true }]);
       expect(next).toHaveBeenCalledTimes(2);
-      // The last page: nothing to ask for.
       seen.length = 0;
       applyData(doc, EARNINGS, { transactions: TXNS, zone: TZ, transactionsMore: { loading: false, error: null, next: null } });
       expect(seen).toEqual([]);
@@ -198,8 +188,6 @@ describe("statements/earnings: the Creator's earning transactions (OF's captured
   });
 });
 
-// Local times (no Z). In the Relay's order, OF's states (statements-payout.js getDescription): approved twice, rejected
-// with and without a reason, pending, new, and a state OF does not know.
 const PAYOUTS: Payout[] = [
   { createdAt: "2026-10-10T10:05:00", invoiceId: "INV-1001", amount: 120, state: "approved" },
   { createdAt: "2026-10-09T21:30:00", invoiceId: 1002, amount: 45.5, state: "approved" },
@@ -211,9 +199,7 @@ const PAYOUTS: Payout[] = [
 ];
 const PAYOUTS_PAGE = "statements/payouts";
 const REFERRALS = "statements/referrals";
-// The `payoutRow` template as useOfData borrows it: the payouts capture, parsed inertly.
 const PAYOUT_TPL = TEMPLATES.payoutRow!.pick(new DOMParser().parseFromString(capture(TEMPLATES.payoutRow!.page), "text/html"))!;
-// [date, time, invoice, amount, status cell HTML] per payout row shown.
 const payoutRows = (doc: Document) =>
   txns(doc).map((r) => [
     r.querySelector(".b-table__date__date > span")!.textContent,
@@ -225,7 +211,6 @@ const payoutRows = (doc: Document) =>
 const APPROVED = '<span class="approved">Payout has been processed<svg aria-hidden="true" class="g-icon"><use href="#icon-done"></use></svg></span>';
 const REJECTED = "Payout request could not be processed and this amount was returned to your Current Balance.";
 const ALERT = '<svg aria-hidden="true" class="g-icon"><use href="#icon-alert"></use></svg>';
-// OF's pending mark without its text (OF's wording was never captured).
 const PENDING = '<span class="pending"><svg aria-hidden="true" class="g-icon"><use href="#icon-loading"></use></svg></span>';
 const WANT_PAYOUTS = [
   [" Oct 10, 2026 ", " 10:05 am ", " INV-1001 ", " $120.00 ", APPROVED],
@@ -263,7 +248,6 @@ describe("statements/payouts and statements/referrals: the Creator's payout requ
     const tbody = doc.querySelector(".b-table tbody")!;
     expect(rows.at(-1)!.nextElementSibling).toBe(tbody.lastElementChild);
     expect(tbody.lastElementChild!.querySelector(".infinite-loading-container")).not.toBeNull();
-    // "Request withdrawal" stays disabled and the balance as captured.
     expect(outsideRows(doc)).toBe(outside);
     expect(doc.querySelector<HTMLButtonElement>("button.g-btn.m-rounded[disabled]")?.textContent?.trim()).toBe("Request withdrawal");
   });
@@ -292,7 +276,6 @@ describe("statements/payouts and statements/referrals: the Creator's payout requ
     expect(payoutRows(doc)).toEqual(WANT_PAYOUTS);
     expect(txns(doc).every((r) => r.hasAttribute("data-oi-data") && r.ownerDocument === doc)).toBe(true);
     expect(shown(doc, REFERRAL_EMPTY)).toEqual([]);
-    // The referral balance and "Request withdrawal" stay as captured.
     expect(outsideRows(doc)).toBe(outside);
   });
 

@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * EditPostModal — lightweight editor for an existing feed post's TEXT and
- * PRICE via PUT /api/of/v2/posts/{id}.
- *
- * Deliberately scoped to text + price (the common edits). Re-attaching /
- * reordering media is intentionally NOT here: the feed payload only gives
- * us media id stubs, and a partial media_files array would drop the rest
- * of the post's media on OF. The relay does a sparse update, so omitting
- * media_files leaves the existing media untouched.
- */
 
 import { useId, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
@@ -47,13 +37,6 @@ export default function EditPostModal({ post, accountId, onClose, onSaved }: Pro
       const body: Record<string, unknown> = { text: trimmed, price: priceNum };
 
       if (priceNum > 0) {
-        // OF rejects a paid post that doesn't declare its protected media
-        // ("Paid post must contain protected content"). A sparse PUT with
-        // only price omits that, so we must re-send the media to lock. Pull
-        // the AUTHORITATIVE media set from the post detail rather than the
-        // (possibly lossy) feed payload — sending a partial list would drop
-        // the rest of the post's media on OF. Preserve existing free
-        // previews so re-pricing doesn't silently lock the teasers.
         const detail = await relay.get<{
           media?: { id: number }[];
           previews?: number[];
@@ -66,6 +49,7 @@ export default function EditPostModal({ post, accountId, onClose, onSaved }: Pro
             "This is a text-only post — OnlyFans can't charge for it. Set the price to 0, or add media to the post on OnlyFans first.",
           );
         }
+        // OF rejects a paid post without its protected media; re-send the full authoritative set from detail (a partial list drops media on OF), plus previews.
         body.media_files = mediaIds;
         if (Array.isArray(detail.previews) && detail.previews.length > 0) {
           body.previews = detail.previews;

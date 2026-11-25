@@ -36,7 +36,7 @@ Run: ./venv/bin/python service/tests/test_vault_internal_folders.py   (exit 0 = 
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import json  # noqa: E402
@@ -60,8 +60,6 @@ SCRIPT = vault_scripts.AI_FOLDER_CREATOR
 C: dict[str, object] = {}
 T0 = datetime(2026, 11, 1, 12, 0, 0)
 
-# Media per account: photos 1..20 (lower id = newer), videos 50/51, a removed photo 40, a Jev free-safe
-# photo 30 and a Jev $50 (not free-safe) photo 31. OTHER owns 900.
 PHOTOS = range(1, 21)
 
 
@@ -115,11 +113,9 @@ def _login(path: str, user: str):
     return c
 
 
-# ── Helpers ──────────────────────────────────────────────────────────
 
 async def _mk(name: str, *, by: str = "operator", items=(), aid: str = AID, deleted: bool = False,
               of_list_id: int | None = None) -> int:
-    """A folder with `items`: media ids, or (media_id, manual_order) pairs."""
     async with get_session() as s:
         f = VaultFolder(account_id=aid, name=name, created_by=by, of_list_id=of_list_id,
                         deleted_at=T0 if deleted else None)
@@ -182,7 +178,6 @@ def _by_order(members: dict[int, int | None]) -> list[int]:
     return [m for m, _ in sorted(members.items(), key=lambda kv: kv[1])]
 
 
-# ── Cases ────────────────────────────────────────────────────────────
 
 async def case_list_fields_and_kinds():
     ai = await _mk("AI-lingerie", by=SCRIPT, items=(1, 2, 50, 40), aid=LID)
@@ -268,7 +263,6 @@ async def case_add_copy_and_move():
     r = _post(f"/{a1}/add", {"media_ids": [1, 2, 3]})
     assert r.json()["added"] == 0 and r.json()["already"] == 3, r.text
     assert set(await _members(a1)) == {1, 2, 3} and await _item_rows() >= 3
-    # Not this account's live media: the whole request is refused, nothing written.
     for ids, foreign in (([4, 900], [900]), ([99999], [99999]), ([4, 40], [40])):
         r = _post(f"/{a1}/add", {"media_ids": ids})
         _err(r, 404, "not_in_mirror")
@@ -278,7 +272,6 @@ async def case_add_copy_and_move():
     for bad in ([], None, "4"):
         _err(_post(f"/{a1}/add", {"media_ids": bad}), 400, "media_ids_required")
     assert set(await _members(a1)) == {1, 2, 3}, "refused adds wrote nothing"
-    # Move: out of the source in the same call.
     a2 = await _mk("a2", items=(5, 6))
     r = _post(f"/{a1}/add", {"media_ids": [5], "move_from": a2})
     assert r.status_code == 200 and (r.json()["added"], r.json()["moved"]) == (1, 1), r.text
@@ -290,14 +283,12 @@ async def case_add_copy_and_move():
     _err(_post(f"/{gone}/add", {"media_ids": [6]}), 404, "folder_not_found")
     assert set(await _members(a1)) == {1, 2, 3, 5} and set(await _members(a2)) == {6}
     assert set(await _members(gone)) == {6}
-    # Adding to an AI folder adopts it; a no-op add (all already members) does not.
     a3 = await _mk("AI-a3", by=SCRIPT, items=((8, 0),))
     r = _post(f"/{a3}/add", {"media_ids": [8]})
     assert r.json()["adopted"] == [] and (await _row(a3)).created_by == SCRIPT, r.text
     r = _post(f"/{a3}/add", {"media_ids": [7, 8]})
     assert r.json()["adopted"] == [a3] and (await _row(a3)).created_by == "operator", r.text
     assert set(await _members(a3)) == {7, 8}
-    # Moving out of an AI folder adopts the source too.
     a4 = await _mk("AI-a4", by=SCRIPT, items=((9, 0),))
     r = _post(f"/{a1}/add", {"media_ids": [9], "move_from": a4})
     assert r.json()["adopted"] == [a4] and (await _row(a4)).created_by == "operator", r.text
@@ -327,7 +318,6 @@ async def case_pack_rungs():
     r = _post(f"/{nude}/add", {"media_ids": [30], "move_from": tease})
     assert r.status_code == 200 and r.json()["moved"] == 1, r.text
     assert await snap() == [set(), {31, 10, 30}, set()], "a rung->rung move"
-    # Rung -> plain folder, plain folder -> rung.
     p1 = await _mk("p1")
     r = _post(f"/{p1}/add", {"media_ids": [10], "move_from": nude})
     assert r.status_code == 200 and r.json()["moved"] == 1, r.text
@@ -335,21 +325,17 @@ async def case_pack_rungs():
     r = _post(f"/{body}/add", {"media_ids": [10], "move_from": p1})
     assert r.status_code == 200, r.text
     assert await snap() == [set(), {31, 30}, {10}] and await _members(p1) == {}
-    # A refused move into a rung leaves the source as it was.
     p2 = await _mk("p2", items=(50,))
     _err(_post(f"/{nude}/add", {"media_ids": [50], "move_from": p2}), 400, "feet_photos_only")
     assert set(await _members(p2)) == {50} and await snap() == [set(), {31, 30}, {10}]
-    # Remove from a rung (the picker's reject).
     r = _post(f"/{nude}/remove", {"media_ids": [30, 12]})
     assert r.status_code == 200 and r.json()["removed"] == 1, r.text
     assert await snap() == [set(), {31}, {10}]
-    # Re-adding a member keeps its place in the rung (the picker would re-file it and drop the order).
     assert _post(f"/{nude}/reorder", {"media_ids": [31], "before": None}).status_code == 200
     placed = await _members(nude)
     r = _post(f"/{nude}/add", {"media_ids": [31]})
     assert r.status_code == 200 and (r.json()["added"], r.json()["already"]) == (0, 1), r.text
     assert await _members(nude) == placed == {31: 0}
-    # A rung keeps its name and stays.
     _err(_post(f"/{nude}/rename", {"name": "toes"}), 400, "pack_rung_fixed")
     _err(_delete(nude), 400, "pack_rung_fixed")
     f = await _row(nude)
@@ -384,7 +370,6 @@ async def case_remove():
 
 
 async def case_reorder():
-    # Listing order: 0,1,2 first, then NULL newest first (4 newer than 5; removed 40 is not listed), then -2, -1.
     f = await _mk("ro", items=((1, 0), (2, 1), (3, 2), (4, None), (5, None), (40, None), (7, -2), (6, -1)))
     assert _listing(f) == [1, 2, 3, 4, 5, 7, 6]
 
@@ -414,7 +399,6 @@ async def case_reorder():
         _err(_post(f"/{f}/reorder", body), 400, "bad_before")
     _err(_post(f"/{f}/reorder", {"media_ids": []}), 400, "media_ids_required")
     assert await _members(f) == snap, "a refused reorder writes nothing"
-    # An AI folder: adopted only when the visible order changes (renumbering alone is no edit).
     ai = await _mk("AI-ro2", by=SCRIPT, items=((1, 0), (2, 1), (3, -1)))
     r = _post(f"/{ai}/reorder", {"media_ids": [3], "before": None})
     assert r.status_code == 200 and r.json()["adopted"] == [], r.text
@@ -465,7 +449,6 @@ async def case_rebuild_spares_edited_ai():
             VaultFolder.deleted_at.is_(None)))).scalars().all()
     assert len(fresh) == 1 and fresh[0] != x, fresh
     assert await _members(fresh[0], BID) == {5: 0}
-    # Control: the unedited generated folder IS rewritten in place.
     assert (await _row(y)).deleted_at is None and await _members(y, BID) == {6: 0}
     assert {c["name"]: c["reused"] for c in out["created"]} == {"AI-x": False, "AI-y": True}, out
     kinds = sorted((f["name"], f["kind"]) for f in _list(aid=BID).json()["list"])
@@ -473,8 +456,6 @@ async def case_rebuild_spares_edited_ai():
 
 
 async def case_add_and_adopt_commit_as_one():
-    """W30 F7: the add and the adopt are one commit. Split, a rebuild landing between them (here: when the
-    route opens a second session) rewrote the still-generated folder and wiped the operator's add."""
     from contextlib import asynccontextmanager
     z = await _mk("AI-z", by=SCRIPT, items=((11, 0),), aid=BID)
     orig, opened = vif.get_session, [0]
@@ -561,7 +542,7 @@ def case_pure_tables():
             ([1, 2, 3, 4], [4], 1, [4, 1, 2, 3]),
             ([1, 2, 3, 4], [1], None, [2, 3, 4, 1]),
             ([1, 2, 3, 4], [4, 2], 1, [4, 2, 1, 3]),
-            ([1, 2, 3, 4], [2, 2, 9], 4, [1, 3, 2, 4]),        # dupes once, non-members ignored
+            ([1, 2, 3, 4], [2, 2, 9], 4, [1, 3, 2, 4]),
             ([1, 2, 3], [9], None, [1, 2, 3]),
             ([1, 2, 3], [], 2, [1, 2, 3])):
         assert pb(order, moved, before) == want, (order, moved, before)

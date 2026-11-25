@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * Real figures on the OF mirror's Statistics pages (reads only) for the period picked (ofMirrorStatsPeriod) and the
- * in-place picks (ofMirrorStatsSources), each page's parts drawn by its group's module (ofMirrorStatsStatements, …Overview,
- * …Engagement, …Reach, …Fans) on the generator's markup:
- * - `/users/me/stats/overview?by=<by>`: every figure the generator keyed (`data-oi-stat="<source>:<path>"`), its change
- *   (`data-oi-delta`: OF's level mark; signed in a Summary block, as OF prints it there); `derived`: Tips and Stream tips
- *   are $0.00 when the period's total is the sum of the other categories (all are non-negative); Referrals are $0.00 for
- *   every period when the referral balance is $0.00 and no referral payout was ever made. Otherwise a dash.
- * - A captured "No … during selected period" or Top card (data-oi-empty) shows OF's own text once these figures prove
- *   the period empty (PROOFS); else "Not available in Inflowwww yet", as the generator draws it.
- * - The charts' canvases get their series in OF's colours, axes and tooltip (ofMirrorChart).
- * Shapes: app/lib/__fixtures__/of/statistics-*.json (live bodies, scrubbed; the phase-2 Relay's synthetic, in OF's shapes).
- * No data yet, a field missing or a Relay error: a dash, as the generator draws it; a read still failing after its
- * retries (retryable) also puts OF's info alert over the content, with a Retry for the failed reads, and keeps the
- * last figures that read gave for this Creator and period (ofMirrorStatsLastGood), the alert saying as of when.
- */
 
 import { useEffect, useMemo, type RefObject } from "react";
 import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
@@ -51,12 +35,7 @@ export { wallOf } from "@/lib/ofMirrorStatsDom";
 export * from "@/lib/ofMirrorStatsPeriod";
 export * from "@/lib/ofMirrorStatsSources";
 
-// ---------------------------------------------------------------- the page
 
-/**
- * The sums OF has no Relay route for (see the header): `tips`, `tips_stream`, `ref` as `{total, gross}`, each present
- * only when the other figures prove it.
- */
 export function derive(data: StatsData): Record<string, { total: number; gross: number }> {
   const out: Record<string, { total: number; gross: number }> = {};
   const parts = ["fans:fans.earnings", "posts:posts.earnings", "messages:massMessages.earnings", "streams:streams.earnings"];
@@ -86,20 +65,14 @@ function applyFigures(doc: Document, data: StatsData, p: Period, rekey: (el: Ele
     else setText(doc, el, money ? ` ${usd(v)} ` : v.toLocaleString("en-US"));
     if (money) setClass(doc, el, "m-zero-value", v !== null && Math.round(v) === 0);
   }
-  if (p.key === "all") return; // OF shows no change for All time
+  if (p.key === "all") return;
   for (const el of doc.querySelectorAll("[data-oi-delta]")) {
     const d = valueOf(data, rekey(el, el.getAttribute("data-oi-delta")!));
     if (d) add(doc, level(doc, d, inSummary(el)), el, "append");
   }
 }
 
-/**
- * OF's own empty text (data-oi-empty) where the Relay's figures prove the period empty: the Top cards (Post: no top
- * post at all; Message: no message earnings; Stream, Stories: no streams or stories), a tab with no streams or stories,
- * Chargebacks (a 0% ratio), Payout Requests and Referrals (no request in the period), Engagement › Posts (no top post).
- */
 const PROOFS: Record<string, (data: StatsData, el: Element, page: string, p: Period) => boolean> = {
-  // Streams: OF counts their minutes ("0m"), or says it has no statistic at all.
   "No Streaming activity during selected period": (d) => at(d.streams, "streams.hasStatistic") === false || /^0(\D|$)/.test(String(at(d.streams, "streams.count.total"))),
   "No Stories activity during selected period": (d) => zero(num(at(d.story, "stories.count.total"))),
   "No Message activity during selected period": (d) => zero(valueOf(d, "messages:massMessages.earnings.total")),
@@ -110,7 +83,6 @@ const PROOFS: Record<string, (data: StatsData, el: Element, page: string, p: Per
       const top = d.topPost as Record<string, unknown> | undefined;
       return !!top && typeof top === "object" && !Array.isArray(top) && Object.values(top).every((v) => v == null);
     }
-    // The period's posts as usePaged hands them over: none, and none to come.
     const items = listOf(d.postsTop);
     return !!items && !items.length && pagedDone(d.postsTop, p);
   },
@@ -131,15 +103,12 @@ function applyEmpties(doc: Document, page: string, data: StatsData, p: Period) {
     const text = el.getAttribute("data-oi-empty")!;
     if (!PROOFS[text]?.(data, el, page, p)) continue;
     setText(doc, el, text);
-    // Statements › Earnings: OF shows its empty placeholder instead of the table (statistics-earnings.js `listCount`).
     if (basePage(page).endsWith("statements/earnings")) display(doc, el.closest(".b-statements-table")?.querySelector<HTMLElement>("thead"), false);
   }
 }
 
 
-// ---------------------------------------------------------------- charts
 
-/** The sidebar chart of a row (its first label) from `/users/me/stats/overview`'s chartData (each the day's earnings). */
 const ROW_CHARTS: Record<string, string> = {
   "Profile visitors": "visitors:visitors.chartData",
   Posts: "posts:posts.chartData",
@@ -148,19 +117,9 @@ const ROW_CHARTS: Record<string, string> = {
   "Mass-offers": "promo:promo.chartData",
   Trials: "trials:trials.chartData",
 };
-/** A Summary card's line colour (OF's SummaryBlock `borderColor`: Posts', Messages'; the other cards its default grey). */
 const SUMMARY_COLORS: Record<string, string> = { Posts: BLUE, Messages: "#ffa000" };
 const SUMMARY_GREY = "#8d96a2";
 
-/**
- * The main charts Phase 1 draws, OF's pair (DoubleLineChart: the first series on the upper chart in blue, the second
- * under it in grey with the dates); the series' titles are OF's copy (texts_en.json, build 202610091632):
- * - Reach › Profile visitors: visitors over the view duration (`/users/me/profile/stats`' chart);
- * - Fans › Subscriptions: earnings over new subscribers (`/subscriptions/subscribers/chart`, OF's order);
- * - Engagement › Posts (Purchases): purchases over posts;
- * - Engagement › Messages: the mass messages' daily earnings (the overview's chartData) until OF's own chart is read.
- * The sidebar rows' sparklines: the day's earnings, a line only. The group modules draw the phase-2 charts.
- */
 function applyCharts(doc: Document, sub: string, data: StatsData, p: Period, by: string) {
   const tz = p.key === "24h" ? "UTC" : p.tz; // OF dates Last 24 hours' points in UTC
   const root = doc.querySelector(".b-statistics-page-content__wrapper");
@@ -170,7 +129,6 @@ function applyCharts(doc: Document, sub: string, data: StatsData, p: Period, by:
     drawPair(doc, root, [at(data.postsChart, "purchases.chart"), "Purchases", "money"], [at(data.postsChart, "posts.chart"), "Posts", "count"], tz);
   if (sub === "engagement/messages" && !isObj(data.messagesChart)) drawPair(doc, root, [at(data.messages, "massMessages.chartData"), "Mass messages purchases", "money"], null, tz);
   for (const c of doc.querySelectorAll<HTMLCanvasElement>(".l-wrapper__sidebar .b-elements-determinant canvas")) {
-    // A Summary card's chart (OF's SummaryBlock) sits in its own unlabelled row: its card's first row names it.
     const summary = c.closest(".b-elements-determinant.m-chart-summary");
     const label = ((summary ? summary.closest(".b-statistics-item") : c.closest(".b-elements-determinant"))?.querySelector(".b-elements-determinant__label")?.textContent ?? "").trim();
     const key = ROW_CHARTS[label];
@@ -179,27 +137,19 @@ function applyCharts(doc: Document, sub: string, data: StatsData, p: Period, by:
   }
 }
 
-// ---------------------------------------------------------------- apply
 
-/** What applyStats reads besides the data: the picks, whether the Relay has the phase-2 reads, the model, its images. */
 export interface ApplyCtx {
   picks?: Partial<Picks>;
   v2?: boolean;
-  /** The Relay has the phase-1 per-item reads (useOfStats' second probe). */
   v3?: boolean;
-  /** The Creator's `/users/me` (OF's authUser), while known. */
   me?: OfMe | null;
   accountId?: string | null;
   img?: (u: string) => string;
-  /** Some of the page's reads failed after their retries: asks them again (the notice's Retry). */
   retry?: (() => void) | null;
-  /** The failed reads' parts show their last good answer: when the oldest of those was read (ms), and the time zone to say it in. */
   asOf?: number | null;
   tz?: string | null;
 }
 
-/** OF's info alert over the page's content (where OF puts its own: m-after-alerts), its Retry asking the failed reads again. */
-/** "Nov 19, 11:42 am", in the Creator's zone. */
 export const asOfText = (at: number, tz: string | null) =>
   new Date(at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...(tz ? { timeZone: tz } : {}) }).replace(/\s?([AP])M$/, (_m, a: string) => ` ${a.toLowerCase()}m`);
 
@@ -218,7 +168,6 @@ function failedNotice(doc: Document, retry: () => void, asOf?: number | null, tz
   add(doc, box, content, "before");
 }
 
-/** Show `data` for period `p` on `doc` (the generator's dashes again for what it lacks; idempotent). */
 export function applyStats(doc: Document, page: string, data: StatsData, p: Period, x: ApplyCtx = {}): void {
   restoreStats(doc);
   if (!statsSources(page).length) return;
@@ -264,35 +213,23 @@ export function applyStats(doc: Document, page: string, data: StatsData, p: Peri
   if (sub.startsWith("fans/")) applyFans(doc, sub, all, p, { picks, v2, img });
   bindUserLists(doc, { accountId: x.accountId, img });
   applyEmpties(doc, page, all, p);
-  // Statements › Earnings with no earning in the period: OF shows its empty state alone, no summary or chart.
   if (sub === "statements/earnings" && PROOFS["No data during selected period"](all, doc.body, page, p))
     for (const el of doc.querySelectorAll<HTMLElement>(".b-statistics-page-content__wrapper > .b-elements-determinant, .b-statistics-page-content__wrapper > .b-chart")) display(doc, el, false);
   applyCharts(doc, sub, all, p, by);
 }
 
-/**
- * Most pages read ahead to reach a past period (OF jumps there with its `marker`, which today's Relay does not forward):
- * 250 rows; a period further back stays in the generator's state rather than reading on.
- */
+// Reading ahead to a past period: OF jumps there with its `marker`, which the Relay does not forward.
 const SKIP_PAGES = 5;
 
-/** Answers asking again would not change: the Relay's own, or OF's behind the Relay's 502 (`detail.upstream_status`). */
 const PERMANENT = [400, 401, 403, 404, 409, 422];
-/** Whether a failed Statistics read is worth asking again: any failure but a permanent answer (a 5xx, a timeout, the network). */
 export function retryable(err: unknown): boolean {
   if (!(err instanceof RelayError)) return true;
   const detail = isObj(err.body) ? err.body.detail : undefined;
   const up = isObj(detail) ? detail.upstream_status : undefined;
   return !PERMANENT.includes(err.status) && !(typeof up === "number" && PERMANENT.includes(up));
 }
-/** A Statistics read's retries: two, about 1 s then 3 s after a failure. */
 const RETRY = { retry: (n: number, err: unknown) => n < 2 && retryable(err), retryDelay: (n: number) => (n ? 3000 : 1000) };
 
-/**
- * A paged source (PAGED) for `route(param)` (null: not on this page), as one body (PagedBody) and a stamp that changes
- * with it. `skip`: while every row read is newer than the period, the next page is read (at most SKIP_PAGES); then the
- * next page waits for OF's infinite loading (the last row scrolling into view).
- */
 export function usePaged(accountId: string | null, route: ((param: PageParam) => string) | null, next: (last: unknown, pages: unknown[]) => PageParam | undefined, p: Period, skip: boolean) {
   const q = useInfiniteQuery({
     queryKey: ["of-mirror-data", accountId, route ? route({ offset: 0 }) : null, "pages"],
@@ -308,12 +245,10 @@ export function usePaged(accountId: string | null, route: ((param: PageParam) =>
   const reached = !!list?.some((r) => (timeOf(r) ?? Infinity) < p.start.getTime());
   const ahead = !!list?.length && list.every((r) => (timeOf(r) ?? -Infinity) > p.end.getTime());
   const { hasNextPage, isFetching, fetchNextPage } = q;
-  // A next page still failing after its retries: no more automatic or scroll paging; Retry asks that page again.
   const pageFailed = q.isFetchNextPageError;
   useEffect(() => {
     if (skip && ahead && hasNextPage && !isFetching && !pageFailed && (pages?.length ?? 0) < SKIP_PAGES) void fetchNextPage();
   }, [skip, ahead, hasNextPage, isFetching, pageFailed, pages?.length, fetchNextPage]);
-  // Stopped short of the period: the cap reached while every row is still newer, the Relay repeated a page, or a page failed.
   const stalled = (!!pages && nothingNew(pages.at(-1), pages)) || (skip && ahead && !!hasNextPage && (pages?.length ?? 0) >= SKIP_PAGES) || pageFailed;
   const more = !!hasNextPage && !(skip && reached) && !stalled;
   const body: PagedBody | undefined = list && { list, hasMore: more, loading: isFetching, more: more && !isFetching ? () => void fetchNextPage() : null, stalled };
@@ -321,17 +256,9 @@ export function usePaged(accountId: string | null, route: ((param: PageParam) =>
   return { body, stamp: `${q.dataUpdatedAt}:${q.status}:${isFetching}:${pages?.length ?? 0}`, error: q.isError, failure: q.error, refetch, at: q.dataUpdatedAt, route: route ? route({ offset: 0 }) : null };
 }
 
-/**
- * Whether the Relay has the phase-2 Statistics reads (omf-statistics-relay): its `/streaks/top` answers an object
- * (today's Relay: 404). Until then every control that needs one of their params (a chip's `by`, the search, OF's
- * Statements paging) keeps today's state: today's Relay drops unknown params and would answer for another tab.
- */
 export const isV2 = (body: unknown) => isObj(body);
 const V2_PROBE = "/api/of/v2/streaks/top";
-// The phase-1 per-item reads (the post buyer and tip lists, the claim and subscriber lists, the item stats headers):
-// ofMirrorStatsPostStat's postStatsProbe. Until it finds them the counts that open those lists stay plain figures.
 
-/** On a Statistics page, show the model's figures for the period picked on every frame load, data or period change. */
 export function useOfStats(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const tz = useAppliedSettings().data?.preferences?.tz ?? null;
@@ -340,16 +267,13 @@ export function useOfStats(frameRef: RefObject<HTMLIFrameElement | null>, src: s
   const page = /^\/of-mirror\/pages\/(.+)\.html$/.exec(src)?.[1] ?? "";
   const sources = statsSources(page);
   const sub = basePage(page).slice("statistics/".length);
-  // The clock is read once per page and period, so the routes (and their cache) stay put between renders.
   const now = useMemo(() => new Date(), [key, src]); // eslint-disable-line react-hooks/exhaustive-deps
-  let phase2 = false; // set from the probe below, before any phase-2 read is built
+  let phase2 = false;
   const query = (source: StatSource | "probe", route: string | null) => ({
     queryKey: ["of-mirror-data", accountId, route],
     queryFn: () => relay.get<unknown>(route!, { accountId }),
-    // A phase-2 read only once the probe found that Relay: today's gets the probe's one 404, nothing else.
     enabled: !!accountId && !!route && (source === "probe" ? sources.length > 0 : sources.includes(source) && (phase2 || !V2_ONLY.includes(source))),
     staleTime: source === "probe" ? Infinity : 60_000,
-    // The probes never: today's Relay answers their 404 at once.
     ...(source === "probe" ? { retry: false } : RETRY),
   });
   const fixedRoute = (s: StatSource) => statsRoute(s, { startApi: "", endApi: "" });
@@ -364,39 +288,31 @@ export function useOfStats(frameRef: RefObject<HTMLIFrameElement | null>, src: s
   const v3 = v2 && probe3Q.data === true;
   const { data: me } = useQuery(ofMeQuery(accountId));
   phase2 = v2;
-  // Today's Relay answers the probe 404 at once; a phase-2 read waits for it so it is asked with the right params.
-  // With phase 2, the second probe too: the payout lists are asked OF's way only on the phase-1 Relay.
   const known = (!probeQ.isPending && !(v2 && probe3Q.isPending)) || !accountId;
   const userStart = startOf(startQ.data, tz);
   const p = periodOf(key, now, tz, userStart);
-  // All time needs the Creator's start before it can ask for anything.
   const ready = (key !== "all" || !!userStart) && known;
   const x: RouteCtx = { picks: pk, v2, v3, sub, tz, top: probeQ.data };
   const routes = ALL_SOURCES.map((s) => (FIXED.includes(s) ? fixedRoute(s) : ready ? statsRoute(s, p, x) : null));
   const results = useQueries({ queries: ALL_SOURCES.map((s, i) => query(s, routes[i])) });
-  // The read-ahead cap only where the Relay cannot page OF's way: transactions before phase 2, the payout lists before phase 1.
   const skipAhead: Partial<Record<StatSource, boolean>> = v3
     ? {}
     : v2
     ? { payoutRequests: sub === "statements/payout-request", referralRequests: sub.startsWith("statements/referrals/") }
     : { transactions: sub === "statements/earnings", payoutRequests: sub === "statements/payout-request", referralRequests: sub.startsWith("statements/referrals/") };
-  // One reader per paged source, always in PAGED's order.
   const lists = PAGED.map((s) =>
     // eslint-disable-next-line react-hooks/rules-of-hooks
     usePaged(accountId, sources.includes(s) && ready && (v2 || !V2_ONLY.includes(s)) ? (param) => listRoute(s, p, param, x) : null, (last, pages) => nextParam(s, last, pages, x), p, !!skipAhead[s]),
   );
   const stamp = [...results.map((r) => `${r.dataUpdatedAt}:${r.status}`), ...lists.map((l) => l.stamp), probeQ.dataUpdatedAt].join(",");
-  // The page's reads still failing after their retries: Retry asks only these again.
   const failed = [...results.filter((r, i) => r.isError && sources.includes(ALL_SOURCES[i])), ...lists.filter((l, i) => l.error && sources.includes(PAGED[i]))];
   const retry = failed.length ? () => failed.forEach((q) => void q.refetch()) : null;
-  // OF opens each page on its default tabs (the top countries collapsed, Posts on Purchases).
   useEffect(() => resetPicks(), [src]);
 
   useEffect(() => {
     const frame = frameRef.current;
     if (!frame || !sources.length) return;
     const data: StatsData = {};
-    // A read that failed keeps its last good answer for this Creator and period; the notice says as of when.
     let asOf: number | null = null;
     const selection = selectionOf(p);
     const shown = (s: StatSource, route: string | null, r: { data: unknown; failed: boolean; at: number; error: unknown }) => {
@@ -408,7 +324,6 @@ export function useOfStats(frameRef: RefObject<HTMLIFrameElement | null>, src: s
       ALL_SOURCES.forEach((s, i) => (data[s] = shown(s, routes[i], { data: results[i].data, failed: results[i].isError, at: results[i].dataUpdatedAt, error: results[i].error })));
       PAGED.forEach((s, i) => {
         const l = lists[i];
-        // Remembered without its live paging: the next page is asked again once a read answers.
         const body = l.body && !l.error ? { ...l.body, loading: false, more: null } : l.body;
         const got = shown(s, l.route, { data: body, failed: l.error, at: l.at, error: l.failure });
         data[s] = l.body && !l.error ? l.body : got;
@@ -424,6 +339,5 @@ export function useOfStats(frameRef: RefObject<HTMLIFrameElement | null>, src: s
     if (frame.contentDocument?.readyState === "complete") apply();
     frame.addEventListener("load", apply);
     return () => frame.removeEventListener("load", apply);
-    // results: by their stamp; p: by its key, tz and start.
   }, [frameRef, src, page, accountId, stamp, key, tz, p.startApi, p.endApi, pk, v2, v3, me]); // eslint-disable-line react-hooks/exhaustive-deps
 }

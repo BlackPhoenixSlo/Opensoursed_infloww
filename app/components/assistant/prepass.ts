@@ -63,8 +63,7 @@ export function prepass(raw: string, links: readonly NavLink[]): PrepassHit | nu
   const nav = NAV_RE.exec(t);
   if (!nav) return null;
   const want = norm(nav[1]);
-  // A placeholder page is never a destination (Fansly's own "Settings").
-  const hit = links.find((l) => !l.notBuilt && norm(l.label) === want);
+  const hit = links.find((l) => norm(l.label) === want);
   return hit ? { kind: "navigate", href: hit.href, label: hit.label } : null;
 }
 

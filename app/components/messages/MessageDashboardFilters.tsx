@@ -1,19 +1,5 @@
 "use client";
 
-/**
- * MessageDashboardFilters — the All tab's filters the shared MessagesFilters
- * strip does not carry (roadmap 5.7): Search message text, Price min/max,
- * Type = Employee / Automation and Status = unsent, applied as they change.
- * All-Messages tab only; the PPV and Tips tabs keep MessagesFilters as it is.
- * The All tab shows both kinds: Direct messages and OnlyFans mass messages are
- * the page's own tabs now (page-parity 30, MessageDashboardForm).
- *
- * Price is typed in dollars and handed up as cents (the relay's unit). Text
- * search debounces 250ms, as the fan search does, and is sent from 2 chars.
- *
- * No Script filter: no message row records the script it came from, so there
- * is nothing honest to filter on.
- */
 
 import { useEffect, useState } from "react";
 
@@ -47,15 +33,12 @@ export default function MessageDashboardFilters({
 }) {
   const set = (patch: Partial<DashboardFilterValue>) => onChange({ ...value, ...patch });
 
-  // Local mirror so typing feels instant; nothing resets the parent's string
-  // from outside, so no sync back.
   const [localQ, setLocalQ] = useState(value.q);
   useEffect(() => {
     const h = window.setTimeout(() => {
       if (localQ !== value.q) set({ q: localQ });
     }, 250);
     return () => window.clearTimeout(h);
-    // keyed on the typed string only, as MessagesFilters' fan search
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localQ]);
 

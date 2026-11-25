@@ -1,9 +1,3 @@
-/**
- * NotAppliedYet is field-scoped (docs/spec/phase-04-apply-stored-settings.md ›
- * Notes): it takes the names of the fields still not applied and renders
- * nothing when given none. With no `fields` it is the whole-Panel sentence, as
- * every Panel shows it today (each Panel's own test pins its note).
- */
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 

@@ -1,32 +1,3 @@
-"""Notification clicks, as the owner makes them. A fan DM enters at the pump boundary
-(actors/fan_dm), the toaster and the bell's history mirror pick it up, and the owner
-clicks it from each place a notification shows. Every click must open the Fan as a Fan
-tab in the one Messages Pro window (app/lib/notificationLink.ts): no new tab or window,
-the Fan in the Fan tabs strip, in the stored Fan tabs and in the Chat header, and the
-clicked window left where it was. A click inside Messages Pro adds the tab in place,
-with no reload.
-
-`browser`: headless Chromium (actors/ui), Messages Pro opened from the sidebar as the
-app opens it (the `messages-pro` popup). `desktop`: the real Electron app
-(desktop/main.js) on this run's app, driven over CDP; SKIP when the binary is missing.
-
-Declared bypasses:
-- message toasts and the OS ping are pinned on in localStorage
-  `chatterly:notif-settings:v1` (both default on since 2026-11-10; pinned so a later
-  default change cannot break this flow), as the bell's Settings tab would;
-- browser: OF's notifications feed is answered with one fixture row at the wire
-  boundary (the /notifications page's row; every other /api/of read stays held, as in
-  actors/ui). Headless Chromium has no notification centre, so the web Notification is
-  a recorder and `document.hasFocus()` reads false while the OS step asks for it; that
-  notification is clicked through its own onclick;
-- desktop: a wrapper outside product code (written into the run folder) points
-  userData at a temp dir (never the user's profile or single-instance lock), logs the
-  cards sent to the app's macOS toast window (desktop/lib/toast-window.js) and clicks,
-  in that window's DOM, the card whose body carries NATIVE_CLICK, where a user's mouse
-  would (the only bypass); the rest is the product's IPC. The main window's `document.hasFocus()` reads
-  false for that step, as in the browser (a CDP-driven window keeps OS focus). The owner
-  cookie is set over CDP. OF reads are held and the feed answered as in the browser.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -48,14 +19,15 @@ from slop.lib.faults import FAULTS
 ROOT = Path(__file__).resolve().parents[2]
 ELECTRON = ROOT / "desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
 NATIVE_CLICK = "slop native click"
-SETTLE_S = 90  # a first Deep link compiles under `next dev`
+# a first Deep link compiles under `next dev`
+SETTLE_S = 90
 
 BROWSER_ENTRIES = ("main-window toast", "Messages Pro toast", "top bar bell row", "/notifications row",
                    "OS notification")
 DESKTOP_ENTRIES = ("main-window toast", "Messages Pro toast", "top bar bell row", "native notification")
 
 
-_STEP: list[tuple[int, str]] = []  # (ms, step) as the steps start: what a console line happened during
+_STEP: list[tuple[int, str]] = []
 
 
 def _step(name: str) -> None:
@@ -67,8 +39,6 @@ def _step_at(t_ms: int) -> str:
 
 
 class _Console:
-    """Console errors and warnings, and uncaught errors, of every app page, by step: what
-    `next dev`'s Issues badge counts. One JSON line each in console-<env>.jsonl."""
 
     def __init__(self, ctx, env: str):
         self.path, self.env, self.seen = ctx.out / f"console-{env}.jsonl", env, set()
@@ -100,7 +70,6 @@ class _Console:
 
 
 def distinct(fans: list[dict]) -> list[dict]:
-    """Fans no other Fan of the list shares a name with: a Fan tab is found by its name."""
     names = [f["name"] for f in fans]
     return [f for f in fans if names.count(f["name"]) == 1]
 
@@ -120,7 +89,6 @@ SETTINGS = {"enabled": True, "osPing": True,
             "platforms": {"onlyfans": True, "fansly": True},
             "sounds": {"message": {"on": False, "sound": "s1"}, "reminder": {"on": True, "sound": "s1"}}}
 SETTINGS_JS = f"try {{ localStorage.setItem('chatterly:notif-settings:v1', {json.dumps(json.dumps(SETTINGS))}); }} catch (e) {{}}"
-# Headless Chromium's stand-in for the OS: notifications are recorded, focus is lost on request.
 FOCUS_JS = """window.__slopBlur = false;
 (() => { const has = Document.prototype.hasFocus;
   Document.prototype.hasFocus = function () { return window.__slopBlur ? false : has.call(this); }; })();"""
@@ -131,7 +99,6 @@ window.Notification = class { constructor(title, o) { this.title = title; this.b
   close() { this.closed = true; } static get permission() { return 'granted'; }
   static requestPermission() { return Promise.resolve('granted'); } };"""
 
-# What the Messages Pro window shows for `fan` right now.
 STATE_JS = """(fan) => {
   const strip = document.querySelector('[role=tablist][aria-label="Fan tabs strip"]');
   const tabs = strip ? [...strip.querySelectorAll('[role=tab]')] : [];
@@ -150,8 +117,6 @@ STATE_JS = """(fan) => {
 
 
 def _shown(state: dict, fan: dict) -> bool:
-    """The Fan's tab in the strip and active, stored once, and its chat open. The Chat header
-    names the Fan by its OF profile, which slop holds, so after a reload it reads `fan <id>`."""
     header = state.get("header") or ""
     return (any(fan["name"] in t for t in state.get("tabs", [])) and fan["name"] in (state.get("active") or "")
             and state.get("stored") == 1 and (fan["name"] in header or str(fan["id"]) in header))
@@ -171,8 +136,6 @@ async def _settle(mp, fan: dict) -> dict:
 
 
 class _Dms:
-    """Fan DMs at the pump boundary. A DM that shows no toast is sent again with a new id
-    (the transcoder fault drops every 10th): what is tested is the click, not delivery."""
 
     def __init__(self, ctx, account_id: str, base: int):
         self.ctx, self.account_id, self.ids = ctx, account_id, iter(range(base, base + 1000))
@@ -193,9 +156,6 @@ class _Dms:
 
 
 async def _arm(mp) -> None:
-    """Right before a click: Messages Pro is up to take it (`next dev` may have reloaded it
-    while compiling a route the other window opened), and marked, so a reload by the click
-    itself shows (the mark gone)."""
     await mp.wait_for_function("() => typeof window.__inflowwOpenNotification === 'function'", timeout=120_000)
     await mp.evaluate("() => { window.__slopMark = 1; }")
 
@@ -207,17 +167,16 @@ def _pages(any_page) -> list:
 async def _judge(ctx, env: str, entry: str, *, mp, fan: dict, trigger, trigger_url: str, windows_before: int,
                  windows, slug: str, pages_before: list, extra: dict | None = None) -> dict:
     state = await _settle(mp, fan)
-    await asyncio.sleep(1.0)  # a stray window would have opened by now
+    await asyncio.sleep(1.0)
     after = await windows()
     kept = trigger.url == trigger_url
-    no_reload = state.get("mark") == 1  # set by _arm: Messages Pro took the click in place
+    no_reload = state.get("mark") == 1
     ok = _shown(state, fan) and after == windows_before and kept and no_reload
     try:
         settled = await ui.shot(ctx, mp, f"{slug}-settled")
     except Exception as e:  # noqa: BLE001  (Messages Pro gone: the check fails, the steps after it go on)
         settled, ok, state = None, False, {**state, "screenshot_error": repr(e)[:300]}
-    # A window the click opened, counted above, is closed: its /events stream would hold one
-    # of the browser's six connections to the app, starving the steps after it.
+    # a window the click opened is closed: its /events stream would hold one of the browser's six connections to the app
     for p in _pages(trigger):
         if p not in pages_before:
             await p.close()
@@ -231,17 +190,15 @@ async def _judge(ctx, env: str, entry: str, *, mp, fan: dict, trigger, trigger_u
 
 
 def _feed(account_id: str, fan: dict, text: str):
-    """OF's notifications feed: one row about `fan` for its Creator, none for the others."""
     async def handle(r):
         if "/count" in r.request.url:
             await r.fulfill(json={})
             return
         q = parse_qs(urlsplit(r.request.url).query)
-        if "/money" in r.request.url:  # the rail's combined read: each asked money type, empty
+        # as OF: a row is listed for its own type only; the money rail's type=tip/purchases lists never carry a message
+        if "/money" in r.request.url:
             await r.fulfill(json={t: {"list": [], "hasMore": False} for t in q.get("types", [""])[0].split(",") if t})
             return
-        # As OF: a row is listed for its own type only (the money rail's type=tip and type=purchases
-        # lists never carry a message; one would show twice there, under one key).
         typ = q.get("type", ["message"])[0]
         if r.request.headers.get("x-account-id") != account_id or typ != "message":
             await r.fulfill(json={"list": [], "hasMore": False})
@@ -254,8 +211,6 @@ def _feed(account_id: str, fan: dict, text: str):
 
 
 async def browser(ctx, account_id: str, fans: list[dict]) -> list[dict]:
-    """Five entry points in headless Chromium; one check each (BROWSER_CHECKS). Each clicks
-    about a Fan with no tab yet, so a click that does nothing cannot pass."""
     pick = distinct(fans)
     if len(pick) < 5:
         for n in BROWSER_CHECKS:
@@ -284,13 +239,11 @@ async def browser(ctx, account_id: str, fans: list[dict]) -> list[dict]:
             mp = await popup.value
             await mp.get_by_role("button", name="Notifications").first.wait_for(timeout=120_000)
 
-            # A: a toast in the main window.
             await page.bring_to_front()
             _step("nc-b1-main-toast arrival")
             toast, tries = await dms.toast(page, f1, "slop notif click: main toast")
             out.append(await _click(ctx, "browser", BROWSER_ENTRIES[0], toast, tries, page, mp, f1, windows, "nc-b1-main-toast"))
 
-            # B: another Fan's row in the top bar bell (its toast left alone).
             await page.bring_to_front()
             _step("nc-b2-bell-row arrival")
             await dms.toast(page, f5, "slop notif click: bell row")
@@ -299,14 +252,12 @@ async def browser(ctx, account_id: str, fans: list[dict]) -> list[dict]:
             out.append(await _click(ctx, "browser", BROWSER_ENTRIES[2], row, 1, page, mp, f5, windows, "nc-b2-bell-row",
                                     wait=True))
 
-            # C: a toast inside Messages Pro.
             await mp.bring_to_front()
             _step("nc-b3-mp-toast arrival")
             toast, tries = await dms.toast(mp, f2, "slop notif click: Messages Pro toast")
             out.append(await _click(ctx, "browser", BROWSER_ENTRIES[1], toast, tries, mp, mp, f2, windows,
                                     "nc-b3-mp-toast"))
 
-            # E: a row on the /notifications page.
             await page.bring_to_front()
             _step("nc-b4-notifications-row arrival")
             await page.goto(f"{ctx.app}/notifications", wait_until="domcontentloaded")
@@ -314,7 +265,6 @@ async def browser(ctx, account_id: str, fans: list[dict]) -> list[dict]:
             out.append(await _click(ctx, "browser", BROWSER_ENTRIES[3], row, 1, page, mp, f4, windows,
                                     "nc-b4-notifications-row", wait=True))
 
-            # O: the OS notification of a DM that lands while the main window is unfocused.
             _step("nc-b5-os-notification arrival")
             await page.goto(f"{ctx.app}/", wait_until="domcontentloaded")
             await page.get_by_role("button", name="Notifications").first.wait_for(timeout=120_000)
@@ -423,7 +373,6 @@ require({main});
 
 
 async def desktop(ctx, account_id: str, fans: list[dict]) -> list[dict]:
-    """Four entry points in the real Electron app; one check each (DESKTOP_CHECKS)."""
     if not ELECTRON.exists():
         for n in DESKTOP_CHECKS:
             ctx.skip(n, f"no Electron binary at {ELECTRON}")
@@ -433,7 +382,7 @@ async def desktop(ctx, account_id: str, fans: list[dict]) -> list[dict]:
         for n in DESKTOP_CHECKS:
             ctx.check(n, False, reason=f"{len(pick)} Fans with a name of their own, 9 needed")
         return []
-    f1, f2, f3, f4 = pick[5:9]  # none the browser steps opened: each starts with no tab
+    f1, f2, f3, f4 = pick[5:9]
     dms = _Dms(ctx, account_id, fan_dm.INJECT_ID_BASE + 778_000)
     out: list[dict] = []
     fault = FAULTS.get(ctx.fault or "")
@@ -465,7 +414,6 @@ async def desktop(ctx, account_id: str, fans: list[dict]) -> list[dict]:
             cdp = await b.new_browser_cdp_session()
 
             async def windows() -> int:
-                # The app's windows: the toast window (a local file) comes and goes on its own.
                 return sum(1 for t in (await cdp.send("Target.getTargets"))["targetInfos"]
                            if t["type"] == "page" and t["url"].startswith(ctx.app))
 
@@ -488,11 +436,9 @@ async def desktop(ctx, account_id: str, fans: list[dict]) -> list[dict]:
                     await r.abort()
 
 
-            # As actors/ui's pages: focus on request, and the fault's page script.
             primed = "window.__slopPrimed = 1;\n" + FOCUS_JS + "\n" + (fault.browser_js if fault and fault.browser_js else "")
 
             async def prime(p):
-                # A window opened before the init script reached it (Messages Pro) runs it now.
                 if await p.evaluate("() => window.__slopPrimed === undefined"):
                     await p.evaluate(f"() => {{ {primed} }}")
 
@@ -542,11 +488,10 @@ async def desktop(ctx, account_id: str, fans: list[dict]) -> list[dict]:
                                     "nc-d3-bell-row", wait=True))
             await main.keyboard.press("Escape")
 
-            # The native notification: raised by a window without focus, clicked "by the OS" (the wrapper).
             await mp.bring_to_front()
             await main.evaluate("() => { window.__slopBlur = true; }")
             entry = DESKTOP_ENTRIES[3]
-            await _arm(mp)  # the wrapper clicks the card about a second after it shows
+            await _arm(mp)
             trigger_png = await ui.shot(ctx, main, "nc-d4-native-notification-trigger")
             before, url, known = await windows(), main.url, _pages(main)
 
@@ -556,7 +501,7 @@ async def desktop(ctx, account_id: str, fans: list[dict]) -> list[dict]:
                            if ln.startswith("[slop] native notification") and NATIVE_CLICK in ln)
 
             tries = 0
-            _step("nc-d4-native-notification arrival+click")  # the wrapper clicks a second after it shows
+            _step("nc-d4-native-notification arrival+click")
             for tries in range(1, 4):
                 await dms.send(f3, f"{NATIVE_CLICK} {tries}")
                 for _ in range(30):
@@ -578,7 +523,7 @@ async def desktop(ctx, account_id: str, fans: list[dict]) -> list[dict]:
                                         windows_before=before, pages_before=known, windows=windows, slug="nc-d4-native-notification",
                                         extra={"trigger_png": trigger_png, "dm_tries": tries,
                                                "native_raised": raised()}))
-            # A held read let go on disconnect would reach the relay's OF client (a 500 and a Traceback).
+            # a held read let go on disconnect would reach the relay's OF client (a 500 and a Traceback)
             closing = True
             for r in held:
                 try:

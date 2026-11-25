@@ -11,7 +11,6 @@ describe("Add to story (story strip)", () => {
   const html = (page: string) => readFileSync(resolve(PAGES, `${page}.html`), "utf8");
   const OWN = ".b-story-item.m-story-item-own";
   const PICKER = "input[type=file][accept='image/*,video/*']";
-  /** Every committed Mirror page (path under pages/, no .html) whose story strip carries the own tile. */
   const ownPages = (readdirSync(PAGES, { recursive: true }) as string[])
     .filter((f) => f.endsWith(".html"))
     .map((f) => f.slice(0, -".html".length))
@@ -22,16 +21,11 @@ describe("Add to story (story strip)", () => {
     return document;
   };
   const png = () => new File([new Uint8Array([137, 80, 78, 71])], "synthetic.png", { type: "image/png" });
-  /**
-   * Hand the hidden picker `files` and its browser-set `value` ("C:\\fakepath\\<name>"; jsdom refuses to set a file
-   * input's value, so it is a plain writable property here), then fire its change, as the browser does after a pick.
-   */
   const pick = (input: HTMLInputElement, files: File[]) => {
     Object.defineProperty(input, "files", { value: files, configurable: true });
     Object.defineProperty(input, "value", { value: files.length ? `C:\\fakepath\\${files[0].name}` : "", writable: true, configurable: true });
     input.dispatchEvent(new Event("change"));
   };
-  /** A spy on every input's click(), so jsdom opens no picker. */
   const spyOpen = () => vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(() => {});
   let opened: ReturnType<typeof spyOpen>;
   beforeEach(() => {
@@ -93,7 +87,6 @@ describe("Add to story (story strip)", () => {
     unbind();
   });
 
-  /** A promise and the hooks to settle it, so a test can look at the page while addStory is in flight. */
   const pending = () => {
     let resolve!: (v: unknown) => void;
     let reject!: (e: unknown) => void;
@@ -252,7 +245,6 @@ describe("Add to story (story strip)", () => {
     unbind();
   });
 
-  /** The strip's tiles other than "Add to story", as the reader sees them (label, or "fan story" for a fan's tile). */
   const others = (d: Document) => [...d.querySelectorAll<HTMLButtonElement>(".b-story-item:not(.m-story-item-own)")];
   const label = (tile: Element) => (tile.matches("[at-attr=story_item]") ? "fan story" : tile.querySelector(".b-story-item__text")!.textContent!.trim());
 
@@ -326,7 +318,7 @@ describe("Add to story (story strip)", () => {
   it("profile/index has no Add to story: binding adds no picker and marks nothing, and no tile clicks a file input", () => {
     const d = load("profile/index");
     const addStory = vi.fn((_file: File) => Promise.resolve({}));
-    const wired = [...d.querySelectorAll("[data-oi-wired]")]; // the generator's (My profile's own controls)
+    const wired = [...d.querySelectorAll("[data-oi-wired]")];
     const unbind = bindStory(d, { addStory });
     expect(d.querySelectorAll("input[type=file]")).toHaveLength(0);
     expect([...d.querySelectorAll("[data-oi-wired]")]).toEqual(wired);

@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * The bio editor's link dialog ("Add link" / "Edit link"), almost full screen on a phone: title, destination, icon,
- * background image, the 18+ gate, Mode, and "Tracking" (OnlyFans tracking, the default code with a picker of the
- * Creator's OnlyFans tracking links; no Geo Rule field since 11-12, a stored rule stays as is). Copy after v2 `links.js`. State: `bioLinkForm.ts`, held by
- * BioEditor (the preview draws the draft); this dialog dispatches and runs the save: the link write, then the
- * background upload or removal. A background that fails after the link saved leaves the dialog on the saved link.
- */
 import { useId, useState, type Dispatch } from "react";
 import { ChevronDown } from "lucide-react";
 
@@ -36,9 +29,7 @@ export function BioLinkDialog({ page, form, dispatch, profileMode, bgPreviewUrl 
   page: BioPage;
   form: BioLinkForm;
   dispatch: Dispatch<Action>;
-  /** The profile's Mode as edited: what "Profile default" means right now. */
   profileMode: BioMode;
-  /** The picked background's object URL (BioEditor owns it; the preview draws it too). */
   bgPreviewUrl: string | null;
 }) {
   const pid = page.profile.id;
@@ -153,7 +144,6 @@ export function BioLinkDialog({ page, form, dispatch, profileMode, bgPreviewUrl 
                 initialSelectedIds={[]}
                 onConfirm={(picked) => {
                   setVaultOpen(false);
-                  // One background: the first photo picked (a lone video goes through, for the relay's refusal).
                   const m = picked.find((p) => p.type === "photo") ?? picked[0];
                   if (m) dispatch({ type: "pick_bg_vault", media: { id: m.id, type: m.type, url: mirrorFullSrc(accountId, m.id) } });
                 }} />
@@ -184,7 +174,6 @@ export function BioLinkDialog({ page, form, dispatch, profileMode, bgPreviewUrl 
             <button type="button" aria-expanded={form.advanced} onClick={() => dispatch({ type: "toggle_advanced" })}
               className="flex w-full items-center gap-2 px-3 py-2 text-left">
               <ChevronDown aria-hidden className={cn("h-4 w-4 shrink-0 transition-transform", !form.advanced && "-rotate-90")} />
-              {/* One line for the heading; the hint goes under it on a phone, beside it from sm */}
               <span className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-baseline sm:gap-2">
                 <span className="whitespace-nowrap text-[14px] text-fg">Tracking</span>
                 <span aria-hidden className="truncate text-[12px] text-muted">Only for OnlyFans Links.</span>

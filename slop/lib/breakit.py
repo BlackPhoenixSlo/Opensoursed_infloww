@@ -1,6 +1,3 @@
-"""--break: break-it-once against a green baseline (run first, or read from --baseline), with the Run identity
-checks. lib/cli.py's break_one passes in its scenario loading (`load`), runs (`run_one`) and this checkout's
-source id (`source_id`); knob matching is lib/runs.py."""
 from __future__ import annotations
 
 import json
@@ -17,8 +14,6 @@ def _status(checks: list[dict]) -> dict[str, str]:
 
 def _load_baseline(d: Path, name: str, ui: bool, args, params, shards: int = 1, *,
                    source_id) -> tuple[dict, str | None, dict]:
-    """(statuses, problem, params) from a previous no-fault run of the same scenario, knobs, --timeout and Run
-    identity."""
     try:
         checks = json.loads((d / "invariants.json").read_text())
         meta = json.loads((d / "metrics.json").read_text())
@@ -33,7 +28,7 @@ def _load_baseline(d: Path, name: str, ui: bool, args, params, shards: int = 1, 
                                          "env_names": args.env_names})
     if why:
         return {}, f"baseline {d}: not the same Run identity: {why}", bp
-    if bp.get("timeout_s") != args.timeout:  # a shorter one can time the fault run out: red with no fault effect
+    if bp.get("timeout_s") != args.timeout:
         return {}, (f"baseline {d} was run with --timeout={bp.get('timeout_s', 'unrecorded')}, this run "
                     f"--timeout={args.timeout}: re-run with the same --timeout"), bp
     if meta.get("infra"):
@@ -42,7 +37,6 @@ def _load_baseline(d: Path, name: str, ui: bool, args, params, shards: int = 1, 
 
 
 def break_one(name: str, path: Path, args, params, *, load, run_one, source_id) -> str:
-    """Break-it-once. Returns CAUGHT, NOT CAUGHT or INCONCLUSIVE."""
     try:
         mod = load(path)
     except Exception as e:
@@ -95,7 +89,6 @@ def break_one(name: str, path: Path, args, params, *, load, run_one, source_id) 
     lines += [f"  note: baseline already red on non-targeted: {base_red}"] if base_red else []
     print("slop: " + "\n".join(lines))
     if broken_dir:
-        # Line 1 is the fault run's own status, red by design: label it so it is not read as the verdict.
         summary = broken_dir / "summary.txt"
         head, _, rest = summary.read_text().partition("\n")
         head += f"  (under injected fault {fault}: red expected; break verdict {verdict}, see the end / break.json)"

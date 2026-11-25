@@ -2,14 +2,6 @@ import { describe, it, expect } from "vitest";
 
 import { bucketOf } from "./CompetitorReports";
 
-/**
- * Regression guard for the "Posts = $0.00" bug: paid FEED-post sales are
- * ingested by transaction_ingest.py as `ppv_post` (OF ledger prefixes
- * "Post from " / "Post purchase by "), and post-tips as `tip_post`. Both must
- * land in the "posts" channel, NOT be swallowed by the generic ppv→messages
- * catch-all. Stream sales (`ppv_stream`, `tip_stream`) have no channel since
- * Chargebacks took Streams' place: "other" (Total earnings only), never "messages".
- */
 describe("bucketOf", () => {
   it("routes paid feed-post revenue to posts", () => {
     expect(bucketOf("ppv_post")).toBe("posts");
@@ -22,8 +14,8 @@ describe("bucketOf", () => {
   });
 
   it("keeps chat PPV in messages", () => {
-    expect(bucketOf("ppv")).toBe("messages");          // WS-pump kind
-    expect(bucketOf("ppv_message")).toBe("messages");  // ledger kind
+    expect(bucketOf("ppv")).toBe("messages");
+    expect(bucketOf("ppv_message")).toBe("messages");
   });
 
   it("counts paid customs in messages, as the Dashboard's Messages tile does (#44)", () => {

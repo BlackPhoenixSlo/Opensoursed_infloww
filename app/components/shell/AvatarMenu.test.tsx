@@ -1,7 +1,3 @@
-/**
- * The avatar (profile) menu offers the desktop app: a plain anchor to /download on the web, left out inside the
- * desktop app (desktop/preload.js sets `window.fasttShell.isDesktop`).
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen } from "@testing-library/react";
 

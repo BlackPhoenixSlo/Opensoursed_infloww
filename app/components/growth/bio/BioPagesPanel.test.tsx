@@ -1,9 +1,3 @@
-/**
- * Growth → Bio pages, rendered as the route renders it (`BioPagesPage`) over a mocked relay: the owner gets its rows
- * from `/admin/bio-pages` (a row opens /growth/bio-pages/<id>); a chatter gets the owner-only note and no read; "New
- * bio page" refuses a reserved username before any write, a create sends the normalized body and opens the editor,
- * and a picked Creator prefills the name and a username from its `/users/me`.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { ChatterFlatAccountDTO, ChatterMeDTO } from "@/contexts/ChatterContext";
@@ -72,7 +66,7 @@ beforeEach(() => {
     if (path === "/admin/accounts") return Promise.resolve({ accounts: [{ id: "1000001", nickname: "Creator A", has_session: true }] });
     if (path === "/admin/bio-pages") return Promise.resolve(list);
     if (path === "/api/of/v2/users/me") return Promise.resolve(me);
-    return new Promise(() => {}); // every other read stays pending: not this test's
+    return new Promise(() => {});
   });
   window.history.replaceState(null, "", "/growth/bio-pages");
 });

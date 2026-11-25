@@ -164,7 +164,6 @@ ROWS = 50
 KIND = full_ai_live.KIND
 OFF_TRIGGER = {"every_seconds": 300}
 LIVE_TRIGGER = {**OFF_TRIGGER, "mode": full_ai_live.MODE}
-# A key's provider as Settings → AI keys names it (llm_client's map lacks the two Writer-only providers).
 _KEY_LABELS = {"nanogpt": "NanoGPT", "openrouter": "OpenRouter", **llm_client.PROVIDER_LABELS}
 
 router = APIRouter()
@@ -172,8 +171,7 @@ log = logging.getLogger("of-relay.full_ai_api")
 
 
 async def _since(account_id: str) -> datetime:
-    """Today's midnight in the report zone, as naive UTC (the rows' clock)."""
-    import stats  # stats imports half the service; the zone reader is all this needs
+    import stats
     zone = await stats._report_zone(account_id) or timezone.utc
     midnight = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
     return midnight.astimezone(timezone.utc).replace(tzinfo=None)
@@ -224,10 +222,6 @@ async def full_ai_revenue_read(account_id: str = Query(...)) -> dict[str, Any]:
 
 
 async def live_blockers(account_id: str) -> list[str]:
-    """Why this Creator may not go Live now (empty = it may), read off the saved checkpoint (what a
-    live Turn runs): a usable key for every Writer in the chain (the same policy as the call,
-    `llm_client.llm_key_available`) and Jev's TypeSafe key (`tenant_keys.typesafe_key_for`). No Fans list is
-    no blocker: both lists empty = every Fan (owner 2026-11-15). Reads only."""
     cfg = (await full_ai_turn.stored_config(account_id))["checkpoint"]
     out: list[str] = []
     by_provider: dict[str, list[str]] = {}
@@ -245,7 +239,6 @@ async def live_blockers(account_id: str) -> list[str]:
 
 
 async def _blockers(account_id: str) -> list[str]:
-    """`live_blockers`, never raising: a failed read is one blocker (Live refused, Off unaffected)."""
     try:
         return await live_blockers(account_id)
     except Exception:
@@ -264,7 +257,7 @@ async def _mode(account_id: str) -> dict[str, Any]:
 
 class ModeWrite(BaseModel):
     account_id: str
-    mode: Literal["off", "live"]   # Shadow is not settable (owner 2026-11-15: no Shadow stage)
+    mode: Literal["off", "live"]
 
 
 @router.get("/admin/full-ai/mode")
@@ -275,7 +268,7 @@ async def full_ai_mode_read(account_id: str = Query(...)) -> dict[str, Any]:
 
 @router.put("/admin/full-ai/mode")
 async def full_ai_mode_write(body: ModeWrite) -> dict[str, Any]:
-    from automation_rules_api import ensure_kind_rule   # it imports the catalog and half the routes
+    from automation_rules_api import ensure_kind_rule
     aid = body.account_id
     assert_account_owned(aid)
     await require_opt_in_kind(KIND, aid)
@@ -284,8 +277,9 @@ async def full_ai_mode_write(body: ModeWrite) -> dict[str, Any]:
             raise HTTPException(409, "Can't go Live: " + "; ".join(blockers))
         async with get_session() as s:
             action = await ensure_kind_rule(s, aid, KIND, enable=True, trigger=LIVE_TRIGGER)
-        full_ai_catchup.start(aid)     # Fans already waiting: passes on `catchup_minutes` (default 0/5/15, then every 15)
+        full_ai_catchup.start(aid)
     else:
+        # Off also cancels every pending job of the kind (a rule-less enqueue one-shot): Off then Live never runs one
         full_ai_catchup.stop(aid)
         async with get_session() as s:
             action = await ensure_kind_rule(s, aid, KIND, enable=False)
@@ -293,9 +287,6 @@ async def full_ai_mode_write(body: ModeWrite) -> dict[str, Any]:
             await s.execute(update(AutomationRule).where(
                 AutomationRule.account_id == aid, AutomationRule.kind.in_(family))
                 .values(trigger_json=json.dumps(OFF_TRIGGER)))
-            # Hook jobs (rule in the payload only) are cancelled by ensure_kind_rule's `_cancel_queued`, the
-            # one Off cancel every rules route shares. Mode Off also cancels every other pending job of the
-            # kind (a rule-less `/admin/automation/enqueue` one-shot, W30 #17): Off then Live never runs one.
             await s.execute(update(ScheduledJob).where(
                 ScheduledJob.account_id == aid, ScheduledJob.kind.in_(family), ScheduledJob.status == "pending")
                 .values(status="cancelled", last_error="rule switched off"))
@@ -305,7 +296,6 @@ async def full_ai_mode_write(body: ModeWrite) -> dict[str, Any]:
 
 class _TestSide(BaseModel):
     account_id: str
-    # The session key's stem: no ":" (the trigger key's separator).
     pair: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     side: Literal["checkpoint", "draft"]
 
@@ -323,7 +313,6 @@ class TestTurn(_TestSide):
     n: int = Field(ge=1)
     text: str = Field("", max_length=2000)
     photo: TestPhotoRead | None = None
-    # The owner's Quote-reply mark: an earlier Turn's number (both sides share Turn numbers).
     reply_to_n: int | None = Field(None, ge=1)
 
     @model_validator(mode="after")
@@ -339,7 +328,6 @@ class TestPhoto(BaseModel):
     account_id: str
     image: str = Field(max_length=full_ai_photo.MAX_UPLOAD * 4 // 3 + 64)
     text: str = Field("", max_length=2000)
-    # The session: a side whose dare stands or is due (`full_ai_test.looks_of`) reads the photo with the key off.
     pair: str | None = Field(None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
@@ -347,9 +335,6 @@ def _conflict(row_id: int | None) -> JSONResponse:
     return JSONResponse(status_code=409, content={"row_id": row_id})
 
 
-# Test Turns running now (process-local), by (account, pair, side, n): a duplicate POST of a Turn
-# still running makes no paid call (Jev, Writers); it waits for the running one to finish, then is
-# 409, so the client's session reload finds the stored row (a retry after a dropped response).
 _turns_running: set[tuple[str, str, str, int]] = set()
 
 
@@ -358,8 +343,9 @@ async def full_ai_test_turn(body: TestTurn):
     assert_account_owned(body.account_id)
     await require_opt_in_kind("full_ai_chat", body.account_id)
     claim = (body.account_id, body.pair, body.side, body.n)
-    if claim in _turns_running:         # check → add with no await between: atomic on the loop
-        while claim in _turns_running:  # ends: the running Turn is bounded by turn_bound_s
+    # A duplicate POST of a running Turn makes no paid call: it waits, then 409s so the client reloads the stored row
+    if claim in _turns_running:
+        while claim in _turns_running:
             await asyncio.sleep(0.2)
         return _conflict(None)
     _turns_running.add(claim)
@@ -380,35 +366,32 @@ async def full_ai_test_turn(body: TestTurn):
     out = {"row_id": res.row_id, "route": d.route, "heat": d.heat, "route_row": d.row,
            "dropped": list(d.dropped), "parts": res.parts, "writer": res.writer, "attempts": res.attempts,
            "wait_s": res.wait_s, "status": res.status, "fan_info": facts.fan_info,
-           "offer": res.offer}          # 03b: Offer / tease Pick / Free item; null otherwise, on a Refusal or a drop
-    if res.caption is not None:     # `caption_writer` "caption" on a PPV Turn: who wrote the caption
+           "offer": res.offer}
+    if res.caption is not None:
         out["caption"] = res.caption
-    out.update({k: v for k, v in (("scene", res.scene), ("price", res.price)) if v})   # sext scene
-    if res.heat_check:              # the Heat check on a sext reply (spec 06)
+    out.update({k: v for k, v in (("scene", res.scene), ("price", res.price)) if v})
+    if res.heat_check:
         out["heat_check"] = res.heat_check
-    if res.dropped_reason:          # the reply chain dropped her text (empty | banned)
+    if res.dropped_reason:
         out["dropped_reason"] = res.dropped_reason
     if facts.photo is not None:
-        out["photo"] = facts.photo     # his photo as this side read it
+        out["photo"] = facts.photo
     return out
 
 
-# Photo descriptions running now (process-local), by (account, sha256 of the image, text): a
-# duplicate POST (double click, client retry) while the first runs makes no paid call; it awaits
-# the same description (or its error). Dropped when it ends: no cache after.
 _photos_running: dict[tuple[str, str, str], asyncio.Task] = {}
 
 
 async def _describe_photo(account_id: str, still, text: str) -> dict[str, Any]:
-    """The photo route's description fields (`desc`, `outcome`, `model`, `ms`)."""
     t0 = time.perf_counter()
     try:
         desc, model = await inbound_describe.describe_upload(account_id, still, his_words=text)
         outcome = "described" if desc else "none"
     except LLMKeyError:
-        raise  # server.py's 424 key notice; before LLMConfigError, which it subclasses
+        raise
     except LLMCapExceeded as e:
         raise HTTPException(status_code=429, detail="Today's AI limit for this creator is reached.") from e
+    # after LLMKeyError: server.py's 424 key notice; LLMConfigError subclasses it
     except LLMConfigError:
         log.warning("full_ai_test_photo config account=%s", account_id, exc_info=True)
         desc, model, outcome = None, None, "failed"
@@ -418,7 +401,7 @@ async def _describe_photo(account_id: str, still, text: str) -> dict[str, Any]:
 def _photo_done(key: tuple[str, str, str], task: asyncio.Task) -> None:
     _photos_running.pop(key, None)
     if not task.cancelled():
-        task.exception()    # retrieved: no "never retrieved" warning when every caller has gone
+        task.exception()
 
 
 @router.post("/admin/full-ai/test/photo")
@@ -441,11 +424,11 @@ async def full_ai_test_photo(body: TestPhoto):
         return out
     key = (body.account_id, hashlib.sha256(body.image.encode()).hexdigest(), body.text)
     task = _photos_running.get(key)
-    if task is None:                    # get → add with no await between: atomic on the loop
+    if task is None:
         task = asyncio.ensure_future(_describe_photo(body.account_id, still, body.text))
         _photos_running[key] = task
         task.add_done_callback(lambda t: _photo_done(key, t))
-    return {**out, **await asyncio.shield(task)}   # a dropped caller leaves it running for the rest
+    return {**out, **await asyncio.shield(task)}
 
 
 class TestSettle(_TestSide):
@@ -520,9 +503,10 @@ async def full_ai_persona_draft(body: PersonaDraftBody) -> dict[str, Any]:
             messages=[{"role": "system", "content": full_ai_persona.persona_draft_system(got.voice)},
                       {"role": "user", "content": full_ai_persona.persona_draft_user(got)}])
     except LLMKeyError:
-        raise  # server.py's 424 key notice; before LLMError, which it subclasses
+        raise
     except LLMCapExceeded as e:
         raise HTTPException(status_code=429, detail="Today's AI limit for this creator is reached.") from e
+    # after LLMKeyError: server.py's 424 key notice; LLMError subclasses it
     except LLMError as e:
         raise HTTPException(status_code=502, detail="The AI provider failed. Try again.") from e
     if not isinstance(res.parsed, dict):
@@ -533,7 +517,6 @@ async def full_ai_persona_draft(body: PersonaDraftBody) -> dict[str, Any]:
 
 # ── Config: checkpoint, previous, draft, rev ──────────────────────────
 
-# The models a Writer may be (`full_ai_config._writers_error`'s rule), for the page's Writer select.
 WRITER_MODELS: list[str] = full_ai_config.WRITER_MODELS
 
 
@@ -546,9 +529,6 @@ def _config_view(cfg: dict) -> dict[str, Any]:
 
 
 async def _owner_keys(account_id: str, providers: set[str]) -> dict[str, dict[str, bool]] | None:
-    """{provider: {set}} for the LLM keys row on the policy the call and the Live blocker read (`llm_key_available`: the
-    Creator's billing owner, not the signed-in user); the photo provider, unless a Writer runs on it, on
-    `inbound_describe.key_available`'s. Booleans only, never key material; None when the read fails."""
     try:
         out = {p: {"set": await llm_client.llm_key_available(account_id, p, WRITER_PURPOSE)} for p in sorted(providers)}
         if inbound_describe.PROVIDER not in out:
@@ -568,9 +548,6 @@ async def full_ai_config_get(account_id: str = Query(...)) -> dict[str, Any]:
 
 async def _config_write(account_id: str, step: Callable[[dict | None], dict[str, Any]], *, retries: int = 0
                         ) -> JSONResponse | dict[str, Any]:
-    """Owner-only: `step(stored)` gives the next blob, stored only if the column still holds
-    what was read (compare-and-swap, so two tabs never both win). `retries`: a lost race reads and tries again
-    (only for a write that takes no `rev`)."""
     assert_account_owned(account_id)
     await require_opt_in_kind("full_ai_chat", account_id)
     for _ in range(retries + 1):
@@ -581,7 +558,6 @@ async def _config_write(account_id: str, step: Callable[[dict | None], dict[str,
 
 async def _config_cas(account_id: str, step: Callable[[dict | None], dict[str, Any]]
                       ) -> JSONResponse | dict[str, Any] | None:
-    """One read + compare-and-swap; None when someone stored between the read and the write."""
     col = AccountAiConfig.full_ai_config_json
     async with get_session() as s:
         found = (await s.execute(select(col).where(AccountAiConfig.account_id == account_id))).first()
@@ -593,7 +569,7 @@ async def _config_cas(account_id: str, step: Callable[[dict | None], dict[str, A
         except full_ai_config.StaleRev as e:
             return _stale(e.rev)
         blob = json.dumps(new)
-        if found is None:       # no row yet: a racing insert makes this one stale
+        if found is None:
             done = await s.execute(sqlite_insert(AccountAiConfig).values(
                 account_id=account_id, full_ai_config_json=blob)
                 .on_conflict_do_nothing(index_elements=["account_id"]))

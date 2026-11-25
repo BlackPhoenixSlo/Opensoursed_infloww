@@ -1,9 +1,3 @@
-/**
- * MessageList — memoized bubbles: a thread update re-renders only the bubbles
- * whose props changed, not all of them (a 4,800-row thread paid ~1.2 s per
- * incoming message re-rendering every bubble). Bubble renders are counted off
- * `useCompactMedia`, which a text bubble calls once per render.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent } from "@testing-library/react";
 
@@ -21,7 +15,6 @@ import type { OFMessage } from "@/lib/relay";
 import { baseProps, bubbleBox, msg } from "./messageListTestHarness";
 
 const N = 40;
-// The Fan's messages, a minute apart on one day, each its own run of one.
 const rows = (n: number): OFMessage[] => Array.from({ length: n }, (_, i) => msg({
   id: i + 1, text: `m${i + 1}`, fromUser: { id: 42 },
   createdAt: `2026-06-04T12:${String(i % 60).padStart(2, "0")}:00.000Z`,
@@ -43,7 +36,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** The parent as ChatSurface writes it: fresh inline handlers every render. */
 function list(messages: OFMessage[], onToggleLike = vi.fn()) {
   return (
     <MessageList
@@ -61,7 +53,6 @@ describe("MessageList memoized bubbles", () => {
     expect(renders.n).toBeGreaterThanOrEqual(N);
     renders.n = 0;
     rerender(list(base));
-    // The new bubble; the row before it keeps its props (runs of one).
     expect(renders.n).toBeGreaterThanOrEqual(1);
     expect(renders.n).toBeLessThanOrEqual(2);
   });

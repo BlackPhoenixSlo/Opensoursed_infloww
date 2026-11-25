@@ -1,6 +1,3 @@
-"""Ultra wild-input flow's checks and break-it-once fault (scenarios/2026-11-14-ultra-wild.py): lib/faults.py merges
-`register(Fault)` into FAULTS. The check names live here and the scenario imports them.
-"""
 from __future__ import annotations
 
 C_5XX = "no_5xx: no Ultra route answers 5xx to any wild request, OK, cancel or pick"
@@ -21,9 +18,6 @@ C_LIVE_CAP = "live_model_cap: leg B makes at most 30 ultra_plan model calls"
 
 def register(Fault) -> dict:
     return {
-        # slop/run 2026-11-14-ultra-wild --break --fault=ultra-ok-ignores-sha (relay side): ultra_run.approve
-        # ignores the posted sha256 and uses the row's own, so a stale card's OK starts the run: C_STALE alone
-        # (the stale case's plan is read-only, so nothing is sent; the race cases post the right sha anyway).
         "ultra-ok-ignores-sha": Fault(_ok_ignores_sha, (C_STALE,)),
     }
 

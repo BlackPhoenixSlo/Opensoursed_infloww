@@ -1,10 +1,3 @@
-"""The welcome burst's break-it-once faults (scenarios/2026-10-30-welcome-burst.py):
-lib/faults.py merges `register(Fault)` into FAULTS. The check names live here and the
-scenario imports them, so a target can never name a check that does not exist.
-
-Both patch `automations.send_welcome_decide.partition` (send_welcome calls it through the
-module attribute) in the relay process, never the repo files.
-"""
 from __future__ import annotations
 
 ONCE = ("welcome burst: exactly once: every new sub of an OF-welcome-off Creator gets one greeting "
@@ -22,8 +15,6 @@ LIVE = "welcome burst: every welcome bubble reached every owner tab's /events st
 
 
 def _patch_partition(drop: str) -> None:
-    """Blank one `Reads` field by name on every `partition` call; a renamed arg or
-    field fails here, loudly, instead of patching nothing."""
     import dataclasses
     import inspect
 
@@ -46,21 +37,15 @@ def _patch_partition(drop: str) -> None:
 
 
 def _rewelcomes() -> None:
-    """partition ignores `welcome_sent`: a renewal the welcome already greeted (2 outbound
-    rows, at the NOT-NEW tolerance, so only the claim kept him out) is greeted and followed
-    again. Only the exactly-once check can see it."""
     _patch_partition("welcomed")
 
 
 def _to_established() -> None:
-    """partition ignores the NOT-NEW scan: a renewal with a real conversation gets a
-    first-contact welcome. Only the established check can see it."""
     _patch_partition("established")
 
 
 def register(Fault) -> dict:
     return {
-        # slop/run welcome-burst --break (the scenario's FAULT)
         "welcome-burst-rewelcomes": Fault(_rewelcomes, (ONCE,)),
         "welcome-to-established": Fault(_to_established, (ESTABLISHED,)),
     }

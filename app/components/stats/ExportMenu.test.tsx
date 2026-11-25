@@ -1,8 +1,3 @@
-/**
- * ExportMenu, the reports' Export pop-up: it offers the choices the page passes (fields, Gross / Net, the
- * displays), hands `build` the choice, and downloads the sections as CSV, or as Excel through the Relay's
- * `POST /admin/stats/xlsx`. Hidden once the role denies Export CSV.
- */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
@@ -17,7 +12,6 @@ import ExportMenu, { type ExportChoice } from "@/components/stats/ExportMenu";
 
 const SECTIONS = [{ title: "Total", rows: [["Creator", "Total earnings"], ["=Ann", 12.5]] }];
 
-/** Captures the saved blob: jsdom has no object URLs, so lend them for the test. */
 function captureDownload() {
   const saved: { blob: Blob | null; name: string | null } = { blob: null, name: null };
   const orig = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };

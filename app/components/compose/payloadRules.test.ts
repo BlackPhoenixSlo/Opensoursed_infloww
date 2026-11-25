@@ -5,7 +5,6 @@ import {
   sendAdvice, sendGap, truthy, type Kind, type SendGap,
 } from "@/components/compose/payloadRules";
 
-// Each rule here mirrors a service/ read; the tables pin the backend's behaviour, not the form's.
 describe("readers", () => {
   it.each<[string, unknown, unknown]>([
     ["intList: int() takes numbers, digit strings, bools", intList([1, 4.5, " 42 ", "x", "4.5", true, null]), [1, 4.5, " 42 ", true]],
@@ -40,9 +39,6 @@ describe("hasContent", () => {
   });
 });
 
-// send_mass_decide.plan: `if not recipients and not user_lists and not online_only and not filters: empty_audience`;
-// recipients = int_list(included_users) + list_ids members + the recent-chat / unread includes (mass_premade's
-// _SEND_KEYS forwards no fan_ids). online_only alone is D5's `online` wait, so it is no audience key here.
 describe("massReaches (the backend's empty_audience, statically)", () => {
   it("iterates exactly the audience keys the help line names", () => {
     expect(MASS_AUDIENCE_KEYS).toEqual(["user_lists", "included_users", "list_ids", "filters", "recent_chat_hours", "unread_limit"]);
@@ -75,7 +71,6 @@ describe("massReaches (the backend's empty_audience, statically)", () => {
   });
 });
 
-// D5: an online filter with no user_lists sends OF `userLists: []` + online, a shape never verified.
 describe("onlineWithoutList (D5)", () => {
   it.each<[string, Record<string, unknown>, boolean]>([
     ["online_only, no list", { online_only: true }, true],
@@ -104,7 +99,6 @@ describe("sendGap", () => {
     ["one of two sends (a skipped item drains to the next)", "mass_premade",
       { messages: [{ text: "a" }, { text: "b", ...fans }] }, null],
     ["the item closest to sending says why", "mass_premade", { messages: [{}, { text: "b" }] }, "audience"],
-    // D5, per item and whichever item: any online-without-list message blocks.
     ["online only, no list", "mass_premade", { messages: [{ text: "a", online_only: true }] }, "online"],
     ["online + chatted-with, no list", "mass_premade", { messages: [{ text: "a", online_only: true, recent_chat_hours: 24 }] }, "online"],
     ["filters.online, no list", "mass_premade", { messages: [{ text: "a", filters: { online: 1 } }] }, "online"],
@@ -112,7 +106,6 @@ describe("sendGap", () => {
       { messages: [{ text: "a", ...fans }, { text: "b", online_only: true }] }, "online"],
     ["online with no text never sends: not blocking", "mass_premade", { messages: [{ online_only: true }, { text: "b", ...fans }] }, null],
     ["online + a list", "mass_premade", { messages: [{ text: "a", online_only: true, ...fans }] }, null],
-    // D6: a paid message with no media is a warning (sendAdvice), not a wait.
     ["paid message, no media", "mass_premade", { messages: [{ text: "a", price: 5, ...fans }] }, null],
     ["post: media only", "auto_posts", { posts: [{ media_files: [1] }] }, null],
     ["post: nothing", "auto_posts", { posts: [{}] }, "content"],
@@ -124,7 +117,6 @@ describe("sendGap", () => {
     ["paid post, media_claims not a list (backend ignores it)", "auto_posts",
       { posts: [{ text: "a", price: 5, media_claims: { id: 1 } }] }, "ppv"],
     ["free post, no media", "auto_posts", { posts: [{ text: "a", price: 0 }] }, null],
-    // auto_posts compares `price > 0`: a string price raises TypeError every run, whichever post has it.
     ["post price as a string", "auto_posts", { posts: [{ text: "a", price: "12", media_files: [1] }] }, "price"],
     ["post price \"0\"", "auto_posts", { posts: [{ text: "a", price: "0" }] }, "price"],
     ["post price \"\" is free (`price or 0`)", "auto_posts", { posts: [{ text: "a", price: "" }] }, null],

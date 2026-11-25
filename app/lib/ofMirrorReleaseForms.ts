@@ -1,20 +1,5 @@
 "use client";
 
-/**
- * Release forms (release-forms/index; OF's ReleaseFormsStorage, /my/release-forms): the tag dialog's lists as a page, its
- * view in the app URL (ofMirrorPost's TagView: ?tab= ?q= ?sort= ?order= ?filter=). The rows are the Relay's list for the
- * tab (tagsRoute: Tag user is OF's tagged-friend-users, Release form OF's release-forms, the same module the dialog reads)
- * with a model, else none (the captured example never shows); an empty Release form tab shows OF's placeholder. OF's tools:
- * - Tag user / Release form: the page on that tab;
- * - the sidebar search ("Search release form or user..."): typing stops for 400 ms (or Enter), the page with ?q=; the
- *   filter's Search icon focuses it;
- * - Sort: OF's menu (All / Pending, Recent / Name, Ascending / Descending), the filter's title naming the sort;
- * - a row's More: Hide from list / Show in list (OF's toggle-show), then OF's toast (ofMirrorPost's tagRowMenu).
- * The tabs and Sort are the tag dialog's (ofMirrorPost's markTagTabs, tagViewClick). A row's checkbox picks nothing (no
- * post to tag here). All models: the first model shows (useStandIn); with none, each tool says "Select a model". Mentions
- * (Notifications' Tags tab), and Create new release form and Create new invitation link (disabled: the page's own
- * requests were never captured), are the generator's.
- */
 
 import { useEffect, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -33,11 +18,9 @@ const SECTION = "release-forms";
 
 export interface ReleaseFormsHandlers {
   navigate(href: string): void;
-  /** PATCH /api/of/v2/release-forms/toggle-show {entity_id, entity_type}. */
   toggleTag(body: { entity_id: number; entity_type: string }): Promise<unknown>;
 }
 
-/** `handlers` null: no model (nothing is sent). `items`: the tab's Relay rows; undefined while loading or after a failure. */
 export interface ReleaseFormsContext {
   handlers: ReleaseFormsHandlers | null;
   items?: TaggedFriendUser[];
@@ -45,7 +28,6 @@ export interface ReleaseFormsContext {
   accountId?: string | null;
 }
 
-/** Wire the Release forms page in `doc` for `ctx`. Returns an unbind, which puts the example back. */
 export function bindReleaseForms(doc: Document, ctx: ReleaseFormsContext): () => void {
   const { handlers, items, view } = ctx;
   const root = doc.querySelector<HTMLElement>(".b-release-form");
@@ -60,7 +42,6 @@ export function bindReleaseForms(doc: Document, ctx: ReleaseFormsContext): () =>
   const sortBtn = root.querySelector<HTMLButtonElement>(".b-content-filter button[aria-label='Sort']");
   const searchBtn = root.querySelector<HTMLButtonElement>(".b-content-filter button[aria-label='Search']");
   const field = root.querySelector<HTMLInputElement>(".b-release-form__side-bar input[type='search']");
-  // A rebind after typing (the app URL took ?q=) leaves the field as the operator has it.
   if (field && doc.activeElement !== field) field.value = view.q ?? "";
   for (const el of [sortBtn, searchBtn, field, ...root.querySelectorAll(`${LIST_ROW} .m-btn-vertical-dots`)]) el?.setAttribute("data-oi-wired", "");
   const go = (next: TagView) => handlers?.navigate(tagHref(next, SECTION));
@@ -93,7 +74,6 @@ export function bindReleaseForms(doc: Document, ctx: ReleaseFormsContext): () =>
       ev.stopPropagation();
       return tagRowMenu(doc, dots, handlers);
     }
-    // A row's checkbox: nothing to pick on this page (no post to tag).
     if (t.closest(LIST_ROW)) ev.preventDefault();
   };
   doc.addEventListener("click", onClick);
@@ -111,7 +91,6 @@ export function bindReleaseForms(doc: Document, ctx: ReleaseFormsContext): () =>
   };
 }
 
-/** On Release forms: the model's rows for the view in the app URL (a selected model, or All's stand-in), bound on every frame load. */
 export function useOfReleaseForms(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const router = useRouter();

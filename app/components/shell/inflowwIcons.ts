@@ -1,10 +1,3 @@
-/**
- * Infloww's Untitled-UI icons (index.9f50f370.js, the `const <Name>=S=>`
- * blocks), paths verbatim, as real `LucideIcon`s: same 24px box, and the
- * stroke icons use lucide's own 2px round stroke. The fill icons (`fill`)
- * paint the path and turn lucide's stroke off.
- */
-
 import { createLucideIcon } from "lucide-react";
 
 const stroke = (name: string, d: string) => createLucideIcon(name, [["path", { d, key: "p" }]]);
@@ -69,8 +62,6 @@ export const InfoCircleSolid = fill(
   "InfoCircleSolid",
   "M12 1C5.925 1 1 5.925 1 12s4.925 11 11 11 11-4.925 11-11S18.075 1 12 1zm0 6a1 1 0 100 2h.01a1 1 0 100-2H12zm1 5a1 1 0 10-2 0v4a1 1 0 102 0v-4z", true,
 );
-// The top bar's (index$c): the bell (`HeaderNotification`), the time zone's globe and ⓘ (`UTCRender`), and
-// the Clock button's two faces (`HeaderSignButton`).
 export const Bell01Line = stroke(
   "Bell01Line",
   "M9.354 21c.705.622 1.632 1 2.646 1s1.94-.378 2.646-1M18 8A6 6 0 106 8c0 3.09-.78 5.206-1.65 6.605-.735 1.18-1.102 1.771-1.089 1.936.015.182.054.252.2.36.133.099.732.099 1.928.099H18.61c1.196 0 1.795 0 1.927-.098.147-.11.186-.179.2-.361.014-.165-.353-.755-1.088-1.936C18.78 13.206 18 11.09 18 8z",

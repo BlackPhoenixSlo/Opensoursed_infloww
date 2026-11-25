@@ -1,7 +1,3 @@
-/**
- * OfRichTextEditor and an IME (item 6): mid-composition input never emits (normalizing would move the IME's text
- * under it); compositionend emits once with the composed text. The host's toolbar prop hides the formatting row.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { OfRichTextEditor } from "./OfRichTextEditor";
@@ -28,7 +24,7 @@ describe("OfRichTextEditor", () => {
     box().querySelector("p")!.textContent = "你好";
     fireEvent.input(box(), { isComposing: true });
     fireEvent.compositionEnd(box());
-    fireEvent.input(box(), { isComposing: false }); // the browser's trailing input: same value, no second emit
+    fireEvent.input(box(), { isComposing: false });
     expect(onChange.mock.calls).toEqual([["你好"]]);
   });
 
@@ -36,7 +32,7 @@ describe("OfRichTextEditor", () => {
     const exec = vi.fn(() => true);
     Object.defineProperty(document, "execCommand", { value: exec, configurable: true });
     const onKeyDown = vi.fn((e: { key: string; shiftKey: boolean; preventDefault(): void }) => {
-      if (e.key === "Enter" && !e.shiftKey) e.preventDefault(); // the chat Composer: Enter sends
+      if (e.key === "Enter" && !e.shiftKey) e.preventDefault();
     });
     render(<OfRichTextEditor value="" onChange={() => {}} aria-label="t" onKeyDown={onKeyDown} />);
     fireEvent.keyDown(box(), { key: "Enter", shiftKey: true });

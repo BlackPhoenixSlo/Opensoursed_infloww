@@ -1,7 +1,5 @@
 "use client";
 
-/** ReadyMadePanel's create / edit popup for one saved ready-made rule: the trigger and its ONE post / message in one
- *  dialog (ruleEditorForm owns the state; Escape never drops an edit, useTouched). */
 
 import { useReducer } from "react";
 import { Code } from "lucide-react";
@@ -48,27 +46,20 @@ export function ReadyMadeRuleEditor({
   const copy = KIND_COPY[kind];
   const ready = canSave(s, d);
   const submitLabel = isEdit ? "Save changes" : "Create";
-  /** Why Create / Save changes waits, in the words of the view the user is in. */
   const emptyHelp = waitHelp(d.wait, view, kind, submitLabel);
 
   const fail = (error: string) => dispatch({ type: "raw", a: { type: "fail", error } });
 
-  /** Create / Save changes: the button's click, and the help bot's agent (agentBridge, `agent`) — the same gate and
-   *  request, except the agent's rule is always saved OFF (docs/spec/assistant-do-mode.md D2): the user's toggle is
-   *  the go-live, whatever the agent dispatched. */
   async function save(agent = false): Promise<SaveResult> {
     if (busy) return { ok: false, reason: "Already saving" };
     const body = buildBody(s, d);
-    // Create is disabled; the parse error or the help line says why
     if (!body) return { ok: false, reason: emptyHelp || raw.error || `${submitLabel} is not ready yet` };
-    // The one forced-OFF guard (slop fault assistant-do-skips-disabled drops this line).
+    // The help bot never goes live: the agent's rule is always saved OFF, the user's toggle is the go-live.
     if (agent) body.is_enabled = false;
     try {
       if (isEdit && editing) {
-        // Untouched name / interval: the stored ones stay (buildBody leaves them out).
         await updateM.mutateAsync({ id: editing.id, ...body, name: body.name ?? editing.name });
       } else {
-        // A blank name reads as the placeholder it showed, never the server's bare kind ("auto_posts").
         await createM.mutateAsync({ account_id: accountId, kind, ...body, name: body.name ?? copy.namePlaceholder });
       }
       onClose();
@@ -89,7 +80,6 @@ export function ReadyMadeRuleEditor({
   const help = (
     <>
       {emptyHelp && <IfHelp id={ids.emptyHelp}>{emptyHelp}</IfHelp>}
-      {/* D6: a warning only, Save stays on. */}
       {d.advice === "ppv" && <IfHelp className="text-warn">{MASS_PPV_ADVICE}</IfHelp>}
     </>
   );
@@ -99,7 +89,6 @@ export function ReadyMadeRuleEditor({
       width={722}
       title={editing ? `Edit · ${editing.name}` : `New ${copy.noun}`}
       onClose={onClose}
-      // While saving, neither × nor Escape: a failed save must land on an open editor, not vanish with it.
       closable={!busy}
       keyboard={!touched && !busy}
       size="editor"
@@ -149,9 +138,6 @@ export function ReadyMadeRuleEditor({
           </div>
         </div>
 
-        {/* The one post / message: its fields inline (Composer), or hand-edited as JSON (paste a big media_files
-         *  pool, set a field the form doesn't expose — such a payload then stays in Raw JSON, `formHoldReason`). The Dry
-         *  run switch owns `dry_run`. */}
         <div role="group" aria-labelledby={ids.items}>
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
             <IfLabel id={ids.items} className="mb-0 text-[16px] font-medium">{items}</IfLabel>
@@ -179,8 +165,6 @@ export function ReadyMadeRuleEditor({
               {help}
             </>
           ) : view === "legacy" ? (
-            // A payload the one-item fields can't hold losslessly keeps running; the fields would drop its other keys.
-            // Phone: stacked, 2-line summary, 44px full-width button.
             <div className="flex flex-col gap-3 rounded-md border border-border-light bg-bg-elev-1 px-4 py-4 sm:flex-row sm:items-center sm:gap-4">
               <div className="min-w-0 flex-1">
                 <span className="line-clamp-2 break-words text-fg sm:block sm:truncate">{summarize(raw.value, kind)}</span>
@@ -201,7 +185,6 @@ export function ReadyMadeRuleEditor({
           )}
         </div>
 
-        {/* wrapped so the grid cell doesn't stretch the switch off its row */}
         <div className="grid gap-6 border-t border-border pt-4 sm:grid-cols-2">
           <div>
             <IfSwitch id={ids.enabled} label="Enabled" checked={s.enabled} onChange={(enabled) => field({ enabled })} />
@@ -212,13 +195,10 @@ export function ReadyMadeRuleEditor({
           </div>
         </div>
 
-        {/* no alert while the buffer is unparseable: parse errors would re-announce per keystroke;
-         *  aria-invalid/aria-describedby on the textarea carry them. Other errors (open/format/fail) alert. */}
         {raw.error && <div id={ids.error} role={raw.invalid ? undefined : "alert"} className="text-[12px] text-err whitespace-pre-wrap">{raw.error}</div>}
       </div>
     </IfModal>
   );
 }
 
-/** No automatic action seeds the popup: every dispatch is the user's. */
 const noSeed = () => false;

@@ -1,20 +1,5 @@
 "use client";
 
-/**
- * Inflowwww folders: our own vault folders (the `AI-…` script and lane folders, the Feet pack's rungs, the
- * operator's), opened and edited like the vault, whether or not they were ever published to OnlyFans. Opened from
- * the Extras drawer.
- *
- * Left, the folders in three sections (Yours / AI folders / Feet pack) with their counts, price and an "on OF"
- * mark, under "All media" (the whole vault, the source to add from). Right, the open folder as the vault's own tiles:
- * click one for the vault's viewer, or Select and remove, copy, move or reorder the ticks. A phone shows one pane at
- * a time (the list, then the folder with a back arrow).
- *
- * Every write changes our DB only (`service/vault_internal_folders.py`); nothing here is written to OnlyFans.
- * Two rules the relay keeps and the folder's header says first (`kindNote`): editing a generated folder makes it the
- * operator's, so Build AI folders no longer rewrites it; a Feet pack rung takes edits through the pack's own rules.
- * State and rules: `internalFoldersState.ts`.
- */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
@@ -63,7 +48,6 @@ const KIND_ICON = { own: Folder, ai: Sparkles, pack: Images } as const;
 const BAR_BTN =
   "h-8 px-2.5 rounded-md text-[13px] border border-border bg-bg-elev-1 text-fg hover:border-fg-dim disabled:opacity-40 disabled:pointer-events-none";
 
-/** "on OF" / "not on OF": whether the folder was ever published as an OnlyFans list. */
 function OfMark({ on }: { on: boolean }) {
   return (
     <span
@@ -89,7 +73,6 @@ function PriceMark({ cents }: { cents: number }) {
   );
 }
 
-/** One folder in the list: name (two lines at most; the AI ones are long), counts, price, the OF mark. */
 function FolderRow({ folder, price, artwork, icons, open, onOpen }: {
   folder: InternalFolder; price: number | undefined; artwork?: string; icons: boolean; open: boolean; onOpen: () => void;
 }) {
@@ -126,12 +109,10 @@ function FolderRow({ folder, price, artwork, icons, open, onOpen }: {
   );
 }
 
-/** "New folder" / "Rename folder": one field; Save is off while the name is blank, taken or unchanged. */
 function NameDialog({ folder, list, busy, error, onSave, onCancel }: {
   folder: InternalFolder | null;
   list: readonly InternalFolder[];
   busy: boolean;
-  /** The relay's refusal of the last Save (a rung's reserved name). */
   error: string;
   onSave: (name: string) => void;
   onCancel: () => void;
@@ -172,7 +153,6 @@ function NameDialog({ folder, list, busy, error, onSave, onCancel }: {
             className="w-full h-9 px-[11px] rounded-md text-base md:text-sm bg-bg border border-border hover:border-accent focus:border-accent outline-none"
           />
         </label>
-        {/* A blank field says nothing: the button is off. */}
         {trimmed && (problem || error) && <p className="text-sm text-err">{problem || error}</p>}
         <p className="text-xs text-fg-dim">Kept in {BRAND_NAME} only. Nothing is created on OnlyFans.</p>
       </form>
@@ -180,12 +160,10 @@ function NameDialog({ folder, list, busy, error, onSave, onCancel }: {
   );
 }
 
-/** Pick the folder the ticks go to. */
 function TargetDialog({ title, folders, busy, error, onPick, onCancel }: {
   title: string;
   folders: readonly InternalFolder[];
   busy: boolean;
-  /** Why the last pick was refused (a rung's rule): said here, the dialog stays for another pick. */
   error: string;
   onPick: (f: InternalFolder) => void;
   onCancel: () => void;
@@ -227,7 +205,6 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
   const prices = useFolderPrices(accountId).data ?? {};
   const [sfw] = useSfw();
   const iconsData = useVaultCategoryIcons(accountId, !sfw).data;
-  // category thumbnails belong to the Creator's "standard folders" switch: off, the relay answers enabled false
   const icons = !sfw && iconsData?.enabled ? iconsData : undefined;
   const [editingIcon, setEditingIcon] = useState<{ category: string; name: string }>();
   const categoryArtwork = (name: string) => {
@@ -240,7 +217,6 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
     [list],
   );
 
-  // The open folder was deleted elsewhere (another tab, a rebuild): back to the list.
   useEffect(() => {
     if (typeof openId === "number" && foldersQ.isSuccess && !foldersQ.isFetching && !folder) {
       dispatch({ type: "open", id: null });
@@ -258,20 +234,17 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
   const can = barActions(openId, list.length, filtered);
   const selectedIds = useMemo(() => new Set(selected.keys()), [selected]);
 
-  // The search box: typed text settles into the view's query after a pause.
   useEffect(() => {
     const t = window.setTimeout(() => dispatch({ type: "query", value: draft.trim() }), 300);
     return () => window.clearTimeout(t);
   }, [draft]);
 
-  // The viewer and the full-screen player over it (`itemViewer`).
   const [viewer, view] = useReducer(viewerReducer, INITIAL_VIEWER);
   const { preview, play: playMedia } = viewer;
   const previewIdx = preview ? items.findIndex((m) => m.id === preview.id) : -1;
   const onStep = useCallback((media: Tile) => view({ type: "open", media }), []);
 
   const boxRef = useRef<HTMLDivElement>(null);
-  // Escape steps back one view: the folder (on a phone that is the whole screen), then the editor.
   useModalFocus(boxRef, () => (selectMode ? dispatch({ type: "toggleSelectMode" }) : onClose()));
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -283,7 +256,6 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
     if (el && src.hasMore && !src.isFetchingNextPage && el.scrollHeight - el.scrollTop - el.clientHeight < 600) src.loadMore();
   }
 
-  /** One write: busy, the call, every reader refetched, then the line it says (or why it failed). */
   async function write(label: string, call: () => Promise<Omit<Extract<Action, { type: "done" }>, "type">>) {
     if (busy) return;
     dispatch({ type: "start", busy: label });
@@ -404,7 +376,6 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
         )}
 
         <div className="flex min-h-0 flex-1">
-          {/* ── The folders ── */}
           <nav
             aria-label="Folders"
             className={cn(
@@ -474,7 +445,6 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
             </div>
           </nav>
 
-          {/* ── The open folder ── */}
           <section
             aria-label={title || "Folder"}
             className={cn("relative min-h-0 min-w-0 flex-1 flex-col", openId === null ? "hidden md:flex" : "flex")}
@@ -612,8 +582,6 @@ export default function VaultInternalFoldersModal({ accountId, onClose }: { acco
                               onCheck={(x) => dispatch({ type: "toggle", media: x })}
                               thumbs={thumbs}
                             />
-                            {/* The folder's order, 1-based, beside the tile's described dot; hidden under a filter (the numbers
-                                would skip). */}
                             {folder && !filtered && (
                               <span className="pointer-events-none absolute top-1 left-[18px] min-w-[18px] rounded bg-black/65 px-1 text-center text-[10px] font-medium leading-[16px] text-white">
                                 {i + 1}

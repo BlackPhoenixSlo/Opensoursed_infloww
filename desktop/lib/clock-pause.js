@@ -1,21 +1,7 @@
 "use strict";
 
-// Sleep / lock awareness for the time-tracking clock.
-//
-// The relay has no paused state: an open Clock event counts until a clock-out
-// or the inactivity sweep, which closes it at last activity + the Agency's
-// auto clock-out minutes, so a laptop shut mid-shift is billed those minutes.
-// Pausing is therefore a clock-out when the machine sleeps or the screen
-// locks, and a clock-in on the same Creator when the user is back, but only
-// within those auto clock-out minutes: longer than that and the sweep would
-// have clocked them out anyway, so they clock in themselves.
-//
-// While clocked in it also holds a powerSaveBlocker('prevent-app-suspension')
-// so idle sleep doesn't cut the live stream (and the notifications) mid-shift.
-// Explicit sleep and lock still happen and pause the clock as above.
-//
-// `api` and `blocker` are injected; test/clock-pause.test.js drives it.
 
+// The relay has no paused state: pause = clock-out on sleep/lock, clock-in on return, only within the Agency's auto clock-out minutes (the sweep would have closed it anyway).
 class ClockPause {
   /**
    * @param {object} o
@@ -27,9 +13,9 @@ class ClockPause {
     this.blocker = blocker;
     this.now = now;
     this.log = log;
-    this.open = null; //     the open Clock event, from the last status read
+    this.open = null;
     this.autoMinutes = 0;
-    this.paused = null; //   { accountId, at } after we clocked out for a pause
+    this.paused = null;
     this.blockerId = null;
   }
 
@@ -44,7 +30,6 @@ class ClockPause {
       this.open = st.open && st.open.clock_event_id != null ? st.open : null;
       this.autoMinutes = Number(st.auto_clock_out_minutes) || 0;
     }
-    // On a failed read keep what we knew; the next poll corrects it.
     this._syncBlocker();
   }
 
@@ -59,7 +44,7 @@ class ClockPause {
     } catch {
       ok = false;
     }
-    if (!ok) return; // the inactivity sweep still closes it, as before
+    if (!ok) return;
     this.log(`[clock] paused (${reason}): clocked out of event ${ev.clock_event_id}`);
     this.paused = { accountId: ev.account_id ?? null, at: this.now() };
     this.open = null;

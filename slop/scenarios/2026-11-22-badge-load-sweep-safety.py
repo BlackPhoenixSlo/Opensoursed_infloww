@@ -1,26 +1,3 @@
-"""Creator badges scenario 7 (docs/spec/creator-badges/phase-0E-slop-and-fake-of-realism.md, story 28): a full chat
-sweep over unread chats leaves OF's Unread counter unchanged; no Background read marks a chat read.
-
-World: `flat_agency` with the tier's Creators (TIERS: small 5, `--set tier=full` 50), each a captured session (the
-relay's REAL OFClient against lib/of_wire.py, `OF_WIRE`) whose OF is lib/badge_wire.py: a first-page messages GET
-without the Peek cursor (no `id` / `before_id`, offset absent or 0, `order=asc&offset=0` too) marks the chat read and
-sends a counter frame, as OF does. Each Creator's OF chat list is CHATS of its Fans, every one unread: ONLY_FRIENDS
-`only_friends` chats, one registry-restricted chat (OF's restrict + the Relay's `skip_list` row `of_restricted`), one
-Muted chat, DEEP deep threads (DEEP_MSGS messages, OF pages them desc by `id` and asc by `offset`, so a first scrape
-wants an ascending backfill) and the rest plain.
-
-Run: one `{}` scrape sweep per Creator (scheduled_jobs by SQL, as the cadence enqueues it), run by supervisor passes
-(`/__slop/automation-tick`) until none is open; then FRAME_TAIL_S for a late counter frame.
-
-Checks: ZERO_RELAY_MARKS (no read-log entry `via=relay_get` since the seed: lib/badge_metrics `relay_marks`);
-COUNTER_UNCHANGED_BY_SWEEP (each Creator's raw counter and its unread chats, `only_friends` / restricted / Muted ones
-included, the same after the sweep; no counter frame with another value: `counter_moves`). Both `ctx.skip` while
-Phase A (service/of_reads.py `PEEK_CURSOR`) is absent. A sweep that read no thread is INFRA (nothing was judged).
-Evidence `sweep-safety.json`.
-
-Bypasses (declared): OF at its wire (lib/badge_wire.py on lib/of_wire.py); the supervisor's cadence
-(`/__slop/automation-tick`); the sweep's enqueue (SQL, the row sweep_cadence writes).
-"""
 from __future__ import annotations
 
 import ast
@@ -50,18 +27,18 @@ CHECKS = (ZERO_RELAY_MARKS, COUNTER_UNCHANGED_BY_SWEEP)
 CHATS = 30
 ONLY_FRIENDS = 2
 DEEP = 4
-DEEP_MSGS = 150        # page 1 (the sweep's limit 50) reports hasMore
+DEEP_MSGS = 150
 DEEP_ID_BASE = 7_200_000_000_000
 ISO = "%Y-%m-%dT%H:%M:%S+00:00"
 MSG_ROUTE = "GET /api2/v2/chats/{id}/messages"
 SWEEP_ROUNDS = 60
 SWEEP_DEADLINE_S = 720.0
-FRAME_TAIL_S = 2.0     # past badge_wire's first-page counter delay (0.9 s)
+# past badge_wire's first-page counter delay (0.9 s)
+FRAME_TAIL_S = 2.0
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def phase_a() -> bool:
-    """Phase A's Peek cursor is built (service/of_reads.py `PEEK_CURSOR`); read, never imported."""
     try:
         tree = ast.parse((ROOT / "service" / "of_reads.py").read_text())
     except (OSError, SyntaxError):
@@ -71,7 +48,6 @@ def phase_a() -> bool:
 
 
 def plan(fans: list[dict]) -> list[dict]:
-    """The Creator's chat list for BadgeWire.seed: every chat unread."""
     return chat_plan(fans, [("only_friends", ONLY_FRIENDS, True), ("restricted", 1, True), ("muted", 1, True),
                             ("deep", DEEP, True), ("plain", CHATS - ONLY_FRIENDS - 2 - DEEP, True)])
 
@@ -132,7 +108,7 @@ async def _sweep(ctx, w, fake, wire: BadgeWire, creators: list[str], seeds: dict
         return True
 
     with fake.lock:
-        fake.extra_routes.append(deep_route)   # after the wire's hook: it sees this answer too
+        fake.extra_routes.append(deep_route)
 
     now = datetime.utcnow()
     con = w.sql()

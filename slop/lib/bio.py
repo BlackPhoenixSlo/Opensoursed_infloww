@@ -1,4 +1,3 @@
-"""Standalone bio process using the slop stack's existing loopback and temp-data guards."""
 import os
 import runpy
 import sys
@@ -12,7 +11,7 @@ def main() -> None:
     os.environ["BIO_FILES_DIR"] = str(Path(os.environ["DEMO_SHOTS_TMP"]) / "bio_files")
     sys.path.insert(0, str(root / "service"))
     sys.path.insert(0, str(root / "slop/lib"))
-    sys.path.append(str(root))  # *_faults.py import `slop.lib.*`
+    sys.path.append(str(root))
 
     if os.environ.get("SLOP_FAULT"):
         import faults

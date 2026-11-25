@@ -1,9 +1,3 @@
-/**
- * A page the chatter's Permission role denies, opened by URL, renders the
- * shell's denied-page panel in its place and never mounts, so it fires no
- * page query (docs/spec/phase-04-apply-stored-settings.md, story 34). The
- * page is a probe that fetches on mount; `fetch` is the mock that counts it.
- */
 import { act, render, screen } from "@testing-library/react";
 import { useEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,14 +12,11 @@ vi.mock("next/navigation", () => ({ usePathname: () => pathname, useSearchParams
 vi.mock("@/contexts/UserContext", () => { const v = () => ({ user, logout: vi.fn() }); return { useUser: v, useOptionalUser: v }; });
 vi.mock("@/contexts/ChatterContext", () => { const v = () => ({ chatter: { username: "fixture-chatter" } }); return { useChatter: v, useOptionalChatter: v }; });
 vi.mock("@/components/shell/TopBar", () => ({ default: () => null }));
-// The platform selector and gate read accounts and roster counts (PlatformSwitcher.test covers them).
 vi.mock("@/components/shell/PlatformSwitcher", () => ({
   default: () => null,
   usePlatformUnread: () => ({ onlyfans: { count: 0 }, fansly: { count: 0 } }),
 }));
 vi.mock("@/components/shell/PlatformGate", () => ({ default: () => null, PlatformSync: () => null }));
-// `realApplied` runs the real read (its query keyed by the Creator in scope)
-// against `fetch`; otherwise the read is the `applied` stub.
 let realApplied = false;
 let scopeAccount: string | null = null;
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: scopeAccount }) }));
@@ -86,7 +77,6 @@ describe("the denied-page panel", () => {
     expect(screen.getByText("Your role does not allow this page")).toBeInTheDocument();
     expect(screen.queryByText("Employee reports page")).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
-    // The sidebar does not offer the denied page either.
     expect(screen.queryByRole("link", { name: "Employee reports" })).toBeNull();
     expect(screen.getByRole("link", { name: "Messages Pro" })).toBeInTheDocument();
   });
@@ -147,7 +137,6 @@ describe("the denied-page panel", () => {
     expect(await screen.findByText("Employee reports page")).toBeInTheDocument();
     expect(mounts).toBe(1);
 
-    // The chatter picks another Creator: its read is still on the wire.
     scopeAccount = "acc-2";
     rerender(
       <AppShell>

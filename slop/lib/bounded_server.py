@@ -1,30 +1,3 @@
-"""The slop fakes' HTTP server: stdlib `ThreadingHTTPServer` semantics (requests served
-concurrently, each on a worker thread, in arrival order) with the thread count bounded.
-
-Why: `ThreadingHTTPServer` spends a thread per CONNECTION, not per request, and an
-HTTP/1.1 handler's thread then sits in `readline()` on the idle keep-alive socket until the
-client closes it. The relay's `OFClient` keeps one curl handle per (account, worker thread)
-(service/client_pool.py), each with its own keep-alive connection, so the fake OF ended up
-with a thread per (account x relay worker): 2,722 threads for 50 accounts at --scale=small
-(relay-admission, 2026-11-05, evidence ~/.slop/evidence/thread-rc-20261105T223546Z), and
-the 5-7k-thread harnesses that kernel-panicked this Mac (`Spinlock timeout`) at 200 users.
-
-Here a request runs on a pooled worker (at most `workers`, env SLOP_SERVER_WORKERS, default
-512; started lazily, daemon threads, never more than the peak of requests IN FLIGHT); between
-requests a keep-alive connection is parked in one selector thread and costs a file
-descriptor, not a thread. When a request arrives on it, it goes back to the pool. Past
-`workers` requests in flight, later ones queue (never refused) and `saturated` counts them;
-the first one is logged, so a scenario that needs more concurrency says so (raise the env).
-
-Drop-in: `ThreadingHTTPServer(addr, Handler)` -> `BoundedHTTPServer(addr, Handler)`;
-`serve_forever` / `shutdown` / `server_close` / `daemon_threads` unchanged.
-
-`idle_close_s` (default None: parked forever, as before): a connection parked longer than that is
-closed, as a real server's keep-alive timeout does; curl reconnects on its next call. Set it on a
-running server (`srv.idle_close_s = 5`) to bound the parked set by recent use instead of (accounts x
-relay threads): relay-admission's fault run parked ~12k of them at small/20 until the socket guard
-killed it (2026-11-09, -9217).
-"""
 from __future__ import annotations
 
 import os
@@ -42,8 +15,6 @@ WORKERS = int(os.environ.get("SLOP_SERVER_WORKERS", "512"))
 
 
 class _Pool:
-    """A fixed-ceiling pool of daemon threads, started on demand (as ThreadPoolExecutor, but
-    daemon: a handler stuck on a slow client never blocks the harness's exit)."""
 
     def __init__(self, workers: int, name: str):
         self.workers, self.name = workers, name
@@ -52,7 +23,7 @@ class _Pool:
         self.lock = threading.Lock()
         self.started = 0
         self.threads: list[threading.Thread] = []
-        self.saturated = 0  # submits that found every worker busy at the ceiling: they queued
+        self.saturated = 0
 
     def submit(self, fn, *args) -> None:
         self.q.put((fn, args))
@@ -90,12 +61,13 @@ class _Pool:
             worker.join(timeout=max(0, deadline - time.monotonic()))
 
 
+# Thread per connection hit 2,722 threads at 50 accounts and 5-7k kernel-panicked the Mac; bound workers, park idle keep-alives.
 class BoundedHTTPServer(HTTPServer):
-    daemon_threads = True  # kept for callers that set it: every thread here is a daemon
-    request_queue_size = 512  # listen() backlog (socketserver: 5)
+    daemon_threads = True
+    request_queue_size = 512
     workers = WORKERS
     idle_close_s: float | None = None
-    idle_closed = 0  # parked connections closed by idle_close_s
+    idle_closed = 0
 
     def server_activate(self) -> None:
         super().server_activate()
@@ -114,13 +86,12 @@ class BoundedHTTPServer(HTTPServer):
     def saturated(self) -> int:
         return self.pool.saturated
 
-    # socketserver calls this on serve_forever's thread for each accepted connection
     def process_request(self, request, client_address) -> None:
         self.pool.submit(self._open, request, client_address)
 
     def _open(self, request, client_address) -> None:
         cls = self.RequestHandlerClass
-        h = cls.__new__(cls)  # BaseRequestHandler.__init__ runs the whole connection; split it
+        h = cls.__new__(cls)
         h.request, h.client_address, h.server = request, client_address, self
         try:
             h.setup()
@@ -128,11 +99,9 @@ class BoundedHTTPServer(HTTPServer):
             self.handle_error(request, client_address)
             self.shutdown_request(request)
             return
-        self._next(h)  # parked until its first request arrives: a silent client pins no worker
+        self._next(h)
 
     def _serve(self, h) -> None:
-        """One request on `h`'s connection (BaseHTTPRequestHandler.handle's loop body), then
-        park the connection or close it."""
         try:
             h.close_connection = True
             h.handle_one_request()
@@ -143,7 +112,6 @@ class BoundedHTTPServer(HTTPServer):
         self._close(h)
 
     def _next(self, h) -> None:
-        """Serve `h`'s next request now if it is already buffered, else park the connection."""
         if self._buffered(h):
             self.pool.submit(self._serve, h)
         else:
@@ -159,10 +127,8 @@ class BoundedHTTPServer(HTTPServer):
 
     @staticmethod
     def _buffered(h) -> bool:
-        """Bytes of a next request already in rfile's buffer (curl does not pipeline, but a
-        buffered byte would never wake the selector). Peeks without blocking."""
         sock = h.connection
-        if isinstance(sock, ssl.SSLSocket) and sock.pending():  # decrypted, unseen by the selector
+        if isinstance(sock, ssl.SSLSocket) and sock.pending():
             return True
         try:
             sock.setblocking(False)
@@ -170,7 +136,7 @@ class BoundedHTTPServer(HTTPServer):
         except (BlockingIOError, ssl.SSLWantReadError):
             return False
         except OSError:
-            return True  # let the worker meet the error and close
+            return True
         finally:
             try:
                 sock.settimeout(h.timeout)
@@ -178,7 +144,7 @@ class BoundedHTTPServer(HTTPServer):
                 pass
 
     def _park_loop(self) -> None:
-        parked_at: dict = {}  # handler -> monotonic time it was parked
+        parked_at: dict = {}
         while True:
             idle = self.idle_close_s
             for key, _ev in self._sel.select(None if idle is None else min(1.0, idle)):

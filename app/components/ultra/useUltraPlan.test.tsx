@@ -1,8 +1,3 @@
-/**
- * useUltraPlan's ordering: a read that started before a press never lands after the press's answer (no OK back on
- * screen), poll reads never overlap, a second press before the first answers posts nothing, a refused read (401/403)
- * stops the poll, and every action is tagged with the plan it is for.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { useCallback, useReducer } from "react";
@@ -44,7 +39,7 @@ beforeEach(() => {
   tags = [];
 });
 afterEach(() => {
-  vi.restoreAllMocks();   // AbortSignal.timeout spies, even when a test fails early
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -56,12 +51,12 @@ describe("useUltraPlan ordering", () => {
     expect(result.current.state.plan?.status).toBe("awaiting_ok");
 
     const stale = deferred<PlanView>();
-    get.mockReturnValueOnce(stale.promise);           // the 15 s poll, still out when OK is pressed
+    get.mockReturnValueOnce(stale.promise);
     act(() => { vi.advanceTimersByTime(15_000); });
     expect(get).toHaveBeenCalledTimes(2);
 
     post.mockResolvedValueOnce(view("running"));
-    get.mockResolvedValueOnce(view("running"));        // the read right after the OK
+    get.mockResolvedValueOnce(view("running"));
     await act(async () => { await result.current.act("ok"); });
     expect(result.current.state.plan?.status).toBe("running");
 
@@ -75,7 +70,7 @@ describe("useUltraPlan ordering", () => {
     get.mockResolvedValueOnce(view("awaiting_ok"));
     const { result } = renderHook(() => useHarness("p1"));
     await flush();
-    post.mockReturnValueOnce(new Promise(() => {}));   // never answers (its timeout is covered below)
+    post.mockReturnValueOnce(new Promise(() => {}));
     act(() => { void result.current.act("ok"); });
     get.mockResolvedValue(view("running"));
     for (let i = 0; i < 3; i++) {
@@ -83,7 +78,6 @@ describe("useUltraPlan ordering", () => {
       await flush();
     }
     expect(get.mock.calls.length).toBeGreaterThanOrEqual(3);
-    // The run moved on server-side: the read shows it; busy keeps the OK disabled meanwhile.
     expect(result.current.state.plan?.status).toBe("running");
     expect(post).toHaveBeenCalledTimes(1);
   });
@@ -98,8 +92,8 @@ describe("useUltraPlan ordering", () => {
     const during = deferred<PlanView>();
     get.mockReturnValueOnce(during.promise);
     act(() => { vi.advanceTimersByTime(15_000); });
-    expect(get).toHaveBeenCalledTimes(2);               // the poll reads while the OK is out
-    get.mockResolvedValueOnce(view("running"));         // the read right after the OK's answer
+    expect(get).toHaveBeenCalledTimes(2);
+    get.mockResolvedValueOnce(view("running"));
     await act(async () => { answer.resolve(view("running")); });
     expect(get).toHaveBeenCalledTimes(3);
     await act(async () => { during.resolve(view("awaiting_ok")); });
@@ -154,7 +148,7 @@ describe("useUltraPlan ordering", () => {
     await flush();
     const answer = deferred<PlanView>();
     post.mockReturnValueOnce(answer.promise);
-    const ok = result.current.act;                      // the same render's handler, pressed twice
+    const ok = result.current.act;
     let first!: Promise<void>;
     act(() => { first = ok("ok"); void ok("ok"); });
     expect(post).toHaveBeenCalledTimes(1);
@@ -174,13 +168,12 @@ describe("useUltraPlan ordering", () => {
       timeouts.push(c);
       return c.signal;
     });
-    // A GET that never answers until its signal fires.
     get.mockImplementationOnce((_p: string, _ctx: unknown, signal: AbortSignal) => new Promise((_res, rej) => {
       signal.addEventListener("abort", () => rej(new DOMException("signal timed out", "TimeoutError")));
     }));
     act(() => { vi.advanceTimersByTime(2_000); });
     act(() => { vi.advanceTimersByTime(2_000); });
-    expect(get).toHaveBeenCalledTimes(2);              // hung: the tick is skipped
+    expect(get).toHaveBeenCalledTimes(2);
     await act(async () => { timeouts[0].abort(); });
     expect([result.current.state.loadError, result.current.state.pollStopped]).toEqual(["no answer in 20 s", false]);
     get.mockResolvedValue(view("running"));

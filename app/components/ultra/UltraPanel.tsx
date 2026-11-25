@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * The help bot with Ultra mode ticked (owners only; docs/plans/ultra-mode map destination 3, tickets 06 + 08): the
- * request goes to POST /admin/ultra/plans; the panel then follows that plan (useUltraPlan polls GET …/{id}) —
- * planning (turns, last tool; Stop) → the server's card, every step verbatim, one red OK (the shown sha256) →
- * running (a red line on the running step, the header dot pulses; Cancel) ⇄ needs_you (PickCard, "Send these")
- * → the end: each step's result and link, then "New request". The open plan's id is kept per browser so a reload
- * (or a collapsed dock) resumes it. State: ultraPanelReducer (this only dispatches). Look: UltraPanel.module.css,
- * dark in both app themes. AssistantPanel renders this in its own frame (dock / page / sheet).
- */
 import { useCallback, useEffect, useReducer, useState } from "react";
 import { ArrowUp, X } from "lucide-react";
 
@@ -25,11 +16,9 @@ import {
 import { planActions, refreshNote, statusNote, type Action as RunAction, type PlanView } from "./ultraRunReducer";
 import styles from "./UltraPanel.module.css";
 
-/** The Ultra tick, per browser. */
 export const ULTRA_KEY = "chatterly:assistant_ultra";
 export { ULTRA_PLAN_KEY } from "./ultraStart";
 
-/** The Ultra tick: stored per browser, on only for an owner (a chatter never sees it). */
 export function useUltraMode(isOwner: boolean): [boolean, (on: boolean) => void] {
   const [stored, setStored] = useState(false);
   useEffect(() => {
@@ -58,7 +47,6 @@ export function UltraToggle({ checked, onChange, className }: {
   );
 }
 
-/** A start's answer into a panel (dropped by React if it has closed: the next one hydrates from storage). */
 function follow(p: Promise<PlanView>, send: (a: PanelAction) => void) {
   p.then((plan) => send({ type: "started", plan }),
     (e: unknown) => send({ type: "startFailed", status: e instanceof RelayError ? e.status : 0, message: errText(e) }));
@@ -81,7 +69,6 @@ export function UltraPanel({ frame, column, composerPad, inputText, onClose, onO
   useEffect(() => {
     let id: string | null = null;
     try { id = window.localStorage.getItem(ULTRA_PLAN_KEY); } catch { /* safari private */ }
-    // A start still out (sent by a panel closed since): shown as in flight, its answer followed here.
     const p = pendingStart();
     send({ type: "hydrate", planId: id || null, starting: !id && p !== null });
     if (!id && p) follow(p, send);
@@ -92,8 +79,10 @@ export function UltraPanel({ frame, column, composerPad, inputText, onClose, onO
 
   function start() {
     const body = requestBody(s);
-    send({ type: "start" }); // a login in the draft: refused here, never sent
-    if (body) follow(beginStart(body), send);  // beginStart stores the plan id before this hears it
+    // A login in the draft is refused here, never sent.
+    send({ type: "start" });
+    // beginStart stores the plan id before follow hears it.
+    if (body) follow(beginStart(body), send);
   }
 
   const run = s.run;

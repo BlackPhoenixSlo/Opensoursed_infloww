@@ -5,13 +5,10 @@ import { OfMirrorFrame } from "@/components/of-manager/OfMirrorFrame";
 import { findNavLink } from "@/lib/nav";
 import { mirrorPageOf, mirrorRedirectOf } from "@/lib/of-mirror-route";
 
-/** OF Manager: a static mirror of the OnlyFans creator UI, one section per sidebar item (docs/routes.md). */
 
 type Props = { params: Promise<{ section: string; path?: string[] }> };
 
-/** The mirrored page for a URL: its file and title, or null if the mirror has none. */
 function pageOf(section: string, path?: string[]) {
-  // The section root shows its index page (settings: OF's settings root is the profile page).
   const p = mirrorPageOf(section, path);
   if (!p) return null;
   const label = findNavLink(`/of-manager/${section}`)?.label ?? section;

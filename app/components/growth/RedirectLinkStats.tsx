@@ -1,8 +1,5 @@
 "use client";
 
-/** Redirect links' stats: each row's 7-day sparkline and a link's expanded analytics (daily click bars, Opened in /
- *  Came from / Country). Days are the report zone's (the API's `tz`). The shapes come from redirectStats.ts; the reads
- *  from useGrowth. The summary cards are RedirectLinksPanel's StatCards. */
 
 import { BlankChart, ChartAxes, ChartMessage, niceMax, plotFrame, useChartWidth } from "@/components/stats/chart";
 import { EmptyState, IfSegmented } from "@/components/ui/infloww";
@@ -13,7 +10,6 @@ import {
 } from "@/components/growth/redirectStats";
 import { useTrackingAnalytics, type TrackingAnalytics, type TrackingLink } from "@/hooks/useGrowth";
 
-/** A row's last 7 days: 7 bars in 56 x 20, a zero day a 1px baseline. */
 export function ClickSparkline({ values, message = "Loading…" }: { values: number[] | undefined; message?: string }) {
   if (!values) return <span className="w-14 text-center text-[10px] text-fg-dim" aria-label={message}>{message}</span>;
   return (
@@ -27,7 +23,6 @@ export function ClickSparkline({ values, message = "Loading…" }: { values: num
   );
 }
 
-/** A link's daily clicks: chart.tsx's axes, bars drawn as the reports' TrendBars (80% of the slot). */
 function ClickBars({ series, message }: { series: TrackingAnalytics["series"] | null; message?: string }) {
   const [ref, W] = useChartWidth();
   const H = W < 640 ? 160 : 200;
@@ -57,7 +52,6 @@ function ClickBars({ series, message }: { series: TrackingAnalytics["series"] | 
   );
 }
 
-/** One breakdown: label, a bar as wide as its share, clicks and percent. */
 function Breakdown({ title, rows }: { title: string; rows: BreakdownRow[] }) {
   return (
     <section aria-label={title} className="min-w-0 rounded-lg bg-panel p-3">
@@ -80,7 +74,6 @@ function Breakdown({ title, rows }: { title: string; rows: BreakdownRow[] }) {
   );
 }
 
-/** A link's expanded analytics ("Analytics" toggle): the range picker, the daily bars and the breakdowns. */
 export function LinkStats({ accountId, link, days, onDays, shareUrl, botAvailable }: {
   accountId: string; link: TrackingLink; days: StatsDays; onDays: (d: StatsDays) => void; shareUrl: string;
   botAvailable: boolean;

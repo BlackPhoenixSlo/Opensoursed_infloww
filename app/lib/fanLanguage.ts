@@ -1,19 +1,11 @@
 "use client";
 
-/**
- * fanLanguage — the language a chatter writes to one Fan in (Infloww's
- * per-Fan translation language, 04 M16), kept per Creator and Fan in this
- * browser's localStorage (`mp:fan-lang:<accountId>:<fanId>`). The composer's
- * outbound translation translates into it through /admin/translate's `target`.
- */
 
 import { useCallback, useSyncExternalStore } from "react";
 
 import type { FanId } from "@/lib/fanId";
 import { subscribeToStorage } from "@/lib/storageSync";
 
-/** The targets offered, as the bare ISO 639-1 codes /admin/translate keeps
- *  (it drops a region suffix, so there is one Chinese). */
 export const LANGUAGES: { code: string; name: string }[] = [
   { code: "ar", name: "Arabic" }, { code: "bg", name: "Bulgarian" }, { code: "zh", name: "Chinese" },
   { code: "hr", name: "Croatian" }, { code: "cs", name: "Czech" },
@@ -43,7 +35,6 @@ function read(accountId: string | null, fanId: FanId | null): string | null {
   }
 }
 
-/** The Fan's language code (null: none chosen) and its setter (null clears). */
 export function useFanLanguage(
   accountId: string | null, fanId: FanId | null,
 ): [string | null, (code: string | null) => void] {

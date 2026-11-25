@@ -1,22 +1,3 @@
-"""Set-gathering extras for the AI folders scenario (scenarios/2026-11-10-vault-ai-folders-partial-flags.py), on top
-of seed/vault_flags_partial.py's vault. All by SQL, as the product leaves them:
-
-  copies      re-uploads of `soft` stills and of videos: the original's row with a new media id, uploaded later, and
-              the SAME stored `content_hash` on both (as vault_dupes.ensure_hashes leaves it, HASH_KIND) -> each set
-              plans as its original only. Copies of soft / video only, so the paid-lane oracles are untouched.
-  colourless  one shoot whose `clothing_items` name no colour: bra + thong, `setting` bedroom; 3 sfw stills ->
-              4 suggestive (1 clip) -> 3 explicit fingering (2 clips), unflagged -> script
-              `AI-lingerie · bedroom · <Mon D>` (a script needs >= 10 pieces with >= 2 clips).
-  big shoot   one black lace set, every item in ONE upload second (as OF's created_at leaves a bulk upload), two
-              rooms by the describe's `setting`: bedroom BIG_BEDROOM items (sfw / suggestive build-up / explicit
-              fingering closers, stills and clips) -> capped to a sendable ladder; bathroom BIG_BATHROOM items (sfw +
-              suggestive incl. clips, nothing that closes) -> borrows one bedroom overflow closer. Unflagged, unhashed.
-  folders     an earlier build's generated folders (created_by vault_ai_script): `AI-stories` (the plan makes it:
-              kept) and `AI-old lane` bound to OF list OLD_LIST (the plan does not: retired, unlinked on OF).
-
-`seed(w, creator, truth)` extends `truth` (vault_flags_partial's) in place and returns it: "copies" {copy: original},
-"colourless" [ids, send order], "colourless_name", "big_shoot" {"bedroom": ids, "bathroom": ids, "names": {room:
-script name}}, "kept_folder" {name: id}, "retired_folder" {name: id}; "stills" / "flagged" count the new stills. Randomness only from `w.rng("vault_ai_sets")`."""
 from __future__ import annotations
 
 import json
@@ -25,26 +6,22 @@ from datetime import timedelta
 
 from . import World, ts
 
-HASH_KIND = "thumb/md5+dhash8+ahash8"   # vault_dupes.HASH_KIND
-AI_CREATOR = "vault_ai_script"           # vault_scripts.AI_FOLDER_CREATOR
+HASH_KIND = "thumb/md5+dhash8+ahash8"
+AI_CREATOR = "vault_ai_script"
 OLD_LIST = 5_551_001
-# The big shoot's parts (vault_scripts caps a script at 3 openers + 4 middle + 3 closers = 10).
 BIG_BEDROOM = 26
 BIG_BATHROOM = 10
 
 
 def script_name(label: str, room: str, at) -> str:
-    """vault_scripts.script_name: `AI-<label> · <room> · <Mon D>` (the part's first upload)."""
     return f"AI-{label} · {room} · {at:%b} {at.day}"
 
 
 def _packed(rng) -> str:
-    """One content_hash (md5:dhash:ahash); random 64-bit hashes sit ~32 bits apart, far past threshold 2."""
     return f"{rng.getrandbits(128):032x}:{rng.getrandbits(64):016x}:{rng.getrandbits(64):016x}"
 
 
 def _item(w: World, aid: str, mid: int, kind: str, at, fields: dict, words: str) -> dict:
-    """A vault_items row as seed/vault_flags_partial.py writes them (described, unhashed)."""
     video = kind == "video"
     raw = {"id": mid, "type": kind, "convertedToVideo": False, "canView": True, "hasError": False,
            "createdAt": at.strftime("%Y-%m-%dT%H:%M:%S+00:00"), "isReady": True,
@@ -67,7 +44,6 @@ def _insert(con, row: dict) -> None:
                 tuple(row.values()))
 
 
-# (kind, describe fields) cycles per band; explicit fingering closes on its own (vault_ai_brief.stands_alone).
 _OPEN = (("photo", {"explicitness": "sfw", "clothing_state": "dressed", "acts": ["posing"]}),
          ("photo", {"explicitness": "sfw", "clothing_state": "lingerie_on", "acts": ["posing"]}))
 _BUILD = (("photo", {"explicitness": "suggestive", "clothing_state": "lingerie_on", "acts": ["tease"]}),
@@ -78,7 +54,6 @@ _CLOSE = (("video", {"explicitness": "explicit", "clothing_state": "fully_nude",
 
 
 def _big_shoot(w: World, con, aid: str, next_id: int, truth: dict) -> int:
-    """The big shoot (module doc); returns the next free media id."""
     at = w.now - timedelta(days=1)
     garb = {"clothing_items": ["black lace bra", "black thong"], "_prompt_version": "v2", "_frames": 1}
     plan = {"bedroom": [_OPEN[k % 2] for k in range(8)] + [_BUILD[k % 3] for k in range(10)]
@@ -142,7 +117,6 @@ def seed(w: World, creator: dict, truth: dict) -> dict:
             colourless.append(mid)
             truth["stills"] += kind == "photo"
         next_id += len(shoot)
-        # A colourless key carries its room, which the name shows once.
         truth["colourless_name"] = script_name("lingerie", "bedroom", t0)
         next_id = _big_shoot(w, con, aid, next_id, truth)
 

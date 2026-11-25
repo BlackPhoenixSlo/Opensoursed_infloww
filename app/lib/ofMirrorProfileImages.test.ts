@@ -23,7 +23,6 @@ const handlers = () => ({
 });
 const flush = () => new Promise((r) => setTimeout(r, 0));
 const png = (size = 8, type = "image/png", name = "cover.png") => new File([new Uint8Array(size)], name, { type });
-/** The camera's file picker: the file chosen (a real picker sets `files`, then fires change). */
 const pick = (d: Document, kind: "header" | "avatar", file: File) => {
   const input = d.querySelector<HTMLInputElement>(`input[data-oi-profile-file='${kind}']`)!;
   Object.defineProperty(input, "files", { value: [file], configurable: true });
@@ -89,7 +88,7 @@ describe("Edit profile's cover and avatar (ticket 67)", () => {
     const opened = vi.spyOn(input, "click");
     d.querySelector<HTMLButtonElement>(PROFILE_CAMERA.header)!.click();
     expect(opened).toHaveBeenCalledOnce();
-    expect(d.getElementById("oi-note")).toBeNull(); // not the Read-only note
+    expect(d.getElementById("oi-note")).toBeNull();
     const file = png();
     pick(d, "header", file);
     expect(cover(d).src).toBe("blob:picked");
@@ -122,7 +121,7 @@ describe("Edit profile's cover and avatar (ticket 67)", () => {
     const unbind = bindWrites(d, PAGE, h, true);
     const remove = d.querySelector<HTMLButtonElement>(PROFILE_REMOVE.header)!;
     remove.click();
-    expect([cover(d).src, remove.hidden]).toEqual([COVER_PLACEHOLDER, true]); // OF: no picture, no remove button
+    expect([cover(d).src, remove.hidden]).toEqual([COVER_PLACEHOLDER, true]);
     save(d).click();
     await flush();
     expect(h.uploadProfileImage).not.toHaveBeenCalled();
@@ -138,7 +137,7 @@ describe("Edit profile's cover and avatar (ticket 67)", () => {
     x.disabled = true;
     x.setAttribute("data-oi-avatar-remove", "");
     d.querySelector(".b-profile__user .g-avatar .b-profile__header__cover__btns")!.append(x);
-    await flush(); // the MutationObserver
+    await flush();
     expect([x.disabled, x.title]).toEqual([false, NOT_YET]);
     x.click();
     save(d).click();

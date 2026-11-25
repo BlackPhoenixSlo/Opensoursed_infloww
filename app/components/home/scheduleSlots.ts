@@ -1,13 +1,6 @@
-/**
- * The owner's "Scheduled shifts" rows: the Agency's Shift occurrences coalesced into one row per time slot (same
- * start, end and zone), the employees of every Shift in it listed once. The row's key is the slot itself, so two
- * Shifts at the same time never collide on a key or lose the second one's employees (#8). Times compare as instants, so a slot that crosses midnight or a
- * DST change sorts and coalesces by when it happens, not by its text.
- */
 import type { ShiftEmployee, ShiftOccurrence } from "@/lib/shifts";
 
 export interface ScheduleSlot {
-  /** Unique per row: the slot's start and end instants and its zone. */
   key: string;
   occurrence_start: string;
   occurrence_end: string;

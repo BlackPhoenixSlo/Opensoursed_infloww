@@ -1,23 +1,3 @@
-"""Browser actor: Chromium signed in as the owner, loopback-only (every other
-host unresolvable), OnlyFans-live reads (/api/of/*) held pending so a screen
-shows what the relay's own DB serves (the Fan List's local seed), screen bundles
-(/admin/screens/*) answered 404 so their reads take those routes, screenshot on
-every visit.
-
-`owner_tabs` opens several tabs, each in its own browser context: production
-serves the app over HTTP/2 (one multiplexed connection), while the slop stack is
-plain HTTP/1.1, where Chromium's 6-connections-per-host cap would let 5 open SSE
-streams starve every other request. `PROBE_JS` instruments a tab without touching
-app code: SSE receipt time per chat message id (`rx`), the app's handler time per
-SSE event, long tasks (>50 ms), heap, rendered Fan List rows, and a text watcher
-for marker DMs (`watch` / `seen`).
-
-`--net=<profile>` (ctx.net): every page `_owner_page` opens (owner_browser, owner_tabs, chatter_tab, touch
-contexts) is throttled to that lib/net.py phone network through a CDP session of its own (`page.slop["cdp"]`,
-open for the page's life); unset, nothing changes. A popup the page opens is not throttled. Two caveats: the
-context's `route("**/*")` turns Chromium's HTTP cache off (Playwright), so a throttled page refetches every chunk and
-image a real phone would have cached; and a service worker's own fetches ride unthrottled (CDP's conditions are the
-page's), so `--net` blocks service workers (app/public/sw-images.js fetches every /img)."""
 from __future__ import annotations
 
 import asyncio
@@ -32,18 +12,14 @@ from slop.lib.faults import FAULTS
 from slop.lib.net import emulate
 from slop.lib.screen_bundle import CHAT_SCREEN_PATH, NO_BUNDLES_COOKIE
 
-# Light theme; hide Next's dev overlay so screenshots show only the app.
 INIT_JS = """try { localStorage.setItem('chatterly:theme', 'light'); } catch (e) {}
 document.addEventListener('DOMContentLoaded', () => { const s = document.createElement('style');
   s.textContent = 'nextjs-portal, [data-nextjs-toast], [data-next-badge-root] { display: none !important; }';
   document.documentElement.appendChild(s); });"""
-# Relay routes outside /api/of/ that are OnlyFans-live reads too: held like /api/of/*.
 OF_LIVE_PATHS = ("/admin/vault/wall-media",)
-SCREEN_BUNDLES = "/admin/screens/"   # one call per screen (service/screens_api.py): `screen_bundle_404`
-# On a browser whose bundles 404 (`screen_bundle_404`): the relay answers 404 to the bundle the Next server reads for
-# its HTML too (app/lib/inlineBoot.server.ts forwards the page's cookies; lib/screen_bundle_relay.py).
+SCREEN_BUNDLES = "/admin/screens/"
 SEND_PATH = re.compile(r"/api/of/v2/chats/\d+/messages")
-# precise-memory-info: without it performance.memory is bucketed and never moves.
+# --enable-precise-memory-info: without it performance.memory is bucketed and never moves.
 LAUNCH_ARGS = ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost",
                "--enable-precise-memory-info"]
 
@@ -115,14 +91,6 @@ PROBE_JS = r"""(() => {
 
 
 async def screen_bundle_404(r) -> bool:
-    """Declared bypass, for every page that holds OnlyFans reads: a screen bundle mixes OnlyFans reads with DB ones and
-    a whole request can only be held or not, so it answers 404 (app/lib/screenBundle.ts: a failed bundle) and every
-    read goes out on its own route as before the bundles: OnlyFans ones held, DB ones answered. The bundles
-    themselves: the screen-bundles (API) and clicks-first scenarios, on browsers of their own. True: answered.
-    The HTML's inline bundle (the Next server's read, past this route): 404 at the relay for a browser carrying
-    NO_BUNDLES_COOKIE (set where this route is installed). Chromium logs each of these 404s as a failed load: the
-    page's `slop["offhost_aborted"]` lists them alongside aborted offhost requests, so a console check can tell
-    the harness's from the app's."""
     path = urlsplit(r.request.url).path
     if not path.startswith(SCREEN_BUNDLES) or path == CHAT_SCREEN_PATH:
         return False
@@ -131,7 +99,6 @@ async def screen_bundle_404(r) -> bool:
 
 
 async def route_held_read(r, held: list, aborted: list | None = None, on_hold=None) -> None:
-    """Answer bundle bypasses (their URLs into `aborted`), hold live OF reads, and pass everything else through."""
     path = urlsplit(r.request.url).path
     if await screen_bundle_404(r):
         if aborted is not None:
@@ -146,12 +113,10 @@ async def route_held_read(r, held: list, aborted: list | None = None, on_hold=No
 
 
 async def set_no_bundles_cookie(bctx, host: str) -> None:
-    """Make the Next server's inline bundle take the same 404 path as the browser."""
     await bctx.add_cookies([{"name": NO_BUNDLES_COOKIE, "value": "1", "domain": host, "path": "/"}])
 
 
 async def hold_of_reads(bctx, host: str, held: list, *, on_hold=None) -> None:
-    """Install the browser OF hold and the matching server-side inline-bundle bypass."""
     await set_no_bundles_cookie(bctx, host)
 
     async def route(r):
@@ -161,7 +126,6 @@ async def hold_of_reads(bctx, host: str, held: list, *, on_hold=None) -> None:
 
 
 async def end_held_background_reads(page, seconds: float) -> int:
-    """Abort held background OF reads so the browser's per-Creator slots can advance."""
     held, n, end = page.slop["held_of_reads"], 0, time.monotonic() + seconds
     while time.monotonic() < end:
         for r in [r for r in held if r.request.headers.get("x-priority") == "background"]:
@@ -176,19 +140,12 @@ async def end_held_background_reads(page, seconds: float) -> int:
 
 
 def _client_fault(ctx) -> tuple:
-    """The run's client fault (lib/faults.py `browser=`): compiled (regex, replacement) pairs."""
     from slop.lib.faults import FAULTS
     f = FAULTS.get(getattr(ctx, "fault", None) or "")
     return tuple((re.compile(rx), rx, rep) for rx, rep in f.browser) if f else ()
 
 
 async def _patched(r, ctx, patches, origin: str | None = None) -> None:
-    """Serve the app's JS with the client fault's rewrites; count each rewrite's matches
-    (ctx.browser_fault_hits, which lib/cli.py requires to be > 0 for every rewrite) and the
-    files they hit (ctx.browser_fault_files). A file that cannot be fetched (the page moved
-    on mid-load) is aborted, never served unpatched. `origin`: fetch the file from there
-    (lib/wan.py's TLS edge: Playwright's own fetch does not trust its certificate, so a
-    WanEdge scenario reads the chunk from the app, ctx.app, on loopback)."""
     hits = ctx.browser_fault_hits
     files = ctx.browser_fault_files
     try:
@@ -211,8 +168,6 @@ async def _patched(r, ctx, patches, origin: str | None = None) -> None:
 
 
 def track(ctx, bctx) -> None:
-    """Record every path (no query) a main frame of `bctx`'s pages navigates to, popups and later
-    tabs too, in `ctx.ui_pages` (lib/cli.py: the run's ui-pages.json, slop/map.json's `pages`)."""
     seen = ctx.ui_pages
 
     def on_nav(page, frame) -> None:
@@ -229,14 +184,7 @@ def track(ctx, bctx) -> None:
 
 async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *, http=None, app=None,
                       send=False, through=(), scale=1, touch=False):
-    """A tab signed in as `http`'s session (default the owner's) on `app` (default ctx.app).
-    `send`: let the chat send (POST /api/of/v2/chats/{fan}/messages) through to the relay,
-    whose OnlyFans hop lib/relay.py answers; `through`: exact /api/of/ paths let through to
-    the relay too (a read whose OnlyFans hop lib/relay.py fakes), compiled patterns a GET's
-    whole path must match, or (method, compiled pattern) pairs for another method (e.g. the
-    chat mute's POST / DELETE); every other /api/of/ call stays held. `scale`: the device
-    scale factor (2 for a zoomed crop). `touch`: a phone's context (touch input, mobile
-    viewport), for `tap` and `swipe`."""
+    # --net: service workers blocked (their fetches ride unthrottled: CDP conditions are the page's); route('**/*') also turns Chromium's HTTP cache off.
     bctx = await browser.new_context(viewport={"width": viewport[0], "height": viewport[1]},
                                      device_scale_factor=scale, has_touch=touch, is_mobile=touch,
                                      service_workers="block" if ctx.net else "allow")
@@ -281,9 +229,6 @@ async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *,
     return page
 
 
-# The app's confirm()/alert() is an in-page dialog since #545 (app/components/ui/ifConfirm.tsx: IfConfirmHost, its
-# body text's id `if-confirm-<n>`), not a native one `page.on("dialog")` sees. Accepted as the native one was: its
-# last footer button (OK / its confirmLabel; an alert's only one) clicked as it mounts. Other dialogs are untouched.
 ACCEPT_CONFIRMS_JS = """(() => {
   if (window.__slopAcceptConfirms) return;
   window.__slopAcceptConfirms = true;
@@ -300,8 +245,6 @@ ACCEPT_CONFIRMS_JS = """(() => {
 
 
 async def accept_confirms(page) -> None:
-    """Accept every confirm()/alert() `page` shows, native (`page.on("dialog")`) and the app's in-page one
-    (ACCEPT_CONFIRMS_JS), on this document and every later one."""
     page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
     await page.add_init_script(ACCEPT_CONFIRMS_JS)
     await page.evaluate(ACCEPT_CONFIRMS_JS)
@@ -319,10 +262,6 @@ async def owner_browser(ctx, viewport=(1600, 1000), through=(), send=False, scal
 
 
 async def close_popup(opener, pop) -> None:
-    """Close `pop`, a window `opener`'s page opened (same context, same routes). Its held
-    /api/of/ reads are aborted first: Chromium resumes requests still paused at the Fetch domain
-    when their page detaches, so a plain close would let them through to the relay, whose
-    offline OnlyFans answers 500. Aborted, they die as a closed window's fetches do."""
     held = opener.slop["held_of_reads"]
 
     def page_of(r):
@@ -331,6 +270,7 @@ async def close_popup(opener, pop) -> None:
         except Exception:  # noqa: BLE001 — a worker's request has no frame
             return None
 
+    # Chromium resumes requests paused at the Fetch domain when their page detaches; abort first or they reach the relay (offline OF answers 500).
     for r in [r for r in held if page_of(r) is pop]:
         held.remove(r)
         try:
@@ -342,7 +282,6 @@ async def close_popup(opener, pop) -> None:
 
 @asynccontextmanager
 async def owner_tabs(ctx, n: int, viewport=(1600, 1000), probe: bool = True):
-    """`n` signed-in tabs (one browser context each), PROBE_JS installed."""
     held, aborted = [], []
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(args=LAUNCH_ARGS)
@@ -355,7 +294,6 @@ async def owner_tabs(ctx, n: int, viewport=(1600, 1000), probe: bool = True):
 
 @asynccontextmanager
 async def chatter_tab(ctx, http, app: str, viewport=(1600, 1000)):
-    """One tab signed in as a chatter (`http`'s cookie) on `app`, its chat send let through."""
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(args=LAUNCH_ARGS)
         try:
@@ -378,8 +316,6 @@ async def seen(page, text: str) -> float | None:
 
 
 async def pick_creator(page, name: str, timeout_ms: int = 60_000) -> None:
-    """Picks a Creator on a My Automations page's creator column (`CreatorRail`, Smart lists' own): clicks its row
-    and waits until that row is the current pick."""
     rows = page.get_by_test_id("of-creator-column").get_by_test_id("of-creator-row")
     mine = page.get_by_text(name, exact=True)
     await rows.filter(has=mine).first.click(timeout=timeout_ms)
@@ -389,33 +325,18 @@ async def pick_creator(page, name: str, timeout_ms: int = 60_000) -> None:
 async def swipe(page, x0: float, y0: float, x1: float, y1: float, *, ms: int = 200, steps: int = 10,
                 cancel: bool = False, via: tuple[tuple[float, float], ...] = (),
                 legs: tuple[tuple[int, int], ...] = (), mid=None, hold_ms: int = 0) -> None:
-    """One finger from (x0, y0) to (x1, y1) over `ms`, as Chromium's touch input (CDP
-    Input.dispatchTouchEvent): the page sees real touch and pointer events, and the
-    compositor scrolls as it would for a finger. `via` bends the path through those
-    points (`steps` moves per leg); `legs` gives each leg its own (ms, steps), e.g. a
-    slow drag then a quick flick back. `cancel` ends it as the OS taking the gesture does
-    (touchcancel). `mid` (async) runs halfway through the moves and the finger then
-    moves on, so the release keeps the finger's real speed (a sheet's release decision
-    reads the last ~100ms); `hold_ms` holds the finger still at the end, which makes the
-    release speed 0.
-
-    Each event carries the finger's own time (CDP `timestamp`, which becomes the page's
-    `event.timeStamp`), as a phone's digitizer stamps a touch when it happens, not when
-    the page gets it: the moves are paced against the wall clock, but a slow CDP round
-    trip (a busy dev server) no longer stretches the swipe the page measures. A `mid`
-    or hold pauses that clock with the finger: it held still meanwhile."""
     pts = [(x0, y0), *via, (x1, y1)]
     timing = legs or tuple((ms // (len(pts) - 1), steps) for _ in pts[1:])
     total = sum(n for _, n in timing)
     done = 0
     cdp = await page.context.new_cdp_session(page)
-    finger = time.time()  # the finger's clock (s since the epoch, as CDP takes it)
-    sync = (finger, time.monotonic())  # a moment both clocks agree on: moves are due from it
+    finger = time.time()
+    sync = (finger, time.monotonic())
 
     async def send(kind: str, touch: list) -> None:
         await cdp.send("Input.dispatchTouchEvent", {"type": kind, "touchPoints": touch, "timestamp": finger})
 
-    def held() -> None:  # the finger held still while something else ran: its clock catches up
+    def held() -> None:
         nonlocal finger, sync
         finger = max(finger, time.time())
         sync = (finger, time.monotonic())
@@ -440,7 +361,6 @@ async def swipe(page, x0: float, y0: float, x1: float, y1: float, *, ms: int = 2
         await cdp.detach()
 
 
-# Every touch event the page sees, from `touch_log` on: [kind, clientX, event.timeStamp, performance.now()].
 TOUCH_LOG_JS = """() => {
   window.__touches = [];
   if (window.__touchLogOn) return;
@@ -453,7 +373,6 @@ TOUCH_LOG_JS = """() => {
 
 
 async def touch_log(page) -> None:
-    """Start (or restart) logging the page's touch events; `touches` reads them."""
     await page.evaluate(TOUCH_LOG_JS)
 
 
@@ -461,11 +380,6 @@ async def touches(page) -> list:
     return await page.evaluate("() => window.__touches || []")
 
 
-# In-page recorder for one sheet gesture (`sheet_probe`), on the sheet `sel` (its real element, never a
-# `.exit-ghost` copy): the release (the first touchend), the frame it is first off screen (or gone), its
-# unmount, a hit test at `pt` 50ms after it went off, each touchstart (was the sheet still mounted, was a
-# leaving copy there) and each click (on `main`? sheet still mounted?). Installed once per page; each call
-# resets it and sets the sheet and point it watches.
 SHEET_PROBE_JS = """([sel, px, py]) => {
   window.__sheetSel = sel;
   window.__sheetPt = [px, py];
@@ -502,8 +416,6 @@ SHEET_READ_JS = """() => { const g = window.__sheet; const t = (v) => v === null
 
 
 async def sheet_probe(page, sel: str, pt: tuple[float, float] = (0, 0)) -> None:
-    """Record the next gesture on the sheet `sel` (`SHEET_PROBE_JS`); `sheet_read` returns it, times in ms
-    from the release."""
     await page.evaluate(SHEET_PROBE_JS, [sel, pt[0], pt[1]])
 
 

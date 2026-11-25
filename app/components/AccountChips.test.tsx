@@ -1,19 +1,6 @@
-/**
- * AccountChips — the one account picker, held to the contract each of its
- * call sites used to own a private copy of.
- *
- * Two of those cases are load-bearing and invisible in the rendered page:
- * the single-account guard, because on a one-model agency EVERY call site
- * renders nothing and a regression here would put a dead one-chip row on four
- * surfaces at once; and the id passed to `onChange`, because the chip is
- * LABELLED by nickname but the callback must carry the account id — handing
- * back the label would scope the panel to an account that does not exist.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
-/** Mutable so each case can vary the roster; hoisted because the mock factory
- *  runs while the module graph is still resolving. */
 const roster = vi.hoisted(() => ({ accounts: [] as Array<{ id: string; nickname?: string }> }));
 vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => roster.accounts }));
 
@@ -37,13 +24,6 @@ describe("AccountChips", () => {
   });
 
   it("still renders when the ONE pickable account is not the selected one", () => {
-    // The way out of a dead end, and it used to be hidden. `useActiveAccounts`
-    // filters on `has_session`, and /vault deliberately keeps pointing at a
-    // model whose session drops rather than switching creators in silence — so
-    // with two models and the selected one's session dead the roster is length
-    // 1, the old `<= 1` shortcut rendered nothing, and the banner told the
-    // operator to "pick another model above" over empty space. The remembered
-    // id brought the same dead end back on every reload.
     roster.accounts = [{ id: "8000186", nickname: "blake" }];
     render(<AccountChips accountId="8000149" onChange={() => {}} />);
     expect(screen.getByRole("button", { name: "blake" })).toBeTruthy();

@@ -1,10 +1,3 @@
-/**
- * The `/creators/proxy` route reads like its Layout capture, `docs/infloww-layouts/creators-proxy.md`
- * (docs/spec/infloww-parity-round-2/phase-04-creators-pages.md, Testing Decisions, Custom proxy page; ticket 17):
- * the title, "+ Add new proxy", the seven columns, "No data", 10 rows a page, the two status labels, and the
- * row actions; then the Add new proxy modal, with the label defaulting to host:port and the bulk paste inside it
- * (ticket 18); then the Creator egress table under it (ticket 19). The Relay client is mocked; labels, hosts (TEST-NET addresses) and Creators are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -44,15 +37,12 @@ function serve(proxies: P[], accounts = ACCOUNTS) {
   });
 }
 
-/** The proxy table, the page's first; the Creator egress table follows it (ticket 19). */
 const proxyTable = () => screen.getAllByRole("table")[0];
-/** The table row whose first cell reads `label` (the Proxy label, or the Creator in the egress table). */
 function rowOf(label: string, table: HTMLElement = proxyTable()): HTMLElement {
   const cell = within(table).getAllByRole("cell").find((c) => c.textContent === label);
   if (!cell) throw new Error(`no row ${label}`);
   return cell.closest("tr") as HTMLElement;
 }
-/** The cell of `row` under its own table's header `name`. */
 function cellOf(row: HTMLElement, name: string): HTMLElement {
   const heads = within(row.closest("table") as HTMLElement).getAllByRole("columnheader").map((h) => h.textContent);
   return within(row).getAllByRole("cell")[heads.indexOf(name)];
@@ -74,32 +64,27 @@ describe("/creators/proxy", () => {
   it("shows the capture's title, add button and column headers", async () => {
     serve([proxy("px-1")]);
     renderWithProviders(<Page />);
-    // creators-proxy#3: the page title; #7: the header button.
     expect(screen.getByRole("heading", { name: "Manage your custom proxies" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add new proxy" })).toBeInTheDocument();
     await screen.findByText("px-1");
     expect(within(proxyTable()).getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
-      "Proxy label", // creators-proxy#11
-      "Host", // creators-proxy#12
-      "Port", // creators-proxy#12
-      "Type", // creators-proxy#12
-      "Creator", // creators-proxy#13
-      "Proxy status", // creators-proxy#14
-      "Actions", // creators-proxy#16
+      "Proxy label",
+      "Host",
+      "Port",
+      "Type",
+      "Creator",
+      "Proxy status",
+      "Actions",
     ]);
-    // page-parity 03: antd dark's filled head row (#1e1e1e on #151515) with a 22px divider after every head cell but
-    // the last, and the antd dark row rule.
     const headRow = within(proxyTable()).getAllByRole("row")[0];
     expect(headRow).toHaveClass("bg-white/4");
     const heads = within(headRow).getAllByRole("columnheader");
     expect(heads.filter((h) => h.classList.contains("after:bg-white/6"))).toHaveLength(6);
     expect(heads[heads.length - 1]).not.toHaveClass("after:bg-white/6");
     expect(rowOf("px-1")).toHaveClass("border-white/6");
-    // Full width: the header rule runs edge to edge, as Infloww's does (no 1800px cap).
     const root = screen.getByRole("heading", { name: "Manage your custom proxies" }).closest("header")!.parentElement!;
     expect(root).not.toHaveClass("max-w-shell");
     expect(document.querySelector(".max-w-shell")).toBeNull();
-    // The Proxies card, its heading and its old columns are gone.
     expect(screen.queryByRole("heading", { name: "Proxies" })).toBeNull();
     expect(screen.queryByText("Bound to")).toBeNull();
   });
@@ -115,7 +100,6 @@ describe("/creators/proxy", () => {
     const r = rowOf("px-http");
     expect(cellOf(r, "Host").textContent).toBe("192.0.2.11");
     expect(cellOf(r, "Port").textContent).toBe("8080");
-    // creators-proxy#12: http and socks; the relay's https is ours.
     expect(cellOf(r, "Type").textContent).toBe("http");
     expect(cellOf(rowOf("px-socks"), "Type").textContent).toBe("socks");
     const https = within(cellOf(rowOf("px-https"), "Type")).getByText("https");
@@ -125,7 +109,6 @@ describe("/creators/proxy", () => {
   it("shows No data on an empty registry, with no pager", async () => {
     serve([]);
     renderWithProviders(<Page />);
-    // creators-proxy#20: antd's simple empty, ticket 00's EmptyState with its drawn tray, "No data" #595959.
     const empty = await screen.findByText("No data");
     expect(empty).toHaveClass("text-[#595959]");
     expect(within(proxyTable()).getByRole("cell").querySelector("svg[data-empty-art]")).not.toBeNull();
@@ -137,12 +120,10 @@ describe("/creators/proxy", () => {
     serve(labels.map((l) => proxy(l)));
     renderWithProviders(<Page />);
     await screen.findByText("px-01");
-    // creators-proxy#23: 10 a page.
     expect(bodyLabels()).toEqual(labels.slice(0, 10));
     const pager = screen.getByRole("navigation", { name: "Pagination" });
     fireEvent.click(within(pager).getByRole("button", { name: "2" }));
     expect(bodyLabels()).toEqual(labels.slice(10, 20));
-    // antd's current page: a 1px primary outline, primary text, no fill, 6px corners.
     expect(within(pager).getByRole("button", { name: "2" })).toHaveClass("border", "border-accent", "text-accent", "bg-transparent", "rounded-md", "h-8", "min-w-8");
     fireEvent.click(within(pager).getByRole("button", { name: "Next page" }));
     expect(bodyLabels()).toEqual(labels.slice(20));
@@ -160,16 +141,13 @@ describe("/creators/proxy", () => {
     relayPost.mockResolvedValue({ ok: false, error: "connect timeout" });
     renderWithProviders(<Page />);
     await screen.findByText("px-ok");
-    // creators-proxy#14: the first state for a working proxy, the second otherwise.
     expect(within(cellOf(rowOf("px-ok"), "Proxy status")).getByText("Available")).toBeInTheDocument();
     expect(within(cellOf(rowOf("px-new"), "Proxy status")).getByText("Unavailable")).toBeInTheDocument();
     expect(within(cellOf(rowOf("px-bad"), "Proxy status")).getByText("Available")).toBeInTheDocument();
-    // The latest test outranks the stored verification.
     fireEvent.click(within(rowOf("px-bad")).getByRole("button", { name: "Test" }));
     await waitFor(() =>
       expect(within(cellOf(rowOf("px-bad"), "Proxy status")).getByText("Unavailable")).toBeInTheDocument(),
     );
-    // The verified IP and the test error stay beside the label, as ours.
     const ip = within(cellOf(rowOf("px-ok"), "Proxy status")).getByText("198.51.100.7");
     expect(ip.getAttribute("title")).toContain(EXTRA_LABEL);
     const err = within(cellOf(rowOf("px-bad"), "Proxy status")).getByText("connect timeout");
@@ -178,7 +156,6 @@ describe("/creators/proxy", () => {
 
   it("a passing test turns an unverified proxy Available", async () => {
     serve([proxy("px-new")]);
-    // The route's own answer (service/proxies.py `probe`): the egress IP is `ip`.
     relayPost.mockResolvedValue({ ok: true, ip: "198.51.100.9", geo: null, error: null });
     renderWithProviders(<Page />);
     await screen.findByText("px-new");
@@ -199,7 +176,6 @@ describe("/creators/proxy", () => {
     renderWithProviders(<Page />);
     await screen.findByText("px-free");
 
-    // Bind: the assign select in the Creator cell.
     const bind = within(cellOf(rowOf("px-free"), "Creator")).getByRole("combobox");
     expect(bind.getAttribute("title")).toContain(EXTRA_LABEL);
     fireEvent.change(bind, { target: { value: "acc-c" } });
@@ -207,7 +183,6 @@ describe("/creators/proxy", () => {
       expect(relayPost).toHaveBeenCalledWith("/admin/proxies/assign", { label: "px-free", account_id: "acc-c" }),
     );
 
-    // Unbind: the × on a Creator chip.
     const unbind = within(rowOf("px-shared")).getByRole("button", { name: "Unbind Creator A" });
     expect(unbind.getAttribute("title")).toContain(EXTRA_LABEL);
     fireEvent.click(unbind);
@@ -215,22 +190,18 @@ describe("/creators/proxy", () => {
       expect(relayPost).toHaveBeenCalledWith("/admin/proxies/px-shared/unbind", { account_id: "acc-a" }),
     );
 
-    // The shared-egress warning stays, as ours.
     const shared = within(rowOf("px-shared")).getByText("shared egress");
     expect(shared.closest("[title]")?.getAttribute("title")).toContain(EXTRA_LABEL);
 
-    // Test, ours, in Actions.
     const test = within(cellOf(rowOf("px-free"), "Actions")).getByRole("button", { name: "Test" });
     expect(test.getAttribute("title")).toContain(EXTRA_LABEL);
     fireEvent.click(test);
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/proxies/px-free/test"));
 
-    // creators-proxy#16: Edit is Not wired (the relay cannot rename a proxy).
     const edit = within(cellOf(rowOf("px-free"), "Actions")).getByRole("button", { name: "Edit" });
     expect(edit).toBeDisabled();
     expect(edit).toHaveAttribute("title", "not wired");
 
-    // creators-proxy#16: Delete is the capture's, shown only while no Creator is bound.
     expect(within(rowOf("px-shared")).queryByRole("button", { name: "Delete" })).toBeNull();
     const del = within(cellOf(rowOf("px-free"), "Actions")).getByRole("button", { name: "Delete" });
     expect(del.getAttribute("title") ?? "").not.toContain(EXTRA_LABEL);
@@ -247,14 +218,12 @@ describe("/creators/proxy", () => {
     await screen.findByText("px-free");
     const del = () => within(cellOf(rowOf("px-free"), "Actions")).getByRole("button", { name: "Delete" });
 
-    // creators-proxy#38: the title, the question, then Cancel and the danger Delete.
     fireEvent.click(del());
     let m = screen.getByRole("dialog", { name: "Delete proxy" });
     expect(within(m).getByText("Are you sure you want to delete this proxy?")).toBeInTheDocument();
     expect(within(m).getAllByRole("button").map((b) => b.textContent)).toEqual(["Cancel", "Delete"]);
     fireEvent.click(within(m).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
-    // Escape closes it too (antd's keyboard default).
     fireEvent.click(del());
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -271,8 +240,6 @@ describe("/creators/proxy", () => {
   it("shows placeholder rows, not No data, while the proxies read runs", async () => {
     relayGet.mockReturnValue(new Promise(() => {}));
     renderWithProviders(<Page />);
-    // creators-proxy#22 drew antd's spinner over an empty table; the owner's 2026-10-29 ask is placeholder rows on
-    // every page, and no false "No data" before the first answer.
     expect(proxyTable().querySelectorAll("tbody [data-loading]").length).toBeGreaterThan(0);
     expect(within(proxyTable()).queryByText("No data")).toBeNull();
     expect(screen.queryByText(/Loading proxies/)).toBeNull();
@@ -284,7 +251,6 @@ describe("/creators/proxy", () => {
     renderWithProviders(<Page />);
     await screen.findByText("px-001");
     const pager = screen.getByRole("navigation", { name: "Pagination" });
-    // creators-proxy#23 (rc-pagination, 2 pages each side): 12 pages fold after page 5.
     const items = () =>
       within(pager).getAllByRole("button")
         .filter((b) => !/^(Previous|Next) page$/.test(b.getAttribute("aria-label") ?? ""))
@@ -296,7 +262,6 @@ describe("/creators/proxy", () => {
     fireEvent.click(within(pager).getByRole("button", { name: "Previous 5 Pages" }));
     expect(bodyLabels()).toEqual(labels.slice(0, 10));
 
-    // More than 50 rows: the size changer, 10 / 20 / 50 / 100 a page, 10 first.
     const size = within(pager).getByRole("combobox", { name: "Page size" }) as HTMLSelectElement;
     expect(Array.from(size.options).map((o) => o.textContent)).toEqual(["10 / page", "20 / page", "50 / page", "100 / page"]);
     expect(size.value).toBe("10");
@@ -319,7 +284,6 @@ describe("/creators/proxy", () => {
     const add = screen.getByRole("button", { name: "Add new proxy" });
     await waitFor(() => expect(add).toHaveAttribute("title", "not wired"));
     expect(add).toBeDisabled();
-    // The form and the paste box live in the modal (ticket 18), which the disabled button cannot open.
     fireEvent.click(add);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByLabelText("Paste proxies (one per line)")).toBeNull();
@@ -328,7 +292,6 @@ describe("/creators/proxy", () => {
   });
 });
 
-/** Opens the Add new proxy modal and returns it. */
 async function openAdd(): Promise<HTMLElement> {
   const add = screen.getByRole("button", { name: "Add new proxy" });
   await waitFor(() => expect(add).toBeEnabled());
@@ -346,9 +309,7 @@ describe("/creators/proxy — Add new proxy", () => {
     expect(screen.queryByLabelText("Proxy label")).toBeNull();
     expect(screen.queryByLabelText("Paste proxies (one per line)")).toBeNull();
     const m = await openAdd();
-    // creators-proxy#28 to #33: the capture's fields, in its order.
     expect(within(m).getByLabelText("Proxy label")).toBeInTheDocument();
-    // #29: Type radios http and socks, none chosen at first; https is ours.
     const radios = within(m).getAllByRole("radio") as HTMLInputElement[];
     expect(radios.map((r) => r.closest("label")?.textContent)).toEqual(["http", "socks", "https"]);
     expect(radios.every((r) => !r.checked)).toBe(true);
@@ -357,11 +318,9 @@ describe("/creators/proxy — Add new proxy", () => {
     expect(within(m).getByLabelText("Port")).toHaveAttribute("placeholder", "e.g. 80");
     expect(within(m).getByLabelText("Username")).toBeInTheDocument();
     expect(within(m).getByLabelText("Password")).toHaveAttribute("type", "password");
-    // Ours, after the capture's fields: Notes, the storage hint and the IP address field's hostnames.
     expect(within(m).getByLabelText(/^Notes/).closest("div")?.querySelector(`[title="${EXTRA_LABEL}"]`)).not.toBeNull();
     expect(within(m).getByText(/stored in/).closest("[title]")?.getAttribute("title")).toBe(EXTRA_LABEL);
     expect(within(m).getByLabelText("IP address").getAttribute("title")).toContain(EXTRA_LABEL);
-    // #27: Cancel, then Add proxy, off until the form is valid.
     expect(within(m).getByRole("button", { name: "Add proxy" })).toBeDisabled();
     fireEvent.click(within(m).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -374,7 +333,6 @@ describe("/creators/proxy — Add new proxy", () => {
     await screen.findByText("px-1");
     const m = await openAdd();
     const label = within(m).getByLabelText("Proxy label") as HTMLInputElement;
-    // The label field and its host:port default are ours: the relay keys a proxy by its label.
     expect(label.getAttribute("title")).toContain(EXTRA_LABEL);
     type(within(m).getByLabelText("IP address"), "192.0.2.20");
     type(within(m).getByLabelText("Port"), "8080");
@@ -427,10 +385,8 @@ describe("/creators/proxy — Add new proxy", () => {
     type(within(m).getByLabelText("IP address"), "192.0.2.40");
     type(within(m).getByLabelText("Port"), "3128");
     fireEvent.click(within(m).getByRole("button", { name: "Add proxy" }));
-    // creators-proxy#37: the check runs on the new proxy; the Relay probes only a registered label.
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/proxies/192.0.2.40%3A3128/test"));
     await waitFor(() => expect(relayDelete).toHaveBeenCalledWith("/admin/proxies/192.0.2.40%3A3128"));
-    // #27: the failure is antd's message toast, and the modal stays open.
     const toast = await screen.findByRole("alert");
     expect(toast.textContent).toContain("Proxy check failed: connect timeout");
     expect(within(m).queryByText(/connect timeout/)).toBeNull();
@@ -453,7 +409,6 @@ describe("/creators/proxy — Add new proxy", () => {
     expect(relayPost).toHaveBeenCalledWith("/admin/proxies/192.0.2.41%3A3128/test");
     expect(relayDelete).not.toHaveBeenCalled();
     expect(screen.queryByRole("alert")).toBeNull();
-    // #37: `message.success` after the add.
     expect(screen.getByRole("status").textContent).toContain("Proxy added");
   });
 
@@ -476,14 +431,12 @@ describe("/creators/proxy — Add new proxy", () => {
     renderWithProviders(<Page />);
     await screen.findByText("No data");
     let m = await openAdd();
-    // creators-proxy#33: Input.Password's visibility toggle.
     const pw = within(m).getByLabelText("Password") as HTMLInputElement;
     expect(pw.type).toBe("password");
     fireEvent.click(within(m).getByRole("button", { name: "Show password" }));
     expect(pw.type).toBe("text");
     fireEvent.click(within(m).getByRole("button", { name: "Hide password" }));
     expect(pw.type).toBe("password");
-    // #24: antd's keyboard default closes the modal on Escape; the mask still does not.
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     m = await openAdd();
@@ -499,7 +452,6 @@ describe("/creators/proxy — Add new proxy", () => {
     type(within(m).getByLabelText("IP address"), "192.0.2.43");
     type(within(m).getByLabelText("Port"), "0");
     const save = within(m).getByRole("button", { name: "Add proxy" });
-    // creators-proxy#32: the bundle's field takes 0; the Relay refuses it.
     expect(save).toBeDisabled();
     expect(save.getAttribute("title")).toMatch(/^not wired: port 0/);
   });
@@ -550,7 +502,6 @@ describe("/creators/proxy — Add new proxy", () => {
     await waitFor(() => expect(within(m).getByText(/Added 1/)).toBeInTheDocument());
     expect(relayPost).toHaveBeenCalledWith("/admin/proxies/bulk", { text, scheme: "https" });
     expect(within(m).getByText(/Line 2: unrecognised format/)).toBeInTheDocument();
-    // The modal stays open on the result.
     expect(screen.getByRole("dialog", { name: "Add new proxy" })).toBeInTheDocument();
   });
 });
@@ -580,27 +531,22 @@ describe("/creators/proxy — Creator egress", () => {
     expect(within(t).getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
       "Creator", "Creator ID", "Egress", "Session", "Action",
     ]);
-    // One row per Creator, in the accounts' order.
     expect(within(t).getAllByRole("row").slice(1).map((r) => within(r).getAllByRole("cell")[0].textContent))
       .toEqual(["Creator A", "Creator B", "Creator C"]);
     const a = rowOf("Creator A", t);
     expect(cellOf(a, "Creator ID").textContent).toBe("acc-a");
     expect(within(cellOf(a, "Egress")).getByText("198.51.100.7")).toBeInTheDocument();
     expect(cellOf(a, "Session").textContent).toBe("Has session");
-    // A bound proxy that was never verified has no IP yet, but it is still a custom proxy.
     const b = rowOf("Creator B", t);
     expect(within(cellOf(b, "Egress")).queryByText("No custom proxy")).toBeNull();
     expect(within(cellOf(b, "Egress")).getByText("px-b")).toBeInTheDocument();
     expect(cellOf(b, "Session").textContent).toBe("No session");
-    // An unbound Creator leaves from the relay's own IP: nothing to test.
     const c = rowOf("Creator C", t);
     expect(cellOf(c, "Egress").textContent).toBe("No custom proxy");
     expect(within(cellOf(c, "Action")).getByRole("button", { name: "Test" })).toBeDisabled();
-    // The capture has no such table (creators-proxy.md, Notes): the whole section is ours.
     const section = t.closest("section") as HTMLElement;
     expect(section.getAttribute("title")).toBe(EXTRA_LABEL);
     expect(within(section).getByText(EXTRA_LABEL)).toBeInTheDocument();
-    // A pure view over the one proxies read: no other relay read.
     expect(relayGet.mock.calls.map((call) => call[0])).toEqual(["/admin/proxies"]);
   });
 
@@ -608,14 +554,12 @@ describe("/creators/proxy — Creator egress", () => {
     serve([proxy("px-1", { assigned_accounts: [{ id: "acc-a", nickname: "Creator A" }] })]);
     renderWithProviders(<Page />);
     await screen.findAllByText("px-1");
-    // creators-proxy#40, #41: the bundle gives each Creator an automatic proxy; the Relay has none.
     const none = within(screen.getAllByRole("table")[1]).getAllByText("No custom proxy")[0];
     expect(none.getAttribute("title")).toMatch(/^not wired: /);
   });
 
   it("its Test posts the proxy test for the bound label and shows the egress IP", async () => {
     serve([proxy("px-a", { assigned_accounts: [{ id: "acc-a", nickname: "Creator A" }] })]);
-    // The route's own answer (service/proxies.py `probe`): the egress IP is `ip`.
     relayPost.mockResolvedValue({ ok: true, ip: "198.51.100.9", geo: null, error: null });
     renderWithProviders(<Page />);
     await waitFor(() => rowOf("px-a"));

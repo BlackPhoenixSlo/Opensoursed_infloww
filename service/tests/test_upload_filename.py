@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""POST /api/of/v2/upload keeps the chatter's file name, and runs off the loop.
-
-The relay spools the multipart body to a temp file before handing it to
-`upload_media`, and both clients (OFClient and the Fansly shim) name the
-upload after `path.name` — the S3 key, the convert claim's `name`, Fansly's
-`fileName`. A bare NamedTemporaryFile made every Composer upload land in the
-vault as `tmpab12cd34.jpg`. The route now spools to `<tempdir>/<name>`, the
-original name reduced to safe ASCII (`[A-Za-z0-9._-]`, other runs as `_`):
-it cannot leave that directory, and the S3 key built from it needs no URL
-encoding (keys used to be plain temp names; we cannot confirm what OF's
-convert step does with an encoded or a raw `s3_location`).
-
-Plain-assert standalone script (no pytest), run via:
-
-    ./venv/bin/python service/tests/test_upload_filename.py
-
-Exit 0 = all pass.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -29,8 +11,6 @@ import time
 import uuid
 from pathlib import Path
 
-# Hard-bind a throwaway DB BEFORE importing any service module (same
-# PROD-fallback guard as the other service tests).
 _TMP_DB = Path(tempfile.gettempdir()) / f"chatterly_upname_{uuid.uuid4().hex}.db"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP_DB}"
 os.environ["CHATTERLY_DB_URL"] = f"sqlite:///{_TMP_DB}"
@@ -63,7 +43,6 @@ def check(label: str, got, want) -> None:
 
 
 class _Client:
-    """Records what upload_media saw while the spooled file still exists."""
 
     def __init__(self):
         self.seen: dict = {}
@@ -129,7 +108,6 @@ check("a dot-only name falls back to upload.bin", seen["name"], "upload.bin")
 seen, _ = upload("photo.jpég")
 check("an extension that is not plain ASCII is not kept as one", seen["name"], "photo.jp_g")
 
-# ASCII only, so 200 characters are 200 bytes (filesystems cap 255 bytes).
 seen, _ = upload("x" * 300 + ".jpeg")
 check("a long name is cut to 200 and keeps its extension",
       (len(seen["name"]), seen["name"].endswith(".jpeg")), (200, True))
@@ -150,7 +128,6 @@ print("\noff the event loop (#171)")
 
 
 class _SlowClient(_Client):
-    """upload_media blocks like the real one (curl: hash, S3 PUTs, claim)."""
 
     def upload_media(self, file_path, *, content_type=None, **_):
         self.thread = threading.get_ident()
@@ -160,14 +137,11 @@ class _SlowClient(_Client):
 
 
 class _Req:
-    """The request the middleware puts in `_request_ctx`, as `_proxy` reads it."""
     headers: dict = {}
     query_params: dict = {}
 
 
 async def _upload_while_ticking(filename: str) -> tuple[_SlowClient, dict, int, int]:
-    """One upload with a 0.4 s upload_media, and a 10 ms ticker on the same
-    loop: on the loop the ticker would stall for the whole upload."""
     client = _SlowClient()
     server._get_client = lambda *a, **k: client
     marker = _Req()

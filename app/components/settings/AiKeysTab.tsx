@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * AI keys: the owner's own LLM keys (AgencyKeysCard's fields) with Save in the Panel header, as every Settings
- * tab, then each Creator's daily AI spend limit (AiSpendCapCard, its own Save), then the server's Google Drive key
- * for the vault importer and the server's fallback TypeSafe (Jev) key, used by any agency with none of its own (ServerKeyCard, master-only to edit, own Save: a different store, /admin/secrets), then the owner's
- * access tokens for an AI app (AccessTokensCard, its own dialog). Hidden from a Chatter (SETTINGS_TABS chatterHidden); the relay
- * owner-gates the keys routes regardless.
- */
 
 import AgencyKeysCard from "@/components/setup/AgencyKeysCard";
 import ServerKeyCard from "@/components/setup/ServerKeyCard";

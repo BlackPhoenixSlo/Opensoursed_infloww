@@ -1,6 +1,3 @@
-"""The clicks-first flow's break-it-once faults (scenarios/2026-11-05-clicks-first.py): lib/faults.py merges
-`register(Fault)` into FAULTS. The check names live here and the scenario imports them.
-"""
 from __future__ import annotations
 
 C_CAP = "no Creator (but the tapped one) exceeds the background OnlyFans read cap on the wire"
@@ -16,9 +13,6 @@ C_ENTRY = ("document entry: Messages Pro's bundle comes with the HTML or leaves 
            "first/reload Applied settings keep their entry timing; each Dashboard visit's card bundle is the page's own, "
            "one, after its Applied settings answer (never with the HTML)")
 
-# app/components/auth/AuthGate.tsx before 2026-11-06: the screen bundle and the Applied settings read wait for the auth
-# probe (the bundle for its screen's first card, the settings for the principal in their query key). Emulated at the
-# page's fetch: both are held until /auth/me has answered (the page's own: with it, the HTML's inline boot is off).
 AFTER_PROBE_JS = """(() => {
   const f = window.fetch;
   let probed;
@@ -41,8 +35,6 @@ AFTER_PROBE_JS = """(() => {
 
 
 def _bundles_unused() -> None:
-    """app/lib/screenBundle.ts unused (the app before 2026-11-05, or the relay without /admin/screens/*): every bundle
-    answers 404, to the browser and to the HTML's inline boot alike, so each read goes out per Creator as before."""
     import server
     from starlette.responses import JSONResponse
 
@@ -55,15 +47,10 @@ def _bundles_unused() -> None:
 
 
 def _html_reads_refused() -> None:
-    """The app before the HTML's inline boot (2026-11-06): the page fetches /auth/me, the bundle and the settings
-    itself (lib/screens_faults.py's `inline-boot-relay-refuses-server`: the Next server's reads get a 503)."""
     import importlib
     importlib.import_module(f"{__package__}.screens_faults" if __package__ else "screens_faults") \
         ._inline_boot_relay_refuses_server()
 
-# app/components/providers.tsx before 2026-11-05: the per-Creator badge and roster keys (of-profile, of-sub-counts,
-# of-new-fans, of-notif-count) left out of the saved snapshot, so a reload reads every Creator again before a card
-# shows a number.
 _KEYS_UNPERSISTED = """(() => {
   const put = IDBObjectStore.prototype.put;
   const dropped = (k) => Array.isArray(k) && ['of-profile', 'of-sub-counts', 'of-new-fans', 'of-notif-count'].includes(k[0]);
@@ -81,15 +68,8 @@ _KEYS_UNPERSISTED = """(() => {
 
 def register(Fault) -> dict:
     return {
-        # slop/run clicks-first --break: a Creator's lane never fills (app/lib/relaySchedule.ts `admissible` reads
-        # `<state>.perCreator` as 1e9), so every background read goes out at once as before. The production build
-        # keeps the property name; one shared chunk holds the module.
-        # Nothing waits, so leaving has nothing to drop: C_ABORT too.
         "relay-scheduler-bypassed": Fault(None, (C_CAP, C_ABORT), browser=((r"\w+\.perCreator\b", "1e9"),)),
-        # slop/run clicks-first --break --fault=badge-keys-unpersisted
         "badge-keys-unpersisted": Fault(None, (C_SNAPSHOT,), browser_js=_KEYS_UNPERSISTED),
-        # slop/run clicks-first --break --fault=screen-bundle-unused: the per-Creator fan-out (main before PR B)
         "screen-bundle-unused": Fault(_bundles_unused, (C_BUNDLE, C_PARTIAL)),
-        # slop/run clicks-first --break --fault=screen-bundle-after-probe: the bundle and settings behind /auth/me
         "screen-bundle-after-probe": Fault(_html_reads_refused, (C_ENTRY,), browser_js=AFTER_PROBE_JS),
     }

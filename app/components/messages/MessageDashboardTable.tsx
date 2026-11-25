@@ -1,24 +1,5 @@
 "use client";
 
-/**
- * MessageDashboardTable — the Message dashboard's Direct messages and OnlyFans mass messages table (page-parity
- * ticket 30; bundle `AllMessageTable`): `IF_TABLE`, eleven columns, Infloww's order and cell rules.
- *
- * - Sender: the Employee, else the mass sender tag, else the automation's name; "--" when none.
- * - Creator: avatar and nickname.
- * - Message: ours, two lines at most. Infloww draws the fan's message above it; no row we read carries that text,
- *   so only ours shows.
- * - Sent time: "h:mm A" over "MMM D, YYYY" in the report time zone.
- * - Reply time: `reply_seconds` as "2m 10s"; "--" when the message before was not the fan's.
- * - Price: "--" on a free message. Purchased: a check or a cross on a priced message ("N of M" bought on a mass
- *   summary), "--" on a free one. A purchase counts as recorded, so a sale not yet cleared reads as bought.
- * - Source: AI chatbot (an automation sent it) or Employee. Infloww's AI Copilot is not told apart (a Copilot send
- *   is the Employee's).
- * - Status: Sent / Unsent (its reason in the tooltip). Sent to: the fan, or "N fans" on a mass summary.
- * - Actions: Open chat (Messages Pro's window), and Unsend where `canOfferUnsend`.
- *
- * Keyset paging: the sentinel row loads the next page as it scrolls into view; the end line closes the list.
- */
 
 import { useMemo, type ReactNode } from "react";
 import Link from "next/link";
@@ -41,8 +22,6 @@ import { InfoTip } from "@/components/ui/InfoTip";
 
 const DASH = "--";
 
-/** The header row, in Infloww's order; `tip` draws the (i) with Infloww's text. Message is 420px, not Infloww's 500:
- *  at 1280px the table shows 856px beside the pinned Actions, so Sent time (to 850px) is whole, not cut "Sent t". */
 export const COLUMNS: Array<{ title: string; tip?: string; width: number }> = [
   { title: "Sender", width: 120 },
   { title: "Creator", width: 180 },
@@ -57,14 +36,11 @@ export const COLUMNS: Array<{ title: string; tip?: string; width: number }> = [
   { title: "Actions", width: 120 },
 ];
 
-/** Infloww's reply time: whole minutes and seconds, "--" for none. */
 export function replyTime(sec: number | null | undefined): string {
   if (!sec || sec <= 0) return DASH;
   return `${Math.floor(sec / 60)}m ${Math.floor(sec % 60)}s`;
 }
 
-// Actions pins right from `sm` up; on a phone the pinned 120px left the other ten columns a ~220px strip (Sender and
-// Creator filled it, Message off-screen), so there it scrolls with the row (IF_TABLE.unpinPhone, RuleTable's precedent).
 
 function senderOf(r: PaidMessageRow): string {
   return r.employee_name || r.sender_name || automationLabel(r.automation_kind) || DASH;
@@ -78,7 +54,6 @@ export default function MessageDashboardTable({
   loading: boolean;
   error?: boolean;
   onRetry?: () => void;
-  /** A refetch under the old rows (placeholder data). */
   dim?: boolean;
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
@@ -93,7 +68,6 @@ export default function MessageDashboardTable({
     month: "short", day: "numeric", year: "numeric", timeZone: reportTz ?? undefined,
   }), [reportTz]);
 
-  // A callback ref: the sentinel unmounts under an error and mounts again on Retry, and is observed again.
   const sentinelRef = useLoadMoreSentinel(hasNextPage, isFetchingNextPage, fetchNextPage);
 
   const span = COLUMNS.length;
@@ -177,8 +151,6 @@ export default function MessageDashboardTable({
   return (
     <div className={cn("transition-opacity", dim && "opacity-60")}>
       <div className="overflow-x-auto">
-        {/* antd's `scroll: {x: 1100}` with these column widths: a fixed layout as wide as the columns, scrolling
-            sideways under the pinned Actions column. */}
         <table className={cn(IF_TABLE.table, "table-fixed min-w-[1100px]")}>
           <thead>
             <tr>
@@ -223,6 +195,7 @@ function Purchased({ row: r }: { row: PaidMessageRow }) {
     return r.price_cents > 0 ? <>{`${r.purchased_count ?? 0} of ${r.recipient_count ?? 0}`}</> : <>{DASH}</>;
   }
   if (r.price_cents <= 0) return <>{DASH}</>;
+  // a sale not yet cleared still reads as bought (pending sales always count)
   return r.is_paid
     ? <Check role="img" aria-label="Paid" className="h-6 w-6 text-ok" />
     : <X role="img" aria-label="Unpaid" className="h-6 w-6 text-err" />;

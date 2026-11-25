@@ -27,7 +27,6 @@ describe("olderPagerReducer", () => {
     ["a stale failure changes nothing", [start(2), fail(1)], "loading"],
     ["a page with no start changes nothing", [page(1, false)], "idle"],
     ["start on exhausted is dropped", [start(1), page(1, false), start(2)], "exhausted"],
-    // Tail exhaustion is sticky: head polls report the HEAD page's hasMore.
     ["a head poll saying more never reopens an exhausted pager", [start(1), page(1, false), head(true)], "exhausted"],
     ["a head page saying nothing older exhausts an idle pager", [head(false)], "exhausted"],
     ["a head page saying more leaves idle idle", [head(true)], "idle"],

@@ -1,8 +1,3 @@
-"""Tracking links' break-it-once faults (scenarios/2026-11-01-tracking-links-clicks.py): lib/faults.py merges
-`register(Fault)` into FAULTS. Each patches a real product function inside the throwaway relay (lib/relay.py
-applies it in `_wire`, after the routes were mounted, so a fault patches what a route looks up at call time).
-The check names live here and the scenario imports them, so a target can never name a check that does not exist.
-"""
 from __future__ import annotations
 
 CLICKS = ("tracking links: every /t/ click sent is stored once per link (tracking_clicks rows, click_count "
@@ -40,12 +35,6 @@ CLIENT_IP = ("tracking links: behind a CDN (EDGE_PROXIES=cloudflare), every clic
 
 
 def _click_lost_1_in_20() -> None:
-    """The first and every 20th click write per link is lost (bug class: the best-effort click write fails and is swallowed, so the fan
-    still gets the redirect and the stat is gone; the raw-row invariant stays green). `_record_click` builds its counter bump with the module's
-    `update` (sqlalchemy's, looked up at call time, used nowhere else in the module): first and every 20th per link raises inside the
-    click session, which rolls back the TrackingClick insert with it, and the route's own except swallows it.
-    BY_DAY, STATS_SUMMARY and STATS_BREAKDOWN go red with CLICKS (the lost clicks were 302'd), and so does the stock `relay logged no unexpected
-    Traceback`: the route's swallow is `log.warning(..., exc_info=True)` (tracking_links_api.py)."""
     from collections import Counter
 
     import tracking_links_api as tla
@@ -74,7 +63,6 @@ def _click_lost_1_in_20() -> None:
 
 
 def _classify_raises() -> None:
-    """A classifier bug leaves NULL labels; redirect and click count must still work."""
     import click_classify
 
     def boom(*_args):
@@ -84,9 +72,6 @@ def _classify_raises() -> None:
 
 
 def _claimers_no_memo() -> None:
-    """The claimers cache is never read (bug class: the per-link memo dropped): every earnings computation walks
-    every link's claimers on OF again. `of_tracking_api._claimers_cached` keeps its zero-subscriber shortcut and
-    its failure back-off; only the cache hit is gone (`_gather` looks it up at call time)."""
     import of_tracking_api as ota
 
     real = ota._claimers_cached
@@ -99,9 +84,6 @@ def _claimers_no_memo() -> None:
 
 
 def _spend_first_link() -> None:
-    """A fan's sale goes to the FIRST link they claimed that opened before it, not the latest (bug class: the
-    claims' sort flipped). `of_tracking_api._spend` is compiled again from its own source with `lst.sort(
-    reverse=True)` as `lst.sort()`, in the module's namespace (`_compute` looks it up at call time)."""
     import inspect
     import textwrap
 
@@ -117,18 +99,12 @@ def _spend_first_link() -> None:
 
 
 def _cdn_header_ignored() -> None:
-    """EDGE_PROXIES dropped (bug class: the CDN's client header is not read, as before deploy/ae/EDGE-CDN.md):
-    every click behind Cloudflare is stored with the Cloudflare server's address, and its country as XX
-    (`client_addr.edge` trusts CF-IPCountry by the same rule): CLIENT_IP and STATS_BREAKDOWN."""
     import client_addr
 
     client_addr.EDGE_PROXIES = ()
 
 
 def _stats_utc_days() -> None:
-    """The report zone ignored (bug class: the stats read in UTC days): `stats._report_zone` answers None, so
-    every day and window starts at UTC midnight. The routes look `stats._report_zone` up at call time. BY_DAY and STATS_SUMMARY
-    go red (the seed puts clicks between 00:00 and 04:00 UTC: New York's day before)."""
     async def utc(_account_id):
         return None
 
@@ -137,11 +113,6 @@ def _stats_utc_days() -> None:
 
 
 def _bot_check_fails_open() -> None:
-    """Every bot-check token passes without asking Cloudflare (bug class: the siteverify verdict ignored, the
-    gate fails open). `turnstile.check` looks `turnstile.passes` up at call time: a failing token gets the
-    target and counts a click, and siteverify sees no calls. GATE_VERIFY, GATE_COUNT and STATS_SUMMARY (the
-    passes' days) go red, and GATE_THROTTLE (its probe's failing tokens pass, count clicks and reach no
-    siteverify)."""
     import turnstile
 
     async def always(_secret, _token, _ip):
@@ -151,9 +122,6 @@ def _bot_check_fails_open() -> None:
 
 
 def _verify_unthrottled() -> None:
-    """The verify budget never runs out (bug class: the per-client throttle dropped): every POST /t/<slug>/verify
-    reaches the link lookup and Cloudflare's siteverify. `verify_tracking_link` looks `_verify_wait` up at call
-    time. Only GATE_THROTTLE targets it (the storm's verifies come from one address each and never meet it)."""
     import tracking_links_api as tla
 
     tla._verify_wait = lambda _request: None
@@ -161,9 +129,7 @@ def _verify_unthrottled() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run tracking-links-clicks --break (the scenario's FAULT)
         "tracking-click-lost-1-in-20": Fault(_click_lost_1_in_20, (CLICKS, BY_DAY, STATS_SUMMARY, STATS_BREAKDOWN, GATE_COUNT)),
-        # slop/run tracking-links-clicks --break --fault=<name>
         "tracking-classify-raises": Fault(_classify_raises, (STATS_BREAKDOWN,)),
         "of-tracking-claimers-no-memo": Fault(_claimers_no_memo, (CLAIMERS,)),
         "of-tracking-spend-first-link": Fault(_spend_first_link, (EARNINGS,)),
@@ -172,8 +138,6 @@ def register(Fault) -> dict:
                                                (GATE_VERIFY, GATE_COUNT, STATS_SUMMARY, GATE_THROTTLE)),
         "tracking-stats-utc-days": Fault(_stats_utc_days, (BY_DAY, STATS_SUMMARY)),
         "tracking-verify-unthrottled": Fault(_verify_unthrottled, (GATE_THROTTLE,)),
-        # client side: the tracking links' list and earnings queries without their hourly refetch (before
-        # fetch-diet 15); both sit in useGrowth.ts, one module of the page's chunk
         "growth-viewed-no-refetch": Fault(None, (UI_VIEWED,), browser=(
             (r"refetchInterval:\s*GROWTH_VIEWED_REFRESH_MS", "refetchInterval: false"),)),
     }

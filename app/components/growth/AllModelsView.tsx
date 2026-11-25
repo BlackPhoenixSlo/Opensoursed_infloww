@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * Growth > Scripts' "All models" view (CreatorRail's All-models pick): a read-only COVERAGE MATRIX over every owned
- * Creator — one row per distinct sequence (or tag) name, one column per Creator, each cell the Creator's step/script
- * count for that name or "—" when it is missing. The Tag / Sequence toggle mirrors the per-account page's.
- *
- * It reads the lean `GET /admin/saved-replies/overview` (counts only, no bodies). Each row offers "Share to all
- * creators" — feature 1 from the first Creator that already holds it: it reads that Creator's scripts for the row
- * (its list query, fetched fresh), then copies them to the rest of the owned roster (`all_creators`,
- * idempotent, so a re-share adds nothing) and shows what the copy did. One share at a time: the share's mutation
- * holds the row, its failure and its result. Rows render in steps of 200 (`useRenderCap`).
- */
 
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -29,14 +18,12 @@ import { cn } from "@/lib/utils";
 
 type Kind = "sequences" | "tags";
 
-/** One row's share: the entry and the Creator it is copied from. */
 interface Share {
   kind: Kind;
   name: string;
   src: string;
 }
 
-/** The first Creator (overview column order) that already holds `name`'s scripts — the share source. */
 function sourceOf(row: { per_account: Record<string, number> }, accounts: ScriptsOverview["accounts"]): string | null {
   for (const a of accounts) if ((row.per_account[a.id] ?? 0) > 0) return a.id;
   return null;
@@ -57,7 +44,6 @@ export function AllModelsView({ accounts }: { accounts: AccountMeta[] }) {
   });
 
   const data = overview.data;
-  // The matrix columns: the overview's own accounts, named off the roster meta when it has one.
   const cols = data?.accounts ?? [];
   const nameOf = (id: string) => creatorName(accounts.find((x) => x.id === id) ?? cols.find((c) => c.id === id) ?? { id });
   const rows = (kind === "sequences" ? data?.sequences : data?.tags) ?? [];
@@ -65,7 +51,6 @@ export function AllModelsView({ accounts }: { accounts: AccountMeta[] }) {
 
   return (
     <div className="flex flex-1 flex-col min-w-0">
-      {/* The Tag / Sequence toggle, mirroring the per-account page's tabs. */}
       <div className="min-h-14 px-3 sm:px-6 flex items-center gap-4 sm:gap-6 border-b border-border">
         {([["sequences", "Sequence"], ["tags", "Tag"]] as const).map(([key, label]) => (
           <button

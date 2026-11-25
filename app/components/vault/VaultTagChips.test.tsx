@@ -22,7 +22,6 @@ function renderChips(tags: string[]) {
 
 describe("Save as folder", () => {
   it("is off while a chip tap's counts load (the shown count is the previous view's)", () => {
-    // W30 F25: Save read "Save 12 items" from the previous chips and was armed with it.
     h.facets = { data: { tags: [{ tag: "feet", count: 12 }], total: 12, selected: [] }, isPlaceholderData: true };
     renderChips(["feet"]);
     fireEvent.click(screen.getByRole("button", { name: "Save as folder" }));

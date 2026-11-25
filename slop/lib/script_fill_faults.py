@@ -1,6 +1,3 @@
-"""Growth > Scripts' "Fill with content" flow's checks and break-it-once fault (scenarios/2026-11-21-script-fill.py):
-lib/faults.py merges `register(Fault)` into FAULTS. Every check the scenario records is named here and the scenario
-imports it."""
 from __future__ import annotations
 
 FILL_ONE_PRESS = ("script fill: one press of \"Fill with content\" on the open Sequence fills it (POST fill/apply 200 "
@@ -25,11 +22,6 @@ DESCRIBE_REFUSED = ("script fill, short vault: the cap row written after the off
 
 
 def _skip_eligibility() -> None:
-    """Phase 1's Fillable item check passes everything: `script_fill_decide.fillable` answers None for every item,
-    and `fillable_rows` (the one filter `plan_over_vault` and `plan` call, a module global looked up per call)
-    keeps every item, each with its script `why` re-derived from its fields as the real gate does (a carried `why`
-    is never read). So the partner and Jev-held decoys reach the Shoots (a REVIEW-folder member is still dropped
-    earlier, by `full_ai_sell.load_rows`); the partner clip then takes step 7 (scenario docstring)."""
     import script_fill_decide as d
     import vault_scripts
 
@@ -43,6 +35,5 @@ def _skip_eligibility() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run 2026-11-21-script-fill --break --baseline=slop/evidence/<green folder>
         "script-fill-skips-eligibility": Fault(_skip_eligibility, (FILL_READ_BACK, FILL_SEND)),
     }

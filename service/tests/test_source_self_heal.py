@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""Self-healing fans.source classification + muted-creator auto-restrict.
-
-Regression for "lots of creators are not auto-restricted from automations": a
-peer-creator first seen via the chat scrape (skip_users=all stripped the flags)
-or a plain WS DM was stuck as source='onlyfans'/'unknown' forever, so the
-muted-creator auto-skip (which keys on source=='creator_we_follow') never fired.
-The fix lets any path that DOES carry OF's subscribedOn/subscribedBy repair the
-row on conflict — UPGRADE-only, never downgrading a known classification.
-
-Run:  ./venv/bin/python service/tests/test_source_self_heal.py
-"""
-import _harness  # MUST be first — binds the temp DB
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 from datetime import datetime
@@ -27,7 +16,7 @@ from automations import scrape_chats  # noqa: E402 — the scrape's calls look n
 from automations.scrape_chats import _upsert_fan_identity
 
 ACCT = "999000"
-OWN = "999000"  # the creator's own OF id (never matched as a fan)
+OWN = "999000"
 
 
 def case_classify_source_unit():
@@ -38,10 +27,8 @@ def case_classify_source_unit():
 
 
 def case_self_heal_set_only_when_flag_present():
-    # No authoritative flag → empty fragment, so callers splat it as a no-op.
     assert source_self_heal_set(None, None) == {}
     assert source_self_heal_set(False, False) == {}
-    # A flag → a SET fragment that targets the `source` column.
     frag = source_self_heal_set(False, True)
     assert "source" in frag and len(frag) == 1
 
@@ -78,8 +65,6 @@ async def _has_muted_skip(fan_id: int) -> bool:
 
 
 async def case_scrape_upgrades_weak_source_and_auto_restricts():
-    """A muted chat whose withUser now carries subscribedBy: source flips
-    onlyfans→creator_we_follow AND the muted_creator skip is written same-tick."""
     fid = 111
     await _seed_fan(fid, "onlyfans")
     async with get_session() as s:
@@ -94,8 +79,6 @@ async def case_scrape_upgrades_weak_source_and_auto_restricts():
 
 
 async def case_never_downgrade_known_fan():
-    """A real fan (source='fan') is never clobbered even if a payload carries
-    subscribedBy, and an un-muted creator gets no muted skip."""
     fid = 222
     await _seed_fan(fid, "fan")
     async with get_session() as s:
@@ -109,11 +92,6 @@ async def case_never_downgrade_known_fan():
 
 
 async def case_subscribed_on_heals_stale_creator_label():
-    """REGRESSION (2026-07-24): 'creator_we_follow' must NOT be a life sentence.
-    It only records that we're subscribed to them — true of any fan a free page
-    followed back — and being unable to wash it off left the promo-spam guards
-    ignoring 71 real fans on a live account for five weeks. The moment OF says
-    subscribedOn (he IS our fan), the label heals to 'fan'."""
     fid = 444
     await _seed_fan(fid, "creator_we_follow")
     async with get_session() as s:
@@ -126,7 +104,6 @@ async def case_subscribed_on_heals_stale_creator_label():
 
 
 async def case_no_flag_leaves_source_untouched():
-    """The common scrape/DM case (no flags in withUser) must not touch source."""
     fid = 333
     await _seed_fan(fid, "onlyfans")
     async with get_session() as s:
@@ -152,9 +129,6 @@ async def _seed_muted_skip(fan_id: int) -> None:
 
 
 async def case_unmute_clears_skip_on_fast_skip_scrape():
-    """REGRESSION (wave6 B1): un-muting an idle chat must free the creator even
-    when the scrape finds no new messages (the fast-skip early return used to
-    bypass the mute reconcile, so the skip and fans.is_muted stuck at 1)."""
     fid = 555
     await _seed_fan(fid, "creator_we_follow")
     await _seed_muted_skip(fid)
@@ -173,7 +147,6 @@ async def case_unmute_clears_skip_on_fast_skip_scrape():
             Fan.account_id == ACCT, Fan.fan_id == fid))).scalar_one()
     assert not muted, "fans.is_muted stayed 1"
 
-    # An empty chat for a fan we have no row for must not mint one.
     await scrape_chats._scrape_one_chat(
         ACCT, OWN, None, 556, {"id": 556}, page_size=10, max_pages=1,
         is_muted=True)

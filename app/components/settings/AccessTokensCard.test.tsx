@@ -1,7 +1,3 @@
-/**
- * AccessTokensCard — Settings › AI keys › Access tokens: list with hint/expiry/last use, New token (name + expiry,
- * the token shown once with Copy, gone after Done), Revoke behind a confirm; revoked/expired rows have no Revoke.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
@@ -55,7 +51,6 @@ describe("AccessTokensCard", () => {
     expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.queryByRole("textbox", { name: "Access token" })).toBeNull();
-    // The dialog's exit ghost (an aria-hidden copy) leaves within its fade; then the token is nowhere in the page.
     await waitFor(() => expect(screen.queryByDisplayValue(TOKEN)).toBeNull());
     fireEvent.click(screen.getByRole("button", { name: "New token" }));
     expect(screen.queryByDisplayValue(TOKEN)).toBeNull();

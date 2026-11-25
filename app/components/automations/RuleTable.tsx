@@ -1,7 +1,5 @@
 "use client";
 
-/** ReadyMadePanel's pinned rule table (Auto Post / Auto Mass) and the
- *  previous-runs strip under each row's chevron. */
 
 import { Fragment, useMemo, useState } from "react";
 import { ChevronRight, MoreHorizontal } from "lucide-react";
@@ -20,7 +18,6 @@ import { splitInterval } from "@/components/automations/ruleInterval";
 import { summarize } from "@/components/automations/readyMadeContent";
 import type { Kind } from "@/components/compose/payloadRules";
 
-/** "in 2 h" / "in 30 min" for an upcoming due time (or null if past/missing). */
 function timeUntil(iso: string | null): string | null {
   if (!iso) return null;
   const t = new Date(iso).getTime();
@@ -35,13 +32,10 @@ function timeUntil(iso: string | null): string | null {
   return `in ${Math.round(hrs / 24)} d`;
 }
 
-// ── Pinned rule table (Auto Post / Auto Mass) ─────────────────────────
 
 const RULE_COLUMNS = ["Name", "Status", "Schedule", "Next run", "Actions"] as const;
-/** Below `sm` a row is the Name cell (status + next run under the name) and a "⋯" menu. */
 const WIDE_ONLY = new Set<string>(["Status", "Schedule", "Next run"]);
 
-/** "Every 24 hours" / "Every 30 minutes" from a rule's interval. */
 function scheduleText(secs: number | null): string {
   if (!secs) return "—";
   const { value, unit } = splitInterval(secs);
@@ -50,8 +44,6 @@ function scheduleText(secs: number | null): string {
 
 const LINK = "text-accent hover:text-accent-hover disabled:cursor-not-allowed disabled:opacity-50";
 
-/** The phone row's "⋯": Run now, Edit, Pause / Resume (the wide row's switch), Delete. The page body clips (main's
- *  overflow-clip): on the last rows it opens upward (`flip`). */
 function RowMenu({ rule, busy, onRun, onEdit, onToggle, onDelete }: {
   rule: AutomationRule;
   busy: { toggle: boolean; run: boolean; remove: boolean };
@@ -77,22 +69,16 @@ function RowMenu({ rule, busy, onRun, onEdit, onToggle, onDelete }: {
   );
 }
 
-/** The saved rules as Smart Messages' antd table: a row per rule, the Status
- *  switch and pill (`ruleStatus`), what the rule posts / sends under its name, the last run and previous runs behind
- *  the Name cell's chevron, Actions fixed right. Below `sm` the row is the name, its pill and next run, and a "⋯". */
 export function RuleTable({
   kind, rules, runs, loading, error, empty, emptyHelp, emptyAction, busy, rowErr, onToggle, onRun, onEdit, onDelete,
 }: {
-  /** The kind every listed rule is (the panel's `only`). */
   kind: Kind;
   rules: AutomationRule[];
   runs: AutomationRunRow[];
   loading: boolean;
   error: string | null;
   empty: string;
-  /** Under the empty text: one line on what a rule does. */
   emptyHelp?: React.ReactNode;
-  /** Under the empty text: the next step (the page's "New …"). */
   emptyAction?: React.ReactNode;
   busy: { toggle: boolean; run: boolean; remove: boolean };
   rowErr: { id: number; msg: string } | null;
@@ -111,9 +97,6 @@ export function RuleTable({
     <tr><td colSpan={RULE_COLUMNS.length} className={cn("py-10 text-center text-[14px]", cls)}>{children}</td></tr>
   );
   return (
-    // A phone row fits the screen (no sideways scroll), so the "⋯" menu may hang below the table. From sm up the
-    // Name cell takes what the other columns leave (`sm:max-w-0`, its text truncates), so Schedule and Next run stay
-    // clear of the fixed Actions beside a Creator column at 1280px; under 640px it scrolls sideways.
     <div className="overflow-x-auto max-sm:overflow-visible">
       <table className={cn(IF_TABLE.table, "min-w-[640px] max-sm:min-w-0")}>
         <thead>
@@ -161,11 +144,9 @@ export function RuleTable({
                       <span className="truncate" title={r.name}>{r.name}</span>
                       {r.has_pending_job && <Badge color="warn">queued</Badge>}
                     </div>
-                    {/* one rule = one post / message: its read-out, so the list shows every rule's content */}
                     {summary && <div className={cn("mt-0.5 max-w-[360px] pl-7 text-[12px] text-muted",
                       kind === "mass_premade" ? "line-clamp-6 whitespace-normal break-words" : "truncate")}
                       title={summary}>{summary}</div>}
-                    {/* phone: the Status and Next run columns, under the name */}
                     <div data-testid="rule-phone-line" className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 pl-7 text-[12px] text-muted sm:hidden">
                       <StatusPill status={status} />
                       {next && (r.has_pending_job ? next : <span>Next run {next}</span>)}
@@ -217,7 +198,6 @@ export function RuleTable({
   );
 }
 
-// ── Previous-runs strip ────────────────────────────────────────────────
 
 export function parseStats(s: string | null): Record<string, unknown> | null {
   if (!s || s === "{}") return null;
@@ -229,7 +209,6 @@ export function parseStats(s: string | null): Record<string, unknown> | null {
   }
 }
 
-/** Hours between two ISO timestamps, rounded — for "deleted after N hrs". */
 function hoursBetween(a: string | null, b: string | null): number | null {
   if (!a || !b) return null;
   const ms = new Date(b).getTime() - new Date(a).getTime();
@@ -237,7 +216,6 @@ function hoursBetween(a: string | null, b: string | null): number | null {
   return Math.round((ms / 3_600_000) * 10) / 10;
 }
 
-/** One previous-run chip: status · when · post id / delete window. */
 export function runSummary(run: AutomationRunRow): string {
   const st = parseStats(run.stats_json);
   const bits: string[] = [];
@@ -255,7 +233,6 @@ export function runSummary(run: AutomationRunRow): string {
   return bits.join(" · ");
 }
 
-/** The pinned table's expanded row: 12px T3 with no left inset. */
 function PreviousRuns({
   kind,
   accountId,
@@ -266,11 +243,8 @@ function PreviousRuns({
   runs: AutomationRunRow[];
 }) {
   const mine = useMemo(() => {
-    // Run rows carry no rule_id, only (kind, account_id) — so we can't pin a run
-    // to ONE rule. Account-scoped rows of this kind clearly belong here; the
     // global (account_id == null) rows are ambiguous (any account, any same-kind
-    // rule), so only fall back to them when this account has no scoped runs of
-    // the kind. That stops a global run from being claimed under every account.
+    // Run rows carry no rule_id: scoped rows of this kind belong here; global ones only when none are scoped, so one is not claimed under every account.
     const ofKind = runs.filter((r) => r.kind === kind);
     const scoped = ofKind.filter((r) => r.account_id === accountId);
     const pool = scoped.length > 0 ? scoped : ofKind.filter((r) => r.account_id == null);

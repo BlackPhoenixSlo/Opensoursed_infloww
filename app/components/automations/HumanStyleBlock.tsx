@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * The Human style block Auto-reply and Get to know fans share: `useHumanStyle` holds the boxes touched on the page
- * (the style PUT merges, so only those are sent) and saves them with the page's own Save; `HumanStyleBlock` renders
- * the boxes once the style blob is in hand. A save drops only the boxes it wrote (humanStyle.ts `dropSaved`).
- * `usePageSave` is that one Save: the page's own mutation and the style save, one verdict.
- */
 
 import { useState } from "react";
 
@@ -18,19 +12,16 @@ import { useSaveStyleConfig, useStyleConfig, type StyleConfig } from "@/hooks/us
 export function useHumanStyle(engine: StyleEngine, accountId: string) {
   const q = useStyleConfig(accountId);
   const m = useSaveStyleConfig(accountId);
-  // Only the boxes touched here; the rest render the stored/default value.
   const [edits, setEdits] = useState<StyleConfig>({});
   const value: StyleConfig = { ...q.data?.defaults, ...q.data?.config, ...edits };
   return {
     engine,
     loaded: !!q.data,
     value,
-    /** A toggle; it clears the last failed style save's message. */
     set: (k: keyof StyleConfig, on: boolean) => {
       if (m.isError) m.reset();
       setEdits((prev) => ({ ...prev, [k]: on }));
     },
-    /** PUTs the touched boxes, if any. */
     save: () => {
       if (Object.keys(edits).length === 0) return;
       const sent = edits;
@@ -38,8 +29,6 @@ export function useHumanStyle(engine: StyleEngine, accountId: string) {
     },
     pending: m.isPending,
     error: m.error,
-    /** The style half of "Saved": no box left unsaved (a sent one stays an edit until its save lands, one toggled
-     *  during a save stays after) and no failed save. */
     clean: !m.isError && Object.keys(edits).length === 0,
   };
 }
@@ -65,13 +54,8 @@ export function HumanStyleBlock({ style }: { style: HumanStyle }) {
   );
 }
 
-/** What `usePageSave` reads of the page's own save mutation. */
 interface PageMutation { isPending: boolean; isSuccess: boolean; isError: boolean; error: Error | null; reset: () => void }
 
-/** The page's Save: its mutation `m` plus the style save, one verdict (the kit's `<SaveRow>` renders it).
- *  `pageUnsaved` is the page form's sentDraft.ts `unsaved`, so an edit turns "Saved" off by itself; `edit` (each page
- *  edit) clears a failed save's message, then dispatches. `save(run)` saves the style, records the draft as sent, then
- *  `run`s the page's own mutate. */
 export function usePageSave<E extends { type: string }>(
   m: PageMutation,
   style: Pick<HumanStyle, "save" | "pending" | "error" | "clean">,

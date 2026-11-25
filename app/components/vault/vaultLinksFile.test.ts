@@ -6,7 +6,8 @@ import { toItems } from "./vaultDownloadReducer";
 import { DRM_TEXT, MIN_LEFT_MS, appLink, buildLinksFile, escapeHtml, urlExpiry, type LinksOpts } from "./vaultLinksFile";
 
 const NOW = Date.UTC(2026, 10, 8, 16, 32);
-const EXP = Date.UTC(2026, 10, 9, 16, 0) / 1000;   // OF: listed 16:32 -> DateLessThan next day 16:00 (measured)
+// OF: listed 16:32 -> DateLessThan next day 16:00 (measured).
+const EXP = Date.UTC(2026, 10, 9, 16, 0) / 1000;
 const policy = (exp: number) => btoa(JSON.stringify({ Statement: [{ Resource: "x*",
   Condition: { DateLessThan: { "AWS:EpochTime": exp }, IpAddress: { "AWS:SourceIp": "1.2.3.4/32" } } }] }))
   .replace(/\+/g, "-").replace(/=/g, "_").replace(/\//g, "~");

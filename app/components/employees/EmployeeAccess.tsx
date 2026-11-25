@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * The access limits of an Employee's login (`chatter` in the code and the Relay): AccessEditor sets the per-Employee
- * Creator and vault-folder limits (GET /admin/chatters/{id}/access, PUT …/account-access and …/folder-access), and
- * Manage employees opens it in the Access limits modal from a row's More menu (EmployeeModals.tsx). Adding an
- * Employee is EmployeeFormModal there.
- */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useReducer } from "react";
@@ -21,18 +15,8 @@ import {
   seedEmployeeAccess, visibleAccountIds, type AccessResp, type FolderEntry,
 } from "@/components/employees/employeeAccessState";
 
-// ── Access limits (Chatter Access, step 6.1) ────────────────────────
-//
-// Owner-set, per-Employee visibility limits. Two SUBTRACTIVE allowlists:
-//   • Limit models — which of THIS owner's accounts the Employee sees (the
-//     same allowlist as the Assigned Creators column).
-//   • Limit folders — per allowed account, which vault folders the
-//     Employee sees in the picker.
-// Both default OFF (= full access). DA-2: an empty restricted set is never
-// persisted — "see nothing" is Deactivate, not an empty allowlist. So when a
-// "Limit …" toggle is ON, at least one selection is required to save.
-// The draft (AccessDraft), its seeding and the save gate/payload: employeeAccessState.ts.
 
+// An empty restricted set is never persisted: "see nothing" is Deactivate.
 export function AccessEditor({ chatterId }: { chatterId: string }) {
   const accessQ = useQuery<AccessResp>({
     queryKey: ["admin", "chatters", chatterId, "access"],
@@ -40,8 +24,6 @@ export function AccessEditor({ chatterId }: { chatterId: string }) {
     staleTime: 5_000,
   });
 
-  // Once loaded the draft stays mounted (a failed background refetch keeps it too) and is seeded once: a refetch's
-  // new `data` never reaches its reducer, so it cannot wipe edits.
   if (accessQ.data) {
     return <AccessDraft key={chatterId} chatterId={chatterId} initial={accessQ.data} />;
   }
@@ -54,7 +36,6 @@ export function AccessEditor({ chatterId }: { chatterId: string }) {
 function AccessDraft({ chatterId, initial }: { chatterId: string; initial: AccessResp }) {
   const qc = useQueryClient();
   const accountsQ = useAccounts();
-  // The watchers too (a fan account, OF Manager only), so a limited Employee can be given one.
   const ownerAccounts = useMemo(
     () => [...(accountsQ.data?.accounts ?? []), ...(accountsQ.data?.watchers ?? [])],
     [accountsQ.data],
@@ -67,7 +48,7 @@ function AccessDraft({ chatterId, initial }: { chatterId: string; initial: Acces
   const visibleIds = visibleAccountIds(state, ownerIds);
 
   const saveM = useMutation({
-    // Two writes (account-access, then folder-access per account), so a save can half land: the error says which.
+    // Two writes (account-access, then folder-access per account), so a save can half land.
     mutationFn: async () => {
       const p = buildPayload(state, ownerIds);
       try {
@@ -86,7 +67,6 @@ function AccessDraft({ chatterId, initial }: { chatterId: string; initial: Acces
     onMutate: () => dispatch({ type: "saveStart" }),
     onSuccess: () => dispatch({ type: "saveOk", at: Date.now() }),
     onError: (e) => dispatch({ type: "saveErr", msg: errText(e, "save failed") }),
-    // Every outcome: a half-landed save changed the access too (and the list's Assigned Creators with it).
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["admin", "chatters", chatterId, "access"] });
       void qc.invalidateQueries({ queryKey: ["employees"] });
@@ -155,7 +135,6 @@ function AccessDraft({ chatterId, initial }: { chatterId: string; initial: Acces
         )}
         {visibleIds.map((aid) => {
           const a = ownerAccounts.find((x) => x.id === aid);
-          // A watcher is a fan account: no vault folders to limit.
           if (a?.role === "watcher") return null;
           return (
             <FolderLimit
@@ -188,9 +167,7 @@ function FolderLimit({
   entry: FolderEntry;
   onChange: (aid: string, next: FolderEntry) => void;
 }) {
-  // Lazy: only fetch the model's folders when the limit is turned on.
-  // Shared paginating fetcher — the grant list must show EVERY folder, and
-  // a bare limit=50 fetch under this key would also poison the picker cache.
+  // Shared paginating fetcher: a bare limit=50 fetch under this key would poison the picker cache.
   const listsQ = useQuery<VaultListsResp>({
     queryKey: ["vault-lists", accountId],
     queryFn: () => fetchAllVaultLists({ accountId }),
@@ -198,7 +175,6 @@ function FolderLimit({
     staleTime: 5 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
-  // Owner sees ALL custom folders (this fetch is owner-scoped, unfiltered).
   const folders = useMemo(
     () => (listsQ.data?.list ?? []).filter((l) => l.type === "custom"),
     [listsQ.data],
@@ -208,8 +184,7 @@ function FolderLimit({
     [entry.grants],
   );
 
-  // Backfill folder_name on grants that were seeded from the server with a
-  // null name (DA-3 — names must round-trip to the denormalised column).
+  // Backfill null folder_name on seeded grants so names round-trip to the denormalised column.
   useEffect(() => {
     if (!entry.limit || folders.length === 0) return;
     const nameById = new Map(folders.map((l) => [l.id, l.name] as const));

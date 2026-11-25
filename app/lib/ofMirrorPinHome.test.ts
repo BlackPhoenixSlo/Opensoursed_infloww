@@ -4,11 +4,8 @@ import { describe, expect, it } from "vitest";
 import { PIN_EMPTY_ALL, pinHomeHref, pinHomeRows, pinHomeStatus, type PinList } from "./ofMirrorPinHome";
 import type { FolderOrder, FolderSort, FolderSortKey } from "./ofMirrorDataLists";
 
-// ticket 19: Home's feed tabs pencil (home/state-feed-tabs-edit, OF's "Pin to home"): the pure helpers beside its binder
-// (Seam C). The binder's rows, Read-only tick, All-Creators note and Not-yet title are dead_home.py's PHASE1/READS rows.
 const fixture = <T = unknown>(name: string): T => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/${name}.json`), "utf8"));
 
-// A worked example where every sort gives its own order: ids (Recent), names (Name), members (People), given (Custom).
 const LISTS: PinList[] = [
   { id: 20, name: "Bravo", usersCount: 1, postsCount: 40 },
   { id: 30, name: "Alpha", usersCount: 5, postsCount: 0 },

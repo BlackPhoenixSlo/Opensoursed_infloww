@@ -1,4 +1,3 @@
-/** lifecycleForm's follow-up helpers: the delay check and the steps the Relay stores. */
 import { describe, expect, it } from "vitest";
 
 import { badDelay, cleanFollowUps } from "./lifecycleForm";
@@ -7,19 +6,18 @@ const WEEK = 7 * 24 * 60;
 
 describe("badDelay", () => {
   it.each([
-    // [text, delay, bad]
-    ["", "", false], // a blank step is never flagged
+    ["", "", false],
     ["   ", "abc", false],
-    ["hi", "", true], // Number("") = 0
+    ["hi", "", true],
     ["hi", "0", true],
     ["hi", "-5", true],
     ["hi", "abc", true],
     ["hi", "1.5", true],
     ["hi", "1", false],
-    ["hi", " 5 ", false], // Number() trims
+    ["hi", " 5 ", false],
     ["hi", String(WEEK), false],
     ["hi", String(WEEK + 1), true],
-    ["hi", "1e3", false], // as coded: Number("1e3") = 1000
+    ["hi", "1e3", false],
   ])("text %j delay %j -> %s", (text, delay, bad) => {
     expect(badDelay({ text, delay })).toBe(bad);
   });

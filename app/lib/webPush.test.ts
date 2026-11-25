@@ -1,13 +1,3 @@
-/**
- * lib/webPush over fakes of the browser (serviceWorker.ready, PushManager,
- * Notification) and the relay (fetch, through the real lib/relay): the tap's
- * subscribe-first order (an unprimed tap fails at once and primes), key
- * rotation (found by the prime, dropped in the tap), the tap's PUT queued
- * behind a DELETE, the debounced lazy sync, the row's DELETE (the browser's
- * subscription kept), the forced re-PUT and a revoked session, logout's local
- * reset, the relay's 503 reason, the SW's messages and the push-notice ack,
- * and never in the shell.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { openNotification } = vi.hoisted(() => ({ openNotification: vi.fn() }));
@@ -56,7 +46,7 @@ let calls: { method: string; path: string; body: unknown }[];
 let routes: Record<string, () => Response>;
 const json = (body: unknown, status = 200) => () => new Response(JSON.stringify(body), { status });
 
-const settings: NotifSettings = DEFAULT_NOTIF_SETTINGS; // message + purchases + tip + subscribed, osPing on
+const settings: NotifSettings = DEFAULT_NOTIF_SETTINGS;
 const off: NotifSettings = { ...DEFAULT_NOTIF_SETTINGS, osPing: false };
 
 beforeEach(() => {
@@ -111,7 +101,7 @@ describe("subscribePush (a tap)", () => {
     await primePush();
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /push/key"]);
     const p = subscribePush(settings);
-    expect(pm.subscribe).toHaveBeenCalledTimes(1); // synchronously: no await before it
+    expect(pm.subscribe).toHaveBeenCalledTimes(1);
     expect(pm.subscribe.mock.calls[0][0]).toMatchObject({ userVisibleOnly: true });
     expect(new Uint8Array(pm.subscribe.mock.calls[0][0].applicationServerKey)).toEqual(KEY);
     await expect(p).resolves.toBe("sub-1");
@@ -125,7 +115,7 @@ describe("subscribePush (a tap)", () => {
     expect(err.message).toBe(NOT_READY);
     expect(pm.subscribe).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /push/key"]));
-    await primePush(); // the re-prime the tap started, settled
+    await primePush();
     const p = subscribePush(settings);
     expect(pm.subscribe).toHaveBeenCalledTimes(1);
     await expect(p).resolves.toBe("sub-1");
@@ -137,7 +127,7 @@ describe("subscribePush (a tap)", () => {
     await primePush();
     const p = subscribePush(settings);
     expect(old.unsubscribe).toHaveBeenCalledTimes(1);
-    expect(pm.subscribe).toHaveBeenCalledTimes(1); // no await between the two
+    expect(pm.subscribe).toHaveBeenCalledTimes(1);
     await expect(p).resolves.toBe("sub-1");
     expect(calls.at(-1)?.body).toMatchObject({ endpoint: "https://fcm.googleapis.com/fcm/send/abc" });
   });
@@ -174,7 +164,7 @@ describe("subscribePush (a tap)", () => {
     expect(await subscribePush(settings).catch((e) => e)).toBe(refused);
     old.unsubscribe.mockResolvedValue(true);
     await expect(subscribePush(settings)).resolves.toBe("sub-1");
-    expect(old.unsubscribe).toHaveBeenCalledTimes(2); // still known stale: dropped again in the next tap
+    expect(old.unsubscribe).toHaveBeenCalledTimes(2);
   });
 
   it("logout while the tap's PUT is in flight: its answer does not revive the id (in-page pings stay on)", async () => {
@@ -254,12 +244,10 @@ describe("subscribePush (a tap)", () => {
   });
 });
 
-/** Real macrotask turns (only setTimeout is faked): the queued fetches settle. */
 async function settle() {
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
 }
 
-/** `syncPush`, its debounce run out, and its queued work settled. */
 async function sync(s: NotifSettings, opts?: { force?: boolean }) {
   syncPush(s, opts);
   await vi.advanceTimersByTimeAsync(SYNC_DEBOUNCE_MS);
@@ -278,7 +266,6 @@ describe("syncPush (no gesture)", () => {
     expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
     expect(calls.at(-1)?.body).toMatchObject({ types: ["message", "purchases", "tip", "subscribed", "favorited"] });
 
-    // The same prefs again: left alone. Forced (tab return, SSE reconnect): PUT again.
     await sync(latest);
     expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1);
     await sync(latest, { force: true });
@@ -379,7 +366,6 @@ describe("the service worker's messages", () => {
   });
 
   it.each([
-    // [label, onNotice, the answer on the port]
     ["taken: acked", () => true, true],
     ["not taken (out of scope): nacked, the worker shows it", () => false, false],
     ["onNotice throws: nacked", () => { throw new Error("boom"); }, false],
@@ -387,7 +373,7 @@ describe("the service worker's messages", () => {
     const onNotice = vi.fn(impl);
     const off = listenPushNotices(onNotice);
     const p = port();
-    try { send({ type: "push-notice", payload: { tag: "a:m1" } }, [p]); } catch { /* the throw case */ }
+    try { send({ type: "push-notice", payload: { tag: "a:m1" } }, [p]); } catch { }
     send({ type: "open-notification", href: "/x" });
     expect(onNotice.mock.calls).toEqual([[{ tag: "a:m1" }]]);
     expect(p.postMessage.mock.calls).toEqual([[answer]]);

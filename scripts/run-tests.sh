@@ -28,6 +28,14 @@ else
 fi
 
 if [ -z "$PATTERN" ]; then
+  echo "──────── Fansly (fansly/test_*.py) ────────"
+  if [ -x "$PY" ]; then
+    "$PY" "$ROOT/scripts/run_tests_parallel.py" "$ROOT/fansly" \
+      -j "$JOBS" --timeout "${RUN_TESTS_TIMEOUT:-600}" || fail=1
+  else
+    echo "✗ venv python not found at $PY"; fail=1
+  fi
+
   echo "──────── Frontend (vitest, app/) ────────"
   if [ -f "$ROOT/app/vitest.config.ts" ] && [ -d "$ROOT/app/node_modules/vitest" ]; then
     ( cd "$ROOT/app" && pnpm test:run ) || fail=1

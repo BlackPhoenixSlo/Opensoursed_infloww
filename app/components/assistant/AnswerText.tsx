@@ -1,31 +1,5 @@
 "use client";
 
-/**
- * AnswerText — renders one help answer.
- *
- * The bot writes markdown because the manual is markdown, so an answer arrives
- * full of `**bold**`, `- ` bullets and `1.` steps. Rendered as plain text those
- * asterisks are just noise in front of the words that matter — the tab names.
- *
- * A DELIBERATELY SMALL SUBSET: bold, italic, inline code, bullet and numbered
- * lists, headings, paragraphs. No links-from-markdown, no tables, no images, no
- * HTML — the input is model output, and the only safe renderer for that is one
- * that builds React nodes and never touches `dangerouslySetInnerHTML`. Anything
- * it does not understand falls through as text, which is why an unclosed `**`
- * degrades to a visible asterisk instead of eating the rest of the answer.
- *
- * The one thing it ADDS is click paths: see answerLinks.ts. `onNavigate` runs
- * on a link's click: the phone's full-screen sheet passes its close, because
- * a route change under a sheet that stays open is a tap that "does nothing"
- * (measured on the dev stack: URL changed, sheet still 390x844 over it).
- *
- * Live figures (spec D12): the bot writes `[[data:…]]` / `[[chat:@…]]` markers,
- * never a figure; markers.ts strips them (and any figure beside one) and
- * MarkerCards renders each as a live card under the text. `focus` is the
- * turn's model, `accountIds` the asker's roster (a card's "all"; null while it
- * loads), `canChat` whether the session may open Messages Pro, `pages` the
- * pages the session may open (only those link; required, rwl W30 S3).
- */
 
 import type { ReactNode } from "react";
 import Link from "next/link";
@@ -35,21 +9,17 @@ import { findPaths, type PathHit } from "./answerLinks";
 import { parseMarkers } from "./markers";
 import { MarkerCards } from "./MarkerCards";
 
-/** For the panel's "Do it for me" swap chip: the link reader rides this chunk, never the shell's first load. */
 export { findPaths };
 
-/** `**bold**` · `*italic*` · `` `code` `` — first match wins, left to right. */
 const INLINE_RE = /`([^`\n]+)`|\*\*([^\n]+?)\*\*|\*([^*\n]+?)\*/g;
 
-/** `text`, which starts at `offset` in the plain run, with the parts of it
- *  inside a hit wrapped in a <Link>. `key` disambiguates sibling spans. */
 function linked(text: string, offset: number, hits: PathHit[], key: number, onNavigate?: () => void): ReactNode[] {
   const out: ReactNode[] = [];
   let last = 0;
   hits.forEach((h, i) => {
     const start = Math.max(h.start - offset, 0);
     const end = Math.min(h.end - offset, text.length);
-    if (end <= start) return; // this hit lies outside the span
+    if (end <= start) return;
     if (start > last) out.push(text.slice(last, start));
     out.push(
       <Link
@@ -67,17 +37,7 @@ function linked(text: string, offset: number, hits: PathHit[], key: number, onNa
   return out;
 }
 
-/** Inline markdown → nodes. Code spans are opaque: no links inside them.
- *
- * Click paths are found on the PLAIN text, markers gone, because the bot bolds
- * a path's labels the way the manual does: "My Automations → **Client
- * masses** → **Settings**" is one path, and resolved span by span its last
- * word would link on its own, to Settings. A path that crosses spans comes out
- * as one link per span, all to the same place.
- *
- * The result is always ONE element's children, so keys only have to be unique
- * within this call — no caller-supplied prefix needed.
- */
+// Model output: build React nodes only, never dangerouslySetInnerHTML.
 function inline(text: string, onNavigate: (() => void) | undefined, pages: ReadonlySet<string>): ReactNode[] {
   const spans: Array<{ kind: "text" | "code" | "bold" | "italic"; text: string }> = [];
   let last = 0;
@@ -93,7 +53,7 @@ function inline(text: string, onNavigate: (() => void) | undefined, pages: Reado
   }
   if (last < text.length) spans.push({ kind: "text", text: text.slice(last) });
 
-  // A code span reads as a line break, so no path runs into or through one.
+  // Paths are found on the plain text: the bot bolds a path's labels, so span-by-span would link the last word alone.
   const hits = findPaths(spans.map((s) => (s.kind === "code" ? "\n".repeat(s.text.length) : s.text)).join(""), pages);
   let offset = 0;
   return spans.flatMap((s, i): ReactNode[] => {
@@ -121,25 +81,18 @@ function inline(text: string, onNavigate: (() => void) | undefined, pages: Reado
   });
 }
 
-/**
- * One rendered block. Paragraphs, list items and headings are all "a run of
- * strings", so they share ONE shape — three payload names (`lines` / `items` /
- * `text`) is what forces a parser to cast its way out of its own union.
- */
 type BlockKind = "p" | "ul" | "ol" | "h";
 interface Block {
   kind: BlockKind;
   items: string[];
 }
 
-/** Line prefixes that open a non-paragraph block, in match order. */
 const LINE_KINDS: Array<[Exclude<BlockKind, "p">, RegExp]> = [
   ["h", /^\s*#{1,6}\s+(.*)$/],
   ["ul", /^\s*[-*•]\s+(.*)$/],
   ["ol", /^\s*\d+[.)]\s+(.*)$/],
 ];
 
-/** A wrapped continuation of the item above, not a new one. */
 const INDENT_RE = /^\s{2,}\S/;
 
 function classify(line: string): { kind: BlockKind; text: string } {
@@ -156,21 +109,19 @@ function parse(text: string): Block[] {
 
   for (const line of text.split("\n")) {
     if (!line.trim()) {
-      open = null; // a blank line closes whatever was open
+      open = null;
       continue;
     }
 
-    // An indented line continues the list item above it.
     if (open && (open.kind === "ul" || open.kind === "ol") && INDENT_RE.test(line)) {
       open.items[open.items.length - 1] += ` ${line.trim()}`;
       continue;
     }
 
     const { kind, text: content } = classify(line);
-    // A same-kind line joins the open block; a heading is always its own.
     if (!open || open.kind !== kind || kind === "h") {
       open = { kind, items: [] };
-      blocks.push(open); // pushed on open, then filled — no flush pass needed
+      blocks.push(open);
     }
     open.items.push(content);
   }
@@ -197,15 +148,13 @@ export function AnswerText({
           );
         }
         if (b.kind === "p") {
-          // Hard-wrapped prose rejoins into one paragraph; the panel is narrow
-          // and the model's own line breaks are an artefact of the manual.
           return (
             <p key={i} className="break-words">
               {inline(b.items.join(" "), onNavigate, pages)}
             </p>
           );
         }
-        const List = b.kind; // "ul" | "ol"
+        const List = b.kind;
         return (
           <List
             key={i}

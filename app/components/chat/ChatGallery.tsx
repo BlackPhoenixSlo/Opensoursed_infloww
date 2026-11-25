@@ -1,26 +1,5 @@
 "use client";
 
-/**
- * ChatGallery — the "Chat gallery" sheet the Chat header's "Gallery" opens
- * (docs/spec/phase-03-chat-header-message-list.md, M4 and F29; ticket 88).
- *
- * Every media file exchanged with this Fan, in both directions and purchased
- * or not: pages of 30 from the existing chat-media request, through
- * `useFanChatMedia` with `creatorOnly: false`, so it never shares a cache
- * entry with Fan insights' Sales list. One tile per file that has a URL, as
- * the Clone builds them (m.js:2626-2630), each a `MediaTile` that SFW mode
- * blurs. A paid item's files carry its price tag. Tiles have no click action,
- * as in the Clone.
- *
- * Ticket 89: "Load more" under the grid fetches the next page by the last
- * item's id while the relay reports one, as Fan insights' Sales list pages.
- * "↻ Refresh" re-pulls the query from the first page. An empty list reads
- * "No media in this chat". A failed request with nothing loaded shows the
- * relay's error and "↻ Refresh" in place of the grid, so nothing pretends to
- * have loaded. A failure after tiles loaded (a "Load more" or a Refresh)
- * keeps them and shows the error under the grid, as Fan insights' Sales list
- * keeps its rows (`FanDrawer.tsx:1277-1287`).
- */
 
 import { useRef } from "react";
 import { createPortal } from "react-dom";
@@ -48,8 +27,6 @@ interface GalleryTile {
   price: number;
 }
 
-/** The Clone's tile list (m.js:2626-2630): each file of each item, by its
- *  smallest still that has a URL, carrying the item's price. */
 function toTiles(items: FanChatMediaItem[]): GalleryTile[] {
   return items.flatMap((item) =>
     item.media.flatMap((m) => {
@@ -65,7 +42,6 @@ export function ChatGallery({ accountId, fanId, onClose }: {
   fanId: FanId;
   onClose: () => void;
 }) {
-  // The Infloww palette when opened from Messages Pro; nothing anywhere else.
   const palette = useInflowwPalette();
   const q = useFanChatMedia(accountId, fanId, { purchased: false, creatorOnly: false, limit: 30 });
   const tiles = toTiles(q.data?.pages.flatMap((p) => p.list) ?? []);
@@ -80,7 +56,6 @@ export function ChatGallery({ accountId, fanId, onClose }: {
       ↻ Refresh
     </button>
   );
-  // Nothing loaded: the error takes the grid's place, with the one Refresh.
   const failedEmpty = q.isError && !q.data;
   const errorNotice = (withRefresh: boolean) => (
     <div role="alert" className={cn(O.notice, "flex flex-col items-start border-dashed border-border text-fg-dim")}>
@@ -92,17 +67,13 @@ export function ChatGallery({ accountId, fanId, onClose }: {
   const [blurMode] = useBlurMode();
   const blurCls = blurImageClass(blurMode);
 
-  // A modal layer (`useModalFocus`): Tab stays in the sheet, focus goes back to its opener on close, and one Escape
-  // closes only it (stopped at `document`, before the `window` ones of Find and the overlay Fan insights).
   const boxRef = useRef<HTMLDivElement>(null);
   useModalFocus(boxRef, onClose);
 
   if (typeof document === "undefined") return null;
-  // Portalled to <body>, as the Vault picker is, so no ancestor of the Chat
-  // header traps the fixed sheet.
+  // Portalled to body so no Chat header ancestor traps the fixed sheet.
   return createPortal(
     <div className={cn(O.backdrop, "fixed flex items-stretch md:items-center md:justify-center")} style={palette}>
-      {/* The backdrop closes it too, as the Clone's does (m.js:143). */}
       <button
         type="button"
         tabIndex={-1}
@@ -113,12 +84,10 @@ export function ChatGallery({ accountId, fanId, onClose }: {
       <div ref={boxRef} role="dialog" aria-modal="true" aria-label="Chat gallery" tabIndex={-1} className={cn(S.panel, "relative flex flex-col overflow-hidden w-full bg-panel border-border shadow-2xl outline-none")}>
         <div className={cn(S.head, "flex items-center border-border")}>
           <h2 className="mr-auto">Chat gallery</h2>
-          {/* With nothing loaded, the one "↻ Refresh" sits with the error. */}
           {!failedEmpty && refreshButton}
           <button
             type="button"
             onClick={onClose}
-            // The sheet is modal, so focus moves into it on open.
             autoFocus
             className={cn(S.close, "text-fg-dim hover:text-fg hover:bg-bg-elev-1")}
             aria-label="Close"

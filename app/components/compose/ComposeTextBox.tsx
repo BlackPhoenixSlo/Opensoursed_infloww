@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * The mass message and post composers' text box: the plain textarea, or OF's rich text editor while `rich`
- * (lib/ofRichMode: "Aa" on, or the text holds formatting). One handle either way, so the emoji pickers insert at the
- * caret and a script pick focuses the box. `AaButton` is the "Aa" toggle beside the pickers (OnlyFans accounts only:
- * hooks/useOfRichAllowed).
- */
 import { forwardRef, useImperativeHandle, useRef } from "react";
 import { insertAtCursor } from "@/components/chat/EmojiBar";
 import { IfTextArea } from "@/components/ui/infloww";
@@ -15,7 +9,6 @@ import { cn } from "@/lib/utils";
 
 export interface ComposeTextBoxHandle {
   focus(): void;
-  /** Put `s` at the caret (the end when the box never had one). */
   insert(s: string): void;
 }
 
@@ -56,7 +49,6 @@ export const ComposeTextBox = forwardRef<ComposeTextBoxHandle, Props>(function C
   );
 });
 
-/** OF's "Aa": shows the formatting toolbar; accent while on. 44px tap target on a phone. */
 export function AaButton({ on, onToggle }: { on: boolean; onToggle: () => void }) {
   return (
     <button type="button" onClick={onToggle} onMouseDown={(e) => e.preventDefault()} aria-pressed={on}

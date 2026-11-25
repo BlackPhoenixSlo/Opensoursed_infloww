@@ -1,19 +1,5 @@
 #!/usr/bin/env python3
-"""Versioned Sales and Time tracking settings (roadmap W6 6.4, 07 M16): a save
-is a new version with an effective time, and every sale reads the version in
-effect at its own time, so a change never rewrites the payroll before it and a
-backdated one recomputes exactly what it reaches.
-
-The seam is the Relay over HTTP with real owner sessions: settings go through
-`PUT /admin/settings/{tab}?effective_from=`, payroll is read from
-`GET /admin/stats/per-employee?by_account=true` over messages and
-transactions seeded straight into the temp DB. Each case
-owns its Agency (a fresh owner), so one case's versions never reach another's
-figures. Every expected figure is a worked example written out by hand.
-
-Run: ./venv/bin/python service/tests/test_settings_versions.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -47,8 +33,6 @@ CONVERTERS = {"messages": "converters", "posts_tips": "converters", "subscriptio
 
 
 async def _apply_view() -> None:
-    # init_db (create_all) builds no views: apply the shipped attribution view,
-    # as test_sales_attribution_rules.py does.
     spec = importlib.util.spec_from_file_location("mig_attr_view", _MIGRATIONS / "20261027_0100_converters_window.py")
     mig = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mig)
@@ -63,7 +47,6 @@ _next_id = iter(range(8_000_001, 8_100_000))
 
 
 class Agency:
-    """A fresh owner with one Creator and one Employee, signed in."""
 
     def __init__(self, name: str):
         self.user_id, self.creator = uuid.uuid4().hex, str(next(_next_id))
@@ -93,9 +76,6 @@ class Agency:
         assert r.status_code == 200, f"PUT sales: {r.status_code} {r.text}"
 
     def tip(self, cents: int, at: datetime) -> None:
-        """A tip on the Creator credited by Converters to the Employee (its
-        fan's last outbound message is the Employee's); no stored net, so
-        Exclude OnlyFans fee credits 80% of it."""
         fan, mid = next(_next_id), next(_next_id)
 
         async def _seed():
@@ -109,7 +89,6 @@ class Agency:
         asyncio.run(_seed())
 
     def payroll(self, frm: str, to: str) -> dict:
-        """`{employee_id: cents}` credited on the Creator from `frm` through `to`."""
         r = self.client.get("/admin/stats/per-employee", params={"from": frm, "to": to, "by_account": "true"})
         assert r.status_code == 200, f"per-employee: {r.status_code} {r.text}"
         return {row["employee_id"]: sub["revenue_cents"] for row in r.json()["employees"]
@@ -125,14 +104,9 @@ def _at(day: str, hhmm: str = "12:00") -> datetime:
     return datetime.fromisoformat(f"2026-05-{day}T{hhmm}:00")
 
 
-# ── Payroll reads the version in effect at the sale ─────────────────
 
 
 def case_a_backdated_change_recomputes_only_the_sales_from_its_effective_time():
-    # Three 1000 tips on 4, 6 and 8 May. Exclude OnlyFans fee turns on from
-    # 5 May (backdated), then off again from 7 May: the 4th keeps 1000, the
-    # 6th reads 800, the 8th 1000 again. The week sums each sale under its
-    # own version (the per-row path); each day reads one (the rollup path).
     a = Agency("sv_backdated")
     a.sales(False, SINCE_THE_START)
     for day in ("04", "06", "08"):
@@ -149,8 +123,6 @@ def case_a_backdated_change_recomputes_only_the_sales_from_its_effective_time():
 
 
 def case_a_change_effective_now_leaves_past_payroll_and_reaches_the_next_sale():
-    # Forward-dated: saved now. The 1000 tip of 4 May keeps 1000; a 1000 tip
-    # made after the save credits 800.
     a = Agency("sv_now")
     a.sales(False, SINCE_THE_START)
     a.tip(1000, _at("04"))
@@ -172,8 +144,6 @@ def case_two_versions_at_one_time_read_the_later_save():
 
 
 def case_a_sale_before_any_version_reads_the_defaults():
-    # Never saved before 5 May: the 4th reads the defaults (Converters, fee
-    # kept), even though a version from 5 May turns the fee exclusion on.
     a = Agency("sv_defaults")
     a.tip(1000, _at("04"))
     a.tip(1000, _at("06"))
@@ -188,7 +158,6 @@ def case_the_effective_time_must_be_a_zoned_time_not_later_than_now():
         r = a.put("sales", {"exclude_of_fee": True}, value)
         assert r.status_code == 400, f"{value}: {r.status_code} {r.text}"
     assert a.history() == [], "a refused save wrote no version"
-    # Before 1970 is the start.
     r = a.put("sales", {"exclude_of_fee": True}, "1900-01-01T00:00:00Z")
     assert r.status_code == 200, r.text
     assert r.json()["history"] == [{**r.json()["history"][0], "effective_from": None, "in_effect": True}]
@@ -201,7 +170,6 @@ def case_other_tabs_are_not_versioned():
     assert "history" not in r.json(), r.json()
 
 
-# ── Untouched data reads the same after the move ────────────────────
 
 
 async def _raw_blob(user_id: str, tab: str, raw: str, saved: datetime = datetime(2026, 4, 1)) -> None:
@@ -228,9 +196,6 @@ async def _count() -> int:
 
 
 def case_the_boot_move_keeps_every_figure_a_stored_blob_gave():
-    # A blob saved before versioning (Exclude OnlyFans fee on) credited the
-    # 4 May 1000 tip 800 and the 1 June one 800; after the move both still
-    # read 800, from one version in effect since the start.
     a = Agency("sv_boot")
     a.tip(1000, _at("04"))
     a.tip(1000, datetime(2026, 6, 1, 12))
@@ -248,9 +213,6 @@ def case_the_boot_move_keeps_every_figure_a_stored_blob_gave():
 
 
 def case_a_blob_stored_after_the_move_lands_as_a_save_from_its_own_time():
-    # Older code (a rollback) stores Exclude OnlyFans fee off on 20 May, over
-    # the moved version (on, since the start). The next boot adds it from 20
-    # May: the 4 May tip keeps 800, the 1 June one reads 1000.
     a = Agency("sv_rollback")
     a.tip(1000, _at("04"))
     a.tip(1000, datetime(2026, 6, 1, 12))
@@ -306,16 +268,14 @@ def case_migration_upgrade_and_downgrade_on_a_fresh_temp_file():
         assert _rows(versions) == moved, _rows(versions)
         assert _rows("SELECT tab FROM user_settings") == [("general",)]
         assert _rows("SELECT cancelled_dates FROM shifts") == [(None,)]
-        _run(mod.upgrade)  # idempotent, house convention
+        _run(mod.upgrade)
         assert _rows(versions) == moved
-        # A blob stored there after the move lands from its own updated_at, not over the first version.
         with sqlite3.connect(path) as conn:
             conn.execute("INSERT INTO user_settings VALUES ('u1', 'sales', '{\"x\": 1}', '2026-04-02 00:00:00')")
         _run(mod.upgrade)
         assert _rows(versions) == [moved[0], ("u1", "sales", "2026-04-02 00:00:00", '{"x": 1}'), moved[1]], \
             _rows(versions)
 
-        # A backdated save and a version not yet in effect: downgrade puts back the one in effect now.
         with sqlite3.connect(path) as conn:
             conn.execute("INSERT INTO settings_versions (user_id, tab, effective_from, config_json) VALUES "
                          "('u1', 'sales', '2026-05-05 00:00:00.000000', '{\"exclude_of_fee\": false}'), "

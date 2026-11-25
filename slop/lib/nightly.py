@@ -1,19 +1,3 @@
-"""`slop/run nightly`: the daily relevant-only sweep, one digest (README "Nightly").
-
-Phases, each scenario a plain `slop/run <name> <knobs>` subprocess (its own stack and evidence folder):
-`all` (small, UI on; owner 2026-11-21: relevant only, see all_plan: the diff pick's own/flow tiers since
-the previous nightly's sha, its non-OK `all` rows carried over, the unmapped, the SMOKE["all"] canaries; every
-scenario when any input is missing or the map cannot judge a changed file), `volume` (a dated rotation of
-VOLUME_PER_NIGHT map entries tagged volume plus the previous nightly's non-OK volume rows, medium/120, no UI;
-runs first), `map` (`--map` for at most MAP_PER_NIGHT of the unmapped + entries past the stale bound, the
-ones recent nightlies did not try first, then most behind: a rotation). A FAIL in `all`/`volume` is re-run once: green = FLAKY. The map phase hands its entries over in <folder>/map.json
-and restores slop/map.json (`--apply-map=<folder>` merges them elsewhere). Evidence:
-evidence/<stamp>-nightly-<hex>/ with plan.txt, run.log, status.json, summary.{json,md}, map.json, done
-(the exit code, written last). Pure parts first (lib/test_nightly.py).
-
-The machine gate (~/.slop/gate.py) owns admission: this parent never holds it (slop/run starts it as
-`python -m slop.lib.nightly`, which the venv hook leaves alone); each child `slop/run` queues for it.
-"""
 from __future__ import annotations
 
 import argparse
@@ -33,7 +17,7 @@ from collections import deque
 from pathlib import Path
 
 from slop.lib import covmap, gate, phases, procs, selection
-from slop.lib.identity import GATE_ENV, LOCK_SHA  # LOCK_SHA in app/node_modules
+from slop.lib.identity import GATE_ENV, LOCK_SHA
 from slop.lib.latency_acceptance import volume_knobs
 from slop.lib.procs import kill_tree, stop_child
 from slop.lib.report import EVIDENCE, parse_folder_line, write_atomic
@@ -41,52 +25,40 @@ from slop.lib.report import EVIDENCE, parse_folder_line, write_atomic
 SLOP = Path(__file__).resolve().parents[1]
 RUN, APP = SLOP / "run", SLOP.parent / "app"
 PHASES = ("volume", "all", "map")  # volume first: exclusive runs queue least before the day's sessions
-VOLUME_PER_NIGHT = 3  # owner 2026-11-12: ~95% cut; a dated rotation covers every volume scenario in turn
-PREV_LOOKBACK = 40  # nightlies searched for a rotated volume row's last result (57 volume / 3 = 19 nights)
+VOLUME_PER_NIGHT = 3
+PREV_LOOKBACK = 40  # 57 volume scenarios / 3 per night = 19 nights
 KNOBS = {"all": [], "volume": ["--scale=medium", "--users=120", "--no-ui"], "map": ["--map"]}
-# SMOKE["all"] = the `all` phase's always-run canaries too: Web Push + the Electron notification click
-# (inbox-unread-fan-burst drives actors/notif_click.desktop).
 SMOKE = {"all": ("2026-11-03-os-ping-push", "2026-10-23-inbox-unread-fan-burst"),
          "volume": ("2026-11-01-notifications-feed-volume",)}
-MAP_PER_NIGHT = 10  # owner 2026-11-21: the laptop is never free overnight; the map refreshes over nights
-P95_MOVE = 0.20  # a p95_vs_last_green key moved more than this vs the previous nightly: listed
-COV_RED = "RED (coverage)"  # a --map run red only on budgets: coverage overhead, counted with OK
+MAP_PER_NIGHT = 10  # the laptop is never free overnight; the map refreshes over nights
+P95_MOVE = 0.20
+COV_RED = "RED (coverage)"
 GREEN, RED = ("OK", "FLAKY", COV_RED), ("FAIL",)
-FULL_TABLE_MAX = 10  # a phase with more rows lists only its non-OK ones (a green night stays short)
-INSTALL_TIMEOUT_S = 1200  # pnpm install past this (after its gate wait): killed, the night INFRA
+FULL_TABLE_MAX = 10
+INSTALL_TIMEOUT_S = 1200
 GATE_PY = gate.GATE
-CHILD_LOCK_WAIT_S = "7200"  # a child queues this long for the gate before its INFRA (exit 75)
-GATE_INFRA = 75  # gate.py: gave up (lock/load) or its thread guard tripped; an `INFRA: <reason>` line
-INSTALL_DEADLINE_S = int(CHILD_LOCK_WAIT_S) + INSTALL_TIMEOUT_S  # the gated install: slot wait + the install
-WALL_S = 8 * 3600  # owner 2026-11-16: the night ends within 8 h; at it the running child is stopped
-LAST_START_S = 30 * 60  # no scenario (or re-run) starts this close to WALL_S (the longest takes ~27 min)
+CHILD_LOCK_WAIT_S = "7200"
+GATE_INFRA = 75
+INSTALL_DEADLINE_S = int(CHILD_LOCK_WAIT_S) + INSTALL_TIMEOUT_S
+WALL_S = 8 * 3600  # the night ends within 8 h; the running child is stopped
+LAST_START_S = 30 * 60  # the longest scenario takes ~27 min
 CUT_NOT_RUN, CUT_STOPPED, CUT_NO_RERUN = "not run: 8 h limit", "stopped at the 8 h limit", "no re-run: 8 h limit"
 
 
-# ---- pure ----
 
 def map_rule(ages: dict[str, int | None], picked: int, due: int) -> str:
-    """The map phase's why. `ages`: per map sha, commits it is behind HEAD, None when it is not an ancestor
-    of HEAD (divergent or newer: stale). No full refresh, Sunday included (owner 2026-11-21): `picked` of the
-    `due` (unmapped + stale entries, map_pick), at most MAP_PER_NIGHT a night; the rest wait for later nights."""
     _stale, reason = covmap.map_stale(ages)
     left = f"; {due - picked} wait for later nights" if due > picked else ""
     return f"{reason}: {picked} of {due} unmapped + stale entries (cap {MAP_PER_NIGHT}, most behind first){left}"
 
 
 def stale_entry(entry: dict, ages: dict[str, int | None]) -> bool:
-    """A map entry past the map_stale bound: no sha, a sha not in `ages`, divergent (None), > MAP_STALE behind."""
     n = ages.get(entry.get("sha") or "")
     return n is None or n > covmap.MAP_STALE
 
 
 def map_pick(names: list[str], mapped: dict, ages: dict[str, int | None],
              k: int = MAP_PER_NIGHT, tried: dict[str, int] | None = None) -> tuple[list[str], int]:
-    """(at most `k` names to --map, how many were due). `tried` (map_attempts): {name: nights ago a recent
-    nightly ran its --map, 0 = the newest}, success or fail. The map phase restores slop/map.json, so a
-    re-mapped entry stays due here until --apply-map: the untried go first, then the tried, oldest try first
-    (a rotation: a persistently failing entry never starves the rest). Within each: the unmapped, then stale
-    entries (stale_entry) with no / unknown / divergent sha, then the most commits behind; ties by name."""
     due = [n for n in names if n not in mapped or stale_entry(mapped[n], ages)]
     tried = tried or {}
 
@@ -100,24 +72,16 @@ def map_pick(names: list[str], mapped: dict, ages: dict[str, int | None],
 
 
 ALL_SOURCES = ("changed", "carry-over", "unmapped", "canary")
-# owner 2026-11-21: own + flow only; a shared/layout pick (e.g. one module-level import loaded by every
-# scenario) would make every night a full sweep. Those scenarios count as left out.
 NIGHTLY_TIERS = ("own", "flow")
 
 
 def plan_notes(line: str, why: dict | None = None, left_out: int = 0, wide: int | None = None,
                volume_carry: list[str] | None = None) -> dict:
-    """The plan notes (all_plan's, build_plan's, _plan_text's default): the same keys on every path."""
     return {"line": line, "why": why or {}, "left_out": left_out, "wide": wide, "volume_carry": volume_carry or []}
 
 
 def all_plan(names: list[str], mapped: dict, prev: dict | None, picked: dict | None,
              fallback: str | None) -> tuple[list[str], dict]:
-    """(`all` phase names in `names` order, plan_notes: {"line", "why": {name: [sources]}, "left_out", "wide"}).
-    Sources: canary (SMOKE["all"]), carry-over (`prev`'s `all` rows not OK: FAIL, FLAKY, INFRA, SKIP incl. 8 h
-    cuts; volume rows carry via volume_carry, from the newest night that ran `volume`),
-    changed (`picked`: selection.pick since prev's sha, NIGHTLY_TIERS only, no budget), unmapped. `fallback`
-    (a reason), no `prev` or no `picked`: every scenario, the reason in the line."""
     if fallback or prev is None or picked is None:
         why = fallback or ("no previous nightly" if prev is None else "no pick")
         return list(names), plan_notes(f"every scenario (fallback: {why})")
@@ -148,8 +112,6 @@ def all_plan(names: list[str], mapped: dict, prev: dict | None, picked: dict | N
 
 
 def volume_slice(names: list[str], day: int, k: int = VOLUME_PER_NIGHT) -> list[str]:
-    """`k` of the sorted volume scenarios for date ordinal `day`: consecutive nights walk the list, wrapping,
-    so each runs once every ceil(n/k) nights."""
     names = sorted(names)
     if len(names) <= k:
         return names
@@ -158,8 +120,6 @@ def volume_slice(names: list[str], day: int, k: int = VOLUME_PER_NIGHT) -> list[
 
 
 def volume_carry(prev: dict | None, volume: list[str]) -> list[str]:
-    """`prev`'s (last_nightly(.., "volume")) volume rows not OK (FAIL, FLAKY, INFRA, SKIP incl. 8 h cuts) of scenarios still in `volume`,
-    sorted: tonight's volume phase runs them again at volume settings (a small `all` pass proves nothing)."""
     have = set(volume)
     return sorted({r["scenario"] for r in (prev or {}).get("rows") or []
                    if r.get("phase") == "volume" and r.get("verdict") != "OK" and r.get("scenario") in have})
@@ -169,9 +129,6 @@ def build_plan(paths: dict[str, Path], doc: dict, phases: list[str], smoke: bool
                day: int = 0, *, prev: dict | None = None, picked: dict | None = None,
                fallback: str | None = None, tried: dict[str, int] | None = None,
                vol_prev: dict | None = None) -> tuple[dict[str, list[str]], str, dict]:
-    """({phase: scenarios}, map rule line, all_plan's notes + "volume_carry"), phases in PHASES order. `doc`:
-    this worktree's map; `day`: the date ordinal picking tonight's volume slice; `prev`, `picked`, `fallback`:
-    all_plan's; `vol_prev`: volume_carry's; `tried`: map_pick's."""
     names = list(paths)
     mapped = doc.get("scenarios", {})
     unmapped = [n for n in names if n not in mapped]
@@ -194,11 +151,8 @@ def build_plan(paths: dict[str, Path], doc: dict, phases: list[str], smoke: bool
 
 def verdict(code: int, checks: list[dict] | None, meta: dict | None, *, map_run: bool = False,
             tail: str = "", gate_line: str = "") -> tuple[str, list[str], str | None]:
-    """(verdict, failed check names, infra reason) from the child's exit code (slop/run: 0 pass, 1 a
-    check failed, 2 usage/refused, 3 infra); invariants.json only names the failed checks. Exit 1 with no
-    failed check in invariants.json = SKIP (every check skipped); without it, INFRA. A --map run red only on budgets = COV_RED (README: not the product's)."""
     failed = [c["name"] for c in checks or [] if c.get("status") == "fail"]
-    if code == GATE_INFRA:  # the machine gate's: its own `INFRA: <reason>` line
+    if code == GATE_INFRA:
         return "INFRA", failed, "machine gate: " + (gate_line.removeprefix("INFRA: ") or f"exit 75: {tail}")
     if code == 0:
         return "OK", [], None
@@ -216,16 +170,12 @@ def verdict(code: int, checks: list[dict] | None, meta: dict | None, *, map_run:
 
 
 def settle(first: str, rerun: str | None) -> str:
-    """A FAIL re-run once: green again = FLAKY, INFRA = INFRA (no verdict), else FAIL. Others stand."""
     if first != "FAIL" or rerun is None:
         return first
     return {"OK": "FLAKY", "INFRA": "INFRA"}.get(rerun, "FAIL")
 
 
 def merge_rerun(first: dict, again: dict) -> dict:
-    """The row of a FAIL and its re-run: the settled verdict, both folders (the re-run's None if it died
-    before making one), the re-run's failed checks (else the first's), infra and p95; seconds, gate wait and
-    run phases summed (every attempt counts), untimed attempts' seconds kept per attempt."""
     return {**first, "verdict": settle(first["verdict"], again["verdict"]), "first_verdict": first["verdict"],
             "rerun_verdict": again["verdict"], "rerun_folder": again["folder"],
             "failed": again["failed"] or first["failed"], "infra": again["infra"],
@@ -236,23 +186,18 @@ def merge_rerun(first: dict, again: dict) -> dict:
 
 
 def cut_row(phase: str, name: str, why: str = CUT_NOT_RUN) -> dict:
-    """The row of a scenario the 8 h limit left out (SKIP: no verdict; the next night runs it)."""
     return {**row_of(phase, name, None, 0, 0), "verdict": "SKIP", "untimed": [], "cut": why}
 
 
 def all_skipped(verdicts: list[str]) -> bool:
-    """Every row SKIP, or no row at all (nothing planned: no work): the night proved nothing (not OK)."""
     return all(v == "SKIP" for v in verdicts)
 
 
 def exit_code(verdicts: list[str], infra: bool = False) -> int:
-    """3 any INFRA (or a preflight failure: `infra`), every row SKIP or no row (NIGHTLY SKIPPED: no verdict),
-    1 any stable FAIL, else 0 (OK, FLAKY, some SKIP, RED (coverage)); as slop/run's own order."""
     return 3 if infra or "INFRA" in verdicts or all_skipped(verdicts) else 1 if "FAIL" in verdicts else 0
 
 
 def headline(stamp: str, verdicts: list[str], infra: bool = False) -> str:
-    """`ok/flaky/fail/infra/skip of n`, adding up to n (RED (coverage) counts as ok); 0 rows says no work."""
     code = exit_code(verdicts, infra)
     n = {v: verdicts.count(v) for v in ("OK", "FLAKY", "FAIL", "INFRA", "SKIP", COV_RED)}
     word = ("INFRA" if infra or "INFRA" in verdicts else "SKIPPED" if all_skipped(verdicts)
@@ -263,21 +208,15 @@ def headline(stamp: str, verdicts: list[str], infra: bool = False) -> str:
 
 
 def _gate_var(k: str) -> bool:
-    """Every SLOP_GATE* (the gate's bookkeeping, SLOP_GATE_EXCLUSIVE, SLOP_GATE=off, any later one): nightly
-    sets none of them, so none is inherited (an exclusive or ungated parent never makes its children so)."""
     return k.startswith("SLOP_GATE")
 
 
 def child_env(env: dict) -> dict:
-    """A child's env: outside any gate (its slop/run queues for the machine itself), long lock wait,
-    SLOP_NIGHTLY=1: ~/.slop/gate.py gives it the reserved nightly slot (owner 11-11: the nightly gets through)."""
     return {**{k: v for k, v in env.items() if not _gate_var(k)}, "SLOP_LOCK_WAIT_S": CHILD_LOCK_WAIT_S,
             "SLOP_NIGHTLY": "1"}
 
 
 def scrub_gate_env(env) -> bool:
-    """Drop inherited SLOP_GATE* from the driver's own env (a stale or reused pid says nothing reliable;
-    the driver never holds the gate either way). -> whether any was there."""
     had = [k for k in env if _gate_var(k)]
     for k in had:
         del env[k]
@@ -285,13 +224,10 @@ def scrub_gate_env(env) -> bool:
 
 
 def child_argv(args, out: Path) -> list[str]:
-    """The detached driver's argv, rebuilt from the parsed options (never the raw argv: no --detach)."""
     return [f"--phases={args.phases}", *(["--smoke"] if args.smoke else []), f"--folder={out}"]
 
 
 def merge_map(cur: dict, got: dict, names: list[str]) -> tuple[dict, list[str], list[str], list[str]]:
-    """`cur` with `got`'s entries for `names` put in (keyed by scenario; the others untouched).
-    -> (doc, replaced, added, missing from got)."""
     sc, new = dict(cur.get("scenarios", {})), got.get("scenarios", {})
     replaced = [n for n in names if n in new and n in sc]
     added = [n for n in names if n in new and n not in sc]
@@ -305,13 +241,10 @@ def effective_knobs(phase, name):
 
 
 def recorded_knobs(row):
-    # Old nightly rows predate scenario overrides: they used the phase defaults.
     return row.get('knobs', KNOBS[row['phase']])
 
 
 def changes(rows: list[dict], prev: list[dict] | None) -> dict:
-    """vs the previous nightly's rows: newly red (now FAIL, before not), newly green (now OK/FLAKY,
-    before FAIL), p95_vs_last_green keys that moved > P95_MOVE."""
     if prev is None:
         return {"newly_red": [], "newly_infra": [], "newly_green": [], "p95": [], "load_changed": [], "first": True}
     before = {(r["phase"], r["scenario"]): r for r in prev}
@@ -353,12 +286,9 @@ def _folders(r: dict) -> str:
 
 
 def _phase_totals(rows: list[dict], gate_s: float) -> str:
-    """One line: the four Run phases summed over the timed attempts (a merged row holds both of its attempts'),
-    seeding's share of their measured run seconds, the untimed attempts (no run phases) with their wall seconds
-    apart, and the gate wait apart."""
     attempts = sum(2 if "rerun_verdict" in r else 1 for r in rows)
     untimed = [x for r in rows for x in r["untimed"]]
-    tot = {k: sum((r["run_phases"] or {}).get(k) or 0 for r in rows) for k in phases.KEYS}  # null = not reached
+    tot = {k: sum((r["run_phases"] or {}).get(k) or 0 for r in rows) for k in phases.KEYS}
     run_s = sum(tot.values())
     share = f"{100 * tot['seeding_s'] / run_s:.1f}%" if run_s else "-"
     return (f"run phases ({attempts - len(untimed)} of {attempts} attempts timed): "
@@ -369,7 +299,6 @@ def _phase_totals(rows: list[dict], gate_s: float) -> str:
 
 
 def digest(s: dict) -> str:
-    """summary.md from summary.json's dict."""
     v = [r["verdict"] for r in s["rows"]]
     out = [s["headline"],
            f"sha {s['sha']}{' (smoke)' if s['smoke'] else ''} · {s['started']} -> {s['ended']} · "
@@ -425,7 +354,6 @@ def digest(s: dict) -> str:
     return "\n".join(out) + "\n"
 
 
-# ---- I/O ----
 
 def row_of(phase: str, name: str, folder: Path | None, seconds: float, code: int, tail: str = "",
            gate_line: str = "") -> dict:
@@ -446,10 +374,9 @@ def row_of(phase: str, name: str, folder: Path | None, seconds: float, code: int
 
 
 def warm_docker() -> str:
-    """One throwaway edge-image start before the first child (2026-11-12: a cold Docker Desktop VM timed the
-    first 3 edge starts out at 60 s). Never fatal: the line goes to run.log; edge.py retries on its own."""
+    # a cold Docker Desktop VM timed the first 3 edge starts out at 60 s; never fatal
     from slop.lib.edge import IMAGE, docker_ok
-    if (why := docker_ok(IMAGE)) and not why.startswith("docker: "):  # absent docker/image; a slow daemon still warms
+    if (why := docker_ok(IMAGE)) and not why.startswith("docker: "):
         return f"skipped ({why})"
     t0 = time.time()
     try:
@@ -461,7 +388,6 @@ def warm_docker() -> str:
 
 
 def app_deps_stale() -> str | None:
-    """Why app/node_modules is not this worktree's own install of app/pnpm-lock.yaml, or None."""
     nm = APP / "node_modules"
     if not nm.is_dir():
         return "app/node_modules missing"
@@ -475,8 +401,7 @@ def app_deps_stale() -> str | None:
 class Night:
     def __init__(self, out: Path, tee: bool):
         self.out, self.log, self.proc = out, open(out / "run.log", "a") if tee else None, None
-        self.t0, self.walled = time.time(), False  # walled: WALL_S hit, the child stopped (start_wall)
-        # pid_lstart: a poller's `LC_ALL=C ps -o lstart= -p <pid>` must print this, else the pid is dead or reused
+        self.t0, self.walled = time.time(), False
         self.status = {"pid": os.getpid(), "pid_lstart": procs.lstart(os.getpid()) or "", "phase": None, "scenario": None, "done": 0, "total": 0,
                        "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "updated": None}
 
@@ -493,12 +418,10 @@ class Night:
 
     def stream(self, cmd: list[str], cwd: Path, env: dict | None = None,
                timeout: float | None = None) -> tuple[int, Path | None, str, bool, str]:
-        """Run `cmd` as self.proc (stop_child reaches it), its output into run.log as it comes.
-        -> (exit code, report.FOLDER_LINE's folder, last lines, killed by `timeout`, gate line)."""
         folder, last, gate_line = None, deque(maxlen=4), ""
         self.proc = p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          stdin=subprocess.DEVNULL, text=True, bufsize=1, start_new_session=True)
-        fired = threading.Event()  # past `timeout`: its whole tree (grandchildren hold the pipe too)
+        fired = threading.Event()
         timer = threading.Timer(timeout, lambda: (fired.set(), kill_tree(p))) if timeout else None
         if timer:
             timer.start()
@@ -519,11 +442,9 @@ class Night:
         return code, folder, " | ".join(last)[:400], fired.is_set(), gate_line
 
     def may_start(self) -> bool:
-        """A scenario may start: the wall not hit and more than LAST_START_S left of WALL_S."""
         return not self.walled and time.time() - self.t0 < WALL_S - LAST_START_S
 
     def start_wall(self) -> threading.Timer:
-        """At WALL_S since start: walled, the running child stopped (its row SKIP, CUT_STOPPED)."""
         def hit():
             self.walled = True
             self.say("slop: nightly 8 h limit reached: stopping the running scenario, starting no more")
@@ -553,7 +474,6 @@ class Night:
         stop_child(self.proc)
 
     def install_app_deps(self, why: str) -> str | None:
-        """pnpm install from this worktree's lockfile, in a gate slot like any heavy child; -> error or None."""
         nm = APP / "node_modules"
         self.say(f"slop: nightly app deps: {why}: gate.py run -- pnpm install --frozen-lockfile in app/")
         code, _, tail, killed, gate_line = self.stream(["python3", str(GATE_PY), "run", "--", "pnpm", "install", "--frozen-lockfile"],
@@ -570,7 +490,6 @@ class Night:
 
 
 def gate_status() -> str:
-    """`python3 ~/.slop/gate.py status` now (who holds the machine, who queues, load)."""
     try:
         r = subprocess.run(["python3", str(GATE_PY), "status"], capture_output=True, text=True, timeout=60)
         return (r.stdout + r.stderr).rstrip() or f"(exit {r.returncode}, no output)"
@@ -594,9 +513,6 @@ def _plan_text(stamp: str, sha: str, smoke: bool, plan: dict, why: str, notes: d
 
 
 def finished_nightlies(before: str | None = None):
-    """(folder, summary.json dict) of each finished nightly (`done` written, a readable summary.json), newest
-    first; with `before`, only folder names sorting before it. The one walk last_nightly, _prev and
-    map_attempts filter."""
     for d in sorted(EVIDENCE.glob("*-nightly-*"), reverse=True):
         if (before and d.name >= before) or not (d / "done").exists():
             continue
@@ -609,9 +525,6 @@ def finished_nightlies(before: str | None = None):
 
 
 def last_nightly(before: str | None = None, phase: str = "all") -> dict | None:
-    """{"name", "sha", "rows"} of the newest finished nightly (finished_nightlies) of a non-smoke night that
-    ran `phase`: `all`'s diff base and carry-over rows; "volume": volume_carry's rows (a failed volume-only
-    run counts, an all-only night in between does not hide it). None: no such night."""
     for d, s in finished_nightlies(before):
         if not s.get("smoke") and phase in (s.get("phase_names") or []) and s.get("sha") \
                 and isinstance(s.get("rows"), list):
@@ -620,8 +533,6 @@ def last_nightly(before: str | None = None, phase: str = "all") -> dict | None:
 
 
 def map_attempts(before: str | None = None, lookback: int = PREV_LOOKBACK) -> dict[str, int]:
-    """{scenario: nights ago its --map last ran, 0 = the newest} over the newest `lookback` finished nightlies
-    with map rows (a run that failed counts; a row the 8 h limit never started does not): map_pick's `tried`."""
     tried: dict[str, int] = {}
     i = 0
     for _d, s in finished_nightlies(before):
@@ -637,17 +548,13 @@ def map_attempts(before: str | None = None, lookback: int = PREV_LOOKBACK) -> di
 
 
 def relevance(doc: dict, prev: dict | None) -> tuple[dict | None, str | None]:
-    """(picked, fallback reason) for all_plan: the diff pick (covmap.pick_changed, as --changed's) since
-    `prev`'s sha (last_nightly). Any missing input, a failed pick or a changed file the map cannot judge
-    (selection.unjudged; its pick would be `shared`, which the nightly leaves out): a reason (every scenario
-    runs)."""
     if not doc.get("scenarios"):
         return None, "no map"
     if prev is None:
         return None, "no previous nightly with summary.json"
     try:
         g, picked, _warns = covmap.pick_changed(doc, prev["sha"])
-    except (Exception, SystemExit) as e:  # base_of / gather exit on an unknown sha
+    except (Exception, SystemExit) as e:
         return None, f"pick since {prev['sha']} failed: {type(e).__name__}: {e}"
     blind = sorted(selection.unjudged(g["changed"], g["untracked"], g["map_missing"]))
     if blind:
@@ -658,9 +565,6 @@ def relevance(doc: dict, prev: dict | None) -> tuple[dict | None, str | None]:
 
 
 def _prev(out: Path, smoke: bool, phases: list[str]) -> tuple[str | None, list | None]:
-    """Rows of the newest earlier finished nightly (finished_nightlies before this one's folder) of the same
-    phases and smoke. Volume rows rotate (VOLUME_PER_NIGHT a night), so each volume scenario's row comes
-    from the newest such nightly that ran it (lookback PREV_LOOKBACK nightlies); the name is the newest."""
     name, rows, seen, looked = None, [], set(), 0
     for d, s in finished_nightlies(out.name):
         if s.get("rows") is None or bool(s.get("smoke")) != smoke or set(s.get("phase_names") or []) != set(phases):
@@ -678,8 +582,6 @@ def _prev(out: Path, smoke: bool, phases: list[str]) -> tuple[str | None, list |
 
 
 def _map_phase(night: Night, names: list[str], why: str, all_names: list[str]) -> tuple[list[dict], dict]:
-    """`--map` per scenario; finally its slop/map.json goes to <out>/map.json and the worktree's is
-    restored (when it was clean before), so the worktree stays clean and the next pull never conflicts."""
     was_dirty = covmap.git("status", "--porcelain", "--", "slop/map.json").strip()
     before, rows, map_error = {}, [], None
     try:
@@ -691,7 +593,7 @@ def _map_phase(night: Night, names: list[str], why: str, all_names: list[str]) -
     except covmap.MapInvalid as e:
         map_error = e
     finally:
-        night.stop_child()  # a killed night: its --map child must not write the map after the restore
+        night.stop_child()
         try:
             after = covmap.load_map()["scenarios"] if not map_error else {}
         except covmap.MapInvalid as e:
@@ -715,7 +617,7 @@ def _map_phase(night: Night, names: list[str], why: str, all_names: list[str]) -
 
 def sweep(night: Night, args, plan: dict, why: str, stamp: str, sha: str, all_names: list[str],
           notes: dict | None = None) -> int:
-    if shutil.which("caffeinate"):  # macOS: no idle sleep while this process lives
+    if shutil.which("caffeinate"):
         subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     night.say(f"slop: nightly {stamp} @ {sha} -> {night.out}", (night.out / "plan.txt").read_text().rstrip())
@@ -764,7 +666,6 @@ def sweep(night: Night, args, plan: dict, why: str, stamp: str, sha: str, all_na
 
 
 def apply_map(arg: str) -> int:
-    """--apply-map=<nightly folder>: its map.json entries for summary.json's map.mapped into slop/map.json."""
     d = Path(arg) if Path(arg).is_dir() else EVIDENCE / arg
     try:
         names = json.loads((d / "summary.json").read_text())["map"]["mapped"]
@@ -787,15 +688,15 @@ def apply_map(arg: str) -> int:
 
 
 def main(argv: list[str], all_s: dict[str, Path]) -> int:
-    ap = argparse.ArgumentParser(prog="slop/run nightly", allow_abbrev=False)  # --det must not mean --detach
+    ap = argparse.ArgumentParser(prog="slop/run nightly", allow_abbrev=False)
     ap.add_argument("--dry", action="store_true", help="print the plan, run nothing, write nothing")
     ap.add_argument("--phases", default=",".join(PHASES), help="comma list of all,volume,map")
     ap.add_argument("--smoke", action="store_true", help="2 UI scenarios, 1 volume, the unmapped: the mechanics")
     ap.add_argument("--detach", action="store_true", help="run in the background; print the folder, return")
     ap.add_argument("--apply-map", metavar="FOLDER", help="merge that nightly's map entries into slop/map.json")
-    ap.add_argument("--folder", help=argparse.SUPPRESS)  # the detached child's: the parent made it
+    ap.add_argument("--folder", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
-    if scrub_gate_env(os.environ):  # the driver never holds the gate; child_env also scrubs each child
+    if scrub_gate_env(os.environ):
         print("slop: nightly: ignoring inherited SLOP_GATED")
     gate.nice10()
     if args.apply_map:
@@ -820,12 +721,12 @@ def main(argv: list[str], all_s: dict[str, Path]) -> int:
         out = EVIDENCE / f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-nightly-{secrets.token_hex(2)}"
         out.mkdir(parents=True)
     stamp = out.name.split("-nightly-")[0]
-    if args.detach:  # the child does everything else, under its own `done` guard
-        child = [str(SLOP.parent / "venv" / "bin" / "python"), "-u", "-m", "slop.lib.nightly",  # not cli.py: the
-                 *child_argv(args, out)]  # venv hook would gate it
+    if args.detach:
+        child = [str(SLOP.parent / "venv" / "bin" / "python"), "-u", "-m", "slop.lib.nightly",  # not cli.py: the venv hook would gate it
+                 *child_argv(args, out)]
         with open(out / "run.log", "a") as log:
             p = subprocess.Popen(child, cwd=SLOP.parent, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                 start_new_session=True)  # setsid: no SIGHUP from the caller's shell
+                                 start_new_session=True)
         print(f"slop: nightly detached (pid {p.pid}) -> {out}\n"
               f"slop: progress {out}/status.json; done when {out}/done exists (holds the exit code)")
         return 0
@@ -833,7 +734,7 @@ def main(argv: list[str], all_s: dict[str, Path]) -> int:
 
     def term(*_):
         raise SystemExit(3)
-    signal.signal(signal.SIGTERM, term)  # `finally` runs: the child stopped, `done` written
+    signal.signal(signal.SIGTERM, term)
     try:
         try:
             night = Night(out, tee=not args.folder)
@@ -870,9 +771,8 @@ def main(argv: list[str], all_s: dict[str, Path]) -> int:
 
 
 def _plan(args, phases: list[str], paths: dict[str, Path], before: str | None = None) -> tuple[dict, str, str, dict]:
-    """build_plan on this worktree's map; `before`: this night's folder name (the last nightly sorts before it)."""
-    doc = covmap.load_map()  # this worktree's map: unmapped = what it lacks now
-    prev = None if args.smoke else last_nightly(before)  # all's diff base + carry-over rows
+    doc = covmap.load_map()
+    prev = None if args.smoke else last_nightly(before)
     vol_prev = last_nightly(before, "volume") if "volume" in phases and not args.smoke else None
     picked, fallback = relevance(doc, prev) if "all" in phases and not args.smoke else (None, "not needed")
     tried = map_attempts(before) if "map" in phases and not args.smoke else None
@@ -882,6 +782,6 @@ def _plan(args, phases: list[str], paths: dict[str, Path], before: str | None = 
     return plan, why, covmap.git("rev-parse", "--short", "HEAD").strip(), notes
 
 
-if __name__ == "__main__":  # slop/run nightly and --detach: `venv/bin/python -m slop.lib.nightly` from the root
+if __name__ == "__main__":
     from slop.lib.cli import scenarios
     sys.exit(main(sys.argv[1:], scenarios()))

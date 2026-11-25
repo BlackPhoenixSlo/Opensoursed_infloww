@@ -1,30 +1,18 @@
 "use strict";
 
-// Our own desktop toasts: a small frameless, always-on-top window in the top
-// right of the primary screen that stacks the notices (renderer/toast.html).
-//
-// Why: on macOS, Electron 42+ delivers OS notifications only for a code-signed
-// app (lib/signing.js), and our builds are unsigned (README → Signing). A
-// window of our own shows either way, the way Infloww's does (transparent,
-// alwaysOnTop, non-focusable, showInactive), so typing elsewhere is never
-// interrupted.
-//
-// `ToastNotification` speaks the part of Electron's `Notification` that
-// lib/notify.js uses (isSupported, new({title, body}), on("click"|"close"),
-// show()), so main.js hands it to registerNotifyIpc in place of the native
-// class and the validation, dedupe and click routing stay in one place.
-// Electron objects are injected; test/toast-window.test.js drives it.
 
 const WIDTH = 360;
-const CARD_H = 74; //  renderer/toast.css: a 66px card + an 8px gap
+// renderer/toast.css: a 66px card + an 8px gap
+const CARD_H = 74;
 const MARGIN = 12;
 const MAX_CARDS = 4;
 const TTL_MS = 12000;
 
+// On macOS, Electron 42+ delivers OS notifications only for a code-signed app and our builds are unsigned, so toasts are a window of our own (non-focusable, showInactive: typing elsewhere is never interrupted).
 function createToasts({ BrowserWindow, screen, ipcMain, preload, html, setTimer = setTimeout }) {
   let win = null;
   let ready = false;
-  let cards = []; // ToastNotification, oldest first
+  let cards = [];
   let seq = 0;
 
   function bounds() {
@@ -76,7 +64,6 @@ function createToasts({ BrowserWindow, screen, ipcMain, preload, html, setTimer 
     if (!win.isVisible()) win.showInactive();
   }
 
-  // Take a card off the stack and tell its owner why ("click" or "close").
   function remove(id, why) {
     const card = cards.find((c) => c.id === id);
     if (!card) return;
@@ -115,7 +102,6 @@ function createToasts({ BrowserWindow, screen, ipcMain, preload, html, setTimer 
         try {
           fn();
         } catch {
-          /* a handler's problem, not the stack's */
         }
       }
     }

@@ -1,22 +1,5 @@
 #!/usr/bin/env python3
-"""The S4S schedule, slot cancel and the opt-out cascade over the Relay
-(docs/spec/phase-03-share-for-share.md, ticket 18).
-
-The seam is the Relay over HTTP with real owner and chatter session cookies
-from the shared two-Agency fixture, on the throwaway `_harness` database:
-`GET /admin/s4s/schedule?from&to`, `POST /admin/s4s/slots/{id}/cancel`, and
-the opt-out cascade of `PUT /admin/s4s/profiles/{account_id}`. Slots are
-booked over HTTP (send, then Accept); a state no route reaches yet (posting,
-posted, failed, a dead job, a departed Creator) is set straight in the temp
-DB, as test_s4s_requests.py does. The executor never runs here.
-
-Split from test_s4s_requests.py so no S4S test file passes 1,000 lines; the
-seeders are shared through `_s4s_fixtures.py`. Every case books on its own
-UTC days (`day(n)`), so one case's slots never fill another's Daily limit.
-
-Run: ./venv/bin/python service/tests/test_s4s_schedule.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -35,9 +18,9 @@ from db.models import Post, S4SRequest, S4SSlot, ScheduledJob, User, UserAccount
 
 A = IDS["creator_a"]
 B = IDS["creator_b"]
-C = "1000009"          # Agency A's second Creator
-UNLINKED_B = "1000021"  # Agency B's, later unlinked from every Agency
-ORPHAN_C = "1000022"    # Agency C's, whose Agency is later deleted
+C = "1000009"
+UNLINKED_B = "1000021"
+ORPHAN_C = "1000022"
 seed_creators({C: "agency_a_owner", UNLINKED_B: "agency_b_owner", ORPHAN_C: "agency_c_owner"},
               users=("agency_c_owner",))
 
@@ -60,7 +43,6 @@ PROJECTION_KEYS = {"profile_id", "display_name", "username", "avatar_url", "prim
 
 
 def day(n: int, hour: int = 10) -> datetime:
-    """`n` UTC days after today, at hour:00 UTC."""
     today = datetime.utcnow().date()
     return datetime(today.year, today.month, today.day) + timedelta(days=n, hours=hour)
 
@@ -70,7 +52,6 @@ def z(dt: datetime) -> str:
 
 
 def month(dt: datetime) -> str:
-    """The query for the UTC month holding `dt` (the app sends its local month's bounds the same way)."""
     first = datetime(dt.year, dt.month, 1)
     return f"from={z(first)}&to={z((first + timedelta(days=32)).replace(day=1))}"
 
@@ -87,7 +68,6 @@ def act(client, request_id: int, verb: str):
 
 
 def booked(sender, from_id: str, receiver, to_id: str, slot_at: datetime) -> dict[str, S4SSlot]:
-    """Send and accept one request; the two slots by poster."""
     req = sent(sender, from_id, to_id, slot_at)
     r = act(receiver, req["id"], "accept")
     assert r.status_code == 200, f"accept: {r.status_code} {r.text}"
@@ -107,7 +87,6 @@ def rows(model, **where) -> list:
 
 
 def raw_slot(slot_id: int) -> tuple:
-    """The slot's row exactly as stored, every column."""
     async def go():
         async with get_session() as s:
             return tuple((await s.execute(text("SELECT * FROM s4s_schedule WHERE id = :i"), {"i": slot_id})).one())
@@ -142,7 +121,6 @@ def _every_route(client) -> list:
     ]
 
 
-# ── Sessions ─────────────────────────────────────────────────────────
 
 def case_signed_out_is_401_and_a_chatter_is_403_on_every_schedule_route():
     anon = _harness.make_client()
@@ -155,7 +133,6 @@ def case_signed_out_is_401_and_a_chatter_is_403_on_every_schedule_route():
             assert r.status_code == 403, f"{label} as {name}: {r.status_code} {r.text}"
 
 
-# ── The month ────────────────────────────────────────────────────────
 
 def case_the_month_lists_only_the_callers_own_slots_with_the_partner_snapshot_and_no_foreign_account_id():
     slots = booked(OWNER_A, A, OWNER_B, B, day(40))
@@ -178,9 +155,6 @@ def case_the_month_lists_only_the_callers_own_slots_with_the_partner_snapshot_an
     assert got_b[theirs.id]["partner"]["display_name"] == "Fixture Alpha"
     assert schedule(fx.login_owner("agency_master"), mine.slot_at) == {}, "the Master holds no Creator"
 
-    # The range is the viewer's local month, sent as instants. For a viewer at UTC-5, June 2030 runs from
-    # 1 Jun 05:00Z to 1 Jul 05:00Z: a slot at 1 Jun 04:59:59Z is still 31 May locally (out) though it is in the
-    # UTC month, and one at 1 Jul 04:59:59Z is still 30 Jun locally (in) though it is in UTC July.
     june = "from=2030-06-01T00:00:00-05:00&to=2030-07-01T00:00:00-05:00"
     for at, listed in ((datetime(2030, 6, 1, 4, 59, 59), False), (datetime(2030, 6, 1, 5), True),
                        (datetime(2030, 7, 1, 4, 59, 59), True), (datetime(2030, 7, 1, 5), False)):
@@ -223,7 +197,6 @@ def case_each_slot_state_reads_as_its_display_status():
         db(update(S4SSlot).where(S4SSlot.id == mine.id).values(**values))
         assert reads(OWNER_A, mine) == want, (values, reads(OWNER_A, mine))
 
-    # A posted slot is Completed once the unsend automation has deleted its post.
     db(update(S4SSlot).where(S4SSlot.id == mine.id).values(
         status="posted", reason=None, post_id=post_id, posted_at=mine.slot_at, remove_at=remove_at))
     item = schedule(OWNER_A, mine.slot_at)[mine.id]
@@ -231,7 +204,6 @@ def case_each_slot_state_reads_as_its_display_status():
     db(update(Post).where(Post.id == post_id).values(status="deleted"))
     assert reads(OWNER_A, mine) == ("posted", "Completed", None)
 
-    # A slot whose s4s_post job the executor gave up on reads Failed, never "Will be posted shortly".
     db(update(S4SSlot).where(S4SSlot.id == mine.id).values(
         status="scheduled", post_id=None, posted_at=None, remove_at=None))
     assert reads(OWNER_A, mine) == ("scheduled", "Will be posted shortly", None)
@@ -240,7 +212,6 @@ def case_each_slot_state_reads_as_its_display_status():
     db(update(ScheduledJob).where(ScheduledJob.id == mine.job_id).values(status="pending"))
 
 
-# ── Slot cancel ──────────────────────────────────────────────────────
 
 def case_cancelling_an_own_scheduled_slot_leaves_the_partners_slot_row_unchanged():
     slots = booked(OWNER_A, A, OWNER_B, B, day(42))
@@ -286,7 +257,6 @@ def case_cancelling_an_own_scheduled_slot_leaves_the_partners_slot_row_unchanged
     assert raw_slot(theirs.id) == partner_row
 
 
-# ── Opt-out cascade ──────────────────────────────────────────────────
 
 def case_opting_out_cancels_own_open_requests_and_future_slots_and_writes_nothing_of_the_partner():
     future = booked(OWNER_B, B, OWNER_A, A, day(43))
@@ -295,13 +265,12 @@ def case_opting_out_cancels_own_open_requests_and_future_slots_and_writes_nothin
     sent_pending = sent(OWNER_A, A, B, day(45))
     received_skipped = sent(OWNER_B, B, A, day(46))
     assert act(OWNER_A, received_skipped["id"], "skip").status_code == 200
-    inside = sent(OWNER_A, C, B, day(47))  # C's request: not A's, so it stays pending
+    inside = sent(OWNER_A, C, B, day(47))
     partner_rows = {s.id: raw_slot(s.id) for s in (future[B], posted[B])}
     own_scheduled = {s.id for s in rows(S4SSlot, poster_account_id=A, status="scheduled")}
     assert future[A].id in own_scheduled and posted[A].id not in own_scheduled
     request_audits, slot_audits = len(audit_rows("s4s.request_cancel")), len(audit_rows("s4s.slot_cancel"))
 
-    # A save that keeps the Creator opted in cascades nothing.
     assert OWNER_A.put(f"/admin/s4s/profiles/{A}", json={"daily_limit": 1}).status_code == 200
     assert len(audit_rows("s4s.request_cancel")) == request_audits
 
@@ -332,23 +301,19 @@ def case_opting_out_cancels_own_open_requests_and_future_slots_and_writes_nothin
         payload = json.loads(a.payload_json)
         assert a.account_id == A and payload["agency_user_id"] == IDS["agency_a_owner"], payload
         assert payload["reason"] == "opted_out", payload
-    # Every one of A's future scheduled slots, this case's and the earlier cases', and nothing else.
     assert {s.id for s in rows(S4SSlot, poster_account_id=A, status="scheduled")} == set(), "a future slot survived"
     slot_rows = audit_rows("s4s.slot_cancel")[slot_audits:]
     assert {json.loads(a.payload_json)["slot_id"] for a in slot_rows} == own_scheduled, [a.payload_json for a in slot_rows]
     for a in slot_rows:
         assert a.account_id == A and json.loads(a.payload_json)["reason"] == "opted_out", a.payload_json
 
-    # Opting out again finds nothing left to cancel.
     assert OWNER_A.put(f"/admin/s4s/profiles/{A}", json={"opted_in": False}).status_code == 200
     assert len(audit_rows("s4s.request_cancel")) == request_audits + 2
-    # "while the partner stays opted out": back in, the partner's slot reads live again.
     assert OWNER_A.put(f"/admin/s4s/profiles/{A}", json={"opted_in": True}).status_code == 200
     assert reads(OWNER_B, future[B]) == ("scheduled", "Will be posted shortly", None)
     assert act(OWNER_A, inside["id"], "cancel").status_code == 200
 
 
-# ── Departed Creators (story 31) ─────────────────────────────────────
 
 def _departs(partner_owner, partner: str, unlink, n: int, agency_left: bool) -> None:
     slots = booked(OWNER_A, A, partner_owner, partner, day(n))
@@ -362,7 +327,6 @@ def _departs(partner_owner, partner: str, unlink, n: int, agency_left: bool) -> 
 
     unlink()
 
-    # The same reason as an opted-out partner: the slot says nothing of another Agency's membership.
     assert reads(OWNER_A, mine) == ("scheduled", "Canceled", "partner_opted_out")
     assert raw_slot(mine.id) == mine_before, "reading wrote the slot"
     assert box(OWNER_A, "received")[waiting["id"]]["status"] == "cancelled"

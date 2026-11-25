@@ -1,16 +1,3 @@
-"""`slop/run --changed`: which scenarios a diff can reach, from slop/map.json. Pure: no git, no
-files; lib/covmap.py gathers the inputs. Not `select.py`: slop/lib is on the relay's sys.path,
-where that name would shadow the stdlib's `select`. README "Which scenarios to run".
-
-Python (service/, slop/, scripts/demo-shots/): a changed line inside a function body picks the
-scenarios whose map lists that file and function (it executed under coverage); a changed line
-outside every body (module level, a decorator or signature: those run when the enclosing body
-runs, the module's for a top-level def), or in a function the map's sha did not have, picks every
-scenario listing the file. Blank lines, and comment lines at module level, change nothing.
-App (app/): a changed file picks the scenarios whose recorded pages match a route page (or layout
-prefix) that imports it, transitively; the root layout's and middleware's trees every scenario
-with pages. Runtime non-.py files: RUNTIME. A scenario whose own file changed is always picked.
-"""
 from __future__ import annotations
 
 import ast
@@ -20,32 +7,24 @@ from pathlib import PurePosixPath
 PY_ROOTS = ("service/", "slop/", "scripts/demo-shots/")
 APP = "app/"
 SCEN = "slop/scenarios/"
-ROOTS = PY_ROOTS + ("deploy/fleet/", "desktop/", APP)  # what a diff is read under (lib/covmap.py DIFF_ROOTS)
-# app/ files every page loads (config, deps, fonts, static): treated as the root layout.
+ROOTS = PY_ROOTS + ("deploy/fleet/", "desktop/", APP)
 APP_LAYOUT_FILES = re.compile(r"app/(next\.config\.\w+|package\.json|pnpm-lock\.yaml|postcss\.config\.\w+|"
                               r"tsconfig\.json|app/globals\.css|app/fonts/.+|public/.+)$")
-# Entry points whose import trees every page runs: the root layout and the middleware.
 APP_ROOT_ENTRIES = re.compile(r"app/(app/layout|middleware|proxy)\.(tsx|ts|jsx|js)$")
 APP_TEST = re.compile(r"(\.test\.|(^|/)test-utils\.tsx$|(^|/)test-import-graph\.ts$|(^|/)vitest\.)")
-APP_IGNORED = re.compile(r"app/(eslint\.config\.mjs|next-env\.d\.ts|[^/]+\.config\.[^/]+)$")  # after APP_LAYOUT_FILES
+APP_IGNORED = re.compile(r"app/(eslint\.config\.mjs|next-env\.d\.ts|[^/]+\.config\.[^/]+)$")
 PREFIX_FILES = {"layout", "template", "loading", "error", "not-found", "default", "global-error"}
 EXACT_FILES = {"page", "route"}
-# Non-.py files the stack runs, and who runs them: PAGES every scenario with pages, else the scenarios
-# whose map lists one of these Python files. Any other non-.py file under service/ or slop/: every scenario.
 PAGES = ()
 RUNTIME = ((re.compile(r"scripts/demo-shots/fetch-guard\.cjs$"), PAGES),
            (re.compile(r"deploy/fleet/"), ("slop/lib/box.py", "slop/lib/edge.py")),
            (re.compile(r"desktop/"), ("slop/actors/notif_click.py",)),
            (re.compile(r"slop/lib/[^/]+\.mjs$"), ("slop/lib/app_ts.py",)),
-           # the bio sidecar's static page (html/js/css/icons): only service/bio_pages/assets.py reads it
            (re.compile(r"service/bio_pages/public/"), ("service/bio_pages/assets.py",)))
 
 
-# ---------- python: functions by line ----------
 
 def defs(src: str) -> list[tuple[str, int, int, int]]:
-    """Every def / async def: (qualified name, first line incl. decorators, first body line, last line).
-    Qualified: Class.method, outer.inner. Raises SyntaxError."""
     out: list[tuple[str, int, int, int]] = []
 
     def walk(node, prefix: str) -> None:
@@ -64,8 +43,6 @@ def defs(src: str) -> list[tuple[str, int, int, int]]:
 
 
 def innermost(ds, line: int) -> str | None:
-    """The innermost def whose body holds `line`. None = module level. A decorator or signature line
-    is in the enclosing body (it runs when that body defines the function), not the function's."""
     best = None
     for q, _start, b0, end in ds:
         if b0 <= line <= end and (best is None or b0 >= best[1]):
@@ -74,7 +51,6 @@ def innermost(ds, line: int) -> str | None:
 
 
 def funcs_of_lines(src: str, lines) -> tuple[list[str], bool]:
-    """(sorted functions whose body ran, any module-level line ran) for executed `lines`."""
     ds = defs(src)
     fs, module = set(), False
     for ln in lines:
@@ -87,8 +63,6 @@ def funcs_of_lines(src: str, lines) -> tuple[list[str], bool]:
 
 
 def _unquote(s: str) -> str:
-    """A path as `git diff` prints it: C-quoted (octal bytes) when it has odd characters; a
-    trailing tab when it has a space."""
     s = s.rstrip("\t")
     if not (len(s) > 1 and s[0] == s[-1] == '"'):
         return s
@@ -111,8 +85,6 @@ def _unquote(s: str) -> str:
 
 
 def parse_hunks(diff: str) -> dict[str, list[tuple[int, int, int, int]]]:
-    """`git diff -U0 --src-prefix=a/ --dst-prefix=b/` -> {path: [(old_start, old_len, new_start,
-    new_len)]}. Path is the new side (the old side for a deletion); quoted paths unquoted."""
     out: dict[str, list] = {}
     cur = None
     old_path = None
@@ -134,8 +106,6 @@ def parse_hunks(diff: str) -> dict[str, list[tuple[int, int, int, int]]]:
 
 
 def _touched(src: str | None, lines, known: set[str] | None = None) -> list[tuple[str | None, int]]:
-    """[(function or None for module level, line)] for changed `lines` of `src`. A function not in
-    `known` (the names the map's sha had; None: no such limit) is new: module level."""
     if src is None:
         return []
     text = src.splitlines()
@@ -158,9 +128,6 @@ def _touched(src: str | None, lines, known: set[str] | None = None) -> list[tupl
 
 
 def py_touched(f: dict) -> list[tuple[str | None, int]]:
-    """Functions (None = module level) and lines a file's hunks touch: old-side lines in the old
-    file, new-side lines in the new one (a pure insertion is judged by where it lands; inside a
-    function the old file did not have, at module level)."""
     try:
         known = {q for q, *_ in defs(f["old"])} if f.get("old") is not None else set()
     except SyntaxError:
@@ -172,11 +139,8 @@ def py_touched(f: dict) -> list[tuple[str | None, int]]:
     return out
 
 
-# ---------- app: routes and the import graph ----------
 
 def app_entry(rel: str) -> tuple[str, bool] | None:
-    """`app/app/<segs>/page.tsx` -> (route regex, prefix?) for a Next route file, else None.
-    `(group)` segments dropped, `[x]` one segment, `[...x]` one or more, `[[...x]]` zero or more."""
     p = PurePosixPath(rel)
     if p.parts[:2] != ("app", "app") or p.suffix not in (".tsx", ".ts", ".jsx", ".js"):
         return None
@@ -198,7 +162,6 @@ def app_entry(rel: str) -> tuple[str, bool] | None:
 
 
 def route_matches(rx: str, prefix: bool, path: str) -> bool:
-    """A recorded page path against a route (exact, or a layout's prefix); a trailing slash is the same page."""
     return re.fullmatch(rx + (r"(?:/.*)?" if prefix else "/?"), path) is not None
 
 
@@ -213,7 +176,6 @@ def _walk(app_edges: dict[str, list[str]], start: str) -> set[str]:
 
 
 def app_reach(app_edges: dict[str, list[str]]) -> dict[str, list[str]]:
-    """{file: [route entry files reaching it]} over the import graph (keys repo-relative)."""
     reach: dict[str, set] = {}
     for e in app_edges:
         if app_entry(e) is not None:
@@ -223,7 +185,6 @@ def app_reach(app_edges: dict[str, list[str]]) -> dict[str, list[str]]:
 
 
 def app_root_tree(app_edges: dict[str, list[str]]) -> set[str]:
-    """Files the root layout or the middleware import, transitively (themselves included)."""
     return {x for e in app_edges if APP_ROOT_ENTRIES.match(e) for x in _walk(app_edges, e)}
 
 
@@ -233,11 +194,8 @@ def _route_label(entry: str) -> str:
     return label + ("/*" if prefix and label != "/" else "*" if prefix else "")
 
 
-# ---------- the pick ----------
 
 def ignored(path: str) -> bool:
-    """Files no slop scenario is meant to reach: docs, tests, evidence, the map itself, and anything
-    outside ROOTS."""
     p = PurePosixPath(path)
     if not path.startswith(ROOTS) or p.suffix == ".md" or "__pycache__" in p.parts or "node_modules" in p.parts:
         return True
@@ -250,7 +208,6 @@ def ignored(path: str) -> bool:
 
 
 def runtime(path: str):
-    """A non-.py runtime file's runners: PAGES, a tuple of Python files, "all", or None (not one)."""
     for rx, who in RUNTIME:
         if rx.match(path):
             return who
@@ -259,44 +216,26 @@ def runtime(path: str):
     return None
 
 
+# nightly takes own + flow only: a shared/layout pick would make every night a full sweep
 TIERS = ("own", "flow", "shared", "layout")
-FLOW_SHARE = 0.15  # reached through code at most this share of mapped scenarios run: the flow's own
+FLOW_SHARE = 0.15
 
 
 def tier(reasons: list[tuple[str, str]]) -> str:
-    """A scenario's tier: its best reason's."""
     return min((t for t, _ in reasons), key=TIERS.index)
 
 
 def needs_ui(reasons: list[tuple[str, str]]) -> bool:
-    """Every reason is a page a browser visited ("app: "): a run without UI cannot reach it."""
     return all(r.startswith("app: ") for _, r in reasons)
 
 
 def unjudged(changed_files: dict, untracked: list[str], map_missing: dict[str, set[str]] | None) -> set[str]:
-    """Changed (or untracked) files absent at some map entry's sha: the map cannot judge them (pick warns
-    about each; the nightly runs every scenario on any). Arguments as pick's."""
     all_changed = set(untracked) | {f for fs in changed_files.values() for f in fs}
     return {f for f in all_changed if any(f in fs for fs in (map_missing or {}).values()) and not ignored(f)}
 
 
 def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict, untracked: list[str],
          deleted=frozenset(), map_missing: dict[str, set[str]] | None = None):
-    """-> ({scenario: [(tier, reason)]}, [warnings]); reasons best tier first.
-
-    Tiers: `own` its scenario file changed; `flow` reached through a function, a module-level hunk,
-    a route or a runtime file's runner that at most FLOW_SHARE of the mapped scenarios run / list /
-    visit; `shared` through one more of them run, or a non-.py file under service/ slop/ (every
-    scenario); `layout` through the app's root layout or middleware tree, globals.css, fonts,
-    public/, app config, fetch-guard.cjs, or a deleted app file (scenarios a browser drove only).
-    A route reason beats a layout one.
-
-    map_doc: slop/map.json ({"scenarios": {name: {"sha", "py": {file: [funcs]}, "pages": [...],
-    "http_pages": [...]}}}; http_pages: reached over HTTP, no browser: reasons "app (http): ").
-    hunks_by_sha: {sha: {file.py: {"hunks": [(a, b, c, d)], "old": src at sha | None, "new": src now | None}}}.
-    app_edges: {app file: [app files it imports]} (repo-relative, the tree now).
-    changed_files: {sha: [every file changed since sha]}. untracked: files git does not know yet.
-    deleted: changed files no longer on disk."""
     scen = map_doc.get("scenarios", {})
     n_all = max(1, len(scen))
     picked: dict[str, list[tuple[str, str]]] = {}
@@ -328,7 +267,6 @@ def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict
             r.append((t, why))
 
     def add_counted(name: str, head: str, detail: str, path: str, key) -> None:
-        """Tier by share: `flow` when at most FLOW_SHARE of the mapped scenarios share `key`."""
         k = runs(key)
         add(name, "flow" if k <= FLOW_SHARE * n_all else "shared", f"{head} ({detail} {k}/{n_all})", path)
 
@@ -336,7 +274,7 @@ def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict
     map_missing = map_missing or {}
     warns |= {f"WARN map cannot judge {f} (absent at map sha); refresh: slop/run all --map"
               for f in unjudged(changed_files, untracked, map_missing)}
-    for f in sorted(all_changed):  # a scenario's own file: always (new or mapped)
+    for f in sorted(all_changed):
         if f.startswith(SCEN) and f.endswith(".py") and "/" not in f[len(SCEN):]:
             name = PurePosixPath(f).stem
             if not name.startswith("_"):
@@ -345,7 +283,7 @@ def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict
         sha = e.get("sha")
         files = set(changed_files.get(sha, ())) | set(untracked)
         py, pages, http_pages = e.get("py", {}), e.get("pages", []), set(e.get("http_pages", ()))
-        browser = [p for p in pages if p not in http_pages]  # what the layout and fetch-guard serve
+        browser = [p for p in pages if p not in http_pages]
         for f in sorted(files):
             if ignored(f):
                 continue
@@ -354,13 +292,13 @@ def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict
             if f.startswith(APP):
                 rel = f[len(APP):]
                 if f in deleted or APP_LAYOUT_FILES.match(f) or f in root_tree:
-                    if pages if f in deleted else browser:  # a deleted route.ts: http pages too
+                    if pages if f in deleted else browser:
                         add(name, "layout", f"app: every page <- {rel}" + (" (deleted)" if f in deleted else ""), f)
                     if f in deleted:
                         warns.add(f"WARN deleted app file: conservative pick: {f}")
                 for ent in reach.get(f, []):
                     if APP_ROOT_ENTRIES.match(ent):
-                        continue  # the root layout itself: the layout reason
+                        continue
                     rx, prefix = app_entry(ent)
                     hits = [p for p in pages if route_matches(rx, prefix, p)]
                     if hits:
@@ -381,14 +319,14 @@ def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict
             if f not in py or not f.endswith(".py"):
                 continue
             fd = (hunks_by_sha.get(sha) or {}).get(f)
-            if fd is None:  # untracked or no hunks (mode change): the whole file is new to this sha
+            if fd is None:
                 add_counted(name, f, "new or rewritten file; loaded by", f, (f, None))
                 continue
-            done = set()  # one reason per function (its first hunk line)
-            known = fd.get("map_known")  # names at the map sha, when the diff base is another commit
+            done = set()
+            known = fd.get("map_known")
             for q, ln in py_touched(fd):
                 if q is not None and known is not None and q not in known:
-                    q = None  # the sweep never saw this function: module level, like a new one
+                    q = None
                 if q is not None and q not in py[f]:
                     touched_fns.add((f, q))
                 if q in done or (q is not None and q not in py[f]):
@@ -410,10 +348,6 @@ def pick(map_doc: dict, hunks_by_sha: dict, app_edges: dict, changed_files: dict
 
 
 def plan(picked: dict[str, list[tuple[str, str]]], seconds: dict[str, float | None], budget_s: float):
-    """-> (run, skipped): tier then seconds ascending (unknown last). `own` and `flow` always run;
-    `shared` and `layout` run in that order while the running estimate (own/flow included) stays
-    within `budget_s` (0 = no cap; an unknown estimate counts 0); from the first that would pass it,
-    the rest are skipped."""
     order = sorted(picked, key=lambda n: (TIERS.index(tier(picked[n])), seconds.get(n) is None,
                                           seconds.get(n) or 0, n))
     run, skipped, total, full = [], [], 0.0, False

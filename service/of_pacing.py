@@ -98,17 +98,17 @@ import of_call_counter
 
 log = logging.getLogger("of-relay.of_pacing")
 
-PAGE_GAP_S = 1.0          # OF: "Please allow 1 seconds"
+PAGE_GAP_S = 1.0  # OF: "Please allow 1 seconds"
 JITTER_S = 0.3
-RETRY_DEFAULT_S = 1.0     # a 429 whose text names no wait
+RETRY_DEFAULT_S = 1.0  # a 429 whose text names no wait
 RETRY_MAX_S = 10.0
-COOLDOWNS_S = (3.0, 5.0, 8.0, 13.0, 21.0, 34.0)   # owner: the gate's cooldown per 429 in a row
+COOLDOWNS_S = (3.0, 5.0, 8.0, 13.0, 21.0, 34.0)  # owner: the gate's cooldown per 429 in a row
 READ_BUDGET_S = 45.0
-SEND_BUDGET_S = 55.0      # leaves room for the OF POST before Cloudflare's origin deadline
+SEND_BUDGET_S = 55.0  # leaves room for the OF POST before Cloudflare's origin deadline
 MAX_READ_WAITERS = 16
 RETRY_HEADER_MAX_S = 120.0
-POLL_S = 0.25             # a queued request's re-check while the probe is out
-USER_WINDOW_S = 10.0      # link_prewarm.prewarm_all skips a Creator with a person's read this recent
+POLL_S = 0.25
+USER_WINDOW_S = 10.0
 
 _ALLOW = re.compile(r"allow\s+(\d+(?:\.\d+)?)\s*sec", re.I)
 _PROXY_PACED_KINDS = frozenset({"transactions"})   # walks whose pages also take their exit's slot
@@ -122,9 +122,8 @@ class _Walk:
 
 _WALK: ContextVar[_Walk | None] = ContextVar("of_pacing_walk", default=None)
 _lock = threading.Lock()
-_next_at: dict[str, float] = {}       # pace key (a Creator, or "proxy <exit>") -> monotonic time its next
-                                      # background GET may leave
-_last_user: dict[str, float] = {}     # Creator -> monotonic time of its last user request
+_next_at: dict[str, float] = {}
+_last_user: dict[str, float] = {}
 
 
 @dataclass
@@ -132,11 +131,11 @@ class _Gate:
     closed: bool = False
     cool_until: float = 0.0
     step: int = 0
-    epoch: int = 0                 # bumped on every close and open: a 429 counts only for its own epoch
+    epoch: int = 0  # bumped on every close and open: a 429 counts only for its own epoch
     probing: bool = False
-    next_at: float = 0.0           # the next drained request's departure
+    next_at: float = 0.0
     closed_at: float = 0.0
-    queue: set[tuple[int, int]] = field(default_factory=set)   # (0 send / 1 read / 2 walk, ticket): min() leaves first
+    queue: set[tuple[int, int]] = field(default_factory=set)
     last_429: BaseException | None = None
 
 
@@ -160,13 +159,11 @@ def user_active(account_id: Any, now: float | None = None) -> bool:
 
 
 def allow_s(text: str | None) -> float | None:
-    """OF's "Please allow N seconds" as N (uncapped, >= 0), None when the text names none."""
     m = _ALLOW.search(text or "")
     return max(float(m.group(1)), 0.0) if m else None
 
 
 def asked_wait(header: str | None, allow: float | None) -> float | None:
-    """OF's uncapped wait from Retry-After seconds or HTTP-date, then body text."""
     if header is not None:
         try:
             v = float(str(header).strip())
@@ -183,29 +180,21 @@ def asked_wait(header: str | None, allow: float | None) -> float | None:
 
 
 def parse_allow(text: str | None) -> float:
-    """OF's asked wait ("Please allow N seconds"), RETRY_DEFAULT_S when it names none,
-    never above RETRY_MAX_S (nor below 0)."""
     a = allow_s(text)
     return min(RETRY_DEFAULT_S if a is None else a, RETRY_MAX_S)
 
 
 def upstream(exc: BaseException) -> tuple[int | str | None, str, str | None]:
-    """OF's answer behind `exc`: (status, body text, Retry-After header). An OFAPIError's
-    `response`, or server._proxy's HTTPException whose detail carries upstream_status /
-    upstream_body (no header there: None). That status is OF's int, or one of _proxy's
-    string codes for a request OF never answered: `proxy_unreachable`, `timeout`,
-    `network`, `refused_by_relay`, `session_retired`, `signed_pool_busy`. Callers compare
-    with == or check `isinstance(status, int)` first. Anything else: (None, "", None)."""
+    # Status is OF's int or one of _proxy's string codes (proxy_unreachable, timeout, network, refused_by_relay, session_retired, signed_pool_busy): isinstance-check before comparing.
     detail = getattr(exc, "detail", None)
     if isinstance(detail, dict):
         return detail.get("upstream_status"), str(detail.get("upstream_body") or ""), None
     resp = getattr(exc, "response", None)
-    header = (getattr(resp, "headers", None) or {}).get("Retry-After")   # curl_cffi headers: case-insensitive
+    header = (getattr(resp, "headers", None) or {}).get("Retry-After")  # curl_cffi headers: case-insensitive
     return getattr(resp, "status_code", None), getattr(resp, "text", "") or "", header
 
 
 def retry_after(exc: BaseException) -> float | None:
-    """Capped retry delay for an OF 429, or None for another error."""
     status, body, header = upstream(exc)
     if status != 429:
         return None
@@ -214,11 +203,7 @@ def retry_after(exc: BaseException) -> float | None:
 
 
 def _turn(*keys: str) -> float:
-    """0.0 when every key's next background GET may leave now (the departure is stamped on
-    all of them at once: the next one leaves PAGE_GAP_S + jitter after it), else the seconds
-    to wait and ask again. Stamped on departure, not booked ahead: a sender that woke late
-    never lets the next one leave right behind it; checked and stamped under one lock, so no
-    key is held while another waits."""
+    # Stamped on departure, not booked ahead (a late sender never lets the next leave right behind it); check and stamp under one lock.
     with _lock:
         now = time.monotonic()
         at = max(_next_at.get(k, 0.0) for k in keys)
@@ -231,8 +216,7 @@ def _turn(*keys: str) -> float:
 
 
 def exit_label(exit_: str | None) -> str:
-    """The log name of an exit key: "-" none, "direct" as is, else `p-<8 hex of the key>`
-    (app_open_warm's exit label too): never an IP, host, port or credential."""
+    # Never an IP, host, port or credential.
     if not exit_ or exit_ == "direct":
         return exit_ or "-"
     return "p-" + hashlib.sha1(exit_.encode()).hexdigest()[:8]
@@ -242,7 +226,7 @@ def paced(account_id: Any, call: Callable[[], Any], proxy_key: Callable[[], str]
     w = _WALK.get()
     if w is None:
         return call()
-    if account_id is None:   # a bare client has no Creator to pace on
+    if account_id is None:
         return call()
     aid = str(account_id)
     exit_ = proxy_key() if proxy_key is not None and w.kind in _PROXY_PACED_KINDS else None
@@ -253,7 +237,6 @@ def paced(account_id: Any, call: Callable[[], Any], proxy_key: Callable[[], str]
         wait = retry_after(e)
         if wait is None:
             raise
-    # Outside the except: OF's second 429 is the page's own error, not one "during handling" the first.
     # walk= after kind=: proxy-health's summarize.py matches "account=... kind=transactions".
     log.info("bg_walk_429_retry account=%s kind=%s walk=%s proxy=%s wait_s=%.1f", aid, w.kind,
              w.account_id or "-", exit_label(exit_), wait)
@@ -280,7 +263,7 @@ def _walk_attempt(aid: str, keys: tuple[str, ...], call: Callable[[], Any]) -> A
 
 def _close(aid: str, g: _Gate, e: BaseException, now: float) -> None:
     if g.closed and now - g.cool_until > COOLDOWNS_S[-1]:
-        g.step = 0   # nobody probed for a whole top cooldown: start the ladder again
+        g.step = 0  # nobody probed for a whole top cooldown: start the ladder again
     cool = max(COOLDOWNS_S[min(g.step, len(COOLDOWNS_S) - 1)], retry_after(e) or 0.0)
     if not g.closed:
         g.closed_at = now
@@ -304,7 +287,6 @@ def _open(aid: str, g: _Gate, now: float) -> None:
 def _admit(
     g: _Gate, me: tuple[int, int], now: float, pace_keys: tuple[str, ...] = (),
 ) -> tuple[str, float]:
-    """("go" | "probe", 0) to send now, else ("wait", seconds). Under _gates_lock."""
     queued = g.closed or bool(g.queue)
     if queued:
         g.queue.add(me)
@@ -416,4 +398,4 @@ async def walk(account_id: Any, kind: str, run: Callable[[], Awaitable[Any]]) ->
         with of_call_counter.caller(f"walk:{kind}"):
             return await run()
     finally:
-        _WALK.reset(tok)   # the caller's context never sees the walk
+        _WALK.reset(tok)

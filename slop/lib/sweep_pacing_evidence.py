@@ -1,4 +1,3 @@
-"""Ledger scan and held-row evidence shared by the pacing and watermark checks."""
 from __future__ import annotations
 
 import re
@@ -6,7 +5,7 @@ from collections import Counter
 
 TX_START = re.compile(r"ingest_tx_scan_start account=(\S+) mode=(\w+)")
 SCAN_END = re.compile(r"ingest_tx_scan_end account=(\S+) ")
-IN_FLIGHT = ("refreshing", "backfilling")   # transaction_ingest_decide.IN_FLIGHT: a tick under way
+IN_FLIGHT = ("refreshing", "backfilling")
 _SCAN_KEYS = ("done", "cursor", "status", "failures", "last_error", "floor", "newest", "paused_until", "last_full_at",
               "full_walk_failures")
 
@@ -29,7 +28,6 @@ def scan_one(w, aid: str) -> dict:
 
 
 def held(w, aid: str) -> tuple[Counter, int, int]:
-    """Provider id -> rows, their amount cents, and the Creator's fan lifetime cents."""
     con = w.sql()
     ids = Counter(str(r[0]) for r in con.execute(
         "SELECT provider_transaction_id FROM transactions WHERE account_id = ? AND provider_transaction_id IS NOT NULL",

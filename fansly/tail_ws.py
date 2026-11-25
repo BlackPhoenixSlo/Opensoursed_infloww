@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""Ad-hoc wsv3 tailer — the Fansly twin of `of_ws.py`'s __main__ tailer.
-
-Prints every frame's serviceId/type and any TRANSLATED event, so a real inbound
-DM can be watched end to end without the relay running:
-
-    ./venv/bin/python fansly/tail_ws.py
-
-Never prints the auth frame body — the token must not reach the log.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -41,8 +32,7 @@ async def _tail() -> None:
             env = json.loads(frame.get("d") or "{}")
             ev = json.loads(env.get("event") or "{}")
             print(f"[frame] serviceId={env.get('serviceId')} type={ev.get('type')}")
-            # Raw non-auth envelope, for the two-account evidence run (prompt 06).
-            # Never the t==1 auth frame — that carries the token.
+            # Never the t==1 auth frame: it carries the token.
             with open("/tmp/creator_ws_raw.jsonl", "a") as fh:
                 fh.write(json.dumps({"serviceId": env.get("serviceId"), "event": ev}) + "\n")
         out = orig(frame)

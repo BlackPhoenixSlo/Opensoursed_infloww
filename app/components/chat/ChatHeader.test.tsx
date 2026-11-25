@@ -1,17 +1,9 @@
-/**
- * ChatHeader — the Chat header Region of the Thread.
- *
- * Seam 1 of docs/spec/phase-03-chat-header-message-list.md (Testing
- * Decisions). Ticket 84 moved the header row out of ChatSurface unchanged;
- * these cases pin the callbacks the Thread hands it, so each later Chat header
- * ticket (85 to 96) can change one part of the row against a test.
- *
- * The relay client is mocked at its module boundary, as
- * `MoneyRail.render.test.tsx` mocks it, the session contexts are stubbed as
- * `windowed.test.tsx` stubs them. Fixture identifiers are invented. The Avatar menu's cases
- * and the verified badge's are in `ChatHeader.avatarMenu.test.tsx`.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+const platform = vi.hoisted(() => ({ current: "onlyfans" as "onlyfans" | "fansly" }));
+vi.mock("@/hooks/useCan", async () => {
+  const { can } = await import("@/lib/platform");
+  return { useCan: (_: unknown, cap: Parameters<typeof can>[1]) => can(platform.current, cap) };
+});
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -20,7 +12,6 @@ const { relayGet, relayPost, relayDelete } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/relay", async (importOriginal) => ({
-  // The real `describeLoadError`, which the Chat gallery's error state reads.
   describeLoadError: (await importOriginal<typeof import("@/lib/relay")>()).describeLoadError,
   relay: {
     get: (...args: unknown[]) => relayGet(...args),
@@ -30,11 +21,9 @@ vi.mock("@/lib/relay", async (importOriginal) => ({
   proxyImage: () => "",
 }));
 
-/** Function permissions the role denies (`useActionAllowed`); none unless a case adds one. */
 const denied = vi.hoisted(() => new Set<string>());
 vi.mock("@/components/shell/useGrantedPages", () => ({ useActionAllowed: (action: string) => !denied.has(action) }));
 
-// An owner signed in, no chatter, no employee (as windowed.test.tsx stubs them).
 vi.mock("@/contexts/UserContext", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/contexts/UserContext")>();
   const value = { user: { user_id: "u-owner", username: "owner" }, loading: false, logout: vi.fn() };
@@ -96,34 +85,28 @@ function renderHeader(over: Partial<Props> = {}, client?: QueryClient) {
   return { props, rerender };
 }
 
-/** The relay serves `routes` by exact path, `{}` elsewhere. */
 const serve = (routes: Record<string, unknown> = {}) =>
   relayGet.mockImplementation(async (path: string) => {
     if (path === "/admin/accounts") return { accounts: [] };
     return path in routes ? routes[path] : {};
   });
 
-/** Opens the Kebab menu and returns it, found through its "Hide chats" row. */
 async function openKebab(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "More actions" }));
   return (await screen.findByRole("button", { name: /Hide chats$/ })).parentElement!;
 }
 
-/** The Kebab row that opens the Chat header Extras overflow (ticket 140). */
 const extrasRow = () => screen.getByRole("button", { name: "Inflowwww extras" });
-/** The Extras overflow, the box that row names, or null while it is closed. */
 const submenu = () => {
   const id = screen.queryByRole("button", { name: "Inflowwww extras" })?.getAttribute("aria-controls");
   return id ? document.getElementById(id) : null;
 };
-/** Opens the overflow through the Kebab menu's last row and returns it. */
 async function openExtras(user: ReturnType<typeof userEvent.setup>) {
   await openKebab(user);
   await user.click(extrasRow());
   return submenu()!;
 }
 
-// Restrict and Block ask first; declined unless a case accepts.
 let confirm: MockInstance<typeof window.confirm>;
 beforeEach(() => {
   relayPost.mockReset().mockResolvedValue({});
@@ -139,7 +122,29 @@ afterEach(() => {
   denied.clear();
   vi.unstubAllGlobals();
   confirm.mockRestore();
+  platform.current = "onlyfans";
   for (const fn of windowListeners.splice(0)) window.removeEventListener("keydown", fn);
+});
+
+describe("ChatHeader on a Fansly Creator", () => {
+  it("renders no Gallery, Find, Restrict, Block, Mark as unread or Special offers", async () => {
+    platform.current = "fansly";
+    const user = userEvent.setup();
+    renderHeader();
+    expect(screen.queryByRole("button", { name: /Gallery/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Find/ })).toBeNull();
+
+    const kebab = await openKebab(user);
+    expect(within(kebab).queryByRole("button", { name: /Restrict|Block/ })).toBeNull();
+    await user.click(extrasRow());
+    expect(within(submenu()!).queryByRole("button", { name: "Mark as unread" })).toBeNull();
+    await user.keyboard("{Escape}{Escape}");
+
+    await user.click(screen.getByTitle("Avatar menu"));
+    const avatar = await screen.findByRole("menu", { name: "Avatar menu" });
+    expect(within(avatar).queryByRole("button", { name: /Special offers/ })).toBeNull();
+    expect(within(avatar).getByRole("button", { name: "Add to lists ▸" })).toBeInTheDocument();
+  });
 });
 
 describe("ChatHeader", () => {
@@ -170,7 +175,6 @@ describe("ChatHeader", () => {
 
     await user.click(screen.getByRole("button", { name: "Back" }));
     expect(onBack).toHaveBeenCalledTimes(1);
-    // Infloww's "←" shows at every width (page-parity 07 CH6), so lg+ clears the open Fan too.
     expect(screen.getByRole("button", { name: "Back" })).not.toHaveClass("lg:hidden");
     expect(screen.getByRole("button", { name: "Back" }).querySelector("svg")).toHaveClass("lucide-arrow-left");
     expect(screen.getByRole("button", { name: "Fan insights" })).toBeInTheDocument();
@@ -183,8 +187,6 @@ describe("ChatHeader", () => {
 
   describe("right group (ticket 90)", () => {
     it('with 100 Fan tabs stored, "Open in new tab" is disabled with "Fan tab limit reached (100)"', async () => {
-      // Seeded as FanTabs.test.tsx seeds the cap, under this owner's Employee key
-      // (no Employee picked, so the signed-in user's id).
       const KEY = "chatterly:fan-tabs:v1:u-owner";
       window.localStorage.setItem(KEY, JSON.stringify(Array.from({ length: 100 }, (_, i) => (
         { accountId: ACCOUNT_ID, fanId: String(600 + i), name: `Fixture Fan ${600 + i}` }))));
@@ -221,8 +223,6 @@ describe("ChatHeader", () => {
 
     it('"Inflowwww extras ▸" toggles the overflow beside the Kebab box; one Escape closes one layer, the submenu then the Kebab menu, and Find never hears it; a pointer-down in the submenu keeps both; one outside closes both', async () => {
       const user = userEvent.setup();
-      // With Find open, an Escape closes a menu layer only: Find's panel
-      // (ChatSearch) closes on a `window` Escape, stood in for here.
       const { props } = renderHeader({ findOpen: true });
       const findEscape = vi.fn();
       const onWindowKey = (e: KeyboardEvent) => { if (e.key === "Escape") findEscape(); };
@@ -231,8 +231,6 @@ describe("ChatHeader", () => {
       const kebabOpen = () => screen.queryByRole("button", { name: /Hide chats$/ }) !== null;
 
       const kebab = await openKebab(user);
-      // Both are menus (`role="menu"`): a page-level Esc handler leaves the
-      // Esc that closes one alone.
       expect(kebab).toHaveAttribute("role", "menu");
       expect(kebab).toHaveAccessibleName("More actions");
       expect(extrasRow()).toHaveTextContent("Inflowwww extras ▸");
@@ -265,7 +263,6 @@ describe("ChatHeader", () => {
   });
 
   describe("Extras overflow (ticket 92)", () => {
-    // Two queued sends to this Fan, seeded where the Scheduled row reads them.
     const SCHEDULED = [1, 2].map((id) => ({
       id, text: `Fixture queued send ${id}`, scheduledDate: "2026-11-01T10:00:00Z", price: 0, lockedText: false,
       mediaCount: 0, media: [], userIds: [FAN_ID], userLists: [], groups: [], __accountId: ACCOUNT_ID,
@@ -274,7 +271,6 @@ describe("ChatHeader", () => {
     const CHATS_KEY = ["chats", "model", ACCOUNT_ID, null, null, null, 25];
     const seeded = () => {
       const client = makeTestQueryClient();
-      // The house client collects unobserved data at once; these seeds must outlive the render.
       client.setDefaultOptions({ queries: { retry: false, gcTime: Infinity, staleTime: 0 } });
       client.setQueryData(["scheduled", ACCOUNT_ID], SCHEDULED);
       client.setQueryData(CHATS_KEY, { pages: [{ rows: [ROW], hasMore: false }], pageParams: [null] });
@@ -304,7 +300,6 @@ describe("ChatHeader", () => {
     });
 
     it('with nothing seeded, the four rows show at once: "Scheduled …" while the queue loads, then "Scheduled 0", disabled, and no row moves', async () => {
-      // The queue answers only when the case says so, so the loading row can be read.
       let answer: (v: { list: [] }) => void = () => {};
       const queue = new Promise<{ list: [] }>((resolve) => { answer = resolve; });
       relayGet.mockImplementation(async (path: string) => {
@@ -330,8 +325,6 @@ describe("ChatHeader", () => {
       expect(loaded[0]).toBeDisabled();
       expect(loaded.slice(1)).toEqual(loading.slice(1));
 
-      // A failed queue request is not "nothing queued": it reads "—", disabled,
-      // with the relay's error in its tooltip.
       cleanup();
       relayGet.mockImplementation(async (path: string) => {
         if (path === "/admin/accounts") return { accounts: [] };
@@ -356,7 +349,6 @@ describe("ChatHeader", () => {
 
       await openKebab(user);
       expect(screen.queryByRole("button", { name: /Mark as unread|MASSppvEXCLUDE|MASSdmEXCLUDE/ })).toBeNull();
-      // The overflow opens from the Kebab menu's last row.
       await user.click(extrasRow());
       await user.click(within(submenu()!).getByRole("button", { name: "Mark as unread" }));
       await waitFor(() => expect(relayDelete).toHaveBeenCalledWith(
@@ -366,7 +358,7 @@ describe("ChatHeader", () => {
       expect(chats?.pages[0].rows[0]).toMatchObject({ hasUnread: true, unreadMessagesCount: 1 });
     });
 
-    it("Mark as unread on a Fansly account (the relay's 501) shows the error and leaves the row read", async () => {
+    it("a refused Mark as unread (a Relay 501) shows the error and leaves the row read", async () => {
       const user = userEvent.setup();
       const client = seeded();
       const before = client.getQueryData<{ pages: { rows: OFChatItem[] }[] }>(CHATS_KEY)?.pages[0].rows[0];
@@ -449,7 +441,6 @@ describe("ChatHeader", () => {
 
   describe("icon row (tickets 86, 87, 88)", () => {
     const MUTE_ROUTE = `/api/of/v2/chats/${FAN_ID}/mute`;
-    /** Every button whose accessible name is `label`, alone or after the Kebab row's glyph. */
     const named = (label: string) => screen.queryAllByRole("button", { name: new RegExp(`^\\W*${label}$`, "u") });
 
     it('line 1 holds back, "Avatar menu", "Edit name", "Open in new tab", "Refresh", "Fan insights" and "More actions", line 2 Priority, mute, Notes, Pinned chat, "Gallery" and "Find", in DOM order, and no Persona, "Inflowwww extras", "Message statistics" or "pop out" button shows (tickets 140, 141, 142)', () => {
@@ -463,7 +454,6 @@ describe("ChatHeader", () => {
         expect(got).toHaveLength(want[i].length);
         want[i].forEach((name, j) => expect(got[j], name).toBe(button(name)));
       });
-      // Line 2's buttons are 24px targets over the "Avatar menu" button (WCAG 2.5.8).
       within(lines[1]).getAllByRole("button").forEach((b) => expect(b).toHaveClass(...MP.chatHeader.lineTarget.split(" ")));
       expect(lines[0].compareDocumentPosition(lines[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(screen.queryAllByRole("button", { name: /^(Persona|Inflowwww extras|Message statistics)$/ })).toHaveLength(0);
@@ -496,8 +486,6 @@ describe("ChatHeader", () => {
     });
 
     it('Gallery opens "Chat gallery": one tile per media item, price tags on the paid ones, both directions and purchased or not (ticket 88)', async () => {
-      // Synthetic chat media: a paid PPV with two files, a free item with
-      // one, and a file with no URL (the Clone skips it, m.js:2629).
       const file = (n: number) => ({ thumb: { url: `https://cdn.example.test/m${n}.jpg` } });
       const page = {
         list: [
@@ -515,7 +503,6 @@ describe("ChatHeader", () => {
         if (path.startsWith(`/api/of/v2/chats/${FAN_ID}/media?`)) return page;
         return {};
       });
-      // jsdom has no IntersectionObserver, which MediaTile's lazy path builds.
       vi.stubGlobal("IntersectionObserver", class { observe() {} disconnect() {} });
       const user = userEvent.setup();
       renderHeader();
@@ -525,7 +512,6 @@ describe("ChatHeader", () => {
       const sheet = screen.getByRole("dialog", { name: "Chat gallery" });
       await waitFor(() => expect(within(sheet).getAllByRole("listitem")).toHaveLength(3));
       expect(within(sheet).getAllByText("$15")).toHaveLength(2);
-      // The free item's tile carries no tag.
       expect(within(sheet).getAllByRole("listitem")[2]).toHaveTextContent(/^$/);
       expect(within(sheet).queryByText("$0")).not.toBeInTheDocument();
 
@@ -536,19 +522,15 @@ describe("ChatHeader", () => {
       expect(qs.has("from_user")).toBe(false);
       expect(qs.has("purchased")).toBe(false);
 
-      // It closes from its head, focus back on its opener.
       expect(within(sheet).getByRole("button", { name: "Close" })).toHaveFocus();
       await user.click(within(sheet).getByRole("button", { name: "Close" }));
       expect(screen.queryByRole("dialog", { name: "Chat gallery" })).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Gallery" })).toHaveFocus();
-      // And from its backdrop.
       await user.click(screen.getByRole("button", { name: "Gallery" }));
       const backdrop = screen.getByRole("dialog", { name: "Chat gallery" }).parentElement!.querySelector<HTMLElement>("button[aria-hidden]")!;
       await user.click(backdrop);
       expect(screen.queryByRole("dialog", { name: "Chat gallery" })).not.toBeInTheDocument();
 
-      // With Find open, one Escape closes the Gallery only: Find's panel
-      // (ChatSearch) closes on a `window` Escape, stood in for here.
       cleanup();
       const { props } = renderHeader({ findOpen: true });
       const findEscape = vi.fn();
@@ -565,7 +547,6 @@ describe("ChatHeader", () => {
       expect(screen.getByRole("button", { name: "Gallery" })).toHaveFocus();
     });
 
-    // Synthetic Chat gallery pages for ticket 89's cases: one photo per item.
     const galleryItem = (id: number, mediaId: number) => ({
       id, text: "", price: 0, isFree: true, isOpened: true, isFromQueue: false, mediaCount: 1,
       createdAt: "2026-10-01T10:00:00Z", fromUser: { id: FAN_ID },
@@ -599,7 +580,6 @@ describe("ChatHeader", () => {
       await waitFor(() => expect(within(sheet).getAllByRole("listitem")).toHaveLength(3));
       expect(mediaCalls()).toHaveLength(2);
       expect(mediaCalls()[1].get("last_id")).toBe("21");
-      // The relay reports no further page, so "Load more" goes.
       expect(within(sheet).queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
     });
 
@@ -617,10 +597,8 @@ describe("ChatHeader", () => {
       await user.click(within(sheet).getByRole("button", { name: "Load more" }));
       const alert = await within(sheet).findByRole("alert");
       expect(alert).toHaveTextContent(/upstream 502: fixture page two down/);
-      // The tiles that loaded stay, and the notice follows the grid.
       expect(within(sheet).getAllByRole("listitem")).toHaveLength(2);
       expect(within(sheet).getByRole("list").compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      // One "↻ Refresh", in the head.
       expect(within(sheet).getAllByRole("button", { name: "↻ Refresh" })).toHaveLength(1);
     });
 
@@ -648,7 +626,6 @@ describe("ChatHeader", () => {
       const user = userEvent.setup();
       const sheet = await openGallery(user);
       expect(await within(sheet).findByText(/upstream 502: fixture gateway down/)).toBeInTheDocument();
-      // Nothing pretends to have loaded.
       expect(within(sheet).queryByRole("listitem")).not.toBeInTheDocument();
       expect(within(sheet).queryByText("No media in this chat")).not.toBeInTheDocument();
       expect(mediaCalls()).toHaveLength(1);
@@ -711,14 +688,11 @@ describe("ChatHeader", () => {
       expect(named("Mute notifications")).toHaveLength(2);
       expect(named("Unmute notifications")).toHaveLength(0);
 
-      // Infloww's plain bell while unmuted, struck through once muted (page-parity 07 CH7).
       const glyph = (name: string) => screen.getByRole("button", { name }).querySelector("svg")!;
       expect(glyph("Mute notifications")).toHaveClass("lucide-bell");
-      // The icon is named exactly; the Kebab row's name starts with its glyph.
       await user.click(screen.getByRole("button", { name: "Mute notifications" }));
       expect(relayPost).toHaveBeenCalledTimes(1);
       expect(relayPost.mock.calls[0][0]).toBe(MUTE_ROUTE);
-      // A click outside the Kebab menu closes it, so it is opened again to read its row.
       await waitFor(() => expect(screen.getByRole("button", { name: "Unmute notifications" })).toBeInTheDocument());
       expect(glyph("Unmute notifications")).toHaveClass("lucide-bell-off");
       await user.click(screen.getByRole("button", { name: "More actions" }));
@@ -732,7 +706,6 @@ describe("ChatHeader", () => {
       expect(relayDelete.mock.calls[0][0]).toBe(MUTE_ROUTE);
       await waitFor(() => expect(named("Mute notifications")).toHaveLength(2));
       expect(named("Unmute notifications")).toHaveLength(0);
-      // The Kebab menu keeps its status line.
       expect(screen.getByText(/Notifications unmuted/)).toBeInTheDocument();
       expect(relayPost).toHaveBeenCalledTimes(1);
     });
@@ -762,7 +735,6 @@ describe("ChatHeader", () => {
   describe("Restrict and Block confirm (ticket 94)", () => {
     const RESTRICT = `/api/of/v2/users/${FAN_ID}/restrict`;
     const BLOCK = `/api/of/v2/users/${FAN_ID}/block`;
-    /** The OF user the relay serves for this Fan. */
     const relayWith = (ofUser: Record<string, unknown>) => serve({ [`/api/of/v2/users/${FAN_ID}`]: ofUser });
 
     it("Restrict and Block are the first two rows; Restrict asks first, a declined confirm makes no call, an accepted one POSTs the restrict route with ack=false and the status line drops \"Sent “.”\"; Lift restrict asks, then DELETEs", async () => {
@@ -806,7 +778,6 @@ describe("ChatHeader", () => {
 
     it("Block asks first, POSTs the block route and refreshes the Fan's OF user, then reads \"Unblock\", which asks and DELETEs; a declined confirm makes no call; a rejected call shows the relay's error in the menu", async () => {
       const user = userEvent.setup();
-      // OF's state: blocked once the POST lands.
       let isBlocked = false;
       relayGet.mockImplementation(async (path: string) =>
         path === `/api/of/v2/users/${FAN_ID}` ? { id: FAN_ID, isBlocked } : path === "/admin/accounts" ? { accounts: [] } : {});
@@ -826,10 +797,8 @@ describe("ChatHeader", () => {
       expect(await within(menu).findByRole("button", { name: /Unblock$/ })).toBeInTheDocument();
       expect(within(menu).queryByRole("button", { name: /\bBlock$/ })).toBeNull();
       expect(within(menu).getByText(/Blocked on OnlyFans/)).toBeInTheDocument();
-      // The Fan's OF user is fetched again from the relay.
       await waitFor(() => expect(userReads()).toBe(2));
 
-      // The row still reads "Unblock" when the menu is opened again.
       await user.keyboard("{Escape}");
       await waitFor(() => expect(screen.queryByRole("button", { name: /Hide chat/ })).toBeNull());
       const again = await openKebab(user);
@@ -858,7 +827,6 @@ describe("ChatHeader", () => {
       expect(await within(menu).findByRole("button", { name: /\bBlock$/ })).toBeInTheDocument();
       expect(relayPost).not.toHaveBeenCalled();
 
-      // Only the chat row says so (the OF user carries no flag): still "Unblock".
       cleanup();
       relayWith({ id: FAN_ID });
       renderHeader({ chat: { ...CHAT, withUser: { ...CHAT.withUser, isBlocked: true } } as OFChatItem });
@@ -869,11 +837,9 @@ describe("ChatHeader", () => {
   describe("Kebab rows and Copy chat link (ticket 96)", () => {
     const HIDE = `/api/of/v2/chats/${FAN_ID}/hide`;
     beforeEach(() => { serve({ [AUTOMATION_RESTRICT]: { restricted: false, reason: null } }); });
-    // Spied after `userEvent.setup()`, which installs its own clipboard.
     let writeText: MockInstance<Clipboard["writeText"]> | undefined;
     afterEach(() => writeText?.mockRestore());
 
-    /** The Kebab menu's rows and dividers ("|"), in DOM order, by accessible name. */
     const layout = (menu: HTMLElement) => [...menu.querySelectorAll<HTMLElement>('button, a, [role="separator"]')]
       .map((el) => el.getAttribute("role") === "separator" ? "|" : (el.getAttribute("aria-label") ?? el.textContent ?? "").replace(/^\W+/u, ""));
     const STATS = ["|", "Mass message statistics", "Online fans message statistics"];

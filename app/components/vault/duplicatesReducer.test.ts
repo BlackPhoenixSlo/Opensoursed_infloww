@@ -65,7 +65,7 @@ describe("allOff", () => {
 describe("threshold", () => {
   it.each([
     ["idle", "idle"],
-    ["confirming", "idle"], // the bug: confirm used to stay on for an unreviewed scan
+    ["confirming", "idle"],
     ["done", "idle"],
     ["error", "idle"],
   ] as const)("in %s → %s, unticked set reset, new threshold", (from, to) => {
@@ -80,7 +80,7 @@ describe("threshold", () => {
 describe("toggle / toggleSet", () => {
   it.each([
     ["idle", "idle"],
-    ["confirming", "idle"], // ticking a box cancels the confirm, never edits the frozen set
+    ["confirming", "idle"],
     ["done", "done"],
     ["error", "error"],
   ] as const)("toggle in %s → %s", (from, to) => {
@@ -113,7 +113,7 @@ describe("confirm / cancel", () => {
     const ids = [11, 12];
     const s = duplicatesReducer(at(from), { type: "confirm", ids });
     expect(s.phase).toEqual({ kind: "confirming", frozenIds: [11, 12], threshold: 2 });
-    ids.push(99); // a later change to the caller's array cannot leak in
+    ids.push(99);
     expect(hidePayload(s)).toEqual({ ids: [11, 12], threshold: 2 });
   });
   it("confirm in confirming is ignored", () => {
@@ -151,7 +151,7 @@ describe("hide lifecycle", () => {
     expect(hidePayload(s)).toEqual({ ids: [11, 12], threshold: 2 });
     s = duplicatesReducer(s, { type: "hideStart" });
     expect(s.phase).toEqual({ kind: "hiding", frozenIds: [11, 12], done: 0 });
-    expect(hidePayload(s)).toBeNull(); // no second request while one is out
+    expect(hidePayload(s)).toBeNull();
     s = duplicatesReducer(s, { type: "progress", done: 1 });
     expect(s.phase).toEqual({ kind: "hiding", frozenIds: [11, 12], done: 1 });
     s = duplicatesReducer(s, { type: "hideOk", result: RESULT });

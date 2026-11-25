@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bindQr, drawQr, exportSize, qrSize, qrSrc } from "./ofMirrorQr";
 
-/** Settings > QR code: OF's own code (qrcode-svg, ecl H, 6px dots, logo or avatar, URL line), its switches, Download. */
 
 const load = () => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, "../public/of-mirror/pages/settings/qrcode.html"), "utf8");
@@ -130,7 +129,6 @@ describe("the page", () => {
       clicks.push(this.download);
     });
     vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,AAAA");
-    // jsdom loads no image: fire each one's load as the browser would.
     const real = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src")!;
     Object.defineProperty(HTMLImageElement.prototype, "src", {
       ...real,

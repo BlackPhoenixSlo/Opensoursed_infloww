@@ -1,11 +1,3 @@
-/**
- * VaultFolderRail's Customize order → Done, driven as the owner drives it (sort menu, drag, check): the folder list
- * in the query cache takes the dragged order once OF took it (the sort POST answered), without waiting for the
- * parent's refetch (`onChanged` here refetches nothing); before that answer, and when OF refuses, the cache keeps
- * OF's order. The label follows the sort only once OF took it, and is the one the real `sortOfFolders` saved (only
- * the relay's POST is faked), so the rail's label and the stored one cannot drift. At mount the rail has its
- * cached folder list read again (a sort set elsewhere may have reordered it).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { QueryClient } from "@tanstack/react-query";
@@ -27,7 +19,6 @@ import { loadFolderSort } from "@/components/vault/vaultFolderSort";
 const AID = "1000001";
 const folder = (id: number, name: string): VaultList => ({ id, name, type: "custom", hasMedia: false });
 const FOLDERS = [folder(1, "Alpha"), folder(2, "Beta"), folder(3, "Gamma")];
-/** The header's sort button: its text is the label. */
 const sortButton = () => screen.getByTitle(/^Sort — the name shown is saved in this browser/);
 
 const newClient = () => new QueryClient({ defaultOptions: { queries: { gcTime: Infinity, retry: false } } });
@@ -39,14 +30,12 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-/** `qc`: one whose folder list is already cached (the rail reads it at mount); else the list is cached after. */
 function setup(qc?: QueryClient) {
   const onChanged = vi.fn();
   const utils = renderWithProviders(
     <VaultFolderRail folders={FOLDERS} loading={false} error={false} onRetry={() => {}} selectedId={null}
       onSelect={() => {}} onChanged={onChanged} onDownloadFolder={() => {}}
       downloadFolderGate={{ reason: "", desktopOnly: false, queues: false }} />,
-    // The rail only writes the folder list (the panel reads it), so nothing observes it here: kept, not collected.
     qc ?? newClient(),
   );
   if (!qc) utils.queryClient.setQueryData<VaultListsResp>(vaultListsKey(AID), { list: FOLDERS });
@@ -55,7 +44,6 @@ function setup(qc?: QueryClient) {
   return { onChanged, cached, label };
 }
 
-/** Sort menu → Customize order, drag Gamma onto Alpha (Gamma takes Alpha's slot), then the check. */
 async function customizeGammaFirst() {
   fireEvent.click(sortButton());
   fireEvent.click(screen.getByRole("menuitem", { name: "Customize order" }));
@@ -80,7 +68,6 @@ describe("VaultFolderRail Customize order → Done", () => {
     await customizeGammaFirst();
 
     expect(h.post).toHaveBeenCalledWith("/admin/vault-ai/of-folders/sort", expect.objectContaining({ custom_order: [3, 1, 2] }), { accountId: AID });
-    // The POST is in flight: OF's order still, label unchanged, no refetch asked.
     expect(cached()).toEqual(["Alpha", "Beta", "Gamma"]);
     expect(onChanged).not.toHaveBeenCalled();
     expect(label()).toBe("Default");

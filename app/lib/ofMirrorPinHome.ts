@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * Home's feed tabs pencil (home/state-feed-tabs-edit, OF's "Pin to home", ModalPinCollectionsFilters), ticket 19:
- * - its rows: the Creator's lists from the Relay's /lists read (USER_LISTS, the cache Collections shares), the ones OF
- *   lets pin (OF's own read asks `filter=can_pin`; here canPinnedToFeed not false), ticked as OF's isPinnedToFeed. The
- *   rows are unmarked, so a tick is bindWrites' Read-only note and flips back: the pin sends nothing (Phase 2's).
- * - its Sort (title kept, D1): OF's lists sort menu (ofMirrorDataLists' FOLDER_SORTS: Recent, Name, People, Custom and
- *   the order), sorted here; a pick navigates to the dialog with ?fsort=&forder=, no Relay read.
- * All Creators (no model): no read, no rows, "Select a model to see its lists"; Sort gives the Select-model note.
- */
 
 import { useEffect, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -25,31 +16,22 @@ export const PIN_EMPTY_ALL = "Select a model to see its lists";
 const SORT = ".modal button[aria-label='Sort']";
 const ROWS = ".modal .b-rows-lists";
 
-/** A list as GET /lists sends it, with OF's Home pin fields. */
 export type PinList = UserList & { canPinnedToFeed?: boolean; isPinnedToFeed?: boolean };
 
-/** The context bindPinHome reads. */
 export interface PinHomeContext {
-  /** A single model is picked (false: All Creators, no read). */
   scoped: boolean;
-  /** The /lists answer's rows (undefined: none yet). */
   lists: PinList[] | undefined;
-  /** The read's error text (null: none). */
   error: string | null;
-  /** The dialog's ?fsort=&forder= (folderSortOf). */
   sort: FolderSort;
   navigate(href: string): void;
 }
 
-/** The lists OF lets pin to Home (canPinnedToFeed not false), in `sorted`. */
 export function pinHomeRows(lists: readonly PinList[] | undefined, sorted: FolderSort): PinList[] | undefined {
   return lists && sortFolders(lists.filter((l) => l.canPinnedToFeed !== false), sorted.sort, sorted.order);
 }
 
-/** The dialog in `sorted` (the default adds nothing: withListSort). */
 export const pinHomeHref = (sorted: FolderSort) => withListSort(PIN_PAGE, sorted);
 
-/** The line under the rows: All Creators, Loading…, the Relay's error, "Nothing found", or null (rows: hidden). */
 export function pinHomeStatus(s: { scoped: boolean; rows: readonly unknown[] | undefined; error: string | null }): string | null {
   if (!s.scoped) return PIN_EMPTY_ALL;
   if (s.error !== null) return `Could not load: ${s.error}`;
@@ -57,7 +39,6 @@ export function pinHomeStatus(s: { scoped: boolean; rows: readonly unknown[] | u
   return s.rows.length ? null : "Nothing found";
 }
 
-// OF's list row (its build's captured row, as messages/state-folders keeps it), its link a div: a click ticks the row.
 const ROW =
   '<label data-v-e201f478="" data-v-50dfc750="" class="b-rows-lists__item m-checkbox-row m-collection-item g-radio-container m-sm-height" data-v-62b39f36="">' +
   '<input type="checkbox" role="checkbox" tabindex="0" name="" class="b-input-radio" value="false"><span class="b-input-radio__label">' +
@@ -84,7 +65,6 @@ function row(doc: Document, l: PinList): HTMLElement {
   return el;
 }
 
-/** Bind the Pin to home dialog in `doc` (none: nothing). Returns an unbind that puts the page back. */
 export function bindPinHome(doc: Document, ctx: PinHomeContext): () => void {
   const list = doc.querySelector(ROWS);
   const btn = doc.querySelector<HTMLButtonElement>(SORT);
@@ -121,7 +101,6 @@ export function bindPinHome(doc: Document, ctx: PinHomeContext): () => void {
 
 const isPage = (src: string) => src === "/of-mirror/pages/home/state-feed-tabs-edit.html";
 
-/** The Pin to home dialog: bind on every frame load and data or sort change. */
 export function useOfPinHome(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const router = useRouter();

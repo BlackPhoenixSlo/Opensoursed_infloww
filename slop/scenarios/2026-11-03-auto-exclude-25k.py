@@ -1,77 +1,3 @@
-"""A Creator's Auto_Exclude past OF's 20k paging backstop (service/audiences.py `ensure_exclude_list`,
-service/auto_exclude_decide.py): every list-audience send still excludes its whole contact guard, but
-syncs only the ids its mirror lacks; stale members go in a background refresh, single-flight per
-Creator, one short `broadcast_lock` hold per batch. A list under the backstop keeps today's crawl +
-adds + removes on every send.
-
-World: `agency_inbox` plus seed/auto_exclude_guard.py: big Creators (SCALES
-`auto_exclude_big_creators`) with a pre-made Auto_Exclude of `--ae_members` (SCALES
-`auto_exclude_members`, past 20k) and one control Creator (the last; `--ae_control_members`, SCALES
-`auto_exclude_control_members`, under it). Per Creator a guard (outbound 10-240 min ago, inside the 6 h
-window), stale members (out of every window), open fans (never messaged) and, on a big Creator,
-REFUSED guard ids OF will not list. OF's side (roster, lists, adds, sends) is lib/auto_exclude_relay.py
-on the lane's offline client.
-
-Drive: one cold send per Creator (`/__slop/run-automation`, payload: the warm-up); then `--users`
-list-audience sends (`user_lists ["fans"]`, each naming CHURN pool ids in `excluded_users`, so the
-guard moves) enqueued through the real `POST /admin/automation/enqueue` at seeded offsets over
-LOAD_S, round-robin big..., control; one driver per Creator claims them (`/__slop/run-automation
-{claim: true}`: the product's claim, run slot, `run_once`, per-(account, kind) lock and write gate).
-
-Racing them, composer blasts: per Creator `max(MANUAL_PAIRS_MIN, users // MANUAL_USERS_PER_PAIR)` pairs at
-seeded offsets, both of a pair at once (two chatters on one Creator). A chatter blasts again only once its
-last blast answered; none begins past the drain deadline. Each is the composer's real `POST
-/api/of/v2/messages/queue` (owner session, X-Account-Id): `user_lists ["fans"]`, the guard windows
-(`exclude_replied_hours` / `exclude_inbound_hours` = GUARD_H, as the automations' guard) and MANUAL_K picks in
-`excluded_users`. The picks come from the Creator's MANUAL_POOL lowest-id fans outside the guard (outside the
-churn pools first), the two of a pair disjoint. The next send's sync (small list) or the next refresh batch (big
-list, ascending removes) takes them off Auto_Exclude, so a blast not holding the lock through its POST loses them.
-
-Once the first big Creator's first refresh ended (during the load; a slow one: after it, before the
-settle), DROP_N of its guard members are dropped on OF's side (`/__slop/auto-exclude/drop`). After
-the load drains, each big Creator settles: no refresh running,
-REFRESH_EVERY_S + 1 s quiet, one send (run-automation, no churn) that schedules a refresh, that
-refresh awaited, OF's list read.
-
-Checks (names in lib/auto_exclude_faults.py):
-  NO_EXCLUDED_SENT  per OF accept, no recipient was in the send's own `excluded_users` (the product's
-                    guard), its churn, or the seeded contact guard at that time (DB oracle; within
-                    EDGE_S of a window edge: either way), bar REFUSED ids and the dropped ids from the
-                    drop until the end of the first refresh that began after it.
-  SEND_LATENCY      budget: big Creators' enqueue -> OF accept p95 <= SEND_P95_S and <= control p95 x
-                    VS_CONTROL[0] + VS_CONTROL[1] s; a send not accepted by the drain deadline counts
-                    at the deadline.
-  CONVERGES         per big Creator after its settle refresh: guard (DB, bar edge) - refused <= list;
-                    list ∩ roster <= guard ∪ edge; no stale member past sorted index 20k left; that
-                    refresh read > 20k.
-  SINGLE_FLIGHT     refresh_begin / refresh_end alternate per Creator, >= 1 refresh per big Creator.
-  EXTERNAL_READD    the first refresh that began after the drop re-adds every dropped id a send had
-                    not re-added before it began (none re-added by a send after it began); all members
-                    again at its end.
-  SMALL_EXACT       the control's list at every automation accept == that send's `excluded_users` and
-                    holds its DB guard and churn; no refresh for it.
-  MANUAL_NO_EXCLUDED_SENT  NO_EXCLUDED_SENT's oracle over the composer blasts OF accepted (picks for
-                    churn), >= 1 accepted per Creator. Its own check (NO_EXCLUDED_SENT and SMALL_EXACT
-                    read automation sends only), so the composer route's fault reddens it alone. A blast
-                    not begun or not answered 200 is info only (5xx / transport: the stock check).
-P95_VS_LAST over the control's enqueue -> accept p95, `POST /admin/automation/enqueue` and the composer's
-`POST /api/of/v2/messages/queue` (the big
-Creators' p95 is SEND_LATENCY's, a fault's target).
-
-Bypasses (declared): OF is faked at the lane's client (lib/auto_exclude_relay.py: PAGE_MS a list page,
-ADD_MS an add / remove, ACCEPT_MS an accept: guesses); the 11 s per-Creator write gap compressed to
-GAP_S and the refresh cadence to REFRESH_EVERY_S (the rules the product's); the supervisor's cadence
-(a driver per Creator claims its next due job); the composer's client answers through the lane's
-(lib/auto_exclude_relay.py wraps `server._load_client`: one OF account); the composer blast sets the guard windows (the
-composer's default sends none: then the refresh would reconcile the big list to a blast's few picks); the warm-up and settle sends' queue claim (run-automation with a payload); the drop is
-an operator edit on OF (no product call).
-Break-it-once: `auto-exclude-refresh-blocks-send` (FAULT: the send runs the refresh inline):
-SEND_LATENCY; `auto-exclude-remove-unlocked` (batches unlocked, against the guard read at refresh
-start): NO_EXCLUDED_SENT; `auto-exclude-refresh-skips-readd`: EXTERNAL_READD;
-`auto-exclude-readds-whole-guard` (a big send re-adds its whole guard): SEND_LATENCY;
-`auto-exclude-manual-lock-early` (the composer releases `broadcast_lock` after the sync, pre-W24):
-MANUAL_NO_EXCLUDED_SENT.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -92,28 +18,28 @@ PROFILE = "agency_inbox"
 UI = False
 FAULT = "auto-exclude-refresh-blocks-send"
 P95_VS_LAST = (1.5, 500)
-PAGE_MS = 20                  # OF list page (guess)
-ADD_MS = 3                    # OF add / remove one user (guess)
-ACCEPT_MS = 400               # OF accepting a mass message (guess)
-GAP_S = 0.3                   # the 11 s per-Creator write gap, compressed
-REFRESH_EVERY_S = 8.0         # auto_exclude_decide.REFRESH_EVERY_S (600 s), compressed
+PAGE_MS = 20
+ADD_MS = 3
+ACCEPT_MS = 400
+GAP_S = 0.3
+REFRESH_EVERY_S = 8.0
 SEND_P95_S = 5.0
 VS_CONTROL = (1.5, 2.0)
-LOAD_S_PER_SEND, LOAD_S_MIN = 0.75, 30.0   # under both kinds of Creator's send rate (no queue)
+LOAD_S_PER_SEND, LOAD_S_MIN = 0.75, 30.0
 DRAIN_S = 240.0
 SETTLE_S = 300.0
-GUARD_H = {"out": 6, "in": 2}   # audiences.BROADCAST_DEFAULT_OUTBOUND_H / _INBOUND_H
+GUARD_H = {"out": 6, "in": 2}
 EDGE_S = 120
-BACKSTOP = 20_000             # of_paging.MAX_PAGES x LIST_PAGE
+BACKSTOP = 20_000
 REFUSED = 4
 POOL = {"stale": 300, "open": 60}
 CHURN = {"stale": 30, "open": 5}
 DROP_N = 5
 TEXT = "slop ae {}"
-MANUAL_PAIRS_MIN = 3          # composer blast pairs per Creator: max(MIN, users // USERS_PER_PAIR)
+MANUAL_PAIRS_MIN = 3
 MANUAL_USERS_PER_PAIR = 20
-MANUAL_K = 5                  # picks per composer blast
-MANUAL_POOL = 40              # lowest-id fans outside the guard a blast picks from
+MANUAL_K = 5
+MANUAL_POOL = 40
 MANUAL_TEXT = "slop ae manual {}"
 QUEUE = "/api/of/v2/messages/queue"
 
@@ -130,8 +56,6 @@ def _p95(xs: list[float]) -> float | None:
 
 
 def _window(last: dict[str, dict[int, float]], f: int, t: float) -> str | None:
-    """Fan `f` in the contact guard at `t`: "certain", "edge" (within EDGE_S of a window's edge in
-    some window, certain in none) or None."""
     best = None
     for d, h in GUARD_H.items():
         at = last[d].get(f)
@@ -150,7 +74,6 @@ def _p50(xs: list[float]) -> float | None:
 
 
 def _guard_at(last: dict[str, dict[int, float]], t: float) -> tuple[set[int], set[int]]:
-    """The contact guard at `t`: (certain, edge), by `_window`."""
     out: dict[str | None, set[int]] = {"certain": set(), "edge": set(), None: set()}
     for f in set().union(*last.values()):
         out[_window(last, f, t)].add(f)
@@ -158,7 +81,6 @@ def _guard_at(last: dict[str, dict[int, float]], t: float) -> tuple[set[int], se
 
 
 def _drop_window(refreshes: list[dict], aid: str, t_drop: float | None) -> tuple[dict | None, dict | None]:
-    """(begin, end) of `aid`'s first refresh that began at or after the drop; None where missing."""
     if t_drop is None:
         return None, None
     ev = [e for e in refreshes if e["account_id"] == aid]
@@ -169,7 +91,6 @@ def _drop_window(refreshes: list[dict], aid: str, t_drop: float | None) -> tuple
 
 
 def _check_no_excluded_sent(sends, by_text, last, refused, drop) -> tuple[bool, dict]:
-    """`drop`: (account, dropped ids, t_drop, window end) or None. Returns (ok, info) + tolerated."""
     bad, tolerated = [], 0
     for e in sends:
         aid, t = e["account_id"], e["t"]
@@ -189,8 +110,6 @@ def _check_no_excluded_sent(sends, by_text, last, refused, drop) -> tuple[bool, 
 
 
 def _check_manual(manual, accepted, last, refused, drop) -> tuple[bool, dict]:
-    """NO_EXCLUDED_SENT's oracle over the composer blasts OF accepted (their picks as churn), >= 1 per
-    Creator (its coverage floor). Not begun / not 200: info only."""
     sends = [accepted[m["text"]] for m in manual if m["text"] in accepted]
     ok, info = _check_no_excluded_sent(sends, {m["text"]: {"churn": m["picks"]} for m in manual}, last, refused, drop)
     off = [m["text"] for m in manual if m["text"] not in accepted]
@@ -199,7 +118,6 @@ def _check_manual(manual, accepted, last, refused, drop) -> tuple[bool, dict]:
 
 
 def _latencies(plan, accepted, control, t_drained) -> tuple[dict[str, list[float]], list[str]]:
-    """Enqueue -> OF accept per send, big vs control; an unaccepted send counts at `t_drained`."""
     lat: dict[str, list[float]] = {"big": [], "control": []}
     unaccepted = []
     for p in plan:
@@ -253,9 +171,6 @@ def _check_single_flight(accounts, control, refreshes) -> tuple[bool, dict]:
 
 
 def _check_external_readd(journal, aid, drop, drop_ids, window) -> tuple[bool, dict]:
-    """Each dropped id is put back by the first refresh after the drop, unless a send had already put
-    it back before that refresh began (nothing left for it then); a send putting it back after the
-    refresh began means the refresh left it."""
     t_drop = drop.get("t")
     if t_drop is None:
         return False, {"why": "no drop: big[0]'s first refresh never ended during the load"}
@@ -319,7 +234,6 @@ async def run(ctx) -> None:
     mpool = {aid: sorted(ae[aid]["roster"] - ae[aid]["guard"], key=lambda f, a=aid: (f in churned[a], f))[:MANUAL_POOL]
              for aid in sizes}
 
-    # OF's side: lib/automation_relay.py's lists (no per-call sleep: ours is PAGE_MS), our roster and sends.
     (tmp / "of-mass.json").write_text(json.dumps({"list_s": 0}))
     (tmp / "auto-exclude.json").write_text(json.dumps({
         "page_ms": PAGE_MS, "add_ms": ADD_MS, "accept_ms": ACCEPT_MS, "gap_s": GAP_S,
@@ -343,7 +257,6 @@ async def run(ctx) -> None:
         return r.json()["counts"]
 
     async def run_send(aid: str, text: str, churn: list[int]) -> dict:
-        """A send through run_once with a payload; retried while the pair's run is in flight."""
         t0 = time.perf_counter()
         while True:
             r = await ctx.owner.post("/__slop/run-automation", timeout=900, json={
@@ -355,7 +268,6 @@ async def run(ctx) -> None:
                         "ms": round((time.perf_counter() - t0) * 1000)}
             await asyncio.sleep(0.2)
 
-    # ── Warm-up: each Creator's first (cold) send ──────────────────────────────
     ctx.rec.stage = "warm"
     warm = dict(zip(sizes, await asyncio.gather(*(run_send(a, TEXT.format(f"warm {i}"), [])
                                                   for i, a in enumerate(sizes)))))
@@ -366,7 +278,6 @@ async def run(ctx) -> None:
                      "adds": c_warm.get(a, {}).get("adds_send", 0),
                      "refused": c_warm.get(a, {}).get("refused_send", 0)} for a in sizes}
 
-    # ── Load ────────────────────────────────────────────────────────────────
     n = max(1, ctx.users)
     load_s = max(LOAD_S_MIN, LOAD_S_PER_SEND * n)
     order = [*big, control]
@@ -396,14 +307,13 @@ async def run(ctx) -> None:
     drop: dict = {}
 
     async def driver(aid: str) -> None:
-        """The supervisor's dispatch for one Creator: claim its earliest due send, run it, again."""
         while not stop.is_set():
             try:
                 r = await drive_http.post("/__slop/run-automation", timeout=900, json={
                     "account_id": aid, "kind": "send_mass_message", "claim": True})
                 res = (r.json().get("result") or {}) if r.status_code == 200 else {}
             except httpx.HTTPError:
-                res = {}        # recorded (599): the stock transport check
+                res = {}
             if res.get("status") in (None, "skipped", "no_job") or res.get("reason") in ("no_job", "in_flight"):
                 await asyncio.sleep(0.1)
 
@@ -416,16 +326,13 @@ async def run(ctx) -> None:
         p["enq_http"] = r.status_code
 
     async def chatter(ms: list[dict], t0: float, deadline: float) -> None:
-        """One chatter's composer blasts in `at` order, each once the last one answered (the composer
-        waits on its send); none begun past the drain deadline."""
         for m in sorted(ms, key=lambda m: m["at"]):
             await asyncio.sleep(max(0.0, t0 + m["at"] - time.monotonic()))
             if time.monotonic() >= deadline:
-                continue    # not begun: http stays None
+                continue
             await blast(m, deadline)
 
     async def blast(m: dict, deadline: float) -> None:
-        """One composer blast: the real route, its picks plus the guard windows."""
         try:
             r = await man_http.post(QUEUE, headers={"X-Account-Id": m["aid"]},
                                     timeout=max(1.0, deadline - time.monotonic()), json={
@@ -434,7 +341,7 @@ async def run(ctx) -> None:
                                         "exclude_inbound_hours": GUARD_H["in"]})
             m["http"] = r.status_code
         except httpx.HTTPError:
-            pass        # http stays None: the stock transport check records it
+            pass
 
     async def dropper(t_load: float, deadline: float) -> None:
         aid = big[0]
@@ -450,7 +357,7 @@ async def run(ctx) -> None:
     t_load, t0 = time.time(), time.monotonic()
     deadline = t0 + load_s + DRAIN_S
     drivers = [asyncio.create_task(driver(a)) for a in sizes]
-    dropping = asyncio.create_task(dropper(t_load, deadline + SETTLE_S))   # a slow first refresh: after the load
+    dropping = asyncio.create_task(dropper(t_load, deadline + SETTLE_S))
     chatters: dict[tuple, list[dict]] = {}
     for m in manual:
         chatters.setdefault((m["aid"], m["chatter"]), []).append(m)
@@ -471,7 +378,6 @@ async def run(ctx) -> None:
     c_load = await counts()
     ctx.rec.stage = None
 
-    # ── Settle: quiet, one send per big Creator, its refresh awaited ─────────
     async def settle(i: int, aid: str) -> dict:
         end = time.monotonic() + SETTLE_S
 
@@ -507,7 +413,6 @@ async def run(ctx) -> None:
     for h in (drive_http, enq_http, man_http):
         await h.aclose()
 
-    # ── Verdicts ──────────────────────────────────────────────────────────────
     J = journal()
     sends = [e for e in J if e["ev"] == "send"]
     accepted = {e["text"]: e for e in sends}
@@ -536,7 +441,6 @@ async def run(ctx) -> None:
     ctx.check(MANUAL_NO_EXCLUDED_SENT, ok, **info)
     p95_big, p95_ctl = _p95(lat["big"]), _p95(lat["control"])
 
-    # ── Metrics ───────────────────────────────────────────────────────────────
     holds = [e["ms"] for e in J if e["ev"] == "hold"]
     big_load = [p for p in plan if p["aid"] != control and p["text"] in accepted]
     adds_load = sum(c_load.get(a, {}).get("adds_send", 0) - c_warm.get(a, {}).get("adds_send", 0) for a in big)

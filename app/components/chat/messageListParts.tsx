@@ -1,9 +1,3 @@
-/**
- * MessageList's small parts: a bubble's side, its text (HTML stripped, the 🌐
- * translate layer), its quote card, the Date divider and the Thread's runs.
- * MessageList re-exports the public ones.
- */
-
 import type { OFMessage } from "@/lib/relay";
 import type { BubbleTranslation } from "@/hooks/useTranslations";
 import { cn } from "@/lib/utils";
@@ -11,10 +5,6 @@ import { MP } from "@/lib/messagesPro";
 import { isOfHtml, ofPlainText } from "@/lib/ofRichText";
 import { OfRichText } from "./OfRichText";
 
-/** A Date divider's label (Phase 4 spec T4, F5): "Today" on `now`'s local
- *  day, the short month and day ("Sep 29") on another day of `now`'s year,
- *  yesterday included, and the year added in another year ("Sep 29, 2025"),
- *  in the browser locale. */
 export function dateDividerLabel(iso: string, now: Date): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -24,18 +14,11 @@ export function dateDividerLabel(iso: string, now: Date): string {
     : { month: "short", day: "numeric", year: "numeric" });
 }
 
-/** What a bubble's time row shows besides the time: its "Sent by" label and,
- *  on our side, its receipt. */
 export interface RunLabel {
   sentBy: string | null;
   receipt: "delivered" | "seen" | null;
 }
 
-/** A Thread's runs (Phase 4 spec, Interfaces): consecutive messages on one
- *  side, on one local day and in one displayed minute, with the same "Sent by"
- *  label and, on our side, the same receipt. A pending, failed or
- *  future-scheduled message is a run of its own. `labels[i]` is
- *  `messages[i]`'s. A run's avatar sits on its last bubble. */
 export function messageRuns(messages: OFMessage[], ownerUserId: number | null, labels: RunLabel[]): OFMessage[][] {
   const runs: OFMessage[][] = [];
   let prev: string | null = null;
@@ -63,9 +46,6 @@ export function QuoteCard({
   ownerUserId: number | null;
   onClick: () => void;
 }) {
-  // Decide who originated the quoted message — same direction test the
-  // host bubble uses. Label "You" vs the author name so the chatter can
-  // tell at a glance whether they're replying to their own send or the fan.
   const fromOwner =
     ownerUserId != null && replyTo.fromUser?.id === ownerUserId;
   const author =
@@ -99,19 +79,7 @@ export function QuoteCard({
   );
 }
 
-/** Which side a bubble sits on, resolved WITHOUT comparing ids against an
- *  async fetch. Priority:
- *   1. An explicit `_side` carried on the row — DB-seed rows derive it from
- *      the authoritative `direction` column (mapped in useChatMessagesLocal),
- *      so seeded text never has to wait on the owner id.
- *   2. Optimistic outbound (tempId < 0) — always ours, even before OF echoes
- *      a real fromUser.id.
- *   3. Live OF rows (no `direction`): compare fromUser.id to ownerUserId.
- *      ownerUserId is now hydrated synchronously from a per-account
- *      localStorage cache in ChatSurface, so the FIRST paint already has it
- *      and there is no left-then-right jump.
- *  relay.ts owns OFMessage; `_side` rides along as an optional intersection
- *  field rather than widening that shared type. */
+// Never wait on the async owner id: seeded rows carry _side from the direction column, optimistic sends (tempId < 0) are ours.
 export function resolveSide(
   m: OFMessage,
   ownerUserId: number | null,
@@ -122,8 +90,6 @@ export function resolveSide(
   return ownerUserId != null && m.fromUser?.id === ownerUserId ? "right" : "left";
 }
 
-// Per-language color for the "(es)" tag — same code, same color everywhere so
-// a chatter learns "amber = Spanish" at a glance. Unknown codes fall back to sky.
 const LANG_TAG_COLOR: Record<string, string> = {
   es: "text-warn",
   sl: "text-accent",
@@ -133,22 +99,15 @@ const LANG_TAG_COLOR: Record<string, string> = {
   it: "text-ok",
 };
 
-/** Bubble text with the 🌐 translate layer. When a translation exists and the
- *  detected language isn't English, render "(es)" (colored by language) + the
- *  English text; the original stays one hover away in the title tooltip.
- *  English / untranslated / toggle-off all render the plain original. */
 export function TranslatableText({ raw, translation, textClassName }: {
   raw: string;
   translation?: BubbleTranslation | null;
-  /** On the text span only, never the language tag: a PPV's title weight (ML11). */
   textClassName?: string;
 }) {
   const original = ofPlainText(raw);
   const t = translation;
   const show = !!t?.text && t.lang !== "en"
     && t.text.trim().toLowerCase() !== original.trim().toLowerCase();
-  // The original as the fan sees it: OF's formatting kept (plain bodies render exactly as plain text did).
-  // Not OF markup: the plain text as the bubble always drew it (tags dropped, entities decoded).
   if (!show && !isOfHtml(raw)) return <span className={textClassName}>{original}</span>;
   if (!show) return <OfRichText raw={raw} className={textClassName} />;
   return (

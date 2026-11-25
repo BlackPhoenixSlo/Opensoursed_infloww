@@ -1,24 +1,5 @@
 "use client";
 
-/**
- * CopilotPicker — the Composer's "AI" pill: Infloww's AI Copilot
- * (help.infloww.com articles 262036 and 262040). Click "AI", pick Casual,
- * Re-engage, Tip request or Sexting, and the Relay suggests three replies for
- * this Fan's thread (`POST /admin/copilot/{account}/{fan}/suggest`). Clicking
- * one inserts it at the cursor, where the employee edits it and presses Send;
- * nothing is ever sent from here. "Regenerate" asks again with the set on
- * screen as `avoid`, so the next set differs.
- *
- * One request per click: a mode generates only when picked, re-picking the mode
- * already on screen does nothing, and suggestions survive closing the panel.
- * The Composer keys this by account and Fan, so a Fan switch starts clean (an
- * answer still in flight lands on the unmounted picker and is dropped). Errors
- * print the Relay's sentence; a missing AI key is also announced app-wide by
- * the relay client (ApiKeyError).
- *
- * Opens UPWARD and right-aligned (the pill sits at the right end of the
- * Composer's button row). Closes on outside click.
- */
 
 import { useEffect, useRef, useState } from "react";
 import { Bot, RefreshCw } from "lucide-react";
@@ -32,7 +13,6 @@ import { MENU_BOX } from "./MenuParts";
 
 export type CopilotMode = "casual" | "reengage" | "tip_request" | "sexting";
 
-/** Infloww's four modes, in its order and with its labels. */
 export const COPILOT_MODES: { id: CopilotMode; label: string }[] = [
   { id: "casual", label: "Casual" },
   { id: "reengage", label: "Re-engage" },
@@ -48,7 +28,6 @@ interface SuggestResponse {
 export interface CopilotPickerProps {
   accountId: string | null;
   fanId: FanId | null;
-  /** Insert this suggestion into the Composer's text box. */
   onPick: (text: string) => void;
 }
 

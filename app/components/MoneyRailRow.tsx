@@ -1,9 +1,5 @@
 "use client";
 
-/**
- * One Buys & tips rail row (`MoneyRail`): the payer, the amount, what was
- * paid for, when, and (`ReplyLine`) where the conversation stands.
- */
 
 import { notificationHref, onNotificationClick } from "@/lib/notificationLink";
 import { fmtPrice } from "@/lib/format";
@@ -13,9 +9,6 @@ import type { NotifTypeKey } from "@/lib/notifSettings";
 import { fmtTime, renderText } from "@/lib/notifText";
 import type { MergedItem, ReplyState } from "./useMoneyRailFeed";
 
-/** The amount in OF's notification text, in the house price format (real cents, no ".00"):
- *  "Jim has purchased your message for $25.22!" → "$25.22", "…sent you a $40.00 tip" → "$40".
- *  Only this rail's amount chip is reformatted; the notification text itself is shown as OF wrote it. */
 export function amountFrom(text: string): string | null {
   const m = text.match(/\$\s?([\d,]+(?:\.\d{1,2})?)/);
   if (!m) return null;
@@ -23,8 +16,6 @@ export function amountFrom(text: string): string | null {
   return Number.isFinite(dollars) ? fmtPrice(Math.round(dollars * 100)) : `$${m[1]}`;
 }
 
-/** What was paid for — tips by typeKey, purchases split post/message/stream
- *  by the notification wording. */
 function kindFrom(typeKey: NotifTypeKey, text: string): string {
   if (typeKey === "tip") return "tip";
   if (/\bpost\b/i.test(text)) return "post";
@@ -42,9 +33,7 @@ export function Row({
   m: MergedItem;
   accountLabel: string | null;
   reply: ReplyState | null;
-  /** Last session's snapshot, still being revalidated for this account. */
   dim?: boolean;
-  /** The rail's on-screen lease (`useOnScreenLease`). */
   leaseRef?: (el: Element | null) => void;
 }) {
   const { n, accountId, typeKey } = m;
@@ -109,16 +98,7 @@ export function Row({
   return <div ref={leaseRef} className={cls} title={text}>{body}</div>;
 }
 
-/** Last message in the thread + where it stands.
- *
- *  The orange dot means "this thread still wants a HUMAN" — it shows when the
- *  fan spoke last, and stays lit when the only thing that answered them was an
- *  automation. It clears the moment a chatter actually replies. Blue keeps its
- *  inbox meaning: unread from the fan, or (as ✓✓) our message opened by them.
- *    blue badge  — the fan spoke last and we haven't read it.
- *    orange dot  — nobody human has answered them.
- *    ✓✓ blue     — a chatter spoke last and the fan has opened it.
- *    ✓ grey      — a chatter spoke last, delivered, not opened yet. */
+// Orange dot = thread still wants a HUMAN: stays lit when only an automation answered.
 function ReplyLine({ reply }: { reply: ReplyState }) {
   const { text, outbound, seen, unread, byBot } = reply;
   const tick = (

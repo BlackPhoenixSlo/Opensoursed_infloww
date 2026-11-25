@@ -1,10 +1,3 @@
-/**
- * The owner's agency notification centre (AgencyNotifications), folded into the top bar's one bell
- * (TopBar's `HeaderBell`) as the panel's "Agency" tab: the server's unread count joins the bell's badge and
- * opens the panel on Agency, a row click reads it, "Mark all read" reads the rest, "Clear all" dismisses up
- * to the newest row shown, the kind switches (in the Settings tab) save `preferences.notifications`, the
- * OnlyFans tab is still the bell's feed, and a chatter's bell has no Agency tab and reads nothing of it.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
@@ -12,7 +5,6 @@ vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(), post: vi.fn(), put: vi.fn
 let session: { user: object | null; chatter: object | null } = { user: { username: "owner" }, chatter: null };
 vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: session.user }) }));
 vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: session.chatter }) }));
-// The bell's OnlyFans side: no Creators, so no OnlyFans reads.
 vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => [] }));
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 
@@ -66,7 +58,6 @@ describe("a pinned consent row and its banner", () => {
     renderWithProviders(<><ConsentBanner /><HeaderBell /></>);
     const banner = await screen.findByRole("alert");
     expect(banner).toHaveTextContent("Ava, Bea");
-    // Two Creators flagged: View opens the bell.
     fireEvent.click(screen.getByRole("button", { name: "View" }));
     expect(await screen.findByRole("tab", { name: /Agency/ })).toHaveAttribute("aria-selected", "true");
     const rows = await screen.findAllByTestId("agency-pinned");
@@ -77,7 +68,7 @@ describe("a pinned consent row and its banner", () => {
       expect(row.querySelector("a")?.getAttribute("href") ?? null).toBe(consentFixHref(n.account_id));
     }
     expect(screen.getByRole("button", { name: "Mark all read" })).toBeDisabled();
-    fireEvent.click(screen.getByText(CONSENT.text));   // reads nothing (a link to its fix closes the panel)
+    fireEvent.click(screen.getByText(CONSENT.text));
     expect(post).not.toHaveBeenCalled();
   });
 
@@ -106,7 +97,6 @@ describe("AgencyNotifications in the top bar's one bell", () => {
     expect(screen.getByRole("tab", { name: /Agency/ })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(await screen.findByText("Ana was deactivated"));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/agency-notifications/7/read"));
-    // A read row's click files nothing.
     fireEvent.click(screen.getByText("Bo's role changed from Chatter to Manager"));
     fireEvent.click(screen.getByRole("button", { name: "Mark all read" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/agency-notifications/read-all"));
@@ -139,12 +129,10 @@ describe("AgencyNotifications in the top bar's one bell", () => {
     await openBell();
     const link = await screen.findByRole("link", { name: /needs a 2FA code/ });
     expect(link).toHaveAttribute("href", "/creators?relink=browserbase");
-    // A row without a link stays a plain row.
     expect(screen.getByRole("button", { name: /Ana was deactivated/ })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Ana was deactivated/ })).toBeNull();
     fireEvent.click(link);
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/agency-notifications/9/read"));
-    // Following it closes the bell (the page it opens is in front).
     expect(screen.queryByRole("link", { name: /needs a 2FA code/ })).toBeNull();
   });
 
@@ -164,7 +152,6 @@ describe("AgencyNotifications in the top bar's one bell", () => {
     renderWithProviders(<HeaderBell />);
     await screen.findByTestId("bell-count");
     await openBell();
-    // The Agency tab has no settings of its own: one settings surface.
     expect(screen.queryByTestId("agency-kind-switches")).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "Settings" }));
     const missed = await screen.findByRole("checkbox", { name: "Missed clock-ins" });

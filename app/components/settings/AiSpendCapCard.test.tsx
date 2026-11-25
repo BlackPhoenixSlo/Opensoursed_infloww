@@ -1,7 +1,3 @@
-/**
- * AiSpendCapCard — Settings › AI keys, a Creator's daily AI spend limit: dollars in the box, cents on the wire,
- * the rest of the stored config echoed (the PUT replaces what it holds), today's per-provider spend shown.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -43,7 +39,7 @@ describe("AiSpendCapCard", () => {
     renderCard();
     const input = await box();
     expect(input.value).toBe("1.00");
-    expect(saveBtn().disabled).toBe(true);                  // unchanged
+    expect(saveBtn().disabled).toBe(true);
     fireEvent.change(input, { target: { value: "5.50" } });
     fireEvent.click(saveBtn());
     await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(1));

@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * "Use your own domain": ofl.ink v2's Domain screen (~/oflinkv2/app/editor/screens/domain.js) as an editor card, its
- * copy kept. Three states from the page's one custom domain: none (the "Add domain" form), pending (the records the API
- * answers, "Check now" and "Not yet: …") and live (Open, Copy). "Remove domain" in both, asked first. On top of v2 the
- * status pill shows `pending_cert` (DNS proved, the box's timer getting the certificate). State: `bioDomainForm.ts`.
- */
 import { useId, useReducer } from "react";
 
 import { IfButton, IfCard, IfHelp, IfInput, IfLabel, ifButtonClass } from "@/components/ui/infloww";
@@ -164,7 +158,6 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-/** v2's records table: Type, Name, Value; each name and value copyable, the full name under a relative one. */
 function Records({ records, labelledBy }: { records: BioDomainRecord[]; labelledBy: string }) {
   return (
     <table className="mt-2 w-full table-fixed text-[13px]" aria-labelledby={labelledBy} data-dns-records>

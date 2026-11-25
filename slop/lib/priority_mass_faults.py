@@ -1,8 +1,3 @@
-"""Priority mass message's break-it-once faults (scenarios/2026-11-01-priority-mass-5k.py):
-lib/faults.py merges `register(Fault)` into FAULTS. Each patches the product function whose
-bug class it names, inside the throwaway relay. The check names live here and the scenario
-imports them, so a target can never name a check that does not exist.
-"""
 from __future__ import annotations
 
 FROZEN = "frozen recipients == oracle (OF lists minus exclusions, first 5000 by fan id), every run"
@@ -24,9 +19,7 @@ UI_SEED = ("UI: the composer pre-ticks the Creator's OF MASSDMEXCLUDE list in Ex
 
 
 def _claimed_row_resent_after_crash() -> None:
-    """automations/priority_mass.py `_leg`: a claim left by a crash goes back to `pending` (a
-    "requeue the interrupted" heal) instead of `unknown`, so the fan whose send OF may already
-    have taken is sent again. Every other leg step is the product's."""
+    # a crash claim returns to pending instead of unknown: OF may already have taken the send
     from sqlalchemy import update
 
     from automations import priority_mass as pm
@@ -46,10 +39,6 @@ def _claimed_row_resent_after_crash() -> None:
 
 
 def _cancel_keeps_pending() -> None:
-    """priority_mass_api.py `cancel_run` without its sweep: the run turns cancelled, its pending
-    fans stay pending. The body mirrors the product's `cancel_run` status transition and public response, without
-    its pending -> skipped UPDATE; swapped in on the app's router (FastAPI calls the
-    route's endpoint, not the module attribute)."""
     from fastapi import HTTPException
     from fastapi.routing import APIRoute
 
@@ -72,11 +61,6 @@ def _cancel_keeps_pending() -> None:
 
 
 def _sensitive_word_ignored() -> None:
-    """priority_mass_api.py `_sensitive_words`: the Agency's list never read (as if keyed by
-    another scope), so the route's matcher finds nothing to refuse. The route's second reader of
-    the same list (`load_banned_words`, whole-word `filter_banned`) still refuses the single
-    words; the phrases with odd case / whitespace ("Cash\\napp", "Telegram   me") are what go
-    through (measured: 2 of 4 refusal posts 200)."""
     import priority_mass_api as api
 
     async def _sensitive_words(account_id: str) -> list[str]:
@@ -86,10 +70,6 @@ def _sensitive_word_ignored() -> None:
 
 
 def _leg_exact_scan_only() -> None:
-    """automations/priority_mass.py `_leg` as before the leg re-ran the create route's matcher:
-    only `filter_banned` (exact spacing, `\\b`) scans the text, so a phrase listed after the run
-    was created and spelled with other whitespace ("pay  pal") goes out. Only the leg's name is
-    patched; the create route's refusal stays the product's."""
     from automations import priority_mass as pm
 
     pm.sensitive_hits = lambda text, words: []
@@ -97,22 +77,10 @@ def _leg_exact_scan_only() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run priority-mass-5k --break (the scenario's FAULT)
         "pm-claimed-row-resent-after-crash": Fault(_claimed_row_resent_after_crash, (ONCE, CRASH)),
-        # slop/run priority-mass-5k --break --fault=pm-cancel-keeps-pending --baseline=...
         "pm-cancel-keeps-pending": Fault(_cancel_keeps_pending, (CANCEL,)),
-        # slop/run priority-mass-5k --break --fault=pm-sensitive-word-ignored --baseline=...
         "pm-sensitive-word-ignored": Fault(_sensitive_word_ignored, (REFUSE,)),
-        # slop/run priority-mass-5k --break --fault=pm-leg-exact-scan-only --baseline=...
         "pm-leg-exact-scan-only": Fault(_leg_exact_scan_only, (LEG_SCAN,)),
-        # slop/run priority-mass-5k --break --fault=pm-ui-no-massdm-seed --baseline=... (not --no-ui)
-        # app/components/growth/PriorityMass.tsx as before the seed: its seedExclude effect returns before
-        # dispatching and Send no longer waits for the seed (the fix reverted). Only the composer's chunk
-        # holds `!lists || isFetching` / `!seeded` on the pages this scenario opens (FunnelLaunchPanel's
-        # twin is in growth/auto-funnel's, Mass's composer reads `listsQ`).
-        # slop/run priority-mass-5k --break --fault=sm-mass-composer-first-creator --baseline=... (not --no-ui)
-        # app/components/growth/CreateMessagePopUp.tsx as before the fix: the mass composer gets no
-        # forcedAccountId, so it opens on the first Creator whatever the column picked.
         "sm-mass-composer-first-creator": Fault(None, (UI_CREATOR,), browser=(
             (r"forcedAccountId:(?:\s|\\n)*accountId \?\? undefined", "forcedAccountId: undefined"),
         )),

@@ -1,5 +1,3 @@
-"""lib/all_models_wire.py's `/users/me` `chatMessagesCount`: the unread chats over the Creator's whole chat list, kept
-through seed, DM, send and mark (all-models-shared-inbox's FRESH_BADGE_TRUE truth)."""
 import json
 import threading
 import types
@@ -53,13 +51,13 @@ def test_dm_counts_chats_not_messages():
     fans = _fans(10)
     wire.seed_chats(AID, fans, 2, base_id=1)
     msg = {"id": 9, "text": "hi", "fromUser": {"id": fans[5]["id"]}}
-    wire.push_dm(AID, fans[5], msg)                      # a read chat: +1
+    wire.push_dm(AID, fans[5], msg)
     assert wire.chat_messages_count(AID) == 3
-    wire.push_dm(AID, fans[5], msg)                      # the same chat again: still one chat
-    wire.push_dm(AID, fans[0], msg)                      # an unread chat: unchanged
+    wire.push_dm(AID, fans[5], msg)
+    wire.push_dm(AID, fans[0], msg)
     assert wire.chat_messages_count(AID) == 3
     new = {"id": 4242, "username": "new", "name": "New"}
-    wire.push_dm(AID, new, msg)                          # a fan not in the list joins it unread
+    wire.push_dm(AID, new, msg)
     assert wire.chat_messages_count(AID) == 4 == _whole(fake)
 
 
@@ -70,7 +68,7 @@ def test_send_reads_the_chat():
     wire.seed_chats(AID, fans, 3, base_id=1)
     wire.head_from_send(AID, fans[1]["id"], {"id": 7, "text": "yo", "fromUser": {"id": int(AID)}})
     assert wire.chat_messages_count(AID) == 2
-    wire.head_from_send(AID, fans[4]["id"], {"id": 8, "text": "yo", "fromUser": {"id": int(AID)}})   # already read
+    wire.head_from_send(AID, fans[4]["id"], {"id": 8, "text": "yo", "fromUser": {"id": int(AID)}})
     assert wire.chat_messages_count(AID) == 2 == _whole(fake)
 
 
@@ -82,13 +80,13 @@ def test_marks_on_the_wire_and_on_of_web():
     assert wire.chat_messages_count(AID) == 5
     assert _call(wire, "POST", f"/api2/v2/chats/{fans[0]['id']}/mark-as-read")["status"] == 200
     assert wire.chat_messages_count(AID) == 4
-    assert wire.mark_read_out_of_band(AID, fans[27]["id"]) is True       # deep, read on OF web
+    assert wire.mark_read_out_of_band(AID, fans[27]["id"]) is True
     assert wire.chat_messages_count(AID) == 3
-    assert wire.mark_read_out_of_band(AID, fans[27]["id"]) is False      # already read: no change
+    assert wire.mark_read_out_of_band(AID, fans[27]["id"]) is False
     assert wire.chat_messages_count(AID) == 3
-    _call(wire, "DELETE", f"/api2/v2/chats/{fans[10]['id']}/mark-as-read")  # mark unread
+    _call(wire, "DELETE", f"/api2/v2/chats/{fans[10]['id']}/mark-as-read")
     assert wire.chat_messages_count(AID) == 4
-    _call(wire, "POST", "/api2/v2/chats/mark-as-read")                    # every chat read
+    _call(wire, "POST", "/api2/v2/chats/mark-as-read")
     assert wire.chat_messages_count(AID) == 0 == _whole(fake)
 
 

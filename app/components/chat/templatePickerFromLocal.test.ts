@@ -1,5 +1,3 @@
-/** TemplatePicker `fromLocal`: a Scripts row as the composer gets it. Bare tags (an old row) load as the OF markup the
- *  relay sends, never as raw tags; OF markup and plain text as saved. */
 import { describe, expect, it } from "vitest";
 
 import { fromLocal } from "@/components/chat/TemplatePicker";

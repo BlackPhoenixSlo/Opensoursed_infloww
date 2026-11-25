@@ -1,35 +1,3 @@
-"""Earnings: what OnlyFans' Statistics holds for each Creator, and the part of it
-the ledger caught.
-
-OF's side goes to `$DEMO_SHOTS_TMP/of-statistics.json` (lib/relay.py's fake
-`earnings_chart` / `my_profile_stats` / `subscribers_chart` answer from it):
-per Creator, net cents and a count per UTC day and Statements category, for
-`history_days` complete days before today. One Creator has a free page (no
-subscriptions, as an owner's Rhy), posts sell on a few days, streams never, and
-each Creator has one chargeback day in the last 30 days whose tips net is
-negative (the ledger holds no tip that day: max(OF, ledger) reads $0).
-
-The ledger's side is `transactions` rows (source 'ledger', as the payouts ingest
-writes them: gross, OF's net at 80%, cleared after 7 days else pending): a
-trickle (`trickle` of OF's money) in the month before the Creator was connected
-(`connected_days` ago, which `accounts.created_at` is set to), most of it
-(`capture`) since, and some sales today, which OF has no complete day for yet.
-
-Two days OF and the ledger disagree on (`w.data["earnings_cases"]`):
-  zero day      `zero_back` days ago OF charts $0 for every Creator while the
-                ledger holds one pending $14 PPV message (app.inflowwww.com,
-                2026-10-25: the sale OF's figure must not erase)
-  midnight      for the first Creator, a PPV message at 23:30 in `midnight_tz`
-                on the day `midnight_back` days ago, which is 06:30 UTC the next
-                day and OF charts on that UTC day; that Creator has no other
-                sale from the day before to the day after the next (a report in
-                that zone sees this one sale alone)
-With `chargebacks=True`, each Creator also has two of today's sales reversed
-(`CHARGEBACKS`: a PPV message charged back, a tip refunded), as the chargebacks
-ingest leaves them (status flipped, money kept), from their own RNG stream; no
-earnings read counts them, the Chargebacks tiles do (`w.data["earnings_cases"]
-["chargebacks"]`).
-Deterministic from the World's seed."""
 from __future__ import annotations
 
 import json
@@ -45,7 +13,6 @@ TX_ID_BASE = 8_100_000_000
 
 
 def _day_net(rng, c: str, base: dict, weekday: int) -> tuple[int, int]:
-    """One day of one category: (net cents, sales)."""
     b = base[c]
     if b <= 0 or (c == "post" and rng.random() > 0.08):
         return 0, 0
@@ -54,9 +21,10 @@ def _day_net(rng, c: str, base: dict, weekday: int) -> tuple[int, int]:
     return net, max(1, round(net / avg))
 
 
-ZERO_SALE_CENTS = 1400     # the $14 PPV message of the zero day
+# one pending $14 PPV on a day OF charts $0: the sale OF's figure must not erase
+ZERO_SALE_CENTS = 1400
 MIDNIGHT_SALE_CENTS = 2500
-# Today's reversed sales per Creator: (kind, gross, status); net is OF's 80%.
+# net is OF's 80%; the chargebacks ingest flips status and keeps the money
 CHARGEBACKS = (("ppv_message", 3610, "chargedback"), ("tip", 1250, "refunded"))
 
 
@@ -83,14 +51,14 @@ def seed(w: World, creators: list[dict], tmp: Path, *, history_days: int, connec
         base = {"messages": rng.uniform(900, 3600), "tips": rng.uniform(120, 520),
                 "subscribes": 0.0 if i == 0 else rng.uniform(40, 190), "post": rng.uniform(2, 14)}
         earned: dict[str, dict[str, list[int]]] = {}
-        refund_day = (today - timedelta(days=rng.randint(12, 29))).isoformat()  # in the last 30 days
+        refund_day = (today - timedelta(days=rng.randint(12, 29))).isoformat()
         for back in range(history_days, 0, -1):
             d = today - timedelta(days=back)
             day = earned[d.isoformat()] = {}
             for cat in KIND:
                 net, n = _day_net(rng, cat, base, d.weekday())
                 if cat == "tips" and d.isoformat() == refund_day:
-                    net, n = -round(base["tips"] * 60), 0  # chargebacks over the day's tips
+                    net, n = -round(base["tips"] * 60), 0
                 if net or n:
                     day[cat] = [net, n]
         earned[zero_day] = {}
@@ -103,7 +71,6 @@ def seed(w: World, creators: list[dict], tmp: Path, *, history_days: int, connec
         renewals = {d: rng.randint(0, 25) for d in earned}
         truth[aid] = {"earnings": earned, "visitors": visitors, "new_subs": new_subs, "renewals": renewals}
 
-        # The ledger: rows summing to a share of each day's OF gross, split into sales.
         def rows_for(d, gross_cents: int, kind: str, *, until: datetime | None = None):
             nonlocal tx_id
             while gross_cents > 0:

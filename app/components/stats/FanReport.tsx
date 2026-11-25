@@ -1,20 +1,5 @@
 "use client";
 
-/**
- * FanReport — Analytics > Fan reports, on Infloww's frame (`FansReport`, bundle @13648850, page-parity 29): the
- * legacy header (title, the report time zone's UTC offset, the icon Refresh), then the creator column beside the
- * report (`ErrorModalListLayout`, as Share for Share lays it out). The report is FanReportsCard: the filter row (the
- * range box, Shown by, Gross / Net) over New fans, Total fans, Traffic earnings and Top fans; then, under an
- * "Inflowwww extras" heading, the per-fan data table (UserDataTab, for the column's Creator; it ignores the window).
- *
- * Infloww reports one Creator at a time, the first until another is picked; there is no "All creators" row (owner
- * P2-5). Below md the column gives way to a creator select over the report. With no Creator only the range shows.
- *
- * The window is the shared report range (useReportRange): the last 30 days to start with, in the Agency's report
- * time zone, or UTC when none is saved, as the fan-report read cuts New fans' days then (not the browser's zone,
- * which would drop the growth rows past the window's UTC days); the report waits for the Applied settings and the
- * Creators. Earnings totals include pending (uncleared) sales.
- */
 
 import { useState } from "react";
 
@@ -35,7 +20,6 @@ export default function FanReport() {
   const { preset, from, to, fromIso, toIso, reportTz, ready, handleRange } = useReportRange("UTC");
   const accountsQ = useAccounts();
   const accounts = useActiveAccounts();
-  // null: nothing picked yet (or the pick is gone), so the first Creator.
   const [picked, setPicked] = useState<string | null>(null);
   const accountId = picked && accounts.some((a) => a.id === picked) ? picked : accounts[0]?.id ?? "";
 
@@ -56,7 +40,6 @@ export default function FanReport() {
   return (
     <div className="flex min-h-full min-w-0 flex-col">
       <InflowwPageHeader title="Fan reports" utc={reportTz} actions={<StatsRefreshButton />} />
-      {/* `.h-chat` on the column (and the report's height) subtracts the 48px header too. */}
       <div className="flex min-w-0 flex-1" style={{ ["--shell-top" as string]: "calc(var(--chrome-top) + 48px)" }}>
         <CreatorColumn
           accounts={accounts}
@@ -64,7 +47,6 @@ export default function FanReport() {
           onChange={setPicked}
           className="md:flex border-r border-border"
         />
-        {/* From md the report scrolls on its own beside the column (`.h-chat`'s height; a plain class takes no `md:`). */}
         <IfBody className="min-w-0 flex-1 space-y-4 md:h-[calc(var(--vvh)-var(--shell-top))] md:overflow-y-auto">
           {accounts.length > 0 && (
             <IfSelect aria-label="Creator" className="w-full md:hidden" searchable value={accountId}
@@ -76,7 +58,6 @@ export default function FanReport() {
           ) : (
             <>
               <div className="flex flex-wrap items-center gap-3">{range}</div>
-              {/* Until the range and the Creators answer (with no Creator at all, the column's own state shows). */}
               {(!ready || accountsQ.isPending) && <TableSkeleton rows={6} />}
             </>
           )}

@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""Replace on overlap and the scheduling horizon (roadmap W6 6.12).
-
-- `replace: true` on POST or PATCH /admin/shifts writes a Shift that clashes with other Shifts on a Creator
-  instead of answering 409: a one-off it clashes with is cancelled, a weekly series loses the clashing
-  occurrences' dates (`cancelled_dates`), each with its `shift.cancel` or `shift.edit` audit row. The Shift's
-  own double-staffing is still 409, and `replace` that is not true or false is 422. A "this" edit that lands on
-  another occurrence of its own series takes that date out too, and the series' audit rows chain (each row's
-  `before` is the one before's `after`). A series in a zone with DST loses the clashing local date.
-- A create or an edit may not put a Shift's start more than SCHEDULE_HORIZON (366 days) ahead (422), while an
-  edit that keeps a far start where it is goes through.
-
-The seam is the Relay over HTTP with Agency A's owner session (Multiple employees per shift off, so the overlap
-rule is on); every case owns its Creator and Employees.
-
-Run: ./venv/bin/python service/tests/test_shift_replace.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -95,7 +79,6 @@ def _audit_rows(shift_id: int) -> list[tuple[str, dict]]:
     return asyncio.run(_get())
 
 
-# ── Replace on overlap ──────────────────────────────────────────────
 
 
 def case_replace_cancels_a_clashing_one_off():
@@ -157,12 +140,10 @@ def case_a_this_edit_onto_its_own_series_takes_that_date_out_with_chained_audit_
 
 
 def case_replace_in_a_dst_zone_takes_out_the_local_date_that_clashes():
-    # America/New_York: 09:00 local is 14:00Z before 2026-03-08 and 13:00Z after it.
     aid, e1, e2 = _creator(), _employee("replace_dst_1"), _employee("replace_dst_2")
     ny = {"tz": "America/New_York", "account_ids": [aid]}
     series = _post({**ny, "start_utc": f"{MONDAYS[0]}T14:00:00Z", "end_utc": f"{MONDAYS[0]}T22:00:00Z",
                     "employee_ids": [e1], "repeat_days": [1], "repeat_until": MONDAYS[-1]})["shift_id"]
-    # 08:30-09:30 EDT on 03-16 clashes only with the DST-shifted 13:00Z start.
     one_off = {**ny, "start_utc": f"{MONDAYS[2]}T12:30:00Z", "end_utc": f"{MONDAYS[2]}T13:30:00Z",
                "employee_ids": [e2]}
     refused = _post(one_off, status=409)
@@ -186,7 +167,6 @@ def case_its_own_double_staffing_is_still_409_and_replace_must_be_a_switch():
     assert _row(old).status == "scheduled"
 
 
-# ── The scheduling horizon ──────────────────────────────────────────
 
 
 def case_a_start_past_the_horizon_is_refused_and_a_far_start_kept_in_place_is_not():
@@ -200,7 +180,6 @@ def case_a_start_past_the_horizon_is_refused_and_a_far_start_kept_in_place_is_no
     edit = {"start_utc": z(far), "end_utc": z(far + timedelta(hours=2)), "tz": "UTC", "employee_ids": [emp],
             "account_ids": [aid]}
     _patch(sid, edit, status=422)
-    # A Shift already beyond the horizon (scheduled before it applied) keeps its start through an edit.
     seeded = _seed_shift(far, far + timedelta(hours=2), [(emp, aid)])
     _patch(seeded, {**edit, "end_utc": z(far + timedelta(hours=3))})
     _patch(seeded, {**edit, "start_utc": z(far + timedelta(hours=1)), "end_utc": z(far + timedelta(hours=3))},

@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""
-The payouts-ledger supervisor ticks every 15 min, and that must stay green.
-Each tick walks the trailing 24 h; the full 7 days once per 2 h period (each
-account at its own crc32 phase): the env knobs' clamps are pinned here too.
-
-2026-11-06: 300 s -> 900 s. The ledger lands hours late (209/560/628 min
-after occurred_at, measured) and provider_id dedup makes a re-read a no-op,
-so the 5-min full 7-day re-read was ~72 OF calls/h/account of waste. The
-floor this file guards: the cadence plus one fleet cycle must still read
-green on the ingest health tier (scanned within 30 min), with >= 10 min to
-spare — at the default and at the env knob's 1500 s ceiling.
-
-Plain-assert standalone script (no pytest), run via:
-    ./venv/bin/python service/tests/test_tx_ingest_cadence.py
-Exit 0 = all pass.
-"""
 from __future__ import annotations
 
 import _harness  # noqa: F401  — MUST be first: binds a throwaway temp DB
@@ -28,19 +12,15 @@ import transaction_ingest as tx  # noqa: E402
 from tx_ingest_admin_api import _tx_ingest_tier  # noqa: E402
 
 _ENV = "INGEST_TICK_INTERVAL_S"
-_FLEET, _PAGES = 50, 10   # sized-for fleet (<= 50 Creators), ~10 ledger pages a Creator per 7 days
+_FLEET, _PAGES = 50, 10
 
 
 def _fleet_cycle_s() -> float:
-    """One supervisor pass over the whole fleet: _REFRESH_CONCURRENCY Creators at once, each
-    paged at of_pacing's per-Creator pace (gap + full jitter, the worst case)."""
     waves = math.ceil(_FLEET / tx._REFRESH_CONCURRENCY)
     return waves * _PAGES * (of_pacing.PAGE_GAP_S + of_pacing.JITTER_S)
 
 
 def _reloaded(value):
-    """transaction_ingest re-imported with INGEST_TICK_INTERVAL_S = value (None: unset);
-    returns (_TICK_INTERVAL_S, _STALE_INFLIGHT_S), then restores the env and the module."""
     old = os.environ.get(_ENV)
     try:
         if value is None:
@@ -82,12 +62,10 @@ def case_clamp_floor_60_and_cap_1500():
     for v, want in (("0", 60.0), ("-5", 60.0), ("59.9", 60.0), ("60", 60.0),
                     ("1500", 1500.0), ("1500.1", 1500.0), ("86400", 1500.0)):
         assert _reloaded(v)[0] == want, (v, want)
-    # The ceiling itself stays green with a fleet cycle on top (no 10 min margin promised there).
     assert _tx_ingest_tier((tx._MAX_TICK_INTERVAL_S + _fleet_cycle_s()) / 60, "ok", 0) == "green"
 
 
 def _knob(env: str, attr: str, value):
-    """transaction_ingest re-imported with `env` = value (None: unset); returns its `attr`."""
     old = os.environ.get(env)
     try:
         if value is None:
@@ -104,7 +82,6 @@ def _knob(env: str, attr: str, value):
 
 
 def case_recent_window_and_full_every_clamps():
-    """Recent window 24 h (12-168), full walk every 7200 s (900-86400); garbage/inf -> default."""
     table = [
         ("INGEST_RECENT_WINDOW_H", "_RECENT_WINDOW_H",
          ((None, 24.0), ("36", 36.0), ("12", 12.0), ("1", 12.0), ("6", 12.0), ("168", 168.0),
@@ -119,7 +96,6 @@ def case_recent_window_and_full_every_clamps():
 
 
 def case_stale_inflight_below_the_tick():
-    """A crashed tick's stamp is ~one interval old at the next visit: it must read stale then."""
     for v in ("60", "300", "900", "1500"):
         tick, stale = _reloaded(v)
         assert stale < tick and stale <= 900.0, (v, tick, stale)

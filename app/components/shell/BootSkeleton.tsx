@@ -1,16 +1,3 @@
-/**
- * BootSkeleton: what a signed-in session sees while AuthGate waits on its principal probes. AuthGate draws it from
- * the server render on, so the HTML itself paints the page's frame (top bar, sidebar, the route's header, cards,
- * rows, chat list) with placeholder bars where the figures go, and the phone is never blank while the JS loads and
- * `/auth/me` answers (2026-10-28 dashboard-load: slow4g first paint at 3.4 s against the HTML at 0.6 s). The real
- * page replaces it whole; each page then shimmers its own figures until its reads land.
- *
- * No hooks and no data: the layout follows the path, and phone or desktop is CSS (`lg:`), so the server render and
- * hydration agree. Its classes mirror the shell's and the pages' (AppShell, TopBar, Sidebar, InflowwPageHeader,
- * IfCard, DashboardHeader, MessagesPro) so the swap does not jump. `data-boot-skeleton` marks it for slop's
- * first-paint check.
- */
-
 import { FanListSkeleton } from "@/components/chat/FanListStates";
 import { control, PERIOD_TABS, type DashboardControlKey } from "@/components/home/dashboardControls";
 import { Skeleton, TableSkeleton } from "@/components/ui/Skeleton";
@@ -18,7 +5,6 @@ import { findNavLink, hasCreatorColumn, isPopoutRoute } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 
 const label = (k: DashboardControlKey) => control(k).labels[0];
-/** The shell's bars on the black chrome. */
 const ON_CHROME = "bg-nav-surface";
 
 export default function BootSkeleton({ pathname }: { pathname: string }) {
@@ -69,8 +55,6 @@ function Frame({ route, children }: { route: string; children: React.ReactNode }
   );
 }
 
-/** The Dashboard (`app/page.tsx`): the period tabs, the earnings card with its labels and a bar per figure, and the
- *  cards under it. */
 function DashboardBoot() {
   return (
     <div className="min-h-dvh p-4">
@@ -128,7 +112,6 @@ function DashboardBoot() {
   );
 }
 
-/** Any other page: InflowwPageHeader's 48px header with the page's sidebar label, a toolbar, then table rows. */
 function PageBoot({ title }: { title?: string }) {
   return (
     <div className="min-w-0">
@@ -147,8 +130,6 @@ function PageBoot({ title }: { title?: string }) {
   );
 }
 
-/** Messages Pro (`MessagesPro`): from lg up the window header, the Fan tabs row and the three panes; below lg the
- *  Creator select over the Fan List. The Fan List's own six skeleton rows (`FanListSkeleton`) either way. */
 function MessagesProBoot() {
   return (
     <div className="h-chat flex flex-col overflow-hidden">
@@ -164,11 +145,8 @@ function MessagesProBoot() {
         <Skeleton className="h-8 w-full rounded-[6px]" />
       </div>
       <div className="flex-1 min-h-0 lg:flex">
-        {/* MP.panes.fanList's width, inlined: reading the token module would put this shell file under the Messages Pro
-         *  magic-number guard, which is for the Messages Pro tree. */}
+        {/* MP.panes.fanList's width inlined: importing the token module would put this file under the Messages Pro magic-number guard. */}
         <div className="lg:w-100 lg:min-w-100 border-r border-border min-h-0 overflow-hidden">
-          {/* The Fan List's head (FanList, FanListButtons): its title and icons, Online Fans | Notifications, the
-           *  settings and filter buttons with Refresh, the filter chips. */}
           <div className="flex h-[52px] items-center gap-6 border-b border-border px-3">
             <Skeleton className="h-6 w-32" />
             <Skeleton className="ml-auto size-6" />

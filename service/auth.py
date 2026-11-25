@@ -1,24 +1,3 @@
-"""
-Friend auth — username/password registration + login + 30-day sliding session.
-
-See plan/simple_username_auth_2026_05_24/PLAN.md.
-
-Two tables (users, user_accounts) + three endpoints (/auth/register,
-/auth/login, /auth/logout) + a session middleware that populates a
-`_request_user` ContextVar consulted by `_resolve_account_id` in server.py
-to gate every account-scoped endpoint.
-
-Passwords are stored plaintext per user decision (friends-only scale; the
-relay sits behind the share-token gate). When the DB file ever moves to
-a wider surface, switch to argon2/bcrypt before exposing.
-
-Session cookie payload: f"{user_id}.{issued_ms}.{hmac_sig}" (signed_cookie).
-The hmac is keyed by SESSION_SECRET (session_secret.load_secret: env, then
-the persisted file, else generated on first boot). 30-day inactivity expiry — every authed request bumps
-`users.last_seen_at`; once the gap exceeds 30 days the cookie is
-rejected and the user has to log in again.
-"""
-
 from __future__ import annotations
 
 import hmac
@@ -57,18 +36,13 @@ from db.models import (
 )
 
 
-# ── Constants ─────────────────────────────────────────────────────────
 
-# Friends-only DB exposure; risk accepted in the plan. Bump to a real KDF
-# before any wider deployment.
 COOKIE_NAME = "chatterly_session"
-COOKIE_MAX_AGE_SECONDS = 30 * 24 * 3600  # browser-side hint; server is the source of truth
+COOKIE_MAX_AGE_SECONDS = 30 * 24 * 3600
 SESSION_INACTIVITY_SECONDS = 30 * 24 * 3600
-LAST_SEEN_TOUCH_S = 300  # bump users.last_seen_at when it is older than this
+LAST_SEEN_TOUCH_S = 300
 
-# Founder impersonation. Short-lived so a forgotten "view as" session
-# can't quietly persist across the founder's coffee break. 1h is plenty
-# for a support call; re-entering admin_password is cheap.
+# Short-lived so a forgotten "view as" session can't persist; 1h is plenty for a support call.
 IMPERSONATE_COOKIE_NAME = "chatterly_impersonate"
 IMPERSONATE_TTL_SECONDS = 60 * 60
 
@@ -76,23 +50,12 @@ USERNAME_RE = re.compile(r"^[a-z0-9_.-]{3,32}$")
 RESERVED_USERNAMES = frozenset({"admin", "root", "system", "chatterly", "founder"})
 
 
-# Set by the session middleware on every request that carries a valid
-# cookie. `None` for unauthed requests (landing page hits, /auth/*,
-# background tasks). Cached read of (id, username, account_ids) so
-# `_resolve_account_id` doesn't query per call.
 _request_user: ContextVar["AuthedUser | None"] = ContextVar(
     "chatterly_request_user", default=None
 )
 
 
 class AuthedUser:
-    """In-process snapshot of the signed-in user, valid for one request.
-
-    Stored on `_request_user` by the session middleware. Holds the user's
-    own row plus the set of OF account_ids they're allowed to touch.
-    Snapshot once at middleware time so deep callers don't pay a query
-    per `_resolve_account_id` call.
-    """
 
     __slots__ = ("id", "username", "account_ids", "is_admin")
 
@@ -102,65 +65,37 @@ class AuthedUser:
     ):
         self.id = id_
         self.username = username
-        # For a master (is_admin) this is the fat set — the registry UNIONED
-        # with every account owned in `user_accounts` (each source holds
-        # accounts the other lacks; see _master_account_ids) — so every
-        # per-account gate that tests membership passes. The employee axis is
-        # a separate column — gated explicitly via `is_admin`.
         self.account_ids = account_ids
         self.is_admin = is_admin
 
 
-# Set (to `(token_id, name)`) when an owner access token signed this request in
-# (`_token_request`); None for a cookie or no session. Reset per request by
-# `session_middleware`, so an inherited context never tags a cookie request.
 _request_token: ContextVar["tuple[int, str] | None"] = ContextVar(
     "chatterly_request_token", default=None
 )
 
 
 def get_request_token() -> "tuple[int, str] | None":
-    """`(token_id, name)` of the owner access token behind this request, or None."""
     return _request_token.get()
 
 
 def request_via() -> str | None:
-    """The `actions.via` stamp for this request: "token <name>" when an owner
-    access token signed it in, else None (a browser session)."""
     tok = _request_token.get()
     return f"token {tok[1]}" if tok else None
 
 
 def get_request_user() -> AuthedUser | None:
-    """Read the current request's signed-in user (or None)."""
     return _request_user.get()
 
 
 def require_user(*, detail: str) -> AuthedUser:
-    """The current request's signed-in user, or a 401 carrying `detail`.
-
-    A Chatter session resolves to no user here, so it gets the 401 too."""
     user = _request_user.get()
     if user is None:
         raise HTTPException(status_code=401, detail=detail)
     return user
 
 
-# ── Impersonation overlay ─────────────────────────────────────────────
-#
-# When a founder POSTs to /admin/impersonate with admin_password, we set a
-# second cookie. The session middleware uses it to OVERLAY `_request_user`
-# with the impersonated user for the request — every downstream gate
-# (`assert_account_owned`, `clamp_account_filter`, the account-isolation
-# middleware) then naturally treats the founder as that user. The original
-# founder identity is kept in `_impersonation` so the UI banner can render
-# "you are viewing as @X (real: @Y) — Exit" and so mutating requests can
-# be 403'd (impersonation is read-only — see middleware).
 
 class Impersonation:
-    """Original founder identity, kept alongside `_request_user` whenever a
-    valid impersonate cookie applies. The middleware sets this; readers
-    consult `get_impersonation()`."""
     __slots__ = ("real_user_id", "real_username",
                  "impersonated_user_id", "impersonated_username")
 
@@ -185,15 +120,6 @@ def get_impersonation() -> "Impersonation | None":
 
 
 def _actor_account_ids() -> frozenset[str] | None:
-    """Return the account_ids set for the current request's active
-    principal, or None if no one is signed in.
-
-    User cookie wins when both are present (owner perspective trumps a
-    chatter cookie that happens to be in the same browser). The chatter
-    branch is reached via a lazy import so this module stays free of a
-    hard `chatters` dependency at boot — `chatters.py` imports `auth.py`
-    at module load, so the reverse must defer.
-    """
     user = _request_user.get()
     if user is not None:
         return user.account_ids
@@ -208,47 +134,18 @@ def _actor_account_ids() -> frozenset[str] | None:
 
 
 async def assert_employee_filter_owned(employee_id: int | None) -> None:
-    """Raise 403 if the active principal isn't authorized to filter by
-    this `employee_id` on a per-employee revenue / message / tip query.
-
-    Why: per-account data filters (`account_id`) catch cross-account
-    leaks, but `employee_id` is a SECOND axis. Without this gate, a
-    chatter with access to account_X could ask `?employee_id=<any id>`
-    and read every message/tip attributed to that random employee on
-    account_X — including co-chatter mirror Employees or even other
-    owners' employees if they ever wrote on account_X.
-
-    Rules:
-      • Owner — the Employee row's `user_id` must equal current user.id.
-        Filtering by another owner's employee is a cross-agency leak.
-      • Chatter — the Employee row's `user_id` must be one of the
-        chatter's linked owners (so chatters can slice team stats
-        within any owner they work for), OR the row's `chatter_id`
-        must equal the current chatter.id (their own mirror, even if
-        unowned). Filtering by an employee under an owner the chatter
-        ISN'T linked to is still a cross-agency leak.
-      • Unauthed — no-op (internal scripts / cron carry no cookie).
-
-    No-op when `employee_id is None`. Async because we have to hit the
-    DB to look up the row.
-    """
     if employee_id is None:
         return
-    # Local import — db.engine imports are heavy; defer to call time
-    # so this helper stays cheap on the hot path when no filter is set.
     from db.engine import get_session
     from db.models import Employee
     async with get_session() as s:
         row = await s.get(Employee, employee_id)
     if row is None:
-        # Unknown employee: 404 would also work, but 403 is honest about
-        # "you're asking about something you can't have" without leaking
-        # whether the row exists. Match the rest of this file's posture.
         raise HTTPException(status_code=403, detail="not your employee")
     user = _request_user.get()
     if user is not None:
         if user.is_admin:
-            return  # master may slice any employee's revenue/messages
+            return
         if row.user_id != user.id:
             raise HTTPException(status_code=403, detail="not your employee")
         return
@@ -258,12 +155,6 @@ async def assert_employee_filter_owned(employee_id: int | None) -> None:
         return
     chatter = get_request_chatter()
     if chatter is not None:
-        # Allow team-transparency: any Employee owned by one of the
-        # chatter's linked owners is fair game (a chatter linked to
-        # Alice + Bob can slice by Alice's own roster employees, by
-        # Bob's, by their own mirrors under either, or by co-chatters'
-        # mirrors under either). Cross-agency rows — Employee.user_id
-        # belongs to an owner the chatter isn't linked to — still 403.
         if row.user_id in chatter.owner_user_ids:
             return
         if row.chatter_id == chatter.id:
@@ -272,24 +163,12 @@ async def assert_employee_filter_owned(employee_id: int | None) -> None:
 
 
 def allow_anonymous_account_access() -> bool:
-    """The escape hatch for the fail-closed gate below. Default OFF.
-
-    Set ALLOW_ANONYMOUS_ADMIN=1 in docker-compose.override.yml to restore the
-    old abstain-on-anonymous behaviour without a code change — there purely so
-    a lockout is a one-line revert plus a restart, never a redeploy.
-    Read per call, not captured at import, so a test can flip it.
-    """
+    # Escape hatch: a lockout from the fail-closed gate is a one-line revert plus restart, never a redeploy.
     return os.environ.get("ALLOW_ANONYMOUS_ADMIN", "0").strip().lower() \
         in ("1", "true", "yes", "on")
 
 
 def require_actor_account_ids() -> frozenset[str] | None:
-    """The active principal's account_ids (owner first, else the chatter's
-    union), `None` when nobody is signed in but the ALLOW_ANONYMOUS_ADMIN
-    escape hatch is on (the caller is then unclamped), else a 401.
-
-    The one who-is-signed-in rule for gates that need the whole set, not a
-    single-id check: `assert_account_owned` and `GET /health?all_accounts=1`."""
     ids = _actor_account_ids()
     if ids is None and not allow_anonymous_account_access():
         raise HTTPException(status_code=401, detail="sign in required")
@@ -297,28 +176,7 @@ def require_actor_account_ids() -> frozenset[str] | None:
 
 
 def assert_account_owned(account_id: str | None) -> None:
-    """Raise 403 if the current principal doesn't own this account_id, and 401
-    if there is no principal at all.
-
-    ⚠️ THIS USED TO NO-OP FOR ANONYMOUS CALLERS, and that was the bug, not a
-    missing check. The rationale on the old code was "system/cron paths,
-    internal curl flows" — an audit on 2026-08-10 found NO runtime caller that
-    needed it. The one internal caller that touches /admin (`scripts/diag.sh`)
-    carries the share token, which is the PERIMETER, not this gate. What the
-    abstention actually did was constrain only the people who had identified
-    themselves: @alice was stopped from reading @bob's account, while an
-    anonymous request sailed through all ~176 call sites of this function.
-    Verified live the same day: GET /admin/accounts returned 200 with no
-    cookie, and /admin/vault-ai/image served real creator media.
-
-    A gate that abstains when it cannot identify the caller is not a gate.
-    `clamp_account_filter` is still the right tool for endpoints where
-    account_id is genuinely optional.
-
-    Both User and Chatter principals participate: a chatter linked to
-    owners @alice and @bob sees the SET UNION of both account_ids sets
-    and clears this gate for any account either owner holds.
-    """
+    # Fail closed: abstaining for anonymous callers once let unauthenticated requests through every account gate.
     if not account_id:
         return
     ids = require_actor_account_ids()
@@ -329,20 +187,6 @@ def assert_account_owned(account_id: str | None) -> None:
 
 
 def clamp_account_filter(account_id: str | None) -> list[str] | None:
-    """For endpoints with OPTIONAL `account_id` (stats, transactions,
-    paid-messages, etc.) that would otherwise fall through to a global
-    "all accounts" query — clamp the filter to what the active principal
-    is allowed to see. The principal may be a User OR a Chatter (chatter
-    sees the SET UNION across linked owners).
-
-    Returns:
-      • `[account_id]` if account_id is given and the principal owns it
-        (or the request is unauthed).
-      • `list(principal.account_ids)` if account_id is None and someone
-        is signed in.
-      • `None` if the request is unauthed and no account_id was given
-        (back-compat: no clamp, query stays global).
-    """
     ids = _actor_account_ids()
     if account_id:
         if ids is not None and account_id not in ids:
@@ -354,23 +198,15 @@ def clamp_account_filter(account_id: str | None) -> list[str] | None:
 
 
 def split_account_ids(*raw: str | None) -> list[str]:
-    """The Creators named in each of `raw` (one id or several comma-separated,
-    roadmap 2.8), stripped, empties dropped, each once in first-named order."""
     return list(dict.fromkeys(a.strip() for one in raw for a in (one or "").split(",") if a.strip()))
 
 
-# ── Cookie signing (signed_cookie, under session_stamps.SESSION_SECRET) ──
 
 def _make_cookie(user_id: str) -> str:
     return signed_cookie.make(session_stamps.SESSION_SECRET, user_id, str(now_ms()))
 
 
 def _parse_cookie(value: str) -> str | None:
-    """Return the user_id if the cookie's HMAC verifies, else None.
-
-    Does NOT check inactivity expiry — that needs a DB read and happens
-    in the middleware. Pure crypto check here.
-    """
     parsed = parse_cookie_issued(value)
     return parsed[0] if parsed else None
 
@@ -381,13 +217,7 @@ def parse_cookie_issued(value: str) -> tuple[str, int] | None:
 
 
 def _make_impersonate_cookie(impersonated_user_id: str, founder_user_id: str) -> str:
-    """Format: `{impersonated_user_id}.{founder_user_id}.{issued_epoch}.{sig}`.
-
-    Binding to `founder_user_id` means a leaked impersonate cookie alone
-    is useless — the session middleware requires the active session cookie
-    to belong to the same founder. Logging in as a different user
-    effectively invalidates the impersonation.
-    """
+    # Bound to the founder id: a leaked impersonate cookie alone is useless.
     issued = str(int(datetime.utcnow().timestamp()))
     return signed_cookie.make(
         session_stamps.SESSION_SECRET, impersonated_user_id, founder_user_id, issued,
@@ -395,8 +225,6 @@ def _make_impersonate_cookie(impersonated_user_id: str, founder_user_id: str) ->
 
 
 def _parse_impersonate_cookie(value: str) -> tuple[str, str, int] | None:
-    """Returns `(impersonated_user_id, founder_user_id, issued_epoch)` or
-    None on any malformation / signature mismatch."""
     fields = signed_cookie.parse(session_stamps.SESSION_SECRET, value, 3)
     if fields is None:
         return None
@@ -408,7 +236,6 @@ def _parse_impersonate_cookie(value: str) -> tuple[str, str, int] | None:
     return imp, founder, issued_int
 
 
-# ── Username/password helpers ─────────────────────────────────────────
 
 def _normalize_username(raw: str) -> str:
     return (raw or "").strip().lower()
@@ -442,8 +269,6 @@ def _set_session_cookie(response: Response, user_id: str) -> None:
         max_age=COOKIE_MAX_AGE_SECONDS,
         httponly=True,
         samesite="lax",
-        # Secure is appropriate in prod (HTTPS via tunnel) but breaks
-        # localhost dev. Honor an env opt-in.
         secure=_cookie_secure(),
     )
 
@@ -470,12 +295,6 @@ def _clear_impersonate_cookie(response: Response) -> None:
 
 
 def clear_all_principal_cookies(response: Response) -> None:
-    """Defensively clear every principal-bearing cookie this app sets.
-
-    Used on logout (both /auth/logout and /chatter/logout) so a stale
-    cross-principal cookie can't survive an identity switch. The chatter
-    cookie name is imported lazily to keep the auth → chatters boot order
-    one-directional (chatters.py imports auth.py at module load)."""
     response.delete_cookie(COOKIE_NAME, samesite="lax")
     response.delete_cookie(IMPERSONATE_COOKIE_NAME, samesite="lax")
     try:
@@ -485,7 +304,6 @@ def clear_all_principal_cookies(response: Response) -> None:
         pass
 
 
-# ── Public routes ─────────────────────────────────────────────────────
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -508,19 +326,7 @@ class ImpersonatingResp(BaseModel):
 class AuthResp(BaseModel):
     user_id: str
     username: str
-    # Present only when this request is running under an active impersonate
-    # cookie. UI uses it to render the "Viewing as @X (real: @Y)" banner
-    # and to wipe RQ caches across the transition.
     impersonating: ImpersonatingResp | None = None
-    # Master role. The UI needs it to HIDE founder-only surfaces (the server's
-    # house-key panel) rather than render them and let the 403 arrive as a
-    # broken card. Not a gate in itself — every founder-only route checks the
-    # role server-side; this only decides what is worth drawing.
-    #
-    # While impersonating this is the IMPERSONATED user's role, matching the
-    # rest of the app's view. A founder wearing an agency's identity therefore
-    # stops seeing the house-key panel, which is right: impersonation is
-    # read-only anyway, and the panel is not that agency's business.
     is_admin: bool = False
     # When this user registered (UTC). The UI counts the 7-day free trial
     # from it. While impersonating, the impersonated user's.
@@ -528,15 +334,11 @@ class AuthResp(BaseModel):
 
 
 def _utc(dt: datetime) -> datetime:
-    """The DB's naive UTC stamp as an aware one, so it serialises with an
-    offset and the browser does not read it as local time."""
     return dt.replace(tzinfo=timezone.utc)
 
 
 @router.post("/register", response_model=AuthResp)
 async def register(request: Request, response: Response, body: RegisterBody = Body(...)) -> AuthResp:
-    # 400 bad username/password, then 429 past the sign-up throttle (login_throttle.take_register,
-    # per client address; MCP register_account too), 409 username taken.
     username = _normalize_username(body.username)
     _validate_username(username)
     _validate_password(body.password)
@@ -547,7 +349,8 @@ async def register(request: Request, response: Response, body: RegisterBody = Bo
         s.add(User(
             id=new_id,
             username=username,
-            password=body.password,  # plaintext per user decision
+            # plaintext per owner decision
+            password=body.password,
         ))
         try:
             await s.flush()
@@ -581,10 +384,7 @@ async def login(
 @router.post("/logout")
 async def logout(request: Request, response: Response) -> dict[str, bool]:
     import push_api
-    await push_api.forget_cookies(request)  # before the cookies go: their sessions' push subs
-    # Wipe every principal cookie (user + impersonate + chatter) so a
-    # surviving cross-principal cookie can't re-authenticate the next
-    # request after the user explicitly signed out.
+    await push_api.forget_cookies(request)
     clear_all_principal_cookies(response)
     return {"ok": True}
 
@@ -617,59 +417,23 @@ async def me() -> AuthResp | None:
     )
 
 
-# ── Middleware: resolve cookie → AuthedUser ───────────────────────────
 
 async def _master_account_ids(s) -> frozenset[str]:
-    """The master (is_admin) fat set: the registry UNIONED with every account
-    any user owns in `user_accounts`. Each source holds accounts the other
-    lacks — the registry knows captured sessions the DB may not, the DB knows
-    retired DB-only accounts with no captured session; replacing the union
-    with the registry alone made the master WEAKER than a regular owner (a
-    rules DELETE 403'd the live master on 2026-08-19). Recomputed each
-    request, so a freshly captured account appears without re-login.
-
-    Deferred registry import mirrors the `chatters` pattern — auth.py keeps no
-    hard registry dependency. `account_ids()` and not `list_accounts()`: we
-    want the id SET, and the listing builds it by reading a meta.json per
-    account — a directory walk on every request the master makes, which is
-    descriptors spent in the middleware on data we discard."""
+    # Union registry + user_accounts: each holds accounts the other lacks; registry alone made master weaker than an owner.
+    # account_ids(), not list_accounts(): the listing reads a meta.json per account on every master request.
     import accounts as _registry
     rows = (await s.execute(select(UserAccount.account_id).distinct())).all()
     return _registry.account_ids() | frozenset(str(r[0]) for r in rows)
 
 
 async def account_ids_for(s, user_id: str, is_admin: bool) -> frozenset[str]:
-    """The account_ids a signed-in (or impersonated) user may touch: a master
-    (is_admin) gets the fat set (_master_account_ids — the same source the
-    isolation middleware and _resolve_account_id check against; why a union
-    and why per request: see there), anyone else the accounts they own in
-    `user_accounts` (agency_account_ids)."""
     if is_admin:
         return await _master_account_ids(s)
     return frozenset(await agency_account_ids(s, user_id))
 
 
 async def _touch_last_seen(user_id: str, now: datetime) -> None:
-    """Bump users.last_seen_at (session_verdict said "touch": only once per
-    ~5 min, to avoid write amplification — a chat session fires hundreds of
-    requests/min).
-
-    A cosmetic activity stamp must NEVER be able to fail the request it rides
-    on. Two things here:
-
-    Its OWN session, because a lock timeout would otherwise poison the
-    middleware's session — SQLAlchemy demands a rollback after any error, and
-    the impersonation overlay still has reads to do on it.
-
-    And SWALLOWED, because a missed bump costs nothing (the next request
-    retries) while a raised one costs the whole call. Unguarded, this UPDATE
-    sat on the 30 s busy_timeout whenever the DB was write-contended and
-    surfaced as a 500 on real API calls — /admin/messages, /api/of/v2/chats —
-    which is how a write-storm turned into a dead-looking UI on 2026-08-21.
-    Note the throttle cannot re-arm on its own while the write keeps failing:
-    `last_seen_at` is read from the row, so a never-committed stamp stays stale
-    and EVERY subsequent request retries the write. Failing quietly is what
-    breaks that loop."""
+    # Own session and swallowed: a failed cosmetic stamp must never fail the request (a lock timeout once 500'd real API calls).
     try:
         async with get_session() as s:
             await s.execute(update(User).where(User.id == user_id).values(last_seen_at=now))
@@ -681,17 +445,11 @@ from typing import NamedTuple  # noqa: E402  (used by this region only)
 
 
 class _CookieClears(NamedTuple):
-    """Which cookies the response clears (`_resolve_session`)."""
     session: bool = False
     impersonate: bool = False
 
 
 async def _resolve_session(request: Request) -> _CookieClears:
-    """Resolve the session cookie onto `_request_user` (and the impersonation
-    overlay onto it, `_apply_impersonation`). Returns which cookies the
-    response clears: the session cookie when revoked (Log out other sessions,
-    2FA turned on) or idle too long, the impersonate cookie per
-    `_apply_impersonation`."""
     cookie = request.cookies.get(COOKIE_NAME)
     parsed = parse_cookie_issued(cookie) if cookie else None
     if not parsed:
@@ -718,19 +476,13 @@ async def _resolve_session(request: Request) -> _CookieClears:
 
 
 async def _apply_impersonation(imp_cookie: str | None, s, row: User, now: datetime) -> bool:
-    """Impersonation overlay, for the signed-in founder `row` (the impersonate
-    cookie binds to a specific founder user_id): overlays `_request_user` with
-    the impersonated user and sets `_impersonation`. Returns whether the
-    response clears the cookie: any parse/load failure does, so the next
-    request is clean. Impersonating a master gets the same fat set as a real
-    master (read-only — mutation is blocked for any impersonation)."""
     if not imp_cookie:
         return False
     parsed = _parse_impersonate_cookie(imp_cookie)
     verdict = session_stamps.impersonation_verdict(
         parsed, now, row.id, ttl=IMPERSONATE_TTL_SECONDS,
     )
-    if verdict == "clear" or parsed is None:  # "apply" implies parsed; `is None` narrows it
+    if verdict == "clear" or parsed is None:
         return True
     imp_uid = parsed[0]
     imp_row = (await s.execute(select(User).where(User.id == imp_uid))).scalar_one_or_none()
@@ -749,13 +501,6 @@ async def _apply_impersonation(imp_cookie: str | None, s, row: User, now: dateti
 
 
 async def _token_request(request: Request, call_next, token: str):
-    """An owner access token's request (token_auth): it wins outright, never a
-    cookie fallback. A bad token → 401; a route off the token allowlist, or a
-    write wider than its tool (token_auth.write_refusal) → 403 JSON; else signed in as its owner, clamped to the owner's own Agency
-    (is_admin False, so master gates refuse it)."""
-    # token_auth.StripCookieIdentities (an outer ASGI layer, server.py) dropped
-    # every cookie identity and X-Employee-Id before any Request was built.
-    # Fail closed if it is not installed rather than mix a token with a cookie.
     if any(h.decode() in request.headers for h in token_auth.STRIPPED):
         raise RuntimeError("bearer request still carries a cookie: token_auth.StripCookieIdentities missing")
     owner = await token_auth.resolve(token)
@@ -778,18 +523,6 @@ async def _token_request(request: Request, call_next, token: str):
 
 
 async def session_middleware(request: Request, call_next):
-    """Read the session cookie, load the user + their account_ids, stash
-    on the ContextVar, then call the route. Idle-too-long users get their
-    cookie cleared on the response.
-
-    Runs AFTER the share-token gate (registered earlier so it's outer in
-    Starlette's reverse-order middleware stack) so only share-authed
-    requests reach this layer. /auth/* endpoints are exempt from the
-    share-token gate via the existing allowlist below.
-    """
-    # Every identity starts empty: under the plain asyncio loop a keep-alive connection that
-    # paused reading (a large body) re-arms its reader inside the request task, so the NEXT
-    # request on that connection would inherit this one's ContextVars (test_request_identity_reset).
     _request_user.set(None)
     _impersonation.set(None)
     _request_token.set(None)
@@ -798,12 +531,6 @@ async def session_middleware(request: Request, call_next):
         return await _token_request(request, call_next, token)
     clears = await _resolve_session(request)
 
-    # Impersonation is READ-ONLY. Any mutation while a valid impersonate
-    # cookie is in effect is rejected, except the exit endpoint (DELETE
-    # /admin/impersonate) and logout (which clears the founder session
-    # entirely, implicitly killing the overlay too). Without this, the
-    # founder could silently send a message AS the friend and the audit
-    # log would record it under the friend's identity.
     if session_stamps.blocks_write(
         request.method, request.url.path, _impersonation.get() is not None,
     ):
@@ -820,12 +547,6 @@ async def session_middleware(request: Request, call_next):
     return response
 
 
-# ── Admin user management ─────────────────────────────────────────────
-#
-# Founder-only: list users + delete one with a typed "delete" + admin
-# password confirmation. Gated by ADMIN_PASSWORD env var (NOT in source).
-# Sits under /admin/* so the existing share-token + (eventually)
-# session-cookie gating both apply.
 
 admin_router = APIRouter(prefix="/admin/users", tags=["admin-users"])
 
@@ -834,27 +555,6 @@ _ENV_FILE = Path(__file__).resolve().parent / ".env"
 
 
 def _read_admin_password() -> str:
-    """The founder second factor: the process ENV first, the UI store as the
-    bootstrap fallback.
-
-    This is the one key whose precedence is inverted, and the inversion is the
-    whole rotation story. `secrets_store.get` is store-first, which is right for
-    a key the UI owns — but ADMIN_PASSWORD is also BOOTSTRAP ONLY
-    (`secrets_store._BOOTSTRAP_ONLY`), so store-first made a UI-set password
-    PERMANENT: the store refused to change it and a new `.env` value could never
-    outrank it. Both the error message and DEPLOY.md told operators to rotate in
-    `.env`, which would have silently done nothing.
-
-    Env-first fixes that without loosening the gate. A master session can write
-    the store, but it can never displace a value it cannot reach — so the two
-    factors stay two, and `.env` + restart really is the rotation path.
-
-    The store still carries the FIRST one. On this deployment the variable was
-    never set or documented, so all five founder-only writes (grant, revoke,
-    transfer, delete user, set another agency's AI keys) answered 503 and
-    nothing said why; a second factor nobody can configure is not a second
-    factor, it is an outage.
-    """
     env = (os.environ.get(ADMIN_PASSWORD_ENV) or "").strip()
     if not env:
         # service/.env directly, not just os.environ, for a NATIVE run
@@ -910,25 +610,6 @@ class DeleteUserBody(BaseModel):
 
 
 def require_master() -> AuthedUser:
-    """THE master-role gate. Founder-only surfaces call this; nothing re-derives it.
-
-    Two gates exist on purpose and are not interchangeable. This one proves WHO
-    is asking from the session, and is what a READ needs — a masked key hint or
-    a roster of every agency is a leak whether or not the caller knows a
-    password. `_assert_admin_password` proves the caller holds the founder
-    secret, and is what a WRITE needs.
-
-    They are not yet applied together everywhere they should be: the account
-    grant, revoke, transfer and delete endpoints below carry the password ALONE,
-    so any signed-in owner who learns it can move accounts between agencies.
-    That predates this helper and is not changed here — it is written down so
-    the next person adding a founder route knows the difference between the
-    policy and the current state.
-
-    401 when nobody is signed in rather than 403: the role has to be PROVEN, so
-    an absent principal is refused on the same footing as a wrong one, and
-    `ALLOW_ANONYMOUS_ADMIN` (which resolves to no user) buys nothing here.
-    """
     user = get_request_user()
     if user is None:
         raise HTTPException(
@@ -940,10 +621,6 @@ def require_master() -> AuthedUser:
 
 
 def _assert_admin_password(supplied: str) -> None:
-    """Founder-gate. 503 if the relay never had the env var configured,
-    403 if the caller's password doesn't match. Centralised so every
-    founder-only endpoint reads the same. An owner access token never
-    passes it: the founder secret is for a person at a browser."""
     if _request_token.get() is not None:
         raise HTTPException(status_code=403, detail="not allowed with an access token")
     expected = _read_admin_password()
@@ -971,22 +648,11 @@ async def admin_delete_user(user_id: str, body: DeleteUserBody = Body(...)) -> d
         )).scalar_one_or_none()
         if row is None:
             raise HTTPException(status_code=404, detail=f"unknown user {user_id!r}")
-        # CASCADE on user_accounts handles the join rows; OF accounts
-        # themselves are untouched. Agency-wide, so it also ends the open
-        # streams of this Agency's chatters, whose grants went with it.
         events.on_commit(s, "assignment_changed", agency=user_id)
         await s.execute(delete(User).where(User.id == user_id))
     return {"ok": True, "deleted_user_id": user_id}
 
 
-# ── Founder grant: hand an OF account to a friend ───────────────────
-#
-# Without this, a new friend has zero accounts until they capture one via
-# the login extension. The founder may want to gift access ("here, try
-# mine") without needing the friend to install anything. The grant just
-# inserts a user_accounts row — the OF session bytes live on disk under
-# service/sessions/<account_id>/ and don't move. Revoke is the inverse
-# DELETE; the underlying account stays put for everyone else.
 
 class GrantAccountBody(BaseModel):
     account_id: str = Field(..., min_length=1, max_length=64)
@@ -1016,13 +682,9 @@ async def admin_list_user_accounts(user_id: str) -> GrantOverview:
     /admin/users list: it names every OF account on the relay. The POST/DELETE
     mutators carry the admin_password gate on top."""
     require_master()
-    # Import locally to avoid a hard module-level dep from auth into the
-    # account registry (which imports plenty itself).
     from accounts import list_accounts
 
     async with get_session() as s:
-        # 404 fast on unknown user so the UI shows a clean error rather
-        # than an empty pair of lists that look like "no accounts."
         u = (await s.execute(
             select(User.id).where(User.id == user_id)
         )).scalar_one_or_none()
@@ -1067,8 +729,6 @@ async def admin_grant_user_account(
             await s.flush()
             events.on_commit(s, "assignment_changed", agency=user_id)
         except IntegrityError:
-            # Already linked — treat as success so a double-click in the UI
-            # doesn't surface as an error.
             await s.rollback()
     return {"ok": True, "user_id": user_id, "account_id": body.account_id}
 
@@ -1088,8 +748,6 @@ async def admin_revoke_user_account(
                 UserAccount.account_id == account_id,
             )
         )
-        # 404 if nothing was removed — better than silently returning ok
-        # so the founder knows the row was already gone (typo? race?).
         if (result.rowcount or 0) == 0:
             raise HTTPException(
                 status_code=404,
@@ -1099,14 +757,6 @@ async def admin_revoke_user_account(
     return {"ok": True, "user_id": user_id, "account_id": account_id}
 
 
-# ── Founder impersonate ─────────────────────────────────────────────
-#
-# Support workflow: a friend reports "my Stats look wrong" and the founder
-# wants to see exactly what they see without making them screenshot or
-# handing over a password. POST starts the overlay; DELETE clears it. The
-# session middleware applies the overlay on every request and 403s
-# mutating verbs so the founder can't accidentally send messages from the
-# friend's account while debugging.
 
 impersonate_router = APIRouter(prefix="/admin/impersonate", tags=["admin-impersonate"])
 
@@ -1123,8 +773,6 @@ async def admin_start_impersonate(
     _assert_admin_password(body.admin_password)
     me = _request_user.get()
     if me is None:
-        # Without a signed-in founder we can't bind the cookie to anyone —
-        # the middleware would refuse to apply it anyway.
         raise HTTPException(
             status_code=401, detail="sign in as the founder before impersonating",
         )
@@ -1138,8 +786,6 @@ async def admin_start_impersonate(
             raise HTTPException(status_code=404, detail=f"unknown user {body.user_id!r}")
         target_username = target.username
     _set_impersonate_cookie(response, body.user_id, me.id)
-    # Loud log — the founder is taking on someone else's identity. Worth
-    # a WARNING-level entry so it shows up in any standard log scan.
     log.warning(
         "impersonate START: founder=%s (id=%s) -> user=%s (id=%s)",
         me.username, me.id, target_username, body.user_id,

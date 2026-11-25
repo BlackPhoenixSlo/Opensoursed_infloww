@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""
-vault_cache is an optimisation, not a dependency.
-
-On 2026-08-22 the VPS lost ~90% of its CPU to hypervisor steal. SQLite
-writers stopped finishing inside `busy_timeout`, and `vault_cache.put`'s
-unguarded INSERT turned `database is locked` into a **500 on a request whose
-upstream OF fetch had already succeeded** — the picker died holding good
-data it simply could not memoise:
-
-    INSERT INTO vault_response_cache ... -> OperationalError: database is locked
-    url: /api/of/v2/vault/lists?view=main&limit=50&offset=50
-
-These cases pin the degradation contract: a failed read is a MISS, a failed
-write is a NO-OP, a failed invalidate does not raise — and, because a
-swallowed invalidate would otherwise let the picker serve pre-upload
-listings for a full TTL, the rows it failed to delete stop being served.
-
-Plain-assert standalone script (no pytest), run via:
-
-    ./venv/bin/python service/tests/test_vault_cache_degrades.py
-
-Exit 0 = all pass.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -32,8 +9,6 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# ── Hard-bind a throwaway DB BEFORE importing any service module (same
-# PROD-fallback guard as the other service tests).
 _TMP_DB = Path(tempfile.gettempdir()) / f"chatterly_vcdeg_{uuid.uuid4().hex}.db"
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP_DB}"
 os.environ["CHATTERLY_DB_URL"] = f"sqlite:///{_TMP_DB}"
@@ -59,10 +34,6 @@ _failures: list[str] = []
 
 
 def _pending() -> dict | None:
-    """The watermark store, or None on a build that predates it. Fetched
-    defensively so this file fails on the BEHAVIOUR below rather than dying
-    with an AttributeError before a single case runs — a RED proof that
-    aborts at setup proves nothing."""
     return getattr(vault_cache, "_invalidated_at", None)
 
 
@@ -73,9 +44,6 @@ def _expect(label: str, ok: bool, detail: str = "") -> None:
 
 
 class _LockedSession:
-    """Stands in for `get_session()` on a box whose SQLite writer cannot get
-    the lock. Raises the exact exception SQLAlchemy surfaces for
-    `sqlite3.OperationalError: database is locked`."""
 
     def __init__(self, calls: list[str]):
         self._calls = calls
@@ -92,7 +60,6 @@ class _LockedSession:
 
 
 def _lock_the_db(calls: list[str]):
-    """Swap vault_cache's session factory for one that always fails."""
     real = vault_cache.get_session
     vault_cache.get_session = lambda: _LockedSession(calls)
     return real
@@ -105,9 +72,6 @@ async def _seed_account() -> None:
 
 
 async def _row_count(query_key: str | None = None) -> int:
-    """Cached rows for the account, or for ONE key when given. Cases share a
-    DB and do not clear it between runs, so a whole-account count would carry
-    the previous case's rows — scope to the key when that matters."""
     from sqlalchemy import func, select
     async with get_session() as s:
         stmt = (select(func.count()).select_from(VaultResponseCache)
@@ -117,10 +81,8 @@ async def _row_count(query_key: str | None = None) -> int:
         return (await s.execute(stmt)).scalar_one()
 
 
-# ── Cases ───────────────────────────────────────────────────────────────
 
 async def case_happy_path_still_caches() -> None:
-    """The guard must not cost us the cache itself."""
     await vault_cache.put(_AID, _KEY, _PAYLOAD, started_at=datetime.utcnow())
     got = await vault_cache.get(_AID, _KEY)
     _expect("happy path: put -> get round-trips the payload",
@@ -128,15 +90,6 @@ async def case_happy_path_still_caches() -> None:
 
 
 async def case_empty_listings_are_never_cached() -> None:
-    """An empty listing must NOT be memoised.
-
-    Regression for a 24h outage: on 2026-08-31 the Fansly vault reads were
-    still returning nothing, three `{"list": []}` rows landed in this cache,
-    and the picker then served them for a full TTL to a browser whose vault
-    was by that point completely healthy — folders and media both blank while
-    the shim, the endpoints and the session were all provably fine. Caching
-    "nothing" saves the cheapest possible fetch and buys a silent, TTL-long,
-    self-healing lie in exchange."""
     empty = {"list": [], "hasMore": False}
     await vault_cache.put(_AID, "empty-listing", empty, started_at=datetime.utcnow())
     _expect("empty listing: not served from cache",
@@ -145,7 +98,6 @@ async def case_empty_listings_are_never_cached() -> None:
             await _row_count("empty-listing") == 0,
             detail=f"{await _row_count('empty-listing')} row(s) present")
 
-    # ...and it must not shadow a GOOD row already cached under that key.
     await vault_cache.put(_AID, _KEY, _PAYLOAD, started_at=datetime.utcnow())
     await vault_cache.put(_AID, _KEY, empty, started_at=datetime.utcnow())
     _expect("empty listing: does not overwrite a healthy cached row",
@@ -153,11 +105,6 @@ async def case_empty_listings_are_never_cached() -> None:
 
 
 async def case_empty_detection_is_conservative() -> None:
-    """Only recognised, actually-empty listing shapes count as empty.
-
-    If this over-matched it would quietly disable caching for payload shapes
-    it merely failed to understand — trading a visible outage for an
-    invisible performance cliff."""
     is_empty = getattr(vault_cache, "_is_empty_listing", None)
     _expect("vault_cache exposes _is_empty_listing", is_empty is not None)
     if is_empty is None:
@@ -178,8 +125,6 @@ async def case_empty_detection_is_conservative() -> None:
 
 
 async def case_put_never_raises_on_locked_db() -> None:
-    """The 500 we actually shipped. `put` is the LAST statement before the
-    endpoint returns OF data that is already in hand."""
     calls: list[str] = []
     real = _lock_the_db(calls)
     try:
@@ -197,7 +142,6 @@ async def case_put_never_raises_on_locked_db() -> None:
 
 
 async def case_get_reports_a_miss_on_locked_db() -> None:
-    """A failed read must send the caller upstream, not 500 them."""
     calls: list[str] = []
     real = _lock_the_db(calls)
     try:
@@ -213,9 +157,6 @@ async def case_get_reports_a_miss_on_locked_db() -> None:
 
 
 async def case_invalidate_never_raises_on_locked_db() -> None:
-    """`invalidate` runs AFTER the mutation succeeded upstream — raising here
-    reports failure for completed work and invites a re-upload (duplicate
-    vault media)."""
     calls: list[str] = []
     real = _lock_the_db(calls)
     try:
@@ -231,9 +172,6 @@ async def case_invalidate_never_raises_on_locked_db() -> None:
 
 
 async def case_failed_invalidate_stops_serving_stale_rows() -> None:
-    """The correctness hole that swallowing would otherwise open: the creator
-    uploads, the DELETE fails, and the picker keeps serving the pre-upload
-    listing for a full TTL. The surviving row must read as a miss."""
     await vault_cache.put(_AID, _KEY, _PAYLOAD, started_at=datetime.utcnow())
     _expect("stale guard: row is served before the failed invalidate",
             await vault_cache.get(_AID, _KEY) == _PAYLOAD)
@@ -249,8 +187,6 @@ async def case_failed_invalidate_stops_serving_stale_rows() -> None:
     _expect("stale guard: but it is NO LONGER served",
             await vault_cache.get(_AID, _KEY) is None)
 
-    # A fresh upstream result must still re-warm the cache — the account is
-    # not poisoned, only the rows the invalidate meant to kill.
     fresh = {"list": [{"id": 7}, {"id": 8, "name": "just uploaded"}], "hasMore": False}
     await vault_cache.put(_AID, _KEY, fresh, started_at=datetime.utcnow())
     _expect("stale guard: a fresh put re-warms the account",
@@ -259,8 +195,6 @@ async def case_failed_invalidate_stops_serving_stale_rows() -> None:
 
 
 async def case_successful_invalidate_resets_the_mark() -> None:
-    """A successful invalidate moves the watermark to its own moment — an older
-    (here: a bogus future) bar left in place would keep raising it forever."""
     store = _pending()
     _expect("vault_cache exposes an invalidation store", store is not None)
     if store is None:

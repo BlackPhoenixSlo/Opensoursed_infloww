@@ -1,48 +1,53 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useQueries } from "@tanstack/react-query";
 
-import { useSplitInbox } from "@/hooks/useSplitInbox";
 import type { OFChatItem } from "@/lib/relay";
-import { groupOf, lockedGroup } from "@/lib/splitInbox";
+import { inboxScope, splitInboxQueryOptions, type ScopeSplit, type SplitInboxResponse } from "@/lib/splitInbox";
+
+const toSplits = (results: { data?: SplitInboxResponse }[]): ScopeSplit[] =>
+  results.map((r) => ({ config: r.data?.config ?? null, myGroup: r.data?.my_group ?? null }));
 
 /**
- * The Split Inbox group chosen in the "All inboxes" selector
- * (docs/spec/phase-02-fan-list-pane.md, Split Inbox; story 9). It reads the
- * Creator's split (`useSplitInbox`, 60-second freshness) and keeps the chosen
- * group as session state: a reload, or a change of Creator, returns to "All
- * inboxes", because a group number belongs to one Creator's split. So does a
- * saved split that lowers the count below the chosen group: the choice itself
- * resets, so raising the count again does not bring the old group back. All
- * Models (no Creator) has no split.
+ * The Split Inbox group chosen in the "All inboxes" selector over the
+ * Creators in scope (one, or every Creator in All Models, where "Inbox N" is
+ * group N of each Creator's own split). The choice is session state: a reload,
+ * a change of Creators, or a count lowered below it returns to "All inboxes".
  *
- * `inGroup` is the client-side filter over loaded rows, and null while "All
- * inboxes" is chosen: the one place that decides whether a group applies.
- *
- * A chatter the owner bound to a group is `locked` to it: the relay already
- * serves only that group's Fans, and the selector offers no other.
+ * `inGroup` filters loaded rows, null while no group applies. A chatter is
+ * `locked` when every Creator in scope binds the same group (the relay
+ * already serves only that group's Fans).
  */
-export function useInboxGroup(accountId: string | null) {
-  const { config, myGroup } = useSplitInbox(accountId);
+export function useInboxGroup(accountIds: readonly string[]) {
+  const splitList = useQueries({ queries: accountIds.map((id) => splitInboxQueryOptions(id)), combine: toSplits });
+  const scopeKey = accountIds.join(",");
   const [picked, setPicked] = useState<number | null>(null);
-  const [pickedFor, setPickedFor] = useState(accountId);
-  if (pickedFor !== accountId) {
-    setPickedFor(accountId);
+  const [pickedFor, setPickedFor] = useState(scopeKey);
+  if (pickedFor !== scopeKey) {
+    setPickedFor(scopeKey);
     setPicked(null);
   }
-  if (config && picked != null && picked > config.group_count) setPicked(null);
-  const locked = lockedGroup(config, myGroup);
-  const group = locked ?? picked;
+  const splits = useMemo(
+    () => new Map(accountIds.map((id, i) => [id, splitList[i]] as const)),
+    [accountIds, splitList],
+  );
+  const scope = useMemo(() => inboxScope(splits, picked), [splits, picked]);
+  const anyLoaded = splitList.some((s) => s.config);
+  if (anyLoaded && picked != null && picked > scope.groupCount) setPicked(null);
+  const group = scope.locked ?? picked;
+  const single = accountIds.length === 1 ? accountIds[0] : "";
   const inGroup = useMemo(() => {
-    if (!config || group == null) return null;
-    return (c: OFChatItem) => groupOf(c.withUser.id, config) === group;
-  }, [config, group]);
+    const of = scope.of;
+    if (!of) return null;
+    return (c: OFChatItem) => of(c.__accountId ?? single, c.withUser.id);
+  }, [scope, single]);
   return {
-    groupCount: config?.group_count ?? 1,
+    groupCount: scope.groupCount,
     group: inGroup ? group : null,
     setGroup: setPicked,
     inGroup,
-    locked: locked != null,
-    wholeInbox: config !== null && locked == null && inGroup === null,
+    locked: scope.locked != null,
+    wholeInbox: scope.allLoaded && accountIds.length > 0 && inGroup === null,
   };
 }

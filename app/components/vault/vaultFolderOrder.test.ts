@@ -21,7 +21,7 @@ describe("moveFolder", () => {
     ["middle up", 3, 1, [3, 1, 2, 4]],
   ] as const)("%s: %s over %s → %j", (_, from, to, want) => {
     expect(moveFolder(ORDER, from, to)).toEqual(want);
-    expect(ORDER).toEqual([1, 2, 3, 4]); // never mutates
+    expect(ORDER).toEqual([1, 2, 3, 4]);
   });
   it.each([
     ["from === to", 2, 2],

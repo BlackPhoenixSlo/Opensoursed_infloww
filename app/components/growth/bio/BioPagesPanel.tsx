@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * Growth → Bio pages (/growth/bio-pages; owner-only, an Inflowwww extra, a Tracking links tab until 11-12): every
- * link-in-bio page of the owner, no Creator
- * filter (imported pages have none), with its address, Creator, link count and the last 30 days' views and clicks. A
- * row opens the page's editor; "New bio page" creates one.
- */
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -23,7 +17,6 @@ import { errMsg } from "@/components/growth/_bits";
 const GRID = "md:grid md:grid-cols-[minmax(0,2fr)_minmax(0,2.4fr)_minmax(0,1.2fr)_4.5rem_5.5rem_5.5rem] md:items-center md:gap-4";
 const fmt = (n: number) => n.toLocaleString("en-US");
 
-/** The route: the panel in the Growth HB frame for an owner; a chatter gets a note and no read. */
 export function BioPagesPage() {
   const owner = !!useUser().user;
   return (
@@ -94,7 +87,6 @@ export function BioPagesPanel() {
   );
 }
 
-/** One page: on a phone a card (name, address, then the counts in a wrapping line), from md up a table row. */
 function Row({ row: r, creator }: { row: BioListRow; creator: string }) {
   const router = useRouter();
   const href = bioPageHref(r.id);

@@ -1,28 +1,5 @@
 "use client";
 
-/**
- * Time tracking (docs/spec/settings-tabs/phase-04-time-tracking-messaging.md): the clock-out policy,
- * shown read-only and edited behind "Edit", saved whole to the `time-tracking` Settings blob behind
- * the Load gate. The Relay reads the blob at request time (service/shifts_api.py): "Enable time tracking" lets
- * chatters clock in and out, so the Panel no longer says "not applied yet" (docs/spec/phase-02-shifts-time-tracking.md,
- * App).
- *
- * Since w4-a, as Infloww's `ClockSetting` (bundle @10663332): "Auto clock out" after N minutes of inactivity (10
- * when never saved), and "Enable clock in and clock out for", a checkbox per role (the built-in Owner, Admin, Team
- * Leader, Chatter and Creator, then the `roles` blob's) with "Select all", saved as `role_ids`; the Relay's clock-in and the top bar's Clock button
- * follow it. Infloww's "restart their Infloww app" line is left out: ours applies on the next status read.
- *
- * Checked against the live Infloww app (w5-a, .scratch/infloww-live/05-*.png): with the switch off only "Enable
- * time tracking" shows; Auto clock out and the role list appear once it is on (unsaved too), the minutes field is
- * 48px in the line's small grey text, and the role boxes sit flush with "Select all".
- *
- * Since w5-a, as live Infloww: a blob that never saved `role_ids` shows every role unticked and the Relay lets nobody
- * clock in until the list is saved; the minutes are 1 to 999 (Infloww's InputInteger max).
- *
- * Versioned (roadmap W6 6.4): a save takes effect from "Set effective date" (in the edit view), now by default;
- * Shift schedule credit reads the version in effect at the sale (SettingsVersions). The auto clock-out of a shift
- * still open always follows the settings in effect now.
- */
 
 import { useEffect, useEffectEvent, useState } from "react";
 
@@ -34,24 +11,18 @@ import SettingsVersions from "@/components/settings/SettingsVersions";
 
 type TimeTrackingBlob = {
   enabled: boolean; auto_clock_out_minutes: number; clock_in_reminder: boolean;
-  /** "Enable clock in and clock out for"; absent until first saved. */
   role_ids?: string[];
 };
 const DEFAULTS: TimeTrackingBlob = { enabled: false, auto_clock_out_minutes: 10, clock_in_reminder: false };
 
-/** The edit view's values, the minutes as the field's text so 0, "", -5 and 1.5 can be shown and refused. */
 type Draft = { enabled: boolean; minutes: string; clock_in_reminder: boolean; role_ids: string[] };
 
 const CHECKBOX = "h-4 w-4 accent-[var(--accent)] cursor-pointer disabled:cursor-default";
 
-/** The field's text for a stored minutes value. A stored non-number is not coerced (spec, Implementation
- *  Decisions): it shows an empty field, which fails `validMinutes` like a typed one. */
 const minutesText = (stored: unknown) => (typeof stored === "number" ? String(stored) : "");
 
-/** Infloww's Auto clock out field caps at 999 (InputInteger max, bundle @10663332); the Relay refuses more. */
 const MAX_MINUTES = 999;
 
-/** Whole minutes from 1 to 999 ("" is 0). */
 function validMinutes(text: string): boolean {
   const n = Number(text);
   return Number.isInteger(n) && n >= 1 && n <= MAX_MINUTES;
@@ -69,19 +40,15 @@ export default function TimeTrackingTab() {
     clock_in_reminder: v.clock_in_reminder,
     role_ids: Array.isArray(v.role_ids) ? v.role_ids : [],
   };
-  /** Null in the read view, where every control is disabled. */
   const [draft, setDraft] = useState<Draft | null>(null);
   const shown = draft ?? stored;
   const change = draft ? (patch: Partial<Draft>) => setDraft({ ...draft, ...patch }) : undefined;
   const valid = validMinutes(shown.minutes);
-  /** The Load gate's note, in the body; a failed load also gets Retry there (settingsBlob.ts). */
   const gateNote = blob.save.gateNote;
 
-  // A save PUTs the hook's whole `value` as it stands when it runs, and a `set` has not reached `value`
-  // until the next render. So Save only `set`s the draft and asks; this effect saves on the render that
-  // holds it (spec, Interfaces), and a success returns to the read view.
   const [saveAsked, setSaveAsked] = useState(0);
   const saveValue = useEffectEvent(() => blob.commit({}, () => setDraft(null)));
+  // A save PUTs `value` as it stands when it runs and a `set` has not reached it until next render: Save only asks, this effect saves.
   useEffect(() => {
     if (saveAsked) saveValue();
   }, [saveAsked]);
@@ -93,7 +60,6 @@ export default function TimeTrackingTab() {
     });
     setSaveAsked((n) => n + 1);
   };
-  /** Back to the loaded values: drops the draft, and the edits a failed save left in the hook. */
   const cancel = () => {
     blob.reset();
     setDraft(null);
@@ -111,7 +77,6 @@ export default function TimeTrackingTab() {
             <SaveRow {...blob.save} look="settings" canSave={blob.save.canSave && valid} onSave={() => save(draft)} />
           </>
         ) : (
-          // The read view's only action, so it is the primary button.
           <button type="button" className={IF_BTN_PRIMARY} disabled={!editable} onClick={() => setDraft(stored)}>
             Edit
           </button>
@@ -126,7 +91,6 @@ export default function TimeTrackingTab() {
             <Switch
               checked={shown.enabled}
               label="Enable time tracking"
-              // Off hides the minutes field, so a bad value there falls back rather than block Save unseen.
               onChange={change && ((enabled) => change(enabled || validMinutes(shown.minutes) ? { enabled }
                 : { enabled, minutes: validMinutes(stored.minutes) ? stored.minutes : String(DEFAULTS.auto_clock_out_minutes) }))}
             />
@@ -184,7 +148,6 @@ export default function TimeTrackingTab() {
   );
 }
 
-/** "Enable clock in and clock out for": "Select all", then a checkbox per role; disabled in the read view. */
 function RoleList({ roles, ids, onChange }: {
   roles: { id: string; name: string }[];
   ids: string[];

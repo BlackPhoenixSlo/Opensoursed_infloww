@@ -1,64 +1,7 @@
 #!/usr/bin/env python3
-"""
-Dead-session pause — an OF "Wrong user." rejection flags the account, the
-executor skips every run for it, and the recovery probe / a re-capture
-resumes it (service/account_health.py + the run_once gate).
-
-  case_classifier_only_matches_dead_signatures:
-      "Wrong user." OFAPIError and the no-captured-session FileNotFoundError
-      classify as session-dead; a 404 OFAPIError, a plain ValueError and a
-      generic FileNotFoundError do NOT.
-  case_wrong_user_run_marks_account:
-      an automation raising the "Wrong user." OFAPIError writes an error run
-      AND flags the account session-dead.
-  case_flagged_account_skips_every_kind:
-      run_once on the flagged account returns skipped/session_unlinked for a
-      DIFFERENT kind, without invoking the automation or writing a run row.
-  case_other_account_unaffected:
-      the same kind still runs fine on a healthy account.
-  case_non_session_error_not_marked:
-      a 404 OFAPIError errors the run but does NOT flag the account.
-  case_no_session_file_marks_account:
-      a missing session dir (account deleted / never captured) flags the
-      account and subsequent runs skip.
-  case_probe_recovers_account:
-      _probe_dead_sessions with a working fake client clears the flag; the
-      next run_once executes normally again.
-  case_probe_failure_keeps_pause_and_rate_limits:
-      a still-dead probe keeps the flag AND stamps last_probe_at so the next
-      sweep inside the probe window skips the account (no OF hammering).
-  case_probe_interval_widens_with_age:
-      the backoff ladder: a fresh death probes at the base interval, a day-old
-      one slower, a week-old one slower still — and it never goes BELOW base.
-  case_long_dead_account_is_not_probed_at_the_base_interval:
-      an account dead for weeks whose last probe was one base interval ago is
-      NOT due (that is the ~4k-wasted-calls-a-month case), while a freshly
-      dead account in the same sweep IS.
-  case_dead_session_map_carries_reason:
-      the /admin/accounts stamp exposes both the instant and the reason, so the
-      UI can name the repair instead of just "something is wrong".
-  case_otp_state_counts_only_on_a_400:
-      the otpState body on a status other than 400 does not classify.
-  case_the_first_reason_stays_while_dead:
-      a second failure with another reason keeps the reason the owner was told.
-  case_classifier_flags_otp_state:
-      OF's HTTP 400 code 101 with `error.payload.otpState` (the login now needs
-      a 2FA code) classifies as "otp_required", from OFClient's message and
-      from the throughput scripts' one-line form; code 105 (OF's per-request
-      step-up, retried after the code) and a 101 without otpState do NOT.
-  case_otp_run_marks_account_and_pauses:
-      an automation raising that 101 writes an error run, flags the account
-      with reason "otp_required", and the next run of another kind skips.
-  case_classifier_leaves_transient_errors_alone:
-      what the OF WebSocket pump meets on a reconnect and must retry (of_ws_decide
-      waits on None): a bare 401 / 429 / 500 from /users/me, a socket OF closed
-      (any code), an open timeout, a proxy CONNECT failure.
-
-Run: ./venv/bin/python service/tests/test_session_health.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -79,10 +22,7 @@ WRONG_USER_ERR = (
     '{"error":{"code":301,"message":"Wrong user."}}'
 )
 
-# OF's answer once the login needs a 2FA code: HTTP 400, error code 101 and the
-# OTP state under `error.payload` (OF web's own interceptor reads
-# `error.payload.otpState` and `error.payload.strong` on a 101 and opens its 2FA
-# modal titled `error.message`; the message text here is invented).
+# OF answers a 2FA demand with HTTP 400, code 101 and `error.payload.otpState`.
 OTP_BODY = (
     '{"error":{"code":101,"message":"Confirm it is you","payload":{"otpState":'
     '{"email":false,"phoneOtp":false,"appOtp":true,"faceOtp":false,"forceFaceOtp":false,'
@@ -105,8 +45,6 @@ async def _t_fail_not_found(account_id: str, payload: dict, *, run_id: int) -> d
 
 @register("t_fail_no_session")
 async def _t_fail_no_session(account_id: str, payload: dict, *, run_id: int) -> dict:
-    # Exact OFClient.from_account wording — the session dir is missing
-    # entirely (account deleted / never captured on this host).
     raise FileNotFoundError(
         f"Account {account_id!r} has no captured session. "
         f"Run the bootstrap (paste-curl) for this account first."
@@ -151,7 +89,6 @@ def case_classifier_only_matches_dead_signatures() -> None:
     ) == "no_session"
     assert account_health.is_session_dead_error(OFAPIError("404 ... Media Not Found")) is None
     assert account_health.is_session_dead_error(ValueError("Wrong user")) is None
-    # A generic missing file inside an automation must NOT pause the account.
     assert account_health.is_session_dead_error(FileNotFoundError("/tmp/media.jpg")) is None
 
 
@@ -165,7 +102,7 @@ async def case_wrong_user_run_marks_account() -> None:
 
 
 async def case_flagged_account_skips_every_kind() -> None:
-    aid = "acct_dead"  # flagged by the previous case
+    aid = "acct_dead"
     assert await account_health.is_session_dead(aid)
     before = CALLS["noop"]
     out = await ax.run_once(aid, "t_noop", payload={})
@@ -226,8 +163,6 @@ async def case_probe_failure_keeps_pause_and_rate_limits() -> None:
         await ax._probe_dead_sessions()
         assert probes["n"] == 1, "first sweep probes the account"
         assert await account_health.is_session_dead(aid), "failed probe must keep the pause"
-        # Immediately again: last_probe_at was just stamped → inside the probe
-        # window → the account is NOT probed a second time.
         await ax._probe_dead_sessions()
         assert probes["n"] == 1, "second sweep inside the window must not re-probe"
     finally:
@@ -237,9 +172,6 @@ async def case_probe_failure_keeps_pause_and_rate_limits() -> None:
 async def _backdate(
     account_id: str, *, dead_ago: timedelta, probed_ago: timedelta,
 ) -> None:
-    """Age an account's health row. The backoff ladder keys off
-    `session_dead_at` and the due check off `last_probe_at`, so a test of their
-    INTERACTION has to be able to set both."""
     now = datetime.utcnow()
     async with get_session() as s:
         await s.execute(
@@ -258,8 +190,6 @@ def case_probe_interval_widens_with_age() -> None:
     assert account_health.probe_interval_s(base, timedelta(hours=3)) == base * 3
     assert account_health.probe_interval_s(base, timedelta(days=3)) == base * 6
     assert account_health.probe_interval_s(base, timedelta(days=30)) == base * 36
-    # Clock skew (a dead_at stamped in the future) must land in the FIRST
-    # bucket, never below base and never in some negative-index surprise.
     assert account_health.probe_interval_s(base, timedelta(seconds=-99)) == base
     ladder = [
         account_health.probe_interval_s(base, d)
@@ -274,8 +204,6 @@ async def case_long_dead_account_is_not_probed_at_the_base_interval() -> None:
     base = 600
     await account_health.mark_session_dead("acct_stale", "no_session")
     await account_health.mark_session_dead("acct_fresh", "no_session")
-    # Both were last probed one base interval ago. The only difference is HOW
-    # LONG they have been dead — a month vs ten minutes.
     await _backdate("acct_stale", dead_ago=timedelta(days=30),
                     probed_ago=timedelta(seconds=base + 5))
     await _backdate("acct_fresh", dead_ago=timedelta(minutes=10),
@@ -284,7 +212,6 @@ async def case_long_dead_account_is_not_probed_at_the_base_interval() -> None:
     assert "acct_fresh" in due, "a freshly dead account must keep probing fast"
     assert "acct_stale" not in due, \
         "a month-dead account must NOT be re-probed every base interval"
-    # Backoff widens the gap; it must not park the account forever.
     await _backdate("acct_stale", dead_ago=timedelta(days=30),
                     probed_ago=timedelta(seconds=base * 36 + 5))
     assert "acct_stale" in await account_health.due_probe_ids(base), \
@@ -298,8 +225,6 @@ async def case_dead_session_map_carries_reason() -> None:
     assert row is not None, "a flagged account must appear in the map"
     assert row.reason == "wrong_user", f"reason not exposed to the UI: {row}"
     assert (row.at or "").endswith("Z"), f"instant must be an ISO-Z stamp: {row}"
-    # A never-flagged account is ABSENT, not present-with-null — a listing
-    # endpoint falls back to the null object, which stamps both fields None.
     assert "acct_alive" not in m, "healthy accounts must not appear in the map"
     fallback = m.get("acct_alive", account_health.NO_DEAD_SESSION)
     assert fallback.at is None and fallback.reason is None, \
@@ -308,22 +233,16 @@ async def case_dead_session_map_carries_reason() -> None:
 
 def case_classifier_flags_otp_state() -> None:
     assert account_health.is_session_dead_error(OFAPIError(OTP_ERR)) == "otp_required"
-    # scripts/throughput builds the error as `OFAPIError(f"{status} {body}")`.
     assert account_health.is_session_dead_error(OFAPIError(f"400 {OTP_BODY}")) == "otp_required"
-    # OF's per-request step-up (code 105, otpState at the top of `error`) is
-    # answered by retrying THAT request with the code: not a dead session.
     step_up = '{"error":{"code":105,"message":"Confirm","otpState":{"appOtp":true}}}'
     assert account_health.is_session_dead_error(
         OFAPIError(f"400 for https://onlyfans.com/api2/v2/users/me\n{step_up}")) is None
-    # A 101 without the OTP state is not the 2FA signature: stay strict.
     assert account_health.is_session_dead_error(
         OFAPIError('400 for https://onlyfans.com/api2/v2/users/me\n{"error":{"code":101,"message":"x"}}')) is None
-    # "otpState" in some other error's text is not it either.
     assert account_health.is_session_dead_error(
         OFAPIError('400 for https://onlyfans.com/api2/v2/x\n{"error":{"code":100,"message":"otpState"}}')) is None
     assert account_health.is_session_dead_error(ValueError(OTP_ERR)) is None
 
-    # OFAPIError's message keeps 500 chars of the body; the response it carries has it all.
     class _Resp:
         status_code = 400
 
@@ -334,8 +253,6 @@ def case_classifier_flags_otp_state() -> None:
 
 
 def case_otp_state_counts_only_on_a_400() -> None:
-    # OF answers its 2FA demand with HTTP 400. The same body on any other status
-    # (a proxy's 403 page echoing it, a 200 relayed by a test double) is not it.
     class _Resp:
         def __init__(self, status: int):
             self.status_code = status
@@ -349,8 +266,6 @@ def case_otp_state_counts_only_on_a_400() -> None:
 
 
 async def case_the_first_reason_stays_while_dead() -> None:
-    # The owner was told why (the notification, the badge); a later caller's
-    # different failure on the same dead session must not rewrite it.
     aid = "acct_reason"
     assert await account_health.mark_session_dead(aid, "otp_required")
     assert not await account_health.mark_session_dead(aid, "wrong_user")

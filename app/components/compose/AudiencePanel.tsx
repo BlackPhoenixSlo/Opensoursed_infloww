@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * AudiencePanel — MassMessageComposer's audience picker: the system audiences
- * (include-only chips), the account's custom lists and Smart Lists (include /
- * exclude columns, one account only) and the reach hint. Pure view: the picks
- * are the form's (massMessageReducer), every click a dispatch. In all-models
- * mode only the system audiences show — custom lists and segments are
- * per-account, so no id means the same thing across every model.
- */
 
 import type { Dispatch } from "react";
 
@@ -18,7 +10,6 @@ import { IfHelp, IfLabel } from "@/components/ui/infloww";
 import { reachHint } from "./audienceReach";
 import type { MassAction, MassForm } from "./massMessageReducer";
 
-/** A list column's heading (under the Audience label). */
 const SUB = "mb-1.5 text-[12px] text-fg-dim";
 
 export function AudiencePanel({
@@ -39,8 +30,7 @@ export function AudiencePanel({
         <IfLabel required>Audience</IfLabel>
         <div className="flex flex-wrap gap-1.5">
           {SYSTEM_AUDIENCES.map((b) => (
-            // Include-only: OF ignores system audiences in `excludedLists`,
-            // so there is no "exclude" state to offer (see cycleSystem).
+            // Include-only: OF ignores system audiences in `excludedLists`.
             <SysChip
               key={b.id}
               state={includes.has(b.id) ? "in" : "off"}
@@ -75,7 +65,6 @@ export function AudiencePanel({
           </div>
         </div>
       )}
-      {/* Smart Lists — saved dynamic segments, resolved to fan ids on send. */}
       {!allModels && smartLists.length > 0 && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <SmartListColumn
@@ -99,7 +88,6 @@ export function AudiencePanel({
   );
 }
 
-/** One side of the Smart List picker: a toggle chip per segment. */
 function SmartListColumn({
   title, lists, selected, onToggle, onClass,
 }: {
@@ -107,7 +95,6 @@ function SmartListColumn({
   lists: SmartList[];
   selected: ReadonlySet<number>;
   onToggle: (id: number) => void;
-  /** The chip's classes while picked. */
   onClass: string;
 }) {
   return (

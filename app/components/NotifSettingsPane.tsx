@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * NotifSettingsPane — the bell's Settings tab (NotificationBell): this
- * browser's toasts, bubbles, OS ping and sounds (lib/notifSettings), and for
- * the owner the Agency feed's per-kind switches (`agency`, AgencyKindSwitches)
- * below them, so every notification setting sits in one place.
- */
 
 import { Fragment, type ReactNode } from "react";
 

@@ -1,30 +1,3 @@
-"""automations/full_ai_settle.py — a real purchase settles the live Offer row (phase 05, ticket 85).
-
-Settle = pull: the same row state the Test chat's fake Buy leaves (`full_ai_test._settle`), from
-`messages.is_paid` (flipped by `purchase_notifications.poll_purchases` or any other writer).
-
-  settle_plan(rows, msgs, notices, claimed) -> list[Settle]   pure, one Fan:
-      1. row with `offer_message_id`, that message `is_paid` -> bought; `outcome_at` = the notice's
-         `notified_at`, else `purchased_at`, else now; `join_src` = notice | is_paid
-      2. row without id whose carrier POST was attempted (`offer_attempt_at`, or a legacy
-         `unconfirmed` row), at any age: candidates = messages at its price carrying exactly its media
-         (`messages.media_ids` = locked + previews), created in `link_window` (from the attempt's
-         whole second, else the row's, to `LINK_MAX_S` after it), not another lane's (`automation_kind` set
-         to another kind, or a chatter's), not a mass copy (`mass_run_id` / OF `queueId`), id not
-         claimed (nor sole candidate of another such row).
-         Exactly one -> link it (`join_src` heuristic when paid; link only, `join_src` None, when
-         unpaid). Zero or several -> nothing.
-  settle_pull(account_id, fan_id=None) -> int   rows changed; each Settle is one UPDATE under the
-      fake Buy's guard (`outcome IS NULL AND offer_price_cents > 0`), so a rerun or a concurrent
-      call changes nothing twice. A row linked here gets its `vault_sends` (`record_vault_sends`, bought
-      when `join_src` is set).
-  attempted(r)         the carrier may be on OF (until settle links it, at any age)
-  link_window(r)       rule 2's (floor, ceil) for row `r`
-  record_vault_sends(s, ..., bought=)   one `vault_sends` row per locked media of a linked Offer, once
-
-No Mode filter (only live rows hold an `offer_message_id`; a test row's Fan id is negative, so it
-has no messages), no `already_owned` refusal (he paid), no Turn triggered, no OF call.
-"""
 from __future__ import annotations
 
 import json
@@ -42,8 +15,7 @@ from of_shapes import queue_id
 
 log = logging.getLogger("of-relay.full_ai_settle")
 
-# OF stamps the PPV within seconds of the attempt; a same-price PPV sent later is another send
-# (a mass copy days on must not become Full AI's sale). = 05's UNCONFIRMED_S.
+# OF stamps the PPV within seconds of the attempt; a later same-price PPV (e.g. a mass copy) is another send.
 LINK_MAX_S = send_marker_decide.IN_FLIGHT_MAX_S
 OUTCOME = "bought"
 
@@ -51,12 +23,11 @@ OUTCOME = "bought"
 class Settle(NamedTuple):
     row_id: int
     message_id: int
-    outcome_at: datetime | None     # None: link only (rule 2, message not paid yet)
-    join_src: str | None            # notice | is_paid | heuristic; None on a link only
+    outcome_at: datetime | None
+    join_src: str | None
 
 
 def _ours(m) -> bool:
-    """Not another lane's: unattributed (a scrape of our own send) or Full AI's."""
     kind = getattr(m, "automation_kind", None)
     return kind in (None, "full_ai_chat") and getattr(m, "sent_by_employee_id", None) is None
 
@@ -66,7 +37,6 @@ def _open(r) -> bool:
 
 
 def _ids(raw, *keys: str) -> set[int]:
-    """Media ids off a JSON list (`messages.media_ids`) or dict of lists (`offer_media_json`)."""
     try:
         v = json.loads(raw or "null")
     except (TypeError, ValueError):
@@ -83,15 +53,10 @@ def _ids(raw, *keys: str) -> set[int]:
 
 
 def attempted(r) -> bool:
-    """The row's carrier POST was attempted (`offer_attempt_at`), or a legacy row (before 0130) the
-    reaper left `unconfirmed`: it may be on OF."""
     return getattr(r, "offer_attempt_at", None) is not None or getattr(r, "status", None) == "unconfirmed"
 
 
 def link_window(r) -> tuple[datetime, datetime]:
-    """Rule 2's candidate window: from the carrier's attempt (`offer_attempt_at`; a legacy row's
-    `created_at`), cut to OF's whole second, to `LINK_MAX_S` after it. A card from before the
-    attempt is another send. `_ppv_readback.sent_ppv`'s Full AI floor is the same second."""
     at = getattr(r, "offer_attempt_at", None) or r.created_at
     return at.replace(microsecond=0), at + timedelta(seconds=LINK_MAX_S)
 
@@ -107,9 +72,6 @@ def _mass(m) -> bool:
 
 
 def settle_plan(rows, msgs, notices: dict[int, datetime], claimed: set[int]) -> list[Settle]:
-    """One Fan's plan: `rows` his `ai_decisions` rows, `msgs` his outbound priced messages,
-    `notices` purchase notice time by message id, `claimed` message ids already on a row. Pure
-    but for "now" when a paid message has neither a notice nor `purchased_at`."""
     by_id = {m.message_id: m for m in msgs}
     taken = set(claimed) | {r.offer_message_id for r in rows if r.offer_message_id is not None}
     out: list[Settle] = []
@@ -144,13 +106,10 @@ def settle_plan(rows, msgs, notices: dict[int, datetime], claimed: set[int]) -> 
     return out
 
 
-_OR_TERMS = 200     # windows per message read: SQLite caps an OR chain's depth (1000)
+_OR_TERMS = 200  # SQLite caps an OR chain's depth (1000)
 
 
 async def _load(account_id: str, fan_id: int | None):
-    """The account's (or one Fan's) unsettled priced rows (unlinked ones only when attempted, at any
-    age), their Fans' outbound priced messages: the linked ids, and each unlinked row's own Fan and
-    `link_window` (`_OR_TERMS` of them per read); notices of those messages, claimed ids."""
     acc = str(account_id)
     async with get_session() as s:
         q = select(AiDecision).where(
@@ -184,10 +143,6 @@ async def _load(account_id: str, fan_id: int | None):
 
 
 async def record_vault_sends(s, account_id: str, fan_id: int, message_id: int, row, *, bought: bool = False) -> None:
-    """In session `s`: one `vault_sends` row per locked media of Offer row `row` (`offer_media_json`,
-    `offer_price_cents`) sent as OF message `message_id`, the ones missing only: every link path (the
-    direct id, the race branch, settle_pull) may call it. `was_purchased` NULL, True when `bought` (settled
-    paid: the purchase stamp may have run before these rows existed), which also flips the existing ones."""
     locked = sorted(_ids(row.offer_media_json, "locked"))
     if not locked:
         return
@@ -202,7 +157,6 @@ async def record_vault_sends(s, account_id: str, fan_id: int, message_id: int, r
 
 
 async def settle_pull(account_id: str, fan_id: int | None = None) -> int:
-    """Settle every planned row of the account (or one Fan); returns rows changed."""
     rows, msgs, notices, claimed = await _load(account_id, fan_id)
     plan: list[Settle] = []
     for fan in sorted({r.fan_id for r in rows}):
@@ -211,7 +165,7 @@ async def settle_pull(account_id: str, fan_id: int | None = None) -> int:
     by_row = {r.id: r for r in rows}
     n = 0
     for p in plan:
-        # The fake Buy's guard; a link only also needs the row still unlinked.
+        # Same guard as the fake Buy: a rerun or concurrent call changes nothing twice.
         guard = [AiDecision.id == p.row_id, AiDecision.outcome.is_(None), AiDecision.offer_price_cents > 0]
         if p.join_src is None:
             guard.append(AiDecision.offer_message_id.is_(None))
@@ -227,7 +181,7 @@ async def settle_pull(account_id: str, fan_id: int | None = None) -> int:
                     r = by_row[p.row_id]
                     await record_vault_sends(s, r.account_id, r.fan_id, p.message_id, r, bought=p.join_src is not None)
                 await s.commit()
-            except IntegrityError:          # another row took the message meanwhile
+            except IntegrityError:  # another row took the message meanwhile
                 await s.rollback()
                 continue
         if res.rowcount:

@@ -110,7 +110,6 @@ describe("planActions: the buttons both surfaces draw", () => {
     [{ id: "pick", state: "needs_you", pick_n: 1, candidates: cands, picks: [11] }]) };
   const needsNone: Action = { type: "loaded", plan: plan("needs_you",
     [{ id: "pick", state: "needs_you", pick_n: 1, candidates: cands, picks: [] }]) };
-  /** kind:label, with "!" when disabled and "*" when primary. */
   const short = (s: UltraRun) => planActions(s).map((b) => `${b.kind}:${b.label}${b.primary ? "*" : ""}${b.enabled ? "" : "!"}`);
   it.each<[string, Action[], string[]]>([
     ["nothing read yet", [], []],

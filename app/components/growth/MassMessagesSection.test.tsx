@@ -1,21 +1,3 @@
-/**
- * Seam 1 of docs/spec/infloww-parity-round-2/phase-02b-auto-mass-messages.md:
- * the Smart Messages page rendered with `@/lib/relay` mocked, every verb
- * stubbed, so an unexpected call fails loudly instead of reaching a relay.
- *
- * Ticket 29 started this file with the hourly "Auto-unsend (automation)"
- * card's data-loss guard: with text, media and price all off it must never
- * send a policy, because the Relay reads an empty policy as the old per-chat
- * sweep of outbound DMs (service/automations/unsend_messages.py,
- * `not wants_mass`). Ticket 30 adds the page frame (header, parent tab strip,
- * the Automated Messages slot) and the Mass Messages tab, checked against the
- * Layout capture on disk. Ticket 31 adds the Create message pop-up, its
- * Automated messages slot, and the composer's per-broadcast Auto-unsend label
- * (the real composer, rendered on its own over the same mocked relay).
- * Ticket 41 fills the Automated Messages slot and makes it the default tab,
- * so the Mass Messages cases open `?tab=mass`; the Automated Messages tab is
- * pinned in `SmartMessagesPage.test.tsx`.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -35,9 +17,6 @@ vi.mock("@/lib/relay", async (importOriginal) => {
   };
 });
 
-// An owner session by default: /admin/accounts is the account source. A
-// chatter-only case clears `user` and sets `chatter`, and its Creators then
-// come from /chatter/me/accounts (a plain fetch, stubbed per case).
 const session = vi.hoisted(() => ({
   user: { user_id: 1 } as { user_id: number } | null,
   chatter: null as { id: number } | null,
@@ -51,9 +30,6 @@ vi.mock("@/contexts/ChatterContext", () => ({
   useOptionalChatter: () => ({ chatter: session.chatter }),
 }));
 
-// The lazy composer stands in as its mode, so a click shows which one opened,
-// and whether the page asked it to label its extras. With `composer.real` set,
-// it passes the page's props through to the real composer instead.
 const composer = vi.hoisted(() => ({ real: false }));
 vi.mock("@/components/compose/LazyMassMessageComposer", async () => {
   const { MassMessageComposer } = await vi.importActual<
@@ -66,15 +42,11 @@ vi.mock("@/components/compose/LazyMassMessageComposer", async () => {
       : <div data-testid="composer" data-label-extras={String(!!props.labelExtras)}>{props.mode}</div>,
   };
 });
-// The real composer reads the acting employee, the window's scope and the All
-// Models include set; nothing else on the page reads any of them.
 vi.mock("@/contexts/EmployeeContext", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/contexts/EmployeeContext")>()),
   useEmployee: () => ({ current: null }),
 }));
-// A plain factory, not importOriginal: the original sits in an import cycle
-// (ScopeContext -> useAccountStateEvents -> appliedSettings -> ScopeContext),
-// and a module first reached inside importOriginal binds the real useScope.
+// Plain factory, not importOriginal: the original sits in an import cycle and importOriginal would bind the real useScope.
 vi.mock("@/contexts/ScopeContext", () => {
   const all = { scope: { kind: "all" } };
   return { useScope: () => all };
@@ -99,23 +71,17 @@ const allMocks = [relayGet, relayPost, relayPatch, relayPut, relayDelete, relayU
 const ACC = "acc-1";
 const RULE_ID = 77;
 const REASON = /turn on at least one class/i;
-/** The wait for a mount to settle. The tab mounts every panel at once (Mass
- *  Nudge's long form among them), so a first render under a loaded machine can
- *  outlast waitFor's 1s default; a click's own wait keeps the default. */
 const SETTLE = { timeout: 5000 };
 
 let client: QueryClient;
 
 const ONE_BROADCAST = [{ id: 1, date: "2026-01-01T00:00:00Z", text: "hi", isFree: true, canUnsend: true }];
-/** The cached broadcasts the list read answers with; one by default. */
 let massItems: unknown[] = ONE_BROADCAST;
 
-/** The relay writes the running test expects, as "VERB path" (query dropped). */
 let expectedWrites: string[] = [];
 const expectWrites = (...writes: string[]) => { expectedWrites.push(...writes); };
 
 beforeEach(() => {
-  // The Mass Messages tab; Automated Messages is the default (ticket 41).
   window.history.replaceState(null, "", "/growth/smart-messages?tab=mass");
   client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
@@ -126,8 +92,6 @@ beforeEach(() => {
   relayPatch.mockResolvedValue({ id: RULE_ID, kind: "unsend_messages" });
 });
 afterEach(() => {
-  // No relay write but the ones this test named: any other non-GET call, under
-  // /api/of or not (an /admin route can write to OnlyFans server-side), fails.
   const writes = { POST: relayPost, PATCH: relayPatch, PUT: relayPut, DELETE: relayDelete, UPLOAD: relayUpload };
   const made = Object.entries(writes).flatMap(([verb, m]) =>
     m.mock.calls.map(([path]) => `${verb} ${String(path).split("?")[0]}`));
@@ -137,9 +101,6 @@ afterEach(() => {
   for (const w of made) expect(allowed, `unexpected relay write: ${w}`).toContain(w);
 });
 
-/** The rule writes the card made: posts to the automation-rules create. Today's
- *  tab also fires a mount-time `/admin/mass-messages/refresh` (a cache warm,
- *  not this card's), so the create is picked out by its path. */
 const rulePosts = () =>
   relayPost.mock.calls.filter(([path]) => String(path) === "/admin/automation-rules");
 
@@ -148,9 +109,6 @@ const savedRule = (policy: Record<string, number>) => ({
   every_seconds: 3600, is_enabled: true, payload: { policy }, last_run: null,
 });
 
-/** Answer the page's reads: one active Creator, a rules list of `rules`. Every
- *  mount also expects today's tab's cache warm, which reads OF and writes only
- *  the Relay's own cache. */
 function stubReads(rules: unknown[]) {
   expectWrites("POST /admin/mass-messages/refresh");
   relayGet.mockImplementation((path: string) => {
@@ -162,26 +120,20 @@ function stubReads(rules: unknown[]) {
       });
     }
     if (p.startsWith("/admin/automation-rules")) return Promise.resolve({ rules });
-    // One cached broadcast for the list (the mount-time refresh may still fire).
     if (p.startsWith("/admin/mass-messages")) return Promise.resolve({ items: massItems });
     return Promise.resolve({});
   });
 }
 
-/** Mount the REAL page's Mass Auto Unsend Messages tab over one active Creator and a rules list of `rules`. */
 async function mount(rules: unknown[]) {
   window.history.replaceState(null, "", "/growth/smart-messages?tab=unsend");
   stubReads(rules);
   render(<QueryClientProvider client={client}><SmartMessagesPage /></QueryClientProvider>);
-  // Wait for the button the loaded state shows: "Save" is also the pre-fetch
-  // state, so a saved rule must have turned it into "Update" first.
   const settled = rules.length ? "Update" : "Save";
   await waitFor(() => expect(screen.getByRole("button", { name: settled })).toBeTruthy(), SETTLE);
-  // Let the tab's mount-time cache warm finish, so a click is the only actor.
   await waitFor(() => expect(client.isFetching() + client.isMutating()).toBe(0), SETTLE);
 }
 
-/** A class's switch, read as on/off. */
 const classOn = (label: string) =>
   screen.getByRole("switch", { name: label }).getAttribute("aria-checked") === "true";
 
@@ -190,7 +142,6 @@ async function setClass(label: string, on: boolean) {
   expect(classOn(label)).toBe(on);
 }
 
-/** The model's own switch (its label is the Creator's name). */
 const MODEL = "Model A";
 
 describe("the hourly Auto-unsend card on Smart Messages", () => {
@@ -236,7 +187,6 @@ describe("the hourly Auto-unsend card on Smart Messages", () => {
     expect(body.kind).toBe("unsend_messages");
     expect(body.name).toBe("Auto-unsend mass");
     expect(body.account_id).toBe(ACC);
-    // The card's default media hours (24) — the class's own field.
     expect(body.payload).toEqual({ policy: { mass_media_hours: 24 } });
     expect(body.is_enabled).toBe(true);
     expect(relayPatch).not.toHaveBeenCalled();
@@ -291,9 +241,7 @@ describe("the hourly Auto-unsend card on Smart Messages", () => {
   });
 });
 
-// ── Ticket 30: the frame and the Mass Messages tab ────────────────────
 
-/** Mount the page at `url`, on the Mass Messages tab unless `url` says otherwise. */
 async function mountFrame(url = "/growth/smart-messages?tab=mass") {
   window.history.replaceState(null, "", url);
   stubReads([]);
@@ -314,7 +262,6 @@ const selected = (list: HTMLElement) =>
 const relayCalls = () => allMocks.map((m) => m.mock.calls.length);
 const before = (a: Element, b: Element) =>
   !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-/** The visible tag beside `el`: inside its parent, with title={EXTRA_LABEL}. */
 const extraTagBeside = (el: HTMLElement) => {
   const tag = within(el.parentElement!).getByText(EXTRA_LABEL);
   expect(tag.getAttribute("title")).toBe(EXTRA_LABEL);
@@ -344,7 +291,6 @@ describe("the control catalogue matches the Layout capture on disk", () => {
     (_key, c) => {
       const row = rowOf(c.id);
       expect(row, `${c.id} is not an Items row`).toBeTruthy();
-      // The label must sit in the Value cell, not merely anywhere in the row.
       const value = row!.split("|")[4];
       if (c.label !== null) expect(value).toContain(c.label);
       if (c.desc) expect(value).toContain(c.desc);
@@ -359,16 +305,12 @@ describe("Smart Messages frame and Mass Messages tab (ticket 30)", () => {
     await mountFrame();
     const title = screen.getByRole("heading", { level: 1 });
     expect(title.textContent).toBe("Smart Messages List");
-    // Mass Messages takes no Creator (its panels list every active Creator): no creator select in the header,
-    // and no creator column (that is the Automated Messages tab's).
     expect(screen.queryByRole("combobox", { name: "Creator" })).toBeNull();
     expect(screen.queryByTestId("of-creator-column")).toBeNull();
 
     expect(tabNames(parentTabs())).toEqual(["Automated Messages", "Mass Messages", "Mass Auto Unsend Messages", "Scheduled"]);
     expect(tabNames(childTabs())).toEqual(["Priority mass messages", "OF mass messages"]);
 
-    // The right box: Learn (its tip), then New Message, in the header row
-    // above the tab strip, where the bundle's `-40px` lifts it (ticket 54).
     const learn = screen.getByRole("button", { name: "Learn" });
     const create = screen.getByRole("button", { name: "New Message" });
     expect(learn).toBeEnabled();
@@ -433,7 +375,6 @@ describe("Smart Messages frame and Mass Messages tab (ticket 30)", () => {
     expect(screen.queryByText("Auto-unsend (automation)")).toBeNull();
     expect(screen.queryByText("Scheduled messages")).toBeNull();
     expect(within(panel).getByRole("heading", { name: "Mass messages" })).toBeTruthy();
-    // Ours, each with the extra tag: the bulk-unsend toolbar and the list's own filters.
     extraTagBeside(within(panel).getByText(/^Bulk actions/));
     extraTagBeside(within(panel).getByRole("switch", { name: "Hide unsent" }));
   });
@@ -473,7 +414,6 @@ describe("Smart Messages frame and Mass Messages tab (ticket 30)", () => {
       expect(controls[i]).not.toHaveAttribute("title", "not wired");
       if (i) expect(before(controls[i - 1], controls[i])).toBe(true);
     }
-    // The bar sits above the list.
     expect(before(controls[0], within(panel).getByRole("heading", { name: "Mass messages" }))).toBe(true);
   });
 
@@ -488,9 +428,7 @@ describe("Smart Messages frame and Mass Messages tab (ticket 30)", () => {
   });
 });
 
-// ── Ticket 55: the OF child's sent list is the capture's table ───────────
 
-/** Mount the Mass Messages tab over `items`, with the report time zone UTC. */
 async function mountSentList(items: unknown[]) {
   massItems = items;
   window.history.replaceState(null, "", "/growth/smart-messages?tab=mass");
@@ -505,7 +443,6 @@ async function mountSentList(items: unknown[]) {
   return within(screen.getByRole("tabpanel", { name: "OF mass messages" })).getByRole("table");
 }
 
-/** A body row's cells, keyed by their column header's text. */
 const cellsOf = (table: HTMLElement, row: HTMLElement) => {
   const heads = within(table).getAllByRole("columnheader").map((h) => h.textContent ?? "");
   const cells = within(row).getAllByRole("cell");
@@ -552,12 +489,10 @@ describe("the OF child's sent list is the capture's table (ticket 55)", () => {
     expect(c["Sender"].textContent).toBe("Online blast");
     expect(c["Attachment"].textContent).toContain("3");
     expect(within(c["Status"]).getByText("Sent")).toBeTruthy();
-    // Priced, but the cache keeps no amount: the amount is Not wired.
     expect(c["Price"].textContent).toBe("PPV");
     expect(c["Price"]).toHaveAttribute("title", "not wired");
     expect(c["Sent"].textContent).toBe("1240");
     expect(c["Viewed"].textContent).toBe("512");
-    // Purchased / Earnings: the relay's local attribution (roadmap 5.8).
     expect(c["Purchased"].textContent).toBe("3");
     expect(c["Earnings"].textContent).toBe("$45");
     for (const h of ["Withdrawn by", "Withdrawn date & time"]) notWired(c[h]);
@@ -590,7 +525,6 @@ describe("the OF child's sent list is the capture's table (ticket 55)", () => {
   });
 });
 
-// ── The sent list's head, empty row and Actions menu, as the bundle draws them ──
 
 describe("the sent list's head, empty row and Actions menu follow the bundle", () => {
   const capture = readFileSync(
@@ -608,9 +542,7 @@ describe("the sent list's head, empty row and Actions menu follow the bundle", (
   it("fills the head and rules a 22px divider after every column but the last", async () => {
     const table = await mountSentList(ONE_BROADCAST);
     const heads = within(table).getAllByRole("columnheader");
-    // IF_TABLE's head: 46px on #353535 (bg-bg-elev-2), a 22px divider drawn by `before:` that the last cell hides.
     for (const h of heads) expect(h).toHaveClass("bg-bg-elev-2", "h-[46px]", "before:h-[22px]", "last:before:hidden");
-    // Actions is fixed right with the left shadow.
     expect(heads.at(-1)).toHaveClass("sticky", "right-0");
     expect(heads.at(-1)!.className).toContain("shadow-");
   });
@@ -619,13 +551,11 @@ describe("the sent list's head, empty row and Actions menu follow the bundle", (
     expectWrites("POST /admin/mass-messages/refresh");
     const table = await mountSentList([]);
     const line = within(table).getByText(SM.massEmpty.label);
-    // EmptyState's 90px art over the line, 232px (12px padding + 220px margin) above and below.
     const box = line.parentElement!;
     expect(box).toHaveClass("py-[232px]");
     expect(box.querySelector("svg")).toHaveAttribute("height", "90");
   });
 
-  /** Unsend's confirm is the kit's IfModal now (the window.confirm it replaced is gone). */
   const confirmUnsend = async (title: string) => {
     const ask = await screen.findByRole("dialog", { name: title });
     await act(async () => { fireEvent.click(within(ask).getByRole("button", { name: "Unsend" })); });
@@ -666,7 +596,6 @@ describe("the sent list's head, empty row and Actions menu follow the bundle", (
   });
 });
 
-// ── Ticket 31: the Create message pop-up ────────────────────────────────
 
 const popUp = () => screen.getByRole("dialog", { name: "Create message" });
 const card = (name: string | RegExp) => within(popUp()).getByRole("button", { name });
@@ -709,7 +638,6 @@ describe("the Create message pop-up (ticket 31)", () => {
     const next = within(dialog).getByRole("button", { name: "Next" });
     expect(before(cards[2], cancel)).toBe(true);
     expect(before(cancel, next)).toBe(true);
-    // Nothing picked yet: Next waits for a card, as the bundle's xConfirmDisabled.
     expect(next).toBeDisabled();
   });
 
@@ -725,7 +653,6 @@ describe("the Create message pop-up (ticket 31)", () => {
     expect(screen.queryByTestId("composer")).toBeNull();
     const form = screen.getByRole("dialog", { name: "Priority mass message" });
     expect(within(form).getByText(/about 300 fans an hour, at most 5,000 fans/)).toBeTruthy();
-    // The Creator seeds from the active sessions.
     await waitFor(() => expect((within(form).getByRole("combobox") as HTMLSelectElement).value).toBe(ACC));
     fireEvent.change(within(form).getByRole("textbox", { name: "Message" }), { target: { value: "hey {name}" } });
 
@@ -772,8 +699,6 @@ describe("the Create message pop-up (ticket 31)", () => {
     expect(screen.queryByTestId("composer")).toBeNull();
   });
 
-  // Ticket 42 fills the slot by default with the Triggers' cards, pinned in
-  // SmartMessagesPage.test.tsx; it was empty, and rendered nothing, until then.
   it("with no child given, the Automated messages slot holds the page's own section after Mass messages", async () => {
     const dialog = await openPopUp();
     expect(within(dialog).getAllByRole("region").map((r) => r.querySelector("h3")?.textContent))
@@ -802,15 +727,12 @@ describe("the composer's per-broadcast Auto-unsend field (ticket 31)", () => {
     expect(field).toHaveAttribute("title", EXTRA_LABEL);
     const tag = within(field).getByText(EXTRA_LABEL);
     expect(tag.getAttribute("title")).toBe(EXTRA_LABEL);
-    // Its scheduled-send caveat is untouched: no schedule, no caveat.
     expect(screen.queryByText(/Auto-unsend applies to immediate sends only/)).toBeNull();
     await waitFor(() => expect(client.isFetching()).toBe(0));
   });
 });
 
-// ── A chatter-only session ──────────────────────────────────────────────
 
-/** Mount the page at `?tab=mass`. */
 async function mountMass() {
   window.history.replaceState(null, "", "/growth/smart-messages?tab=mass");
   stubReads([]);
@@ -819,11 +741,8 @@ async function mountMass() {
   await waitFor(() => expect(client.isFetching() + client.isMutating()).toBe(0), SETTLE);
 }
 
-/** Every relay call the page made, of any verb, as its path. */
 const calledPaths = () => allMocks.flatMap((m) => m.mock.calls.map(([path]) => String(path)));
-/** Today's tab's mount-time cache warm: it reads OF and writes only the Relay's own cache. */
 const CACHE_WARM = "POST /admin/mass-messages/refresh";
-/** The relay writes (every verb but GET) the page made, as "VERB path", distinct. */
 const writesMade = () => [...new Set(
   ([["POST", relayPost], ["PATCH", relayPatch], ["PUT", relayPut], ["DELETE", relayDelete], ["UPLOAD", relayUpload]] as const)
     .flatMap(([verb, m]) => m.mock.calls.map(([path]) => `${verb} ${String(path).split("?")[0]}`)),
@@ -847,21 +766,17 @@ describe("the Mass Messages tab in a chatter-only session", () => {
     vi.stubGlobal("fetch", fetchMock);
     await mountMass();
 
-    // The rest of the tab: the child tabs, the sent history, and the header's New Message.
     expect(tabNames(childTabs())).toEqual(["Priority mass messages", "OF mass messages"]);
     const panel = screen.getByRole("tabpanel", { name: "OF mass messages" });
     expect(within(panel).getByRole("heading", { name: "Mass messages" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "New Message" })).toBeTruthy();
-    // Its Creators came from the chatter's own list, never the owner registry.
     expect(fetchMock).toHaveBeenCalledWith("/chatter/me/accounts", expect.anything());
     const paths = calledPaths();
-    // The roster badge counts are the principal's own (a chatter's union of linked Creators), not the registry.
     expect(paths.filter((p) => p.startsWith("/admin/accounts") && p !== "/admin/accounts/roster-counts")).toEqual([]);
     expect(writesMade().filter((w) => w !== CACHE_WARM)).toEqual([]);
   });
 });
 
-// ── UI flow audit C24 / C25: the OF filter bar filters the list; a failed refresh reads plainly ──
 
 describe("the OF filter bar filters the sent list (C24)", () => {
   const ITEMS = [
@@ -876,10 +791,9 @@ describe("the OF filter bar filters the sent list (C24)", () => {
     const table = await mountSentList(ITEMS);
     expect(listed(table)).toHaveLength(3);
     fireEvent.change(bar().getByRole("textbox", { name: "Search for message" }), { target: { value: "promo" } });
-    expect(listed(table)).toHaveLength(3); // typed, not yet applied
+    expect(listed(table)).toHaveLength(3);
     await act(async () => { fireEvent.click(bar().getByRole("button", { name: "Search" })); });
     expect(listed(table)).toEqual(["Spring PROMO inside", "promo again"]);
-    // The bulk counts follow the filter: only listed rows can be bulk-unsent.
     expect(screen.getByRole("button", { name: /^Unsend all \(2\)$/ })).toBeTruthy();
     await act(async () => { fireEvent.click(bar().getByRole("button", { name: "Reset" })); });
     expect(listed(table)).toHaveLength(3);
@@ -943,7 +857,6 @@ describe("Mass Auto Unsend Messages: one Creator at a time, each its own rule (C
     render(<QueryClientProvider client={client}><SmartMessagesPage /></QueryClientProvider>);
     await waitFor(() => expect(screen.getByRole("switch", { name: "Model A" })).toBeTruthy(), SETTLE);
     await waitFor(() => expect(client.isFetching() + client.isMutating()).toBe(0), SETTLE);
-    // One form: Model A's (the first Creator); Model B's is not shown.
     expect(screen.queryByRole("switch", { name: "Model B" })).toBeNull();
     expect(screen.getAllByRole("button", { name: "Save" })).toHaveLength(1);
     await act(async () => { fireEvent.click(screen.getByRole("switch", { name: "Model A" })); });
@@ -956,7 +869,6 @@ describe("Mass Auto Unsend Messages: one Creator at a time, each its own rule (C
     await waitFor(() => expect(rulePosts()).toHaveLength(1));
     expect(rulePosts()[0][1]).toMatchObject({ account_id: "acc-2", name: "Auto-unsend mass" });
 
-    // Back on Model A: its unsaved switch is still on, and nothing was written for it.
     await act(async () => { fireEvent.click(within(col).getByRole("button", { name: /Model A/ })); });
     expect(screen.getByRole("switch", { name: "Model A" })).toHaveAttribute("aria-checked", "true");
   });

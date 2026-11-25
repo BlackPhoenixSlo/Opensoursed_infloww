@@ -40,7 +40,7 @@ test("holds the power-save blocker only while clocked in", async () => {
   const { clock, blocker } = setup();
   await clock.refresh();
   assert.equal(blocker.active.size, 1);
-  await clock.refresh(); // no second blocker
+  await clock.refresh();
   assert.equal(blocker.active.size, 1);
   clock.dispose();
   assert.equal(blocker.active.size, 0);
@@ -51,8 +51,8 @@ test("lock → clock out; back within the auto clock-out minutes → clock in ag
   await clock.refresh();
   await clock.pause("lock");
   assert.deepEqual(calls, [["out", 7]]);
-  assert.equal(blocker.active.size, 0); // the machine may sleep now
-  await clock.pause("sleep"); // already paused: no second clock-out
+  assert.equal(blocker.active.size, 0);
+  await clock.pause("sleep");
   assert.deepEqual(calls, [["out", 7]]);
   advance(10 * 60000);
   await clock.resume("unlock");

@@ -18,7 +18,6 @@ const run = (actions: EditorAction[], from: EditorState = initialEditorState(F))
   actions.reduce(vaultItemEditorReducer, from);
 const edit = (field: keyof EditorFields, value: string): EditorAction => ({ type: "edit", field, value });
 const pick = (key: JevKey, value: string | null): EditorAction => ({ type: "pick", key, value });
-/** Re-describe: the item's `_ai` comes back with new text. */
 const redescribed = fieldsFromAi({ ...AI, description: "new desc", tags: ["x", "y"] });
 
 describe("fieldsFromAi", () => {
@@ -40,8 +39,6 @@ describe("parsePriceCents", () => {
     ["7", 700],
     ["", null],
     ["   ", null],
-    // Bug: "abc" stripped to "" and Number("") is 0, so a typo in the price box
-    // saved and locked a $0.00 price.
     ["abc", undefined],
     ["$", undefined],
     ["1.2.3", undefined],
@@ -74,9 +71,6 @@ describe("buildPatch / isDirty", () => {
 
 describe("refresh (the open item's `_ai` changed under the editor)", () => {
   it("untouched fields follow the item, and nothing reads as edited", () => {
-    // Bug: the old editor recomputed its baseline from the prop each render
-    // while the inputs kept the old text — Re-describe left "old desc" on
-    // screen and turned Save on with the old values.
     const s = run([{ type: "refresh", fields: redescribed }]);
     expect(s.draft.desc).toBe("new desc");
     expect(s.draft.tags).toBe("x, y");
@@ -89,8 +83,6 @@ describe("refresh (the open item's `_ai` changed under the editor)", () => {
     expect(s.draft.desc).toBe("mine");
     expect(s.base.desc).toBe("old desc");
     expect(s.draft.tags).toBe("x, y");
-    // The old editor sent { description: "mine", tags: "a, b" } here — locking
-    // the stale tags over the fresh describe.
     expect(buildPatch(s)).toEqual({ description: "mine" });
   });
 
@@ -198,7 +190,6 @@ describe("Jev picks", () => {
     expect(picksFromAi({})).toEqual({});
   });
 
-  // The server decides what the AI said (`vault_jev_manual.ai_reading`, its table in test_vault_jev_manual.py).
   it.each<[string, unknown, JevKey, string | null, string]>([
     ["a region", { butt: "bare" }, "butt", "bare", "AI: bare"],
     ["the lane", { lane: "$50" }, "lane", "$50", "auto: $50"],

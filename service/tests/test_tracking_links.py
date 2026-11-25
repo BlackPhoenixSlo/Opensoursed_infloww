@@ -1,29 +1,9 @@
 #!/usr/bin/env python3
-"""Tracking / UTM link tests (Growth feature #4).
-
-  case_click_records_and_redirects  GET /t/{slug} → 302 + a TrackingClick row +
-                                     click_count increments per hit.
-  case_unknown_slug_404             a slug that doesn't exist → 404 (no redirect).
-  case_crud_and_analytics           create → list → analytics(totals) → delete.
-  case_target_normalization         no scheme → https:// prepended; other schemes /
-                                     undotted hosts refused (unit + create route).
-  case_gated_*/case_verify_*        "Bot check before redirect" (Turnstile): the gated
-                                     GET holds no target and counts nothing; verify counts
-                                     once on pass, zero on fail; keys unset → plain 302.
-                                     siteverify is mocked at the HTTP transport.
-
-Run: ./venv/bin/python service/tests/test_tracking_links.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
-# These cases test feature logic, not the account gate (that is
-# test_account_isolation_gate's job). They reach `/admin` routes or
-# `assert_account_owned` with no session, which fails closed (401) since
-# 3b30b486. This is the documented escape hatch (read per call), scoped to this
-# test process.
 import os  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
@@ -64,7 +44,6 @@ async def _link_state(slug):
 def case_click_records_and_redirects():
     target = "https://onlyfans.com/mycreator"
     asyncio.run(_seed_link("tl_click", "promo-x", target))
-    # two hits, no redirect-follow so we can inspect the 302 + Location.
     for _ in range(2):
         r = _client.get("/t/promo-x", follow_redirects=False)
         assert r.status_code == 302, r.status_code
@@ -82,7 +61,6 @@ def case_unknown_slug_404():
 def case_crud_and_analytics():
     aid = "tl_crud"
     asyncio.run(_seed_link("tl_crud", "seed-slug", "https://example.com"))
-    # create with a custom name (slug auto-generated)
     r = _client.post("/admin/tracking-links", json={
         "account_id": aid, "name": "Twitter bio",
         "target_url": "https://onlyfans.com/creator?utm_source=twitter",
@@ -91,28 +69,20 @@ def case_crud_and_analytics():
     link = r.json()
     lid, slug = link["id"], link["slug"]
     assert link["path"] == f"/t/{slug}"
-    # invalid target rejected
     bad = _client.post("/admin/tracking-links", json={
         "account_id": aid, "name": "Bad", "target_url": "ftp://nope",
     })
     assert bad.status_code == 422, bad.text
-    # click it once
     assert _client.get(f"/t/{slug}", follow_redirects=False).status_code == 302
-    # analytics reflects the click
     an = _client.get(f"/admin/tracking-links/{lid}/analytics?account_id={aid}").json()
     assert an["totals"]["clicks"] == 1 and len(an["series"]) == 30, an
-    # list shows it
     lst = _client.get(f"/admin/tracking-links?account_id={aid}").json()["links"]
     assert any(x["id"] == lid for x in lst), lst
-    # delete
     d = _client.delete(f"/admin/tracking-links/{lid}")
     assert d.status_code == 200 and d.json()["deleted"] == lid
 
 
 def case_slug_collision_retries_not_500():
-    # Regression: a duplicate custom slug must NOT 500 (the retry loop used to
-    # trip get_session's auto-commit after a swallowed IntegrityError). It should
-    # mint a suffixed slug and return 200 (or a clean 409) — never 500.
     aid = "tl_dup"
     asyncio.run(_seed_link("tl_dup", "seedx", "https://example.com"))
     body = {"account_id": aid, "name": "Dup", "target_url": "https://example.com/x", "slug": "dup"}
@@ -126,10 +96,6 @@ def case_slug_collision_retries_not_500():
 
 
 def case_redirect_survives_a_failed_click_write():
-    """/t/{slug} is the only URL a real FAN touches — it goes in the creator's
-    bio. The click write must never be able to cost them the redirect. It used
-    to: the write shared the lookup's transaction, so any failure poisoned it and
-    the auto-commit (outside the try) raised PendingRollbackError -> 500."""
     target = "https://example.com/landing"
     asyncio.run(_seed_link("tl_boom", "bio-link", target))
     slug = "bio-link"
@@ -151,7 +117,6 @@ def case_redirect_survives_a_failed_click_write():
     assert r.headers["location"] == target, r.headers
 
 
-# ── target normalization ──────────────────────────────────────────────
 
 def case_target_normalization():
     from tracking_links_api import _normalize_target as n
@@ -193,21 +158,15 @@ def case_target_normalization():
     for bad in ("javascript:alert(1)", "data:text/html,x", "ftp://ofl.ink/x", "nora"):
         b = _client.post("/admin/tracking-links", json={"account_id": aid, "name": "Bad", "target_url": bad})
         assert b.status_code == 422, (bad, b.status_code, b.text)
-        # The app shows this detail as is (it no longer checks the target itself).
         assert b.json()["detail"] == "Target must be a web address, e.g. ofl.ink/name.", b.json()
 
 
-# ── Bot check before redirect (Turnstile) ─────────────────────────────
 
 SITE, SECRET = "1x00000000000000000000AA", "test-turnstile-secret"
 
 
 @contextlib.contextmanager
 def _turnstile(verdict=True, *, keys=True, answer=None):
-    """Keys in the env, and Cloudflare's siteverify answered at the HTTP transport:
-    `verdict` True/False = its `success`; None = unreachable; `answer` = a raw
-    httpx.Response instead. Yields the form posts it got. Every client starts
-    with a full verify budget."""
     import tracking_links_api
     tracking_links_api._verify_buckets.reset()
     calls: list[dict] = []
@@ -294,7 +253,6 @@ def case_verify_fail_counts_zero():
 
 
 def case_gate_page_retry_has_no_inline_handler():
-    """The nonce CSP blocks inline handlers: Retry is wired from the nonce'd script."""
     asyncio.run(_seed_link("tl_retry", "gate-retry", GATED_TARGET, bot_check=True))
     with _turnstile():
         body = _client.get("/t/gate-retry", follow_redirects=False).text
@@ -316,7 +274,7 @@ def case_verify_cloudflare_busy_is_503_not_403():
 def case_verify_is_throttled_per_client_before_lookup_and_siteverify():
     import tracking_links_api as tla
     asyncio.run(_seed_link("tl_thr", "gate-thr", GATED_TARGET, bot_check=True))
-    real_clock, tla._clock = tla._clock, lambda: 1000.0   # no refill mid-test, however slow the box
+    real_clock, tla._clock = tla._clock, lambda: 1000.0
     try:
         with _turnstile(False) as calls:
             codes = [_client.post("/t/gate-thr/verify", json={"token": "junk"}).status_code

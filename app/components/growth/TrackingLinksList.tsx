@@ -1,6 +1,5 @@
 "use client";
 
-/** Tracking links' Links list (TrackingLinksTab): the metric columns, the merged read (`useLinks`), Export. */
 
 import { useState } from "react";
 import { Info } from "lucide-react";
@@ -19,15 +18,6 @@ import { useOfTrackingLinks, useOfTrackingEarnings, useDeleteOfTrackingLink, typ
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { fmtPrice } from "@/lib/format";
 
-/**
- * A metric column after "Tracking link" (#38 to #55); `tip` is the bundle's tooltip on the head.
- *
- * `cell` fills a row's cell from the read (`tz` is the report time zone), `null` when that row has no value. A
- * column renders only when some row has a value for it (or it is `core`, the columns the OnlyFans read always
- * fills), so a column with no `cell` (Not wired) never draws, and one whose data arrives (earnings, promo cost)
- * appears by itself. `net` marks a column whose value has a net figure: while one of them shows, the "Show net
- * earnings" switch shows with it.
- */
 type Col = {
   title: string;
   width: number;
@@ -35,17 +25,12 @@ type Col = {
   core?: boolean;
   net?: boolean;
   cell?: (l: OfTrackingLink, tz: string | null) => string | null;
-  /** A tooltip on the row's cell, when it needs a caveat. */
   hint?: (l: OfTrackingLink) => string | undefined;
-  /** The Export CSV's value when it differs from the cell's text (a raw number, an ISO day). */
   csv?: (l: OfTrackingLink, tz: string | null) => string;
 };
 
-/** The tooltip on a net figure marked `PARTIAL`. */
 const PARTIAL_HINT = "Partial: some transactions have no net figure from OnlyFans yet, so net is understated";
 
-/** The OnlyFans read with the earnings read merged in, gross or net as "Show net earnings" picks. Both tabs read
- *  through this, so they always agree. */
 export function useLinks(accountId: string | null, net: boolean) {
   const q = useOfTrackingLinks(accountId);
   const e = useOfTrackingEarnings(accountId);
@@ -65,9 +50,6 @@ export function useLinks(accountId: string | null, net: boolean) {
   return { q, links };
 }
 
-/** In the capture's order (#57), at the bundle's widths (#38 to #55) so every head fits its label and tip. The
- *  earnings columns read the merged earnings (`useLinks`); a link without a figure is "—", and the columns draw once
- *  any link has one. Wider than the panel, the table scrolls sideways under the sticky name and Actions. */
 const METRIC_COLS: Col[] = [
   {
     title: "Date created", width: 121, core: true,
@@ -94,10 +76,8 @@ const METRIC_COLS: Col[] = [
   },
   {
     title: "Spending CVR", width: 159, tip: TIPS.spendingCvr,
-    // Over the link's claimers, the same fans the numerator is counted from.
     cell: (l) => (l.fans_who_spent == null ? null : share(l.fans_who_spent, l.fans_counted)),
   },
-  // The cost-based columns read the Edit dialog's Promo cost: "—" while it is unset or 0 (linkMetrics).
   {
     title: "Profit", width: 139, tip: TIPS.profit, net: true,
     cell: (l) => { const p = profitCents(l.earnings_cents, l.promo_cost_cents); return p == null ? null : money(p); },
@@ -116,20 +96,15 @@ const METRIC_COLS: Col[] = [
   { title: "Last updated", width: 151 },
 ];
 
-/** The metric columns that have data in `links` (see `Col`), in the capture's order. */
 function visibleCols(links: OfTrackingLink[], tz: string | null): Col[] {
   return METRIC_COLS.filter((c) => c.cell && (c.core || links.some((l) => c.cell!(l, tz) !== null)));
 }
 
-/** The "Show net earnings" switch shows only while a net-aware column has data (`Col.net`); until then it would be
- *  a switch with nothing to switch. */
 export function hasNetCols(links: OfTrackingLink[], tz: string | null): boolean {
   return visibleCols(links, tz).some((c) => c.net);
 }
 
-// ── Export (#28) ──
 
-/** The bundle emails its export (#81); ours downloads the filtered rows (every page) with the columns shown. */
 function exportCsv(rows: OfTrackingLink[], cols: Col[], tz: string | null) {
   const withStatus = rows.some((l) => l.is_deleted);
   const head = ["Tracking link", "Link", ...cols.map((c) => c.title), ...(withStatus ? ["Status"] : [])];
@@ -150,7 +125,6 @@ export function LinksList({ accountId, onAccountChange, net, onNet, accountsLoad
   const { reportTz } = filters;
 
   const [creating, setCreating] = useState(false);
-  // Details (#82): the link whose fan list replaces the list, as the bundle's overlay does.
   const [details, setDetails] = useState<OfTrackingLink | null>(null);
   const [editing, setEditing] = useState<OfTrackingLink | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
@@ -159,10 +133,8 @@ export function LinksList({ accountId, onAccountChange, net, onNet, accountsLoad
 
   const ofAvailable = q.data?.of_available ?? false;
   const matched = links.filter((l) => (!l.is_deleted || filters.showDeactivated) && filters.keep(l));
-  // Every link the read returned decides the columns, so they hold still across pages and filters.
   const cols = visibleCols(links, reportTz);
   const rowKey = (l: OfTrackingLink) => String(l.id ?? l.code);
-  // The picks still in the list (a filter or another Creator leaves the rest out).
   const pickedRows = matched.filter((l) => l.id != null && picked.includes(rowKey(l)));
 
   if (details) {
@@ -180,8 +152,6 @@ export function LinksList({ accountId, onAccountChange, net, onNet, accountsLoad
         tags={q.data?.tags ?? []}
         switches={(
           <>
-            {/* #24 to #26: labels 16px, 6px to the switch; deactivated off by default. "Show net earnings" (on by
-                default, as the bundle's) is drawn only once a net-aware column has data (`hasNetCols`). */}
             <Switch
               label="Show deactivated links"
               on={filters.showDeactivated}
@@ -193,8 +163,6 @@ export function LinksList({ accountId, onAccountChange, net, onNet, accountsLoad
         onCreate={() => setCreating(true)}
         onExport={() => exportCsv(matched, cols, reportTz)}
         exportTitle={`${EXTRA_LABEL}: downloads a CSV of the filtered links and the columns shown; Infloww emails its export`}
-        /* #30 to #32, #89: the update row; the tip 14px, 8px after its icon. The relay reads OnlyFans when asked, not
-           every 2 hours, so the words are ours. */
         update={q.dataUpdatedAt > 0 ? (
           <span className="flex items-center gap-2 text-sm text-fg-dim">
             <Info size={16} aria-hidden className="shrink-0" />
@@ -202,17 +170,12 @@ export function LinksList({ accountId, onAccountChange, net, onNet, accountsLoad
             <ExtraTag />
           </span>
         ) : null}
-        /* Ours when the read fails while the session looks alive; a dead session gets the bundle's reconnect state
-           (#68) in the table body instead. */
         notice={!q.isLoading && !ofAvailable && !sessionGone ? <Unreachable /> : null}
-        // No Creator picked yet because the Creators are still loading: the table is loading, not empty.
         loading={q.isLoading || (!accountId && accountsLoading)}
-        /* #34: only the columns with data draw (`visibleCols`), so the table fits. */
         columns={cols.map((c) => ({
           title: c.title, width: c.width, tip: c.tip, hint: c.hint, cell: (l: OfTrackingLink) => c.cell?.(l, reportTz) ?? "—",
         }))}
         rows={matched}
-        /* On a phone: Clicks, Subs and Earnings (Subscription CVR until earnings arrive). */
         phoneMetrics={["Clicks", "Subs", "Earnings", "Subscription CVR"]}
         rowKey={rowKey}
         selection={{
@@ -220,8 +183,6 @@ export function LinksList({ accountId, onAccountChange, net, onNet, accountsLoad
           onBatchEdit: () => setBatch(true),
         }}
         rowName={(l) => l.name}
-        /* #58, #59, #90: the name on one line, then "Copy link", 2px apart. The address is ours. A deactivated link
-           carries the bundle's red "Deactivated" chip in place of the copy: OF no longer serves it. */
         nameCell={(l) => (
           <div className="flex flex-col items-start gap-0.5 w-full">
             <span className="w-full truncate text-sm" title={l.name}>{l.name}</span>
@@ -230,9 +191,7 @@ export function LinksList({ accountId, onAccountChange, net, onNet, accountsLoad
                 <Badge color="err">Deactivated</Badge>
               ) : (
                 <>
-                  {/* #61: "Link copied", the copy locked for 5 s. */}
                   {l.url && <CopyButton text={l.url} label="Copy link" doneLabel="Link copied" holdMs={5000} />}
-                  {/* The path ("/<username>/c<code>"): the origin would fill the cell before the code. */}
                   <span className="truncate text-[11px] text-fg-dim" title={EXTRA_LABEL}>
                     {l.url ? l.url.replace(/^https:\/\/onlyfans\.com/, "") : "(url unavailable)"}
                   </span>
@@ -241,8 +200,6 @@ export function LinksList({ accountId, onAccountChange, net, onNet, accountsLoad
             </span>
           </div>
         )}
-        /* #62 to #64: Details opens the link's fan list; Edit the editor on its Source, Promo cost and Tag; the dots
-           menu's Deactivate is the OnlyFans delete, behind the bundle's confirm, disabled once deactivated. */
         actions={(l) => (
           <RowActions
             name={l.name}

@@ -1,34 +1,5 @@
 "use client";
 
-/**
- * The offer dialogs New post's tiles open (build 202610091632, read from OF's bundle):
- * - The tiles, as OF's story strip: "Start profile promotion" shows only where users/me's canCreatePromotion holds and
- *   "Create new trial link" where canCreateTrial does (absent: shown). Each opens its dialog over New post
- *   (new-post/state-promotion, new-post/state-trial-link: OF's showModal over the page), the same dialog as Settings'
- *   (below), in All models acting for New post's stand-in, as the rest of New post. As OF's PromoteProfile, the
- *   promotion tile opens Settings > Subscription instead while an "all" promotion is claimable. After Start campaign or
- *   Create link there, OF goes to Settings > Subscription (#promotion) or its free trial links; Cancel returns to New post.
- *   Home's promotion tile opens the same dialog over Home (home/state-promotion); Start campaign and Cancel return to Home.
- * - "Start profile promotion" > the promotion campaign dialog (settings/subscription/promotion-campaign/modal-1, OF's
- *   ModalPromotion): the audience tabs (New subscribers, Expired subscribers, Both new and expired), the kind tabs (Free
- *   trial, First month discount: disabled where OF's isDiscountDisabled holds), the Offer limit, Offer expiration and
- *   Free trial duration (Discount percent on the discount tab) dropdowns, the message and its counter, OF's description
- *   and replace line. Start campaign sends POST /api/of/v2/promotions (promotionBody), then the campaign page.
- * - Its page's "Add bundle" dialog (modal-2, OF's bundle dialog): Discount percent and Discount duration from users/me
- *   settings' canAddSubscriberByBundle (OF's own options; none: Save disabled with OF's reason); Save sends POST
- *   /api/of/v2/subscriptions/bundles {discount, duration}.
- * - "Create new trial link" > the free trial link dialog (settings/subscription/trial-links/modal-1): its name, Offer
- *   limit, Offer expiration and Free trial duration; Create link sends POST /api/of/v2/trials (trialBody).
- * The submits are ofMirrorWrites' SUBMITS (they post, then go to the dialog's Cancel page); this binds the fields. Each
- * dialog's state is kept on its form as JSON (data-oi-offer), which the SUBMITS' collect reads.
- * - The free trial links page: Sort (OF's TrialFilter fields and order, the app URL's ?field= and ?sort=) and the "Your
- *   links" / "Shared with you" tabs (?tab=shared: GET /trials/share-access), read by ofMirrorSubscription; a row's "Share
- *   link's statistics with another user" opens OF's share dialog (a username, OF's performers search, Share: POST
- *   /api/of/v2/trials/share-access {trial_id, user_id}).
- * - A running promotion's card (Home, New post and the campaign page): Stop promotion asks, then POST
- *   /api/of/v2/promotions/{id}/finish; Copy link to profile copies the profile link (OF's shareProfileLink).
- * All of this acts for the model the page shows (New post in All models: its stand-in, which a tile click selects).
- */
 
 import { useEffect, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -42,25 +13,18 @@ import { showMenu, ORDER_GROUP, type MenuOption } from "@/lib/ofMirrorMenu";
 import { toast } from "@/lib/ofMirrorPost";
 import { message, note, SELECT_MODEL } from "@/lib/ofMirrorWrites";
 
-// ---------------------------------------------------------------- shapes (pure)
 
 export type Audience = "new" | "expired" | "both";
 export type PromoKind = "trial" | "discount";
-/** The promotion dialog's state. */
 export interface PromotionForm {
   audience: Audience;
   kind: PromoKind;
-  /** Offer limit (0: No limits). */
   limit: number;
-  /** Offer expiration in days (0: No expiration). */
   expiration: number;
-  /** Free trial duration in days. */
   duration: number;
-  /** First month discount, percent. */
   percent: number;
   message: string;
 }
-/** POST /api/of/v2/promotions (the relay's _PromoBody; of_client maps it to OF's keys). */
 export interface PromotionBody {
   discount: number;
   subscribe_counts: number;
@@ -70,13 +34,10 @@ export interface PromotionBody {
   type: ("all" | "expired")[];
 }
 
-/** OF's ModalPromotion defaults (offer limit 10, 7 days, 7 days, new subscribers, free trial, OF's minimum discount). */
 export const PROMOTION_DEFAULTS: PromotionForm = { audience: "new", kind: "trial", limit: 10, expiration: 7, duration: 7, percent: 5, message: "" };
-/** OF's minimum discount percent and minimum subscription price (subscribers store: minDiscountPercent, minSubscriptionPrice). */
 const MIN_DISCOUNT = 5;
 const MIN_SUBSCRIPTION_PRICE = 3;
 
-/** Start campaign's body, as OF's saveForm: a free trial is 100% off for its duration; a discount lasts its expiration. */
 export function promotionBody(f: PromotionForm): PromotionBody {
   const trial = f.kind === "trial";
   return {
@@ -102,7 +63,6 @@ export interface TrialBody {
   subscribe_days: number;
 }
 export const TRIAL_DEFAULTS: TrialForm = { name: "", limit: 10, expiration: 7, duration: 7 };
-/** Create link's body, as OF's: the name without its leading spaces. */
 export const trialBody = (f: TrialForm): TrialBody => ({ name: f.name.replace(/^ +/, ""), subscribe_counts: f.limit, expire_days: f.expiration, subscribe_days: f.duration });
 
 export interface BundleForm {
@@ -116,31 +76,22 @@ const range = (from: number, to: number, step = 1) => Array.from({ length: Math.
 const opts = (values: number[], label: (n: number) => string): MenuOption[] => values.map((v) => ({ value: String(v), label: label(v) }));
 const limitLabel = (n: number) => (n ? plural(n, "subscriber") : "No limits");
 const expireLabel = (n: number) => (n ? plural(n, "day") : "No expiration");
-/** OF's subscribeDaysHuman: days under a month, else months. */
 export const daysHuman = (n: number) => (n < 30 ? plural(n, "day") : plural(Math.round(n / 30), "month"));
 
-/** The promotion dialog's dropdowns (OF's maxSubscribeCounts, maxFinishDays, maxDuration). */
 export const PROMO_LIMITS = opts([...range(0, 10), ...range(20, 100, 10)], limitLabel);
 export const EXPIRATIONS = opts(range(0, 30), expireLabel);
 export const PROMO_DURATIONS = opts(range(1, 30), (n) => plural(n, "day"));
-/** The free trial link dialog's (OF's countSubscribers, countExpireDays, countTrialDuration). */
 export const TRIAL_LIMITS = opts([...range(0, 10), 50, 100], limitLabel);
 export const TRIAL_DURATIONS = opts([1, 3, 7, 14, 30, 90, 180, 360], daysHuman);
 
-/** OF's discount steps for a price: 5% up to what keeps the price over OF's minimum, at most 95% (calculateDiscountPercents). */
 export function discountOptions(price: number): MenuOption[] {
   const max = price > 0 ? Math.min(Math.floor((100 * (price - MIN_SUBSCRIPTION_PRICE)) / price), 100) : 0;
   return opts(range(MIN_DISCOUNT, Math.min(max, 95), 5), (n) => `${n}% discount`);
 }
-/** OF disables First month discount when its smallest discount would take the price under the minimum (isDiscountDisabled). */
 export const discountDisabled = (price: number) => (price * (100 - MIN_DISCOUNT)) / 100 < MIN_SUBSCRIPTION_PRICE;
 
 const money = (n: number) => (n ? n.toFixed(2).replace(".00", "") : n.toFixed(2));
 
-/**
- * The line under the promotion dropdowns (OF's promoSubscriptionDesc): the free trial's is OF's captured text, the
- * discount's OF's `discount_offer_promotion_desc` (texts_en.json).
- */
 export function promotionDesc(f: PromotionForm, price: number): string {
   const discount = f.kind === "trial" ? 100 : f.percent;
   const amount = money((price * (100 - discount)) / 100);
@@ -149,15 +100,11 @@ export function promotionDesc(f: PromotionForm, price: number): string {
   return `Promotional subscription $${amount} for ${days}.\n User will not be subscribed for $${money(price)} automatically, only by choice`;
 }
 
-/** A promotion as users/me's `promotions` lists it. */
 interface MePromotion {
   type?: string;
   canClaim?: boolean;
 }
-/**
- * OF's replacePromoText: which running promotion the campaign replaces ("" for none). The "new subscribers" text is
- * the captured one; the other two are ASSUMED wording.
- */
+// Only the "new subscribers" wording was captured; the other two are assumed.
 export function replaceText(audience: Audience, promotions: MePromotion[]): string {
   const all = promotions.find((p) => p.type === "all");
   const expired = promotions.find((p) => p.type === "expired");
@@ -170,55 +117,39 @@ export function replaceText(audience: Audience, promotions: MePromotion[]): stri
   return "This campaign will replace your current promotion for expired subscribers.";
 }
 
-/** users/me settings' bundle options (OF: canAddSubscriberByBundle {discounts, durations}; false: none). */
 export interface BundleSettings {
   canAddSubscriberByBundle?: false | { discounts?: Record<string, string>; durations?: Record<string, string> } | null;
   bundleMaxPrice?: number | null;
 }
-/** The bundle dialog's options: OF's own lists, its durations less those the page already has a bundle for. */
 export function bundleOptions(settings: BundleSettings | undefined, existing: number[]): { discounts: MenuOption[]; durations: MenuOption[] } {
   const c = settings?.canAddSubscriberByBundle || {};
   const list = (o: Record<string, string> | undefined) => Object.entries(o ?? {}).map(([value, label]) => ({ value: String(Number(value)), label }));
   return { discounts: list(c.discounts), durations: list(c.durations).filter((d) => !existing.includes(Number(d.value))) };
 }
-/** The bundle dialog's block, and Add bundle's tooltip, when OF has no bundle duration or discount left to offer. */
 export const NO_BUNDLES_LEFT = "OnlyFans offers no more subscription bundles for this page";
-/** The bundle's total (OF's amount: months x price x (100 - discount) / 100, rounded to cents). */
 export const bundleAmount = (f: BundleForm, price: number) => Math.round(f.duration * price * (100 - f.discount)) / 100;
-/**
- * Why the bundle dialog may not save ("" when it may): no model, OF's options still loading, none left, or OF's
- * bundle_max_price_error. Shared by the mirror's dialog and Growth's Subscription bundles.
- */
 export function bundleBlock(o: { noModel?: boolean; settings: BundleSettings | undefined; discounts: MenuOption[]; durations: MenuOption[]; amount: number }): string {
   const max = Number(o.settings?.bundleMaxPrice ?? 0);
   if (o.noModel) return SELECT_MODEL;
   if (!o.settings) return "Loading OnlyFans' bundle options";
   if (!o.discounts.length || !o.durations.length) return NO_BUNDLES_LEFT;
-  if (max && o.amount > max) return `Maximum bundle price is $${max}`; // OF's bundle_max_price_error
+  if (max && o.amount > max) return `Maximum bundle price is $${max}`;
   return "";
 }
-/** The dialog's help line under the dropdowns (OF's promoSubscriptionDesc for a bundle). */
 export const bundleHelp = (amount: number, durationLabel: string) => `Promotional subscription $${amount.toFixed(2)} for ${durationLabel}.`;
 
-// ---------------------------------------------------------------- the dialogs (DOM)
 
 const FORM_STATE = "data-oi-offer";
 export const PROMOTION_MODAL = "settings/subscription/promotion-campaign/modal-1";
 export const BUNDLE_MODAL = "settings/subscription/promotion-campaign/modal-2";
 export const TRIAL_MODAL = "settings/subscription/trial-links/modal-1";
-/** The same two dialogs over New post (its tiles'), and the promotion one over Home (its strip's tile). */
 export const NEW_POST_PROMOTION = "new-post/state-promotion";
 export const NEW_POST_TRIAL = "new-post/state-trial-link";
 export const HOME_PROMOTION = "home/state-promotion";
 const TRIAL_PAGE = "settings/subscription/trial-links";
-/** Where OF goes after either dialog saves on New post (MODALS.PROMOTION's and ModalTrial's isPostsCreatePage push). */
 export const AFTER_NEW_POST_PROMOTION = "/of-manager/settings/subscription#promotion";
 export const AFTER_NEW_POST_TRIAL = "/of-manager/settings/subscription/trial-links";
 
-/**
- * OF's router scrollBehavior (OfMirrorFrame runs it on the app URL's hash once the page loads): a route with a plain `#id` hash (Settings > Subscription's `#promotion`) scrolls smoothly
- * to that element; any other hash, or no such element, leaves the page where it is.
- */
 export function scrollToHash(doc: Document, hash: string): boolean {
   if (!/^#[a-zA-Z_][a-zA-Z0-9_-]*$/.test(hash)) return false;
   const el = doc.getElementById(hash.slice(1));
@@ -237,19 +168,16 @@ function readState<T>(doc: Document): T | null {
 }
 const writeState = (doc: Document, state: object) => formOf(doc)?.setAttribute(FORM_STATE, JSON.stringify(state));
 
-/** SUBMITS' collect for Start campaign. */
 export function collectPromotion(doc: Document): PromotionBody | string {
   const f = readState<PromotionForm>(doc);
   return f ? promotionBody(f) : "The campaign form is not ready";
 }
-/** SUBMITS' collect for Create link. */
 export function collectTrial(doc: Document): TrialBody | string {
   const f = readState<TrialForm>(doc);
   if (!f) return "The link form is not ready";
   const name = doc.querySelector<HTMLInputElement>(".modal.show input[at-attr='input']")?.value ?? f.name;
   return trialBody({ ...f, name });
 }
-/** SUBMITS' collect for the bundle dialog's Save (none: OF's reason). */
 export function collectBundle(doc: Document): BundleForm | string {
   const f = readState<BundleForm & { why?: string }>(doc);
   if (!f) return "The bundle form is not ready";
@@ -257,10 +185,8 @@ export function collectBundle(doc: Document): BundleForm | string {
   return bundleBody(f);
 }
 
-/** The modal's Vuetify selects, in order (its `.v-select` inputs). */
 const selects = (doc: Document) => [...doc.querySelectorAll<HTMLElement>(".modal.show .v-input.v-select")];
 
-/** A select shows `label` (its floated label) and `text` (its selection), and `value` in its hidden input. */
 function setSelect(sel: HTMLElement, label: string | null, text: string, value: string) {
   const l = sel.querySelector(".v-label");
   if (l && label !== null) l.textContent = label;
@@ -281,10 +207,6 @@ interface SelectSpec {
   pick(value: number): void;
 }
 
-/**
- * Wire a dialog: `render(state)` draws it (its selects' specs, in order); a select's click opens its options (OF's
- * list, ofMirrorMenu) and a pick saves the state and draws again. `extra` handles other clicks (tabs). Returns an unbind.
- */
 function bindDialog<T extends object>(
   doc: Document,
   initial: T,
@@ -323,28 +245,24 @@ function bindDialog<T extends object>(
   return () => doc.removeEventListener("click", onClick);
 }
 
-/** Mark a tab current (OF's m-current m-no-pointer) or not. */
 export function current(tab: Element | null, on: boolean) {
   tab?.classList.toggle("m-current", on);
   tab?.classList.toggle("m-no-pointer", on);
   tab?.setAttribute("data-oi-wired", "");
 }
 
-/** A text area's counter ("12 / 500") follows it. */
 function countText(area: HTMLTextAreaElement) {
   const c = area.closest(".v-input")?.querySelector(".v-counter");
   if (c) c.textContent = `${[...area.value].length} / ${area.maxLength > 0 ? area.maxLength : 500}`;
   area.closest(".g-input__wrapper")?.classList.toggle("m-empty", !area.value);
 }
 
-/** The dialog's tabs, by their text (the copy over New post carries no ids). */
 const AUDIENCE_TABS: Record<Audience, string> = { new: "New subscribers", expired: "Expired subscribers", both: "Both new and expired" };
 const KIND_TABS: Record<PromoKind, string> = { trial: "Free trial", discount: "First month discount" };
 const tabText = (tab: Element) => tab.textContent?.trim() ?? "";
 const tabOf = (doc: Document, text: string) =>
   [...doc.querySelectorAll<HTMLButtonElement>(".modal.show .b-tabs__nav__link")].find((t) => tabText(t) === text) ?? null;
 
-/** The promotion campaign dialog (modal-1). Returns an unbind. */
 export function bindPromotionDialog(doc: Document, me: OfMe | undefined): () => void {
   const price = Number(me?.subscribePrice ?? 0);
   const promotions = ((me as { promotions?: MePromotion[] } | undefined)?.promotions ?? []).filter(Boolean);
@@ -407,7 +325,6 @@ export function bindPromotionDialog(doc: Document, me: OfMe | undefined): () => 
   };
 }
 
-/** The free trial link dialog (trial-links/modal-1). Returns an unbind. */
 export function bindTrialDialog(doc: Document, me: OfMe | undefined): () => void {
   const price = Number(me?.subscribePrice ?? 0);
   const desc = doc.querySelector<HTMLElement>(".modal.show p.g-input__help");
@@ -432,7 +349,6 @@ export function bindTrialDialog(doc: Document, me: OfMe | undefined): () => void
   };
 }
 
-/** The bundle dialog (promotion-campaign/modal-2): OF's options from users/me settings. Returns an unbind. */
 export function bindBundleDialog(doc: Document, me: OfMe | undefined, settings: BundleSettings | undefined, noModel = false): () => void {
   const price = Number(me?.subscribePrice ?? 0);
   const existing = ((me as { subscriptionBundles?: { duration?: number }[] } | undefined)?.subscriptionBundles ?? []).map((b) => Number(b.duration));
@@ -457,9 +373,7 @@ export function bindBundleDialog(doc: Document, me: OfMe | undefined, settings: 
   });
 }
 
-// ---------------------------------------------------------------- the free trial links page
 
-/** OF's TrialFilter fields (its captured Sort menu), the default first. */
 export const TRIAL_SORT: MenuOption[] = [
   { value: "create_date", label: "Created" },
   { value: "expire_date", label: "Expires" },
@@ -482,7 +396,6 @@ export const trialViewOf = (params: { get(k: string): string | null }): TrialVie
     tab: params.get("tab") === "shared" ? "shared" : null,
   };
 };
-/** The relay read for the free trial links tab of `view`: OF sends no sort for its default (created, newest first). */
 export function trialsRoute(view: TrialView): string {
   if (view.tab === "shared") return "/api/of/v2/trials/share-access";
   if (!view.field && !view.sort) return "/api/of/v2/trials";
@@ -496,11 +409,9 @@ export const trialHref = (view: TrialView) => {
   const s = q.toString();
   return `/of-manager/${TRIAL_PAGE}${s ? `?${s}` : ""}`;
 };
-/** `view` after picking `value` in the Sort menu's `group` ("field", else the order). */
 export const trialPick = (view: TrialView, group: string, value: string): TrialView =>
   group === "field" ? { ...view, field: value === "create_date" ? null : value } : { ...view, sort: value === "asc" ? "asc" : null };
 
-/** A performer as OF's performers search lists one. */
 export interface Performer {
   id: number;
   name?: string | null;
@@ -516,14 +427,11 @@ export interface OfferHandlers {
   share(body: { trial_id: number; user_id: number }): Promise<unknown>;
 }
 
-/** The trial links page's Sort and tabs, and its rows' share. Returns an unbind. */
 function bindTrialPage(doc: Document, view: TrialView, handlers: OfferHandlers | null): () => void {
   const sortBtn = doc.querySelector<HTMLButtonElement>(".trial-sorting-dropdown button[aria-label='Sort'], button[aria-label='Sort']");
   sortBtn?.setAttribute("data-oi-wired", "");
   const title = doc.querySelector(".b-content-filter__title");
   if (title) title.textContent = view.field ? (TRIAL_SORT.find((o) => o.value === view.field)?.label ?? "Recent") : "Recent";
-  // ticket 61: the kebab State page's radios, checked as `view`, each Select link to the base page's sort for its pick
-  // (as the menu's), Toggle back to the same sort; their Not-yet title stays (D1).
   for (const r of doc.querySelectorAll<HTMLInputElement>("input[name='trial-filter-field'], input[name='trial-order-dir']")) {
     const group = r.name === "trial-filter-field" ? "field" : "order";
     const on = r.value === (group === "field" ? (view.field ?? "create_date") : (view.sort ?? "desc"));
@@ -568,17 +476,10 @@ function bindTrialPage(doc: Document, view: TrialView, handlers: OfferHandlers |
   return () => doc.removeEventListener("click", onClick);
 }
 
-/** The free trial link's share dialog (shareStatsDialog): Share sends {trial_id, user_id}. */
 export function shareDialog(doc: Document, trialId: number, handlers: Pick<OfferHandlers, "searchPerformers" | "share">): HTMLElement {
   return shareStatsDialog(doc, { searchPerformers: handlers.searchPerformers, send: (userId) => handlers.share({ trial_id: trialId, user_id: userId }) });
 }
 
-/**
- * OF's share dialog (ModalShareLinkStats; never captured, so drawn in OF's modal markup): a username field whose text
- * runs OF's performers search (300 ms after typing stops), a pick fills it, Cancel or the backdrop closes it; Share
- * (enabled once a creator is picked) calls `send` with the picked creator's id (a free trial or, ticket 74, a tracking
- * link's share), then OF's toast. Returns the dialog.
- */
 export function shareStatsDialog(
   doc: Document,
   handlers: { searchPerformers(query: string): Promise<Performer[]>; send(userId: number): Promise<unknown> },
@@ -616,7 +517,8 @@ export function shareStatsDialog(
         row.setAttribute("role", "button");
         row.setAttribute("data-oi-wired", "");
         row.dataset.oiPerformer = String(p.id);
-        row.textContent = `${plain(p.name)}${p.username ? ` @${p.username}` : ""}`.trim(); // OF's names come HTML-escaped
+        // OF's names come HTML-escaped.
+        row.textContent = `${plain(p.name)}${p.username ? ` @${p.username}` : ""}`.trim();
         return row;
       }),
     );
@@ -671,9 +573,7 @@ export function shareStatsDialog(
   return root;
 }
 
-// ---------------------------------------------------------------- promotion cards
 
-/** A running promotion's Stop promotion and Copy link to profile, on any page that draws one (ofMirrorFeedsStrip, ofMirrorSubscription mark them). */
 function bindPromotionCards(doc: Document, handlers: OfferHandlers | null): () => void {
   const onClick = (ev: MouseEvent) => {
     const b = (ev.target as Element | null)?.closest?.<HTMLButtonElement>("button[data-oi-finish], button[data-oi-copy]");
@@ -703,16 +603,9 @@ function bindPromotionCards(doc: Document, handlers: OfferHandlers | null): () =
   return () => doc.removeEventListener("click", onClick);
 }
 
-/** The story strip's offer tiles (New post's links, Home's promotion). */
 const PROMOTION_TILE = "Start profile promotion";
 const TRIAL_TILE = "Create new trial link";
 
-/**
- * The story strip's offer tiles, as OF's (its `canCreatePromotion ? promote-profile`, `canCreateTrial ? create-trial-
- * link-btn`): hidden where users/me says the model cannot (only an explicit false; unknown: shown). The promotion
- * tile's link goes to Settings > Subscription while an "all" promotion is claimable (OF's PromoteProfile), else to its
- * dialog over the page it is on (`page`, its path under of-mirror/pages: Home's, else New post's).
- */
 export function applyOfferTiles(doc: Document, me: OfMe | undefined, page: string): void {
   const dialog = page.startsWith("home/") ? HOME_PROMOTION : NEW_POST_PROMOTION;
   const flags = (me ?? {}) as { canCreatePromotion?: boolean; canCreateTrial?: boolean; promotions?: MePromotion[] | null };
@@ -726,7 +619,6 @@ export function applyOfferTiles(doc: Document, me: OfMe | undefined, page: strin
   }
 }
 
-/** Bind whatever of the above the page at `page` (its path under of-mirror/pages) holds. Returns an unbind. */
 export function bindOffers(
   doc: Document,
   page: string,
@@ -741,14 +633,12 @@ export function bindOffers(
   return () => unbinds.forEach((u) => u());
 }
 
-/** Every Mirror page: bind the offer dialogs, the trial links page and the promotion cards on each frame load. */
 export function useOfOffers(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const router = useRouter();
   const qc = useQueryClient();
   const params = useSearchParams();
   const page = /^\/of-mirror\/pages\/(.+)\.html$/.exec(src)?.[1] ?? "";
-  // users/me: the dialogs' price and promotions, and the story strip's tiles (New post, Home).
   const dialog = [PROMOTION_MODAL, BUNDLE_MODAL, TRIAL_MODAL].includes(page) || page.startsWith("new-post/") || page.startsWith("home/");
   const me = useQuery({ ...ofMeQuery(accountId), enabled: !!accountId && dialog }).data;
   const settings = useQuery({
@@ -799,16 +689,6 @@ export function useOfOffers(frameRef: RefObject<HTMLIFrameElement | null>, src: 
   }, [frameRef, src, page, accountId, router, qc, me, settings, viewKey]);
 }
 
-/**
- * Ticket 75 (D29): the promotion "Offer claimed" dialog's ⋮ (settings/subscription/promotion-campaign/modal-3, OF's
- * user_list_dropdown beside "Message all"). OF's JS (record settings--promotion-modal3-kebab, build
- * 202611201129-df73dce944) gives it one item, Add to list (disabled while the claims list is empty), which opens the
- * USER_LISTS dialog and sends addClaimsToList: POST /lists/{listId}/users/{promo|trial}/{claimId}/claims, no body,
- * answering {addedUsers}. OF's JS has no inverse: the undo, one DELETE /lists/{listId}/users/{userId} per added user
- * (the Relay's existing route), is `inferred`, never the bulk DELETE /lists/{id}/users (it clears the whole list).
- * Not wired: the ⋮ stays disabled with its Not-yet title, its opened menu (capture-checklist row 11) and a live
- * narrowed run (row 23) parked "needs capture (ticket 12 sitting)"; the write's Relay route comes with that wiring.
- */
 export const CLAIMS_TO_LIST = {
   source: "inferred",
   write(listId: number, kind: "promo" | "trial", claimId: number): { method: "POST"; path: string } {

@@ -1,74 +1,7 @@
 #!/usr/bin/env python3
-"""Ultra plans end to end (ultra step 4; docs/plans/ultra-mode/issues/06, 13, 05): MCP propose_plan / plan_status,
-the owner's routes (/admin/ultra/plans/*), the executor (ultra_run) and the send tools, through the real app
-in-process (httpx ASGITransport) on the two-Agency bench with a fake OnlyFans client.
-
-Cases:
-  case_propose_stores_post_chain — propose_plan over MCP: plan_id, the post-chain steps (OF-restricted word
-                                   doubled), open_url = base + /ultra/plans/{id}; the owner's GET shows the card
-                                   with the FULL text; plan_status answers awaiting_ok.
-  case_propose_refusals          — the chain refuses a send's text (step + stage named), a bad tool / bad args /
-                                   forward reference / a reference in a send / another Agency's Creator refuse
-                                   the plan; a chained text that reads like a reference (emoji strip turns
-                                   "😘$pick.id" into "$pick.id") is refused by the second validation; nothing stored.
-  case_ok_guards                 — wrong sha256 → 409, malformed → 422; a bearer on /ok (alone or beside the
-                                   owner's cookie) → 403 (and no run); a chatter → 403; signed out → 401; Agency B on A's plan → 404 (GET, OK, cancel);
-                                   plan_status with B's token → error 404.
-  case_bearer_raw_send_routes    — a bearer's raw POST to the mass / post routes → 403, OnlyFans never called.
-  case_happy_path                — read → write with a `$pick...` reference → send with literal ids: each step done
-                                   in order; the folder gets the referenced media id; the send carries its literal
-                                   media id and the post-chain text byte-for-byte; each step its own ended_at;
-                                   the mass's OnlyFans id kept on its step; step open_urls (no separate report, in view or plan_status); one ultra_done notification linking the plan; audit: one
-                                   row per inner write/send naming Creator A, none for /admin/ultra/plans*; a
-                                   second OK → 409 (no second run).
-  case_double_ok_race            — two OKs at once (asyncio.gather): one 200, one 409, one executor run (one post).
-  case_ok_stale_digest_refused   — W30 C1: an awaiting row whose stored hash is not the plan-bound digest of its
-                                   stored plan (a pre-F8 row, or plan_json edited after the card): the OK, even
-                                   echoing that stored hash → 409 "propose it again"; no run, still awaiting_ok.
-  case_ok_commit_fails           — W30 F7: the OK's commit raises: no run, no _TASKS placeholder left; the plan is
-                                   still awaiting_ok and a second OK runs it.
-  case_send_gate                 — toolbox.call of a send with a made-up plan_step, a pending step, an awaiting plan,
-                                   args other than the started step's or another plan owner → 403, OnlyFans never
-                                   called; the started step of the owner's running plan with its exact args goes out.
-  case_send_5xx_uncertain        — OF answers 500 (the mass route 502): the send is uncertain, its error one
-                                   sentence ("OnlyFans answered 500: …"), the plan failed, later steps skipped,
-                                   OnlyFans called exactly once (no retry).
-  case_send_fans_skipped         — the mass route drops an approved fan id (opt-out list): the step is done with a
-                                   plain note "sent to 1 of 2 fans by id: 1 skipped …" (view + plan_status); every
-                                   id dropped → the route refuses (no OF call), the step failed, the next skipped.
-  case_send_timeout_uncertain    — a post past STEP_TIMEOUT_S: uncertain, the next step skipped, never re-sent.
-  case_cancel_between_steps      — cancel while step 1 runs: step 1 finishes, step 2 is skipped, plan cancelled;
-                                   cancelling an awaiting plan → cancelled at once, its steps skipped, its OK → 409.
-  case_cancel_stale_read         — cancel read `awaiting_ok` but an OK flipped it first: the run is flagged (its
-                                   next step skipped); already cancelled → 409, never a silent 200.
-  case_end_save_fails            — the executor's final save raises: it still leaves _TASKS / _CANCEL; the row
-                                   stays `running` until a cancel (no executor here) marks it interrupted; no
-                                   ultra_done notification.
-  case_row_ended_elsewhere_stops_run — the row leaves running mid-step: the next save misses, the run stops
-                                   (no step 2 call), the row is never written back to running; no notification;
-                                   no end-save retried and logged as an error.
-  case_expiry_never_over_running — a stale expiry read never turns a running row expired.
-  case_cancel_during_started_save — W30 F3: a cancel landing while the `started` save runs: the step is never
-                                   called (skipped), the plan cancelled, OnlyFans never called.
-  case_cancel_during_send_gate   — W30 C2: a cancel landing while toolbox's send gate reads the plan: the send
-                                   never goes out (OnlyFans never called), that step and the next skipped, the
-                                   plan cancelled.
-  case_start_save_fails          — the `started` save raises: the step was never called → skipped, not uncertain.
-  case_executor_crash            — the executor raises mid-step: the plan ends failed, the started step uncertain,
-                                   the later step skipped (never left pending).
-  case_executor_cancelled        — the executor task is cancelled mid-step: the plan is interrupted (never done),
-                                   the started step uncertain, the later step skipped; the cancellation re-raised.
-  case_restart_recovery          — a `running` row at relay start → interrupted, started → uncertain, pending →
-                                   skipped (ultra_run.recover, the startup hook's call).
-  case_expiry                    — an awaiting plan past 10 min reads `expired`; its OK → 409.
-
-Seeded straight into the temp DB; no network, no real OnlyFans.
-
-Run: ./venv/bin/python service/tests/test_ultra_plans.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -111,7 +44,6 @@ FWD = {"X-Forwarded-Host": "app.example.com", "X-Forwarded-Proto": "https"}
 
 
 class _FakeOF:
-    """server._get_client (mass + post routes) and ax._make_client (folder routes): every call recorded."""
 
     def __init__(self):
         self.calls: list[tuple] = []
@@ -125,7 +57,6 @@ class _FakeOF:
     def send_mass_message(self, **kw):
         self.calls.append(("mass", kw))
         if self.mass_error:
-            # server._proxy's answer to an OF error: 502 with OF's status + body
             raise HTTPException(502, {"upstream_status": self.mass_error, "upstream_body": '{"error":"fake OF 500"}'})
         return {"id": 4242, "text": kw.get("text")}
 
@@ -145,7 +76,7 @@ class _FakeOF:
 
 OF = _FakeOF()
 server._get_client = lambda *_a, **_k: OF  # type: ignore[assignment]
-account_registry.upsert_account(CA, nickname="Ava")  # the OF routes resolve the Creator through the registry
+account_registry.upsert_account(CA, nickname="Ava")
 ax._make_client = lambda *_a, **_k: OF  # type: ignore[assignment]
 
 
@@ -158,7 +89,7 @@ async def _seed() -> None:
 asyncio.run(_seed())
 
 _ids = itertools.count(1)
-_TEXT = "one drink for halloween, new set inside"  # "drink" is OF-restricted → "driink"
+_TEXT = "one drink for halloween, new set inside"
 _CHAINED = "one driink for halloween, new set inside"
 
 
@@ -236,7 +167,6 @@ async def _done_notes(pid: str) -> int:
         return sum(json.loads(n.data_json or "{}").get("href") == f"/ultra/plans/{pid}" for n in notes)
 
 
-# ── cases ────────────────────────────────────────────────────────────
 
 async def case_propose_stores_post_chain() -> None:
     async with _client() as c:
@@ -291,8 +221,6 @@ async def case_propose_refusals() -> None:
 
 
 def case_ok_guards() -> None:
-    # Sync TestClients: each request gets its own context, as on the real server. (An in-task AsyncClient leaks
-    # the session ContextVars of one request into the next, which would make a chatter look like owner A.)
     msg = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
            "params": {"name": "propose_plan", "arguments": {"summary": "guards", "steps": [_mass()]}}}
     pid = ANON.post(mcp_api.PATH, json=msg, headers=HA).json()["result"]["structuredContent"]["plan_id"]
@@ -303,7 +231,7 @@ def case_ok_guards() -> None:
     assert ok(A, "zz").status_code == 422
     r = ok(ANON, headers=HA)
     assert r.status_code == 403 and "access token" in r.text, r.text
-    r = ok(A, headers=HA)  # a bearer beside the owner's cookie: the cookie is stripped, still refused
+    r = ok(A, headers=HA)
     assert r.status_code == 403, r.text
     r = ok(CHAT)
     assert r.status_code == 403 and "chatter" in r.text, r.text
@@ -352,7 +280,6 @@ async def case_happy_path() -> None:
         assert "report" not in v and [s["open_url"] for s in v["step_states"]][1:] == [
             "/growth/vault-pro", "/growth/smart-messages"], v["step_states"]
         assert v["step_states"][2]["result"] == {"id": 4242} and "result" not in v["step_states"][0], v
-        # W30 F14: each step's own end time (a report file's link counts from it, not from finished_at)
         at = lambda x: datetime.fromisoformat(x.removesuffix("Z"))  # noqa: E731
         ends = [at(s["ended_at"]) for s in v["step_states"]]
         assert all(at(v["approved_at"]) <= e <= at(v["finished_at"]) for e in ends) and ends == sorted(ends), v
@@ -420,7 +347,7 @@ async def case_ok_commit_fails() -> None:
     real, opened = ultra_run.get_session, []
 
     @contextlib.asynccontextmanager
-    async def commit_fails():  # approve's 2nd session (its flip) fails at commit; the 1st is its _row read
+    async def commit_fails():
         async with real() as s:
             yield s
             opened.append(1)
@@ -465,7 +392,7 @@ async def case_send_gate() -> None:
             r = await toolbox.call(tool, a, creds, plan_step=step, plan_owner=OWNER_A)
             assert r["error"] == {"status": 403, "detail": toolbox.SEND_REFUSED}, (step, status, state, r)
         await put("running", "started")
-        for owner in (None, "someone-else"):  # W30 F18: the started step of another owner's plan (or no owner)
+        for owner in (None, "someone-else"):
             r = await toolbox.call(tool, args, creds, plan_step=f"{pid}:mass", plan_owner=owner)
             assert r["error"] == {"status": 403, "detail": toolbox.SEND_REFUSED}, (owner, r)
         assert OF.calls == [], OF.calls
@@ -486,8 +413,8 @@ async def case_send_5xx_uncertain() -> None:
         assert (await _ok(c, pid, (await _get(c, pid)).json()["sha256"])).status_code == 200
         v = await _until_final(c, pid)
     assert v["status"] == "failed" and _states(v) == ["uncertain", "skipped"], v
-    assert v["step_states"][0]["error"] == "OnlyFans answered 500: fake OF 500", v  # one sentence, never a dict
-    assert [k for k, _ in OF.calls] == ["mass"], OF.calls  # once: no retry, the post never ran
+    assert v["step_states"][0]["error"] == "OnlyFans answered 500: fake OF 500", v
+    assert [k for k, _ in OF.calls] == ["mass"], OF.calls
 
 
 async def case_send_fans_skipped() -> None:
@@ -508,7 +435,7 @@ async def case_send_fans_skipped() -> None:
         assert [kw["included_users"] for k, kw in OF.calls] == [[111]], OF.calls
         note = "sent to 1 of 2 fans by id: 1 skipped (opted out or already queued)"
         assert v["step_states"][0]["note"] == note and st["step_states"][0]["note"] == note, (v, st)
-        OF.reset()  # nobody left: the route sends nothing (no OF call) and the step is not done
+        OF.reset()
         async with _client() as c:
             pid = (await _propose(c, _mass(user_lists=[], user_ids=[222]), _post()))["plan_id"]
             assert (await _ok(c, pid, (await _get(c, pid)).json()["sha256"])).status_code == 200
@@ -530,7 +457,7 @@ async def case_send_timeout_uncertain() -> None:
             pid = out["plan_id"]
             assert (await _ok(c, pid, (await _get(c, pid)).json()["sha256"])).status_code == 200
             v = await _until_final(c, pid)
-            await asyncio.sleep(1.0)  # the shielded post finishes on its own; nothing re-sends it
+            await asyncio.sleep(1.0)
     finally:
         ultra_run.STEP_TIMEOUT_S = saved
     assert v["status"] == "failed" and _states(v) == ["uncertain", "skipped"], v
@@ -555,12 +482,11 @@ async def case_cancel_between_steps() -> None:
         sha2 = (await _get(c, pid2)).json()["sha256"]
         r = await c.post(f"/admin/ultra/plans/{pid2}/cancel", headers=COOKIE_A)
         assert r.status_code == 200 and r.json()["status"] == "cancelled", r.text
-        assert _states(r.json()) == ["skipped"], r.json()  # closed in the same flip: never left "pending"
+        assert _states(r.json()) == ["skipped"], r.json()
         assert (await _ok(c, pid2, sha2)).status_code == 409
 
 
 def _stale_row_once():
-    """ultra_run._row whose first read says `awaiting_ok` (a read that raced an OK / a cancel)."""
     real, first = ultra_run._row, [True]
 
     async def stale(pid, uid):
@@ -639,9 +565,6 @@ class _Errors(logging.Handler):
 
 
 async def case_row_ended_elsewhere_stops_run() -> None:
-    """m1: the row leaves running while step 1 runs (ended elsewhere): the next per-step save misses, the run
-    stops before step 2's call and never writes the row back to running; no notification; W30 F16: no second
-    save attempt logged as an error."""
     OF.reset()
     OF.post_sleep = 0.5
     errors = _Errors()
@@ -670,13 +593,12 @@ async def _ended_elsewhere() -> None:
 
 
 async def case_expiry_never_over_running() -> None:
-    """m1: a read that judged a plan expired while an OK flipped it to running writes nothing: it stays running."""
     plan = {"summary": "raced", "steps": [_post("a")]}
     async with get_session() as s:
         s.add(UltraPlan(id="e" * 32, owner_user_id=OWNER_A, source="mcp", plan_json=json.dumps(plan),
                         plan_sha256=ud.digest(plan, "e" * 32), status="running", created_at=datetime.utcnow() - timedelta(minutes=11),
                         step_states=json.dumps([{"id": "a", "state": "started"}])))
-    real, ud.expired = ud.expired, lambda *_a: True  # the stale read: it saw awaiting_ok
+    real, ud.expired = ud.expired, lambda *_a: True
     try:
         row = await ultra_run._row("e" * 32, OWNER_A)
     finally:
@@ -693,7 +615,7 @@ async def case_cancel_during_started_save() -> None:
     async def save(pid, states, status="running"):
         await real(pid, states, status)
         if any(s["state"] == "started" for s in states) and pid not in ultra_run._CANCEL:
-            await ultra_run.cancel(pid, OWNER_A)  # lands before the executor reads its next line
+            await ultra_run.cancel(pid, OWNER_A)
     async with _client() as c:
         pid = (await _propose(c, _post(), _mass()))["plan_id"]
         ultra_run._save = save
@@ -711,7 +633,7 @@ async def case_cancel_during_send_gate() -> None:
 
     async def gate(t, args, plan_step, owner):
         ok = await real(t, args, plan_step, owner)
-        await ultra_run.cancel(plan_step.partition(":")[0], OWNER_A)  # lands while the gate's read is awaited
+        await ultra_run.cancel(plan_step.partition(":")[0], OWNER_A)
         return ok
     async with _client() as c:
         pid = (await _propose(c, _post(), _mass()))["plan_id"]
@@ -725,7 +647,6 @@ async def case_cancel_during_send_gate() -> None:
 
 
 async def case_start_save_fails() -> None:
-    """m5: the save of a step's `started` raises: that step was never called, so it ends skipped (not uncertain)."""
     OF.reset()
     real = ultra_run._save
 

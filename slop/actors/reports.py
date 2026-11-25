@@ -1,18 +1,10 @@
-"""Owners reading the money reports: the Dashboard's earnings card and Employee
-sales, and Creator reports' Overview (Earnings summary with its growth, Earnings
-trends, Creator performance), with the reads those pages make (`DashboardHeader`,
-`CompetitorReports`, `usePerModel`), all Creators or one picked at random.
-
-`windows`: {"month": (from, to), "range": (from, to), "prior": (from, to)}, ISO
-instants as the app sends them. Each owner repeats its page loads until `stop`
-is set and it has done at least `rounds`, a human think time (3 to 15 s) between loads."""
 from __future__ import annotations
 
 import asyncio
 import random
 from urllib.parse import urlencode
 
-THINK_S = (3.0, 15.0)  # seconds between one owner's page loads
+THINK_S = (3.0, 15.0)
 
 
 def dashboard(win: dict) -> list[str]:
@@ -33,7 +25,7 @@ def creator_reports(win: dict, account_id: str | None = None) -> list[str]:
 async def owner(http, win: dict, creator_ids: list[str], stop: asyncio.Event, *, rounds: int = 1,
                 rng: random.Random, think_s: tuple[float, float] = THINK_S) -> int:
     done = 0
-    await asyncio.sleep(rng.uniform(0, think_s[1]))  # owners arrive spread out, not all in one instant
+    await asyncio.sleep(rng.uniform(0, think_s[1]))
     while done < rounds or not stop.is_set():
         pick = rng.choice([None, *creator_ids])
         for path in (dashboard(win) if rng.random() < 0.5 else creator_reports(win, pick)):
@@ -45,6 +37,5 @@ async def owner(http, win: dict, creator_ids: list[str], stop: asyncio.Event, *,
 
 async def crowd(http, win: dict, creator_ids: list[str], stop: asyncio.Event, users: int, *, seed: int,
                 rounds: int = 1) -> int:
-    """`users` owners at once; returns the page loads done."""
     rngs = [random.Random(f"{seed}:reports:{i}") for i in range(users)]
     return sum(await asyncio.gather(*(owner(http, win, creator_ids, stop, rounds=rounds, rng=r) for r in rngs)))

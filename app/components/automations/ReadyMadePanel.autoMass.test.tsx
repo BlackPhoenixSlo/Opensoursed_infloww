@@ -1,10 +1,3 @@
-/**
- * My Automations > Auto Mass (/growth/auto-mass) is `ReadyMadePanel` pinned to
- * the `mass_premade` kind. Rendered with `@/lib/relay` mocked over one Creator.
- * What is pinned: the page header (title, the blurb as Learn's popover), no tab
- * strip, only `mass_premade` rules listed, and the header's "New auto mass"
- * opening the editor dialog for that kind.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 
@@ -54,7 +47,6 @@ describe("Auto Mass (ReadyMadePanel only=mass_premade)", () => {
     renderWithProviders(<ReadyMadePanel only="mass_premade" />);
     const bar = screen.getByRole("banner");
     expect(within(bar).getByRole("heading", { level: 1, name: "Auto Mass" })).toBeTruthy();
-    // The creator is picked on the creator column left of the page, not in the header; it shows Creator A.
     expect(within(bar).queryByRole("combobox", { name: "Creator" })).toBeNull();
     const column = screen.getByTestId("of-creator-column");
     expect(bar.compareDocumentPosition(column) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -75,7 +67,7 @@ describe("Auto Mass (ReadyMadePanel only=mass_premade)", () => {
     fireEvent.click(screen.getByRole("button", { name: "New auto mass" }));
     const dialog = screen.getByRole("dialog", { name: "New auto mass message" });
     expect(within(dialog).getByRole("group", { name: "Message" })).toBeTruthy();
-    expect(within(dialog).getByPlaceholderText(/broadcast text/i)).toBeTruthy(); // the fields are in the popup
+    expect(within(dialog).getByPlaceholderText(/broadcast text/i)).toBeTruthy();
     expect(within(dialog).getByRole("switch", { name: "Enabled" })).toHaveAttribute("aria-checked", "true");
     expect(within(dialog).getByRole("combobox", { name: "Interval unit" })).toHaveTextContent("hours");
   });

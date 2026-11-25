@@ -1,39 +1,5 @@
 "use client";
 
-/**
- * /analytics/message-dashboard — Analytics > "Message dashboard" (formerly the
- * "Stuff" page at /messages, which redirects here): the money surfaces in one place.
- *
- * Old /messages?tab=… / ?fan_id=… deep links keep working: next.config.ts
- * redirects /messages here and the query string rides along.
- *
- * Infloww's surface first (page-parity ticket 30, bundle `MessageReport$1`): the legacy header (title, the report
- * time zone's UTC offset, Learn), then the tabs Direct messages (the default) and OnlyFans mass messages, each the
- * staged filter form over an eleven-column table (AllMessagesTab with `kind`). Infloww's alert "displays data for
- * direct messages only" is not copied: ours shows mass messages too.
- *
- * Then, after a divider and the Inflowwww extra tag, our tabs, keys unchanged:
- *   • PPV  — outbound priced messages, list view with infinite scroll.
- *            Reads /admin/paid-messages (messages table only, no tx join).
- *   • Tips — tip transactions list. Reads /admin/tips-list directly off
- *            the transactions table (no view dependency — synthesis §2.9).
- *   • All  — all messages (inbound + outbound, free + paid), the cards view
- *            with "Group mass sends". Owns its CSV export.
- *   • Customs — the owed-customs queue: a fan tipped for a voice note and has
- *            not been sent one. Live and cross-account: it ignores the page's
- *            date range, since a debt does not stop being owed because it fell
- *            out of a 30-day window. `/customs` redirects in.
- *   • Posts / My Feed / Top Posts — the feed side of the same window.
- *
- * URL state: `?tab=direct|mass|ppv|tips|all|customs|posts|myfeed|top` (none = direct) + `?fan_id=<n>`, which fills
- * Direct messages' Sent to (and filters the All tab, as before).
- *
- * Right rail: TopTippersCard, on PPV, Tips and All only (Infloww's tabs are full width). Clicking a row sets
- * `tippersPreset`, which TipsTab adopts as its fan_query filter, and switches to Tips. Its totals include pending
- * (uncleared) tips.
- *
- * Date range owned at the page level, in the report time zone (useReportRange, the last 30 days to start with).
- */
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -57,10 +23,8 @@ import { BRAND_NAME } from "@/lib/brand";
 
 const TAB_KEYS = new Set<string>(TABS.map((t) => t.key));
 const DEFAULT_TAB: Tab = "direct";
-/** Infloww's two, then ours behind the extra tag. */
 const INFLOWW_TABS: IfOption<Tab>[] = TABS.slice(0, 2).map((t) => ({ value: t.key, label: t.label }));
 const EXTRA_TABS: IfOption<Tab>[] = TABS.slice(2).map((t) => ({ value: t.key, label: t.label }));
-/** Our tabs that keep the Top tippers rail. */
 const RAIL_TABS = new Set<Tab>(["ppv", "tips", "all"]);
 
 const LEARN_TIP =
@@ -73,8 +37,6 @@ function parseTab(raw: string | null): Tab {
 }
 
 export default function MessagesPage() {
-  // useSearchParams suspends in Next 14+; wrap the body in Suspense so the
-  // page can render the static header while it resolves.
   return (
     <Suspense fallback={<div className="max-w-shell mx-auto p-3 sm:p-6 text-sm text-fg-dim">Loading…</div>}>
       <MessagesPageInner />
@@ -94,10 +56,6 @@ function MessagesPageInner() {
     return Number.isFinite(n) ? n : null;
   });
 
-  // Mirror URL → state when the user navigates via browser back/forward.
-  // We intentionally don't reverse-sync state → URL on every keystroke;
-  // only the explicit tab/fan setters push back to the URL so a typing
-  // user doesn't see history entries pile up.
   useEffect(() => {
     setTabState(parseTab(search.get("tab")));
     const raw = search.get("fan_id");
@@ -131,9 +89,7 @@ function MessagesPageInner() {
     updateUrl({ fanId: null });
   };
 
-  // Object-wrapped so re-setting the same username still bumps the
-  // useEffect inside TipsTab. `value` is the username; `nonce` ensures
-  // a fresh reference even when the user clicks the same row twice.
+  // object-wrapped so re-picking the same username still bumps the nonce
   const [tippersPreset, setTippersPreset] = useState<{
     value: string;
     nonce: number;
@@ -147,13 +103,8 @@ function MessagesPageInner() {
     }));
   };
 
-  // Memoized so AllMessagesTab's `useMemo(params, …)` keeps a stable
-  // reference when neither fanId nor the clearer changed.
   const onClearFanId = useMemo(() => () => clearFanId(), [clearFanId]);
 
-  // The window label feeds TopTippersCard; matches the date-range preset
-  // wording the user picked so the leaderboard doesn't lie about its
-  // window when the picker shows "Last 30 days."
   const windowLabel = preset === "custom"
     ? from && to ? `${from} → ${to}` : "custom window"
     : presetLabel(preset);
@@ -172,7 +123,6 @@ function MessagesPageInner() {
           tabs={INFLOWW_TABS}
           value={tab}
           onChange={setTab}
-          // The extras follow Infloww's two tabs directly, not at the bar's right.
           className="min-w-max [&>div:last-child]:ml-0 [&>div:last-child]:self-stretch"
           extra={
             <>
@@ -187,7 +137,6 @@ function MessagesPageInner() {
 
       <IfBody className="space-y-4">
         {!infloww && <div className="flex justify-end">{picker}</div>}
-        {/* Until the Applied settings (the report's time zone) answer: the table's rows as placeholder bars. */}
         {!ready ? <TableSkeleton rows={6} /> : (
           <div className={cn("grid grid-cols-1 gap-5", rail && "lg:grid-cols-[1fr_320px]")}>
             <div className="min-w-0">
@@ -208,9 +157,7 @@ function MessagesPageInner() {
                   from={fromIso}
                   to={toIso}
                   presetFanQuery={tippersPreset?.value ?? null}
-                  // The nonce isn't a prop on TipsTab itself; bumping the
-                  // key forces a remount on duplicate clicks so the preset
-                  // useEffect re-runs even when the same username is picked.
+                  // nonce in key: remount so TipsTab's preset effect re-runs on a repeat pick
                   key={`tips:${tippersPreset?.nonce ?? 0}`}
                 />
               )}
@@ -229,6 +176,7 @@ function MessagesPageInner() {
             </div>
             {rail && (
               <aside className="space-y-3 order-first md:order-none">
+                {/* totals include pending (uncleared) tips */}
                 <TopTippersCard
                   from={fromIso}
                   to={toIso}
@@ -246,7 +194,7 @@ function MessagesPageInner() {
 
 function presetLabel(p: RangePreset): string {
   switch (p) {
-    case "day": // never offered on this page; the picker's shared RangePreset type needs it
+    case "day":
       return "today";
     case "7d":
       return "last 7 days";

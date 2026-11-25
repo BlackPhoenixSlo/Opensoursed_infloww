@@ -52,52 +52,30 @@ export interface SendArgs {
   text: string;
   price?: number;
   lockedText?: boolean;
-  /** Vault items the sender attached. The hook extracts ids for the
-   *  wire payload AND uses the file URLs to seed the optimistic bubble's
-   *  media — without that, attached PPV messages render text-only. */
   attached?: VaultMedia[];
-  /** Vault media ids that should be sent UNLOCKED (free previews) when
-   *  `price > 0`. Order doesn't matter to OF — the locked/unlocked split
-   *  is per-media-id, not by position. Omit / `[]` ⇒ everything locked. */
+  // Vault media ids sent UNLOCKED when price > 0; the locked/unlocked split is per media id, not by position
   previews?: number[];
-  /** ISO 8601 send-at timestamp. When set, the relay queues via the
-   *  /messages/scheduled endpoint instead of sending immediately. */
   scheduledAt?: string;
-  /** OF user ids of creators to @-tag (sent as `userTags`). Picker
-   *  guarantees these are valid taggable creators — OF 400s otherwise. */
+  // Picker guarantees taggable creators: OF 400s otherwise
   taggedUsers?: number[];
-  /** Giphy id (e.g. "0ndspgUFbm9iQtyX2Q"). OF accepts a single GIF per
-   *  send — when the user picks multiple, the parent splits the call. */
+  // OF accepts a single GIF per send; the parent splits multiple
   giphyId?: string;
-  /** Files still uploading when Send was pressed; the send goes out once they
-   *  land, their media after `attached`. Never set on a scheduled send. */
   uploads?: PendingUpload[];
 }
 
 export interface ComposerDraft {
-  /** As typed (sanitized); `parsePrice` reads it. */
   price: string;
-  /** The PPV pill. */
   priceOpen: boolean;
-  /** Opt-in (asks #6 + #17). */
   lockedText: boolean;
   attached: VaultMedia[];
-  /** How many leading tiles are FREE previews; may exceed `attached` (read
-   *  through `effectivePreviewCount`). */
   previewCount: number;
   scheduleOpen: boolean;
-  /** datetime-local value, no tz suffix. */
   scheduleAt: string;
   taggedCreators: TaggedCreatorChoice[];
-  /** OF takes ONE GIF per send; the rest go as GIF-only sends after it. */
   pickedGifs: PickedGif[];
-  /** The Script step this draft was loaded from; its send advances the Script. */
   script: { scriptId: string; scriptStep: number } | null;
-  /** The text's OF markup and the plain text it reads as (a formatted template's, or the rich editor's). */
   rich: { html: string; plain: string } | null;
-  /** "Aa" and whether the text is in the rich editor (lib/ofRichMode). */
   mode: RichMode;
-  /** The saved reply this draft was picked from: its send counts toward the script's send count (`sentReplyId`). */
   replyId: number | null;
 }
 
@@ -107,7 +85,6 @@ export const EMPTY_DRAFT: ComposerDraft = {
   mode: PLAIN_MODE,
 };
 
-/** What the PPV row's Clear empties: price, lock, media and previews, the schedule and GIFs. */
 const PPV_EMPTY: Pick<
   ComposerDraft, "price" | "priceOpen" | "lockedText" | "attached" | "previewCount" | "scheduleOpen" | "scheduleAt" | "pickedGifs"
 > = {
@@ -115,38 +92,27 @@ const PPV_EMPTY: Pick<
   pickedGifs: [],
 };
 
-/** The saved reply whose send count a send of `d` bumps: the picked one, never a script source's
- *  (lib/chatSlots.ts; its automation's own rows stay untouched). */
 export function sentReplyId(d: ComposerDraft): number | null {
   return d.replyId != null && !isSourceScript(d.script?.scriptId) ? d.replyId : null;
 }
 
 export type DraftAction =
-  /** `allowRich`: the chat's account takes OF markup (OnlyFans), so a formatted template keeps it. */
   | { type: "pickTemplate"; t: PickedTemplate; allowRich: boolean }
-  /** "Aa" pressed. */
   | { type: "aa" }
-  /** The rich editor's value changed: its markup (null: plain, no markup). */
   | { type: "setRich"; rich: { html: string; plain: string } | null }
   | { type: "pickVault"; picked: VaultMedia[] }
-  /** Uploads that landed; an id already attached is not added twice. */
   | { type: "uploaded"; media: VaultMedia[] }
-  /** Tiles dragged into a new order. */
   | { type: "reorder"; attached: VaultMedia[] }
   | { type: "removeAttachment"; id: number }
   | { type: "setPrice"; raw: string }
   | { type: "setPriceOpen"; open: boolean }
   | { type: "setLockText"; on: boolean }
-  /** The free previews stepper: one more / fewer than the count it shows. */
   | { type: "stepPreviews"; by: 1 | -1 }
-  /** Either field alone leaves the other as it is. */
   | { type: "schedule"; open?: boolean; at?: string }
   | { type: "addGif"; gif: PickedGif }
   | { type: "removeGif"; id: string }
   | { type: "setTags"; tags: TaggedCreatorChoice[] }
-  /** The PPV row's Clear: everything it lists goes (the text stays). */
   | { type: "clearPpv" }
-  /** The FM bubble's AI draft replaces the text: it is no Script step. */
   | { type: "dropScript" }
   | { type: "endScript"; scriptId: string }
   | { type: "sent" }
@@ -202,7 +168,6 @@ export function composerDraft(s: ComposerDraft, a: DraftAction): ComposerDraft {
     case "setLockText":
       return { ...s, lockedText: a.on };
     case "stepPreviews":
-      // From the count on show: a stored count past the tiles is clamped first.
       return {
         ...s,
         previewCount: Math.max(0, Math.min(s.attached.length, effectivePreviewCount(s) + a.by)),
@@ -219,7 +184,6 @@ export function composerDraft(s: ComposerDraft, a: DraftAction): ComposerDraft {
     case "setTags":
       return { ...s, taggedCreators: a.tags };
     case "clearPpv":
-      // Only the row's fields: tags are not in it, and the Script step, formatting and saved reply ride on the text.
       return { ...s, ...PPV_EMPTY };
     case "endScript":
       return s.script?.scriptId === a.scriptId ? { ...s, script: null } : s;
@@ -229,13 +193,10 @@ export function composerDraft(s: ComposerDraft, a: DraftAction): ComposerDraft {
     case "clear":
       return { ...EMPTY_DRAFT, mode: richMode(s.mode, { type: "sent" }) };
     case "restore":
-      // The snapshot whole, "Aa" and its box included: the text goes back as it was sent (formatted, into the rich
-      // editor).
       return a.snapshot;
   }
 }
 
-/** Nothing on the draft: what `sent` leaves ("Aa" is the box's, not the draft's). */
 export function isEmptyDraft(d: ComposerDraft): boolean {
   return (
     d.price === "" && !d.priceOpen && !d.lockedText && d.attached.length === 0 && d.previewCount === 0 &&
@@ -244,21 +205,16 @@ export function isEmptyDraft(d: ComposerDraft): boolean {
   );
 }
 
-/** The rich editor's value as the Composer's text and markup: markup (formatted, or plain text that reads as
- *  markup) keeps `rich`, plain text clears it. */
 export function richFromEditor(value: string, plainOf: (html: string) => string): { text: string; rich: ComposerDraft["rich"] } {
   if (!isOfHtml(value)) return { text: value, rich: null };
   const plain = plainOf(value);
   return { text: plain, rich: { html: value, plain } };
 }
 
-/** The draft's markup while `text` is still the plain text it was set with (trim aside), else null: the text was
- *  replaced from outside (Use translation), so it sends as the plain text it shows. */
 export function richText(d: ComposerDraft, text: string): string | null {
   return d.rich && d.rich.plain.trim() === text.trim() ? d.rich.html : null;
 }
 
-/** A Composer's whole draft: the text and the rest. */
 export interface FullDraft {
   text: string;
   draft: ComposerDraft;
@@ -272,37 +228,27 @@ export function isEmptyLiveDraft({ text, draft, uploadChips }: LiveDraft): boole
   return text === "" && uploadChips === 0 && isEmptyDraft(draft);
 }
 
-/** Where a refused schedule's draft goes: back into an untouched Composer
- *  (still as `sent` left it), else, once the chatter has typed or attached
- *  since, or left the chat (`now` null: no Composer to go back into), as an
- *  offer to restore it. Nothing is lost. */
 export function afterRefusedSchedule(now: LiveDraft | null): "restore" | "offer" {
   return now != null && isEmptyLiveDraft(now) ? "restore" : "offer";
 }
 
-/** A price > 0, else null: a typed price > 0 is the sole paid signal. */
 export function paidPrice(d: ComposerDraft): number | null {
   const price = parsePrice(d.price);
   return price != null && price > 0 ? price : null;
 }
 
-/** Clamped on read so removing tiles never leaves FREE badges past the end. */
 export function effectivePreviewCount(d: ComposerDraft): number {
   return Math.max(0, Math.min(d.previewCount, d.attached.length));
 }
 
-/** A scheduled send: the schedule is on with a time still ahead. */
 export function isScheduling(d: ComposerDraft, now: number): boolean {
   return d.scheduleOpen && !!d.scheduleAt && new Date(d.scheduleAt).getTime() > now;
 }
 
 export interface SendCtx {
-  /** The draft text (`useChatDraft`). */
   text: string;
   disabled?: boolean;
-  /** OF lets this chat be sent to. */
   chatCanSend: boolean;
-  /** A file is still uploading / one failed (`useComposerUploads`). */
   uploading: boolean;
   uploadFailed: boolean;
   now: number;
@@ -310,15 +256,11 @@ export interface SendCtx {
 
 export const FAILED_UPLOAD_NOTE = "Retry or remove the failed upload first";
 
-/** Why a schedule (the Schedule button, the Timed message) must wait: it
- *  needs the media ids now, so a running upload holds it. */
 export function scheduleWaitReason(ctx: Pick<SendCtx, "uploading" | "uploadFailed">): string | null {
   if (ctx.uploadFailed) return FAILED_UPLOAD_NOTE;
   return ctx.uploading ? "Wait for the upload to finish before scheduling" : null;
 }
 
-/** Why Send is held, shown on it. An immediate send takes a running upload
- *  over, so only a failed one holds it; OF refuses a paid price under $3. */
 export function sendBlockedReason(d: ComposerDraft, ctx: SendCtx): string | null {
   const uploadReason = isScheduling(d, ctx.now)
     ? scheduleWaitReason(ctx)
@@ -336,50 +278,38 @@ export function canSend(d: ComposerDraft, ctx: SendCtx): boolean {
 }
 
 export interface ViewCtx extends SendCtx {
-  /** Upload chips on show (`useComposerUploads`), failed ones included. */
   uploadChips: number;
 }
 
-/** What the Composer shows, derived from the draft in one place. */
 export function composerView(d: ComposerDraft, ctx: ViewCtx) {
   const price = parsePrice(d.price);
   const paid = paidPrice(d);
   const previews = effectivePreviewCount(d);
+  // OF refuses a paid price under $3
   const priceError = priceNote(price);
-  // What the PPV row lists keeps it open, whatever the pill says (spec, The
-  // PPV row; Clone messages.js:1838).
   const holds = d.attached.length > 0 || d.pickedGifs.length > 0 || ctx.uploadChips > 0 || paid != null;
   const ppvHeld = holds || d.scheduleOpen;
   return {
     paid,
-    /** The tiles' paid badge: "$5", "$5.50"; "" when free. */
     priceLabel: paid == null ? "" : `$${paid % 1 === 0 ? paid : paid.toFixed(2)}`,
-    /** OF refuses a price under $3 that is not free (shown above the input). */
     priceError,
     previews,
-    /** The free ↑ / paid ↓ divider sits between the tiles. */
     showDivider: paid != null && previews > 0 && previews < d.attached.length,
     ppvHeld,
     ppvRowOpen: d.priceOpen || ppvHeld,
-    /** What leaving this Fan would lose: the per-Fan draft keeps only the text. */
     held: holds,
     scheduling: isScheduling(d, ctx.now),
     canSend: canSend(d, ctx),
     sendBlockedReason: sendBlockedReason(d, ctx),
-    /** Why the Timed message waits: a running upload, else the price. */
     timedBlockedReason: scheduleWaitReason(ctx) ?? priceError,
   };
 }
 
-/** The send's args from the draft, uploads aside (the Composer hands those
- *  over only once the send is sure to go). `text` is the trimmed body. A
- *  Timed message's `delayMinutes` wins over the schedule's time; a time
- *  already past sends at once. Only the first GIF rides along. */
 export function buildSendArgs(
   d: ComposerDraft,
   opts: { text: string; delayMinutes?: number; now: number; plainOnly?: boolean },
 ): SendArgs {
-  // `plainOnly`: a Fansly account, or a translation sent in the draft's place, never sends OF markup.
+  // plainOnly: a Fansly account, or a translation sent in the draft's place, never sends OF markup
   const args: SendArgs = { text: (!opts.plainOnly && richText(d, opts.text)) || opts.text };
   const price = paidPrice(d);
   if (price != null) {
@@ -395,14 +325,11 @@ export function buildSendArgs(
   if (opts.delayMinutes && opts.delayMinutes > 0) {
     args.scheduledAt = new Date(opts.now + opts.delayMinutes * 60_000).toISOString();
   } else if (isScheduling(d, opts.now)) {
-    // datetime-local has no tz suffix: the Date constructor reads it as local.
+    // datetime-local has no tz suffix: the Date constructor reads it as local
     args.scheduledAt = new Date(d.scheduleAt).toISOString();
   }
   return args;
 }
 
-/** Whether an attached tile can ride in the numeric `previews` array (the
- *  free-teaser split): lib/composeDraft's one rule, re-exported for the
- *  FREE-badge render (PpvTiles), so the UI never promises a free teaser the
- *  wire layer drops. */
+// The FREE-badge render shares lib/composeDraft's rule so the UI never promises a free teaser the wire layer drops
 export { canBeFreePreview };

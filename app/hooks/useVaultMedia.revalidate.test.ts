@@ -80,7 +80,7 @@ describe("picker first-page revalidation", () => {
     response.resolve(membership === "same IDs" ? fresh : { list: [{ id: 99, type: "photo" }], hasMore: false });
     await refreshing;
     expect(qc.getQueryData(query.queryKey)).toBe(refetched);
-    expect(get).toHaveBeenCalledTimes(3); // open + both refetched pages
+    expect(get).toHaveBeenCalledTimes(3);
   });
 
   it("allows pagination-only appends during the open's network read", async () => {
@@ -112,13 +112,12 @@ describe("picker first-page revalidation", () => {
     const { next, fetching } = startNextPage();
     if (order === "before") { next.resolve(last); await fetching; }
     const refreshing = revalidateVaultMediaFirstPage(qc, opts);
-    // Let revalidation receive page 1 while page 3 still holds its old page-1 snapshot.
     await Promise.resolve();
     await Promise.resolve();
     if (order === "after") { next.resolve(last); await fetching; }
     await refreshing;
     expectRenewed([later, last], [0, 24, 48]);
-    expect(get).toHaveBeenCalledTimes(2); // exactly page 3 + page 1, no restart
+    expect(get).toHaveBeenCalledTimes(2);
   });
 
   it("still renews page 1 when the in-flight next page fails", async () => {
@@ -196,16 +195,14 @@ it("keeps an inactive query stale after repeated mutation invalidation during th
   unsub = undefined;
   expect(qc.getQueryCache().find({ queryKey: query.queryKey })?.isActive()).toBe(false);
   await invalidateVaultGrid(qc, opts.accountId);
-  expect(get).toHaveBeenCalledOnce(); // Inactive mutation invalidation starts no refetch.
+  expect(get).toHaveBeenCalledOnce();
   expect(qc.getQueryState(query.queryKey)?.isInvalidated).toBe(true);
-  response.resolve(fresh); // Read began before the mutation.
+  response.resolve(fresh);
   await refreshing;
   expect(qc.getQueryState(query.queryKey)?.isInvalidated).toBe(true);
   expect(qc.getQueryData(query.queryKey)).toBe(before);
 });
 
-// Real observers exercise fetch start/completion, including structural sharing.
-// No clock advancement: two refreshes in the same millisecond must still order.
 describe.each(["open", "thumbnails"] as const)("%s refresh ownership", (reader) => {
   const refresh = () => reader === "open"
     ? revalidateVaultMediaFirstPage(qc, opts)
@@ -269,7 +266,6 @@ describe.each(["open", "thumbnails"] as const)("%s refresh ownership", (reader) 
     });
     const fetching = observer.refetch();
     response.resolve(older);
-    // Do not await the old sidecar: an incorrect implementation can wait for the newer fetch.
     await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
     expect(signal?.aborted).toBe(false);
     expect(qc.getQueryState(query.queryKey)?.fetchStatus).toBe("fetching");
@@ -287,7 +283,7 @@ describe.each(["open", "thumbnails"] as const)("%s refresh ownership", (reader) 
     if (payload === "new payload") get.mockResolvedValue({ ...fresh, hasMore: false });
     await observer.refetch();
     const refetched = qc.getQueryData(query.queryKey);
-    if (payload === "identical") expect(refetched).toBe(before); // TanStack structural sharing
+    if (payload === "identical") expect(refetched).toBe(before);
     response.resolve(fresh);
     await refreshing;
     expect(qc.getQueryData(query.queryKey)).toBe(refetched);
@@ -298,7 +294,6 @@ describe.each(["open", "thumbnails"] as const)("%s refresh ownership", (reader) 
     const refreshing = refresh();
     await requested;
     const before = qc.getQueryData(query.queryKey);
-    // Reset the active Query directly to avoid starting a replacement request.
     if (change === "reset") qc.getQueryCache().find({ queryKey: query.queryKey })!.reset();
     else {
       if (change !== "manual identical write") qc.removeQueries({ queryKey: query.queryKey, exact: true });

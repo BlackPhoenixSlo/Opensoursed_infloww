@@ -1,23 +1,6 @@
 #!/bin/bash
-# slop-netloss: packet loss, delay and bandwidth on loopback TCP ports, via macOS dummynet (dnctl + pfctl).
-# Runs as root through sudo (slop/install-netloss copies it to /usr/local/libexec/slop-netloss, root:wheel 755, and
-# grants this one path NOPASSWD). Never edit the installed copy; the harness refuses a copy that differs from this.
 #
-#   slop-netloss [--dry-run] on <port[,port...]> <rtt_ms> <plr> <down_kbit> <up_kbit>
-#   slop-netloss [--dry-run] off
-#   slop-netloss status
 #
-# on: lo0 only, IPv4 127.0.0.1 <-> 127.0.0.1, only TCP to / from the given ports (1024-65535, at most 4). Two fixed
-#     dummynet pipes: UP (to the port: the browser's upload) and DOWN (from the port: the download), each with
-#     rtt_ms / 2 delay, its own bandwidth (0 = no cap) and plr (per packet, each direction). Rules match `out` only:
-#     a loopback packet passes pf out and in, so matching both would shape it twice. MSS clamped to 1460 on those
-#     ports (lo0's MTU is 16 KB: loss and queueing per 16 KB packet would not be a phone's). Rules live in the
-#     sub-anchor com.apple/slop-netloss, which /etc/pf.conf's `dummynet-anchor "com.apple/*"` / `scrub-anchor
-#     "com.apple/*"` already evaluate: the main ruleset is never loaded or flushed. pf enabled with -E (a reference;
-#     its token kept in the state file) so `off` releases only ours: pf stays on only if something else holds it.
-# off: with state, clears our anchor and pipes; a missing state means nothing of ours to remove.
-# status: pf's enable state and references, the sub-anchor's rules, the pipes. Read-only.
-# --dry-run: validate and print the commands and rules `on` / `off` would run; touches nothing (no root needed).
 set -euo pipefail
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 IFS=$' \t\n'
@@ -27,7 +10,7 @@ ANCHOR="com.apple/slop-netloss"
 PIPE_UP=7401
 PIPE_DOWN=7402
 MSS=1460
-STATE=/var/run/slop-netloss.state   # root 644: on, enable-pending, or token=<n>; existence = shaping may be on
+STATE=/var/run/slop-netloss.state
 PFCTL=/sbin/pfctl
 DNCTL=/usr/sbin/dnctl
 OP_LOCK=/var/run/slop-netloss.operation.lock
@@ -40,7 +23,7 @@ if [ "${1:-}" = "--dry-run" ]; then DRY=1; shift; fi
 [ $# -ge 1 ] || usage
 CMD=$1; shift
 
-int_in() {  # int_in <name> <value> <min> <max>: a plain decimal integer in range
+int_in() {
   case "$2" in ''|*[!0-9]*) die "$1 must be a decimal integer, got '$2'";; esac
   [ ${#2} -le 6 ] || die "$1 out of range: $2"
   [ "$2" = 0 ] || [ "${2#0}" = "$2" ] || die "$1 must not have leading zeros: $2"
@@ -58,7 +41,6 @@ parse_on() {
   [ ${#PORTS[@]} -ge 1 ] && [ ${#PORTS[@]} -le 4 ] || die "1..4 ports, got ${#PORTS[@]}"
   local p; for p in "${PORTS[@]}"; do int_in port "$p" 1024 65535; done
   int_in rtt_ms "$2" 0 2000; RTT=$2
-  # plr: 0, or 0.<1-4 digits>, at most 0.2
   case "$3" in 0|0.[0-9]|0.[0-9][0-9]|0.[0-9][0-9][0-9]|0.[0-9][0-9][0-9][0-9]) ;; *) die "plr must be 0..0.2 (at most 4 decimals), got '$3'";; esac
   local frac="${3#0}"; frac="${frac#.}"; frac="${frac}0000"; frac="${frac:0:4}"
   [ $((10#$frac)) -le 2000 ] || die "plr must be <= 0.2, got $3"
@@ -69,26 +51,29 @@ parse_on() {
   { [ "$UP" = 0 ] || [ "$UP" -ge 64 ]; } || die "up_kbit: 0 (no cap) or >= 64, got $UP"
 }
 
-rules() {  # the sub-anchor's ruleset: normalization first, then dummynet (pf.conf's order)
+rules() {
   local p
   for p in "${PORTS[@]}"; do
+    # MSS clamp: lo0's MTU is 16 KB, per-packet loss/queueing would not be a phone's
     echo "scrub on lo0 inet proto tcp from 127.0.0.1 to 127.0.0.1 port $p max-mss $MSS"
     echo "scrub on lo0 inet proto tcp from 127.0.0.1 port $p to 127.0.0.1 max-mss $MSS"
   done
   for p in "${PORTS[@]}"; do
+    # `out` only: a loopback packet passes pf out and in, matching both would shape it twice
+    # `out` only: a loopback packet passes pf out and in, matching both would shape it twice
     echo "dummynet out quick on lo0 inet proto tcp from 127.0.0.1 to 127.0.0.1 port $p pipe $PIPE_UP"
     echo "dummynet out quick on lo0 inet proto tcp from 127.0.0.1 port $p to 127.0.0.1 pipe $PIPE_DOWN"
   done
 }
 
-pipe_args() {  # pipe_args <kbit>: dnctl config for one direction
+pipe_args() {
   local a="delay $((RTT / 2))"
   [ "$1" = 0 ] || a="$a bw ${1}Kbit/s"
   [ "$PLR" = 0 ] || a="$a plr $PLR"
   echo "$a"
 }
 
-run() {  # run <cmd...>: print in dry-run, else execute
+run() {
   if [ $DRY = 1 ]; then echo "+ $*"; else "$@"; fi
 }
 
@@ -99,7 +84,7 @@ has_our_pipes() { grep -Eq "^[[:space:]]*0*($PIPE_UP|$PIPE_DOWN):"; }
 
 do_off() {
   if [ $DRY = 0 ] && [ ! -f "$STATE" ]; then echo "slop-netloss: off (nothing on)"; return 0; fi
-  run "$PFCTL" -q -a "$ANCHOR" -f /dev/null 2>/dev/null || true   # an empty ruleset: every rule type in it gone
+  run "$PFCTL" -q -a "$ANCHOR" -f /dev/null 2>/dev/null || true
   run "$DNCTL" -q pipe delete "$PIPE_UP" 2>/dev/null || true
   run "$DNCTL" -q pipe delete "$PIPE_DOWN" 2>/dev/null || true
   if [ $DRY = 1 ]; then run "$PFCTL" -X "<token from $STATE>"; run rm -f "$STATE"; return 0; fi
@@ -136,7 +121,8 @@ do_on() {
       local pipes; pipes=$(pipe_listing)
       if printf '%s\n' "$pipes" | has_our_pipes; then die "pipe $PIPE_UP or $PIPE_DOWN exists without our state; refusing to overwrite"; fi
     fi
-    echo "on" > "$STATE"   # before any change: a crash from here on leaves the marker the harness's stale-off reads
+    # before any change: a crash from here on leaves the marker the harness's stale-off reads
+    echo "on" > "$STATE"
     [ -z "$tok" ] || echo "token=$tok" > "$STATE"
   fi
   # shellcheck disable=SC2046  # pipe_args is a word list on purpose
@@ -146,7 +132,8 @@ do_on() {
   run "$PFCTL" -q -a "$ANCHOR" -f - <<<"$(rules)"
   if [ $DRY = 1 ]; then run "$PFCTL" -E; return 0; fi
   if [ -z "$tok" ]; then
-    echo "enable-pending" > "$STATE"  # off must not claim a lost -E token was released
+    # off must not claim a lost -E token was released
+    echo "enable-pending" > "$STATE"
     tok=$("$PFCTL" -E 2>&1 | sed -n 's/.*Token : \([0-9][0-9]*\).*/\1/p' | head -1)
     [ -n "$tok" ] || die "pfctl -E gave no token; cleanup will retry from the state marker"
     echo "token=$tok" > "$STATE"

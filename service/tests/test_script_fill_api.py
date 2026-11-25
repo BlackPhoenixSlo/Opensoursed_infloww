@@ -1,44 +1,4 @@
 #!/usr/bin/env python3
-"""test_script_fill_api — the Fill routes over HTTP (`script_fill_api`, spec phase 01 › Seam 2, ticket 11).
-
-Real owner / chatter session cookies on the shared two-Agency fixture (`_agency_fixtures`). Creator A's vault
-holds the decide suite's WHITE Shoot (101..113: free-safe 101-103, $10 suggestive 104-107 + clip 108, $50
-explicit 109-112 + clip 113), an exact copy of 104 (114, one dupe set), a red Shoot (131..143, same layout) and
-two undescribed photos (remaining Describe work). Red clip 143, the vault's top clip, sits in OF list 7, priced $99
-(a folder price).
-Creator B (Agency B) has its own Shoot and a same-named, priced Sequence; Creators A2 / A3 are Agency A's
-siblings for template prices. The DB is read back through a fresh sqlite3 connection, not the routes.
-
-  case_gate_refusals               empty account_id 400; B owner and B chatter 403; folder-limited chatter 403
-                                   folder_not_allowed; unknown Sequence 404; unreadable vault 503, nothing written
-  case_plan_writes_nothing         plan on every Sequence leaves A's rows byte-identical
-  case_apply_writes_and_reads_back plan -> apply -> DB: media (house VaultMedia, previews first), previews, price,
-                                   updated_at; Fixed price untouched; B's media and prices never used; dupe set
-                                   never twice; Undo list shape; applied Options
-  case_reapply_already_filled      re-press / lost-response retry: already_filled, zero writes, no bump
-  case_stale_fingerprint           edit between plan and fingerprinted apply -> 409 stale + fresh plan, nothing
-                                   written; unfingerprinted apply after the edit applies the fresh plan
-  case_concurrent_applies          two applies at once -> one ok, one already_filled
-  case_non_ok_statuses_write_nothing  not_enough_content, no_fit, price_conflict, price_out_of_range, reserved,
-                                   no_paid_steps: 200, byte-identical rows
-  case_describe_block              owner can_describe with nothing blocking; Scripts-only chatter with Whole-vault
-                                   access and remaining work: can_describe false, "no Vault Pro access"
-  case_template_prices             same-Agency sibling's prices (most priced steps, then lowest id; highest
-                                   price per step); never another Agency's, even for a two-Agency caller
-  case_template_prices_two_owner_creator  A also linked to a second owner (pinned ids "0" and "~": each
-                                   ordering of the tie-break runs): a two-Agency chatter borrows only from the
-                                   Agency it acts in for A
-  case_plan_runs_off_the_event_loop  `script_fill_decide.plan` runs on a worker thread for plan and apply
-  case_vault_fails_closed          through fill/apply: a load row with no live vault_items row is never
-                                   written (control: kept, it wins the clip ask); a planned id missing from the
-                                   live rows raises inside the write transaction, rows byte-identical
-  case_undo_refuses_reserved       hand-built entries on a reserved FM Sequence: every one kept `reserved`
-  case_undo                        restores empty Options, keeps a Fixed price, zeroes only price_set; an edited
-                                   row, altered values, a moved row, a Fixed price edit, another account's row:
-                                   kept and reported per row; only untouched Options revert
-
-Run: ./venv/bin/python service/tests/test_script_fill_api.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB
@@ -64,9 +24,9 @@ from db.models import Account, Chatter, ChatterFolderAccess, ChatterUser, User, 
 
 IDS = fx.seed_two_agencies()
 A, B = IDS["creator_a"], IDS["creator_b"]
-A2, A3 = "1000011", "1000010"     # Agency A siblings (template prices); A3 sorts first
-AX = "1000020"                    # a second owner's Creator (template prices, two-owner case)
-FIRST, LAST = "0", "~"            # owner ids sorting before / after Agency A owner's uuid hex
+A2, A3 = "1000011", "1000010"
+AX = "1000020"
+FIRST, LAST = "0", "~"
 SEQ = "Spicy intro"
 WHITE = set(range(101, 114))
 DUPE = (104, 114)
@@ -90,14 +50,13 @@ async def _seed() -> None:
         s.add(ChatterUser(chatter_id=fl, user_id=IDS["agency_a_owner"], created_at=now))
         s.add(ChatterFolderAccess(chatter_id=fl, account_id=A, folder_id=12, folder_name="f12", created_at=now))
     rows = sf.shoot(A, 100)
-    rows.append(sf.vault_row(A, 114, "suggestive", dupe_of=104,       # exact copy of 104
+    rows.append(sf.vault_row(A, 114, "suggestive", dupe_of=104,
                              created_at=rows[3]["created_at"]))
     rows += sf.shoot(A, 130, "red", at=sf.T0 + timedelta(days=3))
-    rows[26]["of_folder_ids"] = json.dumps([7])                       # clip 143 in OF list 7
+    rows[26]["of_folder_ids"] = json.dumps([7])
     rows += [sf.vault_row(A, m, "suggestive", describe_status=None, colour="blue") for m in UNDESCRIBED]
     rows += sf.shoot(B, 500)
     await sf.insert_vault(rows, {(A, "of:7"): 9900})
-    # Agency B: same Sequence name, priced, on its own Creator.
     await sf.insert_sequence(sf.sequence_rows(B, SEQ, {**sf.S1, 3: ("1/3, ppv", "wanna see more?", 2500)}))
 
 
@@ -114,7 +73,6 @@ CHATTER_AB = fx.login_chatter("chatter_ab")
 CHATTER_FL = fx.login_chatter("chatter_fl")
 
 
-# ── Helpers ──────────────────────────────────────────────────────────
 
 def _sql(query: str, *args) -> list[tuple]:
     con = sqlite3.connect(_harness.DB_PATH)
@@ -127,12 +85,10 @@ def _sql(query: str, *args) -> list[tuple]:
 
 
 def _snapshot(account: str = A) -> list[tuple]:
-    """Every saved_replies row of the Creator, every column (byte-identical check)."""
     return _sql("SELECT * FROM saved_replies WHERE account_id = ? ORDER BY id", account)
 
 
 def _rows(script: str = SEQ, account: str = A) -> dict[int, dict]:
-    """{step: row} of a one-Option-per-Step Sequence, read back from the DB."""
     out: dict = {}
     for rid, step, price, media, previews, updated in _sql(
             "SELECT id, script_step, price_cents, media_json, previews_json, updated_at FROM saved_replies "
@@ -179,7 +135,6 @@ def _ids(media: list) -> list[int]:
 
 
 def _unblocked():
-    """Describe key, cap and Jev all ready (the test stack has no vision key)."""
     budget, jev = vault_ai_vision._vision_budget, vault_jev_pass.plan
 
     async def _budget(*_a, **_k):
@@ -192,11 +147,9 @@ def _unblocked():
     return lambda: (setattr(vault_ai_vision, "_vision_budget", budget), setattr(vault_jev_pass, "plan", jev))
 
 
-# Step 5 carries a Fixed $50; the rest is S1, unpriced.
 S_FIXED = {**sf.S1, 5: ("2/3", "sending you 2 pics 🙈", 5000)}
 
 
-# ── Gate ─────────────────────────────────────────────────────────────
 
 def case_gate_refusals():
     _new_seq(SEQ, S_FIXED)
@@ -214,7 +167,6 @@ def case_gate_refusals():
         assert r.status_code == 403 and r.json()["detail"] == {"error": "folder_not_allowed"}, (route, r.text)
         r = OWNER_A.post(_url(route), json={**body, "sequence": "No such sequence"})
         assert r.status_code == 404 and r.json()["detail"] == {"error": "sequence_not_found"}, (route, r.text)
-    # Unreadable vault (a bad folder-ids value fails `load_rows` closed): 503, nothing written.
     _sql("UPDATE vault_items SET of_folder_ids = 'not json' WHERE account_id = ? AND media_id = 105", A)
     try:
         for route in ("plan", "apply"):
@@ -225,7 +177,6 @@ def case_gate_refusals():
     assert _snapshot() == before, "a refused call wrote"
 
 
-# ── Plan and apply ───────────────────────────────────────────────────
 
 def case_plan_writes_nothing():
     _new_seq(SEQ, S_FIXED)
@@ -246,20 +197,14 @@ def case_apply_writes_and_reads_back():
     r = _ok(_apply(fingerprint=p["fingerprint"]))
     assert r["status"] == "ok" and r["plan"]["fingerprint"] == p["fingerprint"], r
     after = _rows()
-    # Over the whole pool (issue 16): free step 1 the lowest free-safe photo; step 3 the lowest $10 photo + the
-    # lowest clip, preview first, its $50 List held to step 5's Fixed $50; step 5 (the last photo Step) the top
-    # photo pair of one Shoot (red 141, 142) + the next clip + preview; step 7 the top clip, red 143, priced at its
-    # $99 folder price (over $50, so no ladder lift).
     assert (_ids(after[1]["media"]), after[1]["previews"], after[1]["price"]) == ([101], [], 0), after[1]
     assert (_ids(after[3]["media"]), after[3]["previews"], after[3]["price"]) == ([102, 104, 108], [102], 5000), \
         after[3]
     assert (_ids(after[5]["media"]), after[5]["previews"], after[5]["price"]) == ([131, 141, 142, 138], [131], 5000)
     assert (_ids(after[7]["media"]), after[7]["previews"], after[7]["price"]) == ([143], [], 9900), after[7]
-    # House VaultMedia shape from the vault row.
     assert after[3]["media"][0] == {"id": 102, "type": "photo",
                                     "files": {"thumb": {"url": f"https://cdn.example/{A}/102_t.jpg"}}}
     assert after[7]["media"][0]["type"] == "video" and after[3]["media"][-1]["type"] == "video", "clip last"
-    # Written rows bumped; chat rows untouched.
     for step in (1, 3, 5, 7):
         assert after[step]["updated_at"] != before[step]["updated_at"], step
     for step in (2, 4, 6, 8, 13):
@@ -268,7 +213,6 @@ def case_apply_writes_and_reads_back():
     assert set(every) <= WHITE | RED, ("A's own vault only; never B's or the copy", every)
     assert not set(every) & B_IDS
     assert not set(DUPE) <= set(every), "one dupe set used at most once"
-    # Undo list: one entry per written Option, price after apply, price_set only where Fill set it.
     undo = {u["id"]: u for u in r["undo"]}
     assert set(undo) == {after[s]["id"] for s in (1, 3, 5, 7)}, r["undo"]
     assert undo[after[3]["id"]] == {"id": after[3]["id"], "media_ids": [102, 104, 108], "previews": [102],
@@ -283,7 +227,7 @@ def case_reapply_already_filled():
     _new_seq(SEQ, S_FIXED)
     _ok(_apply())
     before = _snapshot()
-    for _ in range(2):    # a re-press, then a lost-response retry
+    for _ in range(2):
         r = _ok(_apply())
         assert r["status"] == "already_filled" and r["applied"] == [] and r["undo"] == [], r
     assert _snapshot() == before, "already_filled wrote or bumped updated_at"
@@ -312,7 +256,7 @@ def case_concurrent_applies():
     load = script_fill_api._load_vault
 
     async def _slow(*a):
-        await asyncio.sleep(0.4)     # widen the window: the other apply must wait on the write lock
+        await asyncio.sleep(0.4)  # widen the window: the other apply must wait on the write lock
         return await load(*a)
 
     script_fill_api._load_vault = _slow
@@ -337,7 +281,6 @@ def case_concurrent_applies():
 
 def case_non_ok_statuses_write_nothing():
     cases = [
-        # (script, steps, status, conflict)
         ("Big ask", {s: ("ppv", "the full video", 0) for s in (1, 2, 3, 4, 5)}, "not_enough_content", None),
         ("Price trouble", {**sf.S1, 3: ("1/3, ppv", "", 5000), 5: ("2/3", "", 2000)}, "price_conflict",
          {"step": 5, "rule": "below_earlier", "price_cents": 2000}),
@@ -358,7 +301,6 @@ def case_non_ok_statuses_write_nothing():
             if call is _apply:
                 assert body["status"] == status and body["applied"] == [] and body["undo"] == [], body
     assert _snapshot() == before, "a non-ok status wrote"
-    # The same ask with no Describe work left: no_fit, still nothing written.
     _sql(f"UPDATE vault_items SET removed_at = '2026-07-02 00:00:00' WHERE account_id = ? "
          f"AND media_id IN ({','.join(map(str, UNDESCRIBED))})", A)
     try:
@@ -375,10 +317,8 @@ def case_describe_block():
     restore = _unblocked()
     try:
         d = _ok(_plan())["describe"]
-        # 27 described (two Shoots + the copy) + 2 undescribed = 29 describable: goal 29, remaining 2.
         assert d == {"described": 27, "target": 29, "remaining": 2, "can_describe": True,
                      "blocked_reason": None}, d
-        # A Scripts-only role on chatter_a (Whole-vault access: no folder limit).
         emp = asyncio.run(employees.get_or_create_mirror_employee(
             IDS["chatter_a"], IDS["agency_a_owner"], display_name="chatter_a", color="#bbbbbb"))
         role = {"id": "role-scripts", "name": "Scripts only", "description": "", "scope": "all",
@@ -390,14 +330,12 @@ def case_describe_block():
             assert p["describe"]["can_describe"] is False, p["describe"]
             assert p["describe"]["blocked_reason"] == "no Vault Pro access", p["describe"]
             assert p["describe"]["remaining"] == 2
-            # describe-all itself would refuse this caller (the sentence's claim).
             r = CHATTER_A.post("/admin/vault-ai/describe-all", json={"account_id": A, "target": 1000})
             assert r.status_code == 403, (r.status_code, r.text)
         finally:
             fx.store_blob(IDS["agency_a_owner"], "roles", {"enforce": False})
     finally:
         restore()
-    # Unpatched, the test stack's own sentence blocks (no vision key): never the Vault Pro one for an owner.
     d = _ok(_plan())["describe"]
     assert d["can_describe"] is False and d["blocked_reason"] and d["blocked_reason"] != "no Vault Pro access", d
 
@@ -405,25 +343,20 @@ def case_describe_block():
 def case_template_prices():
     plain = {**sf.S1}
     _new_seq(SEQ, plain)
-    # Agency B's priced same-named Sequence never lends: List prices as without any template.
     o = _opts(_ok(_plan()))
     assert [o[s]["price_cents"] for s in (3, 5, 7)] == [5000, 7500, 9900], [o[s]["price_cents"] for s in (3, 5, 7)]
     assert not any("template_price" in o[s]["flags"] for s in (3, 5, 7))
-    # Not even for a caller holding both Agencies' Creators (chatter_ab): the source must share A's Agency.
     o = _opts(_ok(_plan(CHATTER_AB)))
     assert [o[s]["price_cents"] for s in (3, 5, 7)] == [5000, 7500, 9900], [o[s]["price_cents"] for s in (3, 5, 7)]
-    # A3 (lower id) prices one step; A2 three: A2 wins on priced steps. A2's step 3 has two Options: the highest.
     _new_seq(SEQ, {**sf.S1, 3: ("1/3, ppv", "", 3000)}, account=A3)
     _new_seq(SEQ, {**sf.S1, 3: ("1/3, ppv", "", 2500), 5: ("2/3", "", 4000), 7: ("3/3, ppv", "", 6000)}, account=A2)
     asyncio.run(sf.insert_sequence([{**sf.sequence_rows(A2, SEQ, {3: ("1/3, ppv", "", 1500)}, last=3)[2]}]))
     o = _opts(_ok(_plan()))
     assert {s: o[s]["price_cents"] for s in (3, 5, 7)} == {3: 2500, 5: 4000, 7: 6000}, o
     assert all("template_price" in o[s]["flags"] for s in (3, 5, 7))
-    # A tie on priced steps: the lowest account id (A3).
     _new_seq(SEQ, {**sf.S1, 3: ("1/3, ppv", "", 2000), 5: ("2/3", "", 3000), 7: ("3/3, ppv", "", 4000)}, account=A3)
     o = _opts(_ok(_plan()))
     assert {s: o[s]["price_cents"] for s in (3, 5, 7)} == {3: 2000, 5: 3000, 7: 4000}, o
-    # Applied, the template price is what lands.
     r = _ok(_apply())
     assert r["status"] == "ok" and _rows()[3]["price"] == 2000, r["status"]
     for acct in (A2, A3):
@@ -431,7 +364,6 @@ def case_template_prices():
 
 
 def _link_owner(uid: str, linked: bool) -> None:
-    """Owner `uid` holds Creators A and AX and is linked to chatter_ab (`linked`), or none of it."""
     links = (("user_accounts", "user_id", uid, "account_id", A), ("user_accounts", "user_id", uid, "account_id", AX),
              ("chatter_users", "user_id", uid, "chatter_id", IDS["chatter_ab"]))
     for table, k1, v1, k2, v2 in links:
@@ -441,22 +373,17 @@ def _link_owner(uid: str, linked: bool) -> None:
                  v1, v2, *((datetime.utcnow().isoformat(" "),) if extra else ()))
         else:
             _sql(f"DELETE FROM {table} WHERE {k1} = ? AND {k2} = ?", v1, v2)
-    chatter_identity_cache.invalidate()   # a seeded link emits no assignment_changed
+    chatter_identity_cache.invalidate()  # a seeded link emits no assignment_changed
 
 
 def case_template_prices_two_owner_creator():
-    """Creator A also held by a second owner, both linked to chatter_ab: chatter_ab borrows only from the Agency
-    it acts in for A (the house tie-break, `_sorted_holder_owner_ids`: alphabetically first holder), never from a
-    Creator of A's other owner. Both orderings run every time, the acting owner pinned by id: "0" sorts before
-    Agency A's owner (uuid hex) and acts; "~" sorts after it, so Agency A acts."""
     _new_seq(SEQ, {**sf.S1})
-    # Agency A's sibling A2 prices three steps; the second owner's Creator AX prices step 3 only.
     _new_seq(SEQ, {**sf.S1, 3: ("1/3, ppv", "", 3000), 5: ("2/3", "", 4000), 7: ("3/3, ppv", "", 6000)}, account=A2)
     _new_seq(SEQ, {**sf.S1, 3: ("1/3, ppv", "", 2500)}, account=AX)
     assert FIRST < IDS["agency_a_owner"] < LAST, "precondition: pinned ids sort around Agency A's owner"
     try:
-        for other, want in ((FIRST, {3: (2500, True), 5: (5000, False), 7: (9900, False)}),   # AX lends, A2 never
-                            (LAST, {3: (3000, True), 5: (4000, True), 7: (6000, True)})):     # A2 lends, AX never
+        for other, want in ((FIRST, {3: (2500, True), 5: (5000, False), 7: (9900, False)}),
+                            (LAST, {3: (3000, True), 5: (4000, True), 7: (6000, True)})):
             _link_owner(other, True)
             try:
                 o = _opts(_ok(_plan(CHATTER_AB)))
@@ -469,11 +396,8 @@ def case_template_prices_two_owner_creator():
             _sql("DELETE FROM saved_replies WHERE account_id = ?", acct)
 
 
-# ── Off the event loop, fail closed ──────────────────────────────────
 
 def case_plan_runs_off_the_event_loop():
-    """plan and apply run `script_fill_decide.plan` (synchronous, the whole vault) on a worker thread, not on
-    the relay's event loop."""
     _new_seq(SEQ, S_FIXED)
     seen: dict = {"plan": []}
     load, real_plan = script_fill_api._load_vault, script_fill_api.decide.plan
@@ -496,10 +420,6 @@ def case_plan_runs_off_the_event_loop():
 
 
 def case_vault_fails_closed():
-    """Through fill/apply. A `load_rows` row with no live `vault_items` row is not in Fill's vault: 777, a copy of
-    clip 143 sorting after it, is never written (control: kept in the vault, it wins the clip ask). A planned
-    media id the vault's live rows do not hold (143 dropped from them) raises inside the write transaction:
-    rolled back, rows byte-identical, never a guessed photo."""
     _new_seq(SEQ, S_FIXED)
     load_rows, load_vault = script_fill_api.fs.load_rows, script_fill_api._load_vault
 
@@ -507,7 +427,7 @@ def case_vault_fails_closed():
         rows, groups, prints = await load_rows(account_id)
         return rows + [{**next(r for r in rows if r["media_id"] == 143), "media_id": 777}], groups, prints
 
-    async def _ghost_kept(*a):                     # control: as if the drop were missing
+    async def _ghost_kept(*a):
         vault = await load_vault(*a)
         vault.items.append({**next(i for i in vault.items if i["media_id"] == 143), "media_id": 777})
         vault.live[777] = vault.live[143]
@@ -547,11 +467,8 @@ def case_vault_fails_closed():
     assert _snapshot() == before, "the failed apply wrote: no rollback"
 
 
-# ── Undo ─────────────────────────────────────────────────────────────
 
 def case_undo_refuses_reserved():
-    """A reserved FM Sequence is never emptied by undo, even by hand-built entries matching its rows: every
-    entry kept as `reserved`, nothing written."""
     _new_seq("FM12", {**sf.S1, 3: ("1/3, ppv", "", 2500)})
     rows = _rows("FM12")
     _sql("UPDATE saved_replies SET media_json = ? WHERE id = ?", json.dumps([{"id": 101, "type": "photo"}]),
@@ -581,8 +498,6 @@ def case_undo():
     assert back[5]["price"] == 5000, "a Fixed price stays"
     assert back[3]["updated_at"] != empty[3]["updated_at"]
 
-    # Fill again, then: step 3 edited (an unrelated edit to its media), step 5's Fixed price edited, step 7 moved
-    # to another Sequence; one entry with altered values; one id of another account's row.
     r = _ok(_apply())
     e = {x["id"]: x for x in r["undo"]}
     rows = _rows()

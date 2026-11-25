@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * OF Manager's creator column (CreatorColumn) and the palette it carries.
- * Its own module, apart from OfManagerChrome: CreatorRail and the pages that list creators the same way import it,
- * and OfManagerChrome's Fan insights (FanDrawer, the Scripts picker, the OF mirror's chat and data modules) must not
- * ride along into theirs. Its route test (hasCreatorColumn) is in lib/nav, so the app shell imports nothing from here.
- * OF Manager's column has no "All creators" pick (owner 2026-11-20: the OF view is always one creator). Its Tag menu
- * (a Tag is Infloww's creator group, useCreatorProfiles) narrows the rows to the creators holding it: "All tags", then
- * each Tag; with no Tags (a chatter is refused the Tags' blob) there is no menu.
- */
 
 import { rosterUnreadText } from "@/lib/format";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -29,15 +20,11 @@ import { liveSession } from "@/lib/sessionConnectivity";
 import { subscribeToStorage } from "@/lib/storageSync";
 import { cn } from "@/lib/utils";
 
-/** Infloww's --tc-* slots this chrome uses, dark then light (REA §3 A). Dark reads the app's theme tokens
- *  (globals.css carries the same Infloww values); light keeps Infloww's own light values, which the app's
- *  light tokens do not match, except the selected row and the blue, which follow the tokens in both. */
 export const PALETTE = `
 .ofm{--ofm-nav:var(--color-bg);--ofm-col:var(--color-bg-elev-1);--ofm-line:var(--color-border);--ofm-fg:var(--color-fg);--ofm-fg2:rgb(255 255 255/62%);--ofm-input:#2f2f2f;--ofm-input-line:#404040;--ofm-placeholder:#949494;--ofm-hover:var(--color-bg-elev-2);--ofm-active:var(--color-selected);--ofm-blue:var(--color-link)}
 html[data-theme="light"] .ofm{--ofm-nav:#fff;--ofm-col:#f5f5f5;--ofm-line:#e6e6e6;--ofm-fg:#151515;--ofm-fg2:#666;--ofm-input:#fff;--ofm-input-line:#d9d9d9;--ofm-placeholder:#999;--ofm-hover:#ebebeb}
 `;
 
-/** OF Manager's creator column collapsed to 70px (Infloww's `modelListExpandStatus`), kept across loads. */
 const COLLAPSED_KEY = "chatterly:ofm:column-collapsed";
 const COLLAPSED_EVENT = "chatterly-ofm-column-collapsed";
 const subscribeCollapsed = subscribeToStorage(COLLAPSED_EVENT);
@@ -48,47 +35,26 @@ function setCollapsed(on: boolean) {
   window.dispatchEvent(new Event(COLLAPSED_EVENT));
 }
 
-/** Search filters this long after the last keystroke. Infloww waits 800ms, but its search is a server query; ours
- *  filters the loaded list, so a short wait only spares the rows' remounts while typing. */
+// Infloww waits 800ms, but its search is a server query; ours filters the loaded list.
 const SEARCH_WAIT_MS = 300;
 
-/** AccountsTable's word for a flagged session. */
 const LOGGED_OUT = "Disconnected";
 
-/** A controlled column's "All creators" pick (CreatorColumn `all`). */
 export type AllPick = { on: boolean; pick: () => void; label?: string; row?: boolean };
 
-/** Share for Share's marks on a creator row: the "S4S" tag (opted in) and its pending received requests. */
 export type S4SMark = { optedIn: boolean; pending: number };
 
-/** The 192px creator column; exported for Profile promotion and Smart lists, which list creators the same way. OF
- *  Manager's picks the scope (ScopeContext); with `onChange` the column is controlled instead (`value` is the picked
- *  creator; `all` adds the "All creators" pick, else there is none) and carries its own palette, for pages
- *  outside the OF Manager chrome (`CreatorRail` lays it out beside a page's content). `className`
- *  sizes it. `variant="s4s"` is Share for Share's rail (`pageScene:"s4s"`): 300px, no "All creators" row, 30px
- *  avatars with the S4S tag and the request count from `marks` in place of the online dot and the OF count.
- *  Every copy filters 300ms after typing stops, ↑/↓ walk its rows and Enter picks one; a logged-out row says so and
- *  reads no OF count. OF Manager's own (`ofManager`) also collapses to Infloww's 70px avatar strip (kept across loads),
- *  warms a creator's `/users/me` on hover or focus, focuses Search on `/` (Infloww has no keys), and leases the
- *  creator rows on screen (`useOnScreenLease`, ADR-0031: only the visible ones, never every row). */
 export function CreatorColumn(props: {
   accounts: AccountMeta[];
   onPicked?: () => void;
   value?: string | null;
   onChange?: (accountId: string) => void;
-  /** A controlled column's "All creators" pick; `on` while it is the pick. `label` relabels the row (Scripts'
-   *  "All models"), default "All creators"; `row`: a creator row (rainbow tile) that picks it in one click, in place of
-   *  the menu. Without it the column has no "All creators" row. */
   all?: AllPick;
-  /** Watcher accounts: dimmed rows after the creators, never picked (a page that passes them). OF Manager's
-   *  own lists its watchers in `accounts` instead, as pickable rows with a "watcher" badge (WatcherScope). */
   watchers?: WatcherAccount[];
   className?: string;
   variant?: "s4s";
   marks?: Record<string, S4SMark>;
 }) {
-  // A controlled column is its page's pick (PageCreatorContext: the help bot follows it); no "All" row and no value
-  // is no pick yet. A scoped column's page (OfManagerChrome) reports the scope.
   usePageCreator(props.onChange ? props.value ?? (props.all ? null : undefined) : undefined);
   return props.onChange ? <ColumnBody {...props} onChange={props.onChange} /> : <ScopedColumn {...props} />;
 }
@@ -99,7 +65,6 @@ function ScopedColumn({ accounts, onPicked, className }: {
   const { scope, setScope } = useScope();
   const profiles = useCreatorProfiles();
   const [picked, setPicked] = useState("");
-  // A Tag renamed or deleted in the Tag manager leaves no group picked.
   const group = profiles.tags.includes(picked) ? picked : "";
   return (
     <ColumnBody
@@ -117,24 +82,18 @@ function ColumnBody({ accounts, value, onChange, all, watchers, groups, ofManage
   accounts: AccountMeta[];
   value?: string | null;
   onChange: (accountId: string) => void;
-  /** A controlled column's "All creators" pick; without it (and with no Tags) there is no menu. `label` relabels the
-   *  row, default "All creators"; `row`: a one-click creator row, no menu. */
   all?: AllPick;
-  /** Watcher accounts after the creators, not pickable. */
   watchers?: WatcherAccount[];
-  /** OF Manager's creator groups (the Tags) under "All tags"; `value` "" is none picked. */
   groups?: { tags: string[]; value: string; pick: (tag: string) => void };
-  /** OF Manager's own column: it collapses, warms the hovered creator's OF view and owns the `/` key. */
   ofManager?: boolean;
   className?: string;
   variant?: "s4s";
   marks?: Record<string, S4SMark>;
 }) {
   const s4s = variant === "s4s";
-  // Chats with unread messages per creator, from the badge counts Messages Pro's Creator tabs read (one query for every row).
   const rosterCounts = useRosterCounts();
   const qc = useQueryClient();
-  // OF Manager's own column leases the creator rows on screen: the row decides (`leaseRef`).
+  // ADR-0031: lease only the creator rows on screen, never every row.
   const track = useOnScreenLease("ofm-column");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("");
@@ -148,7 +107,6 @@ function ColumnBody({ accounts, value, onChange, all, watchers, groups, ofManage
   const asideRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  // Set by an expand for Search: focus it once the input is back.
   const focusSearch = useRef(false);
   useEffect(() => {
     if (!menuOpen) return;
@@ -161,8 +119,6 @@ function ColumnBody({ accounts, value, onChange, all, watchers, groups, ofManage
     focusSearch.current = false;
     searchRef.current?.focus();
   }, [collapsed]);
-  // `/` focuses Search while nothing has focus: not from a field or an open dialog, nor while the column is hidden
-  // below lg.
   useEffect(() => {
     if (!ofManager) return;
     const onKey = (e: KeyboardEvent) => {
@@ -175,7 +131,6 @@ function ColumnBody({ accounts, value, onChange, all, watchers, groups, ofManage
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [ofManager]);
-  // ↑/↓ walk the rows (↓ from Search enters the list, ↑ from the first row returns); Enter is the row button's own.
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     if (e.target === searchRef.current && e.key === "ArrowUp") return;
@@ -187,14 +142,12 @@ function ColumnBody({ accounts, value, onChange, all, watchers, groups, ofManage
     else if (i === 0) searchRef.current?.focus();
   };
   const allLabel = all?.label || "All creators";
-  // The menu's first row: the "All creators" pick, else OF Manager's "All tags" (no Tag filter); neither, no menu.
   const reset = all ? { on: all.on, pick: all.pick, label: allLabel }
     : groups?.tags.length ? { on: !groups.value, pick: () => groups.pick(""), label: "All tags" } : null;
   const menu = s4s || collapsed ? null : reset;
   const q = filter.trim().toLowerCase();
   const shown = q ? accounts.filter((a) => (a.nickname || a.id).toLowerCase().includes(q)) : accounts;
   const shownWatchers = (watchers ?? []).filter((w) => !q || (w.nickname || w.name || w.id).toLowerCase().includes(q));
-  // The strip has no Search box, so it never stays filtered.
   const toggleCollapsed = () => {
     if (!collapsed) { setQuery(""); setFilter(""); }
     setCollapsed(!collapsed);
@@ -254,7 +207,6 @@ function ColumnBody({ accounts, value, onChange, all, watchers, groups, ofManage
         </button>
       </div>}
       {!menu && <div className="h-4 shrink-0" />}
-      {/* `all.row`: "All creators" is one more creator row (rainbow tile, name, count); one click picks it. */}
       {all?.row && menu && (
         <button
           type="button"
@@ -348,7 +300,6 @@ function ColumnBody({ accounts, value, onChange, all, watchers, groups, ofManage
   );
 }
 
-/** The "All creators" row's picture: a rainbow tile in place of a creator's photo. */
 const RAINBOW = "linear-gradient(135deg,#ff5f6d 0%,#ffa94d 20%,#ffe066 38%,#69db7c 55%,#4dabf7 72%,#9775fa 88%,#f783ac 100%)";
 function AllCreatorsTile({ small = false }: { small?: boolean }) {
   return (
@@ -365,28 +316,21 @@ function AllCreatorsTile({ small = false }: { small?: boolean }) {
 function CreatorRow({ account, active, unread, onPick, collapsed = false, prefetch = false, leaseRef }: {
   account: AccountMeta;
   active: boolean;
-  /** Chats with unread messages (the roster counts). */
   unread: number;
   onPick: () => void;
-  /** The 70px strip: the avatar and its dot only. */
   collapsed?: boolean;
-  /** Warm the creator's `/users/me` (the mirror's first read for any page) on hover or focus, so a switch paints at once. */
   prefetch?: boolean;
-  /** OF Manager's on-screen lease (`useOnScreenLease`): OF Manager's own column only, never a watcher row. */
   leaseRef?: (el: Element | null) => void;
 }) {
   const name = account.nickname || account.id;
   const online = liveSession(account);
-  // OF Manager's watcher account (useOfManagerAccounts): picked like a Creator, badged so it is not taken for one.
   const watcher = account.role === "watcher";
   const qc = useQueryClient();
-  // The OnlyFans notification count (useOfNotifCount: Messages Pro's bell's query, gated, shared). Fresh for 60s, as
-  // Infloww's; a creator without a live session has none to read (Infloww shows the chip for linked ones only).
   const { count } = useOfNotifCount(online ? account.id : null, 60_000);
-  // Hover or focus has to rest 150ms, so a sweep of the mouse or the arrows does not read every creator on the way.
   const dwell = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(dwell.current), []);
   const warm = prefetch && online && !active
+    // Hover or focus must rest 150ms so a sweep of the mouse does not read every creator on the way.
     ? () => { clearTimeout(dwell.current); dwell.current = setTimeout(() => void qc.prefetchQuery(ofMeQuery(account.id)), 150); }
     : undefined;
   const cool = () => clearTimeout(dwell.current);
@@ -430,7 +374,6 @@ function CreatorRow({ account, active, unread, onPick, collapsed = false, prefet
                 {count > 99 ? "99+" : count}
               </span>
             )}
-            {/* Infloww's message unread chip (ModelItem): #FF7C71, radius 22, white text. */}
             {unread > 0 && (
               <span
                 aria-label={`${unread} unread chats`}
@@ -446,8 +389,6 @@ function CreatorRow({ account, active, unread, onPick, collapsed = false, prefet
   );
 }
 
-/** A watcher account's row: the creator rows' button, disabled (it is no Creator, so nothing to pick), dimmed, with a
- *  "watcher" badge. No photo: the avatar is a Creator's `/users/me`, and a watcher is a fan account. */
 function WatcherRow({ watcher, collapsed }: { watcher: WatcherAccount; collapsed: boolean }) {
   const name = watcher.nickname || watcher.name || watcher.id;
   return (
@@ -477,8 +418,6 @@ function WatcherBadge() {
   );
 }
 
-/** The S4S rail's row (`_1tnj2`): `0 16px`, 13px vertical, a 30px radius-4 avatar with the #18cba1 "S4S" tag over its
- *  foot when the creator is opted in, the 14 / 500 name, and the #2ad4ac count of pending received requests. */
 function S4SRow({ account, active, mark, onPick }: {
   account: AccountMeta;
   active: boolean;

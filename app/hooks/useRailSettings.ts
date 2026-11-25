@@ -1,20 +1,5 @@
 "use client";
 
-/**
- * The money rail's global settings, hydration-gated.
- *
- * The settings are written from OUTSIDE whichever component is reading them —
- * the rail's own ⚙, the bell's "show it here" restore button, and any other
- * tab — so every reader has to subscribe rather than read once. Both readers
- * used to hand-roll that subscription, and they had drifted: the restore
- * button listened for the same-tab SETTINGS_EVENT but not the cross-tab
- * `storage` event, so hiding the rail from the main tab left a popout's bell
- * still offering to un-hide something that was already hidden.
- *
- * `settings` is null until localStorage has actually been read. The server
- * and the first client render must agree, and neither knows the saved pick —
- * so null means "don't decide yet", not "no settings".
- */
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -27,15 +12,12 @@ import {
 } from "@/lib/moneyRailStorage";
 
 export interface RailSettingsHandle {
-  /** null until hydrated — see the note above. */
   settings: RailSettings | null;
-  /** Apply a pick locally AND persist it. The write queues a SETTINGS_EVENT,
-   *  which every other reader (including this hook in another component)
-   *  picks up. */
   commit: (next: RailSettings) => void;
 }
 
 export function useRailSettings(): RailSettingsHandle {
+  // null until localStorage is read: server and first client render can't know the pick, so null means don't decide yet.
   const [settings, setSettings] = useState<RailSettings | null>(null);
 
   useEffect(() => {

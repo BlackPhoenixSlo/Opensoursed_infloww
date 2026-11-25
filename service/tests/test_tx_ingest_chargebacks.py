@@ -1,29 +1,7 @@
 #!/usr/bin/env python3
-"""
-transaction_chargebacks: OF's disputes list flips the ledger row it names.
-Fixtures are real items from the 2026-11-07 prod capture
-(.scratch/chargebacks-capture/raw_redacted: fan names redacted, ids kept) —
-LEDGER_B / DISPUTE_B are the same PPV sale on 15891843 read from both endpoints.
-
-    case_match_table                exact (fan, amount, sale second) 0/1/>1, undo vs done, already
-        reversed, tip fallback +-300 s (kind='tip' only), no fallback for non-tips
-    case_two_disputes_one_row       the second is `already`, one delta
-    case_parse_real_item / case_poll_window
-    case_dispute_then_ledger        dispute flips + deducts once; re-poll 0 writes, no applied log;
-        the ledger's own `undo` of it afterwards writes nothing
-    case_ledger_then_dispute        ledger deducted first; the dispute is `already`, 0 writes
-    case_unmatched_never_inserts    no row / a WS-only twin (no provider id): nothing written
-    case_applied_broadcasts_a_status_flip
-    case_poll_wire_and_paging       startDate/endDate date-only on the wire, limit 100, offset
-        paging while full, 5-page cap, inside an of_pacing walk kind=chargebacks
-    case_tick_hook                  refresh / backfill poll after the walk; recent does not; a
-        disputes error logs ingest_cb_error and leaves the tick ok, streak 0
-
-Run: ./venv/bin/python service/tests/test_tx_ingest_chargebacks.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -44,21 +22,17 @@ from transaction_chargebacks import Held, parse_dispute, plan_chargebacks  # noq
 
 ti._PAGE_SLEEP_S = 0.0
 
-# ── real items (redacted) ───────────────────────────────────────────
 _USER_B = {"view": "t", "id": 498183621, "name": "<red:str>", "username": "<red:str>", "isVerified": False,
            "isDeleted": False, "isActive": True, "avatar": None, "avatarThumbs": None, "displayName": "<red:str>"}
-# GET /payouts/transactions?limit=10&startDate=2026-10-28 (B), list[0]
 LEDGER_B = {"amount": 28.88, "vatAmount": 0, "taxAmount": 0, "mediaTaxAmount": 0, "net": 23.1, "fee": 5.78,
             "createdAt": "2026-10-28T20:00:19+00:00", "currency": "USD",
             "description": "Payment for message from <a href=\"https://onlyfans.com/u498183621\">RED</a>",
             "descriptionDetails": {"type": "message", "params": {"URL": "https://onlyfans.com/u498183621",
                                                                   "NAME": "<red:str>"}},
             "status": "undo", "user": _USER_B, "refundReason": "agent", "id": "e1d357379ee52b352f52dd3852e986d9"}
-# GET /payouts/chargebacks?limit=100 (B): the same sale, a different payment id
 DISPUTE_B = {"id": 0, "createdAt": "2026-11-03T14:05:23+00:00", "paymentType": "chat_messages",
              "payment": {k: v for k, v in LEDGER_B.items() if k not in ("refundReason", "id")}
              | {"id": "e07f5e73ecd0534ce9bfbee9e30977c8"}}
-# (A) a tip dispute, reversed
 DISPUTE_TIP = {"id": 0, "createdAt": "2026-10-17T12:48:51+00:00", "paymentType": "tips",
                "payment": {"amount": 8.9, "vatAmount": 1.16, "taxAmount": 0, "mediaTaxAmount": 0, "net": 7.12,
                            "fee": 1.78, "createdAt": "2026-10-17T00:32:08+00:00", "currency": "USD",
@@ -67,7 +41,6 @@ DISPUTE_TIP = {"id": 0, "createdAt": "2026-10-17T12:48:51+00:00", "paymentType":
                                "URL": "https://onlyfans.com/u469515269", "NAME": "<red:str>"}},
                            "status": "undo", "user": {"view": "t", "id": 469515269, "name": "<red:str>"},
                            "id": "3b80e749e7d5626ec5181bdd47442c98"}}
-# (A) an open dispute: payment.status done (our row: refund_pending)
 DISPUTE_OPEN = {"id": 0, "createdAt": "2026-10-29T13:51:05+00:00", "paymentType": "subscribes",
                 "payment": {"amount": 4.55, "vatAmount": 0, "taxAmount": 0, "mediaTaxAmount": 0, "net": 3.64,
                             "fee": 0.91, "createdAt": "2026-10-18T16:17:29+00:00", "currency": "USD",
@@ -115,14 +88,12 @@ _lg.setLevel(logging.DEBUG)
 _lg.propagate = False
 
 
-# ── pure ────────────────────────────────────────────────────────────
 
 def case_match_table():
     s = timedelta(seconds=1)
     def tip(i, at, kind="tip", status="cleared"):
         return _held(i, fan=FAN_TIP, amount=890, at=at, kind=kind, status=status)
     table = [
-        # (name, dispute, held rows, (outcome, target id, delta, candidates))
         ("exact 1", DISPUTE_B, [_held(1)], ("applied", 1, -2888, 1)),
         ("exact 1 among others of the fan", DISPUTE_B,
          [_held(1), _held(2, amount=2887), _held(3, at=SALE_B + s), _held(4, fan=FAN_B + 1)],
@@ -197,7 +168,6 @@ def case_poll_window():
     assert cb.poll_window(datetime(2026, 1, 1, 0, 0)) == ("2025-10-03", "2026-01-02")
 
 
-# ── the write path ──────────────────────────────────────────────────
 
 BASE_LIFETIME = 10_000
 
@@ -228,6 +198,7 @@ def _reset_txns() -> None:
     _txns("ledger"), _txns("ledger-chargebacks")
 
 
+# Dispute flips the row and deducts once; a later ledger re-read saying `done` must not deduct or restore twice.
 async def case_dispute_then_ledger():
     aid = "cb_1"
     await _account(aid)
@@ -244,13 +215,11 @@ async def case_dispute_then_ledger():
         f"ingest_cb_applied account={aid} fan={FAN_B} provider={LEDGER_B['id']} amount=2888 "
         "dispute_at=2026-11-03T14:05:23"], LOGS.lines
     assert LOGS.levels["ingest_cb_applied"] == logging.INFO
-    # Re-poll: nothing written, nothing "applied".
     LOGS.lines.clear()
     r = await cb.apply_chargebacks(aid, [DISPUTE_B])
     assert (r["applied"], r["already"]) == (0, 1), r
     assert _txns("ledger-chargebacks") == 0, "a re-poll takes no write lock"
     assert not LOGS.named("ingest_cb_applied"), LOGS.lines
-    # The ledger catches up (`undo`): same status, same fields -> noop.
     assert await ti.write_page(aid, [LEDGER_B]) == (0, 1)
     assert _txns("ledger") == 0, "the ledger's own undo of a disputed row writes nothing"
     assert await _lifetime(aid) == BASE_LIFETIME
@@ -272,9 +241,6 @@ async def case_ledger_then_dispute():
 
 
 async def case_dispute_then_ledger_says_done():
-    # The dispute flipped it; a ledger re-read still says `done`: the amount
-    # comes back with the status (lifetime follows status), the next poll
-    # takes it off again. Net: one deduction while the dispute stands.
     aid = "cb_2b"
     await _account(aid)
     await ti.write_page(aid, [LEDGER_B | {"status": "done"}])
@@ -289,7 +255,6 @@ async def case_dispute_then_ledger_says_done():
 async def case_unmatched_never_inserts():
     aid = "cb_3"
     await _account(aid, fans=(FAN_B, FAN_TIP))
-    # A WS-pump tip at the exact key but no provider id: not a ledger row, not a candidate.
     async with get_session() as s:
         s.add(Transaction(account_id=aid, fan_id=FAN_TIP, kind="tip", amount_cents=890,
                           occurred_at=SALE_TIP, source="ws", status="cleared"))
@@ -331,8 +296,6 @@ async def case_applied_broadcasts_a_status_flip():
 
 
 class _Fake:
-    """OF: `transactions` answers `tx_pages`, `chargebacks` answers `cb_pages` (a callable
-    raises); the wire params the real OFClient methods send are kept."""
 
     def __init__(self, tx_pages=(), cb_pages=()):
         self.tx_pages, self.cb_pages = list(tx_pages), list(cb_pages)
@@ -360,7 +323,7 @@ class _Fake:
 async def case_poll_wire_and_paging():
     aid = "cb_5"
     await _account(aid)
-    other = _with(DISPUTE_B, user={"id": 1})   # unmatched filler
+    other = _with(DISPUTE_B, user={"id": 1})
     fake = _Fake(cb_pages=[{"list": [DISPUTE_B] + [other] * 99, "marker": 1}, {"list": [other] * 100},
                            {"list": [other] * 3}])
     r = await cb.poll_chargebacks(aid, fake)
@@ -418,13 +381,10 @@ async def case_tick_hook():
     assert len(fake.cb_wire) == 1, "a completed backfill polls disputes"
     assert await _rows(ACCT) == [(LEDGER_B["id"], "chargedback", 2888)]
     assert await _lifetime(ACCT) == BASE_LIFETIME
-    # recent: no disputes call
     await _scan_row(True)
     fake = _Fake(cb_pages=[{"list": [DISPUTE_B]}])
     assert (await _tick(fake, "recent"))["error"] is None
     assert fake.cb_wire == [], "recent ticks never poll disputes"
-    # refresh polls; a disputes error is logged and the tick stays ok, streak 0;
-    # a traceback only the first time for the account
     cb._error_traced.discard(ACCT)
     traced = []
     for _ in range(4):

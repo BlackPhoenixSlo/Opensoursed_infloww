@@ -15,15 +15,10 @@ describe("shownKeys", () => {
 
 describe("toggleCol", () => {
   it.each([
-    // hides a shown one
     [["tips", "message"], "tips", ["message"]],
-    // shows one back at its capture place among the shown ones
     [["totalSubscriptionsEarnings", "message"], "tips", ["totalSubscriptionsEarnings", "tips", "message"]],
-    // after every shown one that comes before it
     [["tips"], "ppvsSent", ["tips", "ppvsSent"]],
-    // before the first shown one after it, even in a reordered layout
     [["ppvsSent", "totalEarnings"], "tips", ["tips", "ppvsSent", "totalEarnings"]],
-    // unknown key: nothing
     [["tips"], "nope", ["tips"]],
   ])("%j toggle %s → %j", (keys, key, want) => expect(toggleCol(keys, key)).toEqual(want));
 });

@@ -1,28 +1,5 @@
-/**
- * vaultItemEditorReducer — VaultManagePanel's per-item editor (the details drawer).
- *
- *   draft  — what the inputs show (strings, as typed)
- *   base   — per field, the value the draft is compared against
- *   pending — the fields in flight to Save & lock (null = not saving)
- *
- *   • `refresh{fields}` (the open item's `_ai` changed under the editor:
- *     Re-describe, the post-save merge) moves an UNTOUCHED field — draft and
- *     base together — to the new value, and leaves an EDITED field alone, draft
- *     and base both. The old editor recomputed its baseline from the prop on
- *     every render while the inputs kept their own copy, so a Re-describe left
- *     the old text on screen, read every field the describe changed as an
- *     operator edit, and Save & lock wrote the OLD values back and locked them.
- *   • `saveOk` moves the base of exactly the fields that were sent to what was
- *     sent; the parent's merge (`refresh`) then shows the server's spelling.
- *   • `buildPatch` sends only edited fields. A price that parses to no number
- *     ("abc", "1.2.3") is not sent; blank clears it.
- *   • The Jev picks (`jevPicks`) ride the same draft / base / pending rule per
- *     key; `pick{value: null}` is "back to the AI's answer", sent as null.
- */
-
 import { JEV_KEYS, type JevKey, type JevPicks } from "@/components/vault/jevPicks";
 
-/** The editor's fields, as the inputs hold them. */
 export interface EditorFields {
   desc: string;
   tags: string;
@@ -33,7 +10,6 @@ export interface EditorFields {
 }
 export type EditorField = keyof EditorFields;
 
-/** The override+lock endpoint's key for each field (contract §6c). */
 export const WIRE_KEY: Record<EditorField, string> = {
   desc: "description",
   tags: "tags",
@@ -47,21 +23,15 @@ const FIELDS = Object.keys(WIRE_KEY) as EditorField[];
 export interface EditorState {
   draft: EditorFields;
   base: EditorFields;
-  /** The edited fields a save sent, until it answers. */
   pending: Partial<EditorFields> | null;
-  /** The Jev picks as the popup shows them, and as stored. */
   jev: JevPicks;
   jevBase: JevPicks;
-  /** The pick changes a save sent (null clears), until it answers. */
   pendingJev: JevPatch | null;
-  /** Wire keys of the last successful save. */
   saved: string[] | null;
   err: string;
-  /** Wire keys the server reports locked. */
   locked: ReadonlySet<string>;
 }
 
-/** `fields.jev` on the wire: the picks that changed, null = cleared. */
 export type JevPatch = Partial<Record<JevKey, string | null>>;
 
 export type EditorAction =
@@ -72,7 +42,6 @@ export type EditorAction =
   | { type: "saveOk"; locked: readonly string[] }
   | { type: "saveFail"; msg: string };
 
-/** The editor's fields from an item's `_ai` read. */
 export function fieldsFromAi(ai: Record<string, unknown>): EditorFields {
   const priceCents = ai.suggested_price_cents;
   return {
@@ -92,7 +61,6 @@ export function initialEditorState(fields: EditorFields, picks: JevPicks = {}): 
   };
 }
 
-/** Dollars as typed → cents on the wire; `undefined` = not a number, not sent. */
 export function parsePriceCents(raw: string): number | null | undefined {
   const t = raw.trim();
   if (t === "") return null;
@@ -102,7 +70,6 @@ export function parsePriceCents(raw: string): number | null | undefined {
   return Number.isFinite(n) ? Math.round(n * 100) : undefined;
 }
 
-/** The edited fields a save would send (an unparseable price is left out). */
 function sendable(state: EditorState): Partial<EditorFields> {
   const out: Partial<EditorFields> = {};
   for (const f of FIELDS) {
@@ -114,7 +81,6 @@ function sendable(state: EditorState): Partial<EditorFields> {
   return out;
 }
 
-/** The picks that differ from the stored ones (null: cleared back to the AI's answer). */
 export function jevPatch(state: EditorState): JevPatch {
   const out: JevPatch = {};
   for (const k of JEV_KEYS) {
@@ -123,7 +89,7 @@ export function jevPatch(state: EditorState): JevPatch {
   return out;
 }
 
-/** The PATCH `fields` body: only edited fields, so only those lock (the picks never lock a field). */
+// Only edited fields are sent, so only those lock (picks never lock a field).
 export function buildPatch(state: EditorState): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
   for (const [f, v] of Object.entries(sendable(state)) as [EditorField, string][]) {
@@ -157,6 +123,7 @@ export function vaultItemEditorReducer(state: EditorState, action: EditorAction)
       return { ...state, draft: { ...state.draft, [action.field]: action.value } };
     case "pick":
       return { ...state, jev: withPatch(state.jev, { [action.key]: action.value }) };
+    // An untouched field follows the new `_ai` value, an edited one stays: a baseline recomputed per render made Re-describe get written back and locked.
     case "refresh": {
       const draft = { ...state.draft };
       const base = { ...state.base };

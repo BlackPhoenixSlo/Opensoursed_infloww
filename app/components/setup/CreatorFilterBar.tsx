@@ -15,6 +15,7 @@ import { ChevronDown } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 
 import { HbFilter } from "@/components/ui/infloww";
+import { PLATFORMS } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 
 const NOT_WIRED = "not wired";
@@ -41,8 +42,6 @@ export const NO_FILTERS: CreatorFilters = { q: "", platform: "", conn: "", emplo
  *  and the capture's Notes say the bundle values stand (rung 1). Overturned by a bundle that lists it. */
 export const CONNECTIVITY_OPTIONS = ["Connected", "Disconnected", "Not connected", "Pending connection", "2FA required"] as const;
 
-/** Platform options (creators-manage#20); the gated mym and Fanvue are not shown, as in the Clone. */
-const PLATFORM_OPTIONS = [["onlyfans", "OnlyFans"], ["fansly", "Fansly"]] as const;
 /** Account status options (creators-manage#26). */
 const ACCOUNT_STATUS_OPTIONS = ["Activated", "Deactivated"] as const;
 
@@ -123,7 +122,7 @@ export default function CreatorFilterBar({ value, onChange, employees, connWired
       />
       {/* creators-manage#19, #20. */}
       <Filter label="Platform" width={120} value={value.platform} onChange={(platform) => set({ platform })}>
-        {PLATFORM_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        {PLATFORMS.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
       </Filter>
       {/* creators-manage#21: the Tags the account details hold. */}
       <Filter label="Tag" width={102} value={value.tag} onChange={(tag) => set({ tag })} disabled={!tags}>

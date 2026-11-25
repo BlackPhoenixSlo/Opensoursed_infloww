@@ -1,24 +1,3 @@
-/**
- * The shift cards' seam (docs/spec/phase-02-shifts-time-tracking.md, Testing
- * Decisions, seam 2): the Dashboard's "My shifts" and "Current clocked-in
- * employees" cards for owner and chatter sessions, and Clock in and Clock out
- * from the "My shifts" card and through `ClockDialog`.
- *
- * Rewritten for w4-a: the avatar menu has no clock item any more (the top
- * bar's Clock button, ClockButton.test.tsx, replaced it), so its clock cases
- * now render `ClockDialog` itself, which opens only for a chatter in two
- * Agencies; the card clocks in one click on the agency-wide clock (body `{}`)
- * while `GET /admin/shifts/clock-status` allows it, and the clocked-in rows
- * carry the linked Shift's Creators.
- *
- * Page-parity ticket 01: both cards' empty states are ticket 00's `EmptyState`
- * (the art over the text), and the owner's "My shifts" has no owner sentence.
- *
- * Rendered with `fetch` mocked by URL, so every assertion is about the wire or
- * the rendered text. The Relay double keeps the chatter's open Clock event, so
- * the dialog's switch from Clock in to Clock out comes from a re-read of
- * `GET /admin/shifts/me`, as in the app. Fixture names and ids are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -26,7 +5,6 @@ import { jsonRes, renderWithProviders } from "@/test-utils";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { onNotice } from "@/lib/notices";
 
-// The session: a Chatter only, unless a case signs in an owner.
 let session: { user: { user_id: string; username: string } | null; chatter: { username: string } | null };
 vi.mock("@/contexts/UserContext", () => { const v = () => ({ user: session.user, loading: false, logout: vi.fn() }); return { useUser: v, useOptionalUser: v }; });
 vi.mock("@/contexts/ChatterContext", () => { const v = () => ({ chatter: session.chatter, logout: vi.fn() }); return { useChatter: v, useOptionalChatter: v }; });
@@ -39,11 +17,9 @@ import ClockDialog from "@/components/shifts/ClockDialog";
 
 const MENU_ITEM = "Clock in and out";
 const OFF = "Time tracking is off for your agency";
-/** The capture's My shifts tooltip (dashboard#66) and its empty line (#73). */
 const MY_SHIFTS_TIP = "Your scheduled shifts during this period";
 const NO_DATA = "No data";
 
-/** Creator one's Agency has time tracking on; creator two's (another Agency) has it off. */
 const ACCOUNTS = [
   { account_id: "1000001", display_name: "creator_one", time_tracking_enabled: true, clock_in_reminder: false },
   { account_id: "1000002", display_name: "creator_two", time_tracking_enabled: false, clock_in_reminder: false },
@@ -53,14 +29,12 @@ const OPEN = {
   in_utc: "2026-10-14T16:00:00Z", out_utc: null, close_reason: null,
 };
 
-/** Two of the chatter's occurrences, as `GET /admin/shifts/me` lists them. */
 const OCCURRENCES = [
   { shift_id: 3, occurrence_start: "2026-10-14T15:00:00Z", occurrence_end: "2026-10-14T19:00:00Z",
     tz: "UTC", account_id: "1000001" },
   { shift_id: 4, occurrence_start: "2026-10-20T09:00:00Z", occurrence_end: "2026-10-20T13:00:00Z",
     tz: "UTC", account_id: "1000002" },
 ];
-/** The owner's `GET /admin/shifts/clocked-in`: one event in a Shift, one in none. */
 const CLOCKED_IN = {
   time_tracking_enabled: true,
   clocked_in: [
@@ -75,17 +49,12 @@ const CLOCKED_IN = {
 };
 
 let fetchMock: ReturnType<typeof vi.fn>;
-/** The chatter's open Clock event in the Relay double, or null. */
 let openClock: typeof OPEN | null;
-/** What the Relay double lists: the chatter's Creators and occurrences, and the owner's read. */
 let accounts: typeof ACCOUNTS;
 let occurrences: typeof OCCURRENCES;
 let clockedIn: typeof CLOCKED_IN;
-/** Reads of these paths fail once with 500, then answer. */
 let failOnce: Set<string>;
-/** The Agency's week start, as `GET /admin/settings/applied` answers it (spec phase-04, story 20). */
 let weekStartDay: "monday" | "sunday";
-/** ClockStatus' `can_clock` and `reason`; `open` follows `openClock`. */
 let clockGate: { can_clock: boolean; reason: string | null };
 
 function writes(): { path: string; body: unknown }[] {
@@ -227,8 +196,6 @@ describe("My shifts, for a chatter", () => {
     renderWithProviders(<MyShiftsCard />);
     const card = await screen.findByRole("region", { name: "My shifts" });
     const open = await screen.findByText("Clocked in on creator_one · 1h 05m");
-    // The capture's shift row (#69 to #72): the date, the times in a pill tinted by now / upcoming / past, and the
-    // Creator's 24px avatar, in the Shift's own zone.
     const rows = Array.from(card.querySelectorAll("li")).map((li) => ({
       date: li.querySelector("[data-date]")?.textContent,
       time: li.querySelector("[data-time]")?.textContent,
@@ -239,7 +206,6 @@ describe("My shifts, for a chatter", () => {
       { date: "Wednesday, Oct. 14, 2026", time: "03:00 PM–07:00 PM", state: "now", avatars: ["creator_one"] },
       { date: "Tuesday, Oct. 20, 2026", time: "09:00 AM–01:00 PM", state: "after", avatars: ["creator_two"] },
     ]);
-    // The open Clock event and Clock in / out are ours, so they carry the label.
     expect(open.closest(`[title="${EXTRA_LABEL}"]`)).not.toBeNull();
     expect(screen.getByRole("button", { name: "Clock out" }).closest(`[title="${EXTRA_LABEL}"]`)).not.toBeNull();
     expect(screen.queryByText(OWNER_TEXT)).toBeNull();
@@ -247,13 +213,10 @@ describe("My shifts, for a chatter", () => {
   });
 
   describe("splits the list at the Agency's week start", () => {
-    // Wed 14 Oct 2026, 12:00 EDT; three occurrences at 10:00 EDT on Sat 17,
-    // Sun 18 and Tue 20 Oct.
     const AROUND_THE_WEEKEND = ["2026-10-17T14:00:00Z", "2026-10-18T14:00:00Z", "2026-10-20T14:00:00Z"]
       .map((start, i) => ({ shift_id: 10 + i, occurrence_start: start,
         occurrence_end: start.replace("T14", "T18"), tz: "America/New_York", account_id: "1000001" }));
 
-    /** Renders the card and waits until its two week groups list `want`. */
     async function expectWeeks(want: Record<string, string[]>) {
       vi.stubEnv("TZ", "America/New_York");
       vi.useFakeTimers({ toFake: ["Date"] });
@@ -269,7 +232,6 @@ describe("My shifts, for a chatter", () => {
       };
       await waitFor(() => expect({ "This week": listed("This week"), "Next week": listed("Next week") })
         .toEqual(want));
-      // The week split is ours (phase-04, story 20), so each heading carries the label.
       for (const name of Object.keys(want).filter((k) => want[k].length > 0)) {
         expect(within(screen.getByRole("group", { name })).getByRole("heading")).toHaveAttribute("title", EXTRA_LABEL);
       }
@@ -319,7 +281,6 @@ describe("My shifts, for a chatter", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Clock in" }));
     await within(dialog).findByRole("button", { name: "Clock out" });
     expect(writes()).toEqual([{ path: "/admin/shifts/clock-in", body: { account_id: "1000001" } }]);
-    // The card re-reads the same query, so it shows the open event too.
     expect(await screen.findByText(/^Clocked in on creator_one · /)).toBeInTheDocument();
   });
 
@@ -341,7 +302,6 @@ describe("My shifts, for a chatter", () => {
     expect(off.closest(`[title="${EXTRA_LABEL}"]`)).not.toBeNull();
     expect(screen.queryByRole("link", { name: "Settings › Time tracking" })).toBeNull();
     expect(screen.queryByRole("button", { name: /Clock (in|out)/ })).toBeNull();
-    // The Shifts still list, as the bundle's card lists them whatever the clock-in setting.
     expect(screen.getByRole("region", { name: "My shifts" }).querySelectorAll("li")).toHaveLength(2);
   });
 

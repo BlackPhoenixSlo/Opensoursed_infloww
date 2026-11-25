@@ -1,17 +1,8 @@
-/**
- * Auto Funnel's list pure bits (FunnelEditor's table):
- *  - `funnelStatus`: one model's funnel stats (GET /admin/funnels?account_id=) + the follow-up switch → the
- *    Status pill (Smart Messages' pills: Scheduled grey, Active blue, Completed green, Canceled orange).
- *  - `startedAgo`: "40 min ago" for the Last started column.
- */
-
 import type { PillStatus } from "@/components/automations/StatusPill";
 import type { FunnelStats } from "@/hooks/useFunnels";
 
 export type FunnelStatus = PillStatus & { hint: string };
 
-/** Running: fans being walked, or a run still taking new repliers, with follow-ups on. Paused: the same with them
- *  off (nothing moves). Completed: started before, nobody left to walk. Not started: never sent on this model. */
 export function funnelStatus(stats: FunnelStats | undefined, followUpsOn: boolean): FunnelStatus | null {
   if (!stats) return null;
   if (!stats.last_started_at) return { label: "Not started", tone: "idle", hint: "Never started on this creator." };
@@ -27,7 +18,6 @@ export function funnelStatus(stats: FunnelStats | undefined, followUpsOn: boolea
   return { label: "Completed", tone: "ok", hint: "Every fan who replied has been through the steps." };
 }
 
-/** "just now" / "12 min ago" / "3 h ago" / "4 d ago"; null for never. */
 export function startedAgo(iso: string | null | undefined, now: number = Date.now()): string | null {
   if (!iso) return null;
   // The relay writes naive UTC.

@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * My profile on the OF mirror (profile/index, profile/media, profile/state-more-menu; the generator's profilePage keeps
- * no example there). ofMirrorData's Part "profile" draws, from the Creator's /users/me, its highlights and its post
- * labels: the compact header's Photos, Videos, Likes and Fans counts, the Posts and Media tabs' counts, the wall's label
- * tabs (All, Archive and Private Archive when it has some, then each label; only All is open, as the Relay's posts route
- * has no label filter) and the Media tab's All, Photo and Video counts, and appends a tile per highlight to the story
- * strip (its cover and title; a click plays its stories in the Vault's viewer, ofMirrorPost's bindStory, from GET
- * /stories/highlights/{id}; with no single Creator, its cover). applyRecent fills the sidebar's Recent strip with the
- * Creator's three newest media posts. bindProfile works the page's own controls in place: Story archive opens a box
- * under the strip with the Creator's archived stories (GET /stories/archive), Copy link to profile copies
- * https://onlyfans.com/<username> (OF's toast says so), the status menu sets Available or Invisible (PATCH /users/me
- * isVisibleOnline, as OF's UsersStatus), More info (only for a bio taller than its fold: fitBio) and Spotify's title
- * collapse and expand, the compact header turns sticky past 180px of scroll as OF's (stickHeader), and the Media tab's All, Photo
- * and Video filter the grid (PROFILE_CHANGE: ofMirrorData redraws it). In All models the page shows the first model
- * (standInModel), never the generator's placeholders; so do Statements' Earnings and Release forms.
- */
 
 import { createContext, useContext, useEffect, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -34,54 +18,25 @@ import { showMenu } from "@/lib/ofMirrorMenu";
 import { message, note, SELECT_MODEL } from "@/lib/ofMirrorWrites";
 import { toast } from "@/lib/ofMirrorPost";
 
-/** My profile's pages (profile/index, profile/media, profile/state-*). */
 const PROFILE_SRC = /^\/of-mirror\/pages\/profile\//;
-/**
- * The pages that show one model in All models, so never placeholders: My profile's, the avatar menu, the Messages
- * tab's (its chats, a chat, New message), the Queue's, Statements' Earnings (statements/index: its default tab), New
- * post's (new-post/index, new-post/state-*), every Statistics tab, the Vault's (vault/index, vault/list, vault/state-*) and
- * every Settings page (settings/*: its values, rows and saves).
- */
 const STAND_IN_SRC = /^\/of-mirror\/pages\/(?:profile\/|release-forms\/|messages\/|queue\/|new-post\/|statistics\/|vault\/|settings\/|home\/state-avatar-menu\.html|statements\/(?:index|earnings)\.html$)/;
 
-/** What standInPick reads of a Creator. */
 type StandInCandidate = Pick<AccountMeta, "id" | "has_session" | "session_dead_at">;
 
-/** The Creator shown for "All models" (`accounts` in the picker's order): the first whose session is live, else the
- *  first. OF Manager's OneCreator and standInModel both. */
 export function standInPick(accounts: readonly StandInCandidate[]): string | null {
   return (accounts.find(liveSession) ?? accounts[0])?.id ?? null;
 }
 
-/**
- * The Creator OF Manager's OneCreator put in scope by itself for a saved "All models" (it has no All), null when the scope
- * is a real pick. useStandIn reads it: that Creator is a stand-in, not a pick.
- */
 export const AutoPickContext = createContext<string | null>(null);
 
-/**
- * The model My profile, the avatar menu, Messages, the Queue, Statements' Earnings, New post, Statistics, the Vault and
- * Settings show in All models (standInPick), so the page is that model's real
- * profile, menu, chats, scheduled items, earnings, composer, figures or vault rather than placeholders, and its actions
- * (New post's Post too) are that model's. null: a model is selected, the page is none of them, or there is no model.
- */
 export function standInModel(
   src: string, accountId: string | null, accounts: readonly StandInCandidate[],
 ): string | null {
   return !accountId && STAND_IN_SRC.test(src) ? standInPick(accounts) : null;
 }
 
-/** The model each principal's frames last stood in with (a frame remounts per page, so this outlives it). */
 const lastStandIn = new Map<string, string>();
 
-/**
- * standInModel for a frame, the model list read here. OneCreator's automatic pick (AutoPickContext) is in scope but is
- * no pick: the page stands in with it, so its Settings writes stay locked and the "Showing <model>" hint shows until the
- * Creator is picked. A list with no answer (loading, its cache dropped) or an empty
- * answer keeps the model the frame last stood in with: without it the page binds with no model (New message back from
- * its vault: no draft, no status line, the vault's ticks kept) and stays so until the list is read again. A list that
- * names models but none with a session is an answer: no model.
- */
 export function useStandIn(src: string): string | null {
   const { accountId: scoped } = useScope();
   const auto = useContext(AutoPickContext);
@@ -96,28 +51,22 @@ export function useStandIn(src: string): string | null {
   return lastStandIn.get(principal) ?? null;
 }
 
-/** The Media tab's type filter changed (bindProfile): ofMirrorData redraws the grid. */
 export const PROFILE_CHANGE = "oi-profile-change";
 
-/** /users/me's counts My profile shows (OF's own field names). */
 export interface ProfileUser {
   postsCount?: number | null;
   mediasCount?: number | null;
   photosCount?: number | null;
   videosCount?: number | null;
-  /** Likes. */
   favoritedCount?: number | null;
-  /** Fans; OF sends none when the Creator hides it. */
   subscribersCount?: number | null;
   archivedPostsCount?: number | null;
   privateArchivedPostsCount?: number | null;
 }
 
-/** A story highlight, as /users/{id}/stories/highlights lists it. */
 export interface Highlight {
   id: number | string;
   title?: string | null;
-  /** Its cover picture's URL. */
   cover?: string | null;
   storiesCount?: number | null;
 }
@@ -128,14 +77,12 @@ export interface MirrorProfile {
   highlights?: Highlight[];
 }
 
-/** A media grid post, tagged by the route it came from (/posts/photos or /posts/videos). */
 export type MediaPost = MirrorPost & { _kind?: "photo" | "video" };
 
 const num = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
 const words = (el: Element) => (el.textContent ?? "").replace(/\s+/g, " ").trim();
 const SYSTEM_LABELS = new Set(["archived", "private_archived"]);
 
-/** The counts, label tabs and highlights of My profile (see the module comment). */
 export function applyProfile(doc: Document, p: MirrorProfile, img: (u: string) => string) {
   const u = p.user;
   const sections: [string, unknown][] = [
@@ -168,7 +115,6 @@ export function applyProfile(doc: Document, p: MirrorProfile, img: (u: string) =
     if (text && num(n)) setText(doc, text, ` ${word} ${n} `);
   }
 
-  // The wall's label tabs: All's count, then a copy of the hidden tab per label with posts.
   const all = [...doc.querySelectorAll("[at-attr='profile_label']")].find((t) => words(t) === "All");
   if (all && num(u.postsCount)) setText(doc, all, ` All ${u.postsCount} `);
   const tpl = doc.querySelector<HTMLElement>("[data-oi-template='label']");
@@ -187,8 +133,6 @@ export function applyProfile(doc: Document, p: MirrorProfile, img: (u: string) =
     if (clones.length) fill(doc, [tpl], clones, [tpl.parentElement]);
   }
 
-  // A tile per highlight, after the strip's own: a copy of Create highlight, stamped with its id (`data-oi-highlight`:
-  // bindStory plays its stories) and its cover (`data-oi-full`: what the viewer shows without a read).
   const create = [...doc.querySelectorAll<HTMLElement>(".stories-list .b-story-item.m-create")].find((t) => words(t) === "Create highlight");
   const strip = create?.parentElement;
   if (!create || !strip) return;
@@ -218,13 +162,11 @@ export function applyProfile(doc: Document, p: MirrorProfile, img: (u: string) =
   }
 }
 
-/** Merged by post id, newest first (a post with both photos and videos is in both routes). */
 export function newestFirst(posts: MirrorPost[]): MirrorPost[] {
   const merged = [...new Map(posts.map((p) => [String(p.id), p])).values()];
   return merged.sort((a, b) => (valid(b.postedAt)?.getTime() ?? 0) - (valid(a.postedAt)?.getTime() ?? 0));
 }
 
-/** The sidebar's Recent strip: the three newest media posts with a picture, in copies of its hidden tile; none: it stays hidden. */
 export function applyRecent(doc: Document, posts: MirrorPost[], img: (u: string) => string) {
   const section = doc.querySelector<HTMLElement>("[data-oi-recent]");
   const tpl = section?.querySelector<HTMLElement>(".m-recent-list a[at-attr='photo_item']");
@@ -245,10 +187,6 @@ export function applyRecent(doc: Document, posts: MirrorPost[], img: (u: string)
   setAttr(doc, section, "style", null);
 }
 
-/**
- * The wall's or the Media grid's "No posts yet" before its rows are here: "Loading posts…" (`error` null), or the red
- * "Could not load posts: <the Relay's text>".
- */
 export function applyProfileStatus(doc: Document, error: string | null) {
   const text = doc.querySelector<HTMLElement>(".user_posts [data-oi-empty] > span");
   if (!text) return;
@@ -258,36 +196,27 @@ export function applyProfileStatus(doc: Document, error: string | null) {
   if (error !== null) text.style.color = "#ff4545";
 }
 
-/** The Media tab's type filter: "all" (or none), "photo", "video". Kept on the frame's root, so a redraw keeps it. */
 export const mediaKind = (doc: Document) => doc.documentElement.dataset.oiMediaType ?? "all";
 
-/** The posts the Media tab's open filter shows. */
 export const ofKind = (posts: MediaPost[], kind: string) => (kind === "photo" || kind === "video" ? posts.filter((p) => p._kind === kind) : posts);
 
 export interface ProfileHandlers {
-  /** The Creator's OF username (Copy link to profile); null in All Creators. */
   username: string | null;
-  /** The Creator's status (users/me isVisibleOnline: Available or Invisible); undefined while not known. */
   visible?: boolean;
-  /** Save the status (PATCH /users/me isVisibleOnline); null in All Creators. */
   setVisible?: ((on: boolean) => Promise<unknown>) | null;
-  /** GET a Relay path; null in All Creators. */
   read: ((path: string) => Promise<unknown>) | null;
   img: (u: string) => string;
 }
 
 export const ARCHIVE_PATH = "/api/of/v2/stories/archive?limit=20";
-/** OF's status menu (UsersStatus): its rows, by isVisibleOnline. */
 const STATUS_ROWS = [
   { value: "true", label: "Available" },
   { value: "false", label: "Invisible" },
 ];
 const ARCHIVE_BOX = "[data-oi-story-archive-box]";
 
-/** A story's date: OF's "Oct 3, 2026". */
 const day = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 
-/** The Story archive box under the strip: loading, then the archived stories as tiles (picture, date), else OF's "Nothing found". */
 function openArchive(doc: Document, tile: HTMLElement, h: ProfileHandlers) {
   const strip = tile.closest(".stories-list") ?? tile;
   const box = doc.createElement("div");
@@ -340,16 +269,8 @@ function openArchive(doc: Document, tile: HTMLElement, h: ProfileHandlers) {
   );
 }
 
-/** How far the frame scrolls before My profile's compact header turns sticky (OF's ProfileStickyHeader: scrollY > 180). */
 export const STICKY_HEADER_PX = 180;
 
-/**
- * OF's ProfileStickyHeader on `doc`: the compact header (back, name, counts, More) lies over the cover; OF's CSS keeps it
- * sticky at top -56px, so it scrolls away with the cover. Past STICKY_HEADER_PX it takes m-sticky (OF's CSS: top 0, a
- * .2s slide back in, the page's colour, its name dark, the counts (no longer d-flex) swapped for the status): the
- * back button and More turn dark (GoBack's m-default-color, UsersAction's m-dark for m-light) and Edit profile and Copy link to profile show
- * before More. Back above it, the header is OF's top-of-page one again.
- */
 function stickHeader(doc: Document): void {
   const header = doc.querySelector(".js-compact-sticky-header");
   const on = (doc.defaultView?.scrollY ?? 0) > STICKY_HEADER_PX;
@@ -368,9 +289,7 @@ function stickHeader(doc: Document): void {
   for (const el of header.querySelectorAll<HTMLElement>("[data-oi-sticky-only]")) el.style.display = on ? "" : "none";
 }
 
-/** Bind My profile's in-place controls on `doc` (see the module comment). Returns an unbind. */
 export function bindProfile(doc: Document, h: ProfileHandlers): () => void {
-  // The status button names the Creator's status (the capture's "Available" while it is not known).
   const status = doc.querySelector<HTMLElement>("[data-oi-user-status]");
   let visible = h.visible ?? true;
   const showStatus = (on: boolean) => {
@@ -381,7 +300,6 @@ export function bindProfile(doc: Document, h: ProfileHandlers): () => void {
   const onClick = (ev: MouseEvent) => {
     const t = ev.target as Element | null;
     if (!t?.closest) return;
-    // OF's status menu: a pick shows at once and is saved; a failed save puts the status back.
     const st = t.closest<HTMLElement>("[data-oi-user-status]");
     if (st) {
       ev.preventDefault();
@@ -416,7 +334,6 @@ export function bindProfile(doc: Document, h: ProfileHandlers): () => void {
       if (!h.username) return note(doc, copy, "Select a model to copy its link");
       const clipboard = doc.defaultView?.navigator.clipboard;
       if (!clipboard) return note(doc, copy, "Could not copy the link", true);
-      // OF's toast, not the inline note: a note in the header's button row pushes EDIT PROFILE aside while it shows.
       clipboard.writeText(`https://onlyfans.com/${h.username}`).then(
         () => void toast(doc, "Link copied"),
         () => note(doc, copy, "Could not copy the link", true),
@@ -449,7 +366,6 @@ export function bindProfile(doc: Document, h: ProfileHandlers): () => void {
     }
   };
   doc.addEventListener("click", onClick, true);
-  // More info follows the bio's height: now, and whenever its text (ofMirrorIdentity's) or the frame's width changes it.
   const fit = () => fitBio(doc);
   fit();
   const RO = doc.defaultView?.ResizeObserver;
@@ -466,7 +382,6 @@ export function bindProfile(doc: Document, h: ProfileHandlers): () => void {
   };
 }
 
-/** My profile's pages: bind its in-place controls on every frame load (the archive and the link need a single model). */
 export function useOfProfile(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const me = useQuery(ofMeQuery(accountId)).data;

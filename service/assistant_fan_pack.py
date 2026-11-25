@@ -1,29 +1,4 @@
-"""service/assistant_fan_pack.py — the fan evidence pack, fetched.
-
-The IMPURE half of the help bot's v3 answer (plan:
-plans/help-chatbot/06-v3-fan-why.md). The operator pastes a chat header, an @u
-handle and a model name and asks "why didn't Auto Convo reply to him?"; this
-module works out who he means, reads the rows, and hands `assistant_evidence` a
-typed record to render.
-
-AN EVIDENCE PACK, NOT A RE-DERIVATION. Code fetches typed facts; the model
-ranks causes. Nothing here runs an engine's fetch or send path — those have
-live OnlyFans side effects, and re-running today's gates to explain yesterday's
-send is historical fiction dressed as diagnosis.
-
-The MANDATORY exception is the opposite case: a predicate that exists to be the
-SINGLE COPY of a question must be reused, never re-implemented.
-  • `_common.content_payer_fans` — "he is a customer" means a tip or a PPV
-    unlock. A SUBSCRIPTION IS NOT A PURCHASE, and `lifetime_spend_cents` cannot
-    tell them apart.
-It is a local read, so it adds no side effect.
-
-LOCAL DB ONLY. Nothing in this path may touch OnlyFans — remember /health is an
-OF proxy. Any failure degrades to a docs-only answer with an honest note; the
-endpoint's 200-always contract never surfaces it as an error, because a bot
-that looks broken exactly when someone is debugging a silent fan is the failure
-mode the whole feature exists to avoid.
-"""
+# LOCAL DB ONLY: nothing here may touch OnlyFans; any failure degrades to a docs-only answer (the endpoint's 200-always contract).
 from __future__ import annotations
 
 import asyncio
@@ -47,25 +22,19 @@ from db.models import (
 
 log = logging.getLogger("of-relay.assistant_fan_pack")
 
-RESOLVE_TIMEOUT_S = 0.3      # three small indexed reads: who is he?
-TIMEOUT_S = 1.5              # the evidence itself (local, indexed reads)
-_NICKNAME_PROBES = 4         # pasted lines tried as a nickname
+RESOLVE_TIMEOUT_S = 0.3
+TIMEOUT_S = 1.5
+_NICKNAME_PROBES = 4
 
-# Names what was missing, not "the manual only": the two blocks fail
-# independently, and an answer that still had the account's live state while
-# only the fan's rows were unreadable is not a manual-only answer.
 FAIL_NOTE = (
     "\n\n(I couldn't read this fan's own rows just now, so nothing above is "
     "specific to him — open his chat for his live standing.)")
 
-# OnlyFans user ids are 8-10 digits. A shorter number in a question is a cap, a
-# price or a year, and must not be reported as a missing fan — but any number
-# that MATCHES a real Fan row is self-validating and is still accepted.
+# OF user ids are 8-10 digits; a shorter number is a cap, price or year, not a missing fan (unless it matches a real Fan row).
 _MIN_FAN_ID = 10_000_000
-_INT64_WALL = 2 ** 63        # SQLite refuses anything at or past this
+# SQLite refuses anything at or past this; the driver raises OverflowError.
+_INT64_WALL = 2 ** 63
 
-# The live kinds that put a BROADCAST on a thread from a rule. Used only to pick
-# whose audience to describe when no rule is left for any kind on the thread.
 _MASS_KINDS = frozenset({"mass_premade", "send_mass_message"})
 
 # The fan-facing kinds whose ABSENCE is evidence: "nobody re-opens a silent fan
@@ -93,13 +62,7 @@ _DEAD_TX_STATUSES = ("chargedback", "refund_pending")
 _FULL_AI_KIND = "full_ai_chat"
 _JOB_STATUSES = ("pending", "running", "done", "error", "cancelled")
 
-# The chat header's nickname shape, "Name/City,Country/Age". Matched anywhere
-# in a line, so a fan named mid-sentence ("why is Marco/Turin,Italy/38 quiet")
-# still resolves. The three segments are not alike: the name and the age carry
-# no spaces, the MIDDLE one does ("Dubai,United Arab Emirates"), which is why
-# whitespace tokenising cannot find this and why the first segment is anchored
-# to a word boundary — unanchored, the match swallows "why is " along with it.
-# Requiring TWO slashes is what keeps an ordinary "and/or" out.
+# Chat-header nickname "Name/City,Country/Age": the middle segment holds spaces, so whitespace tokenising cannot find it; two slashes keep "and/or" out.
 _NICK_SHAPE_RE = re.compile(
     r"(?<![^\s])[^\s/]{1,40}/[^/\n]{0,60}/[^\s/]{1,20}")
 
@@ -107,6 +70,7 @@ _HANDLE_RE = re.compile(r"@u(\d{4,})")
 _LONG_INT_RE = re.compile(r"\d{5,}")
 
 
+# Resolution has its own budget: welded to the evidence fetch, a slow read threw away the resolved account and silently described the scoped one.
 class Subject(NamedTuple):
     """WHO the question is about, answered before any evidence is read.
 
@@ -123,31 +87,18 @@ class Subject(NamedTuple):
 
 
 class FanPack(NamedTuple):
-    """The resolved subject of a question, plus how the answer degrades."""
 
-    account_id: str        # the scoped account unless the paste named another
-    label: str | None      # its nickname, so BOTH blocks can name the model
-    block: str | None      # the pack, a lookup note, or None (no fan asked about)
-    ok: bool               # False ⇒ the fetch failed; answer docs-only and say so
+    account_id: str
+    label: str | None
+    block: str | None
+    ok: bool
 
 
 def _handles(question: str) -> list[int]:
-    """The `@u…` fan ids in a paste. A handle is a FAN id BY DEFINITION, so
-    `_resolve_account` needs them separately: letting one match an account id
-    would redirect the whole answer to a model nobody named."""
     return [int(t) for t in _HANDLE_RE.findall(question) if int(t) < _INT64_WALL]
 
 
 def _fan_id_candidates(question: str) -> list[int]:
-    """Every long integer in the paste, HANDLES FIRST.
-
-    `@u534895567` is the chat header's own way of writing a fan id, so it
-    outranks a bare number in the same paste — which is just as likely to be
-    the model's account id, a price or a year.
-
-    Anything at or past SQLite's 64-bit integer wall is dropped rather than
-    bound into a query: the driver raises OverflowError on it, and a stray
-    twenty-digit run in a paste would take the whole pack down with it."""
     out: list[int] = []
     for value in _handles(question) + [int(t) for t
                                        in _LONG_INT_RE.findall(question)]:
@@ -156,6 +107,7 @@ def _fan_id_candidates(question: str) -> list[int]:
     return out
 
 
+# Case-sensitive on purpose: a nickname like "Vault" would retarget a docs question at the wrong account.
 def _names_it(text: str, name: str) -> bool:
     """Is `name` in `text` as a whole token?
 
@@ -170,19 +122,12 @@ def _names_it(text: str, name: str) -> bool:
     nickname verbatim out of the model picker, so exact spelling costs the real
     workflow nothing."""
     if len(name) < 3:
-        return False                  # a two-character nickname matches everything
+        return False
     return re.search(rf"(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])",
                      text) is not None
 
 
 async def _resolve_account(s, question: str, scoped: str) -> tuple[str, str]:
-    """(account_id, label). The widget's scoped account is the DEFAULT, not the
-    answer — operators paste the model name out of habit and expect it honoured.
-
-    Only accounts the caller ALREADY OWNS are considered, so a stray number in a
-    paste can never turn a help question into a 403. `ask()` still runs the
-    result through `assert_account_owned`, which makes that a structural
-    guarantee rather than a property of this filter."""
     owned = _actor_account_ids()
     q = select(Account.id, Account.nickname)
     if owned is not None:
@@ -190,8 +135,6 @@ async def _resolve_account(s, question: str, scoped: str) -> tuple[str, str]:
     rows = (await s.execute(q)).all()
 
     label = next((n for i, n in rows if i == scoped and n), scoped)
-    # Handles are excluded: the two id spaces are both just digits and do
-    # collide, and a handle names a FAN.
     handles = set(_handles(question))
     written = {str(n) for n in _fan_id_candidates(question)
                if n not in handles}
@@ -205,13 +148,6 @@ async def _resolve_account(s, question: str, scoped: str) -> tuple[str, str]:
 
 
 async def _resolve_fan(s, account_id: str, question: str) -> tuple[Any, str | None]:
-    """(fan_row_or_None, note). `note` is what the bot must ASK FOR — this
-    never guesses a fan.
-
-    Ids first, then the name, because an id is unambiguous and a name is not.
-    VERIFIED 2026-08-28: operators paste the chat header line and it IS
-    `custom_nickname` verbatim ("Alexj/Dubai,United Arab Emirates/55"), so that
-    column wins any tie."""
     ids = _fan_id_candidates(question)
     for fan_id in ids:
         fan = await s.get(Fan, (account_id, fan_id))
@@ -258,10 +194,6 @@ async def _resolve_fan(s, account_id: str, question: str) -> tuple[Any, str | No
             f"which fan id is meant — do not guess, and give no diagnosis until "
             f"you know.")
 
-    # A NOT FOUND note tells the model to stop and ask, so it must only fire on
-    # a number that is actually shaped like a fan id. "why is my 100000 cap not
-    # working" is a docs question, and answering it with "ask me for the fan id"
-    # would be the widget refusing to do its original job.
     fan_shaped = [n for n in ids if n >= _MIN_FAN_ID]
     if fan_shaped:
         return None, (
@@ -269,21 +201,16 @@ async def _resolve_fan(s, account_id: str, question: str) -> tuple[Any, str | No
             f"{account_id}. Ask for the fan id from the chat header, or for "
             f"the right model.")
     if shaped:
-        # Unmistakably a pasted chat header, and nothing matched it. Silence
-        # here is the worst outcome: the operator asked about a specific man
-        # and would get a general answer with no hint that he was never found.
         return None, (
             f'NOT FOUND: no fan named "{ev.clean_label(shaped[0])}" on account '
             f"{account_id}. That nickname may have been regenerated since — "
             f"ask for the fan id from the chat header, or for the right model.")
-    return None, None                       # no fan in the question at all
+    return None, None
 
 
-# ── Rendering ─────────────────────────────────────────────────────────
 
 
 async def _resolve(scoped: str, question: str) -> Subject:
-    """Who the paste is about. Three small reads, its own session, no engines."""
     async with get_session() as s:
         account_id, label = await _resolve_account(s, question, scoped)
         fan, note = await _resolve_fan(s, account_id, question)
@@ -291,12 +218,7 @@ async def _resolve(scoped: str, question: str) -> Subject:
 
 
 async def _pack(subject: Subject) -> str:
-    """The evidence for a RESOLVED fan, rendered — LOCAL DB ONLY.
-
-    One session for this module's own reads, then the shared predicates, which
-    each open their own. Sequential throughout: parallel sessions are this
-    repo's documented footgun and nothing here is worth racing for."""
-    import automation_rules_api                      # deferred: plugin loader
+    import automation_rules_api
     from automation_registry import canonical_kind
     from automations._common import (content_payer_fans,
                                      should_skip_muted_creator)
@@ -318,8 +240,6 @@ async def _pack(subject: Subject) -> str:
                  for k, steps, on, _t in rule_rows]
         fa_rules = [(bool(on), trig) for k, _s, on, trig in rule_rows
                     if canonical_kind(k) == _FULL_AI_KIND]
-        # LIVE kinds only: a leftover row of a retired kind reaches nobody from
-        # now on, so it has no "today" to describe and must not stand in for one.
         rules = [r for r in rules if r[0] in live_kinds]
         rule_kinds = {k for k, _s, _o in rules}
         memberships = (await s.execute(
@@ -328,12 +248,8 @@ async def _pack(subject: Subject) -> str:
             .where(List.account_id == account_id, ListMember.fan_id == fan_id)
             .order_by(List.name)
         )).all()
-        # `created_at_text()` rather than the mapped column: ONE row holding ''
-        # in created_at raises while the result set materialises and takes the
-        # whole query with it (db/models.py records the prod incident). A help
-        # bot that falls back to docs-only over a single dirty cell fails on
-        # exactly the account someone is debugging.
         rows = (await s.execute(
+            # created_at_text(), not the mapped column: one row holding '' raises while materialising and kills the whole query.
             select(created_at_text(), Message.direction, Message.automation_kind,
                    Message.price_cents, Message.media_count, Message.mass_run_id,
                    Message.is_tip, Message.is_unsent, Message.message_id)
@@ -349,9 +265,6 @@ async def _pack(subject: Subject) -> str:
                    Transaction.status.notin_(_DEAD_TX_STATUSES))
             .group_by(Transaction.kind).order_by(Transaction.kind)
         )).all()
-        # Off the RAW rows, not the collapsed ones: a priced or broadcast row
-        # never folds anyway, and reading them here keeps this module free of
-        # any call into the renderer.
         priced = [r.message_id for r in rows
                   if (r.price_cents or 0) > 0 and r.message_id]
         paid_ids = {int(m) for (m,) in (await s.execute(
@@ -386,13 +299,10 @@ async def _pack(subject: Subject) -> str:
     audiences = [(k, steps, on) for k, steps, on in sorted(rules)
                  if k in blasted][:ev.MAX_AUDIENCES]
 
-    # THE SHARED PREDICATE — the single copy of its question.
     is_payer = fan_id in await content_payer_fans(account_id, [fan_id])
 
     missing = sorted((set(_FAN_FACING_KINDS) & live_kinds) - rule_kinds)
 
-    # No full_ai_chat rule = not one Full AI line. A failing read costs only
-    # the Full AI lines, never the rest of the pack.
     full_ai, full_ai_failed = None, False
     if fa_rules:
         try:
@@ -413,10 +323,7 @@ async def _pack(subject: Subject) -> str:
 
 
 def _turn_end(rows) -> tuple[datetime | None, int | None]:
-    """His unanswered message as Full AI's sweep sees it: the newest in/out row,
-    a welcome outbound not counting (it never answers his DM), when that row is
-    his. (None, None) when she spoke last. Pure, over the pack's own rows."""
-    for r in rows:                                   # newest first
+    for r in rows:
         if r.direction == "out" and r.automation_kind == "welcome":
             continue
         if r.direction == "in":
@@ -427,16 +334,12 @@ def _turn_end(rows) -> tuple[datetime | None, int | None]:
 
 
 def _rule_trigger(fa_rules) -> dict:
-    """The rule Full AI runs on: the enabled one in Live mode, else the enabled
-    one, else the first — its trigger_json, {} when unreadable."""
     trigs = [(on, _payload(t)) for on, t in fa_rules]
     return (next((t for on, t in trigs if on and t.get("mode") == "live"), None)
             or next((t for on, t in trigs if on), None) or trigs[0][1])
 
 
 def _reply_why(raw) -> dict:
-    """reply_json cut to `fa_ev.FULL_AI_REPLY_KEYS`: it also holds her bubbles and
-    his `fan_info`, and no written word goes in the pack."""
     v = _payload(raw)
     out = {k: v[k] for k in fa_ev.FULL_AI_REPLY_KEYS if k in v}
     if isinstance(out.get("attempts"), list):
@@ -446,11 +349,6 @@ def _reply_why(raw) -> dict:
 
 
 async def _full_ai(account_id: str, fan, rows, fa_rules) -> fa_ev.FullAi:
-    """Full AI Chat's LOCAL facts for him. Reuses full_ai_owner_io's local reads
-    and `full_ai_owner.who_owns`; never its Fans list read (`_listed` opens an
-    OnlyFans client — `cached_listed` only peeks at its in-process cache) nor
-    `_human` (it can scan the account's broadcasts, and a human answer after his
-    message already shows as her turn in the thread)."""
     from audience_include import audience_allows_fan
     from automations import full_ai_config, full_ai_live, full_ai_owner
     from automations import full_ai_owner_io as io
@@ -482,8 +380,6 @@ async def _full_ai(account_id: str, fan, rows, fa_rules) -> fa_ev.FullAi:
             select(Message.message_id, created_at_text())
             .where(Message.account_id == account_id,
                    Message.message_id.in_(anchors or [0])))).all()}
-        # A job answers his NEWEST unanswered message when it runs, so "did it
-        # decide" = a live row on its anchor or a later message of his.
         answered = set()
         for j in jobs:
             a_at = anchor_at.get(_payload(j.payload_json).get("anchor"))
@@ -510,6 +406,7 @@ async def _full_ai(account_id: str, fan, rows, fa_rules) -> fa_ev.FullAi:
     fans_ok = full_ai_config._fans_error(fans) is None
     top = io._top_spend_cents(cfg)
     spend = int(fan.lifetime_spend_cents or 0)
+    # Never `_listed` (opens an OnlyFans client); `cached_listed` only peeks at the in-process cache.
     # Fans list membership is an OnlyFans read: only its in-process cache is
     # read here (no OF call). A FRESH verdict is what Full AI acts on now and
     # feeds the check; else a SET list is assumed passed (the Fans line says
@@ -523,7 +420,7 @@ async def _full_ai(account_id: str, fan, rows, fa_rules) -> fa_ev.FullAi:
         top_spend_cents=top))
     open_due = None
     if open_at is not None and open_id is not None:
-        try:                          # an unknown stored reply_speed: no due time
+        try:
             open_due = full_ai_live.due(cfg, _Dm(open_at, int(open_id)))
         except (KeyError, TypeError, ValueError):
             open_due = None
@@ -548,7 +445,6 @@ async def _full_ai(account_id: str, fan, rows, fa_rules) -> fa_ev.FullAi:
 
 
 class _Dm(NamedTuple):
-    """The two fields `full_ai_live.due` reads off his message."""
     created_at: datetime
     message_id: int
 
@@ -562,10 +458,6 @@ def _payload(raw) -> dict:
 
 
 async def build(scoped: str, question: str) -> FanPack:
-    """Resolve + fetch, on a budget. ANY failure degrades to a docs-only answer
-    with an honest note — the 200-always contract never surfaces it as an
-    error, and a bot that 500s when someone is debugging a silent fan is the
-    failure mode this endpoint exists to avoid."""
     try:
         who = await asyncio.wait_for(_resolve(scoped, question),
                                      timeout=RESOLVE_TIMEOUT_S)
@@ -575,8 +467,6 @@ async def build(scoped: str, question: str) -> FanPack:
         return FanPack(scoped, None, None, False)
 
     if who.fan is None:
-        # No fan in the question, or one we refuse to guess at. Either way
-        # there is no evidence to read, and the note (if any) IS the answer.
         return FanPack(who.account_id, who.label, None if who.note is None
                        else f"FAN LOOKUP:\n- {who.note}", True)
     try:
@@ -584,8 +474,5 @@ async def build(scoped: str, question: str) -> FanPack:
     except Exception:  # noqa: BLE001 — ANY failure degrades, never errors
         log.warning("assistant: fan pack failed for account=%s fan=%s",
                     who.account_id, who.fan.fan_id, exc_info=True)
-        # The SUBJECT survives the evidence failing. Falling back to the scoped
-        # account here would answer about a different model than the one the
-        # operator named, and say nothing about having done so.
         return FanPack(who.account_id, who.label, None, False)
     return FanPack(who.account_id, who.label, block, True)

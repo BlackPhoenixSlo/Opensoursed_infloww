@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * Security (organization) (docs/spec/settings-tabs/phase-02-security.md): Infloww's
- * "Two-factor authentication" switch, the `security` blob's `require_2fa` (service/account_security.py:
- * every employee sets up and uses 2FA at sign-in; turning it on signs out those without it), above the
- * Agency's Employees from the shared roster (`useRoster()` defaults: disabled rows kept and greyed, the
- * Employees with a login only), with each login's 2FA status and last login (`two_factor`,
- * `last_login_at` on the roster rows; below sm Last login hides). "Reset", shown only on an active login
- * with 2FA on, turns it off and signs them out (`POST /admin/employees/{id}/2fa/reset`). Each switch flip
- * and Reset asks first, in Infloww's words.
- */
 
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";

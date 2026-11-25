@@ -1,39 +1,14 @@
-/**
- * /analytics/message-dashboard — the Message dashboard (ex-Stuff) tab strip.
- *
- * Two things here are load-bearing and neither is visible to a type check.
- *
- * The first is that CUSTOMS IS A TAB. The owed-customs queue used to be its
- * own nav entry with its own route; it is now a tab body, and the failure mode
- * of getting that wrong is silent — an unknown `?tab=` value falls back to
- * Direct messages, so a broken Customs tab looks like a working default tab. These cases
- * mount the real queue through the real strip and read a row out of it.
- *
- * The second is the SHELL WIDTH. `max-w-shell` is a theme token
- * (--container-shell in globals.css); if the class is renamed on one side and
- * not the other, Tailwind emits nothing, no build fails, and the page silently
- * goes full-bleed. Asserting the class here is cheap and catches the rename.
- *
- * The heavy tabs (PPV and friends) are mounted for real rather than stubbed —
- * that is what proves the strip is wired — so this file stubs the two browser
- * APIs jsdom lacks and lets every relay call resolve empty.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const { relayGet, params, searchParams } = vi.hoisted(() => {
   const params = { search: "" };
+  // Next keeps the same URLSearchParams per navigation; a fresh one per render re-runs the page's URL->state effect and resets the clicked tab.
   let cached = { key: "\u0000", value: new URLSearchParams() };
   return {
     relayGet: vi.fn(),
     params,
-    // Next hands back the SAME URLSearchParams for the life of a navigation.
-    // A fresh object per render is not a harmless test shortcut: the page's
-    // URL→state mirror is keyed on it (`useEffect(…, [search])`), so an
-    // unstable identity re-runs it every render and stomps the tab the user
-    // just clicked back to the one in the (never-updated) URL. The component
-    // is fine; a naive mock is what breaks.
     searchParams: () => {
       if (cached.key !== params.search) {
         cached = { key: params.search, value: new URLSearchParams(params.search) };
@@ -43,8 +18,6 @@ const { relayGet, params, searchParams } = vi.hoisted(() => {
   };
 });
 
-// The global setup pins useSearchParams to an empty string; these cases deep-
-// link into a tab, which is the same door the /customs redirect comes through.
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), prefetch: vi.fn() }),
   usePathname: () => "/analytics/message-dashboard",
@@ -60,19 +33,15 @@ vi.mock("@/lib/relay", () => ({
   proxyImage: () => "",
 }));
 
-// MessagesFilters reads the roster through useRoster, which asks the signed-in
-// owner (ticket 30); an owner with no chatter, as messages-pro/extras.test.tsx stubs them.
 vi.mock("@/contexts/UserContext", async (orig) => {
   const value = { user: { username: "owner" }, logout: vi.fn() };
   return { ...(await orig<typeof import("@/contexts/UserContext")>()), useUser: () => value, useOptionalUser: () => value };
 });
 
-// The range and Sent time follow the report time zone; the page waits for the Applied settings.
 vi.mock("@/lib/appliedSettings", () => ({
   useAppliedSettings: () => ({ isPending: false, data: { preferences: { report_tz: "UTC" } } }),
 }));
 
-// Export CSV's Function permission reads the Applied settings, which need the shell's ScopeProvider; an owner may.
 vi.mock("@/components/shell/useGrantedPages", () => ({ useActionAllowed: () => true }));
 
 vi.mock("@/hooks/useAccounts", () => ({
@@ -83,9 +52,6 @@ vi.mock("@/hooks/useAccounts", () => ({
 import { renderWithProviders } from "@/test-utils";
 import MessagesPage from "./page";
 
-/** One owed row, shaped like /admin/customs answers it. Every identifier here
- *  is invented — this repo mirrors to a public one, so fixtures never carry a
- *  real account, fan or display name even when nothing asserts on them. */
 const OWED = {
   marked: true,
   account_id: "100000001",
@@ -107,8 +73,6 @@ beforeEach(() => {
     }
     return { rows: [], items: [], next_cursor: null };
   });
-  // jsdom ships neither; PaidMessagesTab's infinite-scroll sentinel and the
-  // chart-ish tabs construct them on mount.
   vi.stubGlobal("IntersectionObserver", class {
     observe() {}
     unobserve() {}
@@ -186,14 +150,11 @@ describe("the Message dashboard page", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Customs" }));
 
     expect(await screen.findByText("Customs owed")).toBeInTheDocument();
-    // The row itself, not just the heading — the queue actually fetched.
     expect(await screen.findByText("Test Fan")).toBeInTheDocument();
     expect(relayGet).toHaveBeenCalledWith("/admin/customs");
   });
 
   it("deep-links straight into the queue, which is where /customs lands", async () => {
-    // The 308 in next.config.ts sends /customs here. If ?tab=customs stopped
-    // parsing, the redirect would quietly dump the operator on PPV.
     params.search = "tab=customs";
     renderWithProviders(<MessagesPage />);
     await waitFor(() => expect(screen.getByText("Customs owed")).toBeInTheDocument());

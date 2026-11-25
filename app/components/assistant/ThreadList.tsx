@@ -1,8 +1,5 @@
 "use client";
 
-/** The help bot's earlier conversations, over the panel (AssistantWidget.tsx):
- *  newest first in day sections (assistantReducer `groupByDay`); a pick opens
- *  that thread. */
 
 import { useRef } from "react";
 import { X } from "lucide-react";
@@ -13,7 +10,6 @@ import { cn } from "@/lib/utils";
 import { groupByDay, type ThreadSummary } from "./assistantReducer";
 import { focusLabel } from "./FocusLine";
 
-/** Local time under a day section: "22:24". */
 const TIME = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
 export function ThreadList({

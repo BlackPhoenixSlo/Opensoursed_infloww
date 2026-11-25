@@ -1,16 +1,7 @@
 #!/usr/bin/env python3
-"""unsend_messages must delete on OF only the account's OWN rows past the policy
-age: a dry run calls no OF DELETE, a re-run deletes nothing new, and a mass-only
-policy never touches a chatter's manual message or another Creator's broadcast.
-Plus tables: pure `sweep_policy` / `mass_targets` / `next_history_page`, and the
-sweep rule itself (`_sweep_targets` / `_sweep_mass_targets`) against seeded rows.
-Mocked OnlyFans only (FakeClient via ax._make_client); nothing reaches the network.
-
-Run: ./venv/bin/python service/tests/test_unsend_messages.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -30,7 +21,6 @@ NOW = datetime(2026, 6, 1, 12, 0, 0)
 
 
 class FakeClient:
-    """Records every OF DELETE (per-chat unsend / mass queue cancel) and history pull."""
     def __init__(self):
         self.unsend_calls: list[tuple[int, int]] = []
         self.cancel_calls: list[int] = []
@@ -106,10 +96,9 @@ async def _actions(aid: str) -> list[Action]:
         return list((await s.execute(select(Action).where(Action.account_id == aid))).scalars())
 
 
-# ── pure tables ───────────────────────────────────────────────────────
 
 def case_sweep_policy_table():
-    rows = [  # (policy, per_chat, mass, text_h, media_h, m_text, m_media, m_price, floored)
+    rows = [
         ({}, True, False, 9.0, None, None, None, None, None),
         ({"text_hours": 3, "media_hours": 12}, True, False, 3.0, 12.0, None, None, None, None),
         ({"text_hours": 0, "media_hours": "x"}, True, False, 9.0, None, None, None, None, None),
@@ -129,7 +118,7 @@ def case_sweep_policy_table():
 
 
 def case_mass_targets_table():
-    rows = [  # (name, (queue_id, run_id) rows oldest first, want targets)
+    rows = [
         ("empty", [], []),
         ("shape + no run", [(10, None)],
          [{"kind": "mass", "queue_id": 10, "mass_run_id": None, "from_cache": True}]),
@@ -154,7 +143,7 @@ async def _seed_rule(aid: str, other: str, spec: tuple) -> None:
     kw = dict(kw)
     acc = other if kw.pop("other", False) else aid
     if kind == "msg":
-        if kw.pop("mass_copy", False):  # a placeholder copy of a real mass run
+        if kw.pop("mass_copy", False):
             kw["mass_run_id"] = await _add_run(acc, 900 + ident, hours_old=h)
         await _add_msg(acc, 7, ident, hours_old=h, **kw)
         return
@@ -165,12 +154,11 @@ async def _seed_rule(aid: str, other: str, spec: tuple) -> None:
 
 
 async def case_sweep_rule_table():
-    """The real rule: SQL WHERE + ORDER BY + LIMIT in the two sweeps, on seeded rows."""
     chat = un.sweep_policy({"text_hours": 9})
     media = un.sweep_policy({"text_hours": 9, "media_hours": 12})
     mass = un.sweep_policy({"mass_text_hours": 8, "mass_media_hours": 6,
-                            "mass_price_hours": 2})             # price floored to 24h
-    rows = [  # (name, seed specs, plan, want ids: chat message_ids then mass queue_ids)
+                            "mass_price_hours": 2})
+    rows = [
         ("text past age", [_m(1, 10)], chat, [1]),
         ("text too young", [_m(1, 8)], chat, []),
         ("past 24h window", [_m(1, 25)], chat, []),
@@ -206,12 +194,10 @@ async def case_sweep_rule_table():
         got += await un._sweep_mass_targets(aid, plan)
         ids = [t.get("message_id") or t.get("queue_id") for t in got]
         assert ids == want, (name, got)
-    # shapes
     await _seed_account("un_shape")
     await _add_msg("un_shape", 7, 1, hours_old=10)
     assert await un._sweep_targets("un_shape", chat) == [
         {"kind": "chat", "fan_id": 7, "message_id": 1}]
-    # _MAX_SWEEP cap, oldest kept
     await _seed_account("un_cap")
     async with get_session() as s:
         for i in range(un._MAX_SWEEP + 5):
@@ -236,7 +222,7 @@ def case_next_history_page_table():
     seen12 = PC(end_cursor=NOW, offset=2, seen_qids=frozenset({1, 2}))
     dm = PC(end_cursor=NOW, date_mode=True)
     page = lambda *items, more=True: {"items": list(items), "hasMore": more}  # noqa: E731
-    rows = [  # (name, cursor, resp, want fresh ids, want next cursor | None)
+    rows = [
         ("fresh + more → stride by rows returned", base, page(_it(1, 1), _it(2, 2)), [1, 2],
          PC(end_cursor=NOW, offset=2, seen_qids=frozenset({1, 2}))),
         ("repeated page → date mode, endDate=oldest-1s", seen12, page(_it(1, 1), _it(2, 2)), [],
@@ -257,7 +243,6 @@ def case_next_history_page_table():
         assert [f["id"] for f in fresh] == want_ids and nxt == want_next, (name, fresh, nxt)
 
 
-# ── real runs through run_once ─────────────────────────────────────────
 
 async def case_dry_run_calls_no_of_delete():
     aid = "un_dry"
@@ -279,8 +264,8 @@ async def case_idempotent_rerun_deletes_nothing_new():
     fake = _use_fake()
     run_id = await _add_run(aid, 3001, hours_old=10)
     await _add_cast(aid, 3001, hours_old=10)
-    await _add_msg(aid, 31, 3101, hours_old=10, mass_run_id=run_id)   # its placeholder copy
-    await _add_msg(aid, 32, 3201, hours_old=10)                       # a per-chat bubble
+    await _add_msg(aid, 31, 3101, hours_old=10, mass_run_id=run_id)
+    await _add_msg(aid, 32, 3201, hours_old=10)
     pol = {"policy": {"mass_text_hours": 8, "text_hours": 9}}
     r1 = await run_once(aid, KIND, payload=pol)
     assert sorted(fake.cancel_calls) == [3001] and fake.unsend_calls == [(3201, 32)], r1
@@ -298,10 +283,9 @@ async def case_only_own_mass_is_targeted():
     await _seed_account(aid)
     await _seed_account(other)
     fake = _use_fake()
-    await _add_cast(aid, 4001, hours_old=10)            # own mass → unsent
-    await _add_cast(other, 4002, hours_old=10)          # another Creator's mass → never
-    # A chatter's manual reply → never. (Its own words: a row with the BLAST's body
-    # near its send time is treated as an untagged copy, by mark_queue_copies_unsent.)
+    await _add_cast(aid, 4001, hours_old=10)
+    await _add_cast(other, 4002, hours_old=10)
+    # Own words: a row with the blast's body near its send time counts as an untagged mass copy.
     await _add_msg(aid, 41, 4101, hours_old=10, body="omg yes tell me more")
     r = await run_once(aid, KIND, payload={"policy": {"mass_text_hours": 8}})
     assert fake.cancel_calls == [4001] and fake.unsend_calls == [], (r, fake.cancel_calls)

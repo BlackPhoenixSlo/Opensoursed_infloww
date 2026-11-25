@@ -14,7 +14,7 @@ describe("injectOfChrome", () => {
 
   it("keeps the chat list's 345px column only from OF's 1004px two-pane width; below it the list fills, no empty pane", () => {
     const css = OF_CHROME_CSS.replace(/@media[^{]*\{(?:[^{}]*\{[^}]*\})*\s*\}/g, "");
-    expect(css).not.toContain(".b-chats__conversations-list{"); // no width cap outside a media query (phones)
+    expect(css).not.toContain(".b-chats__conversations-list{");
     expect(OF_CHROME_CSS).toContain("@media(min-width:1004px){.b-chats__conversations-list{max-width:345px!important;flex:0 0 345px!important}}");
     expect(OF_CHROME_CSS).toContain("@media(max-width:1003.98px){.b-chats__conversations-list{flex:1 1 auto!important}.b-chats__conversations-content.m-empty-chat{display:none!important}}");
   });

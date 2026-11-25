@@ -1,8 +1,3 @@
-/**
- * AuthGate — /login renders the bare sign-in form for everyone (the public
- * site's Log in and Register links, a signed-in owner adding an account),
- * never the app shell + picker.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -13,7 +8,6 @@ import type { AuthBanner, BootStatus } from "@/contexts/userSessionReducer";
 
 let mockPath = "/login";
 type MockUser = { user: unknown; boot: BootStatus; banner: AuthBanner | null; formUp: boolean };
-/** A session as useUser gives it: no banner by default; a banner puts the form up. */
 const me = (s: Pick<MockUser, "user" | "boot"> & Partial<MockUser>): MockUser => ({ banner: null, formUp: !!s.banner, ...s });
 let mockUser: MockUser = me({ user: null, boot: "settled" });
 let mockChatter: { chatter: unknown; loading: boolean } = { chatter: null, loading: false };
@@ -81,7 +75,6 @@ describe("AuthGate on /chatter-login", () => {
       </QueryClientProvider>,
     );
     expect(screen.queryByText("SHELL")).toBeNull();
-    // Its own chunk (next/dynamic; the server-rendered page preloads it).
     expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Back for another shift?");
   });
 });
@@ -165,9 +158,7 @@ describe("AuthGate with a banner: the sign-in form at once", () => {
     mockUser = me({ user: null, boot: "probing", banner: "blocked" });
     rerender(<AuthGate><div>SHELL</div></AuthGate>);
     expect(usernameInput().value).toBe("typed.name");
-    // its probe still in flight: Retry is off (that answer is applied when it comes)
     expect(screen.getByRole("button", { name: "Retry" }).hasAttribute("disabled")).toBe(true);
-    // a late null/401 settles the boot: the banner goes, the form stays up even while the chatter probe hangs
     mockUser = me({ user: null, boot: "settled", banner: null, formUp: true });
     mockChatter = { chatter: null, loading: true };
     rerender(<AuthGate><div>SHELL</div></AuthGate>);

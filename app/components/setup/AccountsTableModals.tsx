@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * AccountsTableModals — AccountsTable's Creator row with no account (DraftRow) and its two confirm modals, the Delete
- * modal (DeleteCreatorModal, two steps) and the Deactivate / Activate modal (ActiveCreatorModal), with the row and ⋮
- * menu styles (every MENU_*) the table's own rows share. Moved out of AccountsTable.tsx as is.
- */
 
 import { ArrowLeft, EllipsisVertical, Pencil, Plus, Trash2, type LucideIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -18,17 +13,12 @@ import {
 import type { DraftCreator } from "@/lib/creatorProfiles";
 import { cn } from "@/lib/utils";
 
-/** The house Not wired marker. */
 export const NOT_WIRED = "not wired";
-/** The Action cell's buttons: 28px, a white 16px icon inside 6px, 6px corners (creators-manage#49), filled #2c2c2c and
- *  borderless (01-home.png). */
 const FILL = cn(
   "bg-[#2c2c2c] hover:bg-[#383838] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-[#2c2c2c]",
   "text-white [html[data-theme=light]_&]:bg-black/[.09] [html[data-theme=light]_&]:text-fg",
 );
 export const ACT = cn("inline-flex h-7 w-7 items-center justify-center rounded-md", FILL);
-/** The ⋮ menu (creators-manage#81): HB's panel #171717 with a 9%-white hairline, 4px padding, 8px corners; items 32px,
- *  5px 12px, 14px white on a 22px line, 4px corners, hover 5.5% white; a disabled item 38% white. */
 export const MENU_BOX = cn(
   "fixed z-50 w-max min-w-48 rounded-lg border border-white/[.09] bg-panel p-1 shadow-lg",
   "[html[data-theme=light]_&]:border-black/[.09]",
@@ -36,17 +26,12 @@ export const MENU_BOX = cn(
 export const MENU_ROW = "block w-full rounded px-3 py-[5px] text-left text-sm leading-[22px]";
 export const MENU_ON = "text-white hover:bg-white/[.055] [html[data-theme=light]_&]:text-fg [html[data-theme=light]_&]:hover:bg-black/[.055]";
 export const MENU_OFF = "cursor-not-allowed text-white/[.38] [html[data-theme=light]_&]:text-black/[.38]";
-/** A group of ⋮ items under a hairline (Recovery, the Inflowwww extras). */
 export const MENU_RULE = "mt-1 border-t border-white/[.09] pt-1 [html[data-theme=light]_&]:border-black/[.09]";
-/** The fixed Action column: #171717 for head and cells, a 1px #2c2c2c rule at its left (01-home.png). */
 export const STICKY = cn(
   "md:sticky md:right-0 bg-panel border-l border-[#2c2c2c] [html[data-theme=light]_&]:border-black/[.09]",
 );
 
-/** A Creator saved with Done and no account yet (Infloww's Creator row with no account): its name and image,
- *  "Pending connection", "Link creator account" (the Add creator modal at select-platform) and ⋮ [Edit, Delete]. */
 export function DraftRow({ columns, draft, onLink, onEdit, onDelete }: {
-  /** The table's columns (AccountsTable's COLUMNS): the row draws one cell per column, in their order. */
   columns: ReadonlyArray<{ key: string; sticky?: boolean }>;
   draft: DraftCreator;
   onLink?: () => void;
@@ -117,18 +102,9 @@ export function DraftRow({ columns, draft, onLink, onEdit, onDelete }: {
   );
 }
 
-/**
- * The Delete modal, `DeleteCreatorsWithSurvey` (creators-manage#78), in Infloww's words: "Delete {creator}" (a
- * Creator) or "Delete {creator} / {nickname}" (an account under one), its message, then the survey, "Why are you
- * deleting the creator's account?" (Optional), with Infloww's five reasons and, for Others, a 120-character reason.
- * The footer is the two-step footer (`footerType:"stepButton"`, `stepTotal:2`): Back (disabled on step 1), the dots
- * and "Step N of 2", then "Delete creator" and, on step 2, Submit, which deletes. The backdrop does not close it;
- * Escape does. Infloww sends the answer with its delete; the Relay has no field for it, so the answer stays here.
- */
 export function DeleteCreatorModal({ creator, nickname, watcher = false, pending, error, onClose, onDelete }: {
   creator: string;
   nickname?: string;
-  /** A watcher account: the message adds that it stops reading the Creators. */
   watcher?: boolean;
   pending: boolean;
   error: Error | null;
@@ -173,6 +149,7 @@ export function DeleteCreatorModal({ creator, nickname, watcher = false, pending
                 {r}
               </label>
             ))}
+            {/* Infloww sends the survey answer with its delete; the Relay has no field, so it stays here. */}
             {reason === others && (
               <textarea
                 aria-label={T.surveyOther} placeholder={T.surveyOther} maxLength={120} value={other}
@@ -188,14 +165,8 @@ export function DeleteCreatorModal({ creator, nickname, watcher = false, pending
   );
 }
 
-/**
- * The Deactivate modal, `DisableCreator` (creators-manage#77): 600px, "Deactivate {creator}", what stops, and Infloww's
- * warning that fees still apply (creators0152); its confirm is the red stop button, or the primary one to activate.
- * The Relay keeps the creator's history and every report row; only the switcher, inbox and background work drop it.
- */
 export function ActiveCreatorModal({ creator, activate, pending, error, onClose, onConfirm }: {
   creator: string;
-  /** True: the creator is deactivated and this activates it. */
   activate: boolean;
   pending: boolean;
   error: Error | null;

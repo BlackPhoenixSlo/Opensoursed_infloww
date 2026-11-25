@@ -16,7 +16,7 @@ function fakes() {
       this.visible = false;
       this.destroyed = false;
       this.webContents = {
-        once: (_ev, fn) => setImmediate(fn), // did-finish-load
+        once: (_ev, fn) => setImmediate(fn),
         send: (_ch, cards) => sent.push(cards.map((c) => c.title)),
       };
     }
@@ -71,7 +71,7 @@ test("cards stack in one non-focusing window; a click opens, a dismiss or the TT
   assert.deepEqual(sent.at(-1), ["A", "B", "C"]);
   assert.equal(win().visible, true);
 
-  listeners["toast:open"]({ sender: {} }, a.id); // not the toast window: ignored
+  listeners["toast:open"]({ sender: {} }, a.id);
   assert.deepEqual(events, []);
   listeners["toast:open"](fromToast(), a.id);
   listeners["toast:dismiss"](fromToast(), b.id);
@@ -79,10 +79,10 @@ test("cards stack in one non-focusing window; a click opens, a dismiss or the TT
   assert.deepEqual(sent.at(-1), ["C"]);
 
   assert.equal(timers[2].ms, TTL_MS);
-  timers[2].fn(); // C expires
+  timers[2].fn();
   assert.deepEqual(events, ["a click", "b close", "c close"]);
   assert.equal(win().visible, false);
-  timers[0].fn(); // A already gone: nothing more
+  timers[0].fn();
   assert.equal(events.length, 3);
 });
 

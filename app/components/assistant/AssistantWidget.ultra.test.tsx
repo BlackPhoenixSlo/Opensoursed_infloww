@@ -1,8 +1,3 @@
-/**
- * The help bot's Ultra mode (components/ultra/UltraPanel): owner-only tick, request → POST /admin/ultra/plans,
- * then the plan followed by polling GET …/{id}: planning → card → OK (the shown hash) → running → done; the pick
- * card's Send these; server refusals shown as written; a reload resumes the open plan.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -67,16 +62,13 @@ const planning = plan("planning", {
 const cands = [21, 22, 23].map((id) => ({ id, type: "photo", thumb: `/admin/vault-ai/thumb?media_id=${id}`, description: `pic ${id}` }));
 const waiting: StepStatus = { id: "pick", state: "needs_you", question: "Which 2 for the mass?", pick_n: 2, candidates: cands, picks: [22] };
 
-/** What GET /admin/ultra/plans/p1 answers now. */
 let current: () => Promise<PlanView>;
 
 async function openPanel() {
   renderWithProviders(<PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>);
   const bubble = await screen.findByRole("button", { name: "Help assistant" });
-  // The open dock is kept per browser: a "reload" finds it open already.
   if (bubble.getAttribute("aria-expanded") !== "true") await userEvent.click(bubble);
 }
-/** Fire the plan poll: flush pending effects first so its interval is set. */
 async function poll(ms: number) {
   await act(async () => {});
   act(() => { vi.advanceTimersByTime(ms); });
@@ -84,7 +76,6 @@ async function poll(ms: number) {
 const note = () => screen.getByRole("status");
 const button = (name: string | RegExp) => screen.getByRole("button", { name });
 
-// Only the plan poll's interval is faked (RTL's waitFor polls on setInterval too: wait on the DOM, not on storage).
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   relayPost.mockReset();
@@ -145,7 +136,7 @@ describe("Ultra mode in the help bot", () => {
 
     const running = plan("running", { step_states: [{ id: "pick", state: "started" }, { id: "mass", state: "pending" }] });
     relayPost.mockResolvedValueOnce(running);
-    current = async () => running;  // the OK is read again at once
+    current = async () => running;
     fireEvent.click(button("OK, run 2 steps"));
     await waitFor(() => expect(screen.getByRole("img", { name: "Running" })).toBeInTheDocument());
     expect(relayPost).toHaveBeenLastCalledWith("/admin/ultra/plans/p1/ok", { sha256: SHA }, undefined, expect.any(AbortSignal));
@@ -229,7 +220,7 @@ describe("Ultra mode in the help bot", () => {
     current = async () => planning;
     fireEvent.change(screen.getByPlaceholderText("What should Ultra do?"), { target: { value: "mass the new set" } });
     fireEvent.click(button("Plan it"));
-    fireEvent.click(screen.getByLabelText("Ultra mode"));          // Ultra off: the panel unmounts
+    fireEvent.click(screen.getByLabelText("Ultra mode"));
     expect(document.querySelector("[data-ultra]")).toBeNull();
     await act(async () => { answer(planning); });
     expect(window.localStorage.getItem(ULTRA_PLAN_KEY)).toBe("p1");
@@ -246,8 +237,8 @@ describe("Ultra mode in the help bot", () => {
     current = async () => planning;
     fireEvent.change(screen.getByPlaceholderText("What should Ultra do?"), { target: { value: "mass the new set" } });
     fireEvent.click(button("Plan it"));
-    fireEvent.click(screen.getByLabelText("Ultra mode"));          // closed: the panel unmounts
-    fireEvent.click(screen.getByLabelText("Ultra mode"));          // reopened while the POST is still out
+    fireEvent.click(screen.getByLabelText("Ultra mode"));
+    fireEvent.click(screen.getByLabelText("Ultra mode"));
     expect(button("Plan it")).toBeDisabled();
     expect(screen.getByPlaceholderText("What should Ultra do?")).toBeDisabled();
     expect(screen.getByText("Sending your request to the planner…")).toBeInTheDocument();

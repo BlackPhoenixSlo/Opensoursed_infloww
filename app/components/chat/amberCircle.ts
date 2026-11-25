@@ -1,11 +1,3 @@
-/**
- * The Creator tab's Amber circle (docs/spec/creator-badges/phase-0F-amber-awaiting-reply.md, Display): Owe reply
- * chats as the Relay publishes them in `values.unread_total.amber`. Pure.
- *
- * The Red circle grey: none (its one grey circle stands for both). `amber` null: grey. No slot or no `amber` key (the
- * Knob off, a non-OF Creator): the route's `owe_reply`. n <= 0: none; 1–8: the digit; >= 9: "9+".
- */
-
 import type { FreshnessValues } from "@/lib/creatorFreshness";
 import type { RedCircle } from "./redCircle";
 

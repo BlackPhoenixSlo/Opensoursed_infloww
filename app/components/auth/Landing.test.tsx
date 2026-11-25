@@ -1,8 +1,3 @@
-/**
- * Landing — the public site sends visitors here as /login?mode=register and
- * /login?username=<u>: the form opens on the right tab, prefills the username,
- * focuses the password, and links back to the site.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
@@ -16,7 +11,6 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: vi.fn() }),
   useSearchParams: () => new URLSearchParams(mockQuery),
 }));
-// What POST /auth/sign-in does; each case sets it, the default signs an owner in.
 let signInImpl: (u: string, p: string) => Promise<unknown> = async () => "user";
 const signInCalls: [string, string][] = [];
 const clearUserLocally = vi.fn();

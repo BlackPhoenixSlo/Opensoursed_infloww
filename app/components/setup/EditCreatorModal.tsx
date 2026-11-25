@@ -17,7 +17,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { AccountChip, PLATFORM_LABEL, fanslyProfile, type SectionKey } from "@/components/setup/AddCreatorModal";
+import { AccountChip, fanslyProfile, type SectionKey } from "@/components/setup/AddCreatorModal";
 import { FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
 import {
   CreatorsDetailsForm, EditCreatorForm, FlowButton, FlowModal, HB_DIM, STEP_TITLE, SelectProxyUI, T, applyProxy, assignedIds,
@@ -26,6 +26,7 @@ import {
 } from "@/components/setup/creatorFlow";
 import { pickAvatarUrl, useAccountAvatar } from "@/hooks/useAccountAvatar";
 import { useCreatorProfiles, type CreatorDetails, type DraftCreator } from "@/lib/creatorProfiles";
+import { PLATFORM_NAME, accountPlatform } from "@/lib/platform";
 import { type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
@@ -39,13 +40,13 @@ export function EditAccountModal({ account, conn, onClose, onLink }: {
   conn: string;
   onClose: () => void;
   /** Link account: the Add creator modal at the sign-in that relinks this platform. */
-  onLink?: (at: SectionKey) => void;
+  onLink?: (at: SectionKey, expectedAccountId?: string) => void;
 }) {
   const profiles = useCreatorProfiles();
   const roster = useRoster();
   const save = useSaveAccountDetails(profiles);
   const profile = profiles.profiles[account.id] ?? {};
-  const platform = account.platform ?? "onlyfans";
+  const platform = accountPlatform(account);
   const of = platform === "onlyfans";
   const [creator, setCreator] = useState<CreatorDetails>({
     name: profile.name ?? account.nickname ?? account.name ?? "", gender: profile.gender ?? "", avatar: profile.avatar,
@@ -91,7 +92,7 @@ export function EditAccountModal({ account, conn, onClose, onLink }: {
         <p className={cn(STEP_TITLE, "mb-0")}>{T.accountDetails}</p>
         <div>
           <span className="mb-1 block text-sm font-medium">{T.platform}</span>
-          <span className="text-sm">{PLATFORM_LABEL[platform]}</span>
+          <span className="text-sm">{PLATFORM_NAME[platform]}</span>
         </div>
         <div>
           <span className="mb-1 block text-sm font-medium">{T.linkedAccount}</span>
@@ -103,7 +104,7 @@ export function EditAccountModal({ account, conn, onClose, onLink }: {
             {connected ? (
               <FlowButton disabled title={NOT_WIRED}>{T.unlink}</FlowButton>
             ) : (
-              <FlowButton onClick={() => { onClose(); onLink?.(of ? "browserbase" : "fansly"); }}>{T.linkAccount}</FlowButton>
+              <FlowButton onClick={() => { onClose(); if (of) onLink?.("browserbase"); else onLink?.("fansly", account.id); }}>{T.linkAccount}</FlowButton>
             )}
           </div>
           {!of && conn === "Disconnected" && <p className="mt-1 text-sm text-err">{FANSLY_T.rebind}</p>}

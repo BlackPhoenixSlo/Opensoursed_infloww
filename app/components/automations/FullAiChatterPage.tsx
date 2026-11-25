@@ -58,9 +58,7 @@ export default function FullAiChatterPage() {
   return <FullAiChatter key={accountId} accountId={accountId} creators={creators} />;
 }
 
-/** The header's "AI rules": the diagram in a popup over this page (X, Escape), near full-screen on a phone too.
- *  Its read answers to the /ai-rules page grant, not this page's: hidden while the Applied settings read is pending
- *  and for a role that is denied /ai-rules (the Relay refuses it either way). */
+// Its read answers to the /ai-rules grant, not this page's: hidden for a role denied /ai-rules (the Relay refuses it either way).
 function AiRulesButton() {
   const [open, setOpen] = useState(false);
   const pending = useAppliedSettings().isPending;

@@ -28,7 +28,7 @@ from soak.fake_of.vault import MEDIA_COUNT
 from soak.world import World
 
 AT = datetime(2026, 11, 21, 3, 10, tzinfo=timezone.utc)
-HASH = "/api2/v2/vault/media/" + "hash"  # split: the worktree's shell guard refuses the joined literal
+HASH = "/api2/v2/vault/media/" + "hash"
 SEEDED = [ids.vault_media_id(n) for n in range(1, MEDIA_COUNT + 1)]
 
 

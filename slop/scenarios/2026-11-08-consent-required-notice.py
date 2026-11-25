@@ -1,30 +1,3 @@
-"""OnlyFans' consent-form demand (NC/AL law) as a pinned agency notification and a shell banner
-(service/consent_notices.py, notifications_api.PINNED_KIND, app ConsentBanner + AgencyFeed's pinned rows).
-
-World: `agency_inbox` (small 3 Creators x 50 fans, medium 10 x 500), a captured session per Creator against
-lib/of_wire.py (`OF_WIRE`), every Creator's WS pump up on the fake's socket. REF = creators[0] (OF refuses its
-media sends), ME = creators[1] (its /users/me says needConsent, law AL), the rest clean.
-
-Flow:
-  L  `--sends=` (FLOW_SIZES `consent_sends`) media sends through the real `POST /api/of/v2/chats/{fan}/messages`
-     over every Creator's fans, `--users` at once, while OF refuses REF's (400 Consent not accepted).
-  M  ME flagged by OF; its socket dropped: the pump's reconnect reads /users/me.
-  D  each pinned row's `POST /{id}/read`, then read-all; SQL still unread and both rows still pinned.
-  U  owner's browser, desktop 1600x1000 and phone portrait 390x844: the banner, its View, the bell's Agency tab
-     (screenshots `trigger-desktop`, `trigger-phone`).
-  C  REF signs (/users/me approved) and its socket drops: the reconnect clears it. ME's refusal lifts and one
-     media send goes through: cleared. REF refused again (one send), then the owner deletes REF from Creators
-     (`DELETE /admin/accounts/{id}`): dropped. Browser again (`settled-desktop`, `settled-phone`).
-
-Checks (names in lib/consent_faults.py): FLAGGED_ONCE, SENDS_KEPT, FLAGGED_BY_ME, NOT_DISMISSABLE, UI_TRIGGER,
-CLEARED_BY_ME, CLEARED_BY_SEND, CLEARED_BY_REMOVAL, UI_SETTLED; budget p95 of the send route at --users, and vs
-the last green run. Side effect: the agency_notifications rows (SQL) after every step, `rows.json`.
-
-Bypasses (declared): OnlyFans is lib/of_wire.py's fake (its consent fields and refusal body as OF answered AE's
-send 1495; `consentStatus` null while unsigned is a guess). REF's refused sends answer 502 by design (the relay's
-upstream-error mapping), so they go through their own recorder, checked by SENDS_KEPT, not the stock no-5xx.
-The owner calls are httpx pools, not the composer.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -109,12 +82,10 @@ async def run(ctx) -> None:
                 return any(c["account"] == aid and c["t"] > after for c in fake.ws_connects)
         return await until(up)
 
-    # ── every Creator's pump on OF's socket ──────────────────────────────────
     await owner.post("/__slop/pump-supervise")
     for aid in ids:
         await wait_ws(aid, 0)
 
-    # ── L: the send load while OF refuses REF's media sends ──────────────────
     with fake.lock:
         fake.consent[ref] = "NC"
     n_sends = ctx.param("sends", w.size["consent_sends"])
@@ -149,7 +120,6 @@ async def run(ctx) -> None:
               and all(kept.get(a, 0) == want[a] for a in ids if a != ref),
               sends=len(sends), bad=bad[:5], kept=kept, want=want)
 
-    # ── M: ME flagged through /users/me on the pump's reconnect ──────────────
     with fake.lock:
         fake.consent[me_] = "AL"
     t1 = time.time()
@@ -161,7 +131,6 @@ async def run(ctx) -> None:
     ctx.check(FLAGGED_BY_ME, reconnected and flagged and len(me_rows) == 1 and "(AL law)" in me_rows[0][3],
               reconnected=reconnected, rows=[r[:2] for r in me_rows])
 
-    # ── D: nothing dismisses them ─────────────────────────────────────────────
     body = await feed()
     reads = [(await owner.post(f"/admin/agency-notifications/{n['id']}/read")).status_code for n in body["pinned"]]
     after_all = (await owner.post("/admin/agency-notifications/read-all")).json()
@@ -172,7 +141,6 @@ async def run(ctx) -> None:
               and still_pinned == {ref, me_},
               reads=reads, read_all=after_all, unread_rows=len(unread_sql), pinned=sorted(still_pinned))
 
-    # ── U: the banner and the Agency tab ──────────────────────────────────────
     async def look(tag: str, want_names: list[str]) -> dict:
         out: dict = {}
         for label, viewport, touch in (("desktop", (1600, 1000), False), ("phone", PHONE, True)):
@@ -188,7 +156,7 @@ async def run(ctx) -> None:
                     rows_ = page.get_by_test_id("agency-pinned")
                     await rows_.nth(len(want_names) - 1).wait_for(timeout=30_000)
                     info["pinned"] = await rows_.count()
-                    info["controls"] = await page.locator("[data-testid=agency-pinned] button").count()   # a link to its fix is no dismiss
+                    info["controls"] = await page.locator("[data-testid=agency-pinned] button").count()
                     info["tab"] = await page.get_by_role("tab", name="Agency").get_attribute("aria-selected")
                     info["fits"] = await page.evaluate(
                         "() => { const b = document.querySelector('[data-consent-banner]').getBoundingClientRect();"
@@ -218,7 +186,6 @@ async def run(ctx) -> None:
     else:
         ctx.skip(UI_TRIGGER, "--no-ui")
 
-    # ── C: three ways out ─────────────────────────────────────────────────────
     with fake.lock:
         fake.consent_signed.add(ref)
     t2 = time.time()
@@ -262,7 +229,6 @@ async def run(ctx) -> None:
     await http.aclose()
     await http_ref.aclose()
 
-    # ── budgets, evidence ─────────────────────────────────────────────────────
     routes = ctx.rec.summary("send")
     r = routes.get(SEND_ROUTE)
     if r is None:

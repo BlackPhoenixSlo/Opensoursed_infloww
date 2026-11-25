@@ -1,34 +1,5 @@
 "use client";
 
-/**
- * useVaultSweep — the one client-side model of a vault background sweep.
- *
- * The server runs several of these and three are literally the same object: a
- * module-level `_X_running: set[str]`, a `_X_progress` counter dict, a 409 on
- * double-start, and `GET /admin/vault-ai/<kind>/status` → `{running, progress}`.
- * `describe-all`, `flags-all` and `harvest-keywords` differ only in which keys
- * they put in `progress`.
- *
- * The client used to model that three different ways: one polled query
- * (`useVaultFlagsStatus`) and two hand-rolled `for (i < N) { sleep; fetch }`
- * loops inside the click handlers. The loops were the same bug twice over —
- * progress lived only in the tab that pressed the button, so it died on reload,
- * never existed in a second tab, and gave up after a fixed tick count (17 min for
- * describe, 7 for harvest) while a 500-item describe pass runs for over an hour.
- * Past that point the button read "Describe all (N)" over a sweep that was barely
- * a third done, and the operator's only remaining feedback was to press it again
- * — which 409s, which the handler swallowed, which put the label straight back.
- *
- * Asking the server instead makes the answer true for any mount, any tab, for
- * exactly as long as the sweep runs.
- *
- * WHAT LIVES HERE AND WHAT DOES NOT
- * ---------------------------------
- * The hook owns polling, the start call, the running→idle edge, and refreshing
- * whatever the sweep writes underneath the page. It does NOT own what a button
- * says: the label formatters below are pure functions of a progress dict, so
- * they are readable and testable without a DOM.
- */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -41,72 +12,37 @@ import {
 import { fmtAgo } from "@/lib/format";
 import { announceApiKeyError, ApiKeyError, relay, RelayError, type ApiKeyErrorPayload } from "@/lib/relay";
 
-/** The sweeps that share the `{running, progress}` contract. This is also the
- *  URL segment: start is POST `/admin/vault-ai/<kind>`, status is GET
- *  `/admin/vault-ai/<kind>/status`. */
 export type SweepKind = "describe-all" | "flags-all" | "harvest-keywords";
 
-/** The union of what the sweeps count. Everything past `total`/`done` is
- *  per-sweep AND optional, because the server fills the dict in stages:
- *  `{total, done}` at kickoff, `failed`/`error` as items fail, `needs_review`
- *  only once the pass lands. */
 export interface SweepProgress {
   total: number;
-  /** Items VISITED, not items that succeeded — a failure counts here too. */
   done: number;
   capped?: boolean;
   failed?: number;
   error?: string;
-  /** A sweep-wide skip worth its own line, whatever failed first (the Jev daily cap: Jev skipped for the rest of
-   *  the sweep) — the relay's sentence (`vault_sweep.run`). */
   notice?: string;
-  /** The sweep DIED — it did not finish. Server-side this is the outer handler
-   *  stamping the exception that ended the run. Without it a dead sweep and a
-   *  finished one are the same two facts (`running: false`, `done < total`) and
-   *  the button reads "Describe all (N)" for both, which is how an operator ends
-   *  up pressing it every few minutes without ever learning why. */
   aborted?: boolean;
-  /** describe-all: how many freshly-described items want a human look. */
   needs_review?: number;
-  /** harvest-keywords: how many items a keyword actually matched. Null for a chatter limited to some folders (a
-   *  whole-vault count is owners only). */
   matches?: number | null;
-  /** The sweep STOPPED on the API key (missing or rejected) — the relay's
-   *  payload, shown as the key toast when the sweep settles. */
   key_error?: ApiKeyErrorPayload | null;
-  /** The sweep STOPPED on a server-side cause no retry fixes (NudeNet missing, Jev down) or its breaker (many
-   *  items in a row failed) — the relay's `{message, fix}` (`vault_sweep.SweepStop`). */
   stop?: { message: string; fix: string } | null;
-  /** When the pass ended (ISO, UTC); dates the finished-with-failures note. */
   finished_at?: string;
 }
 
-/** A sweep-end note's age limit: past it the snapshot describes a run nobody remembers. */
 export const FAILED_NOTE_MAX_MS = 24 * 3600 * 1000;
 
 export interface SweepStatus {
   running: boolean;
-  /** Null before the sweep registers its counter, and after a relay restart —
-   *  it is an in-memory dict, not a row. See `sweepCounts`. */
   progress: SweepProgress | null;
 }
 
 const POLL_MS = 2500;
-/** Refresh what the page is showing every this many items. The sweep writes
- *  rows for an hour; without this the grid shows the vault as it was on load. */
 const REFRESH_EVERY = 10;
 
 export function sweepStatusKey(kind: SweepKind, accountId: string | null): QueryKey {
   return ["vault-sweep", kind, accountId];
 }
 
-/** Poll one sweep's status.
- *
- *  Self-arming by default: the interval is a function of the last answer, so it
- *  runs while the sweep runs and stops when it stops — no caller has to know
- *  when to start watching, which is the whole reason a reloaded tab used to see
- *  nothing. `pollWhileIdle` is for a caller that must also watch the gap between
- *  its own start call and the server admitting the sweep exists. */
 export function useSweepStatus<T extends SweepStatus = SweepStatus>(
   kind: SweepKind,
   accountId: string | null,
@@ -122,12 +58,7 @@ export function useSweepStatus<T extends SweepStatus = SweepStatus>(
       ),
     // eslint-disable-next-line local/no-fixed-polling -- stops when the job ends (pollWhileIdle: TODO verify)
     refetchInterval: (q) => (pollWhileIdle || q.state.data?.running ? POLL_MS : false),
-    // Both override an app-wide default (providers.tsx) that is actively wrong
-    // for a live counter. staleTime is 3 DAYS there: a mount would be served a
-    // cached `running: false` and — since the interval above is a function of
-    // exactly that data — would then never poll at all. refetchOnWindowFocus is
-    // off there, which would leave a backgrounded tab showing whatever it last
-    // saw, on the one screen where you tab away precisely because it is slow.
+    // Overrides the app-wide 3-day staleTime (a cached `running: false` would never poll) and no refetch on window focus (a backgrounded tab would go stale).
     staleTime: 0,
     refetchOnWindowFocus: true,
   });
@@ -136,13 +67,8 @@ export function useSweepStatus<T extends SweepStatus = SweepStatus>(
 export interface VaultSweepOptions {
   kind: SweepKind;
   accountId: string | null;
-  /** Refreshed every `REFRESH_EVERY` items while it runs, and once when it
-   *  settles — i.e. whatever the sweep is rewriting under the page. */
   liveKeys?: QueryKey[];
-  /** Refreshed only when it settles — counts and plans that are meaningless
-   *  mid-pass. */
   settleKeys?: QueryKey[];
-  /** Fires once, on the running→idle edge, with the final status. */
   onSettled?: (status: SweepStatus) => void;
 }
 
@@ -150,12 +76,7 @@ export interface VaultSweep {
   status: SweepStatus | undefined;
   progress: SweepProgress | null;
   running: boolean;
-  /** Running, OR a start this tab fired that the server has not confirmed yet.
-   *  This is the one to disable a button on. */
   busy: boolean;
-  /** POST the start. Extra body fields are merged over `{account_id}`. Resolves null when the sweep started, a
-   *  met target answered zero work, or a 409 says one is already running; else the refusal's sentence
-   *  (`refusalText`). Callers that only start may ignore it. */
   start: (body?: Record<string, unknown>) => Promise<string | null>;
 }
 
@@ -168,9 +89,7 @@ export function useVaultSweep(opts: VaultSweepOptions): VaultSweep {
   const status = query.data;
   const running = !!status?.running;
 
-  // Latest render's callbacks/keys, so neither effect below has to list a fresh
-  // array or closure identity in its dep array — that would re-fire them on
-  // every render and turn the settle edge into a loop.
+  // Latest callbacks/keys via ref so neither effect lists a fresh identity and loops the settle edge.
   const latest = useRef(opts);
   latest.current = opts;
 
@@ -187,9 +106,6 @@ export function useVaultSweep(opts: VaultSweepOptions): VaultSweep {
     refresh(latest.current.liveKeys);
   }, [accountId, running, bucket, refresh]);
 
-  // The running→idle edge, exactly once. Keyed by account so switching the
-  // account chip mid-sweep reads as "a different sweep", not as a finish — the
-  // previous account's `needs_review` must not pop a modal about this one.
   const seen = useRef<{ acct: string | null; running: boolean }>({
     acct: null,
     running: false,
@@ -197,8 +113,9 @@ export function useVaultSweep(opts: VaultSweepOptions): VaultSweep {
   useEffect(() => {
     const prev = seen.current;
     seen.current = { acct: accountId, running };
-    if (!accountId || prev.acct !== accountId) return; // first sight of this account
-    if (running || prev.running === running) return; // only true → false
+    // Keyed by account: switching chip mid-sweep is a different sweep, not a finish.
+    if (!accountId || prev.acct !== accountId) return;
+    if (running || prev.running === running) return;
     refresh(latest.current.liveKeys);
     refresh(latest.current.settleKeys);
     if (status?.progress?.key_error) announceApiKeyError(status.progress.key_error);
@@ -211,14 +128,10 @@ export function useVaultSweep(opts: VaultSweepOptions): VaultSweep {
       setStarting(true);
       let refusal: string | null = null;
       try {
-        // A 409 `*_already_running` means the sweep the operator is asking for
-        // is already in flight — clearing the label on that is what used to put
-        // "Describe all" back over a running sweep — so it is no refusal. Any
-        // other failure is handed back as its sentence; either way the refetch
-        // below asks the server what is actually true and the UI renders that.
         await relay
           .post(`/admin/vault-ai/${kind}`, { account_id: accountId, ...body }, { accountId })
           .catch((e: unknown) => {
+            // A 409 already_running is not a refusal: clearing the label then put "Describe all" back over a running sweep.
             if (!(e instanceof RelayError && e.status === 409)) refusal = refusalText(e);
           });
         await qc
@@ -241,14 +154,10 @@ export function useVaultSweep(opts: VaultSweepOptions): VaultSweep {
   };
 }
 
-// ── Refusals (pure) ────────────────────────────────────────────────
 
-/** A whole-vault refusal (`folder_not_allowed`). */
 export const WHOLE_VAULT = "Ask the owner: this needs access to the whole vault.";
-/** Any refusal the relay gave no sentence for (an object detail without one, a bare or non-JSON body). */
 export const GENERIC_REFUSAL = "The relay could not do that. Try again in a minute.";
 
-/** A refused relay call's object `detail`, when it has one. */
 function objectDetail(err: unknown): Record<string, unknown> | null {
   if (!(err instanceof RelayError)) return null;
   const body = err.body as { detail?: unknown } | null | undefined;
@@ -256,16 +165,11 @@ function objectDetail(err: unknown): Record<string, unknown> | null {
   return detail && typeof detail === "object" && !Array.isArray(detail) ? (detail as Record<string, unknown>) : null;
 }
 
-/** A refused relay call's `detail.error` code (`{"error": "inventory_unknown"}` → "inventory_unknown"). */
 export function errorCode(err: unknown): string | null {
   const code = objectDetail(err)?.error;
   return typeof code === "string" ? code : null;
 }
 
-/** The sentence to show for a refused relay call: the key payload's message and fix, the server's own sentence
- *  (a string `detail`, the Describe cap's `blocked_reason`, a typed refusal's `message`), the whole-vault
- *  refusal, else one generic sentence; never an "HTTP n" prefix or JSON. Anything not from the relay is a
- *  network failure. */
 export function refusalText(err: unknown): string {
   if (err instanceof ApiKeyError) return `${err.payload.message} ${err.payload.fix}`;
   if (err instanceof RelayError) {
@@ -283,21 +187,8 @@ export function refusalText(err: unknown): string {
   return "Could not reach the relay.";
 }
 
-// ── Label formatters (pure) ────────────────────────────────────────
 
-/** `done`/`total` for a label, or null when there is nothing honest to show.
- *
- *  `fallback` is the DURABLE count, derived from the DB rather than from the
- *  process — describe's plan endpoint gives one for free. The live counter is an
- *  in-memory dict on the relay: it does not exist for the second or two between
- *  registering the sweep and finishing its id select, and it does not survive a
- *  relay restart at all. Reading only the counter is how a sweep that is plainly
- *  running renders as "0/0".
- *
- *  The two are not the same denominator and are not meant to be: the counter
- *  measures THIS PASS, the fallback measures THE VAULT. Both are true, the
- *  fallback only appears when the counter is absent, and it moves in the same
- *  direction — which beats a zero that reads as breakage. */
+// `fallback` is the DB-derived count: the live counter is an in-memory relay dict, absent just after start and after a restart, which read "0/0".
 export function sweepCounts(
   progress: SweepProgress | null,
   fallback?: { done: number; total: number },
@@ -307,15 +198,10 @@ export function sweepCounts(
   return null;
 }
 
-/** The sweep's own-line notice (the Jev cap), "" when it only repeats `error`. */
 function noticeLine(progress: SweepProgress | null): string {
   return progress?.notice && progress.notice !== progress.error ? progress.notice : "";
 }
 
-/** The describe button's live text, plus the tooltip that carries what will not
- *  fit on it. Failures stay off the button (it would wrap) but must not be
- *  invisible: 7 silent audio failures is a shrug, a whole vault failing on a
- *  missing provider key is not, and they look identical without the count. */
 export function describeSweepText(
   progress: SweepProgress | null,
   fallback?: { done: number; total: number },
@@ -335,24 +221,10 @@ export function describeSweepText(
   return { label, title };
 }
 
-/** What to say about how the last sweep ENDED, or null if there is nothing to
- *  say. Read only when `busy` is false — while it runs, the button's own label
- *  carries the progress.
- *
- *  A stop (`key_error`, `stop`) or a death (`aborted`) always (`warn`): those keys
- *  are rewritten at every start. A pass that finished with failures too, but only
- *  while its `finished_at` is under FAILED_NOTE_MAX_MS old and saying when — the
- *  server keeps `progress` until a restart, and an undated banner would describe a
- *  run nobody remembers (11-14: 5336/5336 failed and the drawer said nothing).
- *  `warn` when nothing succeeded, else `info`.
- *
- *  `left` is honest for every sweep because `done` counts items VISITED — see
- *  `service/vault_sweep.py`, which owns that definition for all of them. */
 export function sweepAbortedNote(
   progress: SweepProgress | null,
   now: number = Date.now(),
 ): { text: string; detail: string; tone: "warn" | "info" } | null {
-  // The relay's own sentences, stop first; a Jev cap recorded before the stop keeps its line (W30 C7).
   const stop = progress?.key_error ?? progress?.stop;
   if (stop) {
     const detail = [stop.fix, noticeLine(progress)].filter(Boolean).join("\n");
@@ -384,7 +256,6 @@ export function sweepAbortedNote(
 export function harvestSweepLabel(progress: SweepProgress | null): string {
   const counts = sweepCounts(progress);
   if (!counts) return "starting…";
-  // No count (a folder-limited chatter): say nothing rather than "0 hits", which reads as an empty vault.
   const m = progress?.matches;
   return m == null ? `${counts.done}/${counts.total}` : `${counts.done}/${counts.total} · ${m} hits`;
 }

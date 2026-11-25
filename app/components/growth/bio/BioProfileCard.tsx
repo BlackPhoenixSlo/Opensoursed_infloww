@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * The bio editor's Profile card: the avatar and the page background (each uploads on pick, or a photo from the saved
- * Creator's vault; Remove), display name, the address (read-only), bio, default Mode, the Verified badge and the
- * Creator, under one Save. State: `bioProfileForm.ts`, held by BioEditor (the preview draws the draft); this card only
- * dispatches (which image the vault picker is open for is its one local state).
- */
 import { useId, useRef, useState, type Dispatch } from "react";
 
 import {
@@ -39,7 +33,6 @@ export function BioProfileCard({ page, form, dispatch }: {
   const [vaultFor, setVaultFor] = useState<"avatar" | "background" | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const bgFileRef = useRef<HTMLInputElement>(null);
-  // The saved Creator: the relay reads the vault of the page's stored account, not the unsaved draft's.
   const vaultAccount = page.profile.account_id || null;
   const avatarBusy = avatar.isPending || fromVault.isPending;
   const avatarError = avatar.error ? bioFailure(avatar.error, "Upload failed").msg
@@ -125,7 +118,6 @@ export function BioProfileCard({ page, form, dispatch }: {
             onConfirm={(picked) => {
               const target = vaultFor;
               setVaultFor(null);
-              // One image: the first photo picked (a lone video goes through, for the relay's "photo" refusal).
               const m = picked.find((p) => p.type === "photo") ?? picked[0];
               if (!m) return;
               if (target === "avatar") {

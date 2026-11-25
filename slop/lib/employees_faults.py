@@ -1,8 +1,3 @@
-"""Manage employees' break-it-once faults (client side, checked by
-scenarios/2026-10-30-employees-management.py): lib/faults.py merges `register(Fault)` into FAULTS.
-The check names live here and the scenario imports them, so a target can never name a check that
-does not exist.
-"""
 from __future__ import annotations
 
 EMP_MODALS_ONE = ("employees: each of Add, Edit, Set role, Reset password and Access limits opens as exactly one "
@@ -35,26 +30,13 @@ EMP_NO_5XX = "employees: no 5xx on any request the browser made"
 
 def register(Fault) -> dict:
     return {
-        # slop/run employees-management --break (client side, the scenario's FAULT)
-        # app/components/employees/employeeAccessState.ts `buildPayload`: every folder-access PUT body carries
-        # `folders: []`, so the grants are dropped on the wire while the UI still says "Saved.". Only the two
-        # API-side stored checks go red; the UI checks (Saved., the draft through the refetch) stay green.
         "employee-access-drops-folders": Fault(None, (EMP_ACCESS_STORED, EMP_ACCESS_RESAVED), browser=(
             (r"visible\.has\(aid\) && entry\?\.limit \? entry\.grants : \[\]", "false ? entry.grants : []"),
         )),
-        # slop/run 2026-10-30-employees-management --break --fault=employee-access-saved-beside-unsaved-edit
-        # app/components/employees/employeeAccessState.ts `saveOk`: the rev guard reverted, so a save that
-        # finishes after a mid-flight edit says "Saved." beside that unsaved edit. Only that check goes red.
         "employee-access-saved-beside-unsaved-edit": Fault(None, (EMP_ACCESS_SAVED_STALE,), browser=(
             (r"state\.savingRev === state\.rev \? action\.at : null", "action.at"),
         )),
-        # slop/run 2026-10-30-employees-management --break --fault=employee-access-partial-not-invalidated
-        # app/components/employees/EmployeeAccess.tsx `saveM.onSettled`: the pre-fix "invalidate on success only" (the
-        # settle returns on an error), so a save whose accounts half landed and folders half failed refetches nothing (the
-        # list's Assigned Creators stay stale). Only the partial-save check goes red; a full save still refetches. The
-        # arrow is pinned by its body (the access key's invalidate is only in onSettled), not its key: a pattern starting
-        # at `onSettled:` never matched the served JS (measured, run
-        # 20261030T101942Z-2026-10-30-employees-management-break-b0a3).
+        # Pinned by the arrow's body, not its key: a pattern starting at `onSettled:` never matched the served JS (measured).
         "employee-access-partial-not-invalidated": Fault(None, (EMP_ACCESS_PARTIAL,), browser=(
             (r'\(\)\s*=>\s*\{(?=(?:\\n|\s)*void qc\.invalidateQueries\(\{(?:\\n|\s)*queryKey: \[(?:\\n|\s)*'
              r'\\?"admin\\?",(?:\\n|\s)*\\?"chatters\\?",(?:\\n|\s)*chatterId,)',

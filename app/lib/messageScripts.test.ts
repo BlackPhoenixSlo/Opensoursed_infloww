@@ -32,7 +32,6 @@ describe("scriptDraftFromMessage (Save as script, roadmap W4 4.2)", () => {
     expect(d.lockedText).toBe(true);
     expect(d.media!.map((m) => m.id)).toEqual([22, 11]);
     expect(d.previews).toEqual([22]);
-    // Vault files keep only variants with a url; a media item without files has none.
     expect(d.media![1].files).toEqual({ thumb: { url: "https://cdn/t.jpg" }, preview: undefined,
                                         squarePreview: undefined, full: undefined });
     expect(d.media![0].files).toBeNull();

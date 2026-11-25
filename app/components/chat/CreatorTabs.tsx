@@ -1,52 +1,5 @@
 "use client";
 
-/**
- * CreatorTabs — the Window header's Creator tabs strip (the Clone's `.ctabs`,
- * docs/spec/phase-01-window-chrome-tabs.md) and "+ Add a Creator" after it:
- * one named tab per open Creator, in the store's order (`useCreatorTabs`),
- * each with its avatar, its unread total and its ✕. It replaces the roster
- * rail inside Messages Pro.
- *
- * - The unread total is the Red circle (`redCircle`): the Relay's slot in the
- *   Freshness store, else the roster counts (`useRosterCounts`); none at 0,
- *   1–8, "9+", or a Grey circle when unknown. After it the Amber circle
- *   (`amberCircle`, Owe reply chats the Relay publishes; grey when unknown,
- *   none when the Red circle is grey); then, in teal, the
- *   Creator's OnlyFans notification count (`useOfNotifCount`, the
- *   Notifications button's read).
- * - Clicking a tab, or Enter or Space on it, sets the scope to that Creator,
- *   so the Fan List switches. The active tab is `aria-selected`.
- * - The roster's warm-up is kept (`useCreatorWarmUp`): picking a tab, or
- *   hovering or focusing it for 250ms, prefetches that Creator's Fan List and
- *   refreshes its unread count.
- * - ✕ closes a tab (messages.js:352-365). Closing the active tab activates
- *   the first remaining one; focus moves to the active tab, or to "+ Add a
- *   Creator" when none remain, and then the scope is left alone. An empty
- *   strip says why (messages.js:284, :3410).
- * - Dragging a tab onto another moves it to that tab's place, through the
- *   house's HTML5 drag helper (`useReorder`); the dragged tab dims and a
- *   2px drop marker shows where it lands (messages.js:297-333).
- *   ArrowLeft / ArrowRight on a focused tab move it one place and focus
- *   follows it (messages.js:334-348). The order is saved by the store.
- * - "+ Add a Creator" opens the Creator picker (messages.js:368-388): every
- *   session-bearing Creator, "open" or "add". Picking one reopens its tab
- *   and activates it. The picker closes on an outside pointer-down or Escape.
- * - The sort button after it (MP2's chat sorting, 04-messages-pro P9) orders
- *   the strip: Custom order (the saved one), Most unread first, A – Z or
- *   Z – A, saved with the tabs (`useCreatorTabs`'s `sort`). Dragging or
- *   moving a tab while sorted keeps the order shown and makes it the custom one.
- * - Right-clicking a tab offers "Open in a new window" (the Fan List row's
- *   menu, `OpenInNewWindowMenu`): a Pop-out window on that Creator, at the
- *   Creator window URL (`creatorWindowHref`).
- * - The tabs on screen hold a View lease (`useOnScreenLease`, ADR-0031): only
- *   those the strip shows, found by an IntersectionObserver, never every
- *   open tab, so scrolling the strip moves the lease.
- * - A small dot at the foot of a Creator's avatar, on its tab and its picker
- *   row (`useLiveMark`, watched-creator-refresher Phase 3): amber "No live
- *   connection" once the Relay's socket for it has been down 60 s, red
- *   "Disconnected" at once for a Dead session. Its tooltip ends the tab's (is
- *   the row's), its words end the accessible name. No dot when healthy.
- */
 
 import { useLayoutEffect, useRef, type HTMLAttributes, type RefObject } from "react";
 import { ArrowUpDown, Plus } from "lucide-react";
@@ -72,17 +25,12 @@ import { useFanListMenu } from "./useFanListMenu";
 
 const G = MP.creatorTabs;
 const O = MP.ours.CreatorTabs;
-/** The drop marker on the side the dragged tab will land. */
 const DROP_MARK = { before: O.dropMarkBefore, after: O.dropMarkAfter } as const;
 
-/** The Creator window URL (spec, Contracts): a Pop-out window of Messages
- *  Pro on that Creator, which the `account` parameter scopes to. */
 function creatorWindowHref(accountId: string): string {
   return `/messages-pro?account=${encodeURIComponent(accountId)}`;
 }
 
-/** The live mark's dot at the avatar's foot (amber down, red dead), ringed in
- *  the tab's background. Decorative: its words are `MarkWords`. */
 function MarkDot({ mark }: { mark: LiveMark }) {
   return (
     <span
@@ -92,19 +40,15 @@ function MarkDot({ mark }: { mark: LiveMark }) {
   );
 }
 
-/** The mark's words for the accessible name, after a space (see `UnreadMiniBadge`). */
 function MarkWords({ mark }: { mark: LiveMark | null }) {
   return mark && <>{" "}<span className="sr-only">{mark.srText}</span></>;
 }
 
-/** Where focus goes once the strip has re-rendered: a Creator's tab, or
- *  "+ Add a Creator". */
 type FocusTarget = { tab: string } | "add" | null;
 
 export function CreatorTabs() {
   const store = useCreatorTabs();
   const { ready, close, reopen, reorder, sort, setSort } = store;
-  // The strip's order: the store's, in the chosen sort.
   const { open, circles, ambers } = useShownCreatorTabs(store);
   const track = useOnScreenLease("strip");
   const { scope, setScope } = useScope();
@@ -140,8 +84,6 @@ export function CreatorTabs() {
     focusNext.current = { tab: next.id };
   };
 
-  // Focus stays on a moved tab: the tabs are keyed by Creator, so React
-  // moves the focused node and restores its focus after the commit.
   const drag = useReorder(open, (next) => reorder(next.map((a) => a.id)), (a) => a.id);
 
   const reopenTab = (accountId: string) => {
@@ -155,8 +97,6 @@ export function CreatorTabs() {
       <div role="tablist" aria-label="Creator tabs" className={cn(G.strip, "flex items-end min-w-0 overflow-x-auto no-scrollbar")}>
         {open.map((a, idx) => {
           const from = drag.draggingIndex;
-          // The marker shows on the tab dragged over, on the side the dragged
-          // tab lands: `useReorder` puts it in that tab's place.
           const dropMark = from === null || from === idx || drag.dragOverIndex !== idx
             ? null
             : idx < from ? "before" : "after";
@@ -190,8 +130,6 @@ export function CreatorTabs() {
           );
         })}
       </div>
-      {/* After the tablist, not in it (a tablist owns tabs only); the empty
-       *  strip has no width, so it sits where the Clone's does. */}
       {ready && open.length === 0 && (
         <span className={cn(G.empty, "whitespace-nowrap text-fg-dim")}>
           {store.closed.length > 0
@@ -213,14 +151,11 @@ function CreatorTab({
   amber: AmberCircle;
   active: boolean;
   dragging: boolean;
-  /** The drop marker's side, while another tab is dragged over this one. */
   dropMark: keyof typeof DROP_MARK | null;
   dragProps: Pick<HTMLAttributes<HTMLDivElement>,
     "draggable" | "onDragStart" | "onDragOver" | "onDrop" | "onDragEnd">;
-  /** Move this tab one place left (-1) or right (1). */
   onMove: (dir: -1 | 1) => void;
   tabRef: (el: HTMLButtonElement | null) => void;
-  /** The whole tab, for the strip's on-screen lease (`useOnScreenLease`). */
   leaseRef: (el: Element | null) => void;
   onPick: () => void;
   onClose: () => void;
@@ -228,9 +163,6 @@ function CreatorTab({
   onHoverEnd: () => void;
 }) {
   const name = account.nickname || account.id;
-  // Infloww's second badge: the Creator's OnlyFans notification count,
-  // the same read (and cache entry) as the Notifications button; none for a
-  // Dead-session Creator.
   const { count: notifs } = useOfNotifCount(account.session_dead_at ? null : account.id);
   const mark = useLiveMark(account);
   const title = [name, circleTitle(circle), amberTitle(amber), mark?.title].filter(Boolean).join(" — ");
@@ -281,14 +213,11 @@ function CreatorTab({
           {notifs > 0 && <NotifMiniBadge count={notifs} />}
           <MarkWords mark={mark} />
         </button>
-        {/* The ✕ is the tab's sibling inside the tablist, not inside the tab:
-         *  a button cannot nest in a button, and inside the tab it would join
-         *  the tab's accessible name. */}
+        {/* Sibling of the tab, not inside it: a button cannot nest in a button and would join the tab's accessible name. */}
         <button
           type="button"
           onClick={onClose}
           aria-label={`Close ${name}`}
-          // The Clone's tooltip (messages.js:278).
           title="Close this tab (reopen from + Add a Creator)"
           className={cn(G.close, "flex-none grid place-items-center text-fg-dim hover:text-fg")}
         >
@@ -299,8 +228,6 @@ function CreatorTab({
   );
 }
 
-/** "+ Add a Creator" and its Creator picker: the open tabs in strip order,
- *  then the closed ones. */
 function AddCreator({
   open, closed, addRef, onPick,
 }: {
@@ -326,7 +253,6 @@ function AddCreator({
           aria-label="Creator picker"
           className={cn(MENU, O.pickerPlace)}
         >
-          {/* The Clone's heading (messages.js:380). */}
           <div className={cn(MP.menu.head, "uppercase text-fg-dim")}>Creators on this relay ({rows.length})</div>
           {rows.map(({ account, meta }) => (
             <PickerRow key={account.id} account={account} meta={meta} onPick={() => { setOpen(false); onPick(account.id); }} />
@@ -337,7 +263,6 @@ function AddCreator({
   );
 }
 
-/** One Creator in the picker: avatar (with the live mark's dot), name, "open" or "add". */
 function PickerRow({ account, meta, onPick }: { account: AccountMeta; meta: string; onPick: () => void }) {
   const mark = useLiveMark(account);
   return (
@@ -349,7 +274,6 @@ function PickerRow({ account, meta, onPick }: { account: AccountMeta; meta: stri
         {mark && <MarkDot mark={mark} />}
       </span>
       <span className="min-w-0 truncate">{account.nickname || account.id}</span>
-      {/* A space for the accessible name ("Name add"); see the tab's. */}
       {" "}
       <span className={cn(MP.menu.meta, "ml-auto flex-none text-fg-dim")}>{meta}</span>
       <MarkWords mark={mark} />
@@ -364,7 +288,6 @@ const SORT_LABEL: Record<CreatorSort, string> = {
   za: "Z – A",
 };
 
-/** The strip's sort button and its menu; the chosen order is checked. */
 function SortTabs({ sort, onSort }: { sort: CreatorSort; onSort: (sort: CreatorSort) => void }) {
   const { open, setOpen, ref, triggerProps, menuProps } = useFanListMenu<HTMLDivElement>();
   return (

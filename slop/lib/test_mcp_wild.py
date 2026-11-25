@@ -1,4 +1,3 @@
-"""lib/mcp_wild_cases.py: the case table's shape and the judges (scenarios/2026-11-14-mcp-wild.py)."""
 from __future__ import annotations
 
 import json
@@ -77,20 +76,18 @@ def test_mix_names_unique_and_expectations_cover_every_pick():
     (202, "", "", None, "", True),
     (405, "text/plain", "POST only", None, "", True),
     (401, "text/plain", "invalid, expired or revoked access token", 1, 'Bearer realm="x"', True),
-    (401, "text/plain", "invalid", 1, "", False),                                     # no WWW-Authenticate
-    # W30 F13: a JSON-RPC 401 (anon tool call, cookie) needs the Bearer challenge too
+    (401, "text/plain", "invalid", 1, "", False),
     (401, "application/json", '{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"x"}}', 1,
      'Bearer resource_metadata="https://h/.well-known/oauth-protected-resource/admin/mcp"', True),
     (401, "application/json", '{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"x"}}', 1, "", False),
     (401, "application/json", '{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"x"}}', 1,
      'Basic realm="x"', False),
-    # W30 C6: the scheme is exactly Bearer (any case), then a space or the end
     (401, "text/plain", "invalid", 1, "BearerExtra realm=\"x\"", False),
     (401, "text/plain", "invalid", 1, "Bearer-ish", False),
     (401, "text/plain", "invalid", 1, "bearer", True),
     (401, "text/plain", "invalid", 1, 'BEARER error="invalid_token"', True),
     (500, "text/plain", "Internal Server Error", 1, "", False),
-    (200, "application/json", '{"jsonrpc":"2.0","id":2,"result":{}}', 1, "", False),  # id not echoed
+    (200, "application/json", '{"jsonrpc":"2.0","id":2,"result":{}}', 1, "", False),
     (200, "application/json", '{"jsonrpc":"2.0","id":1,"result":{},"error":{}}', 1, "", False),
     (400, "application/json", '{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"x"}}', 1, "", False),
     (200, "application/json", '{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"x"}}', 1, "", False),
@@ -111,7 +108,7 @@ def _tool(is_error, status=None, detail=None):
     (mc.Case("t", "g", tool="ok"), 200, _tool(False), 0),
     (mc.Case("t", "g", tool="ok"), 200, _tool(True, 403, "no"), 1),
     (mc.Case("t", "g", tool=(403, 404)), 200, _tool(True, 404, "gone"), 0),
-    (mc.Case("t", "g", tool=401), 200, {"jsonrpc": "2.0", "id": 1, "result": {}}, 1),       # no tools/call result
+    (mc.Case("t", "g", tool=401), 200, {"jsonrpc": "2.0", "id": 1, "result": {}}, 1),
     (mc.Case("t", "g", status=(400,), code=-32700), 400,
      {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "x"}}, 0),
     (mc.Case("t", "g", status=(400,), code=-32700), 400,
@@ -137,7 +134,7 @@ def test_leaks_and_sentinels():
     assert mc.leaks("Traceback (most recent call last)")
     assert mc.leaks('File "/app/service/x.py", line 3')
     assert mc.leaks("bad password hunter22!", ("hunter22!",))
-    assert not mc.leaks("invalid arguments", ("abc",))   # secrets under 4 chars ignored
+    assert not mc.leaks("invalid arguments", ("abc",))
     assert mc.sentinel_hits("nick bwild1nick x", ("bwild1nick", "", "zz")) == ["bwild1nick"]
 
 
@@ -158,9 +155,9 @@ def test_short_body_and_pct():
 
 
 def test_totp_rfc6238_vector_and_bad_code():
-    secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"   # RFC 6238 SHA-1 key "12345678901234567890"
-    assert mc.totp(secret, 1) == "287082"          # T = 59 s
-    assert mc.totp(secret, 37037036) == "081804"   # T = 1111111109 s
+    secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+    assert mc.totp(secret, 1) == "287082"
+    assert mc.totp(secret, 37037036) == "081804"
     for step in (37037036, 59_000_000):
         bad = mc.bad_code(secret, step)
         assert len(bad) == 6 and bad.isdigit()
@@ -171,7 +168,6 @@ def test_request_id_and_raw():
     assert mc.request_id(mc.rpc("ping", rid=7)) == 7
     assert mc.request_id(b"{") is None
     assert mc.raw('"\\ud800"') == '"\\ud800"'.encode()
-    # raw bodies parse like the server's json.loads: NaN, a lone surrogate id; too deep / too long → None
     assert mc.request_id(b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{"x":NaN}}') == 1
     assert mc.request_id(mc.raw('{"jsonrpc":"2.0","id":"\\udfff","method":"ping"}')) == "\udfff"
     assert mc.request_id(b'{"id":' + b"[" * 100_000 + b"]" * 100_000 + b"}") is None
@@ -189,7 +185,6 @@ def test_unread_cases_are_header_or_size_refusals():
 
 
 def test_fault_widens_anon_tools_list(monkeypatch):
-    """W30 F13: the fault reaches the tools/list leg (`_listed`) for the no-credential caller only."""
     import sys
     import types
     fake = types.SimpleNamespace(BUILTINS={"sign_in": 0, "propose_plan": 1},

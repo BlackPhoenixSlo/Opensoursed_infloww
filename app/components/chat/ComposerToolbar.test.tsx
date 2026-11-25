@@ -1,60 +1,9 @@
-/**
- * Composer toolbar (seam 1: the `Composer`) — the send payload pinned before
- * the Phase 4 rebuild replaces the Composer's chrome (ticket 26): Enter, the
- * GIF and tags. Every check asserts at `onSend`; for the same inputs it must
- * receive the same `SendArgs` after the rebuild (spec, Contracts). A later
- * ticket may change how a test reaches a control, but not what it asserts.
- *
- * Ticket 27 adds the two rows: "Composer buttons" and "Composer toolbar",
- * their order, the blocked chat and Send's enabled state.
- *
- * Ticket 28 turns the parked Lines and ⌘ triggers into the "AI" and
- * "Scripts" pills, and pins what a pick from each puts in the Composer.
- * The "AI" pill is now the AI Copilot; its picks are pinned in
- * `CopilotPicker.test.tsx`.
- *
- * Ticket 29 ends the button row with the "+" Extras overflow, holding free
- * previews, the "at" presets and the quick emojis. TODO.md A2 drops "+":
- * free previews show inline in the PPV row, the presets sit under ⏱ and
- * the quick emojis are a row after ⚙ that ⚙'s Save fills (A1).
- *
- * Ticket 30 puts the "PPV" pill in the price control's slot; the price moves
- * into the PPV row (`PpvRow.test.tsx`).
- *
- * Ticket 31 puts ⏱ "Timed message" after "PPV" (`TimedMessagePopover.test.tsx`)
- * and removes the ▾ quick-send split from Send.
- *
- * Ticket 33 puts ⚙ "Emoji favourites" after the emoji picker: up to 40
- * favourites, which the emoji picker shows first.
- *
- * Ticket 34 adds Upload (opens the Vault picker, as Vault does), @ "Mention"
- * (inserts the Fan's @username) and "Aa" (OF's formatting toolbar) to the bottom toolbar.
- * TODO.md A5 drops "Mention": the @ icon is "Tag other Creators" now.
- * On 2026-10-16 Upload opens the computer's file chooser instead (the
- * upload chips are pinned in `ComposerUpload.test.tsx`).
- *
- * Ticket 35 makes GIF and "Tag other Creators" 34px icons; the tag popover
- * stages picks until "Add", and its "More" › "Add a tag" › "Release form" is
- * Not wired.
- *
- * Ticket 36 puts "Translate" between "Aa" and Send: its popover's "Use
- * translation" switch drives the same translate mode as the Chat header's 🌐.
- *
- * Look-and-feel ticket 147 (docs/spec/messages-pro-look-and-feel/
- * phase-05-composer.md, Gap rows C1–C8, C13) makes the Composer Infloww's
- * three rows: "Composer buttons" holds no input, the textbox is a row of its
- * own before "Composer toolbar", the pills' labels fold to screen-reader text
- * below the row-1 threshold, and ⚙'s panel opens from its left edge.
- *
- * Look-and-feel ticket 148 (Gap rows C10, C11) opens the PPV row between the
- * textbox and "Composer toolbar", under the reply strip.
- *
- * Look-and-feel ticket 150 (user stories 4–7) gives the textbox Infloww's
- * placeholder and makes it true: a draft that is "/" + a keyword lists the
- * matching Scripts, and Enter loads the first one as a "Scripts" pick would.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, screen, waitFor, within } from "@testing-library/react";
+vi.mock("@/contexts/UserContext", async (orig) => ({
+  ...(await orig<typeof import("@/contexts/UserContext")>()),
+  useOptionalUser: () => ({ user: { user_id: "owner-A" }, loading: false }),
+}));
 import userEvent from "@testing-library/user-event";
 
 vi.mock("@/lib/relay", async (orig) =>
@@ -68,6 +17,13 @@ import {
 import { readTranslateMode, useTranslateMode } from "@/hooks/useTranslateMode";
 import { MP } from "@/lib/messagesPro";
 import { NOT_WIRED } from "./NotWired";
+import { QueryClient } from "@tanstack/react-query";
+
+const ownerCache = () => {
+  const c = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  c.setQueryData(["accounts", "owner-A"], { accounts: [{ id: "acct-1", platform: "onlyfans" }], active_account_id: null });
+  return c;
+};
 
 beforeEach(() => resetComposerHarness());
 afterEach(() => {
@@ -79,39 +35,37 @@ const textbox = () => screen.getByPlaceholderText('Press "/" + keyword to quickl
 
 describe("Composer toolbar: the three rows", () => {
   it('"Composer buttons" holds emoji, ⚙, the quick emojis, AI, Scripts, PPV and ⏱ in order and no textbox; "Composer toolbar" holds its controls in order', async () => {
-    await renderComposer();
+    await renderComposer({}, ownerCache());
 
     const row1 = screen.getByRole("toolbar", { name: "Composer buttons" });
     const buttons = within(row1);
     const quick = within(buttons.getByRole("group", { name: "Quick emojis" })).getAllByRole("button");
     const row1Buttons = [
       buttons.getByRole("button", { name: "Emoji picker" }),
-      buttons.getByRole("button", { name: "Emoji favourites" }), // ticket 33
-      ...quick, // TODO.md A2
+      buttons.getByRole("button", { name: "Emoji favourites" }),
+      ...quick,
       buttons.getByRole("button", { name: "AI" }),
       buttons.getByRole("button", { name: "Scripts" }),
-      buttons.getByRole("button", { name: "PPV" }), // ticket 30: the pill replaces the price slot
-      buttons.getByRole("button", { name: "Timed message" }), // ticket 31
+      buttons.getByRole("button", { name: "PPV" }),
+      buttons.getByRole("button", { name: "Timed message" }),
     ];
     expect(quick).toHaveLength(8);
     expectDomOrder(row1Buttons);
-    // Ticket 147 (C2): row 1 holds exactly these and no input; A2 drops "+".
     expect(buttons.getAllByRole("button")).toEqual(row1Buttons);
     expect(buttons.queryByRole("textbox")).not.toBeInTheDocument();
 
     const toolbar = within(screen.getByRole("toolbar", { name: "Composer toolbar" }));
     const toolbarButtons = [
-      toolbar.getByRole("button", { name: "Upload" }), // ticket 34
-      toolbar.getByRole("button", { name: "GIF" }), // ticket 35
+      toolbar.getByRole("button", { name: "Upload" }),
+      toolbar.getByRole("button", { name: "GIF" }),
       toolbar.getByRole("button", { name: "Vault" }),
       toolbar.getByRole("button", { name: "Schedule" }),
-      toolbar.getByRole("button", { name: "Tag other Creators" }), // ticket 35; the @ since A5
-      toolbar.getByRole("button", { name: "Aa" }), // ticket 34
-      toolbar.getByRole("button", { name: "Translate" }), // ticket 36
+      toolbar.getByRole("button", { name: "Tag other Creators" }),
+      toolbar.getByRole("button", { name: "Aa" }),
+      toolbar.getByRole("button", { name: "Translate" }),
       toolbar.getByRole("button", { name: "Send" }),
     ];
     expectDomOrder(toolbarButtons);
-    // Ticket 31: Send has no ▾ menu. Ticket 36: the row holds exactly these; A5 drops "Mention".
     expect(toolbar.getAllByRole("button")).toEqual(toolbarButtons);
     expect(toolbar.queryByRole("textbox")).not.toBeInTheDocument();
   });
@@ -121,7 +75,6 @@ describe("Composer toolbar: the three rows", () => {
 
     const row1 = screen.getByRole("toolbar", { name: "Composer buttons" });
     const row3 = screen.getByRole("toolbar", { name: "Composer toolbar" });
-    // A node inside a row also "follows" it, so containment is checked first.
     expect(row1.contains(textbox()) || row3.contains(textbox())).toBe(false);
     expectDomOrder([row1, textbox(), row3]);
   });
@@ -142,8 +95,6 @@ describe("Composer toolbar: the three rows", () => {
       expect(row1.contains(el) || row3.contains(el) || el.contains(textbox())).toBe(false);
     }
     expectDomOrder([screen.getByText(/Fan unsubscribed/), row1, textbox(), replyStrip, ppvRow, row3]);
-    // The PPV row is a row of the Composer, beside rows 1 and 3, with its
-    // own 16px side inset (C11) and no wrapper adding a second one.
     expect(ppvRow.parentElement).toBe(row3.parentElement);
     expect(ppvRow.className.split(/\s+/)).toEqual(expect.arrayContaining(["px-4", "gap-2"]));
   });
@@ -154,7 +105,6 @@ describe("Composer toolbar: the three rows", () => {
     const row1 = within(screen.getByRole("toolbar", { name: "Composer buttons" }));
     for (const name of ["AI", "Scripts", "PPV"]) {
       const pill = row1.getByRole("button", { name });
-      // C5 and the row-1 label threshold (spec ASSUMPTION: 480px).
       const label = within(pill).getByText(name);
       expect(label).not.toBe(pill);
       expect(label.className.split(/\s+/)).toEqual(expect.arrayContaining(["sr-only", "@min-[480px]:not-sr-only"]));
@@ -185,7 +135,6 @@ describe("Composer toolbar: the three rows", () => {
 
     const send = screen.getByRole("button", { name: "Send" });
     expect(send).toBeDisabled();
-    // Infloww's idle Send: a grey #666 fill and #979797 label (page-parity 07 CP11).
     expect(send).toHaveClass("bg-[var(--inf-send-idle,var(--color-bg-elev-2))]", "text-[var(--inf-send-idle-text,var(--color-fg-dim))]");
     await user.type(textbox(), "hi");
     expect(send).toBeEnabled();
@@ -205,7 +154,6 @@ describe("Composer toolbar: Upload, @ and Aa", () => {
     expect(screen.getByRole("dialog", { name: "Vault picker stub" })).toBeInTheDocument();
   });
 
-  // Disk upload restored 2026-10-16 (ComposerUpload.test.tsx covers the chips).
   it('Upload, titled "Upload from computer", opens the file chooser and not the Vault picker', async () => {
     const user = userEvent.setup();
     await renderComposer();
@@ -238,13 +186,12 @@ describe("Composer toolbar: Upload, @ and Aa", () => {
 
   it('"Aa" toggles OF\'s formatting toolbar: pressed state, title, and the box becomes the rich editor', async () => {
     const user = userEvent.setup();
-    await renderComposer();
+    await renderComposer({}, ownerCache());
 
     const aa = screen.getByRole("button", { name: "Aa" });
     expect(aa).not.toHaveAttribute("aria-disabled");
     expect(aa).toHaveAttribute("aria-pressed", "false");
     expect(aa).toHaveAttribute("title", "Text formatting (bold, italic, colour, size)");
-    // Drawn at full strength in Infloww's glyph grey, not faded (page-parity 07 CP12).
     expect(aa).toHaveClass("text-[var(--inf-composer-glyph,var(--color-fg-dim))]");
     await user.click(aa);
     expect(aa).toHaveAttribute("aria-pressed", "true");
@@ -284,7 +231,6 @@ describe("Composer toolbar: Translate", () => {
     expect(useTranslation).toHaveAttribute("aria-checked", "true");
     expect(readTranslateMode()).toBe(true);
 
-    // The 🌐 toggle flips the mode through the same hook; the switch follows.
     const header = renderHook(() => useTranslateMode());
     act(() => header.result.current[1](false));
     expect(useTranslation).toHaveAttribute("aria-checked", "false");
@@ -334,7 +280,6 @@ describe("Composer toolbar: GIF and tags", () => {
     expect(onSend).toHaveBeenCalledWith({ text: "", giphyId: "gif-synthetic-1" });
   });
 
-  /** Open "Tag other Creators" and pick the synthetic Creator; returns the popover. */
   async function pickCreator(user: ReturnType<typeof userEvent.setup>) {
     routeRelay("/posts/tagged-friend-users", () => ({
       items: [{ id: 7001, user: { id: 7001, name: "Creator Synthetic", username: "creator_synth" } }],
@@ -351,7 +296,7 @@ describe("Composer toolbar: GIF and tags", () => {
     const { onSend } = await renderComposer();
 
     const popover = await pickCreator(user);
-    await user.click(popover.getByRole("button", { name: "Add" })); // ticket 35
+    await user.click(popover.getByRole("button", { name: "Add" }));
     await user.type(textbox(), "hi");
     await user.click(screen.getByRole("button", { name: "Send" }));
 
@@ -378,7 +323,7 @@ describe("Composer toolbar: GIF and tags", () => {
     const { onSend } = await renderComposer();
 
     await pickCreator(user);
-    await user.type(textbox(), "hi"); // a pointerdown outside closes the popover unapplied
+    await user.type(textbox(), "hi");
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
@@ -467,7 +412,6 @@ describe('Composer toolbar: "/" + keyword searches Scripts', () => {
   const routeScripts = () => routeRelay("/admin/saved-replies", () => ({
     list: [step(1, "Synthetic opener"), step(2, "Synthetic follow-up")],
   }));
-  /** What a pick of step 1 then Send puts on the wire (the "Scripts" test above). */
   const STEP_1_SEND = {
     text: "Synthetic opener", price: 15, lockedText: false,
     attached: [{ id: 9201, type: "photo", files: null }],
@@ -492,7 +436,7 @@ describe('Composer toolbar: "/" + keyword searches Scripts', () => {
 
     expect(await screen.findByRole("button", { name: /Synthetic opener/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Synthetic follow-up/ })).not.toBeInTheDocument();
-    await new Promise((r) => setTimeout(r, 60)); // past the panel's own focus timer
+    await new Promise((r) => setTimeout(r, 60));
     expect(textbox()).toHaveFocus();
 
     await user.keyboard("{Enter}");
@@ -526,7 +470,6 @@ describe('Composer toolbar: "/" + keyword searches Scripts', () => {
     await renderComposer({ fanId: 501 });
     await user.type(textbox(), "/synth");
     await screen.findByRole("button", { name: /Synthetic opener/ });
-    // Find and the overlay Fan insights hear Escape on `window`.
     const windowEscape = vi.fn((e: KeyboardEvent) => { if (e.key === "Escape") return e.key; });
     window.addEventListener("keydown", windowEscape);
 
@@ -610,7 +553,6 @@ describe("Composer toolbar: what the \"+\" Extras overflow held (TODO.md A2, A3)
     await user.click(screen.getByRole("button", { name: "Vault" }));
     await user.click(await screen.findByRole("button", { name: "Confirm fixture media" }));
 
-    // A3: attaching opens the price without a click on "PPV".
     const row = within(ppvRow()!);
     expect(screen.getByRole("button", { name: "PPV" })).toHaveAttribute("aria-pressed", "true");
     const price = row.getByRole("textbox", { name: "PPV price" });
@@ -651,7 +593,6 @@ describe("Composer toolbar: what the \"+\" Extras overflow held (TODO.md A2, A3)
   });
 
   it('⏱ "+15m" turns schedule mode on and sets "at" to now plus 15 minutes without sending', async () => {
-    // Only Date is faked: the clock is frozen, user-event's timers stay real.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-13T10:00:00.000Z"));
     const user = userEvent.setup();
@@ -730,7 +671,6 @@ describe("Composer toolbar: emoji favourites", () => {
     expect(quickRow()).toEqual(saved);
     expect(JSON.parse(localStorage.getItem("chatterly:emoji_favourites") ?? "null")).toEqual(saved);
 
-    // A fresh Composer (a reload) reads them back.
     cleanup();
     await renderComposer();
     await waitFor(() => expect(quickRow()).toEqual(saved));
@@ -741,9 +681,6 @@ describe("Composer toolbar: emoji favourites", () => {
   describe("from an empty saved list", () => {
     beforeEach(() => localStorage.setItem("chatterly:emoji_favourites", "[]"));
 
-    /** Open ⚙ and toggle the first 40 emojis of its grid, last to first, so
-     *  pick order is not grid order; returns the editor, its toggles and the
-     *  40 picked, in pick order. */
     async function pickForty(user: ReturnType<typeof userEvent.setup>) {
       await user.click(screen.getByRole("button", { name: "Emoji favourites" }));
       const editor = within(screen.getByRole("region", { name: "Emoji favourites" }));
@@ -801,7 +738,6 @@ describe("Composer toolbar: emoji favourites", () => {
       const favourites = screen.getByRole("button", { name: "Favourites" });
       expect(favourites).toHaveAttribute("aria-pressed", "true");
       expectDomOrder([favourites, screen.getByTitle("flirty")]);
-      // The grid under the tab strip shows the favourites, in pick order.
       const grid = favourites.parentElement!.nextElementSibling as HTMLElement;
       expect(within(grid).getAllByRole("button").map((b) => b.textContent)).toEqual(picked);
     });

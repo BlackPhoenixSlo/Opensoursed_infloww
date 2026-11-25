@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * CoverageHeader — top-of-page health number for attribution coverage.
- *
- * Traffic-light tiers per the plan:
- *   green  ≥ 95 %
- *   yellow 80–95 %
- *   red    < 80 %
- *
- * Click to expand a per-account breakdown. Outbound counts under the
- * window are shown in muted text below the big number so the user knows
- * whether the % is on a meaningful sample or near-zero traffic.
- */
 
 import { useState } from "react";
 

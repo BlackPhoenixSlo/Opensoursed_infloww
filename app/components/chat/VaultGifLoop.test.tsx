@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultGifLoop } from "./VaultGifLoop";
 import { MAX_GIF_LOOPS } from "./vaultGifLoopState";
 
-// A controllable observer: `see(el, on)` fires the callback the tile registered for `el`.
 const watchers = new Map<Element, (e: { isIntersecting: boolean }[]) => void>();
 class IOMock {
   constructor(private cb: (e: { isIntersecting: boolean }[]) => void) {}
@@ -51,7 +50,7 @@ describe("VaultGifLoop", () => {
     see(vs[0], false);
     expect(vs[0].getAttribute("src")).toBeNull();
     expect(vs[0].getAttribute("preload")).toBe("none");
-    expect(load).toHaveBeenCalledTimes(1);   // the decoder let go
+    expect(load).toHaveBeenCalledTimes(1);
     expect(vs[MAX_GIF_LOOPS].getAttribute("src")).toBe(`/img?u=${MAX_GIF_LOOPS}.mp4`);
     expect(withSrc(vs)).toBe(MAX_GIF_LOOPS);
   });
@@ -61,7 +60,6 @@ describe("VaultGifLoop", () => {
     const v = first.container.querySelector("video")!;
     see(v, true);
     first.unmount();
-    // Every slot free again: MAX_GIF_LOOPS fresh loops all attach.
     const vs = loops(MAX_GIF_LOOPS);
     vs.forEach((x) => see(x, true));
     expect(withSrc(vs)).toBe(MAX_GIF_LOOPS);

@@ -1,11 +1,3 @@
-/**
- * My Automations > Auto Post (/growth/auto-post) is `ReadyMadePanel` pinned to
- * `auto_posts`, on Infloww's legacy list page (page-parity ticket 16). Rendered
- * with `@/lib/relay` mocked. What is pinned: no Card heading (the page header
- * is the heading), one table row per rule with its Status switch and post read-out, previous runs
- * behind the Name cell's chevron, Delete through a dialog (never
- * `window.confirm`), and the no-creator empty state.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -72,9 +64,8 @@ describe("Auto Post (ReadyMadePanel only=auto_posts)", () => {
     expect(rows).toHaveLength(2);
     expect(within(rows[0]).getByRole("switch", { name: "Enabled: Morning feed" })).toHaveAttribute("aria-checked", "true");
     expect(within(rows[1]).getByRole("switch", { name: "Enabled: Night feed" })).toHaveAttribute("aria-checked", "false");
-    expect(within(rows[0]).getAllByText("Every 2 hours")).toHaveLength(2); // Schedule, and the phone line (no next run)
-    expect(within(rows[0]).getByText("Free · hi")).toBeTruthy(); // the rule's one post, under its name
-    // The Status pill, in the wide Status cell and in the phone line under the name.
+    expect(within(rows[0]).getAllByText("Every 2 hours")).toHaveLength(2);
+    expect(within(rows[0]).getByText("Free · hi")).toBeTruthy();
     expect(within(rows[0]).getAllByText("Active")).toHaveLength(2);
     expect(within(rows[1]).getAllByText("Paused")).toHaveLength(2);
     expect(within(rows[1]).getByTestId("rule-phone-line")).toHaveTextContent("PausedEvery 2 hours");
@@ -98,7 +89,7 @@ describe("Auto Post (ReadyMadePanel only=auto_posts)", () => {
     expect(chevron).toHaveAttribute("aria-expanded", "true");
     expect(await screen.findByText(/post #4242/)).toBeTruthy();
     expect(screen.getByTestId("rule-last-run")).toHaveTextContent("Last run —");
-    expect(screen.getByText("Done")).toBeTruthy(); // the previous run's pill
+    expect(screen.getByText("Done")).toBeTruthy();
   });
 
   it("the phone row's ⋯ menu runs, edits, pauses / resumes and deletes", async () => {
@@ -124,7 +115,7 @@ describe("Auto Post (ReadyMadePanel only=auto_posts)", () => {
     await screen.findByText("No auto posts yet");
     expect(screen.getByText(/publishes one post on its schedule/)).toBeTruthy();
     const ctas = screen.getAllByRole("button", { name: "New auto post" });
-    expect(ctas).toHaveLength(2); // the header's and the empty state's
+    expect(ctas).toHaveLength(2);
     fireEvent.click(ctas[1]);
     expect(screen.getByRole("dialog", { name: /New auto post/ })).toBeTruthy();
   });

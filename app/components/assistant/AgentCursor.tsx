@@ -1,8 +1,5 @@
 "use client";
 
-/** The help bot's cosmetic cursor while "Do it for me" fills a form (useDoRunner.ts): an arrow, a small label bubble
- *  and a ripple per click. Fixed and `pointer-events:none` above every dialog, so it never takes a click itself; it
- *  glides between fields, or jumps under prefers-reduced-motion. */
 
 import { cn } from "@/lib/utils";
 
@@ -10,7 +7,6 @@ export interface CursorState {
   x: number;
   y: number;
   label: string;
-  /** Bumped per click: keys the ripple so each one replays. */
   clicks: number;
 }
 

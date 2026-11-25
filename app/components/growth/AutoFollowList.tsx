@@ -1,22 +1,5 @@
 "use client";
 
-/**
- * AutoFollowList — Infloww's Growth → Auto-follow list: one row per creator
- * with its switch and follow counts, and a details view of the fans it
- * followed (docs/infloww-of-manager-rea.md, Auto-follow). This is the whole
- * page, as in Infloww: no tunables, the switch turns the account's
- * `auto_follow` rule on or off, and a rule it creates follows fans whose
- * subscriptions expired (money gate on). New subscribers are OnlyFans' own
- * "Auto follow back my fans" setting, which the banner points at.
- *
- * Layout (page-parity 13): the legacy header (AutoFollowPage), the body 16px in with no card, the bundle's help
- * strip, "Creator:" and "Auto-follow:" selects with Reset at the right, the antd table with a 32px avatar.
- *
- * Counts: Total and Last followed are lifetime; Today / Yesterday / 7 days /
- * 30 days count from the follow log, cut at midnight in the browser's zone.
- * Last followed reads "3 h ago", the full date on hover. Too wide for the screen (a phone),
- * the table scrolls sideways under the pinned switch column, whose left shadow says so.
- */
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
@@ -46,14 +29,12 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July",
   "August", "September", "October", "November", "December"];
 const PAGE = 20;
 
-/** The Relay's naive-UTC ISO string → Date. */
 function utc(iso: string): Date {
   return new Date(/[zZ]|[+-]\d\d:\d\d$/.test(iso) ? iso : `${iso}Z`);
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
-/** Infloww's "MMMM DD, YYYY hh:mm A", in local time; "-" when none. */
 export function formatFollowedAt(iso: string | null): string {
   if (!iso) return "-";
   const d = utc(iso);
@@ -68,7 +49,7 @@ function formatDate(iso: string | null): string {
   return Number.isNaN(d.getTime()) ? "-" : `${MONTHS[d.getMonth()]} ${pad(d.getDate())}, ${d.getFullYear()}`;
 }
 
-const usd = fmtCents; // a total: whole dollars
+const usd = fmtCents;
 
 type OnFilter = "all" | "on" | "off";
 
@@ -78,14 +59,11 @@ const ON_FILTERS: IfOption<OnFilter>[] = [
   { value: "off", label: "Off" },
 ];
 const NO_FILTERS: { creator: string; onFilter: OnFilter } = { creator: "all", onFilter: "all" };
-/** Reset: antd's default button with M1 text and an M1 outline. */
 const RESET = "border-accent text-accent";
-/** Infloww's column widths (Total follows 120, Last followed 200, Action 80). */
 const W = { total: "max-md:whitespace-normal max-md:leading-tight md:w-[120px]", last: "w-[200px]", action: "w-[80px]" };
 
 export default function AutoFollowList({ accounts, accountsLoading = false }: {
   accounts: AccountMeta[];
-  /** The Creators are still loading: placeholder rows, not "No data". */
   accountsLoading?: boolean;
 }) {
   const stats = useAutoFollowStats();
@@ -119,7 +97,6 @@ export default function AutoFollowList({ accounts, accountsLoading = false }: {
   return (
     <div className="space-y-4 p-4">
       <p className="hidden text-[14px] text-fg-dim md:block">Automatically follow fans whose subscriptions have expired</p>
-      {/* The bundle's help strip; the sentence is ours (our counts are only Auto-follow's follows). */}
       <div className="flex flex-wrap items-center gap-1 rounded-lg bg-[#b8981a15] px-3 py-2 text-[12px] text-[#b8991a]">
         <StickyNote aria-hidden className="h-4 w-4 shrink-0" />
         <span>
@@ -132,7 +109,6 @@ export default function AutoFollowList({ accounts, accountsLoading = false }: {
       </div>
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-6">
-          {/* Below md both filters fold behind "Filters"; Reset stays out. */}
           <IfFilterFold active={countActiveFilters({ creator, onFilter }, NO_FILTERS, ["creator", "onFilter"])}>
             <label className="flex items-center gap-1 text-[14px] text-fg">
               <span>Creator:</span>
@@ -165,7 +141,6 @@ export default function AutoFollowList({ accounts, accountsLoading = false }: {
             </tr>
           </thead>
           <tbody>
-            {/* The Creators and their counts still on the way: placeholder rows, not "No data". */}
             {loading && <SkeletonRows cols={8} rows={4} cellClassName={IF_TABLE.td} />}
             {!loading && rows.length === 0 && (
               <tr><td colSpan={8}><EmptyState className="min-h-[400px]" /></td></tr>
@@ -208,7 +183,6 @@ export default function AutoFollowList({ accounts, accountsLoading = false }: {
   );
 }
 
-/** "3 h ago", the full "MMMM DD, YYYY hh:mm A" as its title; "-" when never. */
 function LastFollowed({ iso }: { iso: string | null }) {
   const at = iso ? utc(iso) : null;
   const ago = at && !Number.isNaN(at.getTime()) ? fmtAgo(at.toISOString()) : null;
@@ -222,7 +196,6 @@ const SORTS: Array<{ key: RecordSort; label: string }> = [
   { key: "expiry", label: "Expiry date" },
 ];
 
-/** A local `YYYY-MM-DD` → the ISO instant of that local midnight. */
 function localMidnight(day: string, plusDays = 0): string | null {
   if (!day) return null;
   const [y, m, d] = day.split("-").map(Number);
@@ -254,7 +227,6 @@ export function AutoFollowDetails({ account, stats, onBack }: {
         <span className="font-medium text-fg">Details</span>
         <span className="text-fg-dim">· {account.nickname || account.id}</span>
       </nav>
-      {/* The bundle's three figures over the table. */}
       <dl className="flex flex-wrap gap-10">
         {([["Total", stats?.total], ["Today", stats?.today], ["Yesterday", stats?.yesterday]] as const).map(([k, v]) => (
           <div key={k}>
@@ -319,8 +291,6 @@ export function AutoFollowDetails({ account, stats, onBack }: {
   );
 }
 
-/** /growth/auto-follow: a legacy page with no rail: the 48px header, then the list 16px in. It lists every creator
- *  with its own Creator filter, so it draws (an empty table) with none. */
 export function AutoFollowPage() {
   return (
     <div className="flex min-h-full flex-col">

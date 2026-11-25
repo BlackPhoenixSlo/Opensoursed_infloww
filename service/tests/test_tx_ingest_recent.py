@@ -1,48 +1,7 @@
 #!/usr/bin/env python3
-"""
-The ledger tick: a `recent` walk (trailing 24 h) every tick, the full 7-day
-`refresh` once per _FULL_EVERY_S period at the account's crc32 phase, scheduled by the
-persisted watermark TransactionScanHistory.last_full_at (a restart keeps it). On the
-real run_one_tick with a fake OF client:
-
-    case_recent_tick_is_one_call_over_24h      one transactions GET, start ~ now-24h, on the
-        wire startDate=YYYY-MM-DD a day before the window (OF answers an ISO one with
-        nothing); stamps last_scan_at/'ok' (green), never moves the backfill watermark
-    case_due_full_walks_7d_and_stamps           pages the 7-day window (no startDate on the
-        wire: OF's latest 600), stamps last_full_at; a restart on the same DB: same period
-        recent, next period refresh
-    case_backfill_sends_a_date_only_start_date  the backfill's wire: startDate a day before its
-        floor, date only (its walk: test_tx_ingest_backfill.py)
-    case_failed_full_stamps_its_period          a page that raises (a terminal second 429 too):
-        error kept, stamped, counted; this period's next ticks recent and pass (ok), yet /health
-        reads full_walk_failed (yellow), the next period's full; one that completes clears it
-    case_truncated_full_stamps                  OF ignoring `offset` (repeated page): stamped,
-        counted (/health full_walk_failed, its reason in last_error)
-    case_refused_full_counts_only_after_a_page  a proxy refusal on page 1: no stamp, no count;
-        after page 1: stamped + counted; neither in the pause's streak
-    case_unseeded_backfilled_account_seeds_once a backfilled row with NULL: seeded to now
-        (persisted), recent; full at its next phase boundary
-    case_admin_run_refresh_forces_and_stamps    /run mode=refresh: a full walk mid-period, stamped
-    case_window_ignored_warns_once              a recent page with a row > 1 day before startDate logs
-        ingest_tx_recent_window_ignored once per account per process; the rows still land
-    case_inside_slack_no_warning                a row < 1 day before startDate: no warning
-    case_recent_empty_walk_warns_once           0 rows while the DB holds a row on/after the
-        startDate sent: ingest_tx_recent_walk_empty once per account per process; still 'ok'
-    case_quiet_account_empty_walk_no_warning    0 rows, newest held row before the startDate
-    case_supervisor_passes_the_mode             supervisor_cycle ticks with the decided mode
-    case_health_exposes_last_full_attempt_at       read from the DB (survives a restart)
-    case_legacy_schema_gains_last_full_at       a box without the column: boot catch-up adds it
-        (NULL), the 0106 revision is guarded, idempotent, the single head after 0105
-    case_legacy_schema_gains_backfill_stalls    a box without backfill_stalls (no migration): boot
-        catch-up adds it (NULL), which reads 0: no walk started, nothing given up
-    case_legacy_schema_gains_full_walk_failures a box without full_walk_failures: boot catch-up
-        adds it (NULL, reads 0: ok stays ok), the 0111 revision guarded, idempotent, 0110's one child
-
-Run: ./venv/bin/python service/tests/test_tx_ingest_recent.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -64,8 +23,6 @@ ti._PAGE_SLEEP_S = 0.0
 
 
 class _Fake:
-    """OF's ledger: `pages` answered in order (a callable raises); every call's kwargs kept,
-    and in `wire` the query params the real OFClient.transactions sends for them."""
 
     def __init__(self, pages):
         self.pages, self.calls, self.wire = list(pages), [], []
@@ -95,7 +52,6 @@ def _boom():
 
 
 async def _ready() -> None:
-    """A fully backfilled account, idle, no full walk in this process."""
     async with get_session() as s:
         if await s.get(Account, ACCT) is None:
             s.add(Account(id=ACCT, nickname="recent"))
@@ -128,7 +84,6 @@ async def _full() -> datetime | None:
 
 
 def _restart() -> None:
-    """What a relay restart forgets: the module's in-process state."""
     ti._recent_window_warned.clear()
     ti._recent_empty_warned.clear()
     ti._reinstated.clear()
@@ -136,14 +91,12 @@ def _restart() -> None:
 
 
 def _period_start() -> datetime:
-    """Start of ACCT's current full-walk period (a walk stamped here makes this period's ticks recent)."""
     full, ph = ti._FULL_EVERY_S, ti.full_phase_s(ACCT, ti._FULL_EVERY_S)
     b = ti.full_bucket(datetime.utcnow(), full_every_s=full, phase_s=ph)
     return datetime(1970, 1, 1) + timedelta(seconds=b * full - ph)
 
 
 async def _tick(fake: _Fake) -> tuple[str, dict]:
-    """Decide the mode as the supervisor does, then run the tick on `fake`."""
     mode = await ti._decide_mode(ACCT)
     orig = ti._client_for
     ti._client_for = lambda _aid: fake
@@ -159,7 +112,6 @@ async def _scan() -> TransactionScanHistory:
 
 
 async def _health() -> tuple[str, str, int]:
-    """ACCT's /health row: (tier, current_status, full_walk_failures)."""
     from tx_ingest_admin_api import admin_ingest_tx_health
     h = {a["account_id"]: a for a in (await admin_ingest_tx_health())["accounts"]}[ACCT]
     return h["tier"], h["current_status"], h["full_walk_failures"]
@@ -186,6 +138,7 @@ async def case_recent_tick_is_one_call_over_24h():
     c = fake.calls[0]
     assert _near(_at(c["start"]), now - timedelta(hours=24)) and _near(_at(c["end"]), now), c
     assert (c["limit"], c["offset"]) == (ti._PAGE_LIMIT, 0), c
+    # OF answers an ISO startDate with nothing, so the wire carries a date-only one.
     sd = fake.wire[0]["startDate"]
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", sd), f"startDate must be date-only, never ISO: {sd!r}"
     assert sd == (_at(c["start"]) - timedelta(days=1)).date().isoformat(), (sd, c["start"])
@@ -198,7 +151,7 @@ async def case_recent_tick_is_one_call_over_24h():
 
 async def case_due_full_walks_7d_and_stamps():
     await _ready()
-    await _set_full(_period_start() - timedelta(seconds=1))   # last period
+    await _set_full(_period_start() - timedelta(seconds=1))
     now = datetime.utcnow()
     fake = _Fake([_page([_row("f1", now - timedelta(days=1))], more=True),
                   _page([_row("f2", now - timedelta(days=6))])])
@@ -212,11 +165,9 @@ async def case_due_full_walks_7d_and_stamps():
     stamped = await _full()
     assert stamped is not None and stamped >= before, stamped
     assert (await ti._decide_mode(ACCT)) == "recent", "right after a full walk the next is recent"
-    # Restart on the same DB: nothing in memory decides, so the same period stays recent...
     _restart()
     assert (await ti._decide_mode(ACCT)) == "recent", "a restart re-walked an account not due"
     assert await _full() == stamped
-    # ...and one whose watermark is in the previous period walks full.
     await _set_full(_period_start() - timedelta(seconds=1))
     _restart()
     assert (await ti._decide_mode(ACCT)) == "refresh"
@@ -235,7 +186,6 @@ async def case_backfill_sends_a_date_only_start_date():
 
 
 def _second_429():
-    """What of_pacing raises after its one retry: the terminal second 429."""
     from types import SimpleNamespace
     raise of_client.OFAPIError("HTTP 429", response=SimpleNamespace(status_code=429, text="Too Many Requests"))
 
@@ -243,7 +193,7 @@ def _second_429():
 async def case_failed_full_stamps_its_period():
     for boom in (_boom, _second_429):
         await _ready()
-        await _set_full(_period_start() - timedelta(seconds=1))   # due
+        await _set_full(_period_start() - timedelta(seconds=1))
         fake = _Fake([_page([_row(f"x1{boom.__name__}", datetime.utcnow() - timedelta(days=2))], more=True),
                       boom])
         before = datetime.utcnow()
@@ -258,7 +208,6 @@ async def case_failed_full_stamps_its_period():
         assert row.full_walk_failures == 1 and row.last_error.startswith("full_walk_failed: "), row.last_error
         assert (await ti._decide_mode(ACCT)) == "recent", "a failed full walk re-walked in its period"
         _restart()
-        # This period's recent walks pass: the failed full walk still shows on /health.
         fail_err = res["error"]
         mode, res = await _tick(_Fake([_page([_row(f"ok{boom.__name__}", datetime.utcnow() - timedelta(hours=1))])]))
         row = await _scan()
@@ -267,7 +216,6 @@ async def case_failed_full_stamps_its_period():
             "ok", 0, 1), (row.current_status, row.consecutive_failures, row.full_walk_failures)
         assert row.last_error.startswith("full_walk_failed: ") and fail_err[:40] in row.last_error, row.last_error
         assert await _health() == ("yellow", "full_walk_failed", 1)
-        # The next period's first tick walks full again; completed, it clears the count.
         await _set_full(_period_start() - timedelta(seconds=1))
         mode, res = await _tick(_Fake([_page([])]))
         row = await _scan()
@@ -298,9 +246,6 @@ def _refused():
 
 
 async def case_refused_full_counts_only_after_a_page():
-    """A proxy refusal on the first page never reached OF: no stamp, no count, the next tick walks
-    full. One after a page did: stamped and counted (else it re-walks every tick); neither is in
-    the pause's streak."""
     for first, want_stamp, want_count in ((False, False, 0), (True, True, 1)):
         await _ready()
         due = _period_start() - timedelta(seconds=1)
@@ -317,7 +262,6 @@ async def case_refused_full_counts_only_after_a_page():
 
 
 async def case_unseeded_backfilled_account_seeds_once():
-    """The deploy: rows from before the column have NULL. No herd: seeded, recent."""
     await _ready()
     before = datetime.utcnow()
     assert (await ti._decide_mode(ACCT)) == "recent", "an unseeded backfilled account walked full"
@@ -325,10 +269,8 @@ async def case_unseeded_backfilled_account_seeds_once():
     assert seeded is not None and seeded >= before, seeded
     _restart()
     assert (await ti._decide_mode(ACCT)) == "recent" and await _full() == seeded, "seeded twice"
-    # Its first full walk: its next phase boundary.
     await _set_full(_period_start() - timedelta(seconds=1))
     assert (await ti._decide_mode(ACCT)) == "refresh"
-    # An unfinished walk with NULL keeps its full-walk turn (and is not seeded).
     async with get_session() as s:
         row = await s.get(TransactionScanHistory, ACCT)
         row.fully_backfilled, row.last_full_at = False, None
@@ -336,7 +278,6 @@ async def case_unseeded_backfilled_account_seeds_once():
 
 
 async def case_admin_run_refresh_forces_and_stamps():
-    """/run mode=refresh (supervised_tick) walks full mid-period and spends the slot."""
     await _ready()
     await _set_full(_period_start())
     assert (await ti._decide_mode(ACCT)) == "recent"
@@ -379,7 +320,7 @@ async def case_window_ignored_warns_once():
     hits = [m for m in grab.msgs if m.startswith("ingest_tx_recent_window_ignored")]
     assert len(hits) == 1, grab.msgs
     assert f"account={ACCT} " in hits[0] and "oldest=" in hits[0] and "window_start=" in hits[0], hits
-    assert re.search(r"window_start=\d{4}-\d{2}-\d{2}$", hits[0]), hits   # the startDate sent
+    assert re.search(r"window_start=\d{4}-\d{2}-\d{2}$", hits[0]), hits
     async with get_session() as s:
         n = (await s.execute(select(func.count()).select_from(Transaction).where(
             Transaction.account_id == ACCT, Transaction.provider_transaction_id.in_(
@@ -454,7 +395,7 @@ async def case_supervisor_passes_the_mode():
     saved = ti.supervised_tick, ti.live_account_ids
     ti.supervised_tick, ti.live_account_ids = _sup, _only
     try:
-        await _set_full(_period_start() - timedelta(seconds=1))   # due
+        await _set_full(_period_start() - timedelta(seconds=1))
         await ti.supervisor_cycle()
         await _set_full(_period_start())
         await ti.supervisor_cycle()
@@ -464,7 +405,6 @@ async def case_supervisor_passes_the_mode():
 
 
 async def case_health_exposes_last_full_attempt_at():
-    """The /health payload (unscoped: no signed-in principal, as internal curl), from the DB."""
     from tx_ingest_admin_api import admin_ingest_tx_health
     await _ready()
     at = datetime(2026, 11, 7, 9, 30)
@@ -479,9 +419,6 @@ async def case_health_exposes_last_full_attempt_at():
 
 @contextmanager
 def _legacy_db(tag: str, revision: str, column: str, row: str):
-    """A box at alembic `revision` without `column` on transaction_scan_history, one row
-    (`row`: "(cols) VALUES (...)"), booted (init_db's additive catch-up). Yields its path, the
-    table's columns after boot and the row's `column` value; removed after."""
     import asyncio
     import importlib
     import os
@@ -526,8 +463,6 @@ def _legacy_db(tag: str, revision: str, column: str, row: str):
 
 
 def _migration_roundtrip(db, file: str, revision: str, down_revision: str, column: str) -> None:
-    """Revision `file` on `db` (boot already added `column`): `down_revision`'s one child,
-    guarded and idempotent up and down."""
     import importlib.util
     from pathlib import Path
 
@@ -554,7 +489,7 @@ def _migration_roundtrip(db, file: str, revision: str, down_revision: str, colum
         return column in {c["name"] for c in sa.inspect(eng).get_columns("transaction_scan_history")}
 
     try:
-        step(mig.upgrade)   # boot already added it: guarded
+        step(mig.upgrade)
         assert has()
         step(mig.downgrade)
         step(mig.downgrade)

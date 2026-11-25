@@ -1,10 +1,3 @@
-/**
- * ApiKeyToaster + AiKeyNotice — the one notification for a missing/empty/wrong
- * AI key. Pinned: the relay's message and the Settings › AI keys link for an
- * owner; the message without a link (and "ask your agency owner") for a
- * chatter; identical toasts inside the dedupe window are one; the dismiss
- * button; and the automation notice renders the relay's `notices`.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
@@ -58,7 +51,6 @@ describe("ApiKeyToaster", () => {
     act(() => announceApiKeyError(MISSING));
     act(() => announceApiKeyError(MISSING));
     expect(screen.getAllByRole("alert")).toHaveLength(1);
-    // A different problem is its own toast.
     act(() => announceApiKeyError({ ...MISSING, error: "api_key_invalid", message: "Vault describe stopped." }));
     expect(screen.getAllByRole("alert")).toHaveLength(2);
     act(() => { vi.advanceTimersByTime(DEDUPE_MS + 1); });

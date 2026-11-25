@@ -1,24 +1,6 @@
-"""test_wiring_chatter — the Settings on/off switch really turns the engine on/off.
-
-One checkpoint chain, driven through the REAL config handlers the
-tabs call and the REAL runtime gates the executor / webhook dispatch read:
-
-  tab toggle → PUT handler → persisted key (config blob + automation_rules row)
-             → `_materialize_due_rules` schedules (ON) / does not (OFF)
-             → a job ALREADY queued before OFF runs and sends nothing
-             → real-time webhook routing stops handing the fan to the engine.
-
-Automation: autoreply / "Auto Convo" (AutoreplyTab → PUT /admin/autoreply-config).
-
-Confirmed wiring bugs are `_harness.xfail(strict=True)` so the marker breaks the
-moment the bug is fixed.
-
-House style: plain assert, no pytest; _harness temp DB; config handlers called as
-functions (no request principal → ALLOW_ANONYMOUS_ADMIN); FakeOF via ax._make_client so nothing reaches OF.
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -41,10 +23,8 @@ from db.models import (  # noqa: E402
 )
 
 
-# ── seams / helpers ──────────────────────────────────────────────────────────
 
 class FakeOF:
-    """Records every send; any send at all while OFF is the failure."""
 
     def __init__(self):
         self.sent: list = []
@@ -54,7 +34,7 @@ class FakeOF:
         return {"id": 9_000_000_000_000 + len(self.sent), "text": text,
                 "createdAt": "2026-10-17T12:00:00+00:00"}
 
-    def __getattr__(self, name):  # any other OF call → empty, never network
+    def __getattr__(self, name):
         return lambda *a, **k: {"list": []}
 
 
@@ -96,7 +76,6 @@ async def _jobs(aid: str, kind: str) -> list[ScheduledJob]:
 
 
 async def _schedules(aid: str, kind: str) -> bool:
-    """Does the executor's materializer put a job on the queue for (aid, kind)?"""
     await _clear_jobs(aid)
     await ax._materialize_due_rules()
     return bool(await _jobs(aid, kind))
@@ -108,7 +87,6 @@ async def _stored(aid: str, column: str) -> dict:
     return json.loads(getattr(row, column) or "{}") if row else {}
 
 
-# ── autoreply ("Auto Convo") ────────────────────────────────────────────────
 
 async def case_autoreply_off_stops_queued_job():
     aid, fid = "wire_ar_off", 5101
@@ -127,7 +105,6 @@ async def case_autoreply_off_stops_queued_job():
     res = await ax.run_once(aid, "autoreply")
     assert res.get("enabled") is False and res.get("sent") == 0 and res.get("job_id"), res
     assert fake.sent == []
-    # webhook_dispatch never routes to autoreply at all (rule-tick only).
     assert await wd._classify_kind(aid, fid) != "autoreply"
 
 
@@ -144,10 +121,6 @@ async def case_autoreply_on_schedules():
 
 
 async def case_autoreply_on_with_no_source_is_refused():
-    """W30-SM F12: a fan qualifies through folders OR new fans; enabled with both off
-    (as saved: the posted blob over the defaults, folders on / new fans off — a save
-    replaces the stored blob) would reply to nobody → 422, the blob and the rule
-    untouched. Off with both off saves."""
     from fastapi import HTTPException
     aid = "wire_ar_nosrc"
     await _seed(aid)
@@ -155,7 +128,7 @@ async def case_autoreply_on_with_no_source_is_refused():
         autoreply_config_api._ConfigBody(account_id=aid, config=cfg))
     await put({"enabled": False, "folders_enabled": False, "new_fans_enabled": False})
     for cfg in ({"enabled": True, "folders_enabled": False, "new_fans_enabled": False},
-                {"enabled": True, "folders_enabled": False}):   # new fans default off
+                {"enabled": True, "folders_enabled": False}):
         try:
             await put(cfg)
             raise AssertionError(f"accepted {cfg}")
@@ -165,7 +138,7 @@ async def case_autoreply_on_with_no_source_is_refused():
     assert not [r for r in await _rules(aid, "autoreply") if r.is_enabled]
     await put({"enabled": True, "new_fans_enabled": True, "folders_enabled": False})
     assert (await _stored(aid, "autoreply_config_json")).get("enabled") is True
-    await put({"enabled": True})   # folders default on
+    await put({"enabled": True})
     assert (await _stored(aid, "autoreply_config_json")) == {"enabled": True}
 
 

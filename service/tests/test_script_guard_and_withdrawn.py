@@ -1,25 +1,8 @@
 #!/usr/bin/env python3
-"""Messages Pro W4 4.2 / 4.11 — the two reads the chat UI needs from our DB.
-
-  case_saved_replies_flag_removed_media   — the saved-replies list marks each
-                                            script's media our vault mirror has
-                                            soft-deleted (`removed_at`) on THIS
-                                            account, and stops once the mirror
-                                            restores it, so the composer's
-                                            "Use script?" guard can warn before
-                                            sending dead media
-  case_attribution_carries_our_unsends    — the attribution map exposes
-                                            `unsent_at` / `unsent_reason` for a
-                                            message WE unsent (mark_unsent), so
-                                            the thread draws "Message withdrawn"
-
-Run:  ./venv/bin/python service/tests/test_script_guard_and_withdrawn.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
 
-# Feature logic, not the account gate (test_account_isolation_gate's job).
 import os  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
@@ -56,7 +39,6 @@ async def case_saved_replies_flag_removed_media():
                                                 {"id": 103, "type": "photo"}])))
         s.add(SavedReply(account_id=AID, title="text only", text="hey"))
 
-        # Another account's deleted 101 is not ours: OF media ids are per creator here.
         if await s.get(Account, OTHER) is None:
             s.add(Account(id=OTHER))
         s.add(VaultItem(account_id=OTHER, media_id=101, kind="photo", created_at=now,
@@ -66,10 +48,8 @@ async def case_saved_replies_flag_removed_media():
         resp = await saved_replies_api.admin_saved_replies_list(account_id=AID)
         return {r["title"]: r["removed_media_ids"] for r in json.loads(resp.body)["list"]}
 
-    # 103 was never mirrored: unknown is not deleted.
     assert await flagged() == {"two pics": [102], "text only": []}
 
-    # The mirror found 102 again (vault_mirror resets removed_at): no longer flagged.
     async with get_session() as s:
         (await s.get(VaultItem, (AID, 102))).removed_at = None
     assert await flagged() == {"two pics": [], "text only": []}
@@ -90,5 +70,4 @@ async def case_attribution_carries_our_unsends():
     assert kept["unsent_at"] is None and kept["unsent_reason"] is None, kept
 
 
-# Collected automatically — see _harness.run's docstring.
 _harness.run()

@@ -1,141 +1,3 @@
-"""Messages Pro under All Models shared by several chatters: what it costs at OF's wire, and how stale it goes.
-
-World: `flat_agency` with `all_models_creators` Creators (10 small) in one Agency, each a captured session (the
-relay's REAL OFClient against lib/of_wire.py, `OF_WIRE`), OF's chat list per Creator (lib/all_models_wire.py:
-the first `all_models_chats` seeded fans, newest first, the first `all_models_unread` unread; `filter=unread`
-honoured; OF's 10-row cap per response; mark-as-read modelled; `/users/me` `chatMessagesCount` = unread chats over
-the whole list). DEEP_K Creators (creators[1:4]) hold DEEP_CHATS chats instead, rows DEEP_UNREAD unread too (below
-page 0's 25 rows: a rows-based count cannot equal OF's). Three chatters (A, B, C: seed/chatters.py, their own
-logins), each with every Creator in its Employee setup, and a fourth, D, the same, whose tab opens only in phase 10.
-Each chatter has its own Chromium context (one browser) on
-`/messages-pro`, scope All (localStorage `chatterly:scope`). Nothing is routed or held: the screen bundle, the rail,
-the strip and the open chat's reads all reach the relay and the fake OF.
-
-Phases (each: the fake-OF calls by route with t0 in the phase, /api2/ ones per Creator, and the relay's own counter
-by Caller kind (lib/of_call_stats.py); metric `of_budget_<phase>`, all in `of-budget.json`):
-  1 open_first         A opens cold; settled = rows shown, the App-open warm read every Creator's feed (the warm's
-                       first read; one Creator at a time on the one exit, ~3.3 s each, measured run 1), the wire
-                       quiet. Screenshot. The window holds B's open too: `a_own_total` = total - B's attributed.
-  2 open_within_reuse  B opens while A's warm still runs (a 10-Creator warm outlasts REUSE_S: run 1, B after A
-                       settled, found 9 of 10 aged out): once B_AFTER_FED Creators had their feed read (>= 2 warms
-                       done), cap B_OPEN_CAP_S after A's `opened` post. B's calls: the relay counter's rows by
-                       Caller kind but the warm's (`walk:app_open_warm`) and the Shared refresher's
-                       (`walk:shared_refresher`, its own Cycle, no tab's: `refresher_calls_in_window`), from just
-                       before B's navigation until B settled (A's tab is quiet then: its reads are served from the
-                       warm's entries).
-  3 open_after_reuse   C opens C_AFTER_A_OPEN_S after A's open at least, and C_PAST_WARM_S + REUSE_S past phase 1's
-                       end (every warm landed before it). With the Shared refresher on its warm nets against the
-                       Last refreshes (ADR-0044): a Creator within its Cycle is `reused`, so this phase cannot isolate
-                       the refresher (phase 10 does); a metric only.
-  4 idle               the purchases loop starts (`POST /__slop/fast-poll`, LOOP_LEAD_S lead), then IDLE_S with
-                       three tabs open: calls per minute, total and per Creator. `/admin/accounts` `freshness`
-                       (owner, Relay memory, 0 OF calls) sampled every FRESH_EVERY_S. `of_budget_idle.
-                       refresher_per_cycle`: the counter's `walk:shared_refresher` `/users/me` and chats-list calls
-                       per Creator (<= 1 read and <= 1 window a Cycle; a window read only after a drift, none here).
-                       Tab A's Unread chip text sampled every FRESH_EVERY_S too (DOM only, 0 OF calls): QUIET_NOT_STALE.
-  5 incoming           PLAIN_DMS DMs to listed fans on as many Creators, DM_EVERY_S apart; then one DM from a fan not
-                       in the list and two tips. Per event and tab, the lag until a row shows its text (polled every
-                       LAG_POLL_S, cap LAG_CAP_S). OF calls per event. Screenshot.
-  6 mark_read          A clicks an unread chat of Creator X; B's and C's time until that row's unread dot clears and
-                       their Unread chip count drops (cap MARK_CAP_S, poll MARK_POLL_S; None: not within the cap).
-                       A METRIC: a sibling PR adds the cross-chatter read event and owns that check. B's roster-counts
-                       before and after. Screenshots of B at the click and at the end.
-  7 reply              A replies in that chat (the composer; an HTTP send as A if the composer fails): the time until
-                       B's row shows it (cap REPLY_CAP_S: no event patches a teammate's Fan List on a person's send,
-                       app/hooks/useInboxRealtime.ts:86-91, `chat_responded` only feeds the bell; so B's 90 s
-                       head-page poll, app/hooks/useChatList.ts). Metric. Screenshot of B.
-  8 read_on_of         a chat of Creator Y read on OF's own site (`mark_read_out_of_band`): per tab the time until
-                       its row clears and its Unread chip drops (`cleared_ms`, `chip_dropped_ms`, cap OOB_CAP_S), Y's
-                       lease per tab (its last view-lease answer), Y's accounts `unread_total.n` before / after vs the
-                       fake's counter (side effect). Screenshot of B. Then B over HTTP: the All list page 0 (the inbox
-                       bundle) and the `filter=unread` list for X and Y: `unread_parity` (unread in All but not in
-                       the unread list, and the reverse), metric and `unread-parity.json`.
-  8b fresh_prep        one page-0 unread chat on each DEEP Creator read on OF's own site, then FRESH_PREP_S (one Cycle +
-                       tick + the drift's window read) so no drift read lands in phase 9's idle count. Metric
-                       `fresh_prep` (accounts totals vs the fake's counters).
-  9 idle_one_tab       (after `bg_lane_wedge` end, so phases 5-8 keep all three tabs) B and C close their tabs, A
-                       alone for IDLE_S, `freshness` sampled as in 4. Metric `idle_refresher_per_creator_min {n3, n1}`
-                       (the counter's `walk:shared_refresher` calls per Creator per minute, `idle` vs this; lib/
-                       all_models_refresher.py), `refresh_staleness` (max now - `at` over both idle phases' samples),
-                       `data_age` (tab A's chip samples over both idle phases: `quiet_stale_samples` those showing "as
-                       of", null when no text was read; `samples`; lib/all_models_refresher.py `quiet_stale`).
- 10 open_after_cycle   (A's tab still open, the refresher still reading) D opens, at least LAST_WARM_GAP_S after the
-                       last warm (phase 3's end), past every Creator's 60 s Cycle: only the refresher's Last refreshes
-                       can make D's warm `reused`. Just before D's navigation one `/admin/accounts` `freshness` sample
-                       (owner, 0 OF calls): the Creators within their Cycle until D's `opened` post answered
-                       (lib/all_models_refresher.py `fresh_until`). Metric `of_budget_open_after_cycle` (+ D's
-                       `own_total`, `warmed_per_creator`, its `warm` answers). D's open is also the fresh session
-                       (empty browser storage, every Creator, > 1 Cycle after fresh_prep): metric `fresh_session`
-                       {badge_first: the Unread chip's first number, badge_ms: navigation to it, truth: the fake's
-                       `chatMessagesCount` summed, diff}, the accounts answer's totals vs the fake's per Creator (Y's
-                       recorded), screenshots `fresh-session-trigger` (at the first number) / `fresh-session-settled`.
- 11 no_tab             A and D close: NO_TAB_S with no tab open. Metric `refresher_calls_no_tab`: the counter's
-                       `walk:shared_refresher` calls from NO_TAB_GRACE_S after the close (one 5 s tick, the relay's
-                       <= 1 s disconnect poll, the counter's 1 s flush) to the phase's end.
-
-Checks (names in lib/all_models_faults.py):
-  SECOND_OPEN_SHARED  B's `opened` post answered `warm: reused` (accounts_admin_api.py:668: no Creator started,
-                      every one warmed within REUSE_S or still queued in A's warm), B's attributed calls hold no `GET
-                      /api2/v2/chats`, and at most SECOND_OPEN_MAX_PER_CREATOR other OF calls a Creator (thread reads
-                      aside: get_messages_tail, prefetch). Skipped when A's oldest finished warm was already older
-                      than REUSE_S - REUSE_MARGIN_S at B's post (timing, no verdict).
-
-Metric `bg_lane_wedge` (after phase 5 and at the end): per Creator the background lane's waiters
-(`GET /admin/priority-lanes/stats`, owner) and every tab read in flight longer than WEDGE_AGE_S. Run 1: two tabs'
-`/api/of/v2/users/notifications/money` after a tip held both background slots of one Creator for good (the route's
-two gathered `_notifications_read`s: one borrows the lease, the other blocks in `_lane_acquire`; server.py:663,
-4190, 2585-2591, bg_lane.py:115-117); the relay's Traceback invariant reports it, nothing here masks it.
-  IDLE_BUDGET         every Creator <= IDLE_MAX_PER_CREATOR_MIN calls a minute in phase 4.
-  DM_NO_LIST_REREAD   no `GET /api2/v2/chats` from the first plain DM until all are shown + DM_TAIL_S.
-  DM_ROW_LAG          p95 over the plain DMs x 3 tabs <= DM_ROW_LAG_P95_MS (a sample past the cap counts as the cap).
-  REFRESHER_FLAT_IN_N n3 and n1 both in [0.8, 1.2], n3 - n1 <= 0.25 (cost flat in chatters; a refresher reading
-                      nothing fails the floor).
-  REFRESH_WITHIN_CYCLE every sample's every Creator has a Last refresh at most `cycle_s` + 10 s old.
-  REFRESHER_STOPS_WITHOUT_TABS refresher_calls_no_tab == 0 (passes for a refresher that never reads: the floor above
-                      catches that one).
-  OPEN_AFTER_CYCLE_REUSED no Creator within its Cycle at D's open has a `walk:app_open_warm` call in D's window; D's
-                      `opened` answer `reused` (`started` only when a Creator past its Cycle was warmed: the refresher
-                      reads at the first 5 s tick past a slot, so at the 60 s floor about a third of opens meet one,
-                      i; that warm is then its one read); D's own calls (the counter's rows in its window but the
-                      warm's, the refresher's and the `loop:*` kinds) <= OPEN_TOTAL_MAX 40; >= half the Creators
-                      within Cycle.
-  READ_ON_OF_CLEARS   every tab's row cleared and Unread chip dropped within CLEAR_MAX_MS of Y's read on OF.
-  FRESH_BADGE_TRUE    fresh_session.diff == 0 (no number: fail).
-  QUIET_NOT_STALE     data_age.quiet_stale_samples == 0 over >= 1 chip text read (tab A's Unread chip holds no "as of":
-                      the app shows it past Cycle + 40 s slack on a 15 s tick, ~100-115 s; the ping's `fresh` every
-                      20 s keeps an unchanged Creator's `at` within ~Cycle + 10 + 20 s; no text read: fail).
-
-Budgets, from the product (not measured here first):
-  - app_open_warm.REUSE_S 30 (service/app_open_warm.py:73), `start` answers `reused` inside it (:274): B's open
-    reads nothing the warm read; its 30 s entries (notifications count, rail tip and purchases lists:
-    server.py:4232/4236) may have lapsed for the earliest Creators since: 3, + 1 slack = 4.
-  - the chats window: list_chats TTL 600 s + SWR 600 s (server.py:3240/3245), the roster rewarm's key is the
-    bundle's page 0 (accounts_admin_api.py:321-322): a second open, or a DM (event_transcoder.py:321 patches the
-    cached window; :337 busts only roster_count, refolded from the window under _ROSTER_WINDOW_MAX_AGE_S 300,
-    server.py:3254), reads no list.
-  - idle, per Creator, every Creator-keyed entry at most ceil(120/TTL)+1 times in IDLE_S 120: the feed poll (FAST_S
-    30, purchase_poll_decide.py:37), count, tip, purchases (30 s), users/me (60 s, server.py:3039) = 5+5+5+5+3 = 23,
-    + a chats window refresh (3 reads at OF's cap) = 26, + the Shared refresher's `/users/me` (cache bypass, once a
-    Cycle: both Cycle Knobs at the 60 s floor, RELAY_ENV) ceil(120/60)+1 = 3 -> 29 in 120 s ~ 14.5/min -> 15. No tab
-    term: three tabs cost what one does. Measured with IDLE_S 90 and no refresher: max_per_creator 2.67/min; expected
-    with it <= 3.7 (+1 read/min, i).
-  - the refresher (service/shared_refresher.py, shared_refresher_decide): one read per Creator per Cycle; a Cycle at
-    the 60 s floor (SPREAD 0.9-1.0 x 60 clamps to 60) read on the first 5 s tick past due -> ~1/min whatever the tab
-    count (n3, n1 in [0.8, 1.2]; the window's 1-2 reads per Creator average out over 10 Creators, i); a Last refresh
-    ages its Cycle + one tick + the exit's queue (GAP_S 1 s a read) <= cycle_s + 10 s; no tab, `tracked` empty: no
-    job planned, a queued one dropped at its turn (`_wanted`).
-
-Bypasses (declared): OF at its wire (lib/of_wire.py + lib/all_models_wire.py, 50 ms a call); fan DMs and tips at
-the pump boundary (`POST /__slop/of-ws-frame`, actors/fan_dm.py); the purchases loop started on request
-(lib/view_lease_relay.py) after phase 3, so phases 1-3 see only the warm's and the tabs' reads; `/messages-pro` is
-compiled by one plain GET first (dev server).
-Break-it-once: `warm-ignores-reuse` (the FAULT: `app_open_warm.start` forgets every warm first and ignores the shared
-Last refresh): SECOND_OPEN_SHARED and OPEN_AFTER_CYCLE_REUSED. `refresher-per-subscriber` (`--fault=`: one refresher job per tab subscriber per Creator, each its
-own exit-queue entry and cache bypass; lib/all_models_faults.py): only REFRESHER_FLAT_IN_N (n3 ~3, n1 ~1).
-`unread-total-frozen` (`--fault=`: the Unread total keeps OF's first number): READ_ON_OF_CLEARS and FRESH_BADGE_TRUE.
-`fresh-ping-off` (`--fault=`: the ping carries no `fresh`; an unchanged Cycle publishes nothing, so tab A's last
-confirmation is its phase-1 warm's, >= ~100 s before `idle` starts): only QUIET_NOT_STALE.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -165,13 +27,8 @@ UI = True
 OF_WIRE = True
 FAULT = "warm-ignores-reuse"
 RELAY_ENV = {"OF_CALL_STATS_FLUSH_S": "1", "INGEST_FAST_BOOT_GRACE_S": "0",
-             # the Shared refresher on, both Cycles at the 60 s floor: an idle phase sees whole Cycles
              "SHARED_REFRESHER": "1", "SHARED_REFRESHER_LEASE_CYCLE_S": "60", "SHARED_REFRESHER_TAB_CYCLE_S": "60",
-             # the Unread total (phase 2): the badge from OF's whole-inbox counter
              "UNREAD_TOTAL": "1"}
-# SLOP_AM_KNOBS=off (caller env): both Knobs unset, the relay as main runs it. The Knob-only checks are skipped; the
-# rest (second open, idle budget, DMs, 5xx, Traceback) and of-budget.json are the Knob-off proof: no
-# `walk:shared_refresher` row in any phase.
 KNOBS_OFF = os.environ.get("SLOP_AM_KNOBS") == "off"
 if KNOBS_OFF:
     RELAY_ENV = {k: v for k, v in RELAY_ENV.items() if not k.startswith(("SHARED_REFRESHER", "UNREAD_TOTAL"))}
@@ -179,70 +36,67 @@ KNOB_CHECKS = (REFRESHER_FLAT_IN_N, REFRESH_WITHIN_CYCLE, OPEN_AFTER_CYCLE_REUSE
                FRESH_BADGE_TRUE, QUIET_NOT_STALE)
 
 CHATTERS = ("a", "b", "c")
-LATE = "d"                   # the fourth chatter: its tab opens only in open_after_cycle
+LATE = "d"
 VIEWPORT = (1440, 900)
-# Timing.
-WARM_REUSE_S = 30.0          # APP_OPEN_WARM_REUSE_S default (service/app_open_warm.py:73), not scaled
-REUSE_MARGIN_S = 1.0         # a Creator counts as inside B's window only this much short of REUSE_S
-ROWS_TIMEOUT_S = 180.0       # the first rows (next dev compiles /messages-pro on its first hit)
-OPENED_WAIT_S = 20.0         # the tab's `opened: true` view-lease post (ViewLeaseHeartbeat: once its stream is open)
-WARM_SETTLE_S = 60.0         # the `opened` post to every Creator's feed read (~3.3 s a Creator on one exit, run 1)
-NET_QUIET_S, NET_CAP_S = 2.0, 30.0     # the tab: no relay read in flight for NET_QUIET_S
-WIRE_QUIET_S, WIRE_CAP_S = 1.5, 20.0   # the fake OF: no call for WIRE_QUIET_S
-STATS_FLUSH_S = 1.5          # the counter file flushes every 1 s (RELAY_ENV)
-B_AFTER_FED = 3              # B opens once this many Creators had A's warm's feed read (>= 2 warms done) ...
-B_OPEN_CAP_S = 20.0          # ... or this long after A's `opened` post
-C_AFTER_A_OPEN_S = 35.0      # C opens at least this long after A's open (spec: > 35 s)
-C_PAST_WARM_S = 1.5          # ... and past phase 1's end + REUSE_S
-WEDGE_AGE_S = 30.0           # a tab read in flight longer than this counts as stuck (bg_lane_wedge)
+WARM_REUSE_S = 30.0
+REUSE_MARGIN_S = 1.0
+# next dev compiles /messages-pro on its first hit
+ROWS_TIMEOUT_S = 180.0
+OPENED_WAIT_S = 20.0
+WARM_SETTLE_S = 60.0
+NET_QUIET_S, NET_CAP_S = 2.0, 30.0
+WIRE_QUIET_S, WIRE_CAP_S = 1.5, 20.0
+STATS_FLUSH_S = 1.5
+B_AFTER_FED = 3
+B_OPEN_CAP_S = 20.0
+C_AFTER_A_OPEN_S = 35.0
+C_PAST_WARM_S = 1.5
+WEDGE_AGE_S = 30.0
 LOOP_LEAD_S = 3.0
-IDLE_S = 120.0               # two whole 60 s Cycles (phases 4 and 9)
-PUMP_UP_S = 30.0             # every Creator's pump socket connects within this (run)
-FRESH_EVERY_S = 5.0          # `/admin/accounts` freshness samples and tab A's chip text in phases 4 and 9
-LAST_WARM_GAP_S = 240.0      # open_after_cycle: D opens at least this long after the last warm (4 x the 60 s Cycle)
+IDLE_S = 120.0
+PUMP_UP_S = 30.0
+FRESH_EVERY_S = 5.0
+LAST_WARM_GAP_S = 240.0
 NO_TAB_S = 30.0
-NO_TAB_GRACE_S = 7.0         # one refresher tick (5 s) + the stream's disconnect poll (1 s) + the counter flush (1 s)
+NO_TAB_GRACE_S = 7.0
 DM_EVERY_S = 2.0
 LAG_POLL_S, LAG_CAP_S = 0.25, 10.0
 DM_TAIL_S = 2.0
 MARK_POLL_S, MARK_CAP_S = 0.5, 75.0
-SEND_WAIT_S = 15.0           # the composer's send to OF's wire (else the HTTP send)
+SEND_WAIT_S = 15.0
 COMPOSER_TIMEOUT_S = 15.0
-REPLY_CAP_S = 95.0           # past B's 90 s head-page poll (useChatList.ts): the only path to B's row (docstring 7)
-OOB_CAP_S = 90.0             # the watch of Y's read on OF (READ_ON_OF_CLEARS bars at CLEAR_MAX_MS)
-CLEAR_MAX_MS = 65_000        # one 60 s Cycle + one tick (5 s): the refresher's `/users/me`, then the drift's window read
-FRESH_PREP_S = 75.0          # fresh_prep: one Cycle + tick + the drift's window read, before phase 9's idle count
-BADGE_POLL_S = 0.1           # fresh_session: the Unread chip read this often from D's navigation
-# Events.
+# no event patches a teammate's Fan List on a send (useInboxRealtime): only the 90 s head-page poll updates B's row
+REPLY_CAP_S = 95.0
+OOB_CAP_S = 90.0
+CLEAR_MAX_MS = 65_000
+FRESH_PREP_S = 75.0
+BADGE_POLL_S = 0.1
 PLAIN_DMS = 6
-DM_FAN = 10                  # chat index of the plain-DM fans: read, inside page 0
+DM_FAN = 10
 TIP_FAN = 12
 TIPS = (5.0, 12.0)
 CHAT_ID_BASE = 7_100_000_000
-DEEP_K = 3                   # Creators creators[1:1+DEEP_K] (not 0: its unlisted DM fan is fans[n_chats]; not X, Y)
-DEEP_CHATS = 30              # their chats: past page 0's 25 rows
-DEEP_UNREAD = (26, 28)       # rows also unread, below page 0
-DEEP_READ_FAN = 1            # fresh_prep reads this (unread, page-0) chat on OF's own site
+DEEP_K = 3
+DEEP_CHATS = 30
+DEEP_UNREAD = (26, 28)
+DEEP_READ_FAN = 1
 _IDS = itertools.count(9_700_000_000_000)
-# Budgets (module docstring).
 SECOND_OPEN_MAX_PER_CREATOR = 4
 IDLE_MAX_PER_CREATOR_MIN = 15.0
 DM_ROW_LAG_P95_MS = 3000
 LIST_ROUTE = "GET /api2/v2/chats"
 THREAD_ROUTE = "GET /api2/v2/chats/{id}/messages"
-WARM_KIND = "walk:app_open_warm"   # the counter's Caller kind of the warm's reads (lib/of_call_stats.py)
-THREAD_KEY = "GET /api2/v2/chats/{}/messages"   # the counter's key for THREAD_ROUTE
-COMPOSER = 'Press "/" + keyword'   # Composer.tsx placeholder (chatter-crowd)
+WARM_KIND = "walk:app_open_warm"
+THREAD_KEY = "GET /api2/v2/chats/{}/messages"
+COMPOSER = 'Press "/" + keyword'
 SCOPE_ALL_JS = "try { localStorage.setItem('chatterly:scope', 'all'); } catch (e) {}"
 
-# Keys of `items` whose marker shows in any row, or whose handle is in one of the first 3 rows (a tip's preview).
 FIND_JS = """(items) => {
   const texts = [...document.querySelectorAll('[data-chat-row]')].map((r) => r.textContent || '');
   const top = texts.slice(0, 3);
   return items.filter((it) => texts.some((t) => t.includes(it.marker))
     || (it.handle && top.some((t) => t.includes(it.handle)))).map((it) => it.key);
 }"""
-# The row holding `handle`: present, its unread dot (FanRow EdgeMarker), and the Unread chip's count (FanListFilters).
 ROW_JS = """(handle) => {
   const row = [...document.querySelectorAll('[data-chat-row]')].find((r) => (r.textContent || '').includes(handle));
   const g = document.querySelector('[role="group"][aria-label="Fan List filters"]');
@@ -257,7 +111,6 @@ ROW_JS = """(handle) => {
 }"""
 
 
-# The Unread chip's number; null while it shows none (FanListFilters' FilterChip: no count before the badge is ready).
 CHIP_JS = """() => {
   const g = document.querySelector('[role="group"][aria-label="Fan List filters"]');
   const el = g ? [...g.querySelectorAll('button')].find((b) => {
@@ -267,7 +120,6 @@ CHIP_JS = """() => {
   const m = el ? (el.textContent || '').split('as of')[0].match(/(\\d+)/) : null;
   return m ? Number(m[1]) : null;
 }"""
-# The Unread chip's whole text (CHIP_JS's locator); null while no such chip. Holds "as of" when the age shows.
 CHIP_TEXT_JS = """() => {
   const g = document.querySelector('[role="group"][aria-label="Fan List filters"]');
   const el = g ? [...g.querySelectorAll('button')].find((b) => {
@@ -279,7 +131,7 @@ CHIP_TEXT_JS = """() => {
 
 
 def _relevant(path: str) -> bool:
-    if path.startswith("/admin/perflog") or path.startswith("/events"):   # never ends
+    if path.startswith("/admin/perflog") or path.startswith("/events"):
         return False
     return path.startswith("/admin/") or path.startswith("/api/")
 
@@ -295,7 +147,6 @@ async def _answer(post: dict, req) -> None:
 
 
 class Tab:
-    """One chatter's Chromium context on /messages-pro: its view-lease posts and its relay reads in flight."""
 
     def __init__(self, name: str, page) -> None:
         self.name, self.page = name, page
@@ -325,7 +176,6 @@ class Tab:
             self.last_end = time.monotonic()
 
     def stuck(self, min_age_s: float) -> list[dict]:
-        """Relay reads in flight for at least `min_age_s`: path, Creator header, age."""
         now = time.monotonic()
         out = []
         for req, t in list(self.inflight.items()):
@@ -342,7 +192,6 @@ class Tab:
         return next((p for p in self.posts if p["t"] >= since and p["body"].get("opened")), None)
 
     async def open(self, ctx) -> dict:
-        """Navigate, then settle: rows shown, the opening post sent, no relay read in flight for NET_QUIET_S."""
         t0 = time.time()
         await self.page.goto(f"{ctx.app}/messages-pro", wait_until="domcontentloaded", timeout=ROWS_TIMEOUT_S * 1000)
         await self.page.locator("[data-chat-row]").first.wait_for(timeout=ROWS_TIMEOUT_S * 1000)
@@ -368,7 +217,6 @@ async def _tab(ctx, browser, name: str, http: Http) -> Tab:
     return Tab(name, await bctx.new_page())
 
 
-# ── the wire ───────────────────────────────────────────────────────────────
 def _calls(fake, lo: float, hi: float) -> list[dict]:
     with fake.lock:
         return [dict(c) for c in fake.calls if c["t0"] is not None and lo <= c["t0"] < hi]
@@ -387,7 +235,6 @@ def _kinds(ctx) -> Counter:
 
 
 def _rows(ctx) -> Counter | None:
-    """The counter file as (Caller kind, key, Creator) -> n; None when unreadable."""
     try:
         raw, _ = of_call_stats.read(of_call_stats.path(ctx))
     except Exception:  # noqa: BLE001 — the caller records the gap
@@ -399,7 +246,6 @@ def _rows(ctx) -> Counter | None:
 
 
 def _fed(fake, lo: float) -> dict[str, float]:
-    """Per Creator, its first feed read (the warm's first read) since `lo`."""
     out: dict[str, float] = {}
     with fake.lock:
         for c in fake.calls:
@@ -409,7 +255,6 @@ def _fed(fake, lo: float) -> dict[str, float]:
 
 
 async def _wedge(ctx, tabs: dict, at: str) -> dict:
-    """Background lanes with waiters (the relay's lane stats, owner) and tab reads in flight >= WEDGE_AGE_S."""
     out: dict = {"at": at}
     try:
         r = await ctx.owner.get("/admin/priority-lanes/stats")
@@ -431,7 +276,6 @@ async def _wedge(ctx, tabs: dict, at: str) -> dict:
 
 
 class Budget:
-    """Per phase: the fake-OF calls by route and per Creator, the relay's counter by Caller kind; `of-budget.json`."""
 
     def __init__(self, ctx, creators: list[str]) -> None:
         self.ctx, self.creators = ctx, creators
@@ -476,9 +320,7 @@ class Budget:
         (self.ctx.out / "of-budget.json").write_text(json.dumps(self.phases, indent=2, default=str))
 
 
-# ── the DOM ────────────────────────────────────────────────────────────────
 class Lags:
-    """Per tab, when each watched item first shows in a Fan List row (one poll per tab every LAG_POLL_S)."""
 
     def __init__(self, tabs: list[Tab]) -> None:
         self.tabs = tabs
@@ -525,7 +367,6 @@ class Lags:
 
 
 class Freshness:
-    """`GET /admin/accounts` (owner) every FRESH_EVERY_S while started: each Creator's `freshness` (None: absent)."""
 
     def __init__(self, ctx, creators: list[str]) -> None:
         self.ctx, self.creators = ctx, set(creators)
@@ -563,7 +404,6 @@ class Freshness:
 
 
 class ChipAge:
-    """Tab A's Unread chip text every FRESH_EVERY_S while started (DOM only, 0 OF calls): QUIET_NOT_STALE."""
 
     def __init__(self, tab: Tab) -> None:
         self.tab = tab
@@ -604,7 +444,6 @@ async def _row(tab: Tab, handle: str) -> dict:
 
 
 async def _watch_read(tab: Tab, handle: str, chip0, t0: float, cap_s: float) -> dict:
-    """Until `handle`'s row shows no unread dot and the Unread chip drops below `chip0` (each in ms from t0), cap_s."""
     row_ms = chip_ms = None
     last: dict = {}
     while time.time() < t0 + cap_s and (row_ms is None or chip_ms is None):
@@ -635,7 +474,6 @@ async def _roster(http: Http, aid: str) -> dict | None:
     return (r.json().get("counts") or {}).get(aid) if r.status_code == 200 else {"status": r.status_code}
 
 
-# ── the run ────────────────────────────────────────────────────────────────
 async def run(ctx) -> None:
     w = ctx.world
     ctx.metric("knobs", "off" if KNOBS_OFF else "on")
@@ -683,9 +521,8 @@ async def run(ctx) -> None:
             h = Http(ctx.relay, ctx.rec, limits=4)
             https[k] = h
             (await h.post("/chatter/login", json={"username": s["username"], "password": s["password"]})).raise_for_status()
-        # Every Creator's Live connection up, as in prod (one real `_reconcile_pumps` pass, before any phase's clock):
-        # down, the refresher's window step re-reads each chats window every Cycle (`decide.window_due`).
         t_pumps = time.time()
+        # with Live down the refresher re-reads each chats window every Cycle
         (await ctx.owner.post("/__slop/pump-supervise")).raise_for_status()
         up: set = set()
         while time.time() - t_pumps < PUMP_UP_S and len(up) < len(creators):
@@ -709,7 +546,6 @@ async def _flow(ctx, creators: list[str], wire, https: dict[str, Http]) -> None:
     budget = Budget(ctx, creators)
     shots: dict[str, str] = {}
     secs: dict[str, float] = {}
-    # Next compiles each route on its first hit: not on A's clock more than it must.
     async with httpx.AsyncClient(timeout=180) as hc:
         try:
             await hc.get(f"{ctx.app}/messages-pro")
@@ -721,14 +557,13 @@ async def _flow(ctx, creators: list[str], wire, https: dict[str, Http]) -> None:
             tabs = {k: await _tab(ctx, browser, k, https[k]) for k in CHATTERS}
             A, B, C = tabs["a"], tabs["b"], tabs["c"]
 
-            # 1-2 open_first + open_within_reuse: B opens while A's warm still runs (docstring)
             m = budget.begin()
             r0 = _rows(ctx)
             a_open = await A.open(ctx)
             a_at = a_open["opened_t"] or time.time()
             await _until(lambda: len(_fed(fake, m["lo"])) >= B_AFTER_FED,
                          max(0.0, a_at + B_OPEN_CAP_S - time.time()), 0.1)
-            await asyncio.sleep(STATS_FLUSH_S)          # A's own reads so far into the file before B's mark
+            await asyncio.sleep(STATS_FLUSH_S)
             rb0, tb0 = _rows(ctx), time.time()
             b_open = await B.open(ctx)
             await asyncio.sleep(STATS_FLUSH_S)
@@ -750,7 +585,6 @@ async def _flow(ctx, creators: list[str], wire, https: dict[str, Http]) -> None:
             budget.put("open_first", p1)
             budget.put("open_within_reuse", b_own)
 
-            # 3 open_after_reuse: every warm landed before phase 1 ended
             at = max(a_open["t0"] + C_AFTER_A_OPEN_S, p1["hi"] + WARM_REUSE_S + C_PAST_WARM_S)
             await asyncio.sleep(max(0.0, at - time.time()))
             m = budget.begin()
@@ -765,7 +599,6 @@ async def _flow(ctx, creators: list[str], wire, https: dict[str, Http]) -> None:
                              after_a_open_s=round(c_open["t0"] - a_open["t0"], 1),
                              after_phase1_s=round(c_open["t0"] - p1["hi"], 1))
 
-            # 4 idle
             (await ctx.owner.post("/__slop/fast-poll")).raise_for_status()
             await asyncio.sleep(LOOP_LEAD_S)
             fresh = Freshness(ctx, creators)
@@ -778,17 +611,14 @@ async def _flow(ctx, creators: list[str], wire, https: dict[str, Http]) -> None:
             p4 = await budget.end("idle", m)
             await fresh.stop()
             await age.stop()
-            # the refresher's `/users/me` and window reads per Creator per Cycle (phase 2: a window read only on drift)
             p4["refresher_per_cycle"] = refresher.per_cycle(ri0, _rows(ctx), creators, p4["seconds"], 60.0)
             budget.put("idle", p4)
             _idle(ctx, creators, p4)
 
-            # 5 incoming
             await _incoming(ctx, creators, wire, tabs, budget, shots)
             wedge = {"after_incoming": await _wedge(ctx, tabs, "after_incoming")}
             ctx.metric("bg_lane_wedge", wedge)
 
-            # 6-8b: one failing does not stop the next (a raised read_on_of fails its check)
             X, Y = creators[-1], creators[-2]
             fx, fy = w.data["fans"][X][0], w.data["fans"][Y][0]
             for name, step, checks in (
@@ -808,8 +638,6 @@ async def _flow(ctx, creators: list[str], wire, https: dict[str, Http]) -> None:
             wedge["end"] = await _wedge(ctx, tabs, "end")
             ctx.metric("bg_lane_wedge", wedge)
 
-            # 9-11: tabs close (last, so phases 5-8 keep all three); D opens while A's tab still keeps the refresher
-            # reading (before no_tab); a phase that raised fails its checks
             for name, step, checks in (
                     ("idle_one_tab", lambda: _idle_one_tab(ctx, creators, tabs, budget, fresh, age),
                      (REFRESHER_FLAT_IN_N, REFRESH_WITHIN_CYCLE, QUIET_NOT_STALE)),
@@ -836,10 +664,8 @@ async def _flow(ctx, creators: list[str], wire, https: dict[str, Http]) -> None:
 
 def _second_open(ctx, creators: list[str], fed: dict[str, float], a_open: dict, b_open: dict,
                  rb0: Counter | None, rb1: Counter | None, tb0: float, tb1: float) -> dict:
-    """B's verdict and its own budget entry: the counter's rows but the warm's over [tb0, tb1)."""
     t_b = b_open["opened_t"] or b_open["t0"]
     order = sorted(fed.values())
-    # A Creator's warm ended before the next one's feed read: the second feed read bounds the oldest finished warm.
     done = [t for t in order[1:] if t < t_b]
     oldest = round(t_b - done[0], 1) if done else None
     detail: dict = {"seconds": round(tb1 - tb0, 1), "b_warm": b_open["warm"], "b_opened_sent": b_open["opened_sent"],
@@ -888,8 +714,6 @@ def _idle(ctx, creators: list[str], p4: dict) -> None:
 
 async def _idle_one_tab(ctx, creators: list[str], tabs: dict[str, Tab], budget: Budget, fresh: Freshness,
                         age: ChipAge) -> None:
-    """B and C close, A alone for IDLE_S: the refresher's per-Creator cost vs phase 4's, both phases' staleness, and
-    tab A's chip age over both (QUIET_NOT_STALE)."""
     for n in ("b", "c"):
         await tabs[n].page.close()
     m = budget.begin()
@@ -920,17 +744,15 @@ async def _idle_one_tab(ctx, creators: list[str], tabs: dict[str, Tab], budget: 
 
 async def _open_after_cycle(ctx, creators: list[str], wire, tabs: dict[str, Tab], browser, https: dict[str, Http],
                             budget: Budget, shots: dict) -> None:
-    """D opens long past every warm: its warm against the refresher's Last refreshes (OPEN_AFTER_CYCLE_REUSED); the
-    same open is the fresh session (FRESH_BADGE_TRUE)."""
     last_warm = max((budget.phases.get(k) or {}).get("hi") or 0.0 for k in ("open_first", "open_after_reuse"))
     await asyncio.sleep(max(0.0, last_warm + LAST_WARM_GAP_S - time.time()))
     D = tabs[LATE] = await _tab(ctx, browser, LATE, https[LATE])
-    t_s = time.time()                                   # before the read: the relay's `now` is never earlier
+    t_s = time.time()
     r = await ctx.owner.get("/admin/accounts")
     rows = {a["id"]: a.get("freshness") for a in (r.json().get("accounts") or []) if a.get("id") in set(creators)} \
         if r.status_code == 200 else {}
     sample = {"t": t_s, "rows": rows}
-    await asyncio.sleep(STATS_FLUSH_S)                  # earlier calls into the counter file before D's mark
+    await asyncio.sleep(STATS_FLUSH_S)
     m = budget.begin()
     r0 = _rows(ctx)
     first = asyncio.create_task(_first_badge(ctx, D, creators, wire, time.time(), shots))
@@ -973,8 +795,6 @@ async def _open_after_cycle(ctx, creators: list[str], wire, tabs: dict[str, Tab]
 
 
 async def _first_badge(ctx, tab: Tab, creators: list[str], wire, t_nav: float, shots: dict) -> dict:
-    """From just before `tab`'s navigation: the Unread chip's first number, ms after `t_nav`, and the fake's counters
-    at that moment (nothing moves them in phase 10); screenshot `fresh-session-trigger` then."""
     while time.time() < t_nav + ROWS_TIMEOUT_S:
         try:
             n = await tab.page.evaluate(CHIP_JS)
@@ -991,8 +811,6 @@ async def _first_badge(ctx, tab: Tab, creators: list[str], wire, t_nav: float, s
 
 
 async def _totals(ctx, aids: list[str]) -> dict:
-    """Owner `/admin/accounts` (Relay memory, 0 OF calls): per Creator `freshness.values.unread_total.n` (None: no
-    total held), or `{"status": <code>}` / `{"error": ...}` (never raises: a side-effect record only)."""
     try:
         r = await ctx.owner.get("/admin/accounts")
     except Exception as e:  # noqa: BLE001
@@ -1008,8 +826,6 @@ async def _totals(ctx, aids: list[str]) -> dict:
 
 
 async def _fresh_session(ctx, creators: list[str], wire, D: Tab, first: dict, shots: dict) -> None:
-    """FRESH_BADGE_TRUE over D's open (empty storage, every Creator): its first badge vs the fake's whole-inbox
-    counters; the accounts answer's totals vs the fake's (side effect, Y's named)."""
     await _shot(ctx, D.page, "fresh-session-settled", shots)
     try:
         settled = await D.page.evaluate(CHIP_JS)
@@ -1030,8 +846,6 @@ async def _fresh_session(ctx, creators: list[str], wire, D: Tab, first: dict, sh
 
 
 async def _no_tab(ctx, tabs: dict[str, Tab], budget: Budget) -> None:
-    """Every tab still open (A, D) closes: the refresher's calls from NO_TAB_GRACE_S after the close to the end of
-    NO_TAB_S."""
     m = budget.begin()
     for t in tabs.values():
         if not t.page.is_closed():
@@ -1044,7 +858,7 @@ async def _no_tab(ctx, tabs: dict[str, Tab], budget: Budget) -> None:
     except Exception as e:  # noqa: BLE001 — recorded, the check fails
         k0, err = None, f"{type(e).__name__}: {e}"[:300]
     await asyncio.sleep(max(0.0, t_close + NO_TAB_S - time.time()))
-    p = await budget.end("no_tab", m, grace_s=NO_TAB_GRACE_S)   # its STATS_FLUSH_S wait flushes the window's end
+    p = await budget.end("no_tab", m, grace_s=NO_TAB_GRACE_S)
     calls = None
     if k0 is not None:
         try:
@@ -1121,7 +935,6 @@ async def _incoming(ctx, creators: list[str], wire, tabs: dict[str, Tab], budget
 
 async def _mark_read(ctx, wire, tabs: dict[str, Tab], https: dict[str, Http], budget: Budget, shots: dict,
                      X: str, fx: dict) -> None:
-    # A METRIC, not a check: a sibling PR adds the cross-chatter read event and owns that check.
     handle = f"@{fx['username']}"
     others = ("b", "c")
     before = {n: await _row(tabs[n], handle) for n in others}
@@ -1196,14 +1009,12 @@ async def _reply(ctx, wire, tabs: dict[str, Tab], https: dict[str, Http], budget
 
 
 def _leased(tab: Tab, aid: str) -> bool | None:
-    """`aid` in the tab's last answered view-lease post's `leased` (None: no answer yet)."""
     got = [p["answer"]["leased"] for p in tab.posts if isinstance(p.get("answer"), dict) and "leased" in p["answer"]]
     return aid in got[-1] if got else None
 
 
 async def _read_on_of(ctx, wire, tabs: dict[str, Tab], https: dict[str, Http], budget: Budget, shots: dict, X: str,
                       Y: str, fy: dict) -> None:
-    """READ_ON_OF_CLEARS: Y's chat read on OF's own site; per tab its row's clear and the Unread chip's drop."""
     handle = f"@{fy['username']}"
     before = {n: await _row(t, handle) for n, t in tabs.items()}
     leased = {n: _leased(t, Y) for n, t in tabs.items()}
@@ -1231,14 +1042,12 @@ async def _read_on_of(ctx, wire, tabs: dict[str, Tab], https: dict[str, Http], b
     except Exception as e:  # noqa: BLE001
         ctx.metric("unread_parity_error", f"{type(e).__name__}: {e}"[:300])
     await budget.end("read_on_of", m, **out)
-    v = refresher.clears_within(got, CLEAR_MAX_MS)        # last: a raise before it fails the check once (_flow)
+    v = refresher.clears_within(got, CLEAR_MAX_MS)
     ctx.check(READ_ON_OF_CLEARS, v.pop("ok"), **v, cleared_ms=out["cleared_ms"], chip_dropped_ms=out["chip_dropped_ms"],
               y_total=out["y_total"], y_leased=leased)
 
 
 async def _fresh_prep(ctx, creators: list[str], wire, budget: Budget) -> None:
-    """One page-0 unread chat per deep Creator read on OF's own site, then FRESH_PREP_S: the drift's `/users/me` and
-    window read land here, not in phase 9's idle count."""
     deep = ctx.world.data["deep_creators"]
     fans = {a: ctx.world.data["fans"][a][DEEP_READ_FAN] for a in deep}
     m = budget.begin()
@@ -1259,7 +1068,6 @@ async def _fresh_prep(ctx, creators: list[str], wire, budget: Budget) -> None:
 
 
 async def _parity(ctx, http: Http, wire, aids: list[str]) -> dict:
-    """As B: the All list's page 0 (the inbox bundle, else the chats route) and the `filter=unread` list per Creator."""
     all_rows: dict[str, list[dict] | None] = {a: None for a in aids}
     src = "bundle"
     r = await http.get(f"/admin/screens/inbox?cursor=0&accounts={','.join(aids)}")

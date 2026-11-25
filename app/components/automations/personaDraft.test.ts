@@ -4,7 +4,6 @@ import {
   BUSY_LINE, busyLine, buildPayload, canDraft, dirty, hasPersona, initPersonaDraft, personaDraftReducer, requestBody, type Action, type PersonaDraft,
 } from "./personaDraft";
 
-// _persona.MODEL_NOTES_TEMPLATE, as GET /admin/account-config serves it.
 const TEMPLATE = "Name: \nAge: \nFrom: \nPersonality: \nLikes: \nWon't do (hard limits): ";
 
 const run = (actions: Action[], from: PersonaDraft = initPersonaDraft("Name: Mia")) => actions.reduce(personaDraftReducer, from);
@@ -14,7 +13,6 @@ describe("personaDraftReducer", () => {
     ["opens clean on the server text", [], { text: "Name: Mia", dirty: false }],
     ["edit changes text and makes dirty", [{ type: "edit", text: "Name: Kay" }], { text: "Name: Kay", dirty: true }],
     ["saved clears dirty", [{ type: "edit", text: "Name: Kay" }, { type: "saved", text: "Name: Kay" }], { text: "Name: Kay", dirty: false }],
-    // Typing while the PUT is out: the reply marks only what was sent as saved.
     ["saved of an older text keeps a newer edit dirty",
       [{ type: "edit", text: "Name: Kay" }, { type: "edit", text: "Name: Kayla" }, { type: "saved", text: "Name: Kay" }],
       { text: "Name: Kayla", dirty: true }],
@@ -87,7 +85,7 @@ describe("draft from the Creator's images (click / confirm / cancel / draftOk / 
     expect(canDraft(s)).toBe(true);
     const drafting = personaDraftReducer(s, click);
     expect(canDraft(drafting)).toBe(false);
-    expect(personaDraftReducer(drafting, click)).toBe(drafting);   // click while drafting changes nothing
+    expect(personaDraftReducer(drafting, click)).toBe(drafting);
     expect(canDraft(mia())).toBe(true);
     expect(canDraft(personaDraftReducer(mia(), click))).toBe(false);
   });
@@ -96,7 +94,7 @@ describe("draft from the Creator's images (click / confirm / cancel / draftOk / 
     expect(BUSY_LINE).toBe("Describing up to 6 photos, then drafting…");
     const drafting = personaDraftReducer(blank(), click);
     expect.soft(busyLine(blank())).toBeNull();
-    expect.soft(busyLine(personaDraftReducer(mia(), click))).toBeNull();   // confirm: no request yet
+    expect.soft(busyLine(personaDraftReducer(mia(), click))).toBeNull();
     expect.soft(busyLine(drafting)).toBe(BUSY_LINE);
     expect.soft(busyLine(personaDraftReducer(drafting, { type: "draftOk", text: "Name: Kay", notes: [] }))).toBeNull();
     expect.soft(busyLine(personaDraftReducer(drafting, { type: "draftEmpty", note: NEED }))).toBeNull();

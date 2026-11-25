@@ -1,7 +1,3 @@
-/**
- * EmployeesTab paging: ten a page, and a filter change from page 2 lands on page 1 in one action (usePagedFilters).
- * The relay is mocked at `fetch` by URL, as ManageEmployees.test.tsx does; every name is fake.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -12,7 +8,6 @@ import EmployeesTab from "@/components/settings/EmployeesTab";
 
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 
-/** 24 logins: "Staff 00" to "Staff 11" active, "Temp 00" to "Temp 11" deactivated, so By status keeps 12 (two pages). */
 const ROSTER = [
   ...Array.from({ length: 12 }, (_, k) => ({ name: `Staff ${String(k).padStart(2, "0")}`, active: true })),
   ...Array.from({ length: 12 }, (_, k) => ({ name: `Temp ${String(k).padStart(2, "0")}`, active: false })),
@@ -52,13 +47,11 @@ describe("EmployeesTab paging", () => {
     expect(currentPage()).toBe("2");
     expect(names()[0]).toBe("Staff 10");
 
-    // By status: Activated keeps 12, so page 2 still exists; the filter alone moves the page.
     const status = screen.getByRole("combobox", { name: "By status" });
     fireEvent.click(status);
     fireEvent.click(within(document.getElementById(status.getAttribute("aria-controls")!)!).getByRole("option", { name: "Activated" }));
 
     expect(pager()).toHaveTextContent("Total: 12 employees");
-    // The header counts the filtered list too, not the whole roster.
     expect(screen.getByText(/active · \d+ total/)).toHaveTextContent("12 active · 12 total");
     expect(currentPage()).toBe("1");
     expect(names()).toEqual(Array.from({ length: 10 }, (_, k) => `Staff ${String(k).padStart(2, "0")}`));

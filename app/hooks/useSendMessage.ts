@@ -1,35 +1,5 @@
 "use client";
 
-/**
- * useSendMessage — optimistic send for a single chat.
- *
- * Flow:
- *   1. Caller invokes send(text, opts). We:
- *      a. Allocate a fresh negative tempId.
- *      b. Build an optimistic OFMessage and append via appendLocal.
- *      c. POST /api/of/v2/chats/{fanId}/messages.
- *      d. On success → reconcileLocal(tempId, server) (merges media files).
- *      e. On failure → failLocal(tempId) (shows Retry button).
- *
- * Cross-chat guard: we capture `accountId` + `fanId` at send time. If the
- * user switches chats while a send is in flight, the response still
- * reconciles into the original chat's query — there's no `selectedChatIdRef`
- * issue because TanStack Query's query key is the source of truth (we
- * write straight to the (accountId, fanId) cache, regardless of what's
- * visible).
- *
- * Uploads still running at Send (`uploads`, from the Composer): the bubble
- * shows at once with the files' previews ("uploading…"), `send` returns, and
- * the POST goes out when every file has landed, re-seating the bubble at the
- * tail as it goes. A failed upload fails the bubble instead — nothing is sent
- * without its file — and Retry uploads the failed files again, then sends.
- * Every send and Retry runs through `sendAfterUploads` (a file already landed
- * is a resolved promise); its state is the send stash (lib/sendStash), not the
- * mount, so it finishes after a chat switch and Retry works from the reopened
- * chat. Discarding the bubble (or an identity switch) stops it before the POST.
- *
- * Inflight counter exposed for the spinner.
- */
 
 import { useCallback, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -46,41 +16,24 @@ import { sendStash, type SendInput, type StashEntry } from "@/lib/sendStash";
 import { useChatMessages } from "./useChatMessages";
 import { scheduledSendsKey } from "./useServerScheduledSends";
 
-/** A scheduled send this many minutes out or fewer rides OUR executor queue;
- *  later ones go to OF's native queue (see `send` below). */
+// OF's native queue lags/rejects too-near times, so near ones ride our executor.
 export const EXECUTOR_MAX_MINUTES = 15;
 
-/** How a send ended: sent, or not (failed, with why; or discarded, the
- *  bubble dropped or the identity switched, without). */
 export type SendSettled = { sent: true } | { sent: false; failure?: SendFailure };
 
-/** How a send (or a Retry) ended, as `onSettled` reports it: it went out, it
- *  was scheduled, or it failed (refused, discarded, or OF said no). */
 export type SendStatus = "sent" | "scheduled" | "failed";
 
-/** What an immediate send came to: the optimistic bubble's temp id, why the
- *  send failed (null when it landed, or when it still waits on its uploads:
- *  that bubble carries its own outcome), and `settled`, which resolves once
- *  the send is over. */
 export interface SendOutcome {
   tempId: number;
   failure: SendFailure | null;
   settled: Promise<SendSettled>;
 }
 
-// Temp ids are shared by every instance of the hook. Two instances can write
-// one Fan's message cache (the Thread's Composer and a notification's quick
-// reply), and a reconciled message keeps its `_tempId`, so per-instance
-// counters would hand out the same id twice and one send's reconcile would
-// overwrite the other's message. Decrementing: negative ids never collide
-// with OF.
+// Shared by every hook instance: two can write one Fan's cache, and per-instance counters would reuse an id and overwrite a message. Negative never collides with OF.
 let nextTempId = -1;
 
-// Placeholder ids for a file still uploading, far below the claim ids
-// (`toAttachments`) so a bubble's media keys never collide.
 let nextPlaceholderId = -1_000_000_000;
 
-/** A file still uploading, as the pending bubble's media: its blob preview. */
 function placeholderMedia(file: File, previewUrl: string | null): VaultMedia {
   return {
     id: nextPlaceholderId--,
@@ -90,7 +43,6 @@ function placeholderMedia(file: File, previewUrl: string | null): VaultMedia {
   };
 }
 
-/** The wire body of an immediate send. */
 function buildBody(input: SendInput, attached: VaultMedia[]): SendMessageBody {
   const body: SendMessageBody = {
     text: input.text,
@@ -112,27 +64,19 @@ function buildBody(input: SendInput, attached: VaultMedia[]): SendMessageBody {
 export interface UseSendMessageOpts {
   accountId: string | null;
   fanId: FanId | null;
-  /** Our own creator id — numeric on OF, a string snowflake on Fansly. */
   fromUserId?: number | string;
   fromUserName?: string;
   hookHandle: ReturnType<typeof useChatMessages>;
-  /** A send or a Retry began (called before any await). */
   onStart?: () => void;
-  /** How each send or Retry ended; exactly one call per `onStart`. */
   onSettled?: (status: SendStatus) => void;
 }
 
 interface SendOpts extends SendInput {
-  /** Files still uploading. The optimistic bubble shows at once; the send
-   *  goes out when they land, their media after `attached`. Immediate sends
-   *  only. */
   uploads?: PendingUpload[];
 }
 
 function vaultToOFMedia(v: VaultMedia): OFMedia {
-  // Local preview (just-uploaded file) wins over server URLs because the
-  // CDN hasn't seen the file yet — and for fresh claims there's no `files`
-  // at all, so without the blob URL the bubble would be blank.
+  // Local preview wins: the CDN hasn't seen a just-uploaded file yet, and fresh claims have no `files`.
   const thumbUrl =
     v._localPreview || v.files?.thumb?.url || null;
   const sourceUrl =
@@ -159,7 +103,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
 
   const [inflight, setInflight] = useState(0);
 
-  /** Reports how a send ended: nothing sent (undefined) or a rejection is a failure. */
   const report = useCallback((ending: Promise<SendSettled | undefined>) => {
     void ending.then(
       (ended) => onSettled?.(ended?.sent ? "sent" : "failed"),
@@ -179,26 +122,11 @@ export function useSendMessage(opts: UseSendMessageOpts) {
           { accountId: capturedAccountId, employeeId },
         );
         reconcileLocal(tempId, server);
-        // Record vault sends so the picker can mark "you sent this" /
-        // "she bought this" next time. Pull ids straight from OF's response
-        // because (a) fresh-claims didn't have a real vault id pre-send,
-        // and (b) some uploads collapse onto an existing vault item.
         recordVaultSends(qc, capturedAccountId, capturedFanId, server, body.price ?? 0);
-        // Invalidate the outbound-attribution map so the new real
-        // message_id picks up its "Sent by …" label. Without this,
-        // the optimistic fallback (`_tempId<0`) carries the label
-        // until the next chat refetch replaces the merged row with
-        // pure server data (no `_tempId`) — at which point the label
-        // disappears for the 5-min attribution staleTime window.
         qc.invalidateQueries({ queryKey: ["msg-attribution", capturedAccountId, capturedFanId] });
         sendStash.sent(tempId);
         return null;
       } catch (err) {
-        // Leave the optimistic in place but flag it failed so Retry can
-        // recover, carrying what OF (or our own pre-flight guard) said and
-        // which attachments it blamed — one parse of one envelope, see
-        // lib/sendFailure. The console line spreads the upstream details so
-        // logs read as status + body, not "[object Object]".
         let failure: SendFailure;
         if (err instanceof RelayError) {
           console.warn("[send] failed", { status: err.status, body: err.body, message: err.message });
@@ -236,9 +164,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
     [fromUserId, fromUserName],
   );
 
-  // Wait for a send's files, then send it. Runs to the end after the chat
-  // closes (every write goes to the (account, Fan) message cache), unless the
-  // bubble is discarded meanwhile.
   const sendAfterUploads = useCallback(
     async (
       tempId: number, entry: StashEntry, done: Array<Promise<VaultMedia[]>>,
@@ -261,8 +186,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
       }
       const attached = [...(entry.input.attached ?? []), ...entry.files.flatMap((f) => f.media ?? [])];
       if (waited) {
-        // Re-seat the bubble at the tail: it goes out now, after anything
-        // sent while its files uploaded, and OF will order it so.
         dropLocal(tempId);
         appendLocal(optimisticMessage(tempId, entry.input, attached.map(vaultToOFMedia), false));
       }
@@ -272,8 +195,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
     [appendLocal, dropLocal, failLocal, doSend, optimisticMessage],
   );
 
-  // Immediate-send path, extracted so the no-schedule case can call it
-  // without recursion gymnastics.
   const sendNow = useCallback(
     async (input: SendOpts, capturedAccountId: string, capturedFanId: FanId): Promise<SendOutcome> => {
       const { uploads = [], ...rest } = input;
@@ -289,14 +210,8 @@ export function useSendMessage(opts: UseSendMessageOpts) {
         ...uploads.map((u) => placeholderMedia(u.file, u.previewUrl)),
       ].map(vaultToOFMedia);
       appendLocal(optimisticMessage(tempId, rest, optimisticMedia, uploads.length > 0));
-      // Optimistically flip the chat-list row's `lastMessage.fromUser` to
-      // us so the yellow "read but unanswered" dot disappears immediately.
-      // Without this the dot lingers for up to 60s (the chat-list poll).
       patchChatListAfterSend(qc, capturedAccountId, capturedFanId, {
-        // The raw account id, NOT Number(accountId): a Fansly snowflake is past
-        // 2^53, so parsing it yields a DIFFERENT id — the row would read as "the
-        // fan spoke last" and the yellow dot would come straight back on the
-        // thread we just answered.
+        // Raw account id, not Number(): a Fansly snowflake is past 2^53 and the yellow unanswered dot would return.
         fromUserId: fromUserId ?? capturedAccountId,
         fromUserName: fromUserName ?? "you",
         text: input.text,
@@ -304,8 +219,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
         price: input.price ?? 0,
       });
       const sending = sendAfterUploads(tempId, entry, uploads.map((u) => u.done), capturedAccountId, capturedFanId);
-      // Waiting on files: Send is done once the bubble shows, so the Composer
-      // is free for the next message.
       if (uploads.length > 0) return { tempId, failure: null, settled: sending };
       const ended = await sending;
       return { tempId, failure: ended.sent ? null : ended.failure ?? null, settled: sending };
@@ -313,20 +226,8 @@ export function useSendMessage(opts: UseSendMessageOpts) {
     [fromUserId, fromUserName, appendLocal, sendAfterUploads, optimisticMessage, qc],
   );
 
-  // Scheduled path; resolves once enqueued, throws when refused. Two
-  // branches, BOTH server-side (survive reload + are shared across every
-  // chatter on the account):
-  //   • Short delay (≤ 15 min from now): hand to OUR executor — enqueue a
-  //     `scheduled_jobs` row (kind="scheduled_send") that the supervisor
-  //     fires at run_at. We fire it ourselves (not OF's queue) because OF's
-  //     queue lags/rejects too-near times; this also lets us attribute the
-  //     eventual bubble to the chatter who scheduled it.
-  //   • Long delay: hand off to OF's native queue so it survives even if our
-  //     VPS is down, can be edited from OF web, etc.
   const schedule = useCallback(
     async (input: SendOpts, scheduledAt: string, accountId: string, fanId: FanId): Promise<void> => {
-      // A schedule carries media ids; the Composer holds it while a file
-      // uploads. Never schedule a message without its file.
       if (input.uploads?.length) throw new Error("Wait for the upload to finish before scheduling");
       const fireAt = new Date(scheduledAt).getTime();
       const delay = fireAt - Date.now();
@@ -349,16 +250,9 @@ export function useSendMessage(opts: UseSendMessageOpts) {
             },
             { accountId, employeeId },
           );
-          // Surface the ghost bubble immediately (and for any other chatter
-          // on next poll). Server is the source of truth from here on.
           qc.invalidateQueries({ queryKey: scheduledSendsKey(accountId, fanId) });
         } catch (err) {
-          // RETHROW. A scheduled send has no optimistic bubble to turn red —
-          // the only evidence it exists is the server-side ghost row. Swallowing
-          // here left the composer showing its "Scheduled ✓" toast over an empty
-          // textarea for a message the relay had REFUSED (a Fansly PPV/media
-          // schedule 400s), which is indistinguishable from success. The caller
-          // restores the composer and shows the real reason.
+          // Rethrow: a scheduled send has no bubble to turn red, so swallowing showed "Scheduled" for a message the relay refused.
           console.warn("[schedule] near-term enqueue failed", err);
           throw err;
         }
@@ -386,8 +280,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
           { accountId, employeeId },
         );
       } catch (err) {
-        // Same contract as the near-term branch above: no bubble exists to
-        // carry the failure, so it must reach the composer.
         console.warn("[schedule] failed", err);
         throw err;
       }
@@ -395,8 +287,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
     [qc, employeeId],
   );
 
-  /** Resolves to the outcome of an immediate send; to undefined when it
-   *  refuses (no chat) or schedules (a scheduled failure throws instead). */
   const send = useCallback(
     async (input: SendOpts): Promise<SendOutcome | undefined> => {
       onStart?.();
@@ -422,7 +312,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
     [accountId, fanId, sendNow, schedule, onStart, onSettled, report],
   );
 
-  /** Re-sends a failed bubble under its own temp id; resolves how it ended. */
   const retry = useCallback(
     async (tempId: number): Promise<SendSettled> => {
       onStart?.();
@@ -431,9 +320,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
         onSettled?.("failed");
         return { sent: false };
       }
-      // Upload the files that failed again (the landed ones keep their
-      // media; discarding the bubble cancels the rest), then send as the
-      // first attempt would have.
       const done = entry.files.map((f) => {
         if (f.media) return Promise.resolve(f.media);
         const ctl = new AbortController();
@@ -444,8 +330,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
         ...(entry.input.attached ?? []),
         ...entry.files.flatMap((f) => f.media ?? [placeholderMedia(f.file, f.previewUrl)]),
       ].map(vaultToOFMedia);
-      // appendLocal is a no-op when the id already exists, so to flip the
-      // bubble back to pending we drop and re-append it.
       dropLocal(tempId);
       appendLocal(optimisticMessage(tempId, entry.input, media, entry.files.some((f) => !f.media)));
       const sending = sendAfterUploads(tempId, entry, done, accountId, fanId);
@@ -466,14 +350,6 @@ export function useSendMessage(opts: UseSendMessageOpts) {
   return { send, retry, cancelOptimistic, inflight };
 }
 
-/** Record vault sends in the local DB so the picker shows "sent / paid"
- *  badges on this fan's next vault open. Fire-and-forget: the request is
- *  pure-local, but failing to log a send shouldn't surface as an error
- *  toast (the message went out OK from OF's perspective). We pull media
- *  ids from the SERVER response, not the optimistic body, because:
- *    • Fresh-claim uploads only get a real id after OF assigns one.
- *    • Some uploads collapse onto an existing vault item, in which case
- *      OF echoes the canonical id we want to track. */
 function recordVaultSends(
   qc: ReturnType<typeof useQueryClient>,
   accountId: string,
@@ -500,26 +376,12 @@ function recordVaultSends(
     .catch((err) => console.warn("[vault-sends] record failed", err));
 }
 
-/** Patch the chat-list cache so the row we just sent into reflects the
- *  new lastMessage AND pops to the top of the inbox the same frame the
- *  user hits Send. Without the reorder, the row's createdAt is "now" but
- *  it stays where it was until the 60s poll re-sorts — which feels like
- *  a janky bounce. We lift it out wherever it was and prepend to page 0.
- *
- *  Drives:
- *    • Yellow "read · awaiting your reply" dot → gone (lastFromFan now us).
- *    • Row jumps to the top of the inbox instantly.
- *  Walks every chats cache (Unified Inbox vs per-model keys); the per-cache
- *  rule (lift vs patch in place, never a new row) is lib/chatsCache
- *  `bumpAfterSend`. */
 export function patchChatListAfterSend(
   qc: ReturnType<typeof useQueryClient>,
   accountId: string,
   fanId: FanId,
   msg: SentMessage,
 ): void {
-  // On the Relay's clock, so a row showing a newer message (OF's createdAt) stays, live or replayed over a page read
-  // before the send (lib/chatsCache `patchChatCaches`), however far the tab's clock is off.
   const nowIso = new Date(relayNow()).toISOString();
   patchChatCaches(qc, accountId, (data, { key }) => bumpAfterSend(key, data, accountId, fanId, msg, nowIso));
 }

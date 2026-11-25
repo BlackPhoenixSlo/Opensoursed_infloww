@@ -1,7 +1,5 @@
 "use client";
 
-/** Creator reports' primitives and charts: the Not wired marker, cards and titles, the summary tile and stat card,
- *  the sparkline, the trend bars and the donut. */
 
 import { ArrowDownLeft, ArrowUpRight, type LucideIcon } from "lucide-react";
 
@@ -13,9 +11,7 @@ import { cn } from "@/lib/utils";
 import type { Point } from "./reportsMath";
 import { InfoTip } from "@/components/ui/InfoTip";
 
-/* ───────── primitives ───────── */
 
-/** The house Not wired marker, read as "-" (#58, #147). */
 export function NotWired({ label }: { label: string }) {
   return (
     <button type="button" disabled title="not wired" aria-label={label} className="cursor-not-allowed opacity-50">
@@ -24,7 +20,6 @@ export function NotWired({ label }: { label: string }) {
   );
 }
 
-/** #44: a report card, 16px padding and 12px radius by default, on our raised surface (ADR-0001 colours). */
 export function ReportCard({ className, children }: { className?: string; children: React.ReactNode }) {
   return (
     <div className={cn("report-surface rounded-xl p-4", className)} style={{ background: "var(--color-bg-elev-1)" }}>
@@ -33,7 +28,6 @@ export function ReportCard({ className, children }: { className?: string; childr
   );
 }
 
-/** #46 to #48: a section title, 20px weight 500, 16px below, a 24px info icon 8px to its right. */
 export function SectionTitle({ id, label, tip }: { id: string; label: string; tip: string }) {
   return (
     <div className="flex items-center mb-4">
@@ -43,7 +37,6 @@ export function SectionTitle({ id, label, tip }: { id: string; label: string; ti
   );
 }
 
-/** #63, #64: a card title, 16px weight 500, a 16px info icon 8px to its right when it has a tooltip. */
 export function CardTitle({ id, label, tip, className }: { id: string; label: string; tip?: string; className?: string }) {
   return (
     <div className={cn("flex items-center", className)}>
@@ -55,32 +48,21 @@ export function CardTitle({ id, label, tip, className }: { id: string; label: st
   );
 }
 
-/** A figure's partial marker, Dashboard and Creator reports: an asterisk in the warn colour, `reason` on hover and to
- *  a screen reader. */
 export function PartialMark({ reason, className }: { reason: string; className?: string }) {
   return <span data-partial role="note" aria-label={reason} title={reason} className={cn("text-warn", className)}>*</span>;
 }
 
-/** #55 to #60: a summary tile, its title (with a 20px icon 4px away), value and growth. The total tile is larger.
- *  A `null` value is Not wired. `negative`: a figure below zero (Chargebacks), on our err token; `title`: why a
- *  figure is "-"; `partial`: why a figure holds less than it says, marked with an asterisk beside it. */
 export function SummaryTile({ label, Icon, rgb, total, value, growth, growthTitle, negative = false, title, partial }: {
   label: string; Icon: LucideIcon; total: boolean; value: string | null; growth: Growth; negative?: boolean; title?: string;
   partial?: string;
-  /** What the growth compares, when not the figure itself (Total without referrals, #22). */
   growthTitle?: string;
-  /** The icon's channel colour ("r, g, b", `TILE_ICON`), on a 10% circle of it; unset leaves the page's accent. */
   rgb?: string;
 }) {
-  // #59: rising and falling on our ok and pink tokens (ADR-0001 colours).
   const color = growth.dir === "up" ? "var(--color-ok)" : growth.dir === "down" ? "var(--color-pink)" : "var(--color-fg)";
   const Arrow = growth.dir === "up" ? ArrowUpRight : ArrowDownLeft;
   return (
-    // The capture has no phone layout: below md the total tile spans both columns and long values wrap.
     <div role="group" aria-label={label} title={title} className={cn("flex flex-col min-w-0 [overflow-wrap:anywhere]", total && "gap-0.5 col-span-2 md:col-span-1")}>
       <dt
-        // #51, #53: Text$5's tracking, heading4's 0.034px or body1's 0.032px on the title and growth, heading1's
-        // 0.128px or heading2's 0.098px on the value.
         className={cn("flex items-center gap-1 font-medium", total ? "text-xl leading-6 tracking-[0.034px]" : "text-base leading-5 tracking-[0.032px] mb-2")}
         style={{ color: "var(--color-fg-dim)" }}
       >
@@ -109,12 +91,8 @@ export function SummaryTile({ label, Icon, rgb, total, value, growth, growthTitl
   );
 }
 
-/** #102 to #104: a Creator statistics card, 104px high, its label (16px weight 500, a 16px info icon 4px away when
- *  it has a `tip`) 12px over its value (32px weight 500). A `null` value is Not wired; `valueTitle` is a tooltip on
- *  the value (a caveat, e.g. a partial figure). */
 export function StatCard({ label, tip, value, valueTitle, stat }: {
   label: string; tip?: string; value: string | null; valueTitle?: string;
-  /** A stable key for tests and slop (`data-stat` on the card, `data-value` on its figure). */
   stat?: string;
 }) {
   return (
@@ -125,7 +103,6 @@ export function StatCard({ label, tip, value, valueTitle, stat }: {
         className="h-[104px] rounded-xl p-4 flex flex-col gap-3"
         style={{ background: "var(--color-bg-elev-1)", color: "var(--color-fg)" }}
       >
-        {/* #53, #103: body1's 0.032px tracking on the label, heading1's 0.128px on the value. */}
         <span className="flex items-center gap-1 text-base leading-5 tracking-[0.032px] font-medium">
           {label}
           {tip && <InfoTip text={tip} iconClassName="h-4 w-4" style={{ color: "var(--color-fg-dim)" }} />}
@@ -138,7 +115,6 @@ export function StatCard({ label, tip, value, valueTitle, stat }: {
   );
 }
 
-/** #159, #160: a Creator performance block title, 16px weight 500 on 16px, its info icon 9px away and 1px down. */
 export function PerfTitle({ id, label, tip }: { id: string; label: string; tip: string }) {
   return (
     <div className="flex items-center">
@@ -148,7 +124,6 @@ export function PerfTitle({ id, label, tip }: { id: string; label: string; tip: 
   );
 }
 
-/** #164, #166: a growth row's 140px by 25px sparkline of the channel's days. */
 export function Sparkline({ values, color }: { values: number[]; color: string }) {
   const W = 140, H = 25;
   const max = Math.max(1, ...values);
@@ -166,11 +141,7 @@ export function Sparkline({ values, color }: { values: number[]; color: string }
 }
 
 
-/* ───────── charts ───────── */
 
-/** #67, #82, #83: Earnings trends, a 220px bar chart, each bar's tooltip its Earnings and its Growth over the bucket
- *  before; a bucket the range cuts short (`Point.partial`) at half opacity, its tooltip saying so. `perf` is Creator performance's Earnings (#161, #162): 336px high, 25px bars (never wider than their slot),
- *  the x labels 16px off the axis. `null` points draw the blank chart with `message`. */
 export function TrendBars({ points, message, height = 220, perf = false }: {
   points: Point[] | null; message: string; height?: number; perf?: boolean;
 }) {
@@ -180,7 +151,6 @@ export function TrendBars({ points, message, height = 220, perf = false }: {
   const n = points?.length ?? 0;
   const max = niceMax(Math.max(1, ...(points ?? []).map((p) => p.value)), 4);
   const slot = (f.R - f.L) / Math.max(1, n);
-  // Each bar 80% of its slot, whole pixels above 1px, at most 96px; Creator performance's 25px (`barWidth:25`).
   const raw = slot * 0.8;
   const bw = perf ? Math.min(25, slot) : Math.min(96, raw > 1 ? Math.floor(raw) : raw);
   const xAt = (i: number) => f.L + slot * (i + 0.5);
@@ -219,9 +189,6 @@ export function TrendBars({ points, message, height = 220, perf = false }: {
   );
 }
 
-/** #78, #84: Earnings breakdown, a 200px donut (inner radius 55, outer 85); an empty ring with nothing to show.
- *  `perf` is Creator performance's (#164): 180px high and 35px down, its ring 69% to 80% of the half height
- *  (`radius:["80%","69%"]`), 62.1px to 72px. */
 export function Donut({ slices, perf = false }: { slices: { color: string; cents: number }[] | null; perf?: boolean }) {
   const H = perf ? 180 : 200;
   const [inner, outer] = perf ? [0.69 * 90, 0.8 * 90] : [55, 85];

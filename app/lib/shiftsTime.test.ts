@@ -1,6 +1,3 @@
-/** `clockAction`, the clock button's choice behind `useClock().act`, and the DST edges of the Relay's `_to_utc`
- *  rule as `fromZonedInput` and `zonedWeek` apply it: a gap time lands after the jump, an overlap time takes its
- *  first (summer-time) instant, and a DST week is 167 or 169 hours. */
 import { describe, expect, it } from "vitest";
 
 import type { ClockStatus } from "@/lib/shifts";
@@ -26,7 +23,6 @@ describe("clockAction", () => {
   const IN = { kind: "in" };
 
   it.each([
-    // open,  only,      picks, action
     [true, undefined, false, OUT],
     [true, undefined, true, OUT],
     [true, "in", false, IN],
@@ -46,16 +42,12 @@ describe("clockAction", () => {
 
 describe("fromZonedInput across DST", () => {
   it.each([
-    // Ljubljana springs forward 02:00 CET → 03:00 CEST on 29 Mar 2026.
     ["Europe/Ljubljana", "2026-03-29T01:59", "2026-03-29T00:59:00.000Z"],
     ["Europe/Ljubljana", "2026-03-29T03:00", "2026-03-29T01:00:00.000Z"],
-    // Ljubljana falls back 03:00 CEST → 02:00 CET on 25 Oct 2026.
     ["Europe/Ljubljana", "2026-10-25T01:59", "2026-10-24T23:59:00.000Z"],
     ["Europe/Ljubljana", "2026-10-25T03:00", "2026-10-25T02:00:00.000Z"],
-    // New York springs forward 02:00 EST → 03:00 EDT on 8 Mar 2026.
     ["America/New_York", "2026-03-08T01:59", "2026-03-08T06:59:00.000Z"],
     ["America/New_York", "2026-03-08T03:00", "2026-03-08T07:00:00.000Z"],
-    // New York falls back 02:00 EDT → 01:00 EST on 1 Nov 2026.
     ["America/New_York", "2026-11-01T00:59", "2026-11-01T04:59:00.000Z"],
     ["America/New_York", "2026-11-01T02:00", "2026-11-01T07:00:00.000Z"],
   ])("%s %s outside the change → %s", (tz, value, iso) => {
@@ -94,12 +86,10 @@ describe("zonedWeek across DST", () => {
   const hours = (a: Date, b: Date) => (b.getTime() - a.getTime()) / 3_600_000;
 
   it.each([
-    // tz, now (mid-week), first-day midnight (UTC), the DST date, its hours, week hours
     ["Europe/Ljubljana", "2026-03-25T12:00:00Z", "2026-03-22T23:00:00.000Z", "2026-03-29", 23, 167],
     ["Europe/Ljubljana", "2026-10-21T10:00:00Z", "2026-10-18T22:00:00.000Z", "2026-10-25", 25, 169],
     ["America/New_York", "2026-03-04T17:00:00Z", "2026-03-02T05:00:00.000Z", "2026-03-08", 23, 167],
     ["America/New_York", "2026-10-28T16:00:00Z", "2026-10-26T04:00:00.000Z", "2026-11-01", 25, 169],
-    // UTC: control, no change
     ["UTC", "2026-03-25T12:00:00Z", "2026-03-23T00:00:00.000Z", "2026-03-29", 24, 168],
   ] as const)("%s Monday week of %s starts %s; %s is %dh, the week %dh", (tz, now, first, dstDate, dstHours, weekHours) => {
     const { days } = zonedWeek(new Date(now), "monday", tz, 0);

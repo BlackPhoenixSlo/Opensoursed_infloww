@@ -1,31 +1,16 @@
-/**
- * "+ Add employee" / "Edit": the form's values → the one Relay call that saves them, and whether Save is on.
- * Pure, so each sign-in mode's wire shape is pinned by a table test (employeeRequest.test.ts).
- *
- *   kind     form             call (setup = PUT, rest POST)
- *   • setup  edit             /admin/employees/{id}/setup   setup                       (employees.EmployeeSetup)
- *   • login  create           /admin/employees/login        setup + username + password (employees._CreateLoginBody)
- *   • link   existing         /admin/chatters/link          setup + username            (chatters._LinkBody)
- *   • invite invite           /admin/chatters/invite        setup                       (chatters._InviteBody)
- */
-
 export type SignIn = "create" | "invite" | "existing";
 
 export interface EmployeeFormValues {
-  /** The row being edited; absent when adding. */
   employeeId?: number;
   signIn: SignIn;
   name: string;
   username: string;
   password: string;
   role: string;
-  /** The Group select's value ("" = no group). */
   groupId: string;
-  /** null = every Creator. */
   accountIds: string[] | null;
 }
 
-/** employees.EmployeeSetup: what every call carries. */
 export interface EmployeeSetup {
   display_name: string | null;
   role_id: string | null;
@@ -55,7 +40,6 @@ export function buildEmployeeRequest(f: EmployeeFormValues): EmployeeRequest {
   }
 }
 
-/** Ticked "no creators" (an empty pick, not All creators). */
 export const picksNoCreators = (f: Pick<EmployeeFormValues, "accountIds">) => f.accountIds !== null && f.accountIds.length === 0;
 
 export function canSaveEmployee(f: EmployeeFormValues): boolean {

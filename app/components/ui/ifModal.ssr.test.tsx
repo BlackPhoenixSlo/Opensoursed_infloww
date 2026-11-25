@@ -1,5 +1,4 @@
 // @vitest-environment node
-/** A page with an open modal server-renders (Next renders client components on the server too): no DOM globals. */
 import { describe, expect, it } from "vitest";
 import { renderToString } from "react-dom/server";
 

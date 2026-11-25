@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// The tab id is the lease holder's: one per document. A popout (window.open without noopener) and "Duplicate tab"
-// copy sessionStorage, so an id kept there would make two windows one holder that overwrite each other's set.
 describe("tabId", () => {
   afterEach(() => {
     window.sessionStorage.clear();

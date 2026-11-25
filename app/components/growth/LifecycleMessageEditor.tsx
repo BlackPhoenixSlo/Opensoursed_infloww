@@ -1,23 +1,5 @@
 "use client";
 
-/**
- * The editor for Smart Messages' lifecycle Triggers: Nearing expiry, Expired,
- * Resubscribe and Birthday (Infloww's SmartMessageAutoRulesType 5-8). Each is
- * one on/off, up to 10 messages and, for the two expiry Triggers, Infloww's
- * "[N] hour(s)" (Nearing expiry 1..120, Expired 12..120, default 24), saved
- * through `/admin/lifecycle-message-config`. Off by default; with nothing
- * saved, the message starts as Infloww's own default script for the Trigger.
- * Each fan gets one message and one of its variants at random; a message may
- * carry follow-ups that stop once the fan replies and, on Nearing expiry only,
- * a renewal discount set before it goes out (the Relay refuses more than
- * OnlyFans grants for the page's price). The Smart Message settings
- * (`SmartMessageFields`: media and price, Frequency, Effective / Expiry,
- * Auto-unsend) save with it and go out with whichever message is sent.
- * Infloww's "after delay" option is not wired. On a free page the three
- * Triggers Infloww keeps for paid pages cannot be switched on. Below the form:
- * the fans it reached who then bought. `FollowUpsField` is shared with the
- * Delayed welcome editor.
- */
 
 import { useId, useReducer } from "react";
 
@@ -38,12 +20,10 @@ import {
 } from "./lifecycleForm";
 import { SmartMessageFields } from "./SmartMessageFields";
 
-// The Relay's bounds (automations/lifecycle_messages.py).
 const MAX_MESSAGES = 10;
 const MAX_FOLLOW_UPS = 5;
 const DISCOUNT_PERCENTS = Array.from({ length: 12 }, (_, i) => (i + 1) * 5);
 
-/** Infloww's `isPaidAutoRules` (index.9f50f370.js @14441992): refused on a free page. */
 export const PAID_ONLY_KINDS: ReadonlySet<LifecycleKind> = new Set<LifecycleKind>([
   "expiry_message", "expired_message", "resubscribe_message",
 ]);
@@ -51,11 +31,7 @@ export const PAID_ONLY_KINDS: ReadonlySet<LifecycleKind> = new Set<LifecycleKind
 interface Copy {
   title: string;
   blurb: string;
-  /** Infloww's default script for the Trigger, verbatim: the first of its
-   *  random picks (`resetTemplateDefaultData`, index.9f50f370.js @14445781,
-   *  @14446277, @14446639, @14447069). */
   example: string;
-  /** The rule sentence around N, for the two Triggers that have one. */
   hours?: { before: string; after: string; min: number; max: number };
 }
 
@@ -64,7 +40,6 @@ export const LIFECYCLE_COPY: Record<LifecycleKind, Copy> = {
     title: "Nearing expiry",
     blurb: "Sends this message to a fan whose subscription ends within the hours below and is not set to renew: once ever, or once for every subscription that nears its end.",
     example: "Hey, {name}! I think your subscription is about to end.. And I would hate it if you miss out on our latest content!",
-    // The bundle's rule label, with its U+2019 (ruleOptions, @14775371).
     hours: { before: "Fan’s subscription near expiry within", after: "hour(s)", min: 1, max: 120 },
   },
   expired_message: {
@@ -87,7 +62,6 @@ export const LIFECYCLE_COPY: Record<LifecycleKind, Copy> = {
 
 export default function LifecycleMessageEditor({ accountId, kind, onTouched }: {
   accountId: string | null; kind: LifecycleKind;
-  /** Called on each user edit (the dialog's Escape gate). */
   onTouched: () => void;
 }) {
   const q = useLifecycleMessageConfig(accountId, kind);
@@ -145,14 +119,12 @@ export function FollowUpsField({ id, steps, onChange }: {
 function Form({ accountId, kind, initial, onTouched }: {
   accountId: string; kind: LifecycleKind; initial: LifecycleMessageConfig; onTouched: () => void;
 }) {
-  // One per mounted editor: the footer's Save (outside the form) submits this one.
   const formId = useId();
   const copy = LIFECYCLE_COPY[kind];
   const save = useSaveLifecycleMessageConfig(accountId, kind);
   const freeRefusal = useFreePageRefusal(accountId);
   const refusal = PAID_ONLY_KINDS.has(kind) ? freeRefusal : null;
   const [draft, rawDispatch] = useReducer(lifecycleReducer, undefined, () => initLifecycle(initial, copy.example));
-  // Every action is the user's: each one tells the dialog (its Escape gate).
   const dispatch = (a: LifecycleAction) => { onTouched(); rawDispatch(a); };
   const { enabled, messages, hours, extras } = draft;
   const rules = { hours: copy.hours, refusal };

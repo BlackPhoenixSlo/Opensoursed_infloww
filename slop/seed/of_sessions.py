@@ -1,10 +1,3 @@
-"""OF sessions: a captured session file per Creator, in the shape the bootstrap
-writes (`headers` user_id / x_bc / x_of_rev / user_agent, `signing.rules` with
-all five keys, already `signed_ok_at`, `cookies`), and `latest.json` pointed at
-it, so the relay builds a REAL `OFClient` for the Creator (client_pool) instead
-of failing on seed/creators.py's stub. Only for a run whose OnlyFans is
-lib/of_wire.py (`OF_WIRE = True`): the client talks to `OF_API_ORIGIN`.
-The signing rules are lib/browserbase.py's synthetic ones (never OF's)."""
 from __future__ import annotations
 
 import json

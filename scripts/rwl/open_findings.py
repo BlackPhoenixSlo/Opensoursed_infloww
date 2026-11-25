@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[2]
-LIMIT = 400  # gh pr list --limit; hitting it = truncated list = hard error
+LIMIT = 400
 START = re.compile(r"^\s*(#{1,6}\s*|\*\*)?\s*open findings", re.I)
 END = re.compile("^(#{1,6}\\s|\\*\\*[^*]+\\*\\*\\s*$|\U0001F916)")
 BULLET = re.compile(r"^([-*]|\d+[.)]) ")

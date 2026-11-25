@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * Details: who claimed a free trial link or a promotion, and what each spent, as Infloww's Details fan table (Fan,
- * Total, Subs, Posts, Messages, Streams, Tips, then its summary row) with the claim date after the fan. The relay
- * reads OnlyFans' claimers list for the link (all of it, cached; `link_metrics`) and puts our ledger beside it.
- *
- * "Since claim / Lifetime":
- *   Since claim — the fan's spend in our ledger at or after the claim (OnlyFans' subscribeAt, as first read), net,
- *                 refunds and chargebacks left out. The list's Earnings, Fans who spent and Spend/Claim are this.
- *   Lifetime    — OnlyFans' own totals for the fan with this creator (net), whatever the fan came through.
- *
- * Export fans (Infloww's export-link-fans, which it emails): a CSV of this table in the mode shown.
- */
 
 import { useState } from "react";
 
@@ -29,9 +17,9 @@ const HEAD: Record<ColKey, string> = {
 };
 const TD = "px-2 py-1 text-right tabular-nums whitespace-nowrap";
 
+// since = our ledger from the claim on, net (refunds/chargebacks out); lifetime = OnlyFans' net totals.
 type Mode = "since" | "lifetime";
 
-/** A fan's cell in the mode: cents, or null when the mode has no figure for the fan. */
 function cell(f: LinkFan, mode: Mode, k: ColKey): number | null {
   if (mode === "since") return f.since ? f.since[`${k}_net_cents`] : null;
   return f.lifetime && k !== "other" ? f.lifetime[`${k}_cents`] : null;
@@ -41,9 +29,7 @@ export default function OfferClaimers({ accountId, kind, ofId, campaignId, count
   accountId: string | null;
   kind: "trial" | "promo";
   ofId: number | null;
-  /** A promotion campaign: its earlier re-armed OF promos fold in. */
   campaignId?: number | null;
-  /** The row's claim count: the relay re-reads the link when it moved. */
   count?: number | null;
 }) {
   const [mode, setMode] = useState<Mode>("since");

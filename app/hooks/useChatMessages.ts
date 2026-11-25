@@ -28,10 +28,9 @@ import { hashKey, useQuery, useQueryClient, type QueryClient } from "@tanstack/r
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { relay, type OFMessage, type OFMessagesResp } from "@/lib/relay";
-import { type FanId } from "@/lib/fanId";
+import { compareFanIds, isValidFanId, sameUserId, type FanId } from "@/lib/fanId";
 import type { SendFailure } from "@/lib/sendFailure";
 import { eventBus } from "@/lib/events";
-import { getPlatform } from "@/lib/platform";
 import { appendMsg, dropMsg, failMsg, reconcileMsg, THREAD_KEEP, toUtcIso, trimThread } from "@/lib/threadCache";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 
@@ -98,9 +97,8 @@ export function messagesPaintKey(accountId: string, fanId: FanId | null): string
 }
 
 /** The oldest real (positive) id of an oldest-first page, or null. */
-function oldestFetchedId(page: OFMessage[]): number | null {
-  const n = Number(page.find((m) => Number(m.id) > 0)?.id);
-  return Number.isFinite(n) && n > 0 ? n : null;
+function oldestFetchedId(page: OFMessage[]): FanId | null {
+  return page.find((m) => isValidFanId(m.id))?.id ?? null;
 }
 
 /** Each thread's last-fetched head page's oldest id, by `accountId:fanId`,
@@ -118,7 +116,7 @@ function oldestFetchedId(page: OFMessage[]): number | null {
  *  gap leaves no trace in the rows — so "use the minimum when contiguous"
  *  has nothing to test. The cost is re-reading cached pages; the other way
  *  round the cost is a permanently unreachable hole. */
-const headOldest = new Map<string, number>();
+const headOldest = new Map<string, FanId>();
 /** The same head page's `hasMore`, by the same key: a mount riding a prefetch
  *  that said "nothing older" starts its pager exhausted instead of spending
  *  one OF read to learn it again. */
@@ -198,12 +196,12 @@ export function useChatMessages({
   // it back up past pages the user already scrolled to), and never derived
   // from cached rows: a persisted old block below a gap would fake a deeper
   // cursor than we've really paged to. Optimistic ids (≤ 0) never enter.
-  const oldestCursorRef = useRef<number | null>(null);
+  const oldestCursorRef = useRef<FanId | null>(null);
   const lowerCursor = useCallback((page: OFMessage[]) => {
     const n = oldestFetchedId(page);
     if (n == null) return;
-    oldestCursorRef.current =
-      oldestCursorRef.current == null ? n : Math.min(oldestCursorRef.current, n);
+    const cur = oldestCursorRef.current;
+    oldestCursorRef.current = cur == null || compareFanIds(n, cur) < 0 ? n : cur;
   }, []);
   const queryKey = ["messages", accountId, fanId] as const;
 
@@ -218,7 +216,7 @@ export function useChatMessages({
     const head = ridesPrefetch ? headOldest.get(key) : undefined;
     const cached = qc.getQueryData<OFMessage[]>(queryKey) || [];
     return initialOlderPager(
-      headMore.get(key) === false && head != null && cached.some((m) => Number(m.id) === head),
+      headMore.get(key) === false && head != null && cached.some((m) => sameUserId(m.id, head)),
     );
   };
   const [pager, setPager] = useState<OlderPager>(startPager);
@@ -373,18 +371,16 @@ export function useChatMessages({
    *  Exported through the hook so the local-mirror seed pages from the SAME
    *  cursor OF is about to use. Two independent derivations of "oldest"
    *  would eventually disagree, and the seed would paint across a gap. */
-  const olderCursor = useCallback((): number | null => {
+  const olderCursor = useCallback((): FanId | null => {
     const current = qc.getQueryData<OFMessage[]>(queryKey) || [];
     if (oldestCursorRef.current != null) return oldestCursorRef.current;
     const head = ridesPrefetch ? headOldest.get(`${accountId}:${fanId}`) : undefined;
-    if (head != null && current.some((m) => Number(m.id) === head)) return head;
-    // The oldest OF row: a ledger tip / mass placeholder (5e15+ synthetic ids)
-    // sorted to the top of a trimmed thread is no OF cursor. Only on OF: a
-    // Fansly id is a snowflake (~9.5e17), above the band, and the synthetic
-    // rows come from OF's ledger and mass sends.
-    const fansly = getPlatform() === "fansly";
-    const oldest = current.find((m) => Number(m.id) > 0 && (fansly || Number(m.id) < MASS_PLACEHOLDER_MIN))?.id;
-    return oldest == null ? null : Number(oldest);
+    if (head != null && current.some((m) => sameUserId(m.id, head))) return head;
+    // A ledger tip / mass placeholder (5e15+ synthetic ids) sorted to the top
+    // of a trimmed thread is no OF cursor. A string id is never synthetic.
+    const oldest = current.find((m) =>
+      isValidFanId(m.id) && !(typeof m.id === "number" && m.id >= MASS_PLACEHOLDER_MIN))?.id;
+    return oldest ?? null;
   }, [qc, queryKey, accountId, fanId, ridesPrefetch]);
 
   /** Load one older page using cursor pagination. Idempotent — a call while
@@ -425,7 +421,7 @@ export function useChatMessages({
       // empty or repeated page that still says hasMore would otherwise
       // re-fire the auto-loader on the same cursor forever.
       const low = oldestFetchedId(older);
-      const progressed = low != null && low < oldest;
+      const progressed = low != null && compareFanIds(low, oldest) < 0;
       lowerCursor(older);
       dispatchPager({ type: "page", seq, hasMore: more, progressed });
       perfDelivered(opId, "chat.messages", {
@@ -506,7 +502,7 @@ export function useChatMessages({
      *  or it rides a prefetch whose head page is in the cache. Only then may
      *  the sentinel load while the first load still pins (mayLoadOlder). */
     headSettled: pager.headSettled
-      || (prefetchHead != null && (query.data ?? []).some((m) => Number(m.id) === prefetchHead)),
+      || (prefetchHead != null && (query.data ?? []).some((m) => sameUserId(m.id, prefetchHead))),
     refresh,
     appendLocal,
     reconcileLocal,

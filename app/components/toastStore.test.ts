@@ -37,12 +37,9 @@ import {
   type Toast,
 } from "./toastStore";
 
-// The store is module state shared by every test here, so each test claims
-// under its own account ids and lets its toasts expire before the next.
 
 describe("claimUnseen", () => {
   it.each([
-    // [claims as [aid, id], expected results]
     [[["c1", "1"], ["c1", "1"]], [true, false]],
     [[["c2", "1"], ["c3", "1"]], [true, true]],
     [[["c4", "1"], ["c4", "2"], ["c4", "1"]], [true, true, false]],
@@ -52,7 +49,6 @@ describe("claimUnseen", () => {
 
   it("evicts the oldest ids past MAX_SEEN_IDS", () => {
     for (let i = 0; i <= MAX_SEEN_IDS; i++) expect(claimUnseen("evict", String(i))).toBe(true);
-    // id 0 was pushed out by the (MAX_SEEN_IDS + 1)th; id 1 is still held.
     expect(claimUnseen("evict", "1")).toBe(false);
     expect(claimUnseen("evict", "0")).toBe(true);
   });
@@ -169,7 +165,6 @@ describe("deliverDecision", () => {
   });
 
   it.each([
-    // [label, settings, arrival, toasts?, bubble]
     ["master off mutes", { ...base, enabled: false }, arrival({}), false, false],
     ["type toggled off mutes", base, arrival({ typeKey: "favorited" }), false, false],
     ["type on with bubble", base, arrival({}), true, true],
@@ -198,14 +193,12 @@ describe("mirrorNotification + pingNotification: history always, pings gated", (
     ...DEFAULT_NOTIF_SETTINGS, enabled: true, osPing: false,
     toast: { ...DEFAULT_NOTIF_SETTINGS.toast, tip: true },
   };
-  // Dated now: the history mirror prunes rows older than its TTL on read.
   const arrival = (): Arrival => ({
     id: "d1", accountId: "deliver", typeKey: "tip", rawType: "tip", user: { id: 5, name: "Jim" },
     text: "sent you a $5 tip", historyText: "<b>sent</b> you a $5 tip", createdMs: Date.now(), href: null,
   });
 
   it.each([
-    // [label, settings, toasts?]
     ["muted (master off)", { ...settings, enabled: false }, false],
     ["muted (type off)", { ...settings, toast: { ...settings.toast, tip: false } }, false],
     ["on", settings, true],
@@ -247,7 +240,6 @@ describe("toastArrival: who the toast is from", () => {
   const raw = (over: Record<string, unknown>) => ({ id: 7, type: "favorited", text: html, ...over });
 
   it.each([
-    // [label, payload overrides, expected user]
     ["relatedUser beats all; c144 thumb beats avatar",
       { data: { relatedUser: related, replacements: repl }, fromUser: from, user: recipient },
       { id: 11, name: "Rel", username: "rel", avatar: "rel144.jpg" }],
@@ -288,7 +280,6 @@ describe("toastArrival: who the toast is from", () => {
     expect(toastArrival("acc", { id: 1, description: "d", createdAt: "bad" }, NOW)).toMatchObject({ text: "d", createdMs: NOW, rawType: "" });
     expect(toastArrival("acc", { id: 1, text: "t", description: "d", createdAt: "2026-10-31T00:00:00Z" }, NOW))
       .toMatchObject({ text: "t", createdMs: Date.parse("2026-10-31T00:00:00Z") });
-    // No replacements: the payload's own replacePairs.
     expect(toastArrival("acc", { id: 1, text: "{A}", replacePairs: { "{A}": "b" } }, NOW)).toMatchObject({ text: "b", replacePairs: { "{A}": "b" } });
   });
 
@@ -307,7 +298,6 @@ describe("dmArrival", () => {
     msg: { id: 100, fromUser: { id: 5, name: "", username: "jim", avatar: "a.jpg" }, ...msg },
   });
   it.each([
-    // [label, msg, text, historyText]
     ["text rendered", { text: " <p>hey</p> " }, "hey", "<p>hey</p>"],
     ["media only", { text: "", mediaCount: 2 }, "Sent you media", "Sent you media"],
     ["empty", {}, "Sent you a message", "Sent you a message"],
@@ -328,7 +318,6 @@ describe("dmArrival: a tip", () => {
     msg: { id: 100, isTip: true, price: 0, fromUser: { id: 5, name: "Jim" }, ...msg },
   });
   it.each([
-    // [label, msg, text]
     ["tipAmount in dollars", { tipAmount: 5 }, "Tipped you $5"],
     ["cents kept", { tipAmount: 7.5, text: "<p>for you</p>" }, "Tipped you $7.50"],
     ["no tipAmount: price", { price: 3 }, "Tipped you $3"],
@@ -342,7 +331,6 @@ describe("dmArrival: a tip", () => {
 
 describe("purchaseArrival", () => {
   it.each([
-    // [label, payload extras, cached, name, text]
     ["names the payer; cents formatted", { amount_cents: 2522, name: "Jim" }, { name: "Cached", username: "jc" }, "Jim", "Unlocked your PPV — $25.22"],
     ["no name: the cache's", { amount_cents: 0 }, { name: "Cached", username: "jc" }, "Cached", "Unlocked your PPV"],
     ["nothing cached", { amount_cents: Number.NaN }, null, undefined, "Unlocked your PPV"],
@@ -366,7 +354,6 @@ describe("the OS ping: unfocused, and only while no push subscription is live", 
   });
   const on: NotifSettings = { ...DEFAULT_NOTIF_SETTINGS, osPing: true };
   it.each([
-    // [label, focused, push live, osPing, pings]
     ["unfocused, no push", false, false, true, true],
     ["unfocused, push live: the service worker shows it", false, true, true, false],
     ["focused", true, false, true, false],
@@ -390,7 +377,6 @@ describe("pushArrival / deliverPushNotice: a push the service worker left to thi
     href: "/messages-pro/acc/5?refresh=media&fanTab=Jim", icon: "/icon.svg",
   };
   it.each([
-    // [label, payload, arrival (subset) or null]
     ["the lane's id, fan from the link", payload,
       { id: "m42", accountId: "acc", typeKey: "tip", rawType: "tip", text: "Tipped you $5", user: { id: 5, name: "Jim" }, createdMs: 7 }],
     ["the brand title names no one", { ...payload, title: "Inflowwww" }, { user: { id: 5, name: undefined } }],
@@ -410,7 +396,7 @@ describe("pushArrival / deliverPushNotice: a push the service worker left to thi
     const inScope = (aid: string) => (aid === "pn" ? { ...DEFAULT_NOTIF_SETTINGS, enabled: true } : null);
     it("a notice the lane already delivered is taken (acked) but dropped; a new one toasts once", () => {
       const { result } = renderHook(() => useToastStack());
-      expect(claimUnseen("pn", "m1")).toBe(true); // the SSE lane got there first
+      expect(claimUnseen("pn", "m1")).toBe(true);
       let took = false;
       act(() => { took = deliverPushNotice({ ...payload, tag: "pn:m1", account_id: "pn" }, inScope); });
       expect(took).toBe(true);
@@ -419,7 +405,7 @@ describe("pushArrival / deliverPushNotice: a push the service worker left to thi
       act(() => { deliverPushNotice({ ...payload, tag: "pn:m2", account_id: "pn" }, inScope); });
       act(() => { deliverPushNotice({ ...payload, tag: "pn:m2", account_id: "pn" }, inScope); });
       expect(result.current.filter((t) => t.accountId === "pn").map((t) => t.id)).toEqual(["m2"]);
-      expect(claimUnseen("pn", "m2")).toBe(false); // the lane's copy is now the no-op
+      expect(claimUnseen("pn", "m2")).toBe(false);
     });
 
     it("a Creator out of this page's scope, or no Creator: not taken (the worker shows it), nothing toasted or claimed", () => {
@@ -433,7 +419,7 @@ describe("pushArrival / deliverPushNotice: a push the service worker left to thi
       });
       expect(took).toEqual([false, false]);
       expect(result.current.filter((t) => t.accountId === "out")).toEqual([]);
-      expect(claimUnseen("out", "m3")).toBe(true); // its lane (another window) still delivers it
+      expect(claimUnseen("out", "m3")).toBe(true);
     });
   });
 });

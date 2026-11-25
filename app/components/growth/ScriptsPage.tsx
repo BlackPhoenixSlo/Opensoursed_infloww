@@ -1,42 +1,5 @@
 "use client";
 
-/**
- * Growth > Scripts, laid out from its Layout capture (`docs/infloww-layouts/growth-scripts.md`, tickets 35 and 56):
- * the bundle's script manager over our saved replies.
- *
- * - The header (#3 to #17): "Scripts", "Learn" (Not wired: the help article is off-host) and
- *   "Share" (the selected scripts, or all of them, to other Creators), and the More menu behind the bundle shot's
- *   filled accent plus (ours a labelled "+ Add"): Add script, Add sequence > Create new, Add tag, Import > From
- *   Excel / From other creators;
- *   Use template and Import from tag are Not wired. Import and Share are `ScriptsImportDialogs`. The Creator is
- *   picked on the creator column left of the page (`CreatorRail`, as Smart lists') in place of the bundle's header
- *   select (#6), without its per-Creator script count (`showScriptCount`): the store has no count read (YAGNI).
- * - The toolbar (#18 to #33): the "Tag" and "Sequence" tabs (Tag first, as the bundle opens, #23), the search, and
- *   "Manage scripts", which swaps the tabs for a back arrow and its title and sorts by Recent or Name (#31 to #33).
- * - Tag and Sequence (#53 to #64): a 248px sidebar beside the selected entry's scripts. Tag lists "All scripts",
- *   each tag, then the untagged scripts (the bundle's `UncategorizedCommon` 8888 / 9999 entries, index.9f50f370.js
- *   @13877942); a sequence lists its steps, numbered by step, "2.1" / "2.2" when one step holds several options
- *   (the bundle's `stepIndex`, @14238300). Each tag and sequence row renames and deletes. No tag or sequence (or no
- *   script at all on Tag) shows the bundle's sequence empty panel.
- * - The list (#34 to #50): the select-all box, the "Expand scripts" switch, then one row per script: name (the step
- *   number in a sequence, #38), its tag and sequence chips (#41, three then "+N"), text, media, price, stats (the
- *   chat send count in an orange box; purchases and sales Not wired), internal notes (#46), then edit, share and
- *   delete, which removes the script from the open tag or sequence instead (#47, #49). A selection opens the bar
- *   (#51): Add to tag, and Delete (one request) or Remove. A sequence's steps are numbered cards joined by a line.
- * - Scale (an imported Infloww library: ~700 sequences, ~10k scripts): the list and the sidebar render 200 rows at
- *   a time (`useRenderCap`); the Sequence sidebar sorts Custom (the import's order, `GET
- *   /admin/saved-replies/sequences`), Recent or Name; the sequence header adds Created by from the same read.
- *
- * - Fill with content (docs/spec/phase-02-button-and-popup.md; an Inflowwww extra): the open sequence's header
- *   fills it from the Creator's described vault in one press (`POST /admin/saved-replies/fill/apply`), then shows
- *   the Fill notice with Undo; any other answer opens the Fill dialog (`ScriptFillDialog`). State:
- *   `scriptFillState.ts`.
- *
- * Tags, notes and sequences are stored on the saved reply: `tags`, `notes`, and `script_id` + `script_step` (the
- * pair the chat composer's next-step suggestion follows). A tag exists while a script carries it; a new empty tag
- * lives on this page until a script takes it. The list, the editor and their routes are the Templates tab's
- * (`useSavedReplyEditor`); renames, deletes and bulk tagging go through `POST /admin/saved-replies/relabel`.
- */
 
 import { useEffect, useMemo, useReducer, useRef, useState, type ComponentProps } from "react";
 import { ArrowLeft, BookOpen, ImagePlus, List, MinusCircle, Plus, Search, Share2, Trash2, Workflow, X } from "lucide-react";
@@ -73,8 +36,6 @@ import {
 } from "@/components/growth/scriptsPageState";
 import { ifConfirm } from "@/components/ui/ifConfirm";
 
-/** The Learn and Share boxes (#9, #10): 75px wide, 0 8px padding, 14px weight 500 T1, an 18px icon 4px from the
- *  text, at full ink, as the bundle shot draws them (#d9d9d9 dark). Learn is Not wired (disabled and titled). */
 const HEADER_BOX =
   "min-w-[75px] h-6 px-2 flex items-center justify-center text-sm font-medium text-fg disabled:cursor-not-allowed";
 
@@ -91,16 +52,10 @@ export default function ScriptsPage() {
   const metaQ = useSavedReplySequences(accountId);
   const fillApplyM = useFillApply();
   const fillUndoM = useFillUndo();
-  // Fill uses the whole vault: a folder-limited chatter (or one whose access is not read yet) cannot press it.
   const access = dlAccess(useChatterFolderAccess(accountId));
   const fillReq = useRef(0);
-  // The one in-flight guard: the `fillKey`s with a Fill or Undo out, checked and set before the POST (a second
-  // press in the same render, before `fill.inflight` re-renders, sends nothing).
   const fillOut = useRef(new Set<string>());
 
-  // The view, the open tag and sequence, the checked scripts, the page's new tags, the busy scripts and the last
-  // error, the open overlay, the search, the sort and the Fill state (requests in flight, the Fill dialog, each
-  // Sequence's Fill notice; `scriptFillState.ts`): `scriptsPageState.ts`.
   const [page, dispatch] = useReducer(scriptsPageReducer, INITIAL);
   const { view, checked, busy, error, modal, search, sort, allModels, fill } = page;
   const fillDispatch = (action: FillAction) => dispatch({ type: "fill", action });
@@ -109,20 +64,15 @@ export default function ScriptsPage() {
   const openModal = (m: Modal) => dispatch({ type: "openModal", modal: m });
   const closeModal = () => dispatch({ type: "closeModal" });
   const clearSelection = () => dispatch({ type: "setChecked", ids: [] });
-  // Another Creator: nothing of this one's (draft, selection, new tags, open tag or sequence, error, overlay, search)
-  // carries over; an answer to what was done on it is dropped while the page shows another (`account`).
-  // The "All creators" coverage matrix (CreatorRail's All pick) leaves with it (`reset`).
   const pickCreator = (id: string) => {
     setAccountId(id);
     setDraft(null);
     dispatch({ type: "reset", account: id });
   };
-  // The first Creator, picked by `useScopedAccount` rather than the column: the page's state takes it too.
   useEffect(() => {
     if (accountId !== page.account) dispatch({ type: "reset", account: accountId });
   }, [accountId, page.account]);
 
-  // ── derived: tags and sequences ──
   const pending = useMemo(() => livePending(page.pendingTags, replies), [page.pendingTags, replies]);
   const tagCounts = useMemo(() => tagCountsOf(replies, pending), [replies, pending]);
   const tagNames = useMemo(() => [...tagCounts.keys()].sort(byName), [tagCounts]);
@@ -132,16 +82,13 @@ export default function ScriptsPage() {
     () => sequenceOrder(metas, sequences, page.seqSort),
     [sequences, metas, page.seqSort],
   );
-  // The sidebars' order, as drawn: deleting the open entry opens its neighbour in it.
   const tagOrder = useMemo(() => [ALL, ...tagNames, UNCATEGORIZED], [tagNames]);
   const orderOf = (kind: EntryKind) => (kind === "tag" ? tagOrder : seqNames);
   const activeSeq = activeEntry(page.open.sequence, seqNames);
   const activeTag = activeEntry(page.open.tag, tagOrder) ?? ALL;
-  // The Sequence a Fill answer may speak over: the open one, while the Sequence view shows it.
   const fillOpen = !allModels && view === "sequences" ? activeSeq : null;
   useEffect(() => dispatch({ type: "fill", action: { type: "show", sequence: fillOpen } }), [fillOpen]);
 
-  // ── the list for the open view ──
   const rows = useMemo(
     () => scriptRows({ view, replies, sequences, activeSeq, activeTag, q: search.q, sort }),
     [view, replies, sequences, activeSeq, activeTag, search.q, sort],
@@ -153,7 +100,6 @@ export default function ScriptsPage() {
 
   const { listIds, checkedInList, allChecked, selBusy } = selectionOf(rows, checked, busy);
 
-  // ── actions ── (each answer carries the Creator the user acted on: another Creator's page drops it)
   async function run(ids: number[], fn: () => Promise<unknown>) {
     const account = accountId;
     dispatch({ type: "runStart", ids });
@@ -170,7 +116,6 @@ export default function ScriptsPage() {
   async function deleteScripts(ids: number[]) {
     const one = ids.length === 1;
     if (!(await ifConfirm(`${one ? "Delete script?" : `Delete ${ids.length} scripts?`}\n\nThis script will also be deleted from sequences that utilized this script.`, { danger: true }))) return;
-    // A selection goes in one request (`POST /admin/saved-replies/delete`), one script by its own route.
     void run(ids, async () => {
       if (one) await deleteM.mutateAsync(ids[0]);
       else await deleteManyM.mutateAsync(ids);
@@ -184,48 +129,41 @@ export default function ScriptsPage() {
     if (!(await ifConfirm(kind === "tag"
       ? "Remove this script?\n\nThe script will be removed from this tag."
       : "Remove this script?\n\nRemove this script from this sequence. You can add the script back any time you want."))) return;
-    // Unchecked once the server took it (`runEnd`); a failed remove keeps the ticks for a retry.
     void run(ids, async () => {
       await relabelM.mutateAsync({ kind, from, ids });
     });
   }
 
-  /** Add script, seeded with the open tag, or the open sequence's next step. */
   function addScript() {
     if (inTag) startNewReply({ tags: [inTag] });
     else if (inSeq) startNewReply({ scriptId: inSeq, scriptStep: String(nextStep(sequences.get(inSeq) ?? [])) });
     else startNewReply();
   }
 
-  /** One Fill or Undo press on `sequence`: one in flight per Creator and Sequence; its rows take no edit until it
-   *  ends (`fill.inflight`), nor while the list's last load failed (`replyQ.isError`, W30 F41/F50).
-   *  `call` returns the answer to dispatch. */
   async function runFill(
     account: string | null, sequence: string, start: "press" | "undoPress",
     call: (pin: { account: string; sequence: string; req: number }) => Promise<FillAction>,
   ) {
     const key = fillKey(account, sequence);
+    // Checked and set before the POST: a second press in the same render must send nothing.
     if (!account || fillOut.current.has(key)) return;
     fillOut.current.add(key);
     const pin = { account, sequence, req: ++fillReq.current };
     fillDispatch({ type: start, ...pin });
     try {
-      // The call awaits the list refetch, so a failed one is already the query's error state (the lock) here.
       fillDispatch(await call(pin));
     } finally {
       fillOut.current.delete(key);
     }
   }
 
-  /** Fill with content: one press applies (no preview); `ok` leaves the notice, anything else opens the dialog. */
   function fillPress(sequence: string) {
     return runFill(accountId, sequence, "press", async (pin): Promise<FillAction> => {
       try {
         const r = await fillApplyM.mutateAsync({ account: pin.account, sequence });
         return r.status !== "ok" ? { type: "answered", ...pin, status: r.status } : { type: "applied", ...pin, result: r };
       } catch (e) {
-        // A 409 `stale` carries the fresh plan (`useFillApply` seeds the dialog's plan with it): shown and asked
-        // again, never applied silently.
+        // 409 stale carries the fresh plan: show and ask again, never apply silently.
         const fresh = stalePlan(e);
         return fresh ? { type: "answered", ...pin, status: fresh.status }
           : { type: "failed", ...pin, message: fillRefusalText(e) };
@@ -233,7 +171,6 @@ export default function ScriptsPage() {
     });
   }
 
-  /** The Fill notice's Undo: apply's Undo list, verbatim, to the Creator the notice was written on. */
   function fillUndo(notice: FillNotice) {
     return runFill(notice.account, notice.sequence, "undoPress", async (pin): Promise<FillAction> => {
       try {
@@ -245,15 +182,12 @@ export default function ScriptsPage() {
     });
   }
 
-  /** Reload: refetch the shown Creator's list; only a success clears the query's error, and with it the lock. */
   function reloadList() {
     void replyQ.refetch();
   }
 
-  /** A tag no script carries lives on this page only: renamed and deleted here, never on the server. */
   const pageOnly = (kind: EntryKind, name: string) => kind === "tag" && pending.includes(name);
 
-  /** The open name modal's props, from the page as it is this render (see `NamePrompt`). */
   function promptProps(p: NamePrompt): Omit<ComponentProps<typeof NameModal>, "onClose"> {
     if (p.kind === "sequence") {
       return {
@@ -296,14 +230,12 @@ export default function ScriptsPage() {
       : "Delete the Sequence?\n\nAre you sure you want to delete this sequence? Its scripts stay in the library.", { danger: true });
     if (!ok) return;
     const done = () => dispatch({ type: "deleteEntry", kind, name, order: orderOf(kind), account: accountId });
-    // A page-only tag moves on at once; anything else once the server has dropped it.
     if (pageOnly(kind, name)) done();
     else void run([], async () => { await relabelM.mutateAsync({ kind, from: name }); done(); });
   }
 
   const sideKind = kindOf(view);
 
-  // ── render ──
   const tagItems: SidebarItem[] = useMemo(() => [
     { id: ALL, name: "All scripts", count: replies.length, fixed: true },
     ...tagNames.map((t) => ({ id: t, name: t, count: tagCounts.get(t) ?? 0 })),
@@ -322,19 +254,14 @@ export default function ScriptsPage() {
 
   const activeSeqRows = activeSeq ? sequences.get(activeSeq) ?? [] : [];
   const gap = view === "sequences" && activeSeq ? firstGap(activeSeqRows) : null;
-  // Day only, as Infloww's header ("Oct 13, 2026").
   const fmt = (iso?: string | null) =>
     iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "--";
   const { createdBy, created, modified } = sequenceHeader(activeSeq ? metas.get(activeSeq) : undefined, activeSeqRows);
-  // Fill's guards: whole-vault access, then no open edit of one of this Sequence's steps (its save is a whole-row
-  // PUT that would wipe the Fill); a new-step draft does not block.
   const editingSeqRow = draft?.kind === "reply" && draft.id != null && activeSeqRows.some((r) => r.id === Number(draft.id));
+  // An open edit of a Sequence step blocks Fill: its save is a whole-row PUT that would wipe the Fill.
   const fillBlocked = access !== "all" ? ASK_OWNER : editingSeqRow ? SAVE_FIRST : null;
   const activeKey = activeSeq != null ? fillKey(accountId, activeSeq) : null;
   const fillBusy = activeKey != null && fill.inflight[activeKey] != null;
-  // A row of a Sequence with a Fill or Undo in flight opens no edit (so no whole-row PUT races the write); Fill
-  // and Undo are off while a draft is open on a step, and Undo also while one is open on a row it would revert
-  // (one moved out of the Sequence since).
   const rowLocked = (r: { script_id?: string | null }) => r.script_id != null && isLocked(fill, accountId, r.script_id, replyQ.isError);
   const listStale = activeSeq != null && replyQ.isError;
   const fillNotice = activeKey ? fill.notices[activeKey] : undefined;
@@ -345,12 +272,10 @@ export default function ScriptsPage() {
   const list = (
     <div className="flex-1 min-w-0">
       {view === "sequences" && activeSeq && (
-        // The sequence header (#60, #61): name, then its meta; Add step adds the next step's script.
         <div className="px-4 py-3 border-b border-border">
           <div className="flex items-center gap-2 flex-wrap">
             <Workflow size={20} aria-hidden />
             <h2 className="text-base font-semibold">{activeSeq}</h2>
-            {/* Fill with content (an Inflowwww extra), in Add step's pill; its title says why when it is off. */}
             <span title={EXTRA_LABEL} className="ml-auto inline-flex">
               <button
                 type="button"
@@ -382,7 +307,6 @@ export default function ScriptsPage() {
             </div>
           )}
           {fillNotice && (
-            // The Fill notice: until dismissed, undone or a reload; it comes back with the Creator + Sequence.
             <div role="status" aria-label="Fill notice" title={EXTRA_LABEL}
               className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded bg-accent/15 px-2 py-1 text-xs text-fg">
               <span>{noticeText(fillNotice)}</span>
@@ -406,7 +330,6 @@ export default function ScriptsPage() {
             </div>
           )}
           {listStale && (
-            // W30 F41/F50: the list's last load failed: its steps may show values from before a write, so they stay locked.
             <div role="status" title={EXTRA_LABEL} className="mt-2 flex items-center gap-2 text-xs text-warn">
               <span>The list did not reload, so this sequence&apos;s steps stay locked.</span>
               <button type="button" disabled={replyQ.isFetching} onClick={reloadList}
@@ -427,8 +350,6 @@ export default function ScriptsPage() {
         </div>
       )}
 
-      {/* #34 to #36: a 32px bar, 0 16px padding; the select-all box, then the switch; the sort (#33) at the right,
-          two 32px antd selects, so Manage scripts' bar grows by 4px either side. */}
       <div className={cn("h-8 px-4 flex items-center gap-2", view === "manage" && "h-10")}>
         <input
           type="checkbox"
@@ -459,14 +380,12 @@ export default function ScriptsPage() {
           <div className="ml-auto flex items-center gap-2">
             <IfSelect aria-label="Sort by" value={sort.by} onChange={(by) => dispatch({ type: "sortBy", by })} className="w-[120px]"
               options={[{ value: "recent", label: "Recent" }, { value: "name", label: "Name" }]} />
-            {/* 120px clips "Descending" at antd's padding, so this one is 136px. */}
             <IfSelect aria-label="Sort order" value={sort.order} onChange={(order) => dispatch({ type: "sortOrder", order })} className="w-[136px]"
               options={[{ value: "asc", label: "Ascending" }, { value: "desc", label: "Descending" }]} />
           </div>
         )}
       </div>
 
-      {/* #51: the selection bar. */}
       {checkedInList.length > 0 && (
         <div
           role="toolbar"
@@ -499,7 +418,6 @@ export default function ScriptsPage() {
       )}
 
       {error && <div className="px-4 py-2 text-sm text-err">{error}</div>}
-      {/* The house state lines; the bundle's list has a spinner and no failure line, so they carry the label. */}
       {replyQ.error && (
         <div title={EXTRA_LABEL} className="px-4 py-2 text-sm text-err">
           Failed to load: {replyQ.error.message || "unknown"}
@@ -508,7 +426,6 @@ export default function ScriptsPage() {
       {replyQ.isLoading && replies.length === 0 && (
         <div title={EXTRA_LABEL} className="px-4 py-2 text-sm text-fg-dim">Loading…</div>
       )}
-      {/* #50 */}
       {!replyQ.isLoading && !replyQ.error && rows.length === 0 && (
         <EmptyState size="sm" text="No data" />
       )}
@@ -541,18 +458,11 @@ export default function ScriptsPage() {
   );
 
   return (
-    // The bundle's page frame: the header, the toolbar and the list run flush across the page, each band ruled off
-    // by a 1px bottom border (#18), in no card.
     <div className="flex flex-col min-h-[calc(100dvh-var(--shell-top,3.5rem))]">
-      {/* #3, #4: 16px, weight 600, 24px to the creator selector. #7: the tools 24px tall, 16px apart, at the right.
-          #11: the bundle shows Share before the script tour has run (`localStorage` "ScriptTour") or to a role with
-          ShareScript; ours shows it always (Role enforcement gates the Scripts page as a whole). On a phone the row
-          wraps. */}
       <InflowwPageHeader
         title="Scripts"
         className="h-auto min-h-12 flex-wrap gap-y-2 px-3 py-2 sm:h-12 sm:flex-nowrap sm:px-6 sm:py-0"
         actions={
-          // All creators shows no Creator: the actions that write to one are hidden with it.
           !allModels && <div className="flex items-center gap-4 h-8">
             <button type="button" disabled title={NOT_WIRED} className={HEADER_BOX}>
               <BookOpen size={18} className="mr-1" aria-hidden />
@@ -589,10 +499,8 @@ export default function ScriptsPage() {
           <AllModelsView accounts={accounts} />
         ) : (
         <>
-        {/* #18: 56px tall, 0 24px padding, a 1px bottom border; on a phone 12px, wrapping the right box under the tabs. */}
         <div className="min-h-14 px-3 sm:px-6 py-2 sm:py-0 flex flex-wrap items-center gap-y-2 border-b border-border">
           {view === "manage" ? (
-            // #31, #32: Manage scripts swaps the tabs for a back arrow and its title.
             <div className="flex items-center gap-4">
               <button type="button" aria-label="Back" onClick={() => dispatch({ type: "view", view: "tags" })} className="text-fg-dim hover:text-fg">
                 <ArrowLeft size={20} aria-hidden />
@@ -607,7 +515,6 @@ export default function ScriptsPage() {
                   ["sequences", "Sequence", Workflow],
                 ] as const
               ).map(([key, label, Icon]) => (
-                // #21 to #25: 14px, weight 700, a 24px icon 8px from the text.
                 <button
                   key={key}
                   type="button"
@@ -626,7 +533,6 @@ export default function ScriptsPage() {
             </div>
           )}
           <div className="ml-auto flex items-center">
-            {/* #26, #27: a 24px search icon, 16px, a 1px by 18px divider, 16px. */}
             {search.open && (
               <input
                 type="search"
@@ -648,7 +554,6 @@ export default function ScriptsPage() {
               <Search size={24} aria-hidden />
             </button>
             <span aria-hidden className="w-px h-[18px] bg-border mr-4" />
-            {/* #28, #29: a 28px pill, 0 8px padding, 4px radius, 14px weight 400. */}
             <button
               type="button"
               aria-pressed={view === "manage"}

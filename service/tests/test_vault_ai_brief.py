@@ -1,36 +1,7 @@
 #!/usr/bin/env python3
-"""
-`vault_ai_brief` — `sellability()` and `load_fields()` over the describe
-taxonomy. Durable regression suite (plain-assert, no pytest — repo convention).
-
-Cases:
-  case_solo_is_never_assumed:
-      partner_visible / people_count > 1 rules solo out; an item that says
-      nothing is unknown, never an assumed solo. Mis-framing this is a refund.
-  case_stands_alone_vs_buildup:
-      a payoff act ⇒ stands alone; no payoff act ⇒ build-up only.
-  case_ladder_rung:
-      explicitness maps to a rung index — the escalation order, and the order
-      walked backwards for a re-sell.
-  case_missing_fields_degrade:
-      an empty/garbage ai_fields_json loads as {} instead of raising.
-  case_settled_reading_table:
-      per contradiction code, the least-harmful reading the lanes see: flags
-      win the clothing state (never fully_nude), a bare region lifts the tier
-      to explicit, penetration_offscreen keeps its acts. Clean rows pass
-      through untouched; settling is idempotent and never mutates the input.
-  case_copy_claims_only_what_both_passes_agree_on:
-      `sellability` (the copy brief) on a disputed item: no "nothing left to
-      reveal" off a disputed nude, no nudity where describe says covered, no
-      genital act or penetration when nothing genital is in frame.
-
-Run: cd service/tests && \
-  PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_ai_brief.py
-Exit 0 = all cases passed. Pure functions — no DB, no network, no LLM.
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -40,10 +11,7 @@ import vault_ai_brief as B  # noqa: E402
 async def case_solo_is_never_assumed() -> None:
     assert B.sellability({"people_count": 2, "partner_visible": True})["solo"] is False
     assert B.sellability({"people_count": 1, "partner_visible": False})["solo"] is True
-    # people_count alone is enough to rule solo OUT even if partner_visible is
-    # missing — the safe direction when the vision pass didn't say.
     assert B.sellability({"people_count": 3})["solo"] is False
-    # …and an item that says nothing is `None` (unknown), never an assumed solo.
     assert B.sellability({})["solo"] is None
 
 
@@ -60,13 +28,11 @@ async def case_ladder_rung() -> None:
     assert B.sellability({"explicitness": "hardcore"})["rung"] == len(B.EXPLICITNESS_LADDER) - 1
     assert B.sellability({"explicitness": "suggestive"})["rung"] < \
         B.sellability({"explicitness": "explicit"})["rung"]
-    # An unrecognised tier must not fake a position on the ladder.
     unknown = B.sellability({"explicitness": "spicy"})
     assert unknown["rung"] is None and unknown["tier"] == "spicy", unknown
 
 
 async def case_missing_fields_degrade() -> None:
-    # Garbage / empty blobs must not raise.
     assert B.load_fields(None) == {}
     assert B.load_fields("not json") == {}
     assert B.load_fields('["a","list"]') == {}
@@ -97,7 +63,6 @@ _OFFSCREEN = {"explicitness": "explicit", "clothing_state": "pulled_down",
 
 async def case_settled_reading_table() -> None:
     rows = (
-        # (name, fields, codes, expected overrides)
         ("nude_but_clothed: topless, thong on", _THONG_TOPLESS,
          ["nude_but_clothed"], {"clothing_state": "pulled_down"}),
         ("nude_but_clothed: a hand is not a garment", _HAND_BRA,
@@ -162,7 +127,6 @@ async def case_copy_claims_only_what_both_passes_agree_on() -> None:
     assert off["payoff_acts"] == [] and off["stands_alone"] is False, off
     assert off["penetration"] == "", off
     assert B.claimed_acts(_OFFSCREEN) == ["posing"]
-    # Undisputed, the same acts are claimed in full.
     seen = {**_OFFSCREEN, "vulva_vis": "bare"}
     assert B.sellability(seen)["payoff_acts"] == ["fingering", "rubbing_clit"]
     assert B.sellability(seen)["penetration"] == "fingers"

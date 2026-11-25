@@ -1,7 +1,3 @@
-"""scenarios/2026-11-20-notifications-mark-read.py's checks and fault: lib/faults.py merges `register(Fault)`.
-
-  notif-read-not-sent  OFClient.notifications_read answers `{}` without reaching OF (the pre-fix state at the wire).
-"""
 from __future__ import annotations
 
 WIRE_ONE = "opening the Notifications panel sent OF exactly one mark-read (All, no type), none for another Creator"

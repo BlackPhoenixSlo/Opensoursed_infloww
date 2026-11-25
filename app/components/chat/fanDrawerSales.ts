@@ -1,24 +1,11 @@
-/**
- * FanDrawer's pure sales helpers: the Unsold PPVs pick, the ledger ↔ OF
- * gallery row builder, the Spending behavior figures and the purchase
- * chart's buckets. No React.
- */
-
 import { fmtPrice } from "@/lib/format";
 import { stripOFHtml } from "@/lib/ofHtml";
 import { type FanChatMediaItem } from "@/hooks/useFanChatMedia";
 import { type PpvHistoryItem, type PpvHistoryResp } from "@/hooks/useFanPpvHistory";
 
-/** The Unsold PPVs block shows the latest 2, read from at most 5 pages of 20. */
 const UNSOLD_SHOWN = 2;
 export const UNSOLD_MAX_PAGES = 5;
 
-/** The Unsold PPVs pick from the loaded pages of creator-sent chat media.
- *  Filter for paid + not-yet-opened items; show the latest 2 in the
- *  Unsold PPVs block. A page is every creator-sent media message, free
- *  ones and bought PPVs included, so a Fan sent a lot since his last
- *  unsold PPV has none on the first page: `wantMore` pages on until 2 are
- *  found, at most UNSOLD_MAX_PAGES pages. No pages yet: nothing, no paging. */
 export function unsoldOf(pages: { list: FanChatMediaItem[] }[] | undefined): {
   items: FanChatMediaItem[]; wantMore: boolean;
 } {
@@ -32,28 +19,20 @@ export function unsoldOf(pages: { list: FanChatMediaItem[] }[] | undefined): {
 }
 
 export interface PpvSaleThumb {
-  /** Raw signed OF CDN url — must be wrapped in proxyImage before rendering. */
   rawUrl: string;
-  /** Best full-size url for the lightbox (full → preview → thumb). */
   rawFullUrl: string;
-  /** Playable signed video URL for videos (used as both the hover-scrub
-   *  source and the lightbox <video src>). Empty for photos. */
   rawVideoUrl: string;
-  /** Video duration in seconds — lets the relay's storyboard extractor
-   *  skip its own ffprobe step. */
   durationSec: number;
   isVideo: boolean;
 }
 
 export interface PpvSaleRowData {
   key: string;
-  /** OF message id when available (OF gallery row), null for ledger-only fallback. */
   ofMessageId: number | null;
   text: string;
   priceCents: number;
   purchasedAt: string | null;
   thumbs: PpvSaleThumb[];
-  // DB enrichment — null if no fuzzy match.
   netCents: number | null;
   feeCents: number | null;
   vatCents: number | null;
@@ -66,11 +45,6 @@ export interface LightboxMedia {
   isVideo: boolean;
 }
 
-/** PPV Avg or Highest spend: the relay's average or maximum over the loaded
- *  purchase-history page (`service/fans.py:1006-1011`). A full page may hide
- *  older purchases, so it reads "—" then, and with no items (B11 option (b)).
- *  A placeholder page (the previous limit's or the previous Fan's, kept by
- *  `placeholderData` while a fetch is in flight) also reads "—". */
 export function pageFigure(
   q: { data?: PpvHistoryResp; isPlaceholderData: boolean },
   salesLimit: number, key: "avg_cents" | "max_cents",
@@ -80,21 +54,13 @@ export function pageFigure(
   return fmtPrice(q.data.summary[key]);
 }
 
-/** Whole-dollar formatter for ledger summaries. OF returns
- *  these as dollars (`tipsSumm: 87`); our DB returns cents. Prefer the
- *  OF number when it's a real value; fall back to DB cents otherwise.
- *  We treat `0` as "missing" on the OF side because OF reports 0 for
- *  long-tenure / hidden accounts even when activity exists — better to
- *  show our DB total than a misleading $0. */
+// OF reports 0 for long-tenure/hidden accounts even with activity, so 0 counts as missing.
 export function fmtSummDollars(ofDollars: number | null | undefined, dbCents: number | null | undefined): string {
   if (typeof ofDollars === "number" && ofDollars > 0) return `$${Math.round(ofDollars).toLocaleString("en-US")}`;
   if (typeof dbCents === "number" && dbCents > 0) return `$${Math.round(dbCents / 100).toLocaleString("en-US")}`;
   return "—";
 }
 
-/** `salesBars` (`messages.js:1472-1490`): the window runs from the first
- *  purchase to now, at least 7 days, split into 12 equal steps. Epoch
- *  milliseconds throughout, so the buckets do not depend on the host zone. */
 export function salesBars(items: PpvHistoryItem[]) {
   const now = Date.now(), N = 12;
   const times = items.map((i) => parseUtcMs(i.purchased_at)).filter((t): t is number => !!t);
@@ -111,8 +77,7 @@ export function salesBars(items: PpvHistoryItem[]) {
   return { buckets, max: Math.max(...buckets), first, step };
 }
 
-/** The deleted Clone's `InflowwRea.parseUtc` (tag `legacy-ui-final`): relay stamps can be tz-naive
- *  UTC, so a stamp without a zone is read as UTC. Null when unparseable. */
+// Relay stamps can be tz-naive UTC.
 export function parseUtcMs(s: string | null): number | null {
   if (!s) return null;
   let str = s;
@@ -127,7 +92,6 @@ export function fmtFullDateTime(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  // "May 24, 2026 at 7:04 PM" — matches the OF screenshot phrasing.
   const datePart = d.toLocaleDateString(undefined, {
     month: "short", day: "numeric", year: "numeric",
   });
@@ -151,15 +115,9 @@ export function pickThumbs(media: FanChatMediaItem["media"]): PpvSaleThumb[] {
     const f = m.files ?? {};
     const thumbUrl =
       f.squarePreview?.url ?? f.thumb?.url ?? f.preview?.url ?? f.full?.url ?? "";
-    // Lightbox prefers the full asset; falls back to preview then thumb
-    // so a missing `full` (common on locked / no-longer-purchasable media)
-    // still gives us something to render in the overlay.
     const fullUrl =
       f.full?.url ?? f.preview?.url ?? f.squarePreview?.url ?? f.thumb?.url ?? "";
     const isVideo = m.type === "video";
-    // For videos OF puts the playable mp4 under files.full; preview is a
-    // shorter teaser clip on some items, full on others. The relay's
-    // /img/scrub builder needs a real mp4, so prefer full → preview.
     const videoUrl = isVideo ? (f.full?.url ?? f.preview?.url ?? "") : "";
     return {
       rawUrl: thumbUrl ?? "",
@@ -171,24 +129,7 @@ export function pickThumbs(media: FanChatMediaItem["media"]): PpvSaleThumb[] {
   });
 }
 
-/** True when OF's list price (in cents) plausibly corresponds to a
- *  ledger row's gross amount. The relationship isn't always 1:1:
- *    • creator sets list price X (e.g. $18.00)
- *    • OF charges fan X + VAT (varies by region, ~12% in EU)
- *    • OF returns `price: 18` on the gallery row regardless
- *    • our ledger row carries amount_cents = gross paid by fan
- *      (sometimes $18, sometimes $18.03 due to FX rounding, $20.16
- *      with VAT, etc.)
- *
- *  We accept a match if the OF price equals any of the following
- *  derivations of the ledger amount, ±2¢ rounding tolerance:
- *    • amount_cents               (no-VAT region; common case)
- *    • amount_cents − vat_cents   (when ledger amount is VAT-inclusive)
- *    • amount_cents + vat_cents   (when ledger amount is ex-VAT)
- *    • net_cents + fee_cents      (some Phase-F rows store these split)
- *  Plus a ±10% loose fallback to catch OF's occasional ad-hoc discount
- *  rounding. The strict candidates win first; loose only fires when no
- *  strict match exists in the whole gallery. */
+// OF list price vs ledger gross: VAT (~12% EU), FX rounding; strict candidates +-2c, loose +-10%.
 export function priceMatchScore(ofCents: number, it: PpvHistoryItem): "strict" | "loose" | null {
   const lc = it.price_cents;
   const candidates: number[] = [lc];
@@ -206,17 +147,7 @@ export function priceMatchScore(ofCents: number, it: PpvHistoryItem): "strict" |
   return null;
 }
 
-/** Unified row builder — ledger is the spine (source of truth for what
- *  was paid), OF gallery enriches with thumbnails + text.
- *
- *  Matching pass order:
- *    1. ledger.message_id == OF.id  (definitive, when ledger has the id)
- *    2. price strict-match (any of the candidate derivations ±2¢),
- *       nearest |createdAt − purchased_at| wins
- *    3. price loose-match (±10%), nearest time wins
- *
- *  Each OF item is consumed at most once so two same-priced ledger rows
- *  on the same day can't both claim a single gallery entry. */
+// Ledger is the spine; each OF item is consumed at most once so same-priced rows cannot share one.
 export function buildSaleRows(
   media: FanChatMediaItem[],
   ledger: PpvHistoryItem[],
@@ -230,13 +161,10 @@ export function buildSaleRows(
   const usedMediaIds = new Set<number>();
 
   function chooseMedia(it: PpvHistoryItem): FanChatMediaItem | null {
-    // Pass 1: hard message-id match.
     if (it.message_id != null) {
       const direct = mediaById.get(it.message_id);
       if (direct && !usedMediaIds.has(direct.id)) return direct;
     }
-    // Pass 2+3: collect strict and loose price candidates, then pick by
-    // time-proximity within the tighter bucket.
     const ts = +new Date(it.purchased_at ?? it.sent_at ?? 0);
     let bestStrict: FanChatMediaItem | null = null;
     let bestStrictDelta = Number.POSITIVE_INFINITY;

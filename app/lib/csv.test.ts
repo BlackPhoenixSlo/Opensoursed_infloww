@@ -1,4 +1,3 @@
-/** csvField: quoting, and formula-looking text opened as text (the server exports' `safe_cell` rule). */
 import { describe, expect, it } from "vitest";
 
 import { csvField } from "@/lib/csv";

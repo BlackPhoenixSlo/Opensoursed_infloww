@@ -15,7 +15,6 @@ A, B = "101", "202"
 
 
 class Relay:
-    """A loopback fake Relay: `/events` streams what `push` queues; `/admin/accounts` answers `accounts`."""
 
     def __init__(self) -> None:
         self.accounts: dict[str, dict] = {}

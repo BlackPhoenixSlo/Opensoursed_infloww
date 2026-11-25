@@ -1,16 +1,3 @@
-/**
- * REGRESSION PROBE — "we are not printing work in progress".
- *
- * A describe sweep over a 500-item vault runs for over an hour. The progress
- * used to live in a `for (i < 400) { sleep 2500; fetch }` loop inside the click
- * handler, which meant it (a) died on reload, (b) never existed in a second tab,
- * and (c) gave up after ~17 minutes and put "Describe all (N)" back over a sweep
- * that was a third done. The operator's only feedback left was to press the
- * button again — which 409s, which the handler swallowed, which cleared the
- * label again.
- *
- * These lock the four behaviours that fixed it, plus the label maths.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { ReactNode } from "react";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
@@ -36,7 +23,6 @@ const relayGet = relay.get as unknown as Mock;
 const relayPost = relay.post as unknown as Mock;
 const AID = "506355167";
 
-/** What the fake relay currently reports. Mutate, then refetch. */
 let server: SweepStatus;
 
 let client: QueryClient;
@@ -71,14 +57,11 @@ describe("a sweep this tab did not start", () => {
     await waitFor(() => expect(result.current.running).toBe(true));
     expect(result.current.busy).toBe(true);
     expect(result.current.progress).toMatchObject({ done: 232, total: 500 });
-    // Nothing was started: the status is asked for unconditionally, which is the
-    // whole point — the old loop only ran if THIS tab had pressed the button.
     expect(relayPost).not.toHaveBeenCalled();
   });
 
   it("pressing the button again does not start a second sweep, and keeps the label", async () => {
     server = { running: true, progress: { total: 500, done: 232, capped: false } };
-    // The server's 409 guard (`describe_already_running`) surfaces as a reject.
     relayPost.mockRejectedValue(new Error("409 describe_already_running"));
 
     const { result } = mountSweep(AID);
@@ -86,9 +69,6 @@ describe("a sweep this tab did not start", () => {
 
     await result.current.start({ force: false });
 
-    // The rejection is swallowed and the sweep is still shown as running — the
-    // old handler cleared its label here, which is what made the button read
-    // "Describe all" over a live sweep and invited the next press.
     expect(result.current.busy).toBe(true);
     expect(result.current.progress).toMatchObject({ done: 232 });
     expect(relayPost).toHaveBeenCalledTimes(1);
@@ -141,7 +121,6 @@ describe("the running→idle edge", () => {
     await waitFor(() => expect(onSettled).toHaveBeenCalledTimes(1));
     expect(onSettled.mock.calls[0][0].progress).toMatchObject({ needs_review: 12 });
 
-    // Later polls of the same idle state must not re-fire it.
     await client.refetchQueries({ queryKey: sweepStatusKey("describe-all", AID) });
     await client.refetchQueries({ queryKey: sweepStatusKey("describe-all", AID) });
     expect(onSettled).toHaveBeenCalledTimes(1);
@@ -154,8 +133,6 @@ describe("the running→idle edge", () => {
     const { result, rerender } = mountSweep(AID, onSettled);
     await waitFor(() => expect(result.current.running).toBe(true));
 
-    // Switch to an account with no sweep. running goes true→false, but it is a
-    // DIFFERENT sweep — firing here would pop the other account's review modal.
     server = { running: false, progress: null };
     rerender({ acct: "8000149" });
     await waitFor(() => expect(result.current.running).toBe(false));
@@ -170,8 +147,6 @@ describe("label maths", () => {
   });
 
   it("falls back to the durable count when the relay has no counter", () => {
-    // `progress: null` is a restarted relay (the counter is an in-memory dict)
-    // or the second before the sweep finishes selecting its ids.
     expect(sweepCounts(null, { done: 190, total: 463 })).toEqual({ done: 190, total: 463 });
   });
 
@@ -217,10 +192,6 @@ describe("label maths", () => {
   });
 
   it("says a sweep DIED, because otherwise it looks like one that finished", () => {
-    // The whole point: `running: false` + `done < total` is the same two facts
-    // for both, so the button read "Describe all (N)" either way and the only
-    // feedback an operator had was to press it again — which is exactly what
-    // happened on prod for an hour on 2026-08-11.
     const note = sweepAbortedNote({
       total: 832, done: 214, aborted: true,
       error: "RuntimeError: OF read blew up mid-collect",

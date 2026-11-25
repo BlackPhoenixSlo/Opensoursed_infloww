@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * "Desktop update available": inside the desktop app only, when the shell's version (`window.fasttShell.version`,
- * desktop/preload.js) is older than LATEST_DESKTOP_VERSION. It links to /download (in a new window: the desktop
- * opens a same-origin one in the app, and the page's download links go to the OS browser). No network call; the
- * close is remembered per latest version, so the next release shows it again. The server render has no shell, so
- * it shows after hydration.
- */
 
 import { useSyncExternalStore } from "react";
 import { X } from "lucide-react";
@@ -41,6 +34,7 @@ export function DesktopUpdateBanner() {
       className="fixed bottom-3 right-3 z-[60] flex items-center gap-3 rounded-lg border border-border bg-bg-elev-1 px-3 py-2 text-sm text-fg shadow-lg"
     >
       <span>Desktop update available (v{LATEST_DESKTOP_VERSION})</span>
+      {/* new window: the desktop opens a same-origin one in the app, not the OS browser */}
       <a href={DESKTOP_URL} target="_blank" rel="noopener" className="text-accent underline">
         Download
       </a>

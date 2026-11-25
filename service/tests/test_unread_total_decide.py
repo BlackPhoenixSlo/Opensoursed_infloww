@@ -1,81 +1,7 @@
 #!/usr/bin/env python3
-"""unread_total_decide (phase-02 seam 3), as tables. Pure: no clock, no I/O; times are passed (epoch ms).
-
-  case_count:                 an int `chatMessagesCount` (>= 0) is OF's number; bool, str, float, negative, missing or
-                              a non-dict body -> None (no confirmation).
-  case_first_confirmation:    no total yet: OF's number adopted at the read's ask time, no action.
-  case_confirmation_adopts:   a confirmation adopts OF's number whatever the held one (unexplained by any
-                              adjustment, logs drift); publishing is the shell's (Badge version).
-  case_unchanged_n:           the same `n`: `at` moves to the ask time, no action.
-  case_older_read_never_wins: a read asked before the held `at` (landed late) changes nothing, no action.
-  case_slot:                  `values.unread_total`, always an object `{n, at, grey}`: `n` the Red circle, OF's
-                              number minus Restricted unread, floored at 0; null before the first confirmation or
-                              while R is unknown; `grey` the first grey cause (`grey_reason`).
-  case_grey_reason:           `unseeded` (no confirmation), `socket_down` (not up, or no confirmation since the
-                              reconnect), `r_unknown` (no R): the first matching cause in that order, else None.
-  case_prior_from_the_held_row: the held page-0 row's flag is the chat's prior; no row -> unknown.
-  case_adjust_known_prior:    the adjustment table, known prior: DM into read +1 / unread 0; our mark read on unread
-                              -1 / read 0; mark unread on read +1 / unread 0.
-  case_clamped_at_zero:       a move never takes the total below 0.
-  case_no_total_yet:          before the first confirmation nothing moves (`n` stays null).
-  case_flips_kept_until_a_read_asked_after_they_landed: a confirmation asked while a flip's write was in flight
-                              re-applies it; one asked after it landed drops it.
-  case_ordering:              DM stamped by createdAt (never counted twice); an older flip never overrides a newer
-                              DM for the fan (nor an older DM a newer reply); a read asked mid-write keeps the flip.
-  case_reconcile_reapplies_after_ask: OF's number plus only the adjustments stamped after the read's ask time; those
-                              stay held for the next confirmation, the rest are dropped.
-  case_drift:                 expected = the held value at the ask time; OF lower or higher -> `log_drift`; equal or
-                              a first confirmation -> none.
-  case_adjust_unknown_prior:  the table's unknown column: DM +1 slack +1; mark read -1; mark unread +1 slack +1;
-                              reply 0 slack +1.
-  case_reply:                 a reply into an unread chat -1, into a read chat 0.
-  case_prior_of_order:        our own record this Cycle first (what our flips, replies and DMs set), then the held row,
-                              else unknown; a record lives until the second confirmation after it.
-  case_reply_then_mark_read_once: a reply into an unread chat then a mark read of it (window dropped by then) -> -1 once.
-  case_two_dms_into_one_read_chat: +1 once, held row or not.
-  case_mark_all:              `n` = the chats that got a DM stamped after the mark all's pre-write `at`; a confirmation
-                              asked before that `at` re-applies it.
-  case_slack:                 unknown-prior moves add slack; a lower OF number within it is no drift, beyond it is;
-                              slack resets at each confirmation (only moves after the ask stay counted).
-  case_drift_actions:         OF lower than expected beyond slack -> `window_read` + `log_drift` (the drift pending
-                              from that ask); within slack -> none; higher -> `log_drift` only.
-  case_one_window_read_per_drift: a second drift while one is pending asks no second read; a window read asked at or
-                              after the drift's confirmation serves it, one asked before leaves it pending; a drift
-                              after that asks again (the refresher holds it to its next Cycle).
-  case_flips_with_old_rows:   old vs new page-0 rows: each fan whose unread state flipped, either way; a row new to
-                              or gone from the window, or unchanged, none; drift or not alike.
-  case_flips_without_old_rows: no old window held: a drift read -> `(fan, 0)` per read row; a routine read -> none.
-  case_flips_never_clear_newer: a row whose `lastMessage` is newer than the read's ask time is never cleared, with or
-                              without old rows; undated rows are.
-  case_excluded_from_badges:  our skip-list registry or `canSendMessage: false` (any reason) excludes; the field absent,
-                              or OF's own `isRestricted` alone, does not; a non-int fan or non-dict row is safe.
-  case_of_counts:             OF's counter counts an unread unmuted row that is sendable, `only_friends` or
-                              Restricted (reason "muted"); not `chat_unavailable`, muted or read rows.
-  case_amber_count:           Owe reply: a read, Fan-last, `isMutedNotifications: False`, sendable row outside the
-                              Unread set counts; unread, Creator-last, muted, mute unknown, excluded, in the set -> 0;
-                              no set held -> the guard passes; one per Fan; the 26th row is past the window.
-  case_amber_one_predicate:   the Restricted exclusion is `excluded_from_badges` alone: patched to False for a
-                              registry Fan, amber counts him.
-  case_ws_confirmation:       an Unread counter frame (`via="ws"`) confirms like `/users/me` but never logs drift,
-                              asks no window read and leaves `due`; same value: `at` moves.
-  case_frame_vs_users_me_order: frames and `/users/me` share one watermark (`seen`): the older of either kind loses,
-                              the newer wins whichever lands first.
-  case_adjust_vs_ws_at:       a flip or mark all (pre-write `at`), reply (`now`) or DM (`createdAt`) at or before
-                              the newest frame's receipt (`ws_at`) is recorded but moves nothing; after it, moves as
-                              before; `ws_at` outlives a newer `/users/me`.
-  case_badge_version:         +1 on any slot key change (or the slot appearing / going), never on `at` alone.
-  case_phase_c_causes:        Phase C's causes held by the shell: `dead` / `proxy_down` first, before `unseeded`;
-                              socket down with a poll of this outage (after the newest frame) -> no `socket_down`, a
-                              `/users/me` since included; that poll older than 45 s -> `stale`; a poll before the
-                              reconnect, or before a later frame, confirms nothing.
-  case_poll_confirmation:     a Complete socket-down poll (`via="poll"`) confirms through the one watermark like a frame
-                              (no drift, no window read, `due` kept) and stamps `poll_at`; an older one changes nothing.
-
-Run: ./venv/bin/python service/tests/test_unread_total_decide.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness  # MUST be first: binds temp DB
 
 import unread_total_decide as d  # noqa: E402
 from unread_total_decide import (  # noqa: E402
@@ -131,7 +57,7 @@ def case_older_read_never_wins():
     for observed in (3, 5):
         st, actions = d.reconcile(held, observed, T0 + 1000, T0 + 2500)
         assert st == held and actions == (), (observed, st, actions)
-    st, actions = d.reconcile(held, 5, T0 + 2000, T0 + 2500)   # same ask time: a confirmation, adopted
+    st, actions = d.reconcile(held, 5, T0 + 2000, T0 + 2500)
     assert st == State(n=5, at=T0 + 2000, seen=T0 + 2000) and actions == (LOG_DRIFT,), (st, actions)
 
 
@@ -219,59 +145,47 @@ def case_no_total_yet():
 
 
 def case_flips_kept_until_a_read_asked_after_they_landed():
-    """W30-mu #4c: a flip is dropped only by a confirmation asked after the write landed (`now` at adjust); one
-    asked while the write was in flight may hold OF's pre-write number, so the flip is re-applied."""
-    st = d.adjust(_held(3), ReadFlip(FAN, 0, T0 + 100, UNREAD), T0 + 500)    # write asked T0+100, landed T0+500
+    st = d.adjust(_held(3), ReadFlip(FAN, 0, T0 + 100, UNREAD), T0 + 500)
     st = d.adjust(st, DmIn(FAN2, READ), T0 + 400)
     assert st.n == 3, st
-    st2, actions = d.reconcile(st, 3, T0 + 300, T0 + 600)   # asked mid-write: OF's 3 is pre-write
+    st2, actions = d.reconcile(st, 3, T0 + 300, T0 + 600)
     assert st2.n == 3 and st2.at == T0 + 300, ("OF's 3 - the flip + the DM", st2)
     assert LOG_DRIFT not in actions, actions
-    st3, actions = d.reconcile(st, 3, T0 + 550, T0 + 600)   # asked after it landed: both in OF's number
+    st3, actions = d.reconcile(st, 3, T0 + 550, T0 + 600)
     assert (st3.n, st3.adj) == (3, ()) and actions == (), (st3, actions)
 
 
 def case_ordering():
-    """W30-mu #4: (a) a DM is stamped with its createdAt: a /users/me asked after it already counts it, whether the
-    DM is transcoded before or after that confirmation lands; (b) a mark read asked before a DM it never saw leaves
-    the chat unread (the newer DM stands, as in the tabs); (c) a /users/me asked while the mark read was in flight
-    does not undo the landed read."""
     unread_row = {"withUser": {"id": FAN}, "hasUnread": True}
-    # (a1) transcoded after the confirmation that counted it: no second +1, no drift on the next one
-    st, _ = d.reconcile(_held(3), 4, T0 + 150, T0 + 160)                     # OF counted the DM made at T0+100
+    st, _ = d.reconcile(_held(3), 4, T0 + 150, T0 + 160)
     st = d.adjust(st, DmIn(FAN, READ, T0 + 100), T0 + 200)
     assert st.n == 4 and st.adj == (), ("counted once", st)
     assert d.prior_of(st, FAN, None) == UNREAD, "the record still says unread"
     st2, actions = d.reconcile(st, 4, T0 + 300, T0 + 310)
     assert st2.n == 4 and actions == (), ("no false drift, no window read", st2, actions)
-    # (a2) transcoded before that confirmation lands, after it was asked: dropped by it
     st = d.adjust(_held(3), DmIn(FAN, READ, T0 + 100), T0 + 160)
     assert st.n == 4, st
     st, actions = d.reconcile(st, 4, T0 + 150, T0 + 170)
     assert st.n == 4 and st.adj == () and actions == (), (st, actions)
-    # (b) mark read asked T0+110, DM at T0+120, the write returns T0+130
     st = _held(1)
     st = d.adjust(st, DmIn(FAN, d.prior_of(st, FAN, unread_row), T0 + 120), T0 + 125)
     st = d.adjust(st, ReadFlip(FAN, 0, T0 + 110, d.prior_of(st, FAN, None)), T0 + 130)
     assert st.n == 1 and d.prior_of(st, FAN, None) == UNREAD, ("the newer DM stands", st)
-    # ... while a read asked after the DM clears it
     st = d.adjust(st, ReadFlip(FAN, 0, T0 + 140, d.prior_of(st, FAN, None)), T0 + 150)
     assert st.n == 0 and d.prior_of(st, FAN, None) == READ, st
-    # (c) mark read asked T0+110, /users/me asked T0+115 (pre-write: 1), the write lands T0+130
     st = d.adjust(_held(1), ReadFlip(FAN, 0, T0 + 110, UNREAD), T0 + 130)
     st, actions = d.reconcile(st, 1, T0 + 115, T0 + 140)
     assert st.n == 0, ("the landed read is kept", st, actions)
     st, actions = d.reconcile(st, 0, T0 + 200, T0 + 210)
     assert (st.n, st.adj) == (0, ()) and actions == (), (st, actions)
-    # a DM older than our later reply changes nothing
     st = d.adjust(_held(3), Reply(FAN, UNREAD), T0 + 200)
     st = d.adjust(st, DmIn(FAN, d.prior_of(st, FAN, None), T0 + 150), T0 + 260)
     assert st.n == 2 and d.prior_of(st, FAN, None) == READ, st
 
 
 def case_reconcile_reapplies_after_ask():
-    st = d.adjust(_held(3), DmIn(FAN, READ), T0 + 100)          # 4
-    st = d.adjust(st, DmIn(FAN2, READ), T0 + 300)               # 5
+    st = d.adjust(_held(3), DmIn(FAN, READ), T0 + 100)
+    st = d.adjust(st, DmIn(FAN2, READ), T0 + 300)
     st2, actions = d.reconcile(st, 4, T0 + 200, T0 + 350)
     assert st2.n == 5 and st2.at == T0 + 200 and actions == (), ("OF's 4 + FAN2's DM", st2, actions)
     st3, actions = d.reconcile(st2, 5, T0 + 400, T0 + 450)
@@ -281,7 +195,7 @@ def case_reconcile_reapplies_after_ask():
 
 
 def case_drift():
-    st = d.adjust(_held(3), DmIn(FAN, READ), T0 + 100)          # held 4 from T0+100
+    st = d.adjust(_held(3), DmIn(FAN, READ), T0 + 100)
     assert d.expected(st, T0 + 50) == 3 and d.expected(st, T0 + 200) == 4
     assert d.expected(State(), T0) is None
     rows = [
@@ -332,7 +246,7 @@ def case_prior_of_order():
 def case_reply_then_mark_read_once():
     st = d.adjust(_held(3), Reply(FAN, d.prior_of(_held(3), FAN, {"withUser": {"id": FAN}, "hasUnread": True})),
                   T0 + 20)
-    st = d.adjust(st, ReadFlip(FAN, 0, T0 + 25, d.prior_of(st, FAN, None)), T0 + 30)   # the automation's mark read
+    st = d.adjust(st, ReadFlip(FAN, 0, T0 + 25, d.prior_of(st, FAN, None)), T0 + 30)
     assert st.n == 2, ("-1 once", st)
 
 
@@ -346,19 +260,17 @@ def case_two_dms_into_one_read_chat():
 
 
 def case_mark_all():
-    st = d.adjust(_held(5), DmIn(FAN2, READ), T0 + 50)              # before the mark all's `at`: read by it
-    st = d.adjust(st, DmIn(FAN, READ), T0 + 200)                    # after it: stays unread
+    st = d.adjust(_held(5), DmIn(FAN2, READ), T0 + 50)
+    st = d.adjust(st, DmIn(FAN, READ), T0 + 200)
     st = d.adjust(st, ReadFlip(None, 0, T0 + 100, UNKNOWN), T0 + 300)
     assert st.n == 1 and d.slack(st) == 0, st
     assert d.prior_of(st, FAN2, None) == READ and d.prior_of(st, FAN, None) == UNREAD, st
     st0 = d.adjust(_held(5), ReadFlip(None, 0, T0 + 100, UNKNOWN), T0 + 300)
     assert st0.n == 0, ("no DM after it: 0", st0)
-    st2, _ = d.reconcile(st, 7, T0 + 80, T0 + 310)                  # asked before the mark all: it re-applies
+    st2, _ = d.reconcile(st, 7, T0 + 80, T0 + 310)
     assert st2.n == 1, st2
     st3 = d.adjust(st, DmIn(FAN2, d.prior_of(st, FAN2, None)), T0 + 400)
     assert st3.n == 2, ("a DM after the mark all moves as usual", st3)
-    # W30-mu #46: a DM made before the mark all's `at` but transcoded after it, for a fan with no record: the mark
-    # all read it; no +1.
     FAN3 = 503
     st4 = d.adjust(st0, DmIn(FAN3, UNKNOWN, T0 + 60), T0 + 350)
     assert st4.n == 0 and d.slack(st4) == 0, ("read by the mark all", st4)
@@ -367,7 +279,7 @@ def case_mark_all():
 
 
 def case_slack():
-    st = d.adjust(_held(3), DmIn(FAN, UNKNOWN), T0 + 100)           # 4, slack 1 (FAN may have been unread)
+    st = d.adjust(_held(3), DmIn(FAN, UNKNOWN), T0 + 100)
     rows = [
         (4, (), "OF agrees"),
         (3, (), "lower within slack: no drift"),
@@ -376,13 +288,13 @@ def case_slack():
     for observed, want, why in rows:
         st2, actions = d.reconcile(st, observed, T0 + 200, T0 + 210)
         assert actions == want and d.slack(st2) == 0, (why, actions, st2)
-    st = d.adjust(st, DmIn(FAN2, UNKNOWN), T0 + 300)                # after the next ask: re-applied, still slack
+    st = d.adjust(st, DmIn(FAN2, UNKNOWN), T0 + 300)
     st2, _ = d.reconcile(st, 4, T0 + 200, T0 + 310)
     assert st2.n == 5 and d.slack(st2) == 1, st2
 
 
 def case_drift_actions():
-    st = d.adjust(_held(3), DmIn(FAN, UNKNOWN), T0 + 100)           # 4, slack 1
+    st = d.adjust(_held(3), DmIn(FAN, UNKNOWN), T0 + 100)
     rows = [
         (4, (), None, "OF agrees: nothing"),
         (3, (), None, "lower within slack: no read, no log"),
@@ -398,7 +310,7 @@ def case_drift_actions():
 def case_one_window_read_per_drift():
     st, actions = d.reconcile(_held(5), 3, T0 + 100, T0 + 110)
     assert WINDOW_READ in actions and st.due == T0 + 100, (actions, st)
-    st2, actions = d.reconcile(st, 1, T0 + 200, T0 + 210)            # a second drift, the first still pending
+    st2, actions = d.reconcile(st, 1, T0 + 200, T0 + 210)
     assert actions == (LOG_DRIFT,) and st2.due == T0 + 200, ("no second ask; due moves to it", actions, st2)
     assert d.read_window(st2, T0 + 50).due == T0 + 200, "a read asked before the drift's confirmation: still due"
     assert d.read_window(st2, T0 + 150).due == T0 + 200, "a read in flight since the first drift does not serve the second"
@@ -407,7 +319,7 @@ def case_one_window_read_per_drift():
     done = d.read_window(st2, T0 + 300)
     assert (done.n, done.at, done.adj, done.rec) == (st2.n, st2.at, st2.adj, st2.rec), "only `due` moves"
     assert d.read_window(_held(5), T0 + 300) == _held(5), "nothing pending: unchanged"
-    st3, actions = d.reconcile(done, 0, T0 + 400, T0 + 410)          # a later read made elsewhere
+    st3, actions = d.reconcile(done, 0, T0 + 400, T0 + 410)
     assert WINDOW_READ in actions and st3.due == T0 + 400, (actions, st3)
     st4 = d.adjust(st2, DmIn(FAN, READ), T0 + 220)
     assert st4.due == T0 + 200, ("a move keeps the drift pending", st4)
@@ -423,7 +335,7 @@ def _r(fan, unread, created=None):
     return row
 
 
-ASK = 1_763_632_800_000                     # 2025-11-20T10:00:00Z
+ASK = 1_763_632_800_000
 BEFORE, AFTER = "2025-11-20T09:59:00+00:00", "2025-11-20T10:00:01Z"
 
 
@@ -617,7 +529,7 @@ def case_amber_one_predicate():
 
 
 def case_ws_confirmation():
-    st = d.adjust(_held(3), DmIn(FAN, UNKNOWN), T0 + 100)           # 4, slack 1
+    st = d.adjust(_held(3), DmIn(FAN, UNKNOWN), T0 + 100)
     for observed in (0, 2, 3, 6):
         st2, actions = d.reconcile(st, observed, T0 + 200, T0 + 210, via="ws")
         assert actions == () and st2.n == observed and st2.due is None, (observed, actions, st2)

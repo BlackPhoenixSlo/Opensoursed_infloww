@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * ScheduledTab — read + cancel queued sends across all accounts.
- *
- * Surfaces what's about to fire (or already overdue) so the operator can
- * cancel before it goes out. Direct + mass sends share the queue; we
- * label each row by recipient count so a 1-fan send vs a 200-fan blast
- * is unambiguous. A table (one row per send, Actions pinned right) with the
- * house empty state; the help line links to Auto Mass for repeating sends
- * (shown only when the role may open it).
- */
 
 import Link from "next/link";
 import { useMemo } from "react";
@@ -31,7 +21,6 @@ import { RefreshButton } from "./RefreshButton";
 
 const AUTO_MASS = "/growth/auto-mass";
 
-/** The list's columns at their widths (px); Actions pinned right, as the Mass messages table pins it. */
 const COLUMNS = [
   { label: "Scheduled for", width: 210 },
   { label: "Creator", width: 160 },
@@ -48,13 +37,10 @@ export default function ScheduledTab() {
   const { rows, isLoading, isFetching, error, queries } = useScheduledMessages(accountIds);
   const cancelM = useCancelScheduled();
   const { ask, modal: confirmModal } = useIfConfirm();
-  // Repeating sends live on My Automations' Auto Mass; its link shows only where the role may open it.
   const autoMass = deniedPage(AUTO_MASS, useGrantedPages()) === null;
 
   const refresh = () => queries.forEach((q) => q.refetch());
 
-  // Account id → nickname for the row label. Tiny lookup so the body
-  // doesn't need to thread `accounts` through every row.
   const accountName = (id?: string) =>
     accounts.find((a) => a.id === id)?.nickname || id || "?";
 
@@ -102,7 +88,6 @@ export default function ScheduledTab() {
               ) : rows.length === 0 ? (
                 <tr>
                   <td colSpan={COLUMNS.length} className="p-0">
-                    {/* EmptyState sticks itself; the cap keeps it centred in the scroller, not the wider table. */}
                     <EmptyState kind="data" size="md" text="Nothing queued." className="max-w-[100cqw] py-16" />
                   </td>
                 </tr>
@@ -143,8 +128,6 @@ function ScheduledRow({
   const groupCount = m.groups?.length ?? 0;
   const directCount = m.userIds?.length ?? 0;
   const isMass = listCount > 0 || groupCount > 0;
-  // Mass audiences fan out to whole lists/groups, so a flat "N targets" is
-  // misleading — name what the blast actually points at instead.
   const massLabel = [
     listCount > 0 && `${listCount} list${listCount === 1 ? "" : "s"}`,
     groupCount > 0 && `${groupCount} group${groupCount === 1 ? "" : "s"}`,

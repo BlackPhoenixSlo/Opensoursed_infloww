@@ -51,7 +51,7 @@ export default function SetupPage() {
   const extInstalled = useExtensionProbe();
   // null: closed; `at` set: opened from a row (or the 2FA link), at that section; `draft` / `linkAnother`: at the
   // sign-in; {} (the header): Creator details first.
-  const [adding, setAdding] = useState<Pick<ComponentProps<typeof AddCreatorModal>, "at" | "draft" | "linkAnother"> | null>(null);
+  const [adding, setAdding] = useState<Pick<ComponentProps<typeof AddCreatorModal>, "at" | "draft" | "linkAnother" | "expectedAccountId"> | null>(null);
   const openAt = useCallback((at: SectionKey) => setAdding({ at }), []);
   return (
     // Full width, as HBLayout is: the old 1152px cap would stop the header rule and the table short (creators-manage#4,
@@ -75,11 +75,12 @@ export default function SetupPage() {
           at={adding.at}
           draft={adding.draft}
           linkAnother={adding.linkAnother}
+          expectedAccountId={adding.expectedAccountId}
         />
       )}
 
       {/* The table draws the content's padding (creators-manage#12) and its footer; our extras sit between them. */}
-      <AccountsTable onLink={(at) => setAdding({ at })} onAdd={(from) => setAdding(from)}>
+      <AccountsTable onLink={(at, expectedAccountId) => setAdding({ at, expectedAccountId })} onAdd={(from) => setAdding(from)}>
         {me?.is_admin && <MirrorFreshnessBanner />}
 
         <p className="md:hidden text-sm text-fg-dim" title={EXTRA_LABEL}>{DESKTOP_ONLY_LINE}</p>

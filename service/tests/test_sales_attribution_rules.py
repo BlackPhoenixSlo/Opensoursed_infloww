@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""Employee reports credit each sale by the Sales Settings rule for its revenue
-kind (docs/spec/phase-04-apply-stored-settings.md, Sales attribution rules;
-ticket 25, stories 41-48 and 52-54), with the welcome-message and OnlyFans-fee
-exclusions applied, and the Timesheet's Recorded earnings credited the same
-way (ticket 26, stories 49-51).
-
-The seam is the Relay over HTTP with real owner sessions from the shared
-two-Agency fixture: `GET /admin/stats/per-employee?by_account=true` over
-messages, transactions and Clock events seeded straight into the temp DB with
-fixed past timestamps. Sales Settings and Time tracking are saved through
-`PUT /admin/settings/{tab}`. Each case seeds its own Creator, so its figures
-are read from that Creator's `per_account` entries alone. Every expected figure
-is a worked example written out by hand. Converters credits the last human
-chatter who messaged the fan within the Agency's window (1 h unless a case
-saves another), so a fixture's chatter message sits that close to its sale
-where the case wants the credit.
-
-Run: ./venv/bin/python service/tests/test_sales_attribution_rules.py   (exit 0 = green)
-"""
 import _harness  # MUST be first — binds a throwaway temp DB before any db import
 
 _harness.bootstrap()
@@ -49,9 +30,8 @@ def _at(hhmm: str, day: str = DAY) -> datetime:
     return datetime.fromisoformat(f"{day}T{hhmm}:00")
 
 
+# init_db (create_all) builds no views: apply the shipped attribution view
 async def _apply_view() -> None:
-    # init_db (create_all) builds no views: apply the shipped attribution view,
-    # as test_timesheet_api.py does.
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "db", "migrations", "versions", "20261027_0100_converters_window.py")
     spec = importlib.util.spec_from_file_location("mig_attr_view", path)
@@ -66,7 +46,6 @@ asyncio.run(_apply_view())
 
 
 def _creator(aid: str, owner: str = "agency_a_owner") -> str:
-    """A Creator of `owner`'s Agency used by one case only."""
     async def _seed():
         async with get_session() as s:
             s.add(Account(id=aid, nickname=f"sa_creator_{aid[-2:]}", color="#aaaaaa"))
@@ -82,8 +61,6 @@ _next_id = iter(range(7_000_001, 7_100_000))
 
 def _message(aid: str, fan: int, sender: int | None, at: datetime, automation_kind: str | None = None,
              mass: bool = False) -> int:
-    """One outbound message on `aid` to `fan` (one fan's copy of a mass message with `mass`); returns its
-    message id."""
     mid = next(_next_id)
 
     async def _seed():
@@ -111,8 +88,6 @@ def _sale(aid: str, kind: str, cents: int, at: datetime, fan: int | None = 1, me
     asyncio.run(_seed())
 
 
-# Backdated to the start (Settings are versioned, roadmap W6 6.4), so the rules
-# credit every fixture sale, as a save did before versioning.
 SINCE_THE_START = {"effective_from": "1970-01-01T00:00:00Z"}
 
 
@@ -138,7 +113,6 @@ def _report(client) -> dict:
 
 
 def _credited(client, aid: str, field: str = "revenue_cents") -> dict:
-    """`{employee_id: cents}` credited on one Creator (None is Unattributed)."""
     out = {}
     for row in _report(client)["employees"]:
         for sub in row.get("per_account", []):
@@ -148,22 +122,12 @@ def _credited(client, aid: str, field: str = "revenue_cents") -> dict:
     return out
 
 
-# ── Converters: today's figures ─────────────────────────────────────────────
 
 C1 = _creator("2000001")
 E1, E2, E3 = _employee("sa_emp_1"), _employee("sa_emp_2"), _employee("sa_emp_3")
 
 
 def _seed_converters() -> None:
-    """On C1, every shape test_ppv_link_attribution's case_view_exactly_once
-    seeds: a PPV unlocked from E1's message an hour before (1000, the window's
-    edge: inside), a tip on E1's message (400), a standalone tip whose fan E2
-    wrote to two days before (500, outside the hour: Unattributed), a
-    standalone tip from a fan nobody wrote to (300), a PPV whose message was
-    never ingested (700), a PPV with no message id at all (650), a tip on a
-    never-ingested message reassigned by hand to E2 (350); plus a PPV on E1's
-    message reassigned by hand to E3 (200) and a standalone tip whose fan E2
-    wrote to, reassigned by hand to E3 (150)."""
     m1 = _message(C1, 11, E1, _at("09:00"))
     m2 = _message(C1, 12, E1, _at("09:30"))
     m3 = _message(C1, 16, E1, _at("09:45"))
@@ -194,10 +158,6 @@ def case_converters_reproduces_the_attribution_views_figures():
 
 
 def case_converters_matches_the_view_per_employee_and_creator():
-    """With both Agencies on Converters, the Master's report equals the view's
-    GROUP BY employee, Creator on every Creator. C5 is left out: it carries the
-    Subscriptions, Streams & Referrals kinds, which the opt-in rule credits
-    and the view does not."""
     _rules(OWNER_A, "converters", "converters")
     _rules(OWNER_B, "converters", "converters")
     report = {}
@@ -239,7 +199,6 @@ def case_time_tracking_off_falls_back_from_shift_to_converters_with_the_line():
     assert _report(OWNER_A)["attribution_fallback"] is None
 
 
-# ── Message sender ──────────────────────────────────────────────────────────
 
 C2 = _creator("2000002")
 _m = _message(C2, 21, E1, _at("08:00"))
@@ -249,24 +208,18 @@ _sale(C2, "ppv_message", 250, _at("11:10"), fan=23, message_id=6_999_998)
 
 
 def case_message_sender_credits_the_linked_sender_and_leaves_an_unlinked_sale_unattributed():
-    """Message sender credits E1, who sent the PPV three hours before it was
-    bought, and nobody for the unlinked PPV or the one whose message never
-    arrived. Converters credits nobody for the PPV: no chatter messaged the
-    fan in the hour before (story 43: the two rules differ)."""
     _rules(OWNER_A, "sender", "converters")
     assert _credited(OWNER_A, C2) == {E1: 1000, None: 850}
     _rules(OWNER_A, "converters", "converters")
     assert _credited(OWNER_A, C2) == {None: 1850}
 
 
-# ── Converters: the last human chatter within the Agency's window ──────────
 
 C4 = _creator("2000004")
 EA, EB = _employee("sa_emp_conv_a"), _employee("sa_emp_conv_b")
 
 
 def _automation_employee() -> int:
-    """The Automation sentinel as employees.get_automation_employee_id finds it."""
     async def _seed():
         async with get_session() as s:
             return (await s.execute(text(
@@ -276,18 +229,13 @@ def _automation_employee() -> int:
 
 
 AUTO = _automation_employee()
-# A PPV EA sent at 09:00, bought at 10:30 after EB chatted at 10:20.
 _sale(C4, "ppv_message", 1000, _at("10:30"), fan=41, message_id=_message(C4, 41, EA, _at("09:00")))
 _message(C4, 41, EB, _at("10:20"))
-# EA chats at 11:00; an automation's send, a mass message and the Automation Employee's send follow; a tip
-# at 11:40 is still EA's.
 _message(C4, 42, EA, _at("11:00"))
 _message(C4, 42, EB, _at("11:10"), automation_kind="reply_mass_funnel")
 _message(C4, 42, EB, _at("11:20"), mass=True)
 _message(C4, 42, AUTO, _at("11:30"))
 _sale(C4, "tip", 300, _at("11:40"), fan=42)
-# The window's two sides: EA's last chat 59 min before one tip, EB's 61 min before another; a post
-# purchase and a post tip 3 h after EB's chat, inside 3 h 30 min only.
 _message(C4, 43, EA, _at("13:00"))
 _sale(C4, "tip", 70, _at("13:59"), fan=43)
 _message(C4, 44, EB, _at("13:00"))
@@ -309,7 +257,6 @@ def case_a_saved_window_moves_the_boundary_for_every_kind():
     assert _credited(OWNER_A, C4) == {EB: 1000 + 80 + 500 + 50, EA: 370}
     _rules(OWNER_A, "converters", "converters", window=60)
     assert _credited(OWNER_A, C4) == {None: 1000 + 300 + 70 + 80 + 550}
-    # A window version saved from 12:00 on: the earlier sales keep the hour, the later ones take 3 h 30 min.
     _rules(OWNER_A, "converters", "converters")
     r = OWNER_A.put("/admin/settings/sales", params={"effective_from": f"{DAY}T12:00:00Z"},
                     json={"attribution": {"messages": "converters", "posts_tips": "converters",
@@ -317,7 +264,7 @@ def case_a_saved_window_moves_the_boundary_for_every_kind():
     assert r.status_code == 200, r.text
     assert _credited(OWNER_A, C4) == {EB: 1000 + 80 + 550, EA: 370}
 
-    async def _forget_noon():  # later than every since-the-start save: it would outlive them
+    async def _forget_noon():
         async with get_session() as s:
             await s.execute(text("DELETE FROM settings_versions WHERE user_id = :u AND tab = 'sales' "
                                  "AND effective_from > :start"), {"u": IDS["agency_a_owner"], "start": _at("00:00")})
@@ -337,17 +284,15 @@ def case_the_window_is_validated_and_saved_through_the_settings_route():
     _rules(OWNER_A, "converters", "converters")
 
 
-# ── Shift schedule ──────────────────────────────────────────────────────────
 
 C3 = _creator("2000003")
 E4, E5, E6, E7 = (_employee(f"sa_emp_{n}") for n in (4, 5, 6, 7))
-_sale(C3, "ppv_message", 1000, _at("11:00"), fan=31, message_id=_message(C3, 31, E1, _at("08:00")))  # E2 alone
-_sale(C3, "ppv_message", 900, _at("13:00"), fan=31, message_id=_message(C3, 31, E1, _at("08:00")))   # nobody
-_sale(C3, "ppv_message", 1000, _at("15:00"), fan=31, message_id=_message(C3, 31, E1, _at("08:00")))  # E4-E6
-_sale(C3, "tip_post", 120, _at("18:00"), fan=32)                     # E7 still clocked in
+_sale(C3, "ppv_message", 1000, _at("11:00"), fan=31, message_id=_message(C3, 31, E1, _at("08:00")))
+_sale(C3, "ppv_message", 900, _at("13:00"), fan=31, message_id=_message(C3, 31, E1, _at("08:00")))
+_sale(C3, "ppv_message", 1000, _at("15:00"), fan=31, message_id=_message(C3, 31, E1, _at("08:00")))
+_sale(C3, "tip_post", 120, _at("18:00"), fan=32)
 _event(E2, _at("10:00"), _at("12:00"), account_id=C3)
-_event(E3, _at("10:00"), _at("12:00"), account_id=C1)  # another Creator: no credit on C3
-# Another Agency's Clock event on C3: not the owning Agency's, so no credit.
+_event(E3, _at("10:00"), _at("12:00"), account_id=C1)
 _event(_employee("sa_emp_c3_other_agency", "agency_b_owner"), _at("10:30"), _at("11:30"),
        owner="agency_b_owner", account_id=C3)
 for _e in (E6, E4, E5):
@@ -363,7 +308,6 @@ def case_shift_schedule_credits_the_clocked_in_employees_and_splits_the_remainde
     assert _report(OWNER_A)["attribution_fallback"] is None
 
 
-# ── Subscriptions opt-in and the manual override ───────────────────────────
 
 C5 = _creator("2000005")
 _event(E1, _at("10:00"), _at("12:00"), account_id=C5)
@@ -376,10 +320,6 @@ _sale(C5, "ppv_message", 400, _at("11:50"), fan=53, message_id=_m, manual=E2)
 
 
 def case_opt_in_off_leaves_subscriptions_out_and_streams_unattributed_and_on_credits_them_by_shift_schedule():
-    """Opt-in off: the subscription (900) and rebill (100) stay out of the
-    report as before, the tip_stream (70) is Unattributed, and E2 keeps its
-    manual subscription (50) and PPV (400). Opt-in on: E1, clocked in on C5,
-    takes 900 + 100 + 70."""
     _rules(OWNER_A, "converters", "converters", opt_in=False)
     assert _credited(OWNER_A, C5) == {None: 70, E2: 450}
     _rules(OWNER_A, "converters", "converters", opt_in=True)
@@ -395,7 +335,6 @@ def case_a_manual_override_wins_over_every_rule():
             assert E3 not in got, (messages, opt_in, got)
 
 
-# ── The Master: each Creator by its own Agency's rules ──────────────────────
 
 CA, CB = _creator("2000006"), _creator("2000007", owner="agency_b_owner")
 EA_SENDER, EA_SHIFT = _employee("sa_emp_a_sender"), _employee("sa_emp_a_shift")
@@ -416,11 +355,9 @@ def case_the_master_sees_each_creator_credited_by_its_own_agencys_rules():
     _rules(OWNER_B, "shift", "shift", time_tracking=True)
     assert _credited(MASTER, CB) == {EB_SHIFT: 800}
     assert _credited(MASTER, CA) == {EA_SHIFT: 800}
-    # Agency A's own report never reads Agency B's Creator.
     assert _credited(OWNER_A, CB) == {}
 
 
-# ── Exclude welcome messages ────────────────────────────────────────────────
 
 C8 = _creator("2000008")
 E8 = _employee("sa_emp_8")
@@ -428,17 +365,11 @@ for _kind, _cents in (("send_welcome", 1000), ("welcome", 200), ("welcome_chatte
                       ("send_followup", 400), (None, 500)):
     _sale(C8, "tip" if _kind == "welcome" else "ppv_message", _cents, _at("12:00"), fan=81,
           message_id=_message(C8, 81, E8, _at("09:00"), automation_kind=_kind))
-# A welcome sale reassigned by hand: the toggle still drops it.
 _sale(C8, "ppv_message", 60, _at("12:05"), fan=82, manual=E2,
       message_id=_message(C8, 82, E8, _at("09:00"), automation_kind="send_welcome"))
 
 
 def case_exclude_welcome_drops_each_welcome_kinds_sales_and_keeps_the_rest():
-    """Under Message sender (the automations' sends credit no one under
-    Converters). Off: E8 keeps 1000 + 200 + 300 + 400 + 500 and E2 its manual
-    60. On: the send_welcome (1000), welcome (200) and
-    welcome_chatter_for_info (300) sales and the manual welcome sale (60) go;
-    the send_followup (400) and the plain message's sale (500) stay."""
     _rules(OWNER_A, "sender", "converters", exclude_welcome=False)
     assert _credited(OWNER_A, C8) == {E8: 2400, E2: 60}
     _rules(OWNER_A, "sender", "converters", exclude_welcome=True)
@@ -446,19 +377,16 @@ def case_exclude_welcome_drops_each_welcome_kinds_sales_and_keeps_the_rest():
     assert _credited(OWNER_A, C8, "ppv_conversions") == {E8: 2}
 
 
-# ── Exclude the 20% OnlyFans fee ────────────────────────────────────────────
 
 C9 = _creator("2000009")
 E9 = _employee("sa_emp_9")
 _sale(C9, "ppv_message", 1000, _at("12:00"), fan=91, net=820,
       message_id=_message(C9, 91, E9, _at("11:30")))
 _sale(C9, "tip", 999, _at("12:05"), fan=92, message_id=_message(C9, 92, E9, _at("11:30")))
-_sale(C9, "tip", 55, _at("12:10"), fan=93)  # nobody wrote to fan 93: Unattributed
+_sale(C9, "tip", 55, _at("12:10"), fan=93)
 
 
 def case_exclude_of_fee_uses_the_stored_net_else_80_percent_rounded_down():
-    """On: the PPV shows its stored net 820 (not 800), the 999 tip with no
-    net shows 799 (799.2 rounded down), the Unattributed 55 tip shows 44."""
     _rules(OWNER_A, "converters", "converters", exclude_of_fee=False)
     assert _credited(OWNER_A, C9) == {E9: 1999, None: 55}
     _rules(OWNER_A, "converters", "converters", exclude_of_fee=True)
@@ -466,7 +394,6 @@ def case_exclude_of_fee_uses_the_stored_net_else_80_percent_rounded_down():
     assert _credited(OWNER_A, C9, "revenue_by_kind") == {E9: {"ppv": 820, "tip": 799}, None: {"ppv": 0, "tip": 44}}
 
 
-# ── The Timesheet's Recorded earnings agree with Employee reports ───────────
 
 C10 = _creator("2000010")
 E10A, E10B = _employee("sa_emp_10a"), _employee("sa_emp_10b")
@@ -477,9 +404,8 @@ _sale(C10, "ppv_message", 999, _at("11:30"), fan=102, net=900,
       message_id=_message(C10, 102, E10A, _at("11:00")))
 _sale(C10, "tip", 500, _at("11:15"), fan=103,
       message_id=_message(C10, 103, E10A, _at("09:00"), automation_kind="send_welcome"))
-_message(C10, 103, E10A, _at("11:00"))  # E10A chats after the welcome: the tip's converter
-_sale(C10, "tip_post", 250, _at("11:45"), fan=104)  # nobody wrote to fan 104
-# Off the clock: E10A clocked out at 12:00.
+_message(C10, 103, E10A, _at("11:00"))
+_sale(C10, "tip_post", 250, _at("11:45"), fan=104)
 _sale(C10, "ppv_message", 700, _at("13:00"), fan=105, message_id=_message(C10, 105, E10A, _at("12:30")))
 
 
@@ -494,10 +420,6 @@ def _per_employee_totals(client) -> dict:
 
 
 def case_the_timesheets_recorded_earnings_equal_the_per_employee_figures_under_the_same_settings():
-    """Shift schedule with both toggles on: E10A takes the 1000 PPV as 800,
-    half of the 999 PPV's stored net 900 (450) and half of the 250 tip_post
-    as 200 (100), 1350 in all; E10B takes 450 + 100 = 550; the welcome tip
-    (500) goes, and the 13:00 PPV has nobody on the clock (Unattributed)."""
     _rules(OWNER_A, messages="shift", posts_tips="shift", exclude_welcome=True, exclude_of_fee=True)
     want = {E10A: 1350, E10B: 550}
     per_employee = _per_employee_totals(OWNER_A)
@@ -509,11 +431,6 @@ def case_the_timesheets_recorded_earnings_equal_the_per_employee_figures_under_t
 
 
 def case_an_off_clock_sale_counts_in_employee_reports_but_not_in_the_timesheet():
-    """The ASSUMPTION at shifts_api.timesheet: under Converters E10A, the
-    last chatter, is credited the 700 PPV sold at 13:00, after her 12:00
-    clock-out, so Employee reports show 2499 + 700 = 3199 while the
-    Timesheet keeps worked time only and shows 2499 (1000 + 999 + 500
-    inside the Clock event); E10B, who sent nothing, takes 0."""
     _rules(OWNER_A, messages="converters", posts_tips="converters")
     assert _per_employee_totals(OWNER_A).get(E10A) == 3199
     timesheet = _timesheet(OWNER_A, "employee")
@@ -522,7 +439,6 @@ def case_an_off_clock_sale_counts_in_employee_reports_but_not_in_the_timesheet()
     assert _timesheet(OWNER_A, "account")[C10] == 2499
 
 
-# ── Read path only ──────────────────────────────────────────────────────────
 
 def _attribution_columns() -> tuple:
     async def _read():
@@ -549,11 +465,7 @@ def case_no_messages_or_transactions_attribution_column_changes():
 
 
 
-# ── The agency-wide clock (w4-a) ────────────────────────────────────────────
 
-# An event on no Creator at 21:00-22:00, an hour no other case sells in, so it
-# changes no other case's figures. EW holds CW in a Shift until 21:45 only, and
-# CW2 not at all.
 CW, CW2, CWB = _creator("2000091"), _creator("2000093"), _creator("2000092", owner="agency_b_owner")
 EW = _employee("sa_emp_wide")
 _seed_shift(_at("21:00"), _at("21:45"), [(EW, CW)])
@@ -565,11 +477,6 @@ for _aid, _fan, _hhmm in ((CW, 91, "21:30"), (CW, 93, "21:50"), (CW2, 94, "21:30
 
 
 def case_shift_schedule_credits_an_agency_wide_clock_event_only_on_the_creator_its_shift_holds_then():
-    """EW, clocked in on no Creator, shares CW's 21:30 sale with E1, clocked
-    in on CW, because EW's Shift holds CW then; E1 alone takes the 21:50 sale,
-    after that Shift ends, and nobody CW2's, a Creator EW holds in no Shift
-    (no dilution across the Agency's Creators). Agency B's agency-wide event
-    never reaches Agency A's Creator, nor EW Agency B's."""
     _rules(OWNER_A, "shift", "shift")
     _rules(OWNER_B, "shift", "shift")
     assert _credited(OWNER_A, CW) == {E1: 1500, EW: 500}

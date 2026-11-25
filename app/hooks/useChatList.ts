@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * useChatList — fetches the inbox chat list, with built-in support for
- * "all models" (Unified Inbox) fan-out.
- *
- * Scope mapping:
- *   • scope.kind === "model" → single call to /api/of/v2/chats with
- *     X-Account-Id pinned to that model.
- *   • scope.kind === "all"   → parallel calls across every account that
- *     has a session. We merge by lastMessage.createdAt, tag each row with
- *     __accountId so the UI can show the colored dot.
- *
- * Polling: a background poll (`headPollDelay`) that re-reads
- * the HEAD PAGE ONLY — see `useHeadPagePoll` below for why, and for what the
- * deeper pages rely on instead. SSE events drive cheaper between-poll patches
- * (Phase B.2); the Refresh button is the full re-walk.
- */
 
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import {
@@ -43,17 +27,8 @@ import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@
 import { usePlatformAccounts } from "./useAccounts";
 import { avatarThumb, mergeOFUserName, ofUserNameKey, type OFUserName } from "./useOFUser";
 
-/** One chat page per Creator: the inbox bundle answers this exact page (lib/screenBundle.ts). */
 const PAGE_SIZE = CHATS_PAGE;
 
-/** The chats query's structural sharing: each row is shared with the previous
- *  row of the same (accountId, fanId), not the one at the same index. A live
- *  message moves its row to the top (useInboxRealtime), shifting every row
- *  above its old place down one; React Query's index-wise sharing would hand
- *  each of those a new object, and the memoized FanRow would re-render all of
- *  them. Here an unchanged row keeps its object wherever it moved, and a page
- *  (or the whole data) whose rows are all unchanged keeps its own. Exported
- *  for tests. */
 export function shareChatPages(prev: unknown, next: unknown): unknown {
   const p = prev as InfiniteData<StampedPage> | undefined;
   const n = next as InfiniteData<StampedPage> | undefined;
@@ -86,32 +61,23 @@ export function shareChatPages(prev: unknown, next: unknown): unknown {
 }
 const POLL_MS = 90_000;
 const HIDDEN_POLL_MS = 5 * 60_000;
-/** Web Push can arrive while idle mode has paused SSE. */
 export const IDLE_POLL_MS = 30_000;
-/** A tab return (visibilitychange + focus fire together) reads the head once. */
 const RETURN_GAP_MS = 5_000;
 
-/** Head-poll cadence. Exported for tests. */
 export function headPollDelay(s: { paused: boolean; hidden: boolean; connected: boolean; idlePoll: boolean }): number | null {
   if (s.paused) return s.idlePoll ? IDLE_POLL_MS : null;
   return s.hidden || s.connected ? HIDDEN_POLL_MS : POLL_MS;
 }
 
-/** OF's own `filter` values for GET /chats (its web app's chats list: `who_tipped` is the "With Tips" tab, `unread_tips`
- *  its "Unread with tips" dropdown filter). Messages Pro sends the first three. */
 export type ChatListFilter = "unread" | "pinned" | "priority" | "who_tipped" | "unread_tips";
-/** OF's `order`: "recent" (Newest First, the default) or "old" (Oldest First). */
 export type ChatListOrder = "recent" | "old";
 
 interface ChatListParams {
   filter?: ChatListFilter | null;
-  /** Custom fan-list id to filter by (e.g. a pinned chat-folder). */
   listId?: string | null;
   query?: string | null;
   limit?: number;
-  /** Default "recent". "old" is also added to the query key (the default leaves the key as it was). */
   order?: ChatListOrder;
-  /** Default true. False: no fetch and no poll (a caller that mounts on pages without a chat list). */
   enabled?: boolean;
 }
 
@@ -123,57 +89,32 @@ interface UserListResp { [id: string]: OFUserMini & {
 
 export function normalizeChats(resp: OFChatsResp, accountId: string): OFChatItem[] {
   const list = resp.list || resp.chats || [];
-  // OF returns `unreadMessagesCount` (number); the rest of the app reads
-  // `hasUnread` (boolean). Derive it here so every consumer — the dot,
-  // filter chips, mark-all-read, SSE handlers — sees a consistent flag.
   return list.map((c) => {
     const cnt =
       (c as OFChatItem & { unreadMessagesCount?: number }).unreadMessagesCount ?? 0;
     return {
       ...c,
       __accountId: accountId,
+      // OF sends a count; the app reads `hasUnread`, derived here so every consumer sees one flag.
       unreadMessagesCount: cnt,
       hasUnread: cnt > 0 || !!c.hasUnread,
     };
   });
 }
 
+// Measured: each 90 s poll re-sent by-ids for every row (13 of an idle open chat's 27 calls/min).
 export const ENRICH_TTL_MS = 10 * 60_000;
 
-/** `ids` whose `["of-user"]` name for `accountId` the enrichment didn't write in the last ENRICH_TTL_MS (its
- *  `enrichedAt`: a notification's seeded name alone still gets named). The cache is the record: an identity
- *  switch that clears it names every fan again. */
 export function unenriched(ids: FanId[], accountId: string, now: number, qc: QueryClient): FanId[] {
   return ids.filter((id) => now - (qc.getQueryData<OFUserName>(ofUserNameKey(accountId, id))?.enrichedAt ?? 0) >= ENRICH_TTL_MS);
 }
 
-/** OF's /chats only returns `{withUser: {id, _view}}`. We enrich names/
- *  avatars in two passes:
- *
- *  (1) **Local SQLite first.** One cheap `/admin/fans/{aid}/by-ids` call
- *      against our `fans` table — the WS transcoder writes names+avatars
- *      whenever a message lands, so any fan the model has ever talked to
- *      is already there. This pass is INSTANT and pays zero upstream cost.
- *
- *  (2) **Fill the gaps from OF.** Only ids we have no local row for hit
- *      `/users/list`, in chunks of 50 (OF's hard limit). The first chunk
- *      runs eagerly so visible-but-unknown fans get a name fast; the
- *      rest are awaited sequentially to avoid the 8-parallel storm that
- *      was throttling the vault picker. Every OF call carries
- *      `priority: "background"` so a user-initiated fetch (vault open,
- *      chat click) jumps the queue ahead via the relay's lane semaphore.
- *
- *  Profiles land in the per-fan `["of-user", aid, fid]` query cache. The
- *  ChatList row observes that cache, so even when chats refetches drop a
- *  slim version of the row, the rail label keeps the enriched name. */
 export async function enrichWithUsers(
   chats: OFChatItem[],
   accountId: string,
   qc: QueryClient,
 ): Promise<OFChatItem[]> {
   if (chats.length === 0) return chats;
-  // A fan named in the last ENRICH_TTL_MS keeps its cached profile: each 90 s list poll re-sent by-ids for every
-  // row (measured: by-ids 13 of an idle open chat's 27 calls/min).
   const now = Date.now();
   const ids = unenriched(Array.from(new Set(chats.map((c) => c.withUser.id))).filter(Boolean), accountId, now, qc);
   if (ids.length === 0) return chats;
@@ -190,7 +131,6 @@ export async function enrichWithUsers(
     notice?: string | null;
   }>();
 
-  // ── Pass 1: local SQLite (zero upstream) ────────────────────────────
   try {
     const qs = new URLSearchParams();
     qs.set("ids", ids.join(","));
@@ -204,14 +144,8 @@ export async function enrichWithUsers(
       }>;
     }>(`/admin/fans/${accountId}/by-ids?${qs.toString()}`);
     for (const [k, f] of Object.entries(local.fans || {})) {
-      // The KEY as sent, not `Number(k)`. Truncating it here keyed the map by
-      // a rounded snowflake while `byId.has(...)` below looks it up with the
-      // untruncated wire id — so on Fansly pass-1 enrichment never hit and
-      // every fan fell through to the slower per-chunk OF fetch.
       const nid = fanIdFromParam(k);
       if (nid == null) continue;
-      // Treat a row as "useful" only if it has at least a display name.
-      // A bare row with just an id wouldn't save the OF round-trip.
       if (!f.name && !f.username) continue;
       const profile = {
         id: nid,
@@ -231,11 +165,9 @@ export async function enrichWithUsers(
       }));
     }
   } catch (err) {
-    // Local lookup failing isn't fatal — we'll just hit OF for everything.
     console.warn("[chats] local fans/by-ids failed", err);
   }
 
-  // ── Pass 2: fill gaps from OF (background priority, sequential) ─────
   const missing = ids.filter((id) => !byId.has(id));
   if (missing.length > 0) {
     const chunks: FanId[][] = [];
@@ -258,6 +190,7 @@ export async function enrichWithUsers(
             name: u.name,
             username: u.username,
             avatar: avatarThumb(u),
+            // `isActive` on /users/list is exists/not banned, not live presence; OF exposes none here.
             isActive: u.isActive,
             lastSeen: u.lastSeen ?? null,
             customNickname: u.customNickname ?? null,
@@ -277,14 +210,10 @@ export async function enrichWithUsers(
           }));
         }
       } catch (err) {
-        // One chunk failing shouldn't blank the rest of the inbox.
         console.warn("[chats] enrich users/list failed", err);
       }
     };
 
-    // First chunk eagerly (so the visible top of the list lands fast);
-    // the rest awaited sequentially so we never pile more than one
-    // background /users/list onto the relay's per-account lane at a time.
     await fetchChunk(chunks[0]);
     for (let i = 1; i < chunks.length; i++) {
       // eslint-disable-next-line no-await-in-loop
@@ -295,28 +224,17 @@ export async function enrichWithUsers(
   return chats.map((c) => {
     const u = byId.get(c.withUser.id);
     if (!u) return c;
-    // Note: `isActive` on /users/list is "account exists/not banned",
-    // NOT live online presence. OF doesn't expose presence on this path,
-    // so we don't pretend — `isOnline` stays falsy unless OF gives it.
     return { ...c, withUser: { ...c.withUser, ...u } };
   });
 }
 
 
-/** This page load. A page read from OF carries it; one restored from disk
- *  (this tab's earlier load, or another tab's) carries another or none. */
 const SESSION = Math.random().toString(36).slice(2);
 
-/** The scope's cached Unread list (`key`) as an `UnreadView`, this page
- *  load's reads only (lib/chatsCache completeUnreadView). A page kept by
- *  `shareChatPages` keeps its older stamp, which only makes the read look
- *  older than it was. */
 export function cachedUnreadView(qc: QueryClient, key: QueryKey): UnreadView | null {
   return completeUnreadView(qc.getQueryData(key), SESSION);
 }
 
-/** A chats cache's data, re-rendering when that entry changes (a live patch, a read): a cache read with no observer
- *  of its own, so it neither fetches nor replaces the infinite query's options (a `useQuery` on its key would). */
 export function useCachedChatPages(key: QueryKey): InfiniteData<StampedPage> | undefined {
   const qc = useQueryClient();
   const hash = hashKey(key);
@@ -327,10 +245,6 @@ export function useCachedChatPages(key: QueryKey): InfiniteData<StampedPage> | u
   return useSyncExternalStore(subscribe, get, get);
 }
 
-/** Paint-attribution key for one list view. Exported so ChatList and
- *  fetchPage can't drift on the format. Deliberately coarser than the query
- *  key: `limit` and the unified-scope account set don't change which rail
- *  the user is looking at, and a re-key mid-fetch would strand the op. */
 export function listPaintKey(
   scope: ReturnType<typeof useScope>["scope"],
   filter: ChatListParams["filter"],
@@ -358,20 +272,11 @@ async function fetchPage(
   query: ChatListParams["query"],
   limit: number,
   qc: QueryClient,
-  // Named rather than positional. At eight parameters a trailing
-  // `..., qc, false, "background")` told the reader nothing about which knob
-  // was which — and the prefetch call site already reads
-  // `scope, [], 0, null, null, null, limit, qc`.
-  //
-  // `priority` is explicit, never ambient: the relay's `_current_priority`
-  // defaults to 'user' outside a request context, so an untagged call silently
-  // eats one of the per-account lane's reserved user slots. Only a click waits
-  // on 'user'; the 90s head poll and the hover prefetch are 'background'.
+  // `priority` is explicit, never ambient: untagged calls default to 'user' relay-side and eat a reserved per-account user slot.
   { refresh = false, priority = "user", order = "recent", signal }: {
     refresh?: boolean;
     priority?: "user" | "background";
     order?: ChatListOrder;
-    /** Aborts the page's relay calls (a superseded search; see useChatList). */
     signal?: AbortSignal;
   } = {},
 ): Promise<StampedPage> {
@@ -379,30 +284,19 @@ async function fetchPage(
   qs.set("limit", String(limit));
   qs.set("offset", String(offset));
   qs.set("order", order);
-  // Oldest First lists the oldest last message first, as OF's order=old does.
   const sort = order === "old" ? (a: OFChatItem, b: OFChatItem) => compareChats(b, a) : compareChats;
   if (filter) qs.set("filter", filter);
   if (listId) qs.set("list_id", listId);
   if (query) qs.set("query", query);
   const path = `/api/of/v2/chats?${qs.toString()}`;
-  // On the Relay's clock: held against an event's `at` (lib/chatsCache). `askedSeq` orders it among live writes.
   const stamp = { session: SESSION, askedAt: relayNow(), askedSeq: localSeq(), ...(relayOffsetKnown() ? {} : { askedAtGuess: true as const }) };
 
-  // Per-page perf op. offset=0 is "load messages" / first paint; offset>0
-  // is "load next N messages" via infinite scroll. We log filter/listId/
-  // query so a slow filter switch is identifiable.
   const opId = perfOpId("chat.list");
   perfLog(opId, "chat.list", "requested", {
     scope: scope.kind, offset, limit, filter, listId, query,
     phase: offset === 0 ? "initial" : "page",
     accountCount: scope.kind === "all" ? accounts.length : 1,
   });
-  // Only a user-facing first page registers for a `painted` stamp — later
-  // offsets append below the fold, and the background callers that reuse this
-  // function (the 90s head poll, the roster hover-prefetch) must not: their
-  // splice may commit nothing, and a dangling registration would attribute
-  // whatever commit happens NEXT (an SSE bump, minutes later) to their op id.
-  // ChatList emits the matching `painted` when rows reach the DOM.
   if (offset === 0 && priority === "user") {
     perfPaintPending(listPaintKey(scope, filter, listId, query), opId);
   }
@@ -421,12 +315,6 @@ async function fetchPage(
     }
   }
 
-  // Unified: each account independently paginates at this offset. We treat
-  // hasMore as true if ANY account reported hasMore — that's the safe choice
-  // since we want the user to be able to fetch more from the accounts that
-  // still have data.
-  // The opened Creator's page is the user's; every other Creator's waits in the background queue
-  // (lib/relaySchedule), so a click never sits behind twelve Creators' lists.
   const focus = relayFocus();
   const results = await Promise.allSettled(
     accounts.map(async (acc) => {
@@ -436,7 +324,6 @@ async function fetchPage(
       return readChatPage(r, acc.id, qc);
     }),
   );
-  // A superseded search: every account's call was aborted, not failed.
   signal?.throwIfAborted();
   const merged: OFChatItem[] = [];
   let scanned = 0;
@@ -462,15 +349,6 @@ async function fetchPage(
   };
 }
 
-/**
- * prefetchModelChatList — warm ONE model's inbox chat list into the query cache
- * BEFORE the user swaps to it (hover / click prewarm), so opening it paints from
- * cache instead of a spinner. Prefetches only page 0 of the default (no-filter)
- * view — the exact key `useChatList` mounts with on a plain model swap — and is a
- * no-op when that cache is still fresh (respects the same 30s staleTime). Any
- * other active filter/list re-keys the query, so the prefetch simply misses;
- * it's best-effort and never throws (prefetchInfiniteQuery swallows errors).
- */
 export function prefetchModelChatList(
   qc: QueryClient,
   accountId: string,
@@ -487,10 +365,7 @@ export function prefetchModelChatList(
         scope, [], (pageParam as number) ?? 0, null, null, null, limit, qc,
         { priority: "background" },
       ),
-    // MUST mirror useChatList's infinite-query config: this prefetch shares the
-    // SAME query key as the live list, so an options mismatch (a missing
-    // getNextPageParam) corrupts that query and the list fails to load with
-    // "options.getNextPageParam is not a function". React Query v5 requires it.
+    // MUST mirror useChatList's infinite-query config: same key, a missing getNextPageParam fails the list to load.
     getNextPageParam: (lastPage: StampedPage, allPages: StampedPage[]) =>
       lastPage.hasMore ? allPages.length * limit : undefined,
     staleTime: 30_000,
@@ -498,50 +373,7 @@ export function prefetchModelChatList(
   });
 }
 
-/**
- * useHeadPagePoll — the background refresh for the inbox list, scoped to PAGE 0.
- *
- * **Why not `refetchInterval`.** On an infinite query React Query re-walks
- * EVERY loaded page on an interval refetch, sequentially — and each page here
- * is itself the multi-account fan-out gated by the slowest account. A user
- * parked on page 5 paid five full fan-outs every 90s to re-read rows that had
- * not moved; roughly 27% of all inbox list traffic was that redundant re-read.
- * (Background waste and lane pressure — it was never the p99 tail.)
- *
- * **What replaces it.** Fetch offset 0 — the *same* per-account offset-0 fetch
- * page 0 was born from, NOT "the first N of the merged list", which is not a
- * stable cursor in unified scope where every account paginates independently —
- * and splice it over page 0, leaving pages 1..n exactly as they were.
- *
- * **Why deeper pages are left alone instead of de-duped against the fresh head.**
- *   • `getNextPageParam` derives the next offset from `allPages.length * limit`,
- *     so the page COUNT is the cursor. Stripping a row that got promoted into
- *     the head page would punch a hole in a deep page while the server's own
- *     offsets stay put, and the next `fetchNextPage` would skip a server row.
- *   • `useChatList`'s flatten step already de-dupes by (accountId, fanId) and
- *     walks page 0 first, so the FRESH copy renders and the stale deep copy is
- *     invisible. This is exactly how `useInboxRealtime`'s bump-to-top has always
- *     worked: it prepends to page 0 and leaves the old copy where it sits — and
- *     it still rewrites all pages from SSE, so deep rows keep moving without
- *     this poll.
- *
- * **Known, bounded gap.** A row displaced OFF the fresh head page (something
- * below it got a new message) now sits at an offset the stale page 1 predates,
- * so it is invisible until the next `loadMore`, SSE bump, or Refresh. That is
- * precisely why `refresh()` stays a FULL re-walk: it is the user's recovery path.
- *
- * **A write during its read.** A read flip, a reply or a live message landing while the head is out is
- * journaled (lib/chatsCache `patchChatCaches`) and re-applied to that head at its commit (`commitChatPages`): the
- * head lands whatever else moved meanwhile, its other rows refreshed. A page 0 asked after the head (a manual
- * Refresh started while it was out; `askedSeq`) stands: the older head is dropped, the next tick reads again.
- *
- * **The poll is silent.** Splicing via `setQueryData` never flips the query's
- * `fetchStatus`, and ChatList drives the Refresh button's spinner + disabled
- * state and the row count off `isFetching` — so the background poll no longer
- * spins and disables that button every 90s. The one tick that still goes
- * through a real refetch is a key with NO pages (cold or errored), where a
- * spinner and an error state are exactly what should be showing.
- */
+// Head page only, not refetchInterval: that re-walks every loaded page (a multi-account fan-out each), ~27% of inbox list traffic.
 function useHeadPagePoll(args: {
   enabled: boolean;
   queryKey: QueryKey;
@@ -552,9 +384,6 @@ function useHeadPagePoll(args: {
   latest.current = args;
 
   const { enabled, queryKey } = args;
-  // React Query's own key hash — the same function the cache uses to decide
-  // which entry a key addresses, so the timer re-arms on exactly the changes
-  // that move it to a different cache entry.
   const keyHash = hashKey(queryKey);
 
   useEffect(() => {
@@ -569,16 +398,8 @@ function useHeadPagePoll(args: {
     const tick = async (): Promise<void> => {
       const { queryKey: key, fetchHead } = latest.current;
       const state = qc.getQueryState(key);
-      // A fetch is already running on this key (manual Refresh, filter switch,
-      // an in-flight loadMore) — never race a write against it.
       if (state && state.fetchStatus !== "idle") return;
       if (!(state?.data as InfiniteData<StampedPage> | undefined)?.pages?.length) {
-        // No pages at all: this key is cold or its initial fetch errored (with
-        // `placeholderData` the list can still be rendering the PREVIOUS
-        // key's rows meanwhile: same Creator, or All Models under any
-        // session set). There is nothing to splice into,
-        // and a retry is exactly the job a refetch owns — including the error
-        // state, which on a list with no rows is the right thing to show.
         void qc.refetchQueries({ queryKey: key, exact: true });
         return;
       }
@@ -586,18 +407,11 @@ function useHeadPagePoll(args: {
         const head = await fetchHead();
         if (cancelled) return;
         qc.setQueryData<InfiniteData<StampedPage>>(key, (prev) => {
-          // `prev` is whatever the cache holds NOW, which is not necessarily
-          // what we checked before the await: the entry can have been reset or
-          // collected meanwhile, and one page is not a list to splice into.
           if (!prev?.pages?.length) return prev;
-          // A page 0 asked after this head (a manual Refresh that started while it was out) is newer: it stands.
           if ((prev.pages[0].askedSeq ?? -Infinity) > (head.askedSeq ?? -Infinity)) return prev;
           return { ...prev, pages: [head, ...prev.pages.slice(1)] };
         });
       } catch {
-        // A poll the user never asked for must not paint the list red: the
-        // cached pages stand and the next tick (or Refresh) tries again. Not
-        // swallowed silently — `fetchPage` perfError'd on its way out.
       }
     };
 
@@ -626,8 +440,6 @@ function useHeadPagePoll(args: {
       dueAt = at;
       timer = setTimeout(run, ms);
     };
-    // Schedule-AFTER-settle, never a bare interval: at most one tick is ever in
-    // flight, so a slow fan-out can't stack ticks on top of itself.
     const run = () => {
       if (inFlight) return;
       if (timer) clearTimeout(timer);
@@ -644,7 +456,6 @@ function useHeadPagePoll(args: {
     };
 
     schedule();
-    // Idle mode restores focus before resuming SSE.
     const offFocus = focusManager.subscribe(() => queueMicrotask(() => schedule()));
     document.addEventListener("visibilitychange", onReturn);
     window.addEventListener("focus", onReturn);
@@ -655,21 +466,13 @@ function useHeadPagePoll(args: {
       document.removeEventListener("visibilitychange", onReturn);
       window.removeEventListener("focus", onReturn);
     };
-    // `keyHash` stands in for `queryKey` (read through `latest`): re-arm the
-    // timer when the cache it writes to changes, not on every render.
   }, [enabled, keyHash, qc]);
 }
 
-/** The query key's account part: the Creator in model scope; in All Models
- *  the sorted set of ids it fans out across (cache invalidation depends on
- *  the set). FanList keys its paging budget and its All-filter read on it. */
 export function chatListAccountKey(scope: Scope, accounts: ReadonlyArray<{ id: string }>): string {
   return scope.kind === "model" ? scope.accountId : accounts.map((a) => a.id).sort().join(",");
 }
 
-/** A chat list's query key: `["chats", scopeKind, accountKey, filter, listId,
- *  query, limit]`, plus `order` only when not "recent" (every older key stays
- *  as it was). The one builder: FanList reads the All and Unread lists' caches by it. */
 export function chatsQueryKey(
   scopeKind: Scope["kind"], accountKey: string,
   { filter = null, listId = null, query = null, limit = PAGE_SIZE, order = "recent" }: Omit<ChatListParams, "enabled"> = {},
@@ -680,22 +483,16 @@ export function chatsQueryKey(
 
 export function useChatList(params: ChatListParams = {}) {
   const { scope } = useScope();
-  // "all" scope fans out across every session-bearing account.
   const accounts = usePlatformAccounts();
   const qc = useQueryClient();
   const { filter, listId, query, limit = PAGE_SIZE, order = "recent", enabled: wanted = true } = params;
 
   const accountKey = chatListAccountKey(scope, accounts);
 
-  // The key's scope prefix; `placeholderData` compares against it.
   const scopeKey = ["chats", scope.kind, accountKey] as const;
 
   const queryKey = chatsQueryKey(scope.kind, accountKey, { filter, listId, query, limit, order });
 
-  // One-shot flag set by `refresh()` so the next queryFn invocation
-  // forwards `?refresh=1` to the relay, bypassing the Stage C backend
-  // cache (`list_chats` namespace). Cleared after consumption so an
-  // unrelated background poll doesn't accidentally bypass the cache.
   const refreshOnceRef = useRef(false);
 
   const enabled =
@@ -705,44 +502,20 @@ export function useChatList(params: ChatListParams = {}) {
     queryKey,
     enabled,
     initialPageParam: 0,
+    // MUST mirror prefetchModelChatList's config: both share one key, and a missing getNextPageParam corrupts the query.
     getNextPageParam: (lastPage, allPages) =>
       lastPage.hasMore ? allPages.length * limit : undefined,
     queryFn: (ctx) => {
-      // Bypass is scoped to PAGE 0 of the refetch triggered by refresh() (the
-      // flag lives until the refetch settles; queryFn no longer clears it on
-      // first consumption). Page 0 forced-fresh rewarms the shared server
-      // window (badge + list) and re-syncs the visible top of the inbox;
-      // deeper pages ride the relay cache — the server-side invalidations
-      // (WS message, reply, mark-read) already dropped them if anything
-      // actually changed, so a stale warm hit means "nothing happened", while
-      // forcing every loaded page × every account through a live ~3-call OF
-      // assemble turned one deep-scrolled unified Refresh into an OF storm.
       const offset = (ctx.pageParam as number) ?? 0;
       const bypass = refreshOnceRef.current && offset === 0;
-      // A search hands React Query its signal: once the box holds another
-      // search, nothing observes this key and React Query aborts its calls
-      // (each a live OF search, seconds long) instead of letting them land in a
-      // cache nobody reads. A list without a search is not aborted: a chip,
-      // folder or Creator switched away from is often switched back to, and its
-      // pages stay. Only a search may READ `ctx.signal`: React Query cancels and
-      // rolls back a fetch whose signal was read once its key loses its last
-      // observer, so a next page in flight across a switch would be dropped and
-      // the list come back one page short.
       return fetchPage(
         scope, accounts, offset, filter, listId, query, limit, qc,
+        // Only a search may read ctx.signal: React Query cancels a fetch whose signal was read once its key loses its last observer, dropping a next page in flight.
         { refresh: bypass, order, signal: query ? ctx.signal : undefined },
       );
     },
     staleTime: 30_000,
-    // NO refetchInterval — it would re-walk every loaded page. The background
-    // refresh is `useHeadPagePoll` below (page 0 only); read its comment before
-    // reinstating anything here.
     refetchOnWindowFocus: false,
-    // The previous key's rows stand in within one scope kind (a chip, folder
-    // or search switch, or an All Models session set changing as sessions
-    // drop and return — its paging still resets in fanListPaging). A new
-    // Creator shows none of the old one's rows: the list is pending (FanList
-    // draws its local seed).
     placeholderData: (prev, prevQuery) => {
       const prevKey = prevQuery?.queryKey;
       const sameScope =
@@ -754,11 +527,6 @@ export function useChatList(params: ChatListParams = {}) {
     structuralSharing: commitChatPages(qc, queryKey, shareChatPages),
   });
 
-  // Deliberately NOT memoised: `useHeadPagePoll` re-reads its args every render,
-  // so a fresh closure each render is how the timer sees the current fan-out
-  // set without re-arming. `refresh=false` — the poll rides the relay's Stage C
-  // cache; forcing every background tick through a live OF assemble is the
-  // storm we're avoiding.
   const fetchHead = () =>
     fetchPage(
       scope, accounts, 0, filter, listId, query, limit, qc,
@@ -767,10 +535,6 @@ export function useChatList(params: ChatListParams = {}) {
 
   useHeadPagePoll({ enabled, queryKey, fetchHead });
 
-  // Flatten + de-dupe by (accountId, fanId). The realtime SSE handler also
-  // moves rows around, so duplication can creep in across pages. Memoized on
-  // the pages, so a render with no new data hands FanList the same array and
-  // its derived lists (chips, sort) are not rebuilt.
   const rows = useMemo(() => {
     const out: OFChatItem[] = [];
     const seen = new Set<string>();
@@ -785,17 +549,8 @@ export function useChatList(params: ChatListParams = {}) {
     return out;
   }, [q.data]);
 
-  // Page 0's stamp, not `isFetchedAfterMount`: a live event's setQueryData
-  // flips that too, so one landing before the mount fetch would vouch for a
-  // disk-restored list. A live patch keeps the page it patches (and its stamp);
-  // a failed refetch leaves the old pages.
   const fetchedLive = enabled && !q.isPlaceholderData && q.data?.pages[0]?.session === SESSION;
 
-  // Imperative "force-fresh" hook for the Refresh-inbox button. Sets the
-  // bypass flag for the WHOLE refetch (every loaded page forwards ?refresh=1
-  // so Stage C's `list_chats` cache is bypassed), cleared when it settles.
-  // An unrelated background poll landing inside that window also bypasses —
-  // harmless: it just re-reads OF once more.
   const refresh = useCallback(() => {
     refreshOnceRef.current = true;
     return q.refetch().finally(() => {
@@ -805,18 +560,13 @@ export function useChatList(params: ChatListParams = {}) {
 
   return {
     ...q,
-    // Mirror the previous useQuery surface so the component doesn't have
-    // to know we switched to infinite mode.
     data: rows,
-    /** Each fetched page's rows, in page order (before the flatten's de-dupe). */
     pages: q.data?.pages.map((p) => p.rows),
     hasMore: !!q.hasNextPage,
-    // IndexedDB can restore chats pages written before the scan count was stamped.
     scanned: q.data?.pages.reduce((sum, p) => sum + (p.scanned ?? p.rows.length), 0) ?? 0,
     loadMore: () => q.fetchNextPage(),
     isFetchingMore: q.isFetchingNextPage,
     refresh,
-    /** The rows were read from OF in this page load, not only restored from disk. */
     fetchedLive,
   };
 }

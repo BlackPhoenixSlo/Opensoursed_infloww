@@ -1,28 +1,12 @@
-/**
- * funnelMediaReducer — FunnelMediaPane's draft: the opener media, each PPV
- * step's media + free-teaser count, which slot the vault picker edits, and
- * the "Saved" flag.
- *
- *   • `hydrate` seeds ONCE from the saved binding; a later refetch (e.g. the
- *     save's own invalidate) never clobbers the operator's edits.
- *   • Every edit bumps `rev` and clears `done`. `saveOk` carries the `rev` the
- *     save was built from, so an edit made while the save was in flight keeps
- *     "Saved" off (that edit is not on the server).
- */
-
 import type { FunnelAccountMedia, FunnelMediaSave, FunnelStepMedia } from "@/hooks/useFunnels";
 
-/** Local draft for one PPV step's media (keyed by step number). */
 export interface StepDraft {
   ids: number[];
-  /** How many of the leading picked media go out FREE as the teaser. */
   previewCount: number;
 }
 
-/** A media slot: the opener or a PPV step number. */
 export type Slot = "opener" | number;
 
-/** The slot the vault picker edits, or null (picker closed). */
 export type PickerTarget = Slot | null;
 
 export interface FunnelMediaState {
@@ -31,7 +15,6 @@ export interface FunnelMediaState {
   pickerFor: PickerTarget;
   seeded: boolean;
   done: boolean;
-  /** Edit counter; a save's `saveOk` only sets `done` if no edit came after it. */
   rev: number;
 }
 
@@ -59,15 +42,11 @@ export const initialFunnelMedia: FunnelMediaState = {
 
 const EMPTY: StepDraft = { ids: [], previewCount: 0 };
 
-/** A step draft with its teaser clamped to `0 ≤ previewCount ≤ ids.length` —
- *  the one place that invariant is enforced (buildPayload re-clamps defensively). */
 export function stepDraft(ids: number[], previewCount: number): StepDraft {
   return { ids, previewCount: Math.max(0, Math.min(previewCount, ids.length)) };
 }
 
-/** Move the item at `i` one slot left (-1) or right (+1), preserving the rest.
- *  Order matters: the send goes out in this order and the first `previewCount`
- *  are the FREE teaser, so reordering picks which images are free. */
+// Order matters: the first previewCount ids go out FREE as the teaser.
 function reorder(ids: number[], i: number, dir: -1 | 1): number[] {
   const j = i + dir;
   if (j < 0 || j >= ids.length) return ids;
@@ -76,7 +55,6 @@ function reorder(ids: number[], i: number, dir: -1 | 1): number[] {
   return next;
 }
 
-/** An edit: clears "Saved" and bumps the revision. */
 function edited(s: FunnelMediaState, patch: Partial<FunnelMediaState>): FunnelMediaState {
   return { ...s, ...patch, done: false, rev: s.rev + 1 };
 }
@@ -90,6 +68,7 @@ function patchStep(s: FunnelMediaState, stepNo: number, patch: Partial<StepDraft
 export function funnelMediaReducer(s: FunnelMediaState, a: FunnelMediaAction): FunnelMediaState {
   switch (a.type) {
     case "hydrate": {
+      // Seed once: a later refetch (the save's own invalidate) must not clobber edits.
       if (s.seeded) return s;
       const steps: Record<string, StepDraft> = {};
       for (const stepNo of a.stepNos) {
@@ -147,16 +126,12 @@ export function funnelMediaReducer(s: FunnelMediaState, a: FunnelMediaAction): F
   }
 }
 
-/** The ids the open picker edits (pre-selected in it). */
 export function pickerIds(s: FunnelMediaState): number[] {
   if (s.pickerFor === "opener") return s.openerIds;
   if (s.pickerFor != null) return s.steps[String(s.pickerFor)]?.ids ?? [];
   return [];
 }
 
-/** The PUT body: the opener + each PPV step (in `stepNos` order) that has media;
- *  an empty step is omitted (the server drops it too). Previews = the leading
- *  `previewCount` ids. */
 export function buildPayload(
   openerIds: number[],
   steps: Record<string, StepDraft>,

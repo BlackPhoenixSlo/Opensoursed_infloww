@@ -1,41 +1,3 @@
-"""Creator badges scenario 1 (docs/spec/creator-badges/phase-0E-slop-and-fake-of-realism.md, stories 14, 15, 25):
-under a fan DM storm, headless Creator tabs show the Red circle within 2 s of the fake's truth, the operator's reads
-and sends stay within 10 % of a baseline, and OF's raw Unread counter never reaches anything the app renders.
-
-World: `flat_agency` with the tier's Creators (TIERS: small 5 Creators x 3 tabs each, 15 streams; `--set tier=full`
-50 x 30, 1500, run alone), each a captured session (the relay's REAL OFClient against lib/of_wire.py, `OF_WIRE`)
-whose OF is lib/badge_wire.py (counter frames, DM frames, Creator echoes at the measured delays; a first-page GET
-marks read).
-Each Creator's OF chat list: CHATS of its Fans, ONLY_FRIENDS unread `only_friends` chats and RESTRICTED unread
-registry-restricted chats (OF's restrict + the Relay's `skip_list` row `of_restricted`): OF counts them, the Red
-circle does not, and nothing touches them, so raw = red + GAP throughout; one Muted unread chat; PLAIN plain chats,
-PLAIN_UNREAD of them unread. Red moves only within [0, PLAIN] and GAP > PLAIN (asserted at seed), so no Red value,
-however stale, equals raw at any instant.
-Every Creator's Live connection up (`/__slop/pump-supervise`).
-
-Actors: the tier's headless tabs, `tabs` per Creator (actors/badge_tab.py: the owner's session, `/events?lease=1`, a
-View lease on its one Creator, roster-counts every 60 s, an accounts refetch on a behind ping); the tier's operators
-(each loops on a random plain chat: thread open, mark read or reply through the relay's /api/of/ routes, OP_THINK_S
-apart); the DM driver (DMS_PER_MIN per Creator to plain chats, open loop on fixed deadlines, `BadgeWire.push_dm`).
-One Chromium tab on /messages-pro (UI runs): screenshots `badge-storm-trigger` (storm start) and
-`badge-storm-settled` (end), its Creator tabs' titles sampled every DOM_EVERY_S.
-
-Phases: baseline (counter frames off), storm (on), both at the same offered DM rate; then SETTLE_S with nothing
-moving. A truth sampler reads `truth_red` / `raw_counter` every SAMPLE_S.
-
-Checks: RED_P95_UNDER_2S / RED_MAX_UNDER_5S (lib/badge_metrics `lag` per tab and Creator, on storm truth changes
-after the Creator's first storm counter frame, to the settle end); FINAL_EQUALS_TRUTH (every tab's last Red circle =
-`truth_red` after the settle, never `raw_counter`); OPERATOR_P95_WITHIN_10PCT (storm p95 <= 1.1 x baseline p95;
-fewer than OPERATOR_MIN_N samples in a phase or a DM driver below DRIVER_MIN of its offered rate is INFRA, never
-PASS); RAW_COUNTER_NEVER_RENDERED (`raw_leak` over every served slot `n`, roster-counts `unread`, SSE slot and tab
-title, each judged at its own time: the slot's `at`, roster-counts' `as_of`, the title's sample).
-Metric: Attribution reads (`group_reads` over the fake's `filter=unread` calls). Every check `ctx.skip`s while
-Phase B's slot (`values.unread_total` with `v` and `grey`) is absent.
-
-Bypasses (declared): OF at its wire (lib/badge_wire.py on lib/of_wire.py); 15 or 1500 tabs (per Creator) are API tabs (one Chromium
-tab: the machine gate); the tab's store, behind decision and display rule run in node (lib/badge_tab_ts.mjs: the
-app's creatorFreshnessReducer, badgeBehind, redCircle).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -72,7 +34,8 @@ OPERATOR_MARGIN = 0.10
 OPERATOR_MIN_N = 200
 DRIVER_MIN = 0.9
 DMS_PER_MIN = 20.0
-CHATS = 20            # inside roster-counts' 25-row window: every Restricted unread is folded
+# inside roster-counts' 25-row window: every Restricted unread is folded
+CHATS = 20
 ONLY_FRIENDS = 6
 RESTRICTED = 6
 GAP = ONLY_FRIENDS + RESTRICTED
@@ -104,7 +67,6 @@ def phase_b(slot) -> bool:
 
 
 def title_count(title: str) -> tuple[str, int | None] | None:
-    """(Creator name, the number its tab title shows; None for grey or 9+), from CreatorTabs' title."""
     parts = title.split(" — ")
     if len(parts) < 2:
         return None
@@ -113,8 +75,6 @@ def title_count(title: str) -> tuple[str, int | None] | None:
 
 
 class Truth:
-    """`truth_red` and `raw_counter` per Creator every SAMPLE_S, on its own thread: `red[aid]` / `raw[aid]` are
-    `(t, value)` per change."""
 
     def __init__(self, wire: BadgeWire, aids: list[str]) -> None:
         self.wire, self.aids = wire, aids

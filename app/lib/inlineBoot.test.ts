@@ -1,14 +1,9 @@
-/**
- * The HTML's inline boot (lib/inlineBoot.ts, lib/inlineBoot.server.ts): which GETs a document load starts on the
- * server (the browser's own guess, from its cookies), each request's own answers, and the browser taking each once.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { inlineKey, INLINE_KEEP_MS, resetInline, seedInline, takeInline, type InlineAnswer } from "./inlineBoot";
 import { inlinePaths, INLINE_TIMEOUT_MS, startInline } from "./inlineBoot.server";
 import { relay } from "./relay";
 
-/** The request's cookies (the Next jar's decoded values): an old saved Dashboard entry, the scope bit. */
 const jar = (entry?: string, scope?: string) => (n: string) =>
   ({ chatterly_entry: entry, chatterly_scope: scope })[n];
 const STALE_ENTRY = JSON.stringify({ tz: "Asia/Tokyo", weekStart: "sunday", grid: true });
@@ -20,7 +15,6 @@ describe("inlinePaths: what the browser would fetch first, per document", () => 
     ["another page: none", "/creators", undefined, []],
     ["Messages Pro: the probes and the inbox bundle", "/messages-pro", undefined,
       ["/auth/me", "/chatter/me", "/admin/screens/inbox?cursor=0"]],
-    // The Dashboard draws no card that reads its bundle: the probes and the Applied settings only.
     ["Dashboard, no cookie: no bundle", "/", undefined, DASH_ONLY],
     ["Dashboard, a stale grid:true entry: no bundle", "/?window=month", STALE_ENTRY, DASH_ONLY],
     ["Dashboard, a junk entry: no bundle, no throw", "/", "{oops", DASH_ONLY],
@@ -48,7 +42,6 @@ describe("startInline: this request's GETs on the relay", () => {
       expect(init.headers).toEqual({ cookie: "chatterly_session=A", accept: "application/json" });
       expect(init.cache).toBe("no-store");
     }
-    // Another request: its own GETs with its own cookie, not the first one's answers.
     const e = startInline(["/auth/me"], "chatterly_session=B", "http://relay:8787")!;
     await e["/auth/me"];
     expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -95,9 +88,9 @@ describe("takeInline: the browser's first GET of each", () => {
   const ok = (body: unknown): Promise<InlineAnswer> => Promise.resolve({ status: 200, body: JSON.stringify(body) });
 
   it("once per URL; the share token and the bundle's focus do not change the key; unseeded: nothing", async () => {
-    expect(takeInline("/auth/me")).toBeNull(); // synchronously: the caller's fetch leaves in the same tick as before
+    expect(takeInline("/auth/me")).toBeNull();
     seedInline({ "/x": ok({}) });
-    expect(takeInline("/auth/me")).toBeNull(); // seeded, not this URL: synchronously too
+    expect(takeInline("/auth/me")).toBeNull();
     resetInline();
     seedInline({ "/auth/me": ok({ user_id: "u1" }), "/admin/screens/dashboard?from=a&to=b": ok({ creators: [] }) });
     expect(await (await takeInline("/auth/me"))!.json()).toEqual({ user_id: "u1" });
@@ -136,8 +129,8 @@ describe("takeInline: the browser's first GET of each", () => {
 describe("takeInline with React's client-side promise props", () => {
   afterEach(() => resetInline());
 
-  // react-server-dom's Chunk: inherits Promise.prototype, `then(resolve, reject)` returns undefined.
   function chunk(value: InlineAnswer | Error, later = true): Promise<InlineAnswer> {
+        // react-server-dom's Chunk: inherits Promise.prototype, then(resolve, reject) returns undefined
     const c = Object.create(Promise.prototype) as { then: (ok: (v: InlineAnswer) => void, bad: (e: unknown) => void) => void };
     c.then = (ok, bad) => {
       const go = () => (value instanceof Error ? bad(value) : ok(value));

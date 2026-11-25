@@ -1,79 +1,3 @@
-"""The house funnel walker (`automations.reply_mass_funnel`) after its per-fan status
-machine became one pure `decide()` (service/automations/funnel_decide.py): every
-Creator's funnel broadcast walked in one tick, fan by fan against the rule his case
-puts him under, after his answer came in through the real pump.
-
-World: `agency_inbox` (one Agency, its Creators, their fans, threads for a share of
-them), plus seed/house_funnel.py: one 3-step funnel (two lines, one line, a $24 PPV),
-one broadcast per Creator 2 h ago to every fan without a seeded thread, and one case
-per recipient (new, reply, ppv, buyer: they answer now; waiting, past_end, silent).
-
-Load: `--users` fans answer at once (the repliers, spread over the Creators), each
-line a WS frame through `POST /__slop/of-ws-frame` in the pump's shape
-(`fan_dm.say`: one frame in flight per Creator); the run waits until each answer is a
-`messages` row. Then one tick per Creator, all at once (`POST /__slop/run-automation`,
-kind `reply_mass_funnel`, the product's `run_once` under the run-slot pool, payload
-`max_chats` = the Creator's recipients so the 40-send cap never thins a tick), then a
-second tick the same way.
-
-Invariants (lib/funnel_faults.py names them): DISCOVER (a new replier is enrolled and
-gets both lines of step 1 once, a silent recipient gets no walk), ADVANCE (an answer
-earns exactly the next step; no answer reschedules, check_count 1, +4 min), PPV (the
-PPV step sends one priced PPV, OF's `of_ppv` agrees, the walk ends), OFFER (a fan who
-unlocked a PPV since the broadcast is halted offer_taken, sent nothing), END (a walk
-past the script's end is closed), COUNTS (new funnel rows carry the fake OF's ids, one
-per line the walks' step changes earned, the runs' `advanced` = the walks that moved,
-nothing twice, no errors) and AGAIN (tick 2 sends nothing, moves nobody); then
-(lib/funnel_jump_faults.py) JUMP_WAIT: a few held-out fans per Creator get a second,
-branching broadcast (seed/house_funnel.py `seed_jump`), answer it with its keyword
-through the pump, one tick per Creator scoped to that broadcast (`mass_run_id`) sends
-step 1 and jumps them to step 5; past their first check, a second scoped tick finds them
-quiet and must reschedule on step 1's (the SENT step's) intervals[1], not step 4's
-(c - 1) nor step 5's. Budget: each
-Creator's run time per due fan (`automation_runs` started -> completed, so not the wait
-for a run slot), p95 over the Creators, vs TICK_PER_FAN_P95_MS and the last green run.
-
-Faked or bypassed, declared: OF's send (lib/automation_relay.py's offline walker client);
-the step's 4 s line gap to 0.2 s (lib/funnel_relay.py); the supervisor's cadence (the
-scenario ticks); the buyer's unlock is seeded as the two rows purchase_notifications'
-`_flip_paid` leaves (the PPV flipped paid, its `purchase_notices` row;
-seed/house_funnel.py); the account DM rate raised to DM_PER_MIN through the real
-Concurrency panel route. No LLM: the funnel's steps are static lines. JUMP_WAIT's
-clock: between its two ticks the jump fans' `funnel_state.next_check_at` and the send's
-60 s cooldown (`fans.automation_paused_until`) are moved to the past by SQL, as if the
-first check's 2 minutes had passed (nothing else reads the clock there).
-
-Break-it-once: house-funnel-offer-taken-ignored (decide() never sees a purchase): only
-OFFER goes red (the buyer is walked on to step 2, consistently, so COUNTS holds).
-house-funnel-jump-waits-prev-step (the pre-F1 c - 1 rule): only JUMP_WAIT goes red (a
-linear walk's sent step is c - 1, so the main walk's checks cannot see it).
-
-KILL, last (send once, service/automations/send_marker_decide.py: a step killed mid-send is
-never auto-resent; listed "may not have sent", the user retries). KILL Creators = the first
-min(KILL_CREATORS, Creators) (KILL_CREATORS = the 4 run slots: every hung run holds one), each
-with seed/house_funnel.py `seed_kill`'s third funnel and broadcast: three walking fans on its
-PPV step (bubble 0 the PPV) with their answer in, one `control` fan with none. OF's side is
-lib/send_once_relay.py (`first_key: fan_text`): `partial` OF takes the PPV and refuses bubble 1
-with a 400; `partial_noid` the same, the PPV answered without its id; `kill` OF takes the PPV and
-never answers (`hang`), but on the last KILL Creator takes the PPV, answers it, and hangs on
-bubble 1 (`hang_after_first`: the landed fan). One tick per KILL Creator scoped to its run (own
-Recorder: they die with the relay) until each `kill` fan's text is taken and unanswered, the same
-set for KILL_STABLE_S; SIGKILL (`crash_relay`); OF answers every fan normally from then on; restart
-on the same DB. Then one DM through the pump per `kill`, `partial_noid` and `control` fan, one welcome
-chatter run per KILL Creator scoped to them (`only_fan_ids`), two funnel ticks (each settles
-first), the owner's `GET /admin/unconfirmed-sends`, one `POST /admin/unconfirmed-sends/retry`
-per hung (not landed) fan, one more tick. Checks (lib/send_marker_faults.py): FUNNEL_ONCE,
-FUNNEL_MARKED, FUNNEL_SETTLED, FUNNEL_RETRY, FUNNEL_PARTIAL, FUNNEL_PARTIAL_NOID,
-FUNNEL_PARKED_QUIET, and the scenario's own KILLED. Faked, declared: the agency's (fake)
-DeepSeek key through the real `PUT /admin/my-llm-keys` and lib/wcfi_relay.py's DeepSeek answer
-(the KILL Creators carry its persona). Bypasses, declared: the KILL fans' `fan_lease` rows (the
-dead holder's 900 s TTL) expired by SQL right after the restart, as if 15 min had passed; the
-retried fans' send rest (`fans.automation_paused_until`) nulled by SQL before the last tick.
-Expected tracebacks, declared (EXPECTED_TRACEBACKS): the walker's `reply_mass_funnel send
-failed` on the slop 400s, and the welcome chatter's nick push / mark-read on the offline OF.
-Faults (each must turn only its targets red): funnel-partial-requeued, funnel-noid-not-counted,
-funnel-marker-sets-status, funnel-sending-marker-ignored, funnel-settle-skips-lookup.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -94,16 +18,16 @@ from slop.seed import house_funnel as hf
 PROFILE = "agency_inbox"
 UI = False
 FAULT = "house-funnel-offer-taken-ignored"
-TICK_PER_FAN_P95_MS = 250     # reads + a state write per due fan, plus the sends of the few who answered
+TICK_PER_FAN_P95_MS = 250
 P95_VS_LAST = (1.5, 100)
 DM_PER_MIN = 600
-OF_SEND_ID_BASE = 9_700_000_000_000   # lib/relay.py: the fake OF's message ids (this run's sends)
+OF_SEND_ID_BASE = 9_700_000_000_000
 LIVE_WAIT_S = 60
 EXPECTED_TRACEBACKS = (("reply_mass_funnel send failed", SLOP_MARK),
                        ("push_nick_failed", "slop: OF is offline"),
                        ("mark_chat_read failed", "slop: OF is offline"))
-KILL_CREATORS = 4      # the run slots (run_slot): one hung run per Creator, every slot busy
-KILL_HANG_S = 300.0    # the kill comes long before
+KILL_CREATORS = 4
+KILL_HANG_S = 300.0
 KILL_TIMEOUT_S = 120
 KILL_STABLE_S = 3.0
 KILLED = "house funnel kill: SIGKILL landed with each KILL Creator's kill fan's step taken by OF and unanswered"
@@ -114,7 +38,6 @@ def _dt(v) -> datetime | None:
 
 
 def _snapshot(con, runs: dict[str, int]) -> dict:
-    """Per recipient: his funnel_state, and this run's funnel sends (fake OF ids)."""
     rid = {r: a for a, r in runs.items()}
     q = ",".join("?" * len(rid))
     out: dict[tuple[str, int], dict] = {}
@@ -133,8 +56,6 @@ def _snapshot(con, runs: dict[str, int]) -> dict:
 
 
 async def _await_landed(con, recs: list[dict]) -> tuple[set, set]:
-    """-> (accepted, landed): the answers the hook took, and those that are a
-    `messages` row within LIVE_WAIT_S."""
     ids = {(x["account_id"], int(x["fan_id"]), int(x["message_id"])) for x in recs if x.get("status", 599) < 300}
     deadline = time.monotonic() + LIVE_WAIT_S
     landed: set = set()
@@ -178,7 +99,6 @@ async def run(ctx) -> None:
     fan_by = {(f["account_id"], f["id"]): f for fl in w.data["fans"].values() for f in fl}
     repliers = [k for k, c in cases.items() if c in hf.LIVE]
 
-    # The answers, through the real pump, then wait until each one is a row.
     ctx.rec.stage = "answers"
     recs = await fan_dm.say(ctx.owner, [(fan_by[k], "yes 😍") for k in repliers])
     ids, landed = await _await_landed(con, recs)
@@ -215,13 +135,12 @@ async def run(ctx) -> None:
 
     answered = {(a, f) for a, f, _m in landed}
 
-    def landed_ok(k) -> bool:   # his answer is in, or the case is not a replier
+    def landed_ok(k) -> bool:
         return cases[k] not in hf.LIVE or k in answered
 
     def lines(k, step):
         return [x for x in sent(k) if x["step"] == step]
 
-    # DISCOVER: enrolled at step 1 with both lines; a silent recipient has no walk.
     def discover(k):
         if cases[k] == "silent":
             return st(k) is None and not sent(k)
@@ -232,7 +151,6 @@ async def run(ctx) -> None:
     ok, d = _verdict(discover, by("new", "silent"), after)
     ctx.check(DISCOVER, ok and any(cases[k] == "new" for k in cases), **d)
 
-    # ADVANCE: an answer earns exactly the next step; no answer is a reschedule.
     def advance(k):
         s = st(k) or {}
         if cases[k] == "waiting":
@@ -245,7 +163,6 @@ async def run(ctx) -> None:
     ok, d = _verdict(advance, by("reply", "waiting"), after)
     ctx.check(ADVANCE, ok and d["fans"] > 0, **d)
 
-    # PPV: one priced PPV, OF has it at the step's price, the walk is done.
     of_ppv = calls.get("of_ppv") or {}
 
     def ppv(k):
@@ -256,7 +173,6 @@ async def run(ctx) -> None:
     ok, d = _verdict(ppv, by("ppv"), after)
     ctx.check(PPV, ok and d["fans"] > 0, **d)
 
-    # OFFER: a buyer who answered is halted offer_taken and sent nothing.
     def offer(k):
         s = st(k) or {}
         return landed_ok(k) and not sent(k) and s.get("status") == "done" and s.get("err") == "offer_taken" \
@@ -264,12 +180,10 @@ async def run(ctx) -> None:
     ok, d = _verdict(offer, by("buyer"), after)
     ctx.check(OFFER, ok and d["fans"] > 0, **d)
 
-    # END: a walk past the script's end is closed, nothing sent.
     ok, d = _verdict(lambda k: not sent(k) and (st(k) or {}).get("status") == "done"
                      and (st(k) or {}).get("cs") == 3, by("past_end"), after)
     ctx.check(END, ok and d["fans"] > 0, **d)
 
-    # COUNTS: the rows are the lines the step changes earned; the runs agree; nothing twice.
     def cs_of(k, snap):
         return (st(k, snap) or {}).get("cs") or 0
     moved = [k for k in cases if cs_of(k, after) > cs_of(k, before) and sent(k)]
@@ -289,14 +203,12 @@ async def run(ctx) -> None:
               rows=rows, earned_lines=earned, walks_moved=len(moved), runs_advanced=advanced,
               priced_rows=priced, of_ppv=of_ppv_n, twice=twice[:5], errors=errs)
 
-    # AGAIN: a second tick right away moves nobody and sends nothing.
     rows2 = sum(len(sent(k, after2)) for k in cases)
     changed = [f"{a}/{f}" for (a, f) in cases if st((a, f), after2) != st((a, f), after)]
     adv2 = sum(int((t["res"] or {}).get("advanced") or 0) for t in ticks2)
     ctx.check(AGAIN, rows2 == rows and adv2 == 0 and not changed and all(t["status"] == 200 for t in ticks2),
               new_rows=rows2 - rows, advanced=adv2, states_changed=len(changed), e_g=changed[:3])
 
-    # The product's own run time per due fan (automation_runs), not the wait for a run slot.
     per_fan = []
     for a in aids:
         if a not in run_rows:
@@ -323,9 +235,6 @@ async def run(ctx) -> None:
 
 
 async def _jump_wait(ctx, w, held: dict, fan_by: dict) -> None:
-    """JUMP_WAIT: answer the branching broadcast with its keyword, tick (step 1 sent,
-    jumped to step 5), move the clock past the first check, tick again (quiet): the
-    next check is the SENT step's intervals[1] away."""
     jump = hf.seed_jump(w, held)
     jfans, jruns = jump["fans"], jump["runs"]
     if not jfans:
@@ -338,7 +247,6 @@ async def _jump_wait(ctx, w, held: dict, fan_by: dict) -> None:
     per = Counter(a for a, _f in jfans)
     t1 = await asyncio.gather(*(_tick(ctx, a, per[a], jruns[a]) for a in sorted(jruns)))
     jumped = _snapshot(con, jruns)
-    # The clock past the first check (intervals[0]) and the send's cooldown: declared, SQL.
     past = hf.ts(datetime.utcnow() - timedelta(seconds=1))
     with con:
         con.execute(f"UPDATE funnel_state SET next_check_at=? WHERE mass_run_id IN ({','.join('?' * len(jruns))})",
@@ -379,7 +287,6 @@ async def _jump_wait(ctx, w, held: dict, fan_by: dict) -> None:
 
 
 async def _tick_on(http, aid: str, run: int) -> dict:
-    """_tick on `http` (the KILL phase's own pools), scoped to the KILL run."""
     r = await http.post("/__slop/run-automation", timeout=900, json={
         "account_id": aid, "kind": "reply_mass_funnel", "payload": {"max_chats": 10, "mass_run_id": run}})
     body = r.json() if r.status_code < 300 else {"error": r.text[:300]}
@@ -388,8 +295,6 @@ async def _tick_on(http, aid: str, run: int) -> dict:
 
 
 async def _kill_phase(ctx, w, fan_by: dict) -> None:
-    """KILL (module docstring): a step killed after OF took it is listed, never re-sent by
-    a tick, sent once more only on the user's Retry; a step that surely landed advances."""
     kaids = sorted(w.data["fans"])[:min(KILL_CREATORS, len(w.data["fans"]))]
     seeded = hf.seed_kill(w, w.data["threads"], kaids)
     kruns, roles = seeded["runs"], seeded["fans"]

@@ -37,7 +37,6 @@ def E(slice_, posts, reason, **want):
     return {"slice": slice_, "posts": posts, "reason": reason, "want": want}
 
 
-# Written before running; never edited to make a run pass.
 EXPECT = {
     "after-end": E("A", 1, "P0 ends: one After-end re-create; the next backstop finds P1 live",
                    keep_running=True, sources=["auto_ended"]),

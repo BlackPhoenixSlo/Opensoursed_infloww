@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * osNotify — one OS-level notification, wherever the app runs.
- *
- * Inside the desktop app the preload exposes `window.fasttShell.notify`
- * (desktop/preload.js), which shows a native notification from the main
- * process; no web `Notification` permission is involved there (it never
- * reached "granted" in packaged builds). In a browser it falls back to the web
- * `Notification`, only when the user has already allowed it; it never asks.
- *
- * `id` dedupes: the desktop shell shows one notification per id even when
- * several windows (popouts) fire it, and the web path uses it as the `tag`.
- * `href` is a same-origin path (a notification's link, lib/notificationLink);
- * a click opens it: the desktop app's main process does, and in a browser the
- * click focuses this window and calls `openNotification`.
- * `window.fasttShell` is typed in hooks/useInDesktopApp.ts.
- */
 
 import { openNotification } from "@/lib/notificationLink";
 
@@ -26,14 +10,13 @@ export interface OsNotifyPayload {
   href?: string | null;
 }
 
-/** True when the desktop app shows notifications natively. */
 export function hasShellNotify(): boolean {
   return typeof window !== "undefined" && typeof window.fasttShell?.notify === "function";
 }
 
-/** Show it. Resolves whether a notification was handed to the OS. */
 export async function osNotify(n: OsNotifyPayload): Promise<boolean> {
   if (typeof window === "undefined") return false;
+  // Desktop uses the native notification: web Notification permission never reached "granted" in packaged builds.
   const notify = window.fasttShell?.notify;
   if (typeof notify === "function") {
     try {

@@ -96,8 +96,8 @@ def test_case_noop_mark_no_frame():
         fans = _fans(2, unread=1)
         wire.seed(AID, fans)
         c = _Client(fake, AID)
-        _http(fake, AID, "POST", f"/api2/v2/chats/{fans[1]['id']}/mark-as-read")     # already read
-        _http(fake, AID, "DELETE", f"/api2/v2/chats/{fans[0]['id']}/mark-as-read")   # already unread
+        _http(fake, AID, "POST", f"/api2/v2/chats/{fans[1]['id']}/mark-as-read")
+        _http(fake, AID, "DELETE", f"/api2/v2/chats/{fans[0]['id']}/mark-as-read")
         wire.read_elsewhere(AID, fans[1]["id"])
         time.sleep(1.2)
         assert c.frames == [] and wire.frames == []
@@ -106,7 +106,6 @@ def test_case_noop_mark_no_frame():
 
 
 def test_case_parallel_flips_same_value():
-    # a 1 s mark delay keeps both flips inside one frame's window even when the loaded machine spaces the two calls
     with _world(delays={**badge_wire.DELAYS, "api_mark": 1.0}) as (fake, wire):
         fans = _fans(4, unread=4)
         wire.seed(AID, fans)

@@ -16,10 +16,11 @@
  * closing it is the reset: nothing carries over to the next open.
  */
 
-import { useCallback, useEffect, useId, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
 import { Lock, X } from "lucide-react";
 
 import { usePlatformAccounts } from "@/hooks/useAccounts";
+import { usePlatform } from "@/lib/platform";
 import { onlineCountLabel, useOnlineSubscribers } from "@/hooks/useOnlineSubscribers";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
 import { useSmartLists } from "@/hooks/useSmartLists";
@@ -42,9 +43,11 @@ import { sanitizePriceInput } from "@/lib/priceInput";
 import { AudiencePanel } from "./AudiencePanel";
 import { FanOutResults, FanOutStatus } from "./FanOutResults";
 import { IncludeModelsChips } from "./IncludeModelsChips";
+import { massSenders } from "./massSenders";
 import { fanOutLocked, includedTargets } from "./fanOut";
 import { MediaTray } from "./MediaTray";
 import { useOfRichAllowed } from "@/hooks/useOfRichAllowed";
+import { useMassAllowed } from "@/hooks/useMassAllowed";
 import { AaButton, ComposeTextBox, type ComposeTextBoxHandle } from "./ComposeTextBox";
 import { OnlineTargetingPanel } from "./OnlineTargetingPanel";
 import { ScheduleField } from "./ScheduleField";
@@ -85,7 +88,9 @@ export function MassMessageComposer({
   labelExtras = false,
 }: MassMessageComposerProps) {
   const online = mode === "online";
-  const activeAccounts = usePlatformAccounts();
+  const platformAccounts = usePlatformAccounts();
+  const platform = usePlatform();
+  const activeAccounts = useMemo(() => massSenders(platformAccounts, platform), [platformAccounts, platform]);
   // The composers' shared include set (useAllModelsInclude) — a model
   // un-checked in any composer's chip strip is omitted from a broadcast here.
   const { isIncluded } = useAllModelsInclude();
@@ -122,8 +127,8 @@ export function MassMessageComposer({
   const onlineCountQ = useOnlineSubscribers(online && !allModels ? accountId : null, 60_000);
   const onlineCount = onlineCountQ.data ? onlineCountLabel(onlineCountQ.data) : null;
   const textRef = useRef<ComposeTextBoxHandle | null>(null);
-  // OF rich text: OnlyFans accounts only (all-models: the platform's, whose accounts these all are).
-  const allowRich = useOfRichAllowed(allModels ? null : accountId);
+  // OF rich text: OnlyFans accounts only (all-models: the first sender's).
+  const allowRich = useOfRichAllowed(allModels ? activeAccounts[0]?.id : accountId);
   const priceId = useId();
   const funnelSelectId = useId();
 
@@ -166,8 +171,9 @@ export function MassMessageComposer({
   // that already took this broadcast (a partial fan-out's success) is not
   // sent it again.
   const { included: broadcastAccounts, targets } = includedTargets(activeAccounts, isIncluded, results);
-  // The accounts a send goes out from.
-  const sendFrom = allModels ? targets : accountId ? [accountId] : [];
+  // A forced or saved Creator outside the sender list (expired session) still sends, unless her Platform can't mass message.
+  const accountMaySend = useMassAllowed(accountId);
+  const sendFrom = allModels ? targets : accountId && accountMaySend ? [accountId] : [];
 
   // Growth > Sensitive words: like Infloww's mass message and Smart Message
   // editors, a listed word in the text is shown under it and refuses the send.
@@ -240,7 +246,7 @@ export function MassMessageComposer({
            *  mode (vault + custom-list audiences) and fan-out mode
            *  (uploads only + system audiences only). */}
           <IncludeModelsChips
-            noun="broadcast" allModels={allModels} locked={locked}
+            noun="broadcast" accounts={activeAccounts} allModels={allModels} locked={locked}
             onAllModels={(on) => dispatch({ type: "setAllModels", on })}
             accountId={accountId} onAccount={setAccountId}
           />

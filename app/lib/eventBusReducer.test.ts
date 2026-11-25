@@ -11,23 +11,14 @@ const T = 1_000_000;
 const dm = (n: number): Queued => ["api2_chat_message", { n }];
 const dms = (...ns: number[]) => ns.map(dm);
 
-/** An input, or one built from the state it meets (a fired timer's token, the current socket's gen). */
 type Make = BusInput | ((s: BusState) => BusInput);
 const build = (m: Make, s: BusState): BusInput => (typeof m === "function" ? m(s) : m);
 const restartFired: Make = (s) => ({ type: "RestartFired", token: s.restart! });
 const retryFired: Make = (s) => ({ type: "RetryFired", token: s.retry! });
 const flushFired: Make = (s) => ({ type: "Flush", token: s.flush!.token });
-/** The browser gives up on the current socket. */
 const giveUp: Make = (s) => ({ type: "Errored", now: T, ready: CLOSED, gen: s.gen });
 const frame = (now: number, events: Queued[] = [], id = ""): BusInput => ({ type: "Frame", now, ready: OPEN, id, events });
 
-/**
- * The shell minus its I/O: decides `inputs` in turn, performs the effects in order and hands
- * every `Then` to `follow` on the state the listeners left, with the socket's readyState then
- * (the last input's, null after a Close, CONNECTING after an Open). `listener` runs at each
- * Apply / NotifyConnected; what it returns is decided at once, nested, as a listener's call.
- * Returns the end state and the performed effects (no `Then`).
- */
 function settle(start: BusState, inputs: Make[], listener: (fx: BusEffect) => Make[] = () => []): Decision {
   let state = start;
   let ready: number | null = null;
@@ -55,13 +46,11 @@ function settle(start: BusState, inputs: Make[], listener: (fx: BusEffect) => Ma
 }
 const step = (s: BusState, ev: Make) => settle(s, [ev]);
 
-/** The decision's follow-up (its last effect must be a `Then`). */
 function thenOf(d: Decision): FollowUp {
   const last = d.effects[d.effects.length - 1];
   if (last?.type !== "Then") throw new Error(`no Then in ${JSON.stringify(d.effects)}`);
   return last.event;
 }
-/** A listener that makes `call` once, at the first effect `when` matches. */
 function once(when: (fx: BusEffect) => boolean, call: Make[]): (fx: BusEffect) => Make[] {
   let done = false;
   return (fx) => {
@@ -71,9 +60,7 @@ function once(when: (fx: BusEffect) => boolean, call: Make[]): (fx: BusEffect) =
   };
 }
 
-/** Scope "all" set, restart fired: one socket open (not yet OPEN). */
 const opened = () => settle(initialBusState, [{ type: "SetScope", scope: "all" }, restartFired]).state;
-/** …and OPEN with one frame (id e1.1): connected. */
 const live = () => settle(opened(), [{ type: "Opened", now: T, ready: OPEN }, frame(T, [], "e1.1")]).state;
 
 const kinds = (fx: BusEffect[]) => fx.map((e) => e.type);
@@ -84,7 +71,6 @@ const opens = (fx: BusEffect[]) =>
 const applied = (fx: BusEffect[]): Queued[] => fx.flatMap((e) => (e.type === "Apply" ? e.events : []));
 const errors = (fx: BusEffect[]): EventEnvelope[] => applied(fx).flatMap(([t, p]) => (t === "__error" ? [p] : []));
 
-/** Give up, let the armed retry fire (a new socket), `n` times; the retry delays armed. */
 function failNTimes(s: BusState, n: number): { s: BusState; delays: number[] } {
   const d = settle(s, Array.from({ length: n }, () => [giveUp, retryFired]).flat());
   return { s: d.state, delays: retries(d.effects) };
@@ -119,7 +105,6 @@ describe("backoff", () => {
   ])("an error, %s: retries armed %j, `__error` %j", (_n, err, armed, payload) => {
     const d = step(live(), err);
     expect(retries(d.effects)).toEqual(armed);
-    // Either way: freshness shut at once and `__error` reaches listeners, before any retry is armed.
     expect(d.state.lastEventAt).toBe(0);
     expect(d.effects.slice(0, 2)).toEqual([
       { type: "NotifyConnected", connected: false }, { type: "Apply", events: [["__error", payload]] }]);
@@ -184,7 +169,6 @@ describe("pause / resume", () => {
 });
 
 describe("listeners that call back into the bus", () => {
-  /** live() with DMs 1-5 in one frame: queued, a flush armed. */
   const queued = () => step(live(), frame(T, dms(1, 2, 3, 4, 5))).state;
   const isApplyOf = (type: string) => (fx: BusEffect) => fx.type === "Apply" && fx.events[0][0] === type;
   const isNotify = (fx: BusEffect) => fx.type === "NotifyConnected";
@@ -206,7 +190,6 @@ describe("listeners that call back into the bus", () => {
   });
 
   it.each<[string, () => BusState, Make[], (fx: BusEffect) => boolean, Make[], BusEffect["type"][], EventEnvelope[]]>([
-    // [name, from, inputs, the listener runs at, what it calls, performed effects, `__error` payloads]
     ["a pause from the flush's Apply, before the restart's teardown: no socket opened",
       queued, [{ type: "SetScope", scope: "model:7" }, restartFired], isApplyOf("api2_chat_message"), [{ type: "Pause" }],
       ["After", "Apply", "Close", "NotifyConnected", "Close"], []],
@@ -264,7 +247,6 @@ describe("adaptive apply", () => {
   const ARM_FLUSH = { type: "After", ms: APPLY_WINDOW_MS, frame: true, fire: { type: "Flush" } };
 
   it.each<[string, [number, number][], object[]]>([
-    // [ms after T, events in the frame] per frame -> effects of the last frame
     ["a quiet stream applies each frame at once", [[0, 1], [RATE_SPAN_MS, 1], [2 * RATE_SPAN_MS, 1]], [APPLY]],
     [`${HOT_EVENTS_PER_S} events in a span still apply at once`, [[0, 1], [10, HOT_EVENTS_PER_S - 1]], [APPLY]],
     ["one more within the span queues and arms one flush", [[0, 1], [10, HOT_EVENTS_PER_S]], [ARM_FLUSH]],
@@ -285,7 +267,6 @@ describe("adaptive apply", () => {
     ["Pause", [{ type: "Pause" }], ["Apply", "Close", "NotifyConnected"], six],
     ["RestartFired after SetScope", [{ type: "SetScope", scope: "model:7" }, restartFired],
       ["After", "Apply", "Close", "NotifyConnected", "Open"], six],
-    // `__error` is a connection signal, never queued: it comes first.
     ["RetryFired", [giveUp, retryFired],
       ["NotifyConnected", "Apply", "After", "Apply", "Close", "Open"], [["__error", { readyState: CLOSED }], ...six]],
   ])("queued frames apply once, in arrival order, ahead of the next stream — via %s", (_n, trigger, want, wantApplied) => {
@@ -307,7 +288,6 @@ describe("adaptive apply", () => {
 
 describe("scope", () => {
   it.each<[string, BusState, Scope[], number[], BusEffect["type"][], { scope: Scope; lastEventId: string }[]]>([
-    // [name, from, scopes set, restart delays armed, effects of the last restart, sockets it opens]
     ["first scope: one Open after the restart, no last id", initialBusState, ["all"], [RESTART_MS],
       ["Close", "Open"], [{ scope: "all", lastEventId: "" }]],
     ["new scope: Close, then Open of the new scope without the last id", live(), ["model:7"], [RESTART_MS],
@@ -321,7 +301,6 @@ describe("scope", () => {
       (e.type === "After" && e.fire.type === "RestartFired" ? [{ ms: e.ms, token: e.fire.token }] : []));
     expect(restarts.map((r) => r.ms)).toEqual(wantDelays);
     const tokens = restarts.map((r) => r.token);
-    // Earlier restarts were re-armed away: firing them does nothing.
     for (const tok of tokens.slice(0, -1)) expect(step(d.state, { type: "RestartFired", token: tok }).effects).toEqual([]);
     const fired = tokens.slice(-1).flatMap((token) => step(d.state, { type: "RestartFired", token }).effects);
     expect(kinds(fired)).toEqual(wantKinds);

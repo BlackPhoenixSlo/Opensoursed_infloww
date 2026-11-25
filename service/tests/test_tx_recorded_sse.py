@@ -1,22 +1,5 @@
 #!/usr/bin/env python3
-"""Ledger ingest → SSE bridge — a new revenue row written by
-transaction_ingest._write_one must emit a `transaction_recorded` event so the
-browser drops the fan drawer's revenue caches (chart / Sales / spend stats).
-Without it the drawer sits on 5-30 min staleTimes after a sale.
-
-Contract under test:
-  • fresh insert of a recent row         → exactly one event, reason="insert"
-  • re-poll of the same row (no change)  → silent (fires every 5-min tick!)
-  • status flip (pending → cleared)      → one event, reason="status_flip"
-  • backfill INSERT older than 48h       → silent (cold 90-day walks)
-  • status flip on a row older than 48h  → still broadcasts (held PPVs settle
-    days after purchase; the 48h recency cap is for inserts only)
-  • neither the insert nor the patch keeps OF's row in `raw_json` (nothing
-    reads it; it was most of each row's width)
-
-Run: ./venv/bin/python service/tests/test_tx_recorded_sse.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -32,8 +15,6 @@ from transaction_ingest import _write_one  # noqa: E402
 
 def _ppv_row(provider_id: str, fan_id: int, *, created_at: datetime,
              status: str = "done", amount: float = 18.0) -> dict:
-    """Minimal OF /payouts/transactions row that _parse_row classifies as a
-    ppv_message unlock."""
     return {
         "id": provider_id,
         "amount": amount,
@@ -78,21 +59,18 @@ async def case_fresh_insert_broadcasts():
     assert evs[0]["__account_id"] == "710", evs[0]
     assert tx["fan_id"] == 4001 and tx["kind"] == "ppv_message", tx
     assert tx["reason"] == "insert", tx
-    # Every session of the Creator gets it, chatters too, whose role may hide revenue: no amount.
     assert "amount_cents" not in tx, tx
 
 
 async def case_repoll_is_silent():
-    """Every 5-min tick re-walks the 7-day window — an unchanged row must NOT
-    re-fire or the browser would refetch the whole drawer every tick."""
     await _mint_account("711")
     row = _ppv_row("prov-2", 4002,
                    created_at=datetime.utcnow() - timedelta(minutes=3))
-    await _write_one("711", row)  # initial insert (broadcasts; not under test)
+    await _write_one("711", row)
 
     q = await events.subscribe("model:711")
     try:
-        ins, pat = await _write_one("711", row)  # identical re-poll
+        ins, pat = await _write_one("711", row)
         evs = await _drain(q)
     finally:
         await events.unsubscribe("model:711", q)
@@ -102,8 +80,6 @@ async def case_repoll_is_silent():
 
 
 async def case_status_flip_broadcasts():
-    """pending → cleared settles a held PPV's payout — the drawer must hear
-    about the flip so net/fee fields and settled accounting catch up."""
     await _mint_account("712")
     when = datetime.utcnow() - timedelta(minutes=3)
     await _write_one("712", _ppv_row("prov-3", 4003, created_at=when,
@@ -123,8 +99,6 @@ async def case_status_flip_broadcasts():
 
 
 async def case_old_backfill_row_is_silent():
-    """A 90-day cold backfill inserts hundreds of historical rows — none of
-    them is news to an open drawer, so the recency gate must hold."""
     await _mint_account("713")
     q = await events.subscribe("model:713")
     try:
@@ -139,15 +113,8 @@ async def case_old_backfill_row_is_silent():
 
 
 async def case_old_row_status_flip_broadcasts():
-    """OF holds PPV payouts pending for ~7 days, so a purchase often settles
-    long after `occurred_at`. The 48h recency cap must NOT swallow that
-    settle-flip — it's exactly the update the drawer is waiting on. (Before
-    the fix the cap applied to every reason, so flips on rows >2 days old
-    were silently dropped.)"""
     await _mint_account("714")
-    when = datetime.utcnow() - timedelta(days=5)  # older than the 48h cap
-    # Initial pending insert is itself silent (old + reason='insert') — not
-    # under test here; we subscribe only for the flip.
+    when = datetime.utcnow() - timedelta(days=5)
     await _write_one("714", _ppv_row("prov-5", 4005, created_at=when,
                                      status="loading"))
 

@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * useReferrals — `GET /admin/stats/referrals?from&to[&account_id]`, each Creator's referral earnings over whole
- * days (roadmap 1.12): the Dashboard's Referrals tile and Creator reports' Referrals channel.
- *
- * No transaction carries referral earnings, so the Relay reads OnlyFans' Statements › Referrals chart, one read per
- * Creator, cached five minutes. OnlyFans buckets those days in its own time zone, not the report zone, so a day's
- * referrals can sit a few hours off the ledger's days. A Creator whose read failed is in `unavailable`. Referral
- * earnings are what OnlyFans pays the Creator, so gross and net are the same figure.
- */
 
 import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
@@ -20,13 +11,8 @@ const BG_CTX: RelayContext = { priority: "background" };
 export interface ReferralsRow { account_id: string; total_cents: number; by_day: { day: string; cents: number }[] }
 export interface ReferralsResp { rows: ReferralsRow[]; unavailable: string[] }
 
-/** A referrals read whose `data` is undefined while it is in error. */
 export type ReferralsQuery = Omit<UseQueryResult<ReferralsResp>, "data"> & { data: ReferralsResp | undefined };
 
-/** `from`/`to` are YYYY-MM-DD; `accountId` one id or several comma-separated, omitted (or "__all__") for every
- *  Creator. Nothing is read until both dates are known and `enabled`. A read in error gives no data, not even the
- *  last answer a failed refetch leaves in the cache (#43): every sum, tile, row and line built on it leaves
- *  referrals out, as the "-" and notes say. */
 export function useReferrals(
   from: string | null, to: string | null, accountId?: string | null, enabled = true,
 ): ReferralsQuery {
@@ -44,15 +30,11 @@ export function useReferrals(
   return q.isError ? { ...q, data: undefined } : q;
 }
 
-/** Instant `iso`'s YYYY-MM-DD in `timeZone` (the browser's when null): a window's edge as the read's whole day. */
 export function dayIn(iso: string, timeZone: string | null): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: timeZone ?? undefined, year: "numeric", month: "2-digit", day: "2-digit" })
     .format(new Date(iso));
 }
 
-/** How much of a referrals read is missing: `all` when the read failed or failed for every Creator it read (its sum
- *  would be a made-up $0.00), `some` when it failed for some Creators (`unavailable`), else `none`. A read still
- *  pending is `none`: its own pending state says so. */
 export type ReferralsGap = "none" | "some" | "all";
 export function referralsGap(q: { isError: boolean; data?: ReferralsResp }): ReferralsGap {
   if (q.isError) return "all";
@@ -60,18 +42,13 @@ export function referralsGap(q: { isError: boolean; data?: ReferralsResp }): Ref
   return (q.data.rows ?? []).length === 0 ? "all" : "some";
 }
 
-/** Whether Referrals has a figure to show: its first answer is in (not loading) and it did not fail outright. Every
- *  Referrals figure, line and row in the reports reads this one rule (#45); the gap alone says why one is missing. */
 export const referralsShown = (q: { isLoading: boolean; isError: boolean; data?: ReferralsResp }): boolean =>
   !q.isLoading && referralsGap(q) !== "all";
 
-/** The sum over every Creator, in cents. */
 export function referralsTotal(r: ReferralsResp | undefined): number {
   return (r?.rows ?? []).reduce((a, row) => a + row.total_cents, 0);
 }
 
-/** The referrals as the revenue read's rows, kind `referral` with net equal to gross: `kind` as `group_by=kind`
- *  answers, `day` as `group_by=day&by_kind=true` does, so the reports' channel sums take them as one more kind. */
 export function referralsAsRevenue(r: ReferralsResp | undefined) {
   const row = (cents: number) => ({ kind: "referral", total_cents: cents, net_cents: cents, count: 0 });
   const days = new Map<string, number>();
@@ -82,9 +59,6 @@ export function referralsAsRevenue(r: ReferralsResp | undefined) {
   };
 }
 
-/** A window's referrals and the window's before it (`current`/`prior`, each `[from, to]` YYYY-MM-DD), each read
- *  and as `referralsAsRevenue`'s rows. Until a read answers its rows are empty, so a sum over them is the ledger's
- *  alone and takes the referrals in when they land. */
 export function useReferralRevenue(
   current: [string | null, string | null], prior: [string | null, string | null],
   accountId: string | null | undefined, enabled: boolean,

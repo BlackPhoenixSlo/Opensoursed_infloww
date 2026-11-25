@@ -1,49 +1,4 @@
 #!/usr/bin/env python3
-"""Ultra plans, pure (service/ultra_decide.py; docs/plans/ultra-mode/issues/06-ultra-loop.md).
-
-Cases:
-  case_valid_plan        — a read → write (reference) → send (literal ids) plan validates; the summary is trimmed;
-                           the write records its reference's location; "$5 off" in a send's text is text.
-  case_refused_table     — table: not an object, empty summary, no steps, too many, unknown tool, bad args (the
-                           tool's pydantic model), unknown key on a step, bad / duplicate id, a reference to an
-                           unknown step, a forward reference, a self reference, a reference in account_id, another
-                           Agency's Creator → PlanError naming step + field.
-  case_send_literal_only — a reference in EVERY field of mass_send / post_create (and " $x.y" with a leading
-                           space) → refused naming step + field; nothing recorded for a send.
-  case_send_args_coerced — W30 F1: a send's args are stored as its model reads them ("false" → False, "10" → 10,
-                           " fans " → "fans"): the card, the sha and the request read the same values; a judge
-                           ref stays its "$j.ids" string.
-  case_substitute        — recorded references filled from earlier results (dotted keys, list index); a missing
-                           path → KeyError; an unrecorded "$x.y" string and " $x.y" untouched; a send step's args
-                           come back unchanged even when they read like references.
-  case_digest            — sha256 over canonical JSON: key order does not matter, any change (or another
-                           plan id) does.
-  case_outcome           — done / failed / uncertain per effect: a send with no answer, a 5xx or an echo-check
-                           502 is uncertain, a write with no answer too (m6); a send 4xx, a write's 4xx/5xx and
-                           a read's failure are failed.
-  case_states            — expired after OK_TTL (awaiting_ok only), said as OK_TTL_TEXT; PlanStatus / StepState
-                           are the Literal sets (FINAL inside PlanStatus); close: started → uncertain, pending → skipped,
-                           ended states kept; recovered: running → interrupted with close's states; any other
-                           status untouched.
-  case_step_end          — a call result → the stored state: done keeps open_url and the id it made (short
-                           scalars only), a mass that kept fewer fan ids than approved a plain note (kept_note);
-                           a failure / an uncertain send
-                           carries the error as error_text's sentence (no answer: NO_ANSWER), clipped to MAX_ERROR.
-  case_oversize_send_done — a send's 2xx answer over the size cap: done with its id + truncated (a read: 413).
-  case_error_text        — an error detail → one plain sentence: OF's {upstream_status, upstream_body} → "OnlyFans
-                           answered 500: <OF's message>", a relay reason, invalid-args maps, FastAPI's list, a
-                           string; never a raw dict; capped at MAX_ERROR.
-  case_may_send          — a send passes only as the `started` step of a `running` plan with the step's tool and
-                           exact args; any other status / state / step / tool / arg → refused.
-  case_card_and_report   — a send's card (rows from toolbox_sends.card_rows) shows Creator name + id (two
-                           Creators sharing a nickname differ), audience, price, media ids and the FULL text; two
-                           sends to different fan ids have different cards (every id listed); a write
-                           shows its args, a reference as "from step <id>" (a list of them "N from step <id>"),
-                           no media reads "none"; titles: a send's own title, else the tool name in Title Case;
-                           report_text counts from the step states.
-
-Run: ./venv/bin/python service/tests/test_ultra_decide.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
 import _harness  # noqa: F401 — MUST be first (temp DB env) even for a pure module
@@ -116,7 +71,7 @@ def case_refused_table() -> None:
     for name, raw, want in table:
         got = _errs(raw)
         assert all(w in got for w in want), (name, got, want)
-    assert _errs(_plan(READ), frozenset()) == [("pick", "account_id")]  # no Creators: every account_id refused
+    assert _errs(_plan(READ), frozenset()) == [("pick", "account_id")]
 
 
 def case_send_literal_only() -> None:
@@ -158,14 +113,12 @@ def case_substitute() -> None:
             "refs": [{"at": ["list_id"], "step": "folder", "path": "id"},
                      {"at": ["media_ids", 0], "step": "pick", "path": "data_only.list.1.id"}]}
     assert ud.substitute(step, results) == {"account_id": CA, "list_id": 9, "media_ids": [78]}
-    assert step["args"]["list_id"] == "$folder.id"  # the stored plan is never mutated
-    # Only recorded locations are filled: a string that reads like a reference elsewhere stays as written.
+    assert step["args"]["list_id"] == "$folder.id"
     loose = {"id": "f", "tool": "of_folder_create", "args": {"account_id": CA, "name": "$folder.id"}}
     assert ud.substitute(loose, results)["name"] == "$folder.id"
     spaced = ud.validate_plan(_plan(READ, {"id": "f", "tool": "of_folder_create",
                                            "args": {"account_id": CA, "name": " $pick.id"}}), OWNED).steps[1]
     assert "refs" not in spaced and ud.substitute(spaced, results)["name"] == " $pick.id"
-    # A send fills its recorded refs only (validation records judge media / a rule's made folder, nothing else).
     send = {**SEND, "args": {**SEND["args"], "media_files": "$judge.ids"},
             "refs": [{"at": ["media_files"], "step": "judge", "path": "ids"}]}
     filled = ud.substitute(send, {**results, "judge": {"ids": [5, 6]}})
@@ -186,7 +139,7 @@ def case_digest() -> None:
     b = {"steps": [{"args": {"y": "é", "x": 1}, "tool": "t", "id": "a"}], "summary": "s"}
     assert ud.digest(a, "p1") == ud.digest(b, "p1") and len(ud.digest(a, "p1")) == 64
     assert ud.digest(a, "p1") != ud.digest({**a, "summary": "s2"}, "p1")
-    assert ud.digest(a, "p1") != ud.digest(a, "p2")  # W30 F8: two identical plans never share an OK
+    assert ud.digest(a, "p1") != ud.digest(a, "p2")
 
 
 def case_outcome() -> None:
@@ -248,7 +201,6 @@ def case_step_end() -> None:
 
 
 def case_oversize_send_done() -> None:
-    """rwl cross-step M1: a send's 2xx too large to shape is still done with its id (never a synthetic 413)."""
     import toolbox_decide as td
     mass = ud.TOOLS["mass_send"]
     body = {"id": 777, "_user_ids_kept": {"asked": 3, "kept": 2},
@@ -258,7 +210,7 @@ def case_oversize_send_done() -> None:
     end = ud.step_end("s", "send", {**out, "open_url": "/growth/smart-messages"})
     assert end["state"] == "done" and end["result"] == {"id": 777} and "note" in end, end
     read = td.Tool("r", "r", "GET", "/x", td.NoArgs, "read")
-    assert td.shape_result(read, 200, body)["error"]["status"] == 413  # a read still says narrow it
+    assert td.shape_result(read, 200, body)["error"]["status"] == 413
 
 
 def case_error_text() -> None:
@@ -311,21 +263,21 @@ def case_card_and_report() -> None:
     assert mass["effect"] == "send" and mass["text"] == LONG, mass
     assert rows == {"Creator": f"Ava ({CA})", "Audience": "lists fans", "Price": "$10.00", "Media": "1: 9301",
                     "When": "now"}, rows
-    other = "1000002"  # m2: two Creators sharing a nickname get different cards
+    other = "1000002"
     twin = lambda aid: uc.card(ud.validate_plan(_plan({**SEND, "args": {**SEND["args"], "account_id": aid}}),  # noqa: E731
                                                 OWNED | {other}), {CA: "Ava", other: "Ava"})[0]["rows"]
     assert twin(CA) != twin(other) and dict(map(tuple, twin(other)))["Creator"] == f"Ava ({other})"
     write = dict(map(tuple, cards[1]["rows"]))
     assert write["name"] == "Halloween" and cards[1]["effect"] == "write", write
-    assert write["media_ids"] == "from step pick", write  # a one-item list of references: no JSON brackets
+    assert write["media_ids"] == "from step pick", write
     assert [c["title"] for c in cards] == ["Vault Search", "OF Folder Create", "Mass message"], cards
     two = {**WRITE, "args": {**WRITE["args"], "media_ids": ["$pick.data_only.list.0.id", "$pick.data_only.list.1.id"]}}
     rows2 = dict(map(tuple, uc.card(ud.validate_plan(_plan(READ, two), OWNED), {})[1]["rows"]))
     assert rows2["media_ids"] == "2 from step pick", rows2
     mixed = {**WRITE, "args": {**WRITE["args"], "media_ids": [9301, "$pick.data_only.list.0.id"]}}
     rows3 = dict(map(tuple, uc.card(ud.validate_plan(_plan(READ, mixed), OWNED), {})[1]["rows"]))
-    assert rows3["media_ids"] == '[9301, "from step pick"]', rows3  # a literal beside a reference: listed as is
-    assert dict(map(tuple, cards[0]["rows"]))["query"] == "halloween"  # arg labels stay the arg names
+    assert rows3["media_ids"] == '[9301, "from step pick"]', rows3
+    assert dict(map(tuple, cards[0]["rows"]))["query"] == "halloween"
     bare = toolbox_sends.card_rows("post", {"account_id": CA, "text": "hi"})
     assert dict(map(tuple, bare))["Media"] == "none", bare
     to = lambda ids: uc.card(ud.validate_plan(_plan({**SEND, "args": {**SEND["args"], "user_ids": ids}}),  # noqa: E731
@@ -333,8 +285,8 @@ def case_card_and_report() -> None:
     assert to([111, 222]) != to([333, 444])
     assert dict(map(tuple, to([111, 222])))["Audience"] == "lists fans + 2 fan(s) by id: 111, 222"
     many = dict(map(tuple, to(list(range(1, 13)))))["Audience"]
-    assert many.endswith("12 fan(s) by id: " + ", ".join(map(str, range(1, 13)))), many  # every id (M4)
-    assert to(list(range(1, 13))) != to([*range(1, 11), 99, 12])  # the 11th id changed → a different card
+    assert many.endswith("12 fan(s) by id: " + ", ".join(map(str, range(1, 13)))), many
+    assert to(list(range(1, 13))) != to([*range(1, 11), 99, 12])
     post = toolbox_sends.card_rows("post", {**POST["args"], "previews": [9301], "expire_days": 3,
                                             "posted_at": "2026-11-15T18:00:00+00:00"})
     assert post == [["Audience", "her feed (every subscriber)"], ["Price", "$5.00"], ["Media", "1: 9301"],

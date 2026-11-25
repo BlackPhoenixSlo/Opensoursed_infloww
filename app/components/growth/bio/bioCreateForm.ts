@@ -1,10 +1,3 @@
-/**
- * "New bio page": username, display name and an optional Creator, the create in flight and its refusal. A pure
- * reducer (BioCreateDialog only dispatches), the API's create rules mirrored (`decide.check_profile(create=True)`) so
- * a refusal shows before the round trip, and the body the create sends. Picking a Creator prefills the display name
- * (its OF name) and a username suggestion (its OF username) once `/users/me` answers; a field the user typed stays.
- * With a Creator the display name may be left blank: the server fills it from OF.
- */
 import type { ProfileCreate } from "@/hooks/useBioPages";
 import { chars, MAX_DISPLAY_NAME, NAME_MSG, RESERVED, RESERVED_MSG, USERNAME, USERNAME_MSG, type FormError } from "@/components/growth/bio/bioRules";
 export { MAX_DISPLAY_NAME, NAME_MSG, RESERVED_MSG, USERNAME_MSG } from "@/components/growth/bio/bioRules";
@@ -16,7 +9,6 @@ export interface BioCreateForm {
   accountId: string | null;
   busy: boolean;
   error: FormError | null;
-  /** What the last Creator prefill wrote: a field still holding it (or blank) is the next prefill's to replace. */
   filled: { username: string; displayName: string };
 }
 
@@ -31,10 +23,8 @@ export const INITIAL_CREATE: BioCreateForm = {
   username: "", displayName: "", accountId: null, busy: false, error: null, filled: { username: "", displayName: "" },
 };
 
-/** What the Creator typed as a page address: `@Alice ` names `alice`. */
 export const normalizeUsername = (raw: string) => raw.trim().replace(/^@/, "").toLowerCase();
 
-/** An OF username as a page address: `Alice.B-1` suggests `aliceb1`; none under 3 characters or reserved. */
 export function suggestUsername(ofUsername: string | null | undefined): string | null {
   const u = (ofUsername ?? "").toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 30);
   return USERNAME.test(u) && !RESERVED.includes(u) ? u : null;
@@ -62,7 +52,6 @@ export function buildCreatePayload(f: BioCreateForm): ProfileCreate {
   return body;
 }
 
-/** A field the prefill may overwrite: blank, or still what the last prefill wrote. */
 const prefillable = (value: string, filled: string) => value.trim() === "" || value === filled;
 
 export function bioCreateReducer(state: BioCreateForm, action: Action): BioCreateForm {
@@ -72,7 +61,7 @@ export function bioCreateReducer(state: BioCreateForm, action: Action): BioCreat
     case "pick_creator":
       return { ...state, accountId: action.accountId, error: null };
     case "creator_identity": {
-      if (action.accountId !== state.accountId) return state; // a late answer for a Creator no longer picked
+      if (action.accountId !== state.accountId) return state;
       const name = Array.from((action.name ?? "").trim()).slice(0, MAX_DISPLAY_NAME).join("");
       const user = suggestUsername(action.username) ?? "";
       const nameIn = name !== "" && name !== state.displayName && prefillable(state.displayName, state.filled.displayName);

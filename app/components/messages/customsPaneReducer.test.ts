@@ -202,8 +202,6 @@ describe("customsPaneReducer", () => {
 });
 
 describe("Pull's reopen rule (pullTicket → events → mayReopen)", () => {
-  // Carl (acc1:1) has two review rows, K1 and K2; Dan is acc1:2. The Pull is on
-  // Carl's K1; the events happen between its start and its ok rescrape.
   const CARL = "acc1:1";
   const DAN = "acc1:2";
   const moved: ReopenEvent = { type: "paneMoved" };

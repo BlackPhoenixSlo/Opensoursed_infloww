@@ -1,26 +1,13 @@
-/**
- * The Money rail's lists (`useMoneyRailFeed`): one relay read per Creator for the money types asked together.
- *
- * The rail keeps one query per Creator × type (`["notif-list", aid, type]`, shared with the bell and the toaster's
- * seeding), and they refetch together (mount, lease gain, `creator_warmed`, window return). `readMoneyList` joins the types
- * asked for one Creator within a tick into one `GET /api/of/v2/users/notifications/money?types=…`, which the relay
- * answers from the same per-type entries as `/users/notifications?type=…` (no extra OF call, nothing read that was
- * not asked). A relay without that route (404 Not Found) → per-type reads for the rest of the document load.
- */
-
 import type { NotificationItem } from "@/lib/moneyRailStorage";
 import { MONEY_TYPES, NOTIF_PAGE_SIZE, notifPath, parseList, type MoneyTypeKey } from "@/lib/notifText";
 import { relay, RelayError } from "@/lib/relay";
 
-/** The combined read for `types` (MONEY_TYPES order, page 0 at NOTIF_PAGE_SIZE: the per-type reads' page). */
 export function moneyPath(types: readonly MoneyTypeKey[]): string {
   const asked = MONEY_TYPES.filter((t) => types.includes(t));
   const q = new URLSearchParams({ types: asked.join(","), limit: String(NOTIF_PAGE_SIZE), offset: "0" });
   return `/api/of/v2/users/notifications/money?${q.toString()}`;
 }
 
-/** The combined reply as each asked type's rows, or its error (`errors[type]`: `{status, detail}`). A type the reply
- *  lacks lists nothing. */
 export function splitMoneyBody(
   raw: unknown, types: readonly MoneyTypeKey[],
 ): Record<MoneyTypeKey, NotificationItem[] | RelayError> {
@@ -36,9 +23,9 @@ export function splitMoneyBody(
   return out;
 }
 
-/** A relay that has no combined route: FastAPI's own 404 (an unknown Creator's 404 says otherwise). */
 export function isNoRoute(e: unknown): boolean {
   return e instanceof RelayError && e.status === 404
+      // FastAPI's own 404; an unknown Creator's 404 says otherwise
     && (e.body as { detail?: unknown } | null)?.detail === "Not Found";
 }
 
@@ -56,8 +43,6 @@ function perType(aid: string, type: MoneyTypeKey, signal?: AbortSignal): Promise
   return relay.get(notifPath(type), { accountId: aid, priority: "background" }, signal).then(parseList);
 }
 
-/** `aid`'s `type` list; the types asked for `aid` in the same tick share one read. A waiter whose signal aborts
- *  rejects at once; the read itself aborts once every waiter's has. */
 export function readMoneyList(aid: string, type: MoneyTypeKey, signal?: AbortSignal): Promise<NotificationItem[]> {
   if (noRoute) return perType(aid, type, signal);
   return new Promise((resolve, reject) => {
@@ -108,7 +93,6 @@ async function flush(aid: string): Promise<void> {
   }
 }
 
-/** Tests: nothing pending, the combined route assumed present. */
 export function resetMoneyLists(): void {
   pending.clear();
   noRoute = false;

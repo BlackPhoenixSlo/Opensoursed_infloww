@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * ConsentBanner — the full-width strip under the top bar while any of the
- * owner's Creators owes OnlyFans a signed consent form (NC/AL law: OF refuses
- * that Creator's media mass messages and PPVs). Its source is the agency
- * notifications' `pinned` rows (service/consent_notices.py), so it shows and
- * goes with them; not dismissible, as they are not. "View" opens where that
- * Creator gets fixed (`consentFixHref`) while only one is flagged, else the
- * bell on its Agency tab (OPEN_AGENCY_EVENT). Owner only, like that feed.
- *
- * One 40px line (the text truncates; phones get the short wording) inside
- * the sticky chrome, so `--chrome-top` grows by its 48px (globals.css,
- * `[data-consent-banner]`), as for the free-trial banner.
- */
 
 import Link from "next/link";
 import { TriangleAlert } from "lucide-react";

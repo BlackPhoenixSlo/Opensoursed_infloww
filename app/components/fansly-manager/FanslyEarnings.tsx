@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * Fansly Manager > Earning Statistics: the purchases our ledger recorded for this Fansly creator, by kind, over a date
- * range (default the last 30 days), from `GET /admin/stats/revenue?account_id&from&to&group_by=kind`. Fansly's own
- * earnings endpoints answer the shim nothing, so this is not Fansly's statement: it is the sales service/fansly_revenue
- * wrote from Fansly's purchase notifications, labelled as such. Fansly's wallet balance is not shown: its unit is
- * unverified.
- */
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -18,11 +11,11 @@ import { cn } from "@/lib/utils";
 
 interface KindRow { kind: string | null; total_cents: number; count: number }
 
+// Fansly's earnings endpoints answer the shim nothing: these are our ledger's sales from purchase notifications, not Fansly's statement.
 const KIND_LABEL: Record<string, string> = {
   ppv: "Pay-per-view", tip: "Tips", subscription: "Subscriptions", rebill: "Renewals", custom: "Custom",
 };
 
-/** A local `yyyy-mm-dd`, `days` before today. */
 function dayOffset(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() - days);

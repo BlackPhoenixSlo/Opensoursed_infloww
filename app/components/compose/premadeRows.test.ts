@@ -21,7 +21,6 @@ describe("rowReducer", () => {
   it.each<[string, Row, RowAction[], Row]>([
     ["patch merges", row({ texts: ["a"] }), [{ type: "patch", patch: { price: "5", folderId: "7" } }],
       row({ texts: ["a"], price: "5", folderId: "7" })],
-    // System chip: off ↔ include, never exclude (OF drops a built-in name in excludedLists).
     ["system chip off → include", row({ includes: [], excludes: [] }), [{ type: "toggleListInclude", id: "fans" }],
       row({ includes: ["fans"], excludes: [] })],
     ["system chip include → off (no exclude state)", row({ includes: ["fans"] }), [{ type: "toggleListInclude", id: "fans" }],
@@ -76,7 +75,6 @@ describe("rowToItem", () => {
       exclude_last_chat_hours: 3, exclude_replied_hours: 2, exclude_inbound_hours: 3,
       unread_limit: 10, recent_chat_hours: 5,
     }],
-    // Default-on guards (absent = 6h / 2h server-side): blank is the default, an explicit 0 turns them off.
     ["mass replied / inbound blank → absent (backend default)", { includes: [], onlineOnly: false, excludeLastChatHours: "" },
       MASS, {}],
     ["mass replied / inbound 0 → sent as 0 (guard off)", { includes: [], onlineOnly: false, excludeLastChatHours: "",
@@ -88,8 +86,6 @@ describe("rowToItem", () => {
   });
 });
 
-// Every knob set (incl. ones the mode ignores). Expected JSON pins values AND
-// key order, i.e. the exact wire bytes (one clock: no delay / resend on either kind).
 const FULL = row({
   texts: [" hello ", "", "second"], media: [media(11), media(12)], folderId: "7", mediaCount: "3.9",
   previewMedia: [media(21)], previewFolderId: "8", previewCount: "1.5",
@@ -116,7 +112,6 @@ describe("rowToItem golden", () => {
 });
 
 describe("itemToRow round-trip", () => {
-  // item → row → item keeps every payload field.
   it.each<[string, Partial<Row>, Kind]>([
     ["posts full", FULL, POSTS],
     ["mass full (custom excludes only)", { ...FULL, excludes: ["666"] }, MASS],
@@ -151,7 +146,6 @@ describe("payloadToRow", () => {
       row({ texts: ["a"], onlineOnly: false, includes: [], excludeLastChatHours: "" })],
     ["[null] → an empty saved item", { posts: [null] }, "auto_posts",
       row({ onlineOnly: false, includes: [], excludeLastChatHours: "" })],
-    // A saved message without the key is Off (the 1h default is for new rules only).
     ["messages", { messages: [{ texts: ["a", "b"], online_only: true, user_lists: ["fans"] }] }, "mass_premade",
       row({ texts: ["a", "b"], includes: ["fans"], excludeLastChatHours: "" })],
     ["messages, skip chatted-with 3h", { messages: [{ text: "a", exclude_last_chat_hours: 3 }] }, "mass_premade",
@@ -167,9 +161,7 @@ describe("payloadToRow", () => {
 
 describe("buildPayload", () => {
   const plain = row({ texts: ["hi"], includes: [], onlineOnly: false });
-  // One rule = one item: no resend_* / delay_minutes key on either kind.
   it.each<[string, Row, Kind, string]>([
-    // Always the one item, even one that wouldn't send yet (readyMadeContent `sendGap` is the gate).
     ["no text, no media: still the one item", row({ texts: [" "] }), POSTS, '{"posts":[{}]}'],
     ["mass, audience but no text: the audience is kept", row({ texts: [""], includes: ["42"], onlineOnly: false }), MASS,
       '{"messages":[{"user_lists":["42"],"exclude_last_chat_hours":1}]}'],

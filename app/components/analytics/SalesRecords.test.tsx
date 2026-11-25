@@ -1,15 +1,3 @@
-/**
- * SalesRecords — Analytics > Sales records (docs/spec/phase-05-remaining-parity-gaps.md, item 3; ticket 33,
- * stories 19-21, 25, 26 and 29; ticket 34, Reassign, stories 22 and 23).
- *
- * Rendered with the relay mocked at `fetch` by URL: `/admin/stats/sales-records` answers pages of Sales records,
- * `/admin/employees` the Agency's roster (the Employees filter's and the Reassign picker's options),
- * `/admin/employee-groups` its Employee groups (the Employees filter's groups, ticket 36) and
- * `/admin/ingest/transactions/{id}/attribute` a Reassign and `/admin/ingest/transactions/attribute` a batch one
- * (roadmap W6 6.5), so the columns, the filters, paging, the CSV export and Reassign are assertions about the wire. The clock is pinned to 2026-05-04 12:00 UTC and the report time zone is UTC,
- * so every date bound below is written out by hand. Every name is fake. The filters are `IfSelect`s (a combobox
- * button and a listbox), and the table's end is an IntersectionObserver sentinel, stubbed so a test can scroll to it.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -51,13 +39,9 @@ const MANUAL_ROW = {
 };
 
 let fetchMock: ReturnType<typeof vi.fn>;
-/** When set, every Sales records read fails with this status. */
 let failWith: number | null;
-/** The sentinel observers, newest last. */
 let observers: IntersectionObserverCallback[];
-/** The first page's sale 42 as the Relay serves it now: a Reassign POST swaps it for the Relay's answer after. */
 let saleFortyTwo: SalesRecord;
-/** When set, the whole read is these rows, one page. */
 let onePage: SalesRecord[] | null;
 const REASSIGNED_42 = { ...MSG_ROW, employee_id: 9, employee_name: "Gamma Chatter", rule: "manual", assigned_by: "Owner" };
 const CLEARED_42 = { ...MSG_ROW, employee_id: null, employee_name: null, rule: "unassigned", assigned_by: "Auto" };
@@ -82,7 +66,6 @@ beforeEach(() => {
   fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const u = new URL(String(url), "http://relay.test");
     if (u.pathname === "/admin/employees") {
-      // The Agency's roster, a chatter's Mirror Employee included.
       return jsonRes({ employees: [
         { id: 7, display_name: "Alpha One", is_active: true },
         { id: 8, display_name: "Beta Two", is_active: true },
@@ -125,7 +108,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Every Sales records request sent so far. */
 function reads(): URLSearchParams[] {
   return fetchMock.mock.calls
     .map(([url]) => new URL(String(url), "http://relay.test"))
@@ -139,13 +121,11 @@ function cells(row: HTMLElement): string[] {
   return within(row).getAllByRole("cell").map((c) => c.textContent ?? "");
 }
 
-/** Opens the `IfSelect` named `name` and picks `option`. */
 async function pick(name: string, option: string, root: HTMLElement = document.body) {
   fireEvent.click(within(root).getByRole("combobox", { name }));
   fireEvent.click(await screen.findByRole("option", { name: option }));
 }
 
-/** The option texts of the `IfSelect` named `name` (opened, read, closed), once `until` is listed. */
 async function optionsOf(name: string, until?: string): Promise<string[]> {
   const box = screen.getByRole("combobox", { name });
   fireEvent.click(box);
@@ -156,7 +136,6 @@ async function optionsOf(name: string, until?: string): Promise<string[]> {
   return texts;
 }
 
-/** The end of the table comes into view. */
 function scrollToEnd() {
   act(() => observers.at(-1)!([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
 }
@@ -228,13 +207,11 @@ describe("SalesRecords", () => {
     renderWithProviders(<SalesRecords />);
     await screen.findByRole("table");
     expect(reads()).toHaveLength(1);
-    // Month is Employee reports' 30d window: 30 days before today through today.
     expect(last().get("from")).toBe("2026-04-05T00:00:00.000Z");
     expect(last().get("to")).toBe("2026-05-04T23:59:59.999Z");
     expect(last().has("account_id") || last().has("employee_id") || last().has("kind")).toBe(false);
     expect(last().has("assigned") || last().has("before_id")).toBe(false);
 
-    // The presets and the dates live in the range box's popover (page-parity ticket 25).
     fireEvent.click(screen.getByRole("button", { name: /^Date range/ }));
     fireEvent.click(screen.getByRole("button", { name: "Day" }));
     await waitFor(() => expect(last().get("from")).toBe("2026-05-04T00:00:00.000Z"));
@@ -250,18 +227,15 @@ describe("SalesRecords", () => {
     await waitFor(() => expect(last().getAll("kind")).toEqual(["tip"]));
     await pick("Assigned", "Unassigned sales only");
     await waitFor(() => expect(last().get("assigned")).toBe("unassigned"));
-    // Unassigned sales have no Employee: the Employees filter waits (Infloww's rule).
     expect(screen.getByRole("combobox", { name: "Employees" })).toBeDisabled();
     await pick("Assigned", "Assigned sales only");
     await waitFor(() => expect(last().get("assigned")).toBe("assigned"));
     await pick("Employees", "Beta Two");
     await waitFor(() => expect(last().getAll("employee_id")).toEqual(["8"]));
-    // ...and with an Employee picked, Unassigned sales only cannot be chosen.
     fireEvent.click(screen.getByRole("combobox", { name: "Assigned" }));
     expect(screen.getByRole("option", { name: "Unassigned sales only" })).toHaveAttribute("aria-disabled", "true");
     fireEvent.click(screen.getByRole("combobox", { name: "Assigned" }));
 
-    // Typing either date switches the shared picker to Custom.
     fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-03-01" } });
     fireEvent.change(screen.getByLabelText("To date"), { target: { value: "2026-03-31" } });
     await waitFor(() => expect(last().get("from")).toBe("2026-03-01T00:00:00.000Z"));
@@ -429,7 +403,6 @@ describe("SalesRecords", () => {
     expect(await optionsOf("Reassign to", "Gamma Chatter")).toEqual([
       "Alpha One", "Beta Two", "Gamma Chatter", "No one", "Clear assignment",
     ]);
-    // Nothing is sent until Save, and Save waits for a choice.
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("combobox", { name: "Reassign to" })).toBeNull();
@@ -516,7 +489,7 @@ describe("SalesRecords", () => {
     expect(bar).toHaveTextContent("499 sales records selected");
     expect(bar).not.toHaveTextContent("At most 500");
     expect(screen.getByRole("checkbox", { name: "Select sale 1500" })).toBeEnabled();
-  }, 30_000); // 501 rendered rows: several seconds in jsdom, past the 5 s default when the machine is loaded.
+  }, 30_000);
 
   it("a filter change drops the selection", async () => {
     renderWithProviders(<SalesRecords />);

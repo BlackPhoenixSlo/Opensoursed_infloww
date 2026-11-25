@@ -1,8 +1,3 @@
-/**
- * AI rules page view state: the read (load status, payload), the pan/zoom transform, the viewport size and
- * the open card. Pure reducer; the page only dispatches. `view` maps diagram coords to screen: screen = d * k + (x, y).
- */
-
 export type Mode = "test" | "shadow";
 
 export interface RuleBlock {
@@ -41,7 +36,6 @@ export interface AiRulesState {
   view: View;
   viewport: { w: number; h: number };
   selected: string | null;
-  /** A new diagram (load, orientation flip, first size) waits for one `fit` from the page. */
   pendingFit: boolean;
 }
 
@@ -59,7 +53,6 @@ export type Action =
 
 export const MIN_K = 0.1;
 export const MAX_K = 2.5;
-/** Below this scale a card shows title + summary only. */
 export const DETAIL_K = 0.55;
 export const STEP = 1.25;
 const FIT_PAD = 24;
@@ -76,15 +69,12 @@ export const INITIAL: AiRulesState = {
 
 export const clampK = (k: number) => Math.min(MAX_K, Math.max(MIN_K, k));
 
-/** Scale by `factor` keeping screen point (px, py) over the same diagram point. */
 export function zoomAt(v: View, px: number, py: number, factor: number): View {
   const k = clampK(v.k * factor);
   const r = k / v.k;
   return { k, x: px - (px - v.x) * r, y: py - (py - v.y) * r };
 }
 
-/** The view that shows a `w`×`h` diagram whole and centred in the viewport (never above 1×). `width` (the phone's
- *  tall column) fits the width only and starts at the top, so the cards stay readable; drag scrolls down. */
 export function fitView(viewport: { w: number; h: number }, w: number, h: number, fill: "contain" | "width" = "contain"): View {
   if (viewport.w <= 0 || viewport.h <= 0 || w <= 0 || h <= 0) return { x: 0, y: 0, k: 1 };
   const kw = (viewport.w - FIT_PAD * 2) / w;
@@ -109,7 +99,6 @@ export function aiRulesReducer(s: AiRulesState, a: Action): AiRulesState {
     case "zoomStep":
       return { ...s, view: zoomAt(s.view, s.viewport.w / 2, s.viewport.h / 2, a.dir > 0 ? STEP : 1 / STEP) };
     case "fit":
-      // Phone (tb): fit the width, top first; desktop: the whole diagram.
       return { ...s, pendingFit: false,
         view: fitView(s.viewport, a.w, a.h, orientationFor(s.viewport.w) === "tb" ? "width" : "contain") };
     case "resize": {

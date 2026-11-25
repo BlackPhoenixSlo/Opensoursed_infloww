@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * A `needs_you` judge's pick card (ultra ticket 06 owner amendment): its question, ≤6 candidate thumbnails (the
- * AI's words as alt / title and a 2-line caption, readable on a phone), the AI's picks pre-ticked. The owner ticks exactly `pick_n`; the caller's "Send these"
- * posts them (canPick / buildPickPayload). Presentation only: ticks come from ultraRunReducer's `picked`.
- */
 import { cn } from "@/lib/utils";
 import type { StepStatus } from "./ultraRunReducer";
 

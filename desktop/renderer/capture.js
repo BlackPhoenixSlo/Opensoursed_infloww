@@ -1,8 +1,5 @@
 "use strict";
 
-// Capture-status UI. Talks to the main process only through window.fasttCapture
-// (status-preload.js). Shows the four steps with the current one highlighted,
-// one plain-language message, and the technical details folded away.
 
 const steps = {
   app: document.getElementById("step-app"),

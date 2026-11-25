@@ -1,21 +1,3 @@
-"""Bio pages (ofl.ink ported, service/bio_pages on BIO_PORT): Profiles, their Links, domains and past daily counts.
-
-SQL, as the PR2 editor will write them (product-writable rows only): per Creator `profiles` bio_profiles (owner = the
-Agency's user, account_id = the Creator on even profiles, NULL on odd), each with `links` bio_links mixing modes,
-18+, tracking and default codes, a geo rule on every 4th (a country's code, a country's region object, a default
-only; those links carry the default code `geo`, as v2's editor stores it). Each destination holds a unique token
-`slopdest-<p>-<l>` (p the profile's global index): the leak oracle. Every 3rd destination ends in `/`. One spare domain
-SPARE; per Creator profile 0 has the live custom domain `c<i>.bio.slop.test` and profile 1 the pending
-`c<i>p.bio.slop.test`. bio_daily: DAYS days (today included) of past views and clicks per profile. With `files_dir`
-(the bio process's BIO_FILES_DIR) the first profile whose default mode is Escape Mode gets an avatar: a 512px WebP
-made from the OF-mirror background image at AVATAR_SRC (its build-hash path must exist), written under files_dir
-like an upload (the Escape Overlay's backdrop).
-
-`w.data["bio_pages"]`: {profiles: [{id, username, gp, json (the exact Profile JSON bytes, built here, not by the
-service), avatar (file name or ""), links: [{id, link_id, destination, geo, tracking, default, is_adult, mode}],
-live, pending}], spare,
-past: {(profile id, link row id or '', UTC day): (views, clicks)}}. Deterministic from the World's seed (stream
-"bio_pages")."""
 from __future__ import annotations
 
 import io
@@ -29,8 +11,8 @@ from PIL import Image
 from . import World, merge_sizes, ts
 
 SIZES = {
-    "bio_pages_profiles": (2, 5, 20),      # per Creator
-    "bio_pages_links": (6, 12, 12),        # per profile
+    "bio_pages_profiles": (2, 5, 20),
+    "bio_pages_links": (6, 12, 12),
     "bio_pages_visits": (600, 8_000, 30_000),
 }
 merge_sizes(SIZES)
@@ -50,7 +32,6 @@ def _code(rng) -> str:
 
 
 def _geo(rng, k: int) -> dict:
-    """The three rule shapes v2's editor stores: a country's code, a country's regions (+ default), a default only."""
     shape = k % 3
     if shape == 0:
         return {c: _code(rng) for c in rng.sample(COUNTRIES, 2)}
@@ -88,7 +69,7 @@ def seed(w: World, creators: list[dict], *, profiles: int, links: int, files_dir
             verified = p % 2 == 0
             display, bio = f"Slop Bio {gp}", f"Bio {gp} — café <&>"
             avatar = ""
-            if avatar_left and mode != "direct":   # "", "legacy" and escape_ig all default to Escape Mode
+            if avatar_left and mode != "direct":  # "", "legacy" and escape_ig all default to Escape Mode
                 avatar, avatar_left = AVATAR_NAME, False
                 _write_avatar(files_dir, pid)
             prof_rows.append((pid, w.user_id, c["id"] if p % 2 == 0 else None, username, display, bio, avatar, mode,
@@ -116,7 +97,7 @@ def seed(w: World, creators: list[dict], *, profiles: int, links: int, files_dir
                 pub_links.append(pl)
             body = {"profile": {"id": pid, "username": username, "displayName": display, "bio": bio,
                                 "avatarUrl": f"/api/files/profiles/{pid}/{avatar}" if avatar else "",
-                                "backgroundUrl": "",   # PR #605's page background; the seed sets none
+                                "backgroundUrl": "",
                                 "verified": verified, "mode": mode if mode in MODES else "escape_ig"},
                     "links": pub_links}
             live = f"c{ci}.bio.slop.test" if p == 0 else None

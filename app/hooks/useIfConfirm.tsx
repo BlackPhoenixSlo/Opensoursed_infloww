@@ -4,8 +4,6 @@ import { useState, type ReactNode } from "react";
 
 import { IfButton, IfModal } from "@/components/ui/infloww";
 
-/** antd's `Modal.confirm` as an awaited `IfModal` (416px): `ask(title, body, ok)` resolves true on the primary
- *  button, false on Cancel, ×, or Escape. Render `modal` once in the component. */
 export function useIfConfirm() {
   const [q, setQ] = useState<{ title: string; body?: ReactNode; ok: string; resolve: (yes: boolean) => void } | null>(null);
   const ask = (title: string, body?: ReactNode, ok = "Confirm") =>

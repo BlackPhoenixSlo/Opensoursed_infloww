@@ -1,43 +1,5 @@
 "use client";
 
-/**
- * Write-through for New message (messages/send) of the OF mirror's Messages tab. All wiring is runtime DOM.
- *
- * New message (messages/send, single Creator): the Send to rows are the Creator's user lists (GET /api/of/v2/lists, OF's
- * own built-ins like "fans" included), each a checkbox kept on the Mass draft (`oi:mass:<accountId>`) with the text. The
- * left tabs are OF's own ?list= views of the one page: Send to ticks `user_lists`, Exclude ticks `excluded_user_lists` (a
- * list picked on one tab is disabled on the other, as OF's), Users ticks fans one by one (`user_ids`; the Creator's recent
- * chats, GET /api/of/v2/chats). A ticked row drops OF's `m-not-active` (its tick shows only then); anything picked puts
- * OF's "N Selected ⊗" chip over the search (⊗ drops every pick) and titles the right side "New message to selected
- * list". Search users and lists filters the tab's rows. Send
- * asks first (window.confirm, naming the lists and their user count), then sends one POST /api/of/v2/messages/queue
- * {text, user_lists} (OF's mass message, sent now), or with the draft's `scheduled_date` {text, user_lists,
- * scheduled_date}, OF's scheduled mass message; saved for later it goes to POST /api/of/v2/messages/queue/later
- * {…, save_for_later} (OF's Save for later: no date, never sent now).
- * Its composer's tools are ofMirrorChatShared's (bindTools), on the Mass draft: Add media, Record voice and video and drops
- * (`media_files`), Add GIF (`giphy_id`), Format text (the text as OF's markup), and the price, vault and tag dialogs over
- * New message (messages/send/state-price, state-vault, state-tag-people; the generator's sendStates), their picks the
- * draft's `price`, `media_files` and `tags` (creators only: the Relay's mass body has `tagged_users` and no guest or
- * release-form field, NO_MASS_FORMS). OF's GIF rule holds as in a chat; Clear drops every extra (not the recipients).
- * The schedule button opens a date and time dialog in the Agency's time zone (Cancel, Save for Later, Next) that puts
- * either on the draft; the Queue's Add to queue puts them there too. The line under the editor names them ("Scheduled
- * for … · Clear", "Saved for later · Clear").
- * New message's list page (messages/send/state-list-dropdown, ticket 32) has the same composer on the same Mass draft:
- * Add media, Record video and voice, Add GIF and the schedule dialog work in place; vault, price and tag open New
- * message's dialogs and Format Text opens New message with its Format text panel open (`?format=1`, FORMAT_PARAM), so
- * their picks land on the one draft (bindMassList, MASS_DIALOGS' list page entry). ASSUMPTION: these four navigate
- * rather than open in place (rung 3/5: the generator links the list page to New message's states; overturned by ticket
- * 28's generator edit giving the list page its own dialogs).
- * Each keeps its Not-yet title until its draft-only Live proof (D1, ticket 53); the list Send is untouched.
- * Edit message (the Queue's row menu) fills the Mass draft from the queued message (its text, media, price, recipients,
- * lists, excluded lists and date, and `edit_id`): Send then saves that message in place, PUT
- * /api/of/v2/messages/queue/{id} with the same body (a new date is OF's reschedule; an edit always keeps a date or Save
- * for later), and goes back to the Queue or the saved-for-later page. The line names the edit, the picked recipients, the
- * media and the price it keeps; Discard drops the draft. The tools change the edit's media, price and tags (the Relay's
- * edit body has them), not a GIF (it has none: NO_EDIT_GIF).
- *
- * All models and no model: as ofMirrorChat's.
- */
 
 import { restore, setAttr, setText, stamp } from "@/lib/ofMirrorDom";
 import { applyListRows, markRow, MASS_ROW, usersLabel } from "@/lib/ofMirrorDataLists";
@@ -73,37 +35,25 @@ import {
   type MassView,
 } from "@/lib/ofMirrorChatShared";
 
-/** The Mass draft: its text and the picked user lists' ids (as strings: the Relay's `user_lists`). */
 export interface MassDraft {
   text: string;
   user_lists: string[];
-  /** Local ISO with offset (the schedule dialog, the Queue's Add to queue); none: sent now. */
   scheduled_date?: string;
-  /** OF's Save for later: queued with no date (never alongside scheduled_date). */
   save_for_later?: boolean;
-  /** Fans picked one by one (the Users tab, or an edited message's `userIds`). */
   user_ids?: number[];
-  /** Lists left out (the Exclude tab, or an edited message's `excludedLists`). */
   excluded_user_lists?: string[];
-  /** Vault ids (the vault dialog's picks, an edited message's media) and Add media's upload claims, in order. */
   media_files?: Array<number | Record<string, unknown>>;
-  /** thumbs[i] is the picture of media_files[i] (none for an edited message's own media). */
   thumbs?: string[];
-  /** PPV price in dollars (the price dialog, an edited message's); absent: free. */
   price?: number;
-  /** The composer's tools, as the Chat draft's: the text as OF's markup, Add GIF's pick, the tags and the voice notes. */
   html?: string;
   giphy_id?: string;
   giphy_thumb?: string;
   tags?: ChatTag[];
   audio?: number;
-  /** The queued message this draft edits (the Queue's Edit message): Send saves it (PUT) instead of a new one. */
   edit_id?: string;
-  /** Add media's uploads that attached nothing, by `mediaKey`, with why (ofMirrorPost `mediaTaker`): Send asks first. */
   upload_failed?: Record<string, string>;
 }
 
-/** POST /api/of/v2/messages/queue (and PUT …/queue/{id}): the Relay's _MassScheduleBody subset (neither date: sent now). */
 export interface MassMessageBody {
   text: string;
   user_lists: string[];
@@ -113,22 +63,17 @@ export interface MassMessageBody {
   excluded_user_lists?: string[];
   media_files?: Array<number | Record<string, unknown>>;
   price?: number;
-  /** Tagged creators (OF's userTags). */
   tagged_users?: number[];
-  /** OF's `giphyId`. */
   giphy_id?: string;
 }
 
 export const NO_LISTS = "Pick at least one list";
-/** The Relay's mass body tags creators only (`tagged_users`): no guest or release-form field. */
 export const NO_MASS_FORMS = "A mass message can only tag creators";
 export const MASS_TAG = "messages/send/state-tag-people";
-/** New message's "N Selected ⊗" chip over the search (OF's filter counter) and its search field. */
 const SELECTED = "oi-mass-selected";
 const MASS_SEARCH = ".b-search-users-form input";
-/** The Users tab's fans: the Creator's recent chats (the Relay's GET /chats, OF's order). */
 export const MASS_FANS = "/api/of/v2/chats?limit=50";
-/** The most ids OF's /users/list resolves in one read (more are dropped). */
+// The most ids OF's /users/list resolves in one read (more are dropped).
 export const USERS_LIST_MAX = 20;
 
 export const massViewOf = (list: string | null): MassView => (list === "exclude" || list === "users" ? list : "send");
@@ -137,24 +82,17 @@ const MASS_TABS: Array<[MassView, string, string]> = [
   ["exclude", "Exclude", "/of-manager/messages/send?list=exclude"],
   ["users", "Users", "/of-manager/messages/send?list=users"],
 ];
-/** OF's right-hand title once anything is picked (the captured page's "Select users to send them a message" before). */
 export const MASS_PICKED_TITLE = "New message to selected list";
 
 export const massDraftKey = (accountId: string) => `oi:mass:${accountId}`;
 
 export const loadMassDraft = (storage: Storage, accountId: string): MassDraft => load<MassDraft>(storage, massDraftKey(accountId), { text: "", user_lists: [] });
-/** Tick `list` on the Mass draft's Send to (and off its Exclude, as a list ticked on one tab is off the other). */
 export function tickMassList(storage: Storage, accountId: string, list: string): void {
   const d = loadMassDraft(storage, accountId);
   const next = { ...d, user_lists: d.user_lists.includes(list) ? d.user_lists : [...d.user_lists, list], excluded_user_lists: d.excluded_user_lists?.filter((l) => l !== list) };
   storage.setItem(massDraftKey(accountId), JSON.stringify(next));
 }
 
-/**
- * The mass message body for `text` and the draft (its lists, kept recipients, media, price, tagged creators, GIF and date
- * or Save for later), or the validation note. An edit needs a date or Save for later (NO_DATE) and carries no GIF. A list
- * also excluded goes in `excluded_user_lists` only.
- */
 export function collectMass(text: string, draft: MassDraft, now: Date = new Date()): MassMessageBody | string {
   const t = text.trim();
   const media = draft.media_files ?? [];
@@ -166,7 +104,6 @@ export function collectMass(text: string, draft: MassDraft, now: Date = new Date
   if (!t && !media.length && !gif) return EMPTY_MESSAGE;
   if (!sendTo.length && !ids.length) return NO_LISTS;
   if (tags.some((x) => FORM_TAGS.includes(x.type))) return NO_MASS_FORMS;
-  // OF's rule, as a chat's: a GIF goes with no media but a voice note, no price and no tags.
   if (gif && (media.length > (draft.audio ?? 0) || tags.length || draft.price)) return GIF_ALONE;
   if (gif && draft.edit_id) return NO_EDIT_GIF;
   const body: MassMessageBody = { text: t, user_lists: sendTo };
@@ -184,17 +121,12 @@ export function collectMass(text: string, draft: MassDraft, now: Date = new Date
   return body;
 }
 
-/**
- * The Relay request Send makes for the Mass draft: the edited queued message saved in place, a new one saved for later
- * (its own route: a Relay that predates Save for later answers 405 there instead of sending the message at once), or a
- * new mass message (now or scheduled).
- */
 export const massRequest = (draft: MassDraft): { method: "POST" | "PUT"; path: string } =>
   draft.edit_id
     ? { method: "PUT", path: `/api/of/v2/messages/queue/${encodeURIComponent(draft.edit_id)}` }
+    // Save for later has its own route: a Relay that predates it answers 405 instead of sending the message at once.
     : { method: "POST", path: draft.save_for_later ? "/api/of/v2/messages/queue/later" : "/api/of/v2/messages/queue" };
 
-/** New message's dialogs: a chat's (its schedule is bindMass' own dialog). */
 const MASS_DIALOGS: Record<string, ChatDialog> = {
   [MASS_TAG]: bindChatTags,
   "messages/send/state-price": bindPrice,
@@ -203,10 +135,6 @@ const MASS_DIALOGS: Record<string, ChatDialog> = {
 };
 const MASS_PAGE = "/of-manager/messages/send";
 
-/**
- * New message's Send to before the user lists are here: OF's "Nothing found" reads "Loading lists…" while the Relay
- * answers, or the red "Could not load lists: <the Relay's text>" after it failed. The unbind's restore puts it back.
- */
 function listsStatus(doc: Document, error: string | undefined, what: "lists" | "fans" = "lists"): void {
   const text = doc.querySelector<HTMLElement>(".b-chats__scroller [data-oi-empty] .empty-message > span");
   if (!text) return;
@@ -214,27 +142,14 @@ function listsStatus(doc: Document, error: string | undefined, what: "lists" | "
   if (error !== undefined) setAttr(doc, text, "style", "color:#ff4545");
 }
 
-/** New message's schedule button, its dialog's id, and where an edit or a message saved for later lands. */
 const SCHEDULE_BTN = "button[at-attr='scheduled_msg']";
 const MASS_SCHEDULE = "oi-mass-schedule";
 const QUEUE_PAGE = "/of-manager/queue";
 const SFL_MESSAGES = "/of-manager/queue/saved-for-later-messages";
-/** The schedule dialog's title: the schedule button's own (captured) label. */
 export const SCHEDULE_TITLE = "Scheduled messages";
-/**
- * New message's list page (its list menu open, a State page; ticket 32): the same composer, its tools New message's (the
- * generator's Not-yet title kept on them until a Live proof, D1; LIST_LIVE's passed). The vault, price and tag buttons open New message's
- * dialogs, as its links do, and Format Text opens New message with its panel open (the list page has none): a click
- * outside OF's list menu closes it and reaches the tool.
- */
 const FORMAT_TEXT = "button[aria-label='Format Text']";
-/** New message's `?format=1`: its Format text panel opens on arrival (the list page's Format Text). */
 export const FORMAT_PARAM = "format";
 const FORMAT_ONCE = "data-oi-format-once";
-/**
- * The list page's tools whose Live proof passed (D1: their Not-yet title drops): Scheduled messages, Message price, Add
- * media from vault and Format Text (docs/of-manager/captures/messages--list-{schedule,price,vault,format-text}.json).
- */
 const LIST_LIVE = `${SCHEDULE_BTN}, [at-attr='price_btn'], [at-attr='add_vault_media'], ${FORMAT_TEXT}`;
 const LIST_OPENS: Array<[string, string]> = [
   ["[at-attr='add_vault_media']", `/of-manager/${MASS_VAULT}`],
@@ -243,13 +158,6 @@ const LIST_OPENS: Array<[string, string]> = [
   [FORMAT_TEXT, `${MASS_PAGE}?${FORMAT_PARAM}=1`],
 ];
 
-/**
- * The list page's tools: the schedule button and Format Text the composer leaves disabled are enabled (the vault, price
- * and tag buttons follow OF's GIF rule, the composer's lock), all marked Wired (the Not-yet title kept until a Live
- * proof, D1; dropped on LIST_LIVE's); the openers navigate. The state page's backdrop (z 1, a link back) covers the editor and the GIF box, so
- * the composer is lifted over it. bindMass' unbind restores the attributes.
- * ASSUMPTION: a z-index lift, not a generator edit (rung 5, smallest); overturned by ticket 28's generator change.
- */
 function bindMassList(doc: Document, _ctx: ChatContext, { ready }: Parameters<ChatDialog>[2]): () => void {
   for (const b of doc.querySelectorAll(`${SCHEDULE_BTN}, ${LIST_OPENS.map(([sel]) => sel).join(", ")}`)) setAttr(doc, b, "data-oi-wired", "");
   for (const b of doc.querySelectorAll(`${SCHEDULE_BTN}, ${FORMAT_TEXT}`)) setAttr(doc, b, "disabled", null);
@@ -259,8 +167,6 @@ function bindMassList(doc: Document, _ctx: ChatContext, { ready }: Parameters<Ch
   const onClick = (ev: MouseEvent) => {
     const t = ev.target as Element | null;
     const hit = LIST_OPENS.find(([sel]) => t?.closest?.(sel));
-    // The composer's GIF lock (registered first, same node) prevents a locked tool's click; honour it. Format Text is
-    // never locked, but the composer's own panel toggle prevents its default too, so it always navigates here.
     if (!hit || (ev.defaultPrevented && hit[0] !== FORMAT_TEXT)) return;
     ev.preventDefault();
     ready(t!.closest(hit[0])!)?.navigate(hit[1]);
@@ -269,10 +175,6 @@ function bindMassList(doc: Document, _ctx: ChatContext, { ready }: Parameters<Ch
   return () => doc.removeEventListener("click", onClick);
 }
 
-/**
- * Wire New message (messages/send, or one of its dialogs' pages `page`) in `doc`: the list rows, the composer and its
- * tools (a chat's), and the open dialog. Returns an unbind.
- */
 export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"): () => void {
   const { handlers, lists, zone } = ctx;
   const editor = doc.querySelector<HTMLElement>(EDITOR);
@@ -280,12 +182,10 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
   if (!editor || !send) return () => {};
   const keep = handlers && ctx.storage && ctx.accountId ? { storage: ctx.storage, key: massDraftKey(ctx.accountId), accountId: ctx.accountId } : null;
   const draftOf = (): MassDraft => (keep ? loadMassDraft(keep.storage, keep.accountId) : { text: "", user_lists: [] });
-  // Off its vault dialog (its Close, the backdrop, Add): the dialog's ticks are gone, as OF's.
   if (page !== MASS_VAULT && ctx.storage && ctx.accountId) ctx.storage.removeItem(vaultPickKey(ctx.accountId, MASS_VAULT));
   const update = (patch: Partial<MassDraft>) => {
     if (keep) keep.storage.setItem(keep.key, JSON.stringify({ ...draftOf(), ...patch }));
   };
-  /** The draft's moment as the Agency zone's wall clock reads it ("Oct 27, 8:15 pm"). */
   const at = (iso: string) => stamp(wallClock(new Date(iso), zone));
   const link = (text: string, attr: string) => {
     const a = doc.createElement("a");
@@ -295,7 +195,6 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     a.setAttribute(attr, "");
     return a;
   };
-  /** The line under the editor: the edit, kept recipients, media and price, and the date or Save for later. */
   const summary = () => {
     const d = draftOf();
     const parts = [
@@ -319,8 +218,6 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     if (!old) (editor.closest(".g-input__wrapper") ?? editor).after(el);
   };
   summary();
-  // The left tab (OF's ?list=): Send to and Exclude tick lists (a list picked on one is disabled on the other, as OF's),
-  // Users ticks fans one by one (the draft's user_ids, OF's userIds).
   const view = ctx.massView ?? "send";
   const pickedOf = (d: MassDraft): string[] => (view === "send" ? d.user_lists : view === "exclude" ? (d.excluded_user_lists ?? []) : (d.user_ids ?? []).map(String));
   const setPicked = (ids: string[]) => update(view === "send" ? { user_lists: ids } : view === "exclude" ? { excluded_user_lists: ids } : { user_ids: ids.map(Number) });
@@ -338,8 +235,6 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     const cls = [...a.classList].filter((c) => c !== "m-current" && c !== "m-no-pointer");
     setAttr(doc, a, "class", [...cls, ...(v === view ? ["m-current", "m-no-pointer"] : [])].join(" "));
   }
-  // The right-hand title and OF's "N Selected ⊗" chip over the search: what is picked to receive it (the picked lists'
-  // users and the fans picked one by one; OF's own count leaves out the excluded and the ones it can't message).
   const title = doc.querySelector(".b-chat__header .g-page-title .b-inside-el");
   const titleWas = title?.textContent ?? "";
   const searchWrap = doc.querySelector(".b-search-users-form__wrapper");
@@ -357,7 +252,6 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
       chip.className = "b-filter-counter__wrapper";
       chip.innerHTML =
         '<div class="b-tabs__nav m-nv m-tab-rounded m-multiple-current mb-0"><ul class="b-tabs__nav__list m-gaps-inside m-gaps-outside"><li class="b-tabs__nav__item">' +
-        // icon-profile: the captured sprite has no OF icon-friends.
         '<span class="b-tabs__nav__link m-reset-wcag-link-focus"><div class="b-tabs__nav__icon m-inside-icon m-avatar-gap"><svg class="g-icon" aria-hidden="true"><use href="#icon-profile" xlink:href="#icon-profile"></use></svg></div>' +
         '<span class="b-tabs__nav__text"></span><button type="button" at-attr="filter_delete_btn" data-oi-wired="" aria-label="Clear the selection" class="g-btn m-rounded m-reset-width m-btn-remove m-secondary m-sm-icon-size">' +
         '<svg class="g-icon" aria-hidden="true"><use href="#icon-close" xlink:href="#icon-close"></use></svg></button></span></li></ul></div>';
@@ -367,7 +261,6 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     chip.querySelector(".b-tabs__nav__text")!.textContent = ` ${n} Selected `;
   };
   selected();
-  /** Untick every row on the page and enable it (the picks were dropped). */
   const untick = () => {
     for (const box of doc.querySelectorAll<HTMLInputElement>(`${MASS_ROW}[data-oi-list] input[type='checkbox']`)) {
       box.checked = false;
@@ -376,7 +269,6 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     }
   };
   const search = doc.querySelector<HTMLInputElement>(MASS_SEARCH);
-  // All-Creators: the example rows are this binder's (the select-a-model note), not bindWrites' Read-only one.
   if (!handlers) for (const row of doc.querySelectorAll(MASS_ROW)) row.setAttribute("data-oi-wired", "");
   send.setAttribute("data-oi-wired", "");
   let composer: ReturnType<typeof bindComposer> | null = null;
@@ -392,7 +284,6 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
   if (saved.html) setOfHtml(editor, saved.html);
   else setEditor(doc, editor, saved.text);
   sync();
-  // The composer's tools and dialogs work on the Mass draft seen as a Chat draft (the same fields), as a chat's.
   const chatDraft = (): ChatDraft => {
     const d = draftOf();
     return { ...d, media_files: d.media_files ?? [], thumbs: d.thumbs ?? [] };
@@ -410,8 +301,6 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
   const tools = bindTools(doc, editor, send, { draftOf: chatDraft, update: edit, refresh, ready, writer: handlers, none: SELECT_MODEL, accountId: ctx.accountId, key: keep?.key ?? `${ctx.accountId ?? ""}:mass`, mobile: ctx.mobile });
   composer = tools.composer;
   sync();
-  // `?format=1` (the list page's Format Text): the panel opens once per frame document. The marker is left unrestored on
-  // purpose, so a rebind (lists or fans loading) after the user closed the panel leaves it closed.
   if (page === "messages/send" && ctx.massFormat && !doc.body.hasAttribute(FORMAT_ONCE)) {
     doc.body.setAttribute(FORMAT_ONCE, "");
     if (doc.querySelector<HTMLElement>("[data-oi-format-panel]")?.style.display === "none") doc.querySelector<HTMLElement>(FORMAT_TEXT)?.click();
@@ -420,7 +309,6 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     ? MASS_DIALOGS[page](doc, ctx, { page, draftOf: chatDraft, update: edit, back: MASS_PAGE, ready, toggleMute: () => {}, writer: handlers, stay: (href) => href })
     : () => {};
 
-  /** The schedule dialog: the draft's date (else ten minutes from now) in the Agency's zone; Next or Save for Later. */
   const schedule = (opener: Element) => {
     const d = draftOf();
     const soon = new Date(Date.now() + 600_000);
@@ -453,7 +341,6 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
   };
 
   const onInput = (ev: Event) => {
-    // Search users and lists: the tab's rows whose name (or @handle) holds the text, OF's filter.
     if (search && ev.target === search) {
       const q = search.value.trim().toLowerCase();
       for (const row of doc.querySelectorAll<HTMLElement>(`${MASS_ROW}[data-oi-list]`)) row.style.display = !q || (row.textContent ?? "").toLowerCase().includes(q) ? "" : "none";
@@ -463,7 +350,6 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     sync();
     update({ text: textOf(editor), html: hasFormatting(editor) ? ofHtml(editor) : undefined });
   };
-  // Enter in the search field would submit OF's form (a navigation of the frame).
   const onSubmit = (ev: Event) => {
     if ((ev.target as Element | null)?.closest?.(".b-search-users-form")) ev.preventDefault();
   };
@@ -472,11 +358,11 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     const row = box.closest?.<HTMLElement>(MASS_ROW);
     if (!row) return;
     if (!handlers) {
-      box.checked = !box.checked; // nothing was picked: show the real state again
+      box.checked = !box.checked;
       return note(doc, row, SELECT_MODEL);
     }
     const id = row.getAttribute("data-oi-list");
-    if (!id) return; // an example row: bindWrites' change path
+    if (!id) return;
     const others = pickedOf(draftOf()).filter((l) => l !== id);
     setPicked(box.checked ? [...others, id] : others);
     selected();
@@ -518,8 +404,8 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     const draft = draftOf();
     const body = collectMass(hasFormatting(editor) ? ofHtml(editor) : textOf(editor), draft);
     if (typeof body === "string") return note(doc, send, body, true);
-    // A failed upload's media would be missing: OK sends without it (a successful send forgets it), Cancel keeps everything.
     const failed = draft.upload_failed;
+    // A failed upload's media would be missing: OK sends without it, Cancel keeps everything.
     if (failed && !handlers.confirm(uploadFailed(failed))) return;
     const picked = (lists ?? []).filter((l) => body.user_lists.includes(String(l.id)));
     const count = picked.reduce((n, l) => n + (l.usersCount ?? 0), 0);
@@ -545,8 +431,6 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     go(req.path, body).then(
       () => {
         if (keep) keep.storage.removeItem(keep.key);
-        // An edit, or a message saved for later, goes to where it is listed, as OF's (MessagesSavedForLater, the queue).
-        // (OF opens the queue on the message's day: /my/queue/<yyyy-mm-dd>.)
         if (draft.edit_id || body.save_for_later) return handlers.navigate(body.save_for_later ? SFL_MESSAGES : `${QUEUE_PAGE}?date=${localIso(wallClock(new Date(body.scheduled_date!), zone)).slice(0, 10)}`);
         setEditor(doc, editor, "");
         untick();

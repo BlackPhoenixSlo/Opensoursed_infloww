@@ -1,32 +1,5 @@
 "use client";
 
-/**
- * useInboxRealtime — listens to the SSE bus and invalidates the right
- * TanStack Query keys so the inbox updates without polling.
- *
- * Events we care about (matching service/event_transcoder.py):
- *   • api2_chat_message       — a new message in some chat
- *   • chat_responded          — a person's DM through the relay, from any
- *     tab (any-scope): the fan's row in every cached chat list takes it
- *     (`applyCachedReply`), no read
- *   • chat_messages           — a chat preview update (OF push)
- *   • transaction_recorded    — a revenue row landed in our ledger (PPV
- *     unlock / tip / sub), emitted post-commit by transaction_ingest.py
- *     and event_transcoder.py. Drops the fan drawer's revenue caches
- *     (chart, Sales list, spend stats) so a sale shows up without
- *     waiting out their staleTimes.
- *   • vault_history_changed   — a purchase stamp committed the fan's media as
- *     bought (purchase_notifications.py): the vault picker's badges re-read.
- *
- * Strategy:
- *   • For chat message events, append the message to that chat's cache
- *     directly (zero round-trip) and bump the chat-list cache so the
- *     row jumps to the top.
- *   • Fallback: invalidate the chat-list query so the next paint refetches.
- *
- * Mounted once app-wide (NotificationToaster's InboxRealtimeListener), so
- * every chat list (OF Manager's too) stays live on any page.
- */
 
 import { useEffect, useMemo, useRef } from "react";
 import { hashKey, useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -51,9 +24,7 @@ interface ChatMessagePayload {
   text?: string;
   fromUser?: { id: number; name?: string; username?: string; avatar?: string };
   toUser?: { id: number };
-  /** The Fan, on a Creator echo (her send from OF web/app or another tool), which has no `fromUser`. */
   chatUserId?: number;
-  /** A mass's per-Fan copy: its rows are the mass's placeholders, not this echo. */
   isFromQueue?: boolean;
   createdAt?: string;
   mediaCount?: number;
@@ -61,20 +32,10 @@ interface ChatMessagePayload {
   price?: number;
   isFree?: boolean;
   isTip?: boolean;
-  /** A tip's amount, in dollars (OF sends a tip as a DM with isTip, price 0). */
   tipAmount?: number;
   isOpened?: boolean;
 }
 
-// SSE envelope shape: { api2_chat_message: {...payload}, __account_id, ... }.
-// The OF event type is the top-level key holding the actual message body —
-// NOT a flat `message` field. We had this wrong, which is why incoming
-// messages weren't updating the inbox without a manual refresh.
-//
-// `__fan_id` rides on WORKER-emitted OUTBOUND events only (welcome / AI reply /
-// mass / funnel). OF's native outbound event omits the recipient, so the relay
-// stamps it on so the patcher knows which chat to target (see
-// events.publish_db_message).
 export interface ChatMessageEvent {
   api2_chat_message?: ChatMessagePayload;
   __account_id?: string;
@@ -89,35 +50,18 @@ export interface ChatTarget {
   fromId: number;
 }
 
-/**
- * Pure: resolve which chat an `api2_chat_message` envelope targets, and whether
- * it's our own (outbound) send. Exported for unit tests.
- *
- * Direction: `fromUser.id === __account_id` means WE sent it. OF's native
- * outbound event omits the recipient, so worker-emitted outbound events carry
- * the recipient as `__fan_id` (with `toUser.id` as a fallback). Returns null for
- * a malformed event OR a bare OF outbound echo with no recipient to route to —
- * those are left to the optimistic path + the 90s chat-list poll. A Creator echo
- * (no `fromUser`, `chatUserId` = the Fan) is outbound to `chatUserId`, its `msg`
- * given `fromUser` = the Creator; a mass copy (`isFromQueue`) is null.
- */
 export function resolveChatTarget(e: ChatMessageEvent): ChatTarget | null {
   const accountId = e.__account_id ?? null;
   const msg = e.api2_chat_message ?? null;
   if (!accountId || !msg) return null;
   if (!msg.fromUser) {
     const fanId = msg.chatUserId;
+    // Only the Creator's own account id is numeric here; fan ids stay opaque (a Fansly snowflake truncates through Number).
     const fromId = Number(accountId);
     if (msg.isFromQueue || !isValidFanId(fanId) || !Number.isSafeInteger(fromId)) return null;
     return { accountId, fanId, isOutbound: true, msg: { ...msg, fromUser: { id: fromId } }, fromId };
   }
   const fromUser = msg.fromUser;
-  // Keep ids EXACTLY as the wire sent them. These were `Number(...)`, which
-  // truncates a Fansly snowflake — and the truncated value then keyed every
-  // invalidation below (["messages"…], ["fan"…], ["of-user"…], scheduled
-  // sends) plus the `withUser.id` row match, so a realtime patch could never
-  // land on a Fansly chat. `Number.isFinite` is also the wrong validity test
-  // for an opaque id; presence is the only thing to check.
   const fromId = fromUser.id;
   if (!isValidFanId(fromId)) return null;
   const isOutbound = sameUserId(fromId, accountId);
@@ -126,7 +70,6 @@ export function resolveChatTarget(e: ChatMessageEvent): ChatTarget | null {
   return { accountId, fanId, isOutbound, msg, fromId };
 }
 
-/** Prior row for the badge delta; rule: lib/chatsCache `freshestFanRow`. Exported for tests. */
 export function findFanChatRow(
   qc: QueryClient,
   accountId: string,
@@ -137,56 +80,30 @@ export function findFanChatRow(
   return freshestFanRow(caches, accountId, fanId);
 }
 
-/**
- * Drop every cache that renders money for this fan. Prefix-matched (the OF
- * profile excepted: its full key, exactly), so the trailing key parts (limit /
- * purchased flag) are covered too. Active queries (drawer open — including
- * pinned/popout, which never remount and therefore never hit staleTime on
- * their own) refetch immediately; inactive ones just go stale and refetch on
- * next mount (useOFUser refetches on mount only after an invalidation).
- */
+// Prefix-matched so trailing key parts are covered; pinned/popout drawers never remount, so only an active refetch updates them.
 function invalidateFanRevenue(qc: QueryClient, accountId: string, fanId: FanId) {
-  // Local ledger — the chart ("PPV purchases by fan") + Sales row spine.
   void qc.invalidateQueries({ queryKey: ["fan-ppv-history", accountId, fanId] });
-  // Spending power, Chargeback risk, Buy rate.
   void qc.invalidateQueries({ queryKey: ["fan-insights", accountId, fanId] });
-  // OF gallery enrichment — thumbnails/text for Sales + the Unsold list.
   void qc.invalidateQueries({ queryKey: ["fan-chat-media", accountId, fanId] });
-  // Live OF profile — lifetime spend / tips / messages stats grid. The full
-  // profile only: the name key next to it holds no money.
   void qc.invalidateQueries({ queryKey: ofUserFullKey(accountId, fanId), exact: true });
-  // Our local fan mirror — lifetime_spend_cents fallback.
   void qc.invalidateQueries({ queryKey: ["fan", accountId, fanId] });
-  // Per-account payouts walk — "Last purchase" stat (24h staleTime otherwise).
   void qc.invalidateQueries({ queryKey: ["last-purchases", accountId] });
-  // Vault picker badges (bought / sent): a sale can flip one.
   void qc.invalidateQueries({ queryKey: vaultHistoryKey(accountId, fanId) });
-  // Spend-batch chunks holding him (key: `aid`, comma-joined ids) — the list
-  // chips. His chunks only.
   void qc.invalidateQueries({
     queryKey: ["fan-spend", accountId],
     predicate: (q) => String(q.queryKey[2] ?? "").split(",").includes(String(fanId)),
   });
 }
 
-/** A person's reply (`chat_responded`) written into every cached chat list holding `accountId` (lib/chatsCache
- *  `applyReply`: preview, read, order; a page read after it untouched). No read: a fan in no cached list waits
- *  for the list's own next read. Idempotent with this tab's own send (`useSendMessage` bumped the row first). */
 export function applyCachedReply(qc: QueryClient, accountId: string, reply: Reply): void {
   patchChatCaches(qc, accountId, (data, { key }) => applyReply(key, data, accountId, reply));
 }
 
-// Moved to lib/threadCache; re-exported for the modules and tests that import them here.
 export { insertByCreatedAt, toUtcIso };
 
 export function useInboxRealtime() {
   const qc = useQueryClient();
 
-  // Accounts the current principal actually owns/has a session for. The
-  // SSE `all` scope can carry events for models outside this principal —
-  // those must NOT bubble to the top of the list (they belong to other
-  // accounts entirely). We keep this in a ref so the subscription below
-  // stays mounted across account-list changes instead of re-subscribing.
   const accounts = useActiveAccounts();
   const allowedAccountIds = useMemo(
     () => new Set(accounts.map((a) => String(a.id))),
@@ -202,26 +119,17 @@ export function useInboxRealtime() {
       const { accountId, fanId, isOutbound, msg, fromId } = target;
       const fromUser = msg.fromUser!;
 
-      // Drop events for models not on this principal's account. Without
-      // this, webhooks for other owners' models would prepend to the list.
-      // Guard against the cold-start window where accounts haven't loaded
-      // yet (empty set) by letting events through until we know the roster.
+      // The SSE all-scope carries other owners' models; drop them once the roster is known (empty = still loading).
       const allowed = allowedRef.current;
       if (allowed.size > 0 && !allowed.has(accountId)) return;
 
-      // Prior conversation state, read NOW before any patch below mutates it, for
-      // the staleness guard: an event older than the fan's cached last message is
-      // a replay/reorder and must not reorder/bump the chat-list row (that would
-      // show a stale preview, inflate unread, and poison the very row we read as
-      // `prior` next time). Mirrors the message-thread insertByCreatedAt guard.
       const owned = allowedRef.current.has(accountId);
       const priorRow = owned ? findFanChatRow(qc, accountId, fanId) : null;
       const eventAt = toUtcIso(msg.createdAt);
       const evtMs = Date.parse(eventAt);
+      // An event older than the cached last message is a replay: it must not reorder, bump unread or become `prior`.
       const isStale = rowNewerThan(priorRow, evtMs);
 
-      // A scheduled send firing arrives as an outbound message. Drop its ghost
-      // bubble the instant the real one lands (instead of waiting for the poll).
       if (isOutbound) {
         void qc.invalidateQueries({ queryKey: scheduledSendsKey(accountId, fanId) });
       }
@@ -236,54 +144,26 @@ export function useInboxRealtime() {
         price: msg.price ?? 0,
       };
 
-      // A tip rides on a normal inbound message (isTip + price>0) — refresh
-      // the revenue surfaces right away. The ledger ingest reconciles exact
-      // amounts a few minutes later via `transaction_recorded`.
+      // A tip arrives as a normal inbound DM (isTip, price>0); the ledger ingest reconciles the amount later.
       if (!isOutbound && msg.isTip && (msg.price ?? 0) > 0) {
         invalidateFanRevenue(qc, accountId, fanId);
       }
 
-      // Insert into the messages cache in created_at order (de-dup by id).
-      // Blind-appending pinned live funnel/mass bubbles to the bottom when they
-      // landed after newer rows were already cached; insertByCreatedAt drops
-      // each row where its timestamp belongs. Only into a thread that has
-      // rows, a read in flight (a prefetch, a cold open: it merges
-      // over the cache when it lands) or a chat open on it — an enabled
-      // observer (its first read may have failed with nothing cached); not into the thread of a fan
-      // nobody has open with nothing cached — his first read brings the
-      // message. A live message is not a read (patchQueryData): the thread
-      // stays as stale as it was, so a prefetch or a mount still reads what
-      // the socket may have missed.
       const threadKey = ["messages", accountId, fanId];
       const thread = qc.getQueryCache().get<OFMessage[]>(hashKey(threadKey));
-      // The chat is on screen (an enabled thread observer, visible tab): the person sees the message, so the
-      // row's unread is left as it was; the list's next read brings OF's own count.
       const onScreen = !!thread?.isActive() && !(typeof document !== "undefined" && document.hidden);
       if (thread && (thread.state.data !== undefined || thread.state.fetchStatus === "fetching"
           || thread.isActive())) {
         patchQueryData<OFMessage[]>(qc, threadKey, (prev = []) => insertMsg(prev, candidate));
       }
 
-      // Move the fan's row to the top of every chats cache (incoming message
-      // bubbles up, unread bumps).
-      // Out-of-order replay: the message-thread insert above already slotted it by
-      // timestamp; do NOT reorder/bump the chat-list row — that would surface a
-      // stale preview, inflate unread, and corrupt the prior we read next event.
       if (isStale) return;
       const isFanRow = fanRowMatcher(accountId, fanId);
-      /** The fan's row as this message leaves it: `existing` (or a new row)
-       *  with the message as its preview, unread raised for an inbound one.
-       *  Null when this very message already is the row's last one (a
-       *  duplicate delivery, or a list read that had it): re-applying would
-       *  count its unread twice. */
       const bumpRow = (existing: OFChatItem | null): OFChatItem | null => {
         const lastId = existing?.lastMessage?.id;
         if (lastId != null && String(lastId) === String(candidate.id)) return null;
         const base: OFChatItem = existing ?? ({
           __accountId: accountId,
-          // Outbound to a fan not yet in the list: fromUser is US, so we don't
-          // know the fan's name — leave it blank; the 90s head-page poll fills
-          // it in (we prepend to page 0, which is the page that poll re-reads).
           withUser: {
             id: fanId,
             name: isOutbound ? "" : (fromUser.name ?? fromUser.username ?? ""),
@@ -306,13 +186,6 @@ export function useInboxRealtime() {
         };
       };
 
-      // The Fan List's local seed (`useRecentChatsLocal`, key
-      // ["chats-local-seed", limit, accountId|null]) is what it shows while
-      // OF's chat list read is in flight — a slow read, or one that never
-      // answers. The same move-to-top keeps those rows live; without it they
-      // stayed as loaded until a reload. Its own scope: one Creator's seed
-      // takes only that Creator's messages; an older message than the row's
-      // own (a replay) or the row's own last one changes nothing.
       qc.getQueryCache().findAll({ queryKey: ["chats-local-seed"] }).forEach((q) => {
         const data = q.state.data as { list?: OFChatItem[] } | undefined;
         if (!data?.list) return;
@@ -337,7 +210,6 @@ export function useInboxRealtime() {
       });
     });
 
-    // A person answered a fan through the relay, in this tab or another (any-scope): the row moves with no read.
     const offReply = eventBus.on("chat_responded", (env: EventEnvelope) => {
       const accountId = env.__account_id ?? null;
       const reply = parseReply(env.chat_responded);
@@ -347,9 +219,6 @@ export function useInboxRealtime() {
       applyCachedReply(qc, accountId, reply);
     });
 
-    // A revenue row landed in the local transactions ledger (PPV unlock seen
-    // by the payouts ingest, tip promote, status flip). Emitted post-commit
-    // server-side, so refetching here always reads the new row.
     const offTx = eventBus.on("transaction_recorded", (env: EventEnvelope) => {
       const accountId = env.__account_id ?? null;
       const tx = env.transaction_recorded as { fan_id?: FanId } | undefined;
@@ -358,10 +227,6 @@ export function useInboxRealtime() {
       const allowed = allowedRef.current;
       if (allowed.size > 0 && !allowed.has(accountId)) return;
       invalidateFanRevenue(qc, accountId, fanId);
-      // A ppv_message ledger row means a PPV just unlocked. Force the thread's
-      // head page to refetch so OF's now-true `isOpened` lands on the bubble
-      // (our is_paid stamp already flips it via the DB seed, but an already-
-      // open thread renders off the OF `["messages"]` cache, not the seed).
       void qc.invalidateQueries({ queryKey: ["messages", accountId, fanId] });
     });
 
@@ -374,14 +239,6 @@ export function useInboxRealtime() {
       void qc.invalidateQueries({ queryKey: vaultHistoryKey(accountId, fanId) });
     });
 
-    // Note: we used to invalidate ["chats"] on every "chat_messages" event,
-    // but with useInfiniteQuery that refetches *every* loaded page — after a
-    // few "load more" clicks that becomes 40+ pages per OF preview event.
-    // The api2_chat_message handler above already patches rows in place
-    // (preview, unread flag) across EVERY page, and useChatList's 90s poll —
-    // head page only since the P4 fix, see `useHeadPagePoll` — covers anything
-    // that slipped through near the top. Deep rows keep moving on this handler
-    // alone, which is exactly why the poll no longer needs to re-walk them.
 
     return () => { offMsg(); offReply(); offTx(); offVault(); };
   }, [qc]);

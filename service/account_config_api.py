@@ -1,22 +1,3 @@
-"""service/account_config_api.py — read/write the per-account "Brain"
-(`account_ai_config`) for the Automations → Brain panel.
-
-`account_ai_config` is the AI voice + caps a model speaks with: persona,
-the 6 time-of-day activities + their per-slot vault images,
-location/utc_offset (for the "it's <weekday> <tod> here" line), the daily spend
-cap, and the LLM model (global + optional per-purpose override). gen_info /
-send_welcome / send_followup / welcome_chatter_for_info all resolve it at run time, so this is
-the one screen that fills the brain a fresh account starts without.
-
-  GET /admin/account-config?account_id=  → {config, slots, model_options, default_model, purposes}
-       `config` is the stored brain (defaults filled for the scalar caps); the
-       rest is metadata so the editor can render dropdowns + the 6 image slots.
-  PUT /admin/account-config              → upsert the brain, returns {config}
-
-The nudge_online config lives on the SAME row (`nudge_config_json`) but is owned
-by `nudge_config_api` — this upsert never touches it (it's absent from both the
-insert values and the conflict `set_`, so an existing row keeps it).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -34,7 +15,7 @@ import llm_client
 import media_cotag
 from auth import assert_account_owned, get_request_user
 from chatters import get_request_chatter
-from automations._common import (  # what a NULL `model` runs, + the pinnable keys
+from automations._common import (
     DEFAULT_MODEL, MODEL_PURPOSES, PURPOSE_DEFAULT_MODELS, purpose_default)
 from automations._persona import (MODEL_NOTES_TEMPLATE, PERSONA_FACT_FIELDS,
                                   PERSONA_FACTS_OPERATOR_ONLY)
@@ -48,12 +29,8 @@ log = logging.getLogger("of-relay.account_config_api")
 
 router = APIRouter()
 
-# The 6 time-of-day slots (`TIME_SLOTS`, served by GET) and the PUT's checks
-# live in `account_config_rules`, pure.
 from account_config_rules import TIME_SLOTS, clean_text  # noqa: E402
 import account_config_rules as rules  # noqa: E402
-# Languages the account can be set to. The code is the routing/guard key; the label is
-# for the editor dropdown. Sourced from the language layer so there's one list.
 from automations._language import KNOWN_LANGS, LANG_DISPLAY, norm_lang  # noqa: E402
 from automations._voice import (  # noqa: E402
     VOICE_HER, VOICE_HIM, fact_labels, fact_placeholders, norm_voice)
@@ -62,41 +39,17 @@ LANGUAGES: tuple[dict, ...] = tuple(
 )
 
 
-# These three were lazily imported to keep "this light API module" from pulling
-# the llm stack at startup. That saved nothing: the module-level
-# `from automations._language import ...` below already pulls llm_client
-# transitively, so the stack is loaded before any of them runs. The comments
-# outlived the fact and cost a reader real time re-deriving it, so the imports are
-# now where they belong.
 
 def _model_options() -> list[str]:
     """The LLM model ids the account may pick."""
     return list(MODELS.keys())
 
 
+# Laned: labels come from `_voice.fact_labels`; a female label on a male account makes the operator write female canon into his prompt.
 def _persona_fact_meta(voice: object) -> list[dict[str, Any]]:
-    """The creator-canon fields as editor metadata: {key, label, operator_only,
-    placeholder}. Single source of truth — the BrainPanel renders entirely from
-    this. The placeholder rides along because a separate 26-key map in TypeScript
-    is a second enumeration to forget.
-
-    LANED. `_voice.fact_labels` exists precisely to override the gendered labels
-    ("Why she started OF"), and it had exactly one caller — the PROMPT. So the model
-    was told "why HE started OF" while the operator filling the box read "why SHE
-    started OF", on the same field, on the same account. Labels are what the operator
-    types AGAINST; a female label is an instruction to write female canon into a male
-    account's prompt."""
-    # Slots the enrich pass may not propose — what she will and won't do on
-    # camera is a business decision, not something to infer.
+    # Slots the enrich pass may not propose: what she will and won't do on camera is a business decision.
     operator_only = PERSONA_FACTS_OPERATOR_ONLY
-    # Both lane columns come from `_voice`, which owns text that reads differently
-    # per lane. Placeholders are indexed, not `.get`-with-a-default: the table is
-    # total for every declared slot (`_voice.assert_canon_parity`, at import), so
-    # there is no "this lane has no answer" case for the loop to invent one for —
-    # and no way to spell "fall through to the other lane", which is how her copy
-    # reached his boxes twice already. Labels ARE `.get`, because 21 of the 26
-    # declared ones name the field rather than the creator; the gendered five are
-    # bound by the same import-time assert.
+    # Placeholders are indexed, not .get: falling through to the other lane's text reached his boxes with her copy.
     labels, placeholders = fact_labels(voice), fact_placeholders(voice)
     return [{"key": k, "label": labels.get(k, label),
              "operator_only": k in operator_only, "placeholder": placeholders[k]}
@@ -114,18 +67,9 @@ def _parse_obj(raw: str | None) -> dict:
 
 
 def _effective_effort(row: AccountAiConfig | None) -> str:
-    """What the effort box should SHOW — the saved pick if there is one, else
-    the effort this account is ACTUALLY running (its model\'s own pin).
-
-    Not blank. An account on a model pinned to "high" that renders an empty box
-    invites an operator to save a downgrade they never chose, and the save
-    button does not know the difference between "left alone" and "set to the
-    first thing in the list". The dropdown falls back to the CHEAPEST option
-    only when a NEW model is picked, where there is no current behaviour to
-    misreport.
-    """
     if row is None:
         return ""
+    # Show the effort the account actually runs, not blank: a blank box invites saving a downgrade nobody chose.
     saved = (getattr(row, "reasoning_effort", None) or "").strip()
     if saved:
         return saved
@@ -134,7 +78,6 @@ def _effective_effort(row: AccountAiConfig | None) -> str:
 
 
 def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
-    """The stored brain → a flat editor-friendly dict (scalar caps defaulted)."""
     return {
         "persona": row.persona if row else None,
         "location": row.location if row else None,
@@ -150,23 +93,17 @@ def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
         "reasoning_effort": _effective_effort(row),
         "time_activities": _parse_obj(row.time_activities_json) if row else {},
         "time_images": _parse_obj(row.time_images_json) if row else {},
-        # Include-only automation audience. audience_of_list_id is resolved by
-        # the handlers (it lives on the local mirror row, not this row).
         "audience_mode": audience_include.norm_audience_mode(
             getattr(row, "audience_mode", None) if row else None),
         "audience_list_id": getattr(row, "audience_list_id", None) if row else None,
         "audience_auto_add": bool(getattr(row, "audience_auto_add", None)) if row else False,
-        # Co-performer tagging (media_cotag). NULL ≡ OFF for the video rule
-        # (most creators are solo — it's a collab-account opt-in); NULL
-        # username ≡ "No co-creator tag".
+        # Co-tag: NULL video rule = OFF (collab-account opt-in); NULL username = "No co-creator tag".
         "cotag_tag_videos": bool(getattr(row, "cotag_tag_videos", None)) if row else False,
         "cotag_username": getattr(row, "cotag_username", None) if row else None,
     }
 
 
 def _own_handle(account_id: str) -> str:
-    """The account's own OF username, folded; '' when OF cannot say. Asked at
-    save only, so a stored co-creator is never the account itself."""
     import automation_executor as ax
 
     try:
@@ -179,8 +116,6 @@ def _own_handle(account_id: str) -> str:
 
 
 async def _audience_status(account_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    """The Brain Audience section's status block: list identity and mirror
-    health."""
     list_id = cfg.get("audience_list_id")
     out: dict[str, Any] = {
         "mode": cfg.get("audience_mode") or "off",
@@ -226,15 +161,7 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         row = await s.get(AccountAiConfig, account_id)
     cfg = _serialize(row)
     audience = await _audience_status(account_id, cfg)
-    # The picker's stored selection rides the config so the whole-object PUT
-    # round-trips it (BrainConfig must carry these or a Save drops them).
     cfg["audience_of_list_id"] = audience.get("of_list_id")
-    # Built once per lane, and the SINGULAR fields below are indexed out of these
-    # rather than recomputed. Two calls that "obviously" agree are still two
-    # answers to one question: nothing forced `defaults == defaults_by_voice[voice]`,
-    # and it was that possible disagreement the client then had to defend against.
-    # Indexing makes the agreement structural and drops three `deepcopy`s and two
-    # 26-row builds per request on the way.
     brains = {v: brain_defaults(v) for v in (VOICE_HER, VOICE_HIM)}
     canon = {v: _persona_fact_meta(v) for v in (VOICE_HER, VOICE_HIM)}
     return {
@@ -261,49 +188,23 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         # server-side. The singular above stays for the readers that have no
         # dropdown (the blank-account seed, the chat drawer's canon list), which
         # genuinely want the stored lane.
+        # Both lanes: Reset follows the Creator dropdown (local state until Save), not the stored column.
         "defaults_by_voice": brains,
         "slots": list(TIME_SLOTS),
         "model_options": _model_options(),
-        # What `model: null` runs (resolve_model's house fallback), so an editor
-        # labels "Default (…)" from the server rather than a hardcoded id.
         "default_model": DEFAULT_MODEL,
         "effort_options": llm_client.effort_options_by_model(),
         "purposes": list(MODEL_PURPOSES),
-        # What each purpose runs when the operator has pinned NOTHING. Served
-        # because the editor otherwise lies by omission: a purpose in this map
-        # does not inherit the account brain, and a dropdown reading "inherit
-        # default" beside a brain set to GLM, for a route the server holds on
-        # DeepSeek, is the same class of silent drift as the send_welcome /
-        # welcome key mismatch this list was consolidated to end. Absent key =
-        # inherits the brain, exactly as before.
-        #
-        # 🚨 RESOLVED, not raw. `resolve_model` returns DEFAULT_MODEL when a
-        # pinned id has left `llm_client.MODELS` — the retirement its own
-        # comment says it defends against — so serving the map verbatim would
-        # put the dead id in the box and lie a second, quieter way. What the
-        # editor shows is what the next call will run.
-        # Per ACCOUNT: help_assistant runs Opus where an Anthropic key resolves.
+        # RESOLVED, not raw: resolve_model falls back to DEFAULT_MODEL when a pinned id left llm_client.MODELS; the editor shows what the next call runs.
         "purpose_defaults": {
             p: await purpose_default(account_id, p) for p in PURPOSE_DEFAULT_MODELS
         },
         "languages": list(LANGUAGES),
-        # The creator-canon field contract, served the same way as slots /
-        # purposes / languages above. The editor renders straight off this, so
-        # the 26-field list has ONE home — a duplicated copy in the UI would
-        # drift silently and give an operator a box that never reaches a fan.
         "persona_fact_fields": canon[cfg["voice"]],
-        # Per lane, for the same reason `defaults_by_voice` is: the Creator dropdown
-        # is local form state until Save, so a panel that only ever saw the STORED
-        # lane relabels "Why she started OF" one Save too late — after the operator
-        # has already filled the box under the wrong prompt.
         "persona_fact_fields_by_voice": canon,
-        # What the Model info box (My Automations › Get to know fans) prefills
-        # while `model_notes` is empty; its blank label lines never reach a prompt.
         "model_notes_template": MODEL_NOTES_TEMPLATE,
-        # Include-only audience status (mirror health, ledger, outside queue).
         "audience": audience,
-        # Today's AI spend per provider, for the daily cap's "spent today" line
-        # (Settings › AI keys). Outside `config`, so a Save never echoes it.
+        # Outside `config`, so a Save never echoes it.
         "ai_spend_today": await llm_client.spend_today(account_id),
     }
 
@@ -314,11 +215,6 @@ class _ConfigBody(BaseModel):
 
 
 async def _audience_put_branches(cfg: dict, account_id: str) -> rules.AudiencePut:
-    """Validate the include-only audience keys of a brain PUT and find-or-create
-    the local mirror row. The picker sends the OF folder id; the server owns the
-    mirror (kind='automation_include'), and the stored column is the LOCAL
-    lists.id. Shadow is mandatory before enforce; direct-to-enforce takes an
-    explicit, logged override (the legal-fence case) — never a plain click."""
     mode_raw = cfg.get("audience_mode")
     mode_sent = "audience_mode" in cfg and mode_raw not in (None, "")
     mode: str | None = None
@@ -389,26 +285,22 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
     assert_account_owned(body.account_id)
     cfg = body.config
     allowed = set(_model_options())
-    # The checks before the audience branch first: that branch reads (and may
-    # create) the mirror list row, so a body these refuse touches nothing.
     head, err = rules.clean_head(cfg, allowed)
     if err is not None:
         raise err
+    # Checks above run first: the audience branch reads (and may create) the mirror list row, so a refused body touches nothing.
     aud = await _audience_put_branches(cfg, body.account_id)
     async with get_session() as s:
         stored_cap = await s.scalar(select(AccountAiConfig.daily_cost_cap_cents).where(
             AccountAiConfig.account_id == body.account_id))
-    # A Chatter may save the brain (Auto-reply's model, Get to know fans' notes)
-    # but never move the owner's daily AI spend cap.
+    # A Chatter may save the brain but never move the owner's daily AI spend cap.
     cap_locked = get_request_user() is None and get_request_chatter() is not None
     vals, err = rules.clean_config_put(
         cfg, rules.PutContext(body.account_id, allowed, datetime.utcnow(), head, aud,
                               stored_cap, cap_locked))
     if err is not None:
         raise err
-    # An account is never on its own tagged-friend list, so tagging itself is
-    # "No co-creator tag" (NULL), decided once, here (asks OF, so only for a
-    # handle that passed every check).
+    # An account is never on its own tagged-friend list: tagging itself is NULL (asks OF, so only after every check passed).
     own = vals.get("cotag_username")
     if own and own == await asyncio.to_thread(_own_handle, body.account_id):
         vals["cotag_username"] = None
@@ -421,11 +313,7 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
         )
         row = await s.get(AccountAiConfig, body.account_id)
 
-    # media_cotag caches its Brain read for 60s and the resolved tag id for 1h —
-    # a saved username/video rule must apply on the very next send, not after
-    # the TTLs drain. Narrow on purpose: the panel sends these keys on EVERY
-    # save, so a global reset here would cost every other account a fresh
-    # tagged-friend lookup each time anyone edits a persona.
+    # media_cotag caches its Brain read 60s and the tag id 1h; reset only this account (the panel sends these keys on every save).
     if vals.keys() & {"cotag_tag_videos", "cotag_username"}:
         media_cotag.forget_account_cfg(body.account_id)
 

@@ -1,8 +1,3 @@
-/**
- * The runner end to end over the real Auto Mass page under <StrictMode> (next.config reactStrictMode: true, as in
- * `next dev`): effects mount, unmount and mount again, so every bridge registration churns once. A run must still
- * fill the editor and save it OFF. Relay mocked at the module boundary.
- */
 import { StrictMode, useEffect, useReducer, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, waitFor } from "@testing-library/react";
@@ -42,7 +37,6 @@ const DRAFT: DoDraft = {
   answer: "", error: null,
 };
 
-/** The harness's latest run and dispatch, for the test to read / drive. */
 const probe: { run: DoRun; send: (a: DoAction) => void } = { run: { phase: "off" }, send: () => {} };
 
 function Harness() {

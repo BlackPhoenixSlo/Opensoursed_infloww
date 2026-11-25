@@ -1,6 +1,3 @@
-"""The Auto Post one-post popup's break-it-once fault (scenarios/2026-11-09-auto-post-one-post.py): lib/faults.py
-merges `register(Fault)` into FAULTS. The check names live here and the scenario imports them.
-"""
 from __future__ import annotations
 
 AP_FORM = ("auto post popup (390x844 phone): the post's fields inline (no Compose button, no second dialog, no Use in "
@@ -17,9 +14,6 @@ AP_LEGACY = ("auto post: an older 2-post rule with a repost cycle opens with 'Ol
 
 def register(Fault) -> dict:
     return {
-        # slop/run auto-post-one-post --break: the legacy detection reverted (readyMadeContent.ts `formHoldReason`
-        # always null), so an older multi-post / repost rule opens the one-post fields, which would drop post 2 and
-        # its repost cycle. The new rule's form and payload are untouched.
         "auto-post-legacy-composer": Fault(None, (AP_LEGACY,), browser=(
             (r"function formHoldReason\(payload, kind\) \{", r"function formHoldReason(payload, kind) { return null;"),)),
     }

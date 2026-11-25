@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * NudgeSlotPools — Nudge online's "Message lines & images": a day picker (Every day, Weekdays, Weekend, Mon–Sun) and,
- * for the picked day, one editor per time-of-day slot (its lines and its vault images, picked from the vault). A
- * day's empty lines or images use the next bucket's (nudgeDayBuckets `inherited`, the relay's `_pick_pool`), shown
- * dimmed with a button to make them the day's own. The tab owns the slots (its reducer) and the cache of picked
- * media; this only edits them through its callbacks.
- */
 
 import { useState } from "react";
 import { Image as ImageIcon, X } from "lucide-react";
@@ -24,7 +17,6 @@ import {
   type DayBucket, type Inherited,
 } from "@/components/settings/nudgeDayBuckets";
 
-// The 6 time-of-day slots (same buckets send_welcome uses), with friendly labels.
 const SLOT_DEFS: [string, string][] = [
   ["morning_1", "Morning · early (5–9)"],
   ["morning_2", "Morning · late (9–12)"],
@@ -39,17 +31,14 @@ export function NudgeSlotPools({
   accountId, slots, mediaCache, onMediaPicked, onSlot,
 }: {
   accountId: string | null;
-  /** Every day bucket: bucket → slot key → its entry. */
   slots: NudgeSlots;
   mediaCache: Record<number, VaultMedia>;
   onMediaPicked: (picked: VaultMedia[]) => void;
   onSlot: (bucket: DayBucket, key: string, entry: NudgeSlotEntry) => void;
 }) {
   const [bucket, setBucket] = useState<DayBucket>("default");
-  // Which slot's vault picker is open (of the picked day).
   const [pickerSlot, setPickerSlot] = useState<string | null>(null);
   const byIds = useVaultMediaByIds(accountId, shownImageIds(slots, bucket, SLOT_KEYS));
-  // A pick this session first, else the vault read.
   const media = (id: number): VaultMedia | undefined =>
     mediaCache[id]?.files ? mediaCache[id] : byIds[id] ?? mediaCache[id];
   const day = slots[bucket] ?? {};
@@ -90,7 +79,6 @@ export function NudgeSlotPools({
           onPickImages={() => setPickerSlot(key)}
         />
       ))}
-      {/* Vault image picker for a slot of the picked day (opened from a slot's "Vault"). */}
       {pickerSlot && accountId && (
         <VaultPicker
           open
@@ -133,14 +121,12 @@ export function MediaThumb({
   );
 }
 
-/** One time-slot of the picked day: its lines and images. */
 function SlotEditor({
   label, bucket, entry, from, onChange, accountId, media, onPickImages,
 }: {
   label: string;
   bucket: DayBucket;
   entry: NudgeSlotEntry;
-  /** What this day's empty lines / images use instead. */
   from: Inherited;
   onChange: (e: NudgeSlotEntry) => void;
   accountId: string | null;
@@ -188,8 +174,6 @@ function SlotEditor({
           onImport={(items) => onChange({ ...entry, text: mergeCaptions(texts, items).pool })} />
       </div>
 
-      {/* Images: own thumbnails (else the inherited ones, dimmed), then the Vault tile. One image per nudge; several
-       *  rotate. */}
       <div className="flex flex-wrap items-center gap-4 md:gap-2">
         {images.map((id) => (
           <MediaThumb key={id} id={id} media={media(id)} accountId={accountId} onRemove={() => removeImage(id)} />

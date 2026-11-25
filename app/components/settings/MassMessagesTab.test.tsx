@@ -1,10 +1,3 @@
-/**
- * The Mass messages tab's bulk unsend, rendered over a mocked relay: OF's mass
- * unsend is irreversible, so a bulk button must cancel exactly the rows the
- * model chips and its own filter pick (massUnsendRules.ts `bulkTargets`), only
- * after the IfModal confirm's "Unsend", and a Cancel there nothing. There are no per-row checkboxes: "selected" is
- * the chips' scope plus the action's filter.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -35,7 +28,6 @@ const relayDelete = relay.delete as unknown as Mock;
 const H = 3_600_000;
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
 
-/** Per Creator, its cached broadcasts: every kind the bar tells apart. */
 const ITEMS: Record<string, unknown[]> = {
   "acc-a": [
     { id: 101, date: ago(5 * H), text: "a free text old", isFree: true, mediaCount: 0, canUnsend: true },
@@ -69,14 +61,12 @@ beforeEach(() => {
     return Promise.resolve({});
   });
   relayDelete.mockResolvedValue({ success: true });
-  // The tab asks in an IfModal, never the browser's own dialogs.
   vi.spyOn(window, "alert").mockImplementation(() => { throw new Error("window.alert"); });
   vi.spyOn(window, "confirm").mockImplementation(() => { throw new Error("window.confirm"); });
 });
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  // The rows are cached: the tab never asks OF for a refresh, nor writes anything but the cancels.
   expect(relayPost).not.toHaveBeenCalled();
 });
 
@@ -86,14 +76,12 @@ async function mount() {
 }
 
 const button = (name: RegExp) => screen.getByRole("button", { name }) as HTMLButtonElement;
-/** Answers the confirm dialog with `choice`, returning its text. */
 async function answer(choice: "Unsend" | "Cancel"): Promise<string> {
   const dialog = await screen.findByRole("dialog");
   const text = dialog.textContent ?? "";
   await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: choice })); });
   return text;
 }
-/** The DELETEs sent, as "accountId:id". */
 const cancels = () =>
   relayDelete.mock.calls.map(([path, ctx]) => `${(ctx as { accountId: string }).accountId}:${String(path).split("/").pop()}`);
 
@@ -136,7 +124,6 @@ describe("bulk unsend on the Mass messages tab", () => {
     await act(async () => { fireEvent.change(screen.getByRole("textbox", { name: SM.search.label }), { target: { value: "promo" } }); });
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: SM.searchButton.label })); });
     expect(screen.getByText("Showing the newest 100 per Creator: older matches may be hidden.")).toBeTruthy();
-    // Model A's read is not full: picking only it drops the line.
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Model A" })); });
     expect(screen.queryByText(/older matches may be hidden/)).toBeNull();
   });
@@ -166,7 +153,6 @@ describe("bulk unsend on the Mass messages tab", () => {
     try {
       await mount();
       expect(button(/^Unsend free text >4h/).textContent).toContain("(3)");
-      // 105 was sent 1h ago: 3h01m later it is past the 4h gate, and the label says so without a click.
       await act(async () => { vi.advanceTimersByTime(3 * H + 60_000); });
       expect(button(/^Unsend free text >4h/).textContent).toContain("(4)");
     } finally {
@@ -188,12 +174,10 @@ describe("bulk unsend on the Mass messages tab", () => {
     await answer("Unsend");
     await waitFor(() => expect(cancels()).toHaveLength(9));
     expect(peak).toBe(1);
-    // Each Creator's deletes run as one block: the Creator changes once.
     const creators = cancels().map((c) => c.split(":")[0]);
     expect(creators.filter((c, i) => i === 0 || c !== creators[i - 1])).toHaveLength(2);
   });
 
-  /** Holds each DELETE until the test releases it; returns the release fn. */
   function heldDeletes() {
     const waiting: (() => void)[] = [];
     relayDelete.mockImplementation(() => new Promise((res) => waiting.push(() => res({ success: true }))));
@@ -202,7 +186,6 @@ describe("bulk unsend on the Mass messages tab", () => {
       await act(async () => { waiting.shift()!(); });
     };
   }
-  /** True when a closing tab would be asked to stay (a beforeunload listener cancels it). */
   const closeIsWarned = () => {
     const e = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(e);
@@ -244,7 +227,6 @@ describe("bulk unsend on the Mass messages tab", () => {
     await answer("Unsend");
     await release();
     await waitFor(() => expect(relayDelete).toHaveBeenCalledTimes(2));
-    // A tab switch or route change unmounts the tab; the run and its close warning go on.
     cleanup();
     expect(closeIsWarned()).toBe(true);
     await mount();

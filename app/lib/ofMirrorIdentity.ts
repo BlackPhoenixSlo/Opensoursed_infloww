@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * Per-model identity for the OF mirror (public/of-mirror/pages, built
- * by scripts/of-mirror.mjs). The pages carry fixed placeholders; with a
- * single-model scope we swap in that model's live `/users/me` values after the
- * frame loads. Scope "all" or a failed fetch leaves the placeholders alone (Home's
- * price line, which only shows a real price, stays hidden then); My profile and the
- * avatar menu show the first model in "all" instead (standInModel, ofMirrorProfile).
- * The avatar menu's chevron lists the agency's models and switches scope: see bindSwitcher.
- */
 
 import { useEffect, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -20,27 +11,19 @@ import { fillSlot, htmlLines } from "@/lib/ofMirrorDom";
 import { setOfHtml } from "@/lib/ofMirrorFormat";
 import { hasOfFormatting } from "@/lib/ofRichText";
 
-// `/users/me` lives in lib/ofMe (Messages Pro reads it too); re-exported for the mirror's readers.
 export { ofMeQuery, type OfMe };
 
-// Must match PLACEHOLDER / BIO in scripts/of-mirror.mjs; price: the generator's fake for a one-digit amount with cents.
 const PH = { username: "yourmodel", name: "Your Model", bio: "Welcome to my page.", price: "$5.00" };
 
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
 
-/** A nav badge as OF shows it: nothing at zero, else the number, capped at "99+". */
+// OF's own rounding in formatCount below: 999950 reads "1000.0K" there too.
 const badge = (n: number) => (n > 99 ? "99+" : String(n));
-/**
- * OF's one short count (its `formatCount`, bundle module 720548's B4), behind the sidebar's Fans / Following,
- * the profile's Photos / Videos / Likes / Fans and the lists column: by digit count, 999, "1.0K", "14.1K",
- * "1.23M", "12.3M" — OF's own rounding, so 999950 reads "1000.0K" there too.
- */
 export function formatCount(n: number): string {
   const { length } = `${n}`;
   return length >= 8 ? `${(n / 1e6).toFixed(1)}M` : length >= 7 ? `${(n / 1e6).toFixed(2)}M` : length >= 4 ? `${(n / 1e3).toFixed(1)}K` : String(n);
 }
 
-/** The left nav's [data-oi-count] marks: the Creator's own counts; a field `me` lacks keeps the generator's blank. */
 function applyNavCounts(doc: Document, me: OfMe): void {
   for (const el of doc.querySelectorAll<HTMLElement>("[data-oi-count]")) {
     const v = me[el.dataset.oiCount as keyof OfMe];
@@ -52,22 +35,16 @@ function applyNavCounts(doc: Document, me: OfMe): void {
   }
 }
 
-/**
- * Bio as plain text: `rawAbout` as is, else `about`'s lines (htmlLines) joined by newlines: OF's editor shows them
- * (white-space: break-spaces) and counts them.
- */
 export function bioOf(me: OfMe): string | null {
   if (typeof me.rawAbout === "string") return me.rawAbout;
   if (typeof me.about !== "string") return null;
   return htmlLines(me.about).join("\n");
 }
 
-// The mirror's own text and attributes before the first swap: a later apply (new values after a save) starts from them.
 const origText = new WeakMap<Node, string>();
 const origAttr = new WeakMap<Element, Map<string, string>>();
 const origHtml = new WeakMap<Element, string>();
 
-/** The avatar menu's rows OF draws from `/users/me` (its sidebar's rules); a flag `me` lacks keeps the capture's row. */
 function applyDrawer(doc: Document, me: OfMe): void {
   const name = doc.querySelector<HTMLElement>(".l-sidebar__username .g-user-name");
   if (name && typeof me.isVerified === "boolean") {
@@ -81,7 +58,6 @@ function applyDrawer(doc: Document, me: OfMe): void {
     if (!origHtml.has(bank)) origHtml.set(bank, bank.innerHTML);
     bank.innerHTML = origHtml.get(bank)!;
     if (me.canReceiveManualPayout) {
-      // OF's icon-bank and its bank item; the capture's model could not be paid out ("Add bank (to earn)").
       bank.querySelector("svg")?.setAttribute("data-icon-name", "icon-bank");
       for (const attr of ["href", "xlink:href"]) bank.querySelector("use")?.setAttribute(attr, "#icon-bank");
       const text = bank.querySelector(".l-sidebar__menu__text");
@@ -90,10 +66,6 @@ function applyDrawer(doc: Document, me: OfMe): void {
   }
 }
 
-/**
- * The bio's More info `btn` and its truncated box `box`, open (Collapse info: OF's own expanded box, 20vh with a scroll
- * bar) or folded (its captured max-height, faded at the foot).
- */
 export function foldBio(btn: HTMLElement, box: HTMLElement | null | undefined, open: boolean) {
   btn.setAttribute("aria-expanded", String(open));
   btn.textContent = open ? " Collapse info " : " More info ";
@@ -105,13 +77,8 @@ export function foldBio(btn: HTMLElement, box: HTMLElement | null | undefined, o
   } else if (box.dataset.oiMaxHeight !== undefined) box.style.maxHeight = box.dataset.oiMaxHeight;
 }
 
-/** The folded bio's height (OF's g-truncated-text on the profile, as captured), when its box gives none. */
 const BIO_FOLD = 85;
 
-/**
- * As OF's truncated text: a bio (its text and its detail rows, the box's whole content) taller than its folded box is
- * over the limit (m-over-limit, folded until More info), any other shows whole, with no fade and no More info.
- */
 export function fitBio(doc: Document) {
   for (const btn of doc.querySelectorAll<HTMLElement>("[data-oi-bio-toggle]")) {
     const box = btn.parentElement?.querySelector<HTMLElement>(".g-truncated-text");
@@ -130,17 +97,12 @@ export function fitBio(doc: Document) {
   }
 }
 
-/** My profile's details under the bio (OF's UserInfo, in its order): `/users/me`'s field and its icon. */
 const BIO_DETAILS = [
   ["location", "icon-location"],
   ["website", "icon-link"],
   ["wishlist", "icon-trial"],
 ] as const;
 
-/**
- * My profile's bio details: OF's location, website and wishlist rows (p.b-user-info__detail, in the bio's truncated
- * box after its text, with the text's scoped-style attribute), redrawn on each apply; then More info refits to them.
- */
 function applyBioDetails(doc: Document, me: OfMe): void {
   const text = doc.querySelector<HTMLElement>(".b-user-info__content .b-user-info__text");
   const box = text?.closest<HTMLElement>(".g-truncated-text");
@@ -159,7 +121,6 @@ function applyBioDetails(doc: Document, me: OfMe): void {
     row.setAttribute("data-oi-bio-detail", key);
     row.innerHTML = `<svg class="m-initial-icon m-icon-extra-sm g-icon" data-icon-name="${icon}" aria-hidden="true"><use href="#${icon}" xlink:href="#${icon}"></use></svg>`;
     scoped(row.firstElementChild!);
-    // The location is text; the website and wishlist are links, opened in a new tab as OF's.
     const value = scoped(doc.createElement(key === "location" ? "span" : "a"));
     if (key !== "location") {
       value.setAttribute("href", /^https?:\/\//i.test(v) ? v : `https://${v}`);
@@ -173,7 +134,6 @@ function applyBioDetails(doc: Document, me: OfMe): void {
   fitBio(doc);
 }
 
-/** Replace the mirror's placeholders in `doc` with `me`. Idempotent, and re-applies over earlier values; fields `me` lacks keep the placeholders. */
 export function applyIdentity(doc: Document, me: OfMe, imageUrl: (url: string) => string = (u) => u): void {
   const username = str(me.username);
   const name = str(me.name);
@@ -187,7 +147,7 @@ export function applyIdentity(doc: Document, me: OfMe, imageUrl: (url: string) =
     return t;
   };
 
-  const walker = doc.createTreeWalker(doc.body, 4 /* NodeFilter.SHOW_TEXT */);
+  const walker = doc.createTreeWalker(doc.body, 4 );
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
     let t = origText.get(n) ?? n.nodeValue ?? "";
     const trimmed = t.trim();
@@ -211,16 +171,12 @@ export function applyIdentity(doc: Document, me: OfMe, imageUrl: (url: string) =
       if (counter) counter.textContent = (counter.textContent ?? "").replace(/^\s*\d+/, String([...v].length));
     }
   }
-  // Home's price line ([data-oi-price], the generator's) stays hidden until it shows the Creator's own price.
   if (priceText) for (const el of doc.querySelectorAll<HTMLElement>("[data-oi-price]")) el.style.removeProperty("display");
   if (price) {
     const priceInput = doc.querySelector<HTMLInputElement>("input[placeholder='Free']");
     if (priceInput) priceInput.value = String(price);
   }
 
-  // ticket 68: a formatted bio (OF's markup, ofMirrorProfileFormat's Save) shows formatted in Edit profile's Bio, through
-  // the allow-list. ASSUMPTION: rawAbout, when OF sends it, holds the editor's markup as `about` does; overturned by the
-  // Live proof's read.
   const about = typeof me.rawAbout === "string" ? me.rawAbout : typeof me.about === "string" ? me.about : null;
   if (about && hasOfFormatting(about)) for (const el of doc.querySelectorAll("[data-placeholder='Bio']")) setOfHtml(el, about);
   if (bio !== null) {
@@ -230,7 +186,6 @@ export function applyIdentity(doc: Document, me: OfMe, imageUrl: (url: string) =
     }
   }
 
-  // Tooltips and accessible names (the avatar's alt, "Message @yourmodel").
   for (const el of doc.querySelectorAll("[title], [aria-label], [alt]")) {
     for (const attr of ["title", "aria-label", "alt"]) {
       const cur = el.getAttribute(attr);
@@ -248,8 +203,6 @@ export function applyIdentity(doc: Document, me: OfMe, imageUrl: (url: string) =
   if (header) doc.querySelector("img.b-profile__header__cover-img")?.setAttribute("src", imageUrl(header));
   const avatar = str(me.avatar);
   if (avatar) {
-    // .of-fan: a fan's avatar (the generator marks them), which stays a placeholder.
-    // A picture inside it: OF's placeholder paints its ::after over its own background.
     for (const ph of doc.querySelectorAll<HTMLElement>(".g-avatar__placeholder.m-text-avatar:not(.of-fan)")) {
       const pic = ph.querySelector<HTMLImageElement>("img[data-oi-avatar]") ?? doc.createElement("img");
       pic.setAttribute("data-oi-avatar", "");
@@ -258,8 +211,6 @@ export function applyIdentity(doc: Document, me: OfMe, imageUrl: (url: string) =
       pic.style.cssText = "width:100%;height:100%;object-fit:cover;border-radius:inherit;";
       if (!pic.isConnected) ph.replaceChildren(pic);
     }
-    // Edit profile: OF's avatar has a remove button beside its camera once there is an avatar (disabled, as the
-    // header's: its markup with the avatar's scoped-style attribute).
     const btns = doc.querySelector(".b-profile__user .g-avatar .b-profile__header__cover__btns");
     const close = doc.querySelector(".b-profile__header > .b-profile__header__cover__btns > button");
     if (btns && close && !btns.querySelector("[data-oi-avatar-remove]")) {
@@ -273,7 +224,6 @@ export function applyIdentity(doc: Document, me: OfMe, imageUrl: (url: string) =
   }
 }
 
-/** One row of the avatar menu's account switcher. */
 export interface SwitcherModel {
   id: string;
   name: string;
@@ -298,7 +248,6 @@ const el = (doc: Document, tag: string, cls: string, text?: string) => {
   return e;
 };
 
-/** OF's connected-account row (its switcher's markup, 63420.css styles it): avatar, name, @handle, the current one ticked. */
 function switcherRow(doc: Document, m: SwitcherModel, current: boolean, imageUrl: (url: string) => string): HTMLElement {
   const row = el(doc, "div", `connected-accounts${current ? " m-current" : ""}`);
   row.setAttribute("data-v-5d71f54a", "");
@@ -311,7 +260,6 @@ function switcherRow(doc: Document, m: SwitcherModel, current: boolean, imageUrl
     img.style.cssText = "width:36px;height:36px;object-fit:cover;border-radius:50%;";
     avatar.append(img);
   } else {
-    // Not .m-text-avatar: applyIdentity paints those with the shown model's picture.
     const letter = el(doc, "span", "g-avatar__placeholder", [...m.name][0]?.toUpperCase() ?? "");
     letter.style.cssText = "display:flex;align-items:center;justify-content:center;width:36px;height:36px;font-size:16px;";
     avatar.append(letter);
@@ -337,12 +285,6 @@ function switcherRow(doc: Document, m: SwitcherModel, current: boolean, imageUrl
   return row;
 }
 
-/**
- * The avatar menu's chevron ([data-oi-switcher], the generator's): OF's account switcher over the agency's models.
- * It opens OF's menu under the chevron: one row per model, `current` ticked, then "Add another account" (the
- * app's /creators page, where a model is added). A pick calls `onPick` with the model's id (in All models the ticked one is the stand-in,
- * so picking it selects it); a pick, Escape or a click outside closes it. Returns the unbind.
- */
 export function bindSwitcher(
   doc: Document,
   models: readonly SwitcherModel[],
@@ -430,7 +372,6 @@ export function bindSwitcher(
   };
 }
 
-/** The switcher's rows: the agency's models (the scope picker's order), the shown one with its own name, handle and picture. */
 export function switcherModels(accounts: readonly { id: string; nickname?: string | null; name?: string | null }[], current: string | null, me: OfMe | undefined): SwitcherModel[] {
   return accounts.map((a) => {
     const label = str(a.nickname) ?? str(a.name) ?? a.id;
@@ -438,15 +379,9 @@ export function switcherModels(accounts: readonly { id: string; nickname?: strin
   });
 }
 
-/**
- * Single-model scope: fetch that model's `/users/me` and apply it to the frame
- * on every load (pages remount per route). Otherwise does nothing. Either way the
- * avatar menu's chevron lists the agency's models (bindSwitcher); a pick scopes to it.
- */
 export function useOfIdentity(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId, setScope } = useScope();
   const { data: me } = useQuery(ofMeQuery(accountId));
-  // OF Manager's roster, watchers too: a pick goes through OF Manager's WatcherScope.
   const accounts = useOfManagerAccounts();
 
   useEffect(() => {

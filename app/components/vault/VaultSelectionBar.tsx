@@ -17,6 +17,7 @@ export default function VaultSelectionBar({
   count,
   hidden = 0,
   hasFolders,
+  canRemove,
   busy,
   capped,
   capReason,
@@ -32,6 +33,7 @@ export default function VaultSelectionBar({
   /** Of `count`, the ticks the Photo / Video filter hides (`hiddenByFilter`): every action still takes them. */
   hidden?: number;
   hasFolders: boolean;
+  canRemove: boolean;
   busy: string;
   capped: boolean;
   capReason: string;
@@ -86,15 +88,17 @@ export default function VaultSelectionBar({
       )}
       {/* #76: OF's remove is one file at a time here (the drawer's "Remove from vault", which OF cannot
           undo); a batch of them is not built. */}
-      <button
-        type="button"
-        aria-label="Delete"
-        disabled
-        title="not wired"
-        className="text-fg-dim disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        <Trash2 size={18} aria-hidden />
-      </button>
+      {canRemove && (
+        <button
+          type="button"
+          aria-label="Delete"
+          disabled
+          title="not wired"
+          className="text-fg-dim disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <Trash2 size={18} aria-hidden />
+        </button>
+      )}
       <button
         type="button"
         onClick={onNewFolder}

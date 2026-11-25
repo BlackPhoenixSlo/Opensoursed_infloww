@@ -1,16 +1,5 @@
 "use strict";
 
-// Fake proof for the Go live window (ticket 127): real Electron, fully offline.
-// Every https/http request of the window's partition is answered by a local
-// stub page (protocol.handle), and DNS is mapped to nothing, so onlyfans.com is
-// never contacted. The stub shows what the page can see: localStorage
-// bcTokenSha, document.cookie (non-HttpOnly), the UA, and whether a logout
-// request got through; the partition's jar is read for the HttpOnly sess
-// (protocol.handle requests carry no Cookie header, measured).
-// Fake values only.
-//
-// Run (from desktop/):  nice -n 10 npx electron test/go-live-fake-proof.js [outDir]
-// Prints one JSON line and exits 0 when every check holds, 1 otherwise.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -85,7 +74,6 @@ app.whenReady().then(async () => {
       bcTokenSha: !!seen && seen.bcTokenSha === XBC,
       streamingPageServed: !!page,
       sessHttpOnly: !!sess && sess.value === "fake-sess-5678" && sess.httpOnly && !/sess=/.test(seen.documentCookie),
-      // Exact name, full value: a "x_auth_id=" cookie or a longer id must not pass.
       authIdVisible: !!seen && String(seen.documentCookie).split(/;\s*/).some((kv) => kv === `auth_id=${COOKIES.find((c) => c.name === "auth_id").value}`),
       noCloudflare: !jar.some((c) => c.name === "__cf_bm"),
       uaNoElectron: !!seen && !/Electron/i.test(seen.userAgent),

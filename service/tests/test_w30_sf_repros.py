@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""W30 script-fill regressions through the carrier sweep and vault planner."""
 
 import _harness  # noqa: F401 — bind a temporary DB before service imports
 
@@ -59,7 +58,6 @@ class Calendar:
 
 
 def sweep_intent(calendar):
-    """Run the hourly sweep on a finished import that lost its carrier ID."""
     with TemporaryDirectory() as tmp:
         spool = Path(tmp)
         run_id = f"{ACCOUNT}-20261101T000000-ab1234"
@@ -113,9 +111,6 @@ def case_f1c():
 
 
 def case_f1d():
-    """A post row with no text field may be the carrier (its marker unread): the
-    scan is not complete, so the on-disk intent stays pending. A present text
-    without the marker is evaluated (not a carrier)."""
     row = schedule_row(401, 4)
     cases = {
         "no text field": ({**row, "entity": {"id": 401}}, False),
@@ -131,9 +126,6 @@ def case_f1d():
 
 
 def case_f38():
-    """W30 F38: a full (cut) chunk lists the carrier without its text; the day
-    re-read lists it WITH the marker. The re-read row wins: the carrier is
-    deleted and nothing unevaluable is left."""
     carrier = schedule_row(501, 10, of_client.VAULT_MARKER)
     half = of_paging.SCHEDULE_PAGE // 2
     busy = ([schedule_row(5000 + i, 9) for i in range(half)]
@@ -145,7 +137,7 @@ def case_f38():
                                       publish_date_end=publish_date_end, limit=limit)
             span = (datetime.fromisoformat(publish_date_end)
                     - datetime.fromisoformat(publish_date)).days
-            if span > 1:   # the wide read drops the text of the carrier
+            if span > 1:
                 reply["list"] = [{**r, "entity": {"id": r["entity"]["id"]}}
                                  if r is carrier else r for r in reply["list"]]
             return reply
@@ -157,9 +149,6 @@ def case_f38():
 
 
 def case_f39():
-    """W30 F39: the first chunk's read raises (HTTP 502); the far chunk with
-    the carrier is still read and the carrier deleted; the intent stays
-    pending (the scan is incomplete)."""
     carrier = schedule_row(601, of_client.CARRIER_DAYS, of_client.VAULT_MARKER)
 
     class Bad(Calendar):

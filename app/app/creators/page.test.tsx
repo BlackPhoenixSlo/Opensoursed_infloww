@@ -1,10 +1,3 @@
-/**
- * The `/creators` route module renders Manage creators as the Layout capture
- * draws it (docs/infloww-layouts/creators-manage.md; docs/spec/
- * infloww-parity-round-2/phase-04-creators-pages.md, Testing Decisions, the
- * Manage creators page seam; ticket 13). The Relay client is mocked as in
- * AccountsTable.test.tsx. Fixture names and ids are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -17,7 +10,6 @@ vi.mock("@/lib/relay", async (importOriginal) => ({
 }));
 let me: { is_admin?: boolean } | null;
 vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: me, loading: false }) }));
-// vitest.setup.ts's mock, except the search params are the address bar's, as Next keeps them (history.replaceState too).
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), forward: vi.fn(), prefetch: vi.fn() }),
   usePathname: () => "/",
@@ -40,7 +32,6 @@ let health: () => Promise<unknown>;
 let proxies: () => Promise<unknown>;
 let employees: () => Promise<unknown>;
 let liveRev: unknown;
-/** The agency's `account` Settings blob, whose `creators` key holds the Creator profiles (useCreatorProfiles). */
 let settings: Record<string, unknown> | null;
 let fetchMock: Mock;
 
@@ -78,13 +69,11 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const table = () => screen.getByRole("table");
 const rows = () => within(table()).getAllByRole("row").slice(1);
 const rowOf = (name: string) => rows().find((r) => within(r).queryAllByText(name).length > 0)!;
-/** The capture's connectivity cell: the column headed "Connectivity status". */
 const connCell = (name: string) => {
   const i = within(table()).getAllByRole("columnheader").findIndex((h) => h.textContent === "Connectivity status");
   return within(rowOf(name)).getAllByRole("cell")[i];
 };
 const follows = (a: Node, b: Node) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-/** The Creator cell's title: our extras the capture has no column for (the id, the bound proxy, last used). */
 const extrasOf = (name: string) => within(rowOf(name)).getAllByRole("cell")[1].querySelector("[title]")?.getAttribute("title") ?? "";
 
 describe("/creators — the creator table leads", () => {
@@ -93,31 +82,26 @@ describe("/creators — the creator table leads", () => {
     renderWithProviders(<Page />);
     await screen.findAllByText("Alpha");
 
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Manage creators"); // creators-manage#3
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Manage creators");
     const headers = within(table()).getAllByRole("columnheader");
-    // 01-home.png's columns, in its order, and no column of ours (page-parity 02).
     expect(headers.map((h) => h.textContent)).toEqual([
-      "", //                    creators-manage#29 (the untitled expand column)
-      "Creator", //             creators-manage#30
-      "Nickname", //            creators-manage#32
-      "Tag", //                 creators-manage#34
-      "Account", //             creators-manage#36
-      "Creator ID", //          creators-manage#37
-      "Employees", //           creators-manage#38
-      "Connectivity status", // creators-manage#39
-      "Action", //              creators-manage#43
+      "",
+      "Creator",
+      "Nickname",
+      "Tag",
+      "Account",
+      "Creator ID",
+      "Employees",
+      "Connectivity status",
+      "Action",
     ]);
-    // HB's head: #171717 (`bg-panel`), white text; the fixed Action column the same, with its left rule.
     for (const h of headers) expect(h).toHaveClass("bg-panel", "text-white");
     expect(headers[headers.length - 1]).toHaveClass("border-l", "border-[#2c2c2c]");
-    // The HB page body and the orange Add creator (black text on the action fill).
     expect(screen.getByRole("button", { name: "Add creator" })).toHaveClass("bg-cta", "text-black");
 
-    // The capture forms are no longer on the page: they live in the Add creator modal (ticket 14).
     for (const form of ["Paste cURL", /^Connect Fansly/]) {
       expect(screen.queryByRole("heading", { name: form })).toBeNull();
     }
-    // The Tag settings gear (creators-manage#35) opens the Tag manager once the account details are read (TagSettings).
     const gear = within(table()).getByRole("button", { name: "Tag settings" });
     await waitFor(() => expect(gear).toHaveAttribute("title", "Tag settings"));
     expect(gear).toBeEnabled();
@@ -129,12 +113,10 @@ describe("/creators — the creator table leads", () => {
     renderWithProviders(<Page />);
     await screen.findAllByText("Foxtrot");
     const row = rowOf("Foxtrot");
-    expect(within(row).getByText("Fansly")).toBeInTheDocument(); // creators-manage#20
-    // The account id and the bound proxy are the Creator cell's title, labelled ours (no extra column).
+    expect(within(row).getByText("Fansly")).toBeInTheDocument();
     expect(extrasOf("Foxtrot")).toContain("acct-f");
     expect(extrasOf("Foxtrot").startsWith(EXTRA_LABEL)).toBe(true);
     await waitFor(() => expect(extrasOf("Foxtrot")).toContain("Custom proxy · px-1"));
-    // No new Relay route: the page reads the spec's four (Contracts), plus the extras' own reads.
     const paths = new Set(relayGet.mock.calls.map(([p]) => String(p)));
     for (const p of paths) {
       expect([
@@ -154,9 +136,7 @@ describe("/creators — the creator table leads", () => {
     await screen.findAllByText("Oscar");
     const i = within(table()).getAllByRole("columnheader").findIndex((h) => h.textContent === "Creator ID");
     await waitFor(() => expect(within(rowOf("Oscar")).getAllByRole("cell")[i]).toHaveTextContent(/^acct-o$/));
-    // The Account cell: the platform's name after its mark.
     expect(within(rowOf("Oscar")).getByText("OnlyFans")).toBeInTheDocument();
-    // The default Creator's badge follows its nickname.
     expect(within(rowOf("Oscar")).getByText("default")).toBeInTheDocument();
   });
 });
@@ -165,7 +145,6 @@ describe("/creators — the filter bar narrows the table", () => {
   const names = () => rows().map((r) => within(r).getAllByRole("cell")[1].textContent);
   const filter = (name: string) => screen.getByRole("combobox", { name });
   const search = () => screen.getByRole("textbox", { name: "Creator name" });
-  /** The Employee filter searches (creators-manage#24, `showSearch`): a text box over a list of its names. */
   const listOf = (el: HTMLElement) => document.getElementById(el.getAttribute("list") ?? "");
   const pick = (name: string, label: string) => {
     const el = filter(name);
@@ -186,14 +165,14 @@ describe("/creators — the filter bar narrows the table", () => {
       accounts: [
         { account_id: "acct-1", ok: true },
         { account_id: "acct-2", ok: false, error: "auth_failed" },
-        { account_id: "acct-3", ok: true }, // a dead session whose probe is live
+        { account_id: "acct-3", ok: true },
         { account_id: "acct-4", ok: false, error: "no_session" },
       ],
     });
     employees = () => Promise.resolve({
       employees: [
         { id: 1, display_name: "Emp One", color: null, is_active: true, account_ids: ["acct-2"], chatter_id: "c1" },
-        { id: 2, display_name: "Emp Two", color: null, is_active: true, account_ids: null, chatter_id: "c2" }, // every Creator
+        { id: 2, display_name: "Emp Two", color: null, is_active: true, account_ids: null, chatter_id: "c2" },
       ],
     });
   };
@@ -204,31 +183,27 @@ describe("/creators — the filter bar narrows the table", () => {
     renderWithProviders(<Page />);
     await screen.findAllByText("Alpha");
     const bar = screen.getByRole("search", { name: "Filter creators" });
-    // The capture's order (creators-manage#14, #18 to #25). Its labels are keys with no English on disk, so the
-    // words are the Clone's (its Clone fixes for #18 to #25), as the capture's Notes allow.
     const controls = [within(bar).getByRole("textbox"), ...within(bar).getAllByRole("combobox")];
     expect(follows(controls[0], controls[1])).toBe(true);
     expect(controls.map((c) => c.getAttribute("aria-label"))).toEqual([
-      "Creator name", //        creators-manage#18 (growth0094)
-      "Platform", //            creators-manage#19 (settings0125)
-      "Tag", //                 creators-manage#21 (creators0275)
-      "Connectivity status", // creators-manage#22 (creators0064)
-      "Employee", //            creators-manage#24 (employee0055)
-      "Account status", //      creators-manage#25 (creators0022)
+      "Creator name",
+      "Platform",
+      "Tag",
+      "Connectivity status",
+      "Employee",
+      "Account status",
     ]);
-    expect(search()).toHaveAttribute("maxLength", "50"); // creators-manage#18
+    expect(search()).toHaveAttribute("maxLength", "50");
     const opts = (name: string) => within(filter(name)).getAllByRole("option").map((o) => o.textContent);
     const searchable = (name: string) => [...(listOf(filter(name))?.querySelectorAll("option") ?? [])].map((o) => o.value);
-    expect(opts("Platform")).toEqual(["Platform", "OnlyFans", "Fansly"]); // creators-manage#20
+    expect(opts("Platform")).toEqual(["Platform", "OnlyFans", "Fansly"]);
     expect(opts("Connectivity status")).toEqual([
       "Connectivity status", "Connected", "Disconnected", "Not connected", "Pending connection", "2FA required",
-    ]); // creators-manage#23
+    ]);
     await waitFor(() => expect(searchable("Employee")).toEqual(["Emp One", "Emp Two"]));
     expect(filter("Employee")).toHaveAttribute("placeholder", "Employee");
-    expect(opts("Account status")).toEqual(["Account status", "Activated", "Deactivated"]); // creators-manage#26
-    // The bundle has no Reset (the capture's Notes, #14), and neither do we (page-parity 02): each filter clears itself.
+    expect(opts("Account status")).toEqual(["Account status", "Activated", "Deactivated"]);
     expect(within(bar).queryByRole("button")).toBeNull();
-    // HB's filled filter: #161616, no border.
     for (const c of controls) expect(c).toHaveClass("bg-[#161616]", "border-0");
   });
 
@@ -257,7 +232,7 @@ describe("/creators — the filter bar narrows the table", () => {
     expect(names()).toEqual(["Alpha Creator"]);
     pick("Tag", "New");
     expect(names()).toEqual(["Charlie"]);
-    pick("Tag", "Tag"); // the select's own first option clears it
+    pick("Tag", "Tag");
     expect(names()).toEqual(["Alpha Creator", "Bravo", "Charlie", "Delta"]);
   });
 
@@ -267,7 +242,6 @@ describe("/creators — the filter bar narrows the table", () => {
     await screen.findAllByText("Alpha");
     const i = within(table()).getAllByRole("columnheader").findIndex((h) => h.textContent === "Employees");
     const cell = (name: string) => within(rowOf(name)).getAllByRole("cell")[i].firstElementChild!;
-    // creators-manage#38: names joined ", ", two lines (`-webkit-line-clamp:2`), the full list in its popover.
     await waitFor(() => expect(cell("Bravo")).toHaveTextContent("Emp One, Emp Two"));
     expect(cell("Bravo")).toHaveAttribute("title", "Emp One, Emp Two");
     expect(cell("Alpha")).toHaveAttribute("title", "Emp Two");
@@ -279,8 +253,6 @@ describe("/creators — the filter bar narrows the table", () => {
     await waitFor(() => expect(connCell("Alpha")).toHaveTextContent("Connected"));
     expect(names()).toEqual(ALL);
 
-    // Search applies on Enter, never on typing alone (creators-manage#18: `onPressEnter`), on the Creator name or its
-    // id.
     fireEvent.change(search(), { target: { value: "rav" } });
     expect(names()).toEqual(ALL);
     fireEvent.keyDown(search(), { key: "Enter" });
@@ -289,7 +261,6 @@ describe("/creators — the filter bar narrows the table", () => {
     expect(names()).toEqual(["Bravo"]);
     fireEvent.keyDown(search(), { key: "Enter" });
     expect(names()).toEqual(["Delta"]);
-    // Emptied, then Enter, the name filter clears.
     fireEvent.change(search(), { target: { value: "" } });
     fireEvent.keyDown(search(), { key: "Enter" });
     expect(names()).toEqual(ALL);
@@ -301,21 +272,17 @@ describe("/creators — the filter bar narrows the table", () => {
     pick("Platform", "Platform");
     expect(names()).toEqual(ALL);
 
-    // The row's own status: the dead session with a live probe is Disconnected.
     pick("Connectivity status", "Disconnected");
     expect(names()).toEqual(["Bravo", "Charlie"]);
     pick("Connectivity status", "Connected");
     expect(names()).toEqual(["Alpha"]);
     pick("Connectivity status", "Not connected");
     expect(names()).toEqual(["Delta"]);
-    // A login-job state: no stored Creator is in it.
     pick("Connectivity status", "2FA required");
     expect(screen.getByText("No data")).toBeInTheDocument();
     expect(screen.queryByText(/^Total:/)).toBeNull();
     pick("Connectivity status", "Connectivity status");
 
-    // Employees' Creator access: a list grants those Creators, null grants every one. The box searches: a part of a
-    // name only narrows the list it offers, and the table waits for a whole name (creators-manage#24).
     await waitFor(() => expect(listOf(filter("Employee"))?.querySelectorAll("option")).toHaveLength(2));
     fireEvent.change(filter("Employee"), { target: { value: "one" } });
     expect(names()).toEqual(ALL);
@@ -325,10 +292,9 @@ describe("/creators — the filter bar narrows the table", () => {
     pick("Employee", "Emp Two");
     expect(names()).toEqual(ALL);
     pick("Employee", "Emp One");
-    fireEvent.change(filter("Employee"), { target: { value: "" } }); // cleared, as antd's allowClear
+    fireEvent.change(filter("Employee"), { target: { value: "" } });
     expect(names()).toEqual(ALL);
 
-    // Filters combine.
     pick("Platform", "OnlyFans");
     pick("Connectivity status", "Disconnected");
     fireEvent.change(search(), { target: { value: "char" } });
@@ -366,7 +332,6 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
   const btn = (name: string | RegExp) => within(dialog()).getByRole("button", { name });
   const choice = (name: "Browser login" | "Extension") => within(dialog()).getByRole("radio", { name: new RegExp(`^${name}`) });
   const CREATOR_NAME = "Creator draft";
-  /** New creators enter details and choose a platform; recovery and draft rows bypass these steps. */
   const enterLogin = () => {
     expect(btn("Next")).toBeDisabled();
     fireEvent.change(within(dialog()).getByLabelText("Creator name"), { target: { value: CREATOR_NAME } });
@@ -379,7 +344,6 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     fireEvent.click(btn("Next"));
     expect(within(dialog()).getByRole("radiogroup", { name: "Login method" })).toBeInTheDocument();
   };
-  /** The Extension choice, its panel shown. */
   const toExtension = async () => {
     await open();
     enterLogin();
@@ -403,7 +367,6 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     renderWithProviders(<Page />);
     await screen.findAllByText("Alpha");
 
-    // creators-manage#9: the header's primary button, beside the title.
     const add = within(screen.getByRole("banner")).getByRole("button", { name: "Add creator" });
     expect(screen.queryByRole("dialog")).toBeNull();
     fireEvent.click(add);
@@ -416,14 +379,12 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     expect(radios[0]).toHaveAccessibleName(/^Browser login\s*Recommended/);
     expect(radios[1]).toHaveAccessibleName(/^Extension\s*If browser login doesn't work/);
     expect(radios[0]).toBeChecked();
-    // Browser login's panel is shown, its Start in the footer after Cancel; the Extension's panel waits hidden.
     const bb = within(d).getByRole("region", { name: "Browserbase login" });
     expect(within(bb).getByLabelText("OnlyFans email")).toBeInTheDocument();
     expect(within(d).queryByRole("region", { name: "Extension" })).toBeNull();
     expect(within(d).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
     expect(within(d).getByRole("button", { name: "Start browser login" })).toBeDisabled();
     expect(follows(within(d).getByRole("button", { name: "Cancel" }), within(d).getByRole("button", { name: "Start browser login" }))).toBe(true);
-    // Details and platform are complete: the login step has no proxy picker or last-resort screens.
     expect(within(d).queryByLabelText("Creator name")).toBeNull();
     expect(within(d).queryByText("Proxy selection")).toBeNull();
     expect(within(d).queryByRole("combobox")).toBeNull();
@@ -431,7 +392,6 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     expect(within(d).queryByRole("button", { name: /Try Browserbase login|How it works|Next/ })).toBeNull();
     expect(within(d).getByRole("button", { name: "Link a Fansly account instead" })).toBeInTheDocument();
 
-    // Close (×) shuts it; the backdrop does not (`maskClosable:false`, creators-manage#54); Cancel does too.
     fireEvent.click(d.parentElement!);
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     fireEvent.click(within(d).getByRole("button", { name: "Close" }));
@@ -449,7 +409,6 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     expect(within(paste).getByText(/Open the extension, click Copy cURL/)).toBeInTheDocument();
     expect(btn("Link account")).toBeDisabled();
     expect(within(dialog()).queryByRole("button", { name: "Start browser login" })).toBeNull();
-    // No nickname field, proxy select, Download app or confirm: only the copy, and Troubleshooting folded.
     expect(within(paste).queryByRole("combobox")).toBeNull();
     expect(within(paste).queryByLabelText("Nickname")).toBeNull();
     expect(within(paste).queryByRole("link", { name: /Download app/ })).toBeNull();
@@ -461,8 +420,6 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     expect(within(dialog()).queryByRole("button", { name: "Link account" })).toBeNull();
   });
 
-  /** A relay with a 3-proxy pool: `proxy-pool/assign` puts the account on it (or fails with `assignError`); the
-   *  session reload fails `reloadFailures` times. */
   const poolRelay = (assignError?: Error, reloadFailures = 0) => {
     const onPool: string[] = [];
     proxies = () => Promise.resolve({
@@ -514,7 +471,6 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     expect(posts.indexOf("/admin/reload-session?account_id=acct-new")).toBeGreaterThan(posts.indexOf("/admin/proxy-pool/assign"));
     expect(relayPost).toHaveBeenCalledWith("/admin/proxy-pool/assign", { account_id: "acct-new" });
     expect(relayPost).not.toHaveBeenCalledWith("/admin/proxies/assign", expect.anything());
-    // Read back from GET /admin/proxies, which now lists the account on the pool.
     expect(await within(dialog()).findByText("Inflowwww proxy")).toBeInTheDocument();
     confirm.mockRestore();
   });
@@ -552,7 +508,6 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     renderWithProviders(<Page />);
     const paste = await toExtension();
     await waitFor(() => expect(within(paste).getByText(/default proxy is assigned after linking/)).toBeInTheDocument());
-    // The attach step's own read works; the linked step's, after the bind, fails.
     const before = proxies;
     proxies = () => relayPost.mock.calls.some(([p]) => p === "/admin/proxy-pool/assign")
       ? Promise.reject(new RelayError(500, null, "relay 500")) : before();
@@ -602,7 +557,6 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     renderWithProviders(<Page />);
     await screen.findByText("No data");
     const paste = await toExtension();
-    // No extension on a phone: its panel is hidden below md, a line says so; Browser login shows at every width.
     const body = within(paste).getByLabelText("Copied cURL").closest(".hidden")!;
     expect(body).toHaveClass("hidden", "md:block");
     const line = within(paste).getByText("The extension needs desktop Chrome. On a phone, use Browser login.");
@@ -630,7 +584,6 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
 
     await within(dialog()).findByText("Creator account is linked to Inflowwww");
     expect(relayPost).toHaveBeenCalledWith("/admin/session/bootstrap", expect.objectContaining({ mode: "paste-curl" }));
-    // No pool: nothing bound.
     expect(await within(dialog()).findByText("No proxy (server IP)")).toBeInTheDocument();
     expect(relayPost).not.toHaveBeenCalledWith("/admin/proxy-pool/assign", expect.anything());
     expect(within(dialog()).queryByRole("radiogroup", { name: "Login method" })).toBeNull();
@@ -639,7 +592,6 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     fireEvent.change(within(dialog()).getByLabelText("Nickname"), { target: { value: "Nova" } });
     fireEvent.change(within(dialog()).getByLabelText("Tag (Optional)"), { target: { value: "VIP" } });
     fireEvent.change(within(dialog()).getByLabelText("Internal notes (Optional)"), { target: { value: "night shift" } });
-    // Assigned employees: Emp Two can open every Creator, so it is checked and fixed.
     fireEvent.click(btn("Assigned employees"));
     const list = within(dialog()).getByRole("listbox");
     expect(within(list).getByRole("option", { name: /Emp Two/ })).toBeDisabled();
@@ -661,7 +613,6 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     renderWithProviders(<Page />);
     await waitFor(() => expect(connCell("Nova")).toHaveTextContent("Pending connection"));
 
-    // Its Link creator account opens the same two ways in, under the row's title.
     fireEvent.click(within(rowOf("Nova")).getByRole("button", { name: "Link creator account" }));
     expect(within(screen.getByRole("dialog", { name: "Link creator account" })).getByRole("radiogroup", { name: "Login method" })).toBeInTheDocument();
     fireEvent.click(btn("Close"));
@@ -707,7 +658,6 @@ describe("/creators — connectivity in the capture's words", () => {
     renderWithProviders(<Page />);
     await waitFor(() => expect(connCell("Live")).toHaveTextContent("Connected"));
 
-    // creators-manage#23 / #40 labels.
     expect(connCell("Dead")).toHaveTextContent(/^Disconnected/);
     expect(within(connCell("Dead")).getByText("automations paused")).toBeInTheDocument();
     expect(connCell("Down")).toHaveTextContent("Disconnected");
@@ -733,9 +683,7 @@ describe("/creators — connectivity in the capture's words", () => {
     renderWithProviders(<Page />);
     await waitFor(() => expect(connCell("Alpha")).toHaveTextContent("—"));
     expect(within(connCell("Alpha")).getByText("—")).toHaveAttribute("title", "relay 401");
-    // In the table: the connectivity filter lists the label as an option (ticket 15).
     expect(within(table()).queryByText("Pending connection")).toBeNull();
-    // The flag still outranks: it needs no health read to be known.
     expect(connCell("Dead")).toHaveTextContent(/^Disconnected/);
   });
 });
@@ -746,9 +694,8 @@ describe("/creators — the footer pages the table on the client", () => {
     renderWithProviders(<Page />);
     await screen.findAllByText("Model 1");
 
-    expect(screen.getByText("Total: 23 creators")).toBeInTheDocument(); // creators-manage#52
-    expect(rows()).toHaveLength(10); // defaultPageSize:10
-    // HB's pager (ticket 00's HbPager): prev is disabled on page 1.
+    expect(screen.getByText("Total: 23 creators")).toBeInTheDocument();
+    expect(rows()).toHaveLength(10);
     expect(screen.getByRole("button", { name: "Previous page" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Page 3" }));
     expect(rows()).toHaveLength(3);
@@ -762,7 +709,7 @@ describe("/creators — the footer pages the table on the client", () => {
     };
     fireEvent.click(per());
     expect(within(screen.getByRole("listbox", { name: "Per page" })).getAllByRole("option").map((o) => o.textContent))
-      .toEqual(["10", "20", "50"]); // creators-manage#52
+      .toEqual(["10", "20", "50"]);
     fireEvent.click(per());
     size("20");
     expect(rows()).toHaveLength(20);
@@ -773,7 +720,7 @@ describe("/creators — the footer pages the table on the client", () => {
 
   it("shows the capture's No data and no footer when there are no Creators", async () => {
     renderWithProviders(<Page />);
-    await screen.findByText("No data"); // creators-manage#50
+    await screen.findByText("No data");
     expect(screen.queryByText(/^Total:/)).toBeNull();
   });
 
@@ -781,14 +728,11 @@ describe("/creators — the footer pages the table on the client", () => {
     relayGet.mockImplementation((path: string) =>
       path === "/admin/accounts" ? Promise.reject(new RelayError(500, null, "relay 500")) : Promise.resolve({}));
     renderWithProviders(<Page />);
-    // The bundle has no error line in its table; the line is ours.
     expect(await within(table()).findByText("relay 500")).toHaveAttribute("title", EXTRA_LABEL);
     expect(screen.queryByText(/^Total:/)).toBeNull();
   });
 });
 
-// The footer sits at the page's foot (creators-manage#52, #53; the bundle's `_content-wrap` is a full-height column
-// whose `_layout-wrap` scrolls above `_pagination-wrap`), so our extras sit above it, after the table.
 describe("/creators — extras between the table and the footer", () => {
   it("holds the founder key cards in one collapsed disclosure, drawn for a Master only", async () => {
     accounts = [{ id: "acct-a", nickname: "Alpha" }];
@@ -854,14 +798,14 @@ describe("/creators — the Employees column", () => {
     employees = () => Promise.resolve({
       employees: [
         { id: 1, display_name: "Emp One", color: null, is_active: true, account_ids: ["acct-2"], chatter_id: "c1" },
-        { id: 2, display_name: "Emp Two", color: null, is_active: true, account_ids: null, chatter_id: "c2" }, // every Creator
+        { id: 2, display_name: "Emp Two", color: null, is_active: true, account_ids: null, chatter_id: "c2" },
         { id: 3, display_name: "Owner seat", color: null, is_active: true, account_ids: null, chatter_id: null },
       ],
     });
     renderWithProviders(<Page />);
     const col = () => within(table()).getAllByRole("columnheader").findIndex((h) => h.textContent === "Employees");
     const cell = (name: string) => within(rowOf(name)).getAllByRole("cell")[col()];
-    await waitFor(() => expect(cell("Bravo")).toHaveTextContent("Emp One, Emp Two")); // creators-manage#38
+    await waitFor(() => expect(cell("Bravo")).toHaveTextContent("Emp One, Emp Two"));
     expect(cell("Alpha")).toHaveTextContent(/^Emp Two$/);
     expect(within(table()).getAllByRole("columnheader")[col()]).not.toHaveAttribute("title");
   });
@@ -889,7 +833,7 @@ describe("/creators — the row's ⋮ menu", () => {
   const items = (menu: HTMLElement) => within(menu).getAllByRole("menuitem");
   const fleet = () => {
     accounts = [
-      { id: "acct-a", nickname: "Alpha", has_session: true }, // the default Creator
+      { id: "acct-a", nickname: "Alpha", has_session: true },
       { id: "acct-b", nickname: "Bravo", has_session: true },
       { id: "acct-c", nickname: "Charlie", has_session: true },
     ];
@@ -916,19 +860,15 @@ describe("/creators — the row's ⋮ menu", () => {
     renderWithProviders(<Page />);
     await waitFor(() => expect(connCell("Bravo")).toHaveTextContent("Connected"));
 
-    // creators-manage#45: a Connected row's Edit pencil sits outside the menu; it opens Edit account details.
     expect(within(rowOf("Bravo")).getByRole("button", { name: "Edit" })).toBeEnabled();
 
     const menu = openMenu("Bravo");
-    // creators-manage#48, a Connected row (RenderActions): Link another account, Deactivate, Delete; then ours.
     expect(items(menu).map((i) => i.textContent)).toEqual([
       "Link another account", "Deactivate", "Delete", "Rename", "Make default",
     ]);
-    // Deactivate opens its confirm (creators-manage#77; AccountsTable.test covers the modal).
     expect(within(menu).getByRole("menuitem", { name: "Deactivate" })).toBeEnabled();
     expect(within(menu).getByRole("menuitem", { name: "Link another account" })).toBeEnabled();
     expect(within(menu).getByRole("menuitem", { name: "Delete" })).toBeEnabled();
-    // Each capture item leads with its icon (creators-manage#48: Edit04Line, PlusLine, UserX01Line, Trash01Line).
     for (const label of ["Link another account", "Deactivate", "Delete"]) {
       expect(within(menu).getByRole("menuitem", { name: label }).querySelector("svg")).not.toBeNull();
     }
@@ -973,7 +913,7 @@ describe("/creators — the row's ⋮ menu", () => {
     fireEvent.change(within(d).getByLabelText("Nickname"), { target: { value: "Bravo B" } });
     fireEvent.change(within(d).getByLabelText("Tag (Optional)"), { target: { value: "VIP" } });
     fireEvent.click(within(d).getByRole("button", { name: "Assigned employees" }));
-    fireEvent.click(within(d).getByRole("option", { name: "Emp One" })); // unassign
+    fireEvent.click(within(d).getByRole("option", { name: "Emp One" }));
     fireEvent.click(within(d).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(relayPatch).toHaveBeenCalledWith("/admin/accounts/acct-b", { nickname: "Bravo B" });
@@ -982,7 +922,6 @@ describe("/creators — the row's ⋮ menu", () => {
       .toEqual(expect.objectContaining({ name: "Bravo Creator", tag: "VIP" }));
     expect(screen.getByText("Update Success")).toBeInTheDocument();
 
-    // Change proxy: unbind px-1, bind px-2, reload the session.
     fireEvent.click(within(rowOf("Bravo Creator")).getByRole("button", { name: "Edit" }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Edit account details" })).getByRole("button", { name: "Change" }));
     const change = screen.getByRole("dialog", { name: "Change proxy" });
@@ -1019,7 +958,6 @@ describe("/creators — the row's ⋮ menu", () => {
     await waitFor(() => expect(extrasOf("Bravo")).toContain("Inflowwww proxy"));
     expect(extrasOf("Alpha")).toContain("Custom proxy · px-1");
 
-    // Bravo: on the pool → No proxy (pool unbind, reload).
     fireEvent.click(within(rowOf("Bravo")).getByRole("button", { name: "Edit" }));
     let d = screen.getByRole("dialog", { name: "Edit account details" });
     expect(within(d).getByText("Inflowwww proxy")).toBeInTheDocument();
@@ -1035,7 +973,6 @@ describe("/creators — the row's ⋮ menu", () => {
     expect(relayPost).not.toHaveBeenCalledWith("/admin/proxy-pool/assign", expect.anything());
     fireEvent.click(within(screen.getByRole("dialog", { name: "Edit account details" })).getByRole("button", { name: "Cancel" }));
 
-    // Alpha: custom px-1 → Inflowwww proxy (the relay picks and binds; the account moves off px-1).
     relayPost.mockClear();
     fireEvent.click(within(rowOf("Alpha")).getByRole("button", { name: "Edit" }));
     d = screen.getByRole("dialog", { name: "Edit account details" });
@@ -1055,7 +992,6 @@ describe("/creators — the row's ⋮ menu", () => {
     await screen.findAllByText("Bravo");
     const dialog = () => screen.getByRole("dialog", { name: "Delete Bravo" });
 
-    // creators-manage#78: `DeleteCreatorsWithSurvey`, an HBModal (600px) with a two-step footer.
     fireEvent.click(within(openMenu("Bravo")).getByRole("menuitem", { name: "Delete" }));
     expect(within(dialog()).getByText("Step 1 of 2")).toBeInTheDocument();
     expect(within(dialog()).getByRole("button", { name: "Back" })).toBeDisabled();
@@ -1068,7 +1004,6 @@ describe("/creators — the row's ⋮ menu", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(relayDelete).not.toHaveBeenCalled();
 
-    // Infloww's message, then its survey (Optional); the answer has no Relay field, so it stays in the modal.
     fireEvent.click(within(openMenu("Bravo")).getByRole("menuitem", { name: "Delete" }));
     expect(dialog()).toHaveTextContent("All platform accounts and related data under Bravo will be permanently deleted from Inflowwww. This action cannot be undone.");
     fireEvent.click(within(dialog()).getByRole("button", { name: "Delete creator" }));
@@ -1098,9 +1033,7 @@ describe("/creators — the row's ⋮ menu", () => {
     fireEvent.click(within(openMenu("Bravo")).getByRole("menuitem", { name: "Make default" }));
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/accounts/active", { account_id: "acct-b" }));
 
-    // The default Creator is not offered Make default.
     expect(items(openMenu("Alpha")).map((i) => i.textContent)).not.toContain("Make default");
-    // No Refresh session: it ran a server browser the relay does not ship; re-link with Paste cURL instead.
     expect(items(screen.getByRole("menu")).map((i) => i.textContent)).not.toContain("Refresh session");
   });
 
@@ -1111,20 +1044,15 @@ describe("/creators — the row's ⋮ menu", () => {
     const dialog = () => screen.getByRole("dialog", { name: "Link creator account" });
     const close = () => fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
 
-    // A Connected row offers no link button and no recovery (creators-manage#45).
     expect(within(rowOf("Bravo")).queryByRole("button", { name: "Link creator account" })).toBeNull();
     expect(items(openMenu("Bravo")).map((i) => i.textContent)).not.toContain("Log in to account via OnlyFans");
     fireEvent.mouseDown(document.body);
 
-    // creators-manage#46, #58: any other row's link button, "Link creator account", opens at Browser login (the
-    // first way in, Extension one click away), titled as the capture's later steps are (#56).
     fireEvent.click(within(rowOf("Charlie")).getByRole("button", { name: "Link creator account" }));
     expect(within(dialog()).getByRole("region", { name: "Browserbase login" })).toHaveFocus();
-    // A re-link has no platform to swap to.
     expect(within(dialog()).queryByRole("button", { name: /Link a Fansly account/ })).toBeNull();
     close();
 
-    // creators-manage#46, #48: the row's menu holds Edit first, then the capture's three; the recovery actions follow.
     const menu = openMenu("Charlie");
     expect(items(menu).map((i) => i.textContent)).toEqual([
       "Edit", "Link another account", "Deactivate", "Delete",
@@ -1132,13 +1060,11 @@ describe("/creators — the row's ⋮ menu", () => {
       "Rename", "Make default",
     ]);
     expect(within(menu).getByRole("menuitem", { name: "Edit" })).toBeEnabled();
-    // Login+ is Infloww's phone app.
     const loginPlus = within(menu).getByRole("menuitem", { name: "Log in to account via Login+" });
     expect(loginPlus).toBeDisabled();
     expect(loginPlus).toHaveAttribute("title", "not wired");
-    fireEvent.mouseDown(document.body); // an outside click closes the menu
+    fireEvent.mouseDown(document.body);
 
-    // #59, re-link: the OnlyFans sign-in opens at Browser login.
     fireEvent.click(within(openMenu("Charlie")).getByRole("menuitem", { name: "Log in to account via OnlyFans" }));
     expect(within(dialog()).getByRole("region", { name: "Browserbase login" })).toHaveFocus();
     close();
@@ -1152,7 +1078,6 @@ describe("/creators — the row's ⋮ menu", () => {
       renderWithProviders(<Page />);
       const d = await screen.findByRole("dialog", { name: "Link creator account" });
       await waitFor(() => expect(within(d).getByRole("region", { name: "Browserbase login" })).toHaveFocus());
-      // The link is spent: a reload or Back does not reopen the modal.
       expect(window.location.search).toBe("");
     } finally {
       window.history.replaceState(null, "", "/");
@@ -1184,7 +1109,6 @@ describe("/creators — the row's ⋮ menu", () => {
     await waitFor(() => expect(connCell("Charlie")).toHaveTextContent("Disconnected"));
     fireEvent.click(within(openMenu("Charlie")).getByRole("menuitem", { name: "Log in to account via OnlyFans" }));
     const d = screen.getByRole("dialog", { name: "Link creator account" });
-    // A re-login keeps the account's proxy: Browser login says so and binds nothing, and the Extension neither.
     const bb = within(d).getByRole("region", { name: "Browserbase login" });
     expect(within(bb).getByText(/^Keeps its current proxy\./)).toBeInTheDocument();
     fireEvent.click(within(d).getByRole("radio", { name: /^Extension/ }));
@@ -1195,7 +1119,6 @@ describe("/creators — the row's ⋮ menu", () => {
     await within(d).findByText("Creator account is linked to Inflowwww");
     expect(await within(d).findByText("Inflowwww proxy")).toBeInTheDocument();
     expect(relayPost).not.toHaveBeenCalledWith("/admin/proxy-pool/assign", expect.anything());
-    // A recovery saves no details: Done just closes.
     expect(within(d).queryByText("Account details")).toBeNull();
     fireEvent.click(within(d).getByRole("button", { name: "Done" }));
     expect(screen.queryByRole("dialog")).toBeNull();

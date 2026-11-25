@@ -1,8 +1,5 @@
 "use client";
 
-/** The money rail's panel (MoneyRail.tsx's gate mounts it on the surfaces the user ticked): the feed, the rows,
- *  the dock and the ⚙ panel. Its own module so none of it is in the shell's first load. The Creators of the rows on
- *  screen hold a View lease (`useOnScreenLease`, ADR-0031). */
 import { useMemo, useState } from "react";
 
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -15,14 +12,9 @@ import { SettingsPanel } from "./MoneyRailSettings";
 import { ROW_H, useRailDock } from "./useRailDock";
 import { distinctPayers, payerIdOf, useMoneyRailFeed } from "./useMoneyRailFeed";
 
-/** Non-scrolling chrome above the list, used to cap the body so an expand
- *  can't run off the screen edge. Estimates, not measurements — measuring
- *  would need a post-render pass feeding back into the height that caused it. */
 const HEADER_H = 38;
 const SETTINGS_H = 280;
-/** Breathing room kept between the panel and the far viewport edge. */
 const VIEWPORT_MARGIN = 12;
-/** The default (never-dragged) corner sits `bottom-3` = 12px up. */
 const DEFAULT_EDGE_GAP = 12;
 
 export function MoneyRailPanel({
@@ -44,8 +36,6 @@ export function MoneyRailPanel({
   } = useMoneyRailFeed({ settings, activeAccounts, open });
   const track = useOnScreenLease("rail");
 
-  // The newest GROUP_SLOT_CAP distinct payers, in the rail's own order
-  // (most recent money first) — what the 👥 button seeds the group tab with.
   const groupSlots = useMemo<GroupSlot[]>(() => distinctPayers(merged, GROUP_SLOT_CAP), [merged]);
 
   const showAccountTag = targetAccountIds.length > 1;
@@ -57,30 +47,15 @@ export function MoneyRailPanel({
 
   if (!mounted || targetAccountIds.length === 0) return null;
 
-  // Collapsed no longer truncates the feed — it just shrinks the window onto
-  // it. Every row stays in the DOM and scrolls, so one row is visible but the
-  // rest are a flick away.
   const placed = dock.x != null && dock.y != null;
 
-  // Expanding must not push the panel past the edge it's growing toward, so
-  // the body is capped by the room actually available on the free side. `y` is
-  // measured from the anchored edge, so the free side is the rest of the
-  // viewport either way. Chrome (header + the open ⚙ panel) is estimated
-  // rather than measured — measuring it would need a post-render pass that
-  // feeds back into the height that caused it.
+  // chrome height is estimated: measuring needs a post-render pass feeding back into the height it caused
   const chromeH = HEADER_H + (settingsOpen ? SETTINGS_H : 0);
-  // Messages Pro (an Inflowwww extra there): never-dragged, the rail docks
-  // at the Fan List's foot, as wide as the list, so it never covers the
-  // Composer or the Fan insights tabs; from lg up only, where the Fan List
-  // sits beside the Thread.
   const onMessagesPro = surface === "inbox" || surface === "popup";
   const edgeGap = placed ? dock.y! : onMessagesPro ? 0 : DEFAULT_EDGE_GAP;
   const room = viewportH - edgeGap - chromeH - VIEWPORT_MARGIN;
-  // 0 visible rows (collapsed, smallRows=0) drops the body entirely — the
-  // dock is just its header bar until expanded.
   const visRows = open ? settings.bigRows : settings.smallRows;
   const wantH = visRows * ROW_H;
-  // Never below one row: a cramped dock still beats an invisible one.
   const bodyH = Math.max(ROW_H, Math.min(wantH, room));
 
   const placedStyle: React.CSSProperties | undefined = placed
@@ -96,9 +71,6 @@ export function MoneyRailPanel({
       className={cn(
         "fixed z-40 hidden w-[290px] flex-col bg-panel border border-border rounded-lg shadow-xl overflow-hidden",
         onMessagesPro ? "lg:flex" : "md:flex",
-        // Never-dragged: left of the help launcher (AssistantWidget,
-        // `bottom-5 right-5`, 48px), which owns the very corner; in Messages
-        // Pro, the Fan List's foot (`MP.panes.fanList`, 400px).
         !placed && (onMessagesPro ? "bottom-0 left-0 w-100 rounded-none border-l-0 border-b-0 shadow-none" : "bottom-3 right-[88px]"),
       )}
     >
@@ -114,15 +86,11 @@ export function MoneyRailPanel({
           title={open ? "Collapse" : "Expand"}
           aria-expanded={open}
         >
-          {/* ">" collapsed, "⌄" expanded — the marker points where a click
-           *  takes you. */}
           <span className="text-[11px] text-fg-dim w-3 shrink-0" aria-hidden>
             {open ? "⌄" : ">"}
           </span>
           <span className="text-[12px] font-medium text-fg flex items-center gap-1.5 truncate">
             <span aria-hidden>💰</span> Buys &amp; tips
-            {/* Not-yet-seen sales. Green when there's something to look at;
-             *  a dim 0 otherwise, so the number is always there to glance. */}
             <span
               className={cn(
                 "shrink-0 px-1 min-w-[16px] h-[14px] rounded-full text-[9px] font-semibold grid place-items-center",
@@ -143,15 +111,11 @@ export function MoneyRailPanel({
             )}
           </span>
         </button>
-        {/* Opens the /group tab on the newest payers. Clicking again while
-         *  a group tab is alive RE-SEEDS that same tab with the current
-         *  top 8 instead of spawning another. */}
         <button
           type="button"
           onClick={() => {
-            // Same drag-swallow as the toggle: a drag released over this
-            // button must not also open a group tab.
             if (swallowClick()) return;
+            // a drag released over this button must not also open a group tab
             void openGroupTabWithSlots(groupSlots);
           }}
           disabled={groupSlots.length === 0}

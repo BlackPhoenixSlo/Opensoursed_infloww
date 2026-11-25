@@ -1,16 +1,8 @@
-/**
- * Emoji recents — the last picks, newest first, in localStorage so the
- * picker and every quick row remember them across reloads.
- */
-
 import { QUICK_EMOJIS } from "./emojiData";
 
 const LS_RECENTS_KEY = "chatterly:emoji_recents";
 const MAX_RECENTS = 24;
-/** Cross-instance "recents changed" pulse so every mounted EmojiQuickRow
- *  / picker re-reads from localStorage after a pick. The native `storage`
- *  event only fires on OTHER tabs, not within the same tab — so we
- *  dispatch our own `CustomEvent` on `window`. */
+// The native `storage` event fires only on other tabs, so same-tab listeners need our own event.
 const RECENTS_EVENT = "chatterly:emoji_recents:changed";
 
 function loadRecents(): string[] {
@@ -30,11 +22,9 @@ function pushRecent(emoji: string) {
     const next = [emoji, ...cur.filter((e) => e !== emoji)].slice(0, MAX_RECENTS);
     window.localStorage.setItem(LS_RECENTS_KEY, JSON.stringify(next));
     window.dispatchEvent(new CustomEvent(RECENTS_EVENT));
-  } catch { /* ignore quota */ }
+  } catch { }
 }
 
-/** Calls `cb` whenever recents change: our pulse (same tab) + the native
- *  `storage` event (other tabs). Returns the unsubscribe. */
 function subscribeRecents(cb: () => void): () => void {
   window.addEventListener(RECENTS_EVENT, cb);
   window.addEventListener("storage", cb);
@@ -44,8 +34,6 @@ function subscribeRecents(cb: () => void): () => void {
   };
 }
 
-/** Build the quick-row: most-recent leftmost, then fall back to defaults
- *  for any unused slots — without duplicating emojis already in recents. */
 function buildQuickRow(recents: string[], slots: number): string[] {
   const out: string[] = [];
   const seen = new Set<string>();

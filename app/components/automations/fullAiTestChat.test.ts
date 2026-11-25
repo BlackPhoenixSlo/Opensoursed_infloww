@@ -16,7 +16,6 @@ const reply = (over: Partial<TurnResponse> = {}): TurnResponse => ({
 });
 
 const run = (s: TestChatState, ...actions: TestChatAction[]) => actions.reduce(testChatReducer, s);
-/** He types `text` and presses Send. */
 const say = (text: string): TestChatAction[] => [{ type: "edit", text }, { type: "send" }];
 const typed = (text: string): TestChatAction => ({ type: "edit", text });
 const sent = (text = "hey") => run(initTestChat("p1"), ...say(text));
@@ -166,7 +165,6 @@ describe("sessionTurns (the session read's rows, one side)", () => {
 });
 
 
-// ── Config: checkpoint / previous / draft, rev (ticket 39) ──────────────────────────────────────────────────────────
 const CP = { version: 1, reply_speed: "0-2m", text_style: "girl", gifs: false, writers: ["euryale-v2.3"] };
 const body = (over: Partial<ConfigBody> = {}): ConfigBody =>
   ({ checkpoint: CP, previous: null, draft: CP, rev: 3, errors: [],
@@ -176,7 +174,6 @@ const loaded = (over: Partial<ConfigBody> = {}): TestChatAction => ({ type: "loa
 const gifsOn = { ...CP, gifs: true };
 const edit = (draft = gifsOn): TestChatAction => ({ type: "editDraft", draft });
 const stored = (draft: FullAiConfig = gifsOn, rev = 4): TestChatAction => ({ type: "draftSaved", rev, draft });
-/** A revealed, answered chat with a line typed: only the config can block Send. */
 const ready = () => run(initTestChat("p1"), loaded(), typed("hey"));
 
 describe("config: draft edits gate Send", () => {
@@ -292,13 +289,10 @@ describe("config across New chat and loading", () => {
   });
 });
 
-// ── An applied draft from elsewhere (assistant Apply; ticket 57, spec 03c › fullAiTestChat.ts) ──────────────────────
 const slower = { ...CP, reply_speed: "0-15-60" };
 const external = (draft: FullAiConfig = slower, rev = 4, over: Partial<ConfigBody> = {}): TestChatAction =>
   ({ type: "externalDraft", body: body({ draft, rev, ...over }) });
-/** A body Saved elsewhere too: its checkpoint and previous moved with the rev. */
 const savedElsewhere = { checkpoint: gifsOn, previous: CP };
-/** An unsaved edit the server refused: still dirty, nothing out. */
 const unsaved = () => run(ready(), edit(), { type: "saveDraft" }, { type: "configFailed", errors: ["gifs: bad"] });
 
 describe("externalDraft: a refetched config with a newer rev", () => {
@@ -347,7 +341,6 @@ describe("held: a read that lands while a write is out is offered again once it 
   const commitOut = [{ type: "commit" }] as TestChatAction[];
   const failed: TestChatAction = { type: "configFailed", errors: ["gifs: bad"] };
   const reloaded = (rev: number): TestChatAction => loaded({ draft: CP, rev });
-  // [case, actions after ready(), want [rev, draft, dirty, conflict rev, held]]
   it.each<[string, TestChatAction[], [number, FullAiConfig, boolean, number | null, null]]>([
     ["draft PUT lands older → the read is adopted", [...putOut, external(slower, 5), stored(gifsOn, 4)], [5, slower, false, null, null]],
     ["draft PUT lands newer → the read is dropped", [...putOut, external(slower, 4), stored(gifsOn, 5)], [5, gifsOn, false, null, null]],
@@ -412,11 +405,9 @@ describe("replyLine (who wrote the PPV caption)", () => {
   });
 });
 
-// ── Settle (ticket 49): Buy / Decline on a priced PPV bubble ───────────────────────────────────────────────────────
 const offer = (price_cents: number | null, over: Partial<Offer> = {}): Offer => ({
   kind: "offer", ref: 11, price_cents, list_cents: price_cents, media: [11, 12], previews: [13], refusal: null, ...over,
 });
-/** Both sides answered Turn 1 with skip-wait: L a reply with `lOffer`, R with `rOffer`. */
 const offered = (lOffer: Offer | null = offer(1500), rOffer: Offer | null = offer(2000)) => run(
   initTestChat("p1", true), ...say("send me pics"),
   result("L", 1, { row_id: 7, offer: lOffer }), result("R", 1, { row_id: 8, offer: rOffer }),
@@ -764,7 +755,6 @@ describe("audienceSaved: who live answers moves on every side, nothing else", ()
   it("an older answer never lowers the rev", () => {
     expect(run(loaded(), { type: "audienceSaved", body: answer(2) }).rev).toBe(3);
   });
-  // F4 (rwl2): overlapping Fans / Top spend saves and a foreign change in between.
   const fansA = { include: [7], exclude: [] }, fansB = { include: [8], exclude: [] };
   it.each<[string, TestChatAction[], { rev: number; fans: unknown; top: number | undefined; sext: unknown; conflict: number | null }]>([
     ["out of order: the older answer never puts old values back",
@@ -785,7 +775,6 @@ describe("audienceSaved: who live answers moves on every side, nothing else", ()
     expect({ rev: s.rev, fans: s.draft?.fans, top: s.checkpoint?.top_spend_cents, sext: s.draft?.sext_on,
       conflict: s.conflict?.rev ?? null }).toEqual(want);
   });
-  // F5 (rwl2): an audience write out bumps the rev, so no draft write / Save / Roll back starts meanwhile.
   it.each<[string, TestChatAction[], boolean]>([
     ["out", [{ type: "audienceSave" }], false],
     ["two out, one answered", [{ type: "audienceSave" }, { type: "audienceSave" }, { type: "audienceSaved", body: answer(4) }], false],
@@ -799,7 +788,6 @@ describe("audienceSaved: who live answers moves on every side, nothing else", ()
 });
 
 describe("reply mark: replyTo / clearReply (offer-details B)", () => {
-  /** Two Turns answered and shown on both sides. */
   const two = () => run(initTestChat("p1"), { type: "toggleSkip" },
     ...say("one"), result("L", 1), result("R", 1), ...say("two"), result("L", 2), result("R", 2));
 

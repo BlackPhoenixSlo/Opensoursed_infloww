@@ -1,8 +1,3 @@
-/**
- * CotagTab — Settings › Co-creator tag (ticket 85). The panel picks a Creator (the one in scope, else the
- * first session-backed one) and mounts that Creator's CotagForm; a blank stored pick reads as
- * "No co-creator tag", the default. With no Creator, nothing is loaded.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -45,7 +40,6 @@ describe("CotagTab", () => {
     expect(screen.getByText(/mass messages, mass posts, automations and\s+stories/)).toBeTruthy();
     await screen.findByLabelText("Search creators");
     expect(screen.getByTestId("cotag-pick").textContent).toBe("No co-creator tag");
-    // Save sits in the Panel header, off until something changes.
     const save = screen.getByRole("button", { name: "Save" });
     expect(save.closest('[data-settings="panel-header"]')).not.toBeNull();
     expect(save).toBeDisabled();

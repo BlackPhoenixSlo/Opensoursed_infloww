@@ -1,25 +1,13 @@
-/**
- * A form's draft plus the draft its last Save sent, for the automation pages (Auto-reply, Get to know fans).
- *
- *   • `withSent(edit)` turns a form's pure edit fn into its reducer: an edit replaces the draft, `saved` (Save sent
- *     the draft as it is now) records it as sent.
- *   • The edit fn returns a new draft every time, so `unsaved` (draft !== sent) holds "Saved" off over an edit made
- *     while that save was in flight, even one back to the sent value.
- */
-
 export interface SentState<D> {
   draft: D;
-  /** The draft the last Save sent; null before one. */
   sent: D | null;
 }
 
-/** Save sent the draft as it is now. */
 export type Saved = { type: "saved" };
 
-/** The state for a freshly seeded draft: nothing sent yet. */
 export const sentState = <D>(draft: D): SentState<D> => ({ draft, sent: null });
 
-/** An edit since the last Save (or no Save yet): "Saved" stays off. */
+// The edit fn returns a new draft each time, so an edit made while a save is in flight keeps "Saved" off.
 export const unsaved = <D>(s: SentState<D>) => s.draft !== s.sent;
 
 const isSaved = <E extends { type: string }>(a: E | Saved): a is Saved => a.type === "saved";

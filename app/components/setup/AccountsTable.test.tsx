@@ -1,19 +1,3 @@
-/**
- * AccountsTable — dropping a model evicts ALL of its cached data.
- *
- * The delete used to only `invalidateQueries(["accounts"])`, leaving 30+
- * per-account React Query keys (chats, vault-media, of-user, fan-*,
- * *-config/*-rules, automation-*, nudge-*) + the persisted localStorage
- * snapshot holding the dropped account's data until staleTime expiry — so a
- * manual logout/login was the only way to clear it.
- *
- * The fix runs `removeQueries` with a predicate that matches the dropped
- * accountId anywhere in a query key (including the unified "all"-scope chat
- * key, whose accountKey is a comma-joined list of every fanned-out id). These
- * cases assert: the dropped account's per-account caches are HARD-removed,
- * another account's caches survive untouched, and the accounts list refetches
- * (the deleted row disappears).
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -50,7 +34,6 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-/** Each row's actions sit in its "⋮" menu (ticket 16): open the row's menu and pick one. */
 function pick(row: string, item: string) {
   fireEvent.click(screen.getByRole("button", { name: `More actions for ${row}` }));
   fireEvent.click(screen.getByRole("menuitem", { name: item }));
@@ -62,7 +45,6 @@ describe("AccountsTable delete — full per-account cache eviction", () => {
     relayGet.mockImplementation((path: string) => {
       if (path === "/admin/accounts") {
         accountsCalls += 1;
-        // First load lists both; the post-delete refetch drops acct-del.
         return Promise.resolve(
           accountsCalls === 1
             ? { accounts: [{ id: "acct-del" }, { id: "acct-keep" }], active_account_id: "acct-keep" }
@@ -74,64 +56,46 @@ describe("AccountsTable delete — full per-account cache eviction", () => {
     });
     relayDelete.mockResolvedValue({ ok: true });
 
-    // Seed the cache the way the live app would — per-account keys for BOTH
-    // accounts plus the unified "all"-scope chat key (comma-joined ids).
     client.setQueryData(["chats", "model", "acct-del", null, null, null, 30], "del-chats");
     client.setQueryData(["chats", "model", "acct-keep", null, null, null, 30], "keep-chats");
     client.setQueryData(["chats", "all", "acct-del,acct-keep", null, null, null, 30], "combined-chats");
     client.setQueryData(["vault-media", "acct-del"], "del-vault");
     client.setQueryData(["vault-media", "acct-keep"], "keep-vault");
     client.setQueryData(["of-user", "acct-del", "fan1"], "del-ofuser");
-    // A key with a non-string part — predicate must not throw on .split().
     client.setQueryData(["fan", "acct-del", 12345], "del-fan");
 
     render(<AccountsTable />, { wrapper });
 
-    // Wait for the table to paint both rows (the id shows in two cells —
-    // the name + the Creator ID — so match on the rows' menu buttons).
     await waitFor(() =>
       expect(screen.getAllByRole("button", { name: /^More actions for / })).toHaveLength(2),
     );
 
-    // Delete, from acct-del's own menu, through the Delete modal's two steps (creators-manage#78).
     pick("acct-del", "Delete");
     expect(relayDelete).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Delete creator" }));
     fireEvent.click(screen.getByRole("button", { name: "Submit" }));
 
-    // The DELETE relay call goes out for the right account.
     await waitFor(() =>
       expect(relayDelete).toHaveBeenCalledWith("/admin/accounts/acct-del"),
     );
 
-    // The dropped account's per-account caches are HARD-gone...
     await waitFor(() => {
       expect(client.getQueryData(["chats", "model", "acct-del", null, null, null, 30])).toBeUndefined();
     });
     expect(client.getQueryData(["vault-media", "acct-del"])).toBeUndefined();
     expect(client.getQueryData(["of-user", "acct-del", "fan1"])).toBeUndefined();
     expect(client.getQueryData(["fan", "acct-del", 12345])).toBeUndefined();
-    // ...including the unified key whose accountKey lists the dropped id.
     expect(client.getQueryData(["chats", "all", "acct-del,acct-keep", null, null, null, 30])).toBeUndefined();
 
-    // The OTHER account's caches survive untouched.
     expect(client.getQueryData(["chats", "model", "acct-keep", null, null, null, 30])).toBe("keep-chats");
     expect(client.getQueryData(["vault-media", "acct-keep"])).toBe("keep-vault");
 
-    // The accounts list refetched and the deleted row is gone.
     await waitFor(() => expect(screen.queryByText("acct-del")).not.toBeInTheDocument());
     expect(screen.getAllByText("acct-keep").length).toBeGreaterThanOrEqual(1);
     expect(accountsCalls).toBeGreaterThanOrEqual(2);
   });
 });
 
-/**
- * A dead OF session pauses EVERY automation for that account
- * (service/account_health.py), but the relay's `session_dead_at` stamp had no
- * reader — so twelve accounts sat in the fleet with rules showing as enabled
- * while nothing ran, indistinguishable from accounts that were merely quiet.
- * These cases pin the badge that closes that gap.
- */
 describe("AccountsTable — a paused account says it is paused", () => {
   it("badges the dead account, spares the healthy one, and names the repair", async () => {
     relayGet.mockImplementation((path: string) => {
@@ -150,9 +114,6 @@ describe("AccountsTable — a paused account says it is paused", () => {
         });
       }
       if (path.startsWith("/health")) {
-        // OF answers the health probe for BOTH. The pause is a separate fact
-        // from liveness — an account can pass this probe while its automations
-        // stay parked — so a green probe must NOT hide the badge.
         return Promise.resolve({
           ok: true,
           accounts: [
@@ -169,12 +130,9 @@ describe("AccountsTable — a paused account says it is paused", () => {
     await waitFor(() =>
       expect(screen.getByText("automations paused")).toBeInTheDocument(),
     );
-    // Exactly one row is badged — the healthy account is untouched.
     expect(screen.getAllByText("automations paused")).toHaveLength(1);
-    // The operator is told WHICH repair, not shown the raw enum.
     expect(screen.getByTitle(/captured in Manage creators/i)).toBeInTheDocument();
     expect(screen.queryByText("no_session")).not.toBeInTheDocument();
-    // …and how long it has been down, so a month-dead account is obvious.
     expect(screen.getByText(/^unlinked /)).toBeInTheDocument();
   });
 
@@ -216,8 +174,6 @@ describe("AccountsTable — a paused account says it is paused", () => {
 
     render(<AccountsTable />, { wrapper });
 
-    // The id shows in two cells (name + Creator ID), so wait on the row's
-    // menu button instead — same reason as the delete case above.
     await waitFor(() =>
       expect(screen.getAllByRole("button", { name: /^More actions for / })).toHaveLength(1),
     );
@@ -253,12 +209,6 @@ describe("AccountsTable Creator avatar — no Display image picked", () => {
   });
 });
 
-/**
- * A watcher account (`role` "watcher": a fan account that reads what the Creators send) is never in `accounts`; GET /admin/accounts
- * lists it under `watchers`, and the table shows it after the creators as an account row with a "watcher" badge and the
- * ⋮ actions that make sense for it: Edit, Delete, the OnlyFans re-link and Rename; no Link another account, Deactivate
- * or Make default.
- */
 describe("AccountsTable — watcher accounts", () => {
   function serve(accounts: object[], watchers?: object[]) {
     relayGet.mockImplementation((path: string) => {
@@ -283,7 +233,6 @@ describe("AccountsTable — watcher accounts", () => {
     const rows = screen.getAllByRole("row");
     expect(rows[rows.length - 1]).toBe(row);
     expect(screen.getAllByRole("button", { name: /^More actions for / })).toHaveLength(3);
-    // A captured session reads as connected: the Edit pencil, no link button, and a menu without Edit or Log in.
     expect(within(row).getByRole("button", { name: "Edit" })).toBeInTheDocument();
     expect(within(row).queryByRole("button", { name: /^Link creator account/ })).toBeNull();
     fireEvent.click(within(row).getByRole("button", { name: "More actions for Company Account" }));
@@ -292,7 +241,6 @@ describe("AccountsTable — watcher accounts", () => {
     for (const gone of ["Edit", "Log in to account via OnlyFans", "Link another account", "Deactivate", "Activate", "Make default"]) {
       expect(items).not.toContain(gone);
     }
-    // The footer counts Creators; the watcher is named apart, not counted as one.
     expect(screen.getByText("Total: 2 creators + 1 watcher")).toBeInTheDocument();
   });
 
@@ -322,7 +270,6 @@ describe("AccountsTable — watcher accounts", () => {
     const row = await screen.findByTestId("accounts-watcher-row");
     expect(row).toHaveTextContent("acct-w");
     expect(within(row).getByText("—")).toBeInTheDocument();
-    // No session: the link button to capture one, Edit and Log in in the menu.
     expect(within(row).queryByRole("button", { name: "Edit" })).toBeNull();
     fireEvent.click(within(row).getByRole("button", { name: /^More actions for / }));
     const items = screen.getAllByRole("menuitem").map((m) => m.textContent);
@@ -351,11 +298,6 @@ describe("connectivity — watcher", () => {
   });
 });
 
-/**
- * Creator deactivate (07 M28): the ⋮ menu's Deactivate asks first (Infloww's "fees still apply"), then posts the
- * switch; a deactivated row keeps its place, wears the "Deactivated" chip, offers Activate, and the Account status
- * filter narrows on it.
- */
 describe("AccountsTable — deactivate / activate a creator", () => {
   function serve() {
     relayGet.mockImplementation((path: string) => {
@@ -414,7 +356,6 @@ describe("AccountsTable — deactivate / activate a creator", () => {
     render(<AccountsTable />, { wrapper });
     await screen.findAllByText("Onna");
     expect(screen.getAllByText("proxy unreachable")).toHaveLength(1);
-    // Bad for refusing too many calls (the flap knob): plain words for what it does.
     expect(screen.getAllByText("proxy refusing")).toHaveLength(1);
   });
 
@@ -431,7 +372,6 @@ describe("AccountsTable — deactivate / activate a creator", () => {
   });
 });
 
-/** The footer pages the rows on the client; a filter or per-page change goes back to page 1. */
 describe("AccountsTable — paging", () => {
   const ACCOUNTS = Array.from({ length: 25 }, (_, i) => ({
     id: `acct-${i + 1}`, nickname: `Model ${String(i + 1).padStart(2, "0")}`, has_session: true, is_active: true,
@@ -455,13 +395,11 @@ describe("AccountsTable — paging", () => {
 
     toPage2();
     expect(screen.getAllByText("Model 11").length).toBeGreaterThan(0);
-    // Every row is active, so the filter keeps all 25 — only the page moves.
     fireEvent.change(screen.getByRole("combobox", { name: "Account status" }), { target: { value: "Activated" } });
     expect(currentPage()).toBe("1");
     expect(screen.getAllByText("Model 01").length).toBeGreaterThan(0);
 
     toPage2();
-    // 20 per page still leaves 2 pages.
     fireEvent.click(screen.getByRole("combobox", { name: "Per page" }));
     fireEvent.click(screen.getByRole("option", { name: "20" }));
     expect(currentPage()).toBe("1");
@@ -469,7 +407,6 @@ describe("AccountsTable — paging", () => {
   });
 });
 
-/** The connectivity mapping (creators-manage#23, #40): the accounts read outranks the live probe. */
 describe("connectivity", () => {
   type H = Parameters<typeof connectivity>[1];
   const LIVE = { id: "a", has_session: true, is_active: true } as AccountMeta;
@@ -498,7 +435,6 @@ describe("connectivity", () => {
   });
 });
 
-/** Escape closes only the top modal (the modal stack in ui/infloww), and the Delete modal deletes only on step 2. */
 describe("AccountsTable modals — Escape", () => {
   function serve() {
     relayGet.mockImplementation((path: string) => {
@@ -541,8 +477,6 @@ describe("AccountsTable modals — Escape", () => {
   });
 });
 
-/** The Add creator modal's linked step: a double-click on Done saves the account details once (the second click lands
- *  before React re-renders, on the step the first left busy). */
 describe("AddCreatorModal — Done on the linked step", () => {
   it("a double-click saves the account details once, then closes", async () => {
     let release = () => {};
@@ -573,7 +507,6 @@ describe("AddCreatorModal — Done on the linked step", () => {
     fireEvent.click(btn("Link account"));
     await within(d()).findByText("Account details");
     const done = btn("Done");
-    // Both clicks inside ONE act: no re-render between them.
     act(() => { done.click(); done.click(); });
     await waitFor(() => expect(relayPut).toHaveBeenCalled());
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
@@ -588,8 +521,6 @@ describe("AddCreatorModal — Done on the linked step", () => {
   });
 });
 
-/** The linked step reads the account's own OF profile (/users/me): its photo (through /img), its name in the
- *  Nickname field (a typed one kept), and its initials when it has no photo. */
 describe("AddCreatorModal — the linked step prefills from the OF profile", () => {
   async function link(me: () => Promise<unknown>) {
     relayGet.mockImplementation((p: string) => p === "/api/of/v2/users/me" ? me()
@@ -597,7 +528,6 @@ describe("AddCreatorModal — the linked step prefills from the OF profile", () 
         : Promise.resolve({}));
     relayPost.mockImplementation((p: string) => Promise.resolve(p === "/admin/session/bootstrap"
       ? { account_id: "990000102", user_id: 7, session_file: "s.json", x_of_rev: "rev-1" } : {}));
-    // Existing unnamed drafts still use the profile fallback; new creators supply their name before sign-in.
     render(<AddCreatorModal extInstalled={null} onClose={() => {}} draft={{ id: "draft-blank", name: "", gender: "", created_at: "2026-11-09T00:00:00Z" }} />, { wrapper });
     const d = screen.getByRole("dialog");
     fireEvent.click(within(d).getByRole("radio", { name: /^Extension/ }));
@@ -699,7 +629,6 @@ describe("Creators avatar recovery across actual session relinking", () => {
         healthCalls++;
         return healthCalls === 1 ? Promise.resolve(health) : new Promise((resolve) => { finishHealth = resolve; });
       }
-      // Intentionally ignore abort: a late response must still be rejected.
       if (path === "/api/of/v2/users/me") return new Promise((resolve) => { recoveries.push({ resolve, signal }); });
       return Promise.resolve({});
     });
@@ -710,12 +639,11 @@ describe("Creators avatar recovery across actual session relinking", () => {
     fireEvent.error(image());
     await waitFor(() => expect(recoveries).toHaveLength(1));
     if (state === "exhausted") await act(async () => recoveries[0].resolve(same));
-    // This is the actual invalidation semantics: old data/profile/URL remain.
     act(() => { void client.invalidateQueries({ queryKey: ["health-all"] }); });
     await waitFor(() => expect(healthCalls).toBe(2));
     expect(client.getQueryData(["health-all"])).toEqual(health);
     expect(recoveries[0].signal.aborted).toBe(false);
-    expect(image()).toBeNull(); // ordinary refresh must not reset exhausted/pending recovery
+    expect(image()).toBeNull();
     await act(async () => finishHealth(health));
     expect(image()).toBeNull();
     for (let link = 0; link < 3; link++) {
@@ -736,8 +664,6 @@ describe("Creators avatar recovery across actual session relinking", () => {
   });
 });
 
-/** W28 creator-setup fixes: a running Browser login is never stranded by Back; a draft's account takes the draft at
- *  link time; the Extension's attach keeps an existing binding; Done refuses a save it can't finish. */
 describe("AddCreatorModal — sign-in and link guards", () => {
   const CURL = "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'";
   const d = () => screen.getByRole("dialog");
@@ -826,7 +752,6 @@ describe("AddCreatorModal — sign-in and link guards", () => {
     relayPost.mockImplementation((p: string) => Promise.resolve(p === "/admin/session/bootstrap"
       ? { account_id: "acct-d", user_id: 7, session_file: "s.json", x_of_rev: "r" } : {}));
     relayPatch.mockResolvedValue({});
-    // Every settings PUT is held until released; the server keeps what it got last.
     const held: (() => void)[] = [];
     relayPut.mockImplementation((_p: string, body: unknown) =>
       new Promise((r) => held.push(() => r({ tab: "account", config: body }))));
@@ -839,11 +764,11 @@ describe("AddCreatorModal — sign-in and link guards", () => {
     render(<AddCreatorModal extInstalled={null} onClose={onClose} draft={draft} />, { wrapper });
     await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/settings/account"));
     await paste();
-    await waitFor(() => expect(held).toHaveLength(1)); // the link-time write, in flight
+    await waitFor(() => expect(held).toHaveLength(1));
     fireEvent.change(within(d()).getByLabelText("Internal notes (Optional)"), { target: { value: "from Done" } });
     fireEvent.click(btn("Done"));
     await act(async () => {});
-    expect(relayPut).toHaveBeenCalledTimes(1); // Done waits for it
+    expect(relayPut).toHaveBeenCalledTimes(1);
     await releaseNewestFirst();
     await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(2));
     await releaseNewestFirst();
@@ -925,7 +850,7 @@ describe("AddCreatorModal — sign-in and link guards", () => {
   });
 
   it("Done refuses to save while the settings are not loaded: the modal stays open", async () => {
-    route({ "/admin/settings/account": () => new Promise(() => {}) }); // never lands: not wired
+    route({ "/admin/settings/account": () => new Promise(() => {}) });
     relayPost.mockImplementation((p: string) => Promise.resolve(p === "/admin/session/bootstrap"
       ? { account_id: "acct-n", user_id: 7, session_file: "s.json", x_of_rev: "r" } : {}));
     const onClose = vi.fn();

@@ -1,4 +1,3 @@
-"""Deterministic acceptance-contract regressions; no server or gate required."""
 import asyncio
 import importlib.util
 import inspect
@@ -33,7 +32,6 @@ class Context:
         pass
 
     def verdict(self):
-        # Also exercise the pre-fix harness in the explicit revert proof.
         args = (m.KNOWN_RED, self.probes) if 'parked' in inspect.signature(m._budgets).parameters else (self.probes,)
         m._budgets(self, *args)
         return list(self.checks.values())

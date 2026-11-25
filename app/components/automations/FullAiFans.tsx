@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * Full AI Chat's "Who Full AI answers when Live" (owner 2026-11-15), its own block above the Test chat, apart from the bot
- * config's Settings / Make draft live / Roll back: who live answers has nothing to do with how the AI behaves, so the Test chat's
- * draft vs checkpoint never splits it, and Make draft live / Roll back never move it. Both controls write `PUT config/audience`
- * (`useFullAiConfig.putAudience`): applied at once on every side, Live or not, not held by the settings' draft wait.
- *   Fans: which Fans live answers, by the Creator's OnlyFans fan lists (the custom lists of `/api/of/v2/lists`,
- *   `useFanLists`; the live owner check reads the same OF list ids, `full_ai_owner_io._listed`). A dialog sets each list
- *   to Include / Exclude / Neither; Save sends the whole `fans` object. Empty include = every Fan; exclude wins. The top
- *   "Fans & Following" row only reads the pick: Include while no list is included, Neither once one is; picking Include
- *   there clears the includes. It is never stored. No list = every Fan, Live or not (owner 2026-11-15); a failed
- *   Save shows above its Save.
- *   Top spend limit: dollars on the page, cents stored (`top_spend_cents`); 0 = no limit. Stored on blur / Enter; a
- *   refused entry (empty too) snaps back, a refused write shows beside the box; a stored one reads "Saved" until the
- *   next edit.
- * State: `fansForm.ts` (pure reducers: the pick, the save).
- */
 
 import { useReducer, useState } from "react";
 
@@ -39,8 +23,6 @@ type EveryoneSide = "include" | "none";
 
 export const AUDIENCE_TITLE = "Who Full AI answers when Live";
 
-/** The section: Fans and Top spend limit, off the stored config (every side holds the same values). The page titles
- *  it (`AUDIENCE_TITLE` on its block, above the Test chat). */
 export function FullAiAudience({ accountId, state, cfg }: { accountId: string; state: TestChatState; cfg: FullAiConfigApi }) {
   const stored = state.checkpoint ?? state.draft;
   return (
@@ -78,7 +60,6 @@ function FansDialog({ accountId, stored, live, cfg, onClose }: {
   const failed = !lists.isLoading && lists.data === undefined;
   const rows = lists.isLoading || failed ? [] : fanRows(lists.customLists, pick);
   const busy = save.phase === "saving";
-  /** Store the pick (applied at once). */
   const onSave = async () => {
     dispatchSave({ type: "save" });
     const result = await cfg.putAudience({ fans: buildPayload(pick) });
@@ -118,7 +99,6 @@ function FansDialog({ accountId, stored, live, cfg, onClose }: {
           <ul aria-label="Fan lists" className="divide-y divide-border">
             {rows.map((r) => (
               <li key={r.id} className="flex flex-col gap-1.5 py-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-2">
-                {/* Phone: the name (and count) on its own full-width line, the control below it. */}
                 <span className="w-full min-w-0 break-words text-[14px] text-fg sm:w-auto sm:flex-1">
                   {r.name}
                   {r.count !== null && <span className="ml-1.5 text-[12px] tabular-nums text-muted">{r.count}</span>}
@@ -135,7 +115,6 @@ function FansDialog({ accountId, stored, live, cfg, onClose }: {
   );
 }
 
-/** Top spend limit: stored on blur / Enter through the audience write; a refused entry snaps back. */
 export function TopSpendRow({ stored, cfg }: { stored: FullAiConfig | null; cfg: FullAiConfigApi }) {
   const [save, dispatchSave] = useReducer(audienceSaveReducer, AUDIENCE_SAVE_IDLE);
   const dollars = topSpendDollars(stored);

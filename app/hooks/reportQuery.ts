@@ -1,7 +1,3 @@
-/**
- * The report filters the Messages report lists (paid, tips, top tippers) start their query string with: the window,
- * then the model and the employee, each left off when unset. A builder adds its own params after these.
- */
 export interface ReportQueryParams {
   from: string | null;
   to: string | null;

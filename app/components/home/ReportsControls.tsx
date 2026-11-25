@@ -1,7 +1,5 @@
 "use client";
 
-/** Creator reports' filter bar controls: the date range and its presets, the "Shown by"
- *  select, the Channels, Creator and Custom metrics pickers, and the UTC chip. */
 
 import { useEffect, useId, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Filter as FilterFunnel, SlidersHorizontal, Tag, X } from "lucide-react";
@@ -15,7 +13,6 @@ import { DEFAULT_KEYS, colsOf, hiddenCols, moveCol, toggleCol } from "./creatorC
 import { type Chan, type RangeKey, type StatCol, CHANNELS, datePresets, fmtRangeLabel, GRAN_LIMIT, GRANS } from "./reportsMath";
 import { IfDateInput } from "@/components/ui/ifDateInput";
 
-/* ── outside-click hook ── */
 
 function useClickOutside<T extends HTMLElement>(onClose: () => void) {
   const ref = useRef<T | null>(null);
@@ -25,9 +22,7 @@ function useClickOutside<T extends HTMLElement>(onClose: () => void) {
       if (!ref.current.contains(e.target as Node)) onClose();
     }
     function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
-    // pointerdown, not mousedown: iOS only synthesises mousedown for taps on
-    // clickable nodes, so tapping the backdrop never dismissed these popovers.
-    // pointerdown precedes mousedown for a mouse, so desktop is unchanged.
+    // pointerdown, not mousedown: iOS only synthesises mousedown for taps on clickable nodes.
     document.addEventListener("pointerdown", onDown);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -38,9 +33,7 @@ function useClickOutside<T extends HTMLElement>(onClose: () => void) {
   return ref;
 }
 
-/* ───────── interactive pills ───────── */
 
-/** #40: a filter bar control's geometry, 28px high, 6px by 9px padding, 6px radius, 4px from icon to text, 14px. */
 export const FILTER_FIELD = "min-h-7 px-[9px] py-1.5 gap-1 text-[14px]";
 
 function PillTrigger({ open, ariaLabel, className, children, onClick }: {
@@ -87,9 +80,6 @@ function PopoverBox({ children, anchor }: { children: React.ReactNode; anchor: "
   );
 }
 
-/** #21 to #24: the date range, the range's days (YYYY-MM-DD in the report time zone), the bundle's presets beside
- *  the two days, a year back to two days ahead. A cleared input or a day out of bounds changes nothing, so both
- *  sides always hold a day. */
 export function DateRangePill({ from, to, preset, reportTz, onChange, onPreset }: {
   from: string | null; to: string | null; preset: RangeKey; reportTz: string | null;
   onChange: (f: string | null, t: string | null) => void;
@@ -160,8 +150,6 @@ export function DateRangePill({ from, to, preset, reportTz, onChange, onPreset }
   );
 }
 
-/** #27 to #29: the toolbar's "Shown by" select, the one bucket every chart draws in (#4); a bucket the range rules out
- *  is disabled with the capture's tooltip. */
 export function ShownBySelect({ value, days, onPick }: { value: Gran; days: number; onPick: (g: Gran) => void }) {
   return (
     <select
@@ -183,7 +171,6 @@ export function ShownBySelect({ value, days, onPick }: { value: Gran; days: numb
   );
 }
 
-/** #71, #72: the Channels multi select, a funnel 5px from its text, clearable. */
 export function ChannelsPill({ picked, onChange }: { picked: Set<Chan>; onChange: (next: Set<Chan>) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useClickOutside<HTMLDivElement>(() => setOpen(false));
@@ -249,7 +236,6 @@ export function FiltersPill({ models, selected, onChange }: {
   const ref = useClickOutside<HTMLDivElement>(() => setOpen(false));
   const isAll = selected === null;
   const count = isAll ? models.length : selected!.size;
-  // #26: "Creator" until a pick; several picked read "creators selected".
   const label =
     isAll              ? "Creator" :
     count === 0        ? "No creators" :
@@ -324,12 +310,8 @@ export function FiltersPill({ models, selected, onChange }: {
   );
 }
 
-/** #105 to #107: "Custom metrics", opening "Creator report metrics": the shown columns in display order, each with
- *  up and down, then the hidden ones in the capture's order. `keys` is the shown columns' order (creatorCols.ts).
- *  On a phone it opens as a sheet over the page's bottom, so no part of it is off screen. */
 export function CustomMetricsPill({ keys, onChange, onRetry }: {
   keys: readonly string[]; onChange: ((next: string[]) => void) | null;
-  /** The Agency's layout read failed: the button asks it again instead of opening. */
   onRetry?: (() => void) | null;
 }) {
   const [open, setOpen] = useState(false);
@@ -388,7 +370,6 @@ export function CustomMetricsPill({ keys, onChange, onRetry }: {
               <span id={headingId} className="text-[13px] sm:text-[12px] font-medium" style={{ color: "var(--color-fg)" }}>
                 Creator report metrics
               </span>
-              {/* Ours: the old picker's shortcuts. */}
               <div className="flex items-center gap-1" title={EXTRA_LABEL}>
                 <button type="button" className={linkBtn} style={{ color: "var(--color-accent)" }} onClick={() => change([...DEFAULT_KEYS])}>
                   Default
@@ -440,7 +421,6 @@ export function CustomMetricsPill({ keys, onChange, onRetry }: {
   );
 }
 
-/** #98 to #100: the "UTC+00:00" chip, 2px by 4px, 16px high, a pill, 10px weight 500. */
 export function UtcChip() {
   return (
     <span
@@ -462,7 +442,6 @@ const dateInputStyle: React.CSSProperties = {
   outline: "none",
 };
 
-/* ───────── icons ───────── */
 
 function Chev() {
   return (
@@ -480,7 +459,6 @@ function CalIcon() {
   );
 }
 
-/** Secondary controls stay behind the toolbar's Filters button. */
 export function ReportFilters({ models, selected, onChange, onReset }: {
   models: { id: string; name: string }[]; selected: Set<string> | null;
   onChange: (next: Set<string> | null) => void; onReset: () => void;

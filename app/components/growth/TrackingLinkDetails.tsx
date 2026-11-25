@@ -1,6 +1,5 @@
 "use client";
 
-/** Tracking links' Details (#82 to #84): one link's fans and their spend. */
 
 import { ArrowLeft, Info, Search, Upload } from "lucide-react";
 
@@ -17,9 +16,6 @@ import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 
-/** The bundle's `LinkUserList` columns after Fan (`useLinkUserListTableConfig` @14152372): each reads its key, or the
- *  key with `Net` while "Show net earnings" is on. "Other" (a ledger kind outside the five) draws only when a fan has
- *  some, so Total always equals its row. */
 const FAN_COLS: Array<{ title: string; key: "total" | "subs" | "posts" | "messages" | "streams" | "tips" | "other" }> = [
   { title: "Total", key: "total" },
   { title: "Subs", key: "subs" },
@@ -56,7 +52,6 @@ export function LinkDetails({ accountId, link, net, onBack }: {
 
   return (
     <section aria-label="Details" className="px-4 pt-4 mb-4 space-y-4">
-      {/* The bundle's header: back to the list, "Details", then the link's name. */}
       <div className="flex flex-wrap items-center gap-4">
         <button type="button" onClick={onBack} className={cn(ACT, "gap-1 flex")}>
           <ArrowLeft size={14} aria-hidden /> Tracking links
@@ -75,7 +70,6 @@ export function LinkDetails({ accountId, link, net, onBack }: {
             onChange={(e) => set({ search: e.target.value })}
           />
         </span>
-        {/* Infloww's export-link-fans (it emails one); ours downloads the fans matched, as the table shows them. */}
         {exportAllowed && (
           <HbButton variant="secondary" icon={Upload} disabled={matched.length === 0} title={`${EXTRA_LABEL}: downloads a CSV`}
             onClick={() => downloadCsv(`tracking-link-fans-${link.id}`, [
@@ -126,7 +120,6 @@ export function LinkDetails({ accountId, link, net, onBack }: {
                     ))}
                   </tr>
                 ))}
-                {/* The bundle's `LinkUserListSummaryRow`: each column summed. */}
                 <tr className="font-medium">
                   <td className={TD}>Total:</td>
                   {cols.map((c) => (

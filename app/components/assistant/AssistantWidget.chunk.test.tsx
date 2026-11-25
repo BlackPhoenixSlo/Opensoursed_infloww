@@ -1,8 +1,3 @@
-/**
- * The answer renderer (AnswerText) is a lazy chunk. Until it lands — or when
- * it never does — an answer is still on screen, as plain text, never a blank
- * bubble. Its own file: the chunk here never resolves.
- */
 import { describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -22,7 +17,6 @@ vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: null }) }));
 const OWNED = { data: { accounts: [] }, isSuccess: true, dataUpdatedAt: 1 };
 vi.mock("@/hooks/useAccounts", () => ({ useAccounts: () => OWNED }));
-// An owner: the "Add creator" connect hint is theirs.
 vi.mock("@/contexts/UserContext", () => ({ useOptionalUser: () => ({ user: { username: "owner" } }) }));
 
 import { renderWithProviders } from "@/test-utils";

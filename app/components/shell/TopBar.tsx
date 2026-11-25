@@ -59,19 +59,14 @@ export default function TopBar({
   sidebarLocked,
 }: {
   onToggleSidebar: () => void;
-  /** Sidebar column (lg+) or drawer (below lg) is showing. */
   sidebarExpanded: boolean;
   sidebarId: string;
-  /** Held as the icon rail (OF Manager): the toggle is disabled. */
   sidebarLocked?: boolean;
 }) {
   const [sfw, toggleSfw] = useSfw();
 
   return (
-    // flow-root: the banner's bottom margin stays inside the black block.
     <div className="sticky top-0 z-30 bg-chrome flow-root">
-      {/* In the macOS desktop app (<html data-shell="mac">, app/layout.tsx) the window's traffic lights sit
-       *  over the top-left, so the sidebar toggle starts right of them. */}
       <header className="h-[52px] flex items-center gap-2 sm:gap-4 px-3 in-data-[shell=mac]:pl-[84px]">
         <SidebarToggle
           onToggleSidebar={onToggleSidebar}
@@ -89,8 +84,6 @@ export default function TopBar({
           <StatusPill />
           <ErrorBadge />
           <TimeZoneLabel />
-          {/* SFW = blur media everywhere (Infloww's SFW mode). Flips between off
-           *  and the last-used blurred variant; the chat gear stays in sync. */}
           <SfwSwitch on={sfw} onToggle={toggleSfw} />
           <HeaderBell />
           <ClockButton />
@@ -141,9 +134,6 @@ function SfwSwitch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
   );
 }
 
-/** The header's one bell: OnlyFans notifications, and for the owner the
- *  agency notification centre folded in as the panel's "Agency" tab (its
- *  kind switches in the Settings tab). */
 export function HeaderBell() {
   const agencyUnread = useAgencyUnread();
   return (
@@ -152,8 +142,6 @@ export function HeaderBell() {
   );
 }
 
-/** The sidebar toggle: Infloww's 32x28 button, the solid sidebar icon on a
- *  5.5% wash while the sidebar shows, the outline one while folded. */
 function SidebarToggle({
   onToggleSidebar,
   sidebarExpanded,
@@ -184,20 +172,12 @@ function SidebarToggle({
   );
 }
 
-/** The Agency's regular time zone (`preferences.tz` from the Applied settings
- *  read) as "UTC+02:00", or the browser's while none is stored, loaded or
- *  readable; from lg up. */
-// ASSUMPTION: while the read loads or fails the label shows the browser's zone, as before this read
-// existed. Rung 4: no blank or broken label. Overturned if a brief browser-zone flash is unwanted.
 export function TimeZoneLabel() {
   const agency = useAgencyTimeZone();
-  // Server render has no time zone; the client fills it in after hydration.
   const hydrated = useSyncExternalStore(noSubscribe, () => true, () => false);
   const zone = hydrated ? zoneOffsetNow(agency) : null;
   if (!zone) return null;
   const tz = utcOffsetFromMinutes(zone.minutes);
-  // Infloww's `UTCRender`: a tile with `Globe04Line`, the offset and an
-  // `InfoCircleLine` 4px after it carrying the tip; a click opens Your Preferences.
   return (
     <Link href="/settings/preferences" className={cn(HEADER_TILE, "hidden lg:inline-flex tabular-nums")} title="Your time zone">
       <Globe04Line aria-hidden className={HEADER_TILE_ICON} />
@@ -208,8 +188,6 @@ export function TimeZoneLabel() {
   );
 }
 
-/** The avatar and its menu (theme; desktop app download on the web; log out). Clocking is the top bar's
- *  `ClockButton`, as Infloww's. */
 export function AvatarMenu() {
   const { user, logout } = useUser();
   const { chatter, logout: chatterLogout } = useChatter();
@@ -218,7 +196,6 @@ export function AvatarMenu() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
 
-  // The User cookie wins precedence: the menu names the owner while both are set.
   const name = user?.username ?? chatter?.username ?? null;
 
   useEffect(() => {
@@ -255,7 +232,6 @@ export function AvatarMenu() {
           <button type="button" className={item} onClick={toggle}>
             {theme === "dark" ? "Light mode" : "Dark mode"}
           </button>
-          {/* A plain <a>: /download is a static file in public/, outside the router. Left out inside the app. */}
           {!inApp && (
             <a href={DESKTOP_URL} className={item} title={DESKTOP_TITLE}>
               <span aria-hidden="true">&#8595;</span>

@@ -102,7 +102,6 @@ describe("bindStreamCopy", () => {
   });
 });
 
-// ticket 72: the OBS server dropdown is a display switch (its capture record); Copy follows the shown pair.
 describe("bindStreamCopy: OBS server dropdown", () => {
   const MUX = { ...SETTINGS, streamingMuxServer: "rtmp://mux.synthetic.invalid/live", streamingMuxDirectKey: "oi-synthetic-mux-key-test" };
   const load = () => {

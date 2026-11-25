@@ -1,45 +1,7 @@
 #!/usr/bin/env python3
-"""Vault import: the linked fan, per-file details, the open run, Drive folder
-hashtags, and the routes that drive them.
-
-  case_fan_handle_reads_any_paste          name / @name / profile link / blank / junk
-  case_meta_is_sanitised                   only the known keys and shapes survive
-  case_empty_username_takes_the_carrier_path   no fan -> send_to=None on every file
-  case_username_sends_to_the_fan           a fan id on the run -> send_to on every file
-  case_fan_send_uses_the_fan_gate          the DM goes through send_gate, foldering does not
-  case_fan_timeout_is_not_a_carrier_alarm  a timed-out fan send raises no carrier alarm
-  case_fan_refusal_stops_the_run           "Cannot send message" stops the batch
-  case_fan_send_reads_the_vault_id         the message's media id IS the vault id
-  case_fan_send_polls_the_chat_for_the_id  ...read off a page pinned to the message
-  case_fan_send_poll_is_bounded            a few tries, read errors tolerated, then the hash
-  case_folder_tags                         sub-folders, else the pasted folder's name
-  case_resolve_stamps_the_folder_path      a folder walk records every file's path
-  case_drive_items_carry_folder_hashtags   _plan turns that path into the item's hashtags
-  case_appended_files_upload_as_they_arrive    the open run, closed by close()
-  case_append_after_the_run_is_refused     ...and a late file is refused, not lost
-  case_queued_files_are_recorded_when_the_run_fails   accepted files never vanish
-  case_drive_and_appended_files_share_one_cap  one files-per-import count
-  case_idle_timer_waits_for_a_file_in_flight   a slow transfer is not idle time
-  case_each_file_is_filed_into_its_category    per-file folder, else the run's
-  case_every_failed_folder_is_reported     one filing_error naming each failed list
-  case_same_name_files_stage_apart         two IMG_0001.jpg never share a path
-  case_import_details_land_on_the_mirror_row   tags merged + locked, price, notes
-  case_imported_tags_survive_a_full_tag_list   imported tags go first under the cap
-  case_details_outcome_reaches_the_run_record  the hook gets the details, run keeps its answer
-  case_drive_list_route_lists_with_hashtags    GET …/drive/list, Google faked out
-  case_fan_route_resolves_and_batch_rechecks   GET …/upload/fan, then the batch's re-check
-  case_batch_route_opens_the_run_and_aligns_meta   keep_open, stage dir, meta by part
-  case_fan_dm_is_paced_as_manual_and_recorded  purpose `manual` + an outbound messages row
-  case_append_route_guards                 404 / 409 / 413 cleanup / `closed`
-
-Offline by construction: no OnlyFans client exists (fakes only) and every Drive
-call goes through a faked `gdrive._get` / `gdrive.resolve`.
-
-Run: ./venv/bin/python service/tests/test_vault_import_extras.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -81,10 +43,6 @@ gdrive._session = _no_network
 
 
 class _Client:
-    """An OFClient stand-in for `vault_upload.start`: records each file's way
-    into the vault (a carrier, or `send_to` a fan) and its gate, and lands
-    every file as a fresh vault id. `fail` maps a file name to the exception
-    its carrier or send raises."""
 
     def __init__(self, fail: dict | None = None):
         self.calls: list[dict] = []
@@ -150,7 +108,6 @@ def _wait(cond, what: str, tries: int = 300) -> None:
     raise AssertionError(f"timed out waiting for {what}")
 
 
-# ── input sanitising ──────────────────────────────────────────────────────
 
 def case_fan_handle_reads_any_paste():
     h = vault_upload.fan_handle
@@ -176,7 +133,6 @@ def case_meta_is_sanitised():
         {"hashtags": [], "notes": ""},
         "not a dict",
         {"price_cents": "abc", "list_id": None},
-        # Strings are not split any more: the card sends lists.
         {"hashtags": "beach, red"},
     ]))
     assert got[0] == {"hashtags": ["beach", "red set"], "tag_creators": ["collab"],
@@ -186,7 +142,6 @@ def case_meta_is_sanitised():
     assert vault_upload.parse_metas("") == []
 
 
-# ── the linked fan, optional ──────────────────────────────────────────────
 
 def case_empty_username_takes_the_carrier_path():
     with tempfile.TemporaryDirectory() as td:
@@ -235,7 +190,6 @@ def case_fan_timeout_is_not_a_carrier_alarm():
         assert not it["carrier_write_pending"], it
         assert "may still go out" in it["error"], it["error"]
         assert vault_upload.carriers_outstanding("58", [st]) == (0, 0)
-        # The carrier path keeps its alarm.
         c = _Client(fail={"b.jpg": FuturesTimeout()})
         st = _run("58", client=c, local_paths=_files(Path(td), "b.jpg"))
         assert st["items"][0]["carrier_write_pending"] is True
@@ -292,7 +246,6 @@ def case_fan_send_polls_the_chat_for_the_id():
     res = of_client.OFClient.materialize_via_message(s, [{"processId": "p"}], 31337,
                                                      poll_interval_s=0)
     assert res["vault_id"] == 556 and res["still_transcoding"] is True, res
-    # Pinned to the sent message: "older than 78" puts message 77 on top.
     assert s.reads[0]["before_id"] == 78, s.reads
 
 
@@ -303,7 +256,7 @@ def case_fan_send_poll_is_bounded():
         poll_interval_s=0, polls=3)
     assert len(s.reads) == 3, s.reads
     assert res["vault_id"] == 557 and res["message_id"] == 77, res
-    s = _FanSelf([])                       # never surfaces, no hash either
+    s = _FanSelf([])
     res = of_client.OFClient.materialize_via_message(s, [{"processId": "p"}], 31337,
                                                      poll_interval_s=0, polls=2)
     assert res["vault_id"] is None and res["message_id"] == 77, res
@@ -325,7 +278,6 @@ def case_fan_refusal_is_recognised():
         assert "subscribed" in str(e)
 
 
-# ── Google Drive folder → hashtags ────────────────────────────────────────
 
 def case_folder_tags():
     F = gdrive.DriveFile
@@ -333,7 +285,6 @@ def case_folder_tags():
     assert gdrive.folder_tags(
         F("1", "a.jpg", "image/jpeg", 1, folders=("Shoot", "Beach", " Red "))) == ["Beach", " Red "]
     assert gdrive.folder_tags(F("1", "a.jpg", "image/jpeg", 1)) == []
-    # The tag form is the vault normaliser's, applied once.
     assert vault_upload.drive_meta(
         F("1", "a.jpg", "image/jpeg", 1, folders=("Shoot", "Beach", " Red ", "beach"))
     ) == {"hashtags": ["beach", "red"]}
@@ -348,7 +299,6 @@ class _Resp:
 
 
 def _fake_drive(url, *, params, refs, what, **kw):
-    """A two-level public folder: Shoot/{root.jpg, Beach/{b.jpg}}."""
     if url.endswith("/ROOT"):
         return _Resp({"id": "ROOT", "name": "Shoot", "mimeType": gdrive.FOLDER_MIME})
     q = params.get("q", "")
@@ -394,7 +344,6 @@ def case_drive_items_carry_folder_hashtags():
         {"hashtags": ["shoot"]}, {"hashtags": ["beach"]}, None], items
 
 
-# ── the open run: upload as files arrive ──────────────────────────────────
 
 def case_appended_files_upload_as_they_arrive():
     with tempfile.TemporaryDirectory() as td:
@@ -407,7 +356,6 @@ def case_appended_files_upload_as_they_arrive():
             "54", client=c, run_id=run_id, local_paths=[first],
             metas=[{"hashtags": ["one"]}])))
         t.start()
-        # The first file is uploaded before the second has even been sent.
         _wait(lambda: c.calls, "the first upload")
         assert [x["name"] for x in c.calls] == ["1.jpg"], c.calls
         vault_upload.append(run_id, second, {"hashtags": ["two"]})
@@ -513,7 +461,7 @@ def case_idle_timer_waits_for_a_file_in_flight():
                 t = threading.Thread(target=lambda: out.update(st=_run(
                     "62", client=c, run_id=run_id, local_paths=[])))
                 t.start()
-                time.sleep(0.3)                     # six idle periods mid-transfer
+                time.sleep(0.3)
                 assert t.is_alive(), "the run idled out under a file in flight"
                 vault_upload.append(run_id, path, None)
             t.join(10)
@@ -543,10 +491,8 @@ def case_every_failed_folder_is_reported():
         assert "folder 7" in err and "folder 9" in err, err
 
 
-# ── staging (the HTTP route's helper) ─────────────────────────────────────
 
 class _Part:
-    """An `UploadFile` stand-in: a name and some bytes, read in chunks."""
 
     def __init__(self, filename: str, data: bytes, content_type="image/jpeg"):
         self.filename, self.content_type = filename, content_type
@@ -569,7 +515,6 @@ def case_same_name_files_stage_apart():
         assert a != b, "two same-named files were staged onto one path"
         assert Path(a).name == Path(b).name == "IMG_0001.jpg"
         assert Path(a).read_bytes() == b"first" and Path(b).read_bytes() == b"second"
-        # An over-cap part removes ITS partial, and nothing of anyone else's.
         try:
             asyncio.run(vault_import_api._vault_stage_file(
                 _Part("IMG_0001.jpg", b"x" * 64), stage,
@@ -583,7 +528,6 @@ def case_same_name_files_stage_apart():
         shutil.rmtree(stage, ignore_errors=True)
 
 
-# ── the details reach the mirror ──────────────────────────────────────────
 
 async def _seed_item(aid: str, media_id: int, tags: list[str]) -> None:
     async with get_session() as s:
@@ -602,7 +546,7 @@ def case_import_details_land_on_the_mirror_row():
         n = await vault_ai_api.apply_import_meta(aid, {
             801: {"hashtags": ["beach"], "tag_creators": ["collab"],
                   "notes": "noon", "price_cents": 1299},
-            802: {"hashtags": ["nowhere"]},           # no mirror row: skipped
+            802: {"hashtags": ["nowhere"]},
         })
         async with get_session() as s:
             item = await s.get(VaultItem, (aid, 801))
@@ -647,13 +591,11 @@ def case_details_outcome_reaches_the_run_record():
     assert vault_upload.read_state(st["run_id"])["details_saved"]["applied"] == 1
 
 
-# ── HTTP ──────────────────────────────────────────────────────────────────
 
 _HTTP: dict = {}
 
 
 def _http():
-    """Agency A's owner and creator, plus agency B's creator, seeded once."""
     if not _HTTP:
         ids = fx.seed_two_agencies()
         account_registry.upsert_account(ids["creator_a"], nickname="Extras Creator")
@@ -664,8 +606,6 @@ def _http():
 
 
 class _OFUser:
-    """An OFClient stand-in for the routes: `get_user` answers for `testfan`
-    only, and a fan upload sends through the gate it was handed."""
 
     def __init__(self):
         self.lookups: list = []
@@ -694,7 +634,6 @@ class _OFUser:
 
 
 def _patched(server, client):
-    """Swap the route's OF client and capture the spawned worker."""
     spawned: list = []
     saved = (server._get_client, server._spawn_bg)
     server._get_client = lambda *a, **k: client
@@ -707,10 +646,6 @@ def _unpatch(server, saved):
 
 
 def _on_one_loop(owner, server, send, spawned) -> tuple:
-    """POST through the app and then run the worker it spawned, on ONE loop.
-
-    The worker hops back to the loop the request ran on, and a TestClient
-    closes that loop when the request returns."""
     import httpx
 
     async def go():
@@ -726,8 +661,6 @@ def _on_one_loop(owner, server, send, spawned) -> tuple:
 
 
 def _multipart(fields: dict, parts: list[tuple[str, bytes]]) -> tuple[bytes, str]:
-    """A hand-built body, because a client library drops `filename=""`, the
-    nameless part the batch route has to skip."""
     b = "vaultboundary"
     out = b""
     for k, v in fields.items():
@@ -741,7 +674,6 @@ def _multipart(fields: dict, parts: list[tuple[str, bytes]]) -> tuple[bytes, str
 
 
 def _discard(run_id: str, spawned: list) -> None:
-    """Release a run whose worker the test chose not to run."""
     for coro in spawned:
         coro.close()
     st = vault_upload.read_state(run_id) or {}
@@ -790,7 +722,6 @@ def case_fan_route_resolves_and_batch_rechecks():
                       headers=h)
         assert r.status_code == 400, r.text
         files = [("files", ("a.jpg", b"x" * 16, "image/jpeg"))]
-        # Unknown, or not the id that was checked: refused before any claim.
         for form in ({"fan_username": "testfam", "fan_id": "31337"},
                      {"fan_username": "testfan", "fan_id": "31338"},
                      {"fan_username": "testfan"},
@@ -903,7 +834,6 @@ def case_append_route_guards():
                        data={"run_id": theirs},
                        files=[("files", ("a.jpg", b"x" * 16, "image/jpeg"))], headers=h)
         assert r.status_code == 404, "appended into another account's run"
-        # Over the cap: 413, and its bytes are gone, nothing queued.
         orig = vault_upload.Limits.checked
         vault_upload.Limits.checked = lambda self: vault_upload.Limits(
             pace_s=0, max_bytes=8, max_download_bytes=8)
@@ -926,7 +856,6 @@ def case_append_route_guards():
                        files=[("files", ("late.jpg", b"x" * 16, "image/jpeg"))], headers=h)
         assert r.status_code == 409 and "no longer taking files" in r.text, r.text
         assert not list(Path(stage).rglob("late.jpg")), "a refused file was left staged"
-        # `closed` is close()'s answer, not an echo of `last`.
         r = owner.post("/api/of/v2/vault/upload/batch/append",
                        data={"run_id": run_id, "last": "1"}, headers=h)
         assert r.status_code == 200 and r.json()["closed"] is False, r.text

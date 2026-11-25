@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * useScheduledMessages — list + cancel OF's queued sends.
- *
- * Source of truth is `/schedules` (the calendar OF web's own /my/queue
- * page reads from). `/messages/queue` is an older endpoint that returns
- * stale or empty data for sends scheduled via the new web flow, which
- * is why our Settings tab was always empty.
- *
- * /schedules wraps each row as `{type:'chat'|'post', publishDateTime,
- * entity:{...real payload}}` — we flatten chat-type entries onto the
- * OFScheduledMessage shape and ignore posts (Chatterly is messaging-only
- * for now).
- *
- * Each row gets `__accountId` so the cancel mutation routes back through
- * the right session — same pattern as the unified chat-list.
- */
 
 import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 
@@ -35,20 +19,17 @@ interface SchedulesResp {
 
 export const TZ = (typeof Intl !== "undefined" && Intl.DateTimeFormat().resolvedOptions().timeZone) || "UTC";
 
-/** Range: today → +1y, mirroring legacy /ui/ which mirrors what OF web sends
- *  when no date is picked. yyyy-mm-dd format. */
 function rangeParams(): string {
   const today = new Date();
   const oneYear = new Date();
   oneYear.setFullYear(today.getFullYear() + 1);
-  // Format in local time so the date boundary agrees with the time_zone hint
-  // below — toISOString() would format in UTC and drift a day near midnight.
   const fmt = (d: Date) => {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, "0");
     const day = String(d.getDate()).padStart(2, "0");
     return `${y}-${m}-${day}`;
   };
+  // Local-time dates: toISOString would drift a day near midnight against the time_zone hint.
   return `limit=50&publish_date=${fmt(today)}&publish_date_end=${fmt(oneYear)}&time_zone=${encodeURIComponent(TZ)}`;
 }
 
@@ -58,6 +39,7 @@ export function useScheduledMessages(accountIds: string[]) {
       queryKey: [KEY_PREFIX, accountId],
       queryFn: async (): Promise<OFScheduledMessage[]> => {
         const resp = await relay.get<SchedulesResp>(
+          // /schedules is the source; the older /messages/queue returns stale or empty data for sends scheduled via the new web flow.
           `/api/of/v2/schedules?${rangeParams()}`,
           { accountId },
         );
@@ -93,8 +75,6 @@ export function useScheduledMessages(accountIds: string[]) {
 
   const rows = queries
     .flatMap((q) => q.data ?? [])
-    // OF returns newest-first; flip to soonest-first since the UI is "what's
-    // about to go out". Missing scheduledDate sinks to the bottom.
     .sort((a, b) => {
       const ta = a.scheduledDate ? new Date(a.scheduledDate).getTime() : Infinity;
       const tb = b.scheduledDate ? new Date(b.scheduledDate).getTime() : Infinity;

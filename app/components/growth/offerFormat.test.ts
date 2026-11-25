@@ -1,4 +1,3 @@
-/** Growth's Profile promotion and Free trial links wording, as Infloww's cells (PromoCell, ClaimsCell, Claim). */
 import { describe, expect, it } from "vitest";
 
 import { claimsText, discountSteps, offerDate, promoAudience, promoOffer, visibleOffers } from "./offerFormat";
@@ -27,7 +26,6 @@ describe("offerFormat", () => {
     expect(promoOffer({ discount_percent: 100, price_cents: 0, subscribe_days: 7 })).toBe("Free trial for 7 days");
     expect(promoOffer({ discount_percent: null, price_cents: 0, subscribe_days: 3 })).toBe("Free trial for 3 days");
     expect(promoOffer({ discount_percent: 40, price_cents: 300, subscribe_days: 0 })).toBe("Discount - 40%");
-    // OF does not echo the discount on its list: an OnlyFans-only discount row says only that.
     expect(promoOffer({ discount_percent: null, price_cents: 599, subscribe_days: 0 })).toBe("Discount");
   });
 
@@ -39,7 +37,6 @@ describe("offerFormat", () => {
 
   it("offers OF's discount steps for the price, every 5% to 95% before the price is read", () => {
     expect(discountSteps(0).map((o) => o.value)).toEqual(Array.from({ length: 19 }, (_, i) => String(5 + i * 5)));
-    // $5: OF keeps the price at or over its $3 minimum, so 40% is the most.
     expect(discountSteps(5).at(-1)?.value).toBe("40");
   });
 });

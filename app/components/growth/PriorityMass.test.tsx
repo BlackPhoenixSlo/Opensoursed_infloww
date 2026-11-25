@@ -1,9 +1,3 @@
-/**
- * PriorityMassComposer's MASSDMEXCLUDE seed: the Creator's OF list named
- * MASSDMEXCLUDE is pre-ticked in Exclude once its lists land (as Mass and the
- * funnel launch do), Send waits for that seed, and an untick sticks. Relay
- * mocked; the composer's pickers stubbed (not this file's subject).
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -50,7 +44,6 @@ function mount() {
   fireEvent.change(screen.getByLabelText("Message"), { target: { value: "hey {name}" } });
 }
 
-/** The list's checkbox in Include (0) or Exclude (1). */
 const box = (name: string, side: 0 | 1) =>
   screen.getAllByRole("checkbox", { name: new RegExp(`^${name}`) })[side] as HTMLInputElement;
 const send = () => screen.getByRole("button", { name: "Send" });
@@ -116,7 +109,6 @@ describe("PriorityMassComposer MASSDMEXCLUDE seed", () => {
 describe("PriorityMassComposer — once touched, Escape stays off until it closes (a reverted edit too); × and Cancel always close", () => {
   const escape = () => fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
   it("a custom exclusion ticked before the seeding lands stays an edit after it", async () => {
-    // The lists are cached (stale) and refetching: the seed waits, the cached lists are already tickable.
     let land!: (v: unknown) => void;
     lists = new Promise((r) => { land = r; });
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });

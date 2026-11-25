@@ -1,4 +1,3 @@
-"""slop/run entrypoint. See slop/README.md."""
 from __future__ import annotations
 
 import argparse
@@ -17,7 +16,7 @@ import traceback
 from pathlib import Path
 
 SLOP = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(SLOP.parent))  # so `slop.seed...` and `slop.actors...` import
+sys.path.insert(0, str(SLOP.parent))
 
 from slop.lib import breakit, covmap, gate, identity, phases, selection  # noqa: E402
 from slop.lib.client import Http, Recorder  # noqa: E402
@@ -38,11 +37,10 @@ def scenarios() -> dict[str, Path]:
 
 
 def load(path: Path):
-    """The scenario module, registered in sys.modules (`@dataclass` under `from __future__ import
-    annotations` looks its module up there); a failed import leaves no entry."""
     name = f"slop_scenario_{path.stem.replace('-', '_')}"
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
+    # @dataclass under `from __future__ import annotations` looks its module up here
     sys.modules[name] = mod
     try:
         spec.loader.exec_module(mod)
@@ -53,23 +51,16 @@ def load(path: Path):
 
 
 def thread_limit(mod, scale: str) -> int | None:
-    """The scenario's declared per-process thread limit at this --scale (`MAX_THREADS_PROC`: {scale: N}),
-    else None (the gate's SLOP_MAX_THREADS_PROC)."""
     lim = getattr(mod, "MAX_THREADS_PROC", None) or {}
     return int(lim[scale]) if scale in lim else None
 
 
 def socket_limit(mod, scale: str) -> int | None:
-    """The scenario's declared per-run socket limit at this --scale (`MAX_SOCKETS_RUN`: {scale: N}),
-    else None (the gate's SLOP_MAX_SOCKETS_RUN); the gate honours it only for an exclusive run."""
     lim = getattr(mod, "MAX_SOCKETS_RUN", None) or {}
     return int(lim[scale]) if scale in lim else None
 
 
 class Shard:
-    """One relay of a fleet run (`--shards=N`): its id (s01..), relay URL, app URL
-    (None where no `next dev` runs), temp DB, seed World (own RNG stream and
-    usernames) and owner session. `mon` is its ProcMon."""
 
     def __init__(self, stack, i: int, rec, args):
         self.idx, self.id = i, stack.shard_ids[i]
@@ -82,16 +73,13 @@ class Shard:
 
 
 class Ctx:
-    """What a scenario gets: the stack, the owner session, the knobs, check/metric.
-    A fleet run (`--shards=N`, N > 1) also gets `shards` (one Shard each; shard 0
-    is `owner` / `world`) and `fleet` (lib/edge.py: the Caddy edge and the map)."""
 
     def __init__(self, name, stack, report, rec, args, params, *, ui=False, fault=None, fleet=None, run_phases):
         self.name, self.stack, self.report, self.rec = name, stack, report, rec
         self.scale, self.users, self.seed = args.scale, args.users, args.seed
         self.relay, self.app, self.out = stack.relay, stack.app, report.out
         self.params, self.ui, self.fault, self.fleet = params, ui, fault, fleet
-        self.net = args.net  # lib/net.py profile actors/ui.py throttles every page to (--net)
+        self.net = args.net
         self.shards = [Shard(stack, i, rec, args) for i in range(stack.shards)] if stack.shards > 1 else []
         if self.shards:
             self.owner, self.world = self.shards[0].owner, self.shards[0].world
@@ -100,22 +88,19 @@ class Ctx:
             self.world = World(db=stack.db, sessions=stack.sessions, seed=args.seed, scale=args.scale,
                                owner=self.owner)
         self.check, self.metric, self.note, self.skip = report.check, report.metric, report.note, report.skip
-        self.of_wire = None  # lib/of_wire.FakeOF when the scenario sets OF_WIRE
-        self.mon: ProcMon | None = None  # shard 0's: a scenario may read mon.intervals (per-second relay CPU)
-        # A client fault's matches (actors/ui.py, lib/app_ts.py), held to the fault by _client_fault_applied.
+        self.of_wire = None
+        self.mon: ProcMon | None = None
         self.browser_fault_hits: dict[str, int] = {}
         self.browser_fault_files: dict[str, int] = {}
         self.app_ts_fault_files: dict[str, int] = {}
-        self.ui_pages: set[str] = set()  # main-frame paths the browsers navigated to (actors/ui.track)
-        self.run_phases = run_phases  # lib/phases.py: build() charges seeding
+        self.ui_pages: set[str] = set()
+        self.run_phases = run_phases
 
     def param(self, key: str, default):
         v = self.params.get(key, default)
         return type(default)(v) if default is not None else v
 
     async def build(self, profile: str):
-        """The profile's World; a fleet profile (`build_fleet`) gets every shard's
-        World and returns them as a list. Its seconds are Run phase seeding, a raising profile's too."""
         with self.run_phases.seed():
             t0 = time.time()
             mod = importlib.import_module(f"slop.seed.profiles.{profile}")
@@ -134,12 +119,11 @@ class Ctx:
 
 
 def _stock_checks(report: Report, rec: Recorder, out: Path, mod=None) -> None:
-    """Invariants every scenario gets for free."""
     report.check("no 5xx or transport error on any actor call", rec.count(lambda s: s >= 500) == 0,
                  count=rec.count(lambda s: s >= 500))
     unexpected = offline = 0
     expected = tuple(getattr(mod, "EXPECTED_TRACEBACKS", ()))
-    for log in sorted(out.glob("relay*.log")):  # relay.log, or relay-sNN.log per fleet shard
+    for log in sorted(out.glob("relay*.log")):
         u, o = _tracebacks(log, expected)
         unexpected, offline = unexpected + u, offline + o
     report.metric("relay_tracebacks", {"unexpected": unexpected, "offline_expected": offline})
@@ -150,14 +134,11 @@ def _stock_checks(report: Report, rec: Recorder, out: Path, mod=None) -> None:
 
 
 def _world(metrics: dict) -> tuple:
-    """The seeded world a run's p95s depend on: its profile and Creator count (metric `seed`)."""
     seed = metrics.get("seed") or {}
     return seed.get("profile"), seed.get("creators")
 
 
 def _green_runs(scenario: str, exclude: Path | None = None):
-    """(run dir, metrics.json) of `scenario`'s earlier runs, newest first: no infra, every check
-    pass/skip (the p95-vs-last-green baseline and --changed's estimates)."""
     for d in sorted(EVIDENCE.glob(f"*-{scenario}-*"), reverse=True):
         if d == exclude or d.is_symlink() or not d.is_dir():
             continue
@@ -171,15 +152,6 @@ def _green_runs(scenario: str, exclude: Path | None = None):
 
 
 def _p95_vs_last_green(report: Report, out: Path, tol, min_n: int = 0) -> None:
-    """Stock: each p95 the scenario put in metric `p95_vs_last_green` ({key: ms})
-    against the newest earlier run of the same scenario with the same knobs and
-    world (metric `seed`'s profile and Creator count), no fault, no infra and every
-    check pass/skip. FAIL when cur > max(r * last,
-    last + a) for `P95_VS_LAST = (r, a)` in the scenario. The first such run sets
-    the baseline (SKIP). With `P95_VS_LAST_MIN_N = n` the scenario also records
-    metric `p95_vs_last_green_n` ({key: samples}); a key is compared only when
-    both runs have >= n samples (the rest are listed as skipped), and an earlier
-    run without that metric is not a candidate."""
     r, a = float(tol[0]), float(tol[1])
     name = f"p95 within {r:g}x (+{a:g}ms) of the last green run"
     cur = report.metrics.get("p95_vs_last_green") or {}
@@ -219,25 +191,15 @@ def _p95_vs_last_green(report: Report, out: Path, tol, min_n: int = 0) -> None:
                 *(f"  {k:<58} skipped: n now {x['now_n']}, last {x['last_n']} (< {min_n})" for k, x in few.items()))
 
 
-# Log lines that announce a traceback the offline stack causes by design: the
-# seeded Creators have stub OF sessions and the network guard refuses OnlyFans,
-# so any relay-side OF read fails. Add a marker only for that cause.
 OFFLINE_MARKERS = ("OF read failed",)
 
 
 def _tracebacks(log: Path, expected: tuple[tuple[str, str], ...] = ()) -> tuple[int, int]:
-    """(unexpected, expected) Tracebacks. Expected: the line before names an
-    OFFLINE_MARKERS cause, or matches a scenario's EXPECTED_TRACEBACKS pair
-    (marker in the line before, text in the traceback's last line: the error a
-    scenario's fake makes OnlyFans answer). A chained traceback ("During handling
-    of the above exception") is judged per exception: an OFFLINE marker clears
-    only its first; each later one must match a pair itself (the marker in the
-    line before the chain, its text in that exception)."""
     if not log.exists():
         return 0, 0
     lines = log.read_text(errors="replace").splitlines()
     unexpected = offline = 0
-    end = 0   # the line after the last traceback block counted
+    end = 0
     for i, line in enumerate(lines):
         if line.startswith("Traceback") and i >= end:
             prev = lines[i - 1] if i else ""
@@ -246,7 +208,7 @@ def _tracebacks(log: Path, expected: tuple[tuple[str, str], ...] = ()) -> tuple[
                 while j < len(lines) and (lines[j].startswith((" ", "\t")) or not lines[j].strip()
                                           or lines[j].startswith("Traceback")):
                     j += 1
-                excs.append("\n".join(lines[j:j + 2]))  # the exception line (an OFAPIError's body is on the next)
+                excs.append("\n".join(lines[j:j + 2]))
                 k = j + 1
                 while k < len(lines) and not lines[k].strip():
                     k += 1
@@ -264,9 +226,6 @@ def _tracebacks(log: Path, expected: tuple[tuple[str, str], ...] = ()) -> tuple[
 
 
 async def _fleet_resources(report: Report, mons: dict[str, ProcMon], mod, out: Path) -> None:
-    """A fleet run: per shard resources-sNN.json and table rows; the CPU budget
-    over every shard (the max); the decision-5 pool gate if the scenario sets
-    POOL_GATE = {"spills": 0, "wait_p95_ms": 100} (procmon.pool_bent, shared with chatter-crowd)."""
     summs = {}
     for sid, mon in mons.items():
         await mon.write(out)
@@ -302,7 +261,6 @@ async def _fleet_resources(report: Report, mons: dict[str, ProcMon], mod, out: P
 
 
 def _fleet_table(mons: dict[str, ProcMon]) -> list[str]:
-    """procmon's table once, its rows per shard."""
     out: list[str] = []
     for sid, mon in mons.items():
         t, n = mon.table(), len(mon.summary())
@@ -313,8 +271,6 @@ def _fleet_table(mons: dict[str, ProcMon]) -> list[str]:
 
 
 async def _resources(report: Report, mon: ProcMon, mod, out: Path) -> None:
-    """Relay CPU/RSS per stage into the evidence, the CPU budget check if the
-    scenario sets CPU_BUDGET_PCT, and with --profile the peak stage's hot frames."""
     await mon.write(out)
     summ = mon.summary()
     report.metric("relay_resources", summ)
@@ -322,8 +278,7 @@ async def _resources(report: Report, mon: ProcMon, mod, out: Path) -> None:
     stages = mon.stages() or ["run"]
     budget = getattr(mod, "CPU_BUDGET_PCT", None)
     if budget is not None:
-        # The stage mean, not 1 s peaks: executor threads run SQLite outside the GIL,
-        # so single seconds pass 100% in a healthy run. The loop thread rides along.
+        # stage mean, not 1 s peaks: executor threads run SQLite outside the GIL, so single seconds pass 100% when healthy
         name = f"relay process CPU mean <= {budget}% of one core in every stage"
         per = {s: summ[s]["cpu_mean_pct"] for s in stages if s in summ}
         if not per:
@@ -356,8 +311,6 @@ def _git() -> dict:
 
 
 def _source_id() -> str | None:
-    """This checkout's Run identity source (lib/identity.py); None, with one WARN line, if it could not be read
-    (no baseline matches it, and a baseline recorded with it is refused)."""
     try:
         return identity.source_id(SLOP.parent)
     except (OSError, ValueError, subprocess.SubprocessError) as e:
@@ -366,19 +319,16 @@ def _source_id() -> str | None:
 
 
 def break_one(name: str, path: Path, args, params) -> str:
-    """--break (lib/breakit.py) with this module's scenario loading, runs and Run identity source."""
     return breakit.break_one(name, path, args, params, load=load, run_one=run_one, source_id=_source_id)
 
 
+# SystemExit, not Exception: a scenario's `except Exception` must not swallow the timeout
 class ScenarioTimeout(SystemExit):
-    """--timeout ran out. Not an Exception, so a scenario's `except Exception` cannot swallow it; a
-    SystemExit, which asyncio (as KeyboardInterrupt) re-raises out of any task step or loop callback (another
-    BaseException is stored on that task or logged by the loop, and the run keeps going). One that escapes
-    run_one is INFRA, exit 3 (main), never SystemExit's silent 0."""
+    pass
 
 
 class RunTerminated(SystemExit):
-    """SIGTERM/SIGHUP interrupts the main thread so the live stack can tear down (SystemExit: as above)."""
+    pass
 
 
 @contextlib.contextmanager
@@ -397,9 +347,6 @@ def _termination_signals():
 
 @contextlib.contextmanager
 def _deadline(seconds: int):
-    """SIGALRM after `seconds` raises ScenarioTimeout in the main thread, wherever it is: an
-    await (asyncio.run then cancels the scenario, so its finally blocks and the stack's
-    teardown run) or a blocking call. Fires again every 120 s while a teardown hangs too."""
     if not seconds:
         yield
         return
@@ -417,11 +364,10 @@ def _deadline(seconds: int):
 
 
 def run_one(name: str, path: Path, args, params, *, fault: str | None = None, tag: str = "") -> Report:
-    """One scenario run on its own stack, at most `--timeout` seconds. `report.infra` is
-    set when the stack or the scenario itself broke, or it timed out (no verdict possible)."""
     out = run_dir(name, tag)
-    cov = _harness_coverage(out) if args.map else None  # before the scenario module is imported
-    source_id = _source_id()  # before the scenario module is imported
+    # both before the scenario module is imported
+    cov = _harness_coverage(out) if args.map else None
+    source_id = _source_id()
     load_error = None
     try:
         mod = load(path)
@@ -432,7 +378,7 @@ def run_one(name: str, path: Path, args, params, *, fault: str | None = None, ta
     p = {**run_knobs(name, args, params, ui, shards, fault), **_git(), "source_id": source_id,
          "env_id": args.env_id, "env_names": args.env_names, "timeout_s": args.timeout}
     report, rec = Report(name, out, p), Recorder()
-    ph, live, terminated = phases.RunPhases(), {}, None  # restarted after the gate: the four phases sum to `seconds`
+    ph, live, terminated = phases.RunPhases(), {}, None
     print(FOLDER_LINE.format(path=out))
     if load_error:
         (out / "scenario-traceback.txt").write_text(load_error)
@@ -445,7 +391,7 @@ def run_one(name: str, path: Path, args, params, *, fault: str | None = None, ta
                   "the product's, and does not block the map update")
         try:
             with netloss.guard(args.net, wait=not args.no_wait) as facts, \
-                    gate.machine_gate(wait=not args.no_wait, evidence=out,  # nested: evidence + limit hints, missing-gate INFRA
+                    gate.machine_gate(wait=not args.no_wait, evidence=out,
                                       max_threads_proc=thread_limit(mod, args.scale),
                                       max_sockets_run=socket_limit(mod, args.scale),
                                       exclusive=gate.goes_alone(args.scale, args.users)) as g:
@@ -460,8 +406,8 @@ def run_one(name: str, path: Path, args, params, *, fault: str | None = None, ta
                     except (ScenarioTimeout, RunTerminated) as e:
                         signal.alarm(0)
                         stack = live.get("stack")
-                        if stack is not None and stack.tmp.exists():  # its teardown never finished: finish it
-                            stack.__exit__(None, None, None)  # teardown already open, or cut in startup: teardown_s
+                        if stack is not None and stack.tmp.exists():
+                            stack.__exit__(None, None, None)
                         if isinstance(e, RunTerminated):
                             terminated = e
                             _infra_first(report, f"{e}; stack torn down")
@@ -481,11 +427,11 @@ def run_one(name: str, path: Path, args, params, *, fault: str | None = None, ta
     report.metric("run_phases", run_phases := ph.as_dict())
     report.metric("seconds", round(ph.elapsed(), 1))
     report.note(phases.line(run_phases, report.params.get("lock_wait_s")))
-    report.params["source_id_end"] = _source_id()  # after teardown: != source_id means the run raced an edit
+    report.params["source_id_end"] = _source_id()
     try:
         _stock_checks(report, rec, out, mod)
         report.write(rec.summary(), rec.errors)
-    except RunTerminated as e:  # a signal after teardown: still leave a report (INFRA), then stop
+    except RunTerminated as e:
         terminated = e
         _infra_first(report, f"{e} while writing the report")
         report.write(rec.summary(), rec.errors)
@@ -504,8 +450,6 @@ def run_one(name: str, path: Path, args, params, *, fault: str | None = None, ta
 
 
 def _harness_coverage(out: Path):
-    """--map: this process under coverage.py from here (slop/ only), and every relay the stack starts
-    (lib/stack.py relay_cmd reads SLOP_COVERAGE). Data files land in <run>/cov/."""
     import coverage
     d = out / "cov"
     d.mkdir(exist_ok=True)
@@ -526,7 +470,7 @@ def _map_update(name: str, report: Report, cov, out: Path, args, ui: bool, pages
         return
     root = SLOP.parent.resolve()
     mods = set()
-    for m in list(sys.modules.values()):  # loaded by an earlier scenario of this process too
+    for m in list(sys.modules.values()):
         try:
             rel = Path(getattr(m, "__file__", None) or "").resolve().relative_to(root).as_posix()
         except (ValueError, OSError):
@@ -557,34 +501,33 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
                       shards_per_box=getattr(mod, "SHARDS_PER_BOX", None),
                       app_mode=getattr(mod, "APP_MODE", "dev"),
                       sidecars=getattr(mod, "SIDECARS", {}))
-        ph.stack = stack  # its waits; a failed start's own cleanup is teardown
-        # a scenario's RELAY_ENV: extra env for every relay it starts; "{PORT_ENV}" in a value -> that sidecar's port
+        ph.stack = stack
         renv = {k: _with_ports(v, stack.extra_ports) for k, v in getattr(mod, "RELAY_ENV", {}).items()}
         for i in range(stack.shards):
             stack.relay_env[i].update(renv)
         fleet = None
         if shards > 1:
-            from slop.lib.edge import Fleet  # fleet runs only: the Caddy edge from deploy/fleet/fleet.py
+            from slop.lib.edge import Fleet
             fleet = Fleet(stack, out, fault)
-        of_wire, wire = None, contextlib.ExitStack()  # entered once, here: the relays need its origin to start
-        if getattr(mod, "OF_WIRE", False):  # OnlyFans' API on loopback (lib/of_wire.py), the relay's OF_API_ORIGIN
+        of_wire, wire = None, contextlib.ExitStack()
+        if getattr(mod, "OF_WIRE", False):
             from slop.lib.of_wire import FakeOF
             of_wire = wire.enter_context(FakeOF())
             for i in range(stack.shards):
                 stack.relay_env[i]["OF_API_ORIGIN"] = of_wire.origin
-        with wire, stack, (fleet or contextlib.nullcontext()):  # the fake OF outlives the relays it serves
-            live["stack"] = stack  # entered: a timeout that cuts its teardown short finishes it (run_one)
+        # the fake OF outlives the relays it serves
+        with wire, stack, (fleet or contextlib.nullcontext()):
+            live["stack"] = stack
             print(f"slop: stack up in {ph.elapsed():.0f}s (relay {stack.relay}{', app ' + stack.app if stack.app else ''}"
                   f"{f', {shards} shards, apps on ' + ','.join(stack.shard_ids[i] for i in stack.apps) if shards > 1 else ''}"
                   f"{', edge ' + fleet.edge_url if fleet and fleet.edge_url else ''})")
             ctx = Ctx(name, stack, report, rec, args, params, ui=ui, fault=fault, fleet=fleet, run_phases=ph)
             live["ctx"] = ctx
-            # An actor's plain HTTP call to the app or the edge reaches an app path (a route.ts).
             live["app_hosts"] = {u.split("//", 1)[-1] for u in (*stack.app_urls.values(), stack.app,
                                                                    fleet and fleet.edge_url) if u}
             ctx.of_wire = of_wire
             pids = [(s.id, s.pid, s.url) for s in ctx.shards] or [(None, stack.relay_pid, stack.relay)]
-            hooks = [Http(url, Recorder()) for _, _, url in pids]  # /__slop/loop-cpu and /profile: not actor calls
+            hooks = [Http(url, Recorder()) for _, _, url in pids]
             mons = {sid: ProcMon(pid, rec, h, profile=args.profile) for (sid, pid, _), h in zip(pids, hooks)}
             for sh in ctx.shards:
                 sh.mon = mons[sh.id]
@@ -598,14 +541,14 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
             try:
                 ph.enter("execution")
                 await mod.run(ctx)
-            except Exception as e:  # a crashed scenario has no verdict, but keeps its evidence
+            except Exception as e:
                 report.infra = f"scenario crashed: {type(e).__name__}: {e}"
                 report.check("scenario ran to completion", False, error=f"{type(e).__name__}: {e}")
                 (out / "scenario-traceback.txt").write_text(traceback.format_exc())
             finally:
-                ph.enter("teardown")  # monitors, resources, closes and the stack's exit
+                ph.enter("teardown")
                 _client_fault_applied(report, ctx, fault)
-                if args.map:  # the relays' data so far: a relay SIGKILLed at teardown keeps it
+                if args.map:
                     for m in mons.values():
                         await m.save_coverage()
                 for m in mons.values():
@@ -625,20 +568,17 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
                     await sh.owner.aclose()
                 await ctx.owner.aclose()
     except (ScenarioTimeout, RunTerminated):
-        raise  # run_one's: a stop, not a stack failure
-    except (SystemExit, Exception) as e:  # the stack did not come up (or died tearing down)
+        raise
+    except (SystemExit, Exception) as e:
         _infra_first(report, f"stack: {e}")
         report.check("stack started", False, error=str(e))
 
 
 def _infra_first(report: Report, why: str) -> None:
-    """`why` leads report.infra; a reason already there (a client fault's, set in
-    _run_stack's finally) is kept after it."""
     report.infra = "; ".join(filter(None, (why, report.infra)))
 
 
 def _mismatch(fault: str, what: str, files: dict, want: int) -> str | None:
-    """Why a client fault's matches landed in the wrong number of `files` ({path: matches}), or None."""
     if len(files) in (0, want):
         return None
     return (f"client fault {fault}: its rewrites matched {len(files)} {what}, expected {want}: "
@@ -646,11 +586,6 @@ def _mismatch(fault: str, what: str, files: dict, want: int) -> str | None:
 
 
 def _client_fault_applied(report: Report, ctx, fault: str | None) -> None:
-    """A client fault (lib/faults.py `browser=`) ran as declared, else INFRA, never a verdict:
-    every rewrite matched the JS the browser loaded or the app modules lib/app_ts.py ran in
-    node (else a stale pattern, or a run with no UI and no such check), and in each of the two
-    that it hit the matches landed in exactly the fault's `browser_files` (node: `ts_files`) distinct files (else
-    the pattern is not unique to the function it breaks: a red check could be another module's)."""
     f = FAULTS.get(fault or "")
     if not f or not f.browser:
         return
@@ -661,10 +596,9 @@ def _client_fault_applied(report: Report, ctx, fault: str | None) -> None:
         report.metric("app_ts_fault_files", ts_files)
     missed = [rx for rx, _ in f.browser if not hits.get(rx)]
     ts_want = f.browser_files if f.ts_files is None else f.ts_files
-    # One line, so the run summary's `infra:` and the break verdict's `inconclusive:` name the files.
     why = "; ".join(filter(None, (_mismatch(fault, "served JS files", files, f.browser_files),
                                   _mismatch(fault, "node modules", ts_files, ts_want))))
-    if report.infra:  # a crash or timeout came first: keep it, and still say the rewrite hit the wrong files
+    if report.infra:
         if why:
             report.infra += f"; {why}"
         return
@@ -675,8 +609,6 @@ def _client_fault_applied(report: Report, ctx, fault: str | None) -> None:
 
 
 def _estimates(names, doc: dict, args, all_s: dict[str, Path], params: dict) -> tuple[dict[str, float | None], str]:
-    """Seconds per scenario: its newest green non---map run at this scale and UI (evidence), else
-    its map entry's (coverage-mode, slower). And which source(s) gave them."""
     secs, src = {}, set()
     for n in names:
         e = doc["scenarios"].get(n) or {}
@@ -693,10 +625,6 @@ def _estimates(names, doc: dict, args, all_s: dict[str, Path], params: dict) -> 
 
 
 def _changed(all_s: dict[str, Path], args, params: dict) -> tuple[dict[str, Path], list[str], list[str], list[str]] | None:
-    """--changed: the pick (README "Which scenarios to run"), printed and kept in
-    evidence/<stamp>-changed-<hex>/pick.{json,txt}; tier then cheapest first, the shared/layout
-    tail capped by --budget; under --no-ui, picks only a browser page reached are skipped.
-    -> (to run, skipped by budget, skipped for needing UI, WARN lines), or None: no map."""
     doc = covmap.load_map()
     if not doc["scenarios"]:
         print(f"slop: --changed needs {covmap.MAP.relative_to(SLOP.parent)} (missing or empty): build it with "
@@ -758,24 +686,22 @@ def _changed(all_s: dict[str, Path], args, params: dict) -> tuple[dict[str, Path
 
 
 def _nice() -> None:
-    """A run never starves the owner's foreground apps: this harness (and its in-process fakes),
-    Playwright's driver and so Chromium (lib/pw-node), the stack's processes (lib/stack.py): all at
-    nice 10, as the machine gate sets it. Absolute values, never lower than the caller's."""
     gate.nice10()
     if "SLOP_PW_NODE" not in os.environ:
         try:
             from playwright._impl._driver import compute_driver_executable
-        except ImportError:  # the relay image (deploy/fleet/calibrate.sh): no browser there
+        except ImportError:
             return
-        os.environ["SLOP_PW_NODE"] = compute_driver_executable()[0]  # honours a caller's PLAYWRIGHT_NODEJS_PATH
+        os.environ["SLOP_PW_NODE"] = compute_driver_executable()[0]
         os.environ["PLAYWRIGHT_NODEJS_PATH"] = str(SLOP / "lib" / "pw-node")
 
 
 def _parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="slop/run", allow_abbrev=False)  # --user=200 must not mean --users
+    # allow_abbrev=False: --user=200 must not mean --users
+    ap = argparse.ArgumentParser(prog="slop/run", allow_abbrev=False)
     ap.add_argument("target", nargs="?", default=None, help="scenario stem (an exact name runs only that one) or any "
                     "substring of it, or all (default all; omitted with --changed)")
-    gate.add_load_args(ap)  # --scale, --users: exactly what slop/run's exclusivity pre-check reads (lib/gate.py)
+    gate.add_load_args(ap)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--break", dest="break_it", action="store_true",
                     help="run a green baseline, then the scenario's FAULT; CAUGHT only if every check "
@@ -820,8 +746,7 @@ def _parser() -> argparse.ArgumentParser:
 def _main() -> int:
     ap = _parser()
     args, extra = ap.parse_known_args()
-    args.env_id, args.env_names = identity.env_id(os.environ)  # the caller's, before this process sets any
-    # Any other `--some-knob=value` is a scenario param, same as `--set some_knob=value`.
+    args.env_id, args.env_names = identity.env_id(os.environ)
     for e in extra:
         k, _, v = e[2:].partition("=")
         if not (e.startswith("--") and "=" in e and k.replace("-", "_").isidentifier()):
@@ -855,7 +780,7 @@ def _main() -> int:
                   f"code that ran): commit or stash these first:\n{dirty}")
             return 2
         args.map_sha = covmap.git("rev-parse", "HEAD").strip()
-        os.environ["COVERAGE_CORE"] = "sysmon"  # 3.12's low-overhead core (lines only), relays and harness
+        os.environ["COVERAGE_CORE"] = "sysmon"
     tail: list[str] = []
     if args.changed:
         got = _changed(all_s, args, params)
@@ -881,7 +806,7 @@ def _main() -> int:
         if unsupported:
             print(f"slop: --net={args.net} needs a wire-capable UI scenario: {', '.join(unsupported)}")
             return 3
-        if why := netloss.wire_problem():  # before any stack: one line, the install command
+        if why := netloss.wire_problem():
             print(f"slop: --net={args.net}: {why}")
             return 3
     _nice()
@@ -890,7 +815,6 @@ def _main() -> int:
     if args.baseline and not (args.break_it and len(picked) == 1):
         ap.error("--baseline needs --break and exactly one scenario")
     if args.break_it:
-        # 0 every fault CAUGHT, 1 some NOT caught, 3 some INCONCLUSIVE (infra / bad baseline).
         verdicts = {n: break_one(n, p, args, params) for n, p in picked.items()}
         for n, v in verdicts.items():
             print(f"slop: {v} {n}")

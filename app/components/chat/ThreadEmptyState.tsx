@@ -1,10 +1,3 @@
-/**
- * ThreadEmptyState — the Thread with no Fan selected, from lg up: lucide's
- * paper plane (the Clone's icon shape) over "Select any conversation to start" (`.empty`,
- * the deleted Clone's `messages.html:719-722`). Below lg the Fan List
- * fills the screen instead.
- */
-
 import { Send } from "lucide-react";
 
 import { MP } from "@/lib/messagesPro";

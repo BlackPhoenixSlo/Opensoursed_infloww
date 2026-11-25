@@ -1,7 +1,3 @@
-/**
- * The agent bridge over the real Auto Mass page: ReadyMadePanel registers its New, the editor its dispatch and its
- * OWN Save (same canSave gate, same POST as the Create button). Relay mocked at the module boundary.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, screen, waitFor } from "@testing-library/react";
 
@@ -61,7 +57,6 @@ describe("agent bridge on Auto Mass", () => {
 
     let result: Awaited<ReturnType<typeof editor.save>> | undefined;
     await act(async () => {
-      // Instant play: every dispatch in one go, then Save (it waits for them to render).
       for (const step of DO_FLOWS.mass_premade.toActions(SLOTS)) if (typeof step.action !== "string") editor.dispatch(step.action);
       result = await editor.save();
     });
@@ -74,7 +69,6 @@ describe("agent bridge on Auto Mass", () => {
       payload: { messages: [{ texts: ["one", "two"], unsend_after_hours: 8, user_lists: ["fans", "following"] }] },
     });
     expect(body.payload.messages[0].online_only).toBeUndefined();
-    // Saved: the editor closed and unregistered.
     await waitFor(() => expect(bridge.editor("mass_premade", "acc-a")).toBeNull());
   });
 
@@ -100,7 +94,7 @@ describe("agent bridge on Auto Mass", () => {
     act(() => panel.openNew());
     const editor = await bridge.waitFor(() => bridge.editor("mass_premade", "acc-a"), 2000, signal());
     let result: Awaited<ReturnType<typeof editor.save>> | undefined;
-    await act(async () => { result = await editor.save(); }); // no text yet
+    await act(async () => { result = await editor.save(); });
     expect(result).toEqual({ ok: false, reason: expect.stringMatching(/^Add text to enable Create/) });
     expect(post).not.toHaveBeenCalled();
     expect(screen.getByRole("dialog")).toBeTruthy();

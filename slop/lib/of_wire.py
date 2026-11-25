@@ -1,216 +1,3 @@
-"""OnlyFans' API at its wire, on loopback: what the relay's REAL `OFClient`
-(curl_cffi, signed headers, its own error handling) reaches when a scenario sets
-`OF_WIRE = True` (lib/cli.py starts it and points the relay's `OF_API_ORIGIN`,
-the ADR 0024 seam, here). Runs in the harness process, a thread per request
-(stdlib `ThreadingHTTPServer`: curl's `Upgrade: h2c` is ignored and the body
-read, which uvicorn's httptools drops, ADR 0024), so the relay's calls arrive
-concurrently and are recorded in arrival order.
-
-  GET  /hash/?u=<uid>                      the CDN's x-hash (text), any account
-  GET  /robots.txt                         the API host's robots (text), no account: what the
-                                           watcher's `probe_of` GETs through a proxy
-  GET  /static/prod/f/<rev>/2313.js        the signing chunk (lib/browserbase.py's
-                                           synthetic one): a paste-curl bootstrap
-                                           derives its rules from it
-  GET  /api2/v2/users/me                   the Creator: {id, username, name, wsUrl,
-                                           wsAuthToken}: the WS pump's ticket; a scenario's
-                                           `profiles[uid]` (name, username, avatar,
-                                           avatarThumbs, ...) is laid over it
-  GET  /api2/v2/chats                      OF's chat list, empty (`{"list": []}`): what
-                                           the Creators strip's badges read while a
-                                           pump is live (bypass, declared: no chats);
-                                           a scenario may set `chats[uid]` (OF chat
-                                           items) and gets them back, `offset`/`limit`
-  GET  /api2/v2/users/notifications/count  the bell's counts, `notif_counts[uid]` as a scenario set them,
-                                           else all zero (`{"all": 0, ...}`): the shell's per-Creator badge read
-  POST /api2/v2/users/notifications/read   OF's mark-read (OF web on opening its All notifications tab):
-                                           zeroes every count;
-                                           answers `{counters}` (the count shape), each (t, type) kept per
-                                           Creator in order (`notif_reads`)
-  POST /api2/v2/chats/{fan}/mark-as-read    that chat read (`unreadMessagesCount` 0 in `chats[uid]`), DELETE:
-                                           unread (1); POST /api2/v2/chats/mark-as-read: every chat read;
-                                           `{"success": true}`
-  GET  /cdn-cgi/trace                      Cloudflare's trace, as `proxy_probe.probe` reads it
-                                           (ip / loc / colo lines; lib/relay.py points
-                                           `proxy_probe.TRACE_URL` here under OF_WIRE), so a
-                                           proxy's confirm and recheck probes go through
-                                           the fake proxy to loopback, never to 1.1.1.1
-  GET  /api2/v2/chats/{fan}/messages       a thread's history, `messages[uid][fan]` (OF message items, newest
-                                           first) once a scenario set `messages[uid]` (an unset fan:
-                                           empty; a POST below joins it and heads its chat in
-                                           `chats[uid]`, `head_chat`),
-                                           else one text from the Fan (id 8_000_000 + fan % 1e6,
-                                           `hasMore` false: the Thread a click opens);
-                                           `limit` (default 10), `id` = older than (before_id),
-                                           `hasMore`
-  POST /api2/v2/chats/{fan}/messages       OF's new message (id, text, createdAt,
-                                           fromUser), recorded per Creator in order
-                                           with its wire body (`body`)
-  POST /api2/v2/messages/queue             a mass message queued: `{id, text, createdAt}`,
-                                           the wire body kept per Creator in order
-                                           (`queue`); the answer's shape is a guess
-                                           (of_client reads only `id`)
-  DELETE /api2/v2/messages/queue/{id}      a mass message unsent: `{"success": true}`, each
-                                           (`t`, `id`) kept per Creator in order (`unsends`;
-                                           bypass, declared: OF's answer body is a guess)
-  GET  /api2/v2/users/me/stats/messages/group
-                                           the mass feed: the Creator's `queue`, newest first,
-                                           `limit` of them (default 10), `hasMore`; each `{id,
-                                           date, text, template, sentCount}`, sentCount the send's
-                                           recipients at the wire when queued (`sent_counts`): its
-                                           `userIds` and numeric `userLists` members minus its
-                                           `excludedLists` members (bypass, declared: the rosters
-                                           are empty here, so fans / following add none; final at
-                                           once; OF's other item fields not modelled)
-  POST /api2/v2/posts                      a feed post created: `{id, text, postedAt}`, the
-                                           wire body kept per Creator in order (`posts`);
-                                           the answer's shape is a guess (`id` is read)
-  GET  /api2/v2/subscriptions/count/all    the fan counts (`subscribers.active/all/expired`,
-                                           fixed per Creator, or `fan_counts[uid]` as a scenario
-                                           set): the Dashboard's Per-model cards
-  GET  /api2/v2/subscriptions/subscribers/chart
-                                           OF's Subscriptions chart, no new fans (`subscribers` 0)
-  GET  /api2/v2/payouts/referrals/chart    Statements › Referrals, $0 (`total` 0): the
-                                           Dashboard's Referrals tile
-  GET  /api2/v2/users/notifications        the alerts feed, empty; `type=purchases`: `purchases[uid]` (OF
-                                           notification items, newest first) as a scenario seeded them,
-                                           `offset` / `limit` (default 10): the purchases poller
-  GET  /api2/v2/payouts/transactions       the payouts feed, empty: Messages Pro's money rail
-  GET  /api2/v2/campaigns                  the tracking links: `campaigns[uid]` as a scenario set
-                                           it (else none), `offset` / `limit` (bare: 10), deleted
-                                           ones only with `with_deleted`, `hasMore`
-  GET  /api2/v2/promotions, /posts, /users/{id}/posts
-                                           empty pages (`{"list": [], "hasMore": false}`):
-                                           the page sweep's offers, feed
-  GET  /api2/v2/vault/media                the vault page: `vault_media[uid]` (OF media items, newest first)
-                                           as a scenario set it, else empty; `offset` / `limit` (default 24)
-  GET  /api2/v2/vault/lists                the Creator's vault folders, `vault_lists[uid]` (a
-                                           scenario sets them; none: an empty page), in the
-                                           custom order last sorted (`vault_order[uid]`; folders
-                                           it does not name after it, as listed), `offset`/`limit`
-  POST /api2/v2/vault/lists/sort           the folder-list sort: each body recorded per Creator in
-                                           order (`vault_sorts`); `{customOrder, sort: "custom"}`
-                                           sets `vault_order[uid]`. Answers `{"success": true}`
-                                           (bypass, declared: OF's answer body is a guess)
-  GET  /api2/v2/subscriptions/subscribers, /subscriptions/subscribes
-                                           empty rosters (`{"list": [], "hasMore": false}`):
-                                           the fans / following rosters (roster_audience_blocking;
-                                           a mass send reads none) (bypass, declared: no roster)
-  GET  /api2/v2/vault/media/{id}           one vault media by id: `vault[uid][id]` as a
-                                           scenario set it, else OF's 404 "Media Not Found"
-                                           (which the stills path reads as deleted)
-  GET  /api2/v2/trials                     the free trial links, empty (`[]`, a bare list)
-  GET  /api2/v2/lists                      the Creator's custom fan lists (`lists[uid]`, none until
-                                           made), `{list, hasMore}`, `offset`/`limit`: a mass send's
-                                           Auto_Exclude sync (service/audiences.py) reads it
-  POST /api2/v2/lists                      a custom list made: `{id, type, name, usersCount}`
-  GET  /api2/v2/lists/{id}                 one list's metadata `{id, type, name, usersCount}`,
-                                           usersCount its members now (`list_users[id]`); another
-                                           Creator's or unknown list: 404 (the crawl's count check
-                                           after a repeated members page)
-  GET  /api2/v2/lists/{id}/users           its members, a BARE page (`[{id}]`, no hasMore) as
-                                           audiences._page_all documents OF's; another
-                                           Creator's or unknown list: 404; a list in
-                                           `repeat_pages` ignores `offset` (page 1 again)
-  POST /api2/v2/lists/{id}/users/{user}    a member added / removed (`list_users[id]`); answers
-  DELETE (same)                            `{"success": true}` (bypass, declared: OF's answer
-                                           body is a guess)
-                                           The media upload (lib/of_wire_upload.py, `upload`: its
-                                           records below are `upload.<name>`, `upload.snapshot()`):
-  GET  /api2/v2/vault/media/hash?h=&size=  the upload dedupe: the vault media minted for that S3
-                                           ETag + size (`h`), else 404; each kept per Creator in
-                                           order (`lookups`: t, h, size, hit). A claim is minted
-                                           only once something REFERENCES it (a chat send's or a
-                                           post's `mediaFiles` names its processId), as OF does;
-                                           the minted media joins `vault[uid]` (by-id read) and
-                                           `minted[uid]`
-  POST /api2/v2/upload/signed/create       the presigned S3 target(s) on this fake's own origin:
-                                           OF's key (`upload/<uid>/...`, the Creator spliced in),
-                                           `uploadToken`, `getUrl`; `parts` 1 -> `putUrl`, more ->
-                                           `uploadId` + `keys: [{part, putUrl}]` and no putUrl. Each
-                                           kept per Creator in order (`uploads`)
-  PUT  /s3/<key>[?partNumber=&uploadId=]   S3: the bytes stored (size, sha256), answered 200 with
-                                           S3's `ETag` header, computed here (md5 of the body);
-                                           a key / part / uploadId it never handed out: 403. Each
-                                           kept per Creator in order (`s3_puts`, the Creator from
-                                           the key)
-  POST /api2/v2/upload/signed/finish       the multipart assembled: the parts named must be every
-                                           part stored, with their ETags; answers `{ETag}`, S3's
-                                           multipart one (md5 of the part md5 digests, `-N`), else
-                                           400 "Invalid input."
-  POST /convert/file/upload                convert.onlyfans.com's claim (lib/upload_relay.py points
-                                           the relay's convert host here): the FormData parsed
-                                           (stdlib `email`), kept per Creator in order (`claims`:
-                                           key, ETag, Location, Bucket, name, token_ok, processId,
-                                           the S3 object's size / sha256 / ETag); a key with no
-                                           stored object or a wrong `uploadToken`: 400 "Invalid
-                                           input." as OF does; else `{processId, host, sourceUrl,
-                                           extra, thumbs, files}` (`host` / `extra` are guesses)
-  GET  /api2/v2/posts/{id}                 a post as created (`posts[uid]`): `{id, text, postedAt,
-                                           media}`, `media` the vault media its `mediaFiles`
-                                           claims minted (the carrier's listing), shuffled
-                                           (seeded by the post id: OF's order is arbitrary);
-                                           deleted or unknown: 404
-  DELETE /api2/v2/posts/{id}               the post deleted: `{"success": true}` (a guess), kept
-                                           per Creator in order (`carriers`: t, id, media_ids)
-  any other path                           404, counted (`unmodelled`)
-
-`extra_s[uid]` adds seconds to every /api2/ call of that Creator: a Creator whose proxy
-fails and is retried (bypass, declared: no proxy hop exists here, so the retries are
-modelled as their measured cost, not run). `route_s[route]` adds seconds to every call on
-that route (route as recorded, e.g. `"GET /api2/v2/chats"`): a slow OF read beside fast ones;
-`route_jitter` j spreads it to route_s x uniform(1-j, 1+j) per call (seeded), so slow reads that start
-together do not keep answering together (a fixed time keeps every lane in phase: waves).
-`hold[(uid, route)]` is a list of seconds: each arriving call of that Creator on that route
-pops the first and waits that long more (the next N calls held, the rest as usual). Every
-call in `calls` also carries its arrival time `t0`, its path `path` and its query string `query`.
-
-OF's chat WebSocket (`wsUrl`, ws://127.0.0.1:<port>/ws3/<uid>; the relay's real
-of_ws pump connects here): the client's `{"act":"connect","token":…}` is answered
-`{"connected":true,"v":"5.4.0"}` as OF does; then the socket stays open, reading
-what the client sends (pings) and pushing only what `push_ws(id, frame)` sends (a
-fan's DM as OF pushes it, on that Creator's open sockets). Each connect is recorded
-(`ws_connects`: t, account, token as issued). `drop_ws(ids)` closes those
-Creators' sockets, as OF does when it ends a session's socket: the pump
-reconnects through /users/me.
-
-`fail` (a set of (uid, route) the scenario arms and clears at any time, route as recorded, e.g.
-`"POST /api2/v2/messages/queue"`): while armed, that Creator's every call on that route is answered
-500 (`FAIL_BODY`, a guess at OF's error body) after the usual wait, recorded in `calls` and never kept
-in `queue` / `posts` / `unsends`: OnlyFans failing one model of a fan-out.
-`throttle` ((uid, route) -> n, set by the scenario at any time): that Creator's next n calls on that route are
-answered 429 with OF's rate-limit body (`TOO_MANY_BODY`, "Please allow 1 seconds", the text of_pacing reads), after
-the usual wait, recorded in `calls`; the call after them is answered as usual (a 429 the pacer's one retry gets past).
-`min_gap` ((uid, route) -> seconds, set by the scenario at any time): that Creator's call on that route arriving sooner
-than this after its previous one (refused ones count) is answered 429 `TOO_MANY_BODY`: OF's per-account rate limit
-(AE 2026-11-10, measured: 76 unpaced by-id reads in 19 s, then 429; the real budget is a guess, declared).
-`status` ((uid, route) -> (code, retry_after_s[, body]), set and cleared by the scenario at any time): while armed,
-that Creator's every call on that route is answered `code` after the usual wait, recorded in `calls`: 401 with
-`UNAUTH_BODY` (a 401 the relay's dead-session classifier does not recognise), or 429 with `TOO_MANY_PLAIN_BODY` (no
-"allow N seconds" text) and, when `retry_after_s` is not None, a `Retry-After` header of that many seconds. `body`
-(not None) replaces the default: `TOO_MANY_BODY` is OF's own "Please allow 1 seconds" (measured on AE). The other
-bodies are guesses at OF's (declared).
-
-A Creator in `otp` (set by the scenario at any time) is a login OnlyFans has
-asked to confirm with a 2FA code: every /api2/ call it makes is answered 400
-with OF's code-101 body (`OTP_BODY`; `payload.otpState` and `strong` as OF web's
-bundle reads them on code 101, the message text a guess).
-
-The Creator is the request's signed `User-ID` header (the hash CDN's `u=`).
-Bypass, declared: the `Sign` / `Time` / `X-Hash` headers are only checked to be
-present (`unsigned` counts calls without them), never verified; `LATENCY_S`
-(50 ms per call) is a guess at OF's latency.
-
-`consent` (Creator -> "NC" / "AL", set by the scenario at any time) is a creator OnlyFans flagged under a
-consent law: its `/users/me` carries `needConsent: true`, `needConsentState` and `consentStatus: null`, and
-every media send (`POST /api2/v2/chats/{fan}/messages` or `/messages/queue` with a non-empty `mediaFiles`) is
-answered 400 `CONSENT_BODY` (as OF answered AE's send 1495 on 2026-11-07), never kept. Once the Creator is
-also in `consent_signed`, `/users/me` says `consentStatus: "approved"` and its sends go through. Guesses,
-declared: `consentStatus` null while unsigned, and text-only sends not refused.
-
-`extra_routes`: handlers a flow adds (lib/vault_wire.py), tried after the latency /
-OTP / `fail` gates and before the built-in routes.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -273,7 +60,6 @@ def chat_page(query: dict, rows: list[dict], *, cap: int | None = None) -> dict:
 
 class FakeOF:
     def mark(self, uid: str, fan: int | None, read: bool) -> bool:
-        # Callers hold lock so scenario counters and read logs can update with the rows.
         if uid not in self.chats:
             return False
         rows = list(self.chats[uid])
@@ -290,51 +76,50 @@ class FakeOF:
     def __init__(self, latency_s: float = LATENCY_S):
         self.latency_s = latency_s
         self.otp: set[str] = set()
-        self.fail: set[tuple[str, str]] = set()  # (Creator, route) answered 500 while armed
-        self.throttle: dict[tuple[str, str], int] = {}  # (Creator, route) -> its next n calls answered 429
-        self.min_gap: dict[tuple[str, str], float] = {}  # (Creator, route) -> a call sooner after the last: 429
+        self.fail: set[tuple[str, str]] = set()
+        self.throttle: dict[tuple[str, str], int] = {}
+        # OF per-account rate limit; AE measured 76 unpaced by-id reads in 19 s, then 429; real budget is a guess
+        self.min_gap: dict[tuple[str, str], float] = {}
         self._gap_last: dict[tuple[str, str], float] = {}
-        self.status: dict[tuple[str, str], tuple] = {}  # (Creator, route) -> (401|429, Retry-After[, body])
-        self.consent: dict[str, str] = {}  # Creator -> its consent law ("NC" / "AL"): media sends refused
-        self.consent_signed: set[str] = set()  # of `consent`: signed, /users/me approved, sends go through
-        self.extra_s: dict[str, float] = {}  # per Creator, seconds added to each /api2/ call
-        self.route_s: dict[str, float] = {}  # per route (as recorded), seconds added to each call on it
-        self.route_jitter = 0.0  # route_s x uniform(1 - j, 1 + j) per call
+        self.status: dict[tuple[str, str], tuple] = {}
+        self.consent: dict[str, str] = {}
+        self.consent_signed: set[str] = set()
+        self.extra_s: dict[str, float] = {}
+        self.route_s: dict[str, float] = {}
+        self.route_jitter = 0.0
         self._rng = random.Random(0)
-        self.hold: dict[tuple[str, str], list[float]] = {}  # (Creator, route) -> the next calls' extra seconds
-        self.chats: dict[str, list[dict]] = {}  # per Creator, the chat list /api2/v2/chats pages through
-        self.vault_lists: dict[str, list[dict]] = {}  # per Creator, its vault folders (OF's list items)
-        self.vault_order: dict[str, list[int]] = {}   # per Creator, the last customOrder sorted
-        self.vault_sorts: dict[str, list[dict]] = {}  # per Creator, every /vault/lists/sort body, in order
-        self.messages: dict[str, dict[int, list[dict]]] = {}  # per Creator, fan -> OF's thread, newest first
-        self.vault_media: dict[str, list[dict]] = {}  # per Creator, the vault page's media, newest first
-        self.fan_counts: dict[str, int] = {}  # per Creator, `subscribers.active` (else id % 900 + 100)
-        self.purchases: dict[str, list[dict]] = {}  # per Creator, the type=purchases feed, newest first
-        self.notif_counts: dict[str, dict[str, int]] = {}  # per Creator, the /users/notifications/count body
-        self.notif_reads: dict[str, list[tuple[float, str | None]]] = {}  # per Creator, each mark-read (t, type)
-        self.profiles: dict[str, dict] = {}  # per Creator, fields laid over its /users/me (name, username, avatar)
+        self.hold: dict[tuple[str, str], list[float]] = {}
+        self.chats: dict[str, list[dict]] = {}
+        self.vault_lists: dict[str, list[dict]] = {}
+        self.vault_order: dict[str, list[int]] = {}
+        self.vault_sorts: dict[str, list[dict]] = {}
+        self.messages: dict[str, dict[int, list[dict]]] = {}
+        self.vault_media: dict[str, list[dict]] = {}
+        self.fan_counts: dict[str, int] = {}
+        self.purchases: dict[str, list[dict]] = {}
+        self.notif_counts: dict[str, dict[str, int]] = {}
+        self.notif_reads: dict[str, list[tuple[float, str | None]]] = {}
+        self.profiles: dict[str, dict] = {}
         self.lock = threading.Lock()
-        self.calls: list[dict] = []          # every call, answer order: {t0, t, account, route, query, status}
-        self.sends: dict[str, list[dict]] = {}  # per Creator, the messages OF accepted, in order (`t`: arrival)
-        self.queue: dict[str, list[dict]] = {}  # per Creator, the mass-message wire bodies, in order (`t`, `id` added)
-        self.posts: dict[str, list[dict]] = {}  # per Creator, the post-create wire bodies, in order (`t`, `id` added)
-        self.unsends: dict[str, list[dict]] = {}  # per Creator, the mass unsends, in order ({t, id})
-        self.sent_counts: dict[int, int] = {}  # queue id -> the mass feed's sentCount, fixed when queued
-        self.vault: dict[str, dict[int, dict]] = {}  # per Creator, media id -> the by-id read's media dict
-        self.campaigns: dict[str, list[dict]] = {}  # per Creator, OF's /campaigns rows in OF's list order
-        self.lists: dict[str, list[dict]] = {}  # per Creator, its custom fan lists (OF's list items), made order
-        self.list_users: dict[int, list[int]] = {}  # list id -> its members, added order
-        self.repeat_pages: set[int] = set()  # list ids whose /users ignores `offset`: page 1 again (OF's way)
-        self.upload = UploadWire(self)  # the media upload's routes and records (lib/of_wire_upload.py)
-        # a flow's own routes, consulted before the built-ins: fn(h, method, u, uid, route, raw) -> True when
-        # it answered (h._record). lib/vault_wire.py is one.
+        self.calls: list[dict] = []
+        self.sends: dict[str, list[dict]] = {}
+        self.queue: dict[str, list[dict]] = {}
+        self.posts: dict[str, list[dict]] = {}
+        self.unsends: dict[str, list[dict]] = {}
+        self.sent_counts: dict[int, int] = {}
+        self.vault: dict[str, dict[int, dict]] = {}
+        self.campaigns: dict[str, list[dict]] = {}
+        self.lists: dict[str, list[dict]] = {}
+        self.list_users: dict[int, list[int]] = {}
+        self.repeat_pages: set[int] = set()
+        self.upload = UploadWire(self)
         self.extra_routes: list = []
         self.unmodelled: Counter = Counter()
         self.unsigned = 0
         self._ids = iter(range(9_000_000_000, 10**12))
         self._srv: BoundedHTTPServer | None = None
-        self.ws_connects: list[dict] = []  # arrival order: {t, account, token_ok}
-        self._ws_open: dict[str, set] = {}  # account -> its open server-side sockets
+        self.ws_connects: list[dict] = []
+        self._ws_open: dict[str, set] = {}
         self._ws_loop: asyncio.AbstractEventLoop | None = None
         self._ws_port = 0
         self._chunk: str | None = None
@@ -376,7 +161,7 @@ class FakeOF:
                 fake._ws_open.setdefault(uid, set()).add(ws)
             try:
                 await ws.send(json.dumps({"connected": True, "v": "5.4.0"}))
-                async for _ in ws:  # the client's pings (get_onlines): nothing to answer
+                async for _ in ws:
                     pass
             except websockets.ConnectionClosed:
                 pass
@@ -388,7 +173,8 @@ class FakeOF:
             return await websockets.serve(session, "127.0.0.1", 0)
 
         loop = asyncio.new_event_loop()
-        self._ws_srv = loop.run_until_complete(start())  # held: the loop keeps only weak task refs
+        # held: the loop keeps only weak task refs
+        self._ws_srv = loop.run_until_complete(start())
         self._ws_port = self._ws_srv.sockets[0].getsockname()[1]
         self._ws_loop = loop
         up.set()
@@ -398,15 +184,12 @@ class FakeOF:
             loop.close()
 
     def _reach(self, body: dict) -> int:
-        """A queued mass message's recipients at the wire, under self.lock: its userIds and numeric userLists'
-        members (`list_users`; fans / following are empty rosters here) minus its excludedLists' members."""
         def ids(xs):
             return [int(x) for x in xs or () if str(x).strip().isdigit()]
         got = set(ids(body.get("userIds"))).union(*(self.list_users.get(i, ()) for i in ids(body.get("userLists"))))
         return len(got.difference(*(self.list_users.get(i, ()) for i in ids(body.get("excludedLists")))))
 
     def head_chat(self, uid: str, fan: int, msg: dict) -> None:
-        """`msg` is the chat's last message now: OF lists that chat first (call under `lock`)."""
         rows = self.chats.setdefault(uid, [])
         old = next((c for c in rows if c["withUser"]["id"] == fan), None)
         if old is not None:
@@ -416,7 +199,6 @@ class FakeOF:
         rows.insert(0, {**base, "lastMessage": last})
 
     def drop_ws(self, account_ids) -> int:
-        """Close these Creators' open sockets (OF ends them). Returns how many."""
         with self.lock:
             socks = [ws for a in account_ids for ws in self._ws_open.get(str(a), ())]
         for ws in socks:
@@ -424,8 +206,6 @@ class FakeOF:
         return len(socks)
 
     def push_ws(self, account_id, frame: dict) -> int:
-        """Push one frame (OF's JSON) on this Creator's open sockets, as OF pushes a fan's DM.
-        Returns how many sockets it went out on (0: none open, nothing sent)."""
         with self.lock:
             socks = list(self._ws_open.get(str(account_id), ()))
         for ws in socks:
@@ -433,19 +213,17 @@ class FakeOF:
         return len(socks)
 
     def ws_live(self) -> dict[str, int]:
-        """Per Creator, its open sockets right now."""
         with self.lock:
             return {a: len(v) for a, v in self._ws_open.items() if v}
 
     def set_otp(self, account_ids) -> float:
-        """From now on these Creators' logins want a 2FA code. Returns the epoch time."""
         with self.lock:
             self.otp = {str(a) for a in account_ids}
             return time.time()
 
     def chunk(self) -> str:
         if self._chunk is None:
-            from slop.lib.browserbase import signing  # lazy: imports service/of_signer
+            from slop.lib.browserbase import signing
             self._chunk = signing("0", "slop-rev", 0)["chunk"]
         return self._chunk
 
@@ -475,7 +253,7 @@ class FakeOF:
                 self.send_response(code)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(data)))
-                for k, v in headers:   # extra response headers (an extra_routes handler's Retry-After)
+                for k, v in headers:
                     self.send_header(k, v)
                 self.end_headers()
                 self.wfile.write(data)
@@ -566,8 +344,6 @@ class FakeOF:
                         chats = unread_rows(chats)
                     return self._record(uid, route, 200, chat_page(q, chats))
                 if method == "GET" and (m := _SEND.fullmatch(u.path)) and uid not in fake.messages:
-                    # A chat's messages page: one text from the Fan (the thread a click opens). A Creator whose
-                    # threads a scenario modelled (`messages[uid]`) is answered from them below instead.
                     fan = int(m.group(1))
                     return self._record(uid, route, 200, {"list": [{
                         "id": 8_000_000 + fan % 1_000_000, "text": "hey", "fromUser": {"id": fan}, "isFree": True,
@@ -606,15 +382,13 @@ class FakeOF:
                     return self._record(uid, route, 200, {"list": feed[off:off + lim], "hasMore": off + lim < len(feed)})
                 if method == "GET" and u.path == "/api2/v2/payouts/transactions":
                     return self._record(uid, route, 200, {"list": [], "hasMore": False})
-                # The page sweep's reads of a Creator with none of these yet: OF's empty pages (of_client's shapes;
-                # /trials answers a bare list).
-                if method == "GET" and u.path == "/api2/v2/campaigns":  # `campaigns[uid]` paged, OF's /campaigns rules
+                if method == "GET" and u.path == "/api2/v2/campaigns":
                     q = parse_qs(u.query)
                     with fake.lock:
                         rows = list(fake.campaigns.get(uid, ()))
                     if "with_deleted" not in q:
                         rows = [r for r in rows if not r.get("isDeleted")]
-                    off, lim = int(q.get("offset", ["0"])[0]), int(q.get("limit", ["10"])[0])  # bare: first page only
+                    off, lim = int(q.get("offset", ["0"])[0]), int(q.get("limit", ["10"])[0])
                     return self._record(uid, route, 200, {"list": rows[off:off + lim], "hasMore": off + lim < len(rows)})
                 if method == "GET" and u.path == "/api2/v2/vault/lists":
                     q = parse_qs(u.query)
@@ -622,7 +396,7 @@ class FakeOF:
                     with fake.lock:
                         lists = list(fake.vault_lists.get(uid, ()))
                         rank = {fid: k for k, fid in enumerate(fake.vault_order.get(uid, ()))}
-                    lists.sort(key=lambda f: rank.get(f["id"], len(rank)))  # stable: the unnamed keep their order
+                    lists.sort(key=lambda f: rank.get(f["id"], len(rank)))
                     return self._record(uid, route, 200, {"list": lists[off:off + lim], "hasMore": off + lim < len(lists)})
                 if method == "POST" and u.path == "/api2/v2/vault/lists/sort":
                     body = json.loads(raw or b"{}")
@@ -745,7 +519,7 @@ class FakeOF:
                                "isFree": True, "lockedText": False}
                         fake.sends.setdefault(uid, []).append({"fan_id": int(m.group(1)), "t": time.time(), **msg,
                                                                "body": body})
-                        if uid in fake.messages:  # a modelled thread: OF's next reads have it on top
+                        if uid in fake.messages:
                             fake.messages[uid].setdefault(int(m.group(1)), []).insert(0, msg)
                             fake.head_chat(uid, int(m.group(1)), msg)
                     return self._record(uid, route, 200, msg)

@@ -1,23 +1,7 @@
 #!/usr/bin/env python3
-"""Settings → System (service/system_admin_api.py): master-only automation
-status + run log.
-
-  * the Master reads both routes;
-  * an owner (non-master) gets 403, a chatter 403, nobody signed in 401;
-  * /admin/system/automations reports each kind's rule is_enabled and config
-    `enabled` flag, flags a disagreement as a mismatch, and flags duplicate rules;
-  * /admin/system/runs lists runs across accounts (with error_text) and the
-    failed / pending scheduled_jobs, and honours its filters.
-  * /admin/system/switches lists every runtime switch; PUT sets / clears an
-    override (founder password required, audited with it redacted) that each
-    consumer reads at once; bad values 422; a failed boot load is reported
-    (`loaded: false`) and retried.
-
-Run: ./venv/bin/python service/tests/test_system_admin_api.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -32,7 +16,7 @@ from db.models import Account, AccountAiConfig, AutomationRule, AutomationRun, S
 IDS = fx.seed_two_agencies()
 A = IDS["creator_a"]
 B = IDS["creator_b"]
-C = "1000003"  # a third creator, only to hold the two mismatch examples
+C = "1000003"
 
 
 def _rule(aid: str, kind: str, enabled: bool) -> AutomationRule:
@@ -43,8 +27,6 @@ def _rule(aid: str, kind: str, enabled: bool) -> AutomationRule:
 async def _seed() -> None:
     now = datetime.utcnow()
     async with get_session() as s:
-        # A: autoreply rule ON + config ON (agree); nudge_online twice (duplicate),
-        # config absent (default ON).
         s.add_all([_rule(A, "autoreply", True),
                    _rule(A, "nudge_online", True), _rule(A, "nudge_online", False),
                    _rule(A, "scrape_chats", False)])
@@ -52,8 +34,6 @@ async def _seed() -> None:
             account_id=A,
             autoreply_config_json=json.dumps({"enabled": True}),
         ))
-        # C: autoreply rule ON + config OFF (mismatch); nudge_online ON in config
-        # with no rule (a config-on/no-rule mismatch).
         s.add(Account(id=C))
         s.add(_rule(C, "autoreply", True))
         s.add(AccountAiConfig(
@@ -99,7 +79,6 @@ def case_non_master_is_refused():
         assert OWNER.get(path).status_code == 403, f"owner reached {path}"
         assert CHATTER.get(path).status_code == 403, f"chatter reached {path}"
         assert ANON.get(path).status_code == 401, f"anonymous reached {path}"
-    # Even naming the owner's OWN account does not open it.
     assert OWNER.get(f"/admin/system/runs?account_id={A}").status_code == 403
 
 
@@ -125,16 +104,14 @@ def case_status_reflects_rule_and_config_flags():
     extra = _row(body, A, "scrape_chats")
     assert extra["source"] == "rule" and extra["rule_enabled"] is False, extra
 
-    # B has no rules and no config: every config-gated kind defaulting OFF agrees.
     assert _row(body, B, "autoreply")["mismatch"] is False
-    # ...and a house-default-ON kind nobody ever saved or ruled is not a mismatch.
     row = _row(body, B, "nudge_online")
     assert row["config_enabled"] is True and row["rule_ids"] == [], row
     assert row["mismatch"] is False, row
     assert body["mismatch_count"] >= 2, body["mismatch_count"]
 
 
-PW = os.environ["ADMIN_PASSWORD"]   # the harness sets the founder password
+PW = os.environ["ADMIN_PASSWORD"]
 
 
 def _put(name: str, value, *, client=None, pw: str | None = PW):
@@ -151,7 +128,7 @@ def case_switches_list_every_registered_switch():
     import runtime_switches
     body = MASTER.get("/admin/system/switches").json()
     assert [k["env"] for k in body["switches"]] == [s.env for s in runtime_switches.SWITCHES], body
-    assert isinstance(body["loaded"], bool), body   # the harness runs no startup: covered below
+    assert isinstance(body["loaded"], bool), body
     sw = _switch("W7_WEBHOOK_DISPATCH_DISABLED")
     assert sw["source"] == "default" and sw["effective"] is False and sw["active"] is False, sw
     assert sw["kind"] == "bool" and sw["override"] is None and sw["fallback"] is False, sw
@@ -187,7 +164,6 @@ def case_override_beats_env_and_clears_back_to_it():
         os.environ.pop("W7_WEBHOOK_DISPATCH_DISABLED", None)
         _put("W7_WEBHOOK_DISPATCH_DISABLED", None)
     assert webhook_dispatch._global_kill_switch() is False
-    # The style loaders read the same registry.
     assert _put("STYLE_FORCE_OFF", True).status_code == 200
     try:
         assert _common._style_force_off() is True
@@ -234,7 +210,6 @@ def case_bad_writes_are_refused():
                     ("SMART_LIST_MAX_ACTIVE", 10 ** 30), ("MAX_EMPLOYEES_PER_USER", 501)):
         r = _put(name, v)
         assert r.status_code == 422, (name, v, r.status_code, r.text)
-    # Non-finite numbers: JSON has no literal, Python's json writes one, the relay must 422, not 500.
     for raw in (b'{"value": Infinity, "admin_password": "%s"}', b'{"value": NaN, "admin_password": "%s"}'):
         r = MASTER.put("/admin/system/switches/SMART_LIST_MAX_ACTIVE", content=raw % PW.encode(),
                        headers={"content-type": "application/json"})
@@ -314,7 +289,7 @@ def case_a_switch_write_is_audited_and_survives_a_reload():
     payloads, row = asyncio.run(rows())
     assert len(payloads) == 1 and row == ("false", "agency_master"), (payloads, row)
     assert PW not in payloads[0] and '"***"' in payloads[0], "the audit row redacts the password"
-    runtime_switches._overrides = {}            # a restart: the cache is empty until load()
+    runtime_switches._overrides = {}
     asyncio.run(runtime_switches.load())
     import media_cotag
     try:

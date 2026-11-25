@@ -1,9 +1,3 @@
-/**
- * Growth's Free trial links, Infloww's Tracking links frame in its FREETRIAL variant (page-parity ticket 12): the
- * frame's "Create free trial link" and its columns, the create pop-up with Infloww's/OF's fields and Source, Promo
- * cost, Tag and List; the per-link figures from the relay's cache (Spend/Claim, Promo cost, Earnings, Fans who
- * spent, Profit, AEPS, ROI), the Source and Tag filters, Edit, Details and the dots menu's Delete.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -11,7 +5,6 @@ vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();
   return { ...mod, relay: { ...mod.relay, get: vi.fn(), put: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() } };
 });
-// An owner session, so `useAccounts` reads `/admin/accounts` through the mocked relay.
 vi.mock("@/contexts/UserContext", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/contexts/UserContext")>()),
   useUser: () => ({ user: { user_id: "owner-1" } }),
@@ -64,13 +57,11 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 const mount = () => renderWithProviders(<TrialLinksTab accountId="a1" onAccountChange={() => {}} />);
 
-/** Click `combobox`, then its option. */
 function choose(combobox: HTMLElement, option: string | RegExp) {
   fireEvent.click(combobox);
   fireEvent.click(screen.getByRole("option", { name: option }));
 }
 
-/** The options' text behind `combobox` (opens and closes it). */
 function optionsOf(combobox: HTMLElement): string[] {
   fireEvent.click(combobox);
   const out = within(screen.getByRole("listbox")).getAllByRole("option").map((o) => o.textContent ?? "");
@@ -186,7 +177,6 @@ describe("TrialLinksTab Create", () => {
     fireEvent.click(within(dlg).getByRole("button", { name: "Save" }));
     expect((await within(dlg).findByRole("alert")).textContent)
       .toBe("Link created; Source, Promo cost, Tag and List weren't saved. Use Edit.");
-    // No Save is left to mint a duplicate.
     expect(within(dlg).queryByRole("button", { name: "Save" })).toBeNull();
     fireEvent.click(within(dlg).getAllByRole("button", { name: "Close" }).at(-1)!);
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -207,8 +197,6 @@ describe("TrialLinksTab Create", () => {
 });
 
 describe("TrialLinksTab figures, filters, Edit, Details and Delete", () => {
-  // Worked example: Reddit 7-day cost $50.00; 4 claimers, 2 who spent, $120.00 net ($150.00 gross) since claiming.
-  // Spend/Claim 2 / 4 = 50.00%, Profit $70.00, AEPS $120.00 / 4 = $30.00, ROI $70.00 / $50.00 x 100 = 140.00%.
   const LINKS = [
     trial({ id: 7, of_trial_id: 9001, name: "Reddit 7-day", promo_cost_cents: 5000, link_source: "Reddit", tags: ["spring"],
       metrics: figures({ earnings_cents: 15000, earnings_net_cents: 12000, fans_who_spent: 2, fans_counted: 4, claimers: 4 }) }),
@@ -228,7 +216,6 @@ describe("TrialLinksTab figures, filters, Edit, Details and Delete", () => {
       name: "Percentage of fans who claimed a free trial that purchased subscriptions, spent on content, or gave tips" })).toBeTruthy();
     expect(FIGS.map((t) => metric("Reddit 7-day", t))).toEqual(["50.00%", "$50", "$120", "2", "$70", "$30", "140.00%"]);
     expect(FIGS.map((t) => metric("Fresh link", t))).toEqual(Array(7).fill("—"));
-    // Infloww's free trial table has no CPC or CPS; Source and Tag draw once a link has them.
     expect(screen.queryByRole("columnheader", { name: "CPC" })).toBeNull();
     expect(metric("Reddit 7-day", "Source")).toBe("Reddit");
     expect(metric("Reddit 7-day", "Tag")).toBe("spring");
@@ -259,7 +246,6 @@ describe("TrialLinksTab figures, filters, Edit, Details and Delete", () => {
     expect((within(dlg).getByLabelText("Free trial link name") as HTMLInputElement).disabled).toBe(true);
     fireEvent.change(within(dlg).getByLabelText(/^Source/), { target: { value: " Twitter " } });
     fireEvent.change(within(dlg).getByLabelText(/^Promo cost/), { target: { value: "19.9" } });
-    // A tag typed but not added is kept on Save.
     fireEvent.change(within(dlg).getByLabelText(/^Tag/), { target: { value: "fall" } });
     fireEvent.click(within(dlg).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(put).toHaveBeenCalledWith("/admin/link-meta", {

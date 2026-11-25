@@ -1,14 +1,3 @@
-/**
- * fullAiRevenueView.ts — what the Full AI page's Revenue block shows (GET /admin/full-ai/revenue,
- * service/full_ai_revenue.py; spec phase-05 › Phase 07). Pure: `revenueView(api)` picks every figure and the honesty
- * line; `FullAiRevenue.tsx` only renders it.
- *
- * Honesty (ADR-0035): one Arm → the API's "no holdout: not a comparison"; two Arms → both means side by side and
- * "not readable under about 480 Fans per Arm" while either Arm's complete count is under 480; a difference between
- * the Arms only once both are at or over that floor. Never a lift, never before / after. A mean over no complete
- * 14-day window is "—", not $0. A Route with no offers is hidden.
- */
-
 import { fmtPrice } from "@/lib/format";
 import { ROUTE_LABEL, type Route } from "@/hooks/useFullAiToday";
 

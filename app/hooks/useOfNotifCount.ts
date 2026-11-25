@@ -1,20 +1,5 @@
 "use client";
 
-/**
- * useOfNotifCount — a Creator's OnlyFans notification count
- * (`/api/of/v2/users/notifications/count`, its `all`), under the
- * `["of-notif-count", accountId]` key the OF Manager Creator column reads too,
- * so every reader shares one cache entry. `accountId` null reads nothing (the
- * callers pass null for a Dead-session Creator). A failed read counts 0.
- * Re-read only while this tab leases the Creator; an unleased one reads once
- * armed and then only on its next `creator_warmed` (lib/ofReadGate.ts), which
- * carries the warmed count: written into this entry, no read
- * (hooks/useAccountStateEvents.ts).
- * `staleMs`: how long a read stays fresh (OF Manager's column: 60 s, as Infloww's).
- *
- * `useMarkOfNotifsRead` lowers that count the only way OF does: its mark-read write
- * (`POST /users/notifications/read`, what OF web sends when a notifications tab opens).
- */
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { skipToken, useQueries, useQuery, useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
@@ -28,12 +13,8 @@ import { lastNotifArrival } from "@/lib/notifSettings";
 interface NotifCountResp { all?: number }
 
 const NO_IDS: readonly string[] = [];
-/** The count's key, for the lease-gain refetch. */
 export const COUNT_ROOTS = ["of-notif-count"] as const;
 
-/** Per QueryClient (its count entries), per Creator, when the count read (or mark-read) that last answered was asked
- *  (epoch ms; set on its answer, so a read in flight leaves the last one's). "Mark all read" dates a cached 0 by
- *  this, not by when it landed: an arrival between ask and answer may postdate the 0 (W30-mu #49). */
 const countAskedAt = new WeakMap<QueryClient, Map<string, number>>();
 function askedAt(qc: QueryClient): Map<string, number> {
   let m = countAskedAt.get(qc);
@@ -47,7 +28,6 @@ export function useOfNotifCount(accountId: string | null, staleMs = 30_000) {
   const { enabled, ...gated } = gateOptions(gate);
   const q = useQuery<number>({
     queryKey: ["of-notif-count", accountId],
-    // A badge: background (queued behind clicks, lib/relaySchedule), dropped when its screen goes (signal).
     queryFn: accountId && enabled !== false
       ? async ({ signal }) => {
         const asked = Date.now();
@@ -64,16 +44,8 @@ export function useOfNotifCount(accountId: string | null, staleMs = 30_000) {
   return { count: q.isError ? 0 : q.data ?? 0, refetch: q.refetch };
 }
 
-/** The Relay's mark-read route (service/server.py `of_notifications_mark_read`): All, no type. */
 export const NOTIF_READ_PATH = "/api/of/v2/users/notifications/read";
 
-/**
- * Mark a Creator's OnlyFans notifications read: one OF write. Its answer's
- * `counters` (the count route's shape) is written into the count entry, so
- * every badge reading it drops at once; without them the entry is re-read
- * (the Relay dropped its cached count). A failed write leaves the count as
- * it was and resolves false.
- */
 export function useMarkOfNotifsRead() {
   const qc = useQueryClient();
   return useCallback(async (accountId: string): Promise<boolean> => {
@@ -85,7 +57,7 @@ export function useMarkOfNotifsRead() {
       return false;
     }
     const all = resp?.counters?.all;
-    // A count read still in flight (the panel-close re-read) may predate the write: drop it.
+    // A count read in flight (panel-close re-read) may predate the write: drop it.
     await qc.cancelQueries({ queryKey: ["of-notif-count", accountId] });
     if (typeof all === "number") {
       qc.setQueryData<number>(["of-notif-count", accountId], all);
@@ -97,25 +69,12 @@ export function useMarkOfNotifsRead() {
 
 const countKey = (accountId: string) => ["of-notif-count", accountId] as const;
 
-/**
- * These Creators' counts summed from the cache only: disabled observers (no
- * read) that re-sum as any entry changes (a `creator_warmed`, a reader, a
- * mark-read) and keep the entries cached while shown.
- */
 export function useCachedOfNotifSum(ids: readonly string[]): number {
   const qs = useQueries({ queries: ids.map((id) => ({ queryKey: countKey(id), queryFn: skipToken })) });
   const data = new Map(ids.map((id, i) => [id, qs[i]?.data as number | undefined]));
   return cachedCountSum(ids, (id) => data.get(id));
 }
 
-/**
- * "Mark all read" over live Creators: one mark-read each, serially (up to 50
- * Creators, each an OF write on its own proxy), skipping any whose cached
- * count is a 0 asked since the last arrival (lib/notifSettings
- * `lastNotifArrival`; `countAskedAt`). A second call while one runs does nothing. Resolves
- * whether every write went through; `status` names the failed ones' share
- * until the next run (`markAllReducer`).
- */
 export function useMarkAllOfNotifsRead() {
   const qc = useQueryClient();
   const markOfNotifsRead = useMarkOfNotifsRead();
@@ -126,8 +85,6 @@ export function useMarkAllOfNotifsRead() {
     running.current = true;
     dispatch({ type: "start" });
     let failed = 0;
-    // A cached 0's date: its read's ask time when known (a value written after it, a creator_warmed, dates no
-    // later than that ask), else when it landed.
     const readAt = (aid: string) => {
       const landed = qc.getQueryState(countKey(aid))?.dataUpdatedAt ?? 0;
       const asked = askedAt(qc).get(aid);
@@ -147,16 +104,10 @@ export function useMarkAllOfNotifsRead() {
   return { marking, markAll, status };
 }
 
-/**
- * A notifications page's mark-read: one `useMarkOfNotifsRead` write per Creator per mount (A → B → A is still one
- * write for A), once `ready` (its list answered, so unread rows are drawn as unread first); never per render or on a
- * timer. A write that went through re-reads `reread` (the page's own tab counts).
- */
 export function useMarkNotifsReadOnce(accountId: string | null, ready: boolean, reread: QueryKey) {
   const qc = useQueryClient();
   const mark = useMarkOfNotifsRead();
   const done = useRef(new Set<string>());
-  // `reread` is a fresh array each render: the effect re-runs, and `done` keeps it to one write.
   useEffect(() => {
     if (!ready || !accountId || done.current.has(accountId)) return;
     done.current.add(accountId);

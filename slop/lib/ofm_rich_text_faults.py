@@ -1,7 +1,3 @@
-"""OF Manager (the OF mirror) rich text checks and break-it-once fault: lib/faults.py merges `register(Fault)` into
-FAULTS. scenarios/2026-10-29-state-reducers.py (section "ofm-rich-text") imports the check names, so a target can never
-name a check that does not exist.
-"""
 from __future__ import annotations
 
 OFM_CHAT_DESKTOP = ("OF Manager chat, desktop: a formatted script picked in the Scripts column fills OF's editor "
@@ -23,16 +19,10 @@ OFM_POST = ("OF Manager New post (desktop and phone): Format text (Bold + Light 
 
 def register(Fault) -> dict:
     return {
-        # slop/run 2026-10-29-state-reducers --set only=ofm-rich-text --break --fault=ofm-script-drops-format
-        # The fix reverted: a picked script goes on the mirror's Chat draft without its markup (plain text only).
         "ofm-script-drops-format": Fault(None, (OFM_CHAT_DESKTOP, OFM_CHAT_PHONE), browser=(
             (r"html: t\.displayText && [^\n]*?\? t\.displayText\.trim\(\) : undefined", "html: undefined"),
-        ), browser_files=2),  # next dev serves it in the of-manager layout's chunk and the page's
-        # slop/run 2026-10-29-state-reducers --set only=ofm-rich-text --break --fault=ofm-caret-unarmed --baseline=<green>
-        # The fix reverted: a Format text tool on an empty caret arms nothing (it says "Select some text to format"),
-        # so text typed after Large + Bold goes plain. Only the typed check goes red: script picks, New message and
-        # New post format selected words.
+        ), browser_files=2),
         "ofm-caret-unarmed": Fault(None, (OFM_CHAT_TYPED,), browser=(
             (r"\(caret \? (\(0,[^)]*formatAtCaret\)|formatAtCaret)\(", r"(false ? \1("),
-        ), browser_files=2),  # ofMirrorPost: in the of-manager layout's chunk and the page's, as applyScript
+        ), browser_files=2),
     }

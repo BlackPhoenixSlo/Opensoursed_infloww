@@ -1,23 +1,5 @@
 "use client";
 
-/**
- * OF Manager's chrome around the mirrored page, as Infloww's (docs/infloww-of-manager-rea.md §1.5, §1.7): a 48px page
- * header ("Home  UTC+02:00 (i)", fullscreen and reload on the right) over a 192px creator column (Search, refresh,
- * the Tag menu, one row per creator with its avatar, online dot, OF notification count and unread chats) and the OF view.
- * A row picks that creator (ScopeContext) and reloads the OF view for it; below lg the column hides and a creator
- * select in the page header picks instead (the top bar has no creator filter). With no
- * creators the view gives way to Infloww's `OfNotHaveModel`; a picked creator whose OF session is dead or missing
- * gets Infloww's `page-error` placeholder over the view instead of the mirror. "Pop out" opens this page as a window
- * of its own on the picked creator (`?account=<id>`, which scopes that window without saving it, as Messages Pro's
- * Creator window URL does), so each creator's OF page can sit in its own window.
- * On an open OF chat (`/of-manager/messages/chat?chat=<fanId>`, one creator) Infloww's 280px Fan insights column sits
- * over the view's right edge (the chat page leaves it the room, so OF keeps its wide layout): Messages Pro's FanDrawer,
- * pinned, in Infloww's palette, with the Scripts picker (TemplatePicker) over it: a picked script, or an unsold PPV's
- * "Send to chat", goes on the mirror's Chat draft (applyScript), shown in OF's composer in the frame. Below lg the
- * header's Fan insights button opens it as its slide-over instead, and the Scripts picker sits in the header. A
- * formatted script goes in formatted (OF's markup, as OF's own Format text leaves it). It is the chat's one Fan
- * insights mount.
- */
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
@@ -50,7 +32,6 @@ import { chatPath } from "@/lib/ofMirrorDataQueries";
 import { type OFChatItem } from "@/lib/relay";
 import { InfoTip } from "@/components/ui/InfoTip";
 
-/** "UTC+02:00": this computer's offset (Infloww's OF Manager shows the local zone, not the Agency's). */
 function localOffsetLabel(): string {
   const mins = -new Date().getTimezoneOffset();
   const abs = Math.abs(mins);
@@ -58,7 +39,6 @@ function localOffsetLabel(): string {
 }
 const noSubscribe = () => () => {};
 
-/** The Fan insights column's shown / hidden, kept across loads; open unless hidden. */
 const INSIGHTS_KEY = "oi:ofm:insights";
 const insightsListeners = new Set<() => void>();
 function subscribeInsights(cb: () => void) {
@@ -71,9 +51,6 @@ function showInsights(on: boolean) {
   insightsListeners.forEach((f) => f());
 }
 
-/** The open chat's row from the chat list the mirror reads (Messages Pro's ["chats", ...] cache), else the chat the
- *  mirror's page reads (`fan`, the chat's `?chat=`: the same query as useOfChat's, so no second request), else the fan
- *  id alone. */
 function useChatItem(accountId: string | null, fanId: FanId | null, fan: string | null): OFChatItem | null {
   const qc = useQueryClient();
   const read = useQuery(mirrorQuery<OFChatItem>(accountId, fan != null && fanId != null ? chatPath(fan) : null, true)).data;
@@ -87,9 +64,6 @@ function useChatItem(accountId: string | null, fanId: FanId | null, fan: string 
   return row ?? (read?.withUser ? read : null) ?? bare;
 }
 
-/** A watcher account (a fan account that reads what the Creators send) is picked and browsed here like a Creator, but its
- *  pick stays inside OF Manager (WatcherScope): leaving for Messages Pro, the bell or any composer finds the last
- *  Creator in scope, never the watcher. */
 export function OfManagerChrome({ children }: { children: React.ReactNode }) {
   const accountsQ = useAccounts();
   const watchers = useWatcherAccounts();
@@ -104,10 +78,6 @@ export function OfManagerChrome({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** OF Manager has no "All creators" (owner 2026-11-20: the OF view is one creator's): a saved "all" scope (Messages
- *  Pro's unified inbox) shows the first creator with a live session, else the first (standInPick), here alone; the saved
- *  scope stays, so leaving finds it. That automatic pick is a stand-in (AutoPickContext): the mirror's Settings writes
- *  and stream key stay locked and it says "Showing <model>", as in All models. A pick sets the real scope. */
 function OneCreator({ children }: { children: React.ReactNode }) {
   const { accountId } = useScope();
   const creators = useActiveAccounts();
@@ -125,15 +95,10 @@ function Chrome({ children }: { children: React.ReactNode }) {
   const title = findNavLink(`/of-manager/${section}`)?.label ?? "OF Manager";
   const tz = useSyncExternalStore(noSubscribe, localOffsetLabel, () => null);
   const accountsQ = useAccounts();
-  // The active Creators, then the watchers (pickable here alone, WatcherScope).
   const accounts = useOfManagerAccounts();
   const noCreators = accountsQ.isSuccess && accounts.length === 0;
   const { scope, setScope } = useScope();
-  // The scope is this page's Creator pick (PageCreatorContext: the help bot follows it).
   usePageCreator(scope.kind === "model" ? scope.accountId : null);
-  // A Pop-out window's `?account=<id>`: this window's creator, not saved, so the opener keeps its own, applied once
-  // (`popoutReady`: when the id is known as a Creator or a watcher, so a watcher's id stays OF Manager's
-  // (WatcherScope), never the window's scope; an unknown id only after a successful read: it could be a watcher).
   const known = accountsQ.data;
   const popped = useRef(false);
   useEffect(() => {
@@ -146,9 +111,7 @@ function Chrome({ children }: { children: React.ReactNode }) {
   }, [setScope, known, accountsQ.isSuccess]);
   const scoped = scope.kind === "model" ? accounts.find((a) => a.id === scope.accountId) : undefined;
   const sessionGone = !!scoped && !liveSession(scoped);
-  // OfMessageToolbar: fullscreen and reload only for one creator with a live session; reload throttled to 2s.
   const viewTools = !!scoped && !sessionGone;
-  // Bumped by reload and by picking a creator: a fresh OF view (Infloww recreates its BrowserView for the creator).
   const [viewKey, setViewKey] = useState(0);
   const lastReload = useRef(0);
   const reload = useCallback(() => {
@@ -158,10 +121,8 @@ function Chrome({ children }: { children: React.ReactNode }) {
     setViewKey((k) => k + 1);
   }, []);
   const viewRef = useRef<HTMLDivElement>(null);
-  // Fan insights: an open chat of one creator with a live session (no chat: none).
   const fan = useSearchParams()?.get("chat") ?? null;
   const fanId = fanIdFromParam(fan);
-  // A watcher's chats are with Creators, not fans: no Fan insights.
   const onChat = pathname === "/of-manager/messages/chat" && viewTools && scoped.role !== "watcher";
   const chat = useChatItem(scoped?.id ?? null, onChat ? fanId : null, onChat ? fan : null);
   const insights = viewTools && chat ? { accountId: scoped.id, fanId: chat.withUser.id, chat } : null;
@@ -170,17 +131,16 @@ function Chrome({ children }: { children: React.ReactNode }) {
   const [sheet, setSheet] = useState(false);
   const insightsOn = desktop ? pinnedOn : sheet;
   const pinned = !!insights && desktop && pinnedOn;
-  // Infloww mounts the column inside OF's page (`.b-chats__conversations`), so OF's viewport keeps the view's width: the
-  // frame keeps it here too, the column lies over its right 280px and the page, marked, leaves that room.
   useEffect(() => {
     const view = viewRef.current;
     if (!view || !pinned) return;
+    // Mid-swap a frame's document can have no <html> yet; its load marks it.
     const mark = (on: boolean) =>
-      // Mid-swap a frame's document can have no <html> yet; its load marks it.
       view.querySelectorAll("iframe").forEach((f) => f.contentDocument?.documentElement?.toggleAttribute(OF_INSIGHTS_ATTR, on));
     const onLoad = () => mark(true);
     mark(true);
-    view.addEventListener("load", onLoad, true); // a frame's load does not bubble; capture sees each page's
+    // a frame's load does not bubble; capture sees each page's
+    view.addEventListener("load", onLoad, true);
     return () => {
       view.removeEventListener("load", onLoad, true);
       mark(false);
@@ -198,11 +158,9 @@ function Chrome({ children }: { children: React.ReactNode }) {
       <div className="h-12 shrink-0 flex items-center justify-between px-6 bg-[var(--ofm-nav)] border-b border-[var(--ofm-line)] box-border">
         <div className="flex items-center min-w-0 select-none">
           <h1 className="text-base font-medium text-fg truncate">{title}</h1>
-          {/* Below lg the creator column hides: this select picks the creator instead. */}
           {accounts.length > 0 && (
             <ScopeSelect accounts={accounts} onPicked={() => setViewKey((k) => k + 1)} className="ml-3 lg:hidden" />
           )}
-          {/* A phone's open chat needs the row for its Scripts and Fan insights buttons: the zone label gives way. */}
           {tz && (
             <span className={`mx-4 flex items-center gap-2 text-base text-fg-dim tabular-nums${insights ? " max-sm:hidden" : ""}`}>
               {tz}
@@ -212,7 +170,6 @@ function Chrome({ children }: { children: React.ReactNode }) {
         </div>
         {viewTools && (
           <div className="shrink-0 flex items-center gap-6">
-            {/* Below lg the pinned column (and its Scripts) is gone: the picker sits here, for the frame's composer. */}
             {insights && !desktop && (
               <InflowwPalette className="contents">
                 <TemplatePicker accountId={insights.accountId} onPick={pick} messagesPro />
@@ -248,7 +205,6 @@ function Chrome({ children }: { children: React.ReactNode }) {
           </div>
         )}
       </div>
-      {/* `.h-chat` below subtracts this header too. */}
       <div className="flex" style={{ ["--shell-top" as string]: "calc(var(--chrome-top) + 48px)" }}>
         <CreatorColumn accounts={accounts} onPicked={() => setViewKey((k) => k + 1)} />
         <div ref={viewRef} key={viewKey} className="relative flex-1 min-w-0 h-chat bg-[var(--ofm-nav)]">
@@ -274,7 +230,6 @@ function Chrome({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Whether this session may open Creators Management; Infloww shows `no-OF-account-error-text` to one that may not. */
 function useCanOpenCreators(): boolean {
   return !deniedPage("/creators", useGrantedPages());
 }
@@ -282,13 +237,11 @@ function useCanOpenCreators(): boolean {
 const NO_PERMISSION = "Unfortunately, you don't have permission for this page. Please contact the administrator.";
 const PRIMARY = "h-8 px-[15px] grid place-items-center rounded-md bg-accent text-white text-base hover:opacity-90";
 
-/** The link to Creators Management, or Infloww's no-permission line for a session that may not open it. */
 function CreatorsAction({ label }: { label: string }) {
   if (!useCanOpenCreators()) return <p className="max-w-[380px] text-err text-sm">{NO_PERMISSION}</p>;
   return <Link href="/creators" className={PRIMARY}>{label}</Link>;
 }
 
-/** Infloww's OfNotHaveModel: the 100px `data` art, 16px, the bundle's three-line copy (16/24 T1), 16px, the button. */
 function NoCreators() {
   return (
     <div className="h-full flex items-center justify-center px-6">
@@ -302,8 +255,6 @@ function NoCreators() {
   );
 }
 
-/** Infloww's BrowserView `page-error` for a picked creator with no live OF session. The copy is ours: Infloww's is
- *  remote i18n ("creator_account_connection_expired"), not in the bundle. */
 function SessionGone() {
   return (
     <div className="h-full flex items-center justify-center px-6" data-testid="of-session-gone">

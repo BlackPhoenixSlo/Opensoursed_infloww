@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { closeMenu, ORDER_GROUP, showMenu } from "./ofMirrorMenu";
 import { applyPhoneHeader, applyPhoneMenus } from "./ofMirrorPhone";
 
-/** OF's phone bar (WebsiteHeader's isXSMQ), on a desktop capture. */
 
 const load = () => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, "../public/of-mirror/pages/settings/profile.html"), "utf8");
@@ -41,7 +40,6 @@ describe("applyPhoneHeader", () => {
   });
 });
 
-/** OF's phone menu (below SM, 768px): full-screen over its `v-menu-overlay`, the list in the middle (live phone capture). */
 describe("phone menus", () => {
   const page = (slug: string) => {
     document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/settings/${slug}.html`), "utf8");

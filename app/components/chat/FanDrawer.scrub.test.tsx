@@ -1,9 +1,3 @@
-/**
- * FanDrawer's PPV video thumb (`VideoScrubThumb`): the same hover preview as
- * the vault picker's tiles, through the shared useHoverPreview. It used to
- * carry its own copy of the state machine; these pin where that copy had
- * drifted from the picker's.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
@@ -46,16 +40,12 @@ function hoverCommitted() {
 }
 
 describe("FanDrawer VideoScrubThumb", () => {
-  // Its "copied" formula had lost VaultPicker's ×1.3 padding: a 34s clip read
-  // 6s here and 8s in the picker, for the same relay build.
   it("counts down the vault picker's padded build ETA", () => {
     hoverCommitted();
     expect(frames()).toHaveLength(12);
     expect(screen.getByText("8s")).toBeInTheDocument();
   });
 
-  // Its cancel POST only fired when `hovered` flipped false, so closing the
-  // drawer mid-hover left the relay downloading a video nobody was watching.
   it("cancels the relay build when it unmounts mid-hover", () => {
     const { unmount } = hoverCommitted();
     const sid = new URL(frames()[0].src, "http://x").searchParams.get("sid");

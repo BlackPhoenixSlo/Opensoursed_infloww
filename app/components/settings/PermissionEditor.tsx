@@ -1,20 +1,5 @@
 "use client";
 
-/**
- * The Permission editor (docs/spec/settings-tabs/phase-03-roles-sales.md): one
- * Permission role's pages, one radio-drawn checkbox each, under the tabs
- * "Operations" / "Growth" / "OF Manager", plus its Data scope. The pages come
- * from the nav (`permissionTabs`), so a nav change shows up here unedited.
- * It is its own Panel, as Infloww's editor is a full page: the 48px header has
- * a back chevron before the role's name and "Save" at the right. "Save" hands
- * the role back with every page explicit; "Back" drops the edits.
- * Under a page with Function permissions (lib/permissionActions.ts) each action
- * has its own checkbox, usable while its page is ticked. An action is one switch
- * under every page showing it (the Relay refuses it once any of its keys is
- * false): on unless the role stores one false, and "Save" stores them all alike.
- * Under the Dashboard each card a role can hide (lib/dashboardCards.ts) has one too, on unless stored false.
- * A role is Applied only while Role enforcement is on (ADR-0012).
- */
 
 import { useState, type ReactNode } from "react";
 
@@ -33,7 +18,6 @@ export interface PermissionRole {
   description: string;
   permissions: Record<string, boolean>;
   scope: Scope;
-  /** Role Settings' Status switch off: the role grants nothing until it is on again. */
   disabled?: boolean;
 }
 
@@ -42,26 +26,18 @@ type PermissionTab = (typeof TABS)[number];
 interface PageGroup {
   title: string;
   pages: { label: string; href: string }[];
-  /** The nav group is `chatterOptIn` (My Automations, My AI Chatter): off for chatters unless ticked here;
-   *  the note under it. */
   optIn?: string;
 }
 
-/** The note under an opt-in group (ours, so it carries the extra label); `except` are its `notOptIn` pages. */
 export const optInNote = (except: string[]) =>
   `Off for chatters by default${except.length ? `, except ${except.join(", ")}` : ""}. Tick a page to let this role open it; it applies while Enforce role permissions is on.`;
 
-/** The editor's tabs from the nav: "Growth" and "OF Manager" are those groups' children; "Operations"
- *  is every other non-divider link, top-level links first under "General", then each
- *  remaining group under its own label, in nav order. `SIDEBAR_FOOTER` is not a page, nor is a link
- *  with a `permission`, top-level or a child — `isPermissionPage`. */
 export function permissionTabs(sidebar: NavNode[] = SIDEBAR): { tab: PermissionTab; groups: PageGroup[] }[] {
   const general: PageGroup = { title: "General", pages: [] };
   const groups: Record<PermissionTab, PageGroup[]> = { Operations: [general], Growth: [], "OF Manager": [] };
   for (const n of sidebar) {
     if (isDivider(n)) continue;
     if (!isGroup(n)) {
-      // A link that answers to another page's grant is not a page of its own.
       if (isPermissionPage(n)) general.pages.push({ label: n.label, href: n.href });
       continue;
     }
@@ -76,8 +52,6 @@ export function permissionTabs(sidebar: NavNode[] = SIDEBAR): { tab: PermissionT
 }
 
 const TAB_PAGES = permissionTabs();
-/** Every page a Permission role grants or denies, keyed by href in its
- *  `permissions`: nav.ts's `PERMISSION_PAGES`, the one owner of the list. */
 export const PAGE_HREFS = [...PERMISSION_PAGES];
 
 const SCOPES: { value: Scope; label: string }[] = [
@@ -87,12 +61,9 @@ const SCOPES: { value: Scope; label: string }[] = [
 ];
 
 const ROW = cn(TABLE_ROW, "h-12 px-[var(--if-row-px)] flex items-center gap-3 cursor-pointer");
-/** A Function permission's row, indented under its page. */
 const ACTION_ROW = cn(ROW, "h-10 pl-[calc(var(--if-row-px)+28px)] text-[var(--if-fg-2)] has-[:disabled]:cursor-not-allowed");
 
-/** `<page href>#<action>` → `<action>`. */
 const actionOf = (key: string) => key.slice(key.indexOf("#") + 1);
-/** Every Function permission key, set as its action is. */
 const actionKeys = (on: Record<string, boolean>) =>
   Object.fromEntries(Object.keys(PAGE_ACTIONS).map((key) => [key, on[actionOf(key)]]));
 
@@ -101,7 +72,6 @@ export default function PermissionEditor({ role, onSave, onBack, canSave, childr
   onSave: (role: PermissionRole) => void;
   onBack: () => void;
   canSave: boolean;
-  /** Shown at the top of the body (the last save's error). */
   children?: ReactNode;
 }) {
   const [active, setActive] = useState<PermissionTab>(TABS[0]);

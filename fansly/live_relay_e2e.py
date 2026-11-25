@@ -1,24 +1,3 @@
-"""
-The vault + send path through the RELAY'S REAL HTTP ROUTES — not the shim.
-
-Why this exists as its own gate: every other Fansly test calls the shim
-directly, and on 2026-09-01 that is exactly what let a 24h outage hide. The
-shim was perfect; `vault_cache` was serving `{"list": []}` rows memoised the
-night before, when the vault really was empty. Folders and media both blank
-in the browser, every direct shim probe green. Only a request that goes
-through the actual FastAPI stack — cache layer included — sees that class of
-bug, so this drives the same URLs the browser drives, at the page sizes the
-browser uses (the cache key includes limit: a hand probe at limit=20 reads
-fine while the app's limit=50 serves poison).
-
-LIVE and read-only. It needs `service/sessions/accounts/<id>/fansly_session.json`
-and talks to Fansly; it never sends a message — the send route is exercised
-with the client's send_message swapped for a spy, so the assertion is about
-what REACHES the client, which is where the snowflake-id risk lives.
-
-    ./venv/bin/python fansly/test_relay_e2e.py
-Exit 0 = pass, 2 = skipped (no session).
-"""
 from __future__ import annotations
 
 import os
@@ -26,9 +5,6 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-# The documented test escape hatch (auth.allow_anonymous_account_access is read
-# per call precisely so a test can flip it). Must be set BEFORE importing the
-# app, and it only affects this process — nothing running is weakened.
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 os.environ["SHARE_TOKEN"] = ""
 sys.path.insert(0, str(REPO / "service"))
@@ -58,10 +34,6 @@ def main() -> int:
     c = TestClient(server.app)
     h = {"X-Account-Id": ACCOUNT}
 
-    # -- the picker's folder rail -------------------------------------------
-    # limit=50 deliberately: that is what app/hooks/useVaultMedia.ts asks for,
-    # and the cache is keyed on it. Probing a different size tests a different
-    # cache entry and can pass while the app is broken.
     r = c.get("/api/of/v2/vault/lists?view=main&limit=50&offset=0", headers=h)
     check(r.status_code == 200, "GET /vault/lists (limit=50, the app's size)",
           f"{r.status_code} {r.text[:160]}")
@@ -71,7 +43,6 @@ def main() -> int:
     check(all(isinstance(x.get("id"), str) for x in lists),
           "folder ids are STRINGS (snowflakes exceed JS 2^53)")
 
-    # -- the picker's default grid ("All", no folder selected) --------------
     r = c.get("/api/of/v2/vault/media?limit=24&offset=0", headers=h)
     check(r.status_code == 200, "GET /vault/media (All)",
           f"{r.status_code} {r.text[:160]}")
@@ -83,24 +54,18 @@ def main() -> int:
     check(bool((items[0].get("files") or {}).get("thumb", {}).get("url")) if items else False,
           "media carries files.thumb.url (what the grid paints)")
 
-    # -- folder filter -------------------------------------------------------
     if lists:
         r = c.get(f"/api/of/v2/vault/media?limit=24&list_id={lists[0]['id']}", headers=h)
         check(r.status_code == 200 and r.json().get("list"),
               "GET /vault/media?list_id= filters to that album",
               f"{r.status_code} {r.text[:160]}")
 
-    # -- single-media resolve (500'd before vault_media_by_id existed) ------
     if mid:
         r = c.get(f"/api/of/v2/vault/media/{mid}", headers=h)
         check(r.status_code == 200 and r.json().get("id") is not None,
               "GET /vault/media/{id} resolves one media (Brain-panel thumbs)",
               f"{r.status_code} {r.text[:160]}")
 
-    # -- send: what actually REACHES the client -----------------------------
-    # No message is sent. The risk being pinned is that a Fansly snowflake
-    # (~9.5e17) rides through JSON -> Pydantic `list[int|dict]` -> client
-    # unchanged; a lossy hop here would attach the WRONG vault media.
     if mid:
         seen: dict = {}
 

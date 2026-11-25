@@ -1,31 +1,7 @@
 #!/usr/bin/env python3
-"""
-send_followup_decide.decide — table tests over the follow-up drip's pure phase machine.
-
-No DB, no LLM, no OF: every row is (entry, event[, thresholds]) -> (entry', effects).
-The tables lock the ordering rules run() used to carry inline:
-
-  case_tick_table:        only an EXPIRED cooldown resumes (strict >); reply keeps the
-                          cycle and steps, restart bumps the cycle and resets the steps.
-  case_seen_table:        the sweep's precedence, top to bottom: cooling -> done phases
-                          (reply after the drip -> restart 72h) -> reply mid-drip (26h)
-                          -> silence anchor -> 7-day cap -> next step -> 18h gap -> guard
-                          -> Send. Saves exactly where run() always saved (not on cooling,
-                          a finished drip with no reply, guard or Send). Only the guard's
-                          hold is an effect (Wait); every other hold is just no Send.
-  case_sent_table:        a returned send records the step; the third ends the drip.
-  case_marked_table:      a send-once marker (fresh or stale, unconfirmed or not) holds
-                          the fan: no Send and no Save on Tick or Seen; Sent clears it.
-  case_thresholds_table:  _resolve_step_thresholds' overrides and fallbacks.
-  case_pick_step_table:   _pick_next_step: the first unsent due step, in step order.
-  case_whole_drip_walk:   one fan from silence through steps 1-3, a reply, the restart
-                          cooldown and a fresh cycle.
-
-Run: ./venv/bin/python service/tests/test_send_followup_decide.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness  # MUST be first: binds temp DB
 
 from dataclasses import replace  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
@@ -39,7 +15,6 @@ N = datetime(2026, 10, 30, 12, 0, 0)
 
 
 def h(hours: float) -> datetime:
-    """`hours` before N (negative = after)."""
     return N - timedelta(hours=hours)
 
 
@@ -48,7 +23,6 @@ def iso(hours: float) -> str:
 
 
 def sent(**steps: float) -> dict:
-    """sent(s1=40, s2=10) -> {"1": iso 40h ago, "2": iso 10h ago}."""
     return {k[1:]: iso(v) for k, v in steps.items()}
 
 
@@ -56,7 +30,6 @@ TRACK = Entry()
 
 
 def _check(rows) -> None:
-    """Run every row, collect every mismatch, fail once naming them all."""
     bad = []
     for row in rows:
         rid, entry, ev, want_entry, want_fx = row[:5]
@@ -69,7 +42,6 @@ def _check(rows) -> None:
     assert not bad, "\n  " + "\n  ".join(bad)
 
 
-# ── Tick: the time-only pass over every state row ─────────────────────
 
 RC = Entry(phase="reply_cooldown", cycle=2, silence_started_at=h(40), fan_last_reply_at=h(27),
            cooldown_until=h(0.01), messages_sent=sent(s1=30))
@@ -100,11 +72,10 @@ def case_tick_table():
     _check(TICK_ROWS)
 
 
-# ── Seen: one eligible fan in the sweep ───────────────────────────────
 
 WAITING = Entry(phase="all_sent_waiting", silence_started_at=h(130), messages_sent=sent(s1=104, s2=66, s3=10))
 DONE = Entry(phase="completed", silence_started_at=h(200), messages_sent=sent(s1=174))
-A70 = Entry(silence_started_at=h(70), messages_sent=sent(s1=40))   # step 1 out 40h ago, step 2 due
+A70 = Entry(silence_started_at=h(70), messages_sent=sent(s1=40))
 
 
 def seen(last_in=None, last_out=None, guarded=False) -> Seen:
@@ -113,11 +84,9 @@ def seen(last_in=None, last_out=None, guarded=False) -> Seen:
 
 
 SEEN_ROWS = [
-    # cooling wins over everything, and saves nothing
     ("reply cooldown: nothing, even with a fresh reply", replace(RC, cooldown_until=h(-3)),
      seen(last_in=1, last_out=30), None, []),
     ("restart cooldown: nothing", replace(XC, cooldown_until=h(-3)), seen(last_out=200), None, []),
-    # done phases: a reply after the anchor restarts (72h), else wait
     ("finished drip + reply after the anchor -> restart cooldown 72h", WAITING, seen(last_in=2, last_out=10),
      replace(WAITING, phase="restart_cooldown", cooldown_until=N + timedelta(hours=72), fan_last_reply_at=h(2)),
      [Save(), Cooldown("restart")]),
@@ -134,7 +103,6 @@ SEEN_ROWS = [
      DONE, []),
     ("finished drip with no anchor + any inbound -> restart", replace(WAITING, silence_started_at=None),
      seen(last_in=500), None, [Save(), Cooldown("restart")]),
-    # tracking: his reply pauses the drip (26h), before any anchor/cap/step logic
     ("reply mid-drip -> reply cooldown 26h", A70, seen(last_in=5, last_out=40),
      replace(A70, phase="reply_cooldown", cooldown_until=N + timedelta(hours=26), fan_last_reply_at=h(5)),
      [Save(), Cooldown("reply")]),
@@ -145,21 +113,18 @@ SEEN_ROWS = [
      seen(last_in=1, last_out=300), None, [Save(), Cooldown("reply")]),
     ("inbound at the same instant as ours is not a reply (strict >)", TRACK, seen(last_in=30, last_out=30),
      replace(TRACK, silence_started_at=h(30)), [Send(1, 30.0)]),
-    # silence anchor
     ("no messages: anchor = now, nothing due, anchor saved", TRACK, seen(),
      replace(TRACK, silence_started_at=N), [Save()]),
     ("no anchor: anchor = our last message", TRACK, seen(last_in=40, last_out=30),
      replace(TRACK, silence_started_at=h(30)), [Send(1, 30.0)]),
     ("a stored anchor is kept, not moved to our last send", A70, seen(last_in=80, last_out=40),
      A70, [Send(2, 70.0)]),
-    # 7-day cap
     ("silent just over 7 days -> completed, no send", Entry(silence_started_at=h(168.01)), seen(last_out=168.01),
      Entry(phase="completed", silence_started_at=h(168.01)), [Save(), Complete()]),
     ("silent exactly 7 days still drips (strict >)", Entry(silence_started_at=h(168)), seen(last_out=168),
      None, [Send(1, 168.0)]),
     ("cap beats gap and guard", Entry(silence_started_at=h(200), messages_sent=sent(s1=1)),
      seen(last_out=1, guarded=True), None, [Save(), Complete()]),
-    # step thresholds
     ("25.9h silent: not due", TRACK, seen(last_out=25.9), None, [Save()]),
     ("26h silent: step 1 (>=)", TRACK, seen(last_out=26), None, [Send(1, 26.0)]),
     ("70h silent, nothing sent: step 1 first, never 2", TRACK, seen(last_out=70), None, [Send(1, 70.0)]),
@@ -172,7 +137,6 @@ SEEN_ROWS = [
      [Save()]),
     ("custom thresholds {10,20,30}: 12h silent -> step 1", TRACK, seen(last_out=12), None, [Send(1, 12.0)],
      {1: 10, 2: 20, 3: 30}),
-    # 18h minimum gap
     ("step 2 due but step 1 went out 14h ago -> gap, anchor saved",
      Entry(silence_started_at=h(70), messages_sent=sent(s1=14)), seen(last_out=14),
      Entry(silence_started_at=h(70), messages_sent=sent(s1=14)), [Save()]),
@@ -184,7 +148,6 @@ SEEN_ROWS = [
      seen(last_out=18), None, [Send(2, 70.0)]),
     ("an unparseable send time does not block", Entry(silence_started_at=h(70), messages_sent={"1": "garbage"}),
      seen(last_out=40), None, [Send(2, 70.0)]),
-    # contact guard: only a DUE, gap-clear step is held, and nothing is saved
     ("due + guarded -> held, nothing saved", TRACK, seen(last_out=30, guarded=True),
      replace(TRACK, silence_started_at=h(30)), [Wait()]),
     ("not due + guarded -> not_due (the guard is never reached)", TRACK, seen(last_out=5, guarded=True),
@@ -201,7 +164,6 @@ def case_seen_table():
     _check(SEEN_ROWS)
 
 
-# ── Sent: OF returned the send ────────────────────────────────────────
 
 SENT_ROWS = [
     ("step 1 recorded, still tracking", replace(TRACK, silence_started_at=h(30)), Sent(1, N),
@@ -215,8 +177,6 @@ SENT_ROWS = [
     ("cycle, anchor and reply time ride along", replace(RC, phase="tracking", cooldown_until=None), Sent(2, N),
      replace(RC, phase="tracking", cooldown_until=None, messages_sent={**RC.messages_sent, "2": N.isoformat()}),
      [Save()]),
-    # run() only feeds Sent after a tracking Send; any other phase is pinned as is:
-    # the step is recorded and the phase kept, unless it is the third.
     ("Sent on reply_cooldown: recorded, phase kept", RC, Sent(2, N),
      replace(RC, messages_sent={**RC.messages_sent, "2": N.isoformat()}), [Save()]),
     ("Sent on completed: recorded, phase kept", DONE, Sent(2, N),
@@ -234,12 +194,11 @@ def case_sent_table():
     assert e.messages_sent == sent(s1=40), "decide must not mutate the entry it was given"
 
 
-# ── Send-once marker: a marked fan is never auto-sent ─────────────────
 
-FRESH = replace(A70, sending_at=h(0.01), sending_ctx={"step": 2})            # in flight
-STALE = replace(A70, sending_at=h(30), sending_ctx={"step": 2})              # dead attempt
+FRESH = replace(A70, sending_at=h(0.01), sending_ctx={"step": 2})
+STALE = replace(A70, sending_at=h(30), sending_ctx={"step": 2})
 UNCONF = replace(FRESH, unconfirmed_at=h(0))
-MARKED_RC = replace(RC, sending_at=h(30), sending_ctx={"step": 1})          # cooldown ran out
+MARKED_RC = replace(RC, sending_at=h(30), sending_ctx={"step": 1})
 
 MARKED_ROWS = [
     ("fresh mark, step due -> no Send, no Save", FRESH, seen(last_out=40), None, []),
@@ -262,7 +221,6 @@ def case_marked_table():
         assert e.marked, e
         assert decide(e, seen(last_out=40), _STEP_THRESHOLDS_H)[0] is e, "held entry unchanged"
     assert not A70.marked and not Entry().marked
-    # the row seam: marker columns + JSON ctx (a bad ctx reads None); NULLs are unmarked
     from types import SimpleNamespace as NS
     base = dict(phase="tracking", cycle=1, silence_started_at=None, fan_last_reply_at=None,
                 cooldown_until=None, messages_sent="{}", unconfirmed_at=None)
@@ -272,7 +230,6 @@ def case_marked_table():
     assert Entry.from_row(NS(**base, sending_at=h(1), sending_ctx="not json")).sending_ctx is None
 
 
-# ── Thresholds ────────────────────────────────────────────────────────
 
 D = {1: 26, 2: 64, 3: 120}
 THRESHOLD_ROWS = [
@@ -280,10 +237,10 @@ THRESHOLD_ROWS = [
     ({"step_hours": [10]}, {1: 10.0, 2: 64, 3: 120}),
     ({"step_hours": ["x", 50, None]}, {1: 26, 2: 50.0, 3: 120}),
     ({"step_hours": [0, -5, 100]}, {1: 26, 2: 64, 3: 100.0}),
-    ({"step_hours": [26, 64, 256]}, D),                 # step 3 over the 168h cap -> default
-    ({"step_hours": [168]}, D),                         # at the cap is invalid too
+    ({"step_hours": [26, 64, 256]}, D),
+    ({"step_hours": [168]}, D),
     ({"step_hours": [167.9]}, {1: 167.9, 2: 64, 3: 120}),
-    ({"step_hours": "26,64,120"}, D),                   # not a list
+    ({"step_hours": "26,64,120"}, D),
     ({"step_hours": (30, 70, 130)}, {1: 30.0, 2: 70.0, 3: 130.0}),
 ]
 
@@ -299,7 +256,7 @@ PICK_ROWS = [
     (25.99, {}, None), (26, {}, 1), (70, {}, 1), (70, {"1": "x"}, 2), (63.9, {"1": "x"}, None),
     (120, {"1": "x", "2": "x"}, 3), (119.9, {"1": "x", "2": "x"}, None),
     (200, {"1": "x", "2": "x", "3": "x"}, None),
-    (70, {"2": "x"}, 1),                    # an earlier unsent step goes first
+    (70, {"2": "x"}, 1),
     (130, {"1": "x", "3": "x"}, 2),
 ]
 
@@ -311,7 +268,6 @@ def case_pick_step_table():
     assert _pick_next_step(12, {}, {1: 10, 2: 20, 3: 30}) == 1
 
 
-# ── A whole drip, event by event ──────────────────────────────────────
 
 def case_whole_drip_walk():
     t0 = datetime(2026, 10, 1, 0, 0)
@@ -336,19 +292,17 @@ def case_whole_drip_walk():
     assert step(1) == [Save()]
     assert e.silence_started_at == at(0)
     assert step(26) == [Send(1, 26.0)]
-    assert step(40, last_out=26) == [Save()]          # 40h < 64h
-    assert step(64, last_out=26) == [Send(2, 64.0)]                    # 38h after step 1
-    assert step(120, last_out=64) == [Send(3, 120.0)]                  # 56h after step 2
+    assert step(40, last_out=26) == [Save()]
+    assert step(64, last_out=26) == [Send(2, 64.0)]
+    assert step(120, last_out=64) == [Send(3, 120.0)]
     assert e.phase == "all_sent_waiting", e
     assert step(130, last_out=120) == []
     assert step(131, last_in=130.5, last_out=120) == [Save(), Cooldown("restart")]
     assert e.cooldown_until == at(131 + 72)
     assert step(150, last_in=130.5, last_out=120) == []
-    assert step(203, ev=Tick(at(203))) == []                           # exactly the end: not over
+    assert step(203, ev=Tick(at(203))) == []
     assert step(203.5, ev=Tick(at(203.5))) == [Save(), Resume()]
     assert (e.phase, e.cycle, e.messages_sent, e.silence_started_at) == ("tracking", 2, {}, None)
-    # cycle 2: his reply (130.5h) is older than a chatter's answer (190h) -> not a reply;
-    # the new anchor is that answer, so step 1 waits for 26h of fresh silence
     assert step(204, last_in=130.5, last_out=190) == [Save()]
     assert e.silence_started_at == at(190)
     assert step(216, last_in=130.5, last_out=190) == [Send(1, 26.0)]

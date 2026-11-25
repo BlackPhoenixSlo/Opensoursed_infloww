@@ -1,6 +1,5 @@
 "use client";
 
-/** Creator statistics' table. */
 
 import { useRef } from "react";
 
@@ -13,10 +12,6 @@ import { NotWired } from "./ReportsCharts";
 import { UtcChip } from "./ReportsControls";
 import { type ColCtx, type StatCol, type View, cellText, creatorName, readOf } from "./reportsMath";
 
-/** #108 to #153: the Creator statistics table. "Creator" is fixed left at 180px (120px on a phone, so a column beside it shows); the headers start-aligned, 48px rows
- *  with 18px sides; a column with no read has the Not wired marker in its header and "-" cells; "No data" with no
- *  rows; the end line under more than 20. The header stays in view under the top bar (`sticky:true`, #108): it is a
- *  table of its own, sticky to the window's top and scrolled sideways with the body, both laid out by one colgroup. */
 export function CreatorTable({ creators, cols, ctx, view }: {
   creators: PerModelRow[]; cols: readonly StatCol[]; ctx: ColCtx; view: View;
 }) {
@@ -80,8 +75,6 @@ export function CreatorTable({ creators, cols, ctx, view }: {
             {view !== "ready" ? (
               <tr role="row">
                 <td role="cell" colSpan={cols.length + 1}>
-                  {/* #148 to #150: 96px above and below, centred, 16px; "No data" is the bundle's, 8px under the
-                      illustration; the loading and failed wording ours (the bundle shows a spinner). */}
                   {view === "empty" ? (
                     <EmptyState className="py-24" textClassName="text-base text-fg-dim" />
                   ) : (
@@ -102,7 +95,6 @@ export function CreatorTable({ creators, cols, ctx, view }: {
                 </td>
                 {cols.map((c) => (
                   <td key={c.key} role="cell" className={cell}>
-                    {/* A column with a gross read but no net read carries the marker in each cell while net is on. */}
                     {c.v && !readOf(c, ctx)
                       ? <NotWired label={`${creatorName(m)} ${c.title}`} />
                       : cellText(c, m, ctx)}
@@ -114,7 +106,6 @@ export function CreatorTable({ creators, cols, ctx, view }: {
         </table>
         </div>
       </div>
-      {/* #151 to #153: the end line, 32px above and below, centred. */}
       {view === "ready" && creators.length > 20 && (
         <p className="py-8 text-center text-base" style={{ color: "color-mix(in srgb, var(--color-fg) 38%, transparent)" }}>
           You have reached the end of the page

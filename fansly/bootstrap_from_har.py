@@ -87,7 +87,6 @@ def scan(har_path: Path) -> tuple[dict, list[dict]]:
                     {"path": parts.path, "device_id": device_id, "check": check}
                 )
 
-        # Last writer wins — later entries are the freshest.
         for src, dst in (
             ("authorization", "token"),
             ("user-agent", "user_agent"),
@@ -101,7 +100,6 @@ def scan(har_path: Path) -> tuple[dict, list[dict]]:
             if headers.get(src):
                 session[dst] = headers[src]
 
-        # Our own account id falls out of any send/follow response.
         if "accountId" not in session:
             try:
                 payload = json.loads(_body(entry)).get("response") or {}
@@ -179,8 +177,6 @@ def main() -> int:
         return 1
 
     session["check_key"] = check_key
-    # Trust the captured device id for its TTL so a real run reuses the
-    # exact id these digests were signed with, instead of re-fetching.
     session["device_id_ts"] = int(_time.time())
     print("captured:", ", ".join(
         f"{k}={'…' if k == 'token' else session[k]}" for k in sorted(session)

@@ -1,25 +1,14 @@
-/**
- * A vault tile's per-fan state (VaultPicker): the ring / corner-pill colour,
- * the tooltip and the corner price.
- */
-
 import type { FanVaultEntry } from "@/hooks/useFanVaultHistory";
 import { fmtCents, fmtPrice } from "@/lib/format";
 import type { VaultMedia } from "@/lib/relay";
 
-/** Mutually-exclusive tile state. Order matches the desktop-app:
- *    unlocked (fan paid) > free (we sent free) > locked (sent paid, not
- *    bought) > on-wall (public feed only). Sent-anything beats wall-only
- *    because the per-fan signal is always more actionable than the
- *    public-post signal. Unlocked stays the dominant signal — chatter
- *    must know not to resell paid content. */
 export type TileStatus = "unlocked" | "free" | "locked" | "on-wall";
 
 export const STATUS_RING_CLASS: Record<TileStatus, string> = {
-  unlocked: "border-ok",      // green — fan paid
-  free:     "border-warn",    // yellow — we sent free
-  locked:   "border-err",     // red — sent paid, not bought yet
-  "on-wall":"border-info",    // blue — on the public feed
+  unlocked: "border-ok",
+  free:     "border-warn",
+  locked:   "border-err",
+  "on-wall":"border-info",
 };
 
 export const STATUS_DOT_CLASS: Record<TileStatus, string> = {
@@ -30,6 +19,7 @@ export const STATUS_DOT_CLASS: Record<TileStatus, string> = {
 };
 
 export function resolveStatus(entry: FanVaultEntry | undefined, onWall: boolean): TileStatus | null {
+  // Unlocked dominates: a chatter must not resell paid content.
   if (entry?.was_purchased) return "unlocked";
   if (entry) {
     return entry.last_price_cents > 0 ? "locked" : "free";
@@ -38,9 +28,6 @@ export function resolveStatus(entry: FanVaultEntry | undefined, onWall: boolean)
   return null;
 }
 
-/** Tooltip text for each tile — combines media metadata with all known
- *  state so hover gives the full picture (including secondary states the
- *  one-color border can't carry). */
 export function describeTile(m: VaultMedia, entry: FanVaultEntry, onWall: boolean): string {
   const base = `${m.type} · ${m.id}`;
   const wallNote = onWall ? " · also on wall" : "";
@@ -56,13 +43,10 @@ export function describeTile(m: VaultMedia, entry: FanVaultEntry, onWall: boolea
   return `${base} · ${kind} (${entry.send_count}×)${wallNote}`;
 }
 
-/** The corner pill's text: "BOUGHT" (+ the total the fan paid, whole dollars, never the
- *  last ask price), "SENT $X" for a locked send (else "SENT PPV"), "SENT FREE", and the
- *  wall marker. Paid wall posts carry the price OF was charging on the wall ("WALL $6.99");
- *  free wall posts stay a plain "WALL". */
 export function pillText(status: TileStatus, entry: FanVaultEntry | undefined, wallCents: number): string {
   switch (status) {
     case "unlocked":
+    // BOUGHT shows the total the fan paid, never the last ask price.
       return entry && entry.total_paid_cents > 0 ? `BOUGHT ${fmtCents(entry.total_paid_cents)}` : "BOUGHT";
     case "locked":
       return entry && entry.last_price_cents > 0 ? `SENT ${fmtPrice(entry.last_price_cents)}` : "SENT PPV";

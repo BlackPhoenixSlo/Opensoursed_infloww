@@ -1,9 +1,3 @@
-/**
- * A server key card on Settings → AI keys, here the Drive key. A master edits the server's
- * GOOGLE_DRIVE_API_KEY through the same masked /admin/secrets store as the
- * "Server keys" card: the raw value never comes back, a blank field keeps it,
- * and clear sends "". Anyone else gets a line and no master-only read.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -66,7 +60,6 @@ describe("ServerKeyCard (the Drive key)", () => {
     await user.type(field, "AIza-placeholder");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(put).toHaveBeenCalledWith("/admin/secrets", { GOOGLE_DRIVE_API_KEY: "AIza-placeholder" }));
-    // The saved key reads back masked, never as typed.
     expect(await screen.findByText(/set · via UI/)).toBeInTheDocument();
     expect(screen.getByLabelText("Google Drive API key")).toHaveValue("");
     expect(screen.getByLabelText("Google Drive API key").getAttribute("placeholder")).toContain("AIza…wxyz");

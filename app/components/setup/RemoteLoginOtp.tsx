@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * The served Browserbase login's 2FA code form (backend: service/remote_login.py; status type and state texts:
- * remoteLogin.ts). Used by BrowserbaseLoginCard (one login) and LoginQueueCard (pasted logins, one job at a time).
- *
- * OtpCodeForm is mounted only while its job is on OnlyFans' 2FA prompt (state "otp"), so leaving or reaching the
- * prompt starts it clean (no stale digits or error). It posts the code to /admin/login/remote/{id}/otp; the job's own
- * thread types it into OnlyFans. The code is never kept past its send.
- */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -16,17 +8,12 @@ import { relay, RelayError } from "@/lib/relay";
 import { IfButton, IfInput, IfLabel } from "@/components/ui/infloww";
 import { jobPath, type RemoteLoginStatus } from "@/components/setup/remoteLogin";
 
-/** The relay's messages while the job is on OnlyFans' 2FA prompt (remote_login.OTP_CHECKING / OTP_REJECTED /
- * OTP_NOT_TYPED; the last two matched by prefix). */
 const OTP_CHECKING = "checking the 2FA code";
 const OTP_REJECTED = "OnlyFans didn't accept that code";
 const OTP_NOT_TYPED = "couldn't type the 2FA code";
 const OTP_CODE = /^\d{6,8}$/;
-/** What the code field keeps of what was typed or pasted: spaces and dashes dropped ("123 456", "1234-5678"), nothing
- *  else changed or cut, so a mistyped or overlong code stays visibly wrong (Submit off) instead of becoming another code. */
 const otpInput = (raw: string) => raw.replace(/[\s-]/g, "");
 
-/** The code field for a job on the 2FA prompt; `message` is the job's status message (checking / rejected). */
 export function OtpCodeForm({ jobId, message, inputId }: { jobId: string; message: string; inputId: string }) {
   const qc = useQueryClient();
   const [otp, setOtp] = useState("");
@@ -36,18 +23,19 @@ export function OtpCodeForm({ jobId, message, inputId }: { jobId: string; messag
     onSuccess: async (job, sent) => {
       setOtpErr(null);
       setOtp((cur) => (cur === sent ? "" : cur));
-      // A poll still in flight was read before the code was in: it must not land after this and unlock the field.
       const key = ["remote-login", job.id];
+      // A poll in flight was read before the code went in; it must not land after this and unlock the field.
       await qc.cancelQueries({ queryKey: key });
       const cached = qc.getQueryData<RemoteLoginStatus>(key);
-      if (!cached || cached.state === "otp") qc.setQueryData(key, job); // a newer poll already past the prompt wins
+      // A newer poll already past the prompt wins.
+      if (!cached || cached.state === "otp") qc.setQueryData(key, job);
     },
     onError: (e) => setOtpErr(`Couldn't send the code: ${e.message}`),
   });
   const otpChecking = message === OTP_CHECKING;
   const otpRejected = message.startsWith(OTP_REJECTED);
   const otpNotTyped = message.startsWith(OTP_NOT_TYPED);
-  const otpLocked = otpM.isPending || otpChecking; // in flight, or OnlyFans is checking it
+  const otpLocked = otpM.isPending || otpChecking;
 
   return (
     <form

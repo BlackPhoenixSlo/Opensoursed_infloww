@@ -1,13 +1,5 @@
-/**
- * The Vault picker's per-media sales stats (Infloww's Sent count, Unlock
- * count, Unlock rate), the sorts over them and "Recently used", and the
- * "Hide content viewed or unlocked by fan, or posted on Creator's feed"
- * rule. Pure; kept out of VaultPicker.tsx, which is already over size.
- */
-
 import type { VaultMediaStat } from "@/hooks/useVaultMediaStats";
 
-/** The sorts our stats drive. "newest" / "oldest" stay OF's (server-side). */
 export const STATS_SORTS = [
   { value: "sent", label: "Send count" },
   { value: "unlocks", label: "Unlock count" },
@@ -20,8 +12,6 @@ export function isStatsSort(v: unknown): v is StatsSort {
   return STATS_SORTS.some((s) => s.value === v);
 }
 
-/** Order the loaded media by a stats sort, best first. Stable: media with no
- *  stats (never sent) keep the order OF served them in, after the rest. */
 export function sortByStats<T extends { id: number }>(
   items: T[], byMedia: Record<string, VaultMediaStat>, sort: StatsSort,
 ): T[] {
@@ -42,15 +32,12 @@ export function sortByStats<T extends { id: number }>(
   return ranked.map((r) => r.m);
 }
 
-/** "Sent 12 · Unlock 3 · 25%": the rate only when it was ever sent priced. */
 export function statsLabel(st: VaultMediaStat): string {
   const rate = st.unlock_rate == null ? "" : ` · ${Math.round(st.unlock_rate * 100)}%`;
   return `Sent ${st.sent} · Unlock ${st.unlocks}${rate}`;
 }
 
-/** Viewed or unlocked by the Fan (bought, or sent free), or on the Creator's
- *  feed: what "Hide content viewed or unlocked…" removes. A PPV he left
- *  locked stays. */
+// What "Hide content viewed or unlocked" removes (bought, free, or on the feed); a PPV left locked stays.
 export function seenByFan(status: string | null): boolean {
   return status === "unlocked" || status === "free" || status === "on-wall";
 }

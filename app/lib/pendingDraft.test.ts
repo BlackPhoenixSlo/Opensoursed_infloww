@@ -26,7 +26,7 @@ describe("stash / read / clear", () => {
 
   it.each<[string, unknown, boolean]>([
     ["no ifEquals", undefined, true],
-    ["equal draft", { b: [2], a: 1 }, true], // key order ignored
+    ["equal draft", { b: [2], a: 1 }, true],
     ["another draft (edited during the PUT)", { a: 2, b: [2] }, false],
   ])("clear — %s", (_n, ifEquals, gone) => {
     stashDraft(K, { ...V, at: 1 });

@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * OsPingSettings — the bell's "OS notification" row: the checkbox, Test and,
- * with Web Push live, "Send push in 8 s" (lock the phone, see it arrive).
- * Both taps are the gesture Web Push needs (lib/webPush `subscribePush`
- * calls `pushManager.subscribe` first, which asks the permission). Without
- * push (desktop app, dev build, no PushManager, nothing to push) Test shows
- * an in-page notification as before. A denied permission and an iPhone /
- * iPad tab (push only from the Home Screen app) get their own message.
- * `pushHintShown`: the bell's line while push is wanted but not live (a lazy
- * subscribe failed, or the permission was never asked).
- */
 
 import { useState } from "react";
 
@@ -46,12 +35,10 @@ export function pushHintShown(settings: NotifSettings, push: PushState): boolean
     (push.failed !== null || permission() === "default");
 }
 
-/** The Test's message when push could not come up. */
 export function pushFailMessage(reason: string, perm: NotificationPermission | null): string {
   return perm === "denied" ? DENIED_MSG : `✗ push unavailable: ${reason}, alerts only while open`;
 }
 
-/** The in-page notification (no push): the message to show. */
 async function inPageTest(): Promise<string> {
   if (typeof Notification === "undefined") return "✗ This browser has no Notification API.";
   let perm = Notification.permission;
@@ -76,7 +63,6 @@ export function OsPingSettings({ settings, update }: {
   settings: NotifSettings;
   update: (patch: Partial<NotifSettings>) => void;
 }) {
-  // `sendable`: push came up from this Test, so the delayed-push link shows.
   const [test, setTest] = useState<{ msg: string; sendable?: boolean } | null>(null);
   const push = usePushState();
 
@@ -88,7 +74,7 @@ export function OsPingSettings({ settings, update }: {
     }
     const next = { ...settings, osPing: true };
     if (pushSupported() && pushWanted(next)) {
-      void subscribePush(next).catch(() => {}); // a failure shows the hint
+      void subscribePush(next).catch(() => {});
     } else if (!hasShellNotify() && typeof Notification !== "undefined" && Notification.permission === "default") {
       void Notification.requestPermission().catch(() => {});
     }
@@ -96,7 +82,6 @@ export function OsPingSettings({ settings, update }: {
 
   const runTest = async () => {
     if (hasShellNotify()) {
-      // The desktop app notifies natively: no web permission.
       setTest({ msg: "Sending to the desktop app…" });
       const ok = await osNotify({ id: `chatterly-test:${Date.now()}`, title: `${BRAND_NAME} test`, body: TEST_BODY });
       setTest({ msg: ok
@@ -114,7 +99,8 @@ export function OsPingSettings({ settings, update }: {
     }
     setTest({ msg: "Turning push on…" });
     try {
-      await subscribePush(settings); // first: inside the tap, it asks the permission
+      // first: inside the tap, so it can ask the permission
+      await subscribePush(settings);
       await showViaWorker(`${BRAND_NAME} test`, { body: TEST_BODY, tag: TEST_TAG });
       setTest({ msg: "✓ Push on: lock screen alerts active", sendable: true });
     } catch (e) {

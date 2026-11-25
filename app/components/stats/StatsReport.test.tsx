@@ -1,21 +1,3 @@
-/**
- * StatsReport and its DateRangePicker under the Agency's report time zone
- * (docs/spec/phase-04-apply-stored-settings.md, stories 18, 21 and 22).
- *
- * The report sends its window as UTC instants, the midnights (and 23:59:59.999
- * ends) of its dates in the report time zone, and the presets count days from
- * today in that zone. With none (never saved) it sends the browser's local
- * midnights. No report fires before the Applied settings answer. The presets
- * are Custom and Last 7, 30, 90 and 365 days: no "This week".
- *
- * The browser's timezone is pinned to UTC and the clock to Thu 15 Oct 2026
- * 02:00Z, which is still Wed 14 Oct (22:00) in New York, so each expected
- * instant is a worked example: New York is UTC-4 (EDT) until Sun 1 Nov 2026,
- * then UTC-5 (EST). Rendered with `fetch` mocked by URL.
- *
- * Employee reports also show Infloww's sales settings notice and the Relay's
- * Shift schedule fallback line (stories 46 and 54).
- */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -23,7 +5,6 @@ import { jsonRes, renderWithProviders } from "@/test-utils";
 import { CHARGEBACKS_UNAVAILABLE } from "@/components/home/netMissingNote";
 
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
-// An owner session by default; a test may switch to a chatter session (no user).
 const OWNER = { user_id: "owner-1", username: "owner" };
 const session = vi.hoisted(() => ({
   user: null as { user_id: string; username: string } | null,
@@ -31,7 +12,6 @@ const session = vi.hoisted(() => ({
 }));
 vi.mock("@/contexts/UserContext", () => ({
   useUser: () => ({ user: session.user, loading: false }),
-  // Fan reports' creator column reads the roster counts, which take the optional forms.
   useOptionalUser: () => ({ user: session.user, loading: false }),
 }));
 vi.mock("@/contexts/ChatterContext", () => ({
@@ -47,7 +27,6 @@ let saveStatus: number;
 let fallback: string | null;
 let creators: Record<string, unknown>[];
 let ingestRows: Record<string, unknown>[];
-/** The revenue read's answer to one request, by its query parameters. */
 let revenueFor: (q: URLSearchParams) => Promise<Response> | Response;
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -75,7 +54,6 @@ beforeEach(() => {
     if (path === "/admin/stats/per-employee") {
       return jsonRes({ employees: [], attribution_fallback: fallback });
     }
-    // The page's notice reads the fallback line from the Chatting statistics read (page-parity ticket 27).
     if (path === "/admin/stats/chatting-stats") {
       return jsonRes({ employees: [], attribution_fallback: fallback, series: [], by_employee: {} });
     }
@@ -108,7 +86,6 @@ afterEach(() => {
   window.history.replaceState(null, "", "/");
 });
 
-/** Every query to `path` sent so far, as its `from` and `to`: the Employee report's per-employee read by default. */
 function ranges(path = "/admin/stats/per-employee"): Record<string, string>[] {
   return fetchMock.mock.calls
     .map(([url]) => new URL(String(url), "http://relay.test"))
@@ -116,17 +93,13 @@ function ranges(path = "/admin/stats/per-employee"): Record<string, string>[] {
     .map((u) => ({ from: u.searchParams.get("from") ?? "", to: u.searchParams.get("to") ?? "" }));
 }
 const lastRange = (path?: string) => ranges(path).at(-1);
-/** A chart's bars and lines, by their labels; the cards' info tips are role="img" too and are left out. */
 const chartLabels = (el: HTMLElement) => within(el).getAllByRole("img").filter((b) => !b.hasAttribute("data-info-tip"))
   .map((b) => b.getAttribute("aria-label"));
-/** Creator reports open with "Show net earnings" on (analytics-creator-reports#33, ticket 60); a test written against
- *  the gross figures turns it off first. */
 async function showGross() {
   await selectSevenDays();
   fireEvent.change(screen.getByRole("combobox", { name: "Earnings basis" }), { target: { value: "gross" } });
 }
 
-/** Worked amounts, prior growth and exports below use an explicit seven-day window. */
 async function selectSevenDays() {
   await waitFor(() => expect(lastRange("/admin/stats/per-model")).toBeDefined());
   openRange();
@@ -141,17 +114,14 @@ function openFilters() {
   if (button.getAttribute("aria-expanded") !== "true") fireEvent.click(button);
 }
 
-/** Opens the range box's popover (page-parity ticket 25): the presets, From / To and the hours live in it. */
 function openRange() {
   fireEvent.click(screen.getByRole("button", { name: /^Date range/ }));
 }
-/** Picks hour `label` ("3 PM") in the range popover's `name` hour select. */
 function pickHour(name: string, label: string) {
   fireEvent.click(screen.getByRole("combobox", { name }));
   fireEvent.click(screen.getByRole("option", { name: label }));
 }
 
-// Infloww's legacy header (page-parity ticket 25): the title, the report time zone's UTC offset, the icon Refresh.
 describe("StatsReport report header", () => {
   it.each([["employee", "Employee Reports"], ["fan", "Fan reports"]] as const)(
     "%s: the title, the report time zone's offset and the icon Refresh", async (view, title) => {
@@ -161,7 +131,6 @@ describe("StatsReport report header", () => {
       await waitFor(() => expect(within(header).getByText("UTC-04:00")).toBeInTheDocument());
       const refresh = screen.getByRole("button", { name: "Refresh" });
       if (view === "employee") {
-        // IfTabs owns the toolbar: the named tablist and its sibling controls share this parent.
         const toolbar = screen.getByRole("tablist", { name: "Employee reports" }).parentElement!;
         expect(within(toolbar).getByRole("button", { name: "Refresh" })).toBe(refresh);
         expect(within(toolbar).getByRole("button", { name: /^Date range/ })).toBeInTheDocument();
@@ -173,16 +142,12 @@ describe("StatsReport report header", () => {
     });
 });
 
-// The shared range rides on Employee reports: Creator reports' body is the Creator Reports card (ticket 20), which
-// reads the same `useReportRange` and has its own report-zone case below.
 describe("StatsReport date range", () => {
   it("sends the report time zone's midnights as instants, counted from today there", async () => {
     reportTz = "America/New_York";
     renderWithProviders(<StatsReport view="employee" />);
-    // 30d, thirty calendar days through today: Tue 15 Sep 00:00 EDT through Wed 14 Oct 23:59:59.999 EDT.
     await waitFor(() => expect(lastRange())
       .toEqual({ from: "2026-09-15T04:00:00.000Z", to: "2026-10-15T03:59:59.999Z" }));
-    // None went out first with the browser's (UTC) days.
     expect(ranges().every((r) => r.from === "2026-09-15T04:00:00.000Z")).toBe(true);
     openRange();
     expect(screen.getByLabelText("To date")).toHaveValue("2026-10-14");
@@ -195,23 +160,14 @@ describe("StatsReport date range", () => {
     await waitFor(() => expect(lastRange())
       .toEqual({ from: "2026-10-01T04:00:00.000Z", to: "2026-10-15T03:59:59.999Z" }));
 
-    // Past the daylight-saving change, Mon 2 Nov ends at 23:59:59.999 EST.
     fireEvent.change(screen.getByLabelText("To date"), { target: { value: "2026-11-02" } });
     await waitFor(() => expect(lastRange())
       .toEqual({ from: "2026-10-01T04:00:00.000Z", to: "2026-11-03T04:59:59.999Z" }));
   });
 
   it("starts and ends each day where the report time zone's day does, across a change at midnight", async () => {
-    // Santiago (UTC-3 in summer, UTC-4 in winter) changes its clocks at
-    // midnight. Sat 4 Apr 2026: at 24:00 UTC-3 (05 Apr 03:00Z) the clock goes
-    // back to 23:00 UTC-4, so 23:00-24:00 happens twice and Sun 5 Apr starts at
-    // 00:00 UTC-4 = 04:00Z; 4 Apr ends 1 ms before that. Sun 6 Sep 2026: at
-    // 00:00 UTC-4 (04:00Z) the clock jumps to 01:00 UTC-3, so 6 Sep's first
-    // instant is 04:00Z (03:00Z is still 23:00 on 5 Sep).
     reportTz = "America/Santiago";
     renderWithProviders(<StatsReport view="employee" />);
-    // Today there is Wed 14 Oct (02:00Z is 23:00 UTC-3); it ends 1 ms before
-    // 15 Oct 00:00 UTC-3 = 03:00Z.
     await waitFor(() => expect(lastRange()?.to).toBe("2026-10-15T02:59:59.999Z"));
 
     openRange();
@@ -219,7 +175,6 @@ describe("StatsReport date range", () => {
     await waitFor(() => expect(lastRange())
       .toEqual({ from: "2026-09-06T04:00:00.000Z", to: "2026-10-15T02:59:59.999Z" }));
 
-    // Wed 1 Apr 00:00 UTC-3 is 03:00Z.
     fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-04-01" } });
     fireEvent.change(screen.getByLabelText("To date"), { target: { value: "2026-04-04" } });
     await waitFor(() => expect(lastRange())
@@ -238,12 +193,10 @@ describe("StatsReport date range", () => {
     reportTz = "America/New_York";
     renderWithProviders(<StatsReport view="employee" />);
     await waitFor(() => expect(lastRange()?.from).toBe("2026-09-15T04:00:00.000Z"));
-    // Whole days by default: From 12 AM, To 11 PM.
     openRange();
     expect(screen.getByRole("combobox", { name: "From hour" })).toHaveTextContent("12 AM");
     expect(screen.getByRole("combobox", { name: "To hour" })).toHaveTextContent("11 PM");
 
-    // From Thu 1 Oct 3 PM EDT (19:00Z) to Wed 14 Oct 9 AM EDT, which ends 1 ms before 10 AM (14:00Z).
     fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-10-01" } });
     pickHour("From hour", "3 PM");
     pickHour("To hour", "9 AM");
@@ -251,7 +204,6 @@ describe("StatsReport date range", () => {
       .toEqual({ from: "2026-10-01T19:00:00.000Z", to: "2026-10-14T13:59:59.999Z" }));
     expect(screen.getByLabelText("From date")).toHaveValue("2026-10-01");
 
-    // A new To date keeps 9 AM; past the daylight-saving change that is 9 AM EST, ending 1 ms before 15:00Z.
     fireEvent.change(screen.getByLabelText("To date"), { target: { value: "2026-11-02" } });
     await waitFor(() => expect(lastRange())
       .toEqual({ from: "2026-10-01T19:00:00.000Z", to: "2026-11-02T14:59:59.999Z" }));
@@ -285,7 +237,6 @@ describe("StatsReport Employee reports notice", () => {
     fallback = FALLBACK;
     renderWithProviders(<StatsReport view="employee" />);
     const fallbackIcon = await screen.findByRole("img", { name: FALLBACK });
-    // The info tip carries the line as its name and hover tooltip (no native title since the info-tip change).
     expect(fallbackIcon).toHaveAttribute("data-info-tip");
     expect(screen.getByRole("note")).toHaveAttribute("title", FALLBACK);
     expect(screen.getByRole("note")).toHaveTextContent(NOTICE);
@@ -312,7 +263,6 @@ describe("StatsReport Employee reports notice", () => {
 });
 
 describe("StatsReport Employee reports, Sales needing attribution", () => {
-  // Its assign controls send the manual attribute route, which refuses a chatter 403 (ticket 34).
   const sent = () => fetchMock.mock.calls
     .some(([u]) => String(u).startsWith("/admin/ingest/transactions/sales-needing-attribution"));
 
@@ -333,11 +283,6 @@ describe("StatsReport Employee reports, Sales needing attribution", () => {
   });
 });
 
-/**
- * Creator reports opens on the Layout capture's frame (docs/infloww-layouts/analytics-creator-reports.md, ticket 20):
- * the page header, the two tabs, the filter bar, then the Creator Reports card as the body. Each expectation cites
- * the capture's Item ID.
- */
 describe("StatsReport Creator reports frame", () => {
   const ZERO_KIND = { ppv: 0, post: 0, tip: 0, subscription: 0, rebill: 0, custom: 0 };
   const creator = (id: string, name: string, cents: number) => ({
@@ -346,7 +291,6 @@ describe("StatsReport Creator reports frame", () => {
     total_revenue_cents: cents, pending_revenue_cents: 0, pending_clears_by: null,
     messages_sent: 0, ppv_conversions: 0, new_subs_count: 0, active_subs_count: null, ltv_cents: null, arpu_cents: null,
   });
-  /** Every revenue read sent so far, as its query parameters. */
   const revenue = () => fetchMock.mock.calls
     .map(([url]) => new URL(String(url), "http://relay.test"))
     .filter((u) => u.pathname === "/admin/stats/revenue")
@@ -359,28 +303,23 @@ describe("StatsReport Creator reports frame", () => {
 
   it("opens on the capture's header, its two tabs with Overview selected, and the filter bar in order", async () => {
     renderWithProviders(<StatsReport view="creator" />);
-    // analytics-creator-reports#3: the page title.
     const title = await screen.findByRole("heading", { level: 1, name: "Creator reports" });
-    // analytics-creator-reports#10: the header's icon-only Refresh, "Refresh page".
     const refresh = screen.getByRole("button", { name: "Refresh page" });
     before(title, refresh);
-    // analytics-creator-reports#14: "Overview" / "Creator performance", in that order; Overview is the default.
     const tabs = screen.getAllByRole("tab");
     expect(tabs.map((t) => t.textContent)).toEqual(["Overview", "Creator performance"]);
     expect(tabs[0]).toHaveAttribute("aria-selected", "true");
     expect(tabs[1]).toHaveAttribute("aria-selected", "false");
     before(refresh, tabs[0]);
-    // analytics-creator-reports#18: the filter bar after the tabs.
     const bar = screen.getByRole("group", { name: "Report controls" });
     before(tabs[1], bar);
     const controls = [
-      within(bar).getByRole("button", { name: "Date range" }), // analytics-creator-reports#21
+      within(bar).getByRole("button", { name: "Date range" }),
       within(bar).getByRole("combobox", { name: "Shown by" }),
-      within(bar).getByRole("combobox", { name: "Earnings basis" }), // analytics-creator-reports#30, #33
+      within(bar).getByRole("combobox", { name: "Earnings basis" }),
       within(bar).getByRole("button", { name: "Filters" }),
     ];
     for (let i = 1; i < controls.length; i++) before(controls[i - 1], controls[i]);
-    // The body is the Creator Reports card's Overview.
     expect(screen.getByText("Earnings summary")).toBeInTheDocument();
   });
 
@@ -388,10 +327,10 @@ describe("StatsReport Creator reports frame", () => {
     renderWithProviders(<StatsReport view="creator" />);
     const bar = await screen.findByRole("group", { name: "Report controls" });
     openFilters();
-    const tag = within(bar).getByRole("button", { name: "Creator tag" }); // analytics-creator-reports#25
+    const tag = within(bar).getByRole("button", { name: "Creator tag" });
     expect(tag).toBeDisabled();
     expect(tag).toHaveAttribute("title", "Creator tags are not available");
-    const net = within(bar).getByRole("combobox", { name: "Earnings basis" }); // analytics-creator-reports#33
+    const net = within(bar).getByRole("combobox", { name: "Earnings basis" });
     expect(net).toBeEnabled();
     expect(net).not.toHaveAttribute("title", "not wired");
     expect(net).toHaveValue("net");
@@ -426,8 +365,6 @@ describe("StatsReport Creator reports frame", () => {
     await waitFor(() => expect(lastRange("/admin/stats/per-model"))
       .toEqual({ from: "2026-09-15T04:00:00.000Z", to: "2026-10-15T03:59:59.999Z" }));
     expect(ranges("/admin/stats/per-model").every((r) => r.from === "2026-09-15T04:00:00.000Z")).toBe(true);
-    // Initial thirty-day revenue reads must never leak browser-local boundaries either.
-    // The preceding thirty calendar days are Aug 16 through Sep 14 in New York (EDT).
     const initial = { from: "2026-09-15T04:00:00.000Z", to: "2026-10-15T03:59:59.999Z" };
     const initialPrior = { from: "2026-08-16T04:00:00.000Z", to: "2026-09-15T03:59:59.999Z" };
     const initialSent = () => [...new Set(revenue().map((r) => `${r.group_by} ${r.from} ${r.to}`))].sort();
@@ -437,13 +374,8 @@ describe("StatsReport Creator reports frame", () => {
     ]));
     const beforeSeven = revenue().length;
     await selectSevenDays();
-    // Explicit seven days through today there: Thu 8 Oct 00:00 EDT
-    // through Wed 14 Oct 23:59:59.999 EDT (it is still Wed 14 Oct in New York).
     const want = { from: "2026-10-08T04:00:00.000Z", to: "2026-10-15T03:59:59.999Z" };
     await waitFor(() => expect(lastRange("/admin/stats/per-model")).toEqual(want));
-    // The window's day and kind reads, and the kind read over the 7 days just before it for each tile's growth
-    // (analytics-creator-reports#58): Thu 1 Oct 00:00 EDT through Wed 7 Oct 23:59:59.999 EDT. None went out
-    // first with the browser's (UTC) days.
     const prior = { from: "2026-10-01T04:00:00.000Z", to: "2026-10-08T03:59:59.999Z" };
     const sent = () => [...new Set(revenue().slice(beforeSeven).map((r) => `${r.group_by} ${r.from} ${r.to}`))].sort();
     await waitFor(() => expect(sent()).toEqual([
@@ -463,12 +395,10 @@ describe("StatsReport Creator reports frame", () => {
     creators = [creator("acct-a", "Creator A", 1200), creator("acct-b", "Creator B", 3400)];
     renderWithProviders(<StatsReport view="creator" />);
     const bar = await screen.findByRole("group", { name: "Report controls" });
-    // Both Creators in the statistics table.
     expect(await screen.findByText("Creator B")).toBeInTheDocument();
     expect(screen.getByText("Creator A")).toBeInTheDocument();
     const rangeLabel = within(bar).getByRole("button", { name: "Date range" }).textContent;
 
-    // analytics-creator-reports#26: the Creator pop lists the per-model read's Creators; untick Creator B.
     openFilters();
     fireEvent.click(within(bar).getByRole("button", { name: "Creator" }));
     expect(screen.getByRole("checkbox", { name: "Creator A" })).toBeChecked();
@@ -480,7 +410,6 @@ describe("StatsReport Creator reports frame", () => {
     openFilters();
     expect(within(bar).getByRole("button", { name: "Creator A" })).toBeInTheDocument();
 
-    // A changed range and bucket too.
     fireEvent.click(within(bar).getByRole("button", { name: "Date range" }));
     fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-10-01" } });
     fireEvent.keyDown(document, { key: "Escape" });
@@ -489,7 +418,6 @@ describe("StatsReport Creator reports frame", () => {
     expect(shownBy).toHaveValue("week");
     expect(within(bar).getByRole("button", { name: "Date range" }).textContent).not.toBe(rangeLabel);
 
-    // Reset puts the default 30-day range, every Creator and Day back.
     openFilters();
     fireEvent.click(within(bar).getByRole("button", { name: "Reset" }));
     expect(within(bar).getByRole("button", { name: "Date range" }).textContent).toBe(rangeLabel);
@@ -529,7 +457,6 @@ describe("StatsReport Creator reports frame", () => {
       consecutive_failures: 0, paused_until: pausedUntil, rows_inserted_total: 3, rows_patched_total: 0,
       fully_backfilled: true, minutes_since_scan: 60, tier: "green",
     });
-    // acct-b is paused for another hour, so its row offers resume.
     ingestRows = [ingest("acct-a", null), ingest("acct-b", "2026-10-15T03:00:00Z")];
     renderWithProviders(<StatsReport view="creator" />);
     const extras = await screen.findByRole("button", { name: "Inflowwww extras" });
@@ -539,15 +466,12 @@ describe("StatsReport Creator reports frame", () => {
 
     fireEvent.click(extras);
     const panel = screen.getByRole("region", { name: "Inflowwww extras" });
-    // Each extra is labelled.
     expect(within(panel).getAllByTitle("Inflowwww extra").length).toBeGreaterThanOrEqual(3);
     expect(within(panel).getByRole("link", { name: "All messages…" }))
       .toHaveAttribute("href", "/analytics/message-dashboard?tab=all");
-    // No 7d / 30d shortcuts: they were the date range's own Last 7 / 30 days.
     expect(within(panel).queryByRole("button", { name: "7d" })).toBeNull();
     expect(await within(panel).findByRole("heading", { name: "Per-model KPIs" })).toBeInTheDocument();
 
-    // Ingest health's pause, resume and re-sync post as they do today.
     fireEvent.click(await within(panel).findByRole("button", { name: /Ingest health/ }));
     fireEvent.click(await within(panel).findByRole("button", { name: "pause 1h" }));
     await waitFor(() => expect(posted()).toContain("/admin/ingest/transactions/acct-a/pause"));
@@ -559,14 +483,6 @@ describe("StatsReport Creator reports frame", () => {
   });
 });
 
-/**
- * The Overview's sections (docs/infloww-layouts/analytics-creator-reports.md, ticket 21): Earnings summary, Earnings
- * trends, the channel row (Earnings by channel beside Earnings breakdown), then Creator statistics, each wired to the
- * revenue read or Not wired. The clock is Thu 15 Oct 2026 02:00Z in a UTC browser with no report time zone, so the
- * selected window, the last 7 days through today (#21), is Fri 9 Oct through Thu 15 Oct, and the 7 days before it run
- * Fri 2 Oct through Thu 8 Oct. The figures are gross, so each test turns "Show net earnings" off first. Each
- * expectation cites the capture's Item ID.
- */
 describe("StatsReport Creator reports Overview", () => {
   const ZERO_KIND = { ppv: 0, post: 0, tip: 0, subscription: 0, rebill: 0, custom: 0 };
   const creator = (id: string, name: string, cents: number) => ({
@@ -580,17 +496,11 @@ describe("StatsReport Creator reports Overview", () => {
     day, kind: null, total_cents: cents, count: 1,
     ...(byKind ? { by_kind: byKind.map(([kind, c]) => ({ kind, total_cents: c, count: 1 })) } : {}),
   });
-  // The selected window's kinds: Subscriptions $150 (subscription + rebill), Messages $80, Posts $20, Tips $30,
-  // a $10 stream tip (no channel: Total only), so Total earnings $290.
   const CURRENT = [kindRow("subscription", 10000), kindRow("rebill", 5000), kindRow("ppv", 8000),
     kindRow("ppv_post", 2000), kindRow("tip", 3000), kindRow("tip_stream", 1000)];
-  // The window before: Subscriptions $100, Messages $100, Posts $20, no Tips and no Streams, so Total $220.
   const PRIOR = [kindRow("subscription", 10000), kindRow("ppv", 10000), kindRow("ppv_post", 2000)];
   const PRIOR_FROM = "2026-10-02T00:00:00.000Z";
-  // The window's reversals (`status=reversed`), Chargebacks' $28.88.
   const REVERSED = [kindRow("ppv_message", 2888)];
-  /** Answers the kind read by window (the selected one or the one before), the day read with `days`, the reversed
-   *  kind read with REVERSED. */
   const mockRevenue = (days: unknown[] = [], hours: unknown[] = []) => {
     revenueFor = (q) => {
       if (q.get("status") === "reversed") return jsonRes({ rows: q.get("group_by") === "kind" ? REVERSED : [] });
@@ -602,14 +512,11 @@ describe("StatsReport Creator reports Overview", () => {
   const before = (a: HTMLElement, b: HTMLElement) =>
     expect(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   const section = (name: string) => screen.getByRole("region", { name });
-  /** Every revenue read sent so far, as its query parameters. */
   const revenue = () => fetchMock.mock.calls
     .map(([url]) => new URL(String(url), "http://relay.test"))
     .filter((u) => u.pathname === "/admin/stats/revenue")
     .map((u) => Object.fromEntries(u.searchParams));
-  /** A summary tile's figures: its value, then its growth. */
   const figures = (tile: HTMLElement) => within(tile).getAllByRole("definition").map((d) => d.textContent);
-  /** The bars of a chart, each as `<label>: <amount>`. */
   const bars = (name: string) => chartLabels(section(name));
   const pickRange = (from: string, to: string) => {
     fireEvent.click(screen.getByRole("button", { name: "Date range" }));
@@ -622,27 +529,23 @@ describe("StatsReport Creator reports Overview", () => {
     creators = [creator("acct-a", "Creator A", 1200)];
     mockRevenue();
     renderWithProviders(<StatsReport view="creator" />);
-    // analytics-creator-reports#42: Earnings summary, Earnings trends, the channel row, Creator statistics.
-    const summary = await screen.findByRole("heading", { name: "Earnings summary" }); // analytics-creator-reports#46
-    const trends = screen.getByRole("heading", { name: "Earnings trends" }); // analytics-creator-reports#61
-    const channel = screen.getByRole("heading", { name: "Earnings by channel" }); // analytics-creator-reports#70
-    const breakdown = screen.getByRole("heading", { name: "Earnings breakdown" }); // analytics-creator-reports#77
-    const stats = screen.getByText("Creator statistics"); // analytics-creator-reports#87
+    const summary = await screen.findByRole("heading", { name: "Earnings summary" });
+    const trends = screen.getByRole("heading", { name: "Earnings trends" });
+    const channel = screen.getByRole("heading", { name: "Earnings by channel" });
+    const breakdown = screen.getByRole("heading", { name: "Earnings breakdown" });
+    const stats = screen.getByText("Creator statistics");
     before(summary, trends);
     before(trends, channel);
     before(channel, breakdown);
     before(breakdown, stats);
-    // The tooltips, verbatim: analytics-creator-reports#46, #61, #70.
     expect(within(section("Earnings summary"))
       .getByRole("img", { name: "An overview of total earnings based on your managed creators during this period" })).toBeInTheDocument();
     expect(within(section("Earnings trends"))
       .getByRole("img", { name: "Sales growth and trends of all earnings from your managed creators" })).toBeInTheDocument();
     expect(within(section("Earnings by channel"))
       .getByRole("img", { name: "Track trends and growth of your managed creators’ earning channels" })).toBeInTheDocument();
-    // analytics-creator-reports#50: the seven tiles, in order (the hidden cell between Messages and Tips is not one).
     expect(within(section("Earnings summary")).getAllByRole("group").map((t) => t.getAttribute("aria-label")))
       .toEqual(["Total earnings", "Subscriptions", "Posts", "Messages", "Tips", "Referrals", "Chargebacks"]);
-    // Earnings by channel is one of Infloww's sections: nothing above it is titled Inflowwww extra.
     expect(channel.closest('[title="Inflowwww extra"]')).toBeNull();
   });
 
@@ -652,8 +555,6 @@ describe("StatsReport Creator reports Overview", () => {
     renderWithProviders(<StatsReport view="creator" />);
     await showGross();
     const tile = (name: string) => within(section("Earnings summary")).getByRole("group", { name });
-    // analytics-creator-reports#55, #58 to #60: the value, then the change unsigned to two decimals with its arrow;
-    // "0.00%" when flat, "-" with nothing before.
     await waitFor(() => expect(figures(tile("Total earnings"))).toEqual(["$290", "31.82%"]));
     expect(within(tile("Total earnings")).getByRole("img", { name: "rising" })).toBeInTheDocument();
     expect(figures(tile("Subscriptions"))).toEqual(["$150", "50.00%"]);
@@ -662,12 +563,10 @@ describe("StatsReport Creator reports Overview", () => {
     expect(figures(tile("Posts"))).toEqual(["$20", "0.00%"]);
     expect(within(tile("Posts")).queryByRole("img")).toBeNull();
     expect(figures(tile("Tips"))).toEqual(["$30", "-"]);
-    // Chargebacks: the window's reversals below zero on the err token, no growth (no prior read).
     expect(figures(tile("Chargebacks"))).toEqual(["-$29", "-"]);
     expect(within(tile("Chargebacks")).getAllByRole("definition")[0]).toHaveStyle({ color: "var(--color-err)" });
     expect(within(tile("Total earnings")).getAllByRole("definition")[0]).toHaveStyle({ color: "var(--color-fg)" });
     expect(revenue().some((r) => r.status === "reversed" && r.group_by === "kind" && !r.account_id)).toBe(true);
-    // Referrals is OnlyFans' own read (`/admin/stats/referrals`), none here.
     expect(figures(tile("Referrals"))[0]).toBe("$0");
   });
 
@@ -678,20 +577,16 @@ describe("StatsReport Creator reports Overview", () => {
     [dayRow("2026-10-13T09:00", 1500), dayRow("2026-10-14T15:00", 2500)]);
     renderWithProviders(<StatsReport view="creator" />);
     await showGross();
-    // #4: the toolbar's one "Shown by" select buckets every chart; no per-chart tabs.
     const shownBy = await screen.findByRole("combobox", { name: "Shown by" });
     expect(screen.queryByRole("group", { name: /granularity/ })).toBeNull();
     const tab = (name: string) => within(shownBy).getByRole("option", { name: `Shown by ${name.toLowerCase()}` });
     const pickGran = (name: string) => fireEvent.change(shownBy, { target: { value: name.toLowerCase() } });
-    // analytics-creator-reports#65: Hour / Day / Week / Month, Day the default.
     expect(within(shownBy).getAllByRole("option").map((b) => b.textContent))
       .toEqual(["Shown by hour", "Shown by day", "Shown by week", "Shown by month"]);
     expect(shownBy).toHaveValue("day");
-    // The selected 7-day window rules Hour out (#28, #29).
     expect(tab("Hour")).toBeDisabled();
     expect(tab("Hour")).toHaveAttribute("title", "Date range must be 2 days or less for this option");
 
-    // Tue 13 Oct to Wed 14 Oct, 2 days: Hour or Day; Hour reads the local hours, a bar per hour.
     pickRange("2026-10-13", "2026-10-14");
     await waitFor(() => expect(tab("Hour")).toBeEnabled());
     expect(tab("Week")).toBeDisabled();
@@ -703,29 +598,25 @@ describe("StatsReport Creator reports Overview", () => {
     expect(bars("Earnings trends")[9]).toBe("Oct 13 9 AM: $15");
     expect(bars("Earnings trends")[39]).toBe("Oct 14 3 PM: $25");
 
-    // Thu 1 Oct to Wed 14 Oct, 14 days: Day or Week (analytics-creator-reports#29).
     pickRange("2026-10-01", "2026-10-14");
     await waitFor(() => expect(bars("Earnings trends")).toHaveLength(14));
     expect(bars("Earnings trends").slice(0, 3)).toEqual(["Oct 1: $10", "Oct 2: $20", "Oct 3: $0"]);
     expect(bars("Earnings trends")[13]).toBe("Oct 14: $5");
     expect(tab("Month")).toBeDisabled();
-    expect(tab("Month")).toHaveAttribute("title", "Date range must be more than 62 days for this option"); // #28
+    expect(tab("Month")).toHaveAttribute("title", "Date range must be more than 62 days for this option");
     pickGran("Week");
-    // Weeks run seven days from the range's first day.
     expect(bars("Earnings trends")).toEqual(["Oct 1: $30", "Oct 8: $45"]);
 
-    // Sat 1 Aug to Wed 14 Oct, 75 days: Week or Month; Day moves off.
     pickRange("2026-08-01", "2026-10-14");
     await waitFor(() => expect(tab("Day")).toBeDisabled());
-    expect(tab("Day")).toHaveAttribute("title", "Date range must be 31 days or less for this option"); // #28
+    expect(tab("Day")).toHaveAttribute("title", "Date range must be 31 days or less for this option");
     pickGran("Month");
     expect(bars("Earnings trends")).toEqual(["Aug 26: $70", "Sep 26: $0", "Oct 26: $75"]);
 
-    // Sun 4 Oct to Wed 14 Oct, 11 days: Day only, and the chosen Month moves to Day.
     pickRange("2026-10-04", "2026-10-14");
     await waitFor(() => expect(shownBy).toHaveValue("day"));
     expect(tab("Week")).toBeDisabled();
-    expect(tab("Week")).toHaveAttribute("title", "Date range must be between 14 to 365 days for this option"); // #28
+    expect(tab("Week")).toHaveAttribute("title", "Date range must be between 14 to 365 days for this option");
   });
 
   it("draws Earnings by channel and Earnings breakdown from the revenue read and the referrals read", async () => {
@@ -733,22 +624,18 @@ describe("StatsReport Creator reports Overview", () => {
     mockRevenue([dayRow("2026-10-01", 4000, [["subscription", 1000], ["rebill", 1000], ["tip", 2000]])]);
     renderWithProviders(<StatsReport view="creator" />);
     await showGross();
-    // analytics-creator-reports#74: the day read splits each day by kind.
     await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => {
       const q = new URL(String(u), "http://relay.test").searchParams;
       return q.get("group_by") === "day" && q.get("by_kind") === "true";
     })).toBe(true));
     const chan = section("Earnings by channel");
-    // analytics-creator-reports#74, #75: a line per channel, every channel when none is picked.
     await waitFor(() => expect(chartLabels(chan))
       .toEqual(["Subscription", "Tips", "Posts", "Messages", "Referrals"]));
-    // analytics-creator-reports#71: the Channels pick, Referrals among them.
     fireEvent.click(within(chan).getByRole("button", { name: "Channels" }));
     expect(screen.getByRole("checkbox", { name: "Referrals" })).toBeEnabled();
     fireEvent.click(screen.getByRole("checkbox", { name: "Tips" }));
     expect(chartLabels(chan)).toEqual(["Tips"]);
 
-    // analytics-creator-reports#75, #85: the donut's legend, share and amount of the kind read's channels.
     const legend = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings breakdown legend" });
     await waitFor(() => expect(within(legend).getAllByRole("listitem").map((r) => r.textContent)).toEqual([
       "Subscription53.57%$150", "Tips10.71%$30", "Posts7.14%$20", "Messages28.57%$80",
@@ -765,7 +652,6 @@ describe("StatsReport Creator reports Overview", () => {
     expect(ledger).toHaveAttribute("title", "Inflowwww extra");
     const row = (name: string) => within(ledger).getByRole("group", { name });
     await waitFor(() => expect(row("Gross earnings")).toHaveTextContent("$290"));
-    // Refunds sums the per-model read's reversals, none here; no read carries chargebacks.
     expect(row("Refunds")).toHaveTextContent("$0");
     for (const name of ["Chargeback ratio"]) {
       const v = within(row(name)).getByRole("button", { name });
@@ -773,8 +659,6 @@ describe("StatsReport Creator reports Overview", () => {
       expect(v).toHaveAttribute("title", "not wired");
       expect(row(name)).not.toHaveTextContent("$");
     }
-    // Platform fee, VAT collected and Net earnings read OF's own net, fee and VAT only while "Show net earnings" is
-    // on; off, no net read is made.
     for (const name of ["Platform fee", "VAT collected", "Net earnings"]) {
       const v = within(row(name)).getByRole("button", { name });
       expect(v).toBeDisabled();
@@ -785,7 +669,6 @@ describe("StatsReport Creator reports Overview", () => {
 
   it("shows the empty state with no Creator and no revenue", async () => {
     renderWithProviders(<StatsReport view="creator" />);
-    // As the bundle prints them: the tiles' zeros with no growth, and blank charts with no wording.
     const summary = await screen.findByRole("region", { name: "Earnings summary" });
     await waitFor(() => expect(figures(within(summary).getByRole("group", { name: "Total earnings" })))
       .toEqual(["$0", "-"]));
@@ -793,13 +676,11 @@ describe("StatsReport Creator reports Overview", () => {
       expect(figures(within(summary).getByRole("group", { name }))).toEqual(["$0", "-"]);
     }
     expect(screen.queryByText("No creators in this selection")).toBeNull();
-    // Overview keeps truthful unavailable legend rows; its decorative donut was removed.
     const breakdown = within(section("Earnings breakdown"));
     expect(breakdown.queryByRole("img")).toBeNull();
     expect(within(breakdown.getByRole("list", { name: "Earnings breakdown legend" }))
       .getAllByRole("listitem").map((row) => row.textContent))
       .toEqual(["Subscription--", "Tips--", "Posts--", "Messages--", "Referrals--", "Chargebacks--"]);
-    // No other section invents a zero.
     for (const name of ["Earnings trends", "Earnings by channel", "Earnings breakdown", "Creator statistics", "Earnings ledger"]) {
       expect(section(name)).not.toHaveTextContent("$0");
     }
@@ -824,7 +705,6 @@ describe("StatsReport Creator reports Overview", () => {
   });
 });
 
-/** A per-model row: Creator A sells across the kinds, Creator B sold nothing in the window. */
 const ZERO_KINDS = { ppv: 0, post: 0, tip: 0, subscription: 0, rebill: 0, custom: 0 };
 const perModelRow = (id: string, name: string, over: Record<string, unknown> = {}) => ({
   account_id: id, display_name: name, revenue_by_kind: ZERO_KINDS, pending_by_kind: ZERO_KINDS,
@@ -832,17 +712,14 @@ const perModelRow = (id: string, name: string, over: Record<string, unknown> = {
   pending_clears_by: null, messages_sent: 0, ppv_conversions: 0, new_subs_count: 0, active_subs_count: null,
   ltv_cents: null, arpu_cents: null, ...over,
 });
-// Subscriptions $100 + rebills $50, Tips $30, Messages $60, Posts $10: Total earnings $250.
 const CREATOR_A = perModelRow("acct-a", "Creator A", {
   revenue_by_kind: { ...ZERO_KINDS, subscription: 10000, rebill: 5000, tip: 3000, ppv: 6000, post: 1000 },
   total_revenue_cents: 25000, new_subs_count: 4, messages_sent: 120, active_subs_count: 50,
   ppvs_sent: 30, fans_chatted: 40, avg_reply_seconds: 185,
 });
 const CREATOR_B = perModelRow("acct-b", "Creator B");
-/** A rendered table's rows, each as its cells' text. */
 const tableRows = (table: HTMLElement) =>
   within(table).getAllByRole("row").slice(1).map((r) => within(r).getAllByRole("cell").map((c) => c.textContent));
-/** Lends jsdom object URLs for one test and hands back the last CSV written. */
 function captureCsv() {
   const out: { blob: Blob | null } = { blob: null };
   const saved = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
@@ -852,14 +729,11 @@ function captureCsv() {
   onTestFinished(() => { URL.createObjectURL = saved.create; URL.revokeObjectURL = saved.revoke; click.mockRestore(); });
   return out;
 }
-/** The default columns' CSV header (analytics-creator-reports#111 onward, those shown by default). */
 const CSV_HEADER = "Creator,Total subscription earnings,Tips,Message,Engagement earnings ratio,Total earnings,Contribution %," +
   "OF ranking,Fans with renew on,Profile visitors,New subscribers,Subscriber renewals,New subscriber LTV," +
   "New subscriber conversion,Active fans,Number of spenders,Avg spend per spender,Avg earnings per fan,Reply time," +
   "Fans chatted,Messages sent,PPVs sent";
-// Dollars and percentages are numbers (W5 5.9), so a spreadsheet sums them.
 const ROW_A = "Creator A,150,30,60,60,250,100,,,,4,,22.5,,50,,,,3m 05s,40,120,30";
-/** Opens the Export pop-up in `region` and downloads with what is ticked after `pick` (W5 5.9). */
 async function exportFrom(region: HTMLElement, pick: string[] = []) {
   fireEvent.click(within(region).getByRole("button", { name: "Export" }));
   const dialog = within(region).getByRole("dialog", { name: "Export" });
@@ -868,12 +742,6 @@ async function exportFrom(region: HTMLElement, pick: string[] = []) {
   await waitFor(() => expect(within(region).queryByRole("dialog")).toBeNull());
 }
 
-/**
- * Creator statistics (docs/infloww-layouts/analytics-creator-reports.md #87 to #153, ticket 22): the title and
- * Export, the notice, the four stat cards, Custom metrics and the table of the capture's columns, each read from the
- * per-model read or Not wired. The selected window is Thu 8 Oct through Wed 14 Oct, 7 days (168 hours); the figures
- * are gross, so the tests that read them turn "Show net earnings" off first.
- */
 describe("StatsReport Creator reports Creator statistics", () => {
   const stats = () => screen.getByRole("region", { name: "Creator statistics" });
   const card = (name: string) => within(stats()).getByRole("group", { name });
@@ -882,15 +750,12 @@ describe("StatsReport Creator reports Creator statistics", () => {
     creators = [CREATOR_A, CREATOR_B];
     renderWithProviders(<StatsReport view="creator" />);
     await showGross();
-    // analytics-creator-reports#87, #88: the title, then Export at its right.
     const title = await screen.findByRole("heading", { level: 2, name: "Creator statistics" });
     const exp = within(stats()).getByRole("button", { name: "Export" });
     expect(title.compareDocumentPosition(exp) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // analytics-creator-reports#94, #98: the notice's two lines and its UTC chip.
     expect(within(stats()).getByText("Percentage change is calculated based on the change in value in the selected time "
       + "frame against the same time frame immediately before it.")).toBeInTheDocument();
     expect(within(stats()).getByText(/is available in UTC\+00:00 only, due to OnlyFans limitations/)).toBeInTheDocument();
-    // analytics-creator-reports#101: the four stat cards in order, each with its tooltip verbatim.
     const cards = within(stats()).getByRole("list", { name: "Creator statistics cards" });
     expect(within(cards).getAllByRole("group").map((c) => c.getAttribute("aria-label")))
       .toEqual(["Creators", "Message earnings", "Total earnings", "Refunded"]);
@@ -903,9 +768,7 @@ describe("StatsReport Creator reports Creator statistics", () => {
     await waitFor(() => expect(card("Creators")).toHaveTextContent("2"));
     expect(card("Message earnings")).toHaveTextContent("$60");
     expect(card("Total earnings")).toHaveTextContent("$250");
-    // Refunded sums the per-model read's reversals (`refunded_cents`), none here.
     expect(card("Refunded")).toHaveTextContent("$0");
-    // Ours: Hide $0 creators and Export CSV sit on Creator performance, as the Clone puts them.
     expect(screen.queryByRole("checkbox", { name: "Hide $0 creators" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Export CSV" })).toBeNull();
   });
@@ -915,43 +778,36 @@ describe("StatsReport Creator reports Creator statistics", () => {
     renderWithProviders(<StatsReport view="creator" />);
     await showGross();
     const table = await within(await screen.findByRole("region", { name: "Creator statistics" })).findByRole("table");
-    // analytics-creator-reports#111 to #146, those shown by default, in the capture's order; the UTC chip (#98) on
-    // the columns that carry it.
     expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
-      "Creator", // #111
-      "Total subscription earnings", // #112
-      "Tips", // #115
-      "Message", // #116
-      "Engagement earnings ratio", // #117
-      "Total earnings", // #120
-      "Contribution %", // #123
-      "OF rankingUTC+00:00", // #124
-      "Fans with renew onUTC+00:00", // #126
-      "Profile visitorsUTC+00:00", // #128
-      "New subscribersUTC+00:00", // #131
-      "Subscriber renewalsUTC+00:00", // #132
-      "New subscriber LTV", // #133
-      "New subscriber conversionUTC+00:00", // #134
-      "Active fansUTC+00:00", // #135
-      "Number of spenders", // #137
-      "Avg spend per spender", // #138
-      "Avg earnings per fan", // #141
-      "Reply time", // #143
-      "Fans chatted", // #144
-      "Messages sent", // #145
-      "PPVs sent", // #146
+      "Creator",
+      "Total subscription earnings",
+      "Tips",
+      "Message",
+      "Engagement earnings ratio",
+      "Total earnings",
+      "Contribution %",
+      "OF rankingUTC+00:00",
+      "Fans with renew onUTC+00:00",
+      "Profile visitorsUTC+00:00",
+      "New subscribersUTC+00:00",
+      "Subscriber renewalsUTC+00:00",
+      "New subscriber LTV",
+      "New subscriber conversionUTC+00:00",
+      "Active fansUTC+00:00",
+      "Number of spenders",
+      "Avg spend per spender",
+      "Avg earnings per fan",
+      "Reply time",
+      "Fans chatted",
+      "Messages sent",
+      "PPVs sent",
     ]);
-    // analytics-creator-reports#147: "-" for a value the read lacks (here the OF statistics and spender figures the
-    // fixture leaves out). Engagement earnings ratio is messages and tips over subscriptions ($90 / $150),
-    // Contribution % the Creator's share of the Agency's $250, New subscriber LTV messages and tips over new
-    // subscribers ($90 / 4); Reply time the average wait (185 s), with none "-".
     await waitFor(() => expect(tableRows(table)).toEqual([
       ["Creator A", "$150", "$30", "$60", "60.00%", "$250", "100.00%", "-", "-", "-", "4", "-", "$22.50",
         "-", "50", "-", "-", "-", "3m 05s", "40", "120", "30"],
       ["Creator B", "$0", "$0", "$0", "-", "$0", "0.00%", "-", "-", "-", "0", "-", "-",
         "-", "-", "-", "-", "-", "-", "0", "0", "0"],
     ]));
-    // The columns with no relay field carry the house Not wired marker; the rest have none.
     for (const name of ["OF ranking", "Avg earnings per fan"]) {
       const marker = within(table).getByRole("button", { name });
       expect(marker).toBeDisabled();
@@ -968,14 +824,12 @@ describe("StatsReport Creator reports Creator statistics", () => {
     renderWithProviders(<StatsReport view="creator" />);
     await showGross();
     const table = await within(await screen.findByRole("region", { name: "Creator statistics" })).findByRole("table");
-    // analytics-creator-reports#105: "Custom metrics" opens "Creator report metrics".
     fireEvent.click(within(stats()).getByRole("button", { name: "Custom metrics" }));
     const metrics = screen.getByRole("group", { name: "Creator report metrics" });
-    fireEvent.click(within(metrics).getByRole("checkbox", { name: "Avg hourly earnings" })); // #121
-    fireEvent.click(within(metrics).getByRole("checkbox", { name: "Refunds" })); // #122
+    fireEvent.click(within(metrics).getByRole("checkbox", { name: "Avg hourly earnings" }));
+    fireEvent.click(within(metrics).getByRole("checkbox", { name: "Refunds" }));
     const headers = () => within(table).getAllByRole("columnheader").map((h) => h.textContent);
     expect(headers().slice(5, 9)).toEqual(["Total earnings", "Avg hourly earnings", "Refunds", "Contribution %"]);
-    // Avg hourly earnings: Total earnings over the window's hours, $250 / 168.
     await waitFor(() => expect(tableRows(table)[0].slice(5, 9)).toEqual(["$250", "$1.49", "$12", "100.00%"]));
   });
 
@@ -989,7 +843,6 @@ describe("StatsReport Creator reports Creator statistics", () => {
     fireEvent.click(within(metrics).getByRole("button", { name: "Move Tips up" }));
     const headers = () => within(table).getAllByRole("columnheader").map((h) => h.textContent);
     expect(headers().slice(1, 3)).toEqual(["Tips", "Total subscription earnings"]);
-    // The first shown column has no up; a hidden one has no arrows at all.
     expect(within(metrics).getByRole("button", { name: "Move Tips up" })).toBeDisabled();
     expect(within(metrics).queryByRole("button", { name: "Move Posts up" })).toBeNull();
     await waitFor(() => {
@@ -1033,7 +886,6 @@ describe("StatsReport Creator reports Creator statistics", () => {
       .findByRole("table")).getAllByRole("columnheader").map((h) => h.textContent);
     await waitFor(async () => expect(await headers()).toEqual(["Creator", "Tips"]));
     first.unmount();
-    // Saved since (another tab, or a save the cached read predates): the cached Applied read still says ["tips"].
     layout = ["ppvsSent"];
     renderWithProviders(<StatsReport view="creator" />, first.queryClient);
     await waitFor(async () => expect(await headers()).toEqual(["Creator", "PPVs sent"]));
@@ -1052,7 +904,6 @@ describe("StatsReport Creator reports Creator statistics", () => {
 
   it("shows the capture's empty states with no Creator: No data, and no stat card invents a zero", async () => {
     renderWithProviders(<StatsReport view="creator" />);
-    // analytics-creator-reports#148: "No data" when there are no rows.
     expect(await within(await screen.findByRole("region", { name: "Creator statistics" })).findByText("No data"))
       .toBeInTheDocument();
     for (const name of ["Creators", "Message earnings", "Total earnings"]) {
@@ -1065,24 +916,17 @@ describe("StatsReport Creator reports Creator statistics", () => {
   it("says the end of the page is reached under more than 20 rows", async () => {
     creators = Array.from({ length: 21 }, (_, i) => perModelRow(`acct-${i}`, `Creator ${i}`));
     renderWithProviders(<StatsReport view="creator" />);
-    // analytics-creator-reports#151.
     expect(await within(await screen.findByRole("region", { name: "Creator statistics" }))
       .findByText("You have reached the end of the page")).toBeInTheDocument();
     expect(tableRows(within(stats()).getByRole("table"))).toHaveLength(21);
   });
 });
 
-/**
- * The Creator performance tab (docs/infloww-layouts/analytics-creator-reports.md #18, #27, #154 to #174, ticket 22):
- * a creator list at the left and, for the one picked, Earnings, Earnings breakdown, Earnings heatmap and Chargebacks.
- * The filter bar swaps Creator tag and Creator for the "Shown by" select.
- */
 describe("StatsReport Creator reports Creator performance", () => {
   const kindRow = (kind: string, cents: number) => ({ day: null, kind, total_cents: cents, count: 1 });
   const dayRow = (day: string, cents: number, byKind: [string, number][]) => ({
     day, kind: null, total_cents: cents, count: 1, by_kind: byKind.map(([kind, c]) => ({ kind, total_cents: c, count: 1 })),
   });
-  /** Every revenue read sent so far, as its query parameters. */
   const revenue = () => fetchMock.mock.calls
     .map(([url]) => new URL(String(url), "http://relay.test"))
     .filter((u) => u.pathname === "/admin/stats/revenue")
@@ -1102,13 +946,9 @@ describe("StatsReport Creator reports Creator performance", () => {
     fireEvent.change(screen.getByLabelText("To date"), { target: { value: to } });
     fireEvent.keyDown(document, { key: "Escape" });
   };
-  /** Creator A's reads: the window's kinds (Subscriptions $150, Tips $30, Messages $60, Posts $10) against the window
-   *  before the default one (Fri 2 Oct through Thu 8 Oct: Subscriptions $100, Messages $60), and one day split by
-   *  kind. The figures are gross, so the tests that read them turn "Show net earnings" off first. */
   const mockCreatorA = () => {
     revenueFor = (q) => {
       if (q.get("account_id") !== "acct-a") return jsonRes({ rows: [] });
-      // Creator A's reversals: $28.88 on one day.
       if (q.get("status") === "reversed") return jsonRes({ rows: [dayRow("2026-10-01", 2888, [["ppv_message", 2888]])] });
       if (q.get("group_by") === "day") {
         return jsonRes({ rows: [dayRow("2026-10-01", 4000, [["subscription", 1500], ["tip", 2000], ["ppv", 500]])] });
@@ -1123,24 +963,20 @@ describe("StatsReport Creator reports Creator performance", () => {
     creators = [CREATOR_A];
     mockCreatorA();
     await openPerformance();
-    // analytics-creator-reports#154, #155: Earnings, Earnings breakdown, Earnings heatmap, Chargebacks.
     const heads = ["Earnings", "Earnings breakdown", "Earnings heatmap", "Chargebacks"]
       .map((name) => screen.getByRole("heading", { name }));
     for (let i = 1; i < heads.length; i++) {
       expect(heads[i - 1].compareDocumentPosition(heads[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
-    // The tooltips, verbatim (#155, #164, #168).
     for (const [name, tip] of [
       ["Earnings", "Sales growth and trends of all Creator earnings"],
       ["Earnings breakdown", "A detailed view of Creator earnings broken down by channel"],
       ["Earnings heatmap", "Heat intensity shows the number of PPVs bought per time slot, identifying top performing days and hours within a week"],
       ["Chargebacks", "Growth and trends of earnings refunded from the Creator"],
     ]) expect(within(section(name)).getByRole("img", { name: tip })).toBeInTheDocument();
-    // #168 reads the weekday x hour read, #170 the reversed sales.
     for (const name of ["Earnings heatmap", "Chargebacks"]) {
       expect(await within(section(name)).findByRole("img", { name: `${name} chart` })).toBeInTheDocument();
     }
-    // The Overview's sections and the per-model KPI cards are not on this tab.
     expect(screen.queryByRole("heading", { name: "Earnings summary" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Per-model KPIs" })).toBeNull();
   });
@@ -1150,7 +986,6 @@ describe("StatsReport Creator reports Creator performance", () => {
     mockCreatorA();
     await openPerformance();
     const bar = screen.getByRole("group", { name: "Report controls" });
-    // analytics-creator-reports#18: date range, Shown by, Show net earnings, Reset.
     expect(within(bar).queryByRole("button", { name: "Creator tag" })).toBeNull();
     expect(within(bar).queryByRole("button", { name: "Creator" })).toBeNull();
     const shownBy = within(bar).getByRole("combobox", { name: "Shown by" });
@@ -1159,13 +994,11 @@ describe("StatsReport Creator reports Creator performance", () => {
     for (let i = 1; i < order.length; i++) {
       expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
-    // analytics-creator-reports#27: the four choices, Day the default.
     const options = within(shownBy).getAllByRole("option") as HTMLOptionElement[];
     expect(options.map((o) => o.textContent)).toEqual(["Shown by hour", "Shown by day", "Shown by week", "Shown by month"]);
     expect(shownBy).toHaveValue("day");
     expect(options[0]).toBeDisabled();
     expect(options[0]).toHaveAttribute("title", "Date range must be 2 days or less for this option");
-    // #28, #29: the selected 7-day window allows Day only.
     expect(options[2]).toBeDisabled();
     expect(options[2]).toHaveAttribute("title", "Date range must be between 14 to 365 days for this option");
     expect(options[3]).toBeDisabled();
@@ -1177,14 +1010,12 @@ describe("StatsReport Creator reports Creator performance", () => {
     mockCreatorA();
     await openPerformance();
     await showGross();
-    // analytics-creator-reports#156: the creator list; the first is picked.
     const list = screen.getByRole("list", { name: "Creators" });
     expect(within(list).getAllByRole("button").map((b) => b.textContent)).toEqual(["Creator A", "Creator C"]);
     expect(within(list).getByRole("button", { name: "Creator A" })).toHaveAttribute("aria-pressed", "true");
     pickRange("2026-10-01", "2026-10-03");
     await waitFor(() => expect(revenue().some((r) => r.account_id === "acct-a" && r.group_by === "day"
       && r.by_kind === "true" && r.from === "2026-10-01T00:00:00.000Z")).toBe(true));
-    // analytics-creator-reports#161: All by default, a bar per bucket.
     const channels = screen.getByRole("group", { name: "Earnings channel" });
     expect(within(channels).getAllByRole("button").map((b) => b.textContent))
       .toEqual(["All", "Subscriptions", "Tips", "Posts", "Messages", "Referrals"]);
@@ -1192,15 +1023,12 @@ describe("StatsReport Creator reports Creator performance", () => {
     await waitFor(() => expect(bars()).toEqual(["Oct 1: $40", "Oct 2: $0", "Oct 3: $0"]));
     fireEvent.click(within(channels).getByRole("button", { name: "Tips" }));
     expect(bars()).toEqual(["Oct 1: $20", "Oct 2: $0", "Oct 3: $0"]);
-    // Referrals is OnlyFans' own read for the picked Creator.
     expect(within(channels).getByRole("button", { name: "Referrals" })).toBeEnabled();
 
-    // analytics-creator-reports#27: Shown by week rolls the days into weeks from the range's first day.
     pickRange("2026-10-01", "2026-10-14");
     fireEvent.change(screen.getByRole("combobox", { name: "Shown by" }), { target: { value: "week" } });
     await waitFor(() => expect(bars()).toEqual(["Oct 1: $20", "Oct 8: $0"]));
 
-    // Picking Creator C reads its revenue.
     fireEvent.click(within(list).getByRole("button", { name: "Creator C" }));
     expect(within(list).getByRole("button", { name: "Creator C" })).toHaveAttribute("aria-pressed", "true");
     await waitFor(() => expect(revenue().some((r) => r.account_id === "acct-c")).toBe(true));
@@ -1211,14 +1039,12 @@ describe("StatsReport Creator reports Creator performance", () => {
     mockCreatorA();
     await openPerformance();
     await showGross();
-    // analytics-creator-reports#164 to #167: the donut's legend and the growth column.
     const legend = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings breakdown legend" });
     await waitFor(() => expect(within(legend).getAllByRole("listitem").map((r) => r.textContent)).toEqual([
       "Subscription$15060.00%", "Tips$3012.00%", "Posts$104.00%", "Messages$6024.00%",
       "Referrals$00.00%", "Chargebacks-$29-",
     ]));
     const growth = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings growth" });
-    // #166: each row's count, then its change.
     expect(within(growth).getAllByRole("listitem").map((r) => r.textContent)).toEqual([
       "$15050.00%Subscription", "$30-Tips", "$10-Posts", "$600.00%Messages", "$0-Referrals", "-$29-Chargebacks",
     ]);
@@ -1230,7 +1056,6 @@ describe("StatsReport Creator reports Creator performance", () => {
     mockCreatorA();
     await openPerformance();
     await showGross();
-    // Ours (the capture has neither, its Notes), labelled.
     const tools = screen.getByRole("group", { name: "Creator list tools" });
     expect(tools).toHaveAttribute("title", "Inflowwww extra");
     const hide = within(tools).getByRole("checkbox", { name: "Hide $0 creators" });
@@ -1247,7 +1072,6 @@ describe("StatsReport Creator reports Creator performance", () => {
     fireEvent.click(within(tools).getByRole("button", { name: "Export CSV" }));
     expect((await csv.blob!.text()).split("\n")[2]).toBe("Creator B,0,0,0,,0,0,,,,0,,,,,,,,,0,0,0");
 
-    // Net, as the export pop-up writes it: the header first, no note lines; a cell with no net read empty.
     fireEvent.change(screen.getByRole("combobox", { name: "Earnings basis" }), { target: { value: "net" } });
     fireEvent.click(within(tools).getByRole("button", { name: "Export CSV" }));
     expect((await csv.blob!.text()).split("\n")[0]).toBe(CSV_HEADER);
@@ -1255,7 +1079,6 @@ describe("StatsReport Creator reports Creator performance", () => {
 
   it("shows each section's empty state with no Creator", async () => {
     await openPerformance();
-    // Ours, labelled: the list's wording; Earnings is a blank chart with none.
     expect(await within(screen.getByRole("list", { name: "Creators" })).findByText("No creators in this selection"))
       .toHaveAttribute("title", "Inflowwww extra");
     expect(within(section("Earnings")).queryByText("No creators in this selection")).toBeNull();
@@ -1270,7 +1093,6 @@ describe("StatsReport Creator reports Creator performance", () => {
     creators = [CREATOR_A];
     revenueFor = () => jsonRes({ detail: "boom" }, 500);
     await openPerformance();
-    // analytics-creator-reports#172: the retry box's text and button.
     const earnings = section("Earnings");
     expect(await within(earnings).findByText("Request failed")).toBeInTheDocument();
     expect(within(section("Earnings breakdown")).getByText("Request failed")).toBeInTheDocument();
@@ -1282,32 +1104,21 @@ describe("StatsReport Creator reports Creator performance", () => {
   });
 });
 
-/**
- * "Show net earnings" (docs/infloww-layouts/analytics-creator-reports.md #30 to #36, ticket 23): on, every money figure
- * with a net read shows OnlyFans' own post-fee net (`include_net=true`, `net_cents`; the per-model read's
- * `total_net_revenue_cents`), and every figure with none shows the Not wired marker; nothing is a ratio of gross.
- */
 describe("StatsReport Creator reports Show net earnings", () => {
   type Row = { day: string | null; kind: string | null; total_cents: number; count: number; net_cents: number;
     net_missing_count: number; by_kind?: Row[] };
   const kindRow = (kind: string, gross: number, net: number, missing = 0): Row =>
     ({ day: null, kind, total_cents: gross, count: 1, net_cents: net, net_missing_count: missing });
-  // Gross: Subscriptions $150 (subscription + rebill), Messages $80, Posts $20, Tips $30, a $10 stream tip, so $290.
-  // OF's net: Subscriptions $120, Messages $64, Posts $16, Tips $24, the stream tip $8, so $232; two PPV sales have
-  // no net yet. Reversed: $28.88 gross, $23.10 net, on the one day.
   const KINDS = [kindRow("subscription", 10000, 8000), kindRow("rebill", 5000, 4000), kindRow("ppv", 8000, 6400, 2),
     kindRow("ppv_post", 2000, 1600), kindRow("tip", 3000, 2400), kindRow("tip_stream", 1000, 800)];
-  // One day in the default window (Fri 9 Oct through Thu 15 Oct).
   const DAYS: Row[] = [{ day: "2026-10-10", kind: null, total_cents: 29000, count: 6, net_cents: 23200,
     net_missing_count: 2, by_kind: KINDS }];
   const REVERSED_KINDS = [kindRow("ppv_message", 2888, 2310)];
   const REVERSED_DAYS: Row[] = [{ day: "2026-10-10", kind: null, total_cents: 2888, count: 1, net_cents: 2310,
     net_missing_count: 0, by_kind: REVERSED_KINDS }];
-  /** The relay's answer: `net_cents` and `net_missing_count` only when the read asks for them. */
   const shape = (rows: Row[], net: boolean): unknown[] => rows.map(({ net_cents, net_missing_count, by_kind, ...r }) => ({
     ...r, ...(net ? { net_cents, net_missing_count } : {}), ...(by_kind ? { by_kind: shape(by_kind, net) } : {}),
   }));
-  // Creator A's gross is $250 (CREATOR_A); OF's net total for it is $200: Subscriptions $120, Tips $24, Messages $48.
   const NET_A = { ...CREATOR_A, total_net_revenue_cents: 20000, net_missing_count: 1, pending_revenue_cents: 500,
     ltv_cents: 1000, arpu_cents: 300,
     net_revenue_by_kind: { ...ZERO_KINDS, subscription: 8000, rebill: 4000, tip: 2400, ppv: 4800, post: 800 } };
@@ -1332,11 +1143,9 @@ describe("StatsReport Creator reports Show net earnings", () => {
 
   it("on at load, sends include_net=true on the day and kind reads and shows OF's own net; off, gross", async () => {
     renderWithProviders(<StatsReport view="creator" />);
-    // analytics-creator-reports#33: on by default, so every read asks for the net from the first.
     await waitFor(() => expect(value(tile("Total earnings"))).toBe("$232"));
     expect(earningsBasis()).toHaveValue("net");
     expect(revenue().every((r) => r.include_net === "true")).toBe(true);
-    // The day read keeps `by_kind=true` for Earnings by channel; the kind read serves the tiles and the donut.
     expect(revenue().map((r) => `${r.group_by} ${r.by_kind ?? ""}`)).toEqual(expect.arrayContaining(["day true", "kind "]));
     expect(value(tile("Subscriptions"))).toBe("$120");
     expect(value(tile("Messages"))).toBe("$64");
@@ -1348,13 +1157,11 @@ describe("StatsReport Creator reports Show net earnings", () => {
     const legend = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings breakdown legend" });
     expect(within(legend).getAllByRole("listitem")[0]).toHaveTextContent("Subscription53.57%$120");
 
-    // Creator statistics: Total is the per-model read's net total, the per-kind columns its net by kind.
     await waitFor(() => expect(tableRows(table())[0].slice(0, 7))
       .toEqual(["Creator A", "$120", "$24", "$48", "60.00%", "$200", "100.00%"]));
-    expect(tableRows(table())[0][12]).toBe("$18"); // New subscriber LTV: ($48 + $24) / 4 new subscribers
+    expect(tableRows(table())[0][12]).toBe("$18");
     expect(within(section("Creator statistics")).getByRole("group", { name: "Total earnings" })).toHaveTextContent("$200");
     expect(within(section("Creator statistics")).getByRole("group", { name: "Message earnings" })).toHaveTextContent("$48");
-    // Ours, from Custom metrics: Pending revenue, LTV and ARPU have no net read either.
     fireEvent.click(within(section("Creator statistics")).getByRole("button", { name: "Custom metrics" }));
     const metrics = screen.getByRole("group", { name: "Creator report metrics" });
     for (const name of ["Pending revenue", "LTV", "ARPU"]) {
@@ -1380,7 +1187,6 @@ describe("StatsReport Creator reports Show net earnings", () => {
     const held = new Promise<void>((r) => { answer = r; });
     revenueFor = (q) => (q.get("status") === "reversed" ? held.then(() => jsonRes({ detail: "relay down" }, 500)) : earned(q));
     renderWithProviders(<StatsReport view="creator" />);
-    // Pending: every other tile and the legend show, Chargebacks "-" with no title yet.
     await waitFor(() => expect(value(tile("Total earnings"))).toBe("$232"));
     expect(value(tile("Messages"))).toBe("$64");
     expect(value(tile("Chargebacks"))).toBe("-");
@@ -1425,7 +1231,6 @@ describe("StatsReport Creator reports Show net earnings", () => {
     expect(within(ledger).getByText("OnlyFans' net is gross less its fee; VAT is not deducted.")).toBeInTheDocument();
 
     await waitFor(() => expect(tableRows(table())[0][5]).toBe("$200"));
-    // The Export pop-up starts at the page's Net, with the Custom metrics pick: each money column in net.
     await exportFrom(section("Creator statistics"));
     expect(await csv.blob!.text()).toBe(`${CSV_HEADER}\nCreator A,120,24,48,60,200,100,,,,4,,18,,50,,,,3m 05s,40,120,30`);
   });
@@ -1438,7 +1243,6 @@ describe("StatsReport Creator reports Show net earnings", () => {
     const before = revenue().length;
     await exportFrom(section("Creator statistics"), ["All data fields", "Display by day"]);
     const lines = (await csv.blob!.text()).split("\n");
-    // Total: every column with a net read, none Not wired; a blank line, then By day.
     expect(lines[0]).toBe("Total");
     const head = lines[1].split(",");
     expect(head).toEqual(expect.arrayContaining(["Creator", "Total earnings", "Avg hourly earnings", "PPV conversions"]));
@@ -1446,7 +1250,6 @@ describe("StatsReport Creator reports Show net earnings", () => {
     expect(head).not.toContain("OF ranking");
     expect(lines.slice(3, 5)).toEqual(["", "By day"]);
     expect(lines[5]).toBe("Creator,Day,Total earnings (excl. referrals),Subscription,Tips,Posts,Messages,Other,Chargebacks");
-    // The selected window's seven days; OF's net by channel on the one with sales.
     expect(lines.slice(6)).toHaveLength(7);
     expect(lines).toContain("Creator A,2026-10-09,0,0,0,0,0,0,0");
     expect(lines).toContain("Creator A,2026-10-10,232,120,24,16,64,8,-23.1");

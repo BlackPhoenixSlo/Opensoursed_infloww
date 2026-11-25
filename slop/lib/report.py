@@ -1,6 +1,3 @@
-"""Invariants + evidence. A scenario calls ctx.check(...) / ctx.metric(...);
-the run folder gets invariants.json, metrics.json, http.json, summary.txt,
-logs and screenshots, and evidence/latest points at it."""
 from __future__ import annotations
 
 import json
@@ -11,11 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 EVIDENCE = Path(__file__).resolve().parents[1] / "evidence"
-FOLDER_LINE = "slop: folder {path}"  # printed by every run (lib/cli.py), parsed by lib/nightly.py
+FOLDER_LINE = "slop: folder {path}"
 
 
 def write_atomic(path: Path, text: str) -> None:
-    """Replace a text file without exposing a partial write."""
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.slop-tmp-", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as out:
@@ -45,12 +41,9 @@ class Report:
         self.checks: list[dict] = []
         self.metrics: dict = {}
         self.notes: list[str] = []
-        self.infra: str | None = None  # the stack or the scenario itself broke: no verdict
+        self.infra: str | None = None
 
     def check(self, name: str, ok: bool | None, *, budget: bool = False, **detail) -> bool:
-        """`ok=None` records the check as SKIP (shown, never counted as a pass).
-        `budget`: a latency/throughput budget rather than a correctness invariant
-        (labelled in the summary; a miss is still FAIL)."""
         status = "skip" if ok is None else "pass" if ok else "fail"
         self.checks.append({"name": name, "ok": None if ok is None else bool(ok), "status": status,
                             **({"budget": True} if budget else {}), **detail})
@@ -64,7 +57,6 @@ class Report:
         self.metrics[key] = value
 
     def note(self, *lines: str) -> None:
-        """Free-form lines for summary.txt (e.g. a per-stage table)."""
         self.notes += lines
 
     @property
@@ -74,7 +66,6 @@ class Report:
 
     @property
     def failed_invariants(self) -> list[str]:
-        """Failed checks that are correctness invariants (not budgets)."""
         return [c["name"] for c in self.checks if c["ok"] is False and not c.get("budget")]
 
     def write(self, http_summary: dict, http_errors: list[str]) -> None:

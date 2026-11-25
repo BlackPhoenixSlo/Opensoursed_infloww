@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * MessageRow — one PPV in the paid-messages list.
- *
- * The right-rail status line is the one piece that needs care:
- *   • is_paid=true + purchased_at set → "PAID 18m later" (humanized
- *     delta against sent_at). Green.
- *   • is_paid=true + purchased_at=null → "just paid". Green. The WS
- *     pump occasionally writes the unlock flag before the timestamp;
- *     we render the truthful "we don't know exactly when" instead of
- *     substituting sent_at or now() (which would be a lie).
- *   • is_paid=false (or null) → "UNPAID · 3d old". Muted.
- */
 
 import Link from "next/link";
 import { Paperclip } from "lucide-react";
@@ -29,7 +17,6 @@ interface Props {
   row: PaidMessageRow;
 }
 
-/** "PAID 18m later" — purchased_at minus sent_at, no future/in prefix. */
 function fmtUnlockDelta(sentIso: string | null, purchasedIso: string | null): string {
   if (!sentIso || !purchasedIso) return "later";
   const sent = new Date(sentIso).getTime();
@@ -49,12 +36,12 @@ function fmtUnlockDelta(sentIso: string | null, purchasedIso: string | null): st
 export default function MessageRow({ row }: Props) {
   const previewBody = ofPreviewText(row.body);
   const isPaid = row.is_paid;
+  // purchased_at can be null: the WS pump sometimes writes the unlock flag first; show "just paid", never substitute sent_at/now().
   const justPaid = isPaid && !row.purchased_at;
 
   return (
     <Link
       href={`/messages-pro/${row.account_id}/${row.fan_id}`}
-      // Messages Pro's own window; this page stays put.
       onClick={(e) => onPopoutClick(e, `/messages-pro/${row.account_id}/${row.fan_id}`)}
       className="block group"
     >

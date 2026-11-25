@@ -1,28 +1,5 @@
 #!/usr/bin/env python3
-"""The Vault import status read says whether the Drive import is on
-(docs/spec/infloww-parity-round-2/phase-05-drive-import.md, Testing Decisions, Seam 2; ticket 46).
-
-`GET /api/of/v2/vault/upload/status` carries `drive_import_configured` on every answer, the no-run answer included,
-resolved by the Drive key's own reader (`gdrive.api_key()`: the secrets store first, then the environment). The key,
-or any hint of it, never leaves the relay, and the field does not open the route to another Agency.
-
-  1. key unset: Owner A's status for A's Creator is 200 with the field false, on the no-run path.
-  2. a fake key in the store: true, and the response text holds neither the value nor its last four characters.
-  3. a key only in the environment: true (the reader's fallback).
-  4. a seeded finished run on the spool: the run path still carries the field.
-  5. Owner B asking for A's Creator still gets 403.
-  6. every answer carries `upload_limits`, this server's own per-file size limit and files per import, the
-     `VAULT_UPLOAD_MAX_MB` and `VAULT_UPLOAD_MAX_FILES` the batch route enforces (ticket 58: the import card's rules row
-     shows them in place of Infloww's limits): case 1 checks the no-run answer, case 6 a named run.
-
-Offline by construction: no case resolves or downloads a Drive link, and `gdrive._session` (the module's one session
-factory, which every Drive call goes through) is replaced with a function that raises. The vault spool is a
-`tempfile.mkdtemp` tree, the secrets store is the harness's throwaway file, and the key is removed from the process
-environment at the start.
-
-Run: ./venv/bin/python service/tests/test_vault_drive_configured.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -34,7 +11,6 @@ from pathlib import Path  # noqa: E402
 os.environ.pop("GOOGLE_DRIVE_API_KEY", None)
 _SPOOL = Path(tempfile.mkdtemp(prefix="vault_drive_configured_spool_"))
 os.environ["VAULT_SPOOL_DIR"] = str(_SPOOL)
-# Off the defaults (4000 MB, 40 files), so case 6 proves the answer is the configured limit, not a constant.
 os.environ["VAULT_UPLOAD_MAX_MB"] = "1234"
 os.environ["VAULT_UPLOAD_MAX_FILES"] = "7"
 

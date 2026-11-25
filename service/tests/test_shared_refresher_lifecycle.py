@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""Shared refresher lifecycle (phase-01 seam 3), real path below the OF client: with SHARED_REFRESHER=1 (module
-reloaded), `start()` plus one app-tab subscriber on a live Creator publishes one `creator_refreshed` (it entered
-`tracked`) and runs one job on its exit at its slot: `/users/me` through `server.shared_refresher_reads`, Caller kind
-`walk:shared_refresher`, background priority on the Creator's background lane, bypassing a held entry. A landed read
-moves `at` and publishes nothing. A View lease gained after it publishes once with the lease `cycle_s`; the next job
-runs within the lease cycle of the last ask, not before 0.9 x it. `stop()` ends the task. The last tab leaving: no job
-enqueued after the next tick, and one already queued is dropped unread at its turn. Knob off: `start()` starts
-nothing, no event, no read.
-Real events, app_open_warm gate, relay_cache, `_warm_fetch`; only the OF client and the registries are faked; the
-refresher's monotonic clock is injected (`_clock`) and its tick shortened (`TICK_S`).
-
-Run: ./venv/bin/python service/tests/test_shared_refresher_lifecycle.py
-"""
 import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # noqa: E401,E702
 import _harness  # noqa: E402  (first: temp DB)
 
@@ -53,7 +40,6 @@ class _Client:
 
 @contextlib.contextmanager
 def _refresher(on: bool):
-    """shared_refresher reloaded with the Knob set (or unset), the registries and OF client faked."""
     clock = [1000.0]
     client = _Client()
 
@@ -94,14 +80,12 @@ def _refresher(on: bool):
 
 
 async def _until(cond) -> None:
-    """Real time under load: wait for `cond` or DEADLINE_S; the assertions after it say what was missing."""
     end = time.monotonic() + DEADLINE_S
     while not cond() and time.monotonic() < end:
         await asyncio.sleep(TICK / 5)
 
 
 async def _ticks(n: int) -> None:
-    """`n` more refresher ticks completed: room for anything that must NOT happen to show."""
     start = TICKS[0]
     await _until(lambda: TICKS[0] >= start + n)
 
@@ -117,8 +101,7 @@ async def case_one_read_and_one_event_within_two_ticks():
     with _refresher(True) as (mod, clock, client):
         assert mod.ENABLED
         q = await events.subscribe("all", accounts=frozenset({A}), tab=True)
-        q2 = await events.subscribe("all", accounts=frozenset({A}), tab=True)     # a second tab: still one read
-        # A held entry the read must bypass (a cache hit confirms nothing).
+        q2 = await events.subscribe("all", accounts=frozenset({A}), tab=True)
         await relay_cache.get_or_fetch("users_me", A, ("users_me",), 60.0, lambda: {"stale": True})
         try:
             task = mod.start()
@@ -136,7 +119,7 @@ async def case_one_read_and_one_event_within_two_ticks():
             assert snap["boot"] <= snap["live_since"] <= snap["now"], snap
             assert 540 <= snap["cycle_s"] <= 600, "the tab cycle, 0.9-1.0 x 600"
             assert client.seen == [], "not due before its first slot (inside FLOOR_S)"
-            clock[0] += 61.0                                   # past the first slot
+            clock[0] += 61.0
             await _until(lambda: mod._at_ms.get(A) is not None)
             await _ticks(1)
             assert client.seen == [{"caller": "walk:shared_refresher", "priority": "background", "bg_held": 1}], \
@@ -159,14 +142,14 @@ async def case_lease_gain_publishes_and_reads_within_lease_cycle():
         q = await events.subscribe("all", accounts=frozenset({A}), tab=True)
         try:
             mod.start()
-            await _until(lambda: not q.empty())                # first seen at 1000
-            clock[0] += 61.0                                   # past the first slot
+            await _until(lambda: not q.empty())
+            clock[0] += 61.0
             await _until(lambda: mod._at_ms.get(A) is not None)
             await _ticks(1)
             assert len(client.seen) == 1, client.seen
             asked = clock[0]
             assert len(_drain(q)) == 1, "entered `tracked`: one event"
-            view_lease.renew(holder, [A], None)                # the Creator comes on screen
+            view_lease.renew(holder, [A], None)
             await _until(lambda: not q.empty())
             await _ticks(1)
             got = _drain(q)
@@ -174,10 +157,10 @@ async def case_lease_gain_publishes_and_reads_within_lease_cycle():
             snap = got[0]["creator_refreshed"]
             assert 108 <= snap["cycle_s"] <= 120 and snap["seq"] == 2, snap
             assert len(client.seen) == 1, "a lease gain is no burst read"
-            clock[0] = asked + 107.0                           # inside 0.9 x 120
+            clock[0] = asked + 107.0
             await _ticks(2)
             assert len(client.seen) == 1, client.seen
-            clock[0] = asked + 120.0                           # the lease cycle
+            clock[0] = asked + 120.0
             await _until(lambda: len(client.seen) >= 2)
             await _ticks(1)
             assert len(client.seen) == 2, ("next due within its lease cycle", client.seen)
@@ -201,16 +184,16 @@ async def case_last_tab_leaves_no_job_after_next_tick():
         q = await events.subscribe("all", accounts=frozenset({A}), tab=True)
         try:
             mod.start()
-            await _until(lambda: not q.empty())                # first seen at 1000
-            app_open_warm.hold(A, TICK * 8)                    # its exit busy: the job waits in the queue
-            clock[0] += 61.0                                   # past the first slot
+            await _until(lambda: not q.empty())
+            app_open_warm.hold(A, TICK * 8)
+            clock[0] += 61.0
             await _until(lambda: bool(enqueued))
             assert enqueued, "due while the tab is open: queued"
-            await events.unsubscribe("all", q)                 # the last tab closes
+            await events.unsubscribe("all", q)
             n = len(enqueued)
-            clock[0] += 3600.0                                 # long past any slot
+            clock[0] += 3600.0
             _, ex = app_open_warm._gate(A)
-            await _until(lambda: not ex.jobs and ex.task is None)   # the hold ends: the queued job's turn
+            await _until(lambda: not ex.jobs and ex.task is None)
             await _ticks(2)
             assert enqueued[n:] == [], ("no job enqueued after the last tab left", enqueued[n:])
             assert client.seen == [], ("the queued job is dropped unread at its turn", client.seen)

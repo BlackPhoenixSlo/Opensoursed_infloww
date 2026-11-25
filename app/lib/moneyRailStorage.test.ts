@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// A made-up plugin with one Messages Pro mode route (lib/chatSlots.ts).
 vi.mock("@/lib/plugins.generated.register", () => ({ PLUGINS: [{ popoutModeRoutes: ["/messages-pro/mode"] }] }));
 
 import {
@@ -38,8 +37,6 @@ describe("surfaceOf", () => {
   });
 
   it("buckets every non-chat page (and no path) as 'other'", () => {
-    // Setup/Automations/Stats/… are one bucket: none is a chatting surface,
-    // and the bucket exists so the rail can be kept off the admin pages.
     expect(surfaceOf("/")).toBe("other");
     expect(surfaceOf("/stats")).toBe("other");
     expect(surfaceOf("/automations")).toBe("other");
@@ -57,7 +54,6 @@ describe("dock persistence", () => {
 
     expect(readDock("inbox")).toEqual({ open: true, x: 40, y: 60, anchor: "top" });
     expect(readDock("group")).toEqual({ open: false, x: 700, y: 12, anchor: "bottom" });
-    // Untouched surface stays on the default bottom-right corner.
     expect(readDock("popup")).toEqual({ open: false, x: null, y: null, anchor: "bottom" });
   });
 
@@ -69,7 +65,6 @@ describe("dock persistence", () => {
       "chatterly:money-rail:v2:group",
       JSON.stringify({ open: true, x: "left", y: NaN }),
     );
-    // A bad coordinate must not pin the panel at NaN — it re-anchors.
     expect(readDock("group")).toMatchObject({ open: true, x: null, y: null });
   });
 
@@ -78,8 +73,6 @@ describe("dock persistence", () => {
       "chatterly:money-rail:v2:inbox",
       JSON.stringify({ open: false, x: 40, y: 60 }),
     );
-    // The old y WAS a distance from the top; re-reading it as a bottom offset
-    // would teleport the panel across the screen.
     expect(readDock("inbox").anchor).toBe("top");
   });
 });
@@ -94,11 +87,8 @@ describe("rail settings", () => {
   });
 
   it("keeps an explicit 'everywhere' (null) distinct from a pre-surfaces save", () => {
-    // Explicit null = the user ticked all four surfaces.
     writeSettings({ smallRows: 1, bigRows: 6, accounts: null, surfaces: null });
     expect(readSettings().surfaces).toBeNull();
-    // Missing key = a save from before surfaces existed → the house default,
-    // NOT everywhere.
     window.localStorage.setItem(
       "chatterly:money-rail:settings:v1",
       JSON.stringify({ smallRows: 2, bigRows: 6, accounts: null }),
@@ -119,7 +109,6 @@ describe("rail settings", () => {
   });
 
   it("rejects row counts outside the offered choices", () => {
-    // A hand-edited or stale value must not stretch the dock to 900 rows.
     writeSettings({ smallRows: 99, bigRows: 2, accounts: null, surfaces: null } as never);
     expect(readSettings()).toMatchObject({ smallRows: 1, bigRows: 6 });
   });
@@ -134,12 +123,6 @@ describe("rail settings", () => {
 });
 
 describe("rail settings under a full localStorage", () => {
-  // The react-query persister shares the origin's ~5MB with these writes, so
-  // setItem can throw QuotaExceededError. The persister now sheds old queries
-  // on quota (removeOldestQuery), but a rail write can still land in the
-  // window before that trim — and since writeSettings queues a SETTINGS_EVENT
-  // re-read, a silently-failed write would snap every ⚙ pick back to the
-  // saved value. These tests pin the survival path.
   const quotaError = () => new DOMException("quota", "QuotaExceededError");
 
   beforeEach(() => window.localStorage.clear());
@@ -154,8 +137,6 @@ describe("rail settings under a full localStorage", () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw quotaError(); });
 
     writeSettings({ smallRows: 3, bigRows: 8, accounts: ["a"], surfaces: null });
-    // Let the queued SETTINGS_EVENT fire — this is the re-read that used to
-    // restore the old value.
     await new Promise<void>((r) => queueMicrotask(r));
 
     expect(readSettings()).toEqual({ smallRows: 3, bigRows: 8, accounts: ["a"], surfaces: null });
@@ -209,7 +190,6 @@ describe("surface visibility", () => {
     const hidden = withRailOn(s, "inbox", false);
     expect(hidden).toEqual({ ...s, surfaces: ["popup", "group", "other"] });
     expect(railVisibleOn(hidden, "inbox")).toBe(false);
-    // Shown again on every surface: back to null, "everywhere".
     expect(withRailOn(hidden, "inbox", true).surfaces).toBeNull();
     expect(withRailOn({ ...s, surfaces: ["inbox", "group"] }, "group", false).surfaces).toEqual(["inbox"]);
     expect(withRailOn({ ...s, surfaces: ["inbox"] }, "popup", true).surfaces).toEqual(["inbox", "popup"]);
@@ -316,8 +296,6 @@ describe("resolveRailAccounts", () => {
   });
 
   it("falls back to all when the pick no longer matches any live model", () => {
-    // Otherwise removing a model would leave the rail permanently empty with
-    // no hint as to why.
     expect(resolveRailAccounts({ ...base, accounts: ["gone"] }, active))
       .toEqual(["a", "b", "c"]);
   });

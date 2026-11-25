@@ -1,4 +1,3 @@
-/** VariantsField: the one text-variant pool (Trigger editors, PremadeForm, funnel steps); the caller owns the list. */
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";

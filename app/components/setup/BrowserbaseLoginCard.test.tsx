@@ -1,25 +1,3 @@
-/**
- * BrowserbaseLoginCard — the operator-facing states of the served Browserbase login.
- *
- *   - the copy says the login runs in a remote browser, needs no extension, and that the proxy is automatic (a row's
- *     re-link: the account keeps its proxy);
- *   - no proxy picker: a new login's start omits `proxy` (the relay's automatic pick), a re-link sends "none";
- *   - a success names the attached proxy and hands the account on at once (onLinked), like Paste cURL;
- *   - while the job runs the form is replaced by plain-language progress, the live view, a full-screen link and Stop login;
- *   - a refused start reads "Couldn't start the login: …";
- *   - on OnlyFans' 2FA prompt ("otp") a numeric code field (autofocused, 6-8 digits) and Submit code appear above the
- *     live view; Submit POSTs {code} to /admin/login/remote/{id}/otp; a code OnlyFans rejected, one the relay couldn't
- *     type, or a refused POST, shows an error and the field takes another code; the field is locked while the code is
- *     in flight and while OnlyFans checks it (a poll read before the code was in never unlocks it); leaving the prompt
- *     (or a new job) clears the typed code and the error;
- *   - the field drops only spaces and dashes: a pasted "1234-5678" is the 8-digit code, anything else stays visibly
- *     wrong (Submit off) instead of turning into another code;
- *   - unmounting the card stops a running job (also one whose start answers after the unmount), never a finished one;
- *     `onBusy` hears the job run and stop;
- *   - a job the relay no longer knows (status 404) ends as lost: polling stops and the form comes back;
- *   - a status read failing otherwise (500) shows its error under Stop login (never a blank card, also before the first
- *     status) and the poll goes on; failing for POLL_GIVE_UP_MS straight it stops, with Stop login and Try again.
- */
 import { onAccountSessionCaptured } from "@/lib/accountSession";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -73,7 +51,6 @@ describe("BrowserbaseLoginCard", () => {
   it("says the proxy is automatic and can be changed later", () => {
     render(<BrowserbaseLoginCard />, { wrapper });
     expect(screen.getByText(/^Proxy assigned automatically \(an account already on one keeps it\)\. You can add yours after linking\.$/)).toBeInTheDocument();
-    // No proxy picker, no How it works fold.
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.queryByRole("button", { name: "How it works" })).toBeNull();
     expect(screen.queryByText(/Proxy for this account/)).toBeNull();
@@ -199,7 +176,7 @@ describe("BrowserbaseLoginCard", () => {
     expect(relayPost.mock.calls.filter(([p]) => p === "/admin/login/remote/job1/otp")).toHaveLength(1);
     await act(async () => answer(job({ state: "otp", message: "checking the 2FA code" })));
     expect(await screen.findByText("Checking the code with OnlyFans…")).toBeInTheDocument();
-    expect(screen.getByLabelText("2FA code")).toBeDisabled(); // still locked while OnlyFans checks it
+    expect(screen.getByLabelText("2FA code")).toBeDisabled();
     expect(screen.getByLabelText("2FA code")).toHaveValue("");
     current = job({ state: "otp", message: "OnlyFans didn't accept that code (or hasn't answered yet) — try again", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
     await act(async () => { await client.refetchQueries({ queryKey: ["remote-login", "job1"] }); });
@@ -215,12 +192,12 @@ describe("BrowserbaseLoginCard", () => {
     relayGet.mockImplementation((path: string) => path === "/admin/proxies"
       ? Promise.resolve({ proxies: [], pool: { size: 0, account_ids: [] } })
       : new Promise<RemoteLoginStatus>((ok) => { stale = ok; }));
-    void client.refetchQueries({ queryKey: ["remote-login", "job1"] }); // a poll in flight, read before the code
+    void client.refetchQueries({ queryKey: ["remote-login", "job1"] });
     fireEvent.change(field, { target: { value: "123456" } });
     relayPost.mockImplementation(() => Promise.resolve(job({ state: "otp", message: "checking the 2FA code", live_view_url: ask.live_view_url })));
     fireEvent.click(screen.getByRole("button", { name: "Submit code" }));
     expect(await screen.findByText("Checking the code with OnlyFans…")).toBeInTheDocument();
-    await act(async () => { // the stale poll answers now; give react-query time to land it
+    await act(async () => {
       stale(ask);
       await new Promise((r) => setTimeout(r, 50));
     });
@@ -239,9 +216,9 @@ describe("BrowserbaseLoginCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Submit code" }));
     await waitFor(() => expect(relayPost).toHaveBeenCalled());
     current = job({ state: "typing", message: "waiting for OnlyFans", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
-    await act(async () => { await client.refetchQueries({ queryKey: ["remote-login", "job1"] }); }); // the code went in
+    await act(async () => { await client.refetchQueries({ queryKey: ["remote-login", "job1"] }); });
     await waitFor(() => expect(screen.queryByLabelText("2FA code")).not.toBeInTheDocument());
-    await act(async () => { // the POST's answer, read before the worker took the code, lands last
+    await act(async () => {
       answer(job({ state: "otp", message: "checking the 2FA code", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" }));
       await new Promise((r) => setTimeout(r, 50));
     });
@@ -265,7 +242,7 @@ describe("BrowserbaseLoginCard", () => {
     for (const typed of ["12a3456", "123456789", "123.456"]) {
       await user.clear(field);
       await user.type(field, typed);
-      expect(field).toHaveValue(typed); // not turned into another code
+      expect(field).toHaveValue(typed);
       expect(submit).toBeDisabled();
     }
     await user.clear(field);
@@ -365,7 +342,7 @@ describe("BrowserbaseLoginCard", () => {
     it("before the first status: progress, Stop login and the error, never a blank card; polling goes on", async () => {
       fail();
       start();
-      await tick(8_000); // the first read and its retries
+      await tick(8_000);
       expect(screen.getByRole("status")).toHaveTextContent("Waiting for the login's first status…");
       expect(screen.getByRole("button", { name: "Stop login" })).toBeInTheDocument();
       expect(screen.getByRole("alert")).toHaveTextContent("Couldn't read this login's status (relay 500). Still trying…");

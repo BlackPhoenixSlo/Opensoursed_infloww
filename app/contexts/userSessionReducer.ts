@@ -1,103 +1,26 @@
-/**
- * The signed-in user's session as a pure transition: `decideUserSession(state,
- * action) -> { state, effects }`. UserContext is the shell — it turns fetch
- * results (via `probeAction`), focus/visibility and the login/logout calls
- * into actions, and performs the effects in order. The rules:
- *
- *   • `boot` is where the boot probe is: `probing` (in flight — the gate
- *     stays shut unless a warm-boot snapshot is painted or the form is up),
- *     `settled`, or `unreachable`.
- *   • `bootStart` (mount; Retry, on the retry screen or a banner, with no snapshot) paints
- *     the snapshot, if there is one, and probes /auth/me (`fetchMe` "boot"),
- *     dropping any boot probe already in flight (an effect re-run). Once the
- *     boot settled it is a no-op: a session is never rebooted in place; so is
- *     a banner's Retry while its probe still runs (its late answer is applied).
- *   • `bootOk` adopts what the boot probe answers (null = signed out);
- *     `bootAuthErr` (401) signs out. If it answers a DIFFERENT user than the
- *     snapshot painted, the caches already read under that identity are wiped
- *     first (`wipeCaches`), as a login would.
- *   • `bootNetErr` (relay unreachable) neither signs in nor out: `user` null,
- *     `boot` unreachable — the gate shows a retry screen, not the login form
- *     (unless a "slow" banner already put the form up).
- *     The snapshot is kept (the next boot still paints warm) and so is
- *     `painted` (the retry's answer still wipes on a switch). The snapshot
- *     must not turn a network hiccup into a session that outlives its cookie,
- *     so nobody is shown signed in until the server says so.
- *   • `banner`: the sign-in form is up over an unsettled boot, with a notice
- *     and a Retry. `bootBlocked` (a 403: the proxy in front of the relay
- *     refuses) sets "blocked" at once, `probeSlow` (no answer after
- *     ME_SLOW_MS, nothing painted) sets "slow" while the probe keeps running.
- *     Both set `formUp`: the gate stops waiting on the probes (the chatter
- *     one too — /chatter/me has no timeout), so <Landing> stays mounted
- *     through Retry and every late answer, and a late user is the shell at
- *     once. Any user answer settles the boot and clears the banner (a user →
- *     the shell, null / 401 → the plain form), `formUp` stays; a 403 →
- *     "blocked"; a network error keeps a "slow" banner (the form is already
- *     up) but turns a "blocked" one into the retry screen (`formUp` off).
- *     Neither signs in nor out: the snapshot and `painted` are kept, as for
- *     `bootNetErr`. `formUp` is cleared only by that network error, a
- *     warm-boot `bootStart` (snapshot painted) and `logout` (a flow's user keeps it).
- *   • `revalidateStart` (window focus, tab visible again) probes again —
- *     only once the boot settled, and unless the tab is hidden or a
- *     revalidation is already in flight. While `unreachable` it is a no-op:
- *     only Retry re-runs the boot (a focus must not shut the gate on a
- *     signed-in chatter's shell), so only boot answers ever settle a boot.
- *   • `revalidateOk` adopts the answer (null signs out), `revalidateAuthErr`
- *     signs out, `revalidateNetErr` KEEPS the current user (retry on the next
- *     focus). It never wipes on an identity change — only boot does.
- *   • `probeAction` sorts a probe's outcome: a 2xx is Ok (a signed-out cookie
- *     is a 200 `null`), 401 is AuthErr, a 403 is `bootBlocked` at boot and
- *     NetErr on a revalidation (the user is kept), a thrown fetch or any other
- *     status (a 5xx from the proxy in front of a dead relay, a 429) is NetErr.
- *   • `confirmed` is a user the server just returned outside the probes
- *     (login, register, impersonation's /auth/me); `unconfirmed` is
- *     impersonation's synthesized stub, which must never be snapshotted;
- *     `logout` (logout, the chatter flip, stopImpersonating answered no one)
- *     signs out. Each supersedes any probe in flight (`dropProbes`: its late
- *     answer would speak for the cookie before the flow) and settles the boot.
- *     The flows' own cache wipes and logout's navigation stay in those flows:
- *     they are unconditional.
- *
- * Every confirmed user change goes with a `snapshot` effect (write it; null
- * or an impersonation overlay clears it — lib/authSnapshot.ts), so the two
- * can't drift; the unconfirmed ones (bootStart's paint, bootNetErr's blank)
- * leave the snapshot as it is. Redirecting a signed-out user is the gate's job (`gateScreen`), so
- * there is no redirect effect.
- */
-
 import type { AuthedUserDTO } from "./UserContext";
 
 export type ProbePhase = "boot" | "revalidate";
 
 export type BootStatus = "probing" | "settled" | "unreachable";
 
-/** The sign-in form's notice over an unsettled boot: the proxy answered 403, or the relay is silent. */
 export type AuthBanner = "blocked" | "slow";
 
 export interface UserSessionState {
   user: AuthedUserDTO | null;
   boot: BootStatus;
-  /** The snapshot boot painted, until a boot answer settles it. */
   painted: AuthedUserDTO | null;
-  /** A focus/visibility revalidation is in flight. */
   revalidating: boolean;
-  /** The sign-in form is up with this notice until a boot answer settles it. */
   banner: AuthBanner | null;
-  /** A banner put the form up: the gate no longer waits on either probe (survives the banner). */
   formUp: boolean;
 }
 
 export type UserSessionAction =
   | { type: "bootStart"; snapshot: AuthedUserDTO | null }
-  /** Boot /auth/me answered 2xx; `user` is null when the body carries no user_id. */
   | { type: "bootOk"; user: AuthedUserDTO | null }
-  /** Boot /auth/me threw, timed out, or answered a non-401 error status. */
   | { type: "bootNetErr" }
-  /** Boot /auth/me answered 401. */
   | { type: "bootAuthErr" }
-  /** Boot /auth/me answered 403: the proxy in front of the relay refuses. */
   | { type: "bootBlocked" }
-  /** Boot /auth/me has not answered after ME_SLOW_MS; it keeps running. */
   | { type: "probeSlow" }
   | { type: "revalidateStart"; hidden: boolean }
   | { type: "revalidateOk"; user: AuthedUserDTO | null }
@@ -109,10 +32,8 @@ export type UserSessionAction =
 
 export type UserSessionEffect =
   | { type: "fetchMe"; phase: ProbePhase }
-  /** writeAuthSnapshot(user): null clears it. */
   | { type: "snapshot"; user: AuthedUserDTO | null }
   | { type: "wipeCaches" }
-  /** Drop the answer of every /auth/me probe in flight. */
   | { type: "dropProbes" };
 
 export interface UserSessionStep {
@@ -124,11 +45,9 @@ export const initialUserSession: UserSessionState = {
   user: null, boot: "probing", painted: null, revalidating: false, banner: null, formUp: false,
 };
 
-/** What one GET /auth/me ended in. */
 export type MeOutcome =
   | { type: "answered"; user: AuthedUserDTO | null }
   | { type: "refused"; status: number }
-  /** The fetch threw or the body was unreadable; `error` is what was thrown. */
   | { type: "netError"; error: unknown };
 
 const PROBE_ACTIONS = {
@@ -136,7 +55,6 @@ const PROBE_ACTIONS = {
   revalidate: { ok: "revalidateOk", auth: "revalidateAuthErr", net: "revalidateNetErr", blocked: "revalidateNetErr" },
 } as const;
 
-/** A /auth/me outcome as the action for its phase. */
 export function probeAction(phase: ProbePhase, o: MeOutcome): UserSessionAction {
   const t = PROBE_ACTIONS[phase];
   if (o.type === "answered") return { type: t.ok, user: o.user };
@@ -146,10 +64,6 @@ export function probeAction(phase: ProbePhase, o: MeOutcome): UserSessionAction 
 
 export type GateScreen = "loading" | "signed-in" | "retry" | "login";
 
-/** Where AuthGate sends a session; a signed-in chatter is signed in too, and
- *  the gate waits on the chatter probe as well — except once a banner put the
- *  form up (`formUp`): the form or the shell at once, whatever either probe is
- *  doing (/chatter/me has no timeout). The retry screen = unreachable, no form up. */
 export function gateScreen(
   s: Pick<UserSessionState, "user" | "boot" | "formUp">,
   chatter: { present: boolean; loading: boolean },
@@ -160,19 +74,17 @@ export function gateScreen(
   return s.boot === "unreachable" ? "retry" : "login";
 }
 
-/** Commit a server-confirmed principal (and its snapshot). */
 function commit(state: UserSessionState, user: AuthedUserDTO | null): UserSessionStep {
   return { state: { ...state, user }, effects: [{ type: "snapshot", user }] };
 }
 
-/** The boot probe settled with `user` (null = signed out). */
 function settleBoot(state: UserSessionState, user: AuthedUserDTO | null): UserSessionStep {
+  // Only boot wipes caches on an identity change; revalidation never does.
   const switched = !!state.painted && !!user && user.user_id !== state.painted.user_id;
   const step = commit({ ...state, boot: "settled", painted: null, banner: null }, user);
   return switched ? { ...step, effects: [{ type: "wipeCaches" }, ...step.effects] } : step;
 }
 
-/** A flow's principal: drops the probes in flight and settles the boot; logout puts the gate back to waiting. */
 function adopt(state: UserSessionState, user: AuthedUserDTO | null, snapshot: AuthedUserDTO | null): UserSessionStep {
   return {
     state: { user, boot: "settled", painted: null, revalidating: false, banner: null, formUp: !!user && state.formUp },
@@ -194,17 +106,17 @@ export function decideUserSession(state: UserSessionState, action: UserSessionAc
       return settleBoot(state, action.user);
     case "bootAuthErr":
       return settleBoot(state, null);
+    // Unreachable relay neither signs in nor out: a network hiccup must not outlive-cookie a snapshotted session, so nobody is shown signed in.
     case "bootNetErr": {
-      // Under "slow" the form is already up: it stays, banner and all; else (a Retry from "blocked" too) the retry screen.
       const slow = state.banner === "slow";
       return { state: { ...state, user: null, boot: "unreachable", banner: slow ? "slow" : null, formUp: slow }, effects: [] };
     }
     case "bootBlocked":
       return { state: { ...state, user: null, boot: "unreachable", banner: "blocked", formUp: true }, effects: [] };
     case "probeSlow":
-      // Only a boot in flight with nothing painted: a warm boot's shell stays.
       if (state.boot !== "probing" || state.user) return { state, effects: [] };
       return { state: { ...state, banner: "slow", formUp: true }, effects: [] };
+    // No-op while unreachable: only Retry re-runs the boot, so a focus can't shut the gate on a signed-in shell.
     case "revalidateStart":
       if (action.hidden || state.revalidating || state.boot !== "settled") return { state, effects: [] };
       return { state: { ...state, revalidating: true }, effects: [{ type: "fetchMe", phase: "revalidate" }] };
@@ -212,8 +124,8 @@ export function decideUserSession(state: UserSessionState, action: UserSessionAc
       return commit({ ...state, revalidating: false }, action.user);
     case "revalidateAuthErr":
       return commit({ ...state, revalidating: false }, null);
+    // Transient hiccup: keep the user, retry on next focus.
     case "revalidateNetErr":
-      // A transient hiccup — keep the user, retry next focus.
       return { state: { ...state, revalidating: false }, effects: [] };
     case "confirmed":
       return adopt(state, action.user, action.user);

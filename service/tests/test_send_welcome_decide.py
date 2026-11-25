@@ -1,30 +1,7 @@
 #!/usr/bin/env python3
-"""
-send_welcome_decide.partition + send_welcome._hold_segments — table tests over
-send_welcome's two pure halves. No DB, no OF, no clock: every row is data in,
-decision out.
-
-  case_partition_reason_table:   one row per reason, first match wins.
-  case_precedence_table:         a fan who hits several filters gets the first.
-  case_welcomed_never_welcome:   a `welcome_sent` fan is never Welcome, whatever
-                                 else holds (test_fan, OF welcome, audience).
-  case_established_never_welcome:  the NOT-NEW gate on the notification path.
-  case_of_welcome_on:            OF's own welcome on -> Welcome(by_of=True), which
-                                 _welcome_one routes to the claim + follow-ups path
-                                 (test_send_welcome's after_of_welcome cases drive it);
-                                 off / unreadable -> ours.
-  case_test_fan_bypasses_feed_filters:  only welcomed + audience apply to it.
-  case_order_and_counts:         feed order kept; welcomes/skip_counts helpers.
-  case_hold_segments_table:      gif vs text, typing on/off, paced/unpaced,
-                                 interruptible split; segments sum to the hold.
-  case_hold_segments_clamped_pace:  absurd quiet overrides are clamped by the
-                                 sampler and the split still sums to total_s.
-
-Run: ./venv/bin/python service/tests/test_send_welcome_decide.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness  # MUST be first: binds temp DB
 
 from collections import Counter  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
@@ -136,13 +113,9 @@ def case_established_never_welcome():
 
 
 def case_of_welcome_on():
-    # OF's own welcome really on: he is still admitted (a new sub, a max_welcomes
-    # slot, a lease), but the run only claims him + queues follow-ups.
     assert one(sub(1, m(-5)), of_on=True) == Welcome(sub(1, m(-5)), by_of=True)
-    # Off, or unreadable (None): this rule's own welcome.
     assert one(sub(1, m(-5)), of_on=False) == Welcome(sub(1, m(-5)), by_of=False)
     assert one(sub(1, m(-5)), of_on=None) == Welcome(sub(1, m(-5)), by_of=False)
-    # It never rescues a skipped fan.
     assert verdict(one(sub(1, m(-5)), of_on=True, established={1})) == "established"
 
 
@@ -178,7 +151,6 @@ def case_hold_segments_table():
     quiet = Pace(total_s=20.0, quiet_s=12.0, think_at_s=2.0, think_for_s=1.0)
     noquiet = Pace(total_s=6.0)
     rows = [
-        # (id, kwargs, [(seconds, indicator, quiet_s, check_after)])
         ("unpaced text, typing on", dict(pace=None, typing_s=4.0, is_gif=False,
                                          typing_on=True, interruptible=False),
          [(4.0, True, 0.0, False)]),
@@ -210,7 +182,6 @@ def case_hold_segments_table():
     bad = [f"{rid}: {got} != {want}" for rid, kw, want in rows
            if (got := _shape(sw._hold_segments(**kw))) != want]
     assert not bad, "\n  " + "\n  ".join(bad)
-    # The think phases ride the typing segment of a split.
     segs = sw._hold_segments(pace=quiet, typing_s=4.0, is_gif=False, typing_on=True,
                              interruptible=True)
     assert (segs[1].think_at_s, segs[1].think_for_s) == (2.0, 1.0)
@@ -218,8 +189,6 @@ def case_hold_segments_table():
 
 
 def case_hold_segments_clamped_pace():
-    # Malformed / absurd raw-JSON quiet bands: the sampler clamps, and the split
-    # never adds time to the one number that moves a clock.
     for oq, gq in (([0, 10_000], [-5, 99_999]), (["x", None], "junk"), (None, None)):
         for role, text, has_image in (("opener", "Hey S-S-S-Sexy Sam ! !!", True),
                                       ("gap", "just woke up... it's Friday", False),

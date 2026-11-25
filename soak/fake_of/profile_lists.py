@@ -1,25 +1,3 @@
-"""Profile list surfaces of the fake OnlyFans (Phase 3 tickets 69 and 70: Social media's buttons' and Things I Like's
-links' fake-mode proofs), one state per list for every read and write.
-
-Mounted from app.py beside the settings surface (after automations' gate rows, so its fault knobs still apply):
-  GET    /users/social/buttons        the buttons, oldest first (a bare list: service/of_reads.py `social_buttons`)
-  GET    /init                        only `{socialMediaProviders, socialButtonsMaxLimit}` (OF's lists, measured live
-                                      2026-11-21: SOCIAL_PROVIDERS, 10): the Add button form's Button select
-  PUT    /users/social/buttons        `{socialMedia, label, link, username}` appended (of_sends `add_social_button`);
-                                      answers the full list (the capture record's response_shape); a `socialMedia`
-                                      not in SOCIAL_PROVIDERS gets OF's 400 (INVALID_SOCIAL, measured live 2026-11-21)
-  DELETE /users/social/buttons/{id}   removes that button only (of_sends `delete_social_button`); `{success: true}`
-  GET    /users/links                 Things I Like's links, oldest first (of_reads `users_links`), each in OF's
-                                      shape `{id, sort, url, title, description, image}` (measured live
-                                      2026-11-21: the link is `url`, no `link` key)
-  PUT    /users/links                 `{link}` appended as such an item (of_sends `add_users_link`); answers the
-                                      full list
-  DELETE /users/links/{id}            removes that link only (of_sends `delete_users_link`); `{success: true}`
-
-The account starts with no buttons and no links, so the proof's undo puts the read back as it was. Every write is logged with its
-body and applied before the response, so the next read reflects it. The replies follow the capture record's shapes;
-the ids are the fake's own.
-"""
 from __future__ import annotations
 
 import json
@@ -31,7 +9,6 @@ from starlette.responses import JSONResponse, Response
 
 _STATE = "_soak_profile_lists"
 SOCIAL_KEYS = ("socialMedia", "label", "link", "username")
-# OF's GET /init socialMediaProviders, measured live 2026-11-21 (22 items, OF's order) with socialButtonsMaxLimit 10.
 SOCIAL_PROVIDERS = [
     {"socialMedia": "instagram", "label": "Instagram", "isLink": False, "isShowAt": False},
     {"socialMedia": "x", "label": "X", "isLink": False, "isShowAt": False},
@@ -57,9 +34,7 @@ SOCIAL_PROVIDERS = [
     {"socialMedia": "spoilme", "label": "SpoilMe", "isLink": False, "isShowAt": False},
 ]
 SOCIAL_MAX = 10
-# OF's answer to PUT /users/social/buttons with socialMedia "example" (measured live 2026-11-21). ASSUMPTION: OF gives
-# this whole body (its username error included) for any socialMedia outside its providers; the username rule per
-# provider is not captured, so the fake checks socialMedia alone.
+# ASSUMPTION: OF gives this whole body for any socialMedia outside its providers; the per-provider username rule is not captured.
 INVALID_SOCIAL = {"error": {"code": 0, "message": "SocialMedia contains invalid value"},
                   "errors": {"socialMedia": ["SocialMedia contains invalid value"], "username": ["Username not allowed."]}}
 
@@ -69,8 +44,6 @@ def social_item(body: dict) -> dict[str, Any]:
 
 
 def link_item(body: dict) -> dict[str, Any]:
-    """OF's GET /users/links item for a PUT `{link}`: `url` the link; OF's scraped title/description/preview are the
-    fake's blanks (it fetches no page)."""
     return {"sort": 0, "url": str(body.get("link") or ""), "title": "", "description": "",
             "image": {"src": "", "thumbs": {"c50": "", "c144": ""}, "width": 0, "height": 0}}
 
@@ -81,7 +54,6 @@ def rows(fake, kind: str) -> list[dict[str, Any]]:
 
 
 def _social_refusal(body: dict) -> JSONResponse | None:
-    """OF's 400 for a socialMedia none of its providers has, else None."""
     if body.get("socialMedia") in {p["socialMedia"] for p in SOCIAL_PROVIDERS}:
         return None
     return JSONResponse(INVALID_SOCIAL, status_code=400)
@@ -122,7 +94,7 @@ def _surface(kind: str, item, first_id: int, refuse=lambda body: None):
 
 
 _social = _surface("social", social_item, 6900, _social_refusal)
-_links = _surface("links", link_item, 7000)  # ticket 70
+_links = _surface("links", link_item, 7000)
 
 ROUTES: list[tuple[str, re.Pattern, Any]] = [
     ("GET", re.compile(r"/api2/v2/init"), _init),

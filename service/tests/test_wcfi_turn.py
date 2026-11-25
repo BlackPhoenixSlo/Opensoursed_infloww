@@ -1,40 +1,7 @@
 #!/usr/bin/env python3
-"""
-welcome_chatter_for_info's per-fan `_turn` (the run loop's body) and `_fold` (its
-stats), called directly on a real gathered candidate, a fake OF and a patched LLM.
-
-  case_sent                  a reply lands: kind "sent", replies_sent 1, the bubble at
-                             OF, the lease back and the 10 s rest set
-  case_skipped_cooldown      a resting fan: kind "cooldown", no LLM call, nothing sent
-  case_skipped_locked        another engine holds his lease: kind "locked", nothing sent
-  case_echo_only_dropped     a reply that only parrots his DM: kind "echo", errors 1,
-                             nothing sent, the turn still counted (turn_counter +1)
-  case_lost_slot             SlotLost at bubble 2: _turn raises, bubble 1 recorded
-                             (send stamp, rest, lease released)
-  case_lost_slot_at_sticker  SlotLost at the sticker's hold after the text landed: the
-                             bubble recorded (send stamp), no gif, then _turn raises —
-                             mark-read never called, the lease released
-  case_no_id_quarantined     200 without an id from a lapsed sub: kind "no_id",
-                             errors 1, the fan rested a week
-  case_cap_raises            the LLM cap / a rejected key raise out of `_turn` (run()
-                             stops on them), nothing sent, the lease released
-  case_persist_seam          a bubble persists through the module's
-                             `write_outbound_attribution`, looked up per call (slop's
-                             wcfi-turn-sent-twice patches it there)
-  case_fold_table            `_fold` (pure): each outcome's counters summed under the
-                             stats keys run() returns, newly_skiplisted in the skips
-  case_run_stats_keys        run_once: the stats keys (in order) run() always returned
-  case_model_waits_free_the_slot  the extract and the reply wait on the model off the
-                             run slot (a 2nd run gets the one permit); the reply lands once
-  case_slot_lost_in_model_wait_sends_no_more  slot not back after the 2nd fan's reply
-                             call: run errors, he gets nothing (no turn, no lease), the
-                             1st reply stays recorded; the next run answers only him
-
-Run: ./venv/bin/python service/tests/test_wcfi_turn.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -82,7 +49,6 @@ class FakeOF:
 
 @contextlib.contextmanager
 def _patched_llm(reply: str):
-    """llm_client.chat answers `reply` (calls recorded); the real one is put back."""
     calls: list = []
 
     async def _chat(**kw):
@@ -107,8 +73,6 @@ async def _seed(aid: str, fan_id: int, msgs: list[tuple[str, str]]) -> None:
 
 
 async def _turn(aid: str, fan_id: int, client) -> a05.TurnOutcome:
-    """One `_turn` exactly as run() calls it: its config (the LLM gate passed, not
-    capped), his gathered candidate, his Fan row, no profile, the run's `now`."""
     model = await a05.resolve_model(aid, a05._PURPOSE, None)
     cfg = await a05._load_run_config(aid, {}, a05._PayloadKnobs.of({}), model=model,
                                      llm_capped=False)
@@ -298,7 +262,6 @@ def case_fold_table():
 
 
 async def case_run_stats_keys():
-    """run()'s result: the keys (in order) it has always returned."""
     aid = "turn_stats"
     await _seed(aid, 7107, [("in", "hi there")])
     real_client = ax._make_client
@@ -330,7 +293,6 @@ async def _profile_chat(**kw):
 
 @contextlib.contextmanager
 def _run_seams(chat):
-    """run_once's OF client is a FakeOF and llm_client.chat is `chat`; both put back."""
     of, real_client, real_chat = FakeOF(), ax._make_client, llm_client.chat
     ax._make_client = lambda account_id: of  # type: ignore[attr-defined]
     llm_client.chat = chat  # type: ignore[attr-defined]
@@ -341,9 +303,6 @@ def _run_seams(chat):
 
 
 async def case_model_waits_free_the_slot():
-    """The extract and the reply each wait on the model off the run slot: a
-    second run takes the one permit meanwhile, and the reply still goes out once
-    (extract before reply, its facts saved)."""
     for aid, fid, park in (("turn_freed_x", 7121, _extract_call),
                            ("turn_freed_r", 7122, lambda kw: not _extract_call(kw))):
         await _seed(aid, fid, [("in", "haha im 31 btw")])
@@ -356,9 +315,6 @@ async def case_model_waits_free_the_slot():
 
 
 async def case_slot_lost_in_model_wait_sends_no_more():
-    """The slot is not back within the take-back budget after the 2nd fan's
-    reply call: he gets nothing (no turn counted, no lease left; the next run
-    answers him); the 1st fan's reply stays recorded and is not sent again."""
     aid = "turn_freed_lost"
     for fid in (7123, 7124):
         await _seed(aid, fid, [("in", "hey")])

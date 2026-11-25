@@ -1,50 +1,3 @@
-"""Auto_Exclude past the 20k paging backstop: this flow's part of the slop relay (lib/relay.py loads
-it; `wire` runs at the end of its `_wire`). It adds methods to lib/automation_relay.py's offline
-walker (the lane's OF client, `ax._make_client` without `OF_API_ORIGIN`) with
-`WALKER_MIXINS.insert(0, ...)`; each one calls `super()` (the walker's own answer) unless the
-scenario wrote `$DEMO_SHOTS_TMP/auto-exclude.json` and armed it (`POST /__slop/auto-exclude/arm`),
-and then only for the Creators that file names.
-
-`auto-exclude.json` {"page_ms", "add_ms", "accept_ms", "gap_s", "refresh_every_s",
-  "accounts": {account: {"roster": [fan ids], "members": [the pre-made Auto_Exclude],
-                         "refuse": [ids], "watch": [ids], "exact": bool}}}. Armed:
-  subscribers(...)              OF's fans roster (`roster`, sorted, 50 a page): a pre-send roster
-                                read (`audiences.roster_audience_blocking`).
-  list_users_in(...)            the walker's in-process list, after `page_ms` (a guess at OF's page).
-  add_user_to_list(...)         after `add_ms` (a guess at OF's per-user add): an id in `refuse` is
-                                OF's 403 "Unable to add user to user list" (a deleted / blocked
-                                account, declared), never listed; else the walker's add.
-  remove_user_from_list(...)    after `add_ms`, the walker's remove.
-  send_mass_message(...)        OF accepts after `accept_ms`; AT ACCEPT the recipients are `roster`
-                                minus every member of its `excluded_user_lists` (the walker's lists,
-                                read then). Journaled: {ev: send, account_id, text, t, n, leak:
-                                recipients ∩ watch, leak_excl: recipients ∩ the send's own
-                                `excluded_users` (the product's guard), lists, and for an `exact`
-                                Creator only members: the Auto_Exclude's members, excl: the
-                                send's `excluded_users`}.
-The Creator's Auto_Exclude is pre-made at arm (automation_relay `add_lists`, name "Auto_Exclude"),
-so the product finds it through `get_lists` as on a live account.
-
-Journal `$DEMO_SHOTS_TMP/auto-exclude.jsonl` (one write(2) per line, O_APPEND), in order:
-  send            above.
-  refresh_begin / refresh_end   around the product's `audiences._refresh_auto_exclude` (patched by
-                  module attr, observation only): t, account_id; at the end the product's stats, the
-                  list's size and which dropped ids are members again (`dropped_back`).
-  add             an add of a dropped id: t, account_id, uid, ok, via ("refresh" inside the
-                  product's `_ae_apply_batch_blocking`, else "send").
-  hold            one `broadcast_lock` hold taken by a refresh (`audiences.broadcast_lock`
-                  patched by module attr, timing only): t, account_id, ms (acquired -> released).
-  drop            `POST /__slop/auto-exclude/drop {account_id, ids}`: OF's side drops those members
-                  (an operator edit on OF, declared); no product call.
-Counters per Creator (pages, adds / removes by via, refused) at `GET /__slop/auto-exclude`;
-`GET /__slop/auto-exclude/members?account_id=` answers the Auto_Exclude's members now.
-
-Bypasses, declared (armed only): `of_write_paced`'s 11 s per-Creator write gap is passed as
-`gap_s` (the gate is the product's, as lib/priority_mass_relay.py does);
-`auto_exclude_decide.REFRESH_EVERY_S` is set to `refresh_every_s` (time compression: the refresh
-cadence, the rule the same); `server._load_client` answers the lane's client for an armed Creator, so
-the composer route and the automations share one OF account, its lists and this journal.
-"""
 import contextvars
 import dataclasses
 import json
@@ -54,18 +7,18 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from fastapi import Request   # module level: the routes' annotations resolve against this module
+from fastapi import Request
 
-AE_NAME = "Auto_Exclude"          # audiences.AUTO_EXCLUDE_LIST_NAME
+AE_NAME = "Auto_Exclude"
 QUEUE_BASE = 8_900_000_000
-_tl = threading.local()           # .via = "refresh" inside the product's refresh step
+_tl = threading.local()
 _jlock = threading.Lock()
-_cfg: dict | None = None          # the armed config (None = inert)
-_acc: dict[str, dict] = {}        # account -> {roster (sorted list), roster_set, refuse, watch, exact, lid}
+_cfg: dict | None = None
+_acc: dict[str, dict] = {}
 _drops: dict[str, set[int]] = {}
 _counts: Counter = Counter()
 _sends = [0]
-_in_refresh = contextvars.ContextVar("slop_ae_in_refresh", default=None)   # account inside its refresh
+_in_refresh = contextvars.ContextVar("slop_ae_in_refresh", default=None)
 
 
 def _tmp() -> Path:
@@ -87,7 +40,6 @@ def _line(row: dict) -> None:
 
 
 def read_journal(tmp: Path) -> list[dict]:
-    """The journal under `tmp` (the run's DEMO_SHOTS_TMP), in order; the scenario reads it."""
     f = tmp / "auto-exclude.jsonl"
     if not f.is_file():
         return []
@@ -101,7 +53,6 @@ def _sleep_ms(key: str) -> None:
 
 
 class _AutoExcludeWalker:
-    """The armed answers above; `super()` (the walker's) for any other Creator or unarmed."""
 
     def _ae(self) -> dict | None:
         return _acc.get(str(self.account_id)) if _on() else None
@@ -130,7 +81,7 @@ class _AutoExcludeWalker:
         _counts[(aid, f"adds_{via}" if ok else f"refused_{via}")] += 1
         if uid in _drops.get(aid, ()):
             _line({"ev": "add", "t": time.time(), "account_id": aid, "uid": uid, "ok": ok, "via": via})
-        if not ok:   # as of_client raises OF's answer: an OFAPIError carrying the 403
+        if not ok:
             from types import SimpleNamespace
 
             from of_client import OFAPIError
@@ -156,7 +107,8 @@ class _AutoExcludeWalker:
         _sleep_ms("accept_ms")
         excluded: set[int] = set()
         for lid in kw.get("excluded_user_lists") or []:
-            excluded |= set(ar._of_members.get(int(lid), ()))   # a C-level copy: one GIL hold
+            # set() copy runs in C: one GIL hold, no mutation mid-read
+            excluded |= set(ar._of_members.get(int(lid), ()))
         rec = a["roster_set"] - excluded
         excl = {int(x) for x in kw.get("excluded_users") or ()}
         row = {"ev": "send", "t": time.time(), "account_id": str(self.account_id), "text": text, "n": len(rec),
@@ -171,7 +123,7 @@ class _AutoExcludeWalker:
                 "text": text, "price": price or 0, "isFree": not price, "mediaCount": len(media_files or [])}
 
 
-try:   # relay side only: the harness imports this module for `read_journal`
+try:
     import automation_relay as _base
 except ImportError:
     _base = None
@@ -180,7 +132,6 @@ else:
 
 
 def _arm() -> dict:
-    """Read auto-exclude.json, pre-make each Creator's Auto_Exclude, compress the cadence."""
     global _cfg
     import auto_exclude_decide
     import automation_relay as ar
@@ -262,9 +213,6 @@ def wire(app, loopback, _relay) -> None:
 
     audiences.broadcast_lock = broadcast_lock
 
-    # The composer's client (`server._load_client`, lib/relay.py's offline fallback around it) for an
-    # armed Creator: the lane's (`ax._make_client`), so a composer blast and an automation share one
-    # OF account, its lists and the journal (both are the one session's OFClient in the product).
     import server
     real_load = server._load_client
 

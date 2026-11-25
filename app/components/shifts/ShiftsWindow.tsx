@@ -1,46 +1,5 @@
 "use client";
 
-/**
- * The Shifts window (docs/spec/phase-02-shifts-time-tracking.md, App;
- * Inventory §3.8), in Infloww's antd modal look at 700px (page-parity ticket
- * 18): "Create shift(s)" opens it with one row (a click on an empty day cell
- * seeds that row with the cell's Creator and 09:00-17:00 that day), "+ Add
- * Shift" adds more, and "OK" sends one `POST /admin/shifts` per row. Rows the
- * server saves leave the window; a refused row stays with the server's
- * reason under it; a 409 from the overlap rule is spelled out clash by
- * clash, each with its Creator and its start in the Agency's time. A 422
- * for an Employee whose login lacks a Creator asks "Grant <Employee> access
- * to <Creator>?" and, confirmed, resends the row with `grant_access` so the
- * Relay grants the access with the Shift. Opened
- * from a Shift in the calendar, it holds that one occurrence as "Edit
- * shift", its row at the occurrence's times: "OK" saves it (`PATCH`), and
- * "Delete" cancels it after a confirmation (a soft cancel: the Shift stays in
- * the history). An occurrence of a weekly series first asks Infloww's scope
- * (ShiftScopeDialog, roadmap W6 6.3): an edit "Only this shift" or "This and
- * all future shifts", a delete "This shift", "This shift and following" or
- * "All shifts".
- *
- * Roadmap W6 6.12: a row's "Common period" picks one of the Agency's saved
- * periods (Shift Settings, the `shifts` blob's `presets`) and sets Start and
- * End to it on the row's day (today when unset; an end before the start
- * ends the next day). When a 409 clashes only with other Shifts, the row
- * offers "Replace the clashing shifts": ticked, OK sends `replace: true`, and
- * the Relay takes the clashing occurrences out of those Shifts.
- *
- * A row is in one timezone, its `tz`, shown in the row: Start, End, the
- * repeat weekdays and "Repeat until" are all wall clock there, and Start and
- * End are sent as UTC. A new row's `tz` is the Agency's (`defaultTz`); an
- * edited Shift keeps its own, and its repeats follow that zone's wall clock
- * on the Relay.
- *
- * ASSUMPTION: the row shows its timezone but offers no picker; a new Shift
- * always takes the Agency's. Rung 5: the spec asks only for the default and
- * the display. Overturned by Inventory evidence of a timezone picker.
- *
- * ASSUMPTION: a one-off Shift's delete confirms with the browser's
- * `window.confirm`. Rung 3: components/settings/TemplatesTab.tsx (useSavedReplyEditor) confirms
- * deletes the same way. Overturned by a house confirm dialog.
- */
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -56,12 +15,10 @@ import { errText } from "@/lib/errText";
 import { ifConfirm } from "@/components/ui/ifConfirm";
 import { IfDateInput } from "@/components/ui/ifDateInput";
 
-/** The antd field box (`IF_FIELD` in ui/infloww.tsx) on a native input. */
 const FIELD =
   "h-8 rounded-md border border-border bg-bg px-[11px] text-[14px] text-fg outline-none hover:border-accent focus:border-accent";
 const LABEL = "flex flex-col gap-1 text-[14px] text-fg";
 
-/** A Creator and a day (YYYY-MM-DD in `defaultTz`) to seed the first row with: an empty day cell's click. */
 export interface ShiftPreset { accountId: string; date: string }
 
 export interface Choice<Id> { id: Id; label: string }
@@ -78,7 +35,6 @@ interface Row {
   repeatEnds: "never" | "date";
   repeatUntil: string;
   error: string | null;
-  /** The last refusal clashed with other Shifts only, so "Replace the clashing shifts" is offered. */
   replaceable: boolean;
   replace: boolean;
 }
@@ -96,7 +52,6 @@ function blankRow(tz: string, preset?: ShiftPreset): Row {
   };
 }
 
-/** The occurrence opened, at its own times. */
 function rowOf(o: ShiftOccurrence): Row {
   return {
     key: nextKey++,
@@ -115,7 +70,6 @@ function rowOf(o: ShiftOccurrence): Row {
   };
 }
 
-/** The row as the Relay's body, or the reason it cannot be sent yet. */
 function toInput(row: Row): ShiftInput | string {
   const start = fromZonedInput(row.start, row.tz);
   const end = fromZonedInput(row.end, row.tz);
@@ -134,7 +88,6 @@ function toInput(row: Row): ShiftInput | string {
   };
 }
 
-/** `row` with Start and End set to `period` on its day (today in its zone when unset). */
 function withPeriod(row: Row, period: CommonPeriod): Partial<Row> {
   const day = (row.start || toZonedInput(new Date().toISOString(), row.tz)).slice(0, 10);
   const next = new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
@@ -143,11 +96,6 @@ function withPeriod(row: Row, period: CommonPeriod): Partial<Row> {
 
 const periodLabel = (p: CommonPeriod) => `${p.start} - ${p.end}`;
 
-/** A refused write's reason. A 409 carrying the overlap rule's `clashes` is
- *  spelled out one clash at a time; anything else is the Relay's `detail`.
- *  ASSUMPTION: a clash names the Creator and the other Shift's start, not
- *  its id or Employees, which the window does not hold. Rung 5. Overturned
- *  if owners need the other Shift's Employees named. */
 function errorText(e: unknown, creatorName: (id: string) => string, tz: string): string {
   const clashes = shiftClashes(e);
   if (clashes) {
@@ -166,10 +114,8 @@ function toggle<T>(list: T[], value: T): T[] {
 export default function ShiftsWindow({
   editing, preset, defaultTz, employees, creators, onClose,
 }: {
-  /** The Shift opened from the calendar, or null for "Create shift(s)". */
   editing: ShiftOccurrence | null;
   preset?: ShiftPreset;
-  /** A new row's time zone: the Agency's. */
   defaultTz: string;
   employees: Choice<number>[];
   creators: Choice<string>[];
@@ -178,7 +124,6 @@ export default function ShiftsWindow({
   const queryClient = useQueryClient();
   const [rows, setRows] = useState<Row[]>(() => [editing ? rowOf(editing) : blankRow(defaultTz, preset)]);
   const [busy, setBusy] = useState(false);
-  /** "Edit recurring shift" open over the window, for an occurrence of a weekly series. */
   const [askingEdit, setAskingEdit] = useState(false);
 
   const update = (key: number, patch: Partial<Row>) =>
@@ -194,8 +139,7 @@ export default function ShiftsWindow({
       return;
     }
     setBusy(true);
-    // One answer per (Employee, Creator) pair for the whole OK, however many rows need it: the pending question is
-    // kept, so a row failing while it is open waits on it instead of asking again. Pairs are asked one at a time.
+    // One answer per (Employee, Creator) pair for the whole OK; a row failing while it is open waits on it.
     const answers = new Map<string, Promise<boolean>>();
     const approve = async (pairs: ShiftGrantable[]) => {
       for (const p of pairs) {
@@ -222,8 +166,7 @@ export default function ShiftsWindow({
         await send(input);
         return null;
       } catch (e) {
-        // An Employee whose login lacks a Creator: ask, then resend granting the access with the Shift. The
-        // Relay asks before it checks clashes, so the resend may still come back 409 (and offer Replace).
+        // The Relay asks before it checks clashes, so the resend may still come back 409.
         const grantable = shiftGrantable(e);
         if (!grantable || !(await approve(grantable))) return failed(e);
         try {

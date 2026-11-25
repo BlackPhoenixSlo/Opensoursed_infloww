@@ -43,8 +43,6 @@ export const RAIL_CLASS =
   "w-full md:w-52 shrink-0 border-b md:border-b-0 md:border-r border-border bg-bg flex flex-col md:overflow-hidden";
 /** The rail's sort row (#19): 48px tall, 0 16px, the sort left and the icons right. */
 export const RAIL_HEAD_CLASS = "h-12 shrink-0 px-4 flex items-center justify-between";
-/** A rail row's outer box (#27, #28): 10px either side; the selected row `--tc-M-B` (#353535 dark, #eff4ff light),
- *  the others T1 with `--tc-M-B1` on hover. */
 export function railRowClass(selected: boolean): string {
   return cn(
     "w-full px-[10px] text-fg transition-colors",
@@ -53,19 +51,12 @@ export function railRowClass(selected: boolean): string {
       : "hover:bg-[#2f2f2f] [html[data-theme=light]_&]:hover:bg-bg-elev-1",
   );
 }
-/** A rail row's inner box (#27): 14px 4px 14px 10px, a 6px gap, a 1px L1 rule under it. */
 export const RAIL_ROW_INNER = "py-[14px] pl-[10px] pr-1 border-b border-border flex flex-col gap-1.5";
-/** The rail's 30px round icon boxes (#23 to #25). */
 export const RAIL_ICON_BOX =
   "w-[30px] min-w-[30px] h-[30px] grid place-items-center rounded-[20px] text-fg-dim hover:text-accent hover:bg-accent/10 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-dim";
 
-/** The sort button's tooltip: the sort name shown is kept per Creator in this browser (vaultFolderSort.ts);
- *  OF's own sort is not read back. */
 const SORT_TITLE = "Sort — the name shown is saved in this browser, per Creator (OnlyFans' own sort is not read back)";
 
-/** A folder's counts (#30, #31): photo, video, audio and GIF, each behind its icon (20px, audio 16px), split by
- *  "·" with a 2px gap; "empty" when all are 0. Also the "All media" row's (the whole vault's) and the "Add to
- *  category" modal's rows (`MoveModalItem`). */
 export function FolderCounts({ f }: { f: VaultTypeCounts }) {
   const parts: [string, ReactNode, number][] = [
     ["photo", <ImageIcon key="i" size={20} aria-hidden />, f.photosCount ?? 0],
@@ -91,7 +82,6 @@ export function FolderCounts({ f }: { f: VaultTypeCounts }) {
   );
 }
 
-/** A folder's counts as one phrase, for the phone's folder select: "12 photos · 3 videos", or "empty". */
 function countsText(f: VaultTypeCounts): string {
   const parts = ([
     [f.photosCount, "photo"], [f.videosCount, "video"], [f.audiosCount, "audio"], [f.gifsCount, "GIF"],
@@ -99,7 +89,6 @@ function countsText(f: VaultTypeCounts): string {
   return parts.length ? parts.join(" · ") : "empty";
 }
 
-/** The rail's two modals (#36, #37): antd's modal at 480px, "Cancel" then the confirm. */
 function RailModal({ title, children, confirm, onCancel }: {
   title: string;
   children: ReactNode;
@@ -123,8 +112,6 @@ function RailModal({ title, children, confirm, onCancel }: {
   );
 }
 
-/** "New category" or, given a folder, "Rename category" (#36): field "Category", `maxLength:64`, "Save". Save is
- *  off while the name is blank or unchanged. */
 function FolderNameModal({ folder, onSave, onCancel }: {
   folder: VaultList | null;
   onSave: (name: string) => Promise<void>;
@@ -166,11 +153,8 @@ function FolderNameModal({ folder, onSave, onCancel }: {
   );
 }
 
-/** Ours: "Set price" (an agency's price on the folder, `of:<id>` or `vf:<id>`). Full AI Chat's sell executor lists the folder's
- *  items at it (the highest when an item is in several priced folders). Dollars, $10 to $200; Clear drops it. Our DB
- *  only, never written to OnlyFans. Form logic: `folderPriceForm.ts`. */
+// Ours: an agency's folder price lives in our DB only, never written to OnlyFans.
 export function FolderPriceModal({ name, priceRef: ref, current, onSave, onCancel }: {
-  /** The folder's name, and its price ref: `of:<id>` (an OF list) or `vf:<id>` (one of ours). */
   name: string;
   priceRef: string;
   current: number | null;
@@ -178,7 +162,6 @@ export function FolderPriceModal({ name, priceRef: ref, current, onSave, onCance
   onCancel: () => void;
 }) {
   const accountId = useVaultAccountId();
-  // The Creator's "Folder price is final" switch (off by default) decides which promise the modal makes.
   const priceFinal = !!useVaultSettings(accountId).data?.folder_price_final;
   const [form, dispatch] = useReducer(folderPriceReducer, current, initForm);
   async function write(body: ReturnType<typeof buildPayload>) {
@@ -237,7 +220,6 @@ export function FolderPriceModal({ name, priceRef: ref, current, onSave, onCance
   );
 }
 
-/** A priced folder's chip: its price. */
 function PriceChip({ cents }: { cents: number }) {
   return (
     <span
@@ -249,9 +231,7 @@ function PriceChip({ cents }: { cents: number }) {
   );
 }
 
-/** "Delete category" (#37). It removes the folder only. The bundle's option to also remove the folder's media from
- *  the vault (shown only for a folder with media, index.9f50f370.js @6836258) is Not wired: a permanent media wipe
- *  from one box is left to the owner (see the recheck record). */
+// Removes the folder only; the bundle's also-delete-media option is deliberately not wired (a permanent media wipe is left to the owner).
 function FolderDeleteModal({ folder, onDelete, onCancel }: {
   folder: VaultList;
   onDelete: () => Promise<void>;
@@ -295,22 +275,15 @@ export default function VaultFolderRail({
   downloadFolderGate,
   standardRows, standardMobile, standardSelected = false,
 }: {
-  /** The folders to list, in OF's order. */
   folders: VaultList[];
-  /** The whole vault's counts per type (OF's `all` on the folder list), for the "All media" row; null: none read. */
   allCounts?: VaultTypeCounts | null;
   loading: boolean;
-  /** The folder read failed: the rail shows #35's error and its Refresh (`onRetry`). */
   error: boolean;
   onRetry: () => void;
-  /** The folder the grid shows; `null` is "All media". */
   selectedId: FanId | null;
   onSelect: (id: FanId | null) => void;
-  /** Called after every folder write, taken by OF or not: the folders may have changed. */
   onChanged: () => void;
-  /** Ours: the row menu's "Download folder". */
   onDownloadFolder: (f: VaultList) => void;
-  /** `downloadGate` for a folder: off = disabled with the reason as its title; its label is `downloadLabel`. */
   downloadFolderGate: DlGate;
   standardRows?: ReactNode;
   standardMobile?: ReactNode;
@@ -318,13 +291,8 @@ export default function VaultFolderRail({
 }) {
   const accountId = useVaultAccountId();
   const qc = useQueryClient();
-  // Customize order: folder ids (the drag reorders FOLDERS), so FanId; the mode is on while `customize` is set.
   const [customize, dispatchCustomize] = useReducer(customizeReducer, null);
   const customizeOrder = customize !== null;
-  // The rail's header (#19 to #25): the folder sort and its popover, the folder search, the add icon.
-  // The panel is keyed per Creator, so the rail mounts per Creator: its last sort is read once, then is what
-  // `sortOfFolders` returns. At mount, once the query snapshot is restored, the folder list is read again: a sort
-  // set elsewhere may have reordered it (the relay serves it from its cache, which a sort drops).
   const [folderSort, setFolderSort] = useState<FolderSortState>(() => loadFolderSort(accountId));
   const restoring = useIsRestoring();
   useEffect(() => {
@@ -333,7 +301,6 @@ export default function VaultFolderRail({
   const { open: sortOpen, setOpen: setSortOpen, ref: sortRef } = useOutsideClose();
   const [railSearching, setRailSearching] = useState(false);
   const [railSearch, setRailSearch] = useState("");
-  // The open rail modal: a new folder (`folder: null`), a rename, or a delete.
   const [nameModal, setNameModal] = useState<{ folder: VaultList | null } | null>(null);
   const [deleteModal, setDeleteModal] = useState<VaultList | null>(null);
   const [priceModal, setPriceModal] = useState<VaultList | null>(null);
@@ -353,34 +320,27 @@ export default function VaultFolderRail({
     setDeleteModal(null);
     onChanged();
   }
-  /** Set OF's folder-list sort; the label follows only once OF has taken it. */
   async function onSortFolders(next: FolderSortState) {
     setSortOpen(false);
     try {
       setFolderSort(await sortOfFolders(accountId, next));
     } catch {
-      /* the label stays on the sort OF still has */
     }
     onChanged();
   }
-  // ── Customize (drag) folder order → OF customOrder ──────────────
   function startCustomize() {
     setSortOpen(false);
     dispatchCustomize({ type: "start", ids: folders.map((f) => f.id) });
   }
-  /** The bundle's check (`customize-ok`, index.9f50f370.js @6820751): writes the dragged order as OF's custom order
-   *  once (`customOrder`, @5094572), and the sort label then reads "Custom". */
   async function doneCustomize() {
     const order = customize?.order;
     dispatchCustomize({ type: "cancel" });
     if (!order) return;
     try {
       const saved = await sortOfFolders(accountId, { customOrder: order });
-      // The new order in the cached list at once (no old-order flash before the refetch).
       qc.setQueryData<VaultListsResp>(vaultListsKey(accountId), (d) => d && { ...d, list: applyCustomOrder(d.list ?? [], order) });
       setFolderSort(saved);
     } catch {
-      /* OF kept its own order, and the refresh shows it */
     }
     onChanged();
   }
@@ -389,7 +349,6 @@ export default function VaultFolderRail({
     dispatchCustomize({ type: "over", id: overId });
   }
 
-  /** A folder's Rename / Delete / Download folder: its rail row's menu, and on a phone the picked folder's. */
   const rowMenuItems = (f: VaultList) => [
     { label: "Rename", onClick: () => setNameModal({ folder: f }) },
     ...(prices ? [{ label: priceOf(f) == null ? "Set price" : "Edit price", onClick: () => setPriceModal(f) }] : []),
@@ -413,8 +372,6 @@ export default function VaultFolderRail({
       {/* LEFT rail — OF folders (Layout capture #15 to #37): 208px with a right rule, a fixed 48px header row,
           then "All media" and the folders, which scroll on their own. */}
       <aside className={RAIL_CLASS}>
-        {/* Phone: the rail is one bar, so the grid shows on the first screen: the folder select (each with its
-            counts), the picked folder's menu, and New category. Sort, search and Customize order are desk-only. */}
         <div className="md:hidden flex items-center gap-1 px-3 py-2">
           <IfNativeSelect
             aria-label="Folder"
@@ -450,10 +407,7 @@ export default function VaultFolderRail({
             <IfButton variant="link" onClick={onRetry} className="h-auto text-xs">Refresh</IfButton>
           </p>
         )}
-        {/* md and up: the rail proper. */}
         <div data-rail-desk className="max-md:hidden flex flex-1 min-h-0 flex-col">
-        {/* #19: 48px tall, 0 16px, the sort left and the icons right. It turns into the search box (#23) or the
-            Customize order bar (#22) while either is on. */}
         <div className={RAIL_HEAD_CLASS}>
           {railSearching ? (
             <>
@@ -479,12 +433,9 @@ export default function VaultFolderRail({
             </>
           ) : customizeOrder ? (
             <>
-              {/* #22's Customize order bar (index.9f50f370.js @6820132): a 20px close that drops the drag, the text,
-                  and an 18px check that writes it. */}
               <button
                 type="button"
                 aria-label="Cancel"
-                // Leave the mode with nothing written: the bundle's close icon (`customize-close`).
                 onClick={() => dispatchCustomize({ type: "cancel" })}
                 className={RAIL_ICON_BOX}
               >
@@ -502,10 +453,6 @@ export default function VaultFolderRail({
             </>
           ) : (
             <>
-              {/* #20 to #22: the current sort's name and its icon open the sort popover. "Default" at first, as
-                  in the capture; the bundle then shows the sort OnlyFans has stored, from its list read
-                  (`jn.sort||Lt`, index.9f50f370.js @5087418), which our list read does not carry:
-                  only the shown sort name is kept, in this browser, by owner decision. */}
               <div ref={sortRef} className="relative flex-1 flex items-center">
                 <button
                   type="button"
@@ -550,8 +497,6 @@ export default function VaultFolderRail({
                       </button>
                     ))}
                     <div className="my-1 border-t border-border" />
-                    {/* HTML5 drag never fires on touch, and while the mode is on a folder tap stops opening the
-                        folder — so the item is desk-only. Off while the rail is filtered, as the bundle has it. */}
                     <button
                       type="button"
                       role="menuitem"
@@ -564,7 +509,6 @@ export default function VaultFolderRail({
                   </div>
                 )}
               </div>
-              {/* #23 to #25: search (20px icon) and add category (16px icon) in 30px boxes. */}
               <div className="flex items-center">
                 <button
                   type="button"
@@ -587,8 +531,6 @@ export default function VaultFolderRail({
           )}
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto">
-          {/* #26, #27: "All media", then one row per folder: 10px outer padding, 14px 4px 14px 10px inside, a
-              6px gap and a rule under each. #28: the selected row is tinted. */}
           <button
             type="button"
             onClick={() => onSelect(null)}
@@ -596,9 +538,6 @@ export default function VaultFolderRail({
           >
             <div className={RAIL_ROW_INNER}>
               <div className="text-sm font-medium">All media</div>
-              {/* The bundle's "All media" counts are the vault-wide type totals (#30, #58; `classifyListsAll` from the
-                  list read's `all`, index.9f50f370.js @5087418). A folder-limited chatter's read has none (the relay
-                  drops it): no line. */}
               {allCounts && <FolderCounts f={allCounts} />}
             </div>
           </button>
@@ -608,7 +547,6 @@ export default function VaultFolderRail({
               {Array.from({ length: 5 }, (_, i) => <Skeleton key={i} className="h-8 w-full" />)}
             </div>
           ) : error ? (
-            /* #35: the rail's error and its Refresh. */
             <EmptyState
               kind="error"
               size="sm"
@@ -617,7 +555,6 @@ export default function VaultFolderRail({
               action={<IfButton variant="primary" onClick={onRetry}>Refresh</IfButton>}
             />
           ) : displayFolders.length === 0 ? (
-            /* #35: no folders (or none matching the rail's search). */
             <EmptyState size="sm" />
           ) : (
             displayFolders.map((f) => (
@@ -628,7 +565,6 @@ export default function VaultFolderRail({
                 draggable={customizeOrder}
                 onDragStart={customizeOrder ? () => dispatchCustomize({ type: "drag", id: f.id }) : undefined}
                 onDragOver={customizeOrder ? (e) => onDragOverFolder(e, f.id) : undefined}
-                // A drop only moves the row on screen; the order is written by the check (`doneCustomize`).
                 onDrop={customizeOrder ? () => dispatchCustomize({ type: "drop" }) : undefined}
                 onClick={() => {
                   if (!customizeOrder) onSelect(f.id);
@@ -652,14 +588,11 @@ export default function VaultFolderRail({
                     {customizeOrder ? (
                       <span className="text-fg-dim select-none text-base leading-none">⣿</span>
                     ) : (
-                      // #34. The house Menu behind the bundle's 20px icon (`STpMessageMore,{size:20`,
-                      // index.9f50f370.js @6802706); its clicks stay inside, so they never select the row.
                       <span className="shrink-0 flex items-center" onClick={(e) => e.stopPropagation()}>
                         <Menu link ariaLabel="More" label={<Ellipsis size={20} aria-hidden />} items={rowMenuItems(f)} />
                       </span>
                     )}
                   </div>
-                  {/* #33's send / unlock / revenue line is not drawn: no read reports a folder's figures. */}
                   <FolderCounts f={f} />
                 </div>
               </div>

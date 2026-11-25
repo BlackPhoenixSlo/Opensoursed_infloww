@@ -16,6 +16,8 @@ import { useId, useRef, useState, type ComponentProps } from "react";
 import { Image as ImageIcon, Plus, Search } from "lucide-react";
 import { LazyMassMessageComposer } from "@/components/compose/LazyMassMessageComposer";
 import type { FanId } from "@/lib/fanId";
+import { useCan } from "@/hooks/useCan";
+import { can, usePlatform, type Platform } from "@/lib/platform";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 import { ChatGallery } from "./ChatGallery";
@@ -44,8 +46,8 @@ const NEW_MENU_ITEMS: readonly NewMenuItem[] = [
 ];
 
 /** The "+" New button and its menu (Gap rows 4-5). A composer row hands its
- *  mode to `onCompose`. */
-function NewMenu({ onCompose }: { onCompose: (mode: ComposerMode) => void }) {
+ *  mode to `onCompose`; without `mass` only Post is offered. */
+function NewMenu({ mass, onCompose }: { mass: boolean; onCompose: (mode: ComposerMode) => void }) {
   const { open, setOpen, ref, triggerProps, menuProps } = useFanListMenu<HTMLDivElement>();
   const row = (item: NewMenuItem) =>
     "href" in item ? (
@@ -70,13 +72,13 @@ function NewMenu({ onCompose }: { onCompose: (mode: ComposerMode) => void }) {
         {...triggerProps}
         className={cn(G.iconButton, ICON_BUTTON)}
         aria-label="New"
-        title="New: mass message, message online fans, or post"
+        title={mass ? "New: mass message, message online fans, or post" : "New: post"}
       >
         <Plus aria-hidden className={G.iconButtonIcon} />
       </button>
       {open && (
         <section {...menuProps} aria-label="New" className={cn(MENU, MP.ours.FanListHeader.menuPlace)}>
-          {NEW_MENU_ITEMS.map(row)}
+          {NEW_MENU_ITEMS.filter((item) => mass || "href" in item).map(row)}
         </section>
       )}
     </div>
@@ -84,11 +86,12 @@ function NewMenu({ onCompose }: { onCompose: (mode: ComposerMode) => void }) {
 }
 
 export function FanListHeader({
-  title, creatorId, query, onQueryChange, galleryFan,
+  title, creatorId, scopePlatforms, query, onQueryChange, galleryFan,
 }: {
   title: string;
   /** The Creator in scope, or null in All Models. */
   creatorId: string | null;
+  scopePlatforms: readonly Platform[];
   query: string;
   onQueryChange: (next: string) => void;
   /** The open Fan, whose Chat gallery the gallery icon opens; null disables it. */
@@ -96,6 +99,10 @@ export function FanListHeader({
 }) {
   // The Fan the sheet was opened for, so it never shows another Fan's media.
   const [galleryFor, setGalleryFor] = useState<typeof galleryFan>(null);
+  const scoped = galleryFan?.accountId ?? creatorId;
+  const scopedGallery = useCan(scoped, "chat_media");
+  const platformGallery = can(usePlatform(), "chat_media");
+  const showGallery = scoped ? scopedGallery : platformGallery;
   const [searchOpen, setSearchOpen] = useState(false);
   const [composer, setComposer] = useState<ComposerMode | null>(null);
   const searchButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -110,17 +117,19 @@ export function FanListHeader({
     <>
       <div role="group" aria-label="Fan List header" className={cn(G.head, "flex items-center border-[var(--inf-rule,var(--color-border))]")}>
         <h2 className={cn(G.title, "flex-1 min-w-0 truncate")}>{title}</h2>
-        <button
-          type="button"
-          onClick={() => setGalleryFor(galleryFan)}
-          disabled={galleryFan === null}
-          aria-haspopup="dialog"
-          title={galleryFan ? "Chat gallery" : "Open a conversation to browse its media"}
-          className={cn(G.gallery, ICON_BUTTON, "disabled:opacity-50 disabled:cursor-not-allowed")}
-          aria-label="Gallery"
-        >
-          <ImageIcon aria-hidden className={G.iconButtonIcon} />
-        </button>
+        {showGallery && (
+          <button
+            type="button"
+            onClick={() => setGalleryFor(galleryFan)}
+            disabled={galleryFan === null}
+            aria-haspopup="dialog"
+            title={galleryFan ? "Chat gallery" : "Open a conversation to browse its media"}
+            className={cn(G.gallery, ICON_BUTTON, "disabled:opacity-50 disabled:cursor-not-allowed")}
+            aria-label="Gallery"
+          >
+            <ImageIcon aria-hidden className={G.iconButtonIcon} />
+          </button>
+        )}
         <button
           ref={searchButtonRef}
           type="button"
@@ -133,7 +142,7 @@ export function FanListHeader({
         >
           <Search aria-hidden className={G.iconButtonIcon} />
         </button>
-        <NewMenu onCompose={setComposer} />
+        <NewMenu mass={scopePlatforms.some((p) => can(p, "mass_message"))} onCompose={setComposer} />
       </div>
       {searchOpen && (
         <div id={searchRowId} className="px-4 pb-3">
@@ -148,7 +157,7 @@ export function FanListHeader({
           />
         </div>
       )}
-      {galleryFor && (
+      {galleryFor && showGallery && (
         <ChatGallery accountId={galleryFor.accountId} fanId={galleryFor.fanId} onClose={() => setGalleryFor(null)} />
       )}
       {/* In a single-Creator scope the composer opens with that Creator as

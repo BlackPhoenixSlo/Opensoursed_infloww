@@ -1,16 +1,7 @@
 #!/usr/bin/env python3
-"""Unreachable-fan skip-listing (_common.skip_unreachable_fan).
-
-When OnlyFans permanently rejects a send ("Cannot send message to this user" =
-expired/restricted sub, or "User not found" = deleted account), the fan must be
-added to skip_list so the senders stop retrying it every cycle. Transient errors
-(proxy blips, timeouts) must NOT skip-list — they should be retried.
-
-Run: ./venv/bin/python service/tests/test_unreachable_skip.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -24,14 +15,12 @@ from automations._common import is_unreachable_fan_error, skip_unreachable_fan  
 
 
 async def _seed_account(aid: str) -> None:
-    # skip_unreachable_fan now ALSO upserts a Fan pause row → needs the account.
     async with get_session() as s:
         if await s.get(Account, aid) is None:
             s.add(Account(id=aid))
 
 
 def _ofapi(msg: str) -> Exception:
-    # Mirrors of_client.OFAPIError's str(): "<code> for <url>\n<body>".
     return Exception(
         f'400 for https://onlyfans.com/api2/v2/chats/9/messages\n'
         f'{{"error":{{"code":0,"message":"{msg}"}}}}'
@@ -81,17 +70,13 @@ def case_idempotent_on_repeat():
     async def go():
         await _seed_account("111")
         await skip_unreachable_fan("111", 555, _ofapi("User not found"))
-        await skip_unreachable_fan("111", 555, _ofapi("User not found"))  # upsert is idempotent
+        await skip_unreachable_fan("111", 555, _ofapi("User not found"))
         assert 555 in await _skip_ids("111")
     asyncio.run(go())
 
 
+# A fan skip-listed under another reason must upgrade to 'unreachable' and be paused, else engines keep selecting him.
 def case_upgrades_existing_reason_and_pauses():
-    """The masked-reason trap (live fan 554433562): a fan already skip-listed under
-    another reason ('too_long', or the 'info' graduation marker) hits a permanent send error. The row must
-    UPGRADE to 'unreachable' — do_nothing used to keep the old reason, so an engine
-    kept selecting the fan and burned an LLM call every tick — and the fan must also
-    be paused so the pause-only senders (autoreply) rest too."""
     async def go():
         await _seed_account("111")
         async with get_session() as s:

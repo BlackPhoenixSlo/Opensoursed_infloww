@@ -1,15 +1,6 @@
-/**
- * The dark Inflowwww "site look" pieces shared by the signed-out auth screens
- * (Landing.tsx at /login, app/chatter-login/page.tsx for invited employees).
- * Render them inside a `data-look="site"` root: the scoped tokens in
- * app/globals.css make `bg`, `fg`, `fg-dim` and `accent` the site's colours.
- */
-
 import { BRAND_LOGO, BRAND_NAME } from "@/lib/brand";
 import { SITE_URL } from "@/lib/site";
 
-/** Our "OIF" square, redrawn (not Infloww's asset): their white IF mark with an O in front, plus an orange dot.
- *  A deployment with its own logo (lib/brand.ts BRAND_LOGO) shows that instead. */
 export function IfMark({ className = "size-10" }: { className?: string }) {
   if (BRAND_LOGO) {
     // The 180px image (the Apple touch icon's), not the 512px one: the mark draws at most 40px, 120 device px on a 3x
@@ -30,7 +21,6 @@ export function IfMark({ className = "size-10" }: { className?: string }) {
   );
 }
 
-/** The mark and the INFLOWWWW wordmark, linking home. `mark` sizes the square (their login screen's is 32px). */
 export function Logo({ mark = "size-10" }: { mark?: string }) {
   return (
     <a
@@ -64,7 +54,6 @@ export function Notice() {
   );
 }
 
-/** The site's two parody badges (web/src/_includes/auth.njk badges()). */
 export function Badges() {
   return (
     <ul aria-label="Badges" className="mt-12 flex flex-wrap items-center gap-x-12 gap-y-8 text-white/60">
@@ -121,13 +110,10 @@ function Laurel({ className }: { className: string }) {
   );
 }
 
-/** The sign-up field (their signup.infloww.com: 58px, #111111, a hair darker than the #121212 page). */
 export const INPUT =
   "block h-[58px] w-full rounded-xl border border-transparent bg-[#111111] px-5 text-lg text-fg placeholder:text-white/50 focus-visible:border-accent focus-visible:outline-none user-invalid:bg-[#23141a]";
-/** The sign-in field (their app's login screen: 48px, radius 8, #161616 on the #0c0c0c page, 16px text). */
 export const INPUT_LOGIN =
   "block h-12 w-full rounded-lg border border-transparent bg-[#161616] px-4 text-base text-fg placeholder:text-white/50 focus-visible:border-accent focus-visible:outline-none user-invalid:bg-[#23141a]";
-/** Their pink field message: 16px #fb609f, a 20px circle-bang, 8px under the field (PINK carries the 8px). */
 export const PINK_TEXT = "items-start gap-2 text-base text-[#fb609f]";
 export const PINK = `mt-2 ${PINK_TEXT}`;
 export const HINT = "mt-3 text-sm text-[#a4a4a4]";

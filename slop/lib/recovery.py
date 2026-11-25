@@ -1,21 +1,3 @@
-"""Crash recovery for lib/stack.py: what a run killed past its teardown (SIGKILL, a crash,
-the gate's guard) leaves behind, put right by the next Stack.
-
-- Process groups: each run records its owner and every group it spawns, as (pid, start
-  time), in `slop/evidence/.stack-*.json` (RunState). A Stack sweeps them at start: an
-  owner that is gone (or whose pid now belongs to a younger process) loses its groups. A
-  group is the run's while its leader still has the recorded start time, or, the leader
-  gone, while the group still has members and no other process holds the leader's pid (a
-  pgid is not reused while its group lives), so a reused pid is never hit and members that
-  outlive their leader are still reaped. The state file stays until every group is empty.
-- App files `next` rewrites: the app-lock holder keeps their originals in
-  `app/.next/slop.state.json` (AppFiles). Its own exit puts them back; a holder that died
-  first leaves the file for the next holder. Either way a file is restored only if it still
-  holds what slop last saw there (else a user's edit or branch switch: WARN, leave it).
-
-No start time readable (no `ps`, as in the relay image without /proc): None; the Stack
-then WARNs once and records nothing, never fails.
-"""
 from __future__ import annotations
 
 import base64
@@ -35,7 +17,7 @@ STATE_DIR = ROOT / "slop/evidence"
 APP_FILES = ("tsconfig.json", "next-env.d.ts")
 APP_LOCK, APP_STATE = "app/.next/slop.lock", "app/.next/slop.state.json"
 _warned = False
-KILL_WAIT_S = 3  # a group's SIGTERM -> SIGKILL, then as long again for it to empty
+KILL_WAIT_S = 3
 
 
 def write_json(path: Path, obj) -> None:
@@ -57,8 +39,6 @@ def _read_json(path: Path) -> dict | None:
 
 
 def _gone(owner: dict) -> bool:
-    """The recorded owner is dead: its pid is free, or reused by a process with another start time.
-    Alive but unreadable (ps failed) counts as alive."""
     pid = owner.get("pid")
     if not isinstance(pid, int) or pid <= 1:
         return True
@@ -66,13 +46,11 @@ def _gone(owner: dict) -> bool:
 
 
 def _ours(group: dict) -> bool:
-    """The recorded group still has members of the run: its leader is the recorded process, or the leader is
-    gone, no process holds its pid and the group is not empty (a pgid is not handed out while its group lives)."""
     pgid = group.get("pid")
     if not isinstance(pgid, int) or pgid <= 1 or not procs.group_alive(pgid):
         return False
     if not procs.exists(pgid):
-        return True  # leader gone, members left
+        return True
     try:
         if os.getpgid(pgid) != pgid:
             return False
@@ -98,8 +76,6 @@ def _wait(groups: list[dict]) -> list[dict]:
 
 
 def kill_groups(groups: list[dict]) -> list[dict]:
-    """SIGTERM each group still the run's; SIGKILL whatever member is left after KILL_WAIT_S. -> the groups
-    that still have members after that (their record is kept for the next sweep)."""
     live = [g for g in groups if _ours(g)]
     _signal(live, signal.SIGTERM)
     live = _wait(live)
@@ -108,7 +84,6 @@ def kill_groups(groups: list[dict]) -> list[dict]:
 
 
 def sweep(state_dir: Path | None = None) -> None:
-    """Reap the groups of every run whose owner is gone; drop its state file once every group is empty."""
     for path in sorted((state_dir or STATE_DIR).glob(".stack-*.json")):
         state = _read_json(path)
         if state is None or not _gone(state.get("owner") or {}):
@@ -126,7 +101,6 @@ def sweep(state_dir: Path | None = None) -> None:
 
 
 class RunState:
-    """This run's owner and spawned groups, written on the first record()."""
 
     def __init__(self, state_dir: Path | None = None):
         self.dir, self.path, self.groups = state_dir or STATE_DIR, None, []
@@ -146,13 +120,11 @@ class RunState:
             self.dir.mkdir(parents=True, exist_ok=True)
             self.path = self.dir / f".stack-{os.getpid()}-{time.time_ns()}.json"
         start = procs.start_time(pid)
-        if start is not None:  # None: it already exited
+        if start is not None:
             self.groups.append({"pid": pid, "start": start})
             write_json(self.path, {"owner": self.owner, "groups": self.groups})
 
     def close(self, left: list[dict] = ()) -> None:
-        """The run is done: drop its record, or keep it naming only `left`, the groups that still have members
-        (kill_groups' result): this owner exits soon and the next sweep reaps them."""
         if self.path is not None:
             if left:
                 write_json(self.path, {"owner": self.owner, "groups": list(left)})
@@ -166,14 +138,12 @@ def content_hash(path: Path) -> str | None:
 
 
 class AppFiles:
-    """The app files `next` rewrites (`names` under `app`), for the app-lock holder only."""
 
     def __init__(self, app: Path, names: tuple[str, ...], state: Path):
         self.app, self.names, self.state_path = app, names, state
         self.state: dict = {}
 
     def save(self) -> None:
-        """Reap a dead holder's leftovers, then record this run's originals."""
         self._reap()
         self.state = {"originals": {f: base64.b64encode(p.read_bytes()).decode() if (p := self.app / f).exists()
                                     else None for f in self.names},
@@ -181,16 +151,12 @@ class AppFiles:
         write_json(self.state_path, self.state)
 
     def note_written(self) -> None:
-        """What the files hold now (slop's or its `next`'s rewrite): what the crash reaper may undo."""
         now = {f: content_hash(self.app / f) for f in self.names}
         if self.state and now != self.state["written"]:
             self.state["written"] = now
             write_json(self.state_path, self.state)
 
     def restore(self) -> None:
-        """In-process exit: put back each original whose file still holds what slop last saw (note_written);
-        a file changed since (a user's edit during the run) is kept, one WARN line. Nothing saved yet (a start
-        cut before save() finished): a no-op, so a killed holder's state file stays for the next holder."""
         if not self.state:
             return
         self._put_back(self.state, "during this slop run")
@@ -224,10 +190,6 @@ class AppFiles:
 
 
 def _reap_action(path: Path, name: str, encoded: str | None, written: dict) -> str:
-    """What a holder's exit, or the next holder for a dead one, does to a file: "keep" (it holds the original),
-    "restore" (it still holds what slop last saw there) or "conflict" (changed since: a user's edit or branch
-    switch, kept).
-    `encoded` None = the original was absent; "" = it was empty. ValueError: corrupt (not base64 text)."""
     now = content_hash(path)
     orig = _original(encoded)
     orig = None if orig is None else hashlib.sha256(orig).hexdigest()
@@ -239,11 +201,6 @@ def _reap_action(path: Path, name: str, encoded: str | None, written: dict) -> s
 
 
 def checkout_view(app: Path, names: tuple[str, ...], state_path: Path) -> dict[str, bytes | None]:
-    """`names` under `app` as the checkout holds them once slop is done with them (None = absent, b"" = empty):
-    the saved originals where the holder's exit (live) or the next holder's _reap (dead) restores them, one
-    rule for both (_reap_action), so no holder pid is trusted; else disk. Read-only: never writes, warns or
-    unlinks; a malformed state file or entry reads as no state for that file (disk). Unreadable disk raises
-    OSError."""
     try:
         originals, written = _saved(json.loads(state_path.read_text()))
     except (OSError, ValueError):
@@ -259,12 +216,11 @@ def checkout_view(app: Path, names: tuple[str, ...], state_path: Path) -> dict[s
             if _reap_action(path, name, encoded, written) == "restore":
                 out[name] = _original(encoded)
         except ValueError:
-            pass  # corrupt: disk stands
+            pass
     return out
 
 
 def _saved(state) -> tuple[dict, dict]:
-    """(originals, written) of a state file's JSON; a malformed part reads as empty."""
     if not isinstance(state, dict):
         return {}, {}
     originals, written = state.get("originals"), state.get("written")
@@ -272,8 +228,6 @@ def _saved(state) -> tuple[dict, dict]:
 
 
 def _original(encoded) -> bytes | None:
-    """A saved original: None = it was absent, b"" = empty. ValueError if corrupt (lenient base64 would read
-    junk as b"", an empty file)."""
     if encoded is None:
         return None
     if not isinstance(encoded, str):
@@ -285,5 +239,6 @@ def _put(path: Path, encoded: str | None) -> None:
     b = _original(encoded)
     if b is None:
         path.unlink(missing_ok=True)
-    elif not path.exists() or path.read_bytes() != b:  # unchanged: leave its mtime to watchers
+    # unchanged: leave its mtime to watchers
+    elif not path.exists() or path.read_bytes() != b:
         path.write_bytes(b)

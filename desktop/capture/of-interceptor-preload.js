@@ -1,19 +1,5 @@
 "use strict";
 
-// OnlyFans capture interceptor — delivered as an Electron PRELOAD that runs in
-// the page's MAIN world (the capture window sets contextIsolation:false), so it
-// can monkey-patch XHR/fetch and webpackChunkof_vue at document-start WITHOUT
-// Chrome DevTools Protocol.
-//
-// Why not CDP: Cloudflare (which fronts onlyfans.com) detects `debugger.attach`
-// / Runtime.enable and hard-blocks it — that was the blank-window bug. A plain
-// preload trips none of that.
-//
-// It captures the signed headers + webpack sign-rules (static_param from module
-// 89668, start/end from 802313) and pushes each update to the main process via
-// ipcRenderer. It also mirrors onto window.__inflowwReaCapture / postMessage as a
-// fallback. It NEVER sends anything off-device — the shell does that, over the
-// relay.
 
 const { ipcRenderer } = require("electron");
 
@@ -85,6 +71,7 @@ const { ipcRenderer } = require("electron");
   } catch (_) {}
 
   try {
+    // Cloudflare detects CDP debugger.attach / Runtime.enable and blocks it, so capture is a preload, never CDP; nothing leaves the device from here.
     var _fetch = window.fetch;
     window.fetch = function (input, init) {
       try {
@@ -107,18 +94,11 @@ const { ipcRenderer } = require("electron");
           publish();
         }
       } catch (_) {}
-      // Bind to window to avoid an "Illegal invocation" that would crash callers.
       return _fetch.apply(window, arguments);
     };
   } catch (_) {}
 
-  // Passkeys: Electron ships navigator.credentials but no WebAuthn UI, so a
-  // modal passkey request never settles (not even at its own timeout; measured
-  // on Electron 43 / Chromium 150). OnlyFans' email -> NEXT step asks for one,
-  // so NEXT spun forever and the password step never came. Reject it the way
-  // Chrome does when the user dismisses the passkey sheet (NotAllowedError);
-  // OnlyFans then falls back to the password step. Conditional (autofill)
-  // requests are left alone: in Chrome they also just wait.
+  // Electron ships navigator.credentials but no WebAuthn UI, so a modal passkey request never settles (measured, Electron 43): NEXT spun forever. Reject like Chrome's dismissed sheet so OnlyFans falls back to the password step; conditional (autofill) requests are left alone.
   try {
     var creds = navigator.credentials;
     var noPasskeyUi = function (orig) {
@@ -135,6 +115,7 @@ const { ipcRenderer } = require("electron");
 
   try {
     var wpChunks = (self.webpackChunkof_vue = self.webpackChunkof_vue || []);
+    // Capture must never break OnlyFans' own module loading; bind to the array to avoid an "Illegal invocation".
     var origPush = wpChunks.push.bind(wpChunks);
     wpChunks.push = function (chunk) {
       try {
@@ -204,7 +185,6 @@ const { ipcRenderer } = require("electron");
           }
         }
       } catch (_) {
-        // Never let capture instrumentation break OnlyFans' own module loading.
       }
       return origPush(chunk);
     };

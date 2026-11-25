@@ -1,11 +1,3 @@
-/**
- * Settings → System is the master's alone: anyone else gets the 404 page (notFound), never the Panel,
- * and nothing is fetched for them; the master gets the Panel. Its Runtime switches section lists every
- * switch with its source and effective value, sets an override (a toggle for on/off, a number and Set for
- * a cap) and clears it, each one PUT /admin/system/switches/{env} carrying the admin password. Landing
- * back on the env / default value clears instead of storing; an override that beats a set env var is
- * badged; a relay that could not read its overrides shows a banner.
- */
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -39,7 +31,6 @@ const get = vi.fn((path: string) =>
     : path.startsWith("/admin/system/runs") ? { runs: [], jobs: [] } : { keys: {} }),
 );
 type Body = { value: unknown; admin_password?: string };
-/** The relay's answer: null clears back to the fallback; a value becomes the override. */
 const put = vi.fn((path: string, body: Body) => {
   const base = ALL.find((k) => k.env === path.split("/").pop())!;
   const fromEnv = base.env_raw !== null;
@@ -127,7 +118,6 @@ describe("SystemTab", () => {
     expect(put).toHaveBeenCalledWith(URL("W7_WEBHOOK_DISPATCH_DISABLED"), { value: true, admin_password: "pw" });
     expect(w7.getByTestId("switch-effective")).toHaveTextContent("on (ACTIVE)");
     expect(w7.getByRole("button", { name: "Clear override" })).toBeEnabled();
-    // Back to the default: a clear (null), never a stored `false` that would outrank a later env change.
     fireEvent.click(toggle);
     await waitFor(() => expect(w7.getByTestId("switch-source")).toHaveTextContent("default"));
     expect(put).toHaveBeenLastCalledWith(URL("W7_WEBHOOK_DISPATCH_DISABLED"), { value: null, admin_password: "pw" });

@@ -14,7 +14,6 @@ import {
   type BlockedUser,
 } from "./ofMirrorStreamBlocked";
 
-/** Settings > Streaming > Blocked users: OF's GET pages, its rows, the remove button disabled, no write. */
 
 const fx = JSON.parse(readFileSync(resolve(__dirname, "__fixtures__/of/settings-stream-blocked.json"), "utf8")) as {
   pages: { path: string; body: { list: BlockedUser[]; hasMore: boolean } }[];
@@ -51,7 +50,6 @@ describe("Blocked users", () => {
       expect(remove.querySelector("use")?.getAttribute("href")).toBe("#icon-close");
     });
     expect(rows()[0].querySelector("img")?.getAttribute("src")).toContain("/img?u=");
-    // The block form stays disabled.
     expect((d.getElementById("input-365") as HTMLInputElement).disabled).toBe(true);
   });
 
@@ -70,7 +68,6 @@ describe("Blocked users", () => {
   });
 });
 
-// ticket 73
 describe("Block a username and a row's unblock (ticket 73)", () => {
   const input = () => document.getElementById("input-365") as HTMLInputElement;
   const blockBtn = () => form().querySelector<HTMLButtonElement>("button[type='submit']")!;
@@ -101,7 +98,7 @@ describe("Block a username and a row's unblock (ticket 73)", () => {
     const { block } = setup();
     input().value = "@soakfan1";
     blockBtn().click();
-    blockBtn().click(); // a second click while sending sends nothing
+    blockBtn().click();
     await flush();
     expect(block.mock.calls).toEqual([["soakfan1"]]);
     expect(input().value).toBe("");
@@ -170,7 +167,7 @@ describe("Block a username and a row's unblock (ticket 73)", () => {
     const { block, unbind } = setup();
     unbind();
     input().value = "soakfan1";
-    document.addEventListener("click", (e) => e.preventDefault(), { once: true }); // ofMirrorWrites' part: no native submit
+    document.addEventListener("click", (e) => e.preventDefault(), { once: true });
     blockBtn().click();
     await flush();
     expect(block).not.toHaveBeenCalled();

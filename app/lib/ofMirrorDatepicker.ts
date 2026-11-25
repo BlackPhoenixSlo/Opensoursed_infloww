@@ -1,24 +1,9 @@
 "use client";
 
-/**
- * OF's Custom period picker (build 202610091632: 45647.js's PeriodDatePicker, its markup as captured open on
- * Statements' Earning Statistics, my__stats__earnings__state-date-range): a vdatetime popup over an overlay with
- * "<N> days selected", the start and end dates as two tabs, a month switcher (‹, the month's menu, ›) and a Sunday-first
- * month grid (Vuetify's v-calendar) with today and the range drawn as its events, then Cancel and Apply. OF's rules:
- * - a click on a day sets the start on the start tab (then moves to the end tab) or the end on the end tab; an end
- *   before the start swaps them (and goes back to the end tab);
- * - days before the earlier of the Creator's start and the range's start are greyed (vc-disabled) and, like days after
- *   today, cannot be picked; ‹ stops at the Creator's start month, › at this month;
- * - the month menu lists every month from this one back to the Creator's start;
- * - Apply hands the start and end days back; Cancel, the overlay and Escape close it.
- * Days are calendar days in the owner's time zone (the caller's `today`).
- * `single` is the same popup for one day (the Vault's Go to date, the schedule dialogs' date): its title is the day, no
- * tabs, a click picks it; with `future` the days run from today on (a schedule: earlier days greyed, no last month).
- */
 
 export interface Day {
   y: number;
-  m: number; // 1-12
+  m: number;
   d: number;
 }
 
@@ -26,14 +11,10 @@ export interface PickerOptions {
   start: Day;
   end: Day;
   today: Day;
-  /** The Creator's start day (none: no lower bound). */
   userStart: Day | null;
   onApply: (start: Day, end: Day) => void;
-  /** One day (start = end): the day as the title, no tabs. */
   single?: boolean;
-  /** From today on, no upper bound (a schedule); the Creator's start is ignored. */
   future?: boolean;
-  /** The control that opened it: aria-expanded while it is open. */
   opener?: Element;
 }
 
@@ -41,13 +22,11 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July", 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const pad = (n: number) => String(n).padStart(2, "0");
 
-/** Days since 1970-01-01 (UTC calendar arithmetic). */
 export const dayNum = (x: Day) => Date.UTC(x.y, x.m - 1, x.d) / 86_400_000;
 export const fromNum = (n: number): Day => {
   const d = new Date(n * 86_400_000);
   return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate() };
 };
-/** "2026-09-01". */
 export const isoDay = (x: Day) => `${x.y}-${pad(x.m)}-${pad(x.d)}`;
 export const parseDay = (s: string): Day | null => {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
@@ -55,31 +34,23 @@ export const parseDay = (s: string): Day | null => {
   const day = { y: +m[1], m: +m[2], d: +m[3] };
   return isoDay(fromNum(dayNum(day))) === s ? day : null;
 };
-/** OF's tab date (dayjs "MMM D, YYYY"). */
 export const tabDate = (x: Day) => `${MONTHS[x.m - 1].slice(0, 3)} ${x.d}, ${x.y}`;
-/** OF's "<N> days selected" (both ends counted). */
 export const daysSelected = (a: Day, b: Day) => {
   const n = Math.abs(dayNum(b) - dayNum(a)) + 1;
   return `${n} ${n === 1 ? "day" : "days"} selected`;
 };
 
-/** The picker's state. */
 interface State extends PickerOptions {
   fromTab: boolean;
-  /** The range the picker opened with (OF's `dateRange` prop). */
   initial: Day;
-  /** The month shown (its first day). */
   month: Day;
   menu: boolean;
 }
 
-/** The earliest day that can be picked: the earlier of the Creator's start and the opening range's start (OF's `startDate`). */
 const minDay = (s: State) => (s.userStart && dayNum(s.userStart) < dayNum(s.initial) ? s.userStart : s.initial);
 
-/** Whether day `at` can be picked: today on (`future`), else the earliest day to today. */
 const allowed = (s: State, at: Day) => (s.future ? dayNum(at) >= dayNum(s.today) : dayNum(at) >= dayNum(minDay(s)) && dayNum(at) <= dayNum(s.today));
 
-/** OF's selectDate: the day `at` on the current tab (outside the bounds: nothing). */
 export function pick(s: { start: Day; end: Day; fromTab: boolean; today: Day; min: Day | null }, at: Day): { start: Day; end: Day; fromTab: boolean } | null {
   if ((s.min && dayNum(at) < dayNum(s.min)) || dayNum(at) > dayNum(s.today)) return null;
   const a = s.fromTab ? at : s.start;
@@ -89,7 +60,6 @@ export function pick(s: { start: Day; end: Day; fromTab: boolean; today: Day; mi
   return { start, end, fromTab: s.fromTab || swapped ? !s.fromTab : s.fromTab };
 }
 
-/** The month grid's weeks: Sunday-first, from the week of the 1st to the week of the last day. */
 export function monthWeeks(month: Day): Day[][] {
   const first = dayNum({ ...month, d: 1 });
   const last = dayNum({ y: month.m === 12 ? month.y + 1 : month.y, m: month.m === 12 ? 1 : month.m + 1, d: 1 }) - 1;
@@ -100,18 +70,11 @@ export function monthWeeks(month: Day): Day[][] {
   return weeks;
 }
 
-/** OF's scoped-style marks (DatePickerWrapper's, as captured): 45647.css styles the grid only under them. */
 const V = 'data-v-f708a5fa=""';
 
-/**
- * A day cell's tense class. OF's popup CSS styles `v-future` as unpickable (faded, no selection circle), the right look
- * for its streaks range; a `future` (schedule) picker's days from tomorrow on are the pickable ones, so they take
- * `v-past`, the class OF's CSS draws as pickable.
- */
 const when = (x: Day, today: Day, future = false) =>
   dayNum(x) < dayNum(today) ? "v-past" : dayNum(x) === dayNum(today) ? "v-present" : future ? "v-past" : "v-future";
 
-/** OF's getDayClasses for `x`. */
 function dayClasses(s: State, x: Day): string {
   const k = dayNum(x);
   if (k < dayNum(s.future ? s.today : minDay(s))) return "vc-disabled";
@@ -121,7 +84,6 @@ function dayClasses(s: State, x: Day): string {
   return "";
 }
 
-/** The events (Vuetify's v-event) drawn in day `x`'s cell of a week `week`: today, and the range's segment starting there. */
 function events(s: State, x: Day, week: Day[]): string {
   const out: string[] = [];
   const k = dayNum(x);
@@ -179,10 +141,6 @@ function render(s: State): string {
   );
 }
 
-/**
- * The month menu's items (OF's shortMonthNames): this month back to the Creator's start (none: this year's months);
- * `future`: this month and the next eleven.
- */
 export function pickerMonths(today: Day, userStart: Day | null, future = false): Day[] {
   const back = future ? 11 : userStart ? (today.y - userStart.y) * 12 + (today.m - userStart.m) : today.m - 1;
   return Array.from({ length: Math.max(0, back) + 1 }, (_, i) => {
@@ -191,10 +149,6 @@ export function pickerMonths(today: Day, userStart: Day | null, future = false):
   });
 }
 
-/**
- * OF's updateRangeWidth: each range segment spans its days in pixels, from the measured cells ((days - 1) × the step
- * between two cells + a cell's width); unmeasured (no layout): the percentage it was drawn with.
- */
 function fitRanges(root: HTMLElement) {
   const cells = root.querySelectorAll<HTMLElement>(".v-calendar-weekly__day");
   if (cells.length < 2) return;
@@ -211,7 +165,6 @@ function fitRanges(root: HTMLElement) {
 const PICKER = "data-oi-picker";
 const MENU = "data-oi-picker-months";
 
-// Each page's open picker's opener (aria-expanded="true" until it closes).
 const openers = new WeakMap<Document, Element>();
 
 export function closeDatepicker(doc: Document): void {
@@ -221,10 +174,6 @@ export function closeDatepicker(doc: Document): void {
   openers.delete(doc);
 }
 
-/**
- * The picker's grid styles (45647.css, scoped to its data-v marks) next to the page's own `app.css`: only the
- * Statistics captures link it, and Queue, Vault and the composers open the picker too.
- */
 function linkPickerCss(doc: Document): HTMLLinkElement | null {
   if (doc.querySelector("link[href$='/45647.css']")) return null;
   const app = doc.querySelector<HTMLLinkElement>("link[href$='/app.css']");
@@ -236,7 +185,6 @@ function linkPickerCss(doc: Document): HTMLLinkElement | null {
   return link;
 }
 
-/** OF's picker in `doc` for `opts`; returns its root. */
 export function openDatepicker(doc: Document, opts: PickerOptions): HTMLElement {
   closeDatepicker(doc);
   if (opts.opener) {
@@ -248,7 +196,6 @@ export function openDatepicker(doc: Document, opts: PickerOptions): HTMLElement 
   const root = doc.createElement("div");
   root.setAttribute(PICKER, "");
   root.className = "vdatetime custom-datepicker";
-  // Over an OF modal (z-index 1050), as a schedule dialog's date opens it.
   root.style.cssText = "position:relative;z-index:1060";
   const draw = () => {
     root.innerHTML = render(s);
@@ -282,7 +229,6 @@ export function openDatepicker(doc: Document, opts: PickerOptions): HTMLElement 
     win?.removeEventListener("keydown", onKey, true);
     doc.removeEventListener("click", onMenuClick);
   };
-  // Ahead of the page's own Escape (a modal under it stays open).
   const win = doc.defaultView;
   const onKey = (ev: KeyboardEvent) => {
     if (ev.key !== "Escape") return;
@@ -355,7 +301,6 @@ export function openDatepicker(doc: Document, opts: PickerOptions): HTMLElement 
   doc.addEventListener("click", onMenuClick);
   doc.body.append(root);
   draw();
-  // The range bars are measured from the grid, so measure again once its styles arrive.
   css?.addEventListener("load", () => root.isConnected && draw());
   return root;
 }

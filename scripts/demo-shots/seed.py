@@ -71,10 +71,13 @@ def _accounts(con, d: Dataset, sessions: Path, user_id: str) -> None:
         a.mkdir(exist_ok=True)
         (a / "meta.json").write_text(json.dumps({
             "id": c["id"], "nickname": c["nickname"], "color": c["color"], "incogniton_profile_id": None,
-            "platform": "onlyfans", "name": c["name"], "created_at": iso(c["created_at"]),
+            "platform": c.get("platform", "onlyfans"), "name": c["name"], "created_at": iso(c["created_at"]),
             "last_used_at": iso(d.now - timedelta(minutes=3 + 11 * i))}))
-        (a / "session_demo.json").write_text("{}")
-        (a / "latest.json").write_text(json.dumps({"session": "session_demo.json", "ts": iso(d.now)}))
+        if c.get("platform") == "fansly":
+            (a / "fansly_session.json").write_text(json.dumps(c["fansly_session"]))
+        else:
+            (a / "session_demo.json").write_text("{}")
+            (a / "latest.json").write_text(json.dumps({"session": "session_demo.json", "ts": iso(d.now)}))
         con.execute("INSERT INTO accounts(id, nickname, color, is_active_default, created_at, last_used_at) "
                     "VALUES (?,?,?,?,?,?)", (c["id"], c["nickname"], c["color"], 1 if i == 0 else 0,
                                              ts(c["created_at"]), ts(d.now)))

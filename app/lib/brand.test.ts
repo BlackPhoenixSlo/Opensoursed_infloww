@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-/** lib/brand.ts reads NEXT_PUBLIC_BRAND_* at import (Next inlines them at build), so each case imports it fresh. */
 async function load(env: Record<string, string>) {
   vi.resetModules();
   for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);

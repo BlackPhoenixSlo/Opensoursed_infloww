@@ -217,7 +217,6 @@ def case_scene_prompts():
         assert wr.SCENE_NARRATION in s and wr.SCENE_SELF in s
         for gone in (wr.EXPLICIT_EARLY, NO_NARRATION_RULE, wr.SELF_BAN, wr.SEXT_HOT, sticker):
             assert gone not in s, gone[:40]
-    # gif_ok None keeps `config.gifs` (the old rule); False drops the block on any Route.
     f = _turn(gifs=True, sext_scene=True)
     assert sticker in wr.messages_for("chat", "otherwise", 2, f, None)[0]["content"]
     assert sticker not in wr.messages_for("chat", "otherwise", 2, f, None, gif_ok=False)[0]["content"]

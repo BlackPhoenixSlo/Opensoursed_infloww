@@ -1,39 +1,5 @@
 "use client";
 
-/**
- * VaultFlagsReviewModal — check what the vision model decided, item by item.
- *
- * The flags pass answers, per region of her body, whether she is bare, covered
- * or not in the picture. Those three answers decide which folder an item lands
- * in, what it may be priced at, and whether it is safe to put in front of a
- * whole list. It is a vision model guessing, and it has been wrong in a
- * DIFFERENT direction after every prompt change — first over-reporting
- * exposure (a tank top read as bare), then under-reporting it (a still of
- * fingers inside her read as "covered by a thong"). Every one of those
- * reversals was invisible to every automatic check and obvious to a human in
- * about four seconds.
- *
- * So checking is part of the product, not part of a test script.
- *
- * Each card is PRE-SET to what the model currently believes. Tap only what is
- * wrong — a pass over a hundred items should be a handful of clicks. Saving
- * records two things and both matter:
- *
- *   · a correction   → locked permanently. No re-run can revert it, so the
- *                      data is right from then on however the model behaves.
- *   · a confirmation → the answers left alone, stamped with the prompt version
- *                      that produced them. This is the half that is easy to
- *                      skip and the half that makes the accuracy number real:
- *                      without it, "looked and agreed" and "never opened" are
- *                      the same record.
- *
- * Ungraded items come first, and within them the ones that gate money or a
- * mass send — two rounds of tuning were once measured entirely on items that
- * had already been checked, and a regression sat in the unchecked remainder
- * through both without moving any total.
- *
- * No OF writes. Nothing here sends anything.
- */
 
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -78,7 +44,6 @@ function Card({
   const [zoom, setZoom] = useState(false);
   const [note, setNote] = useState("");
 
-  /** What the model said, unless the operator has tapped something else. */
   const shown = (region: string) => picked[region] ?? item.regions[region] ?? "";
   const changed = Object.entries(picked).filter(
     ([r, v]) => v !== item.regions[r],
@@ -97,9 +62,7 @@ function Card({
         changed.length ? "border-warn/60" : "border-border"
       }`}
     >
-      {/* Full FRAME, letterboxed — the square crop is where an edge-of-frame
-          waistband or genitalia disappears, i.e. exactly what the reviewer is
-          here to check. Click to enlarge. */}
+      {/* Full frame, letterboxed: a square crop hides edge-of-frame waistband/genitalia, which is what the reviewer checks. */}
       <img
         src={mirrorFullSrc(accountId, item.media_id)}
         alt=""
@@ -188,6 +151,8 @@ function Card({
   );
 }
 
+// Vision flags drift a different way after every prompt change, invisible to automatic checks: a human review is part of the product.
+// Corrections lock permanently; confirmations are stamped with the prompt version so "agreed" differs from "never opened".
 export default function VaultFlagsReviewModal({
   accountId,
   onClose,
@@ -209,7 +174,6 @@ export default function VaultFlagsReviewModal({
 
   function onSaved(mediaId: number, changes: number) {
     setDone((prev) => new Map(prev).set(mediaId, changes));
-    // A correction re-cuts the lanes and re-bands the prices.
     for (const key of [
       "vault-flags-accuracy",
       "vault-ai-folder-plan",

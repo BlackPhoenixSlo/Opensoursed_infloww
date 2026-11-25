@@ -1,9 +1,4 @@
 // @vitest-environment node
-/**
- * POST /site-auth: the public site's form post becomes a relay JSON call and a
- * 303, with the relay's cookies copied on success and an error code (in the
- * fragment) on failure.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SITE_URL } from "@/lib/site";
@@ -17,14 +12,12 @@ const IMP = "chatterly_impersonate=; Max-Age=0; Path=/; SameSite=lax";
 type Reply = { status: number; detail?: string; cookies?: string[]; body?: unknown };
 type Post = (req: Request) => Promise<Response>;
 
-/** The route reads SITE_URL once at import, so each test imports it fresh. */
 async function loadRoute(siteUrl = SITE): Promise<Post> {
   vi.resetModules();
   vi.stubEnv("SITE_URL", siteUrl);
   return (await import("@/app/site-auth/route")).POST;
 }
 
-/** Answer relay calls by path; record what was sent. */
 function mockRelay(replies: Record<string, Reply>) {
   const calls: { path: string; body: unknown; forwarded?: string }[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
@@ -179,8 +172,8 @@ describe("POST /site-auth on a fleet", () => {
   const FRONT = "https://login.fleet.test";
   const S02 = "https://s02.fleet.test";
   const S03 = "https://s03.fleet.test";
-  const SELF = "http://127.0.0.1:8787"; // RELAY_URL's default
-  const S02_RELAY = "http://127.0.0.1:18702"; // the `|` form: whois straight to the relay
+  const SELF = "http://127.0.0.1:8787";
+  const S02_RELAY = "http://127.0.0.1:18702";
   const SECRET = "s".repeat(40);
   const TRICKY = `pw"<&>'x`;
 
@@ -198,7 +191,6 @@ describe("POST /site-auth on a fleet", () => {
     FLEET_PEERS: `${S02}|${S02_RELAY}, ${S03}`, ...extra,
   });
 
-  /** whois answers per relay base (self, s02's relay, s03), plus local relay replies. */
   function mockFleet(who: Partial<Record<string, Whois>>, relayReplies: Record<string, Reply> = {}) {
     const calls: Call[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
@@ -256,7 +248,7 @@ describe("POST /site-auth on a fleet", () => {
     expect(res.headers.get("content-security-policy")).toBe(
       `default-src 'none'; script-src 'sha256-${hash}'; form-action ${S02} ${ORIGIN}; frame-ancestors 'none'`,
     );
-    expect(paths(calls).filter((p) => !p.endsWith("/whois"))).toEqual([]); // no sign-in here
+    expect(paths(calls).filter((p) => !p.endsWith("/whois"))).toEqual([]);
   });
 
   it("is wrong when no shard has the name, unavailable when one did not answer, workspace on two", async () => {
@@ -291,7 +283,6 @@ describe("POST /site-auth on a fleet", () => {
     const res = await post({ username: "x", password: PASSWORD }, ORIGIN, ip(5));
     expect(res.headers.get("location")).toBe(`${SITE}/login/#error=throttled&username=x`);
     expect(calls.length).toBe(sent);
-    // Keyed on the LAST X-Forwarded-For entry: a different first entry is the same client.
     const spoof = await post({ username: "x", password: PASSWORD }, ORIGIN, { "X-Forwarded-For": "1.2.3.4, 203.0.113.5" });
     expect(spoof.headers.get("location")).toContain("error=throttled");
     expect((await post({ username: "x", password: PASSWORD }, ORIGIN, ip(6))).headers.get("location")).toContain("error=wrong");
@@ -326,7 +317,7 @@ describe("POST /site-auth on a fleet", () => {
     const res = await post({ username: "bob", password: PASSWORD, mode: "login" }, FRONT);
     expect(res.status).toBe(303);
     expect(res.headers.getSetCookie()).toEqual([COOKIE]);
-    expect(paths(calls)).toEqual([`${SELF}/auth/sign-in`]); // no peers here: no whois
+    expect(paths(calls)).toEqual([`${SELF}/auth/sign-in`]);
     for (const origin of [S02, "null", null]) expect((await post({ username: "bob", password: PASSWORD }, origin)).status).toBe(403);
   });
 
@@ -350,7 +341,6 @@ describe("POST /site-auth on a fleet", () => {
     POST = await loadFleet({ FLEET_SECRET: SECRET, FLEET_FRONT_ORIGIN: "javascript:alert(1)",
       FLEET_PEERS: `not a url, ${S02}|ftp://x, ${S03}|a|b` });
     expect(err.mock.calls.length).toBe(3);
-    // No peer survived: single-box sign-in, and the bogus front origin is not accepted.
     const calls = mockRelay({ "/auth/sign-in": { status: 401 } });
     expect((await post({ username: "a", password: PASSWORD })).headers.get("location")).toContain("error=wrong");
     expect(calls.map((c) => c.path)).toEqual(["/auth/sign-in"]);

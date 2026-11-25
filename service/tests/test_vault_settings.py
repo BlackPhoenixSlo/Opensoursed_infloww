@@ -1,22 +1,7 @@
 #!/usr/bin/env python3
-"""`vault_settings`: the per-Creator vault switches (two OFF, `solo_sequences` ON by default), and what off means.
-
-  case_seed                       owner / other owner / folder-limited chatter logins
-  case_default_off_and_routes     no row = two off, solo_sequences on; PUT sets one, keeps the others; bad
-                                  bodies 400; a row whose solo_sequences is NULL (pre-0131) reads it as on
-  case_scope                      another owner's account and a folder-limited chatter -> 403
-  case_standard_off_is_inert      off: sync creates no folder, listing is empty, a describe places nothing,
-                                  a leftover Needs Review folder does not take media out of the sale pool,
-                                  and is neither listed in the internal folders nor editable (404)
-  case_price_final_off_is_before  off: rows carry no mark, a Pick has no locked price, the tease price and a
-                                  haggle move it (the 11-15 rule: Jev decides the price)
-  case_price_final_on_marks_rows  on: `load_rows` marks every row; off again: the mark is gone
-
-Run: ./venv/bin/python service/tests/test_vault_settings.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import json  # noqa: E402
@@ -94,7 +79,6 @@ async def case_default_off_and_routes():
         assert C["owner"].put(URL, json=body).status_code == 400, body
     r = C["owner"].put(URL, json={"account_id": AID, **OFF})
     assert r.status_code == 200 and await vault_settings.load(AID) == OFF
-    # A row from before 0131 has solo_sequences NULL: it reads as on, and the other switches as stored.
     await vault_settings.put(OTHER, standard_folders=True)
     async with get_session() as s:
         await s.execute(update(VaultAccountSetting).where(VaultAccountSetting.account_id == OTHER)
@@ -127,7 +111,6 @@ async def case_standard_off_is_inert():
     await vault_ai_vision._write_item(AID, 1, describe_status="described",
                                       ai_fields_json=json.dumps({"tags": ["beach"], "suggested_price_cents": 5000}))
     assert await _standard_count() == 0, "a finished describe places nothing while the switch is off"
-    # A Needs Review folder left from an earlier "on": off, its media is for sale again.
     async with get_session() as s:
         review = VaultFolder(account_id=AID, name="Photos / Uncategorised / Needs Review", created_by=key("photo", REVIEW))
         s.add(review)
@@ -140,7 +123,6 @@ async def case_standard_off_is_inert():
     rows, _, _ = await sell.load_rows(AID)
     assert {r["media_id"] for r in rows} == {1}, "on: Needs Review blocks the sale"
     await vault_settings.put(AID, standard_folders=False)
-    # Off: the leftover category is neither listed (vault, Full AI picker) nor editable.
     base = "/admin/vault-ai/internal-folders"
     listed = C["owner"].get(base, params={"account_id": AID}).json()["list"]
     assert rid not in {f["id"] for f in listed}, listed
@@ -168,7 +150,7 @@ async def case_price_final_off_is_before():
     p = sell._offer(rows, [], ask, free=False)
     assert p.facts["folder_cents"] == 3500 and "folder_price_cents" not in p.facts and "folder_final" not in p.facts
     assert sell.folder_price(p) is None
-    t = sell.tease_price(p, 1000)                         # the tease price Jev's price replaces the list
+    t = sell.tease_price(p, 1000)
     assert (t.price_cents, t.list_cents, t.facts["vault_list_cents"]) == (1000, 1000, 3500), t
     free = sell.tease_price(p, 0)
     assert (free.price_cents, free.list_cents) == (0, 3500), free
@@ -193,7 +175,7 @@ async def case_price_final_on_marks_rows():
     assert all(r["folder_final"] is True for r in rows)
     priced = [{**r, "list_cents": 3500, "fields": {}} for r in rows if r["media_id"] == 1]
     p = sell._offer(priced, [], sell.Ask("anything", "photo", 1), free=False)
-    hold = sell.hold_folder_price   # the one clamp `_sell` runs last (rwl3 A9)
+    hold = sell.hold_folder_price
     assert sell.folder_price(p) == 3500 and hold(sell.tease_price(p, 1000)).price_cents == 3500
     assert hold(turn._haggled(p, SimpleNamespace(list_cents=3500), True, ["how about $25?"])).price_cents == 3500
     unpriced = [{**r, "list_cents": 5000, "fields": {}} for r in rows if r["media_id"] == 2]

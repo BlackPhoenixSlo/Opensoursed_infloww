@@ -8,7 +8,6 @@ import automation_executor as ax
 from automation_registry import register
 from automations._pools import has_media_source, pick_media, pick_text
 import platforms
-from side_effect_gate import refusal
 
 log = logging.getLogger("of-relay.automation.mass_premade")
 
@@ -73,8 +72,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             })
         return {"dry_run": True, "messages": len(messages), "plan": plan, "sent": 0}
 
-    backend = platforms.for_account(account_id).backend
-    if backend is not None and refusal(backend.Shim, "send_mass_message"):
+    if platforms.refusal_for_account(account_id, "send_mass_message"):
         return {"status": "skipped", "reason": "platform_lacks:send_mass_message"}
 
     spec = messages[0] if isinstance(messages[0], dict) else {}

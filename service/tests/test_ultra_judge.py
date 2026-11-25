@@ -1,40 +1,11 @@
 #!/usr/bin/env python3
-"""Ultra judge steps (step 5B): validation, card, the executor's one model call, needs_you + the owner's pick, cancel,
-restart and the run's AI budget, through the real app in-process (httpx ASGITransport) with a fake LLM + fake OF.
-
-Cases:
-  case_validate            — a judge refs only earlier read steps, pick_n 1..50 (confirm: ≤6), no extra keys; a send's
-                             media_files may be "$<judge>.ids" (nothing else: a read ref, a ref in text / audience /
-                             inside the list, a judge's other path → SEND_LITERAL); previews with judge media refused.
-  case_card_and_pure       — card rows (media "N picked at run time…", the question; judge entry), picks clamp,
-                             owner_pick, may_send with `resolved`.
-  case_happy_path          — MCP propose → OK: the judge's one call (owner-billed, no account, catalog + data line),
-                             out-of-candidate / duplicate ids dropped, OF gets exactly the picked ids; states show them.
-  case_null_keys_accepted  — MCP propose with every optional step key null (judge: tool null, args {}) → stored,
-                             no null keys (a judge with real args: refused, case_validate).
-  case_too_few_fails       — fewer than pick_n valid ids: judge failed, plan failed, send skipped, OF never called.
-  case_confirm_pick        — confirm → needs_you (≤6 candidates with thumbs, AI picks, one ultra_needs_you notice);
-                             a foreign id / wrong count → 422, bearer → 403, B → 404; the owner's pick runs the send.
-  case_stale_pick_refused  — W30 F6: a pick read before an earlier pick landed (2nd tab) never overwrites the next
-                             judge's needs_you: 409, the later judge still waits.
-  case_cancel_needs_you    — cancel in needs_you → cancelled, judge + send skipped, a later pick → 409, OF untouched.
-  case_judge_error_fails   — the judge call raises a non-LLM error: judge failed (never uncertain), plan failed.
-  case_cancel_during_judge — cancel while the judge call runs: cancelled, no needs_you, no notification.
-  case_restart_needs_you   — recover: needs_you → interrupted; a cancel with no run here → interrupted.
-  case_bio_background_from_pick — a pick_n 1 judge's pick → bio_page_background (its page's Creator only); the
-                             page's owner read raising → that step failed with OWNER_UNREAD.
-  case_cost_cap            — the run's AI budget spent by the first judge → the second is capped (no second call);
-                             today's AI cap (LLMCapExceeded) → capped.
-
-Run: ./venv/bin/python service/tests/test_ultra_judge.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB before any db import
 import os  # noqa: E402
 import tempfile as _tmp  # noqa: E402
 
-os.environ["BIO_FILES_DIR"] = _tmp.mkdtemp(prefix="ultra_judge_bio_")  # the bio background case writes files
+os.environ["BIO_FILES_DIR"] = _tmp.mkdtemp(prefix="ultra_judge_bio_")
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -89,8 +60,6 @@ account_registry.upsert_account(CA, nickname="Ava")
 
 
 class _LLM:
-    """llm_client.chat stand-in: answers from `script` in order (the last repeats); an Exception is raised, a
-    coroutine function awaited for its answer."""
 
     def __init__(self):
         self.calls: list[dict] = []
@@ -197,7 +166,6 @@ async def _pick(c, pid, ids, step="pick", headers=COOKIE_A) -> httpx.Response:
     return await c.post(f"/admin/ultra/plans/{pid}/pick", json={"step": step, "ids": ids}, headers=headers)
 
 
-# ── cases ────────────────────────────────────────────────────────────
 
 def case_validate() -> None:
     plan = ud.validate_plan(_plan(FIND, _judge(), _mass()), OWNED)
@@ -209,7 +177,7 @@ def case_validate() -> None:
                                                                                 "$more.data_only.list"])), OWNED)
     assert [r["step"] for r in many.steps[2]["refs"]] == ["find", "more"]
     folder = {"id": "folder", "tool": "of_folder_create", "args": {"account_id": CA, "name": "H", "media_ids": "$pick.ids"}}
-    ud.validate_plan(_plan(FIND, _judge(), folder), OWNED)  # a write may use the picks too
+    ud.validate_plan(_plan(FIND, _judge(), folder), OWNED)
     table = [
         (_plan(folder | {"args": {"account_id": CA, "name": "H"}}, _judge(cands="$folder.data_only.list")),
          "pick", "candidates", "not an earlier vault_search step"),
@@ -219,7 +187,7 @@ def case_validate() -> None:
         (_plan(FIND, _judge(n=51)), "pick", "pick_n", "1 to 50"),
         (_plan(FIND, _judge(n=7, confirm=True)), "pick", "pick_n", "1 to 6"),
         (_plan(FIND, _judge(confirm="yes")), "pick", "confirm", "true or false"),
-        (_plan(FIND, {**_judge(), "args": {"x": 1}}), "pick", "step", "a judge step is"),  # {} dropped (M3)
+        (_plan(FIND, {**_judge(), "args": {"x": 1}}), "pick", "step", "a judge step is"),
         (_plan(FIND, _judge(), _mass(media="$find.data_only.list")), "mass", "media_files", "literal"),
         (_plan(FIND, _judge(), _mass(media=["$pick.ids"])), "mass", "media_files.0", "literal"),
         (_plan(FIND, _judge(), _mass(media="$pick.other")), "mass", "media_files", "literal"),
@@ -228,12 +196,11 @@ def case_validate() -> None:
         (_plan(FIND, _judge(), _mass(previews=[9401])), "mass", "previews", "must be empty"),
         (_plan(FIND, _judge(), {**folder, "args": {**folder["args"], "media_ids": "$pick.list"}}),
          "folder", "media_ids", "$pick.ids"),
-        (_plan(_mass(), FIND, _judge()), "mass", "media_files", "literal"),  # a judge later is no judge yet
+        (_plan(_mass(), FIND, _judge()), "mass", "media_files", "literal"),
     ]
     for raw, step, field, words in table:
         errs = _errors(raw)
         assert any(e["step"] == step and e["field"] == field and words in e["error"] for e in errs), (raw, errs)
-    # B1: candidates only from vault_search steps, all on one Creator; a step using the picks is on that Creator
     both = frozenset({CA, CB})
     find_b = {"id": "findb", "tool": "vault_search", "args": {"account_id": CB, "query": "halloween"}}
     reads = [{"id": "rules", "tool": "automation_rules_list", "args": {"account_id": CA}},
@@ -263,7 +230,6 @@ def case_validate() -> None:
             raise AssertionError(f"accepted: {raw}")
     ud.validate_plan(_plan(find_b, _judge(cands="$findb.data_only.list"),
                            {**_mass(), "args": {**_mass()["args"], "account_id": CB}}), both)
-    # M2: "$<judge>.ids.0" only as bio_page_background.media_id, from a pick_n 1 judge
     bg = {"id": "bg", "tool": "bio_page_background", "args": {"pid": "a" * 15, "media_id": "$pick.ids.0"}}
     one = ud.validate_plan(_plan(FIND, _judge(n=1), bg), OWNED)
     assert one.steps[2]["refs"] == [{"at": ["media_id"], "step": "pick", "path": "ids.0"}], one.steps[2]
@@ -271,7 +237,7 @@ def case_validate() -> None:
     assert chk == ud.OwnerCheck("bio_page", "a" * 15, CA) and CA in chk.refused, chk
     assert ud.owner_check(FIND, FIND["args"], {}) is None
     for raw, step, field in [
-            (_plan(FIND, _judge(n=1), {**bg, "args": {**bg["args"], "media_id": "$pick.ids"}}), "bg", "media_id"),  # N5
+            (_plan(FIND, _judge(n=1), {**bg, "args": {**bg["args"], "media_id": "$pick.ids"}}), "bg", "media_id"),
             (_plan(FIND, _judge(n=2), bg), "bg", "media_id"),
             (_plan(FIND, _judge(n=1), {**folder, "args": {**folder["args"], "media_ids": ["$pick.ids.0"]}}),
              "folder", "media_ids.0"),
@@ -298,7 +264,6 @@ def case_card_and_pure() -> None:
     assert [c["id"] for c in state["candidates"]][:1] == [2] and len(state["candidates"]) == uj.PICK_CARD
     assert uj.owner_pick(state, [1]) is None and uj.owner_pick(state, [77]) and uj.owner_pick(state, [1, 2])
     assert uj.owner_pick(state, [True]) and uj.owner_pick(state, "1")
-    # may_send: the started send's media = the judge's done ids, repeated in `resolved`
     pj = plan.as_json()
     args = {**plan.steps[2]["args"], "media_files": [9402, 9401]}
     good = [{"id": "find", "state": "done"}, uj.done("pick", [9402, 9401], "ai"),
@@ -331,8 +296,6 @@ async def case_happy_path() -> None:
 
 
 async def case_null_keys_accepted() -> None:
-    """rwl cross-step M3: the schema's optional step keys sent as null (and a judge's empty args) are dropped
-    before validation, over MCP propose_plan."""
     nulls = {"question": None, "candidates": None, "pick_n": None, "confirm": None}
     steps = [{**FIND, **nulls}, {**_judge(), "tool": None, "args": {}}, {**_mass(), **nulls}]
     async with _client() as c:
@@ -392,7 +355,7 @@ async def case_stale_pick_refused() -> None:
         pid = await _start(c, FIND, _judge("one", n=1, confirm=True), _judge("two", n=1, confirm=True),
                            _mass(media="$two.ids"))
         v = await _until(c, pid, {"needs_you"})
-        stale = await ultra_run._row(pid, OWNER_A)  # the 2nd tab's read: "one" waiting
+        stale = await ultra_run._row(pid, OWNER_A)
         first = v["step_states"][1]["candidates"][0]["id"]
         assert (await _pick(c, pid, [first], step="one")).status_code == 200
         for _ in range(200):
@@ -475,10 +438,10 @@ async def case_restart_needs_you() -> None:
         for pid in ("e" * 32, "d" * 32):
             s.add(UltraPlan(id=pid, owner_user_id=OWNER_A, source="mcp", plan_json=json.dumps(plan),
                             plan_sha256=ud.digest(plan, pid), status="needs_you", step_states=json.dumps(states)))
-    async with _client() as c:  # no run in this process: the cancel ends it
+    async with _client() as c:
         assert (await c.post(f"/admin/ultra/plans/{'d' * 32}/cancel", headers=COOKIE_A)).status_code == 200
         assert (await _get(c, "d" * 32))["status"] == "interrupted"
-        assert (await _pick(c, "e" * 32, [9401])).status_code == 409  # no waiter
+        assert (await _pick(c, "e" * 32, [9401])).status_code == 409
         assert await ultra_run.recover() == 1
         v = await _get(c, "e" * 32)
     assert v["status"] == "interrupted" and _states(v) == ["done", "skipped", "skipped"], v
@@ -499,8 +462,6 @@ async def case_cost_cap() -> None:
 
 
 async def case_bio_background_from_pick() -> None:
-    """M2 end to end: a pick_n 1 judge's pick becomes the page background; a page on another Creator fails the step
-    before any call."""
     import vault_stills
     from PIL import Image
     from db.models import BioProfile
@@ -531,7 +492,7 @@ async def case_bio_background_from_pick() -> None:
         assert "not on the Creator" in v["step_states"][2]["error"], v["step_states"]
         async with get_session() as s:
             assert (await s.get(BioProfile, "bgpagebbbbbbbbb")).background_image == ""
-        LLM.reset(_res([9404]))  # m5: the owner read raises → that step failed with a sentence, never silent
+        LLM.reset(_res([9404]))
         real_owner = ultra_run._owner
 
         async def boom(_chk):

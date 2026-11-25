@@ -1,9 +1,3 @@
-/**
- * useInboxRealtime — `chat_responded` (a person's DM through the relay, from another chatter's tab): the fan's
- * row in every cached chat list (All Models included) takes the reply, with no relay / OF read. The pure patch is
- * lib/chatsCache `applyReply` (tables in chatsCache.test.ts). Neither it nor a Live connection message touches
- * the cached roster count or asks for a `?bust=`: the Creator echo and the counter frame move the Red circle.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -141,10 +135,10 @@ describe("useInboxRealtime — Live connection messages leave the cached count a
     renderHook(() => useInboxRealtime(), { wrapper });
     const send = (env: unknown) => act(() => { handlers.get("api2_chat_message")?.forEach((h) => h(env)); });
 
-    send(msg(A, 5, 8001));                 // inbound, loaded row
-    send(msg(A, FAN, 8002, true));         // outbound, loaded row
-    send(msg(B, 777001, 8003));            // inbound, cold row
-    send(msg(B, 777002, 8004, true));      // outbound, cold row
+    send(msg(A, 5, 8001));
+    send(msg(A, FAN, 8002, true));
+    send(msg(B, 777001, 8003));
+    send(msg(B, 777002, 8004, true));
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
     expect(client.getQueryData(rosterCountsKey("anon"))).toBe(counts);

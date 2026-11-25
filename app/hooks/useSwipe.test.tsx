@@ -1,12 +1,3 @@
-/**
- * useSwipe, the hook's DOM side (the gesture's rules are swipeGesture.test.ts's
- * tables): a one-finger, mostly-horizontal swipe below lg calls `onSwipe`;
- * text fields, a second finger, a platform-taken gesture (touchcancel), desktop
- * width, the OS edge zone and an open dialog (not a leaving copy) do not. A
- * sheet (`sheet`) tracks the finger, lets go of taps the moment a dismissal is
- * decided (a modal Radix layer's hold on <body> too), calls `onSwipe` once, and
- * is caught where it is mid-spring.
- */
 import { fireEvent, render } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,8 +8,6 @@ import { OPEN_DIALOG, startsInIgnored, useSwipe, type SwipeDir } from "./useSwip
 
 let wide = false;
 let reduced = false;
-/** Layout, which the test DOM has none of: every element is 300px wide; and
- *  `animate` records its animations, finished by hand (`onfinish`). */
 type Anim = { cancel: ReturnType<typeof vi.fn>; onfinish: (() => void) | null; playState: string; timing: KeyframeAnimationOptions };
 let anims: Anim[] = [];
 const animate = vi.fn((_frames: Keyframe[], timing: KeyframeAnimationOptions) => {
@@ -85,7 +74,6 @@ function Box({ dir, onSwipe, onLetGo, sheet = true, enabled = true, edgeGuard, i
 }
 
 const pt = (x: number, y: number) => ({ clientX: x, clientY: y });
-/** A finger from (x0, y0) to (x1, y1) on `el`; `end` false: the platform cancels it. */
 function swipe(el: Element, x0: number, y0: number, x1: number, y1: number, end = true) {
   fireEvent.touchStart(el, { touches: [pt(x0, y0)] });
   fireEvent.touchMove(el, { touches: [pt((x0 + x1) / 2, (y0 + y1) / 2)] });
@@ -94,7 +82,6 @@ function swipe(el: Element, x0: number, y0: number, x1: number, y1: number, end 
   else fireEvent.touchCancel(el, { touches: [], changedTouches: [pt(x1, y1)] });
 }
 
-/** A slow drag from x0 to x1 that holds still before lifting: velocity 0, the position alone decides. */
 function dragAndHold(el: Element, x0: number, x1: number) {
   vi.useFakeTimers({ toFake: ["Date"] });
   const at = (ms: number) => vi.setSystemTime(new Date(1_000_000 + ms));
@@ -179,7 +166,6 @@ describe("useSwipe: a plain swipe", () => {
     fireEvent.touchMove(el, { touches: [pt(200, 10)] });
     fireEvent.touchEnd(el, { touches: [], changedTouches: [pt(200, 10)] });
     expect(onSwipe).not.toHaveBeenCalled();
-    // A scroll elsewhere (another pane) does not cancel it.
     const other = document.createElement("div");
     document.body.appendChild(other);
     fireEvent.touchStart(el, { touches: [pt(0, 0)] });
@@ -228,13 +214,11 @@ describe("useSwipe: a sheet", () => {
   it("locks sideways only within 30 degrees of horizontal", () => {
     const { getByTestId } = render(<Box dir="left" onSwipe={vi.fn()} />);
     const box = getByTestId("box");
-    // 15px left, 10px down: 34 degrees off horizontal at the lock, a scroll.
     fireEvent.touchStart(box, { touches: [pt(200, 100)] });
     fireEvent.touchMove(box, { touches: [pt(185, 110)] });
     fireEvent.touchMove(box, { touches: [pt(100, 110)] });
     expect(box.style.transform).toBe("");
     fireEvent.touchEnd(box, { touches: [], changedTouches: [pt(100, 110)] });
-    // 15px left, 8px down: 28 degrees, a sheet drag.
     fireEvent.touchStart(box, { touches: [pt(200, 100)] });
     fireEvent.touchMove(box, { touches: [pt(185, 108)] });
     expect(box.style.transform).toBe("translateX(-15px)");
@@ -245,7 +229,6 @@ describe("useSwipe: a sheet", () => {
     const box = getByTestId("box");
     fireEvent.touchStart(box, { touches: [pt(300, 100)] });
     fireEvent.touchMove(box, { touches: [pt(280, 102)] });
-    // The finger drifts down more than sideways, and the list under it scrolls: still the sheet's.
     fireEvent.touchMove(box, { touches: [pt(260, 160)] });
     fireEvent.scroll(getByTestId("list"));
     fireEvent.touchMove(box, { touches: [pt(200, 140)] });
@@ -256,7 +239,7 @@ describe("useSwipe: a sheet", () => {
     const onSwipe = vi.fn(), onLetGo = vi.fn();
     const { getByTestId } = render(<Box dir="left" onSwipe={onSwipe} onLetGo={onLetGo} />);
     const box = getByTestId("box"), bd = getByTestId("backdrop");
-    document.body.style.pointerEvents = "none"; // a modal Radix layer holds the page
+    document.body.style.pointerEvents = "none";
     dragAndHold(box, 290, 50);
     expect(onLetGo).toHaveBeenCalledTimes(1);
     expect(box.style.pointerEvents).toBe("none");
@@ -265,7 +248,6 @@ describe("useSwipe: a sheet", () => {
     expect(box.hasAttribute("data-swiped")).toBe(true);
     expect(onSwipe).not.toHaveBeenCalled();
     expect((animate.mock.calls[0][1] as { duration: number }).duration).toBeLessThanOrEqual(DISMISS_MS);
-    // The panel's keyframes end at its width (just off screen), not past it.
     const frames = animate.mock.calls[0][0] as { transform: string }[];
     expect(frames[frames.length - 1].transform).toBe("translateX(-300px)");
     anims[0].onfinish?.();
@@ -291,7 +273,7 @@ describe("useSwipe: a sheet", () => {
     rerender(<Box dir="left" onSwipe={onSwipe} enabled={false} />);
     expect(onSwipe).toHaveBeenCalledTimes(1);
     expect(anims[0].cancel).toHaveBeenCalled();
-    anims[0].onfinish?.(); // a late finish fires nothing more
+    anims[0].onfinish?.();
     expect(onSwipe).toHaveBeenCalledTimes(1);
   });
 
@@ -330,7 +312,7 @@ describe("useSwipe: a sheet", () => {
     const { getByTestId } = render(<Box dir="left" onSwipe={vi.fn()} />);
     const box = getByTestId("box");
     dragAndHold(box, 290, 200);
-    expect(anims).toHaveLength(2); // panel + backdrop
+    expect(anims).toHaveLength(2);
     vi.spyOn(window, "getComputedStyle").mockReturnValue({ transform: "matrix(1, 0, 0, 1, -40, 0)", opacity: "0.7" } as CSSStyleDeclaration);
     globalThis.DOMMatrixReadOnly ??= class { m41: number; constructor(s: string) { this.m41 = Number(/,\s*([-\d.]+),\s*[-\d.]+\)$/.exec(s)?.[1]); } } as unknown as typeof DOMMatrixReadOnly;
     fireEvent.touchStart(box, { touches: [pt(200, 100)] });
@@ -338,7 +320,7 @@ describe("useSwipe: a sheet", () => {
     expect(anims[1].cancel).toHaveBeenCalled();
     expect(box.style.transform).toBe("translateX(-40px)");
     fireEvent.touchEnd(box, { touches: [], changedTouches: [pt(200, 100)] });
-    expect(anims).toHaveLength(4); // a new spring back from -40px
+    expect(anims).toHaveLength(4);
     expect((animate.mock.calls[2][0] as { transform: string }[])[0].transform).toBe("translateX(-40px)");
   });
 });

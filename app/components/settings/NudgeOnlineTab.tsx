@@ -1,20 +1,5 @@
 "use client";
 
-/**
- * NudgeOnlineTab — Settings → "Nudge online" (also opened from +New).
- *
- * Configures the nudge_online automation ("message a fan when they come
- * online"). Two stores, one screen:
- *   • the 60s detector cadence is an `automation_rules` row (kind nudge_online).
- *   • the rich behaviour (timing, caps, quiet hours, tease pools)
- *     is account_ai_config.nudge_config_json — both the detector and the delayed
- *     fire-job read it, so it's persisted server-side via useNudgeConfig.
- *
- * UX: every field has inline help; the tease pools have a friendly per-line
- * editor AND a raw-JSON advanced view (copy in/out); a live Preview composes a
- * sample message for a chosen fan + time; and "Share to models" copies this
- * config (settings + lines; each model keeps its own images) to picked models.
- */
 
 import { useEffect, useMemo, useReducer, useState, type ReactNode } from "react";
 import { Play, ChevronDown } from "lucide-react";
@@ -60,7 +45,6 @@ import {
   type FormKey,
 } from "@/components/settings/nudgeOnlineReducer";
 
-// Quick time presets for the preview (representative hour per slot).
 const TIME_PRESETS: [string, number][] = [
   ["Morning", 8], ["Midday", 13], ["Afternoon", 16], ["Evening", 19], ["Night", 23],
 ];
@@ -69,16 +53,12 @@ const PREVIEW_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "s
 export default function NudgeOnlineTab({
   initialAccountId = null,
 }: {
-  /** The Creator to open on, where a page's own creator control already picked
-   *  one (Smart Messages' Nudge row). Without it the tab opens on the first. */
   initialAccountId?: string | null;
 } = {}) {
   const accounts = useActiveAccounts();
   const [state, dispatch] = useReducer(
     nudgeOnlineReducer, { ...initialNudgeOnlineState, accountId: initialAccountId },
   );
-  // The picker's one copy: every pick is an `account` dispatch, which resets
-  // the old account's draft and lines in the same update.
   const { accountId } = state;
   useEffect(() => {
     if (!accountId && accounts.length > 0) dispatch({ type: "account", accountId: accounts[0].id });
@@ -96,8 +76,6 @@ export default function NudgeOnlineTab({
   const bulkM = useBulkApplyNudgeConfig();
   const previewM = useNudgePreview();
 
-  /** THE save gate and its note, read by the footer's Save. Why each half is
-   *  there: nudgeOnlineReducer `canSave`. */
   const gate = {
     accountId, drafted: state.base !== null, cfgError: cfgQ.isError,
     rulesHasData: rulesQ.data !== undefined, rulesPlaceholder: rulesQ.isPlaceholderData,
@@ -105,16 +83,10 @@ export default function NudgeOnlineTab({
   };
   const saveAllowed = canSave(gate);
   const { form, slots, jsonDraft, jsonErr, save: saved, runMsg, preview, previewErr, bulkMsg } = state;
-  /** THE save verdict, shown in the footer beside the Save. */
   const savedOk = saved?.ok === true;
   const saveErr = saved?.ok === false ? saved.err : null;
-  /** A save PUT in flight for the SHOWN account: after a switch the PUT is the
-   *  other account's (B is not "Saving…"), and back on A it is A's again — a
-   *  second whole-blob PUT must not overlap it. */
   const busy = useNudgeSavePending(accountId);
 
-  // A cache of picked media so we can render thumbnails by id (in the slot
-  // editor AND the preview).
   const [mediaCache, setMediaCache] = useState<Record<number, VaultMedia>>({});
   const addMedia = (list: VaultMedia[]) => setMediaCache((prev) => {
     const next = { ...prev };
@@ -122,24 +94,15 @@ export default function NudgeOnlineTab({
     return next;
   });
   const saveDisabled = busy || !saveAllowed;
-  /** …and THE label: which branch save() will take (create the rule or save
-   *  the config). */
   const saveLabel = rule ? "Save changes" : "Create automation";
   const note = gateNote(gate);
 
   const [advOpen, setAdvOpen] = useState(false);
 
-  // Share checklist: the OTHER models, none checked by default.
   const others = accounts.filter((a) => a.id !== accountId);
   const otherIds = others.map((a) => a.id);
   const picked = pickedIds(state.selected, otherIds);
 
-  // Load the effective config into the draft when it arrives — a refetch
-  // while the draft has unsaved edits keeps them, and a config from before
-  // this account's last save (or one arriving while it is pending) is ignored
-  // (the reducer's `hydrate`). Re-run when `busy` drops: the cache may then
-  // hold that pre-save config, which must not seed the form.
-  // The account's kept draft (a tab closed mid-edit / mid-save) rides along.
   useEffect(() => {
     if (!cfgQ.data) return;
     dispatch({
@@ -149,9 +112,6 @@ export default function NudgeOnlineTab({
     });
   }, [cfgQ.data, cfgQ.dataUpdatedAt, accountId, busy]);
 
-  // Keep the dirty (or saving) draft in localStorage until a PUT acks it
-  // (useSaveNudgeConfig); not before the form is seeded — a kept draft is the
-  // hydrate's to read first.
   usePendingDraft(state.base !== null && accountId ? nudgeDraftKey(accountId) : null, keptDraft(state));
   const restored = restoredNote(state);
   const discardDraft = () => {
@@ -165,22 +125,14 @@ export default function NudgeOnlineTab({
     return typeof v === "number" ? v : fallback;
   };
 
-  // Share writes the config shown here to the picked models; unsaved edits are saved here first.
   const block = shareBlock(state, picked);
 
-  /** Saves the shown account; true when the PUT landed. */
   async function save(): Promise<boolean> {
-    // Belt to the buttons' braces: a save here is a whole-blob REPLACE, so
-    // never write from a form that was never seeded. The same guard
-    // `useSellerConfig` keeps inside saveCfg for the seller tabs. One PUT per
-    // account at a time: `busy`, plus `state.saving` for a second click before
-    // the mutation cache reports the first one pending.
+    // Save is a whole-blob REPLACE: never write from an unseeded form; one PUT per account at a time.
     if (!accountId || !saveAllowed || busy || state.saving) return false;
     const cfg = buildConfig(state);
     dispatch({ type: "saveStart", cfg, accountId });
     try {
-      // The PUT is the only switch: it syncs the 60s detector rule (created /
-      // woken / parked from `enabled`) in the same write as the config.
       await saveCfgM.mutateAsync({ account_id: accountId, config: cfg });
       dispatch({ type: "saveOk", accountId, at: Date.now() });
       return true;
@@ -262,11 +214,6 @@ export default function NudgeOnlineTab({
         </Field>
       )}
 
-      {/* Drawn only once the draft is seeded (the gate's `drafted`) — also not
-       *  while a cached config is ignored as pre-save: fields drawn from the
-       *  unseeded draft would show fallbacks, and an edit typed there would be
-       *  wiped by the hydrate. A failed load says so instead of loading forever;
-       *  no account (none connected) has nothing to load, so nothing is drawn. */}
       {!gate.drafted ? (
         !accountId ? null
           : note?.failed
@@ -280,13 +227,11 @@ export default function NudgeOnlineTab({
                 <div>{RESTORED_NOTE}</div>
                 {restored.moved && <div className="text-warn mt-1">{RESTORED_MOVED_NOTE}</div>}
               </div>
-              {/* Off mid-save: the PUT's ack would land under a form already put back. */}
               <IfButton onClick={discardDraft} disabled={busy || !!state.saving}>Discard</IfButton>
             </div>
           )}
           <IfSwitch label="Enabled" checked={form.enabled !== false} onChange={(on) => set("enabled", on)} />
 
-          {/* What gets sent — one message: the time-of-day greeting. */}
           <Section title="What gets sent">
             <div className="flex flex-wrap gap-6">
               <IfSwitch label="Include text (off = image only)" checked={form.nudge_line_text !== false}
@@ -381,7 +326,6 @@ export default function NudgeOnlineTab({
             <IfHelp>No nudges in this window, creator-local time; equal = off.</IfHelp>
           </div>
 
-          {/* ── Preview ─────────────────────────────────────────────── */}
           <Section title="Preview">
             <div className="flex flex-wrap items-end gap-3">
               <Field label="Fan id">
@@ -432,7 +376,6 @@ export default function NudgeOnlineTab({
             )}
           </Section>
 
-          {/* ── Tease pools: friendly editor, per day ───────────────── */}
           <Section title="Message lines & images">
             <IfHelp className="mt-0">
               {"{name} {city} {age} {job} {hobby} {pet} fill from the fan's profile. One image per nudge; several rotate. Night runs 21:00-05:00: after midnight it uses the day before's lines (Friday 02:00 = Thursday night)."}
@@ -442,7 +385,6 @@ export default function NudgeOnlineTab({
               onSlot={(bucket, key, entry) => dispatch({ type: "slot", bucket, key, entry })} />
           </Section>
 
-          {/* Advanced JSON (copy in/out, weekend/friday, full control) */}
           <Collapsible open={advOpen} onToggle={() => setAdvOpen((v) => !v)}
             title="Advanced: edit pools as JSON">
             <div className="space-y-2">
@@ -481,7 +423,6 @@ export default function NudgeOnlineTab({
         </div>
       )}
 
-      {/* Share this config to other models (settings + lines; images stay each model's) */}
       {others.length > 0 && (
         <Section title="Share to models" extra={(
           <span className="flex gap-4">
@@ -509,11 +450,6 @@ export default function NudgeOnlineTab({
         </Section>
       )}
 
-      {/* The one Save, in the dialog's footer (`EditorFooter`: `AutomatedEditor`'s IfModal). Drawn outside the
-       *  `drafted` ternary, so it reads the full `canSave` gate — load half included — and says why it is off.
-       *  Its status column beside the buttons answers them: the gate note, the save's verdict ("Saved." or its
-       *  error) and Run now's line — in view however far the form is scrolled, and Run now's even while the
-       *  form is not drawn. */}
       <EditorFooter>
         <div role="status" className="mr-auto flex flex-col text-[12px]">
           {note && <span className={note.failed ? "text-err" : "text-muted"}>{note.text}</span>}
@@ -534,9 +470,7 @@ export default function NudgeOnlineTab({
   );
 }
 
-// ── small bits ────────────────────────────────────────────────────────
 
-/** A titled group of the form; `extra` sits at the title row's right. */
 function Section({ title, extra, children }: { title: string; extra?: ReactNode; children: ReactNode }) {
   return (
     <section className="space-y-3">
@@ -549,11 +483,10 @@ function Section({ title, extra, children }: { title: string; extra?: ReactNode;
   );
 }
 
-/** Dollar input that stores CENTS; 0/empty saves `null` (= off), so a bound of
- *  0 never accidentally means "skip every paying fan". */
 function DollarField({
   label, cents, onChange,
 }: { label: string; cents: number; onChange: (cents: number | null) => void }) {
+  // 0/empty saves null (= off): a bound of 0 must never mean "skip every paying fan".
   const dollars = cents > 0 ? cents / 100 : 0;
   return (
     <Field label={label}>

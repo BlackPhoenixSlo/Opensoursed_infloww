@@ -53,7 +53,6 @@ const ctx = (over: Partial<MessageMenuContext> = {}): MessageMenuContext => ({
   newWrites: true,
   ...over,
 });
-/** The chat page with the fixture thread drawn (as useOfData does) and the menus bound. */
 const chatPage = (over: Partial<MessageMenuContext> = {}) => {
   const d = page("chat");
   applyData(d, "messages/chat", { chat: "2006", thread: { fan: FAN, messages: thread } });
@@ -74,7 +73,6 @@ describe("OF's message ⋮ items (ItemActions, 13560)", () => {
     expect(messageItems(theirs, { mine: false, limited: false, left: 0, chat: null }).map((i) => [i.label, !!i.off])).toEqual([["Copy message text", false], ["Like", false], ["Reply", false], ["Bookmark", false], ["Pin", false], ["Hide", false], ["Report", true]]);
     expect(messageItems({ ...theirs, canReport: undefined }, { mine: false, limited: false, left: 0, chat: null }).map((i) => i.key)).not.toContain("report");
     expect(messageItems({ ...theirs, canReport: false }, { mine: false, limited: false, left: 0, chat: null }).map((i) => i.key)).not.toContain("report");
-    // ticket 42: with the open chat, Report is a hand-off to that chat's onlyfans.com page, not off.
     expect(messageItems(theirs, { mine: false, limited: false, left: 0, chat: "2006" }).find((i) => i.key === "report")).toEqual({ key: "report", label: "Report", href: "https://onlyfans.com/my/chats/chat/2006/" });
     const own = { ...mine, media: [{ id: 1, type: "photo" }] } as MenuMessage;
     const items = messageItems(own, { mine: true, limited: false, left: 125, chat: null });
@@ -178,7 +176,6 @@ describe("the menu on the chat page", () => {
     const report = d.querySelector<HTMLAnchorElement>("#oi-msg-menu [data-oi-msg-action='report']")!;
     expect([report.tagName, report.href, report.target, report.rel, report.hasAttribute("data-oi-wired"), report.title]).toEqual(["A", "https://onlyfans.com/my/chats/chat/2006/", "_blank", "noopener noreferrer", true, HANDOFF_TITLE]);
     expect([report.getAttribute("aria-disabled"), report.classList.contains("v-list-item--disabled"), report.textContent!.trim()]).toEqual([null, false, "Report"]);
-    // Its click reaches the browser (a new tab): the binder's capture listener leaves it alone; the menu closes after.
     let prevented: boolean | null = null;
     const seen = (ev: Event) => { prevented = ev.defaultPrevented; ev.preventDefault(); };
     d.addEventListener("click", seen);
@@ -205,11 +202,9 @@ describe("the unsend window: each message's cancelSeconds from when it was read"
     const reads = new Map<string, MessageRead>();
     const a = { id: 1, cancelSeconds: 100 } as MenuMessage;
     stampReads(reads, [a], 0);
-    // 40s later an older page arrives: the same message, the same value read at 0.
     stampReads(reads, [a, { id: 2, cancelSeconds: 0 } as MenuMessage], 40_000);
     expect(unsendLeft(reads, a, 40_000)).toBe(60);
-    expect(unsendLeft(reads, { ...a, isLiked: true }, 40_000)).toBe(60); // a like's patched copy
-    // A refetch at 50s reads 50 left.
+    expect(unsendLeft(reads, { ...a, isLiked: true }, 40_000)).toBe(60);
     const fresh = { id: 1, cancelSeconds: 50 } as MenuMessage;
     stampReads(reads, [fresh], 50_000);
     expect(unsendLeft(reads, fresh, 60_000)).toBe(40);
@@ -229,7 +224,7 @@ describe("the menu at 390px and from the keyboard", () => {
     });
     openMenu(d, theirs);
     const menu = d.getElementById("oi-msg-menu")!;
-    expect([menu.style.left, menu.style.maxHeight, menu.style.overflow]).toEqual(["162px", "384px", "auto"]); // 390 - 220 - 8
+    expect([menu.style.left, menu.style.maxHeight, menu.style.overflow]).toEqual(["162px", "384px", "auto"]);
     expect(Number.parseInt(menu.style.top)).toBeGreaterThanOrEqual(8);
     const copy = vi.fn(() => Promise.resolve());
     const w = writes();
@@ -318,8 +313,6 @@ describe("messageWrites: the exact Relay requests, the thread patched first and 
     expect(qc.getQueryData<MenuMessage[]>(["messages", "acc", 2006])!.some((m) => String(m.id) === id)).toBe(false);
   });
 
-  // W30 W3: the pinned page draws from `chat-pinned`; an unsend that left it there kept the bubble + Unsend PPV.
-  // W30 S1: the in-flight guard lives in useUnsendMessage, so the Messages list's button (a second hook) shares it.
   it("pinned page: a second confirm while the unsend is out sends nothing, from the menu or another caller; on success the bubble leaves the pinned cache", async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } });
     const pinnedKey = ["chat-pinned", "acc", "2006"];
@@ -328,15 +321,15 @@ describe("messageWrites: the exact Relay requests, the thread patched first and 
     const del = vi.spyOn(relay, "delete").mockImplementation(() => new Promise((r) => (answer = r)));
     const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: qc }, children);
     const menu = renderHook(() => useUnsendMessage("acc", 2006), { wrapper }).result.current;
-    const button = renderHook(() => useUnsendMessage("acc", 2006), { wrapper }).result.current; // as UnsendMessageButton
+    const button = renderHook(() => useUnsendMessage("acc", 2006), { wrapper }).result.current;
     const first = messageWrites("acc", "2006", qc, menu.unsendOne).unsend(mine as OFMessage);
-    const again = messageWrites("acc", "2006", qc, menu.unsendOne).unsend(mine as OFMessage); // the writes rebuilt while it is out
+    const again = messageWrites("acc", "2006", qc, menu.unsendOne).unsend(mine as OFMessage);
     const row = button.unsendOne({ id: String(mine.id) } as OFMessage);
     expect(del).toHaveBeenCalledTimes(1);
     answer({ success: true });
     expect(await Promise.all([first, again, row])).toEqual([{ success: true }, { success: true }, { success: true }]);
     expect(qc.getQueryData<MenuMessage[]>(pinnedKey)!.map((m) => m.id)).toEqual([theirs.id]);
-    const later = button.unsendOne(mine as OFMessage); // settled: a later unsend is its own request
+    const later = button.unsendOne(mine as OFMessage);
     expect(del).toHaveBeenCalledTimes(2);
     answer({ success: true });
     await later;
@@ -352,7 +345,6 @@ describe("messageWrites: the exact Relay requests, the thread patched first and 
   });
 });
 
-// ticket 33: the own bubble's extras (Countdown, Copy as draft, Unsend PPV).
 describe("bubbleExtras: per own/fan, priced/free, window open/closed", () => {
   const free = { id: 1, text: "hi", price: 0 } as MenuMessage;
   const ppv = { id: 2, text: "ppv", price: 5 } as MenuMessage;
@@ -494,7 +486,6 @@ describe("the own bubble's extras on the chat page", () => {
     openMenu(d, ppv);
     pick(d, "unsend");
     button(d, "Unsend").click();
-    // As useUnsendMessage: the bubble goes at once and is drawn again after the error.
     const bubble = d.querySelector<HTMLElement>('[data-oi-msg="501"]')!;
     const [parent, next] = [bubble.parentElement!, bubble.nextSibling];
     bubble.remove();

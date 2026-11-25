@@ -1,9 +1,5 @@
 "use client";
 
-/**
- * `infloww.tsx`'s selects (re-exported there): the shared `Listbox` (also `IfCreatorSelect`'s and `HbPager`'s),
- * `IfSelect`, `HbSelect` and the `HbFilter` boxes, plus the HB greys and the antd field box the other primitives share.
- */
 
 import {
   forwardRef, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type SelectHTMLAttributes,
@@ -13,13 +9,10 @@ import { ChevronDown, type LucideIcon } from "lucide-react";
 import { useOutsideClose } from "@/components/ui/Menu";
 import { cn } from "@/lib/utils";
 
-/** An option of `IfSelect`, `HbSelect`, `IfTabs` and `IfSegmented`. `text` is what `searchable` filters on (the
- *  label when it is a string, else the value). `title` is a tab's tooltip (`IfTabs` only). */
 export type IfOption<T extends string = string> = {
   value: T; label: ReactNode; text?: string; disabled?: boolean; title?: string;
 };
 
-// HB greys with no theme token: the sampled dark hex, then the light stand-in.
 export const HB_TEXT = "text-white [html[data-theme=light]_&]:text-fg";
 export const HB_DIM = "text-[#a3a3a3] [html[data-theme=light]_&]:text-fg-dim";
 export const HB_FILL_1 = "bg-[#1a1a1a] [html[data-theme=light]_&]:bg-black/5";
@@ -29,15 +22,9 @@ export const HB_HAIR = "border-white/[.09] [html[data-theme=light]_&]:border-bla
 
 export type IconProp = { icon?: LucideIcon };
 
-// ── Listbox (shared by IfSelect, HbSelect, IfCreatorSelect) ──────────────────────────────────────────────────────
 
 const optionText = (o: IfOption) => o.text ?? (typeof o.label === "string" ? o.label : o.value);
 
-/**
- * A button that opens a listbox: Enter, Space or the arrows open it, the arrows move, Enter picks, Escape or Tab
- * closes, an outside click closes. Focus stays on the button (`aria-activedescendant`), or on the filter box when
- * `searchable`.
- */
 export function Listbox<T extends string>({
   value, options, onChange, renderValue, placeholder, searchable, disabled, id, ariaLabel, ariaDescribedby,
   className, triggerClassName, menuClassName, chevronClassName, openUp,
@@ -56,7 +43,6 @@ export function Listbox<T extends string>({
   triggerClassName: string;
   menuClassName: string;
   chevronClassName?: string;
-  /** Open the menu above the trigger (a control at the page foot), not below. */
   openUp?: boolean;
 }) {
   const { open, setOpen, ref } = useOutsideClose();
@@ -176,21 +162,16 @@ type SelectProps<T extends string> = {
   options: IfOption<T>[];
   onChange: (value: T) => void;
   placeholder?: string;
-  /** A filter box at the top of the menu (type to narrow; time zones, creators). */
   searchable?: boolean;
   disabled?: boolean;
   id?: string;
   "aria-label"?: string;
   "aria-describedby"?: string;
-  /** Width and placement; the trigger fills it. */
   className?: string;
 };
 
-/** The antd field box: 1px L1, radius 6, B-nav fill, 14px T1; 32px (the Dashboard's `lg` 36px). */
 export const IF_FIELD = "rounded-md border border-border bg-bg text-[14px] text-fg hover:border-accent";
 
-/** A native `<select>` on the field box (32px, `padding:0 11px`): where tests and slop pick by option. `className`
- *  adds width and the like. */
 export const IfNativeSelect = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(
   ({ className, ...rest }, ref) => (
     <select ref={ref}
@@ -200,9 +181,6 @@ export const IfNativeSelect = forwardRef<HTMLSelectElement, SelectHTMLAttributes
 );
 IfNativeSelect.displayName = "IfNativeSelect";
 
-/** antd's select (button + listbox): 32px, `padding:0 11px`, a 12px T3 chevron; `size="lg"` is the Dashboard's 36px
- *  "Net earnings" with T2 text; `size="field"` is a pop-up form field (36px, radius 8, T1). The menu is the panel
- *  colour, 32px items. */
 export function IfSelect<T extends string>({ size = "md", ...p }: SelectProps<T> & { size?: "md" | "lg" | "field" }) {
   return (
     <Listbox
@@ -215,20 +193,14 @@ export function IfSelect<T extends string>({ size = "md", ...p }: SelectProps<T>
   );
 }
 
-/** HB's filter field, as a class string: filled #161616, no border, 28px, radius 4, 14px text, #a6a6a6 placeholder.
- *  Put it on an `<input>`; `HbSelect` is the select built on it. */
 export const HbFilter =
   "h-7 rounded-[4px] border-0 bg-[#161616] px-3 text-[14px] text-fg placeholder:text-[#a6a6a6] outline-none " +
   "focus-visible:ring-1 focus-visible:ring-border-light " +
-  // Light: a grey 5% fill read as disabled; white + hairline like Infloww's light inputs, #666 placeholder.
   "[html[data-theme=light]_&]:bg-white [html[data-theme=light]_&]:shadow-[inset_0_0_0_1px_var(--color-border-light)] " +
   "[html[data-theme=light]_&]:placeholder:text-fg-dim";
 
-/** HB's filter at Tracking links' 36px: radius 8, 16px text (its filter bar, #17-#22). */
 export const HbFilterLg = cn(HbFilter, "h-9 rounded-lg text-[16px]");
 
-/** HB's select: the `HbFilter` box with the chevron at the right, a panel-coloured menu. `size="lg"` is the 36px
- *  `HbFilterLg`; `icon` leads the trigger (Tracking links' Source and Tag), not the menu's options. */
 export function HbSelect<T extends string>({ size = "md", icon: Icon, ...p }: SelectProps<T> & IconProp & { size?: "md" | "lg" }) {
   return (
     <Listbox

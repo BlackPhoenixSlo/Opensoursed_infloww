@@ -7,7 +7,7 @@ const START = D("2021-09-28");
 
 describe("OF's Custom date picker: its rules (PeriodDatePicker)", () => {
   it("the title counts both ends; the tabs read 'MMM D, YYYY'", () => {
-    expect(daysSelected(D("2025-02-02"), D("2026-10-12"))).toBe("618 days selected"); // the captured picker
+    expect(daysSelected(D("2025-02-02"), D("2026-10-12"))).toBe("618 days selected");
     expect(daysSelected(D("2026-10-17"), D("2026-10-17"))).toBe("1 day selected");
     expect(tabDate(D("2025-02-02"))).toBe("Feb 2, 2025");
     expect(parseDay("2026-02-30")).toBeNull();
@@ -18,8 +18,8 @@ describe("OF's Custom date picker: its rules (PeriodDatePicker)", () => {
     expect(pick(s, D("2026-10-01"))).toEqual({ start: D("2026-10-01"), end: D("2026-10-17"), fromTab: false });
     expect(pick({ ...s, fromTab: false }, D("2026-10-05"))).toEqual({ start: D("2026-09-17"), end: D("2026-10-05"), fromTab: false });
     expect(pick({ ...s, fromTab: false }, D("2026-09-01"))).toEqual({ start: D("2026-09-01"), end: D("2026-09-17"), fromTab: true });
-    expect(pick(s, D("2026-10-18"))).toBeNull(); // after today
-    expect(pick(s, D("2021-09-27"))).toBeNull(); // before the Creator's start
+    expect(pick(s, D("2026-10-18"))).toBeNull();
+    expect(pick(s, D("2021-09-27"))).toBeNull();
   });
 
   it("the grid: Sunday-first weeks from the 1st's week to the last day's (the captured February 2025: Jan 26 to Mar 1)", () => {
@@ -66,7 +66,7 @@ describe("OF's Custom date picker in a page", () => {
     closeDatepicker(document);
     openDatepicker(document, { start: TODAY, end: TODAY, today: TODAY, userStart: null, single: true, future: true, onApply: vi.fn() });
     expect([tense("2026-10-16"), tense("2026-10-17"), tense("2026-10-20")]).toEqual([["v-past"], ["v-present"], ["v-past"]]);
-    expect(document.querySelector("[data-oi-day='2026-10-16'] span")!.className).toBe("vc-disabled"); // before today: greyed
+    expect(document.querySelector("[data-oi-day='2026-10-16'] span")!.className).toBe("vc-disabled");
     closeDatepicker(document);
   });
 
@@ -75,8 +75,8 @@ describe("OF's Custom date picker in a page", () => {
     click("[data-oi-day='2026-09-03']");
     expect(text(".vdatetime-popup__title")).toBe("45 days selected");
     expect(document.querySelector(".vdatetime-popup__tab.time")!.classList.contains("active")).toBe(true);
-    expect(text(".b-streaks-swither__time")).toBe("October 2026"); // the end tab shows the end's month
-    expect((document.querySelector("[data-oi-month='next']") as HTMLButtonElement).disabled).toBe(true); // this month
+    expect(text(".b-streaks-swither__time")).toBe("October 2026");
+    expect((document.querySelector("[data-oi-month='next']") as HTMLButtonElement).disabled).toBe(true);
     click("[data-oi-month='prev']");
     expect(text(".b-streaks-swither__time")).toBe("September 2026");
     click("[data-oi-day='2026-09-15']");

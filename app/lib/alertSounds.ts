@@ -1,19 +1,5 @@
 "use client";
 
-/**
- * alertSounds — the 12 alert sounds for new messages and timed reminders
- * (roadmap W3 row 3.13; Infloww ships 12 choosable sounds, Audio1–12 /
- * timeOutAudio1..12, findings 04 M19 and 02 M24).
- *
- * Synthesised with WebAudio, so there are no audio files to ship or license.
- * One AudioContext per window, made on first use. Browsers keep it suspended
- * until the page has had a user gesture; the desktop app has no such rule.
- *
- * `playAlertOnce` is what the app calls on an arrival: every window (main +
- * popouts) runs its own toaster and hears the same SSE event, so a Web Lock
- * per key lets one window play it, and a short gap keeps a burst from
- * becoming a cacophony.
- */
 
 export const ALERT_SOUND_IDS = [
   "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "s12",
@@ -21,16 +7,11 @@ export const ALERT_SOUND_IDS = [
 export type AlertSoundId = (typeof ALERT_SOUND_IDS)[number];
 
 interface Note {
-  /** Frequency in Hz. */
   f: number;
-  /** Start, seconds after the sound starts. */
   t: number;
-  /** Length in seconds. */
   d: number;
   wave?: OscillatorType;
-  /** Glide to this frequency over the note. */
   to?: number;
-  /** Relative level, default 1. */
   g?: number;
 }
 
@@ -100,12 +81,9 @@ function audioContext(): AudioContext | null {
   return ctx;
 }
 
-/** A resume() that settles later than this is stale: the sound is dropped,
- *  so sounds requested while the context was suspended don't pile up and all
- *  play at once on the next user gesture. */
+// A resume() settling later than this is stale: dropped so sounds queued while suspended don't all fire on the next gesture.
 const RESUME_STALE_MS = 1_000;
 
-/** Play one sound now. Returns false where there is no WebAudio. */
 export function playAlertSound(id: AlertSoundId): boolean {
   const ac = audioContext();
   if (!ac) return false;
@@ -146,9 +124,8 @@ function schedule(ac: AudioContext, sound: AlertSound): boolean {
   }
 }
 
-/** How long a window holds a key's lock: covers SSE delivery skew between windows. */
+// Lock hold covers SSE delivery skew between windows so one window plays each arrival.
 const HOLD_MS = 10_000;
-/** Minimum gap between two sounds in one window. */
 const GAP_MS = 1_000;
 let lastAt = 0;
 
@@ -159,7 +136,6 @@ function playGapped(id: AlertSoundId): void {
   playAlertSound(id);
 }
 
-/** Play `id` for the arrival `key` in one window only (see the header). */
 export function playAlertOnce(key: string, id: AlertSoundId): void {
   const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
   if (!locks?.request) {

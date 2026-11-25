@@ -1,68 +1,3 @@
-"""A mass message's optimistic placeholders fold into OnlyFans' echo exactly once: the
-composer's broadcast to explicit fans writes one placeholder-band stub per recipient
-(`attribution.write_mass_optimistic_rows`: OF's queue answer carries no per-fan ids), and
-when the inbox poll reads OF's chat list with that send as a chat's last message
-(`reconcile_chats_from_of`) the real row adopts its stub (`adopt_thread_placeholders` ->
-`attribution_pair.pair_placeholders`: nearest-first, `<br />` == `\\n`, the 6 h bound).
-
-World: `agency_inbox` (small 3 Creators x 50 fans, medium 10 x 500), each Creator with a
-captured session (seed/of_sessions) so the relay builds its REAL OFClient against
-lib/of_wire.py (`OF_WIRE`). Per Creator, before any send, `seed/mass_placeholders`: a closed
-run from 2 days ago whose echo never came (prod's 90% case), its stubs on STALE fans plus
-BOTH fans, carrying run 0's caption.
-
-Load: per Creator (all at once, each Creator's sends in turn) RUNS broadcasts through the
-real `POST /api/of/v2/messages/queue` (owner session, X-Account-Id, `user_ids`), each a
-multi-line caption to its own `--per_run` fans (run 0's include the BOTH fans), the last
-`--set excluded=` (FLOW_SIZES, 2) of them also named in the body's `excluded_users` (so each run
-SENDS to per_run - excluded). Then OF's chat list (`FakeOF.chats`) shows every sent recipient's
-copy of its run as the last message, its text
-as OF echoes it (`\\n` -> `<br />\\n`, created a second after the send), and every STALE fan a
-Creator's own OF-web send of run 0's caption, now. `--users` open inboxes, as the app's
-`useChatList` drives them: each has scrolled to one (Creator, page) and loads it once
-(`GET /api/of/v2/chats?limit=50&offset=..`, a relay-cache miss, so a fresh OF read and one
-reconcile), then head-polls page 0 every POLL_S without `refresh` (`useHeadPagePoll`: 90 s,
-`refresh=false`, rides the relay cache), until every fresh stub is gone or SETTLE_S passes.
-
-Checks: every send answered 200 and left one stub per sent recipient and none on any other
-non-excluded fan (SENT); EXCL (skipped at `--set excluded=0`)
-(lib/mass_queue_faults.py), right after the sends: per excluded fan no row of its run and no out row
-with its caption (stub or real), no OF wire `userIds` naming it (RUNS wire bodies per Creator, so
-the read is never blind), and each run's `mass_runs.recipient_count` == its sent ids; PH_ONCE
-(lib/attribution_pair_faults.py): per sent recipient its stub is gone, OF's row carries its run,
-one out row and one thread bubble (`GET /admin/messages/{aid}/{fan}`) hold that caption; per
-BOTH fan the 2-day-old stub is still there; per STALE fan the 2-day-old stub is still there
-and OF's row carries no run. Budgets: echo visible -> every stub adopted (E2E_SETTLE_MS),
-route p95s, p95 vs the last green run.
-
-Dry-run tail (O3, after every check above is recorded, so it can redden none of them): per Creator,
-seed/mass_dry_run.py puts `--set dry_fence=` fans on MASSdmEXCLUDE and as many outside an enforce-mode
-include list (AUTOFENCE), and the scenario gives FakeOF a custom list (`lists` / `list_users`) whose
-roster = `--set dry_fresh=` fans no message touched in 12 h, `--set dry_guard=` fans the broadcasts above
-reached (inside the 6 h contact guard), and both fences. max(`--users`, 2 per Creator) concurrent
-`POST /admin/automation/enqueue` `send_mass_message` dry runs, alternating per Creator explicit (the
-roster as `included_users`, `--set dry_excluded=` fresh fans as `excluded_users`, one payload per
-Creator) and list (`user_lists: [that list]`), drained by
-`/__slop/automation-tick`; then ONE real enqueue per Creator of the explicit payload. DRY_NO_SEND
-(lib/mass_dry_run_faults.py), the dry phase only: of_wire `queue` frames per Creator unchanged, no OF
-list POST / DELETE, no new mass_runs / out messages row, every job done and every run's stats
-(`GET /admin/stats/automation-runs`) dry_run, sent 0. DRY_LIST: every list run's would_send is None
-with reason `list_audience` (no roster read); every explicit run's would_send is roster - guard -
-fences - its excluded_users (non-empty), in roster order, and the real send's wire `userIds`.
-
-Bypasses (declared): lib/of_wire.py is OnlyFans (its own declared bypasses; the queue answer
-`{id, text, createdAt}` is a guess, which is what makes every recipient a placeholder; no 10 s
-broadcast throttle); OF's chat list is set by the scenario, one item per recipient, its
-`<br />` echo shape the one test_placeholder_adopt pins; the inbox clients are httpx pools, not
-browsers, and model only the page-load + head poll (no SSE, no manual Refresh); the stale run is SQL in the product's shape (no actor can send 2 days ago);
-the tail's fences are SQL rows (seed/mass_dry_run.py), its OF list is set on FakeOF directly (OF's
-side: no route makes a custom list with members in one step), its runs are drained by tick passes,
-not the supervisor's cadence.
-Break-it-once: placeholder-pair-ignores-window (the 6 h bound dropped: only PH_ONCE);
-`--fault=mass-queue-excluded-kept` (only EXCL); `--fault=mass-dry-run-ignored` (a dry run sends:
-DRY_NO_SEND + DRY_LIST); `--fault=mass-dry-run-list-claims-reach` (a list dry run answers its known
-fans, no reason: only DRY_LIST).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -78,7 +13,7 @@ from slop.lib.mass_dry_run_faults import DRY_LIST, DRY_NO_SEND
 from slop.lib.mass_queue_faults import EXCL
 from slop.seed import mass_dry_run, mass_placeholders, of_sessions, ts
 
-sys.path.append(str(Path(__file__).resolve().parents[2] / "service"))   # the pairing key, pure
+sys.path.append(str(Path(__file__).resolve().parents[2] / "service"))
 from attribution_pair import _norm_body  # noqa: E402
 
 PROFILE = "agency_inbox"
@@ -87,28 +22,19 @@ OF_WIRE = True
 FAULT = "placeholder-pair-ignores-window"
 RUNS = 3
 STALE_AGE = timedelta(days=2)
-PAGE = 50                                            # the relay's /chats limit cap
-# useHeadPagePoll's 90 s, 2x compressed with jitter (declared). Not `refresh=1` on every page
-# every tick (this scenario's first cut): every fresh read reconciles its page in ONE write
-# transaction (reconcile_chats_from_of), measured 122 ms p50 / 825 ms p95 of SQLite write lock per
-# 50-chat page, and ~5-27 such reads/s at --users=200 oversubscribe the lock: reconciles waited out
-# the 30 s busy_timeout and rolled back "database is locked"
-# (20261031T085043Z-2026-10-31-mass-placeholder-echo-0480, 98 of 251;
-# 20261031T085400Z-2026-10-31-mass-placeholder-echo-baseline-ae29, 32 at 30-45 s). The app never
-# sends that load (only a manual Refresh forwards ?refresh=1); an open product limit, not this flow's.
+PAGE = 50
+# not refresh=1 per tick: each fresh read reconciles its page in one write txn (~122 ms p50 / 825 ms p95 of lock); at --users=200 they oversubscribe it and roll back 'database is locked'
 POLL_S = (30.0, 45.0)
 SETTLE_S = 240
-ECHO_ID_BASE = 9_760_000_000_000                     # OF ids for the chat list's copies
-E2E_SETTLE_MS = 2 * 45_000   # each page's first load lands within one compressed poll; 2x slack
-# The enqueue budget is the composer's: every dry run is enqueued at once, one SQLite write each, so the
-# burst queues on the write lock (measured --scale=medium --users=200: p50 755 / p95 1143 ms,
-# 20261103T045033Z-2026-10-31-mass-placeholder-echo-9023).
+ECHO_ID_BASE = 9_760_000_000_000
+E2E_SETTLE_MS = 2 * 45_000
+# the dry-run enqueue burst queues on the SQLite write lock (measured medium --users=200: p50 755 / p95 1143 ms)
 P95_MS = {"GET /api/of/v2/chats": 2000, "POST /api/of/v2/messages/queue": 3000,
           "GET /admin/messages/:id/:id": 1000, "POST /admin/automation/enqueue": 3000}
 P95_VS_LAST = (1.5, 500)
 
 SENT = "every broadcast answered 200 and left one placeholder per recipient"
-DRY_LIST_ID_BASE = 7_900_000                         # the tail's OF custom list, one per Creator
+DRY_LIST_ID_BASE = 7_900_000
 DRY_SETTLE_S = 300
 _LIST_WRITES = ("POST /api2/v2/lists", "POST /api2/v2/lists/{id}/users/{id}",
                 "DELETE /api2/v2/lists/{id}/users/{id}")
@@ -135,7 +61,6 @@ async def run(ctx) -> None:
     assert 0 <= n_excl and n_run - n_excl >= max(n_both, 1), (n_run, n_excl, n_both)
     rng = w.rng("scenario:mass-placeholder-echo")
 
-    # Who gets what, per Creator: runs[k] (fresh recipients), stale, both (also in runs[0]).
     plan: dict[str, dict] = {}
     for aid in aids:
         fans = [f["id"] for f in w.data["fans"][aid]]
@@ -150,7 +75,6 @@ async def run(ctx) -> None:
     stale_runs = mass_placeholders.seed(w, {aid: plan[aid]["stale"] + plan[aid]["both"] for aid in aids},
                                         lambda aid: caption(aid, 0), old)
 
-    # ── the broadcasts, through the composer's route ────────────────────────
     owner = ctx.owner.share(limits=len(aids) + 4)
     send_bad: list = []
 
@@ -172,8 +96,6 @@ async def run(ctx) -> None:
                for k, rid in enumerate(plan[aid]["run_ids"]) if rid is not None}
 
     def stub_fans() -> dict[tuple[str, int], list[int]]:
-        """Per (Creator, fresh run) the fans of ALL its stubs but that run's excluded fans (theirs are
-        EXCL's): a phantom stub on any other fan, or a second one, still shows."""
         con = w.sql()
         try:
             out: dict[tuple[str, int], list[int]] = {}
@@ -187,7 +109,6 @@ async def run(ctx) -> None:
         finally:
             con.close()
 
-    # EXCL: what the excluded fans got from the sends (the DB rows and OF's wire), and the runs' counts.
     con = w.sql()
     try:
         rids = [rid for aid in aids for rid in plan[aid]["run_ids"] if rid is not None]
@@ -242,7 +163,7 @@ async def run(ctx) -> None:
             if rid is None:
                 continue
             got = sorted(stubs.get((aid, int(rid)), []))
-            if got != sorted(plan[aid]["sent"][k]):   # n_run - n_excl stubs, one per sent fan, no other fan
+            if got != sorted(plan[aid]["sent"][k]):
                 short[f"{aid}:{k}"] = {"n": len(got), "want": n_run - n_excl,
                                        "off": sorted(set(got) ^ set(plan[aid]["sent"][k]))[:5]}
     ctx.check(SENT, not send_bad and not short, sends=RUNS * len(aids), bad=send_bad[:5], stubs_off=short,
@@ -254,9 +175,8 @@ async def run(ctx) -> None:
         await owner.aclose()
         return
 
-    # ── OF's chat list: every recipient's copy, every stale fan's OF-web send ──
     now = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0) + timedelta(seconds=1)
-    echo: dict[tuple[str, int], dict] = {}   # (aid, fan) -> {id, text, run k or None}
+    echo: dict[tuple[str, int], dict] = {}
     n = 0
     for aid in aids:
         items = []
@@ -271,7 +191,7 @@ async def run(ctx) -> None:
                                           "fromUser": {"id": int(aid)}, "isFree": True, "price": 0,
                                           "mediaCount": 0, "media": []},
                           "unreadMessagesCount": 0, "hasUnread": False, "canSendMessage": True})
-        items.reverse()   # newest first, as OF orders `recent`
+        items.reverse()
         with ctx.of_wire.lock:
             ctx.of_wire.chats[aid] = items
 
@@ -287,7 +207,6 @@ async def run(ctx) -> None:
             con.close()
         return left == 0 and have == n
 
-    # ── the inbox clients: page the chat list until every stub folded in ────
     t_echo = time.perf_counter()
     done = asyncio.Event()
     deadline = t_echo + SETTLE_S
@@ -296,8 +215,6 @@ async def run(ctx) -> None:
     reads = [0]
 
     async def inbox(i: int, http) -> None:
-        """One open inbox: loads its (Creator, page) once from a random phase, then head-polls
-        page 0 every POLL_S, both without `refresh` (the relay cache decides what is fresh)."""
         aid, off = slots[i % len(slots)]
         r = w.rng(f"scenario:mass-placeholder-echo:inbox:{i}")
         await asyncio.sleep(r.uniform(0, POLL_S[1]))
@@ -320,9 +237,8 @@ async def run(ctx) -> None:
     settle_ms, *_ = await asyncio.gather(watch(), *(inbox(i, h) for i, h in enumerate(clients)))
     for h in clients:
         await h.aclose()
-    await asyncio.sleep(1.0)   # the last reads' reconcile tasks (fire-and-forget) land
+    await asyncio.sleep(1.0)
 
-    # ── verdict: SQL for the stub band (no route serves a stub past 1 h), the thread route for bubbles ──
     con = w.sql()
     try:
         rows = con.execute(
@@ -405,8 +321,6 @@ async def run(ctx) -> None:
 
 
 async def dry_tail(ctx, w, aids: list[str], plan: dict, rng) -> None:
-    """The dry-run tail (module docstring): fences + an OF list per Creator, concurrent dry runs, one
-    real send per Creator, DRY_NO_SEND and DRY_LIST."""
     sizes = {k: ctx.param(f"dry_{k}", w.size[f"mass_dry_run_{k}"]) for k in ("fresh", "guard", "fence", "excluded")}
     lists = _dry_world(ctx, w, aids, plan, rng, sizes)
     jobs = _dry_jobs(ctx, aids, lists)
@@ -429,7 +343,6 @@ async def dry_tail(ctx, w, aids: list[str], plan: dict, rng) -> None:
     _check_no_send(ctx, aids, jobs, stats, status, before, after,
                    enq_bad=enq_bad, list_writes=list_writes, seconds=dry_s)
 
-    # One real send per Creator of the explicit payload: what OF is told is what the dry runs said.
     real_before = _dry_counts(ctx, w, aids)["queue"]
     reals = [{"aid": aid, "payload": _explicit(lists, aid)} for aid in aids]
     await _enqueue(http, reals)
@@ -447,8 +360,6 @@ async def dry_tail(ctx, w, aids: list[str], plan: dict, rng) -> None:
 
 
 def _dry_world(ctx, w, aids: list[str], plan: dict, rng, sizes: dict) -> dict[str, dict]:
-    """Per Creator: the OF list roster (fresh ∪ guard ∪ both fences), its fences seeded, the list set on
-    FakeOF. -> {aid: {id, roster, fresh, guard, massdm, autofence, ex_exp}}."""
     n_fresh, n_guard, n_fence, n_dx = (sizes[k] for k in ("fresh", "guard", "fence", "excluded"))
     assert n_fresh > n_dx >= 0, (n_fresh, n_dx)
     con = w.sql()
@@ -493,14 +404,11 @@ def _explicit(lists: dict, aid: str) -> dict:
 
 
 def _want(lists: dict, aid: str, ex) -> list[int]:
-    """Who a run with excluded_users `ex` reaches: the roster's fresh fans minus `ex`, in roster order."""
     v, ex = lists[aid], set(ex)
     return [f for f in v["roster"] if f in set(v["fresh"]) and f not in ex]
 
 
 def _dry_jobs(ctx, aids: list[str], lists: dict) -> list[dict]:
-    """max(--users, 2 per Creator) dry payloads, alternating per Creator explicit / list.
-    -> [{aid, kind, payload}] (`job_id` set by _enqueue)."""
     jobs: list[dict] = []
     for u in range(max(ctx.users, 2 * len(aids))):
         aid = aids[u % len(aids)]
@@ -528,7 +436,6 @@ def _dry_counts(ctx, w, aids: list[str]) -> dict:
 
 
 async def _enqueue(http, jobs: list[dict]) -> list[dict]:
-    """POST every job at once; sets each `job_id` (None on a failed enqueue). -> the failures."""
     bad: list[dict] = []
 
     async def one(j: dict) -> None:
@@ -543,7 +450,6 @@ async def _enqueue(http, jobs: list[dict]) -> list[dict]:
 
 
 async def _drain(w, tick_http, ids: list[int]) -> dict[int, str]:
-    """Tick the automation worker until every job in `ids` is final (or DRY_SETTLE_S). -> {id: status}."""
     t0 = time.monotonic()
     st: dict[int, str] = {}
     while time.monotonic() - t0 < DRY_SETTLE_S:
@@ -582,7 +488,6 @@ def _check_no_send(ctx, aids, jobs, stats, status, before, after, *, enq_bad, li
 
 
 def _check_list(ctx, aids, lists, jobs, stats, wire) -> None:
-    """`wire`: {aid: (the real send's userIds, its queue frames)}."""
     bad: dict[str, list] = {"list": [], "list_runs": [], "explicit": [], "explicit_empty": [],
                             "explicit_runs": [], "explicit_vs_wire": [], "wire": []}
     for aid in aids:

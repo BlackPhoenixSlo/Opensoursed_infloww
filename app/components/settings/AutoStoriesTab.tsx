@@ -1,31 +1,5 @@
 "use client";
 
-/**
- * AutoStoriesTab — My Automations > Auto Story (/growth/auto-story).
- *
- * One `auto_stories` automation_rule per account. The owner picks a vault
- * folder, a schedule ("cron time"), how many stories to post per trigger, how
- * long each lives before auto-delete, and an optional total run-limit. On its
- * cadence the executor posts `per_run` random photos from the folder as stories
- * (vault/CDN → convert → POST /stories) and enqueues each delete at now+hours.
- *
- * Schedule modes (all three the spec asked for):
- *   • "At set times"  → daily_at: ["09:00","20:00", …]  (one fire per slot/day)
- *   • "Every N hours" → every_seconds interval
- * Run-limit ("how many times to run") → trigger.max_runs; blank = run forever.
- * Per-trigger count ("how many to post") → payload.per_run; default 1.
- *
- * On Infloww's look (page-parity ticket 16): the page header holds the creator
- * select (`?creator=`), Learn (the blurb), the On / Off pill + switch, a "More
- * actions" menu (Run now, Edit raw JSON for fast imports, Delete) and the primary
- * Save; the form is the S4S-settings blocks (Source, When to post, Stories, Vault
- * clean-up). The switch saves the moment it flips once the rule exists (a PATCH of
- * `is_enabled` alone); before that it picks whether Save creates the rule on.
- *
- * The form is a pure reducer (autoStoriesForm.ts); the page only dispatches. It registers on the help bot's agent
- * bridge as the `auto_stories` editor (docs/spec/assistant-do-mode.md D13): "Do it for me" fills this form and saves a
- * NEW rule through `agentSave`, always switched off; with a rule already here it refuses (one per account).
- */
 
 import { useEffect, useMemo, useReducer, useState } from "react";
 import { Images, MoreHorizontal, Plus, Trash2 } from "lucide-react";
@@ -58,7 +32,6 @@ import {
 
 const TITLE = "Auto Story";
 
-/** Minutes to add to UTC to get the user's local time (e.g. +120 for UTC+2). */
 function tzOffsetMinutes(): number {
   return -new Date().getTimezoneOffset();
 }
@@ -73,8 +46,7 @@ export default function AutoStoriesTab() {
   const { accountId, creators, loading } = useAutomationCreator();
 
   const rulesQ = useAutomationRules(accountId);
-  // This Creator's own rules only: after a Creator switch the query shows the last Creator's rows as placeholder
-  // until the new read lands, and a PATCH on that rule id would change the other Creator's Auto Story.
+  // After a Creator switch the query shows the last Creator's rows as placeholder; a PATCH on that rule id would change the other Creator's Auto Story.
   const rulesReady = rulesQ.isSuccess && !rulesQ.isPlaceholderData;
   const rule = useMemo(
     () => (rulesReady ? (rulesQ.data ?? []).find((r) => r.kind === "auto_stories") ?? null : null),
@@ -82,7 +54,6 @@ export default function AutoStoriesTab() {
   );
 
   const foldersQ = useVaultListsRevalidated(accountId);
-  // Only folders that actually hold photos are postable as stories.
   const folders = useMemo(
     () => (foldersQ.data?.list ?? []).filter((f) => (f.photosCount ?? 0) > 0),
     [foldersQ.data],
@@ -90,10 +61,8 @@ export default function AutoStoriesTab() {
 
   const [form, dispatch] = useReducer(autoStoriesReducer, DEFAULT_FORM);
   const set = (patch: Partial<FormState>) => dispatch({ type: "set", patch });
-  // What the form was loaded with: unsaved edits = not the same.
   const baseline = useMemo(() => (rule ? ruleToForm(rule) : DEFAULT_FORM), [rule]);
 
-  // Load the existing rule into the form whenever it (re)loads.
   useEffect(() => {
     dispatch({ type: "load", form: rule ? ruleToForm(rule) : DEFAULT_FORM });
   }, [rule?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -101,7 +70,6 @@ export default function AutoStoriesTab() {
   const createM = useCreateRule(accountId);
   const updateM = useUpdateRule(accountId);
   const deleteM = useDeleteRule(accountId);
-  // The header switch's own PATCH, so its pending never reads as the Save's.
   const switchM = useUpdateRule(accountId);
   const runM = useRunRuleNow(accountId);
   const busy = createM.isPending || updateM.isPending || deleteM.isPending;
@@ -112,7 +80,6 @@ export default function AutoStoriesTab() {
   const [deleting, setDeleting] = useState(false);
   const [editingJson, setEditingJson] = useState(false);
 
-  // With a rule: saves at once (is_enabled alone), flipping back if the PATCH fails. Without one: Save creates it so.
   function flip(on: boolean) {
     set({ enabled: on });
     if (rule) switchM.mutate({ id: rule.id, is_enabled: on }, { onError: () => set({ enabled: !on }) });
@@ -121,8 +88,6 @@ export default function AutoStoriesTab() {
   async function runNow() {
     if (!rule) return;
     setRunMsg(null);
-    // Run now fires the SAVED rule, so report its count/folder — not the
-    // (possibly dirty, unsaved) form.
     const saved = ruleToForm(rule);
     const n = Math.max(1, Math.round(saved.perRun));
     try {
@@ -160,7 +125,6 @@ export default function AutoStoriesTab() {
     }
   }
 
-  // The help bot's save (D13): a NEW rule only, Save's own gate, switched OFF whatever the form says.
   async function agentSave(): Promise<SaveResult> {
     if (!accountId) return { ok: false, reason: "No creator picked — nothing was saved." };
     if (rule) return { ok: false, reason: "Auto Story is already set up for this creator — nothing was saved." };
@@ -168,8 +132,7 @@ export default function AutoStoriesTab() {
     setErr(null);
     const gap = saveGap(form);
     if (gap) { setErr(gap); return { ok: false, reason: gap }; }
-    // Another tab may have made one since this page read the rules (rwl W30 M13): read them again right before the
-    // create. Narrows the race, never closes it — the create route has no one-per-account guard.
+    // Narrows the race with another tab, never closes it: the create route has no one-per-account guard.
     const fresh = await rulesQ.refetch();
     if (fresh.isError || !fresh.data) return { ok: false, reason: "Couldn't check for an Auto Story already here — nothing was saved." };
     if (fresh.data.some((r) => r.kind === "auto_stories")) {
@@ -193,13 +156,11 @@ export default function AutoStoriesTab() {
     ready: !!accountId && rulesReady, dirty: !sameForm(form, baseline),
   });
 
-  // 12px apart on phones (the header's 16px left "Auto Story" too little room).
   const actions = (
     <span className="flex items-center gap-3 sm:gap-4">
       {LEARN}
       <HeaderSwitch id="story-enabled" label={TITLE} checked={form.enabled} loading={switchM.isPending}
         disabled={busy || !rulesReady} status={rule ? undefined : "Not saved"} onChange={flip} />
-      {/* The rule's less-used actions, right-aligned under the ⋯ so the menu never runs off a phone's edge. */}
       <Menu align="right" menuLabel="More actions" panelClassName="z-50 w-44" itemClassName="text-[14px] text-fg disabled:opacity-60"
         trigger={(p) => <IfButton icon={MoreHorizontal} aria-label="More actions" title="More actions" {...p}
           className="w-8 px-0 [&>svg]:h-4 [&>svg]:w-4" />}
@@ -269,7 +230,6 @@ export default function AutoStoriesTab() {
             )}
           </div>
 
-          {/* Explicit image pool — combines with the folder above into one pool. */}
           <div>
             <IfLabel>Or pick specific images</IfLabel>
             <div className="flex flex-wrap items-center gap-4">
@@ -288,7 +248,6 @@ export default function AutoStoriesTab() {
           </div>
         </FormBlock>
 
-        {/* Schedule — pick ONE of the two modes */}
         <FormBlock title={<>When to post <span className="text-[14px] font-normal text-muted">(choose one)</span></>}>
           <div role="radiogroup" aria-label="When to post" className="space-y-4">
             <ScheduleOption
@@ -343,8 +302,6 @@ export default function AutoStoriesTab() {
           </div>
         </FormBlock>
 
-        {/* Vault-dupe cleanup — posting a story re-uploads the photo, which
-            leaves an extra copy in the vault. This hides that copy for you. */}
         <FormBlock title="Vault clean-up">
           <SwitchRow
             label="Remove the re-uploaded copy from the vault"
@@ -387,10 +344,7 @@ export default function AutoStoriesTab() {
   );
 }
 
-// ── small bits ────────────────────────────────────────────────────────
 
-/** One selectable schedule mode, a radio card: 1px L1 radius 8; selected, 1px M1 on the selected-row tint (40%), its own
- *  controls (time pickers / interval input) below. Clicking anywhere on the card selects it. */
 function ScheduleOption({
   id, selected, onSelect, title, desc, children,
 }: {
@@ -431,8 +385,6 @@ function ScheduleOption({
           <div className="text-[14px] text-fg">{title}</div>
           <p className="mt-0.5 text-[12px] text-muted">{desc}</p>
           {selected && (
-            // Stop clicks on the controls from bubbling up (they'd re-select,
-            // harmless, but keep focus/typing clean).
             <div className="mt-3" onClick={(e) => e.stopPropagation()}>
               {children}
             </div>

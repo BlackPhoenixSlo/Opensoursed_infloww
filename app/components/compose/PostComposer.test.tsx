@@ -1,14 +1,3 @@
-/**
- * The Post button is disabled while the form is invalid, and its `title` says
- * why — but a phone has no hover. The footer's error line shows the same
- * reason, dimmer than a send error, and clears once the form is valid.
- *
- * All-models: one free text-only body per INCLUDED model (a price typed
- * before is ignored, its row hidden); a partial failure's retry re-posts only
- * the failed models, and the feed refetches as soon as any model took it.
- * After a partial failure the content is locked (the retry sends the same
- * post), the footer counts every outstanding failure, and Start over unlocks.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
@@ -29,12 +18,10 @@ vi.mock("@/hooks/useAccounts", () => {
   return { useActiveAccounts: () => accounts, usePlatformAccounts: () => accounts, ownerAccountsQuery: (u?: string) => ({ queryKey: ["accounts", u ?? "anon"], queryFn: async () => ({ accounts }) }) };
 });
 vi.mock("@/hooks/useAllModelsInclude", () => {
-  // acct3 is un-checked in the shared include set.
   const include = { isIncluded: (id: string) => id !== "acct3", toggle: () => {} };
   return { useAllModelsInclude: () => include };
 });
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
-// Tagging as one button (the real picker searches OF): it tags one fixed creator.
 vi.mock("@/components/chat/TagCreatorsPicker", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/components/chat/TagCreatorsPicker")>()),
   TagCreatorsPicker: ({ onChange }: { onChange: (v: { id: number; name: string; username: string; avatar: null }[]) => void }) => (
@@ -50,7 +37,6 @@ afterEach(() => {
 });
 
 const TEXT = "What's on your feed today?";
-/** Each relay.post call as [account, body]. */
 const posted = () => postSpy.mock.calls.map((c) => [(c[2] as { accountId: string }).accountId, c[1]]);
 
 const REASON = "Add text or media";
@@ -80,7 +66,6 @@ describe("PostComposer — all-models fan-out", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     renderWithProviders(<PostComposer open onClose={onClose} onSuccess={onSuccess} />);
     fireEvent.change(screen.getByPlaceholderText(TEXT), { target: { value: " hello all " } });
-    // A price typed before all-models: the trap the post used to fall into.
     fireEvent.change(screen.getByPlaceholderText("0 (free)"), { target: { value: "10" } });
     fireEvent.click(screen.getByLabelText(/Post from ALL models/));
     return { onClose, onSuccess, confirmSpy, btn: screen.getByRole("button", { name: /^Post$/ }) };
@@ -88,7 +73,7 @@ describe("PostComposer — all-models fan-out", () => {
 
   it("posts one free text-only body per included model; the excluded one is skipped", async () => {
     const { onClose, onSuccess, confirmSpy, btn } = allModelsDraft();
-    expect(screen.queryByPlaceholderText("0 (free)")).toBeNull(); // price row hidden
+    expect(screen.queryByPlaceholderText("0 (free)")).toBeNull();
     await waitFor(() => expect(btn).toHaveProperty("disabled", false));
     fireEvent.click(btn);
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
@@ -109,9 +94,7 @@ describe("PostComposer — all-models fan-out", () => {
     await waitFor(() => expect(screen.getByText("1/2 succeeded")).toBeTruthy());
     expect(posted().map((p) => p[0])).toEqual(["acct1", "acct2"]);
     expect(onClose).not.toHaveBeenCalled();
-    expect(onSuccess).toHaveBeenCalledTimes(1); // acct1's post is live: the feed refetches
-    // Locked: an edit would reach acct2 only, acct1 keeping the old text.
-    // (a disabled <fieldset> disables its controls: `:disabled`, not their own attribute)
+    expect(onSuccess).toHaveBeenCalledTimes(1);
     expect(screen.getByPlaceholderText(TEXT).matches(":disabled")).toBe(true);
     expect(screen.getByLabelText(/Post from ALL models/)).toHaveProperty("disabled", true);
 
@@ -149,13 +132,12 @@ describe("PostComposer — all-models fan-out", () => {
     postSpy.mockImplementation(async (...a: unknown[]) => {
       const aid = (a[2] as { accountId: string }).accountId;
       if (round === 1 && aid === "acct2") throw new Error("HTTP 500");
-      await gate; // round 1's acct1, then the retry's acct2: held in flight
+      await gate;
       return {};
     });
     const { onClose, btn } = allModelsDraft();
     await waitFor(() => expect(btn).toHaveProperty("disabled", false));
     fireEvent.click(btn);
-    // Round 1, acct1's POST in flight, no results yet.
     await waitFor(() => expect(screen.getByText("Posting to 0 / 2…")).toBeTruthy());
     expect(screen.getByPlaceholderText(TEXT).matches(":disabled")).toBe(true);
     expect(screen.getByLabelText(/Post from ALL models/)).toHaveProperty("disabled", true);

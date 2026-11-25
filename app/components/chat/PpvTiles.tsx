@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * PpvTiles — the PPV row's tiles: attached media (FREE / PPV / BOUGHT badge,
- * the free ↑ / paid ↓ divider, drag and arrow-key reorder), upload chips and
- * picked GIFs, each with its ✕. The Composer owns the draft; this only draws it.
- */
 
 import { Fragment } from "react";
 
@@ -21,14 +16,11 @@ import type { PickedGif } from "./GifPicker";
 
 export interface PpvTilesProps {
   attached: VaultMedia[];
-  /** `previews`: leading tiles shown FREE; `paid`: the price, null when free. */
   view: Pick<ReturnType<typeof composerView>, "previews" | "paid" | "priceLabel" | "showDivider">;
-  /** The upload chips, and their Retry and ✕. */
   uploads: Pick<ReturnType<typeof useComposerUploads>, "chips" | "retry" | "remove">;
   accountId: string | null;
   disabled?: boolean;
   reorder: UseReorderResult;
-  /** The Fan's vault history (BOUGHT badges); absent outside a Fan chat. */
   byMedia?: Record<string, FanVaultEntry>;
   onRemove: (id: number) => void;
   gifs: PickedGif[];
@@ -47,21 +39,13 @@ export function PpvTiles({
           m.files?.squarePreview?.url ||
           m.files?.preview?.url ||
           null;
-        // A just-uploaded file shows its own blob: preview (the CDN has
-        // not seen it yet; a claim has no `files` at all).
+        // A just-uploaded file has no CDN thumb yet: show its blob preview.
         const thumb = m._localPreview || proxyImage(rawThumb, accountId);
-        // A tile only renders FREE if it's within the preview range
-        // AND would actually survive the `previews` filter on send. A
-        // still-uploading `_claim` tile is sent as media but cannot be
-        // referenced by id in `previews`, so OF locks it — showing FREE
-        // there would lie about what the fan sees. Render it as PPV.
+        // A still-uploading `_claim` can't be named in `previews`, so OF locks it: render PPV, not FREE.
         const isFreeTile = idx < previews && canBeFreePreview(m);
         const isDragging = reorder.draggingIndex === idx;
         const isDragOver = reorder.dragOverIndex === idx && !isDragging;
-        // Three-state badge: BOUGHT (green) wins over the PPV split —
-        // this fan already paid for this vault item, so the chatter
-        // should know before sending it again. Falls through to the
-        // free/paid colors below when no purchase record exists.
+        // BOUGHT wins over the PPV split: warn before re-sending an item this fan already paid for.
         const fanEntry = byMedia?.[String(m.id)];
         const wasBought = fanEntry?.was_purchased === true;
         return (

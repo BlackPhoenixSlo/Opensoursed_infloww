@@ -1,29 +1,3 @@
-"""Fansly's API at its wire, for the formatted-script flow (scenarios/2026-11-05-rich-text-sends.py): lib/relay.py
-loads this part (`wire` runs at the end of its `_wire`). The relay's REAL `FanslyShimClient` (seed/fansly_accounts.py
-makes a Creator a Fansly account) sends through python-requests to apiv3.fansly.com; armed, that host goes to a
-loopback fake in the relay process.
-
-Inert until a scenario arms it: nothing here is patched before `POST /__slop/fansly/arm`, so every other scenario's
-relay is untouched (a Fansly call there is refused by relay_guarded's socket guard, as before).
-
-  arm(http)                  (harness side) POSTs the arm hook, answers {port}.
-  POST /__slop/fansly/arm    (loopback; 409 under SLOP_LIVE=1)
-       1. The fake: a loopback ThreadingHTTPServer (a thread per request) answering Fansly's `{success, response}`
-          envelope for the send lane: GET /api/v1/messaging/groups (no DM groups yet: `{data: [], ...}`),
-          POST /api/v1/group (a minted DM group `{id}`), POST /api/v1/message (the message as Fansly echoes it:
-          `{id, groupId, senderId, content, createdAt, attachments: []}`). Anything else: 404, counted unmodelled.
-       2. python-requests at its wire: `requests.Session.request` wrapped so a URL on apiv3.fansly.com goes to
-          the fake (path + query kept); every other URL unchanged (the socket guard still refuses off-host).
-  GET /__slop/fansly/calls   {calls, unmodelled}: every request the fake got, in arrival order:
-       {i, t, method, path, token (the `authorization` header: seed/fansly_accounts.token), signed (the
-       fansly-client-check header came), body (the JSON body), id (the minted group / message id, else None)}.
-
-Bypasses (declared): Fansly's server is a loopback fake inside the relay process (shares its GIL); its answers'
-shapes are fansly/test_automation_methods.py's (the captured recipes); the signature headers are never verified,
-only their presence; no latency, no 4xx/5xx; `createdAt` is epoch seconds (a guess the shim does not read back).
-"""
-
-
 import itertools
 import json
 import os
@@ -100,7 +74,6 @@ def _serve() -> int:
 
 
 def _route_requests() -> None:
-    """python-requests' Session.request: apiv3.fansly.com goes to the fake. Idempotent."""
     import requests
     inner = requests.Session.request
     if getattr(inner, "__slop_fansly__", False):

@@ -70,11 +70,9 @@ const DRAWER_ID = "app-sidebar-drawer";
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
   const docked = useIsDesktop();
-  // OF Manager and Settings (Infloww's full-window Settings overlay) hold the docked sidebar as the icon rail.
   const ofRail = hasCreatorColumn(pathname) || pathname === "/settings" || pathname.startsWith("/settings/");
   const locked = docked && ofRail;
   const [collapsed, setCollapsed] = useState(false);
-  // Any navigation (link, back/forward) changes the path and so closes it; widening past lg closes it too.
   const [drawer, dispatchDrawer] = useReducer(drawerReducer, DRAWER_CLOSED);
   const drawerIs = docked ? "closed" : drawerOn(drawer, pathname);
   const drawerShown = drawerIs !== "closed";
@@ -86,15 +84,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     enabled: !docked && !popout && !drawerShown, dir: "right", onSwipe: () => dispatchDrawer({ type: "open", path: pathname }),
     edgeGuard: OS_EDGE_PX, ignoreWhile: OPEN_DIALOG,
   });
-  // The drawer and its backdrop cover the page, so the whole document listens while it is open.
   useSwipe(null, {
     enabled: drawerShown, dir: "left", onSwipe: () => dispatchDrawer({ type: "slid" }),
     sheet: { panel: drawerRef, backdrop: backdropRef, onLetGo: () => dispatchDrawer({ type: "letGo" }) },
   });
   useExitGhost(drawerShown, backdropRef, drawerRef);
 
-  // Messages Pro has no top bar, so the shell offset `.h-chat` subtracts
-  // (`--shell-top`, globals.css) is 0 and the panes fill the window.
   if (popout) {
     return (
       <main className="messages-pro-viewport min-w-0" style={{ ["--shell-top" as string]: "0px" }}>
@@ -124,10 +119,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           collapsed={ofRail || collapsed}
           className="hidden lg:flex sticky top-[var(--chrome-top)] h-[calc(100dvh-var(--chrome-top))]"
         />
-        {/* Mounted while it slides off after a swipe let it go (`leaving`), its Radix layer already closed. */}
         <Dialog.Root
           open={drawerOpen}
-          // No Dialog.Trigger: Radix only ever asks to close (Esc, an outside click).
           onOpenChange={(open) => { if (!open) dispatchDrawer({ type: "close" }); }}
         >
           {drawerShown && <Dialog.Portal forceMount>
@@ -136,7 +129,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               ref={drawerRef}
               id={DRAWER_ID}
               aria-describedby={undefined}
-              // `before:` paints the chrome left of it, so a rubber-band pull past open shows no gap.
               className="sheet-left lg:hidden fixed inset-y-0 left-0 z-50 flex max-w-[85vw] outline-none before:absolute before:inset-y-0 before:right-full before:w-32 before:bg-chrome"
             >
               <Dialog.Title className="sr-only">Menu</Dialog.Title>
@@ -147,7 +139,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </Dialog.Content>
           </Dialog.Portal>}
         </Dialog.Root>
-        {/* `overflow-clip`, not hidden: the window still scrolls, so sticky headers in the page hold. */}
+        {/* overflow-clip, not hidden: the window still scrolls, so sticky headers in the page hold. */}
         <main className="flex-1 min-w-0 bg-bg rounded-tl-xl overflow-clip">
           <DeniedPageGate>{children}</DeniedPageGate>
         </main>
@@ -160,12 +152,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-/**
- * The desktop app's main window has no address bar and no Back, so Messages Pro there (the shell's old `/inbox`
- * start, a restored route, a sign-in's `?next=`, a notification or app link) would leave no way to the rest of the
- * app. The main window is the one no window opened and not named `messages-pro`. A Deep link opens in the Messages
- * Pro window (`openPopout`), as a click would; then the main window loads the Dashboard.
- */
 function LeaveDesktopMainWindow({ pathname }: { pathname: string }) {
   useEffect(() => {
     if (window.fasttShell?.isDesktop !== true || window.opener || window.name === POPOUT_WINDOW) return;

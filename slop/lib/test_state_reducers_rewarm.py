@@ -1,5 +1,3 @@
-"""state-reducers' FANLIST_REWARM wants the return's `?bust=` to re-read OF: its wait must clear the Relay's Hover
-cooldown, or the bust answers the held, pre-flip count."""
 import importlib
 from pathlib import Path
 

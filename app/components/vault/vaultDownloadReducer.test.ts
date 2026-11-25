@@ -19,7 +19,6 @@ const media = (id: number, type = "photo", url: string | null = `https://cdn2.on
   ({ id, type, files: url ? { full: { url } } : { full: { url: null } }, listStates }) as unknown as VaultMedia;
 
 const start: Action = { type: "start", mode: "selection", label: "3 selected", accountId: "acc-amy", creator: "amy" };
-/** The picker a folder `start` (its model's) opens first. */
 const pick: Action = { type: "pick", accountId: "acc-amy" };
 const direct: Action = { type: "direct", allowed: true, attempt: 1 };
 const listed = (ids: number[], attempt = 1): Action => ({ type: "listed", items: toItems(ids.map((i) => media(i)), null), attempt });
@@ -65,7 +64,6 @@ describe("phases", () => {
   it("a listing error records why on the one failure channel", () => {
     expect(run([start, { type: "runError", error: "relay 500", attempt: 1 }]).runError).toBe("relay 500");
   });
-  // #28/#34: run-level actions carry their attempt; an older run's late result never lands on the new one.
   it.each<[string, Action[], DlState["phase"], number]>([
     ["listed of an older attempt", [start, { type: "cancel" }, start, listed([1, 2], 1)], "listing", 0],
     ["listed of this attempt", [start, { type: "cancel" }, start, listed([1, 2], 2)], "running", 2],
@@ -101,14 +99,11 @@ describe("picker, notes and run errors (#11, #17, #21: no useStates beside the r
     ["runError of an older attempt changes nothing", [start, { type: "runError", error: "x", attempt: 0 }],
       "listing", false, "", ""],
     ["runError while listing ends the run", [start, { type: "runError", error: "x", attempt: 1 }], "done", false, "x", ""],
-    // #40: a start refused (a run holds the slot) still closes its picker; the run below goes on.
     ["a refused start ends its picker", [start], "listing", false, "", "", { ...run([start]), picking: true }],
   ])("%s", (_n, actions, phase, picking, runError, note, base) => {
     const s = run(actions, base);
     expect([s.phase, s.picking, s.runError, s.note]).toEqual([phase, picking, runError, note]);
   });
-  // #428: the page's one download outlives a Creator switch; a picker another model opened and closed leaves the
-  // finished run below as it was (its card, its account, its Retry), and no Retry runs while that picker is open.
   it("a picker opened over a finished run: Retry off while open; closed, the run and its Retry are back", () => {
     const failed = run([{ type: "itemStart", attempt: 1, id: 1 }, { type: "itemFailed", attempt: 1, id: 1, error: "x" }],
       run([start, direct, listed([1])]));
@@ -126,7 +121,6 @@ describe("picker, notes and run errors (#11, #17, #21: no useStates beside the r
     expect(statuses(s)).toEqual(["1:failed", "2:failed", "3:failed"]);
     expect(canRetry(s)).toBe(true);
   });
-  // #445: where a folder run saves rides its `start`; the next run / a close drops it, a picker over it keeps it.
   it.each<[string, Action[], string[] | null]>([
     ["its start sets it", [], ["amy"]],
     ["a picker over the run keeps it", [pick], ["amy"]],
@@ -141,7 +135,6 @@ describe("picker, notes and run errors (#11, #17, #21: no useStates beside the r
     const cancelled = run([{ type: "cancel" }], running);
     expect(vaultDownloadReducer(cancelled, { type: "runError", error: "boom", attempt: 1 })).toBe(cancelled);
   });
-  // #17: a share sheet failing mid-run is a note; the run, its items and its batches go on.
   it("a share-sheet note while running keeps running and keeps the items", () => {
     const mid = run([{ type: "itemStart", attempt: 1, id: 1 }, { type: "itemDone", attempt: 1, id: 1, source: "direct",
       bytes: 1 }, { type: "itemStart", attempt: 1, id: 2 }], running);
@@ -162,8 +155,6 @@ describe("picker, notes and run errors (#11, #17, #21: no useStates beside the r
     const s = vaultDownloadReducer(threw, { type: "retryFailed" });
     expect([s.runError, s.note, s.phase]).toEqual(["", "", "running"]);
   });
-  // #443 F10: the slot a start / permission ask holds is state, not a ref beside it.
-  // `holds`: holdsFiles (picker / busy / unsaved); the claim itself is its own column (R6).
   it.each<[string, Action[], number, boolean, boolean]>([
     ["a claim holds the slot", [{ type: "claim", id: 1 }], 1, false, false],
     ["a second claim is refused", [{ type: "claim", id: 1 }, { type: "claim", id: 2 }], 1, false, false],
@@ -304,7 +295,6 @@ describe("paths", () => {
   ])("safeName(%j) = %j", (s, want) => {
     expect(safeName(s)).toBe(want);
   });
-  // F18: two models whose names make one folder each get their own; every other model keeps its plain folder.
   const amy = { id: "1", nickname: "Amy" };
   it.each<[string, { id: string; nickname?: string | null; name?: string | null } | null, { id: string; nickname?: string | null }[], string]>([
     ["unique name: the plain folder", amy, [amy, { id: "2", nickname: "Bea" }], "Amy"],
@@ -317,7 +307,6 @@ describe("paths", () => {
   ])("creatorDir: %s", (_n, account, all, want) => {
     expect(creatorDir(account?.id ?? "7", account, all)).toBe(want);
   });
-  // X4: a long shared name keeps its ` (<id>)` within the 80-char limit, so the two folders never merge.
   it("creatorDir: two models with one 90-char name get distinct folders, each ending in its id", () => {
     const long = "L".repeat(90);
     const all = [{ id: "123456", nickname: long }, { id: "123457", nickname: long }];
@@ -349,7 +338,7 @@ describe("paths", () => {
 
 describe("share sink (phones)", () => {
   const MB = 1 << 20;
-  const B = 10 * MB;   // a small budget for the tables
+  const B = 10 * MB;
   const fold = (sizes: number[], budget = B) =>
     sizes.reduce<DlBatch[]>((bs, n, i) => addToBatches(bs, i + 1, n, budget), []);
   const shape = (bs: DlBatch[]) => bs.map((b) => `${b.ids.join(",")}${b.sealed ? "|" : ""}`);
@@ -372,10 +361,8 @@ describe("share sink (phones)", () => {
   const shareStart: Action = { ...start, sink: "share" };
   const doneA = (id: number, bytes: number): Action[] => [{ type: "itemStart", attempt: 1, id }, { type: "itemDone", attempt: 1, id, source: "relay", bytes }];
   const doneB = (id: number): Action[] => [{ type: "itemStart", attempt: 2, id }, { type: "itemDone", attempt: 2, id, source: "relay", bytes: MB }];
-  const unsavedPhone = run([shareStart, listed([1, 2]), ...doneA(1, MB), ...doneA(2, MB)]);   // done, 1 batch unsaved
+  const unsavedPhone = run([shareStart, listed([1, 2]), ...doneA(1, MB), ...doneA(2, MB)]);
 
-  // #10: the one gate for every Download control (selection bar, rail folder item, page header). Folder sink: a busy
-  // run never turns it off (the press queues); an open picker does.
   it.each<[string, DlState, DlSink | null, DlMode, number, DlAccess, string, boolean]>([
     ["no sink", initialDownloadState, null, "selection", 1, "all", DOWNLOAD_OFF, false],
     ["desktop, running: queues", running, "folder", "selection", 1, "all", "", false],
@@ -399,8 +386,6 @@ describe("share sink (phones)", () => {
     ["restricted chatter, folder", initialDownloadState, "folder", "folder", 0, "folders", "", false],
     ["restricted chatter, selection", initialDownloadState, "folder", "selection", 3, "folders", "", false],
     ["a finished run", run([{ type: "cancel" }], running), "folder", "vault", 0, "all", "", false],
-    // #443 F10: a Retry's permission ask (or a start before its picker) holds the slot: the button says so instead
-    // of doing nothing; with jobs waiting the press still queues.
     ["a held slot (claim), nothing queued", run([{ type: "claim", id: 1 }], run([{ type: "cancel" }], running)),
       "folder", "selection", 1, "all", BUSY_OFF, false],
     ["a held slot (claim), jobs waiting: queues",
@@ -408,11 +393,9 @@ describe("share sink (phones)", () => {
         source: "mirror" } }, { type: "cancel" }, { type: "claim", id: 1 }], running),
       "folder", "selection", 1, "all", "", false],
   ])("downloadGate: %s", (_n, st, sink, mode, count, access, reason, desktopOnly) => {
-    if (_n.includes("claim")) expect(st.claim).toBe(1);   // the row really holds the slot
-    // Rows named "…: queues" are the ones whose press joins the queue (the label says "Add … to queue").
+    if (_n.includes("claim")) expect(st.claim).toBe(1);
     expect(downloadGate(st, sink, mode, count, access)).toEqual({ reason, desktopOnly, queues: _n.endsWith(": queues") });
   });
-  // #F13: one label rule for the selection bar, the rail's folder item and the Extras drawer.
   it.each<[string, DlState, DlSink, DlMode, string, string]>([
     ["desktop, idle", initialDownloadState, "folder", "folder", "folder", "Download folder"],
     ["desktop, a run busy", running, "folder", "selection", "selected", "Add selected to queue"],
@@ -430,7 +413,6 @@ describe("share sink (phones)", () => {
   ])("dlAccess: %s", (_n, q, want) => {
     expect(dlAccess(q)).toBe(want);
   });
-  // #6: unsaved phone files are never dropped by a new run or a plain close.
   it.each<[string, DlState, boolean]>([
     ["idle", initialDownloadState, false],
     ["picker open", run([pick]), true],
@@ -462,9 +444,8 @@ describe("share sink (phones)", () => {
     expect(readyBatch(s3)).toBe(1);
     expect(batchLabel(s3, 1)).toBe("Save 2");
     expect(unsaved(s3)).toBe(1);
-    expect(run([{ type: "batchSaved", index: 0, attempt: 1 }], s3)).toBe(s3);   // twice is a no-op
+    expect(run([{ type: "batchSaved", index: 0, attempt: 1 }], s3)).toBe(s3);
   });
-  // slop phone stage: 3 photos + 2 videos each > SHARE_BATCH_BYTES / 2 (110 MiB of 200): 2 batches, all 5 land.
   it("phone: photos + 2 videos > budget/2 make 2 batches; every item lands once and the run ends done", () => {
     const sizes: [number, number][] = [[3, 180_000], [4, 190_000], [6, 140_000], [8, 110 * MB], [11, 110 * MB]];
     const s = run([shareStart, listed(sizes.map(([id]) => id)), ...sizes.flatMap(([id, n]) => doneA(id, n))]);
@@ -476,7 +457,6 @@ describe("share sink (phones)", () => {
     const saved = run([{ type: "batchSaved", index: 0, attempt: 1 }, { type: "batchSaved", index: 1, attempt: 1 }], s);
     expect([unsaved(saved), countText(saved)]).toEqual([0, "5 of 5 ready · 5 saved"]);
   });
-  // #38: a share sheet of a discarded run that resolves late never marks the new run's batch saved.
   it.each<[string, number, boolean]>([
     ["this run's sheet saves its batch", 2, true],
     ["an older run's late sheet changes nothing", 1, false],
@@ -525,13 +505,11 @@ describe("share sink (phones)", () => {
     expect(countText(all)).toBe("2 of 2 ready · 2 saved");
     const folder = run([start, listed([1]), ...doneA(1, MB)]);
     expect(panelTitle(folder)).toBe("Downloaded amy: 3 selected");
-    // the run's creator once, from the state (the label stays raw: the links file adds the creator itself)
     expect([run([start]), running, run([{ type: "cancel" }], running)].map(panelTitle))
       .toEqual(["Listing amy: 3 selected…", "Downloading amy: 3 selected", "Cancelled: amy: 3 selected"]);
     expect(running.label).toBe("3 selected");
     expect(countText(folder)).toBe("1 of 1 saved");
   });
-  // #4: the title says what happened, never "Downloaded" / "Saved" with nothing saved.
   const failA = (id: number): Action[] => [{ type: "itemStart", attempt: 1, id }, { type: "itemFailed", attempt: 1, id, error: "x" }];
   it.each<[string, Action[], string]>([
     ["folder: listing failed", [start, { type: "runError", error: "relay 500", attempt: 1 }], "Download failed: amy: 3 selected"],
@@ -548,7 +526,6 @@ describe("share sink (phones)", () => {
   ])("panelTitle: %s", (_n, actions, want) => {
     expect(panelTitle(run(actions))).toBe(want);
   });
-  // #9: the desktop links file's outcome is recorded; the phone's only on a resolved share.
   it.each<[string, Action[], string]>([
     ["share sink, sheet resolved", [shareStart, listed([1]), { type: "links", ok: true, attempt: 1 }], "saved"],
     ["share sink, sheet dismissed", [shareStart, listed([1]), { type: "links", ok: false, attempt: 1 }], "none"],
@@ -604,7 +581,6 @@ describe("outcomes: failed / stalled / drm / cancelled", () => {
   });
 });
 
-// Hard invariant: `done` only once every item has its outcome. A seeded walk over every item event, both sinks.
 describe("invariant: a run is done only when every item has an outcome", () => {
   const OUTCOME = new Set(["done", "failed", "stalled", "cancelled", "drm"]);
   it.each<[string, DlSink, number]>([
@@ -627,7 +603,7 @@ describe("invariant: a run is done only when every item has an outcome", () => {
       if (s.phase === "done") {
         dones += 1;
         expect(s.items.filter((i) => !OUTCOME.has(i.status)).map((i) => `${i.id}:${i.status}`)).toEqual([]);
-        if (sink === "share") {   // every done item in exactly one batch, nothing else
+        if (sink === "share") {
           expect(s.batches.flatMap((b) => b.ids).sort()).toEqual(
             s.items.filter((i) => i.status === "done").map((i) => i.id).sort());
         }
@@ -669,7 +645,6 @@ describe("queue (folder sink)", () => {
   ])("dedupe: %s -> %s queued", (_n, j, n) => {
     expect(run([enq(j)], withQueue).jobs.length).toBe(n);
   });
-  // F19: selections never dedupe; the queue stops at JOBS_MAX with a visible note, and every Download says why.
   it.each<[string, number, number, string]>([
     ["one under the cap: queued", JOBS_MAX - 1, JOBS_MAX, ""],
     ["at the cap: refused with the note", JOBS_MAX, JOBS_MAX, QUEUE_FULL_OFF],
@@ -682,7 +657,6 @@ describe("queue (folder sink)", () => {
     expect(next.note).toBe(note);
     expect(downloadGate(next, "folder", "selection", 1, "all").reason).toBe(after >= JOBS_MAX ? QUEUE_FULL_OFF : "");
   });
-  // X6: the cap holds at every append: a run failing with the queue full adds no retry job and keeps its own Retry.
   it("queue cap: a run that fails with JOBS_MAX waiting queues no retry job; its manual Retry stays", () => {
     const sel = (i: number): DlJobArgs => ({ ...job("acc-bea", "bea", "selection"), media: [media(i)] });
     const full = run(Array.from({ length: JOBS_MAX }, (_, i) => enq(sel(i))), running);
@@ -748,7 +722,7 @@ describe("queue (folder sink)", () => {
     expect(vaultDownloadReducer(initialDownloadState, { type: "stop" })).toBe(initialDownloadState);
   });
   it("paused only with jobs waiting and nothing busy; resumed lifts it; close keeps the waiting queue", () => {
-    expect(vaultDownloadReducer(withQueue, { type: "paused" })).toBe(withQueue);   // busy
+    expect(vaultDownloadReducer(withQueue, { type: "paused" })).toBe(withQueue);
     const p = run([{ type: "paused" }], finishAll(withQueue));
     expect(p.paused).toBe(true);
     expect(canQueue(p)).toBe(true);
@@ -800,8 +774,8 @@ describe("retry jobs (a run a queued job replaces keeps its Retry)", () => {
     expect(retry[0]).toMatchObject({ accountId: "acc-amy", creator: "amy", mode: "selection", retryOf: s.jobId,
                                      label: `3 selected · retry ${want.length}`, qid: s.seq });
     expect(retry[0].items!.map((i) => [i.id, i.status, i.error])).toEqual(want.map((id) => [id, "queued", null]));
-    expect(s.jobs[0].creator).toBe("bea");   // the waiting job stays first
-    expect(canRetry(s)).toBe(false);          // already queued: no second Retry
+    expect(s.jobs[0].creator).toBe("bea");
+    expect(canRetry(s)).toBe(false);
   });
   it("a run that threw while a job waits: its failed items join the queue as a retry job too", () => {
     const s = run([enq, { type: "runError", error: "boom", attempt: 1 }], four);
@@ -828,8 +802,6 @@ describe("retry jobs (a run a queued job replaces keeps its Retry)", () => {
     expect(r.finished.map((f) => [f.creator, f.stalled, f.failed])).toEqual([["amy", 1, 0], ["bea", 0, bOut === "failed" ? 1 : 0]]);
     expect(r.jobs).toHaveLength(retriesAfterB.length - 1);
   });
-  // F1: a retry job's own failures never queue another retry, else two jobs failing for good (OF down) re-queue each
-  // other forever and the provider launches each one.
   it.each<[string, number]>([["both fail every time", 0], ["both fail, then OF is back", 2]])(
     "two jobs failing: the queue drains (%s)", (_n, okAfter) => {
       const head = (s: DlState): Action => {
@@ -849,9 +821,9 @@ describe("retry jobs (a run a queued job replaces keeps its Retry)", () => {
         s = end(Object.fromEntries(ids.map((id) => [id, out])) as Record<number, "done" | "failed">, s);
       }
       expect(s.jobs).toEqual([]);
-      expect(starts).toBe(3);   // B, A's retry, B's retry: a retry never queues another
+      expect(starts).toBe(3);
       expect(s.phase).toBe("done");
-      if (!okAfter) expect(canRetry(s)).toBe(true);   // the last retry's failures keep the card's manual Retry
+      if (!okAfter) expect(canRetry(s)).toBe(true);
     });
   it("the share sink never queues a retry job", () => {
     const phone = run([{ ...start, sink: "share" }, listed([1])]);
@@ -869,7 +841,6 @@ describe("retry jobs (a run a queued job replaces keeps its Retry)", () => {
     ["a finished run of a removed model: the card goes (no Retry left)", run([{ type: "itemStart", attempt: 1, id: 1 },
       { type: "itemFailed", attempt: 1, id: 1, error: "x" }, { type: "cancel" }], running), ["acc-bea"], true],
     ["a finished run of a kept model stays", run([{ type: "cancel" }], running), ["acc-amy"], false],
-    // F3: access removed mid-run: the phone's fetched files (its Save would share them), links and Retry go too
     ["a busy phone run of a removed model: its fetched files go", run([{ ...start, sink: "share" }, listed([1, 2]),
       { type: "itemStart", attempt: 1, id: 1 }, { type: "itemDone", attempt: 1, id: 1, source: "relay", bytes: 5 }]),
      ["acc-bea"], true],
@@ -884,7 +855,6 @@ describe("retry jobs (a run a queued job replaces keeps its Retry)", () => {
       expect([canRetry(s), unsaved(s), holdsFiles(s)]).toEqual([false, 0, false]);
     } else expect(s).toBe(from);
   });
-  // X3: access to the picker's model removed while the picker is open: its start, once the picker resolves, is refused.
   it.each<[string, string[], DlState["phase"]]>([
     ["removed while picking: refused, picker ended", ["acc-bea"], "idle"],
     ["kept while picking: starts", ["acc-amy", "acc-bea"], "listing"],

@@ -1,64 +1,3 @@
-"""Nothing a person taps waits behind background reads (owner, 2026-11-05: "make sure nothing blocks
-user actions and it's still fast so the background action works"). Two ways a tap used to wait, both
-in service/server.py's per-Creator lanes:
-  A. a background read (`X-Priority: background`) took a worker thread first and then blocked there
-     on its Creator's background lane (2 slots), so a flood of them filled the default executor and a
-     tap's thread queued behind it; now it waits for the lane on the event loop (`_bg_admission`) and
-     takes a thread only once admitted (`threads_waiting_background`, a new lane-stats gauge, stays 0);
-  B. a user read joined a background read of the same key already in flight (relay_coalesce, and
-     relay_cache's per-key lock) and inherited its lane wait; now the flight key carries the priority
-     class (a background read may still join a user one).
-
-The world: one Agency with 50 Creators (`one_agency`), each with a captured session
-(seed/of_sessions.py), so the relay builds its REAL OFClient; OnlyFans is lib/of_wire.py on loopback
-(`OF_WIRE`): after the probe a chat list answers in BG_OF_S (1.5 s on average, `route_s`; x uniform(0.5, 1.5),
-`route_jitter`), the taps' reads and sends in its 50 ms.
-`--users` chatters (real invites, `POST /chatter/register`, own `POST /chatter/login` cookies), each
-assigned PER_USER (13) Creators, the Agency's 50 spread evenly.
-
-Legs, one run:
-  probe     quiet relay: on PROBES Creators at once, a background `GET /api/of/v2/chats?query=<unique>`
-            whose OF call fake OF holds PROBE_HOLD_S (3 s, `hold`), then, once that call is on OF's
-            wire, the same URL at user priority, timed.
-  baseline  every chatter taps once per assigned Creator, think time THINK_MS between taps: open a
-            fan (`GET /api/of/v2/chats/{fan}/messages`, the head page, always OF), send to it
-            (`POST /api/of/v2/chats/{fan}/messages`), `GET /api/of/v2/users/me`.
-  flood     every chatter keeps BG_PER_CREATOR (4) background chat-list reads in flight per assigned
-            Creator (`refresh=1`, a unique `offset` each, so every one is its own OF call; refilled as
-            each answers, until a stop Event; started at RAMP_PER_S, the host's somaxconn is 128),
-            then, SETTLE_S later, the same taps as baseline; then the flood stops and drains (every
-            read answered). `GET /admin/priority-lanes/stats` (owner) every SAMPLE_S throughout.
-
-Checks (lib/relay_admission_faults.py has the targeted names): at 120 users, flood p95 <=700ms
-for every kind and overall; at 200 users, <=500ms is advisory only. Below 120 users,
-flood p95 <=2 x baseline +100ms per kind and overall (catches blocking, not host jitter: lib/relay_admission_faults.py); threads_waiting_background 0 in every sample (fleet and per
-Creator; at least 5 samples); bg_in_flight_peak <= 2 per Creator and reached; every probe's user read
-< 1 s while its background twin took >= 3 s; every chatter signed in; every tap 200 (users/me answers
-the asked Creator); every background read 200, none dropped, the flood held >= 90 % of its reads in
-flight while the taps ran; OnlyFans saw exactly one chat-list call per background read (its offset),
-exactly one send per send tap (its text), per leg no more message reads than opens and at least one
-per (Creator, fan) opened; lib/of_wire.py saw only signed calls it models; stock: no 5xx. Relay pool (C_POOL, lib/procmon.py's 1 s samples
-ramp to drain): DB connections out never past the pool's bound (service/db/engine.py POOL_SIZE + MAX_SPILL, read off
-/__slop/loop-cpu; an unbounded pool is red) and relay threads under THREADS_MAX; a sample past either stops the
-flood there, before the gate's thread guard kills the run. Metrics:
-p95 per leg and kind, lane-stats sample maxima, flood counts; p95 vs the last green run: the flood
-leg's p95 per kind (standard volume: --scale=medium --users=120 --no-ui, 6,240 reads in flight).
-
-Faults: `admission-in-thread` (default `--break`: A reverted; targets the tap p95 and thread-wait checks;
-taps slow to ~10 s, past the 30 s client timeout only on a loaded host), `coalesce-ignores-priority` (B reverted; targets the probe check),
-`pool-spills-unbounded` (the DB pool's spill cap off; targets C_POOL; run it as lib/relay_admission_faults.py says: 2 s spills need 200 users, where uncapped
-hits the gate's thread guard first).
-
-Bypasses, declared: lib/of_wire.py (OnlyFans on loopback, its own declared bypasses), its chat list
-empty and slowed to BG_OF_S +- 50 % for every caller after the probe (a guess at OF behind a residential
-proxy under load; the taps' routes keep 50 ms). The jitter is load-bearing: at a fixed 1.5 s every lane
-stays in phase and ~100 answers land within 0.6 s each cycle; taps during those waves were the p95 tail
-(slow taps saw ~154 background answers/s around them, fast ones ~27: evidence …-1ca3); the clients are httpx pools, not browsers: the app's relaySchedule.ts caps a
-browser at 2 background reads per Creator, the flood keeps 4 per chatter (two tabs' worth) and runs
-past the browser's own cap on purpose; background reads are chat lists only (the shell's other
-background reads take the same lane and the same admission); the probe's background read is the
-owner's, its user read too (one session, two classes, as one browser tab sends them).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -80,48 +19,31 @@ PROFILE = "one_agency"
 UI = False
 OF_WIRE = True
 FAULT = "admission-in-thread"
-P95_VS_LAST = (1.5, 100)  # flood p95 spread across green-path runs on the shared machine: see P95_RATIO
+P95_VS_LAST = (1.5, 100)
 P95_VS_LAST_MIN_N = 200
 BG_CAP = 2  # service/server.py _ACCOUNT_LANE_BACKGROUND (default)
-# The gate's per-process thread guard (README "The machine gate"). Killed at the 1500 default at
-# medium/200 on main too (1518-2034 at the guard's first tick over it, 2026-11-06..09); owner 2026-11-09
-# accepted ~2k (scale = more boxes), so 3000 here. Still red at 3000 (measured, 20261109T084847Z-...-b634):
-# the relay grew 466 -> 3477 threads in 16 s of the flood, no plateau, its DB pool at 2856 overflow
-# (spill) connections, one aiosqlite thread each (service/db/engine.py _SpillQueuePool). Above 3000 is
-# the 5-7k class that panicked the Mac: bound the spills in the product, or the owner raises
-# SLOP_MAX_THREADS_PROC_CEIL (3500) knowingly.
+# Owner accepted ~2k threads at medium/200 (scale = more boxes), so 3000. Still red there: the relay grew to 3477 threads, its DB pool spilling one aiosqlite thread per overflow connection (service/db/engine.py _SpillQueuePool).
 MAX_THREADS_PROC = {"medium": 3000}
-# The gate's per-run socket guard (default 8192 fds, half the 16384 ephemeral ports). The flood keeps
-# 200 x 13 x 4 = 10.4k reads in flight, both ends in this run's tree: 16k-31k fds at medium/200
-# (measured 2026-11-09), which ran the Mac's ephemeral ports dry for every other run. Owner 2026-11-09:
-# keep the flood, run it alone: medium/120 and larger are exclusive (lib/gate.py), and only an exclusive run gets
-# this (capped at SLOP_MAX_SOCKETS_RUN_CEIL, 28000). Small green stays under the 8192 default. `--break`
-# (admission-in-thread) was a socket runaway (8252 / 16101 / 26010 fds: -ce51, -6d14, -9217): every
-# blocked worker thread keeps a curl handle per account, one socket each. Now the fake OF closes idle
-# keep-alives (OF_IDLE_CLOSE_S) and SOCKETS_TRIP cuts the flood leg: no-fault small max 5481 sockets
-# (52fa, was ~8.2k), the fault trips at 7621 and is CAUGHT (0df4).
+# The flood keeps ~10.4k reads in flight (16k-31k fds at medium/200) and ran the Mac's ephemeral ports dry; medium/120+ run exclusive and only they get this ceiling.
 MAX_SOCKETS_RUN = {"medium": 26000}
-THREADS_MAX = {"small": 400, "medium": 1000}  # C_POOL: relay threads, ramp to drain; measured max small 134, medium 417-512 (caps 24-120), uncapped 3477
-# relay + this process's socket fds (the gate's count): under the gate's 8192 at small, MAX_SOCKETS_RUN at medium
-SOCKETS_TRIP = {"small": 7600, "medium": 25500}  # medium: no-fault medium/200 ramp reached 24289 (b705)
-DB_TRIP_UNBOUNDED = 120  # an unbounded pool (max_overflow -1) stops the flood past pool_size + this many
-# Catches blocking (a fault puts tap p95 at 10-30 s), not jitter: on the shared machine (gate: up to 6
-# runs) the no-fault flood p95 spread over runs was 85-140 ms all, 120-189 ms send (measured: 7b84, 09ae,
-# dd50, f09a), so 1.25x + 50 ms flipped on host noise.
+THREADS_MAX = {"small": 400, "medium": 1000}  # measured max small 134, medium 417-512, uncapped 3477
+SOCKETS_TRIP = {"small": 7600, "medium": 25500}  # medium: no-fault medium/200 ramp reached 24289
+DB_TRIP_UNBOUNDED = 120
 from slop.lib.latency_acceptance import latency_check
 
+# Catches blocking (a fault puts tap p95 at 10-30 s), not host jitter: no-fault flood p95 spread 85-140 ms across runs on the shared machine, so 1.25x + 50 ms flipped on noise.
 P95_RATIO, P95_SLACK_MS = 2.0, 100
 PROBE_HOLD_S, PROBE_MAX_S = 3.0, 1.0
-PER_USER = 13          # Creators per chatter
-BG_PER_CREATOR = 4     # background reads each chatter keeps in flight per assigned Creator
+PER_USER = 13
+BG_PER_CREATOR = 4
 OF_IDLE_CLOSE_S = 5.0  # synthetic server idle lifetime; not a measured OF edge value
-BG_OF_S = 1.5          # OF's answer time for a chat list, on average
-BG_JITTER = 0.5        # each one BG_OF_S x uniform(0.5, 1.5)
-THINK_MS = (500, 1500)  # between one chatter's taps
-RAMP_PER_S = 300       # flood reads started per second
+BG_OF_S = 1.5
+BG_JITTER = 0.5  # load-bearing: at a fixed BG_OF_S every lane stays in phase and the answer waves become the p95 tail
+THINK_MS = (500, 1500)
+RAMP_PER_S = 300
 SETTLE_S = 2.0
 SAMPLE_S = 0.5
-BG_TIMEOUT_S = 600     # a flood read waits its turn in the lane: up to reads / (2 x Creators / BG_OF_S)
+BG_TIMEOUT_S = 600
 PROBES = 3
 CHATS = "GET /api2/v2/chats"
 KINDS = ("open", "send", "me")
@@ -140,10 +62,6 @@ async def run(ctx) -> None:
     main = w.data["agencies"][0]["user_id"]
     aids = [c["id"] for c in w.data["creators"] if c["owner"] == main]
     fake = ctx.of_wire
-    # Bound unused fake-OF keep-alives, not active reads or the actor workload.
-    # Each (account, relay worker) curl handle otherwise parks a connection forever, so the
-    # admission-in-thread fault run finishes instead of parking ~12k connections into the socket
-    # guard (lib/bounded_server.py).
     fake._srv.idle_close_s = float(ctx.param("of_idle_close_s", OF_IDLE_CLOSE_S))
     bg_of_s = float(ctx.param("bg_of_s", BG_OF_S))
     n = max(1, ctx.users)
@@ -156,7 +74,6 @@ async def run(ctx) -> None:
     ctx.metric("load", {"chatters": n, "creators": len(aids), "per_chatter": per_user, "bg_per_creator": bg_per,
                         "flood_reads_in_flight": n_flood, "bg_of_s": bg_of_s, "bg_jitter": float(ctx.param("bg_jitter", BG_JITTER)), "think_ms": list(think)})
 
-    # ── chatters: real invites, own logins ──
     t0 = time.time()
     seeded = await chatters.seed(w, ctx.owner, main, [f"ra{k:03d}" for k in range(n)], account_ids=assign)
     base = str(ctx.owner.c.base_url)
@@ -183,7 +100,6 @@ async def run(ctx) -> None:
         f.c.timeout = httpx.Timeout(BG_TIMEOUT_S)
         flood_http.append(f)
 
-    # ── probe: a user read of a key a background read holds in flight ──
     owner_bg, owner_user = ctx.owner.share(limits=PROBES), ctx.owner.share(limits=PROBES)
 
     async def probe(i: int, aid: str) -> dict:
@@ -193,7 +109,7 @@ async def run(ctx) -> None:
         b0 = time.perf_counter()
         bg = asyncio.create_task(owner_bg.get(path, headers={"X-Account-Id": aid, "X-Priority": "background"}))
         on_wire = False
-        for _ in range(250):  # until OF has the held call (the hold popped)
+        for _ in range(250):
             with fake.lock:
                 if not fake.hold.get((aid, CHATS)):
                     on_wire = True
@@ -215,7 +131,6 @@ async def run(ctx) -> None:
                            and p["user_s"] < PROBE_MAX_S and p["bg_s"] >= PROBE_HOLD_S for p in probes),
               probes=probes, probe_max_s=PROBE_MAX_S, probe_hold_s=PROBE_HOLD_S)
 
-    # ── taps ──
     taps: list[dict] = []
 
     async def tap(http: Http, leg: str, kind: str, aid: str, k: int) -> None:
@@ -254,15 +169,14 @@ async def run(ctx) -> None:
         ctx.rec.stage = None
         return a, time.time()
 
-    fake.route_s[CHATS] = bg_of_s  # from here on: the probe's user read is OF's usual 50 ms
+    fake.route_s[CHATS] = bg_of_s
     fake.route_jitter = float(ctx.param("bg_jitter", BG_JITTER))
     of0 = len(fake.calls)
     base_win = await leg("baseline")
 
-    # ── flood + sampler ──
     stop, sampling = asyncio.Event(), asyncio.Event()
     offsets = itertools.count(1)
-    flood: list[tuple[str, int, int]] = []  # (aid, offset, status)
+    flood: list[tuple[str, int, int]] = []
     live = {"in_flight": 0, "issued": 0}
     phase = {"now": "ramp"}
     samples: list[dict] = []
@@ -305,16 +219,9 @@ async def run(ctx) -> None:
             except asyncio.TimeoutError:
                 pass
 
-    # The relay's threads and DB pool, from lib/procmon.py's 1 s samples (ps + /__slop/loop-cpu), ramp to
-    # drain. A sample past the bound (DB connections over pool_size + max spill, threads over THREADS_MAX)
-    # stops the flood at once, so an unbounded pool goes red here, not at the gate's thread guard.
     threads_max = int(ctx.param("threads_max", THREADS_MAX.get(ctx.scale, THREADS_MAX["medium"])))
     pool = {"samples": 0, "threads_max": 0, "db_peak": 0, "size": None, "max_overflow": None, "spills": [],
             "capped": [], "tripped": None}
-    # Socket fds of the relay (lib/relay.py) + this process (the clients and the fake OF), as the gate's
-    # socket guard counts them: past SOCKETS_TRIP the flood leg is cut short and the flood dropped, so a
-    # fault that blocks every worker thread (one curl handle per account x thread) ends with its taps red
-    # instead of in the guard (INFRA)
     sockets_trip = int(ctx.param("sockets_trip", SOCKETS_TRIP.get(ctx.scale, SOCKETS_TRIP["medium"])))
     socks = {"max": 0, "tripped": None}
     socket_samples: list[dict] = []
@@ -363,7 +270,7 @@ async def run(ctx) -> None:
                     "flood_client_pool": client_pool_state(flood_http),
                     "tap_client_pool": client_pool_state(taps_http),
                 })
-            except Exception as exc:  # diagnostic; the scenario's checks still decide the verdict
+            except Exception as exc:
                 socket_samples.append({"phase": phase["now"], "error": f"{type(exc).__name__}: {exc}"})
             try:
                 await asyncio.wait_for(sampling.wait(), 5)
@@ -380,7 +287,7 @@ async def run(ctx) -> None:
                 th, peak = s.get("threads") or 0, db.get("out_peak") or 0
                 pool["threads_max"], pool["db_peak"] = max(pool["threads_max"], th), max(pool["db_peak"], peak)
                 pool["size"], pool["max_overflow"] = db.get("size"), db.get("max_overflow")
-                if db.get("holders"):  # SLOP_DB_HOLDERS=1 (lib/relay.py): diagnostic only
+                if db.get("holders"):
                     pool["holders_last"] = db["holders"]
                     if peak >= pool["db_peak"]:
                         pool["holders_at_peak"] = db["holders"]["out_now"]
@@ -422,7 +329,7 @@ async def run(ctx) -> None:
     await asyncio.wait({flood_leg, aborted}, return_when=asyncio.FIRST_COMPLETED)
     if flood_leg.done():
         flood_win = flood_leg.result()
-    else:  # cut short (fds or pool trip): the taps so far are the leg; the rest are never sent
+    else:
         flood_leg.cancel()
         await asyncio.gather(flood_leg, return_exceptions=True)
         flood_win = (f0, time.time())
@@ -431,7 +338,7 @@ async def run(ctx) -> None:
     stop.set()
     ctx.rec.stage = "drain"
     d0 = time.time()
-    if abort.is_set():  # the flood is dropped, not drained: its reads keep the relay's threads (and fds)
+    if abort.is_set():
         for t in tasks:
             t.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
@@ -451,7 +358,6 @@ async def run(ctx) -> None:
 
     ctx.metric("of_keepalive", {"idle_close_s": fake._srv.idle_close_s, "idle_closed": fake._srv.idle_closed})
 
-    # ── checks ──
     bad_taps = Counter((t["leg"], t["kind"], t["status"]) for t in taps if not t["ok"])
     ctx.check(C_TAPS, len(taps) == 2 * n * per_user * len(KINDS) and not bad_taps, taps=len(taps),
               want=2 * n * per_user * len(KINDS), not_ok={" ".join(map(str, k)): v for k, v in bad_taps.items()})
@@ -463,7 +369,6 @@ async def run(ctx) -> None:
               reads=len(flood), issued=live["issued"], not_200=dict(fbad), min_in_flight_during_taps=held,
               want_in_flight=n_flood)
 
-    # OF: one chat-list call per background read, by its (unique) offset
     chat_calls = Counter((c["account"], (parse_qs(c.get("query") or "").get("offset") or [""])[0])
                          for c in of_calls if c["route"] == CHATS)
     flood_keys = {(a, str(o)) for a, o, _ in flood}
@@ -473,7 +378,7 @@ async def run(ctx) -> None:
     strays = sum(v for k, v in chat_calls.items() if k[1] in flood_off and k not in flood_keys)
     send_wrong = []
     sent_texts = Counter((a, str(s["fan_id"]), re.sub(r"<[^>]+>", "", s.get("text") or ""))
-                         for a, v in sends.items() for s in v)  # OF web's <p>
+                         for a, v in sends.items() for s in v)
     for t in taps:
         key = (t["aid"], str(t["fan"]), t["text"])
         if t["kind"] == "send" and t["status"] == 200 and sent_texts.get(key, 0) != 1:
@@ -528,7 +433,6 @@ async def run(ctx) -> None:
     ctx.check(C_POOL, pool["samples"] >= 5 and bound is not None and pool["db_peak"] <= bound
               and pool["threads_max"] <= threads_max and pool["tripped"] is None, **pool_detail)
 
-    # ── metrics ──
     ctx.metric("run_sockets", socks)
     ctx.metric("socket_lifecycle", socket_samples)
     ctx.metric("of_idle_closed", fake._srv.idle_closed)

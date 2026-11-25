@@ -1,47 +1,3 @@
-"""OnlyFans' vault at its wire, for the vault flows (scenarios/2026-11-05-vault-collect.py, 2026-11-05-vault-thumbs.py,
-2026-11-05-vault-refresh.py). Installs into lib/of_wire.FakeOF through its one generic hook, `extra_routes`,
-so the built-in vault routes stay as other scenarios knew them.
-
-Each Creator's vault is made on first sight of its `User-ID` (deterministic from `seed` + the id), so it is
-served before the Creator exists in the DB: the background collector may reach OF the moment a session file
-lands. A vault: `items` media (k = 0 newest; ~80% photo, ~20% video; createdAt one hour apart back from
-install time), FOLDERS custom folders; each item sits in 0-2 of them (OF's `listStates[]`, `hasMedia`), and
-every folder holds >= 1 item. `sizes` (uid -> items) overrides `items` per Creator. `add(uid, name, k)` is a
-change made on OnlyFans now: a new folder holding k new media, created now (the newest).
-
-  GET /api2/v2/vault/lists        offset/limit (OF's default 10); the folders, hasMore, and `all`: the whole vault's
-                                  per-type counts ({photos,videos,gifs,audios}Count, on every page), as OF's (Infloww's
-                                  bundle reads `.all` into its "All media" row, index.640a8db9.js `classifyListsAll`).
-  GET /api2/v2/vault/media        list ("all" or a folder id) / type (photo|video|gif, omitted = all) /
-                                  sort (asc|desc by createdAt, id) / offset / limit (default 24) / query (OF's own
-                                  search: media whose PPV caption, `caption(uid, ids, text)`, holds it, any case;
-                                  none without a caption); list, hasMore.
-  GET /api2/v2/vault/media/{id}   that media with FRESH signatures (a new `gen`, exp now + SIGN_TTL_S); 404 unknown.
-
-Media urls: `files.{thumb,full}.url` on cdn2.onlyfans.com, path /files/v/<uid>/<mid>/{thumb,full}.jpg,
-signed by seed/chat_media.sign (CloudFront-style Policy exp + gen), so lib/img_relay.py's fake CDN 403s an
-expired or unsigned one. `assets()` is the CDN asset table for `img_relay.arm_run`. Listings carry the urls
-of the Creator's current gen with exp = now + SIGN_TTL_S; `rotate(uid)` bumps the gen (OF re-signing: every
-url string changes, the media does not).
-
-`ip_bound` (off by default): every url OF answers is signed for the egress the request came through
-(`AWS:SourceIp` = lib/proxy_wire.egress_of: a proxy's "127.0.0.1:<port>" or "direct"), as OF's are; the fake CDN
-then 403s it through any other egress. `of_media(..., egress=)` signs for a given one (SQL seeding: what an
-earlier proxy listed). `mp4` (off by default): each video also carries `videoSources["240"]`, a playable 12 s
-clip at /files/v/<uid>/<mid>/240p.mp4 (in `assets()`; lib/img_relay.video_bytes), for /img/scrub and the player.
-`gifs` (uid -> item indexes k, set before that Creator's vault is first made): those items are gifs, as OF stores
-one (service/tests/fixtures/of_media_shapes.json): `files.full` a .mp4 (/files/v/<uid>/<mid>/gif.mp4, the same
-clip), the thumb a jpg, no videoSources; the item's other draws are unchanged, so the rest of the vault is too.
-`full_mp4` (off by default): a video's `files.full` is its source mp4 (/files/v/<uid>/<mid>/src.mp4, the same clip;
-in `assets()`), as OF's are, instead of the .jpg every other flow reads (2026-11-08-vault-download saves it).
-
-Records (fake.vault_calls, arrival order after the fake's latency): {t, account, route ("lists" | "media" |
-"by_id"), query (the parsed query string, one value per key; by_id: {"id": ...}), status, egress}. fake.calls
-gets them too (h._record).
-
-Bypasses (declared): media is never DRM (no poster frames); no audio; folder names are made up;
-OF's `counters` / per-folder counts / `all.medias` covers are omitted (the relay never reads them on these paths).
-"""
 from __future__ import annotations
 
 import random
@@ -75,7 +31,6 @@ def path(uid: str, mid: int, variant: str) -> str:
 
 
 def owner_of(key: str) -> tuple[str, int, str] | None:
-    """CDN key "host/files/v/<uid>/<mid>/<variant>.jpg" -> (uid, mid, variant), else None."""
     m = re.fullmatch(r"[^/]+/files/v/([^/]+)/(\d+)/(\w+)\.jpg", key)
     return (m.group(1), int(m.group(2)), m.group(3)) if m else None
 
@@ -98,12 +53,10 @@ class VaultWire:
         fake.vault_calls = []
         fake.extra_routes.append(self.handle)
 
-    # ── the vault ──
     def has_vault(self, uid: str) -> bool:
         return uid in self._v
 
     def vault(self, uid: str) -> dict:
-        """{"folders": [OF list item], "media": [{id, type, created, folders: [ids], sizes}] newest first}."""
         v = self._v.get(uid)
         if v is None:
             rng = random.Random(f"vault_wire:{self.seed}:{uid}")
@@ -111,7 +64,7 @@ class VaultWire:
             media = []
             for k in range(self.sizes.get(uid, self.items)):
                 inn = rng.sample(fids, rng.choice((0, 0, 1, 1, 1, 2)))
-                if k < len(fids):  # every folder holds at least one item
+                if k < len(fids):
                     inn = sorted(set(inn) | {fids[k]})
                 kind = "video" if rng.random() < 0.2 else "photo"
                 media.append({"id": media_id(uid, k), "type": "gif" if k in self.gifs.get(uid, ()) else kind,
@@ -125,7 +78,6 @@ class VaultWire:
 
     def of_media(self, uid: str, m: dict, *, exp: int | None = None, gen: int | None = None,
                  egress: str | None = None) -> dict:
-        """The media dict OF answers (vault_mirror.row_values' input); `egress` its SourceIp (ip_bound only)."""
         exp = exp if exp is not None else int(time.time()) + SIGN_TTL_S
         gen = self.gen.get(uid, 0) if gen is None else gen
         ip = egress if self.ip_bound else None
@@ -147,23 +99,20 @@ class VaultWire:
                                 "canAddMedia": True} for f in m["folders"]]}
 
     def assets(self, uids) -> dict:
-        """img_relay.arm_run's table: {"host/path": {"size": n}} for every thumb and full of these Creators."""
         out = {}
         for uid in uids:
             for m in self.vault(uid)["media"]:
                 out[f"{HOST}{path(uid, m['id'], 'thumb')}"] = {"size": m["sizes"][0]}
                 out[f"{HOST}{path(uid, m['id'], 'full')}"] = {"size": m["sizes"][1]}
                 if self.mp4 and m["type"] == "video":
-                    out[f"{HOST}{path(uid, m['id'], '240p')}"] = {"size": m["sizes"][1]}  # size ignored: a clip
+                    out[f"{HOST}{path(uid, m['id'], '240p')}"] = {"size": m["sizes"][1]}
                 if m["type"] == "gif":
-                    out[f"{HOST}{path(uid, m['id'], 'gif')}"] = {"size": m["sizes"][1]}  # size ignored: a clip
+                    out[f"{HOST}{path(uid, m['id'], 'gif')}"] = {"size": m["sizes"][1]}
                 if self.full_mp4 and m["type"] == "video":
-                    out[f"{HOST}{path(uid, m['id'], 'src')}"] = {"size": m["sizes"][1]}  # size ignored: a clip
+                    out[f"{HOST}{path(uid, m['id'], 'src')}"] = {"size": m["sizes"][1]}
         return out
 
     def add(self, uid: str, name: str, k: int) -> tuple[dict, list[dict]]:
-        """Made on OnlyFans now: folder `name` holding `k` new media (photos), created now, one second apart.
-        Returns (the folder's OF list item, the new media oldest first)."""
         v = self.vault(uid)
         rng = random.Random(f"vault_wire:add:{self.seed}:{uid}:{len(v['media'])}")
         folder = {"id": folder_id(uid, len(v["folders"])), "type": "custom", "name": name, "hasMedia": True,
@@ -173,7 +122,7 @@ class VaultWire:
                  "sizes": (rng.randint(*THUMB_SIZE), rng.randint(*FULL_SIZE))} for i in range(k)]
         with self.fake.lock:
             v["folders"].append(folder)
-            v["media"][:0] = reversed(news)   # newest first
+            v["media"][:0] = reversed(news)
             v["by_id"].update({m["id"]: m for m in news})
         return folder, news
 
@@ -182,7 +131,6 @@ class VaultWire:
         return self.gen[uid]
 
     def caption(self, uid: str, ids, text: str) -> None:
-        """A PPV caption these media were sent with on OnlyFans: OF's vault search (`query`) finds them by it."""
         with self.fake.lock:
             self.captions.setdefault(uid, {}).update({int(i): text for i in ids})
 
@@ -190,8 +138,6 @@ class VaultWire:
         return [m["id"] for m in self.vault(uid)["media"][:n]]
 
     def all_counts(self, uid: str) -> dict:
-        """OF's `all` on a /vault/lists answer: the whole vault's media per type (every media once, whatever its
-        folders)."""
         n = {t: 0 for t in ("photo", "video", "gif", "audio")}
         for m in self.vault(uid)["media"]:
             n[m["type"]] += 1
@@ -208,7 +154,6 @@ class VaultWire:
             ms = [m for m in ms if m["type"] == type_]
         return sorted(ms, key=lambda m: (m["created"], m["id"]), reverse=(sort != "asc"))
 
-    # ── the wire ──
     def _rec(self, uid, route, query, status, egress) -> None:
         with self.fake.lock:
             self.fake.vault_calls.append({"t": time.time(), "account": uid, "route": route,

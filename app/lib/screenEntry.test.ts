@@ -3,12 +3,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { bootScreen, cookieValue, rememberScope } from "./screenEntry";
 import type { Screen } from "./screenKey";
 
-/** The cookies' decoded values (the Next jar's, `cookieValue`'s): an old saved Dashboard entry, the scope bit. */
 const jar = (c: { entry?: string; scope?: string } = {}) => (n: string) => ({
   chatterly_entry: c.entry,
   chatterly_scope: c.scope,
 })[n];
-/** A Dashboard entry cookie as the Dashboard saved it before #374 (Per-model cards drawn). */
 const STALE_ENTRY = JSON.stringify({ tz: "Asia/Tokyo", weekStart: "sunday", grid: true });
 
 describe("bootScreen: which screen a route opens", () => {
@@ -20,7 +18,6 @@ describe("bootScreen: which screen a route opens", () => {
     expect(bootScreen(path, jar({ entry: STALE_ENTRY }))).toEqual(want);
   });
 
-  // The Dashboard draws no card that reads its bundle: a guess would prefetch per-Creator OnlyFans reads for nothing.
   it.each<[string, Parameters<typeof jar>[0]]>([
     ["no cookie", {}],
     ["a stale grid:true entry", { entry: STALE_ENTRY }],

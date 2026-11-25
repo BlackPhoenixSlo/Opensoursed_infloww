@@ -46,7 +46,7 @@ describe("ModelInfoBlock › Make persona from the Creator's images", () => {
     await box();
     const btn = screen.getByRole("button", { name: BUTTON });
     fireEvent.click(btn);
-    fireEvent.click(btn);  // a double tap is one request
+    fireEvent.click(btn);
     await waitFor(async () => expect((await box()).value).toBe(DRAFTED));
     expect(relayPost).toHaveBeenCalledTimes(1);
     expect(relayPost.mock.calls[0]).toEqual(["/admin/full-ai/persona/draft", { account_id: ACC, current_text: TEMPLATE },

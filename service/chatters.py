@@ -1,27 +1,3 @@
-"""
-Chatter auth — second principal alongside User. See Todo.txt STEP 8.
-
-A Chatter is a human messenger; one Chatter can be linked to many owners
-(Users) via the `chatter_users` join. The chatter's available-accounts
-list is the SET UNION of every linked owner's `user_accounts` rows. Login
-mints a cookie that's distinct from the User session cookie (different
-name, different signing secret) so a stolen chatter cookie can't be used
-to claim founder/owner privileges.
-
-This module is intentionally a parallel to service/auth.py — same flow
-(register → login → me → logout, sliding 30-day expiry, HMAC-signed
-cookies) but no shared globals so the two principals can never accidentally
-mix. Cookie precedence (when both happen to be present): the User cookie
-wins for /admin/* (owner perspective); the Chatter cookie only drives
-/chatter/* + provides current_actor() to the audit pipeline when no User
-cookie is set. See service/auth.py session_middleware for the composition.
-
-Tables (migration 0024_chatter_login):
-  • chatters         — id/username/password (plaintext, friends-scale)/etc.
-  • chatter_users    — many-to-many: which owners each chatter is linked to.
-  • chatters_invites — owner-issued one-shot signup tokens (24h TTL).
-"""
-
 from __future__ import annotations
 
 import json
@@ -44,6 +20,7 @@ import account_health
 import accounts as account_registry
 import chatter_identity_cache as identity_cache
 import events
+import platforms
 import shared_refresher
 from account_security import (
     TwoFactorChallenge,
@@ -74,32 +51,21 @@ from session_secret import load_secret
 from session_stamps import now_ms, session_verdict
 
 
-# ── Constants ─────────────────────────────────────────────────────────
 
 COOKIE_NAME = "chatterly_chatter_session"
 COOKIE_MAX_AGE_SECONDS = 30 * 24 * 3600
 SESSION_INACTIVITY_SECONDS = 30 * 24 * 3600
 INVITE_TTL_SECONDS = 24 * 3600
 
-# Distinct secret from the User session secret on purpose: cross-principal
-# forgery should require compromising BOTH files, not one. Persisted to
-# service/.chatter_secret on first boot if CHATTER_SESSION_SECRET is
-# unset. Same disk pattern as service/.session_secret.
+# Distinct from the User session secret: cross-principal forgery must need both files.
 _SECRET_FILE = Path(__file__).resolve().parent / ".chatter_secret"
 
 
 _SESSION_SECRET = load_secret("CHATTER_SESSION_SECRET", _SECRET_FILE)
 
 
-# ── Identity snapshot ────────────────────────────────────────────────
 
 class ChatterIdentity:
-    """In-process snapshot of the signed-in chatter for one request.
-
-    `account_ids` is precomputed as the SET UNION across all linked
-    owners' UserAccount rows so `_resolve_account_id` doesn't pay a
-    query per call. `owner_user_ids` is kept alongside for the audit
-    pipeline's per-(chatter, account.owner) Employee lookup."""
 
     __slots__ = ("id", "username", "display_name", "color",
                  "owner_user_ids", "account_ids")
@@ -127,13 +93,11 @@ _request_chatter: ContextVar["ChatterIdentity | None"] = ContextVar(
 
 
 def get_request_chatter() -> "ChatterIdentity | None":
-    """Read the current request's signed-in chatter (or None)."""
     return _request_chatter.get()
 
 
-# ── Cookie signing ────────────────────────────────────────────────────
 
-def _sign(payload: str) -> str:  # kept as alias for old private name
+def _sign(payload: str) -> str:
     return signed_cookie.sign(_SESSION_SECRET, payload)
 
 
@@ -142,13 +106,11 @@ def _make_cookie(chatter_id: str) -> str:
 
 
 def _parse_cookie(value: str) -> str | None:
-    """Return the chatter_id if the cookie's HMAC verifies, else None."""
     parsed = parse_cookie_issued(value)
     return parsed[0] if parsed else None
 
 
 def parse_cookie_issued(value: str) -> tuple[str, int] | None:
-    """`(chatter_id, issued_ms)` if the cookie's HMAC verifies, else None."""
     return signed_cookie.parse_issued(_SESSION_SECRET, value)
 
 
@@ -167,11 +129,8 @@ def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(COOKIE_NAME, samesite="lax")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────
 
 def _validate_username(username: str) -> None:
-    """Same rules as User.username so a chatter who later wants to become
-    an owner doesn't have to rename. Mirrors auth._validate_username."""
     if not USERNAME_RE.fullmatch(username):
         raise HTTPException(
             status_code=400,
@@ -182,15 +141,6 @@ def _validate_username(username: str) -> None:
 
 
 async def _account_restrictions_for(s, chatter_id: str) -> dict[str, frozenset[str]]:
-    """Per-owner account allowlist for a chatter (Chatter Access, step 2/3).
-
-    Returns {owner_user_id: {allowed_account_id, ...}} built from
-    chatter_account_access. An owner PRESENT in the map restricts the
-    chatter to that owner's listed accounts; an owner ABSENT imposes NO
-    restriction (full access to that owner's models). This is purely
-    SUBTRACTIVE and scoped per (chatter, owner): owner A's rows never
-    touch owner B's contribution. Empty map ⇒ no restrictions anywhere
-    (backwards-compatible with chatters created before this feature)."""
     rows = (await s.execute(
         select(
             ChatterAccountAccess.user_id,
@@ -207,11 +157,6 @@ def _filter_owner_accounts(
     pairs: "list[tuple[str, str]]",
     restrictions: dict[str, frozenset[str]],
 ) -> set[str]:
-    """Apply the per-owner allowlist from `_account_restrictions_for` to a
-    list of (owner_user_id, account_id) candidate pairs, returning the set
-    of account_ids the chatter may see. An owner not in `restrictions`
-    contributes all of its accounts; an owner in it contributes only the
-    intersection with its allowlist."""
     allowed: set[str] = set()
     for uid, aid in pairs:
         if _allowed(restrictions, uid, aid):
@@ -220,21 +165,6 @@ def _filter_owner_accounts(
 
 
 async def allowed_folder_ids_for_chatter(account_id: str) -> "frozenset[int] | None":
-    """Folder-visibility gate for the vault relay (Chatter Access, step 4).
-
-    Returns:
-      • None  — NO folder restriction applies. Either the acting principal
-        is NOT a chatter (DA-1: a User cookie present ⇒ owner perspective,
-        even with a chatter cookie also set), or the chatter simply has no
-        chatter_folder_access rows for this account. Caller passes media
-        through unchanged.
-      • frozenset[int] — the chatter IS restricted; only these OF vault
-        folder ids may be shown. Always non-empty (DA-2: an empty restricted
-        set is never persisted; "see nothing" = unlink the chatter).
-
-    DA-1 is enforced via current_actor().kind == "chatter" — NOT
-    `get_request_chatter() is not None`, which is also true for a
-    dual-cookie owner. Mirrors `_resolve_account_id`'s user-first order."""
     actor = current_actor()
     if actor is None or actor.kind != "chatter":
         return None
@@ -251,19 +181,6 @@ async def allowed_folder_ids_for_chatter(account_id: str) -> "frozenset[int] | N
 
 
 async def load_identity(chatter_id: str) -> "identity_cache.CachedIdentity | None":
-    """Hydrate a ChatterIdentity by joining
-        chatters → chatter_users → user_accounts (+ users for usernames),
-    in one session, with the Chatter row's revocation and inactivity stamps
-    beside it (the identity cache's entry, chatter_identity_cache.py).
-
-    Returns None if the chatter row is missing or inactive. Computes
-    `account_ids` as a SET (de-dupes when two owners both granted the same
-    account).
-
-    Chatter Access (step 2): per-owner chatter_account_access rows trim each
-    owner's contribution to the union BEFORE the set-union, so the resulting
-    frozenset (and therefore the existing `_resolve_account_id` /
-    `assert_account_owned` gate) only ever sees allowed accounts."""
     async with get_session() as s:
         row = (await s.execute(
             select(Chatter).where(Chatter.id == chatter_id)
@@ -301,15 +218,10 @@ async def load_identity(chatter_id: str) -> "identity_cache.CachedIdentity | Non
         return identity_cache.CachedIdentity(identity, row.sessions_valid_after, row.last_seen_at)
 
 
-LAST_SEEN_TOUCH_S = 300  # bump chatters.last_seen_at when it is older than this
+LAST_SEEN_TOUCH_S = 300
 
 
 async def _session_identity(chatter_id: str, issued: int) -> tuple[ChatterIdentity | None, bool]:
-    """`(identity, expired)` for a chatter cookie whose HMAC verified, from
-    the identity cache (chatter_identity_cache.py) when fresh. `expired`:
-    revoked (password or 2FA reset, deactivated, Log out other sessions) or
-    idle too long, so the cookie is cleared. A missing or inactive chatter is
-    (None, False)."""
     entry = identity_cache.get(chatter_id)
     if entry is None:
         gen = identity_cache.generation()
@@ -323,8 +235,6 @@ async def _session_identity(chatter_id: str, issued: int) -> tuple[ChatterIdenti
     if verdict == "expired":
         return None, True
     if verdict == "touch":
-        # Only while the row is still that old: a sign-in or a concurrent
-        # request may have bumped it since the read.
         async with get_session() as s:
             res = await s.execute(update(Chatter).where(
                 Chatter.id == chatter_id,
@@ -333,11 +243,11 @@ async def _session_identity(chatter_id: str, issued: int) -> tuple[ChatterIdenti
         if res.rowcount:
             entry.last_seen_at = now
         else:
-            identity_cache.drop(chatter_id)  # the next request reads the row's stamp
+            # A sign-in or concurrent request bumped last_seen_at since the read: next request re-reads the row.
+            identity_cache.drop(chatter_id)
     return entry.identity, False
 
 
-# ── Public routes ────────────────────────────────────────────────────
 
 router = APIRouter(prefix="/chatter", tags=["chatter-auth"])
 
@@ -371,18 +281,11 @@ class FlatAccountDTO(BaseModel):
     color: str | None = None
     owner_id: str
     owner_username: str
-    # Mirrors the owner-side /admin/accounts stamp. A chatter cannot REPAIR a
-    # dead session, but they are the one staring at a model that has gone quiet
-    # — without this the picker shows a paused model as perfectly normal.
     session_dead_at: str | None = None
     session_dead_reason: str | None = None
-    # False while the owner has the Creator deactivated: the picker drops it.
     is_active: bool = True
-    # "watcher" for a watcher account (a fan account that reads what the Creators send): the
-    # app lists it in OF Manager only, never as a Creator. None = a Creator.
     role: Literal["watcher"] | None = None
-    # The Creator's Freshness (Shared refresher, P1 Contract 4; `now` inside it, this answer being a bare list).
-    # Off, or a watcher: absent from the row, not null.
+    platform: str = "onlyfans"
     freshness: dict[str, Any] | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
@@ -392,8 +295,6 @@ class ChatterMeResp(BaseModel):
     display_name: str | None = None
     color: str | None = None
     owners: list[OwnerDTO]
-    # When this chatter registered (UTC). The UI counts the 7-day free
-    # trial from it.
     created_at: datetime | None = None
 
 
@@ -465,8 +366,6 @@ async def register(
             raise HTTPException(status_code=410, detail="invite already used")
         if invite.expires_at < now:
             raise HTTPException(status_code=410, detail="invite expired")
-        # Defensive: the issuing owner may have been deleted (CASCADE
-        # would also wipe the invite, but it's cheap to confirm).
         owner_exists = (await s.execute(
             select(User.id).where(User.id == invite.user_id)
         )).scalar_one_or_none()
@@ -476,7 +375,7 @@ async def register(
         s.add(Chatter(
             id=new_id,
             username=username,
-            password=body.password,  # plaintext, friends-scale
+            password=body.password,
             display_name=(body.display_name or "").strip() or None,
             created_at=now,
             last_seen_at=now,
@@ -486,9 +385,6 @@ async def register(
         except IntegrityError:
             raise HTTPException(status_code=409, detail="username already taken")
 
-        # Auto-link to the issuing owner; consume invite atomically with
-        # the chatter insert so a partial register never leaves a
-        # consumed invite around.
         s.add(ChatterUser(
             chatter_id=new_id, user_id=invite.user_id, created_at=now,
         ))
@@ -497,9 +393,6 @@ async def register(
         await s.flush()
         owner_id, setup_json = invite.user_id, invite.setup_json
 
-    # The setup the owner chose on the invite: their Employee row, role, Creators
-    # and group, in place before their first page. Best-effort: a role or group
-    # deleted since the invite must not fail the sign-up.
     try:
         from employees import setup_login_employee, validate_employee_setup
         setup = json.loads(setup_json) if setup_json else {}
@@ -546,11 +439,8 @@ async def login(
 @router.post("/logout")
 async def logout(request: Request, response: Response) -> dict[str, bool]:
     import push_api
-    await push_api.forget_cookies(request)  # before the cookies go: their sessions' push subs
-    # Wipe every principal cookie (chatter + user + impersonate) so a
-    # surviving cross-principal cookie can't re-authenticate the next
-    # request after explicit logout. Reuses the auth helper so the set
-    # of cookies stays single-sourced.
+    # Before the cookies go: their sessions' push subs.
+    await push_api.forget_cookies(request)
     from auth import clear_all_principal_cookies
     clear_all_principal_cookies(response)
     return {"ok": True}
@@ -626,7 +516,6 @@ async def me_folder_access(account_id: str = Query(..., min_length=1)) -> Folder
     )
 
 
-# ── Internal helpers ─────────────────────────────────────────────────
 
 def _require_chatter() -> "ChatterIdentity":
     c = get_request_chatter()
@@ -637,10 +526,6 @@ def _require_chatter() -> "ChatterIdentity":
 
 async def _me_response(c: "ChatterIdentity | None") -> ChatterMeResp:
     if c is None:
-        # _set_session_cookie just fired, so the next request should pick
-        # it up — but right now this request didn't pass through the
-        # middleware (response is being built mid-handler). Hydrate
-        # directly so the caller gets a usable payload right away.
         raise HTTPException(status_code=500, detail="chatter identity unavailable")
     owners = await _owners_for(c)
     async with get_session() as s:
@@ -658,7 +543,6 @@ async def _me_response(c: "ChatterIdentity | None") -> ChatterMeResp:
 
 
 def _allowed(restrictions: dict[str, frozenset[str]], user_id: str, account_id: str) -> bool:
-    """Per-owner allowlist check: an owner not in `restrictions` allows all."""
     limit = restrictions.get(user_id)
     return limit is None or account_id in limit
 
@@ -674,7 +558,6 @@ async def _owners_for(c: "ChatterIdentity") -> list[OwnerDTO]:
         )).all()
         usernames = {r.id: r.username for r in user_rows}
 
-        # accounts per owner — we need nickname + color from accounts table.
         acct_rows = (await s.execute(
             select(
                 UserAccount.user_id,
@@ -684,8 +567,6 @@ async def _owners_for(c: "ChatterIdentity") -> list[OwnerDTO]:
             ).join(Account, Account.id == UserAccount.account_id, isouter=True)
             .where(UserAccount.user_id.in_(list(c.owner_user_ids)))
         )).all()
-        # Chatter Access (step 3): drop accounts this owner has restricted
-        # away from the chatter, so the picker only lists allowed models.
         restrictions = await _account_restrictions_for(s, c.id)
 
     grouped: dict[str, list[OwnerAccountDTO]] = {uid: [] for uid in c.owner_user_ids}
@@ -697,7 +578,6 @@ async def _owners_for(c: "ChatterIdentity") -> list[OwnerDTO]:
             nickname=r.nickname,
             color=r.color,
         ))
-    # Sort accounts within each owner; sort owners by username.
     out: list[OwnerDTO] = []
     for uid in sorted(c.owner_user_ids, key=lambda u: usernames.get(u, "").lower()):
         accs = sorted(grouped.get(uid, []), key=lambda a: (a.nickname or a.account_id).lower())
@@ -723,16 +603,9 @@ async def _flat_accounts_for(c: "ChatterIdentity") -> list[FlatAccountDTO]:
             .join(Account, Account.id == UserAccount.account_id, isouter=True)
             .where(UserAccount.user_id.in_(list(c.owner_user_ids)))
         )).all()
-        # Chatter Access (step 3): same per-owner allowlist as the union.
         restrictions = await _account_restrictions_for(s, c.id)
-    # One read for the whole list (the flagged set is bounded by the number of
-    # broken accounts, not by the roster size).
     dead = await account_health.dead_session_map()
     off = await account_health.deactivated_ids()
-    # De-dupe by account_id. When two linked owners both have the same
-    # account in their UserAccount table (cross-grant), the chatter sees
-    # it exactly once. The owner_username displayed is the alphabetically
-    # first owner's — a deterministic, audit-friendly choice.
     seen: dict[str, FlatAccountDTO] = {}
     for r in rows:
         if not _allowed(restrictions, r.user_id, r.account_id):
@@ -751,6 +624,7 @@ async def _flat_accounts_for(c: "ChatterIdentity") -> list[FlatAccountDTO]:
                 session_dead_reason=health.reason,
                 is_active=r.account_id not in off,
                 role=role,
+                platform=platforms.for_account(r.account_id).key,
                 freshness=shared_refresher.snapshot(r.account_id) if shared_refresher.ENABLED and role is None
                 else None,
             )
@@ -765,68 +639,42 @@ async def _flat_accounts_for(c: "ChatterIdentity") -> list[FlatAccountDTO]:
     )
 
 
-# ── Middleware: resolve cookie → ChatterIdentity ─────────────────────
 
-# Owner-only path prefixes under /admin/* that a chatter-only session
-# MUST never reach. Anything not on this list falls through to its
-# handler, where the per-account ownership gate (`_resolve_account_id`
-# / `assert_account_owned` / the account-isolation middleware) enforces
-# the chatter's account_ids union. Single place to add new owner-only
-# surfaces — keep this curated.
-#
-# NOTE: `/admin/accounts` is NOT a blanket-blocked prefix — chatters get two
-# carved-out sub-surfaces under it (see `_chatter_allowed_admin`). It is
-# handled explicitly there rather than listed here.
+# Owner-only /admin/* prefixes; everything else falls through to its per-account ownership gate.
 _CHATTER_BLOCKED_ADMIN_PREFIXES: tuple[str, ...] = (
-    "/admin/users",        # founder-only user CRUD + grants + transfers
-    "/admin/impersonate",  # founder-only
-    "/admin/chatters",     # owner-side chatter management (link/unlink/invite)
-    "/admin/proxies",      # proxy registry — owner-only
-    "/admin/proxy-pool",   # Inflowwww proxy pool assign/unbind — owner-only, like /admin/proxies
-    "/admin/session",      # session bootstrap / capture — owner-only
-    "/admin/login",        # served Browserbase login (OnlyFans credentials) — owner-only, like /admin/session
-    "/admin/rev",          # drift detection — owner-only
-    "/admin/audit",        # multi-tenant audit log
-    "/admin/secrets",      # the SERVER's house keys — founder-only
-    "/admin/system",       # Settings → System: automation status + run log — founder-only
-    "/admin/my-llm-keys",  # an agency's own LLM keys — the OWNER's, never a chatter's
-    "/admin/owner-tokens",  # Settings → AI keys → Access tokens — the OWNER's, never a chatter's
-    "/admin/ultra",        # Ultra plans: read / OK / cancel — the OWNER's, never a chatter's
-    "/admin/employees",    # Manage employees — owner-only, the list too (phase-05 story 13)
-    "/admin/employee-groups",  # the Organization Chart's groups — owner-only (phase-05 story 39)
-    "/admin/link-shares",  # Growth > Share links: public reports on a Creator's links — owner-only
-    "/admin/agency-notifications",  # the owner's notification centre — owner-only for now
-    # Growth > Sensitive words: managing the list is owner-only; the bare GET
-    # /admin/sensitive-words (no trailing slash) stays open, every composer reads it.
+    "/admin/users",
+    "/admin/impersonate",
+    "/admin/chatters",
+    "/admin/proxies",
+    "/admin/proxy-pool",
+    "/admin/session",
+    "/admin/login",
+    "/admin/rev",
+    "/admin/audit",
+    "/admin/secrets",
+    "/admin/system",
+    "/admin/my-llm-keys",
+    "/admin/owner-tokens",
+    "/admin/ultra",
+    "/admin/employees",
+    "/admin/employee-groups",
+    "/admin/link-shares",
+    "/admin/agency-notifications",
+    # Managing the list is owner-only; the bare GET /admin/sensitive-words stays open, every composer reads it.
     "/admin/sensitive-words/",
-    "/admin/roster",       # forced subscriber-roster crawl (ADR 0024 trigger seam) — owner-only
-    "/admin/bio-pages",    # Growth > Tracking links > Bio pages: the owner's bio pages editor — owner-only
-    "/admin/full-ai/prepare-content",  # Full AI prepare content: paid describe, the owner's press only (03b)
+    "/admin/roster",
+    "/admin/bio-pages",
+    "/admin/full-ai/prepare-content",
 )
 
 
 def _chatter_allowed_admin(path: str, method: str) -> bool:
-    """Return True if a chatter session may reach this /admin/* path.
-
-    Carved out specifically:
-      • GET /admin/accounts/roster-counts — the per-model unread / owe-reply
-        inbox badges (the endpoint scopes its counts to the chatter's union).
-      • PATCH /admin/accounts/{id} — recolor a model. The handler forces every
-        field except `color` to None for a chatter principal, so a crafted body
-        can't rename a model.
-
-    Everything else under /admin/accounts stays owner-only: GET /admin/accounts
-    (the raw multi-tenant list — chatters read /chatter/me/accounts), POST
-    /admin/accounts/active (flips the GLOBAL default account, body-carried so
-    the isolation middleware can't catch it), and DELETE /admin/accounts/{id}.
-    """
     if any(path.startswith(p) for p in _CHATTER_BLOCKED_ADMIN_PREFIXES):
         return False
     if path == "/admin/accounts" or path.startswith("/admin/accounts/"):
         if method == "GET" and path == "/admin/accounts/roster-counts":
             return True
-        # PATCH /admin/accounts/{id} (recolor). `/admin/accounts/active` is a
-        # POST, so it can never reach this branch; the guard is belt-and-braces.
+        # PATCH recolors a model (the handler nulls every other field for a chatter); /active is a POST so never reaches here.
         if method == "PATCH" and path != "/admin/accounts/active":
             return True
         return False
@@ -834,26 +682,7 @@ def _chatter_allowed_admin(path: str, method: str) -> bool:
 
 
 async def chatter_session_middleware(request: Request, call_next):
-    """Read the chatter cookie, hydrate ChatterIdentity (`_session_identity`),
-    stash on the ContextVar, then call the route. Wipes the cookie on the response if
-    the chatter's session was revoked or idle too long.
-
-    Registered AFTER `_auth_session_middleware` in server.py so it runs
-    INSIDE auth on the inbound path — by the time we reach the admin
-    gate below, `get_request_user()` reflects the User cookie's truth.
-
-    Both cookies may be present (founder testing on the same browser);
-    when BOTH are valid the User cookie wins for /admin/* — the chatter
-    cookie still hydrates `_request_chatter` so /chatter/me works without
-    a logout-in-other-tab dance.
-
-    No ContextVar reset in finally: BaseHTTPMiddleware shares contextvars
-    with outer middlewares' post-blocks (verified pattern in auth.py),
-    and the request task ends with the response so cleanup is automatic.
-    Resetting would hide the chatter from the audit middleware's
-    post-block — the whole reason for setting it in the first place.
-    """
-    _request_chatter.set(None)  # never the previous request's on this connection (auth.session_middleware)
+    _request_chatter.set(None)
     cookie = request.cookies.get(COOKIE_NAME)
     expired = False
     if cookie:
@@ -863,13 +692,7 @@ async def chatter_session_middleware(request: Request, call_next):
             if identity is not None:
                 _request_chatter.set(identity)
 
-    # Admin gate: chatter-only sessions are 403'd from owner-only
-    # /admin/* surfaces (managed user/proxy/account/etc. mgmt). Per-
-    # account /admin/* endpoints (saved-replies, mass-messages, fans,
-    # vault, stats) fall through to their handler's account-id gate,
-    # which now consults the chatter's account_ids union. User cookie
-    # takes precedence — if also set, gate stays open and treats the
-    # request as an owner action.
+    # User cookie wins for /admin/*: the gate only applies when no owner is signed in.
     from auth import get_request_user as _get_user_local
     chatter_active = _request_chatter.get() is not None
     if chatter_active and _get_user_local() is None:
@@ -888,16 +711,8 @@ async def chatter_session_middleware(request: Request, call_next):
     return response
 
 
-# ── Unified actor view ───────────────────────────────────────────────
 
 class CurrentActor:
-    """Whichever principal is driving this request — owner or chatter.
-
-    Owner endpoints assert `kind == "user"` (the chatter principal must
-    be 403'd from founder-only / owner-only routes). Audit + account-id
-    gating reads `account_ids` regardless of kind so the choke point in
-    `_resolve_account_id` stays single-sourced.
-    """
     __slots__ = ("kind", "id", "username", "account_ids")
 
     def __init__(self, kind: str, id_: str, username: str, account_ids: frozenset[str]):
@@ -908,13 +723,6 @@ class CurrentActor:
 
 
 def current_actor() -> "CurrentActor | None":
-    """Single source of truth: who's behind this request, and what can
-    they touch. User cookie takes precedence — owner perspective wins
-    when both happen to be present, the chatter cookie is informational
-    until the user logs out."""
-    # Local import so importing this module doesn't pull auth's globals
-    # at module load (avoids any circular-init risk when chatters.py is
-    # first imported from server.py).
     from auth import get_request_user
 
     u = get_request_user()
@@ -931,10 +739,6 @@ def current_actor() -> "CurrentActor | None":
 
 
 def assert_owner() -> "CurrentActor":
-    """Use at the top of any owner-only endpoint that must reject chatter
-    cookies (transfer model, grant account, founder password gates,
-    impersonate, etc.). 401 if no principal, 403 if a chatter is trying
-    to act as an owner."""
     actor = current_actor()
     if actor is None:
         raise HTTPException(status_code=401, detail="sign in required")
@@ -946,12 +750,6 @@ def assert_owner() -> "CurrentActor":
     return actor
 
 
-# ── Owner-side admin router (/admin/chatters/*) ──────────────────────
-#
-# Linking/unlinking/inviting chatters is an OWNER action: the founder
-# password is NOT required because ownership IS the auth (the calling
-# user can only mutate THEIR OWN chatter_users rows). This mirrors the
-# user-account grant/revoke conventions on the User side.
 
 admin_router = APIRouter(prefix="/admin/chatters", tags=["admin-chatters"])
 
@@ -959,7 +757,6 @@ admin_router = APIRouter(prefix="/admin/chatters", tags=["admin-chatters"])
 class _LinkBody(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
     display_name: str | None = Field(None, max_length=64)
-    # The Employee setup, applied at once (employees.EmployeeSetup): absent = left alone.
     role_id: str | None = Field(None, max_length=64)
     account_ids: list[str] | None = None
     group_id: int | None = None
@@ -973,8 +770,6 @@ def _setup_from(body: BaseModel) -> dict:
 class AdminInviteResp(BaseModel):
     token: str
     expires_at: datetime
-    # Convenience: the URL the owner shares with the new chatter.
-    # Built relative; the owner copies a full URL from the UI side.
     accept_path: str
 
 
@@ -1001,10 +796,6 @@ async def link_chatter(body: _LinkBody = Body(...)) -> dict:
                 status_code=404,
                 detail=f"no chatter named {target_username!r} — send them an invite link instead",
             )
-        # Update display_name if the owner provided one and the chatter
-        # has no preferred display_name set. Owner can override their own
-        # view via the Employee mirror row's display_name; this only fills
-        # the global-default slot.
         if body.display_name and not chatter.display_name:
             chatter.display_name = body.display_name.strip()
 
@@ -1028,7 +819,6 @@ class _InviteBody(BaseModel):
 
 
 async def _mint_invite(s, owner_id: str, setup_json: str | None) -> AdminInviteResp:
-    """Add a fresh 24h single-use ChatterInvite of `owner_id` to session `s` and flush."""
     token = secrets.token_urlsafe(24)
     now = datetime.utcnow()
     expires = now + timedelta(seconds=INVITE_TTL_SECONDS)
@@ -1054,8 +844,6 @@ async def invite_chatter(body: _InviteBody | None = Body(None)) -> AdminInviteRe
         return await _mint_invite(s, actor.id, json.dumps(setup) if setup else None)
 
 
-# Pending invites: Manage employees lists each unused, unexpired invite as an
-# "Inactive" row (Infloww's pending employee) with Resend and Delete.
 
 class PendingInviteRow(AdminInviteResp):
     created_at: datetime
@@ -1066,7 +854,6 @@ class PendingInviteRow(AdminInviteResp):
 
 
 async def _own_pending_invite(s, owner_id: str, token: str) -> ChatterInvite:
-    """The caller's unused invite `token` (expired or not), else 404."""
     invite = await s.get(ChatterInvite, token)
     if invite is None or invite.user_id != owner_id or invite.used_at is not None:
         raise HTTPException(status_code=404, detail="no such pending invite")
@@ -1120,28 +907,14 @@ async def resend_invite(token: str) -> AdminInviteResp:
         return await _mint_invite(s, actor.id, setup_json)
 
 
-# ── Chatter Access: owner-set visibility limits (step 5) ─────────────
-#
-# All three endpoints are OWNER-only and strictly scoped to the calling
-# owner's OWN accounts — owner A can neither read nor write owner B's
-# grants for a shared chatter. Both allowlists are SUBTRACTIVE; an empty
-# set = full access for that owner (DA-2: "see nothing" = unlink the
-# chatter, never an empty restricted set).
 
 class FolderGrant(BaseModel):
     folder_id: int
-    # Denormalised at write time (DA-3) so the chatter's authoritative
-    # folder menu can render names without re-paginating OF's vault/lists.
     folder_name: str | None = None
 
 
 class AccessResp(BaseModel):
-    # This owner's account allowlist for the chatter (empty = all of this
-    # owner's accounts).
     account_ids: list[str]
-    # {account_id: [folder_id, ...]} — this owner's folder allowlists,
-    # only for accounts the owner owns. Empty list for an account = all
-    # folders.
     folder_access: dict[str, list[int]]
 
 
@@ -1190,8 +963,6 @@ async def get_chatter_access(chatter_id: str) -> AccessResp:
                 ChatterAccountAccess.user_id == actor.id,
             )
         )).all()
-        # Folder grants are keyed (chatter, account); scope to accounts this
-        # owner actually owns so cross-owner folder grants never leak.
         fa_rows = []
         if actor.account_ids:
             fa_rows = (await s.execute(
@@ -1206,12 +977,6 @@ async def get_chatter_access(chatter_id: str) -> AccessResp:
     folder_access: dict[str, list[int]] = {}
     for aid, fid in fa_rows:
         folder_access.setdefault(aid, []).append(fid)
-    # Scope the account allowlist to accounts this owner STILL owns. A model
-    # transfer (or a revoked grant) can leave orphaned chatter_account_access
-    # rows for an account the owner no longer holds; surfacing one seeds the
-    # editor's "Limit models" set, and "Save access" then re-sends that now-
-    # foreign id → 403 "account X is not one of yours". Mirrors the
-    # folder_access scoping above.
     return AccessResp(
         account_ids=[r[0] for r in acct_rows if r[0] in actor.account_ids],
         folder_access=folder_access,
@@ -1227,7 +992,6 @@ async def put_chatter_account_access(
     models again). Rejects any account id the owner doesn't own."""
     from employees import _replace_login_access
     actor = assert_owner()
-    # Validate ownership of every supplied id before touching the DB.
     for aid in body.account_ids:
         _assert_owns(actor, aid)
     deduped = sorted(set(body.account_ids))
@@ -1248,7 +1012,6 @@ async def put_chatter_folder_access(
     at write time (DA-3)."""
     actor = assert_owner()
     _assert_owns(actor, body.account_id)
-    # De-dupe by folder_id, keeping the last-supplied name.
     by_id: dict[int, str | None] = {}
     for g in body.folders:
         by_id[g.folder_id] = g.folder_name

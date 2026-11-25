@@ -1,9 +1,7 @@
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { agendaText, at, count, dateOf, dayText, money, num, ofCount, pad, timeText, wallOf, zero, type Wall } from "./ofMirrorStatsDom";
 
-// The host zone pinned before any import (a formatter built at module load would keep the old zone): Kathmandu,
-// +05:45 all year, no DST, matching no zone named here, so `tz: null` (the browser's clock) expectations are literals
-// that fail if the module ignored the host zone. Restored after the file.
+// Pinned before any import: a formatter built at module load would keep the old zone.
 vi.hoisted(() => vi.stubEnv("TZ", "Asia/Kathmandu"));
 afterAll(() => vi.unstubAllEnvs());
 
@@ -15,8 +13,8 @@ describe("num (a number, or a numeric string)", () => {
     ["43", 43],
     [" 43 ", 43],
     ["1e3", 1000],
-    ["0x10", 16], // Number("0x10"): hex strings pass as numbers
-    ["1,234.5", null], // grouped strings are not numbers
+    ["0x10", 16],
+    ["1,234.5", null],
     ["", null],
     ["   ", null],
     ["abc", null],
@@ -49,7 +47,6 @@ describe("money (OF's $ figure; none: empty)", () => {
     expect(money(v)).toBe(want);
   });
   it("money(-0.004) -> \"-$0.00\": a sub-cent negative keeps its sign, though zero(-0.004) is true", () => {
-    // Edge case OF never sends (its amounts are whole cents): usd rounds to 0.00 and the signed zero is kept.
     expect(money(-0.004)).toBe("-$0.00");
     expect(zero(-0.004)).toBe(true);
   });
@@ -80,7 +77,7 @@ describe("at (the value at a dotted path)", () => {
     [body, "a.list.5", undefined],
     [body, "a.zero", 0],
     [body, "a.empty", ""],
-    [body, "a.zero.deeper", undefined], // a primitive on the way: undefined
+    [body, "a.zero.deeper", undefined],
     [body, "top", null],
     [body, "top.x", undefined],
     [body, "missing", undefined],
@@ -118,7 +115,6 @@ describe("ofCount (an integer grouped, a digits-only string too, anything else a
     [-1234, "-1,234"],
     [1234.5, "1234.5"],
     [NaN, "NaN"],
-    // An integer sent as a string (`/profile/stats`' guests) grouped too; any other string as sent.
     ["1234", "1,234"],
     ["43", "43"],
     ["-1234", "-1234"],
@@ -163,15 +159,13 @@ describe("pad (two digits)", () => {
   });
 });
 
-// ---------------------------------------------------------------- the wall clock
 
-// EU DST ends 2026-10-25 01:00Z (Ljubljana CEST+2 -> CET+1); US DST ends 2026-11-01 06:00Z (New York EDT-4 -> EST-5).
 const EU_BEFORE = new Date("2026-10-25T00:30:00Z");
 const EU_AFTER = new Date("2026-10-25T01:30:00Z");
 const US_BEFORE = new Date("2026-11-01T05:30:00Z");
 const US_AFTER = new Date("2026-11-01T06:30:00Z");
-const NOON_NY = new Date("2026-03-05T17:00:00Z"); // 12:00 EST
-const MIDNIGHT_LJ = new Date("2026-01-04T23:05:09Z"); // 00:05:09 CET, Jan 5
+const NOON_NY = new Date("2026-03-05T17:00:00Z");
+const MIDNIGHT_LJ = new Date("2026-01-04T23:05:09Z");
 
 const w = (y: number, m: number, d: number, h: number, mi: number, s = 0): Wall => ({ y, m, d, h, mi, s });
 
@@ -193,7 +187,6 @@ describe("wallOf (the wall clock of an instant in a zone)", () => {
   it("the host zone pin took effect (+05:45)", () => {
     for (const at of [EU_BEFORE, US_AFTER, NOON_NY, MIDNIGHT_LJ]) expect(at.getTimezoneOffset()).toBe(-345);
   });
-  // tz null: the runtime's zone (the pinned Kathmandu, +05:45).
   it.each<[Date, Wall]>([
     [EU_BEFORE, w(2026, 10, 25, 6, 15)],
     [EU_AFTER, w(2026, 10, 25, 7, 15)],
@@ -207,7 +200,6 @@ describe("wallOf (the wall clock of an instant in a zone)", () => {
 
 describe("dayText / timeText / agendaText", () => {
   it.each<[Date, string | null, string, string, string, string]>([
-    // at, tz, dayText, dayText(dayPad false), timeText, agendaText
     [EU_BEFORE, "Europe/Ljubljana", "Oct 25, 2026", "Oct 25, 2026", "02:30 am", "Oct 25, 2026, 02:30 am"],
     [EU_AFTER, "Europe/Ljubljana", "Oct 25, 2026", "Oct 25, 2026", "02:30 am", "Oct 25, 2026, 02:30 am"],
     [EU_BEFORE, "America/New_York", "Oct 24, 2026", "Oct 24, 2026", "08:30 pm", "Oct 24, 2026, 08:30 pm"],
@@ -226,7 +218,6 @@ describe("dayText / timeText / agendaText", () => {
   });
 
   it.each<[Date, string, string, string, string]>([
-    // at, dayText, dayText(dayPad false), timeText, agendaText: in the pinned host zone (Kathmandu, +05:45)
     [EU_BEFORE, "Oct 25, 2026", "Oct 25, 2026", "06:15 am", "Oct 25, 2026, 06:15 am"],
     [EU_AFTER, "Oct 25, 2026", "Oct 25, 2026", "07:15 am", "Oct 25, 2026, 07:15 am"],
     [US_BEFORE, "Nov 01, 2026", "Nov 1, 2026", "11:15 am", "Nov 1, 2026, 11:15 am"],

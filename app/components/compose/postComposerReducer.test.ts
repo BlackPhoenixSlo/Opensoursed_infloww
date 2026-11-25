@@ -69,8 +69,6 @@ describe("postComposerReducer", () => {
     expect(postComposerReducer(s, a)).toBe(s);
   });
 
-  // #13-1: after a partial fan-out an edit would reach only the failed models
-  // (the posted ones keep the old post), so the content is locked until Start over.
   const partial = form({ allModels: true, results: [ok("a"), bad("b")] });
   it.each<[string, PostAction]>([
     ["text", postFieldAction("text", "edited")],
@@ -86,9 +84,6 @@ describe("postComposerReducer", () => {
   ])("BUG: a partial fan-out locks the content: %s is refused", (_n, a) => {
     expect(postComposerReducer(partial, a)).toBe(partial);
   });
-  // A round in flight (progress set, round 1: no results yet): its body is
-  // built, so an edit would show content it doesn't send, and all-models off
-  // would land its results in one-account mode.
   const inFlight = form({ allModels: true, progress: { done: 0, total: 2 } });
   it.each<[string, PostAction]>([
     ["text", postFieldAction("text", "edited")],

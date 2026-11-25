@@ -1,13 +1,4 @@
 // @vitest-environment node
-/**
- * public/sw-push.js, run as the browser runs it: evaluated in a `vm` context
- * whose `self` is a fake service worker global (registration.showNotification,
- * clients, navigator). Covers the push display rule (always shows, but off
- * Apple a focused visible window that acks toasts it instead; no ack within
- * ACK_MS, a nack or a failed post and it shows), a bad payload, the click,
- * sw-images.js surviving a broken push file (and still showing every push),
- * and sw-images.js's `// push sha256:` line equal to sw-push.js's hash (the bump).
- */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -24,7 +15,6 @@ const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebK
 const MAC_SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15";
 
 interface FakeClient { focused: boolean; visibilityState: string; focus: ReturnType<typeof vi.fn>; postMessage: ReturnType<typeof vi.fn> }
-/** `answer`: what the page replies to a push-notice on its port (undefined: no listener, no reply). */
 const client = (focused: boolean, visibilityState = focused ? "visible" : "hidden", answer?: boolean): FakeClient => ({
   focused, visibilityState, focus: vi.fn(async () => undefined),
   postMessage: vi.fn((_msg: unknown, ports?: MessagePort[]) => {
@@ -132,14 +122,13 @@ describe("sw-push.js: push", () => {
       ["the post fails", Object.assign(client(true), { postMessage: vi.fn(() => { throw new Error("detached"); }) })],
     ])("%s: shown at once, no timer run", async (_l, page) => {
       const { self, handlers } = load({ clients: [page] });
-      await push(handlers, payload); // fake timers never advanced: resolves without ACK_MS
+      await push(handlers, payload);
       expect(page.postMessage).toHaveBeenCalledTimes(1);
       expect(self.registration.showNotification.mock.calls).toEqual([["Tipper", shown]]);
     });
   });
 
   it.each([
-    // [label, ua, clients]
     ["iPhone, even with a focused window", IPHONE, [client(true)]],
     ["Safari on a Mac / iPadOS, even with a focused window", MAC_SAFARI, [client(true)]],
     ["Chrome, windows open but none focused and visible", CHROME, [client(false, "visible"), client(true, "hidden")]],

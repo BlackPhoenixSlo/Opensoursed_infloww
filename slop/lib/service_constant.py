@@ -1,4 +1,3 @@
-"""Read relay constants from source without importing service modules into the harness."""
 from pathlib import Path
 import re
 

@@ -1,4 +1,3 @@
-/** The client-held bulk unsend run: one at a time, its warning tied to the run, not a component. */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 

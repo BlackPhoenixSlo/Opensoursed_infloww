@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * The Agency's Employee groups (`GET /admin/employee-groups`, service/employee_groups_api.py;
- * docs/spec/phase-05-remaining-parity-gaps.md, item 4): one query that Manage employees' group tree,
- * phone group select and Batch edit group, and Sales records' Employees filter share. Owner session or Master
- * only; the Relay refuses a chatter 403.
- */
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -14,9 +8,7 @@ import { relay } from "@/lib/relay";
 export interface EmployeeGroup {
   id: number;
   name: string;
-  /** null = directly under the Agency root. */
   parent_id: number | null;
-  /** Every Employee placed in the group, deactivated ones included. */
   employee_count: number;
 }
 
@@ -30,7 +22,6 @@ export function useEmployeeGroups(enabled = true) {
   });
 }
 
-/** The groups depth first under the Agency root, each with its depth (0 = directly under the root). */
 export function groupsInTreeOrder(groups: EmployeeGroup[]): Array<{ group: EmployeeGroup; depth: number }> {
   const out: Array<{ group: EmployeeGroup; depth: number }> = [];
   const walk = (parentId: number | null, depth: number) => {

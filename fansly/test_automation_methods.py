@@ -1,25 +1,3 @@
-"""
-Prove the automation-surface methods emit the CAPTURED request shapes — offline.
-
-These are the eight automation-surface methods (follow / unfollow /
-like_message / unsend_message / create_post / delete_post / cancel_scheduled /
-the lists family) plus the seven permanent no-ops. Every expected body below is
-copied from capture/RECIPES.md, not derived from the shim, because the trap in
-this API is that sibling resources do NOT share conventions:
-
-  • three delete shapes — message id in BODY, live post id in PATH + /delete,
-    scheduled post id in PATH + /cancel;
-  • list add vs remove take DIFFERENT payloads (singular listItem vs plural
-    itemIds) — the wrong one is accepted and silently does nothing;
-  • a post's scheduledFor is MILLISECONDS, a message's is seconds.
-
-A plausible-looking refactor that "unifies" any of those would still return
-{"success": True}, so this asserts the outgoing call field by field.
-
-No network: _request is swapped for a recorder.
-
-    ../venv/bin/python test_automation_methods.py
-"""
 from __future__ import annotations
 
 import sys
@@ -36,11 +14,7 @@ LIST = "900537126601601024"
 GROUP = "900604711209099999"
 LATER = "900546198725955999"
 
-# GET /post/scheduled as RECIPES "Scheduled posts" records it: postId,
-# accountId, status, postTemplate, scheduledFor (MILLISECONDS). Two queued
-# posts out of order, one cancelled (status 3), and a row with no postId.
-# INVENTED: postTemplate's fields. The capture names the key only, so its
-# `content` (and `attachments`) are the shim's assumption, not a recording.
+# INVENTED: postTemplate's fields; the capture names only the key.
 SCHEDULED = {"scheduledPosts": [
     {"postId": LATER, "accountId": US, "status": 1,
      "postTemplate": {"content": "later", "attachments": []}, "scheduledFor": 1788981187000},
@@ -54,8 +28,6 @@ SCHEDULED = {"scheduledPosts": [
 
 def _client(*, fail: dict[str, str] | None = None,
             walls: list | None = None) -> tuple[FanslyShimClient, list]:
-    """A shim whose _request only records. `fail` maps a path to the error
-    message _request should raise for it; `walls` is what /account/me shows."""
     c = FanslyShimClient(FanslySession({
         "accountId": US, "token": "t", "check_key": "k", "device_id": "d",
         "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
@@ -71,7 +43,6 @@ def _client(*, fail: dict[str, str] | None = None,
             return {"account": {"id": US, "walls": walls if walls is not None
                                 else [{"id": WALL, "mainWall": True}]}}
         if path == "/post":
-            # A scheduled create omits the id (RECIPES "Scheduled posts").
             return {} if json_body.get("scheduledFor") else {"id": POST}
         if path == "/lists":
             return {"id": LIST, "type": 1, "label": json_body["label"]}
@@ -84,7 +55,6 @@ def _client(*, fail: dict[str, str] | None = None,
         if path == "/group":
             return {"id": GROUP}
         if path == "/messaging/groups":
-            # A stranger: the DM listing has no thread with them.
             return {"data": [], "aggregationData": {}}
         if path == "/message":
             return {"id": MSG, "groupId": json_body["groupId"],
@@ -103,7 +73,6 @@ def main() -> int:
         if not cond:
             fails.append(msg)
 
-    # -- follow / unfollow: id in the path, NO body -------------------------
     c, calls = _client()
     check(c.follow_user(FAN) == {"success": True}, "follow returns success")
     check(calls == [("POST", f"/account/{FAN}/followers", None, None)],
@@ -113,14 +82,12 @@ def main() -> int:
     check(calls == [("POST", f"/account/{FAN}/followers/remove", None, None)],
           f"unfollow must be POST .../followers/remove with no body: {calls}")
 
-    # A 422 is account policy (paid-only / reserved) — one call, clean skip.
     c, calls = _client(fail={f"/account/{FAN}/followers":
                              "HTTP 422 {'code': 5, 'details': 'you can not follow'}"})
     out = c.follow_user(FAN)
     check(out.get("success") is False and out.get("skipped"),
           f"a 422 follow must be a clean skip, got {out}")
     check(len(calls) == 1, "a 422 follow must never be retried")
-    # ...but anything else is a real error and must surface.
     c, calls = _client(fail={f"/account/{FAN}/followers": "HTTP 500 boom"})
     try:
         c.follow_user(FAN)
@@ -128,7 +95,6 @@ def main() -> int:
     except FanslyAPIError:
         pass
 
-    # -- like_message: heart is reaction type 1, id in the body -------------
     c, calls = _client()
     check(c.like_message(MSG, FAN) == {"success": True}, "like returns success")
     check(calls == [("POST", "/message/like",
@@ -141,13 +107,11 @@ def main() -> int:
     check(out.get("success") is False and out.get("skipped"),
           f"liking our own message must skip, not raise: {out}")
 
-    # -- unsend_message: id in the BODY (contrast delete_post) ---------------
     c, calls = _client()
     check(c.unsend_message(MSG) == {"success": True}, "unsend returns success")
     check(calls == [("POST", "/message/delete", {"messageId": MSG}, None)],
           f"unsend must be ONE POST /message/delete {{messageId}}: {calls}")
 
-    # -- create_post: wallIds required, body matches the capture exactly ----
     captured_post = {
         "content": "test", "fypFlags": 0, "inReplyTo": None,
         "quotedPostId": None, "attachments": [], "scheduledFor": 0,
@@ -163,12 +127,10 @@ def main() -> int:
           "the wall id must be read from the account, not baked in")
     check(out == {"success": True, "id": POST, "scheduled": False},
           f"create_post must surface the new post id as a string: {out}")
-    # The wall lookup is cached — a second post must not re-read /account/me.
     c.create_post("again")
     check(sum(1 for _, p, _, _ in calls if p == "/account/me") == 1,
           "wall id must be cached across posts")
 
-    # scheduledFor: caller passes epoch SECONDS, the wire wants MILLISECONDS.
     c, calls = _client()
     out = c.create_post("later", scheduled_for=1788894787)
     body = next(b for _, p, b, _ in calls if p == "/post")
@@ -177,7 +139,6 @@ def main() -> int:
     check(out == {"success": True, "id": None, "scheduled": True},
           f"a scheduled create has no id yet and must say so: {out}")
 
-    # No wall → refuse before any write; media → refuse (shape uncaptured).
     c, calls = _client(walls=[])
     try:
         c.create_post("x")
@@ -193,7 +154,6 @@ def main() -> int:
         check(not [p for _, p, _, _ in calls if p == "/post"],
               "refused media means NO /post call")
 
-    # -- delete_post / cancel_scheduled: id in the PATH, no body ------------
     c, calls = _client()
     c.delete_post(POST)
     check(calls == [("POST", f"/post/{POST}/delete", None, None)],
@@ -203,7 +163,6 @@ def main() -> int:
     check(calls == [("POST", f"/post/scheduled/{POST}/cancel", None, None)],
           f"cancel_scheduled must be POST /post/scheduled/{{id}}/cancel: {calls}")
 
-    # -- schedules: the post queue in OF's /schedules shape ------------------
     c, calls = _client()
     out = c.schedules(publish_date="2026-09-01", publish_date_end="2026-09-30", limit=20)
     check(calls == [("GET", "/post/scheduled", None, None)],
@@ -214,17 +173,23 @@ def main() -> int:
         {"id": LATER, "type": "post", "publishDateTime": "2026-09-09T19:13:07+00:00",
          "entity": {"id": LATER, "text": "later"}},
     ], "hasMore": False}, f"schedules must be the live queue, ms read as ms, soonest first: {out}")
-    # The queue item's id is what cancel_scheduled takes.
     c.cancel_scheduled(out["list"][0]["id"])
     check(calls[-1] == ("POST", f"/post/scheduled/{POST}/cancel", None, None),
           f"a queue item's id must cancel that post: {calls[-1]}")
 
-    # -- lists: add and remove are DIFFERENT shapes --------------------------
     c, calls = _client()
     c.add_user_to_list(LIST, FAN)
     check(calls == [("POST", "/lists/commands", {"listCommands": [
         {"type": 1, "listItem": {"id": FAN, "listId": LIST}}]}, None)],
         f"list ADD must be type 1 with a singular listItem: {calls}")
+    c, calls = _client()
+    out = c.add_users_to_lists({int(LIST): [int(FAN), int(GROUP)]})
+    check(calls == [("POST", "/lists/commands", {"listCommands": [
+        {"type": 1, "listItem": {"id": FAN, "listId": LIST}},
+        {"type": 1, "listItem": {"id": GROUP, "listId": LIST}}]}, None)],
+        f"bulk list ADD must send one string-id listItem per fan: {calls}")
+    check(out == {LIST: [FAN, GROUP]},
+          f"bulk list ADD must return the echoed fan ids as strings: {out}")
     c, calls = _client()
     c.remove_user_from_list(LIST, FAN)
     check(calls == [("POST", "/lists/commands", {"listCommands": [
@@ -245,7 +210,6 @@ def main() -> int:
     check(out == {"list": [{"id": LIST, "name": "vip"}], "hasMore": False},
           f"get_lists must return OF's list page: {out}")
 
-    # -- the seven no-ops: marked, never call the network, OF-empty value ---
     expected = {
         "pin_message": {"success": True},
         "unpin_message": {"success": True},
@@ -263,15 +227,11 @@ def main() -> int:
         check(getattr(getattr(FanslyShimClient, name),
                       "fansly_unsupported", None),
               f"{name} must carry the fansly_unsupported marker")
-    # Mutable empties must not be shared between callers.
     c, _ = _client()
     c.pin_message(MSG)["success"] = "mutated"
     check(c.pin_message(MSG) == {"success": True},
           "a no-op's return value must be fresh per call")
 
-    # -- send to a fan with NO thread yet: mint the group, then post into it --
-    # (send_welcome's new-follower case — a follow opens no group on Fansly, so
-    # POST /message with the fan id as groupId 500s 'error getting group'.)
     c, calls = _client()
     c.send_message(FAN, "hey")
     paths = [(m, p) for m, p, _b, _q in calls]
@@ -285,13 +245,11 @@ def main() -> int:
           f"the send must go to the MINTED group, not the fan id: {msg}")
     check(paths.index(("POST", "/group")) < paths.index(("POST", "/message")),
           "group creation must precede the send")
-    # Second send to the same fan: the minted group is remembered, no re-mint.
     calls.clear()
     c.send_message(FAN, "again")
     check(("POST", "/group") not in [(m, p) for m, p, _b, _q in calls],
           f"a known fan must not mint a second group: {calls}")
 
-    # -- send to a KNOWN group id: passes straight through, no mint ----------
     c, calls = _client()
     c._known_group_ids.add(GROUP)
     c.send_message(GROUP, "hi")

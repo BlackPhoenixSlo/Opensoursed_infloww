@@ -1,9 +1,5 @@
 "use client";
 
-/**
- * useOfConsent — a Creator's "Auto-accept OnlyFans consent" switch
- * (`GET`/`PUT /admin/of-consent/{id}`, service/of_consent_api.py).
- */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -12,8 +8,6 @@ import { relay } from "@/lib/relay";
 
 const KEY = ["of-consent"] as const;
 
-/** The switch (`auto_accept`), `required` while OF wants the consent form (the
- *  consent_required notice), `changed` the newest change (null: never set, off). */
 export interface OfConsent {
   account_id: string;
   auto_accept: boolean;
@@ -31,7 +25,6 @@ export function useOfConsent(accountId: string) {
   });
 }
 
-/** `PUT /admin/of-consent/{id}` (owner only): one click turns it on or off. */
 export function useSetOfConsent() {
   const qc = useQueryClient();
   return useMutation<OfConsent, Error, { accountId: string; autoAccept: boolean }>({

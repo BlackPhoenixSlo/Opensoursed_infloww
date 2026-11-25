@@ -1,18 +1,3 @@
-"""The ledger backfill's between-ticks statuses on Ingest health (components/stats/IngestHealthBanner.tsx,
-in Creator reports' Inflowwww extras), from real supervisor passes against OF's ledger (lib/sweep_pacing_wire.py).
-
-World: `agency_inbox`, a captured session per Creator. STALL holds STALL_ROWS ledger rows and OF answers its
-first page blank once; LONG holds LONG_ROWS rows, past one tick's page cap; every other Creator's ledger is empty.
-Flow: one supervisor pass (real `supervisor_cycle`, `POST /__slop/sweep-pacing/run`), the owner opens the page
-and Ingest health (screenshot `trigger-stalled-and-working`), SETTLE_PASSES more passes, reload (screenshot `settled`).
-
-Checks (names in lib/ingest_banner_faults.py, and below):
-  banner_words_a_stopped_and_a_working_walk  after pass 1 the page says "backfill stalled" with its reason as the
-                         row's title and "backfilling · still working", neither raw status.
-  health_api_after_pass_1  the health API: STALL backfill_stalled + yellow + its reason, LONG backfill_partial + green.
-  banner_settled         after the last pass neither wording remains and both rows read "last scan".
-  rows_landed            each Creator's held provider ids == OF's, fully_backfilled 1, health API ok + green.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -28,8 +13,8 @@ PROFILE = "agency_inbox"
 UI = True
 OF_WIRE = True
 FAULT = "ingest-banner-raw-status"
-STALL_ROWS, LONG_ROWS = 300, 4_200   # LONG: 42 pages, the tick cap's 40 + the rest
-SETTLE_PASSES = 2                    # LONG: its full walk, then the rest of its walk
+STALL_ROWS, LONG_ROWS = 300, 4_200
+SETTLE_PASSES = 2
 PASS_TIMEOUT_S = 300
 HEALTH = "banner_settled"
 API, LANDED = "health_api_after_pass_1", "rows_landed"

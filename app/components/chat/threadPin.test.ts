@@ -37,8 +37,6 @@ describe("atBottom", () => {
 });
 
 describe("afterRender", () => {
-  // Snapshots at 0 / 79 / 80 / 600 px from the bottom (scrollHeight 1000, clientHeight 400),
-  // taken before the commit; `scrollHeight` is after it.
   const at = (distance: number): Scroll => ({ scrollHeight: 1000, scrollTop: 600 - distance, clientHeight: 400 });
   const bottom = at(0), up = at(600);
   type In = Parameters<typeof afterRender>[0];

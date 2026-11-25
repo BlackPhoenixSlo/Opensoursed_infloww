@@ -1,8 +1,3 @@
-/**
- * resolveSmartLists — the mass composer's picked Smart Lists as fan ids at send
- * time: one /resolve per list, de-duped across lists, and no call at all for an
- * empty pick (an empty include must not look like "everyone").
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { getSpy } = vi.hoisted(() => ({ getSpy: vi.fn() }));

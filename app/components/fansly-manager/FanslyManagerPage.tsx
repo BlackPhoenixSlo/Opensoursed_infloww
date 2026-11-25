@@ -23,9 +23,8 @@ import type { NavLink } from "@/lib/nav";
 import { accountPlatform } from "@/lib/platform";
 import { TableSkeleton } from "@/components/ui/Skeleton";
 
-/** Each built page's body, by its nav href. The route (app/fansly-manager/[page]) renders this page only for a built
- *  link (`!notBuilt`), so every href it passes is here. */
-const BODIES: Record<string, (p: { accountId: string }) => React.ReactNode> = {
+/** Each page's body, by its nav href: the route (app/fansly-manager/[page]) renders this page only for a nav link. */
+export const BODIES: Record<string, (p: { accountId: string }) => React.ReactNode> = {
   "/fansly-manager/notifications": FanslyNotifications,
   "/fansly-manager/lists": FanslyLists,
   "/fansly-manager/scheduled": FanslyScheduled,

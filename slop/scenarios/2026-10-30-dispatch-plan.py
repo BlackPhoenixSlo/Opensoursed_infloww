@@ -1,47 +1,3 @@
-"""The automation dispatch plan (service/dispatch_plan.py, lib/dispatch_faults.py names the
-checks): the scheduler's own path, follow-up rules firing through real supervisor passes.
-
-World: `agency_inbox` + seed/followup_drip.py (lib/followup.py `setup`, as
-2026-10-30-followup-drip), so each run has due fans to sweep. Load: the owner switches the
-follow-up on for every Creator through the real rules route (`POST /admin/automation-rules`,
-every PLAN_EVERY_S; two rules of the kind on every other Creator and on the last one) and
-deactivates the last one (`POST /admin/accounts/{id}/active`). Then one real supervisor pass
-(`POST /__slop/automation-tick`: rules -> jobs, due pairs -> runs), a second (a wake) the
-moment the first one's jobs exist, while its runs are still queued for a slot, and
-PLAN_CADENCE_PASSES more.
-
-Invariants: ONE: the first pass makes one job per Creator, two rules or one; by the end of the
-wake every active Creator's jobs are `done`, ran once each and were spawned once each (the
-hooks' task lists: each pass lists the runs it spawned), the deactivated one's job is still
-pending, never spawned, never run. CADENCE: over all the passes (inside the rules' interval)
-each active Creator's rule made exactly one job (a second rule of the kind is held while the
-first one's job is open, then fires once on its own anchor: deferred, not dropped, not
-repeated), the deactivated Creator's at most one. Budget: a pass with nothing due, vs the last
-green run.
-
-Faked or bypassed, declared: as lib/followup.py (DeepSeek at its HTTP boundary, OF's send, the
-DM rate via the real route); the supervisor's timer (the hook runs its pass). No `--users`
-streams: this flow is the scheduler, not the fan-out (2026-10-30-followup-drip watches that).
-SLOP_LIVE=1: every check SKIPs.
-
-Break-it-once: dispatch-plan-two-jobs-per-kind (ONE, the scenario's FAULT) patches the
-executor's busy read (`_pair_busy`), --fault=dispatch-plan-ignores-cadence (CADENCE)
-dispatch_plan.interval_due, and --fault=dispatch-plan-spawns-in-flight-pairs (ONE, at
---scale=medium: the wake must find runs still queued) dispatch_plan.plan_dispatch.
-A rule switched off mid-run (service/run_decide.py `park`, lib/jobs_faults.py names the check
-RULE_OFF), after the passes above: on the first Creator the owner schedules a send due now (`POST
-/api/of/v2/scheduled-sends`, the composer's deferral) and one supervisor pass fires it, so the
-account's write gate spaces the next write 11 s out; the owner adds an auto_posts rule (the
-Ready-made panel's `POST /admin/automation-rules`), a second pass fires it, and while its run
-waits at the gate with its job `running` the owner switches the rule off (the panel's `PATCH
-/admin/automation-rules/{id}`, which leaves a running job alone). OnlyFans then refuses the post
-(`create_post`: the offline client's build error, no `of-vault.json`), so the job is parked.
-RULE_OFF: the job ends `cancelled` with the rule-off reason after its one attempt; then OnlyFans
-accepts posts (`of-vault.json` written) and a third pass runs: no second run, no post. Bypass,
-declared: a job of the rule still pending then has its 60 s retry backoff collapsed by SQL
-(`run_at` in the past), so a requeued retry is due on that pass (never touches a cancelled job).
---fault=job-park-ignores-rule-off (RULE_OFF) patches run_decide.park.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -57,10 +13,9 @@ PROFILE = "agency_inbox"
 UI = False
 FAULT = "dispatch-plan-two-jobs-per-kind"
 P95_VS_LAST = (1.5, 300)
-PLAN_EVERY_S = 3600          # the follow-up rule's interval (its catalog cadence_default_s)
-PLAN_CADENCE_PASSES = 3      # supervisor passes right after the first, all inside the interval
-# The rule-off phase's auto_posts run fails on purpose (OnlyFans refuses the post): its
-# `automation_run_failed ... kind=auto_posts run_id=` warning logs the traceback.
+PLAN_EVERY_S = 3600
+# The rule-off phase's auto_posts run fails on purpose (OnlyFans refuses the post): its automation_run_failed warning logs a traceback.
+PLAN_CADENCE_PASSES = 3
 EXPECTED_TRACEBACKS = (("kind=auto_posts run_id=", "slop: OF is offline"),)
 
 
@@ -70,8 +25,6 @@ async def _pass(ctx) -> dict:
 
 
 async def _rule_off_phase(ctx, w, aid: str) -> None:
-    """A rule switched off while its job runs, then OnlyFans refuses the write (module
-    docstring: RULE_OFF): the retry is cancelled and nothing goes out after."""
     text = f"slop rule-off post {ctx.seed}"
     con = w.sql()
     fan = con.execute("SELECT fan_id FROM fans WHERE account_id = ? ORDER BY fan_id LIMIT 1", (aid,)).fetchone()[0]
@@ -93,7 +46,7 @@ async def _rule_off_phase(ctx, w, aid: str) -> None:
     r = await ctx.owner.post("/api/of/v2/scheduled-sends", headers={"X-Account-Id": aid},
                              json={"fan_id": fan, "run_at": now, "text": "slop: the owner's deferred send"})
     r.raise_for_status()
-    gate = await _pass(ctx)           # fires the send: the account's next write waits out the gap
+    gate = await _pass(ctx)
     r = await ctx.owner.post("/admin/automation-rules", json={
         "account_id": aid, "kind": "auto_posts", "name": "rule-off probe", "every_seconds": PLAN_EVERY_S,
         "payload": {"posts": [{"text": text}]}, "is_enabled": True})
@@ -113,7 +66,7 @@ async def _rule_off_phase(ctx, w, aid: str) -> None:
     first = await fire
     parked, _ = read(rid)
     vault = ctx.stack.shard_svc[0] / "of-vault.json"
-    vault.write_text("{}")   # OnlyFans accepts posts from here on
+    vault.write_text("{}")
     try:
         con = w.sql()
         collapsed = con.execute("UPDATE scheduled_jobs SET run_at = '2000-01-01 00:00:00.000000' "
@@ -177,9 +130,9 @@ async def run(ctx) -> None:
     t0 = time.monotonic()
     while not first_t.done() and len(jobs()) < len(aids) and time.monotonic() - t0 < 60:
         await asyncio.sleep(0.02)
-    snap = jobs()                     # the first pass's jobs, before the wake
+    snap = jobs()
     woke_at = round(time.monotonic() - t0, 3)
-    wake = await _pass(ctx)           # a wake landing while the first pass's runs are in flight
+    wake = await _pass(ctx)
     first = await first_t
     made = jobs()
     con = w.sql()

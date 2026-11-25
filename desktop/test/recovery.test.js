@@ -14,12 +14,12 @@ test("allows 3 reloads, then refuses until the 5-minute window slides", () => {
   t += 60_000;
   assert.strictEqual(limiter.tryReload(), true);
   t += 60_000;
-  assert.strictEqual(limiter.tryReload(), false); // 4th within 5 min
-  assert.strictEqual(limiter.tryReload(), false); // a refusal is not counted
+  assert.strictEqual(limiter.tryReload(), false);
+  assert.strictEqual(limiter.tryReload(), false);
   t = 1_000_000 + WINDOW_MS - 1;
-  assert.strictEqual(limiter.tryReload(), false); // first is still inside the window
+  assert.strictEqual(limiter.tryReload(), false);
   t = 1_000_000 + WINDOW_MS;
-  assert.strictEqual(limiter.tryReload(), true); // first one expired → one slot
+  assert.strictEqual(limiter.tryReload(), true);
   assert.strictEqual(limiter.tryReload(), false);
 });
 
@@ -43,7 +43,7 @@ test("remembers same-origin routes with the share token stripped", () => {
 test("ignores anything off the app origin", () => {
   for (const url of [
     "https://onlyfans.com/my/chats",
-    "http://app.example.com/inbox", // other scheme → other origin
+    "http://app.example.com/inbox",
     "chrome-error://chromewebdata/",
     "about:blank",
     "file:///tmp/error.html",

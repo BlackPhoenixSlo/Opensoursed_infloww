@@ -1,6 +1,3 @@
-"""FakeOF's chat send refuses a priced message with no media and no locked text, as OnlyFans does (measured on the Live
-proof run 11-22: 400 "You have no paid content. Please add some paid media or text."). Media or lockedText passes; a
-free text-only send passes. Requests go through the fake's real routes (signature check included)."""
 import time
 
 import _path  # noqa: F401

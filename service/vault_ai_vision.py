@@ -1,25 +1,3 @@
-"""service/vault_ai_vision.py — the vision passes over the vault mirror.
-
-Split out of `vault_ai_api` (routes unchanged): the FLAGS pass (`_jev_and_flag`,
-`flags-all`) and the DESCRIBE pass (`_describe_one`, `describe`,
-`describe-all`), plus the vision budget and the process-wide vision gate they
-share. Pure decisions live in `vault_ai_vision_decide`.
-
-Two routers, one per block, because `vault_ai_api` includes each at the spot the
-block used to occupy — FastAPI matches routes in registration order. This module
-never imports `vault_ai_api` (one-way dependency, no cycle).
-
-Tests patch `vault_ai_vision._describe_one` /
-`_DESCRIBE_CONCURRENCY` — the names are looked up HERE. The Jev v8 wiring
-lives in `vault_jev_pass` (patch `vault_jev_pass.safe` / `plan`).
-
-Jev v8 is the default for every PHOTO and CLIP — its pass stamps the item's
-flags (`vault_jev_flags`) and feeds its describe (`vault_describe_jev`: photos
-prose / v6; clips "vid", the V2 describe + Jev facts). An item Jev cannot read
-(no NudeNet / key, capped, error, no frames) is skipped and retried by the next
-sweep, never described or flagged without it. There is no qwen flags call
-(D52/D54): photos and clips are the only describable kinds.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -34,18 +12,18 @@ from sqlalchemy import and_, case, func, or_, select, update
 import llm_client
 import vault_ai_brief
 import vault_ai_fix
-import vault_ai_vision_decide  # module attr `with_jev`, looked up per call
+import vault_ai_vision_decide
 import vault_cache
 import vault_describe_jev
-import vault_dupes  # module attr `reuse_groups`, looked up per call
+import vault_dupes
 import vault_frames
 import vault_jev_flags
 import vault_jev_manual
-import vault_jev_pass  # module attrs `safe` / `plan`, looked up per call
+import vault_jev_pass
 import vault_jev_rules
 import vault_scripts
 import vault_sweep
-import vision  # shared frame download / shrink / refusal test
+import vision
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import VaultItem
@@ -60,28 +38,22 @@ from vault_ai_vision_decide import (
     reuse_state,
 )
 
-# Same logger name as before the split, so log routing/filters are unchanged.
 log = logging.getLogger("of-relay.vault_ai_api")
 
 flags_router = APIRouter()
 describe_router = APIRouter()
 
 
-# ── Constants & prompts ─────────────────────────────────────────────
 
 # Every describe call goes to this provider (its key); the spend lands on the
 # account's own vault-describe budget row (`llm_client.DESCRIBE_BUDGET`).
 _VISION_PROVIDER = "deepinfra"
 
 
-# The flags version stamped on every row's flags (`vault_jev_flags` stamps it): defined, with its
-# history, in `vault_ai_brief.FLAGS_VERSION`.
 _FLAGS_VERSION = vault_ai_brief.FLAGS_VERSION
 
 
-# ── Describe prompts (Qwen3-VL vision) ──────────────────────────────
 
-# Proven prompt (service/_probe_vault_describe.py — 8/8 described, 0 refused, correct NSFW tags).
 _DESCRIBE_PROMPT = (
     "You are tagging an OnlyFans creator's vault media so it can be searched and "
     "sold. Look at the image and return STRICT JSON only, no prose:\n"
@@ -97,24 +69,6 @@ _DESCRIBE_PROMPT = (
 )
 
 
-# ── V2 describe prompt (bake-off variant B, chosen 2026-07-21) ──────
-#
-# Measured over 12 real items x 3 variants (service/_probe_describe_v2.py):
-# V2@9 frames on qwen3-vl-30b beat the V1 prompt decisively and cost $0.88 for a
-# 2,309-item vault, with 235B kept in the harness for later. V1 above is left in
-# place as the cheap baseline and as what the harness diffs against.
-#
-# The four changes over V1, each aimed at a measured failure:
-#  1. Ownership/consent framing — V1 gave the model no reason not to sanitise,
-#     which is how a clip with fingers inside became "touching her genitals".
-#  2. An explicit anti-euphemism rule naming that exact failure mode.
-#  3. `beats` — an ordered walk across the sampled frames, so a 2-minute clip
-#     stops collapsing into one static sentence.
-#  4. A CLOSED taxonomy instead of free tag soup. V1's free vocabulary let it
-#     emit `nude` + `lingerie` + `topless` on the SAME item — 78% of the graded vault's rows
-#     carry a contradiction like that, which is why nothing downstream could
-#     order a script. `clothing_state` and `acts` are single-valued rungs, and
-#     they are what service/vault_scripts.py scores.
 _V2_SCHEMA = """{
   "description":      "<2-4 literal sentences — see RULES>",
   "beats":            ["<what happens first>", "<then>", "..."],
@@ -180,22 +134,7 @@ _DESCRIBE_PROMPT_V2 = (
     "stockings, socks — all count as TRUE. Answer it on its own: this records what is "
     "THERE, not what is covered, so a TRUE here is perfectly compatible with fully_nude. "
     "Never adjust this answer to agree with the clothing_state you picked.\n"
-    # `genitals_covered` is asked for and then DELETED by the flags pass, which
-    # superseded it with the three-state `vulva_vis`. It stays because it is not
-    # an output — it is the second half of a scaffold the model reasons through
-    # before committing to a state. Deleting it as "unused" is a prompt change
-    # wearing the costume of a cleanup; re-measure before touching it.
-    #
-    # What this scaffold used to do was WORSE than nothing. It asserted that a
-    # visible garment rules out `fully_nude`, which is false: measured against an
-    # operator's own labels on 10 explicit stills (2026-08-05), 6 items were
-    # `fully_nude` WITH a garment visible — a nude woman in socks. Every model
-    # answer that reported `underwear_visible=True` was wrong about the state
-    # (0/8); every answer that reported False was right 19/22. The models were
-    # resolving the contradiction by suppressing `underwear_visible` — a
-    # `FLAG_KEY` the pricing tiers read. The rule poisoned the field it was
-    # built on. Presence and coverage are now asked as the separate questions
-    # they always were.
+    # Do not delete genitals_covered as unused: it is the second half of a scaffold the model reasons through; re-measure before touching
     "    genitals_covered — is her vulva covered by ANY fabric right now? Pushed aside "
     "so it is exposed = FALSE. Covered by a thong = TRUE. Out of frame or hidden by her "
     "pose/leg/hand rather than by fabric = FALSE (nothing is covering it).\n"
@@ -222,25 +161,15 @@ _DESCRIBE_PROMPT_V2 = (
 )
 
 
-# ── Vision budget + process-wide gate ───────────────────────────────
 
-# Process-wide ceiling on concurrent vision work across ALL accounts and BOTH
-# sweeps (describe + flags). The per-sweep _DESCRIBE_CONCURRENCY/_FLAGS_CONCURRENCY
-# bound ONE sweep; without a shared gate, kicking "Describe all" on 16 accounts
-# fans out to 16×4 = 64 concurrent DeepInfra calls plus their ffmpeg/OF frame
-# fetches and starves the relay threadpool (cost-audit finding: ReadTimeouts +
-# 500s while sweeps run). Lazily created so it binds to the running event loop,
-# not import time.
+# Process-wide cap across all accounts and both sweeps: per-sweep bounds alone fan out to 16x4 DeepInfra calls and starve the relay threadpool
 _VISION_GLOBAL_CONCURRENCY = 8
 _vision_sema: "asyncio.Semaphore | None" = None
 
 
 def _vision_gate() -> "asyncio.Semaphore":
-    """The process-wide vision-concurrency gate (see _VISION_GLOBAL_CONCURRENCY).
-    Every describe/flags sweep acquires this IN ADDITION to its per-sweep bound, so
-    total concurrent vision work is capped no matter how many accounts sweep at once."""
     global _vision_sema
-    if _vision_sema is None:  # single-threaded asyncio: check→set is atomic (no await)
+    if _vision_sema is None:
         _vision_sema = asyncio.Semaphore(_VISION_GLOBAL_CONCURRENCY)
     return _vision_sema
 
@@ -283,19 +212,6 @@ def _vision_key_missing() -> "llm_client.LLMKeyError":
 
 
 def _assert_vision_model(model: str) -> None:
-    """Refuse a model that is not cleared to be handed an image.
-
-    These routes take a model id straight off the request body, and the model
-    list an operator picks from is derived server-side from `llm_client.MODELS`
-    — so every model registered for ANY purpose is offerable the moment it
-    lands, including the text-only ones. The old check here tested membership,
-    which answers "is this a model" and not "is this a model for this job".
-
-    `vision_ok` is that second question. Answering it up front also keeps the
-    failure cheap: a text model reaching `_describe_one` would first pull frames
-    off OF and cut a clip with ffmpeg, then spend the LLM call, and only then
-    find out.
-    """
     mdl = llm_client.MODELS.get(model)
     if mdl is None:
         raise HTTPException(status_code=400,
@@ -306,10 +222,6 @@ def _assert_vision_model(model: str) -> None:
 
 
 async def _write_item(account_id: str, media_id: int, **vals: Any) -> None:
-    """UPDATE one vault_items row with `vals` and commit. A new `ai_fields_json`
-    keeps the row's CURRENT `_jev` (`vault_jev_pass.keep_current`): the blob was
-    built from a read taken before a describe / flags call, and a Jev pass from
-    the other sweep may have landed meanwhile."""
     async with get_session() as s:
         if "ai_fields_json" in vals:
             cur = (await s.execute(select(VaultItem.ai_fields_json, VaultItem.locked_fields_json).where(
@@ -328,7 +240,6 @@ async def _write_item(account_id: str, media_id: int, **vals: Any) -> None:
         await after_analysis(account_id, media_id)
 
 
-# ── Flags: the Jev pass (photos and clips) ──────────────────────────
 
 async def _kind(account_id: str, media_id: int) -> str | None:
     async with get_session() as s:
@@ -338,38 +249,18 @@ async def _kind(account_id: str, media_id: int) -> str | None:
 
 async def _jev_and_flag(account_id: str, media_id: int, *, force: bool = False,
                         jev_sweep: vault_jev_pass.Sweep | None = None) -> dict[str, Any]:
-    """The flags sweep's visit. A photo or clip: the Jev pass, which stamps its
-    flags (nothing to pay for when `_jev` is AI-read (`ai_read`): its flags are re-stamped
-    if they drifted). `force` never forces a paid Jev re-run. A Jev cap is that
-    item's failure (`jev_capped`), not the sweep's stop (`capped`)."""
     kind = await _kind(account_id, media_id)
-    if kind not in JEV_KINDS:   # no qwen flags call: a missing row / another kind is not flaggable
+    if kind not in JEV_KINDS:
         return {"media_id": media_id, "ok": False,
                 "status": "not_in_mirror" if kind is None else "not_flaggable"}
-    jev = await vault_jev_pass.checked(account_id, media_id, sweep=jev_sweep)   # a key / server cause raises
-    if jev is None:       # `_jev` already AI-read: its flags re-stamped if they drifted, nothing paid
+    jev = await vault_jev_pass.checked(account_id, media_id, sweep=jev_sweep)
+    if jev is None:
         return {"media_id": media_id, "ok": True, "status": "flagged", "cost_millicents": 0}
     return vault_ai_vision_decide.with_jev(
         {"media_id": media_id, "ok": jev["ok"], "status": "flagged" if jev["ok"] else jev["status"],
          **({"detail": jev["detail"]} if jev.get("detail") else {})}, jev)
 
 
-# ── Answer reuse across duplicates (both sweeps) ────────────────────
-# A re-upload is the same picture: one vision call answers the whole set
-# (`vault_dupes.reuse_groups` — the Duplicates screen's sets at threshold 2).
-# Copies are free, are made the moment their source is written (a cap mid-sweep
-# keeps them), carry the source's flags version (so the flags sweep leaves them
-# alone) and are stamped `_copied_from` / `_flags_copied_from`, which is how a
-# later re-describe / re-flag of the SWEEP re-copies them.
-# A marker refreshes only while copy and source are still one set: a set that
-# changed (an older seed backfilled, a re-hash) leaves former members alone.
-# The single-item describe and flags-all `media_ids` run the same `_reuse` +
-# `_lead` (`leads=`, `lead_plan`): the named item is always called and the rest
-# of its current set follows it, so one click never splits a set.
-# Not covered (follow-ups):
-#   * an operator fix (`vault_ai_fix`) on a source does not propagate;
-#   * a copy whose set has two sources answered in one sweep may take either
-#     one's answer (last write wins). Same picture, so accepted.
 _COPY_SRC_COLS = ("ai_fields_json", "describe_model", "describe_call_id", "frames_sampled",
                   "tip_vault_flag", "tags", "explicitness_tier", "description",
                   "video_description", "search_text")
@@ -377,11 +268,6 @@ _COPY_SRC_COLS = ("ai_fields_json", "describe_model", "describe_call_id", "frame
 
 async def _reuse(account_id: str, order: list[int], *, flags: bool,
                  leads: bool = False) -> tuple[ReusePlan, dict[int, list[tuple[int, str]]]]:
-    """This sweep's `ReusePlan` over `order` (`leads`: a named run, `lead_plan`),
-    and the index of rows earlier sweeps marked as copies ({source: [(copy,
-    marker)]}) — only those still in their source's set. Never raises: no
-    duplicates is the fallback for every failure. A photo is a source only on
-    its current `_jev` (`reuse_state`)."""
     plan, index = ReusePlan({}, {}), {}
     try:
         groups = await vault_dupes.reuse_groups(account_id, frozenset(order))
@@ -406,7 +292,6 @@ async def _reuse(account_id: str, order: list[int], *, flags: bool,
                 f = load_json(fj, {}) or {}
                 for marker in (COPY_MARK, FLAGS_COPY_MARK):
                     src = f.get(marker)
-                    # A former member (the set changed since the copy) is not this source's copy any more.
                     if src and int(mid) in set_of and set_of.get(int(src)) == set_of[int(mid)]:
                         index.setdefault(int(src), []).append((int(mid), marker))
     except Exception:  # noqa: BLE001
@@ -418,9 +303,6 @@ async def _reuse(account_id: str, order: list[int], *, flags: bool,
 
 
 async def _copy_up_front(account_id: str, plan: ReusePlan, copy) -> list[dict[str, Any]]:
-    """Make every `copy_now` copy BEFORE the walk: free, so outside the vision
-    gate and safe from a cap trip. The results ride into `vault_sweep.run` as
-    `settled`."""
     return [await _copy_safe(copy, account_id, src, dst)
             for dst, src in plan.copy_now.items()]
 
@@ -428,9 +310,6 @@ async def _copy_up_front(account_id: str, plan: ReusePlan, copy) -> list[dict[st
 def _propagation(index: dict[int, list[tuple[int, str]]], src: int,
                  walked: set[int], *, flags_only: bool,
                  skip: Collection[int] = ()) -> list[tuple[int, str]]:
-    """Earlier copies of `src` to refresh once it is re-answered: (copy, what to
-    copy). Rows this sweep walks itself are left to it; `skip` (a target
-    sweep's Terminal failures) is never written."""
     out = []
     for mid, marker in index.get(src, ()):
         if mid in walked or mid in skip:
@@ -441,7 +320,6 @@ def _propagation(index: dict[int, list[tuple[int, str]]], src: int,
 
 
 async def _copy_describe(account_id: str, src_id: int, dst_id: int) -> dict[str, Any]:
-    """Give `dst_id` the describe + flags answer `src_id` carries. No call."""
     async with get_session() as s:
         src = await s.get(VaultItem, (account_id, src_id))
         dst = await s.get(VaultItem, (account_id, dst_id))
@@ -469,7 +347,6 @@ async def _copy_describe(account_id: str, src_id: int, dst_id: int) -> dict[str,
 
 
 async def _copy_flags(account_id: str, src_id: int, dst_id: int) -> dict[str, Any]:
-    """Merge `src_id`'s current flags into `dst_id`. No call."""
     async with get_session() as s:
         src = await s.get(VaultItem, (account_id, src_id))
         dst = await s.get(VaultItem, (account_id, dst_id))
@@ -492,7 +369,6 @@ async def _copy_flags(account_id: str, src_id: int, dst_id: int) -> dict[str, An
 
 
 async def _copy_safe(copy, account_id: str, src_id: int, dst_id: int) -> dict[str, Any]:
-    """A copy that raised is that copy's failure, not its source's."""
     try:
         return await copy(account_id, src_id, dst_id)
     except Exception as e:  # noqa: BLE001
@@ -503,16 +379,10 @@ async def _copy_safe(copy, account_id: str, src_id: int, dst_id: int) -> dict[st
 
 async def _lead(account_id: str, mid: int, call, followers: list[int], copy,
                 refresh: list[tuple[int, str]]) -> dict[str, Any]:
-    """Run `mid`'s own (paid) visit; on success copy it to `followers` — counted
-    as `extra` items of this visit — and refresh earlier copies (`refresh`,
-    uncounted: they are outside this sweep's set). A failed leader's followers
-    are counted failed and stay undescribed; the next sweep picks a different
-    leader (`reuse_plan`'s `bad`). A capped one's are left uncounted, like
-    every item a cap cuts off."""
     try:
         res = await call
     except (llm_client.LLMKeyError, vault_sweep.SweepStop):
-        raise  # stops the sweep; its riders go uncounted like a cap's
+        raise
     except Exception as e:  # noqa: BLE001 — counted here so the riders are too
         log.exception("visit raised media=%s account=%s", mid, account_id)
         res = {"media_id": mid, "ok": False, "status": "error",
@@ -533,25 +403,13 @@ async def _lead(account_id: str, mid: int, call, followers: list[int], copy,
     return {**res, "extra": extra} if extra else res
 
 
-# ── Flags sweep (background, same shape as describe-all) ────────────
-# A whole-vault sweep CANNOT run inside its own request. 327 items × ~3.4s is
-# ~18 minutes; the app's proxy drops the socket long before that and the browser
-# is shown "Internal Server Error" — while the sweep carries on server-side,
-# invisible, so every retry click starts ANOTHER concurrent sweep over the same
-# rows. `describe-all` has always been a background task with a status endpoint;
-# this was the odd one out.
 _flags_running: set[str] = set()
 _flags_progress: dict[str, dict[str, Any]] = {}
-# Same bound as describe. The pass is IO-bound on one small VLM call per item,
-# so 4 at a time turns ~18 minutes into ~5 without changing what is asked.
 _FLAGS_CONCURRENCY = 4
 
 
 async def _rail_order(account_id: str) -> list[int]:
-    """The OF folder rail's order (`rail_folder_ids`), read from the cached
-    /vault/lists pages `vault_collect.hot_folders` writes — never an OF call.
-    No / expired cache → [] (`priority_order` then ranks folders by newest item)."""
-    from vault_collect import LISTS_MAX_PAGES, LISTS_PAGE  # lazy: vault_collect pulls the executor
+    from vault_collect import LISTS_MAX_PAGES, LISTS_PAGE
     pages = []
     for i in range(LISTS_MAX_PAGES):
         page = await vault_cache.get(account_id, vault_cache.vault_lists_cache_key(
@@ -566,10 +424,6 @@ async def _rail_order(account_id: str) -> list[int]:
 
 async def _flags_todo(account_id: str, *, force: bool = False,
                       only: set[int] | None = None, limit: int = 0) -> list[int]:
-    """Which items still need flags, in `priority_order` — the describe sweep's
-    order. Flags are what the gated lanes actually read, so a describe and a
-    flags pass that walked the vault differently would leave freshly-described
-    items describable but still unusable."""
     async with get_session() as s:
         q = (select(VaultItem.media_id, VaultItem.created_at,
                     VaultItem.of_folder_ids, VaultItem.ai_fields_json, VaultItem.kind,
@@ -586,9 +440,6 @@ async def _flags_todo(account_id: str, *, force: bool = False,
                               await _rail_order(account_id)):
         r = by_id[mid]
         f = load_json(r[3], {}) or {}
-        # Every row here is a photo / clip (`live_describable`): its flags are its `_jev`'s. Work when its Jev
-        # reading is due (`vault_jev_pass.sweep_due`: operator picks alone still scan; a clip given up on or in its
-        # retry backoff is no sweep's work), or an AI-read row's flags drifted from it (a free re-stamp).
         stale = (vault_jev_pass.sweep_due(f, now)
                  or (jev_ai_read(f) and not vault_jev_flags.row_in_sync(f, r[5], tier=r[6])))
         if only or force or stale:
@@ -597,17 +448,12 @@ async def _flags_todo(account_id: str, *, force: bool = False,
 
 
 async def _run_flags_all(account_id: str, todo: list[int], *, force: bool = False) -> None:
-    """Background flags sweep. Resumable by construction: it only ever visits
-    rows that are missing or stale, so a relay restart mid-sweep costs the items
-    in flight and nothing else — pressing the button again picks up the rest.
-
-    Duplicates (`_reuse`) cost one call per set: the rest copy its flags."""
     try:
         plan, index = await _reuse(account_id, todo, flags=True)
         walked = set(todo)
         settled = await _copy_up_front(account_id, plan, _copy_flags)
         jev_sweep = vault_jev_pass.Sweep()
-        due = await vault_jev_pass.clips_due(account_id)   # clips that queue for the Jev video lane
+        due = await vault_jev_pass.clips_due(account_id)
 
         async def visit(mid: int) -> dict[str, Any]:
             return await _lead(account_id, mid,
@@ -657,11 +503,6 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     force = bool(payload.get("force"))
     limit = int(payload.get("limit") or 0)
-    # Re-check a NAMED set instead of the whole vault. A prompt change is
-    # cheap to evaluate on the couple of dozen items that have ever been wrong
-    # and expensive to evaluate on all of them — and the ones that have been
-    # wrong before are where a regression shows up first. Implies `force`,
-    # since the caller is asking for these specifically.
     only = payload.get("media_ids")
     only = {int(m) for m in only} if isinstance(only, (list, tuple, set)) else None
     from vault_ai_api import assert_media_visible, assert_owner_scope
@@ -670,25 +511,19 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
     else:
         await assert_owner_scope(account_id)
 
-    # No DeepInfra key check: flags make no DeepInfra call (Jev reads + `vault_jev_flags`); a missing/refused
-    # TypeSafe key is the Jev pass's own refusal (`vault_jev_pass.fatal` → 424 / sweep stop). W30 F9.
     todo = await _flags_todo(account_id, force=force, only=only, limit=limit)
 
     if only:
         done, failed, cost = 0, 0, 0
         stop = None
         jev_sweep = vault_jev_pass.Sweep()
-        # Each named item's current set rides along (`_reuse` leads): the other
-        # members take its fresh flags (own locks / picks kept).
         plan, _index = await _reuse(account_id, todo, flags=True, leads=True)
         for mid in todo:
-            # Jev only where `_jev` is missing / stale (else its flags re-stamped
-            # if they drifted) — never a paid Jev re-run per probe.
             try:
                 res = await _lead(account_id, mid,
                                   _jev_and_flag(account_id, mid, force=True, jev_sweep=jev_sweep),
                                   plan.followers.get(mid, []), _copy_flags, [])
-            except vault_sweep.SweepStop as e:   # a key error stays a 424 (server handler)
+            except vault_sweep.SweepStop as e:
                 failed += 1
                 stop = e.payload()
                 break
@@ -696,18 +531,12 @@ async def flags_all(payload: dict = Body(...)) -> dict[str, Any]:
                 done += 1
                 cost += int(res.get("cost_millicents") or 0)
             else:
-                failed += 1   # a Jev cap is `jev_capped`, the item's own (never "capped": no break)
+                failed += 1
         return {"account_id": account_id, "candidates": len(todo),
                 "flagged": done, "failed": failed, "cost_millicents": cost,
                 "prompt_version": _FLAGS_VERSION, "stop": stop,
-                # A sweep that stopped early leaves the vault at MIXED versions,
-                # which is the state that has repeatedly been mistaken for a
-                # finished one. Say so in the result rather than leaving a caller
-                # to infer it from `failed`.
                 "complete": failed == 0 and done == len(todo)}
 
-    # One sweep per account. Without this, a click on a button that appears to
-    # have failed re-runs the whole vault alongside the run already going.
     if not claim_flags(account_id):
         return {"account_id": account_id, "status": "running",
                 "candidates": len(todo), "already": True,
@@ -738,34 +567,19 @@ async def flags_all_status(account_id: str = Query(...)) -> dict[str, Any]:
     }
 
 
-# ── Describe (one item) ─────────────────────────────────────────────
-# The vision primitives live in `vision`. This module has one job: her VAULT.
 
 async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-30b",
                         prompt_version: str = "v2",
                         frames: int | None = None,
                         jev_res: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Describe one item.
-
-    `prompt_version` picks the bake-off variant: "v2" (default — rich structured
-    schema, the one in production) or "v1" (the original one-sentence prompt,
-    ~4× cheaper, kept for bulk passes where only a rough tag is wanted).
-    `frames` overrides the duration ladder; None = `_frames_for_duration`.
-    `jev_res`: the Jev pass that just ran on this photo (`_describe_and_flag`),
-    whose failure status names a skip (a cap is not stamped on the row).
-    """
     async with get_session() as s:
         item = await s.get(VaultItem, (account_id, media_id))
     if item is None:
         raise HTTPException(status_code=404, detail={"error": "not_in_mirror", "media_id": media_id})
-    if item.removed_at is not None:   # OF deleted it after a sweep picked it (#948): no cached frame, no paid call
+    # OF deleted it after a sweep picked it: no cached frame, no paid call
+    if item.removed_at is not None:
         return {"media_id": media_id, "ok": False, "status": "gone",
                 "detail": "removed from OF since the sweep picked it — not described"}
-    # D51: a photo is described off its `_jev` (`vault_describe_jev`: prose @640
-    # off the review lane, v6 JSON @960 on it) — or not at all: no feedable
-    # `_jev` (Jev unavailable / failed / capped) is a skip, retried by the next
-    # sweep. Nothing is written, so a described row keeps its describe. A clip:
-    # "vid" (the V2 describe + Jev facts, its storyboard frames), same skip rule.
     prev_ai = load_json(item.ai_fields_json, {}) or {}
     path, jev = vault_describe_jev.route(kind=item.kind, fields=prev_ai)
     if path is None:
@@ -796,7 +610,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
 
     images = list(got.images)
     if jev is not None:
-        px = vault_describe_jev.PX.get(path)   # a clip: 400px (storyboard frames as they are, previews cut down)
+        px = vault_describe_jev.PX.get(path)
         if px:
             images = [await asyncio.to_thread(vision.shrink_data_url, u, px) for u in images]
         prompt = vault_describe_jev.prompt_for(path, jev, _DESCRIBE_PROMPT_V2)
@@ -869,10 +683,6 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
     had_prose = bool(str(data.get("description") or "").strip())
     data = vault_describe_jev.answer(path, data, jev)
     if had_prose and not str(data.get("description") or "").strip():
-        # The scrub cut every sentence (each contradicted Jev): no usable answer, like a refusal. The prior
-        # description kept — never an empty one committed as `described` (W30 F22) — and stamped `refused`, a
-        # Terminal failure (`is_terminal`): the target sweeps skip it, not re-buying the call every sweep (R3);
-        # the operator's "Describe new" still retries it.
         await _write_item(account_id, media_id, describe_status="refused", describe_model=used_model,
                           describe_call_id=(result.call_id if result else None),
                           describe_generated_at=datetime.utcnow())
@@ -903,17 +713,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
 async def _describe_and_flag(account_id: str, media_id: int, *,
                              jev_sweep: vault_jev_pass.Sweep | None = None,
                              **describe_kw: Any) -> dict[str, Any]:
-    """Flag one item, then describe it — the single-item route and the
-    describe-all sweep both, so a described item always has its flags (the
-    gated lanes read them). A photo or clip gets the Jev pass FIRST
-    (`vault_jev_pass.safe`), which stamps its flags; there is no qwen flags
-    call (D52/D54). Its outcome and spend ride on the result (`with_jev`;
-    `vault_sweep.run` sums `cost_millicents`); when it leaves the item without
-    a reading, `_describe_one` skips the item with Jev's status.
-    `_describe_one` / `vault_ai_vision_decide.with_jev` are looked up per
-    call, so patches bite."""
     kind = await _kind(account_id, media_id)
-    # a key / server cause raises (`checked`)
     jev = await vault_jev_pass.checked(account_id, media_id, sweep=jev_sweep) if kind in JEV_KINDS else None
     res = await _describe_one(account_id, media_id, jev_res=jev, **describe_kw)
     return vault_ai_vision_decide.with_jev(res, jev)
@@ -942,16 +742,6 @@ async def describe_one(payload: dict = Body(...)) -> dict[str, Any]:
     if budget["capped"]:
         return {"media_id": media_id, "ok": False, "status": "capped",
                 "detail": budget["blocked_reason"]}
-    # Flagged in the same breath, exactly as the sweep does. Describing ONE item
-    # from the UI otherwise left it as the only row in the vault the gated lanes
-    # could not read, and nothing on screen said so.
-    # Its duplicate set rides along as in the sweep (`_reuse` leads, `_lead`): the
-    # clicked item is always called and the rest of its CURRENT set takes the
-    # fresh answer (own locks kept), so one click does not split the set.
-    # Its whole set follows, so no marker refresh is left to do.
-    # Whole-vault `_reuse` per click, kept (W30 F8, measured 11-22 on a copy of the owner test-stack DB):
-    # median 20 ms at 754 items, 47 ms at 3016, 88 ms at 6032 (synthetic 4×/8× copies, every item in a set):
-    # linear, ~15 ms per 1000 items, so under 150 ms up to ~10k items. Scope it to the item's bucket past that.
     plan, _index = await _reuse(account_id, [media_id], flags=False, leads=True)
     res = await _lead(
         account_id, media_id,
@@ -959,7 +749,6 @@ async def describe_one(payload: dict = Body(...)) -> dict[str, Any]:
                            prompt_version=str(payload.get("prompt_version") or "v2"),
                            frames=payload.get("frames")),
         plan.followers.get(media_id, []), _copy_describe, [])
-    # The whole set took the answer; a folder-limited caller is told only about the members it may see.
     if res.get("extra"):
         from vault_ai_api import visible_ids
         seen = await visible_ids(account_id, [e["media_id"] for e in res["extra"]])
@@ -967,25 +756,9 @@ async def describe_one(payload: dict = Body(...)) -> dict[str, Any]:
     return res
 
 
-# ── Describe ALL (background sweep, gen_info-style) ─────────────────
 _describe_running: set[str] = set()
 _describe_progress: dict[str, dict[str, Any]] = {}
-# Items in flight for ONE sweep. Raised 4 → 8 on 2026-08-11, against measured
-# prod numbers rather than a guess: describe latency is a straight line in OUTPUT
-# tokens (~24 tok/s — 54 tokens ⇒ 3.0s, 324 ⇒ 13.4s, 512 ⇒ 21.8s), and input size
-# barely moves it, so the v2 prompt's 24-field schema costs ~14s per item no
-# matter how many frames it reads. That is provider wall-clock nobody can shorten
-# from here; the only lever on THROUGHPUT is how many run at once. At 4 the best
-# observed minutes hit exactly the ceiling that implies (~14 items/min, 3.75 of 4
-# slots busy), i.e. the bound was binding.
-#
-# 8 does NOT raise the load the relay was measured safe at — _VISION_GLOBAL
-# _CONCURRENCY above still caps total vision work at 8 across every sweep, and
-# the still-fetch path has its own `vault_stills._MAX_INFLIGHT_FETCHES`. What
-# changes is that ONE account's sweep can now use the whole global budget instead
-# of a quarter of it. Two accounts sweeping at once still share 8 and each get
-# what they got before — the global gate is the knob for that, and it was set by
-# a cost-audit finding about ReadTimeouts, so raise it with numbers, not hope.
+# Describe latency is ~24 tok/s of output (~14 s/item), so throughput only scales with parallelism; the global gate still caps total at 8
 _DESCRIBE_CONCURRENCY = 8
 
 
@@ -1000,8 +773,6 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
     walk is cut to `coverage`'s remaining, then to `limit`."""
     try:
         async with get_session() as s:
-            # The SAME clause the plan counts with, so the number on the button
-            # is the set walked here.
             walked = {int(r[0]) for r in (await s.execute(select(VaultItem.media_id).where(
                 describe_selection(account_id, mode, prompt_version)))).all()}
             rows = (await s.execute(
@@ -1013,21 +784,18 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
             cov_rows = await _coverage_rows(account_id)
             terminal = {mid for mid, st, f in cov_rows if is_terminal(st, f)}
             remaining = coverage(((st, f) for _m, st, f in cov_rows), target)["remaining"]
-        # `priority_order`, the same walk as `_flags_todo`. Order decides what
-        # `limit` keeps, and what finishes early when the cap trips or the relay
-        # restarts — all three cut the tail.
         ids = [m for m in priority_order(rows, await _rail_order(account_id))
                if m in walked and m not in terminal]
         if target > 0:
             ids = ids[:remaining]
-            walked = set(ids)   # past the cut is not this sweep's, as past `limit`
+            walked = set(ids)
         if limit > 0:
             ids = ids[:limit]
-            walked = set(ids)   # past the limit is not this sweep's: its copies get refreshed
+            walked = set(ids)
         plan, index = await _reuse(account_id, ids, flags=False)
         settled = await _copy_up_front(account_id, plan, _copy_describe)
         jev_sweep = vault_jev_pass.Sweep()
-        due = await vault_jev_pass.clips_due(account_id)   # clips that queue for the Jev video lane
+        due = await vault_jev_pass.clips_due(account_id)
 
         async def visit(mid: int) -> dict[str, Any]:
             return await _lead(
@@ -1060,11 +828,6 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
             log.info("describe_all done account=%s done=%s/%s capped=%s",
                      account_id, c.done, c.total, c.capped)
     except Exception as e:  # noqa: BLE001
-        # Into the progress snapshot, not just the log. `running` goes False in
-        # `finally` either way, so a sweep that DIED and a sweep that finished
-        # were previously distinguishable only by counting — and a caller that
-        # sees done<total has no way to know whether to wait or to press the
-        # button again.
         log.exception("describe_all failed account=%s", account_id)
         _describe_progress[account_id] = {
             **_describe_progress.get(account_id, {}),
@@ -1072,12 +835,9 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
         }
     finally:
         _describe_running.discard(account_id)
-        # keep last progress snapshot for the status endpoint to report "done"
 
 
 def claim_flags(account_id: str) -> bool:
-    """Claim the account's ONE flags sweep (no await: check→add is atomic); False when
-    one already runs. `_run_flags_all` releases it in its finally."""
     if account_id in _flags_running:
         return False
     _flags_running.add(account_id)
@@ -1085,29 +845,11 @@ def claim_flags(account_id: str) -> bool:
 
 
 async def _claim_describe(account_id: str, model: str) -> dict[str, Any]:
-    """Claim the account's ONE describe sweep, or refuse; returns the budget.
-
-    The claim is taken in the same step as the check, before any await. It used
-    to come after the budget read, so a second press (a double click, two
-    managers) passed the check while the first was still awaiting it: N presses,
-    N sweeps, N x the spend. Every refusal after the claim releases it, or the
-    account would 409 forever; a started sweep releases it in its `finally`.
-    """
     if account_id in _describe_running:
         raise HTTPException(status_code=409, detail={"error": "describe_already_running"})
     _describe_running.add(account_id)
     try:
-        # REFUSE to start over the daily cap.
-        #
-        # Nothing here was ever unsafe: `llm_client._reserve` refuses every call
-        # over the cap and the sweep stops on the first one. It was DISHONEST. The
-        # sweep ended, the button went straight back to "Describe all (1777)", and a
-        # second press started another one — which pulled frames off OF and cut them
-        # with ffmpeg for a batch of items, had every LLM call refused, and reported
-        # the same 1777 still to do. Nothing on screen ever said "you are out of
-        # budget today", so the only reading available was that describe is broken,
-        # and the natural response to that is to press it again.
-        _assert_vision_model(model)  # a bad request is a 400 whatever the key/budget
+        _assert_vision_model(model)
         budget = await _vision_budget(account_id, model)
         if budget["key_missing"]:
             raise _vision_key_missing()
@@ -1120,16 +862,10 @@ async def _claim_describe(account_id: str, model: str) -> dict[str, Any]:
     return budget
 
 
-# The describe sweep's Max when the request names none (the drawer's default, `DESCRIBE_LIMIT_DEFAULT`): omitting the
-# field never lifts the cap. "all" is the explicit opt-out; a `target` sweep is bounded by its own goal.
 DESCRIBE_MAX_DEFAULT = 2000
 
 
 def _limit_of(raw: Any, target: int) -> int:
-    """describe-all's `limit` (items walked, priority order), validated before any claim: "all" → 0 (no limit),
-    absent → DESCRIBE_MAX_DEFAULT (0 under a `target`), a positive int (or its decimal string) → it, however large
-    (the operator's choice: past the vault's size it walks everything); anything else (0, negative, junk, a float,
-    a bool, a decimal string too long to convert) → 400 `bad_limit`."""
     if raw == "all":
         return 0
     if raw is None:
@@ -1137,7 +873,7 @@ def _limit_of(raw: Any, target: int) -> int:
     if isinstance(raw, str) and raw.strip().isdecimal():
         try:
             raw = int(raw.strip())
-        except ValueError:   # past Python's int-string digit limit (W30 C8): junk, not a 500
+        except ValueError:
             raw = None
     if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1:
         return raw
@@ -1145,8 +881,6 @@ def _limit_of(raw: Any, target: int) -> int:
 
 
 def _target_of(raw: Any) -> int:
-    """describe-all's Describe `target`: 0 when absent (None), else a positive
-    int, or 400 `bad_target`."""
     if raw is None:
         return 0
     if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1:
@@ -1168,7 +902,6 @@ async def _coverage_rows(account_id: str) -> list[tuple[int, str | None, dict[st
 
 
 async def describe_coverage(account_id: str, target: int) -> dict[str, int]:
-    """`vault_ai_vision_decide.coverage` of `account_id`'s vault, read from the DB now."""
     return coverage(((st, f) for _m, st, f in await _coverage_rows(account_id)), target)
 
 
@@ -1182,13 +915,11 @@ async def describe_all(payload: dict = Body(...)) -> dict[str, Any]:
     force = bool(payload.get("force"))
     restage = bool(payload.get("restage"))
     target = _target_of(payload.get("target"))
-    limit = _limit_of(payload.get("limit"), target)   # before the claim: a bad value never strands it
+    limit = _limit_of(payload.get("limit"), target)
     if target and (force or restage):
         raise HTTPException(status_code=400, detail={"error": "target_needs_undescribed"})
-    _assert_vision_model(model)  # a bad request is a 400 whatever the key/budget
+    _assert_vision_model(model)
     if target:
-        # Read before the claim (a side-effect-free count): a met target needs no
-        # budget, starts nothing and takes no claim, so it never 409s.
         remaining = (await describe_coverage(account_id, target))["remaining"]
         if remaining == 0:
             return {"account_id": account_id, "status": "done",

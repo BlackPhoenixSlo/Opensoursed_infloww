@@ -46,7 +46,7 @@ Session scope: the chatter roster gains `platform` in this Phase (a one-field Re
 33. As the owner relinking a Fansly row, I want a pasted blob whose `accountId` is not that row's refused before any request, so that a paste from the wrong tab never adds a second Creator.
 
 ## Implementation Decisions
-- **Owns.** Platform table module (`app/lib/platform.ts`) and its new test; relay account type (`relayTypes`); nav (`app/lib/nav.ts`, its test), the Fansly Manager route and `NotBuiltYet` (deleted), assistant prepass; the gated read hooks `useChatPinned`, `useFanChatMedia`, `useChatFolders` (both exports), `useTemplates`, and `ChatSearch`'s read; the gated components of ticket 02 item 6 (bubble actions, Pinned bar, Thread header extras, chat actions menu, Thread header, Fan List header, Fan drawer, vault selection bar and manage panel, account picker, All-models chips (`IncludeModelsChips`), mass composer, Smart Messages page and create pop-up, avatar menu, template picker, Fan List filters and Fan List), `useOfRichAllowed` and its All-models callers (`MassMessageComposer`, `PostComposer`); setup (add-Creator wizard and modal, Creators table, Creator filter bar and `creatorRowFilter`, `EditCreatorModal`, `FanslyPasteSessionCard` and the Fansly row's relink entry in `AccountsTable`), Platform switch; a Fan List chip helper and the one mass-sender helper (`massSenders.ts` beside `MassMessageComposer`), each a pure `.ts`; the chatter roster `platform` field (Relay `chatters` flat roster DTO, `useAccounts`' chatter row mapping); the Relay-side Drift test; the verify-app seed's one Fansly Creator (behind `--fansly`, fixed ids, fixtures).
+- **Owns.** Platform table module (`app/lib/platform.ts`) and its new test; `app/hooks/useCan.ts` and its test; relay account type (`relayTypes`); nav (`app/lib/nav.ts`, its test), the Fansly Manager route and `NotBuiltYet` (deleted), assistant prepass; the gated read hooks `useChatPinned`, `useFanChatMedia`, `useChatFolders` (both exports), `useTemplates`, and `ChatSearch`'s read; the gated components of ticket 02 item 6 (bubble actions, Pinned bar, Thread header extras, chat actions menu, Thread header, Fan List header, Fan drawer, vault selection bar and manage panel, account picker, All-models chips (`IncludeModelsChips`), mass composer, Smart Messages page and create pop-up, avatar menu, template picker, Fan List filters and Fan List), `useOfRichAllowed` and its All-models callers (`MassMessageComposer`, `PostComposer`); setup (add-Creator wizard and modal, Creators table, Creator filter bar and `creatorRowFilter`, `EditCreatorModal`, `FanslyPasteSessionCard` and the Fansly row's relink entry in `AccountsTable`), Platform switch; a Fan List chip helper and the one mass-sender helper (`massSenders.ts` beside `MassMessageComposer`), each a pure `.ts`; the chatter roster `platform` field (Relay `chatters` flat roster DTO, `useAccounts`' chatter row mapping); the Relay-side Drift test; the verify-app seed's one Fansly Creator (behind `--fansly`, fixed ids, fixtures).
 - **Interfaces.** The Platform table module exports:
   ```ts
   export const CAPABILITIES = ["pin_message", "mark_unread", "restrict", "block", "chat_search", "chat_media",
@@ -59,6 +59,9 @@ Session scope: the chatter roster gains `platform` in this Phase (a one-field Re
   ] as const satisfies readonly { key: string; label: string; lacks: readonly Capability[] }[];
   export type Platform = (typeof PLATFORMS)[number]["key"];
   can(platform: Platform | null, cap: Capability): boolean       // null -> false
+  ```
+  The table module stays a leaf (data and pure functions, no React Query or context imports). The two hooks live in `app/hooks/useCan.ts`, beside `useOfRichAllowed`:
+  ```ts
   useAccountPlatform(accountId: string | null | undefined): Platform | null
   useCan(accountId: string | null | undefined, cap: Capability): boolean
   ```
@@ -94,8 +97,8 @@ Seams, highest first:
   1. Open a Thread on Nova Reyes. Desktop and phone screenshots, plus an ARIA snapshot showing no Pin, Mark unread, Restrict, Block, Search, Gallery, Pinned or tip/priority chips. Open the bubble menu, the chat actions menu, the avatar menu and the template picker, and snapshot each (no Pin, Restrict, Block, Special offers; Scripts listed). `reads --match` for `/chats/$FFAN/pinned`, `/chats/$FFAN/media`, `/chats/$FFAN/messages/search`, `/messages/templates`, `/chats/folders`: each 0.
   2. Vault pro on Nova Reyes: select one item, screenshot the selection bar and manage panel (no Remove). Open Growth > Smart Messages create and the Fan List New menu: screenshot (no Nova Reyes sender; no mass rows in Fansly mode, Post row present).
   3. Switch to OnlyFans, open an OnlyFans Creator's Thread, open the template picker and run an in-Thread search. Same controls present; `/pinned`, `/messages/templates`, `/messages/search` reads each above 0, which proves the probe sees them. The composer sender list in All-models shows the Aa toolbar.
-  4. `of-writes` count 0. `api /fansly-manager/home` status 404. Screenshot the Fansly sidebar.
-- **`can` / `useCan` / `useAccountPlatform`**: a vitest table in the Platform table module's new test. Rows cover:
+  4. `of-writes` holds no write but the Thread open's `mark-as-read` (every Messages Pro open posts it, OnlyFans too). `api /fansly-manager/home` status 404 after one warm-up request (`next dev`'s first compile of a route answers 200 for `notFound()`). Screenshot the Fansly sidebar.
+- **`can` / `useCan` / `useAccountPlatform`**: vitest tables in the Platform table module's new test (`can`, names, keys) and `app/hooks/useCan.test.tsx` (the hooks). Rows cover:
   - every Platform × Capability;
   - a `null` Platform;
   - a missing or unknown `platform`;
@@ -141,7 +144,8 @@ $D screenshot --path fansly-vault.png && $D screenshot --path fansly-new-menu.pn
 # manual: switch to OnlyFans, open an OnlyFans Creator's Thread, open the template picker, run an in-Thread search
 $D screenshot --path of-thread.png && $D screenshot --phone --path of-thread-phone.png
 for m in /pinned /messages/templates /messages/search; do [ "$(cnt "$m")" -gt 0 ] || { echo "probe blind: $m"; exit 1; }; done
-[ "$($D of-writes | venv/bin/python -c 'import json,sys; print(json.load(sys.stdin)["count"])')" -eq 0 ]
+[ "$($D of-writes --last 1000 | venv/bin/python -c 'import json,sys; print(sum(not w["path"].endswith("/mark-as-read") for w in json.load(sys.stdin)["writes"]))')" -eq 0 ]
+$D api /fansly-manager/home >/dev/null
 [ "$($D api /fansly-manager/home | venv/bin/python -c 'import json,sys; print(json.load(sys.stdin)["status"])')" -eq 404 ]
 $D down
 [ -z "$(git status --short app/tsconfig.json)" ]

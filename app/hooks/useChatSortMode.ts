@@ -1,26 +1,5 @@
 "use client";
 
-/**
- * useChatSortMode — persisted "how should the chat sidebar be ordered?"
- * toggle.
- *
- * Four states:
- *   • "recent"        — server order (last activity desc), shown as
- *                       Infloww's "Newest first" (default)
- *   • "spend"         — lifetime spend desc; rows with no spend drop to
- *                       bottom, ordered by last activity within ties
- *   • "spend-unread"  — three tiers (unread → owe-reply → idle), spend
- *                       desc within each
- *   • "hybrid"        — spend with tiered exponential decay (1h/2h/3h
- *                       half-life based on attention state); below a
- *                       $3 effective threshold, unread tiebreak kicks
- *                       in so fresh conversations don't drown
- *
- * Same custom-event + storage-event pattern as useBlurMode so sibling
- * tabs / windows stay in sync. Every choice is stored, the default's too, so
- * a later change of default never overrides a choice
- * (docs/spec/phase-02-fan-list-pane.md, Interfaces).
- */
 
 import { createStoredValue } from "@/lib/storageSync";
 
@@ -41,14 +20,7 @@ export const { read: readChatSortMode, use: useChatSortMode } = createStoredValu
   (v) => v,
 );
 
-/** Hybrid score: spend dollars weighted by an exponential decay against
- *  hours since the fan's last interaction. Half-life is tiered by chat
- *  state — chats that need our attention decay slower so they stay
- *  visible longer:
- *    • read + we-sent-last (idle):       1h half-life
- *    • read + fan-sent-last (owe reply): 2h half-life
- *    • unread:                           3h half-life
- *  Callers pass the appropriate half-life per row. */
+// Attention states decay slower so chats needing a reply stay visible longer.
 export const HALF_LIFE_IDLE = 1;
 export const HALF_LIFE_UNRESPONDED = 2;
 export const HALF_LIFE_UNREAD = 3;

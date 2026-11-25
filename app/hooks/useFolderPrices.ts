@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * useFolderPrices — an agency's price per vault folder (GET /admin/vault-ai/folder-prices): `{ref: cents}`, refs
- * `vf:<id>` / `of:<id>`. Full AI Chat's sell executor lists a priced folder's items at it. `setFolderPrice` writes
- * one (null clears) and refreshes the map. Owner scope: a folder-limited chatter's read 403s, so `data` stays
- * undefined and the rail offers no "Set price".
- */
 
 import { useQuery, type QueryClient } from "@tanstack/react-query";
 

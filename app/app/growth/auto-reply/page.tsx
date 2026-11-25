@@ -4,9 +4,6 @@ import AutoReplyPage from "@/components/growth/AutoReplyPage";
 
 export const metadata: Metadata = { title: "Auto-reply" };
 
-// My AI Chatter > Auto-reply (by URL: out of the sidebar since 11-15, still a Permission page; ours, like Auto Post and Auto Story). Backed by
-// the `autoreply` automation (service/automations/autoreply.py). The page
-// renders its own PageFrame (creator column, Learn, the Auto-reply switch).
 export default function Page() {
   return <AutoReplyPage />;
 }

@@ -1,13 +1,3 @@
-"""Vault Pro at 20k's break-it-once faults (scenarios/2026-11-01-vault-pro-20k.py): lib/faults.py merges
-`register(Fault)` into FAULTS. Every correctness check the scenario records is named here and the scenario
-imports it, so a target can never name a check that does not exist. The latency budgets are named in the scenario
-(budgets live in the scenario file) and no fault targets them; a fault never targets a check still KNOWN_RED in the
-scenario.
-
-Deviation (declared): `vault-items-page-overlap` swaps the route's endpoint (`APIRoute.dependant.call`, FastAPI
-internals), not a product module attribute: FastAPI keeps its own reference to `vault_ai_api.local_items`, and
-the paging (`.limit(limit + 1).offset(offset)`) is inline in it, with no module-level helper to patch.
-"""
 from __future__ import annotations
 
 PAGING = ("vault pro: every GET /admin/vault-ai/items walk (each filter, each Creator) pages every item exactly "
@@ -30,11 +20,6 @@ UI_HIDE = ("vault pro UI: the Duplicates modal shows the relay's sets, and its R
 
 
 def _items_page_overlap() -> None:
-    """GET /admin/vault-ai/items pages overlap: every page past the first starts one row early (offset - 1,
-    limit + 1), so each page repeats the previous page's last item. Nothing is lost and every filter still
-    returns its whole set; only the paging check (no id twice, full pages) can see it. The route is registered
-    before faults apply, so the patch swaps its endpoint (`APIRoute.dependant.call`, which FastAPI calls per
-    request) for a wrapper around the product's own `vault_ai_api.local_items`."""
     import server
 
     route = next(r for r in server.app.routes
@@ -50,8 +35,6 @@ def _items_page_overlap() -> None:
 
 
 def _dupes_ignore_strictness() -> None:
-    """vault_dupes.cluster ignores the strictness asked for: every scan clusters at the default (2), so 0, 4
-    and 6 answer 2's sets. `find_duplicates` looks `cluster` up on the module per call."""
     import vault_dupes
 
     real = vault_dupes.cluster
@@ -63,9 +46,6 @@ def _dupes_ignore_strictness() -> None:
 
 
 def _hide_threshold_or_default() -> None:
-    """POST /duplicates/hide reads its strictness as `int(raw or DEFAULT_THRESHOLD)` again, the pre-W23 line:
-    0 is falsy, so a hide at 0 re-clusters at 2 and hides a copy that is no duplicate at 0. GET /duplicates is
-    untouched. `hide_duplicates` looks `parse_threshold` up in vault_of_folders' globals per call."""
     import vault_of_folders
 
     def or_default(raw, default, _top):
@@ -76,11 +56,7 @@ def _hide_threshold_or_default() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run vault-pro-20k --break (the scenario's FAULT)
         "vault-items-page-overlap": Fault(_items_page_overlap, (PAGING,)),
-        # slop/run vault-pro-20k --break --fault=vault-dupes-ignores-strictness
-        # (the hide at 0 re-clusters through it too, so HIDE_STRICT0 goes red with DUPES)
         "vault-dupes-ignores-strictness": Fault(_dupes_ignore_strictness, (DUPES, HIDE_STRICT0)),
-        # slop/run vault-pro-20k --break --fault=vault-hide-threshold-or-default
         "vault-hide-threshold-or-default": Fault(_hide_threshold_or_default, (HIDE_STRICT0,)),
     }

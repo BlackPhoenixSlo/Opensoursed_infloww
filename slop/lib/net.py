@@ -1,35 +1,3 @@
-"""Named phone networks for a browser page, and a meter of what a screen costs on one.
-
-PROFILES (round trip, down / up; measured 2026-11-05: the AE client's iPhone in Tokyo saw 250 ms to the
-Düsseldorf host, Slovenia 25 ms):
-  si          25 ms, no bandwidth cap (the owner's own line, "feels instant")
-  jp          250 ms, no cap
-  jp-mobile   250 ms, 1.6 Mbit/s down / 750 kbit/s up (Lighthouse's slow 4G, as dashboard-load's slow4g)
-  jp-bad      400 ms, 1 Mbit/s down / 1 Mbit/s up (a guess at a congested cell; up = down, no measurement)
-
-Wire profiles (`"wire": True`, excluded from DEFAULT_PROFILES; their budgets live in slow-connections):
-  jp-lossy      250 ms, 1.6 Mbit/s down / 750 kbit/s up, 2 % loss per packet each way (a guess at the Tokyo
-                phone's line: its browser saw calls at p50 5 s, p95 67 s, worst 118 s, which no CDP profile shows)
-  jp-lossy-bad  400 ms, 1 / 1 Mbit/s, 5 % loss each way (a guess at a congested cell)
-
-`await emulate(cdp, profile)`: `Network.enable` + `Network.emulateNetworkConditions` on a page's CDP
-session (latency = rtt_ms; throughput in bytes/s; `cellular4g` when capped, else `wifi`). Keep the session
-open for the page's life: the conditions belong to it. CDP's latency is per request (each response's headers
-held `latency` ms): no TCP / TLS handshake RTTs and no TCP slow start, unlike lib/wan.py's DelayProxy (a fresh
-connection pays 3 RTTs there), which dashboard-load keeps. CDP's `packetLoss` applies only to WebRTC. A wire
-profile is handled by the scenario, which enables CDP events while lib/netloss.py shapes TCP.
-
-`Meter(cdp)`: every request the page sends, from CDP's Network events (`requestWillBeSent`, `responseReceived`,
-`loadingFinished` / `loadingFailed`; one clock: CDP's monotonic stamps moved onto the epoch by the first
-`wallTime`). `mark()` opens a window; `window()` lists the requests since it (path, method, status, bytes =
-`encodedDataLength` (0 from the HTTP cache), start / end ms from the mark, kind: html js css img api (/api/of/)
-relay sse beacon other); `await settled(page, key, ...)`: time-to-settled from the mark = the later of the key
-showing (a CSS selector, or a JS predicate `() => ...`) and the last network activity followed by `idle_ms` of none;
-not counted (listed in the window, not in requests / bytes / settled): the open SSE stream (`/events`) and the perf
-log's beacon (`/admin/perflog/ingest`: app/lib/perfLog.ts's 10 s flush timer, whatever the user does; measured
-landing 1.2 s after si's creators rows, 20261105T165728Z-...-7e07). A request sent before the mark is not the
-window's: settle (network quiet) before marking.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -57,7 +25,6 @@ DEFAULT_PROFILES = tuple(p for p in PROFILES if not is_wire(p))
 
 
 async def emulate(cdp, profile: str) -> dict:
-    """Throttle the page behind `cdp` to `profile`; returns the conditions sent."""
     p = PROFILES[profile]
     if is_wire(profile):
         raise ValueError(f"wire profile {profile} needs a shaped edge port")
@@ -92,12 +59,11 @@ def _kind(path: str, rtype: str) -> str:
 
 
 class Meter:
-    """Every request the page behind `cdp` sends (Network must be enabled on it: `emulate` does)."""
 
     def __init__(self, cdp):
         self.reqs: dict[str, dict] = {}
         self.order: list[str] = []
-        self._off: float | None = None  # epoch s - CDP monotonic s
+        self._off: float | None = None
         self.t0 = time.time()
         cdp.on("Network.requestWillBeSent", self._sent)
         cdp.on("Network.responseReceived", self._resp)
@@ -117,7 +83,6 @@ class Meter:
         rid = e["requestId"]
         if rid not in self.reqs:
             self.order.append(rid)
-        # The Creator a scoped call is for (app/lib/relay.ts sends it as X-Account-Id; None when unscoped).
         account = next((v for k, v in (e["request"].get("headers") or {}).items() if k.lower() == "x-account-id"), None)
         self.reqs[rid] = {"path": path, "method": e["request"]["method"], "kind": _kind(u.path, e.get("type", "")),
                           "start": self._wall(e["timestamp"]), "end": None, "resp": None, "status": None, "bytes": 0,
@@ -127,9 +92,9 @@ class Meter:
         r = self.reqs.get(e["requestId"])
         if r is not None:
             r["status"] = e["response"]["status"]
-            r["resp"] = self._wall(e["timestamp"])  # its headers: the first byte (end: the last)
+            r["resp"] = self._wall(e["timestamp"])
             r["cached"] = bool(e["response"].get("fromDiskCache") or e["response"].get("fromMemoryCache"))
-            if r["kind"] == "html":  # a document's caching (a signed-in page's HTML carries that user's answers)
+            if r["kind"] == "html":
                 r["cache_control"] = {k.lower(): v for k, v in e["response"].get("headers", {}).items()}.get("cache-control")
 
     def _done(self, e: dict) -> None:
@@ -146,7 +111,6 @@ class Meter:
         self.t0 = time.time()
 
     def window(self) -> list[dict]:
-        """The requests since the mark, in send order; ms relative to it."""
         out = []
         for rid in self.order:
             r = self.reqs[rid]
@@ -171,8 +135,6 @@ class Meter:
         return {k: {"n": v[0], "kb": round(v[1] / 1024, 1)} for k, v in sorted(by.items())}
 
     async def settled(self, page, key: str, idle_ms: int = 1500, timeout_ms: int = 120_000) -> dict:
-        """Wait until `key` shows and the network went `idle_ms` quiet (SSE and the beacon aside). Returns
-        settled_ms (None: timed out), key_ms, requests, bytes, by_kind, pending (paths still open at the end)."""
         js = key.lstrip().startswith(("(", "function", "async"))
         key_ms = None
         end = time.time() + timeout_ms / 1000

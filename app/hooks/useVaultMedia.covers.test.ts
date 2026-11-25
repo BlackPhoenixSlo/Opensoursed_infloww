@@ -1,4 +1,3 @@
-/** ["vault-lists"] is persisted to the browser: its folder covers must never be OF-signed urls. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const get = vi.hoisted(() => vi.fn());
@@ -6,6 +5,7 @@ vi.mock("@/lib/relay", () => ({ relay: { get } }));
 
 import { fetchAllVaultLists } from "./useVaultMedia";
 
+// ["vault-lists"] is persisted to the browser: its folder covers must never be OF-signed urls.
 const SIGNED = "https://cdn2.onlyfans.com/files/a/ab/abc/300x300_1.jpg?Policy=eyJ&Signature=xyz&Key-Pair-Id=K1";
 
 beforeEach(() => {

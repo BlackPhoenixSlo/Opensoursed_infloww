@@ -1,0 +1,182 @@
+{
+ "source": "synthetic, shaped from fansly/capture/RECIPES.md; no captured id, token, text, session or device",
+ "headers": {
+  "fansly-client-id": "900000000000000901",
+  "fansly-session-id": "900000000000000902",
+  "fansly-client-ts": "1767225600000",
+  "user-agent": "Mozilla/5.0 (synthetic fixture)",
+  "accept-language": "en-US,en;q=0.9"
+ },
+ "writes": [
+  {
+   "path": "/api/v1/message/typing",
+   "check": "6b4f33b8b0e57",
+   "body": {
+    "groupId": "900000000000000101"
+   },
+   "payload": {
+    "success": true
+   }
+  },
+  {
+   "path": "/api/v1/message",
+   "check": "1788f0cc91f388",
+   "body": {
+    "type": 1,
+    "attachments": [],
+    "likes": [],
+    "content": "synthetic hello",
+    "groupId": "900000000000000101",
+    "scheduledFor": 0,
+    "inReplyTo": null,
+    "createdAt": 1767225600.123
+   },
+   "payload": {
+    "success": true,
+    "response": {
+     "id": "900000000000000301",
+     "type": 1,
+     "groupId": "900000000000000101",
+     "senderId": "900000000000000001",
+     "content": "synthetic hello",
+     "attachments": [],
+     "createdAt": 1767225600
+    }
+   }
+  },
+  {
+   "path": "/api/v1/group",
+   "check": "1ff418fdb6a52a",
+   "body": {
+    "users": [
+     {
+      "userId": "900000000000000001",
+      "permissionFlags": 0
+     },
+     {
+      "userId": "900000000000000002",
+      "permissionFlags": 0
+     }
+    ],
+    "recipients": [],
+    "lastMessage": null,
+    "userSettings": null,
+    "type": 1
+   },
+   "payload": {
+    "success": true,
+    "response": {
+     "id": "900000000000000102",
+     "type": 1,
+     "users": [
+      {
+       "userId": "900000000000000001",
+       "permissionFlags": 65535
+      },
+      {
+       "userId": "900000000000000002",
+       "permissionFlags": 65535
+      }
+     ]
+    }
+   }
+  },
+  {
+   "path": "/api/v1/account/900000000000000002/followers",
+   "check": "1776e0bba1b392",
+   "body": null,
+   "payload": {
+    "success": true,
+    "response": {
+     "followerId": "900000000000000001",
+     "accountId": "900000000000000002",
+     "id": "900000000000000401",
+     "accountSortOrder": 0,
+     "followerSortOrder": 0
+    }
+   }
+  },
+  {
+   "path": "/api/v1/account/900000000000000002/followers/remove",
+   "check": "7055fa0ccdd5d",
+   "body": null,
+   "payload": {
+    "success": true,
+    "response": {
+     "followerId": "900000000000000001",
+     "accountId": "900000000000000002",
+     "id": "900000000000000401",
+     "createdAt": 1767225600
+    }
+   }
+  },
+  {
+   "path": "/api/v1/lists/commands",
+   "check": "152ed2bf59f1c8",
+   "body": {
+    "listCommands": [
+     {
+      "type": 1,
+      "listItem": {
+       "id": "900000000000000002",
+       "listId": "900000000000000201"
+      }
+     },
+     {
+      "type": 1,
+      "listItem": {
+       "id": "900000000000000003",
+       "listId": "900000000000000201"
+      }
+     }
+    ]
+   },
+   "payload": {
+    "success": true,
+    "response": [
+     {
+      "type": 1,
+      "listItem": {
+       "id": "900000000000000002",
+       "listId": "900000000000000201"
+      }
+     },
+     {
+      "type": 1,
+      "listItem": {
+       "id": "900000000000000003",
+       "listId": "900000000000000201"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "path": "/api/v1/lists/commands",
+   "check": "152ed2bf59f1c8",
+   "body": {
+    "listCommands": [
+     {
+      "type": 2,
+      "listId": "900000000000000201",
+      "itemIds": [
+       "900000000000000002"
+      ]
+     }
+    ]
+   },
+   "payload": {
+    "success": true,
+    "response": [
+     {
+      "type": 2,
+      "listId": "900000000000000201",
+      "itemIds": [
+       "900000000000000002"
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}

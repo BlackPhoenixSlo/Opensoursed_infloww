@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""SSE replay and account-state events (roadmap W2 2.5).
-
-  • Every pushed frame carries an `id:`; a reconnect with `Last-Event-ID`
-    gets what it missed, oldest first, then the live stream, no duplicates.
-  • Each account's ring is bounded: a reconnect from before what a ring still
-    holds gets `resync` (the browser refetches) plus what is left; another
-    Creator's overflow does not resync a tab that cannot see it. An id from
-    another relay process (or garbage) is a `resync` too, and so is a
-    subscriber queue that overflowed.
-  • A session only ever receives its own Creators' events, live and on
-    replay, and its own Agencies' Agency-wide events; `GET /events` builds
-    that from the session (403 for another Creator's scope, 401 signed out).
-  • `assignment_changed` ends the stream so the reconnect reads fresh grants,
-    and `sessions_revoked` ends a revoked sign-in's streams.
-  • The state events leave from where the state changes: on commit (never on
-    rollback), from another thread, account_health, proxies.save,
-    automation_executor._finalize_run (after the run's job is written), every
-    scheduled-send transition and its cancel route, and admin_delete_user.
-
-Run:  ./venv/bin/python service/tests/test_sse_replay.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -42,7 +21,7 @@ import events  # noqa: E402
 import proxies  # noqa: E402
 from db.engine import get_session  # noqa: E402
 
-A, B = "9101", "9102"            # the session's Creator, and one it is not granted
+A, B = "9101", "9102"
 OWNER, OTHER = "owner-1", "owner-2"
 SEEN = frozenset({A})
 
@@ -56,7 +35,6 @@ class _Req:
 
 
 def _parse(raw: bytes) -> dict:
-    """One SSE frame → its fields; a comment-only frame is {}."""
     out: dict = {}
     for line in raw.decode().split("\n"):
         if line and not line.startswith(":"):
@@ -83,8 +61,6 @@ def _mid(frame: dict) -> int:
 
 
 def _replayed(frame: dict) -> list[int]:
-    """The message ids a replay frame carries: replays go out as one `batch`
-    frame (events.sse_stream), whose id is its last member's."""
     if frame.get("event") != "batch":
         return [_mid(frame)]
     members = json.loads(frame["data"])
@@ -119,7 +95,6 @@ async def case_replay_after_reconnect():
     await gen.aclose()
     assert events.subscriber_count() == 0
 
-    # Missed while away: two of A's, one of a Creator the session isn't granted.
     for ev in (_msg(A, 2), _msg(B, 3), _msg(A, 4)):
         await events.broadcast(ev)
 
@@ -128,13 +103,11 @@ async def case_replay_after_reconnect():
     assert got[0] == {}
     assert _replayed(got[1]) == [2, 4], got
     assert got[2] == {"id": got[1]["id"]}, "the head marker names the last event replayed"
-    # Live again, nothing replayed twice.
     await events.broadcast(_msg(A, 5))
     (f5,) = await _frames(gen, 1)
     assert _mid(f5) == 5
     await gen.aclose()
 
-    # A fresh tab (no id) gets no replay.
     gen = _stream()
     assert [set(f) for f in await _frames(gen, 2)] == [set(), {"id"}]
     await gen.aclose()
@@ -157,19 +130,16 @@ async def case_ring_overflow_resyncs():
         assert _replayed(got[2]) == [12, 13, 14], "what the ring still holds is replayed"
         await gen.aclose()
 
-        # From inside what the ring still reaches: replay, no resync.
         twelve = json.loads(got[2]["data"])[0]["id"]
         gen = _stream(twelve)
         inside = await _frames(gen, 3)
         assert _replayed(inside[1]) == [13, 14] and set(inside[2]) == {"id"}, inside
         await gen.aclose()
 
-        # A's overflow is not the concern of a tab that only sees B.
         gen = _stream(head["id"], accounts=frozenset({B}))
         assert [set(f) for f in await _frames(gen, 2)] == [set(), {"id"}]
         await gen.aclose()
 
-        # An id from another relay process, or garbage: resync, nothing replayed.
         for stale in ("0.1", "not-an-id"):
             gen = _stream(stale)
             got = await _frames(gen, 3)
@@ -180,9 +150,6 @@ async def case_ring_overflow_resyncs():
 
 
 async def case_any_scope_replay_reaches_a_model_scoped_tab():
-    """A tab scoped to A whose clamp also holds B reconnects: the money/warm events of B it would have got live
-    (events_decide.ANY_SCOPE_TYPES) are replayed, B's other events are not; an evicted any-scope frame of B resyncs
-    it, B's evicted DMs alone do not (fetch-diet rwl2 F1)."""
     _reset()
     clamp = frozenset({A, B})
     old = events.ed.RING_MAX
@@ -201,7 +168,6 @@ async def case_any_scope_replay_reaches_a_model_scoped_tab():
         assert set(got[2]) == {"id"}, got
         await gen.aclose()
 
-        # B's ring drops only DMs: nothing this tab could see is lost, no resync.
         _reset()
         events.ed.RING_MAX = 3
         gen = _stream(accounts=clamp, scope=f"model:{A}")
@@ -213,7 +179,6 @@ async def case_any_scope_replay_reaches_a_model_scoped_tab():
         assert [set(f) for f in await _frames(gen, 2)] == [set(), {"id"}]
         await gen.aclose()
 
-        # B's ring drops a purchase: lost to this tab, so it resyncs.
         _reset()
         gen = _stream(accounts=clamp, scope=f"model:{A}")
         _, head = await _frames(gen, 2)
@@ -264,7 +229,6 @@ async def case_state_events_reach_only_granted_creators():
     ]
     await events.unsubscribe("all", q)
 
-    # A one-Creator scope gets only that Creator, but its Agency's events still.
     q = await events.subscribe(f"model:{B}", accounts=frozenset({A, B}), agencies=frozenset({OWNER}))
     events.publish_state("session_dead", account_id=A, dead=False, reason=None)
     events.publish_state("session_dead", account_id=B, dead=False, reason=None)
@@ -272,7 +236,6 @@ async def case_state_events_reach_only_granted_creators():
     assert _types(_drain(q)) == [("session_dead", B), ("permissions_changed", None)]
     await events.unsubscribe(f"model:{B}", q)
 
-    # Replay applies the same rule.
     gen = _stream()
     _, head = await _frames(gen, 2)
     await gen.aclose()
@@ -334,7 +297,7 @@ async def case_on_commit_and_threads():
     _reset()
     q = await events.subscribe("all", agencies=frozenset({OWNER}))
     async with get_session() as s:
-        await s.execute(text("SELECT 1"))   # a session that never began commits nothing
+        await s.execute(text("SELECT 1"))
         events.on_commit(s, "permissions_changed", agency=OWNER)
         assert _drain(q) == [], "nothing before the commit"
     assert _types(_drain(q)) == [("permissions_changed", None)]
@@ -347,7 +310,6 @@ async def case_on_commit_and_threads():
         pass
     assert _drain(q) == [], "a rolled-back change is not announced"
 
-    # From a threadpool route: handed to the loop, not run on the thread.
     t = threading.Thread(target=events.publish_state, args=("proxy_switched",),
                          kwargs={"account_id": A, "proxied": False})
     t.start()
@@ -372,8 +334,8 @@ async def case_emitted_where_state_changes():
     try:
         p = {"label": "p1", "scheme": "http", "host": "h", "port": 1, "assigned_account_ids": [A]}
         proxies.save({"proxies": [p]})
-        proxies.save({"proxies": [{**p, "verified_ip": "1.2.3.4"}]})   # a probe stamp: same egress
-        proxies.save({"proxies": [{**p, "port": 2}]})                  # endpoint edited in place
+        proxies.save({"proxies": [{**p, "verified_ip": "1.2.3.4"}]})
+        proxies.save({"proxies": [{**p, "port": 2}]})
         proxies.save({"proxies": [{**p, "assigned_account_ids": []}]})
     finally:
         proxies.REGISTRY_PATH = old_path
@@ -391,7 +353,6 @@ async def case_emitted_where_state_changes():
 
 
 async def _ensure_account() -> None:
-    """scheduled_jobs.account_id references accounts."""
     from db.models import Account
     async with get_session() as s:
         if await s.get(Account, A) is None:
@@ -404,9 +365,6 @@ def _job_status(job_id: int) -> str:
 
 
 async def case_run_finished_reads_the_written_job():
-    """rule_run_finished leaves after the run's job is written, and every
-    scheduled-send transition (queued, claimed, finished, parked) announces
-    itself: a refetch on either event never reads the job as running."""
     _reset()
     automation_registry.load_automation_plugins()
     reg = automation_registry._REGISTRY
@@ -447,7 +405,6 @@ async def case_run_finished_reads_the_written_job():
         await automation_executor.run_once(A, "scheduled_send")
         assert seen[-2:] == [("scheduled_send_changed", "pending"), ("rule_run_finished", "pending")], seen
 
-        # Another kind's job is not a scheduled send.
         seen.clear()
         await automation_executor.enqueue_job(A, "nudge_online_fire", payload={})
         assert seen == [], seen
@@ -477,7 +434,6 @@ async def case_cancel_route_announces():
         assert (await server.cancel_scheduled_send(_Req(), job_id))["cancelled"]
         (e,) = _drain(q)
         assert e["__account_id"] == A and e["scheduled_send_changed"] == {"job_id": job_id}, e
-        # Already cancelled: nothing changed, nothing sent.
         assert not (await server.cancel_scheduled_send(_Req(), job_id))["cancelled"]
         assert _drain(q) == []
     finally:
@@ -505,8 +461,6 @@ async def case_deleting_a_user_ends_its_agency_streams():
 
 
 async def case_revoking_a_sign_ins_sessions_ends_its_streams_only():
-    # Log out other sessions, 2FA on/off/reset, a password reset, Deactivate: a revoked cookie must not
-    # keep its open stream (account_security.revoke_sessions); the reconnect is refused.
     import server
     from account_security import revoke_sessions
     _reset()
@@ -521,7 +475,6 @@ async def case_revoking_a_sign_ins_sessions_ends_its_streams_only():
         await gen.__anext__()
     finally:
         chatters._request_chatter.reset(tok)
-    # The Agency's other sessions, and an owner whose id is the same string, keep theirs.
     other = await events.subscribe("all", accounts=SEEN, agencies=frozenset(
         {OWNER, events.sessions_audience("chatter", "c-other")}))
     owner = await events.subscribe("all", accounts=SEEN, agencies=frozenset(
@@ -545,10 +498,6 @@ async def case_revoking_a_sign_ins_sessions_ends_its_streams_only():
 
 
 async def case_sigterm_ends_open_streams_then_stops_the_relay():
-    # A relay stop must not wait out uvicorn's graceful timeout per open tab
-    # (each stream cancelled mid-await, one traceback apiece): SIGTERM closes
-    # every stream and stops the automation lane claiming new sends (none may
-    # start during uvicorn's graceful wait), then uvicorn's own handler runs.
     import signal
     import server
     import automation_executor as ax

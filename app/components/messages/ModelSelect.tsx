@@ -1,19 +1,11 @@
 "use client";
 
-/**
- * The single-model picker of the per-account post tabs (Posts, My feed, Top posts): one option per active model,
- * "No models" while there are none, and "" chosen reads as no model.
- */
 
 import { useEffect, useState } from "react";
 
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import type { AccountMeta } from "@/lib/relay";
 
-/**
- * The active models plus the picked one: null until the list loads, then the first model, then whatever the user
- * picks. A pick (default included) is a latched state, not derived, so it stays when that model leaves the list.
- */
 export function usePickedModel() {
   const accounts = useActiveAccounts();
   const [accountId, setAccountId] = useState<string | null>(null);

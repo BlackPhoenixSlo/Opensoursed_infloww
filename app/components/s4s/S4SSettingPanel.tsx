@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * S4S settings (Inventory §3.6; docs/spec/phase-03-share-for-share.md, UI), Infloww's `S4sSettingPage` (menu 55,
- * page-parity 15), for the creator picked on the rail: "Primary post" (its caption in the bordered box with the
- * "Primary" tag, or "Create post"; "Manage posts" opens the post list, up to 20, Create / Edit in a pop-up),
- * "Limit daily S4S" (1, 2 or 3, sending `daily_limit` only), "Discoverability settings" (saves on toggle).
- * Proposal (UI flow audit C38, owner review): Discoverability first, the Discover switch nested under Take part and
- * disabled while opted out; the limit saves on pick with a "Saved" line instead of its own Save button.
- * Ours, labelled: "Take part in Share for Share" (the opt-in ADR-0011's bounded directory needs; Infloww has none, a primary post is taking part), and "Profile shown to partners" (read only: the Creator's own OnlyFans name,
- * @username and avatar, which the Relay re-reads on every list). The post pop-up's "Add from Vault", and each post's
- * in Manage posts, pick up to 5 of the Creator's own vault items; Save stores them as vault references, and a
- * partner's slot reads them from this Creator's vault and uploads them to the partner's account (ADR-0015). A creator with posts always
- * has a Primary post (the Relay keeps it so), so "Create post" shows only for a creator with none.
- */
 
 import { useState } from "react";
 import { useQueryClient, type UseQueryResult } from "@tanstack/react-query";
@@ -40,16 +27,13 @@ const LIMIT_OPTIONS: IfOption[] = S4S_DAILY_LIMITS.map((n) => ({
 }));
 const HEAD = "text-[16px] font-semibold text-fg";
 const BOX = "rounded-lg border border-border";
-/** A row inside the Discoverability box. */
 const ROW_IN = "flex min-h-14 items-center justify-between gap-4 px-4 py-2 text-[14px] text-fg-dim";
 const OUTLINE = "border-accent text-accent";
 export const PARTNER_PROFILE_LINE = "From this creator's OnlyFans profile, read again each time this page opens.";
 const tooMany = (n: number) => `An S4S post carries at most ${S4S_MAX_MEDIA} media; you picked ${n}.`;
 
-/** One profile save; the reply replaces the cached profile, then the list reads again. */
 function useSaveProfile(accountId: string) {
   const qc = useQueryClient();
-  // One save's state: which key is in flight, the last one that landed, or the failure.
   const [st, setSt] = useState<{ busy: string | null; saved: string | null; error: string | null }>(
     { busy: null, saved: null, error: null });
   async function save(key: string, body: S4SProfileUpdate) {
@@ -91,7 +75,6 @@ function Settings({ profile, onManage }: { profile: S4SProfile; onManage: () => 
     <section aria-label={`S4S settings for ${name}`} className="max-w-[900px] p-6">
       {error && <p role="alert" className="mb-4 text-[14px] text-err">{error}</p>}
 
-      {/* Proposal (C38): the master switch first, Discover visibility nested under it (it means nothing opted out). */}
       <h2 className={HEAD}>Discoverability settings</h2>
       <div className={cn(BOX, "mt-4 divide-y divide-border")}>
         <div className={ROW_IN}>
@@ -135,7 +118,6 @@ function Settings({ profile, onManage }: { profile: S4SProfile; onManage: () => 
         <p className="text-[14px] text-fg-dim">
           Set the maximum S4S permitted <span className="text-[#ff7c71]">per day</span>. Changes do not affect S4S already scheduled.
         </p>
-        {/* Proposal (C38): saves on pick, as the switches do; no separate Save. */}
         <div className="mt-4 flex items-center gap-4">
           <IfSelect aria-label="Limit daily S4S" value={String(profile.daily_limit)} options={LIMIT_OPTIONS}
             disabled={busy === "limit"}
@@ -152,7 +134,6 @@ function Settings({ profile, onManage }: { profile: S4SProfile; onManage: () => 
   );
 }
 
-/** Ours: what partners see of the creator, read only: its OnlyFans name, @username and avatar. */
 function PartnerProfile({ profile }: { profile: S4SProfile }) {
   return (
     <>
@@ -171,7 +152,6 @@ function PartnerProfile({ profile }: { profile: S4SProfile }) {
   );
 }
 
-/** "Manage posts": the back header, then the post list with Create post; Create / Edit in a pop-up. */
 function ManagePosts({ profile, onBack }: { profile: S4SProfile; onBack: () => void }) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<PostDraft | null>(null);
@@ -279,10 +259,6 @@ function ManagePosts({ profile, onBack }: { profile: S4SProfile; onBack: () => v
 
 type PostDraft = { id: number | null; caption: string; media?: S4SPost["media"] };
 
-/** "Create post" / "Edit Post" at 520: the caption and its count, and up to 5 vault items from "Add from Vault". Save
- *  writes the caption, then the media when they were picked here, as references to this Creator's vault that a
- *  partner's slot reads at post time. While the picker is open it stands in for the pop-up (one dialog at a
- *  time, so Escape and Tab belong to the picker). */
 function PostModal({ accountId, post, onClose }: {
   accountId: string;
   post?: PostDraft;
@@ -290,9 +266,7 @@ function PostModal({ accountId, post, onClose }: {
 }) {
   const qc = useQueryClient();
   const [caption, setCaption] = useState(post?.caption ?? "");
-  // The post once it exists: a create whose media save failed retries as an edit of the post it made.
   const [postId, setPostId] = useState<number | null>(post?.id ?? null);
-  // null: the media stay as saved.
   const [picked, setPicked] = useState<VaultMedia[] | null>(null);
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);

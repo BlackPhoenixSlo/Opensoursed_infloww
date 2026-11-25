@@ -1,9 +1,3 @@
-"""Opt-in local request phase probe; SLOP_VAULT_ITEMS_TRACE=1 only. No service hooks.
-
-All spans are inclusive elapsed wall time, not CPU time. SQL includes driver/loop
-scheduling; execute includes pool, SQL and ORM work. Do not sum nested spans.
-Only synthetic vault-ai items requests are retained, in memory, until teardown.
-"""
 import contextvars
 import functools
 import os

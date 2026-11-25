@@ -15,9 +15,6 @@ import { GUARD_DEFAULT_H, ppvPrice, type Kind } from "./payloadRules";
 import { VariantsField } from "./VariantsField";
 import { cn } from "@/lib/utils";
 
-/** A ready-made rule's ONE post (Auto Post) or message (Auto Mass), inline in the rule popup (ReadyMadeRuleEditor;
- *  its only clock is the rule's "Run every"). Controlled: the popup's reducer owns `row` (ruleEditorForm), this only
- *  dispatches premadeRows actions. A rule is single-account (`accountId`). */
 export function PremadeFields({
   kind,
   accountId,
@@ -25,37 +22,27 @@ export function PremadeFields({
   dispatch,
 }: {
   kind: Kind;
-  /** The rule's account (vault folders, images, custom lists). */
   accountId: string;
   row: Row;
   dispatch: (a: RowAction) => void;
 }) {
   const posts = kind === "auto_posts";
   const [listMode, setListMode] = useState<"include" | "exclude">("include");
-  // The one vault picker: which pool it fills.
   const [picker, setPicker] = useState<"media" | "previewMedia" | null>(null);
-  // Auto Mass "More settings" (the rarely used audience knobs): closed unless the saved message uses one.
   const [moreOpen, setMoreOpen] = useState(() => !posts && hasMoreAudience(r));
 
-  // Custom lists for the mass_premade audience picker (the house fan-lists read, shared cache). Only fetched for
-  // broadcasts.
   const { customLists, isLoading: listsLoading } = useFanLists(posts ? null : accountId);
 
-  // Vault folders for the folder pool (same hook as AutoStoriesTab).
-  // Only folders WITH photos — posts/mass attach photos.
   const foldersQ = useVaultListsRevalidated(accountId);
   const photoFolders = useMemo(
     () => (foldersQ.data?.list ?? []).filter((f) => (f.photosCount ?? 0) > 0),
     [foldersQ.data],
   );
 
-  // Shorthand for the ~20 per-field inputs below.
   function patchRow(patch: Partial<Row>) {
     dispatch({ type: "patch", patch });
   }
 
-  /** A folder-pool select: "None" always clears it, even with no folders fetched; a saved folder that is gone
-   *  (deleted or emptied) stays listed so the rule shows it and can drop it. */
   const folderSelect = (id: string, value: string, onChange: (v: string) => void) => (
     <IfSelect
       id={id}
@@ -75,7 +62,6 @@ export function PremadeFields({
 
   return (
     <div className="space-y-4">
-      {/* Text variant POOL — a random one is sent each fire. */}
       <VariantsField
         id={`pm-${kind}-text`}
         label={posts ? "Caption" : "Message"}
@@ -85,8 +71,6 @@ export function PremadeFields({
         onChange={(texts) => patchRow({ texts })}
       />
 
-      {/* Image POOL — pre-picked vault media AND/OR a whole vault folder.
-       *  Both feed one pool; `media_count` is sampled from it per fire. */}
       <MediaPool
         idPrefix={`pm-${kind}`}
         folderSelect={(id) => folderSelect(id, r.folderId, (v) => patchRow({ folderId: v }))}
@@ -97,8 +81,6 @@ export function PremadeFields({
         onPick={() => setPicker("media")}
         onClear={() => patchRow({ media: [] })}
       />
-      {/* How many to attach per fire — sampled from the combined pool
-       *  (picked images ∪ folder). Shown once either source is set. */}
       {(r.media.length > 0 || r.folderId) && (
         <CountLine
           id={`pm-${kind}-media-count`}
@@ -113,9 +95,6 @@ export function PremadeFields({
       )}
 
       <div className="grid grid-cols-2 gap-4">
-        {/* PPV price — a priced post/broadcast is paywalled; OF needs at
-         *  least one image attached. Blank/0 = free. Both kinds support it
-         *  (auto_posts→create_post, mass_premade→send_mass_message). */}
         <Field id={`pm-${kind}-price`} label="Price (USD)" help={ppvPrice(r.price) > 0 && (
           <span className="flex items-center gap-1 text-warn">
             <Lock className="h-3 w-3" aria-hidden />PPV {priceLabel(r.price)} · needs an image
@@ -135,9 +114,6 @@ export function PremadeFields({
         )}
       </div>
 
-      {/* Free-preview pool — PAID auto_posts only. These images post as a
-       *  FREE teaser on the paywalled post (the backend adds them to the
-       *  attachment set so they're always a valid subset). */}
       {posts && Number(r.price) > 0 && (
         <div className="space-y-4 border-t border-border pt-4">
           <div>
@@ -169,9 +145,6 @@ export function PremadeFields({
           <h4 className="text-[14px] font-medium text-fg">Audience</h4>
           <div>
             <IfLabel>Send to</IfLabel>
-            {/* System audiences are include-only; Send to online only toggles the online_only payload flag (OF
-             *  `filters.online`). The backend would send it with no list too, but that OF shape is unverified, so
-             *  Save waits for a list (payloadRules `onlineWithoutList`, D5). */}
             <div className="flex flex-wrap gap-2" role="group" aria-label="Send to">
               {SYSTEM_AUDIENCES.map((b) => (
                 <AudienceChip
@@ -181,13 +154,13 @@ export function PremadeFields({
                   label={b.label}
                 />
               ))}
+              {/* OF `filters.online` shape unverified: Save waits for a list (payloadRules onlineWithoutList). */}
               <AudienceChip id={`pm-${kind}-online-only`} active={r.onlineOnly} label="Send to online only"
                 onClick={() => patchRow({ onlineOnly: !r.onlineOnly })} />
             </div>
             <IfHelp>Online only filters the fans picked here and below: only those online at send time get it.</IfHelp>
           </div>
 
-          {/* One multi-select picker, with Include / Exclude tabs both visible. */}
           <div>
             <div role="tablist" aria-label="Custom lists" className="mb-2 flex gap-2">
               {(["include", "exclude"] as const).map((mode) => {
@@ -216,11 +189,9 @@ export function PremadeFields({
             </div>
           </div>
 
-          {/* exclude_last_chat_hours: a fan we OR they messaged in the window is skipped (resolved server-side). */}
           <LastChatChips id={`pm-${kind}-last-chat`} hours={r.excludeLastChatHours}
             onChange={(v) => patchRow({ excludeLastChatHours: v })} />
 
-          {/* The other DB-sourced add/exclude knobs (resolved server-side), rarely used: behind a disclosure. */}
           <div>
             <button type="button" id={`pm-${kind}-more-toggle`} onClick={() => setMoreOpen((o) => !o)} aria-expanded={moreOpen}
               aria-controls={`pm-${kind}-more`}
@@ -230,7 +201,6 @@ export function PremadeFields({
             </button>
             {moreOpen && (
               <div id={`pm-${kind}-more`} className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {/* Default-on server-side (absent = GUARD_DEFAULT_H); 0 turns the guard off. */}
                 <NumField id={`pm-${kind}-replied`} label="Exclude I replied to"
                   help={`last N hours · blank = default ${GUARD_DEFAULT_H.replied}h · 0 = off`}
                   placeholder={String(GUARD_DEFAULT_H.replied)}
@@ -251,7 +221,6 @@ export function PremadeFields({
         </div>
       )}
 
-      {/* Mounted only while open: the popup renders these fields inline, so a closed picker costs nothing. */}
       {picker && (
         <VaultPicker
           open
@@ -269,7 +238,6 @@ export function PremadeFields({
   );
 }
 
-/** Folder pool + picked-image pool, side by side. */
 function MediaPool({ idPrefix, folderSelect, folderRefresh, picked, pickLabel, pickedLabel, onPick, onClear }: {
   idPrefix: string;
   folderSelect: (id: string) => ReactNode;
@@ -310,7 +278,6 @@ function AudienceChip({ id, active, label, onClick }: { id?: string; active: boo
   );
 }
 
-/** "Skip fans chatted with in last [Off|1h|3h|8h|24h]" — the one recent-chat guard shown up front. */
 function LastChatChips({ id, hours, onChange }: { id?: string; hours: string; onChange: (v: string) => void }) {
   const { value, options } = lastChatChips(hours);
   return (
@@ -324,9 +291,7 @@ function LastChatChips({ id, hours, onChange }: { id?: string; hours: string; on
   );
 }
 
-/** "Send [n] images at random per fire": how many of a pool go out each time. */
 function CountLine({ id, lead, value, onChange, tail }: {
-  /** A stable id for the input (the help bot's cursor target). */
   id?: string;
   lead: string;
   value: string;
@@ -343,9 +308,7 @@ function CountLine({ id, lead, value, onChange, tail }: {
   );
 }
 
-/** A labelled field with one help line; `children` gets the input's id. */
 function Field({ id: fixedId, label, help, children }: {
-  /** A stable id for the input (default: a generated one). */
   id?: string;
   label: string;
   help?: ReactNode;
@@ -362,7 +325,6 @@ function Field({ id: fixedId, label, help, children }: {
   );
 }
 
-/** A labelled numeric input; its `help` says what blank means. */
 function NumField({
   id, label, help, value, onChange, placeholder,
 }: {

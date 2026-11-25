@@ -1,9 +1,3 @@
-/**
- * useDataAge — the thin hook rows the pure seam cannot see
- * (docs/spec/watched-creator-refresher/phase-03-data-age-live-connection-mark.md, Testing Decisions): one clock for
- * the tab, re-renders only when what a badge shows changed, a hidden tab, an idle return, the kill switch, and no
- * request. The decisions themselves are components/chat/dataAge.test.ts's tables.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -16,12 +10,11 @@ import { setRelayOffset, TICK_MS } from "@/lib/ageClock";
 import type { Freshness } from "@/lib/creatorFreshness";
 import { eventBus } from "@/lib/events";
 
-const T = 1_800_000_000_000; // a TICK_MS multiple: the tab's clock and the Relay's agree unless skewed
+const T = 1_800_000_000_000;
 const S = 1_000;
 const MIN = 60 * S;
-const PRINCIPAL = "anon"; // no User or Chatter provider
+const PRINCIPAL = "anon";
 
-/** One Creator's snapshot on an accounts row: total confirmed `ago` ms before T, lease Cycle. */
 const fresh = (aid: string, ago: number, over: Partial<Freshness> = {}): Freshness => ({
   account_id: aid, boot: T - 60 * MIN, seq: 1, now: T, at: T - ago, cycle_s: 120, live: "up", live_since: T - 10 * MIN,
   values: { unread_total: { n: 2, at: T - ago } }, ...over,
@@ -35,7 +28,6 @@ const seed = (rows: { id: string; freshness?: Freshness | null }[]) =>
   dispatchCreatorFreshness(qc, PRINCIPAL, { type: "seeded", rows, receivedAt: Date.now() });
 const tick = (n = 1) => act(() => { vi.advanceTimersByTime(n * TICK_MS); });
 
-/** The chip's age over `aids`, its sources from the store as the Fan List takes them (re-read on a store change). */
 function Chip({ aids, log }: { aids: string[]; log: (BadgeAge | null)[] }) {
   const age = useUnreadBadgeAge(unreadBadgeSources(useCreatorFreshnessState(), aids), NO_DEAD);
   log.push(age);
@@ -87,9 +79,9 @@ describe("useDataAge", () => {
     const marks: (LiveMark | null)[] = [];
     mount(<><Chip aids={["a"]} log={a} /><Chip aids={["b"]} log={b} /><Mark id="a" log={marks} /></>);
     const [ra, rb, rm] = [a.length, b.length, marks.length];
-    tick(4); // a: 100 s → 160 s, still within 120 s + 40 s
+    tick(4);
     expect([a.length, b.length, marks.length]).toEqual([ra, rb, rm]);
-    tick(1); // a: 175 s, late
+    tick(1);
     expect(a.length).toBe(ra + 1);
     expect(a.at(-1)?.text).toBe("as of 2 min");
     expect([b.length, marks.length]).toEqual([rb, rm]);
@@ -101,7 +93,7 @@ describe("useDataAge", () => {
     const { container } = mount(<Chip aids={ids(10)} log={log} />);
     expect(container.textContent).toBe("as of 4 min|As of 4 min ago: 1 of 10 Creators not refreshed within its Cycle");
     const before = log.length;
-    tick(1); // c1: 165 s, late; c0: 4 min 15 s
+    tick(1);
     expect(log.length).toBe(before + 1);
     expect(container.textContent).toBe("as of 4 min|As of 4 min ago: 2 of 10 Creators not refreshed within its Cycle");
   });
@@ -114,7 +106,7 @@ describe("useDataAge", () => {
     const { container } = mount(<Chip aids={["a"]} log={log} />);
     expect(tickIntervals(spy)).toBe(0);
     act(() => { vi.advanceTimersByTime(5 * MIN); });
-    expect(container.textContent).toBe("fresh"); // nothing ticked while hidden
+    expect(container.textContent).toBe("fresh");
     setVisibility("visible");
     expect(container.textContent).toBe("as of 5 min|As of 5 min ago: not refreshed within its 2 min Cycle");
     expect(tickIntervals(spy)).toBe(1);
@@ -159,7 +151,7 @@ describe("useDataAge", () => {
     mount(<>{ids(50).map((id) => <Mark key={id} id={id} log={[]} />)}<Chip aids={ids(50)} log={[]} /></>);
     tick(10);
     act(() => {
-      setRelayOffset(2 * S); // what a ping does (lib/events), then its `fresh`
+      setRelayOffset(2 * S);
       dispatchCreatorFreshness(qc, PRINCIPAL, {
         type: "confirmed", fresh: Object.fromEntries(ids(50).map((id) => [id, Date.now()])), now: Date.now(),
         receivedAt: Date.now(),

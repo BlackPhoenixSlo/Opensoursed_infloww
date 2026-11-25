@@ -1,5 +1,3 @@
-/** useMarkChatRead x a chat-list read in flight: the read predates the mark, so it must not paint the dot back; OF
- *  refusing the write (the relay's 502) puts back the dot the row had. */
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
@@ -31,7 +29,6 @@ describe("useMarkChatRead", () => {
       structuralSharing: commitChatPages(client, KEY, shareChatPages),
     };
     await client.fetchInfiniteQuery(opts);
-    // A Refresh is out: OF answers after the mark, still from before it.
     answer = () => {};
     void client.refetchQueries({ queryKey: KEY });
     await waitFor(() => expect(client.getQueryState(KEY)?.fetchStatus).toBe("fetching"));
@@ -58,7 +55,6 @@ describe("useMarkChatRead", () => {
     const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
     renderHook(() => useMarkChatRead({ accountId: "acct-a", fanId: 7, markRead: "onOpen" }), { wrapper });
     const row = () => client.getQueryData<InfiniteData<Page>>(KEY)!.pages[0].rows[0];
-    // Read at once (count 2 → 0), then back unread on the refusal (count 0 → 1): not the untouched row.
     await waitFor(() => expect(row().unreadMessagesCount).toBe(1));
     expect(row().hasUnread).toBe(true);
     expect(relay.post).toHaveBeenCalledWith("/api/of/v2/chats/7/mark-as-read", undefined, { accountId: "acct-a" });

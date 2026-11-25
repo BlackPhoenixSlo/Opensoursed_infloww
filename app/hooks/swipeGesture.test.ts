@@ -1,7 +1,3 @@
-/**
- * swipeGesture: the release physics, and `swipeReducer`'s transitions as
- * tables: (actions from a state) -> (phase, effects).
- */
 import { describe, expect, it } from "vitest";
 
 import {
@@ -17,14 +13,14 @@ describe("swipeDirection", () => {
     expect(swipeDirection(SWIPE_MIN_PX - 1, 0, 1000)).toBeNull();
   });
   it("counts a short quick flick, never a tiny one", () => {
-    expect(swipeDirection(30, 0, 50)).toBe("right");          // 0.6 px/ms
-    expect(swipeDirection(30, 0, 200)).toBeNull();            // 0.15 px/ms
+    expect(swipeDirection(30, 0, 50)).toBe("right");
+    expect(swipeDirection(30, 0, 200)).toBeNull();
     expect(swipeDirection(SWIPE_FLICK_MIN_PX - 1, 0, 1)).toBeNull();
   });
   it("refuses a move more than 30 degrees off horizontal", () => {
-    expect(swipeDirection(100, 57, 300)).toBe("right");       // ~29.7°
-    expect(swipeDirection(100, 58, 300)).toBeNull();          // ~30.1°
-    expect(swipeDirection(10, 200, 300)).toBeNull();          // a scroll
+    expect(swipeDirection(100, 57, 300)).toBe("right");
+    expect(swipeDirection(100, 58, 300)).toBeNull();
+    expect(swipeDirection(10, 200, 300)).toBeNull();
   });
 });
 
@@ -41,7 +37,6 @@ describe("the release decision (iOS projection)", () => {
     expect(releaseDismisses(0.74 * W, 0, W)).toBe(false);
   });
   it("dismisses short of 75% when the projected release reaches it", () => {
-    // 130px at 0.35 px/ms (under the flick speed) coasts to 235 >= 225.
     expect(releaseDismisses(130, 0.35, W)).toBe(true);
     expect(releaseDismisses(100, 0.35, W)).toBe(false);
   });
@@ -53,12 +48,10 @@ describe("the release decision (iOS projection)", () => {
   it("a flick back always cancels, even past 75%", () => {
     expect(releaseDismisses(0.9 * W, -SWIPE_FLICK_PX_PER_MS, W)).toBe(false);
     expect(releaseDismisses(0.9 * W, -1, W)).toBe(false);
-    // On a wide panel (a tablet-width Thread) the projection alone would still dismiss: the flick rule cancels.
     expect(projectRelease(900, -SWIPE_FLICK_PX_PER_MS)).toBeGreaterThanOrEqual(0.75 * 1000);
     expect(releaseDismisses(900, -SWIPE_FLICK_PX_PER_MS, 1000)).toBe(false);
-    // A slow drift back from past 75% is judged by where it would coast.
-    expect(releaseDismisses(0.8 * W, -0.1, W)).toBe(false);   // 240 - 30 < 225
-    expect(releaseDismisses(0.85 * W, -0.05, W)).toBe(true);  // 255 - 15 >= 225
+    expect(releaseDismisses(0.8 * W, -0.1, W)).toBe(false);
+    expect(releaseDismisses(0.85 * W, -0.05, W)).toBe(true);
   });
   it("honours a custom dismissAt", () => {
     expect(releaseDismisses(0.5 * W, 0, W, 0.5)).toBe(true);
@@ -80,7 +73,7 @@ describe("rubberBand", () => {
 describe("releaseVelocity", () => {
   it("reads the last 100ms only, and 0 for a finger that held still", () => {
     const s = [{ x: 0, t: 0 }, { x: 10, t: 100 }, { x: 60, t: 150 }, { x: 110, t: 200 }];
-    expect(releaseVelocity(s, 200)).toBeCloseTo(1);   // 10 -> 110 over 100ms
+    expect(releaseVelocity(s, 200)).toBeCloseTo(1);
     expect(releaseVelocity(s, 400)).toBe(0);
   });
 });
@@ -133,14 +126,13 @@ describe("backdropOpacity", () => {
     expect(backdropOpacity(0, 300, none)).toBe(1);
     expect(backdropOpacity(150, 300, none)).toBeCloseTo(0.5);
     expect(backdropOpacity(300, 300, none)).toBe(0);
-    const caught = { p: 100, o: 0.2 }; // mid slide-in: the backdrop lags the panel
+    const caught = { p: 100, o: 0.2 };
     expect(backdropOpacity(100, 300, caught)).toBeCloseTo(0.2);
     expect(backdropOpacity(50, 300, caught)).toBeCloseTo(0.6);
     expect(backdropOpacity(300, 300, caught)).toBe(0);
   });
 });
 
-// --- swipeReducer -----------------------------------------------------------
 
 const W = 300;
 const start = (x: number, t = 0, more: Partial<Extract<GestureAction, { type: "start" }>> = {}): GestureAction =>
@@ -160,7 +152,6 @@ function play(s0: GestureState, actions: GestureAction[]) {
   }
   return { state, effects, types: effects.map((e) => e.type) };
 }
-/** A sheet dragged slowly from 290 to `x`, held still 300ms, let go. */
 const heldDrag = (x: number) => [start(290), move((290 + x) / 2, 100), move(x, 200), end(x, 500)];
 
 describe("swipeReducer: a sheet (dir left, 300px)", () => {
@@ -248,7 +239,6 @@ describe("swipeReducer: a sheet (dir left, 300px)", () => {
     const r = play(sheet(), [start(290, 0, { sheet: undefined }), move(200, 50), move(120, 100), end(120, 150)]);
     expect(r.types).toEqual(["fire"]);
     expect(r.state.phase).toBe("idle");
-    // A plain touch that turns vertical is a scroll: no sheet-only hold.
     const turned = play(sheet(), [start(290, 0, { sheet: undefined }), move(270, 10), move(268, 100, 200), end(120, 150)]);
     expect(turned.types).toEqual([]);
   });

@@ -1,22 +1,7 @@
-/**
- * MessageList — bubble-side stability (T0 / DA bugs 8 & 12).
- *
- * The "all-left-then-spread" flash came from deriving each bubble's side
- * from the async `/users/me` owner id, which is null on first paint. These
- * tests pin the two replacement signals:
- *   • side-from-direction (bug 12): a DB-seeded row carries an explicit
- *     `_side` off the authoritative `direction` column, so it aligns
- *     correctly even when `ownerUserId` is still null.
- *   • side-from-cache (bug 8): a live OF row (no `_side`) aligns on the
- *     FIRST render when the owner id is supplied synchronously (in the app,
- *     ChatSurface hydrates it from the `of-owner:<acct>` localStorage cache).
- */
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 
-// The reply-strip harness renders the real Composer, so the relay is mocked by
-// URL (Phase 4's Seam 1 harness).
 vi.mock("@/lib/relay", async (orig) =>
   (await import("./composerTestHarness")).mockRelayModule(await orig()));
 
@@ -31,9 +16,6 @@ import { quoteFromMessage, type QuotedReply } from "@/components/chat/ReplyStrip
 import type { OFMessage } from "@/lib/relay";
 import type { FanId } from "@/lib/fanId";
 
-/** The bubble box's side-specific background: `bg-accent` (outgoing/right)
- *  vs the Fan's bubble, Infloww's grey inside Messages Pro and
- *  `--color-bg-elev-1` anywhere else (left). */
 const INCOMING = "bg-[var(--inf-bubble-in,var(--color-bg-elev-1))]";
 
 beforeEach(() => {
@@ -56,7 +38,6 @@ describe("MessageList bubble alignment", () => {
 
     const out = bubbleBox(container, 1);
     const inc = bubbleBox(container, 2);
-    // `_side` drives it — no id comparison, no dependence on ownerUserId.
     expect(out.className).toContain("bg-accent");
     expect(out.className).not.toContain(INCOMING);
     expect(inc.className).toContain(INCOMING);
@@ -64,13 +45,11 @@ describe("MessageList bubble alignment", () => {
   });
 
   it("side-from-cache: a live row (no _side) aligns right on the FIRST render when the owner id is synchronous", () => {
-    // ChatSurface persists the resolved /users/me id here and re-reads it
-    // synchronously on the next mount. Simulate that warm cache.
     window.localStorage.setItem("of-owner:acct1", "555");
     const ownerUserId = Number(window.localStorage.getItem("of-owner:acct1"));
 
     const messages = [
-      msg({ id: 10, text: "live outbound", fromUser: { id: 555 } }), // live OF row, no _side
+      msg({ id: 10, text: "live outbound", fromUser: { id: 555 } }),
       msg({ id: 11, text: "live inbound", fromUser: { id: 42 } }),
     ];
 
@@ -78,8 +57,6 @@ describe("MessageList bubble alignment", () => {
       <MessageList {...baseProps} messages={messages} ownerUserId={ownerUserId} />,
     );
 
-    // No waitFor: a synchronous owner id means the very first paint is
-    // already correctly sided (the whole point of the cache).
     expect(bubbleBox(container, 10).className).toContain("bg-accent");
     expect(bubbleBox(container, 11).className).toContain(INCOMING);
   });
@@ -91,18 +68,12 @@ describe("MessageList bubble alignment", () => {
       <MessageList {...baseProps} messages={messages} ownerUserId={null} />,
     );
 
-    // This is exactly the case the synchronous cache fixes: with no owner
-    // id and no _side there is nothing to align against, so it falls left.
     expect(bubbleBox(container, 20).className).toContain(INCOMING);
   });
 });
 
-// The PPV status line reads paid on EITHER OF's `isOpened` OR our ledger's
-// `isPaid`. is_paid lands minutes before OF's isOpened echoes on a fresh
-// fetch, so a purchased PPV must not linger "not paid" on a cached bubble.
 describe("MessageList PPV unlock (isOpened || isPaid)", () => {
   function ppv(over: Partial<SeedMsg>): OFMessage {
-    // Inbound, as a Fan's PPV: the status line and the 🔒 tile render.
     return msg({ id: 30, text: "", price: 29.99, _side: "left",
       fromUser: { id: 42 }, ...over });
   }
@@ -131,15 +102,10 @@ describe("MessageList PPV unlock (isOpened || isPaid)", () => {
   });
 });
 
-// The Creator's side never shows the Fan's "UNLOCK FOR $X" bar. The PPV card
-// ends in one status line instead, as the old Infloww overlay's `.ppv-mini`
-// did: title, media, then "$X.XX · paid" / "$X.XX · not paid" inside the card
-// (the deleted Clone's messages.js:885-890, tag legacy-ui-final).
 describe("MessageList PPV price line in the card", () => {
   function sent(over: Partial<SeedMsg>): OFMessage {
     return msg({ id: 31, text: "", price: 35, _side: "right", fromUser: { id: 555 }, ...over });
   }
-  /** The bubble's column: the bubble box and its siblings (time row). */
   const column = (container: HTMLElement, id: number) => bubbleBox(container, id).parentElement!;
 
   it("an unpaid PPV we sent shows no unlock bar, and one '$35 · not paid' line inside its card", () => {
@@ -162,14 +128,6 @@ describe("MessageList PPV price line in the card", () => {
   });
 });
 
-/**
- * A failed refresh must not delete the conversation.
- *
- * A fan who deletes his OnlyFans account 404s on every poll, forever. The
- * error branch used to return a full-pane "Failed to load: upstream 404:
- * {"error":{"code":0,"message":"User not found"}}" — blanking a thread whose
- * cached copy was, at that point, the only one left anywhere.
- */
 describe("load errors never hide cached history", () => {
   const err = new Error('upstream 404: {"error":{"code":0,"message":"User not found"}}');
 
@@ -198,10 +156,8 @@ describe("load errors never hide cached history", () => {
     );
     const notice = container.querySelector('[role="status"]');
     expect(notice).not.toBeNull();
-    // Plain-language, and it does NOT leak the raw upstream json at the operator.
     expect(notice!.textContent).toContain("no longer exists");
     expect(container.textContent).not.toContain('{"error"');
-    // `sticky`, never `absolute` — an absolute banner would cover message #1.
     expect(notice!.className).toContain("sticky");
   });
 
@@ -227,16 +183,7 @@ describe("load errors never hide cached history", () => {
   });
 });
 
-/**
- * A failed media send: OF names the offending attachment in
- * `payload.removeFromInputMediaIds`, `useSendMessage` parks it on the bubble as
- * `_failedMediaIds`, and the bubble has to point AT it. On 2026-08-16 the same
- * item was re-picked into three bundles because the footer only ever repeated
- * OF's sentence, which says "media" without saying which.
- */
 describe("MessageList refused-attachment marking", () => {
-  // jsdom has no IntersectionObserver and MediaTile's lazy path constructs one
-  // on mount — these are the only cases here that render tiles at all.
   class IOStub {
     observe() {}
     unobserve() {}
@@ -252,13 +199,6 @@ describe("MessageList refused-attachment marking", () => {
     vi.unstubAllGlobals();
   });
 
-  /** A failed send of `count` attachments, with the ids at `refusedIdx`
-   *  refused. Parameterised on purpose: the first version of these tests
-   *  hard-coded TWO tiles, which is under IMAGE_CAP=3, so `items.slice(0, cap)`
-   *  could never truncate and the assertions passed no matter what the render
-   *  cap did. The incident that produced the feature was a FOUR-media bundle —
-   *  the shape the parser test already encodes and the render test could not
-   *  express. */
   const failedSend = (count: number, refusedIdx: number[], over: Partial<SeedMsg> = {}): OFMessage => {
     const media = Array.from({ length: count }, (_, i) => ({
       id: 3000000000 + i,
@@ -298,20 +238,15 @@ describe("MessageList refused-attachment marking", () => {
   });
 
   it("marks a refused tile that sits PAST the 3-tile render cap", () => {
-    // The incident's own shape. Before the fix the row rendered 3 tiles + a
-    // "+1" pill, the footer claimed "remove 1 of 4", and nothing was marked.
     const { container } = renderWithProviders(
       <MessageList {...baseProps} messages={[failedSend(4, [3])]} ownerUserId={555} />,
     );
     expect(marks(container).length).toBe(1);
     expect(container.textContent).toContain("remove 1 of 4");
-    // Force-opened, so no tile is hidden behind a pill that carries no warning.
     expect(container.textContent).not.toContain("+1");
   });
 
   it("marks BOTH when OF names one visible and one hidden tile", () => {
-    // One mark beside a count of two is worse than none: it reads as a complete
-    // answer, so the operator drops that tile and fails identically on the other.
     const { container } = renderWithProviders(
       <MessageList {...baseProps} messages={[failedSend(4, [1, 3])]} ownerUserId={555} />,
     );
@@ -320,26 +255,16 @@ describe("MessageList refused-attachment marking", () => {
   });
 
   it("never claims a count it cannot point at", () => {
-    // OF naming an id this bubble does not hold (a fresh-claim upload whose
-    // vault id only exists server-side). The count is an intersection, so it
-    // stays silent rather than printing a number over an unmarked row.
     const stray = failedSend(2, [], { _failedMediaIds: [999999999] });
     const { container } = renderWithProviders(
       <MessageList {...baseProps} messages={[stray]} ownerUserId={555} />,
     );
     expect(marks(container).length).toBe(0);
     expect(container.textContent).not.toContain("remove");
-    // OF's own sentence still reaches the operator.
     expect(container.textContent).toContain("Something wrong with attached media");
   });
 
   it("marks a hidden refusal that arrives AFTER the bubble mounted", () => {
-    // THE LIVE ORDERING, which every other fixture here skips. `sendNow` calls
-    // appendLocal synchronously, so MediaStrip mounts on the PENDING bubble
-    // with no `_failedMediaIds`; `failLocal` then patches the same row in place
-    // — same id, same React key, same instance. A force-open read once at mount
-    // is therefore always read too early, and the feature silently does nothing
-    // on the only path that produces a refusal.
     const pending = failedSend(4, [], { _failed: false, _pending: true, _failedReason: undefined });
     const { container, rerender } = renderWithProviders(
       <MessageList {...baseProps} messages={[pending]} ownerUserId={555} />,
@@ -356,8 +281,6 @@ describe("MessageList refused-attachment marking", () => {
   });
 
   it("collapses again once a retry clears the failure", () => {
-    // The other direction: derived-once state would leave the row pinned open
-    // with the marks gone after `retry()` re-appends under the same tempId.
     const { container, rerender } = renderWithProviders(
       <MessageList {...baseProps} messages={[failedSend(4, [3])]} ownerUserId={555} />,
     );
@@ -370,15 +293,11 @@ describe("MessageList refused-attachment marking", () => {
   });
 
   it("a collapse taken BEFORE the failure cannot hide the mark", () => {
-    // The operator peeks at a big bundle and collapses it again while the POST
-    // is still in flight, then the failure lands. A stored click that outranked
-    // the refusal made this render zero marks under "remove 1 of 6" — the third
-    // variant of the same defect, re-entered through the operator's own hand.
     const pending = failedSend(6, [], { _failed: false, _pending: true, _failedReason: undefined });
     const { container, rerender } = renderWithProviders(
       <MessageList {...baseProps} messages={[pending]} ownerUserId={555} />,
     );
-    fireEvent.click(container.querySelector("button")!);            // "+3"
+    fireEvent.click(container.querySelector("button")!);
     const less = [...container.querySelectorAll("button")]
       .find((b) => b.textContent?.includes("show less"));
     if (less) fireEvent.click(less);
@@ -392,14 +311,9 @@ describe("MessageList refused-attachment marking", () => {
   });
 
   it("keeps a refused tile in the COLLAPSED set, and still collapses", () => {
-    // The guarantee that replaced three attempts at a force-open flag: the
-    // marked tile is in view because the collapsed slice includes it by
-    // membership, not because a boolean forced the row open. So the row still
-    // behaves like any other — "+N", "show less" — and no click can hide the mark.
     const { container } = renderWithProviders(
       <MessageList {...baseProps} messages={[failedSend(6, [5])]} ownerUserId={555} />,
     );
-    // 3 by position + the refused one pulled forward, 2 still behind the pill.
     expect(marks(container).length).toBe(1);
     expect(container.textContent).toContain("+2");
 
@@ -412,14 +326,11 @@ describe("MessageList refused-attachment marking", () => {
     expect(less).toBeTruthy();
 
     fireEvent.click(less);
-    // Collapsed again — and the mark survived the round trip.
     expect(container.textContent).toContain("+2");
     expect(marks(container).length).toBe(1);
   });
 
   it("collapses a huge bundle even when its last item is the refused one", () => {
-    // The case the 3-tile cap exists for. A force-open rendered all 40 with no
-    // control at all, on a bubble that cannot be retried away or dismissed.
     const { container } = renderWithProviders(
       <MessageList {...baseProps} messages={[failedSend(40, [39])]} ownerUserId={555} />,
     );
@@ -439,12 +350,6 @@ describe("MessageList refused-attachment marking", () => {
   });
 });
 
-/**
- * A landed co-performer tag. The bubble renders `releaseForms` — what OF
- * STORED — so an operator can tell a tag that stuck from one OF dropped. Until
- * 2026-08-17 the chat body sent its ids in `userTags`, which that endpoint
- * ignores, and nothing rendered the field: the send looked identical either way.
- */
 describe("MessageList release-form tags", () => {
   it("names the tagged co-performer on the bubble", () => {
     const { container } = renderWithProviders(
@@ -476,11 +381,6 @@ describe("MessageList release-form tags", () => {
   });
 });
 
-/**
- * Phase 3 ticket 98 (spec gap row L4, F28): our bubbles carry a glyph receipt
- * in the time row, ✓ "Delivered" or ✓✓ "Seen" by the Fan's read pointer, and
- * the Thread takes the newer of two read pointers.
- */
 describe("MessageList receipts and the read pointer", () => {
   it("shows ✓✓ named 'Seen' at or before the read pointer and ✓ named 'Delivered' after it", () => {
     const { container, getAllByRole, getByRole } = renderWithProviders(
@@ -506,7 +406,6 @@ describe("MessageList receipts and the read pointer", () => {
     expect(delivered.textContent).toBe("✓");
     expect(delivered.getAttribute("title")).toBe("Delivered");
     expect(timeRow(container, 52)!.contains(delivered)).toBe(true);
-    // Glyphs only: the words no longer show.
     expect(container.textContent).not.toMatch(/delivered|seen/i);
   });
 
@@ -520,12 +419,6 @@ describe("MessageList receipts and the read pointer", () => {
   });
 });
 
-/**
- * Phase 3 ticket 100 (spec gap row L10, stories 43 and 44): ↩ on a bubble
- * feeds `quoteFromMessage` into the real Composer's `quoted` prop, which shows
- * "Replying to: <quote>" with ✕ "Cancel reply"; ✕ clears it through
- * `onClearQuoted`, as the Thread wires them.
- */
 describe("MessageList reply strip, with the real Composer", () => {
   function ReplyHarness({ messages }: { messages: OFMessage[] }) {
     const [quoted, setQuoted] = useState<QuotedReply | null>(null);
@@ -561,19 +454,11 @@ describe("MessageList reply strip, with the real Composer", () => {
   });
 });
 
-/**
- * messages-pro-look-and-feel ticket 143 (Phase 4 spec, Gap rows T1-T3 and T8,
- * stories 1-17): the Bubble action row beside each bubble. The Fan's side has
- * Pin, Reply, Like and Translate; ours has Translate and a "More message
- * actions" menu. Hover or focus shows it from md up, always below md, and a
- * sending, failed or scheduled message has none.
- */
 describe("MessageList Bubble action row", () => {
   const handlers = () => ({
     onQuoteReply: vi.fn(), onToggleLike: vi.fn(), onTogglePin: vi.fn(), onUnsend: vi.fn(),
     onSaveAsScript: vi.fn(),
   });
-  /** A message's "Message actions" group: in its bubble line, beside the bubble's column. */
   function actionsOf(container: HTMLElement, id: number | string): HTMLElement | null {
     const line = bubbleBox(container, id).parentElement!.parentElement!;
     return within(line).queryByRole("group", { name: "Message actions" });
@@ -596,7 +481,6 @@ describe("MessageList Bubble action row", () => {
     );
     const row = actionsOf(container, 70)!;
     expect(names(row, "button")).toEqual(["Pin", "Reply", "Like", "Translate"]);
-    // Beside the bubble's column, not inside it (Gap row T1).
     expect(bubbleBox(container, 70).parentElement!.contains(row)).toBe(false);
     for (const b of within(row).getAllByRole("button")) expect(b.className).toContain(MP.messageList.action);
     const setRow = actionsOf(container, 72)!;
@@ -604,7 +488,6 @@ describe("MessageList Bubble action row", () => {
     expect(within(setRow).getByRole("button", { name: "Unpin" }).getAttribute("aria-pressed")).toBe("true");
     expect(within(setRow).getByRole("button", { name: "Unlike" }).getAttribute("aria-pressed")).toBe("true");
     expect(within(row).getByRole("button", { name: "Pin" }).getAttribute("aria-pressed")).toBe("false");
-    // Glyph colours (criterion 6): idle Like and Pin read the palette's glyph grey, a liked heart its red.
     expect(within(row).getByRole("button", { name: "Like" }).className).toContain("var(--inf-action");
     expect(within(row).getByRole("button", { name: "Pin" }).className).toContain("var(--inf-action");
     expect(within(setRow).getByRole("button", { name: "Unlike" }).className).toContain("var(--inf-liked");
@@ -614,7 +497,6 @@ describe("MessageList Bubble action row", () => {
     expect(h.onTogglePin).toHaveBeenCalledWith(plain);
     expect(h.onQuoteReply).toHaveBeenCalledWith(plain);
     expect(h.onToggleLike).toHaveBeenCalledWith(plain);
-    // Double-click on the bubble still likes (story 10).
     fireEvent.doubleClick(bubbleBox(container, 70));
     expect(h.onToggleLike).toHaveBeenCalledTimes(2);
     expect(relayPost).not.toHaveBeenCalled();
@@ -760,7 +642,6 @@ describe("MessageList Bubble action row", () => {
     expect(bubbleBox(container, 77).textContent).toContain("buenos días, amor");
     expect(bubbleBox(container, 77).textContent).not.toContain("good morning, love");
     expect(within(row).getByRole("button", { name: "Translate" })).toBeTruthy();
-    // Translated once: a third click is answered from the cache.
     fireEvent.click(within(row).getByRole("button", { name: "Translate" }));
     expect(bubbleBox(container, 77).textContent).toContain("good morning, love");
     expect(relayPost).toHaveBeenCalledTimes(1);
@@ -808,16 +689,11 @@ describe("MessageList Bubble action row", () => {
   });
 });
 
-/**
- * Ticket 144 (Phase 4 spec T4-T7, F5, F6): Infloww's Date dividers, a run's
- * avatar on its last bubble line only, and the Jump chip.
- */
 describe("MessageList Date dividers, run avatars and the Jump chip", () => {
   const at = (y: number, mo: number, d: number, h = 12, mi = 0, s = 0) => new Date(y, mo - 1, d, h, mi, s).toISOString();
   const NOW = new Date(2026, 9, 15, 12, 0);
   const line = (c: HTMLElement, id: number) => bubbleBox(c, id).parentElement!.parentElement!;
   const slot = (c: HTMLElement, id: number) => line(c, id).querySelector("[data-msg-avatar]");
-  /** Fan, Fan, Fan in one minute, then ours, ours in the next. */
   const RUNS = [101, 102, 103].map((id, i) => msg({ id, text: `fan ${id}`, fromUser: { id: 42 }, createdAt: at(2026, 6, 4, 9, 41, i) }))
     .concat([104, 105].map((id, i) => msg({ id, text: `ours ${id}`, fromUser: { id: 555 }, createdAt: at(2026, 6, 4, 9, 42, i) })));
 
@@ -865,7 +741,7 @@ describe("MessageList Date dividers, run avatars and the Jump chip", () => {
       ours(4, 1), ours(5, 2), ours(6, 3), ours(7, 4),
       ours(8, 5, { _pending: true }), ours(9, 6), ours(10, 7, { _failed: true }), ours(11, 8, { _isFutureScheduled: true }),
       msg({ id: 12, fromUser: { id: 42 }, createdAt: at(2026, 10, 16, 9, 42, 0) }),
-      msg({ id: 13, fromUser: { id: 42 }, createdAt: at(2026, 10, 17, 9, 42, 0) }), // the day alone splits 12 | 13
+      msg({ id: 13, fromUser: { id: 42 }, createdAt: at(2026, 10, 17, 9, 42, 0) }),
     ];
     const label = (sentBy: string | null, receipt: "delivered" | "seen" | null) => ({ sentBy, receipt });
     const labels = [label(null, null), label(null, null), label(null, null),
@@ -909,7 +785,6 @@ describe("MessageList Date dividers, run avatars and the Jump chip", () => {
   });
 
   it("with null URLs the plain circle and the person glyph render and no img does; the relay request list is the same with and without URLs", async () => {
-    // Our photo asks for the Fan's vault history, so the list is not empty.
     const media = msg({ id: 106, fromUser: { id: 555 }, createdAt: at(2026, 6, 4, 9, 50),
                         media: [{ id: 1, type: "photo", files: { thumb: { url: "https://cdn.test/p.jpg" } } }] });
     const requests = () => [...relayGet.mock.calls.map((c) => ["GET", c[0]]), ...relayPost.mock.calls.map((c) => ["POST", c[0], c[1]])];
@@ -947,10 +822,6 @@ describe("MessageList Date dividers, run avatars and the Jump chip", () => {
   });
 });
 
-/**
- * Roadmap W4 4.11: a "Message withdrawn" line where one of OUR unsent bubbles
- * stood, from the `unsent_at` our DB stamped (read off the attribution map).
- */
 describe("MessageList withdrawn-message lines", () => {
   const entry = (unsent_reason: string | null, unsent_at: string | null = "2026-06-04T12:05:00",
                  created_at: string | null = "2026-06-04T12:01:00") => ({
@@ -966,7 +837,7 @@ describe("MessageList withdrawn-message lines", () => {
     const attribution = {
       "101": entry("manual:chat"),
       "104": entry("automation:unsend_messages"),
-      "102": entry(null, null), // never unsent: no line
+      "102": entry(null, null),
     };
     const { container } = renderWithProviders(
       <MessageList {...baseProps} ownerUserId={555} messages={messages} attribution={attribution} />,
@@ -1016,13 +887,12 @@ describe("MessageList withdrawn-message lines", () => {
   });
 
   it("reads the server's zone-less created_at as UTC: near midnight in UTC+2 the line lands on the next local day", () => {
-    vi.stubEnv("TZ", "Europe/Berlin"); // CEST, UTC+2 in June
+    vi.stubEnv("TZ", "Europe/Berlin");
     try {
       const messages = [
-        msg({ id: 400, text: "late", fromUser: { id: 42 }, createdAt: "2026-06-04T21:30:00.000Z" }), // 23:30 Jun 4
-        msg({ id: 402, text: "after midnight", fromUser: { id: 42 }, createdAt: "2026-06-04T22:40:00.000Z" }), // 00:40 Jun 5
+        msg({ id: 400, text: "late", fromUser: { id: 42 }, createdAt: "2026-06-04T21:30:00.000Z" }),
+        msg({ id: 402, text: "after midnight", fromUser: { id: 42 }, createdAt: "2026-06-04T22:40:00.000Z" }),
       ];
-      // 22:30 UTC = 00:30 Jun 5 in Berlin; read as local time it would stay on Jun 4.
       const attribution = { "401": entry("manual:chat", "2026-06-04T22:35:00", "2026-06-04T22:30:00") };
       const { container } = renderWithProviders(
         <MessageList {...baseProps} ownerUserId={555} messages={messages} attribution={attribution} />,

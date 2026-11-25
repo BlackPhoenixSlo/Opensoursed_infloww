@@ -1,37 +1,3 @@
-"""The vault import's part of the slop relay (lib/relay.py loads it: `OF` joins `_OfflineOF`'s
-bases, `wire` runs at the end of its `_wire`).
-
-OnlyFans' side of a vault import (`POST /api/of/v2/vault/upload/batch` + `/append`, run by
-`vault_upload.start` on a worker thread) is faked only when a scenario writes
-`$DEMO_SHOTS_TMP/of-vault.json` (`{}` is enough); without it every call re-raises the
-client build's error as before.
-
-  upload_claim(path)            OF's dedupe -> S3 -> convert claim, one call: the bytes are read
-                                and recorded (name, size, sha256); a file OF already minted (same
-                                md5 + size) is a dedupe hit (`vault_id`), else a fresh claim.
-  create_post / get_post /      the carrier post, at OF's REST shape: the create mints one vault id
-  delete_post                   per claim on it (ready at once), get_post lists them, delete ends it.
-                                `materialize_to_vault` itself is the PRODUCT's
-                                (`OFClient.materialize_to_vault`, run on this object), so the carrier
-                                intent / id / delete hooks and the pacer gate run unchanged.
-  vault_media_lookup_hash       GET /vault/media/hash: the minted media for (md5, size), or None.
-  vault_media_by_id             GET /vault/media/{id}: the minted media's dict (photo / video).
-  add_media_to_vault_list       POST /vault/lists/{id}/media: recorded, answered {id, mediaIds}.
-  create_vault_list             POST /vault/lists: mints a list id (`made`: {id, name, account}), for a
-                                folder publish (POST /admin/vault-ai/folders/{id}/publish).
-  vault_media(list_id=<made>)   GET /vault/media?list=: a made list's members (every id added to it, in
-                                order), paged; any other vault_media call re-raises the build error.
-
-  GET /__slop/vault/fake  {claims, carriers, lists, minted}: what OnlyFans received, in order.
-
-Declared: the dedupe -> S3 -> convert pipeline (`upload_claim`, three OF hosts) is one in-process
-call, not its HTTP; the bytes reaching it are the staged file the relay's own route wrote.
-
-The vault spool (`VAULT_SPOOL_DIR`, default `service/vault_spool`) is pointed into the run's
-temp dir when unset, at import time (before relay_guarded imports the service), so a slop run
-never writes into the checkout.
-"""
-
 import hashlib
 import os
 import threading
@@ -46,9 +12,9 @@ VAULT_ID_BASE = 8_800_000_000
 LIST_ID_BASE = 6_600_000_000
 POST_ID_BASE = 7_700_000_000
 VIDEO = (".mp4", ".mov", ".m4v", ".webm", ".mkv")
-_lock = threading.Lock()  # vault_upload runs on a worker thread
+_lock = threading.Lock()
 _fake: dict = {"claims": [], "carriers": [], "lists": [], "minted": {}, "made": []}
-_by_key: dict[tuple, int] = {}   # (md5, size) -> vault id
+_by_key: dict[tuple, int] = {}
 _posts: dict[int, list[int]] = {}
 
 
@@ -58,8 +24,6 @@ def _on() -> bool:
 
 def _media(vid: int) -> dict:
     m = _fake["minted"][str(vid)]
-    # No `files`: the fake has no CDN, so the mirror row gets no thumb url (the grid draws no still) rather
-    # than one whose fetch goes through the offline client and fails.
     return {"id": vid, "type": m["type"], "isReady": True, "createdAt": m["at"], "hasError": False}
 
 
@@ -99,6 +63,7 @@ class OF:
         with _lock:
             pid = POST_ID_BASE + len(_fake["carriers"]) + 1
             ids = []
+            # no `files` on the minted media: the fake has no CDN, so no thumb url
             for c in media_files or []:
                 vid = VAULT_ID_BASE + len(_fake["minted"]) + 1
                 _fake["minted"][str(vid)] = {"name": c.get("name"), "type": c.get("type") or "photo", "at": at,
@@ -160,7 +125,7 @@ class OF:
             made = _on() and list_id is not None and any(m["id"] == int(list_id) for m in _fake["made"])
             ids = list(dict.fromkeys(m for c in _fake["lists"] if c["list_id"] == int(list_id or 0)
                                      for m in c["media_ids"])) if made else []
-        if not made:   # another plugin's vault read, else the build error (as before this method existed)
+        if not made:
             nxt = getattr(super(), "vault_media", None)
             if nxt is None:
                 raise self._err

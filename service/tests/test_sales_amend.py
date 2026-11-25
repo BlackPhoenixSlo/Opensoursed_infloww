@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""Sales amend (roadmap W6 6.5): "No one", the three-way assigned filter and the batch reassign.
-
-- "No one" (`employee_id: "no_one"`, the override `sales_attribution.NO_ONE`) credits a sale to nobody
-  whatever the Rules say: its Sales record reads rule `manual`, no Employee, "Assigned by" Owner, it is listed
-  as unassigned, and Employee reports (read from the rollups) move its revenue to Unattributed; clearing
-  (`null`) hands it back to the Rules.
-- `assigned=all|assigned|unassigned` on `GET /admin/stats/sales-records`.
-- `POST /admin/ingest/transactions/attribute` moves many sales at once, by `tx_ids` or by one Clock event's
-  sales (`clock_event_id`, the shares credited to its Employee inside its time on the Creator, pending sales
-  included), every sale or none, one `sales.reassign` action each; a Clock event's split sale (Shift schedule
-  shares) is left as it is and counted in `skipped_split`. The Master may batch any Agency's sales, to an
-  Employee of the sale's Agency only.
-
-The seam is the Relay over HTTP with the shared two-Agency fixture's session cookies, over transactions and
-messages seeded straight into the temp DB with fixed past timestamps, on Creators this file owns.
-
-Run: ./venv/bin/python service/tests/test_sales_amend.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -109,8 +91,6 @@ def _records(query: str, client=OWNER_A) -> dict:
 
 
 def _reports(aid: str) -> dict:
-    """Employee reports' revenue on one Creator by Employee (None is Unattributed), over the whole day, so read
-    from the rollups."""
     r = OWNER_A.get(f"/admin/stats/per-employee?from={DAY}&to={DAY}&by_account=true")
     assert r.status_code == 200, r.text
     return {e["employee_id"]: sub["revenue_cents"] for e in r.json()["employees"] for sub in e["per_account"]
@@ -128,7 +108,6 @@ E1, E2 = _employee("amend_emp_1"), _employee("amend_emp_2")
 E_B = _employee("amend_emp_b", owner="agency_b_owner")
 
 
-# ── "No one" and the three-way filter ───────────────────────────────────────────────────────────────────────
 
 C1 = _creator("3100001")
 C1_DAY = f"account_id={C1}&from={DAY}&to={DAY}"
@@ -159,7 +138,7 @@ def case_no_one_credits_nobody_until_cleared_and_moves_the_reports_revenue_to_un
     assert _reassigns(T_MSG)[-1] == {"actor": OWNER_ACTOR, "before": {"employee_id": None},
                                      "after": {"employee_id": 0}, "shown_before": {"employee_id": E1}}
 
-    _post(OWNER_A, ONE.format(T_MSG), {"employee_id": None})  # cleared: the message's sender again
+    _post(OWNER_A, ONE.format(T_MSG), {"employee_id": None})
     assert _override(T_MSG) is None
     assert _records(C1_DAY)[T_MSG] == ("converters", E1, "Auto"), _records(C1_DAY)
     assert _reports(C1) == {E1: 1000, None: 300, E2: 200}, _reports(C1)
@@ -172,7 +151,6 @@ def case_a_bad_employee_id_is_400_and_writes_nothing():
     assert _override(T_NOBODY) is None and not _reassigns(T_NOBODY)
 
 
-# ── The batch ───────────────────────────────────────────────────────────────────────────────────────────────
 
 C2 = _creator("3100002")
 C2_DAY = f"account_id={C2}&from={DAY}&to={DAY}"
@@ -228,7 +206,6 @@ def case_a_malformed_batch_is_400_and_a_chatter_403():
     assert [_override(tx) for tx in BATCH_TXS] == [None, None, None]
 
 
-# ── One shift's sales ───────────────────────────────────────────────────────────────────────────────────────
 
 C3 = _creator("3100003")
 C3_DAY = f"account_id={C3}&from={DAY}&to={DAY}"

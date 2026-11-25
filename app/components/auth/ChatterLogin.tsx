@@ -1,28 +1,5 @@
 "use client";
 
-/**
- * ChatterLogin: the /chatter-login page, the sign-in surface for the second
- * principal. AuthGate renders it bare (no app shell or "who's chatting"
- * picker around it), the way /login renders <Landing>.
- *
- * Two modes:
- *   • With `?token=...` (invite link from an owner) → register form.
- *     If a User is currently signed in on this browser we explicitly
- *     log them out FIRST, so the new chatter cookie isn't shadowed by
- *     the owner cookie (AuthGate gives User precedence — would leave
- *     the chatter "registered but invisible" otherwise).
- *   • Without a token → login form for returning chatters.
- *
- * On success router.replace("/") so the app shell mounts under the
- * fresh chatter principal.
- *
- * Wears the dark Inflowwww site look (`data-look="site"`, shared pieces in
- * components/auth/SiteLook.tsx): their employee-invite screen as we imagine
- * it, invite card + form left, a parody pitch and fake shift card right.
- *
- * Path is intentionally NOT /chatter — that would shadow the relay
- * rewrite (memory: feedback_next_page_relay_collision).
- */
 
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -38,7 +15,7 @@ import { BRAND_NAME, DESKTOP_PLATFORMS, DESKTOP_URL } from "@/lib/brand";
 import { errText } from "@/lib/errText";
 
 interface InvitePreview {
-  username: string;        // owner who issued the invite
+  username: string;
   expires_at: string;
   used: boolean;
 }
@@ -53,8 +30,6 @@ export default function ChatterLogin() {
   const isRegister = !!token;
   const inApp = useInDesktopApp();
 
-  // Peek at the invite (read-only — doesn't consume) so the user knows
-  // which owner is inviting them and that the link is still valid.
   const invitePreview = useQuery<InvitePreview | null>({
     queryKey: ["chatter", "invite-preview", token],
     queryFn: async () => {
@@ -78,9 +53,6 @@ export default function ChatterLogin() {
   const [showPw, setShowPw] = useState(false);
   const [challenge, setChallenge] = useState<TwoFactorChallenge | null>(null);
 
-  // Already signed in as a chatter? Bounce straight to the app.
-  // Owner signed in (with no token in URL) → also bounce: they probably
-  // just clicked an old bookmark and there's nothing to do here.
   useEffect(() => {
     if (chatter) router.replace("/");
     else if (user && !token) router.replace("/");
@@ -94,32 +66,19 @@ export default function ChatterLogin() {
     try {
       const u = username.trim().toLowerCase();
       if (isRegister) {
-        // Owner signed in on the same browser? Drop the User cookie
-        // first so AuthGate doesn't keep showing the owner's view after
-        // the chatter is created. Local-only clear — the chatter
-        // register call sets the chatter cookie a moment later.
+        // Clear the owner cookie first: AuthGate gives User precedence, which would hide the new chatter.
         if (user) clearUserLocally();
         await register(u, password, token, displayName.trim() || undefined);
       } else {
         await login(u, password);
       }
-      // Hard navigation, not router.replace: the chatter cookie was
-      // just set on the response and React Query has the new principal
-      // seeded. A full page load guarantees the new cookie ships on
-      // every subsequent fetch and re-mounts every provider from
-      // scratch — what the user used to have to do manually with
-      // "click refresh." A client-side transition was racing the
-      // observer notifications and occasionally landed on AuthGate
-      // while it still saw chatter=null.
+      // Hard navigation: a client-side transition raced the observer notifications and could land on AuthGate with chatter=null.
       window.location.replace("/");
     } catch (err) {
-      // 2FA on, or the Agency requires it (an invite sign-up sets it up here): the code step.
       if (err instanceof TwoFactorRequired) setChallenge(err.challenge);
       else setError(errText(err));
       setBusy(false);
     }
-    // Note: no finally clearing busy — on success we hard-navigate so
-    // the form unmounts before the next event loop tick anyway.
   }
 
   const invite = invitePreview.data;
@@ -148,7 +107,6 @@ export default function ChatterLogin() {
             </p>
           )}
 
-          {/* Invite context: who invited you, and is the link still good. */}
           {isRegister && invite && (
             inviteDead ? (
               <div className={DEAD_CARD}>
@@ -195,8 +153,6 @@ export default function ChatterLogin() {
             </div>
           )}
 
-          {/* Owner cookie warning: heading into the register submit will
-           *  sign them out of their owner account on this browser. */}
           {isRegister && user && (
             <p className="mt-6 rounded-2xl bg-white/[0.06] p-5 text-base text-white/70">
               You&apos;re currently signed in as <span className="text-white">@{user.username}</span>.
@@ -205,7 +161,6 @@ export default function ChatterLogin() {
             </p>
           )}
 
-          {/* `group`: the submit button stays brown while the form is :invalid (as on /login). */}
           {challenge ? (
             <div className="mt-8">
               <TwoFactorStep
@@ -308,7 +263,6 @@ export default function ChatterLogin() {
           </form>
           )}
 
-          {/* Returning chatter? Owner signing in? Pointer to the other surface. */}
           <p className="mt-8 text-base text-white/85">
             {isRegister ? (
               <>
@@ -322,8 +276,6 @@ export default function ChatterLogin() {
             )}
           </p>
 
-          {/* Desktop app. Gated behind sm: an installer is no use on a phone,
-              and offering one there is just a dead end. Not in the app itself. */}
           {!inApp && <a
             href={DESKTOP_URL}
             className="mt-8 hidden w-full items-center gap-4 rounded-2xl bg-white/[0.06] px-5 py-4 hover:bg-white/[0.09] focus-visible:outline-2 focus-visible:outline-accent sm:flex"
@@ -347,7 +299,6 @@ export default function ChatterLogin() {
             the scheduled messages, in one tab instead of eleven.
           </p>
 
-          {/* Fake shift card, the parody of their "your shift" widget. */}
           <div aria-label="Your shift (a joke)" role="group" className="mt-10 max-w-md rounded-2xl border border-white/10 bg-[#0c0c0c] p-6">
             <div className="flex items-center justify-between">
               <p className="text-lg font-medium">Your shift</p>

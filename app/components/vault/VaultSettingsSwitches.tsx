@@ -1,8 +1,5 @@
 "use client";
 
-/** Ours: the Creator's vault switches (`useVaultSettings`; "Sequences: solo only" on by default, the rest off). In
- *  the Extras drawer, for whoever may edit the folders (not a folder-limited chatter). Each is one server boolean,
- *  saved on the tap. */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 

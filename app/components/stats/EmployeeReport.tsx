@@ -1,6 +1,5 @@
 "use client";
 
-/** Compact Employee reports frame. URL tabs and report-zone ranges remain shared with Sales records. */
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -39,8 +38,6 @@ const PAGE = "/analytics/employee-reports";
 const SALES = "/analytics/sales-records";
 const HREF: Record<EmployeeTab, string> = { overview: PAGE, sales: SALES, performance: `${PAGE}?tab=performance` };
 const GRAN_TIP = "The granularities offered depend on the length of the selected time frame";
-/** The live v5.7.20 capture draws this bar's idle tabs and the range box's dates in element-emphasis-00 (#ffffff dark),
- *  brighter than the shared IfTabs' and DateRangePicker's T1, so here only they take it; hover stays M1. */
 const BRIGHT_BAR = cn(
   "[&_[role=tab][aria-selected=false]:not(:disabled)]:text-nav-fg-active",
   "[&_[role=tab][aria-selected=false]:not(:disabled):hover]:text-accent",
@@ -48,10 +45,9 @@ const BRIGHT_BAR = cn(
 );
 
 export default function EmployeeReport({ tab }: {
-  /** The tab the route opens on: Sales records' route passes "sales"; Employee reports' reads `?tab=`. */
   tab?: EmployeeTab;
 }) {
-  // useSearchParams suspends while the page prerenders: the boundary keeps that to this report.
+  // useSearchParams suspends during prerender; the boundary keeps that to this report.
   return <Suspense fallback={null}><EmployeeReportBody routeTab={tab ?? "overview"} /></Suspense>;
 }
 
@@ -61,14 +57,11 @@ function EmployeeReportBody({ routeTab }: { routeTab: EmployeeTab }) {
   const granted = useGrantedPages();
   const { preset, from, to, fromIso, toIso, priorFromIso, priorToIso, reportTz, ready, handleRange } = useReportRange();
   const tab: EmployeeTab = routeTab !== "overview" ? routeTab : search?.get("tab") === "performance" ? "performance" : "overview";
-  // Only the Employees holding the built-in Chatter role (`chatter_only` on the relay).
   const [chatterOnly, setChatterOnly] = useState(false);
   const days = fromIso && toIso ? rangeDays(fromIso, toIso) : 30;
   const [picked, setPicked] = useState<Gran>("day");
   const bucket = granShown(picked, days);
   const employeePage = deniedPage(PAGE, granted) == null;
-  // The fallback line rides on the Chatting statistics read the table and charts already make (one request), so it
-  // is read only on their tabs and for a role with their page: Sales records never sends it.
   const stats = useChattingStats(fromIso, toIso, chatterOnly, ready && employeePage && tab !== "sales");
 
   const tabs = [
@@ -100,7 +93,6 @@ function EmployeeReportBody({ routeTab }: { routeTab: EmployeeTab }) {
         {tab === "sales" ? (
           <SalesRecords />
         ) : !ready ? (
-          // The Applied settings (the report's time zone) are still in flight: the table's rows as placeholder bars.
           <TableSkeleton rows={6} className="mt-6" />
         ) : (
           <div className={styles.content}>
@@ -125,7 +117,6 @@ function EmployeeReportBody({ routeTab }: { routeTab: EmployeeTab }) {
   );
 }
 
-/** A chart tab's body, mounted once the range is ready so its reads never go out without one. */
 function Charts({ tab, from, to, bucket, chatterOnly }: {
   tab: "overview" | "performance"; from: string | null; to: string | null; bucket: Gran; chatterOnly: boolean;
 }) {
@@ -143,8 +134,6 @@ function SalesSettingsNotice({ fallback }: { fallback: string | null }) {
   );
 }
 
-/** Ours, not Infloww's, under one heading: the ingest note and "All messages…" on its line, then the per-Creator
- *  table, the attribution cards, coverage and ingest health. */
 function Extras({ from, to, chatterOnly }: {
   from: string | null; to: string | null; chatterOnly: boolean;
 }) {

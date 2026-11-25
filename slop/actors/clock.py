@@ -1,19 +1,3 @@
-"""Chatters on the Clock (service/clock_api.py, under `/admin/shifts`): each with its own login
-(POST /chatter/login: its own cookie, as actors/chatter.py's `Crowd` signs in; `Member` is reused for
-who it is), human-paced.
-
-  storm(members, k)  every chatter fires `k` concurrent `POST /admin/shifts/clock-in {account_id}` at
-                     once (a double-click, two tabs, a retrying client), all chatters together.
-  work(m)            the top bar's day: clock-status, then `beats` heartbeats (`POST
-                     /admin/shifts/clock-heartbeat`, what the app sends after real input) with think time,
-                     clock-out of the open event; then clock-in again, heartbeats, clock-out.
-
-The plan (how many beats, which Creator) comes from the seed, never from an answer, so a fault does not
-change the load: the event a clock-out names is the one clock-in or clock-status answered, and a chatter
-with none still sends its clock-out (`clock_event_id` 0: a 404).
-
-`writes`: every clock write answered, (kind, member username, status, clock_event_id or None).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -23,7 +7,7 @@ from slop.actors.chatter import Member
 
 class Clock:
     def __init__(self, rec, rng, *, think_s=(0.5, 2.0), beats=(2, 4), limits=8):
-        from slop.lib.client import Http  # lazy: actors stay importable without httpx
+        from slop.lib.client import Http
         self._Http = Http
         self.rec, self.rng, self.think_s, self.beats, self.limits = rec, rng, think_s, beats, limits
         self.writes: list[tuple[str, str, int, int | None]] = []
@@ -35,7 +19,6 @@ class Clock:
         return m
 
     async def login(self, m: Member) -> bool:
-        """actors/chatter.py `Crowd`'s sign-in: POST /chatter/login on a fresh client, its cookie kept."""
         m.http = self._Http(m.url, self.rec, limits=self.limits)
         try:
             r = await m.http.post("/chatter/login", json={"username": m.username, "password": m.password})

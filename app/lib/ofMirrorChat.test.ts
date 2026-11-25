@@ -18,7 +18,6 @@ import { applyData } from "./ofMirrorData";
 import { bindWrites, localIso, READ_ONLY, SELECT_MODEL, TOO_SOON } from "./ofMirrorWrites";
 import type { VaultMedia, VaultUploadResp } from "./relay";
 
-/** A committed messages capture (path under of-mirror/pages/messages). */
 const loadPage = (page: string) => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/messages/${page}.html`), "utf8");
   return document;
@@ -120,11 +119,9 @@ describe("applyScript: a Messages Pro script beside the chat", () => {
     expect([...editor(doc).querySelectorAll("p")].map((p) => p.textContent)).toEqual(["Hey", "there"]);
     expect(doc.getElementById("oi-chat-summary")!.textContent).toContain("Price: $12");
     expect(send(doc).disabled).toBe(false);
-    // ticket 33: the cursor in the composer, a Wired field (dead.py's focus outcome of Copy as draft)
     expect([doc.activeElement === editor(doc), editor(doc).hasAttribute("data-oi-wired")]).toEqual([true, true]);
   });
 
-  // A Scripts picker row (TemplatePicker fromLocal): `text` the plain lines, `displayText` the row as saved.
   const RICH = '<p><span class="m-editor-fc__blue-1"><strong>Hey</strong></span> babe</p><p><span class="m-editor-fs__l">Large line</span></p>';
   const DIRTY = '<p onclick="x()"><b class="evil">Hey</b> <span class="m-editor-fc__blue-1 evil" style="color:red">babe</span><script>alert(1)</script><img src=x onerror="a()"></p>';
   it.each([
@@ -143,7 +140,6 @@ describe("applyScript: a Messages Pro script beside the chat", () => {
     expect(loadChatDraft(storage, ACCOUNT, CHAT).html).toBe(html);
     expect([...editor(doc).querySelectorAll(":scope > p")].map((p) => p.textContent)).toEqual(lines);
     expect(editor(doc).querySelector("script, img, [onclick], [style], .evil")).toBeNull();
-    // OF's placeholder off, Send on: the editor is not empty.
     expect(editor(doc).getAttribute("data-is-empty")).toBe("false");
     expect(editor(doc).closest(".g-input__wrapper")?.classList.contains("m-empty")).toBe(false);
     expect(send(doc).disabled).toBe(false);
@@ -363,7 +359,6 @@ describe("bindChat: the dialogs", () => {
     const t62 = doc.querySelector<HTMLElement>("[data-oi-media='62']")!;
     t61.click();
     t62.click();
-    // Nothing is attached by a tick: the draft stays empty until Add.
     expect(loadChatDraft(storage, ACCOUNT, CHAT).media_files).toEqual([]);
     expect(t62.classList.contains("selected")).toBe(true);
     expect(bar()!.querySelector(".b-row-selected__text")!.textContent!.trim()).toBe("2 / 40 Selected");
@@ -384,7 +379,6 @@ describe("bindChat: the dialogs", () => {
     const h = handlers();
     const un = bindChat(doc, "messages/chat/state-vault", ctxOf(h, memoryStorage()));
     const search = doc.querySelector<HTMLButtonElement>(".modal.show .l-sidebar-column .g-page__header button[aria-label='Search']")!;
-    // The generator greys it ("Not available in Inflowwww yet"); the bind runs it.
     expect([search.hasAttribute("data-oi-wired"), search.disabled, search.title]).toEqual([true, false, ""]);
     search.click();
     const field = doc.querySelector<HTMLInputElement>("input[aria-label='Search folders']")!;
@@ -408,7 +402,6 @@ describe("bindChat: the dialogs", () => {
     expect(tile().classList.contains("selected")).toBe(false);
     expect(doc.querySelector("[data-oi-vault-bar]")).toBeNull();
     tile().click();
-    // Close is a link back to the chat: the chat's page binds, nothing attached, the ticks gone.
     expect(doc.querySelector(".modal.show .modal-footer a")!.getAttribute("href")).toBe("/of-manager/messages/chat");
     un();
     doc = loadPage("chat");
@@ -426,7 +419,7 @@ describe("bindChat: the dialogs", () => {
     expect(tabs.map((t) => t.classList.contains("m-current"))).toEqual([true, false, false, false, false]);
     tabs[3].click();
     expect(h.navigate).toHaveBeenCalledWith(`/of-manager/messages/chat/state-vault?list=7&type=video&chat=${CHAT}`);
-    tabs[0].click(); // the open tab
+    tabs[0].click();
     expect(h.navigate).toHaveBeenCalledTimes(1);
     doc.querySelector<HTMLElement>("button[aria-label='Search media']")!.click();
     expect(doc.querySelector("input[name='media_vault_search']")!.closest(".g-page__header")!.classList.contains("m-search-form-visible")).toBe(true);
@@ -436,7 +429,7 @@ describe("bindChat: the dialogs", () => {
     const doc = loadPage("chat/state-header-menu");
     const h = handlers();
     const go = vi.fn();
-    doc.addEventListener("click", go); // the frame's own link handler (bubble): never reached
+    doc.addEventListener("click", go);
     bindChat(doc, "messages/chat/state-header-menu", ctxOf(h, memoryStorage(), { fan: { name: "Fan A", muted: true } }));
     const items = [...doc.querySelectorAll<HTMLElement>(".of-state-menu .v-list-item")];
     const mute = items.find((i) => /mute notifications/i.test(i.textContent ?? ""))!;

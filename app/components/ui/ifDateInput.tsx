@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * `IfDateInput`: a drop-in for `<input type="date" | "time" | "datetime-local">` that opens an Infloww-themed pop-over
- * (antd's DatePicker / TimePicker: a month grid, hour and minute columns, Today / Now, OK) instead of the browser's.
- * The native input stays, so the value string, typing a date, `min`/`max`/`required`/`step`, form posts and tests'
- * `fireEvent.change` are as before; a pick sets its value and fires `input`, so the call site's `onChange` runs with a
- * real event. The browser's picker icon is hidden and the theme's drawn (`.if-date`, globals.css; `bare` drops it, for a
- * box that leads with its own). The pop-over renders beside the input, fixed to the viewport, not in a portal: a
- * pop-over holding the input (a date-range popover) still sees clicks in it as inside. Touch screens keep the phone's
- * own picker. Keyboard: F4 / Alt+Down are the browser's (its own picker, keyboard-operable); the themed pop-over is
- * pointer-only, its buttons untabbable, so it never opens on a key (W30 F4).
- */
 
 import {
   forwardRef, useCallback, useEffect, useLayoutEffect, useRef, useState, type InputHTMLAttributes,
@@ -24,7 +13,6 @@ import {
 } from "@/components/ui/ifDateValue";
 import { cn } from "@/lib/utils";
 
-/** Set the input's value as the browser would and fire `input` + `change`; React's value tracker sees the change. */
 function emit(el: HTMLInputElement, value: string) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(el, value);
   el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -35,12 +23,10 @@ const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const CELL = "h-7 rounded text-[13px] tabular-nums";
 
-/** `IfInput`'s field box (32px, `padding:0 11px`) on the input itself: a date field standing alone. */
 export const IF_DATE_FIELD = cn(IF_FIELD, "h-8 px-[11px] outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50");
 
 export const IfDateInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes<HTMLInputElement>, "type"> & {
   type: DateMode;
-  /** No calendar / clock icon at the right (the surrounding box draws one). */
   bare?: boolean;
 }>(({ type, bare, className, onClick, onKeyDown, onBlur, ...rest }, ref) => {
   const input = useRef<HTMLInputElement | null>(null);
@@ -61,7 +47,7 @@ export const IfDateInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes
 
   const openPanel = () => {
     if (open || rest.disabled || rest.readOnly) return;
-    if (window.matchMedia?.("(pointer: coarse)")?.matches) return; // the phone's own picker
+    if (window.matchMedia?.("(pointer: coarse)")?.matches) return;
     setMonth((splitValue(type, input.current?.value ?? value).day || today).slice(0, 7));
     setOpen(true);
   };
@@ -71,8 +57,6 @@ export const IfDateInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes
     if (close) setOpen(false);
   };
 
-  // Place the pop-over under the input (above when there is no room), inside the viewport; scroll the time columns
-  // to the picked hour and minute.
   useLayoutEffect(() => {
     const el = input.current, box = panel.current;
     if (!open || !el || !box) return;
@@ -81,8 +65,6 @@ export const IfDateInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes
     const top = below + box.offsetHeight > window.innerHeight - 8 && r.top - 4 - box.offsetHeight >= 8
       ? r.top - 4 - box.offsetHeight : below;
     const left = Math.max(8, Math.min(r.left, window.innerWidth - box.offsetWidth - 8));
-    // Still at 0,0: where it lands is the frame's offset (a transformed ancestor becomes the fixed box's frame). The
-    // pop-in scales from the top-left corner, so that corner is exact mid-animation too.
     const frame = box.getBoundingClientRect();
     box.style.top = `${top - frame.top}px`;
     box.style.left = `${left - frame.left}px`;
@@ -185,6 +167,7 @@ export const IfDateInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes
         onBlur={(e) => { onBlur?.(e); setOpen(false); }}
       />
       {open && (
+        // Not in a portal: a pop-over holding the input (a date-range popover) must still see clicks in it as inside.
         <div
           ref={panel}
           role="dialog"

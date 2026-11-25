@@ -1,21 +1,8 @@
 "use client";
 
-/**
- * registerImageSW — install the /sw-images.js Service Worker.
- *
- * Production-only: Turbopack's dev SW lifecycle is fragile and an
- * orphaned SW serving stale JS bundles is exactly the kind of stuck-tab
- * pain TRIAGE.txt step 4C warns about. In dev we want every fetch to
- * hit the relay so /admin/img-cache/stats reflects reality.
- *
- * The SW lives at /sw-images.js (public root) so its scope is the whole
- * origin — necessary to intercept /img and /img/by-hash from any path.
- * It also shows Web Push (public/sw-push.js, imported at its top).
- */
 
 const SW_URL = "/sw-images.js";
 
-/** Whether this build registers the SW at all (prod only); Web Push rides on it. */
 export function swEnabled(): boolean {
   return process.env.NODE_ENV === "production";
 }
@@ -25,9 +12,6 @@ export function registerImageSW(): void {
   if (!swEnabled()) return;
   if (!("serviceWorker" in navigator)) return;
 
-  // navigator.serviceWorker only works over HTTPS or localhost. Tailscale
-  // Funnel is HTTPS so production is fine. LAN HTTP would silently fail
-  // — log a warning so the browser console hints why caching is off.
   const proto = window.location.protocol;
   const host = window.location.hostname;
   const isLocalhost = host === "localhost" || host === "127.0.0.1";
@@ -39,11 +23,7 @@ export function registerImageSW(): void {
   navigator.serviceWorker
     .register(SW_URL, { scope: "/" })
     .then(async (reg) => {
-      // Force-update check so a freshly-deployed SW with a bug fix takes
-      // over the page without requiring the user to close every tab. The
-      // browser normally only re-checks the SW script on navigation; this
-      // makes us re-check on every page mount.
-      try { await reg.update(); } catch { /* non-fatal */ }
+      try { await reg.update(); } catch { }
     })
     .catch((err) => {
       console.warn("[sw] register failed", err);

@@ -1,97 +1,3 @@
-"""Sales attribution of TIPS and PPV (README.attribution.md): who Employee reports and Sales
-records credit when many chatters work the same fans and the fans pay, under Infloww's
-Converters rule: "Sale is attributed to the last Chatter who messaged the fan within X hours
-and Y minutes of the sale"; nobody messaged in that window -> nobody.
-
-World: `agency_inbox` (1 Agency; small 3 Creators x 50 fans, medium 10 x 500) plus `--users`
-chatters, each with its own login (seed/chatters: the real invite + register), each assigned 2
-Creators (k and k+1 mod C).
-
-Settings, through the real route (PUT /admin/settings/sales and /time-tracking, backdated to
-the epoch so they rule every sale): Converters for Messages and for Posts and tips, the
-Converters window 1 h (`attribution.converters_window_seconds` 3600), Time tracking off.
-
-Load: `--set episodes=` per Creator (SCALES `sales_attribution_episodes`), at most `--users` at once. An
-episode is one fan: 1-3 replies by the Creator's chatters (the real send route, each chatter
-one send at a time), then the fan pays, then half the time another reply ("thanks"):
-  - ledger_tip: a chat tip only OnlyFans' ledger has ("Tip from ...", no message);
-  - ws_tip: a tip frame through the pump (POST /__slop/of-ws-frame, serial per Creator);
-    its ledger twin is appended after the pump went quiet (the ledger lags the WebSocket);
-  - ppv_ws: a chatter sends a PPV (`price`), half the time another chatter replies, the fan
-    unlocks it (purchase frame);
-  - ppv_ledger: the same, the unlock only in the ledger ("Payment for message from ...").
-Each step waits THINK_MS first, so payments, replies after them and scans interleave.
-Meanwhile the ledger scan runs per Creator every TICK_S (POST /admin/ingest/transactions/
-{aid}/run) and the owner re-reads Employee reports and Sales records every READ_S.
-Specials (Creator 0, its first two chatters A and B, before the load): past touches written by
-SQL (seed/sales_touches) and one tip each: A 59 min / 61 min before the tip (the 1 h window
-+-60 s) and 3 h 29 min / 3 h 31 min (the 3 h 30 min window +-60 s); Automation as the only
-touch; A then Automation, A then a mass send by B, Automation then A (ledger tips); WS tips
-after A then Automation, and after A then B. Live (the real send route): A sends a PPV, B
-replies, the fan unlocks it (`ppv_a_then_b`).
-
-Expected credit (`expect`): every kind (message PPV, WS chat tip linked to the fan's own tip
-message, standalone ledger tip) -> the last HUMAN chatter's 1:1 send to the fan at or before
-the sale, within the window, else nobody; Automation (the sentinel Employee, `automation_kind`)
-and mass sends are never a touch; a PPV's sender is not credited for being its sender.
-
-Checks (credit read through the real report routes; no SQL):
-  per kind (TIP_LEDGER, TIP_WS, PPV), a new chatter's reply after the payment (TIP_AFTER), the 1 h
-  window's edges (WINDOW) and the automation/mass specials (AUTO), Employee report totals per
-  Employee == expected to the cent (TOTALS) and == Sales records summed (AGREE); then each
-  settings change, saved through the route and re-read: the window changed to 3 h 30 min
-  (WINDOW330: the saved value read back and every sale re-expected, the read path's per-sale
-  window), Exclude the 20% fee (same Employee, net amount), Message sender (SENDER: a linked
-  sale -> its message's sender, so a PPV -> its sender A though B chatted later and a WS tip ->
-  nobody; a ledger tip has no message and is Posts and tips, so it keeps the Converters read),
-  Shift schedule with Time tracking off (the product falls back to Converters, with the
-  fallback line), and a change saved effective now recredits nothing earlier; nothing dropped
-  (one sale per payment), every reply stamped with its chatter's Employee (STAMP), ledger
-  scans settled; the ledger write path (LEDGER, lib/ledger_faults.py): the product's
-  write_telemetry `ledger` write transactions (relay.log, after a forced flush) == its
-  `ingest_tx_page_written` lines (one per page with news), at least one, and fewer than the
-  `ingest_tx_page_fetched` pages with rows (the settle's second scan re-polls quietly: no write
-  lock); the relink sweep is labelled `ledger-relink` and not counted; every fan's
-  lifetime_spend_cents == its seeded spend + its revenue transactions summed (status not in
-  the writer's `_NON_REVENUE_STATUSES`; read-only SQL on the temp DB: no route serves that sum); budgets: WS tip frame -> owner /events p95, report route p95s, send route p95.
-  With UI: the Sales settings page shows the window as 1 h 0 min, saves 3 h 30 min, and
-  GET /admin/settings/sales reads 12600 (screenshots `trigger-sales-converters-window`,
-  `settled-sales-converters-window-saved`).
-
-Chargebacks phase (last, after every check above: disputes reverse sales those credited; `ledger_chargebacks.run_chargebacks`):
-OF's disputes list (`of-chargebacks.jsonl`, lib/attribution_relay.py, empty until then, so every load
-scan's poll reads none) against the real refresh walk (POST .../run is mode refresh, whose completed walk
-polls GET /payouts/chargebacks: transaction_chargebacks.poll_after_walk). Unused fans of Creators 1 and
-2: a1 reversed in the ledger (undo) and in the disputes; b disputed only, its sale aged out of OF's
-ledger window (latest n-1 rows); c an open dispute (payment.status done); d a dispute on a sale never
-ingested; e1/e2 one fan's two same-amount tips 1 s apart, both aged out of the ledger window, e2 disputed;
-then a re-poll. Checks CB_MONEY,
-CB_OPEN, CB_UNMATCHED, CB_REPOLL, CB_CALLS (lib/ledger_faults.py; statuses and lifetimes by read-only
-SQL, write counts from relay.log).
-
-Break-it-once: converters-first-chatter (the default; TIP_LEDGER, TIP_WS, PPV, TOTALS,
-WINDOW330 go red); `--fault=converters-window-ignored` (WINDOW330); `--fault=converters-
-counts-automation` (AUTO, TOTALS, WINDOW330); `--fault=chatter-send-unstamped` (STAMP, PPV,
-TIP_LEDGER, TIP_WS, TOTALS, WINDOW330, SENDER); `--fault=ledger-per-row-txns` and
-`--fault=ledger-delta-separate-txn` (LEDGER); `--fault=ledger-chargeback-already-ignored`
-(CB_MONEY, CB_REPOLL).
-
-Declared bypasses:
-  - OnlyFans' payouts ledger is a file (lib/attribution_relay.py, `of-ledger.jsonl`); the
-    scan runs only when POSTed (the tx-ingest supervisor is off under CHATTERLY_TEST_MODE).
-  - Past touches (hours ago, Automation, mass) are SQL rows in the product's shape: no
-    actor can send in the past, run an automation for a chosen fan, or reach OF's mass API.
-  - Chatters' mirror Employees are SQL rows (seed/sales_touches.employees) before any send, the
-    row the first send would create, so a fault on the send path cannot change the load.
-  - A WS tip's ledger twin is appended only after the pump is quiet, and WS-unlocked PPVs
-    have no ledger twin (separate fans from ledger PPVs): the product links a ledger tip to a
-    WS tip by fingerprint but never a ledger PPV to a WS unlock (`_ENABLE_PPV_FINGERPRINT`
-    False), so a twin would count twice; that is a product limit this run does not test.
-  - Chatters reach the relay directly (no Next proxy).
-Not provable here: a tip ingested BEFORE an outbound row whose createdAt precedes it (the
-fake OF stamps createdAt at answer time); tx_rollup's message-insert re-credit is covered by
-its unit tests only.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -113,35 +19,32 @@ from slop.lib.ledger_chargebacks import run_chargebacks, settle_scans
 from slop.seed import chatters as chatters_seed
 from slop.seed import sales_touches
 
-sys.path.append(str(Path(__file__).resolve().parents[2] / "service"))   # the writer's own pure module
+sys.path.append(str(Path(__file__).resolve().parents[2] / "service"))
 from transaction_ingest_decide import _NON_REVENUE_STATUSES  # noqa: E402
 
 PROFILE = "agency_inbox"
 UI = True
 FAULT = "converters-first-chatter"
-E2E_P95_MS = 500           # a WS tip frame handed to the relay -> on the owner's /events
-# The send route's budget is a STRESS budget: THINK_MS pacing offers ~100 sends/s at medium
-# --users=200 (measured 99/s), ~50x chatter-crowd's measured chatter (a send every 10-30 s),
-# which owns the realistic 750 ms gate; dense sends are what make the credit races likely.
+# Send route budget is a stress budget: ~99 sends/s at medium --users=200, ~50x chatter-crowd's realistic rate.
+E2E_P95_MS = 500
 P95_MS = {"GET /admin/stats/per-employee": 1000, "GET /admin/stats/sales-records": 1000,
           "POST /api/of/v2/chats/:id/messages": 1500}
-WINDOW_S = 3600             # the Converters window this run saves first (the product's default)
+WINDOW_S = 3600
 WINDOW_330_S = 3 * 3600 + 30 * 60
 TICK_S, READ_S = 1.0, 0.5
-THINK_MS = (50, 400)        # a chatter reads and types before each step (timing only, never the credit)
+THINK_MS = (50, 400)
 EPOCH = "1970-01-01T00:00:00Z"
-TIP_FRAME_BASE = 9_750_000_000_000   # between fan_dm's bands and sales_touches' 9.8e12
+TIP_FRAME_BASE = 9_750_000_000_000  # between fan_dm's bands and sales_touches' 9.8e12
 LEDGER_ID_BASE = 7_700_000_000
 KINDS = (("ledger_tip", 35), ("ws_tip", 25), ("ppv_ws", 20), ("ppv_ledger", 20))
 PPV_KINDS = ("ppv_ws", "ppv_ledger")
-LINKED_KINDS = ("ws_tip", *PPV_KINDS)   # the sale carries a message_id (a ledger tip has none)
+LINKED_KINDS = ("ws_tip", *PPV_KINDS)
 FALLBACK_LINE = "Shift schedule needs Time tracking on; credited by Converters."
-# Specials (Creator 0): name -> (touches as (minutes before the tip, who), how the fan pays).
 SPECIALS = {
-    "edge_in": ([(59, "A")], "ledger_tip"),        # 1 h - 60 s: A
-    "edge_out": ([(61, "A")], "ledger_tip"),       # 1 h + 60 s: nobody (A under 3 h 30 min)
-    "w330_in": ([(209, "A")], "ledger_tip"),       # 3 h 30 min - 60 s: nobody under 1 h, A under 3 h 30 min
-    "w330_out": ([(211, "A")], "ledger_tip"),      # 3 h 30 min + 60 s: nobody under both
+    "edge_in": ([(59, "A")], "ledger_tip"),
+    "edge_out": ([(61, "A")], "ledger_tip"),
+    "w330_in": ([(209, "A")], "ledger_tip"),
+    "w330_out": ([(211, "A")], "ledger_tip"),
     "auto_last": ([(30, "auto")], "ledger_tip"),
     "human_then_auto": ([(50, "A"), (20, "auto")], "ledger_tip"),
     "human_then_mass": ([(50, "A"), (20, "massB")], "ledger_tip"),
@@ -149,7 +52,7 @@ SPECIALS = {
     "ws_human_then_auto": ([(50, "A"), (20, "auto")], "ws_tip"),
     "ws_a_then_b": ([(50, "A"), (20, "B")], "ws_tip"),
 }
-LIVE_SPECIAL = "ppv_a_then_b"   # A sends a PPV, B replies, the fan unlocks it (the real routes)
+LIVE_SPECIAL = "ppv_a_then_b"
 WINDOW_SPECIALS = ("edge_in", "edge_out", "w330_in", "w330_out")
 AUTO_SPECIALS = ("auto_last", "human_then_auto", "human_then_mass", "auto_then_human", "ws_human_then_auto")
 
@@ -171,7 +74,6 @@ def _iso(dt: datetime) -> str:
 
 
 class Ledger:
-    """OnlyFans' payouts ledger as lib/attribution_relay.py reads it (one line per row)."""
 
     def __init__(self, path):
         self.path, self.n, self.per_aid, self.last = path, 0, Counter(), None
@@ -187,15 +89,11 @@ class Ledger:
         return cents - fee
 
     def put(self, aid: str, row: dict) -> None:
-        """A row as OF shows it now (a later line with the same id: OF's newer view, e.g. `undo`)."""
         with self.path.open("a") as f:
             f.write(json.dumps({"account_id": aid, "row": row}) + "\n")
 
 
 def expect(sale: dict, touches: list[dict], window_s: int) -> int | None:
-    """Converters: the last human chatter's 1:1 send to the fan at or before the sale, within
-    `window_s` (inclusive), else nobody. Automation and mass sends are never a touch; the send
-    order is (created_at, message_id), as the product's lookback orders it."""
     at, lo = sale["at"], sale["at"] - timedelta(seconds=window_s)
     xs = [t for t in touches if lo <= t["at"] <= at and not (t["auto"] or t["mass"])]
     return max(xs, key=lambda t: (t["at"], t["mid"]))["emp"] if xs else None
@@ -219,15 +117,15 @@ def _plan(w, creators: list[str], fans: dict, by_creator: dict, n_ep: int, taken
                 steps.append(("ppv", a))
                 others = [x for x in ch if x != a]
                 if others and rng.random() < 0.5:
-                    steps.append(("reply", rng.choice(others)))   # another chatter after the PPV
+                    steps.append(("reply", rng.choice(others)))
             elif kind == "ws_tip" and rng.random() < 0.5:
                 one = rng.choice(ch)
-                steps += [("reply", one)] * rng.randint(1, 3)      # one chatter: the sole-chatter credit
+                steps += [("reply", one)] * rng.randint(1, 3)
             else:
                 steps += [("reply", rng.choice(ch)) for _ in range(rng.randint(1, 3))]
             steps.append(("pay",))
             if rng.random() < 0.5:
-                steps.append(("reply", rng.choice(ch)))            # "thanks", after the payment
+                steps.append(("reply", rng.choice(ch)))
             eps.append({"aid": aid, "fan": f, "kind": kind, "steps": steps, "cents": rng.randint(300, 5000),
                         "think": [rng.randint(*THINK_MS) / 1000 for _ in steps]})
     rng.shuffle(eps)
@@ -263,7 +161,6 @@ async def run(ctx) -> None:
     await put("sales", sales_blob())
     await put("time-tracking", {"enabled": False})
 
-    # Chatters: own logins, 2 Creators each; their mirror Employees before any send.
     names = [f"attr-c{k:03d}" for k in range(ctx.users)]
     assign = [sorted({creators[k % C], creators[(k + 1) % C]}) for k in range(ctx.users)]
     recs = await chatters_seed.seed(w, owner, w.user_id, names, account_ids=assign)
@@ -283,7 +180,7 @@ async def run(ctx) -> None:
     frame_locks = {aid: asyncio.Lock() for aid in creators}
     ledger = Ledger(ctx.stack.tmp / "of-ledger.jsonl")
     ledger.path.write_text("")
-    (ctx.stack.tmp / "of-chargebacks.jsonl").write_text("")   # OF's disputes: none until the chargebacks phase
+    (ctx.stack.tmp / "of-chargebacks.jsonl").write_text("")
     pump = owner.share(limits=max(10, C))
     touches: dict[tuple, list[dict]] = defaultdict(list)
     sales: list[dict] = []
@@ -309,17 +206,17 @@ async def run(ctx) -> None:
                 sale.update(sender=e, ppv_id=int(r["id"]))
             if paid:
                 sale["after"] = True
-        await asyncio.sleep(0.003)
+        await asyncio.sleep(0.003)  # strictly after the previous createdAt (ms)
 
     async def pay(sale: dict, fan: dict) -> None:
         aid, cents, kind = sale["aid"], sale["cents"], sale["kind"]
-        await asyncio.sleep(0.003)  # strictly after the last reply's createdAt (ms)
+        await asyncio.sleep(0.003)  # strictly after the previous createdAt (ms)
         if kind in ("ledger_tip", "ppv_ledger"):
             sale["at"] = ledger_chargebacks.now()
             sale["net"] = ledger.add(aid, fan["id"], cents, sale["at"],
                                      "Tip from" if kind == "ledger_tip" else "Payment for message from")
         else:
-            async with frame_locks[aid]:   # the pump: one frame in flight per Creator
+            async with frame_locks[aid]:
                 if kind == "ws_tip":
                     mid = next(tip_ids)
                     fr = fan_dm.frame(mid, fan, "slop tip", tip_dollars=cents / 100)
@@ -333,9 +230,8 @@ async def run(ctx) -> None:
                 frames.append({"kind": kind, "message_id": mid, "status": r.status_code, "t0": t0})
             if kind == "ws_tip":
                 twins.append((aid, fan["id"], cents, sale["at"], sale))
-        await asyncio.sleep(0.003)  # a reply after the payment is strictly after it
+        await asyncio.sleep(0.003)  # strictly after the previous createdAt (ms)
 
-    # Specials: SQL touches in the past, then the tip (Creator 0, its first two chatters).
     c0 = creators[0]
     rng_s = w.rng("sales-attribution:specials")
     pool0 = list(fans[c0])
@@ -360,7 +256,6 @@ async def run(ctx) -> None:
                 "net": None, "special": name, "after": False}
         await pay(sale, f)
         sales.append(sale)
-    # Live: A sends a PPV, B replies, the fan unlocks it (Converters: B; Message sender: A).
     f = special_fans[LIVE_SPECIAL]
     sale = {"aid": c0, "fan": f["id"], "kind": "ppv_ws", "cents": 1000 + 111 * len(sales), "sender": None,
             "net": None, "special": LIVE_SPECIAL, "after": False, "ppv_id": None}
@@ -370,7 +265,6 @@ async def run(ctx) -> None:
         await pay(sale, f)
         sales.append(sale)
 
-    # Load: episodes, the ledger scan and the owner's report reads alongside.
     eps = _plan(w, creators, fans, by_creator, n_ep, {f["id"] for f in special_fans.values()})
     stop = asyncio.Event()
 
@@ -428,12 +322,10 @@ async def run(ctx) -> None:
     await asyncio.sleep(1.0)
     await sse.stop()
 
-    # The ledger catches up with the WebSocket: the WS tips' twins, then the last scans.
     for aid, fan, cents, at, sale in twins:
         sale["net"] = ledger.add(aid, fan, cents, at, "Tip in chat from")
     settled = await settle_scans(owner, creators)
 
-    # ---- Reads: the report routes, phase by phase -------------------------------------------
     async def records() -> list[dict]:
         out, before = [], None
         while True:
@@ -462,11 +354,6 @@ async def run(ctx) -> None:
         return (s["net"] if s["net"] is not None else s["cents"] * 8 // 10) if fee else s["cents"]
 
     def want_of(phase: str):
-        """The Employee each sale should credit in `phase`. converters / window330: `expect` with
-        that window. A setting's phase checks only that setting's change against the 1 h
-        Converters read (`base`): fee and shift_off (the product falls back to Converters) keep
-        it; sender credits a linked sale to its message's sender (a WS tip's message is the
-        fan's own: nobody) and leaves a ledger tip (no message: Posts and tips) on Converters."""
         if phase in ("converters", "window330"):
             window = WINDOW_S if phase == "converters" else WINDOW_330_S
             return lambda s: expect(s, touches[(s["aid"], s["fan"])], window)
@@ -525,7 +412,6 @@ async def run(ctx) -> None:
             ctx.check(name, res["mismatches"] == 0, **res)
         else:
             ctx.skip(name, "no sale of this kind in the run")
-    # A reply after the payment: its chatter, if it never touched the fan before, gets nothing.
     after_bad, after_n = [], 0
     for s in sales:
         tt = touches[(s["aid"], s["fan"])]
@@ -567,7 +453,6 @@ async def run(ctx) -> None:
               errors=settled["errors"], waited_s=settled["seconds"])
     await _ledger(ctx, w, creators)
 
-    # Every reply: one outbound row, stamped with its own chatter's Employee (thread read).
     async def thread(key):
         async with sem:
             return key, await manager.thread_messages(owner, key[0], key[1], limit=200)
@@ -585,7 +470,6 @@ async def run(ctx) -> None:
                               "got": [m.get("sent_by_employee_id") for m in rows_]})
     ctx.check(STAMP, not bad_stamp, replies=len(replies), wrong=len(bad_stamp), sample=bad_stamp[:5])
 
-    # The Converters window changed to 3 h 30 min, saved through the route and read back.
     await put("sales", sales_blob(window=WINDOW_330_S))
     saved = await saved_window()
     rows_w, (rep_w, _) = by_fan(await records()), await report()
@@ -596,7 +480,6 @@ async def run(ctx) -> None:
     specials_330 = {s["special"]: [(r["employee_id"], r["rule"]) for r in rows_w.get((s["aid"], s["fan"]), [])]
                     for s in sales if s["special"]}
 
-    # Exclude the 20% OnlyFans fee.
     await put("sales", sales_blob(fee=True))
     rows_fee, (rep_fee, _) = by_fan(await records()), await report()
     res = compare("fee", rows_fee, sales, fee=True)
@@ -604,7 +487,6 @@ async def run(ctx) -> None:
     ctx.check(FEE, res["mismatches"] == 0 and not diff(rep_fee, want_fee), **res,
               wrong_totals=diff(rep_fee, want_fee)[:6])
 
-    # Message sender.
     await put("sales", sales_blob(messages="sender"))
     rows_s, (rep_s, _) = by_fan(await records()), await report()
     res = compare("sender", rows_s, sales)
@@ -612,7 +494,6 @@ async def run(ctx) -> None:
     ctx.check(SENDER, res["mismatches"] == 0 and not diff(rep_s, want_s), **res,
               wrong_totals=diff(rep_s, want_s)[:6])
 
-    # Shift schedule, Time tracking off.
     await put("sales", sales_blob(messages="shift", posts_tips="shift"))
     rows_sh, (rep_sh, fb_sh) = by_fan(await records()), await report()
     res = compare("shift_off", rows_sh, sales)
@@ -621,13 +502,11 @@ async def run(ctx) -> None:
     ctx.check(SHIFT, res["mismatches"] == 0 and not diff(rep_sh, want_sh) and fb_sh == want_fb, **res,
               wrong_totals=diff(rep_sh, want_sh)[:6], fallback=fb_sh, want_fallback=want_fb)
 
-    # A change saved effective now: no earlier sale recredited.
     await put("sales", sales_blob())
     await put("sales", sales_blob(fee=True), effective_from=None)
     rep_v, _ = await report()
     ctx.check(VERSION, rep_v == rep1, wrong=diff(rep_v, rep1)[:6], fallback_before=fb1)
 
-    # Budgets.
     sent_at = {f["message_id"]: f["t0"] for f in frames if f["kind"] == "ws_tip" and f["status"] < 300}
     e2e = [sse.received_at[m] - t0 for m, t0 in sent_at.items() if m in sse.received_at]
     ctx.metric("e2e_ms", {"n": len(e2e), "of": len(sent_at),
@@ -661,11 +540,9 @@ async def run(ctx) -> None:
              "Converters (the report's fallback line); under Message sender a ledger-only tip has no message, "
              "so it is Posts and tips and keeps the Converters credit.")
 
-    # OF's disputes (transaction_chargebacks), last: they reverse sales the checks above credited.
     used = {(ep["aid"], ep["fan"]["id"]) for ep in eps} | {(c0, f["id"]) for f in special_fans.values()}
     await run_chargebacks(ctx, w, creators, ledger, used)
 
-    # The Sales settings page: the window's hours and minutes, saved as an owner saves (effective now).
     if ctx.app is None:
         ctx.skip(UI_SAVE, "--no-ui")
     else:
@@ -676,10 +553,6 @@ async def run(ctx) -> None:
 
 
 async def _ledger(ctx, w, creators: list[str]) -> None:
-    """LEDGER, after the scans settled: the `ledger` writer's write transactions against the
-    pages the product says it wrote, and against the pages that carried rows, as the product
-    logs them (relay.log, a write_telemetry line forced now); and each fan's lifetime spend
-    against its revenue transactions (read-only SQL)."""
     try:
         text = await relay_telemetry.flushed_log(ctx)
     except TimeoutError as e:

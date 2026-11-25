@@ -1,9 +1,6 @@
 import { CreatorRail, type CreatorPick } from "@/components/shell/CreatorRail";
 import { InflowwPageHeader } from "@/components/ui/infloww";
 
-/** Infloww's 48px page header, then the page body (`padding:16px`, full width like Infloww's pages), for routes that
- *  wrap one existing panel. `actions` (Learn, the primary) pass to the header; `creators` puts Smart lists' creator
- *  column left of the body (`CreatorRail`). */
 export function PageFrame({ title, extra, actions, creators, children }: {
   title: string;
   extra?: React.ReactNode;

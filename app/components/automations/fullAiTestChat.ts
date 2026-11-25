@@ -1,42 +1,8 @@
-/**
- * Full AI Chat's Test chat state (docs/spec/phase-03a-full-ai-writers-test-chat.md › App changes): two windows, L on
- * the saved checkpoint and R on the draft, each its own session of one `pair`. One composer (`text`, `edit`) sends his
- * Fan line to both (`send`); each side's answer (`turnResult`) is shown after its `wait_s` (`revealAt`, `reveal`) or at once with
- * skip-wait. A failed request keeps its Turn number for `retry`; a 409 reloads that side (`sessionLoaded`). Anything
- * for a `pair` that is no longer current (a late answer after `newChat`) is ignored. Pure: the hook
- * (`useFullAiTestChat`) does the requests and timers, the components only dispatch.
- *
- * L/R exist only in the page's code, never in requests or UI text; every request says `side: "checkpoint" | "draft"` (spec › `full_ai_test`).
- * Config (ticket 39): `loaded` takes GET /admin/full-ai/config; a settings control or the JSON editor dispatches
- * `editDraft` then `saveDraft` (the PUT); `draftSaved` / `configFailed` / `stale` end it
- * (`configFailed` is any failed config request: the read, a PUT, a Save or Roll back). `commit` marks a Save or
- * Roll back in flight, `saved` / `rolledBack` land it. Send waits while an edit is unstored or storing: the draft side's
- * Turn reads the stored draft only.
- * An applied draft from elsewhere (ticket 57: the assistant's Apply invalidates the config query, the hook dispatches the
- * refetch) is `externalDraft` with the whole body (rev is one counter for the whole config): a newer `rev` is adopted, or
- * with an unsaved edit raises `conflict` until `keepMine` (take its checkpoint and rev; the hook then re-stores the page's
- * draft on it through `saveDraft`, `keepMineSave`) or `takeTheirs` (adopt it whole). Never overwritten silently.
- * One landing while a write of ours is out (or a Reload is owed) is `held` and offered the same way when it settles.
- * Selling (ticket 49): a reply may carry an `offer`; Buy / Decline on a priced one dispatches `settle` (that Turn's
- * `settle` pending), the hook POSTs `buildSettlePayload` and lands `settled` (done, the outcome) or `settleFailed`
- * (failed: buttons back with the message).
- * A settle lives on its Turn, not in `pending`, so it never blocks Send.
- * His photo: `attach` puts one (already shrunk) image on the composer, `detach` drops it; Send with one first owes the
- * photo request (`describing`: described ONCE for both sides), then `photoDescribed` owes both sides' Turns carrying it
- * (`photo` in `buildTurnPayload`), or `photoFailed` puts his line and image back in the composer with the message
- * (as `photoDescribed` does while `sendBlock` holds: the draft side would not read the stored draft).
- * Reply mark (offer-details B): `replyTo` marks his next line as a Quote-reply to an earlier Turn's bubble (`clearReply`
- * drops it); Send carries it to both sides' Turns (`reply_to_n` in `buildTurnPayload`, the same Turn number on both)
- * and clears it, as `newChat` does; a failed photo request puts it back with his line.
- */
-
 import { sameConfig, type ConfigBody, type FullAiConfig } from "@/components/automations/fullAiConfig";
 import type { Route } from "@/hooks/useFullAiToday";
 import { errText } from "@/lib/errText";
 import { RelayError } from "@/lib/relay";
 
-// `sellFoldersForm.ts` still imports the config type from here (outside this split's files); drop once it imports
-// `fullAiConfig`.
 export type { FullAiConfig };
 
 export type UiSide = "L" | "R";
@@ -44,17 +10,13 @@ export type TestSide = "checkpoint" | "draft";
 export const UI_SIDES: readonly UiSide[] = ["L", "R"];
 export const SIDE_OF: Record<UiSide, TestSide> = { L: "checkpoint", R: "draft" };
 
-/** `reply_json.heat_check`: `score` / `level` are the shipped text's; `first_level` / `redo_score` when a rewrite ran. */
 export interface HeatCheck {
   cap: number; score: number | null; level: number | null; outcome: "ok" | "regen_ok" | "over_sent" | "error";
   ms: number | null; version: string; redo_score?: number | null; first_level?: number; error?: string;
 }
 
-/** The PPV the last text bubble carries (`full_ai_test.send`): the Offer's ref, price and media ids. */
 export interface Ppv { ref: number; price_cents: number; media: number[]; previews: number[] }
-/** One of her bubbles: text (the last one may carry the PPV), or a GIF (`{gif: <giphy id>, tag}`). */
 export type Part = { text: string; ppv?: Ppv } | { gif: string; tag: string };
-/** A reply's Offer (`full_ai_test.offer_of`): `price_cents` > 0 priced, 0 a free item, null a tease. */
 export interface Offer {
   kind: string;
   ref: number;
@@ -62,20 +24,14 @@ export interface Offer {
   list_cents: number | null;
   media: number[];
   previews: number[];
-  /** Each locked then preview media's kind and length in seconds (`offer_media_json.items`); absent on older rows. */
   items?: OfferItem[];
   refusal: string | null;
 }
-/** One Offer media (`full_ai_sell._facts` "media"): its id, kind ("photo" | "video" | ...) and length (null: none known). */
 export interface OfferItem { id: number; kind: string; seconds: number | null }
 export type Outcome = "bought" | "declined";
-/** One Writer call; `rewrite` marks the Claim audit's rewrite pass (`full_ai_turn._claim_audit`), appended after the
- *  first pass. */
 export interface Attempt { writer: string; outcome: string; ms: number; rewrite?: boolean }
-/** The separate caption call's path (`caption_writer` "caption" on a PPV Turn, full_ai_turn._caption). */
 export interface CaptionPath { writer: "caption" | "chat"; model: string | null; outcome: string; ms: number; attempts: Attempt[] }
 
-/** POST /admin/full-ai/test/turn's answer. */
 export interface TurnResponse {
   row_id: number | null;
   route: Route;
@@ -83,31 +39,20 @@ export interface TurnResponse {
   route_row: string;
   dropped: string[];
   parts: Part[];
-  /** The Writer that answered; null on `failed` / `no_send`. */
   writer: string | null;
   attempts: Attempt[];
   wait_s: number;
   status: "sent" | "failed" | "no_send";
-  /** The facts the test Fan gave so far (the session's fold). */
   fan_info: Record<string, unknown>;
-  /** The Offer this reply made; absent / null on none. */
   offer?: Offer | null;
-  /** Who wrote the PPV's caption; absent unless `caption_writer` is "caption" on a PPV Turn. */
   caption?: CaptionPath | null;
-  /** His photo as this side read it; absent without one. */
   photo?: FanPhoto | null;
-  /** Sext scene (config `sext_scene`): the saved scene after this Turn; absent off a scene. */
   scene?: { n: number; stage: string; heat: number } | null;
-  /** Sext scene: the price Jev on a fresh priced sell (`jev_cents` null when it failed: `error`). */
   price?: { list_cents: number; jev_cents: number | null; error: string | null } | null;
-  /** Why the reply chain dropped her text on a `failed` Turn a Writer answered ("empty" | "banned"); absent otherwise. */
   dropped_reason?: string | null;
-  /** The Heat check on a sext reply (`floor_on`, spec 06): her level vs the Heat the Writer got; absent when it did not run. */
   heat_check?: HeatCheck | null;
 }
 
-/** POST /admin/full-ai/test/photo's answer, sent back with each side's Turn; `read` (on a recorded Turn only): that
- *  side's `describe_fan_photos` was on and a description exists, so its Router and Writer read it. */
 export interface FanPhoto {
   desc: string | null;
   thumb: string;
@@ -116,7 +61,6 @@ export interface FanPhoto {
   ms: number | null;
   read?: boolean;
 }
-/** What his photo bubble prints under the thumbnail: the description his side read, else the line it read instead. */
 export const MEDIA_ONLY = "[sent a photo or video]";
 export const photoCaption = (p: FanPhoto) => (p.read && p.desc ? p.desc : MEDIA_ONLY);
 
@@ -125,59 +69,40 @@ export interface Turn {
   text: string;
   photo?: FanPhoto | null;
   result: TurnResponse;
-  /** Its Offer's Buy / Decline: in flight, settled, or failed (buttons back, with the message). Absent: never pressed. */
   settle?: Settle;
 }
 export type Settle = { kind: "pending" | "done"; outcome: Outcome } | { kind: "failed"; error: string };
-/** The request a side owes: in flight, or failed and waiting for a retry with the same `n`. */
 export interface PendingTurn {
   n: number; text: string; photo?: FanPhoto; inFlight: boolean; error: string | null;
-  /** The earlier Turn his line quote-replies to (the reply mark); absent: none. */
   replyTo?: number;
 }
-/** The photo request Send owes before either side's Turn: his line and the image (a data URL), and any reply mark. */
 export interface Describing { text: string; image: string; replyTo?: number }
 export interface SideState {
   turns: Turn[];
   pending: PendingTurn | null;
-  /** Epoch ms the newest reply shows at; null = shown. */
   revealAt: number | null;
 }
 
 export interface TestChatState {
   pair: string;
   skipWait: boolean;
-  /** The composer's Fan line. */
   text: string;
-  /** The composer's attached image (a shrunk data URL), or null. */
   photo: string | null;
-  /** The photo request in flight, or null. */
   describing: Describing | null;
-  /** Why the last photo request failed (cleared by the next edit / attach / Send). */
   photoError: string | null;
-  /** The composer's reply mark: the earlier Turn his next line quote-replies to, or null. */
   replyTo: number | null;
   sides: Record<UiSide, SideState>;
-  /** null until `loaded`. */
   checkpoint: FullAiConfig | null;
   previous: FullAiConfig | null;
-  /** The draft as shown: the stored one, or an edit not yet stored (`dirty`). */
   draft: FullAiConfig | null;
   rev: number;
   dirty: boolean;
   savingDraft: boolean;
-  /** A Save or Roll back in flight. */
   committing: boolean;
-  /** Someone stored meanwhile: reload before anything else is written. */
   stale: boolean;
-  /** Audience writes out (`PUT config/audience` bumps the rev): no draft write, Save or Roll back starts meanwhile. */
   audienceSaving: number;
-  /** Field errors ("<key>: <why>") or a failed write's message. */
   errors: string[];
-  /** A newer draft stored elsewhere while the page had an unsaved edit: Keep mine / Take theirs pending. */
   conflict: ConfigBody | null;
-  /** The newest read that landed while a write of ours was out or a Reload was owed: offered again (`offer`) once
-   *  the write settles. */
   held: ConfigBody | null;
 }
 
@@ -185,7 +110,6 @@ export type TestChatAction =
   | { type: "edit"; text: string }
   | { type: "attach"; image: string }
   | { type: "detach" }
-  /** Mark his next line as a Quote-reply to Turn `n` (an earlier, answered Turn). */
   | { type: "replyTo"; n: number }
   | { type: "clearReply" }
   | { type: "send" }
@@ -207,9 +131,7 @@ export type TestChatAction =
   | { type: "saved"; rev: number }
   | { type: "rolledBack"; rev: number }
   | { type: "stale" }
-  /** An audience write starts (`PUT config/audience`, the Fans dialog / Top spend box). */
   | { type: "audienceSave" }
-  /** Its answer: its keys on every side (`audienceSaved`). */
   | { type: "audienceSaved"; body: ConfigBody }
   | { type: "audienceSaveFailed" }
   | { type: "externalDraft"; body: ConfigBody }
@@ -221,6 +143,7 @@ export type TestChatAction =
 
 const EMPTY_SIDE: SideState = { turns: [], pending: null, revealAt: null };
 
+// L/R exist only in the page's code; every request says side: checkpoint | draft.
 export function initTestChat(pair: string, skipWait = false): TestChatState {
   return {
     pair, skipWait, text: "", photo: null, describing: null, photoError: null, replyTo: null,
@@ -231,38 +154,30 @@ export function initTestChat(pair: string, skipWait = false): TestChatState {
   };
 }
 
-/** Why Send waits on the config, or null: an edit not stored yet would not reach the draft side's Turn. Every edit
- *  stores at once, so an unstored edit is one in flight or one the server refused. */
+// The draft side's Turn reads the stored draft only, so Send waits while an edit is unstored.
 export function sendBlock(state: TestChatState): string | null {
   if (state.conflict) return "Keep mine or Take theirs first";
   if (state.savingDraft) return "Saving draft…";
   return state.dirty ? "Draft not saved: fix it or Reload" : null;
 }
 
-/** Send is allowed with a Fan line typed or an image attached, no photo request out, neither side owing a request or
- *  hiding a reply (a Turn is never cut in two), the draft stored and no Save / Roll back out. */
+// A Turn is never cut in two: no side may owe a request or hide a reply.
 export function canSend(state: TestChatState): boolean {
   return (state.text.trim() !== "" || state.photo !== null) && state.describing === null
     && sendBlock(state) === null && !state.committing
     && UI_SIDES.every((s) => state.sides[s].pending === null && state.sides[s].revealAt === null);
 }
 
-/** A control (or the JSON editor) may edit the draft: loaded, nothing out (no photo request either: `photoDescribed`
- *  then owes the draft side's Turn on the stored draft; no audience write, whose rev bump would make ours stale), not
- *  stale, no Keep mine / Take theirs pending. */
 export function canEdit(state: TestChatState): boolean {
   return state.draft !== null && !state.savingDraft && !state.committing && !state.stale && state.conflict === null
     && state.describing === null && state.audienceSaving === 0;
 }
 
-/** Keep mine's draft PUT: the page's draft on the conflict's rev; null without a conflict, or while the photo request
- *  is out (as `canEdit`). */
 export function keepMineSave(state: TestChatState): { draft: FullAiConfig; rev: number } | null {
   return state.conflict && state.draft && state.describing === null
     ? { draft: state.draft, rev: state.conflict.rev } : null;
 }
 
-/** Save (the stored draft becomes the checkpoint): something to save, nothing unstored, out, stale or refused. */
 export function canSave(state: TestChatState): boolean {
   return canEdit(state) && !state.dirty && state.errors.length === 0 && !sameConfig(state.draft, state.checkpoint);
 }
@@ -272,10 +187,8 @@ export function canRollback(state: TestChatState): boolean {
   return canEdit(state) && state.previous !== null;
 }
 
-/** POST /admin/full-ai/test/turn's body without `account_id`. */
 export interface TurnPayload { pair: string; side: TestSide; n: number; text: string; photo?: FanPhoto; reply_to_n?: number }
 
-/** The side's owed request; `n` = its Turn count + 1, the same on a retry; `reply_to_n` the reply mark it was sent with. */
 export function buildTurnPayload(state: TestChatState, ui: UiSide): TurnPayload | null {
   const p = state.sides[ui].pending;
   if (!p) return null;
@@ -287,11 +200,8 @@ const owe = (s: SideState, text: string, photo?: FanPhoto, replyTo?: number | nu
   ({ ...s, pending: { n: s.turns.length + 1, text, ...(photo ? { photo } : {}), ...(replyTo ? { replyTo } : {}),
     inFlight: true, error: null } });
 
-/** The Turn number his next line gets (both sides share it): the fewer side's Turn count + 1. */
 const nextN = (state: TestChatState) => Math.min(...UI_SIDES.map((s) => state.sides[s].turns.length)) + 1;
 
-/** A photo request that sends nothing: his line and image back in the composer (a line typed meanwhile is kept after
- *  it), with why. */
 function unsent(state: TestChatState, d: Describing, why: string): TestChatState {
   const text = [d.text, state.text].filter((t) => t.trim() !== "").join(" ");
   return { ...state, describing: null, text, photo: d.image, photoError: why, replyTo: d.replyTo ?? state.replyTo };
@@ -300,12 +210,11 @@ function unsent(state: TestChatState, d: Describing, why: string): TestChatState
 const withSide = (state: TestChatState, ui: UiSide, side: SideState): TestChatState =>
   ({ ...state, sides: { ...state.sides, [ui]: side } });
 
-/** Buy / Decline may be pressed: a priced Offer, no outcome yet, no settle in flight. */
+// A settle lives on its Turn, not in pending, so it never blocks Send.
 export function canSettle(turn: Turn): boolean {
   return (turn.result.offer?.price_cents ?? 0) > 0 && (!turn.settle || turn.settle.kind === "failed");
 }
 
-/** POST /admin/full-ai/test/settle's body. */
 export interface SettlePayload { account_id: string; pair: string; side: TestSide; row_id: number; outcome: Outcome }
 
 export function buildSettlePayload(
@@ -314,7 +223,6 @@ export function buildSettlePayload(
   return { account_id: accountId, pair: state.pair, side: SIDE_OF[ui], row_id: rowId, outcome };
 }
 
-/** The side with the Turn of `rowId` changed by `fn`; the same state when no Turn matches or `fn` keeps it. */
 function withTurn(state: TestChatState, ui: UiSide, rowId: number, fn: (t: Turn) => Turn): TestChatState {
   const s = state.sides[ui];
   const i = s.turns.findIndex((t) => t.result.row_id === rowId);
@@ -349,7 +257,6 @@ export function testChatReducer(state: TestChatState, action: TestChatAction): T
     case "photoDescribed": {
       const d = state.describing;
       if (action.pair !== state.pair || !d) return state;
-      // The draft side's Turn reads the stored draft only: with Send blocked meanwhile, nothing is sent.
       const block = sendBlock(state);
       if (block) return unsent(state, d, `Not sent: ${block}`);
       return { ...state, describing: null,
@@ -451,12 +358,9 @@ export function testChatReducer(state: TestChatState, action: TestChatAction): T
 export const STALE_TEXT = "Someone saved this config meanwhile. Reload.";
 
 const relayBody = (e: unknown) => (e instanceof RelayError ? (e.body as { errors?: unknown; rev?: unknown } | null) : null);
-/** 409 `{detail}` with no `rev`: not stale but refused (its words shown). */
 const refused409 = (e: unknown): boolean =>
   e instanceof RelayError && e.status === 409 && typeof relayBody(e)?.rev !== "number";
 
-/** A failed config write as one action: a 409 carrying a numeric `rev` is stale (someone stored meanwhile); any other
- *  refusal (a 409 without `rev`, 422 field errors, a network error) is `configFailed` with the server's words. */
 export function writeFailed(e: unknown): TestChatAction {
   if (e instanceof RelayError && e.status === 409 && !refused409(e)) return { type: "stale" };
   const errors = relayBody(e)?.errors;
@@ -475,11 +379,8 @@ const withAudience = (c: FullAiConfig | null, src: FullAiConfig | null): FullAiC
   return out;
 };
 
-/** An audience write's answer: stored, or failed (a refusal, a field error, a lost race, the network), shown beside
- *  the control. */
 export type AudienceResult = { kind: "ok" } | { kind: "failed"; reason: string };
 
-/** A failed audience write as the control shows it (never on the page's config errors). */
 export function audienceFailed(e: unknown): AudienceResult {
   if (refused409(e)) return { kind: "failed", reason: errText(e, "Refused") };
   if (e instanceof RelayError && e.status === 409) return { kind: "failed", reason: "Someone saved this config meanwhile. Try again." };
@@ -487,11 +388,7 @@ export function audienceFailed(e: unknown): AudienceResult {
   return { kind: "failed", reason: Array.isArray(errors) ? errors.map(String).join(" ") : errText(e, "Request failed") };
 }
 
-/** An audience write's answer. No newer than what the page holds (its rev, a held read's, a conflict's): dropped, so
- *  a slower Fans / Top spend answer never puts old values back. Else only the audience keys move (an unstored edit
- *  stays): with a write of ours out the body is held and offered once it settles (`offer`), as a read landing meanwhile
- *  is; on exactly the next rev the page takes the rev; further ahead (someone stored meanwhile) the body is offered as
- *  a read (`offer`: adopted whole, or the conflict), never its rev over settings the page has not seen. */
+// Dropped when no newer than the page's rev, so a slower answer never puts old values back.
 function audienceSaved(state: TestChatState, body: ConfigBody): TestChatState {
   if (body.rev <= Math.max(state.rev, state.held?.rev ?? 0, state.conflict?.rev ?? 0)) return state;
   const src = body.checkpoint;
@@ -501,8 +398,7 @@ function audienceSaved(state: TestChatState, body: ConfigBody): TestChatState {
   return body.rev === state.rev + 1 ? { ...s, rev: body.rev } : offer(s, body);
 }
 
-/** A read config body: held while a write of ours is out or a Reload is owed (the newest rev kept); else dropped
- *  unless newer than the page's rev and any conflict's, adopted, or with an unsaved edit raised as the conflict. */
+// Never overwrites an unsaved edit silently: it raises the conflict.
 function offer(state: TestChatState, body: ConfigBody): TestChatState {
   if (state.savingDraft || state.committing || state.stale) {
     return { ...state, held: state.held && state.held.rev > body.rev ? state.held : body };
@@ -511,35 +407,25 @@ function offer(state: TestChatState, body: ConfigBody): TestChatState {
   return state.dirty ? { ...state, conflict: body } : adopt(state, body);
 }
 
-/** A write settled (`draftSaved`, `saved`, `rolledBack`, `loaded`, `configFailed`): the held read, if any, is offered
- *  once and cleared (still stale, `offer` holds it again until the Reload's `loaded`). */
 const offerHeld = (state: TestChatState): TestChatState => (state.held ? offer({ ...state, held: null }, state.held) : state);
 
-/** A stored config body taken whole (`loaded`, an adopted `externalDraft`, Take theirs): nothing unstored is left. */
 function adopt(state: TestChatState, { checkpoint, previous, draft, rev, errors }: ConfigBody): TestChatState {
   return { ...state, checkpoint, previous, draft, rev, errors,
     dirty: false, savingDraft: false, committing: false, stale: false, conflict: null };
 }
 
-/** One row of GET /admin/full-ai/test/session (`full_ai_test.session_row`): the turn answer minus `dropped`, plus
- *  its side, Turn number, his line and when it was recorded. `wait_s` is null on a Turn that sent nothing. */
 export type SessionRow = Omit<TurnResponse, "dropped" | "wait_s" | "photo"> & {
   side: TestSide; n: number; text: string; wait_s: number | null; created_at: string; photo?: FanPhoto | null;
 };
-/** The session read's body: both sides' rows, oldest first. */
 export interface SessionBody { rows: SessionRow[] }
 
-/** One side's Turns from the session read. A reloaded Turn is already recorded, so it carries no rows dropped. */
 export function sessionTurns(body: SessionBody, side: TestSide): Turn[] {
   return body.rows.filter((r) => r.side === side).map(({ side: _s, created_at: _c, n, text, wait_s, photo, ...rest }) => ({
     n, text, ...(photo ? { photo } : {}), result: { ...rest, dropped: [], wait_s: wait_s ?? 0 },
   }));
 }
 
-// ── What a window prints (pure, so the component only renders) ─────────────────────────────────────────────────────
 
-/** How a PPV bubble stands, from its Turn's Offer: the settled outcome, the price (Buy / Decline go under it while
- *  `canSettle`), "Free", or nothing (no Offer, or a tease with no price). */
 export type PpvLine = { kind: "settled"; dollars: number; paid: boolean } | { kind: "price"; dollars: number } | { kind: "free" };
 export function ppvLine(t: Turn): PpvLine | null {
   const cents = t.result.offer?.price_cents;
@@ -554,10 +440,6 @@ const clock = (secs: number) => {
   return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 };
 
-/** The PPV bubble's kind and length line over the Offer's LOCKED items (those whose id is in `media`; a free preview is
- *  not what he pays for): "1 video · 0:42", "5 videos · 12:30", "3 photos", "2 photos + 1 video · 0:42". Photos first,
- *  then videos, then any other kind; the length is the videos' total (m:ss, h:mm:ss from an hour), printed only when
- *  every video has one. null when `items` is absent or holds no locked item. */
 export function mediaLine(offer: Offer): string | null {
   const locked = new Set(offer.media);
   const items = (offer.items ?? []).filter((i) => locked.has(i.id));
@@ -570,13 +452,10 @@ export function mediaLine(offer: Offer): string | null {
   return timed ? `${head} · ${clock(videos.reduce((t, i) => t + (i.seconds ?? 0), 0))}` : head;
 }
 
-/** The line under a reply: Route, Heat, matched row and, when she answered, the Writer and how many fell before it
- *  with each one's outcome ("1 fell before (euryale-v2.3 no_key)"). */
 export function replyLine(r: TurnResponse): string {
   const head = `Route ${r.route} · Heat ${r.heat} · Row ${r.route_row}`;
   if (r.status !== "sent" || !r.writer) return head;
-  // The chain stops at the first Writer that answers, so every failed first-pass attempt fell before it; the Claim
-  // audit's rewrite attempts are not Writers falling.
+  // The chain stops at the first Writer that answers; the Claim audit's rewrite attempts are not Writers falling.
   const fell = r.attempts.filter((a) => !a.rewrite && a.outcome !== "ok");
   const why = fell.length ? ` (${outcomesLine(fell)})` : "";
   const cap = !r.caption ? "" : r.caption.writer === "caption" ? ` · Caption ${r.caption.model}` : ` · Caption chat (${r.caption.outcome})`;
@@ -585,7 +464,6 @@ export function replyLine(r: TurnResponse): string {
 
 const usd = (c: number) => `$${c % 100 ? (c / 100).toFixed(2) : c / 100}`;
 
-/** The sext scene's tail: ` · scene building · 3`, and ` · price Jev $35 (list $50)` when Jev moved the price. */
 function sceneTail(r: TurnResponse): string {
   const s = r.scene ? ` · scene ${r.scene.stage} · ${r.scene.n}` : "";
   const p = r.price;
@@ -594,8 +472,6 @@ function sceneTail(r: TurnResponse): string {
   return s + px;
 }
 
-/** The Heat check's tail: ` · reply level 3 of Heat 3`, then ` · rewritten (was 4)` or ` · over Heat, sent`; a failed
- *  check ` · Heat check failed`; nothing when it did not run. */
 export function heatTail(h: HeatCheck | null | undefined): string {
   if (!h) return "";
   if (h.outcome === "error" || h.level == null) return " · Heat check failed";
@@ -604,7 +480,6 @@ export function heatTail(h: HeatCheck | null | undefined): string {
   return h.outcome === "over_sent" ? `${lvl} · over Heat, sent` : lvl;
 }
 
-/** The text in place of her bubbles on a Turn with none; null when she answered. */
 export function noReplyText(r: TurnResponse): string | null {
   if (r.status === "no_send") {
     return r.route_row === "says_under_18" ? "no reply (under 18)"
@@ -617,23 +492,17 @@ export function noReplyText(r: TurnResponse): string | null {
   return null;
 }
 
-/** `reply_json.dropped_reason` in plain words. */
 const DROP_WORDS: Record<string, string> = { empty: "nothing left to send", banned: "sensitive word", echo: "repeated his line" };
 
-/** A failed Turn no Writer answered: the Writers' outcomes are the reason. When one answered and the reply chain
- *  dropped its text, an earlier Writer's "no_key" is not why, so the outcomes line stays out. */
 export const writersFailed = (r: TurnResponse) => r.status === "failed" && r.attempts.every((a) => a.outcome !== "ok");
 
-/** Each Writer's outcome, in chain order. */
 export const outcomesLine = (attempts: Attempt[]) => attempts.map((a) => `${a.writer} ${a.outcome}`).join(" · ");
 
-/** `_EXTRACT_FIELDS` (welcome_chatter_for_info.py) in their order, with the words the window header shows. */
 const FACT_LABEL: [string, string][] = [
   ["real_name", "name"], ["his_age", "age"], ["home_country", "country"], ["home_city", "city"],
   ["hobbies", "hobbies"], ["occupation", "job"], ["fetishes", "fetishes"],
 ];
 
-/** The facts the test Fan gave, for the window header; "No facts yet" when none. */
 export function factsLine(fanInfo: Record<string, unknown> | undefined): string {
   const got = FACT_LABEL.flatMap(([k, label]) => {
     const v = fanInfo?.[k];

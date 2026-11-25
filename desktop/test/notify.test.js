@@ -63,7 +63,7 @@ test("parsePayload requires a title and drops a foreign href", () => {
   assert.deepStrictEqual(parsePayload({ id: "m1", title: "Ann", body: "<b>hi</b>", href: "https://evil.x/" }, APP), {
     id: "m1",
     title: "Ann",
-    body: "<b>hi</b>", // shown as plain text by the OS; never rendered as HTML
+    body: "<b>hi</b>",
     path: null,
   });
 });
@@ -77,7 +77,6 @@ test("show: builds a silent notification and click opens the validated path", ()
   assert.deepStrictEqual(made[0].opts, { title: "Ann", body: "hi", silent: true });
   assert.ok(made[0].shown);
   made[0].handlers.click();
-  // The query is kept: `fanTab` makes Messages Pro open the Fan as a Fan tab.
   assert.deepStrictEqual(clicks, ["/messages-pro/a/1?fanTab=Ann"]);
 });
 
@@ -96,7 +95,7 @@ test("show: dedupes the same id until DEDUPE_MS passes", () => {
   const n = createNotifier({ Notification: FakeNotification, onClick() {}, now: () => t });
   assert.strictEqual(n.show({ id: "m1", title: "A" }, APP), true);
   t = 500;
-  assert.strictEqual(n.show({ id: "m1", title: "A" }, APP), false); // a popout's toaster
+  assert.strictEqual(n.show({ id: "m1", title: "A" }, APP), false);
   assert.strictEqual(n.show({ id: "m2", title: "B" }, APP), true);
   t = DEDUPE_MS + 1;
   assert.strictEqual(n.show({ id: "m1", title: "A" }, APP), true);
@@ -130,8 +129,8 @@ test("registerNotifyIpc: only the configured app origin may notify", () => {
 
   assert.strictEqual(call(`${APP}/inbox`, "a"), true);
   assert.strictEqual(call("https://evil.example.com/", "b"), false);
-  assert.strictEqual(handlers["shell:notify"]({}, { id: "c", title: "T" }), false); // no sender frame
-  appOrigin = null; // no server configured → denied
+  assert.strictEqual(handlers["shell:notify"]({}, { id: "c", title: "T" }), false);
+  appOrigin = null;
   assert.strictEqual(call(`${APP}/inbox`, "d"), false);
   assert.strictEqual(made.length, 1);
 });

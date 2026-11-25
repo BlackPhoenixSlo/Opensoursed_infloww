@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * ErrorBoundary — wraps the app shell so a React render crash shows a
- * recoverable fallback instead of blanking the screen. Reports the
- * crash to the server via reportError so it lands in /admin/errors.
- *
- * Class component because React's hooks API still doesn't expose
- * componentDidCatch / getDerivedStateFromError. Tiny, self-contained.
- */
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
@@ -15,8 +7,6 @@ import { reportError } from "@/lib/errorReporter";
 
 interface Props {
   children: ReactNode;
-  /** Optional label so /admin/errors can distinguish "inbox boundary
-   *  fired" vs "settings boundary fired" if we ever nest multiples. */
   scope?: string;
 }
 
@@ -24,6 +14,7 @@ interface State {
   err: Error | null;
 }
 
+// class: hooks have no componentDidCatch / getDerivedStateFromError
 export class ErrorBoundary extends Component<Props, State> {
   state: State = { err: null };
 

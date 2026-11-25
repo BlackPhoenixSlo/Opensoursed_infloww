@@ -1,47 +1,21 @@
-/**
- * The funnel editor's draft model (automations/FunnelEditor): wire
- * FunnelStep ⇄ editable DraftStep, and the raw-JSON codec over the whole
- * funnel body. Raw steps go through the same `toDraft` → `toWire` checks as
- * the typed form — plus the fields `toDraft` would otherwise silently coerce
- * (a non-object step, an unknown `type`, a non-number `price`, a bad or
- * duplicate `step` number, non-list `messages` / `check_intervals_min`).
- *
- * `step` is the step's id (`next` targets and per-model PPV media key on it;
- * the walker goes by list order). `DraftStep.step` is the one source of truth:
- * kept through every edit, move and remove, written by `toWire`; a new step
- * (added, or unnumbered in raw text) gets max + 1. Text the user reads names a
- * step by its POSITION ("Step n"); an id shows only in parentheses (`stepErrorText`).
- */
-
 import type { FunnelFull, FunnelStep, PpvStep } from "@/hooks/useFunnels";
 import { parseJsonObject, type RawJsonCodec } from "@/lib/rawJsonReducer";
 
-// ── Local draft model (easy to edit; converted to/from wire FunnelStep) ──
 
 export type StepKind = "reply" | "ppv";
 
 export interface DraftStep {
   kind: StepKind;
-  /** The wire `step` id (see the module doc). */
   step: number;
-  /** Poll cadence after this step as a comma list of minutes (blank → executor default). */
   intervals: string;
-  /** Message VARIANT pool (used when `generate` is off). */
   messages: string[];
-  /** Generate the reply/copy with the AI instead of static messages. */
   generate: boolean;
   prompt: string;
-  // PPV only (media is per-account → FunnelMediaPane, not here):
   price: string;
   lockedText: boolean;
-  /** Step keys the typed form doesn't model (e.g. legacy in-step media, or a
-   *  field a raw-JSON edit added) — carried through toDraft→toWire so a
-   *  raw → typed → save round-trip never silently drops them. */
   extra: Record<string, unknown>;
 }
 
-/** Step keys the typed editor owns (re-emitted by `toWire`) — everything else is
- *  stashed in `DraftStep.extra` and merged back on save. */
 const KNOWN_STEP_KEYS = new Set([
   "type", "step", "messages", "generate", "prompt", "price",
   "locked_text", "check_intervals_min",
@@ -61,10 +35,6 @@ export function blankStep(kind: StepKind, step: number): DraftStep {
   };
 }
 
-/** A wire step → editor draft. Keys the form doesn't model are preserved in
- *  `extra`; known keys come back in the form's shape — a `prompt` beside
- *  static messages is dropped (static wins on the server too). A missing PPV
- *  price stays blank (server default), never $0. */
 export function toDraft(step: FunnelStep): DraftStep {
   const isPpv = step.type === "paid_ppv";
   const msgs = Array.isArray(step.messages) ? step.messages.map(String) : [];
@@ -90,7 +60,6 @@ export function toDraft(step: FunnelStep): DraftStep {
   };
 }
 
-/** Parse a comma/space list of positive whole ints; throws on a bad token. */
 function parseIntervals(raw: string, label: string): number[] {
   const parts = raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
   const out: number[] = [];
@@ -104,15 +73,14 @@ function parseIntervals(raw: string, label: string): number[] {
   return out;
 }
 
-/** Draft → wire step (throws with a clear message on invalid input). */
 export function toWire(d: DraftStep, idx: number): FunnelStep {
   const label = `Step ${idx + 1}`;
   const msgs = d.messages.map((m) => m.trim()).filter(Boolean);
   if (!d.generate && msgs.length === 0) {
     throw new Error(`${label} needs at least one message (or switch it to AI-generated).`);
   }
-  // TEXT-ONLY: PPV media is per-account (FunnelMediaPane), never written here.
   const out: Omit<PpvStep, "type"> & { type?: "paid_ppv" } = { step: d.step };
+  // TEXT-ONLY: PPV media is per-account (FunnelMediaPane), never written here.
   if (d.kind === "ppv") {
     out.type = "paid_ppv";
     if (d.price.trim() !== "") {
@@ -124,7 +92,6 @@ export function toWire(d: DraftStep, idx: number): FunnelStep {
     }
     if (d.lockedText) out.locked_text = true;
   }
-  // The walker waits on a PPV step's cadence too (reply_mass_funnel._step_intervals).
   const intervals = parseIntervals(d.intervals, label);
   if (intervals.length) out.check_intervals_min = intervals;
   if (d.generate) {
@@ -133,19 +100,15 @@ export function toWire(d: DraftStep, idx: number): FunnelStep {
   } else {
     out.messages = msgs;
   }
-  // Merge preserved unknown keys; the fields we set above win over `extra`.
   return { ...d.extra, ...out } as FunnelStep;
 }
 
-// ── The whole funnel (header + steps) ───────────────────────────────────
 
 export interface FunnelDraft {
   name: string;
   description: string;
   opening: string;
   steps: DraftStep[];
-  /** The one open step card (FunnelEditor): it follows its step through edits (`followOpen`); a load or a raw-JSON
-   *  edit starts closed. Never saved. */
   open: number | null;
 }
 
@@ -158,19 +121,14 @@ export interface FunnelBody {
 
 export const EMPTY_FUNNEL: FunnelDraft = { name: "", description: "", opening: "", steps: [], open: null };
 
-/** A stored `check_intervals_min` the save validators would refuse: present
- *  (not null) but not a non-empty list of positive whole numbers. */
 function badIntervals(iv: unknown): boolean {
   if (iv == null) return false;
   return !Array.isArray(iv) || iv.length === 0
     || !iv.every((x) => typeof x === "number" && Number.isInteger(x) && x > 0);
 }
 
-/** Funnel ids already warned about this page load (warn once per funnel). */
 const warnedRepairs = new Set<number>();
 
-/** Stored funnel → draft. Load-only repair (rows from before the validator):
- *  a malformed `check_intervals_min` loads blank, so a save omits it. */
 export function funnelDraftOf(f: FunnelFull): FunnelDraft {
   const repaired: number[] = [];
   const steps = (f.steps ?? []).map((s, i) => {
@@ -195,10 +153,6 @@ export function funnelDraftOf(f: FunnelFull): FunnelDraft {
   };
 }
 
-/** A save error the user reads, with every step named by POSITION ("Step n",
- *  as on the step cards) instead of the server's 0-based `step[i]` or a `step`
- *  id. `steps` is the list that was sent (ids → positions). Other text passes
- *  through unchanged. */
 export function stepErrorText(msg: string, steps: Pick<DraftStep, "step">[]): string {
   const dangling = /^step\[(\d+)\]\.next\.(.+) → step (-?\d+) references no existing step$/.exec(msg);
   if (dangling) {
@@ -212,23 +166,18 @@ export function stepErrorText(msg: string, steps: Pick<DraftStep, "step">[]): st
   return msg.replace(/^step\[(\d+)\](\.?)/, (_m, i: string, dot: string) => `Step ${Number(i) + 1}${dot ? " " : ""}`);
 }
 
-/** A typed-form edit, applied by `editFunnel`. */
 export type FunnelEdit =
   | { type: "header"; patch: Partial<Pick<FunnelDraft, "name" | "description" | "opening">> }
   | { type: "addStep"; kind: StepKind }
   | { type: "patchStep"; i: number; patch: Partial<DraftStep> }
   | { type: "removeStep"; i: number }
   | { type: "moveStep"; i: number; dir: -1 | 1 }
-  /** Open step `i`'s card, or close it if open. */
   | { type: "toggleStep"; i: number };
 
-/** The id for a new step: max(existing) + 1. */
 function nextStepNumber(steps: Pick<DraftStep, "step">[]): number {
   return steps.reduce((m, s) => Math.max(m, s.step), 0) + 1;
 }
 
-/** The open card after `e` on `d` (before the edit): an added step opens; the open one follows its move; removing
- *  it closes; removing one above shifts it up; a toggle opens / closes `i`. */
 export function followOpen(d: Pick<FunnelDraft, "open" | "steps">, e: FunnelEdit): number | null {
   const { open } = d;
   const len = d.steps.length;
@@ -250,8 +199,6 @@ export function followOpen(d: Pick<FunnelDraft, "open" | "steps">, e: FunnelEdit
   }
 }
 
-/** One typed-form edit (pure), the open card following it. Out-of-range moves are no-ops; a step's message pool is
- *  a `patchStep` (VariantsField keeps one or more). */
 export function editFunnel(d: FunnelDraft, e: FunnelEdit): FunnelDraft {
   const next = applyEdit(d, e);
   const open = followOpen(d, e);
@@ -282,11 +229,9 @@ function applyEdit(d: FunnelDraft, e: FunnelEdit): FunnelDraft {
   }
 }
 
-/** Draft → body, steps wired (throws on an invalid step or a reused step
- *  number). Name / opener may be blank — `saveBody` requires them. */
 function wireBody(d: FunnelDraft): FunnelBody {
   const steps = d.steps.map(toWire);
-  const seen = new Map<number, number>(); // id → position
+  const seen = new Map<number, number>();
   steps.forEach((s, i) => {
     const first = seen.get(s.step);
     if (first != null) throw new Error(`Step ${i + 1} has the same id as Step ${first} (id ${s.step}).`);
@@ -300,14 +245,12 @@ function wireBody(d: FunnelDraft): FunnelBody {
   };
 }
 
-/** The body to save (throws with a clear message). */
 export function saveBody(d: FunnelDraft): FunnelBody {
   if (!d.name.trim()) throw new Error("Name is required.");
   if (!d.opening.trim()) throw new Error("Opening message is required.");
   return wireBody(d);
 }
 
-/** Narrows one raw step to the wire shape `toDraft` reads (throws otherwise). */
 function assertRawStep(s: unknown, idx: number): asserts s is FunnelStep {
   const label = `Step ${idx + 1}`;
   if (typeof s !== "object" || s === null || Array.isArray(s)) throw new Error(`${label} must be an object.`);
@@ -327,7 +270,6 @@ function assertRawStep(s: unknown, idx: number): asserts s is FunnelStep {
   }
 }
 
-/** Raw steps → drafts; an unnumbered step (no `step`) gets max + 1. */
 function rawDraftSteps(raw: unknown[]): DraftStep[] {
   const steps = raw.map((s, i) => {
     assertRawStep(s, i);
@@ -337,7 +279,6 @@ function rawDraftSteps(raw: unknown[]): DraftStep[] {
   return steps.map((s) => toDraft(s.step != null ? s : { ...s, step: next++ }));
 }
 
-/** Raw-JSON codec over `{ name, opening_message, description, steps }`. */
 export const FUNNEL_RAW: RawJsonCodec<FunnelDraft> = {
   format: (d) => JSON.stringify(wireBody(d), null, 2),
   parse(text) {
@@ -351,7 +292,7 @@ export const FUNNEL_RAW: RawJsonCodec<FunnelDraft> = {
       steps: rawDraftSteps(steps),
       open: null,
     };
-    wireBody(draft); // reject here what a save would
+    wireBody(draft);
     return draft;
   },
 };

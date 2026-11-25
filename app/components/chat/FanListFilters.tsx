@@ -18,6 +18,7 @@ import { MP } from "@/lib/messagesPro";
 import { extraTitle } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 import { ExtraMenuRow } from "./ExtraMenuRow";
+import type { FanListChipSet } from "./fanListChips";
 import { MENU, MENU_ITEM } from "./MenuParts";
 import { useFanListMenu } from "./useFanListMenu";
 
@@ -111,7 +112,7 @@ export function FanListFilters({
   active, onActiveChange, unreadCount, unreadAge, activeCount, oweReplyCount,
   pinnedFolders, hasLists, onOpenFolderPicker,
   showInboxSelector, groupCount, group, groupLocked = false, onGroupChange, onOpenSplitInbox,
-  fetching, onRefresh, sortMode, onSortModeChange, tipsEnabled, ...gear
+  fetching, onRefresh, sortMode, onSortModeChange, chips, ...gear
 }: {
   active: ActiveChip;
   onActiveChange: (next: ActiveChip) => void;
@@ -146,9 +147,8 @@ export function FanListFilters({
   fetching: boolean;
   /** Fetch a fresh list past the relay cache. */
   onRefresh: () => void;
-  /** The scoped Creator has tips on (users/me `tipsEnabled`): "Unread with
-   *  tips" shows, as OF offers that filter only then. */
-  tipsEnabled: boolean;
+  /** The gated chips the scope's Platforms back (`fanListChips`); "Unread with tips" also needs the Creator's tips on. */
+  chips: FanListChipSet;
 } & SortChoice & GearSettings) {
   return (
     <>
@@ -209,10 +209,14 @@ export function FanListFilters({
             filter="owe-reply" active={active} onActiveChange={onActiveChange} count={oweReplyCount} amber
             title={extraTitle("Owe reply", "Chats where the fan sent the last message and we haven't replied")}
           >Owe reply</BuiltinChip>
-          <BuiltinChip filter="pinned" active={active} onActiveChange={onActiveChange} activeCount={activeCount}>Pinned</BuiltinChip>
+          {chips.pinned && (
+            <BuiltinChip filter="pinned" active={active} onActiveChange={onActiveChange} activeCount={activeCount}>Pinned</BuiltinChip>
+          )}
           <BuiltinChip filter="unread" active={active} onActiveChange={onActiveChange} count={unreadCount} age={unreadAge}>Unread</BuiltinChip>
-          <BuiltinChip filter="who_tipped" active={active} onActiveChange={onActiveChange} activeCount={activeCount}>With Tips</BuiltinChip>
-          {tipsEnabled && (
+          {chips.who_tipped && (
+            <BuiltinChip filter="who_tipped" active={active} onActiveChange={onActiveChange} activeCount={activeCount}>With Tips</BuiltinChip>
+          )}
+          {chips.unread_tips && (
             <BuiltinChip filter="unread_tips" active={active} onActiveChange={onActiveChange} activeCount={activeCount}>Unread with tips</BuiltinChip>
           )}
           {pinnedFolders.map((f) => {
@@ -232,10 +236,12 @@ export function FanListFilters({
               </FilterChip>
             );
           })}
-          <BuiltinChip
-            filter="priority" active={active} onActiveChange={onActiveChange} activeCount={activeCount}
-            title={extraTitle("Priority chip")}
-          >Priority</BuiltinChip>
+          {chips.priority && (
+            <BuiltinChip
+              filter="priority" active={active} onActiveChange={onActiveChange} activeCount={activeCount}
+              title={extraTitle("Priority chip")}
+            >Priority</BuiltinChip>
+          )}
         </div>
       </div>
     </>

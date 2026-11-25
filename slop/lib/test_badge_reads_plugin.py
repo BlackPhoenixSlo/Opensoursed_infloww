@@ -1,4 +1,3 @@
-"""lib/badge_reads_relay.py starts the badge reads loop at relay startup (CHATTERLY_TEST_MODE skips the product's)."""
 from __future__ import annotations
 
 import asyncio

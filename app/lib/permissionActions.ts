@@ -1,12 +1,4 @@
-/**
- * Function permissions (Infloww's FUN_PERMISSIONS): the destructive, money and export actions a Permission role
- * can deny on a page it grants, stored as `<page href>#<action>` keys in the role's own `permissions` map. A key
- * not stored falls back to its page's grant, so a role saved before these existed keeps every action. The Relay's
- * `permissions.ACTION_KEYS` derives this list from the routes each action calls (one key for every page serving
- * them); service/tests/test_role_enforcement.py pins this copy to it. The Relay cannot tell which page sent a
- * request, so an action is denied everywhere once any of its keys is stored false; the editor sets them alike.
- */
-
+// Keys are `<page href>#<action>`; the Relay cannot tell which page sent a request, so an action is denied everywhere once any key is false. service/tests/test_role_enforcement.py pins this to the Relay's ACTION_KEYS.
 export const PAGE_ACTIONS = {
   "/of-manager/home#delete-post": "Delete posts",
   "/of-manager/new-post#delete-post": "Delete posts",
@@ -53,9 +45,7 @@ export const PAGE_ACTIONS = {
   "/employees/shifts#reassign-sales": "Reassign sales",
 } as const satisfies Record<string, string>;
 
-/** An action's name, the part of its keys after `#`. */
 export type ActionName = keyof typeof PAGE_ACTIONS extends `${string}#${infer A}` ? A : never;
 
-/** The Function permissions under page `href`, `[key, label]` in list order. */
 export const pageActions = (href: string): [string, string][] =>
   Object.entries(PAGE_ACTIONS).filter(([key]) => key.startsWith(`${href}#`));

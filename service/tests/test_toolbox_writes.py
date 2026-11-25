@@ -1,45 +1,7 @@
 #!/usr/bin/env python3
-"""Toolbox write tools (step 3; docs/plans/ultra-mode/issues/04-toolbox.md, 05-mcp-server.md) on the two-Agency
-bench, through the real app in-process: MCP tools/call with an owner token, a fake OnlyFans client, the bio files
-dir and vault stills in temp dirs.
-
-Cases:
-  case_listed_as_writes          — tools/list: the six write tools, readOnlyHint false; destructiveHint true only
-                                   for the two that replace (and delete) an image file.
-  case_folder_tools              — of_folder_create / of_folder_add over MCP: OF called for Creator A only, the
-                                   echo in the result, open_url; audit rows carry Creator A, "token mcp" and
-                                   A's owner Employee; no /admin/mcp row.
-  case_bio_tools                 — bio_page_create / bio_link_add / bio_avatar_from_vault / bio_link_bg_from_vault /
-                                   bio_page_background
-                                   over MCP: the page changes as asked, open_url = the page; the bound writes are
-                                   audited as the page's stored Creator; a page with no Creator still takes a link.
-  case_page_without_of_link_is_error — bio_page_create for a Creator whose OnlyFans profile is unreadable: the page
-                                   is made with no OnlyFans link → an error result naming the page id.
-  case_resource_tools_audit_its_creator — drift over TOOLS: each write tool with no account_id is audited as the
-                                   resource's stored Creator.
-  case_new_link_past_row_cap     — bio_link_add on a page past the 50-row cut: `link` names the new link (cut from
-                                   `links`); its id takes a background.
-  case_echo_lost_args_is_error   — OF drops the media of a new folder (route still 200): an error result, not
-                                   success; every check's mismatch table (pure).
-  case_args_refused_no_request   — bad args: 422 per field, no OF call, no row written.
-  case_cross_agency_refused      — A's token: Creator B (of_folder_create / of_folder_add / bio_page_create) and
-                                   B's page (bio_page_get, each page tool) are refused before any write; B unchanged.
-  case_bearer_raw_route_gated    — a bearer on the raw write routes must send exactly what the tool sends: an extra
-                                   body key, a wrong type, a body nested past the JSON decoder's depth, an extra
-                                   query param, a missing or mismatched Creator, unsent defaults, a path key in the
-                                   body, any X-Account-Id / ?account_id= on a
-                                   bio page route (foreign, own other, even the page's) → 403 before the route; the
-                                   tool's own request passes, the bio write audited as the page's stored Creator; a
-                                   cookie caller is not gated, its bio write audited as the page's Creator too.
-  case_revoked_token_cannot_write — a revoked token: 401 on the raw route and on MCP, no OF call.
-
-Seeded straight into the temp DB; no network, no real OnlyFans.
-
-Run: ./venv/bin/python service/tests/test_toolbox_writes.py   (exit 0 = green)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 import os  # noqa: E402
 import tempfile  # noqa: E402
@@ -73,7 +35,7 @@ from db.models import Account, Action, BioLink, BioProfile, Employee, UserAccoun
 
 IDS = fx.seed_two_agencies()
 CA, CB = IDS["creator_a"], IDS["creator_b"]
-CA2 = "1000003"  # a second Creator of Agency A
+CA2 = "1000003"
 OWNER_A = IDS["agency_a_owner"]
 for _aid, _nick in ((CA, "creator_a"), (CB, "creator_b"), (CA2, "creator_a2")):
     account_registry.save_meta(_aid, {"id": _aid, "nickname": _nick})
@@ -99,7 +61,6 @@ HB = {"Authorization": f"Bearer {TOK_B}"}
 
 
 class _FakeOF:
-    """The OnlyFans client the folder routes build (`ax._make_client`): every call recorded."""
 
     def __init__(self):
         self.timeout_s = 5.0
@@ -172,7 +133,6 @@ def _rpc(method, params=None, headers=HA):
 
 
 def _tool(name, args, headers=HA) -> dict:
-    """tools/call → (isError, structuredContent)."""
     res = _rpc("tools/call", {"name": name, "arguments": args}, headers)["result"]
     assert json.loads(res["content"][0]["text"]) == res["structuredContent"], res
     return {"isError": res["isError"], **res["structuredContent"]}
@@ -213,7 +173,6 @@ def _bio_rows(owner_user_id: str | None = None) -> list[tuple]:
 
 
 def _b_page() -> tuple[str, str]:
-    """Agency B's page (with Creator B) and one link on it, made by B's own cookie."""
     r = B.post("/admin/bio-pages", json={"username": f"bpage{next(_ids)}", "display_name": "B", "account_id": CB})
     assert r.status_code == 201, r.text
     pid = r.json()["profile"]["id"]
@@ -222,7 +181,6 @@ def _b_page() -> tuple[str, str]:
     return pid, r.json()["links"][-1]["id"]
 
 
-# ── cases ────────────────────────────────────────────────────────────
 
 def case_listed_as_writes() -> None:
     listed = {t["name"]: t for t in _rpc("tools/list")["result"]["tools"]}
@@ -284,22 +242,18 @@ def case_bio_tools() -> None:
     for action in ("POST /admin/bio-pages", f"POST /admin/bio-pages/{pid}/links",
                    f"POST /admin/bio-pages/{pid}/avatar/vault", f"POST /admin/bio-pages/{pid}/background/vault",
                    f"POST /admin/bio-pages/{pid}/links/{lk['id']}/background/vault"):
-        assert (action, CA, "token mcp", OWNER_A) in new, (action, new)  # the page's stored Creator
-    # A page with no Creator: no Creator to bind, the link still lands; audit says no Creator.
+        assert (action, CA, "token mcp", OWNER_A) in new, (action, new)
     bare = _tool("bio_page_create", {"username": "tool_bare", "display_name": "Bare"})
     assert bare["isError"] is False and bare["profile"]["account_id"] is None and bare["links"] == [], bare
     since = _last_action_id()
     res = _tool("bio_link_add", {"pid": bare["profile"]["id"], "title": "Hi", "destination": "https://hi.test/"})
     assert res["isError"] is False, res
     assert [(aid, via) for _, _, aid, via, _ in _actions(since)] == [(None, "token mcp")], _actions(since)
-    # A vault photo needs a Creator: the route's 409 comes back as an error result.
     res = _tool("bio_avatar_from_vault", {"pid": bare["profile"]["id"], "media_id": PHOTO_A})
     assert res["isError"] is True and res["error"]["status"] == 409, res
 
 
 def case_page_without_of_link_is_error() -> None:
-    """The Creator's OnlyFans profile unreadable + an explicit name: the route still creates the page, with no
-    OnlyFans link (bio_pages.admin._of_me swallows it) → an error naming the page, not success."""
     async def _no_me(account_id):
         return None
     bio_admin._of_me = _no_me  # type: ignore[assignment]
@@ -307,7 +261,7 @@ def case_page_without_of_link_is_error() -> None:
         res = _tool("bio_page_create", {"username": "no_of_link", "display_name": "Ava", "account_id": CA})
     finally:
         bio_admin._of_me = _fake_me  # type: ignore[assignment]
-    pid = next(r[0] for r in _bio_rows() if r[1] == "no_of_link")  # the page was made
+    pid = next(r[0] for r in _bio_rows() if r[1] == "no_of_link")
     assert res["isError"] is True and res["error"]["status"] == 502, res
     assert res["error"]["detail"]["detail"] == (f"page {pid} was created without the OnlyFans link; do not retry "
                                                 "create; add it with bio_link_add"), res
@@ -315,8 +269,6 @@ def case_page_without_of_link_is_error() -> None:
 
 
 def case_resource_tools_audit_its_creator() -> None:
-    """Drift, over TOOLS: the gate refuses any Creator to a write tool with no account_id, so each such tool's
-    route must audit the resource's stored Creator (bio_pages.admin._audit_as). A new one needs a row here."""
     page = _tool("bio_page_create", {"username": f"drift_page{next(_ids)}", "account_id": CA})
     pid, lid = page["profile"]["id"], page["links"][0]["id"]
     sample = {"bio_avatar_from_vault": {"pid": pid, "media_id": PHOTO_A},
@@ -341,7 +293,6 @@ async def _add_links(pid: str, n: int) -> None:
 
 
 def case_new_link_past_row_cap() -> None:
-    """A page past the result's 50-row cut: the new link (last) is cut from `links`, `link` still names it."""
     pid = _tool("bio_page_create", {"username": f"full_page{next(_ids)}", "account_id": CA})["profile"]["id"]
     asyncio.run(_add_links(pid, td.MAX_ROWS + 5))
     res = _tool("bio_link_add", {"pid": pid, "title": "Last", "destination": "https://last.test/"})
@@ -354,7 +305,7 @@ def case_new_link_past_row_cap() -> None:
 
 def case_echo_lost_args_is_error() -> None:
     OF.reset()
-    OF.fail_add = True  # the route swallows this and still answers 200 with added=0
+    OF.fail_add = True
     res = _tool("of_folder_create", {"account_id": CA, "name": "Lost", "media_ids": [PHOTO_A]})
     assert res["isError"] is True and res["error"]["status"] == 502, res
     assert "0 of 1 media added" in res["error"]["detail"]["detail"], res
@@ -376,7 +327,6 @@ def case_echo_lost_args_is_error() -> None:
         (tw.check_bio_page_create, {"username": "u_1", "display_name": "Mine", "account_id": None},
          {"profile": {"id": "x", "username": "u_1", "display_name": "Mine", "account_id": None}, "links": []}),
         (tw.check_bio_link_add, link, {**page, "links": [*page["links"], new_link], "link": new_link}),
-        # The route names the created link: a concurrent add beside it is not a failed write.
         (tw.check_bio_link_add, link, {**page, "links": [*page["links"], theirs, new_link], "link": new_link}),
     )
     for check, args, body in ok:
@@ -390,18 +340,16 @@ def case_echo_lost_args_is_error() -> None:
         (tw.check_bio_page_create, {"username": "u_1", "display_name": None, "account_id": CA},
          {"profile": {"id": "x", "username": "u_1", "display_name": "N", "account_id": None}}),
         (tw.check_bio_page_create, {"username": "u_1", "display_name": None, "account_id": None}, {}),
-        # A Creator asked, her OnlyFans profile unreadable: the page has no OnlyFans link.
         (tw.check_bio_page_create, {"username": "u_1", "display_name": "Mine", "account_id": CA},
          {"profile": {"id": "x", "username": "u_1", "display_name": "Mine", "account_id": CA},
           "links": [{**of_link, "destination": "https://other.test/onlyfans.com/"}]}),
-        (tw.check_bio_link_add, link, {**page, "links": [*page["links"], new_link]}),  # no `link`
+        (tw.check_bio_link_add, link, {**page, "links": [*page["links"], new_link]}),
         (tw.check_bio_link_add, link, {**page, "link": {**new_link, "tracking": False}}),
         (tw.check_bio_link_add, link, {**page, "link": {**new_link, "icon_stock": None}}),
         (tw.check_bio_link_add, link, {**page, "links": [*page["links"], new_link], "link": theirs}),
     )
     for check, args, body in bad:
         assert isinstance(check(args, body), str), (check.__name__, args, body)
-    # No id back: of_folders_list hides empty folders, so the text must stop a duplicating retry.
     why = tw.check_folder_create(a, {"account_id": CA, "id": None, "name": "N", "added": 0})
     assert "do not retry" in why and "of_folders_list" not in why, why
 
@@ -449,7 +397,6 @@ def case_cross_agency_refused() -> None:
     assert _actions(since) == [], _actions(since)
     assert _bio_rows(IDS["agency_b_owner"]) == b_rows
     assert not any(r[1] == "steal_b" for r in _bio_rows())
-    # The other way round: B's token on A's Creator and A's page.
     a_pid = _tool("bio_pages_list", {})["profiles"][0]["id"]
     assert _tool("of_folder_create", {"account_id": CA, "name": "x"}, HB)["error"]["status"] in (403, 404)
     assert _tool("bio_link_add", {"pid": a_pid, "title": "x", "destination": "https://x/"}, HB)["error"]["status"] == 404
@@ -466,26 +413,25 @@ def case_bearer_raw_route_gated() -> None:
     link = f"/admin/bio-pages/{pid}/links"
     ok_link = {"title": "Raw", "destination": "https://raw.test/", "is_adult": False, "tracking": False}
     refused = (
-        ("POST", folder, {**ok_body, "x": 1}, *as_tool),                                  # unknown body key
-        ("POST", folder, {**ok_body, "media_ids": ["9001"]}, *as_tool),                   # a type the tool refuses
-        ("POST", folder, ok_body, {"account_id": CA, "debug": "1"}, as_tool[1]),          # unknown query param
-        ("POST", folder, ok_body, {"account_id": CA}, {"X-Account-Id": CB}),              # header ≠ body Creator
-        ("POST", folder, ok_body, {"account_id": CB}, as_tool[1]),                        # query ≠ body Creator
-        ("POST", folder, ok_body, {}, {}),                                                # no header/query Creator
-        ("POST", folder, {**ok_body, "name": " Raw "}, *as_tool),                         # not as the tool sends it
+        ("POST", folder, {**ok_body, "x": 1}, *as_tool),
+        ("POST", folder, {**ok_body, "media_ids": ["9001"]}, *as_tool),
+        ("POST", folder, ok_body, {"account_id": CA, "debug": "1"}, as_tool[1]),
+        ("POST", folder, ok_body, {"account_id": CA}, {"X-Account-Id": CB}),
+        ("POST", folder, ok_body, {"account_id": CB}, as_tool[1]),
+        ("POST", folder, ok_body, {}, {}),
+        ("POST", folder, {**ok_body, "name": " Raw "}, *as_tool),
         ("POST", f"{folder}/7001/add", {"account_id": CA, "list_id": 7002, "media_ids": [PHOTO_A]}, *as_tool),
         ("POST", link, {**ok_link, "geo": {"US": "1"}}, {}, {}),
-        ("POST", link, {"title": "Raw", "destination": "https://raw.test/"}, {}, {}),     # defaults not sent
-        ("POST", link, {**ok_link, "is_adult": 0}, {}, {}),                               # 0 is not false
-        # A page tool takes no Creator: its route audits the page's stored one, so none may be named.
-        ("POST", link, ok_link, {}, {"X-Account-Id": CB}),                                # another Agency's
-        ("POST", link, ok_link, {}, {"X-Account-Id": CA2}),                               # own Agency, not the page's
-        ("POST", link, ok_link, {}, {"X-Account-Id": CA}),                                # even the page's own
+        ("POST", link, {"title": "Raw", "destination": "https://raw.test/"}, {}, {}),
+        ("POST", link, {**ok_link, "is_adult": 0}, {}, {}),
+        ("POST", link, ok_link, {}, {"X-Account-Id": CB}),
+        ("POST", link, ok_link, {}, {"X-Account-Id": CA2}),
+        ("POST", link, ok_link, {}, {"X-Account-Id": CA}),
         ("POST", link, ok_link, {"account_id": CA2}, {}),
         ("POST", f"/admin/bio-pages/{pid}/avatar/vault", {"media_id": PHOTO_A}, {}, {"X-Account-Id": CA2}),
         ("POST", f"/admin/bio-pages/{pid}/avatar/vault", {"media_id": PHOTO_A, "type": "photo"}, {}, {}),
         ("POST", "/admin/bio-pages", {"username": "raw_mode", "display_name": "R", "mode": "direct"}, {}, {}),
-        ("POST", "/admin/bio-pages", [1, 2], {}, {}),                                     # not an object
+        ("POST", "/admin/bio-pages", [1, 2], {}, {}),
     )
     for method, path, body, query, headers in refused:
         r = ANON.request(method, path, json=body, params=query, headers={**HA, **headers})
@@ -493,25 +439,22 @@ def case_bearer_raw_route_gated() -> None:
         assert r.json()["detail"].startswith(token_auth.WRITE_REFUSED), r.text
     r = ANON.post(folder, content=b"{not json", headers={**HA, "Content-Type": "application/json"})
     assert r.status_code == 403, r.text
-    deep = b'{"name":' + b"[" * 100_000 + b"]" * 100_000 + b"}"  # json.loads → RecursionError, not ValueError
+    deep = b'{"name":' + b"[" * 100_000 + b"]" * 100_000 + b"}"
     r = ANON.post(folder, content=deep, headers={**HA, "Content-Type": "application/json"})
     assert r.status_code == 403 and r.json()["detail"].startswith(token_auth.WRITE_REFUSED), (r.status_code, r.text)
     assert OF.calls == [] and _actions(since) == [], (OF.calls, _actions(since))
-    # Exactly what the tool would send: through, and audited as the token — the bio write as the page's Creator.
     r = ANON.post(folder, json=ok_body, params=as_tool[0], headers={**HA, **as_tool[1]})
     assert r.status_code == 200 and r.json()["added"] == 1, r.text
     r = ANON.post(link, json=ok_link, headers=HA)
     assert r.status_code == 201, r.text
     assert [(a, aid, via) for _, a, aid, via, _ in _actions(since)] == [
         ("POST /admin/vault-ai/of-folders", CA, "token mcp"), (f"POST {link}", CA, "token mcp")], _actions(since)
-    # A cookie caller is not gated: the same extra keys reach the route as before; a bio write it labels with
-    # another Creator is still audited as the page's own.
     since = _last_action_id()
     r = A.post(folder, json={**ok_body, "x": 1})
     assert r.status_code == 200, r.text
     r = A.post(link, json={"title": "Geo", "destination": "https://x/", "geo": {"US": "1"}}, headers={"X-Account-Id": CA2})
     assert r.status_code == 201, r.text
-    assert [aid for _, _, aid, _, _ in _actions(since)] == [None, CA], _actions(since)  # folder: no header sent
+    assert [aid for _, _, aid, _, _ in _actions(since)] == [None, CA], _actions(since)
 
 
 def case_revoked_token_cannot_write() -> None:

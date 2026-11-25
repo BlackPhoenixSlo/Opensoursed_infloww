@@ -21,7 +21,6 @@ const no = (reason: unknown): PromiseRejectedResult => ({ status: "rejected", re
 const run = (actions: ManageAction[], from: ManageState = initialManageState) => actions.reduce(manageReducer, from);
 const start = (seq: number): ManageAction => ({ type: "refreshStart", seq });
 const settle = (seq: number, users: Users, roster: Roster): ManageAction => ({ type: "refreshSettled", seq, users, roster });
-/** One whole refresh, numbered after `from`'s. */
 const refreshed = (users: Users, roster: Roster, from: ManageState = initialManageState) =>
   run([start(from.seq + 1), settle(from.seq + 1, users, roster)], from);
 const ids = (s: ManageState) => (s.keyStatus === null ? null : Object.keys(s.keyStatus));
@@ -146,7 +145,6 @@ describe("panes", () => {
     expect(run(actions).open).toEqual(open);
   });
 
-  // The open pane follows its row: gone from visibleRows → closed.
   const roster = ok({ agencies: [status("1", 2), status("2", 0)] });
   const loaded = refreshed(ok(ROWS), roster);
   const openOn = (userId: string, s: ManageState = loaded) => run([{ type: "togglePane", userId, pane: "grant" }], s);

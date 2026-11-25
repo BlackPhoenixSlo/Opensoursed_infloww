@@ -1,9 +1,3 @@
-/**
- * PromoReactivateCard (Keep running's status row, docs/spec/phase-01-promo-preempt.md): ticked campaigns read
- * "Re-creates after it ends"; a campaign Inflowwww turned off stays listed with its reason and who
- * fixes it, a held one says why; the lines' text is the relay's (`keep_lines`). With Re-create at 90% filled (`preempt`, cap 10 or more) it
- * reads "Re-creates at 90% filled or shortly before it ends" unless the server switch is off or it waits (`keep_wait`).
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -92,7 +86,7 @@ describe("PromoReactivateCard", () => {
     mount();
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe("“Week”: Keep running is off: 3 promos in a row … then tick Keep running again");
-    expect(alert.className).toContain("break-words");   // wraps on a 390 px phone
+    expect(alert.className).toContain("break-words");
     expect(screen.getByText("No campaign is set to keep running")).toBeTruthy();
   });
 
@@ -111,7 +105,6 @@ describe("PromoReactivateCard", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  // The text is the relay's (service/tests/test_promotions.py case_w30_f6_keep_lines); the card adds the lead and time.
   it.each<[PromoCampaign["keep_lines"], { text: string; off: boolean }[]]>([
     [[], []],
     [[line("Not re-creating", "Tick Keep running again", true)], [{ text: "Not re-creating: Tick Keep running again", off: true }]],

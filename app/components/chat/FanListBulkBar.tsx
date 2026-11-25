@@ -1,23 +1,5 @@
 "use client";
 
-/**
- * FanListBulkBar — the Fan List's select mode bar (Infloww's "Select chat",
- * 04-messages-pro M4/M5). FanList owns which rows are picked; this bar shows
- * the count and acts on them:
- *   • Select all / Clear selection: every row on screen, or none
- *   • Mark as read: the unread picks, through FanList's `markChatsRead`, one
- *     unpaced POST /chats/{id}/mark-as-read per pick
- *   • Add to lists ▸: the Creator's lists that take users (`/chats/folders`,
- *     as the Avatar menu's "Add to lists"); a pick is one POST /lists/users
- *     with every picked Fan. Per Creator, so All Models does not offer it.
- *   • Delete: "Delete selected conversations?" first; then DELETE /chats/{id}
- *     per pick (paced by the relay), which clears the chat on OnlyFans and
- *     cannot be undone. Hidden from a role denied "Delete chats".
- * After a partial failure only the failed rows stay picked.
- *   • Done: leaves select mode.
- * Every route is the Messages Pro page's, so the relay's role enforcement
- * decides as it does for the same calls elsewhere on the page.
- */
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -40,15 +22,10 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 export function FanListBulkBar({
   picked, shownCount, listsAccountId, onSelectAll, onPickOnly, onDone, markChatsRead,
 }: {
-  /** The picked chats, in list order. */
   picked: OFChatItem[];
-  /** Rows on screen, which "Select all" picks. */
   shownCount: number;
-  /** The scoped Creator, whose lists "Add to lists" offers; null in All Models. */
   listsAccountId: string | null;
   onSelectAll: () => void;
-  /** Leave exactly these rows picked: none clears the selection; after a
-   *  partial failure, the rows that failed, so a retry acts on them alone. */
   onPickOnly: (rows: OFChatItem[]) => void;
   onDone: () => void;
   /** FanList's per-chat mark-read loop: marks the
@@ -61,12 +38,11 @@ export function FanListBulkBar({
   const canDelete = useActionAllowed("delete-chat");
   const count = picked.length;
 
-  /** Run `call` for each pick in turn, each on its row's own Creator; returns
-   *  the picks that failed. A row with no Creator stamp is never sent. */
   async function eachPick(call: (c: OFChatItem, accountId: string) => Promise<unknown>, of: OFChatItem[]) {
     const failed: OFChatItem[] = [];
     for (const c of of) {
       try {
+        // a row with no Creator stamp is never sent
         if (!c.__accountId) throw new Error("row has no Creator");
         await call(c, c.__accountId);
       } catch (err) {
@@ -98,7 +74,7 @@ export function FanListBulkBar({
     try {
       await relay.post("/api/of/v2/lists/users", { [listId]: picked.map((c) => c.withUser.id) }, { accountId: listsAccountId });
       qc.invalidateQueries({ queryKey: ["chat-folders", listsAccountId] });
-      qc.invalidateQueries({ queryKey: ["fan-lists", listsAccountId] }); // the composers' list counts
+      qc.invalidateQueries({ queryKey: ["fan-lists", listsAccountId] });
       qc.invalidateQueries({ queryKey: ["chats"] });
       flash(true, `Added ${plural(count, "Fan")} to "${name}"`);
     } catch (e) {
@@ -111,7 +87,6 @@ export function FanListBulkBar({
       `Delete ${plural(count, "selected conversation")}? This clears the messages on OnlyFans and cannot be undone.`,
       { danger: true },
     ))) return;
-    // One paced DELETE per chat (the relay spaces them), so the bar stays busy a while.
     const failed = await eachPick(async (c, accountId) => {
       await relay.delete(`/api/of/v2/chats/${c.withUser.id}`, { accountId });
       qc.invalidateQueries({ queryKey: ["messages", accountId, c.withUser.id] });
@@ -152,14 +127,12 @@ export function FanListBulkBar({
   );
 }
 
-/** "Add to lists ▸" and its menu: the Creator's lists that take users. */
 function AddToLists({ accountId, disabled, onPick }: {
   accountId: string;
   disabled: boolean;
   onPick: (listId: string, name: string) => void;
 }) {
   const { open, setOpen, ref, triggerProps, menuProps } = useFanListMenu<HTMLDivElement>();
-  // The Fan List's own OF lists read (its pencil's), so the menu opens from the cache.
   const foldersQ = useAllChatFolders(accountId);
   const lists = (foldersQ.data ?? []).filter((f) => f.canAddUsers);
   return (

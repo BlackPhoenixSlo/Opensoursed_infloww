@@ -1,27 +1,3 @@
-"""My Automations > Auto Post: one rule = one post, the rule's "Run every" its only clock, all in ONE popup (the post's
-fields inline, no Compose dialog / "Use in rule"), and the list shows each rule's post (app/components/compose/
-PremadeFields.tsx, premadeRows.ts, automations/ruleEditorForm.ts, readyMadeContent.ts, ReadyMadeRuleEditor.tsx,
-RuleTable.tsx). The Auto Mass twin is 2026-11-08-auto-mass-one-message (same shared files, another page and key).
-
-World: `agency_inbox`. Creator 0 gets an older Auto Post rule through the real POST /admin/automation-rules (two
-posts, a delay on the second, a repost cycle; disabled, so nothing fires).
-Flow, on a 390x844 phone: the owner opens /growth/auto-post, New auto post: the popup holds the caption box at once
-(screenshot `popup-top`), types a caption, sets Price 12 (`popup-media-price`: the free preview pool appears) and
-Auto-delete after 6 (`popup-bottom`: no More settings, no repost cycle; with no image Create waits, `ppv-wait`),
-clears the price (no vault media in this world to attach), Create (`saved`: the new row reads its post);
-then Edit on the older rule (`legacy-notice`), Edit in Raw JSON (`legacy-raw`), Cancel.
-
-Checks (names in lib/auto_post_faults.py):
-  AP_FORM    one popup: the post's fields inline (no Compose button, no second dialog, no Use in rule); one post and no
-             list / delay / repost field, no More settings; caption, media pool, price, auto-delete shown; preview
-             pool only once paid; the popup and page fit the phone.
-  AP_STORED  the POST body's payload, the GET route's and the automation_rules row's: exactly the one post, no
-             resend_* / delay_minutes key; the rule's list row reads its post.
-  AP_LEGACY  the older rule's notice, no post fields, Raw JSON holds its payload, the row unchanged after Cancel.
-
-FAULT `auto-post-legacy-composer` (client: `formHoldReason` always null): AP_LEGACY goes red, alone.
-UI only (`--no-ui` skips): not a volume path, proven once on the real page.
-"""
 from __future__ import annotations
 
 import json
@@ -43,24 +19,22 @@ LEGACY = {"posts": [{"text": "slop legacy one", "hours_to_live": 6},
           "resend_count": 1, "resend_after_hours": 24}
 WANT = [{"text": TEXT, "hours_to_live": 6}]
 SUMMARY = f"Free · {TEXT} · deletes after 6h"
-# A priced post with no image never posts (auto_posts `paid_no_media`): Create waits with this line.
+# A priced post with no image never posts (auto_posts paid_no_media): Create waits with this line.
 PPV_HELP = "A paid post needs an image: add one or a vault folder, or make it free, to enable Create."
 TIMER_KEYS = ("resend_count", "resend_after_hours", "delay_minutes")
 GONE = ("Delay before posting", "Delay after previous", "Repost whole list after", "Repost this many times")
 NOTICE = "Older multi-post rule — edit in Raw JSON."
 RULES = "/admin/automation-rules"
-# The page and each open dialog within the phone's width.
 _FITS = """() => ({page: document.documentElement.scrollWidth, vw: innerWidth,
   dialogs: [...document.querySelectorAll('[role=dialog]')].map((d) => {
     const r = d.getBoundingClientRect(); return {left: r.left, right: r.right, sw: d.scrollWidth, cw: d.clientWidth}; })})"""
-# Finite animations (a modal's pop in / out) done; a skeleton's endless pulse does not count.
+# Finite animations (a modal's pop in/out) done; a skeleton's endless pulse does not count.
 _SETTLED = """() => document.getAnimations().filter((a) => a.playState === 'running'
   && a.effect && a.effect.getComputedTiming().iterations !== Infinity).length === 0"""
 
 
 
 async def _row_edit(page, row) -> None:
-    """A phone rule row's Edit: its "⋯" menu (the wide row's links are desktop only)."""
     await row.get_by_role("button", name=re.compile(r"^More actions for ")).click(timeout=30_000)
     await row.get_by_role("menuitem", name="Edit", exact=True).click(timeout=10_000)
 
@@ -75,7 +49,6 @@ def _fits(f: dict) -> bool:
 
 
 def _timer_keys(payload) -> list[str]:
-    """Every resend_* / delay_minutes key on the payload or any of its posts."""
     if not isinstance(payload, dict):
         return []
     items = [payload, *[p for p in payload.get("posts") or [] if isinstance(p, dict)]]
@@ -108,7 +81,7 @@ async def run(ctx) -> None:
         await page.get_by_role("button", name="New auto post").first.click(timeout=WAIT_MS)
         editor = page.get_by_role("dialog", name="New auto post")
         box = editor.get_by_placeholder("Post caption…")
-        await box.wait_for(timeout=WAIT_MS)  # the fields are in the popup itself
+        await box.wait_for(timeout=WAIT_MS)
         shots = [await _shot(ctx, page, "popup-top")]
         one_popup = {
             "compose_button": await editor.get_by_role("button", name="Compose", exact=True).count(),
@@ -116,7 +89,7 @@ async def run(ctx) -> None:
             "dialogs": await page.get_by_role("dialog").count(),
         }
         free_preview = await editor.get_by_role("button", name="Pick preview pool").count()
-        folder_pools = await editor.get_by_text("Folder pool", exact=True).count()  # free: the media pool's alone
+        folder_pools = await editor.get_by_text("Folder pool", exact=True).count()
 
         await box.fill(TEXT)
         price = editor.get_by_placeholder("0 (free)")
@@ -158,7 +131,7 @@ async def run(ctx) -> None:
                   and all(v == 1 for v in form["shown"].values()) and form["preview_pool_free"] == 0
                   and form["preview_pool_paid"] == 1 and ppv_wait == {"create_disabled": True, "help": 1}
                   and _fits(form["fits"]), **form, screenshots=shots)
-        await price.fill("")  # free: no vault media in this world to attach
+        await price.fill("")
 
         async with page.expect_response(lambda x: x.request.method == "POST" and urlsplit(x.url).path == RULES,
                                         timeout=30_000) as created:

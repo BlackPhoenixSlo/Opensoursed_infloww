@@ -1,4 +1,3 @@
-/** The nav's plugin slots (lib/chatSlots.ts) with a made-up plugin. */
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/plugins.generated.register", () => ({

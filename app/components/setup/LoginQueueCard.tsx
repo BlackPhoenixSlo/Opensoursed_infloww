@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * LoginQueueCard — paste many OnlyFans logins, one `email<separator>password` per line (ultra-mode ticket 11; relay:
- * service/login_queue.py via POST /admin/login/remote/queue). The relay logs them in one at a time with the Browser
- * login (Browserbase) on its default proxy, the Add creator card's: the Inflowwww proxy when the relay has one, an
- * account already on a proxy keeps it; adding one is never required. Bad lines come back by number, never their text.
- *
- * Each entry shows its state; one on OnlyFans' 2FA prompt gets the shared code field (RemoteLoginOtp), one on a check
- * a link to its live view. A login that fails or runs out of time is also filed as a notification, and the queue goes
- * on. The queue id and each entry's email + state are kept per browser (the id also in `?queue=`, the notification's
- * link), so a reload resumes it; a queue the relay no longer has (it restarted, or a newer paste replaced it) lists
- * what was seen, done and not. With none open, or when Start fails without a sure refusal (no answer, a 409, a 5xx),
- * the card opens the owner's running queue; the error shows only when there is none. Polling goes on until every
- * entry ended (after Stop queue the running login winds down). The paste is cleared once the relay has it.
- *
- * State: loginQueue.ts (this only dispatches).
- */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useReducer } from "react";
@@ -60,7 +44,6 @@ export default function LoginQueueCard({ linkedQueueId = null }: { linkedQueueId
     else url.searchParams.delete("queue");
     window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
   }, [s.hydrated, s.queueId, stored]);
-  // None open once hydrated: the owner's running queue (e.g. Start's answer was lost) is opened.
   const hydratedEmpty = s.hydrated && !s.queueId;
   useEffect(() => {
     if (hydratedEmpty) void currentQueue().then((view) => view && send({ type: "adopt", view }));
@@ -85,12 +68,11 @@ export default function LoginQueueCard({ linkedQueueId = null }: { linkedQueueId
     if (doneCount > 0) for (const key of ["accounts", "proxies", "health-all"]) qc.invalidateQueries({ queryKey: [key] });
   }, [doneCount, qc]);
 
-  /** The owner's last queue, if the relay has one. */
   async function currentQueue(): Promise<QueueView | null> {
     try {
       return await relay.get<QueueView>(QUEUE);
     } catch {
-      return null; // 404: none
+      return null;
     }
   }
   async function start() {

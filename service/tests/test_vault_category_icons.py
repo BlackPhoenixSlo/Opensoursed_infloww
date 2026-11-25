@@ -1,7 +1,6 @@
-"""The icon store is scoped to the signed-in agency and crops actual image bytes."""
 from __future__ import annotations
 
-import _harness
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -50,7 +49,6 @@ async def case_upload_crop_share_within_agency_and_reset():
         image.paste((240, 20, 35), (0, 0, 120, 110))
         image.save(output, "PNG")
         files = {"file": ("picture.png", output.getvalue(), "image/png")}
-    # standard folders off (the default): no icons, no writes
     off = owner.get(BASE, params=account)
     assert off.status_code == 200 and off.json() == {"enabled": False, "can_edit": False, "icons": {}}, off.text
     assert owner.post(endpoint, params=account, data={"x": "0.5", "y": "0"}, files=files).status_code == 404
@@ -74,7 +72,6 @@ async def case_upload_crop_share_within_agency_and_reset():
     assert owner.get(BASE, params=account).json()["icons"]["covered-breast"] == icon
     assert owner.delete(endpoint, params=account).status_code == 200
     assert owner.get(BASE, params=account).json()["icons"] == {}
-    # an icon saved while on is hidden for a Creator whose switch is off, shown again for one that is on
     assert owner.post(endpoint, params=account, data={"x": "0.5", "y": "0"}, files=files).status_code == 200
     await vault_settings.put("creator-a2", standard_folders=False)
     assert owner.get(BASE, params={"account_id": "creator-a2"}).json() == {"enabled": False, "can_edit": False, "icons": {}}

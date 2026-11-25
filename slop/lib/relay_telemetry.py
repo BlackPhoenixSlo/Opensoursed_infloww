@@ -1,4 +1,3 @@
-"""Read flushed relay telemetry from a slop run."""
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +6,6 @@ from collections import Counter
 
 
 async def flushed_log(ctx) -> str | None:
-    """Return relay.log after a forced write_telemetry line lands, or None when disabled."""
     flushed = (await ctx.owner.post("/__slop/telemetry-flush", json={})).json().get("line")
     if flushed is None:
         return None
@@ -21,7 +19,6 @@ async def flushed_log(ctx) -> str | None:
 
 
 def writers(text: str) -> Counter:
-    """Sum write_telemetry write transactions per writer label."""
     out = Counter()
     for line in text.splitlines():
         i = line.find(" write_telemetry {")

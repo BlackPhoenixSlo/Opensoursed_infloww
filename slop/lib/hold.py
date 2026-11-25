@@ -1,16 +1,3 @@
-"""A page's save held at the browser's wire: the operator typing while a slow save is in flight.
-
-`async with held(page, match, "PUT") as h:` routes `match` through a `Hold` for the block: every PUT body is
-recorded (`h.bodies`), the first is held until `h.release` is set (`h.seen` once it arrived), the rest pass. On exit,
-failure included, the hold is released and the route removed, so a red section never leaves a request hanging.
-`release_settled` lets the held save through and waits until the page settled it. Each request is then let through
-to the relay unchanged (`route.fallback`).
-
-`with recorded(page, "POST", path) as sent:` records every such request the page sends, unaltered, as
-{"url", "body", "status"}: `status` None until answered, then the HTTP status, or `"failed: <reason>"` if the request
-failed before an answer (so a wait on it ends with a reason).
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -19,8 +6,6 @@ from urllib.parse import urlsplit
 
 
 class Hold:
-    """A route handler for the URLs `match` takes: records each `method` body and holds the first such request
-    until `release` is set."""
 
     def __init__(self, match, method: str):
         self.match, self.method, self.on = match, method, True
@@ -49,10 +34,6 @@ async def held(page, match, method: str):
 
 async def release_settled(page, hold: Hold, refetch: str | None = None, save=None,
                           timeout_ms: float = 120_000) -> int:
-    """Let the held request through and wait until it settled: its response, then the GET of `refetch` (a path: the
-    query its onSuccess invalidates, what a re-seed or a wipe would show), then `save` (a Save button) enabled again
-    (the mutation no longer pending: the render its onSuccess lands in), then two frames. Returns the held
-    response's status."""
     is_held = lambda x: x.request.method == hold.method and hold.match(x.url)  # noqa: E731
     is_refetch = lambda x: x.request.method == "GET" and urlsplit(x.url).path == refetch  # noqa: E731
     async with page.expect_response(is_held, timeout=timeout_ms) as resp:
@@ -71,9 +52,8 @@ async def release_settled(page, hold: Hold, refetch: str | None = None, save=Non
 
 @contextmanager
 def recorded(page, method: str, path: str):
-    """Every `method` request to `path` the page sends, in order (module docstring). The listeners come off on exit."""
     sent: list[dict] = []
-    reqs: list = []  # sent[i]'s Request
+    reqs: list = []
 
     def on_request(r) -> None:
         if r.method == method and urlsplit(r.url).path == path:
@@ -86,7 +66,6 @@ def recorded(page, method: str, path: str):
                 x["status"] = status
 
     on_response = lambda r: settle(r.request, r.status)  # noqa: E731
-    # A body that fails after its headers came keeps the HTTP status the server answered.
     on_failed = lambda r: settle(r, f"failed: {r.failure}", unanswered_only=True)  # noqa: E731
     page.on("request", on_request)
     page.on("response", on_response)

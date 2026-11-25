@@ -1,7 +1,3 @@
-/**
- * The Settings pages against OF's own /api2/v2 answers for one model, read through the Relay and scrubbed
- * (app/lib/__fixtures__/of/settings-*.json: synthetic names, a placeholder email, no phone, stream keys or IPs).
- */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -147,10 +143,8 @@ describe("the toggles show the model's captured values", () => {
     expect([field.readOnly, field.disabled, field.title]).toEqual([true, true, "Not available in Inflowwww yet"]);
     const help = field.closest(".v-input")!.querySelector(".g-input__help")!;
     expect(textOf(help)).toBe(`E-mail ${ME.email} is verified`);
-    // Not verified: no hint (OF's error text is not in the capture).
     applyPageExtras(document, "account/email", data({ me: { ...ME, isEmailChecked: false } }), true);
     expect(textOf(help)).toBe("");
-    // Two Step Authentication's passwordless note.
     load("account/2fa");
     expect(sourcesFor("account/2fa")).toContain("me");
     applyPageExtras(document, "account/2fa", data(), true);
@@ -189,7 +183,7 @@ describe("the toggles show the model's captured values", () => {
     applySettings(document, "fans", {});
     applyPageExtras(document, "fans", {}, true);
     expect(input("setting_isAutoFollowBack").checked).toBe(before);
-    expect(line("Following price").style.display).toBe("none"); // the generator's hidden placeholder price stays hidden
+    expect(line("Following price").style.display).toBe("none");
   });
 });
 

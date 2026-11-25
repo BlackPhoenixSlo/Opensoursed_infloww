@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * OnlyFans' message text editor, as Infloww's "Edit script" Text field draws it (docs/infloww-rich-text-rea.md §1):
- * a toolbar of Text size ("Default"), B, I, A (Text color: 3 swatches, a divider, the default) and Aa (Clear
- * formatting) over the text. A contenteditable on ofMirrorFormat's model: the browser's editing commands do the
- * work (`applyFormat`), `normalize` turns what they leave into OF's markup, `ofHtml` reads it back. The value
- * contract is lib/ofRichTextEditor's: OF markup only while there is formatting, else the plain text, so a plain
- * script loads and saves byte-identical.
- *
- * The toolbar keeps the editor's selection: its buttons take no focus on press (pointer/mouse down prevented), and
- * the last range inside the editor is saved on every selection change and put back before a command (iOS Safari
- * drops it on a tap anyway). Phone portrait: the toolbar wraps, every control is 44px, the popovers fit the width.
- */
 import {
   forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState,
   type ClipboardEvent as ReactClipboardEvent, type KeyboardEvent as ReactKeyboardEvent,
@@ -28,7 +16,6 @@ import {
 import { cn } from "@/lib/utils";
 
 export interface OfRichTextEditorHandle {
-  /** Insert `text` at the caret (the last one inside the editor; else at the end). */
   insert(text: string): void;
   focus(): void;
 }
@@ -38,28 +25,20 @@ type Props = {
   onChange: (value: string) => void;
   id?: string;
   placeholder?: string;
-  /** On the plain text (what the fan reads); typing and pasting stop at it. */
   maxLength?: number;
   required?: boolean;
   "aria-labelledby"?: string;
   "aria-label"?: string;
   className?: string;
-  /** The text area's own classes (a host's size and padding), over the default ones. */
   inputClassName?: string;
-  /** Show the formatting toolbar (default). Hidden, the formatting stays and still renders (OF's "x": the toolbar
-   *  goes, the content is unchanged). */
   toolbar?: boolean;
-  /** Not editable (a host's locked form). */
   disabled?: boolean;
-  /** A host's keys (the chat's Enter to send), before the editor's own. */
   onKeyDown?: (e: ReactKeyboardEvent<HTMLDivElement>) => void;
-  /** A host's paste first (the chat uploads a pasted image); one it prevents stops here. */
   onPaste?: (e: ReactClipboardEvent<HTMLDivElement>) => void;
 };
 
+// Toolbar buttons take no focus on press so the editor keeps its selection (iOS Safari drops it on a tap anyway).
 const keep = (e: ReactPointerEvent | React.MouseEvent) => e.preventDefault();
-/** Where the browser has no editing command (jsdom): `node` (a text, a fragment) replaces the selection, the caret
- *  after it. */
 function insertAtRange(sel: Selection, node: Node): void {
   const r = sel.getRangeAt(0);
   r.deleteContents();
@@ -83,7 +62,6 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
 ) {
   const rootRef = useRef<HTMLDivElement>(null);
   const savedRange = useRef<Range | null>(null);
-  /** The value this editor last emitted: a prop equal to it is the editor's own echo, never reloaded. */
   const emitted = useRef<string | null>(null);
   const [marks, setMarks] = useState<Marks>(NO_MARKS);
   const [menu, setMenu] = useState<"size" | "color" | null>(null);
@@ -101,7 +79,6 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
     if (!root || !sel?.rangeCount || !root.contains(sel.anchorNode)) return;
     savedRange.current = sel.getRangeAt(0).cloneRange();
     const m = marksAt(root, sel.anchorNode);
-    // A B or I armed on an empty selection is the browser's typing style: it shows before the first letter.
     const doc = root.ownerDocument;
     setMarks({ ...m, bold: m.bold || commandState(doc, "bold"), italic: m.italic || commandState(doc, "italic") });
   }, []);
@@ -136,7 +113,6 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
     onChange(v);
   }, [onChange]);
 
-  /** Back to the last caret inside the editor (a tap on the toolbar may have moved it), else to its end. */
   const restore = useCallback(() => {
     const root = rootRef.current;
     if (!root) return null;
@@ -148,7 +124,6 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
       r.selectNodeContents(root.lastElementChild ?? root);
       r.collapse(false);
     }
-    // Focus first (it may move the caret), then put the range back.
     if (root.ownerDocument.activeElement !== root) root.focus({ preventScroll: true });
     sel.removeAllRanges();
     sel.addRange(r);
@@ -160,14 +135,12 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
     const sel = restore();
     if (!root || !sel) return;
     if (!sel.isCollapsed) applyFormat(root, cmd);
-    else formatAtCaret(root, sel, cmd); // no selection: OF's stored mark, the browser's typing style
+    else formatAtCaret(root, sel, cmd);
     setMenu(null);
     emit();
     refreshMarks();
   };
 
-  /** What is left under `maxLength` once the selection (which an insert replaces) is gone. IME composition and
-   *  iOS text replacement can't be held back here: the counter turns red and the form's save stays disabled. */
   const left = useCallback(() => {
     if (maxLength == null) return Infinity;
     const sel = rootRef.current?.ownerDocument.getSelection();
@@ -190,18 +163,14 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
     },
   }), [emit, left, restore]);
 
-  /** Text from outside (a drop, a paste with no formatting) goes in plain, cut to fit. */
   const insertPlain = (text: string) => {
     text = cutTo(text, left());
     if (text) exec(rootRef.current?.ownerDocument, "insertText", text);
   };
-  /** A paste keeps OF's formatting (OF's paste filter: its tags and classes, inline colours and sizes as classes); what
-   *  does not fit the limit, or has none, goes in as plain text. */
   const paste = (html: string, text: string) => {
     const root = rootRef.current;
     const marked = html && root ? pastedOfHtml(html, root.ownerDocument) : null;
     if (!root || !marked || plainLength(marked) > left()) return insertPlain(text);
-    // One paragraph goes in inline, at the caret; more split the paragraph as typed Enters would.
     const one = /^<p>((?:(?!<\/?p>).)*)<\/p>$/s.exec(marked);
     if (exec(root.ownerDocument, "insertHTML", one ? one[1] : marked)) return;
     const sel = root.ownerDocument.getSelection();
@@ -295,8 +264,8 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
         suppressContentEditableWarning
         spellCheck
         onFocus={() => exec(rootRef.current?.ownerDocument, "defaultParagraphSeparator", "p")}
-        // An IME's composition is left alone (normalizing it would move its text under it): read once it ends.
         onInput={(e) => {
+          // An IME's composition is left alone (normalizing would move its text under it): read once it ends.
           if (!(e.nativeEvent as InputEvent).isComposing) emit();
         }}
         onCompositionEnd={emit}
@@ -309,7 +278,6 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
         }}
         onKeyDown={(e) => {
           onKeyDown?.(e);
-          // Shift+Enter: a new line as a paragraph (OF's lines), never the "\n" a pre-wrap contenteditable types in.
           if (e.defaultPrevented || e.key !== "Enter" || !e.shiftKey || e.nativeEvent.isComposing) return;
           e.preventDefault();
           if (room(1)) exec(rootRef.current?.ownerDocument, "insertParagraph");
@@ -323,7 +291,6 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
         onDrop={(e) => {
           e.preventDefault();
           const doc = rootRef.current?.ownerDocument;
-          // The caret goes where the text was dropped (where the browser can say), then it goes in like a paste.
           const at = (doc as Document & { caretRangeFromPoint?: (x: number, y: number) => Range | null })
             ?.caretRangeFromPoint?.(e.clientX, e.clientY);
           if (at && rootRef.current?.contains(at.startContainer)) {

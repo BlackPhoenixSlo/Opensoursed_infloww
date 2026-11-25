@@ -1,13 +1,3 @@
-"""assistant_full_ai — Do mode's `full_ai_config` proposal (phase 03c, D63). Pure: no DB, no LLM.
-
-The assistant turns "reply slower" into a patch of the Creator's Full AI draft. `propose` applies the
-patch to the fresh merged draft (`full_ai_turn.stored_config`) and checks the result with 03a's one
-`full_ai_config.validate` (never a forked schema). The card shows `diffs`; the apply is the page's own
-rev-checked `PUT /admin/full-ai/config/draft`. The assistant never touches the checkpoint.
-
-`CONFIG_WORD` is the lexical gate `assistant_draft.vetoed` and `user_block` read, built from the
-schema (keys, labels, Writer model names, info fields), so a new key or model widens it with no edit.
-"""
 from __future__ import annotations
 
 import json
@@ -19,9 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from automations import full_ai_config
 
-# Plan-card labels: the page control's name (`REFERENCE[k]["page"]`); `_LABEL_OVERRIDES` names the JSON-only keys and
-# the few whose page entry is not one control's name; any other key shows its own name (`label`).
-# `style` reads like the page's switch (its page entry also names Typos); the legacy `text_style` lands on `style`.
 _LABEL_OVERRIDES: dict[str, str] = {
     "style": "Human style", "text_style": "Human style",
     "sext_scene": "Sext scene",
@@ -63,12 +50,11 @@ class Proposal:
 
 @dataclass(frozen=True)
 class Refusal:
-    error: str          # invalid_patch | no_change
+    error: str
     text: str
 
 
 def diffs(before: dict, after: dict) -> list[dict[str, Any]]:
-    """One row per changed key, in `after`'s key order."""
     return [{"field": k, "label": label(k), "before": before.get(k), "after": v}
             for k, v in after.items() if before.get(k) != v]
 
@@ -78,21 +64,18 @@ def refusal_text(errors: list[str]) -> str:
 
 
 def propose(cur: dict, patch: ConfigPatch) -> Proposal | Refusal:
-    """`cur`: the merged stored config (`full_ai_config.merged` / `full_ai_turn.stored_config`)."""
     base = cur["draft"]
-    # An unknown key never equals `base`, so `validate` below refuses it, as it does the JSON box's.
     if bad := [f"{k}: locked" for k in patch.set if k in LOCKED_KEYS]:
         return Refusal("invalid_patch", refusal_text(bad))
-    # `side` below drops a retired key, so name it here or the answer would be a false "already set".
+    # `side` below drops a retired key, so name it here or the answer would be a false "already set"
     if bad := full_ai_config.retired_errors(patch.set):
         return Refusal("invalid_patch", refusal_text(bad))
     after = {**base, **patch.set}
-    # 03b's `folders`: a value without `exclude` keeps the stored one (spec 03c › propose step 3).
+    # a folders value without `exclude` keeps the stored one
     f = patch.set.get("folders")
     if isinstance(f, dict) and "exclude" not in f and isinstance(base.get("folders"), dict) \
             and "exclude" in base["folders"]:
         after["folders"] = {**f, "exclude": base["folders"]["exclude"]}
-    # Do mode's prompt names the legacy `text_style`: shown and applied as the stored `style` layers.
     after = full_ai_config.side(after)
     if after == base:
         return Refusal("no_change", "That's already how the draft is set — nothing to change.")
@@ -102,20 +85,16 @@ def propose(cur: dict, patch: ConfigPatch) -> Proposal | Refusal:
 
 
 def draft_line(cur: dict) -> str:
-    """The `user_block` line: the merged stored draft, as the model patches it."""
     return "Full AI draft: " + json.dumps(cur["draft"], ensure_ascii=False, sort_keys=True)
 
 
-# ── CONFIG_WORD (built from the schema) ───────────────────────────────
 
 _FIXED = ("reply", "speed", "slow", "fast", "gif", "style", "formal", "girl", "sext", "writer", "timeout",
           "question", "info", "learn", "check", "floor", "sell", "folder", "setting", "config", "json")
-# Key words that name nothing (`his_age`; `catchup_minutes`: "every 30 minutes" is a mass ask); < 3 letters drop too.
 _STOP = frozenset({"his", "the", "and", "min", "minutes"})
 
 
 def writer_short_names() -> list[str]:
-    """Each Writer-provider model's leading word: euryale, hermes, glm, deepseek."""
     return sorted({re.match(r"[a-z]+", m).group(0) for m in full_ai_config.WRITER_MODELS
                    if re.match(r"[a-z]+", m)})
 
@@ -137,7 +116,6 @@ def config_vocab() -> list[str]:
 
 
 def _stem(w: str) -> str:
-    # "reply" → replies, "slow" → slower, "gif" → gifs, "sell" → selling.
     head = re.escape(w[:-1]) + "(?:y|ies)" if w.endswith("y") else re.escape(w)
     return head + r"(?:s|es|er|ers|ing|ed)?"
 

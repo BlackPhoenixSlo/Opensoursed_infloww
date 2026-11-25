@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * TagSettings — the Tag column's gear on Manage creators (creators-manage#35) and the Tag manager it opens: each Tag
- * with "used by N creators", Rename and Delete (Infloww's creator group CRUD, `/creator/group/rename|delete`; a Tag is
- * Infloww's `group`). A Tag lives on the accounts that hold it (useCreatorProfiles), so Rename and Delete rewrite every
- * profile holding it in one write, and a new Tag is still typed in a Creator's account details: a Tag nobody holds
- * has nowhere to live. A chatter's refused blob leaves the gear Not wired.
- */
 
 import { Settings } from "lucide-react";
 import { useState } from "react";
@@ -37,14 +30,12 @@ export default function TagSettings() {
 
 function TagManager({ onClose }: { onClose: () => void }) {
   const profiles = useCreatorProfiles();
-  // The row being renamed or asked about; one at a time.
   const [row, setRow] = useState<{ tag: string; mode: "delete" } | { tag: string; mode: "rename"; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const run = (p: Promise<void>, done: string) => {
     setBusy(true);
     p.then(() => { toast(done); setRow(null); }, (e: Error) => toast(e.message, "err")).finally(() => setBusy(false));
   };
-  /** "1 creator", "2 creators": how many hold the Tag `t`. */
   const holders = (t: string) => {
     const n = profiles.tagCounts[t] ?? 0;
     return `${n} creator${n === 1 ? "" : "s"}`;
@@ -59,7 +50,7 @@ function TagManager({ onClose }: { onClose: () => void }) {
             const r = row?.tag === t ? row : null;
             if (r?.mode === "rename") {
               const next = r.name.trim();
-              // Another Tag's name would merge the two: refused, as Infloww refuses a duplicate group name.
+              // Another Tag's name would merge the two: refused.
               const taken = next !== t && profiles.tags.includes(next);
               const canSave = !busy && !!next && next !== t && !taken;
               const save = () => { if (canSave) run(profiles.renameTag(t, next), "Tag renamed"); };

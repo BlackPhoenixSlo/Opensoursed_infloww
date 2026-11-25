@@ -1,67 +1,5 @@
 "use client";
 
-/**
- * The Dashboard's KPI header (docs/spec/infloww-parity-round-2/phase-01-dashboard.md;
- * ticket 24): Infloww's "Creator earnings overview" card as the Layout capture
- * `docs/infloww-layouts/dashboard.md` records it, and its "Employee sales"
- * card (`EmployeeSalesCard`, which the page places in the bottom box's right
- * column). Labels, order and spacing come from the capture through the control
- * catalogue (`dashboardControls.ts`); the card, the select, the period strip
- * and the colours are page-parity ticket 01's, on ticket 00's Infloww
- * primitives (`components/ui/infloww.tsx`), sampled from the live capture
- * `.scratch/infloww-live/16-dashboard.png`.
- *
- * The period is the capture's tabs (`DashboardPeriodTabs`, which the page
- * places over its grid; `DashboardPeriodProvider`, which the page wraps
- * around every card), seeded once from `?window=` and written
- * back on a click with `history.replaceState` (no history entry). Its days are
- * cut at midnight in the Agency's report time zone from the Applied settings
- * (the browser's when none is saved, as the reports do), and no read fires
- * before those settings answer.
- *
- * Total earnings and the channel tiles read one
- * `GET /admin/stats/revenue?from&to&group_by=kind`; Chargebacks (ours, in
- * the capture's Streams slot) reads it with `status=reversed` and shows the
- * sum below zero (stream sales count in Total only). That answer and the Applied
- * settings are saved with the React Query snapshot (components/providers.tsx),
- * keyed by the signed-in principal: a return visit paints the last Total at
- * once, cut by the saved settings, and refreshes both. Total sums every kind,
- * `unknown` included; each channel sums the kinds `CHANNEL_KINDS` maps to it
- * (ticket 25), so the channels can sum to less than Total and nothing here
- * says they add up. The header is Agency-wide: it sends no `account_id` (and
- * no `X-Account-Id`), whatever the top bar's scope, so the Relay bounds it to
- * the session's own Creators.
- *
- * The Net earnings / Gross earnings select opens on the capture's Net (#4) and
- * toggles every money tile (#32). The read always carries `include_net=true`;
- * Net shows OnlyFans's own `net_cents`, Gross the same answer's `total_cents`,
- * so a switch reads nothing. When some of the window's sales have no
- * net figure yet (`net_missing_count`), Net's note under the tiles says how many,
- * so gross is never read as net. The
- * select does not drive the Creator Reports card (Phase 3's). Referrals has
- * no sales kind: its tile reads `GET /admin/stats/referrals` (`useReferrals`,
- * OnlyFans' own figure per Creator, the same under Net and Gross), and Total
- * earnings adds it, as the bundle's Total counts referrals and Creator reports'
- * does. OnlyFans buckets referral days in its own time zone, so the window's
- * edges can sit a few hours off. A Creator whose referrals read failed counts
- * $0.00, and the tile is titled so; when the read failed for every Creator (or
- * outright) the tile shows "-", not a made-up $0.00. Either way Total earnings
- * carries a partial marker (`TOTAL_PARTIAL`): it holds the sales without those
- * referrals.
- *
- * Employee sales (ticket 26) reads `GET /admin/stats/per-employee?from&to`,
- * the read Employee reports makes, so each sale is credited by Sales Settings
- * and the "Unattributed" bucket is a row of its own. It sends no `account_id`
- * either, and the Relay's account clamp and Data scope bound what it shows.
- * With `include_series=true` it adds one point per day of the period, cut in
- * the report time zone, or the browser's (`tz`) when none is saved, so the
- * chart's days are the period tabs' days; a day after today in that zone (This week, This month) keeps its axis
- * slot but draws no line, marker or tooltip. The points sum the same credited
- * sales as the rows, Unattributed included, and their "From Messages" / "From
- * Tips" count the kinds the Messages and Tips tiles count. An answer without
- * a series is an error, never an empty chart. The earnings basis select does
- * not drive this card.
- */
 
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
@@ -72,8 +10,6 @@ import type { EmployeeSalesResp } from "@/hooks/useStats";
 import { useAppliedSettings } from "@/lib/appliedSettings";
 import { usePrincipalId } from "@/hooks/useEmployeeKey";
 import { periodWindow, todayISO, type Period } from "@/lib/dateRange";
-// A header figure is `fmtCents` (whole dollars, "$1,005,875"): the house choice, deliberately unlike the bundle's
-// `getHomePageMoneyFormat` (index.9f50f370.js @11227188), which prints two decimals at every size.
 import { fmtCents, isLoss } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { EmployeeSalesChart } from "./EmployeeSalesChart";
@@ -95,17 +31,14 @@ import {
 import { InfoTip } from "@/components/ui/InfoTip";
 
 
-/** White on the dark card (16-dashboard.png), the theme's text in light. */
 export const WHITE = "text-white [html[data-theme=light]_&]:text-fg";
 
-/** A by-kind row; `net_cents` and `net_missing_count` come only with `include_net=true`. */
 interface RevenueRow {
   kind: string | null; total_cents: number; count: number;
   net_cents?: number; net_missing_count?: number;
 }
 interface RevenueResp { rows: RevenueRow[] }
 
-/** Ours: what each earnings tile counts, on its ⓘ (the bundle's tiles have none). */
 const TILE_TIP: Record<Channel | "total", string> = {
   total: "Everything your managed Creators earned in this period: all sales plus referrals, gross or net as picked on "
     + "the right. Counts sales OnlyFans hasn't cleared yet; charged-back sales are left out.",
@@ -118,13 +51,7 @@ const TILE_TIP: Record<Channel | "total", string> = {
 };
 const BASIS_TIP = "Gross: what fans paid. Net: what the Creators keep after OnlyFans' fee.";
 
-/**
- * The capture's channels and the Relay's sales kinds (`transaction_ingest.KIND_CATALOG`)
- * each sums, as the spec's Channel mapping writes them. A channel absent here
- * (Referrals, Chargebacks) has no sales kind and reads its own (`useReferrals`, the reversed read); a kind
- * absent here (`unknown`, `ppv_stream` and `tip_stream` among them) counts in Total earnings only.
- * Keep in sync with service/stats_employees.py SERIES_MESSAGE_KINDS / SERIES_TIP_KINDS (messages, tips).
- */
+// Keep in sync with service/stats_employees.py SERIES_MESSAGE_KINDS / SERIES_TIP_KINDS (messages, tips).
 const CHANNEL_KINDS: Partial<Record<Channel, readonly string[]>> = {
   subscriptions: ["subscription", "rebill"],
   messages: ["ppv_message", "custom"],
@@ -132,23 +59,18 @@ const CHANNEL_KINDS: Partial<Record<Channel, readonly string[]>> = {
   tips: ["tip", "tip_post"],
 };
 
-/** The answer's rows; an answer without a `rows` array (a mock's `[]` or `{}`) reads as a window with no sales,
- *  never a crash. */
 const rowsOf = (d: RevenueResp | undefined): RevenueRow[] => (Array.isArray(d?.rows) ? d.rows : []);
 
-/** A row's money in the chosen basis: OnlyFans's `net_cents` in Net, `total_cents` in Gross. */
 const cents = (r: RevenueRow, basis: Basis) => (basis === "Net" ? r.net_cents ?? 0 : r.total_cents);
 
 const label = (key: DashboardControlKey) => control(key).labels[0];
 
-/** The ⓘ beside a title: its tooltip is the catalogue label. */
 function Info({ k }: { k: DashboardControlKey }) {
   return (
     <InfoTip data-control={k} text={label(k)} className="text-fg-dim" />
   );
 }
 
-/** A figure's slot while its read loads: a shimmer bar, no text (the bundle prints "$0.00"). */
 function Shimmer({ what, className }: { what: string; className: string }) {
   return (
     <span role="status" aria-label={`Loading ${what}`} data-loading className="flex items-center">
@@ -157,7 +79,6 @@ function Shimmer({ what, className }: { what: string; className: string }) {
   );
 }
 
-/** A channel's 45px icon circle (capture #58-#63). */
 function TileIcon({ k }: { k: Channel }) {
   const { Icon, rgb } = TILE_ICON[k];
   return (
@@ -172,10 +93,6 @@ function TileIcon({ k }: { k: Channel }) {
   );
 }
 
-/** The Total earnings figure: the currency sign at 25px beside a 34px number (capture #42). `refreshing`: a figure
- *  already shown (the saved one on a return visit) whose read is out again; ours, dimmed in place (no layout shift)
- *  until the fresh answer lands. `partial`: why the figure holds less than it says (`TOTAL_PARTIAL`), marked with an
- *  asterisk beside it, the reason on hover and to a screen reader. */
 function Figure({ text, refreshing = false, partial }: { text: string; refreshing?: boolean; partial?: string }) {
   const sign = text.startsWith("$") ? "$" : "";
   return (
@@ -190,34 +107,23 @@ function Figure({ text, refreshing = false, partial }: { text: string; refreshin
   );
 }
 
-/** What a channel tile needs from the header: the by-kind read, whether the
- *  Applied settings have answered, and the basis. */
 interface Tiles {
   revenue: UseQueryResult<RevenueResp>; referrals: ReferralsQuery; reversed: UseQueryResult<RevenueResp>;
   ready: boolean; basis: Basis;
 }
 
-/**
- * A channel tile (capture #50-#57): the figure over the label, the icon circle
- * at the right. While the read loads the figure's slot shimmers (the bundle
- * prints "$0.00", capture #50); a window with no sales of the channel's kinds
- * shows $0.00, as the bundle does. A failed read shows on the whole tiles row
- * (`DashboardHeader`). Referrals, with no sales kind, reads its own
- * (`useReferrals`): a Creator it failed for counts $0.00 under a title saying
- * so; failed for every Creator, or outright, the figure is "-".
- */
+// Whole-dollar figures are the house choice, deliberately unlike the bundle's two decimals.
 function ChannelTile({ k, tiles }: { k: Channel; tiles: Tiles }) {
   const kinds = CHANNEL_KINDS[k];
   const { revenue, referrals, reversed, ready, basis } = tiles;
   const chargebacks = k === "chargebacks";
-  // Chargebacks: the window's reversals (dated by their sale) below zero; Total already leaves them out.
+  // Chargebacks: reversals below zero; Total already leaves them out.
   const sum = chargebacks ? -rowsOf(reversed.data).reduce((s, r) => s + cents(r, basis), 0)
     : kinds ? rowsOf(revenue.data)
       .filter((r) => r.kind !== null && kinds.includes(r.kind))
       .reduce((s, r) => s + cents(r, basis), 0) : referralsTotal(referrals.data);
   const gap = k === "referrals" ? referralsGap(referrals) : "none";
   const read = chargebacks ? reversed : kinds ? revenue : referrals;
-  // No figure at all: Chargebacks' read failed, or the referrals' for every Creator.
   const dash = (chargebacks && reversed.isError) || gap === "all";
   return (
     <div
@@ -245,8 +151,6 @@ function ChannelTile({ k, tiles }: { k: Channel; tiles: Tiles }) {
   );
 }
 
-/** One of the three channel columns, two channels stacked (capture #34, #52). Below `xl` the three sit on their
- *  own row under Total earnings, so the first has no left divider there. */
 function ChannelColumn({ top, bottom, tiles, first = false }: {
   top: Channel; bottom: Channel; tiles: Tiles; first?: boolean;
 }) {
@@ -264,7 +168,6 @@ function ChannelColumn({ top, bottom, tiles, first = false }: {
   );
 }
 
-/** The bundle's empty chart (16-dashboard.png): dashed #444 rules at 0, 0.2 … 1 with 12px #999 labels at the left. */
 function EmptyAxes() {
   const ticks = [1, 0.8, 0.6, 0.4, 0.2, 0];
   return (
@@ -282,7 +185,6 @@ function EmptyAxes() {
   );
 }
 
-/** Daily sales with loading and retry states. `tz`: the zone the series' days were cut in, whose today ends the line. */
 function EmployeeSales({ sales, ready, tz }: { sales: UseQueryResult<EmployeeSalesResp>; ready: boolean; tz: string }) {
   if (!ready || sales.isPending) {
     return (
@@ -307,25 +209,18 @@ function EmployeeSales({ sales, ready, tz }: { sales: UseQueryResult<EmployeeSal
   return <EmployeeSalesChart points={points} today={todayISO(tz)} />;
 }
 
-/** The selected period, its `[from, to]` in the report time zone, and whether the Applied settings have answered. */
 interface DashboardPeriod {
   period: Period; pick: (p: Period) => void; from: string; to: string; ready: boolean; reportTz: string | null;
 }
 
 const PeriodContext = createContext<DashboardPeriod | null>(null);
 
-/** The header's period, for every card inside `DashboardPeriodProvider`. */
 export function useDashboardPeriod(): DashboardPeriod {
   const value = useContext(PeriodContext);
   if (!value) throw new Error("DashboardHeader and EmployeeSalesCard need a DashboardPeriodProvider");
   return value;
 }
 
-/**
- * The header's period, shared with the Employee sales card, which the page
- * places in the bottom box's right column (capture #79): seeded once from
- * `?window=`, written back on a tab click with `history.replaceState`.
- */
 export function DashboardPeriodProvider({ children }: { children: ReactNode }) {
   const [period, setPeriod] = useState<Period>(DEFAULT_PERIOD);
   useTabParam("window", isPeriod, setPeriod);
@@ -345,11 +240,6 @@ export function DashboardPeriodProvider({ children }: { children: ReactNode }) {
   );
 }
 
-/**
- * The period tabs (capture #22-#25, and #96 from the later bundle), over the Dashboard's grid, not in the earnings card: every card
- * reads their period, and a role may hide the earnings card. Below `md` the strip takes its own full-width line with
- * the five tabs sharing it (4px side padding, no gap), so every tab shows and the page never scrolls sideways.
- */
 export function DashboardPeriodTabs() {
   const { period, pick } = useDashboardPeriod();
   return (
@@ -366,10 +256,8 @@ export function DashboardPeriodTabs() {
   );
 }
 
-/** "Employee sales" (capture #79-#85), for the bottom box's right column. */
 export function EmployeeSalesCard() {
   const { from, to, ready, reportTz } = useDashboardPeriod();
-  // The zone the period's days were cut in: the Relay cuts the series' days in it when it has no report zone.
   const tz = reportTz ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const sales = useQuery<EmployeeSalesResp>({
     queryKey: ["dashboard", "per-employee", "daily", from, to, tz],
@@ -402,10 +290,7 @@ export default function DashboardHeader() {
   const [basis, setBasis] = useState<Basis>(DEFAULT_BASIS);
   const principalId = usePrincipalId();
 
-  // The window's by-kind read; `reversed`, Chargebacks': the same over the reversals (`status=reversed`: chargedback,
-  // refunded, refund pending). The earnings one is saved with the snapshot (providers.tsx PERSIST_KEYS): the
-  // principal keeps one login's figure from another's. Both bases come from one answer (`include_net` only adds
-  // keys; `total_cents` is Gross), so the basis is not in the key: switching it reads nothing.
+  // principalId keeps one login's saved figure from another's; include_net only adds keys (total_cents is Gross), so the basis is not in the key.
   const byKind = (reversedOnly: boolean) => ({
     queryKey: ["dashboard", reversedOnly ? "revenue-reversed-by-kind" : "revenue-by-kind", principalId, from, to],
     queryFn: () => {
@@ -419,11 +304,9 @@ export default function DashboardHeader() {
   const revenue = useQuery<RevenueResp>(byKind(false));
   const reversed = useQuery<RevenueResp>(byKind(true));
 
-  // OnlyFans' referrals, the same figure under Net and Gross; Total earnings adds them as the bundle's does. The
-  // ledger's Total shows without waiting on them (an OF read per Creator) and takes them in when they land.
   const referrals = useReferrals(dayIn(from, reportTz), dayIn(to, reportTz), null, ready);
+  // Total shows without waiting on referrals (an OF read per Creator) and takes them in when they land.
   const totalCents = rowsOf(revenue.data).reduce((sum, r) => sum + cents(r, basis), 0) + referralsTotal(referrals.data);
-  // Chargebacks' reversals with no net yet count too, once their read lands.
   const netMissing = basis === "Net" && revenue.isSuccess
     ? [...rowsOf(revenue.data), ...(reversed.isSuccess ? rowsOf(reversed.data) : [])]
       .reduce((n, r) => n + (r.net_missing_count ?? 0), 0)
@@ -431,10 +314,7 @@ export default function DashboardHeader() {
   const tiles: Tiles = { revenue, referrals, reversed, ready, basis };
 
   return (
-    // #11: 16px from this card to the bottom box, the Dashboard grid's gap.
     <IfCard aria-labelledby="dash-earnings-title">
-      {/* Title row: title, ⓘ, time zone, ⓘ on the left; the select on the right (the period tabs sit over the grid,
-       *  `DashboardPeriodTabs`). Below `md` the groups wrap in the capture's order. */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center min-w-0">
           <h2 id="dash-earnings-title" data-control="title" className={cn("text-[16px] font-medium mr-[9px]", WHITE)}>
@@ -450,18 +330,12 @@ export default function DashboardHeader() {
           <span className="ml-1"><Info k="timeZoneTip" /></span>
         </div>
         <span data-control="basis" className="flex items-center gap-2">
-          {/* The capture's 140px (#21) clips "Gross earnings" in our font; 160px fits both labels. */}
           <IfSelect size="lg" aria-label="Earnings" value={basis} options={BASIS_OPTIONS} onChange={setBasis}
             className="w-[160px]" />
           <InfoTip text={BASIS_TIP} className="text-fg-dim" />
         </span>
       </div>
 
-      {/* Tiles row: Total earnings, then three columns of two channels (capture #33-#35). The bundle has no
-       *  narrower layout; below `xl` the four columns are too narrow for a figure and its icon circle, so Total
-       *  earnings takes its own row over the three channel columns (from `md`), and on a phone all four stack. A
-       *  figure wider than its tile pushes the circle into the tile's right margin, never over the figure. A failed
-       *  read swaps the row for the bundle's `CommonRetryBox` at the row's height. */}
       {revenue.isError ? (
         <div data-control="total" className="mt-4 md:min-h-[177px] flex items-center justify-center">
           <EmptyState

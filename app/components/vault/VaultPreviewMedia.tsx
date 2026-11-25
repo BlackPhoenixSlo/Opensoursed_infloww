@@ -1,24 +1,5 @@
 "use client";
 
-/**
- * The media block in the vault manager's details drawer, and the audio player it
- * falls back to.
- *
- * Lifted out of `VaultManagePanel` — which is a 1,600-line file whose main
- * component is a 1,000-line function — because this is the block the still
- * ladder lives in and the one being changed. It closes over nothing: it reads
- * its media and account from props and everything else from module scope, so
- * the move is a cut and paste. The other components below it in that file are
- * the same shape and a separate diff; moving them here too would widen this one
- * for no reason.
- *
- * A selected video plays INLINE with native controls (same `.vault-video`
- * styling the full-screen player uses), so watching a clip never leaves the
- * grid. The ⤢ button hands off to the picker's `VaultVideoPreview` for
- * full-screen. DRM videos have no progressive mp4 to play, so they fall back to
- * the still + a ▶ that opens VaultVideoPreview's poster-frame lightbox — the
- * same behaviour as the picker. Photos just render.
- */
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
@@ -30,22 +11,11 @@ import { useStillLadder } from "@/hooks/useStillLadder";
 import { mirrorFullSrc, proxyImage } from "@/lib/mediaUrl";
 import { type VaultMedia } from "@/lib/relay";
 
-/** Held past the first playable frame, so the player does not appear mid-stutter. */
 const VIDEO_REVEAL_DELAY_MS = 500;
-/** The spinner's ceiling: past it the player is shown as it is, still buffering, rather than a spinner forever. */
 const VIDEO_LOAD_TIMEOUT_MS = 15_000;
 type VideoLoad = "loading" | "ready" | "error";
-/** Loading becomes ready; an error stays an error. */
 const toReady = (s: VideoLoad): VideoLoad => (s === "loading" ? "ready" : s);
 
-/** The inline player, behind our loading circle until it can play.
- *
- *  The native player alone shows its own spinner over a 0:00 bar while the file
- *  buffers through the relay, which reads as broken. So it stays `invisible`
- *  (laid out, so it keeps loading; a floor height, as it is 0px tall until its
- *  metadata arrives) until `loadeddata`/`canplay`, then
- *  {@link VIDEO_REVEAL_DELAY_MS} more. Keyed on the source by its caller, so a
- *  new selection starts loading afresh. */
 function VaultInlineVideo({ src, poster, h }: { src: string; poster?: string; h: string }) {
   const [state, setState] = useState<VideoLoad>("loading");
   const revealTimer = useRef<number | undefined>(undefined);
@@ -92,19 +62,14 @@ function VaultInlineVideo({ src, poster, h }: { src: string; poster?: string; h:
   );
 }
 
-/** A gif (OF's short .mp4) in the details drawer: it loops, muted, over its
- *  still as poster; `fallback` (the still view) if the clip fails. Keyed on the
- *  source by its caller, so another selection starts afresh; closing the drawer
- *  or picking another lets go of the clip's decoder. */
 function VaultInlineGif({ src, poster, fallback, h }: {
   src: string; poster: string | null; fallback: ReactNode; h: string;
 }) {
   const [failed, setFailed] = useState(false);
   const ref = useRef<HTMLVideoElement | null>(null);
-  // The src goes back on in the body: StrictMode's dev double-mount runs the release once and React won't re-set
-  // an unchanged prop, so the drawer would show only the poster.
   useEffect(() => {
     const el = ref.current;
+    // src goes back on here: StrictMode's dev double-mount runs the release once and React won't re-set an unchanged prop.
     if (el && !el.getAttribute("src")) el.setAttribute("src", src);
     return () => { if (el) releaseVideo(el); };
   }, [src]);
@@ -125,17 +90,6 @@ function VaultInlineGif({ src, poster, fallback, h }: {
   );
 }
 
-/** A voice note in the details drawer: the player, and nothing else.
- *
- *  Its own component because it shares NOTHING with the picture path below — no
- *  still, no lightbox, no zoom, no ⤢ — and every one of those would resolve to
- *  `files.full`, which for audio IS the audio. `preload="none"` so the file is
- *  fetched only if somebody presses play.
- *
- *  Module-private. It came out of `VaultManagePanel` with the picture path it
- *  is a sibling of, and it has exactly one caller, below — exporting it would
- *  have made the extraction widen the public surface, which is the opposite of
- *  what the extraction was for. */
 function VaultAudioPreview({
   media: m,
   accountId,
@@ -161,7 +115,6 @@ export default function VaultPreviewMedia({
   media: VaultMedia;
   accountId: string;
   onExpand: () => void;
-  /** Fill the parent's height (the vault item popup's media pane) instead of the drawer's 30vh cap. */
   fill?: boolean;
 }) {
   const h = fill ? "h-full" : "max-h-[30vh]";
@@ -173,14 +126,8 @@ export default function VaultPreviewMedia({
   const idNum = Number(m.id);
   const [zoom, setZoom] = useState(false);
 
-  // A PHOTO shows the FULL FRAME from the permanent cache — not `_thumb`, which
-  // is a 300x300 centre-crop that lops the top and bottom off a 3:4 portrait and
-  // hides edge-of-frame detail. A VIDEO keeps its poster (the square is fine as a
-  // play affordance; ⤢ opens the real player).
+  // A photo shows the full frame, not `_thumb` (a 300x300 centre-crop that lops a 3:4 portrait).
   const photoFull = !isVideo && Number.isFinite(idNum) ? mirrorFullSrc(accountId, idNum) : null;
-  // The rungs, best first. See `useStillLadder` for what the store can actually
-  // answer with and why a fallback is worth having at all. `still` is null if
-  // and only if every rung has failed — one fact, one piece of state.
   const fallbacks = [
     m._thumb,
     proxyImage(
@@ -191,14 +138,8 @@ export default function VaultPreviewMedia({
   ];
   const still = useStillLadder([photoFull, ...fallbacks]);
 
-  // Hook order first: audio never reaches the ladder, but the early return has
-  // to come after every hook this component runs.
   if (m.type === "audio") return <VaultAudioPreview media={m} accountId={accountId} />;
 
-  // Both branches of the non-playable case need it, including the one that used
-  // to render NOTHING: a DRM or poster-less video with an exhausted ladder had
-  // neither an <img> nor a message, which is the blank black box the message was
-  // added to eliminate.
   const noPreview = (
     <div className="w-full py-10 text-center text-xs text-fg-dim">
       {isVideo
@@ -219,9 +160,7 @@ export default function VaultPreviewMedia({
       className={`w-full ${h} object-contain${isVideo ? "" : " cursor-zoom-in"}`}
     />
   ) : (
-    // Say so. A blank black box is how a rendering failure gets read as
-    // a missing upload, and then re-uploaded — onto OnlyFans' byte
-    // dedupe, which returns the same id and changes nothing.
+    // Say so: a blank box reads as a missing upload, and a re-upload hits OF's byte dedupe (same id, no change).
     noPreview
   );
 
@@ -234,8 +173,6 @@ export default function VaultPreviewMedia({
         <VaultInlineVideo
           key={rawSrc}
           src={proxyImage(rawSrc, accountId, m.id)}
-          // `still.src` and not the first rung: a poster url that has already
-          // 404'd is a dead attribute the browser retries on every render.
           poster={still.src || undefined}
           h={h}
         />
@@ -269,10 +206,6 @@ export default function VaultPreviewMedia({
         ⤢
       </button>
       {zoom && Number.isFinite(idNum) && (
-        /* The same rungs. The lightbox is what this component's own
-           click-to-zoom opens, and it rendered `mirrorFullSrc` with no fallback
-           at all — so the tile could recover from a dead store while clicking it
-           gave a broken-image icon. */
         <ImageLightbox
           accountId={accountId}
           mediaId={idNum}

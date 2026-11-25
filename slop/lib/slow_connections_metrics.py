@@ -1,4 +1,3 @@
-"""Request and idle traffic summaries for the slow-connections scenario."""
 from __future__ import annotations
 
 import re
@@ -8,7 +7,6 @@ from slop.lib.net import Meter
 from slop.lib.procmon import pct as _p
 
 def route(path: str) -> str:
-    """A request's route for the idle table: the query dropped, ids (digit runs) as {n}."""
     return re.sub(r"\d+", "{n}", path.split("?", 1)[0])
 
 
@@ -26,17 +24,10 @@ def idle(win: list[dict], seconds: float) -> dict:
 
 
 def _before_id(path: str) -> str | None:
-    """An older page's cursor (`before_id`), None for any other read."""
     return (parse_qs(path.split("?", 1)[1]).get("before_id") or [None])[0] if "?" in path else None
 
 
 def thread_reads(reqs: list[dict], wave_gap_ms: float, thread_local) -> dict:
-    """The thread open's reads: routes GET more than once for one Creator (/img aside; the query aside, so a bare read
-    and its `since_id` follow-up are one route; per X-Account-Id, so another Creator's read landing in the window, e.g.
-    the App-open warm reaching it, is not the thread's; an older page, `before_id`, is its own read per
-    cursor: a short thread fills older pages at once, app/components/chat/threadPin.ts MAX_FILL_PAGES), the bundle
-    calls, the open's local reads per route (older pages aside: the bundle carries the head), the older pages OF
-    was asked for (distinct cursors), and waves (start clusters)."""
     gets = [q for q in reqs if q.get("method", "GET") == "GET" and not q["path"].startswith("/img")]
     by: dict[str, int] = {}
     for q in gets:
@@ -57,8 +48,6 @@ def thread_reads(reqs: list[dict], wave_gap_ms: float, thread_local) -> dict:
 
 
 def req_ms(r: dict) -> dict:
-    """One flow's request durations (the SSE stream and the beacon aside): n, p50 / p95 / max ms, the slowest's path,
-    how many over 10 s and 60 s, unfinished, and failed (not the page's own ERR_ABORTED)."""
     qs = [q for q in r.get("reqs", []) if q["kind"] not in ("sse", "beacon")]
     done = sorted((q["ms"], q["path"]) for q in qs if q["ms"] is not None)
     ms = [m for m, _ in done]

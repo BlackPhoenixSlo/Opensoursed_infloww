@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""OF Manager fan writes that sit next to the retired Statistics ones and must
-keep reaching OF unchanged:
-
-  PUT  /api/of/v2/subscriptions/{id}  → OFClient.update_subscription
-  POST /api/of/v2/lists/users         → OFClient.add_users_to_lists
-
-OF is faked on the client: nothing leaves the process. Ids are synthetic.
-
-Run: ./venv/bin/python service/tests/test_statistics_writes.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()

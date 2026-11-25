@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""Load-adaptive SSE batching (events.py "Load-adaptive batching").
-
-  • A quiet stream gets one frame per event, at once.
-  • A hot one gets `event: batch` frames: every event arrives, in order, none
-    later than one window after it was sent; the batch frame's id is its
-    last member's, so a reconnect from it replays exactly what came after.
-  • Within a batch the newest `chat_typing` per fan and `chat_queue_update`
-    per queue replace older ones; DMs, money and unread never coalesce.
-  • The stream drops back to single frames once its rate falls.
-  • A stream-ending state event closes its batch at once, and nothing after
-    it reaches that stream.
-  • The queue counts batches: a burst far past _QUEUE_MAX events rides
-    through a small queue without a resync.
-
-Run:  ./venv/bin/python service/tests/test_sse_batching.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -63,7 +47,6 @@ async def _open(last: str | None = None):
 
 
 def _members(frame: dict) -> list[tuple[str, str, dict]]:
-    """(id, type, event) per event a frame carries."""
     if frame.get("event") == "batch":
         return [(m["id"], m["type"], m["data"]) for m in json.loads(frame["data"])]
     return [(frame["id"], frame["event"], json.loads(frame["data"]))]
@@ -124,7 +107,7 @@ async def case_hot_stream_batches_within_the_window():
             got.extend((_mid(e), now - e["api2_chat_message"]["t"]) for _, _, e in _members(f))
 
     reader = asyncio.create_task(read())
-    for mid in range(100, 200):  # ~170 events/s for ~0.55 s
+    for mid in range(100, 200):
         await events.broadcast(_dm(mid))
         sent.append(mid)
         await asyncio.sleep(0.005)
@@ -205,7 +188,7 @@ async def case_drops_back_to_single_frames_when_the_rate_falls():
     while n < 40:
         n += len(_members(await _next(gen)))
     assert events.sse_stats()["streams"][0]["mode"] == "batch"
-    await asyncio.sleep(2.5)  # 40/s decays under 5/s in ~2.1 s
+    await asyncio.sleep(2.5)
     assert events.sse_stats()["streams"][0]["mode"] == "immediate"
     t0 = time.monotonic()
     await events.broadcast(_dm(440))
@@ -236,7 +219,7 @@ async def case_queue_counts_batches_not_events():
     _reset()
     with _knobs(SSE_BATCH_MIN_RATE=0, _QUEUE_MAX=3):
         gen = await _open()
-        for mid in range(1000, 1500):  # 500 events, one tick: 3 batches
+        for mid in range(1000, 1500):
             await events.broadcast(_dm(mid))
         seen: list[int] = []
         while len(seen) < 500:

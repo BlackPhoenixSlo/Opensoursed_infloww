@@ -1,53 +1,7 @@
 #!/usr/bin/env python3
-"""
-`vault_ingest.ingest_ids` — putting a finished import INTO the local mirror.
-Plain-assert, no pytest (repo convention).
-
-Why this suite exists: an upload that succeeded on OnlyFans was invisible in the
-dashboard. The grid serves from the mirror the moment the mirror holds any row
-for the account (`VaultManagePanel`'s `useLocal`), and nothing in the whole
-import path — `vault_upload`, the batch route, the CLI — ever wrote a mirror
-row. The media was genuinely in her vault and appeared in no vault view, until
-somebody thought to run a full re-collect. The operator's reading of that is
-"the upload failed", and the next move is to upload it again, onto OnlyFans'
-byte dedupe, which returns the same id and changes nothing.
-
-The two boundaries are what this pins:
-
-  * an account with NO mirror is left alone. Seeding rows there would flip the
-    grid from a complete live-OF listing to a view of just-imported items, and
-    hiding the rest of a vault is a worse bug than the one being fixed.
-  * a row that already exists keeps everything the describe pass wrote about it.
-    A re-import of the same file is a dedupe hit on OF, and it must not cost the
-    account its description, tags or review state.
-
-Cases:
-  case_import_lands_in_an_existing_mirror   — the new id is queryable after,
-                                    with the kind and urls OF just reported.
-  case_no_mirror_is_left_untouched — zero rows in, zero rows out, and OF is
-                                    never even asked.
-  case_a_fully_buried_mirror_is_left_untouched — rows exist but every one is
-                                    soft-deleted, so the grid is reading OF; the
-                                    guard must agree with the grid, not with the
-                                    row count.
-  case_describe_output_survives_a_reimport — description/tags/review_state are
-                                    preserved on conflict; urls refresh.
-  case_a_dead_id_does_not_sink_the_batch — one id 500s, the others still land.
-  case_reimport_does_not_restamp_the_run_id — an import is not a sweep and must
-                                    not claim to be the last one that saw a row.
-  case_a_404_during_ingest_never_buries_an_existing_row — the ingest shares
-                                    `resolve_fresh` but NOT its soft-delete; an
-                                    import must never remove media from the grid.
-  case_a_404_on_a_new_id_creates_nothing — and withholding that write must not
-                                    invent a row either.
-
-Run: cd service/tests && \
-  PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_mirror_ingest.py
-Exit 0 = all cases passed. Temp DB bound by _harness (never prod).
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -63,19 +17,14 @@ from db.models import Account, VaultItem  # noqa: E402
 _AID = "acc_ingest"
 
 
-# ── Fake OF ─────────────────────────────────────────────────────────
 
 class _NotFound(Exception):
-    """Shaped like the error `vault_stills._resolve_fresh_sync` reads a 404 out
-    of — it looks at `e.response.status_code`, and a plain exception is a
-    TRANSIENT failure to that code, not a deletion."""
 
     class response:  # noqa: N801 — mimicking the client's attribute, not a class
         status_code = 404
 
 
 class _FakeOF:
-    """Answers the by-id read the ingest is built on, and counts the asks."""
 
     def __init__(self):
         self.timeout_s = 5.0
@@ -113,7 +62,6 @@ class _FakeOF:
 _OF = _FakeOF()
 
 
-# ── Seeders ─────────────────────────────────────────────────────────
 
 async def _clear_items() -> None:
     async with get_session() as s:
@@ -126,7 +74,6 @@ async def _clear_items() -> None:
 
 
 async def _seed_item(media_id: int, **over) -> None:
-    """One mirror row, as a collect sweep would have left it."""
     now = datetime.utcnow()
     vals = dict(
         account_id=_AID, media_id=media_id, kind="photo",
@@ -154,12 +101,11 @@ async def _count() -> int:
         )).scalars().all())
 
 
-# ── Cases ───────────────────────────────────────────────────────────
 
 async def case_import_lands_in_an_existing_mirror():
     await _clear_items()
     _OF.reset()
-    await _seed_item(100)                      # the mirror exists
+    await _seed_item(100)
     _OF.kinds[201] = "photo"
 
     landed = await vault_ingest.ingest_ids(_AID, [201], _OF)
@@ -187,18 +133,6 @@ async def case_no_mirror_is_left_untouched():
 
 
 async def case_a_fully_buried_mirror_is_left_untouched():
-    """A mirror whose every row is soft-deleted is NOT a mirror the grid uses.
-
-    `cache_summary` — the count the UI turns into `cachedCount`, and therefore
-    into `useLocal = cachedCount > 0` — filters on `removed_at IS NULL`. A guard
-    that counted every row instead would disagree with the grid in exactly the
-    direction it exists to prevent: `vault_stills` stamps `removed_at` on any OF
-    "not found", so an expired signature or a session pointed at the wrong OF
-    user can bury a whole 2,500-item mirror while the grid falls back to live OF
-    and looks fine. Landing three imported ids there would flip the grid onto a
-    mirror holding three tiles, and the rest of her vault would be gone from
-    every view.
-    """
     await _clear_items()
     _OF.reset()
     buried = datetime.utcnow()
@@ -216,17 +150,11 @@ async def case_a_fully_buried_mirror_is_left_untouched():
 
 
 async def case_one_live_row_is_still_a_mirror():
-    """The buried-mirror check must not become "no soft-deletes anywhere".
-
-    A real vault always carries some `removed_at` rows — every media the creator
-    has ever hidden. If ONE row is still live the grid is on the mirror, and the
-    import has to land there or it is invisible.
-    """
     await _clear_items()
     _OF.reset()
     buried = datetime.utcnow()
     await _seed_item(811, removed_at=buried)
-    await _seed_item(812)                      # one survivor — the grid uses it
+    await _seed_item(812)
 
     landed = await vault_ingest.ingest_ids(_AID, [913], _OF)
 
@@ -279,24 +207,11 @@ async def case_reimport_does_not_restamp_the_run_id():
 
 
 async def case_a_404_during_ingest_never_buries_an_existing_row():
-    """An IMPORT must not be able to delete media from the operator's grid.
-
-    The ingest is built on `vault_stills.resolve_fresh` so that one place knows
-    what a 404 from OnlyFans means — but that function's default is to stamp
-    `removed_at` on it, which is right for the RENDER path and wrong here. The
-    render path asks about a media the mirror already claims exists, so a 404
-    really is a deletion. This caller asks about a media this process uploaded
-    seconds ago, and a Google Drive memo hit re-imports an id that ALREADY has a
-    mirror row. One blip from OF — or a session pointed at the wrong OF user,
-    the mundane cause `has_live_mirror`'s own docstring cites — then soft-
-    deleted a tile the operator could see a second earlier, and `bytes_for`'s
-    negative cache answered `gone` on every render of it until a full
-    re-collect. Hence `mark_gone=False` at the call site.
-    """
     await _clear_items()
     _OF.reset()
-    await _seed_item(20)                       # the mirror is live
-    await _seed_item(22)                       # …and already holds the id
+    await _seed_item(20)
+    await _seed_item(22)
+# ingest must not soft-delete on a 404 (the render path's default): one OF blip would bury a tile the operator sees
     _OF.missing.add(22)
 
     landed = await vault_ingest.ingest_ids(_AID, [22], _OF)
@@ -313,10 +228,6 @@ async def case_a_404_during_ingest_never_buries_an_existing_row():
 
 
 async def case_a_404_on_a_new_id_creates_nothing():
-    """The other half: withholding the soft-delete must not turn a 404 into a
-    row. `resolve_fresh` cannot create one, and the upsert below it only runs on
-    a payload — so an id OF genuinely does not have leaves the mirror exactly as
-    it was."""
     await _clear_items()
     _OF.reset()
     await _seed_item(30)

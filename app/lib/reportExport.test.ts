@@ -1,7 +1,3 @@
-/**
- * The reports' export helpers: sections flattened to one sheet, cents as dollars and the by-day reads' concurrency
- * cap.
- */
 import { describe, expect, it } from "vitest";
 
 import { mapLimit, sectionsToRows, usd } from "@/lib/reportExport";

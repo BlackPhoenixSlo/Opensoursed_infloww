@@ -1,8 +1,3 @@
-/**
- * Release forms (release-forms/index): the tab's Relay rows in place of the example, the tabs, the sidebar search, Sort,
- * a row's More (OF's toggle-show body, the fixture's), the Release form tab's empty placeholder, no model, and the
- * generator's Mentions link and disabled Create new release form and Create new invitation link.
- */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";

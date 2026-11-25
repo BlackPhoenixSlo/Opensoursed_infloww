@@ -1,10 +1,3 @@
-/**
- * useUnsendChoice — the Thread's unsend prompt (roadmap 4.15d,
- * 04-messages-pro.md P3). A mass-sent bubble asks the scope up front, "Unsend
- * from this conversation" preselected; other bubbles keep the one confirm and
- * the follow-up when OF's reply names a live queue. The unsender is a fake:
- * the calls it records are the ones `useUnsendMessage` would send.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -12,7 +5,6 @@ import userEvent from "@testing-library/user-event";
 import type { OFMessage } from "@/lib/relay";
 import { useUnsendChoice } from "./UnsendChoice";
 
-/** Function permissions the role denies (`useActionAllowed`); none unless a case adds one. */
 const denied = vi.hoisted(() => new Set<string>());
 vi.mock("@/components/shell/useGrantedPages", () => ({ useActionAllowed: (action: string) => !denied.has(action) }));
 

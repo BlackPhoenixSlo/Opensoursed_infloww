@@ -1,23 +1,3 @@
-"""Auto_Exclude past the 20k backstop (scenarios/2026-11-03-auto-exclude-25k.py): per Creator, fans
-whose recent chat puts them in the product's contact guard, plus the OF side the scenario hands to
-lib/auto_exclude_relay.py (its pre-made Auto_Exclude, roster, refused ids).
-
-Per Creator `aid` with list size `n` (`sizes[aid]`), fan ids from AE_FAN_BASE + Creator index x 1M:
-  guard    n - stale + refused fans, each with one outbound message GUARD_AGE_MIN..MAX ago (inside
-           the 6 h outbound window, BROADCAST_DEFAULT_OUTBOUND_H, for the whole run) and its chats row,
-           as the product writes a 1:1 send.
-  refused  `refused` of the guard: OF refuses to list them (a deleted account, declared): never on the
-           pre-made list, not on the roster.
-  stale    ~STALE_FRAC of n: on the list from an older send, last message STALE_AGE days ago (out of
-           every window).
-  open     OPEN_FRAC of n: subscribed, never messaged; a send reaches them.
-  members  the pre-made Auto_Exclude: (guard - refused) | stale, exactly n ids.
-  roster   members | open: OF's fans roster.
-Rows: `fans` (as seed/fans.py), `messages` + `chats` (as seed/threads.py); their INSERTs are
-copied here on purpose: seed/fans.py and seed/threads.py belong to other flows (not this task's to
-change), and they seed by count, not by a given id set. Deterministic from
-`w.rng("auto_exclude_guard")`. Output in `w.data["auto_exclude_guard"]`: {aid: {...sets above}}.
-"""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -25,11 +5,11 @@ from datetime import timedelta
 from . import World, ts
 
 AE_FAN_BASE = 820_000_000
-MSG_ID_BASE = 9_100_000_000_000      # below the relay's synthetic bands, above seed/threads.py's
+MSG_ID_BASE = 9_100_000_000_000  # below the relay's synthetic bands, above seed/threads.py's
 STALE_FRAC = 0.10
 OPEN_FRAC = 0.05
-GUARD_AGE_MIN = (10, 240)            # minutes ago, (min, max)
-STALE_AGE = (2, 9)                   # days ago
+GUARD_AGE_MIN = (10, 240)
+STALE_AGE = (2, 9)
 LINES = ["hi babe", "thinking of you", "check your inbox", "you're sweet"]
 
 
@@ -46,7 +26,7 @@ def seed(w: World, creators: list[dict], sizes: dict[str, int], refused: dict[st
         n_open = int(round(n * OPEN_FRAC))
         base = AE_FAN_BASE + index[aid] * 1_000_000
         ids = list(range(base, base + n_guard + n_stale + n_open))
-        rng.shuffle(ids)                       # guard / stale / open interleave in id (= OF page) order
+        rng.shuffle(ids)
         guard = set(ids[:n_guard])
         stale = set(ids[n_guard:n_guard + n_stale])
         opened = set(ids[n_guard + n_stale:])

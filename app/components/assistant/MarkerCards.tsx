@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * MarkerCards — an answer's markers (markers.ts) as live cards: each data card
- * reads its figure from the existing report endpoint with the asker's own
- * session, so a role without stats access sees "Not available for your role",
- * never $0, and an unread count that cannot read every model is an error,
- * never a partial sum. A card's value is never written into the answer, so it never
- * reaches the thread's history. A chat marker is a button into the fan's chat
- * once the handle resolves on the turn's model and the session may open
- * Messages Pro; otherwise its handle stays plain text in the answer and nothing
- * renders here.
- */
 
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
@@ -26,7 +15,6 @@ import {
   type ChatMarker, type DataMarker, type Marker,
 } from "./markers";
 
-/** One card's rows: a total, or a short ranked list (`more`: rows past it). */
 type Reading = { total: string } | { rows: Array<{ name: string; value: string }>; more?: number };
 
 interface RevenueResp { rows?: Array<{ total_cents?: number | null }> }
@@ -40,13 +28,9 @@ const fan = (name: string | null | undefined, user: string | null | undefined, i
 
 const SHOWN = 5;
 
-/** The figure behind one data marker. `account` null = every account the
- *  session may see; `accounts` are those, for the per-account unread count.
- *  Any account failing, or answering no count, fails the whole sum. */
 async function read(m: DataMarker, account: string | null, accounts: string[], tz: string | null): Promise<Reading> {
   if (m.metric === "unread") {
     const ids = account ? [account] : accounts;
-    // One OnlyFans read per Creator: pooled, never every Creator at once (lib/settlePool).
     const got = await settlePool(ids, CREATOR_POOL, (id) =>
       relay.get<{ chatMessagesCount?: number | null }>("/api/of/v2/users/me", { accountId: id, ...BG }));
     const counts = got.map((r) => (r.status === "fulfilled" ? r.value?.chatMessagesCount : undefined));
@@ -60,7 +44,6 @@ async function read(m: DataMarker, account: string | null, accounts: string[], t
       return { total: fmtCents((r?.rows ?? []).reduce((a, x) => a + (x.total_cents ?? 0), 0)) };
     }
     case "per_model": {
-      // The endpoint sorts by revenue, highest first: the card shows the top ones.
       const all = (await relay.get<PerModelResp>(path, BG))?.per_model ?? [];
       return {
         rows: all.slice(0, SHOWN).map((x) => ({ name: x.display_name || x.account_id, value: fmtCents(x.total_revenue_cents ?? 0) })),
@@ -83,11 +66,8 @@ const statusOf = (e: unknown): number | undefined => (e as { status?: unknown } 
 const CARD = "rounded-xl border border-border bg-bg px-3 py-2 text-[13px]";
 
 function DataCard({ marker, account, accounts }: { marker: DataMarker; account: string | null; accounts: string[] | null }) {
-  // Wait for the report zone of the card's own account (null: the session's,
-  // as the endpoint reads it with no account), so a window is cut once.
   const applied = useQuery<AppliedSettings>(appliedQuery(usePrincipalId(), account));
   const tz = applied.data?.preferences?.report_tz ?? null;
-  // "All" unread sums the roster: it waits for it (null while it loads).
   const allUnread = marker.metric === "unread" && !account;
   const q = useQuery({
     queryKey: ["assistant-card", marker.metric, marker.window, account, accounts, tz],
@@ -145,9 +125,6 @@ function ChatButton({ marker, account, onNavigate }: { marker: ChatMarker; accou
   );
 }
 
-/** The cards under one answer. `focus` is the turn's model (null = General:
- *  a `this` marker then reads every account); `accountIds` null while the
- *  roster loads; `canChat` false (no Messages Pro): no chat buttons. */
 export function MarkerCards({
   markers, focus, accountIds, canChat, onNavigate,
 }: { markers: Marker[]; focus: string | null; accountIds: string[] | null; canChat: boolean; onNavigate?: () => void }) {

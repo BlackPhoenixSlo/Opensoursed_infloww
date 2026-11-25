@@ -5,8 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { holdLease, onLeaseHolds } from "@/lib/viewLease";
 import { useOnScreenLease, useViewLease } from "./useViewLease";
 
-/** What the heartbeat would hold: each hold key's last set ([] = released), and a source label's union over its
- *  holds (`label#…` keys). */
 function watch() {
   const seen: Record<string, string[]> = {};
   const off = onLeaseHolds((key, ids) => { seen[key] = ids; });
@@ -68,7 +66,6 @@ describe("useViewLease", () => {
   });
 });
 
-// A stand-in IntersectionObserver: the test says which elements intersect.
 class FakeIO implements IntersectionObserver {
   static all: FakeIO[] = [];
   readonly root = null;
@@ -111,9 +108,9 @@ describe("useOnScreenLease: the visible-row sources", () => {
     expect(w.of("u-strip")).toEqual([]);
     act(() => io.fire([el("A"), el("B")]));
     expect(w.of("u-strip")).toEqual(["A", "B"]);
-    act(() => io.fire([el("C"), el("D")]));          // scrolled: A and B left view
+    act(() => io.fire([el("C"), el("D")]));
     expect(w.of("u-strip")).toEqual(["C", "D"]);
-    act(() => io.fire([el("C")], 0));                 // edge-adjacent, no pixel shown: not on screen
+    act(() => io.fire([el("C")], 0));
     expect(w.of("u-strip")).toEqual([]);
     act(() => io.fire([el("D")]));
     unmount();
@@ -146,10 +143,10 @@ describe("useOnScreenLease: the visible-row sources", () => {
     const io = FakeIO.all[0];
     act(() => io.fire([container.querySelector('[data-id="A"]')!, container.querySelector('[data-id="B"]')!]));
     expect(w.of("u-strip")).toEqual(["A", "B"]);
-    rerender(<Strip ids={["B"]} />);                  // tab A closed
+    rerender(<Strip ids={["B"]} />);
     expect(w.of("u-strip")).toEqual(["B"]);
     expect(io.observed.size).toBe(1);
-    rerender(<Strip ids={["A", "B"]} />);             // reopened: a new row element
+    rerender(<Strip ids={["A", "B"]} />);
     act(() => io.fire([container.querySelector('[data-id="A"]')!, container.querySelector('[data-id="B"]')!]));
     expect(w.of("u-strip")).toEqual(["A", "B"]);
     unmount();

@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * useRecentChatsLocal — instant-load seed for the inbox.
- *
- * Reads the LOCAL `chats` table via /admin/chats/recent. The table is
- * populated by the WS transcoder, so it carries every chat we've ever
- * seen an event for — including names + avatars cached on the fans
- * row. Sub-50ms because SQLite is indexed on last_message_at.
- *
- * Used by ChatList as a fallback display while the cold `/chats` OF
- * fetch is still in flight: 10–25 rows render instantly, the user can
- * click into one, and the live OF data replaces it once it arrives.
- */
 
 import { replaceEqualDeep, useQuery } from "@tanstack/react-query";
 
@@ -23,14 +11,7 @@ interface RecentChatsResp {
   source: string;
 }
 
-/** The seed's structural sharing, by row as `shareChatPages` does for the
- *  chats query: each row is shared with the previous row of the same
- *  (accountId, fanId), not the one at the same index. A live message moves its
- *  row to the top (useInboxRealtime), shifting every row above its old place
- *  down one; React Query's index-wise sharing would hand each of those a new
- *  object and the memoized FanRow would re-render the whole list on every
- *  message (measured: 76% of row renders under a DM flood). Exported for
- *  tests. */
+// Share per (accountId, fanId), not by index: a live message shifts rows and index sharing re-rendered the whole list (76% of row renders under a DM flood).
 export function shareSeedList(prev: unknown, next: unknown): unknown {
   const p = prev as RecentChatsResp | undefined;
   const n = next as RecentChatsResp | undefined;
@@ -51,8 +32,6 @@ export function shareSeedList(prev: unknown, next: unknown): unknown {
 export function useRecentChatsLocal(opts: {
   enabled?: boolean;
   limit?: number;
-  /** When set, the backend filters to this account_id so seed rows in a
-   *  single-model view don't bleed in other accounts' chats. */
   accountId?: string | null;
 } = {}): { rows: OFChatItem[]; isLoading: boolean } {
   const { enabled = true, limit = 25, accountId = null } = opts;
@@ -65,7 +44,6 @@ export function useRecentChatsLocal(opts: {
       if (accountId) qs.set("account_id", accountId);
       return relay.get<RecentChatsResp>(`/admin/chats/recent?${qs.toString()}`);
     },
-    // Fresh enough for a session. The OF data replaces it in <2s anyway.
     staleTime: 5 * 60 * 1000,
     gcTime: 30 * 60 * 1000,
     refetchOnWindowFocus: false,

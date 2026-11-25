@@ -1,42 +1,3 @@
-"""The welcome burst (`automations.send_welcome`) after its filters became one pure
-`partition` (service/automations/send_welcome_decide.py): a subscribe wave hits every
-Creator at once, OnlyFans' toasts poke each Creator's welcome rule, one supervisor pass
-runs them all, and every subscriber is checked against what his history says he gets,
-while `--users` owner tabs watch the live stream.
-
-World: `agency_inbox` plus seed/welcome_burst.py, per Creator: `new` brand-new subs, `welcomed`
-renewals the welcome already greeted (claim + 2 outbound rows), `established` renewals with a
-real conversation (4 out / 10 in, no claim), all in OF's subscribe feed at once; a share of the
-Creators (`of_on_frac`) has OnlyFans' own welcome on. Sizes per scale (`--set new=`,
-`welcomed=`, `established=`, `of_on_frac=`).
-
-Flow, all through real routes: the owner raises the DM rate (Concurrency panel route) and adds
-one `send_welcome` rule per Creator (`POST /admin/automation-rules`, every 300 s, `after_of_welcome`,
-`stop_on_reply` on so the claim lands with bubble 0, `limit` / `max_welcomes` = the feed, so no
-batch cap). Tick 0 (an empty feed) fires each new rule once, so a CONTROL pass after it has
-nothing due. Then the feed is published, the `--users` /events streams open over TAB_RAMP_S, every
-Creator's subscribe toasts arrive (`POST /__slop/of-ws-frame`, serial per Creator, the real
-transcoder pokes the rule), tick 1 runs; one more toast per Creator and tick 2.
-
-Invariants (lib/welcome_burst_faults.py names them): ONCE (one greeting + one follow-back per new
-sub of an OF-off Creator, nothing for a claimed fan, nothing in tick 2), ESTABLISHED (no send, follow
-or claim for a renewal with history; the runs' skipped_existing = the seed), OF_ON (OF-on Creators send
-nothing, claim + follow each new sub once), COUNTS (OF sends = new welcome rows, distinct fans sent =
-the runs' welcomes_sent, follows = followed_back, no errors), POKE (control pass runs nothing; each
-toast pass runs every Creator's rule; a toast inside the 60 s poke floor after a run is spent), LIVE (every welcome bubble on every tab). Budget: a Creator's
-tick-1 run time per welcome (automation_runs started -> completed), p95, vs PER_WELCOME_P95_MS and the
-last green run.
-
-Faked or bypassed, declared: OnlyFans' subscribe feed, settings, templates, profile read and follow
-(lib/welcome_relay.py, at the offline client); OF's send (lib/relay.py `_OfflineOF.send_message`); the
-supervisor's 30 s cadence (`POST /__slop/automation-tick`, one `_drain_due_jobs_once` pass);
-`human_pace: false` (paced holds are minutes of real sleep; the relay's test mode already zeroes typing
-holds) and `with_image: false` (no vault read); the DM rate raised to DM_PER_MIN; the wait between waves (the 60 s poke floor) replaced by moving
-each rule's own scheduled_jobs rows AGE_S back (SQL, `_age_jobs`), a row the product writes, only older.
-
-Break-it-once: welcome-burst-rewelcomes (partition ignores welcome_sent): only ONCE goes red.
-`--fault=welcome-to-established` (partition ignores the NOT-NEW scan): only ESTABLISHED.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -53,15 +14,16 @@ from slop.seed import ts, welcome_burst
 PROFILE = "agency_inbox"
 UI = False
 FAULT = "welcome-burst-rewelcomes"
-PER_WELCOME_P95_MS = 400      # measured p95 65.8 ms at medium (slop/evidence/20261030T215222Z-2026-10-30-welcome-burst-7482): 2 bubbles, claim, follow
+# measured p95 65.8 ms at medium (2 bubbles, claim, follow)
+PER_WELCOME_P95_MS = 400
 P95_VS_LAST = (1.5, 300)
-OF_SEND_ID_BASE = 9_700_000_000_000   # lib/relay.py: the fake OF's message ids (this run's sends)
+OF_SEND_ID_BASE = 9_700_000_000_000
 DM_PER_MIN = 600
 EVERY_S = 300
-AGE_S = 120   # the rules' last job moved this far back: past the 60 s poke floor, inside EVERY_S
+# the rules' last job moved this far back: past the 60 s poke floor, inside EVERY_S
+AGE_S = 120
 TAB_RAMP_S = 10.0
-BURST = (False, True)   # the composed burst, per bubble "is the question": the seeded brain has no
-                        # activity line and the rule no GIF, so one greeting, then the question
+BURST = (False, True)
 
 
 def _dt(v) -> datetime | None:
@@ -69,7 +31,6 @@ def _dt(v) -> datetime | None:
 
 
 def _publish(ctx, feed: dict, of_on: list) -> None:
-    """of-welcome.json for lib/welcome_relay.py, atomically (the relay reads it on every call)."""
     f = ctx.stack.tmp / "of-welcome.json"
     tmp = f.with_suffix(".tmp")
     tmp.write_text(json.dumps({"feed": feed, "of_welcome_on": of_on}))
@@ -98,8 +59,6 @@ def _runs(con, after_id: int, upto: int) -> dict[str, list]:
 
 
 def _age_jobs(con, rule_ids) -> None:
-    """The time between two subscribe waves, without the wait: each rule's own jobs (the
-    cadence anchor, job_queue.rule_last_fired_at) are moved AGE_S back."""
     q = ",".join("?" * len(rule_ids))
     with con:
         con.execute(f"UPDATE scheduled_jobs SET created_at = ? WHERE rule_id IN ({q})",
@@ -139,10 +98,10 @@ async def run(ctx) -> None:
     ws0 = {(str(a), int(f)): s for a, f, s in con.execute("SELECT account_id, fan_id, sent_at FROM welcome_sent")}
 
     ctx.rec.stage = "tick0"
-    tick0 = await _tick(ctx)            # the new rules fire once on an empty feed
+    tick0 = await _tick(ctx)
     ctx.rec.stage = "control"
     _age_jobs(con, list(rules.values()))
-    control = await _tick(ctx)          # AGE_S < EVERY_S: nothing due, nothing poked
+    control = await _tick(ctx)
     ctx.rec.stage = None
 
     _publish(ctx, feed, sorted(of_on))
@@ -163,7 +122,7 @@ async def run(ctx) -> None:
 
     async def toasts(a: str, items: list) -> list[int]:
         bad = []
-        for it in items:   # serial per Creator, like its WS pump
+        for it in items:
             r = await ctx.owner.post("/__slop/of-ws-frame", json={"account_id": a, "frame": _toast(it)})
             if r.status_code != 200:
                 bad.append(r.status_code)
@@ -187,7 +146,7 @@ async def run(ctx) -> None:
     while time.monotonic() < deadline and any(ids1 - set(t.message_ids) for t in tabs):
         await asyncio.sleep(0.25)
 
-    ctx.rec.stage = "toasts-floor"      # a toast right after tick 1: under the poke floor, spent
+    ctx.rec.stage = "toasts-floor"
     bad2 = await asyncio.gather(*(toasts(a, feed[a][:1]) for a in aids))
     await manager.quiesce(ctx.owner)
     floor = await _tick(ctx)
@@ -223,8 +182,6 @@ async def run(ctx) -> None:
     def claimed_now(a: str, f: int) -> bool:
         return (a, f) in ws1 and (a, f) not in ws0
 
-    # ONCE: OF-off Creators' new subs get exactly one burst (BURST: one greeting, then the
-    # question) + one follow; a claimed renewal gets nothing anywhere; tick 2 sends and follows nobody.
     once_bad: dict[str, object] = {}
     for a in aids:
         for f in seed["new"][a]:
@@ -267,7 +224,6 @@ async def run(ctx) -> None:
     flat = [x for v in runs1.values() for x in v] + [x for v in runs2.values() for x in v]
     welcomes = sum(int(x.get("welcomes_sent") or 0) for x in flat)
     fb = sum(int(x.get("followed_back") or 0) for x in flat)
-    # Both ticks: OF's sends / follows (lib/welcome_relay.py) vs the rows and the two ticks' runs.
     all_sends = {a: v for a, v in seen2["sends"].items() if a in feed}
     n_sends = sum(len(v) for v in all_sends.values())
     n1 = {a: len(v) for a, v in sends1.items()}

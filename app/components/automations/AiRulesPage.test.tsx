@@ -1,5 +1,3 @@
-/** AI rules page: cards render from GET /admin/full-ai/rules, a click opens the drawer with the full prompt, the
- *  no Test|Shadow toggle. */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
@@ -40,7 +38,7 @@ describe("AiRulesPage", () => {
     expect(await screen.findByRole("button", { name: "Router Jev" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "His lines + state" })).toBeTruthy();
     expect(relayGet).toHaveBeenCalledWith("/admin/full-ai/rules?mode=test", expect.anything());
-    expect(screen.getByText("state")).toBeTruthy(); // edge label
+    expect(screen.getByText("state")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Router Jev" }));
     const drawer = await screen.findByRole("dialog", { name: "Router Jev" });

@@ -1,15 +1,12 @@
 "use client";
 
-/** The notifications tabs and their tab bar's counts. */
 
 import type { OFUserMini } from "@/lib/relay";
 import { dayOf, dropClass, fill, handleOf, linkUser, make, nameOf, otherAvatar, setIcon, stamp, track, userHref, valid } from "@/lib/ofMirrorDom";
 
-/** A `/users/notifications` item (its fan in `user`, else `fromUser`). */
 export interface MirrorNotification {
   type?: string;
   text?: string | null;
-  /** OF's placeholders in `text` and what each stands for. */
   replacePairs?: Record<string, string>;
   createdAt?: string;
   isRead?: boolean;
@@ -17,11 +14,6 @@ export interface MirrorNotification {
   fromUser?: OFUserMini;
 }
 
-/**
- * Notifications tab -> its Relay route: All with no type, the others their type, the value OF's own tab sends (its route
- * name, read from OF's bundle: Tips `tip`, Likes `favorited`, Promotions `message`, OnlyFans `deactivated_media`). Tags
- * reads OF's own source for that tab, `/release-forms/mentions`, whose items are notification-shaped.
- */
 export const NOTIFICATIONS: Record<string, string> = {
   "notifications/index": "/api/of/v2/users/notifications?limit=20",
   "notifications/subscribed": "/api/of/v2/users/notifications?limit=20&type=subscribed",
@@ -35,45 +27,33 @@ export const NOTIFICATIONS: Record<string, string> = {
   "notifications/tags": "/api/of/v2/release-forms/mentions?limit=20",
 };
 
-/** Tags' route: OF's mentions, which take no related_user (server.py's /release-forms/mentions). */
 const TAGS = "notifications/tags";
 
-/** ticket 17: a Notifications page URL's fan (`?related_user=`): its OF id, digits only (the Relay's related_user is a
- *  number); anything else is dropped. */
 export function relatedUserOf(params: URLSearchParams): string | null {
   const v = params.get("related_user")?.trim() ?? "";
   return /^\d+$/.test(v) ? v : null;
 }
 
-/** ticket 17: a Notifications tab's read for fan `relatedUser` (spec story 15): a type tab re-reads with OF's
- *  related_user; Tags keeps its mentions read (its rows are filtered as read, relatedOnly); no tab: null. */
 export function notificationsRoute(page: string, relatedUser: string | null): string | null {
   if (!Object.hasOwn(NOTIFICATIONS, page)) return null;
   const route = NOTIFICATIONS[page];
   return relatedUser && page !== TAGS ? `${route}&related_user=${encodeURIComponent(relatedUser)}` : route;
 }
 
-/** ticket 17: a Notifications tab's URL for fan `relatedUser` (none: the tab as is). */
 export function notificationsHref(page: string, relatedUser: string | null): string {
   const tab = page.slice("notifications/".length);
   const path = `/of-manager/notifications${tab && tab !== "index" ? `/${tab}` : ""}`;
   return relatedUser ? `${path}?related_user=${encodeURIComponent(relatedUser)}` : path;
 }
 
-/** `/users/notifications/count`: the unread count per tab type (`all`, `subscribed`, `tip`, ...). */
 export type NotificationCounts = Record<string, number | null | undefined>;
 export const NOTIFICATION_COUNTS = "/api/of/v2/users/notifications/count";
 
-/** OF's tab count formatter: nothing at zero, else the number, capped at `max` ("99+"). */
 const tabCount = (n: unknown, max = 9999) => {
   const v = Number(n);
   return !v || v <= 0 ? "" : v > max ? `${max}+` : `${v}`;
 };
 
-/**
- * The notifications tab bar: each tab shows its type's count from `counts` (All capped at 99, as OF), Tags the
- * Creator's `newTagsCount` (from "who am I", as OF); a tab with none shows no count. The captured counts are hidden.
- */
 export function applyNotificationCounts(doc: Document, counts: NotificationCounts, newTags?: number | null) {
   for (const a of doc.querySelectorAll("a.b-tabs__nav__link[href^='/of-manager/notifications']")) {
     const label = a.querySelector(".b-tabs__nav__text");
@@ -87,35 +67,26 @@ export function applyNotificationCounts(doc: Document, counts: NotificationCount
   }
 }
 
-/** A notification type -> its avatar badge icon: the two measured on the captured tabs (no badge for the others). */
 const NOTIFICATION_ICONS: Record<string, string> = { subscribed: "icon-follow", tip: "icon-price", tipped: "icon-price" };
 
-/**
- * A notifications tab: one copy of its plain row (the first with no list link, "Add to favorites and other lists") per
- * notification, in order: the fan's name, @handle and avatar (none: no picture, never the example's), its text with OF's
- * replace pairs as plain text, its date with the hover stamp (none: no date), the unread mark only when unread, and the
- * type's measured badge icon (other types: no badge). With a row, a tab OF captured empty loses its "No notifications
- * currently!" and its centring layout; an empty list keeps them.
- */
 export function applyNotifications(doc: Document, items: MirrorNotification[], img: (u: string) => string) {
   const views = [...doc.querySelectorAll<HTMLElement>(".b-notifications__list .vue-recycle-scroller__item-view")];
   const tpl = views.find((v) => v.querySelector(".b-notifications__list__item") && !v.querySelector(".b-list-titles a"));
   if (!tpl) return;
   const clones = items.map((n, i) => {
     const el = make(tpl);
-    el.style.removeProperty("display"); // the generator's hidden template
+    el.style.removeProperty("display");
     const u = n.user ?? n.fromUser;
     el.querySelector("[data-index]")?.setAttribute("data-index", String(i));
     el.querySelector(".b-notifications__list__item")?.classList.toggle("m-unread", n.isRead === false);
     const name = el.querySelector(".b-username .g-user-name");
     if (name) {
-      name.classList.remove("m-verified"); // the example's verified mark (the Relay sends none)
+      name.classList.remove("m-verified");
       name.textContent = u ? ` ${nameOf(u)} ` : "";
     }
     const handle = el.querySelector(".g-user-username");
     if (handle) handle.textContent = u ? ` @${handleOf(u)} ` : "";
     otherAvatar(el.querySelector(".b-available-users__round-img .g-avatar"), u, img);
-    // The user's avatar, name and handle (OF's profile links): their OF profile.
     linkUser(el.querySelectorAll("a.g-avatar, a.b-username, a.g-user-username"), userHref(u));
     const icon = NOTIFICATION_ICONS[n.type ?? ""];
     const badge = el.querySelector(".b-notifications__avatar__icon");
@@ -137,8 +108,6 @@ export function applyNotifications(doc: Document, items: MirrorNotification[], i
   fill(doc, [...views, ...empty], clones);
 }
 
-/** An OF link in a notification's text: an OF chat (`/my/chats/chat/<id>`) opens it here; any other OF page (a post, a
- *  comment) opens on onlyfans.com in a new tab (the mirror has no post page); anything else is no link. */
 function notificationHref(raw: string | null): { href: string; here: boolean } | null {
   let url: URL;
   try {
@@ -151,8 +120,6 @@ function notificationHref(raw: string | null): { href: string; here: boolean } |
   return chat ? { href: `/of-manager/messages/chat?chat=${chat}`, here: true } : { href: url.href, here: false };
 }
 
-/** A notification's text (OF's HTML) as `doc`'s nodes, parsed inertly: its text and its OF links (notificationHref), no
- *  other markup (the frame shares our origin), trimmed as OF's. */
 export function notificationText(doc: Document, html: string): Node[] {
   const out: Node[] = [];
   const walk = (n: Node) => {
@@ -174,11 +141,6 @@ export function notificationText(doc: Document, html: string): Node[] {
   return out;
 }
 
-/**
- * A notifications tab before its notifications are here: OF's "No notifications currently!" reads "Loading
- * notifications…" while the Relay answers (`error` null), or the red "Could not load notifications: <the Relay's text>"
- * after it failed (as Home's feed, applyFeedStatus).
- */
 export function applyNotificationsStatus(doc: Document, error: string | null) {
   const text = doc.querySelector<HTMLElement>(".b-notifications__list .infinite-status-prompt:not([style*='none']) > .empty-message > span");
   if (!text) return;

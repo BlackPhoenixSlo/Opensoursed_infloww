@@ -66,8 +66,8 @@ describe("keepRunningOn", () => {
   });
 });
 
+// A cap under 10 or unlimited (0) never pre-empts: it re-creates after it ends.
 describe("preemptUsable", () => {
-  // A cap under 10 or unlimited (0) never pre-empts: it re-creates after it ends.
   it.each<[number, boolean]>([[0, false], [1, false], [9, false], [10, true], [11, true], [50, true], [100, true]])(
     "cap %i -> %s", (cap, want) => {
       expect(preemptUsable(cap)).toBe(want);

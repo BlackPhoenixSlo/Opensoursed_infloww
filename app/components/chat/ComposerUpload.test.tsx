@@ -1,15 +1,3 @@
-/**
- * Composer upload from the computer (seam 1: the `Composer`, through
- * `composerTestHarness`; sibling of `ComposerToolbar.test.tsx`). Restored
- * 2026-10-16 at the human's request (docs/spec/phase-04-composer-ppv-vault.md,
- * Out of Scope note): row 3's Upload, a drop on the Composer and a pasted
- * image each upload through `POST /api/of/v2/upload`; every file shows a
- * chip until it lands, then rides on the send exactly as a Vault pick does.
- * `relay.uploadFile` is the harness mock; every case drives it by hand. The
- * Vault picker is a local stub that records the ids it was opened with and
- * confirms whatever a case sets in `picker.confirm`. jsdom has no blob URLs,
- * so `URL.createObjectURL` / `revokeObjectURL` are stubbed per case.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -30,8 +18,6 @@ vi.mock("./VaultPicker", () => ({
   },
 }));
 
-// The harness first: importing `@/lib/relay` first runs the mock factory while
-// the harness is mid-import, and the hook then gets the real relay.
 import { pickSendAt, renderComposer, resetComposerHarness } from "./composerTestHarness";
 import { relay, type VaultMedia, type VaultUploadResp } from "@/lib/relay";
 
@@ -47,11 +33,8 @@ function deferred<T>() {
 const ok = (id: number): VaultUploadResp => ({ ready: true, deduped: false, vault_id: id, send_with: [id] });
 const png = (name: string) => new File(["x"], name, { type: "image/png" });
 
-// Uploads queue per Creator at module level, so one left hanging would hold
-// every later case's; afterEach settles whatever a case left open.
 const outstanding: Array<(e: unknown) => void> = [];
 
-/** Each call to the upload gets its own deferred, in call order. */
 function queueUploads() {
   const pending: Array<ReturnType<typeof deferred<VaultUploadResp>>> = [];
   uploadFile.mockImplementation(() => {
@@ -156,7 +139,6 @@ describe("Composer: upload from computer", () => {
     expect(args.uploads?.map((u) => [u.file.name, u.previewUrl])).toEqual([["a.png", "blob:a.png"]]);
     expect(textbox()).toHaveValue("");
     expect(screen.queryByRole("group", { name: "Uploading a.png" })).not.toBeInTheDocument();
-    // The send owns the upload now: it lands as the send's media, not as a tile.
     pending[0].resolve(ok(9));
     await expect(args.uploads![0].done).resolves.toMatchObject([{ id: 9, _localPreview: "blob:a.png" }]);
     await new Promise((r) => setTimeout(r, 0));
@@ -334,7 +316,6 @@ describe("Composer: upload from computer", () => {
 
     await user.upload(fileInput(), png("a.png"));
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Remove attachment" })).toHaveLength(2));
-    // The picker hands back the uploaded id bare (not on a loaded page) plus a new pick.
     picker.confirm = [{ id: 77, type: "photo" }, { id: 9102, type: "photo" }];
     await user.click(screen.getByRole("button", { name: "Vault" }));
     expect(picker.initialSelectedIds).toEqual([77]);

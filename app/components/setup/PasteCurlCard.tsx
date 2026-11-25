@@ -1,22 +1,5 @@
 "use client";
 
-/**
- * PasteCurlCard — the Add creator flow's Extension way in (the fallback when Browser login does not work).
- *
- * Three steps: install the Chatterly Login Capture extension (or see that it is installed), sign in to OnlyFans in
- * Chrome, then click "Copy cURL" in the extension and paste the copy here. We POST it to /admin/session/bootstrap with
- * `mode: 'paste-curl'`. The relay parses cookies + signed headers + the `x-relay-static-param` extension header to
- * derive signing rules for the current OF revision.
- *
- * The proxy is the flow's: `attach` (a new sign-in: the pool's automatic pick for an account on no proxy yet) runs as
- * the card's attach step after the capture, then, when it bound one, the session reloads through it; a line under the
- * box says so (the cookies were minted on this computer's IP). Without `attach` (a row's re-link) nothing is bound.
- * "Troubleshooting", folded at the foot: a manual static_param for a brand-new OF revision the extension did not
- * inject one for.
- *
- * Inside the modal (`IfModal footerSlot`) its Link account button sits in the modal's footer, only while `active`.
- * The result panel shows the relay's answer (the new account_id and session file, or the error).
- */
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useReducer } from "react";
@@ -35,29 +18,19 @@ import { BRAND_NAME } from "@/lib/brand";
 
 const EXTENSION_URL = `https://chromewebstore.google.com/detail/chatterly-login-capture/${EXTENSION_ID}`;
 
-/** The textarea's form: the footer's Link account submits it. */
 const PASTE_FORM_ID = "extension-login-form";
 
-/** `extInstalled` is the page-mount probe's answer (useExtensionProbe): null while checking. The card never probes.
- *  Inside the Add creator flow, `onLinked` hears the new account (when the proxy attach failed, only after Retry
- *  succeeds or Continue is pressed), and the flow's nickname comes in as `initialNickname`. */
 export default function PasteCurlCard({ extInstalled, onLinked, initialNickname = "", attach, active = true, onBusy }: {
   extInstalled: boolean | null;
   onLinked?: (accountId: string) => void;
   initialNickname?: string;
-  /** Binds the flow's proxy; false when it bound nothing (no reload then). */
   attach?: (accountId: string) => Promise<boolean>;
-  /** Shown (Link account in the footer); false while the other sign-in is. */
   active?: boolean;
-  /** Hears whether a capture is under way or waits on Retry / Continue (false again on unmount). */
   onBusy?: (busy: boolean) => void;
 }) {
   const qc = useQueryClient();
   const [state, dispatch] = useReducer(pasteCurlReducer, undefined, initialPasteCurl);
-  // `pending`: an account captured but whose attach failed. `onLinked` waits for Retry or Continue, so the error
-  // stays readable.
   const { curl, staticOverride, result, pending } = state;
-  // Why the pasted curl would be refused (no cookies, no user-agent, …), shown under the textarea.
   const hint = curlHint(curl);
   useReportBusy(extensionBusy(state), onBusy);
 
@@ -85,16 +58,13 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
     }
   }
 
-  // Invalidate every cache that depends on accounts/proxies.
+  // The account exists before the proxy step, so refresh even when attach fails.
   function refreshCaches() {
     qc.invalidateQueries({ queryKey: ["accounts"] });
     qc.invalidateQueries({ queryKey: ["proxies"] });
     qc.invalidateQueries({ queryKey: ["health-all"] });
   }
 
-  /** The attach step: bind the flow's proxy (`attach`; skipped when an earlier try already `bound` it), then reload the
-   *  session. True when there is nothing to attach or it all worked; on failure the error stays in the card with Retry
-   *  and Continue. */
   async function attachStep(accountId: string, alreadyBound = false): Promise<boolean> {
     if (!attach) return true;
     let bound = alreadyBound;
@@ -112,13 +82,11 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
             `${msg}\n\nPress Retry to reload it.`
           : `Session captured (account ${accountId}), but proxy attach failed:\n${msg}\n\nPress Retry, or Continue without it.`,
       });
-      // The account was created before the proxy step, so refresh even on the failure path.
       refreshCaches();
       return false;
     }
   }
 
-  /** After the attach step (or Continue past it): clear the curl, report, hand the account on. */
   async function finish(accountId: string | null, headline: string) {
     dispatch({ type: "submitOk", text: headline });
     refreshCaches();
@@ -142,7 +110,6 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
           {extInstalled === true ? (
             <span className="text-ok">Extension installed</span>
           ) : (
-            // Its text is what desktop/preload.js finds to put "Connect OnlyFans (app)" beside it inside the desktop app.
             <a
               href={EXTENSION_URL} target="_blank" rel="noopener noreferrer"
               className="inline-flex h-8 items-center rounded-md border border-border px-[15px] text-fg hover:border-accent hover:text-accent"
@@ -193,7 +160,6 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
         />
       </details>
 
-      {/* Result panel */}
       {result && (
         <pre
           className={
@@ -214,7 +180,6 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
       )}
 
       {active && (
-        // No phone: the extension is desktop Chrome's.
         <EditorFooter>
           <IfButton type="submit" form={PASTE_FORM_ID} variant="primary" disabled={!canSubmit(state)} className="max-md:hidden">
             {state.busy ? "Linking…" : "Link account"}

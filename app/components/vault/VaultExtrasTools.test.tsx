@@ -1,5 +1,3 @@
-/** The Extras drawer's describe "Max": default 2000, persisted per browser, capping the button counts and the press;
- *  and the paused Collect's "continue collecting?" prompt. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen } from "@testing-library/react";
 
@@ -24,7 +22,7 @@ function renderTools(
       onCollect={() => {}} onCollectAnswer={collect.onCollectAnswer} onDescribeAll={onDescribeAll} describeSweep={sweep}
       describeText={{ label: "", title: "" }} describeStopped={null} harvestSweep={sweep}
       plan={plan as never} capped={false} capReason="" needsReview={0} setNeedsReview={() => {}}
-      flagsReviewOpen={false} onOpen={() => {}} download={{ label: "Download full vault", reason: "", onStart: () => {} }}
+      flagsReviewOpen={false} onOpen={() => {}} removeAllowed download={{ label: "Download full vault", reason: "", onStart: () => {} }}
     />,
   );
   return onDescribeAll;
@@ -102,10 +100,9 @@ describe("Inflowwww folders", () => {
       accountId: "1000001", onClose: () => {}, isCollecting: false, totalSeen: null, cachedCount: 0, onCollect: () => {},
       onDescribeAll: () => {}, describeSweep: sweep, describeText: { label: "", title: "" }, describeStopped: null,
       harvestSweep: sweep, plan: undefined, capped: false, capReason: "", needsReview: 0, setNeedsReview: () => {},
-      flagsReviewOpen: false, onOpen, download: { label: "Download full vault", reason: "", onStart: () => {} },
+      flagsReviewOpen: false, onOpen, removeAllowed: true, download: { label: "Download full vault", reason: "", onStart: () => {} },
     };
     const { rerender } = renderWithProviders(<VaultExtrasTools {...props} />);
-    // An empty cache does not turn it off: a folder can be made first.
     fireEvent.click(screen.getByRole("button", { name: "Inflowwww folders" }));
     expect(onOpen).toHaveBeenCalledWith("folders");
     rerender(<VaultExtrasTools {...props} foldersAllowed={false} />);

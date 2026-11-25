@@ -1,7 +1,5 @@
 "use client";
 
-/** Creator reports › Overview (#42 to #153): Earnings summary, Earnings trends, Earnings by channel and Earnings
- *  breakdown, Creator statistics, and our Earnings ledger. Its state lives in CompetitorReports. */
 
 import type { LucideIcon } from "lucide-react";
 
@@ -28,8 +26,6 @@ import {
   TREND_TEXT, colTotal, isWait, statCol, viewOf,
 } from "./reportsMath";
 
-/** The summary's sum tiles in grid order, each channel's icon and colour from the Dashboard's one map (#5), Total on
- *  the accent; Chargebacks (its own read, no growth) follows them. */
 const TILES: readonly { key: Chan | "total"; label: string; Icon: LucideIcon; rgb?: string }[] = [
   { key: "total", label: "Total earnings", Icon: OnlyfansLine },
   ...([
@@ -37,8 +33,6 @@ const TILES: readonly { key: Chan | "total"; label: string; Icon: LucideIcon; rg
     ["referrals", "Referrals"],
   ] as const).map(([key, label]) => ({ key, label, ...TILE_ICON[key] })),
 ];
-/** #101: the Creator statistics cards' tooltips, verbatim but for Total earnings: the per-model read it sums carries
- *  no OnlyFans referrals, so its tip says so. */
 const STAT_TIPS = {
   creators: "Total number of creators managed by your team",
   message: "Earnings from creators’ messages during the selected time frame",
@@ -58,8 +52,6 @@ export default function CreatorOverview({
 }: {
   ids: { summary: string; trends: string; channel: string; breakdown: string; stats: string; ledger: string };
   view: View; totalCents: number; buckets: Record<Bucket, number>;
-  /** Both windows' sums as growth reads them (`forGrowth`, per `totalGrowth`): unless whole, no Referrals, and
-   *  Total without referrals (`exclReferrals`) or none yet (`pending`). */
   prior: GrowthSums | null; growthNow: GrowthSums; totalGrowth: TotalGrowth;
   trendPoints: Point[];
   chanPick: Set<Chan>; setChanPick: (next: Set<Chan>) => void;
@@ -67,33 +59,22 @@ export default function CreatorOverview({
   from: string | null; to: string | null; net: boolean; buildExport: (c: ExportChoice) => Promise<Section[]>;
   perModel: { isPending: boolean; isError: boolean }; visibleCreators: PerModelRow[];
   colKeys: string[]; setColKeys: ((next: string[]) => void) | null;
-  /** The Agency's layout read failed: asks it again (the picker stays off until it answers). */
   retryCols?: (() => void) | null;
   orderedCols: readonly StatCol[]; colCtx: ColCtx; grossCents: number;
   netLedger: Partial<Record<(typeof LEDGER_ROWS)[number], number>>;
-  /** Chargebacks' figure, below zero, and its reversed read's state, outside `view`: pending or failed, only
-   *  Chargebacks' figures show "-". */
   chargebacksCents: number; chargebacksView: View;
-  /** How much of OnlyFans' referrals read is missing: all, Referrals shows "-"; any, Total is marked partial. */
   referralsGap: ReferralsGap;
-  /** Whether Referrals has a figure (`referralsShown`): not, its tile, legend row and line wait ("-"), Total shows the
-   *  sales without it; `referralsGap` says why (the failure title, Total's partial mark). */
   referralsShown: boolean;
 }) {
   const ready = view === "ready";
   const cbShown = ready && !isWait(chargebacksView);
-  /* #101: the Creator statistics cards; "-" until the per-model read answers with a Creator in the selection. */
   const statsView = viewOf([perModel], visibleCreators.length > 0);
-  // With net on, OnlyFans' net per bucket; an older relay has none, so the card is Not wired then.
   const netByKind = visibleCreators.every((m) => m.net_revenue_by_kind);
-  // The cards sum the table's own columns (Message, Total earnings, Refunds) in the table's basis.
   const messageEarnings = colTotal(MESSAGE_COL, visibleCreators, colCtx);
   const totalEarningsAcrossCreators = colTotal(TOTAL_EARNINGS_COL, visibleCreators, colCtx);
   const refundedGross = colTotal(REFUNDS_COL, visibleCreators, { ...colCtx, net: false });
   const refundedAcrossCreators = colTotal(REFUNDS_COL, visibleCreators, colCtx);
-  /* Each channel’s share of total channel earnings. */
   const chanSum = CHANNELS.reduce((a, c) => a + buckets[c.key], 0);
-  /* The summary tiles' rows: Chargebacks has its own read (its own wait and error) and no growth. */
   const refsFailed = referralsGap === "all";
   const NO_GROWTH = { text: "-", dir: null };
   const tiles = [
@@ -123,14 +104,12 @@ export default function CreatorOverview({
       growthTitle: undefined,
     },
   ];
-  /* The legend's rows: the channels with their share, then Chargebacks (no share, its own read). */
   const legend = [
     ...CHANNELS.map((c) => ({ ...c, cents: buckets[c.key], share: true, shown: ready && (c.key !== "referrals" || referralsShown) })),
     { key: "chargebacks", label: "Chargebacks", color: CHARGEBACKS_COLOR, cents: chargebacksCents, share: false, shown: cbShown },
   ];
   return (
     <div className={styles.overview}>
-    {/* #46 to #60: Earnings summary, a card of seven tiles in four columns. */}
     <section aria-labelledby={ids.summary}>
       <SectionTitle
         id={ids.summary}
@@ -139,7 +118,6 @@ export default function CreatorOverview({
       />
       <ReportCard className={styles.summary}>
         <dl className={styles.summaryGrid}>
-          {/* The summary grid positions Tips beneath Subscriptions. */}
           {tiles.map((t) => (
             <SummaryTile
               key={t.key}
@@ -150,7 +128,6 @@ export default function CreatorOverview({
               negative={!t.blank && isLoss(t.cents)}
               title={t.title}
               partial={t.partial}
-              // With no Creator the reads' zeros, "$0".
               value={t.blank ? "-" : fmtDollars(t.cents)}
               growth={t.growth}
               growthTitle={t.growthTitle}
@@ -163,7 +140,6 @@ export default function CreatorOverview({
       </ReportCard>
     </section>
 
-    {/* #61 to #67: Earnings trends, a 220px bar chart in the toolbar's "Shown by" bucket (#4). */}
     <section aria-labelledby={ids.trends}>
       <ReportCard className={styles.trends}>
         <CardTitle
@@ -177,9 +153,7 @@ export default function CreatorOverview({
       </ReportCard>
     </section>
 
-    {/* #68: the channel row, 32px below, Earnings by channel and Earnings breakdown at either end. */}
     <div className={styles.channels}>
-      {/* #69 to #75: Earnings by channel (Inventory §3.4, C[H276166]), one of Infloww's sections. */}
       <section aria-labelledby={ids.channel} className="min-w-0">
         <ReportCard className={styles.channelCard}>
           <div className="min-w-0">
@@ -193,14 +167,12 @@ export default function CreatorOverview({
               <ChannelsPill picked={chanPick} onChange={setChanPick} />
             </div>
             <div className="mt-2">
-              {/* #74, #81, #83: a 250px chart of 2px lines, one per channel given; the breakdown's legend names them. */}
               <LineChart
                 height={190}
                 labels={trendPoints.map((p) => p.label)}
                 partial={trendPoints.map((p) => p.partial)}
                 lines={ready && channelLines.length > 0
                   ? channelLines.map((c) => ({ name: c.label, color: c.color, values: c.points.map((p) => p.value) })) : null}
-                // Only Referrals picked and it has no figure: why, not empty axes (as Creator performance's chart).
                 message={isWait(view) ? CHANNEL_TEXT[view]
                   : channelLines.length > 0 ? "" : refsFailed ? REFERRALS_FAILED : SUMMARY_TEXT.loading}
                 messageTitle={EXTRA_LABEL}
@@ -211,7 +183,6 @@ export default function CreatorOverview({
           </div>
         </ReportCard>
       </section>
-      {/* Channel shares and totals sit beside the line chart. */}
       <section aria-labelledby={ids.breakdown} className={styles.legend}>
         <ReportCard className={styles.channelCard}>
           <div className="min-w-0">
@@ -227,7 +198,6 @@ export default function CreatorOverview({
                     <span className="w-2 h-2 rounded-full mr-2 shrink-0" style={{ background: c.color }} aria-hidden />
                     {c.label}
                   </span>
-                  {/* Chargebacks has no share of the earnings: "-". */}
                   <span className="text-right" style={{ color: "var(--color-fg)" }}>
                     {ready && c.share ? `${(chanSum > 0 ? (100 * c.cents) / chanSum : 0).toFixed(2)}%` : "-"}
                   </span>
@@ -242,20 +212,16 @@ export default function CreatorOverview({
       </section>
     </div>
 
-    {/* #87 to #153: Creator statistics, its title with Export at the right, the notice, the four stat cards,
-        Custom metrics and the table. */}
     <section aria-labelledby={ids.stats}>
       <div className={styles.statisticsHeader}>
         <h2 id={ids.stats} className="text-xl font-medium leading-[1.2]" style={{ color: "var(--color-fg)" }}>
           Creator statistics
         </h2>
         <CustomMetricsPill keys={colKeys} onChange={setColKeys} onRetry={retryCols} />
-        {/* #88, #89: the bundle's Export pop-up; ours downloads at once (W5 5.9). */}
         <ExportMenu fileName={`creator-reports_${from ?? ""}_${to ?? ""}`} sheet="Creator reports"
           displays={["total", "day"]} fields net={net} build={buildExport} className="self-start" />
       </div>
 
-      {/* #101 to #104: four cards side by side, 16px apart; Refunded sums the Refunds column. */}
       <ul aria-label="Creator statistics cards" className="grid grid-cols-2 gap-2 md:flex md:flex-row md:gap-0 mb-4">
         <StatCard label="Creators" tip={STAT_TIPS.creators}
           value={statsView === "ready" ? visibleCreators.length.toLocaleString("en-US") : "-"} />
@@ -269,7 +235,6 @@ export default function CreatorOverview({
 
       <CreatorTable creators={visibleCreators} cols={orderedCols} ctx={colCtx} view={statsView} />
 
-      {/* #94 to #100: the notice, two lines with 6px dots, the second carrying the UTC chip. */}
       <div className="mt-3 rounded-lg border px-3 py-2" style={{ borderColor: "var(--color-border)" }}>
         <ul className="text-sm" style={{ color: "var(--color-fg)" }}>
           <li className="flex items-baseline my-1 mb-1">
@@ -284,9 +249,6 @@ export default function CreatorOverview({
       </div>
     </section>
 
-    {/* Ours: the Inventory's breakdown rows, which the capture lacks (its Notes), after Creator statistics as the
-        Clone places them. Gross earnings and Refunds have a read, and Platform fee, VAT collected and Net earnings
-        too while "Show net earnings" is on. */}
     <section aria-labelledby={ids.ledger} title={EXTRA_LABEL} className="mt-6">
       <ReportCard className="p-4">
         <h2 id={ids.ledger} className="text-xl font-medium leading-[1.2] mb-4" style={{ color: "var(--color-fg)" }}>
@@ -306,16 +268,14 @@ export default function CreatorOverview({
                 : name === "Refunds" ? (statsView === "ready" ? fmtDollars(refundedGross) : "-")
                 : !(name in netLedger) ? <NotWired label={name} />
                 : net ? (ready ? fmtDollars(netLedger[name] ?? 0) : "-")
-                // Off, no net read is made: a dash, not the Not wired marker, since the row has a read.
                 : (
                   <button type="button" disabled title="Turn on Show net earnings" aria-label={name} className="cursor-not-allowed opacity-50">
                     -
                   </button>
                 )}
             </span>
-            {/* The relay's net is gross less OnlyFans' fee (service/stats.py, `include_net`); VAT collected above
-                is OnlyFans' own figure beside it, not deducted, so the rows do not sum. */}
             {name === "Net earnings" && (
+              /* The relay's net is gross less OnlyFans' fee; VAT is OnlyFans' own figure, not deducted, so the rows do not sum. */
               <p className="basis-full mt-1 text-[12px]" style={{ color: "var(--color-fg-dim)" }}>
                 OnlyFans&apos; net is gross less its fee; VAT is not deducted.
               </p>

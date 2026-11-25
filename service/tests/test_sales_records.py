@@ -1,38 +1,5 @@
 #!/usr/bin/env python3
-"""Sales records on the Relay (docs/spec/phase-05-remaining-parity-gaps.md, item 3; ticket 33, stories 19-21,
-25, 26, 29 and 30).
-
-`GET /admin/stats/sales-records` lists one row per credited share of each sale Employee reports count (roadmap
-S7: one crediting path, so each Employee's Earnings add up to its Employee reports revenue), each with its `rule`
-(`manual`, `message`, `converters`, `shift` or `unassigned`) and "Assigned by" ("Auto" for rule-based credit,
-"Manual" for an override), filtered by Creator, Employees, Sales types, Date and "Show unassigned sales",
-paged by `before_id`, and with `format=csv` the whole filtered set streamed as CSV with the 50k cap, which
-`X-Row-Count` carries as an upper bound (the /admin/paid-messages precedent).
-Under Role enforcement a chatter's rows narrow to its Data scope; with it off the Employee reports scope holds.
-Ticket 36 (stories 20, 38): `group_id` narrows to the Employees placed in that Employee group (another Agency's or a
-missing group is 404), and "Self and subordinates" is the chatter's own Employee plus the Employees in the groups below
-its own group, never its peers.
-No session is 401 and another Agency's Creator id is 404.
-Reassign (ticket 34, stories 22-24, 27, 28) goes through the existing `POST /admin/ingest/transactions/{id}/attribute`:
-owner or Master only (a chatter 403, with or without Role enforcement), another Agency's sale 404, an Employee outside
-the sale's Agency 400, and each write one `sales.reassign` action with the old and new Employee, which "Assigned by"
-reads ("Owner" or "Master"); the audit middleware's generic row is still written and never read.
-
-The seam is the Relay over HTTP with real session cookies from the shared two-Agency fixture, over messages,
-transactions and fans seeded straight into the temp DB with fixed past timestamps; the view is the current
-revision (`*_converters_window.py`, 0099), applied as test_sales_attribution_rules applies it. This ticket's
-revision (`*_attr_view_sales_records.py`, 0069) and 0099 each round-trip on a throwaway SQLite file. Every expected row is written out
-by hand from the seed.
-
-ASSUMPTION: a single foreign `?account_id=` is answered 403 by `_account_isolation_middleware` (server.py)
-before the route runs, so the route's 404 "creator not found" is asserted for what gets past that gate (an
-unknown id, and a repeated param whose foreign value the gate does not read); both are asserted, and no
-foreign row ever appears; spec story 55 allows 403/404 across Agencies. Rung 1 (the gate is in the code)
-and rung 3 (phase-03's S4S answers a foreign Creator 403). Overturned if the gate should defer to the route's 404 for this path.
-
-Run: ./venv/bin/python service/tests/test_sales_records.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -81,7 +48,6 @@ HEAD = _load("*_converters_window.py")
 
 
 async def _apply_view() -> None:
-    # init_db (create_all) builds no views: apply this ticket's revision.
     async with get_session() as s:
         await s.execute(text("DROP VIEW IF EXISTS per_employee_revenue_with_attribution"))
         await s.execute(text(HEAD._NEW_VIEW_SQL))
@@ -100,7 +66,6 @@ def _at(hhmm: str, day: str = DAY) -> datetime:
 
 
 def _creator(aid: str, owner: str = "agency_a_owner") -> str:
-    """A Creator of `owner`'s Agency used by this file only."""
     async def _seed():
         async with get_session() as s:
             s.add(Account(id=aid, nickname=f"sr_creator_{aid[-2:]}", color="#aaaaaa"))
@@ -159,7 +124,6 @@ def _ids(client, query: str) -> list[int]:
     return [row["tx_id"] for row in _rows(client, query)]
 
 
-# ── The seed: Creator C1 of Agency A, one sale per shape the view carries ─────────────────────────────────
 
 C1 = _creator("3000001")
 C2 = _creator("3000002")
@@ -168,9 +132,9 @@ E1, E2, E3 = _employee("sr_emp_1"), _employee("sr_emp_2"), _employee("sr_emp_3")
 _fan(C1, 11, "Fixture Fan Eleven", "fixture_fan_11")
 _fan(C1, 13, None, "fixture_fan_13")
 M1 = _message(C1, 11, E1, _at("09:00"))
-M2 = _message(C1, 12, None, _at("09:30"))   # an outbound message no Employee sent
+M2 = _message(C1, 12, None, _at("09:30"))
 M3 = _message(C1, 16, E1, _at("09:45"))
-_message(C1, 13, E2, _at("09:50"))  # E2 wrote to fan 13 twenty minutes before its tip
+_message(C1, 13, E2, _at("09:50"))
 
 T_MSG = _sale(C1, "ppv_message", 1000, _at("10:00"), fan=11, message_id=M1, net=800)
 T_NOSENDER = _sale(C1, "tip", 400, _at("10:05"), fan=12, message_id=M2)
@@ -179,9 +143,8 @@ T_NOBODY = _sale(C1, "tip", 300, _at("10:15"), fan=14)
 T_ORPHAN = _sale(C1, "ppv_message", 700, _at("10:20"), fan=15, message_id=7_999_999)
 T_MANUAL = _sale(C1, "ppv_message", 200, _at("10:25"), fan=16, message_id=M3, manual=E3)
 T_MANUAL_TIP = _sale(C1, "tip", 150, _at("10:30"), fan=13, manual=E3)
-T_TIE = _sale(C1, "tip", 50, _at("10:30"), fan=19)  # same instant as T_MANUAL_TIP, a later id
+T_TIE = _sale(C1, "tip", 50, _at("10:30"), fan=19)
 T_PENDING = _sale(C1, "custom", 900, _at("10:35"), fan=17, manual=E1, status="pending")
-# Not in the view, so never a Sales record: a subscription and a refunded sale.
 _sale(C1, "subscription", 1200, _at("10:40"), fan=None)
 _sale(C1, "ppv_message", 999, _at("10:45"), fan=20, message_id=_message(C1, 20, E1, _at("10:44")), status="refunded")
 T_OTHER_DAY = _sale(C1, "ppv_post", 250, _at("09:00", "2026-05-05"), fan=18)
@@ -189,11 +152,9 @@ T_C2 = _sale(C2, "tip", 600, _at("11:00"), fan=31)
 T_B = _sale(IDS["creator_b"], "tip", 700, _at("11:00"), fan=41)
 
 C1_DAY = f"account_id={C1}&from={DAY}&to={DAY}"
-# Newest first; a tie on the instant breaks by the higher transaction id.
 ORDER = [T_PENDING, T_TIE, T_MANUAL_TIP, T_MANUAL, T_ORPHAN, T_NOBODY, T_LOOK, T_NOSENDER, T_MSG]
 
 
-# ── Each Rule on the right sale ─────────────────────────────────────────────────────────────────────────────
 
 def case_each_rule_and_assigned_by_lands_on_the_right_sale():
     got = {row["tx_id"]: (row["rule"], row["employee_id"], row["assigned_by"]) for row in _rows(OWNER_A, C1_DAY)}
@@ -225,11 +186,7 @@ def case_a_row_carries_every_column_of_the_read_contract():
 
 
 def case_each_sale_is_credited_as_employee_reports_credit_it_under_any_sales_settings():
-    """Roadmap S7: Sales records and Employee reports credit each sale through one path
-    (`sales_attribution.credit`), so under every Sales Settings each Employee's Earnings on a Creator add up to
-    its Employee reports revenue there (the Unattributed bucket too), and Earnings follows the fee toggle."""
     def _put(blob):
-        # Backdated to the start (Sales Settings are versioned, roadmap W6 6.4), so it credits the fixture sales.
         r = OWNER_A.put("/admin/settings/sales", json=blob, params={"effective_from": "1970-01-01T00:00:00Z"})
         assert r.status_code == 200, r.text
 
@@ -259,7 +216,6 @@ def case_each_sale_is_credited_as_employee_reports_credit_it_under_any_sales_set
         assert (rows[T_MSG]["earnings_cents"], rows[T_MSG]["gross_cents"]) == (800, 1000), rows[T_MSG]
         assert (rows[T_LOOK]["earnings_cents"], rows[T_LOOK]["gross_cents"]) == (400, 500), rows[T_LOOK]
         assert (rows[T_LOOK]["employee_id"], rows[T_LOOK]["rule"]) == (E2, "converters"), rows[T_LOOK]
-        # With the opt-in on, the subscription Employee reports count is listed too.
         assert any(r["kind"] == "subscription" for r in _rows(OWNER_A, f"{C1_DAY}&limit=500"))
     finally:
         _put({})
@@ -269,7 +225,6 @@ def case_subscriptions_refunds_and_other_days_are_not_listed():
     assert _ids(OWNER_A, C1_DAY) == ORDER
 
 
-# ── Filters ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 def case_every_filter_narrows_the_rows():
     def ids(extra: str) -> set[int]:
@@ -292,7 +247,6 @@ def case_show_unassigned_sales_lists_only_uncredited_sales():
     assert _ids(OWNER_A, f"{C1_DAY}&assigned=unassigned") == [T_TIE, T_ORPHAN, T_NOBODY, T_NOSENDER]
 
 
-# ── Paging and CSV ──────────────────────────────────────────────────────────────────────────────────────────
 
 def case_pages_by_before_id_newest_first_across_a_tie():
     seen, before, pages = [], None, 0
@@ -311,8 +265,6 @@ def case_pages_by_before_id_newest_first_across_a_tie():
 
 
 def case_a_before_id_outside_the_requested_creators_gives_an_empty_page():
-    # Another Agency's sale, a sale of a Creator not requested, and an unknown id are no cursor at all, so the
-    # page never reveals when that sale happened.
     for cursor in (T_B, T_C2, 99_999_999):
         body = _get(OWNER_A, f"{C1_DAY}&before_id={cursor}").json()
         assert body == {"rows": [], "next_before_id": None}, (cursor, body)
@@ -330,11 +282,9 @@ def _csv(query: str) -> tuple[list[list[str]], str]:
 
 
 def case_csv_exports_the_whole_filtered_set_with_its_header_and_row_count():
-    lines, count = _csv(f"{C1_DAY}&limit=2")  # limit and paging do not apply to the export
+    lines, count = _csv(f"{C1_DAY}&limit=2")
     assert lines[0] == HEADER, lines[0]
     assert [int(line[0]) for line in lines[1:]] == ORDER, lines
-    # X-Row-Count is the cap, an upper bound sent before the streamed body (the /admin/paid-messages
-    # precedent, messages.py), not the exact count: the file itself holds 9 rows.
     assert count == "50000", count
     assert lines[-1] == [str(T_MSG), "2026-05-04T10:00:00Z", str(E1), "sr_emp_1", C1, "11", "Fixture Fan Eleven",
                          "1000", "1000", "800", "ppv_message", "converters", "Auto", "cleared"], lines[-1]
@@ -343,7 +293,7 @@ def case_csv_exports_the_whole_filtered_set_with_its_header_and_row_count():
 
 
 def case_csv_stops_at_the_row_cap_with_a_truncated_line():
-    cap = csv_export.CSV_MAX_ROWS  # one cap for both server-side CSV exports
+    cap = csv_export.CSV_MAX_ROWS
     assert cap == 50_000, cap
     csv_export.CSV_MAX_ROWS = 2
     try:
@@ -355,7 +305,6 @@ def case_csv_stops_at_the_row_cap_with_a_truncated_line():
     assert len(lines) == 4 and lines[3][0].startswith("# TRUNCATED"), lines
 
 
-# ── Data scope under Role enforcement ───────────────────────────────────────────────────────────────────────
 
 EMP_A = asyncio.run(employees.get_or_create_mirror_employee(
     IDS["chatter_a"], IDS["agency_a_owner"], display_name="chatter_a", color="#bbbbbb"))
@@ -398,7 +347,6 @@ def case_with_role_enforcement_on_a_self_scope_chatter_sees_only_its_own_sales()
         assert _ids(CHATTER_A, f"{CA_DAY}&employee_id={E_OTHER}") == []
         lines = list(csv.reader(io.StringIO(_get(CHATTER_A, f"{CA_DAY}&format=csv").text)))
         assert [int(line[0]) for line in lines[1:]] == [T_OWN], lines
-        # The owner, never checked, still sees every row.
         assert set(_ids(OWNER_A, CA_DAY)) == CA_ALL
         _roles(True, "all")
         assert set(_ids(CHATTER_A, CA_DAY)) == CA_ALL
@@ -415,10 +363,6 @@ def case_with_role_enforcement_on_a_role_without_the_page_is_refused():
         _reset_roles()
 
 
-# ── Employee groups: the group filter and "Self and subordinates" (ticket 36) ──────────────────────────────
-# A tree of Agency A, on its own day so no row above moves:
-#     Fixture SR Lead (EMP_A, E_PEER) ── Fixture SR Team (E_SUB) ── Fixture SR Deep (E_DEEP)
-#     Fixture SR Other (E_ELSE)
 
 G_DAY = "2026-05-06"
 E_PEER, E_SUB, E_DEEP, E_ELSE = (_employee(f"sr_emp_{n}") for n in ("peer", "sub", "deep", "else"))
@@ -486,7 +430,6 @@ def case_with_role_enforcement_on_self_and_subordinates_sees_its_own_and_the_gro
         assert _ids(CHATTER_A, f"{G_Q}&group_id={G_DEEP}") == [G_DEEP_SALE]
         lines = list(csv.reader(io.StringIO(_get(CHATTER_A, f"{G_Q}&format=csv").text)))
         assert {int(line[0]) for line in lines[1:]} == {G_OWN, G_SUB, G_DEEP_SALE}, lines
-        # The owner is never narrowed (the Master: test_role_enforcement.py's subordinates case).
         assert set(_ids(OWNER_A, G_Q)) == G_ALL
         _roles(True, "self")
         assert _ids(CHATTER_A, G_Q) == [G_OWN]
@@ -496,7 +439,6 @@ def case_with_role_enforcement_on_self_and_subordinates_sees_its_own_and_the_gro
         _reset_roles()
 
 
-# ── Sessions and Agencies ───────────────────────────────────────────────────────────────────────────────────
 
 def case_an_unauthenticated_caller_gets_401_even_with_anonymous_admin():
     _get(ANON, C1_DAY, status=401)
@@ -505,9 +447,6 @@ def case_an_unauthenticated_caller_gets_401_even_with_anonymous_admin():
 
 
 def case_another_agencys_creator_id_is_404_and_its_rows_never_appear():
-    """A single foreign `account_id` is refused 403 by the account isolation middleware before the handler
-    (`service/server.py`, `_account_isolation_middleware`); a foreign or unknown id the middleware lets
-    through (it reads one `account_id` value) is the handler's 404."""
     b = IDS["creator_b"]
     _get(OWNER_A, f"account_id={b}", status=403)
     for query in (f"account_id={b}&account_id={C1}", "account_id=999999999", f"account_id={b}&account_id={C1}"
@@ -519,9 +458,6 @@ def case_another_agencys_creator_id_is_404_and_its_rows_never_appear():
     assert T_B in b_rows and not (b_rows & (set(ORDER) | CA_ALL | {T_C2})), b_rows
 
 
-# ── Reassign ────────────────────────────────────────────────────────────────────────────────────────────────
-# Ticket 34 (stories 22-24, 27, 28): the existing manual attribute route, now owner or Master only, inside the
-# sale's Agency, writing one `sales.reassign` action that "Assigned by" reads. Its own Creator, so no row above moves.
 
 ATTR = "/admin/ingest/transactions/{}/attribute"
 C3 = _creator("3000003")
@@ -542,7 +478,6 @@ def _c3_row(tx: int) -> tuple:
 
 
 def _actions(tx: int) -> tuple[list[dict], int]:
-    """This sale's `sales.reassign` actions (oldest first), and how many generic middleware rows its POSTs left."""
     async def _read():
         async with get_session() as s:
             rows = (await s.execute(select(Action).order_by(Action.id))).scalars().all()
@@ -555,7 +490,6 @@ def _actions(tx: int) -> tuple[list[dict], int]:
 
 
 def _entry(actor: str, old: int | None, new: int | None, shown: int | None) -> dict:
-    """`old`/`new` are the override column before and after; `shown` the Employee the row credited before."""
     return {"employee_id": None, "account_id": C3, "target_type": "transaction",
             "payload": {"actor": actor, "before": {"employee_id": old}, "after": {"employee_id": new},
                         "shown_before": {"employee_id": shown}}}
@@ -570,27 +504,24 @@ def case_reassign_and_clear_each_write_one_sales_reassign_entry_that_assigned_by
     assert _c3_row(t) == ("converters", E1, "Auto")
 
     r = _attribute(OWNER_A, t, E2)
-    # The route keeps its response.
     assert r.json() == {"id": t, "account_id": C3, "kind": "ppv_message", "amount_cents": 800,
                         "attributed_employee_id": E2}, r.text
     assert _c3_row(t) == ("manual", E2, "Owner")
     assert _actions(t) == ([_entry(OWNER_ACTOR, None, E2, E1)], 1), _actions(t)
 
-    _attribute(OWNER_A, t, None)  # clear: the Rule credits the message's sender again
+    _attribute(OWNER_A, t, None)
     assert _c3_row(t) == ("converters", E1, "Auto")
     assert _actions(t) == ([_entry(OWNER_ACTOR, None, E2, E1), _entry(OWNER_ACTOR, E2, None, E2)], 2), _actions(t)
 
     _attribute(MASTER, t, E3)
     assert _c3_row(t) == ("manual", E3, "Master")
-    _attribute(OWNER_A, t, E2)  # the latest entry names who assigned it
+    _attribute(OWNER_A, t, E2)
     assert _c3_row(t) == ("manual", E2, "Owner")
     mine, generic = _actions(t)
     assert mine[2:] == [_entry(MASTER_ACTOR, None, E3, E1), _entry(OWNER_ACTOR, E3, E2, E3)] and generic == 4, mine
 
 
 def case_the_middlewares_generic_row_is_not_read_as_a_reassign():
-    """An override with no `sales.reassign` entry (set before this ticket) is "Manual", though the audit
-    middleware's generic row for its POST is there."""
     t = _sale(C3, "tip", 120, _at("13:10"), fan=52, manual=E1)
 
     async def _legacy_post():
@@ -603,16 +534,13 @@ def case_the_middlewares_generic_row_is_not_read_as_a_reassign():
 
 
 def case_an_override_set_outside_reassign_after_a_clear_reads_manual():
-    """The ingest backfill (attribution_backfill.attribute_orphans) sets an empty override with no audit entry.
-    After a reassign and a clear, the latest entry no longer describes the override, so the row is "Manual",
-    not the owner who cleared it."""
     t = _sale(C3, "tip", 170, _at("13:12"), fan=55)
     _attribute(OWNER_A, t, E2)
     assert _c3_row(t) == ("manual", E2, "Owner")
     _attribute(OWNER_A, t, None)
     assert _c3_row(t)[2] == "Auto"
 
-    async def _backfill():  # the backfill's own write: an UPDATE of the override, no Action
+    async def _backfill():
         async with get_session() as s:
             await s.execute(sa.update(Transaction).where(Transaction.id == t).values(attributed_employee_id=E2))
     asyncio.run(_backfill())
@@ -624,18 +552,17 @@ def _payload(actor: str, after: int | None) -> str:
     return json.dumps({"actor": actor, "before": {"employee_id": None}, "after": {"employee_id": after}})
 
 
-# (rule, latest `sales.reassign` payload, override id) → "Assigned by"
 ASSIGNED_BY = [
     ("converters", None, None, "Auto"),
-    ("message", _payload("owner:1", 5), 5, "Auto"),  # rule-based credit never reads the payload
+    ("message", _payload("owner:1", 5), 5, "Auto"),
     ("unassigned", None, None, "Auto"),
-    ("manual", None, 5, "Manual"),  # an override with no reassign entry
+    ("manual", None, 5, "Manual"),
     ("manual", "", 5, "Manual"),
     ("manual", _payload("owner:1", 5), 5, "Owner"),
     ("manual", _payload("master:2", 5), 5, "Master"),
-    ("manual", _payload("owner:1", 5), 6, "Manual"),  # the entry no longer names the override
-    ("manual", _payload("owner:1", None), None, "Owner"),  # a "No one" override set by reassign
-    ("manual", _payload("owner:1", None), 5, "Manual"),  # cleared, then set outside reassign
+    ("manual", _payload("owner:1", 5), 6, "Manual"),
+    ("manual", _payload("owner:1", None), None, "Owner"),
+    ("manual", _payload("owner:1", None), 5, "Manual"),
 ]
 
 
@@ -667,7 +594,7 @@ def case_a_chatter_is_refused_403_with_and_without_role_enforcement():
     _attribute(CHATTER_A, t, EMP_A, status=403)
     _roles(True, "all", pages=("/analytics/sales-records", "/analytics/employee-reports"))
     try:
-        assert set(_ids(CHATTER_A, C3_DAY)) >= {t}  # the role reaches the page, and still no Reassign
+        assert set(_ids(CHATTER_A, C3_DAY)) >= {t}
         _attribute(CHATTER_A, t, EMP_A, status=403)
         _attribute(CHATTER_A, t, None, status=403)
     finally:
@@ -678,7 +605,6 @@ def case_a_chatter_is_refused_403_with_and_without_role_enforcement():
     assert _actions(t) == ([], 0)
 
 
-# ── The view revision ───────────────────────────────────────────────────────────────────────────────────────
 
 def _view_columns(path: Path) -> list[str]:
     conn = sqlite3.connect(path)
@@ -725,8 +651,6 @@ def case_the_view_revision_round_trips_on_a_throwaway_file():
 
 
 def case_the_converters_window_revision_round_trips_on_a_throwaway_file():
-    """0099 adds the three touch columns and the view's `sender_id`, `converter_id`, `converter_at`; its
-    downgrade restores 0069's view byte for byte and drops the columns."""
     assert HEAD.down_revision == "0098_runtime_switches", HEAD.down_revision
     workdir = Path(tempfile.mkdtemp(prefix="converters_window_migration_"))
     path = workdir / "mig.db"

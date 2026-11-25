@@ -10,7 +10,6 @@ function tmpStore() {
   return new Store(fs.mkdtempSync(path.join(os.tmpdir(), "secret-test-")));
 }
 
-// Reversible stand-in for safeStorage: "enc:" + base64.
 function fakeCodec({ available = true, failDecrypt = false } = {}) {
   return {
     available: () => available,
@@ -47,7 +46,6 @@ test("decrypt failure reads as null (missing), not as a token", () => {
   const store = tmpStore();
   setSecret(store, "shareToken", "tok", fakeCodec());
   assert.strictEqual(getSecret(store, "shareToken", fakeCodec({ failDecrypt: true })), null);
-  // Encryption gone since the token was stored: also unreadable.
   assert.strictEqual(getSecret(store, "shareToken", fakeCodec({ available: false })), null);
 });
 

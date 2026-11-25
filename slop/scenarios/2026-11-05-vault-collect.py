@@ -1,53 +1,3 @@
-"""The vault week cache's background collector (service/vault_collect.py) under a working Agency.
-
-World: `flat_agency`, vault_collect_creators Creators (6 / 16 / 40), each with a captured OF session (the relay's
-REAL OFClient against lib/of_wire.py, `OF_WIRE`) and a vault of vault_collect_items media in 6 folders
-(lib/vault_wire.py, made per Creator on first sight, so it is there the moment a session lands). OF's CDN is
-lib/img_relay.py's fake, armed with every vault thumb + full (`pictures`: small PNGs), and
-vault_stills' stores point into the run's temp dir. The collector runs on its own (RELAY_ENV: tick 2 s, first
-tick 1 s, GAP_S 2 s, USER_QUIET_S 20 s). GAP_S stays above of_pacing's per-Creator 1 s page gap (+0.3 s
-jitter), which every collector call also goes through: at 1 s that pacer alone kept the gaps and hid collect-unpaced.
-
-Load (until every quiet Creator's walk reached auto:done, then LINGER_S more): BUSY_FRAC of the Creators are
-busy: --users/2 picker users (each: the folder list, All page 0 with refresh=1 — the picker's refresh, so every
-open reaches OF on the user lane — and one scroll / folder / type page, then 3-7 s think), --users/4 chatters
-(actors/chatter.py: inbox head, thread, mark-read, a reply through OF) and fan DMs (actors/fan_dm.serial,
-0.5 frame/s per Creator) on those Creators only. The other Creators are quiet: no traffic at all, so every
-OF vault call and CDN fetch they get is the collector's. Mid-walk (a quiet Creator in auto:all:<K>, K > 0)
-the load pauses, the relay is stopped (SIGTERM) and started again, the CDN re-armed, the load resumed.
-
-Checks (lib/vault_collect_faults.py names):
-  collect_pacing         per quiet Creator, consecutive OF vault calls >= GAP_S - 50 ms apart.
-  collect_one_at_a_time  per-Creator collector spans (its OF vault calls + its CDN fetches, split on 20 s
-                         gaps) never overlap another Creator's.
-  collect_skips_busy     no collector OF page read on a busy Creator is admitted within USER_QUIET_S after a user
-                         picker refresh (only refreshes since the relay last started: the product keeps that clock
-                         in RAM; exempt past MAX_SKIP_S). CDN thumbs already queued behind the user are excluded.
-  collect_fills_mirror   per quiet Creator: latest auto run done/auto:done, vault_items == the fake's count,
-                         /admin/vault-ai/cache/summary complete + count, the picker's hot keys in vault_response_cache.
-  collect_thumbs_warm    per quiet Creator: the thumbs store holds every media (all links live); no image /
-                         poster / storyboard file; every CDN fetch a thumb, every one 200.
-  collect_resume         the restarted relay's first walk page for the stopped Creator is the persisted cursor,
-                         no walk offset fetched twice but that one, the walk reaches auto:done, mirror complete.
-  user_read_p95          picker + chat reads during load: p95 <= BUDGET_MS each; stock p95 vs last green
-                         (P95_VS_LAST) on the same keys.
-  rewarm_after_switch    after the load: every other Creator made due (its last done run aged past STALE_S by
-                         SQL), then, while the collector walks one of them, a quiet Creator with a fresh run is moved
-                         to a proxy (POST /admin/proxies + /assign, lib/proxy_wire.py). Its hot pass (folder-list
-                         call through the new proxy) comes before any due Creator's that was not already walking (a
-                         rival's first folder-list call must be seen, after it), and its picker hot keys are back in
-                         vault_response_cache.
-User vs collector on a busy Creator: an OF vault call inside one of the harness's own picker requests to that
-Creator (+-50 ms) is the user's; the rest the collector's.
-
-Bypasses (declared): OF at its wire (lib/of_wire.py + lib/vault_wire.py), OF's CDN in the relay process
-(lib/img_relay.py, `pictures`: small PNGs), vault_stills / storyboard dirs re-pointed by env
-(lib/vault_collect_relay.py), the collector's env knobs shortened (RELAY_ENV; USER_QUIET_S 20 s, not 120 s, so
-a run stays minutes long), picker users are httpx clients reading the picker's routes (no browser), 6 h passing
-for rewarm_after_switch is an SQL age of finished_at, the proxy is a loopback SOCKS5 (lib/proxy_wire.py).
-Break-it-once: collect-unpaced (GAP_S 0: only collect_pacing goes red); no-rewarm-on-switch (only
-rewarm_after_switch).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -71,7 +21,8 @@ from slop.lib.vault_ui import cdn_calls
 from slop.seed.vault_cache import LISTS_KEY
 from slop.lib.vault_wire import VaultWire, owner_of
 
-sys.path.append(str(Path(__file__).resolve().parents[2] / "service"))   # of_pacing imports its sibling of_call_counter
+# of_pacing imports its sibling of_call_counter
+sys.path.append(str(Path(__file__).resolve().parents[2] / "service"))
 from of_pacing import JITTER_S, PAGE_GAP_S  # noqa: E402
 
 PROFILE = "flat_agency"
@@ -79,20 +30,21 @@ UI = False
 OF_WIRE = True
 FAULT = "collect-unpaced"
 GAP_S, QUIET_S, MAX_SKIP_S = 2.0, 20.0, 1800.0
+# GAP_S stays above of_pacing's 1 s per-Creator page gap (+0.3 s jitter): at 1 s the pacer alone kept the gaps and hid collect-unpaced
 RELAY_ENV = {"VAULT_COLLECT_TICK_S": "2", "VAULT_COLLECT_FIRST_AFTER_S": "1", "VAULT_COLLECT_GAP_S": str(GAP_S),
              "VAULT_COLLECT_USER_QUIET_S": str(QUIET_S), "VAULT_COLLECT_MAX_SKIP_S": str(MAX_SKIP_S),
              "SLOP_VAULT_STILLS": "1"}
-P95_VS_LAST = (1.10, 25)  # +10%, and 25 ms slack so a 30 ms read does not flap
+P95_VS_LAST = (1.10, 25)
 P95_VS_LAST_MIN_N = 30
 BUDGET_MS = {"GET /api/of/v2/vault/lists": 1500, "GET /api/of/v2/vault/media": 1500,
-             "GET /admin/chats/recent": 800, "GET /admin/messages/:id/:id": 800}  # guesses until measured
+             "GET /admin/chats/recent": 800, "GET /admin/messages/:id/:id": 800}
 BUSY_FRAC = 0.6
 CDN_LATENCY_S = 0.05
 LINGER_S = 15.0
 SPAN_GAP_S = 20.0
 TOL_S = 0.05
-STALE_S = 21600           # vault_collect's default, not shortened here
-WAIT_S = 360.0            # one walk in flight (<= a full walk) + the re-warm's run + the next rival's start, with room
+STALE_S = 21600
+WAIT_S = 360.0
 
 
 def _q(path: str, **kv) -> str:
@@ -129,8 +81,7 @@ async def run(ctx):
         rs = runs("account_id=? AND phase LIKE 'auto:%'", (aid,))
         return rs[-1] if rs else None
 
-    # ── load ──
-    picks: list[dict] = []   # every picker request: aid, kind, t0, t1, status, refresh
+    picks: list[dict] = []
     dm_ids = itertools.count(fan_dm.INJECT_ID_BASE)
     fans = w.data["fans"]
     ctx.rec.stage = "load"
@@ -220,7 +171,6 @@ async def run(ctx):
                                       "picks": len(picks), "wire_vault_calls": len(fake.vault_calls),
                                       "cdn_calls": len(cdn), "resume": resume})
 
-    # ── attribution ──
     win: dict[str, list[tuple[float, float]]] = {}
     for p in picks:
         win.setdefault(p["aid"], []).append((p["t0"] - TOL_S, p["t1"] + TOL_S))
@@ -238,7 +188,6 @@ async def run(ctx):
         if o:
             cdn_by.setdefault(o[0], []).append({**c, "mid": o[1], "variant": o[2]})
 
-    # collect_pacing
     gaps = {}
     for a in quiet:
         ts_ = sorted(c["t"] for c in by_aid.get(a, []))
@@ -246,7 +195,6 @@ async def run(ctx):
     bad = {a: round(g, 3) for a, g in gaps.items() if g is not None and g < GAP_S - TOL_S}
     ctx.check(PACING, not bad and any(g is not None for g in gaps.values()), gap_s=GAP_S, min_gap_s=gaps, too_close=bad)
 
-    # spans
     spans = []
     for a in cs:
         ev = sorted([c["t"] for c in by_aid.get(a, [])] + [c["t"] for c in cdn_by.get(a, [])])
@@ -261,8 +209,6 @@ async def run(ctx):
     overlaps = [(x[0], y[0], round(x[2] - y[1], 3)) for x, y in zip(spans, spans[1:]) if y[1] < x[2] - TOL_S]
     ctx.check(ONE_AT_A_TIME, not overlaps and bool(spans), spans=len(spans), overlaps=overlaps[:10])
 
-    # collect_skips_busy: OF page reads admitted during a user's quiet window are forbidden.
-    # Thumbnail work already queued on the CDN lane can arrive after the user request.
     viol, active = [], 0
     for a in busy:
         refs = [p for p in picks if p["aid"] == a and p["refresh"] and p["status"] == 200]
@@ -273,7 +219,6 @@ async def run(ctx):
             since = t_up if t >= t_up else t_run0
             if t - t_run0 >= MAX_SKIP_S:
                 continue
-            # A call admitted before the user's request can arrive after it through OF pacing.
             last = max((p["t1"] for p in refs if since <= p["t1"] <= t
                         and t > p["t0"] + PAGE_GAP_S + JITTER_S + TOL_S), default=None)
             if last is not None and t - last < QUIET_S:
@@ -283,7 +228,6 @@ async def run(ctx):
     else:
         ctx.check(SKIPS_BUSY, not viol, quiet_s=QUIET_S, busy=len(busy), violations=viol[:10])
 
-    # collect_fills_mirror
     con = w.sql()
     try:
         mirror = dict(con.execute("SELECT account_id, COUNT(*) FROM vault_items WHERE removed_at IS NULL "
@@ -309,7 +253,6 @@ async def run(ctx):
             fill_bad[a] = got
     ctx.check(FILLS_MIRROR, not fill_bad and done_at is not None, quiet=len(quiet), bad=fill_bad)
 
-    # collect_thumbs_warm
     warm_bad = {}
     for a in quiet:
         have = {p.name for p in (stills / "thumbs" / a).glob("*")} if (stills / "thumbs" / a).is_dir() else set()
@@ -323,7 +266,6 @@ async def run(ctx):
     ctx.check(THUMBS_WARM, not warm_bad and not not_thumb and not non200, bad=warm_bad, non_thumb_fetches=not_thumb[:5],
               non_200=non200[:5])
 
-    # collect_resume
     if not resume:
         ctx.skip(RESUME, "no quiet Creator seen in auto:all:<K>, K > 0 (walk too fast to catch)")
     else:
@@ -340,22 +282,18 @@ async def run(ctx):
                   run=(la.get("id"), la.get("status"), la.get("phase")), want_run=resume["run_id"],
                   mirror=mirror.get(a, 0), stop_took_s=resume["took"])
 
-    # user_read_p95
     summ = ctx.rec.summary("load")
     p95 = {k: v["p95_ms"] for k, v in summ.items() if k in BUDGET_MS}
     over = {k: (p95[k], BUDGET_MS[k]) for k in p95 if p95[k] > BUDGET_MS[k]}
     ctx.metric("p95_vs_last_green", p95)
     ctx.metric("p95_vs_last_green_n", {k: summ[k]["n"] for k in p95})
     ctx.check(USER_P95, bool(p95) and not over, budget=True, p95_ms=p95, over=over)
-    # rewarm_after_switch
     rw = await _rewarm_after_switch(ctx, fake, vw, cs, quiet, runs, latest_auto)
     (Path(ctx.out) / "vault-collect-records.json").write_text(json.dumps(
         {"busy": busy, "quiet": quiet, "spans": spans, "resume": resume, "gaps": gaps, "rewarm": rw}, default=str))
 
 
 async def _rewarm_after_switch(ctx, fake, vw, cs, quiet, runs, latest_auto) -> dict:
-    """A proxy switch on a quiet Creator whose run is fresh, while the collector walks a due one: that Creator's hot
-    pass is the next one to start, ahead of every other due Creator (never-walked or stale)."""
     if not quiet or len(cs) < 2:
         ctx.skip(REWARM, "needs a quiet Creator and one other")
         return {}
@@ -382,7 +320,8 @@ async def _rewarm_after_switch(ctx, fake, vw, cs, quiet, runs, latest_auto) -> d
         try:
             await ctx.owner.post("/admin/proxies", json={"label": label, "scheme": "socks5", "host": "127.0.0.1",
                                                          "port": pw.port, "notes": "slop: vault-collect rewarm"})
-            await asyncio.sleep(1.0)  # proxies.json writes apart (dead-proxy scenario's measured race)
+            # proxies.json writes apart (dead-proxy scenario's measured race)
+            await asyncio.sleep(1.0)
             v0 = len(fake.vault_calls)
             inflight = running()
             bind = (await ctx.owner.post("/admin/proxies/assign", json={"label": label, "account_id": t})).status_code
@@ -398,7 +337,6 @@ async def _rewarm_after_switch(ctx, fake, vw, cs, quiet, runs, latest_auto) -> d
                         out[c["account"]] = c["t"]
                 return out
 
-            # one Creator walks at a time: the first rival's hot pass starting fixes the order (and the target's keys)
             while rivals and not any(a in first_lists() for a in rivals) and time.time() - t_sw < WAIT_S:
                 await asyncio.sleep(0.5)
             fl = first_lists()

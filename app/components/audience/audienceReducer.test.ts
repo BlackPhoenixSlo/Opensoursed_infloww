@@ -10,7 +10,6 @@ const inc = (id: string): AudienceAction => ({ type: "toggleInclude", id });
 const exc = (id: string): AudienceAction => ({ type: "toggleExclude", id });
 const acct = (id: string | null): AudienceAction => ({ type: "setAccount", id });
 const seed = (listId: string | null, accountId = "acc1"): AudienceAction => ({ type: "seedExclude", accountId, listId });
-/** PriorityMass's start (the system default) and FunnelLaunchPanel's start. */
 const pm = () => initAudience("acc1");
 const fl = () => initAudience("acc1", ["fans"]);
 

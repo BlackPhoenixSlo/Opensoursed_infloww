@@ -11,8 +11,6 @@ import {
 
 const flow = DO_FLOWS.mass_premade;
 
-/** The owner's pilot: "auto mass to fans every hour, delete after, everyone except mass-exclude, SFW folder,
- *  10 captions, leave it off". */
 const PILOT: MassPremadeSlots = {
   name: "Hourly SFW tease",
   interval: { value: 1, unit: "hours" },
@@ -37,12 +35,10 @@ describe("mass_premade toActions", () => {
       ["rm-mass_premade-enabled", { type: "field", patch: { enabled: false, dryRun: false } }],
       ["rm-mass_premade-name", { type: "field", patch: { name: "Hourly SFW tease" } }],
       ["rm-mass_premade-every", { type: "field", patch: { intervalValue: 1 } }],
-      // unit "hours" is the blank form's: no step
       ...PILOT.captions.map((_, i) => [`pm-mass_premade-text-${i}`, row({ texts: texts(i + 1) })]),
       ["pm-mass_premade-folder", row({ folderId: "42" })],
       ["pm-mass_premade-online-only", row({ onlineOnly: false })],
       ["pm-mass_premade-unsend", row({ unsendAfterHours: "8" })],
-      // exclude_last_chat_hours null, includes = the default audience: no steps
       ["pm-mass_premade-lists-panel", row({ excludes: ["9001"] })],
       ["rm-mass_premade-save", "save"],
     ]);
@@ -74,14 +70,12 @@ describe("mass_premade toActions", () => {
     expect(flow.toActions({ ...BARE, ...patch }).map((s) => s.target)).toEqual(targets);
   });
 
-  // rwl W30 F2: a run stopped halfway must never leave a filled form ON for the user's own Save.
   it.each([PILOT, BARE])("Enabled off + Dry run off right after open, before any content step; Save last", (slots) => {
     const steps = flow.toActions(slots);
     expect(steps[0].action).toBe("open");
     expect(steps[1].action).toEqual({ type: "field", patch: { enabled: false, dryRun: false } });
     expect(steps.at(-1)!.action).toBe("save");
     expect(steps.filter((s) => s.action === "save")).toHaveLength(1);
-    // every prefix stopped after a content step is OFF when played into the editor's reducer
     for (let i = 2; i < steps.length - 1; i++) {
       let s = initRuleEditor("mass_premade", null);
       for (const st of steps.slice(0, i + 1)) if (typeof st.action !== "string") s = ruleEditorReducer(s, st.action);
@@ -106,7 +100,7 @@ describe("mass_premade toActions", () => {
     expect(item.unsend_after_hours).toBe(8);
     expect(item.user_lists).toEqual(blankRow().includes);
     expect(item.excluded_user_lists).toEqual(["9001"]);
-    expect(item.exclude_last_chat_hours).toBe(1); // the default, untouched
+    expect(item.exclude_last_chat_hours).toBe(1);
     expect("dry_run" in (body.payload as object)).toBe(false);
   });
 });
@@ -125,7 +119,7 @@ describe("mass_premade extras (price, photo count, More settings)", () => {
       ["pm-mass_premade-media-count", row({ mediaCount: "3" })],
       ["pm-mass_premade-price", row({ price: "15" })],
       ["pm-mass_premade-more-toggle", "reveal"],
-      ["pm-mass_premade-replied", row({ excludeRepliedHours: "0" })],      // an explicit 0 = off
+      ["pm-mass_premade-replied", row({ excludeRepliedHours: "0" })],
       ["pm-mass_premade-inbound", row({ excludeInboundHours: "4" })],
       ["pm-mass_premade-recent-hours", row({ recentChatHours: "12" })],
       ["pm-mass_premade-recent-limit", row({ recentChatLimit: "20" })],
@@ -254,7 +248,6 @@ describe("plan lines", () => {
 
 describe("auto_story toActions", () => {
   const story = DO_FLOWS.auto_story;
-  /** What the server sends for "auto story from Daytime, nothing else said" (the blank form's own values). */
   const BLANK: AutoStorySlots = {
     folder: { id: "11", name: "Daytime", photos: 8 }, mode: "clock", times: ["09:00"], every_hours: 6, per_run: 1,
     hours_to_live: 6, max_runs: null,
@@ -319,7 +312,6 @@ describe("auto_story toActions", () => {
   });
 });
 
-// rwl W30 F2 + M17: the stopped-run line says what the page holds — filled + OFF, or untouched; "left open" only then.
 describe("stoppedLine", () => {
   it.each<[string, Parameters<typeof stoppedLine>[0], boolean, string]>([
     ["aborted before filling", { aborted: "Stopped with Esc" }, false,
@@ -333,7 +325,6 @@ describe("stoppedLine", () => {
   ])("%s", (_n, how, filled, want) => {
     expect(stoppedLine(how, filled)).toBe(want);
   });
-  // rwl W30 S4: the OFF step is the one the builder marks, not any patch that happens to hold enabled:false.
   it("leftFilled reads the builder's off marker", () => {
     const field = { target: "x", action: { type: "field", patch: { enabled: false } }, label: "" } as AgentStep;
     const save: AgentStep = { target: "s", action: "save", label: "" };

@@ -1,38 +1,3 @@
-"""A Creator's proxy at its wire, on loopback: the SOCKS5 endpoint the relay's REAL
-`OFClient` (curl_cffi) dials once the Creator is bound to it through the product's
-own `POST /admin/proxies` + `POST /admin/proxies/assign`. Alive, it tunnels each
-CONNECT to its target (loopback only: lib/of_wire.py), as a residential proxy does.
-`kill()` closes every open tunnel and makes each later CONNECT wait `refuse_s`, then
-answer SOCKS5 reply 0x02 (not allowed): curl reports CURLE_PROXY (97), which
-curl_cffi raises as `ProxyError`, the class prod's provider-side CONNECT 403 (curl 56)
-raises, so the product's own retry, proxy_health and 502 run unchanged.
-
-Every tunnel runs on the wire's one asyncio loop thread (it was 2 threads per tunnel, and the
-relay keeps a tunnel per (account x worker thread) open: thousands; see lib/bounded_server.py).
-
-`refuse_share` (0..1, `set_refuse_share`): a flapping proxy, alive but refusing that share
-of CONNECTs, drawn at random from `seed` in arrival order (deterministic per --seed), each
-refusal after `refuse_s` with the same 0x02, as prod's provider-side bursts
-(slop/evidence/20261105T150727Z-ae-proxy-refusals-296e9299c). While it refuses, a tunnel
-carries one HTTP exchange: a request on a reused tunnel closes it (curl re-dials on a
-fresh CONNECT), so the share of CONNECTs is the share of attempts (with keep-alive, 30 %
-of CONNECTs was 7.7 % of attempts); judged per request, so a tunnel dialed before the
-refusals began closes too (since the relay's signed curl handles are shared across workers,
-such a warm tunnel carried ~325 of ~1,570 attempts: 24.0 % shown vs 30.3 % of CONNECTs,
-...-022c); a WebSocket upgrade keeps its tunnel.
-
-`connects` records every CONNECT in arrival order: {t, alive, dest} (alive False = refused).
-
-`egress_of(peer_port)`: the egress a loopback fake in this process (lib/of_wire.py) saw a request arrive from:
-"127.0.0.1:<proxy port>" when that peer port is an open tunnel's upstream socket, else "direct" (the address an
-OF signature's `AWS:SourceIp` names; lib/img_relay.py names the CDN side's egress the same way).
-
-Bypass, declared: SOCKS5, not HTTP CONNECT. lib/of_wire.py is plain http and curl
-tunnels only an https target through an HTTP proxy, so an HTTP proxy would never be
-asked a CONNECT to refuse. `refuse_s` (0.33 s) is measured: the gap between prod's
-`proxy_error_retry` lines minus the pause between them (slop/evidence/
-20261028T111800Z-scale-vs-load-7cc9bbd67/prod/relay_ingest_retry.log).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -45,9 +10,10 @@ import time
 from typing import Callable
 
 
+# measured: gap between prod proxy_error_retry lines minus the pause between them
 REFUSE_S = 0.33
 _LOOPBACK = ("127.0.0.1", "::1")
-_EGRESS: dict[int, int] = {}  # an open tunnel's upstream local port -> its proxy's port (every wire in the process)
+_EGRESS: dict[int, int] = {}
 
 
 def egress_of(peer_port: int) -> str:
@@ -56,7 +22,6 @@ def egress_of(peer_port: int) -> str:
 
 
 def registry_bindings(path) -> dict[str, str]:
-    """Read the relay's registry as written, tolerating a concurrent partial write."""
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
@@ -65,19 +30,15 @@ def registry_bindings(path) -> dict[str, str]:
 
 
 def registry_pool(path) -> dict[str, int]:
-    """Pool proxy labels and ports from the relay's registry, in registry order."""
     data = json.loads(path.read_text())
     return {p["label"]: p["port"] for p in data["proxies"] if p.get("pool")}
 
 
-_INTERIM = re.compile(rb"HTTP/1\.[01] 1(?!01)\d\d ")  # interim 1xx answer (101 upgrade excluded: a WebSocket keeps its tunnel anyway)
-# A head too short to tell yet: it may still grow into an interim status line (a read can end anywhere).
+_INTERIM = re.compile(rb"HTTP/1\.[01] 1(?!01)\d\d ")
 _INTERIM_PART = re.compile(rb"H(?:T(?:T(?:P(?:/(?:1(?:\.(?:[01](?: (?:1(?:\d\d?)?)?)?)?)?)?)?)?)?)?\Z")
 
 
 def _answered(head: bytes) -> tuple[bool, bytes]:
-    """(the answer began, what to keep for the next read) for the answer bytes seen so far: complete interim
-    1xx heads are dropped; an incomplete one, or a start that may still become one, waits for more bytes."""
     while _INTERIM.match(head) and (end := head.find(b"\r\n\r\n")) >= 0:
         head = head[end + 4:]
     if not head or _INTERIM.match(head) or _INTERIM_PART.match(head):
@@ -88,17 +49,11 @@ def _answered(head: bytes) -> tuple[bool, bytes]:
 async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter, socks: tuple,
                 mark: asyncio.Event | None = None, once: asyncio.Event | None = None,
                 refusing: Callable[[], bool] | None = None) -> None:
-    """Copy src to dst; `mark` is set once a chunk went through; with `once` (the answer's mark),
-    a chunk after the answer began (the next request on this tunnel) closes it instead while
-    `refusing()` holds then (judged per request, not at the CONNECT: a keep-alive tunnel dialed
-    before the refusals began closes too). The cut assumes one request in flight per tunnel (curl never
-    pipelines); a 1xx interim answer does not count as the answer. Either direction ending shuts both
-    sockets, which ends the other."""
-    head = b""  # answer bytes not judged yet (an interim head split across reads)
+    head = b""
     try:
         while chunk := await src.read(65536):
             if once is not None and b"upgrade: websocket" in chunk.lower():
-                once = None  # the first request upgrades this tunnel before its 101 answer
+                once = None
             if once is not None and once.is_set() and (refusing is None or refusing()):
                 break
             dst.write(chunk)
@@ -106,9 +61,8 @@ async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter, socks: tup
             if mark is not None and not mark.is_set():
                 began, head = _answered(head + chunk)
                 if began:
-                    mark.set()  # a `100 Continue` is not the answer: the request body still follows it
-        # Every buffered byte to the kernel before the shutdown below: drain() stops at the transport's high-water
-        # mark, and the shutdown dropped what was left (a slow reader's big body lost its last <= 64 KiB, measured).
+                    mark.set()
+        # drain() stops at the high-water mark and the shutdown below dropped the rest (a slow reader lost its last <= 64 KiB, measured)
         dst.transport.set_write_buffer_limits(0)
         await dst.drain()
     except OSError:
@@ -129,7 +83,7 @@ class ProxyWire:
         self.alive = True
         self.lock = threading.Lock()
         self.connects: list[dict] = []
-        self._open: set = set()  # the open tunnels' sockets (both ends), shut by kill()
+        self._open: set = set()
         self._srv: socket.socket | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: asyncio.AbstractServer | None = None
@@ -174,7 +128,6 @@ class ProxyWire:
         self._loop.close()
 
     def kill(self) -> float:
-        """The proxy dies: open tunnels end, every later CONNECT is refused. Returns the time."""
         with self.lock:
             self.alive = False
             socks, self._open = list(self._open), set()
@@ -186,12 +139,10 @@ class ProxyWire:
         return time.time()
 
     def revive(self) -> None:
-        """The proxy answers again: later CONNECTs tunnel."""
         with self.lock:
             self.alive = True
 
     def set_refuse_share(self, share: float) -> None:
-        """Refuse this share of later CONNECTs (0 = none), the proxy otherwise alive."""
         with self.lock:
             self.refuse_share = share
 
@@ -205,14 +156,14 @@ class ProxyWire:
         try:
             _ver, n = await cr.readexactly(2)
             await cr.readexactly(n)
-            cw.write(b"\x05\x00")  # no auth
+            cw.write(b"\x05\x00")
             await cw.drain()
             _ver, cmd, _rsv, atyp = await cr.readexactly(4)
             if atyp == 1:
                 host = socket.inet_ntoa(await cr.readexactly(4))
             elif atyp == 4:
                 host = socket.inet_ntop(socket.AF_INET6, await cr.readexactly(16))
-            else:  # a name: never resolved here
+            else:
                 host = (await cr.readexactly((await cr.readexactly(1))[0])).decode()
             port = int.from_bytes(await cr.readexactly(2), "big")
             with self.lock:
@@ -230,12 +181,12 @@ class ProxyWire:
             up = u.getsockname()[1]
             _EGRESS[up] = self.port
             with self.lock:
-                if not self.alive:  # killed meanwhile
+                if not self.alive:
                     return
                 self._open.update((c, u))
             cw.write(b"\x05\x00\x00\x01" + b"\0" * 6)
             await cw.drain()
-            answered = asyncio.Event()   # one exchange per tunnel while refusing (whenever it was dialed)
+            answered = asyncio.Event()
             await asyncio.gather(_pipe(ur, cw, (u, c), answered),
                                  _pipe(cr, uw, (c, u), None, answered, lambda: bool(self.refuse_share)))
         except (OSError, asyncio.IncompleteReadError):

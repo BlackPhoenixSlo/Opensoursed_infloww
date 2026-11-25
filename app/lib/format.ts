@@ -1,52 +1,29 @@
-/**
- * format.ts — shared formatters for the stats surface.
- *
- * Lives outside `cn`/utils because these are tiny number/date primitives
- * that 3+ components share verbatim. Behavior matches the original
- * inline copies in PerModelKpiGrid / PerEmployeeTable.
- */
-
-/** Cents → an aggregate (a total, spend, earnings, a chart axis / tooltip / peak): whole dollars with en-US commas
- *  at every size, "$0", "$86", "$1,234", as the dashboard prints them; a loss keeps its leading minus, "-$12".
- *  A unit price or an average (they keep their cents, as Infloww prints them) is `fmtPrice`.
- *  `null` / `undefined` / `NaN` → "—". */
 export function fmtCents(c: number | null | undefined): string {
   if (c == null || Number.isNaN(c)) return "—";
   const d = Math.round(Math.abs(c) / 100);
   return `${c < 0 && d > 0 ? "-" : ""}$${d.toLocaleString("en-US")}`;
 }
 
-/** A figure `fmtCents` prints with its minus ("-$1" and below; -$0.49 prints "$0"): what a loss colour keys on. */
 export const isLoss = (c: number): boolean => fmtCents(c).startsWith("-");
 
-/** Cents → a unit price (a PPV, a sale line, a script, a subscription, a promo cost) or an average / a rate (avg
- *  spend, LTV, ARPU, per hour, CPC, CPS): its cents, rounded to the cent, with commas, and no ".00" on a whole
- *  amount: "$9.99", "$10", "$1,234.56", as Infloww keeps cents on these (its `getMoneyFormat` / `formatMoney`,
- *  index.9f50f370.js @11226956, @13925782). A loss keeps its leading minus. `null` / `undefined` / `NaN` → "—". */
 export function fmtPrice(cents: number | null | undefined): string {
   if (cents == null || Number.isNaN(cents)) return "—";
-  const c = Math.sign(cents) * Math.round(Math.abs(cents)); // a half cent rounds away from zero either side
+  const c = Math.sign(cents) * Math.round(Math.abs(cents));
   const digits = c % 100 === 0 ? 0 : 2;
   const s = (Math.abs(c) / 100).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
   return `${c < 0 ? "-" : ""}$${s}`;
 }
 
-/** Same as fmtCents but renders 0 as "—" — matches the PerEmployeeTable
- *  "no data" convention where empty cells stay quiet. */
 export function fmtCentsBlankZero(c: number | null | undefined): string {
   if (c == null || c === 0 || Number.isNaN(c)) return "—";
   return fmtCents(c);
 }
 
-/** A typed dollar amount as cents; blank or not a non-negative number = null. */
 export function dollarsToCents(raw: string): number | null {
   const n = Number(raw);
   return raw.trim() === "" || !Number.isFinite(n) || n < 0 ? null : Math.round(n * 100);
 }
 
-/** Cents → a Fan's Total spend at a glance (docs/spec/phase-02-fan-list-pane.md,
- *  Rows): whole dollars with commas, "$45" / "$9,999", and above $9,999 shortened
- *  to "k" with at most one decimal, "$10k" / "$12.5k". */
 export function fmtSpend(cents: number): string {
   const dollars = Math.round(cents / 100);
   return dollars > 9_999 ? `$${Math.round(dollars / 100) / 10}k` : `$${dollars.toLocaleString("en-US")}`;
@@ -57,12 +34,6 @@ export function fmtInt(n: number | null | undefined): string {
   return n.toLocaleString();
 }
 
-/** Seconds → "9:59", or "1:02:05" from an hour up. Absent / zero / negative → "" so a caller can render the
- *  pill only when there is a duration to show (`dur && …`, `dur || "▶"`).
- *
- *  This was three identical private copies — VaultPicker's `fmtDur`,
- *  VaultTile's `fmtDuration`, and a fourth written for the composer's
- *  overlong-video warning — before they were collapsed here. */
 export function fmtDuration(sec: number | null | undefined): string {
   if (!sec || sec <= 0) return "";
   const h = Math.floor(sec / 3600);
@@ -71,8 +42,6 @@ export function fmtDuration(sec: number | null | undefined): string {
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
 }
 
-/** A reply wait: seconds → "45s", "3m 05s", "2h 07m"; null → "—" (Chatting statistics' Response time, Creator
- *  reports' Reply time, the Dashboard's Avg reply time). */
 export function fmtReplyTime(sec: number | null): string {
   if (sec == null) return "—";
   const s = Math.round(sec);
@@ -82,8 +51,6 @@ export function fmtReplyTime(sec: number | null): string {
   return `${Math.floor(s / 3600)}h ${two(Math.floor((s % 3600) / 60))}m`;
 }
 
-/** A figure's change against the window (or bucket) before, Infloww's growth (analytics-creator-reports#58): unsigned
- *  to two decimals with its direction; "0.00%" when flat, "-" with nothing before to compare with. */
 export interface Growth { text: string; dir: "up" | "down" | null }
 export function growthOf(cur: number, prev: number | null | undefined): Growth {
   if (prev == null || !(prev > 0)) return { text: "-", dir: null };
@@ -93,12 +60,6 @@ export function growthOf(cur: number, prev: number | null | undefined): Growth {
   return { text, dir: g > 0 ? "up" : "down" };
 }
 
-/** Past ISO timestamp → "12s ago" / "5 min ago" / "3 h ago" / "2 d ago".
- *  Absent / unparseable → `null` (render nothing); a FUTURE stamp → "soon".
- *
- *  Shared so the automation surfaces cannot each grow a private `timeAgo`. (The `${h}h ago` family in MoneyRail / NotificationBell
- *  / IngestHealthBanner is a DIFFERENT wording with a 30-day cutoff — deliberately
- *  left alone rather than silently restyled.) */
 export function fmtAgo(iso: string | null | undefined): string | null {
   if (!iso) return null;
   const then = new Date(iso).getTime();
@@ -113,11 +74,9 @@ export function fmtAgo(iso: string | null | undefined): string | null {
   return `${Math.round(hrs / 24)} d ago`;
 }
 
-/** A relay stamp as a Date: the relay writes `datetime.utcnow()` and sends it zone-less, so a date and time with no
- *  zone is read as UTC (not the browser's zone). A stamp with a zone, or a date alone, parses as is. Null when empty
- *  or unparseable. */
 export function parseUtc(s: string | null | undefined): Date | null {
   if (!s) return null;
+  // The relay writes zone-less utcnow() stamps: read them as UTC, not the browser's zone.
   const naive = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(s) && !/(Z|[+-]\d{2}:?\d{2})$/i.test(s);
   const d = new Date(naive ? `${s.replace(" ", "T")}Z` : s);
   return Number.isNaN(d.getTime()) ? null : d;
@@ -137,8 +96,6 @@ export function fmtDateTime(iso: string | null): string {
   });
 }
 
-/** A UTC ISO time in the viewer's zone, named by its city:
- *  "22 Oct 21:50 (Ljubljana)". */
 export function localWhen(iso: string): string {
   const d = new Date(iso);
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -148,7 +105,6 @@ export function localWhen(iso: string): string {
   return `${day} ${time} (${city})`;
 }
 
-/** "HH:MM" in the user's locale — used for "data through 13:45" captions. */
 export function fmtTimeOnly(iso: string | null): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleTimeString(undefined, {
@@ -157,16 +113,11 @@ export function fmtTimeOnly(iso: string | null): string {
   });
 }
 
-/** "7:02 pm": Infloww's and OF's clock time (numeric hour, lower-case am/pm). */
 export function clockTime(d: Date): string {
   return CLOCK.format(d).toLowerCase();
 }
-// One formatter for every call: `toLocaleTimeString` with options builds a new
-// Intl.DateTimeFormat each time, the top self-time frame of a Fan List render
-// under a DM flood (measured). Same output.
 const CLOCK = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" });
 
-/** The OF Manager creator column's and the platform switcher's unread text: the exact count, "99+" past 99. */
 export function rosterUnreadText(unread: number): string {
   return unread > 99 ? "99+" : String(unread);
 }

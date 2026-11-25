@@ -1,5 +1,3 @@
-"""Vault Refresh's break-it-once faults (scenarios/2026-11-05-vault-refresh.py): lib/faults.py merges `register(Fault)`
-into FAULTS. Every check the scenario records is named here and the scenario imports it."""
 from __future__ import annotations
 
 REFRESH_FOLDER = ("vault refresh: after Vault Pro's Refresh the folder rail shows the folder made on OnlyFans since "
@@ -40,21 +38,14 @@ SYNC_LOAD = ("vault refresh at volume: --users owners pressing Refresh at once o
 SYNC_COALESCED = ("vault refresh at volume: at least five concurrent Refresh presses per Creator start no more "
                   "than two offset-zero OF media walks")
 
-# The app's own code (served unminified by `next dev`), the fix's seams (app/hooks/vaultRefresh.ts,
-# app/hooks/useThumbAutoRefresh.ts). `browser_files=2`: `next dev` bundles both modules into each served chunk that
-# imports them, and this scenario loads two: app/growth/vault-pro/page.js (Vault Pro) and the chat page's lazy
-# components_chat_VaultMediaDetails_tsx chunk (the picker); each pattern lands in both.
 _SYNC_URL = (r"/admin/vault-ai/sync\?", "/admin/vault-ai/no-such-sync?")
-_AUTO_REFRESH = (r"if \(!thumbCooldown\.claim\(accountId, Date\.now\(\)\)\) return arm\(\);", "return;")  # never reloads
-_NO_ALL = (r"\ball: d\.all\b", "all: undefined")   # useVaultMedia.ts: the folder list's `all` dropped (pre-fix)
-# VaultManagePanel.tsx before 2026-11-11: an empty grid says "No data" while OF's own search still runs.
+_AUTO_REFRESH = (r"if \(!thumbCooldown\.claim\(accountId, Date\.now\(\)\)\) return arm\(\);", "return;")
+_NO_ALL = (r"\ball: d\.all\b", "all: undefined")
 _SEARCH_NO_SPINNER = (r"(\.length === 0 && )searchingOf\b", r"\1false")
-_FAIL_SILENT = (r"(if \(ofUnreachable\(e\)\) )return false;", r"\1return true;")   # OF unreachable reads as synced
+_FAIL_SILENT = (r"(if \(ofUnreachable\(e\)\) )return false;", r"\1return true;")
 
 
 def _no_coalesce() -> None:
-    """POST /admin/vault-ai/sync walks OF once per press: `vault_ai_api.relay_coalesce` (looked up per call) swapped
-    for a pass-through."""
     import types
 
     import vault_ai_api
@@ -66,8 +57,6 @@ def _no_coalesce() -> None:
 
 
 def _picker_open_cache_only() -> None:
-    """The picker's open is answered from the shared cache whatever its age, as before the revalidate:
-    `server._vault_picker_revalidate_s` (looked up per call by `_vault_read`) says no entry is ever too old."""
     import server
 
     server._vault_picker_revalidate_s = lambda: 10 ** 9
@@ -75,24 +64,13 @@ def _picker_open_cache_only() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run vault-refresh --break: the pre-fix Refresh (only invalidateVaultGrid; the sync URL 404s and the
-        # client falls through to the reload, which the relay answers from its day-long cache and the mirror).
-        # Every sync POST 404s, including the deliberate OF-failure phase and the picker's refresh.
         "vault-refresh-cache-only": Fault(None, (REFRESH_FOLDER, REFRESH_MEDIA, REFRESH_WIRE,
                                                 REFRESH_FAIL_SHOWN, PICKER_FAILURE),
                                           browser=(_SYNC_URL,), browser_files=2),
-        # slop/run vault-refresh --break --fault=vault-refresh-fail-silent: a failed sync shows the old grid, no word
         "vault-refresh-fail-silent": Fault(None, (REFRESH_FAIL_SHOWN,), browser=(_FAIL_SILENT,), browser_files=2),
-        # slop/run vault-refresh --break --fault=vault-all-media-no-counts: All media shows "—", every chip on
         "vault-all-media-no-counts": Fault(None, (ALL_COUNTS,), browser=(_NO_ALL,), browser_files=2),
-        # slop/run vault-refresh --break --fault=vault-thumbs-no-auto-refresh: a broken thumb never reloads
         "vault-thumbs-no-auto-refresh": Fault(None, (THUMBS_RELOAD,), browser=(_AUTO_REFRESH,), browser_files=2),
-        # slop/run vault-refresh --break --fault=vault-search-no-spinner: "No data" until OF's search answered
         "vault-search-no-spinner": Fault(None, (SEARCH_PENDING,), browser=(_SEARCH_NO_SPINNER,), browser_files=1),
-        # slop/run vault-refresh --break --fault=vault-sync-no-coalesce --no-ui
         "vault-sync-no-coalesce": Fault(_no_coalesce, (SYNC_COALESCED,)),
-        # slop/run vault-refresh --break --fault=picker-open-cache-only: relay side, the picker's open revalidate
-        # is served the cached copy whatever its age; the thumb reload reads through that same gate
-        # (revalidateLoadedVaultPages), so its expired copy is served back too: THUMBS_RELOAD
         "picker-open-cache-only": Fault(_picker_open_cache_only, (PICKER_OPEN_FRESH, THUMBS_RELOAD)),
     }

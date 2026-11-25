@@ -7,7 +7,6 @@ import { CATEGORIES } from "./emojiData";
 
 afterEach(() => window.localStorage.clear());
 
-/** A composer: textarea + quick row + picker, both inserting at the caret. */
 function Harness({ initial = "", messagesPro }: { initial?: string; messagesPro?: boolean }) {
   const [value, setValue] = useState(initial);
   const ref = useRef<HTMLTextAreaElement | null>(null);
@@ -24,10 +23,8 @@ function Harness({ initial = "", messagesPro }: { initial?: string; messagesPro?
 const draft = () => screen.getByLabelText("draft") as HTMLTextAreaElement;
 const openPicker = () => fireEvent.click(screen.getByLabelText("Emoji picker"));
 const search = () => screen.getByPlaceholderText("Search emoji…");
-/** The open picker's emoji-grid buttons ("Insert …"), not a quick-row button. */
 const gridButtons = () => screen.getAllByRole("button")
   .filter((b) => b.title.startsWith("Insert ") && !screen.getByTestId("quick").contains(b));
-/** Both quick rows' emojis: desktop (8 slots), then phone (its first 5). */
 const quickButtons = () => within(screen.getByTestId("quick")).getAllByRole("button").map((b) => b.textContent);
 
 describe("EmojiBar", () => {
@@ -53,7 +50,7 @@ describe("EmojiBar", () => {
 
   it("a pick replaces the selection at the caret, closes, and leads the quick row", async () => {
     render(<Harness initial="hello world" />);
-    draft().setSelectionRange(0, 5); // "hello"
+    draft().setSelectionRange(0, 5);
     openPicker();
     fireEvent.change(search(), { target: { value: "puppy" } });
     fireEvent.click(screen.getByRole("button", { name: "🐶" }));
@@ -71,7 +68,7 @@ describe("EmojiBar", () => {
     openPicker();
     fireEvent.click(screen.getByTitle("animals"));
     fireEvent.change(search(), { target: { value: "cat" } });
-    openPicker(); // close
+    openPicker();
     openPicker();
     expect(search()).toHaveValue("");
     expect(screen.getByTitle("animals")).toHaveClass("bg-bg-elev-1");

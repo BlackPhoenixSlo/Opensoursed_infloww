@@ -1,27 +1,3 @@
-/**
- * refusedOffers — schedules the relay refused that the Composer could not
- * put straight back (`afterRefusedSchedule`): the chatter typed on since, or
- * left the chat while it was in flight. Each holds the only copy of its
- * whole draft (text, price, lock, media, previews, schedule, tags, GIFs),
- * so it stays until restored or dismissed, never timed out.
- *
- * Module-level, as `lib/sendStash` is: the Composer and its ChatSurface
- * remount per chat (MessagesPro keys ChatSurface by Creator and
- * Fan), so a refusal that lands after a chat switch has no mounted owner.
- * Every chat's Composer lists them; Restore is offered only in the chat the
- * offer came from, so its draft goes back where it was written.
- *
- * Only a Fan chat's Composer makes offers (the only kind there is:
- * ChatSurface always has its Fan), so each names its chat.
- *
- * The store owns its offers' blob previews: they stay alive while held
- * (`revokeUnlessHeld`), dismissing one revokes those nothing else shows
- * (`dismissRefusedOffer`). An identity switch drops them all and bumps the
- * `epoch` (`clearRefusedOffers`, from `clearIdentityMemory` in UserContext),
- * so a refusal of the previous identity's send landing after it is dropped,
- * its previews revoked (`offerRefusedSchedule`).
- */
-
 import { useSyncExternalStore } from "react";
 
 import { revokePreviews } from "@/lib/blobPreviews";
@@ -29,12 +5,10 @@ import { sameUserId, type FanId } from "@/lib/fanId";
 
 import type { FullDraft } from "./composerDraft";
 
-/** A refused schedule's draft, its chat, and why the relay refused it. */
 export interface RefusedOffer extends FullDraft {
   id: number;
   accountId: string | null;
   fanId: FanId;
-  /** The Fan's name as the chat showed it, for the notice in other chats. */
   fanName: string | null;
   why: string;
 }
@@ -42,19 +16,14 @@ export interface RefusedOffer extends FullDraft {
 export interface RefusedOffersState {
   offers: RefusedOffer[];
   nextId: number;
-  /** Bumped by `cleared`: a send started before it is another identity's. */
   epoch: number;
 }
 
 export const NO_OFFERS: RefusedOffersState = { offers: [], nextId: 1, epoch: 0 };
 
 export type RefusedOffersAction =
-  /** A refusal nobody could put back: offered, in arrival order, unless
-   *  its send started in an earlier `epoch` (before an identity switch). */
   | { type: "refused"; offer: Omit<RefusedOffer, "id">; epoch: number }
-  /** Restored into its chat's Composer, or dismissed. */
   | { type: "removed"; id: number }
-  /** Everything goes (an identity switch). */
   | { type: "cleared" };
 
 export function refusedOffersReducer(s: RefusedOffersState, a: RefusedOffersAction): RefusedOffersState {
@@ -71,20 +40,16 @@ export function refusedOffersReducer(s: RefusedOffersState, a: RefusedOffersActi
   }
 }
 
-/** The offer was written in this chat. */
 export function isOfferHere(o: RefusedOffer, accountId: string | null, fanId: FanId): boolean {
   return o.accountId === accountId && sameUserId(o.fanId, fanId);
 }
 
-/** Blob previews the held offers still show. */
 export function heldPreviews(s: RefusedOffersState): Set<string> {
   const out = new Set<string>();
   for (const o of s.offers) for (const m of o.draft.attached) if (m._localPreview) out.add(m._localPreview);
   return out;
 }
 
-/** What dismissing `id` frees: its previews no other offer nor `shown` (the
- *  Composer's tiles) still shows. */
 export function previewsFreedBy(s: RefusedOffersState, id: number, shown: Array<string | undefined>): string[] {
   const offer = s.offers.find((o) => o.id === id);
   if (!offer) return [];
@@ -93,9 +58,6 @@ export function previewsFreedBy(s: RefusedOffersState, id: number, shown: Array<
   return offer.draft.attached.map((m) => m._localPreview).filter((u): u is string => !!u && !kept.has(u));
 }
 
-/** The blob previews action `a` drops unoffered — a refusal the reducer
- *  turns away (its send started before an identity switch) — but those a held
- *  offer or `shown` (the Composer's tiles) still shows; none otherwise. */
 export function previewsDroppedBy(
   s: RefusedOffersState, a: RefusedOffersAction, shown: Array<string | undefined>,
 ): string[] {
@@ -105,8 +67,8 @@ export function previewsDroppedBy(
   return a.offer.draft.attached.map((m) => m._localPreview).filter((u): u is string => !!u && !kept.has(u));
 }
 
-/* ── the module's one state ─────────────────────────────────────────────── */
 
+// Module-level: Composer/ChatSurface remount per chat, so a refusal landing after a switch has no mounted owner; each offer holds the only copy of its draft.
 let state: RefusedOffersState = NO_OFFERS;
 const listeners = new Set<() => void>();
 
@@ -126,15 +88,11 @@ function subscribe(l: () => void): () => void {
   return () => listeners.delete(l);
 }
 
-/** Revoke `urls` but those a held offer still shows (a Composer's tiles
- *  going). */
 export function revokeUnlessHeld(urls: Array<string | undefined>): void {
   const held = heldPreviews(state);
   revokePreviews(urls.filter((u) => !(u && held.has(u))));
 }
 
-/** Dismiss an offer and revoke its previews nothing else shows (`shown`: the
- *  Composer's tiles). Returns those revoked. */
 export function dismissRefusedOffer(offer: RefusedOffer, shown: Array<string | undefined>): string[] {
   const gone = previewsFreedBy(state, offer.id, shown);
   dispatchRefusedOffers({ type: "removed", id: offer.id });
@@ -142,9 +100,6 @@ export function dismissRefusedOffer(offer: RefusedOffer, shown: Array<string | u
   return gone;
 }
 
-/** Offer a refused schedule; one from before an identity switch is dropped
- *  and its previews nothing else shows (`shown`: the Composer's tiles) are
- *  revoked. Returns those revoked. */
 export function offerRefusedSchedule(
   offer: Omit<RefusedOffer, "id">, epoch: number, shown: Array<string | undefined>,
 ): string[] {
@@ -155,15 +110,12 @@ export function offerRefusedSchedule(
   return gone;
 }
 
-/** Drop every offer and revoke its previews (an identity switch: they are
- *  the previous identity's drafts). */
 export function clearRefusedOffers(): void {
   const held = heldPreviews(state);
   dispatchRefusedOffers({ type: "cleared" });
   revokePreviews([...held]);
 }
 
-/** Every held offer, live. */
 export function useRefusedOffers(): RefusedOffersState {
   return useSyncExternalStore(subscribe, readRefusedOffers, () => NO_OFFERS);
 }

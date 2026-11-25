@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * About Inflowwww (docs/spec/settings-tabs/phase-05-billing-balance-about.md): an 88x88 tile drawn from
- * the "Inflowwww" wordmark (no image asset), "Version {version}" from the app's package.json as the
- * Sidebar shows it, then a 760px desktop-app box where Infloww has its beta box, and the licence link, centred
- * across the Panel and top-aligned under its header. No beta box, no build hash; the Panel makes no request and stores nothing (ADR-0008).
- */
 
 import { IF_BTN, SettingsPanel } from "@/components/settings/SettingsPanel";
 import { useInDesktopApp } from "@/hooks/useInDesktopApp";
@@ -35,14 +29,12 @@ export default function AboutTab() {
             </div>
           )}
           <p className="mb-8 text-[length:var(--if-fs)] text-[var(--if-fg)]">Version {version}</p>
-          {/* Where Infloww's `._join-beta-wrap` sits: 760px, 16px padding, an L1 border, radius 4. Not in the app. */}
           {!inApp && (
             <div className="mb-4 flex flex-wrap w-[760px] max-w-full items-center justify-between gap-4 rounded border border-[var(--if-line)] p-4 text-left">
               <div>
                 <p className="text-[length:var(--if-fs-lg)] font-medium text-[var(--if-fg)]">Get the desktop app</p>
                 <p className="text-[length:var(--if-fs)] text-[var(--if-fg-2)]">{BRAND_NAME} for {DESKTOP_PLATFORMS}</p>
               </div>
-              {/* A plain <a>: /download is a static file outside the router. */}
               <a href={DESKTOP_URL} className={cn(IF_BTN, "inline-flex shrink-0 items-center")}>
                 Download
               </a>

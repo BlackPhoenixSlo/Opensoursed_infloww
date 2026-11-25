@@ -24,12 +24,12 @@ describe("centsToDollars", () => {
 describe("capError / canSaveCap", () => {
   it.each<[string, number, string | null, boolean]>([
     ["5", 100, null, true],
-    ["1.00", 100, null, false],                         // unchanged
-    ["0", 100, null, true],                             // pause
-    ["100", 100, null, true],                           // the bound itself
+    ["1.00", 100, null, false],
+    ["0", 100, null, true],
+    ["100", 100, null, true],
     ["100.01", 100, "At most $100.00 a day", false],
-    ["500", 50_000, null, false],                       // a legacy cap echoed, unchanged
-    ["499", 50_000, "At most $100.00 a day", false],    // an edit of it is bounded
+    ["500", 50_000, null, false],
+    ["499", 50_000, "At most $100.00 a day", false],
     ["2.555", 100, "Enter a dollar amount, e.g. 5 or 2.50", false],
     ["", 100, "Enter a dollar amount, e.g. 5 or 2.50", false],
   ])("%j (stored %d)", (raw, stored, err, ok) => {

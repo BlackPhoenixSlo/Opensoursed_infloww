@@ -42,15 +42,10 @@ Exit 0 = all cases passed. Temp DB bound by _harness (never prod).
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
-# These cases test feature logic, not the account gate (that is
-# test_account_isolation_gate's job). They reach `/admin` routes or
-# `assert_account_owned` with no session, which fails closed (401) since
-# 3b30b486. This is the documented escape hatch (read per call), scoped to this
-# test process.
 import os  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
@@ -77,8 +72,6 @@ from db.models import (Account, AccountAiConfig, GrokDailyCost,  # noqa: E402
                        VaultCacheRun, VaultItem)
 
 
-# The describe path preflights `llm_key_available` per provider it would bill.
-# These cases fake the model calls, so a key is always "present".
 async def _fake_key_available(account_id, provider, purpose=None) -> bool:
     return True
 
@@ -86,18 +79,15 @@ async def _fake_key_available(account_id, provider, purpose=None) -> bool:
 llm_client.llm_key_available = _fake_key_available
 
 
-# ── Fakes ────────────────────────────────────────────────────────────
 
 class _FakeVisionResult:
-    """Minimal `llm_client.LLMResult` shape the copy call + _describe_one read."""
     def __init__(self, content: str, parsed: Any = None, cost: int = 0, call_id: int = 1):
         self.content = content
         self.parsed = parsed
-        self.cost_cents = cost      # MILLICENTS in this codebase
+        self.cost_cents = cost
         self.call_id = call_id
 
 
-# ── Seeders ──────────────────────────────────────────────────────────
 
 _AID_N = 0
 
@@ -117,8 +107,6 @@ async def _seed_account(aid: str, *, cap_cents: int = 1000) -> None:
 
 
 async def _seed_items(aid: str, media_ids: list[int], *, kind: str = "video") -> None:
-    """Clips by default, each with a current `_jev` (D54: a clip's qwen describe is fed its Jev reading; the Jev
-    pass itself is test_vault_jev's), so the qwen describe state machine this file pins runs."""
     base = datetime(2026, 6, 1, 10, 0, 0)
     async with get_session() as s:
         for i, mid in enumerate(media_ids):
@@ -132,7 +120,6 @@ async def _get(aid: str, media_id: int) -> VaultItem:
         return await s.get(VaultItem, (aid, media_id))
 
 
-# ── Cases ────────────────────────────────────────────────────────────
 
 async def case_drm_state():
     aid = _fresh_account()
@@ -140,7 +127,6 @@ async def case_drm_state():
     await _seed_items(aid, [50], kind="video")
 
     async def _no_frames(*_a, **_k):
-        # OF answered and offered no renderable variant → genuinely DRM-blocked
         return vault_frames.Collected([], "no_variant")
 
     orig = vault_frames.collect
@@ -175,26 +161,14 @@ async def case_refusal_state():
     assert out["ok"] is False and out["status"] == "refused", out
     it = await _get(aid, 60)
     assert it.describe_status == "refused", it.describe_status
-    # A refusal must NEVER leave a partial/blank description behind.
     assert not (it.description or "").strip(), it.description
 
 
 async def case_frame_ladder_by_duration() -> None:
-    """Frames scale with clip length instead of a flat constant.
-
-    Measured 2026-07-21 over 6 long clips × 4 counts × 3 repeats, scored as
-    coverage of the pooled union of all findings (3f 38% / 6f 49% / 9f 47% /
-    12f 55%, mean beats 1.9 → 3.7). 3→6 is a real gain, 6→9 is inside
-    run-to-run noise, 9→12 buys the beats a long clip needs. 12 is the ceiling
-    (`storyboard._STORYBOARD_FRAMES`).
-    """
-    # The ladder itself is table-tested in test_vault_ai_vision_decide.
-    # Never ask for more than the storyboard actually holds.
     import storyboard
     assert vault_ai_vision_decide._FRAME_LADDER_MAX <= storyboard._STORYBOARD_FRAMES, \
         (vault_ai_vision_decide._FRAME_LADDER_MAX, storyboard._STORYBOARD_FRAMES)
 
-    # …and the ladder is what _describe_one actually asks _collect_images for.
     aid = _fresh_account()
     await _seed_account(aid)
     async with get_session() as s:
@@ -207,7 +181,7 @@ async def case_frame_ladder_by_duration() -> None:
 
     async def _spy(_aid, _item, _raw, want=None):
         seen["want"] = want
-        return vault_frames.Collected([], "no_variant")  # short-circuit; we only want `want`
+        return vault_frames.Collected([], "no_variant")
 
     orig = vault_frames.collect
     vault_frames.collect = _spy
@@ -215,13 +189,10 @@ async def case_frame_ladder_by_duration() -> None:
         await vault_ai_vision._describe_one(aid, 70)
     finally:
         vault_frames.collect = orig
-    assert seen["want"] == 12, seen        # 15-minute clip → the ceiling
+    assert seen["want"] == 12, seen
 
 
 async def case_prompt_version_selects_variant() -> None:
-    """A clip is Jev-fed (D54): v1 and v2 both send the V2 prompt with the clip's
-    Jev facts (no v1 describe for a Jev kind); the row still records which was
-    asked, so a re-scan can find it."""
     aid = _fresh_account()
     await _seed_account(aid)
     await _seed_items(aid, [80, 81])
@@ -255,7 +226,6 @@ async def case_prompt_version_selects_variant() -> None:
     assert sent[0] == sent[1] == want, "a clip was not sent the Jev-fed V2 prompt"
     assert "pulled_aside" in sent[1] and "one literal sentence" not in sent[0]
 
-    # The stamp is what the re-scan sweep selects on.
     v1_row = json.loads((await _get(aid, 80)).ai_fields_json)
     v2_row = json.loads((await _get(aid, 81)).ai_fields_json)
     assert v1_row["_prompt_version"] == "v1", v1_row
@@ -263,8 +233,6 @@ async def case_prompt_version_selects_variant() -> None:
 
 
 class _NoJevStop:
-    """A candidate-selection case: this box has no NudeNet, and a sweep stops on that (`vault_jev_pass.fatal`,
-    test_vault_jev's); which items get visited is what's pinned here."""
 
     def __enter__(self):
         self._o = vault_jev_pass.fatal
@@ -314,17 +282,6 @@ async def case_restage_selects_only_stale_rows() -> None:
 
 
 async def case_describe_also_flags():
-    """REGRESSION — "described" used to mean prose plus `clothing_state` and
-    NOTHING about what is actually on show, because the flags pass was a second
-    button. A freshly-described vault therefore had no flags at all, and every
-    lane gated on them (`AI-safe explicit`, both price tiers) was silently
-    empty until somebody remembered. The two passes now run in one breath: a
-    clip's flags come from its Jev pass, which runs FIRST (D54; never the qwen
-    flags call), and its spend rides on the sweep's.
-
-    A raising Jev pass never takes the sweep down (`vault_jev_pass.safe`): the
-    item is skipped with Jev's status (no describe without its reading).
-    """
     aid = _fresh_account()
     await _seed_account(aid)
     await _seed_items(aid, [9001])
@@ -349,7 +306,6 @@ async def case_describe_also_flags():
         await vault_ai_vision._run_describe_all(aid, "force", prompt_version="v2")
         assert described == [9001], described
         assert flagged == [9001], f"describe did not flag what it described: {flagged}"
-        # The sweep's spend is BOTH calls: the Jev pass is paid for too.
         cost = vault_ai_vision._describe_progress[aid]["cost_millicents"]
         assert cost == 73, f"the sweep's cost dropped the Jev pass: {cost}"
 
@@ -419,26 +375,6 @@ async def case_one_exploding_item_does_not_end_the_sweep():
 
 
 async def case_redescribe_keeps_flags_and_operator_fixes():
-    """REGRESSION — `ai_fields_json` is ONE column written by three passes, and
-    `_describe_one` wrote it WHOLE from the describe schema alone. So a re-scan
-    silently deleted:
-
-      * the exposure flags. The item came back with no `_flags_v`, every gated
-        lane emptied, and the flags pass had to be run over the vault again —
-        which is exactly what the operator reported.
-      * the dispute corrections. `locked_fields_json` guarded four COLUMNS and
-        nothing inside this blob, so a dispute they had settled reverted to the
-        model's answer on the next re-scan. A lock that silently un-does itself
-        is worse than no lock: there is no reason to look at the item again.
-
-    Only the `vault_ai_fix.FIXABLE` half is restored, and the boundary matters:
-    `edit_item` locks (description, tier, price) deliberately leave this blob as
-    the model's RAW answer and win at read time through `effective_value`, so
-    stamping those in here would erase the evidence that a re-run ever ran —
-    `test_vault_ai_edit_lock.case_rerun_respects_lock` asserts exactly that.
-    `vault_ai_fix` is the opposite: the lanes and `contradictions` read
-    `ai_fields_json` directly, so its fixes have to live in it.
-    """
     aid = _fresh_account()
     await _seed_account(aid)
     async with get_session() as s:
@@ -448,19 +384,13 @@ async def case_redescribe_keeps_flags_and_operator_fixes():
             describe_status="described",
             ai_fields_json=json.dumps({
                 "description": "old prose", "clothing_state": "fully_nude",
-                # written by the FLAGS pass
                 "vulva_vis": "covered", "breasts_vis": "bare",
                 "anus_vis": "not_in_frame", "over_vulva": "black lace thong",
                 "underwear_visible": True, "_flags_v": 3,
                 "_flags_model": "qwen3-vl-30b",
-                # settled by the OPERATOR on the disputes screen
                 "explicitness": "suggestive",
                 "_jev": video_jev(),
             }),
-            # `explicitness` is FIXABLE — a dispute fix, read straight out of
-            # ai_fields_json, so it has to be restored INTO it. `description` is
-            # not: it takes the edit_item read-time path, so the model's fresh
-            # prose must still land in the blob (see the assert below).
             operator_overrides_json=json.dumps({"explicitness": "suggestive",
                                                 "description": "operator prose"}),
             locked_fields_json=json.dumps(["explicitness", "description"]),
@@ -490,7 +420,7 @@ async def case_redescribe_keeps_flags_and_operator_fixes():
     assert got["description"] == "new prose", (
         "an edit_item lock must NOT stamp itself into the blob — that would "
         "erase the evidence a re-run ever ran (case_rerun_respects_lock)")
-    import vault_jev_flags   # a clip's lane fields are its Jev reading's (D54), not qwen's
+    import vault_jev_flags
     assert got["clothing_state"] == vault_jev_flags.reading(video_jev())["clothing_state"], got
     for key, want in (("vulva_vis", "covered"), ("breasts_vis", "bare"),
                       ("anus_vis", "not_in_frame"),
@@ -501,10 +431,6 @@ async def case_redescribe_keeps_flags_and_operator_fixes():
 
 
 async def case_describing_one_item_flags_it_too():
-    """The sweep has flagged in the same breath for a while; the ONE-item button
-    never did, so a hand-described item was the only row in the vault the gated
-    lanes could not read — and nothing on screen said so. A clip's flags are its
-    Jev pass's (D54), run first; its cost is reported with describe's."""
     aid = _fresh_account()
     await _seed_account(aid)
     await _seed_items(aid, [80])
@@ -531,25 +457,20 @@ async def case_describing_one_item_flags_it_too():
 
 
 async def case_describe_all_attempts_every_undescribed_item() -> None:
-    """'Describe all' attempts EVERYTHING it is not already done with, including a
-    clip blocked minutes ago. A blocked_drm cooldown belonged to the (since-
-    deleted) recurring `describe_media` sweep — never to a button whose label
-    quotes a count. Honouring it here made the button offer 1,777 items and
-    attempt none of them, with nothing in the UI to say so."""
     aid = _fresh_account()
     await _seed_account(aid)
     now = datetime.utcnow()
     async with get_session() as s:
         s.add(VaultItem(account_id=aid, media_id=10, kind="photo",
-                        created_at=datetime(2026, 6, 1), tags="[]"))  # undescribed
+                        created_at=datetime(2026, 6, 1), tags="[]"))
         s.add(VaultItem(account_id=aid, media_id=11, kind="video",
                         created_at=datetime(2026, 6, 1), tags="[]",
                         describe_status="blocked_drm",
-                        describe_generated_at=now - timedelta(hours=2)))  # just blocked
+                        describe_generated_at=now - timedelta(hours=2)))
         s.add(VaultItem(account_id=aid, media_id=12, kind="photo",
                         created_at=datetime(2026, 6, 1), tags="[]",
                         describe_status="described",
-                        describe_generated_at=now - timedelta(hours=2)))  # done → skip
+                        describe_generated_at=now - timedelta(hours=2)))
         await s.commit()
 
     seen: list[int] = []
@@ -565,17 +486,12 @@ async def case_describe_all_attempts_every_undescribed_item() -> None:
             await vault_ai_vision._run_describe_all(aid, "undescribed", prompt_version="v2")
         assert sorted(seen) == [10, 11], (
             f"the button skipped work it counted: {seen}")
-        # …and it is still the count the UI showed: `described` stays untouched.
         assert 12 not in seen, "a finished item was re-billed"
     finally:
         vault_ai_vision._describe_one = orig
 
 
 async def case_fetch_failure_is_not_blocked_drm() -> None:
-    """2026-08-04: 1,777 items whose OF signature had merely expired were stamped
-    `blocked_drm`, which carries a 7-day cool-off meant for clips OF genuinely
-    cannot render — so the sweep that would have fixed them skipped them. A
-    transient failure must be stamped as one, and must be retried immediately."""
     aid = _fresh_account()
     await _seed_account(aid)
     await _seed_items(aid, [60])
@@ -592,14 +508,8 @@ async def case_fetch_failure_is_not_blocked_drm() -> None:
     assert out["status"] == "fetch_failed", out
     row = await _get(aid, 60)
     assert row.describe_status == "fetch_failed", row.describe_status
-    # And it says SOMETHING to the operator. `vault_sweep` shows the first
-    # `detail` as the sweep's error, so a frameless return with none is a vault
-    # that fails N of N times and reports no reason at all — the shape of the
-    # missing-provider-key incident.
     assert out.get("detail"), f"a failure with no cause is not a report: {out}"
 
-    # When `collect` swallowed an exception it says WHICH — `fetch_failed` alone
-    # cannot tell an expired OF signature from a bug in the frame code.
     async def _blew_up(*_a, **_k):
         return vault_frames.Collected([], "fetch_failed", "TypeError: NoneType")
 
@@ -610,7 +520,6 @@ async def case_fetch_failure_is_not_blocked_drm() -> None:
         vault_frames.collect = orig
     assert "TypeError" in out["detail"], out
 
-    # …and the very next default sweep still offers it, cool-off untouched.
     seen: list[int] = []
 
     async def _spy(_aid, mid, **_k):
@@ -627,10 +536,6 @@ async def case_fetch_failure_is_not_blocked_drm() -> None:
 
 
 async def case_audio_is_never_a_describe_candidate() -> None:
-    """An audio file has no frame. Sweeping it is a guaranteed failure per pass,
-    and the ones whose signature was still live had their MP3 bytes posted to a
-    vision endpoint as an image. The plan's total must not count them either —
-    it was quoting a number the sweep could never meet."""
     aid = _fresh_account()
     await _seed_account(aid)
     async with get_session() as s:
@@ -660,9 +565,6 @@ async def case_audio_is_never_a_describe_candidate() -> None:
 
 
 async def case_flags_failure_stays_in_todo() -> None:
-    """A photo's flags are its Jev pass's (no qwen flags call): a still it cannot
-    fetch is that item's `fetch_failed`, reported, and nothing on the row may
-    claim the flags are current, or the retry stops."""
     aid = _fresh_account()
     await _seed_account(aid)
     await _seed_items(aid, [90], kind="photo")
@@ -687,13 +589,6 @@ async def case_flags_failure_stays_in_todo() -> None:
 
 
 async def case_a_dead_collect_stops_claiming_it_is_running() -> None:
-    """A collect finalises its own row, so a relay restart mid-sweep leaves
-    `running` behind with nothing left to ever clear it. One prod row said
-    `running / warming` for three days — and that stall is why 1,046 clips were
-    never warmed, while the status endpoint reported the sweep as still working.
-
-    `_running` is process-local and is the only place a live sweep is tracked, so
-    a row claiming to run for an account nobody is running is orphaned."""
     aid = _fresh_account()
     row = VaultCacheRun(account_id=aid, status="running", phase="warming")
 
@@ -707,7 +602,6 @@ async def case_a_dead_collect_stops_claiming_it_is_running() -> None:
     finally:
         vault_runs.manual_running.discard(aid)
 
-    # A finished run is never reinterpreted — only `running` can be orphaned.
     for done in ("done", "error"):
         row.status = done
         assert vault_ai_api._run_status(row, aid) == done, done
@@ -715,8 +609,6 @@ async def case_a_dead_collect_stops_claiming_it_is_running() -> None:
 
 async def _spend_today(aid: str, millicents: int, *, provider: str = "describe",
                        flagged: bool = False) -> None:
-    """Put `millicents` on today's per-(account, provider) rollup — the row the
-    cap is enforced against."""
     async with get_session() as s:
         s.add(GrokDailyCost(
             day=datetime.utcnow().strftime("%Y-%m-%d"), account_id=aid,
@@ -726,16 +618,8 @@ async def _spend_today(aid: str, millicents: int, *, provider: str = "describe",
 
 
 async def case_describe_all_refuses_to_start_over_the_cap() -> None:
-    """Over the daily cap, pressing Describe all again started a whole sweep.
-
-    Nothing about it was unsafe — `llm_client._reserve` refuses every call over
-    the cap, so the sweep stopped on the first one. It was DISHONEST: it pulled
-    frames off OF for a batch of items first, wrote nothing, and ended with the
-    same count back on the button. Pressing it again did the same again, and
-    nothing anywhere said "you are out of budget today".
-    """
     aid = _fresh_account()
-    await _seed_account(aid, cap_cents=100)  # $1.00 = 10,000 mc
+    await _seed_account(aid, cap_cents=100)
     await _seed_items(aid, [90, 91])
     await _spend_today(aid, 10_000)
 
@@ -753,8 +637,6 @@ async def case_describe_all_refuses_to_start_over_the_cap() -> None:
         except HTTPException as e:
             assert e.status_code == 429, e.status_code
             assert e.detail["error"] == "daily_cap_reached", e.detail
-            # The numbers have to be ON the refusal: "capped" without them is
-            # the same dead end as no message at all.
             assert e.detail["spent_millicents"] == 10_000, e.detail
             assert e.detail["cap_millicents"] == 10_000, e.detail
             assert "$1.00" in e.detail["blocked_reason"], e.detail["blocked_reason"]
@@ -767,10 +649,6 @@ async def case_describe_all_refuses_to_start_over_the_cap() -> None:
 
 
 async def case_concurrent_describe_all_presses_start_one_sweep() -> None:
-    """Two presses at once (a double click, two managers) started TWO sweeps:
-    the start checked `_describe_running`, awaited the budget, then claimed it,
-    so the second press passed the check while the first was still awaiting.
-    N presses = N sweeps = N x the spend. Now one 200, the rest 409."""
     import asyncio
 
     aid = _fresh_account()
@@ -792,7 +670,7 @@ async def case_concurrent_describe_all_presses_start_one_sweep() -> None:
     try:
         got = await asyncio.gather(*(vault_ai_vision.describe_all({"account_id": aid}) for _ in range(2)),
                                    return_exceptions=True)
-        await asyncio.sleep(0)  # let the created task(s) run
+        await asyncio.sleep(0)
         ok = [g for g in got if isinstance(g, dict)]
         busy = [g for g in got if isinstance(g, HTTPException) and g.status_code == 409
                 and g.detail == {"error": "describe_already_running"}]
@@ -804,10 +682,6 @@ async def case_concurrent_describe_all_presses_start_one_sweep() -> None:
 
 
 async def case_one_item_describe_over_the_cap_fetches_nothing() -> None:
-    """`Describe selected` is a client-side loop over the single-item endpoint.
-    Over the cap every one of those calls was refused by `_reserve` — AFTER the
-    frames had been pulled off OF and (for a clip) cut with ffmpeg. Fifty
-    selected items bought fifty rounds of that and zero descriptions."""
     aid = _fresh_account()
     await _seed_account(aid, cap_cents=100)
     await _seed_items(aid, [92])
@@ -826,17 +700,7 @@ async def case_one_item_describe_over_the_cap_fetches_nothing() -> None:
         assert out["status"] == "capped" and out["ok"] is False, out
         assert collected == [], f"it fetched frames anyway: {collected}"
 
-        # SAME shape as the in-flight refusal, down to the sentence. The
-        # pre-flight is an optimisation, not a second contract: a caller that
-        # had to tell the two apart would have two cases to get right, and the
-        # in-flight one is the path that shows an operator raw exception text
-        # unless they are kept together. `_describe_one` is the real thing —
-        # it collects frames, calls the model, and is refused by `_reserve`.
         assert "$1.00" in out["detail"], out["detail"]
-        # The in-flight path resolves a key BEFORE it reserves (fail-closed per
-        # Agency, 4cbd576b), and this account has no owner — so without a house
-        # key it would refuse for the missing key and never reach `_reserve`.
-        # Hand it one for this call only; the cap refusal still means no HTTP.
         key_env = llm_providers.PROVIDERS["deepinfra"].api_key_env
         prev_key = os.environ.get(key_env)
         os.environ[key_env] = "test-deepinfra-key"
@@ -855,14 +719,6 @@ async def case_one_item_describe_over_the_cap_fetches_nothing() -> None:
 
 
 async def case_cap_state_reads_the_money_not_the_sticky_flag() -> None:
-    """`is_capped` is set when a reservation is refused and never cleared, so
-    an operator who RAISES the daily cap mid-day would still be locked out by a
-    gate that read it. The gate reads what is spent against what is allowed;
-    the flag is carried for display only.
-
-    The plan endpoint carries the same state, so the button can go grey before
-    it is pressed rather than after.
-    """
     aid = _fresh_account()
     await _seed_account(aid, cap_cents=100)
     await _seed_items(aid, [93])
@@ -872,7 +728,6 @@ async def case_cap_state_reads_the_money_not_the_sticky_flag() -> None:
     assert plan["cap"]["capped"] is True and plan["cap"]["flagged"] is True, plan["cap"]
     assert plan["cap"]["remaining_millicents"] == 0, plan["cap"]
 
-    # Raise the cap: the money now fits, the stale flag must not veto it.
     async with get_session() as s:
         await s.execute(
             update(AccountAiConfig).where(AccountAiConfig.account_id == aid)
@@ -883,41 +738,32 @@ async def case_cap_state_reads_the_money_not_the_sticky_flag() -> None:
     assert state["flagged"] is True, "the day's cap-hit is still worth reporting"
     assert state["remaining_millicents"] == 40_000, state
 
-    # Another provider's spend is another budget — the cap is per-(account,
-    # provider), and reading the wrong row would refuse a describe because the
-    # chat engines had a busy day.
     other = await llm_client.cap_state(aid, "deepseek")
     assert other["spent_millicents"] == 0, other
 
 
 async def case_capped_means_no_call_on_the_model_fits() -> None:
-    """With a model, `capped` is "no call on it fits", not spent >= cap: the
-    last reservation that fit settles under the cap and the spend stays just
-    below it while every call is refused. Less left than one reservation
-    (no input, a full output) is capped; a refusal today with under two left
-    is capped; a cap raised since is not. The vision routes read this one
-    predicate, so a hopeless describe fetches nothing."""
     model = "qwen3-vl-30b"
     floor = llm_client._cost_millicents(model, 0, llm_client._ASSUMED_OUTPUT_TOKENS)
     assert 0 < floor < 10_000, floor
 
     async def _state(left: int, flagged: bool = False) -> dict:
         aid = _fresh_account()
-        await _seed_account(aid, cap_cents=100)  # 10,000 mc
+        await _seed_account(aid, cap_cents=100)
         await _spend_today(aid, 10_000 - left, flagged=flagged)
         return await llm_client.cap_state(aid, "describe", model)
 
-    assert (await _state(floor - 1))["capped"] is True                      # no room at all
-    assert (await _state(floor + 1))["capped"] is False                     # still fits
-    assert (await _state(2 * floor - 1, flagged=True))["capped"] is True    # refused, too little left
-    assert (await _state(min(5 * floor, 10_000), flagged=True))["capped"] is False  # cap raised since
+    assert (await _state(floor - 1))["capped"] is True
+    assert (await _state(floor + 1))["capped"] is False
+    assert (await _state(2 * floor - 1, flagged=True))["capped"] is True
+    assert (await _state(min(5 * floor, 10_000), flagged=True))["capped"] is False
     no_model = await llm_client.cap_state(_fresh_account(), "deepinfra")
     assert no_model["capped"] is False, no_model
 
     aid = _fresh_account()
     await _seed_account(aid, cap_cents=100)
     await _seed_items(aid, [94])
-    await _spend_today(aid, 10_000 - (floor - 1))   # spent < cap, yet nothing fits
+    await _spend_today(aid, 10_000 - (floor - 1))
     collected: list[int] = []
     orig = vault_frames.collect
 
@@ -934,8 +780,6 @@ async def case_capped_means_no_call_on_the_model_fits() -> None:
 
 
 async def case_escalation_cost_is_the_sum_of_both_attempts() -> None:
-    """A 30b refusal is paid for too. The sweep sums `cost_millicents`, so
-    returning only the 235b call's cost under-reported every escalated item."""
     aid = _fresh_account()
     await _seed_account(aid)
     await _seed_items(aid, [95])
@@ -965,10 +809,6 @@ async def case_escalation_cost_is_the_sum_of_both_attempts() -> None:
 
 
 async def case_escalation_failure_still_reports_the_paid_refusal() -> None:
-    """A 30b refusal is paid for even when the 235b retry never answers: the
-    cap trips (`capped`, and still NO row write — capped means try later) or
-    the provider errors (`error`). Both must carry the 30b cost, or the sweep's
-    sum under-reports exactly the items that escalated."""
     async def _one_frame(*_a, **_k):
         return vault_frames.Collected(["data:image/jpeg;base64,AAAA"], "ok")
 

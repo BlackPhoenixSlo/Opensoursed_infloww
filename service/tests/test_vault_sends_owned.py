@@ -1,29 +1,4 @@
 #!/usr/bin/env python3
-"""
-`POST /admin/vault/sends` + `/admin/vault/sends/backfill` take `account_id` in
-the BODY. `_account_isolation_middleware` reads only query/path, so the routes
-gate themselves with `assert_account_owned(body.account_id)`.
-
-  case_foreign_owner_is_refused:
-      owner A posting owner B's account_id → 403 on both routes, and zero
-      `vault_sends` rows written for B.
-  case_owner_writes_own_account:
-      owner A posting A's account_id → 200 on both routes, rows written.
-  case_anonymous_is_refused:
-      no session → 401 on both routes, nothing written. Pins the perimeter
-      (the general admin gate already 401s); not this fix.
-  case_wall_scan_takes_the_session_user_id:
-      `GET /admin/vault/wall-media` walks `/users/{id}/posts` with the
-      session's own `user_id` and makes zero `/users/me` calls.
-  case_wall_scan_without_a_usable_user_id_is_a_500:
-      a missing, empty, non-numeric, zero or negative `user_id` → the same 500
-      as the old missing `/users/me` id, and no posts read (never an empty wall).
-  case_fansly_wall_scan_stays_a_500:
-      a Fansly account (its shim's `user_id` is a digit string, its old
-      `/users/me` id a string) → today's 500, no `me`, no timeline read.
-
-Run: ./venv/bin/python service/tests/test_vault_sends_owned.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
@@ -40,7 +15,7 @@ import accounts as account_registry  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, User, UserAccount, VaultSend  # noqa: E402
 
-_harness.make_client()  # neutralises the startup spawns before `server` serves
+_harness.make_client()
 import server  # noqa: E402
 
 ACC_A, ACC_B = "acc_vs_a", "acc_vs_b"
@@ -94,6 +69,7 @@ def _backfill(c: TestClient, aid: str, msg: int):
         "items": [{"message_id": msg, "media_ids": [201, 202, 203]}]})
 
 
+# the isolation middleware reads only query/path, so these routes gate themselves on body.account_id
 def case_foreign_owner_is_refused() -> None:
     c = _login("owner_a")
     before = _rows(ACC_B)
@@ -111,7 +87,6 @@ def case_owner_writes_own_account() -> None:
     assert r.status_code == 200 and r.json() == {"ok": True, "inserted": 2}, r.text
     r = _backfill(c, ACC_A, 4)
     body = r.json() if r.status_code == 200 else {}
-    # Rows inserted: the fan's new history rides along (GET /admin/vault/fan-history's body).
     assert {k: body.get(k) for k in ("ok", "inserted", "skipped")} == {"ok": True, "inserted": 3, "skipped": 0} \
         and set(body["history"]["by_media"]) >= {"201", "202", "203"}, r.text
     assert _rows(ACC_A) == before + 5
@@ -127,7 +102,6 @@ def case_anonymous_is_refused() -> None:
 
 
 class _WallClient:
-    """A fake OF client for the wall scan: counts `me()` and records `user_posts` ids."""
 
     def __init__(self, user_id):
         self.user_id = user_id
@@ -175,7 +149,7 @@ def case_wall_scan_without_a_usable_user_id_is_a_500() -> None:
 
 def case_fansly_wall_scan_stays_a_500() -> None:
     c = _login("owner_a")
-    fake = _WallClient("123456789012345678")  # FanslyShimClient.user_id: str(session.account_id)
+    fake = _WallClient("123456789012345678")
     orig = account_registry.get_platform
     account_registry.get_platform = lambda aid: "fansly" if aid == ACC_A else orig(aid)
     try:

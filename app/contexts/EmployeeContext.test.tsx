@@ -1,10 +1,3 @@
-/**
- * EmployeeContext — who the session acts as, from the session alone (no "Who's chatting?" pick).
- *
- * An Owner session acts as the Agency's Owner row (`kind: "owner"`, `user_id` the owner's), read from the cached
- * roster on the first render; the roster is every row, so attribution resolves any historical id; and `hydrated`
- * waits for the roster so per-Employee storage never keys on a guess.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 
@@ -32,7 +25,6 @@ const RETIRED: Employee = { id: 27, display_name: "jackob", color: "#f59e0b", is
 
 type Ctx = ReturnType<typeof useEmployee>;
 
-/** Renders the provider over a pre-seeded cache and hands back the first and the latest context values. */
 function renderProvider(cached?: Employee[]) {
   const client = makeTestQueryClient();
   if (cached) client.setQueryData(["employees", "all"], { employees: cached });

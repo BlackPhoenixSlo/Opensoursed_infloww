@@ -1,24 +1,10 @@
-"""Vault Pro's part of the slop relay (lib/relay.py loads it: `OF` joins `_OfflineOF`'s bases, `wire` runs at
-the end of its `_wire`).
-
-OnlyFans' side of the duplicates hide (`POST /admin/vault-ai/duplicates/hide` -> `OFClient.hide_vault_media`,
-OF's `PUT /api2/v2/vault/media/hidden {"mediaIds": [...]}`) is faked only when a scenario writes
-`$DEMO_SHOTS_TMP/of-vault-pro.json` (`{}` is enough); without it the call re-raises the client build's error
-as before.
-
-  hide_vault_media(media_ids)   recorded per call (t, Creator, ids in order), answered {"success": true}
-                                (OF's answer body is a guess; the route reads none of it).
-
-  GET FAKE_PATH (/__slop/vault-pro/fake)  {hidden: [{t, account, media_ids}]}: what OnlyFans received, in order.
-"""
-
 import os
 import threading
 import time
 from pathlib import Path
 
-FAKE_PATH = "/__slop/vault-pro/fake"   # the scenario reads what OnlyFans received here
-_lock = threading.Lock()   # the route calls OF on a worker thread
+FAKE_PATH = "/__slop/vault-pro/fake"
+_lock = threading.Lock()
 _hidden: list[dict] = []
 
 

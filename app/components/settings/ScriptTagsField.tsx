@@ -2,11 +2,8 @@
 
 import { useState } from "react";
 
-/** The tag name modal's limit (#81). */
 export const SCRIPT_TAG_MAX = 32;
 
-/** The script editor's "Tags" (#74): several, "Select or create a tag". Enter or a comma adds the typed name; the
- *  list offers the Creator's existing tags. */
 export function ScriptTagsField({
   tags, options, onChange,
 }: {
@@ -44,7 +41,6 @@ export function ScriptTagsField({
         placeholder={tags.length ? "" : "Select or create a tag"}
         onChange={(e) => {
           const v = e.target.value;
-          // Picking from the list fills the whole name at once: take it as chosen.
           if (options.includes(v)) add(v);
           else setText(v);
         }}

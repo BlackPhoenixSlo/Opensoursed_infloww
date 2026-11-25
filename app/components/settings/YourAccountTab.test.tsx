@@ -1,10 +1,3 @@
-/**
- * YourAccountTab — the Your Account Panel (docs/spec/settings-tabs/phase-01-account-preferences.md).
- *
- * Rendered inside `UserProvider`, with the relay mocked at `fetch` by URL: the
- * same stub serves `/auth/me` (the signed-in username) and the `account`
- * Settings blob, so every save assertion is an assertion about the wire.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
@@ -13,14 +6,12 @@ import { UserProvider } from "@/contexts/UserContext";
 import YourAccountTab from "@/components/settings/YourAccountTab";
 import { avatarDataUrl } from "@/lib/creatorProfiles";
 
-// jsdom has no canvas: the picture's resize is stubbed to a fixed data URL.
 const PIC = "data:image/jpeg;base64,AAAA";
 vi.mock("@/lib/creatorProfiles", () => ({ avatarDataUrl: vi.fn(async () => PIC) }));
 
 type Call = { method: string; url: string; body: unknown };
 
 let fetchMock: ReturnType<typeof vi.fn>;
-/** What GET /admin/settings/account answers. */
 let getReply: () => Response;
 
 function calls(): Call[] {
@@ -117,7 +108,6 @@ describe("YourAccountTab", () => {
   it("with an empty stored blob, saves exactly {agency_name} and shows its initials", async () => {
     mount();
     await waitFor(() => expect(save()).toBeEnabled());
-    // Infloww's Save sits in the Panel header row, not after the body.
     expect(save().closest('[data-settings="panel-header"]')).not.toBeNull();
     fireEvent.change(screen.getByLabelText("Agency Name"), { target: { value: "Synthetic Agency" } });
     expect(screen.getByRole("img", { name: "Agency picture" })).toHaveTextContent(/^SA$/);

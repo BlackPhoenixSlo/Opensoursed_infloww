@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * AgencyKeysCard — Settings → AI keys, YOUR agency's LLM keys: the provider fields only. The edit state
- * (`useKeyDraft`) and the Save live in AiKeysTab, whose Panel header carries Save like every Settings tab.
- *
- * Every OF account you own bills the key you paste here, so no other agency on
- * this server can spend on your credential and you cannot spend on theirs. That
- * is the whole reason this card is separate from KeysCard (Creators → Inflowwww
- * extras, founder only), which holds the SERVER's own house keys.
- *
- * The edit rules that keep a stored key safe (placeholder-not-value, blank
- * means unchanged, send only what changed) live in useKeyDraft, shared with
- * that card.
- */
 
 import { useTenantKeys } from "@/hooks/useTenantKeys";
 import { LABELS, clearConfirm } from "@/components/setup/providerFields";
@@ -24,9 +11,7 @@ import { FieldInput } from "@/components/settings/SettingsPanel";
 import { ifConfirm } from "@/components/ui/ifConfirm";
 
 export default function AgencyKeysCard({ keys, pending }: {
-  /** The tab's draft: the typed fields, and `clear` for one stored key. */
   keys: Pick<KeyDraft, "draft" | "setField" | "clear">;
-  /** A save or clear is in flight. */
   pending: boolean;
 }) {
   const { data, isLoading, error } = useTenantKeys();
@@ -118,8 +103,7 @@ export default function AgencyKeysCard({ keys, pending }: {
                 type="button"
                 disabled={pending}
                 onClick={async () => {
-                  // One click here can stop every automation on every account this
-                  // owner runs — the calls fail closed with no key. Worth a beat.
+                  // Clearing a key fails every automation on the owner's accounts closed.
                   if (await ifConfirm(clearConfirm(name), { danger: true })) {
                     void clear(name);
                   }

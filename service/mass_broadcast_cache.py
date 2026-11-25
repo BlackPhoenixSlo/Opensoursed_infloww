@@ -1,18 +1,3 @@
-"""
-mass_broadcast_cache.py — local SQLite cache for OF's mass-message history.
-
-Backs the /settings → Mass messages tab. The feed
-`GET /users/me/stats/messages/group` returns broadcasts already sent;
-each row carries the queue id needed to cancel/unsend the broadcast
-from every recipient (no edit window — `unsendSeconds=1000000`).
-
-The tab fans out across every active account, so reading direct from
-OF on every open is slow + flickers. We persist the listing to
-`mass_broadcast_cache` and read off SQLite for the snappy first render;
-the user-initiated Refresh button (and the cancel mutation) reuse the
-upstream-fetch path to update the cache, and the tab's next open refetches
-after a day or once a `mass_runs` row is newer than the cache (`is_stale`).
-"""
 from __future__ import annotations
 
 import json
@@ -28,25 +13,15 @@ from db.models import MassBroadcastCache
 
 log = logging.getLogger("of-relay.mass_broadcast_cache")
 
-# Safety-net TTL — the cache is normally kept fresh by the manual Refresh
-# button + the cancel mutation. Callers can use `is_stale()` to decide
-# whether to auto-refresh from upstream before serving cached rows so
-# the UI doesn't quietly drift if no-one clicks Refresh for days.
 TTL_SECONDS = 24 * 60 * 60
 
 
 def _parse_of_date(s: str | None) -> datetime | None:
-    """Parse OF's ISO-8601-with-offset (`2026-05-23T17:50:13+00:00`) into a
-    UTC-naive datetime. Returns None on missing / unparseable input — we
-    store as nullable since OF sometimes omits the field."""
     if not s:
         return None
     try:
-        # Python ≥3.11 handles +HH:MM directly. Normalize to UTC-naive — both
-        # readers assume UTC (`_row_to_dict` re-stamps `+00:00`; the unsend sweep
-        # compares against `datetime.utcnow()`), so `astimezone(tz=None)` (host-LOCAL)
-        # would skew `sent_at` by the server's offset on any non-UTC box.
         dt = datetime.fromisoformat(s)
+        # UTC-naive: readers assume UTC; host-local astimezone() would skew sent_at on non-UTC boxes.
         if dt.tzinfo is not None:
             dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
         return dt
@@ -55,8 +30,6 @@ def _parse_of_date(s: str | None) -> datetime | None:
 
 
 def _row_to_dict(row: MassBroadcastCache) -> dict[str, Any]:
-    """Project a DB row back into the JSON shape the OF feed uses, so the
-    frontend doesn't have to know about two payload shapes."""
     try:
         media = json.loads(row.media_json) if row.media_json else []
     except (ValueError, TypeError):
@@ -87,15 +60,6 @@ def _row_to_dict(row: MassBroadcastCache) -> dict[str, Any]:
 
 
 async def is_stale(account_id: str, ttl_seconds: int = TTL_SECONDS) -> bool:
-    """True if the freshest cached row for this account is older than the
-    TTL or than its latest `mass_runs` row — or there are no rows at all.
-    Callers (e.g. /admin/mass-messages) use this to decide whether to fall
-    back to an upstream refresh before serving from cache.
-
-    Every mass send of ours writes a run: the composer routes and the
-    send_mass_message automation mint one before the send (`started_at`),
-    and a close stamps OF's
-    `sent_at`. A cache fetched before either misses that broadcast."""
     from db.models import MassRun  # local: avoid import cycle
     cutoff = datetime.utcnow() - timedelta(seconds=ttl_seconds)
     async with get_session() as s:
@@ -120,8 +84,6 @@ async def is_stale(account_id: str, ttl_seconds: int = TTL_SECONDS) -> bool:
 
 async def list_for_account(account_id: str, *, since: datetime | None = None,
                            limit: int = 100) -> list[dict[str, Any]]:
-    """Read cached rows for one account, newest broadcast first. `since`
-    filters by `sent_at >= cutoff` (typically utcnow - daysBack)."""
     async with get_session() as s:
         stmt = select(MassBroadcastCache).where(
             MassBroadcastCache.account_id == account_id
@@ -131,14 +93,11 @@ async def list_for_account(account_id: str, *, since: datetime | None = None,
         stmt = stmt.order_by(MassBroadcastCache.sent_at.desc().nullslast()).limit(limit)
         rows = (await s.execute(stmt)).scalars().all()
 
-        # Attribution: join mass_runs on (account_id, queue_id) so the Mass
-        # Messages tab can show WHICH automation (+ funnel) produced each cached
-        # broadcast. NULL automation = a manual UI broadcast or a pre-0032 run.
         attribution: dict[int, dict[str, Any]] = {}
         run_to_queue: dict[int, int] = {}
         queue_ids = [r.queue_id for r in rows if r.queue_id is not None]
         if queue_ids:
-            from db.models import MassMessageFunnel, MassRun  # local: avoid import cycle
+            from db.models import MassMessageFunnel, MassRun
             run_rows = (await s.execute(
                 select(
                     MassRun.id,
@@ -156,8 +115,7 @@ async def list_for_account(account_id: str, *, since: datetime | None = None,
                     "funnelName": rr.funnel_name,
                 }
                 run_to_queue[int(rr.id)] = int(rr.queue_id)
-        # Purchased / Earnings: the Message dashboard's own count, by queue.
-        from messages import local_mass_sales  # local: messages is a heavy import
+        from messages import local_mass_sales
         sent_ats = [r.sent_at for r in rows if r.sent_at is not None]
         sales = await local_mass_sales(
             s, account_id, runs=run_to_queue, queues={int(q): int(q) for q in queue_ids},
@@ -178,9 +136,6 @@ async def list_for_account(account_id: str, *, since: datetime | None = None,
 
 
 async def upsert_many(account_id: str, items: list[dict[str, Any]]) -> int:
-    """Write through OF response items. Returns the count of rows
-    touched. Empty `items` is a no-op (we don't wipe existing rows —
-    OF only ever returns a slice of the timeline)."""
     if not items:
         return 0
     now = datetime.utcnow()
@@ -222,13 +177,9 @@ async def upsert_many(account_id: str, items: list[dict[str, Any]]) -> int:
                 "fetched_at": now,
             }
             stmt = sqlite_insert(MassBroadcastCache).values(**values)
-            # A cancel is terminal — a broadcast never un-cancels. Keep
-            # `is_canceled` monotonic (existing OR incoming) and force
-            # `can_unsend` off once canceled, so a lagging OF feed that still
-            # reports `isCanceled:false` for a broadcast we already unsent can't
-            # resurrect the cache row and make the unsend sweep re-cancel it.
             excl = stmt.excluded
             set_ = {k: v for k, v in values.items() if k not in ("account_id", "queue_id")}
+            # A cancel is terminal: a lagging OF feed must not resurrect the row and make the unsend sweep re-cancel it.
             set_["is_canceled"] = sa_or(MassBroadcastCache.is_canceled, excl.is_canceled)
             set_["can_unsend"] = sa_and(
                 excl.can_unsend,
@@ -244,9 +195,6 @@ async def upsert_many(account_id: str, items: list[dict[str, Any]]) -> int:
 
 
 async def mark_canceled(account_id: str, queue_id: int) -> bool:
-    """Flip `is_canceled=True` + `can_unsend=False` for one broadcast.
-    Called after the cancel mutation succeeds upstream so the UI's next
-    read sees the new state without waiting for a refresh."""
     async with get_session() as s:
         result = await s.execute(
             sa_update(MassBroadcastCache)

@@ -1,16 +1,7 @@
 #!/usr/bin/env python3
-"""GET /admin/vault-ai/collect/status names the store being warmed.
-
-REGRESSION (wave6 B12): `_run_collect` writes `phase="thumbs"` on the run row once
-before warming three stores (thumbs, images, posters), so the status route said
-"thumbs" while the full-frame store warmed and the counter visibly reset. The
-live warm phase now wins while a warm is in flight; the row's phase otherwise.
-
-Run: ./venv/bin/python service/tests/test_vault_collect_status.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 from datetime import datetime  # noqa: E402
@@ -42,14 +33,11 @@ async def case_status_reports_the_store_being_warmed():
     assert run["phase"] == "images", run
     assert (run["warmed"], run["warm_total"]) == (10, 711), run
 
-    # No warm in flight → the row's own phase.
     run = (await api.collect_status(account_id=AID))["run"]
     assert run["phase"] == "thumbs", run
 
 
 def case_paused_reads_paused_only_while_live():
-    """A paused Collect waiting on the operator holds manual_running: "paused". The
-    same row after a restart (nobody holds it) is "interrupted", like a running one."""
     row = VaultCacheRun(account_id=AID, status="paused", phase="paused")
     vault_runs.manual_running.add(AID)
     try:

@@ -3,7 +3,6 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-// The reload itself (hooks/vaultRefresh): each call returns a promise the test settles.
 const reloads: { accountId: string; resolve: () => void }[] = [];
 vi.mock("@/hooks/vaultRefresh", () => ({
   reloadBrokenThumbs: vi.fn((_qc: unknown, accountId: string) =>
@@ -38,22 +37,16 @@ describe("thumbRefreshReducer", () => {
     ["N broken tiles, one fire: one reload's nonce", [broken("a"), broken("b"), broken("c"), fire()],
       { nonce: 1, pending: [], nonces: { a: 1, b: 1, c: 1 } }],
     ["the same tile twice counts once", [broken("a"), broken("a")], { pending: ["a"] }],
-    // Review #2: a tile retried by an earlier reload keeps its nonce when a later one answers other tiles.
     ["retried tile, then another reload: the first keeps its nonce",
       [broken("a"), fire(), broken("b"), fire()], { nonce: 2, nonces: { a: 1, b: 2 } }],
-    // R3-1: a tile broken for good is retried once, not on every cooldown.
-    // R4-1: ... and remembers the src that failed, for its placeholder.
     ["a tile broken again after its retry is not retried again",
       [broken("a"), fire(), broken("a", "/t/a?_r=1")], { pending: [], nonces: { a: 1 }, failed: { a: "/t/a?_r=1" } }],
     ["... and a later reload of other tiles leaves it as is",
       [broken("a"), fire(), broken("a", "/t/a?_r=1"), broken("b"), fire()],
       { nonce: 2, nonces: { a: 1, b: 2 }, failed: { a: "/t/a?_r=1" } }],
-    // R2-2: a reload of another Creator settling late answers none of this grid's tiles.
     ["a fire for another scope is ignored", [broken("a"), fire("B")], { nonce: 0, pending: ["a"], nonces: {} }],
-    // F7: given up on in an earlier mount (a reopened picker): no reload again.
     ["given up in an earlier mount: its placeholder, no reload",
       [{ type: "broken", id: "a", src: "/t/a", gaveUp: true }], { pending: [], nonces: {}, failed: { a: "/t/a" } }],
-    // F8: the user's Refresh is the retry of every tile waiting or given up on.
     ["refreshed: waiting and given-up tiles on a new nonce, give-ups dropped",
       [broken("a"), fire(), broken("a", "/t/a?_r=1"), broken("b"), refreshed()],
       { nonce: 2, pending: [], nonces: { a: 2, b: 2 }, failed: {} }],
@@ -77,11 +70,8 @@ describe("thumbSrc", () => {
     ["never broken: as is", [], base],
     ["broken, waiting: the placeholder", [broken("2")], ""],
     ["retried: with its nonce", [broken("2"), fire()], `${base}&_r=1`],
-    // Review #2: the old code fell back to nonce 0 here, the src went back to the one that failed.
     ["retried, then another tile's reload: still its nonce", [broken("2"), fire(), broken("9"), fire()], `${base}&_r=1`],
-    // R4-1: not the browser's broken-image icon.
     ["retried, broken again: the placeholder", [broken("2", base), fire(), broken("2", `${base}&_r=1`)], ""],
-    // F8: the mirror's thumb url is stable; after the Refresh it is asked for again on a new nonce.
     ["given up, then the user's Refresh: on its new nonce",
       [broken("2", base), fire(), broken("2", `${base}&_r=1`), refreshed()], `${base}&_r=2`],
   ])("%s", (_n, acts, want) => expect(thumbSrc(run(acts), "2", base)).toBe(want));
@@ -94,11 +84,9 @@ describe("thumbSrc", () => {
   it("no picture stays no picture", () => expect(thumbSrc(run([broken("2")]), "2", "")).toBe(""));
 });
 
-// The cooldown is module state that outlives every grid (and test): each test takes fresh Creator ids.
 let creators = 0;
 const creator = () => `creator-${++creators}`;
 
-// R2-1: the cooldown's one check.
 describe("thumbCooldown.claim", () => {
   it("one claim per cooldown per Creator; another Creator is free", () => {
     const [a, b] = [creator(), creator()];
@@ -118,7 +106,6 @@ describe("thumbCooldown.claim", () => {
   });
 });
 
-// Review #12: a tile broken during the cooldown is retried when it ends, not never.
 describe("fireDelay", () => {
   it.each<[string, number | null, number, number]>([
     ["never reloaded: the debounce", null, 1000, DEBOUNCE_MS],
@@ -137,7 +124,6 @@ describe("retrySrc", () => {
   ])("%s @%i", (src, nonce, want) => expect(retrySrc(src, nonce)).toBe(want));
 });
 
-// Review #15 / R2-2: the hook's real timer path (fake timers, the reload mocked at its module boundary).
 describe("useThumbAutoRefresh", () => {
   const SRC = "/img?u=x";
   let client: QueryClient;
@@ -173,7 +159,7 @@ describe("useThumbAutoRefresh", () => {
     expect(thumb(g, "m1")).toBe("");
     await advance(DEBOUNCE_MS);
     expect(reloads).toHaveLength(1);
-    expect(thumb(g, "m1")).toBe("");   // reload in flight: still the placeholder
+    expect(thumb(g, "m1")).toBe("");
     await settle(0);
     expect(thumb(g, "m1")).toBe(`${SRC}&_r=1`);
   });
@@ -188,7 +174,7 @@ describe("useThumbAutoRefresh", () => {
     await settle(0);
     await advance(COOLDOWN_MS - 1);
     expect(reloads).toHaveLength(1);
-    await advance(1);   // the second grid's tile, still broken, is retried when the cooldown ends
+    await advance(1);
     expect(reloads).toHaveLength(2);
   });
 
@@ -216,27 +202,25 @@ describe("useThumbAutoRefresh", () => {
     expect(reloads[0].accountId).toBe(a);
     g.rerender({ id: b });
     broke(g, "b1");
-    await settle(0);   // A's reload lands late
+    await settle(0);
     expect(thumb(g, "b1")).toBe("");
-    await advance(DEBOUNCE_MS);   // B's own reload
+    await advance(DEBOUNCE_MS);
     expect(reloads.map((x) => x.accountId)).toEqual([a, b]);
     await settle(1);
     expect(thumb(g, "b1")).toBe(`${SRC}&_r=1`);
   });
 
-  // R3-1: a thumb broken for good costs one reload, not one per cooldown for as long as the grid is open.
   it("a tile broken again after its retry triggers no further reload", async () => {
     const g = grid(creator());
     broke(g, "m1");
     await advance(DEBOUNCE_MS);
     await settle(0);
-    broke(g, "m1");   // its retried src, `${SRC}&_r=1`
+    broke(g, "m1");
     await advance(2 * COOLDOWN_MS);
     expect(reloads).toHaveLength(1);
-    expect(thumb(g, "m1")).toBe("");   // R4-1: its placeholder, not a broken image
+    expect(thumb(g, "m1")).toBe("");
   });
 
-  // F7: a give-up survives a remount (a reopened picker), so it costs no further relay vault-cache drop.
   it("a tile given up on stays given up after a remount: no reload", async () => {
     const a = creator();
     const g = grid(a);
@@ -255,7 +239,6 @@ describe("useThumbAutoRefresh", () => {
     expect(reloads).toHaveLength(1);
   });
 
-  // F8: the user's Refresh draws a given-up tile again, once; the give-up is forgotten.
   it("refreshed: a given-up tile is asked for again, and given up again on failure without a reload", async () => {
     const a = creator();
     const g = grid(a);

@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * OnlineTargetingPanel — the Mass Online live-targeting fields
- * (MassMessageComposer mode "online"). These resolve server-side:
- * online_only + the chosen audience list = fans online now; unread / recent
- * ADD fans; the excludes drop recently-touched fans; auto-unsend schedules a
- * delayed DELETE. Pure view over the form's string fields (blank = not
- * applied; massMessageReducer `buildMassBody` forwards positive numbers only).
- */
 
 import { IfHelp, IfInput, IfLearn, IfSwitch } from "@/components/ui/infloww";
 import { ExtraTag } from "@/components/ui/primitives";
@@ -27,9 +19,7 @@ export function OnlineTargetingPanel({
 }: {
   form: Pick<MassForm, OnlineField>;
   set: <K extends OnlineField>(k: K) => (v: MassForm[K]) => void;
-  /** OnlyFans' online subscribers count label, null while unknown. */
   onlineCount: string | null;
-  /** Tag Auto-unsend as an "Inflowwww extra" (MassMessageComposer `labelExtras`). */
   labelExtras: boolean;
   isScheduled: boolean;
 }) {
@@ -37,8 +27,6 @@ export function OnlineTargetingPanel({
     onlineOnly, unreadLimit, recentChatHours, recentChatLimit, excludeRepliedHours, excludeInboundHours,
     unsendAfterHours, minTotalSpent, minTipped, subscribedOverDays, expiredOverDays,
   } = form;
-  // Thresholds (Infloww's Total spent / Tipped over / Subscribed over / Expired
-  // over). Any one set makes the relay send to the qualifying fans' ids only.
   const hasThresholds = [minTotalSpent, minTipped, subscribedOverDays, expiredOverDays]
     .some((v) => Number(v) > 0);
 
@@ -139,8 +127,6 @@ export function OnlineTargetingPanel({
   );
 }
 
-/** Compact labelled numeric input for the Online-targeting panel. Blank = the
- *  filter isn't applied; the parent only forwards positive numbers. */
 function NumField({
   label, suffix, value, onChange, placeholder, extra = false,
 }: {
@@ -149,7 +135,6 @@ function NumField({
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
-  /** Carries the "Inflowwww extra" tag and tooltip. */
   extra?: boolean;
 }) {
   return (

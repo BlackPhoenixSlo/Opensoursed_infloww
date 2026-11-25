@@ -1,39 +1,10 @@
 #!/usr/bin/env bash
 #
-# deploy-here.sh — run THIS ON the VPS itself (e.g. Hostinger's browser terminal).
-# No laptop, no SSH. It installs Docker, clones/updates the repo, brings the
-# stack up, and prints how to reach it. By default that's plain http on this
-# server's own IP — zero hassle, no domain, no DNS. Pass DOMAIN= to get a real
-# https url instead (see the modes below).
 #
-# Zero secrets, zero proxies needed for a brand-new account:
-#   • session secrets are generated automatically on first run,
-#   • no proxy is required for one account (it uses this server's own IP —
-#     proxies only matter once you host MULTIPLE OF accounts here),
-#   • the DeepSeek API key is OPTIONAL — the dashboard boots and works without
-#     it. Mind WHERE it goes, though: the moment you sign in and capture an OF
-#     account, that account is OWNED by your login, and llm_client bills an
-#     owned account to the key its owner pasted at Setup → Your AI keys. The
-#     .env key below is the HOUSE key and is spent only on accounts nobody
-#     owns — so .env alone does NOT switch AI auto-messaging on.
 #
-# One-liner (paste into the Hostinger / VPS terminal — runs start to finish, no
-# questions asked):
-#   bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/Opensoursed_infloww/main/deploy/deploy-here.sh)
 #
-# Modes (same one-liner, just prefix an env var). Re-run anytime to switch — it's
-# idempotent and keeps your .env, database, and sessions:
 #
-#   (default)                      → plain http on this server's IP   http://<ip>:3000
-#   PORT=8080  ...                 → same, on a different host port
-#   DOMAIN=you.duckdns.org ...     → real https via Traefik (free DuckDNS subdomain)
-#   DOMAIN=app.yourdomain.com ...  → real https via Traefik (your own domain)
-#   TUNNEL=1  ...                  → throwaway https url, no DNS (random, changes on restart)
-#   DEEPSEEK_API_KEY=sk-... ...    → bake in the HOUSE AI key (optional; owned accounts
-#                                    read Setup → Your AI keys instead — see above)
 #
-# A DOMAIN needs Traefik already on the box — every Hostinger *n8n* template
-# ships it. Deploy your own fork by setting REPO_URL=.
 
 set -euo pipefail
 
@@ -47,14 +18,12 @@ die() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 gen_secret() { openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
-# ---------- 1. Docker ----------
 if ! command -v docker >/dev/null; then
   say "installing Docker"
   curl -fsSL https://get.docker.com | $SUDO sh
 fi
 docker compose version >/dev/null 2>&1 || die "docker compose plugin missing — install Docker Engine 20+ with the compose plugin"
 
-# ---------- 2. git + clone/pull ----------
 command -v git >/dev/null || { say "installing git"; ($SUDO apt-get update -y && $SUDO apt-get install -y git) 2>/dev/null || $SUDO yum install -y git; }
 if [ -d "$DIR/.git" ]; then
   say "updating $DIR"
@@ -65,13 +34,8 @@ else
 fi
 cd "$DIR"
 
-# ---------- 3. bind-mount targets ----------
 [ -f service/proxies.json ] || echo '{"proxies":[]}' > service/proxies.json
 mkdir -p service/data service/sessions service/storyboard_cache
-# The DB moved from service/chatterly.db (a file mount) to service/data/ (a
-# directory mount, so its -wal/-shm are on the host). An install from before
-# the move: checkpoint and stop the relay, move the DB, carry any WAL the old
-# container still holds (the relay replays it on start).
 if [ -s service/chatterly.db ] && [ -e service/data/chatterly.db ]; then
   die "both service/chatterly.db and service/data/chatterly.db exist: keep the right one, move the other out of the way, re-run"
 fi
@@ -83,6 +47,7 @@ if [ -s service/chatterly.db ]; then
       || echo "  relay not running: no checkpoint"
     docker compose stop openinflowwww-relay
   fi
+  # carry any WAL the old container still holds (relay replays it on start)
   rm -f service/data/chatterly.db-wal service/data/chatterly.db-shm
   mv service/chatterly.db service/data/chatterly.db && rm -f service/chatterly.db-shm service/chatterly.db-wal
   if [ -n "$cid" ] && docker cp "$cid:/app/service/chatterly.db-wal" service/data/chatterly.db-wal 2>/dev/null; then
@@ -90,42 +55,27 @@ if [ -s service/chatterly.db ]; then
   fi
 fi
 
-# ---------- 4. .env (idempotent — keep existing keys, mint session secrets once) ----------
-# No secrets required: session secrets are generated, the share gate is off
-# (friend-auth is the only gate), and the DeepSeek key is left blank unless you
-# passed one. Nothing here blocks the boot.
 say "writing .env (secrets stay on this box, chmod 600)"
 touch .env; chmod 600 .env
 upsert() { local k="$1" v="$2"; [ -z "$v" ] && return 0
   if grep -q "^$k=" .env; then sed -i "s|^$k=.*|$k=$v|" .env; else printf '%s=%s\n' "$k" "$v" >> .env; fi; }
 grep -q '^SESSION_SECRET=.\+'         .env || upsert SESSION_SECRET "$(gen_secret)"
 grep -q '^CHATTER_SESSION_SECRET=.\+' .env || upsert CHATTER_SESSION_SECRET "$(gen_secret)"
-grep -q '^SHARE_TOKEN='               .env || echo 'SHARE_TOKEN=' >> .env   # empty = friend-auth only
-# Web Push VAPID key (service/push_send.py): none made here. The relay writes
-# service/secrets/vapid_private.pem on first start (bind-mounted, in ae-backup); never rotate it.
-# The VAPID subject needs a real host (Apple refuses localhost); without one push stays off.
+# empty SHARE_TOKEN = friend-auth only
+grep -q '^SHARE_TOKEN='               .env || echo 'SHARE_TOKEN=' >> .env
+# VAPID key is minted by the relay on first start (service/secrets); never rotate it. Subject needs a real host (Apple refuses localhost)
 if [ -n "${DOMAIN:-}" ] && ! grep -q '^VAPID_SUBJECT=.\+' .env; then upsert VAPID_SUBJECT "mailto:admin@$DOMAIN"; fi
-# DeepSeek key is optional — only bake it in if you passed one inline. Otherwise
-# leave a blank placeholder. It is the HOUSE key (ownerless accounts only); the
-# account you capture is owned by your login and reads Setup → Your AI keys.
 [ -n "${DEEPSEEK_API_KEY:-}" ] && upsert DEEPSEEK_API_KEY "$DEEPSEEK_API_KEY"
 grep -q '^DEEPSEEK_API_KEY=' .env || echo 'DEEPSEEK_API_KEY=' >> .env
 echo "  .env keys: $(grep -oE '^[A-Z_]+' .env | tr '\n' ' ')"
 grep -q '^DEEPSEEK_API_KEY=.\+' .env || echo "  note: no DeepSeek key yet — the dashboard works without one. Switch AI on at Setup → Your AI keys once your account is captured (this .env key covers only accounts with no owner)."
 
-# ---------- 5. choose exposure: stable Traefik route (preferred) or quick tunnel ----------
 DOMAIN="${DOMAIN:-}"
 
-# The base compose attaches `openinflowwww-app` to the external `n8n_default` network so a
-# host Traefik can reach it. On a box without an n8n stack that network is
-# absent and `compose up` would refuse to start — create an empty stand-in so
-# the bare-VPS tunnel path still boots. No-op if it already exists.
+# base compose attaches the app to external n8n_default; absent on a bare box, so create a stand-in or compose refuses to start
 docker network inspect n8n_default >/dev/null 2>&1 || docker network create n8n_default >/dev/null 2>&1 || true
 
 if [ -n "$DOMAIN" ]; then
-  # Find the running Traefik, the docker network it's on, and its cert-resolver
-  # name — so we adapt to the box instead of hard-coding template specifics.
-  # Falls back to the Hostinger n8n template's defaults.
   TNAME=$(docker ps --format '{{.Names}} {{.Image}}' | awk 'tolower($2) ~ /traefik/ {print $1; exit}')
   [ -z "$TNAME" ] && die "DOMAIN set but no Traefik container is running on this box. Omit DOMAIN to use the Cloudflare tunnel, or start Traefik first."
   TNET=$(docker inspect "$TNAME" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' 2>/dev/null | grep -vE '^bridge$|^$' | head -1)
@@ -133,8 +83,6 @@ if [ -n "$DOMAIN" ]; then
   CR=$(docker inspect "$TNAME" --format '{{json .Args}}' 2>/dev/null | grep -oE 'certificatesresolvers\.[A-Za-z0-9_-]+' | head -1 | cut -d. -f2)
   CR="${CR:-mytlschallenge}"
   say "routing the dashboard through Traefik '$TNAME' on https://$DOMAIN (network=$TNET, certresolver=$CR)"
-  # Auto-merged override: point the router at YOUR host + attach app to the
-  # Traefik network. Regenerated every run (idempotent).
   cat > docker-compose.override.yml <<YAML
 services:
   openinflowwww-app:
@@ -189,10 +137,6 @@ DONE
   exit 0
 fi
 
-# ---------- 5b. opt-in: Cloudflare quick tunnel (TUNNEL=1) ----------
-# Throwaway https url, no DNS — handy for a quick demo. Disable the app's
-# Traefik router so a host Traefik doesn't also try to serve the placeholder
-# host from the base compose.
 if [ "${TUNNEL:-}" = "1" ]; then
   say "TUNNEL=1 → Cloudflare quick tunnel (random https url, changes on every restart)"
   cat > docker-compose.override.yml <<'YAML'
@@ -229,17 +173,10 @@ DONE
   exit 0
 fi
 
-# ---------- 5c. default: plain http on this server's IP (zero hassle) ----------
-# The simplest path that just works: publish the dashboard on a host port and
-# print http://<this-server-ip>:<port>. No DNS, no domain, stable, instant.
-# Trade-off: NO TLS — the login/session token travels in clear text, so treat
-# this as quick-start and upgrade to https (footer) once it's working.
 PORT="${PORT:-3000}"
 IP=$(curl -fsS https://api.ipify.org 2>/dev/null || curl -fsS https://ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')
 IP="${IP:-<this-server-ip>}"
 say "exposing the dashboard on http://$IP:$PORT (plain http — see footer to add https)"
-# Disable the placeholder Traefik router and publish the port. (compose merges
-# this with the base 127.0.0.1 bind, adding a public one.)
 cat > docker-compose.override.yml <<YAML
 services:
   openinflowwww-app:

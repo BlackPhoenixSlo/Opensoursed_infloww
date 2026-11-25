@@ -106,7 +106,6 @@ def main() -> int:
         for s in ser:
             job(s)
     except KeyboardInterrupt:
-        # scripts run in their own sessions: Ctrl-C must kill them.
         ex.shutdown(wait=False, cancel_futures=True)
         for p in list(_LIVE):
             try:

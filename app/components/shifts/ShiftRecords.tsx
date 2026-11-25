@@ -1,23 +1,5 @@
 "use client";
 
-/**
- * Shift history "By shift" (roadmap W6 6.6; Infloww's Shift records): one row per worked shift, the Agency's Clock
- * events over the viewed week (`GET /admin/shifts/records`), newest clock-in first, with its Employee, Creator ("All
- * creators" for the top bar's agency-wide clock), clock in and out in the Agency's zone, worked hours, and its Sales
- * and Recorded earnings: the sales credited to its Employee inside its time on the Creator, the Timesheet's rule. The
- * page owns the query, so the tab bar's "Export" writes these rows (`recordHeads`, `recordCells`).
- *
- * Each row: "Edit" (the Owner edit, Employee reports' `RecordEditor`), "Delete" (`DELETE
- * /admin/shifts/clock-events/{id}` after a confirm) and "Reassign sales" (the batch reassign with `clock_event_id`:
- * every sale of that shift to another Employee or "No one", in one call). A sale the shift shares with other
- * Employees (Shift schedule's split) is left as it is, so their shares stay theirs, and the row says how many.
- *
- * Infloww's chatting statistics (Messages sent, PPVs, Keystrokes...) are not here: nothing records keystrokes, and
- * the others are Employee reports'.
- *
- * ASSUMPTION: Delete confirms with the browser's `window.confirm`, as a one-off Shift's delete does
- * (ShiftScopeDialog). Rung 3. Overturned by a house confirm dialog.
- */
 
 import { useState } from "react";
 import { useQueryClient, type UseQueryResult } from "@tanstack/react-query";
@@ -38,16 +20,13 @@ const DELETE_CONFIRM = "Delete this shift record? Its time leaves the Shift hist
 
 export interface RecordNames {
   employee: (id: number | null) => string;
-  /** null is the agency-wide clock. */
   creator: (id: string | null) => string;
 }
 
-/** The table's head cells; the Export CSV writes the same columns. */
 export const recordHeads = (tz: string) => [
   "Employee", "Creator", `Clock in (${tz})`, `Clock out (${tz})`, "Worked hours", "Sales", "Recorded earnings",
 ];
 
-/** One record as the table prints it; the Export passes `fmtPrice` so the CSV keeps the cents. */
 export const recordCells = (r: ShiftRecord, tz: string, names: RecordNames, money: (cents: number) => string = fmtCents) => [
   names.employee(r.employee_id), names.creator(r.account_id), clockStamp(r.in_utc, tz),
   r.out_utc ? clockStamp(r.out_utc, tz) : "Clocked in", r.minutes == null ? "-" : fmtHours(r.minutes), r.sales,
@@ -58,7 +37,6 @@ export default function ShiftRecords({ records, tz, names, employees }: {
   records: UseQueryResult<{ records: ShiftRecord[] }>;
   tz: string;
   names: RecordNames;
-  /** The Reassign sales picker's Employees. */
   employees: { id: number; label: string }[];
 }) {
   const rows = records.data?.records ?? [];
@@ -145,7 +123,6 @@ function RecordRow({ record: r, tz, names, employees }: {
 const splitNote = (n: number) =>
   `${n} split sale${n === 1 ? " was" : "s were"} left unchanged: shared with other employees on the shift.`;
 
-/** Every sale of one shift to another Employee or "No one"; `onDone` gets how many split sales were left. */
 function ReassignSales({ clockEventId, employees, onDone }: {
   clockEventId: number; employees: { id: number; label: string }[]; onDone: (skippedSplit: number) => void;
 }) {

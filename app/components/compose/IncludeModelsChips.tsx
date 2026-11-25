@@ -1,28 +1,22 @@
 "use client";
 
-import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
 import { IfHelp } from "@/components/ui/infloww";
+import type { AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { AccountPicker } from "./AccountPicker";
 
-/** The composers' scope block (Mass + Post): the all-models switch with its
- *  "(n/m included)" count, then either the text-only note and the chip strip
- *  over the shared include set (hooks/useAllModelsInclude — click a chip to
- *  drop / re-add a model from this broadcast and the other composers'), or
- *  the one-account AccountPicker. The switch is disabled while the content is
- *  locked (compose/fanOut `fanOutLocked`). */
 export function IncludeModelsChips({
-  noun, allModels, locked, onAllModels, accountId, onAccount,
+  noun, accounts, allModels, locked, onAllModels, accountId, onAccount,
 }: {
   noun: "broadcast" | "post";
+  accounts: readonly AccountMeta[];
   allModels: boolean;
   locked: boolean;
   onAllModels: (on: boolean) => void;
   accountId: string | null;
   onAccount: (id: string) => void;
 }) {
-  const accounts = usePlatformAccounts();
   const { isIncluded, toggle } = useAllModelsInclude();
   const includedCount = accounts.filter((a) => isIncluded(a.id)).length;
   return (
@@ -72,7 +66,7 @@ export function IncludeModelsChips({
           <IfHelp>{`All-models ${noun}s are text-only for now — uploads from computer are temporarily disabled.`}</IfHelp>
         </div>
       ) : (
-        <AccountPicker value={accountId} onChange={onAccount} />
+        <AccountPicker accounts={accounts} value={accountId} onChange={onAccount} />
       )}
     </>
   );

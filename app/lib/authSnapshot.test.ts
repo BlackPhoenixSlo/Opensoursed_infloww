@@ -19,10 +19,6 @@ describe("authSnapshot", () => {
   });
 
   it("lives under the chatterly: namespace the identity wipe sweeps", () => {
-    // wipeIdentityStorage() deletes every `chatterly:` / `chatterly-` key that
-    // isn't an explicitly preserved UI preference. That sweep — not any code in
-    // this module — is what stops one principal's snapshot reaching another's
-    // session, so the prefix is a contract, not a naming choice.
     writeAuthSnapshot(USER);
     const keys = Object.keys(window.localStorage);
     expect(keys).toContain(KEY);
@@ -67,10 +63,10 @@ describe("authSnapshot", () => {
   it("treats malformed, unparseable, or user_id-less payloads as absent", () => {
     for (const raw of [
       "not json",
-      JSON.stringify({ user: USER }),                    // no timestamp
-      JSON.stringify({ at: Date.now() }),                // no user
-      JSON.stringify({ at: Date.now(), user: { username: "ann" } }),  // no user_id
-      JSON.stringify({ at: "recently", user: USER }),    // timestamp of the wrong type
+      JSON.stringify({ user: USER }),
+      JSON.stringify({ at: Date.now() }),
+      JSON.stringify({ at: Date.now(), user: { username: "ann" } }),
+      JSON.stringify({ at: "recently", user: USER }),
     ]) {
       window.localStorage.setItem(KEY, raw);
       expect(readAuthSnapshot()).toBeNull();

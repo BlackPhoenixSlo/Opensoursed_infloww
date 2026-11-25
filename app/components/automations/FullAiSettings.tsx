@@ -99,7 +99,6 @@ export function FullAiSettings({ state, cfg, accountId }: {
       <FullAiModeControl accountId={accountId} />
       <ul aria-label="Settings" className="space-y-2">
         <li><KeysRow state={state} cfg={cfg} /></li>
-        {/* The speeds are the server's (`limits`): the row waits for the config read. */}
         {cfg.limits && (
           <li className={ROW}>
             <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 py-2">
@@ -180,13 +179,11 @@ function SellGroup({ draft, off, cfg }: { draft: FullAiConfig | null; off: boole
   );
 }
 
-/** A plain top-level switch (`chatSwitch`): stores its key true / false. */
 function ChatSwitchRow({ k, draft, off, cfg }: { k: ChatSwitchKey; draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi }) {
   const s = chatSwitch(draft, k);
   return <SwitchRow label={s.label} hint={s.hint} checked={s.checked} disabled={off} onChange={(on) => cfg.edit({ [k]: on })} />;
 }
 
-/** A segmented choice over the server's values (`limits`), stored at once. */
 function ChoiceRow({ label, hint, value, values, toLabel, off, onChange }: {
   label: string; hint: string; value: string; values: string[]; toLabel: (v: string) => string; off: boolean;
   onChange: (v: string) => void;
@@ -205,19 +202,16 @@ function ChoiceRow({ label, hint, value, values, toLabel, off, onChange }: {
   );
 }
 
-/** Typos %: the chance a reply gets one slip. */
 function TypoPctBox({ draft, off, cfg }: { draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi }) {
   return <PctBox pct={typoPct(draft)} toPatch={typoPctPatch} off={off} cfg={cfg} label="Typos %"
     text="Replies with a typo" note="~1 per 5 sentences" />;
 }
 
-/** GIFs %: of the Turns a GIF fits (Jev's `gif_fits`), the share that send one (`gif_pct`). */
 function GifPctBox({ draft, off, cfg }: { draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi }) {
   return <PctBox pct={gifPct(draft)} toPatch={gifPctPatch} off={off} cfg={cfg} label="GIFs %"
     text="GIF when one fits" note="share of the replies a GIF suits, not of all replies" />;
 }
 
-/** A % box under a switch, stored on blur / Enter; empty = auto. A refused entry snaps back. */
 function PctBox({ pct, toPatch, off, cfg, label, text, note }: {
   pct: number | null; toPatch: (text: string) => Partial<FullAiConfig> | null; off: boolean; cfg: FullAiConfigApi;
   label: string; text: string; note: string;
@@ -239,8 +233,6 @@ function PctBox({ pct, toPatch, off, cfg, label, text, note }: {
   );
 }
 
-/** The Writer chain as a checklist: tick to add a model at the end, untick to drop it (1 to `limits.max_writers`); the
- *  first ticked is the Writer, the rest its fallbacks in order. "Make Writer" moves one to the front. */
 function WriterRow({ draft, off, cfg, max }: { draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi; max: number }) {
   const writers = draft?.writers ?? [];
   const options = [...new Set([...writers, ...cfg.writerModels])];
@@ -271,7 +263,6 @@ function WriterRow({ draft, off, cfg, max }: { draft: FullAiConfig | null; off: 
   );
 }
 
-/** Keep mine (store the page's edit over the applied draft) or Take theirs (drop the edit, adopt it). */
 function ConflictBar({ cfg, canKeep }: { cfg: FullAiConfigApi; canKeep: boolean }) {
   return (
     <div role="group" aria-label="Draft changed elsewhere" className="space-y-2 rounded-lg border border-warn/40 px-4 py-3">
@@ -285,8 +276,6 @@ function ConflictBar({ cfg, canKeep }: { cfg: FullAiConfigApi; canKeep: boolean 
   );
 }
 
-/** Set / not set per Writer provider and the photo provider (`keyRows`), from the config read's `owner_keys` (the
- *  Creator's billing owner's keys, the ones Live checks; booleans only). The model → provider map is its `writer_providers`. */
 function KeysRow({ state, cfg }: { state: TestChatState; cfg: FullAiConfigApi }) {
   const providers = cfg.ownerKeys ?? undefined;
   const sides = [state.draft, state.checkpoint];
@@ -319,20 +308,13 @@ function KeysRow({ state, cfg }: { state: TestChatState; cfg: FullAiConfigApi })
 const JSON_TITLE: Record<JsonSide, string> = { checkpoint: "Live settings · what fans get", draft: "Draft · Test chat only" };
 const JSON_SAVE: Record<JsonSide, string> = { checkpoint: "Save Live settings", draft: "Save draft" };
 
-/** Both sides as raw JSON next to each other (a `RawJsonEditor` + `RawJsonActions` each): the Live settings
- *  (checkpoint) and the Draft, each editable and saved on its own.
- *  Bad JSON never leaves its box; the server checks the keys and answers field errors. Storing the checkpoint keeps
- *  the old one as `previous` (Roll back undoes it). Both store on the rev the boxes were read at (`jsonEditInit`):
- *  one the page adopts meanwhile turns both Store buttons off (`jsonMoved`), one it has not read yet answers 409 and
- *  the reload message, never a silent overwrite. */
 function ConfigJson({ state, cfg, onClose }: { state: TestChatState; cfg: FullAiConfigApi; onClose: () => void }) {
   const [ed, dispatch] = useReducer(jsonEditReducer, state, jsonEditInit);
   const text = ed.text;
   const setText = (side: JsonSide, t: string) => dispatch({ type: "type", side, text: t });
   const busy = state.savingDraft || state.committing;
-  // Moved underneath: storing these boxes would 409 (`baseRev` stays the guard for a store already out), so Store is off.
+  // Moved underneath: storing these boxes would 409, so Store is off.
   const moved = jsonMoved(ed, state);
-  // Escape closes only untouched boxes, and never mid-store.
   const typed = jsonTyped(ed);
   const serverError = state.stale ? STALE_TEXT : state.errors.length > 0 ? state.errors.join("\n") : null;
   const parse = (side: JsonSide): { v: Record<string, unknown> | null; err: string | null } => {
@@ -381,8 +363,6 @@ const SETTING_COLS = ["Setting", "Default", "Live", "Draft", "Allowed", "What it
 const CELL = cn(IF_TABLE.td, "px-3 py-2 align-top text-[12px]");
 const CODE = cn(CELL, "break-all font-mono");
 
-/** Read-only: every key the JSON takes (the GET's `reference`), its default, the Live settings' (checkpoint's) and the
- *  draft's value ("Changed" when the draft's differs from the Live one), what it accepts and does, and the page control that edits it. Scrolls sideways in its own box. */
 function AllSettings({ rows }: { rows: SettingRow[] }) {
   if (rows.length === 0) return null;
   return (

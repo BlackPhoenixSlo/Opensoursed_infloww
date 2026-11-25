@@ -8,10 +8,8 @@ import type { Employee } from "@/lib/relay";
 
 const E = { id: 7, display_name: "Emp", is_active: true } as Employee;
 const INV_A = { token: "a", expires_at: "2026-11-01T00:00:00Z", accept_path: "/chatter-login?token=a" };
-// A resend of "a" again: the relay mints a new token, and "a" stops working.
 const INV_A2 = { token: "a2", expires_at: "2026-11-01T00:00:00Z", accept_path: "/chatter-login?token=a2" };
 const INV_B = { token: "b", expires_at: "2026-11-01T00:00:00Z", accept_path: "/chatter-login?token=b" };
-// Each dialog is one value; `close` names that value (identity), as EmployeesTab's onClose does.
 const ADD: EmployeesModal = { kind: "add" };
 const EDIT_X: EmployeesModal = { kind: "edit", e: E };
 const EDIT_Y: EmployeesModal = { kind: "edit", e: { ...E, id: 8 } };

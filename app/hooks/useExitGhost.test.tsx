@@ -1,9 +1,3 @@
-/**
- * useExitGhost: closing a layer leaves an inert copy, without ids, that an
- * open-dialog lookup (`OPEN_DIALOG`) skips, dropped after its exit; none under
- * reduced motion, for a strict-mode remount, a layer holding live media, or one
- * a swipe already slid away.
- */
 import { act, render } from "@testing-library/react";
 import { StrictMode, useRef, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -52,9 +46,8 @@ describe("useExitGhost", () => {
     expect(ghost.textContent).toBe("hi");
     for (const el of [ghost, ...ghost.querySelectorAll("*")]) {
       expect(el.hasAttribute("id")).toBe(false);
-      expect(el.hasAttribute("name")).toBe(false); // a radio in the copy joins no group
+      expect(el.hasAttribute("name")).toBe(false);
     }
-    // It looks as it did on screen: role and data-* stay.
     expect(ghost.getAttribute("role")).toBe("dialog");
     expect(ghost.getAttribute("data-state")).toBe("open");
     expect(document.querySelector(OPEN_DIALOG)).toBeNull();

@@ -1,5 +1,3 @@
-"""Timed HTTP client for actors. Every call is recorded (route label, status,
-latency), so the stock invariants (no 5xx, p95 per route) need no extra code."""
 from __future__ import annotations
 
 import re
@@ -16,7 +14,6 @@ def label(method: str, path: str) -> str:
 
 
 async def actor_call(http, kind: str, aid: str, path: str, method: str = "GET", body=None, text=None) -> dict:
-    """One actor call through a bound proxy, with timing and proxy-failure evidence."""
     t0 = time.perf_counter()
     try:
         r = await (http.get(path, headers={"X-Account-Id": aid}) if method == "GET"
@@ -36,13 +33,9 @@ class Recorder:
     def __init__(self) -> None:
         self.calls: dict[str, list[tuple[int, float]]] = defaultdict(list)
         self.errors: list[str] = []
-        # Optional phase tag (e.g. a load stage): calls are also kept per tag.
         self.stage: str | None = None
         self.by_stage: dict[str, dict[str, list[tuple[int, float]]]] = defaultdict(lambda: defaultdict(list))
-        # Every call as (end epoch s, route, status, ms), for checks over a time window.
         self.timeline: list[tuple[float, str, int, float]] = []
-        # Every (host:port, path) answered: lib/cli.py keeps the app's and the edge's in the run's
-        # http pages (a route handler reached without a browser, slop/map.json).
         self.urls: set[tuple[str, str]] = set()
 
     def add(self, route: str, status: int, ms: float) -> None:
@@ -64,20 +57,11 @@ class Recorder:
         return sum(1 for v in self.calls.values() for s, _ in v if pred(s))
 
 
-# An idle keep-alive connection is reused only below this age. httpx's default (5 s)
-# equals uvicorn's timeout_keep_alive (5 s, the Dockerfile's too), so a request can be
-# written into a connection the relay is about to time out: after any relay stall the
-# relay resets it (httpx ReadError(BrokenResourceError)): a failure httpx never retries,
-# while Chromium resends a request whose reused socket fails before any response. Kept
-# below 5 s minus the longest stall a scenario injects (2 s), no reset was seen
-# (.scratch/fleet-sharding/03-write-storm.md).
+# Reuse idle connections only below uvicorn's 5 s keep-alive minus the longest injected stall (2 s): else the relay resets a reused socket (httpx ReadError, never retried).
 KEEPALIVE_EXPIRY_S = 2.0
 
 
 class Http:
-    """One signed-in session (cookie jar) against the relay. `host` sends that Host
-    header (a fleet edge routes on it); `prefix` goes in front of every route label
-    (e.g. "edge s03 ") so edge calls get their own p95 rows."""
 
     def __init__(self, base: str, rec: Recorder, *, limits: int = 100, host: str | None = None,
                  prefix: str = "", headers: dict | None = None):
@@ -114,7 +98,6 @@ class Http:
         return await self.request("PUT", path, **kw)
 
     def share(self, rec: Recorder | None = None, limits: int = 100) -> "Http":
-        """A second client on the same session (e.g. one per actor pool)."""
         h = Http(str(self.c.base_url), rec or self.rec, limits=limits, host=self.host, prefix=self.prefix,
                  headers=self.headers)
         h.c.cookies = self.c.cookies

@@ -1,8 +1,5 @@
 "use client";
 
-/** FunnelEditor's step card: one reply / PPV step of a mass-message funnel, as a node on the steps timeline (Infloww
- *  Scripts' sequence steps). Closed it is one summary row (type, price / AI, the first line of copy); open it shows
- *  the type, the copy and, folded, the reply-check timing. */
 
 import { useId } from "react";
 import { ChevronDown, ChevronUp, Image as ImageIcon, Sparkles, Trash2 } from "lucide-react";
@@ -14,7 +11,7 @@ import { VariantsField } from "@/components/compose/VariantsField";
 import type { DraftStep } from "@/lib/funnelDraft";
 import { cn } from "@/lib/utils";
 
-/** reply_mass_funnel._step_texts: a static step sends its first 2 messages. */
+// reply_mass_funnel._step_texts: a static step sends its first 2 messages.
 const FUNNEL_STEP_MSGS = 2;
 const DEFAULT_CHECKS = "2, 4, 10";
 
@@ -26,10 +23,8 @@ const SOURCES: IfOption<"static" | "ai">[] = [
   { value: "static", label: "Write it" },
   { value: "ai", label: "AI writes it" },
 ];
-/** Icon-only link actions: muted until hovered, thumb-sized below md. */
 const ICON_ACTION = "w-8 text-muted hover:text-fg disabled:hover:text-muted max-md:h-10 max-md:w-10";
 
-/** The closed card's one line: the first message, the AI prompt, or what is missing. */
 function preview(step: DraftStep): string {
   if (step.generate) return step.prompt.trim() || "AI writes it (default persona)";
   return step.messages.map((m) => m.trim()).find(Boolean) || "No message yet";
@@ -52,7 +47,6 @@ export function StepCard({
   const price = step.price.trim();
   return (
     <li className="relative pl-10">
-      {/* The timeline: a numbered node on the rail. */}
       <span aria-hidden className={cn(
         "absolute left-0 top-3 grid h-7 w-7 place-items-center rounded-full text-[12px] font-medium",
         isPpv ? "bg-accent text-white" : "border border-border bg-bg text-fg",
@@ -114,7 +108,6 @@ export function StepCard({
                   <IfHelp>Guides the AI; blank uses the creator&apos;s persona. Uses your AI key per reply.</IfHelp>
                 </div>
               ) : (
-                // reply_mass_funnel sends static messages[:2], one after the other (_step_texts, _send_step).
                 <VariantsField
                   id={`${id}-msg`}
                   label={isPpv ? "Sales copy" : "Message"}

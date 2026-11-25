@@ -1,15 +1,3 @@
-/**
- * ManageEmployees — Infloww's Manage employees page (docs/spec/phase-05-remaining-parity-gaps.md, item 1; page-parity
- * ticket 17): the group tree on the left, the list on the right.
- *
- * Rendered inside `UserProvider` and `ChatterProvider` with the relay mocked at `fetch` by URL: the stub serves
- * `/auth/me`, the roster (each row's `account_ids`: null for all Creators), the owner's Creators, the `roles`
- * Settings blob, the Applied settings (the Agency's time zone), the Timesheet and the Employee groups (each roster
- * row's `group_id`; Batch edit group's `PUT /admin/employee-groups/members`, ticket 36), and the Add / Edit / Set
- * role / Reset password writes (`/admin/employees/login`, `…/{id}/setup`, `…/{id}/password`), so the columns and
- * the writes are assertions about the wire. The modals and the row's More menu render in portals, so they are
- * found on `screen`. Every name is fake.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -18,7 +6,6 @@ import { UserProvider } from "@/contexts/UserContext";
 import { ChatterProvider } from "@/contexts/ChatterContext";
 import ManageEmployees from "@/components/employees/ManageEmployees";
 
-// The Applied settings read names the Creator in scope; none is (the real provider opens the event stream).
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 
 type Call = { method: string; url: string; body: unknown };
@@ -28,26 +15,18 @@ type Row = { id: number; display_name: string; color: string; is_active: boolean
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let roster: Row[];
-/** The signed-in principal: an owner, or a chatter with no owner session. */
 let principal: "owner" | "chatter";
-/** The Agency's applied time zone (Your Preferences' "Time zone"). */
 let agencyTz: string | null;
-/** What the Relay answers a roles PUT: the saved blob, or its validation's 400. */
 let rolesPut: { status: 200 } | { status: 400; detail: string };
-/** Whether the roles blob's read fails (a 500), so the blob never loads. */
 let rolesGetFails: boolean;
-/** What the Relay answers an access PUT when it refuses one, or null to accept it. */
 let accessRefusal: string | null;
-/** What the Relay answers a password reset when it refuses one, or null to accept it. */
 let passwordRefusal: string | null;
-/** The invites not accepted yet (GET /admin/chatters/invites); none unless a case sets them. */
 let invites: Record<string, unknown>[];
 const PENDING = {
   token: "pend1", expires_at: "2026-10-19T12:00:00Z", accept_path: "/chatter-login?token=pend1",
   created_at: "2026-10-18T12:00:00Z", display_name: "Pending Pat", role_id: "chatter", account_ids: ["902"], group_id: 10,
 };
 
-/** Alpha One and Delta Four sit in Fixture Leads, Beta Two in Fixture Nights below it, Gamma Three in no group. */
 const ROSTER: Row[] = [
   { id: 1, display_name: "Alpha One", color: "#a78bfa", is_active: true, chatter_id: "c1", username: "alpha.one",
     account_ids: null, group_id: 10 },
@@ -57,14 +36,11 @@ const ROSTER: Row[] = [
     account_ids: ["902"], group_id: null },
   { id: 4, display_name: "Delta Four", color: "#f472b6", is_active: true, chatter_id: "c4", username: "delta.four",
     account_ids: [], group_id: 10 },
-  // A retired name on the owner's own login (the old "Who's chatting?" pick) is not listed at all.
   { id: 5, display_name: "Mirror Five", color: "#bbbbbb", is_active: true, chatter_id: null, account_ids: ["901"],
     group_id: 11, kind: "name", user_id: "u1" },
-  // The owner's own row, listed last here and first on the page.
   { id: 6, display_name: "ownerone", color: "#888888", is_active: true, chatter_id: null, account_ids: null,
     group_id: null, kind: "owner", user_id: "u1" },
 ];
-/** Two groups and an empty one, the sub-group listed before its parent, so the rail's tree order is not the list's. */
 const GROUPS = [
   { id: 12, name: "Fixture Spare", parent_id: null, employee_count: 0 },
   { id: 11, name: "Fixture Nights", parent_id: 10, employee_count: 2 },
@@ -73,9 +49,7 @@ const GROUPS = [
 const CREATORS = [{ id: "901", nickname: "Creator North" }, { id: "902", nickname: "Creator South" }];
 let watchers: Record<string, unknown>[] = [];
 const CLOSER = { id: "role-closer", name: "Closer", description: "", permissions: { "/": true }, scope: "self" };
-/** A stored copy of the built-in Chatter, which "+ Add employee" picks by default. */
 const CHATTER = { id: "chatter", name: "Chatter", description: "Chats with fans.", permissions: { "/": true }, scope: "self" };
-/** Beta Two holds the built-in Admin (not stored), Delta Four a role id no role has, Gamma Three none. */
 const ROLES = {
   roles: [CLOSER, CHATTER],
   assignments: { "1": "role-closer", "2": "admin", "4": "role-gone" },
@@ -90,12 +64,8 @@ function calls(): Call[] {
     body: init?.body ? JSON.parse(String(init.body)) : undefined,
   }));
 }
-// The perf logger (app/lib/perfLog.ts) flushes a "tab open" beacon to /admin/perflog/ingest on a timer; it is
-// not a page write and raced one run of the suite, so it is left out of the wire record.
 const writes = () => calls().filter((c) => c.method !== "GET" && !c.url.startsWith("/admin/perflog/"));
 
-/** The current month's Timesheet, per Employee (`key` is the Employee id as text). Beta Two and Delta Four have
- *  no Shift or clock time this month, so the rollup has no row for them. */
 const TIMESHEET = {
   rows: [
     { key: "1", display_name: "Alpha One", scheduled_shifts: 4, shifts_worked: 3, scheduled_minutes: 960,
@@ -109,7 +79,6 @@ const TIMESHEET = {
 
 beforeEach(() => {
   watchers = [];
-  // UserProvider opens from the last signed-in owner's localStorage snapshot; a chatter's mount must not.
   window.localStorage.clear();
   roster = ROSTER.map((r) => ({ ...r }));
   principal = "owner";
@@ -229,28 +198,22 @@ function mount() {
   );
 }
 
-/** The table's Employee rows (the owner's own first) as [Employee, Assigned creators, Role, Status]. */
 const rows = () =>
-  // Read from the DOM: an open modal marks the page behind it aria-hidden, so role queries skip the table.
   [...document.querySelectorAll<HTMLElement>("tr[data-employee]")].map((r) => {
     const cells = r.querySelectorAll("td");
     return [r.getAttribute("data-employee"), cells[2].textContent, cells[3].textContent, cells[4].textContent];
   });
 const names = () => rows().map((r) => r[0]);
-/** The rows but the owner's own. */
 const staff = () => rows().filter((r) => r[0] !== "ownerone");
 const OWNER = "ownerone";
 const rowOf = (name: string) => document.querySelector<HTMLElement>(`tr[data-employee="${name}"]`)!;
 
-/** Waits until the roster, the Creators and the roles blob have all landed in the table. */
 async function loaded() {
   mount();
   await waitFor(() => expect(rows().find((r) => r[0] === "Alpha One")?.[2]).toBe("Closer"));
   await waitFor(() => expect(rows().find((r) => r[0] === "Beta Two")?.[1]).toBe("Creator North"));
 }
 
-/** Picks the option labelled `label` in a select: a native one (the dialogs), or an `IfSelect` (the filters), which
- *  opens a listbox on a click. */
 const choose = (select: HTMLElement, label: string) => {
   if (select instanceof HTMLSelectElement) {
     const option = within(select).getByRole("option", { name: label }) as HTMLOptionElement;
@@ -260,7 +223,6 @@ const choose = (select: HTMLElement, label: string) => {
   fireEvent.click(select);
   fireEvent.click(within(document.getElementById(select.getAttribute("aria-controls")!)!).getByRole("option", { name: label }));
 };
-/** An `IfSelect`'s option labels (opened, read, closed again). */
 const optionsOf = (select: HTMLElement) => {
   fireEvent.click(select);
   const labels = within(document.getElementById(select.getAttribute("aria-controls")!)!).getAllByRole("option")
@@ -268,7 +230,6 @@ const optionsOf = (select: HTMLElement) => {
   fireEvent.click(select);
   return labels;
 };
-/** The tree's pick buttons (the root, then each group in tree order), not its carets or ⋮. */
 const treeNodes = () => within(screen.getByRole("navigation", { name: "Employee groups" })).getAllByRole("button")
   .filter((b) => b.hasAttribute("aria-pressed"));
 const node = (name: string) => treeNodes().find((b) => b.textContent === name)!;
@@ -285,7 +246,6 @@ describe("ManageEmployees", () => {
       ["Gamma Three", "Creator South", "—", "Deactivated"],
       ["Delta Four", "Assign", "Unknown role (role-gone)", "Activated"],
     ]);
-    // The title is the picked tree node: the root, named by the owner (no Agency name is set here).
     expect(screen.getByRole("heading", { name: "ownerone" })).toBeInTheDocument();
     expect(screen.getByText("3 active · 4 total")).toBeInTheDocument();
   });
@@ -354,7 +314,6 @@ describe("ManageEmployees", () => {
     expect(names()).toEqual(["Alpha One"]);
     choose(byRole, "Admin");
     expect(names()).toEqual(["Beta Two"]);
-    // A role id no role has counts as no role, as Role Settings and the Relay treat it.
     choose(byRole, "No role");
     expect(names()).toEqual(["Gamma Three", "Delta Four"]);
     choose(byRole, "Owner");
@@ -370,11 +329,9 @@ describe("ManageEmployees", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));
     expect(names()).toEqual([OWNER, "Alpha One", "Beta Two", "Gamma Three", "Delta Four"]);
     expect(byEmployee).toHaveValue("");
-    // Cleared, each select shows its placeholder, as Infloww's do.
     expect([byCreator, byStatus, byRole].map((b) => b.textContent)).toEqual(["Creator", "Status", "Role"]);
   });
 
-  /** Opens the More menu on the row whose Employee is `name`; it renders in a portal, outside the table. */
   const openMore = (name: string) => {
     fireEvent.click(within(rowOf(name)).getByRole("button", { name: "More" }));
     const menu = screen.getByRole("menu");
@@ -443,9 +400,7 @@ describe("ManageEmployees", () => {
     expect(writes()).toEqual([]);
   });
 
-  /** Ticks the selection box on the row whose Employee is `name`. */
   const select = (name: string) => fireEvent.click(screen.getByRole("checkbox", { name: `Select ${name}` }));
-  /** Opens Batch actions and picks `item`, returning the dialog it opens. */
   const batch = (item: string) => {
     fireEvent.click(screen.getByRole("button", { name: "Batch actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: item }));
@@ -476,11 +431,9 @@ describe("ManageEmployees", () => {
     select("Delta Four");
     const dialog = batch("Batch edit roles");
     const role = dialog.getByRole("combobox", { name: "Role" });
-    // Owner is never handed out, and no role is preselected.
     expect(within(role).getAllByRole("option").map((o) => o.textContent))
       .toEqual(["Choose a role", "Admin", "Team Leader", "Chatter", "Creator", "Closer"]);
     expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
-    // The role selector's content block must not contain the dialog actions.
     const body = role.parentElement!;
     for (const name of ["Cancel", "Save"]) {
       expect(within(body).queryByRole("button", { name })).toBeNull();
@@ -514,7 +467,6 @@ describe("ManageEmployees", () => {
     expect(staff().map((r) => r[2])).toEqual(["Closer", "Admin", "—", "Unknown role (role-gone)"]);
     expect(writes()).toHaveLength(1);
 
-    // Cancel drops the refusal: reopening the dialog starts clean.
     fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
     expect(batch("Batch edit roles").queryByRole("alert")).toBeNull();
   });
@@ -582,7 +534,6 @@ describe("ManageEmployees", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  /** The Group column, by login row. */
   const groupCells = () => staff().map((r) => within(rowOf(r[0]!)).getAllByRole("cell")[5].textContent);
 
   it("shows each Employee's group in the Group column, and — for none", async () => {
@@ -599,19 +550,15 @@ describe("ManageEmployees", () => {
     fireEvent.click(node("Fixture Leads"));
     expect(node("Fixture Leads")).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("heading", { name: "Fixture Leads" })).toBeInTheDocument();
-    // One group, not its sub-groups: Beta Two in Fixture Nights is not listed.
     expect(names()).toEqual(["Alpha One", "Delta Four"]);
-    // A hidden row is never written: the selection was cleared.
     expect(screen.queryByText(/selected$/)).toBeNull();
     fireEvent.click(node("Fixture Nights"));
     expect(names()).toEqual(["Beta Two"]);
-    // The tree combines with By status.
     choose(screen.getByRole("combobox", { name: "By status" }), "Deactivated");
     expect(names()).toEqual([]);
     choose(screen.getByRole("combobox", { name: "By status" }), "All statuses");
     fireEvent.click(node("Fixture Spare"));
     expect(names()).toEqual([]);
-    // An empty list is Infloww's Empty.
     expect(screen.getByText("No data")).toBeInTheDocument();
     fireEvent.click(node("ownerone"));
     expect(names()).toEqual([OWNER, "Alpha One", "Beta Two", "Gamma Three", "Delta Four"]);
@@ -633,7 +580,6 @@ describe("ManageEmployees", () => {
       username: `extra.${k}`, account_ids: null, group_id: null,
     }))];
     await loaded();
-    // The owner, four logins and eight more: 13 rows.
     await waitFor(() => expect(names()).toHaveLength(10));
     const pager = screen.getByRole("navigation", { name: "Pagination" });
     expect(pager).toHaveTextContent("Total: 13 employees");
@@ -655,7 +601,6 @@ describe("ManageEmployees", () => {
     const group = dialog.getByRole("combobox", { name: "Group" });
     expect(within(group).getAllByRole("option").map((o) => o.textContent))
       .toEqual(["Choose a group", "Fixture Spare", "Fixture Leads", "Fixture Nights", "No group"]);
-    // No group is preselected, so Save at once moves nobody.
     expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
     choose(dialog.getByRole("combobox", { name: "Group" }), "Fixture Spare");
     fireEvent.click(dialog.getByRole("button", { name: "Save" }));
@@ -678,8 +623,6 @@ describe("ManageEmployees", () => {
   });
 
   it("shows this month's recorded earnings and worked of scheduled shifts from the Timesheet, in the Agency's time zone", async () => {
-    // 23:30 UTC on 31 October is already 1 November in Auckland (UTC+13), so the month is November there:
-    // 1 Nov 00:00 NZDT = 31 Oct 11:00 UTC, up to 1 Dec 00:00 NZDT = 30 Nov 11:00 UTC.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-31T23:30:00Z"));
     agencyTz = "Pacific/Auckland";
@@ -708,7 +651,6 @@ describe("ManageEmployees", () => {
     expect(header.getAttribute("title")).toMatch(/not pay/);
   });
 
-  /** Opens "+ Add employee", returning its dialog. */
   const openAdd = () => {
     fireEvent.click(screen.getByRole("button", { name: "+ Add employee" }));
     return within(screen.getByRole("dialog", { name: "Add employee" }));
@@ -730,7 +672,6 @@ describe("ManageEmployees", () => {
     fireEvent.change(dialog.getByLabelText(/^Password/), { target: { value: "secret-1" } });
     choose(dialog.getByRole("combobox", { name: "Group" }), "Fixture Leads");
     fireEvent.click(dialog.getByRole("checkbox", { name: "All creators" }));
-    // Limited to no Creator at all is not a choice: Save waits for one.
     expect(add).toBeDisabled();
     fireEvent.click(dialog.getByRole("checkbox", { name: "Creator North" }));
     fireEvent.click(add);
@@ -813,7 +754,6 @@ describe("ManageEmployees", () => {
     fireEvent.click(openMore("Alpha One").getByRole("menuitem", { name: "Reset password" }));
     let dialog = within(screen.getByRole("dialog", { name: "Reset password" }));
     const submit = () => dialog.getByRole("button", { name: "Reset password" });
-    // Both fields required: the kit label's red * after each.
     for (const l of ["New password", "Confirm password"]) expect(dialog.getByText(l).closest("label")).toHaveTextContent(`${l}*`);
     fireEvent.change(dialog.getByLabelText(/^New password/), { target: { value: "new-secret" } });
     fireEvent.change(dialog.getByLabelText(/^Confirm password/), { target: { value: "new-secreT" } });
@@ -882,7 +822,6 @@ describe("ManageEmployees", () => {
     expect(pending()).toBeNull();
     choose(byStatus, "All statuses");
 
-    // Resend: a fresh link, shown to copy.
     fireEvent.click(within(pending()!).getByRole("button", { name: "Resend" }));
     const dialog = await screen.findByRole("dialog");
     await waitFor(() => expect(within(dialog).getByDisplayValue(/token=pend2/)).toBeInTheDocument());
@@ -890,7 +829,6 @@ describe("ManageEmployees", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
-    // Delete revokes it.
     await waitFor(() => expect(pending()).not.toBeNull());
     fireEvent.click(within(pending()!).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(pending()).toBeNull());

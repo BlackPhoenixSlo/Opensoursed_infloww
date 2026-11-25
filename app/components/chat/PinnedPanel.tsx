@@ -1,33 +1,5 @@
 "use client";
 
-/**
- * PinnedPanel — the in-chat pinned-messages surface.
- *
- *   PinnedBar      — a thin row that sits between the chat header and the
- *                    message list. Renders only when ≥1 message in the
- *                    loaded backlog has `isPinned: true`. Click toggles
- *                    the popover.
- *
- *   PinnedPopover  — a floating panel anchored bottom-left of the message
- *                    scroll area. Scrollable list of pinned messages with
- *                    text preview, sender name, time, and an optional
- *                    "📎 N" media badge. Images are NOT loaded — clicking
- *                    a row jumps to the bubble in the main thread where
- *                    MediaTile owns the actual fetch.
- *
- * Hide rules for the popover:
- *   • Click anywhere outside the popover AND outside the composer area
- *     (textarea, emoji bar, action buttons) → close.
- *   • Composer click → keep open (the chatter is likely about to type
- *     based on the pinned context).
- *   • Send fires → parent closes by calling `onClose()`.
- *
- * Pinned messages are sourced from the same `["messages", aid, fanId]`
- * cache that drives the main thread — no extra OF fetch. If you've
- * scrolled up to load older pages, those pinned items will appear too;
- * otherwise the popover shows only the pinned items inside the loaded
- * window (the last ~30 messages by default).
- */
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pin } from "lucide-react";
@@ -37,9 +9,6 @@ import { MP } from "@/lib/messagesPro";
 import { cn, decodeHtmlEntities } from "@/lib/utils";
 import type { OFMessage } from "@/lib/relay";
 
-// Fallback top offset (px) if no `[data-chat-row]` elements are found
-// — covers the case where the chat list hasn't rendered yet or the
-// inbox is empty. Roughly: nav (56) + filter chips (~120) + 3 rows (~210).
 const FALLBACK_TOP_PX = 386;
 
 interface PinnedBarProps {
@@ -84,13 +53,8 @@ export function PinnedPopover({
   pinned, ownerUserId, open, onClose, onJumpTo,
 }: PinnedPopoverProps) {
   const ref = useRef<HTMLDivElement | null>(null);
-  // Top edge in viewport pixels. Measured from the 3rd ChatList row's
-  // bottom so the popover overlays the rest of the chat list while
-  // keeping the top three conversations visible above it.
   const [topPx, setTopPx] = useState<number>(FALLBACK_TOP_PX);
 
-  // Newest pinned first — chatters usually pin "the latest thing we
-  // agreed on" so the most recent pin is the most actionable.
   const ordered = useMemo(() => {
     return [...pinned].sort((a, b) => {
       const ta = a.createdAt ? Date.parse(a.createdAt) || 0 : 0;
@@ -99,13 +63,6 @@ export function PinnedPopover({
     });
   }, [pinned]);
 
-  // Click-out handler. Composer carries `data-composer-area` so the
-  // chatter can keep typing in the input / press emoji / vault buttons
-  // without dismissing the panel. Anything else closes it. ChatList
-  // rows above the popover (the top 3) are exempt too so the chatter
-  // can still switch conversations without dismissing the panel — the
-  // panel content travels with the new chat anyway via the messages
-  // cache.
   useEffect(() => {
     if (!open) return;
     const onDocClick = (e: MouseEvent) => {
@@ -113,6 +70,7 @@ export function PinnedPopover({
       if (!target) return;
       if (ref.current?.contains(target)) return;
       const el = target as HTMLElement;
+      // Composer clicks keep it open so the chatter can type against the pinned context.
       if (el.closest && el.closest("[data-composer-area]")) return;
       if (el.closest && el.closest("[data-chat-row]")) return;
       onClose();
@@ -126,17 +84,10 @@ export function PinnedPopover({
     };
   }, [open, onClose]);
 
-  // Measure the 3rd ChatList row's bottom so the popover snaps just
-  // below it. Re-measure on open + on window resize so the layout
-  // stays correct if the chatter resizes their window.
   useEffect(() => {
     if (!open) return;
     const measure = () => {
       const rows = document.querySelectorAll<HTMLElement>("[data-chat-row]");
-      // Use the third row if present, otherwise the last row we found,
-      // otherwise the fallback. The "max" interpretation per the user
-      // spec: keep at LEAST 3 rows visible; if there are fewer, show
-      // them all and start the popover below whatever's there.
       const anchor = rows[2] ?? rows[rows.length - 1];
       if (!anchor) {
         setTopPx(FALLBACK_TOP_PX);
@@ -146,9 +97,6 @@ export function PinnedPopover({
       setTopPx(Math.round(rect.bottom));
     };
     measure();
-    // Re-measure when rows mount in later (chat list lazily renders);
-    // a short tick after open catches the common case where the list
-    // is still loading.
     const t = setTimeout(measure, 80);
     window.addEventListener("resize", measure);
     return () => {
@@ -164,7 +112,6 @@ export function PinnedPopover({
       ref={ref}
       style={{ top: topPx }}
       className={cn(
-        // As wide as the Fan List it overlays (`MP.panes.pinnedOverlay`).
         MP.panes.pinnedOverlay, MP.ours.PinnedPanel.overlay, "fixed z-30",
         "bg-panel border-border shadow-2xl",
         "flex flex-col overflow-hidden",
@@ -238,11 +185,6 @@ export function stripPreview(html: string, max: number): string {
   return plain.slice(0, max - 1) + "…";
 }
 
-// Absolute time, like the main thread bubbles (MessageList.fmtTime). Relative
-// labels ("5m ago") were computed once at render and went stale while the
-// panel stayed open; an absolute stamp needs no re-render to stay correct.
-// Same-day pins show the time; older pins also show a short date so a pin
-// from last week isn't an undated bare time.
 export function fmtTime(iso?: string): string {
   if (!iso) return "";
   const d = new Date(iso);

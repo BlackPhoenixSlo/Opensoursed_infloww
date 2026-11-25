@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * TopPostsTab — best-performing posts in the selected window.
- *
- * This is the only place purchases/earnings ranking is available: OF's
- * feed payload carries no per-post buy counts, but /posts/top returns the
- * posts already sorted by the chosen metric. Order = rank, which we surface
- * as a "#N" chip on each card. Uses the page-level date range.
- */
 
 import { useMemo, useState } from "react";
 

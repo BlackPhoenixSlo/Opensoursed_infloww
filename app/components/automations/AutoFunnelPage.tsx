@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * My Automations > Auto Funnel — the mass-message funnels (a broadcast opener,
- * then reply-checked steps ending in a PPV) as their own My Automations page.
- *
- * `MassFunnelsTab` (list with per-creator Status / Fans in funnel, editor,
- * per-model Media, Start and the "Follow up on replies" switch) on Infloww's
- * legacy list page (page-parity ticket 16): the
- * creator column (`?creator=`) scopes it to one model, Learn and
- * "New funnel" sit in the header. The relay pre-adds the default "strokes"
- * funnel (seeds/funnels.py), so it is listed here and in the mass composer's
- * "Funnel follow-up" picker from the first boot. Funnel TEXT is shared by every
- * model; the PPV media is bound per model via Media.
- */
 
 import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { NoCreator, useAutomationCreator } from "@/components/automations/automationPage";

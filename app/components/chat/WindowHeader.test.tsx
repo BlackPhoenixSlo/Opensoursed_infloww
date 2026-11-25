@@ -1,8 +1,3 @@
-/**
- * The Window header's Inflowwww mark (`goToDashboard`): Messages Pro's window has no sidebar, and in the desktop
- * app no address bar, so the mark is the way back to the Dashboard, in the window that opened this one if any;
- * otherwise its `next/link` goes there in this window.
- */
 import type { MouseEvent } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 

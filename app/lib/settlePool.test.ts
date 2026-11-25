@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import { settlePool } from "./settlePool";
 
-/** `fn` for settlePool that records the peak calls in flight; `fail` ids reject. */
 function probe(fail: ReadonlySet<number> = new Set()) {
   const state = { inFlight: 0, peak: 0, started: [] as number[] };
   const fn = async (n: number) => {

@@ -1,6 +1,5 @@
 "use client";
 
-/** The Buys & tips rail's ⚙ panel (`MoneyRail`). */
 
 import {
   BIG_ROW_CHOICES,
@@ -12,9 +11,6 @@ import {
   type Surface,
 } from "@/lib/moneyRailStorage";
 
-/** Labels for the "Show on" surface checkboxes — keyed by the canonical
- *  Surface union, so a new surface in SURFACE_VALUES is a compile error here
- *  until it gets a label (and its checkbox appears for free). */
 const SURFACE_LABELS: Record<Surface, string> = {
   inbox: "Inbox",
   popup: "Solo chat",
@@ -23,10 +19,6 @@ const SURFACE_LABELS: Record<Surface, string> = {
 };
 const SURFACE_CHOICES = SURFACE_VALUES.map((key) => ({ key, label: SURFACE_LABELS[key] }));
 
-/** The ⚙ popover: where the rail shows at all, how many rows each size
- *  shows, and which models feed it. Writes straight through on every change
- *  — no Save button, the rail re-renders under you so the effect IS the
- *  feedback. */
 export function SettingsPanel({
   settings,
   accounts,
@@ -36,8 +28,6 @@ export function SettingsPanel({
   accounts: readonly { id: string; nickname?: string | null }[];
   onChange: (s: RailSettings) => void;
 }) {
-  // null (= all) is rendered as every box ticked, so "all" and "everything
-  // picked" look the same — which is what a user means by them anyway.
   const picked = settings.accounts;
   const isOn = (id: string) => (picked ? picked.includes(id) : true);
 
@@ -46,8 +36,7 @@ export function SettingsPanel({
     const next = current.includes(id)
       ? current.filter((x) => x !== id)
       : [...current, id];
-    // Unticking the last model would blank the rail forever — read that as
-    // "back to all" rather than leaving a dead dock on screen.
+    // Unticking the last model would blank the rail forever: read as back to all.
     if (next.length === 0 || next.length === accounts.length) {
       onChange({ ...settings, accounts: null });
       return;
@@ -61,8 +50,6 @@ export function SettingsPanel({
     const next = current.includes(s)
       ? current.filter((x) => x !== s)
       : [...current, s];
-    // parseSurfaces applies the same guard on read, but normalise here too so
-    // the ticks reflect what will actually happen: all off = back to all.
     onChange({ ...settings, surfaces: parseSurfaces(next) });
   };
 

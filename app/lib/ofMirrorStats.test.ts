@@ -14,7 +14,6 @@ const load = (p: string) => {
 };
 const visible = (el: Element) => !el.closest("[style*='display:none'], [style*='display: none']");
 const texts = (doc: Document, sel: string) => [...doc.querySelectorAll(sel)].filter(visible).map((e) => e.textContent?.replace(/\s+/g, " ").trim());
-/** A sidebar or summary unit's value by its label. */
 const unit = (doc: Document, label: string) =>
   [...doc.querySelectorAll(".b-elements-determinant__unit")]
     .filter(visible)
@@ -22,12 +21,10 @@ const unit = (doc: Document, label: string) =>
     .map((u) => u.querySelector(".b-elements-determinant__value")!.textContent!.replace(/\s+/g, " ").trim());
 const NOT_YET = "Not available in Inflowwww yet";
 const TZ = "Europe/Ljubljana";
-const NOW = new Date("2026-10-17T10:00:00Z"); // 12:00 in Ljubljana (UTC +02:00)
+const NOW = new Date("2026-10-17T10:00:00Z");
 
-/** OF's own /api2/v2 responses for the last 30 days, read through the Relay and scrubbed (app/lib/__fixtures__/of). */
 const fixture = <T = unknown,>(name: string): T => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/statistics-${name}.json`), "utf8")) as T;
 const OVERVIEW = fixture<Record<string, unknown>>("overview");
-/** Every source as the Relay answered it: a real period with no earnings (OF's zeros), counts and charts. */
 const LIVE: StatsData = {
   ...OVERVIEW,
   stats: fixture("payouts-stats"),
@@ -46,7 +43,6 @@ const LIVE: StatsData = {
 };
 const START = startOf(LIVE.startDate, TZ);
 const D30 = periodOf("d30", NOW, TZ, START);
-/** `LIVE` with the period's earnings set (net, gross, change in %) per overview source. */
 const earning = (net: Record<string, [number, number, number]>): StatsData => {
   const out: StatsData = structuredClone(LIVE);
   const set = (src: string, path: string, [total, gross, delta]: [number, number, number]) => {
@@ -82,7 +78,7 @@ describe("the period (OF's PeriodDatepicker, in the owner's time zone)", () => {
     const titles = (start: Date | null) => periodMenu(NOW, TZ, start).map((i) => (i ? i.title : "—"));
     expect(titles(START)).toEqual(["Custom", "—", "Last 24 hours", "Last 7 days", "Last 30 days", "Last 90 days", "Last 180 days", "Last 365 days", "—", "2026", "2025", "All time", "—", "October", "September", "August", "July", "June", "May"]);
     expect(titles(new Date("2026-09-25T10:00:00Z"))).toEqual(["Custom", "—", "Last 24 hours", "Last 7 days", "Last 30 days", "—", "2026", "All time", "—", "October", "September"]);
-    expect(periodMenu(NOW, TZ, START)[0]).toEqual({ title: "Custom", key: null }); // it opens OF's date picker
+    expect(periodMenu(NOW, TZ, START)[0]).toEqual({ title: "Custom", key: null });
   });
 
   it("Custom: its first day's start to its last day's end, titled Custom, its dates with their times (OF's format)", () => {
@@ -92,7 +88,6 @@ describe("the period (OF's PeriodDatepicker, in the owner's time zone)", () => {
     expect(isPeriodKey("c2026-09-15_2026-09-01")).toBe(false);
     expect(isPeriodKey("c2026-02-30_2026-03-01")).toBe(false);
     expect(periodOf(key, NOW, TZ, START)).toMatchObject({ title: "Custom", startApi: "2026-09-01 00:00:00", endApi: "2026-09-15 23:59:59", from: "12:00 am, Sep 01", to: "11:59 pm, Sep 15, 2026" });
-    // Ending today: now, sent as UTC; across years the start carries its year.
     expect(periodOf("c2025-12-30_2026-10-17", NOW, TZ, START)).toMatchObject({ startApi: "2025-12-30 00:00:00", endApi: "2026-10-17 10:00:00", from: "12:00 am, Dec 30, 2025", to: "12:00 pm, Oct 17, 2026" });
   });
 
@@ -107,7 +102,7 @@ describe("the period (OF's PeriodDatepicker, in the owner's time zone)", () => {
     expect(doc.querySelector("[data-oi-period-menu]")).toBeNull();
     expect(doc.querySelector(".vdatetime-popup__title")!.textContent!.trim()).toBe("31 days selected");
     doc.querySelector<HTMLElement>("[data-oi-day='2026-09-20']")!.click();
-    doc.querySelector<HTMLElement>("[data-oi-month='prev']")!.click(); // the end tab opened on the end's month
+    doc.querySelector<HTMLElement>("[data-oi-month='prev']")!.click();
     doc.querySelector<HTMLElement>("[data-oi-day='2026-09-25']")!.click();
     doc.querySelector<HTMLElement>("[data-oi-picker-apply]")!.click();
     expect(currentPeriodKey()).toBe("c2026-09-20_2026-09-25");
@@ -138,7 +133,6 @@ describe("the generator's Statistics pages", () => {
   it("no captured figure, fan, example text or level mark shows; the period button is OF's, wired", { timeout: 30_000 }, () => {
     for (const p of ["overview/earnings", "overview/top-highlights", "overview/streaks", "engagement/messages", "engagement/posts", "fans/subscriptions", "fans/top-fans", "reach/profile-visitors", "reach/promotions", "statements/earnings", "statements/disputes"]) {
       const doc = load(`statistics/${p}`);
-      // A <style>'s text is no figure (the streak tabs' CSS).
       const main = [...doc.querySelectorAll("main")].map((m) => [...m.querySelectorAll("*")].filter((e) => visible(e) && e.tagName !== "STYLE")).flat();
       const text = main.map((e) => [...e.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join(" ")).join(" ");
       expect(text.replace("Minimum withdrawal amount is $20", ""), p).not.toMatch(/\$\d|Fan \d|@fan|Lorem|\d+(\.\d+)?%|TOP \d|\b\d+ \/ \d+\b/);
@@ -146,7 +140,7 @@ describe("the generator's Statistics pages", () => {
       const button = doc.querySelector<HTMLButtonElement>("button[data-oi-period]")!;
       expect(button.disabled, p).toBe(false);
       expect(button.hasAttribute("data-oi-wired"), p).toBe(true);
-      expect(doc.querySelectorAll("[data-oi-stat^='chart:']").length, p).toBe(0); // /earnings/chart answers [] through the Relay
+      expect(doc.querySelectorAll("[data-oi-stat^='chart:']").length, p).toBe(0);
     }
   });
 });
@@ -161,8 +155,8 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     expect(texts(doc, "[data-oi-period-title]")).toEqual(["Last 30 days"]);
     expect(texts(doc, "[data-oi-range]")).toEqual(["Sep 17, 2026 - Oct 17, 2026"]);
     applyStats(doc, "statistics/statements/disputes", { ...LIVE, chargebacks: { chargebacksRatio: 1.236 } }, D30);
-    expect(texts(doc, ".m-statistics-alert .alert-text-wrapper > p")).toEqual(["Chargeback ratio 1.24%"]); // OF rounds to two places
-    expect(texts(doc, ".b-statistics-page-content__wrapper .empty-message")).toEqual([NOT_YET]); // chargebacks, but no list route
+    expect(texts(doc, ".m-statistics-alert .alert-text-wrapper > p")).toEqual(["Chargeback ratio 1.24%"]);
+    expect(texts(doc, ".b-statistics-page-content__wrapper .empty-message")).toEqual([NOT_YET]);
   });
 
   it("Overview › Earnings: the sidebar's figures and OF's marks, the period's sums as $0.00, All time and every month since the start", () => {
@@ -173,19 +167,19 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     expect(unit(doc, "Profile visitors")).toEqual(["200 86.9%"]);
     expect(unit(doc, "New subs/Renews")).toEqual(["10 / 0"]);
     expect(unit(doc, "Posts views")).toEqual(["20 60%"]);
-    expect(doc.querySelector(".b-elements-determinant__value .m-level-down")!.textContent!.trim()).toBe("60%"); // not a Summary: no sign
+    expect(doc.querySelector(".b-elements-determinant__value .m-level-down")!.textContent!.trim()).toBe("60%");
     expect(texts(doc, "[data-oi-range='tz']")).toEqual(["Sep 17, 2026 - Oct 17, 2026 (local time UTC +02:00)"]);
     const row = (name: string) => texts(doc, `.b-stats-row__label:has(input[name='${name}']) .b-stats-row__val`);
     for (const k of ["total", "subscribes", "tips", "tips_stream", "post", "chat_messages", "ref", "stream"]) expect(row(k), k).toEqual(["$0.00", "$0.00"]);
     const months = texts(doc, ".b-stats-row__month");
     expect(months.slice(0, 4)).toEqual(["All time", "Sep 17, 2026 - Oct 17, 2026", "October, 2026", "September, 2026"]);
-    expect(months.at(-1)).toBe("September, 2021"); // the Creator's start
+    expect(months.at(-1)).toBe("September, 2021");
     const nets = texts(doc, ".b-stats-row__total-net > span");
     expect(nets).not.toContain("—");
-    expect(nets[months.indexOf("May, 2026")]).not.toBe("$0.00"); // /payouts/stats' month
-    expect(nets[months.indexOf("April, 2026")]).toBe("$0.00"); // a month it lists nothing for
+    expect(nets[months.indexOf("May, 2026")]).not.toBe("$0.00");
+    expect(nets[months.indexOf("April, 2026")]).toBe("$0.00");
     expect(texts(doc, ".l-wrapper__sidebar .empty-message")).toEqual(["No Streaming activity during selected period"]);
-    applyStats(doc, "statistics/overview/earnings", LIVE, D30); // idempotent
+    applyStats(doc, "statistics/overview/earnings", LIVE, D30);
     expect(texts(doc, ".b-stats-row__month")).toHaveLength(months.length);
     applyStats(doc, "statistics/overview/earnings", {}, D30);
     expect(unit(doc, "Earnings")).toEqual(["—"]);
@@ -197,7 +191,7 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     const doc = load("statistics/overview/top-highlights");
     applyStats(doc, "statistics/overview/top-highlights", LIVE, D30);
     const card = (t: string) => texts(doc, `.b-clean-state:has(> .b-clean-state__title) `).find((x) => x?.startsWith(t));
-    expect(card("Top Post")).toBeUndefined(); // OF's card instead (below)
+    expect(card("Top Post")).toBeUndefined();
     expect(card("Top Message")).toBe("Top Message No Message activity during selected period");
     expect(card("Top Stream")).toBe("Top Stream No Streaming activity during selected period");
     expect(card("Top Fan")).toBe(`Top Fan ${NOT_YET}`);
@@ -214,9 +208,9 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
       const card = doc.querySelector("[data-oi-top='Top Post']")!;
       expect(card, page).not.toBeNull();
       expect([...card.querySelectorAll<HTMLButtonElement>(".b-tabs__nav__link")].map((b) => `${b.textContent!.trim()}${b.disabled ? "×" : ""}${b.classList.contains("m-current") ? "*" : ""}`)).toEqual(["Purchases×", "Tips×", "Views*", "Likes×", "Comments×"]);
-      expect(card.querySelector(".b-top-statistic__header__date")!.textContent!.trim()).toBe("Oct 17, 2026, 01:52 am"); // OF's "MMM D, YYYY, hh:mm a", owner's zone
+      expect(card.querySelector(".b-top-statistic__header__date")!.textContent!.trim()).toBe("Oct 17, 2026, 01:52 am");
       expect(card.querySelector(".b-top-statistic__text p")!.textContent).toBe("Synthetic post text 1");
-      expect(card.querySelector(".b-top-statistic__img img")!.getAttribute("src")).toMatch(/^\/img\?u=/); // through the Relay, never OF's CDN
+      expect(card.querySelector(".b-top-statistic__img img")!.getAttribute("src")).toMatch(/^\/img\?u=/);
       expect(texts(doc, "[data-oi-top='Top Post'] .b-summary-list__item")).toEqual(["6 views"]);
       const full = card.querySelector<HTMLButtonElement>(".b-top-statistic__btns button")!;
       expect([full.textContent!.trim(), full.disabled, full.title]).toEqual(["Full stat", true, NOT_YET]);
@@ -227,9 +221,9 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     const views = (both.topPost as Record<string, Record<string, unknown>>).views;
     (both.topPost as Record<string, unknown>).purchases = { ...views, id: 7002, rawText: "Synthetic post text 2", price: 5, stats: { purchasedSumm: 15, lookCount: 3 } };
     applyStats(doc, "statistics/overview/top-highlights", both, D30);
-    expect(texts(doc, "[data-oi-top='Top Post'] .b-top-statistic__text")).toEqual(["Synthetic post text 2"]); // OF's first tab with a post
+    expect(texts(doc, "[data-oi-top='Top Post'] .b-top-statistic__text")).toEqual(["Synthetic post text 2"]);
     expect(texts(doc, "[data-oi-top='Top Post'] .b-price")).toEqual(["$5.00"]);
-    expect(doc.querySelector("[data-oi-top='Top Post'] .b-top-statistic__body")!.className).toContain("m-without-img"); // no image proxy: no picture
+    expect(doc.querySelector("[data-oi-top='Top Post'] .b-top-statistic__body")!.className).toContain("m-without-img");
     expect(texts(doc, "[data-oi-top='Top Post'] .b-summary-list__item")).toEqual(["$15.00 purchases", "3 views"]);
     bindPicks(doc);
     doc.querySelector<HTMLElement>("[data-oi-pick='tpost:views']")!.click();
@@ -243,7 +237,7 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
   it("Engagement › Messages: OF's own mass messages of the period, in the owner's time zone", () => {
     const doc = load("statistics/engagement/messages");
     applyStats(doc, "statistics/engagement/messages", LIVE, D30);
-    expect(unit(doc, "Messages")).toEqual(["40 -34.4%"]); // a Summary: OF prints the sign
+    expect(unit(doc, "Messages")).toEqual(["40 -34.4%"]);
     expect(texts(doc, ".b-statistics-page-content__wrapper > .b-elements-determinant__value")).toEqual(["40 messages $0.00 34.4%"]);
     const rows = [...doc.querySelectorAll(".b-statements-table tbody > tr")].filter(visible);
     expect(rows).toHaveLength(6);
@@ -251,8 +245,7 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     expect([...rows[0].querySelectorAll(":scope > td")].slice(1, 5).map((c) => c.textContent!.trim())).toEqual(["1", "0", "—", "—"]);
     expect(rows[0].querySelector(".b-top-statistic__text p")!.textContent).toBe("Synthetic mass message 1");
     expect(rows[0].querySelector(".b-content-inside-thumbs")).toBeNull();
-    expect(rows[0].querySelector(".b-top-statistic__img")!.outerHTML).toBe('<div class="b-top-statistic__img b-top-statistic__img--placeholder"></div>'); // OF's, no media
-    // OF's buttons: a canceled message "New message" (disabled) and the "Canceled" mark; an unsendable one Unsend and its "i".
+    expect(rows[0].querySelector(".b-top-statistic__img")!.outerHTML).toBe('<div class="b-top-statistic__img b-top-statistic__img--placeholder"></div>');
     expect(rows[0].classList.contains("m-colored-bg")).toBe(true);
     const newMessage = rows[0].querySelector<HTMLButtonElement>(".b-top-statistic__btns button")!;
     expect([newMessage.textContent!.trim(), newMessage.disabled, newMessage.title]).toEqual(["New message", true, NOT_YET]);
@@ -262,7 +255,7 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     const plainMsg = structuredClone(LIVE);
     (plainMsg.massMessages as { items: Record<string, unknown>[] }).items[0].isCanceled = false;
     applyStats(doc, "statistics/engagement/messages", plainMsg, D30);
-    expect([...doc.querySelectorAll(".b-statements-table tbody > tr")].filter(visible)[0].querySelector(".b-top-statistic__btns")).toBeNull(); // neither: no buttons
+    expect([...doc.querySelectorAll(".b-statements-table tbody > tr")].filter(visible)[0].querySelector(".b-top-statistic__btns")).toBeNull();
   });
 
   it("Engagement › Messages: read by pages (OF's offset); \"Loading…\" while more may come, OF's \"No data\" once read", () => {
@@ -272,7 +265,7 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     applyStats(doc, "statistics/engagement/messages", { ...LIVE, massMessages: { items: [], hasMore: false } }, D30);
     expect(texts(doc, ".b-statements-table .empty-message")).toEqual(["No data during selected period"]);
     applyStats(doc, "statistics/engagement/messages", { ...LIVE, massMessages: undefined }, D30);
-    expect(texts(doc, ".b-statements-table .empty-message")).toEqual([NOT_YET]); // not read (a Relay error): no claim
+    expect(texts(doc, ".b-statements-table .empty-message")).toEqual([NOT_YET]);
   });
 
   it("Engagement › Posts: OF's metric tabs, the period's top posts in OF's table; Purchases with its summary and chart", () => {
@@ -286,13 +279,13 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     expect(doc.querySelector("[data-oi-table='posts'] .b-top-statistic__text p")!.textContent).toBe("Synthetic post text 1");
     expect(doc.querySelector("[data-oi-table='posts'] .b-top-statistic__img img")!.getAttribute("src")).toMatch(/^\/img\?u=/);
     expect(texts(doc, ".b-statistics-page-content__wrapper > .empty-message")).toEqual([]);
-    expect(texts(doc, "[data-oi-posts-summary]")).toEqual(["1 post $0.00"]); // purchases' change 0: no mark
+    expect(texts(doc, "[data-oi-posts-summary]")).toEqual(["1 post $0.00"]);
     expect(chartSpecOf(doc.querySelector<HTMLCanvasElement>("[data-oi-posts-chart] canvas.b-chart__double-line__main")!)!.series).toMatchObject({ title: "Purchases", kind: "money" });
     expect(chartSpecOf(doc.querySelector<HTMLCanvasElement>("[data-oi-posts-chart] canvas.b-chart__double-line__aside")!)!.series.values.reduce((a, b) => a + b)).toBe(1);
     applyStats(doc, "statistics/engagement/posts", LIVE, D30, { picks: { by: "comments" } });
     expect(texts(doc, "[data-oi-pick^='by:'].m-current")).toEqual(["Comments"]);
     expect(texts(doc, "[data-oi-table='posts'] thead th")[2]).toBe("Comments");
-    expect(texts(doc, "[data-oi-posts-summary]")).toEqual([]); // the chart filter does not reach OF: no summary, no chart
+    expect(texts(doc, "[data-oi-posts-summary]")).toEqual([]);
     expect(chartSpecOf(doc.querySelector<HTMLCanvasElement>("[data-oi-posts-chart] canvas.b-chart__double-line__main")!)).toBeUndefined();
     applyStats(doc, "statistics/engagement/posts", { ...LIVE, postsTop: { hasMore: false, items: [] } }, D30);
     expect(texts(doc, ".b-statistics-page-content__wrapper > .empty-message")).toEqual(["No Post activity during selected period"]);
@@ -322,13 +315,13 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     expect(aside(visitors)).toMatchObject({ ticks: 2, xLabels: true, series: { title: "View duration", kind: "duration" } });
     const fans = load("statistics/fans/subscriptions");
     applyStats(fans, "statistics/fans/subscriptions", LIVE, D30);
-    expect(main(fans)!.series).toMatchObject({ title: "Earnings", kind: "money" }); // OF's order: earnings, then subscribes
+    expect(main(fans)!.series).toMatchObject({ title: "Earnings", kind: "money" });
     expect(aside(fans)!.series.values.reduce((a, b) => a + b)).toBe(10);
     const promo = load("statistics/reach/promotions");
     applyStats(promo, "statistics/reach/promotions", LIVE, D30);
     for (const c of promo.querySelectorAll<HTMLCanvasElement>(".b-statistics-page-content__wrapper canvas")) expect(chartSpecOf(c)).toBeUndefined();
     applyStats(fans, "statistics/fans/subscriptions", {}, D30);
-    expect(main(fans)).toBeUndefined(); // no data: blank again
+    expect(main(fans)).toBeUndefined();
   });
 
   it("Reach › Profile visitors: OF's \"View all\" while OF has more countries, \"View less\" once all are read; Guests/Users stay disabled", () => {
@@ -349,8 +342,7 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     const shown = structuredClone(LIVE);
     (shown.profileStats as { topCountries: { hasMore: boolean } }).topCountries.hasMore = false;
     applyStats(doc, "statistics/reach/profile-visitors", shown, D30);
-    expect(visible(more())).toBe(false); // OF has no more: no button
-    // The chart's Guests/Users split needs OF's `by`, which the Relay does not forward.
+    expect(visible(more())).toBe(false);
     for (const t of ["Guests", "Users"]) {
       const chip = [...doc.querySelectorAll<HTMLButtonElement>(".b-statistics-page-content__wrapper button.b-tabs__nav__link")].find((b) => b.textContent!.trim() === t)!;
       expect([chip.disabled, chip.title], t).toEqual([true, NOT_YET]);
@@ -360,7 +352,7 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
   it("Reach › Tracking links: OF's Summary (tracking links, clicks, subscribers) when the period has statistics, else OF's text", () => {
     const doc = load("statistics/reach/tracking-links");
     applyStats(doc, "statistics/reach/tracking-links", LIVE, D30);
-    expect(unit(doc, "Tracking links")).toEqual(["1 -75%"]); // a Summary: OF prints the sign
+    expect(unit(doc, "Tracking links")).toEqual(["1 -75%"]);
     expect(unit(doc, "Clicks")).toEqual(["0"]);
     expect(unit(doc, "Subscribers")).toEqual(["0"]);
     expect(texts(doc, ".l-wrapper__sidebar .empty-message")).toEqual([]);
@@ -384,7 +376,7 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     applyStats(stories, "statistics/engagement/stories", LIVE, D30);
     expect(new Set(texts(stories, ".empty-message"))).toEqual(new Set(["No Stories activity during selected period"]));
     const streaming = load("statistics/engagement/streaming");
-    applyStats(streaming, "statistics/engagement/streaming", LIVE, D30); // OF's count arrives as the string "0"
+    applyStats(streaming, "statistics/engagement/streaming", LIVE, D30);
     expect(new Set(texts(streaming, ".empty-message"))).toEqual(new Set(["No Streaming activity during selected period"]));
   });
 
@@ -402,9 +394,8 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
       ["Jun 05, 2024, 03:02 pm", "60000001", "$95.73", "Payout has been processed Download invoice"],
     ]);
     const dl = doc.querySelector<HTMLButtonElement>("[data-oi-table='payouts'] .download-invoice-link")!;
-    expect([dl.disabled, dl.title]).toEqual([true, NOT_YET]); // OF's invoice file: no Relay route
+    expect([dl.disabled, dl.title]).toEqual([true, NOT_YET]);
     expect(doc.querySelector("[data-oi-table='payouts'] .useable-icon")!.className).toBe("useable-icon m-payout-cell m-done");
-    // A rejected request (OF's copy and its reason) and a pending one.
     const states = { list: [
       { invoiceId: "61", createdAt: "2026-10-10T08:00:00+00:00", amount: 20, currency: "USD", state: "rejected", rejectReason: "Synthetic reason" },
       { invoiceId: "62", createdAt: "2026-10-09T08:00:00+00:00", amount: 0, currency: "USD", state: "new", rejectReason: null },
@@ -414,11 +405,11 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
       "Payout request could not be processed and this amount was returned to your Current Balance. Reason: Synthetic reason",
       "Payout request is being processed",
     ]);
-    expect(texts(doc, "[data-oi-table='payouts'] tbody td:nth-child(3)")).toEqual(["$20.00", "$0.00"]); // a real zero
+    expect(texts(doc, "[data-oi-table='payouts'] tbody td:nth-child(3)")).toEqual(["$20.00", "$0.00"]);
     const ref = load("statistics/statements/referrals/earnings");
     applyStats(ref, "statistics/statements/referrals/earnings", LIVE, D30);
     expect(texts(ref, ".b-statistics-page-content__wrapper .empty-message")).toEqual(["No data during selected period"]);
-    expect(texts(ref, ".b-elements-determinant__value.m-inline")).toEqual(["$0.00"]); // no referral balance, no referral payout ever
+    expect(texts(ref, ".b-elements-determinant__value.m-inline")).toEqual(["$0.00"]);
     applyStats(ref, "statistics/statements/referrals/earnings", { ...LIVE, referralRequests: { list: [states.list[0]], hasMore: false } }, D30);
     expect(ref.querySelector("[data-oi-table='referrals'] tbody .rejected .b-state-icon use")!.getAttribute("href")).toBe("#icon-alert");
   });
@@ -438,15 +429,14 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
   it("Statements › Earnings: the period's transactions only; none: OF's empty state alone (no summary or chart)", () => {
     const doc = load("statistics/statements/earnings");
     applyStats(doc, "statistics/statements/earnings", LIVE, D30);
-    expect(texts(doc, ".b-statements-table .empty-message")).toEqual(["No data during selected period"]); // the fixture's are older
-    expect(texts(doc, ".b-statements-table thead th")).toEqual([]); // OF's placeholder alone, no header
+    expect(texts(doc, ".b-statements-table .empty-message")).toEqual(["No data during selected period"]);
+    expect(texts(doc, ".b-statements-table thead th")).toEqual([]);
     expect(texts(doc, ".b-statistics-page-content__wrapper > .b-elements-determinant")).toEqual([]);
     applyStats(doc, "statistics/statements/earnings", LIVE, periodOf("all", NOW, TZ, START));
     expect(texts(doc, ".b-statistics-page-content__wrapper .b-elements-determinant__value.m-inline")).toEqual(["$0.00 ( $0.00 Gross)"]);
     const rows = [...doc.querySelectorAll(".b-statements-table tbody > tr")].filter(visible);
     expect(rows.map((r) => r.querySelector(".b-statements-text-table")!.textContent)).toEqual(["Subscription from Fan One", ...Array(5).fill("Payment for message from Fan Two")]);
     expect(rows[0].querySelector(".m-width-statements strong > span")!.textContent).toBe("May 19, 2026,");
-    // Still reading towards the period: "Loading…", never a claim.
     applyStats(doc, "statistics/statements/earnings", { ...LIVE, transactions: { list: [], hasMore: true } }, D30);
     expect(texts(doc, ".b-statements-table .empty-message")).toEqual(["Loading…"]);
   });
@@ -470,7 +460,7 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     bindPicks(doc);
     setPick("tips", "chat");
     doc.querySelector<HTMLElement>("[data-oi-pick='type:post']")!.click();
-    expect([currentPicks().type, currentPicks().tips]).toEqual(["post", "all"]); // OF opens Tips on "All tips" again
+    expect([currentPicks().type, currentPicks().tips]).toEqual(["post", "all"]);
     setPick("type", "total");
   });
 
@@ -486,7 +476,7 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     expect(currentPicks().type).toBe("chat_messages");
     expect(went).toBe("/of-manager/statistics/statements/earnings");
     resetPicks();
-    expect(currentPicks().type).toBe("chat_messages"); // kept across the tabs, as OF keeps it
+    expect(currentPicks().type).toBe("chat_messages");
     setPick("type", "total");
   });
 
@@ -496,19 +486,18 @@ describe("applyStats on the live bodies (a real period with no earnings)", () =>
     const page = (n: number, from = 0, hasMore?: boolean) => ({ list: Array.from({ length: n }, (_, i) => ({ id: from + i })), ...(hasMore === undefined ? {} : { hasMore }) });
     expect(nextOffset(page(50, 0, true), [page(50, 0, true)])).toBe(50);
     expect(nextOffset(page(20, 0, false), [page(20)])).toBeUndefined();
-    expect(nextOffset(page(50), [page(50)])).toBe(50); // no hasMore (payout requests): a full page may have more
+    expect(nextOffset(page(50), [page(50)])).toBe(50);
     expect(nextOffset(page(12), [page(12)])).toBeUndefined();
-    expect(nextOffset(page(50, 0, true), [page(50, 0, true), page(50, 0, true)])).toBeUndefined(); // OF ignored the offset
+    expect(nextOffset(page(50, 0, true), [page(50, 0, true), page(50, 0, true)])).toBeUndefined();
   });
 
   it("rows once: by id, invoice or (a dispute, id 0) payment; 0 or empty is no identity, such rows are all kept", () => {
     const disputes = [1, 2, 3].map((n) => ({ id: 0, createdAt: `2026-10-0${n}T10:00:00+00:00`, payment: { id: `p${n}`, amount: n } }));
     expect(uniqueRows([{ list: disputes }])).toHaveLength(3);
-    expect(uniqueRows([{ list: disputes }, { list: disputes }])).toHaveLength(3); // a page read twice
+    expect(uniqueRows([{ list: disputes }, { list: disputes }])).toHaveLength(3);
     expect(uniqueRows([{ list: [{ id: 0 }, { id: 0 }, { id: "" }, { invoiceId: "" }, {}] }])).toHaveLength(5);
     expect(uniqueRows([{ list: [{ id: 7 }, { invoiceId: "a" }] }, { list: [{ id: 7 }, { invoiceId: "a" }, { invoiceId: "b" }] }])).toEqual([{ id: 7 }, { invoiceId: "a" }, { invoiceId: "b" }]);
     expect([{ id: 5 }, { id: "x" }, { id: 0, invoiceId: 9 }, { id: 0, payment: { id: "h" } }, { id: 0, payment: null }, { id: "0" }].map(rowId)).toEqual(["5", "x", "9", "h", undefined, undefined]);
-    // A next page of distinct id-0 disputes is new; the same page again is not.
     const pg = (from: number) => ({ list: Array.from({ length: 10 }, (_, i) => ({ id: 0, payment: { id: `p${from + i}` } })), hasMore: true });
     expect(nothingNew(pg(10), [pg(0), pg(10)])).toBe(false);
     expect(nothingNew(pg(0), [pg(0), pg(0)])).toBe(true);
@@ -539,8 +528,8 @@ describe("applyStats with earnings in the period", () => {
     const rest = earning({ earnings: [20, 25, 0], fans: [8, 10, 0], messages: [4, 5, 0], posts: [0, 0, 0], streams: [0, 0, 0] });
     expect(derive(rest).tips).toBeUndefined();
     applyStats(doc, "statistics/overview/earnings", rest, D30);
-    expect(row("tips")).toEqual(["—", "—"]); // $8.00 the overview does not place: no made-up split
-    expect(row("ref")).toEqual(["$0.00", "$0.00"]); // no referral balance and no referral payout ever
+    expect(row("tips")).toEqual(["—", "—"]);
+    expect(row("ref")).toEqual(["$0.00", "$0.00"]);
   });
 
   it("All time: no change marks (OF shows none for it)", () => {
@@ -548,7 +537,7 @@ describe("applyStats with earnings in the period", () => {
     applyStats(doc, "statistics/overview/earnings", DATA, periodOf("all", NOW, TZ, START));
     expect(unit(doc, "Earnings")).toEqual(["$12.00"]);
     expect(texts(doc, "[data-oi-period-title]")).toEqual(["All time"]);
-    expect(texts(doc, "[data-name='period']")).toEqual([]); // OF draws no period row for All time
+    expect(texts(doc, "[data-name='period']")).toEqual([]);
   });
 });
 
@@ -576,9 +565,8 @@ describe("OF's own landings (scripts/of-mirror.mjs REDIRECTS, from the captures'
 
 describe("Statements' From … To range (ticket 20): days in the owner's time zone as the earning statistics read asks them", () => {
   const NY = "America/New_York";
-  const LATE = new Date("2026-11-20T23:30:00Z"); // 00:30 on the 21st in Ljubljana (UTC +01:00), 18:30 on the 20th in New York
+  const LATE = new Date("2026-11-20T23:30:00Z");
   it.each([
-    // [case, from, to, now, tz, params, start, end]
     ["same day", "2026-10-17", "2026-10-17", NOW, TZ, ["2026-10-17", "2026-10-17"], "2026-10-16T22:00:00.000Z", NOW.toISOString()],
     ["a month boundary", "2026-09-30", "2026-10-01", NOW, TZ, ["2026-09-30", "2026-10-01"], "2026-09-29T22:00:00.000Z", "2026-10-01T21:59:59.000Z"],
     ["days in either order", "2026-10-01", "2026-09-30", NOW, TZ, ["2026-09-30", "2026-10-01"], "2026-09-29T22:00:00.000Z", "2026-10-01T21:59:59.000Z"],
@@ -592,8 +580,6 @@ describe("Statements' From … To range (ticket 20): days in the owner's time zo
   });
 
   it.each([
-    // [case, start, end, now, tz, userStart, [start, end, today, first pickable]]: Statements opens on today (start = end
-    // = now); Statistics' Custom on the period shown.
     ["Statements: today in Ljubljana past its midnight", LATE, LATE, LATE, TZ, null, ["2026-11-21", "2026-11-21", "2026-11-21", null]],
     ["Statements: today in New York at the same instant", LATE, LATE, LATE, NY, null, ["2026-11-20", "2026-11-20", "2026-11-20", null]],
     ["Statements: the Creator's start on its own day in the zone", NOW, NOW, NOW, TZ, new Date("2021-09-27T22:30:00Z"), ["2026-10-17", "2026-10-17", "2026-10-17", "2021-09-28"]],

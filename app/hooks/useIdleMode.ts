@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * useIdleMode — Infloww's Idle mode (04 M18): after IDLE_AFTER_MS with no
- * input in this window, close the SSE stream and stop every react-query poll;
- * the next input resumes both. A forgotten tab then holds no relay connection
- * and makes no OF calls.
- *
- * Polls stop through react-query's focusManager: a `refetchInterval` only
- * fires while focused (no query here sets `refetchIntervalInBackground`). On
- * resume the stream reopens from its last event id, so the relay replays what
- * was missed or sends `resync` (useAccountStateEvents refetches everything),
- * and every active query past its staleTime refetches now rather than on its
- * next tick.
- */
 
 import { useEffect, useState } from "react";
 import { focusManager, useQueryClient } from "@tanstack/react-query";
@@ -20,7 +7,6 @@ import { focusManager, useQueryClient } from "@tanstack/react-query";
 import { eventBus } from "@/lib/events";
 import { onUserInput } from "@/lib/idle";
 
-/** Infloww's: "after 10 min with no input" (docs/infloww-screens.md §1.3). */
 export const IDLE_AFTER_MS = 10 * 60_000;
 export const IDLE_CHECK_MS = 15_000;
 

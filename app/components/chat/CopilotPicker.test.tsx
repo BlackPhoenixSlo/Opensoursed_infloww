@@ -1,9 +1,3 @@
-/**
- * AI Copilot (the Composer's "AI" pill; Infloww help articles 262036/262040):
- * pick Casual / Re-engage / Tip request / Sexting → one request → three
- * suggestions; a pick goes into the text box and is never sent; Regenerate
- * sends the set on screen as `avoid`; a Relay error prints its sentence.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -48,7 +42,7 @@ describe("CopilotPicker", () => {
     const modes = within(panel.getByRole("group", { name: "Reply style" })).getAllByRole("button");
     expect(modes.map((b) => b.textContent)).toEqual(["Casual", "Re-engage", "Tip request", "Sexting"]);
     expect(screen.queryByText(/saved lines/i)).toBeNull();
-    expect(suggestCalls()).toHaveLength(0); // opening costs nothing
+    expect(suggestCalls()).toHaveLength(0);
   });
 
   it("picks a mode with one request and inserts a suggestion without sending", async () => {
@@ -61,7 +55,6 @@ describe("CopilotPicker", () => {
     expect(suggestCalls()).toEqual([
       ["/admin/copilot/acct-1/42/suggest", { mode: "reengage", avoid: [] }, { accountId: "acct-1" }],
     ]);
-    // Re-picking the mode on screen does not pay for another call.
     await user.click(panel.getByRole("button", { name: "Re-engage" }));
     expect(suggestCalls()).toHaveLength(1);
 

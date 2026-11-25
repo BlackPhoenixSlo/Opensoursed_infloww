@@ -1,34 +1,6 @@
-"""
-The OF WebSocket pump on a dead session (service/of_ws.py + server.py's pump
-and its supervisor). Before each (re)connect the pump reads /users/me for a
-fresh wsUrl + token; when OF answers that with a dead-session signature
-(account_health.is_session_dead_error: 101 otpState, "Wrong user.") retrying
-every few seconds cannot succeed, so:
-
-  case_events_gives_up_on_a_dead_session:
-      OFWebSocket.events() retries such an answer 3 times (1, 2, 4 s, owner
-      Q2), then raises SessionDead (with the reason) on the 4th instead of
-      reconnecting; any other error still reconnects.
-  case_the_pump_flags_the_account_and_exits:
-      _ws_pump_for_account marks the account session-dead (reason
-      otp_required, the owner's one notification) and returns after FOUR
-      /users/me (1 + 3 retries), instead of looping.
-  case_the_supervisor_parks_a_dead_account_until_it_recovers:
-      a supervisor pass starts no pump for a session-dead account and does not
-      restart its exited pump; once the flag clears (a re-login, the probe) the
-      next pass starts it again, and the new pump loads a fresh client.
-  case_restart_backoff_holds_and_a_stop_resets_it:
-      a crashing pump's 1st Restart goes at once, the 2nd is held 15 s; a stop
-      (remove / deactivate) drops the backoff record, so a re-added Creator
-      starts from attempt 0.
-
-No network: the registry, the OF client and pump starts are stubbed.
-
-Run: ./venv/bin/python service/tests/test_ws_session_dead.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -41,7 +13,7 @@ import of_ws  # noqa: E402
 from of_ws_decide import DEAD_RETRIES  # noqa: E402
 from of_client import OFAPIError  # noqa: E402
 
-_harness.make_client()  # neutralises the startup spawns before `server` serves
+_harness.make_client()
 import server  # noqa: E402
 
 DEAD, LIVE = "acc_ws_dead", "acc_ws_live"
@@ -59,7 +31,6 @@ server._start_account_pump = STARTED.append
 
 
 class _Client:
-    """An OFClient whose /users/me answers `err` (or a ws ticket when None)."""
     proxy_url = None
     user_agent = "ua"
 
@@ -83,12 +54,11 @@ async def case_events_gives_up_on_a_dead_session() -> None:
         raise AssertionError("events() ended without raising")
     except of_ws.SessionDead as e:
         assert e.reason == "otp_required", e.reason
-    assert DEAD_RETRIES == 3  # the literals below (4 calls, 1 + 2 + 4 s) assume it
+    assert DEAD_RETRIES == 3
     assert c.me_calls == 4, f"/users/me called {c.me_calls}x, want 4 (1 + 3 retries)"
     took = time.monotonic() - t0
     assert 6.9 <= took < 7.9, f"{took:.1f} s: want the 1 + 2 + 4 s retries, then no wait"
 
-    # Any other failure still reconnects with backoff (1 s, then 2 s).
     other = _Client(LIVE, OFAPIError("500 for https://onlyfans.com/api2/v2/users/me\n{}"))
     ws = of_ws.OFWebSocket(lambda: other, session_dead=account_health.is_session_dead_error)
 
@@ -108,11 +78,10 @@ async def case_the_pump_flags_the_account_and_exits() -> None:
     orig = server._load_client
     server._load_client = lambda aid: clients.append(_Client(aid, OFAPIError(OTP_ERR))) or clients[-1]
     try:
-        parked = await asyncio.wait_for(server._ws_pump_for_account(DEAD), timeout=10)  # 1 + 2 + 4 s retries
+        parked = await asyncio.wait_for(server._ws_pump_for_account(DEAD), timeout=10)
     finally:
         server._load_client = orig
     assert parked is True, "a parked exit tells the supervisor's backoff it parked"
-    # 1 + 3 retries; each attempt gets a fresh client (test_ws_pump_evict).
     assert [c.me_calls for c in clients] == [1] * 4, [c.me_calls for c in clients]
     stamp = (await account_health.dead_session_map()).get(DEAD)
     assert stamp is not None and stamp.reason == "otp_required", stamp
@@ -123,16 +92,16 @@ async def case_the_supervisor_parks_a_dead_account_until_it_recovers() -> None:
     await account_health.mark_session_dead(DEAD, "otp_required")
     loop = asyncio.get_running_loop()
     exited = loop.create_future()
-    exited.set_result(None)  # its pump returned after flagging the account
+    exited.set_result(None)
     server._account_pumps[DEAD] = exited
-    server._pump_runs[DEAD] = server._PumpRun(0.0, due=0.0)  # its exit was handled
+    server._pump_runs[DEAD] = server._PumpRun(0.0, due=0.0)
     STARTED.clear()
     try:
         await server._reconcile_pumps()
         assert DEAD not in STARTED and LIVE in STARTED, f"started: {STARTED}"
         assert server._account_pumps.get(DEAD) is exited, "the parked pump was restarted"
 
-        await account_health.clear_session_dead(DEAD)  # a re-login or the probe
+        await account_health.clear_session_dead(DEAD)
         STARTED.clear()
         await server._reconcile_pumps()
         assert DEAD in STARTED, f"the recovered account's pump did not start: {STARTED}"
@@ -143,17 +112,13 @@ async def case_the_supervisor_parks_a_dead_account_until_it_recovers() -> None:
 
 
 async def case_restart_backoff_holds_and_a_stop_resets_it() -> None:
-    # The supervisor's bookkeeping around pump_reconcile.restart_due (its table is
-    # test_pump_reconcile.py): a crashing pump's 1st Restart goes at once, the 2nd
-    # is held (15 s); a stop (remove / deactivate / the supervisor's) drops the
-    # record, so the Creator's next pump starts again from attempt 0.
     async def crash(_aid: str) -> bool:
-        return False   # exits at once, not parked
+        return False
 
     async def exited() -> asyncio.Task:
         task = server._account_pumps[LIVE]
         await task
-        await asyncio.sleep(0)   # its done callback (_on_pump_exit) has run
+        await asyncio.sleep(0)
         return task
 
     real_pump, real_list = server._ws_pump_for_account, account_registry.list_accounts
@@ -164,18 +129,18 @@ async def case_restart_backoff_holds_and_a_stop_resets_it() -> None:
         await exited()
         assert server._pump_runs[LIVE].restarts == 0, server._pump_runs[LIVE]
 
-        await server._reconcile_pumps()                 # attempt 0: at once
+        await server._reconcile_pumps()
         second = await exited()
         assert server._pump_runs[LIVE].restarts == 1, server._pump_runs[LIVE]
         run = server._pump_runs[LIVE]
-        assert run.due - time.monotonic() > 14, run   # attempt 1: 15 s after its exit
+        assert run.due - time.monotonic() > 14, run
 
-        await server._reconcile_pumps()                 # held: no new pump
+        await server._reconcile_pumps()
         assert server._account_pumps[LIVE] is second, "the held Restart ran"
 
-        server._do_stop_account_pump(LIVE)              # remove / deactivate
+        server._do_stop_account_pump(LIVE)
         assert LIVE not in server._pump_runs, "the stop kept the backoff record"
-        server._do_start_account_pump(LIVE)             # re-added
+        server._do_start_account_pump(LIVE)
         await exited()
         run = server._pump_runs[LIVE]
         assert run.restarts == 0 and run.due <= time.monotonic(), run
@@ -187,10 +152,6 @@ async def case_restart_backoff_holds_and_a_stop_resets_it() -> None:
 
 
 async def case_a_cancelled_pump_leaves_no_orphaned_read() -> None:
-    # A pump is cancelled on every restart (a re-capture, a proxy switch, a parked
-    # account's resume). Its pending socket read must go with it: left behind, it
-    # ends with ConnectionClosed once the socket closes and asyncio logs it as a
-    # "Task exception was never retrieved" traceback.
     import gc
 
     import websockets
@@ -225,11 +186,12 @@ async def case_a_cancelled_pump_leaves_no_orphaned_read() -> None:
                 break
             await asyncio.sleep(0.05)
         assert got, "the pump never connected"
-        await asyncio.sleep(0.2)  # parked in its next socket read
+        await asyncio.sleep(0.2)
+# a restart cancels the pump; its pending socket read must go too, else asyncio logs "Task exception was never retrieved"
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        del task  # as the supervisor drops a restarted pump's task
-        for _ in range(5):  # the socket's close handshake ends the read; then it is collected
+        del task
+        for _ in range(5):
             await asyncio.sleep(0.2)
             gc.collect()
         srv.close()

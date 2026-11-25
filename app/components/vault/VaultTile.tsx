@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * VaultTile — one media tile with hover preview + select/describe/order affordances.
- *
- * Hover: the vault picker's preview (useHoverPreview + tilePreview): OF poster
- * frames → HD storyboard (via /img/scrub), cancel on leave. Optional selection checkbox, a describe-status dot, and a per-folder
- * manual-order input (0,1,2,3 / -1,-2,-3) shown only in a folder view.
- */
 
 import {
   progressiveVideoSrc,
@@ -36,8 +29,6 @@ export interface VaultTileProps {
   media: VaultMedia & { _ai?: AiMeta };
   accountId: string | null;
   onClick?: (m: VaultMedia) => void;
-  /** When set, the duration pill becomes a play button that opens the picker's
-   *  full-screen VaultVideoPreview (one click, same as the chat picker). */
   onPlay?: (m: VaultMedia) => void;
   selected?: boolean;
   selectMode?: boolean;
@@ -45,10 +36,7 @@ export interface VaultTileProps {
   onCheck?: (m: VaultMedia) => void;
   showOrder?: boolean;
   onOrder?: (m: VaultMedia, value: number | null) => void;
-  /** Force the AI caption overlay on/off. When omitted, follows the persisted
-   *  manager toggle (default ON). */
   aiCaption?: boolean;
-  /** The grid's thumbnail retry (useThumbAutoRefresh): the src to show, and a failed load reported back. */
   thumbs: ThumbRetry;
 }
 
@@ -69,21 +57,15 @@ export default function VaultTile({
   const [managerCaptionOn] = useCaptionOverlay("manager");
   const captionOn = aiCaption ?? managerCaptionOn;
   const caption = captionOn ? aiCaptionFor(m) : null;
-  // Dwell, session id, slideshow cursor and the cancel POST live in the hook;
-  // what the tile shows is tilePreview's read of it, as in the picker.
   const hover = useHoverPreview(HOVER_DELAY_MS);
 
-  // src "" for a media with no picture (a voice note), or a broken one waiting for the grid's reload — the
-  // placeholder renders.
   const thumb = thumbs.tile(m);
   const dur = fmtDuration(m.duration);
   const isVideo = m.type === "video";
   const rawVideoSrc = isVideo ? progressiveVideoSrc(m) : null;
   const posterFrames = isVideo ? videoPosterFrames(m) : [];
   const drmOnly = isVideo && isDrmOnlyVideo(m);
-  // The storyboard needs an account to proxy through; without one there is no build to start or cancel.
   const canScrub = isVideo && !!rawVideoSrc && !!accountId;
-  // Posters proxy through the account too.
   const posterCount = accountId ? posterFrames.length : 0;
   const described = m._ai?.describe_status === "described";
 
@@ -102,7 +84,6 @@ export default function VaultTile({
   return (
     <div
       onPointerEnter={(e) => {
-        // Nothing to show (no account, or no source and no posters): no session to start.
         if (e.pointerType === "mouse" && (canScrub || posterCount > 0)) {
           hover.start(m.id, m.duration ?? 0, canScrub ? rawVideoSrc : null);
         }
@@ -163,7 +144,6 @@ export default function VaultTile({
 
       {caption && <VaultAiCaptionOverlay caption={caption} />}
 
-      {/* selection checkbox */}
       {selectMode && (
         <div
           className={`absolute top-1 right-1 w-5 h-5 rounded-full border-2 grid place-items-center text-[11px] ${
@@ -174,7 +154,6 @@ export default function VaultTile({
         </div>
       )}
 
-      {/* per-folder manual order input */}
       {showOrder && (
         <input
           type="number"
@@ -190,8 +169,7 @@ export default function VaultTile({
         />
       )}
 
-      {/* described dot — in a folder view the order input owns this corner on
-       *  desktop, but that input is hidden on phone, so the dot takes it back. */}
+      {/* In a folder view the order input owns this corner on desktop; it is hidden on phone, so the dot takes it back. */}
       {described && (
         <div
           className={`absolute top-1 left-1 w-2.5 h-2.5 rounded-full bg-ok ring-1 ring-black/40${
@@ -201,9 +179,7 @@ export default function VaultTile({
         />
       )}
 
-      {/* The duration pill IS the play affordance, same as the picker. A nested
-       *  <button> isn't legal HTML inside the clickable tile, so role="button" +
-       *  stopPropagation keeps tile-click = open detail and pill-click = play. */}
+      {/* A nested <button> is illegal inside the clickable tile: role="button" + stopPropagation instead. */}
       {isVideo && onPlay && (
         <span
           role="button"

@@ -1,22 +1,7 @@
-/**
- * Writes `lib/plugins.generated.register.ts`: one import per `plugins/<name>/register.ts`
- * there is, as `PLUGINS: ChatPlugin[]` (lib/chatSlots.ts), and
- * `lib/plugins.generated.ui.ts` the same from `plugins/<name>/ui.ts` as
- * `ChatUiPlugin[]` (lib/chatUiSlots.ts). next.config.ts
- * (for `next dev` and `next build`; never `next start`, whose image holds no lib/) and
- * vitest.config.ts require it, so each sees the plugins present, and none
- * when `plugins/` is absent. Plain CommonJS: next.config.ts requires it while
- * its config function runs, after Next's TypeScript hook for the config file
- * is gone. Rewrites a file only when its text changes (a dev server watches
- * it), via a rename, so two servers starting together never read half a file.
- */
 /* eslint-disable @typescript-eslint/no-require-imports -- CommonJS on purpose (above) */
 const fs = require("node:fs");
 const path = require("node:path");
 
-/** One barrel: every `plugins/<name>/<entry>.ts` there is, as `PLUGINS`, in
- *  `lib/<out>`, checked against `type` (from `typeFrom`) so a plugin field in
- *  the wrong entry file fails tsc. */
 function writeBarrel(appRoot, entry, out, type, typeFrom) {
   const dir = path.join(appRoot, "plugins");
   const names = fs.existsSync(dir)
@@ -45,7 +30,6 @@ function writeBarrel(appRoot, entry, out, type, typeFrom) {
 
 /** @param {string} appRoot @returns {string[]} the plugins' names */
 function writePluginBarrel(appRoot) {
-  // The plugins' components (lib/chatUiSlots.ts), apart from their data, which lib/nav.ts loads.
   writeBarrel(appRoot, "ui", "plugins.generated.ui.ts", "ChatUiPlugin", "@/lib/chatUiSlots");
   return writeBarrel(appRoot, "register", "plugins.generated.register.ts", "ChatPlugin", "@/lib/chatSlots");
 }

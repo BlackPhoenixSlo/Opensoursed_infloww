@@ -1,30 +1,7 @@
 #!/usr/bin/env python3
-"""
-Tips tab and Top tippers CSV exports (roadmap 1.16; transactions.py).
-
-`format=csv` on `/admin/tips-list` and `/admin/top-tippers` streams the
-whole filtered set through csv_export.py, the /admin/paid-messages
-precedent: paging (`before_id`, `limit`) does not apply, the filters do,
-and past the cap the file ends in the TRUNCATED line.
-
-  case_tips_csv_is_every_filtered_tip_newest_first:
-      the header, then every tip in the window (cleared or pending) newest
-      first, with the JSON row's attribution; `before_id` and `limit` are
-      ignored, `fan_query` narrows, a refunded tip and a PPV never appear.
-  case_top_tippers_csv_ranks_every_tipper:
-      every tipper (past `limit`), ranked by total, with the fan's names;
-      the Fan join does not inflate the sums.
-  case_csv_stops_at_the_row_cap:
-      the shared cap holds for both.
-  case_tip_note_needs_the_tips_fan_and_message:
-      the note is the tip's own message (account, fan, message): a hit; no
-      fan and no message; no fan with a message id -> no note.
-
-Run: ./venv/bin/python service/tests/test_tips_csv.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -51,22 +28,20 @@ async def _seed() -> None:
         s.add(Employee(id=EMP, display_name="Ana"))
         s.add(Fan(account_id=AID, fan_id=1, of_username="whale", of_display_name="Big, Spender"))
         s.add(Fan(account_id=AID, fan_id=2, of_username="minnow", of_display_name="Small"))
-        # Fan 3 has no fans row: its names export empty.
         s.add(Message(account_id=AID, fan_id=1, message_id=501, direction="out",
                       body="thanks babe", created_at=_NOW - timedelta(days=3),
                       sent_by_employee_id=EMP))
-        tips = [  # id, fan, cents, days ago, message
+        tips = [
             (8001, 1, 5000, 3, 501),
             (8002, 2, 500, 2, None),
+# 8003 is pending: pending always counts (TRACKED_STATUSES)
             (8003, 1, 2500, 1, None),
             (8004, 3, 100, 1, None),
         ]
         for tx_id, fan, cents, days, msg in tips:
-            # 8003 is still pending: pending always counts (TRACKED_STATUSES).
             s.add(Transaction(id=tx_id, account_id=AID, fan_id=fan, kind="tip", amount_cents=cents,
                               occurred_at=_NOW - timedelta(days=days), message_id=msg,
                               status="pending" if tx_id == 8003 else "cleared"))
-        # Neither a refunded tip nor a PPV unlock counts.
         s.add(Transaction(id=8005, account_id=AID, fan_id=2, kind="tip", amount_cents=9999,
                           occurred_at=_NOW - timedelta(days=1), status="refunded"))
         s.add(Transaction(id=8006, account_id=AID, fan_id=2, kind="ppv", amount_cents=9999,
@@ -112,7 +87,6 @@ async def case_top_tippers_csv_ranks_every_tipper():
         ["3", AID, "3", "", "", "100", "1"],
     ], lines
     assert lines[1][7] == (_NOW - timedelta(days=1)).isoformat()
-    # JSON reads the same query, cut to `limit`.
     page = await top_tippers(from_=_FROM, to=_TO, account_id=AID, employee_id=None, limit=2, format="json")
     assert [(r["rank"], r["fan"]["username"], r["total_cents"]) for r in page["rows"]] == [
         (1, "whale", 7500), (2, "minnow", 500),
@@ -125,15 +99,13 @@ async def case_csv_stops_at_the_row_cap():
     csv_export.CSV_MAX_ROWS = 2
     try:
         for lines in (await _tips(), await _tippers()):
-            assert len(lines) == 4, lines  # header, two rows, the TRUNCATED line
+            assert len(lines) == 4, lines
             assert lines[-1][0] == csv_export.TRUNCATED_LINE, lines[-1]
     finally:
         csv_export.CSV_MAX_ROWS = cap
 
 
 async def case_tip_note_needs_the_tips_fan_and_message():
-    # 8101 note hit; 8103 no fan, no message; 8104 no fan, a real message id: no note (the join
-    # is the messages PK, fan included). A fan's tip without a message: case 1 (8002).
     aid = "tipnote"
     async with get_session() as s:
         s.add(Account(id=aid))
@@ -149,9 +121,6 @@ async def case_tip_note_needs_the_tips_fan_and_message():
 
 
 async def case_formula_cells_open_as_text():
-    # Shared by every server CSV export: a fan-typed name a spreadsheet would
-    # run gets a leading '; numbers, numeric text, the lone "-" placeholder
-    # and other text do not (app/lib/csv.ts keeps the same rule).
     async def rows():
         yield ["=HYPERLINK(\"http://x\")", "+1", "-cmd", "--", "@SUM(A1)", "\tx", "\rx", -5, "-12.50", "-",
                "a=b", ""]

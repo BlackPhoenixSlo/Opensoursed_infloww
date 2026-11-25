@@ -1,9 +1,3 @@
-/**
- * chatDrafts — the composer's per-chat draft text: restored per Fan, live
- * for the Fan List, and cleared when the composer empties (a send).
- *
- * Fixture identifiers are invented (this repo mirrors to a public one).
- */
 import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";

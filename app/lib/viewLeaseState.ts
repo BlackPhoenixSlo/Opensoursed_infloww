@@ -1,23 +1,3 @@
-/**
- * This tab's View lease (ADR-0031, phase-01): the Creators it holds on screen, per lease source, and where this
- * document load's opening post stands. A pure reducer (ViewLeaseHeartbeat only dispatches), `union` (the Creators
- * the next post leases), `leaseBody` (that post) and `shouldPostNow` (a change that posts at once, not at the next
- * VIEW_LEASE_RENEW_MS tick).
- *
- * SELECTED_SOURCE is the scope provider's selected Creator: its one id is the post's `selected` too. The other
- * sources are the on-screen holds, one per key (`holdLease` / `useViewLease`): the open chat, the rail's, the strip's
- * and OF Manager's column's visible rows. A source's Hold replaces its set; Release drops it.
- *
- * `hidden` (the page's visibilityState) and `idle` (Idle mode, useIdleMode): such a tab renews nothing (`canPost`), so
- * its lease lapses within the Relay's TTL; shown again or back from Idle, it posts at once. A load that opens hidden or
- * idle still sends its opening post (every document load is an App-open warm), leasing nothing (`leases`).
- *
- * `ready`: the event stream opened, or OPENED_WAIT_MS passed (Opened); nothing posts before it. `openSent`: a post
- * carrying `opened: true` (the Relay's App-open warm) was answered (Posted); until then every post carries it, so a
- * failed first post is retried by the next one. A remount (a sign-in without a reload) starts over: a fresh login is
- * an app open.
- */
-
 export const SELECTED_SOURCE = "selected";
 
 export interface ViewLeaseState {
@@ -45,8 +25,6 @@ export interface LeaseBody {
 
 export const INITIAL_LEASE: ViewLeaseState = { sources: {}, ready: false, openSent: false, hidden: false, idle: false };
 
-/** `ids` once each, sorted; `prev` itself when it holds the same Creators, so a change that changes nothing keeps
- *  its identity (a reducer's same state, a hook's same set). */
 export function sortedIds(ids: readonly string[], prev?: readonly string[]): readonly string[] {
   const next = [...new Set(ids)].sort();
   return prev && prev.length === next.length && prev.every((x, i) => x === next[i]) ? prev : next;
@@ -80,12 +58,10 @@ export function selectedOf(state: ViewLeaseState): string | null {
   return state.sources[SELECTED_SOURCE]?.[0] ?? null;
 }
 
-/** Every source's Creators, once each, sorted. */
 export function union(state: ViewLeaseState): string[] {
   return [...sortedIds(Object.values(state.sources).flat())];
 }
 
-/** Whether this tab's posts lease anything: ready, shown and not in Idle mode. */
 export function leases(state: ViewLeaseState): boolean {
   return state.ready && !state.hidden && !state.idle;
 }
@@ -95,15 +71,10 @@ export function leaseBody(state: ViewLeaseState, tab: string): LeaseBody {
   return { tab, account_ids: on ? union(state) : [], selected: on ? selectedOf(state) : null, opened: !state.openSent };
 }
 
-/** Whether this tab posts at all: one that leases, or a ready one whose opening post is still unanswered (a load
- *  opened hidden or idle). The renewal tick asks it too. */
 export function canPost(state: ViewLeaseState): boolean {
   return leases(state) || (state.ready && !state.openSent);
 }
 
-/** Post now: the tab just became able to post (ready: the opening post), it leases again (shown again or back from
- *  Idle mode), the selected Creator changed (its Select refresh), or the union gained a Creator. A loss waits for the
- *  next tick. Never while it cannot post; a change while it leases nothing waits for it to lease. */
 export function shouldPostNow(prev: ViewLeaseState, next: ViewLeaseState): boolean {
   if (!canPost(next)) return false;
   if (!canPost(prev)) return true;

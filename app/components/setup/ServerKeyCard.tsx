@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * ServerKeyCard — one secrets-store key's card in Settings → AI keys (AiKeysTab names
- * which: the fallback TypeSafe key, the vault importer's Google Drive key), set where an
- * operator looks for keys rather than only in the master's System tab. It is the same
- * secrets-store entry the "Server keys" card edits: stored server-side in
- * service/secrets/secrets.json, read masked, never sent back raw, and the relay
- * still falls back to the env var when it is unset here.
- *
- * `/admin/secrets` is master-only, so anyone else sees one line saying who sets
- * it and never fires the read.
- */
 
 import { useUser } from "@/contexts/UserContext";
 import { useKeyDraft } from "@/hooks/useKeyDraft";
@@ -20,7 +9,6 @@ import SecretKeyField from "@/components/setup/SecretKeyField";
 import { Skeleton } from "@/components/ui/Skeleton";
 
 type ServerKeyProps = {
-  /** The secrets-store key (service/secrets_store.py KNOWN). */
   name: string;
   intro: React.ReactNode;
   savedNote: string;
@@ -57,7 +45,6 @@ function ServerKeyEditor({ name, savedNote }: Omit<ServerKeyProps, "intro">) {
   );
 }
 
-/** A section body; AI keys' Panel gives it its Section title. */
 export default function ServerKeyCard({ name, intro, savedNote }: ServerKeyProps) {
   const { user } = useUser();
   return (

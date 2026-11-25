@@ -1,9 +1,3 @@
-/**
- * useGrowth — a Growth page refreshes itself while viewed (docs/spec/phase-03-smaller-cuts.md): the relay's hourly
- * background prewarm only walks links with a List (LINK_PREWARM_SCOPE), so the trial links, promotions, OF tracking
- * links and their earnings refetch every GROWTH_VIEWED_REFRESH_MS (an hour) while idle, and the two lists with
- * figures every 15 s while the relay says a refresh is running.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -84,7 +78,7 @@ describe("Growth refreshes itself while viewed", () => {
     await advance(15_000);
     expect(ROUTES.map(calls)).toEqual([3, 3, 1, 1]);
     refreshing = false;
-    await advance(15_000);                      // this read says done
+    await advance(15_000);
     expect(ROUTES.map(calls)).toEqual([4, 4, 1, 1]);
     await advance(15_000);
     expect(ROUTES.map(calls)).toEqual([4, 4, 1, 1]);

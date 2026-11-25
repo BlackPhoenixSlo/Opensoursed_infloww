@@ -1,27 +1,7 @@
 #!/usr/bin/env python3
-"""Free-trial-link tests (Growth feature #3). OF is faked — no network.
-
-Locks in the contract captured by LIVE testing on 2026-07-22 (Ava):
-  • GET /trials returns a BARE LIST (not {items:[...]} like /promotions).
-  • An entry has NO `name` key — the operator's label is `trialLinkName`.
-  • A spent/expired link KEEPS appearing in the list with isFinished=true, so
-    status has to be surfaced or a dead link renders exactly like a live one.
-  • clicksCounts is the click-through count (claimCounts is redemptions).
-  • fetch failure → of_available False (None sentinel), not a 500; a reachable
-    account with zero links is of_available True.
-
-  case_list_parses_bare_list_and_status
-  case_finished_link_is_marked_spent
-  case_create_captures_of_id_and_round_trips
-  case_of_unavailable_vs_reachable_but_empty
-  case_mirror_status_unknown_when_of_silent
-  case_offer_expiration_reaches_of   Infloww's/OF's "Offer expiration" (expireDays)
-
-Run: ./venv/bin/python service/tests/test_trial_links.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -32,23 +12,20 @@ from db.models import Account, UserAccount  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
 
-# The admin routes need a session (no anonymous admin): an Agency owner signs in and owns every seeded account.
 _OWNER = fx.seed_two_agencies()["agency_a_owner"]
 _client = fx.login_owner("agency_a_owner")
 
 
 class FakeOF:
-    """Mimics the LIVE OF trial endpoints: a BARE LIST on GET, dict on create."""
 
     def __init__(self):
         self._id = 11_000_000
         self.deleted: list[int] = []
         self.store: dict[int, dict] = {}
-        self.expire_days: list = []   # each create's expire_days, as OF would get it
+        self.expire_days: list = []
 
     def _entry(self, tid, name, days, counts, *, claims=0, clicks=0,
                finished=False, expired=None):
-        # Exactly the key set OF returned live — note `trialLinkName`, no `name`.
         return {"id": tid, "trialLinkName": name, "url": f"https://onlyfans.com/x/trial/{tid}",
                 "subscribeDays": days, "subscribeCounts": counts,
                 "claimCounts": claims, "clicksCounts": clicks,
@@ -62,7 +39,6 @@ class FakeOF:
         return tid
 
     def trial_links(self, *, offset=0, limit=100):
-        # BARE LIST (not {"items": ...}), and PAGED — OF's default page is 3.
         return list(self.store.values())[offset:offset + limit]
 
     def create_trial_link(self, *, name, subscribe_days=7, subscribe_counts=1, expired_at=None,
@@ -109,7 +85,6 @@ def case_list_parses_bare_list_and_status():
     d = _links(aid)
     assert d["of_available"] is True, d
     row = next(l for l in d["links"] if l["of_trial_id"] == 101)
-    # trialLinkName is the label — reading `name` alone would yield "".
     assert row["name"] == "Bio link", row
     assert row["status"] == "active", row
     assert row["claim_counts"] == 2 and row["clicks_count"] == 9, row
@@ -117,8 +92,6 @@ def case_list_parses_bare_list_and_status():
 
 
 def case_finished_link_is_marked_spent():
-    """The live bug: a spent link stays in /trials, and without isFinished the
-    UI rendered it identically to a live one."""
     aid = "tl_fin"
     asyncio.run(_seed(aid))
     f = _use_fake()
@@ -143,7 +116,6 @@ def case_create_captures_of_id_and_round_trips():
     })
     assert r.status_code == 200, r.text
     body = r.json()
-    # Without of_trial_id, delete can't reach OF and the link is orphaned.
     assert body["of_trial_id"] is not None, body
     assert body["status"] == "active", body
     mirror_id, of_id = body["id"], body["of_trial_id"]
@@ -163,7 +135,7 @@ def case_of_unavailable_vs_reachable_but_empty():
     aid = "tl_down"
     asyncio.run(_seed(aid))
 
-    _use_fake()                       # reachable, zero links
+    _use_fake()
     assert _links(aid)["of_available"] is True
 
     class Boom:
@@ -171,28 +143,23 @@ def case_of_unavailable_vs_reachable_but_empty():
             raise RuntimeError("no session")
     ax._make_client = lambda account_id: Boom()  # type: ignore[attr-defined]
     d = _links(aid)
-    assert d["of_available"] is False, d      # None sentinel, not a 500
+    assert d["of_available"] is False, d
 
 
 def case_mirror_status_unknown_when_of_silent():
-    """A mirror row OF didn't return must not claim to be live — /trials
-    ordering is unstable, so 'absent' is not proof of 'finished'."""
     aid = "tl_unknown"
     asyncio.run(_seed(aid))
     f = _use_fake()
     created = _client.post("/admin/trial-links", json={
         "account_id": aid, "name": "vanishes", "subscribe_days": 3, "subscribe_counts": 1,
     }).json()
-    f.store.clear()                   # OF stops listing it
+    f.store.clear()
 
     row = next(l for l in _links(aid)["links"] if l["id"] == created["id"])
     assert row["status"] == "unknown", row
 
 
 def case_pages_past_the_default_page():
-    """/trials pages at THREE by default. The un-paged call showed 3 of Ava's
-    18 real links — the operator saw a fraction of their own links with no hint
-    that the rest existed."""
     aid = "tl_paged"
     asyncio.run(_seed(aid))
     f = _use_fake()
@@ -207,8 +174,6 @@ def case_pages_past_the_default_page():
 
 
 def case_offer_expiration_reaches_of():
-    """The Growth form now sends the link's Offer expiration (0 = none); an old
-    caller that omits it sends nothing, and over 30 days is refused."""
     aid = "tl_expire"
     asyncio.run(_seed(aid))
     f = _use_fake()

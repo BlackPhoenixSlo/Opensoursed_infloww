@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""
-send_mass_decide — table tests over send_mass_message.run's pure half.
-
-No DB, no OF: every row is (payload, rows already read) -> value.
-
-  case_seed_table:          list ∪ explicit (explicit first, order + dups kept);
-                            fan_ids alias; exclude-list members join the excludes.
-  case_plan_audience_table: dedupe keeps first-seen order; exclusions win over
-                            includes; empty audience -> Skip, unless a list/online/filters audience.
-  case_plan_text_table:     payload text beats the funnel opener; neither -> Skip("no_text"),
-                            checked before the audience.
-  case_opener_table:        funnel send with no explicit media sends the opener media; a
-                            funnel with NO opener media sends none; payload previews kept.
-  case_opener_media_of:     FunnelAccountMedia JSON -> media ids; unreadable -> no media.
-  case_audience_filter_shape:  the stored mass_runs JSON (key order + sorted excludes; online / filters).
-  case_echoed_of_table:     OF's per-fan echo -> (fan, msg) pairs; malformed dropped.
-  case_dry_run_table:       dry_run flag; the stats: sent 0, the explicit recipients or None + why
-                            (online/filters, list, explicit + OF exclude lists), never partial.
-
-Run: ./venv/bin/python service/tests/test_send_mass_decide.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first (binds a temp DB; this file never touches it)
@@ -35,13 +14,11 @@ NO_OPENER = Funnel(id=4, opening_message=None)
 
 
 def plan(payload, *, funnel=F, resolved, opener=()):
-    """smd.plan with list_ids parsed the way run does."""
     return smd.plan(payload, funnel=funnel, resolved=resolved,
                     list_ids=smd.list_ids_of(payload)[0], opener_media=list(opener))
 
 
 def R(included, excluded=(), answered=None) -> dict:
-    """A resolve_mass_audience result."""
     out = {"included_users": list(included), "excluded_users": list(excluded)}
     if answered is not None:
         out["skipped_funnel_responders"] = answered
@@ -131,7 +108,6 @@ def case_opener_media_of():
 def case_audience_filter_shape():
     p = plan({"user_lists": ["fans"], "list_ids": [7]}, resolved=R([1, 2], [9, 3]))
     assert isinstance(p, Plan), p
-    # the post-fence plan: recipients intersected, fence + Auto_Exclude ids appended
     p = replace(p, recipients=[1], excluded_user_lists=["x", 5])
     raw = smd.audience_filter(p, ref=41, fence=True)
     assert list(json.loads(raw)) == ["user_lists", "included_users", "excluded_users",
@@ -147,7 +123,6 @@ def case_audience_filter_shape():
     af = json.loads(smd.audience_filter(p, ref=None, fence=False, auto_exclude=5))
     assert (af["auto_exclude_list"], af["unresolved_exclude_lists"]) == (5, ["x"]), af
     assert json.loads(smd.audience_filter(p, ref=None, fence=False))["ref"] is None
-    # online / filtered sends say so (the boot re-crawl skips them: OF resolves those audiences)
     af = json.loads(smd.audience_filter(replace(p, online_only=True), ref=None, fence=False))
     assert (af["online"], af["filters"]) == (True, False), af
     af = json.loads(smd.audience_filter(replace(p, filters={"online": 1}), ref=None, fence=False))

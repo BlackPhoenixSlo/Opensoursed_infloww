@@ -1,35 +1,5 @@
 "use client";
 
-/**
- * Role Settings (docs/spec/settings-tabs/phase-03-roles-sales.md): the Agency's
- * Permission roles, saved whole to the `roles` Settings blob behind the Load
- * gate. Owner and Admin are built in and always listed first; "+ Add Role"
- * appends a custom role, deny-all with scope `self`. "Edit" reopens the same
- * modal pre-filled (a built-in's name locked). "Set Permissions" swaps the Panel
- * for that role's Permission editor. No built-in role is deleted. Roles are
- * assigned on Employees (EmployeesTab), which a line here links to; every write
- * here commits at once, so the Panel has no Save. Built-ins with no stored
- * description show a display-only one (BUILT_IN_DESCRIPTIONS, never saved).
- * Below sm Description hides and the Operations stack, so they fit a 390px phone.
- * The "Enforce role permissions" switch, on unless `enforce: false` is stored, saves `enforce`
- * at once: with it on the Relay refuses each chatter the pages its role does not
- * grant (docs/spec/phase-04-apply-stored-settings.md). Turning it on first
- * confirms with the count of active Employees whose role grants no page, who will
- * be refused every page; turning it off needs no confirm. The not-enforced note
- * shows only while it is off; while it is on, a warning counts those Employees.
- *
- * Every Employee holds a role (one never assigned reads as Chatter, which the
- * Relay gives it on joining and on any save), and a role in use cannot be deleted, as Infloww refuses ("This role is in use and
- * cannot be deleted").
- *
- * A custom role's Status switch (Infloww's RolePermissions_DisableActiveRole) saves `disabled` at once: a
- * disabled role grants nothing on the Relay, and its Employees keep it, so switching it back on restores them.
- * Disabling a role some active Employee holds first confirms. The built-ins' switch is always on.
- *
- * ASSUMPTION: an Employee whose assignment names a role id no role has counts as
- * granted no page, since the Relay refuses it every page too. Rung 5. Overturned
- * if the owner wants the count to mean pageless roles only.
- */
 
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
@@ -56,7 +26,6 @@ const COLUMNS: TableColumn[] = [
   "Operations",
 ];
 
-/** What a built-in does, shown when its stored description is empty; display only, never saved. */
 const BUILT_IN_DESCRIPTIONS: Record<string, string> = {
   owner: "Full access; owns the Agency",
   admin: "Full access to every page",
@@ -66,14 +35,11 @@ const BUILT_IN_DESCRIPTIONS: Record<string, string> = {
 };
 const roleDescription = (r: PermissionRole) => r.description || BUILT_IN_DESCRIPTIONS[r.id] || "";
 
-/** The Status switch is off: a built-in role is always on, as the Relay reads it. */
 const isOff = (r: PermissionRole) => r.disabled === true && !isBuiltIn(r.id);
 
-/** An Operations cell action: a plain text button in `--if-accent` (M1); Delete is D1. */
 const OPERATION = "text-[var(--if-accent)] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed";
 const DELETE = cn(OPERATION, "text-[#ff7c71]");
 
-/** One `._tabble-content_1r0jx_77` block: a 16px / 500 T1 title 16px over its table, 32px before the next. */
 function TableBlock({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="mb-8">
@@ -83,18 +49,14 @@ function TableBlock({ title, children }: { title: string; children: ReactNode })
   );
 }
 
-/** The role an Employee with no assignment reads as: the Relay gives it Chatter (settings_api.DEFAULT_LOGIN_ROLE). */
 const DEFAULT_ROLE = "chatter";
 
 
-/** The tab's one save-error line, under Add Role's Submit and above the Permission editor. */
 function SaveError({ error }: { error: string | null }) {
   if (!error) return null;
   return <span role="alert" className="text-[length:var(--if-fs-sm)] text-[var(--if-danger)]">{error}</span>;
 }
 
-/** The role modal's body, for "Add Role" (`role` undefined) and "Edit Role"; mounted on open, so each
- *  opening starts blank or from the edited role. The duplicate check skips the edited role. */
 function RoleForm({ role, roles, saving, error, onSubmit, onCancel }: {
   role?: PermissionRole;
   roles: PermissionRole[];
@@ -140,7 +102,6 @@ function RoleForm({ role, roles, saving, error, onSubmit, onCancel }: {
 export default function RoleSettingsTab() {
   const blob = useSettingsBlob<RolesBlob>("roles", { roles: [] });
   const roles = withBuiltIns(blob.value.roles);
-  /** The open role modal: `{}` adds a role, `{ role }` edits that one; null while closed. */
   const [modal, setModal] = useState<{ role?: PermissionRole } | null>(null);
   const close = () => setModal(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -148,7 +109,6 @@ export default function RoleSettingsTab() {
   const { query: rosterQuery, rows: employees } = useRoster({ includeDisabled: false });
   const assignments = blob.value.assignments ?? {};
 
-  /** Active Employees the Relay refuses every page: their role grants none, or names a role no role has. */
   const pageless = employees.filter((e) => {
     const role = assignedRole(roles, { [String(e.id)]: DEFAULT_ROLE, ...assignments }, e.id);
     // Pages only: a `<page>#<action>` key grants no page of its own.
@@ -158,7 +118,6 @@ export default function RoleSettingsTab() {
   const pagelessWho = pageless === 1 ? "1 active Employee holds" : `${pageless} active Employees hold`;
 
   const enforced = blob.value.enforce !== false;
-  /** Saves the switch; turning it on first confirms with the active Employees the Relay will refuse every page. */
   const setEnforce = async (on: boolean) => {
     if (on && pageless > 0) {
       if (!(await ifConfirm(`Turn on ${ENFORCE}? ${pagelessWho} a role granting no page and will be refused every page.`)))
@@ -174,12 +133,10 @@ export default function RoleSettingsTab() {
     blob.commit({ roles: [...roles, role] }, close);
   };
 
-  /** Saves the whole `roles` blob with `role` replaced in place, then `onSaved`. */
   const replaceRole = (role: PermissionRole, onSaved: () => void) => {
     blob.commit({ roles: roles.map((r) => (r.id === role.id ? role : r)) }, onSaved);
   };
 
-  /** Saves a custom role's Status; disabling one an active Employee holds first confirms. */
   const setStatus = async (role: PermissionRole, on: boolean) => {
     const holders = employees.filter((e) => assignments[String(e.id)] === role.id).length;
     if (!on && holders > 0) {
@@ -189,7 +146,6 @@ export default function RoleSettingsTab() {
     replaceRole({ ...role, disabled: !on }, () => {});
   };
 
-  /** Deletes a role no Employee holds; one in use is refused, as Infloww refuses it. */
   const removeRole = async (role: PermissionRole) => {
     if (Object.values(assignments).includes(role.id)) {
       void ifAlert("This role is in use and cannot be deleted. Give its Employees another role first.");

@@ -46,9 +46,6 @@ import type { AuthBanner } from "@/contexts/userSessionReducer";
 import { prefetchScreenBundle } from "@/lib/relay";
 import { bootScreen, cookieValue } from "@/lib/screenEntry";
 
-// The invite page and a share link's report: only their own paths draw them, which render on the server, so
-// next/dynamic (it preloads their chunks from the HTML) keeps them out of every other first load. <Landing> stays
-// static: a dead session or a banner puts it up client-side, at once.
 const ChatterLogin = dynamic(() => import("@/components/auth/ChatterLogin"));
 const ShareReport = dynamic(() => import("@/components/growth/ShareReport"));
 
@@ -66,8 +63,6 @@ export default function AuthGate({ children, signedIn = false }: { children: Rea
   const { user, boot, banner, formUp, retry } = useUser();
   const { chatter, loading: chatterLoading, reprobe } = useChatter();
   const pathname = usePathname();
-  // A document load of a bundled screen starts its bundle alongside the probes, not after them: the server's guess,
-  // from the same cookies (lib/screenEntry.ts `bootScreen`).
   useEffect(() => {
     if (!signedIn) return;
     const s = bootScreen(window.location.pathname + window.location.search, (n) => cookieValue(document.cookie, n));
@@ -75,16 +70,9 @@ export default function AuthGate({ children, signedIn = false }: { children: Rea
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the document's first route only
   }, []);
 
-  // The sign-in form is bare for everyone: a signed-in owner can still sign in
-  // as someone else, and the submit's router.replace(next) lands in the shell.
   if (pathname === "/login") return <Landing />;
-  // The employee invite page is bare for everyone: an owner opening an invite
-  // link on their own browser gets the invite screen, not their shell.
   if (pathname === "/chatter-login") return <ChatterLogin />;
-  // A share link's report is public: no sign-in, no shell.
   if (pathname?.startsWith("/share/")) return <ShareReport />;
-  // Wait for BOTH probes to settle so we don't flash <Landing> before
-  // chatter detection completes (or vice versa) — unless a banner put the form up (`formUp`).
   switch (gateScreen({ user, boot, formUp }, { present: !!chatter, loading: chatterLoading })) {
     case "loading": return signedIn ? <BootSkeleton pathname={pathname ?? "/"} /> : null;
     case "signed-in": return <>{children}</>;
@@ -98,9 +86,6 @@ export default function AuthGate({ children, signedIn = false }: { children: Rea
         </div>
       );
     }
-    // A banner's Retry re-runs the user boot only (the form under it signs a chatter in too); off while its probe
-    // still runs (that answer is applied when it comes). One shape with or without the banner, so <Landing> stays
-    // mounted as it comes and goes.
     case "login":
       return (
         <>

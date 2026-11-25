@@ -1,34 +1,3 @@
-/**
- * Seam 1 of docs/spec/infloww-parity-round-2/phase-02-growth-pages.md: the
- * Smart Messages page rendered with `@/lib/relay` mocked, a fresh QueryClient,
- * two placeholder Creators, and `MassMessagesSection` mocked (Phase 2b's tab,
- * pinned by its own file, `MassMessagesSection.test.tsx`).
- *
- * Ticket 41: the "Automated Messages" tab opens by default, holds the
- * capture's filter bar and table, and lists the Nudge message (`nudge_online`)
- * as a row that opens the existing nudge editor. Every label it checks is read
- * from the Layout capture on disk by its Item ID, never typed from memory.
- *
- * Delayed welcome (ticket 43, rebound by the owner's ruling of 2026-10-18,
- * Phase 2 N1): the row is our `send_welcome` automation, present only when the
- * Creator has a `send_welcome` rule, whose Status maps the rule's on/off; the
- * row and the pop-up's "Subscriber welcome" card open the Delayed welcome
- * editor, which saves the rule's on/off, check interval and message through
- * the automation-rules routes, the payload merged. The OnlyFans welcome slot is
- * no longer a row, and OnlyFans' own welcome switch neither blocks nor is read
- * (Infloww has no such rule).
- *
- * Ticket 44 (owner ruling N2, position B): the "Purchased" Trigger is wired.
- * The account's `purchase_followup` rule is a "Purchased" row; the row and the
- * pop-up's "Purchases" card open its editor, which reads and saves through
- * `/admin/purchase-followup-config`.
- *
- * The lifecycle Triggers (Nearing expiry, Expired, Resubscribe, Birthday) are
- * wired the same way: each is the account's rule of its kind, a row and a card
- * that open `LifecycleMessageEditor`, saved through
- * `/admin/lifecycle-message-config`. "Not Purchased" stays Not wired. The
- * Actions cell cancels an Active row; Date created filters the rows.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -47,7 +16,6 @@ vi.mock("@/lib/relay", async (importOriginal) => {
   };
 });
 
-// An owner session: /admin/accounts is the account source.
 vi.mock("@/contexts/UserContext", () => ({
   useUser: () => ({ user: { user_id: 1 } }),
   useOptionalUser: () => ({ user: { user_id: 1 } }),
@@ -56,16 +24,13 @@ vi.mock("@/contexts/ChatterContext", () => ({
   useChatter: () => ({ chatter: null }),
   useOptionalChatter: () => ({ chatter: null }),
 }));
-// No global creator: the Priority mass composer's "Post as" would seed the first Creator unless handed the chip's.
 vi.mock("@/contexts/ScopeContext", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/contexts/ScopeContext")>()),
   useScope: () => ({ scope: { kind: "all" }, accountId: null, setScope: () => {} }),
 }));
-// The creator column's unread chips poll the roster counts; not this page's reads.
 vi.mock("@/hooks/useRosterCounts", () => ({ useRosterCounts: () => ({}) }));
 vi.mock("@/components/growth/MassMessagesSection", () => ({
   default: () => <div data-testid="mass-section">mass section</div>,
-  // Its creator column, cut to what the page wires: the Creator shown and a pick of the second one.
   MassAutoUnsendSection: ({ accountId, onPick }: { accountId?: string | null; onPick?: (id: string) => void }) => (
     <div data-testid="unsend-section" data-account={accountId ?? ""}>
       unsend section<button type="button" onClick={() => onPick?.("acc-2")}>unsend rail: Model B</button>
@@ -73,7 +38,6 @@ vi.mock("@/components/growth/MassMessagesSection", () => ({
   ),
   ScheduledSection: () => <div data-testid="scheduled-section">scheduled section</div>,
 }));
-// The mass composer's own contexts (employee, vault) are its tests'; here, only the Creator it opens on.
 vi.mock("@/components/compose/LazyMassMessageComposer", () => ({
   LazyMassMessageComposer: ({ mode, forcedAccountId }: { mode?: string; forcedAccountId?: string }) => (
     <div role="dialog" aria-label={`mass composer ${mode}`} data-account={forcedAccountId ?? ""} />
@@ -94,12 +58,10 @@ const relayUpload = relay.uploadFile as unknown as Mock;
 const allMocks = [relayGet, relayPost, relayPatch, relayPut, relayDelete, relayUpload];
 const relayCalls = () => allMocks.map((m) => m.mock.calls.length);
 
-// Two placeholder Creators.
 const A = { id: "acc-1", nickname: "Model A", has_session: true };
 const B = { id: "acc-2", nickname: "Model B", has_session: true };
 const RULE_ID: Record<string, number> = { [A.id]: 11, [B.id]: 12 };
 
-// ── The Layout capture on disk ───────────────────────────────────────────
 const capture = readFileSync(
   resolve(__dirname, "../../../docs/infloww-layouts/growth-smart-messages.md"), "utf-8",
 );
@@ -108,16 +70,12 @@ const rowOf = (n: number) => {
   if (!row) throw new Error(`growth-smart-messages#${n} is not a row of the capture`);
   return row.split("|").map((c) => c.trim());
 };
-/** An Items row's Value cell. */
 const valueOf = (n: number) => rowOf(n)[4];
-/** The label an Items row records: its Value up to the first ", " (the width follows). */
 const labelOf = (n: number) => valueOf(n).split(", ")[0];
 const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
-/** The Triggers section's list labels, in its order (#116 to #123). */
 const triggerLabels = range(116, 123).map((n) => /list label "([^"]+)"/.exec(rowOf(n)[2])![1]);
 const statusValues = valueOf(28).split(" / ");
 
-/** The quoted label a tab row records ("Automated Messages", rendered as …). */
 const quoted = (n: number) => /"([^"]+)"/.exec(valueOf(n))![1];
 const TAB_AUTOMATED = quoted(5);
 const TAB_MASS = quoted(6);
@@ -133,7 +91,6 @@ beforeEach(() => {
   relayPatch.mockImplementation((p: string) => Promise.resolve({ id: Number(String(p).split("/").pop()) }));
 });
 afterEach(() => {
-  // No relay write but the ones the test named.
   const writes = { POST: relayPost, PATCH: relayPatch, PUT: relayPut, DELETE: relayDelete, UPLOAD: relayUpload };
   const made = Object.entries(writes).flatMap(([verb, m]) =>
     m.mock.calls.map(([path]) => `${verb} ${String(path).split("?")[0]}`));
@@ -161,7 +118,6 @@ const nudgeRule = (accountId: string, isEnabled: boolean) => ({
 });
 
 const PURCHASE_RULE_ID: Record<string, number> = { [A.id]: 31, [B.id]: 32 };
-/** A rule's Smart Message settings as its payload stores them (smart_message_extras). */
 type ExtrasFixture = { media_ids?: number[]; price_cents?: number; starts_at?: string | null; ends_at?: string | null };
 type PurchaseFixture = { on: boolean; text: string } & ExtrasFixture;
 const purchaseRule = (accountId: string, { on, text, ...extras }: PurchaseFixture) => ({
@@ -190,40 +146,28 @@ const lifecycleRule = (accountId: string, kind: string, p: LifecycleFixture) => 
 });
 
 type Fixture = {
-  /** Per Creator, its lifecycle rules by kind; absent, none. */
   lifecycle?: Record<string, Record<string, LifecycleFixture>>;
   nudge?: Record<string, boolean>;
-  /** Per Creator, its purchase_followup rule's on/off and text; absent, no rule. */
   purchase?: Record<string, PurchaseFixture>;
   lines?: Record<string, string>;
-  /** Per Creator, its OnlyFans welcome slot's text; absent, no slot. Never a row since the 2026-10-18 ruling. */
   welcome?: Record<string, string>;
-  /** Per Creator, OnlyFans' own reply-on-subscribe switch; absent, off. Mutable: a PATCH to it updates the read. */
   ofOn?: Record<string, boolean>;
-  /** Per Creator, its `send_welcome` rule (on or off, and its delay in seconds); absent, none. */
   welcomeRules?: Record<string, { on: boolean; everySeconds?: number; message?: string | string[] }>;
-  /** The Agency's report time zone, from the Applied settings read; absent, none saved. */
   reportTz?: string;
-  /** Per Creator, OnlyFans' subscription price (0 = a free page); absent, unknown. */
   subscribePrice?: Record<string, number>;
-  /** The automation-rules read fails. */
   failRules?: boolean;
-  /** The Creators read lists none. */
   noCreators?: boolean;
+  fanslyB?: boolean;
 };
 
-/** The Relay's Smart Message settings before anything is saved. */
 const EXTRAS_DEFAULTS = { media_ids: [], price_cents: 0, starts_at: null, ends_at: null, unsend_minutes: 0 };
 
 const TEMPLATES_READ = "/api/of/v2/messages/templates";
 const SETTINGS = "/api/of/v2/users/me/settings";
 const TOGGLE = "/api/of/v2/users/me/reply-on-subscribe";
 
-/** Answer the page's reads: two active Creators; per Creator, its nudge rule
- *  (on or off, or none), one tease line in its nudge config, and its welcome
- *  slot (or none) beside a saved-reply template, which is not a row. */
 function stubReads({
-  lifecycle = {}, nudge = {}, purchase = {}, lines = {}, welcome = {}, ofOn = {}, welcomeRules = {}, subscribePrice = {}, reportTz, failRules, noCreators,
+  lifecycle = {}, nudge = {}, purchase = {}, lines = {}, welcome = {}, ofOn = {}, welcomeRules = {}, subscribePrice = {}, reportTz, failRules, noCreators, fanslyB,
 }: Fixture) {
   const acc = (p: string) => new URLSearchParams(p.split("?")[1] ?? "").get("account_id") ?? "";
   relayGet.mockImplementation((path: string, ctx?: { accountId?: string }) => {
@@ -245,7 +189,7 @@ function stubReads({
       return Promise.resolve({ preferences: { tz: null, report_tz: reportTz ?? null, week_start: "monday" } });
     }
     if (p.startsWith("/admin/accounts")) {
-      return Promise.resolve(noCreators ? { accounts: [], active_account_id: null } : { accounts: [A, B], active_account_id: A.id });
+      return Promise.resolve(noCreators ? { accounts: [], active_account_id: null } : { accounts: [A, fanslyB ? { ...B, platform: "fansly" } : B], active_account_id: A.id });
     }
     if (p.startsWith("/admin/automation-rules")) {
       if (failRules) return Promise.reject(new Error("fixture failure"));
@@ -295,14 +239,12 @@ function stubReads({
 
 async function mount(url = "/growth/smart-messages", fixture: Fixture = {}) {
   window.history.replaceState(null, "", url);
-  relayGet.mockClear(); // the wait below reads this mount's calls only
+  relayGet.mockClear();
   stubReads(fixture);
-  // A fresh cache per mount, so a second mount in one test reads its own fixture.
   client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
   });
   render(<QueryClientProvider client={client}><SmartMessagesPage /></QueryClientProvider>);
-  // The Creators load first; the tab's reads start once the chip holds one.
   await waitFor(() => {
     const paths = relayGet.mock.calls.map(([p]) => String(p));
     expect(paths.some((p) => p.startsWith("/admin/accounts"))).toBe(true);
@@ -314,7 +256,6 @@ async function mount(url = "/growth/smart-messages", fixture: Fixture = {}) {
 }
 
 const parentTabs = () => screen.getByRole("tablist", { name: "Smart Messages" });
-/** A row's message text: the Messages cell's button (the cell adds a phone-only Trigger · Status line). */
 const messageOf = (row: HTMLElement) => within(row).getAllByRole("cell")[0].querySelector("button")?.textContent;
 const tabNames = () => within(parentTabs()).getAllByRole("tab").map((t) => t.textContent);
 const selected = () => within(parentTabs()).getAllByRole("tab")
@@ -323,15 +264,11 @@ const panel = () => screen.getByRole("tabpanel", { name: TAB_AUTOMATED });
 const rows = () => within(panel()).getAllByRole("row").slice(1);
 const before = (a: Element, b: Element) =>
   !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-/** The Automated tab's creator column (`CreatorRail`, Smart lists'), and its row for a Creator. */
 const column = () => screen.getByTestId("of-creator-column");
 const creatorRow = (nickname: string) =>
   within(column()).getByRole("button", { name: new RegExp(nickname) });
-/** Picks a Creator on the creator column. */
 const pickCreator = (nickname: string) => act(async () => { fireEvent.click(creatorRow(nickname)); });
 
-/** The filter bar's controls, in the capture's order (#24 to #37), found by
- *  the capture's labels. */
 function filterBar() {
   const p = within(panel());
   return {
@@ -347,13 +284,11 @@ function filterBar() {
   };
 }
 
-/** Open a listbox select (`IfSelect`, `IfCreatorSelect`) and pick the option named `name`. */
 async function choose(box: HTMLElement, name: string | RegExp) {
   await act(async () => { fireEvent.click(box); });
   await act(async () => { fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name })); });
 }
 
-/** A listbox select's options, read with it open, then closed again. */
 function optionsOf(box: HTMLElement) {
   fireEvent.click(box);
   const options = within(screen.getByRole("listbox")).getAllByRole("option");
@@ -361,7 +296,6 @@ function optionsOf(box: HTMLElement) {
   return options;
 }
 
-/** "" picks the placeholder option "All". */
 async function applyFilters(set: { search?: string; status?: string; trigger?: string }) {
   const bar = filterBar();
   await act(async () => {
@@ -414,14 +348,12 @@ describe("Automated Messages tab (ticket 41)", () => {
     for (let i = 1; i < bar.length; i++) expect(before(bar[i - 1], bar[i])).toBe(true);
     const headers = within(panel()).getAllByRole("columnheader").map((h) => h.textContent);
     expect(headers).toEqual(range(39, 52).map(labelOf));
-    // The bar sits above the table.
     expect(before(bar[bar.length - 1], within(panel()).getByRole("table"))).toBe(true);
   });
 
   it("with no nudge configured there is no row, and the capture's empty state shows", async () => {
     await mount();
     expect(within(panel()).getByText(NO_DATA)).toBeTruthy();
-    // The one body row is the empty state; no row carries a Trigger.
     expect(rows()).toHaveLength(1);
     expect(within(rows()[0]).queryByText(triggerLabels[0])).toBeNull();
   });
@@ -431,16 +363,15 @@ describe("Automated Messages tab (ticket 41)", () => {
     expect(rows()).toHaveLength(1);
     const cells = within(rows()[0]).getAllByRole("cell").map((c) => c.textContent);
     expect(messageOf(rows()[0])).toBe("Hey you, fixture line");
-    // Below md the cell's second line names the Trigger and Status.
     expect(cells[0]).toBe(`Hey you, fixture line${triggerLabels[0]} · ${statusValues[1]}`);
-    expect(cells[1]).toBe(statusValues[1]); // Active
-    expect(cells[2]).toBe(triggerLabels[0]); // Nudge
+    expect(cells[1]).toBe(statusValues[1]);
+    expect(cells[2]).toBe(triggerLabels[0]);
     expect(within(panel()).queryByText(NO_DATA)).toBeNull();
     cleanup();
 
     await mount(undefined, { nudge: { [A.id]: false } });
     const off = within(rows()[0]).getAllByRole("cell").map((c) => c.textContent);
-    expect(off[1]).toBe(statusValues[3]); // Canceled
+    expect(off[1]).toBe(statusValues[3]);
     expect(off[2]).toBe(triggerLabels[0]);
   });
 
@@ -449,7 +380,6 @@ describe("Automated Messages tab (ticket 41)", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     await act(async () => { fireEvent.click(within(rows()[0]).getByRole("button", { name: "Hey you, fixture line" })); });
     const dialog = screen.getByRole("dialog", { name: triggerLabels[0] });
-    // The editor, mounted unchanged: its own heading and its save.
     expect(within(dialog).getByRole("heading", { name: "Nudge online" })).toBeTruthy();
     const tag = within(dialog).getByText(EXTRA_LABEL);
     expect(tag.getAttribute("title")).toBe(EXTRA_LABEL);
@@ -461,7 +391,6 @@ describe("Automated Messages tab (ticket 41)", () => {
   it("no mass label appears inside the tab, and the page imports none of the mass components", async () => {
     await mount(undefined, { nudge: { [A.id]: true }, lines: { [A.id]: "Hey you, fixture line" } });
     const text = panel().textContent ?? "";
-    // The capture's mass strings (#56, #57, #66, #73, #79, #106 to #108) and ours.
     const mass = [labelOf(56), labelOf(57), labelOf(66), labelOf(73), labelOf(79), labelOf(106),
       valueOf(107).split(" / ")[0], valueOf(108).split(" / ")[0],
       "Message online fans", "Mass Nudge", "Auto-unsend"];
@@ -482,12 +411,12 @@ describe("Automated Messages tab (ticket 41)", () => {
     await applyFilters({ search: "FIXTURE" });
     expect(rows()).toHaveLength(1);
 
-    await applyFilters({ search: "", status: statusValues[3] }); // Canceled
+    await applyFilters({ search: "", status: statusValues[3] });
     expect(within(panel()).getByText(NO_DATA)).toBeTruthy();
-    await applyFilters({ status: statusValues[1] }); // Active
+    await applyFilters({ status: statusValues[1] });
     expect(rows()).toHaveLength(1);
 
-    await applyFilters({ status: "", trigger: triggerLabels[0] }); // Nudge
+    await applyFilters({ status: "", trigger: triggerLabels[0] });
     expect(rows()).toHaveLength(1);
 
     await applyFilters({ search: "nothing like it" });
@@ -495,20 +424,17 @@ describe("Automated Messages tab (ticket 41)", () => {
     await act(async () => { fireEvent.click(filterBar().reset); });
     expect(rows()).toHaveLength(1);
     expect((filterBar().search as HTMLInputElement).value).toBe("");
-    // Filtering is on the rows already read: no relay call.
     expect(relayCalls()).toEqual(calls);
   });
 
   it("the Status and Trigger options are the capture's, in its order; those with nothing behind them are Not wired", async () => {
     await mount();
-    // The first option is the placeholder "All".
     const options = (el: HTMLElement) => optionsOf(el).slice(1);
     const { status, trigger } = filterBar();
     const notWired = (o: HTMLElement) => !!o.querySelector('[title="not wired"]');
 
     const statusOptions = options(status);
     expect(statusOptions.map((o) => o.textContent)).toEqual(statusValues);
-    // A rule on or off, and one that is on before its Effective date or past its Expiry.
     for (const o of statusOptions) {
       expect(o, o.textContent!).not.toHaveAttribute("aria-disabled");
       expect(notWired(o)).toBe(false);
@@ -517,7 +443,7 @@ describe("Automated Messages tab (ticket 41)", () => {
     const triggerOptions = options(trigger);
     expect(triggerOptions.map((o) => o.textContent)).toEqual(triggerLabels);
     for (const o of triggerOptions) {
-      const wired = triggerLabels.slice(0, 7).includes(o.textContent!); // all but Not Purchased
+      const wired = triggerLabels.slice(0, 7).includes(o.textContent!);
       expect(o.getAttribute("aria-disabled") === "true", o.textContent!).toBe(!wired);
       expect(notWired(o)).toBe(!wired);
     }
@@ -536,7 +462,7 @@ describe("Automated Messages tab (ticket 41)", () => {
 
     const headers = within(panel()).getAllByRole("columnheader").map((h) => h.textContent);
     const cells = within(rows()[0]).getAllByRole("cell");
-    for (const name of [labelOf(42), labelOf(43)]) { // Sent, Purchased
+    for (const name of [labelOf(42), labelOf(43)]) {
       const cell = cells[headers.indexOf(name)];
       expect(cell.textContent, name).toBe("—");
       expect(cell).toHaveAttribute("title", "not wired");
@@ -561,7 +487,6 @@ describe("Automated Messages tab (ticket 41)", () => {
       nudge: { [A.id]: true, [B.id]: false },
       lines: { [A.id]: "Line of Model A", [B.id]: "Line of Model B" },
     });
-    // The first Creator is the pick until another is clicked on the creator column.
     expect(creatorRow(A.nickname)).toHaveAttribute("aria-current", "true");
     expect(creatorRow(B.nickname)).not.toHaveAttribute("aria-current");
     expect(messageOf(rows()[0])).toBe("Line of Model A");
@@ -576,8 +501,6 @@ describe("Automated Messages tab (ticket 41)", () => {
     expect(nudgeReads).toEqual([`/admin/nudge-config?account_id=${B.id}`]);
     expect(within(rows()[0]).getAllByRole("cell")[1].textContent).toBe(statusValues[3]);
 
-    // The row's editor opens on the same Creator, and its save writes for it.
-    // The PUT is the only write: the relay syncs B's nudge_online rule inside it.
     expectedWrites.push("PUT /admin/nudge-config");
     await act(async () => { fireEvent.click(within(rows()[0]).getByRole("button", { name: "Line of Model B" })); });
     const dialog = screen.getByRole("dialog", { name: triggerLabels[0] });
@@ -595,32 +518,24 @@ describe("Automated Messages tab (ticket 41)", () => {
   });
 });
 
-// ── Ticket 42: the Create message pop-up's Automated messages section ────
 
-/** A Triggers row's pop-up card, as the capture records it: `card "<title>",
- *  "<second line>"`, then `tag "<tag>"` where the card has one; null for a
- *  Trigger with no card (#123, a list label only). */
 const cardOf = (n: number) => {
   const m = /^card "([^"]+)", "([^"]+)"(?:, tag "([^"]+)")?;/.exec(rowOf(n)[2]);
   return m ? { title: m[1], desc: m[2], tag: m[3] ?? null } : null;
 };
 const triggerRows = range(116, 123);
-/** The capture's cards, in its Triggers order. */
 const captureCards = triggerRows.map(cardOf).filter((c) => c !== null);
 const NUDGE_CARD = cardOf(116)!;
 const WELCOME_CARD = cardOf(117)!;
 const PURCHASE_CARD = cardOf(118)!;
-const POP_UP = labelOf(103); // "Create message"
-/** "Start from scratch" (#104), the template line (#105) and the section (#109): Value cells verbatim. */
+const POP_UP = labelOf(103);
 const SCRATCH = valueOf(104);
 const TEMPLATES = valueOf(105);
 const AUTOMATED = valueOf(109);
 
 const popUp = () => screen.getByRole("dialog", { name: POP_UP });
 const automatedSection = () => within(popUp()).getByRole("region", { name: AUTOMATED });
-/** A card's title: the first line its button renders. */
 const titleOf = (b: HTMLElement) => b.querySelector("span span")?.textContent;
-/** The section's cards, in DOM order: every button but "Start from scratch". */
 const automatedCards = () => within(automatedSection()).getAllByRole("button")
   .filter((b) => b.textContent !== SCRATCH);
 const cardNamed = (title: string) => automatedCards().find((b) => titleOf(b) === title)!;
@@ -655,11 +570,9 @@ describe("the Create message pop-up's Automated messages section (ticket 42)", (
     expect(section.textContent).toContain(TEMPLATES);
     const cards = automatedCards();
     expect(before(scratch, cards[0])).toBe(true);
-    // Each card: its title, its second line, and the Nudge card's tag, as the capture spells them.
     expect(cards.map((c) => c.textContent)).toEqual(
       captureCards.map((c) => c.title + c.desc + (c.tag ?? "")),
     );
-    // The section sits before the buttons.
     expect(before(cards[cards.length - 1], within(dialog).getByRole("button", { name: labelOf(111) }))).toBe(true);
   });
 
@@ -667,14 +580,10 @@ describe("the Create message pop-up's Automated messages section (ticket 42)", (
     await mount();
     const { trigger } = filterBar();
     const options = optionsOf(trigger).slice(1);
-    // The filter lists every list label; the pop-up every Trigger with a card,
-    // in the same order (#123, "Not Purchased", has no card in the bundle).
     expect(options.map((o) => o.textContent)).toEqual(triggerLabels);
     await openPopUp();
     const withCard = triggerRows.filter((n) => cardOf(n) !== null);
     expect(automatedCards().map(titleOf)).toEqual(withCard.map((n) => cardOf(n)!.title));
-    // The wired Triggers are the same in both: every one with a card ("Not
-    // Purchased" has no rule in the bundle's rules enum).
     const wiredOptions = options.filter((o) => o.getAttribute("aria-disabled") !== "true").map((o) => o.textContent);
     const wiredCards = automatedCards().filter((c) => !(c as HTMLButtonElement).disabled).map(titleOf);
     expect(wiredOptions).toEqual(triggerLabels.slice(0, 7));
@@ -697,12 +606,10 @@ describe("the Create message pop-up's Automated messages section (ticket 42)", (
 
     expect(screen.queryByRole("dialog", { name: POP_UP })).toBeNull();
     const dialog = screen.getByRole("dialog", { name: triggerLabels[0] });
-    // The same editor the Nudge row opens: its own heading, the extra tag, and its save.
     expect(within(dialog).getByRole("heading", { name: "Nudge online" })).toBeTruthy();
     expect(within(dialog).getByText(EXTRA_LABEL).getAttribute("title")).toBe(EXTRA_LABEL);
     await waitFor(() => expect(within(dialog).getAllByRole("button", { name: /Save changes/ }).length).toBeGreaterThan(0));
     await waitFor(() => expect(client.isFetching()).toBe(0));
-    // Its reads are the chip's Creator's.
     const nudgeReads = relayGet.mock.calls.slice(reads).map(([p]) => String(p))
       .filter((p) => p.startsWith("/admin/nudge-config"));
     for (const p of nudgeReads) expect(p).toBe(`/admin/nudge-config?account_id=${B.id}`);
@@ -746,6 +653,15 @@ describe("the Create message pop-up's Automated messages section (ticket 42)", (
     expect(screen.getByRole("dialog", { name: title })).toHaveAttribute("data-account", B.id);
   });
 
+  it("on a Fansly Creator the mass composer opens unseeded: she is no sender", async () => {
+    await mount("/growth/smart-messages", { fanslyB: true });
+    await pickCreator(B.nickname);
+    await openPopUp();
+    await act(async () => { fireEvent.click(within(popUp()).getByRole("button", { name: new RegExp(`^${valueOf(108).split(" / ")[0]}`) })); });
+    await act(async () => { fireEvent.click(nextButton()); });
+    expect(screen.getByRole("dialog", { name: "mass composer standard" })).toHaveAttribute("data-account", "");
+  });
+
   it("Start from scratch is disabled, titled not wired, picks nothing and calls nothing; every card is wired", async () => {
     await mount();
     await openPopUp();
@@ -778,20 +694,16 @@ describe("the Create message pop-up's Automated messages section (ticket 42)", (
   });
 });
 
-// ── Ticket 43, rebound 2026-10-18: the Delayed welcome row is our send_welcome automation ──
 
-const WELCOME = triggerLabels[1]; // "Delayed welcome"
+const WELCOME = triggerLabels[1];
 const triggerOf = (r: HTMLElement) => within(r).getAllByRole("cell")[2]?.textContent;
 const welcomeRow = () => rows().find((r) => triggerOf(r) === WELCOME);
-/** The calls a relay mock got for `path`: [path, body (writes only), the Creator its context named]. */
 const callsTo = (m: Mock, path: string) => m.mock.calls
   .filter(([p]) => p === path)
   .map(([p, ...rest]) => [p, ...rest.slice(0, -1), (rest[rest.length - 1] as { accountId?: string } | undefined)?.accountId]);
 const RULES = "/admin/automation-rules";
-/** Every call a relay mock got for `path`, verbatim: [path, body] for a rule write, which names no Creator context. */
 const rawCalls = (m: Mock, path: string) => m.mock.calls.filter(([p]) => p === path);
 const ruleAt = (accountId: string) => `${RULES}/${WELCOME_RULE_ID[accountId]}`;
-/** The editor's controls, by their labels. */
 const welcomeEditor = () => {
   const d = screen.getByRole("dialog", { name: WELCOME });
   return {
@@ -810,7 +722,6 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     expect(within(panel()).getByText(NO_DATA)).toBeTruthy();
     cleanup();
 
-    // An OnlyFans welcome slot, switched on, is not a row any more, and the tab no longer reads it.
     await mount(undefined, { welcome: { [A.id]: "Welcome in, fixture greeting" }, ofOn: { [A.id]: true } });
     expect(welcomeRow()).toBeUndefined();
     expect(callsTo(relayGet, TEMPLATES_READ)).toEqual([]);
@@ -821,13 +732,13 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     const headers = within(panel()).getAllByRole("columnheader").map((h) => h.textContent);
     const cells = within(welcomeRow()!).getAllByRole("cell").map((c) => c.textContent);
     expect(messageOf(welcomeRow()!)).toBe("Welcome new subscribers");
-    expect(cells[1]).toBe(statusValues[1]); // Active
+    expect(cells[1]).toBe(statusValues[1]);
     expect(cells[2]).toBe(WELCOME);
     expect(cells[headers.indexOf(labelOf(51))]).toBe("Feb 3, 2026");
     cleanup();
 
     await mount(undefined, { welcomeRules: { [A.id]: { on: false } } });
-    expect(within(welcomeRow()!).getAllByRole("cell")[1].textContent).toBe(statusValues[3]); // Canceled
+    expect(within(welcomeRow()!).getAllByRole("cell")[1].textContent).toBe(statusValues[3]);
   });
 
   it("names the row by its message, the first of several variants", async () => {
@@ -851,7 +762,6 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     await act(async () => { fireEvent.click(within(welcomeRow()!).getByRole("button", { name: "Welcome new subscribers" })); });
     const e = welcomeEditor();
     expect(within(e.dialog).getByText(EXTRA_LABEL).getAttribute("title")).toBe(EXTRA_LABEL);
-    // Not the OnlyFans welcome slot's editor.
     expect(within(e.dialog).queryByRole("heading", { name: "Welcome message" })).toBeNull();
     await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
     expect(e.enabled).toBeChecked();
@@ -864,12 +774,10 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     fireEvent.change(e.delay, { target: { value: "15" } });
     fireEvent.change(e.message, { target: { value: "  Hey {name}, welcome in!  " } });
     await act(async () => { fireEvent.click(e.save); });
-    // The payload is written back merged (a PATCH replaces it whole): the rule's other knobs stay as they are.
     await waitFor(() => expect(rawCalls(relayPatch, ruleAt(A.id))).toEqual([[ruleAt(A.id), {
       is_enabled: true, every_seconds: 900,
       payload: {
         question: "what's yours?", follow_back: true, follow_back_gate: true, message: "Hey {name}, welcome in!",
-        // Its Smart Message settings; a rule saved before them sends immediately.
         ...EXTRAS_DEFAULTS, delay_range: null,
       },
     }]]));
@@ -883,14 +791,12 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     await mount(undefined, { welcomeRules: { [A.id]: { on: true, everySeconds: 600 } } });
     await act(async () => { fireEvent.click(within(welcomeRow()!).getByRole("button", { name: "Welcome new subscribers" })); });
     await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
-    // The PATCH answers with the rule as written (17 minutes, the server's say); the cache's refetch still reads 10.
     relayPatch.mockImplementation(() => Promise.resolve({ ...welcomeRule(A.id, true, 17 * 60), payload: { message: "As saved" } }));
     expectedWrites.push(`PATCH ${ruleAt(A.id)}`);
     fireEvent.change(welcomeEditor().delay, { target: { value: "15" } });
     await act(async () => { fireEvent.click(welcomeEditor().save); });
     const d = welcomeEditor().dialog;
     expect(await within(d).findByText("Saved")).toBeTruthy();
-    // The form reseeds from the save's answer, not the cache.
     await waitFor(() => expect(client.isFetching()).toBe(0));
     expect(welcomeEditor().delay.value).toBe("17");
     expect(welcomeEditor().message.value).toBe("As saved");
@@ -909,7 +815,6 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     expect(within(d).getByText(/has none yet/)).toBeTruthy();
     fireEvent.change(welcomeEditor().message, { target: { value: "Typed before the rule came" } });
 
-    // Another tab creates the rule; the rules read refetches it.
     welcomeRules[A.id] = { on: false, everySeconds: 600 };
     await act(async () => { await client.invalidateQueries(); });
     await waitFor(() => expect(within(d).queryByText(/has none yet/)).toBeNull());
@@ -922,7 +827,6 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     expect(rawCalls(relayPost, RULES)).toEqual([]);
   });
 
-  /** The create path with the POST held open: the editor, the rules fixture, and the hand that lands the POST. */
   async function createHeldOpen() {
     const welcomeRules: Fixture["welcomeRules"] = {};
     await mount(undefined, { welcomeRules });
@@ -933,7 +837,6 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     let land!: () => Promise<void>;
     relayPost.mockImplementation(() => new Promise((resolve) => {
       land = async () => {
-        // The server now holds the rule it answered with; the refetch reads it.
         welcomeRules[A.id] = { on: false, everySeconds: 7 * 60, message: "As created" };
         await act(async () => { resolve(welcomeRule(A.id, false, 7 * 60, "As created")); });
       };
@@ -948,7 +851,6 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
   it("create path: typing while the POST runs keeps Save disabled (one POST, no duplicate rule); on land the typed edit stays and the next Save PATCHes the new rule", async () => {
     const { d, land, saving } = await createHeldOpen();
     expect(saving()).toBeDisabled();
-    // welcomeEditor() wants a "Save" button; while saving it reads "Saving…".
     fireEvent.change(within(d).getByRole("textbox", { name: "Message" }), { target: { value: "Typed while saving" } });
     expect(saving()).toBeDisabled();
     await act(async () => { fireEvent.click(saving()); });
@@ -957,7 +859,6 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     await land();
     await waitFor(() => expect(within(d).queryByText(/has none yet/)).toBeNull());
     await waitFor(() => expect(client.isFetching()).toBe(0));
-    // Not reseeded over the edit, and no "Saved" for a draft that holds an unsaved edit.
     expect(welcomeEditor().message.value).toBe("Typed while saving");
     expect(within(d).queryByText("Saved")).toBeNull();
     expect(rawCalls(relayPost, RULES)).toHaveLength(1);
@@ -1076,7 +977,6 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
 
     welcomeRules[A.id] = { on: false, everySeconds: 1200, message: "From another tab" };
     await act(async () => { await client.invalidateQueries(); });
-    // The page has the new rule (its row is named by the message) while the PATCH still runs.
     await waitFor(() => expect(screen.getAllByText("From another tab").length).toBeGreaterThan(0));
     expect(within(d).getByRole("spinbutton", { name: "Check every (minutes)" })).toHaveValue(15);
     await fail();
@@ -1150,7 +1050,6 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
     const d = welcomeEditor().dialog;
     relayPost.mockResolvedValueOnce(welcomeRule(A.id, false, 7 * 60, "As created"));
-    // From here the rules read fails: the cache keeps reading no rule.
     stubReads({ failRules: true });
     expectedWrites.push(`POST ${RULES}`);
     await act(async () => { fireEvent.click(welcomeEditor().save); });
@@ -1188,7 +1087,6 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     await mount(undefined, { welcomeRules: { [A.id]: { on: true } } });
     await pickCreator(B.nickname);
     await waitFor(() => expect(client.isFetching()).toBe(0));
-    // Model B has no rule, so no row.
     expect(welcomeRow()).toBeUndefined();
 
     await openPopUp();
@@ -1203,29 +1101,25 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     const e = welcomeEditor();
     expect(within(e.dialog).getByText(EXTRA_LABEL).getAttribute("title")).toBe(EXTRA_LABEL);
     await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
-    // A new rule is off until the owner ticks it, with the Brain's 5-minute check.
     expect(e.enabled).not.toBeChecked();
     expect(e.delay.value).toBe("5");
 
     relayPost.mockResolvedValue({ id: 99 });
     expectedWrites.push(`POST ${RULES}`);
     await act(async () => { fireEvent.click(e.save); });
-    // What an untouched welcome lane creates (DelayedWelcomeEditor's `WELCOME_CREATE_DEFAULTS`).
     await waitFor(() => expect(rawCalls(relayPost, RULES)).toEqual([[RULES, {
       account_id: B.id, kind: "send_welcome", name: "Welcome new subscribers", every_seconds: 300, is_enabled: false,
       payload: {
         time_only: true, skip_time_bubble: false, human_pace: true, stop_on_reply: true,
         follow_back: true, follow_back_gate: true, question: "what's yours?", gif_id: "", message: "",
-        // Infloww's start for a new welcome: a 2～5 minute delay.
         ...EXTRAS_DEFAULTS, delay_range: [2, 5],
       },
     }]]));
   });
 });
 
-// ── Ticket 44: the Purchased row and editor, the purchase_followup rule ──
 
-const PURCHASED = triggerLabels[2]; // "Purchased"
+const PURCHASED = triggerLabels[2];
 const purchasedRow = () => rows().find((r) => triggerOf(r) === PURCHASED);
 const PF_CONFIG = "/admin/purchase-followup-config";
 const FIXTURE_PURCHASE = { on: true, text: "Thanks for the unlock, fixture line" };
@@ -1240,12 +1134,12 @@ describe("the Purchased row and editor (ticket 44)", () => {
     expect(rows()).toHaveLength(1);
     const cells = within(purchasedRow()!).getAllByRole("cell").map((c) => c.textContent);
     expect(messageOf(purchasedRow()!)).toBe(FIXTURE_PURCHASE.text);
-    expect(cells[1]).toBe(statusValues[1]); // Active
+    expect(cells[1]).toBe(statusValues[1]);
     expect(cells[2]).toBe(PURCHASED);
     cleanup();
 
     await mount(undefined, { purchase: { [A.id]: { ...FIXTURE_PURCHASE, on: false } } });
-    expect(within(purchasedRow()!).getAllByRole("cell")[1].textContent).toBe(statusValues[3]); // Canceled
+    expect(within(purchasedRow()!).getAllByRole("cell")[1].textContent).toBe(statusValues[3]);
   });
 
   it("follows the Nudge and Delayed welcome rows, in the catalogue's order, and the Trigger filter picks it out", async () => {
@@ -1274,7 +1168,6 @@ describe("the Purchased row and editor (ticket 44)", () => {
     expect(within(dialog).getByText(EXTRA_LABEL).getAttribute("title")).toBe(EXTRA_LABEL);
     expect(await within(dialog).findByRole("heading", { name: "Message on purchase" })).toBeTruthy();
     expect(callsTo(relayGet, `${PF_CONFIG}?account_id=${B.id}`).length).toBeGreaterThan(0);
-    // Off by default, the message starting as Infloww's first default script; on with no text cannot be saved.
     const on = within(dialog).getByRole("switch", { name: "On" });
     expect(on).not.toBeChecked();
     expect((within(dialog).getByLabelText("Message") as HTMLTextAreaElement).value)
@@ -1288,7 +1181,6 @@ describe("the Purchased row and editor (ticket 44)", () => {
 
     expectedWrites.push(`PUT ${PF_CONFIG}`);
     fireEvent.change(within(dialog).getByLabelText("Message"), { target: { value: "  Thank you, fixture fan  " } });
-    // Infloww's start for Purchased: after a random 1～3 minute delay, every time.
     expect((within(dialog).getByLabelText("Send message to fans") as HTMLSelectElement).value).toBe("on");
     expect(within(dialog).getByRole("radio", { name: "Send every time the fan matches the trigger" })).toBeChecked();
     fireEvent.change(within(dialog).getByLabelText("Delay from (minutes)"), { target: { value: "15" } });
@@ -1297,7 +1189,7 @@ describe("the Purchased row and editor (ticket 44)", () => {
     await waitFor(() => expect(relayPut.mock.calls.filter(([p]) => p === PF_CONFIG).map(([, body]) => body)).toEqual([
       { account_id: B.id, config: {
         enabled: true, text: "Thank you, fixture fan", ...EXTRAS_DEFAULTS, frequency: "every",
-        delay_range: [15, 16], // equal ends widen by a minute, as Infloww's clamp does
+        delay_range: [15, 16],
       } },
     ]));
     expect(await within(dialog).findByText("Saved")).toBeTruthy();
@@ -1313,12 +1205,10 @@ describe("the Purchased row and editor (ticket 44)", () => {
   });
 });
 
-// ── The lifecycle Triggers, the Actions cell and the Date created filter ──
 
 const LM_CONFIG = "/admin/lifecycle-message-config";
 const SWITCH = "/admin/automation-rules/switch";
 
-/** A row's Cancel, confirmed in the bundle's "Cancel message" dialog. */
 async function cancelRow(trigger: string) {
   await act(async () => {
     fireEvent.click(within(actionsCell(rowOfTrigger(trigger)!)).getByRole("button", { name: `Cancel ${trigger}` }));
@@ -1351,7 +1241,7 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
     expect(rows().map(triggerOf)).toEqual([PURCHASED, ...LIFECYCLE_ROWS.map(([t]) => t)]);
     const cells = within(rowOfTrigger(triggerLabels[6])!).getAllByRole("cell").map((c) => c.textContent);
     expect(messageOf(rowOfTrigger(triggerLabels[6])!)).toBe("Happy birthday, fixture");
-    expect(cells[1]).toBe(statusValues[3]); // Canceled
+    expect(cells[1]).toBe(statusValues[3]);
     expect(within(rowOfTrigger(triggerLabels[3])!).getAllByRole("cell")[1].textContent).toBe(statusValues[1]);
     await applyFilters({ trigger: triggerLabels[4] });
     expect(rows().map(triggerOf)).toEqual([triggerLabels[4]]);
@@ -1369,7 +1259,6 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
     expect(within(dialog).getByRole("switch", { name: "On" })).toBeChecked();
     const hours = within(dialog).getByLabelText("Fan’s subscription expired") as HTMLInputElement;
     expect(hours.value).toBe("48");
-    // Infloww's bounds: Expired is 12..120 hours.
     fireEvent.change(hours, { target: { value: "6" } });
     expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
     expect(within(dialog).getByText("Hours must be a whole number from 12 to 120.")).toBeTruthy();
@@ -1415,7 +1304,6 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
     await act(async () => { fireEvent.click(cardNamed(cardOf(122)!.title)); });
     await act(async () => { fireEvent.click(nextButton()); });
     const dialog = screen.getByRole("dialog", { name: triggerLabels[6] });
-    // The dialog's title and, once loaded, the editor's own heading share the name.
     expect((await within(dialog).findAllByRole("heading", { name: "Birthday" })).length).toBeGreaterThan(0);
     await waitFor(() => expect(within(dialog).getByRole("switch", { name: "On" })).toBeTruthy());
     expect(within(dialog).getByRole("switch", { name: "On" })).not.toBeChecked();
@@ -1455,7 +1343,6 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
     });
     const dialog = screen.getByRole("dialog", { name: "Cancel message" });
     expect(within(dialog).getByText("The selected smart message will no longer be sent.")).toBeTruthy();
-    // The shared Modal is Infloww's antd modal now (page-parity ticket 17), with a corner Close.
     expect(within(dialog).getAllByRole("button").filter((b) => b.getAttribute("aria-label") !== "Close").map((b) => b.textContent))
       .toEqual(["Not now", "Proceed with cancellation"]);
     await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Not now" })); });
@@ -1467,7 +1354,6 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
   it("after a row's Cancel, its editor reopens on the rule as it is now, not a stale On", async () => {
     const lifecycle = { [A.id]: { resubscribe_message: { on: true, text: "Welcome back, fixture" } } };
     await mount(undefined, { lifecycle });
-    // Keep an unmounted editor's read cached, as the app's default does.
     client.setQueryDefaults(["lifecycle-message-config"], { gcTime: 5 * 60_000 });
     const open = async () => {
       await act(async () => { fireEvent.click(within(rowOfTrigger(triggerLabels[5])!).getByRole("button", { name: "Welcome back, fixture" })); });
@@ -1501,7 +1387,7 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
       expect(card).toHaveAttribute("title", refusal);
       expect(within(card).getByText(refusal)).toBeTruthy();
     }
-    expect(cardNamed(cardOf(122)!.title)).not.toBeDisabled(); // Birthday
+    expect(cardNamed(cardOf(122)!.title)).not.toBeDisabled();
     await act(async () => { fireEvent.click(within(popUp()).getByRole("button", { name: labelOf(111) })); });
 
     await act(async () => { fireEvent.click(within(rowOfTrigger(triggerLabels[4])!).getByRole("button", { name: "Come back, fixture" })); });
@@ -1519,7 +1405,7 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
 
   it("Date created keeps the rows created inside the picked days, applied by Search; Reset clears it", async () => {
     await mount(undefined, {
-      nudge: { [A.id]: true }, // created 2026-01-05
+      nudge: { [A.id]: true },
       lifecycle: { [A.id]: {
         birthday_message: { on: true, text: "Happy birthday, fixture", createdAt: "2026-03-10T12:00:00Z" },
       } },
@@ -1529,7 +1415,7 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
     const field = filterBar().dateCreated.closest("[role=group]") as HTMLElement;
     const [from, to] = Array.from(field.querySelectorAll("input"));
     await act(async () => { fireEvent.change(from, { target: { value: "2026-03-01" } }); });
-    expect(rows()).toHaveLength(2); // not until Search
+    expect(rows()).toHaveLength(2);
     await act(async () => { fireEvent.click(filterBar().apply); });
     expect(rows().map(triggerOf)).toEqual([triggerLabels[6]]);
     await act(async () => { fireEvent.change(to, { target: { value: "2026-03-09" } }); });
@@ -1540,7 +1426,6 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
   });
 });
 
-// ── Ticket 54: the header row, the filter bar and the table against the bundle shots ──
 
 describe("the header row and the Automated filter bar and table read like the bundle (ticket 54)", () => {
   it("the header row holds the title, then Learn and New Message, all above the tab strip; the creator column sits under it, left of the Automated tab", async () => {
@@ -1548,20 +1433,16 @@ describe("the header row and the Automated filter bar and table read like the bu
     const title = screen.getByRole("heading", { level: 1 });
     const learn = screen.getByRole("button", { name: labelOf(11) });
     const create = screen.getByRole("button", { name: labelOf(15) });
-    // One row: title, Learn, New Message, in that order (#3, #11, #15, #18).
     const header = screen.getByRole("banner");
     expect(header.contains(title)).toBe(true);
     expect(title.textContent).toBe(SM.title.label);
     for (const el of [learn, create]) expect(header.contains(el)).toBe(true);
     expect(before(title, learn) && before(learn, create)).toBe(true);
-    // The header holds no creator select: the Creator is picked on the creator column.
     expect(within(header).queryByRole("combobox", { name: "Creator" })).toBeNull();
     expect(within(header).queryByTestId("of-creator-column")).toBeNull();
-    // The tab strip follows the header row, full width, and holds only the two tabs.
     expect(before(create, parentTabs())).toBe(true);
     expect(header.contains(parentTabs())).toBe(false);
     expect(parentTabs().contains(column())).toBe(false);
-    // The column sits under the tab strip, in the Automated tab, left of its body (the list).
     expect(before(parentTabs(), column())).toBe(true);
     expect(panel().contains(column())).toBe(true);
     expect(column().nextElementSibling!.contains(rows()[0])).toBe(true);
@@ -1594,7 +1475,6 @@ describe("the header row and the Automated filter bar and table read like the bu
       const field = filterBar()[n === 31 ? "startDate" : "dateCreated"].closest("[role=group]") as HTMLElement | null;
       expect(field, labelOf(n)).toBeTruthy();
       const ends = Array.from(field!.querySelectorAll("input"));
-      // antd's RangePicker placeholders (index.9f50f370.js @1623380).
       expect(ends.map((e) => e.getAttribute("placeholder"))).toEqual(["Start date", "End date"]);
       for (const e of ends) {
         if (n === 31) {
@@ -1602,7 +1482,6 @@ describe("the header row and the Automated filter bar and table read like the bu
           expect(e).toHaveAttribute("title", "not wired");
         } else {
           expect(e).not.toBeDisabled();
-          // An empty end shows the placeholder until it has focus, then is a day picker.
           await act(async () => { fireEvent.focus(e); });
           expect(e.type).toBe("date");
           await act(async () => { fireEvent.blur(e); });
@@ -1624,7 +1503,6 @@ describe("the header row and the Automated filter bar and table read like the bu
   });
 
   it("Date created renders in the Agency's report time zone (#51)", async () => {
-    // The fixture rule was created 2026-01-05 12:00 UTC: Jan 6 at UTC+14, Jan 5 at UTC-11.
     for (const [reportTz, want] of [["Pacific/Kiritimati", "Jan 6, 2026"], ["Pacific/Pago_Pago", "Jan 5, 2026"]]) {
       await mount(undefined, { nudge: { [A.id]: true }, reportTz });
       const headers = within(panel()).getAllByRole("columnheader").map((h) => h.textContent);
@@ -1637,7 +1515,6 @@ describe("the header row and the Automated filter bar and table read like the bu
   });
 
   it("loading draws placeholder rows (no text); the read-failure line carries the Inflowwww extra label; No Data does not", async () => {
-    // Loading: the rules read never answers.
     window.history.replaceState(null, "", "/growth/smart-messages");
     stubReads({});
     const answer = relayGet.getMockImplementation()!;
@@ -1659,7 +1536,6 @@ describe("the header row and the Automated filter bar and table read like the bu
   });
 
   it("with no Creator the creator column lists none and no creator select shows", async () => {
-    // No Creator, so no rules read: the mount waits on the Creators read alone.
     window.history.replaceState(null, "", "/growth/smart-messages");
     stubReads({ noCreators: true });
     client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
@@ -1669,12 +1545,10 @@ describe("the header row and the Automated filter bar and table read like the bu
       expect(client.isFetching()).toBe(0);
     });
     expect(within(column()).queryAllByTestId("of-creator-row")).toEqual([]);
-    // The narrow-screen fallback select shows only once there are Creators to pick.
     expect(screen.queryByRole("combobox", { name: "Creator" })).toBeNull();
   });
 });
 
-// ── The Smart Message settings: media and price, Frequency & scheduling, Auto-unsend ──
 
 const cellOf = (r: HTMLElement, label: string) => {
   const headers = within(panel()).getAllByRole("columnheader").map((h) => h.textContent);
@@ -1688,12 +1562,10 @@ describe("the Smart Message settings on the Trigger editors and the list", () =>
     const dialog = screen.getByRole("dialog", { name: PURCHASED });
     expect(await within(dialog).findByRole("heading", { name: "Message on purchase" })).toBeTruthy();
     const save = within(dialog).getByRole("button", { name: "Save" });
-    // Infloww's floor on a price: under $3 cannot be saved.
     const price = within(dialog).getByLabelText("Message price");
     fireEvent.change(price, { target: { value: "2" } });
     expect(save).toBeDisabled();
     expect(within(dialog).getAllByText("Minimum $3 USD")).toHaveLength(2);
-    // ...nor over OnlyFans' $200 PPV ceiling.
     fireEvent.change(price, { target: { value: "200.01" } });
     expect(save).toBeDisabled();
     expect(within(dialog).getByText("Maximum $200 USD")).toBeTruthy();
@@ -1703,17 +1575,15 @@ describe("the Smart Message settings on the Trigger editors and the list", () =>
     fireEvent.click(within(dialog).getByRole("radio", { name: "Send only once when the fan matches the trigger" }));
     const effective = within(dialog).getByRole("radiogroup", { name: "Effective" });
     fireEvent.click(within(effective).getByRole("radio", { name: "Scheduled date" }));
-    expect(save).toBeDisabled(); // a scheduled date with no date
+    expect(save).toBeDisabled();
     fireEvent.change(within(dialog).getByLabelText("Effective date"), { target: { value: "2026-11-01T09:30" } });
     expect(within(dialog).getByText("Times in Europe/Berlin.")).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("checkbox", { name: "Unsend messages" }));
-    // At most 23 hours: inside OnlyFans' ~24h per-chat delete window.
     fireEvent.change(within(dialog).getByLabelText("Unsend after (hours)"), { target: { value: "24" } });
     expect(within(dialog).getByText("Unsend after 1 minute to 23 hours")).toBeTruthy();
     expect(save).toBeDisabled();
     fireEvent.change(within(dialog).getByLabelText("Unsend after (hours)"), { target: { value: "1" } });
     fireEvent.change(within(dialog).getByLabelText("Unsend after (minutes)"), { target: { value: "30" } });
-    // The house differs here: a paid message is never unsent.
     expect(within(dialog).getByText("A paid message is never unsent: only a free one is.")).toBeTruthy();
 
     expectedWrites.push(`PUT ${PF_CONFIG}`);
@@ -1721,8 +1591,6 @@ describe("the Smart Message settings on the Trigger editors and the list", () =>
     await waitFor(() => expect(relayPut.mock.calls.filter(([p]) => p === PF_CONFIG).map(([, body]) => body)).toEqual([
       { account_id: A.id, config: {
         enabled: true, text: FIXTURE_PURCHASE.text, media_ids: [7, 8], price_cents: 1250, frequency: "once",
-        // The delay row was left as it opened, so it is not sent: the Relay
-        // keeps what it stored (an old fixed delay stays exact).
         starts_at: "2026-11-01T08:30:00.000Z", ends_at: null, unsend_minutes: 90,
       } },
     ]));
@@ -1732,11 +1600,9 @@ describe("the Smart Message settings on the Trigger editors and the list", () =>
     await mount(undefined, { lifecycle: { [A.id]: { birthday_message: { on: true, text: "Happy birthday, fixture" } } } });
     await act(async () => { fireEvent.click(within(rowOfTrigger(triggerLabels[6])!).getByRole("button", { name: "Happy birthday, fixture" })); });
     const dialog = screen.getByRole("dialog", { name: triggerLabels[6] });
-    // The dialog's title and, once loaded, the editor's own heading share the name.
     expect((await within(dialog).findAllByRole("heading", { name: "Birthday" })).length).toBeGreaterThan(0);
     await waitFor(() => expect(within(dialog).getByRole("switch", { name: "On" })).toBeTruthy());
     const save = within(dialog).getByRole("button", { name: "Save" });
-    // No delay row on a lifecycle Trigger.
     expect(within(dialog).queryByLabelText("Send message to fans")).toBeNull();
     fireEvent.change(within(dialog).getByLabelText("Message price"), { target: { value: "5" } });
     expect(within(dialog).getByText("Add media to set a price")).toBeTruthy();

@@ -1,4 +1,3 @@
-"""Bounded independent actor work shared by scenarios."""
 from __future__ import annotations
 
 import asyncio

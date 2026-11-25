@@ -1,28 +1,17 @@
-/**
- * The `report_export` Do flow (docs/plans/ultra-mode/issues/02-do-mode-export.md): no form, no cursor. The draft's
- * slots carry a report recipe with ids and the window fixed at draft time; Download POSTs it to /admin/reports/run
- * (AssistantWidget) and saves the file. Pure, so the card's lines and the request body are tested (doExport.test.ts).
- */
-
 export type ExportFormat = "csv" | "xlsx";
 
 export interface ExportSlots {
-  /** The recipe /admin/reports/run takes; null while a name is unresolved (no Download). */
   recipe: Record<string, unknown> | null;
   format: ExportFormat;
   window: { from: string; to: string; tz: string };
   labels: {
     dataset: string;
     about: string;
-    /** The named Creators; [] = all of them (`all_creators` many). */
     creators: string[];
     all_creators: number;
-    /** null: the dataset has no Employees; [] = all of them. */
     employees: string[] | null;
     kinds: string[];
-    /** The effective row order in plain words ("Tips, high to low"); "" when the server sent none. */
     order: string;
-    /** The row cap; null = all rows. */
     limit: number | null;
   };
   columns: string[];
@@ -34,7 +23,6 @@ const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const obj = (v: unknown): Record<string, unknown> =>
   (v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {});
 
-/** The draft's slots, read defensively (a missing field never crashes the card); null for no slots. */
 export function exportSlotsFrom(raw: unknown): ExportSlots | null {
   if (!raw || typeof raw !== "object") return null;
   const r = obj(raw);
@@ -57,7 +45,6 @@ export function exportSlotsFrom(raw: unknown): ExportSlots | null {
   };
 }
 
-/** The plan card's plain-words lines (no row count: that would cost a second run). */
 export function exportPlanText(s: ExportSlots): string[] {
   const lb = s.labels;
   const lines = [`Report: ${lb.dataset}${lb.about ? ` — ${lb.about}` : ""}`];
@@ -72,7 +59,6 @@ export function exportPlanText(s: ExportSlots): string[] {
   return lines;
 }
 
-/** POST /admin/reports/run's body, or null while the recipe is unresolved. */
 export function exportRunBody(s: ExportSlots | null): { recipe: Record<string, unknown>; format: ExportFormat } | null {
   return s?.recipe ? { recipe: s.recipe, format: s.format } : null;
 }

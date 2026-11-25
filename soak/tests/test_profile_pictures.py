@@ -1,7 +1,3 @@
-"""FakeOF's profile pictures (ticket 67): the account starts with a seeded cover whose /cdn bytes are fixed, and a cover
-saved from an upload (storage PUT, convert claim, PATCH /users/me {header: item}) reads back under a new URL, as OF
-does (ticket 67 follow-up, measured live 2026-11-21): late (the previous cover keeps showing for `STALE_S` seconds)
-and re-encoded (other bytes, the same picture), so the cover proof's undo must wait and compare pixels, not sha256."""
 import io
 import time
 from urllib.parse import urlsplit
@@ -56,21 +52,21 @@ def test_saved_cover_reads_back_late_and_re_encoded() -> None:
     try:
         prior = header()
         assert prior == settings.picture_url(settings.PRIOR_COVER) and cdn(prior) == settings.PRIOR_COVER_PNG
-        one, two = settings.vault._png(4), settings.PRIOR_COVER_PNG   # intact: FakeOF refuses a corrupt PNG, as OF does
-        assert save(one, "a") == prior and header() == prior   # applied late: the previous cover still shows
+        one, two = settings.vault._png(4), settings.PRIOR_COVER_PNG
+        assert save(one, "a") == prior and header() == prior
         now[0] += settings.STALE_S
         first = header()
-        assert first != prior and cdn(first) != one and _pixels(cdn(first)) == _pixels(one)   # re-encoded
+        assert first != prior and cdn(first) != one and _pixels(cdn(first)) == _pixels(one)
         assert settings.posts.png_intact(cdn(first))
         assert save(two, "b") == first
         now[0] += settings.STALE_S - 0.5
-        assert header() == first   # still stale
+        assert header() == first
         now[0] += 0.5
         again = header()
         assert again not in (prior, first) and cdn(again) != two and _pixels(cdn(again)) == _pixels(two)
         assert client.get("/cdn/files/soak/profile/soak-process-99.png").status_code == 404
         call("PATCH", "/api2/v2/users/me", {"header": ""})
-        assert header() is None   # a remove is not delayed
+        assert header() is None
     finally:
         settings._clock = clock
 

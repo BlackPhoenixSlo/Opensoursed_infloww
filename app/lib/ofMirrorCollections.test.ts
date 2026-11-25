@@ -2,9 +2,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyData } from "./ofMirrorData";
-import { ADD_TO_LIST, bindCollections as bindC, CARD_TOOL, CREATE_LIST, DIALOG, labelsPage, LIST_MORE, listsPage, openListPage, USERS_SEARCH, USERS_SEARCH_ID, usernames, type CollectionList, type CollectionsHandlers } from "./ofMirrorCollections";
+import { ADD_TO_LIST, addListUsers, bindCollections as bindC, CARD_TOOL, CREATE_LIST, DIALOG, labelsPage, LIST_MORE, listsPage, openListPage, USERS_SEARCH, USERS_SEARCH_ID, usernames, type CollectionList, type CollectionsHandlers } from "./ofMirrorCollections";
 import { bindWrites as bindW, NOT_YET, SELECT_MODEL } from "./ofMirrorWrites";
 import type { ChatToolWrites, FanState, FanToolsContext } from "./ofMirrorChatTools";
+import { relay } from "./relay";
 
 const capture = (p: string) => readFileSync(resolve(__dirname, `../public/of-mirror/pages/${p}.html`), "utf8");
 const load = (p: string) => {
@@ -14,7 +15,6 @@ const load = (p: string) => {
 const noteText = (doc: Document) => doc.getElementById("oi-note")?.textContent ?? null;
 const items = (doc: Document) => [...doc.querySelectorAll<HTMLElement>("[data-oi-menu] [role=menuitem], [data-oi-menu] hr")].map((e) => e.textContent || "—");
 const flush = () => new Promise((r) => setTimeout(r, 0));
-// Every test reuses the one document: its binders are unbound after it.
 const unbinds: (() => void)[] = [];
 afterEach(() => unbinds.splice(0).forEach((u) => u()));
 const bindCollections = (...a: Parameters<typeof bindC>) => {
@@ -55,7 +55,6 @@ function handlers(over: Partial<CollectionsHandlers> = {}) {
   };
 }
 
-// The cards' fans as /users/list sends them: 201 a restricted subscriber with a note, 202 never subscribed.
 const FANS: Record<string, FanState> = {
   "201": { id: 201, username: "delta", subscribedOn: true, isRestricted: true, canRestrict: true, notice: "vip", displayName: "Delta" },
   "202": { id: 202, username: "echo", subscribedOn: false, canRestrict: true, isRestricted: false },
@@ -77,7 +76,6 @@ const cardCtx = (uid: string): FanToolsContext => ({
   writes: (lastWrites = cardWrites()),
 });
 
-/** `page` (the list page, or Collections) for list 31 with its real cards, bound as OfMirrorFrame binds it (bindWrites too). */
 function listPage(h: CollectionsHandlers | null, lists: CollectionList[] = LISTS, page = "collections/user-lists/list") {
   const doc = load(page);
   applyData(doc, page, { list: "31", userLists: lists, listUsers: PEOPLE });
@@ -90,7 +88,6 @@ const dialog = (doc: Document) => doc.querySelector<HTMLElement>(DIALOG);
 const field = (doc: Document) => dialog(doc)!.querySelector<HTMLInputElement>("input")!;
 const save = (doc: Document) => dialog(doc)!.querySelector<HTMLButtonElement>("button[type=submit]")!;
 
-/** Type `text` into the open dialog's field (as a user does: an input event) and press Save. */
 function submit(doc: Document, text: string) {
   const input = field(doc);
   input.value = text;
@@ -360,7 +357,7 @@ describe("a real user card's Lists", () => {
     const lists = [{ id: 31, name: "Fans" }];
     bindCollections(doc, "collections/user-lists/list", { lists, list: "31" }, handlers());
     applyData(doc, "collections/user-lists/list", { list: "31", userLists: lists, listUsers: PEOPLE });
-    await flush(); // the MutationObserver's sweep
+    await flush();
     const buttons = [...doc.querySelectorAll<HTMLButtonElement>(ADD_TO_LIST)];
     expect(buttons.length).toBeGreaterThan(0);
     expect(buttons.every((b) => b.disabled && b.title === NOT_YET)).toBe(true);
@@ -383,7 +380,6 @@ describe("a real user card's chat tools", () => {
     expect(tools.every((b) => !b.disabled && b.hasAttribute("data-oi-wired"))).toBe(true);
     expect([label(cardTool(doc, "201", "restrict")), label(cardTool(doc, "201", "notes"))]).toEqual(["Unrestrict", "Edit notes"]);
     expect(label(cardTool(doc, "202", "restrict"))).toBe("Restrict");
-    // 202 never subscribed: OF offers no notes and no rename (the chat header's rules).
     expect([cardTool(doc, "202", "notes").style.display, cardTool(doc, "202", "rename").style.display]).toEqual(["none", "none"]);
   });
 
@@ -398,7 +394,6 @@ describe("a real user card's chat tools", () => {
     expect(lastWrites.restrict).toHaveBeenCalledWith(true);
     await flush();
     expect(doc.getElementById("oi-toast")!.textContent).toContain("User restricted");
-    // The toast's sweep reads the cards' fans again (the write invalidated their cached query).
     expect(vi.mocked(h.cardFans).mock.calls.length).toBeGreaterThan(before);
     cardTool(doc, "201", "restrict").click();
     await flush();
@@ -507,5 +502,37 @@ describe("Search users", () => {
   it("on Fans it stays disabled (no evidenced search there)", () => {
     const doc = load("collections/user-lists/subscribers/active");
     expect(doc.querySelector<HTMLButtonElement>(USERS_SEARCH)!.title).toBe(NOT_YET);
+  });
+});
+
+describe("addListUsers (Add users' POST and its echo check)", () => {
+  const FAN = "900539700124344321";
+  const ROUNDS_SAME = "900539700124344300";
+  afterEach(() => vi.restoreAllMocks());
+  const run = (found: { id: number | string }[], echo: (number | string)[]) => {
+    vi.spyOn(relay, "get").mockImplementation(async (path: string) => found[["/api/of/v2/users/nova", "/api/of/v2/users/delta"].indexOf(path)]);
+    const post = vi.spyOn(relay, "post").mockResolvedValue({ "31": echo });
+    return { post, out: addListUsers("31", ["nova", "delta"].slice(0, found.length), { accountId: "900539700124344320" }) };
+  };
+
+  it("sends an 18-digit Fan id as its literal string and counts its exact echo as added", async () => {
+    const { post, out } = run([{ id: FAN }, { id: 201 }], [FAN, 201]);
+    await expect(out).resolves.toBe(2);
+    expect(post.mock.calls[0][1]).toEqual({ "31": [FAN, 201] });
+    expect(JSON.stringify(post.mock.calls[0][1])).toBe(`{"31":["${FAN}",201]}`);
+  });
+
+  it("fails on an echo that differs but rounds to the same Number", async () => {
+    expect(Number(ROUNDS_SAME)).toBe(Number(FAN));
+    const { out } = run([{ id: FAN }], [ROUNDS_SAME]);
+    await expect(out).rejects.toThrow("did not add every user");
+  });
+
+  it("keeps an OnlyFans id a number and accepts its echo as a string or a number", async () => {
+    const asNumber = run([{ id: "201" }], [201]);
+    await expect(asNumber.out).resolves.toBe(1);
+    expect(asNumber.post.mock.calls[0][1]).toEqual({ "31": [201] });
+    vi.restoreAllMocks();
+    await expect(run([{ id: 201 }], ["201"]).out).resolves.toBe(1);
   });
 });

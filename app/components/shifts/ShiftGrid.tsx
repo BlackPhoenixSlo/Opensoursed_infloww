@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * The Shift schedule's week grid, Infloww's legacy `ScheduleList$1` (bundle @16728089, CSS `_1f33j` / `_aluuy`;
- * page-parity ticket 18): a 64px sticky day header (weekday 10px over the date 20px, today in M1, prev / next
- * chevrons in its corners), then one row per Creator, an 80px gutter (avatar and name) and seven day cells. A cell
- * holds up to two Shift tiles (a 6px bar in the Employee's colour, the Employee, "9:00 AM - 5:00 PM" in the Agency's
- * zone) and then "+N more"; a click on its empty area creates a Shift for that Creator and day. Hovering a tile
- * (600ms) or focusing it shows the detail popover: Edit / Delete / Close, the date and times in the Shift's own zone
- * (named when it is not the Agency's), Repeats, Creator, Employee. A Shift with several Creators shows in each row.
- */
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -22,13 +13,10 @@ import {
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/Skeleton";
 
-/** Infloww's `pastRecordBackgroundColor`: the bar of a Shift that has ended. */
 const PAST_BAR = "#D9D9D9";
-/** Tiles a cell shows before "+N more". */
 const CELL_CAP = 2;
 const HOVER_MS = 600;
 
-// #1a1a1a is `--tc-B-th` (dark); light falls back to the card fill.
 const B_TH = "bg-[#1a1a1a] [html[data-theme=light]_&]:bg-bg-elev-1";
 
 export const dayLabel = (d: ZonedDay) => `${d.ddd} ${Number(d.dd)} ${MONTHS[Number(d.date.slice(5, 7)) - 1]}`;
@@ -37,11 +25,9 @@ export const employeeLine = (o: ShiftOccurrence) =>
 const timeLine = (o: ShiftOccurrence, tz: string) =>
   `${fmtShiftTime(o.occurrence_start, tz)} - ${fmtShiftTime(o.occurrence_end, tz)}`;
 
-/** "Thursday, October 15, 2026" in `tz`. */
 export const longDate = (iso: string, tz: string) =>
   new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long", month: "long", day: "2-digit", year: "numeric" })
     .format(new Date(iso));
-/** "Dec. 31, 2026" (Infloww's `MMM. D, YYYY`) from a YYYY-MM-DD date. */
 export const untilDate = (date: string) => {
   const [y, m, d] = date.split("-").map(Number);
   return `${MONTHS[m - 1]}. ${d}, ${y}`;
@@ -57,13 +43,10 @@ export default function ShiftGrid({
   days, tz, now, rows, occurrences, colourOrder, loading, error, onRetry, onPrev, onNext, onEdit, onDelete, onCreate,
 }: {
   days: ZonedDay[];
-  /** The Agency's time zone: the tiles' times. */
   tz: string;
   now: Date;
   rows: GridRow[];
-  /** The week's occurrences after the filters. */
   occurrences: ShiftOccurrence[];
-  /** The unfiltered week, so a filter does not recolour anyone. */
   colourOrder: ShiftOccurrence[];
   loading: boolean;
   error: string | null;
@@ -90,7 +73,6 @@ export default function ShiftGrid({
     leaveTimer.current = setTimeout(() => setPeek(null), 150);
   };
 
-  // Each occurrence on the day it starts (one that started before the week sits on its first day), per Creator.
   const cells = new Map<string, ShiftOccurrence[]>();
   for (const o of occurrences) {
     const start = new Date(o.occurrence_start);
@@ -241,8 +223,6 @@ function IconButton({ label, onClick, children }: { label: string; onClick: () =
   );
 }
 
-/** antd's popover (#1f1f1f, radius 10, 16px padding, 300px), fixed under its tile (above it near the viewport foot),
- *  in a portal so the grid's scroll box does not clip it. Escape and an outside click close it. */
 function PeekPopover({ anchor, label, onClose, onEnter, onLeave, children }: {
   anchor: DOMRect;
   label: string;
@@ -286,7 +266,6 @@ function ShiftDetail({ o, tz, account, onEdit, onDelete, onClose }: {
   onDelete: () => void;
   onClose: () => void;
 }) {
-  // The Shift's own zone: its wall clock is what was scheduled; named when it is not the Agency's.
   const zone = o.tz;
   const offset = gmtOffset(o.occurrence_start, zone);
   return (

@@ -21,13 +21,12 @@ const draft = (over: Partial<ComposerDraft> = {}): ComposerDraft => ({ ...EMPTY_
 const run = (s: ComposerDraft, ...as: DraftAction[]) => as.reduce(composerDraft, s);
 
 const NOW = new Date("2026-10-29T12:00:00").getTime();
-const LATER = "2026-10-29T13:00"; // datetime-local, an hour ahead
+const LATER = "2026-10-29T13:00";
 const EARLIER = "2026-10-29T11:00";
 const ctx = (over: Partial<SendCtx> = {}): SendCtx => ({
   text: "hey", chatCanSend: true, uploading: false, uploadFailed: false, now: NOW, ...over,
 });
 
-// A PPV draft with everything the PPV row lists, plus tags and a Script step.
 const STEP = { scriptId: "s1", scriptStep: 2 };
 const FULL = draft({
   price: "12", priceOpen: true, lockedText: true, attached: [media(1), media(2)], previewCount: 1,
@@ -44,7 +43,6 @@ describe("composerDraft", () => {
     ["stepPreviews + stops at the tiles", draft({ attached: [media(1)], previewCount: 1 }),
       [{ type: "stepPreviews", by: 1 }], { previewCount: 1 }],
     ["stepPreviews − stops at 0", draft({ attached: [media(1)] }), [{ type: "stepPreviews", by: -1 }], { previewCount: 0 }],
-    // 4 stored, 1 tile left: the stepper shows 1/1, so − goes to 0 (it went to 3, still showing 1).
     ["remove a tile then − steps from the count on show", draft({ attached: [media(1), media(2)], previewCount: 4 }),
       [{ type: "removeAttachment", id: 2 }, { type: "stepPreviews", by: -1 }], { attached: [media(1)], previewCount: 0 }],
     ["schedule open keeps the time", draft({ scheduleAt: LATER }), [{ type: "schedule", open: true }],
@@ -99,9 +97,9 @@ describe("composerDraft", () => {
         price: "9", priceOpen: true, lockedText: true, attached: [media(5), media(6)], previewCount: 1,
         taggedCreators: [tag(7), { id: 8, name: "user8", username: "", avatar: null }],
         pickedGifs: [{ id: "g9", thumbUrl: "u9", fullUrl: "u9", title: "T" }],
-        script: null, // no Script on this template: the old step goes
-        rich: null, // nor formatting: the old markup goes
-        replyId: null, // nor a saved reply id (an OF row's shape): the old one goes
+        script: null,
+        rich: null,
+        replyId: null,
       });
     });
     it.each<[string, Partial<PickedTemplate>, ComposerDraft["script"]]>([
@@ -128,7 +126,7 @@ describe("composerDraft", () => {
         type: "pickVault", picked: [media(2), media(3, { files: null })],
       });
       expect(s.attached).toEqual([media(2), up, claim]);
-      expect(s.price).toBe("4"); // unpriced media leave the typed price alone
+      expect(s.price).toBe("4");
     });
     it("prices the bundle at its highest suggested price and opens the PPV row", () => {
       const priced = (id: number, cents: number | null) => media(id, { _ai: { suggested_price_cents: cents } });
@@ -317,7 +315,6 @@ describe("afterRefusedSchedule", () => {
   it("only what `sent` leaves is empty: every draft field counts", () => {
     expect(isEmptyDraft(run(FULL, { type: "sent" }))).toBe(true);
     expect(isEmptyDraft(run(FULL, { type: "clear" }))).toBe(true);
-    // `mode` is the box's look (rich editor or textarea), not content.
     for (const k of (Object.keys(EMPTY_DRAFT) as (keyof ComposerDraft)[]).filter((k) => k !== "mode")) {
       expect(FULL[k], k).not.toEqual(EMPTY_DRAFT[k]);
       expect(isEmptyDraft({ ...EMPTY_DRAFT, [k]: FULL[k] }), k).toBe(false);

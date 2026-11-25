@@ -1,20 +1,5 @@
 "use client";
 
-/**
- * My Automations > Gen-Info (ours; Infloww has no counterpart). The daily
- * `gen_info` automation (service/automations/gen_info.py) on a page of its own:
- * read each fan's chat, work out who he is, and write it into his OnlyFans
- * nickname as "Name/City,Country/Age/Job" (gen_info pushes the nickname and the
- * Fan notes itself, `_sync_of_fan_info`; nothing else has to be on).
- *
- * The header switch (with its On / Off pill) is `useSwitchKind`, saving the
- * moment it flips, so the server picks the row, its daily cadence and its name
- * (automation_rules_api._CATALOG["gen_info"]); this page owns no other knob. The
- * long explanation lives in Learn. Below, a one-shot for the fans already in the
- * account before the AI: `process_old_fans` over the N most recent (`OnboardRecentCard`).
- *
- * Restored from the short-lived Fan info page (b60d9839), pointed at gen_info.
- */
 
 import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { FormBlock, NoCreator, useAutomationCreator } from "@/components/automations/automationPage";
@@ -50,8 +35,6 @@ export default function GenInfoPage() {
 function GenInfo({ accountId, creators }: { accountId: string; creators: CreatorPick }) {
   const rulesQ = useAutomationRules(accountId);
   const switchKind = useSwitchKind(accountId);
-  // "On" = a running gen_info row, the one the server wakes. No rows read yet
-  // → the switch is disabled rather than claiming "off".
   const rules = (rulesQ.data ?? []).filter((r) => r.kind === KIND);
   const rule = rules.find((r) => r.is_enabled) ?? rules[0] ?? null;
   const on = rules.some((r) => r.is_enabled);

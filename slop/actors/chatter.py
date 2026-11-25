@@ -1,15 +1,3 @@
-"""Chatters working the inbox, on the endpoints the Messages Pro screens use:
-the chat list head page from the local DB (GET /admin/chats/recent, what the Fan
-List seeds from), the thread (GET /admin/messages/{account}/{fan}), the local
-read marker the inbox fires on every chat open (POST .../mark-read) and a reply
-(POST /api/of/v2/chats/{fan}/messages with X-Account-Id, whose OnlyFans hop
-lib/relay.py answers). Each chatter loops: pick a Creator (by weight), open the
-head page, open an unread thread (else any), mark it read, think, reply, think.
-
-`touched[(account_id, fan_id)]` is the epoch-ms start of the FIRST read/reply a
-chatter sent on that thread (from then on its unread count is the chatters'
-doing, not only the fans'); `last[...]` the end of the LAST one: every fan DM
-injected after it must still be counted unread."""
 from __future__ import annotations
 
 import asyncio
@@ -19,7 +7,6 @@ import time
 class Chatters:
     def __init__(self, sessions: dict[str, object], weights: dict[str, float], rng, *,
                  think_s=(2.0, 6.0), head=25, avoid: set[tuple] = frozenset()):
-        """`sessions`: Creator id -> the signed-in Http of the Agency that owns it."""
         self.sessions, self.weights, self.rng = sessions, weights, rng
         self.think_s, self.head, self.avoid = think_s, head, avoid
         self.touched: dict[tuple, float] = {}
@@ -29,7 +16,6 @@ class Chatters:
         self._tasks: list[asyncio.Task] = []
 
     async def _think(self, lo: float | None = None) -> bool:
-        """Sleep a think time; True once the run is stopping."""
         try:
             await asyncio.wait_for(self._stop.wait(), self.rng.uniform(self.think_s[0] if lo is None else lo,
                                                                         self.think_s[1]))
@@ -39,7 +25,7 @@ class Chatters:
 
     async def _one(self, n: int) -> None:
         aids, w = list(self.weights), list(self.weights.values())
-        if await self._think(0):  # stagger the starts
+        if await self._think(0):
             return
         while not self._stop.is_set():
             aid = self.rng.choices(aids, w)[0]
@@ -81,12 +67,6 @@ class Chatters:
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
 
-# ── Employee mode: chatters as their own logins, each one a Messages Pro tab ──
-# The relay requests one signed-in chatter tab makes (measured in Chromium,
-# .scratch/fleet-sharding/18-chatter-crowd.md §1, with app/ file:line cites).
-# OnlyFans-live reads (/api/of/v2/chats, users, vault, notifications ...) are NOT
-# sent: a slop run cannot reach OnlyFans (declared bypass); the chat send is, and
-# lib/relay.py answers its OnlyFans hop.
 TAB_OPEN = ("/auth/me", "/chatter/me", "/chatter/me/accounts", "/admin/settings/applied",
             "/admin/shifts/clock-status", "/admin/shifts/me", "/admin/accounts/roster-counts",
             "/admin/errors?since_hours=24&limit=50")
@@ -94,7 +74,6 @@ POLL_60S = ("/admin/shifts/clock-status", "/admin/shifts/me")
 
 
 def chat_open(aid: str, fan: int) -> tuple[str, ...]:
-    """GETs a chat open fires together (ChatSurface, useFanInsights, sensitiveWords ...)."""
     return ("/admin/settings/applied", f"/admin/vault/fan-history?account_id={aid}&fan_id={fan}",
             f"/admin/saved-replies?account_id={aid}", f"/admin/sensitive-words?account_id={aid}",
             f"/admin/fans/{aid}/{fan}", f"/admin/fans/{aid}/{fan}/ppv-history?limit=12",
@@ -102,15 +81,14 @@ def chat_open(aid: str, fan: int) -> tuple[str, ...]:
 
 
 class Member:
-    """One chatter: who it is, where it works, what it saw and did."""
 
     def __init__(self, rec: dict):
         self.username, self.password = rec["username"], rec["password"]
         self.url, self.shard, self.agency = rec["url"], rec["shard"], rec["owner"]
         self.assigned: frozenset[str] = frozenset(rec["account_ids"])
         self.chatter_id = rec.get("chatter_id")
-        self.rec = rec.get("rec")  # its calls' Recorder, when the scenario tags them (else the Crowd's)
-        self.probes: list[dict] = list(rec.get("probes") or [])  # direct reads to be refused (the scenario's plan)
+        self.rec = rec.get("rec")
+        self.probes: list[dict] = list(rec.get("probes") or [])
         self.probes_out: list[dict] = []
         self.stage: str | None = None
         self.http = None
@@ -119,25 +97,20 @@ class Member:
         self.connected_ms: float | None = None
         self.accounts_listed: set[str] | None = None
         self.rows_seen: set[str] = set()
-        self.head: list[tuple[str, int]] = []  # the sign-in inbox head's rows of assigned Creators
+        self.head: list[tuple[str, int]] = []
         self.head_status: int | None = None
         self.replies: list[dict] = []
         self.opens = 0
         self.errors: list[str] = []
-        self._read = 0  # index into lis.message_ids already turned into pending work
+        self._read = 0
         self.pending: dict[tuple[str, int], int] = {}
 
 
 class Crowd:
-    """Chatters signing in with their own logins (POST /chatter/login: own cookie),
-    each with its own /events stream and the tab's request pattern, human-paced,
-    working only the Creators assigned to it. `join()` adds chatters (a ladder
-    stage); `stop()` ends the work (streams keep listening); `close()` ends the
-    streams."""
 
     def __init__(self, rec, rng, *, read_s=(5.0, 15.0), next_s=(5.0, 15.0), poll_s=60.0, perflog_s=10.0,
                  head=25, limits=8):
-        from slop.lib.client import Http  # lazy: actors stay importable without httpx
+        from slop.lib.client import Http
         self._Http = Http
         self.rec, self.rng = rec, rng
         self.read_s, self.next_s, self.poll_s, self.perflog_s, self.head, self.limits = (
@@ -147,7 +120,6 @@ class Crowd:
         self._tasks: list[asyncio.Task] = []
 
     async def _wait(self, s: float) -> bool:
-        """Sleep s seconds; True once the run is stopping."""
         try:
             await asyncio.wait_for(self._stop.wait(), max(0.0, s))
             return True
@@ -172,7 +144,6 @@ class Crowd:
     async def _one(self, m: Member, delay: float) -> None:
         if await self._wait(delay):
             return
-        # the client after the wait: each httpx client loads certifi's CA bundle (sync, ~3 ms)
         m.http = self._Http(m.url, m.rec or self.rec, limits=self.limits)
         t0 = time.time()
         try:
@@ -241,8 +212,6 @@ class Crowd:
                 return
 
     def _pick(self, m: Member) -> tuple[str, int] | None:
-        """The fan to answer: one of the newest DMs this chatter's own stream brought
-        for its Creators, else a row of its inbox head page."""
         ids = m.lis.message_ids
         while m._read < len(ids):
             mid = ids[m._read]
@@ -266,9 +235,8 @@ class Crowd:
                 continue
             aid, fan = key
             m.opens += 1
+            # next dev's StrictMode mounts effects twice (mark-read twice in the browser trace); a production build fires once
             msgs = m.http.get(f"/admin/messages/{aid}/{fan}?limit=30")
-            # the browser trace shows mark-read (and the OF reads) twice: `next dev` runs React's
-            # StrictMode, which mounts effects twice; a production build fires them once
             read = m.http.post(f"/admin/messages/{aid}/{fan}/mark-read")
             rs = await asyncio.gather(msgs, read, *(self._get(m, p) for p in chat_open(aid, fan)),
                                       return_exceptions=True)
@@ -279,7 +247,7 @@ class Crowd:
             await asyncio.gather(self._get(m, f"/admin/do-not-mass?account_id={aid}&fan_id={fan}&kind=dm"),
                                  self._get(m, f"/admin/messages/{aid}/{fan}/attribution"
                                               + (f"?since_id={top}" if top else "")))
-            if await self._wait(self.rng.uniform(*self.read_s)):  # reading the thread, typing (no relay call)
+            if await self._wait(self.rng.uniform(*self.read_s)):
                 return
             t0 = time.time()
             try:
@@ -296,7 +264,6 @@ class Crowd:
                 return
 
     async def stop(self) -> None:
-        """End the work loops and polls; the /events streams keep listening (close())."""
         self._stop.set()
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
@@ -312,4 +279,4 @@ class Crowd:
                 await m.http.aclose()
 
 
-OF_SENT_MIN = 9_700_000_000_000  # lib/relay.py OF_SEND_ID_BASE: a chatter's own sent message, not a fan's DM
+OF_SENT_MIN = 9_700_000_000_000

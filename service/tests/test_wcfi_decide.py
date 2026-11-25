@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""
-wcfi_decide.decide(FanSnapshot) -> Skip(reason) | ClosePpv | Ask, each with
-handoff_admitted: the welcome_chatter_for_info per-fan eligibility gates (run() is the
-shell) as tables.
-
-  case_one_row_per_reason              every Skip reason, its durability, ClosePpv, Ask
-  case_precedence                      with every gate tripped, peel them off one at a
-                                       time: listed > mid_funnel > not_turn > paused >
-                                       muted > spam > spent > too_long/ClosePpv > Ask
-  case_forced_bypasses_only_soft_gates force_ids opens mid_funnel/spam/spent/too_long,
-                                       never listed / not_turn / paused / muted
-  case_no_fan_row_skips_the_row_gates  no Fan row → spam/spent/too_long never apply
-  case_handoff_opens_the_turn_gate     a welcome handoff counts as his turn
-  case_handoff_admitted_per_reason     handoff_admitted iff past listed/mid_funnel w/ handoff
-  case_stat_covers_every_reason        STAT maps every Reason to a stats key; DURABLE ⊂ Reason
-  case_asked_topics                    questions_asked JSON → set; bad JSON / None → empty
-  case_msg_id_of                       OF's send response → its message id, or None
-  case_module_is_pure                  stdlib only (no DB import)
-
-Run: ./venv/bin/python service/tests/test_wcfi_decide.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
@@ -32,14 +11,11 @@ from typing import get_args  # noqa: E402
 from automations import wcfi_decide as d  # noqa: E402
 from automations.wcfi_decide import Ask, ClosePpv, FanSnapshot, Skip, decide  # noqa: E402
 
-# An eligible fan: his turn, a Fan row, nothing tripped, under the cutoff.
 OK = FanSnapshot(listed=False, mid_funnel=False, forced=False, his_turn=True,
                  handoff=False, has_fan_row=True, paused=False, muted_creator=False,
                  promo_spam=False, content_payer=False, gather_done=False,
                  fan_msg_n=3, max_fan_messages=10, closing_due=False)
 
-# Every gate tripped at once, in precedence order (each tuple: the override that
-# trips it, the verdict it yields).
 ALL = [
     ({"listed": True}, Skip("listed")),
     ({"mid_funnel": True}, Skip("mid_funnel")),
@@ -54,15 +30,14 @@ ALL = [
 
 def case_one_row_per_reason() -> None:
     rows = [(kw, want) for kw, want in ALL] + [
-        ({"fan_msg_n": 10, "closing_due": True}, ClosePpv()),   # cutoff + closing PPV due
-        ({"fan_msg_n": 50, "gather_done": True}, Ask()),         # gather done: cutoff off
-        ({"fan_msg_n": 9}, Ask()),                               # one under the cutoff
+        ({"fan_msg_n": 10, "closing_due": True}, ClosePpv()),
+        ({"fan_msg_n": 50, "gather_done": True}, Ask()),
+        ({"fan_msg_n": 9}, Ask()),
         ({}, Ask()),
     ]
     for kw, want in rows:
         got = decide(replace(OK, **kw))
         assert got == want, (kw, got, want)
-    # spam is the one reversible row-gate; spent / too_long persist
     assert decide(replace(OK, promo_spam=True)).durable is False
     assert {r.reason for _, r in ALL if r.durable} == {"spent", "too_long"}
 
@@ -74,7 +49,7 @@ def case_precedence() -> None:
     for kw, want in ALL:
         got = decide(replace(OK, **tripped))
         assert got == want, (sorted(tripped), got, want)
-        for k in kw:                           # clear this gate → the next one answers
+        for k in kw:
             tripped[k] = getattr(OK, k)
     assert decide(replace(OK, **tripped)) == Ask(), tripped
 
@@ -97,16 +72,14 @@ def case_no_fan_row_skips_the_row_gates() -> None:
 
 def case_handoff_opens_the_turn_gate() -> None:
     assert decide(replace(OK, his_turn=False, handoff=True)) == Ask(handoff_admitted=True)
-    # …but not the gates around it
     assert decide(replace(OK, his_turn=False, handoff=True, listed=True)) == Skip("listed")
     assert decide(replace(OK, his_turn=False, handoff=True, paused=True)) == Skip("paused", True)
 
 
 def case_handoff_admitted_per_reason() -> None:
-    # (overrides, reason or verdict type, handoff_admitted) — handoff on, his_turn off
     rows = [
-        ({"listed": True}, "listed", False),            # dropped before the turn gate
-        ({"mid_funnel": True}, "mid_funnel", False),    # ditto
+        ({"listed": True}, "listed", False),
+        ({"mid_funnel": True}, "mid_funnel", False),
         ({"paused": True}, "paused", True),
         ({"muted_creator": True}, "muted", True),
         ({"promo_spam": True}, "spam", True),
@@ -120,7 +93,6 @@ def case_handoff_admitted_per_reason() -> None:
         v = decide(replace(OK, his_turn=False, handoff=True, **kw))
         assert (v.reason if isinstance(v, Skip) else type(v)) == want, (kw, v)
         assert v.handoff_admitted is adm, (kw, v)
-    # no handoff → never admitted, whatever the verdict
     for kw, want in ALL:
         assert decide(replace(OK, **kw)).handoff_admitted is False, kw
     assert decide(replace(OK, his_turn=False)) == Skip("not_turn")
@@ -140,16 +112,16 @@ def case_asked_topics() -> None:
     rows = [
         (None, set()), ("", set()), ("[]", set()),
         ('["age", "job"]', {"age", "job"}), ('["age:2", "age:2"]', {"age:2"}),
-        ("not json", set()), ("5", set()),      # bad JSON / a bare number → nothing asked
+        ("not json", set()), ("5", set()),
     ]
     for raw, want in rows:
         assert d.asked_topics(F(questions_asked=raw)) == want, (raw, want)
 
 
 def case_msg_id_of() -> None:
-    rows = [  # (OF response, msg id)
-        ({"id": 7, "text": "hi"}, 7), ({"success": True}, None),  # 200 without an id
-        ({"id": 0}, 0), (None, None), ("ok", None),               # not a dict → None
+    rows = [
+        ({"id": 7, "text": "hi"}, 7), ({"success": True}, None),
+        ({"id": 0}, 0), (None, None), ("ok", None),
     ]
     for result, want in rows:
         assert d.msg_id_of(result) == want, (result, d.msg_id_of(result))

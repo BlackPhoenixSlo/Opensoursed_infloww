@@ -1,8 +1,3 @@
-/**
- * PremadeFields, a ready-made rule's one post / message inline in the rule popup (ReadyMadeRuleEditor). Driven here
- * through a harness that owns the row like the popup's reducer and builds the payload on "Use in rule" (premadeRows
- * `buildPayload`, what Create saves). It has no send path of its own: it imports no relay write.
- */
 import { useReducer } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
@@ -26,7 +21,6 @@ vi.mock("@/hooks/useAllModelsInclude", () => ({
 vi.mock("@/hooks/useVaultMedia", () => ({
   useVaultListsRevalidated: () => ({ data: { list: [] }, isLoading: false, isFetching: false, refresh: vi.fn() }),
 }));
-// The vault picker's last props (it renders a marker while mounted): which pool it opens for, and its confirm.
 type PickerProps = {
   open: boolean; initialSelectedIds: number[]; onClose: () => void; onConfirm: (p: { id: number }[]) => void;
 };
@@ -38,7 +32,6 @@ const lastPicker = () => picker.all[picker.all.length - 1];
 
 afterEach(() => cleanup());
 
-/** The popup's share of the job: own the row, build the payload (no content → nothing to save). */
 function Harness({ kind, onComposePayload, initialPayload }: {
   kind: Kind;
   onComposePayload: (p: PremadePayload) => void;
@@ -65,7 +58,6 @@ describe("PremadeFields", () => {
       />,
     );
 
-    // No all-models switch + no enqueue button in return mode.
     expect(screen.queryByText(/from ALL models/i)).toBeNull();
     expect(screen.queryByRole("button", { name: /enqueue/i })).toBeNull();
 
@@ -90,7 +82,6 @@ describe("PremadeFields", () => {
     fireEvent.change(screen.getByPlaceholderText(/post caption/i), {
       target: { value: "locked pic" },
     });
-    // The auto_posts-only price field (dollars) → emitted only when >0.
     fireEvent.change(screen.getByPlaceholderText(/0 \(free\)/i), {
       target: { value: "19.99" },
     });
@@ -101,7 +92,6 @@ describe("PremadeFields", () => {
     });
   });
 
-  // One clock: the rule's "Run every". One post, no list / repost cycle / delay; preview pool only when paid.
   it("auto_posts: one post, no list or timers; auto-delete and the paid preview pool", () => {
     const onComposePayload = vi.fn();
     renderWithProviders(<Harness kind="auto_posts" onComposePayload={onComposePayload} />);
@@ -143,8 +133,6 @@ describe("PremadeFields", () => {
     fireEvent.change(screen.getByPlaceholderText(/broadcast text/i), {
       target: { value: "premade promo" },
     });
-    // Price parity with auto_posts: a PPV broadcast rides `price` too
-    // (mass_premade → send_mass_message both read it).
     fireEvent.change(screen.getByPlaceholderText(/0 \(free\)/i), {
       target: { value: "9.99" },
     });
@@ -163,9 +151,9 @@ describe("PremadeFields", () => {
     renderWithProviders(<Harness kind="mass_premade" onComposePayload={onComposePayload} />);
     fireEvent.change(screen.getByPlaceholderText(/broadcast text/i), { target: { value: "x" } });
     const fans = screen.getByRole("button", { name: /All fans/ });
-    fireEvent.click(fans); // included → off
+    fireEvent.click(fans);
     expect(fans).toHaveAttribute("aria-pressed", "false");
-    fireEvent.click(fans); // off → included, never "exclude"
+    fireEvent.click(fans);
     fireEvent.click(fans);
     fireEvent.click(screen.getByRole("button", { name: /use in rule/i }));
     expect(onComposePayload).toHaveBeenCalledWith({
@@ -173,7 +161,6 @@ describe("PremadeFields", () => {
     });
   });
 
-  // One clock: the rule's "Run every". One message, no list / resend / delay; one up-front recent-chat guard.
   it("mass_premade: one message, no list or timers; Skip chatted-with chips; More settings collapsed", () => {
     const onComposePayload = vi.fn();
     renderWithProviders(<Harness kind="mass_premade" onComposePayload={onComposePayload} />);
@@ -239,7 +226,7 @@ describe("PremadeFields", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pick image pool" }));
     expect(lastPicker().open).toBe(true);
     act(() => lastPicker().onConfirm([{ id: 1 }, { id: 2 }]));
-    expect(screen.queryByTestId("vault-picker")).toBeNull(); // closed = unmounted
+    expect(screen.queryByTestId("vault-picker")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Pick preview pool" }));
     expect(lastPicker().initialSelectedIds).toEqual([]);
     act(() => lastPicker().onConfirm([{ id: 3 }]));
@@ -283,7 +270,6 @@ describe("PremadeFields", () => {
     expect(onComposePayload).toHaveBeenCalledWith({ posts: [{ text: "hi" }] });
   });
 
-  // The text-variant pool: typed, added and imported variants land in `texts` in order (dupes skipped).
   it.each([
     ["auto_posts", /post caption/i, "posts"],
     ["mass_premade", /broadcast text/i, "messages"],

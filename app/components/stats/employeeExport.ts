@@ -1,23 +1,13 @@
-/**
- * Employee reports' export (roadmap W5 5.9; Infloww's Employee export, 05-analytics M22): the Chatting statistics
- * rows on screen in total, each Employee's figures by day (the charts' `chatting-stats?bucket=` read), and each
- * Employee's figures by Creator (`per-employee?by_account=true`). Only the Employees the table shows: the Relay
- * already scoped them, and the Unattributed sales have no row. Sales follow the Sales Settings rules and count
- * pending sales.
- */
-
 import type { ExportChoice } from "@/components/stats/ExportMenu";
 import { granShown, rangeDays } from "@/components/stats/chart";
 import type { ChattingSeriesResp, ChattingStatsRow, PerEmployeeResp } from "@/hooks/useStats";
 import { relay } from "@/lib/relay";
 import { type Cell, type Section, usd } from "@/lib/reportExport";
 
-/** A Chatting statistics column the table shows: a numeric field and its title. */
 export interface StatColumn { key: keyof ChattingStatsRow; label: string }
 
 const name = (r: ChattingStatsRow) => r.display_name ?? `Employee #${r.employee_id}`;
 
-/** A figure as exported: cents as dollars, clocked minutes as hours, the rest as read; empty when null. */
 function value(key: string, v: unknown): Cell {
   if (typeof v !== "number") return null;
   if (key.endsWith("_cents")) return usd(v);
@@ -33,7 +23,6 @@ function query(from: string | null, to: string | null, chatterOnly: boolean, ext
   return qs.toString();
 }
 
-/** The `build` of Employee reports' ExportMenu, over the table's `rows` and `columns` as shown. */
 export function employeeExport({ rows, columns, from, to, chatterOnly }: {
   rows: ChattingStatsRow[]; columns: StatColumn[]; from: string | null; to: string | null; chatterOnly: boolean;
 }) {
@@ -49,7 +38,7 @@ export function employeeExport({ rows, columns, from, to, chatterOnly }: {
       ] });
     }
     if (c.displays.includes("day")) {
-      // By day as the charts read it: a range the Relay will not show by day (over 31 days) comes by week or month.
+      // A range the Relay won't show by day (over 31 days) comes by week or month.
       const bucket = granShown("day", from && to ? rangeDays(from, to) : 30);
       const data = await relay.get<ChattingSeriesResp>(
         `/admin/stats/chatting-stats?${query(from, to, chatterOnly, { bucket })}`);

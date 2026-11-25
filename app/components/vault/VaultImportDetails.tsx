@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * The vault import's per-file details: the model (`RowMeta` as typed, `WireMeta`
- * as the batch route takes it), the one field control the table and Batch edit
- * both draw, and Batch edit itself.
- */
 
 import { useReducer } from "react";
 import { Info } from "lucide-react";
@@ -16,7 +11,6 @@ import { cn } from "@/lib/utils";
 import { BATCH_EDIT_INIT, CRITERIA, batchAll, batchEditReducer, batchShown, buildBatchPayload } from "@/components/vault/batchEditState";
 import { InfoTip } from "@/components/ui/InfoTip";
 
-/** Step 3's per-file columns (growth-vault-pro#109), each a key of `RowMeta`. */
 export const STEP3_FIELDS = [
   ["Category", "category"],
   ["Tag Creators", "tag"],
@@ -25,8 +19,6 @@ export const STEP3_FIELDS = [
   ["Suggested price", "price"],
 ] as const;
 
-/** One picked file's details, as typed: the Category is a vault folder id, the
- *  price is in dollars, and the two tag fields are comma-separated. */
 export interface RowMeta {
   category?: string;
   tag?: string;
@@ -36,7 +28,6 @@ export interface RowMeta {
 }
 export type MetaKey = keyof RowMeta;
 
-/** What the batch route's `meta` list takes for one file, or null for none. */
 export interface WireMeta {
   list_id?: number;
   tag_creators?: string[];
@@ -45,13 +36,10 @@ export interface WireMeta {
   price_cents?: number;
 }
 
-/** Commas only, as the relay reads the lists: a multi-word hashtag ("red set",
- *  like a Drive folder named that) stays one tag. */
+// Commas only, as the relay reads the lists: a multi-word hashtag stays one tag.
 const splitTags = (v: string | undefined, strip: RegExp) =>
   [...new Set((v ?? "").split(",").map((t) => t.trim().replace(strip, "").trim()).filter(Boolean))];
 
-/** A row's details as the relay takes them; empty fields are left out and an
- *  all-empty row is null. Exported for tests. */
 export function metaToWire(m: RowMeta | undefined): WireMeta | null {
   if (!m) return null;
   const out: WireMeta = {};
@@ -66,7 +54,6 @@ export function metaToWire(m: RowMeta | undefined): WireMeta | null {
   return Object.keys(out).length ? out : null;
 }
 
-/** The free-text fields' hints, shared by the table and Batch edit. */
 const PLACEHOLDER: Partial<Record<MetaKey, string>> = {
   tag: "@creator, …",
   hashtags: "beach, lingerie",
@@ -74,8 +61,6 @@ const PLACEHOLDER: Partial<Record<MetaKey, string>> = {
   price: "$",
 };
 
-/** One detail's control: the Category's folder `<select>`, Batch edit's Notes
- *  box, or a plain input. */
 export function MetaField({
   field,
   label,
@@ -94,9 +79,7 @@ export function MetaField({
   folders: VaultList[];
   disabled?: boolean;
   multiline?: boolean;
-  /** Width, padding, height: the field box is MetaField's own. */
   className?: string;
-  /** For a label above it (`htmlFor`). */
   id?: string;
 }) {
   if (field === "category") {
@@ -147,9 +130,6 @@ export function MetaField({
   );
 }
 
-/** Batch edit media (#113 to #117): the criteria pick which fields show, and
- *  Save writes the shown fields onto every selected row — only those keys, as
- *  the bundle's `batchModifyCurrentlyVaultToBeUploaded` does. */
 export function BatchEditModal({
   onClose,
   onSave,

@@ -1,96 +1,3 @@
-"""Vault Pro > Extras > "Feet pack" (app/components/vault/VaultPackPickerModal.tsx + packPickerState.ts,
-service/vault_pack_picker.candidates / triage): PRECISION ONLY. The queue is the Jev v8 photos (`_jev.status` ok)
-that see the feet at score >= FEET_PRESELECT_SCORE (.6), most likely first, then the POSSIBLE ones (seen, at
-FEET_POSSIBLE_MIN (.3) <= score < the gate: `possible` true, never preselected, tile unticked + a "possible" badge,
-`suggested` its rung without the gate), by score; below .3 no candidate; nothing else (no describe-word row without Jev, no video: filing one is 400 feet_photos_only). Items already
-on a rung come back out of the queue. Each is prefilled from `_jev` alone (lane5 + body answers -> tier, feet_detail
--> covering; an unknown tier never prefilled), and the keyboard files the queue: Enter confirms the prefill, x
-rejects, 1/2/3 pick a rung. On a 390px phone the grid is two columns of 44px taps. The free rung (tease) is
-refused, server (400 not_free_safe) and UI (disabled), unless Jev filed it free with every body answer "n". A
-candidate with a known, safe prefill arrives PRESELECTED (`preselect` true, tile ticked); "File N preselected"
-files every ticked tile on its rung in one triage.
-
-World: `agency_inbox`; Creator 0's vault by SQL (seed/vault_feet.py, `vault_feet_items` 300 / 2,000 / 12,000):
-keepers = the confident Jev photos (Jev-measured / Jev free / Jev $50 over qwen-covered / Jev free-but-unsure-breasts
-+ Jev review (unsafe) / Jev soles with no feet word) mixed with feet photos Jev has not classified (every describe
-word and flag says feet), a Jev half-sure .55 and a .30 (possible), a .29 (below the floor), a confident Jev feet CLIP,
-what the old LIKE query also returned (bystander, text mention, ambiguous payoff-act, Jev-measured-no .05 (below the
-floor), Jev-says-not-in-picture) and
-filler, media ids
-shuffled across classes; ~8% of keepers already on `feet-nude`, one unsafe (Jev unsure) + one free-safe Jev keeper
-already on `feet-tease` (pre-guard), one no-Jev photo + one clip on `feet-nude` (pre-rule). Every LIKE-set item's
-and keeper's full image is a small PNG in the run's still store (lib/vault_collect_relay.py's dirs), so tiles draw
-pictures.
-
-Stages:
-  rank   (also --no-ui) GET /admin/vault-ai/pack-candidates?limit=2000 by the owner, 5 times (latency).
-  desktop (UI) 1440x900: Extras > Feet pack, screenshot `feet-picker-trigger`; click the first tile; Enter x3, x,
-        1 (no verdict when tile 5 is not free-safe); screenshot; Save; settles on "Saved", screenshot
-        `feet-picker-settled`; scroll to an unsafe Jev tile
-        (not one of the five keyed), screenshot `feet-picker-jev-guard`.
-  phone (UI) 390x844 touch: Vault Pro on the Creator (last pick, localStorage), Extras > Feet pack; screenshot
-        `feet-picker-phone-trigger`; tap the first tile's "nude"; Save; screenshot `feet-picker-phone-settled`.
-  preselect (UI; --no-ui: the API flags only) 1440x900, fresh: Extras > Feet pack; read every tick; untick one
-        free-safe tile; screenshot `feet-preselect-trigger`; "File N preselected"; settles on "filed N (0 rejected)",
-        screenshot `feet-preselect-settled`.
-  guard  (also --no-ui; last, so a leak cannot touch the other checks) POST pack-triage [an unsafe Jev keeper ->
-        tease, a free-safe Jev keeper -> nude]; POST /admin/vault-ai/folders/<feet-tease>/publish (OF's list side:
-        lib/vault_relay.py, `of-vault.json` written); POST .../folders/<feet-nude>/publish (the pre-rule clip skipped).
-
-Checks (lib/vault_feet_picker_faults.py names):
-  feet_ranked_above_like_baseline   the unfiled queue's non-possible set == the seeded unfiled keepers, its
-                                    `possible` set == the seeded POSSIBLE rows, every possible after every keeper
-                                    (nothing else); precision@N (N = unfiled keepers) >= PRECISION_MIN and >= the old
-                                    query's (LIKE, media_id order; the seeder's oracle) + LIFT_MIN; no pre-filed
-                                    item in the queue, each (pre-rule clip + no-Jev photo too) back with its rung.
-  feet_prefill_matches_flags        every unfiled keeper's and possible row's (suggested, tier) == the seeded
-                                    class's; no other row prefilled; no possible row preselected.
-  feet_no_free_prefill_without_tier no queue item with tier None or free_ok false is prefilled on the free rung
-                                    (tease); the seeded unknown-tier keepers (Jev unsure / review) are in the queue
-                                    with tier None.
-  feet_jev_selects_and_ranks        the Jev soles rows (no feet word) are in the queue; the no-Jev feet photos, the
-                                    not-in-picture rows and the feet clips are not, the Jev .55 and .30 only as
-                                    possible; keepers then possible each score-sorted, every row jev true, kind
-                                    photo, keepers score >= .6 and possible < .6; filing a clip
-                                    (unfiled) on nude is 400 feet_photos_only naming it, feet-* members unchanged.
-  feet_jev_free_guard               the unsafe Jev keepers are in the queue with tier None, free_ok false (the
-                                    free-safe Jev keepers free_ok true); the guard POST is 400
-                                    not_free_safe naming the unsafe item, feet-* members unchanged (atomic); UI:
-                                    that tile shows the Jev badge, tease disabled, nude enabled. The pre-filed
-                                    unsafe tease row (and only it) comes back `unsafe_on_free`; publishing
-                                    feet-tease is 200 with `skipped_unsafe` == it, and OF's list gets the free-safe
-                                    one, never it. Publishing feet-nude is 200 with `skipped_videos` == the pre-rule
-                                    clip, never on its OF list (`pushed` == that list's size).
-  feet_possible_floor               the seeded below-floor rows (Jev sees feet at .29 / .05) are not in the queue;
-                                    the .30 rows are, as possible (score .3, not preselected); every possible
-                                    score >= FLOOR (vault_pack_picker.FEET_POSSIBLE_MIN).
-  feet_keyboard_confirm_members     desktop: >= 1 of tiles 1-3 showed a prefill; one triage POST (200) of exactly
-                                    the keyed verdicts (tiles 1-3 the prefill they showed, none if none, tile 4
-                                    rejected, tile 5 tease unless free_ok false); DB: the feet-* folders' members
-                                    == those + the pre-filed, nothing else.
-  feet_phone_layout_tap_save        phone: the Extras drawer shows every tool (none desk-only), screenshot
-                                    `extras-drawer-phone`; 2 grid columns, rung + reject buttons >= 44px tall, no horizontal
-                                    overflow; one POST [{tile, nude}] (200); DB: that tile on feet-nude only.
-  feet_preselect_confirm            the API's preselect set == the seeded PRESELECT keepers not pre-filed, each
-                                    suggested on its class's rung; UI: the ticked tiles == those not yet filed (of
-                                    the grid's top 600; a shown possible tile unticked, its badge on); after one
-                                    untick, the button says File <rest>, one triage
-                                    POST (200) of exactly the rest at their rungs; DB: the feet-* members == before
-                                    + those.
-  feet_candidates_p95 [budget]      the route's p95 over the 5 reads <= CANDS_P95_MS[scale].
-
-Bypasses (declared): the vault is SQL as Collect + describe + flags leave it (no OF, no LLM); full images written by
-the harness into the run's temp still store; the background collector off (VAULT_COLLECT_ENABLED=0); Publish not
-pressed in the UI: feet-tease is published by API, OF's list side lib/vault_relay.py's in-process fake. No volume: --scale only resizes the vault.
-Break-it-once: feet-rank-like-only (default; server: every Jev score 1, so every Jev photo that sees feet is a
-candidate, the .55 / measured-no rows prefilled and preselected: ranked + prefill + jev rank + preselect), --fault=feet-free-prefill-unknown-tier
-(server: an unknown Jev tier prefilled from its covering, socks -> the free rung: no-free + prefill + preselect),
---fault=feet-keys-enter-ignores-suggestion (client: Enter only moves: keyboard), --fault=feet-jev-free-guard-off
-(server: Jev lane5 free trusted over unsure body answers: jev free guard + prefill),
---fault=feet-preselect-threshold-low (server: Jev gate 0.3, the .55 rows candidates, prefilled and preselected:
-preselect + prefill + ranked + jev rank), --fault=feet-possible-floor-off (server: no .3 floor, the .29 / .05 rows
-queued as possible: floor + ranked + prefill).
-"""
 from __future__ import annotations
 
 import json
@@ -114,18 +21,18 @@ VIEWPORT, PHONE_VP = (1440, 900), (390, 844)
 WAIT_MS = 120_000
 CANDS, TRIAGE = "/admin/vault-ai/pack-candidates", "/admin/vault-ai/pack-triage"
 PRECISION_MIN, LIFT_MIN = 0.9, 0.2
-ENTERS = 3   # Enter x3, then x, then 1
-CANDS_P95_MS = {"small": 400, "medium": 800, "huge": 2_000}   # one read, every Jev feet photo scored (12k vault: ~80 ms in-process)
+ENTERS = 3
+CANDS_P95_MS = {"small": 400, "medium": 800, "huge": 2_000}
 TAP_MIN_PX = 44
 P95_CHECK = "feet_candidates_p95"
 SUGGESTED = re.compile(r", suggested (\S+)$")
 SAVE = re.compile(r"^Save \d+$")
-FREE_RUNG = "tease"   # vault_pack_picker feet rungs[0]: rides free as the preview
-GATE = 0.6   # vault_pack_picker.FEET_PRESELECT_SCORE: the candidate gate
-FLOOR = 0.3   # vault_pack_picker.FEET_POSSIBLE_MIN: below it no candidate (owner 2026-11-13)
-JEV_OUT = ("jev_maybe", "jev_floor", "jev_low", "measured_no", "jev_absent")   # no confident candidate (score / unseen)
-JEV_NEVER = ("jev_absent",)   # not seen: not even possible
-JEV_SAFE = ("measured", "jev_free")   # Jev lane5 free, every body answer "n"
+FREE_RUNG = "tease"
+GATE = 0.6
+FLOOR = 0.3
+JEV_OUT = ("jev_maybe", "jev_floor", "jev_low", "measured_no", "jev_absent")
+JEV_NEVER = ("jev_absent",)
+JEV_SAFE = ("measured", "jev_free")
 FILE = re.compile(r"^File \d+ preselected$")
 FILED_NOTE = re.compile(r"^filed \d+ \(\d+ rejected\)$")
 
@@ -134,24 +41,22 @@ EXTRAS_TOOLS = ["Re-collect", "Describe all", "Harvest OF", "Duplicates", "Feet 
 
 
 async def _open_picker(ctx, page, creator: dict, *, pick: bool = True, drawer: dict | None = None) -> list[dict]:
-    """Vault Pro > the Creator > Extras > Feet pack; the grid's tiles in order [{id, label}]. `pick` False (phone:
-    the creator column is off-canvas) opens on the Creator Vault Pro last had (localStorage `vault.accountId`)."""
     await page.context.add_init_script(TOURS_SEEN + ("" if pick else
                                        f"localStorage.setItem('vault.accountId', '{creator['id']}');"))
     await page.goto(f"{ctx.app}/growth/vault-pro", wait_until="domcontentloaded", timeout=WAIT_MS)
     if pick:
         await ui.pick_creator(page, creator["nickname"], timeout_ms=WAIT_MS)
     await page.get_by_role("button", name=re.compile(r" extras$")).first.click(timeout=WAIT_MS)
-    if drawer is not None:   # every Extras tool shows at this width (none desk-only)
+    if drawer is not None:
         await page.get_by_role("button", name="Feet pack", exact=True).wait_for(timeout=WAIT_MS)
         box = page.get_by_role("dialog", name=re.compile(r" extras$"))
         drawer["visible"] = [n for n in EXTRAS_TOOLS
                              if await box.get_by_role("button", name=re.compile("^" + re.escape(n))).first.is_visible()]
-        await page.wait_for_timeout(600)   # the sheet's slide-in settles
+        await page.wait_for_timeout(600)
         drawer["shot"] = await ui.shot(ctx, page, "extras-drawer-phone")
     await page.get_by_role("button", name="Feet pack", exact=True).click(timeout=WAIT_MS)
     await page.locator("[data-pack-tile]").first.wait_for(timeout=WAIT_MS)
-    await page.wait_for_timeout(800)   # first images drawn
+    await page.wait_for_timeout(800)
     return await _tiles(page)
 
 
@@ -161,13 +66,11 @@ async def _tiles(page) -> list[dict]:
 
 
 def _shown_suggestion(label: str | None) -> str | None:
-    """The prefill a tile showed, from its aria-label ("media <id>, suggested <rung>")."""
     m = SUGGESTED.search(label or "")
     return m.group(1) if m else None
 
 
 async def _save(page) -> None:
-    """Save (the POST's body is the verdict oracle, not the button's count), then wait for "Saved"."""
     await page.get_by_role("button", name=SAVE).click(timeout=10_000)
     await page.get_by_role("button", name="Saved", exact=True).wait_for(timeout=WAIT_MS)
     await page.wait_for_timeout(500)
@@ -189,11 +92,7 @@ def _members(w, aid: str) -> dict[str, set[int]]:
 
 async def _free_guard(ctx, w, aid: str, queue: list[dict], unsafe_ids: set[int], unsafe_q: list[dict],
                       safe_ids: set[int], guard_ui: dict | None, by_id: dict[int, dict], truth: dict) -> dict:
-    """`feet_jev_free_guard`: the unsafe Jev keepers come back unprefilled and not free-safe, and a triage putting
-    one on the free rung (beside a free-safe one on nude) is refused whole; the pre-filed unsafe tease row is
-    flagged and publishing feet-tease skips it (OF's list never gets it). Runs last: a leak writes."""
     safe_q = [c for c in queue if c["media_id"] in safe_ids]
-    # The prefill is feet_no_free_prefill_without_tier's (free_ok false never on tease) + the prefill check's.
     flags_bad = [(c["media_id"], c.get("tier"), c.get("free_ok")) for c in unsafe_q
                  if c.get("tier") is not None or c.get("free_ok") is not False]
     safe_bad = [c["media_id"] for c in safe_q if c.get("free_ok") is not True]
@@ -216,7 +115,6 @@ async def _free_guard(ctx, w, aid: str, queue: list[dict], unsafe_ids: set[int],
     ui_ok = guard_ui is None or ("error" not in guard_ui and guard_ui.get("tile") is not None
                                  and guard_ui.get("badge") and guard_ui.get("tease_disabled")
                                  and guard_ui.get("nude_enabled") and "shot" in guard_ui)
-    # The pre-guard free rung: flagged in candidates, skipped by its publish, never on OF's list.
     flagged = sorted(m for m, c in by_id.items() if c.get("unsafe_on_free"))
     con = w.sql()
     try:
@@ -236,7 +134,6 @@ async def _free_guard(ctx, w, aid: str, queue: list[dict], unsafe_ids: set[int],
         return sorted({int(x) for c in of.get("lists") or [] if c["list_id"] == lid for x in c["media_ids"]})
 
     pub, pub_body = await publish(f"feet-{FREE_RUNG}")
-    # The pre-rule clip on feet-nude: skipped by its publish (a pack is photos only), never on OF's list.
     npub, npub_body = await publish(vault_feet.FILED_FOLDER)
     of = (await ctx.owner.get("/__slop/vault/fake")).json()
     on_of, on_nude = on_list(of, pub_body), on_list(of, npub_body)
@@ -268,9 +165,6 @@ async def _free_guard(ctx, w, aid: str, queue: list[dict], unsafe_ids: set[int],
 
 async def _preselect(ctx, w, aid: str, creator: dict, want_pre: dict[int, str], api_pre: dict[int, str | None],
                      safe_ids: set[int], possible_ids: set[int]) -> dict:
-    """`feet_preselect_confirm`: the API's `preselect` set == the seeded PRESELECT keepers (unfiled), each on its
-    suggestion; UI (desktop, fresh): exactly the unfiled ones arrive ticked; untick one free-safe tile (so the guard
-    stage keeps a buddy); "File N preselected" sends one triage of the rest at their rungs; DB: those land there."""
     out: dict = {"api_extra": sorted(set(api_pre) - set(want_pre))[:5],
                  "api_missing": sorted(set(want_pre) - set(api_pre))[:5],
                  "api_wrong_rung": [(m, api_pre[m], r) for m, r in want_pre.items()
@@ -292,7 +186,6 @@ async def _preselect(ctx, w, aid: str, creator: dict, want_pre: dict[int, str], 
                 ticks = await page.locator("[data-pack-tick]").evaluate_all(
                     "els => els.map(e => ({id: Number(e.dataset.packTick), on: e.checked}))")
                 got["ticked"] = sorted(t["id"] for t in ticks if t["on"])
-                # The grid holds the top `limit` (600) only: the oracle is the preselected keepers it shows.
                 want_ui = {m: r for m, r in want_ticked.items() if m in shown}
                 got["want_ticked"] = sorted(want_ui)
                 got["not_shown"] = len(want_ticked) - len(want_ui)
@@ -350,7 +243,7 @@ async def run(ctx):
     creator = w.data["creators"][0]
     aid = creator["id"]
     truth = vault_feet.seed(w, creator, int(ctx.param("items", w.size["vault_feet_items"])))
-    (ctx.stack.tmp / "of-vault.json").write_text("{}")   # lib/vault_relay.py answers the feet-tease publish
+    (ctx.stack.tmp / "of-vault.json").write_text("{}")
     images = stills_dir(ctx.stack.tmp) / "images" / aid
     images.mkdir(parents=True, exist_ok=True)
     for mid in set(truth["like_set"]) | set(truth["keepers"]):
@@ -361,7 +254,6 @@ async def run(ctx):
              f"({len(truth['filed'])} pre-filed: feet-nude + {FREE_RUNG} {truth['free_unsafe'] + truth['free_safe']}"
              f" + pre-rule {truth['pre_rule']})")
 
-    # ── rank ──
     ms, r = [], None
     for _ in range(5):
         t0 = time.perf_counter()
@@ -383,7 +275,7 @@ async def run(ctx):
     maybe = [c for c in queue if c.get("possible")]
     sure_ids, maybe_ids = {c["media_id"] for c in sure}, {c["media_id"] for c in maybe}
     poss = {int(k): v for k, v in truth["possible"].items()}
-    possible_after = queue == sure + maybe   # every possible row after every keeper
+    possible_after = queue == sure + maybe
     ctx.check(RANKED, r is not None and r.status_code == 200 and sure_ids == keep and maybe_ids == set(poss)
               and bool(poss) and possible_after and p_new >= PRECISION_MIN
               and p_new >= p_old + LIFT_MIN and not leaked and on_rungs == truth["filed"],
@@ -407,7 +299,6 @@ async def run(ctx):
               and not poss_pre,
               keepers_in_queue=seen_keep, wrong=wrong[:5], wrong_n=len(wrong), stray=stray[:5],
               possible_preselected=poss_pre[:5])
-    # The leak: an unknown Jev tier (review / an unsure body) prefilled on the free preview rung.
     unknown = set(truth["unknown_tier"]) & {c["media_id"] for c in queue}
     free_leak = [c["media_id"] for c in queue if c.get("suggested") == FREE_RUNG
                  and (c.get("tier") is None or c.get("free_ok") is False)]
@@ -416,7 +307,6 @@ async def run(ctx):
               unknown_tier_in_queue=len(unknown), free_leak=free_leak[:5], free_leak_n=len(free_leak),
               unknown_tiers=unknown_tiers)
 
-    # Selected and ranked from `_jev` alone: Jev photos at the gate, nothing else.
     cls, filed = truth["classes"], set(truth["filed"])
     by_id = {c["media_id"]: c for c in cands}
     soles_missing = [m for m in cls["jev_soles"] if m not in filed and m not in q_ids]
@@ -428,7 +318,6 @@ async def run(ctx):
     bad_rows = [(c["media_id"], c.get("kind"), c.get("jev"), c.get("score")) for c in queue
                 if c.get("kind") != "photo" or not c.get("jev")
                 or ((c.get("score") or 0) >= GATE) == bool(c.get("possible"))]
-    # No videos in feet: filing an unfiled clip is refused whole (nothing written).
     clip = next((m for m in cls["jev_video"] if m not in filed), None)
     before = _members(w, aid)
     vr = (await ctx.owner.post(TRIAGE, json={"account_id": aid, "category": "feet",
@@ -450,7 +339,6 @@ async def run(ctx):
     safe_ids = {m for k in JEV_SAFE for m in cls[k]} - filed
     want_pre = {int(m): r for m, r in truth["preselect"].items() if int(m) not in filed}
     api_pre = {c["media_id"]: c.get("suggested") for c in queue if c.get("preselect")}
-    # The .3 floor: below it a Jev-seen photo is no candidate; at it, possible.
     below = set(truth["below_floor"]) - filed
     below_back = sorted(below & q_ids)
     at_floor = set(cls["jev_floor"]) - filed
@@ -471,7 +359,6 @@ async def run(ctx):
         await _free_guard(ctx, w, aid, queue, unsafe_ids, unsafe_q, safe_ids, None, by_id, truth)
         return
 
-    # ── desktop: the keys ──
     desk: dict = {}
     guard_ui: dict = {}
     ids: list[int] = []
@@ -484,10 +371,8 @@ async def run(ctx):
                 desk["trigger_shot"] = await ui.shot(ctx, page, "feet-picker-trigger")
                 ids = [t["id"] for t in tiles[:ENTERS + 2]]
                 if len(ids) == ENTERS + 2:
-                    # What the grid SHOWED is the oracle: Enter files a shown prefill, moves past a tile with none.
                     shown = {t["id"]: _shown_suggestion(t["label"]) for t in tiles[:ENTERS]}
                     desk["enter_prefills"] = sum(1 for r in shown.values() if r)
-                    # "1" on a tile the server says is not free-safe files nothing (packPickerState.canFile).
                     t5 = ids[ENTERS + 1]
                     desk["tile5_free_ok"] = (by_id.get(t5) or {}).get("free_ok")
                     want_verdicts = sorted(
@@ -505,7 +390,6 @@ async def run(ctx):
             except Exception as e:  # noqa: BLE001 — the check reports it
                 desk["error"] = f"{type(e).__name__}: {e}"[:600]
                 desk["failed_shot"] = await ui.shot(ctx, page, "failed-feet-picker")
-            # The Jev free guard on screen: an unsafe tile the keys left alone.
             try:
                 gid = next((c["media_id"] for c in unsafe_q if c["media_id"] not in ids), None)
                 guard_ui["tile"] = gid
@@ -530,7 +414,6 @@ async def run(ctx):
             want_made.setdefault(f"feet-{v['rung']}", set()).add(v["media_id"])
     body = (posts[0]["body"] or {}) if posts else {}
     got_verdicts = sorted(body.get("verdicts") or [], key=lambda v: v.get("media_id", 0))
-    # Not vacuous: the top tiles must have shown a prefill for Enter to confirm (the ranking's job).
     ctx.check(KEYS, "error" not in desk and want_verdicts is not None and desk.get("enter_prefills", 0) >= 1
               and len(posts) == 1
               and posts[0]["status"] == 200 and got_verdicts == want_verdicts and made == want_made
@@ -540,7 +423,6 @@ async def run(ctx):
               diff={k: sorted(made.get(k, set()) ^ want_made.get(k, set()))[:5] for k in set(made) | set(want_made)},
               ui=desk)
 
-    # ── phone: layout + one tap ──
     phone: dict = {}
     async with ui.owner_browser(ctx, viewport=PHONE_VP, touch=True) as page:
         with recorded(page, "POST", TRIAGE) as sent:

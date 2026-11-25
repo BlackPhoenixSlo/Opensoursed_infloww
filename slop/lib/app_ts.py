@@ -1,20 +1,3 @@
-"""The app's own TypeScript, run in node (`app_ts.mjs`): a check that rests on client
-logic (a pure module under `app/lib/`, `app/hooks/`) evaluates the app's real code on
-what the relay answered, also in a `--no-ui` run, instead of a Python copy of its rules
-that would stay green when the TypeScript is wrong.
-
-`await run(ctx, script, payload)`: `script` is a node module exporting
-`run(load, input)` (`load("/lib/x.ts")` is that app module, through vite's SSR loader:
-the app's `@/` alias, TypeScript stripped); `payload` its JSON input; returns its JSON
-output. The run's client fault (lib/faults.py `browser=`) rewrites the modules as they
-load, as actors/ui.py does to the browser's JS: matches add to `ctx.browser_fault_hits`
-and the modules hit to `ctx.app_ts_fault_files` (lib/cli.py holds both to the fault's
-rules). Needs `node` and `app/node_modules` (vitest's vite). Each call starts a node
-process (about 0.5 s); its vite cache goes to the run's temp dir.
-
-`await session(ctx, script)`: one node process for many calls (`await s.call(payload)`, in order, one at a time;
-`await s.close()` adds its fault hits to ctx), for client logic consulted live (actors/badge_tab.py).
-"""
 from __future__ import annotations
 
 import asyncio

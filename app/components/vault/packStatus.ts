@@ -1,10 +1,3 @@
-/**
- * VaultPackPickerModal's status line as a pure reducer: the request in flight (`busy`, shown instead of the note),
- * the last request's result (`note`, red when it `failed`) and how many items the last publish left on OF that their
- * rung no longer holds (`stale`, the warning icon). Save, Publish and Publish all each run start →
- * ok | fail; a start drops the previous note and warning.
- */
-
 export interface PackStatus {
   busy: string;
   note: string;

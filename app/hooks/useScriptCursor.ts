@@ -9,10 +9,6 @@ export interface ScriptCursor {
   step: number;
 }
 
-/** Per-chat cursor for template scripts. Stored in localStorage so the
- *  next-step suggestion survives reloads. Sticky — only cleared when the
- *  user explicitly dismisses the bubble (✕) or when no successor template
- *  exists (handled in render). */
 export function useScriptCursor(
   accountId: string | null,
   fanId: FanId | null,
@@ -51,7 +47,6 @@ export function useScriptCursor(
         if (next) window.localStorage.setItem(storageKey, JSON.stringify(next));
         else window.localStorage.removeItem(storageKey);
       } catch {
-        /* quota / private mode — UI still works for the current session */
       }
     },
     [storageKey],

@@ -1,15 +1,9 @@
-/**
- * My Automations > Gen-Info: one switch over the daily `gen_info` kind, through
- * the server's own kind switch (it decides the row, cadence and name), and under
- * it the one-shot old-fans run (`process_old_fans`, pushed to OnlyFans).
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type { QueryClient } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();
-  // Every verb mocked, so nothing here can reach a live relay.
   return {
     ...mod,
     relay: {

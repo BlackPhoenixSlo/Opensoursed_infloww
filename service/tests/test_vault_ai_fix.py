@@ -1,40 +1,7 @@
 #!/usr/bin/env python3
-"""
-The flags grading loop (`vault_ai_fix`): corrections, confirmations, accuracy
-and the review queue. Durable regression suite (plain-assert, no pytest — repo
-convention).
-
-Describe/flags contradictions are no longer settled by hand: they are read the
-least harmful way at read time (`vault_ai_brief.settled_reading`, tested in
-test_vault_ai_brief / test_vault_scripts). The queue still nominates them
-(`passes_disagree`) as a sampled audit, labelled with the reading used.
-
-Cases:
-  case_fix_is_visible_to_every_reader:
-      a correction is written into `ai_fields_json`, so the lanes, the price
-      tiers and the copy brief see it with no change to any of them.
-  case_fix_survives_a_forced_rerun:
-      THE point. A correction a re-run silently reverts is worse than none —
-      the operator would have no reason to look at the item again.
-  case_fix_rejects_what_it_does_not_own:
-      unknown fields are dropped and an invalid region state is refused.
-  case_offscreen_penetration_correction_settles_it:
-      `penetration` and `acts` are both correctable, and clearing both is what
-      ends the contradiction ("none" is an answer, not a finding).
-  case_queue_labels_auto_settled_and_sorts_by_price:
-      a disputed item carries the reading it was auto-settled to and its price;
-      among disputed items the one with the most money on it leads.
-  case_iffy_reasons_table / case_priority_table / case_grade_of_table:
-      pure-function rows pinning CURRENT behaviour of the review-queue helpers.
-
-Run: cd service/tests && \
-  PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_ai_fix.py
-Exit 0 = all cases passed. Temp DB bound by _harness (never prod). No OF, no
-network, no LLM.
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -85,20 +52,16 @@ async def _fields(aid: str, mid: int) -> dict:
         return vault_ai_brief.load_fields(item.ai_fields_json)
 
 
-# The a real graded shape: describe says fully_nude, the flags name a thong.
 _THONG = {"description": "A woman lying on her back, fully nude.",
           "explicitness": "explicit", "clothing_state": "fully_nude",
           **_flags(vulva="covered", breasts="bare", over_vulva="black lace thong")}
 
 
 def case_fix_is_visible_to_every_reader() -> None:
-    """Written into `ai_fields_json`, so the lanes and the price tiers pick it
-    up without a single change to either."""
     aid = _next_account()
     asyncio.run(_seed(aid, [(720, _THONG)]))
     assert vault_scripts._is_nude(_THONG) is False, "fixture: thong means not nude"
 
-    # Operator says describe was right — she really is nude, there is no thong.
     res = asyncio.run(F.apply_fix(aid, 720, {"over_vulva": None, "vulva_vis": "bare",
                                              "underwear_visible": False}))
     assert res["ok"], res
@@ -110,15 +73,11 @@ def case_fix_is_visible_to_every_reader() -> None:
 
 
 def case_fix_survives_a_forced_rerun() -> None:
-    """A correction a re-run silently reverts is worse than no correction: the
-    operator has no reason to ever look at the item again."""
     aid = _next_account()
     asyncio.run(_seed(aid, [(730, _THONG)]))
     asyncio.run(F.apply_fix(aid, 730, {"clothing_state": "pulled_down"}))
 
     async def rerun() -> None:
-        # Exactly what a forced flags pass does: merge fresh model
-        # output into the stored fields, skipping locked keys.
         async with get_session() as s:
             item = await s.get(VaultItem, (aid, 730))
             fields = vault_ai_brief.load_fields(item.ai_fields_json)
@@ -140,7 +99,6 @@ def case_fix_rejects_what_it_does_not_own() -> None:
     aid = _next_account()
     asyncio.run(_seed(aid, [(740, _THONG)]))
 
-    # A client posting the whole item back must not rewrite the prose.
     res = asyncio.run(F.apply_fix(aid, 740, {"description": "anything at all",
                                              "clothing_state": "pulled_down"}))
     assert res["ok"], res
@@ -148,43 +106,31 @@ def case_fix_rejects_what_it_does_not_own() -> None:
     assert after["description"].startswith("A woman"), "prose was rewritten"
     assert "description" not in res["applied"]
 
-    # Nothing fixable at all is a refusal, not a silent no-op.
     assert asyncio.run(F.apply_fix(aid, 740, {"tags": ["x"]}))["ok"] is False
-    # A region state outside the vocabulary is not an answer.
     bad = asyncio.run(F.apply_fix(aid, 740, {"vulva_vis": "sort of"}))
     assert bad["ok"] is False and bad["error"] == "bad_region_state", bad
 
 
 def case_confirming_is_evidence_not_a_no_op() -> None:
-    """The half that is easy to skip and the half that makes measurement
-    possible. Without a recorded confirmation, "the operator looked and agreed"
-    and "nobody ever opened this" are the same record — and an accuracy
-    computed over them reads 100% on a vault nobody has checked."""
     aid = _next_account()
     asyncio.run(_seed(aid, [(760, _THONG), (761, _THONG)]))
 
-    # One confirmed as-is, one corrected.
     asyncio.run(F.record_grade(aid, 760, version=3))
     asyncio.run(F.record_grade(aid, 761, version=3,
                                corrections={"breasts_vis": "covered"}))
 
     acc = asyncio.run(F.flags_accuracy(aid, version=3))
     assert acc["graded_items"] == 2, acc
-    # 3 regions x 2 items = 6 answers; exactly one was corrected.
     assert acc["answers"] == 6, acc
     assert acc["per_region"]["breasts_vis"] == {"ok": 1, "n": 2}, acc["per_region"]
     assert acc["accuracy"] == round(5 / 6, 4), acc
 
-    # An UNGRADED item must not count as correct — that is the whole failure.
     aid2 = _next_account()
     asyncio.run(_seed(aid2, [(770, _THONG)]))
     assert asyncio.run(F.flags_accuracy(aid2, version=3))["accuracy"] is None
 
 
 def case_accuracy_refuses_to_mix_prompt_versions() -> None:
-    """A score across two prompts measures neither. Three times in one session
-    a number was taken from a half-finished re-run and read as a result,
-    because v2 and v3 answers are indistinguishable once stored."""
     aid = _next_account()
     asyncio.run(_seed(aid, [(780, _THONG)]))
     asyncio.run(F.record_grade(aid, 780, version=2))
@@ -196,9 +142,6 @@ def case_accuracy_refuses_to_mix_prompt_versions() -> None:
 
 
 def case_queue_puts_ungraded_and_costly_items_first() -> None:
-    """Two rounds of tuning were scored entirely on already-graded items, and a
-    regression sat in the ungraded remainder through both without moving any
-    total."""
     aid = _next_account()
     tame = {"explicitness": "suggestive", "clothing_state": "lingerie_on",
             **_flags(vulva="covered", breasts="covered",
@@ -214,20 +157,14 @@ def case_queue_puts_ungraded_and_costly_items_first() -> None:
 
 
 def case_queue_labels_auto_settled_and_sorts_by_price() -> None:
-    """The disputes queue is gone; the grading queue keeps `passes_disagree` as
-    a sampled audit. Each disputed card says how it was read, and the one with
-    the most money riding on that reading comes first."""
     aid = _next_account()
-    # nude_but_clothed, topless with a thong on: settled to pulled_down -> $10.
     ten = {"description": "Topless, thong on.", "explicitness": "explicit",
            "clothing_state": "fully_nude",
            **_flags(vulva="covered", breasts="bare", over_vulva="black lace thong")}
-    # lingerie_but_nothing_on, vulva bare, nothing named: read pulled_aside -> $50.
     fifty = {"description": "Lying back.", "explicitness": "explicit",
              "clothing_state": "lingerie_on",
              **_flags(vulva="bare", breasts="covered", over_breasts="her hands",
                       underwear=False)}
-    # nude_but_clothed, nothing bare: no price at all.
     zero = {"description": "In a bodysuit.", "explicitness": "explicit",
             "clothing_state": "fully_nude",
             **_flags(vulva="covered", breasts="covered",
@@ -243,15 +180,11 @@ def case_queue_labels_auto_settled_and_sorts_by_price() -> None:
     assert by[901]["settled"][-1] == "never in a free lane"
     assert "passes_disagree" in by[901]["iffy"]
     assert "auto-settled" in F.IFFY_REASONS["passes_disagree"]
-    # Nothing was written: the settling is read-time only and nothing is locked.
     assert asyncio.run(_fields(aid, 901))["clothing_state"] == "fully_nude"
     assert by[901]["locked"] == []
 
 
 def case_offscreen_penetration_correction_settles_it() -> None:
-    """`penetration` and `acts` are both FIXABLE, and the contradiction fires on
-    either, so clearing both is what settles it. "none" and "unclear" are
-    ANSWERS, not findings."""
     aid = _next_account()
     item = {"description": "Her hand is between her legs, off frame.",
             "explicitness": "explicit", "clothing_state": "fully_nude",
@@ -267,7 +200,6 @@ def case_offscreen_penetration_correction_settles_it() -> None:
     assert stored["penetration"] == "none" and stored["acts"] == []
     assert vault_ai_brief.penetration_claimed(stored) is False
     assert vault_ai_brief.genital_act_claimed(stored) is False
-    # A clit-contact act with the vulva not_in_frame is a contradiction too.
     assert vault_ai_brief.genital_act_claimed({**stored, "acts": ["rubbing_clit"]}) is True
     assert vault_ai_brief.penetration_claimed({**stored, "acts": ["fingering"]}) is True
 
@@ -284,7 +216,6 @@ def case_penetration_and_acts_are_validated() -> None:
     assert ok["ok"] and asyncio.run(_fields(aid, 810))["acts"] == ["posing"], ok
 
 
-# Consistent base: no contradiction, nothing bare, every region answered.
 _TAME = {"explicitness": "suggestive", "clothing_state": "lingerie_on",
          **_flags(vulva="covered", breasts="not_in_frame",
                   over_vulva="black lace thong")}

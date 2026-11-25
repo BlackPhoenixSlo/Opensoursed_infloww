@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * useFullAiPrepare — Prepare content (ticket 49; service/full_ai_prepare.py): the run's step list from
- * GET /admin/full-ai/prepare-content/status, polled every 2 s while it runs (`run_id` set, `finished_at` null), and
- * `start`, the one POST /admin/full-ai/prepare-content. Only the owner's click calls `start`: reading the status on
- * load never starts a run (the server keeps the latest run in memory; idle = `run_id: null`).
- */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 

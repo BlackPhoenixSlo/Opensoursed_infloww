@@ -1,9 +1,3 @@
-/**
- * Strip OF's HTML wrappers: `<br>` → \n, `</p><p>` → \n\n, then drop
- * remaining tags and decode the common named entities. OF markdown-rendered
- * bodies arrive wrapped in `<p>`. Used wherever we render an OF message body
- * as plain text (drawer previews, scheduled-send popovers, …).
- */
 export function stripOFHtml(html: string | null | undefined): string {
   if (!html) return "";
   return html

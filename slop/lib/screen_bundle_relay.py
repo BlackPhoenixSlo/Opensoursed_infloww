@@ -1,21 +1,3 @@
-"""Relay hooks for screen-bundle and inline-boot scenarios.
-
-The HTML's inline boot (app/lib/inlineBoot.server.ts) seen from the relay, outermost hook (no product code):
-
-      GET  /__slop/server-reads   the reads the Next server sent for a document's HTML (Node's fetch: user agent
-           `node` / `undici*`; the browser's own calls through the rewrites keep its user agent), each
-           {path (+query), status, t0, t1} in wall-clock seconds, since this relay's start.
-      POST /__slop/screens-404 {on}  every /admin/screens/* answers 404 (the per-Creator path), for the browser and
-           the Next server alike: a page route would only reach the browser's calls.
-      The Next server's /admin/screens/* read for a browser with the no-bundles cookie (actors/ui.py:
-      its page route 404s the bundles) answers 404 too.
-      POST /__slop/server-wire {path, mode}  the Next server's reads of `path` (exact) meet what a scenario's page
-           route does to the browser's: mode 403 (a blocking proxy's HTML 403) or "hold" (a relay that never
-           answers: held until the mode changes, then forwarded on release or answered 403 on switch; after
-           HOLD_MAX_S it answers 504 (the server's own INLINE_TIMEOUT_MS normally gives up first); null lifts it.
-           The proxy and the silent relay a scenario stands in for
-           sit in front of the relay, on the leg the browser's rewrites and the server's reads both take (RELAY_URL).
-"""
 from __future__ import annotations
 
 import asyncio

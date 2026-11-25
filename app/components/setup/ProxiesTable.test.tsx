@@ -1,9 +1,3 @@
-/**
- * ProxiesTable — "Paste proxies": the whole textarea goes to
- * POST /admin/proxies/bulk with the chosen scheme, the result shows how many
- * landed plus a row per rejected line, and the table refetches.
- * Contract: docs/proxies.md (Paste many at once).
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -45,9 +39,7 @@ describe("ProxiesTable paste proxies", () => {
     const invalidate = vi.spyOn(client, "invalidateQueries");
     render(<ProxiesTable />, { wrapper });
     await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/proxies"));
-    // The paste box sits in the Add new proxy modal (ticket 18).
     fireEvent.click(screen.getByRole("button", { name: "Add new proxy" }));
-    // page-parity 03: antd dark's modal (#1f1f1f); the kit's field box (IF_FIELD).
     expect(screen.getByRole("dialog", { name: "Add new proxy" })).toHaveClass("bg-[#1f1f1f]");
     expect(screen.getByLabelText("Paste proxies (one per line)")).toHaveClass("bg-bg", "border-border");
 
@@ -60,7 +52,6 @@ describe("ProxiesTable paste proxies", () => {
     expect(screen.getByText(/1\.1\.1\.1:8000, 2\.2\.2\.2:9000/)).toBeInTheDocument();
     expect(screen.getByText(/Line 3: unrecognised format/)).toBeInTheDocument();
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["proxies"] });
-    // The pasted text (with passwords) never became a cache key or mutation variable.
     for (const m of client.getMutationCache().getAll()) {
       expect(JSON.stringify(m.state.variables ?? null)).not.toContain("secret");
     }
@@ -142,7 +133,6 @@ describe("ProxiesTable refusal rate", () => {
         label: "hu-6", host: "u.invalid", port: 8080, scheme: "http", assigned_accounts: [], verified_ip: "203.0.113.12",
         health: { state: "healthy", errors: 0, refusals: { window_s: 45, refused: 9, calls: 30, pct: 30 } },
       }, {
-        // An Agency's owner: the share alone (the counts are every Agency's traffic: the site owner's).
         label: "hu-7", host: "v.invalid", port: 8080, scheme: "http", assigned_accounts: [], verified_ip: "203.0.113.13",
         health: { state: "healthy", errors: 0, refusals: { window_s: 600, pct: 12.6 } },
       }, {
@@ -157,14 +147,11 @@ describe("ProxiesTable refusal rate", () => {
     expect(screen.getByText("203.0.113.7 · refusing 32% (10 min)")).toBeInTheDocument();
     expect(screen.getByText("203.0.113.8")).toBeInTheDocument();
     expect(screen.getByText(/unreachable since .* \(3 refused\) — rechecking · refusing 45% \(10 min\)/)).toBeInTheDocument();
-    // Bad from flapping: the rate is the reason, in plain words; no "unreachable", no "(0 refused)".
     expect(screen.getByText(/^refusing 27% \(10 min\) since .* — recheck at .*$/)).toBeInTheDocument();
     expect(screen.queryByText(/0 refused/)).not.toBeInTheDocument();
     expect(screen.getAllByText(/unreachable/)).toHaveLength(1);
-    // Flap-bad with nothing refused left in the window: no "refusing 0%".
     expect(screen.getByText(/^was refusing — recheck at .*$/)).toBeInTheDocument();
     expect(screen.queryByText(/refusing 0%/)).not.toBeInTheDocument();
-    // A window under a minute reads in seconds, never "(0 min)".
     expect(screen.getByText("203.0.113.12 · refusing 30% (45 s)")).toBeInTheDocument();
     expect(screen.getByText("203.0.113.13 · refusing 13% (10 min)")).toBeInTheDocument();
     expect(screen.getByText("203.0.113.14")).toBeInTheDocument();
@@ -179,14 +166,12 @@ describe("ProxiesTable delete of a proxy in use", () => {
       pool: { size: 0, account_ids: [] },
       accounts: [],
     });
-    // relay.ts puts a string `detail` in the error's message.
     relayDelete.mockRejectedValue(Object.assign(new Error("Proxy already in use by Jade. Unbind it first."), { status: 409 }));
     render(<ProxiesTable />, { wrapper });
     fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Proxy already in use by Jade. Unbind it first.");
     expect(relayDelete).toHaveBeenCalledWith("/admin/proxies/hu-1");
-    // The stale list is refetched.
     await waitFor(() => expect(relayGet.mock.calls.filter(([p]) => p === "/admin/proxies").length).toBeGreaterThan(1));
   });
 });
@@ -205,7 +190,6 @@ describe("ProxiesTable delete modal", () => {
     const dialog = screen.getByRole("dialog", { name: "Delete proxy" });
     expect(dialog).toHaveAttribute("aria-modal", "true");
     expect(dialog.contains(document.activeElement)).toBe(true);
-    // Tab stays inside the dialog.
     for (let i = 0; i < 4; i++) {
       await user.tab();
       expect(dialog.contains(document.activeElement)).toBe(true);
@@ -217,7 +201,6 @@ describe("ProxiesTable delete modal", () => {
   });
 });
 
-/** antd's prev5 / next5 run (rc-pagination), on purpose not ui/ifPager's `pageItems` "…" run. */
 describe("pagerItems", () => {
   it.each<[string, number, number, Array<number | "prev5" | "next5">]>([
     ["1 page", 1, 1, [1]],

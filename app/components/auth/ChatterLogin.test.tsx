@@ -1,7 +1,3 @@
-/**
- * ChatterLogin's "Get the desktop app" card: a plain anchor to /download on the web, left out inside the
- * desktop app (desktop/preload.js sets `window.fasttShell.isDesktop`).
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen } from "@testing-library/react";
 

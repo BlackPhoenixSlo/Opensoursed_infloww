@@ -1,10 +1,3 @@
-/**
- * Shared test helpers. Chat components read the TanStack Query cache, so they
- * must render under a QueryClientProvider — use renderWithProviders() instead
- * of RTL's bare render().
- *
- * Requires the T-TESTKIT dev-deps (@testing-library/react, @tanstack/react-query).
- */
 import type { ReactElement } from "react";
 import { act, render } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -18,14 +11,6 @@ export function makeTestQueryClient(): QueryClient {
   });
 }
 
-/** Render a component with a fresh QueryClient. Returns RTL utils + the client
- *  (so a test can seed the cache via client.setQueryData before asserting).
- *
- *  `rerender` is WRAPPED. RTL's own rerender replaces the whole tree with what
- *  you hand it, so calling it with a bare element silently drops the provider
- *  and the component dies on "No QueryClient set" — which reads like a bug in
- *  the component rather than in the test. Any suite that needs to assert on a
- *  props CHANGE (an optimistic row patched in place, say) needs this. */
 export function renderWithProviders(ui: ReactElement, client?: QueryClient) {
   const queryClient = client ?? makeTestQueryClient();
   const wrap = (node: ReactElement) => (
@@ -34,17 +19,14 @@ export function renderWithProviders(ui: ReactElement, client?: QueryClient) {
   const utils = render(wrap(ui));
   return {
     ...utils,
+    // RTL's bare rerender drops the provider; wrap it
     rerender: (next: ReactElement) => utils.rerender(wrap(next)),
     queryClient,
   };
 }
 
-/** Let running animations end: vitest.setup's `animate` finishes on a later
- *  microtask, as a browser's on a later frame (a swipe's settle, and its
- *  `onSwipe`, land then). */
 export const settled = () => act(async () => {});
 
-/** A JSON `Response` for `fetch` mocks in the Settings Panel tests. */
 export function jsonRes(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,

@@ -1,22 +1,5 @@
 "use client";
 
-/**
- * WindowHeader — Messages Pro's own top row (the Clone's `.topstrip`,
- * docs/spec/phase-01-window-chrome-tabs.md): SFW at the right. Home sits in
- * the Fan tabs row under it, as in Infloww (`FanTabsRow`).
- * It is there from lg up, in Messages Pro's own window (ADR-0002), so its
- * SFW is the only one. All Models comes first, before the Creator tabs
- * strip, with the Legacy flag off and on, so the scope can always go back to
- * every Creator; there is no "+" Extras overflow (TODO.md B2;
- * `MessagesProExtras`). The Creator tabs and "+ Add a Creator"
- * (`CreatorTabs`) follow it. Our Inflowwww mark sits before All Models
- * as the way back to the Dashboard (`goToDashboard`): this window has no
- * sidebar, and in the desktop app no address bar.
- * The right-hand group ends with SFW, the far right; before it the "Notif"
- * switch (`RailSwitch`), and before that the page's own `actions`. A page
- * that picks the Creator itself can leave All Models and the Creator tabs
- * out (`tabs={false}`).
- */
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -34,8 +17,6 @@ import { AllModelsTab } from "./MessagesProExtras";
 
 const G = MP.windowHeader;
 
-/** The Dashboard in the window that opened this one (the app's main window), brought to the front. With no such
- *  window (a tab, or its opener closed) the link goes there in this window, as does a modified click its own way. */
 export function goToDashboard(e: MouseEvent<HTMLAnchorElement>): void {
   if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   const main = window.opener as Window | null;
@@ -45,16 +26,9 @@ export function goToDashboard(e: MouseEvent<HTMLAnchorElement>): void {
     main.focus();
     e.preventDefault();
   } catch {
-    /* another origin's window: the link goes there here */
   }
 }
 
-/** The "Notif" switch (Compare FL11, ours; TODO.md B1): shows or hides the
- *  Buys & tips rail (`MoneyRail`, the money notifications) on this page's
- *  surface, the same choice as the rail's ⚙ "Show on" ticks, kept in the
- *  rail's settings (`useRailSettings`). Disabled until those are read. It sits
- *  outside the rail so it can bring the rail back. Labelled above its track
- *  as SFW is; desktop only, as the rail is in Messages Pro. */
 export function RailSwitch() {
   const surface = surfaceOf(usePathname());
   const { settings, commit } = useRailSettings();
@@ -83,10 +57,7 @@ export function RailSwitch() {
 }
 
 export function WindowHeader({ actions, tabs = true }: {
-  /** The page's own buttons, before Notif and SFW. */
   actions?: ReactNode;
-  /** All Models and the Creator tabs (with "+ Add a Creator"); off, the row
-   *  keeps Home and its right end. */
   tabs?: boolean;
 } = {}) {
   const [sfw, toggleSfw] = useSfw();
@@ -100,7 +71,6 @@ export function WindowHeader({ actions, tabs = true }: {
       <div className={cn(G.right, "ml-auto self-center flex items-center")}>
         {actions}
         <RailSwitch />
-        {/* SFW = blur media everywhere; the same store as the app top bar's. */}
         <button
           type="button"
           role="switch"

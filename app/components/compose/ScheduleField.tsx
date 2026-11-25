@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * ScheduleField — datetime-local input with a smart-suggestion chip.
- *
- * Behavior mirrors the desktop app's chip: once the scope (account id)
- * has ≥1 prior pick in localStorage, we show a chip that fills the
- * field with the predicted next slot ("Tue, May 25 · 9:00 PM · +1d").
- * Click to apply; Clear next to a populated field empties it.
- *
- * Empty value === "send immediately" — the parent decides what to do
- * with that. Callers should also call `recordSchedule(scope, value)`
- * after a successful submit so the cadence keeps learning.
- */
 
 import { useId, useMemo, useState, useEffect } from "react";
 import { Clock } from "lucide-react";
@@ -36,11 +24,8 @@ export function ScheduleField({
   onChange: (next: string) => void;
   label?: string;
 }) {
-  // Local copy so chip predictions refresh when the user clicks Submit
-  // and we call recordSchedule from the parent (storage write fires our
-  // own re-read via the "storage" event in the same tab is not guaranteed,
-  // so we re-read on mount + when the scope changes).
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory(scope));
+  // A same-tab storage event is not guaranteed after the parent's recordSchedule, so re-read on mount and scope change.
   useEffect(() => { setHistory(loadHistory(scope)); }, [scope]);
 
   const prediction = useMemo(() => predictNext(history), [history]);

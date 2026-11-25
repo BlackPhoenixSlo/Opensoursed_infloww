@@ -1,8 +1,3 @@
-/**
- * useSaveAccountConfig — a whole-brain Save (Auto-reply model, Model info, Cotag) leaves the daily AI spend cap out of
- * its PUT (server: absent = unchanged), so a stale echoed cap can't silently undo a limit set elsewhere (W30 #4). Only
- * the spend-limit card sends it.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { createElement, type ReactNode } from "react";
 import { renderHook } from "@testing-library/react";

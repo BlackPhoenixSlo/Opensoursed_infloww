@@ -14,7 +14,6 @@ export default function VaultCategoryIconDialog({
   accountId: string; category: string; name: string; hasIcon: boolean;
   onSaved: () => void; onClose: () => void;
 }) {
-  // See `vaultCategoryIconForm`: the component only dispatches.
   const [form, dispatch] = useReducer(iconFormReducer, INITIAL_ICON_FORM);
   const { preview, x, y, busy, error } = form;
 
@@ -68,7 +67,7 @@ export default function VaultCategoryIconDialog({
         </label>
         {preview && (
           <div className="space-y-2">
-            {/* This local file preview deliberately bypasses image optimization. */}
+            {/* Local file preview deliberately bypasses image optimization. */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={preview} alt="Square folder icon crop"
               className="mx-auto size-36 rounded-xl border border-border object-cover"

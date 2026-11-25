@@ -34,7 +34,7 @@ describe("reads", () => {
   it.each([
     [{ blockedCountries: ["AQ", 3], blockedStates: [7, "x", 1.5], blockedIps: ["192.0.2.1", null] }, { countries: ["AQ"], states: [7], ips: ["192.0.2.1"] }],
     [{}, { countries: [], states: [], ips: [] }],
-    [null, null], // no settings read (pending or failed): no lists to edit
+    [null, null],
     ["x", null],
     [{ blockedCountries: "AQ" }, { countries: [], states: [], ips: [] }],
   ])("blockedOf(%j)", (read, want) => expect(blockedOf(read)).toEqual(want));
@@ -78,7 +78,6 @@ describe("countryReducer", () => {
     expect(canSubmitCountries(s)).toBe(can);
   });
 
-  // finding 16: no settings read yet (or it failed) → nothing to edit, no Save that would wipe OF's lists
   const u0 = countryInit(null);
   it.each<[string, CountryAction[], Partial<CountryState>, boolean]>([
     ["unloaded: starts empty, no Save", [], { loaded: false, picked: [] }, false],
@@ -153,7 +152,6 @@ describe("Block by IP", () => {
     expect([canSubmitIps(s), canCancelIps(s)]).toEqual([save, cancel]);
   });
 
-  // finding 16: no settings read yet (or it failed) → the field takes no edit, no Save that would wipe OF's list
   const u0 = ipInit(null);
   it.each<[string, IpAction[], Partial<IpState>, boolean, boolean]>([
     ["unloaded: empty, neither", [], { loaded: false, text: "" }, false, false],

@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * "Media details": the Vault picker's ⓘ panel when a Fan is in scope
- * (docs/spec/phase-04-composer-ppv-vault.md, Vault picker, stories 48–49).
- *
- * A full-height panel over the picker, shaped like the vault manager's details
- * drawer (`VaultManagePanel`, `md:w-[430px]`): the media through the vault
- * browser's own `VaultPreviewMedia`, its facts, and the Fan's price history
- * from the picker's existing fan-history and wall-scan queries. Kept out of
- * VaultPicker.tsx, which is already over size; the picker only opens it.
- */
 
 import { useEffect, useId, useRef, type KeyboardEvent } from "react";
 
@@ -18,9 +8,6 @@ import { type FanVaultEntry } from "@/hooks/useFanVaultHistory";
 import { fmtCents, fmtDateTime, fmtDuration, fmtPrice } from "@/lib/format";
 import { type VaultMedia } from "@/lib/relay";
 
-/** Props for a control inside a card `<button>` (a nested `<button>` is not
- *  legal HTML): it opens its own thing and never toggles the card's selection,
- *  by mouse, double-click or keyboard. */
 export function cardAction(open: () => void) {
   return {
     role: "button",
@@ -42,14 +29,10 @@ export function cardAction(open: () => void) {
 export interface VaultMediaDetailsProps {
   media: VaultMedia;
   accountId: string | null;
-  /** The Fan's fan-history entry: `null` when the media was never sent to
-   *  them, `undefined` while fan-history is loading or has failed. */
   entry: FanVaultEntry | null | undefined;
-  /** The wall scan: whether the media is posted in the feed, and its price. */
   onWall: boolean;
   wallCents: number;
   tags: string[];
-  /** Opened from the card's price pill: scroll to the price history. */
   atHistory: boolean;
   onExpand: () => void;
   onClose: () => void;

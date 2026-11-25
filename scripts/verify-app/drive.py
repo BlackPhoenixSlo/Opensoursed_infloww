@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Drive the real app (relay + Next) for verification. Usage: see .claude/skills/verify-app/SKILL.md.
 
-    drive.py up                      start a throwaway stack (scripts/demo-shots/run.sh serve), seed
+    drive.py up [--fansly]           start a throwaway stack (scripts/demo-shots/run.sh serve), seed
                                      Northstar Studio, start the browser daemon; prints the run id
+                                     --fansly: a 21st Creator, Nova Reyes on Fansly (demo-shots/fansly_nova.py)
     drive.py doctor                  read-only health check of the run
     drive.py login --as owner|manager|chatter|anon
     drive.py goto /growth/scripts
@@ -123,6 +124,10 @@ def cmd_up(a):
     except FileExistsError:
         fail(f"run {rid} exists; pick another --run")
     env = os.environ.copy()
+    if a.fansly:
+        env["VERIFY_APP_FANSLY_NOW"] = datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat()
+    else:
+        env.pop("VERIFY_APP_FANSLY_NOW", None)
     save_state(run, run_id=rid, started=time.time())
     children = {}
     interrupted = False
@@ -177,7 +182,9 @@ def cmd_up(a):
         signal.signal(signal.SIGTERM, previous_term)
     s = state(run)
     out({"ok": True, "run": rid, "evidence": str(run), "app": s["app"], "relay": s["relay"], "db": s["db"],
-         "logins": s["logins"], "thread": s["thread"], "next": f"export VERIFY_APP_RUN={rid}; scripts/verify-app/drive.py doctor"}, run)
+         "logins": s["logins"], "thread": s["thread"],
+         **({"fansly_thread": s["fansly_thread"]} if "fansly_thread" in s else {}),
+         "next": f"export VERIFY_APP_RUN={rid}; scripts/verify-app/drive.py doctor"}, run)
 
 
 def group_identity(pid: int) -> str | None:
@@ -302,7 +309,8 @@ def cmd_doctor(a):
     checks["offhost_aborted"] = daemon.get("offhost", "?")
     checks["unmatched_of_reads"] = daemon.get("unmatched", "?")
     ok = all(checks[k] for k in ("stack_pid", "daemon_pid", "relay_livez", "app_http", "db_exists",
-                                 "owner_session")) and checks.get("seeded_creators") == 20 and daemon.get("offhost") == 0
+                                 "owner_session")) and checks.get("seeded_creators") == s.get("creators") \
+        and daemon.get("offhost") == 0
     hint = None if ok else (f"run looks broken: read {run}/stack.log and {run}/daemon.log, then "
                             f"`drive.py down --run {run.name}` and `drive.py up`")
     out({"ok": ok, "run": run.name, "app": s.get("app"), "checks": checks, "active": daemon.get("active"),
@@ -361,7 +369,8 @@ def daemon(rid: str):
     s = state(run)
     os.environ.update(DEMO_SHOTS_ROOT=str(ROOT), DEMO_SHOTS_TMP=s["tmp"], DEMO_SHOTS_APP=s["app"],
                       DEMO_SHOTS_RELAY=s["relay"],
-                      DEMO_SHOTS_NOW=datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat())
+                      DEMO_SHOTS_NOW=os.environ.get("VERIFY_APP_FANSLY_NOW")
+                      or datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat())
     sys.path.insert(0, str(SHOTS))
     from playwright.sync_api import Error as PwError, sync_playwright
     import dataset
@@ -371,7 +380,13 @@ def daemon(rid: str):
 
     app = s["app"]
     d = dataset.build()
-    router = Router(Fixtures(d))
+    if os.environ.get("VERIFY_APP_FANSLY_NOW"):
+        import fansly_nova
+        fansly_nova.add(d)
+        router = Router(fansly_nova.FanslyFixtures(d))
+        save_state(run, fansly_thread=fansly_nova.THREAD)
+    else:
+        router = Router(Fixtures(d))
     of_writes: list[dict] = []
     plain_handle = router.handle
 
@@ -601,6 +616,7 @@ def daemon(rid: str):
     ctx_for("owner")
     th = d.thread
     save_state(run, daemon_port=srv.server_address[1], logins=logins, ready=True, dataset_now=dataset.iso(d.now),
+               creators=len(d.creators),
                thread={"route": f"/messages-pro/{th['account_id']}/{th['fan_id']}",
                        "creator": d.creator(th["account_id"])["name"], "fan": d.fans[th["fan_id"]]["name"]})
     print(f"verify-app daemon ready on {srv.server_address[1]}", flush=True)
@@ -635,7 +651,9 @@ def main():
         p.add_argument("--dialog", help="only inside the open dialog with this exact name")
         p.add_argument("--timeout", type=int, help="seconds (default 15)")
 
-    sp("up", cmd_up, "start stack + seed + browser daemon").add_argument("--timeout", type=int, default=600)
+    p = sp("up", cmd_up, "start stack + seed + browser daemon")
+    p.add_argument("--timeout", type=int, default=600)
+    p.add_argument("--fansly", action="store_true", help="seed a 21st Creator on Fansly (Nova Reyes)")
     sp("down", cmd_down, "stop this run's processes; evidence stays")
     sp("doctor", cmd_doctor, "read-only health check")
     p = sp("db", cmd_db, "read-only SQL on the temp DB")

@@ -1,7 +1,3 @@
-/**
- * The loading placeholders pages draw before their reads land: bars with no text (never "$0.00"), and the
- * automation pages' form while the account list is in flight instead of a blank body or the no-creator art.
- */
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 

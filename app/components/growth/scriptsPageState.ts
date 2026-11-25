@@ -1,33 +1,3 @@
-/**
- * Growth > Scripts' page state as a pure reducer: the open view, the open tag and sequence, the checked scripts, the
- * tags added on this page before any script carries them, the scripts a remove / delete is still running on (`busy`)
- * and its last failure (`error`), the open overlay (`modal`), the search, Manage scripts' sort and the Fill state
- * (`fill`, `scriptFillState.ts`, held here so its dialog and `modal` stay one overlay). Below it, the
- * page's pure derivations: tag counts, sequences, the open list's rows and the selection over them.
- *
- *   • Moving to another list (`view`, `open`, `addTag`) clears the checked scripts.
- *   • The open entry of a kind is `activeEntry(open[kind], order)`: the stored pick while the sidebar lists it,
- *     else the sidebar's first entry (All scripts on Tag, the first sequence on Sequence).
- *   • Deleting the open entry opens its neighbour in the sidebar (the next, else the previous, else none);
- *     deleting another keeps the open one.
- *   • Renaming the open entry keeps it open under its new name; renaming another keeps the open one. Checked
- *     scripts stay through a rename.
- *   • A run (a remove, a delete, a tag or sequence delete) marks its ids busy and clears the last error; its one
- *     `runEnd` frees its own ids only (an overlapping run's stay busy), then sets its error if it failed, else
- *     unchecks its ids (the server took them; a failed run keeps the ticks for a retry).
- *   • The name prompt, the Excel / Import / Share dialogs (`modal`) and the Fill dialog (`fill.dialog`) are one
- *     overlay: opening one replaces another. An answer that opens the Fill dialog closes `modal`; `openModal`,
- *     All models and another Creator close the Fill dialog.
- *   • Closing the search clears its text.
- *   • The All models matrix (`allModels`, CreatorRail's All pick) shows no Creator: no overlay and no checked scripts
- *     stay open on the hidden one, and the page's write actions are hidden while it shows. Picking a Creator
- *     (`reset`) leaves it.
- *   • Another Creator (`reset`) keeps the view and the sort (view preferences) and the busy ids (see `reset`): none
- *     of the last Creator's picks, checks, pending tags, error, overlay or search. An answer (a run's end, an
- *     entry's rename or delete) carries the Creator it was asked on: on another Creator's page it is dropped
- *     (`otherCreator`), but a run's end still frees its ids. Back on that Creator, its answers apply again.
- */
-
 import type { SavedReply, SavedReplySequenceMeta } from "@/lib/relay";
 import {
   INITIAL_FILL, scriptFillReducer, type Action as FillAction, type ScriptFillState,
@@ -37,27 +7,21 @@ import { ofPlainText } from "@/lib/ofRichText";
 export type View = "tags" | "sequences" | "manage";
 export type EntryKind = "tag" | "sequence";
 
-/** The view that lists a kind's entries in its sidebar. */
 const VIEW_OF: Record<EntryKind, View> = { tag: "tags", sequence: "sequences" };
 
-/** The kind a view's sidebar lists (`VIEW_OF` read backwards); Manage scripts has no sidebar. */
 const KIND_OF: Record<View, EntryKind | null> = { tags: "tag", sequences: "sequence", manage: null };
 export function kindOf(view: View): EntryKind | null {
   return KIND_OF[view];
 }
 
-/** The Tag sidebar's two fixed entries (the bundle's `UncategorizedCommon`): every script, and the untagged ones. */
 export const ALL = "\u0000all";
 export const UNCATEGORIZED = "\u0000uncategorized";
 
-/** The open name modal, as data: its props (and `onOk`) are built each render, so OK acts on the page as it is
- *  then, not as it was when the modal opened (a refetch in between may have given a new tag its first script). */
 export type NamePrompt =
   | { kind: "sequence" }
   | { kind: "tag"; ids?: number[] }
   | { kind: "rename"; entry: EntryKind; from: string };
 
-/** The page's own overlay: the name prompt, or an Import / Share dialog (the Fill dialog is `fill.dialog`). */
 export type Modal =
   | { kind: "name"; prompt: NamePrompt }
   | { kind: "excel" }
@@ -66,13 +30,11 @@ export type Modal =
 
 export type SortBy = "recent" | "name";
 export type SortOrder = "asc" | "desc";
-/** Manage scripts' sort (#33). */
 export interface Sort {
   by: SortBy;
   order: SortOrder;
 }
 
-/** The Sequence sidebar's sort (Infloww's Custom / Recent / Name): Custom is the sequences' own order. */
 export type SeqSortBy = "custom" | "recent" | "name";
 export interface SeqSort {
   by: SeqSortBy;
@@ -81,62 +43,39 @@ export interface SeqSort {
 
 export interface ScriptsPageState {
   view: View;
-  /** The picked tag and sequence; null opens the first in the sidebar (ALL on Tag). */
   open: Record<EntryKind, string | null>;
-  /** The checked scripts' ids. */
   checked: ReadonlySet<number>;
-  /** Tags added from the More menu with nothing checked; shown while no script carries them (`livePending`). */
   pendingTags: readonly string[];
-  /** Scripts a remove or delete is still running on: their delete buttons and the selection bar wait. */
   busy: ReadonlySet<number>;
-  /** The last run's failure, shown above the list until the next run starts. */
   error: string | null;
   modal: Modal | null;
-  /** The toolbar search; closed, it has no text. */
   search: { open: boolean; q: string };
   sort: Sort;
   seqSort: SeqSort;
-  /** The Creator the page shows (`reset`); null until the first pick. */
   account: string | null;
-  /** The All models matrix shows in place of the Creator (`allModels`); a Creator's pick (`reset`) leaves it. */
   allModels: boolean;
-  /** Fill with content: requests, the Fill dialog, notices (`scriptFillReducer`). */
   fill: ScriptFillState;
 }
 
 export type Action =
-  /** Open a view (a tab, Manage scripts); clears the checked scripts. */
   | { type: "view"; view: View }
-  /** Open an entry in its view (a sidebar row, a chip, a new sequence); clears the checked scripts. */
   | { type: "open"; kind: EntryKind; name: string }
   | { type: "check"; ids: readonly number[]; on: boolean }
-  /** Replace the checked scripts (select all, or none). */
   | { type: "setChecked"; ids: readonly number[] }
-  /** Open the tag `name`; `pending` lists it before any script carries it. */
   | { type: "addTag"; name: string; pending: boolean }
-  /** `order` (both): the kind's sidebar as drawn when the user acted, before the server's answer refetches it;
-   *  `account` (here and on runEnd): the Creator the user acted on. */
   | { type: "renameEntry"; kind: EntryKind; from: string; to: string; order: readonly string[]; account: string | null }
   | { type: "deleteEntry"; kind: EntryKind; name: string; order: readonly string[]; account: string | null }
-  /** A run started on `ids` (none for a tag or sequence delete): they are busy, the last error goes. */
   | { type: "runStart"; ids: readonly number[] }
-  /** A run ended: its `ids` are free (another run's stay busy); `error`: its failure, null when the server took it. */
   | { type: "runEnd"; ids: readonly number[]; error: string | null; account: string | null }
   | { type: "openModal"; modal: Modal }
   | { type: "closeModal" }
-  /** The search icon: opens the search, or closes it and clears its text. */
   | { type: "searchToggle" }
   | { type: "searchQ"; q: string }
   | { type: "sortBy"; by: SortBy }
   | { type: "sortOrder"; order: SortOrder }
-  /** The Sequence sidebar's sort: picking the one already on flips its order; another starts ascending (Recent:
-   *  newest first). */
   | { type: "seqSort"; by: SeqSortBy }
-  /** Another Creator (`account`): nothing of this one's carries over but the view, the sorts and the busy ids. */
   | { type: "reset"; account: string | null }
-  /** The All models matrix: the Creator's overlay closes and its checked scripts go. */
   | { type: "allModels" }
-  /** A Fill action, run by `scriptFillReducer`. */
   | { type: "fill"; action: FillAction };
 
 export const INITIAL: ScriptsPageState = {
@@ -155,19 +94,16 @@ export const INITIAL: ScriptsPageState = {
   fill: INITIAL_FILL,
 };
 
-/** The open entry: `sel` while `order` lists it, else the first entry, else none. */
 export function activeEntry(sel: string | null, order: readonly string[]): string | null {
   return sel != null && order.includes(sel) ? sel : (order[0] ?? null);
 }
 
-/** The entry that takes `name`'s place when it goes: the next in `order`, else the previous, else none. */
 export function neighbour(order: readonly string[], name: string): string | null {
   const i = order.indexOf(name);
   if (i < 0) return null;
   return order[i + 1] ?? order[i - 1] ?? null;
 }
 
-/** The pending tags no script carries yet: once one does, it is an ordinary tag (renamed and deleted on the server). */
 export function livePending(
   pendingTags: readonly string[],
   replies: readonly { tags?: string[] | null }[],
@@ -177,9 +113,9 @@ export function livePending(
 
 const closeFill = (f: ScriptFillState) => scriptFillReducer(f, { type: "close" });
 
-/** An answer to what was asked on `account` while the page shows another Creator: dropped. */
 const otherCreator = (s: ScriptsPageState, account: string | null) => account !== s.account;
 
+// An answer carries the Creator it was asked on: on another Creator's page it is dropped, but a run's end still frees its ids.
 export function scriptsPageReducer(s: ScriptsPageState, a: Action): ScriptsPageState {
   switch (a.type) {
     case "view":
@@ -239,8 +175,6 @@ export function scriptsPageReducer(s: ScriptsPageState, a: Action): ScriptsPageS
       return { ...s, seqSort: { by: a.by, order } };
     }
     case "reset":
-      // `busy` stays: script ids are global DB ids, so the last Creator's never show on this one, and a run still
-      // out on them keeps their rows waiting if the user comes back (no second POST); its `runEnd` frees them.
       return {
         ...INITIAL, view: s.view, sort: s.sort, seqSort: s.seqSort, busy: s.busy, account: a.account,
         fill: scriptFillReducer(s.fill, { type: "reset", account: a.account }),
@@ -250,19 +184,15 @@ export function scriptsPageReducer(s: ScriptsPageState, a: Action): ScriptsPageS
     case "fill": {
       const fill = scriptFillReducer(s.fill, a.action);
       if (fill === s.fill) return s;
-      // One overlay: the Fill dialog and `modal` are never both open, so a dialog now open replaces `modal`.
       return { ...s, fill, modal: fill.dialog ? null : s.modal };
     }
   }
 }
 
-/* ── derivations ─────────────────────────────────────────────────────────── */
 
-/** Case-blind, numbers by value ("Seq 2" before "Seq 10"). */
 const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
 export const byName = (a: string, b: string) => collator.compare(a, b);
 
-/** Each tag's script count: the pending tags at 0, then every tag a script carries. */
 export function tagCountsOf(replies: readonly SavedReply[], pending: readonly string[]): Map<string, number> {
   const m = new Map<string, number>();
   for (const t of pending) m.set(t, 0);
@@ -270,7 +200,6 @@ export function tagCountsOf(replies: readonly SavedReply[], pending: readonly st
   return m;
 }
 
-/** Each sequence's scripts, in list order. */
 export function sequencesOf(replies: readonly SavedReply[]): Map<string, SavedReply[]> {
   const m = new Map<string, SavedReply[]>();
   for (const r of replies) {
@@ -282,15 +211,12 @@ export function sequencesOf(replies: readonly SavedReply[]): Map<string, SavedRe
   return m;
 }
 
-/** An entry's scripts' ids (its per-row Share): a tag's tagged scripts, a sequence's steps, in list order. */
 export function entryIds(kind: EntryKind, name: string, replies: readonly SavedReply[]): number[] {
   return replies
     .filter((r) => (kind === "tag" ? (r.tags ?? []).includes(name) : r.script_id === name))
     .map((r) => r.id);
 }
 
-/** The Sequence sidebar (`sequences`' names) in `sort`'s order. Custom: the sequences' own position (one without
- *  meta after them, by name); Recent: last modified (`sequenceHeader`); Name. Ties go by name. */
 export function sequenceOrder(
   metas: ReadonlyMap<string, SavedReplySequenceMeta>,
   sequences: ReadonlyMap<string, readonly SavedReply[]>,
@@ -311,7 +237,6 @@ export function sequenceOrder(
   return list.sort((a, b) => dir * modified.get(a)!.localeCompare(modified.get(b)!) || byName(a, b));
 }
 
-/** A sequence's scripts in step order, each with its label: the step, or "step.option" when a step holds several. */
 export function sequenceSteps(rows: readonly SavedReply[]): Array<{ r: SavedReply; label: string }> {
   const sorted = [...rows].sort((a, b) => (a.script_step ?? 0) - (b.script_step ?? 0) || a.id - b.id);
   const perStep = new Map<number, number>();
@@ -325,7 +250,6 @@ export function sequenceSteps(rows: readonly SavedReply[]): Array<{ r: SavedRepl
   });
 }
 
-/** The first step number a sequence skips: the chat's next-step suggestion stops before it. */
 export function firstGap(rows: readonly SavedReply[]): number | null {
   const steps = new Set(rows.map((r) => r.script_step ?? 0));
   const max = Math.max(0, ...steps);
@@ -333,12 +257,10 @@ export function firstGap(rows: readonly SavedReply[]): number | null {
   return null;
 }
 
-/** The step Add script / Add step seeds in a sequence: one past its last. */
 export function nextStep(rows: readonly SavedReply[]): number {
   return Math.max(0, ...rows.map((r) => r.script_step ?? 0)) + 1;
 }
 
-/** A sequence's header dates: its first script's creation and its last edit (none when no script has one). */
 export function sequenceDates(rows: readonly SavedReply[]): { created?: string; modified?: string } {
   return {
     created: rows.map((r) => r.created_at ?? "").filter(Boolean).sort()[0],
@@ -346,8 +268,6 @@ export function sequenceDates(rows: readonly SavedReply[]): { created?: string; 
   };
 }
 
-/** A sequence's header: Created by and Created on from its own fields when it has them (an import's), else its
- *  first script's creation; Last modified on: the later of its own edit and its scripts'. */
 export function sequenceHeader(
   meta: SavedReplySequenceMeta | undefined,
   rows: readonly SavedReply[],
@@ -357,7 +277,6 @@ export function sequenceHeader(
   return { createdBy: meta?.created_by || undefined, created: meta?.created_at || d.created, modified };
 }
 
-/** Each script's search text, lower-cased once per row object (a refetch brings new objects, so new text). */
 const haystacks = new WeakMap<SavedReply, string>();
 function haystackOf(r: SavedReply): string {
   let h = haystacks.get(r);
@@ -368,7 +287,6 @@ function haystackOf(r: SavedReply): string {
   return h;
 }
 
-/** Whether the search `q` finds the script: in its name, text, notes or tags, case-blind; no text finds all. */
 export function matchesSearch(r: SavedReply, q: string): boolean {
   const needle = q.trim().toLowerCase();
   if (!needle) return true;
@@ -377,12 +295,9 @@ export function matchesSearch(r: SavedReply, q: string): boolean {
 
 export interface ScriptListRow {
   r: SavedReply;
-  /** In a sequence: the step label (`sequenceSteps`). */
   stepLabel?: string;
 }
 
-/** The open view's list: the open sequence's steps, the open tag's (or all, or the untagged) scripts, or Manage
- *  scripts' sorted list; each filtered by the search. */
 export function scriptRows(p: {
   view: View;
   replies: readonly SavedReply[];
@@ -413,8 +328,6 @@ export function scriptRows(p: {
   return list.map((r) => ({ r }));
 }
 
-/** The selection over the list as shown: its ids, the checked ones among them, whether all are, and whether any
- *  checked one is still being removed / deleted (the selection bar waits for its answer: no second POST). */
 export function selectionOf(
   rows: readonly ScriptListRow[],
   checked: ReadonlySet<number>,

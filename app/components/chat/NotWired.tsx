@@ -1,24 +1,10 @@
 "use client";
 
-/**
- * NotWired — Messages Pro's dead controls, and what each says when touched.
- * The screen copies Infloww pixel for pixel, so it draws a few controls no
- * relay route stands behind (spec, "Not wired rendering"). They used to be
- * titled "not wired" and swallow the click, which reads as broken. Now each
- * says, on hover and on click, what it would do and why it does not, in the
- * site's own dry voice ("The software is real; the jokes are ours.").
- *
- * The title still starts "not wired" (`notWiredTitle`), so the house marker
- * stays greppable. A click shows the same excuse in a small note for a few
- * seconds (`useNotWiredNote`, `NotWiredNote`); nothing is called, stored or
- * selected.
- */
 
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
-/** Every dead control on the chat screen, and its excuse. */
 export const NOT_WIRED = {
   priority: "Starring a fan needs a route to OnlyFans we don't have, so for now every fan is a priority. The Priority chip in the list shows who OnlyFans already starred.",
   pin: "Pinning a chat needs a route to OnlyFans we don't have, so your favourite scrolls like everyone else. The Pinned chip lists the chats OnlyFans already pinned.",
@@ -31,16 +17,12 @@ export const NOT_WIRED = {
 
 export type NotWiredKey = keyof typeof NOT_WIRED;
 
-/** The title a dead control carries: the house marker, then its excuse. */
 export function notWiredTitle(key: NotWiredKey): string {
   return `not wired: ${NOT_WIRED[key]}`;
 }
 
-/** How long a click's note stays up. */
 export const NOTE_MS = 4000;
 
-/** A dead control's click: it shows the excuse for `NOTE_MS` and goes no
- *  further (no row selection, no menu dismissal by the click itself). */
 export function useNotWiredNote() {
   const [open, setOpen] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -55,8 +37,6 @@ export function useNotWiredNote() {
   return { open, onClick };
 }
 
-/** The note a click shows: a small bubble placed by `className` against the
- *  nearest positioned box. `role="status"`, so a screen reader reads it. */
 export function NotWiredNote({ open, children, className }: { open: boolean; children: ReactNode; className?: string }) {
   if (!open) return null;
   return (
@@ -72,9 +52,6 @@ export function NotWiredNote({ open, children, className }: { open: boolean; chi
   );
 }
 
-/** A dead icon button (Chat header star and pin, the Composer's "Aa"):
- *  `aria-disabled`, titled with its excuse, which a click shows in a note.
- *  `notePlace` puts the note (below the icon by default). */
 export function NotWiredButton({ why, label, className, notePlace = "top-full left-0 mt-1", children }: {
   why: NotWiredKey;
   label?: string;

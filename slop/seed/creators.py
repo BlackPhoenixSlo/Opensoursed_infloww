@@ -1,5 +1,3 @@
-"""Creators: `accounts` + `user_accounts` rows and the on-disk account registry
-(the temp sessions/ dir the guarded relay redirected), as scripts/demo-shots/seed.py."""
 from __future__ import annotations
 
 import json
@@ -34,7 +32,6 @@ def _add(w: World, con, i: int, aid: int, owner: str) -> dict:
 
 
 def seed(w: World, n: int | None = None, owners: list[str] | None = None) -> list[dict]:
-    """`owners[i]`: the Agency (users.id) Creator i belongs to; default all `w.user_id`."""
     n = int(n or w.size["creators"])
     rng = w.rng("creators")
     ids = sorted(rng.sample(range(100_000_000, 400_000_000), n))
@@ -48,8 +45,6 @@ def seed(w: World, n: int | None = None, owners: list[str] | None = None) -> lis
 
 
 def extra(w: World, n: int) -> list[dict]:
-    """`n` more Creators of `w.user_id`, ids above seed()'s range, kept out of `w.data["creators"]`:
-    a scenario's own, beside the profile's."""
     ids = sorted(w.rng("creators:extra").sample(range(400_000_000, 500_000_000), n))
     con = w.sql()
     with con:

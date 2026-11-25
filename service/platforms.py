@@ -6,6 +6,7 @@ from types import ModuleType
 
 import accounts
 import fansly_backend
+from side_effect_gate import refusal
 
 
 class Lack(str, Enum):
@@ -46,6 +47,11 @@ def get(key: str | None) -> Platform:
 
 def for_account(aid: str) -> Platform:
     return get(accounts.get_platform(aid))
+
+
+def refusal_for_account(aid: str, name: str) -> str | None:
+    backend = for_account(aid).backend
+    return None if backend is None else refusal(backend.Shim, name)
 
 
 def backends() -> tuple[ModuleType, ...]:

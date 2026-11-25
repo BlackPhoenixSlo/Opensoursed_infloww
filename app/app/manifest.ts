@@ -2,13 +2,11 @@ import type { MetadataRoute } from "next";
 
 import { BRAND_LOGO, BRAND_NAME } from "@/lib/brand";
 
-/** /manifest.webmanifest: "Add to Home Screen" opens the app standalone, which
- *  iOS needs for Web Push (lib/webPush). The service worker also reads `name`
- *  for a push it can't parse (public/sw-push.js). */
 export default function manifest(): MetadataRoute.Manifest {
   return {
     name: BRAND_NAME,
     short_name: BRAND_NAME,
+    // standalone is what iOS needs for Web Push
     display: "standalone",
     start_url: "/",
     icons: BRAND_LOGO

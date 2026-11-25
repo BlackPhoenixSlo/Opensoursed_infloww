@@ -1,20 +1,7 @@
 #!/usr/bin/env python3
-"""GET / POST /admin/vault-ai/folder-prices: an agency's price per vault folder (`vf:<id>` /
-`of:<id>`), read by Full AI Chat's sell executor. Our DB only, no OF call.
-
-Real HTTP with real owner / chatter logins (pattern: test_full_ai_internal_folders.py).
-
-  case_set_list_update_clear     set vf + of, list sorted, re-set updates, null clears
-  case_validation                account_id / ref / price errors as 400 with their codes; nothing written
-  case_vf_must_be_live_and_ours  a deleted or another account's internal folder -> 404
-  case_ownership                 another owner's account -> 403; a folder-limited chatter -> 403
-  case_parse_tables              parse_ref / parse_cents edges
-
-Run: ./venv/bin/python service/tests/test_vault_folder_prices.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import uuid  # noqa: E402
@@ -153,7 +140,7 @@ def case_parse_tables():
 def case_standard_categories_owner_scoped_and_prices_stable():
     base = "/admin/vault-ai/standard-folders"
     client = C["owner"]
-    off = client.post(base + "/sync", json={"account_id": AID})   # switch off (default): nothing created
+    off = client.post(base + "/sync", json={"account_id": AID})
     assert off.status_code == 200 and off.json() == {"list": [], "pending": 0}, off.text
     assert client.put("/admin/vault-ai/settings", json={"account_id": AID, "standard_folders": True}).status_code == 200
     first = client.post(base + "/sync", json={"account_id": AID})

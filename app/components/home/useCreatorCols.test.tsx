@@ -1,9 +1,3 @@
-/**
- * useCreatorCols: this visit's change belongs to the Applied read it was made on (another Creator's scope shows its own
- * layout, never the previous one's placeholder); saves never overlap so the latest layout is the one stored, also when
- * the page is left mid-save or left and opened again; a failed layout read offers a retry instead of a picker disabled
- * for good.
- */
 import type { ReactNode } from "react";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,7 +9,6 @@ const applied = vi.hoisted(() => ({
   stored: {} as Record<string, string[]>,
   failed: false,
   retry: vi.fn(),
-  /** A Creator whose read has not answered: the cached read shows the previous one's as placeholder. */
   unread: null as string | null,
   last: "a1",
 }));
@@ -28,7 +21,6 @@ vi.mock("@/lib/appliedSettings", () => ({
     if (!placeholder) applied.last = scope.accountId ?? "";
     return { data: { reports: { creator_cols: applied.stored[applied.last] } }, isPlaceholderData: placeholder };
   },
-  // `key`: the read's identity (principal + Creator in scope).
   useAppliedSettingsAfterMount: () => {
     const key = `owner-1|${scope.accountId}`;
     if (scope.accountId === applied.unread) return { settings: undefined, failed: false, retry: applied.retry, key };
@@ -60,7 +52,6 @@ import { useCreatorCols } from "./useCreatorCols";
 let client: QueryClient;
 const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 const tick = () => act(async () => void (await vi.advanceTimersByTimeAsync(700)));
-/** The stored layout as the Relay would hold it: the last PUT to land wins. */
 let server: string[] | null = null;
 const land = async (i: number) => {
   server = relayMock.calls[i].cols;
@@ -82,7 +73,6 @@ beforeEach(() => {
 });
 afterEach(async () => {
   cleanup();
-  // Land every PUT still out (and the ones each landing sends), so no save carries into the next test.
   for (let i = 0; i < relayMock.calls.length; i++) await act(async () => relayMock.calls[i].done());
   vi.useRealTimers();
 });
@@ -100,10 +90,10 @@ describe("useCreatorCols", () => {
   it("leaving the page mid-save: the latest layout lands last, even when the older PUT is slower", async () => {
     const { result, unmount } = renderHook(() => useCreatorCols(), { wrapper });
     act(() => result.current[1]!(["a"]));
-    await tick(); // PUT a in flight
+    await tick();
     expect(relayMock.calls.map((c) => c.cols)).toEqual([["a"]]);
     act(() => result.current[1]!(["b"]));
-    unmount(); // leaving: b queued behind a, sent once a lands
+    unmount();
     await land(0);
     for (let i = 1; i < relayMock.calls.length; i++) await land(i);
     expect(server).toEqual(["b"]);
@@ -113,13 +103,13 @@ describe("useCreatorCols", () => {
   it("navigating away and back: the left page's queued layout never lands after the new page's newer save", async () => {
     const first = renderHook(() => useCreatorCols(), { wrapper });
     act(() => first.result.current[1]!(["a"]));
-    await tick(); // PUT a in flight
+    await tick();
     act(() => first.result.current[1]!(["b"]));
-    first.unmount(); // b queued behind a
+    first.unmount();
     const second = renderHook(() => useCreatorCols(), { wrapper });
     act(() => second.result.current[1]!(["c"]));
     await tick();
-    for (let i = 0; i < relayMock.calls.length; i++) await land(i); // each in the order sent
+    for (let i = 0; i < relayMock.calls.length; i++) await land(i);
     expect(server).toEqual(["c"]);
     expect(relayMock.calls.filter((c) => c.cols[0] !== "b").map((c) => c.cols)).toEqual([["a"], ["c"]]);
   });
@@ -127,9 +117,9 @@ describe("useCreatorCols", () => {
   it("a layout queued by one principal never goes out under the next principal's session", async () => {
     const { result, rerender } = renderHook(() => useCreatorCols(), { wrapper });
     act(() => result.current[1]!(["a"]));
-    await tick(); // PUT a in flight
-    act(() => result.current[1]!(["b"])); // b queued
-    scope.principal = "owner-2"; // sign-out, another principal in
+    await tick();
+    act(() => result.current[1]!(["b"]));
+    scope.principal = "owner-2";
     rerender();
     await land(0);
     expect(relayMock.calls.map((c) => c.cols)).toEqual([["a"]]);
@@ -148,7 +138,7 @@ describe("useCreatorCols", () => {
   it("pagehide with a save in flight sends the queued layout at once, and never replays it", async () => {
     const { result } = renderHook(() => useCreatorCols(), { wrapper });
     act(() => result.current[1]!(["a"]));
-    await tick(); // PUT a in flight
+    await tick();
     act(() => result.current[1]!(["b"]));
     act(() => void window.dispatchEvent(new Event("pagehide")));
     expect(relayMock.calls.map((c) => c.cols)).toEqual([["a"], ["b"]]);

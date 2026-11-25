@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * Saved-reply editing state, shared by Growth > Scripts (`ScriptsPage`).
- *
- * Saved replies live in local SQLite (/admin/saved-replies/*). OF's
- * /messages/templates rejects creates for everything but the welcome slot, so
- * regular replies never round-trip through OF; the composer reads them locally.
- * The draft form itself is `TemplateDraftEditor`.
- */
 
 import { useEffect, useState } from "react";
 
@@ -36,22 +28,14 @@ function localMediaToVault(r: SavedReply): VaultMedia[] {
   }));
 }
 
-/**
- * The saved-reply list and its editor, for one Creator: the list read, the
- * one open draft, and create / edit / delete through `/admin/saved-replies`.
- * `save` only ever saves a reply draft.
- */
 export function useSavedReplyEditor(accountId: string | null) {
   const [draft, setDraft] = useState<TemplateDraft | null>(null);
   const [saveErr, setSaveErr] = useState<string | null>(null);
 
-  // Local saved replies.
   const replyQ = useSavedReplies(accountId);
   const createReplyM = useCreateSavedReply(accountId);
   const updateReplyM = useUpdateSavedReply(accountId);
   const deleteReplyM = useDeleteSavedReply(accountId);
-  // A script source's scripts (lib/chatSlots.ts) are not hand-made: they
-  // live in the chat's Scripts picker only.
   const replies = (replyQ.data ?? []).filter((r) => !isSourceScript(r.script_id));
 
   function startNewReply(seed?: Partial<TemplateDraft>) {
@@ -72,10 +56,6 @@ export function useSavedReplyEditor(accountId: string | null) {
       lockedText: !!r.locked_text,
       attached,
       previews: (r.previews ?? []).filter((id) => attachedIds.has(id)),
-      // The picker resolves the live name/avatar by querying OF when its
-      // popover opens; we only persist ids, so seed the chip row with
-      // placeholder labels that the user can replace by re-tagging if
-      // they care about the display name.
       taggedCreators: (r.tagged_users ?? []).map((id) => ({
         id, name: `user${id}`, username: "", avatar: null,
       })),
@@ -98,18 +78,11 @@ export function useSavedReplyEditor(accountId: string | null) {
     const price = Number(draft.price) || 0;
     setSaveErr(null);
     try {
-      // Filter previews down to ids actually attached so deletions
-      // don't leave orphan preview ids that confuse the composer.
       const attachedIds = new Set(draft.attached.map((m) => m.id));
       const previewIds = new Set(
         draft.previews.filter((id) => attachedIds.has(id)),
       );
-      // Reorder on save: FREE-marked tiles first, then PPV. The chat
-      // composer's preview model is count-based ("leading N tiles are
-      // free"), so without this rewrite a user who clicked FREE on the
-      // 2nd tile would, on apply, see tile #1 marked FREE and tile #2
-      // marked PPV. Stable within each group so the user's manual
-      // ordering between free-vs-free / paid-vs-paid is preserved.
+      // The composer preview is count-based (leading N tiles are free), so FREE-marked tiles must come first.
       const orderedAttached =
         price > 0 && previewIds.size > 0
           ? [
@@ -131,9 +104,6 @@ export function useSavedReplyEditor(accountId: string | null) {
         previews: price > 0 ? Array.from(previewIds) : [],
         gifId: draft.gif?.id ?? null,
         gifUrl: draft.gif?.thumbUrl ?? draft.gif?.fullUrl ?? null,
-        // Only persist the script pair when both halves are present —
-        // a script id without a step (or vice versa) can't anchor the
-        // next-step lookup, so coerce to null and don't surface it.
         scriptId: draft.scriptId.trim() || null,
         scriptStep:
           draft.scriptId.trim() && /^\d+$/.test(draft.scriptStep.trim())
@@ -170,7 +140,6 @@ export function useSavedReplyEditor(accountId: string | null) {
   };
 }
 
-/** The Creator a saved-reply page is scoped to: the first session-backed one until another is picked. */
 export function useScopedAccount() {
   const accounts = useActiveAccounts();
   const [accountId, setAccountId] = useState<string | null>(null);

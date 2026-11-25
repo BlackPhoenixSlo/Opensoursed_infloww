@@ -1,6 +1,5 @@
 "use client";
 
-/** The Messages pages' rows, cut from ofMirrorData (applyData draws them): the chat list, the open chat's thread, its links and scroll. */
 
 import type { OFChatItem, OFMedia, OFMessage } from "@/lib/relay";
 import { stillUrl } from "@/lib/ofMedia";
@@ -12,14 +11,8 @@ import type { MirrorData } from "@/lib/ofMirrorDataOf";
 
 const CHAT_MARKS = ["current", "m-muted", "m-muted-by-me", "m-muted-notifications", "m-unread", "m-unread-muted"];
 
-/**
- * The chat rows: one copy of the template row per chat, its link to the chat carrying the list's view (`listQuery`, see
- * ofMirrorChats), stamped `data-oi-chat="<fan id>"` (its "x", Clear messages, is ofMirrorChats'); its avatar links to the
- * fan's OnlyFans profile in a new tab, as OF's avatar goes to the profile (only while OF says canGoToProfile).
- */
 export function applyChats(doc: Document, chats: OFChatItem[], open: string | null, img: (u: string) => string, borrowed?: Element, listQuery = "") {
   let rows = [...doc.querySelectorAll<HTMLElement>(".b-chats__item")];
-  // A list captured with no chat: the borrowed list (its hidden row) put in, and OF's empty-list layout dropped.
   const dialogues = doc.querySelector(".b-chats__list-dialogues");
   if (!rows.length && borrowed && dialogues) {
     const list = doc.importNode(borrowed, true) as HTMLElement;
@@ -33,7 +26,7 @@ export function applyChats(doc: Document, chats: OFChatItem[], open: string | nu
   const tpl = unit(rows.find((r) => r.querySelector(".b-chats__item__last-message__text")) ?? rows[0]);
   const clones = chats.map((c, i) => {
     const el = make(tpl);
-    el.style.removeProperty("display"); // the generator's hidden template
+    el.style.removeProperty("display");
     const u = c.withUser;
     const row = el.matches(".b-chats__item") ? el : el.querySelector(".b-chats__item")!;
     const unread = c.unreadMessagesCount ?? (c.hasUnread ? 1 : 0);
@@ -43,11 +36,9 @@ export function applyChats(doc: Document, chats: OFChatItem[], open: string | nu
     el.querySelector("[data-index]")?.setAttribute("data-index", String(i));
     row.setAttribute("data-oi-chat", String(u.id));
     row.toggleAttribute("data-oi-unread", unread > 0);
-    // OF's swipe label (the row's SwipeOut): what a swipe left does to this chat.
     const swipe = el.querySelector(".b-chats__mark-as-read-label");
     if (swipe) swipe.textContent = unread > 0 ? " Mark as Read " : " Mark as Unread ";
     el.querySelector(".b-chats__item__btn-clear")?.setAttribute("data-oi-wired", "");
-    // The example's state icons and verified mark (the Relay sends none).
     for (const x of el.querySelectorAll(".b-icon-state-dialog, .b-chats__item__last-message__icons, [data-icon-name='icon-verified']")) x.remove();
     for (const x of el.querySelectorAll(".g-user-name")) {
       x.classList.remove("m-verified");
@@ -70,7 +61,7 @@ export function applyChats(doc: Document, chats: OFChatItem[], open: string | nu
       if (at) time.setAttribute("title", stamp(at));
       else time.removeAttribute("title");
     }
-    if (!unread) el.querySelector(".b-chats__item__uread-count")?.remove(); // the unread dot: only unread rows have it
+    if (!unread) el.querySelector(".b-chats__item__uread-count")?.remove();
     const avatar = el.querySelector<HTMLAnchorElement>(".b-available-users__round-img .g-avatar");
     setAvatar(avatar, u, img);
     if (avatar) {
@@ -84,21 +75,15 @@ export function applyChats(doc: Document, chats: OFChatItem[], open: string | nu
     }
     return el;
   });
-  // OF's "Nothing found" (the generator's) only for an empty list.
   const empty = chats.length ? [...doc.querySelectorAll<HTMLElement>(".b-chats__scroller [data-oi-empty]")] : [];
   fill(doc, [...rows.map(unit), ...empty], clones);
 }
 
-/** OF's infinite loader under the chat list (its spinner prompt): shown while the next page is read. */
 export function applyChatsMore(doc: Document, more: MorePages) {
   const spinner = [...doc.querySelectorAll<HTMLElement>(".b-chats__scroller .infinite-status-prompt")].find((p) => p.querySelector(".b-posts_preloader"));
   if (spinner && more.loading) setAttr(doc, spinner, "style", "");
 }
 
-/**
- * The chat list before its chats are here: OF's "Nothing found" reads "Loading chats…" while the Relay answers (`error`
- * null), or the red "Could not load chats: <the Relay's text>" after it failed (as the notifications tabs).
- */
 export function applyChatsStatus(doc: Document, error: string | null) {
   const text = doc.querySelector<HTMLElement>(".b-chats__scroller [data-oi-empty] .empty-message > span");
   if (!text) return;
@@ -112,23 +97,13 @@ export function applyChatsStatus(doc: Document, error: string | null) {
   if (error !== null) text.style.color = "#ff4545";
 }
 
-/**
- * A message's price line, in OF's payment-state words (its time bar, shown while `price > 0`): "$9 not paid yet" until
- * the fan opened or paid it (`isOpened || isPaid`, Messages Pro's rule), then "$9 paid"; a free message and a tip (OF
- * sends a tip with price 0, its amount in tipAmount) none.
- */
 export function paymentState(m: Pick<OFMessage, "price" | "isTip" | "isOpened" | "isPaid">): string {
   if (m.isTip || !(typeof m.price === "number" && m.price > 0)) return "";
   return `${dollars(m.price)} ${m.isOpened || m.isPaid ? "paid" : "not paid yet"}`;
 }
 
-/** OF's tip bubble (its ItemTips, scoped data-v-364cdc78): the funds icon, the tip line, a heart, then the fan's note. */
 export const isTipMessage = (m: ThreadMessage) => !!(m.isTip || m.isFundRaisingTip) && (m.tipAmount ?? 0) > 0;
 
-/**
- * OF's purchase card on a message the Creator cannot open (isMessagePurchaseVisible: not the Creator's, not a tip, with
- * media or locked text, purchasable or "unsubscribed"): another creator's PPV in the Creator's chat with them.
- */
 export const isPurchaseCard = (m: ThreadMessage, fromMe: boolean) =>
   !fromMe && !m.isTip && ((m.media?.length ?? 0) > 0 || !!m.lockedText) && (m.canPurchase === true || m.canPurchaseReason === "unsubscribed");
 
@@ -161,10 +136,6 @@ function tipBubble(doc: Document, m: ThreadMessage): HTMLElement {
   return wrap;
 }
 
-/**
- * The captured purchase card (`.m-purchase-chat`) for `m`: its media counts or length, the price with OF's lock, and
- * "Unlock for $X", disabled with the tooltip (unlocking is a payment from the Creator's balance; Inflowwww makes none).
- */
 function purchaseCard(tpl: Element, m: ThreadMessage): HTMLElement {
   const card = make(tpl);
   delete card.dataset.oiData;
@@ -182,14 +153,9 @@ function purchaseCard(tpl: Element, m: ThreadMessage): HTMLElement {
   return card;
 }
 
-/**
- * A chat page's links to the open chat's other pages: its header's Gallery and pin (lit, OF's `icon-pin-on`, "Open
- * pinned messages", while the chat has pinned messages), the gallery's and pinned page's Back, and their "with <name>".
- */
 export function applyChatLinks(doc: Document, page: string, chat: string, data: MirrorData, listQuery = "") {
   const q = `?chat=${encodeURIComponent(chat)}${listQuery ? `&${listQuery}` : ""}`;
-  // The chat page's own State links (Message price, …) carry the fan from the URL, not from the thread: a click before
-  // the thread arrives otherwise opens the dialog with no chat and its Save has nowhere to go back to.
+  // State links carry the fan from the URL, not the thread: a click before the thread arrives would open the dialog with no chat.
   keepQuery(doc, "messages/chat", q);
   track(doc, () => keepQuery(doc, "messages/chat", ""));
   for (const a of doc.querySelectorAll<HTMLAnchorElement>("a[data-oi-chat-link]")) {
@@ -209,10 +175,6 @@ export function applyChatLinks(doc: Document, page: string, chat: string, data: 
   applyWith(doc, data.chatFan ?? null);
 }
 
-/**
- * One media item in OF's chat bubble markup: a copy of the capture's single-photo media block (no
- * slideshow), else a bare one with OF's media classes. Its <img>s are left for chatMedia to fill.
- */
 export function chatMediaTemplate(doc: Document, wrapper: Element | null): HTMLElement {
   const single = [...(wrapper?.querySelectorAll(".b-chat__message__media-wrapper") ?? [])].find(
     (w) => !w.querySelector(".swiper") && w.querySelectorAll(".b-post__media__item-inner").length === 1 && w.querySelector("img.b-post__media__img"),
@@ -221,7 +183,6 @@ export function chatMediaTemplate(doc: Document, wrapper: Element | null): HTMLE
     const tpl = make(single);
     delete tpl.dataset.oiData;
     tpl.querySelector(".b-post__media__item-inner")?.classList.remove("g-pointer-cursor");
-    // The example's PPV lock, and OF's loading cover (its script drops it once the picture loads).
     for (const x of tpl.querySelectorAll(".m-purchase-chat, .post_media__loading")) x.remove();
     return tpl;
   }
@@ -238,7 +199,6 @@ export function chatMediaTemplate(doc: Document, wrapper: Element | null): HTMLE
   return tpl;
 }
 
-/** `media`'s still (`src`) in a copy of `tpl`, sized to its aspect when known. */
 export function chatMedia(tpl: HTMLElement, media: OFMedia, src: string): HTMLElement {
   const el = tpl.cloneNode(true) as HTMLElement;
   const ratio = media.width && media.height ? Math.min(1.5, Math.max(0.5, media.height / media.width)) : 1;
@@ -254,7 +214,6 @@ export function chatMedia(tpl: HTMLElement, media: OFMedia, src: string): HTMLEl
   return el;
 }
 
-/** OF's chat message classes (82027): with media, a photo among it, text (or nothing else to show), the Creator's own, a tip. */
 export const bubbleClass = (b: { media: boolean; photo: boolean; text: boolean; fromMe: boolean; tip?: boolean }) =>
   `b-chat__message${b.media ? " m-has-media" : ""}${b.photo ? " m-photo" : ""}${b.text ? " m-text" : ""}${b.fromMe ? " m-from-me" : ""}${b.tip ? " m-tip" : ""}`;
 
@@ -274,7 +233,7 @@ export function applyThread(doc: Document, page: string, chat: string, thread: N
   const msgTpl = wrapper?.querySelector(".b-chat__message.m-media-less-text") ?? wrapper?.querySelector(".b-chat__message");
   if (!groups.length || !msgTpl) return;
   const groupTpl = make(groups[0]);
-  groupTpl.style.removeProperty("display"); // the generator's hidden template
+  groupTpl.style.removeProperty("display");
   for (const m of groupTpl.querySelectorAll(".b-chat__message")) m.remove();
   const mediaTpl = chatMediaTemplate(doc, wrapper!);
   const stateTpl = wrapper!.querySelector(".b-chat__message__payment-state");
@@ -302,11 +261,10 @@ export function applyThread(doc: Document, page: string, chat: string, thread: N
     const el = make(msgTpl);
     delete el.dataset.oiData;
     el.dataset.oiMsg = String(m.id);
-    if (menuTagged) el.querySelector(".m-btn-vertical-dots")?.setAttribute("data-oi-msg-menu", ""); // make() drops the generator's tag
+    if (menuTagged) el.querySelector(".m-btn-vertical-dots")?.setAttribute("data-oi-msg-menu", "");
     const tip = isTipMessage(tm);
     const purchase = !!purchaseTpl && isPurchaseCard(tm, fromMe);
-    const notPaid = !m.isTip && (m.price ?? 0) > 0 && !m.isOpened && !m.isPaid; // OF's isNotPaidYet (!isFree && !isOpened)
-    // OF hides a PPV's locked text until it is opened (another creator's, here); a tip's text is its tip line.
+    const notPaid = !m.isTip && (m.price ?? 0) > 0 && !m.isOpened && !m.isPaid;
     const text = tip || (purchase && m.lockedText && notPaid) ? "" : plain(m.text);
     const stills = (m.media ?? []).filter((x) => x.canView !== false).map((x) => ({ x, url: stillUrl(x) })).filter((s) => s.url);
     el.className = bubbleClass({ media: !!stills.length || purchase, photo: !!stills.length, text: !!text || tip || (!stills.length && !purchase), fromMe, tip });
@@ -315,7 +273,6 @@ export function applyThread(doc: Document, page: string, chat: string, thread: N
     if (body && (stills.length || purchase)) {
       const shown = stills.map((s) => chatMedia(mediaTpl, s.x, img(s.url!)));
       if (purchase) {
-        // OF's ItemMedia: the free previews, then the purchase card, in one media wrapper.
         const box = shown.at(-1) ?? doc.createElement("div");
         box.classList.add("b-chat__message__media-wrapper");
         box.appendChild(purchaseCard(purchaseTpl!, tm));
@@ -333,7 +290,6 @@ export function applyThread(doc: Document, page: string, chat: string, thread: N
     else if (fan) setAvatar(avatar, fan, img);
     const holder = el.querySelector(".b-chat__message__text-holder");
     if (holder) {
-      // OF draws the text's own markup (bold, italic, its colours and sizes; the mirrored stylesheet has the classes).
       if (text) setOfText(holder, m.text ?? "");
       else {
         const p = doc.createElement("p");
@@ -350,13 +306,11 @@ export function applyThread(doc: Document, page: string, chat: string, thread: N
       span.textContent = ` ${state} `;
       el.querySelector(".b-chat__message__time")?.appendChild(span);
     }
-    // OF's classes (82027): m-purchase on a purchase card (never the Creator's own), m-not-paid-yet on any PPV not opened.
     if (purchase) el.classList.add("m-purchase");
     if (notPaid) el.classList.add("m-not-paid-yet");
     clones[clones.length - 1].appendChild(el);
   }
   fill(doc, groups, clones);
-  // The pinned page with none: OF's empty placeholder ("pinned_messages_will_be_shown_here").
   if (!clones.length && wrapper!.classList.contains("m-pinned")) {
     const empty = doc.createElement("div");
     empty.className = "text-center m-mall-auto g-sides-gaps";
@@ -366,33 +320,21 @@ export function applyThread(doc: Document, page: string, chat: string, thread: N
     wrapper!.before(empty);
     track(doc, () => empty.remove());
   }
-  // The scroll position (the newest message on open, kept on a redraw) is useOfData's: keepThreadScroll.
 }
 
-/** The thread's scroller. */
 export const THREAD_BOX = ".b-chat__messages";
-/** How near the thread's top (px) its older messages are asked for, and how near its end counts as "at the newest". */
 export const OLDER_PX = 300;
 const AT_END_PX = 40;
 
-/** Where the thread was scrolled before a redraw (threadScroll), for keepThreadScroll. */
 export interface ThreadScroll {
-  /** The chat the box showed. */
   chat: string;
-  /** Its oldest drawn message's id: another one after the redraw means older messages were put in above. */
   first: string | null;
   top: number;
-  /** Its distance from the end (scrollHeight - scrollTop). */
   fromEnd: number;
 }
 
 const firstShown = (box: Element) => box.querySelector<HTMLElement>(".b-chat__item-message[data-oi-data] [data-oi-msg]")?.dataset.oiMsg ?? null;
 
-/**
- * Where `chat`'s thread is scrolled before a redraw, or null when it shows no real message yet (a first draw), sits at
- * the newest message, or showed another chat (a switch opens the new one at its newest, never at the last one's
- * offset). Read before applyData's restore empties it.
- */
 export function threadScroll(doc: Document, chat: string | null): ThreadScroll | null {
   const box = doc.querySelector<HTMLElement>(THREAD_BOX);
   if (!chat || !box?.querySelector(".b-chat__item-message[data-oi-data]") || box.dataset.oiChat !== chat) return null;
@@ -400,11 +342,6 @@ export function threadScroll(doc: Document, chat: string | null): ThreadScroll |
   return fromEnd - box.clientHeight <= AT_END_PX ? null : { chat, first: firstShown(box), top: box.scrollTop, fromEnd };
 }
 
-/**
- * After a redraw of `chat`: at the newest message as OF opens a chat (`was` null: a first draw, or it was at the end, so
- * a new message is followed); older messages put in above keep the same distance from the end (no jump); any other
- * redraw (a poll, a message arriving below while scrolled up) keeps the same scrollTop, so nothing in view moves.
- */
 export function keepThreadScroll(doc: Document, chat: string, was: ThreadScroll | null) {
   const box = doc.querySelector<HTMLElement>(THREAD_BOX);
   if (!box) return;

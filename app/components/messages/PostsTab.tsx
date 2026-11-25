@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * PostsTab — the model's own feed, rendered inside the Messages page.
- *
- * Unlike the PPV/Tips/All tabs (DB aggregates that span "All models"),
- * posts come live off OF per-account, so this tab owns a single-model
- * picker that defaults to the first active account. Paged by
- * InfiniteListFooter.
- */
 
 import { useMemo } from "react";
 

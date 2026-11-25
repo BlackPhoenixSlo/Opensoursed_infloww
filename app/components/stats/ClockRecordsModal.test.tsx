@@ -1,10 +1,3 @@
-/**
- * ClockRecordsModal (w4-a): one Employee's Clock events from Employee reports' Clocked hours, as Infloww's
- * `ClockInModal` timeline in the Agency's zone, its CSV Export, and our Owner edit.
- *
- * Rendered with the relay mocked at `fetch` by URL (`/admin/shifts/clock-events`, the PATCH, and the Applied
- * settings answering America/New_York), so the default range's times are worked by hand in EDT (UTC-4). Every name is fake.
- */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -16,15 +9,11 @@ let storedTz: string | null;
 
 import ClockRecordsModal from "@/components/stats/ClockRecordsModal";
 
-/** Midnight 1 Oct to the end of 15 Oct, New York: the report's range. */
 const FROM = "2026-10-01T04:00:00.000Z";
 const TO = "2026-10-16T03:59:59.999Z";
-/** Now, pinned inside the range (EDT) where a test reads the clock. */
 const NOW = new Date("2026-10-15T14:07:42Z");
-/** Now in winter (EST, UTC-5), past the range's DST. */
 const WINTER = new Date("2026-12-01T17:00:00Z");
 
-/** Newest first, as the Relay lists them: one open, one auto-closed, one edited. */
 const RECORDS = [
   { clock_event_id: 4, employee_id: 41, account_id: null, shift_id: null, in_utc: "2026-10-15T12:00:00Z",
     out_utc: null, close_reason: null, minutes: null, edited: false },
@@ -35,9 +24,7 @@ const RECORDS = [
 ];
 
 let records: typeof RECORDS;
-/** What the list answers instead of the records, or null. */
 let listRefusal: { status: number; detail: string } | null;
-/** What the PATCH answers instead of the event, or null. */
 let patchRefusal: { status: number; detail: string } | null;
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -79,7 +66,6 @@ const patches = () => fetchMock.mock.calls
   .filter(([, init]) => init?.method === "PATCH")
   .map(([url, init]) => ({ path: String(url), body: JSON.parse(String(init.body)) }));
 
-/** Renders the modal and waits until the records show in the Agency's zone. */
 const render = async (from = FROM, to = TO) => {
   renderWithProviders(
     <ClockRecordsModal employeeId={41} employeeName="Alpha One" groupName="Night, team" from={from} to={to}
@@ -87,10 +73,8 @@ const render = async (from = FROM, to = TO) => {
   );
   if (storedTz) await screen.findByText(new RegExp(`^Times in ${storedTz}`));
 };
-/** Each record's Infloww lines, in order. */
 const lines = () => screen.getAllByRole("listitem")
   .map((li) => within(li).getAllByText(/^Clock (in|out) at /).map((line) => line.textContent));
-/** The record of event 2, 3 or 4, found by its clock in day. */
 const IN_DAY: Record<number, string> = { 2: "Oct 13", 3: "Oct 14", 4: "Oct 15" };
 const record = (id: number) => screen.getAllByRole("listitem")
   .find((li) => within(li).queryByText(new RegExp(`^Clock in at ${IN_DAY[id]}, 2026`)))!;
@@ -102,7 +86,6 @@ describe("ClockRecordsModal", () => {
     await screen.findByText(/^Clock in at Oct 15, 2026/);
     const [req, ...more] = listCalls();
     expect(more).toHaveLength(0);
-    // Until the user picks, the report's exact range.
     expect(Object.fromEntries(req.searchParams)).toEqual({ employee_id: "41", from: FROM, to: TO });
     expect((within(dialog).getByLabelText("From") as HTMLInputElement).value).toBe("2026-10-01T00:00");
     expect((within(dialog).getByLabelText("To") as HTMLInputElement).value).toBe("2026-10-15T23:00");
@@ -139,8 +122,6 @@ describe("ClockRecordsModal", () => {
   });
 
   it("a picked end the hour before DST start reads only EST", async () => {
-    // To 01:00 EST asks up to 07:00Z, the DST start instant itself; no stamp in the range is EDT. Now in EDT,
-    // so now's offset would read UTC-4.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(NOW);
     await render();
@@ -200,7 +181,6 @@ describe("ClockRecordsModal", () => {
     await render();
     await screen.findByText(/^Clock in at Oct 15, 2026/);
     fireEvent.click(screen.getByRole("button", { name: "Export" }));
-    // The group comes from the card: no roster or groups read.
     expect(fetchMock.mock.calls.map(([u]) => String(u).split("?")[0]))
       .not.toEqual(expect.arrayContaining(["/admin/employees"]));
 

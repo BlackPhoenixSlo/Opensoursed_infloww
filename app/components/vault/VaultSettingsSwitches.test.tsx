@@ -1,7 +1,3 @@
-/**
- * The Creator's vault switches: two off and "Sequences: solo only" on until tapped, one PUT per tap, and the Set
- * price modal's promise follows "Folder price is final" (off: the old line; on: the saved price cannot be changed).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
@@ -17,7 +13,7 @@ vi.mock("@/lib/relay", async (orig) => {
 import { FolderPriceModal } from "@/components/vault/VaultFolderRail";
 import VaultSettingsSwitches from "@/components/vault/VaultSettingsSwitches";
 
-const OFF = { folder_price_final: false, standard_folders: false, solo_sequences: true };  // the defaults
+const OFF = { folder_price_final: false, standard_folders: false, solo_sequences: true };
 
 beforeEach(() => {
   h.get.mockReset();

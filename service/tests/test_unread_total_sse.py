@@ -1,40 +1,4 @@
 #!/usr/bin/env python3
-"""The Unread total from every `/users/me` OF returns (phase-02 seam 2, ticket 13). With `UNREAD_TOTAL=1` and
-`SHARED_REFRESHER=1` (modules reloaded) one observer in the OF client takes `chatMessagesCount` from each 2xx
-`GET /api2/v2/users/me` OF actually answered, whoever asked (the route, S4S's `_of_me`, a direct `client.me()`: health
-probes, account config, the Live connection's reconnect auth), and the Creator's `freshness.values.unread_total`
-becomes `{n, at}` (`at`: the read's ask time, epoch ms); a changed `n` is one `creator_refreshed`, an unchanged one
-none. A cache hit is never a confirmation; a failed read (a Dead session's 401) keeps the last total. Both accounts
-answers carry the slot (`grey: "unseeded"` before the first confirmation). Knob off (either): no key, nothing held, the
-same OF calls.
-
-Between Cycles (ticket 14), at 0 OF calls: our mark read on a held unread page-0 row moves the total -1, our mark unread
-on a held read row +1, each one `creator_refreshed`; Knob off, the routes hold nothing.
-Ticket 22: a reply (the send route) into an unread chat then a mark read of it -> -1 once; two DMs (the transcoder)
-into one read chat -> +1 once; mark all read with a DM landing after its pre-write `at` -> 1, not 0.
-Creator badges 0B ticket 07: a chats answer stamps `withUser.badgeExcluded` exactly where `excluded_from_badges` is
-true (our registry fan, a not-sendable row); patched False for the registry fan -> no stamp, `isRestricted` still.
-Creator badges 0B ticket 08, through `events.handle_event` with real `chat_messages` frames, OF a wire that fails on
-any call: a frame confirms the total at its receipt (one `creator_refreshed`, `v` 1; same value: `at` only); frames and
-`/users/me` share one watermark; a frame never asks a window read or logs drift; the slot is the Red circle, OF's
-number minus Restricted unread (`of_counts` and `excluded_from_badges` over the roster-counts fold), null until a fold
-since start; newest R wins; roster-counts answers `unread` from the slot; an untracked Creator's slot rides its next
-accounts answer; OF's raw number appears nowhere; a cold leased roster-counts makes today's one window read; malformed
-frames and Knobs off hold nothing.
-Ticket 10: the slot's `grey` is the first cause: `unseeded`, `socket_down` (down, or up again with no confirmation
-received since), `r_unknown`; each change moves `v` and republishes (a `live` flip through the refresher's real tick);
-a non-OF Creator has a null slot.
-Ticket 09: our mark read whose frame lands while the write is in flight (before `after_write`) -> the frame's value,
-not one lower; an inbound DM into a read chat then its counter frame -> +1 once.
-Ticket 21, through the Shared refresher's real Cycle job (`_job`: `/users/me`, then its window step): a lower OF number
-beyond slack -> one page-0 window read in the same job, `chat_read_changed` stamped at its ask time for the flipped row,
-the Creator's other chat lists dropped, a `dir=down` drift log; within slack -> no read; higher -> a `dir=up` log only;
-a second drift in the same Cycle -> no read (the next Cycle's); no old window held -> `{unread: 0}` per read row on a
-drift read, none (and nothing dropped) on a routine read. Knob off: no reader registered, the roster rewarm as today.
-
-OF faked below the client (a real `OFClient` on a fake wire: no network); `events.publish` captured.
-Run: ./venv/bin/python service/tests/test_unread_total_sse.py
-"""
 import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # noqa: E401,E702
 import _harness  # noqa: E402  (first: temp DB)
 
@@ -70,7 +34,7 @@ import unread_total  # noqa: E402
 from unread_total_decide import Restricted  # noqa: E402
 from of_client import OFClient  # noqa: E402
 
-A, B = "8131", "8132"           # the Relay's account id is the OF user id the client carries
+A, B = "8131", "8132"
 _CREATORS = (A, B)
 ME = "/api2/v2/users/me"
 CHATS = "/api2/v2/chats"
@@ -108,11 +72,9 @@ class _Resp:
 
 
 class _Wire:
-    """OF: `/users/me` answers `me` (status, body); any other path a body carrying a counter too (never observed).
-    `calls`: every request sent, (method, path)."""
     def __init__(self, n=3):
         self.me = (200, {"chatMessagesCount": n, "wsUrl": "wss://ws", "wsAuthToken": "t"})
-        self.chats: list = []           # what `GET /chats` lists (the page-0 window)
+        self.chats: list = []
         self.calls = []
 
     def _answer(self, method, url):
@@ -142,14 +104,12 @@ def _client(aid: str, wire: _Wire) -> OFClient:
 
 
 def _r0() -> None:
-    """Restricted unread 0 for both Creators, as their first roster-counts fold leaves it (the Red circle known)."""
     for a in _CREATORS:
         unread_total.set_restricted_unread(a, Restricted(0, False, 0), 0)
 
 
 @contextlib.contextmanager
 def _knobs(shared: bool, unread: bool, r_known: bool = True):
-    """The two Knobs as env, both modules reloaded (a reload is a restart: nothing held but, `r_known`, R 0)."""
     saved = {k: os.environ.get(k) for k in ("SHARED_REFRESHER", "UNREAD_TOTAL")}
 
     def _set(k, v):
@@ -172,12 +132,11 @@ def _knobs(shared: bool, unread: bool, r_known: bool = True):
         importlib.reload(unread_total)
 
 
-_UP_LONG_AGO = -1e10    # monotonic s: a Live connection up since before any epoch ms a case stamps
+_UP_LONG_AGO = -1e10
 
 
 @contextlib.contextmanager
 def _live(since: float | None):
-    """Every Creator's Live connection up since monotonic `since` (None: down)."""
     saved = of_ws.connected_since
     of_ws.connected_since = lambda _a: since
     try:
@@ -188,9 +147,6 @@ def _live(since: float | None):
 
 @contextlib.contextmanager
 def _world(wire: _Wire):
-    """A's client on `wire` for the route (`_get_client`) and S4S (`ax._make_client`); A tracked (a tab open on
-    it) on the running Relay loop, every Live connection up since long before the case; `creator_refreshed`
-    captured. Yields the published list."""
     published: list = []
     client = _client(A, wire)
     live = _live(_UP_LONG_AGO)
@@ -201,7 +157,7 @@ def _world(wire: _Wire):
     s4s_api.ax._make_client = lambda _aid: client
     events.publish = published.append
     relay_cache.invalidate("users_me", A)
-    shared_refresher._relay_loop = asyncio.get_running_loop()      # what `start()` captures
+    shared_refresher._relay_loop = asyncio.get_running_loop()
     shared_refresher._state = shared_refresher_decide.State(
         shown={A: {"cycle_s": 600.0, "live": "up", "values": shared_refresher._values_of(A)}})
     try:
@@ -229,7 +185,6 @@ FAN, FAN2 = 9101, 9102
 
 
 async def _hold_window(rows: list, *, fetched_at: int | None = None) -> None:
-    """A's page-0 chats window held (what the Fan List and the roster badge read), as a list read left it."""
     from accounts_admin_api import _ROSTER_WINDOW_KEY
     relay_cache.invalidate("list_chats", A)
     await relay_cache.get_or_fetch("list_chats", A, _ROSTER_WINDOW_KEY, ttl_seconds=600,
@@ -247,12 +202,10 @@ def _of(published, kind: str) -> list:
 
 
 def _ns(published) -> list:
-    """The `n` of each `creator_refreshed` published."""
     return [e["values"]["unread_total"]["n"] for e in _of(published, "creator_refreshed")]
 
 
 async def _confirmed(wire: _Wire, pub: list) -> None:
-    """The total confirmed once through the route (one `/users/me`), then the capture and the call log cleared."""
     await server.users_me()
     await _settle()
     assert _slot()["n"] == wire.me[1]["chatMessagesCount"], _slot()
@@ -286,8 +239,8 @@ async def case_route_fetch_observed_cache_hit_not():
             assert _slot() == got, _slot()
             pub.clear()
             wire.me = (200, {"chatMessagesCount": 5})
-            await server.users_me()                     # the 60 s entry: a cache hit
-            await server.users_me(max_age=1800)         # an identity reader: served, never fetched
+            await server.users_me()
+            await server.users_me(max_age=1800)
             await _settle()
             assert wire.calls == [("GET", ME)], ("cache hits reach no OF", wire.calls)
             assert pub == [] and _slot() == got, ("a cache hit is never a confirmation", pub, _slot())
@@ -304,7 +257,7 @@ async def case_s4s_fetch_observed():
             (got,) = _totals(pub)
             assert got["n"] == 7 and t0 <= got["at"], got
             pub.clear()
-            await server.users_me()                     # S4S filled the route's entry: a hit
+            await server.users_me()
             await _settle()
             assert wire.calls == [("GET", ME)] and pub == [], (wire.calls, pub)
 
@@ -317,7 +270,7 @@ async def case_unchanged_n_publishes_nothing():
             await _settle()
             first = _slot()
             pub.clear()
-            relay_cache.invalidate("users_me", A)       # the entry gone: the next read is a fetch
+            relay_cache.invalidate("users_me", A)
             time.sleep(0.002)
             await server.users_me()
             await _settle()
@@ -336,16 +289,16 @@ async def case_direct_reads_observed_health_and_reconnect_auth():
         wire = _Wire(4)
         with _world(wire) as pub:
             client = _client(A, wire)
-            await asyncio.to_thread(client.me)          # health probes, account config: `client.me()` direct
+            await asyncio.to_thread(client.me)
             await _settle()
             assert [t["n"] for t in _totals(pub)] == [4], pub
             pub.clear()
-            importlib.reload(unread_total)              # a Relay restart: nothing held
+            importlib.reload(unread_total)
             assert _slot() == _UNSEEDED, _slot()
             _r0()
             wire.me = (200, {"chatMessagesCount": 2, "wsUrl": "wss://ws", "wsAuthToken": "t"})
             ws = of_ws.OFWebSocket(lambda: client, account_id=A)
-            await asyncio.to_thread(ws._refresh_auth, client)   # the Live connection's (re)connect read
+            await asyncio.to_thread(ws._refresh_auth, client)
             await _settle()
             assert [t["n"] for t in _totals(pub)] == [2], ("the reconnect read refills the total", pub)
 
@@ -355,9 +308,9 @@ async def case_only_a_2xx_get_of_users_me_with_a_count():
         wire = _Wire(3)
         with _world(wire) as pub:
             client = _client(A, wire)
-            await asyncio.to_thread(client.get_json, "/api2/v2/users/me/settings")     # another path
-            await asyncio.to_thread(client.request_json, "PATCH", ME, json_body={"x": 1})   # a write
-            wire.me = (200, {"name": "no counter"})                                    # Fansly-like body
+            await asyncio.to_thread(client.get_json, "/api2/v2/users/me/settings")
+            await asyncio.to_thread(client.request_json, "PATCH", ME, json_body={"x": 1})
+            wire.me = (200, {"name": "no counter"})
             await asyncio.to_thread(client.me)
             await _settle()
             assert len(wire.calls) == 3 and pub == [] and _slot() == _UNSEEDED, (wire.calls, pub, _slot())
@@ -385,7 +338,6 @@ async def case_dead_session_keeps_its_last_total():
 
 
 async def case_an_answer_without_a_counter_drops_the_held_total():
-    """It moved Last refresh but confirmed nothing: a held total may not keep looking fresh (W30-mu #19)."""
     with _knobs(True, True):
         wire = _Wire(3)
         with _world(wire) as pub:
@@ -407,7 +359,6 @@ async def case_an_answer_without_a_counter_drops_the_held_total():
 
 
 async def case_an_answer_without_a_counter_keeps_the_records_adjustments_and_due_read():
-    """Only the total goes: per-fan records, adjustments still landing and a due window read survive (W30-mu #35)."""
     import unread_total_decide as decide
     with _knobs(True, True):
         rec, adj = {7: (True, 150)}, (decide.Adj(stamp=900, delta=-1),)
@@ -421,20 +372,17 @@ async def case_an_answer_without_a_counter_keeps_the_records_adjustments_and_due
 
 
 async def case_answers_of_both_kinds_order_by_their_ask_time():
-    """W30-mu #45: a delayed counter-less answer once erased a newer confirmed total and its watermark, and an
-    older valid answer then replaced it. Both kinds now order by ask time against one watermark (`seen`), kept
-    while the total is unknown: an answer asked before the newest one taken changes nothing."""
     import unread_total_decide as decide
     with _knobs(True, True), _live(_UP_LONG_AGO):
         unread_total._held[A] = decide.State()
         unread_total.observe(A, {"chatMessagesCount": 5}, 200)
-        unread_total.observe(A, {"name": "no counter"}, 100)        # asked before the confirmation: stale
+        unread_total.observe(A, {"name": "no counter"}, 100)
         assert _slot() == {"n": 5, "at": 200, "v": 1, "grey": None, "amber": None, "amber_at": None}, _slot()
-        unread_total.observe(A, {"chatMessagesCount": 9}, 150)      # an older valid answer landing late
+        unread_total.observe(A, {"chatMessagesCount": 9}, 150)
         assert _slot() == {"n": 5, "at": 200, "v": 1, "grey": None, "amber": None, "amber_at": None}, _slot()
-        unread_total.observe(A, {"name": "no counter"}, 300)        # a newer one drops the total, keeps the mark
+        unread_total.observe(A, {"name": "no counter"}, 300)
         assert _slot() == {**_UNSEEDED, "v": 2} and unread_total._held[A].seen == 300, unread_total._held[A]
-        unread_total.observe(A, {"chatMessagesCount": 9}, 250)      # asked before it: still unknown
+        unread_total.observe(A, {"chatMessagesCount": 9}, 250)
         assert _slot() == {**_UNSEEDED, "v": 2}, _slot()
         unread_total.observe(A, {"chatMessagesCount": 4}, 400)
         assert _slot() == {"n": 4, "at": 400, "v": 3, "grey": None, "amber": None, "amber_at": None}, _slot()
@@ -447,7 +395,7 @@ async def case_a_tab_without_the_creator_gets_no_unread_total():
             await _settle()
             (e,) = pub
             assert ed.wants(f"model:{A}", frozenset({A}), frozenset(), e)
-            assert ed.wants(f"model:{B}", frozenset({A, B}), frozenset(), e)    # any-scope: its All Models lists
+            assert ed.wants(f"model:{B}", frozenset({A, B}), frozenset(), e)
             assert not ed.wants(f"model:{B}", frozenset({B}), frozenset(), e), "never outside the clamp"
 
 
@@ -464,7 +412,7 @@ async def case_mark_read_on_a_held_unread_row_minus_one_no_list_read():
             assert [c for c in wire.calls if c[0] == "GET"] == [], ("0 OF reads: the write only", wire.calls)
             pub.clear()
             await _hold_window([_row(FAN, False), _row(FAN2, False)])
-            await server.of_mark_chat_read(FAN)             # already read: 0
+            await server.of_mark_chat_read(FAN)
             await _settle()
             assert _of(pub, "creator_refreshed") == [] and _slot()["n"] == 2, (pub, _slot())
             relay_cache.invalidate("list_chats", A)
@@ -482,7 +430,7 @@ async def case_mark_unread_on_a_held_read_row_plus_one():
             assert [c for c in wire.calls if c[0] == "GET"] == [], wire.calls
             pub.clear()
             await _hold_window([_row(FAN, True)])
-            await server.of_mark_chat_unread(FAN)           # already unread: 0
+            await server.of_mark_chat_unread(FAN)
             await _settle()
             assert _of(pub, "creator_refreshed") == [] and _slot()["n"] == 4, (pub, _slot())
             relay_cache.invalidate("list_chats", A)
@@ -503,8 +451,6 @@ async def case_knob_off_routes_hold_nothing():
 
 
 def _dm(fan: int, mid: int) -> dict:
-    """A DM sent now: its `createdAt` (the Unread total's stamp for it) is after the held confirmation and any write
-    already asked (2 ms on: never the same ms as them)."""
     time.sleep(0.002)
     now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     return {"api2_chat_message": {"id": mid, "text": "hey", "price": 0, "isTip": False, "fromUser": {"id": fan},
@@ -514,7 +460,6 @@ def _dm(fan: int, mid: int) -> dict:
 
 @contextlib.contextmanager
 def _quiet_hooks():
-    """The transcoder's automation hooks and the send route's employee lookup, no-ops (not under test)."""
     import employees
     import webhook_dispatch
 
@@ -543,7 +488,7 @@ async def case_reply_into_unread_then_mark_read_minus_one_once():
             assert relay_cache.peek("list_chats", A, _window_key()) is None, "the send route dropped the window"
             await _settle()
             assert _ns(pub) == [2], ("the reply moved it", pub)
-            await server.of_mark_chat_read(FAN)             # an automation's mark read after its reply
+            await server.of_mark_chat_read(FAN)
             await _settle()
             assert _ns(pub) == [2] and _slot()["n"] == 2, ("-1 once", pub, _slot())
             assert [c for c in wire.calls if c[0] == "GET"] == [], wire.calls
@@ -560,7 +505,7 @@ async def case_two_dms_into_one_read_chat_plus_one_once():
             await et.transcode(_dm(FAN, FAN * 10 + 2))
             await _settle()
             assert _ns(pub) == [4] and _slot()["n"] == 4, ("+1 once", pub, _slot())
-            relay_cache.invalidate("list_chats", A)          # no window held: unknown prior, then our record
+            relay_cache.invalidate("list_chats", A)
             await et.transcode(_dm(FAN2, FAN2 * 10 + 1))
             await et.transcode(_dm(FAN2, FAN2 * 10 + 2))
             await _settle()
@@ -578,7 +523,7 @@ async def case_mark_all_keeps_a_dm_after_its_pre_write_at():
             await _hold_window([_row(FAN, False), _row(FAN2, True)])
             answer = wire._answer
 
-            def _dm_while_writing(method, url):      # FAN writes while OF takes the mark all
+            def _dm_while_writing(method, url):
                 if urlsplit(url).path.endswith("/chats/mark-as-read"):
                     asyncio.run_coroutine_threadsafe(et.transcode(_dm(FAN, FAN * 10 + 5)), loop).result(10)
                 return answer(method, url)
@@ -599,7 +544,6 @@ _OTHER_LISTS = ((25, 25, "recent", None, None, None), (25, 0, "recent", "unread"
 
 
 async def _hold_other_lists() -> None:
-    """A's deeper page and its `filter=unread` list held, as a tab's reads left them."""
     for key in _OTHER_LISTS:
         await relay_cache.get_or_fetch("list_chats", A, key, ttl_seconds=600, fetcher=lambda: {"list": [], "hasMore": False})
 
@@ -618,7 +562,6 @@ def _flips(pub) -> list:
 
 @contextlib.contextmanager
 def _drift_log():
-    """The `unread_total_drift` lines logged."""
     records: list = []
     h = logging.Handler()
     h.emit = records.append
@@ -635,11 +578,6 @@ def _drift_log():
 
 @contextlib.contextmanager
 def _cycle(wire: _Wire, *, ws_since=50.0, window_at=100.0):
-    """The Shared refresher's real Cycle job for A on `wire` (`_job`: `/users/me` through the OF client, then the
-    window step asking `window_due`): A's client for the refresher's reads, the Live connection up since `ws_since`
-    (None: down) and the window last read at `window_at` (monotonic: WS-kept unless the socket is down or reconnected
-    since), Cycle 600 s, a Last refresh before. Yields `job(t)`: one job asked at monotonic `t` -> (ok, ask epoch ms
-    lower bound, upper bound)."""
     client = _client(A, wire)
     saved = (server._load_client, of_ws.connected_since, shared_refresher._clock)
     server._load_client = lambda *_a, **_k: client
@@ -673,7 +611,7 @@ async def case_drift_down_one_window_read_flips_the_row_and_drops_the_other_list
             await _confirmed(wire, pub)
             await _hold_window([_row(FAN, True), _row(FAN2, True), _row(FAN * 3, False)])
             await _hold_other_lists()
-            wire.me = (200, {"chatMessagesCount": 2})          # FAN read on OF web
+            wire.me = (200, {"chatMessagesCount": 2})
             wire.chats = [_row(FAN, False), _row(FAN2, True), _row(FAN * 3, False)]
             ok, t0, t1 = await job(1000.0)
             assert ok and _window_reads(wire) == 1, ("one window read in the same job", ok, wire.calls)
@@ -696,10 +634,10 @@ async def case_within_slack_no_read_higher_logs_only():
         with _world(wire) as pub, _quiet_hooks(), _cycle(wire) as job, _drift_log() as drifts:
             await _confirmed(wire, pub)
             relay_cache.invalidate("list_chats", A)
-            await et.transcode(_dm(FAN, FAN * 10 + 7))          # no row held: unknown prior, +1 slack 1
+            await et.transcode(_dm(FAN, FAN * 10 + 7))
             await _settle()
             assert _slot()["n"] == 4, _slot()
-            await et.transcode(_dm(FAN, FAN * 10 + 7))          # the same frame again (WS replay): counted once
+            await et.transcode(_dm(FAN, FAN * 10 + 7))
             await _settle()
             assert _slot()["n"] == 4, ("a replayed DM does not move the total", _slot())
             await _hold_window([_row(FAN, True), _row(FAN2, True)])
@@ -707,10 +645,10 @@ async def case_within_slack_no_read_higher_logs_only():
             wire.calls.clear()
             pub.clear()
             wire.chats = [_row(FAN, False), _row(FAN2, False)]
-            ok, _t0, _t1 = await job(1000.0)                     # OF 3: within the slack
+            ok, _t0, _t1 = await job(1000.0)
             assert ok and _window_reads(wire) == 0 and _flips(pub) == [], (wire.calls, pub)
             assert drifts() == [] and _others_held() == [True, True], drifts()
-            wire.me = (200, {"chatMessagesCount": 6})           # higher
+            wire.me = (200, {"chatMessagesCount": 6})
             ok, _t0, _t1 = await job(2000.0)
             assert ok and _window_reads(wire) == 0 and _flips(pub) == [], (wire.calls, pub)
             assert drifts() == [f"unread_total_drift account={A} dir=up expected=3 observed=6"], drifts()
@@ -727,12 +665,12 @@ async def case_second_drift_in_the_same_cycle_no_read():
             wire.chats = [_row(FAN, False), _row(FAN2, True)]
             await job(1000.0)
             assert _window_reads(wire) == 1 and _flips(pub) == [(FAN, 0)], (wire.calls, pub)
-            wire.me = (200, {"chatMessagesCount": 1})           # FAN2 read on OF web, same Cycle
+            wire.me = (200, {"chatMessagesCount": 1})
             wire.chats = [_row(FAN, False), _row(FAN2, False)]
             await job(1100.0)
             assert _window_reads(wire) == 1 and _flips(pub) == [(FAN, 0)], ("no second read this Cycle", wire.calls)
             assert len(drifts()) == 2 and unread_total.window_due(A) is True, drifts()
-            await job(1700.0)                                   # the next Cycle: the drift still due
+            await job(1700.0)
             assert _window_reads(wire) == 2 and _flips(pub) == [(FAN, 0), (FAN2, 0)], (wire.calls, pub)
             assert len(drifts()) == 2 and unread_total.window_due(A) is False, drifts()
 
@@ -742,7 +680,7 @@ async def case_no_old_window_drift_read_clears_read_rows_routine_read_none():
         wire = _Wire(3)
         with _world(wire) as pub, _cycle(wire) as job:
             await _confirmed(wire, pub)
-            relay_cache.invalidate("list_chats", A)             # the window dropped (a bust, expiry)
+            relay_cache.invalidate("list_chats", A)
             wire.me = (200, {"chatMessagesCount": 1})
             wire.chats = [_row(FAN, False), _row(FAN2, True), _row(FAN * 3, False)]
             ok, t0, t1 = await job(1000.0)
@@ -750,9 +688,9 @@ async def case_no_old_window_drift_read_clears_read_rows_routine_read_none():
             assert _flips(pub) == [(FAN, 0), (FAN * 3, 0)], ("{unread: 0} per read row", pub)
             assert all(t0 <= c["at"] <= t1 for c in _of(pub, "chat_read_changed")), pub
         pub.clear()
-        with _world(wire) as pub, _cycle(wire, ws_since=None) as job:   # socket down: Phase 1's routine read
+        with _world(wire) as pub, _cycle(wire, ws_since=None) as job:
             await _hold_other_lists()
-            ok, _t0, _t1 = await job(2000.0)                     # no drift, no window held
+            ok, _t0, _t1 = await job(2000.0)
             assert ok and _window_reads(wire) == 2, wire.calls
             assert _flips(pub) == [] and _others_held() == [True, True], ("none, nothing dropped", pub)
 
@@ -790,7 +728,7 @@ def case_both_accounts_answers_carry_the_total():
     with _knobs(True, True):
         wire = _Wire(6)
         t0 = _ms()
-        _client(A, wire).me()                           # no Relay loop: held, published by nothing
+        _client(A, wire).me()
         for where, rows in _rows().items():
             got = rows[A]["freshness"]["values"]["unread_total"]
             assert got["n"] == 6 and t0 <= got["at"], (where, got)
@@ -843,7 +781,6 @@ async def case_badge_excluded_stamp():
 
 
 class _NoOF(_Wire):
-    """OF that fails on any call: the counter path makes none (story 12)."""
     def _answer(self, method, url):
         raise AssertionError(f"an OF call: {method} {url}")
 
@@ -854,7 +791,6 @@ def _frame(n, aid=A) -> dict:
 
 
 async def _feed(n, aid=A) -> tuple[int, int]:
-    """One Unread counter frame through the WS pump's entry; its receipt window (epoch ms)."""
     t0 = _ms()
     await events.handle_event(_frame(n, aid))
     t1 = _ms()
@@ -868,7 +804,6 @@ class _User:
 
 @contextlib.contextmanager
 def _roster(wire: _Wire):
-    """roster-counts as the owner, A's client on `wire`, A unleased: its held window folded at 0 OF calls."""
     import accounts_admin_api
     client = _client(A, wire)
     saved = (server._get_request_user, server._load_client)
@@ -895,7 +830,6 @@ def _roster(wire: _Wire):
 
 
 async def _fold(counts, rows: list) -> dict:
-    """A's page-0 window `rows` held (read now) and folded by roster-counts; A's count."""
     await _hold_window(rows, fetched_at=_ms())
     return (await counts())[A]
 
@@ -941,7 +875,7 @@ async def case_frame_before_seed_then_me():
             t1 = _ms()
             time.sleep(0.002)
             await _feed(4)
-            unread_total.observe(A, {"chatMessagesCount": 5}, t1)    # a /users/me asked before the frame, landing late
+            unread_total.observe(A, {"chatMessagesCount": 5}, t1)
             assert _slot()["n"] == 4, _slot()
 
 
@@ -955,7 +889,7 @@ async def case_mark_read_frame_before_after_write():
             pub.clear()
             answer = wire._answer
 
-            def _frame_while_writing(method, url):      # OF emits the read's frame before the write returns
+            def _frame_while_writing(method, url):
                 if method == "POST" and urlsplit(url).path.endswith(f"/chats/{FAN}/mark-as-read"):
                     time.sleep(0.002)
                     asyncio.run_coroutine_threadsafe(events.handle_event(_frame(2)), loop).result(10)
@@ -1043,8 +977,6 @@ async def case_restricted_subtracted():
 
 
 async def case_only_friends_worked_example():
-    """Owner amendment #3: counter 11 with 4 unread `only_friends` chats -> red 7; `chat_unavailable` rows OF already
-    leaves out are not subtracted."""
     sendable = [_send_row(7200 + i, canSendMessage=True) for i in range(7)]
     friends = [_send_row(7300 + i, canSendMessage=False, canNotSendReason="only_friends") for i in range(4)]
     gone = [_send_row(7400 + i, canSendMessage=False, canNotSendReason="chat_unavailable") for i in range(2)]
@@ -1085,7 +1017,6 @@ async def case_r_unknown_until_a_fold():
 
 
 async def _tick() -> None:
-    """One real Shared refresher tick with A the only Open-tab, readable Creator (no read started)."""
     import account_health
     import app_open_warm
     import transaction_ingest
@@ -1135,13 +1066,13 @@ async def case_grey_reasons():
             with _live(None):
                 assert unread_total.snapshot(A)["grey"] is None
                 assert unread_total.badge_versions(frozenset({A})) == {A: folded["v"]}
-                await _tick()                           # the refresher sees the socket drop
+                await _tick()
                 (down,) = _totals(pub)
                 assert down["grey"] == "socket_down" and down["n"] == 5 and down["v"] == folded["v"] + 1, down
                 assert pub[-1]["creator_refreshed"]["live"] == "down", pub
             pub.clear()
             with _live(time.monotonic()):
-                await _tick()                           # back up: `live` flips, the circle stays grey
+                await _tick()
                 assert _totals(pub) == [down] and pub[-1]["creator_refreshed"]["live"] == "up", pub
                 pub.clear()
                 time.sleep(0.002)
@@ -1151,8 +1082,6 @@ async def case_grey_reasons():
 
 
 async def case_non_of_creator_has_no_total():
-    """Coordinator decision: the Unread total tracks OF Creators only; a Fansly row's slot is null (P1 C8: a
-    contributor's None), so its tab keeps the route's count."""
     real = account_registry.get_platform
     account_registry.get_platform = lambda aid: "fansly" if aid == B else "onlyfans"
     try:
@@ -1206,7 +1135,6 @@ _RAW = {"raw", "chat_messages", "chatMessagesCount", "of_total"}
 
 
 async def case_raw_never_published():
-    """Story 26, owner amendment #2: OF's number is an input only."""
     with _knobs(True, True):
         wire = _NoOF()
         with _world(wire) as pub, _roster(wire) as counts:
@@ -1237,8 +1165,6 @@ def _ping_data(sub) -> dict:
 
 
 async def case_ping_badge_only_open_tabs_in_clamp():
-    """Ticket 11: each ping carries `badge`, the Badge version of each Open-tab Creator in the subscriber's clamp
-    that has one (`fresh`'s clamp rule); Knob off: no `badge`."""
     with _knobs(True, True):
         with _world(_NoOF()):
             await _feed(3)
@@ -1266,7 +1192,7 @@ async def case_ping_badge_only_open_tabs_in_clamp():
         finally:
             await events.unsubscribe("all", sub.q)
     writes = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    if writes:      # the frames' fire-and-forget persists, before this case's loop closes
+    if writes:
         await asyncio.wait(writes, timeout=5)
 
 
@@ -1278,7 +1204,6 @@ class _Req:
 
 
 async def _opening() -> dict:
-    """A reconnecting tab's stream on A: its Knob-on opening ping's data."""
     import events_wire as ew
     gen = events.sse_stream(_Req(), "all", accounts=frozenset({A}), tab=True)
     try:
@@ -1289,9 +1214,6 @@ async def _opening() -> dict:
 
 
 async def case_restart_opening_ping_carries_nothing_fresh():
-    """Ticket 13's restart item with the Knob-on opening ping: after a restart a stream's first ping carries no Last
-    refresh and Badge version 0 at most (a tab holding a pre-restart version is behind, refetches and gets the
-    unseeded slot), and the slot stays grey (unseeded, then r_unknown) until the first fold."""
     with _knobs(True, True, r_known=False):
         wire = _NoOF()
         with _world(wire), _roster(wire) as counts:
@@ -1308,10 +1230,6 @@ async def case_restart_opening_ping_carries_nothing_fresh():
 
 
 async def case_restart_one_window_read_folds_r():
-    """Live proof AB2 (Relay restart: reconnected tabs grey 300 s, or until a roster-counts call): after a restart a
-    tracked Creator with no held window is `r_unknown` until the refresher's next Cycle job, whose window step makes
-    one page-0 read; its fold sets R, so the circle turns red with R applied (never OF's raw number), published, and
-    the next ping's badge is its `v`. A later Cycle makes no second window read."""
     reg = 7565
     with _knobs(True, True, r_known=False):
         wire = _Wire(5)
@@ -1331,7 +1249,6 @@ async def case_restart_one_window_read_folds_r():
 
 
 async def case_cold_route_calls():
-    """A cold roster-counts on a leased Creator with frames flowing: exactly today's one chats-window read."""
     import view_lease
     holder = ("user", "sse-test", "tab")
     with _knobs(True, True):

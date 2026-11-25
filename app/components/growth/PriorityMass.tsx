@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * Smart Messages' Priority mass message (06-growth-automations M4): one direct
- * message per fan instead of OF's mass message, so it lands in each fan's
- * priority inbox. `service/automations/priority_mass.py` sends it and
- * `service/priority_mass_api.py` holds its runs.
- *
- * - `PriorityMassComposer`: the "Priority mass message" card's form (the pop-up's
- *   Next opens it). Creator, text, vault media, price, the OF lists to include
- *   and exclude. Launching freezes the audience on the Relay and starts the run.
- * - `PriorityMassRuns`: the "Priority mass messages" tab. One Creator's runs, newest
- *   first, each with its progress, and Cancel / Resume.
- *
- * Pacing is the shared 11 s per-Creator OF write gap, about 300 fans an hour
- * (Infloww advertises 300 to 700), and a run reaches at most 5,000 fans. Both
- * figures come from the Relay's list answer once loaded.
- */
 
 import { useEffect, useReducer, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -39,7 +23,6 @@ import {
 const ROUTE = "/admin/priority-mass/runs";
 const MAX_RECIPIENTS = 5000;
 const HOURLY_RATE = 300;
-/** A list column's heading (under the Audience label), as in AudiencePanel. */
 const SUB = "mb-1.5 text-[12px] text-fg-dim";
 
 export interface PriorityMassRun {
@@ -64,7 +47,6 @@ interface RunsResp { runs: PriorityMassRun[]; max_recipients: number; hourly_rat
 
 const runsKey = (accountId: string | null) => ["priority-mass-runs", accountId ?? ""];
 
-/** The pace line both surfaces show. */
 export function paceLine(hourly = HOURLY_RATE, max = MAX_RECIPIENTS): string {
   return `One direct message per fan, in their priority inbox: up to about ${hourly} fans an hour, at most ${max.toLocaleString("en-US")} fans.`;
 }
@@ -72,13 +54,10 @@ export function paceLine(hourly = HOURLY_RATE, max = MAX_RECIPIENTS): string {
 export function PriorityMassComposer({ open, onClose, initialAccountId = null }: {
   open: boolean;
   onClose: () => void;
-  /** "Post as" on open: the opener's Creator (Smart Messages' header select); else the picker seeds itself. */
   initialAccountId?: string | null;
 }) {
   const qc = useQueryClient();
-  // The account, its audience (list ids are per account) and the message — one reducer.
   const [form, rawDispatch] = useReducer(priorityMassReducer, initialAccountId, initPriorityMass);
-  // The user's dispatch: any action but the seeding touches the form (Escape then keeps it).
   const { touched, dispatch } = useTouched(form, rawDispatch, isAudienceSeed);
   const { accountId, includes, excludes, text, attached, price, previewCount, lockedText } = form;
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -87,8 +66,6 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
   const sensitiveHits = useSensitiveHits(text, accountId);
   const numericPrice = priceOf(form);
 
-  // Pre-tick the standing MASSDMEXCLUDE list in Exclude once the account's lists
-  // settle (not a stale cache mid-refetch); seeded once per account, so an untick sticks.
   useEffect(() => {
     if (!accountId || !lists || isFetching) return;
     rawDispatch({ type: "seedExclude", accountId, listId: massExcludeListId(lists) });
@@ -96,8 +73,7 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
 
   // Send waits for that seed, so a run never goes out before MASSDMEXCLUDE is excluded.
   const seeded = !accountId || form.seededFor === accountId;
-  // The read failed (no data, nothing in flight): Send stays shut — a missing
-  // exclusion would reach excluded fans. Reopening remounts and refetches.
+  // Read failed: Send stays shut, a missing exclusion would reach excluded fans.
   const listsFailed = !!accountId && !lists && !isFetching;
 
   const send = useMutation({
@@ -124,7 +100,7 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
         width={722}
         size="editor"
         onClose={close}
-        // Escape never drops a draft the user touched; × and Cancel still close.
+        // Escape never drops a touched draft; × and Cancel still close.
         keyboard={!touched}
         footer={<>
           <IfButton onClick={onClose} disabled={send.isPending}>Cancel</IfButton>

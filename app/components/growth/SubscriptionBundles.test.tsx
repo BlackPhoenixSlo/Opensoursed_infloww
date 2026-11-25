@@ -1,7 +1,3 @@
-/**
- * Growth's Subscription bundles: the same reads, writes and rules as OF Manager's mirror (the settings-bundles
- * fixture its own tests use: synthetic, PII-free), plus Edit (OF's saveBundle with an id).
- */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -42,12 +38,10 @@ const rows = () => document.querySelectorAll("[data-bundle-row]");
 const addButton = () => screen.getByRole("button", { name: "Add bundle" });
 
 
-/** Click `combobox`, then its option. */
 function choose(combobox: HTMLElement, option: string) {
   fireEvent.click(combobox);
   fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: option }));
 }
-/** The combobox's option names (opens it, reads, closes it). */
 function optionsOf(combobox: HTMLElement) {
   fireEvent.click(combobox);
   const names = within(screen.getByRole("listbox")).getAllByRole("option").map((o) => o.textContent);

@@ -21,7 +21,6 @@ const ids = (pages: ChatPage[]) => pages.map((p) => p.rows.map((r) => `${r.__acc
 
 describe("decodeChatsKey / keyHoldsAccount / viewAdmits", () => {
   it.each([
-    // key, unfiltered, holds "a1", holds "a2", new a1 row may enter, new a2 row may enter
     [["chats", "model", "a1", null, null, null, 30], true, true, false, true, false],
     [["chats", "model", "a1", "unread", null, null, 30], false, true, false, false, false],
     [["chats", "model", "a1", null, "list9", null, 30], false, true, false, false, false],
@@ -41,7 +40,6 @@ describe("decodeChatsKey / keyHoldsAccount / viewAdmits", () => {
       expect(viewAdmits(decodeChatsKey(key), row("a2", 1))).toBe(add2);
     });
   it.each([
-    // a fan's message may also enter the plain Unread list of a scope holding his Creator
     [["chats", "model", "a1", "unread", null, null, 30], true, false],
     [["chats", "all", "a1,a2", "unread", null, null, 30], true, true],
     [["chats", "model", "a1", "unread_tips", null, null, 30], false, false],
@@ -77,12 +75,10 @@ describe("bumpChatPages", () => {
     ({ ...(e ?? row("a1", 9)), lastMessage: { id: 50, text: "new" } }) as OFChatItem;
   const onlyExisting = (e: OFChatItem | null) => (e ? add(e) : null);
   const never = () => null;
-  // Fan 9 of a1 on page 1 (and a stale copy on page 2) behind fans 1, 2.
   const present = () => pagesOf([row("a1", 1), row("a1", 2)], [row("a1", 3), row("a1", 9, 5)], [row("a1", 9, 4)]);
   const absent = () => pagesOf([row("a1", 1), row("a1", 2)], [row("a1", 3)]);
 
   it.each([
-    // name, pages, patch, inPlace, fanId, want ids (null = same reference)
     ["present, lifted, every copy stripped", present, add, false, 9,
       [["a1:9", "a1:1", "a1:2"], ["a1:3"], []]],
     ["present, fanId '9' vs row 9", present, add, false, "9",
@@ -141,7 +137,6 @@ describe("bumpAfterSend", () => {
   const OTHER = ["chats", "model", "a2", null, null, null, 30];
 
   it.each([
-    // name, key, rows, fanId, want ids (null = same reference)
     ["unfiltered: lifted to the top", UNF, [[row("a1", 1)], [row("a1", 9, 5, undefined, 3)]], 9,
       [["a1:9", "a1:1"], []]],
     ["unfiltered: fanId '123' vs row 123", UNF, [[row("a1", 1)], [row("a1", 123)]], "123",
@@ -176,7 +171,6 @@ describe("readElsewhere", () => {
   const NEW = "2026-10-03T00:00:00Z";
   const unread = (aid: string, fid: FanId, at = OLD) => ({ ...row(aid, fid, 1, at, 1), hasUnread: true });
   it.each([
-    // case, chat, view rows, read elsewhere
     ["unread, absent, older than the read", unread("a1", 1), [], true],
     ["unread by count alone", row("a1", 1, 1, OLD, 2), [], true],
     ["unread, in the view", unread("a1", 1), [unread("a1", 1)], false],
@@ -312,7 +306,6 @@ describe("badgeUnreadView", () => {
   const view = { rows: [], asOf: 10_000 };
   const AGE = UNREAD_VIEW_MAX_AGE_MS;
   it.each([
-    // case, view, on the Unread chip, now, kept
     ["no view", null, false, 10_000, false],
     ["off the chip, just read", view, false, 10_000, true],
     ["off the chip, 1 ms under the limit", view, false, 10_000 + AGE - 1, true],
@@ -357,7 +350,6 @@ describe("applyReadFlip", () => {
       of(u("a", 1, "3"), u("a", 2, "1")), "a", f(null, false, Date.parse(T("2"))), {}, ["a:1:U2", "a:2:r0"]],
     ["Unread list, read: the row with the newer message stays", of(u("a", 1, "3")), "a",
       f(1, false, Date.parse(T("2"))), { unreadList: true }, ["a:1:U2"]],
-    // Unread lists: rows enter and leave.
     ["Unread list, read: the row leaves", of(u("a", 1), u("a", 2)), "a", f(1, false), { unreadList: true }, ["a:2:U2"]],
     ["Unread list on screen, read: flags only, the open chat stays", of(u("a", 1)), "a", f(1, false),
       { unreadList: true, keepRows: true }, ["a:1:r0"]],
@@ -403,9 +395,8 @@ describe("applyReadFlip", () => {
   describe("an event older than the page's read (askedAt) is skipped: the page already reflects it", () => {
     const stamped = (askedAt: number, ...rows: OFChatItem[]) =>
       ({ pages: [{ rows, hasMore: false, askedAt }], pageParams: [0] }) as unknown as ChatPages;
-    const L = Date.parse(T("9"));   // later than every row's last message
+    const L = Date.parse(T("9"));
     it.each([
-      // case, page askedAt, event at, applied
       ["event after the read", L + 1_000, L + 2_000, true],
       ["event at the read", L + 1_000, L + 1_000, true],
       ["event before the read (a replay)", L + 2_000, L + 1_000, false],

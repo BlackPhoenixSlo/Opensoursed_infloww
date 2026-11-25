@@ -1,20 +1,6 @@
-/**
- * The tag chips' "Save as folder" form and its saved row (VaultTagChips only dispatches): open, the name, the save in
- * flight, the last failure line, then the saved folder ("Saved locally · <name> · N items") and its Publish.
- *
- *   • The name follows the picked chips ("feet + lace") until the operator types in it (`name` null = follow);
- *     a save or a close goes back to following.
- *   • One save at a time: `canSubmit` is off while one runs, with no chip picked, a blank name, nothing to save or
- *     more than `TAG_FOLDER_MAX` items (the relay's `vault_tags.FOLDER_MAX_ITEMS`; `capText` says why).
- *   • A save is local only (an internal folder). The saved row stays (chips cleared or changed) until dismissed or the
- *     next save; Publish asks first, stating N items, then calls the existing publish route. One publish at a time.
- *   • `buildPayload` sends the grid's own filters (chips, type, search, open folder): the relay resolves the
- *     items itself (POST /admin/vault-ai/folders/from-tags), never from the grid's loaded page.
- */
-
 import type { FanId } from "@/lib/fanId";
 
-/** Items one saved folder may hold: `vault_tags.FOLDER_MAX_ITEMS`. */
+// Mirrors vault_tags.FOLDER_MAX_ITEMS.
 export const TAG_FOLDER_MAX = 5000;
 
 export interface SavedTagFolder {
@@ -32,10 +18,8 @@ export type PublishState =
 
 export interface TagFolderForm {
   open: boolean;
-  /** The typed name; null = the chips' default (`defaultFolderName`). */
   name: string | null;
   saving: boolean;
-  /** The last save's failure (the form stays open to retry). */
   error: string | null;
   saved: SavedTagFolder | null;
   publish: PublishState;
@@ -46,9 +30,7 @@ export type TagFolderAction =
   | { type: "close" }
   | { type: "name"; value: string }
   | { type: "start" }
-  /** Saved: closes the form, the saved row replaces any earlier one. */
   | { type: "done"; folder: SavedTagFolder }
-  /** Not saved: stays open with what was typed, to retry. */
   | { type: "failed"; text: string }
   | { type: "dismiss" }
   | { type: "publishAsk" }
@@ -95,7 +77,6 @@ export function tagFolderFormReducer(state: TagFolderForm, action: TagFolderActi
   }
 }
 
-/** The name before any typing: the picked tags joined. */
 export function defaultFolderName(tags: readonly string[]): string {
   return tags.join(" + ").slice(0, 120);
 }
@@ -104,14 +85,12 @@ export function folderName(s: TagFolderForm, tags: readonly string[]): string {
   return s.name ?? defaultFolderName(tags);
 }
 
-/** Why `total` items cannot be saved (over the cap), else null. */
 export function capText(total: number): string | null {
   return total > TAG_FOLDER_MAX
     ? `${total.toLocaleString("en-US")} items match; a saved folder holds at most ${TAG_FOLDER_MAX.toLocaleString("en-US")}. Pick another chip or filter to narrow it.`
     : null;
 }
 
-/** `total` null: the count for these chips is still loading (the shown one is the previous view's). */
 export function canSubmit(s: TagFolderForm, tags: readonly string[], total: number | null): boolean {
   return s.open && !s.saving && tags.length > 0 && total != null && total > 0 && total <= TAG_FOLDER_MAX
     && folderName(s, tags).trim().length > 0;
@@ -147,17 +126,14 @@ export function buildPayload(s: TagFolderForm, v: TagFolderView): TagFolderPaylo
 
 const items = (n: number) => `${n.toLocaleString("en-US")} item${n === 1 ? "" : "s"}`;
 
-/** The saved row's line. */
 export function savedText(f: SavedTagFolder): string {
   return `Saved locally · ${f.name} · ${items(f.items)}`;
 }
 
-/** The publish confirm's question. */
 export function publishQuestion(f: SavedTagFolder): string {
   return `Publish "${f.name}" to OnlyFans? This creates an OnlyFans vault folder and adds all ${items(f.items)} to it. Removing items later does not remove them on OnlyFans.`;
 }
 
-/** After the publish route answered (`pushed`: the folder's items sent to the OnlyFans list). */
 export function publishedText(r: { pushed: number }): string {
   return `Published to OnlyFans · ${items(r.pushed)}`;
 }

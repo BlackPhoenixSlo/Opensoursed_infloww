@@ -1,9 +1,3 @@
-/**
- * VaultManagePanel, driven as the operator drives it: the real panel, toolbar
- * and item editor; the data hooks and the heavy children (folder rail, tile,
- * preview player) are stubs. Each case here failed on the pre-reducer panel —
- * see `vaultBrowseReducer` and `vaultItemEditorReducer` for the bugs.
- */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
@@ -66,7 +60,6 @@ vi.mock("@/components/vault/VaultAccount", () => ({
   useVaultAccountId: () => "1000001",
   useVaultAccount: () => ({ account: { id: "1000001", nickname: "Amy" } }),
 }));
-// The download provider's account list: this page's one model (it never leaves).
 vi.mock("@/hooks/useAccounts", () => ({
   useAccounts: () => ({ isSuccess: true, data: { accounts: [{ id: "1000001" }], watchers: [] } }),
 }));
@@ -78,8 +71,6 @@ vi.mock("@/hooks/useStandardFolders", () => ({
   standardFoldersKey: (id: string) => ["vault-standard-folders", id],
   useStandardFolders: () => ({ data: { list: h.standardList, pending: 0 }, refresh: () => {}, syncing: false }),
 }));
-// The Creator's switches, both on here (the standard-category cases below need them); off is the default. The real
-// hook still runs (fetch off) so a conditional call breaks hook order here as it does in the app.
 vi.mock("@/hooks/useVaultSettings", async (orig) => {
   const mod = await orig<typeof import("@/hooks/useVaultSettings")>();
   return {
@@ -133,7 +124,6 @@ vi.mock("@/components/vault/VaultFolderRail", () => ({
     <nav>
       {standardRows}
       <button type="button" onClick={() => onSelect(null)}>rail:All media</button>
-      {/* A folder the rail shows before the panel's folder list has it (the list still loading). */}
       <button type="button" onClick={() => onSelect(4242)}>rail:not loaded</button>
       {folders.map((f) => (
         <button key={String(f.id)} type="button" onClick={() => onSelect(f.id)}>rail:{f.name}</button>
@@ -159,7 +149,6 @@ import { VaultBrowseMemory } from "./VaultBrowseMemory";
 import { VaultDownloadProvider } from "./VaultDownloadPanel";
 import VaultManagePanel, { FOLDER_LOADING } from "./VaultManagePanel";
 
-/** The panel as VaultProPage mounts it: under the page's one download (`extrasOpen`: the page's ⋯ opened the drawer). */
 const renderPanel = (extrasOpen = false, onCloseExtras = () => {}) =>
   renderWithProviders(
     <VaultDownloadProvider><VaultBrowseMemory><VaultManagePanel extrasOpen={extrasOpen} onCloseExtras={onCloseExtras} /></VaultBrowseMemory></VaultDownloadProvider>,
@@ -199,10 +188,9 @@ describe("selection across a change of view", () => {
   it("while the live grid still shows the previous folder's tiles, none of them can be ticked (#430)", () => {
     renderPanel();
     click("rail:Beach");
-    h.placeholder = true;   // the folder's first page is loading; the grid holds All media's pages
+    h.placeholder = true;
     click("Select");
     click("tile 10");
-    // Bug: a tick here downloaded the old folder's file into the new folder's directory.
     expect(selectionBar()).toBeNull();
     expect(screen.getByRole("button", { name: "Select all" })).toBeDisabled();
   });
@@ -215,7 +203,6 @@ describe("selection across a change of view", () => {
     expect(selectionBar()).toBeInTheDocument();
 
     click("rail:Beach");
-    // Bug: the bar stayed up with "Selected 2" over a grid showing none of them.
     expect(selectionBar()).toBeNull();
 
     click("tile 10");
@@ -237,23 +224,22 @@ describe("selection across a change of view", () => {
       getFileHandle: async () => ({ createWritable: async () => new WritableStream<Uint8Array>() }),
     };
     (window as unknown as { showDirectoryPicker: unknown }).showDirectoryPicker = vi.fn(async () => root);
-    vi.spyOn(console, "warn").mockImplementation(() => {});   // writeLinks: jsdom's Blob has no stream()
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       renderPanel();
       click("Photo");
       click("Select");
       click("tile 1");
       click("Video");
-      expect(screen.queryByRole("button", { name: "tile 1" })).toBeNull();   // hidden by the filter
+      expect(screen.queryByRole("button", { name: "tile 1" })).toBeNull();
       click("tile 3");
-      // every bar action takes both: the bar says one is off screen
       const count = () => screen.queryByTestId("selection-count");
       expect(count()).toHaveTextContent(/^2 selected · 1 hidden by filter$/);
       click("All");
       expect(count()).toHaveTextContent(/^Selected\s*2$/);
       click("Video");
       click("Download selected");
-      await waitFor(() => expect(count()).toBeNull());   // cleared once the run started
+      await waitFor(() => expect(count()).toBeNull());
       await waitFor(() => expect(fetched.length).toBe(2));
       expect(fetched.map((u) => new URL(u, "http://x").searchParams.get("media_id")).sort()).toEqual(["1", "3"]);
     } finally {
@@ -269,7 +255,6 @@ describe("the item editor under a Re-describe", () => {
     media_id: 1, ok: true, status: "described", description: "new desc", tags: ["x", "y"],
   });
   const descBox = () => screen.getByPlaceholderText("Full description…") as HTMLTextAreaElement;
-  // The hashtag chips, read off their × buttons.
   const chips = () => screen.queryAllByRole("button", { name: /^Remove hashtag / }).map((b) => b.getAttribute("aria-label")!.slice(15));
   const saveBtn = () => screen.getByRole("button", { name: "Save & lock" });
 
@@ -280,7 +265,6 @@ describe("the item editor under a Re-describe", () => {
     expect(descBox().value).toBe("old desc");
     click("Re-describe");
     await flush();
-    // Bug: the inputs kept "old desc" / "a, b" and Save turned on, armed with them.
     expect(descBox().value).toBe("new desc");
     expect(chips()).toEqual(["x", "y"]);
     expect(saveBtn()).toBeDisabled();
@@ -296,7 +280,6 @@ describe("the item editor under a Re-describe", () => {
     expect(descBox().value).toBe("mine");
     click("Save & lock");
     await flush();
-    // Bug: the body also carried tags: "a, b" — the stale tags, locked over the fresh describe.
     expect(h.patch).toHaveBeenCalledWith(
       "/admin/vault-ai/items/1", { account_id: AID, fields: { description: "mine" } }, { accountId: AID },
     );
@@ -317,9 +300,6 @@ describe("the item editor's price", () => {
 });
 
 describe("the Extras drawer's full download", () => {
-  // The relay soft-denies "All" to a folder-limited chatter on both sources (here a partial mirror of its folders,
-  // count 12, complete:false: the live path), so a whole-vault download would read "Nothing to download".
-  // The drawer is open (VaultProPage's ⋯); `closeExtras` is the page's close.
   const button = () => screen.getByTestId("vault-extras-download");
   const closeExtras = vi.fn();
   const render = () => renderPanel(true, closeExtras);
@@ -332,7 +312,6 @@ describe("the Extras drawer's full download", () => {
   });
 
   it.each([
-    // An owner's folder-access query is disabled: not loading, no data.
     { who: "owner", access: { isLoading: false, isError: false }, off: false },
     { who: "unrestricted chatter", access: { isLoading: false, isError: false, data: { restricted: false } }, off: false },
     { who: "restricted chatter", access: { isLoading: false, isError: false, data: { restricted: true } }, off: true },
@@ -363,7 +342,6 @@ describe("the Extras drawer's full download", () => {
     expect(button()).toHaveTextContent("Download full vault");
   });
 
-  // #29: a selected folder the folder list does not have yet is never downloaded under a guessed name: off.
   it("a selected folder not in the loaded list: off, says why, a click starts nothing", () => {
     h.access = { isLoading: false, isError: false };
     render();
@@ -376,7 +354,6 @@ describe("the Extras drawer's full download", () => {
     expect(closeExtras).not.toHaveBeenCalled();
   });
 
-  // #430 + #29: a selection made in a folder saves into it; one made in a folder not resolved yet is off, not guessed.
   it.each<[string, string, string | null]>([
     ["a resolved folder: on", "rail:Beach", null],
     ["a folder not in the loaded list: off", "rail:not loaded", FOLDER_LOADING],
@@ -395,13 +372,11 @@ describe("the Extras drawer's full download", () => {
     }
   });
 
-  // F13 (rwl W30 round 2): one gate per control. A run busy (a press would queue) but the scope off: the label never
-  // offers "Add … to queue" for a press that does nothing; label and title name the same state.
   it("a run busy, the scope off: the drawer item and the selection bar say Download, the title why", async () => {
     (window as { showDirectoryPicker?: unknown }).showDirectoryPicker = () => Promise.resolve({});
     h.access = { isLoading: false, isError: false };
     h.get.mockImplementation((p: string) => (String(p).startsWith("/admin/vault-ai/download/info")
-      ? Promise.resolve({ direct: false }) : new Promise(() => {})));   // the listing hangs: the run stays busy
+      ? Promise.resolve({ direct: false }) : new Promise(() => {})));
     h.standardList = [{ id: 501, kind: "photo", slug: "beach", name: "Photos Beach", items: 1, priceable: true }];
     render();
     fireEvent.click(button());
@@ -417,13 +392,12 @@ describe("the Extras drawer's full download", () => {
     expect(dlSel).toHaveAttribute("title", FOLDER_LOADING);
   });
 
-  // #24: the click downloads the scope it names, and closes the drawer so the download card shows: the listing carries the selected folder's id, or none.
   it.each<[string, string | null, string | null]>([
     ["All media: the whole vault", null, null],
     ["a selected folder: that folder", "rail:Beach", String(BEACH.id)],
   ])("%s", async (_n, railClick, listId) => {
     (window as { showDirectoryPicker?: unknown }).showDirectoryPicker = () => Promise.resolve({});
-    h.summary.data = { count: 12, complete: false };   // a partial mirror: the live listing
+    h.summary.data = { count: 12, complete: false };
     h.access = { isLoading: false, isError: false };
     h.get.mockResolvedValue({ list: [], hasMore: false });
     render();
@@ -453,7 +427,7 @@ describe("the Extras drawer's full download", () => {
 
 describe("search while OF's own search runs", () => {
   it("an empty grid spins 'Searching OnlyFans…', not 'No data', until OF answered", async () => {
-    h.summary.data = { count: 12, complete: true };   // the mirror path; its search found nothing
+    h.summary.data = { count: 12, complete: true };
     h.searchingOf = true;
     const { rerender } = renderPanel();
     fireEvent.change(screen.getByPlaceholderText("Search media by PPV caption"), { target: { value: "leggings" } });
@@ -487,11 +461,11 @@ describe("search while OF's own search runs", () => {
   });
 
   it("the live path (no mirror) never says it is searching OnlyFans: its listing is OF's search", async () => {
-    h.searchingOf = true;   // what the hook would say if it were not gated
+    h.searchingOf = true;
     renderPanel();
     fireEvent.change(screen.getByPlaceholderText("Search media by PPV caption"), { target: { value: "leggings" } });
     await flush();
-    await new Promise((r) => setTimeout(r, 300));   // past the search box's 250 ms debounce
+    await new Promise((r) => setTimeout(r, 300));
     await flush();
     expect(screen.queryByText(/Searching OnlyFans/)).toBeNull();
     expect(screen.getByRole("button", { name: "tile 1" })).toBeInTheDocument();
@@ -514,7 +488,6 @@ describe("the item popup", () => {
     expect(screen.getByTitle(/Your price for this media/)).toHaveValue("12.50");
     const more = screen.getByRole("button", { name: /More info/ });
     expect(more).toHaveAttribute("aria-expanded", "false");
-    // The extras are not in the DOM until asked for.
     expect(screen.queryByTestId("jev-reading")).toBeNull();
     expect(screen.queryByPlaceholderText("One-line PPV/DM caption…")).toBeNull();
     expect(screen.queryByRole("combobox", { name: "Tier" })).toBeNull();
@@ -532,7 +505,6 @@ describe("the item popup", () => {
     expect(jev).toHaveTextContent("12%");
     expect(jev).toHaveTextContent("outfit: lingerie");
     expect(jev).toHaveTextContent("toy any: no");
-    // The bookkeeping keys stay out.
     for (const k of ["tok", "passes", "1234", "800"]) expect(jev).not.toHaveTextContent(k);
     expect(screen.getByRole("combobox", { name: "Tier" })).toBeInTheDocument();
     expect(screen.getByPlaceholderText("One-line PPV/DM caption…")).toBeInTheDocument();
@@ -547,7 +519,7 @@ describe("the item popup", () => {
     click(/More info/);
     expect(screen.queryByTestId("jev-reading")).toBeNull();
     click("Next item");
-    expect(screen.getByRole("button", { name: /More info/ })).toHaveAttribute("aria-expanded", "true");   // kept
+    expect(screen.getByRole("button", { name: /More info/ })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByTestId("jev-reading")).toHaveTextContent("status: error");
     expect(screen.getByTestId("jev-reading")).not.toHaveTextContent("lane");
   });
@@ -573,7 +545,6 @@ describe("the item popup", () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     expect(dialog()).toBeNull();
     click("tile 1");
-    // a click (a selection dragged out onto the backdrop) does not close it; a press on the backdrop does
     fireEvent.click(dialog()!.parentElement!);
     expect(dialog()).not.toBeNull();
     fireEvent.pointerDown(dialog()!.parentElement!);
@@ -581,7 +552,6 @@ describe("the item popup", () => {
   });
 
   it("with unsaved edits, Escape / ✕ / backdrop / stepping ask first; Cancel keeps the edit", async () => {
-    // W30 F24: closing threw the draft away without a word.
     const ask = vi.spyOn(window, "confirm").mockReturnValue(false);
     try {
       renderPanel();
@@ -628,8 +598,8 @@ describe("the item popup", () => {
     expect(lane.options[0].textContent).toBe("auto: $50");
     expect((screen.getByRole("combobox", { name: "Jev butt" }) as HTMLSelectElement).options[0].textContent)
       .toBe("AI: not visible");
-    expect(screen.queryByRole("combobox", { name: "Jev watermark" })).toBeNull();   // behind Details
-    expect(screen.queryByRole("combobox", { name: "vulva" })).toBeNull();          // the old vis selects are gone
+    expect(screen.queryByRole("combobox", { name: "Jev watermark" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "vulva" })).toBeNull();
     fireEvent.change(lane, { target: { value: "$100" } });
     click("Details");
     fireEvent.change(screen.getByRole("combobox", { name: "Jev watermark" }), { target: { value: "y" } });
@@ -668,7 +638,6 @@ it("a standard category scopes the mirror and disables the live whole-vault fall
 });
 
 it("an unrestricted chatter's access loading → all keeps the hook order and shows the standard categories", () => {
-  // Bug: `access === "all" && useVaultSettings(…)` skipped the hook while access loaded → "Rendered more hooks".
   h.standardList = [{ id: 501, kind: "photo", slug: "beach", name: "Photos Beach", items: 1, priceable: true }];
   h.access = { isLoading: true, isError: false };
   const { rerender } = renderPanel();

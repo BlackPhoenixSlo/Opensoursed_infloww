@@ -59,16 +59,13 @@ describe("sumKinds", () => {
     { data: { rows: [
       { day: null, kind: "subscription", total_cents: 1000, count: 1, net_cents: 800 },
       { day: null, kind: "rebill", total_cents: 500, count: 1, net_cents: 400 },
-      // No net from OnlyFans yet: counts 0 in net.
       { day: null, kind: "tip", total_cents: 300, count: 1, net_cents: null as unknown as number },
       { day: null, kind: "ppv_post", total_cents: 200, count: 1 },
     ] } },
     { data: { rows: [{ day: null, kind: "referral", total_cents: 50, count: 1, net_cents: 40 }, { day: null, kind: null, total_cents: 7, count: 1, net_cents: 5 }] } },
-    // Stream sales: Total earnings only.
     { data: { rows: [{ day: null, kind: "ppv_stream", total_cents: 11, count: 1, net_cents: 9 }] } },
     {},
   ];
-  // The reversed read, Chargebacks' own.
   const reversed = [{ data: { rows: [
     { day: null, kind: "ppv_message", total_cents: 2888, count: 2, net_cents: 2310 },
     { day: null, kind: "tip", total_cents: 100, count: 1 },
@@ -116,11 +113,8 @@ describe("cellCsv", () => {
     const c = { ...m, revenue_by_kind: { tip: 1999, subscription: 1000, ppv: 500, custom: 15_000 },
       net_revenue_by_kind: { tip: 1599, subscription: 800, ppv: 400, custom: 12_000 } } as unknown as PerModelRow;
     expect([cellCsv(col("message"), c, gross), cellCsv(col("message"), c, netCtx)]).toEqual([155, 124]);
-    // (15,000 + 500 + 1,999) / 1,000 subs
     expect(cellCsv(col("engagementEarningsRatio"), c, gross)).toEqual(1749.9);
-    // Net: (12,000 + 400 + 1,599) / 800 net subs (it stayed gross)
     expect(cellCsv(col("engagementEarningsRatio"), c, netCtx)).toEqual(1749.88);
-    // The cards sum the columns' own reads, in either basis.
     expect([colTotal(col("message"), [c, c], gross), colTotal(col("message"), [c, c], netCtx)]).toEqual([31_000, 24_800]);
   });
   it("Tips and Message leave out what the summary's channels do (other_by_kind: streams), in both bases", () => {
@@ -129,7 +123,6 @@ describe("cellCsv", () => {
       other_by_kind: { tip: 999, ppv: 300 }, net_other_by_kind: { tip: 799, ppv: 240 } } as unknown as PerModelRow;
     expect(["tips", "message"].map((k) => [cellCsv(col(k), c, gross), cellCsv(col(k), c, netCtx)]))
       .toEqual([[10, 8], [3, 2.4]]);
-    // (1,000 tips + 300 message) / 1,000 subs
     expect(cellCsv(col("engagementEarningsRatio"), c, gross)).toEqual(130);
   });
   it("leaves quoting to the writer: a name with commas and quotes stays verbatim", () => {
@@ -162,12 +155,10 @@ describe("creatorDayRows", () => {
     ] }] },
     b2: { rows: [] },
   };
-  // The reversed day read (CompetitorReports' buildExport).
   const reversed: Record<string, RevResp> = {
     a1: { rows: [{ day: "2026-01-02", kind: null, total_cents: 2888, count: 1, net_cents: 2310 }] }, b2: { rows: [] },
   };
   const read = (id: string) => Promise.resolve({ earned: earned[id], reversed: reversed[id] });
-  // The total column says it leaves referrals out (DeepSeek F3).
   const header = ["Creator", "Day", "Total earnings (excl. referrals)", "Subscription", "Tips", "Posts", "Messages", "Other",
     "Chargebacks"];
   it.each([

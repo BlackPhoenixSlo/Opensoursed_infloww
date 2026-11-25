@@ -35,6 +35,9 @@ import proxies as _proxies  # noqa: E402
 _proxies.REGISTRY_PATH = _import_legacy.PROXIES_FILE
 
 import _run_ui_safe  # noqa: E402,F401  (sets CHATTERLY_TEST_MODE, neuters loops)
+if os.environ.get("VERIFY_APP_FANSLY_NOW"):
+    import fansly_relay  # noqa: E402
+    fansly_relay.install(os.environ["VERIFY_APP_FANSLY_NOW"])
 import uvicorn  # noqa: E402
 
 uvicorn.run(_run_ui_safe.server.app, host="127.0.0.1", port=int(os.environ["DEMO_SHOTS_RELAY_PORT"]),

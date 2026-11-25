@@ -1,20 +1,5 @@
 "use client";
 
-/**
- * Unsend from the Thread (ChatSurface's `onUnsend`). A bubble that went out
- * in a mass send, while OF still lets that queue be unsent, asks the scope up
- * front, as Infloww does (04-messages-pro.md P3): "Unsend from this
- * conversation" (the default) or "Unsend for all recipients". Any other
- * bubble keeps the one confirm, and when OF's reply still names a live queue
- * it gets the follow-up "Also unsend it for all recipients?" (once per queue).
- *
- * The calls are unchanged (`useUnsendMessage`): the per-chat DELETE, then,
- * for all recipients, the DELETE of the queue OF echoes back.
- *
- * A role denied "unsend" gets no `onUnsend` (the bubble shows no Unsend); one
- * denied "mass-message" unsends from this chat only, never asked about the
- * queue (its DELETE is a mass-message action).
- */
 
 import { useCallback, useRef, useState, type ReactNode } from "react";
 
@@ -28,17 +13,12 @@ import { ifAlert, ifConfirm } from "@/components/ui/ifConfirm";
 export type UnsendScope = "chat" | "all";
 type Unsender = Pick<ReturnType<typeof useUnsendMessage>, "unsendOne" | "unsendQueue">;
 
-/** `onUnsend` for the Thread, and the scope dialog to render while it asks. */
 export function useUnsendChoice(unsender: Unsender): { onUnsend: ((msg: OFMessage) => void) | undefined; dialog: ReactNode } {
   const allowed = useActionAllowed("unsend");
   const queueAllowed = useActionAllowed("mass-message");
-  // Queue ids already offered the follow-up in this session — unsending
-  // several bubbles of one broadcast prompts once.
   const promptedQueuesRef = useRef<Set<number>>(new Set());
   const [ask, setAsk] = useState<OFMessage | null>(null);
 
-  /** `scope` is the dialog's choice; null when the bubble was not known as
-   *  mass-sent, so a queue OF echoes gets the follow-up confirm. */
   const run = useCallback(async (msg: OFMessage, scope: UnsendScope | null) => {
     let resp: Awaited<ReturnType<Unsender["unsendOne"]>> = null;
     try {
@@ -49,8 +29,6 @@ export function useUnsendChoice(unsender: Unsender): { onUnsend: ((msg: OFMessag
       return;
     }
     if (scope === "chat" || !queueAllowed) return;
-    // A `queue` block means a mass message; it can go for all recipients
-    // only while OF says so (canUnsend, not yet canceled).
     const queue = resp?.queue;
     if (!queue?.id) {
       if (scope === "all") await ifAlert("Unsent from this conversation only: OF returned no mass send to unsend for all recipients.");
@@ -105,8 +83,6 @@ export function useUnsendChoice(unsender: Unsender): { onUnsend: ((msg: OFMessag
   return { onUnsend: allowed ? onUnsend : undefined, dialog };
 }
 
-/** The scope dialog: two options, this conversation preselected; Cancel, ×
- *  or Escape cancels. */
 function UnsendChoiceDialog({
   onChoose, onCancel,
 }: {

@@ -1,7 +1,3 @@
-"""Vault Pro download's check names and break-it-once fault (scenarios/2026-11-08-vault-download.py): lib/faults.py
-merges `register(Fault)` into FAULTS. The check names live here and the scenario imports them, so a target can
-never name a check that does not exist.
-"""
 from __future__ import annotations
 
 SELECT = ("vault download: Download selected (3 photos + 1 video) under All media saves each as "
@@ -63,7 +59,6 @@ RELAY_STALE = ("vault download: --users concurrent relay downloads of a proxied 
 
 
 def _resign_by_id() -> None:
-    """cdn_resign's listing-window path off: every stale file is one by-id read again (AE 2026-11-10: 118 reads)."""
     import cdn_resign
 
     async def miss(*_a, **_k) -> str:
@@ -71,18 +66,9 @@ def _resign_by_id() -> None:
     cdn_resign._via_page = miss
 
 
-# The download modules (VaultDownloadPanel, vaultDownload, vaultDownloadReducer, vaultLinksFile) ship in 2 dev chunks
-# since the provider moved to app/layout.tsx: the layout's and Vault Pro's page (`next dev` bundles a layout module
-# into each page chunk that imports it too, as with ScopeContext). The Dashboard ("/", the
-# queue stage's away page) imports none of them.
 DL_FILES = 2
 
-# VaultDownloadPanel.tsx `useVaultDownload`: `useEffect(() => () => stopRunAndQueue(), [])`, the run's only stop
-# on unmount (sign-out): the effect's two arguments. `next dev` (React Compiler names) serves them as
-#   {"useVaultDownload.useEffect": ()=>({"useVaultDownload.useEffect": ()=>stopRunAndQueue()})["useVaultDownload.useEffect"]}["useVaultDownload.useEffect"], []
-# inside eval("..."): line breaks the two characters \n, quotes \" (measured, app/.next/slop/dev/static/chunks/app/
-# layout.js, 2026-11-11). Every effect of the hook carries the same "useVaultDownload.useEffect" key, so the anchor is
-# the key + stopRunAndQueue together; the plain source form is the other branch (one or the other matches, once).
+# next dev serves modules inside eval("..."): newlines are the two characters \n, quotes \"
 _W = r"(?:\s|\\n)*"
 _K = r'\\?"useVaultDownload\.useEffect\\?"'
 _UNMOUNT = (r"(?:\{" + _W + _K + ":" + _W + r"\(\)" + _W + "=>" + _W + r"\(\{" + _W + _K + ":" + _W + r"\(\)" + _W
@@ -93,68 +79,35 @@ _UNMOUNT = (r"(?:\{" + _W + _K + ":" + _W + r"\(\)" + _W + "=>" + _W + r"\(\{" +
 
 def register(Fault) -> dict:
     return {
-        # slop/run 2026-11-08-vault-download --break --fault=vault-download-resign-by-id (service side)
         "vault-download-resign-by-id": Fault(_resign_by_id, (RELAY_STALE, VAULT)),
-        # slop/run 2026-11-08-vault-download --break --fault=vault-download-selection-ignores-folder
-        # app/components/vault/VaultManagePanel.tsx Download selected: the rail folder not passed, so each ticked media
-        # lands in its own first OF folder (the 2026-11-11 owner report: one folder's picks spread over others).
         "vault-download-selection-ignores-folder": Fault(None, (SELECT_IN_FOLDER,), browser=(
             (r"folder:(?:\s|\\n)*selectedFolder(?:\s|\\n)*\?", "folder: null ?"),
         )),
-        # slop/run 2026-11-08-vault-download --break (the scenario's FAULT)
-        # app/components/vault/vaultDownloadReducer.ts `sourceFor`: the proxy rule dropped, so a proxied Creator's
-        # browser fetches OF's CDN itself (403 for the proxy-signed url, a re-sign, a strike, then the relay: the
-        # files still land, the operator's IP was shown to OF).
         "vault-download-direct-ignores-proxy": Fault(None, (PROXIED, PHONE_SHARE), browser=(
             (r"return s\.directAllowed && s\.directStrikes < MAX_DIRECT_STRIKES \?",
              "return s.directStrikes < MAX_DIRECT_STRIKES ?"),
         ), browser_files=DL_FILES),
-        # slop/run 2026-11-08-vault-download --break --fault=vault-download-share-batch-drops-item
-        # vaultDownloadReducer.ts `addToBatches`: a file that opens a new batch is counted but not listed, so the
-        # share sheet never gets it (fetched, "done", never saved).
         "vault-download-share-batch-drops-item": Fault(None, (PHONE_SHARE,), browser=(
-            # `next dev` serves the module inside eval("..."): its newlines are the two characters \n there.
             (r"ids:\s*\[(?:\s|\\n)*id(?:\s|\\n)*\],(?:\s|\\n)*bytes,(?:\s|\\n)*sealed:\s*false",
              "ids: [], bytes, sealed: false"),
         ), browser_files=DL_FILES),
-        # slop/run 2026-11-08-vault-download --break --fault=vault-download-links-cdn-for-proxied
-        # app/components/vault/vaultLinksFile.ts `linkRows`: the direct rule dropped, so a proxied Creator's links
-        # file lists its CDN urls (bound to the proxy's IP: 403 on the owner's computer) instead of the app link.
         "vault-download-links-cdn-for-proxied": Fault(None, (LINKS, PHONE_LINKS), browser=(
             (r"o\.direct && it\.url && exp !== null", "it.url && exp !== null"),
         ), browser_files=DL_FILES),
-        # slop/run 2026-11-08-vault-download --break --fault=vault-download-switch-aborts-run
-        # The pre-fix lifetime: the run belongs to the selected Creator. VaultDownloadPanel.tsx `useVaultDownload`'s
-        # unmount effect gets the remembered Creator (VaultAccount's `vault.accountId`) as its dependency, so the
-        # first render after a Creator pick runs its cleanup: the run is aborted and the queue dropped (the bug fixed
-        # 2026-11-11, there via VaultProPage's per-Creator remount). `next dev` serves the module inside eval("..."):
-        # its newlines are the two characters \n there (quotes \"), so the replacement uses single quotes.
         "vault-download-switch-aborts-run": Fault(None, (SWITCH, QUEUE_STALL, QUEUE_NAV, QUEUE_CREATORS), browser=(
             (_UNMOUNT, "() => () => stopRunAndQueue(), [globalThis.localStorage.getItem('vault.accountId')]"),
         ), browser_files=DL_FILES),
-        # slop/run 2026-11-08-vault-download --break --fault=vault-download-no-stall-watchdog
-        # vaultDownload.ts STALL_MS 20 s -> 10 min: a body that stops mid-file is no longer cut by the watchdog; the
-        # relay's curl gives up at 30 s low speed and the item ends `failed` (truncated), not `stalled`.
         "vault-download-no-stall-watchdog": Fault(None, (QUEUE_STALL,), browser=(
             (r"STALL_MS = 20000", "STALL_MS = 600000"),
         ), browser_files=DL_FILES),
-        # slop/run 2026-11-08-vault-download --break --fault=vault-download-nav-kills-run
-        # The run scoped to the Vault page: `useVaultDownload`'s unmount effect also stops the run and the queue as
-        # soon as the path leaves the one it started on (a 200 ms check), as the page-level provider did.
         "vault-download-nav-kills-run": Fault(None, (QUEUE_NAV, QUEUE_CREATORS), browser=(
             (_UNMOUNT, "() => { const p = globalThis.location.pathname; const t = setInterval(() => { "
                        "if (globalThis.location.pathname !== p) stopRunAndQueue(); }, 200); "
                        "return () => { clearInterval(t); stopRunAndQueue(); }; }, []"),
         ), browser_files=DL_FILES),
-        # slop/run 2026-11-08-vault-download --break --fault=vault-download-open-folder-at-root
-        # app/components/vault/vaultDownload.ts `showSavedFolder`: only the first of the run's dirs walked, so a
-        # folder download's Open folder lands in <creator>/, not <creator>/<folder>/.
         "vault-download-open-folder-at-root": Fault(None, (OPEN_FOLDER,), browser=(
             (r"for \(const n of at\.dirs\)", "for (const n of at.dirs.slice(0, 1))"),
         ), browser_files=DL_FILES),
-        # slop/run 2026-11-08-vault-download --break --fault=vault-download-header-ignores-folder
-        # app/components/vault/VaultManagePanel.tsx the Extras drawer's full download `onStart`: the selected folder's
-        # scope dropped, so "Download full folder" lists and saves the whole vault (the label still says folder).
         "vault-download-header-ignores-folder": Fault(None, (HEADER_SCOPE,), browser=(
             (r"dl\.start\(fullScope\)", "dl.start(scopeArgs(null))"),
         )),

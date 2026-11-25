@@ -3,11 +3,6 @@
 import { SENSITIVE_HIT_LEAD } from "@/lib/sensitiveWords";
 import { cn } from "@/lib/utils";
 
-/**
- * Infloww's sensitive-word notice: "Input contains prohibited language: [word] [word]",
- * shown under (or above) a composer's text while it holds a word from
- * Growth > Sensitive words. Nothing when `hits` is empty.
- */
 export function SensitiveWordWarning({ hits, className }: { hits: readonly string[]; className?: string }) {
   if (hits.length === 0) return null;
   return (

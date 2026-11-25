@@ -34,7 +34,6 @@ function emit(type: string) {
   act(() => { for (const fn of handlers.get(type) ?? []) fn({}, type); });
 }
 
-/** The refetch the event triggers: a real fetch answering `data`, or failing. */
 async function refetch(qc: QueryClient, queryKey: unknown[], data: unknown) {
   await act(async () => {
     await qc.fetchQuery({
@@ -78,7 +77,6 @@ describe("useAccessChangeNotices", () => {
     emit("assignment_changed");
     await refetch(qc, ACCOUNTS, [row("a3", "Kept"), row("a4", "New")]);
     expect(texts).toEqual(["You've been unassigned from Jade.", "You've been unassigned from a2."]);
-    // Only the refetch the event triggered is compared.
     await refetch(qc, ACCOUNTS, []);
     expect(texts).toHaveLength(2);
   });

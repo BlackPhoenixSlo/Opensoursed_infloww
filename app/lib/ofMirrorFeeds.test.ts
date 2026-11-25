@@ -1,4 +1,3 @@
-/** Home's story strip from GET /stories and GET /streams/feed (applyStories) and its tiles' clicks (bindStory); the queue calendar's wallClock/fromWallClock across DST. */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -19,7 +18,6 @@ const TILE = ".stories-list .b-story-item";
 const STORY_TILE = `${TILE}[at-attr='story_item']`;
 const views = (doc: Document) => [...doc.querySelectorAll<HTMLElement>(".stories-list .vue-recycle-scroller__item-view")];
 
-/** Synthetic GET /stories rows (no live capture of the feed yet): two creators, the first with its stories' media. */
 const STORIES: StoryUser[] = [
   {
     id: 515,
@@ -42,7 +40,6 @@ describe("Home's story strip", () => {
     expect(partsOf("home/index")).toContain("stories");
   });
 
-  /** The Creator (users/me) and their own active stories (GET /users/{id}/stories). */
   const ME: StoryUser = { id: 77, name: "Model One", username: "modelone" };
   const MINE: StoryEntry[] = [{ id: 9, media: [{ id: 19, type: "photo", files: { full: { url: "https://cdn.example/m.jpg" } } }] }];
 
@@ -50,7 +47,7 @@ describe("Home's story strip", () => {
     expect(stripUsers(ME, MINE, STORIES)!.map((u) => u.id)).toEqual([77, 515, 616]);
     expect(stripUsers(ME, MINE, STORIES)![0].stories).toEqual(MINE);
     expect(stripUsers(ME, MINE, [{ id: "77", name: "Model One" }, ...STORIES])!.map((u) => u.id)).toEqual([77, 515, 616]);
-    expect(stripUsers(ME, MINE, undefined)!.map((u) => u.id)).toEqual([77]); // the feed not read yet (or failed)
+    expect(stripUsers(ME, MINE, undefined)!.map((u) => u.id)).toEqual([77]);
   });
 
   it("stripUsers: no own stories, or no Creator id, leaves the feed as it is", () => {
@@ -79,7 +76,7 @@ describe("Home's story strip", () => {
     expect(tiles.map((t) => t.querySelector(".b-story-item__text")!.textContent!.trim())).toEqual(["Delta Four", "Echo Five"]);
     expect(tiles.map((t) => t.dataset.oiStoryUser)).toEqual(["515", "616"]);
     expect(tiles[0].querySelector(".g-avatar img")!.getAttribute("src")).toBe(img("https://cdn.example/d4.jpg"));
-    expect(tiles[1].querySelector(".g-avatar img")).toBeNull(); // no picture: OF's initials
+    expect(tiles[1].querySelector(".g-avatar img")).toBeNull();
     expect(tiles[1].querySelector(".g-avatar__placeholder")!.textContent!.trim()).toBe("EF");
     expect(tiles.map((t) => !!t.querySelector("svg[data-icon-name='icon-verified']"))).toEqual([true, false]);
     expect(tiles[0].querySelector("img.img-responsive")!.getAttribute("src")).toBe(img("https://cdn.example/s1t.jpg"));
@@ -110,7 +107,7 @@ describe("Home's story strip", () => {
     expect(viewer.querySelector("img")!.getAttribute("src")).toBe(img("https://cdn.example/s1.jpg"));
     viewer.querySelector<HTMLButtonElement>("button[aria-label='Next']")!.click();
     expect(viewer.querySelector("video")!.getAttribute("src")).toBe(img("https://cdn.example/s2.mp4"));
-    expect(doc.getElementById("oi-note")).toBeNull(); // not the Read-only note
+    expect(doc.getElementById("oi-note")).toBeNull();
     unbind();
   });
 
@@ -144,8 +141,6 @@ describe("Home's story strip", () => {
   });
 });
 
-/** The strip's order as OF's StoriesWidget `list` (app.js chunk 32036): addStoryBtn, liveStreams, userStories,
- *  newStories, promoteProfile, watchedStories, scheduledStreams. Synthetic rows (no live capture of either feed yet). */
 describe("Home's story strip: new vs watched, live and scheduled streams (OF's StoriesWidget order)", () => {
   const ME: StoryUser = { id: 77, name: "Model One", username: "modelone" };
   const photo = (id: number, url: string, isWatched?: boolean): StoryEntry => ({ id, isWatched, media: [{ id: id * 10, type: "photo", files: { full: { url }, thumb: { url: `${url}?t` } } }] });
@@ -158,14 +153,13 @@ describe("Home's story strip: new vs watched, live and scheduled streams (OF's S
     const html = doc.documentElement.innerHTML;
     const feed: StoryUser[] = [
       { id: 515, name: "Delta Four", stories: [photo(1, "https://cdn.example/d1.jpg", true), photo(2, "https://cdn.example/d2.jpg", true)] },
-      { id: 616, name: "Echo Five" }, // no stories in the feed row: not watched
+      { id: 616, name: "Echo Five" },
       { id: 717, name: "Foxtrot Six", stories: [photo(3, "https://cdn.example/f1.jpg", true), photo(4, "https://cdn.example/f2.jpg")] },
     ];
     applyData(doc, "home/index", { stories: stripUsers(ME, [photo(9, "https://cdn.example/m.jpg", true)], feed), me: { id: 77 } }, img);
     expect(names(doc)).toEqual(["Add to story", "Model One", "Echo Five", "Foxtrot Six", "Start profile promotion", "Delta Four"]);
     const tiles = [...doc.querySelectorAll<HTMLElement>(STORY_TILE)];
     expect(tiles.map((t) => [t.dataset.oiStoryUser, t.classList.contains("m-viewed")])).toEqual([["77", false], ["616", false], ["717", false], ["515", true]]);
-    // OF's preview: the first unwatched story's still, else the first's.
     expect(tiles[2].querySelector("img.img-responsive")!.getAttribute("src")).toBe(img("https://cdn.example/f2.jpg?t"));
     expect(tiles[3].querySelector("img.img-responsive")!.getAttribute("src")).toBe(img("https://cdn.example/d1.jpg?t"));
     const all = views(doc);
@@ -187,7 +181,7 @@ describe("Home's story strip: new vs watched, live and scheduled streams (OF's S
     { id: 2, user: { id: 999, name: "Not Subscribed" }, isScheduled: false, isActive: true, thumbUrl: "https://cdn.example/l2.jpg" },
     { id: 3, user: { id: 77 }, isScheduled: true, isActive: false, scheduledAt: inMs(3 * 3600_000) },
     { id: 4, user: { id: 616, name: "Echo Five", subscribedBy: true }, isScheduled: true, isActive: false, scheduledAt: inMs(2 * 86400_000), media: { id: 40, type: "photo", files: { thumb: { url: "https://cdn.example/c4.jpg" } } } },
-    { id: 5, user: 717, isScheduled: true, isActive: false, scheduledAt: inMs(3600_000) }, // an id only, not the Creator's: no subscribedBy to go by
+    { id: 5, user: 717, isScheduled: true, isActive: false, scheduledAt: inMs(3600_000) },
   ];
 
   it("live streams right after Add to story, scheduled ones last; only the Creator's own and subscribed creators'", () => {
@@ -201,10 +195,9 @@ describe("Home's story strip: new vs watched, live and scheduled streams (OF's S
     expect(live.querySelector(".b-story-item__cost")!.textContent!.trim()).toBe("$5");
     const [mine, echo] = [...doc.querySelectorAll<HTMLElement>("[data-oi-stream='scheduled']")];
     expect(mine.className).toBe("b-story-item m-gradient-overlay m-gradient-backward m-scheduled-story");
-    // The Creator's own scheduled stream: their name (the stream carries only their id), a link to the queue that lists it.
     expect([mine.tagName, mine.getAttribute("href"), mine.getAttribute("target")]).toEqual(["A", "/of-manager/queue", "_top"]);
     expect(mine.querySelector(".b-story-item__time-scheduled")!.textContent!.trim()).toBe("in 3 hours");
-    expect(mine.querySelector(".b-story-item__text-near-avatar")!.classList.contains("m-over-light-bg")).toBe(true); // no cover
+    expect(mine.querySelector(".b-story-item__text-near-avatar")!.classList.contains("m-over-light-bg")).toBe(true);
     expect(mine.querySelectorAll(".b-story-item__text-near-avatar .datetime > span")).toHaveLength(2);
     expect([echo.tagName, echo.querySelector(".b-story-item__time-scheduled")!.textContent!.trim()]).toEqual(["BUTTON", "in 2 days"]);
     expect(echo.querySelector("img.m-stream-image")!.getAttribute("src")).toBe(img("https://cdn.example/c4.jpg"));
@@ -250,11 +243,6 @@ describe("Home's story strip: new vs watched, live and scheduled streams (OF's S
   });
 });
 
-/**
- * The queue's Agency time zone across DST edges (wallClock / fromWallClock). The wall is a host-local Date holding the
- * zone's fields, so the host's own DST gaps would shift it (a US host turns 02:30 on 2026-03-08 into 03:30 before
- * fromWallClock sees it): the host is pinned to UTC here.
- */
 describe("wallClock / fromWallClock across DST", () => {
   const was = process.env.TZ;
   beforeAll(() => void (process.env.TZ = "UTC"));
@@ -280,12 +268,9 @@ describe("wallClock / fromWallClock across DST", () => {
   });
 
   it.each([
-    // In the gap 02:30 does not exist: two steps land on 06:30Z (02:30 read as EDT), whose wall reads 01:30 EST.
-    // Current behaviour, known backward shift (the same instant as 01:30) — reported, not fixed.
     ["NY spring-forward gap 02:30", [2026, 3, 8, 2, 30], "America/New_York", "2026-03-08T06:30:00.000Z"],
     ["NY 01:30, before the gap", [2026, 3, 8, 1, 30], "America/New_York", "2026-03-08T06:30:00.000Z"],
     ["NY 03:30, after the gap", [2026, 3, 8, 3, 30], "America/New_York", "2026-03-08T07:30:00.000Z"],
-    // In the overlap 01:30 happens twice: the first (EDT) is picked.
     ["NY fall-back overlap 01:30", [2026, 11, 1, 1, 30], "America/New_York", "2026-11-01T05:30:00.000Z"],
     ["Kolkata 02:30", [2026, 3, 8, 2, 30], "Asia/Kolkata", "2026-03-07T21:00:00.000Z"],
     ["no zone: the wall as is", [2026, 3, 8, 2, 30], undefined, "2026-03-08T02:30:00.000Z"],

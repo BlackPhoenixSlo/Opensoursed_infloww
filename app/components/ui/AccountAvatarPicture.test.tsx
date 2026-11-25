@@ -38,7 +38,6 @@ describe("avatar identity and health reuse", () => {
     const view = render(picture({ settled: false, profile: me("22") }), { wrapper });
     expect(view.container.querySelector("img")).toBeNull();
     expect(get).not.toHaveBeenCalled();
-    // A mismatched cache body must not suppress the own-profile fallback.
     get.mockResolvedValue(me());
     view.rerender(picture({ settled: true, profile: me("22") }));
     await waitFor(() => expect(view.container.querySelector("img")).not.toBeNull());

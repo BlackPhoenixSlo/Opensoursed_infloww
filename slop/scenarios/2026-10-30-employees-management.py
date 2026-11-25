@@ -1,56 +1,3 @@
-"""Manage employees (/employees, the sidebar's Employees > Manage employees) on the real UI after the 2026-10-30
-refactor: the five row/header modals as one `openModal` value, `buildEmployeeRequest` picking the save call per
-sign-in mode, and the Access limits draft as a reducer seeded once. One owner, one browser (1440x900),
-`agency_inbox` (3 Creators), the relay's own routes on the slop temp DB. A flow, not a volume one: `--users` and
-`--scale` change nothing, so no latency budget.
-
-Seeded through the real routes: two Employee groups (`POST /admin/employee-groups`), one login of this Agency
-(`seed/chatters`: invite + register) and one login of a second Agency (registered through `POST /auth/register`,
-its login through the same seeder), for "Existing login". By SQL: Creator 0's cached OnlyFans folder list (one
-`vault_response_cache` row, as `GET /api/of/v2/vault/lists` writes it after an OnlyFans fetch: two custom folders).
-
-1. Modals: "+ Add employee", the row's Edit, its role cell (Set role), More > Reset password, More > Access limits:
-   each open shows exactly one dialog with its title, its close leaves none. Then Set role open + a click on the
-   row's Edit (a DOM click: the backdrop covers the row) leaves one dialog, Edit employee. Screenshots
-   modal-<kind>-trigger / modal-<kind>-open, modal-replace-open.
-2. Add in each sign-in mode: Create login (role VA, group 1, Creator 1 only), Existing login (the other Agency's
-   login, role Manager, group 2), Invite link (role VA, group 1; the link is shown). Each POST's path and body
-   keys checked on the wire; GET /admin/employees, GET /admin/settings/roles and GET /admin/chatters/invites
-   show the rows. Screenshots add-<mode>-trigger / add-<mode>-settled.
-2b. Add on a 390x844 phone (a touch context of its own): the "How they sign in" control's box inside the dialog (its
-   own sideways scroll allowed), no sideways page scroll, each option scrolled into the control's visible box, a tap
-   on Existing login switches the form (no Password, "Their existing username"); closed without adding.
-   Screenshots add-phone-trigger, add-phone-settled; boxes in employees-api.json `add_phone`.
-3. Edit the seeded login: name, role Manager, group 2, one PUT .../setup; the API shows them. Screenshots
-   edit-trigger, edit-settled.
-4. Access limits on the edited login: Limit models on, Creator 0 and 1 ticked, 1 unticked again, Creator 0's
-   folder limit on with the first folder, Save access -> "Saved." (and still after the save's refetch); GET
-   /admin/chatters/{id}/access: account_ids [Creator 0], folder_access {Creator 0: [first folder]}. Then Creator 2
-   ticked, Save, and while its account-access PUT is held the second folder ticked: once the save's access refetch
-   lands the draft keeps both edits and shows no "Saved." (the folder edit is not stored yet); the next Save
-   stores them. Then a partial save: Creator 2 and the second folder unticked, Save, the account-access PUT lands and
-   the first folder-access PUT is refused (400): the line says "Accounts saved; folders failed — <error>", no
-   "Saved.", the access and the employee list are refetched, and GET …/access holds [Creator 0] with the folders it
-   held before (the folder half did not land). Screenshots access-trigger, access-saved, access-edit-during-save,
-   access-after-refetch, access-resaved, access-partial-trigger, access-partial-settled.
-5. No 5xx on any response the browser got.
-
-A UI step that cannot complete is FAIL for each check of its section not yet recorded, with a `failed-<section>`
-picture. API side effects are written to `employees-api.json`, the browser's employee writes to `writes.json`.
-
-Bypasses (declared): Creator 0's folder list comes from the relay's own cache row, seeded by SQL (the relay never
-reaches OnlyFans); `/api/of/v2/vault/lists` is let through to the relay for that, every other `/api/of/*` read stays
-held (actors/ui.py). The access-refetch check holds one account-access PUT at the browser's wire until the second
-edit is typed (an owner typing while a slow save is in flight), then lets it through unchanged. The partial-save
-check answers one folder-access PUT 400 at the browser's wire (the relay never sees it; a 4xx so the no-5xx check
-keeps its meaning). The page is opened by URL, not through the sidebar.
-
-Fault (client side, lib/employees_faults.py): `employee-access-drops-folders` (buildPayload sends `folders: []` in every
-folder-access PUT): only the two stored checks go red, "Saved." and the draft checks stay green.
-`--fault=employee-access-saved-beside-unsaved-edit` (saveOk's rev guard reverted): only the no-stale-"Saved." check.
-`--fault=employee-access-partial-not-invalidated` (a save with a failed folders half refetches nothing, as before
-the fix): only the partial-save check.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -70,8 +17,8 @@ UI = True
 FAULT = "employee-access-drops-folders"
 VIEWPORT = (1440, 900)
 PHONE = (390, 844)
-WAIT_MS = 120_000  # first visit of a page compiles it in next dev
-ANIM_MS = 450  # the modal pop-in / exit ghost (globals.css .pop-modal, useExitGhost 260 ms)
+WAIT_MS = 120_000
+ANIM_MS = 450
 
 SECTIONS = {
     "modals": (EMP_MODALS_ONE, EMP_MODAL_REPLACE),
@@ -86,7 +33,7 @@ SECTIONS = {
 GROUPS = ("Slop night shift", "Slop day shift")
 FOLDERS = ((501, "Slop VIP folder"), (502, "Slop teaser folder"))
 REFUSED = "slop: folder write refused"
-LISTS_KEY = "lists:view=main|limit=50|offset=0"  # vault_cache.vault_lists_cache_key for fetchAllVaultLists' first page
+LISTS_KEY = "lists:view=main|limit=50|offset=0"
 EDITED_NAME = "Slop Edited Emp"
 WRITE_PATHS = re.compile(r"/admin/(employees(/\d+/setup|/login)?|chatters/(link|invite|[0-9a-f]+/(account|folder)-access))")
 
@@ -98,7 +45,6 @@ VISIBLE_DIALOGS = """() => [...document.querySelectorAll('[role=dialog]')].filte
 
 
 def _seed_folders(w, aid: str) -> None:
-    """Creator 0's folder list as the relay caches OnlyFans' answer (vault_cache.put)."""
     body = {"list": [{"id": fid, "type": "custom", "name": name, "hasMedia": True, "canUpdate": True,
                       "canDelete": True, "photosCount": 3, "videosCount": 0, "gifsCount": 0, "audiosCount": 0,
                       "medias": []} for fid, name in FOLDERS], "hasMore": False}
@@ -110,7 +56,6 @@ def _seed_folders(w, aid: str) -> None:
 
 
 async def _section(ctx, page, name: str, fn) -> None:
-    """Run one section; a step that cannot complete fails every check of it not yet recorded."""
     done: set[str] = set()
 
     def chk(check_name: str, ok: bool, **detail) -> None:
@@ -134,8 +79,6 @@ async def _dialogs(page) -> list[str]:
 
 
 async def _settle_dialogs(page, want: list[str], timeout_s: float = 5.0) -> list[str]:
-    """The visible dialogs once they are `want` (or what they are after the timeout), then the pop / exit
-    animation's time, so a screenshot after it shows the settled screen."""
     t_end = asyncio.get_event_loop().time() + timeout_s
     got = await _dialogs(page)
     while got != want and asyncio.get_event_loop().time() < t_end:
@@ -150,7 +93,6 @@ def _row(page, name: str):
 
 
 async def _menu(page, row, item: str):
-    """The row's More menu opened, `item` (a menuitem in the portal) ready to click."""
     await row.get_by_role("button", name="More", exact=True).click(timeout=10_000)
     mi = page.get_by_role("menuitem", name=item, exact=True)
     await mi.wait_for(timeout=10_000)
@@ -182,7 +124,6 @@ def _api_log(ctx, key: str, value) -> None:
     path.write_text(json.dumps(data, indent=2, default=str))
 
 
-# ── 1. modals ────────────────────────────────────────────────────────────────
 
 async def _modals(ctx, page, chk, s) -> None:
     row = _row(page, s["emp"]["username"])
@@ -224,7 +165,6 @@ async def _modals(ctx, page, chk, s) -> None:
         role_open=before, after_edit_click=after, after_close=closed)
 
 
-# ── 2. add, one per sign-in mode ─────────────────────────────────────────────
 
 async def _fill_add(page, s, mode: str, name: str, role: str, group: str, username: str = "",
                     password: str = "", creators: list[str] | None = None):
@@ -331,7 +271,6 @@ async def _add_invite(ctx, page, chk, s) -> None:
         http=status, link=url, dialogs_while_link_shown=shown, api=got, want=want, invite_row=row_shown, wire=wire)
 
 
-# On a phone: the page's sideways scroll, the dialog's box and one element's box (its own sideways scroll too).
 DIALOG_FIT = """([dlg, el]) => {
   const box = (e) => { const r = e.getBoundingClientRect();
     return { l: r.left, r: r.right, t: r.top, b: r.bottom, w: r.width, h: r.height }; };
@@ -341,8 +280,6 @@ DIALOG_FIT = """([dlg, el]) => {
 
 
 async def _add_phone(ctx, page, chk, s) -> None:
-    """EMP_ADD_PHONE: Add on a 390x844 phone (a touch context of its own): the sign-in control fits the dialog, each
-    option scrolls into its visible box, Existing login switches the form. Closed without adding."""
     phone = await ui._owner_page(page.context.browser, ctx, PHONE, [], [], through=("/api/of/v2/vault/lists",),
                                  touch=True)
     try:
@@ -385,7 +322,6 @@ async def _add_phone(ctx, page, chk, s) -> None:
         and placeholder == "Their existing username" and closed == [], **out)
 
 
-# ── 3. edit ──────────────────────────────────────────────────────────────────
 
 async def _edit(ctx, page, chk, s) -> None:
     emp = s["emp"]
@@ -413,7 +349,6 @@ async def _edit(ctx, page, chk, s) -> None:
         and wire[0]["method"] == "PUT", http=status, before=s["emp_before"], api=got, want=want, wire=wire)
 
 
-# ── 4. access limits ─────────────────────────────────────────────────────────
 
 async def _access(ctx, page, chk, s) -> None:
     cid = s["emp"]["chatter_id"]
@@ -448,7 +383,6 @@ async def _access(ctx, page, chk, s) -> None:
     _api_log(ctx, "access_first_save", got)
     chk(EMP_ACCESS_STORED, got == want, api=got, want=want)
 
-    # A refetch must not reseed the draft: Creator 2 ticked, Save held at the wire, folder 2 ticked meanwhile.
     hold = {"on": True, "seen": asyncio.Event(), "release": asyncio.Event()}
 
     async def put(route):
@@ -490,7 +424,6 @@ async def _access(ctx, page, chk, s) -> None:
     _api_log(ctx, "access_second_save", got)
     chk(EMP_ACCESS_RESAVED, got == want, api=got, want=want)
 
-    # A partial save: account-access lands, the first folder-access PUT is refused at the browser's wire.
     folder_path = f"/admin/chatters/{cid}/folder-access"
     refused: list[str] = []
     refetched: list[str] = []
@@ -502,9 +435,6 @@ async def _access(ctx, page, chk, s) -> None:
                                        body=json.dumps({"detail": REFUSED}))
         await route.fallback()
 
-    # Only the save's settle refetches the editor's access GET (no poll, no SSE key covers it), so that GET after the
-    # refused PUT is the check's teeth. /admin/employees alone would not be: the account-access PUT's
-    # `assignment_changed` event can refetch it too (useAccountStateEvents; not seen within the window, measured).
     def on_get(req) -> None:
         p = urlsplit(req.url).path
         if refused and req.method == "GET" and p in (acc_path, "/admin/employees"):
@@ -525,7 +455,8 @@ async def _access(ctx, page, chk, s) -> None:
         await save.click()
         alert = dlg.get_by_role("alert").filter(has_text="folders failed")
         await alert.wait_for(timeout=15_000)
-        await page.wait_for_timeout(1500)  # the refetches the settle fires
+        # Only the save's settle refetches the editor's access GET (no poll, no SSE key), so that GET is the check's teeth.
+        await page.wait_for_timeout(1500)
         line = await alert.inner_text()
         saved_n = await saved.count()
         await ui.shot(ctx, page, "access-partial-settled")
@@ -533,25 +464,23 @@ async def _access(ctx, page, chk, s) -> None:
         page.remove_listener("request", on_get)
         await page.unroute(is_folder)
     got = norm(await _api_access(ctx, cid))
-    want = {"account_ids": [c0["id"]], "folder_access": folders_before}  # the folder half did not land
+    want = {"account_ids": [c0["id"]], "folder_access": folders_before}
     _api_log(ctx, "access_partial_save", {"line": line, "refetched": refetched, "api": got})
     chk(EMP_ACCESS_PARTIAL, line == f"Accounts saved; folders failed — {REFUSED}" and saved_n == 0
         and len(refused) == 1 and acc_path in refetched and "/admin/employees" in refetched and got == want,
         line=line, saved_shown=saved_n, refused_puts=len(refused), refetched=refetched, api=got, want=want)
 
 
-# ── run ──────────────────────────────────────────────────────────────────────
 
 async def _seed(ctx, w) -> dict:
     from slop.lib.client import Http
     groups = {}
-    for name in GROUPS:  # the real route, as the group tree's "Add group" does
+    for name in GROUPS:
         r = await ctx.owner.post("/admin/employee-groups", json={"name": name})
         r.raise_for_status()
         groups[name] = r.json()["id"]
     prefix = f"{w.user_prefix}{w.seed}e"
     emp = (await chatters.seed(w, ctx.owner, w.user_id, [f"{prefix}emp"]))[0]
-    # Another Agency and its login: what "Existing login" links.
     other = Http(ctx.relay, ctx.rec)
     try:
         r = await other.post("/auth/register", json={"username": f"{w.user_prefix}{w.seed}r2",

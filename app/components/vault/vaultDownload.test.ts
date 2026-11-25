@@ -17,11 +17,7 @@ import {
 
 const get = relay.get as unknown as ReturnType<typeof vi.fn>;
 
-// ── a fake directory tree, Chrome's rules: getFileHandle(create) makes the file (0 bytes) at once, without create a
-// missing one throws; files[path] = bytes, written only on a clean close (an abort keeps what was there) ──
 type Files = Record<string, number>;
-/** `write(path)`: runs before each chunk written to that file (a slow / failing disk); `dirAt(path)` before each
- *  directory lookup (a stalled one). */
 type DirOpts = { write?: (path: string) => Promise<void>; dirAt?: (path: string) => Promise<void> };
 function dir(files: Files, path: string, o: DirOpts = {}): FileSystemDirectoryHandle {
   return {
@@ -38,7 +34,6 @@ function dir(files: Files, path: string, o: DirOpts = {}): FileSystemDirectoryHa
 }
 function fileHandle(files: Files, path: string, n: string, o: DirOpts = {}) {
   return {
-    // read back in 64 KiB chunks, as Chrome's File.stream() does (node's gives one)
     getFile: async () => Object.assign(new File([new Uint8Array(files[`${path}${n}`] ?? 0)], n), {
       stream: () => {
         let left = files[`${path}${n}`] ?? 0;
@@ -76,7 +71,7 @@ async function go(ms: VaultMedia[], directAllowed: boolean, fetchImpl: (u: strin
   send({ type: "listed", items: toItems(ms, null), attempt: 1 });
   const calls: string[] = [];
   vi.stubGlobal("fetch", vi.fn(async (u: string, init?: RequestInit) => {
-    if (init?.signal?.aborted) throw new DOMException("aborted", "AbortError");   // what real fetch does
+    if (init?.signal?.aborted) throw new DOMException("aborted", "AbortError");
     calls.push(u);
     return fetchImpl(u);
   }));
@@ -128,7 +123,6 @@ describe("source chain", () => {
     expect(s.items[0]).toMatchObject({ status: "done", source: "relay", bytes: 6 });
   });
 
-  // F16: a refused CDN answer's body is cancelled, not left holding its connection.
   it("a non-2xx direct answer's body is cancelled before the re-sign", async () => {
     get.mockResolvedValue({ url: cdn(1, "new") });
     const cancelled: string[] = [];
@@ -146,7 +140,6 @@ describe("source chain", () => {
       return body(1);
     });
     expect(s.items.every((i) => i.status === "done" && i.source === "relay")).toBe(true);
-    // 3 workers start direct before any strike lands; nothing after the 2nd strike goes direct
     expect(calls.filter((u) => u.startsWith("https://")).length).toBeLessThanOrEqual(3);
     expect(s.directStrikes).toBeGreaterThanOrEqual(2);
   });
@@ -158,7 +151,6 @@ describe("source chain", () => {
     expect(summarize2(s)).toEqual(["relay", "relay"]);
   });
 
-  // #1/#18: the relay's slot wait ran out (503 download_busy): a failed item Retry takes again.
   it("relay busy (503): a failed item that Retry requeues", async () => {
     const { s, calls } = await go([media(1)], false, async () => new Response("{}", { status: 503 }));
     expect(calls).toHaveLength(1);
@@ -243,7 +235,6 @@ describe("attempts + links (#5, #9)", () => {
     vi.stubGlobal("fetch", vi.fn(async (u: string) => { fetched.push(u); return body(1); }));
     const old = runQueue({ send, get: () => s, signal: new AbortController().signal,
                            sink: folderSink(dir({}, ""), "amy") });
-    // Before the old workers' first item: Cancel, then Retry failed (attempt 2) — its own queue is not run here.
     send({ type: "cancel" });
     send({ type: "retryFailed" });
     await old;
@@ -251,7 +242,6 @@ describe("attempts + links (#5, #9)", () => {
     expect(s.items.map((i) => i.status)).toEqual(["queued", "queued"]);
   });
 
-  // #428: the page's one download; B's start while A's run holds the state takes nothing over.
   it("a start the reducer refuses (another run holds the state) runs nothing and reports no sink", async () => {
     get.mockResolvedValue({ direct: true });
     let s = vaultDownloadReducer(initialDownloadState,
@@ -265,8 +255,8 @@ describe("attempts + links (#5, #9)", () => {
       { accountId: "acc-b", mode: "selection", label: "1 selected", creator: "bea", media: [media(9)], source: "mirror" },
       { send: (a) => { s = vaultDownloadReducer(s, a); }, get: () => s, signal: new AbortController().signal },
       "share", started);
-    expect(s).toBe(held);                      // A's run untouched, still A's
-    expect(fetchSpy).not.toHaveBeenCalled();   // no second queue over A's items
+    expect(s).toBe(held);
+    expect(fetchSpy).not.toHaveBeenCalled();
     expect(started).not.toHaveBeenCalled();
   });
 
@@ -281,19 +271,16 @@ describe("attempts + links (#5, #9)", () => {
     expect(files).toEqual({ "amy/a.txt": 1, "amy/a.html": 1 });
   });
 
-  // F15: two selections of one Creator both write into `<creator>/`; the second keeps the first's file.
-  // R2: only a pair another job wrote this page-load is kept; one from before (an earlier visit) is overwritten.
   it("writeLinks: an earlier visit's pair is overwritten; this page-load's jobs (one picked folder) get -2, then -3", async () => {
     const files: Files = { "amy/a.txt": 7, "amy/a.html": 7 };
     const f = { txtName: "a.txt", htmlName: "a.html", txt: "t", html: "h", validUntil: null, rows: [] };
-    const root = dir(files, "");   // the queue's jobs share the picked folder
+    const root = dir(files, "");
     const sig = new AbortController().signal;
     for (let i = 0; i < 3; i++) await expect(writeLinks(root, ["amy"], f, sig)).resolves.toBe(true);
     expect(files).toEqual({ "amy/a.txt": 1, "amy/a.html": 1, "amy/a-2.txt": 1, "amy/a-2.html": 1,
                             "amy/a-3.txt": 1, "amy/a-3.html": 1 });
   });
 
-  // X2: a write left behind at its deadline (signal aborted) never lands, and the next run never takes its names.
   it("writeLinks: a cancelled write never lands over the next run's pair", async () => {
     const files: Files = {};
     let release!: () => void;
@@ -304,13 +291,13 @@ describe("attempts + links (#5, #9)", () => {
     const next = { ...late, txt: "ok", html: "ok" };
     const ac = new AbortController();
     const p1 = writeLinks(root, ["amy"], late, ac.signal);
-    await new Promise((r) => setTimeout(r, 5));   // its first write hangs
+    await new Promise((r) => setTimeout(r, 5));
     ac.abort(new DOMException("no answer", "TimeoutError"));
     await expect(writeLinks(root, ["amy"], next, new AbortController().signal)).resolves.toBe(true);
     const saved = Object.fromEntries(Object.entries(files).filter(([, n]) => n === 2));
     release();
     await expect(p1).resolves.toBe(false);
-    expect(Object.values(files).some((n) => n === 5)).toBe(false);   // nothing of the cancelled write landed
+    expect(Object.values(files).some((n) => n === 5)).toBe(false);
     expect(Object.fromEntries(Object.entries(files).filter(([, n]) => n === 2))).toEqual(saved);
     expect(Object.keys(saved)).toHaveLength(2);
   });
@@ -325,7 +312,7 @@ describe("attempts + links (#5, #9)", () => {
     s = vaultDownloadReducer(s, { type: "start", mode: "vault", label: "whole vault", accountId: "acc-a", creator: "amy" });
     s = vaultDownloadReducer(s, { type: "enqueue", job: { accountId: "acc-b", creator: "bea", mode: "selection",
                                                          label: "1 selected", media: [media(9)], source: "mirror" } });
-    s = vaultDownloadReducer(s, { type: "listed", items: [], attempt: 2 });   // amy's run done (empty); bea's job waits
+    s = vaultDownloadReducer(s, { type: "listed", items: [], attempt: 2 });
     const files: Files = {};
     const root = dir(files, "");
     const run = { send: (a: Action) => { s = vaultDownloadReducer(s, a); }, get: () => s,
@@ -337,7 +324,6 @@ describe("attempts + links (#5, #9)", () => {
     expect(started).toHaveBeenCalledWith(expect.any(Function), 3, root);
     expect(s).toMatchObject({ phase: "done", creator: "bea", jobs: [] });
     expect(files["bea/Unfiled/9.jpg"]).toBe(3);
-    // the same qid again (no longer queued): refused before anything runs
     const again = vi.fn();
     await startDownload(job, run, "folder", again, root);
     expect(again).not.toHaveBeenCalled();
@@ -356,7 +342,7 @@ describe("stall watchdog", () => {
       const { s, files } = await p;
       expect(s.items.map((i) => i.status)).toEqual(["stalled", "done"]);
       expect(s.items[0].error).toBe(`stalled: no data for ${STALL_MS / 1000} s`);
-      expect(files).toEqual({ "amy/Unfiled/2.jpg": 4 });   // no partial / empty 1.jpg a retry could mistake
+      expect(files).toEqual({ "amy/Unfiled/2.jpg": 4 });
     } finally {
       vi.useRealTimers();
     }
@@ -428,7 +414,6 @@ describe("stall watchdog", () => {
       ac.abort();
       await vi.advanceTimersByTimeAsync(STALL_MS + 100);
       const { seen } = await p;
-      // the run's abort is CANCELLED, never `stalled` (the panel's `cancel` / `stop` then mark open items cancelled)
       expect(seen.filter((a) => a.type === "itemFailed").map((a) => a.type === "itemFailed" && [a.reason, a.error]))
         .toEqual([["failed", CANCELLED]]);
     } finally {
@@ -461,14 +446,12 @@ describe("listAll", () => {
     expect(get.mock.calls[0][1]).toEqual({ accountId: "acc" });
     expect(sleep.mock.calls).toEqual([[LIVE_PAGE_GAP_MS], [LIVE_PAGE_GAP_MS]]);
   });
-  // #8: a stuck cursor or an endless hasMore is "listing incomplete", never a partial list read as the whole.
   it("the same page again while hasMore: listing incomplete", async () => {
     get.mockResolvedValue({ list: [media(1), media(2)], hasMore: true });
     await expect(listAll("acc", 12, "mirror", new AbortController().signal, async () => {}))
       .rejects.toThrow(/listing incomplete/);
     expect(get).toHaveBeenCalledTimes(2);
   });
-  // X5: an empty page that still says hasMore is no end: the earlier pages are not the whole folder.
   it("an empty page while hasMore: listing incomplete", async () => {
     get.mockResolvedValueOnce({ list: [media(1)], hasMore: true }).mockResolvedValueOnce({ list: [], hasMore: true });
     await expect(listAll("acc", 12, "mirror", new AbortController().signal, async () => {}))
@@ -481,7 +464,6 @@ describe("listAll", () => {
       .rejects.toThrow(/listing incomplete/);
     expect(get).toHaveBeenCalledTimes(LIST_MAX_PAGES);
   });
-  // #31: a Cancel during the live page gap rejects at once, not after the gap.
   it("abortableSleep: resolves after ms, rejects at once on abort", async () => {
     await expect(abortableSleep(1, new AbortController().signal)).resolves.toBeUndefined();
     const gone = new AbortController();
@@ -496,7 +478,7 @@ describe("listAll", () => {
     get.mockResolvedValue({ list: [media(1)], hasMore: true });
     const ac = new AbortController();
     const t0 = Date.now();
-    const p = listAll("acc", null, "live", ac.signal);   // the default sleep
+    const p = listAll("acc", null, "live", ac.signal);
     await new Promise((r) => setTimeout(r, 5));
     ac.abort();
     await expect(p).rejects.toMatchObject({ name: "AbortError" });
@@ -548,8 +530,6 @@ describe("startDownload (#28, #33, #34)", () => {
   });
 });
 
-// F4: a stall before the first item (the account's direct check, a listing page, the links file) ends within
-// SETUP_MS: the run goes on without it or ends with a reason, so it can't hold the queue behind it.
 describe("setup deadline", () => {
   const never = (_p: string, _c?: unknown, signal?: AbortSignal) => new Promise((_, no) => {
     signal?.addEventListener("abort", () => no(signal.reason));
@@ -645,7 +625,6 @@ describe("share sink (phones)", () => {
 
   it("holds fetching while ~2 batches are unsaved, resumes after each save", async () => {
     let s: DlState = initialDownloadState;
-    // every file reported as a whole batch's bytes: each is a batch of its own
     const send = (a: Action) => {
       s = vaultDownloadReducer(s, a.type === "itemDone" ? { ...a, bytes: SHARE_BATCH_BYTES } : a);
     };
@@ -659,7 +638,7 @@ describe("share sink (phones)", () => {
     const held = fetched.length;
     expect(held).toBeLessThan(6);
     await tick(600);
-    expect(fetched.length).toBe(held);   // nothing more until a save
+    expect(fetched.length).toBe(held);
     while (s.phase !== "done" || readyBatch(s) >= 0) {
       if (readyBatch(s) >= 0) send({ type: "batchSaved", index: readyBatch(s), attempt: s.attempt });
       await tick(300);
@@ -670,7 +649,6 @@ describe("share sink (phones)", () => {
     expect(s.batches.map((b) => b.ids.length)).toEqual([1, 1, 1, 1, 1, 1]);
   });
 
-  // #7: a file the phone would have to hold whole is refused, by its Content-Length or by the counted bytes.
   it.each<[string, () => Response]>([
     ["declared too big", () => new Response(new Uint8Array(4), { status: 200,
       headers: { "content-length": String(SHARE_FILE_MAX_BYTES + 1) } })],
@@ -696,7 +674,6 @@ describe("share sink (phones)", () => {
     const send = (a: Action) => { s = vaultDownloadReducer(s, a); };
     send({ type: "start", mode: "selection", label: "x", accountId: "acc", creator: "amy", sink: "share" });
     send({ type: "listed", items: toItems([media(1)], null), attempt: 1 });
-    // The Cancel lands in the reducer while the body is still read; the fetch itself is not aborted.
     vi.stubGlobal("fetch", vi.fn(async () => { send({ type: "cancel" }); return body(3); }));
     const kept = new Map<number, File>();
     await runQueue({ send, get: () => s, signal: new AbortController().signal,
@@ -733,7 +710,7 @@ describe("folder sink copies", () => {
   it("a slow copy (each chunk just under STALL_MS, all of it far over) is not a stall", async () => {
     vi.useFakeTimers();
     try {
-      const big = 300_000;   // several File.stream() chunks
+      const big = 300_000;
       const p = goDir([inTwo(1)], { write: async (path) => {
         if (path === "amy/B/1.jpg") await new Promise((r) => setTimeout(r, STALL_MS - 1000));
       } }, async () => body(big));
@@ -754,8 +731,6 @@ describe("folder sink copies", () => {
     expect(files).toEqual({});
   });
 
-  // F2: attempt A (stalled, its write still winding down) made the file; attempt B (its retry) wrote it and is done;
-  // A's late cleanup must not remove B's file.
   it.each<[string, boolean]>([["the same sink (Retry)", true], ["a new sink on the same folder (a retry job)", false]])(
     "a stalled attempt's late cleanup never removes the file its replacement wrote: %s", async (_n, same) => {
       const files: Files = {};
@@ -766,20 +741,19 @@ describe("folder sink copies", () => {
       const [it1] = toItems([media(1)], null);
       const a = folderSink(root, "amy");
       const acA = new AbortController();
-      const open = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(4)); } });   // never ends
+      const open = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(4)); } });
       const pA = a(it1, open, acA.signal);
       await new Promise((r) => setTimeout(r, 5));
-      expect(files).toEqual({ "amy/Unfiled/1.jpg": 0 });   // A made it, its write hangs
+      expect(files).toEqual({ "amy/Unfiled/1.jpg": 0 });
       acA.abort(new DOMException("stalled", "TimeoutError"));
       const b = same ? a : folderSink(root, "amy");
       await b(it1, body(6).body!, new AbortController().signal);
       expect(files).toEqual({ "amy/Unfiled/1.jpg": 6 });
       release();
       await expect(pA).rejects.toBeTruthy();
-      expect(files).toEqual({ "amy/Unfiled/1.jpg": 6 });   // B's file survives A's cleanup
+      expect(files).toEqual({ "amy/Unfiled/1.jpg": 6 });
     });
 
-  // R3: B took over the file A made and failed too: B removes it (A, no longer its owner, can't), nothing half-written.
   it("a replacement that took over a stalled attempt's new file and failed removes it", async () => {
     const files: Files = {};
     let release!: () => void;
@@ -791,7 +765,7 @@ describe("folder sink copies", () => {
     const acA = new AbortController();
     const pA = a(it1, new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(4)); } }), acA.signal);
     await new Promise((r) => setTimeout(r, 5));
-    expect(files).toEqual({ "amy/Unfiled/1.jpg": 0 });   // A made it, its write hangs
+    expect(files).toEqual({ "amy/Unfiled/1.jpg": 0 });
     acA.abort(new DOMException("stalled", "TimeoutError"));
     const short = new ReadableStream<Uint8Array>({ start(c) { c.error(new Error("short read")); } });
     await expect(folderSink(root, "amy")(it1, short, new AbortController().signal)).rejects.toThrow("short read");
@@ -801,7 +775,6 @@ describe("folder sink copies", () => {
     expect(files).toEqual({});
   });
 
-  // X1: ownership is per picked folder: a stalled attempt in root A gives nothing to a write into root B.
   it("a failed write into another picked folder never removes that folder's file there before", async () => {
     const filesA: Files = {};
     const filesB: Files = { "amy/Unfiled/1.jpg": 5 };
@@ -813,16 +786,15 @@ describe("folder sink copies", () => {
     const pA = folderSink(rootA, "amy")(it1, new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(4)); } }),
                                         acA.signal);
     await new Promise((r) => setTimeout(r, 5));
-    expect(filesA).toEqual({ "amy/Unfiled/1.jpg": 0 });   // A made it in root A, its write hangs
+    expect(filesA).toEqual({ "amy/Unfiled/1.jpg": 0 });
     const short = new ReadableStream<Uint8Array>({ start(c) { c.error(new Error("short read")); } });
     await expect(folderSink(dir(filesB, ""), "amy")(it1, short, new AbortController().signal)).rejects.toThrow("short read");
-    expect(filesB).toEqual({ "amy/Unfiled/1.jpg": 5 });   // B's own earlier file stays
+    expect(filesB).toEqual({ "amy/Unfiled/1.jpg": 5 });
     acA.abort(new DOMException("stalled", "TimeoutError"));
     release();
     await expect(pA).rejects.toBeTruthy();
   });
 
-  // X1: an attempt aborted while its directory lookup hung never takes the file over from its retry.
   it("an attempt aborted during a stalled directory lookup never removes its retry's file", async () => {
     const files: Files = {};
     let openDir!: () => void;
@@ -839,13 +811,13 @@ describe("folder sink copies", () => {
     const acA = new AbortController();
     const pA = a(it1, body(6).body!, acA.signal);
     await new Promise((r) => setTimeout(r, 5));
-    acA.abort(new DOMException("stalled", "TimeoutError"));   // A stalled in its lookup
-    const pB = a(it1, body(6).body!, new AbortController().signal);   // its Retry: makes the file, writing
+    acA.abort(new DOMException("stalled", "TimeoutError"));
+    const pB = a(it1, body(6).body!, new AbortController().signal);
     await new Promise((r) => setTimeout(r, 5));
     expect(files).toEqual({ "amy/Unfiled/1.jpg": 0 });
-    openDir();   // A's lookup answers late
+    openDir();
     await expect(pA).rejects.toBeTruthy();
-    expect(files).toEqual({ "amy/Unfiled/1.jpg": 0 });   // B's file still there
+    expect(files).toEqual({ "amy/Unfiled/1.jpg": 0 });
     writeOn();
     await expect(pB).resolves.toBeNull();
     expect(files).toEqual({ "amy/Unfiled/1.jpg": 6 });

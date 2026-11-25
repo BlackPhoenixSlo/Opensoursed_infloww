@@ -2,7 +2,6 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { ALERT_SOUNDS, ALERT_SOUND_IDS, isAlertSoundId, playAlertOnce, playAlertSound } from "./alertSounds";
 
-/** Records every oscillator a sound starts. */
 const started: { type: string; freq: number }[] = [];
 
 class FakeParam {
@@ -15,7 +14,6 @@ class FakeAudioContext {
   state = "running";
   currentTime = 0;
   destination = {};
-  /** What the next resume() does; default: runs at once. */
   onResume: () => Promise<void> = () => { this.state = "running"; return Promise.resolve(); };
   constructor() { FakeAudioContext.last = this; }
   resume() { return this.onResume(); }
@@ -56,13 +54,13 @@ describe("alert sounds", () => {
   });
 
   it("a suspended context plays after resume, but drops a sound whose resume settles late", async () => {
-    playAlertSound("s2"); // make sure the context exists
+    playAlertSound("s2");
     const ac = FakeAudioContext.last!;
     started.length = 0;
 
     ac.state = "suspended";
     playAlertSound("s2");
-    expect(started).toHaveLength(0); // nothing scheduled while suspended
+    expect(started).toHaveLength(0);
     await Promise.resolve();
     expect(started).toHaveLength(1);
 
@@ -73,7 +71,7 @@ describe("alert sounds", () => {
       let release!: () => void;
       ac.onResume = () => new Promise<void>((r) => { release = () => { ac.state = "running"; r(); }; });
       playAlertSound("s2");
-      vi.advanceTimersByTime(5_000); // the user gestures much later
+      vi.advanceTimersByTime(5_000);
       release();
       await Promise.resolve();
       await Promise.resolve();
@@ -90,14 +88,14 @@ describe("alert sounds", () => {
       request: async (name: string, _opts: unknown, cb: (lock: unknown) => Promise<void>) => {
         if (held.has(name)) return cb(null);
         held.add(name);
-        void cb({ name }); // held until the callback settles, which the test never awaits
+        void cb({ name });
       },
     };
     Object.defineProperty(navigator, "locks", { value: locks, configurable: true });
     try {
       started.length = 0;
       playAlertOnce("m1", "s2");
-      playAlertOnce("m1", "s2"); // a popout hearing the same message
+      playAlertOnce("m1", "s2");
       await Promise.resolve();
       expect(started).toHaveLength(1);
     } finally {

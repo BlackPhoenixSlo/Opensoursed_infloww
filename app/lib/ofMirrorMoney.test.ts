@@ -30,11 +30,9 @@ const load = (p: string) => {
   return document;
 };
 const visible = (el: Element) => !el.closest("[style*='display:none']");
-/** Earning Statistics' capture as any apply leaves it with no data: its From … To button marked (ticket 20's picker). */
 const RANGE = ".b-stats-row__body button.m-time-period";
 const rangeWired = (p: string) => {
   const doc = load(p);
-  // As applyMoney leaves it: marked, enabled, its Not-yet title gone (D1 Live pass).
   for (const b of doc.querySelectorAll(RANGE)) {
     b.setAttribute("data-oi-wired", "");
     b.removeAttribute("disabled");
@@ -44,9 +42,7 @@ const rangeWired = (p: string) => {
 };
 const texts = (doc: Document, sel: string) => [...doc.querySelectorAll(sel)].filter(visible).map((e) => e.textContent?.trim());
 
-/** OF's own /payouts/balances, captured through the Relay (synthetic figures; app/lib/__fixtures__/of). */
 const CAPTURED: Balances = JSON.parse(readFileSync(resolve(__dirname, "__fixtures__/of/statements-balances.json"), "utf8"));
-// OF's shape with figures that show the formatting: thousands, a zero, another minimum and frequency.
 const BAL: Balances = { ...CAPTURED, payoutAvailable: 1234.5, payoutPending: 0, minPayoutSumm: 50, withdrawalPeriod: "weekly" };
 const OPTIONS = ".balance-block .v-select-list > .v-list-item";
 const options = (doc: Document) => [...doc.querySelectorAll(OPTIONS)].filter((o) => !(o as HTMLElement).style.display).map((o) => [o.textContent!.trim(), o.getAttribute("aria-selected"), o.classList.contains("v-list-item--active")]);
@@ -57,7 +53,7 @@ describe("moneyParts", () => {
     expect(moneyParts("statements/stats/earnings/state-date-range")).toEqual(["balances", "earningStats"]);
     expect(moneyParts("statements/referrals")).toEqual(["balances", "referralBalance"]);
     expect(moneyParts("statistics/statements/referrals/earnings")).toEqual(["balances", "referralBalance"]);
-    expect(moneyParts("statistics/statements/disputes")).toEqual(["balances"]); // its ratio follows the period: ofMirrorStats
+    expect(moneyParts("statistics/statements/disputes")).toEqual(["balances"]);
     expect(moneyParts("statistics/overview/earnings/state-period-dropdown")).toEqual(["balances"]);
     for (const p of ["statements/support", "statistics/engagement/messages", "statistics/fans/top-fans", "bank/index", "bank/payout_types", "home/index"]) expect(moneyParts(p)).toEqual([]);
   });
@@ -78,7 +74,6 @@ describe("balances", () => {
     expect(texts(doc, ".b-statements__pending-balance__value > span")).toEqual(["$0.00"]);
     expect(doc.querySelector(".b-statements__pending-balance__value > span")!.classList.contains("m-zero-value")).toBe(true);
     expect(texts(doc, ".balance-block .v-select__selection")).toEqual(["Weekly payouts"]);
-    // Weekly payouts: OF's minSumMessage gives the next payout's day (OF reads availableAmount, absent from its balances).
     expect(texts(doc, ".b-statements__min-payout-summ")).toEqual([`Once your balance is over $50 next payout will be scheduled on: ${payoutDate("weekly", new Date())}`]);
     applyMoney(doc, "statements/earnings", { balances: { ...BAL, payoutAvailable: 7 } });
     expect(texts(doc, ".b-statements__current-balance__value > span")).toEqual(["$7.00"]);
@@ -101,7 +96,6 @@ describe("balances", () => {
     applyMoney(doc, "statements/earnings", { balances: { ...CAPTURED, withdrawalPeriod: "daily", withdrawalPeriodOptions: four } });
     expect(options(doc).map((o) => o[0])).toEqual(["Manual payouts", "Weekly payouts", "Monthly payouts", "Daily payouts"]);
     expect(options(doc).map((o) => o[2])).toEqual([false, false, false, true]);
-    // Request withdrawal: disabled by OF's rule (a balance under the minimum), no tooltip.
     expect([...doc.querySelectorAll<HTMLButtonElement>(".balance-block .g-btn")].map((b) => [b.disabled, b.title])).toEqual([[true, ""]]);
     applyMoney(doc, "statements/earnings", {});
     expect(doc.documentElement.innerHTML).toBe(html);
@@ -144,9 +138,8 @@ describe("balances", () => {
     head.click();
     const box = head.closest(".g-box")!;
     const icon = head.querySelector(".g-box__collapse-icon svg")!;
-    // OF's Balances: v-show on the content, GBoxWrapper's m-roll-state, icon-arrow-down while collapsed.
     expect([content.style.display, box.classList.contains("m-roll-state"), icon.getAttribute("data-icon-name"), icon.querySelector("use")!.getAttribute("href")]).toEqual(["none", true, "icon-arrow-down", "#icon-arrow-down"]);
-    applyMoney(doc, "statements/earnings", { balances: BAL }); // a re-apply binds no second handler
+    applyMoney(doc, "statements/earnings", { balances: BAL });
     head.click();
     expect([content.style.display, box.classList.contains("m-roll-state"), icon.getAttribute("data-icon-name"), icon.querySelector("use")!.getAttribute("href")]).toEqual(["", false, "icon-arrow-up", "#icon-arrow-up"]);
   });
@@ -159,7 +152,6 @@ describe("balances", () => {
   });
 });
 
-// Month keys: each month's start, unix seconds (local time, so the titles read the same in every zone).
 const sec = (y: number, m: number) => String(new Date(y, m, 1).getTime() / 1000);
 const STATS: EarningStats = {
   total: {
@@ -175,7 +167,6 @@ const STATS: EarningStats = {
   },
 };
 const NOW = new Date(2026, 9, 16, 12, 0);
-// The browser's zone (as NOW and the month keys): the owner set none.
 const TZ_NONE = null;
 
 describe("Earning Statistics", () => {
@@ -198,7 +189,7 @@ describe("Earning Statistics", () => {
     ]);
     expect(texts(doc, ".m-total .m-total-item .b-stats-row__val")).toEqual(["$2,500.00", "$2,000.00"]);
     expect(texts(doc, ".b-stats-row.m-expanded .b-date-value")).toEqual(["Feb 1, 2025", "Oct 16, 2026"]);
-    expect([doc.querySelector<HTMLButtonElement>(".m-time-period")!.disabled, doc.querySelector<HTMLButtonElement>(".m-time-period")!.title]).toEqual([false, ""]); // no range yet: all time; enabled (D1 Live pass)
+    expect([doc.querySelector<HTMLButtonElement>(".m-time-period")!.disabled, doc.querySelector<HTMLButtonElement>(".m-time-period")!.title]).toEqual([false, ""]);
     const months = [...doc.querySelectorAll(".b-stats-wrap > .b-stats-row:not(.m-expanded)")].filter(visible);
     expect(months.map((r) => [r.querySelector(".b-stats-row__month")!.textContent, r.querySelector(".b-stats-row__total-net")!.textContent!.trim()])).toEqual([
       [" October, 2026 ", "$800.00"],
@@ -230,7 +221,6 @@ describe("Earning Statistics", () => {
 describe("Earning Statistics: OF's expanded row and chart", () => {
   const page = "statements/stats/earnings";
   const at = (y: number, m: number, d: number) => new Date(y, m, d, 12).getTime() / 1000;
-  // OF's months: each category's earnings (gross, net, time), summed per month by OF itself.
   const ITEMS: EarningStats = {
     total: { all: { total_gross: 60, total_net: 48 }, subscribes: { total_gross: 10, total_net: 8 }, tips: { total_gross: 50, total_net: 40 } },
     months: {
@@ -248,7 +238,7 @@ describe("Earning Statistics: OF's expanded row and chart", () => {
     const doc = load(page);
     applyMoney(doc, page, { earningStats: ITEMS }, NOW);
     expect(open(doc).map((r) => r.querySelector(".b-stats-row__month")!.textContent!.trim())).toEqual(["All time"]);
-    expect(linesOf(open(doc)[0].querySelector("canvas")!)?.lines).toHaveLength(6); // All time's chart is drawn, not blank
+    expect(linesOf(open(doc)[0].querySelector("canvas")!)?.lines).toHaveLength(6);
     head(doc, "September, 2026").click();
     expect(linesOf(open(doc)[0].querySelector("canvas")!)?.lines).toHaveLength(6);
     expect(open(doc).map((r) => r.querySelector(".b-stats-row__month")!.textContent!.trim())).toEqual(["September, 2026"]);
@@ -263,7 +253,7 @@ describe("Earning Statistics: OF's expanded row and chart", () => {
     expect(open(doc).map((r) => r.querySelector(".b-stats-row__month")!.textContent!.trim())).toEqual(["All time"]);
     expect(sums(doc)).toEqual(["$10.00 $8.00", "$50.00 $40.00", "$0.00 $0.00", "$0.00 $0.00", "$0.00 $0.00"]);
     expect(texts(doc, ".b-stats-row__body .b-date-value")).toEqual(["Sep 1, 2026", "Oct 16, 2026"]);
-    head(doc, "All time").click(); // OF's head expands; it never collapses
+    head(doc, "All time").click();
     expect(open(doc)).toHaveLength(1);
   });
 
@@ -272,7 +262,6 @@ describe("Earning Statistics: OF's expanded row and chart", () => {
     const doc = load(page);
     applyMoney(doc, page, { earningStats: ITEMS }, NOW);
     head(doc, "October, 2026").click();
-    // The From … To button, the All time body's and the expanded month's copy, each marked (ticket 20).
     expect([...doc.querySelectorAll(RANGE)].filter(visible).map((b) => b.hasAttribute("data-oi-wired"))).toEqual([true]);
     expect(open(doc)[0].querySelector(RANGE)?.hasAttribute("data-oi-wired")).toBe(true);
     open(doc)[0].querySelector<HTMLElement>(".b-stats-row__label.m-tips")!.click();
@@ -282,7 +271,7 @@ describe("Earning Statistics: OF's expanded row and chart", () => {
     expect(texts(doc, ".b-stats-row__body .b-stats-row__label.m-current .b-stats-row__name")).toEqual(["Tips"]);
     applyMoney(doc, page, {}, NOW);
     expect(doc.documentElement.innerHTML).toBe(html);
-    head(doc, "All time").click(); // no data: nothing to expand
+    head(doc, "All time").click();
     expect(doc.documentElement.innerHTML).toBe(html);
   });
 
@@ -295,8 +284,8 @@ describe("Earning Statistics: OF's expanded row and chart", () => {
     expect(spec.lines.map((l) => l.title)).toEqual(["Subscriptions", "Tips", "Posts", "Messages", "Referrals", "Streams"]);
     const subs = spec.lines[0].values;
     const tips = spec.lines[1].values;
-    expect([subs[0], subs[1], subs[14]]).toEqual([0, 10, 10]); // slots ~2.07 days apart: Oct 2 noon -> slot 1 (Oct 3 01:36), then summed up
-    expect([tips[0], tips[3], tips[4], tips[14]]).toEqual([0, 20, 25, 25]); // Oct 3 -> slot 1, Oct 9 -> slot 4
+    expect([subs[0], subs[1], subs[14]]).toEqual([0, 10, 10]);
+    expect([tips[0], tips[3], tips[4], tips[14]]).toEqual([0, 20, 25, 25]);
     expect(tips[1]).toBe(20);
     expect(spec.lines.map((l) => l.color)).toEqual(["rgba(33,150,243,0.4)", "#00bcd4", "rgba(236,64,122,0.4)", "rgba(255,112,67,0.4)", "rgba(149,117,205,0.4)", "rgba(255,160,0,0.4)"]);
     expect(spec.lines.every((l) => l.kind === "money")).toBe(true);
@@ -305,7 +294,6 @@ describe("Earning Statistics: OF's expanded row and chart", () => {
 
 describe("Earning Statistics' From … To Apply (ticket 24): the totals for the picked range", () => {
   const page = "statements/stats/earnings";
-  // OF's /payouts/stats for October 1-16 alone (startDate/endDate), other figures than all time's (STATS).
   const RANGED: EarningStats = {
     total: { all: { total_gross: 14, total_net: 11.2 }, tips: { total_gross: 14, total_net: 11.2 } },
     months: { [sec(2026, 9)]: { total_gross: 14, total_net: 11.2, tips: [{ gross: 14, net: 11.2, time: new Date(2026, 9, 3, 12).getTime() / 1000 }] } },
@@ -336,7 +324,7 @@ describe("Earning Statistics' From … To Apply (ticket 24): the totals for the 
     applyMoney(doc, page, { earningStats: STATS, range }, NOW);
     expect(shown(doc)).toEqual(ALL_TIME);
     const btn = doc.querySelector<HTMLButtonElement>(RANGE)!;
-    expect([btn.disabled, btn.title]).toEqual([false, ""]); // enabled, its Not-yet title gone (D1 Live pass)
+    expect([btn.disabled, btn.title]).toEqual([false, ""]);
     btn.click();
     expect([!!doc.querySelector("[data-oi-picker]"), btn.getAttribute("aria-expanded")]).toEqual([true, "true"]);
     doc.querySelector<HTMLElement>("[data-oi-picker-apply]")!.click();
@@ -344,21 +332,17 @@ describe("Earning Statistics' From … To Apply (ticket 24): the totals for the 
     expect(doc.querySelector("[data-oi-picker]")).toBeNull();
     expect(pick).toHaveBeenCalledTimes(1);
     const [from, to] = pick.mock.calls[0];
-    expect(from).toEqual(to); // the picker opens on today (ticket 20)
-    // Picked, its read in flight: still all time's.
+    expect(from).toEqual(to);
     applyMoney(doc, page, { earningStats: STATS, range: { ...range, picked: { from: OCT1, to: OCT16 } } }, NOW);
     expect(shown(doc)).toEqual(ALL_TIME);
-    // Its read answered: the range's label, totals and All time's net; the category rows the range's too.
     applyMoney(doc, page, { earningStats: STATS, range: { ...range, picked: { from: OCT1, to: OCT16, stats: RANGED } } }, NOW);
     expect(shown(doc)).toEqual(OCTOBER);
     expect(texts(doc, ".b-stats-row.m-expanded .b-stats-row__label.m-tips .b-stats-row__val")).toEqual(["$14.00", "$11.20"]);
-    // Reopened, the picker shows the picked range (each apply puts the capture's disabled back: un-greyed again).
     const again = doc.querySelector<HTMLButtonElement>(RANGE)!;
     again.disabled = false;
     again.click();
     expect(doc.querySelector("[data-oi-picker] .vdatetime-popup__title")?.textContent?.trim()).toBe("16 days selected");
     doc.querySelector<HTMLElement>("[data-oi-picker-close]")!.click();
-    // A month's head shows that month as read for all time; All time's head drops the range (OF's updateExpand "all").
     head(doc, "September, 2026").click();
     expect(texts(doc, ".b-stats-row.m-expanded .m-total .m-total-item .b-stats-row__val")).toEqual(["$1,500.00", "$1,200.00"]);
     expect(clear).not.toHaveBeenCalled();
@@ -431,7 +415,6 @@ describe("statements/index: its Earnings tab lists the transactions", () => {
     expect(partsOf("statements/index")).toEqual(["transactions"]);
     const doc = load("statements/index");
     const html = doc.documentElement.innerHTML;
-    // OF's captured rows (app/lib/__fixtures__/of), the second as pending.
     const [sub, msg] = (JSON.parse(readFileSync(resolve(__dirname, "__fixtures__/of/statements-transactions.json"), "utf8")) as { list: Transaction[] }).list;
     applyData(doc, "statements/index", { transactions: [sub, { ...msg, status: "loading", payoutPendingDays: 3 }] });
     const rows = [...doc.querySelectorAll(".b-table tbody > tr")].filter((r) => visible(r) && r.querySelector(".b-table__date"));
@@ -444,22 +427,17 @@ describe("statements/index: its Earnings tab lists the transactions", () => {
   });
 });
 
-// ---------------------------------------------------------------- withdrawals, the payout frequency and Support
 
 const fixture = <T,>(name: string): T => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/statements-${name}.json`), "utf8")) as T;
 type Call = { request: { method: string; path: string; body: Record<string, unknown> }; response: { status: number; body: unknown } };
-/** OF's live answers to the writes (account balance $4.40, minimum $20): one withdrawal, a frequency change and its restore. */
 const WRITES = fixture<Record<"withdrawal" | "periodChange" | "periodRestore", Call>>("payout-writes");
 const WEEKLY = fixture<Balances>("balances-weekly");
 const RECEIVE = fixture<PayoutUser>("check-receive");
-/** OF's live balances at the withdrawal attempt: the captured shape with the account's real $4.40. */
 const LIVE: Balances = { ...CAPTURED, payoutAvailable: WRITES.withdrawal.request.body.withdrawal_amount as number };
-/** A balance OF lets withdraw: over the minimum (OF's max is still its maxPayoutSumm, $20). */
 const RICH: Balances = { ...CAPTURED, payoutAvailable: 25.6 };
 const USER: PayoutUser = { canReceiveManualPayout: RECEIVE.canReceiveManualPayout, hasPayoutsIssue: null };
-/** The Relay's error for an OF refusal: `_proxy`'s 502 with OF's body. */
 const refusal = (c: Call) => new RelayError(502, { detail: { upstream_status: c.response.status, upstream_body: JSON.stringify(c.response.body) } }, "upstream");
-const SAT = new Date(2026, 9, 17, 16, 0); // a Saturday
+const SAT = new Date(2026, 9, 17, 16, 0);
 
 const button = (doc: Document) => doc.querySelector<HTMLButtonElement>(".balance-block .g-btn__wrapper > button")!;
 const slot = (doc: Document) => doc.querySelector<HTMLElement>(".balance-block .v-select .v-input__slot")!;
@@ -490,7 +468,7 @@ describe("OF's withdrawal rules (useBalances, ModalPayouts, InputTips)", () => {
     expect(withdrawDisabled(RICH, USER)).toBe(false);
     expect(withdrawDisabled({ ...RICH, payoutAvailable: 20 }, USER)).toBe(false);
     expect(withdrawDisabled(RICH, { canReceiveManualPayout: false })).toBe(true);
-    expect(withdrawDisabled(RICH, { canReceiveManualPayout: false, hasPayoutsIssue: true })).toBe(false); // it opens Billing Support
+    expect(withdrawDisabled(RICH, { canReceiveManualPayout: false, hasPayoutsIssue: true })).toBe(false);
     expect(withdrawDisabled(RICH, undefined)).toBe(true);
     expect(withdrawDisabled({}, USER)).toBe(true);
     expect(payoutsDisabled(RICH, USER)).toBe(false);
@@ -527,7 +505,7 @@ describe("Statements' balance box writes", () => {
     applyMoney(doc, "statements/earnings", { balances: LIVE, payoutUser: USER, actions: a }, SAT);
     expect(texts(doc, ".b-statements__current-balance__value > span")).toEqual(["$4.40"]);
     expect([button(doc).disabled, button(doc).title]).toEqual([true, ""]);
-    button(doc).removeAttribute("disabled"); // even if forced: OF's onManualWithdrawalClick checks the rule
+    button(doc).removeAttribute("disabled");
     button(doc).click();
     expect(dialog(doc)).toBeNull();
     expect(a.withdraw).not.toHaveBeenCalled();
@@ -563,7 +541,6 @@ describe("Statements' balance box writes", () => {
 
   it("OF's success: the new request's state in its alert", async () => {
     const doc = load("statements/earnings");
-    // OF's answer lists the request (its shape as OF's /payouts/requests rows, captured: statistics-payout-requests.json), now pending.
     const row = JSON.parse(readFileSync(resolve(__dirname, "__fixtures__/of/statistics-payout-requests.json"), "utf8")).list[0];
     const a = actions({ withdraw: vi.fn(async () => ({ list: [{ ...row, state: "pending" }] })) });
     applyMoney(doc, "statements/earnings", { balances: RICH, payoutUser: USER, actions: a }, SAT);
@@ -571,7 +548,6 @@ describe("Statements' balance box writes", () => {
     type(doc, "20");
     dialog(doc)!.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(alertText(doc)).toBe("Payout request is being processed"));
-    // Cancel closes the dialog and sends nothing.
     button(doc).click();
     dialog(doc)!.querySelector<HTMLButtonElement>(".modal-footer button[type='button']")!.click();
     expect(dialog(doc)).toBeNull();
@@ -598,12 +574,11 @@ describe("Statements' balance box writes", () => {
     expect(menu(doc).style.display).toBe("none");
     slot(doc).click();
     expect([menu(doc).style.display, slot(doc).getAttribute("aria-expanded")]).toEqual(["block", "true"]);
-    menu(doc).querySelectorAll<HTMLElement>(".v-list-item")[0].click(); // the current one: nothing sent
+    menu(doc).querySelectorAll<HTMLElement>(".v-list-item")[0].click();
     expect([menu(doc).style.display, a.setPeriod.mock.calls]).toEqual(["none", []]);
     slot(doc).click();
     menu(doc).querySelectorAll<HTMLElement>(".v-list-item")[1].click();
     expect(a.setPeriod.mock.calls).toEqual([[WRITES.periodChange.request.body.withdrawalPeriod]]);
-    // The hook keeps the new one while it saves (the select disabled), then OF's answer: the balances read weekly.
     applyMoney(doc, "statements/earnings", { balances: WEEKLY, payoutUser: USER, actions: a, periodSaving: true }, SAT);
     expect([slot(doc).getAttribute("role"), slot(doc).closest(".v-input")!.classList.contains("v-input--is-disabled")]).toEqual([null, true]);
     applyMoney(doc, "statements/earnings", { balances: WEEKLY, payoutUser: USER, actions: a }, SAT);
@@ -611,7 +586,6 @@ describe("Statements' balance box writes", () => {
     expect(texts(doc, ".b-statements__min-payout-summ")).toEqual(["Once your balance is over $20 next payout will be scheduled on: Oct 19, 2026"]);
     expect(button(doc).closest(".g-btn__wrapper")!.getAttribute("style")).toBe("display:none");
     expect(options(doc).map((o) => o[2])).toEqual([false, true, false]);
-    // Escape and a click elsewhere close the menu.
     slot(doc).click();
     doc.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(menu(doc).style.display).toBe("none");
@@ -630,7 +604,6 @@ describe("Statements' Support (the header's ?)", () => {
       const help = [...doc.querySelectorAll<HTMLAnchorElement>(".g-page__header .b-btns-group a, h1 ~ .b-btns-group a")].filter((a) => a.querySelector("[data-icon-name='icon-support']"));
       expect(help.map((a) => [a.getAttribute("href"), a.getAttribute("aria-label"), a.getAttribute("target")])).toEqual([["/of-manager/statements/support", "Support", "_top"]]);
     }
-    // OF's Billing Support page, its SupportForm as captured; its Send needs OF's captcha, so it stays disabled with the tooltip.
     const doc = load("statements/support");
     expect(doc.querySelector("h1")!.textContent!.trim()).toBe("Billing Support");
     expect(texts(doc, "form.contact_form ~ p, .g-default-text")[0]).toBe("If you have any questions, please fill out the form below to contact us.");

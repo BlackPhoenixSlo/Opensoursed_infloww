@@ -1,19 +1,3 @@
-/**
- * The Agency's AI translation switch, applied in the Messages Pro thread
- * (docs/spec/phase-04-apply-stored-settings.md, stories 56-59; ticket 27).
- *
- * With the Applied settings read saying `messaging.ai_translation: false`, a
- * chatter's "Use translation" switch in the Composer is disabled with the
- * tooltip "Turned off by your organization", and the thread sends no
- * translate request. The chatter's own stored translate mode is untouched and
- * returns when the owner turns AI translation back on. Owner sessions are
- * never gated. The Chat header's 🌐 toggle no longer exists (commit 752d4342,
- * messages-pro-parity ticket 92): the Composer's switch drives the same
- * translate mode.
- *
- * The relay is mocked by URL (the Composer's Seam 1 harness); the session is
- * the mocked User and Chatter contexts.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -23,7 +7,6 @@ vi.mock("@/lib/relay", async (orig) =>
 vi.mock("./VaultPicker", async () =>
   (await import("./composerTestHarness")).vaultPickerStubModule);
 
-/** The session: a chatter-only session unless a case signs an owner in. */
 let session: "chatter" | "owner" = "chatter";
 vi.mock("@/contexts/UserContext", async (orig) => ({
   ...(await orig<typeof import("@/contexts/UserContext")>()),
@@ -47,7 +30,6 @@ import { baseProps, bubbleBox, msg } from "./messageListTestHarness";
 const STORAGE_KEY = "chatterly:translate-en";
 const TURNED_OFF = "Turned off by your organization";
 
-/** What the Applied settings read answers; flipped by a case. */
 let aiTranslation = false;
 const applied = (): AppliedSettings => ({
   preferences: { tz: null, report_tz: null, week_start: "monday" },
@@ -55,7 +37,6 @@ const applied = (): AppliedSettings => ({
   permissions: { enforced: false, pages: null, scope: "all" },
   flags: { fansly_manager: false },
 });
-/** Set by a case to hold the Applied read unanswered. */
 let heldApplied: Promise<AppliedSettings> | null = null;
 
 const translateCalls = () => relayPost.mock.calls.filter(([path]) => path === "/admin/translate");
@@ -67,7 +48,6 @@ beforeEach(() => {
   aiTranslation = false;
   heldApplied = null;
   routeRelay("/admin/settings/applied", () => heldApplied ?? applied());
-  // The chatter left "Use translation" on before the owner turned AI translation off.
   localStorage.setItem(STORAGE_KEY, "1");
   window.dispatchEvent(new Event("storage"));
 });
@@ -92,10 +72,8 @@ describe("the Composer's \"Use translation\" switch", () => {
     await userEvent.setup().click(useTranslation);
     expect(readTranslateMode()).toBe(true);
     expect(localStorage.getItem(STORAGE_KEY)).toBe("1");
-    // The Applied read was asked for the Composer's Creator.
     expect(relayGet.mock.calls.find(([p]) => p === "/admin/settings/applied")?.[1]?.accountId).toBe("acct-1");
 
-    // The owner turns AI translation back on: the stored mode returns as it was.
     aiTranslation = true;
     await act(() => queryClient.invalidateQueries({ queryKey: APPLIED_SETTINGS_KEY }));
     await waitFor(() => expect(useTranslation).toBeEnabled());

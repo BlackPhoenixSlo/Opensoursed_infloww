@@ -1,65 +1,10 @@
 #!/usr/bin/env python3
-"""
-Vault duplicate detection (`vault_dupes`) + the operator-confirmed removal
-endpoint (`vault_ai_api.hide_duplicates`). Durable regression suite
-(plain-assert, no pytest — repo convention).
-
-Removal calls OF's own "Remove selected items from vault"
-(`PUT /vault/media/hidden`), which HIDES rather than destroys — but OF has no
-unhide, so the guards are the safety net and they are what this suite pins.
-
-Cases:
-  case_hash_roundtrip:
-      pack/unpack of `content_hash`; a re-encoded copy of the same image keeps a
-      near-zero hash distance while a genuinely different image does not.
-  case_original_is_earliest:
-      the ORIGINAL of a set is the earliest-uploaded item, whatever order the
-      rows come out of the DB in, and it is never listed among its own dupes.
-  case_no_transitive_chaining:
-      a chain A~B~C where A and C are FAR apart must not land C in A's set —
-      the seed-based grouping is what stops a cluster drifting off its original.
-  case_video_duration_gate:
-      two clips that share a poster frame but differ in length are NOT grouped.
-  case_cluster_matches_allpairs:
-      the banded candidate index returns exactly the all-pairs walk's sets
-      (`_cluster_allpairs`, the pre-index code kept here as the oracle) over
-      seeded worlds: n 0/1/50/2000, strictness -1/0/2/4/6/8, md5 collisions,
-      videos +-2 s, planted chains a~b~c, created_at ties, cross-kind copies.
-  case_hide_refuses_original:
-      asking to hide an id that is the original of its set is refused, and the
-      OF call never receives it — the keeper cannot be removed by a stale UI.
-  case_hide_refuses_non_duplicate:
-      an id that isn't in any duplicate set is refused.
-  case_hide_skips_sent_unless_allowed:
-      a copy with send_count > 0 is skipped by default and only goes through
-      with allow_sent.
-  case_backfill_scans_unrendered_items:
-      items with no cached thumb are fetched in the background on a scan
-      (audio and already-hashed rows are not), the next scan covers them, and
-      a finished pass is not relaunched by the modal's polling (cooldown).
-  case_backfill_scope_and_mid_scan_finish:
-      cooldown is per scope (a chatter's pass doesn't block the owner's); a poll
-      during a pass skips the mirror walk and stays running if it ends mid-scan.
-  case_hide_marks_mirror_removed:
-      a successful hide sends exactly the approved ids to OF and soft-deletes
-      those mirror rows so the grid/picker/automations stop seeing them.
-
-Run: cd service/tests && \
-  PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_dupes.py
-Exit 0 = all cases passed. Temp DB bound by _harness (never prod). No OF and no
-network: the OF client is faked at the `automation_executor._make_client` seam.
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
-# These cases test feature logic, not the account gate (that is
-# test_account_isolation_gate's job). They reach `/admin` routes or
-# `assert_account_owned` with no session, which fails closed (401) since
-# 3b30b486. This is the documented escape hatch (read per call), scoped to this
-# test process.
 import os  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
@@ -96,8 +41,6 @@ async def _seed_account(aid: str) -> None:
 async def _seed_item(aid: str, media_id: int, *, packed: str, kind: str = "photo",
                      days_old: int = 0, duration: int | None = None,
                      send_count: int = 0) -> None:
-    """One mirrored item carrying a pre-computed hash. `days_old` drives upload
-    order (larger = older = the original)."""
     async with get_session() as s:
         s.add(VaultItem(
             account_id=aid, media_id=media_id, kind=kind,
@@ -113,9 +56,6 @@ def _packed(md5: str, dh: int, ah: int) -> str:
 
 
 class _FakeOF:
-    """Records what `hide_vault_media` was asked to remove, one entry per call
-    so chunking is observable. `fail_from` makes the Nth call onwards raise, to
-    exercise the partial-success path."""
     def __init__(self, fail_from: int | None = None) -> None:
         self.hidden: list[list[int]] = []
         self.fail_from = fail_from
@@ -128,7 +68,6 @@ class _FakeOF:
 
 
 async def _hide(payload: dict, fake: _FakeOF | None = None) -> tuple[dict, _FakeOF]:
-    """Call the endpoint with the OF client faked at the _make_client seam."""
     fake = fake or _FakeOF()
     orig = ax._make_client
     ax._make_client = lambda *_a, **_k: fake
@@ -139,7 +78,6 @@ async def _hide(payload: dict, fake: _FakeOF | None = None) -> tuple[dict, _Fake
     return out, fake
 
 
-# ── Cases ────────────────────────────────────────────────────────────
 
 async def case_hash_roundtrip() -> None:
     assert vault_dupes.unpack_hash(vault_dupes.pack_hash("ab" * 16, 5, 9)) == \
@@ -147,14 +85,12 @@ async def case_hash_roundtrip() -> None:
     assert vault_dupes.unpack_hash(None) is None
     assert vault_dupes.unpack_hash("garbage") is None
 
-    # A real re-encode of the same pixels must stay close; a different image
-    # must not. This is the property the whole detector rests on.
     src = Image.new("RGB", (64, 64))
     for x in range(64):
         for y in range(64):
             src.putpixel((x, y), (x * 4 % 256, y * 4 % 256, (x + y) % 256))
     buf = io.BytesIO()
-    src.save(buf, "JPEG", quality=55)          # lossy re-encode, as OF does
+    src.save(buf, "JPEG", quality=55)
     reencoded = Image.open(io.BytesIO(buf.getvalue()))
     d_src, d_re = vault_dupes.dhash(src), vault_dupes.dhash(reencoded)
     assert vault_dupes.hamming(d_src, d_re) <= 2, vault_dupes.hamming(d_src, d_re)
@@ -170,9 +106,8 @@ async def case_original_is_earliest() -> None:
     aid = _next_account()
     await _seed_account(aid)
     same = _packed("f" * 32, 0b1010, 0b0101)
-    # Insert NEWEST first so "original" can't accidentally be insertion order.
     await _seed_item(aid, 300, packed=same, days_old=1)
-    await _seed_item(aid, 100, packed=same, days_old=30)     # ← the original
+    await _seed_item(aid, 100, packed=same, days_old=30)
     await _seed_item(aid, 200, packed=same, days_old=10)
 
     res = await vault_dupes.find_duplicates(aid, 2, rehash=False)
@@ -185,14 +120,11 @@ async def case_original_is_earliest() -> None:
 
 
 async def case_no_transitive_chaining() -> None:
-    """A~B (dist 2) and B~C (dist 2) but A~C (dist 4): with threshold 2 the set
-    seeded at A must contain B only. Chaining would swallow C and drift the
-    cluster away from the original it is supposed to represent."""
     aid = _next_account()
     await _seed_account(aid)
     a = 0b0000
-    b = 0b0011          # 2 bits from a
-    c = 0b1111          # 2 bits from b, 4 from a
+    b = 0b0011
+    c = 0b1111
     await _seed_item(aid, 1, packed=_packed("1" * 32, a, a), days_old=30)
     await _seed_item(aid, 2, packed=_packed("2" * 32, b, b), days_old=20)
     await _seed_item(aid, 3, packed=_packed("3" * 32, c, c), days_old=10)
@@ -214,12 +146,10 @@ async def case_video_duration_gate() -> None:
     res = await vault_dupes.find_duplicates(aid, 2, rehash=False)
     assert res["sets"] == 1, res
     ids = [d["media_id"] for d in res["clusters"][0]["dupes"]]
-    assert ids == [11], ids          # the 95s clip is a different edit
+    assert ids == [11], ids
 
 
 def _cluster_allpairs(items: list[dict], threshold: int) -> list[dict]:
-    """The all-pairs seed walk `vault_dupes.cluster` replaced: every later item
-    is tested against every seed. The equivalence oracle, test-only."""
     items = sorted(items, key=lambda r: (r["created_at"], r["media_id"]))
     claimed: set[int] = set()
     clusters: list[dict] = []
@@ -268,10 +198,6 @@ def _flip(h: int, rng: random.Random, k: int) -> int:
 
 
 def _world(n: int, seed: int) -> list[dict]:
-    """n fingerprints: random singles plus planted near copies (0-9 bits off on
-    each hash), md5 collisions with far hashes, videos +-0..2 s, chains a~b~c
-    whose ends are far apart, created_at ties, and exact / near copies under
-    another kind (never grouped)."""
     rng = random.Random(seed)
     t0 = datetime(2026, 1, 1)
     out: list[dict] = []
@@ -288,21 +214,21 @@ def _world(n: int, seed: int) -> list[dict]:
         md5, dh, ah = f"{rng.getrandbits(128):032x}", rng.getrandbits(64), rng.getrandbits(64)
         add(kind, md5, dh, ah, dur)
         roll = rng.random()
-        if roll < 0.3:            # near copies
+        if roll < 0.3:
             for _ in range(rng.randrange(1, 4)):
                 add(kind, f"{rng.getrandbits(128):032x}", _flip(dh, rng, rng.randrange(10)),
                     _flip(ah, rng, rng.randrange(10)),
                     None if dur is None else dur + rng.choice((-2, -1, 0, 1, 2)))
-        elif roll < 0.4:          # same bytes, hashes far (md5 path only)
+        elif roll < 0.4:
             add(kind, md5, rng.getrandbits(64), rng.getrandbits(64), dur)
-        elif roll < 0.5:          # chain a~b~c: b near both, c far from a
+        elif roll < 0.5:
             b_dh = _flip(dh, rng, 3)
             add(kind, f"{rng.getrandbits(128):032x}", b_dh, ah, dur)
             add(kind, f"{rng.getrandbits(128):032x}", _flip(b_dh, rng, 3), ah, dur)
-        elif roll < 0.6:          # same md5 + hashes, other kind
+        elif roll < 0.6:
             other = rng.choice([k for k in ("photo", "video", "gif") if k != kind])
             add(other, md5, dh, ah, rng.randrange(5, 60) if other == "video" else None)
-        elif roll < 0.7:          # near copy, other kind
+        elif roll < 0.7:
             other = rng.choice([k for k in ("photo", "video", "gif") if k != kind])
             add(other, f"{rng.getrandbits(128):032x}", _flip(dh, rng, rng.randrange(3)),
                 _flip(ah, rng, rng.randrange(3)), rng.randrange(5, 60) if other == "video" else None)
@@ -321,18 +247,19 @@ def case_cluster_matches_allpairs() -> None:
     assert len(planted) > 100 and any(not c["all_exact"] for c in planted), len(planted)
 
 
+# OF hides via PUT /vault/media/hidden and has no unhide, so these guards are the safety net.
 async def case_hide_refuses_original() -> None:
     aid = _next_account()
     await _seed_account(aid)
     same = _packed("b" * 32, 0b1, 0b1)
-    await _seed_item(aid, 1, packed=same, days_old=30)        # original
+    await _seed_item(aid, 1, packed=same, days_old=30)
     await _seed_item(aid, 2, packed=same, days_old=10)
 
     out, fake = await _hide({"account_id": aid, "media_ids": [1, 2]})
     assert out["hidden"] == 1, out
     assert out["hidden_ids"] == [2], out
     assert out["refused"]["is_original"] == [1], out
-    assert fake.hidden == [[2]], fake.hidden   # OF never saw the keeper
+    assert fake.hidden == [[2]], fake.hidden
 
 
 async def case_hide_refuses_non_duplicate() -> None:
@@ -341,13 +268,12 @@ async def case_hide_refuses_non_duplicate() -> None:
     same = _packed("c" * 32, 0b10, 0b10)
     await _seed_item(aid, 1, packed=same, days_old=30)
     await _seed_item(aid, 2, packed=same, days_old=10)
-    # A lone item, in no set at all.
     await _seed_item(aid, 9, packed=_packed("d" * 32, 0xFFFF, 0xFFFF), days_old=5)
 
     out, fake = await _hide({"account_id": aid, "media_ids": [9]})
     assert out["hidden"] == 0, out
     assert out["refused"]["not_a_duplicate"] == [9], out
-    assert fake.hidden == [], fake.hidden      # no OF call at all
+    assert fake.hidden == [], fake.hidden
 
 
 async def case_hide_skips_sent_unless_allowed() -> None:
@@ -384,24 +310,20 @@ async def case_hide_marks_mirror_removed() -> None:
             select(VaultItem.media_id, VaultItem.removed_at)
             .where(VaultItem.account_id == aid)
         )).all())
-    assert rows[1] is None, rows          # original untouched
+    assert rows[1] is None, rows
     assert rows[2] is not None and rows[3] is not None, rows
 
-    # And they're gone from the next scan — no set left to act on.
     res = await vault_dupes.find_duplicates(aid, 2, rehash=False)
     assert res["sets"] == 0, res
 
 
 async def case_hide_request_cap() -> None:
-    """One request can't sweep the vault: over the cap is a 400 telling the
-    client how far over it is, which is what drives client-side batching.
-    (Live 2026-07-21: a 644-copy Ava selection hit exactly this.)"""
     aid = _next_account()
     await _seed_account(aid)
     over = list(range(1, vault_ai_api._MAX_HIDE_PER_CALL + 5))
     try:
         await _hide({"account_id": aid, "media_ids": over})
-    except Exception as e:  # HTTPException
+    except Exception as e:
         detail = getattr(e, "detail", {})
         assert detail.get("error") == "too_many", detail
         assert detail.get("max") == vault_ai_api._MAX_HIDE_PER_CALL, detail
@@ -411,13 +333,11 @@ async def case_hide_request_cap() -> None:
 
 
 async def case_hide_chunks_of_calls() -> None:
-    """A big approved batch reaches OF as bounded chunks, never one giant body,
-    and every id still lands."""
     aid = _next_account()
     await _seed_account(aid)
     same = _packed("7" * 32, 0b11, 0b11)
     n = vault_ai_api._OF_HIDE_CHUNK * 2 + 5
-    await _seed_item(aid, 1, packed=same, days_old=999)          # original
+    await _seed_item(aid, 1, packed=same, days_old=999)
     for mid in range(2, n + 2):
         await _seed_item(aid, mid, packed=same, days_old=10)
 
@@ -431,9 +351,6 @@ async def case_hide_chunks_of_calls() -> None:
 
 
 async def case_hide_partial_failure_is_recorded() -> None:
-    """If OF takes chunk 1 then rejects chunk 2, the media OF actually hid must
-    still be marked gone locally and reported — dropping it would leave the
-    mirror advertising media that no longer exists in her vault."""
     aid = _next_account()
     await _seed_account(aid)
     same = _packed("6" * 32, 0b101, 0b101)
@@ -488,7 +405,7 @@ async def case_backfill_scans_unrendered_items() -> None:
 
     async def fake_bytes_for(account_id, media_id, path, pick):
         asked.append(media_id)
-        if media_id == 3:                       # OF has nothing for this one
+        if media_id == 3:
             return vault_stills.Still(None, "fetch_failed")
         vault_stills.write(path, buf.getvalue())
         return vault_stills.Still(buf.getvalue(), "ok")
@@ -504,10 +421,10 @@ async def case_backfill_scans_unrendered_items() -> None:
             if not vault_dupes.backfill_status(aid)["running"]:
                 break
             await asyncio.sleep(0.01)
-        assert sorted(asked) == [1, 2, 3], asked   # never audio, never the hashed row
+        assert sorted(asked) == [1, 2, 3], asked
 
         second = await vault_of_folders.list_duplicates(account_id=aid, threshold=2, limit=200)
-        assert second["scanned"] == 3, second       # 1 + 2 now hashed, 9 already was
+        assert second["scanned"] == 3, second
         assert second["missing_thumbs"] == 1, second
         assert second["backfill"] == {"total": 3, "done": 3, "failed": 1, "running": False}, second
         assert second["sets"] == 1 and second["clusters"][0]["original"]["media_id"] == 1, second
@@ -517,9 +434,6 @@ async def case_backfill_scans_unrendered_items() -> None:
 
 
 async def case_backfill_scope_and_mid_scan_finish() -> None:
-    """W30 F21/F22: a folder-restricted pass does not put the whole vault in cooldown; a poll that
-    starts while a pass runs neither re-walks the mirror nor reports running=false when the pass ends
-    mid-scan (the scan may have missed its last thumbs)."""
     import asyncio
     import tempfile
     from pathlib import Path
@@ -563,7 +477,7 @@ async def case_backfill_scope_and_mid_scan_finish() -> None:
 
         async def find_while_pass_ends(account_id, threshold, allowed=None):
             gate.set()
-            await until_idle()                  # the pass ends during the scan
+            await until_idle()
             return await real_find(account_id, threshold, allowed=allowed)
 
         async def missing(account_id, allowed=None):

@@ -1,44 +1,3 @@
-"""Help bot as a Siri-style box (spec D12; app/components/assistant/{prepass.ts, markers.ts, MarkerCards.tsx,
-AssistantWidget.tsx}): plain commands run with no LLM call, and a figure the bot needs is a live card read with
-the asker's own session, never a number the model wrote.
-
-World: `agency_inbox`. Creator 0 (C) gets SALES ledger rows a few minutes before the build (SQL `transactions`,
-amounts from `--seed`, whole dollars; the rollup triggers keep tx_hourly / tx_daily in step). The Agency has its
-own DeepSeek key (PUT /admin/my-llm-keys). DeepSeek is lib/assistant_qa_relay.py's fake: REVENUE_Q -> a sentence
-with a planted "$999 ... 999 sales" beside `[[data:revenue|today|this]]`, HOWTO_Q -> a how-to line.
-
-Flow, the owner's browser, desktop 1440x900 (Q&A, not do-mode): /growth/auto-post, open the help bot, focus C.
-"open settings" (`prepass-trigger` typed, `prepass-settled` on /settings with "Opened Settings."), "light mode",
-"dark mode", HOWTO_Q, REVENUE_Q (`card-trigger` typed, `card-settled` with the card's figure). Then a chatter
-(real invite + register, C assigned) on the built-in "chatter" role with enforcement on: its own browser, the bot,
-REVENUE_Q (`chatter-card`).
-
-Checks:
-  prepass_navigates_no_llm        "open settings": URL on /settings, "Opened Settings." in the thread, no POST
-                                  /admin/assistant/ask, no fake DeepSeek call
-  prepass_question_falls_through  HOWTO_Q: one POST /admin/assistant/ask (200), one `deepseek:help_assistant` call,
-                                  the fake's how-to in the thread
-  prepass_theme                   "light mode" then "dark mode": <html data-theme> light then dark, each with its
-                                  "Switched to ... mode." line; no ask, no fake call
-  marker_card_shows_db_total      the card (Revenue · Today · This model) reads C (account_id) and shows
-                                  fmtCents(SQL sum of C's tracked `transactions` in the card's own from/to window),
-                                  which holds the seeded rows; the owner's API read of that URL sums the same
-  figure_stripped                 the answer's text (the bubble minus its card) has no "$" and no PLANTED
-  marker_not_in_history           REVENUE_Q's `assistant_turns` row is stored (with the marker), and the card's
-                                  figure is in no stored turn and not in GET /admin/assistant/history
-  marker_403_not_zero             the chatter's API read of the revenue window is 403, the card's own read 403,
-                                  and the card says "Not available for your role", no "$"
-  no_5xx                          no 5xx in either browser (OF's /api/of/ reads are held, left out)
-Side effects: siri.json (seeded rows, SQL sum, card request, turns, chatter reads).
-
-FAULT `assistant-marker-figure-kept` (client: markers.ts' strip of figures beside a data marker skipped):
-figure_stripped alone.
-
-Bypasses (declared): DeepSeek is the fake above (the answer text is canned; the strip, the card and its read are
-the product's). No OF session: every /api/of/ read stays held in the browser (actors/ui). The theme pass starts
-from whatever theme the page booted in ("light mode" first, so "dark mode" is always a switch). Not a volume path:
-one owner, one chatter, a handful of commands.
-"""
 from __future__ import annotations
 
 import json
@@ -55,7 +14,7 @@ PROFILE = "agency_inbox"
 UI = True
 FAULT = "assistant-marker-figure-kept"
 DESKTOP = (1440, 900)
-WAIT_MS = 120_000   # first visit of a page compiles it in next dev
+WAIT_MS = 120_000
 START = "/growth/auto-post"
 ASK, REV = "/admin/assistant/ask", "/admin/stats/revenue"
 SALES = 4
@@ -68,13 +27,10 @@ C_NAV, C_FALL, C_THEME, C_TOTAL, C_STRIP, C_HIST, C_403, C_5XX = (
     "prepass_navigates_no_llm", "prepass_question_falls_through", "prepass_theme", "marker_card_shows_db_total",
     "figure_stripped", "marker_not_in_history", "marker_403_not_zero", "no_5xx")
 
-# Finite animations (the dock's pop in) done; a skeleton's endless pulse does not count.
 _SETTLED = """() => document.getAnimations().filter((a) => a.playState === 'running'
   && a.effect && a.effect.getComputedTiming().iterations !== Infinity).length === 0"""
-# The newest card has its figure (or its refusal): no "Loading…" left.
 _CARD_DONE = f"""() => {{ const c = [...document.querySelectorAll('{CARD_SEL}')].pop();
   return !!c && !c.innerText.includes('Loading'); }}"""
-# The newest card's answer bubble, its text without the card(s).
 _ANSWER_TEXT = f"""(card) => {{ const b = card.closest('.rounded-bl-md')
   || [...document.querySelectorAll('{PANEL} .rounded-bl-md')].pop();
   if (!b) return null; const c = b.cloneNode(true);
@@ -82,12 +38,10 @@ _ANSWER_TEXT = f"""(card) => {{ const b = card.closest('.rounded-bl-md')
 
 
 def fmt_cents(c: int) -> str:
-    """app/lib/format.ts fmtCents for a non-negative whole-dollar total: "$1,234"."""
     return f"${int(abs(c) / 100 + 0.5):,}"
 
 
 def _seed_today(w, aid: str) -> list[dict]:
-    """SALES tracked ledger rows on C, minutes before the build, whole dollars (no "999" in their total)."""
     rng = w.rng("siri-box")
     fans = [f["id"] for f in w.data["fans"][aid]]
     rows = []
@@ -116,7 +70,6 @@ def _utc(iso: str) -> datetime:
 
 
 def _sql_sum(w, aid: str, frm: str, to: str) -> int:
-    """C's tracked gross in [frm, to] (the card's own instants), straight off `transactions`."""
     con = w.sql()
     try:
         r = con.execute("SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE account_id=? AND status IN "
@@ -155,7 +108,6 @@ async def _shot(ctx, page, name: str) -> str:
 
 
 async def _open_bot(page, nick: str | None) -> str | None:
-    """Open the help bot (unfold it when tucked) and, given `nick`, focus it on that Creator; the focus label."""
     launcher = page.locator('button[aria-label="Help assistant"], button[aria-label="Show help assistant"]')
     await launcher.first.wait_for(timeout=WAIT_MS)
     tucked = page.get_by_role("button", name="Show help assistant", exact=True)
@@ -171,7 +123,6 @@ async def _open_bot(page, nick: str | None) -> str | None:
 
 
 async def _card(page) -> dict:
-    """The newest data card once settled: its title, figure line, whole text, and its answer's text."""
     await page.wait_for_function(_CARD_DONE, timeout=60_000)
     card = page.locator(CARD_SEL).last
     ps = [x.strip() for x in await card.locator("p").all_inner_texts()]
@@ -194,26 +145,23 @@ async def _owner_pass(ctx, aid: str, nick: str) -> dict:
         page.on("response", on_resp)
         page.context.set_default_navigation_timeout(WAIT_MS)
         try:
-            # Warm /settings (its first compile) so the command's push lands within the wait.
             await page.goto(f"{ctx.app}/settings", wait_until="domcontentloaded")
             await page.goto(f"{ctx.app}{START}?creator={aid}", wait_until="domcontentloaded")
             res["focus"] = await _open_bot(page, nick)
             panel = page.locator(PANEL)
             box = page.get_by_placeholder("Ask a question…")
 
-            # 1. "open settings": a command, no LLM.
             c0, n0 = await _calls(ctx), len(asks)
             await box.fill("open settings")
             res["shots"]["prepass_trigger"] = await _shot(ctx, page, "prepass-trigger")
             await box.press("Enter")
             await page.wait_for_url(re.compile(r"^https?://[^/]+/settings(?:[/?#]|$)"), timeout=WAIT_MS)
             await panel.get_by_text("Opened Settings.", exact=True).wait_for(timeout=30_000)
-            await page.wait_for_timeout(1_500)   # an ask it would have sent is out by now
+            await page.wait_for_timeout(1_500)
             res["nav"] = {"url": page.url, "asks": len(asks) - n0, "calls": _delta(c0, await _calls(ctx)),
                           "line": await panel.get_by_text("Opened Settings.", exact=True).count()}
             res["shots"]["prepass_settled"] = await _shot(ctx, page, "prepass-settled")
 
-            # 2. Theme words: "light mode" then "dark mode" (so the second is always a switch).
             c0, n0 = await _calls(ctx), len(asks)
             steps = []
             for want in ("light", "dark"):
@@ -227,7 +175,6 @@ async def _owner_pass(ctx, aid: str, nick: str) -> dict:
             res["theme"] = {"steps": steps, "asks": len(asks) - n0, "calls": _delta(c0, await _calls(ctx))}
             res["shots"]["theme"] = await _shot(ctx, page, "prepass-theme")
 
-            # 3. A question that names a page: the LLM's.
             c0, n0 = await _calls(ctx), len(asks)
             await box.fill(HOWTO_Q)
             await box.press("Enter")
@@ -235,7 +182,6 @@ async def _owner_pass(ctx, aid: str, nick: str) -> dict:
             res["howto"] = {"asks": [a.status for a in asks[n0:]], "calls": _delta(c0, await _calls(ctx)),
                             "url": page.url}
 
-            # 4. The data marker: a live card, the model's figure stripped.
             n0, r0 = len(asks), len(revs)
             await box.fill(REVENUE_Q)
             res["shots"]["card_trigger"] = await _shot(ctx, page, "card-trigger")
@@ -257,7 +203,6 @@ async def _owner_pass(ctx, aid: str, nick: str) -> dict:
 
 
 async def _chatter(ctx, w, aid: str) -> tuple[Http, dict]:
-    """A chatter (real invite + register) working C, on the built-in "chatter" role, enforcement on."""
     name = f"{w.user_prefix}{w.seed}siri"
     got = (await chatters.seed(w, ctx.owner, w.user_id, [name], account_ids=[[aid]]))[0]
     emps = (await ctx.owner.get("/admin/employees")).json()["employees"]

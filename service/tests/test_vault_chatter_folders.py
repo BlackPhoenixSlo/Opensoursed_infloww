@@ -1,40 +1,7 @@
 #!/usr/bin/env python3
-"""Chatter folder limits on the vault MIRROR paths (not just /api/of/v2/vault/*).
-
-Real HTTP with real owner / chatter logins. Owner A owns accV; chatter `cf`
-is linked to A and restricted to OF folder 12 on accV. Mirror rows:
-  101 in folder 12, 102 in folder 123 (the LIKE trap: '%12%' matched it),
-  103 in no folder; all three have a thumb on disk.
-
-  /admin/vault-ai/items       All → soft deny; folder 12 → only 101 (exact match);
-                              folder 123 → empty; owner unchanged
-  /admin/vault-ai/of-folders  chatter sees folder 12 only
-  /admin/vault-ai/cache/summary  chatter count = allowed folders only
-  /admin/vault-ai/thumb|image|poster  chatter 404 outside its folders (even on a
-                              disk hit) and for media with no mirror row
-  /admin/vault-ai/pack-candidates|flags-review|flags-accuracy,
-  /admin/vault/media-stats    the review routes + the picker's stats: chatter lists
-                              and counts folder 12's items only; owner unchanged
-  /admin/vault-ai/flags-review/grade|pack-triage
-                              chatter 404 outside its folders / no mirror row;
-                              owner unchanged (200, 400 not_in_mirror for 999)
-  pack-candidates shelf       chatter's rung counts are of folder 12's media only
-  /api/of/v2/vault/media/{id}, PATCH items/{id}, items/{id}/hide, reorder
-                              chatter 404 outside its folders / no mirror row,
-                              before any cache read or OF call
-  collect/status, cache/summary last_run, harvest-keywords/status
-                              chatter gets no whole-vault totals / hit count
-  /admin/vault-ai/sync        chatter 403 outside its folders; on All only the cache
-                              drop (200, seen/new null, no OF walk)
-  OF-search harvest          pages paced; an OF error mid-walk folds what it got but
-                              writes no cache row; a 240 row is legacy only if stamped
-                              before the new cap shipped; a cache hit matches whole terms
-
-Run: ./venv/bin/python service/tests/test_vault_chatter_folders.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import json  # noqa: E402
@@ -67,10 +34,6 @@ _JPEG = b"\xff\xd8\xff\xe0" + b"0" * 64
 
 
 def _review_fields(graded: bool) -> dict:
-    """The review routes' seed: both passes answered (flags_known), contradicting
-    each other (fully_nude + a garment: listed by flags-review as passes_disagree),
-    with a confident Jev feet answer (a pack candidate), graded at the current
-    prompt when asked (flags-accuracy counts it)."""
     fields = {"description": "lying on her back", "explicitness": "explicit",
               "clothing_state": "fully_nude", "underwear_visible": True,
               "vulva_vis": "covered", "breasts_vis": "bare", "anus_vis": "not_in_frame",
@@ -111,13 +74,12 @@ async def case_seed():
         s.add(ChatterUser(chatter_id=cid, user_id=uid, created_at=datetime.utcnow()))
         s.add(ChatterFolderAccess(chatter_id=cid, account_id=AID, folder_id=12,
                                   folder_name="f12", created_at=datetime.utcnow()))
+        # 123 is the LIKE '%12%' trap for exact folder matching.
         for mid, folders in ((101, [12]), (102, [123]), (103, [])):
             s.add(_item(mid, folders, graded=mid != 103))
-        # One 1:1 priced send per media, 999 = a media the mirror has no row for.
         for mid in (101, 102, 103, 999):
             s.add(VaultSend(account_id=AID, fan_id=7, media_id=mid, message_id=mid * 10,
                             price_cents=500, was_purchased=True, sent_at=datetime(2026, 2, 1)))
-        # OF search already harvested (fresh log row): search-of answers from the mirror.
         s.add(VaultOfQueryLog(account_id=AID, query="bikini", match_count=3,
                               fetched_at=datetime.utcnow()))
     await seed_pre_enforcement_install()
@@ -222,7 +184,6 @@ def case_duplicate_list_hides_foreign_folder_media():
 
 
 def case_duplicate_hide_uses_chatter_folder_scope():
-    """A~B~C is not transitive: hiding C must use the visible B/C pair."""
     import asyncio
     import automation_executor as ax
     import vault_dupes
@@ -352,9 +313,6 @@ def _mids(r, key: str) -> list[int]:
 
 
 def case_review_lists_scoped_to_folders():
-    """pack-candidates, flags-review, flags-accuracy, media-stats: the owner
-    sees every item, the chatter only folder 12's (101), counts included. The
-    retired disputes routes are gone for both."""
     owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
     a = f"account_id={AID}"
     for path, key in ((f"/admin/vault-ai/pack-candidates?{a}&category=feet", "candidates"),
@@ -377,10 +335,6 @@ def case_review_lists_scoped_to_folders():
 
 
 def case_review_writes_404_outside_folders():
-    """flags-review/grade, pack-triage: the chatter may write
-    only folder 12's media; outside (102), unfiled (103), unknown (999) and a
-    verdict list naming one of them 404 as a still does. The owner is unchanged:
-    200, and 404 not_in_mirror for 999 (W30 F14/N1: triage files live mirror rows only)."""
     owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
 
     def triage(*mids):
@@ -404,9 +358,6 @@ def case_review_writes_404_outside_folders():
 
 
 def case_pack_shelf_counts_scoped():
-    """After the triage above filed 101 (chatter) and 102 (owner; 999 refused, W30 F14) on "nude"
-    (the seed is breasts-bare + disputed, so never the free "tease" rung — W30 F1):
-    the owner's shelf counts both, the chatter's only 101."""
     owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
     q = f"/admin/vault-ai/pack-candidates?account_id={AID}&category=feet"
 
@@ -420,7 +371,7 @@ def case_by_id_edit_hide_reorder_gated():
     owner, chatter = _login("/auth/login", "ownerv"), _login("/chatter/login", "cf")
     h = {"X-Account-Id": AID}
     import asyncio
-    for mid in (101, 102):   # cached, so a pass reads no OF
+    for mid in (101, 102):
         asyncio.run(vault_cache.put(AID, f"media-by-id:{mid}", {"id": mid}, started_at=datetime.utcnow()))
     for mid, want in ((101, 200), (102, 404), (103, 404), (999, 404)):
         r = chatter.get(f"/api/of/v2/vault/media/{mid}", headers=h)
@@ -461,7 +412,7 @@ async def case_run_totals_owner_only():
     assert (o["warmed"], o["warm_total"]) == (40, 900), o
     assert (c["total_seen"], c["upserted"], c["pages_done"]) == (None, None, None), c
     assert (c["warmed"], c["warm_total"]) == (None, None), c
-    assert (o["error"], c["error"]) == ("boom", None), (o, c)   # a cap's error names the vault's size
+    assert (o["error"], c["error"]) == ("boom", None), (o, c)
     assert c["status"] == o["status"], (c, o)
     o = owner.get(f"/admin/vault-ai/cache/summary?{q}").json()
     c = chatter.get(f"/admin/vault-ai/cache/summary?{q}").json()
@@ -482,7 +433,7 @@ def case_sync_needs_an_allowed_folder():
 
     async def _no_mirror(_aid):
         return False
-    vault_ingest.has_live_mirror = _no_mirror   # stop before any OF walk
+    vault_ingest.has_live_mirror = _no_mirror
     saved_inv, dropped = vault_cache.invalidate, []
 
     async def _inv(aid):
@@ -494,8 +445,7 @@ def case_sync_needs_an_allowed_folder():
             assert r.status_code == want, ("chatter", folder, r.status_code, r.text[:120])
             if want == 403:
                 assert r.json()["detail"] == {"error": "folder_not_allowed"}, r.json()
-        # All (where the UI opens): Refresh still drops the cache; no whole-vault walk or counts.
-        vault_ingest.has_live_mirror = saved   # a walk would need it: must not get that far
+        vault_ingest.has_live_mirror = saved
         dropped.clear()
         r = chatter.post(f"/admin/vault-ai/sync?account_id={AID}")
         assert r.status_code == 200, ("chatter All", r.status_code, r.text[:120])
@@ -559,7 +509,6 @@ async def case_harvest_paced_partial_uncached_legacy_by_date():
 
 
 async def case_harvest_cache_matches_whole_terms():
-    """W30 F18: a cache hit matches the whole stored term ("ace" is not "lace", folded above)."""
     async with get_session() as s:
         s.add(VaultOfQueryLog(account_id=AID, query="ace", match_count=0, fetched_at=datetime.utcnow()))
     r = await vault_ai_api._harvest_query(AID, "ace")

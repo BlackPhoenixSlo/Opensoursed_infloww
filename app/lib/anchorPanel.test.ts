@@ -1,7 +1,3 @@
-/**
- * lib/anchorPanel — popover placement. The legacy rows prove
- * the left-aligned output equals the inline math TagCreatorsPicker / TemplatePicker carried before the move.
- */
 import { describe, expect, it } from "vitest";
 
 import { anchorPanel, type PopoverCoords } from "@/lib/anchorPanel";
@@ -11,7 +7,6 @@ const rect = (top: number, left: number, h = 32, w = 32): Rect => ({ top, bottom
 const VP = { width: 1280, height: 800 };
 const PANEL = { width: 320, height: 384 };
 
-/** TagCreatorsPicker's inline `update` body before the move, verbatim but for `window.inner*` → `vp`. */
 function legacyTagPicker(r: Rect, vp: { width: number; height: number }) {
   const PANEL_W = 320;
   const PANEL_H_PREF = 384;

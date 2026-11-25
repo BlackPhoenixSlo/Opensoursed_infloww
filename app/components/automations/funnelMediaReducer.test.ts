@@ -53,7 +53,6 @@ describe("transitions", () => {
     ["setStep on an unseeded step starts from empty (teaser clamped to no ids)",
       [{ type: "setStep", stepNo: 9, patch: { previewCount: 3 } }],
       { steps: { ...seeded.steps, "9": { ids: [], previewCount: 0 } } }],
-    // teaser clamp lives in the reducer: 0 ≤ previewCount ≤ ids.length.
     ["setStep with fewer ids re-clamps the teaser",
       [{ type: "setStep", stepNo: 2, patch: { ids: [21] } }],
       { steps: { ...seeded.steps, "2": { ids: [21], previewCount: 1 } }, rev: seeded.rev + 1 }],
@@ -85,7 +84,6 @@ describe("transitions", () => {
     ["pickConfirm with the picker closed is a no-op",
       [{ type: "pickConfirm", ids: [5] }],
       { pickerFor: null, openerIds: [7, 8], steps: seeded.steps, rev: seeded.rev }],
-    // move / remove: send order = teaser order; every one is an edit (rev + 1).
     ["move opener right",
       [{ type: "move", target: "opener", i: 0, dir: 1 }],
       { openerIds: [8, 7], rev: seeded.rev + 1, done: false }],

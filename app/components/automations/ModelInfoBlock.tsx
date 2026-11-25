@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * Model info, the account's short note every chat prompt pins (`account_ai_config.model_notes`, through
- * `_persona.compose_persona`: Get to know fans and Auto-reply). One block, shown on both pages, with its own Save
- * ("Save model info"): it PUTs the STORED brain back with only `model_notes` changed (the PUT replaces the brain).
- * The box mounts only once the stored brain is in hand, so a failed read is never saved back; its Save waits while any
- * brain PUT or re-read is out (`useAccountConfigBusy`), so it never lands on a stale copy. Form state: `personaDraft.ts`.
- * `draftFromImages` (Full AI Chat only) adds "Make persona from the Creator's images": POST /admin/full-ai/persona/draft fills the
- * box, unsaved; only Save writes. With a persona in the box it asks first (the house `ifConfirm`), before the paid call.
- * `saveNote` is a line beside Save (Full AI Chat: it saves for every live chat, not into the config checkpoint).
- */
 
 import { useReducer, type ReactNode } from "react";
 
@@ -24,11 +14,9 @@ import {
   buildPayload, busyLine, canDraft, dirty, initPersonaDraft, MODEL_NOTES_MAX as NOTES_MAX, personaDraftReducer, requestBody, type PersonaDraftResp,
 } from "./personaDraft";
 
-// Spec phase-03c › Solution 1 / story 14, word for word.
 const NEED_DESCRIBE = "No described images yet. Run Prepare content or the vault describe first.";
 const REPLACE_ASK = "Replace the Model info in the box with a new draft from the Creator's images? Nothing is saved until you tap Save.";
 
-/** A form block's fields while its read runs: a label bar over an input-sized bar, twice. */
 export function FormSkeleton() {
   return (
     <div role="status" aria-label="Loading" className="space-y-3">
@@ -57,9 +45,8 @@ function ModelInfoForm({ accountId, resp, draftFromImages, saveNote }: {
   accountId: string; resp: AccountConfigResp; draftFromImages: boolean; saveNote?: ReactNode;
 }) {
   const saveM = useSaveAccountConfig(accountId);
-  // Any brain PUT or re-read out (this Save's or the page's model Save): `resp` may be stale, a PUT now could undo it.
+  // While any brain PUT or re-read is out, resp may be stale and a PUT now could undo it.
   const busy = useAccountConfigBusy(accountId);
-  // Empty → the prewritten template; its lines left blank never reach a prompt.
   const [draft, dispatch] = useReducer(personaDraftReducer,
     resp.config.model_notes || resp.model_notes_template || "", initPersonaDraft);
   const text = draft.text;
@@ -71,13 +58,13 @@ function ModelInfoForm({ accountId, resp, draftFromImages, saveNote }: {
   const makeDraft = async () => {
     const click = { type: "click", template } as const;
     const next = personaDraftReducer(draft, click);
-    if (next === draft) return;  // a request out or a question open: a double tap is one request
+    if (next === draft) return;
     const body = requestBody(draft, accountId);
     dispatch(click);
     if (next.phase === "confirm") {
       const ok = await ifConfirm(REPLACE_ASK, { confirmLabel: "Make new draft" });
       dispatch({ type: ok ? "confirm" : "cancel" });
-      if (!ok) return;  // Cancel: no request, the text stays
+      if (!ok) return;
     }
     relay.post<PersonaDraftResp>("/admin/full-ai/persona/draft", body, { accountId }).then(
       (r) => dispatch(r.need_describe ? { type: "draftEmpty", note: NEED_DESCRIBE } : { type: "draftOk", text: r.text, notes: r.notes }),

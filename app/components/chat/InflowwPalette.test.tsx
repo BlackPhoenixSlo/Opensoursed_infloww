@@ -1,13 +1,3 @@
-/**
- * InflowwPalette — the palette seam of
- * docs/spec/messages-pro-look-and-feel/phase-01-colour-and-shell.md (Testing
- * Decisions): the hook returns the palette style inside the wrapper and
- * nothing outside it, and a real portal root (`VaultPicker`) carries the
- * palette's custom properties on its outermost element inside the wrapper and
- * none outside it, so a picker reused outside Messages Pro keeps the app's
- * tokens. Expected values are the Colour inventory's
- * (docs/screenshots/messages-pro-compare.md).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen } from "@testing-library/react";
 
@@ -51,7 +41,6 @@ describe("InflowwPalette's hook", () => {
       "--inf-fan-avatar": "#262626",
       "--inf-creator-avatar": "#666666",
       "--inf-list-avatar": "#666666",
-      // Page-parity 07, sampled from the 2026-10-18 capture.
       "--inf-online": "#2ad4ac",
       "--inf-send-idle": "#666666",
       "--inf-send-idle-text": "#979797",
@@ -106,7 +95,6 @@ describe("a portal root (VaultPicker)", () => {
   const picker = (
     <VaultPicker open onClose={() => {}} accountId="acct-1" initialSelectedIds={[]} onConfirm={() => {}} />
   );
-  /** The picker's outermost element, the one portalled into <body>. */
   const pickerRoot = () => {
     const root = screen.getByRole("button", { name: "Close vault picker" }).parentElement!;
     expect(root.parentElement).toBe(document.body);
@@ -123,7 +111,6 @@ describe("a portal root (VaultPicker)", () => {
     expect(root.style.getPropertyValue("--color-fg")).toBe("#d9d9d9");
     expect(root.style.getPropertyValue("--inf-accent-text")).toBe("#7d97ff");
     expect(root.style.colorScheme).toBe("dark");
-    // The backdrop keeps its own (transparent) fill: the palette paints no background on it.
     expect(root.style.background).toBe("");
   });
 

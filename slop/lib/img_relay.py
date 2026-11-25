@@ -1,70 +1,3 @@
-"""OnlyFans' media CDN at its wire, for the chat media flow (scenarios/2026-11-02-img-chat-media.py): lib/relay.py
-loads this part (`OF` joins `_OfflineOF`'s bases; `wire` runs at the end of its `_wire`).
-
-Inert unless the run wrote `$DEMO_SHOTS_TMP/of-cdn.json` (the scenario does, through `arm_run` below) AND then armed
-it: without the file `POST /__slop/img/arm` is a 409 that changes nothing, and nothing else here runs, so every
-other scenario's relay is untouched (`OF.http` / `OF.timeout_s` re-raise the client build error, as
-`_OfflineOF.__getattr__` did before this part existed: unarmed, nothing here can reach curl).
-
-  arm_run(http, tmp, assets, latency_s, pictures=False, mp4_sizes=None, stall=None, mp4_frames=None)  (harness
-       side) writes `of-cdn.json` {latency_s, pictures, assets: {"host/path": size}, mp4_sizes, stall, mp4_frames},
-       POSTs the arm hook and
-       answers its body. `stall` {"host/path": {"after": K, "hold_s": S}}: that key's 200 sends its headers and first
-       K bytes, then nothing for S s (a CDN response throttled to zero bytes mid-body), then the rest if the peer
-       is still there (the relay's curl drops it first: LOW_SPEED_TIME = its 30 s timeout).
-       `pictures`: every asset's bytes are a real picture (`picture_bytes`, a small PNG; size ignored) so a browser
-       draws it and vault_stills keeps it. `mp4_sizes` {"host/path.mp4": size}: that video is the clip padded to
-       exactly `size` (`padded_mp4`: one trailing `free` box), a big file without encoding one. `mp4_frames`
-       {"host/path.mp4": {"size": [W, H], "rgb": [[r, g, b], ...]}}: that video is `colour_clip` instead (one flat
-       colour per second, W x H; padded too when in `mp4_sizes`). Arming again re-reads the file (same server; a
-       re-sized key's cached bytes are dropped).
-  POST /__slop/img/arm   (loopback; 409 without the file or under SLOP_LIVE=1)
-       1. The fake CDN: a loopback ThreadingHTTPServer in the relay process (a thread per request). Per request,
-          after `latency_s`: a seeded asset's bytes (`asset_bytes`, deterministic per host+path) with
-          Content-Length; on a signed host (any but public.onlyfans.com) a URL without Policy + Signature +
-          Key-Pair-Id, whose Policy's `exp` is past, or whose Policy names an `AWS:SourceIp` other than the
-          request's egress, is 403 AccessDenied (CloudFront's answer; the Policy is CloudFront's custom one,
-          `policy_b64` / `policy_exp` / `policy_ip`); an unseeded path 404. A `.mp4` key's bytes are a real
-          12 s clip (`video_bytes`, ffmpeg testsrc 64x64 at 1 fps, size ignored; an `mp4_frames` key's its
-          `colour_clip`), so /img/scrub's ffmpeg slices it.
-          A `Range: bytes=` header (one spec) gets that slice: 206 + Content-Range (416 past the end).
-       2. curl_cffi at its wire: `relay._guard_curl_cffi()` first (curl_cffi goes past relay_guarded's socket guard;
-          it refuses every non-loopback host from now on), then `curl_cffi.requests.Session.request` wrapped so a
-          URL on a seeded CDN host (the assets' hosts) is sent to the fake instead (path + query kept, the original
-          host in `X-Slop-Cdn-Host`, the egress in `X-Slop-Egress`: "127.0.0.1:<port>" of the proxy the call
-          names (its `proxies`, else the session's), else "direct"; and the session's cookies that curl would
-          have sent to that host as a `Cookie` header, since curl matches its jar against the loopback host
-          otherwise). Every other URL is unchanged.
-          Both `/img` lanes go through it: the signed hosts on the Creator's `client.http` (this part's
-          `OF.http`), the direct ones on `img_api._DIRECT_HTTP` (a bare curl_cffi Session, measured in source).
-       3. `img_api._IMG_CACHE_DIR` (a module global read at call time) re-pointed to `$DEMO_SHOTS_TMP/img-cache`:
-          the default `/tmp/of-relay-img-cache` is the laptop's shared dir, never read or written here.
-       Answers {port, cache_dir}.
-  GET /__slop/img/calls?since=N&until=M  {calls}: every request the fake got, in arrival order, [N:M].
-  GET /__slop/img/stats                  {n}: calls so far.
-
-Record per call: i, t (arrival, epoch s), key ("host/path"), host, path, range, egress, cookie (a Cookie header came),
-auth_id (its auth_id cookie), of_headers (user-id / x-bc / app-token / sign sent), ua, status, inflight (requests
-in the fake at arrival, this one included: its max over calls is the fake's peak concurrency), bytes, stalled (a
-`stall` key; status 499 unless the whole body got out). A call leaves `inflight` just before its last byte is
-written (a non-200: before its status line), so a relay slot can never be released while the fake still counts it.
-
-`OF` (joins `_OfflineOF`): a Creator with no session in a slop run gets, once armed, `http` = one curl_cffi Session
-per Creator (impersonate as of_client, the cookies an OFClient replays: synthetic `auth_id` = the Creator's id and
-`sess`, on `.onlyfans.com`; and `creator_headers(id)`, synthetic stand-ins for the account's pinned User-Agent,
-user-id, x-bc and app-token, so a check can tell an account's request from `_DIRECT_HTTP`'s) and `timeout_s` =
-of_client.DEFAULT_TIMEOUT_S, so `/img`'s signed-host path runs `_get_client(request).http` unchanged.
-
-Bypasses (declared): the CDN is a loopback fake inside the relay process (shares its GIL); the bytes are seeded
-noise in a 1x1 JPEG's comment segments (`asset_bytes`: the browser decodes one grey pixel, the relay nothing);
-`latency_s` per request is a guess at OF's CDN through a proxy;
-the Signature is never verified, only the Policy's expiry and SourceIp; the egress is the proxy curl was told to
-use (a header the wrap adds), not the peer address the fake sees; `pictures` serves a PNG as image/jpeg (browsers
-sniff); one-spec Range answered as CloudFront does (206 + Content-Range, 416 past the end), no CDN 5xx; `stall`
-is a sleep in the fake's thread, not a real throttled TCP path; the session cookies and headers are synthetic
-(session-level here, where of_client sets them per request).
-"""
-
 import base64
 from functools import cache
 import hashlib
@@ -77,11 +10,11 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-CFG_FILE = "of-cdn.json"  # in $DEMO_SHOTS_TMP
+CFG_FILE = "of-cdn.json"
 ORIG_HOST = "X-Slop-Cdn-Host"
 EGRESS = "X-Slop-Egress"
-ACCOUNT_HEADERS = ("user-id", "x-bc", "app-token")  # the OF account headers `creator_headers` sets
-OF_HEADERS = (*ACCOUNT_HEADERS, "sign")  # recorded per call (`of_headers`)
+ACCOUNT_HEADERS = ("user-id", "x-bc", "app-token")
+OF_HEADERS = (*ACCOUNT_HEADERS, "sign")
 _lock = threading.Lock()
 _calls: list[dict] = []
 _cfg: dict = {"assets": {}, "hosts": set(), "latency_s": 0.0, "pictures": False, "mp4_sizes": {}, "stall": {},
@@ -89,7 +22,7 @@ _cfg: dict = {"assets": {}, "hosts": set(), "latency_s": 0.0, "pictures": False,
 _state = {"port": None, "armed": False, "inflight": 0}
 _bytes: dict[str, bytes] = {}
 _sessions: dict[str, object] = {}
-_relay = None  # lib/relay.py's namespace (wire)
+_relay = None
 
 
 def _file() -> Path:
@@ -100,7 +33,6 @@ def _on() -> bool:
     return bool(os.environ.get("DEMO_SHOTS_TMP")) and _file().is_file()
 
 
-# A 1x1 grey JPEG (PIL, quality 50): asset_bytes pads it with COM segments, so a browser decodes the whole body.
 _JPEG_1PX = base64.b64decode(
     "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9PDkzODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBk"
     "eFxlZ2P/2wBDARESEhgVGC8aGi9jQjhCY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wAARCAABAAED"
@@ -113,17 +45,14 @@ _JPEG_1PX = base64.b64decode(
 
 
 def asset_bytes(key: str, size: int) -> bytes:
-    """The CDN's bytes for asset `key` ("host/path"): exactly `size`, deterministic (harness and fake agree): a 1x1
-    JPEG whose COM segments carry seeded noise (bare noise below its size). Not bare noise: Chromium cancels an
-    image whose first chunk will not decode, so over a capped line only ~1.5 KB of it crossed (measured 2026-11-05:
-    12 noise tiles of 100 KB in 435 ms at 1.6 Mbit/s, these in 6285 ms)."""
     rng = random.Random(int(hashlib.sha256(key.encode()).hexdigest()[:16], 16))
+    # not bare noise: Chromium cancels an image whose first chunk will not decode (measured: capped line delivered ~1.5 KB)
     pad = size - len(_JPEG_1PX)
     if pad < 4:
         return rng.randbytes(size)
     out = [b"\xff\xd8"]
     while pad:
-        n = min(pad, 65_537)  # a COM segment: FF FE, a 2-byte length (itself included, <= 65535), then the data
+        n = min(pad, 65_537)
         if pad - n in (1, 2, 3):
             n = pad - 4
         out.append(b"\xff\xfe" + (n - 2).to_bytes(2, "big") + rng.randbytes(n - 4))
@@ -133,7 +62,6 @@ def asset_bytes(key: str, size: int) -> bytes:
 
 
 def picture_bytes(key: str) -> bytes:
-    """A real picture for asset `key`: a 16x16 PNG in one colour from the key (harness and fake agree)."""
     import struct
     import zlib
     rgb = hashlib.sha256(key.encode()).digest()[:3]
@@ -147,20 +75,16 @@ def picture_bytes(key: str) -> bytes:
 
 
 def signed(host: str) -> bool:
-    """OF's signed hosts: every seeded media host but the unsigned one (seed/chat_media.py's DIRECT_HOST, one of
-    img_api._DIRECT_CDN_HOST's)."""
     return host != "public.onlyfans.com"
 
 
 def creator_headers(account_id: str) -> dict[str, str]:
-    """The Creator's synthetic account headers on its fake session (module docstring: `OF`)."""
     vals = (str(account_id), f"slop-bc-{account_id}", "slop-app-token")
     return {"User-Agent": f"SlopCreatorUA/{account_id}", **dict(zip(ACCOUNT_HEADERS, vals, strict=True))}
 
 
 async def arm_run(http, tmp: Path, assets: dict, latency_s: float, pictures: bool = False,
                   mp4_sizes: dict | None = None, stall: dict | None = None, mp4_frames: dict | None = None) -> dict:
-    """Harness side: `assets` {"host/path": {size, ...}} into the config file, then the arm hook."""
     (Path(tmp) / CFG_FILE).write_text(json.dumps({
         "latency_s": latency_s, "pictures": pictures, "assets": {k: a["size"] for k, a in assets.items()},
         "mp4_sizes": mp4_sizes or {}, "stall": stall or {}, "mp4_frames": mp4_frames or {}}))
@@ -171,7 +95,6 @@ async def arm_run(http, tmp: Path, assets: dict, latency_s: float, pictures: boo
 
 
 class OF:
-    """`_OfflineOF`'s media client: armed, the Creator's curl_cffi session; unarmed, the build error as before."""
 
     @property
     def http(self):
@@ -215,7 +138,6 @@ def _leave() -> None:
 
 @cache
 def video_bytes() -> bytes:
-    """A 12 s 64x64 clip at 1 fps (ffmpeg testsrc: a counter that changes every second), H.264 mp4."""
     import subprocess
     import tempfile
     with tempfile.TemporaryDirectory() as d:
@@ -227,13 +149,11 @@ def video_bytes() -> bytes:
 
 @cache
 def colour_clip(w: int, h: int, rgb: tuple) -> bytes:
-    """A len(rgb)-second w x h H.264 mp4, second i one flat colour rgb[i]. 4 fps, so the product's mid-second seek
-    (`vault_frames._extract_jev`: frame i at i + 0.5 s) lands on a frame of second i (at 1 fps ffmpeg's accurate
-    seek drops the frame at i and returns the next: measured 11-12)."""
     import subprocess
     import tempfile
 
     from PIL import Image
+    # 4 fps: at 1 fps ffmpeg's accurate seek to i + 0.5 s drops frame i and returns the next (measured)
     raw = b"".join(Image.new("RGB", (w, h), tuple(c)).tobytes() for c in rgb for _ in range(4))
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / "clip.mp4"
@@ -244,7 +164,6 @@ def colour_clip(w: int, h: int, rgb: tuple) -> bytes:
 
 
 def padded_mp4(clip: bytes, size: int) -> bytes:
-    """`clip`, then one ISO-BMFF `free` box (players skip it) up to exactly `size` bytes."""
     pad = size - len(clip)
     return clip if pad < 8 else clip + pad.to_bytes(4, "big") + b"free" + bytes(pad - 8)
 
@@ -269,7 +188,6 @@ UNSATISFIABLE_RANGE = (-1, -1)
 
 
 def _range(h: str | None, n: int) -> tuple[int, int] | None:
-    """Return a byte span, UNSATISFIABLE_RANGE, or None for a full 200 answer."""
     m = re.fullmatch(r"bytes=(\d*)-(\d*)", (h or "").strip())
     if not m or not (m.group(1) or m.group(2)):
         return None
@@ -282,7 +200,6 @@ def _range(h: str | None, n: int) -> tuple[int, int] | None:
 
 
 def policy_b64(policy: dict) -> str:
-    """A custom Policy as CloudFront puts it in a URL: base64 with `+=/` as `-_~`."""
     raw = base64.b64encode(json.dumps(policy, separators=(",", ":")).encode()).decode()
     return raw.translate(str.maketrans("+=/", "-_~"))
 
@@ -293,20 +210,16 @@ def _policy_doc(policy: str) -> dict:
 
 
 def policy_exp(policy: str) -> float:
-    """A CloudFront custom Policy's expiry (`Statement[0].Condition.DateLessThan["AWS:EpochTime"]`, epoch s)."""
     doc = _policy_doc(policy)
     return float(doc["Statement"][0]["Condition"]["DateLessThan"]["AWS:EpochTime"])
 
 
 def policy_ip(policy: str) -> str | None:
-    """A CloudFront custom Policy's `IpAddress.AWS:SourceIp`, or None when it names none."""
     doc = _policy_doc(policy)
     return (doc["Statement"][0]["Condition"].get("IpAddress") or {}).get("AWS:SourceIp")
 
 
 def _denied(q: dict, egress: str) -> bool:
-    """CloudFront's check, as far as this fake makes it: the three params present, the Policy's expiry ahead and
-    its SourceIp (when it names one) the request's egress."""
     if not all(q.get(k) for k in ("Policy", "Signature", "Key-Pair-Id")):
         return True
     try:
@@ -333,7 +246,8 @@ def _serve() -> int:
                           status=None, bytes=0)
             left = []
 
-            def leave() -> None:  # once per call, whichever path gets here first
+            # runs before the last byte so a relay slot is never freed while the fake still counts the request
+            def leave() -> None:
                 if not left:
                     left.append(True)
                     _leave()
@@ -356,7 +270,7 @@ def _serve() -> int:
                     a, b = part
                     status, range_header, body = 206, f"bytes {a}-{b}/{len(body)}", body[a:b + 1]
                 rec.update(status=status, bytes=len(body))
-                if status not in (200, 206):  # the relay drops its slot on the status line alone
+                if status not in (200, 206):
                     leave()
                 self.send_response(status)
                 self.send_header("Content-Type", ct)
@@ -367,15 +281,15 @@ def _serve() -> int:
                 if not body:
                     return
                 st = _cfg["stall"].get(key) if status == 200 else None
-                if st:  # throttled to zero bytes mid-body (docstring: arm_run `stall`)
+                if st:
                     k = max(0, min(int(st.get("after", 0)), len(body) - 1))
-                    rec.update(stalled=True, status=499)  # 200 again only if the whole body got out
+                    rec.update(stalled=True, status=499)
                     self.wfile.write(body[:k])
                     self.wfile.flush()
                     time.sleep(float(st.get("hold_s", 45)))
                     body = body[k:]
                 self.wfile.write(body[:-1])
-                leave()  # before the last byte: the relay cannot finish (and free its slot) before this
+                leave()
                 self.wfile.write(body[-1:])
                 if st:
                     rec["status"] = 200
@@ -389,7 +303,8 @@ def _serve() -> int:
 
     class Srv(ThreadingHTTPServer):
         daemon_threads = True
-        request_queue_size = 256  # listen() backlog (socketserver: 5); a class attr, read by server_activate
+        # listen() backlog; socketserver default is 5
+        request_queue_size = 256
 
     srv = Srv(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, name="slop-fake-of-cdn", daemon=True).start()
@@ -402,7 +317,6 @@ def _domain_match(host: str, domain: str) -> bool:
 
 
 def _route_curl() -> None:
-    """curl_cffi's Session.request: a seeded CDN host goes to the fake (docstring 2). Idempotent."""
     from cffi_wrap import path_query, wrap_request
 
     def to_fake(session, p, k):
@@ -420,7 +334,6 @@ def _route_curl() -> None:
         k["headers"] = hdrs
         return f"http://127.0.0.1:{_state['port']}" + path_query(p)
 
-    # The guard sits under it: `_guard_curl_cffi` stays idempotent.
     wrap_request(to_fake, "__slop_img__")
 
 

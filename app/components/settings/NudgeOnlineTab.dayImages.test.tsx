@@ -1,10 +1,3 @@
-/**
- * Nudge online's per-day editor and Share, through the whole tab on a mocked relay wire:
- *   • picking a day shows what its empty times inherit, and "Edit for …" makes those lines the day's own;
- *   • images come only from the vault (no upload / drop);
- *   • Share saves this model's unsaved edits, then sends the config to the picked models (none by default);
- *   • the preview sends the picked day.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -38,7 +31,6 @@ function wrapper({ children }: { children: ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
 }
-// The tab keeps an unsaved draft in localStorage (usePendingDraft); one case must not seed the next.
 afterEach(() => { cleanup(); vi.clearAllMocks(); localStorage.clear(); });
 
 const SLOTS = { default: { evening: { text: ["eve {name}", "two"], image: [] } } };
@@ -90,7 +82,6 @@ describe("Nudge online per day", () => {
     render(<NudgeOnlineTab />, { wrapper });
     const btn = await screen.findByRole("button", { name: "Share to 0 models" });
     expect(btn).toBeDisabled();
-    // The model being edited is not in its own share list.
     expect(screen.queryByRole("switch", { name: "acct" })).toBeNull();
     await user.click(screen.getByRole("switch", { name: "other" }));
     const eve = card("Evening (18–21)");

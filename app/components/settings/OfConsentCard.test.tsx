@@ -1,8 +1,3 @@
-/**
- * OfConsentCard — the "Auto-accept OnlyFans consent" checkbox: shown for every
- * Creator, a warning line above it while OF wants the consent form; one click PUTs
- * `{auto_accept}`; the line under it names who changed it and when.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";

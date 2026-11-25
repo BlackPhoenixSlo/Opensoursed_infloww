@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""`/admin/saved-replies/relabel` is all-or-nothing.
-
-The seam is the Relay over HTTP with the shared two-Agency fixture's owner
-session; the DB is read back through a fresh sqlite3 connection, not the
-route. A relabel that blows up on one script (a corrupt tags_json) must leave
-every script as it was, a clean one changes exactly the scripts it names, and
-a sequence rename onto an existing name changes nothing.
-
-Run: ./venv/bin/python service/tests/test_saved_reply_relabel_atomic.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -37,6 +27,7 @@ def _db_rows() -> dict[int, tuple]:
         "SELECT id, tags_json, script_id, script_step FROM saved_replies WHERE account_id = ?", A)}
 
 
+# Handler's select has no ORDER BY: corrupt the middle row so asc or desc scans both relabel a clean row first.
 def _corrupt_tags(reply_id: int) -> None:
     _sql("UPDATE saved_replies SET tags_json = ? WHERE id = ?", "[not json", reply_id)
 
@@ -52,7 +43,6 @@ def _relabel(c, **body):
 
 
 def _wipe() -> None:
-    # SQL, not the list route: the atomic case leaves a corrupt row the list can't serialize.
     _sql("DELETE FROM saved_replies WHERE account_id = ?", A)
 
 
@@ -60,13 +50,11 @@ def case_a_relabel_that_fails_midway_leaves_every_script_unchanged():
     c = fx.login_owner("agency_a_owner")
     _wipe()
     ids = [_new(c, title=t, tags=["Old"])["id"] for t in ("r1", "r2", "r3")]
-    # The handler's select has no ORDER BY; the corrupt row is the middle one, so an ascending or a descending scan
-    # both relabel a clean row before the failing one.
     _corrupt_tags(ids[1])
     before = _db_rows()
     try:
         _relabel(c, kind="tag", **{"from": "Old"}, to="New", ids=ids)
-    except json.JSONDecodeError:  # TestClient re-raises the handler's error
+    except json.JSONDecodeError:
         pass
     else:
         raise AssertionError("relabel over a corrupt row did not fail")

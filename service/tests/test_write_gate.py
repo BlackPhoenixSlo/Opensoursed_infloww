@@ -1,15 +1,3 @@
-"""One account's OF write spacing serves the operator first (write_gate, ADR 0025).
-
-`automation_executor.of_write_paced` waits at the account's `WriteGate`. These
-cases pin that every write still starts at least the gap after the one before
-(the spacing OF sees), that an operator's write waiting behind automation's
-goes next rather than last, that an idle account writes at once, that a
-cancelled waiter neither blocks nor shortens the spacing, and that the tier
-reaches the gate: from an operator's run (owner or borrower) by default, and
-from the app's own writes (chat delete, vault import) explicitly.
-
-Run: ./venv/bin/python service/tests/test_write_gate.py
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB + TEST_MODE
@@ -24,11 +12,10 @@ from write_gate import WriteGate
 _harness.bootstrap()
 
 GAP = 0.05
-SLACK = 0.004     # loop timer granularity
+SLACK = 0.004  # loop timer granularity
 
 
 async def _writers(gate: WriteGate, plan: list[tuple[str, bool, float]]) -> list[tuple[str, float]]:
-    """Start each (name, operator, after_s) writer; their grant times, in order."""
     loop = asyncio.get_running_loop()
     got: list[tuple[str, float]] = []
 
@@ -52,9 +39,6 @@ async def case_writes_on_one_account_stay_a_gap_apart():
 
 
 async def case_an_operator_write_goes_next_not_last():
-    """Five automation writes queue on one account; the operator's chat delete
-    arrives after them and starts at the next turn, a gap after the write in
-    flight — not five gaps later. The spacing between every write holds."""
     gate = WriteGate()
     plan = [(f"a{i}", False, 0.0) for i in range(5)] + [("op", True, GAP / 2)]
     got = await _writers(gate, plan)
@@ -65,8 +49,6 @@ async def case_an_operator_write_goes_next_not_last():
 
 
 async def case_operators_keep_their_own_order():
-    """Operators keep their arrival order; with automation waiting they take
-    every other turn, never two in a row."""
     gate = WriteGate()
     plan = [("a0", False, 0.0), ("a1", False, 0.0), ("op1", True, 0.01), ("op2", True, 0.02)]
     names = [n for n, _ in await _writers(gate, plan)]
@@ -74,10 +56,6 @@ async def case_operators_keep_their_own_order():
 
 
 async def case_automation_is_served_within_two_gaps_of_a_streaming_operator_leg():
-    """A priority mass leg runs in the operator tier: ten of its sends queue on
-    the account, and an automation write (a mass send under broadcast_lock,
-    keeping its run slot) arrives behind them. It goes within two gaps, not
-    after the whole leg, and the leg keeps its order."""
     gate = WriteGate()
     loop = asyncio.get_running_loop()
     t0 = loop.time()
@@ -87,8 +65,6 @@ async def case_automation_is_served_within_two_gaps_of_a_streaming_operator_leg(
     waited = dict(got)["auto"] - (t0 + GAP / 2)
     assert waited <= 2 * GAP + SLACK, ("automation starved behind the operator leg", waited / GAP, names)
     assert [n for n in names if n != "auto"] == [f"op{i}" for i in range(10)], names
-    # (The spacing is case_writes_on_one_account_stay_a_gap_apart's: eleven
-    # wake-ups measured here jitter past SLACK on a loaded machine.)
 
 
 async def case_an_idle_account_writes_at_once():
@@ -116,10 +92,6 @@ async def case_a_cancelled_waiter_neither_blocks_nor_shortens_the_spacing():
 
 
 async def case_the_tier_reaches_the_gate_from_an_operators_run():
-    """of_write_paced with no `operator`: an operator's run (a child borrowing
-    its lent slot, or any task it spawned) writes in the operator tier,
-    automation's does not; outside a run it is automation unless the caller
-    says otherwise. Inside a run the gate's tier is dm_rate's (run_of_task)."""
     seen: list[tuple[str, bool]] = []
     real = WriteGate.turn
 
@@ -127,7 +99,7 @@ async def case_the_tier_reaches_the_gate_from_an_operators_run():
 
     async def spy(self, gap, *, operator=False):
         seen.append((tag, operator))
-        if run_slot.run_of_task() is not None:      # one test of whose work it is, gate and DM rate alike
+        if run_slot.run_of_task() is not None:
             assert operator == (not dm_rate._automation()), (tag, operator)
         return await real(self, 0.0, operator=operator)
     WriteGate.turn = spy
@@ -149,7 +121,7 @@ async def case_the_tier_reaches_the_gate_from_an_operators_run():
                         await ax.of_write_paced("acc-wg", lambda: None, send_purpose="manual")
                 tag = "operator-borrower"
                 await asyncio.create_task(child())
-            tag = "operator-spawned"                  # a plain task the run spawned, no borrow
+            tag = "operator-spawned"
             await asyncio.create_task(ax.of_write_paced("acc-wg", lambda: None, send_purpose="manual"))
         async with run_slot.hold(pool):
             tag = "automation-spawned"
@@ -162,10 +134,6 @@ async def case_the_tier_reaches_the_gate_from_an_operators_run():
 
 
 def case_the_apps_paced_writes_are_the_operators():
-    """The relay's own of_write_paced calls (chat delete, the vault import's
-    carrier writes and its linked-fan send) run in a request, outside any run:
-    each must say it is the operator's. Every relay module: routes move out of
-    server.py. service/automations/ is not scanned, those calls are a run's."""
     calls = [(path.name, n) for path in sorted(Path(ax.__file__).parent.glob("*.py"))
              for n in ast.walk(ast.parse(path.read_text()))
              if isinstance(n, ast.Call)

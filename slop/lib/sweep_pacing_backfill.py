@@ -1,4 +1,3 @@
-"""Backfill correctness evidence for sweep-pacing's marker, gap, and shared-bucket walks."""
 from __future__ import annotations
 
 from collections import Counter
@@ -17,7 +16,6 @@ from slop.seed import ts
 def check(ctx, w, sw, *, deep, react, blank, gap_a, crowd, passed, react0, blank0, gap0, admin, pass_modes,
           plog, log, cycles, same, t_walks, since, sse) -> None:
     ledger_only = (deep, react, blank, gap_a, *crowd)
-    # ── the backfill's marker walk: DEEP, REACT, BLANK, GAP, CROWD ──────────
     end = {a: scan_one(w, a) for a in ledger_only}
     held_rows = {a: held(w, a) for a in ledger_only}
 
@@ -25,7 +23,6 @@ def check(ctx, w, sw, *, deep, react, blank, gap_a, crowd, passed, react0, blank
         return (datetime.fromisoformat(end[a]["floor"]) - timedelta(days=1)).date().isoformat()
 
     def of_rows(a: str) -> list[dict]:
-        # BLANK's old rows sit below its window, held since before it: OF's sum and ours hold them.
         return [r for r in sw.txs[a] if r["createdAt"][:10] >= start_date(a) or a == blank]
 
     def cents(rows: list[dict]) -> int:
@@ -45,7 +42,7 @@ def check(ctx, w, sw, *, deep, react, blank, gap_a, crowd, passed, react0, blank
     ctx.check(BF_DROPPED, all(v["missing"] == 0 and v["not_in_window"] == 0 and v["done"] for v in dropped.values()),
               **{a: dropped[a] for a in dropped})
     con = w.sql()
-    # A first charge and a renewal are one count: the writer relabels a fan's later `Subscription from` a rebill.
+    # a first charge and a renewal are one count: the writer relabels a fan's later `Subscription from` a rebill
     sub = lambda k: "sub" if k in ("subscription", "rebill") else k  # noqa: E731
     kinds = {a: (dict(Counter(sub(k) for k, in con.execute(
         "SELECT kind FROM transactions WHERE account_id = ? AND provider_transaction_id IS NOT NULL", (a,)))),
@@ -83,7 +80,6 @@ def check(ctx, w, sw, *, deep, react, blank, gap_a, crowd, passed, react0, blank
     ctx.check(BF_PARTIAL, all(partial.values()), **partial, deep_pass1=d1, react_pass1=r1, blank_pass1=b1,
               deep_pass2=d2, deep_pass3=d3, end={a: end[a] for a in (deep, react, blank, gap_a)})
 
-    # ── GAP: the resumed read that cannot reach newest_seen ─────────────────
     capped = [y for y in plog if "ingest_tx_backfill_recent_capped" in y["msg"] and f"account={gap_a}" in y["msg"]]
     gap_gets = sorted((e for e in log if e["account"] == gap_a and e["route"] == "transactions" and e["status"] == 200
                        and len(cycles) > 1 and cycles[1]["t0"] <= e["t"] <= cycles[1]["t1"]), key=lambda e: e["t"])
@@ -99,22 +95,19 @@ def check(ctx, w, sw, *, deep, react, blank, gap_a, crowd, passed, react0, blank
     }
     ctx.check(BF_GAP, all(rewalk.values()), **rewalk, gets=len(gap_gets), scan_seeded=gap0, scan_pass1=g1, scan_end=end[gap_a])
 
-    # ── CROWD: one shared bucket ────────────────────────────────────────────
     crowd_set = set(crowd)
     crowd_429 = [e for e in log if e["account"] in crowd_set and e["status"] == 429]
     crowd_terminal, crowd_refresh_terminal = [], []
     for e in crowd_429:
         page = same[(e["account"], e["route"], e["query"])]
         if any(x["t"] < e["t"] and x["status"] == 429 for x in page):
-            # The full 7-day walk (`start=`, _REFRESH_CONCURRENCY, unchanged) is reported, not held to this: its tick
-            # fails and the next one redoes it, so the bound below gives it those pages.
             (crowd_refresh_terminal if "start=" in e["query"] else crowd_terminal).append(
                 {"account": e["account"], "t": round(e["t"] - t_walks, 1), "query": e["query"]})
     crowd_calls = {}
     for a in crowd:
         rows_ = sw.txs[a]
         recent_rows = sum(1 for r in rows_ if r["createdAt"][:10] >= since)
-        # Its walk + a full walk + its recent walks (never more pages than rows imply) + 2 polls (complete, full).
+        # its walk + a full walk + its recent walks (never more pages than rows imply) + 2 polls
         bound = (_pages(len(rows_)) + 1 + FRESH_PAGES + (TX_CYCLES - 2) * _pages(recent_rows)
                  + FRESH_PAGES * sum(1 for x in crowd_refresh_terminal if x["account"] == a))
         n = sum(1 for e in log if e["account"] == a and e["route"] == "transactions" and e["status"] == 200)
@@ -129,7 +122,6 @@ def check(ctx, w, sw, *, deep, react, blank, gap_a, crowd, passed, react0, blank
               refill_per_s=sw.refill_per_s, burst=sw.burst)
 
     def walk_entries(a: str, t0: float, t1: float) -> tuple[list[dict], list[dict]]:
-        """The Creator's ledger GETs between t0 and t1, 200s: its marker walk's / its recent read's."""
         rows = [e for e in log if e["account"] == a and e["route"] == "transactions" and t0 <= e["t"] <= t1
                 and e["status"] == 200]
         wk = [e for e in rows if (parse_qs(e["query"]).get("startDate") or [""])[0] == start_date(a)]
@@ -138,7 +130,7 @@ def check(ctx, w, sw, *, deep, react, blank, gap_a, crowd, passed, react0, blank
     spans = [(c["t0"], c["t1"]) for c in cycles]
     react_spans = [(admin.get("t0") or 0, admin.get("t1") or 0), *spans[:1]]
     react_walks = [{"walk": len(x), "recent": len(y)} for x, y in (walk_entries(react, *c) for c in react_spans)]
-    deep_full = [c for c, ms in zip(spans, pass_modes) if ms.get(deep) == "refresh"]   # no startDate: not a walk's
+    deep_full = [c for c, ms in zip(spans, pass_modes) if ms.get(deep) == "refresh"]
     deep_spans = [{"walk": len(x), "recent": len(y)} for x, y in (walk_entries(deep, *c) for c in spans if c not in deep_full)]
     deep_end = spans[-1][1] if spans else 0
     react_end = max(admin.get("t1") or 0, spans[0][1] if spans else 0)

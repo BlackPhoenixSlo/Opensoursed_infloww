@@ -56,7 +56,6 @@ def test_stop_proc_can_repeat(monkeypatch):
 
 
 def _three_scenarios(monkeypatch, tmp_path):
-    """`slop/run all` over a, b, c with the real run_one; only the stack and machine-wide state are faked."""
     ev = tmp_path / "evidence"
     ev.mkdir()
     monkeypatch.setattr(cli, "scenarios", lambda: {n: tmp_path / f"{n}.py" for n in ("a", "b", "c")})
@@ -152,7 +151,6 @@ def test_load_registers_the_module_for_dataclasses(tmp_path):
 
 
 def test_bad_import_is_one_infra_row_and_the_rest_run(monkeypatch, tmp_path, capsys):
-    """The real load: a scenario whose import raises is an INFRA row; the next scenario still runs."""
     ev = tmp_path / "evidence"
     for n in ("bad", "good"):
         (ev / n / "screenshots").mkdir(parents=True)
@@ -180,7 +178,6 @@ def test_bad_import_is_one_infra_row_and_the_rest_run(monkeypatch, tmp_path, cap
 
 @pytest.mark.parametrize("token", ["--break --scale=small", "--a b=1", "--=1"])
 def test_glued_flags_are_refused_not_read_as_a_knob(monkeypatch, capsys, token):
-    """A quoted `"--break --scale=small"` became knob `break __scale`: the run went green with no fault phase."""
     monkeypatch.setattr(sys, "argv", ["slop/run", "s", token])
     monkeypatch.setattr(cli, "scenarios", lambda: pytest.fail("parsed past the knobs: a run would start"))
     with pytest.raises(SystemExit) as e:
@@ -196,7 +193,6 @@ def test_socket_limit_per_scale():
 
 
 def _cli_decision(argv):
-    """lib/cli.py's own parser on argv: exclusive (medium+ and --users >= 120) or "rejected"."""
     try:
         ns, _ = cli._parser().parse_known_args(argv)
     except SystemExit:
@@ -208,17 +204,15 @@ def _cli_decision(argv):
     ["x", "--scale=medium", "--users=200", "--no-ui"], ["x", "--scale=medium", "--users=120"],
     ["x", "--scale=medium", "--users=119"], ["x", "--scale", "huge", "--users", "500"],
     ["x", "--scale=small", "--users=200"], ["x", "--users=200"], ["x", "--scale=medium"], ["--changed"],
-    ["x", "--scale=medium", "--users", "200"],  # spaced vs `=`
-    ["x", "--scale=medium", "--user=200"], ["x", "--sca", "medium", "--users=200"],  # abbreviations: not the flag
+    ["x", "--scale=medium", "--users", "200"],
+    ["x", "--scale=medium", "--user=200"], ["x", "--sca", "medium", "--users=200"],
     ["x", "--scale=medium", "--users=200", "--users=20"], ["x", "--scale=medium", "--users=20", "--users=200"],
-    ["x", "--scale=huge", "--scale=small", "--users=200"],  # repeated: the last wins
-    ["x", "--scale=medium", "--users=+200"], ["x", "--scale=medium", "--users= 200"],  # int() parsing
-    ["x", "--scale=large", "--users=200"], ["x", "--scale=medium", "--users=lots"], ["x", "--users"],  # invalid
+    ["x", "--scale=huge", "--scale=small", "--users=200"],
+    ["x", "--scale=medium", "--users=+200"], ["x", "--scale=medium", "--users= 200"],
+    ["x", "--scale=large", "--users=200"], ["x", "--scale=medium", "--users=lots"], ["x", "--users"],
     ["x", "--seed", "5", "--set", "k=v", "--scale=medium", "--users=200", "--some-knob=1"],
 ])
 def test_exclusive_agrees_with_cli_parser(argv):
-    """slop/run's pre-check (lib/gate.py exclusive) and the run's own parser decide alike: no spelling runs a
-    medium/200 run beside others, and an argv the parser rejects is refused by the pre-check too."""
     from slop.lib import gate
     try:
         got = gate.exclusive(argv)
@@ -244,8 +238,6 @@ def test_slop_run_asks_for_exclusive():
 
 @pytest.mark.parametrize("rc, want", [(1, 3), (2, 2)])
 def test_slop_run_refuses_when_the_pre_check_fails(tmp_path, rc, want):
-    """A pre-check failure is INFRA (exit 3), its usage error (exit 2) stays a usage error; either way never a
-    non-exclusive run: gate.py run is not reached."""
     capture = tmp_path / "gate-argv"
     shim = tmp_path / "python3"
     shim.write_text(
@@ -266,7 +258,6 @@ def test_slop_run_refuses_when_the_pre_check_fails(tmp_path, rc, want):
 
 @pytest.mark.parametrize("users,exclusive", [(119, False), (120, True), (200, True)])
 def test_actual_runner_forwards_volume_gate_choice(tmp_path, users, exclusive):
-    """Exercise slop/run's shell re-exec, stopping at the machine gate."""
     if not (Path.home() / ".slop/gate.py").is_file():
         pytest.skip("machine gate unavailable")
     capture = tmp_path / "gate-argv"
@@ -292,8 +283,6 @@ def test_actual_runner_forwards_volume_gate_choice(tmp_path, users, exclusive):
 
 @pytest.mark.parametrize("users, exclusive", [(119, False), (120, True), (200, True)])
 def test_run_one_passes_exclusive_to_the_machine_gate(monkeypatch, tmp_path, users, exclusive):
-    """The nested gate in run_one is told the run goes alone (medium + --users >= 120), so an exclusive
-    request is never downgraded inside the run (cli.run_one -> gate.machine_gate(exclusive=...))."""
     _three_scenarios(monkeypatch, tmp_path)
     monkeypatch.setattr(sys, "argv", ["slop/run", "a", "--scale=medium", f"--users={users}", "--no-ui"])
     seen = []
@@ -318,15 +307,11 @@ def test_thread_limit_per_scale():
     assert cli.thread_limit(SimpleNamespace(), "medium") is None
 
 
-# --- Run identity: a Break baseline is reused only at an equal Run identity (lib/identity.py) ---
 
 BREAK_FAULT = "sweep-enqueued-every-pass"
 
 
 def _break_setup(monkeypatch, tmp_path):
-    """`slop/run s --break [--baseline=...]` through cli.main() with the real run_one and break logic; only the
-    stack is faked: a targeted check passes without the fault and fails with it. Returns (evidence dir, faults
-    started per run_one: None for a baseline run)."""
     from slop.lib.faults import FAULTS
     ev, started, n = tmp_path / "evidence", [], iter(range(1000))
     ev.mkdir()
@@ -352,7 +337,6 @@ def _break_setup(monkeypatch, tmp_path):
 
 
 def _green_folder(tmp_path, **identity) -> Path:
-    """A green no-fault run folder of scenario `s` at the default knobs, with these params added."""
     from slop.lib.faults import FAULTS
     d = tmp_path / "green"
     d.mkdir()
@@ -366,7 +350,7 @@ def _green_folder(tmp_path, **identity) -> Path:
 
 
 def _runs(ev: Path) -> list[Path]:
-    return [d for d in ev.iterdir() if d.is_dir() and not d.is_symlink()]  # not `latest`
+    return [d for d in ev.iterdir() if d.is_dir() and not d.is_symlink()]
 
 
 def _break(monkeypatch, *extra) -> int:
@@ -375,19 +359,17 @@ def _break(monkeypatch, *extra) -> int:
 
 
 def test_baseline_from_other_source_is_refused(monkeypatch, tmp_path, capsys):
-    """Red on the knob-only comparison: a green folder from other source (same knobs) was reused silently."""
     ev, started = _break_setup(monkeypatch, tmp_path)
     old = "0" * 64
     g = _green_folder(tmp_path, source_id=old, source_id_end=old, env_id="e", env_names=[])
     assert _break(monkeypatch, f"--baseline={g}") == 3
     out = capsys.readouterr().out
-    assert "other knobs" not in out  # identity facts are not knobs: the refusal must say which part differs
+    assert "other knobs" not in out
     assert any(line.lstrip().startswith("inconclusive:") and "source" in line for line in out.splitlines()), out
-    assert started == [] and not list(ev.iterdir())  # no fault run, no fault-run folder
+    assert started == [] and not list(ev.iterdir())
 
 
 def test_legacy_baseline_without_identity_is_refused(monkeypatch, tmp_path, capsys):
-    """Red on the knob-only comparison: a pre-identity folder from another commit was reused silently."""
     ev, started = _break_setup(monkeypatch, tmp_path)
     g = _green_folder(tmp_path)
     assert _break(monkeypatch, f"--baseline={g}") == 3
@@ -397,7 +379,6 @@ def test_legacy_baseline_without_identity_is_refused(monkeypatch, tmp_path, caps
 
 
 def _sources(monkeypatch, *ids):
-    """identity.source_id returns these, in call order (then the last one again)."""
     seq = list(ids)
     monkeypatch.setattr(cli.identity, "source_id", lambda _root: seq.pop(0) if len(seq) > 1 else seq[0])
 
@@ -415,12 +396,12 @@ def test_baseline_at_equal_identity_is_reused(monkeypatch, tmp_path, capsys):
     assert _break(monkeypatch, f"--baseline={g}") == 0
     out = capsys.readouterr().out
     assert "mutation CAUGHT" in out and f"baseline: {g.resolve()}" in out
-    assert started == [BREAK_FAULT] and len(_runs(ev)) == 1  # the fault run only
+    assert started == [BREAK_FAULT] and len(_runs(ev)) == 1
 
 
 @pytest.mark.parametrize("env,want", [
     ({"SLOP_IDENTITY_PROBE": "1"}, "added ['SLOP_IDENTITY_PROBE']"),
-    ({"SLOP_GATE": "on"}, "env value changed (values are not stored)"),  # guard policy is identity
+    ({"SLOP_GATE": "on"}, "env value changed (values are not stored)"),
 ])
 def test_baseline_from_other_env_is_refused(monkeypatch, tmp_path, capsys, env, want):
     ev, started = _break_setup(monkeypatch, tmp_path)
@@ -437,8 +418,6 @@ def test_baseline_from_other_env_is_refused(monkeypatch, tmp_path, capsys, env, 
 @pytest.mark.parametrize("over,argv", [({"timeout_s": 1800}, ["--timeout=60"]), ({"timeout_s": 60}, []),
                                        ({"timeout_s": None}, [])])
 def test_baseline_at_other_timeout_is_refused(monkeypatch, tmp_path, capsys, over, argv):
-    """A green at --timeout=1800 and a fault run at --timeout=60 that times out: red without the fault (false
-    CAUGHT). Unrecorded (an older folder) is refused too. The fault run records its own timeout_s."""
     ev, started = _break_setup(monkeypatch, tmp_path)
     _sources(monkeypatch, "a" * 64)
     g = _same_identity_folder(tmp_path, **over)
@@ -462,7 +441,6 @@ def test_raced_baseline_is_refused(monkeypatch, tmp_path, capsys):
 
 @pytest.mark.parametrize("ids", [("a" * 64, "b" * 64, "b" * 64), ("a" * 64, "a" * 64, "b" * 64)])
 def test_fault_run_on_other_source_than_the_baseline_is_inconclusive(monkeypatch, tmp_path, capsys, ids):
-    """--baseline: identity check, then the fault run's start and end source (an edit at or during it)."""
     ev, started = _break_setup(monkeypatch, tmp_path)
     _sources(monkeypatch, *ids)
     g = _same_identity_folder(tmp_path)
@@ -473,9 +451,9 @@ def test_fault_run_on_other_source_than_the_baseline_is_inconclusive(monkeypatch
 
 
 @pytest.mark.parametrize("ids,want", [
-    (("a" * 64, "a" * 64, "b" * 64, "b" * 64), [None, BREAK_FAULT]),  # edit between baseline and fault run
-    (("a" * 64, "a" * 64, "a" * 64, "b" * 64), [None, BREAK_FAULT]),  # edit during the fault run
-    (("a" * 64, "b" * 64), [None]),                                   # the baseline raced: no fault run
+    (("a" * 64, "a" * 64, "b" * 64, "b" * 64), [None, BREAK_FAULT]),
+    (("a" * 64, "a" * 64, "a" * 64, "b" * 64), [None, BREAK_FAULT]),
+    (("a" * 64, "b" * 64), [None]),
 ])
 def test_break_without_baseline_catches_an_edit(monkeypatch, tmp_path, capsys, ids, want):
     _ev, started = _break_setup(monkeypatch, tmp_path)
@@ -509,8 +487,6 @@ def test_every_run_records_identity_names_never_values(monkeypatch, tmp_path):
 @pytest.mark.parametrize("err", [subprocess.CalledProcessError(128, ["git"], stderr=b"fatal"),
                                  binascii.Error("Incorrect padding"), UnicodeDecodeError("utf-8", b"\xff", 0, 1, "x")])
 def test_unreadable_source_warns_runs_and_is_refused_as_unreadable(monkeypatch, tmp_path, capsys, err):
-    """A failed source read records null with one WARN line (never a crash before the stack); a later
-    --baseline of that folder names the unreadable source, not a legacy folder."""
     ev, started = _break_setup(monkeypatch, tmp_path)
 
     def broken(_root):
@@ -522,7 +498,7 @@ def test_unreadable_source_warns_runs_and_is_refused_as_unreadable(monkeypatch, 
     p = json.loads((run / "metrics.json").read_text())["params"]
     assert p["source_id"] is None and p["source_id_end"] is None
     out = capsys.readouterr().out
-    assert out.count("slop: WARN source_id unreadable: ") == 2, out  # start and end
+    assert out.count("slop: WARN source_id unreadable: ") == 2, out
 
     _sources(monkeypatch, "a" * 64)
     assert _break(monkeypatch, f"--baseline={run}") == 3
@@ -532,7 +508,6 @@ def test_unreadable_source_warns_runs_and_is_refused_as_unreadable(monkeypatch, 
 
 
 def test_p95_vs_last_green_compares_across_identities(monkeypatch, tmp_path, capsys):
-    """`p95 within ... of the last green run` picks a green run of other source and env (same knobs and world)."""
     ev, _started = _break_setup(monkeypatch, tmp_path)
     monkeypatch.setattr(cli, "EVIDENCE", ev)
     monkeypatch.setattr(cli, "load", lambda _p: SimpleNamespace(UI=False, P95_VS_LAST=(1.5, 50)))
@@ -542,7 +517,7 @@ def test_p95_vs_last_green_compares_across_identities(monkeypatch, tmp_path, cap
     monkeypatch.setattr(cli, "_run_stack", stack)
     _sources(monkeypatch, "a" * 64)
     args = SimpleNamespace(scale="small", users=20, seed=1, profile=False, map=False, net=None)
-    last = ev / "000-s-green"  # an earlier green run of scenario s
+    last = ev / "000-s-green"
     last.mkdir()
     (last / "metrics.json").write_text(json.dumps({
         "params": {**runs.run_knobs("s", args, {}, False, 1, None), "git_sha": "old1234", "git_dirty": True,
@@ -557,7 +532,6 @@ def test_p95_vs_last_green_compares_across_identities(monkeypatch, tmp_path, cap
 
 
 def test_estimates_still_match_across_identities(monkeypatch, tmp_path):
-    """Identity facts are run facts, not knobs: --changed estimates compare across commits."""
     args = SimpleNamespace(scale="small", users=2, seed=1, no_ui=True, shards=None, profile=False, map=False, net=None)
     want = runs.run_knobs("s", args, {}, False, 1, None)
     other = {**want, "source_id": "b" * 64, "source_id_end": "c" * 64, "env_id": "x", "env_names": ["Y"]}
@@ -568,7 +542,6 @@ def test_estimates_still_match_across_identities(monkeypatch, tmp_path):
     assert secs == {"s": 40} and source == "evidence"
 
 
-# --- Run phases through the real run_one/_run_stack: a fake Stack below the stack runner, a controlled clock ---
 
 class _Clock:
     def __init__(self):
@@ -582,10 +555,6 @@ class _Clock:
 
 
 def _phased(monkeypatch, tmp_path, run, *, enter=None, exit_=None, argv=("s",)):
-    """`slop/run s` through cli.main() with the real run_one, _run_stack, Ctx and ProcMon; only the Stack class,
-    the scenario module and the clock are fake. The fake Stack's start takes 5 s (its relay wait: 5 s, 6 polls),
-    its exit 4 s; `enter(stack, clock)` runs inside its start, with the real Stack's partial-start cleanup on a
-    raise, `exit_(stack, clock)` inside its exit before the temp dir goes. Returns (evidence dir, clock)."""
     ev, clock = tmp_path / "evidence", _Clock()
     ev.mkdir()
     monkeypatch.setattr(cli.phases, "now", clock)
@@ -700,12 +669,12 @@ def test_overlapping_seeds_count_once_and_execution_excludes_them(monkeypatch, t
         ctx.check("x", True)
     ev, clock = _phased(monkeypatch, tmp_path, run)
 
-    async def build_a(world):  # seeds 0..4 s after the gather starts
+    async def build_a(world):
         await asyncio.sleep(0)
         clock.tick(3)
         return world
 
-    async def build_b(world):  # 1..6 s, raises: the union is 6 s, not 4 + 5
+    async def build_b(world):
         clock.tick(1)
         await asyncio.sleep(0)
         await asyncio.sleep(0)
@@ -720,8 +689,6 @@ def test_overlapping_seeds_count_once_and_execution_excludes_them(monkeypatch, t
 
 
 def test_seed_cancelled_after_teardown_began_stays_in_teardown(monkeypatch, tmp_path):
-    """A ctx.build still running when mod.run returns: asyncio.run cancels it after the stack's exit; its end must
-    not reopen execution (the 2 s after it are teardown's)."""
     async def bg(ctx):
         try:
             await ctx.build("t2_hang")
@@ -761,7 +728,7 @@ def test_raising_seed_profile_still_counts_as_seeding(monkeypatch, tmp_path):
 def test_timed_out_run_records_phases_reached_and_teardown(monkeypatch, tmp_path):
     async def run(ctx):
         clock.tick(2)
-        await asyncio.sleep(30)  # the real --timeout=1 alarm cuts it
+        await asyncio.sleep(30)
     ev, clock = _phased(monkeypatch, tmp_path, run, argv=("s", "--timeout=1"))
     assert cli.main() == 3
     _run, m, ph = _phases_of(ev)
@@ -788,11 +755,10 @@ def test_sigtermed_run_records_phases_reached_and_teardown(monkeypatch, tmp_path
 @pytest.mark.parametrize("argv,want", [(("s",), "signal SIGTERM; stack torn down"),
                                         (("s", "--timeout=1"), "timed out after 1s")])
 def test_stop_landing_in_a_busy_background_task_tears_the_run_down(monkeypatch, tmp_path, argv, want):
-    """SIGTERM / the --timeout alarm lands while another asyncio task is stepping: it still stops the run."""
     async def run(ctx):
         async def busy():
             end = time.monotonic() + 4
-            while time.monotonic() < end:  # the signal lands here, in this task's step
+            while time.monotonic() < end:
                 pass
         ctx.bg = asyncio.create_task(busy())
         if "--timeout=1" not in argv:
@@ -820,11 +786,10 @@ def test_sigterm_during_startup_charges_the_partial_cleanup_to_teardown(monkeypa
 
 
 def test_teardown_cut_short_by_timeout_is_finished_and_charged_to_teardown(monkeypatch, tmp_path):
-    """--timeout lands inside the stack's exit; run_one finishes the teardown and its seconds stay teardown's."""
     def exit_(_stack, _clock):
         if not cut:
             cut.append(1)
-            time.sleep(5)  # the real --timeout=1 alarm cuts it here
+            time.sleep(5)
 
     async def run(ctx):
         clock.tick(2)
@@ -844,8 +809,6 @@ def test_relay_env_port_template():
 
 
 def test_escaped_scenario_timeout_is_infra_not_a_silent_zero(monkeypatch, capsys):
-    """R7-2: a --timeout alarm landing outside run_one's handler (e.g. _deadline's exit) escapes as
-    ScenarioTimeout, a SystemExit with no code: main must say INFRA and return 3 (red before: exit 0, no line)."""
     def boom():
         raise cli.ScenarioTimeout()
     monkeypatch.setattr(cli, "_main", boom)

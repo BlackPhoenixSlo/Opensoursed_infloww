@@ -1,6 +1,5 @@
 "use client";
 
-/** Home's story strip (stories and streams) and the right column's promotions. */
 
 import type { OFMedia, OFUserMini } from "@/lib/relay";
 import { stillUrl } from "@/lib/ofMedia";
@@ -9,50 +8,33 @@ import { viewerItems } from "@/lib/ofMirrorPostCard";
 import type { ViewerItem } from "@/lib/ofMirrorVault";
 import { clock, dayOf, fill, make, plain, setAvatar, track, valid } from "@/lib/ofMirrorDom";
 
-/** One story as OF lists it (GET /stories, GET /users/{id}/stories): its media, and whether the Creator has watched it. */
 export interface StoryEntry {
   id?: number | string;
   media?: OFMedia[] | null;
-  /** OF's flag (app.js stories store `isAllUserStoriesWatched`); absent: not watched. */
   isWatched?: boolean | null;
 }
 
-/** A creator in Home's story strip, as GET /stories lists them (the Creator's feed of followed creators' stories). */
 export interface StoryUser extends AvatarUser {
   isVerified?: boolean;
   stories?: StoryEntry[] | null;
 }
 
-/**
- * A creator's tile is a watched one once every story of theirs is (OF's StoriesWidget `processedStories`: its first
- * unwatched story, else its first, decides; the tile then sits after "Start profile promotion", marked `m-viewed`).
- */
 export const allWatched = (u: StoryUser): boolean => !!u.stories?.length && u.stories.every((s) => !!s.isWatched);
 
-/** A stream as OF's GET /streams/feed lists it (app.js 622365 `GQ`; the strip's TheStream and ScheduledStream tiles). */
 export interface FeedStream {
   id?: number | string;
-  /** Its creator: a profile, or only an id. */
   user?: (StoryUser & { subscribedBy?: unknown }) | number | string | null;
   isScheduled?: boolean | null;
   isActive?: boolean | null;
   startedAt?: string | null;
   scheduledAt?: string | null;
-  /** A live stream's preview picture. */
   thumbUrl?: string | null;
-  /** A scheduled stream's cover. */
   media?: OFMedia | null;
   price?: number | null;
 }
 
 const streamUser = (s: FeedStream): StoryUser & { subscribedBy?: unknown } => (s.user && typeof s.user === "object" ? s.user : { id: s.user ?? undefined });
 
-/**
- * The strip's streams, as OF's StoriesWidget splits GET /streams/feed: only the Creator's own (`me`, their id) and those
- * of creators they are subscribed to (`user.subscribedBy`; a creator without it is left out); live ones (`isScheduled`
- * false, or `isActive`) in the feed's order, scheduled ones (`isScheduled` and not `isActive`) by `startedAt`, as
- * lodash's sortBy (stable, a missing one last).
- */
 export function stripStreams(streams: FeedStream[], me?: string): { live: FeedStream[]; scheduled: FeedStream[] } {
   const shown = streams.filter((s) => {
     const u = streamUser(s);
@@ -74,7 +56,6 @@ export function stripStreams(streams: FeedStream[], me?: string): { live: FeedSt
   return { live: shown.filter((s) => s.isScheduled === false || !!s.isActive), scheduled };
 }
 
-/** A scheduled stream's "in 3 hours" (OF's "Soon" within a minute; ScheduledStream `checkTime`). */
 function untilText(at: Date, now: Date): string {
   const ms = at.getTime() - now.getTime();
   if (ms <= 60_000) return "Soon";
@@ -85,47 +66,24 @@ function untilText(at: Date, now: Date): string {
   return h < 24 ? rtf.format(h, "hour") : rtf.format(Math.round(h / 24), "day");
 }
 
-/**
- * Home's strip, in OF's stories list order: the Creator's own tile first while they have active stories (OF's
- * `userStories` item, read from GET /users/{id}/stories), then the creators GET /stories lists (the Creator left out of
- * those, so their tile never shows twice). `me` without an id, or no stories of their own: the feed as it is.
- */
 export function stripUsers(me: StoryUser | undefined, mine: StoryEntry[] | undefined, feed: StoryUser[] | undefined): StoryUser[] | undefined {
   if (me?.id == null || !mine?.length) return feed;
   const id = String(me.id);
   return [{ ...me, stories: mine }, ...(feed ?? []).filter((u) => String(u.id) !== id)];
 }
 
-/** The viewer's items for `stories` (every story's media, in order), each `{src, type}`. */
 export function storyItems(stories: StoryEntry[], img: (u: string) => string): ViewerItem[] {
   return viewerItems(stories.flatMap((s) => s.media ?? []), img);
 }
 
-/** OF's horizontal step between two story tiles (its recycle scroller's item size). */
 const STORY_STEP = 136;
 
-/** What Home's strip shows besides the creators' stories: the Creator (their id marks their own tile and streams; their
- *  profile draws their own streams), the streams feed (GET /streams/feed) and the time scheduled streams count from. */
 export interface StripExtras {
   me?: StoryUser;
   streams?: FeedStream[];
   now?: Date;
 }
 
-/**
- * Home's story strip, in OF's StoriesWidget order: after "Add to story", the live streams, then one tile per creator in
- * `users` whose stories are not all watched (the Creator's own first, as stripUsers puts it); after the captured
- * "Start profile promotion", the creators whose stories are all watched (allWatched, OF's `m-viewed`; the Creator's own
- * never moves), then the scheduled streams (stripStreams). The strip's tiles are laid out again from the left.
- *
- * A story tile is OF's at-attr="story_item" (as captured: the 36px avatar in its ring, the name with the verified mark,
- * the still of the first unwatched story, else the first, behind), stamped `data-oi-story-user` (the creator's id, which
- * ofMirrorPost's bindStory reads on a click) and, when the feed carries the stories' media, `data-oi-story` (their viewer
- * items). A stream tile is OF's TheStream or ScheduledStream (`m-gradient-backward`, a scheduled one `m-scheduled-story`
- * with its date and "in 3 hours"), stamped `data-oi-stream` ("live" or "scheduled"); the Creator's own scheduled stream
- * links to the queue that lists it, any other stream tile is left to bindStory's Read-only note (Inflowwww plays no live
- * video). Nothing to show (or no strip): the strip stays as captured.
- */
 export function applyStories(doc: Document, users: StoryUser[], img: (u: string) => string, extras: StripExtras = {}) {
   const own = doc.querySelector<HTMLElement>(".stories-list .b-story-item.m-story-item-own");
   const view = own?.closest<HTMLElement>(".vue-recycle-scroller__item-view");
@@ -145,7 +103,6 @@ export function applyStories(doc: Document, users: StoryUser[], img: (u: string)
     pic.className = cls;
     return pic;
   };
-  // OF's ButtonBlock: the tile, its inside, the avatar and the name with the verified mark.
   const block = (u: StoryUser, cls: string, href?: string) => {
     const v = doc.createElement("div");
     v.className = "vue-recycle-scroller__item-view";
@@ -227,28 +184,23 @@ export function applyStories(doc: Document, users: StoryUser[], img: (u: string)
   });
 }
 
-/** A `/promotions` item, as OF sends it (service/of_promos.py has the live-captured contract). */
 export interface Promotion {
   id?: number | string;
   message?: string | null;
-  /** The promotion's price: 0 is a free trial. OF sends no discount on read. */
   price?: number | null;
-  /** Who can claim it: "new", "expired" or "all" subscribers. */
   type?: string | null;
   claimsCount?: number | null;
-  /** The claim cap (0: no cap). */
   subscribeCounts?: number | null;
   subscribeDays?: number | null;
   isFinished?: boolean | null;
   canClaim?: boolean | null;
 }
 
-/** On offer: OF leaves isFinished false on a spent promotion, so canClaim must not be false either. */
+// OF leaves isFinished false on a spent promotion, so canClaim must not be false either.
 export const onOffer = (p: Promotion) => !p.isFinished && p.canClaim !== false;
 
 const PROMO_FOR: Record<string, string> = { new: "For new subscribers", expired: "For expired subscribers", all: "For new and expired subscribers" };
 
-/** OF's card title: "Limited offer - Free trial for 30 days!", "... - 50% off for 31 days" (from the subscription price), else "... - $2.50". */
 export function promotionTitle(p: Promotion, subscribePrice?: number | null): string {
   const n = p.subscribeDays ?? 0;
   const days = n > 0 ? ` for ${n} day${n === 1 ? "" : "s"}` : "";
@@ -258,15 +210,7 @@ export function promotionTitle(p: Promotion, subscribePrice?: number | null): st
   return `Limited offer${price !== null ? ` - $${price.toFixed(2)}` : ""}${days}`;
 }
 
-/**
- * Home's right column: one copy of the generator's hidden promotion card per promotion on offer (onOffer), in the
- * Relay's order: its title (promotionTitle), who it is for and the claims left (a capped one), and its message in the
- * Creator's bubble (`me`'s avatar; no message: no bubble). OF's toggle is plain text there; its Stop promotion
- * (data-oi-finish) and Copy link to profile (data-oi-copy, the profile link) stay for ofMirrorOffers. None on offer: the
- * column shows no card.
- */
 export function applyPromotions(doc: Document, promos: Promotion[], subscribePrice: number | null | undefined, me: OFUserMini | undefined, img: (u: string) => string) {
-  // My profile has two copies of the column's cards (the wall's column shows them on a phone).
   for (const tpl of doc.querySelectorAll<HTMLElement>("[data-oi-template='promotion']")) promotionCards(doc, tpl, promos, subscribePrice, me, img);
 }
 
@@ -284,7 +228,7 @@ function promotionCards(doc: Document, tpl: HTMLElement, promos: Promotion[], su
       div.append(...head.childNodes);
       head.replaceWith(div);
     }
-    el.querySelector(".b-menu-list__icon")?.remove(); // the toggle's chevron
+    el.querySelector(".b-menu-list__icon")?.remove();
     const title = el.querySelector(".b-menu-list__text");
     if (title) title.textContent = ` ${promotionTitle(p, subscribePrice)} `;
     const sub = el.querySelector(".b-offer-join__left-time");
@@ -308,7 +252,6 @@ function promotionCards(doc: Document, tpl: HTMLElement, promos: Promotion[], su
       holder.textContent = text;
       setAvatar(bubble!.querySelector(".g-avatar"), me ?? { id: "" }, img);
     }
-    // OF's own card buttons: Stop promotion and Copy link to profile (ofMirrorOffers binds both).
     const btns = [...el.querySelectorAll<HTMLButtonElement>(".b-offer-join__btn button")];
     const stop = btns.find((b) => b.textContent?.trim() === "Stop promotion");
     const copy = btns.find((b) => b.textContent?.trim() === "Copy link to profile");

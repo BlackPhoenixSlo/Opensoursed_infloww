@@ -1,120 +1,3 @@
-"""service/assistant_api.py — POST /admin/assistant/ask: the in-product help bot.
-
-Agency staff ask "how do I make autopost?", "can I do autostories?" and get back
-WHERE in the UI, WHAT to configure, and an honest "not supported" when that is
-the truth. Design record: plans/help-chatbot/README.md (2026-08-28).
-
-CLOSED-BOOK, by design. There is no retrieval, no embedding store and no
-graph — `assistant_manual.md` is stuffed whole into the system prompt and the
-model is told to answer ONLY from it. A wrong "yes you can" is worse than a
-"not supported", so the LLM is allowed to EXPLAIN features and never to DECIDE
-whether one exists. Three things enforce that: the closed-book instruction, the
-refusal few-shots below (this repo's documented lesson is that an EXAMPLE beats
-a rule), and the drift gate — which diffs the manual's front-matter `kinds:`
-list against the LIVE automation registry and appends a stub sentence for every
-kind the prose has not caught up with. That gate is why a newly-registered
-automation makes the bot say "it exists, docs haven't caught up" instead of
-confidently inventing a click path.
-
-THE SYSTEM PROMPT IS BYTE-STABLE — built once, cached, no timestamps, no account
-names, sorted drift lists. ~28k tokens of manual ride on every call (median
-`tokens_in` 28,418 over 228 logged calls; 98.6% median cache hit on DeepSeek),
-so on DeepSeek the cost model is entirely the provider's PREFIX CACHE; one
-varying byte at the front of the prompt busts it and multiplies input cost.
-ALL per-request text (the question, the derived role, the previous turns, the
-LIVE STATE block) goes in the USER message. (The keyed Claude Opus default
-does not cache at all — `_model_pick.KEYED_PURPOSE_DEFAULTS` — so there every
-call pays the full input rate.)
-
-WHICH model answers is an operator setting, not a constant here: the route asks
-`_common.resolve_model_and_fallback` under the purpose `help_assistant`, and an
-operator pins it per account (the brain's per-purpose overrides,
-`account_ai_config`). It does NOT follow the account brain, which is the one
-way this route differs from every lane: `_common.PURPOSE_DEFAULT_MODELS` holds
-it on DeepSeek between that pin and `cfg.model` — or on Claude Opus where an
-Anthropic key resolves, and then a cap, key or provider failure on Opus is
-retried ONCE on DeepSeek (never a pin: a pin that fails is reported). Because of the cached-input economics above, the
-cheapest model on a short chat turn is not the cheapest one here, and when all
-seven live accounts were switched to glm-5.3-flash the brain would have taken
-this route with them at roughly 2.8x — with nobody choosing it. That multiple
-is NOT a price difference: replayed through `_cost_millicents`, glm-5.3-flash at
-this route's own 98.6% cache rate is 0.77x DeepSeek, i.e. CHEAPER. It is a
-CACHING difference. Live GLM calls hit cache 9% of the time (36 of 400), so a
-route whose whole economics is a 98.6% hit would land near the no-cache figure,
-2.75x. Re-measure that assumption before trusting the pin, not the price list.
-
-v2 (plans/help-chatbot/05-v2-live-state.md): the asking account's LIVE STATE —
-rule switches + last runs, the config-only Enabled flags, the paused bit — rides
-the user message so "is my welcome actually on?" is answered from rows, not
-prose. Local DB only, ~1s budget, and any fetch failure degrades to a docs-only
-answer with an honest note. See the state section below.
-
-v3 (plans/help-chatbot/06-v3-fan-why.md): the operator pastes a chat header, an
-@u handle and a model name and asks "why didn't AI chatter reply to him?". A FAN
-EVIDENCE PACK rides the same user message — stored rows marked PROVEN, live
-numbers marked CURRENT-STATE, and the model is taught to state the first as fact
-and rank the second as hypotheses. Still ONE llm call, no tabs, no tool loop.
-Both blocks are LOCAL reads that degrade independently; each failure appends its
-own honest note rather than an error.
-
-Neither block lives here. `assistant_state` reads the account's rows,
-`assistant_fan_pack` resolves who a question is about and reads the fan's, and
-`assistant_evidence` turns a typed record into text — the seam between the last
-two is the database, so every line of the pack is testable without one. THIS
-file is the HTTP layer: the prompt, the drift gate, the route, and no
-diagnosis at all.
-
-  POST /admin/assistant/ask  {question, account_id?, thread_id?} → {answer, error, id}
-  GET  /admin/assistant/history?limit=50  → the caller's own turns, newest first
-
-HISTORY. Every non-blank ask past the account gate writes one `assistant_turns`
-row — question, the answer the asker saw (a friendly error sentence included),
-who, model/provider/cost/latency; never a key, never the prompt blocks — and
-`id` in the response is that row (null when the write failed). Each asker keeps
-their newest MAX_TURNS_KEPT rows. The SERVER owns the context: `_own_turns` is
-the one read, scoped to the asker AND their CURRENT reach (a row about an
-account they were unlinked from is gone from both reads). The history GET
-returns it; the prompt gets the last CONTEXT_TURNS answered turns of the ask's
-THREAD (`thread_id`, the widget's conversation) on the SAME account, at any
-age, under PREVIOUS TURNS in the USER message, so a bare "yes" can take up the
-last answer's offer while the system prompt stays byte-stable. A thread id is
-only a filter inside the asker's own rows, so a guessed one reads nothing.
-Every row stores one (`_thread_for`): the client's, else — a client from
-before threads — the thread of the asker's newest answered turn on that
-account from the last CONTEXT_WINDOW, else a new one; rows from before threads
-got `legacy-<first id>` per run (db/assistant_threads.py, run at boot). The client sends no history — text it sent would land in
-the prompt as "your answers".
-
-LENGTH. The prompt asks a how-to answer to AIM for ≤300 characters and end
-with one offer; a follow-up that takes the offer may be long. Nothing checks
-length after generation — a hard cut would break **…** and link paths.
-
-NO ACCOUNT YET. A signed-in agency that has not connected an OnlyFans account
-still needs "where is X?" answered — connecting one is the first thing it asks
-about. With `account_id` omitted the answer is manual-only: no LIVE STATE, no
-fan pack, a note in the user message that nothing is connected, and the prompt
-points anything that needs an account at Creators → Manage creators → Add
-creator (the widget links the path). It takes a signed-in USER (`require_user`;
-no anonymous asker, and a chatter always has an account in scope), and it bills
-that agency: its own key, else the help-bot fallback, under a per-agency daily
-cap (`llm_client.chat(user_id=…)`, `grok_user_daily_cost`). An owner WITH
-accounts who picks "General" in the widget asks the same way; the note then
-says no account is in focus, and points at the widget's picker instead.
-
-`error` is a machine tag for the log (null on success); `answer` is ALWAYS a
-human sentence — a used-up cap or a missing agency key comes back 200 with a
-friendly string, not a 500, because the bot looking broken exactly when someone
-needs config help is the failure mode this endpoint exists to avoid.
-
-AUTH — the role comes from the SERVER. `chatters._CHATTER_BLOCKED_ADMIN_PREFIXES`
-is a default-ALLOW blocklist, so this new /admin route is reachable by chatter
-sessions, and a role read out of the request body would be client-supplied
-theater. The DECISION here is that chatters may ask (their questions are as real
-as an owner's); `_asker_role` derives who they are from the session ContextVars
-and the prompt then answers admin-tab questions with "ask an owner/admin", per
-the manual's Roles section. Access itself is not this file's job —
-`assert_account_owned` plus the account-isolation middleware own that.
-"""
 from __future__ import annotations
 
 import logging
@@ -135,7 +18,7 @@ import assistant_state
 import llm_client
 from auth import (assert_account_owned, get_request_user, require_actor_account_ids,
                   require_user)
-from automations._common import resolve_model_and_fallback  # the one model resolver
+from automations._common import resolve_model_and_fallback
 from brand import BRAND_NAME
 from chatters import get_request_chatter
 from db.engine import get_session
@@ -149,15 +32,12 @@ log = logging.getLogger("of-relay.assistant_api")
 router = APIRouter()
 
 MANUAL_PATH = Path(__file__).with_name("assistant_manual.md")
-PURPOSE = "help_assistant"          # the tag every call is logged under in grok_calls
-# The answer's output cap, sent and reserved against on every lane (rwl W30 C4, as the draft's F11): an
-# OpenAI-wire call with none reserved only an assumed 1,024 while the provider could write more past the cap.
-# The native Claude lane's own cap (llm_anthropic.MAX_TOKENS), so a thinking model keeps its room.
+PURPOSE = "help_assistant"
+# Sent and reserved on every lane: an OpenAI-wire call with no cap reserves only an assumed 1,024.
 ASK_MAX_TOKENS = 4096
 MAX_QUESTION_CHARS = 1000
 
 
-# ── The prompt's fixed head ───────────────────────────────────────────
 
 _INSTRUCTIONS = """\
 You are the help assistant for this platform. Answer ONLY from the manual below.
@@ -309,11 +189,6 @@ Rules:
   scheduled, deleted or switched on, and never switch an automation on for
   them."""
 
-# EXAMPLE beats the rule — a refusal the model can imitate is worth more than
-# another sentence telling it to refuse. Both cases below are the ones staff
-# actually ask. Customs is a documented "NOT SUPPORTED" entry in the manual; the
-# birthday DM is a live Smart Messages trigger (`birthday_message`), so it shows
-# a yes: the examples teach answering from the manual, not refusing by default.
 _FEWSHOTS = """\
 Examples of the expected behaviour:
 
@@ -428,7 +303,6 @@ The lines below were checked against the running registry, not the prose above.
 Where they conflict with the manual, THESE WIN."""
 
 
-# ── The manual + the drift gate ───────────────────────────────────────
 
 def _read_manual() -> tuple[str, frozenset[str]]:
     """Return (prose, documented kinds) from `assistant_manual.md`.
@@ -453,21 +327,11 @@ def _read_manual() -> tuple[str, frozenset[str]]:
 
 
 def _drift_addendum(documented: frozenset[str]) -> str:
-    """Diff the manual's kinds against the LIVE registry; "" when they agree.
-
-    ⚠️ CALLED LAZILY, never at import. `_kind_catalog()` runs the plugin loader,
-    and if this ran before `service/automations/` was importable every kind would
-    read as REMOVED — and, because the prompt is cached for the life of the
-    process, the bot would spend the whole deploy telling people that features
-    they are looking at were deleted.
-    """
-    import automation_rules_api  # deferred: pulls the automation plugin loader
+    import automation_rules_api
 
     catalog = {row["kind"]: row for row in automation_rules_api._kind_catalog()}
     lines: list[str] = []
 
-    # Registered but undocumented — the bot must admit it exists without
-    # inventing steps for it.
     for kind in sorted(set(catalog) - documented):
         row = catalog[kind]
         label = (row.get("label") or kind).strip()
@@ -477,7 +341,6 @@ def _drift_addendum(documented: frozenset[str]) -> str:
             f"- `{kind}` ({label}): EXISTS{what} — but detailed docs haven't "
             f"caught up. Say exactly that; do not guess steps.")
 
-    # Documented but gone — the prose above is describing something deleted.
     for kind in sorted(documented - set(catalog)):
         lines.append(f"- `{kind}` was removed; say it was removed.")
 
@@ -487,17 +350,11 @@ def _drift_addendum(documented: frozenset[str]) -> str:
 
 
 def _build_system_prompt() -> str:
-    """Assemble instructions + few-shots + manual + drift, deterministically.
-
-    Pure and repeatable on purpose: the byte-stability the prefix cache needs is
-    a property of THIS function, so a test can assert it by building twice.
-    """
     prose, documented = _read_manual()
     parts = [_INSTRUCTIONS, _FEWSHOTS, prose]
     drift = _drift_addendum(documented)
     if drift:
         parts.append(drift)
-    # The manual and few-shots name the product Inflowwww; a renamed deployment's assistant says its own name.
     return "\n\n---\n\n".join(parts).replace("Inflowwww", BRAND_NAME)
 
 
@@ -505,7 +362,6 @@ _SYSTEM_PROMPT: str | None = None
 
 
 def system_prompt() -> str:
-    """The cached prompt, built on the FIRST REQUEST (see `_drift_addendum`)."""
     global _SYSTEM_PROMPT
     if _SYSTEM_PROMPT is None:
         _SYSTEM_PROMPT = _build_system_prompt()
@@ -513,27 +369,18 @@ def system_prompt() -> str:
     return _SYSTEM_PROMPT
 
 
-# ── The request ───────────────────────────────────────────────────────
 
 def _asker_role() -> str:
-    """Who is asking, derived from the session — NEVER from the request body.
-
-    Mirrors the chatter middleware's own precedence: when a founder is testing
-    with both cookies present the User cookie wins for /admin/*, so a valid user
-    identity outranks a chatter one here too. This shapes WORDING only — what
-    the caller may reach is `assert_account_owned`'s decision, not the prompt's.
-    """
+    # Role comes from the session, never the request body; it shapes wording only, access is assert_account_owned's call.
     if get_request_user() is not None:
         return "an owner/admin"
     return "a chatter" if get_request_chatter() is not None else "an owner/admin"
 
 
-HISTORY_SIDE_CHARS = 600   # per question / per answer of a previous turn in the prompt
+HISTORY_SIDE_CHARS = 600
 
 
 def _history_block(turns: list[AssistantTurn]) -> str | None:
-    """The asker's earlier turns, oldest first, each side capped at
-    HISTORY_SIDE_CHARS; None when there are none."""
     if not turns:
         return None
 
@@ -550,12 +397,6 @@ def _history_block(turns: list[AssistantTurn]) -> str | None:
 def _user_block(question: str, role: str, state: str | None = None,
                 fan: str | None = None, *,
                 history: list[AssistantTurn]) -> str:
-    """Everything that varies per request lives HERE, not in the system prompt.
-
-    PREVIOUS TURNS sit BEFORE the question, so the question still follows
-    everything it may refer back to. The fan pack goes LAST, closest to the
-    answer: when someone pastes a chat header and asks why a thread is silent,
-    that block IS the question."""
     parts = [f"The asker is {role}."]
     prev = _history_block(history)
     if prev:
@@ -568,12 +409,9 @@ def _user_block(question: str, role: str, state: str | None = None,
     return "\n\n".join(parts)
 
 
-# Rides the user message when no account is connected, so the cached system
-# prompt stays one prompt for every asker.
 NO_ACCOUNT_NOTE = (
     "NO ACCOUNT IS CONNECTED YET: this asker has no OnlyFans account in the "
     "app, so there is no live state to read.")
-# …and when they have accounts but picked "General" in the widget.
 GENERAL_NOTE = (
     "NO ACCOUNT IN FOCUS: the asker picked General in the help chat, so there "
     "is no live state to read.")
@@ -581,24 +419,19 @@ GENERAL_NOTE = (
 
 class AskBody(BaseModel):
     question: str = Field(..., max_length=MAX_QUESTION_CHARS)
-    # Omitted = no account connected yet (see the module docstring). Empty is
-    # still refused: "" would no-op `assert_account_owned`.
+    # Omitted = no account connected; "" is still refused because it would no-op assert_account_owned.
     account_id: str | None = Field(None, min_length=1)
-    # The widget's conversation. Omitted (a client from before threads): the
-    # server picks one (`_thread_for`).
     thread_id: str | None = Field(None, min_length=1, max_length=64)
-    # No `role` field and no `history`, deliberately — see the module docstring.
 
 
 @dataclass
 class Reply:
-    """One ask's outcome: what the asker sees and what its turn row records."""
     answer: str
-    model: str                    # the model that answered (or last failed)
+    model: str
     provider: str
-    error: str | None = None      # machine tag; None on success
+    error: str | None = None
     cost_millicents: int | None = None
-    about: str | None = None      # the account the live state described (rwl W30 C3); None = General
+    about: str | None = None
 
 
 async def _complete(model: str, user_content: str, *, account_id: str | None,
@@ -607,14 +440,6 @@ async def _complete(model: str, user_content: str, *, account_id: str | None,
                     fallback: str | None = None,
                     purpose: str = PURPOSE, system: str | None = None,
                     response_format: dict | None = None, max_tokens: int | None = None) -> Reply:
-    """One help-bot completion, every provider failure turned into an answer.
-
-    `fallback` is set only when `model` is a KEYED purpose default
-    (`resolve_model_and_fallback`): a cap, key or provider failure then gets
-    exactly ONE retry on it, and the Reply names the model that answered.
-    `purpose`/`system`/`response_format`: the "Do it for me" draft
-    (assistant_draft.py) reuses this with its own prompt and JSON mode;
-    `max_tokens` caps its output and is what the budget reserves (llm_client.chat)."""
     sent = Reply("", model=model, provider=MODELS[model].provider)
     extra: dict = {"response_format": response_format} if response_format is not None else {}
     if max_tokens is not None:
@@ -632,7 +457,7 @@ async def _complete(model: str, user_content: str, *, account_id: str | None,
             temperature=0.3,
             **extra,
         )
-    except LLMKeyError as e:            # before LLMConfigError: it is one too
+    except LLMKeyError as e:
         log.warning("assistant: llm key %s provider=%s", e.kind, e.provider)
         p = key_error_payload(e)
         failed = replace(sent, answer=f"{p['message']} {p['fix']}", error="config")
@@ -652,8 +477,6 @@ async def _complete(model: str, user_content: str, *, account_id: str | None,
                        cost_millicents=result.cost_cents)
         answer = (result.content or "").strip()
         if not answer:
-            # A model that reasoned its whole output budget away returns content=""
-            # (see llm_client's note on the `thinking` field). Say something.
             log.warning("assistant: empty answer from %s", result.model)
             return replace(sent, answer="The AI came back empty — try asking again.",
                            error="empty_answer")
@@ -667,15 +490,13 @@ async def _complete(model: str, user_content: str, *, account_id: str | None,
                            system=system, response_format=response_format, max_tokens=max_tokens)
 
 
-# ── Turns: one server-owned read for the history GET and the prompt ───
 
-MAX_TURNS_KEPT = 500                   # per asker; also the history GET's max limit
-CONTEXT_TURNS = 3                      # previous turns that ride an ask…
-CONTEXT_WINDOW = timedelta(hours=2)    # …and how old they may be
+MAX_TURNS_KEPT = 500
+CONTEXT_TURNS = 3
+CONTEXT_WINDOW = timedelta(hours=2)
 
 
 def _asker_ids() -> tuple[str | None, str | None]:
-    """(user_id, chatter_id) of the session — the same precedence as `_asker_role`."""
     user = get_request_user()
     if user is not None:
         return user.id, None
@@ -692,10 +513,6 @@ def _asker_clause(user_id: str | None, chatter_id: str | None) -> ColumnElement[
 
 
 async def _own_turns(limit: int, *narrow: ColumnElement[bool]) -> list[AssistantTurn]:
-    """This asker's turns, newest first, within their CURRENT reach: a row
-    about an account the principal no longer reaches (a chatter unlinked from
-    its owner) is gone, and rows with no account stay. No principal → [].
-    `narrow`: extra where-clauses on top of asker + reach."""
     user_id, chatter_id = _asker_ids()
     if user_id is None and chatter_id is None:
         return []
@@ -713,16 +530,12 @@ async def _own_turns(limit: int, *narrow: ColumnElement[bool]) -> list[Assistant
 
 
 def _answered_on(account_id: str | None) -> tuple[ColumnElement[bool], ...]:
-    """Answered turns on the ask's own account (the no-account rows for a no-account ask)."""
     return (AssistantTurn.error.is_(None),
             AssistantTurn.account_id.is_(None) if account_id is None
             else AssistantTurn.account_id == account_id)
 
 
 async def _thread_for(account_id: str | None, thread_id: str | None) -> str:
-    """The ask's thread: the client's; else (a client from before threads)
-    the thread of the asker's newest answered turn on that account from the
-    last CONTEXT_WINDOW — the old context rule — else a new one. Never NULL."""
     if thread_id is not None:
         return thread_id
     try:
@@ -736,10 +549,6 @@ async def _thread_for(account_id: str | None, thread_id: str | None) -> str:
 
 
 def _has_creator() -> bool:
-    """The asker reaches a Creator: what the widget lists (GET /admin/accounts
-    `accounts`). A watcher (a fan account, `role` "watcher") is in the reach
-    but no Creator, so an agency with watchers only is "none connected yet"
-    here as on screen."""
     return any(not account_registry.is_watcher(a) for a in (require_actor_account_ids() or ()))
 
 
@@ -748,9 +557,6 @@ def _new_thread_id() -> str:
 
 
 async def _context_turns(account_id: str | None, thread_id: str) -> list[AssistantTurn]:
-    """The prompt's PREVIOUS TURNS, oldest first: the last CONTEXT_TURNS
-    answered turns of the ask's thread on its own account, at any age. A
-    failed read is no context, never a failed ask."""
     try:
         rows = await _own_turns(CONTEXT_TURNS, *_answered_on(account_id),
                                 AssistantTurn.thread_id == thread_id)
@@ -763,9 +569,6 @@ async def _context_turns(account_id: str | None, thread_id: str) -> list[Assista
 async def _record_turn(*, question: str, reply: Reply, role: str,
                        account_id: str | None, thread_id: str,
                        started: float) -> int | None:
-    """Write this ask's `assistant_turns` row and prune the asker's rows past
-    their newest MAX_TURNS_KEPT; the new row's id. Best-effort: a failed write
-    is logged, returns None, and never costs the asker the answer."""
     user_id, chatter_id = _asker_ids()
     try:
         async with get_session() as s:
@@ -790,19 +593,17 @@ async def _record_turn(*, question: str, reply: Reply, role: str,
         return None
 
 
-# ── The route ─────────────────────────────────────────────────────────
 
 @router.post("/admin/assistant/ask")
 async def ask(body: AskBody = Body(...)) -> dict[str, Any]:
     started = time.monotonic()
     if body.account_id is None:
-        # No account to gate on, so the gate is the session itself: a signed-in
-        # user of this deployment, never an anonymous caller.
+        # No account to gate on, so the gate is a signed-in user, never an anonymous caller.
         require_user(detail="sign in required")
     else:
         assert_account_owned(body.account_id)
     question = body.question.strip()
-    if not question:      # refused before any model call: no turn row
+    if not question:
         return {"answer": "Ask me something about the product.",
                 "error": "empty_question", "id": None}
     role = _asker_role()
@@ -811,17 +612,12 @@ async def ask(body: AskBody = Body(...)) -> dict[str, Any]:
     row_id = await _record_turn(question=question, reply=reply, role=role,
                                 account_id=body.account_id, thread_id=thread_id,
                                 started=started)
-    # `about`: the account the answer's data is about — the paste may resolve another of the
-    # asker's models than the thread's focus; the answer's live cards fetch it (rwl W30 C3).
     return {"answer": reply.answer, "error": reply.error, "id": row_id, "about": reply.about}
 
 
 async def _ask(body: AskBody, question: str, role: str,
                prev: list[AssistantTurn]) -> Reply:
-    """The gated, non-blank ask → the Reply the asker sees (`prev`: its PREVIOUS TURNS)."""
     if body.account_id is None:
-        # Manual only, billed to the asking agency. No account → no pin to
-        # read, so the model is the purpose default.
         model, fallback = await resolve_model_and_fallback("", PURPOSE)
         note = GENERAL_NOTE if _has_creator() else NO_ACCOUNT_NOTE
         return await _complete(
@@ -829,23 +625,16 @@ async def _ask(body: AskBody, question: str, role: str,
             account_id=None, user_id=_asker_ids()[0], fallback=fallback, max_tokens=ASK_MAX_TOKENS,
             capped="Today's help-bot budget is used up — try again tomorrow.")
 
-    # Resolution comes FIRST: the paste may name a different model, and the live
-    # state block has to describe the account the question is actually about.
     target = await assistant_fan_pack.build(body.account_id, question)
-    assert_account_owned(target.account_id)   # belt: _resolve_account already filters
+    assert_account_owned(target.account_id)
     state = await assistant_state.build(target.account_id, target.label)
-    # One rule for both lines below: the SCOPED account owns this answer's
-    # settings AND its bill, even when the paste named another account. The
-    # daily AI budget is per account, so naming one in a question must not
-    # reach into its config or spend its money. The resolver is total —
-    # there is no failure branch to write here.
+    # The scoped account owns this answer's settings and bill even when the paste names another: the daily AI budget is per account.
     model, fallback = await resolve_model_and_fallback(body.account_id, PURPOSE)
     reply = await _complete(
         model, _user_block(question, role, state, target.block, history=prev),
-        account_id=body.account_id, fallback=fallback, max_tokens=ASK_MAX_TOKENS)      # pays — see above
+        account_id=body.account_id, fallback=fallback, max_tokens=ASK_MAX_TOKENS)
     reply.about = target.account_id
     if reply.error is None:
-        # The model answered without rows it should have had — be honest about why.
         if state is None:
             reply.answer += assistant_state.FAIL_NOTE
         if not target.ok:
@@ -853,7 +642,6 @@ async def _ask(body: AskBody, question: str, role: str,
     return reply
 
 
-# ── History ───────────────────────────────────────────────────────────
 
 def _turn_row(t: AssistantTurn) -> dict[str, Any]:
     return {"id": t.id, "ts": t.ts.replace(tzinfo=timezone.utc).isoformat(),

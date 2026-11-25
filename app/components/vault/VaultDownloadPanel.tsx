@@ -1,14 +1,5 @@
 "use client";
 
-/** Vault Pro's download: `useVaultDownload` (the reducer, its ref for the runner, the abort, the picked folder, the
- *  share sink's files) and the compact status card. The card only dispatches; the runner is `vaultDownload.ts`, the
- *  rules `vaultDownloadReducer.ts`.
- *  `VaultDownloadProvider` sits in the root layout, above the routes: leaving Vault Pro (or switching model) keeps
- *  the run and unsaved phone files; the card shows on every page ("Open Vault Pro" off it). Only the provider
- *  unmounting (sign-out: AuthGate drops the tree) stops the run and the queue; the provider itself (its account list,
- *  `useAccounts`) drops the run, files and queued jobs of a model that was removed. Every Download control (selection bar, rail, page header) calls this one.
- *  Folder sink: a download asked for while one runs joins the queue; the next job starts when the run settles, into
- *  the same picked folder once its permission still holds (else the card's Resume asks again, inside the tap). */
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -34,53 +25,33 @@ export const VAULT_PRO_PATH = "/growth/vault-pro";
 
 export interface VaultDownload {
   state: DlState;
-  /** Where files go in this browser; null = no download here. */
   sink: DlSink | null;
-  /** Start `a` (or queue it: `queues`, as the gate's `DlGate.queues` says); true once it started or joined the queue
-   *  (the caller clears its ticks), false when it didn't (picker closed, refused, a duplicate). `accountId` /
-   *  `creator` = the model the run is for; retry and the links file stay on it after a switch. */
   start: (a: DlJobArgs) => Promise<boolean>;
-  /** Cancel the current run (a queued next one then starts). */
   cancel: () => void;
   clearQueue: () => void;
-  /** The folder's permission lapsed before the next job: ask again (call straight from the tap). */
   resume: () => void;
   retryFailed: () => void;
-  /** `discard`: also drop fetched phone files nobody saved (the card's Discard); else a close keeps them. */
   close: (discard?: boolean) => void;
-  /** Share sink: hand batch `index` to the share sheet (call straight from the tap). */
   saveBatch: (index: number) => void;
-  /** Share sink: hand the links file (txt + html) to the share sheet (call straight from the tap). */
   saveLinks: () => void;
-  /** Folder sink: the computer's file window, open in the run's `state.savedAt` (`showSavedFolder`; call straight
-   *  from the click). A failure is a note. */
   openFolder: () => void;
-  /** Only these models still exist (the account list): a run / queued job of another is dropped. */
   keepAccounts: (ids: readonly string[]) => void;
 }
 
-/** The download controller: ONE for the app (`VaultDownloadProvider`). Every Download control (selection bar, rail,
- *  Extras drawer) calls this one. */
 export function useVaultDownload(): VaultDownload {
   const [state, dispatch] = useReducer(vaultDownloadReducer, initialDownloadState);
   const ref = useRef(state);
-  // Between a start and its `start` action (the picker, the queue's permission check, a Retry's ask) nothing is busy
-  // yet: the claimant holds the slot (`claim` in the state, so the Download controls see it too) and a second start,
-  // the queue's driver or a retry in that gap can't run a queue of its own. Ended by the accepted `start` or the
-  // claimant's own `release` (refused / picker closed / threw / permission answered), never at the queue's end.
+  // claim: between a start and its `start` action the claimant holds the slot so no second start, queue driver or retry runs a queue of its own.
   const claims = useRef(0);
   const abort = useRef<AbortController | null>(null);
   const sinkRef = useRef<Sink | null>(null);
-  // Folder sink: the picked folder, reused by every queued job.
   const rootRef = useRef<FileSystemDirectoryHandle | null>(null);
-  // Share sink: the fetched files by media id until their batch is saved. Cleared only when nothing holds them
-  // (`holdsFiles`): an accepted close / a new run.
   const files = useRef(new Map<number, File>());
   // null on the server, the browser's answer after hydration (no mismatch).
   const sink = useSyncExternalStore(noSubscribe, downloadSink, () => null);
 
-  // The runner reads the state between awaits, so the ref is advanced with the same pure reducer, synchronously.
   const send = useCallback((a: Action) => {
+    // The runner reads state between awaits, so the ref advances synchronously with the same pure reducer.
     ref.current = vaultDownloadReducer(ref.current, a);
     dispatch(a);
   }, []);
@@ -88,34 +59,27 @@ export function useVaultDownload(): VaultDownload {
     abort.current?.abort();
     send({ type: "stop" });
   };
-  // Sign-out (AuthGate unmounts the tree) ends the run and drops the queue; navigation never unmounts this.
-  // (slop's switch-aborts-run / nav-kills-run faults patch this exact line.)
   useEffect(() => () => stopRunAndQueue(), []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const why = (e: unknown) => (e as Error)?.message || String(e);
-  // The run (`attempt`) threw: stop its workers, then end it. Only from the runner's own promise.
   const fail = (ac: AbortController, attempt: number) => (e: unknown) => {
     ac.abort();
     send({ type: "runError", error: why(e), attempt });
   };
-  // A share sheet, the picker or the folder's permission failed: say so; the run and its files stay.
   const note = (e: unknown) => send({ type: "note", text: why(e) });
   const clearNote = () => { if (ref.current.note) send({ type: "note", text: "" }); };
   const deps = (ac: AbortController) => ({
     send, get: () => ref.current, signal: ac.signal,
     keep: (id: number, f: File) => { files.current.set(id, f); },
   });
-  // Each run gets its own controller and aborts the previous one: a cancelled queue's late workers (or a done phone
-  // run's held ones) stop; whatever they still send carries their old attempt and is dropped by the reducer.
   const next = () => {
     abort.current?.abort();
+    // Each run aborts the previous one: a cancelled queue's late workers stop, and what they still send is dropped by the reducer by attempt.
     const ac = new AbortController();
     abort.current = ac;
     return ac;
   };
 
-  /** Run `a` (into `root` when the queue reuses its folder, else the picker); resolves true once its `start` is
-   *  accepted, false if it never is. */
   const claim = (): number | null => {
     const id = ++claims.current;
     send({ type: "claim", id });
@@ -126,11 +90,9 @@ export function useVaultDownload(): VaultDownload {
     const id = claim();
     if (id === null) return resolve(false);
     const ac = next();
-    files.current.clear();   // nothing is held (holdsFiles): only files of a saved / discarded run
+    files.current.clear();
     let attempt: number | null = null;
-    const release = () => send({ type: "release", id });   // only this claim: a later start may hold the slot
-    // The failure handler is pinned to the attempt `start` actually made (`started`); nothing throws before it
-    // except the picker (a `pickClosed`) and a note.
+    const release = () => send({ type: "release", id });
     startDownload(a, deps(ac), sink, (k, n, r) => {
       sinkRef.current = k;
       if (r) rootRef.current = r;
@@ -155,12 +117,11 @@ export function useVaultDownload(): VaultDownload {
     return launch(a, null);
   };
 
-  // The queue's driver: the run settled and a job waits (not paused) -> its folder's permission, then the job.
   useEffect(() => {
     if (isBusy(state) || state.picking || !state.jobs.length || state.paused || state.claim) return;
     const root = rootRef.current;
     if (!root) {
-      send({ type: "paused" });   // no folder yet (cannot happen: a queue needs a folder run first); Resume picks
+      send({ type: "paused" });
       return;
     }
     const id = claim();
@@ -198,7 +159,7 @@ export function useVaultDownload(): VaultDownload {
       if (!canRetry(ref.current)) return;
       send({ type: "retryFailed" });
       const ac = next();
-      const attempt = ref.current.attempt;   // the one retryFailed just made
+      const attempt = ref.current.attempt;
       runQueue({ ...deps(ac), sink: sinkNow }).catch(fail(ac, attempt));
     };
     const root = ref.current.sink === "folder" ? rootRef.current : null;
@@ -206,7 +167,6 @@ export function useVaultDownload(): VaultDownload {
       run();
       return;
     }
-    // Chrome may have lapsed the folder's permission: ask inside this tap; refused -> a queued retry behind Resume
     const id = claim();
     if (id === null) return;
     clearNote();
@@ -225,10 +185,10 @@ export function useVaultDownload(): VaultDownload {
     if (!b?.sealed || b.saved) return;
     const batch = b.ids.map((id) => files.current.get(id)).filter((f): f is File => !!f);
     const attempt = ref.current.attempt;
+    // The share sheet must be opened straight from the tap.
     shareFiles(batch).then((r) => {
-      if (r !== "saved") return;   // the sheet was dismissed: the button stays
+      if (r !== "saved") return;
       send({ type: "batchSaved", index, attempt });
-      // A late sheet of an older run: its files are gone already, and the ids may be the new run's.
       if (ref.current.attempt === attempt) for (const id of b.ids) files.current.delete(id);
     }).catch(note);
   };
@@ -253,7 +213,7 @@ export function useVaultDownload(): VaultDownload {
     const s = ref.current;
     if (isBusy(s) && !ids.includes(s.accountId)) abort.current?.abort();
     send({ type: "keepAccounts", ids });
-    if (!holdsFiles(ref.current)) files.current.clear();   // a removed model's phone files go with its run
+    if (!holdsFiles(ref.current)) files.current.clear();
   }, [send]);
   return { state, sink, start, cancel, clearQueue, resume, retryFailed, close,
            saveBatch, saveLinks, openFolder, keepAccounts };
@@ -261,8 +221,6 @@ export function useVaultDownload(): VaultDownload {
 
 const DownloadCtx = createContext<VaultDownload | null>(null);
 
-/** One download for the whole app, with its status card; see the header. Inside the user context (`useAccounts`):
- *  a model that leaves the account list (removed mid-run) loses its run / files / queued jobs. */
 export function VaultDownloadProvider({ children }: { children: ReactNode }) {
   const dl = useVaultDownload();
   const q = useAccounts();
@@ -280,7 +238,6 @@ export function VaultDownloadProvider({ children }: { children: ReactNode }) {
   );
 }
 
-/** The app's download (`VaultDownloadProvider`, in the root layout). */
 export function useVaultDownloadContext(): VaultDownload {
   const dl = useContext(DownloadCtx);
   if (!dl) throw new Error("useVaultDownloadContext: no VaultDownloadProvider above this component");
@@ -297,12 +254,11 @@ export default function VaultDownloadPanel({ dl }: { dl: VaultDownload }) {
   const { state: s } = dl;
   const pathname = usePathname();
   const error = [s.runError, s.note].filter(Boolean).join(" · ");
-  // Chrome refuses Home / Desktop / Documents / Downloads themselves ("contains system files"; its File System Access
-  // blocklist, kDontBlockChildren), never a folder inside them. Its dialog, not ours: say so while the picker is open.
   if (s.picking) {
     return (
       <div role="status" data-testid="dl-pick-hint"
         className="fixed bottom-24 left-3 right-3 sm:left-auto sm:right-6 z-40 sm:w-[340px] rounded-lg border border-border bg-panel shadow-lg text-xs px-3 py-2">
+        {/* Chrome's own dialog refuses Home/Desktop/Documents/Downloads themselves (File System Access blocklist), never a folder inside them. */}
         Pick any folder. Chrome won&apos;t take Desktop, Documents or Downloads themselves: open one and click New Folder.
       </div>
     );

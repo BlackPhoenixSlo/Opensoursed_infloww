@@ -25,6 +25,7 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 
 import { LazyMassMessageComposer } from "@/components/compose/LazyMassMessageComposer";
+import { useMassAllowed } from "@/hooks/useMassAllowed";
 import { IfButton, IfModal } from "@/components/ui/infloww";
 import { ExtraTag } from "@/components/ui/primitives";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
@@ -42,12 +43,13 @@ export default function CreateMessage({
 }: {
   open: boolean;
   onClose: () => void;
-  /** The page's Creator: every mass composer's "Post as" on open. */
+  /** The page's Creator: every mass composer's "Post as" on open, the mass one's only while it may send. */
   accountId?: string | null;
   /** Phase 2's cards for the "Automated messages" section, placed after "Mass messages". */
   automatedMessageCards?: ReactNode;
 }) {
   const [composer, setComposer] = useState<ComposerMode | null>(null);
+  const massSeed = useMassAllowed(accountId) ? accountId : null;
   return (
     <>
       {open && (
@@ -60,7 +62,7 @@ export default function CreateMessage({
       {composer === "priority" && <PriorityMassComposer open initialAccountId={accountId} onClose={() => setComposer(null)} />}
       {composer && composer !== "priority" && (
         <LazyMassMessageComposer
-          mode={composer} labelExtras forcedAccountId={accountId ?? undefined} onClose={() => setComposer(null)}
+          mode={composer} labelExtras forcedAccountId={massSeed ?? undefined} onClose={() => setComposer(null)}
         />
       )}
     </>

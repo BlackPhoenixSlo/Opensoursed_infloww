@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * DiscountSubmenu — the Avatar menu's "Special offers ▸" (04-messages-pro.md
- * M6, roadmap 4.5): OF's "Give user a discount" for this Fan, in the menu box
- * as "Add to lists ▸" is. A percent (5 up to what keeps the price above OF's
- * floor, by 5), 1..12 months, the price it leaves, then Clear (only while a
- * discount is set) and Apply: PUT /subscriptions/{fan}/discount
- * {discount, period}, Clear sending {0, 1}. The rules and the write are the OF
- * mirror's (`lib/fanDiscount`). Infloww's Free trial and Promotional offer are
- * not here: their request bodies are unverified.
- */
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -31,9 +21,7 @@ export function DiscountSubmenu({
 }: {
   accountId: string;
   fanId: FanId;
-  /** The Creator's subscription price in dollars (OF's /users/me). */
   price: number;
-  /** The Fan's discount now (`subscribedOnData.discountPercent`), 0 for none. */
   current: number;
   currentPeriod: number;
   onFlash: (ok: boolean, msg: string) => void;

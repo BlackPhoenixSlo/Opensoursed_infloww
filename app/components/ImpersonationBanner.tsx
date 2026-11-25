@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * ImpersonationBanner — sticky strip mounted above the top bar when the
- * founder is viewing the app as another user via /admin/impersonate.
- *
- * Reads from UserContext (user.impersonating). Hidden entirely when the
- * overlay isn't active, so the cost on every other render is one truthy
- * check. The relay 403s mutating requests while impersonating, so this
- * banner is the user's visual cue for why a send button would suddenly
- * fail.
- */
 
 import { useState } from "react";
 
@@ -19,6 +9,7 @@ export function ImpersonationBanner() {
   const { user, stopImpersonating } = useUser();
   const [busy, setBusy] = useState(false);
 
+  // Relay 403s mutating requests while impersonating; this banner explains why sends fail.
   if (!user?.impersonating) return null;
 
   async function onExit() {

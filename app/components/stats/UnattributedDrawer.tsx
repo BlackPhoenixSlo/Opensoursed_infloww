@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * UnattributedDrawer — lazy-loaded debug drawer for the most-recent
- * outbound messages we couldn't tie to a chatter.
- *
- * Collapsed by default; the GET only fires once the user expands the
- * drawer (`useUnattributedRecent(limit, enabled=expanded)`). Closing it
- * doesn't blow away the data — staleTime/gcTime still apply — so a
- * quick re-open is free.
- */
 
 import { useState } from "react";
 

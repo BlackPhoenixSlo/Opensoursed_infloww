@@ -1,24 +1,5 @@
 "use client";
 
-/**
- * S4S schedule (Inventory §3.6; docs/spec/phase-03-share-for-share.md, UI and Display status), on Infloww's `Index$5`
- * (page-parity 15), for the creator picked on the rail, in UTC (the header says so): left, "Scheduled S4S" and the
- * picked day's slots from `GET /admin/s4s/schedule?from&to` (one UTC month); right, 265px, a month calendar with a
- * red dot on days with S4S (only those days and today pickable), then "S4S statistics": the day's slots and the
- * month's completed ones. Each slot shows the
- * partner as the request stored it at send (never a live read of the other Agency, ADR-0011) and Infloww's status:
- * "Will be posted shortly", "In progress", "Complete", "Cancelled", or "Failed" (Inflowwww extra, its tooltip) with
- * the reason. Ours, labelled: "Cancel" on a slot that will still post (`POST /admin/s4s/slots/{id}/cancel`, behind a
- * confirm), the live-posting line while the Deployment's live posting is off, and "Partner's post: …" on a slot
- * whose partner deleted, archived or edited its own post of the pair before removal (`partner_issue`, ADR-0015).
- *
- * PROPOSAL (owner review, deviates from Infloww): no "Total Growth" tile (Infloww's is a placeholder too, and ours
- * was never wired); on a phone the order is calendar, the day's slots, then statistics (Infloww stacks the statistics
- * above the slots); the empty day sits 40px down on a phone instead of 180px.
- *
- * ASSUMPTION: a reason is shown as its stored code with underscores read as spaces ("partner opted out"). Rung 5
- * (no reason copy exists in the Inventory). Overturned by Infloww's own reason wording.
- */
 
 import { useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
@@ -37,7 +18,6 @@ import { cn } from "@/lib/utils";
 export const BANNER = "Live posting is off on this deployment. Slots are planned, but nothing is posted to OnlyFans.";
 const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
-/** Infloww's status words and colours; "Failed" is ours. */
 export const STATUS: Record<S4SDisplayStatus, { text: string; color: string }> = {
   "Will be posted shortly": { text: "Will be posted shortly", color: "text-accent" },
   "In progress": { text: "In progress", color: "text-[#ffa15f]" },
@@ -49,7 +29,6 @@ export const STATUS: Record<S4SDisplayStatus, { text: string; color: string }> =
 const utcMonthStart = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
 const addMonths = (d: Date, n: number) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1));
 
-/** "Posted at MMM. D HH:mm", the reason, or the planned time. */
 function detailOf(s: S4SSlot): string {
   const d = new Date(s.slot_at);
   if (s.display_status === "Completed") return `Posted at ${monthName(d.getUTCMonth()).slice(0, 3)}. ${d.getUTCDate()} ${utcTime(s.slot_at)}`;
@@ -75,7 +54,6 @@ export default function S4SSchedule({ profile, livePosting }: { profile: S4SProf
   const pickedDate = new Date(`${picked}T00:00:00Z`);
 
   return (
-    // Phone: calendar, slots, statistics. md up: slots left over both rows, calendar then statistics in the 265px column.
     <div className="grid grid-cols-1 pl-6 md:grid-cols-[minmax(0,1fr)_265px] md:grid-rows-[auto_1fr]">
       <aside aria-label="S4S calendar"
         className="border-border pt-6 pr-3 md:col-start-2 md:row-start-1 md:border-l md:pl-6">
@@ -124,7 +102,6 @@ function Tile({ figure, caption }: { figure: string; caption: string }) {
   );
 }
 
-/** A compact month: 20px round day cells, a 5px #f62828 dot under days with S4S; only those days and today pick. */
 function MonthCalendar({ month, picked, today, marked, onMonth, onPick }: {
   month: Date;
   picked: string;

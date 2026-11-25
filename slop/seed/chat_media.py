@@ -1,21 +1,3 @@
-"""Chat media: photo messages in existing threads (seed/threads.py) and their `message_media` rows, as the
-transcoder (`messages.media_ids` / `media_count`) and `messages.reconcile_rest_media` (thumb_url / source_url from
-OF's `files.thumb.url` / `files.full.url`, dims) leave them. Used by scenarios/2026-11-02-img-chat-media.py.
-
-`seed(w, n_assets)`: about `n_assets` CDN assets (each photo = a thumb + its full source) over 3-6 photos per chat in
-1-3 messages, older than the thread's history (ids below threads.HISTORY_ID_BASE, so `chats.last_message_id` stays
-right). Chats are `fresh` (OF's URLs signed until w.now + 6 h) or `stale` (~10% of photos, at least one chat: their
-Policy expired 2 h ago, what a chat not re-listed since leaves). Fresh photos: ~15% on `public.onlyfans.com`
-(unsigned, img_api's direct lane), the rest on synthetic `cdn2/cdn3.onlyfans.com` with Policy / Signature /
-Key-Pair-Id; max(2, photos // 25) fresh signed sources are > 2 MiB (never disk-cached). Ids are synthetic
-(messages 8_900_000_000_000+, media 900_000_000+); randomness only from w.rng("chat_media").
-
-`rotate(w, data)`: OF re-signed every fresh signed URL (a REST refresh's `reconcile_rest_media` overwrote
-thumb_url / source_url): same host + path, new Policy / Signature. Returns the new URLs by asset key.
-
-Output (`w.data["chat_media"]`): {chats: [{account_id, fan_id, stale, media: [{media_id, message_id, thumb, source}]}],
-assets: {"host/path": {host, path, size, sha256, account_id, media_id, variant, big, direct, stale, url}}}.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -26,12 +8,14 @@ from slop.lib.img_relay import asset_bytes, policy_b64, signed
 
 from . import World, threads, ts
 
-MSG_ID_BASE = 8_900_000_000_000   # < threads.HISTORY_ID_BASE: these photos are older than the thread's lines
+# < threads.HISTORY_ID_BASE: these photos are older than the thread's lines
+MSG_ID_BASE = 8_900_000_000_000
 MEDIA_ID_BASE = 900_000_000
 SIGNED_HOSTS = ("cdn2.onlyfans.com", "cdn3.onlyfans.com")
 DIRECT_HOST = "public.onlyfans.com"
 KEY_PAIR_ID = "SLOPKEYPAIRID0"
-MAX_CACHE = 2 * 1024 * 1024       # img_api._IMG_CACHE_MAX_BYTES
+# img_api._IMG_CACHE_MAX_BYTES
+MAX_CACHE = 2 * 1024 * 1024
 THUMB = (6_000, 30_000)
 SOURCE = (40_000, 250_000)
 BIG = (2_200_000, 3_200_000)
@@ -40,12 +24,8 @@ assert threads.HISTORY_ID_BASE > MSG_ID_BASE + 10_000_000
 
 
 def sign(host: str, path: str, exp_epoch: int, gen: int = 0, ip: str | None = None) -> str:
-    """`host/path` as OF hands it out: the signed hosts with a CloudFront-style query, the direct one bare. `ip`:
-    the Policy also names the egress that listed it (`IpAddress.AWS:SourceIp`, as OF's do; img_relay's egress
-    names, e.g. "127.0.0.1:<proxy port>" or "direct")."""
     if not signed(host):
         return f"https://{host}{path}"
-    # CloudFront's custom Policy, as OF's CDN URLs carry it (its expiry what the relay and the fake CDN read).
     cond: dict = {"DateLessThan": {"AWS:EpochTime": exp_epoch}}
     if ip is not None:
         cond["IpAddress"] = {"AWS:SourceIp": ip}
@@ -130,7 +110,6 @@ def seed(w: World, n_assets: int) -> dict:
 
 
 def rotate(w: World, data: dict) -> dict[str, str]:
-    """OF re-signed every fresh signed URL (module docstring): the message_media rows a REST refresh rewrites."""
     exp = _epoch(w.now + timedelta(hours=7))
     new = {k: sign(a["host"], a["path"], exp, gen=1) for k, a in data["assets"].items()
            if not a["stale"] and signed(a["host"])}

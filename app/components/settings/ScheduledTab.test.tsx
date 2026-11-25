@@ -1,9 +1,3 @@
-/**
- * ScheduledTab's Cancel asks in an IfModal before the same cancel request; the dialog's Cancel sends nothing.
- * The list is a table with the house empty state, and its help line links to Auto Mass only where the role may
- * open it. The scheduled-messages hooks, the account list and the granted pages are faked at the module; every
- * name is fake.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 

@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""Growth > Scripts at Infloww size: the bulk import (`POST /admin/saved-replies/bulk`), sequence meta
-(`saved_reply_sequences`, `GET /admin/saved-replies/sequences`) kept in step with relabel / delete, the one-request
-selection delete (`POST /admin/saved-replies/delete`) and the send count (`POST /admin/saved-replies/sent`).
-
-The seam is the Relay over HTTP with real session cookies from the shared two-Agency fixture.
-
-Run: ./venv/bin/python service/tests/test_scripts_bulk_import.py   (exit 0 = green)
-"""
 import _harness  # MUST be first — binds a throwaway temp DB before any db import
 
 _harness.bootstrap()
@@ -91,10 +83,9 @@ def case_bulk_creates_sequences_whole_with_meta_steps_options_and_prices():
     m = _metas()
     assert (m["Night 10"]["position"], m["Night 10"]["created_by"]) == (1, "Mia"), m
     assert m["Night 10"]["created_at"].startswith("2025-03-01T10:00:00"), m
-    assert m["Night 10"]["updated_at"].startswith("2025-04-30"), m  # 1746000000000 ms
+    assert m["Night 10"]["updated_at"].startswith("2025-04-30"), m
     assert (m["Branchy"]["position"], m["Branchy"]["description"], m["Branchy"]["created_by"]) == (
         2, "PPV ladder", None), m
-    # Its scripts carry the sequence's dates (Infloww's), so derived dates agree with the meta.
     night = [x for x in _list() if x["script_id"] == "Night 10"]
     assert all(x["created_at"].startswith("2025-03-01") for x in night), night
 
@@ -159,7 +150,6 @@ def case_a_bad_step_fails_its_whole_sequence_with_a_reason_and_the_rest_import()
                        ("empty", "no steps"), ("ok", "name twice in this request")}, reasons
     assert b["tag_scripts"]["failed"] == 1, b
     assert {x["script_id"] for x in _list()} == {"ok"}
-    # A request over the row cap is refused whole.
     many = [{"name": f"m{i}", "order": i, "steps": [{"step": "1", "text": "x"}]} for i in range(5001)]
     r = _bulk({"sequences": many})
     assert r.status_code == 413, r.text
@@ -177,8 +167,8 @@ def case_tag_scripts_merge_into_an_identical_step():
     _wipe()
     assert _bulk({"sequences": [_seq("Q", 1, n=2)]}).status_code == 200
     r = _bulk({"tags": [{"name": "VIP", "order": 1, "scripts": [
-        {"name": "Q s1", "text": "Q text 1"},      # == step 1 of Q: tagged, not created
-        {"name": "q S1", "text": "Q text 1"},      # name is case-blind: same script, already tagged
+        {"name": "Q s1", "text": "Q text 1"},
+        {"name": "q S1", "text": "Q text 1"},
         {"name": "solo", "text": "only here", "notes": "n", "price": 5},
     ]}], "mode": "replace"})
     assert r.status_code == 200, r.text
@@ -186,7 +176,6 @@ def case_tag_scripts_merge_into_an_identical_step():
     rows = {(x["title"], x["script_id"]): x for x in _list()}
     assert rows[("Q s1", "Q")]["tags"] == ["VIP"]
     assert rows[("solo", None)]["price"] == 5 and rows[("solo", None)]["tags"] == ["VIP"]
-    # A replace of Q drops its tag with its old steps; the tag pass of the same payload puts it back.
     r = _bulk({"sequences": [_seq("Q", 1, n=2)], "tags": [{"name": "VIP", "scripts": [
         {"name": "Q s1", "text": "Q text 1"}]}], "mode": "replace"})
     assert r.json()["tag_scripts"]["tagged"] == 1, r.json()
@@ -201,9 +190,7 @@ def case_a_step_carries_its_own_tags_and_infloww_day_only_dates():
     rows = sorted((x for x in _list() if x["script_id"] == "NSQ"), key=lambda x: x["script_step"])
     assert [x["tags"] for x in rows] == [["NS", "VIP"], []], rows
     m = _metas()["NSQ"]
-    # Day-only: noon UTC, so the day reads the same in any browser zone.
     assert (m["created_at"], m["updated_at"]) == ("2026-10-13T12:00:00", "2026-09-02T12:00:00"), m
-    # One script, never two: a re-run is a no-op; a step tag over the tag cap fails the sequence.
     assert _bulk({"sequences": [q]}).json()["steps"]["created"] == 0
     assert len([x for x in _list() if x["script_id"] == "NSQ"]) == 2
     bad = _seq("Fat tag", 2, n=1)
@@ -224,8 +211,6 @@ def _cli():
 
 
 def case_cli_plan_maps_an_infloww_dump_to_one_row_per_script():
-    """The real dump's shape: steps carry `script_name` (or candidates when ambiguous), tags.json holds the fixed
-    views "All scripts" / "Uncategorized" plus real tags whose scripts are steps. One row per script, never two."""
     _wipe()
     cli = _cli()
     seqs = [{"order": 0, "name": "654/A", "script_count": 3, "created_by": "024", "created_on": "Oct 13, 2026",
@@ -252,7 +237,6 @@ def case_cli_plan_maps_an_infloww_dump_to_one_row_per_script():
     rb = cli.read_back(_list(), list(_metas().values()), p)
     assert (rb["mismatches"], rb["step_diffs"], rb["meta_diffs"]) == ([], [], []), rb
     assert rb["got"]["rows"] == 5 and rb["got"]["untagged"] == 2
-    # A dump whose views disagree with the plan is a problem the CLI exits 1 on.
     tags[2]["scripts"] = every[1:2]
     assert cli.plan(seqs, tags)["problems"] == [
         "dump 'Uncategorized' 1 unique != planned 2; only in dump [], only planned ['a3']"]
@@ -262,7 +246,7 @@ def case_untagged_group_creates_scripts_with_no_tag_and_a_rerun_skips():
     _wipe()
     assert _bulk({"sequences": [_seq("U", 1, n=1)]}).status_code == 200
     body = {"tags": [{"name": " ", "scripts": [{"name": "loose", "text": "no tag here"},
-                                               {"name": "U s1", "text": "U text 1"}]}]}  # 2nd == step 1 of U
+                                               {"name": "U s1", "text": "U text 1"}]}]}
     r = _bulk(body)
     assert r.json()["tag_scripts"] == {"total": 2, "created": 1, "tagged": 0, "skipped": 1, "failed": 0}, r.json()
     rows = {(x["title"], x["script_id"]): x["tags"] for x in _list()}
@@ -271,9 +255,6 @@ def case_untagged_group_creates_scripts_with_no_tag_and_a_rerun_skips():
 
 
 def case_cli_plan_imports_loose_and_shared_scripts_with_no_problems():
-    """Infloww scripts shared by sequences (same name + text; one script in its views, one row per step here),
-    a step whose every candidate is taken (reuses the first), and a loose script in no sequence and no tag
-    (only in the views: imported untagged)."""
     _wipe()
     cli = _cli()
     dup = {"step": "2", "text": "dup", "script_name_candidates": ["d1", "d2"]}
@@ -298,8 +279,6 @@ def case_cli_plan_imports_loose_and_shared_scripts_with_no_problems():
 
 
 def case_cli_plan_reports_same_name_and_text_scripts_with_different_price_or_notes():
-    """W30 F8: the dump has no script id; two untagged scripts with one (name, text) but $10 and $30 (or other
-    notes) would collapse into one row, so the plan says so instead of keeping one silently."""
     cli = _cli()
     a, b = {"name": "promo", "text": "same", "price": 10}, {"name": "Promo", "text": "same", "price": 30}
     p = cli.plan([], [{"name": "All scripts", "scripts": [a, b]}, {"name": "Uncategorized", "scripts": [a, b]}])
@@ -308,14 +287,11 @@ def case_cli_plan_reports_same_name_and_text_scripts_with_different_price_or_not
     noted = cli.plan([], [{"name": "VIP", "scripts": [{**a, "notes": "x"}]}, {"name": "All scripts", "scripts": [
         {"name": "promo", "text": "same", "notes": "y"}]}])
     assert [m.split(":")[0] for m in noted["problems"]] == ["scripts 'promo' share name and text but not notes ['x', 'y']"]
-    # The same script in several views (no price in a view) is one script, no problem.
     assert cli.plan([], [{"name": "VIP", "scripts": [a]}, {"name": "All scripts", "scripts": [
         {"name": "promo", "text": "same"}]}])["problems"] == []
 
 
 def case_cli_tags_only_dump_sends_no_view_only_script():
-    """W30 F9: with no sequences.json a script only in the views may be an untagged sequence step; sending it as a
-    loose script would leave a second copy once the full dump imports the step, so it is left out and reported."""
     cli = _cli()
     step, tagged = {"name": "s1", "text": "step one"}, {"name": "t", "text": "tagged"}
     tags = [{"name": "All scripts", "scripts": [step, tagged]}, {"name": "VIP", "scripts": [tagged]},
@@ -325,15 +301,11 @@ def case_cli_tags_only_dump_sends_no_view_only_script():
     assert p["problems"][0] == ("no sequences.json: 2 scripts were not imported (a sequence step, tagged or "
                                 "not, can't be told from a loose script); add a sequences.json containing [] if "
                                 "the Creator has no sequences"), p["problems"]
-    # An empty sequences.json says the Creator has none: the view-only script is loose.
     assert cli.plan([], tags)["tags"][-1] == {"name": "", "scripts": [step]}
     assert cli.plan([], tags)["problems"] == []
 
 
 def case_cli_tags_only_dump_sends_no_tagged_script():
-    """W30 F42: a tagged script in a tags-only dump may be a sequence step too; the relay's sequence import never
-    merges into a standalone row, so sending it now leaves a second copy once the full dump imports the step. The
-    CLI sends nothing and exits non-zero, saying why."""
     import contextlib
     import io
     import tempfile
@@ -349,9 +321,8 @@ def case_cli_tags_only_dump_sends_no_tagged_script():
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
             code = cli.main(["--base-url", "http://127.0.0.1:9", "--account-id", A, "--dump", d])
     assert code == 2 and "no sequences.json: 1 scripts were not imported" in err.getvalue(), (code, err.getvalue())
-    assert "sequences.json containing [] if the Creator has no sequences" in err.getvalue(), err.getvalue()   # F52
+    assert "sequences.json containing [] if the Creator has no sequences" in err.getvalue(), err.getvalue()
     assert _list() == []
-    # the full dump later: one row for the step, tagged
     full = cli.plan([{"order": 0, "name": "Q", "steps": [{"step": "1", "text": "step one", "script_name": "s1"}]}],
                     tags)
     for body in cli.chunks(full["sequences"], full["tags"], 1000):
@@ -360,9 +331,6 @@ def case_cli_tags_only_dump_sends_no_tagged_script():
 
 
 def case_cli_reads_back_what_the_relay_stores_and_reports_instead_of_crashing():
-    """The read-back compares the relay's stored text (its `of_text`) and UTC days, a loose tag script sharing a
-    step's name (other text) is imported, a sequence the relay refused (bad step label) is a diff, not a
-    traceback, and an unreachable relay is HTTP 0."""
     _wipe()
     cli = _cli()
     seqs = [{"order": 0, "name": "Html", "created_on": "2026-03-01T23:30:00-05:00", "steps": [
@@ -385,9 +353,6 @@ def case_cli_reads_back_what_the_relay_stores_and_reports_instead_of_crashing():
 
 
 def case_cli_reads_dates_with_the_relays_own_rule():
-    """One date and step rule, not two copies: the CLI imports the module the relay reads a dump with, and a dump's
-    every date form (epoch s / ms, ISO with a zone, Infloww's day-only, unreadable, absent) reads back without a
-    diff."""
     import infloww_dump
     import scripts_import_api
     _wipe()
@@ -406,8 +371,6 @@ def case_cli_reads_dates_with_the_relays_own_rule():
 
 
 def case_cli_rerun_on_a_later_day_compares_only_the_dates_the_dump_gives():
-    """A sequence the dump gives no date is stored with the import's time: a re-run's read-back on a later day must
-    not call that a mismatch, while a date the dump does give is still compared."""
     from datetime import datetime
     _wipe()
     cli = _cli()
@@ -418,7 +381,7 @@ def case_cli_rerun_on_a_later_day_compares_only_the_dates_the_dump_gives():
     for body in cli.chunks(p["sequences"], p["tags"], 1000):
         assert _bulk({**body, "mode": "skip"}).status_code == 200
 
-    async def age(name: str, when: datetime) -> None:  # as if imported then, read back today
+    async def age(name: str, when: datetime) -> None:
         async with get_session() as s:
             m = (await s.execute(select(SavedReplySequence).where(
                 SavedReplySequence.account_id == A, SavedReplySequence.name == name))).scalar_one()
@@ -433,7 +396,6 @@ def case_cli_rerun_on_a_later_day_compares_only_the_dates_the_dump_gives():
 
 
 def case_cli_sign_in_failure_exits_2():
-    """The docstring's "2 usage / sign-in": a refused sign-in is exit 2 with the reason on stderr, no traceback."""
     import contextlib
     import io
     import os
@@ -453,8 +415,6 @@ def case_cli_sign_in_failure_exits_2():
 
 
 def case_cli_without_the_relays_service_dir_exits_2():
-    """No silent fallback: a CLI copied away from service/ can't read text and dates as the relay does, so it says
-    so and exits 2 (usage), never reconciling with a guess."""
     import shutil
     import subprocess
     import sys
@@ -470,7 +430,6 @@ def case_cli_without_the_relays_service_dir_exits_2():
 
 
 def case_cli_writes_its_report_when_the_read_back_fails():
-    """A read-back the relay answers with an error still leaves `--report` (counts, failures, the HTTP codes)."""
     import tempfile
     from pathlib import Path
     _wipe()
@@ -494,8 +453,6 @@ def case_cli_writes_its_report_when_the_read_back_fails():
 
 
 def case_cli_reimport_after_an_app_edit_creates_the_tag_script_again_and_says_so():
-    """Tag scripts match on (name, text) only (the dump has no script id): one whose text was edited in the app
-    since the last import is created again on a re-import, and the reconciliation says so."""
     import contextlib
     import io
     import tempfile
@@ -510,7 +467,7 @@ def case_cli_reimport_after_an_app_edit_creates_the_tag_script_again_and_says_so
     tags = [{"order": 0, "name": "VIP", "scripts": [{"name": "hey", "text": "hey you"}, {"name": "yo", "text": "yo"}]}]
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "tags.json").write_text(json.dumps(tags))
-        (Path(d) / "sequences.json").write_text("[]")  # W30 F42: the Creator has no sequences
+        (Path(d) / "sequences.json").write_text("[]")
         argv = ["--base-url", "http://unused", "--account-id", A, "--dump", d]
         with contextlib.redirect_stdout(io.StringIO()) as first:
             cli.main(argv)
@@ -525,8 +482,6 @@ def case_cli_reimport_after_an_app_edit_creates_the_tag_script_again_and_says_so
 
 
 def case_cli_first_import_beside_an_app_script_notes_only_conditionally():
-    """W30 F33: a first import that finds one tag script already in the app (same name and text) and creates
-    another prints the note, worded so it is true on a first import too."""
     import contextlib
     import io
     import tempfile
@@ -543,7 +498,7 @@ def case_cli_first_import_beside_an_app_script_notes_only_conditionally():
     tags = [{"order": 0, "name": "VIP", "scripts": [{"name": "hey", "text": "hey you"}, {"name": "yo", "text": "yo"}]}]
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "tags.json").write_text(json.dumps(tags))
-        (Path(d) / "sequences.json").write_text("[]")  # W30 F42: the Creator has no sequences
+        (Path(d) / "sequences.json").write_text("[]")
         with contextlib.redirect_stdout(io.StringIO()) as out:
             cli.main(["--base-url", "http://unused", "--account-id", A, "--dump", d])
     text = out.getvalue()
@@ -553,8 +508,6 @@ def case_cli_first_import_beside_an_app_script_notes_only_conditionally():
 
 
 def case_cli_dry_run_over_chunks_says_its_totals_are_per_chunk():
-    """W30 F45: a dry run rolls back each chunk, so a script in two tags that land in two chunks is "created" by
-    both; the reconciliation labels its totals as per-chunk estimates instead of passing them off as exact."""
     import contextlib
     import io
     import tempfile
@@ -591,18 +544,16 @@ def case_relabel_rename_and_delete_keep_the_meta_in_step():
     assert rel(kind="sequence", **{"from": "Old"}, to="New").status_code == 200
     m = _metas()
     assert "Old" not in m and (m["New"]["position"], m["New"]["created_by"]) == (3, "Mia"), m
-    assert rel(kind="sequence", **{"from": "Gone"}).status_code == 200      # ungroup the whole sequence
+    assert rel(kind="sequence", **{"from": "Gone"}).status_code == 200
     assert "Gone" not in _metas()
     part = [x["id"] for x in _list() if x["script_id"] == "Part"]
-    assert rel(kind="sequence", **{"from": "Part"}, ids=part[:1]).status_code == 200   # one script out
+    assert rel(kind="sequence", **{"from": "Part"}, ids=part[:1]).status_code == 200
     assert "Part" in _metas()
-    # The rest out one by one: PUT moving the last one out prunes the meta.
     for rid in part[1:]:
         row = [x for x in _list() if x["id"] == rid][0]
         r = OWNER_A.put(f"/admin/saved-replies/{rid}", json={"text": row["text"], "script_id": None})
         assert r.status_code == 200, r.text
     assert "Part" not in _metas()
-    # A stale meta of the target name never blocks or leaks into a rename.
     asyncio.run(_stale_meta(A, "Fresh"))
     assert rel(kind="sequence", **{"from": "New"}, to="Fresh").status_code == 200
     assert _metas()["Fresh"]["position"] == 3
@@ -647,7 +598,6 @@ def case_the_list_reads_more_media_than_sqlites_variable_cap():
 
     async def go() -> None:
         async with get_session() as s:
-            # 260k distinct ids: past this build's 250,000 bound variables (and the 32,766 default).
             for k in range(2):
                 s.add(SavedReply(account_id=A, text=f"m{k}", media_json=json.dumps(
                     [{"id": 1_000_000 + k * 130_000 + i} for i in range(130_000)])))
@@ -681,7 +631,6 @@ def case_role_gate_bulk_as_the_excel_import_and_batch_delete_as_delete_scripts()
         ids = [x["id"] for x in _list()]
         r = CHATTER_A.post(f"/admin/saved-replies/delete?account_id={A}", json={"ids": ids})
         assert r.status_code == 403, r.text
-        # Replace deletes the sequence's scripts: Delete scripts too, dry run or not; nothing is touched.
         for dry in (False, True):
             r = _bulk({**body, "mode": "replace", "dry_run": dry}, client=CHATTER_A)
             assert r.status_code == 403 and r.json() == {"detail": "Your role does not allow Delete scripts"}, r.text
@@ -697,8 +646,6 @@ def case_role_gate_bulk_as_the_excel_import_and_batch_delete_as_delete_scripts()
 
 
 def case_identical_tag_chunks_at_once_create_each_script_once():
-    """Two identical tag-only chunks at once (a re-run beside a stuck run): one bulk per Creator at a time, so the
-    second sees the first's scripts and creates none."""
     _wipe()
     body = {"tags": [{"name": "Race", "scripts": [{"name": f"r{i}", "text": f"t{i}"} for i in range(200)]}]}
 
@@ -724,7 +671,6 @@ def case_infloww_html_is_sanitized_to_ofs_markup_and_plain_stays_byte_identical(
     r = _bulk({"sequences": [seq]})
     assert r.status_code == 200 and r.json()["sequences"]["created"] == 1, r.text
     assert [s[2] for s in _steps(A, "H")] == [clean, plain]
-    # A tag's script matches the stored (sanitized) step text however its markup was written; markup counts as read.
     r = _bulk({"tags": [{"name": "T", "scripts": [{"name": "h1", "text": hostile}, {"name": "h2", "text": plain},
                                                   {"name": "long", "text": "<p>" + "x" * 6500 + "</p>"}]}]})
     assert r.json()["tag_scripts"] == {"total": 3, "created": 1, "tagged": 2, "skipped": 0, "failed": 0}, r.json()
@@ -748,7 +694,6 @@ def case_markup_that_keeps_no_text_fails_and_prose_in_angles_is_stored_as_writte
         ("gone", "step 2: text is only markup that is not kept (nothing a fan would read)"),
         ("s", "text is only markup that is not kept (nothing a fan would read)")}, b["failed"]
     assert [s[2] for s in _steps(A, "media")] == ["<p></p>", ""]
-    # prose stays as written; a text that fails closed is stored escaped whole: the fan reads it as written
     assert [s[2] for s in _steps(A, "prose")] == ["<link in bio>", "Use <code VIP20> at checkout",
                                                   "<p>my &lt;style is everything&gt;</p>",
                                                   "<p>&lt;img src=x onerror=a()&gt;</p>"]

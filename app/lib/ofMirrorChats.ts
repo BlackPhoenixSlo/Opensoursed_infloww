@@ -1,33 +1,5 @@
 "use client";
 
-/**
- * The OF mirror's chat list controls (messages/index, a chat's pages, the sort dropdown and the folders dialog), as OF's
- * own chats list does them (its web bundle's chats-list chunk; ledger .scratch/omf-messages-full/ledger.md). All wiring
- * is runtime DOM; the rows themselves are ofMirrorData's (applyChats, read through Messages Pro's useChatList).
- *
- * The list's state lives in the app URL, so every tab, sort option and folder is a plain navigation and Back works:
- * `?tab=pinned|priority|unread|who_tipped` (absent: All), `?folder=<list id>` (a list pinned to chats), `?filter=` the
- * dropdown's priority|unread|unread_tips, `?order=old` (Oldest First; absent: Newest First) and `?q=` the header search.
- * chatsRequest turns it into OF's own GET /chats params: a tab's filter wins over the dropdown's (whose group OF hides
- * on Unread, Pinned and Priority), With Tips with the dropdown's Unread is `unread_tips`, a folder is `list_id`.
- *
- * - Tabs: All, Pinned, Priority, Unread and With Tips, shown by OF's rules from /users/me (Pinned while countPinnedChat,
- *   Priority while countPriorityChat, Unread while chatMessagesCount, With Tips while tipsEnabled; the open tab always),
- *   each with OF's count; then one tab per list pinned to chats (/chats/folders, disabled while it has no users); the
- *   pencil opens the folders dialog (messages/state-folders): each pinnable list a checkbox, PATCH /lists/{id}/pin-chat.
- * - The sort dropdown (messages/state-filter-dropdown): its filter and order radios link to the list with that change,
- *   the current ones checked, the groups OF hides hidden; the title shows the order. "Mark all as read" sends
- *   POST /chats/mark-as-read (no confirm, as OF) and is disabled while /users/me has no unread chats.
- * - Header search: the magnifier opens OF's search form; typing (500 ms after the last key) or Enter lists `?q=`, Clear
- *   closes it.
- * - A row's "x" (Clear messages) asks first, then DELETE /chats/{id}; the open chat's row goes back to the list.
- * - A row swiped left past OF's threshold (its SwipeOut, 100 px; with a finger or the mouse) shows OF's "Mark as Read" /
- *   "Mark as Unread" behind it and then sends it: POST or DELETE /chats/{id}/mark-as-read (OF offers read state only
- *   there and on its own scroll to the end, which the mirror never does).
- * Nothing here marks a chat read: opening or scrolling a chat sends no mark-as-read.
- * All models with no model: navigation works; Mark all as read, a row's "x" and a folder checkbox send nothing and show
- * "Select a model to save changes".
- */
 
 import { useEffect, type RefObject } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -45,11 +17,10 @@ export const LIST_PAGE = "/of-manager/messages";
 export const CHAT_PAGE = "/of-manager/messages/chat";
 export const DROPDOWN_PAGE = "/of-manager/messages/state-filter-dropdown";
 export const FOLDERS_PAGE = "/of-manager/messages/state-folders";
-/** OF's tooltip on the row's "x" is "Clear messages"; its confirm text (message.confirm_delete_chat_desc) is not in the bundle: assumed. */
+// The confirm text (message.confirm_delete_chat_desc) is not in OF's bundle: assumed.
 export const CLEAR_CONFIRM = "Clear messages? This cannot be undone.";
-/** The header search waits this long after the last key, as OF's (debounced) chats search. */
 export const SEARCH_MS = 500;
-/** The fewest characters OF's search lists on its own (its ChatsSearch watcher: `length < 3` waits for Enter). */
+// The fewest characters OF's search lists on its own (below it waits for Enter).
 export const SEARCH_MIN = 3;
 
 export const TABS = ["pinned", "priority", "unread", "who_tipped"] as const;
@@ -57,7 +28,6 @@ export type ChatsTab = (typeof TABS)[number];
 export const DROP_FILTERS = ["priority", "unread", "unread_tips"] as const;
 export type ChatsDropFilter = (typeof DROP_FILTERS)[number];
 
-/** The chat list's view, as the app URL carries it. */
 export interface ChatsView {
   tab: ChatsTab | null;
   folder: string | null;
@@ -68,7 +38,6 @@ export interface ChatsView {
 
 const isOf = <T extends string>(list: readonly T[], v: string | null): v is T => v !== null && (list as readonly string[]).includes(v);
 
-/** The view in `params` (anything unknown is dropped; a tab wins over a folder). */
 export function chatsView(params: { get(key: string): string | null }): ChatsView {
   const tab = params.get("tab");
   const filter = params.get("filter");
@@ -82,20 +51,15 @@ export function chatsView(params: { get(key: string): string | null }): ChatsVie
   };
 }
 
-/** OF shows the dropdown's filter group on All, With Tips and a folder (not on Unread, Pinned or Priority). */
 export const filterGroupShown = (v: ChatsView) => !v.tab || v.tab === "who_tipped";
-/** And its order group everywhere but Pinned (OF sends no order there). */
 export const orderGroupShown = (v: ChatsView) => v.tab !== "pinned";
 
-/** OF's GET /chats params for the view (its chats-list fetch): filter, list_id, order and query. */
 export function chatsRequest(v: ChatsView): { filter: ChatListFilter | null; listId: string | null; order: ChatListOrder; query: string | null } {
-  // "Unread with tips" is hidden on With Tips, so it does not apply there.
   const dd = filterGroupShown(v) && !(v.tab === "who_tipped" && v.filter === "unread_tips") ? v.filter : null;
   const filter: ChatListFilter | null = v.tab === "who_tipped" && dd === "unread" ? "unread_tips" : (v.tab ?? dd);
   return { filter, listId: v.tab ? null : v.folder, order: v.order, query: v.q };
 }
 
-/** The view as a query string, in a fixed order, without "?" ("" for the default view). */
 export function chatsQuery(v: ChatsView): string {
   const q = new URLSearchParams();
   if (v.tab) q.set("tab", v.tab);
@@ -106,55 +70,28 @@ export function chatsQuery(v: ChatsView): string {
   return q.toString();
 }
 
-/** `path` with the open chat (when given) and the view. */
 export function chatsHref(path: string, chat: string | null, v: ChatsView): string {
   const parts = [chat ? `chat=${encodeURIComponent(chat)}` : "", chatsQuery(v)].filter(Boolean);
   return parts.length ? `${path}?${parts.join("&")}` : path;
 }
 
-/** The list (the open chat's page while one is open) showing `v`. */
 export const listHref = (chat: string | null, v: ChatsView) => chatsHref(chat ? CHAT_PAGE : LIST_PAGE, chat, v);
 
-/*
- * ticket 16: the chat list's client-side tools, bound by bindChatList; nothing here reads or writes the Relay.
- * - Select mode (story 29): the sort dropdown's "Select" opens the list (or the open chat's page) with `?select=1`, kept
- *   out of chatsQuery so the GET /chats stays the same. The chats header then shows the selection bar (Cancel, Select
- *   all / Deselect, Delete) and every row a box; a row's click picks it instead of opening the chat. Cancel goes to the
- *   same list without `?select`. Delete is a write (DELETE /chats/{ids}, Phase 2 story 50): it is left unmarked, so the
- *   click fallback (ofMirrorWrites) answers with the Read-only note.
- * ASSUMPTION: OF's select bar markup is not captured (only its controls: Delete and Select all / Deselect, capture
- * messages--select-bulk-actions, chats-list ChatsHeader); the bar is built in the chats header from OF's own header
- * classes, with a Cancel where the header's Back is (OF's way out of select mode is not in the record). Overturned by a
- * DOM capture of OF's select mode.
- * - The folders dialog's Sort (story 30): OF's lists sort menu (captured on New message's lists dropdown,
- *   messages/send/state-list-dropdown: Recent, Name, People, Custom, then Ascending, Descending) orders the lists
- *   /chats/folders already read. Its state is the dialog page's `?fsort=&forder=`, so the order survives the folders'
- *   refetch and Back works.
- * ASSUMPTION: client-side; OF may save the lists sort server-side (the folders answer carries `sort`/`order`, the
- * collections lists' POST /lists/sort). Overturned by a Request capture of this menu's pick: then a Narrowed write
- * under story 34 (ticket 21's pattern).
- * ASSUMPTION: Recent is the newest id first (as the labels dialog's Recent, ofMirrorPostTags sortLabelRows: the folders
- * carry no date) and a system list's word id ("following") counts as the oldest; Custom is the order the dialog draws
- * as read (useChatFolders: pinned first, then by name), not OF's raw order. Overturned by a capture of OF's order.
- */
 
 export const SELECT_ITEM = "[data-oi-select]";
 const HEADER = ".b-chats__header";
 const ROW = ".b-chats__item[data-oi-chat]";
 const ROWS = ".b-chats__list-dialogues";
 
-/** The list showing `v` in select mode (`on`), or out of it. */
 export function selectHref(chat: string | null, v: ChatsView, on: boolean): string {
   const href = listHref(chat, v);
   return on ? `${href}${href.includes("?") ? "&" : "?"}select=1` : href;
 }
 
-/** OF's Select all / Deselect: every row picked, or none once they all are. */
 export function pickAll(picked: ReadonlySet<string>, ids: readonly string[]): Set<string> {
   return ids.every((id) => picked.has(id)) ? new Set() : new Set(ids);
 }
 
-/** Select mode in `doc`'s chats list. Returns its remover (the bar, the boxes and the header as it was). */
 export function selectMode(doc: Document, leave: () => void): () => void {
   const header = doc.querySelector<HTMLElement>(HEADER);
   if (!header) return () => {};
@@ -190,7 +127,6 @@ export function selectMode(doc: Document, leave: () => void): () => void {
   bar.append(cancel, group);
   header.append(bar);
 
-  /** Every row's box, ticked as picked; Select all's label. */
   const mark = () => {
     for (const row of doc.querySelectorAll<HTMLElement>(ROW)) {
       let box = row.querySelector<HTMLInputElement>("[data-oi-select-box]");
@@ -209,7 +145,6 @@ export function selectMode(doc: Document, leave: () => void): () => void {
     if (all.textContent !== label) all.textContent = label;
   };
   mark();
-  // The rows are drawn again on every chat list change (a poll, the next page): their boxes come back with the picks.
   const list = doc.querySelector(ROWS) ?? doc.querySelector(".b-chats__conversations-list");
   const win = doc.defaultView;
   const watch = list && win ? new win.MutationObserver(mark) : null;
@@ -231,7 +166,6 @@ export function selectMode(doc: Document, leave: () => void): () => void {
     }
     const row = t.closest<HTMLElement>(ROW);
     if (!row) return;
-    // Before the list's own handlers (bindChatList binds this first): a row's link, "x" and avatar only pick it.
     ev.preventDefault();
     ev.stopImmediatePropagation();
     const id = row.dataset.oiChat!;
@@ -248,42 +182,29 @@ export function selectMode(doc: Document, leave: () => void): () => void {
   };
 }
 
-/** The folders dialog (with the open chat and the list's view) in `sorted` (the default adds nothing: withListSort). */
 export function folderSortHref(chat: string | null, v: ChatsView, sorted: FolderSort): string {
   return withListSort(chatsHref(FOLDERS_PAGE, chat, v), sorted);
 }
 
-/** OF's tab counter: none for 0, "999+" past 999 (its unreadTips cap). */
 export const counter = (n: number | null | undefined) => (!n || n < 0 ? "" : n > 999 ? "999+" : String(n));
 
-/** The /users/me fields OF's tab bar and dropdown read. */
 export type ChatsMe = Pick<OfMe, "chatMessagesCount"> & { countPinnedChat?: number | null; countPriorityChat?: number | null; unreadTips?: number | null; tipsEnabled?: boolean | null };
 
 export interface ChatsWrites {
-  /** DELETE /chats/{id} (Clear messages). */
   clear(chat: string): Promise<unknown>;
-  /** POST /chats/mark-as-read. */
   markAllRead(): Promise<unknown>;
-  /** PATCH /lists/{id}/pin-chat {pinned}. */
   pinFolder(id: string, pinned: boolean): Promise<unknown>;
-  /** POST (read) or DELETE (unread) /chats/{id}/mark-as-read: a row's swipe. */
   markRead(chat: string, read: boolean): Promise<unknown>;
 }
 
 export interface ChatsContext {
   view: ChatsView;
-  /** ?chat=: the open chat's fan id. */
   chat: string | null;
-  /** /users/me, once read. */
   me?: ChatsMe;
-  /** /chats/folders' lists (pinned and pinnable), once read. */
   folders?: ChatFolder[];
   navigate(href: string, replace?: boolean): void;
-  /** ticket 16: ?select=1, the list in select mode (the select mode block above). */
   select: boolean;
-  /** ticket 16: the folders dialog's ?fsort=&forder= (folderSortOf). */
   folderSort: FolderSort;
-  /** null: All models with no model (nothing is sent). */
   writes: ChatsWrites | null;
   confirm(text: string): boolean;
 }
@@ -291,23 +212,18 @@ export interface ChatsContext {
 const BAR = ".b-chats__conversations-list .b-tabs__nav";
 const TAB = "button[data-oi-tab]";
 const DROP_ITEM = "[data-oi-chats]";
-// The list header's More (OF's sort toggle): its State link (carryView's href) opens the sort dropdown, on it closes it.
 const SORT_MORE = "[at-attr='sort_dropdown'] > button";
 const SEARCH_BTN = ".b-chats__header button[at-attr='search_header_btn']";
 const SEARCH_FORM = ".b-chats__header .b-chat__search-form";
 const CLEAR_BTN = ".b-chats__item__btn-clear";
-// OF's collection rows only: a chat's tag dialog (its m-release-item rows) is another modal list on a chat page.
 const FOLDER_ROW = ".modal .b-rows-lists label.b-rows-lists__item.m-collection-item";
-/** OF's row SwipeOut and its threshold (chats-list: `threshold: 100`). */
 const SWIPE_ROW = ".swipeout";
 export const SWIPE_PX = 100;
 
-/** Show or hide `el` (inline display, nothing else touched). */
 const show = (el: HTMLElement | null | undefined, on: boolean) => {
   if (el) el.style.display = on ? "" : "none";
 };
 
-/** The tab a button stands for, as the view it opens. */
 function tabView(btn: HTMLElement, v: ChatsView): ChatsView | null {
   const t = btn.dataset.oiTab;
   if (t === "all") return { ...v, tab: null, folder: null };
@@ -323,7 +239,6 @@ const isCurrent = (btn: HTMLElement, v: ChatsView) => {
   return v.tab === t;
 };
 
-/** OF's rule for a special tab's visibility (null: no /users/me yet, shown as captured). */
 function tabShown(t: string | undefined, me: ChatsMe | undefined): boolean {
   if (!me) return true;
   if (t === "pinned") return (me.countPinnedChat ?? 0) > 0;
@@ -342,7 +257,6 @@ function tabCount(t: string | undefined, me: ChatsMe | undefined): string {
   return "";
 }
 
-/** One tab's current mark (OF's m-current m-no-pointer) and counter. */
 function markTab(doc: Document, btn: HTMLElement, current: boolean, count: string) {
   btn.classList.toggle("m-current", current);
   btn.classList.toggle("m-no-pointer", current);
@@ -356,7 +270,6 @@ function markTab(doc: Document, btn: HTMLElement, current: boolean, count: strin
   (text ?? btn).after(span);
 }
 
-/** The tab bar: the special tabs by OF's rules, the folder tabs, the current one marked. */
 export function applyTabs(doc: Document, ctx: ChatsContext): void {
   const bar = doc.querySelector(BAR);
   if (!bar) return;
@@ -370,7 +283,6 @@ export function applyTabs(doc: Document, ctx: ChatsContext): void {
     show(btn.closest<HTMLElement>("li"), current || tabShown(t, me));
     markTab(doc, btn, current, tabCount(t, me));
   }
-  // OF's loader between the tabs and the pencil: the folder tabs are being read.
   const loader = bar.querySelector<HTMLElement>(".b-posts_preloader");
   show(loader, folders === undefined);
   const textTab = tabs.find((b) => b.dataset.oiTab === "who_tipped") ?? tabs.find((b) => b.dataset.oiTab === "all");
@@ -389,22 +301,18 @@ export function applyTabs(doc: Document, ctx: ChatsContext): void {
       text.classList.remove("m-capitalize");
       text.textContent = ` ${f.name ?? ""} `;
     }
-    btn.disabled = !f.usersCount; // OF: a list with no users is a disabled tab
+    btn.disabled = !f.usersCount;
     markTab(doc, btn, !view.tab && view.folder === String(f.id), "");
     at ? at.before(item) : li.parentElement?.appendChild(item);
   }
 }
 
-/**
- * Links to the dropdown and the folders dialog carry the open chat and the view; on those two pages the links back to the
- * list (backdrop, toggle, Close) go to the same list (or chat) again. Their original href is kept as keepQuery does.
- */
 function carryView(doc: Document, ctx: ChatsContext) {
   const query = [ctx.chat ? `chat=${encodeURIComponent(ctx.chat)}` : "", chatsQuery(ctx.view)].filter(Boolean).join("&");
   const onState = !!doc.querySelector(`${DROP_ITEM}, ${FOLDER_ROW}`);
   for (const a of doc.querySelectorAll<HTMLAnchorElement>("a[href^='/of-manager/messages']")) {
     const href = a.dataset.oiHref ?? a.getAttribute("href") ?? "";
-    if (a.closest(DROP_ITEM)) continue; // applyDropdown's
+    if (a.closest(DROP_ITEM)) continue;
     const to = href === DROPDOWN_PAGE || href === FOLDERS_PAGE ? (query ? `${href}?${query}` : href) : onState && href === LIST_PAGE ? listHref(ctx.chat, ctx.view) : null;
     if (to === null) continue;
     a.dataset.oiHref = href;
@@ -412,7 +320,6 @@ function carryView(doc: Document, ctx: ChatsContext) {
   }
 }
 
-/** The sort dropdown's items (generator marks: data-oi-chats="filter:<v>|order:<v>|mark-all"): links, checks and OF's hidden groups. */
 export function applyDropdown(doc: Document, ctx: ChatsContext): void {
   const { view, me } = ctx;
   const items = [...doc.querySelectorAll<HTMLElement>(DROP_ITEM)];
@@ -443,23 +350,20 @@ export function applyDropdown(doc: Document, ctx: ChatsContext): void {
       show(item, orderGroupShown(view));
       show(groupEnd(item), orderGroupShown(view));
     } else if (kind === "mark-all") {
-      // OF: disabled while the Creator has no unread chat (authUser.chatMessagesCount); unknown counts as none.
       const off = !((me?.chatMessagesCount ?? 0) > 0);
       item.classList.toggle("v-list-item--disabled", off);
       item.setAttribute("aria-disabled", String(off));
       item.toggleAttribute("data-oi-wired", !off);
-      link?.remove(); // its click is the binder's, never a navigation
+      link?.remove();
     }
   }
 }
 
-/** The list header's title: the order's label, as OF's. */
 function applyTitle(doc: Document, v: ChatsView) {
   const title = doc.querySelector<HTMLElement>(".b-chats__conversations-list .b-content-filter__title");
   if (title) title.textContent = v.order === "old" ? "Oldest First" : "Newest First";
 }
 
-/** The header search form: open (OF's m-search-form-visible on the header) with the query while there is one. */
 function applySearch(doc: Document, v: ChatsView, open: boolean) {
   const form = doc.querySelector<HTMLFormElement>(SEARCH_FORM);
   if (!form) return;
@@ -470,7 +374,6 @@ function applySearch(doc: Document, v: ChatsView, open: boolean) {
   if (submit) submit.disabled = !(input?.value.trim());
 }
 
-/** Wire the chat list's controls in `doc` (any page with the list, the dropdown or the folders dialog). Returns an unbind. */
 export function bindChatList(doc: Document, ctx: ChatsContext): () => void {
   const { view, writes } = ctx;
   applyTabs(doc, ctx);
@@ -479,16 +382,11 @@ export function bindChatList(doc: Document, ctx: ChatsContext): () => void {
   carryView(doc, ctx);
   applySearch(doc, view, !!view.q);
   for (const el of doc.querySelectorAll(`${TAB}, ${SEARCH_BTN}, ${SEARCH_FORM} button`)) el.setAttribute("data-oi-wired", "");
-  // The sort toggle on every page with the list (each State page variant too): Wired, its Not-yet title kept until its
-  // Live proof (decisions D1). The generator's State link over it takes the click; a State page's dialog covers both.
   doc.querySelector(SORT_MORE)?.setAttribute("data-oi-wired", "");
-  // ticket 16: the dropdown's Select (its Not-yet title stays, D1) and select mode, bound before the list's own clicks.
   doc.querySelector(SELECT_ITEM)?.setAttribute("data-oi-wired", "");
   const undoSelect = ctx.select ? selectMode(doc, () => ctx.navigate(selectHref(ctx.chat, view, false))) : null;
 
-  // The folders dialog: each pinnable list a checkbox, ticked when pinned to chats.
   const pinnable = ctx.folders?.filter((f) => f.canPinnedToChat !== false);
-  // ticket 16: in the dialog's sort; its Sort (title kept, D1) opens OF's lists sort menu, a pick a navigation.
   const sorted = ctx.folderSort;
   const sortBtn = doc.querySelector(FOLDER_ROW) ? doc.querySelector<HTMLButtonElement>(".modal button[aria-label='Sort']") : null;
   sortBtn?.setAttribute("data-oi-wired", "");
@@ -497,7 +395,6 @@ export function bindChatList(doc: Document, ctx: ChatsContext): () => void {
     : null;
 
   let timer: ReturnType<typeof setTimeout> | undefined;
-  // A row's swipe (OF's SwipeOut): dragged left, its label shows; let go past the threshold, read state flips.
   let drag: { x: number; y: number; dx: number; moving: boolean; box: HTMLElement; row: HTMLElement; id: string } | null = null;
   let swallow = false;
   const slide = (box: HTMLElement, dx: number, animate: boolean) => {
@@ -508,6 +405,7 @@ export function bindChatList(doc: Document, ctx: ChatsContext): () => void {
     if (content) content.style.transform = dx ? `translateX(${dx}px)` : "";
     if (right) right.style.transform = dx ? `translateX(calc(100% + ${dx}px))` : "";
   };
+  // No capture on pointerdown: it retargets a plain click to the .swipeout box, so the row's link would not open the chat. Taken once the drag moves.
   const onDown = (ev: PointerEvent) => {
     const t = ev.target as Element | null;
     if (ev.button !== 0 || !t?.closest || t.closest(`${CLEAR_BTN}, .g-avatar`)) return;
@@ -515,10 +413,7 @@ export function bindChatList(doc: Document, ctx: ChatsContext): () => void {
     const row = box?.querySelector<HTMLElement>("[data-oi-chat]");
     if (!box || !row) return;
     drag = { x: ev.clientX, y: ev.clientY, dx: 0, moving: false, box, row, id: row.dataset.oiChat! };
-    // No capture yet: a capture on pointerdown retargets a plain click to the .swipeout box, so the row's link would
-    // not open the chat. It is taken once the drag really moves (onMove).
   };
-  /** A drag that ends without a deliberate release (no button held any more, the browser took the gesture): no write. */
   const reset = () => {
     const d = drag;
     drag = null;
@@ -526,17 +421,15 @@ export function bindChatList(doc: Document, ctx: ChatsContext): () => void {
   };
   const onMove = (ev: PointerEvent) => {
     if (!drag) return;
-    if (ev.buttons === 0) return reset(); // the button was let go where no pointerup reached us
+    if (ev.buttons === 0) return reset();
     const dx = Math.min(0, ev.clientX - drag.x);
     if (!drag.moving) {
-      if (Math.abs(ev.clientY - drag.y) > Math.abs(ev.clientX - drag.x) && Math.abs(ev.clientY - drag.y) > 6) return void (drag = null); // a scroll
+      if (Math.abs(ev.clientY - drag.y) > Math.abs(ev.clientX - drag.x) && Math.abs(ev.clientY - drag.y) > 6) return void (drag = null);
       if (dx > -6) return;
       drag.moving = true;
-      // From here on the release comes back to this row even if the pointer leaves it (or the frame).
       try {
         drag.box.setPointerCapture?.(ev.pointerId);
       } catch {
-        /* a synthetic pointer has no capture */
       }
     }
     drag.dx = dx;
@@ -546,7 +439,7 @@ export function bindChatList(doc: Document, ctx: ChatsContext): () => void {
     const d = drag;
     drag = null;
     if (!d?.moving) return;
-    swallow = true; // the click that ends a drag opens no chat
+    swallow = true;
     setTimeout(() => (swallow = false), 0);
     slide(d.box, 0, true);
     if (-d.dx < SWIPE_PX) return;
@@ -604,7 +497,7 @@ export function bindChatList(doc: Document, ctx: ChatsContext): () => void {
       if (!ctx.confirm(CLEAR_CONFIRM)) return;
       writes.clear(id).then(
         () => {
-          if (ctx.chat === id) ctx.navigate(listHref(null, view), true); // the cleared chat is no page to go Back to
+          if (ctx.chat === id) ctx.navigate(listHref(null, view), true);
         },
         (e) => note(doc, x, `Could not clear messages: ${message(e)}`, true),
       );
@@ -612,10 +505,10 @@ export function bindChatList(doc: Document, ctx: ChatsContext): () => void {
     }
     if (t.closest(SELECT_ITEM)) {
       ev.preventDefault();
-      return ctx.navigate(selectHref(ctx.chat, view, true)); // ticket 16
+      return ctx.navigate(selectHref(ctx.chat, view, true));
     }
     if (sortBtn && t.closest("button") === sortBtn) {
-      ev.preventDefault(); // ticket 16
+      ev.preventDefault();
       showListSort(doc, sortBtn, sorted, (s) => ctx.navigate(folderSortHref(ctx.chat, view, s)));
       return;
     }
@@ -637,7 +530,6 @@ export function bindChatList(doc: Document, ctx: ChatsContext): () => void {
     const submit = doc.querySelector<HTMLButtonElement>(`${SEARCH_FORM} button[type='submit']`);
     if (submit) submit.disabled = !input.value.trim();
     clearTimeout(timer);
-    // OF's watcher: an emptied input lists every chat again, 1-2 characters wait (Enter still searches), 3+ search.
     timer = setTimeout(() => {
       const q = input.value.trim();
       if (q.length > 0 && q.length < SEARCH_MIN) return;
@@ -676,7 +568,6 @@ export function bindChatList(doc: Document, ctx: ChatsContext): () => void {
   doc.addEventListener("pointerup", onUp, true);
   doc.addEventListener("pointercancel", reset, true);
   doc.addEventListener("dragstart", onDragStart, true);
-  // A finger's horizontal drag is the swipe's; a vertical one still scrolls the list (OF's SwipeOut).
   const touch = doc.createElement("style");
   touch.id = "oi-swipe-touch";
   touch.textContent = ".swipeout { touch-action: pan-y; }";
@@ -699,10 +590,6 @@ export function bindChatList(doc: Document, ctx: ChatsContext): () => void {
   };
 }
 
-/**
- * The chat list's writes for `accountId` (its X-Account-Id), each refreshing what it changed: the chat lists (Messages
- * Pro's useChatList cache), /users/me's unread count, the folders.
- */
 export function chatsWrites(accountId: string, qc: QueryClient): ChatsWrites {
   const refresh = () => qc.invalidateQueries({ queryKey: ["chats"] });
   return {
@@ -727,10 +614,8 @@ export function chatsWrites(accountId: string, qc: QueryClient): ChatsWrites {
   };
 }
 
-/** A Messages page with the chat list, its dropdown or its folders dialog (not New message): its mirror path, else "". */
 const pageOf = (src: string) => /^\/of-mirror\/pages\/(messages\/(?:index|state-[^/]+|chat(?:\/[^/]+)?))\.html$/.exec(src)?.[1] ?? "";
 
-/** The chat list's controls: bind on every frame load and view or data change. */
 export function useOfChats(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const router = useRouter();
@@ -740,8 +625,8 @@ export function useOfChats(frameRef: RefObject<HTMLIFrameElement | null>, src: s
   const chat = page ? params.get("chat") : null;
   const view = chatsView(params);
   const viewKey = chatsQuery(view);
-  const select = !!page && params.get("select") === "1"; // ticket 16
-  const { sort: fsort, order: forder } = folderSortOf(params); // ticket 16
+  const select = !!page && params.get("select") === "1";
+  const { sort: fsort, order: forder } = folderSortOf(params);
   const me = useQuery(ofMeQuery(page ? accountId : null)).data as ChatsMe | undefined;
   const folders = useAllChatFolders(page ? accountId : null).data;
 

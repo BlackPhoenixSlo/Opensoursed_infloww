@@ -3,11 +3,6 @@ import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import { HELP, KEY_URLS, LABELS, clearConfirm, keyUrl, wrongFieldWarning } from "./providerFields";
 
-/**
- * Pins the one paste mistake this card can make silently: a DeepSeek key
- * (`sk-` + 32 hex) dropped into the DeepInfra or Z.ai box stores fine and only
- * shows up later as 401s from that provider.
- */
 describe("wrongFieldWarning", () => {
   const DEEPSEEK = "sk-" + "a".repeat(32);
 

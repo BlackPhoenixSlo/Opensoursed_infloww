@@ -1,5 +1,3 @@
-/** scheduleHistory: the per-scope pick log, the local datetime helpers, and the next-slot prediction.
- *  The suite pins no TZ, so every row builds times from local fields and asserts local fields (July: no DST edge). */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -8,7 +6,6 @@ import {
 } from "./scheduleHistory";
 
 const KEY = "chatterly:schedule:history:";
-/** Local wall-clock time, July 2026. */
 const at = (day: number, h: number, m = 0) => new Date(2026, 6, day, h, m);
 const v = (day: number, h: number, m = 0) => toLocalDatetimeInput(at(day, h, m));
 const entry = (value: string, savedAt = 0): HistoryEntry => ({ value, savedAt });
@@ -92,15 +89,12 @@ describe("toLocalDatetimeInput / localDatetimeToIso", () => {
   });
 
   it("out-of-range fields roll over instead of failing", () => {
-    // BUG: see PR — "2026-13-40T25:99" parses (Date overflow), not null
-    // (latent: values come from <input type="datetime-local">, which never emits out-of-range fields).
     expect(toLocalDatetimeInput(new Date(localDatetimeToIso("2026-13-40T25:99")!))).toBe("2027-02-10T02:39");
   });
 });
 
 describe("predictNext", () => {
   it.each<[string, HistoryEntry[]]>([
-    // [label, history]
     ["empty", []],
     ["only junk values", [entry("garbage-garbage-g", 0)]],
   ])("%s -> null", (_, h) => {
@@ -108,7 +102,6 @@ describe("predictNext", () => {
   });
 
   it.each<[string, HistoryEntry[], Date, Prediction]>([
-    // [label, history, now, want]
     ["one pick 6h out -> +6h",
       [entry(v(10, 12), at(10, 6).getTime())], at(10, 7), { value: v(10, 18), intervalLabel: "6h", fromDelta: true }],
     ["one pick 30m out -> +30m",
@@ -139,8 +132,6 @@ describe("predictNext", () => {
   });
 
   it("one parsable pick behind a junk head reads the junk entry's savedAt", () => {
-    // BUG: see PR — times[0] is history[1], but the gap uses history[0].savedAt (0 here) -> > 30 d -> +1 day
-    // (latent: every recorded value comes from a datetime-local input, so a junk head never occurs).
     const h = [entry("garbage-garbage-g", 0), entry(v(10, 12), at(10, 6).getTime())];
     expect(predictNext(h, at(10, 7))).toEqual({ value: v(11, 12), intervalLabel: "", fromDelta: false });
   });
@@ -152,9 +143,9 @@ describe("describePrediction", () => {
     const [date, time, ...rest] = split(v(11, 21));
     expect(rest).toEqual([]);
     expect(date).toContain("11");
-    const [nextDate, nextTime] = split(v(12, 21)); // next day: date differs, time same
+    const [nextDate, nextTime] = split(v(12, 21));
     expect([nextDate !== date, nextTime]).toEqual([true, time]);
-    const [morningDate, morningTime] = split(v(11, 9)); // 9:00: time differs, date same
+    const [morningDate, morningTime] = split(v(11, 9));
     expect([morningDate, morningTime !== time]).toEqual([date, true]);
   });
 

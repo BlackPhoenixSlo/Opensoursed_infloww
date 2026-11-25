@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * Full AI Chat's selling controls with their own state (ticket 49), items 7-8 of the settings list (`FullAiSettings`;
- * item 6, Sell, is an inline switch there):
- *   7. Content folders: which vault folders (`vf:<id>`) and OF lists (`of:<id>`) the selling turn may offer from.
- *      A checklist in a dialog, All by default, include-only: Save sends the whole `folders` object with the stored
- *      `exclude` carried over (the draft PUT replaces it whole) and is refused with nothing ticked and All off.
- *      State: `sellFoldersForm.ts` (pure reducer);
- *   8. Prepare content: harvest → describe + Jev flags → AI folders → feet pack, each step only if missing; the button is its only
- *      start, the step list polls every 2 s while it runs (`useFullAiPrepare`). It writes no config, so it does not
- *      wait on the draft.
- * Content folders edits the draft (`useFullAiConfig.edit`) and waits like the other controls (`off`).
- */
 
 import { useReducer, useState } from "react";
 
@@ -29,6 +17,7 @@ export function ContentFoldersRow({ accountId, draft, off, cfg }: {
   accountId: string; draft: FullAiConfig | null; off: boolean; cfg: FullAiConfigApi;
 }) {
   const [open, setOpen] = useState(false);
+  // Save sends the whole `folders` object with the stored `exclude` carried over: the draft PUT replaces it whole.
   const stored = draft?.folders ?? NO_FOLDERS;
   const n = stored.include.length;
   return (

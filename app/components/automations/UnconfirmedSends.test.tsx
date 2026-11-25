@@ -1,8 +1,3 @@
-/**
- * Auto Funnel's "May not have sent" rows: beside Retry, "It went through" asks first (treated as sent, not sent
- * again), then POSTs …/dismiss with the hint the user saw; success drops the row, a failure shows its error and keeps
- * it. Declining makes no call. A row with a hint shows "Sent to this fan at …: …".
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -92,7 +87,7 @@ describe("UnconfirmedSends · Retry", () => {
 
   it("a 409 (the row changed since it was listed) keeps the row with the message and refetches it", async () => {
     relay.post.mockImplementation(async () => {
-      rows = [{ ...ROW, since: "2026-11-20T10:20:00Z" }];          // a newer attempt
+      rows = [{ ...ROW, since: "2026-11-20T10:20:00Z" }];
       throw new RelayError(409, {}, "this row changed since it was listed: refresh");
     });
     const row = await mount();

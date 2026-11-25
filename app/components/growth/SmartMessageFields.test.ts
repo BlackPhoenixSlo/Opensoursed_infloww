@@ -1,4 +1,3 @@
-/** SmartMessageFields' pure helpers: the stored payload read, the delay clamp, the draft, and the save round-trip. */
 import { describe, expect, it } from "vitest";
 
 import {
@@ -28,10 +27,9 @@ describe("extrasOfPayload", () => {
   });
 
   it.each([
-    // [payload, want (merged over NONE)]
     [{ media_ids: "11,12" }, {}],
     [{ media_ids: [1, "2", 0, -3, 2.5, 4, null] }, { media_ids: [1, 4] }],
-    [{ price_cents: 500 }, {}], // a price without media is dropped
+    [{ price_cents: 500 }, {}],
     [{ media_ids: [1], price_cents: "500" }, { media_ids: [1] }],
     [{ media_ids: [1], price_cents: 12.5 }, { media_ids: [1] }],
     [{ media_ids: [1], price_cents: -100 }, { media_ids: [1] }],
@@ -45,15 +43,14 @@ describe("extrasOfPayload", () => {
   });
 
   it.each([
-    // [delay_range, want]
     [null, null],
-    [undefined, null], // key present, value not a pair
+    [undefined, null],
     ["5-10", null],
     [[5], null],
     [[1, 2, 3], null],
     [[1.5, 3], null],
     [["1", "3"], null],
-    [[10, 5], [5, 10]], // via clampDelay
+    [[10, 5], [5, 10]],
   ])("delay_range %j -> %j", (r, want) => {
     expect(extrasOfPayload({ delay_range: r }).delay_range).toEqual(want);
   });
@@ -65,19 +62,17 @@ describe("extrasOfPayload", () => {
 
 describe("clampDelay", () => {
   it.each([
-    // [a, b, want]
     [5, 10, [5, 10]],
-    [10, 5, [5, 10]], // swapped into order
+    [10, 5, [5, 10]],
     [100, 1, [1, 60]],
-    [0, 0, [1, 2]], // equal pair widens by a minute
+    [0, 0, [1, 2]],
     [0, 1, [1, 2]],
     [30, 30, [30, 31]],
     [-5, 3, [1, 3]],
     [-5, -1, [1, 2]],
     [59, 60, [59, 60]],
-    [60, 60, [59, 60]], // top end widens downward
+    [60, 60, [59, 60]],
     [61, 100, [59, 60]],
-    // as coded: NaN is not clamped; both callers (extrasOfPayload, collectExtras) only pass integers.
     [Number.NaN, 5, [Number.NaN, 5]],
     [5, Number.NaN, [5, Number.NaN]],
   ])("(%s, %s) -> %j", (a, b, want) => {
@@ -109,14 +104,13 @@ describe("extrasDraft", () => {
       media: [{ id: 7, type: "photo" }], price: "19.99", frequency: "every",
       startsOn: true, startsAt: START, endsOn: false, endsAt: null,
       unsendOn: true, unsendH: "2", unsendM: "5",
-      delayOn: true, delayA: "2", delayB: "4", // a stored range beats the default
+      delayOn: true, delayA: "2", delayB: "4",
     });
   });
 });
 
 describe("collectExtras round-trip", () => {
   it.each([
-    // [name, payload, opts]
     ["full", FULL, { delay: true }],
     ["delay off", { ...FULL, delay_range: null }, { delay: true }],
     ["whole-dollar price", { ...FULL, price_cents: 300 }, { delay: true }],
@@ -127,7 +121,6 @@ describe("collectExtras round-trip", () => {
   });
 
   it.each([
-    // [name, payload, want] — as coded: extrasOfPayload reads these, collectExtras refuses them
     ["price_cents 150 (< $3)", { media_ids: [1], price_cents: 150 }, "Minimum $3 USD"],
     ["unsend 1381 (> 23 h)", { unsend_minutes: 1381 }, "Unsend after 1 minute to 23 hours"],
   ])("read but refused on save: %s", (_, p, want) => {
@@ -149,7 +142,6 @@ describe("collectExtras refusals", () => {
   const DELAY = "The delay is whole minutes from 1 to 60";
 
   it.each<[string, Partial<ExtrasDraft>, string | Partial<SmartExtras>]>([
-    // [name, draft patch over VALID, want]
     ["valid draft saves", {}, SAVED],
     ["price 2.50 (< $3)", { price: "2.50" }, "Minimum $3 USD"],
     ["price abc", { price: "abc" }, "Minimum $3 USD"],

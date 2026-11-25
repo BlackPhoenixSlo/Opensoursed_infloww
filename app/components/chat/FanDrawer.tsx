@@ -37,6 +37,7 @@ import { OF_USER_STALE_MS, ofUserNameKey, useOFUser } from "@/hooks/useOFUser";
 import { useFanActivity } from "@/hooks/useLastPurchases";
 import { useFanPpvHistory } from "@/hooks/useFanPpvHistory";
 import { useFanChatMedia } from "@/hooks/useFanChatMedia";
+import { useCan } from "@/hooks/useCan";
 import { useFanInsights } from "@/hooks/useFanInsights";
 import { fmtCents } from "@/lib/messageFormat";
 import { fmtPrice } from "@/lib/format";
@@ -182,7 +183,8 @@ export function FanDrawer({
   const [tab, setTab] = useState<InsightsTab>("insights");
   const { open: addOpen, setOpen: setAddOpen, ref: addRef } = useOutsideClose();
   // Insights' blocks: their saved order and the removed ones, and the grip's drag.
-  const blocks = useInsightsBlocks();
+  const canMedia = useCan(accountId, "chat_media");
+  const blocks = useInsightsBlocks(canMedia ? null : "unsoldPpvs");
   const drag = useReorder(blocks.shown, blocks.reorder, (id) => id);
   // Two instances mount at once (slide-over + pinned), so ids are per instance.
   const uid = useId();
@@ -743,7 +745,7 @@ export function FanDrawer({
                 plainTitle
                 trail={<>
                   <SalesTable items={ppvHistoryQ.data?.items ?? []} />
-                  <PpvSalesSection
+                  {canMedia && <PpvSalesSection
                     items={ppvHistoryQ.data?.items ?? []}
                     loading={ppvHistoryQ.isLoading}
                     chatMedia={chatMediaFlat}
@@ -765,7 +767,7 @@ export function FanDrawer({
                     serverFetching={
                       ppvHistoryQ.isFetching || chatMediaQ.isFetchingNextPage
                     }
-                  />
+                  />}
                 </>}
               >
                 <InsightsRow

@@ -1,13 +1,7 @@
-/**
- * The top bar's error triage badge (ErrorBadge), apart from the static "Operational" pill: the last 24h of
- * /admin/errors. None is a dim badge without a count; any is red with the count. A click opens the recent
- * errors either way.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(), delete: vi.fn() } }));
-// The first read is deferred ~1s on the real hook.
 vi.mock("@/hooks/useDeferredMount", () => ({ useDeferredMount: () => true }));
 
 import { renderWithProviders } from "@/test-utils";

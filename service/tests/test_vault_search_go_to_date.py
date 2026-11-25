@@ -1,23 +1,7 @@
 #!/usr/bin/env python3
-"""
-The Vault page's folder Search and its media "Go to date" (OF Manager), read-only.
-
-Wire shapes from OF's web bundle: the folder column's Search is
-GET /api2/v2/vault/lists?view=main&...&query=<text> (an empty search sends no
-query); "Go to date" is GET /api2/v2/vault/media?...&beforePublishDate=YYYY-MM-DD
-("All time" sends nothing).
-
-  case_lists_query_wire     : vault_lists sends `query` only when it has text
-  case_media_before_wire    : vault_media sends `beforePublishDate` only when set
-  case_cache_keys           : each is in its cache key; the keys without them are unchanged
-  case_routes_pass_them     : the routes forward them to the client and key the cache on them
-  case_before_date_pattern  : the route only takes YYYY-MM-DD
-
-Run: ./venv/bin/python service/tests/test_vault_search_go_to_date.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -29,7 +13,6 @@ import vault_cache  # noqa: E402
 
 
 def _client():
-    """An OFClient that skips __init__ and captures each GET instead of sending it."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.captured = []
 
@@ -61,7 +44,6 @@ def case_media_before_wire():
 
 
 def case_cache_keys():
-    # The keys every existing caller (and test_chatter_access) builds are unchanged.
     assert vault_cache.vault_lists_cache_key(view="main", limit=50, offset=0) == "lists:view=main|limit=50|offset=0"
     assert vault_cache.vault_media_cache_key() == "media:type=all|list=None|offset=0|limit=24|sort=desc|field=recent|query="
     assert vault_cache.vault_lists_cache_key(view="main", limit=50, offset=0, q_norm="beach") == "lists:view=main|limit=50|offset=0|query=beach"

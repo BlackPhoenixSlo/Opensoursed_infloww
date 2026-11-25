@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * Growth > Scripts' Import from Excel, Import from other creators and Share (`docs/infloww-layouts/growth-scripts.md`
- * #94 to #98), over `service/scripts_import_api.py`.
- *
- * - Excel: the bundle's two steps (download "Script templates.xlsx", upload an .xlsx), then its result, "You've
- *   imported a total of N data items…", with each failed row listed (the bundle offers them as a downloadable report;
- *   ours lists them in place).
- * - Other creators and Share are one copy: pick up to 5 Creators to import from, or the Creators to share to. Media
- *   stays on its own account (ADR-0008), so a copied script arrives without it, and the result says how many lost it.
- */
 
 import { useReducer, useRef, useState } from "react";
 import { CheckCircle2, Download, Upload } from "lucide-react";
@@ -101,8 +91,7 @@ export function ExcelImportDialog({ accountId, onClose }: { accountId: string | 
   );
 }
 
-/** Import from other creators (`mode` "import": the picked Creators' scripts come here) or Share (`mode` "share":
- *  `ids`, or every script when omitted, go to the picked Creators). `onCopied` runs once the copy succeeded. */
+// Media stays on its own account, so a copied script arrives without it.
 export function CopyScriptsDialog({
   mode, accountId, accounts, ids, onClose, onCopied,
 }: {
@@ -156,8 +145,7 @@ export function CopyScriptsDialog({
         {" "}Media is not copied between Creators; a sequence is copied whole, and a script name or sequence the
         Creator already has is skipped.
       </p>
-      {/* Share only: send to every Creator you own (the server resolves the full roster). Re-sharing is a no-op
-          (a name the Creator already holds is skipped), so the Confirm button is the only guard a repeat needs. */}
+      {/* Re-sharing is a no-op (names the Creator already holds are skipped), so Confirm is the only guard a repeat needs. */}
       {!importing && (
         <label className="mb-2 flex items-center gap-2">
           <input

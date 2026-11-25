@@ -1,45 +1,14 @@
-/**
- * vaultBrowseReducer — what VaultManagePanel's grid is showing (folder, media
- * type, search) and the files ticked in it.
- *
- *   • Changing the folder or the search CLEARS the selection. The selection is
- *     media off the grid the operator was looking at; the old panel kept it
- *     across a folder switch, so the bar said "Selected 3" over a grid showing
- *     none of them and "Add to category" / "New OF folder with these" /
- *     "Describe selected" acted on files no longer on screen. Select mode
- *     itself stays on — only what was ticked goes.
- *   • The Photo / Video filter KEEPS the ticks: it narrows the same folder, and
- *     ticking photos then videos for one download is the point (owner, 11-11).
- *     The ticks hold the media themselves, so a download still has the ones the
- *     filter hides.
- *   • The tag chips (`tags`, AND) are a new view too: toggling one CLEARS the
- *     ticks, as a search does. They stay across a folder or type change (they
- *     narrow whatever is open), as the search does.
- *   • Re-picking the same folder / type / search changes nothing.
- *   • Paging is not here: the grid's pages live in the query hooks, keyed by
- *     folder / type / search, so a change already starts from page one.
- *   • Sort is not here either: it reorders the same files, so the ticks stand.
- *
- * `browseMapReducer`: one BrowseState per model (memory only, the page's
- * lifetime), so switching model and back finds its folder, select mode and
- * ticks as they were; another model's ticks never apply to this one.
- */
-
 import type { MediaType } from "@/components/vault/VaultMediaToolbar";
 import type { FanId } from "@/lib/fanId";
 import type { VaultMedia } from "@/lib/relay";
 
 export interface BrowseState {
   type: MediaType;
-  /** The OF folder (list id); null = All media. FanId: a Fansly album id is a snowflake past 2^53. */
   folderId: FanId | null;
   standardFolderId: number | null;
-  /** The settled search (the debounced box). */
   query: string;
-  /** The picked tag chips (lower-case, in pick order); the grid shows items carrying all of them. */
   tags: readonly string[];
   selectMode: boolean;
-  /** The ticked media by id, in tick order. */
   selected: ReadonlyMap<number, VaultMedia>;
 }
 
@@ -48,11 +17,9 @@ export type BrowseAction =
   | { type: "standardFolder"; id: number; kind: "photo" | "video" }
   | { type: "mediaType"; value: MediaType }
   | { type: "query"; value: string }
-  /** A tag chip tapped: picked if it was not, else dropped. */
   | { type: "toggleTag"; tag: string }
   | { type: "clearTags" }
   | { type: "toggleSelectMode" }
-  /** The toolbar's Select all: select mode on, every loaded file ticked. */
   | { type: "selectAll"; media: readonly VaultMedia[] }
   | { type: "toggle"; media: VaultMedia }
   | { type: "clearSelection" };
@@ -69,7 +36,7 @@ export const initialBrowseState: BrowseState = {
   selected: NONE,
 };
 
-/** A new view of the vault: the ticks described the old one. */
+// A new view of the vault: the ticks described the old one, so a folder/search/tag change clears them.
 function view(state: BrowseState, patch: Partial<BrowseState>): BrowseState {
   return { ...state, ...patch, selected: NONE };
 }
@@ -82,6 +49,7 @@ export function vaultBrowseReducer(state: BrowseState, action: BrowseAction): Br
     case "standardFolder":
       return action.id === state.standardFolderId ? state
         : view(state, { folderId: null, standardFolderId: action.id, type: action.kind, tags: [] });
+    // The Photo / Video filter keeps the ticks (owner): downloads can span both.
     case "mediaType":
       return action.value === state.type ? state : { ...state, type: action.value };
     case "query":
@@ -109,8 +77,6 @@ export function vaultBrowseReducer(state: BrowseState, action: BrowseAction): Br
   }
 }
 
-/** Ticked media the Photo / Video filter hides. Every bar action (download, Add to category, new OF folder, describe)
- *  still takes all ticks, so the bar names how many of them are off screen. */
 export function hiddenByFilter(s: Pick<BrowseState, "type" | "selected">): number {
   if (s.type === "all") return 0;
   let n = 0;
@@ -118,12 +84,10 @@ export function hiddenByFilter(s: Pick<BrowseState, "type" | "selected">): numbe
   return n;
 }
 
-/** The selection bar's count: "Selected" + N, or "N selected · M hidden by filter" when the filter hides some. */
 export function selectionText(count: number, hidden: number): string {
   return hidden > 0 ? `${count} selected · ${hidden} hidden by filter` : `Selected ${count}`;
 }
 
-/** Each model's browse state by account id (absent: initialBrowseState). */
 export type BrowseMap = Readonly<Record<string, BrowseState>>;
 export type BrowseMapAction = { accountId: string; action: BrowseAction };
 

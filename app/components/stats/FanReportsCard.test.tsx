@@ -1,8 +1,3 @@
-/**
- * Fan reports (roadmap W5 5.6, page-parity 29): the card reads /admin/stats/fan-report for the page's window, the
- * Creator it is given and the ranking; it renders New fans as a three-line chart, Total fans as Not wired, Traffic
- * earnings and Top fans; Gross / Net switches Top fans' Total spend, and "Download report" is the same query as CSV.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -13,7 +8,6 @@ vi.mock("@/lib/relay", async (importOriginal) => {
 });
 vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => [{ id: "7", nickname: "Mia" }] }));
 vi.mock("@/lib/appliedSettings", () => ({ useWeekStart: () => "monday" }));
-// The download's Export CSV Function permission (the Applied settings read) is CsvExportButton's own test.
 vi.mock("@/components/shell/useGrantedPages", () => ({ useActionAllowed: () => true }));
 vi.mock("@/components/stats/chart", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/components/stats/chart")>();
@@ -33,8 +27,6 @@ const FROM = "2026-03-01T00:00:00Z";
 const TO = "2026-03-07T23:59:59Z";
 const WINDOW = "from=2026-03-01T00%3A00%3A00Z&to=2026-03-07T23%3A59%3A59Z";
 
-// The fan's $6,500 total holds a $5 pending tip: the relay counts uncleared sales (test_fan_reports.py), and the
-// card shows the read's total as is.
 const BODY = {
   top_fans: [{
     account_id: "7", fan_id: 1, fan_name: "Whale", username: "whale1", total_cents: 650000, net_or_80_cents: 520000,
@@ -72,8 +64,8 @@ describe("FanReportsCard", () => {
     const cards = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
     expect(cards.map((c) => c?.replace(/UTC.*$/, "").trim())).toEqual(
       ["New fans (growth & trends)", "Total fans (growth & trends)", "Traffic earnings", "Top fans"]);
-    // One Creator at a time: no Creator column.
     expect(screen.queryByRole("columnheader", { name: "Creator" })).toBeNull();
+    // The $6,500 total holds a $5 pending tip: the relay counts uncleared sales.
     expect(screen.getByText("$6,500")).toBeTruthy();
     expect(screen.getByText("Reddit trial")).toBeTruthy();
     expect(screen.getByText("No link")).toBeTruthy();
@@ -99,12 +91,10 @@ describe("FanReportsCard", () => {
     await screen.findByText("Whale");
     const heads = () => screen.getAllByRole("columnheader").map((h) => h.textContent);
     expect(screen.getByTestId("total-spend").textContent).toBe("$6,500");
-    // No Net column of its own: Net earnings is the switch.
     expect(heads()).not.toContain("Net");
     expect(heads()).toEqual(expect.arrayContaining(["Tips", "PPV sales", "Subscriptions"]));
     pick("Earnings", "Net earnings");
     expect(screen.getByTestId("total-spend").textContent).toBe("$5,200");
-    // The read has no net per kind: those columns stay gross and say so.
     expect(heads()).toEqual(expect.arrayContaining(["Tips (gross)", "PPV sales (gross)", "Subscriptions (gross)"]));
     expect(screen.getByRole("columnheader", { name: "Tips (gross)" })).toHaveAttribute("title",
       expect.stringContaining("Gross"));

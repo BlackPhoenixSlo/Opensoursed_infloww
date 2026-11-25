@@ -1,58 +1,3 @@
-"""Vault Pro's tag chips, "Save as folder" and the saved row's Publish (app/components/vault/VaultTagChips.tsx,
-tagFolderForm.ts; service/vault_tags.py, GET /admin/vault-ai/tag-facets, the items listing's `tags`, POST
-/admin/vault-ai/folders/from-tags, POST /admin/vault-ai/folders/{id}/publish): tap "feet" then "lace", the grid
-narrows to items carrying both (AND, any of the three tag sources), "Save as folder" makes a local operator folder
-holding exactly those items, the row "Saved locally · <name> · N items" stays, its Publish asks (stating N items)
-and sends exactly those items to one new OnlyFans vault list.
-
-World: `agency_inbox`; Creator 0's vault by SQL (seed/vault_tag_chips.py, `vault_tag_items` 80 / 2,000 / 12,000):
-photos planted per class so "feet" AND "lace" has an exact oracle: tags in the column, in ai_fields_json.tags only
-(mixed case, padded), split across both, via ai primary_folder, beside malformed ai JSON; decoys (feet_only,
-lace_only, feet_soles / laced substrings), removed items. Each item's 300px thumb is a small PNG in the run's still
-store, so the grid draws pictures. OnlyFans' list side is lib/vault_relay.py (`of-vault.json` written).
-
-Stages:
-  api   (also --no-ui) by the owner: GET /tag-facets (unfiltered, and with both chips); the items listing with
-        tags=feet&tags=lace walked to the end; 10 timed reads of each for the p95 metric.
-  desktop (UI) 1440x900: Vault Pro, pick Creator 0, tap "feet" then "lace"; once the grid shows only matches,
-        screenshot `vault-tag-chips-trigger`; Save as folder (name left at its default), Save; the saved row shows,
-        screenshot `vault-tag-chips-settled`; Publish: the confirm (`vault-tag-chips-publish-confirm`), "Publish N
-        items"; the row says "Published to OnlyFans", screenshot `vault-tag-chips-published`.
-  phone (UI) 390x844 touch: Vault Pro on Creator 0 (last pick, localStorage), the same taps; screenshot
-        `vault-tag-chips-phone-trigger`; Save as folder, Save; the saved row, screenshot
-        `vault-tag-chips-phone-settled`; Publish opens the confirm (`vault-tag-chips-phone-confirm`), Cancel (one
-        publish per run: the desktop's).
-  --no-ui: POST /folders/from-tags {tags: feet, lace}, then POST /folders/{id}/publish, instead of the UI.
-
-Checks (lib/vault_tag_chips_faults.py names):
-  tag_facets_counts               unfiltered facets == the seeder's oracle (per live item its tags from all three
-                                  sources, lowercased, count desc then name); total == live items.
-  tag_filter_and_three_sources    the items walk with both chips == the match set exactly, newest first (no decoy,
-                                  removed or one-tag item); facets with both chips: total == |match|, feet == lace ==
-                                  |match|.
-  tag_chips_desktop               the chip row shows "feet" with the oracle's count; after two taps both chips are
-                                  pressed and lead the row; every grid tile is a match; Save as folder shown.
-  tag_chips_phone_fit             phone: the same taps work; the chip row, Save as folder, the form's Save, the saved
-                                  row and its Publish, and the confirm's Publish lie inside the 390px viewport; the
-                                  page never scrolls sideways.
-  tag_folder_saved_from_ui        one POST from-tags per device, 200, body tags [feet, lace] and the default name,
-                                  of_folder_id null; the Save button read "Save <|match|> items"; the saved row reads
-                                  "Saved locally · <name> · <|match|> items", names "feet + lace" then "feet + lace 2".
-  tag_folder_published            the confirm states "<|match|> items"; one POST publish (desktop's folder), 200,
-                                  after the confirm; OnlyFans got one new list named "feet + lace" holding exactly
-                                  the match set; the DB folder's of_list_id == that list; the row says "Published to
-                                  OnlyFans · <|match|> items"; the phone's Cancel sent nothing.
-  tag_folder_members_exact        DB: each saved folder (created_by 'operator', live) holds exactly the match set.
-  tag_chips_no_5xx                no 5xx answered to either browser.
-
-Bypasses (declared): the vault is SQL as Collect + describe leave it (no OF, no LLM); thumbs written by the harness
-into the run's temp still store; OnlyFans' vault list calls (create list, add media, list read-back) are
-lib/vault_relay.py's in-process OF client, not OF's HTTP; the background collector off (VAULT_COLLECT_ENABLED=0).
-The 5,000-item cap (400 `too_many_items`) is covered by service/tests/test_vault_tag_chips.py, not here (no scale
-reaches it). No volume gate: --scale only resizes the vault (huge = 12k, the per-Creator target).
-Break-it-once: tag-filter-ignores-ai-tags (default; server: the filter skips ai_fields_json.tags): the filter, saved,
-published and folder-membership checks go red; facets (unfiltered) and the chip-row checks stay green.
-"""
 from __future__ import annotations
 
 import json
@@ -79,12 +24,11 @@ WAIT_MS = 120_000
 FACETS_PATH, ITEMS_PATH, SAVE_PATH = "/admin/vault-ai/tag-facets", "/admin/vault-ai/items", "/admin/vault-ai/folders/from-tags"
 PUBLISH_PATH = re.compile(r"^/admin/vault-ai/folders/\d+/publish$")
 TAGS = list(vault_tag_chips.TAGS)
-NAMES = ("feet + lace", "feet + lace 2")   # desktop, then phone (unique_name)
+NAMES = ("feet + lace", "feet + lace 2")
 SAVE_N = re.compile(r"^Save (\d+) items?$")
 PUBLISH_N = re.compile(r"^Publish (\d+) items?$")
 TIMED = 10
 
-# Every grid tile's media id (VaultMediaGrid's `title="#<id> ..."`).
 _TILE_IDS = "() => [...document.querySelectorAll(\"section [title^='#']\")].map(e => e.getAttribute('title').slice(1).split(' ')[0])"
 _GRID_ONLY = """(ids) => { const ok = new Set(ids);
   const ts = [...document.querySelectorAll("section [title^='#']")].map(e => e.getAttribute('title').slice(1).split(' ')[0]);
@@ -100,7 +44,6 @@ async def _press(loc, touch: bool) -> None:
 
 
 async def _taps(page, match: list[int], got: dict, *, touch: bool) -> None:
-    """The chip row: reads "feet"'s count, taps feet then lace, waits until the grid shows only matches."""
     group = page.get_by_role("group", name="Tags")
     feet = _chip(group, TAGS[0])
     await feet.first.wait_for(timeout=WAIT_MS)
@@ -114,7 +57,7 @@ async def _taps(page, match: list[int], got: dict, *, touch: bool) -> None:
     got["pressed"] = [re.sub(r"\d+$", "", s).strip() for s in await pressed.all_inner_texts()]
     got["row"] = [re.sub(r"\s*\d+$", "", s).strip() for s in await group.locator("button[aria-pressed]").all_inner_texts()]
     await page.wait_for_function(_GRID_ONLY, arg=[str(m) for m in match], timeout=WAIT_MS)
-    await page.wait_for_timeout(800)   # thumbs drawn
+    await page.wait_for_timeout(800)
     got["tiles"] = await page.evaluate(_TILE_IDS)
     save = page.get_by_role("button", name="Save as folder", exact=True)
     got["save_visible"] = await save.is_visible()
@@ -123,12 +66,11 @@ async def _taps(page, match: list[int], got: dict, *, touch: bool) -> None:
 
 
 async def _save(page, got: dict, *, touch: bool):
-    """Save as folder: default name, Save; waits for the saved row and returns it."""
     await _press(page.get_by_role("button", name="Save as folder", exact=True), touch)
     form = page.get_by_role("form", name="Save as folder")
     await form.wait_for(timeout=WAIT_MS)
     got["name"] = await form.get_by_role("textbox", name="Folder name").input_value()
-    got["of_switch"] = await form.get_by_role("switch").count()   # gone: saving is local only
+    got["of_switch"] = await form.get_by_role("switch").count()
     submit = form.get_by_role("button", name=SAVE_N)
     got["submit_label"] = (await submit.inner_text()).strip()
     got["submit_box"] = await submit.bounding_box()
@@ -142,7 +84,6 @@ async def _save(page, got: dict, *, touch: bool):
 
 
 async def _confirm(ctx, page, row, got: dict, shot: str, *, touch: bool):
-    """The saved row's Publish: the confirm opens; records its text and its Publish button; screenshot `shot`."""
     await _press(row.get_by_role("button", name="Publish", exact=True), touch)
     dlg = page.get_by_role("dialog", name="Publish to OnlyFans?")
     await dlg.wait_for(timeout=WAIT_MS)
@@ -150,7 +91,7 @@ async def _confirm(ctx, page, row, got: dict, shot: str, *, touch: bool):
     got["confirm_text"] = (await dlg.inner_text()).strip()
     got["confirm_label"] = (await go.inner_text()).strip()
     got["confirm_box"] = await go.bounding_box()
-    await page.wait_for_timeout(300)   # the pop-in settled
+    await page.wait_for_timeout(300)
     got["confirm_shot"] = await ui.shot(ctx, page, shot)
     return dlg, go
 
@@ -185,7 +126,6 @@ async def _walk(owner, aid: str) -> tuple[list[int], list[int]]:
 
 
 def _recorded_publish(page):
-    """Every POST /admin/vault-ai/folders/<id>/publish the page sends (hold.recorded matches one exact path)."""
     sent: list[dict] = []
 
     def on_request(r) -> None:
@@ -206,7 +146,7 @@ def _recorded_publish(page):
 async def run(ctx):
     w = ctx.world
     await ctx.build(PROFILE)
-    (ctx.stack.tmp / "of-vault.json").write_text("{}")   # lib/vault_relay.py answers OF's vault list calls
+    (ctx.stack.tmp / "of-vault.json").write_text("{}")
     creator = w.data["creators"][0]
     aid = creator["id"]
     truth = vault_tag_chips.seed(w, creator, int(ctx.param("items", w.size["vault_tag_items"])))
@@ -220,7 +160,6 @@ async def run(ctx):
     ctx.note(f"Creator {aid}: {len(live)} live items, {n} carry feet AND lace; "
              + ", ".join(f"{c} {len(v)}" for c, v in truth["classes"].items()))
 
-    # ── api ──
     r = await ctx.owner.get(FACETS_PATH, params={"account_id": aid})
     fac = r.json() if r.status_code == 200 else {}
     ctx.check(FACETS, r.status_code == 200 and fac.get("tags") == truth["facets"] and fac.get("total") == len(live),
@@ -243,7 +182,6 @@ async def run(ctx):
     ctx.metric("p95_vs_last_green", {"tag facets": _p95(ms_f), "items tags page 40": _p95(ms_i)})
     ctx.metric("p95_vs_last_green_n", {"tag facets": TIMED, "items tags page 40": TIMED})
 
-    # ── UI ──
     saves: list[tuple[str, list[dict], dict]] = []
     publishes: list[dict] = []
     statuses: list[list] = []
@@ -355,7 +293,6 @@ async def run(ctx):
         want_names = {NAMES[0]}
         pub_ui, pub_ui_ok = {"api": publishes}, len(publishes) == 1 and publishes[0]["status"] == 200
 
-    # ── side effects: the saved folders, OnlyFans' list ──
     con = w.sql()
     try:
         folders = con.execute("SELECT id, name, created_by, of_list_id FROM vault_folders "

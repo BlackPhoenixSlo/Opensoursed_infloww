@@ -1,17 +1,3 @@
-/**
- * The Messages Pro page: seam 2 of docs/spec/phase-01-window-chrome-tabs.md
- * (Testing Decisions). The index page and the Deep link page render with the
- * real `MessagesPro`, the real Fan List and the real scope and flags
- * providers. The relay client is mocked by path through the shared harness
- * (`components/chat/composerTestHarness.tsx`), `EventSource` and `matchMedia`
- * are stubbed, the user / chatter / Employee contexts are fixed as
- * `windowed.test.tsx` fixes them (with a fixed Employee), and the Thread
- * (`ChatSurface`) is a marker naming its Creator and Fan id: the Thread is
- * another Region, and only the selection is under test here. Every later
- * Phase 1 ticket adds its cases here.
- *
- * Fixture identifiers are invented (this repo mirrors to a public one).
- */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { act, cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -20,13 +6,9 @@ import { QueryClient } from "@tanstack/react-query";
 vi.mock("@/lib/relay", async (orig) =>
   (await import("@/components/chat/composerTestHarness")).mockRelayModule(await orig()));
 
-// The setup file's router, with spies a case can read: a Fan tab click must
-// not navigate.
 const router = vi.hoisted(() => ({
   push: vi.fn(), replace: vi.fn(), back: vi.fn(), forward: vi.fn(), prefetch: vi.fn(),
 }));
-// The path `usePathname` reports: "/" unless a case renders through the app
-// shell, which reads it to tell a Messages Pro route.
 const nav = vi.hoisted(() => ({ pathname: "/" }));
 vi.mock("next/navigation", () => ({
   useRouter: () => router,
@@ -37,7 +19,6 @@ vi.mock("next/navigation", () => ({
   notFound: vi.fn(),
 }));
 
-// An owner signed in, no chatter, and a fixed Employee at the keyboard.
 vi.mock("@/contexts/UserContext", async (orig) => {
   const value = { user: { username: "owner" }, logout: vi.fn() };
   return { ...(await orig<typeof import("@/contexts/UserContext")>()), useUser: () => value, useOptionalUser: () => value };
@@ -54,10 +35,6 @@ vi.mock("@/contexts/EmployeeContext", async (orig) => {
   return { ...(await orig<typeof import("@/contexts/EmployeeContext")>()), useEmployee: () => value };
 });
 
-// The Thread, as a marker naming the Creator and Fan it was opened for, and
-// the Chat header's real "Open in new tab" beside it. `data-chat` says
-// whether it was handed a Fan List row (with its last message) or the Deep
-// link's thin chat.
 vi.mock("@/components/chat/ChatSurface", async () => {
   const { OpenInNewTabButton } = await import("@/components/chat/FanTabs");
   return {
@@ -94,7 +71,6 @@ import type { OFMessage } from "@/lib/relay";
 import MessagesProPage from "./page";
 import DeepLinkPage from "./[accountId]/[fanId]/page";
 
-/* ── fixtures: two Creators, four Fans ─────────────────────────────────── */
 
 const ACCOUNT_ID = "100000001";
 const OTHER_ACCOUNT_ID = "100000002";
@@ -104,7 +80,6 @@ const account = (id: string, name: string) => ({
   has_session: true, session_dead_at: null, created_at: ago(43_200), last_used_at: ago(5),
 });
 const ACCOUNTS = [account(ACCOUNT_ID, "Test Creator"), account(OTHER_ACCOUNT_ID, "Other Creator")];
-/** Unread conversations per Creator, as the roster counts report them. */
 const COUNTS = {
   [ACCOUNT_ID]: { unread: 2, owe_reply: 0 },
   [OTHER_ACCOUNT_ID]: { unread: 5, owe_reply: 0 },
@@ -114,7 +89,6 @@ const FANS = [
   { id: 200000002, name: "Fixture Fan Two", username: "fixturefantwo" },
   { id: 200000003, name: "Fixture Fan Three", username: "fixturefanthree" },
 ];
-/** Only the other Creator's. */
 const FAN_FOUR = { id: 200000004, name: "Fixture Fan Four", username: "fixturefanfour" };
 const fanUser = (f: (typeof FANS)[number]) => ({ ...f, avatar: null, customNickname: null, displayName: null });
 const chatOf = (f: (typeof FANS)[number], i: number) => ({
@@ -126,21 +100,13 @@ const chatOf = (f: (typeof FANS)[number], i: number) => ({
   hasUnread: false, unreadMessagesCount: 0, isOnline: false,
   canSendMessage: true, canNotSendReason: null, isMutedNotifications: false,
 });
-/** Each Creator's Fan List: the first Creator has Fans One to Three, the other
- *  Fan Three and Fan Four. */
 const CHATS = FANS.map(chatOf);
 const OTHER_CHATS = [FANS[2], FAN_FOUR].map(chatOf);
-/** Presence a case sets before it renders, as the chat rows carry it: the
- *  Fans whose row says online, and each Fan's `lastSeen`. Empty unless a case
- *  fills it. */
 const PRESENCE = { online: new Set<number>(), lastSeen: new Map<number, string>() };
 
-/** The relay as these cases need it, by path and Creator. */
 function serveFixture() {
-  // Before "/admin/accounts", which would match it too. Distinct unread totals.
   routeRelay("/admin/accounts/roster-counts", () => ({ counts: COUNTS }));
   routeRelay("/admin/accounts", () => ({ accounts: ACCOUNTS, active_account_id: ACCOUNT_ID }));
-  // The trailing "?" keeps the Thread and folder routes out of this one.
   routeRelay("/api/of/v2/chats?", (path, ctx) => {
     const offset = new URLSearchParams(path.split("?")[1]).get("offset") ?? "0";
     const list = (ctx?.accountId === OTHER_ACCOUNT_ID ? OTHER_CHATS : CHATS)
@@ -151,17 +117,13 @@ function serveFixture() {
       }));
     return { list: offset === "0" ? list : [], hasMore: false };
   });
-  // The Deep link's profile lookup and the Fan List's enrichment.
   routeRelay("/api/of/v2/users/list", (path) => {
     const ids = new URLSearchParams(path.split("?")[1]).getAll("ids").flatMap((v) => v.split(","));
     return Object.fromEntries([...FANS, FAN_FOUR].filter((f) => ids.includes(String(f.id))).map((f) => [String(f.id), fanUser(f)]));
   });
 }
 
-/* ── jsdom gaps ─────────────────────────────────────────────────────────── */
 
-/** `matchMedia` for a viewport `width` px wide: 1440 is the desktop every case
- *  starts at, 390 a phone. */
 function stubViewport(width: number) {
   window.matchMedia = ((query: string) => {
     const min = /min-width:\s*(\d+)px/.exec(query);
@@ -186,19 +148,13 @@ class FakeEventSource {
   removeEventListener() {}
   close() {}
 }
-// For the whole file, outside vi.stubGlobal: a scope change schedules the SSE
-// bus's reconnect 50ms out (lib/events.ts setScope), which may fire after a
-// case's teardown and read `EventSource.OPEN`.
 Object.defineProperty(globalThis, "EventSource", { value: FakeEventSource, configurable: true, writable: true });
 
-// Both Creators leased by this tab (the root layout's heartbeat, not mounted here, would hold the selected one), so
-// the counts and money lists read as they always have (an unleased Creator's gate: lib/ofReadGate.ts).
 let releaseLease: () => void = () => {};
 beforeEach(() => {
   resetReadGate();
   releaseLease = holdLease("test", [ACCOUNT_ID, OTHER_ACCOUNT_ID]);
   resetComposerHarness();
-  // In-flight roster busts are module state: no case inherits another's.
   resetRosterCountsModuleState();
   PRESENCE.online.clear();
   PRESENCE.lastSeen.clear();
@@ -220,10 +176,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/* ── render ─────────────────────────────────────────────────────────────── */
 
-/** Changes this window's scope as any scope switcher does (`useScope`), so a
- *  case does not depend on which control Phase 1 gives the switch. */
 function ScopeSwitch() {
   const { setScope } = useScope();
   return (
@@ -233,15 +186,9 @@ function ScopeSwitch() {
   );
 }
 
-/** The page Next routes `url` to, the index or a Deep link, under the
- *  providers; inside
- *  `AppShell`, within the providers as `app/layout.tsx` places it, when
- *  `shell` is set. */
 function pageTree(url: string, shell = false) {
   window.history.replaceState(null, "", url);
   const link = /^\/messages-pro\/([^/]+)\/([^/?]+)/.exec(url);
-  // Already fulfilled, as React's `use` marks a settled thenable, so the page
-  // reads its params on first render (as windowed.test.tsx does).
   const value = link && { accountId: link[1], fanId: link[2] };
   const page = value
     ? <DeepLinkPage params={Object.assign(Promise.resolve(value), { status: "fulfilled", value })} />
@@ -253,28 +200,20 @@ function pageTree(url: string, shell = false) {
   );
 }
 
-/** A window opened at `url`. */
 const renderPage = (url: string) => renderWithProviders(pageTree(url));
 
-/** A client-side navigation to `url`: the providers stay mounted, so the scope
- *  already holds the saved Creator when the page mounts (as windowed.test.tsx's
- *  `navigateTo`). */
 function navigateTo(rendered: ReturnType<typeof renderPage>, url: string) {
   rendered.rerender(pageTree(url));
 }
 
-/** The Thread marker's text, exactly; null with no Thread open. */
 const threadText = () => screen.queryByRole("region", { name: "Thread" })?.textContent ?? null;
-/** Every Fan List row naming `f`; a Fan tab with the same name is not one. */
 const rowsOf = (f: (typeof FANS)[number]) =>
   screen.queryAllByText(f.name).filter((el) => !el.closest('[role="tablist"]')).map((el) => el.closest("button")!);
-/** The one Fan List row naming `f`; throws on none or more than one. */
 const row = (f: (typeof FANS)[number]) => {
   const rows = rowsOf(f);
   if (rows.length !== 1) throw new Error(`expected one Fan List row for ${f.name}, found ${rows.length}`);
   return rows[0];
 };
-/** Every Fan List row, by Fan name, in document order. */
 const listedFans = () =>
   [...FANS, FAN_FOUR].flatMap((f) => rowsOf(f).map((el) => ({ el, name: f.name })))
     .sort((a, b) => (a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1))
@@ -316,11 +255,9 @@ describe("the Messages Pro page", () => {
     for (const f of FANS.slice(0, 2)) {
       routeRelay(`/api/of/v2/chats/${f.id}/messages`, () => ({ list: [], hasMore: false }));
     }
-    // The client's own gcTime, not the kit's 0: a warmed thread has no observer until it opens.
     const rendered = renderWithProviders(pageTree("/messages-pro"),
       new QueryClient({ defaultOptions: { queries: { retry: false } } }));
     await screen.findByText("Fixture Fan Three");
-    // Fan One warmed 17 s ago (inside 20 s, past the 15 s every other open uses), Fan Two 23 s ago.
     const warmed = (f: (typeof FANS)[number], agoMs: number) => rendered.queryClient.setQueryData(
       ["messages", ACCOUNT_ID, f.id], [{ id: 700000000 + f.id % 10, text: "warmed", fromUser: { id: f.id }, createdAt: ago(2) }],
       { updatedAt: Date.now() - agoMs });
@@ -338,25 +275,19 @@ describe("the Messages Pro page", () => {
   });
 
   it("Deep link route: the page opens with the link's Creator and Fan in the Thread", async () => {
-    // The saved scope and the active account name the first Creator; the link
-    // names the other, so only the link can put it in the Thread, and the
-    // arrival selection has to survive the scope moving off the saved Creator.
     window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
     const link = `/messages-pro/${OTHER_ACCOUNT_ID}/200000003`;
 
     async function expectArrived() {
       expect(threadText()).toBe(`Creator ${OTHER_ACCOUNT_ID}, Fan 200000003`);
-      // Still there once the link's Creator's Fan List has loaded and marks the Fan.
       await vi.waitFor(() => expect(row(FANS[2])).toHaveAttribute("aria-current", "true"));
       expect(threadText()).toBe(`Creator ${OTHER_ACCOUNT_ID}, Fan 200000003`);
     }
 
-    // A window opened straight at the link.
     const first = renderPage(link);
     await expectArrived();
     first.unmount();
 
-    // From the index page, already scoped to the saved Creator, into the link.
     const rendered = renderPage("/messages-pro");
     expect(await screen.findByText("Fixture Fan One")).toBeInTheDocument();
     navigateTo(rendered, link);
@@ -376,9 +307,6 @@ describe("the Messages Pro page", () => {
   it("Home, the Creator tabs, Add a Creator, SFW, Online Fans and Notifications, in document order on the index route and the Deep link route; Home links to the inbox root, not the app; no roster", async () => {
     window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
 
-    /** Each Creator's tab (name and unread total, in the relay's order),
-     *  "+ Add a Creator", SFW, Home in the Fan tabs row under them, then the
-     *  Fan List buttons; the tab of `scoped` is the selected one. */
     async function expectChromeInOrder(scoped: string) {
       const header = within(screen.getByRole("region", { name: "Window header" }));
       expect(header.queryByRole("link", { name: "Home" })).toBeNull();
@@ -400,7 +328,6 @@ describe("the Messages Pro page", () => {
         expect(test).toHaveAttribute("aria-selected", String(scoped === ACCOUNT_ID));
         expect(other).toHaveAttribute("aria-selected", String(scoped === OTHER_ACCOUNT_ID));
       });
-      // The roster rail is gone from Messages Pro.
       expect(screen.queryByRole("button", { name: "Expand roster" })).toBeNull();
     }
 
@@ -431,7 +358,6 @@ describe("the Messages Pro page", () => {
   });
 
   it("Window header SFW: flipping it flips the shared blur store, and a chatterly-blur-mode-change event flips it back", async () => {
-    // The Employee's last blurred variant, which the top bar's SFW restores too.
     window.localStorage.setItem("chatterly:blur-mode-last", "constant");
     renderPage("/messages-pro");
     const sfw = within(screen.getByRole("region", { name: "Window header" })).getByRole("switch", { name: "SFW" });
@@ -441,7 +367,6 @@ describe("the Messages Pro page", () => {
     expect(readBlurMode()).toBe("constant");
     expect(sfw).toHaveAttribute("aria-checked", "true");
 
-    // Another control (the app top bar's SFW, the chat gear) turns blur off.
     window.localStorage.removeItem("chatterly:blur-mode");
     act(() => { window.dispatchEvent(new Event("chatterly-blur-mode-change")); });
     expect(sfw).toHaveAttribute("aria-checked", "false");
@@ -453,7 +378,6 @@ describe("the Messages Pro page", () => {
     expect(await screen.findByText("Fixture Fan Three")).toBeInTheDocument();
     expect(threadText()).toBeNull();
     expect(screen.getByText("Select any conversation to start")).toBeInTheDocument();
-    // Empty: the row holds only Home and the Fan tabs strip, and the strip holds nothing.
     const fanTabsRow = screen.getByRole("region", { name: "Fan tabs" });
     expect(fanTabsRow.childElementCount).toBe(2);
     expect(within(fanTabsRow).getByRole("tablist", { name: "Fan tabs strip" })).toBeEmptyDOMElement();
@@ -476,7 +400,6 @@ describe("the Messages Pro page", () => {
 
     expect(header.queryByRole("button", { name: "Inflowwww extras" })).toBeNull();
     const allModels = header.getByRole("button", { name: "All Models" });
-    // Our mark comes first, the way back to the Dashboard; All Models right after it.
     const home = header.getByRole("link", { name: "Dashboard" });
     expect(headerEl.firstElementChild).toBe(home);
     expect(home).toHaveAttribute("href", "/");
@@ -484,8 +407,6 @@ describe("the Messages Pro page", () => {
     expect(tooltipOf(allModels)).toBe("Inflowwww extra — All Models\nAll models");
     const test = await header.findByRole("tab", { name: "Test Creator 2 unread" });
     expectDomOrder([allModels, test]);
-    // Group chat stays in the Chat header's Extras overflow (the extras audit's
-    // assertion 6); the Creator tabs and All Models pick the scope.
     for (const name of ["Group chat", "Scope switcher"]) {
       expect(headerEl).not.toHaveTextContent(name);
       expect(fanTabs).not.toHaveTextContent(name);
@@ -509,7 +430,6 @@ describe("the Messages Pro page", () => {
     expect(await screen.findByRole("heading", { level: 2, name: "All Models" })).toBeInTheDocument();
     expect(window.localStorage.getItem("chatterly:scope")).toBe("all");
     expect(allModels).toHaveAttribute("aria-pressed", "true");
-    // The Creator just picked was warmed then (each refresh is cooldown-guarded).
     await vi.waitFor(() => {
       const busts = relayGet.mock.calls.map(([path]) => path).filter((p) => p.includes("roster-counts?bust="));
       expect(busts).toContain(`/admin/accounts/roster-counts?bust=${OTHER_ACCOUNT_ID}`);
@@ -523,7 +443,6 @@ describe("the Messages Pro page", () => {
     await userEvent.click(screen.getByRole("button", { name: "Open in new tab" }));
     expect(fanTabNames()).toEqual(["Fixture Fan One"]);
 
-    // Scope the other Creator: the scope guard clears the Thread.
     await userEvent.click(await creatorTab(/^Other Creator/));
     expect(await screen.findByText("Fixture Fan Four")).toBeInTheDocument();
     expect(threadText()).toBeNull();
@@ -536,7 +455,6 @@ describe("the Messages Pro page", () => {
     expect(row(FANS[0])).toHaveAttribute("aria-current", "true");
     expect(fanTabsStrip().getByRole("tab", { name: "Fixture Fan One" })).toHaveAttribute("aria-selected", "true");
     expect(window.localStorage.getItem("chatterly:scope")).toBe(`model:${ACCOUNT_ID}`);
-    // The URL does not change, through history or the router.
     expect(window.location.href).toBe(url);
     expect(router.push).not.toHaveBeenCalled();
     expect(router.replace).not.toHaveBeenCalled();
@@ -548,7 +466,6 @@ describe("the Messages Pro page", () => {
     expect(await screen.findByRole("heading", { level: 2, name: "All Models" })).toBeInTheDocument();
     await userEvent.click(await screen.findByText("Fixture Fan One"));
     await userEvent.click(screen.getByRole("button", { name: "Open in new tab" }));
-    // Open the other Creator's Fan, so the tab is not the open one.
     await userEvent.click(row(FAN_FOUR));
     expect(threadText()).toBe(`Creator ${OTHER_ACCOUNT_ID}, Fan 200000004`);
 
@@ -576,7 +493,6 @@ describe("the Messages Pro page", () => {
     expect(threadText()).toBe(`Creator ${ACCOUNT_ID}, Fan 200000001`);
     expect(fanTabNames()).toEqual(["Fixture Fan One"]);
     expect(tabOne).toHaveAttribute("aria-selected", "true");
-    // Clicking the active tab keeps the Thread on the row it was opened with.
     const thread = screen.getByRole("region", { name: "Thread" });
     expect(thread).toHaveAttribute("data-chat", "row");
     await userEvent.click(tabOne);
@@ -646,7 +562,6 @@ describe("the Messages Pro page", () => {
   it("✕ on the last Fan tab, active or not, leaves the Thread on \"Select any conversation to start\"", async () => {
     window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
     renderPage("/messages-pro");
-    // The last tab is the open conversation.
     await userEvent.click(await screen.findByText("Fixture Fan One"));
     await userEvent.click(screen.getByRole("button", { name: "Open in new tab" }));
     await userEvent.click(fanTabsStrip().getByRole("button", { name: "Close Fixture Fan One" }));
@@ -654,7 +569,6 @@ describe("the Messages Pro page", () => {
     expect(screen.getByText("Select any conversation to start")).toBeInTheDocument();
     expect(fanTabNames()).toEqual([]);
 
-    // The last tab is not the open conversation.
     await userEvent.click(row(FANS[0]));
     await userEvent.click(screen.getByRole("button", { name: "Open in new tab" }));
     await userEvent.click(row(FANS[1]));
@@ -662,15 +576,12 @@ describe("the Messages Pro page", () => {
     await userEvent.click(fanTabsStrip().getByRole("button", { name: "Close Fixture Fan One" }));
     expect(threadText()).toBeNull();
     expect(screen.getByText("Select any conversation to start")).toBeInTheDocument();
-    // The row stays, holding only Home and the empty strip.
     const fanTabsRow = screen.getByRole("region", { name: "Fan tabs" });
     expect(fanTabsRow.childElementCount).toBe(2);
     expect(within(fanTabsRow).getByRole("tablist", { name: "Fan tabs strip" })).toBeEmptyDOMElement();
   });
 
-  /** The fixed Employee's stored Creator tabs (Contracts: Creator tabs storage). */
   const CREATOR_TABS_KEY = "chatterly:creator-tabs:v1:300000001";
-  /** The Window header's Creator tabs, in strip order. */
   const creatorTabs = () => within(screen.getByRole("region", { name: "Window header" })).queryAllByRole("tab");
 
   it("?account=<id> opens on that Creator: its tab is active and the Fan List shows its rows, while the saved scope stays", async () => {
@@ -681,10 +592,8 @@ describe("the Messages Pro page", () => {
     await vi.waitFor(() => expect(listedFans()).toEqual(["Fixture Fan Three", "Fixture Fan Four"]));
     expect(await creatorTab(/^Other Creator/)).toHaveAttribute("aria-selected", "true");
     expect(await creatorTab(/^Test Creator/)).toHaveAttribute("aria-selected", "false");
-    // Not saved: the Employee's other windows keep their scope.
     expect(window.localStorage.getItem("chatterly:scope")).toBe(`model:${ACCOUNT_ID}`);
 
-    // Applied once: a switch made after landing stands, and is saved as in-app.
     window.localStorage.setItem("chatterly:scope", `model:${OTHER_ACCOUNT_ID}`);
     const testTab = await creatorTab(/^Test Creator/);
     await userEvent.click(testTab);
@@ -709,7 +618,6 @@ describe("the Messages Pro page", () => {
 
   it("?account=<unknown id> leaves the window as it would open without the parameter", async () => {
     const stored = JSON.stringify({ order: [], closed: [OTHER_ACCOUNT_ID] });
-    /** The window at `url`, once its Creators and Fan List have loaded. */
     async function windowAt(url: string) {
       window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
       window.localStorage.setItem(CREATOR_TABS_KEY, stored);
@@ -719,7 +627,6 @@ describe("the Messages Pro page", () => {
       expect(testTab).toHaveAttribute("aria-selected", "true");
       const seen = {
         heading: screen.getByRole("heading", { level: 2 }).textContent,
-        // Only the Test Creator's: the other's stays closed.
         onlyTestTab: creatorTabs().length === 1 && creatorTabs()[0] === testTab,
         thread: threadText(),
         savedScope: window.localStorage.getItem("chatterly:scope"),
@@ -737,14 +644,13 @@ describe("the Messages Pro page", () => {
     expect(await windowAt("/messages-pro?window=1&account=100000099")).toEqual(without);
   });
 
-  /* ── Online Fans (ticket 78) ─────────────────────────────────────────── */
 
   const onlineFans = () => screen.getByRole("button", { name: "Online Fans" });
 
   it("\"Online Fans\" sits between the Fan List header and its filters, sets aria-pressed and narrows the list to online Fans; pressing it again restores every row", async () => {
     window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
-    PRESENCE.online.add(FANS[0].id); // the row says online
-    PRESENCE.lastSeen.set(FANS[2].id, ago(1)); // seen a minute ago
+    PRESENCE.online.add(FANS[0].id);
+    PRESENCE.lastSeen.set(FANS[2].id, ago(1));
     renderPage("/messages-pro");
 
     const all = ["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"];
@@ -767,9 +673,6 @@ describe("the Messages Pro page", () => {
   });
 
   it("\"Online Fans\" keeps a Fan last seen 4m59s ago and drops one last seen 5m01s ago", async () => {
-    // The clock stands still, so "4m59s ago" stays 4m59s ago however long the
-    // render takes; it stops at the real time, so the fixture rows' message
-    // times stay in the past.
     const now = Date.now();
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(now);
@@ -796,14 +699,12 @@ describe("the Messages Pro page", () => {
     expect(screen.queryByText("No Fans online now")).toBeNull();
   });
 
-  /* ── Online Fans: the Creator's online list (ticket 79) ──────────────── */
 
   const ONLINE_LIST = "/api/of/v2/subscribers?";
   const onlineListReads = () => relayGet.mock.calls.filter(([path]) => path.includes(ONLINE_LIST));
 
   it("\"Online Fans\" keeps a Fan on the Creator's online list even though its row does not say online", async () => {
     window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
-    // No row says online and no Fan has a lastSeen: only the list names Fan Two.
     routeRelay(ONLINE_LIST, (_path, ctx) =>
       ({ list: ctx?.accountId === ACCOUNT_ID ? [fanUser(FANS[1])] : [], hasMore: false }));
     renderPage("/messages-pro");
@@ -813,7 +714,6 @@ describe("the Messages Pro page", () => {
     await userEvent.click(onlineFans());
     await vi.waitFor(() => expect(listedFans()).toEqual(["Fixture Fan Two"]));
 
-    // One read, for the scoped Creator: active, online, one page of 50.
     expect(onlineListReads()).toHaveLength(1);
     const [path, ctx] = onlineListReads()[0];
     expect(Object.fromEntries(new URLSearchParams(path.split("?")[1]))).toEqual({ type: "active", online: "1", limit: "50" });
@@ -823,7 +723,7 @@ describe("the Messages Pro page", () => {
 
   it("\"Online Fans\" falls back to the row rule when the online list fails, with the tooltip \"Online list unavailable\"; under All Models the list is not read", async () => {
     window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
-    PRESENCE.online.add(FANS[0].id); // the row says online
+    PRESENCE.online.add(FANS[0].id);
     routeRelay(ONLINE_LIST, () => Promise.reject(new Error("HTTP 502")));
     const scoped = renderPage("/messages-pro");
 
@@ -834,7 +734,6 @@ describe("the Messages Pro page", () => {
     expect(onlineListReads()).toHaveLength(1);
     scoped.unmount();
 
-    // All Models: the row rule alone, and no read.
     relayGet.mockClear();
     window.localStorage.setItem("chatterly:scope", "all");
     renderPage("/messages-pro");
@@ -846,20 +745,13 @@ describe("the Messages Pro page", () => {
     expect(tooltipOf(onlineFans())).toBe("Showing only fans online now: click to show all");
   });
 
-  /* ── Notifications (ticket 80) ───────────────────────────────────────── */
 
   const NOTIF_COUNT = "/api/of/v2/users/notifications/count";
   const countReads = () => relayGet.mock.calls.filter(([path]) => path.includes(NOTIF_COUNT));
-  /** The count reads for one Creator. The Notifications button and that
-   *  Creator's tab share one cache entry, so one read serves both. */
   const countReadsFor = (accountId: string) => countReads().filter(([, ctx]) => ctx?.accountId === accountId);
-  /** The Fan List's Notifications button; its name ends with the badge's
-   *  number while the badge shows. */
   const notifications = () => screen.getByRole("button", { name: /^Notifications\b/ });
-  /** Each Creator's OnlyFans notification count, `all` first. */
   const serveCounts = (all: Record<string, number>) =>
     routeRelay(NOTIF_COUNT, (_path, ctx) => ({ all: all[ctx?.accountId ?? ""] ?? 0, subscribed: 1, purchases: 0, tip: 0 }));
-  /** OF's mark-read (sent once per panel open) answers its counters at `all`. */
   const NOTIF_READ = "/api/of/v2/users/notifications/read";
   const answerMarkRead = (all: number) => {
     relayPost.mockImplementation((path: string) => Promise.resolve(path === NOTIF_READ ? { counters: { all } } : {}));
@@ -874,9 +766,7 @@ describe("the Messages Pro page", () => {
 
     await vi.waitFor(() => expect(notifications()).toHaveAccessibleName("Notifications 7"));
     expectDomOrder([onlineFans(), notifications(), screen.getByRole("group", { name: "Inbox, settings and sort" })]);
-    // One read per Creator: the button and the tabs share it.
     expect(countReadsFor(ACCOUNT_ID)).toHaveLength(1);
-    // The Creator tab badges, "7" and "99+" (capped), on the teal.
     const tabCounts = () => within(screen.getByRole("tablist", { name: "Creator tabs" }))
       .queryAllByText("notifications").map((sr) => sr.parentElement!);
     await vi.waitFor(() => expect(tabCounts().map((b) => b.textContent)).toEqual(["7 notifications", "99+ notifications"]));
@@ -888,7 +778,6 @@ describe("the Messages Pro page", () => {
   });
 
   it("\"Notifications\" hides its badge at zero and on a failed read; under All Models it sums the Creator tabs' cached counts", async () => {
-    // One route whose reply each window below swaps.
     let reply: () => unknown = () => ({ all: 0, subscribed: 0, purchases: 0, tip: 0 });
     routeRelay(NOTIF_COUNT, () => reply());
     answerMarkRead(0);
@@ -899,7 +788,6 @@ describe("the Messages Pro page", () => {
     expect(notifications()).toHaveAccessibleName("Notifications");
     zero.unmount();
 
-    // A re-read that fails after a good one: the old count is not kept.
     relayGet.mockClear();
     reply = () => ({ all: 4, subscribed: 4, purchases: 0, tip: 0 });
     const failed = renderPage("/messages-pro");
@@ -917,7 +805,6 @@ describe("the Messages Pro page", () => {
     renderPage("/messages-pro");
     expect(await screen.findByRole("heading", { level: 2, name: "All Models" })).toBeInTheDocument();
     await vi.waitFor(() => expect(listedFans()).toContain("Fixture Fan Four"));
-    // The Creator tabs read their own counts; the button sums what they cached and reads nothing itself (#879).
     await vi.waitFor(() => expect(within(screen.getByRole("tablist", { name: "Creator tabs" })).getAllByText("notifications").length).toBeGreaterThan(0));
     await vi.waitFor(() => expect(notifications()).toHaveAccessibleName("Notifications 14"));
   });
@@ -935,10 +822,8 @@ describe("the Messages Pro page", () => {
 
     await userEvent.click(notifications());
     expect(await screen.findByText("subscribed to your profile")).toBeInTheDocument();
-    // Opening sent OF's mark-read once for the scoped Creator; its counters cleared the badge.
     expect(markReads().map(([, , ctx]) => ctx?.accountId)).toEqual([ACCOUNT_ID]);
     await vi.waitFor(() => expect(notifications()).toHaveAccessibleName("Notifications"));
-    // The bell's own filters ("All" is the Fan List's chip too) and its settings.
     for (const name of ["Subscriptions", "Purchases", "Tips", "Comments", "Likes"]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
@@ -951,15 +836,10 @@ describe("the Messages Pro page", () => {
     await vi.waitFor(() => expect(countReadsFor(ACCOUNT_ID)).toHaveLength(2));
   });
 
-  /* ── The Buys & tips switch (TODO.md B1) ─────────────────────────────── */
 
-  /** The "Notif" switch, in the Window header before SFW. */
   const railSwitch = () => screen.getByRole("switch", { name: "Buys & tips" });
-  /** The Buys & tips rail's header toggle: present while the rail is. */
   const railShown = () => screen.queryByRole("button", { name: /Buys & tips/ }) !== null;
-  /** The rail's stored settings' surfaces. */
   const storedSurfaces = () => JSON.parse(window.localStorage.getItem(RAIL_SETTINGS_KEY) ?? "null")?.surfaces;
-  /** The page at /messages-pro (the rail's "inbox" surface) with the rail, as the root layout mounts it. */
   const renderWithRail = () => {
     nav.pathname = "/messages-pro";
     return renderWithProviders(<>{pageTree("/messages-pro")}<MoneyRail /></>);
@@ -983,7 +863,6 @@ describe("the Messages Pro page", () => {
     expect(railSwitch()).toHaveAttribute("aria-checked", "false");
     expect(tooltipOf(railSwitch())).toBe("Buys & tips notifications panel hidden: click to show it on this page");
     await vi.waitFor(() => expect(railShown()).toBe(false));
-    // Hidden on this surface only: the pop-out and group tab keep it.
     expect(storedSurfaces()).toEqual(["popup", "group"]);
 
     await userEvent.click(notifications());
@@ -1008,7 +887,6 @@ describe("the Messages Pro page", () => {
     expect(railSwitch()).toHaveAttribute("aria-checked", "false");
     expect(railShown()).toBe(false);
 
-    // Another tab (or the rail's ⚙ there) shows it everywhere.
     window.localStorage.setItem(RAIL_SETTINGS_KEY, JSON.stringify({ ...JSON.parse(window.localStorage.getItem(RAIL_SETTINGS_KEY)!), surfaces: null }));
     act(() => { window.dispatchEvent(new StorageEvent("storage", { key: RAIL_SETTINGS_KEY })); });
     expect(railSwitch()).toHaveAttribute("aria-checked", "true");
@@ -1017,7 +895,6 @@ describe("the Messages Pro page", () => {
 
   it("at phone width there is no Notif switch: Messages Pro draws the rail from lg up only, so the switch did nothing there; a rail hidden here still comes back from Notifications", async () => {
     window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
-    // Hidden on this page (the "inbox" surface), as the desktop switch leaves it.
     window.localStorage.setItem(RAIL_SETTINGS_KEY, JSON.stringify({ smallRows: 1, bigRows: 6, accounts: null, surfaces: ["popup", "group"] }));
     stubViewport(390);
     renderWithRail();
@@ -1028,21 +905,16 @@ describe("the Messages Pro page", () => {
     await userEvent.click(notifications());
     await userEvent.click(await screen.findByRole("button", { name: /rail is hidden here/ }));
     expect(storedSurfaces()).toEqual(["inbox", "popup", "group"]);
-    // Back on this page, and still drawn from lg up only.
     await vi.waitFor(() => expect(railShown()).toBe(true));
     expect(screen.getByRole("button", { name: /Buys & tips/ }).closest(".fixed")).toHaveClass("hidden", "lg:flex");
   });
 
-  /* ── A notification opens a Fan tab (ticket 81) ──────────────────────── */
 
-  /** The fixed Employee's stored Fan tabs (Contracts: Fan tabs storage). */
   const FAN_TABS_KEY = "chatterly:fan-tabs:v1:300000001";
-  /** The scoped Creator's notifications: one about Fan Two. */
   const serveNotificationAboutFanTwo = () => routeRelay("/api/of/v2/users/notifications?", (_path, ctx) =>
     ctx?.accountId === ACCOUNT_ID
       ? [{ id: 900000002, type: "tip", text: "sent you a tip", createdAt: ago(2), user: fanUser(FANS[1]) }]
       : []);
-  /** The open panel's row about Fan Two. */
   const notificationRow = async () => (await screen.findByText("sent you a tip")).closest("button")!;
 
   it("a notification row about a Fan opens that Fan in a Fan tab in this window, and opening it again reuses the tab", async () => {
@@ -1062,7 +934,6 @@ describe("the Messages Pro page", () => {
     expect(windowOpen).not.toHaveBeenCalled();
     expect(screen.queryByText("Fan tab limit reached (100)")).toBeNull();
 
-    // Another Fan, then the same notification: its tab is reused, not doubled.
     await userEvent.click(row(FANS[0]));
     expect(threadText()).toBe(`Creator ${ACCOUNT_ID}, Fan 200000001`);
     await userEvent.click(notifications());
@@ -1106,7 +977,6 @@ describe("the Messages Pro page", () => {
     expect(window.location.pathname).toBe("/messages-pro");
     expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["messages", ACCOUNT_ID, 200000002] });
 
-    // A money toast (a tip, a purchase) refreshes the Fan's Thread in place too.
     act(() => openNotification(`/messages-pro/${ACCOUNT_ID}/200000002?refresh=media&fanTab=Fixture+Fan+Two`));
     expect(fanTabNames()).toEqual(["Fixture Fan Two"]);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["messages", ACCOUNT_ID, 200000002] });
@@ -1127,14 +997,12 @@ describe("the Messages Pro page", () => {
     const notificationButton = await notificationRow();
     await userEvent.click(notificationButton);
     expect(threadText()).toBe(`Creator ${ACCOUNT_ID}, Fan 200000002`);
-    // The panel's row names the Fan too: the Fan List's is the other one.
     const listRow = rowsOf(FANS[1]).filter((el) => el !== notificationButton);
     expect(listRow).toHaveLength(1);
     expect(listRow[0]).toHaveAttribute("aria-current", "true");
     expect(fanTabNames()).toHaveLength(100);
     expect(fanTabNames()).not.toContain("Fixture Fan Two");
     expect(window.localStorage.getItem(FAN_TABS_KEY)).toBe(seed);
-    // In the panel, which stays open beside the row.
     const notice = screen.getByText("Fan tab limit reached (100)");
     expect(notice).toHaveAttribute("role", "status");
     expect(notice.parentElement).toContainElement(screen.getByText("sent you a tip"));
@@ -1146,7 +1014,6 @@ describe("the Messages Pro page", () => {
       ({ accountId: ACCOUNT_ID, fanId: String(700000000 + i), name: `Fixture Seeded Fan ${i}` })));
     window.localStorage.setItem(FAN_TABS_KEY, seed);
     const first = renderPage(`/messages-pro/${ACCOUNT_ID}/200000001?fanTab=Fixture+Fan+One`);
-    // Arriving from another window with ?fanTab.
     expect(await screen.findByText("Fan tab limit reached (100)")).toHaveAttribute("role", "status");
     expect(window.localStorage.getItem(FAN_TABS_KEY)).toBe(seed);
     first.unmount();
@@ -1154,7 +1021,6 @@ describe("the Messages Pro page", () => {
     renderPage("/messages-pro");
     await vi.waitFor(() => expect(listedFans()).toContain("Fixture Fan Two"));
     expect(screen.queryByText("Fan tab limit reached (100)")).toBeNull();
-    // A toast here (another window's click lands the same way, through its handle).
     act(() => openNotification(`/messages-pro/${ACCOUNT_ID}/200000002?fanTab=Fixture+Fan+Two`));
     expect(threadText()).toBe(`Creator ${ACCOUNT_ID}, Fan 200000002`);
     expect(fanTabNames()).not.toContain("Fixture Fan Two");
@@ -1162,40 +1028,29 @@ describe("the Messages Pro page", () => {
     expect(screen.getByText("Fan tab limit reached (100)")).toHaveAttribute("role", "status");
   });
 
-  /* ── A message notification's quick reply (ticket 83) ────────────────── */
 
-  /** The other Creator's notifications under All Models: a message from Fan
-   *  Four. The first Creator has none, so the reply's account can only be the
-   *  notification's Creator. */
   const serveMessageFromFanFour = () => routeRelay("/api/of/v2/users/notifications?", (_path, ctx) =>
     ctx?.accountId === OTHER_ACCOUNT_ID
       ? [{ id: 900000003, type: "message", text: "sent you a message", createdAt: ago(1), user: fanUser(FAN_FOUR) }]
       : []);
   const THREAD_OF_FAN_FOUR = `/api/of/v2/chats/${FAN_FOUR.id}/messages`;
-  /** Opens the panel and the Reply field of the message notification. */
   async function openReply() {
-    // A case's send reply is its own: the harness clears calls, not replies.
     onTestFinished(() => { relayPost.mockReset(); });
     window.localStorage.setItem("chatterly:scope", "all");
     serveMessageFromFanFour();
     const { queryClient } = renderPage("/messages-pro");
-    // A closed field leaves the Fan's messages cached, as the app's week-long
-    // gcTime does (components/providers.tsx); the test client's is shorter.
     queryClient.setQueryDefaults(["messages"], { gcTime: Infinity });
     await vi.waitFor(() => expect(listedFans()).toContain("Fixture Fan Four"));
     await userEvent.click(notifications());
     await screen.findByText("sent you a message");
     await userEvent.click(screen.getByRole("button", { name: "Reply" }));
-    /** Fan Four's message cache under the other Creator, as the Thread reads it. */
     const fanFourMessages = () =>
       queryClient.getQueryData<OFMessage[]>(["messages", OTHER_ACCOUNT_ID, FAN_FOUR.id]) ?? [];
-    // The field's module is lazy (NotificationBell): under load it may land after the click.
     return { field: await screen.findByRole("textbox", { name: "Reply to Fixture Fan Four" }), fanFourMessages };
   }
 
   it("a message notification's Reply posts the text to the Fan's chat messages route as the notification's Creator, then clears and reads \"Sent\"", async () => {
     const { field } = await openReply();
-    // Opening the field mounts the Fan's message hook, read as its Creator.
     await vi.waitFor(() => expect(relayGet.mock.calls.filter(([path]) => path.startsWith(`${THREAD_OF_FAN_FOUR}?`))
       .map(([, ctx]) => ctx?.accountId)).toEqual([OTHER_ACCOUNT_ID]));
     relayPost.mockImplementation((path: string) => Promise.resolve(path === THREAD_OF_FAN_FOUR
@@ -1209,17 +1064,14 @@ describe("the Messages Pro page", () => {
     expect(field).toHaveValue("");
     const sends = relayPost.mock.calls.filter(([path]) => path === THREAD_OF_FAN_FOUR);
     expect(sends).toHaveLength(1);
-    // Text only, with the Creator in X-Account-Id (relay.ts) and the Employee.
     expect(sends[0]).toEqual([
       THREAD_OF_FAN_FOUR,
       { text: "Fixture quick reply", locked_text: false, price: 0, media_files: [] },
       { accountId: OTHER_ACCOUNT_ID, employeeId: 300000001 },
     ]);
-    // A reply opens no Thread and adds no Fan tab.
     expect(threadText()).toBeNull();
     expect(fanTabNames()).toEqual([]);
 
-    // Reply again closes the field, and with it the Fan's message hook.
     await userEvent.click(screen.getByRole("button", { name: "Reply" }));
     expect(screen.queryByRole("textbox", { name: "Reply to Fixture Fan Four" })).toBeNull();
   });
@@ -1237,8 +1089,6 @@ describe("the Messages Pro page", () => {
     expect(field).toHaveValue("Fixture quick reply");
     expect(screen.queryByText("Sent")).toBeNull();
     expect(relayPost.mock.calls.filter(([path]) => path === THREAD_OF_FAN_FOUR)).toHaveLength(1);
-    // The inbox row already reads as our reply: the failed bubble (its Retry
-    // reads the shared send stash) is the Thread's trace that it didn't go.
     expect(fanFourMessages().filter((m) => m._failed).map((m) => m.text)).toEqual(["Fixture quick reply"]);
   });
 
@@ -1254,7 +1104,6 @@ describe("the Messages Pro page", () => {
     await userEvent.type(field(), "Fixture first reply");
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
     await vi.waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Sent"));
-    // A new field is a new instance of the send hook over the same cache.
     await userEvent.click(reply);
     await userEvent.click(reply);
     await userEvent.type(field(), "Fixture second reply");
@@ -1267,19 +1116,14 @@ describe("the Messages Pro page", () => {
     ]);
   });
 
-  /* ── A Fan tab closed in another window, at every width (ticket 128) ── */
 
-  /** The stored Fan tab of `f`, the scoped Creator's (Contracts). */
   const storedTab = (f: (typeof FANS)[number]) => ({ accountId: ACCOUNT_ID, fanId: String(f.id), name: f.name });
-  /** Another window writes this Employee's Fan tabs: a `storage` event here. */
   const otherWindowWritesFanTabs = (tabs: ReturnType<typeof storedTab>[]) =>
     act(() => {
       window.localStorage.setItem(FAN_TABS_KEY, JSON.stringify(tabs));
       window.dispatchEvent(new StorageEvent("storage", { key: FAN_TABS_KEY, newValue: JSON.stringify(tabs) }));
     });
 
-  /** A window `width` px wide with Fans One, Two and Three in Fan tabs and
-   *  Fan One open in the Thread from its Fan List row. */
   async function openFanOneWithTabs(width: number, fans = FANS) {
     window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
     window.localStorage.setItem(FAN_TABS_KEY, JSON.stringify(fans.map(storedTab)));
@@ -1294,7 +1138,6 @@ describe("the Messages Pro page", () => {
     expect(screen.queryByRole("region", { name: "Fan tabs" })).toBeNull();
 
     await otherWindowWritesFanTabs([storedTab(FANS[1]), storedTab(FANS[2])]);
-    // The last remaining tab, not the next one.
     expect(threadText()).toBe(`Creator ${ACCOUNT_ID}, Fan 200000003`);
 
     await otherWindowWritesFanTabs([storedTab(FANS[2])]);
@@ -1324,18 +1167,13 @@ describe("the Messages Pro page", () => {
   });
 });
 
-/* ── the page through the app shell (look-and-feel ticket 135) ──────────── */
 
 describe("the Messages Pro page through the app shell", () => {
-  /** The page at `url` inside `AppShell`, as the app's layout renders it. */
   function renderInShell(url: string) {
     nav.pathname = url.split("?")[0];
     return renderWithProviders(pageTree(url, true));
   }
 
-  // Messages Pro is a window of its own (ADR-0002): the app's chrome is never
-  // around it, at any width, on the index or a Deep link, with or without
-  // the old `?window=1`.
   for (const url of ["/messages-pro", "/messages-pro?window=1", `/messages-pro/${ACCOUNT_ID}/200000002`]) {
     it(`at desktop ${url} has no Top bar, sidebar or app controls, in the Window header or anywhere`, async () => {
       window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);

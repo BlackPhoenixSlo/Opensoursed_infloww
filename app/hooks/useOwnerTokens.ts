@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * useOwnerTokens — Settings → AI keys → Access tokens, the signed-in owner's own access tokens
- * (`Authorization: Bearer ifw_…` for an MCP client; service/owner_tokens_api.py).
- *
- *   GET    /admin/owner-tokens        { tokens: [...] } — hints only, never a token
- *   POST   /admin/owner-tokens        { name, days: 30|90|365 } → the row + `token`, shown once
- *   DELETE /admin/owner-tokens/{id}   revoke
- */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -16,7 +8,6 @@ import { relay } from "@/lib/relay";
 export interface OwnerToken {
   id: number;
   name: string;
-  /** "ifw_…" + the last four. */
   hint: string;
   created_at: string;
   expires_at: string;

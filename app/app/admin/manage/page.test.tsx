@@ -1,10 +1,3 @@
-/**
- * /admin/manage over the two independent refresh calls, through the real
- * page: an EMPTY roster that loaded filters (nobody is live), a FAILED roster
- * does not and says so, and a failed FIRST /admin/users load shows its error —
- * not a skeleton forever, not "No users registered yet.". Only the relay wire
- * and useUser are faked.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
@@ -109,7 +102,7 @@ describe("/admin/manage failed loads", () => {
   it("a failed FIRST /admin/users load shows the error: no skeleton, no 'No users registered yet.'", async () => {
     serve(() => Promise.resolve({ agencies: [] }), () => Promise.reject(new Error("upstream 502")));
     const { container } = render(<AdminUsersPage />);
-    expect(container.querySelector(".animate-pulse")).not.toBeNull(); // loading: the skeleton
+    expect(container.querySelector(".animate-pulse")).not.toBeNull();
     expect((await screen.findByRole("alert")).textContent).toBe("upstream 502");
     expect(container.querySelector(".animate-pulse")).toBeNull();
     expect(screen.queryByText("No users registered yet.")).toBeNull();

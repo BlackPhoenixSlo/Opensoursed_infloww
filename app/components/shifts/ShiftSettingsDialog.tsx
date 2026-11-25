@@ -1,37 +1,5 @@
 "use client";
 
-/**
- * The header gear's "Shift Settings" on the Shift schedule (Inventory §3.8;
- * docs/spec/phase-02-shifts-time-tracking.md, App): one switch, "Allow
- * multiple employees to work on the same shift for the assigned Creator".
- *
- * It stores nothing of its own. The value is the `sales` Settings blob's
- * `multi_employee_shift`, the same key the Sales Panel shows as "Multiple
- * employees per shift", read and written through `useSettingsBlob("sales")`.
- * "OK" sends the whole stored blob back with only that key changed (ADR-0007
- * whole-blob replace), behind the blob's Load gate. While it is not on, the
- * Relay refuses a Shift that double-staffs a Creator (service/shifts_api.py).
- *
- * ASSUMPTION: the hook's defaults are empty, so the PUT is the stored blob
- * plus this one key, never the Sales Panel's defaults for keys nobody saved.
- * Rung 5: the spec's "changing only `multi_employee_shift`". Overturned if
- * Phase 4's blob validation wants every Sales key present.
- *
- * ASSUMPTION: the box is ticked only for a stored literal `true`, the value
- * the Relay counts. Rung 5. Overturned if odd stored values should read as on.
- *
- * The label and the gear entry point are Inventory §3.8 (rung 1,
- * docs/infloww-screens.md:458). This is the antd modal look (`IfModal`, 520)
- * with one `IfSwitch` row (page-parity ticket 18). A toggle stages the change
- * and "OK" saves it, as the Sales Panel saves through its save bar rather than
- * on toggle.
- *
- * "Common periods" (Infloww's preset shift periods, roadmap W6 6.12) are the
- * `shifts` blob's `presets`, `[{start, end}]` "HH:MM", which the Shifts window
- * offers per row. Not `time-tracking`: its saves are payroll versions, and a
- * period credits nothing. "OK" saves that blob too, only when a period
- * changed, so its Load gate never blocks the switch alone.
- */
 
 import { useState } from "react";
 
@@ -56,6 +24,7 @@ export default function ShiftSettingsDialog({ onClose }: { onClose: () => void }
     presets.set({ presets: next });
     setPeriodsEdited(true);
   };
+  // Whole-blob replace: the PUT is the stored blob plus this one key, never the Sales Panel's defaults.
   const save = () => blob.commit({}, () => (periodsEdited ? presets.commit({}, onClose) : onClose()));
   const saving = blob.save.saving || presets.save.saving;
 

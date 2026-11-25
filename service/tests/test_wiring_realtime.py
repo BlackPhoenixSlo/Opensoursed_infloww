@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""
-On/off WIRING checkpoints — the W7 "Reply Instant" real-time webhook dispatch.
-
-Each case writes the switch straight into the persisted column
-(account_ai_config.webhook_config_json — the editor route is retired, so only the
-stored config remains) → the runtime gate that reads it, and asserts OFF
-dispatches nothing and ON dispatches.
-
-  Formerly-known bug (now fixed — kept as a regression guard):
-    • W7 ON wakes `welcome_chatter_for_info` for a plain fan even when that
-      engine's rule is OFF, so the info-gather "off" switch is bypassed by every
-      inbound DM while Reply Instant is on.
-
-Run: ./venv/bin/python service/tests/test_wiring_realtime.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
@@ -35,10 +20,9 @@ from db.models import (  # noqa: E402
     Account, AccountAiConfig, AutomationRule, ScheduledJob,
 )
 
-ax.wake_supervisor = lambda: None  # no supervisor loop in tests
+ax.wake_supervisor = lambda: None
 
 
-# ── helpers ──────────────────────────────────────────────────────────
 
 async def _seed_account(aid: str) -> None:
     async with get_session() as s:
@@ -47,7 +31,6 @@ async def _seed_account(aid: str) -> None:
 
 
 async def _put_webhook(aid: str, config: dict) -> None:
-    """Store the Reply Instant config the way the retired editor did."""
     async with get_session() as s:
         row = await s.get(AccountAiConfig, aid)
         if row is None:
@@ -57,8 +40,6 @@ async def _put_webhook(aid: str, config: dict) -> None:
 
 
 async def _give_w7_switches(aid: str) -> int:
-    """What the retired editor did on off → on (and the boot backfill still does):
-    a cadence-less enabled rule for each gated kind with no rule row."""
     async with get_session() as s:
         return await s.run_sync(lambda ss: ensure_w7_rule_switches(ss.connection(), aid))
 
@@ -79,13 +60,10 @@ async def _jobs(aid: str, kind: str | None = None, status: str | None = "pending
         return (await s.execute(q.order_by(ScheduledJob.id))).scalars().all()
 
 
-# ── W7 Reply Instant ─────────────────────────────────────────────────
 
 async def case_webhook_put_persists_and_gates_dispatch():
     aid, fan = "wv_w7", 7101
     await _seed_account(aid)
-    # W7 only wakes the info-gather engine while its rule is ON (see the
-    # rule-OFF case below) — this case is about the Reply Instant switch.
     async with get_session() as s:
         s.add(AutomationRule(account_id=aid, name="info gather", kind="welcome_chatter_for_info",
                              trigger_json=json.dumps({"every_seconds": 60}),
@@ -102,9 +80,6 @@ async def case_webhook_put_persists_and_gates_dispatch():
     assert len(jobs) == 1 and json.loads(jobs[0].payload_json).get("only_fan_ids") == [fan], \
         [(j.kind, j.payload_json) for j in jobs]
 
-    # Flip OFF: no NEW dispatch. The job queued while ON stays pending — by
-    # design it is a fan-scoped run of the ordinary chat engine (the same reply
-    # the 30s sweep gives once Reply Instant is off), so it is not cancelled.
     await _put_webhook(aid, {"enabled": False})
     await wd.on_inbound_message(aid, fan + 1, 3)
     assert len(await _jobs(aid)) == 1, "OFF must not dispatch new inbound DMs"
@@ -137,10 +112,6 @@ async def case_w7_does_not_wake_disabled_welcome_chatter():
 
 
 async def case_reply_instant_on_gives_a_new_account_its_switches():
-    """Default build: the info-gather / funnel switches are hidden, so Reply
-    Instant ON gives a kind with NO rule a cadence-less enabled one
-    (ensure_w7_rule_switches) — and the realtime path then enqueues. An existing
-    disabled row stays off."""
     aid, fan = "wv_w7_new", 7401
     await _seed_account(aid)
     await _put_webhook(aid, {"enabled": True})
@@ -157,7 +128,6 @@ async def case_reply_instant_on_gives_a_new_account_its_switches():
     jobs = await _jobs(aid)
     assert [j.kind for j in jobs] == ["welcome_chatter_for_info"], \
         [(j.kind, j.payload_json) for j in jobs]
-    # Cadence-less: the materializer schedules no periodic sweep for it.
     async with get_session() as s:
         for j in jobs:
             await s.delete(await s.get(ScheduledJob, j.id))
@@ -177,13 +147,9 @@ async def case_reply_instant_on_gives_a_new_account_its_switches():
     assert "welcome_chatter_for_info" not in [j.kind for j in await _jobs(off)]
 
 async def case_w7_rule_backfill_keeps_reply_instant_accounts_answered_once():
-    """The one-time boot backfill (db.engine.backfill_w7_rules_once): an account
-    with Reply Instant ON and NO rule of a gated kind gets an enabled, cadence-less
-    one; an existing (even disabled) row is left alone; Reply Instant OFF gets
-    nothing; and the marker stops it from ever running again."""
     from sqlalchemy import create_engine, text
     import sys
-    dbe = sys.modules["db.engine"]  # `db.engine` the name is the AsyncEngine
+    dbe = sys.modules["db.engine"]
 
     on_bare, on_off, off = "bf_on_bare", "bf_on_off", "bf_off"
     for aid in (on_bare, on_off, off):
@@ -197,7 +163,7 @@ async def case_w7_rule_backfill_keeps_reply_instant_accounts_answered_once():
 
     sync = create_engine(dbe.DATABASE_URL.replace("+aiosqlite", ""))
     try:
-        # Boot (harness bootstrap) already stamped it on this fresh DB → no-op.
+        # never twice: an operator deleting the switch afterwards keeps it deleted
         assert dbe.backfill_w7_rules_once(sync) == 0
         with sync.begin() as c:
             c.execute(text("DELETE FROM data_migrations WHERE name = :n"),
@@ -216,7 +182,6 @@ async def case_w7_rule_backfill_keeps_reply_instant_accounts_answered_once():
         assert await _rules(off) == set()
         assert await ax.enabled_rule_id(on_bare, "welcome_chatter_for_info") is not None
 
-        # Never twice: an operator deleting the switch afterwards keeps it deleted.
         async with get_session() as s:
             for r in (await s.execute(select(AutomationRule).where(
                     AutomationRule.account_id == on_bare))).scalars():

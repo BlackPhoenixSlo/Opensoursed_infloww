@@ -28,9 +28,10 @@ import { Check, ChevronDown, ChevronUp } from "lucide-react";
 
 import { useOutsideClose } from "@/components/ui/Menu";
 import { useAccounts } from "@/hooks/useAccounts";
-import { useRosterCounts } from "@/hooks/useRosterCounts";
+import { useRosterCounts, type RosterCount } from "@/hooks/useRosterCounts";
 import { rosterUnreadText } from "@/lib/format";
 import { PLATFORMS, PLATFORM_NAME, accountPlatform, setPlatform, usePlatform, type Platform } from "@/lib/platform";
+import type { AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
 /** Each platform's brand mark, 20px: Infloww's OnlyfansColor and
@@ -91,27 +92,30 @@ const COMING_SOON = [
 export interface PlatformUnread { count: number }
 
 /** Unread per platform: the roster's unread summed over that platform's accounts with a session. */
+export function platformUnread(
+  accounts: readonly Pick<AccountMeta, "id" | "platform" | "has_session">[] | undefined,
+  counts: Record<string, RosterCount>,
+): Record<Platform, PlatformUnread> {
+  const out = Object.fromEntries(PLATFORMS.map((p) => [p.key, { count: 0 }])) as Record<Platform, PlatformUnread>;
+  for (const a of accounts ?? []) {
+    const c = counts[a.id];
+    if (!a.has_session || !c) continue;
+    out[accountPlatform(a)].count += c.unread;
+  }
+  return out;
+}
+
 export function usePlatformUnread(): Record<Platform, PlatformUnread> {
   const accounts = useAccounts().data?.accounts;
   const counts = useRosterCounts();
-  return useMemo(() => {
-    const out: Record<Platform, PlatformUnread> = {
-      onlyfans: { count: 0 }, fansly: { count: 0 },
-    };
-    for (const a of accounts ?? []) {
-      const c = counts[a.id];
-      if (!a.has_session || !c) continue;
-      out[accountPlatform(a)].count += c.unread;
-    }
-    return out;
-  }, [accounts, counts]);
+  return useMemo(() => platformUnread(accounts, counts), [accounts, counts]);
 }
 
 export default function PlatformSwitcher({ collapsed = false }: { collapsed?: boolean }) {
   const platform = usePlatform();
   const unread = usePlatformUnread();
   const { open, setOpen, ref } = useOutsideClose();
-  const anyUnread = PLATFORMS.some((p) => unread[p].count > 0);
+  const anyUnread = PLATFORMS.some(({ key }) => unread[key].count > 0);
   const name = PLATFORM_NAME[platform];
 
   const pick = (p: Platform) => {
@@ -156,7 +160,7 @@ export default function PlatformSwitcher({ collapsed = false }: { collapsed?: bo
             collapsed ? "left-full top-0 ml-2 w-56" : "left-0 right-0 top-full mt-2",
           )}
         >
-          {PLATFORMS.map((p) => (
+          {PLATFORMS.map(({ key: p }) => (
             <button
               key={p}
               type="button"

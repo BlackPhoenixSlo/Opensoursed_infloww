@@ -1,9 +1,3 @@
-/**
- * useFanVaultHistory — the response is normalised once, here, so every reader
- * (MessageList's BOUGHT badge, the Composer's attachment badges) can index
- * `data.by_media[id]` without guarding: a `/admin/vault/fan-history` reply
- * that lacks `by_media` arrives as an empty map, not undefined.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { ReactNode } from "react";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";

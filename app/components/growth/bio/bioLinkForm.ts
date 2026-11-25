@@ -1,23 +1,9 @@
-/**
- * The bio editor's link dialog: closed or open with a nullable saved `base`, the Creator's edits,
- * the background picked (a file, or a photo of the Creator's vault) or marked for removal, the "Tracking" disclosure, the save in flight and its
- * refusal. A pure reducer (BioEditor holds it, BioLinkDialog only dispatches), the API's link rules mirrored
- * (`decide.check_link`) and the body a save sends: the whole link on create, only what changed on edit.
- *
- * `saved` sets the open form's base: a background upload that fails after
- * the create leaves the dialog on the saved link, so a retry patches it and never creates a second one (v2
- * `links.js:109`).
- *
- * No Geo Rule (11-12): no body carries `geo`, so a link's stored rule is never touched from here.
- */
 import { isBioMode, isStockIcon, type BioLink, type BioMode, type LinkBody, type StockIcon } from "@/hooks/useBioPages";
 import { chars, CODE, CODE_MSG, DESTINATION, DEST_EMPTY_MSG, DEST_MSG, MAX_DESTINATION, MAX_TITLE, TITLE_MSG, type FormError } from "@/components/growth/bio/bioRules";
 export { CODE_MSG, DEST_EMPTY_MSG, DEST_MSG, TITLE_MSG } from "@/components/growth/bio/bioRules";
 
-/** The fields inside the "Tracking" disclosure: a refusal naming one opens it. */
 const ADVANCED_FIELDS = ["tracking", "default_tracking_code"];
 
-/** "none" = no icon, "current" = the link's own non-stock icon kept as is, else a stock icon. */
 export type IconChoice = "none" | "current" | StockIcon;
 export type LinkMode = "" | BioMode;
 
@@ -31,7 +17,6 @@ export interface LinkDraft {
   code: string;
 }
 
-/** A vault photo picked as the background: the relay fetches it on save; `url` previews it. */
 export interface BgVault { id: number; type: string; url: string }
 
 interface LinkFormFields {
@@ -78,10 +63,8 @@ export const draftOfLink = (l: BioLink): LinkDraft => ({
   code: l.default_tracking_code ?? "",
 });
 
-/** v2's disclosure rule (`links.js:100`): open when any of its values is set. */
 const hasAdvanced = (d: LinkDraft) => d.tracking || d.code !== "";
 
-/** The first refusal the API would answer for this draft, or null. */
 export function linkFormError(d: LinkDraft, base: BioLink | null = null): FormError | null {
   const was = base ? draftOfLink(base) : null;
   const changed = (field: keyof LinkDraft) => !was || d[field] !== was[field];
@@ -98,14 +81,9 @@ export function linkFormError(d: LinkDraft, base: BioLink | null = null): FormEr
   return null;
 }
 
-/** The icon field a save sends: a stock stem, null to remove, or nothing (keep the current one). */
 const iconBody = (icon: IconChoice): { icon?: StockIcon | null } =>
   icon === "current" ? {} : { icon: icon === "none" ? null : icon };
 
-/**
- * The body a save sends: with no `base` (create) the whole link; with one (edit) only the fields that differ from it,
- * or null when nothing does. Call it on a draft `linkFormError` passed.
- */
 export function buildLinkPayload(base: BioLink | null, draft: LinkDraft): LinkBody | null {
   if (!base) {
     return {
@@ -164,8 +142,8 @@ export function bioLinkReducer(state: BioLinkForm, action: Action): BioLinkForm 
       if (error) return { ...state, error, advanced: state.advanced || opensAdvanced(error.fields) };
       return { ...state, busy: true, error: null };
     }
+    // A background upload failing after create leaves the dialog on the saved link: a retry patches it, never creates a second.
     case "saved":
-      // The link is saved; a background step may still run (busy stays as the thunk set it).
       return { ...state, open: true, base: action.link, draft: draftOfLink(action.link) };
     case "failed": {
       const fields = action.fields ?? [];

@@ -1,22 +1,5 @@
 #!/usr/bin/env python3
-"""S4S requests over the Relay (docs/spec/phase-03-share-for-share.md, ticket 17).
-
-The seam is the Relay over HTTP with real owner and chatter session cookies
-from the shared two-Agency fixture, on the throwaway `_harness` database:
-send from one of the caller's own opted-in Creators to an S4S profile id,
-the Received and Sent boxes, Accept / Skip / Decline by the receiver,
-Cancel by the sender, lazy expiry, and Accept booking one S4S slot per side
-with one queued `s4s_post` job each. Queued jobs are read straight from
-`scheduled_jobs`; the executor never runs here, so nothing is posted.
-
-Creators: A (Agency A), B (Agency B) from the fixture, plus C (Agency A),
-the third Creator for limit cases, and a few single-purpose Creators for
-the refusals. Every case runs on its own UTC day (`day(n)`), so one case's
-slots never fill another case's Daily limit.
-
-Run: ./venv/bin/python service/tests/test_s4s_requests.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -38,7 +21,6 @@ B = IDS["creator_b"]
 C = "1000009"
 NO_PRIMARY_A, NO_PRIMARY_B, OUT_A, OUT_B, HIDDEN_B, GONE_B = (
     "1000011", "1000012", "1000013", "1000014", "1000015", "1000016")
-# The proposal case's own Creators, so no other case's slot fills their days.
 PROP_A, PROP_B, PROP_X = "1000021", "1000022", "1000023"
 seed_creators({C: "agency_a_owner", NO_PRIMARY_A: "agency_a_owner", OUT_A: "agency_a_owner",
                NO_PRIMARY_B: "agency_b_owner", OUT_B: "agency_b_owner", HIDDEN_B: "agency_b_owner",
@@ -78,7 +60,6 @@ PID = {A: pid(OWNER_A, A), B: pid(OWNER_B, B), C: pid(OWNER_A, C),
 
 
 def day(n: int, hour: int = 10, minute: int = 0) -> datetime:
-    """`n` UTC days after today, at hour:minute UTC."""
     today = datetime.utcnow().date()
     return datetime(today.year, today.month, today.day) + timedelta(days=n, hours=hour, minutes=minute)
 
@@ -148,7 +129,6 @@ def _every_route(client) -> list:
     ]
 
 
-# ── Sessions ─────────────────────────────────────────────────────────
 
 def case_signed_out_is_401_and_a_chatter_is_403_on_every_request_route():
     anon = _harness.make_client()
@@ -162,7 +142,6 @@ def case_signed_out_is_401_and_a_chatter_is_403_on_every_request_route():
     assert count(S4SRequest) == 0, "a refused call wrote a request"
 
 
-# ── Send, boxes, snapshots ───────────────────────────────────────────
 
 def case_sending_answers_201_with_both_snapshots_and_the_boxes_never_read_the_partner_live():
     audits = len(audit_rows("s4s.request_send"))
@@ -180,7 +159,6 @@ def case_sending_answers_201_with_both_snapshots_and_the_boxes_never_read_the_pa
     payload = one_new_audit("s4s.request_send", audits, A, "agency_a_owner", got["id"])
     assert set(payload) == {"agency_user_id", "request_id"}, payload
 
-    # Creator B is renamed on OnlyFans and Agency B rewrites its Primary caption; the request keeps what was sent.
     of_profile(B, "Fixture Beta Renamed", "fixture_beta")
     assert profile(OWNER_B, B)["display_name"] == "Fixture Beta Renamed"
     (primary,) = [p for p in profile(OWNER_B, B)["posts"] if p["is_primary"]]
@@ -253,7 +231,7 @@ def case_one_open_request_per_pair_and_direction():
     first = sent(OWNER_A, A, B, day(3))
     r = send(OWNER_A, A, PID[B], day(4))
     assert r.status_code == 409, f"second open A→B: {r.status_code} {r.text}"
-    back = sent(OWNER_B, B, A, day(3, 12))  # the other direction is its own pair
+    back = sent(OWNER_B, B, A, day(3, 12))
     assert {first["id"], back["id"]} <= set(box(OWNER_A, "sent")) | set(box(OWNER_A, "received"))
 
 
@@ -289,7 +267,7 @@ def case_accept_after_cancel_is_409():
 
 
 def case_a_non_party_or_the_wrong_party_gets_404():
-    inside_a = sent(OWNER_A, A, C, day(5))  # both Creators in Agency A
+    inside_a = sent(OWNER_A, A, C, day(5))
     across = sent(OWNER_A, C, B, day(5, 14))
     for verb in ("accept", "skip", "decline", "cancel"):
         r = act(OWNER_B, inside_a["id"], verb)
@@ -309,7 +287,6 @@ def case_a_non_party_or_the_wrong_party_gets_404():
     assert r.status_code == 400, f"unknown box: {r.status_code} {r.text}"
 
 
-# ── Accept books two slots ───────────────────────────────────────────
 
 def case_accept_books_one_slot_per_side_and_queues_one_s4s_post_job_each_at_the_slot_time():
     slot_at = day(6)
@@ -345,24 +322,20 @@ def case_accept_books_one_slot_per_side_and_queues_one_s4s_post_job_each_at_the_
 
 
 def case_a_full_daily_limit_on_either_side_is_409_counted_per_utc_day():
-    # A and B each hold one slot on day 6 (the accept above); both Daily limits are 1.
     for label, r in (
         ("the receiver A is full", send(OWNER_A, C, PID[A], day(6, 15))),
         ("the sender A is full", send(OWNER_A, A, PID[C], day(6, 15))),
         ("the receiver B is full", send(OWNER_A, C, PID[B], day(6, 23, 59))),
     ):
         assert r.status_code == 409, f"{label}: {r.status_code} {r.text}"
-    # The day is the UTC day: the minutes either side of day 6 are free.
     edge = [sent(OWNER_A, C, A, day(5, 23, 59)), sent(OWNER_A, A, C, day(7, 0, 0))]
     for item in edge:
         assert act(OWNER_A, item["id"], "cancel").status_code == 200
-    # A canceled slot does not count (the slot cancel route is ticket 18, so the row is set here).
     (a_slot,) = [s for s in rows(S4SSlot, poster_account_id=A) if s.slot_at == day(6)]
     db(update(S4SSlot).where(S4SSlot.id == a_slot.id).values(status="canceled"))
     freed = sent(OWNER_A, C, A, day(6, 16))
     assert act(OWNER_A, freed["id"], "cancel").status_code == 200
     db(update(S4SSlot).where(S4SSlot.id == a_slot.id).values(status="scheduled"))
-    # A higher limit makes room on the same day.
     assert OWNER_A.put(f"/admin/s4s/profiles/{A}", json={"daily_limit": 2}).status_code == 200
     more = sent(OWNER_A, C, A, day(6, 15))
     assert act(OWNER_A, more["id"], "cancel").status_code == 200
@@ -372,7 +345,7 @@ def case_a_full_daily_limit_on_either_side_is_409_counted_per_utc_day():
 def case_a_failed_recheck_rolls_the_whole_accept_back_with_409():
     from_c = sent(OWNER_A, C, B, day(8, 9))
     from_a = sent(OWNER_A, A, B, day(8, 18))
-    assert act(OWNER_B, from_a["id"], "accept").status_code == 200  # B's one slot on day 8
+    assert act(OWNER_B, from_a["id"], "accept").status_code == 200
     slots, jobs = count(S4SSlot), count(ScheduledJob, kind="s4s_post")
     audits = len(audit_rows("s4s.request_accept"))
     r = act(OWNER_B, from_c["id"], "accept")
@@ -384,7 +357,6 @@ def case_a_failed_recheck_rolls_the_whole_accept_back_with_409():
 
 
 def case_accept_after_either_side_opts_out_is_409_and_writes_nothing():
-    # The opt-out cascade (ticket 18, test_s4s_schedule.py) cancels the request, so it is no longer pending.
     for n, (owner, creator) in enumerate(((OWNER_A, A), (OWNER_B, B))):
         req = sent(OWNER_A, A, B, day(11 + n))
         assert owner.put(f"/admin/s4s/profiles/{creator}", json={"opted_in": False}).status_code == 200
@@ -399,7 +371,6 @@ def case_accept_after_either_side_opts_out_is_409_and_writes_nothing():
         assert act(OWNER_B, req["id"], "accept").status_code == 409, "opting back in reopened it"
 
 
-# ── Lazy expiry ──────────────────────────────────────────────────────
 
 def case_a_request_past_its_time_reads_as_expired_and_cannot_be_accepted():
     pending = sent(OWNER_B, B, C, day(9))
@@ -409,7 +380,6 @@ def case_a_request_past_its_time_reads_as_expired_and_cannot_be_accepted():
     db(update(S4SRequest).where(S4SRequest.id.in_([pending["id"], skipped["id"]])).values(slot_at=past))
     audits = len(audit_rows("s4s.request_expire"))
 
-    # Any S4S read applies it, not only a Requests read.
     assert OWNER_A.get("/admin/s4s/profiles").status_code == 200
     assert {r.id: r.status for r in rows(S4SRequest) if r.id in (pending["id"], skipped["id"])} == {
         pending["id"]: "expired", skipped["id"]: "expired"}
@@ -439,7 +409,6 @@ def case_the_master_acts_as_an_owner_of_its_own_creators_only():
     assert act(OWNER_A, req["id"], "cancel").status_code == 200
 
 
-# ── Proposed time ────────────────────────────────────────────────────
 
 def proposal(client, from_id: str, to_aid: str):
     return client.get(f"/admin/s4s/requests/proposal?from_account_id={from_id}&to_profile_id={PID[to_aid]}")
@@ -459,22 +428,17 @@ def book(owner, from_id: str, to_aid: str, receiver, slot_at: datetime) -> None:
 
 
 def case_the_proposal_is_0600_utc_on_the_first_day_from_tomorrow_with_room_under_both_daily_limits():
-    # Never today, though both are free today: tomorrow at 06:00 UTC.
     assert (got := proposed(OWNER_A, PROP_A, PROP_B)) == day(1, 6), got
-    # The sender full on day 1, the receiver full on day 2, both full on day 3: each day is skipped.
     book(OWNER_A, PROP_A, PROP_X, OWNER_A, day(1, 12))
     assert (got := proposed(OWNER_A, PROP_A, PROP_B)) == day(2, 6), got
     book(OWNER_B, PROP_B, PROP_X, OWNER_A, day(2, 12))
     assert (got := proposed(OWNER_A, PROP_A, PROP_B)) == day(3, 6), got
     book(OWNER_A, PROP_A, PROP_B, OWNER_B, day(3, 23))
     assert (got := proposed(OWNER_A, PROP_A, PROP_B)) == day(4, 6), got
-    # Either side asking reads the same day.
     assert (got := proposed(OWNER_B, PROP_B, PROP_A)) == day(4, 6), got
-    # A higher limit is room: PROP_A's day-1 slot no longer fills it, and PROP_B is free that day.
     assert OWNER_A.put(f"/admin/s4s/profiles/{PROP_A}", json={"daily_limit": 2}).status_code == 200
     assert (got := proposed(OWNER_A, PROP_A, PROP_B)) == day(1, 6), got
     assert OWNER_A.put(f"/admin/s4s/profiles/{PROP_A}", json={"daily_limit": 1}).status_code == 200
-    # The proposal is one Send accepts.
     at = proposed(OWNER_A, PROP_A, PROP_B)
     assert at == day(4, 6), at
     assert act(OWNER_A, sent(OWNER_A, PROP_A, PROP_B, at)["id"], "cancel").status_code == 200
@@ -495,10 +459,8 @@ def case_the_proposal_refuses_like_send_and_is_null_for_an_opted_out_sender():
     assert proposed(OWNER_A, OUT_A, PROP_B) is None, "an opted-out sender got a time"
 
 
+# Slowed count lets racing sends overlap between count and INSERT, as the slop burst did in a deferred transaction.
 def case_concurrent_sends_across_the_daily_cap_store_exactly_the_cap():
-    """`room` short of the cap, then 10 sends at once to distinct partners: `room` x 201, the rest 409, the cap
-    stored. Each send's count is slowed (`_sent_today` + 50 ms) so racing sends overlap between the count and
-    the INSERT, as the slop burst did (stored 51-55) in a deferred transaction."""
     import httpx
 
     import s4s_requests_api

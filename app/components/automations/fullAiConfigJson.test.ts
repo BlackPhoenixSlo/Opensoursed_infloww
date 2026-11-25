@@ -12,9 +12,7 @@ const body = (over: Partial<ConfigBody> = {}): ConfigBody =>
       info_questions: ["pick", "list"], caption_writers: ["chat", "caption"] }, ...over });
 const slower = { ...CP, reply_speed: "0-15-60" };
 const external = (draft: FullAiConfig = slower, rev = 4): TestChatAction => ({ type: "externalDraft", body: body({ draft, rev }) });
-/** Loaded at rev 3 with a Fan line typed. */
 const ready = () => run(initTestChat("p1"), { type: "loaded", body: body() }, { type: "edit", text: "hey" });
-/** An unsaved edit the server refused: still dirty, nothing out. */
 const unsaved = () => run(ready(), { type: "editDraft", draft: { ...CP, gifs: true } }, { type: "saveDraft" },
   { type: "configFailed", errors: ["gifs: bad"] });
 

@@ -1,12 +1,3 @@
-/**
- * Roadmap W6 6.12 in the Shifts window and Shift Settings: the Agency's common periods (the `shifts` blob's
- * `presets`, never the versioned `time-tracking` blob) are edited in Shift Settings and picked per row in the
- * Shifts window, and a 409 that clashes
- * only with other Shifts offers "Replace the clashing shifts", which resends with `replace: true`.
- *
- * Rendered with `fetch` mocked by URL, so every assertion is about the wire or the rendered text. The Shift zone is
- * UTC and the clock is pinned to Wed 14 Oct 2026 12:00 UTC. Fixture names and ids are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -20,7 +11,6 @@ const SELF_CLASH = { detail: "clash", clashes: [{ shift_id: null, occurrence_sta
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let shiftsBlob: Record<string, unknown>;
-/** The replies to each POST /admin/shifts in turn; the last repeats. */
 let posts: Response[];
 
 beforeEach(() => {

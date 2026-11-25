@@ -282,7 +282,7 @@ bought rows flip; no other row moves.
 """
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness
 
 import difflib  # noqa: E402
 import hashlib  # noqa: E402
@@ -291,10 +291,6 @@ import os  # noqa: E402
 import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-# The golden is the harness-env route set. FLEET_SECRET (>=32 chars) mounts
-# /auth/fleet/whois (server.py `if fleet_api.enabled()`); the only env-gated
-# route registration. Set empty (not popped) before `import server`: db/engine's
-# load_dotenv(override=False) would refill a popped key from service/.env.
 os.environ["FLEET_SECRET"] = ""
 
 import server  # noqa: E402 — registers routers + middleware
@@ -308,8 +304,6 @@ WANT = None if WRITE else json.loads(GOLDEN.read_text())
 
 
 def _wired() -> dict[str, list]:
-    """{wiring module: the server.app routes it added}, by endpoint: what its
-    `wire` binds on a probe app."""
     out = {}
     for mod in relay_hooks.import_wirings():
         probe = FastAPI()
@@ -377,7 +371,6 @@ def case_openapi_sha1_matches_golden():
 
 
 def case_wired_routes_match_their_goldens():
-    """Each present wiring module that adds routes has its own golden."""
     for name, routes in WIRED.items():
         path = _wired_golden(name)
         assert path.exists(), f"{name} adds routes but {path.name} is missing (--write-golden)"

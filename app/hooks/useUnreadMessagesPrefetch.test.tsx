@@ -1,7 +1,3 @@
-/**
- * useUnreadMessagesPrefetch — the tiered, idle-only unread-thread warm. Driven
- * over synthetic rows; useChatList.test.tsx pins `fetchedLive`, its `ready`.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -25,7 +21,6 @@ import { USER_INPUT_EVENTS } from "@/lib/idle";
 import { relay, type OFChatItem } from "@/lib/relay";
 const relayGet = relay.get as unknown as Mock;
 
-/** An unread chat with the Fan `id` on account `aid`; its last message is `lastId`. */
 function unread(id: number, { aid = "acct-a", lastId = id * 100 } = {}): OFChatItem {
   return {
     __accountId: aid,
@@ -38,9 +33,7 @@ function unread(id: number, { aid = "acct-a", lastId = id * 100 } = {}): OFChatI
 const read = (id: number) => ({ ...unread(id), hasUnread: false, unreadMessagesCount: 0 }) as OFChatItem;
 const unreads = (...ids: number[]) => ids.map((id) => unread(id));
 
-/** Thread reads, with the read's abort signal. Default: an empty thread. */
 let serveMessages: (path: string, signal?: AbortSignal) => unknown;
-/** Each thread read, in order: the account, the Fan, the lane. */
 function messageCalls() {
   return relayGet.mock.calls.map((c) => ({
     aid: (c[1] as { accountId: string }).accountId,
@@ -54,7 +47,6 @@ let client: QueryClient;
 function wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
-/** The hook over `rows`, ready unless told otherwise. */
 function renderWarm(rows: OFChatItem[], ready = true, tiers?: readonly number[]) {
   return renderHook(
     (p: { rows: OFChatItem[]; ready: boolean }) => useUnreadMessagesPrefetch(p.rows, p.ready, tiers),
@@ -62,7 +54,6 @@ function renderWarm(rows: OFChatItem[], ready = true, tiers?: readonly number[])
   );
 }
 
-/** Advance fake timers AND drain the promise jobs they release (see useChatList.test.tsx). */
 async function settle(ms = 1) {
   await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 }
@@ -73,14 +64,11 @@ async function until(label: string, cond: () => boolean, tries = 30) {
   }
   throw new Error(`timed out waiting for: ${label}`);
 }
-/** The user doing something, as the browser reports it. */
 const userInput = (type: string) => act(() => { window.dispatchEvent(new Event(type)); });
 
-// jsdom has no requestIdleCallback: an idle callback on the fake clock.
 let idleRequests = 0;
 beforeEach(() => {
   vi.useFakeTimers();
-  // No gc timers, so a test can count the hook's own.
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
   serveMessages = async () => ({ list: [], hasMore: false });
   relayGet.mockReset();
@@ -107,7 +95,6 @@ describe("useUnreadMessagesPrefetch: the first tier", () => {
     serveMessages = () => new Promise((r) => release.push(() => r({ list: [], hasMore: false })));
     renderWarm([unread(1), read(2), unread(3), unread(4), unread(5)]);
 
-    // Serial: each read waits for the one before it — never a burst of three.
     for (const n of [1, 2, 3]) {
       await until(`read ${n}`, () => messageCalls().length === n);
       await settle();
@@ -115,10 +102,8 @@ describe("useUnreadMessagesPrefetch: the first tier", () => {
       release.shift()!();
     }
     await settle();
-    // Fan 2 is read, fan 5 is fourth (an idle tier's): neither is warmed yet.
     expect(messageCalls()).toEqual([1, 3, 4].map((fanId) => ({ aid: "acct-a", fanId, priority: "background" })));
     expect(client.getQueryData(["messages", "acct-a", 1])).toEqual([]);
-    // A plain head read marks the chat read on OF; a warm must leave it unread.
     expect(relayGet.mock.calls.every(([path]) => String(path).endsWith("&peek=1"))).toBe(true);
   });
 
@@ -180,7 +165,6 @@ describe("useUnreadMessagesPrefetch: the first tier", () => {
     const h = renderWarm(unreads(1, 2));
     await until("warmed", () => messageCalls().length === 2);
 
-    // Past the thread's staleTime, so only the once-per-message rule holds it back.
     await settle(5 * 60_000);
     h.rerender({ rows: unreads(1, 2), ready: true });
     await settle(10);
@@ -194,7 +178,6 @@ describe("useUnreadMessagesPrefetch: the first tier", () => {
 });
 
 describe("useUnreadMessagesPrefetch: the idle tiers", () => {
-  /** Fan `fanId`'s read is held until `land()`; it rejects if its signal aborts first. */
   function holdRead(fanId: number) {
     let release = () => {};
     serveMessages = (path, signal) => path.includes(`/chats/${fanId}/`)
@@ -205,7 +188,6 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
       : Promise.resolve({ list: [], hasMore: false });
     return { land: () => release() };
   }
-  /** The hook over `rows`, run to tier 2's warm of fan 4; `signal` is that read's. */
   async function toFan4Warm(rows = unreads(1, 2, 3, 4, 5)) {
     const h = renderWarm(rows);
     await until("tier 1", () => messageCalls().length === 3);
@@ -229,7 +211,6 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
     await settle(1_000);
     await until("tier 3", () => messageCalls().length === 7);
 
-    // Three tiers in all: the eighth unread chat is never warmed.
     await settle(10 * PREFETCH_QUIET_MS);
     expect(warmedFans()).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(messageCalls().every((c) => c.priority === "background")).toBe(true);
@@ -262,7 +243,6 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
   });
 
   it("input aborts an idle tier's in-flight warm and stops the tier; the aborted chat is never warmed again for that message", async () => {
-    // Fan 4's read hangs every time, until aborted.
     holdRead(4);
     const { h, signal: first } = await toFan4Warm();
     expect(first.aborted).toBe(false);
@@ -274,8 +254,6 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
     await settle(PREFETCH_QUIET_MS - 500);
     expect(warmedFans()).toEqual([1, 2, 3, 4]);
 
-    // The next quiet window finishes the tier without fan 4, and further
-    // windows (and input) never bring it back.
     await settle(1_000);
     await until("tier 2 again", () => messageCalls().length === 5);
     for (let i = 0; i < 3; i++) {
@@ -285,7 +263,6 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
     await settle(10 * PREFETCH_QUIET_MS);
     expect(warmedFans()).toEqual([1, 2, 3, 4, 5]);
 
-    // A new message in fan 4's chat re-qualifies it.
     h.rerender({ rows: [...unreads(1, 2, 3), unread(4, { lastId: 401 }), unread(5)], ready: true });
     await settle(PREFETCH_QUIET_MS + 100);
     await until("fan 4 again, for its new message", () => messageCalls().length === 6);
@@ -293,7 +270,6 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
   });
 
   it("an idle tier leaves a thread that is open and fetching alone, and input does not cancel it", async () => {
-    // Fan 4's thread is open; its own read is in flight.
     let landOpen!: () => void;
     const open = renderHook(() => useQuery({
       queryKey: ["messages", "acct-a", 4],
@@ -316,7 +292,6 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
     holdRead(4);
     const { signal: warm } = await toFan4Warm();
 
-    // The thread opens and joins the warm's read (no input reached this window).
     renderHook(() => useQuery({ queryKey: ["messages", "acct-a", 4], queryFn: () => [] }), { wrapper });
     await settle();
     userInput("keydown");
@@ -330,13 +305,11 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
     const rows = unreads(1, 2, 3, 4, 5);
     const { h, signal: warm } = await toFan4Warm(rows);
 
-    // The list stops being ready (a sort input re-keying, say) mid-warm.
     h.rerender({ rows, ready: false });
     await settle();
     expect(warm.aborted).toBe(false);
     expect(client.getQueryState(["messages", "acct-a", 4])?.fetchStatus).toBe("fetching");
 
-    // Fan 4's read lands; fan 5, the rest of the tier, waits for ready.
     await act(async () => { fan4.land(); });
     await settle(10 * PREFETCH_QUIET_MS);
     expect(warmedFans()).toEqual([1, 2, 3, 4]);
@@ -351,13 +324,11 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
     const fan4 = holdRead(4);
     const { h } = await toFan4Warm();
 
-    // Fan 5, the rest of tier 2, is read while fan 4's warm is in flight.
     h.rerender({ rows: [...unreads(1, 2, 3, 4), read(5)], ready: true });
     await act(async () => { fan4.land(); });
     await settle(10 * PREFETCH_QUIET_MS);
     expect(warmedFans()).toEqual([1, 2, 3, 4]);
 
-    // Unread again for the same message: it was never claimed, so it warms.
     h.rerender({ rows: unreads(1, 2, 3, 4, 5), ready: true });
     await settle(PREFETCH_QUIET_MS + 100);
     await until("fan 5", () => messageCalls().length === 5);
@@ -368,7 +339,6 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
     const fan4 = holdRead(4);
     const { h } = await toFan4Warm();
 
-    // A new unread chat lands on top while fan 4's warm is in flight.
     h.rerender({ rows: unreads(9, 1, 2, 3, 4, 5), ready: true });
     await settle();
     await act(async () => { fan4.land(); });
@@ -380,16 +350,13 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
     const fan4 = holdRead(4);
     const { h } = await toFan4Warm();
 
-    // A new unread chat lands on top: its first-tier warm queues behind fan 4's.
     const fan9 = holdRead(9);
     h.rerender({ rows: unreads(9, 1, 2, 3, 4, 5), ready: true });
     await settle();
-    // Fan 4 lands with no input: fan 9 starts, and fan 5's idle warm queues behind it.
     await act(async () => { fan4.land(); });
     await until("fan 9 in flight", () => messageCalls().length === 5);
     const fan9Signal = relayGet.mock.calls[4][2] as AbortSignal;
 
-    // Input while fan 5's warm waits: fan 9, a first-tier warm, is not aborted.
     userInput("keydown");
     await settle();
     expect(fan9Signal.aborted).toBe(false);
@@ -397,7 +364,6 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
     await settle(PREFETCH_QUIET_MS - 500);
     expect(warmedFans()).toEqual([1, 2, 3, 4, 9]);
 
-    // Fan 5 was stopped before its claim, so the next quiet window warms it.
     await settle(1_000);
     await until("fan 5", () => messageCalls().length === 6);
     expect(warmedFans()).toEqual([1, 2, 3, 4, 9, 5]);
@@ -423,7 +389,6 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
 
   it("unmounting leaves no timer, no listener and no warm running", async () => {
     holdRead(4);
-    // The hook's listeners (input, tab switch), by type: +1 added, -1 removed.
     const mine = new Set<string>([...USER_INPUT_EVENTS, "scroll", "visibilitychange"]);
     const spies = [window, document].flatMap((t) => [vi.spyOn(t, "addEventListener"), vi.spyOn(t, "removeEventListener")]);
     const unbalanced = () => {
@@ -432,7 +397,6 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
       return [...n].filter(([type, d]) => mine.has(type) && d !== 0);
     };
 
-    // Mid quiet window.
     const quiet = renderWarm(unreads(1, 2, 3, 4, 5));
     await until("tier 1", () => messageCalls().length === 3);
     await settle(PREFETCH_QUIET_MS - 500);
@@ -440,7 +404,6 @@ describe("useUnreadMessagesPrefetch: the idle tiers", () => {
     await settle();
     expect(vi.getTimerCount()).toBe(0);
 
-    // Mid idle-tier warm.
     relayGet.mockClear();
     client.clear();
     const { h: warming, signal: warm } = await toFan4Warm();

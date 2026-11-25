@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * One VaultPicker grid card: the thumb, the hover preview layers (OF poster
- * frames, then the HD ffmpeg storyboard), the per-fan status ring + corner
- * pill, and the card's own actions (video preview, media details).
- */
 
 import { type MouseEvent } from "react";
 
@@ -35,10 +30,6 @@ export const TILE_HINT = "Click to select · double-click to attach";
 
 type HoverPreview = ReturnType<typeof useHoverPreview>;
 
-// Hover-dwell debounce (in useHoverPreview): we won't kick off a hover
-// preview until the pointer has been over a tile for HOVER_DELAY_MS — kills
-// "brush past 20 tiles in 200ms" thrash. The relay only pays the storyboard
-// build cost when the user actually commits.
 function startHoverIntent(
   hover: HoverPreview,
   id: number,
@@ -46,10 +37,6 @@ function startHoverIntent(
   rawUrl: string | null,
   posterUrls?: string[],
 ) {
-  // Kick the first poster frame(s) fetch IMMEDIATELY, in parallel with the
-  // dwell — so by the time the preview commits (HOVER_DELAY_MS later) the
-  // frame is already warm in the browser + relay /img cache instead of
-  // paying a ~0.85s cold OF fetch ON TOP of the dwell (the "2s wait").
   if (posterUrls && typeof Image !== "undefined") {
     for (const u of posterUrls.slice(0, 2)) {
       const pre = new Image();
@@ -65,7 +52,6 @@ export interface VaultPickerTileProps {
   selected: boolean;
   accountId: string | null;
   fanId: FanId | null;
-  /** The Messages Pro sheet's tile class; undefined outside Messages Pro. */
   sheetTile: string | undefined;
   useLocalVault: boolean;
   blurCls: string;
@@ -73,17 +59,14 @@ export interface VaultPickerTileProps {
   fanEntry: FanVaultEntry | undefined;
   stat: VaultMediaStat | undefined;
   onWall: boolean;
-  /** OF's wall price for this media, 0 when free / not on the wall. */
   wallCents: number;
   hover: HoverPreview;
   photoHover: ReturnType<typeof usePhotoHover>;
-  /** Set on the first card only: VaultPicker's `vault.open` painted mark. */
   firstTileRef?: (el: HTMLButtonElement | null) => void;
   onTileClick: (m: VaultMedia, e: MouseEvent) => void;
   onAttach: (m: VaultMedia) => void;
   onPreview: (m: VaultMedia) => void;
   onDetails: (d: { media: VaultMedia; atHistory: boolean }) => void;
-  /** The picker's thumbnail retry (useThumbAutoRefresh): the src to show, and a failed load reported back. */
   thumbs: ThumbRetry;
 }
 
@@ -93,29 +76,12 @@ export function VaultPickerTile({
   onTileClick, onAttach, onPreview, onDetails, thumbs,
 }: VaultPickerTileProps) {
   const closePhoto = photoHover.close;
-  // Permanent cached thumb on the mirror path, proxied OF url on the
-  // live one, "" for a media with no picture at all (a voice note) —
-  // in which case the `{m.type}` placeholder below renders; so does a broken one waiting for the picker's reload.
   const thumb = thumbs.tile(m);
-  // A video's playable mp4 — null for DRM-only videos and for anything
-  // but a video. We do NOT fall back to files.preview.url here: that's a
-  // static poster JPEG, and feeding it to <video>/`/img/scrub` is exactly
-  // what made DRM items fail ("Couldn't load" + 502 storyboard build).
+  // No fallback to files.preview.url: a static poster JPEG in <video> or /img/scrub made DRM items fail.
   const rawVideoSrc = progressiveVideoSrc(m);
-  // A gif is OF's short .mp4: it loops over the still while on screen (VaultGifLoop).
   const gifSrc = accountId ? proxyImage(gifClipSrc(m), accountId, m.id) : "";
-  // DRM (encrypted) videos have no progressive source; we slideshow
-  // OF's own poster frames instead of the impossible ffmpeg scrub.
-  // The 🔒 marker keys off the manifest (authoritative), so it
-  // shows even on the rare DRM file with no poster frames.
   const drmOnly = isDrmOnlyVideo(m);
-  // OF's pre-extracted poster frames — available on MOST videos
-  // (up to ~9), not just DRM ones. We now use them as the instant
-  // hover preview for ALL videos: they're a single CDN GET each
-  // (~0.85s cold, instant warm) vs the ~11.5s cold ffmpeg build.
   const posterFrames = m.type === "video" ? videoPosterFrames(m) : [];
-  // Posters first, the ffmpeg storyboard built behind them and
-  // swapped in once a frame lands; see vaultTilePreview.
   const posterCount = accountId ? posterFrames.length : 0;
   const pv = tilePreview(hover.state, {
     id: m.id,
@@ -123,27 +89,14 @@ export function VaultPickerTile({
     drmOnly,
     canBuild: !!rawVideoSrc && !!accountId,
   });
-  // DRM videos serve poster frames from the relay's PERMANENT on-disk
-  // cache (media-id keyed, signature-free). It self-heals: on a miss
-  // the relay resolves the media by id straight from OF for a freshly
-  // signed url, then stores the bytes — so hovering a DRM video caches
-  // its posters even on an UN-collected account (the cache fills as you
-  // browse; Collect just pre-warms everything). Not gated on cache-mode
-  // — works on any owned account.
-  //
-  // We deliberately do NOT pass the url we happen to be holding. The
-  // route used to take it as `u=`, which made a render endpoint fetch
-  // whatever host the client named, and it saved nothing: the by-id
-  // read is the same call the relay makes when a stored url has gone
-  // stale, and unlike our copy it cannot already be expired.
+  // Never pass the held url as `u=`: it made a render endpoint fetch any client-named host and saved nothing.
   const useCachedPoster = drmOnly && !!accountId;
   const posterSrcFor = (u: string, idx: number) =>
     useCachedPoster
       ? mirrorPosterSrc(accountId!, m.id, idx)
       : proxyImage(u, accountId, m.id);
   const status = resolveStatus(fanEntry, onWall);
-  // The Fan already has it (bought, or last sent free). Advisory:
-  // the card stays selectable; the relay's 409 guards re-sales.
+  // Advisory: card stays selectable; the relay's 409 guards re-sales.
   const greyed = status === "unlocked" || status === "free";
   const cap = aiCaptionFor(m);
   return (
@@ -154,9 +107,7 @@ export function VaultPickerTile({
       onClick={(e) => onTileClick(m, e)}
       onDoubleClick={() => onAttach(m)}
       title={fanEntry ? `${describeTile(m, fanEntry, onWall)} · ${TILE_HINT}` : TILE_HINT}
-      // Pointer events, no touch: a touch tap fires a synthetic
-      // mouseenter and no mouseleave until the next tap elsewhere,
-      // which would commit a preview and a cold build per tap.
+      // Pointer events, not touch: a tap fires mouseenter with no mouseleave, committing a cold build per tap.
       onPointerEnter={(e) => {
         if (e.pointerType === "touch") return;
         if (m.type === "video") {
@@ -170,9 +121,6 @@ export function VaultPickerTile({
         sheetTile,
         "border-2 transition-colors",
         "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
-        // Status ring wins unless the tile is selected — once
-        // the user picks it the accent ring takes over so
-        // their selection state is unambiguous.
         selected
           ? "border-accent ring-2 ring-accent/40"
           : status
@@ -182,20 +130,11 @@ export function VaultPickerTile({
     >
       {(pv.showScrub || pv.showPosters) ? (
         <>
-          {/* LAYER 0 — base thumb. Already loaded by the grid, so
-           *  it paints instantly and fills any gap when the cursor
-           *  lands on a poster/HD frame that hasn't finished
-           *  loading yet — without it those beats flash black
-           *  (empty <img> over the dark tile). Never animates;
-           *  the frame layers sit on top at object-cover. */}
           {thumb.src && (
             <img
               src={thumb.src}
               alt=""
               aria-hidden
-              // Cache path = permanent on-disk thumbs → load ALL at
-              // once, paint as each arrives. Live path stays lazy so
-              // we don't flood OF with off-screen fetches.
               loading={useLocalVault ? "eager" : "lazy"}
               decoding="async"
               onError={thumb.onError}
@@ -205,15 +144,7 @@ export function VaultPickerTile({
               )}
             />
           )}
-          {/* LAYER 1 — OF poster frames (instant). The hover
-           *  preview the user sees first: one CDN GET per frame
-           *  (~0.85s cold, instant warm) vs the ~11.5s cold
-           *  ffmpeg build. Shown for DRM videos (the only option)
-           *  and for progressive videos UNTIL the HD storyboard
-           *  is ready. Layered + opacity-toggled so ticking the
-           *  cursor never cancels an in-flight load. */}
           {pv.showPosters && posterFrames.map((u, idx) => (
-            // Don't render/fetch frame 0 (the thumbnail-like frame).
             idx < pv.posterStart ? null : (
             <img
               key={`${m.id}-pf-${idx}`}
@@ -221,13 +152,8 @@ export function VaultPickerTile({
               alt=""
               aria-hidden={idx !== pv.posterIdx}
               decoding="async"
-              // First poster image to land clears the gray-state
-              // decimal countdown.
               onLoad={hover.onPosterLoad}
               onError={useCachedPoster ? (e) => {
-                // If the cached-poster endpoint isn't up yet (relay
-                // pre-restart) fall back once to the direct OF url so
-                // DRM tiles never break — just aren't cached yet.
                 const img = e.currentTarget;
                 if (!img.dataset.fellback) {
                   img.dataset.fellback = "1";
@@ -242,11 +168,6 @@ export function VaultPickerTile({
             />
             )
           ))}
-          {/* Gray-state countdown — fine decimal (2.3 → 2.2 → 2.1)
-           *  painted over the thumb base until OF's first poster
-           *  image arrives — not held past load, which made a cached
-           *  poster read as a 2s wait. Distinct from the
-           *  whole-second HD pill (the ffmpeg-upgrade ETA). */}
           {pv.posterBadge && (
             <div
               aria-hidden
@@ -257,16 +178,6 @@ export function VaultPickerTile({
               </span>
             </div>
           )}
-          {/* LAYER 2 — HD ffmpeg storyboard (12 frames, sharper +
-           *  evenly spaced). Mounted as soon as we hover a
-           *  progressive video so the background build starts
-           *  immediately; sits at opacity 0 UNDER the posters and
-           *  takes over the moment a frame lands.
-           *  Each <img> keeps its own src for the whole hover — no
-           *  src swaps, so the browser never cancels an in-flight
-           *  frame fetch. The first frame to load is the
-           *  poster→HD handoff; a frame-0 error drops the HD
-           *  pill / shimmer so the tile falls back to its thumb. */}
           {pv.showScrub && Array.from({ length: SCRUB_FRAMES }).map((_, idx) => (
             <img
               key={`${m.id}-frame-${idx}`}
@@ -282,11 +193,6 @@ export function VaultPickerTile({
               )}
             />
           ))}
-          {/* LAYER 3 — HD-build affordance while ffmpeg runs. With
-           *  posters visible we DON'T cover them with the shimmer;
-           *  a small corner ETA pill ("HD 7s", ×1.3-padded) tells
-           *  the user a sharper version is coming. No posters
-           *  (rare) → keep the full-tile shimmer as before. */}
           {pv.scrubBadge && (
             pv.scrubBadge.kind === "hd" ? (
               <span className="absolute top-1 right-1 bg-black/55 text-white/90 text-[9px] px-1.5 py-0.5 rounded-full pointer-events-none tabular-nums">
@@ -325,12 +231,6 @@ export function VaultPickerTile({
       {greyed && <span data-testid="vault-card-greyed" aria-hidden className={VAULT_CARD_GREYED} />}
       {captionOn && cap && <VaultAiCaptionOverlay caption={cap} />}
       {m.type === "video" && (
-        // Repurposed as the preview-open affordance. Nested
-        // <button> isn't legal HTML so we use a span with
-        // role="button" + stopPropagation, which keeps tile
-        // selection on the tile click and play-modal on the
-        // pill click. Hover styling makes the interactivity
-        // discoverable.
         <span
           role="button"
           tabIndex={0}
@@ -346,10 +246,6 @@ export function VaultPickerTile({
               onPreview(m);
             }
           }}
-          // Phone: a real 40px tap pill (it is the only way to
-          // open the video preview). The md: half restores the
-          // original 10px/px-1.5/py-0.5 badge exactly; the box is
-          // absolutely positioned, so grid vs block is inert.
           className={cn("absolute bottom-1 right-1 bg-black/60 hover:bg-black/85 text-white grid place-items-center md:block text-[12px] md:text-[10px] min-h-[40px] md:min-h-0 px-3 md:px-1.5 py-0 md:py-0.5 rounded cursor-pointer select-none", sheetTile != null && VAULT_SHEET.duration)}
           title="Preview video"
         >
@@ -357,8 +253,6 @@ export function VaultPickerTile({
         </span>
       )}
       {drmOnly && (
-        // DRM (FairPlay) marker. These have no progressive mp4, so
-        // hover + click show OF's poster frames, not real playback.
         <span
           className="absolute top-1 left-1 bg-black/60 text-white text-[10px] px-1 py-0.5 rounded leading-none select-none"
           title="DRM-protected video — preview shows OnlyFans' poster frames; full playback only after sending"
@@ -376,7 +270,6 @@ export function VaultPickerTile({
           )}
           {fanId != null && (
             <>
-              {/* The mirror's AI tags; live media carries none. */}
               {cap && cap.tags.length > 0 && (
                 <ul aria-label="Tags" className={VAULT_CARD_TAGS}>
                   {cap.tags.slice(0, 3).map((t) => <li key={t} className={VAULT_CARD_TAG}>{t}</li>)}
@@ -387,7 +280,6 @@ export function VaultPickerTile({
             </>
           )}
           {m.type === "gif" && <span className={VAULT_CARD_GIF}>GIF</span>}
-          {/* Not wired: fan-history returns no message id to unsend. */}
           {fanEntry && (
             <span
               {...cardAction(() => {})}
@@ -401,10 +293,6 @@ export function VaultPickerTile({
           )}
         </div>
       )}
-      {/* State corner (pillText): BOUGHT / SENT / WALL, colour-matched to the ring
-       *  so the state is legible at the smallest grid sizes; truncated clear of ⓘ. */}
-      {/* With a Fan in scope the pill opens "Media details" at
-       *  the price history. */}
       {status && (
         <span
           {...(fanId != null
@@ -413,8 +301,6 @@ export function VaultPickerTile({
           className={cn(
             "absolute top-1 left-1 max-w-[calc(100%-2rem)] truncate px-1.5 h-4 rounded-full text-[9px] font-bold leading-4 shadow",
             STATUS_DOT_CLASS[status],
-            // Yellow needs dark text for legibility; the
-            // rest are bright-on-dark.
             status === "free" ? "text-bg" : "text-white",
             fanId != null && "cursor-pointer",
           )}

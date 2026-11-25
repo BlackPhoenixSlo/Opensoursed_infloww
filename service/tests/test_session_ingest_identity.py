@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import _harness  # MUST be first: temp DB env guard
+import _harness  # MUST be first: binds temp DB
 
 import asyncio  # noqa: E402
 import contextlib  # noqa: E402

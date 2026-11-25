@@ -1,63 +1,3 @@
-"""Full chat sweeps (`scrape_chats`, payload `{}`) run on a cadence, never one per relay restart
-(service/sweep_cadence.py).
-
-Prod AE (2026-11, measured): the boot seed enqueued one sweep per account on every restart with no
-dedupe; 16 deploys in 48 h left up to 18 identical pending sweeps per account on a 2-slot bulk lane.
-
-World: `flat_agency` with CREATORS Creators, each with a captured session (the relay's REAL
-OFClient against lib/of_wire.py, `OF_WIRE`). Each Creator's OF chat list holds CHATS of its Fans.
-A live Creator's last four are deep threads (DEEP messages, OF pages them desc by `id` and asc by
-`offset`): SILENT Silent mass-only chats (all our queued mass rows, `isFromQueue`, Fans with no DB
-row), one the same but for a Fan with a fan message in the DB, one with a fan reply on page 1.
-The last two
-Creators are deactivated (the real `POST /admin/accounts/{id}/active`) and session-dead (SQL: the
-row `account_health.mark_session_dead` writes, probe stamped now so the recovery probe stays off).
-Each live Creator carries, by SQL, BACKLOG identical pending `{}` sweeps (what BACKLOG restarts of
-the old boot seed left) and one future-dated `fan_ids` scrape.
-
-Phases: (1) one cadence pass; (2) RESTARTS times: SIGTERM + start the relay (`stack.stop_relay`,
-as `docker stop`), two cadence passes; (3) supervisor passes (`/__slop/automation-tick`) until no
-live Creator has an open sweep: the sweeps run against the fake OF; (4) restart + a cadence pass;
-(3b) each live Creator's first Silent mass-only chat gets the steps in TRIGGERS: Click reads (a plain `GET
-/api/of/v2/chats/{fan}/messages` head read, or `POST /api/of/v2/chats/{fan}/mark-as-read`) and warms (the app's
-prefetch: `peek=1` at background priority), the second and later Click reads inside the dedup window;
-TRIGGERS[2] is the warm-then-open leg: a warm, then the inbox open that rides it, which sends only its
-mark-as-read; Creator 0's second gets REPLY_LEG (a fan reply frame through `/__slop/of-ws-frame`, which the WS
-transcoder counts into `chats.unread_count`, then warms while it is unread); the other Creators' second
-none; each fan-message deep chat one head read; supervisor passes run the jobs they bought; (5) Creator 0's sweep runs aged past SWEEP_EVERY_S by SQL + a cadence pass; (6) FakeOF answers Creator 0's
-chat reads 429 after its first FF_GOOD chats and one supervisor pass runs the sweep phase 5 enqueued.
-
-Checks (names in lib/sweep_cadence_faults.py): ONE_OPEN (every observation: at most one
-pending/running `{}` sweep per Creator); COLLAPSE (each backlog's oldest job is the one left, the
-rest cancelled 'duplicate full sweep', the `fan_ids` job still pending); ANCHOR (no sweep after
-phase 4 while the last finished one is recent, exactly Creator 0's after phase 5, none ever for the
-deactivated / session-dead Creator); FAILFAST (phase 6: the sweep stops at FAIL_FAST failed reads, FF_GOOD
-good reads then FAIL_FAST 429s, and its run is not ok and carries no `full_sweep`); DEFER (phase 3: each
-Silent mass-only chat costs one messages page and no asc page, keeps that page and is left deferred with a NULL
-cursor; the two other deep chats get both ends and a cursor, no mark); BACKFILL_ON_DEMAND (phase 3b: a
-deferred chat gets one `deferred_history` job, bought by its first Click read alone (no warm before it buys one),
-ends with a cursor, no mark, and the rows and asc pages of the Creator's fan-message deep chat, today's first
-scrape; the REPLY_LEG chat's reply leaves it unread and buys nothing, nor do its warms: no job, still deferred, no
-asc page; every head read answered 200 after one OF read, every mark-as-read 200; no job for the untriggered or the not-deferred chat); DEFER_NET (history pages of the Silent mass-only chats since phase 3,
-route head reads left out, below the same chats at the fan-message deep chat's sweep cost, which is what
-SCRAPE_EAGER_HISTORY=1 pays for them; inferred reference: same depth, same paging, no trigger buys a job under
-eager). Evidence `sweep-cadence.json`.
-
-Bypasses (declared): OF at its wire (lib/of_wire.py: one message per chat; 50 ms a call, a
-guess); the cadence's timer (`/__slop/sweep-cadence-tick`, lib/sweep_cadence_relay.py: one
-`sweep_cadence.tick()` pass; prod's periodic task starts FIRST_AFTER_S after boot, TICK_S apart)
-and the supervisor's (`/__slop/automation-tick`); the 429 burst (an `extra_routes` handler on FakeOF's chat
-messages route, OF's `TOO_MANY_BODY`; its tracebacks are EXPECTED_TRACEBACKS); time (a finished run's `completed_at` moved by
-SQL, the row the product wrote, its time only).
-Break-it-once: `sweep-enqueued-every-pass` (the scenario's FAULT: each pass enqueues for every
-live Creator, the old per-restart seed in the new loop): only ONE_OPEN and ANCHOR.
-`failfast-only-before-first-scan` (the sweep's stop only before its first scraped chat, as before): only FAILFAST.
-`history-eager` (SCRAPE_EAGER_HISTORY=1, today's both-ends backfill on every first scrape): only DEFER and DEFER_NET.
-`no-deferred-trigger` (the Click read triggers enqueue nothing): only BACKFILL_ON_DEMAND.
-The warm-then-open leg is TRIGGERS[2]: the unread warm's peeked head read buys nothing; the inbox open inside
-UNREAD_WARM_REUSE_MS (20 s, app/hooks/useUnreadMessagesPrefetch.ts) rides it and sends only its mark-as-read, which
-alone buys the job (`jobs_after` [0, 1, 1]); slow-connections' WARM_REUSED proves the open in the browser.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -77,34 +17,31 @@ PROFILE = "flat_agency"
 UI = False
 OF_WIRE = True
 FAULT = "sweep-enqueued-every-pass"
-CREATORS = 5          # 3 live, 1 deactivated, 1 session-dead
-CHATS = 12            # each Creator's OF chat list
-BACKLOG = 5           # identical pending {} sweeps per live Creator (the old seed, 5 restarts)
+CREATORS = 5
+CHATS = 12
+BACKLOG = 5
 RESTARTS = 3
-SWEEP_EVERY_S = 4 * 3600   # service/sweep_cadence.py SWEEP_EVERY_S (the scenario imports no service code)
+# service/sweep_cadence.py SWEEP_EVERY_S (the scenario imports no service code)
+SWEEP_EVERY_S = 4 * 3600
 DUP_REASON = "duplicate full sweep"
 MSG_ROUTE = "GET /api2/v2/chats/{id}/messages"
-FF_GOOD = 3           # phase 6: Creator 0's chats OF still answers before the 429 burst
-FAIL_FAST = 5         # service/automations/scrape_chats.py SCRAPE_SWEEP_FAIL_FAST default
-# Phase 6's tracebacks, the errors FakeOF's 429 burst makes: each failed chat read, and the broken-off run.
-SILENT = 2            # Silent mass-only chats per live Creator (the tail of its chat list, after FAILFAST's reads)
-DEEP = 150            # a deep thread's messages: page 1 (the sweep's limit 50) reports hasMore
-DEEP_ID_BASE = 7_100_000_000_000   # deep threads' OF ids, below threads.HISTORY_ID_BASE and every relay band
-HEAD_LIMIT = 10        # a chat open's head read (the app's page), != the sweep's 50
+FF_GOOD = 3
+# service/automations/scrape_chats.py SCRAPE_SWEEP_FAIL_FAST default
+FAIL_FAST = 5
+SILENT = 2
+DEEP = 150
+# deep threads' OF ids: below threads.HISTORY_ID_BASE and every relay band
+DEEP_ID_BASE = 7_100_000_000_000
+HEAD_LIMIT = 10
 # service/of_reads.PEEK_CURSOR: a Background first page sends it as `id`; it is no cursor.
 PEEK_ID = "9223372036854775807"
-REPLY_ID_BASE = fan_dm.INJECT_ID_BASE + 880_000   # phase 3b's fan reply frames
-# Phase 3b's triggers, per live Creator (by index) on its first Silent mass-only chat: each first Click read buys
-# the job alone. "read" = a plain head read (a Click read); "mark" = a mark-as-read POST (a Click read); "warm" = the
-# app's prefetch (peek=1, background priority); "reply" = a fan reply frame.
+REPLY_ID_BASE = fan_dm.INJECT_ID_BASE + 880_000
 CLICKS = ("read", "mark")
 TRIGGERS = (("read", "read"),
             ("warm", "read", "warm", "read"),
             ("warm", "mark", "read"))
-# Creator 0's second Silent mass-only chat (the other Creators' stay untriggered): his reply leaves it unread, and
-# neither it nor the warms after it buy anything.
 REPLY_LEG = ("reply", "warm", "warm")
-UNREAD_WAIT_S = 5      # the reply frame's unread bump lands off the inject request
+UNREAD_WAIT_S = 5
 EXPECTED_TRACEBACKS = (("scrape_chat_failed account=", "Too many requests"),
                        ("kind=scrape_chats", "full sweep stopped after"))
 
@@ -118,11 +55,9 @@ async def run(ctx) -> None:
     live, off, dead = creators[:-2], creators[-2], creators[-1]
     rng = w.rng("scenario:sweep-cadence")
 
-    # OF's chat lists: CHATS Fans each; a live Creator's tail is its deep threads.
     con = w.sql()
     try:
         in_db = {(r[0], r[1]) for r in con.execute("SELECT DISTINCT account_id, fan_id FROM messages")}
-        # a db_inbound pick must be read locally: an unread one is held back from its asc pass
         inbound = {(r[0], r[1]) for r in con.execute(
             "SELECT DISTINCT m.account_id, m.fan_id FROM messages m JOIN chats c"
             " ON c.account_id=m.account_id AND c.fan_id=m.fan_id"
@@ -130,8 +65,8 @@ async def run(ctx) -> None:
     finally:
         con.close()
     listed: dict[str, list[int]] = {}
-    deep: dict[tuple[str, int], list[dict]] = {}     # (Creator, Fan) -> OF's thread, newest first
-    deep_kind: dict[str, dict[int, str]] = {}        # Creator -> Fan -> silent | db_inbound | reply
+    deep: dict[tuple[str, int], list[dict]] = {}
+    deep_kind: dict[str, dict[int, str]] = {}
     for aid in creators:
         ids = [f["id"] for f in w.data["fans"][aid]]
         kinds: dict[int, str] = {}
@@ -152,7 +87,6 @@ async def run(ctx) -> None:
             deep[(aid, fan)] = rows
 
     def deep_route(h, method, u, uid, route, _raw) -> bool:
-        """A deep thread's messages page as OF pages it: desc older than `id`, asc from `offset`."""
         if method != "GET" or route != MSG_ROUTE:
             return False
         rows = deep.get((uid, int(u.path.rsplit("/", 2)[-2])))
@@ -202,7 +136,6 @@ async def run(ctx) -> None:
     def jobs() -> list[dict]:
         con = w.sql()
         try:
-            # scrape_fan: a one-fan scrape (enqueue_fan_scrape, its own kind since 90e5e97b4: the sender lane)
             rows = con.execute("SELECT id, account_id, payload_json, status, last_error, kind FROM scheduled_jobs"
                                " WHERE kind IN ('scrape_chats', 'scrape_fan') ORDER BY id").fetchall()
         finally:
@@ -245,7 +178,6 @@ async def run(ctx) -> None:
         hook = ctx.owner.share(rec=Recorder(), limits=2)
         observe(label)
 
-    # (1) + (2): collapse, then restarts.
     await cadence("first pass")
     for i in range(RESTARTS):
         await restart(f"restart {i + 1}")
@@ -264,7 +196,6 @@ async def run(ctx) -> None:
         if by_id[fan_job[aid]]["status"] != "pending":
             collapse_bad.append((aid, "fan_ids job", by_id[fan_job[aid]]["status"]))
 
-    # (3) the sweeps run.
     calls_before = len(fake.calls)
     await drain("sweeps run")
     with fake.lock:
@@ -297,7 +228,6 @@ async def run(ctx) -> None:
         kind, db = deep_kind[aid][fan], deep_db[(aid, fan)]
         asc = sum(r["order"] == "asc" for r in reads)
         if kind == "silent":
-            # one page-1 read per full sweep that ran (one sweep, unless a fault ran more)
             ok = (reads == [{"order": "desc", "id": None, "offset": None}] * max(1, full_runs[aid])
                   and db["cursor"] is None
                   and db["deferred_at"] is not None and db["rows"] == 50)
@@ -307,8 +237,6 @@ async def run(ctx) -> None:
             defer_bad.append({"creator": aid, "fan": fan, "kind": kind, "pages": len(reads), "asc": asc,
                               "full_sweeps": full_runs[aid], **db})
 
-    # (3b) the deferred chats' triggers: Click reads, warms, the reply leg's fan reply frame;
-    # a head read of a not-deferred deep chat too. Then supervisor passes run what they enqueued.
     def backfills() -> Counter:
         return Counter((j["account_id"], fid) for j in jobs() if j["kind"] == "scrape_fan"
                        for fid in json.loads(j["payload"]).get("fan_ids", [])
@@ -335,7 +263,6 @@ async def run(ctx) -> None:
     plain_deep = {aid: next(f for f, k in deep_kind[aid].items() if k == "db_inbound") for aid in live}
     trig: dict[tuple[str, int], dict] = {}
     head_ms: list[float] = []
-    # the opens go on the owner's own recorder: the run's http table carries the head read's p95
     opener = ctx.owner.share(limits=2)
     reply_ids = iter(range(REPLY_ID_BASE, REPLY_ID_BASE + 10**6))
 
@@ -397,7 +324,6 @@ async def run(ctx) -> None:
                     before = marker(aid, fan)
                 read = await head_read(aid, fan, warm=how == "warm")
                 t["reads"].append(read)
-            # the trigger's job lands off the request (the read's fired task): wait for it, or for a wrong one
             for _ in range(30):
                 if not t["deferred_before"] or backfills()[(aid, fan)]:
                     break
@@ -428,7 +354,6 @@ async def run(ctx) -> None:
             after_db[(aid, fan)] = {"cursor": h[0] if h else None, "deferred_at": h[1] if h else None, "rows": n}
     finally:
         con.close()
-    # History pages since phase 3 per deep chat: every messages read but the route's head reads (limit HEAD_LIMIT).
     pages: dict[tuple[str, int], dict] = {k: {"desc": 0, "asc": 0} for k in deep}
     for c in net_calls:
         if c["route"] == MSG_ROUTE and (key := (c["account"], int(c["path"].rsplit("/", 2)[-2]))) in deep:
@@ -439,19 +364,18 @@ async def run(ctx) -> None:
             pages[key]["asc" if (q.get("order") or ["desc"])[0] == "asc" else "desc"] += 1
     backfill_bad = []
     for aid in live:
-        ref = plain_deep[aid]           # today's first scrape of a same-depth deep chat (the sweep, phase 3)
+        ref = plain_deep[aid]
         for fan in silent_of[aid]:
             t = trig.get((aid, fan))
             db, pg, n_jobs = after_db[(aid, fan)], pages[(aid, fan)], jobs_by_fan[(aid, fan)]
-            if t is None:               # untriggered: no backfill bought
+            if t is None:
                 ok = n_jobs == 0
-            elif t["leg"] == "reply":   # unread from his reply on, warms only: nothing bought, history still deferred
+            elif t["leg"] == "reply":
                 ok = (t["deferred_before"] and n_jobs == 0 and not any(t["jobs_after"])
                       and t["unread_after_reply"] > t["unread_before_reply"]
                       and db["cursor"] is None and db["deferred_at"] is not None and pg["asc"] == 0
                       and all(map(head_ok, t["reads"])))
             else:
-                # each Creator's FIRST Click read buys the job alone; a warm before it buys none
                 first = next(i for i, how in enumerate(t["steps"]) if how in CLICKS)
                 ok = (t["deferred_before"] and n_jobs == 1
                       and t["jobs_after"] == [0] * first + [1] * (len(t["steps"]) - first)
@@ -471,12 +395,10 @@ async def run(ctx) -> None:
     net_eager = sum(len(silent_of[a]) * (pages[(a, plain_deep[a])]["desc"] + pages[(a, plain_deep[a])]["asc"])
                     for a in live)
 
-    # (4) a restart right after: nothing due.
     await restart("restart after sweeps")
     await cadence("after sweeps pass")
     recent_open = {a: n for a, n in open_sweeps(jobs()).items() if a in live and n}
 
-    # (5) Creator 0's last sweep ages past SWEEP_EVERY_S.
     con = w.sql()
     with con:
         con.execute("UPDATE automation_runs SET completed_at=? WHERE kind='scrape_chats' AND account_id=?",
@@ -486,7 +408,6 @@ async def run(ctx) -> None:
     aged_open = {a: n for a, n in open_sweeps(jobs()).items() if n}
     ever_off = {a: max(o["sweeps_total"].get(a, 0) for o in observations) for a in (off, dead)}
 
-    # (6) Creator 0's due sweep meets a 429 burst after its first FF_GOOD chats.
     ff_uid, ff_chats = live[0], []
 
     def burst(h, _method, u, uid, route, _raw) -> bool:

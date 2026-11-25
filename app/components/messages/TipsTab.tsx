@@ -1,19 +1,5 @@
 "use client";
 
-/**
- * TipsTab — owns the filter state + infinite-scroll list for the Tips
- * surface in /messages. Mirrors PaidMessagesTab conventions; the date
- * range still comes in from the page so both tabs share the window.
- *
- * `presetFanQuery` is set by the parent when the user clicks a row in
- * TopTippersCard — when it changes, we adopt it into local state so the
- * filter input reflects the click. The user can still edit it after.
- *
- * Pagination is keyset (transaction_id DESC) via useTipsList, paged by
- * InfiniteListFooter.
- * "Export CSV" downloads the whole filtered set, not the loaded pages
- * (`/admin/tips-list?format=csv`, as the PPV tab's).
- */
 
 import { useEffect, useMemo, useState } from "react";
 
@@ -28,8 +14,6 @@ import { TableSkeleton } from "@/components/ui/Skeleton";
 interface Props {
   from: string | null;
   to: string | null;
-  /** Bumped by the page when the user clicks a Top Tippers row. Latest
-   *  non-empty value is mirrored into the local fanQuery state. */
   presetFanQuery?: string | null;
 }
 
@@ -38,8 +22,6 @@ export default function TipsTab({ from, to, presetFanQuery }: Props) {
   const [employeeId, setEmployeeId] = useState<number | null>(null);
   const [fanQuery, setFanQuery] = useState("");
 
-  // Adopt the preset whenever the parent bumps it. Empty string from
-  // the parent clears the filter; null leaves the current value alone.
   useEffect(() => {
     if (presetFanQuery == null) return;
     setFanQuery(presetFanQuery);
@@ -67,9 +49,6 @@ export default function TipsTab({ from, to, presetFanQuery }: Props) {
           onAccountChange={setAccountId}
           employeeId={employeeId}
           onEmployeeChange={setEmployeeId}
-          // Status is a PPV concept (paid/unpaid). Tips don't have it, so we
-          // hide the toggle entirely (showStatus={false}) and pass the
-          // still-required status props as inert no-ops.
           status="all"
           onStatusChange={() => {}}
           showStatus={false}

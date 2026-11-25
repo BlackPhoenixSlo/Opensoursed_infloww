@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * The foot of an infinite list: the sentinel that loads the next page as it scrolls into view
- * (useLoadMoreSentinel), a "Load more" button for keyboards and for a page that failed, and an end line once
- * there is no next page. Render it under the rows, only when there are rows.
- */
 
 import { Button } from "@/components/ui/primitives";
 import { useLoadMoreSentinel } from "@/hooks/useLoadMoreSentinel";
@@ -13,9 +8,7 @@ interface Props {
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
   fetchNextPage: () => unknown;
-  /** The query is in error: the sentinel stays still until Load more (or a refetch) brings a page. */
   isError?: boolean;
-  /** The end line's words: the reports say "end of results", the post feeds "end of feed". */
   endLabel: string;
 }
 

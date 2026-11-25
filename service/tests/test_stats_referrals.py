@@ -1,34 +1,4 @@
 #!/usr/bin/env python3
-"""
-GET /admin/stats/referrals — the Dashboard's Referrals tile and Creator
-reports' Referrals channel (roadmap 1.12).
-
-No transaction carries referral earnings, so the route reads OF's Statements ›
-Referrals chart, one read per Creator, cached. These cases stub `_load_client`
-with a fake that answers the shape of service/tests/fixtures/
-of_statistics_reads.json's "/payouts/referrals/chart": no network.
-
-  case_one_read_per_creator_in_cents      the window's whole days, dollars to
-      cents, OF's day buckets as they come; Fansly skipped.
-  case_a_failed_creator_is_unavailable    one Creator's 503 lists it, the rest
-      still answer.
-  case_cached_per_window                  a repeat is served from the cache; a
-      new window reads again.
-  case_account_filter                     `account_id` narrows to those Creators.
-  case_signed_in_reads_only_its_creators  a signed-in caller's omitted filter
-      is its own Creators with a session, never the rest.
-  case_a_foreign_creator_is_403           naming a Creator not the caller's.
-  case_late_creator_is_unavailable        one past the budget is listed, the
-      rest answer; its read lands in the cache for the next ask.
-  case_one_read_in_flight_per_creator     new windows while a Creator's read
-      still runs list it unavailable without a second read.
-  case_a_deactivated_creator_is_not_read  listed unavailable, no OF read.
-  case_fixture_shape                      OF's captured answer parses.
-  case_imported_first_fails_loudly        `import of_stats_api` before server
-      raises, never a silently empty router (routes 404).
-
-Run: ./venv/bin/python service/tests/test_stats_referrals.py
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB
@@ -53,7 +23,7 @@ import of_stats_api  # noqa: E402  # after server: its routes load with it
 
 FIX = json.loads((Path(__file__).parent / "fixtures" / "of_statistics_reads.json").read_text())
 
-A, B, F = "9301001", "9301002", "9301003"   # two OnlyFans Creators and a Fansly one
+A, B, F = "9301001", "9301002", "9301003"
 
 
 class _FakeOF:
@@ -108,7 +78,7 @@ async def case_one_read_per_creator_in_cents():
 
 
 async def case_a_failed_creator_is_unavailable():
-    _reset(**{A: _chart(3, [("2026-10-01", 3)])})   # B answers 503
+    _reset(**{A: _chart(3, [("2026-10-01", 3)])})
     out = await _call()
     assert out["unavailable"] == [B], out
     assert [r["account_id"] for r in out["rows"]] == [A], out
@@ -138,7 +108,6 @@ async def case_fixture_shape():
 
 
 def _signed_in(ids):
-    """Stand in for a signed-in principal owning `ids` (auth's clamp reads it)."""
     auth._actor_account_ids = lambda: frozenset(ids)  # type: ignore[assignment]
 
 
@@ -147,7 +116,7 @@ _anonymous = auth._actor_account_ids
 
 async def case_signed_in_reads_only_its_creators():
     _reset(**{A: _chart(1, []), B: _chart(2, [])})
-    _signed_in({B, "9301009"})   # one live Creator, one without a session
+    _signed_in({B, "9301009"})
     try:
         out = await _call()
     finally:
@@ -193,7 +162,6 @@ async def case_one_read_in_flight_per_creator():
     try:
         out = await _call()
         assert out["unavailable"] == [B], out
-        # Another window while B's first read still runs: no second OF read.
         for t in ("2026-10-03", "2026-10-04"):
             out = await _call(t=t)
             assert out["unavailable"] == [B], out
@@ -219,7 +187,6 @@ async def case_a_deactivated_creator_is_not_read():
 
 
 def case_imported_first_fails_loudly():
-    # Child inherits the harness's temp-DB env; cwd service/ as under uvicorn.
     r = subprocess.run([sys.executable, "-c", "import of_stats_api"],
                        cwd=Path(__file__).resolve().parents[1],
                        capture_output=True, text=True, timeout=120)

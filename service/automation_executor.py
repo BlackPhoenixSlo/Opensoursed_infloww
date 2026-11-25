@@ -1,43 +1,3 @@
-"""
-Automation executor — the background worker that runs the 12 automations
-(MASTER_PLAN §5, db_data/08_build_order Phase B, one_section_of_automations).
-
-This is the P3 *harness*: a single async supervisor task per process that
-consumes `scheduled_jobs`, evaluates `automation_rules`, and runs one bounded
-task per (account, automation_kind) on a tick. Every run writes an
-`automation_runs` row (kind, started/finished, status, stats_json, error_text)
-which `GET /admin/stats/automation-runs` already reads. Automation 01
-`scrape_chats` (automations/scrape_chats.py) is the reference; P4 copies this
-pattern for the rest.
-
-It MIRRORS the two existing supervisors — it does not invent a new pattern:
-  • server.py `_pump_supervisor` (15s reconcile ticks, per-account tasks,
-    crash-restart) spawned in `_start_event_pumps`.
-  • transaction_ingest.py `start_supervisor` (per-account asyncio.Lock guards a
-    slow tick from stacking; `await asyncio.to_thread(client.<sync OF call>)` so
-    the network never blocks the event loop; sleep-at-end so the cadence holds).
-
-Two concurrency invariants the DA caught (MASTER_PLAN §5.6), both real bugs:
-  1. **Atomic per-account spend cap** — the daily soft-cap check+spend must be
-     atomic, else parallel LLM workers each read "under cap" and overspend. This
-     now lives in `llm_client._reserve` (a single INSERT … ON CONFLICT DO UPDATE
-     that bumps the rollup only while it stays under the cap) — no Python lock is
-     needed. scrape_chats does not spend, so it skips it.
-  2. **Per-(account, fan) lease** — A05/A06/A07/A11 can all message the SAME fan
-     in overlapping ticks. `acquire_fan_lease()` writes a short-TTL row in
-     `fan_lease` (PK (account_id, fan_id)); a live lease blocks every other
-     automation from sending to that fan until it expires or is released. One
-     bot message per fan per cycle. scrape_chats does not send, so it does not
-     lease — but the harness provides + tests the primitive for P4.
-
-The testable seam is `run_once(account_id, kind)`: it executes exactly one
-automation run and returns. Tests call it directly — no infinite loop, no
-timing, no network (inject a fake client via `_make_client`).
-
-Guardrail (MASTER_PLAN §5): a route handler may only INSERT a `scheduled_jobs`
-row (see `enqueue_job`) to trigger work — it must NEVER run an automation
-inline. The worker loop is the only thing that calls `run_once`.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -65,29 +25,22 @@ from db.models import (
 )
 
 from of_client import OUTBOUND_TEXT_GUARD, OFClient, proxy_refused
-import client_pool  # the relay's one OFClient pool (fd discipline lives there)
+import client_pool
 import of_call_counter
 import accounts as account_registry  # noqa: F401  (automations.auto_follow reads ax.account_registry)
 import platforms
 from automation_registry import (get_automation, canonical_kind,
                                  kind_family, load_automation_plugins,
                                  failed_plugins)
-# The ONE creator-clock resolver (quiet hours). `automations/__init__` is a
-# docstring and rhythm imports nothing of ours, so this cannot cycle back through
-# the plugins that import THIS module.
 from automations import rhythm
 import account_health
-import account_page  # free-vs-paid page (prime the cache off the recovery probe)
+import account_page
 
 import lane_config
 import run_slot
 import dispatch_plan
 import run_decide
 from of_coerce import cents_or_zero as _to_cents, strip_tags as _strip_html  # noqa: F401 — ax._to_cents / ax._strip_html importers
-# The fan lease + post-send cooldown (fan_lease.py) and the paced OF write
-# (of_write.py) are re-exported as the SAME objects (`ax._write_gates is
-# of_write._write_gates`, one `_RUN_WRITE` ContextVar). Rebinding one on ax
-# (a test patch) only bites callers that look up `ax.<name>` at call time.
 from fan_lease import (  # noqa: F401 — re-exports
     _FAN_COOLDOWN_S,
     _LEASE_TTL_S,
@@ -110,10 +63,6 @@ from of_write import (  # noqa: F401 — re-exports
     of_write_paced,
     of_write_with_retry,
 )
-# The scheduled_jobs queue + automation_runs rows live in job_queue; the names
-# used here or read as `ax.<name>` are re-exported as the SAME objects
-# (`ax.enqueue_job is job_queue.enqueue_job`, one `_current_rule_id` ContextVar).
-# Patch queue internals on job_queue: a patch on ax misses job_queue's own calls.
 from job_queue import (  # noqa: F401 — re-exports
     ANY_FAN,
     FOLLOWUP_MARK,
@@ -143,38 +92,10 @@ from job_queue import (  # noqa: F401 — re-exports
 
 log = logging.getLogger("of-relay.automation")
 
-# ── Knobs ────────────────────────────────────────────────────────────
-_TICK_INTERVAL_S = 30          # supervisor cadence (sleep-at-end like tx-ingest)
-# Measured 2026-08-26: at 7 accounts this lane runs 23.5% utilized
-# (115,879 runs/7d, mean 4.9s), so it saturates near 30 accounts — it is the
-# ceiling that binds FIRST as the fleet grows, ahead of the executor and every
-# admission lane. Settable from the Concurrency panel for that reason.
-# Since 2026-10-24 a run hands its slot back during typing holds
-# (run_slot.py), and the soak timing model puts 50 models at a ~1.3 s
-# p95 slot wait on these 4 (ADR 0025).
-# Applies at restart: the semaphore below is built once when the supervisor starts.
+_TICK_INTERVAL_S = 30
 _MAX_CONCURRENT_RUNS = lane_config.resolve("AUTOMATION_MAX_CONCURRENT_RUNS", 4)
-# …and with neither the env nor the panel setting it, the supervisor sizes the
-# pool from the active Creators every pass (run_slot.auto_runs, ADR 0025):
-# adding or deactivating one re-sizes it on the next pass, live.
-# Separate lane for long account-wide BULK sweeps (scrape_chats etc.). Proven
-# live: the W7 startup seed fired 4 scrape_chats at once, they filled all the run
-# slots for ~2 min, and a real-time welcome_chatter_for_info reply was starved ~40s. Bulk kinds
-# now use their OWN small semaphore so they can NEVER consume a sender's slot —
-# real-time replies stay fast even mid-scrape. Senders keep _run_sem; bulk gets
-# _bulk_sem. Independent → at most RUNS+BULK concurrent (fine: per-account OF
-# pacing + different accounts/sessions).
 _MAX_CONCURRENT_BULK = lane_config.resolve("AUTOMATION_MAX_CONCURRENT_BULK", 2)
-# …sized from the active Creators every pass like the run slots
-# (run_slot.auto_bulk) unless the env or the panel sets it. One of them is held
-# for an operator's bulk run (priority_mass): it never waits behind sweeps.
 _OPERATOR_RESERVED_BULK = 1
-# Run slots only an OPERATOR's run may take (a job of an operator kind started
-# from the app: a premade mass, a scheduled send, an unsend, a priority mass;
-# its scheduled_jobs row carries `created_by_employee_id`, `_OPERATOR_KINDS`). Operator runs also go ahead of every
-# queued automation run for the shared slots (run_slot.SlotPool), so the
-# operator never waits behind automation; automation never uses these.
-# Applies at restart, like the two above.
 _OPERATOR_RESERVED_RUNS = lane_config.resolve("AUTOMATION_OPERATOR_RESERVED_RUNS", 2)
 # The kinds whose run is a person's own content, sent when they said: only
 # these take the operator tier (the slot queue, the write gate, the DM rate
@@ -184,45 +105,23 @@ _OPERATOR_RESERVED_RUNS = lane_config.resolve("AUTOMATION_OPERATOR_RESERVED_RUNS
 _OPERATOR_KINDS: frozenset[str] = frozenset({
     "scheduled_send", "mass_premade", "unsend_messages", "priority_mass",
 })
-# Per-fan kinds run one run per (account, kind, fan) instead of one per (account,
-# kind): Full AI Chat replies to DIFFERENT Fans of one Creator overlap (Router +
-# Writer calls, typing holds), up to AUTOMATION_FULL_AI_PER_CREATOR at once; one
-# Fan never has two (dispatch_plan.run_key). Their OF sends still queue at the
-# account's write gate (of_write_paced) and DM rate (dm_rate): overlap is for
-# the thinking and typing, never a burst of sends. Each run takes a run slot
-# (_run_sem) for its reads, shaping and sends, and gives it back while it waits
-# on a model (run_slot.freed), so model waits are bounded by this cap x the
-# Creators, not by the slots. Read every pass (panel save applies at once);
-# 1 = one at a time per Creator, as before.
 _FULL_AI_PER_CREATOR = 4
 _PER_FAN_KINDS: frozenset[str] = frozenset({"full_ai_chat"})
 
 
 def _per_fan_caps() -> dict[str, int]:
-    """kind -> runs at once per account, for the per-fan kinds."""
     cap = lane_config.resolve_live("AUTOMATION_FULL_AI_PER_CREATOR", _FULL_AI_PER_CREATOR)
     return dict.fromkeys(_PER_FAN_KINDS, cap)
 
 
-_per_fan_caps()   # on the panel from boot
+_per_fan_caps()
 _BULK_KINDS: frozenset[str] = frozenset({
     "scrape_chats", "process_old_fans",
     "smart_list_sync",
     "priority_mass",   # ~2-min legs of paced per-fan DMs (automations/priority_mass)
 })
-# Job retries: job_queue._MAX_JOB_ATTEMPTS, run_decide.JOB_RETRY_BACKOFF_S.
-# A dead-session account (OF "Wrong user." — the creator got unlinked) pauses
-# ALL its automations; a fresh-from-disk client.me() probe runs this often per
-# flagged account and the first success resumes them. See account_health.py.
 _SESSION_PROBE_INTERVAL_S = 600
 
-# Send priority (W3): lower rank = higher priority. Used by the supervisor to
-# DISPATCH higher-priority kinds first within a tick, so on the rare fan overlap
-# the more important automation acquires the fan-lease before a lower one does
-# (e.g. a brand-new sub gets `send_welcome`, not `send_followup`). NOTE: a LIVE
-# lease still blocks EVERY other kind regardless of priority — priority never
-# steals a live lease (that would risk a double-message); it only orders who
-# tries first. Unknown kinds sort last (after the ranked senders).
 _KIND_PRIORITY: dict[str, int] = {
     "send_welcome": 1,
     "welcome_chatter_for_info": 3,
@@ -232,85 +131,33 @@ _KIND_PRIORITY: dict[str, int] = {
 }
 _DEFAULT_PRIORITY = 50
 
-# Rule ids already warned about for carrying an unregistered kind — the skip in
-# _materialize_due_rules() fires every tick, the warning only once per process.
-# Keyed (rule_id, kind) — not bare id — so a rule EDITED to a different
-# unknown kind (or a reused SQLite rowid) warns again instead of staying mute.
 _UNKNOWN_RULE_WARNED: set[tuple[int, str]] = set()
 
 
 def kind_priority(kind: str) -> int:
-    """Dispatch rank for an automation kind — lower runs first. See _KIND_PRIORITY.
-    Legacy names rank as their live kind (a pre-rename rule row keeps its slot)."""
     return _KIND_PRIORITY.get(canonical_kind(kind), _DEFAULT_PRIORITY)
 
 
-# ── W7 supervisor wake ───────────────────────────────────────────────
-# The supervisor normally drains on a fixed _TICK_INTERVAL_S cadence. W7 makes
-# dispatch event-driven: an inbound WS event (webhook_dispatch.on_inbound_message)
-# calls wake_supervisor() to drain NOW instead of waiting for the next tick. The
-# 30s tick stays as a fallback. The Event is created lazily inside
-# automation_supervisor() on the running loop; wake_supervisor() is a no-op until
-# then (and during tests, which call run_once directly without a supervisor).
 _wake_event: asyncio.Event | None = None
 
 
 def wake_supervisor() -> None:
-    """Signal the supervisor to drain immediately (W7 real-time dispatch).
-    No-op when no supervisor is running (e.g. tests). Loop-safe: callers run on
-    the same event loop as the supervisor, so a plain .set() suffices."""
     ev = _wake_event
     if ev is not None:
         ev.set()
 
 
-# Event-driven rule fire (W2 2.10). A rule whose work an event just made due (a
-# purchase for `purchase_followup`, a new subscriber for `send_welcome`) is
-# POKED: the next materializer pass treats its interval as elapsed, and nothing
-# else. Every other gate still holds: the rule must be enabled, there must be no
-# due pending/running job for (account, kind) (the materializer's dedupe, so a
-# poke never stacks a second job), max_runs, quiet hours. The job is the rule's
-# own (rule_id, steps payload), so the sweep's own claims (purchase_followup_claims,
-# welcome_sent) stay the per-fan no-double-send guard. A poke landing while the
-# sweep RUNS is kept for the pass after it, because that run may have read
-# before the event; one landing on a job not yet started is dropped, as that job
-# will see it. The interval sweep stays as the backstop.
-#
-# FLOOR: a poke fires the rule only once its last job is at least
-# min(every_seconds, dispatch_plan.POKE_FLOOR_S) old, so a stream of events cannot turn a
-# long cadence into a sweep per event. For dispatch_plan.REPOKE_KINDS a poke under
-# the floor is deferred, not spent: the plan (dispatch_plan.Repoke) keeps it for the
-# first pass past the floor, so an event right after a run waits at most the floor
-# plus one tick, not a whole cadence; so is one inside quiet hours (kept for the band's
-# end). Other kinds (send_welcome) spend it. Only an enabled rule's loop re-adds it, so a poke for a
-# pair with no enabled rule is cleared. (purchase_followup's cadence IS 60 s, so
-# there a poke only saves the wait for the supervisor's next tick.)
 _poked: set[tuple[str, str]] = set()
 
 
 def poke_rule(account_id: Any, kind: str) -> None:
-    """An event made (account, kind)'s interval rule due now: materialize it on
-    the next pass and wake the supervisor to run that pass. Sync and cheap; a
-    no-op beyond the set when no supervisor runs (tests, scripts)."""
     _poked.add((str(account_id), canonical_kind(kind)))
     wake_supervisor()
 
 
-# ── Non-blocking drain (W7) ──────────────────────────────────────────
-# The supervisor must NOT await all runs per tick. A single slow run (observed
-# live: a 5.7-min scrape_chats sweep on one account) would block the whole drain
-# and stall every real-time webhook dispatch for minutes. Instead each run is
-# spawned as a tracked background task bounded by a SHARED semaphore + an
-# in-flight (account,kind) guard, and the loop keeps ticking/waking. A slow run
-# on one account can no longer freeze a real-time welcome_chatter_for_info reply on another.
 _run_sem: run_slot.SlotPool | None = None
 _bulk_sem: run_slot.SlotPool | None = None
-_inflight_pairs: set[tuple] = set()   # dispatch_plan.run_key of every run in flight
-# When each account last WON a run slot (loop time). Dispatch within a priority
-# rank goes least-recently-served first, so with 20 creators sharing the slots
-# the one that ran a moment ago queues behind the one that has been waiting —
-# instead of account-id order, which put the same high-id creators last on
-# every busy tick.
+_inflight_pairs: set[tuple] = set()
 _last_served: dict[str, float] = {}
 _inflight_tasks: set = set()
 
@@ -330,14 +177,10 @@ _inflight_tasks: set = set()
 # (Dockerfile) before it.
 DRAIN_S = float(os.environ.get("RELAY_DRAIN_S", "45"))
 _draining = False
-_sends_open: dict = {}   # the task that claimed a send -> a future set when it is settled
+_sends_open: dict = {}
 
 
 def begin_send() -> bool:
-    """Called by a pass right before it claims a send, with no await between
-    this and the claim's own first await. False while the relay drains (do not
-    claim); otherwise the current task's send is one `drain()` waits for, until
-    `end_send()` or the task's end."""
     if _draining:
         return False
     task = asyncio.current_task()
@@ -348,30 +191,21 @@ def begin_send() -> bool:
 
 
 def stop_claiming() -> None:
-    """SIGTERM (server._close_streams_on_term): no new run and no new send from
-    here on, so none starts during uvicorn's graceful wait; `drain()` later waits
-    for the sends already claimed."""
     global _draining
     _draining = True
 
 
 def draining() -> bool:
-    """True from SIGTERM on (`stop_claiming`): a sender ends its waits early."""
     return _draining
 
 
 def end_send(task=None) -> None:
-    """The current task's send is settled: `drain()` stops waiting for it."""
     fut = _sends_open.pop(task or asyncio.current_task(), None)
     if fut is not None and not fut.done():
         fut.set_result(None)
 
 
 async def drain(timeout_s: float | None = None) -> dict:
-    """Shutdown: start no new run, then wait up to `timeout_s` (default
-    `DRAIN_S`) for every send that passed `begin_send()` to settle. Returns
-    `{"waited", "left", "s"}`: how many there were, how many were still
-    running at the bound, and how long it took."""
     stop_claiming()
     pending = {f for f in _sends_open.values() if not f.done()}
     t0 = time.monotonic()
@@ -385,31 +219,18 @@ async def drain(timeout_s: float | None = None) -> dict:
 
 
 async def _join_inflight_runs() -> None:
-    """Await every in-flight drain task. The SUPERVISOR never calls this (it must
-    not block on slow runs); tests use it to wait for spawned runs to finish."""
     if _inflight_tasks:
         await asyncio.gather(*list(_inflight_tasks), return_exceptions=True)
 
-# (The per-account *spend* lock that used to live here is gone: llm_client._reserve
-# now does the soft-cap check+spend atomically in one INSERT … ON CONFLICT, so no
-# Python-side lock is needed. The per-(account, kind) run lock below stays; it is
-# keyed by a stable, small (account, kind) set — accounts don't churn — so it
-# doesn't grow unbounded. The write-gate dict lives in of_write.py.)
 
-# Per-(account, kind) lock: stops a slow run from stacking with the next tick.
-# Same idea as tx-ingest's per-account tick lock, scoped to the automation kind
-# (scrape and welcome_chatter_for_info for one account can run concurrently; two scrapes can't).
-# A per-fan run's (account, kind, fan) lock is dropped when its run ends (`_one`).
 _run_locks: dict[tuple, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
-# ── Tiny parsing helpers (callers use ax._parse_iso) ─────────────────
 
 from isotime import parse_iso as _parse_iso  # noqa: E402 — OF ISO 8601 → naive UTC (callers use ax._parse_iso)
 
 
 def _media_ids(media: list | None) -> list[int]:
-    """Pluck integer media ids; skip anything non-int."""
     if not isinstance(media, list):
         return []
     out: list[int] = []
@@ -422,16 +243,8 @@ def _media_ids(media: list | None) -> list[int]:
     return out
 
 
-# ── scheduled_jobs queue (the queue itself: job_queue.py) ─────────────
 
 async def _due_job_pairs() -> list[dispatch_plan.Pair]:
-    """Distinct (account_id, kind) over all pending, due jobs — the supervisor
-    spawns one bounded run per pair per tick; a per-fan kind's pairs are per
-    (account_id, kind, its job's Fan) — and whether an operator started
-    one of them (`_by_operator`) of an operator kind (`_OPERATOR_KINDS`),
-    which puts the run in the operator tier. A deactivated Creator's jobs stay
-    pending, unspawned; activating it cancels the ones that fell due meanwhile
-    (`cancel_jobs_missed_while_off`) and runs the rest."""
     now = datetime.utcnow()
     off = await account_health.deactivated_ids()
     auto_emp = await _automation_employee()
@@ -456,25 +269,15 @@ async def _due_job_pairs() -> list[dispatch_plan.Pair]:
 
 
 def _epoch(dt: datetime | str) -> float:
-    """A naive-UTC run_at (NOT NULL) as epoch seconds (an aggregate may come back as text)."""
     if isinstance(dt, str):
         dt = _parse_iso(dt)
     return (dt - datetime(1970, 1, 1)).total_seconds()
 
 
-# Accounts already warned about "quiet hours set, but no clock to evaluate them in".
-# The materializer runs every 30s, so this is the difference between one honest
-# warning and a log nobody can read. Process-local by design: a restart re-warns,
-# which is when someone is looking anyway.
 _QUIET_HOURS_NO_CLOCK_WARNED: set[str] = set()
 
 
 async def _account_clock(s, account_id, offsets: dict, now: datetime) -> int | None:
-    """The account's creator-local offset in minutes (None = no clock), cached in `offsets`
-    for the pass. Through the ONE resolver, not the raw column — see
-    dispatch_plan.in_quiet_hours. Both clock columns are read so a zone-only account still
-    has a band. Named, because the SELECT order and the resolver's argument order are
-    deliberately crossed."""
     if account_id not in offsets:
         row = (await s.execute(
             select(AccountAiConfig.utc_offset, AccountAiConfig.timezone)
@@ -486,22 +289,11 @@ async def _account_clock(s, account_id, offsets: dict, now: datetime) -> int | N
 
 
 async def _pair_busy(s, rule: AutomationRule, now: datetime) -> dispatch_plan.Busy | None:
-    """The status of a DUE pending/running job of the rule's (account, kind), or None:
-    the materializer's one-job-per-(account, kind) gate. Read in the session the pass adds
-    its jobs to, so a second rule of the pair sees the first one's job (autoflush). We only
-    count jobs that are due now (run_at <= now): a future-dated one-shot (e.g.
-    auto_stories' delete-later cleanup, which shares the `unsend_messages` kind) must NOT
-    block a recurring rule from materializing its own hourly job — otherwise the rule is
-    starved for as long as any future cleanup sits pending."""
     return (
         await s.execute(
             select(ScheduledJob.status)
             .where(
                 ScheduledJob.account_id == rule.account_id,
-                # kind_family, matching what this loop MINTS (canonical)
-                # and what a pre-0062 row may still carry (legacy) — a
-                # legacy rule must see the canonical job it created
-                # last tick, or a backlog stacks a duplicate per tick.
                 ScheduledJob.kind.in_(kind_family(rule.kind)),
                 ScheduledJob.status.in_(("pending", "running")),
                 ScheduledJob.run_at <= now,
@@ -513,20 +305,12 @@ async def _pair_busy(s, rule: AutomationRule, now: datetime) -> dispatch_plan.Bu
 
 
 async def _materialize_due_rules() -> int:
-    """Turn due `automation_rules` into `scheduled_jobs` rows (the uniform path
-    — rules never execute inline, they only enqueue). Conservative: handles a
-    `trigger_json` of `{"every_seconds": N}`, enqueues only when the rule's last
-    run is older than N (or an event poked it, see `poke_rule`) AND no pending
-    job for (account, kind) already exists.
-    A malformed rule is logged + skipped, never fatal. Returns jobs enqueued."""
-    load_automation_plugins()  # runners self-register on import; idempotent
+    load_automation_plugins()
     now = datetime.utcnow()
     enqueued = 0
-    # This pass consumes the pokes made so far (see poke_rule); a poke made
-    # while it runs waits for the next pass. No await between copy and clear.
     poked = set(_poked)
     _poked.clear()
-    offsets: dict[str, int | None] = {}   # account_id → creator-local MINUTES (quiet hours)
+    offsets: dict[str, int | None] = {}
     async with get_session() as s:
         rules = (
             await s.execute(
@@ -535,19 +319,6 @@ async def _materialize_due_rules() -> int:
         ).scalars().all()
 
         for rule in rules:
-            # A rule whose kind has no registered runner can only manufacture an
-            # unknown-kind ERROR run every tick (run_once refuses it) — a retired
-            # engine's leftover rule must go inert, not noisy. Checked against
-            # the runner REGISTRY (the same source run_once dispatches from),
-            # never a hand-kept kind list, so it stays true by construction.
-            #
-            # UNLESS the kind's module FAILED TO IMPORT this process: that is a
-            # sending engine that vanished, not a retirement, and it must stay
-            # LOUD — fall through, let the job materialize, and run_once writes
-            # a status=error run row every tick where the ops surfaces show it.
-            # (Kinds are module basenames by convention; a failed module's
-            # secondary kinds still go quiet here — acceptable, the primary
-            # kind raises the alarm for the whole module.)
             if get_automation(rule.kind) is None:
                 failed = rule.kind in failed_plugins()
                 if (rule.id, rule.kind) not in _UNKNOWN_RULE_WARNED:
@@ -574,31 +345,13 @@ async def _materialize_due_rules() -> int:
                 continue
             trig = dispatch_plan.parse_trigger(trigger)
             if trig is None:
-                continue  # neither an interval nor clock trigger — nothing to do
+                continue
 
-            # The facts dispatch_plan.plan_rule decides on, read in the pass's session.
-            # Already a DUE job for this (account, kind)? Don't pile on (see _pair_busy).
             pair = (str(rule.account_id), canonical_kind(rule.kind))
             pending = await _pair_busy(s, rule, now)
 
-            # Cadence anchor for BOTH the interval and clock triggers: the last
-            # time THIS rule enqueued a job (rule_id == rule.id), NOT the last run
-            # of the kind. `unsend_messages` (and other kinds) double as one-shot
-            # actions — auto_stories' delete-later cleanup, the "Unsend this"
-            # button, test drivers — all of which write AutomationRun rows for the
-            # same (account, kind). Anchoring the "is it due?" check on the kind's
-            # last *run* let those one-shots reset the rule's clock every few
-            # minutes: an interval rule whose period (e.g. 1h) outlasts the
-            # one-shot cadence NEVER became due, and a clock rule's daily slot got
-            # marked "already ran" by an unrelated same-kind run. Anchoring on the
-            # rule's own jobs decouples both. Its FOLLOW-ON jobs (drips /
-            # resends, see enqueue_followup) also carry rule_id but are not the
-            # rule firing — they must not push its next fire back.
             last_rule_job_at = await rule_last_fired_at(s, rule.id)
 
-            # ── run-limit ("how many times to run") ──────────────────────
-            # Count this (account, kind)'s prior runs (only for a rule with a
-            # max_runs); the plan disables the rule once it has fired that often.
             run_count = None
             if trig.max_runs is not None:
                 run_count = (
@@ -607,8 +360,6 @@ async def _materialize_due_rules() -> int:
                         .select_from(AutomationRun)
                         .where(
                             AutomationRun.account_id == rule.account_id,
-                            # run rows are written canonical (run_once), so a
-                            # legacy-kind rule must count under the live name
                             AutomationRun.kind == canonical_kind(rule.kind),
                         )
                     )
@@ -618,22 +369,16 @@ async def _materialize_due_rules() -> int:
             plan = dispatch_plan.plan_rule(
                 trig, busy=pending, poked=pair in poked, last_fired=last_rule_job_at,
                 run_count=run_count, quiet_hours_json=rule.quiet_hours_json, now=now, kind=pair[1])
-            # ── quiet hours (opt-in; default off) ────────────────────────
-            # A due rule inside its creator-local quiet band does NOT enqueue this
-            # tick — it'll materialize on the first tick after the band ends (it's
-            # still "due" then — no job was enqueued). Unset/[] = fires 24/7. The
-            # account's clock is read only here: busy / capped / not-due rules never
-            # reach it.
             if isinstance(plan, dispatch_plan.CheckQuiet):
                 plan = dispatch_plan.quiet_plan(
                     plan.band, await _account_clock(s, acct, offsets, now), now)
             match plan:
                 case dispatch_plan.Repoke():
-                    _poked.add(pair)   # running, or under the floor: fire once more later
+                    _poked.add(pair)
                     continue
                 case dispatch_plan.Skip(reason="quiet_hours"):
                     if pair in poked and pair[1] in dispatch_plan.REPOKE_KINDS:
-                        _poked.add(pair)   # its event still owes a run: fire after the band
+                        _poked.add(pair)
                     log.info("automation_rule_quiet_hours rule_id=%s account=%s kind=%s",
                              rule.id, acct, rule.kind)
                     continue
@@ -645,11 +390,6 @@ async def _materialize_due_rules() -> int:
                              rule.id, runs, limit)
                     continue
                 case dispatch_plan.Enqueue(no_clock=True):
-                    # Quiet hours are creator-LOCAL, so an account with no clock has
-                    # no band — `dispatch_plan.quiet_plan` owns that call (the rule
-                    # fires); this only narrates it, ONCE per account per process. The
-                    # loop runs every 30s forever, and a warning repeated 2,880 times a
-                    # day is one nobody reads.
                     if acct not in _QUIET_HOURS_NO_CLOCK_WARNED:
                         _QUIET_HOURS_NO_CLOCK_WARNED.add(acct)
                         log.warning("automation_rule_quiet_hours_no_clock rule_id=%s "
@@ -664,9 +404,6 @@ async def _materialize_due_rules() -> int:
             s.add(
                 ScheduledJob(
                     account_id=rule.account_id,
-                    # Canonical even for a legacy-kind rule row: new job rows
-                    # never mint a retired token, so only the rule row itself
-                    # is left for migration 0062 to rename.
                     kind=canonical_kind(rule.kind),
                     payload_json=rule.steps_json or "{}",
                     run_at=now,
@@ -680,41 +417,16 @@ async def _materialize_due_rules() -> int:
     return enqueued
 
 
-# ── Client seam ──────────────────────────────────────────────────────
-# Automation 01 scrape_chats lives in automations/scrape_chats.py; it reads
-# this seam as `ax._make_client` at call time, so a patch here still bites.
 
 
 def _make_client(account_id: str) -> OFClient:
-    """Client construction seam for the automation lane. Tests override this to
-    inject a fake (no network, no session files). Kept tiny so the override
-    surface is one name.
-
-    Clients are pinned per account — see service/client_pool.py for why (an
-    OFClient per call was an fd per call, and it took the relay to EMFILE).
-
-    Resolves exactly as server._load_client does, or the HTTP routes work while
-    the executor silently does not."""
     backend = platforms.for_account(account_id).backend
     if backend is not None:
         return backend.get_client(account_id)
     return client_pool.get(account_id)
 
 
-# Registry lives in automation_registry.py. Every automation — `scrape_chats`
-# included (automations/scrape_chats.py) — is one file under service/automations/
-# that self-registers via @register — NO edit to this file, so they can be built
-# in parallel without colliding on a shared dict (load_automation_plugins finds
-# scrape_chats by walking the package, like the rest).
 
-# scrape_chats ties back here two ways:
-# - the import at the bottom of this module: `import automation_executor` alone
-#   registers it (test_p4_pre relies on that);
-# - __getattr__ below (PEP 562): reads of the moved names still taken from here
-#   (messages.py's `from automation_executor import _scrape_one_chat, …`, tests)
-#   forward there. Its import stays lazy: when scrape_chats is imported first it
-#   imports this module before the bottom line has run.
-# Reads only: patch on automations.scrape_chats, not ax — its calls look names up there.
 _SCRAPE_NAMES: frozenset[str] = frozenset({
     "_scrape_one_chat", "_upsert_fan_identity",
     "_SCRAPE_PAGE_SIZE", "_SCRAPE_MAX_PAGES",
@@ -723,16 +435,12 @@ _SCRAPE_NAMES: frozenset[str] = frozenset({
 
 def __getattr__(name: str) -> Any:
     if name in _SCRAPE_NAMES:
-        from automations import scrape_chats  # lazy: it imports this module
+        from automations import scrape_chats
         return getattr(scrape_chats, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-# ── Dead-session pause (see account_health.py) ──────────────────────
 
-# account_id → time.monotonic() of the last "paused" log line. The gate in
-# run_once fires every tick for every due (account, kind) pair, so without a
-# throttle a paused account would log twice a minute per kind.
 _session_skip_log_last: dict[str, float] = {}
 _session_probe_task: asyncio.Task | None = None
 
@@ -743,9 +451,6 @@ def _log_session_dead_skip(account_id: str, kind: str) -> None:
     if last is not None and now - last < _SESSION_PROBE_INTERVAL_S:
         return
     _session_skip_log_last[account_id] = now
-    # Don't quote a probe period here: it WIDENS with how long the account has
-    # been dead (account_health._PROBE_BACKOFF), so a fixed number would read as
-    # a promise this line cannot keep for a month-dead account.
     log.info(
         "automation_paused_session_dead account=%s kind=%s — runs skipped "
         "until the recovery probe or a re-capture clears it",
@@ -754,15 +459,6 @@ def _log_session_dead_skip(account_id: str, kind: str) -> None:
 
 
 async def _probe_dead_sessions() -> None:
-    """Recovery sweep: for each flagged account due under the backoff ladder
-    (account_health.probe_interval_s — _SESSION_PROBE_INTERVAL_S while the death
-    is fresh, widening toward 6-hourly once it is a week old), try a
-    fresh-from-disk `client.me()` — evict
-    first, because a re-captured session on disk must be picked up. Evicting
-    (rather than bypassing the pool) is load-bearing: a probe that proved the
-    session healthy while automations kept the stale pooled client would clear
-    the flag, fail, and re-flag forever. The first success clears the flag;
-    its parked jobs run on the next tick."""
     try:
         aids = await account_health.due_probe_ids(_SESSION_PROBE_INTERVAL_S)
         for aid in aids:
@@ -774,8 +470,6 @@ async def _probe_dead_sessions() -> None:
             except Exception as e:
                 log.info("session_probe_still_dead account=%s err=%s", aid, repr(e)[:200])
                 continue
-            # Free-run: this probe already holds the profile the paid-post gate
-            # needs, and a recovered account is exactly when it went stale.
             account_page.prime(aid, me)
             if await account_health.clear_session_dead(aid):
                 log.info("account_session_recovered account=%s — automations resume", aid)
@@ -784,12 +478,7 @@ async def _probe_dead_sessions() -> None:
 
 
 async def _outbound_guard(account_id: str):
-    """This run's outbound word guard (of_client.OUTBOUND_TEXT_GUARD): the
-    Agency's sensitive words for this account, in block mode. Every automation send and post passes it, whichever
-    helper it went through — the per-sender filter_banned calls stay as the
-    whole-turn check, this is the floor under the senders that never had one
-    (posts and S4S). None when nothing is listed."""
-    from automations import _wordfilter  # lazy: _common's import graph reaches the plugins
+    from automations import _wordfilter
     try:
         return _wordfilter.outbound_guard(*await _wordfilter.load_banned_words(account_id))
     except Exception:
@@ -797,7 +486,6 @@ async def _outbound_guard(account_id: str):
         return None
 
 
-# ── The testable seam: run exactly one automation run ────────────────
 
 async def run_once(
     account_id: str,
@@ -808,54 +496,14 @@ async def run_once(
     job_only: bool = True,
     fan: Any = ANY_FAN,
 ) -> dict:
-    """Execute exactly one automation run for (account_id, kind) and return a
-    summary dict. No loop, no sleeping, no supervisor — tests call this
-    directly.
-
-    Job binding: when neither `payload` nor `job_id` is given, the earliest due
-    `scheduled_jobs` row for (account, kind) is CLAIMED and its payload used (so
-    "enqueue a scrape job → run_once → it executes" works). A test may also pass
-    an explicit `payload` to bypass the queue. Every run writes an
-    `automation_runs` row; a bound job is marked done/error/requeued.
-
-    `job_only` (default): with no `payload`/`job_id` and NOTHING to claim, skip
-    (`reason=no_job`) instead of running an unbound empty-payload sweep. That
-    empty run used to fire whenever the job was gone by claim time — cancelled
-    because its rule was switched off, or already claimed by the supervisor
-    (fans.py kicks a run_once right after enqueueing). Pass `job_only=False`
-    to get the old "run with {} anyway" behaviour.
-
-    `fan` (the supervisor, for a per-fan kind): the run claims only that Fan's
-    jobs (None: the kind's jobs that name no Fan) and its run lock is
-    (account, kind, fan), so runs for different Fans of one account overlap.
-
-    Rule binding: while a claimed job of a LIVE rule (`scheduled_jobs.rule_id`)
-    runs, `current_rule_id()` returns that rule, so follow-on jobs the automation
-    enqueues (`enqueue_followup`: a drip, a resend) carry it and die with it. A
-    follow-on, or a job tagged by a payload `_rule_id` (a real-time job queued
-    under a rule — webhook_dispatch), is dropped at claim time if that rule is
-    now OFF or gone.
-    """
-    load_automation_plugins()  # ensure P4 plugin modules under service/automations/ self-registered
-    # Canonical from here down: the run row, the (account, kind) locks and the
-    # stats vocabulary all speak the live name even when the caller (a legacy
-    # rule/job row migration 0062 hasn't rewritten) still says the old one.
+    load_automation_plugins()
     kind = canonical_kind(kind)
     fn = get_automation(kind)
     if fn is None:
-        # Truthful per-tick artifact: a plugin that CRASHED on import is not a
-        # retired kind, and the run row is what the ops surfaces show.
         err = (f"automation plugin failed to import: {kind}"
                if kind in failed_plugins()
                else f"unknown automation kind: {kind}")
         log.warning("automation_unknown_kind account=%s kind=%s", account_id, kind)
-        # CONSUME the bound job (error, no retry): a leftover pending job for a
-        # retired kind would otherwise re-dispatch this exact branch every 30s
-        # tick, forever — error-run noise plus automation_runs bloat. Loudness
-        # for a FAILED-IMPORT kind is unharmed: its rule keeps materializing a
-        # fresh job each tick (see _materialize_due_rules), so each tick still
-        # errors once, visibly, while a truly retired kind errors once and
-        # goes quiet.
         if payload is None and job_id is None:
             claimed = await _claim_due_job(account_id, kind)
             job_id = claimed.id if claimed is not None else None
@@ -864,17 +512,10 @@ async def run_once(
         await _finalize_run(run_id, status, None, err, job_id=job_id, job_status=job_status)
         return {"status": "error", "reason": "unknown_kind", "run_id": run_id}
 
-    # Don't stack a second run of the same (account, kind) — or (account, kind, fan) — over a slow one.
     lock = _run_locks[dispatch_plan.run_key(account_id, kind, fan, () if fan is ANY_FAN else _PER_FAN_KINDS)]
     if lock.locked():
         return {"status": "skipped", "reason": "in_flight"}
 
-    # Dead-session account (OF "Wrong user." — creator got unlinked): paused
-    # wholesale. Don't claim the job (it stays pending and simply runs on the
-    # first tick after the session recovers) and don't write a run row (one
-    # per 30s tick per kind would be pure noise). See account_health.py.
-    # A deactivated Creator (Creators › ⋮ › Deactivate) parks the same way, for
-    # the direct callers that don't come through _due_job_pairs.
     try:
         if await account_health.is_session_dead(account_id):
             _log_session_dead_skip(account_id, kind)
@@ -887,11 +528,6 @@ async def run_once(
     except Exception:
         log.warning("deactivated_check_failed account=%s", account_id, exc_info=True)
 
-    # Again, with no await before the acquire: the checks above awaited, and
-    # two raw kinds with one canonical_kind (a legacy alias and its live name
-    # are two `_inflight_pairs` entries) could both have passed the first
-    # check. The loser must return here, not queue on the lock: queued, it
-    # would pin a run slot while the winner may need a slot back to finish.
     if lock.locked():
         return {"status": "skipped", "reason": "in_flight"}
     async with lock:
@@ -901,7 +537,6 @@ async def run_once(
             if claimed is not None:
                 payload = run_decide.parse_payload(claimed.payload_json)
                 job_id = claimed.id
-                # Drop-or-bind rules: run_decide.bind_claim; the liveness read stays here.
                 check = run_decide.tagged_rule(payload, claimed.rule_id) or claimed.rule_id
                 live = None
                 if check is not None:
@@ -916,8 +551,6 @@ async def run_once(
                         return {"status": "skipped", "reason": "rule_disabled",
                                 "job_id": job_id}
                     case run_decide.Bind(rule_id=bound):
-                        # Only a LIVE rule's run hands its id to follow-ons: Run-now on a
-                        # disabled rule behaves as a one-shot (its drip is not dropped).
                         rule_id = bound
                     case _:
                         assert_never(claim)
@@ -929,28 +562,21 @@ async def run_once(
         t0 = time.monotonic()
         rule_token = _current_rule_id.set(rule_id)
         job_token = _current_job_id.set(job_id)
-        write = run_decide.RunWrites()   # of_write_paced keeps it per attempt
+        write = run_decide.RunWrites()
         write_token = _RUN_WRITE.set(write)
         once = run_decide.sends_once(kind)
-        from automations._wordfilter import OutboundWordsBlocked  # lazy: see _outbound_guard
+        from automations._wordfilter import OutboundWordsBlocked
         guard = await _outbound_guard(account_id)
         guard_token = OUTBOUND_TEXT_GUARD.set(guard)
         try:
             ran = "ok"
             try:
-                # Its OF calls count as `auto:<canonical kind>` (of_call_counter; a walk inside: the walk).
                 with of_call_counter.caller(f"auto:{kind}"):
                     stats = await fn(account_id, payload, run_id=run_id) or {}
             except OutboundWordsBlocked:
-                # The sender let a word-guard block abort the run: its own stats
-                # died with it, the guard's summary below is what is left. Never
-                # an error to retry: the text won't get cleaner on a re-fire.
                 stats = {}
                 ran = "words_blocked"
             stats["duration_ms"] = int((time.monotonic() - t0) * 1000)
-            # One rule whether the sender let the block propagate or caught it
-            # per fan: the guard's summary in the stats, `skipped` iff it blocked
-            # something and let nothing through.
             guard_status = None
             if guard is not None and guard.blocked:
                 stats.update(guard.summary())
@@ -968,8 +594,6 @@ async def run_once(
             )
             return {"status": "ok", "run_id": run_id, "job_id": job_id, **stats}
         except asyncio.CancelledError:
-            # Shutdown / supervisor cancel: park the run, requeue the job (a
-            # one-shot OF may have taken: 'error', never resent).
             status, job_status, err = run_decide.outcome(
                 "cancelled", None, "cancelled", once=once, wrote=write.state)
             _log_parked(job_status, account_id, kind, run_id, job_id, write.state)
@@ -996,8 +620,6 @@ async def run_once(
             status, job_status, err = run_decide.outcome(
                 "exception", None, err, once=once, wrote=write.state)
             _log_parked(job_status, account_id, kind, run_id, job_id, write.state)
-            # A one-shot broadcast the proxy refused, nothing of it at OF: the job
-            # waits out the burst (run_decide.defers_refusal, job_queue._park_failed_job).
             refused = run_decide.defers_refusal(kind, proxy_refused(e), write.state)
             await _finalize_run(run_id, status, None, err, job_id=job_id,
                                 job_status=job_status, refused=refused)
@@ -1011,21 +633,14 @@ async def run_once(
 
 def _log_parked(job_status: str, account_id: str, kind: str, run_id: int,
                 job_id: int | None, wrote: str) -> None:
-    """A failed run's job parked 'error' (run_decide.outcome: a one-shot OF may have taken)."""
     if job_status == "error":
         log.warning("automation_job_parked_may_have_sent account=%s kind=%s run_id=%s "
                     "job=%s write=%s", account_id, kind, run_id, job_id, wrote)
 
 
-# ── Supervisor ───────────────────────────────────────────────────────
 
 
 async def _interrupt_orphan_mass_runs(s, now: datetime) -> list[int]:
-    """Every `running` mass run -> MASS_RUN_INTERRUPTED; returns their ids. Nothing
-    resends one: a stream's send settles by the stream's own repair and orphan
-    match, a one-shot job parks ORPHAN_REASON (AE 2026-11-07 mass_runs 1545
-    sat `running` for good across a deploy). A send that closes later (a request
-    that minted just before the heal) still closes its run `ok`."""
     ids = list((await s.execute(
         select(MassRun.id).where(MassRun.status == MASS_RUN_RUNNING).order_by(MassRun.id))).scalars())
     if ids:
@@ -1035,20 +650,6 @@ async def _interrupt_orphan_mass_runs(s, now: datetime) -> list[int]:
 
 
 async def _reconcile_orphans() -> None:
-    """Boot-time self-heal. A fresh process owns ZERO in-flight work, so any row
-    still marked 'running' was orphaned by the previous process's restart/crash:
-      • a stuck `ScheduledJob.status='running'` makes _materialize_due_rules skip
-        that (account, kind) forever — it looks like work is still in progress, so
-        the rule silently stops materializing new jobs (a real clog);
-      • a stuck `AutomationRun.status='running'` shows as forever-running in the UI
-        and inflates the max_runs count (cosmetic).
-    Park a one-shot send (run_decide.one_shot_family: OF may already have taken it,
-    and nothing records whether its write started) 'error', ORPHAN_REASON, never sent
-    twice; requeue every other job (the work never finished). Mark the runs
-    interrupted, and every `running` mass run MASS_RUN_INTERRUPTED (never resent). Idempotent; the supervisor awaits it before its first tick. A
-    direct run_once (e.g. a slop hook) may claim a job before it ends: such a job is
-    'running' too, so the heal treats it as orphaned (slop scenarios wait for the
-    `reconciled_orphans` line before their first pass)."""
     now = datetime.utcnow()
     running = ScheduledJob.status == "running"
     async with get_session() as s:
@@ -1067,13 +668,11 @@ async def _reconcile_orphans() -> None:
         masses = await _interrupt_orphan_mass_runs(s, now)
     if masses:
         log.warning("mass_runs_interrupted ids=%s (may have sent; not resent)", masses)
-    # Always logged: a scenario waits for this line before its first pass.
     log.info("reconciled_orphans requeued_jobs=%s parked_jobs=%s interrupted_runs=%s "
              "interrupted_masses=%s", jobs.rowcount, parked.rowcount, runs.rowcount, len(masses))
 
 
 async def _active_models() -> int:
-    """Creators on the relay that are not deactivated."""
     off = select(AccountHealth.account_id).where(AccountHealth.deactivated_at.is_not(None))
     async with get_session() as s:
         return int((await s.execute(
@@ -1082,9 +681,6 @@ async def _active_models() -> int:
 
 
 async def _size_slots(pool: run_slot.SlotPool, knob: str, auto, event: str) -> None:
-    """Size `pool` from the active Creators (`auto(models)`) unless the env or
-    the panel sets `knob`. The panel shows the auto size as the knob's default
-    and live value, so nothing reads as a pending restart."""
     if lane_config.overridden(knob):
         return
     models = await _active_models()
@@ -1107,11 +703,6 @@ async def _size_bulk_slots(pool: run_slot.SlotPool) -> None:
 
 
 async def _drain_due_jobs_once() -> None:
-    """One supervisor pass: materialize due rules → jobs, sweep expired leases,
-    then spawn ONE bounded `run_once` per due (account, kind) pair (per
-    (account, kind, fan) for `_PER_FAN_KINDS`, `_per_fan_caps` per account).
-    Bounded by `_MAX_CONCURRENT_RUNS`; the run lock inside run_once keeps a
-    slow run from stacking with the next tick."""
     try:
         await _materialize_due_rules()
     except Exception:
@@ -1121,9 +712,6 @@ async def _drain_due_jobs_once() -> None:
     except Exception:
         log.warning("automation_lease_sweep_failed", exc_info=True)
 
-    # Dead-session recovery probe — detached so a slow OF round-trip can't
-    # stall dispatch; internally rate-limited per account, so spawning it
-    # every tick is a no-op between probe windows.
     global _session_probe_task
     if _session_probe_task is None or _session_probe_task.done():
         _session_probe_task = asyncio.create_task(_probe_dead_sessions())
@@ -1132,13 +720,6 @@ async def _drain_due_jobs_once() -> None:
     if not pairs:
         return
 
-    # Priority dispatch (W3, dispatch_plan.plan_dispatch): higher-priority kinds
-    # are spawned first so on the rare same-fan overlap they win the lease race (a
-    # new sub gets welcome, not followup). Operator-started work first, then the
-    # kind priority. Within a rank, the account served longest ago goes first (see
-    # `_last_served`, read here, before the sizing await below: runs that start
-    # during it must not reorder this pass); account_id only breaks an exact tie,
-    # for determinism.
     served = dict(_last_served)
 
     global _run_sem, _bulk_sem
@@ -1158,17 +739,11 @@ async def _drain_due_jobs_once() -> None:
     per_fan = _per_fan_caps()
 
     async def _one(aid: str, kind: str, operator: bool, bulk: bool, key: tuple, per_fan_run: bool) -> None:
-        # Long bulk sweeps run in their own lane so they can't starve real-time
-        # senders of a slot (see _BULK_KINDS).
         sem = _bulk_sem if bulk else _run_sem
         ran = False
         try:
-            # run_slot.hold == `async with sem`, except the run gives the slot
-            # back during its typing holds (_common.hold_with_typing) and takes
-            # it back ahead of fresh runs (run_slot.SlotPool). An operator's
-            # run takes the operator tier: the reserve, else ahead of everyone.
             async with run_slot.hold(sem, operator=operator):
-                if _draining:   # shutting down: the job stays pending for the next process
+                if _draining:
                     return
                 _last_served[aid] = asyncio.get_running_loop().time()
                 res = await run_once(aid, kind, **({"fan": key[2]} if per_fan_run else {}))
@@ -1183,15 +758,10 @@ async def _drain_due_jobs_once() -> None:
         finally:
             _inflight_pairs.discard(key)
             if per_fan_run:
-                _run_locks.pop(key, None)   # Fans churn: keep the lock dict small
-                if ran:                     # that Fan's next job, or another Fan's, without a tick wait
+                _run_locks.pop(key, None)
+                if ran:
                     wake_supervisor()
 
-    # Spawn DETACHED, tracked tasks — do NOT await. The supervisor loop returns
-    # immediately and keeps ticking/waking, so a slow run can't stall real-time
-    # dispatch. The plan skips a pair already in flight (no stacking); the
-    # shared semaphore bounds total concurrency across overlapping drains. No
-    # await between the plan and the last spawn: the in-flight set it read holds.
     for sp in dispatch_plan.plan_dispatch(pairs, _inflight_pairs, served, kind_priority, _BULK_KINDS, per_fan):
         key = dispatch_plan.run_key(sp.account_id, sp.kind, sp.fan, per_fan)
         _inflight_pairs.add(key)
@@ -1201,19 +771,12 @@ async def _drain_due_jobs_once() -> None:
 
 
 async def automation_supervisor() -> None:
-    """Async supervisor loop — mirror of transaction_ingest.start_supervisor /
-    server._pump_supervisor: drain a tick, sleep AT END so cadence holds
-    regardless of tick duration, return on CancelledError, log+continue on
-    anything else. Spawned from server._start_event_pumps and cancelled in
-    _stop_event_pumps alongside the other supervisors."""
     global _wake_event
-    _wake_event = asyncio.Event()  # created on the running loop (W7 wake)
+    _wake_event = asyncio.Event()
     log.info(
         "automation_supervisor_started tick=%ds max_concurrent=%d",
         _TICK_INTERVAL_S, _MAX_CONCURRENT_RUNS,
     )
-    # Self-heal orphaned 'running' rows from the previous process before the
-    # first tick, so a crash/restart mid-run can't permanently starve a rule.
     try:
         await _reconcile_orphans()
     except Exception:
@@ -1223,16 +786,12 @@ async def automation_supervisor() -> None:
             cycle_started = time.monotonic()
             await _drain_due_jobs_once()
             elapsed = time.monotonic() - cycle_started
-            # W7: wake early on an inbound event, else hold the 30s cadence.
-            # Wait FIRST, clear AFTER: a wake that landed during the drain above
-            # leaves the event set, so wait_for returns immediately and we
-            # re-drain it on the next cycle instead of losing it.
             try:
                 await asyncio.wait_for(
                     _wake_event.wait(), timeout=max(0.0, _TICK_INTERVAL_S - elapsed)
                 )
             except asyncio.TimeoutError:
-                pass  # normal fallback tick
+                pass
             _wake_event.clear()
         except asyncio.CancelledError:
             return
@@ -1241,7 +800,4 @@ async def automation_supervisor() -> None:
             await asyncio.sleep(_TICK_INTERVAL_S)
 
 
-# Last, once every name above exists: scrape_chats imports this module (its
-# `from automation_executor import _to_cents, …` needs them defined), and its
-# @register("scrape_chats") must run on importing the executor.
 from automations import scrape_chats as _scrape_chats  # noqa: E402,F401

@@ -1,19 +1,5 @@
 "use client";
 
-/**
- * MessageRowGeneric — direction-aware row for the All-Messages tab.
- *
- * Unlike MessageRow (PPV-only, price + paid/unpaid badge front-and-
- * center), this row handles all four shapes:
- *   • outbound paid     — price + PAID/UNPAID badge, employee name
- *   • outbound free     — body only, employee name
- *   • inbound  paid     — fan-purchased (rare but exists), no PAID badge
- *   • inbound  free     — body only
- *
- * Body isn't clamped to 200 chars server-side here (the All-Messages
- * endpoint uses a 2000 cap), so we line-clamp visually instead — full
- * text is in the chat link the row navigates to.
- */
 
 import Link from "next/link";
 import { ArrowDownLeft, ArrowUpRight, Clock, Eye, Megaphone, Paperclip, ShoppingBag, Users } from "lucide-react";
@@ -32,12 +18,13 @@ interface Props {
   row: PaidMessageRow;
 }
 
-/** Friendly labels for the automation_kind tokens (= grok_calls.purpose). */
 const AUTOMATION_LABELS: Record<string, string> = {
   welcome_chatter_for_info: "Info-gather",
-  of_ai_chat: "Info-gather", // pre-rename token on old rows — drop after migration 0062
+  // Pre-rename token on old rows.
+  of_ai_chat: "Info-gather",
   welcome: "Welcome",
-  deep_convo: "Deep Convo", // retired engine — legacy label so old rows still render
+  // Retired engine: legacy label so old rows still render.
+  deep_convo: "Deep Convo",
   followup: "Follow-up",
   autoreply: "Auto-reply",
   reply_mass_funnel: "Funnel reply",
@@ -46,8 +33,6 @@ const AUTOMATION_LABELS: Record<string, string> = {
   online_blast: "Online blast",
   nudge_online: "Online nudge",
   gen_info: "Profiler",
-  // Retired selling engine (deleted 2026-10-18) — legacy labels so old rows
-  // still render.
   ai_chatter: "AI Chatter",
   ai_upseller: "AI Upseller",
 };
@@ -70,14 +55,12 @@ export default function MessageRowGeneric({ row }: Props) {
   return (
     <Link
       href={`/messages-pro/${row.account_id}/${row.fan_id}`}
-      // Messages Pro's own window; this page stays put.
       onClick={(e) => onPopoutClick(e, `/messages-pro/${row.account_id}/${row.fan_id}`)}
       className="block group"
     >
       <div
         className={cn(
           "flex gap-3 p-3 border border-border rounded-xl bg-panel hover:border-border-light transition-colors",
-          // Subtle left border to make scanning direction quick at a glance.
           isInbound && "border-l-2 border-l-accent/40",
         )}
       >
@@ -135,7 +118,6 @@ export default function MessageRowGeneric({ row }: Props) {
             )}
 
             {row.reply_seconds != null && (
-              // Infloww's Reply time: since the fan's previous message.
               <Badge color="muted" title="Reply time: since the fan's previous message">
                 <Clock size={12} aria-hidden />
                 <span>{fmtDuration(row.reply_seconds) || "0:00"}</span>
@@ -151,8 +133,6 @@ export default function MessageRowGeneric({ row }: Props) {
             )}
 
             {!isInbound && (automationLabel(row.automation_kind) ? (
-              // Specific automation that sent it — beats the flat "Automation"
-              // sentinel that employee_name resolves to for every bot send.
               <Badge color="muted" className="!px-1.5 !text-[10px]">
                 <Megaphone size={10} aria-hidden />
                 <span>{automationLabel(row.automation_kind)}</span>
@@ -173,12 +153,6 @@ export default function MessageRowGeneric({ row }: Props) {
   );
 }
 
-/**
- * MassSummaryRow — one collapsed row standing in for a whole broadcast
- * (mass_run), instead of N identical per-fan rows flooding the list. Shows
- * recipient count, the automation + funnel that ran it, and the broadcast body.
- * Not a chat link (there's no single fan); it's an at-a-glance audit row.
- */
 function MassSummaryRow({ row }: Props) {
   const previewBody = ofPreviewText(row.body);
   const isPriced = row.price_cents > 0;
@@ -200,8 +174,6 @@ function MassSummaryRow({ row }: Props) {
             {row.funnel_name && (
               <span className="text-xs text-fg-dim truncate">· {row.funnel_name}</span>
             )}
-            {/* Who fired the broadcast — the denormalized "mass-<who>" tag when
-                present (survives an employee delete), else the joined name. */}
             {(row.sender_name || row.employee_name) && (
               <span className="text-[11px] text-fg-dim truncate">
                 {row.sender_name || `by ${row.employee_name}`}
@@ -236,10 +208,9 @@ function MassSummaryRow({ row }: Props) {
             </Badge>
           )}
           {(row.purchased_count ?? 0) > 0 && (
-            // Sales from our own rows (bought copies at their price) — a floor
-            // when the blast went to a list we hold few copies of.
             <Badge color="ok" title="Purchases recorded on this broadcast's copies">
               <ShoppingBag size={12} aria-hidden />
+              {/* Sales from our own rows: a floor when the blast went to a list we hold few copies of. */}
               <span>{row.purchased_count} bought · {fmtCents(row.earnings_cents ?? 0)}</span>
             </Badge>
           )}

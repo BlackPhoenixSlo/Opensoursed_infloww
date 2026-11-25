@@ -1,38 +1,18 @@
-/**
- * Whether a composer's text box is OF's rich text editor or its plain textarea, and whether the formatting toolbar
- * shows: the "Aa" button's state machine, shared by the chat Composer, the mass message and the post composers.
- * Pure, so each host's reducer folds it in (repo rule: reducers, not setState chains).
- *
- *   • "Aa" shows the toolbar and puts the text in the rich editor. Pressed again, the toolbar hides (OF's "x": the
- *     content is unchanged); with formatting in the text the editor stays (the fan still gets it), else the plain
- *     textarea is back.
- *   • Text loaded from outside (a picked script, a restored draft): formatted, it opens in the rich editor; else the
- *     box stays as the toolbar has it.
- *   • An edit never leaves the rich editor (the box would swap under the caret); only a send or "Aa" off does.
- *   • A send empties the text: the box is back to what the toolbar says.
- *   • Not allowed (a Fansly account: it never gets OF markup; its host hides "Aa"): text loaded there goes to the
- *     plain textarea, no toolbar (`loaded`'s `allowed`, required so no host can forget it).
- */
-
 export interface RichMode {
-  /** "Aa" on: the formatting toolbar shows. */
   toolbar: boolean;
-  /** The text is in the rich editor (else the plain textarea). */
   rich: boolean;
 }
 
 export const PLAIN_MODE: RichMode = { toolbar: false, rich: false };
 
 export type RichModeEvent =
-  /** "Aa" pressed; `formatted`: the text holds formatting now. */
   | { type: "aa"; formatted: boolean }
-  /** Text put in from outside (a script pick, a restore); `allowed`: the account may author OF rich text. */
   | { type: "loaded"; formatted: boolean; allowed: boolean }
-  /** The text was edited in the box. */
   | { type: "edited"; formatted: boolean }
   | { type: "sent" };
 
 export function richMode(m: RichMode, e: RichModeEvent): RichMode {
+  // A Fansly account never gets OF markup.
   if (e.type === "loaded" && !e.allowed) return m.toolbar || m.rich ? PLAIN_MODE : m;
   let next: RichMode;
   switch (e.type) {
@@ -44,7 +24,7 @@ export function richMode(m: RichMode, e: RichModeEvent): RichMode {
     case "loaded":
       next = { toolbar: m.toolbar, rich: m.toolbar || e.formatted };
       break;
-    case "edited":
+    case "edited": // an edit never leaves the rich editor: the box would swap under the caret
       next = { toolbar: m.toolbar, rich: m.rich || e.formatted };
       break;
     case "sent":

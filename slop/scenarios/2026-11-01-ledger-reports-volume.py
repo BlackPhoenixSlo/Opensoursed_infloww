@@ -1,73 +1,3 @@
-"""Ledger reports at volume (W16): Fan reports (Top fans, Traffic), the Tips tab (tips list, top
-tippers), the Message dashboard's paid broadcasts, Sales records and the Excel export, read by many
-owners of two Agencies over a big ledger, every figure against an oracle the harness computes in SQL.
-
-World: `multi_agency_big_models` (5 Agencies, 20 Creators, 3 big; Agency 0 = the UI's owner with the
-3 big Creators, Agency 1 = the scope probe) + `seed/ledger_bulk.py` on all 20 Creators: `--set n=`
-ledger rows (small 10k, medium 200k, huge 1M) over 60 days, kinds tip / tip_post / ppv_message /
-ppv_post / subscription / rebill / custom, statuses cleared / pending and the reversals chargedback /
-refunded / refund_pending / failed, 1 in 10 tips a WS-pump row with no net, 1 in 200 ledger rows with
-net 0; paid mass broadcasts (`--set runs=`, `recipients=` per Creator) whose buyers' copies are marked
-bought with their linked sale (some since refunded); 1 in 5 fans a free trial / promotion claimer
-(`link_claimers`) + `seed/earnings.py` on Agencies 0 and 1's Creators (OF Statistics' days and the
-ledger rows it caught, `history_days` 40, connected 5 days ago): its ledger rows are `transactions`
-every check's oracle reads, so they are part of each figure checked.
-
-Load (`ctx.rec.stage` "load", `--set load_s=`: small 20 s, medium 60 s): `--users` owners, half each
-Agency, each its own pool on its Agency's session, a human think time (actors/reports THINK_S, 3-15 s)
-between page loads, what to read picked from the seed: Fan reports (fan-report for one Creator or all,
-a random sort), the Tips tab (tips-list for one Creator or all + top-tippers), the Message dashboard
-(paid-messages), Sales records (sales-records), or an export (a CSV of fan-report / tips-list /
-top-tippers, route label prefixed `export `, or POST /admin/stats/xlsx with rows from the seeded fans).
-Every JSON list and CSV export a crowd read answers is scanned for another Agency's Creator. The
-owner is this file's `_owner`, not an actors/ module: no actor reads these routes (actors/reports.py
-reads the Dashboard and Creator reports), and the module stays here until a second flow needs it.
-
-Checks (after the load, route labels prefixed `check `), all against the oracle: SQL over the run's
-`transactions` / `messages` / `link_claimers`, written from the rules, never importing a product
-function: spend counts cleared + pending only (attribution_backfill.TRACKED_STATUSES), net = net_cents
-(0 included) else 80% of gross rounded down (floor), tips = tip / tip_post / tip_stream, PPV = the ppv
-family, subs = subscription + rebill; ranking by the sort key desc, then total desc, then fan id;
-Sales records list each tracked sale of a credited kind once, without subscription / rebill / referral
-(default Sales Settings leave Subscriptions unattributed); a paid broadcast's buyers are its bought
-copies whose linked sale is not a reversal. Each correctness check also needs its oracle set non-empty
-(no vacuous pass). Names: lib/ledger_reports_faults.py (rank and CSV checks one per route). Budgets
-(budget=True, stage "load"): p95 fan-report <= 1500 ms, tips-list / top-tippers <= 800 ms; p95 vs the
-last green run (P95_VS_LAST) over those and the other report routes. UI (small, UI on): Fan reports'
-Top fans cells == the fan-report rows the page read == oracle, and its Download report file == oracle
-(the side effect); the Message dashboard's Tips tab list with its next pages answering 500 at the browser
-wire (page.route) and its foot in view PAGE_ERR_WAIT_S: <= 2 next-page requests (retry: 1) and Load more
-offered, then the route lifted, Load more renders that page's rows (the side effect); screenshots
-fan-reports-settled, fan-reports-download-trigger, message-dashboard, sales-records, page-error-trigger,
-page-error-settled.
-
-Acceptance: all three crowd p95 budgets and all three isolated probe budgets are mandatory,
-independent checks at every scale. Missing samples, missing probes, non-200 probe responses, and
-latencies over budget FAIL. Probe selection never depends on historical waiver metadata. With the
-crowd stopped, tips-list reads Agency 0's 45-day first page and fan-report reads one big Creator's
-45-day report. Top-tippers runs alone for PROBE_ALONE_S with the same owners, Agency split, think
-time, windows and Tips-tab share. Big Creators remain eligible for crowd fan-report reads and exports.
-Historical known-red reasons and narrowed-run results are retained in
-slop/evidence/fd3-integration/ledger-contract/historical-contract.txt and ledger-volume-attribution.md;
-they neither waive a current failure nor turn a within-budget measurement into a stale-marker failure.
-
-Break-it-once (targets in lib/ledger_reports_faults.py): fan-report-counts-refunds (FAULT; reversals
-counted as spend: fan totals, fan-report rank, fan-report CSV, traffic), --fault=top-tippers-crosses-agency
-(top-tippers loses its Agency clamp: scope, top-tippers totals, rank and CSV),
---fault=fan-report-csv-truncates (the fan-report CSV stops at 100 rows: fan-report CSV),
---fault=fan-report-latest-claim (traffic credits each spender's newest claim: traffic),
---fault=loadmore-refires-on-error (client: the load-more sentinel loses its error gate: the page-error check).
-With the UI on,
-the UI checks of Fan reports go red too under the fan-report faults (noise, not targets: they skip
-under --no-ui, where a target would be INCONCLUSIVE).
-
-Bypasses (declared): every ledger, message, mass run and claimer row is SQL-seeded (the payouts
-ingest, the WS pump, the mass send and OF's claimer walk are not run), in the shapes those writers
-leave; the tx_rollup triggers fire on the inserts as on any write. The oracle reads the same DB rows
-the product reads (it checks the reads, not the writers). OnlyFans is never reached; in the browser
-`/api/of/*` stays held; the Tips tab's next-page 500s are answered at the browser's wire. The Message dashboard and Sales records screens are screenshot only; their
-figures are checked through the API.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -104,10 +34,9 @@ def _budget_name(route: str) -> str:
     return f"ledger reports: p95 {route} <= {P95_MS[route]} ms under the crowd (stage load)"
 
 
-# Isolated checks use the same unchanged thresholds, separately from crowd verdicts.
 PROBE_P95_MS = {FAN_ROUTE: 1500, TIPS_ROUTE: 800, TOP_ROUTE: 800}
-TIPS_TAB = (0.35, 0.6)  # the share of an owner's page loads that open the Tips tab (tips-list + top-tippers)
-PROBE_ALONE_S = 30  # top-tippers alone: how long (~170 calls at 200 owners)
+TIPS_TAB = (0.35, 0.6)
+PROBE_ALONE_S = 30
 
 TRACKED = ("cleared", "pending")
 TIP_KINDS = ("tip", "tip_post", "tip_stream")
@@ -115,11 +44,11 @@ PPV_KINDS = ("ppv", "ppv_message", "ppv_post", "ppv_stream")
 SUB_KINDS = ("subscription", "rebill")
 CREDITED = ("ppv", "ppv_message", "ppv_post", "ppv_stream", "tip", "tip_post", "tip_stream", "custom")
 SORTS = ("total", "tips", "ppv", "subs")
-SORT_COL = {"total": 0, "tips": 2, "ppv": 3, "subs": 4}  # into the oracle's (total, net, tips, ppv, subs)
+SORT_COL = {"total": 0, "tips": 2, "ppv": 3, "subs": 4}
 CSV_CAP = 50_000  # csv_export.CSV_MAX_ROWS: past it the file ends in a TRUNCATED line
 WINDOW_DAYS = 45
 TIP_PAGES = 3
-PAGE_ERR_WAIT_S = 5  # the foot in view after its next page failed (unfixed: 13 requests in 5 s, finding 133.1)
+PAGE_ERR_WAIT_S = 5  # unfixed: 13 requests in 5 s
 
 
 def _iso(dt: datetime) -> str:
@@ -127,19 +56,15 @@ def _iso(dt: datetime) -> str:
 
 
 class Window(NamedTuple):
-    """The reports' window: [lo, hi] (WINDOW_DAYS days), its last 7 days starting at `week`."""
     lo: datetime
     hi: datetime
     week: datetime
 
     def q(self, week: bool = False) -> dict[str, str]:
-        """The window as a route's from / to params."""
         return {"from": _iso(self.week if week else self.lo), "to": _iso(self.hi)}
 
 
 class Menu(NamedTuple):
-    """What one Agency's owners may read: its Creators (tips-list, top-tippers and their exports), the
-    including big Creators for fan-report and its export, and the rows an XLSX export posts."""
     creators: list[str]
     fan_rows: list
 
@@ -153,7 +78,6 @@ def _marks(vals) -> str:
 
 
 def _fmt_cents(c: int) -> str:
-    """app/lib/format.ts fmtCentsBlankZero: whole dollars (JS Math.round), commas, '—' for 0."""
     if not c:
         return "—"
     d = math.floor(abs(c) / 100 + 0.5)
@@ -169,7 +93,6 @@ def _parse_csv(text: str) -> tuple[list[dict], bool]:
     return [dict(zip(header, r)) for r in (body[:-1] if truncated else body)], truncated
 
 
-# ── The oracle: the harness's own reading of the run's DB. ───────────────────
 
 def _rows(w, sql: str, params: list) -> list[tuple]:
     con = w.sql()
@@ -180,7 +103,6 @@ def _rows(w, sql: str, params: list) -> list[tuple]:
 
 
 def oracle_fans(w, accounts, lo: datetime, hi: datetime) -> dict[tuple[str, int], tuple[int, ...]]:
-    """(account, fan) -> (total, net_or_80, tips, ppv, subs) over tracked sales in [lo, hi]."""
     rows = _rows(
         w, "SELECT account_id, fan_id, SUM(amount_cents), SUM(COALESCE(net_cents, CASE WHEN amount_cents >= 0 "
         "THEN amount_cents * 8 / 10 ELSE -((-amount_cents * 8 + 9) / 10) END)), "
@@ -199,7 +121,6 @@ def ranked(fans: dict, sort: str) -> list[tuple[str, int]]:
 
 
 def oracle_tips(w, accounts, lo, hi) -> list[tuple[int, str, int | None, int]]:
-    """Every tracked tip, newest id first: (id, account, fan, amount)."""
     return _rows(
         w, f"SELECT id, account_id, fan_id, amount_cents FROM transactions WHERE kind IN {_marks(TIP_KINDS)} "
         f"AND status IN {_marks(TRACKED)} AND occurred_at >= ? AND occurred_at <= ? AND account_id IN "
@@ -216,7 +137,6 @@ def tippers_of(tips) -> dict[tuple[str, int], tuple[int, int]]:
 
 
 def oracle_sales(w, accounts, lo, hi) -> list[tuple[int, int]]:
-    """Sales records' sales, newest first: (id, gross)."""
     return _rows(
         w, f"SELECT id, amount_cents FROM transactions WHERE account_id IN {_marks(accounts)} AND status IN "
         f"{_marks(TRACKED)} AND kind IN {_marks(CREDITED)} AND occurred_at >= ? AND occurred_at <= ? "
@@ -224,8 +144,6 @@ def oracle_sales(w, accounts, lo, hi) -> list[tuple[int, int]]:
 
 
 def oracle_traffic(w, accounts, fans: dict) -> dict[tuple, tuple[int, int]]:
-    """(account, kind, of_id) -> (fans, total): each spender under his earliest claim
-    (OF's subscribe_at, else first seen; then the claim's id), the rest (account, None, None)."""
     first: dict[tuple[str, int], tuple] = {}
     for cid, a, f, kind, of_id, sub, seen in _rows(
             w, "SELECT id, account_id, fan_id, kind, of_id, subscribe_at, first_seen_at FROM link_claimers "
@@ -243,7 +161,6 @@ def oracle_traffic(w, accounts, fans: dict) -> dict[tuple, tuple[int, int]]:
 
 
 def oracle_paid(w, accounts, lo, hi) -> dict[int, dict]:
-    """Paid broadcasts with a copy in [lo, hi]: run -> account, recipients, buyers, earnings."""
     runs = {int(r): {"account_id": a, "recipients": int(n), "buyers": 0, "earnings": 0} for r, a, n in _rows(
         w, f"SELECT r.id, r.account_id, r.recipient_count FROM mass_runs r WHERE r.account_id IN {_marks(accounts)} "
         "AND EXISTS (SELECT 1 FROM messages m WHERE m.mass_run_id = r.id AND m.direction = 'out' AND "
@@ -260,10 +177,8 @@ def oracle_paid(w, accounts, lo, hi) -> dict[int, dict]:
     return runs
 
 
-# ── Scope and the check phase's reads. ───────────────────────────────────────
 
 class Scope:
-    """Every account id a list answered, per Agency, against that Agency's Creators."""
 
     def __init__(self, accounts: dict[int, set[str]]):
         self.accounts, self.foreign, self.lists = accounts, defaultdict(set), 0
@@ -290,7 +205,6 @@ def _next_sent(body: dict) -> dict:
 
 
 class Checks:
-    """The check phase's reads (route labels `check `, scanned for scope) and failures per check name."""
 
     def __init__(self, http: dict, scope: Scope):
         self.h = {i: h.share(limits=4) for i, h in http.items()}
@@ -315,7 +229,6 @@ class Checks:
         return r.status_code, rows, trunc
 
     async def pages(self, i: int, path: str, cursor, max_pages: int, **q) -> tuple[int, list[dict]]:
-        """Every row of up to `max_pages` keyset pages; `cursor(body)` is the next page's params ({} = last)."""
         rows: list[dict] = []
         cur: dict = {}
         for _ in range(max_pages):
@@ -333,16 +246,14 @@ class Checks:
             await h.aclose()
 
 
-# ── The crowd. ───────────────────────────────────────────────────────────────
 
 async def _owner(*, pool, export, ag: int, menu: Menu, windows: list[dict], stop, rng, scope: Scope) -> int:
-    """One owner: page loads until `stop`, a human think time between; what to read from `rng` and `menu` only."""
     done = 0
     await asyncio.sleep(rng.uniform(0, THINK_S[1]))
     while not stop.is_set():
         win = rng.choice(windows)
         x = rng.random()
-        reads: list[tuple] = []  # (pool, method, path, json body or None)
+        reads: list[tuple] = []
         if x < TIPS_TAB[0]:
             q = {**win, "sort": rng.choice(SORTS)}
             if rng.random() < 0.75:
@@ -386,7 +297,6 @@ async def _owner(*, pool, export, ag: int, menu: Menu, windows: list[dict], stop
 
 
 def _owners(users: int) -> dict[int, int]:
-    """Owners per Agency: half each, the odd one to Agency 0."""
     return {i: max(1, users // 2 + (users % 2 if i == 0 else 0)) for i in (0, 1)}
 
 
@@ -412,7 +322,6 @@ async def _load(ctx, *, http: dict, menus: dict[int, Menu], windows: list[dict],
 
 
 def _probe_stats(calls: list[tuple[int, float]], **detail) -> dict:
-    """A probe's calls (status, ms) -> n, status counts, p95; `ok` only if every call answered 200."""
     lat = sorted(ms for _, ms in calls)
     status: dict[int, int] = defaultdict(int)
     for st, _ in calls:
@@ -431,9 +340,6 @@ async def _timed(h, path: str, timeout: float) -> tuple[int, float]:
 
 
 async def _alone(ctx, *, http: dict, windows: list[dict]) -> dict:
-    """top-tippers alone, the rest of the crowd stopped: every owner of both Agencies (the crowd's split,
-    think time and windows) reads it Agency-wide on the page loads that open the Tips tab, for
-    PROBE_ALONE_S; the other page loads read nothing."""
     per = _owners(ctx.users)
     pools = {i: http[i].share(limits=max(10, per[i])) for i in (0, 1)}
     for h in pools.values():
@@ -461,7 +367,6 @@ async def _alone(ctx, *, http: dict, windows: list[dict]) -> dict:
 
 async def _probes(ctx, *, w, http: dict, big: set, win: Window, o_fans0: dict,
                   o_tips0: list) -> dict:
-    """All three required isolated probes, independent of historical findings."""
     out = {TOP_ROUTE: await _alone(ctx, http=http, windows=[win.q(), win.q(week=True)])}
     if big:
         probe = ctx.owner.share(limits=1)
@@ -482,7 +387,6 @@ async def _probes(ctx, *, w, http: dict, big: set, win: Window, o_fans0: dict,
 
 
 def _budgets(ctx, probes: dict) -> None:
-    """Crowd and isolated budgets stand independently; absent evidence fails closed."""
     routes = ctx.rec.summary("load")
     for route, budget in P95_MS.items():
         sample = routes.get(route) or {}
@@ -497,8 +401,6 @@ def _budgets(ctx, probes: dict) -> None:
                  and status == {200: probe["n"]} and latency is not None)
         ctx.check(f"ledger reports: p95 {route} <= {budget} ms isolated probe",
                   valid and latency <= budget, budget=True, probe=probe, users=ctx.users)
-    # Every route with samples, so the stock check lists the thin ones as skipped; none when no route
-    # reaches P95_VS_LAST_MIN_N (a short small run): the stock check fails a comparison of 0 routes.
     seen = [r for r in (*P95_MS, *P95_ALSO)
             if routes.get(r, {}).get("n", 0) > 0 and routes[r].get("p95_ms") is not None]
     if any(routes[r]["n"] >= P95_VS_LAST_MIN_N for r in seen):
@@ -506,7 +408,6 @@ def _budgets(ctx, probes: dict) -> None:
         ctx.metric("p95_vs_last_green_n", {r: routes[r]["n"] for r in seen})
 
 
-# ── The check sections. ──────────────────────────────────────────────────────
 
 def _fan_vals(r) -> tuple[int, ...]:
     return tuple(int(r[k]) for k in ("total_cents", "net_or_80_cents", "tips_cents", "ppv_cents", "subs_cents"))
@@ -523,7 +424,6 @@ def _cmp_fans(ck: Checks, where: str, rows: list, want: dict, order: list, limit
 
 
 def _cmp_tips(ck: Checks, where: str, st: int, rows: list, want: list, n: int) -> list[tuple[int, int]]:
-    """tips-list JSON rows vs the oracle's newest `n` tips; returns the rows' (id, amount)."""
     got = [(r["transaction_id"], r["amount_cents"]) for r in rows]
     exp = [(t[0], t[3]) for t in want[:n]]
     if st != 200 or got != exp:
@@ -533,7 +433,6 @@ def _cmp_tips(ck: Checks, where: str, st: int, rows: list, want: list, n: int) -
 
 
 def _cmp_tippers(ck: Checks, where: str, st: int, body: dict | None, tippers: dict, limit: int) -> list[dict]:
-    """top-tippers JSON vs the oracle's tippers: totals / counts (TOP_TOTALS), rank (TOP_RANK); returns its rows."""
     rows = (body or {}).get("rows", [])
     wrong = [r for r in rows if tippers.get((r["account_id"], r["fan_id"])) != (r["total_cents"], r["tip_count"])]
     if st != 200 or wrong:
@@ -545,11 +444,9 @@ def _cmp_tippers(ck: Checks, where: str, st: int, body: dict | None, tippers: di
 
 
 async def _fan_report(ck: Checks, w, mine, o_fans, win: Window) -> dict:
-    """Agency-wide fan-report per sort key and limit; its total / 100 read's traffic, and that read's
-    Top fans through the XLSX export (Agency 0). Returns the XLSX check's detail."""
     xlsx: dict = {"ok": False, "error": "never read"}
     for i in (0, 1):
-        first: tuple = (None, None)  # the total / 100 read
+        first: tuple = (None, None)
         for sort in SORTS:
             order = ranked(o_fans[i], sort)
             for limit in (100, 5000):
@@ -580,7 +477,6 @@ async def _fan_report(ck: Checks, w, mine, o_fans, win: Window) -> dict:
 
 
 async def _per_creator_fans(ck: Checks, mine, o_fans, win: Window) -> None:
-    """Per Creator: fan-report JSON (limit 5000) and its CSV, one sort key each."""
     for i in (0, 1):
         for ci, aid in enumerate(mine[i]):
             sort = SORTS[ci % len(SORTS)]
@@ -603,8 +499,6 @@ async def _per_creator_fans(ck: Checks, mine, o_fans, win: Window) -> None:
 
 
 async def _tips(ck: Checks, mine, o_tips, win: Window) -> None:
-    """Per Creator: tips-list pages + CSV, top-tippers JSON + CSV (the window); then each Agency's own
-    Tips tab reads (tips-list first page, top-tippers)."""
     for i in (0, 1):
         for aid in mine[i]:
             tips = [t for t in o_tips[i] if t[1] == aid]
@@ -638,7 +532,6 @@ async def _tips(ck: Checks, mine, o_tips, win: Window) -> None:
 
 
 async def _paid(ck: Checks, o_paid, win: Window) -> None:
-    """Paid broadcasts (Message dashboard, mass tab): every run once, with its figures."""
     for i in (0, 1):
         want = o_paid[i]
         st, rows = await ck.pages(i, "/admin/paid-messages", _next_sent, 50, **win.q(), kind="mass", type="paid",
@@ -654,10 +547,9 @@ async def _paid(ck: Checks, o_paid, win: Window) -> None:
 
 
 async def _sales(ck: Checks, w, mine, big: set, win: Window) -> None:
-    """Sales records: one Creator per Agency that is not big, JSON pages and CSV; Agency 1 whole as CSV."""
     q = win.q()
     for i in (0, 1):
-        aid = next(a for a in mine[i] if a not in big)  # run() checks each Agency has one
+        aid = next(a for a in mine[i] if a not in big)
         want = oracle_sales(w, [aid], win.lo, win.hi)
         st, rows = await ck.pages(i, "/admin/stats/sales-records", _next_id, 400, **q, account_id=aid, limit=500)
         got = [(r["tx_id"], r["gross_cents"]) for r in rows]
@@ -675,7 +567,6 @@ async def _sales(ck: Checks, w, mine, big: set, win: Window) -> None:
 
 
 async def _refusals(ck: Checks, mine, win: Window) -> dict[str, int]:
-    """A foreign Creator id on every list: each answer's status (403 / 404 = refused)."""
     out = {}
     for i, other in ((1, mine[0][0]), (0, mine[1][0])):
         for path in ("/admin/stats/fan-report", "/admin/tips-list", "/admin/top-tippers", "/admin/paid-messages",
@@ -716,11 +607,10 @@ async def run(ctx) -> None:
     menus = {i: Menu(creators=mine[i],
                      fan_rows=[[names.get(k, str(k[1])), o_fans[i][k][0]] for k in ranked(o_fans[i], "total")[:1000]])
              for i in (0, 1)}
-    for i in menus:  # the Sales records check needs a Creator that is not big
+    for i in menus:
         if not set(mine[i]) - big:
             raise RuntimeError(f"Agency {i}: no Creator that is not big ({mine[i]}); the world changed")
 
-    # ── Load: owners of both Agencies read the reports. ──────────────────────
     http = {0: ctx.owner, 1: w.data["agencies"][1]["http"]}
     ctx.metric("page_loads", await _load(ctx, http=http, menus=menus, windows=[win.q(), win.q(week=True)],
                                          load_s=load_s, scope=scope))
@@ -728,7 +618,6 @@ async def run(ctx) -> None:
                            o_tips0=o_tips[0])
     _budgets(ctx, probes)
 
-    # ── Checks, against the oracle. ──────────────────────────────────────────
     ck = Checks(http, scope)
     o_paid = {i: oracle_paid(w, mine[i], win.lo, win.hi) for i in (0, 1)}
     xlsx = await _fan_report(ck, w, mine, o_fans, win)
@@ -742,7 +631,6 @@ async def run(ctx) -> None:
     fans_ok, tips_ok = all(o_fans.values()), all(o_tips.values())
     each = {i: len(mine[i]) for i in (0, 1)}
     ctx.check(XLSX, **xlsx)
-    # (check, its oracle set non-empty, extra detail); PAID / SALES need theirs per comparison.
     for name, ready, extra in (
             (FAN_TOTALS, fans_ok, {"fans": {i: len(o_fans[i]) for i in (0, 1)}, "window": win.q()}),
             (FAN_RANK, fans_ok, {}),
@@ -770,7 +658,7 @@ async def run(ctx) -> None:
 async def _ui(ctx, w, mine: list[str]) -> None:
     async with ui.owner_browser(ctx, viewport=(1600, 1000)) as page:
         hits = await _fan_reports(ctx, w, page)
-        await _page_error(ctx, page)  # its own list, so it runs whether or not Fan reports showed rows
+        await _page_error(ctx, page)
     ctx.metric("ui", {"creators": mine, "fan_report_reads": len(hits)})
 
 
@@ -787,7 +675,7 @@ async def _fan_reports(ctx, w, page) -> list:
         ctx.check(UI_TOTALS, False, error=f"no Top fans rows: {type(e).__name__}")
         ctx.skip(UI_SIDE, "the Fan reports page never showed its rows")
         return hits
-    await page.wait_for_timeout(1500)  # a refetch after the Applied settings landed
+    await page.wait_for_timeout(1500)
     texts = await cells.all_inner_texts()
     resp = hits[-1] if hits else None
     body = await resp.json() if resp else {}
@@ -845,9 +733,6 @@ _TIP_ROWS_JS = """() => {
 
 
 async def _page_error(ctx, page) -> None:
-    """PAGE_ERR_BOUNDED: every Tips tab list read with a cursor (`before_id`, its next pages) answers 500 at the
-    browser's wire (page.route, set before the tab opens), the list's foot scrolled into view for PAGE_ERR_WAIT_S;
-    then the route lifted and Load more clicked, the next page's rows must render (the side effect)."""
     def is_next(u: str) -> bool:
         s = urlsplit(u)
         return s.path.endswith("/admin/tips-list") and "before_id=" in s.query and "format=csv" not in s.query

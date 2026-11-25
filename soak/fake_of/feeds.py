@@ -1,26 +1,3 @@
-"""Feed and profile reads of the fake OnlyFans (Phase 6 ticket 95: the Tips, story strip, highlights and payout-row
-read proofs). Synthetic answers in the shape the app's binders read today; read only, no write is modelled.
-
-Mounted from app.py:
-  GET  /users/notifications?type=tip|tipped   the same tip rows for both filters (any other type: growth's / app's)
-  GET  /stories                               Home's strip as the Relay reads it (of_reads `stories_feed`): creators
-                                              with their stories
-  GET  /stories/map                           OnlyFans's own strip read (of_reads.py `stories_feed` docstring, OF's
-                                              JS endpoint list): one stub per creator, `{storyId, userId, isWatched}`
-  GET  /stories/items?map[<userId>]=<storyId> the stories of each creator named in `map`
-  GET  /users/{id}/stories                    the Creator's own active stories: none
-  GET  /users/{id}/stories/highlights         My profile's highlight row, shaped as profile-highlights.json
-  GET  /stories/highlights/{id}               one highlight with its stories (`{..., stories: [...]}`)
-  GET  /streams/feed                          Home's streams: none
-  GET  /payouts/requests[/referral]           payout request rows, shaped as statistics-payout-requests.json
-
-ASSUMPTION: `/stories/map` answers a bare list of stubs and `/stories/items` a bare list of stories each carrying its
-`userId` (rung 5: only the paths and the stub keys are known from OF's JS, no live answer is recorded, 02-gaps G5);
-overturned by ticket 12's capture, which then reshapes these two answers and the strip proof's reader with them.
-Every picture is on vault.CDN_HOST, rewritten to this fake's `/cdn` by the harness's Relay (vault.py). A `{id}` in a
-path is not checked against the Creator: the app reads the Creator's id as a JS number, so an 18-digit soak id reaches
-the Relay rounded.
-"""
 from __future__ import annotations
 
 import re
@@ -36,7 +13,6 @@ from soak.fake_of.vault import CDN_HOST
 from soak.world import iso, now_utc
 
 TIP_ROWS = 3
-# (creator n, stories, all watched): the third creator's tile sits after "Start profile promotion" (`m-viewed`).
 STRIP = ((1, 2, False), (2, 1, False), (3, 1, True))
 HIGHLIGHTS = ((1, "Soak highlight 1", 2), (2, "Soak highlight 2", 1))
 PAYOUTS = (("approved", 85.23, None), ("new", 40, None), ("rejected", 12.5, "Soak reason: payout method not verified"))
@@ -55,7 +31,6 @@ def _photo(key: str) -> dict[str, Any]:
                       "preview": {"url": f"{base}/750x750.png?Policy=soak", "width": 750, "height": 750}}}
 
 
-# ── Tips ──
 
 def tip_rows(world) -> list[dict[str, Any]]:
     out = []
@@ -71,7 +46,7 @@ def tip_rows(world) -> list[dict[str, Any]]:
 
 async def _notifications(fake, req: Request, ok) -> Response:
     if req.query_params.get("type") not in ("tip", "tipped"):
-        from soak.fake_of import growth as _growth   # app.py imports this module after growth
+        from soak.fake_of import growth as _growth
         return await _growth._notifications(fake, req, ok)
     rows = tip_rows(fake.world)
     p = req.query_params
@@ -80,7 +55,6 @@ async def _notifications(fake, req: Request, ok) -> Response:
     return ok(req, {"list": page, "hasMore": off + len(page) < len(rows)})
 
 
-# ── Home's story strip ──
 
 def _story(n: int, user_id: int, watched: bool, hours: int) -> dict[str, Any]:
     m = _photo(f"story/{n}")
@@ -131,7 +105,6 @@ async def _streams(fake, req: Request, ok) -> Response:
     return ok(req, {"list": []})
 
 
-# ── My profile's highlights ──
 
 def highlights(world) -> list[dict[str, Any]]:
     out, n = [], 100
@@ -160,7 +133,6 @@ async def _highlight(fake, req: Request, ok, hid: str) -> Response:
     return ok(req, h)
 
 
-# ── Statements payout rows ──
 
 def payout_rows(rows, first: int) -> list[dict[str, Any]]:
     tpl = render._tpl("statistics-payout-requests.json", "list", 0)

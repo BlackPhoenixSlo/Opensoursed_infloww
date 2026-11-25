@@ -1,39 +1,3 @@
-"""Formatted scripts (OF rich text, PR #233 + its service gaps): saved through Growth > Scripts, then sent: to Fansly
-fans as the plain text a fan reads (Fansly renders `content` literally), to OnlyFans as OF's allow-listed markup.
-
-World: `agency_inbox` (small 3 Creators x 50 fans, medium 10 x 500). The last `--fansly_creators=` (FLOW_SIZES
-`rich_text_fansly_creators`) are Fansly accounts (seed/fansly_accounts.py: meta `platform: fansly` + a captured
-session, so the relay builds its REAL `FanslyShimClient`), Fansly's API the loopback fake of lib/fansly_relay.py
-(armed here); the rest OnlyFans Creators with a captured session (seed/of_sessions) against lib/of_wire.py
-(`OF_WIRE`), so the relay's real `OFClient` posts.
-
-Flow:
-  S  per Creator, every script of SCRIPTS (hostile markup included) through the real `POST /admin/saved-replies`
-     (`--users` at once), then the over-limit bodies (6501 plain characters, bare and in markup) on create and on
-     update of the Creator's first script, and the 6500 edge inside heavy markup.
-  F  the picker's send: `--sends=` (FLOW_SIZES `rich_text_sends`) sends over the Fansly Creators' fans, each the
-     stored text of a script read back from `GET /admin/saved-replies`, through the real
-     `POST /api/of/v2/chats/{fan}/messages`; a fan's sends one after another (a chatter's), `--users` fans at once.
-  P  per OnlyFans Creator, every script's stored text as a feed post (`POST /api/of/v2/posts`), all at once.
-
-Checks (names in lib/rich_text_faults.py); every expected value is written out in SCRIPTS, never computed by the
-product's of_rich_text:
-  SAVED         each create 200 with the script's allow-listed text; its saved_replies row (SQL) holds exactly it.
-  OVER          every over-limit create / update 400; no row with it (SQL), the updated script unchanged; the 6500
-                edge 200.
-  FANSLY_PLAIN  every Fansly wire `POST /api/v1/message` `content` == the script's plain text.
-  FANSLY_SENT   every send 200; the fake got exactly one `POST /message` per send, each signed, with that Creator's
-                token, per fan one minted group, nothing unmodelled.
-  POST_MARKUP   every OF wire `POST /api2/v2/posts` text == the script's allow-listed markup.
-Budgets: p95 of the send (F) and the save (S) at --users, both vs the last green run; stock no 5xx / Traceback.
-
-Break-it-once: fansly-sends-markup (the scenario's FAULT: the Fansly shim sends the word guard's output, OF markup
-raw, as before the fix) turns FANSLY_PLAIN red, nothing else.
-
-Bypasses (declared): Fansly is lib/fansly_relay.py's fake (its docstring); OnlyFans is lib/of_wire.py's. The owner
-calls are httpx pools, not the app: the picker's pick is a read of the stored text, then the send route the
-composer calls with it.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -56,7 +20,6 @@ P95_VS_LAST = (2.0, 2000)
 CALL_TIMEOUT_S = 120
 
 _BLUE = '<span class="m-editor-fs__l m-editor-fc__blue-1">'
-# (title, text sent to the route, stored = OF's allow-list, plain = what a Fansly fan reads)
 SCRIPTS = [
     ("rt bold blue", f"<p><strong>{_BLUE}Hey babe</span></strong></p>",
      f"<p><strong>{_BLUE}Hey babe</span></strong></p>", "Hey babe"),
@@ -71,7 +34,7 @@ SCRIPTS = [
     ("rt plain", "plain <3 u & <VIP20>", "plain <3 u & <VIP20>", "plain <3 u & <VIP20>"),
 ]
 OVER_BODIES = ["x" * 6501, "<p>" + "y" * 6501 + "</p>"]
-EDGE = "<p>" + (_BLUE + "z" * 100 + "</span>") * 65 + "</p>"   # 6500 plain characters, ~9.5k raw
+EDGE = "<p>" + (_BLUE + "z" * 100 + "</span>") * 65 + "</p>"
 
 
 
@@ -88,7 +51,6 @@ async def run(ctx) -> None:
     by_title = {t: (raw, stored, plain) for t, raw, stored, plain in SCRIPTS}
     http = ctx.owner.share(limits=ctx.users + 8)
 
-    # ── S: save every script on every Creator, then the over-limit bodies ─────
     saves: dict[tuple[str, str], dict] = {}
 
     async def save(job: tuple[str, str]) -> None:
@@ -112,8 +74,7 @@ async def run(ctx) -> None:
     edge = await http.post(f"/admin/saved-replies?account_id={creators[0]['id']}",
                            json={"title": "rt edge", "text": EDGE})
 
-    # ── F: Fansly sends of the stored scripts, per fan in order ───────────────
-    stored: dict[str, dict[str, str]] = {}   # aid -> title -> text as the picker reads it
+    stored: dict[str, dict[str, str]] = {}
     for c in fansly_cs:
         r = await http.get(f"/admin/saved-replies?account_id={c['id']}")
         stored[c["id"]] = {x["title"]: x["text"] for x in (r.json()["list"] if r.status_code == 200 else [])}
@@ -137,7 +98,6 @@ async def run(ctx) -> None:
     send_s = time.time() - t0
     ctx.rec.stage = None
 
-    # ── P: OF posts of the stored scripts ─────────────────────────────────────
     posted: list[dict] = []
 
     async def post(job: tuple[str, str]) -> None:
@@ -149,7 +109,6 @@ async def run(ctx) -> None:
     await asyncio.gather(*(post((c["id"], t)) for c in of_cs for t, *_ in SCRIPTS))
     await http.aclose()
 
-    # ── SAVED / OVER: the route's answers and the rows (SQL) ──────────────────
     con = w.sql()
     try:
         rows = defaultdict(list)
@@ -169,7 +128,6 @@ async def run(ctx) -> None:
               over=Counter(f"{o['op']} {o['status']}" for o in over), rows_with_over=over_rows[:5],
               edge=edge.status_code)
 
-    # ── FANSLY: the fake's wire ───────────────────────────────────────────────
     r = await ctx.owner.get("/__slop/fansly/calls")
     fw = r.json()
     calls = fw["calls"]
@@ -178,7 +136,7 @@ async def run(ctx) -> None:
     groups = [c for c in calls if c["method"] == "POST" and c["path"] == "/api/v1/group"]
     fan_of = {g["id"]: (tok.get(g["token"]), str(g["body"]["users"][1]["userId"])) for g in groups}
     per_fan_groups = Counter(fan_of.values())
-    got = defaultdict(list)   # (aid, fan) -> wire contents in arrival order
+    got = defaultdict(list)
     for m in msgs:
         got[fan_of.get(str(m["body"].get("groupId")), ("?", "?"))].append(m["body"].get("content"))
     want = {(a, str(f)): [by_title[t][2] for t in v] for (a, f), v in plan.items()}
@@ -193,7 +151,6 @@ async def run(ctx) -> None:
               fans=len(plan), unmodelled=fw["unmodelled"],
               failed=[s for s in sends if s["status"] != 200][:5])
 
-    # ── POST_MARKUP: OF's wire ────────────────────────────────────────────────
     fake = ctx.of_wire
     with fake.lock:
         of_posts = {a: [p.get("text") for p in v] for a, v in fake.posts.items()}
@@ -204,7 +161,6 @@ async def run(ctx) -> None:
               diff={a: dict(got_posts.get(a, Counter()) - want_posts[a]) for a in want_posts
                     if got_posts.get(a) != want_posts[a]})
 
-    # ── budgets ───────────────────────────────────────────────────────────────
     routes = {**ctx.rec.summary("save"), **ctx.rec.summary("send")}
     for route, budget in P95_MS.items():
         if route not in routes:

@@ -1,20 +1,3 @@
-"""`slop/run <args> --share`: a Shared run (CONTEXT.md). An exact concurrent request (the same argument vector in
-the same order, checkout, working directory, source and caller env: the Run identity, lib/identity.py) waits
-outside the machine gate for the live run and prints its output, prefixed by one `slop: shared run of pid N
-(started T)` line, and exits with its exit code. Never an earlier finished run. Opt-in only: no env var turns it
-on, nightly never passes it, refused with --map and nightly. Per checkout (files in its gitignored
-slop/evidence/.share/, all kept: a run's log is small; delete them by hand only while no `--share` run is live):
-
-  <key>.lock                  flock only, never unlinked: the leader holds LOCK_EX for its whole run
-  <key>.json                  the live generation {nonce, pid, pid_start, argv, cwd, checkout, source_id, env_id,
-                              started}; the leader is live while pid runs with start time pid_start (lib/procs.py)
-  <key>.<nonce>.log           the leader's tee'd output; never rewritten once its result exists
-  <key>.<nonce>.result.json   {nonce, exit, source_id_end, finished}; never written for a cancelled leader
-
-A follower ends INFRA exit 3, with the leader's log, when the leader was cancelled or died without a result,
-its source changed during the run (no re-key, no re-election, no automatic re-run: re-run), the leader did not
-publish within PUBLISH_WAIT_S, or SLOP_SHARE_WAIT_S ran out; its own cancellation stops only itself (exit 3).
-Stdlib only (`slop/run` starts it with python3, before the gate). Tests: lib/test_share.py."""
 from __future__ import annotations
 
 import contextlib
@@ -31,22 +14,24 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))  # run as a script by slop/run
+    sys.path.insert(0, str(ROOT))
 
 from slop.lib import identity, procs  # noqa: E402
 from slop.lib.report import EVIDENCE, write_atomic  # noqa: E402
 
 FLAG = "--share"
-WAIT_S = 7200  # SLOP_SHARE_WAIT_S default: gate slot wait 3600 + scenario timeout 1800 + admission margin
-PUBLISH_WAIT_S, STEP_S = 10, 0.2  # a leader holding the lock may not have written <key>.json yet
-START_CHECK_S = 5  # a follower checks its leader's start time (pid reuse) this often; its pid every STEP_S
+# gate slot wait 3600 + scenario timeout 1800 + admission margin
+WAIT_S = 7200
+# a leader holding the lock may not have written <key>.json yet
+PUBLISH_WAIT_S, STEP_S = 10, 0.2
+START_CHECK_S = 5
 INFRA = 3
 SIGS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-_held: list[int] | None = None  # set by _deferred(): signals are recorded, raised when it ends
+_held: list[int] | None = None
 
 
 class Stopped(Exception):
-    """SIGINT/SIGTERM/SIGHUP to this process (later ones are ignored while it cleans up)."""
+    pass
 
 
 def key(argv: list[str], checkout: Path, cwd: str, source_id: str, env_id: str) -> str:
@@ -64,7 +49,7 @@ def main(argv: list[str], *, run: list[str] | None = None, root: Path | str = RO
     run = run or [str(ROOT / "slop" / "run")]
     try:
         src = identity.source_id(root)
-    except Exception as e:  # no identity, no sharing: a Fresh run is always correct
+    except Exception as e:
         print(f"slop: WARN --share: source_id unreadable ({type(e).__name__}: {e}); running fresh", flush=True)
         os.execvp(run[0], [*run, *args])
     env = identity.env_id(os.environ)[0]
@@ -87,32 +72,31 @@ def main(argv: list[str], *, run: list[str] | None = None, root: Path | str = RO
                 meta = _read(d / f"{k}.json")
                 if meta and not (d / f"{k}.{meta['nonce']}.result.json").exists() and _leader_alive(meta):
                     return _follow(fd, d, k, meta, wait_s)
-                if time.monotonic() >= end:  # a finished, dead or missing generation and the lock still held
+                if time.monotonic() >= end:
                     print(f"slop: INFRA shared run did not publish within {PUBLISH_WAIT_S}s "
                           f"(lock held, no live generation in {d / k}.json); re-run", flush=True)
                     return INFRA
                 time.sleep(STEP_S)
-        except Stopped as e:  # a follower, or a request that has not published: a leader handles its own
+        except Stopped as e:
             print(f"slop: INFRA shared run: stopped ({e}) before running a child; a live leader keeps running",
                   flush=True)
             return INFRA
         finally:
-            os.close(fd)  # the lock goes with it
+            os.close(fd)
 
 
 def _lead(d: Path, k: str, meta: dict, run: list[str], root: Path) -> int:
-    """Publish this generation, run the child (it queues for the gate itself), tee its output, then the result.
-    Cancelled anywhere from publication until the result write starts: stop the child as nightly does, no result."""
     nonce, p, out = meta["nonce"], None, sys.stdout.buffer
     with open(d / f"{k}.{nonce}.log", "wb") as log:
         try:
             write_atomic(d / f"{k}.json", json.dumps(meta) + "\n")
-            with _deferred():  # a signal inside Popen must not leave its child unsupervised
+            # a signal inside Popen must not leave its child unsupervised
+            with _deferred():
                 p = subprocess.Popen([*run, *meta["argv"]], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, start_new_session=True)
             _tee(p.stdout, out, log)
             code = _shell_code(p.wait())
-            with _deferred(raising=False):  # finished: publish; a signal now is dropped, the result stands
+            with _deferred(raising=False):
                 try:
                     end = identity.source_id(root)
                 except Exception:
@@ -122,27 +106,25 @@ def _lead(d: Path, k: str, meta: dict, run: list[str], root: Path) -> int:
                      "finished": time.strftime("%Y-%m-%dT%H:%M:%S%z")}) + "\n")
             return code
         except Stopped as e:
-            procs.stop_child(p)  # SIGINT, its whole tree after 60 s; nothing if no child yet
+            procs.stop_child(p)
             if p is not None:
                 _tee(p.stdout, out, log)
             _tee([f"slop: INFRA shared run: leader cancelled ({e}); no result published\n".encode()], out, log)
             if p is not None:
                 p.wait()
-            return INFRA  # cancelled: never the child's code (a child stopped by SIGINT may exit 0)
+            return INFRA
         finally:
-            if p is not None and p.poll() is None:  # crashed in here: never leave a stack behind ungated
+            if p is not None and p.poll() is None:
                 procs.kill_tree(p)
 
 
 def _follow(fd: int, d: Path, k: str, meta: dict, wait_s: float) -> int:
-    """Wait (no gate slot, no stack) for this nonce's result, or for its leader to be gone; replay its files.
-    Polled, never a blocking lock: a later generation may hold the lock long after this one's result exists."""
     pid, nonce = meta["pid"], meta["nonce"]
     res_path = d / f"{k}.{nonce}.result.json"
     print(f"slop: shared run of pid {pid} (started {meta.get('started')})", flush=True)
     end, timed_out, checked = time.monotonic() + wait_s, False, -START_CHECK_S
 
-    def leader_alive() -> bool:  # pid per poll; its start time (a `ps` off Linux) at most every START_CHECK_S
+    def leader_alive() -> bool:
         nonlocal checked
         if not procs.exists(pid):
             return False
@@ -171,7 +153,6 @@ def _follow(fd: int, d: Path, k: str, meta: dict, wait_s: float) -> int:
 
 
 def _leader_alive(meta: dict) -> bool:
-    """The generation's leader still runs: its pid, with its recorded start time (a reused pid is not it)."""
     pid = meta.get("pid")
     return isinstance(pid, int) and procs.alive(pid, meta.get("pid_start"))
 
@@ -185,7 +166,7 @@ def _trylock(fd: int, kind: int) -> bool:
 
 
 def _shell_code(code: int) -> int:
-    return 128 - code if code < 0 else code  # a signal exit as a shell reports it
+    return 128 - code if code < 0 else code
 
 
 def _tee(src, out, log) -> None:
@@ -193,7 +174,7 @@ def _tee(src, out, log) -> None:
     for line in lines:
         log.write(line)
         log.flush()
-        with contextlib.suppress(BrokenPipeError):  # our caller gone: the run still finishes for followers
+        with contextlib.suppress(BrokenPipeError):
             out.write(line)
             out.flush()
 
@@ -207,7 +188,6 @@ def _read(p: Path) -> dict | None:
 
 @contextlib.contextmanager
 def _deferred(raising: bool = True):
-    """Record stop signals instead of raising them; raise Stopped for the first one when the block ends."""
     global _held
     _held = []
     try:

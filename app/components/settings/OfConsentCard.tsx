@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * OfConsentCard — the "Auto-accept OnlyFans consent" checkbox for one Creator
- * (`GET`/`PUT /admin/of-consent/{id}`, hooks/useOfConsent), shown for every
- * Creator (Settings › OnlyFans consent; a plugin's own settings may show it
- * too). While OF wants their consent form (`required`: the consent_required
- * notice) a warning line sits above it. One click saves (no
- * Save bar): while on, every media send for them carries OF's
- * `isConsentAccepted`. The line under it names who changed it last and when.
- * Owner only (a chatter's PUT is 403, shown as the error).
- */
 import { TriangleAlert } from "lucide-react";
 
 import { useOfConsent, useSetOfConsent } from "@/hooks/useOfConsent";

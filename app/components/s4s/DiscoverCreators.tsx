@@ -1,34 +1,5 @@
 "use client";
 
-/**
- * Discover creators (Inventory §3.6; docs/spec/phase-03-share-for-share.md, UI; ADR-0011), on Infloww's
- * `DiscoverList` (page-parity 15): the 24px search row, then a two-column list of cards (`.dis-item`: 16px, 1px L1,
- * radius 8, hover M1). One card per opted-in, visible Creator with a Primary post on this Deployment, the owner's own
- * other Creators included and tagged "Your agency"; the creator picked on the rail is left out (it cannot send to
- * itself). A card shows the S4S projection and nothing else: the 44px avatar, display name, @username, a Daily
- * limit tile (in place of Infloww's stat tiles, which we have no figures for), the Primary post's caption and its first
- * still (64px), and a "Request" button top right (ours: Infloww's card has none). A card click or Request opens the
- * request pop-up (850), Infloww's layout: the Primary post's media carousel on the left; the avatar,
- * name, @username, tags (Daily limit in place of Infloww's VIP / ranking / Active Fans, which we have no figures for)
- * and "<name>'s S4S post" caption on the right. The request goes from the creator picked on the rail, at a proposed
- * time, as `POST /admin/s4s/requests`; the Relay decides every refusal and the pop-up shows its reason.
- * Not built, not faked: Filters (the projection has no account type or gender), Report, account-type tags.
- *
- * Another Agency's pop-up carries "Block": the Creator leaves this Agency's Discovery, and no request goes either way
- * between it and this Agency's Creators. The "Blocked creators" list under the cards lifts a block.
- *
- * ASSUMPTION: the empty-state line is decided on the unfiltered list only; a filter that matches nothing shows
- * Infloww's "No creators available" / "Try searching another keyword", because a filtered list says nothing about
- * other Creators' opt-ins. Rung 5.
- *
- * ASSUMPTION: the filter is sent to the Relay as `q` on every change, with no debounce. Rung 5 (the list is at most
- * 200 rows of one indexed table). Overturned if typing makes too many requests.
- *
- * The proposed time is picked in UTC (Infloww's S4S pages are in UTC) and sent as UTC. It is prefilled with the
- * Relay's proposal (`GET /admin/s4s/requests/proposal`): 06:00 UTC on the first day from tomorrow with room under
- * both Daily limits. Picking another rail creator re-proposes; an edit made while a proposal loads wins over it, and a
- * failed proposal leaves the field as it was.
- */
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -50,11 +21,9 @@ import { BRAND_NAME } from "@/lib/brand";
 export const EMPTY_LINE =
   "No other creator is listed yet. A creator appears here once it takes part in Share for Share, is allowed on "
   + "Discover Creators, and has a Primary post.";
-/** The Bounded S4S labelled improvement (ADR-0011): said under the search, never Infloww's community directory. */
 export const DEPLOYMENT_LINE = `Your agency's other creators and other agencies' creators on this ${BRAND_NAME} deployment appear here.`;
 const LOAD_ERROR = "The creator list failed to load due to network connection, please try again later.";
 
-/** Two lines: Infloww's 16 / 600 title over its 12 / 600 T3 sentence. */
 function EmptyText({ title, line }: { title: string; line: string }) {
   return (
     <>
@@ -64,7 +33,6 @@ function EmptyText({ title, line }: { title: string; line: string }) {
   );
 }
 
-/** Why the rail's creator can't send to `item`, or null when it can. */
 function cannotSend(from: S4SProfile | null): string | null {
   const name = from?.display_name || from?.account_id || "this creator";
   if (!from?.opted_in || !from.posts.some((p) => p.is_primary)) {
@@ -77,15 +45,11 @@ function Tag({ children }: { children: ReactNode }) {
   return <span className="inline-flex h-5 items-center rounded border border-[#999] px-1.5 text-[12px] text-[#999]">{children}</span>;
 }
 
-/** "YYYY-MM-DDTHH:mm" read as UTC. */
 const fromUtcInput = (v: string) => new Date(`${v}:00Z`);
-/** An ISO-8601 UTC instant as the field's "YYYY-MM-DDTHH:mm". */
 const toUtcInput = (iso: string) => new Date(iso).toISOString().slice(0, 16);
 
-/** The proposed-time field, prefilled with the Relay's proposal for this pair, re-proposed when the sender changes. */
 function useProposedTime(fromAccountId: string | null, toProfileId: number) {
   const [when, setWhen] = useState("");
-  // The owner's edits so far: a proposal that loads after one is dropped.
   const edits = useRef(0);
   useEffect(() => {
     if (!fromAccountId) return;
@@ -103,7 +67,6 @@ function useProposedTime(fromAccountId: string | null, toProfileId: number) {
   return [when, edit] as const;
 }
 
-/** Block or unblock one Creator, then refresh Discovery and the blocked list. */
 function useBlockAction() {
   const qc = useQueryClient();
   const [busy, setBusy] = useState(false);
@@ -214,8 +177,6 @@ function RequestModal({ item, from, onClose }: { item: S4SDiscoveryItem; from: S
   );
 }
 
-/** The Primary post's first still, 64px, as Discover's card shows it; nothing when the post has no media or the
- *  Relay cannot read it (the item left its vault). */
 function PostThumb({ media = [] }: { media?: S4SMedia[] }) {
   const [broken, setBroken] = useState(false);
   const m = media[0];
@@ -224,7 +185,7 @@ function PostThumb({ media = [] }: { media?: S4SMedia[] }) {
     <span className="relative h-16 w-16 shrink-0 overflow-hidden rounded-lg bg-bg-elev-1">
       {/* eslint-disable-next-line @next/next/no-img-element -- a Relay-served still, not a Next asset */}
       <img src={s4sMediaUrl(m.id)} alt={`${media.length > 1 ? `1 of ${media.length}, ` : ""}S4S ${m.media_type}`}
-        loading="lazy" decoding="async"   // W30 F25: each still is a live read on its Creator's session
+        loading="lazy" decoding="async" // each still is a live read on its Creator's session
         onError={() => setBroken(true)} className="h-full w-full object-cover" />
       {m.media_type === "video" && (
         <span aria-hidden className="absolute inset-0 grid place-items-center">
@@ -235,7 +196,6 @@ function PostThumb({ media = [] }: { media?: S4SMedia[] }) {
   );
 }
 
-/** A card: the whole card opens the request pop-up, and "Request" top right says so. */
 function CreatorCard({ item, onOpen }: { item: S4SDiscoveryItem; onOpen: () => void }) {
   return (
     <article aria-label={item.display_name}
@@ -271,7 +231,6 @@ export default function DiscoverCreators({ from }: { from: S4SProfile | null }) 
   const [filter, setFilter] = useState("");
   const [open, setOpen] = useState<S4SDiscoveryItem | null>(null);
   const q = useS4SDiscover(filter);
-  // The rail's own creator is never a partner of itself.
   const items = (q.data ?? []).filter((i) => from?.profile_id == null || i.profile_id !== from.profile_id);
   const filtered = filter.trim() !== "";
   const settled = q.isSuccess && !q.isPlaceholderData;
@@ -295,7 +254,6 @@ export default function DiscoverCreators({ from }: { from: S4SProfile | null }) 
         <EmptyState kind="search" className="py-24" text={<EmptyText title="No creators available" line="Try searching another keyword" />} />
       )}
       {q.isPending && (
-        // The first read in flight: the cards' places as placeholder bars, not a blank page.
         <div role="status" aria-label="Loading" className="grid grid-cols-1 items-start gap-4 px-6 pb-6 md:grid-cols-2">
           {Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-36 w-full rounded-lg" />)}
         </div>

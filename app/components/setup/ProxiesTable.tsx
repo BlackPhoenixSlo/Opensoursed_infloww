@@ -1,24 +1,5 @@
 "use client";
 
-/**
- * ProxiesTable — Creators > Custom proxy, laid out from its Layout capture
- * (`docs/infloww-layouts/creators-proxy.md`, ticket 17): the header, then the proxy
- * table with the capture's seven columns, "No data" and 10 rows a page. Every cell comes
- * from the one proxies read. Bind, Unbind, Test and the shared-egress warning are ours,
- * titled `EXTRA_LABEL`; Remove is the capture's Delete. "+ Add new proxy" opens the
- * capture's add modal (`AddProxyModal`, ticket 18), which holds the manual form and the paste box. Under the table,
- * `CreatorEgressTable` (ours, ticket 19) shows each Creator's egress from the same proxies read. Ticket 62: an add is
- * checked through Test and kept only if the check passes, a failed add is antd's message toast, Delete asks in the
- * capture's modal, the loading state is antd's spinner and the pager folds and changes size as antd's does.
- *
- * Powered by:
- *   GET    /admin/proxies                 list + assignments enriched with account meta
- *   POST   /admin/proxies                 upsert {label, host, port, scheme, username?, password?, notes?}
- *   POST   /admin/proxies/bulk            paste many, one per line {text, scheme} (docs/proxies.md)
- *   DELETE /admin/proxies/{label}         remove; 409 while a Creator is bound (Infloww's "Proxy already in use")
- *   POST   /admin/proxies/assign          bind a proxy to an account_id (or null to unassign)
- *   POST   /admin/proxies/{label}/test    egress-IP check
- */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Plus } from "lucide-react";
@@ -38,8 +19,6 @@ import { SkeletonRows } from "@/components/ui/Skeleton";
 interface ProxiesResp {
   proxies: Array<
     ProxyMeta & {
-      // Backend now returns a list (many accounts may share a proxy);
-      // `assigned_account` (singular) is kept around as legacy mirror.
       assigned_accounts?: Array<{ id: string; nickname?: string | null; color?: string | null }>;
       assigned_account?: { id: string; nickname?: string | null } | null;
     }
@@ -47,19 +26,12 @@ interface ProxiesResp {
   accounts: AccountMeta[];
 }
 
-/** creators-proxy#23: 10 a page at first; antd's size changer offers these past 50 rows
- *  (`totalBoundaryShowSizeChanger:50`, `pageSizeOptions:["10","20","50","100"]`, vendor.bab480ce.js). */
 const PAGE_SIZES = [10, 20, 50, 100] as const;
 const SIZE_CHANGER_PAST = 50;
 
-/** creators-proxy#14's two states, `creators0045` (the status on) and `creators0289` (off). The bundle ships no
- *  English for either key, so these words stand in until its en locale chunk is read (the capture's Notes). */
 const STATUS_ON = "Available";
 const STATUS_OFF = "Unavailable";
 
-/** A chatter (or a signed-out caller) is refused the proxies read: the page draws its controls not wired instead of
- *  an error nobody can act on. 401 as well as 403, as `ManagedAgencyKeysCard` reads a refusal; read off the error's
- *  `status` (a `RelayError`'s) rather than `instanceof`, so a test's relay mock need not carry the class. */
 const isRefused = (err: unknown) => {
   const status = (err as { status?: unknown } | null)?.status;
   return status === 401 || status === 403;
@@ -68,7 +40,6 @@ const isRefused = (err: unknown) => {
 export default function ProxiesTable() {
   const qc = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
-  /** #27, #37: antd's `message.error` / `message.success`, at the top and over the modal, gone after its 3s. */
   const [toast, setToast] = useState<{ ok: boolean; text: string } | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
@@ -76,15 +47,12 @@ export default function ProxiesTable() {
     queryKey: ["proxies"],
     queryFn: () => relay.get<ProxiesResp>("/admin/proxies"),
     staleTime: 60_000,
-    // A refusal will not change on a retry.
     retry: (n, err) => !isRefused(err) && n < 3,
   });
   const refused = isRefused(proxiesQ.error);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZES[0]);
 
-  // Single mutation key, used for both bind and unbind (same per-row spinner
-  // semantics — `variables.label` lets a row know which action is in flight).
   const assignM = useMutation({
     mutationFn: ({ label, account_id }: { label: string; account_id: string }) =>
       relay.post<unknown>("/admin/proxies/assign", { label, account_id }),
@@ -110,11 +78,9 @@ export default function ProxiesTable() {
       ),
   });
 
-  // #37: the bundle checks a proxy before it adds one. The Relay probes only a registered label (`POST
-  // /admin/proxies/{label}/test`) and this Phase adds no route, so the add registers, runs that check, and removes
-  // the proxy again when the check fails: a failing proxy ends unregistered, as in the bundle.
   const createM = useMutation({
     mutationFn: async (body: { label: string } & Record<string, unknown>) => {
+      // The Relay probes only a registered label: register, test, and unregister again when the check fails.
       await relay.post<{ ok: boolean; proxy: ProxyMeta }>("/admin/proxies", body);
       const path = `/admin/proxies/${encodeURIComponent(body.label)}`;
       const check = await relay.post<{ ok: boolean; error?: string | null }>(`${path}/test`);
@@ -126,7 +92,6 @@ export default function ProxiesTable() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["proxies"] });
       setAddOpen(false);
-      // `creators0317` has no English on disk; "Proxy added" stands in.
       setToast({ ok: true, text: "Proxy added" });
     },
     onError: (err: Error) => {
@@ -142,8 +107,6 @@ export default function ProxiesTable() {
       qc.invalidateQueries({ queryKey: ["accounts"] });
       setDeleting(null);
     },
-    // A 409 "Proxy already in use by …" means the list was stale (the row hides Delete while a Creator is bound):
-    // refetch it so the row shows its Creators.
     onError: (err: Error) => {
       setToast({ ok: false, text: err.message });
       qc.invalidateQueries({ queryKey: ["proxies"] });
@@ -156,8 +119,6 @@ export default function ProxiesTable() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  // The relay's POST upserts: an existing label is overwritten in place. The modal keeps Add proxy off for a label
-  // the registry already holds (`draftProblem`), so a typo cannot silently clobber a working proxy.
   function submitDraft(draft: ProxyDraft) {
     setToast(null);
     createM.mutate({
@@ -173,15 +134,11 @@ export default function ProxiesTable() {
 
   const proxies = proxiesQ.data?.proxies ?? [];
   const pageCount = Math.max(1, Math.ceil(proxies.length / pageSize));
-  // A delete or a larger page can empty the last page; show the one before it.
   const cur = Math.min(page, pageCount);
   const shown = proxies.slice((cur - 1) * pageSize, cur * pageSize);
 
   return (
-    // Full width, as Infloww's header rule runs edge to edge (page-parity 03).
     <div>
-      {/* creators-proxy#4, #6: a 48px header, 0 24px, a 1px rule under it; the title 16px, weight 600. #7, #8: the
-          primary, 32px, 0 15px, 4px corners, 14px weight 400, one line. */}
       <InflowwPageHeader
         title="Manage your custom proxies"
         actions={
@@ -201,9 +158,7 @@ export default function ProxiesTable() {
         }
       />
 
-      {/* #9: the table 24px 40px in (16px at the sides on a phone). */}
       <div className="my-6 mx-4 md:mx-10 overflow-auto">
-        {/* #10, #17 to #19: one auto-layout table, 14px, 16px cells, the head weight 600 and start-aligned. */}
         <table className="w-full text-sm">
           <thead>
             <tr className={PROXY_TABLE.headRow}>
@@ -236,10 +191,6 @@ export default function ProxiesTable() {
             {proxiesQ.error && !refused && (
               <tr><td colSpan={7} className="p-4 text-err">{(proxiesQ.error as Error).message}</td></tr>
             )}
-            {/* #20, #21: antd's simple empty (ticket 00's `EmptyState size="sm"`: the tray, then "No data"), 32px
-                above and below, once the read has answered. #22: antd's Table draws that empty body faded under a
-                spinner while the read runs; ours draws placeholder rows instead (the owner's every-page-paints-its-
-                layout ask, 2026-10-29), so "No data" never shows before the answer. */}
             {proxiesQ.isLoading && <SkeletonRows cols={7} rows={4} />}
             {(proxiesQ.data || refused) && !proxiesQ.isLoading && proxies.length === 0 && (
               <tr>
@@ -261,7 +212,6 @@ export default function ProxiesTable() {
         )}
       </div>
 
-      {/* Ours (ticket 19): which IP each Creator talks from, over the same proxies answer; no read of its own. */}
       <CreatorEgressTable
         proxies={proxies}
         accounts={proxiesQ.data?.accounts ?? []}
@@ -289,7 +239,6 @@ export default function ProxiesTable() {
         />
       )}
 
-      {/* #27, #37: antd's message, 8px from the top, centred, over the modal's layer. */}
       {toast && (
         <div className="fixed top-2 inset-x-0 z-[2010] flex justify-center pointer-events-none">
           <div
@@ -310,10 +259,6 @@ export default function ProxiesTable() {
   );
 }
 
-/** creators-proxy#38: `DeleteProxy`, an `XModal` (antd's 520px, centred, no close cross) titled with the question,
- *  then Cancel and the danger primary Delete; Escape closes it. Drawn by ticket 00's `IfModal` (#25's box: #1f1f1f, 10px
- *  corners, a 22px 24px header), so it joins the modal stack: Escape closes only the top modal, Tab stays inside, and
- *  focus goes back to the row's Delete. Ours: a mask click does not close it (antd's `maskClosable` is on there). */
 function DeleteProxyModal({ removing, onDelete, onClose }: { removing: boolean; onDelete: () => void; onClose: () => void }) {
   return (
     <IfModal
@@ -336,8 +281,6 @@ function DeleteProxyModal({ removing, onDelete, onClose }: { removing: boolean; 
   );
 }
 
-/** rc-pagination's run, as antd 5 draws it (vendor.bab480ce.js): every page up to 7, else 2 each side of the current
- *  page, the first and last pages, and a "•••" jump of 5 where a run is folded. */
 export function pagerItems(page: number, pageCount: number): Array<number | "prev5" | "next5"> {
   const buf = 2;
   if (pageCount <= 3 + buf * 2) return Array.from({ length: pageCount }, (_, i) => i + 1);
@@ -354,8 +297,6 @@ export function pagerItems(page: number, pageCount: number): Array<number | "pre
   return items;
 }
 
-/** creators-proxy#23: under the table at the left (the app moves antd's bottom right there), 40px under it; the size
- *  changer follows the pages when the caller passes `onPageSize` (past 50 rows). */
 function Pager({ page, pageCount, onPage, pageSize, onPageSize }: {
   page: number; pageCount: number; onPage: (n: number) => void;
   pageSize: number; onPageSize?: (n: number) => void;
@@ -409,9 +350,6 @@ function Pager({ page, pageCount, onPage, pageSize, onPageSize }: {
   );
 }
 
-/** The capture's state (#14) from the latest test, else the relay's health (a proxy it holds bad is Unavailable,
- *  whatever the stored verification says), else the stored verification; the detail under it is ours, with
- *  "refusing 32% (10 min)" after it while the provider refused any call in the window. */
 export function proxyStatus(proxy: ProxyMeta, test?: TestResult): { on: boolean; detail: string } {
   if (test) return test.ok ? { on: true, detail: test.ip ?? "" } : { on: false, detail: test.error || "failed" };
   const h = proxy.health;
@@ -423,7 +361,6 @@ export function proxyStatus(proxy: ProxyMeta, test?: TestResult): { on: boolean;
     const since = h.bad_since ? ` since ${new Date(h.bad_since * 1000).toLocaleTimeString()}` : "";
     const next = h.state === "rechecking" ? "rechecking now" : h.next_recheck_at
       ? `recheck at ${new Date(h.next_recheck_at * 1000).toLocaleTimeString()}` : "rechecking";
-    // Bad for refusing too often (the flap knob): the rate is the reason, not a count of refusals in a row.
     if (h.bad_reason === "flapping") {
       return { on: false, detail: r && r.pct > 0 ? `${rate}${since} — ${next}` : `was refusing — ${next}` };
     }
@@ -433,14 +370,12 @@ export function proxyStatus(proxy: ProxyMeta, test?: TestResult): { on: boolean;
     : { on: false, detail: "unverified — run Test" + refusing };
 }
 
-/** #12: the bundle's type words, http and socks (the relay's socks5); the relay's https is ours. */
 function TypeCell({ scheme }: { scheme: string }) {
   if (scheme === "socks5") return <>socks</>;
   if (scheme === "https") return <span title={EXTRA_LABEL}>https</span>;
   return <>{scheme}</>;
 }
 
-/** #16's link buttons: 32px, 0 15px, 14px, one line. */
 const LINK_BTN = "h-8 px-[15px] text-sm whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed";
 
 function ProxyRow({
@@ -459,9 +394,7 @@ function ProxyRow({
   busyBind: boolean;
   busyUnbind: boolean;
 }) {
-  // Server returns `assigned_accounts: [...]`; fall back to the legacy
-  // singular so a stale relay (running on an old build) doesn't blank the
-  // cell. Sort by nickname for stable rendering across refetches.
+  // Fall back to the legacy singular so a stale relay build doesn't blank the cell.
   const bound = (proxy.assigned_accounts && proxy.assigned_accounts.length > 0)
     ? proxy.assigned_accounts
     : proxy.assigned_account ? [proxy.assigned_account] : [];
@@ -471,12 +404,10 @@ function ProxyRow({
   const status = proxyStatus(proxy, testResult);
   return (
     <tr className={PROXY_TABLE.row}>
-      {/* #11, #12: label, host, port and type, plain text. */}
       <td className="p-4">{proxy.label}</td>
       <td className="p-4">{proxy.host}</td>
       <td className="p-4">{proxy.port}</td>
       <td className="p-4"><TypeCell scheme={proxy.scheme} /></td>
-      {/* #13: the Creator. The bundle names one; ours lists every bound Creator as a chip. */}
       <td className="p-4">
         <div className="flex flex-wrap items-center gap-1.5">
           {bound.map((b) => {
@@ -531,7 +462,6 @@ function ProxyRow({
           )}
         </div>
       </td>
-      {/* #14: the capture's two states, then ours under it: the verified IP, or why there is none. */}
       <td className="p-4">
         <div className="flex flex-col">
           <span className={status.on ? "text-accent" : "text-err"}>{status.on ? STATUS_ON : STATUS_OFF}</span>
@@ -540,10 +470,8 @@ function ProxyRow({
           )}
         </div>
       </td>
-      {/* #16: Edit, then Delete only while no Creator is bound; Test after them is ours. */}
       <td className="p-4">
         <div className="flex items-center whitespace-nowrap">
-          {/* The relay keys a proxy by its label and has no route that renames one. */}
           <button type="button" className={`${LINK_BTN} text-accent`} disabled title="not wired">
             Edit
           </button>

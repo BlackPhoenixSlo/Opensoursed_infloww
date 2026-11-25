@@ -1,8 +1,3 @@
-/**
- * Growth > Sensitive words (page-parity ticket 14), with `@/lib/relay` mocked over a list of four words: two under
- * "A", one under "B", one under "Special symbol". Pins the letter tabs (`aria-selected`, one Tab stop, the arrow
- * keys), the word card's Edit / Delete on focus, "Total: N" over every word, and the Add dialog.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -82,7 +77,6 @@ describe("SensitiveWordsPage", () => {
     const edit = within(card).getByRole("button", { name: "Edit" });
     expect(within(card).getByRole("button", { name: "Delete" })).toBeInTheDocument();
 
-    // Focus moving from the card onto its own button keeps the overlay.
     fireEvent.blur(card, { relatedTarget: edit });
     expect(within(card).getByRole("button", { name: "Edit" })).toBeInTheDocument();
 

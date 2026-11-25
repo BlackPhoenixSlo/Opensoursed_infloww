@@ -91,7 +91,6 @@ describe("armed store", () => {
   });
 
   it.each([
-    // [case, arm times (s after the load), when every Creator arms (s)]
     ["no arm: the 90 s deadline", [], 90],
     ["an arm at 85 s (the warm still landing): 20 s after it", [85], 105],
     ["an arm early on: the 90 s deadline", [30], 90],

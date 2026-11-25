@@ -1,31 +1,5 @@
 "use client";
 
-/**
- * The Delayed welcome editor on Smart Messages (ticket 43, rebound by the
- * owner's ruling of 2026-10-18, Phase 2 N1): our `send_welcome` automation,
- * not OnlyFans' own welcome slot.
- *
- * It edits the rule's on/off, its cadence, its `message` and the message's
- * Smart Message settings (`SmartMessageFields`: media and price, Infloww's
- * random "after delay", Effective / Expiry, Auto-unsend; no Frequency, a fan
- * is welcomed once). The cadence (`every_seconds`) is how often `send_welcome` checks
- * for new subscribers, so a new fan is welcomed within that many minutes. The
- * message, when set, is the whole welcome: one DM, `{name}` filled with the
- * fan's name; with several variants each fan gets one at random (`message`
- * is then their list); left empty, the rule sends the welcome the Brain's
- * welcome lane shapes. The Smart Messages extras (06 P3): follow-ups that stop
- * once the fan replies, and "OnlyFans' welcome is message 1" (while OnlyFans'
- * own welcome is on, the rule sends no welcome, only the follow-ups; while it
- * is off, the rule's welcome goes out as usual). Saving an existing rule
- * PATCHes those fields and writes the payload back MERGED (a PATCH replaces
- * the whole payload), so every other knob (the question, the GIF, the pacing
- * and the follow-back) stays as the Brain set it.
- * With no rule yet, Save creates the one the old Brain welcome lane created
- * (`WELCOME_CREATE_DEFAULTS`, delayedWelcomeForm.ts), switched off unless the owner ticks Enabled,
- * with Infloww's 2～5 minute delay for a new welcome (`resetTemplateDefaultData`,
- * index.9f50f370.js @14443789). The media, price and Auto-unsend go out with
- * the message only: left empty, the Brain's welcome keeps its own image.
- */
 
 import { useReducer } from "react";
 
@@ -44,7 +18,6 @@ import { SmartMessageFields } from "./SmartMessageFields";
 
 export function DelayedWelcomeEditor({ accountId, onTouched }: {
   accountId: string | null;
-  /** Called on each user edit (the dialog's Escape gate). */
   onTouched: () => void;
 }) {
   const rulesQ = useAutomationRules(accountId);
@@ -55,20 +28,15 @@ export function DelayedWelcomeEditor({ accountId, onTouched }: {
 
 function Form({ accountId, live, onTouched }: {
   accountId: string | null;
-  /** The rule as the cache reads it (null: none, or its read failed). */
   live: AutomationRule | null;
   onTouched: () => void;
 }) {
   const save = useSaveRule(accountId);
   const [state, rawDispatch] = useReducer(welcomeReducer, live, initWelcomeState);
-  // A newer read (a refetch, another tab, the first read after a failed one, the rule deleted) goes to the reducer:
-  // an untouched form follows it, an edit stays. Held while a save runs, so the draft it sent is not replaced unseen.
   if (live !== state.live && !save.isPending) rawDispatch({ type: "live", rule: live });
-  // What a save merges into (null = create it).
+  // A save PATCHes the payload merged: a PATCH replaces it whole, so the rule's other knobs would be lost.
   const rule = mergeTarget(state);
   const { draft } = state;
-  // Every edit is the user's: it tells the dialog (its Escape gate) and clears the last save's line, but not while
-  // that save runs (Save stays disabled; on land the edit stays and "Saved" stays off: `unsaved`).
   const dispatch = (a: WelcomeEdit) => {
     onTouched();
     rawDispatch(a);
@@ -115,7 +83,6 @@ function Form({ accountId, live, onTouched }: {
         </label>
       </div>
       <IfHelp className="-mt-2">A new fan is welcomed within this many minutes.</IfHelp>
-      {/* Infloww's editor placeholder (index.9f50f370.js @15332026). */}
       <VariantsField
         id="dw-message"
         label="Message"

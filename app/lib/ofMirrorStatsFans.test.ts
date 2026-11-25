@@ -1,7 +1,3 @@
-/**
- * Statistics › Fans' phase-2 parts (ofMirrorStatsFans) called directly on the captured mirror pages
- * (app/public/of-mirror/pages/statistics/fans/*.html) with OF's synthetic replies (app/lib/__fixtures__/of).
- */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -28,15 +24,10 @@ const D30 = periodOf("d30", NOW, TZ, START);
 const ALL = periodOf("all", NOW, TZ, START);
 const D30_NY = periodOf("d30", NOW, NY, START);
 const picks = (p: Partial<Picks> = {}): Picks => ({ ...PICK_DEFAULTS, ...p });
-/** A list reply in any of OF's shapes (`list`, `items`, `users`). */
 type Listed = { list?: unknown[]; items?: unknown[]; users?: unknown[]; hasMore?: boolean };
 const paged = (b: Listed, more: (() => void) | null = null): PagedBody => ({ list: b.list ?? b.items ?? b.users ?? [], hasMore: !!b.hasMore, loading: false, more });
 const ctx = (x: Partial<FansCtx> = {}): FansCtx => ({ picks: picks(), v2: true, ...x });
 
-/**
- * jsdom has no IntersectionObserver (and its document.defaultView is globalThis, measured): a stand-in recording what
- * moreAt observes; `fire()` scrolls it into view.
- */
 function stubIO() {
   const seen: { el: Element; fire: (isIntersecting?: boolean) => void; disconnected: boolean }[] = [];
   class IO {
@@ -68,8 +59,6 @@ describe("subsRekey: Fans › Subscriptions' summary from OF's chart for the tab
     ["earnings", RENEW, true, "fans:fans.earnings.total", "subsChart:total"],
     ["subscribers delta", RENEW, true, "fans:fans.subscribers.delta", "subsChart:delta"],
     ["earnings delta", RENEW, true, "fans:fans.earnings.delta", "subsChart:delta"],
-    // Every fans:fans.*.delta reads the tab chart's one change: the rekey ignores the element, so the sidebar's New
-    // subs/Renews change does too (see the BUG (pinned) sidebar test).
     ["new subs delta", RENEW, true, "fans:fans.subscriptions.new.delta", "subsChart:delta"],
     ["new subs total stays", RENEW, true, "fans:fans.subscriptions.new.total", "fans:fans.subscriptions.new.total"],
     ["another source's delta stays", RENEW, true, "posts:posts.count.delta", "posts:posts.count.delta"],
@@ -96,7 +85,7 @@ describe("applyFans › Subscriptions", () => {
     const doc = load("statistics/fans/subscriptions");
     applyFans(doc, "fans/subscriptions", data(), D30, ctx({ picks: picks({ subs: "renew" }) }));
     expect(tabs(doc)).toEqual([["All", false, false], ["Renews", false, true], ["New subscribers", false, false]]);
-    expect(level(doc)).toEqual(["20%"]); // OF's ChartSummary: unsigned, the icon (m-level-down) the direction
+    expect(level(doc)).toEqual(["20%"]);
     expect(doc.querySelector(".b-statistics-page-content__wrapper .b-statistics-level")!.classList.contains("m-level-down")).toBe(true);
     expect(texts(doc, "[data-oi-table='subs'] thead th")).toEqual(["Name", "Price", "Price/ Renew date"]);
     expect(rows(doc, "[data-oi-table='subs']")).toEqual([
@@ -104,7 +93,7 @@ describe("applyFans › Subscriptions", () => {
       ["u900011 @u900011", "$9.99", "Oct 10, 2026"],
     ]);
     const trs = [...doc.querySelectorAll("[data-oi-table='subs'] tbody tr[data-oi-data]")];
-    expect(trs.map((t) => t.classList.contains("g-gray-text"))).toEqual([false, true]); // expired Oct 12, before now
+    expect(trs.map((t) => t.classList.contains("g-gray-text"))).toEqual([false, true]);
     expect(texts(doc, "[data-oi-table='subs'] .empty-message")).toEqual([]);
     expect(doc.querySelector(".b-statistics-page-content__wrapper")!.classList.contains("m-empty-wrapper")).toBe(false);
   });
@@ -112,7 +101,6 @@ describe("applyFans › Subscriptions", () => {
   const columnCases: [tab: string, period: typeof D30, head: string, third: [string, string]][] = [
     ["total", D30, "Total duration", ["1 month", "3 months"]],
     ["new", D30, "Subscription date", ["Oct 1, 2026", "Jul 10, 2026"]],
-    // Midnight UTC is the evening before in New York.
     ["new", D30_NY, "Subscription date", ["Sep 30, 2026", "Jul 9, 2026"]],
     ["renew", D30_NY, "Renew date", ["", "Oct 9, 2026"]],
   ];
@@ -167,13 +155,8 @@ describe("applyFans › Subscriptions", () => {
     expect(more).toHaveBeenCalledTimes(1);
   });
 
+  // BUG pinned: subsRekey ignores the element it rekeys, so the sidebar Summary reads the tab chart's figures.
   it("BUG (pinned): with OF's chart, the sidebar Summary shows the tab chart's figures and change, not the overview's (through applyStats)", () => {
-    // BUG: see PR — subsRekey (like messagesRekey) ignores the element it rekeys, and applyStats' figures pass every
-    // [data-oi-stat] / [data-oi-delta] on the page through it, the `.l-wrapper__sidebar` Summary's included. So on the
-    // Renews tab the sidebar "Subscribers" and "Subscriptions earnings" read the Renews chart (2, $19.98) and every
-    // sidebar change is the chart's -20%, even "New subs/Renews", whose figures (7 / 3) stay the overview's (its own
-    // change is +40%). Correct: the sidebar keeps the overview's figures and changes, as it does without the chart
-    // (second half).
     const overview = { fans: { fans: { subscribers: { total: 50, delta: 10 }, earnings: { total: 200, delta: 15 }, subscriptions: { new: { total: 7, delta: 40 }, renew: { total: 3 } } } } };
     const side = (doc: Document) => squash(doc.querySelector(".l-wrapper__sidebar .b-useful-data")!.textContent);
     const doc = load("statistics/fans/subscriptions");
@@ -202,7 +185,6 @@ describe("applyFans › Top fans", () => {
     expect(current.map((b) => b.getAttribute("data-oi-pick"))).toEqual([`top:${tab}`]);
     expect(texts(doc, "[data-oi-table='topfans'] thead th")).toEqual(head);
     expect(rows(doc, "[data-oi-table='topfans']")).toEqual([row]);
-    // The tab's own sum bold; the total bold only on Total.
     const tr = doc.querySelector("[data-oi-table='topfans'] tbody tr[data-oi-data]")!;
     expect(squash(tr.querySelector("strong")!.textContent)).toBe(row[1]);
   });
@@ -235,7 +217,7 @@ describe("applyFans › Fans activity", () => {
     expect(fansChartOf(doc.querySelector<HTMLCanvasElement>("[data-oi-activity='sectors'] canvas")!)!.kind).toBe("sectors");
     const bars = fansChartOf(doc.querySelector<HTMLCanvasElement>("[data-oi-activity='hours'] canvas")!)!;
     expect(bars.kind).toBe("bars");
-    if (bars.kind !== "bars") return; // narrowed for the type checker; asserted just above
+    if (bars.kind !== "bars") return;
     expect(bars.spec.values).toHaveLength(24);
     expect(bars.spec.values[9]).toBe(5);
   });
@@ -245,7 +227,7 @@ describe("applyFans › Fans activity", () => {
     applyFans(doc, "fans/activity", { fansHours: { data: [{ ratio: 0.25 }, {}, { ratio: "0.5" }, { ratio: "x" }, null] } }, D30, ctx());
     const bars = fansChartOf(doc.querySelector<HTMLCanvasElement>("[data-oi-activity='hours'] canvas")!)!;
     expect(bars.spec).toMatchObject({ values: [25, 0, 50, 0, 0] });
-    expect(shown(doc, "sectors")).toBe(false); // no table reply: untouched
+    expect(shown(doc, "sectors")).toBe(false);
   });
 
   it("no hours at all: OF's \"No Profile activity\"; replies not in OF's shape: both boxes untouched", () => {
@@ -262,7 +244,6 @@ describe("applyFans › Fans activity", () => {
 
 describe("applyFans › the sidebar Top Fan card (every Fans tab)", () => {
   const card = (doc: Document) => doc.querySelector<HTMLElement>("[data-oi-fan-card]")!;
-  /** Each fan tab: [text, disabled, current, m-disabled]. */
   const fanTabs = (doc: Document) =>
     [...card(doc).querySelectorAll<HTMLButtonElement>("[data-oi-pick^='fan:']")].map((b) => [squash(b.textContent), b.disabled, b.classList.contains("m-current"), b.classList.contains("m-disabled")]);
   const currentFanTab = (doc: Document) => fanTabs(doc).filter(([, , current]) => current).map(([text]) => text);
@@ -282,7 +263,6 @@ describe("applyFans › the sidebar Top Fan card (every Fans tab)", () => {
       ["Streams", true, false, true],
     ]);
     expect(list(doc)).toEqual(["Current subscription $9.99", "Total duration 3 months"]);
-    // OF's avatar in place of the generator's slot.
     const slot = card(doc).querySelector<HTMLElement>("[data-oi-fan-avatar]")!;
     expect(slot.style.display).toBe("none");
     expect(slot.nextElementSibling!.classList.contains("g-avatar")).toBe(true);

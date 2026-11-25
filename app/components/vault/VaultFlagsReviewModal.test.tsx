@@ -1,8 +1,3 @@
-/**
- * The Flags review card: each save is one request, shows "Saving…" while it is out, says why when it fails and lets
- * the operator retry; it draws the shared region bits (over lines, meta line, reasons) and, for an item the two passes
- * disagree on, the auto-settled reading. The vault hooks are faked at the module; every name is fake.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -34,7 +29,6 @@ const grade = gradeFlags as unknown as Mock;
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-/** A promise the test settles by hand. */
 function held() {
   let settle!: { ok: () => void; fail: (e: Error) => void };
   const p = new Promise<void>((ok, fail) => { settle = { ok: () => ok(), fail }; });

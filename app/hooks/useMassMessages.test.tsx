@@ -1,16 +1,9 @@
-/**
- * useMassMessages — the owner's sent list on a cold load. The Creators list
- * loads first (accountIds = []), then the per-Creator queries start and
- * resolve; the merged `rows` must fill once they do, not stay at the empty
- * list computed while the Creators were loading.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { ReactNode } from "react";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
-// eventBus.on records each handler so a test fires SSE frames synchronously.
 type Handler = (env: Record<string, unknown>) => void;
 const handlers = new Map<string, Set<Handler>>();
 vi.mock("@/lib/events", () => ({
@@ -94,7 +87,6 @@ describe("useMassQueueProgress", () => {
     expect(result.current).toEqual([{ queueId: 7, accountId: "acct-1" }]);
     fire("chat_queue_update", { __account_id: "acct-1", chat_queue_update: { id: 7, total: 23, pending: 5 } });
     expect(result.current).toEqual([{ queueId: 7, accountId: "acct-1" }]);
-    // Another Creator's queue is not ours to show.
     fire("chat_queue_update", { __account_id: "acct-9", chat_queue_update: { id: 8, total: 3, pending: 1 } });
     expect(result.current).toHaveLength(1);
 
@@ -103,13 +95,11 @@ describe("useMassQueueProgress", () => {
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith(
       "/admin/mass-messages/refresh?account_id=acct-1&days_back=30&limit=100", undefined));
 
-    // A cancelled queue is dropped without a refresh.
     fire("chat_queue_update", { __account_id: "acct-1", chat_queue_update: { id: 9, total: 4, pending: 4 } });
     fire("chat_queue_update", { __account_id: "acct-1", chat_queue_update: { id: 9, isCanceled: true } });
     expect(result.current).toEqual([]);
     expect(relayPost).toHaveBeenCalledTimes(1);
 
-    // A resync or a lost stream may have hidden a finish frame: forget what was in flight.
     fire("chat_queue_update", { __account_id: "acct-1", chat_queue_update: { id: 10 } });
     fire("resync", {});
     expect(result.current).toEqual([]);

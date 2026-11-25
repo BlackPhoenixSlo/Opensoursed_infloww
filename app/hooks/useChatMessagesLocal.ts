@@ -33,7 +33,7 @@ import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { MASS_PLACEHOLDER_END, MASS_PLACEHOLDER_MIN, orderThread } from "@/hooks/useChatMessages";
 import { toUtcIso } from "@/hooks/useInboxRealtime";
 import { relay, type OFMessage } from "@/lib/relay";
-import { type FanId } from "@/lib/fanId";
+import { isValidFanId, type FanId } from "@/lib/fanId";
 import { SEED_PAGE } from "@/lib/screenBundle";
 
 // Mass-send optimistic placeholders (service/attribution.py 5e15 band) are a
@@ -47,7 +47,7 @@ const SEED_PLACEHOLDER_MAX_AGE_MS = 60 * 60_000;
 interface LocalMessageRow {
   account_id: string;
   fan_id: FanId;
-  message_id: number;
+  message_id: FanId;
   direction: "in" | "out";
   sender_name: string | null;
   body: string | null;
@@ -63,7 +63,7 @@ interface LocalMessageRow {
 interface LocalMessagesResp {
   messages: LocalMessageRow[];
   limit: number;
-  next_before_id: number | null;
+  next_before_id: FanId | null;
 }
 
 /** Cache key for one chat's seed, minus the page size — pass it to a
@@ -151,10 +151,10 @@ export function useChatMessagesLocal(opts: {
 export async function fetchOlderSeed(
   accountId: string | null,
   fanId: FanId | null,
-  beforeId: number | null,
+  beforeId: FanId | null,
   limit = 30,
 ): Promise<OFMessage[]> {
-  if (!accountId || fanId == null || beforeId == null || !(beforeId > 0)) return [];
+  if (!accountId || fanId == null || !isValidFanId(beforeId)) return [];
   try {
     const qs = new URLSearchParams({ limit: String(limit), before_id: String(beforeId) });
     const resp = await relay.get<LocalMessagesResp>(
@@ -214,12 +214,12 @@ export function mapRows(
     // Optimistic placeholders never live in the local DB, but guard
     // anyway — if one ever slipped through it would collide with the
     // send-flow's reconciliation by tempId.
-    if (!Number.isFinite(r.message_id) || r.message_id <= 0) continue;
+    if (!isValidFanId(r.message_id)) continue;
     if (r.is_unsent) continue;
     // Band-scoped: ids at/above MASS_PLACEHOLDER_END are ledger-synthesized
     // TIP rows (permanent history whose ONLY render path is this seed) — the
     // bridge cutoff must never age those out.
-    if (r.message_id >= MASS_PLACEHOLDER_MIN && r.message_id < MASS_PLACEHOLDER_END) {
+    if (typeof r.message_id === "number" && r.message_id >= MASS_PLACEHOLDER_MIN && r.message_id < MASS_PLACEHOLDER_END) {
       const at = Date.parse(toUtcIso(r.created_at ?? undefined));
       if (!Number.isFinite(at) || now - at > SEED_PLACEHOLDER_MAX_AGE_MS) continue;
     }

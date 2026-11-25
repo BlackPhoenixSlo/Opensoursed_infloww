@@ -1,11 +1,3 @@
-/**
- * FanRow — one Fan List row, tested at its props, which are its public
- * interface (docs/spec/phase-02-fan-list-pane.md, Testing Decisions). The
- * row is rendered from raw facts with a fixed `now`, so later row tickets
- * add their badge cases here.
- *
- * Fixture identifiers are invented (this repo mirrors to a public one).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -62,10 +54,8 @@ function renderRow(props: Partial<Parameters<typeof FanRow>[0]> = {}) {
 const row = () => screen.getByRole("button", { name: /Fixture Fan One/ });
 
 const HOUR = 3_600_000;
-/** An ISO time `ms` before NOW (negative: after it). */
 const before = (ms: number) => new Date(NOW - ms).toISOString();
 
-/** What the row shows of the badge strip and the expired avatar. */
 function badgesShown() {
   const r = row();
   return {
@@ -77,7 +67,6 @@ function badgesShown() {
   };
 }
 const NONE = { New: false, "🔥": false, "❄️": false, Off: false, "❌": false };
-/** A chat whose last message was sent at `createdAt`. */
 const chatAt = (createdAt: string) => ({ ...CHAT, lastMessage: { ...CHAT.lastMessage!, createdAt } });
 
 afterEach(cleanup);
@@ -191,7 +180,6 @@ describe("FanRow", () => {
   });
 
   it("shows the owe dot only when the row is told to show it", () => {
-    // CHAT is read and the Fan wrote last, so it owes a reply either way.
     renderRow({ oweDot: false });
     expect(screen.queryByRole("img", { name: "Read · awaiting your reply" })).not.toBeInTheDocument();
 
@@ -210,11 +198,9 @@ describe("FanRow", () => {
   });
 
   it("rings the online dot in the row's background: the pane, the hover fill, the selected fill", () => {
-    // Spec Story 3: "ringed in the row's background (selected and hovered too)".
     renderRow({ chat: { ...CHAT, isOnline: true } });
     let dot = within(row()).getByRole("img", { name: "Online" });
     expect(dot).toHaveClass("border-[var(--inf-pane,var(--color-panel))]");
-    // A hovered row fills `bg-bg-elev-1` (the palette's hover grey); the ring follows it.
     expect(row()).toHaveClass("group", "hover:bg-bg-elev-1");
     expect(dot).toHaveClass("group-hover:border-bg-elev-1");
 
@@ -226,8 +212,6 @@ describe("FanRow", () => {
   });
 
   it("draws the avatar circle in its own grey, never the selected row's fill, with light initials", () => {
-    // Ticket 151 visual loop: on the selected row the circle took the row's
-    // #353535 and vanished; the capture's circle is #666666 on either row (Compare FL1).
     renderRow({ selected: true });
     const circle = within(row()).getByText("FI").parentElement!;
     expect(circle).toHaveClass("bg-[var(--inf-list-avatar,var(--color-bg-elev-2))]");
@@ -236,7 +220,6 @@ describe("FanRow", () => {
   });
 
   it("marks an unread row with the 9px unread dot and a bold preview, and a muted row with the mute icon and no dimming", () => {
-    // Read row first: the preview is not bold and there is no unread dot.
     renderRow();
     expect(screen.getByText("Hello there")).not.toHaveClass("font-semibold");
     expect(screen.queryByRole("img", { name: /^Unread/ })).not.toBeInTheDocument();
@@ -245,7 +228,6 @@ describe("FanRow", () => {
     renderRow({ chat: { ...CHAT, hasUnread: true, unreadMessagesCount: 3 } });
     const dot = within(row()).getByRole("img", { name: "Unread (3)" });
     expect(dot).toHaveAttribute("title", "Unread (3)");
-    // The count lives in the tooltip; the old 18px count badge is gone.
     expect(within(row()).queryByText("3")).not.toBeInTheDocument();
     expect(screen.getByText("Hello there")).toHaveClass("font-semibold");
 
@@ -260,7 +242,6 @@ describe("FanRow", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(NOW);
     try {
-      // No facts: no tooltip.
       renderRow();
       expect(row()).not.toHaveAttribute("title");
 
@@ -272,12 +253,9 @@ describe("FanRow", () => {
         expiredAt: "2026-10-18T12:00:00Z",
       });
       expect(row()).toHaveAttribute("title", "$42 · last buy 3h ago · renews in 5d");
-      // Line one: the name and @handle. Line two: the preview and time.
       expect(within(row()).getByText("Fixture Fan One")).toBeInTheDocument();
       expect(within(row()).getByText("@fixturefanone")).toBeInTheDocument();
       expect(within(row()).getByText("Hello there")).toBeInTheDocument();
-      // No third line: "last buy" and "renews" are only in the tooltip, and
-      // the spend shows once, as the pill under the avatar (ticket 137).
       expect(within(row()).getAllByText(/\$42/)).toEqual([within(row()).getByText("$42", { exact: true })]);
       expect(row()).not.toHaveTextContent("last buy");
       expect(row()).not.toHaveTextContent("renews");
@@ -296,29 +274,24 @@ describe("FanRow", () => {
   });
 
   it("lights New, 🔥, ❄️ and Off each on its own, New and 🔥 through exactly 7×24h and ❄️ only past 72h, and a missing, unparseable or future time lights nothing", () => {
-    // The base row: a message 1h ago, no subscribe time, no PPV, no subscription.
     renderRow();
     expect(badgesShown()).toEqual(NONE);
 
     const cases: Array<[string, Partial<Parameters<typeof FanRow>[0]>, typeof NONE]> = [
-      // New: subscribed within 7×24h, inclusive.
       ["subscribed exactly 7×24h ago", { subscribedAt: before(7 * 24 * HOUR) }, { ...NONE, New: true }],
       ["subscribed 1s past 7×24h", { subscribedAt: before(7 * 24 * HOUR + 1000) }, NONE],
       ["subscribed an hour from now", { subscribedAt: before(-HOUR) }, NONE],
       ["an unparseable subscribe time", { subscribedAt: "not a date" }, NONE],
-      // 🔥: the last PPV purchase within 7×24h, inclusive.
       ["a PPV an hour ago", { lastPpvPurchase: before(HOUR) }, { ...NONE, "🔥": true }],
       ["a PPV exactly 7×24h ago", { lastPpvPurchase: before(7 * 24 * HOUR) }, { ...NONE, "🔥": true }],
       ["a PPV 1s past 7×24h", { lastPpvPurchase: before(7 * 24 * HOUR + 1000) }, NONE],
       ["a PPV an hour from now", { lastPpvPurchase: before(-HOUR) }, NONE],
       ["an unparseable PPV time", { lastPpvPurchase: "not a date" }, NONE],
-      // ❄️: the last message is more than 72h old.
       ["last message exactly 72h ago", { chat: chatAt(before(72 * HOUR)) }, NONE],
       ["last message 1s past 72h", { chat: chatAt(before(72 * HOUR + 1000)) }, { ...NONE, "❄️": true }],
       ["last message an hour from now", { chat: chatAt(before(-HOUR)) }, NONE],
       ["an unparseable last message time", { chat: chatAt("not a date") }, NONE],
       ["no message at all", { chat: { ...CHAT, lastMessage: undefined } }, NONE],
-      // Off: renewal off and not expired.
       ["renewal off, ending in 5 days", { subscriptionStatus: "Set to Expire", expiredAt: before(-5 * 24 * HOUR) },
         { ...NONE, Off: true }],
       ["renewing, in 5 days", { subscriptionStatus: "active", expiredAt: before(-5 * 24 * HOUR) }, NONE],
@@ -329,7 +302,6 @@ describe("FanRow", () => {
       expect({ label, ...badgesShown() }).toEqual({ label, ...shown });
     }
 
-    // All four lit together read New, 🔥, ❄️, Off, in that order, after the name and @handle.
     cleanup();
     renderRow({
       subscribedAt: before(HOUR),
@@ -352,20 +324,16 @@ describe("FanRow", () => {
   });
 
   it("turns an expired Fan's avatar into the red ✕, without \"Off\" even when renewal is off", () => {
-    // Renewal off and expired a day ago: the ✕ avatar, and no "Off".
     renderRow({ subscriptionStatus: "Set to Expire", expiredAt: before(24 * HOUR) });
     expect(badgesShown()).toEqual({ ...NONE, "❌": true });
     const mark = within(row()).getByRole("img", { name: "Subscription expired" });
     expect(mark).toHaveClass("bg-err");
-    // The ✕ takes the avatar's place: the initials are gone.
     expect(within(row()).queryByText("FI")).not.toBeInTheDocument();
 
-    // The same Fan a day before expiry: the plain avatar and "Off".
     cleanup();
     renderRow({ subscriptionStatus: "Set to Expire", expiredAt: before(-24 * HOUR) });
     expect(badgesShown()).toEqual({ ...NONE, Off: true });
 
-    // Expired whatever the status says; an unparseable expiry expires nothing.
     cleanup();
     renderRow({ subscriptionStatus: "active", expiredAt: before(1000) });
     expect(badgesShown()).toEqual({ ...NONE, "❌": true });
@@ -373,9 +341,6 @@ describe("FanRow", () => {
     renderRow({ subscriptionStatus: "active", expiredAt: "not a date" });
     expect(badgesShown()).toEqual(NONE);
 
-    // Expiry is read against the row's `now`, not the clock: with the clock
-    // 30 days on, a Fan whose renewal is off and who ends a day after `now`
-    // still reads "Off".
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(NOW + 30 * 24 * HOUR);
     try {
@@ -388,42 +353,35 @@ describe("FanRow", () => {
   });
 
   it("keeps a spender's avatar with the Total spend in a pill under it, \"$0\" for a known zero, an expired spender's \"$N\" under the ✕, and no pill while spend is unknown", () => {
-    // A Fan with a photo, so "no avatar image" can fail.
     const withPhoto = { ...CHAT, withUser: { ...CHAT.withUser, avatar: "https://cdn.example.invalid/fan.jpg" } };
     const photo = () => within(row()).queryByRole("presentation");
 
-    // A spender: the photo stays, and the orange "$45" pill is the only figure.
     renderRow({ chat: withPhoto, totalSpendCents: 4_500 });
     expect(photo()).toBeInTheDocument();
     expect(within(row()).getByText("$45", { exact: true })).toHaveClass("text-warn");
     expect(within(row()).getAllByText(/^\$/)).toHaveLength(1);
 
-    // A known zero: the photo, and "$0" in the same orange pill, as Infloww.
     cleanup();
     renderRow({ chat: withPhoto, totalSpendCents: 0 });
     expect(photo()).toBeInTheDocument();
     expect(within(row()).getByText("$0", { exact: true })).toHaveClass("text-warn");
 
-    // An expired spender: the ✕ avatar, and the spend in the orange pill.
     cleanup();
     renderRow({ chat: withPhoto, totalSpendCents: 23_000, subscriptionStatus: "Set to Expire", expiredAt: before(24 * HOUR) });
     expect(within(row()).getByRole("img", { name: "Subscription expired" })).toBeInTheDocument();
     expect(within(row()).getByText("$230", { exact: true })).toHaveClass("text-warn");
     expect(photo()).not.toBeInTheDocument();
 
-    // An expired Fan with a known zero: the ✕ avatar and "$0".
     cleanup();
     renderRow({ chat: withPhoto, totalSpendCents: 0, subscriptionStatus: "Set to Expire", expiredAt: before(24 * HOUR) });
     expect(within(row()).getByRole("img", { name: "Subscription expired" })).toBeInTheDocument();
     expect(within(row()).getByText("$0", { exact: true })).toHaveClass("text-warn");
 
-    // Unknown spend (spend-batch loading, or no entry for the Fan): the photo and no pill.
     cleanup();
     renderRow({ chat: withPhoto, totalSpendCents: null });
     expect(photo()).toBeInTheDocument();
     expect(within(row()).queryByText(/^\$/)).not.toBeInTheDocument();
 
-    // Without a photo, a spender keeps the initials, with the pill.
     cleanup();
     renderRow({ totalSpendCents: 4_500 });
     expect(within(row()).getByText("FI")).toBeInTheDocument();
@@ -455,7 +413,6 @@ describe("FanRow", () => {
     const x = within(row()).getByRole("img", { name: "Not wired" });
     expect(x).toHaveAttribute("title", `not wired: ${NOT_WIRED.rowClose}`);
     expect(x).toHaveClass("text-fg-dim");
-    // After the handle and the badges.
     expectDomOrder([within(row()).getByText("@fixturefanone"), within(row()).getByText("Off", { exact: true }), x]);
 
     fireEvent.pointerDown(x);
@@ -526,7 +483,6 @@ describe("FanRow", () => {
   });
 
   describe("right-click menu", () => {
-    /** The Fan's Deep link in a Pop-out window (spec, Rows; Phase 0). */
     const POPOUT_HREF = "/messages-pro/100000001/200000001";
     const openItem = () => screen.queryByRole("button", { name: "Open in a new window" });
     let windowOpen: ReturnType<typeof vi.spyOn>;
@@ -539,7 +495,6 @@ describe("FanRow", () => {
       const cb = renderRow();
       expect(openItem()).toBeNull();
 
-      // The browser's own context menu is suppressed.
       expect(fireEvent.contextMenu(row())).toBe(false);
       await userEvent.click(openItem()!);
 

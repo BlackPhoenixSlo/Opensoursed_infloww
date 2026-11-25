@@ -54,7 +54,6 @@ const LIVE4 = liveArg4 || (fs.existsSync(DEFAULT_LIVE4) ? DEFAULT_LIVE4 : null);
 const DEFAULT_LIVE2 = path.join(os.homedir(), "Downloads/of-live-capture-2");
 const LIVE2 = liveArg2 || (fs.existsSync(DEFAULT_LIVE2) ? DEFAULT_LIVE2 : null);
 const PORTALS = "<!-- body-level portals (modals/menus) -->";
-// 1.2.3.4: OF's own block-by-IP format hint
 const SAFE_IPS = new Set(["127.0.0.1", "1.2.3.4"]);
 const secrets = new Set();
 const fanSecrets = new Set();

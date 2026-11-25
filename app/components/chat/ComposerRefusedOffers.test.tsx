@@ -1,9 +1,3 @@
-/**
- * A refused schedule through the rendered Composer (./refusedOffers): its
- * tags come back with the rest of the draft, one refused after a chat switch
- * is shown in every chat and restored, whole, in its own, and an identity
- * switch drops them all, a refusal landing after it included.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -48,7 +42,6 @@ async function paidTaggedSchedule(user: ReturnType<typeof userEvent.setup>, text
   await user.keyboard("{Enter}");
 }
 
-/** Fan `fanId`'s chat, as ChatSurface keys it: a switch remounts. */
 async function chats() {
   const { Composer } = await import("./Composer");
   const utils = await renderComposer({ fanId: 1, fanName: "Fan One" });
@@ -58,7 +51,6 @@ async function chats() {
   return { ...utils, chat };
 }
 
-/** The next send hangs until the returned `refuse` is called. */
 function holdNextSend(onSend: Awaited<ReturnType<typeof renderComposer>>["onSend"]) {
   const box: { refuse?: (err: Error) => void } = {};
   onSend.mockImplementationOnce(() => new Promise<void>((_, reject) => { box.refuse = reject; }));
@@ -105,18 +97,17 @@ describe("Composer: a refused schedule's tags and chat", () => {
 
     await paidTaggedSchedule(user, "later");
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
-    rerender(chat(2)); // the chatter opens another Fan's chat
+    rerender(chat(2));
     await act(async () => refuse(new Error("relay said no")));
 
     expect(await screen.findByText(/Not scheduled in the chat with Fan One — relay said no: “later”\. Open that chat to restore it/))
       .toBeInTheDocument();
     expect(restoreButtons()).toHaveLength(0);
-    // Its draft is not shown here, so it cannot be dismissed unseen.
     expect(screen.queryByRole("button", { name: "✕" })).not.toBeInTheDocument();
     expect(screen.queryByTitle("Dismiss the refused message")).not.toBeInTheDocument();
     expect(textbox().value).toBe("");
 
-    rerender(chat(1)); // back in the chat it was written in
+    rerender(chat(1));
     expect(screen.getByTitle("Dismiss the refused message")).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: "Restore" }));
     expect(textbox().value).toBe("later");
@@ -125,7 +116,7 @@ describe("Composer: a refused schedule's tags and chat", () => {
     expect(tagChip()).toBeInTheDocument();
     expect(screen.queryByText(/Not scheduled/)).not.toBeInTheDocument();
 
-    rerender(chat(2)); // restored: gone from every chat
+    rerender(chat(2));
     expect(screen.queryByText(/Not scheduled/)).not.toBeInTheDocument();
   });
 
@@ -157,7 +148,7 @@ describe("Composer: a refused schedule's tags and chat", () => {
     await paidTaggedSchedule(user, "later");
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     rerender(chat(2));
-    act(() => clearRefusedOffers()); // the identity switches while it is in flight
+    act(() => clearRefusedOffers());
     await act(async () => refuse(new Error("relay said no")));
 
     expect(screen.queryByText(/Not scheduled/)).not.toBeInTheDocument();
@@ -183,7 +174,7 @@ describe("Composer: a refused schedule's tags and chat", () => {
       await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
       expect(onSend.mock.calls[0][0].attached?.[0]?._localPreview).toBe("blob:a.png");
       rerender(chat(2));
-      act(() => clearRefusedOffers()); // the identity switches while it is in flight
+      act(() => clearRefusedOffers());
       expect(revokeObjectURL).not.toHaveBeenCalledWith("blob:a.png");
       await act(async () => refuse(new Error("relay said no")));
 

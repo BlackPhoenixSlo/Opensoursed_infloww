@@ -1,7 +1,5 @@
 "use client";
 
-/** Creator reports › Creator performance (#154 to #174): the creator list at the left and the picked Creator's
- *  Earnings, Earnings breakdown, Earnings heatmap and Chargebacks at the right. Its state lives in CompetitorReports. */
 
 import { ArrowDownLeft, ArrowUpRight, Upload } from "lucide-react";
 
@@ -19,8 +17,6 @@ import {
   type Bucket, type Chan, type Point, type View, CHANNELS, NO_CREATORS, SUMMARY_TEXT, creatorName, dailyOf,
 } from "./reportsMath";
 
-/** #161: the Creator performance Earnings block's channel buttons, All first. The bundle's Streams has none: its sales
- *  count in All, and Chargebacks has its own chart below (bars draw nothing below zero). */
 const PERF_CHANNELS: readonly { key: Chan | "all"; label: string }[] = [
   { key: "all", label: "All" },
   { key: "subscriptions", label: "Subscriptions" },
@@ -29,13 +25,10 @@ const PERF_CHANNELS: readonly { key: Chan | "all"; label: string }[] = [
   { key: "messages", label: "Messages" },
   { key: "referrals", label: "Referrals" },
 ];
-/** #167: Creator performance's own slice and legend-dot colours, in CHANNELS' order then Chargebacks' (the bundle's
- *  literal hex, as the Overview's channel colours are); its sparklines rise and fall in the bundle's two. */
 const PERF_COLORS: Record<Chan | "chargebacks", string> = {
   subscriptions: "#3467ff", tips: "#2ad4ac", posts: "#ff6868", messages: "#ffa553", referrals: "#34c2ff", chargebacks: "#ff7c71",
 };
 const PERF_SPARK = { up: "#2ad4ac", down: "#ff7c71" } as const;
-/** #155, #164, #168: the Creator performance blocks' tooltips, verbatim. */
 const PERF_TIPS = {
   earnings: "Sales growth and trends of all Creator earnings",
   breakdown: "A detailed view of Creator earnings broken down by channel",
@@ -57,22 +50,17 @@ export default function CreatorPerformance({
   perfView: View; perfRetry: () => void;
   perfPoints: Point[]; perfBuckets: Record<Bucket, number>; perfPrior: Partial<Record<Bucket, number>> | null;
   perfDaily: ReturnType<typeof dailyOf>; perfHeat: { weekday: number; hour: number; value: number }[]; perfChargebacks: Point[];
-  /** The picked Creator's reversals, below zero: a row after the channels in the legend and growth column. */
   perfChargebacksCents: number;
-  /** Whether the picked Creator's Referrals has a figure (`referralsShown`, #45): not, its figures are "-", never
-   *  $0.00; `perfRefsGap` "all" (failed outright) says so on its chart, else the chart is loading. */
+  // No Referrals figure: its figures are "-", never $0.00.
   perfRefsShown: boolean; perfRefsGap: ReferralsGap;
 }) {
   const perfReady = perfView === "ready";
-  /* #172 to #174: a failed block's `AbnormalRequestError` in the block's place, centred in its height: the error art,
-     "Request failed" and a primary Retry (the bundle's words are i18n keys loaded at run time). */
   const perfFailed = (minHeight: number) => (
     <div className="flex items-center justify-center" style={{ minHeight }}>
       <EmptyState kind="error" text="Request failed" onRetry={perfRetry} />
     </div>
   );
   const perfChanSum = CHANNELS.reduce((a, c) => a + perfBuckets[c.key], 0);
-  /* The legend's and growth column's rows: the channels (share, growth, sparkline), then Chargebacks (none of them). */
   const rows: { key: Chan | "chargebacks"; label: string; cents: number; chan: Chan | null; shown: boolean }[] = [
     ...CHANNELS.map((c) => ({ key: c.key, label: c.label, cents: perfBuckets[c.key], chan: c.key,
       shown: perfReady && (c.key !== "referrals" || perfRefsShown) })),
@@ -83,7 +71,6 @@ export default function CreatorPerformance({
   return (
     <div className="flex flex-col md:flex-row text-[13px]">
       <aside className="md:w-[240px] shrink-0 px-4 md:pr-0 pt-2 md:pt-6 pb-4">
-        {/* Ours (the capture has neither, its Notes): Hide $0 creators and Export CSV, where the Clone puts them. */}
         <div role="group" aria-label="Creator list tools" title={EXTRA_LABEL} className="flex flex-col items-start gap-2 mb-3">
           <label className="flex items-center gap-2 text-sm cursor-pointer" style={{ color: "var(--color-fg)" }}>
             <input
@@ -139,9 +126,7 @@ export default function CreatorPerformance({
         </ul>
       </aside>
 
-      {/* #157: 24px report padding, none below; blocks 32px apart. */}
       <div className="flex-1 min-w-0 px-4 md:px-6 md:pt-6">
-        {/* #155, #161 to #163: Earnings, the channel buttons at the right, a 336px bar chart. */}
         <section aria-labelledby={ids.perfEarnings} className="mb-8">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
             <PerfTitle id={ids.perfEarnings} label="Earnings" tip={PERF_TIPS.earnings} />
@@ -174,7 +159,6 @@ export default function CreatorPerformance({
           )}
         </section>
 
-        {/* #164 to #167: Earnings breakdown, a donut over its legend beside a growth column. */}
         <section aria-labelledby={ids.perfBreakdown} className="mb-8">
           <div className="flex items-center justify-between mb-4">
             <PerfTitle id={ids.perfBreakdown} label="Earnings breakdown" tip={PERF_TIPS.breakdown} />
@@ -211,7 +195,6 @@ export default function CreatorPerformance({
                       style={{ borderColor: "var(--color-border)" }}
                     >
                       <span className="flex flex-col min-w-0">
-                        {/* #166: the count, 4px from the 12px arrow, then the change. */}
                         <span className="inline-flex items-center">
                           <span className="text-base font-semibold leading-5 mr-1 tabular-nums" style={{ color: figureColor(c.cents) }}>
                             {c.shown ? fmtDollars(c.cents) : "-"}
@@ -241,7 +224,6 @@ export default function CreatorPerformance({
           )}
         </section>
 
-        {/* #168, #169: Earnings heatmap, the window's sales folded into one week in the report zone. */}
         <section aria-labelledby={ids.perfHeatmap} className="mb-8">
           <div className="flex items-center justify-between mb-4">
             <PerfTitle id={ids.perfHeatmap} label="Earnings heatmap" tip={PERF_TIPS.heatmap} />
@@ -251,7 +233,6 @@ export default function CreatorPerformance({
           )}
         </section>
 
-        {/* #170, #171: Chargebacks, the picked Creator's reversals at the "Shown by" bucket. */}
         <section aria-labelledby={ids.perfChargebacks} className="mb-8">
           <div className="flex items-center justify-between mb-4">
             <PerfTitle id={ids.perfChargebacks} label="Chargebacks" tip={PERF_TIPS.chargebacks} />

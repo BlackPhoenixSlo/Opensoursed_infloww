@@ -1,61 +1,3 @@
-"""Vault Pro at 20k: the vault mirror's reads, duplicate review and duplicate hide on a big vault, through the
-real `/admin/vault-ai/*` routes, many owners at once.
-
-World: `agency_inbox` (small 3 Creators, medium 10) and `seed/vault_items` (SQL, deterministic from --seed):
-Creator 0 is the big vault (`--set vault_items=N`, SCALES `vault_pro_items`, clamped to COLLECT_CAP, the
-most a Collect sweep mirrors, seed/vault_items.py), every other Creator a twentieth of it (at least 50). Rows as Collect sweeps +
-describe + flags + harvest + sends + earlier hides leave them; about a fifth of the hashed media are planted
-re-upload groups and a few flagged rows planted review suspects (seed docstring), 6 OF folders (listStates) and
-3 AI folders per Creator, two finished sweep rows each.
-
-Load (stage `read`): `--users` owner sessions (`ctx.owner.share`) take tasks off one shared list until it is
-empty, 1-3 s think time after each (an owner looking at a 40-tile page before the grid loads the next):
-every page (the app's PAGE, 40) of every items walk, per Creator: all newest / all oldest, each type, three
-searches (a describe word, an OF-harvest term, a kind word), photo + a search, each OF folder, each AI folder;
-plus per Creator 3x GET /cache/summary, 2x GET /of-folders, GET /flags-review (the modal's limit 200, all and
-only_iffy). How many pages a walk has comes from the seed (SQL), never from a route's hasMore, so the load is
-the same under a fault. Stage `dupes`: per Creator GET /duplicates at each strictness the modal offers
-(0, 2, 4, 6; limit high enough for every set), all at once. Stage `hide`: per Creator but the UI's (Creator 1),
-one POST /duplicates/hide (strictness 2) ticking up to 150 unsent copies, one keeper, two sent copies, a
-media in no set and a media in a set only at strictness 6 (copy or original), from the oracle; then GET
-/cache/summary again. Stage `hide-strict0`: one POST /duplicates/hide at strictness 0 for one small Creator
-(Creator 0 if none has one), ticking an unsent copy that is one at 2 but not at 0 (kept out of the stage-hide
-pick).
-
-Checks (names in lib/vault_pro_faults.py): PAGING (every walk: each item exactly once, full pages + hasMore
-until the last, the sort's order), FILTERS (every walk's set == SQL's), DUPES (each Creator x strictness ==
-the seed's planted groups: a group's original keeps its copies that are its bytes or within the strictness on
-both planted distances, never a decoy edit; no hashes are compared), HIDE (hidden_ids == the ticked unsent
-copies in order; refused exactly keeper / not a duplicate / has_sends; OnlyFans got exactly those ids in chunks
-of <= OF_HIDE_CHUNK; removed_at newly set on exactly those), HIDE_STRICT0 (that copy refused as
-not_a_duplicate, hidden 0, removed_at unset, OnlyFans not called for that Creator), SUMMARY_BEFORE / SUMMARY_AFTER (count and last
-sweep == SQL), OF_FOLDERS (== listStates counted from SQL), FLAGS (total / graded == SQL, iffy == the seed's
-planted suspects, per item and in only_iffy). Non-vacuous: DUPES needs Creator 0's planted sets at 0 < 2 < 6
-(strictly more, none empty), FLAGS needs Creator 0 to have planted live suspects. Budgets: GET items p95 <=700ms at 120 users; <=500ms at 200 users is advisory only;
-small runs retain <=500ms and GET duplicates p95 <= 3 s
-(stages `read` / `dupes`), p95 vs the last green run (ROUTES; not GET /of-folders, see there). KNOWN_RED (open product findings): each listed check is
-measured every run; a red one SKIPs with the reason and its numbers once the big vault is at least the
-finding's size, a green one PASSes (a stale finding shows).
-
-UI (small run): Creator 1 in Chromium on /growth/vault-pro, Extras > Duplicates; the modal settles on its
-sets (screenshot vault-pro-dupes-trigger), Remove > Yes, remove them, until "Removed N copies"
-(vault-pro-dupes-settled). UI_HIDE: the modal's set count == the API's, the ids the browser sent == the
-oracle's copies at 2 in the modal's first MODAL_SETS sets, removed_at newly set and OnlyFans' hidden ids ==
-those less the sent ones, no keeper.
-
-Bypasses (declared): bulk rows are SQL (no Collect sweep, describe or flags pass ran; the hashes are planted,
-not computed from thumbs). No thumb is cached, so each /duplicates call's `ensure_hashes` tries the unhashed
-rows (audio + vault_items.UNHASHED_P of the rest), finds no thumb file and hashes none. OnlyFans' `PUT /vault/media/hidden`
-is lib/vault_pro_relay.py (records the ids, answers success). OF is unreachable, so the grid's and the modal's
-tiles answer 404 (no picture). The `--users` sessions are separate clients on one owner login (one cookie,
-`ctx.owner.share`), not separate owners. The page tasks come from a shared pool, so a walk's pages are fetched
-by many sessions, not one tab scrolling. The /duplicates and /hide calls wait up to DUPES_TIMEOUT_S per request
-(the browser's fetch has no 30 s cap either). Every /api/of/ read stays held in the browser (ui.py), so the
-folder rail lists no OF folders. Vault Pro's tours are marked seen (a returning owner). The page-overlap fault
-swaps the route's endpoint (FastAPI internals), not a product attribute (lib/vault_pro_faults.py).
-Break-it-once: vault-items-page-overlap (FAULT; PAGING only), vault-dupes-ignores-strictness (DUPES and
-HIDE_STRICT0: the hide at 0 re-clusters through it), vault-hide-threshold-or-default (HIDE_STRICT0 only).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -77,19 +19,19 @@ from slop.seed.vault_items import COLLECT_CAP, REGIONS, VIS
 PROFILE = "agency_inbox"
 UI = True
 FAULT = "vault-items-page-overlap"
-PAGE = 40                      # useVaultCache.ts PAGE
-THRESHOLDS = (0, 2, 4, 6)      # VaultDuplicatesModal THRESHOLDS
-MODAL_SETS = 200               # the modal's scan: GET /duplicates' default limit
-DUPES_ALL_SETS = 1_000_000     # GET /duplicates' limit has no cap; more than any Creator's sets
-OF_HIDE_CHUNK = 100            # vault_of_folders._OF_HIDE_CHUNK: ids per OF PUT
+PAGE = 40
+THRESHOLDS = (0, 2, 4, 6)
+MODAL_SETS = 200
+DUPES_ALL_SETS = 1_000_000
+OF_HIDE_CHUNK = 100
 HIDE_T = 2
 HIDE_K = 150
-FLAGS_LIMIT = 200              # useFlagsReview's default
+FLAGS_LIMIT = 200
 THINK_S = (1.0, 3.0)
 DUPES_TIMEOUT_S = 900
-SUMMARY_READS = 3              # GET /cache/summary per Creator in stage read
-OF_FOLDERS_READS = 2           # GET /of-folders per Creator in stage read
-PAGE_T, SUMMARY_T, OF_FOLDERS_T, FLAGS_T = "page", "summary", "of-folders", "flags"   # read task / result keys
+SUMMARY_READS = 3
+OF_FOLDERS_READS = 2
+PAGE_T, SUMMARY_T, OF_FOLDERS_T, FLAGS_T = "page", "summary", "of-folders", "flags"
 ITEMS_PATH = "/admin/vault-ai/items"
 SUMMARY_PATH = "/admin/vault-ai/cache/summary"
 OF_FOLDERS_PATH = "/admin/vault-ai/of-folders"
@@ -98,22 +40,18 @@ DUPES_PATH = "/admin/vault-ai/duplicates"
 HIDE_PATH = "/admin/vault-ai/duplicates/hide"
 ITEMS_ROUTE = ("read", f"GET {ITEMS_PATH}")
 DUPES_ROUTE = ("dupes", f"GET {DUPES_PATH}")
-# (stage, route) for p95 vs the last green run. Not GET /of-folders: its p95 is the big vault's 2 calls of 20
-# (each parses every row's raw_json; the rest take ~10 ms), a max, not a percentile: 197 / 443 / 732 / 3508 ms on
-# one world (5f40, 63f1, 5594, 5609). Its numbers stay in http.json / summary.txt.
+# Not GET /of-folders: its p95 is the big vault's 2 calls of 20 (each parses every row's raw_json), a max, not a percentile.
 ROUTES = (ITEMS_ROUTE, ("read", f"GET {SUMMARY_PATH}"), ("read", f"GET {FLAGS_PATH}"), DUPES_ROUTE,
           ("hide", f"POST {HIDE_PATH}"))
 from slop.lib.latency_acceptance import latency_check
 
-ITEMS_P95_MS = 500  # small-run regression budget; volume uses latency_check
+ITEMS_P95_MS = 500
 DUPES_P95_MS = 3000
 ITEMS_BUDGET = f"p95 {ITEMS_ROUTE[1]} meets user-load latency contract (stage {ITEMS_ROUTE[0]})"
 DUPES_BUDGET = f"p95 {DUPES_ROUTE[1]} <= {DUPES_P95_MS} ms (stage {DUPES_ROUTE[0]})"
 BUDGETS = ((ITEMS_BUDGET, ITEMS_ROUTE, ITEMS_P95_MS), (DUPES_BUDGET, DUPES_ROUTE, DUPES_P95_MS))
 P95_VS_LAST = (1.5, 500)
 P95_VS_LAST_MIN_N = 5
-# Open product findings {check: (big-vault size from which it applies, reason)}: the check is measured every
-# run; red at or above that size it SKIPs with the reason, otherwise it is an ordinary check.
 KNOWN_RED: dict[str, tuple[int, str]] = {
     DUPES_BUDGET: (20_000, "open finding (perf paused until real data, owner 10-29): GET /duplicates p95 3.7-5.7 s "
                            "for 40 scans at once (10 Creators x 4 strictness) with a 20k vault "
@@ -127,7 +65,7 @@ VIEWPORT = (1440, 900)
 WAIT_MS = 180_000
 TOURS_SEEN = ("localStorage.setItem('vaultProOnboarding', JSON.stringify({batchUploadEntry: '1', "
               "uploadPageStep: '1', batchEdit: '1', uploadBtn: '1'}));")
-BANDS = ((0, 0, "identical"), (1, 2, "near"), (3, 5, "similar"), (6, 8, "loose"))   # the modal's colour bands
+BANDS = ((0, 0, "identical"), (1, 2, "near"), (3, 5, "similar"), (6, 8, "loose"))
 SEARCHES = ("lingerie", "feet", "video")
 
 
@@ -135,7 +73,6 @@ def _band(d: int) -> str:
     return next((nm for lo, hi, nm in BANDS if lo <= d <= hi), "far")
 
 
-# ── the truth, from SQL ─────────────────────────────────────────────
 
 def _truth(w, aid: str) -> dict:
     con = w.sql()
@@ -165,8 +102,6 @@ def _truth(w, aid: str) -> dict:
 
 
 def _walks(aid: str, t: dict, meta: dict) -> list[dict]:
-    """Every items walk for a Creator: params, the SQL set in the sort's order, and its sort key (ties in it may
-    come in any order)."""
     items = t["items"]
     live = {m: it for m, it in items.items() if not it["removed"]}
     newest = lambda m: -items[m]["t"]  # noqa: E731
@@ -199,17 +134,10 @@ def _walks(aid: str, t: dict, meta: dict) -> list[dict]:
 
 
 def _folder_key(mo):
-    """local_items' internal-folder order: 0,1,2.. first, then unpinned, then ..-2,-1 (bucket, manual_order)."""
     return (1, 0) if mo is None else (0, mo) if mo >= 0 else (2, mo)
 
 
 def _oracle(t: dict, copies: dict, threshold: int) -> dict:
-    """The sets at a strictness from the seed's planted groups alone (no hash is read or compared): a group's
-    original (live; the seed never hides one that has copies) keeps its live copies that are its bytes (exact,
-    0 / 0) or within the strictness on both planted distances (dHash, aHash), never a decoy edit (duration off
-    by > 1 s). A copy not kept is more than the strictness from its original, so d1 + d2 more from any other
-    copy, and forms no set of its own (seed docstring). Clusters in the route's order: (-copies, worst), ties by
-    the original's upload (created, media id)."""
     items = t["items"]
     live = {m: it for m, it in items.items() if not it["removed"]}
     kept: dict[int, list[tuple]] = {}
@@ -247,7 +175,6 @@ def _of_folders(t: dict) -> list[dict]:
 
 
 def _flags(t: dict, planted_iffy: set) -> dict:
-    """Known flags and graded-at-this-version from SQL; iffy = the seed's planted suspects still live."""
     known = graded = 0
     ids = set()
     for m, it in t["items"].items():
@@ -262,10 +189,8 @@ def _flags(t: dict, planted_iffy: set) -> dict:
     return {"total": known, "graded": graded, "ids": ids, "iffy": planted_iffy & ids}
 
 
-# ── the load ────────────────────────────────────────────────────────
 
 async def _pool(ctx, tasks: list, run_one) -> None:
-    """`--users` owner sessions take tasks off one list until it is empty, thinking after each."""
     it = iter(tasks)
     clients = [ctx.owner.share(limits=2) for _ in range(ctx.users)]
 
@@ -304,7 +229,6 @@ async def run(ctx) -> None:
     ui_aid = ui_creator["id"]
     truth = {aid: _truth(w, aid) for aid in aids}
 
-    # ── stage read: every page of every walk, plus summary / of-folders / flags-review ──
     walks = [wk for aid in aids for wk in _walks(aid, truth[aid], meta[aid])]
     tasks: list[tuple[tuple, str]] = [
         ((PAGE_T, wi, p), f"{ITEMS_PATH}?{urlencode({**wk['params'], 'limit': PAGE, 'offset': p * PAGE})}")
@@ -335,7 +259,6 @@ async def run(ctx) -> None:
     oracles = {(aid, th): _oracle(truth[aid], meta[aid]["copies"], th) for aid in aids for th in THRESHOLDS}
     dupes_http = ctx.owner.share(limits=len(aids) * len(THRESHOLDS) + 2)
     try:
-        # ── stage dupes: each Creator at each strictness, all at once ──
         ctx.rec.stage = "dupes"
 
         async def scan(aid: str, th: int):
@@ -348,7 +271,6 @@ async def run(ctx) -> None:
         dupes_s = time.perf_counter() - t_d
         _check_dupes(ctx, scans, oracles, aids[0])
 
-        # ── stage hide: one ticked selection per Creator (not the UI's), from the oracle ──
         ctx.rec.stage = "hide"
         rng = w.rng("scenario:vault-pro:hide")
         plans = {aid: _hide_plan(rng, truth[aid], *(oracles[(aid, th)] for th in (0, HIDE_T, THRESHOLDS[-1])))
@@ -369,7 +291,6 @@ async def run(ctx) -> None:
             summ2[aid] = (r.status_code, _json(r))
         _check_hide(ctx, plans, hidden, before, after, of_hidden, summ2, truth)
 
-        # ── stage hide-strict0: a copy only at 2, ticked at strictness 0 (a small Creator first) ──
         ctx.rec.stage = "hide-strict0"
         s0_aid = next((a for a in aids[2:] + aids[:1] if plans[a]["strict0"] is not None), None)
         s0 = {"aid": s0_aid}
@@ -382,14 +303,12 @@ async def run(ctx) -> None:
     finally:
         await dupes_http.aclose()
 
-    # ── UI: Creator 1's Duplicates modal, Remove ──
     ctx.rec.stage = "ui"
     if ctx.app is None:
         ctx.skip(UI_HIDE, "--no-ui")
     else:
         await _ui(ctx, w, ui_creator, scans[(ui_aid, HIDE_T)][1], oracles[(ui_aid, HIDE_T)], truth[ui_aid])
 
-    # ── budgets, metrics ──
     stats = {route: ctx.rec.summary(stage).get(route) for stage, route in ROUTES}
     for name, (_, route), budget in BUDGETS:
         s = stats[route]
@@ -414,17 +333,14 @@ async def run(ctx) -> None:
 
 
 async def _of_hidden(ctx) -> dict[str, list[list[int]]]:
-    """What OnlyFans received (lib/vault_pro_relay.py): per Creator, each PUT's ids, in order."""
     out: dict[str, list[list[int]]] = {}
     for h in (await ctx.owner.get(FAKE_PATH)).json()["hidden"]:
         out.setdefault(h["account"], []).append(h["media_ids"])
     return out
 
 
-# ── checks ──────────────────────────────────────────────────────────
 
 def _verdict(ctx, name: str, ok: bool, big: int, **detail) -> None:
-    """A check, or its KNOWN_RED skip when it is red and the big vault is at least the finding's size."""
     from_size, reason = KNOWN_RED.get(name, (None, ""))
     if not ok and from_size is not None and big >= from_size:
         ctx.skip(name, reason, **detail)
@@ -433,14 +349,11 @@ def _verdict(ctx, name: str, ok: bool, big: int, **detail) -> None:
 
 
 def _responses(results: dict, key: tuple, n: int) -> list[tuple]:
-    """The (status, body) answers to a read task, padded with (None, None) to the n it was sent: a missing
-    answer is a failure, never a vacuous pass."""
     got = results.get(key, [])
     return got + [(None, None)] * (n - len(got))
 
 
 def _page(st, body):
-    """(ids, types, hasMore) of a 200 items page, or None when it is not one."""
     if st != 200:
         return None
     try:
@@ -522,7 +435,6 @@ def _check_of_folders(ctx, aids, truth, results) -> None:
 
 
 def _flags_body(st, body):
-    """{total, graded, iffy, items: [(media_id, iffy)]} of a 200 flags-review answer, or None when it is not one."""
     if st != 200:
         return None
     try:
@@ -551,7 +463,7 @@ def _check_flags(ctx, aids, truth, results, meta) -> None:
                         "got": all_ and {k: all_[k] for k in ("total", "graded", "iffy")},
                         "items": all_ and len(all_["items"]), "iffy_total": only and only["total"],
                         "iffy_items": only and len(only["items"])})
-    planted = want_fl[aids[0]]["iffy"]   # non-vacuous: the big vault has live planted suspects
+    planted = want_fl[aids[0]]["iffy"]
     ctx.check(FLAGS, not bad and planted > 0, bad=bad[:5], planted_iffy_creator0=planted, want=want_fl)
 
 
@@ -559,8 +471,6 @@ DUPES_COUNTS = ("sets", "removable", "scanned", "unhashed", "returned", "thresho
 
 
 def _scan_body(st, body):
-    """([{original, dupes, worst, sent, bands_ok}], counts) of a 200 /duplicates answer, or None when it is not
-    one (a set with no copies is not one)."""
     if st != 200:
         return None
     try:
@@ -602,7 +512,6 @@ def _check_dupes(ctx, scans, oracles, big_aid: str) -> None:
             bad.append({"aid": aid, "threshold": th, "status": st, "counts": counts, "want": wcounts,
                         "bands_ok": bands_ok, "sent_ok": sent_ok, "order_ok": order_ok,
                         "only_got": sorted(gs - ws)[:3], "only_want": sorted(ws - gs)[:3]})
-    # non-vacuous: the big vault's planted sets grow with the strictness (0 < 2 < 6), none empty
     growing = [oracles[(big_aid, th)]["sets"] for th in (0, HIDE_T, THRESHOLDS[-1])]
     nonvacuous = 0 < growing[0] < growing[1] < growing[2]
     ctx.check(DUPES, not bad and nonvacuous, scans=len(scans), bad=len(bad), sample=bad[:4],
@@ -615,7 +524,7 @@ def _hide_plan(rng, t: dict, o0: dict, o2: dict, o6: dict) -> dict:
     dupes0 = {d[0] for c in o0["clusters"] for d in c["dupes"]}
     unsent = [m for m in dupes2 if items[m]["sends"] == 0]
     sent = [m for m in dupes2 if items[m]["sends"] > 0]
-    strict0 = min((m for m in unsent if m not in dupes0), default=None)   # kept for stage hide-strict0
+    strict0 = min((m for m in unsent if m not in dupes0), default=None)
     unsent = [m for m in unsent if m != strict0]
     in2 = set(dupes2) | {c["original"] for c in o2["clusters"]}
     in6 = {d[0] for c in o6["clusters"] for d in c["dupes"]} | {c["original"] for c in o6["clusters"]}
@@ -677,7 +586,6 @@ def _check_hide(ctx, plans, hidden, before, after, of_hidden, summ2, truth) -> N
 
 
 def _check_strict0(ctx, s0: dict) -> None:
-    """A copy only at 2 ticked at strictness 0: refused as not_a_duplicate, nothing hidden or sent to OF."""
     if s0["aid"] is None:
         ctx.check(HIDE_STRICT0, False, error="no Creator has an unsent copy at 2 that is none at 0")
         return
@@ -690,7 +598,6 @@ def _check_strict0(ctx, s0: dict) -> None:
               newly_removed=s0["newly"], of_calls=s0["of_calls"])
 
 
-# ── UI ──────────────────────────────────────────────────────────────
 
 async def _ui(ctx, w, creator: dict, api_body, o2: dict, t: dict) -> None:
     aid = creator["id"]
@@ -703,7 +610,6 @@ async def _ui(ctx, w, creator: dict, api_body, o2: dict, t: dict) -> None:
                 await page.goto(f"{ctx.app}/growth/vault-pro", wait_until="domcontentloaded", timeout=WAIT_MS)
                 await ui.pick_creator(page, creator["nickname"], timeout_ms=WAIT_MS)
                 await page.get_by_role("button", name=re.compile(r" extras$")).first.click(timeout=WAIT_MS)
-                # enabled once the summary says the mirror holds media; click waits for that
                 await page.get_by_role("button", name="Duplicates", exact=True).click(timeout=WAIT_MS)
                 line = page.get_by_text(re.compile(r"^\d+ sets · \d+ copies · \d+ items scanned"))
                 await line.wait_for(timeout=WAIT_MS)
@@ -731,7 +637,7 @@ async def _ui(ctx, w, creator: dict, api_body, o2: dict, t: dict) -> None:
         ctx.metric("offhost_aborted", len(page.slop["offhost_aborted"]))
     after = _removed(w).get(aid, set())
     of_ids = sorted(m for ids in (await _of_hidden(ctx)).get(aid, []) for m in ids)
-    shown = o2["clusters"][:MODAL_SETS]   # oracle clusters are in the route's order
+    shown = o2["clusters"][:MODAL_SETS]
     dupes = sorted(d[0] for c in shown for d in c["dupes"])
     unsent = sorted(m for m in dupes if t["items"][m]["sends"] == 0)
     sent_ids = sorted(m for b in bodies for m in b.get("media_ids") or [])

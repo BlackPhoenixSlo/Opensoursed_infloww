@@ -1,32 +1,5 @@
 "use client";
 
-/**
- * PerModelKpiGrid — one card per model account with the headline KPIs.
- *
- * Fields:
- *   • Total revenue (cleared + pending; chips break down by kind, with
- *                    a small "·$Xp" badge for the pending portion)
- *   • New subs        (DISTINCT fan_id with kind='subscription'; tracks
- *                      pending so a new sub shows the moment it fires
- *                      instead of waiting ~7d for bank-clear)
- *   • LTV             (= total / new_subs; null when new_subs = 0)
- *   • Active subs     (point-in-time; null when backend can't read it)
- *   • ARPU            (= total / active; null when no active count)
- *
- * Nulls render as "—" — see plan §11.3 (active_subs may be null when
- * fans.subscription_expires_at is also empty). A warning badge sits at
- * the top of EVERY card when `active_subs_source === "unavailable"` so
- * the user knows why every model in the grid shows "—" for active/ARPU.
- *
- * The OnlyFans reads (profile, fan count, new fans) go only to a Creator with
- * a live session (lib/sessionConnectivity leaves it `null`: `has_session`, no
- * `session_dead_at`, active). Any other card makes no OF call: it shows the DB's
- * figures, "—" for OF's, and the Creators page's connectivity label and colour
- * from the same helper. A Creator the accounts read lacks
- * has no account on this host at all (the Relay lists the on-host registry;
- * its OF reads answer 404 Unknown account_id), so it is "Not connected" too.
- * Before the accounts read answers no card reads OF; a failed read reads as before.
- */
 
 import { Badge, Card } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
@@ -50,9 +23,6 @@ interface Props {
   to: string | null;
 }
 
-/** Paid/free comes from OF's own profile when available (subscribePrice
- *  > 0 ≡ paid, isFree ≡ free). Falls back to "any sub/rebill in window"
- *  while the /me call is in flight or if it failed. */
 function isPaidPage(m: PerModelRow, profile: import("@/hooks/useStats").OfProfile | null | undefined): boolean {
   if (profile) {
     if (typeof profile.subscribePrice === "number") return profile.subscribePrice > 0;
@@ -63,9 +33,6 @@ function isPaidPage(m: PerModelRow, profile: import("@/hooks/useStats").OfProfil
   return (k.subscription + k.rebill + p.subscription + p.rebill) > 0;
 }
 
-/** Whether a Creator's card may read OnlyFans (`live`), and its connectivity when it may not. `null` until the
- *  accounts read answers (no OF call yet). A Creator absent from the answered list has no account on this host; a
- *  failed list reads OF as before. */
 export function ofReadState(
   account: AccountMeta | undefined, accounts: { isPending: boolean; isError: boolean },
 ): { live: boolean; conn: Connectivity | null } | null {
@@ -77,7 +44,6 @@ export function ofReadState(
 }
 
 export default function PerModelKpiGrid({ from, to }: Props) {
-  // The cards' per-Creator reads (users/me, fan counts, new fans) and per-model: one relay call (lib/screenBundle.ts).
   useScreen({ kind: "dashboard", from, to });
   const q = usePerModel(from, to);
   const accountsQ = useAccounts();
@@ -94,10 +60,6 @@ export default function PerModelKpiGrid({ from, to }: Props) {
   const models = data?.per_model ?? [];
   const activeUnavail = data?.active_subs_source === "unavailable";
 
-  // Cold-start path: paint a skeleton grid sized by useAccounts (which is
-  // cached `staleTime: 3d`, so it lands well before /per-model). One empty
-  // <ModelCard> placeholder per known account — the page renders <300ms
-  // instead of waiting for the per-model query to settle.
   if (q.isPending) {
     const skeletons = accountsQ.data?.accounts ?? [];
     const count = skeletons.length || 3;
@@ -156,8 +118,6 @@ export default function PerModelKpiGrid({ from, to }: Props) {
   );
 }
 
-/** How each KPI on the cards is calculated — pinned at the bottom of the
- *  grid so the numbers are never a black box. */
 function MetricsLegend() {
   return (
     <dl className="hidden md:block mt-1 rounded-md border border-border bg-bg-elev-1/40 p-3 text-[11px] leading-relaxed text-fg-dim space-y-1">
@@ -212,40 +172,20 @@ function ModelCard({ m, activeUnavail, from, to, of, color }: {
 }) {
   const kinds = m.revenue_by_kind;
   const pending = m.pending_by_kind;
-  // The OF reads below go out only for a live session (`ofReadState`): a null id disables each.
   const ofId = of?.live ? m.account_id : null;
   const offline = of?.conn ?? null;
-  // Pull the model's OF profile (avatar + name) per card. React Query
-  // dedupes by accountId so re-mounts don't re-fetch. Falls back to the
-  // backend's `display_name` (accounts.nickname) and then the bare ID.
   const profile = useAccountProfile(ofId);
   const p = profile.data;
-  // Hold the paid/free badge indeterminate until the OF profile query has
-  // settled — otherwise the revenue-window fallback in isPaidPage paints a
-  // guess that can flip once the real subscribePrice/isFree lands in. With
-  // no live session there is no profile to wait for: the window decides.
+  // Paid/free badge stays indeterminate until the OF profile settles, else the revenue fallback paints a guess that flips.
   const paid = offline ? isPaidPage(m, null) : profile.isPending ? null : isPaidPage(m, p);
-  // Live OF fan counts — the REAL totals. Our DB `fans` roster is a tiny
-  // subset (only fans we've chatted with), so per_model's sub counts read 0
-  // for free pages that actually have thousands of fans. subscribers.active
-  // is the true current-fan count (the mass-message audience).
+  // Live OF fan count is the real total: our DB fans roster only holds fans we've chatted with.
   const counts = useOfSubscriberCounts(ofId);
   const totalFans = counts.data?.active ?? null;
-  // New fans in the window — OF's Statistics > Subscriptions count. Correct
-  // for BOTH free and paid pages (uses the subscriber-count series, not the
-  // earnings series), so no paid-only gating.
   const newFansQ = useOfNewFans(ofId, from, to);
   const newFans = newFansQ.data ?? null;
-  // LTV = revenue in the window ÷ the new-count shown in slot 2 (paid pages:
-  // new subs; free pages: new fans). Dividing by the displayed number
-  // keeps LTV > ARPU the way you'd expect (revenue per acquisition vs per
-  // current fan). "—" until the count lands / if it's 0.
   const ltvDenom = paid === true ? m.new_subs_count : newFans;
   const ltvCents =
     ltvDenom && ltvDenom > 0 ? Math.round(m.total_revenue_cents / ltvDenom) : null;
-  // ARPU = revenue in the window ÷ total fans (live). On a free page every
-  // fan is a free sub; on a paid page every current fan is a paid sub — so
-  // total fans is the right per-fan denominator for both.
   const arpuCents =
     totalFans && totalFans > 0 ? Math.round(m.total_revenue_cents / totalFans) : null;
   const headline = p?.name || p?.username || m.display_name || m.account_id;
@@ -306,9 +246,6 @@ function ModelCard({ m, activeUnavail, from, to, of, color }: {
         <div className="text-[11px] text-fg-dim mt-0.5">total revenue · gross</div>
       </div>
 
-      {/* Revenue-by-kind chips. Hide kinds with zero on BOTH cleared and
-          pending so the row stays terse. Pending appears as a dim "+$X"
-          suffix when present — lets you see un-cleared revenue per kind. */}
       <div className="flex flex-wrap gap-1.5">
         <KindChip label="PPV"    cents={kinds.ppv}          pending={pending.ppv} />
         <KindChip label="Post"   cents={kinds.post}         pending={pending.post} />
@@ -319,11 +256,6 @@ function ModelCard({ m, activeUnavail, from, to, of, color }: {
       </div>
 
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2 pt-2 border-t border-border text-sm">
-        {/* Slot 1 = live total fans (OF subscribers.active) for BOTH page
-            types. Slot 2 adapts: a PAID page shows our new subs (each fan
-            whose subscription began in the window: a subscription sale or
-            OF's roster start, free and trial included; rebills not); a FREE
-            page shows OF's free-inclusive new-fan count. */}
         <Kpi
           label="Fans"
           value={totalFans == null ? (counts.isPending && !offline ? "…" : "—") : fmtInt(totalFans)}
@@ -367,11 +299,8 @@ function ModelCard({ m, activeUnavail, from, to, of, color }: {
   );
 }
 
-/** No OF read of its own (not a live session, or still loading): a logo another screen already cached, else the
- *  Creator's coloured initial. */
 const NO_READ: AvatarHealth = { profile: null, settled: false };
 
-/** The Creator's logo in a 40px circle: the shared roster picture (OF avatar, else the coloured initial). */
 function ModelAvatar({ account, health }: { account: Pick<AccountMeta, "id" | "nickname" | "color">; health: AvatarHealth }) {
   return (
     <span data-model-avatar className="w-10 h-10 rounded-full overflow-hidden shrink-0 bg-bg-elev-1">

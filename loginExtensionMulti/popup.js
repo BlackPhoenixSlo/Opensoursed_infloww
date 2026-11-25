@@ -1,13 +1,6 @@
-// Popup UI logic.
-//
-// Two panels — OnlyFans and Fansly — over one shared saved-logins widget.
-// The account list, its click handling and the label rules are written once
-// and driven by a per-panel descriptor; only the capture-specific bits (the
-// OF curl, the Fansly session JSON) are platform code.
-
 const OF_URL = "https://onlyfans.com/";
-const LOGIN_URL = "https://onlyfans.com/";  // OF shows the login modal on root if signed-out
-const REQUIRED_COOKIES = ["auth_id", "sess"];  // OF's session cookies
+const LOGIN_URL = "https://onlyfans.com/";
+const REQUIRED_COOKIES = ["auth_id", "sess"];
 
 const $ = (id) => document.getElementById(id);
 const loginBtn = $("login-btn");
@@ -31,7 +24,6 @@ function showToast(msg, kind = "ok") {
   toast.style.borderColor = kind === "err"
     ? "rgba(248,81,73,0.4)"
     : "rgba(46,160,67,0.4)";
-  // Force reflow so re-adding .show triggers the transition fresh.
   void toast.offsetWidth;
   toast.classList.add("show");
   clearTimeout(showToast._t);
@@ -57,8 +49,6 @@ function fmtWhen(iso) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-// The one rule for turning a capture into a human label. Mirrors labelFrom()
-// in background.js, which is what actually gets stored on the account record.
 function labelFrom(capture) {
   if (!capture) return null;
   if (capture.username) return "@" + String(capture.username).replace(/^@+/, "");
@@ -66,77 +56,23 @@ function labelFrom(capture) {
   return null;
 }
 
-// Everything except the Status box goes through the service worker. When that
-// worker is down — a registration that failed, a start that threw, an extension
-// reloaded out from under an open popup — sendMessage answers with `undefined`
-// and the real reason sits in chrome.runtime.lastError. The old `r || {}` threw
-// that away, and one dead worker then told three separate lies: an empty
-// saved-logins list ("no accounts saved yet"), a save that failed with a bare
-// "?", and a "Missing cookies — sign in first" on an account that was signed in
-// the whole time. Carry the failure so the popup can say the one true thing.
 const NO_WORKER =
   "extension background is down — reload it at chrome://extensions";
 
-// THE ONE TRUST TEST. Every caller asks this, not "is the worker dead" — the
-// question is "did I get an answer I can show the user as fact". Three shapes
-// fail it and only one of them is a dead worker:
-//
-//   1. `dead`      — sendMessage never reached a handler.
-//   2. `ok === false` — a handler ran and threw; the router's catch returns a
-//      TRUTHY envelope, which sails past any `if (resp.dead)` guard and then
-//      destructures to `accounts === undefined` → "No accounts saved yet".
-//      That is the exact state that makes someone sign in again and overwrite
-//      a good session.
-//   3. `error` set — a handler answered with a plausible payload AND a reason
-//      it is empty. `getCookies` does precisely this (`{cookies: [], error}`),
-//      which is how "Missing cookies — sign in first" was shown to an account
-//      that was signed in the whole time.
-//
-// ⚠️ ONE CALLER IS EXEMPT, DELIBERATELY: the save site (`wireSaveAndNext`).
-// This predicate is BINARY — trusted or not — and `save` answers over a domain
-// that has THREE states: clean success, clean failure, and a PARTIAL success
-// where the account row was committed and the clean-up threw
-// (`{ok: false, savedAs, error}` from background.js's saveAndClear). `untrusted`
-// would collapse that third state into the second and the stale list on screen
-// would stand, so the save site reads `resp.ok` and then `resp.savedAs` itself.
-// Any NEW partial-success envelope has the same problem; do not route it here.
+// Binary trust test; the save site is exempt: it reads resp.ok then resp.savedAs (partial success: row committed, clean-up threw)
 function untrusted(resp) {
   return !resp || resp.dead === true || resp.ok === false || !!resp.error;
 }
 
-// The reason to put in front of the user. Never hardcode NO_WORKER at a call
-// site: a channel error with a real cause of its own was being reported as
-// "background is down" regardless of what it actually said.
 function reasonOf(resp) {
   return (resp && resp.error) || NO_WORKER;
 }
 
-// sendMessage can also throw SYNCHRONOUSLY — "Extension context invalidated",
-// the case the comment above names, when the extension is reloaded out from
-// under an open popup. Inside a `new Promise` executor that rejects the
-// promise, so the guard below never runs and whatever placeholder is in the
-// HTML stands for the life of the popup. Answer with the dead envelope
-// instead, so there is exactly one failure shape to handle.
+// 20 s per sendOnce, generous on purpose: a Fansly switch runs ensureTab twice (up to 8 s each); a timeout is retried, so ~60-80 s total
 const SEND_TIMEOUT_MS = 20_000;
 
 function sendOnce(msg) {
   return new Promise((res) => {
-    // A handler that accepts the channel and then hangs would leave this
-    // awaiting forever with the clicked button disabled and no feedback. The
-    // ceiling is deliberately generous, not the 5 s that first suggests
-    // itself: a Fansly switch goes through fanslyStorage → ensureTab TWICE
-    // (clear then write) and ensureTab alone waits up to 8 s for a new tab to
-    // load. A shorter timeout would report failure on a switch that is about
-    // to succeed — a fresh lie in place of the old one.
-    //
-    // ⚠️ 20 s is PER `sendOnce`, NOT what the user waits. A timeout resolves
-    // `{dead: true}`, which is exactly the shape `sendWithRetries` retries, so
-    // the real ceilings are:
-    //   ~60 s  a retryable message (3 × 20 s + 120 ms + 240 ms of backoff)
-    //   ~80 s  save / switch — `send` wakes the worker with a retryable `list`
-    //          (up to ~60 s) and only then sends the real message once
-    // Still bounded, and every path ends in a toast rather than a stuck button;
-    // but do not read "20 s" here as the answer to "how long can this hang".
     const timer = setTimeout(
       () => res({ ok: false, dead: true, error: "the extension background did not answer in time" }),
       SEND_TIMEOUT_MS
@@ -144,7 +80,6 @@ function sendOnce(msg) {
     const answer = (r) => { clearTimeout(timer); res(r); };
     try {
       chrome.runtime.sendMessage(msg, (r) => {
-        // Reading lastError is also what stops Chrome logging it as unchecked.
         const err = chrome.runtime.lastError;
         if (r) return answer(r);
         answer({ ok: false, dead: true, error: (err && err.message) || NO_WORKER });
@@ -155,26 +90,12 @@ function sendOnce(msg) {
   });
 }
 
-// An MV3 service worker sleeps after ~30s idle. The very sendMessage that finds
-// it asleep is also what wakes it, but the first call can come back empty while
-// it is still spinning up — which is the whole "works only right after a reload"
-// symptom: a fresh load has a live worker, a day-old one does not. So a dead
-// reply gets a couple of retries with a short backoff; by then the worker is up
-// and answering. Only a worker that never comes back reports the failure.
+// An MV3 service worker sleeps after ~30 s idle; the sendMessage that finds it asleep wakes it but can come back empty, so retry
 function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
-// One try plus two retries — 120 ms then 240 ms of backoff, 360 ms total. The
-// previous shape ran the loop three times AND made a fourth call after it, so
-// a dead worker cost 720 ms of pure sleep and one redundant send whose answer
-// the loop had already produced.
 const ATTEMPTS = 3;
 
-// Retrying is only safe for a message that lands on the same state however
-// many times it runs. `save` and `switch` are not: each wipes the live session
-// and reloads the site's tabs, so a retry runs the destructive half a SECOND
-// time and answers about that second run — which is how a save that did work
-// came back as `{savedAs: null}` and toasted "Cleared". `list` and `getCookies`
-// change nothing; `forget` and `resetCapture` settle at one state.
+// save and switch wipe the live session and reload tabs: a retry would run the destructive half twice
 function isRetryable(msg) {
   if (msg.type !== "account") return true;
   return msg.action === "list" || msg.action === "forget";
@@ -192,8 +113,7 @@ async function sendWithRetries(msg) {
 
 async function send(msg) {
   if (isRetryable(msg)) return await sendWithRetries(msg);
-  // Non-idempotent. The retries existed to wake a sleeping worker, so do that
-  // with a harmless read first and then send the real message exactly once.
+  // Non-idempotent: wake the worker with a harmless read, then send the real message exactly once
   const woke = await sendWithRetries({
     type: "account", action: "list", platform: msg.platform,
   });
@@ -201,18 +121,11 @@ async function send(msg) {
   return await sendOnce(msg);
 }
 
-// ── Saved-logins list (shared by both panels) ─────────────────────
 
-// A panel is: which platform it drives, which <div> holds its rows, and what
-// the site is called in user-facing text.
 async function renderAccountList(panel) {
   const resp = await send({
     type: "account", action: "list", platform: panel.platform,
   });
-  // An untrustworthy reply must not render as "nothing saved yet" — the saved
-  // logins are still on disk, we just cannot vouch for this answer, and telling
-  // the user they are gone is what makes them sign in again and overwrite a
-  // good session. Show the reason the reply actually carried.
   if (untrusted(resp)) {
     panel.list.innerHTML =
       `<div class="empty err">Can't read saved logins — ${escapeHtml(reasonOf(resp))}</div>`;
@@ -234,8 +147,6 @@ async function renderAccountList(panel) {
     const isActive = id === String(activeId);
     const row = document.createElement("div");
     row.className = "acct-row" + (isActive ? " active" : "");
-    // The label rides on the buttons as data-label so toasts and confirms can
-    // read it back without scraping rendered text out of the DOM.
     const btn = (act, cls, text, title) =>
       `<button data-act="${act}"${cls ? ` class="${cls}"` : ""}` +
       ` data-id="${escapeHtml(id)}" data-label="${escapeHtml(label || id)}"` +
@@ -252,8 +163,6 @@ async function renderAccountList(panel) {
   }
 }
 
-// Two-click delete. The button turns into an explicit "Remove?" for a few
-// seconds; clicking anything else, or letting it time out, stands down.
 function disarmDelete(btn) {
   delete btn.dataset.armed;
   btn.textContent = "\u00d7";
@@ -262,7 +171,6 @@ function disarmDelete(btn) {
 }
 
 function armDelete(panel, btn) {
-  // Only one row can be armed at a time.
   for (const other of panel.list.querySelectorAll('button[data-armed="1"]')) {
     if (other !== btn) disarmDelete(other);
   }
@@ -275,7 +183,6 @@ function armDelete(panel, btn) {
 function wireAccountList(panel) {
   panel.list.addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-act]");
-    // Any click that is not the armed button itself stands it down.
     for (const armed of panel.list.querySelectorAll('button[data-armed="1"]')) {
       if (armed !== btn) disarmDelete(armed);
     }
@@ -298,11 +205,7 @@ function wireAccountList(panel) {
     }
 
     if (btn.dataset.act === "delete") {
-      // No confirm() here. A modal dialog CLOSES an extension popup, which
-      // kills this handler mid-await — the forget message never goes out and
-      // the row is still there next time the popup opens. Confirmation is a
-      // second click on the same button instead: it arms, and only the armed
-      // click deletes.
+      // No confirm(): a modal closes an extension popup and kills this handler mid-await
       if (btn.dataset.armed !== "1") {
         armDelete(panel, btn);
         return;
@@ -323,25 +226,15 @@ function wireAccountList(panel) {
   });
 }
 
-// "Save current & log in to another" — identical for both platforms.
 function wireSaveAndNext(panel, button) {
   button.addEventListener("click", async () => {
     button.disabled = true;
     const resp = await send({ type: "account", action: "save", platform: panel.platform });
     if (resp.ok) {
-      // No `savedAs ? … : "Cleared"` ternary any more. `saveAndClear` REFUSES
-      // when there is nothing to file, so `ok:true` with a falsy `savedAs` is
-      // unreachable — and the else-leg was the exact wrong toast: it painted a
-      // save that saved nothing as a successful "Cleared", green, with the live
-      // cookies gone and no way back.
       showToast(`Saved ${resp.savedAs} — sign in to the next one`);
       renderAccountList(panel);
+    // No answer does not mean nothing happened: the save may have committed and wiped the session
     } else if (resp.dead) {
-      // The worker never answered. Unlike every other failure this one does NOT
-      // mean the work did not happen: `send` puts a non-idempotent message on
-      // the wire exactly once, and a save that outlived the timeout may have
-      // committed the row and wiped the session. Saying "couldn't save" over
-      // that is the same lie in the other direction, so say what is true.
       showToast(
         "No answer from the extension — reopen the popup to see whether it saved",
         "err"
@@ -349,9 +242,6 @@ function wireSaveAndNext(panel, button) {
       renderAccountList(panel);
     } else {
       showToast("Couldn't save: " + reasonOf(resp), "err");
-      // A save can fail AFTER the row was committed (the wipe threw). The
-      // worker says so by carrying `savedAs` on a not-ok envelope; the list on
-      // screen is then already stale.
       if (resp.savedAs) renderAccountList(panel);
     }
     setTimeout(() => (button.disabled = false), 600);
@@ -388,7 +278,6 @@ const FANSLY_PANEL = {
   platform: "fansly", siteName: "Fansly", list: $("fansly-accounts-list"),
 };
 
-// ── OnlyFans panel ────────────────────────────────────────────────
 
 function renderStatus() {
   if (!currentCapture) {
@@ -416,7 +305,6 @@ function renderStatus() {
 }
 
 function shellQuote(s) {
-  // POSIX-safe single-quote: end quote, escape ', re-open.
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
 
@@ -441,9 +329,6 @@ function buildCurl(capture, cookies) {
     `  -H ${shellQuote("referer: https://onlyfans.com/")} \\`,
     `  -H ${shellQuote("app-token: 33d57ade8c02dbc5a333db99ff9ae26a")}`,
   ];
-  // Runtime-only fields the wire doesn't carry but the relay needs for
-  // a brand-new x-of-rev. The relay's curl parser recognises these as
-  // overrides and never forwards them upstream.
   const extra = [
     ["x-relay-static-param", r.static_param],
     ["x-relay-sign-start", r.start],
@@ -493,10 +378,6 @@ async function init() {
 
   copyBtn.addEventListener("click", async () => {
     if (!currentCapture) return;
-    // `getCookies` answers `{cookies: [], error}` when chrome.cookies throws —
-    // truthy, `dead` falsy — so the old guard let it through and the empty list
-    // below produced "Missing cookies: auth_id, sess — sign in first" on an
-    // account that was signed in. An empty list is only news if we trust it.
     const resp = await send({ type: "getCookies" });
     if (untrusted(resp)) {
       showToast("Couldn't read cookies: " + reasonOf(resp), "err");
@@ -516,8 +397,6 @@ async function init() {
   });
 
   resetBtn.addEventListener("click", async () => {
-    // "Cleared" used to be toasted unconditionally, including when the worker
-    // never answered and the capture is still sitting there.
     const resp = await send({ type: "resetCapture", platform: "onlyfans" });
     if (untrusted(resp)) {
       showToast("Couldn't clear the capture: " + reasonOf(resp), "err");
@@ -529,10 +408,6 @@ async function init() {
   });
 }
 
-// ── Fansly panel ──────────────────────────────────────────────────
-//
-// Fansly needs no signing: the whole session is a small JSON blob the content
-// scripts lift out of localStorage, so this panel copies that verbatim.
 
 let fanslyCapture = null;
 
@@ -560,8 +435,8 @@ function renderFansly() {
   add.disabled = false;
 }
 
+// Shape service/fansly_backend.py reads at fansly_session.json
 function fanslySessionJson(cap) {
-  // Exactly the shape service/fansly_backend.py reads at fansly_session.json.
   return JSON.stringify({
     platform: "fansly",
     token: cap.token,

@@ -9,7 +9,6 @@ const CREATOR = "100000001";
 const NOW = Date.parse("2026-11-02T12:00:00Z");
 
 type State = "unread" | "owed" | "idle";
-/** A chat: `state` sets who wrote last and the unread flag; `ago` is hours since its last message. */
 function chat(name: string, cents: number, state: State, ago = 0, excluded = false) {
   return {
     __accountId: CREATOR,
@@ -36,7 +35,6 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(NOW); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe("sortFanRows", () => {
-  // Each case's rows are in OF's order (newest first); the expected order per mode.
   const cases: Array<{ case: string; rows: OFChatItem[]; want: Record<ChatSortMode, string[]> }> = [
     {
       case: "two $0 fans keep OF order",
@@ -120,7 +118,6 @@ describe("sortFanRows", () => {
       const before = names(c.rows);
       const out = sortFanRows(c.rows, mode, deps);
       expect(names(out)).toEqual(c.want[mode]);
-      // Nothing dropped or added; the input is not reordered in place.
       expect(names(out).slice().sort()).toEqual(before.slice().sort());
       expect(names(c.rows)).toEqual(before);
     });
@@ -142,7 +139,6 @@ describe("chipCounts", () => {
   it.each([
     { case: "empty list", rows: [], want: { allCount: 0, unreadCount: 0, oweReplyCount: 0 } },
     {
-      // Unread rows are fan-last, so owed too; the restricted unread fan counts nowhere.
       case: "restricted never counted",
       rows: [chat("R", 0, "unread", 0, true), chat("U", 0, "unread"), chat("O", 0, "owed"), chat("I", 0, "idle")],
       want: { allCount: 2, unreadCount: 1, oweReplyCount: 2 },
@@ -153,7 +149,6 @@ describe("chipCounts", () => {
       want: { allCount: 1, unreadCount: 1, oweReplyCount: 1 },
     },
     {
-      // Fan-last, so still owed: only the unread half leaves it out.
       case: "a muted unread row is not in the Unread count",
       rows: [{ ...chat("M", 0, "unread"), isMutedNotifications: true } as OFChatItem, chat("U", 0, "unread")],
       want: { allCount: 2, unreadCount: 1, oweReplyCount: 2 },
@@ -172,14 +167,12 @@ describe("chipCounts", () => {
   ] as Array<{ case: string; rows: OFChatItem[]; owed?: (c: OFChatItem) => boolean; want: ReturnType<typeof chipCounts> }>)(
     "$case", ({ rows, owed = isOwed, want }) => {
       expect(chipCounts(rows, { isOwed: owed })).toEqual(want);
-      // The active chip's count is All's rule alone.
       expect(attentionCount(rows, owed)).toBe(want.allCount);
     },
   );
 });
 
 describe("chipCountsWithUnreadView", () => {
-  // The Unread view was read from OF half an hour ago (`asOf`); ages are hours.
   const asOf = NOW - 0.5 * 3_600_000;
   const read = (c: OFChatItem) => ({ ...c, hasUnread: false, unreadMessagesCount: 0 });
   it.each([

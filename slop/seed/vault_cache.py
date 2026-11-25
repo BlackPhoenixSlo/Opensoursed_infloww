@@ -1,19 +1,15 @@
-"""Product-shaped vault response cache rows and chatter folder grants."""
 from __future__ import annotations
 
 import json
 from . import ts
 
-# app/hooks/useVaultMedia.ts: PAGE.
 PICKER_PAGE = 24
 
 
 def media_key(list_id: int | None = None, offset: int = 0) -> str:
-    """service/vault_cache.vault_media_cache_key of a picker page (type all, newest first, no search)."""
     return f"media:type=all|list={list_id}|offset={offset}|limit={PICKER_PAGE}|sort=desc|field=recent|query="
 
 
-# service/vault_cache.py: vault_lists_cache_key (fetchAllVaultLists' first page) and the picker's All page 1.
 LISTS_KEY = "lists:view=main|limit=50|offset=0"
 PICKER_KEY = media_key()
 

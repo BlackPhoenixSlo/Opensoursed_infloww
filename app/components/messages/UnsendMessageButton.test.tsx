@@ -1,7 +1,3 @@
-/**
- * UnsendMessageButton hides itself once the session's role denies the Unsend messages Function permission
- * (any `<page>#unsend` in the Applied settings' `denied_actions`); the Relay refuses the unsend either way.
- */
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";

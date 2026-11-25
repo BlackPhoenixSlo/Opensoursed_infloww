@@ -1,38 +1,5 @@
 "use client";
 
-/**
- * useComposerUploads — the chat Composer's uploads from the computer, restored
- * 2026-10-16 at the human's request (docs/spec/phase-04-composer-ppv-vault.md,
- * Out of Scope). Row 3's Upload, a drop on the Composer and a pasted image all
- * come through `add`.
- *
- * Each file goes to `POST /api/of/v2/upload` (the Creator's OF vault), one at a
- * time, as the removed `onPickLocalFile` did (commit 1ccd82f): OF's signed
- * upload and S3 PUT do not like parallel uploads. While a file waits or uploads
- * its chip spins (`relay.uploadFile` reports no progress). A failure keeps the
- * chip with the error and a Retry. A success drops the chip and hands
- * `onUploaded` the media, shaped as a Vault pick (`toAttachments`), so price,
- * free previews and send treat it the same. An image keeps a blob: preview
- * (`_localPreview`) for its tile and the sent bubble; a video gets none, as an
- * `<img>` cannot show it.
- *
- * Send does not wait for a running upload (2026-10-16): `handOff` takes the
- * uploading chips off the Composer and gives the send each file's `done`
- * promise, so the message goes out when its files land (useSendMessage).
- * The uploads run on a module-level queue per Creator, outside any mount, so
- * a handed-off upload keeps going when the chat closes.
- *
- * The Composer remounts per Fan chat (MessagesPro keys ChatSurface by account
- * and Fan), so chips are per Fan by mount. Unmounting cancels the chips'
- * uploads and revokes their previews; handed-off uploads are not the
- * Composer's any more (the send's `cancel` stops them). ✕ discards a chip.
- * A cancelled upload never starts if it is still queued; a running one is
- * aborted (the file may still land in the vault if OF already has it).
- *
- * An upload gets a deadline from its turn in the queue (`uploadDeadlineMs`):
- * past it the request is aborted and the upload fails as "timed out", so one
- * hung request cannot hold the Creator's queue for the session.
- */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -40,7 +7,6 @@ import { revokePreviews } from "@/lib/blobPreviews";
 import { relay, type VaultMedia, type VaultUploadResp } from "@/lib/relay";
 
 export const UPLOAD_PATH = "/api/of/v2/upload";
-/** The file chooser's `accept`; `isUploadable` applies it to drops and pastes. */
 export const UPLOAD_ACCEPT = "image/*,video/*";
 
 export function isUploadable(f: File): boolean {
@@ -51,20 +17,13 @@ export interface UploadChip {
   key: string;
   accountId: string;
   file: File;
-  /** An image's blob: URL for the chip's thumbnail and the sent bubble; null
-   *  for a video, and without `URL.createObjectURL` (jsdom). */
   previewUrl: string | null;
   status: "uploading" | "failed";
   error?: string;
 }
 
-// Claim attachments carry no vault id; negative ids keep React keys and
-// removal distinct (the wire body sends `_claim`, not `id`).
 let claimSeq = 0;
 
-/** An upload response as Composer attachments: a vault id as a Vault pick
- *  (with the vault's files when the upload was a duplicate), a fresh claim
- *  dict as `_claim`. Throws the relay's note when the upload is not ready. */
 export function toAttachments(resp: VaultUploadResp, file: File, previewUrl: string | null): VaultMedia[] {
   if (resp?.ready !== true) throw new Error(resp?.note || "Upload not ready");
   const type = file.type.startsWith("video") ? "video" : "photo";
@@ -78,15 +37,10 @@ export function toAttachments(resp: VaultUploadResp, file: File, previewUrl: str
   return media;
 }
 
-/** A failure as the chip and the failed bubble word it: OF's status for an
- *  upstream error, OF's own message (else its status) when its converter
- *  refused the file, a short relay note as it is, else a plain line. The raw
- *  text stays for the tooltip. */
 export function uploadErrorText(raw: string): string {
   const upstream = /^upstream (\d{3})\b/.exec(raw);
   if (upstream) return `Upload failed — OnlyFans error ${upstream[1]}`;
-  // The relay's note when OF's convert claim (the step after the S3 PUT)
-  // answers non-2xx: "… convert register failed: 400 {"error":{…,"message":"Invalid input."}}".
+  // Relay note when OF's convert claim (after the S3 PUT) answers non-2xx.
   const convert = /convert register failed: (\d{3})/.exec(raw);
   if (convert) {
     const why = /"message"\s*:\s*"([^"]{1,60})"/.exec(raw)?.[1] ?? `error ${convert[1]}`;
@@ -98,20 +52,13 @@ export function uploadErrorText(raw: string): string {
 
 export class UploadCancelled extends Error {}
 
-/** How long one upload may take from its turn: two minutes, plus a second
- *  per 50 KB (a slow uplink), before it is aborted as timed out. */
 export function uploadDeadlineMs(size: number): number {
   return 120_000 + size / 50;
 }
 
-// One queue per Creator: OF's signed upload and S3 PUT do not like parallel
-// uploads. Module-level so an upload outlives the Composer that started it.
+// One queue per Creator: OF's signed upload and S3 PUT do not like parallel uploads.
 const queues = new Map<string, Promise<unknown>>();
 
-/** Upload one file to the Creator's vault after the uploads queued before it,
- *  as Composer attachments. `cancel` aborting stops it: before its turn it
- *  never starts, during it the request is aborted; either way it rejects
- *  with `UploadCancelled`. */
 export function uploadToVault(
   accountId: string, file: File, previewUrl: string | null, cancel?: AbortSignal,
 ): Promise<VaultMedia[]> {
@@ -119,8 +66,6 @@ export function uploadToVault(
     if (cancel?.aborted) throw new UploadCancelled();
     const ctl = new AbortController();
     let stop!: (why: Error) => void;
-    // Race the request too: the queue moves on at once even if the request
-    // ignores its abort.
     const stopped = new Promise<never>((_, reject) => {
       stop = (why) => {
         ctl.abort();
@@ -145,9 +90,6 @@ export function uploadToVault(
   return run;
 }
 
-/** An upload a send waits on: the file (for a re-upload on Retry), its
- *  preview (for the pending bubble), the attachments it lands as, and how to
- *  cancel it (the bubble discarded). */
 export interface PendingUpload {
   file: File;
   previewUrl: string | null;
@@ -155,13 +97,10 @@ export interface PendingUpload {
   cancel: () => void;
 }
 
-/** Who a chip's attempt answers to: the Composer, nobody (removed, retried,
- *  left), or the send it was handed to. */
 type Owner = { to: "composer" | "dropped" | "send" };
 
 type Attempt = { owner: Owner; ctl: AbortController; done: Promise<VaultMedia[]> };
 
-/** The chip's attempt is nobody's now: it stops, and its result is ignored. */
 function dropAttempt(a: Attempt) {
   a.owner.to = "dropped";
   a.ctl.abort();
@@ -174,15 +113,12 @@ export function useComposerUploads(
   onUploaded: (media: VaultMedia[]) => void,
 ) {
   const [chips, setChips] = useState<UploadChip[]>([]);
-  // The current attempt of each live chip, and the promise it lands with.
   const attempts = useRef(new Map<string, Attempt>());
   const latest = useRef(onUploaded);
   latest.current = onUploaded;
   const chipsRef = useRef(chips);
   chipsRef.current = chips;
 
-  // Leaving the chat cancels the chips' uploads. Handed-off uploads are no
-  // longer in `attempts`.
   useEffect(() => () => {
     for (const a of attempts.current.values()) dropAttempt(a);
     attempts.current.clear();
@@ -246,12 +182,8 @@ export function useComposerUploads(
   }, [chips]);
 
   const remove = useCallback((key: string) => discard((c) => c.key === key), [discard]);
-  /** Drop every chip (the PPV row's Clear). */
   const clear = useCallback(() => discard(() => true), [discard]);
 
-  /** Give the uploading chips to a send: they leave the Composer (their
-   *  previews now the pending bubble's) and keep uploading after it unmounts,
-   *  until the send cancels them. */
   const handOff = useCallback((): PendingUpload[] => {
     const handed: PendingUpload[] = [];
     for (const c of chips) {

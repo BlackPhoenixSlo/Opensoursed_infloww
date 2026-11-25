@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * Settings › OF Manager writes: one Creator's OF Manager new writes (OFM_NEW_WRITES_ENABLED per Creator,
- * hooks/useOfmWritesCreator). The server's env turns them on for every Creator; here the Creator's owner can only
- * keep them off for one Creator (a chatter's PUT is 403, shown as the error). One click saves. The Creator is picked in
- * the panel header (CreatorSettingsPanel): the one in scope, else the first session-backed Creator.
- */
 
 import { ofmWritesStatus, useOfmWritesCreator, useSetOfmWritesCreator } from "@/hooks/useOfmWritesCreator";
 import { CreatorSettingsPanel } from "@/components/settings/CreatorSettingsPanel";

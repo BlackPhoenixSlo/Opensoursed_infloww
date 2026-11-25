@@ -7,95 +7,55 @@ import { useModalFocus } from "@/components/ui/ifModal";
 import { type VaultMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 
-// The DRM / progressive-source helpers live here next to the preview modal;
-// the grid tile (VaultPickerTile) uses them too, and VaultPicker re-exports
-// them for its existing importers.
 
-/** The progressive (downloadable/playable) mp4 source for a video, or null
- *  when OF only exposes a DRM (FairPlay) stream. NOTE: deliberately does NOT
- *  fall back to `files.preview.url` — that's a static poster JPEG, and
- *  resolving to it is exactly the bug that made `<video>` + /img/scrub fail
- *  on DRM items (the JPEG can't be played or sliced into frames).
- *  Prefer the CHEAPEST source (240p) first: these frames are only ever
- *  scaled down to a small storyboard width for ffmpeg scrubbing, so pulling
- *  the 720p mp4 is wasted bandwidth. Fall back to 720p, then files.full. */
+// Never falls back to files.preview.url: it is a poster JPEG, which <video> and /img/scrub cannot play.
 export function progressiveVideoSrc(m: VaultMedia): string | null {
   return m.type === "video" ? clipUrl(m) : null;
 }
 
-/** A gif's clip: OF stores a gif as a short .mp4 (no DRM), its `files.full`; null for anything but a gif. */
 export function gifClipSrc(m: VaultMedia): string | null {
   return m.type === "gif" ? clipUrl(m) : null;
 }
 
-/** The cheapest mp4 a media carries: 240p, 720p, then `files.full`. */
 function clipUrl(m: VaultMedia): string | null {
   return m.videoSources?.["240"] || m.videoSources?.["720"] || m.files?.full?.url || null;
 }
 
-/** OF's own pre-extracted poster frames for a video (`preview.options[]`).
- *  For DRM-only videos these are the sole renderable representation — the
- *  segments are SAMPLE-AES encrypted so ffmpeg/<video>/hls.js can't decode
- *  them. Returns [] when none are present. */
+// DRM-only videos are SAMPLE-AES encrypted: these OF poster frames are their only renderable form.
 export function videoPosterFrames(m: VaultMedia): string[] {
   return (m.files?.preview?.options ?? [])
     .map((o) => o?.url)
     .filter((u): u is string => !!u);
 }
 
-/** Authoritative DRM signal: OF returns an HLS/DASH manifest under
- *  `files.drm` for files it delivers with content protection (FairPlay/
- *  Widevine). This is per-FILE — baked in when the file was uploaded under
- *  the creator's "content protection" setting — NOT a live account property,
- *  which is why one account has both playable and DRM videos and toggling
- *  the setting never changes existing files. We key off this, never the
- *  account setting. (Absence of a progressive mp4 is a *consequence* of DRM,
- *  not the cause, so we check the manifest directly.) */
+// DRM is per file (set at upload under the content-protection setting), not a live account property: key off files.drm.
 export function isDrmVideo(m: VaultMedia): boolean {
   if (m.type !== "video") return false;
   const man = m.files?.drm?.manifest;
   return !!(man?.hls || man?.dash);
 }
 
-/** DRM video with no progressive fallback — the kind we genuinely cannot
- *  play or slice (segments are encrypted). Defensive: if OF ever ships BOTH
- *  a manifest and a progressive mp4, prefer playing the mp4. */
+// Defensive: if OF ships both a manifest and a progressive mp4, prefer playing the mp4.
 export function isDrmOnlyVideo(m: VaultMedia): boolean {
   return isDrmVideo(m) && !progressiveVideoSrc(m);
 }
 
-/** Full-screen modal video player. Sits above the picker's slide-over
- *  pane so backdrop click closes only the preview. The native <video>
- *  controls give scrub/volume/fullscreen; we don't reimplement them. */
 export function VaultVideoPreview({
   media, accountId, onClose,
 }: { media: VaultMedia; accountId: string | null; onClose: () => void }) {
-  // Progressive mp4 only — NOT files.preview.url (a poster JPEG). Resolving
-  // to the poster is what made DRM previews mount a <video> on a still image
-  // and fail. DRM items get the poster-frame lightbox below instead.
   const rawSrc = progressiveVideoSrc(media);
   const drmOnly = isDrmOnlyVideo(media);
   const drmFrames = videoPosterFrames(media);
-  // Show the poster-frame lightbox only when we actually have frames; a DRM
-  // file with none falls through to the friendly "can't preview" panel.
   const drm = drmOnly && drmFrames.length > 0;
-  // Distinguish "no URL at all" (rawSrc null) from "URL was returned but
-  // upstream rejected it" (loadError set by the <video> onError). Both
-  // surface the same friendly hint about refresh + transcoding.
   const [loadError, setLoadError] = useState(false);
   useEffect(() => { setLoadError(false); }, [media.id]);
-  // Its own focus layer: Tab and Escape follow the top layer when it opens over another modal (the vault popup).
   const boxRef = useRef<HTMLDivElement | null>(null);
   useModalFocus(boxRef, onClose);
-  // Lock background scroll while open. The overlay is viewport-level (`fixed`),
-  // so without this the page behind it still scrolls under the backdrop.
   useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => { document.body.style.overflow = prev; };
   }, []);
-  // DRM poster-frame lightbox cursor. Auto-advances so the user sees the
-  // whole set; arrow keys / on-screen arrows let them step manually.
   const [frameIdx, setFrameIdx] = useState(0);
   useEffect(() => { setFrameIdx(0); }, [media.id]);
   useEffect(() => {
@@ -106,9 +66,6 @@ export function VaultVideoPreview({
     );
     return () => window.clearInterval(id);
   }, [drm, drmFrames.length]);
-  // Diagnostic for the "no source" case — logs the full vault item so we
-  // can see which fields OF actually populated for priced/PPV videos and
-  // extend the fallback list above. No-op when a source resolved fine.
   useEffect(() => {
     if (!rawSrc) {
       console.warn("[vault-preview] no playable source", {
@@ -130,10 +87,7 @@ export function VaultVideoPreview({
   );
   const showError = !src || loadError;
   return (
-    // `fixed`, not `absolute`: this is reused OUTSIDE the picker's own portal
-    // (e.g. the /vault manager), where an absolute overlay would size itself to
-    // whatever positioned ancestor it landed in — which rendered the video tiny
-    // and left the page behind it scrollable.
+    // `fixed`, not `absolute`: reused outside the picker's portal (/vault), where absolute sizes to the wrong ancestor.
     <div ref={boxRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Video preview" className="fixed inset-0 z-50 flex items-center justify-center">
       <button
         type="button"
@@ -144,9 +98,6 @@ export function VaultVideoPreview({
       <div className="relative max-w-[95vw] max-h-[95vh] flex flex-col items-center gap-3">
         {drm ? (
           <>
-            {/* DRM (FairPlay) video — segments are encrypted, so we can't
-             *  play it here. Show OF's pre-extracted poster frames as a
-             *  steppable slideshow; the user can still attach/send it. */}
             <div className="relative">
               <img
                 src={proxyImage(drmFrames[frameIdx], accountId, media.id)}

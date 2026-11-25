@@ -7,7 +7,6 @@ const CHATTER = commandLinks({ chatterOnly: true, grantedPages: null });
 
 describe("prepass", () => {
   it.each<[string, PrepassHit | null]>([
-    // An imperative verb + a page label navigates.
     ["open settings", { kind: "navigate", href: "/settings", label: "Settings" }],
     ["Open Settings.", { kind: "navigate", href: "/settings", label: "Settings" }],
     ["please go to the auto post page", { kind: "navigate", href: "/growth/auto-post", label: "Auto Post" }],
@@ -16,17 +15,14 @@ describe("prepass", () => {
     ["open messages pro", { kind: "navigate", href: "/messages-pro", label: "Messages Pro" }],
     ["open audit log", { kind: "navigate", href: "/settings/audit", label: "Audit log" }],
     ["switch to manage creators", { kind: "navigate", href: "/creators", label: "Manage creators" }],
-    // Theme.
     ["dark mode", { kind: "theme", theme: "dark" }],
     ["switch to light mode", { kind: "theme", theme: "light" }],
     ["turn on dark mode", { kind: "theme", theme: "dark" }],
     ["toggle theme", { kind: "theme", theme: "toggle" }],
-    // A fan's chat.
     ["open @Lena_99", { kind: "chat", handle: "Lena_99" }],
     ["chat with @lena", { kind: "chat", handle: "lena" }],
     ["open chat with @lena", { kind: "chat", handle: "lena" }],
     ["open @lena's chat", { kind: "chat", handle: "lena" }],
-    // Questions and everything else go to the LLM unchanged.
     ["how do I open settings?", null],
     ["how do I open settings", null],
     ["where is dark mode", null],
@@ -35,7 +31,7 @@ describe("prepass", () => {
     ["settings", null],
     ["open the pod bay doors", null],
     ["show me revenue for today", null],
-    ["open my automations", null], // a group, not a page
+    ["open my automations", null],
     ["message @lena saying hi", null],
     ["send a mass message to everyone", null],
     ["", null],
@@ -46,7 +42,7 @@ describe("prepass", () => {
   it("only the session's visible pages: a chatter cannot open an owner page", () => {
     expect(prepass("open audit log", CHATTER)).toBeNull();
     expect(prepass("open manage creators", CHATTER)).toBeNull();
-    expect(prepass("open system", OWNER)).toBeNull(); // master only
+    expect(prepass("open system", OWNER)).toBeNull();
     expect(prepass("open system", commandLinks({ chatterOnly: false, grantedPages: null, master: true })))
       .toEqual({ kind: "navigate", href: "/settings/system", label: "System" });
     expect(prepass("open scripts", CHATTER)).toEqual({ kind: "navigate", href: "/growth/scripts", label: "Scripts" });
@@ -68,7 +64,6 @@ describe("prepass", () => {
   });
 });
 
-// rwl W30 F10: what an answer may link, per role.
 describe("Settings opens a tab the role can open (rwl W30 C5)", () => {
   it("an owner's open settings is /settings (it lands on Your Account)", () => {
     expect(prepass("open settings", OWNER)).toEqual({ kind: "navigate", href: "/settings", label: "Settings" });

@@ -1,4 +1,3 @@
-/** Infloww's link formulas (its column tooltips) and their "—" rules, and the Edit dialog's Promo cost input. */
 import { describe, expect, it } from "vitest";
 
 import {
@@ -75,11 +74,9 @@ describe("linkMetrics", () => {
     const one = { promo_cost_cents: 25000, clicks: 200, subscribers: 25, earnings_cents: 98760 };
     const two = { promo_cost_cents: 5000, clicks: 0, subscribers: 0, earnings_cents: 0 };
     const free = { promo_cost_cents: null, clicks: 1000, subscribers: 500, earnings_cents: 100000 };
-    // $300.00 over 200 clicks and 25 subs; ($987.60 − $300.00) / $300.00; the uncosted link counts nowhere.
     expect(linkAverages([one, two, free])).toEqual({ cpc: "$1.50", cps: "$12", roi: "229.20%", roiPartial: false });
     expect(linkAverages([free])).toEqual({ cpc: "—", cps: "—", roi: "—", roiPartial: false });
     expect(linkAverages([])).toEqual({ cpc: "—", cps: "—", roi: "—", roiPartial: false });
-    // Costed, but no clicks or subs: "—" on those, ROI still reads.
     expect(linkAverages([two])).toEqual({ cpc: "—", cps: "—", roi: "-100.00%", roiPartial: false });
   });
 
@@ -93,53 +90,49 @@ describe("linkMetrics", () => {
   });
 
   it.each([
-    // [subscribers, clicks, CVR]
     [2435, 23037, "10.57%"],
-    [1, 3, "33.33%"], // 33.333… to 2 decimals
-    [2, 3, "66.67%"], // 66.666… rounds up
+    [1, 3, "33.33%"],
+    [2, 3, "66.67%"],
     [0, 50, "0.00%"],
     [5, 5, "100.00%"],
-    [12, 0, "—"], // zero clicks: nothing to divide by
+    [12, 0, "—"],
     [0, 0, "—"],
   ])("Subscription CVR of %i subs over %i clicks is %s", (subscribers, clicks, want) => {
     expect(cvr({ subscribers, clicks })).toBe(want);
   });
 
   it.each([
-    // [earnings cents, n, EPC / AEPS]
     [14181440, 23037, "$6.16"],
-    [100000, 3, "$333.33"], // 33,333.33… cents
+    [100000, 3, "$333.33"],
     [1000, 4, "$2.50"],
-    [100000, 100, "$10"], // whole dollars print without cents (fmtPrice)
+    [100000, 100, "$10"],
     [0, 10, "$0"],
-    [5000, 0, "—"], // zero clicks / subs
+    [5000, 0, "—"],
     [5000, null, "—"],
-    [null, 10, null], // no earnings figure: the column has no value for this link
+    [null, 10, null],
     [undefined, 10, null],
   ])("earnings %s cents per %s is %s", (cents, n, want) => {
     expect(per(cents, n)).toBe(want);
   });
 
   it.each([
-    // [part, whole, Subscription CVR / Spending CVR]
     [0, 0, "—"],
     [0, 7, "0.00%"],
     [12, 0, "—"],
-    [1, 800, "0.13%"], // 0.125 %: a half hundredth
+    [1, 800, "0.13%"],
     [1, 200, "0.50%"],
     [1, 3, "33.33%"],
     [2, 3, "66.67%"],
-    [9_999_999, 10_000_000, "100.00%"], // large, rounds up
+    [9_999_999, 10_000_000, "100.00%"],
     [123_456_789, 987_654_321, "12.50%"],
     [5, 5, "100.00%"],
-    [5, -10, "-50.00%"], // negative clicks: divided as given (current behaviour)
+    [5, -10, "-50.00%"],
   ])("Subscription CVR / Spending CVR of %i over %i is %s", (part, whole, want) => {
     expect(cvr({ subscribers: part, clicks: whole })).toBe(want);
     expect(share(part, whole)).toBe(want);
   });
 
   it.each([
-    // [fans who spent, counted fans, share] (the Spending CVR cell itself is null with no spend figure)
     [null, 10, "—"],
     [null, null, "—"],
     [3, null, "—"],
@@ -151,17 +144,16 @@ describe("linkMetrics", () => {
   });
 
   it.each([
-    // [earnings cents, subs, want]
     [null, 25, "—"],
     [null, 0, "—"],
     [98760, null, "—"],
     [98760, 0, "—"],
     [0, 25, "$0"],
-    [1, 2, "$0.01"], // half a cent rounds away from zero
-    [1001, 2, "$5.01"], // 500.5 cents
+    [1, 2, "$0.01"],
+    [1001, 2, "$5.01"],
     [100000, 3, "$333.33"],
     [100000, 100, "$10"],
-    [999_999_999_99, 7, "$142,857,142.86"], // large
+    [999_999_999_99, 7, "$142,857,142.86"],
   ])("AEPS of %s cents over %s subs is %s", (earnings, subs, want) => {
     expect(aeps(earnings, subs)).toBe(want);
   });

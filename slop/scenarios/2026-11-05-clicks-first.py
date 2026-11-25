@@ -1,68 +1,3 @@
-"""Clicks first, snapshots instantly: the owner on an iPhone in Japan, 250 ms from the host (AE prod, 2026-11-05:
-server p50 < 0.5 s, the phone's p50 5 s / p95 67 s), opens the Dashboard, Creator reports extras and Messages Pro
-over 13 Creators. The cards and inbox fire a per-Creator burst (users/me, fan counts, new fans; Messages Pro's chat lists and notification badges);
-the owner asked that a click never waits behind it and that a reload shows the last numbers at once.
-
-The app (app/lib/relaySchedule.ts, run by app/lib/relay.ts) holds background OnlyFans reads in a queue: at most
-PER_CREATOR of one Creator's on the wire (the relay's own background lane; fewer in all only on a starved link, which
-the browser reports and Safari never does); the open or pressed Creator's never wait; user reads skip it with fetch
-priority high; a screen's waiting reads are dropped when it goes away. The per-Creator badge and roster keys ride the saved query snapshot (app/components/providers.tsx).
-
-Stack as the Dashboard-load scenario's: the production build behind lib/wan.py at `rtt_ms` (250), Chromium's LTE
-throttling (12 / 4 Mbit/s, CPU x2), OnlyFans on lib/of_wire.py (`of_ms` a call, 500: prod's server p50). One Agency,
-`creators` (13) Creators with captured sessions, OF's chat list per Creator its first 30 seeded Fans.
-
-A phone (390x844, touch, iPhone user agent), each visit a new browser process. Reports cards use their own
-profile (a genuinely cold first card visit); Dashboard / Messages Pro share the original profile:
-  dash-first    `/` with nothing cached: settled time, request counts
-  dash-reload   `/` again: a normal document load for C_ENTRY and paint timing
-  reports-first `/analytics/creator-reports`, extras activated: every card and one card bundle
-  reports-snapshot Creator reports extras again, clock +31 min, bundle fallback and fan-count responses held: the Per-model cards' fan counts from the saved snapshot (C_SNAPSHOT)
-  reports-slow     Creator reports extras again, the page's clock 2 * SLOW_SHIFT_S ahead (the snapshot past its 30 min staleTime: every card
-                refetches), the relay restarted, Creator 0's OF +SLOW_EXTRA_S (> the bundle's 2 s deadline): the cards
-                keep the snapshot, one follow-up bundle fetches Creator 0 (C_PARTIAL)
-  reports-leave    Creator reports extras cold on a profile of its own, OF slow (LEAVE_OF_MS a call), then S4S settings by the phone's
-                menu as the first fan-count read goes out: the extras cards' waiting fan-count / new-fan reads are
-                dropped, none sent after it unmounted (C_ABORT)
-  mp-first      `/messages-pro` (All Models) with nothing of its own cached: settled time, request counts
-  mp-click-N    `/messages-pro` reloaded `CLICKS` times, the snapshot stale (> 30 s, the chat list's staleTime) and
-                the relay restarted (its OF caches cold), so every Creator's chat list and badge loads again; as soon
-                as the saved rows show, the owner taps the Nth row: tap -> OnlyFans' message of that Fan painted
-                (C_CLICK, budget), while at least `creators` - 1 Creators' chat lists are still loading (C_LOADING)
-dash-first, reports-first extras and mp-first send 0 per-Creator OnlyFans reads of what the screen bundles carry
-(BUNDLE_OF; the money rail's feeds keep their own routes; app/lib/screenBundle.ts, service/screens_api.py): one bundle
-each (C_BUNDLE; the Dashboard's from its Per-model cards, back at its bottom since #586). The card bundle starts at
-extras activation; Messages Pro's entry bundle leaves with the auth probe on a document load, the Dashboard's Applied
-settings read with the HTML; the Dashboard's card bundle is the page's own, once, after its Applied settings answer
-(it boots no bundle: lib/screenEntry.ts) (C_ENTRY: app/components/auth/AuthGate.tsx, lib/screenEntry.ts, lib/inlineBoot.server.ts). reports-snapshot, reports-leave and mp-click-N run the per-Creator path on purpose
-(the page answers /admin/screens/* 404, as a failed bundle: `no_bundle`), the path PR A's queue governs.
-Every page request's start / end, its `X-Priority`, `X-Account-Id` and fetch priority (CDP) give C_CAP: no Creator
-(but the tapped one) with more than PER_CREATOR background OnlyFans reads on the wire at once. Screenshots per visit: `<visit>-trigger` (the reload's first paint
-of the cards; the tapped row) and `<visit>` (settled). Side effects: the painted fan counts equal OF's
-(lib/of_wire.py: Creator id % 900 + 100); every saved message the tapped Thread paints is a DB row of that Fan, and
-OF's message id is the one the fake OF answered for that Fan (8000000 + Fan id % 1e6).
-
-Budget: C_CLICK, the median tap -> Thread over the `CLICKS` taps, at most CLICK_BUDGET_MS (below).
-
-Break-it-once (lib/clicks_first_faults.py):
-  relay-scheduler-bypassed  a Creator's lane never fills (every background read at once, as before): C_CAP, C_ABORT
-  badge-keys-unpersisted    the four keys left out of the snapshot (as before): C_SNAPSHOT
-  screen-bundle-unused      every bundle 404 at the relay (main before the bundles): C_BUNDLE, C_PARTIAL; its dash-first /
-                            mp-first numbers are the per-Creator "before" in this same harness
-  screen-bundle-after-probe the bundle and the Applied settings read held until /auth/me answered, and no inline
-                            boot (main before 2026-11-06, emulated at the page's fetch; the relay 503s the Next
-                            server's reads): C_ENTRY
-
-`--no-ui`: nothing to measure without the browser (the change is the app's alone): every check SKIPs.
-
-Bypasses, declared: the WAN is lib/wan.py's delay proxy (no loss, no slow start); bandwidth and CPU are Chromium's
-throttling; Chromium stands in for Safari, and `navigator.connection` is hidden from the page (Safari has none, so
-the app judges the link by its own round trips, as on the owner's iPhone); OF answers are lib/of_wire.py's (one
-message per Thread, badges 0; reports-leave's calls take LEAVE_OF_MS); the 30 s wait before each tap visit stands in
-for the owner coming back later; under `relay-scheduler-bypassed` the app's JS chunks come patched from the app on
-loopback (actors/ui.py `_patched` origin), not over the WAN; shifted visits replace the page's Date only (native Performance retained); reports-snapshot / reports-leave / mp-click-N's bundle 404 is the relay's harness hook (`no_bundle`, `/__slop/screens-404`,
-browser and Next server alike). Reads the HTML brought (inline boot) are the relay's log of the Next server's reads (`/__slop/server-reads`).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -85,7 +20,6 @@ from slop.lib.wan import WanEdge
 from slop.seed import agency, earnings, fans, of_sessions, threads
 from slop.seed import creators as creators_seed
 
-# The per-Creator /api/of reads the screen bundles replace (service/screens_api.py): Dashboard's three, Pro's two.
 BUNDLE_OF = frozenset(("/api/of/v2/users/me", "/api/of/v2/subscriptions/count/all",
                        "/api/of/v2/subscriptions/subscribers/chart", "/api/of/v2/chats",
                        "/api/of/v2/users/notifications/count"))
@@ -95,26 +29,23 @@ APP_MODE = "prod"
 RELAY_ENV = {"VAPID_SUBJECT": "mailto:slop@example.test"}
 OF_WIRE = True
 FAULT = "relay-scheduler-bypassed"
-PER_CREATOR = 2  # app/lib/relaySchedule.ts PER_CREATOR: the relay's background lane per Creator
+PER_CREATOR = 2
 CREATORS = 13
 RTT_MS = 250
 OF_MS = 500
-NET = (12_000, 4_000, 2)  # down / up kbit/s, CPU slowdown: the Dashboard-load scenario's "lte"
+NET = (12_000, 4_000, 2)
 CLICKS = 3
-LEAVE_OF_MS = 2_000  # OF's answer time during reports-leave: a slow moment (prod's tail), so reads still wait at the switch
+LEAVE_OF_MS = 2_000
 REPORTS_PATH = "/analytics/creator-reports"
-LEAVE_TO = "/share-for-share/settings"  # Dashboard -> a page with no OF reads, by the sidebar
-STALE_S = 32  # the chat list's and the badges' staleTime is 30 s
+LEAVE_TO = "/share-for-share/settings"
+STALE_S = 32
 SLOW_ROUTES = ("GET /api2/v2/users/me", "GET /api2/v2/subscriptions/count/all",
-               "GET /api2/v2/subscriptions/subscribers/chart")   # reports-slow: the bundle's 3 reads
-# The phone's zone (the browser context's timezone_id).
+               "GET /api2/v2/subscriptions/subscribers/chart")
 ZONE = "Europe/Ljubljana"
-# The reads the HTML's inline boot sends from the Next server (app/lib/inlineBoot.server.ts).
 INLINE_READS = ("/auth/me", "/chatter/me", "/admin/settings/applied", "/admin/screens/")
-SLOW_SHIFT_S = 31 * 60  # reports-slow: past the Dashboard keys' 30 min staleTime (useStats.ts)
-SLOW_EXTRA_S = 3.0  # reports-slow: Creator 0's OF answer time on top of of_ms; the bundle's deadline is 2 s
-# Median tap -> OF's message of that Fan painted. Before (origin/main 3425c6598, this scenario, small): 777 ms, one OF
-# call (500 ms) + one round trip; budget = that + 30% tolerance (CPU noise on a shared host).
+SLOW_SHIFT_S = 31 * 60
+SLOW_EXTRA_S = 3.0
+# before the change this scenario measured 777 ms (one OF call + one round trip); budget = that + 30% for CPU noise
 CLICK_BUDGET_MS = 1_000
 IPHONE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
              "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
@@ -159,15 +90,10 @@ PROBE_JS = r"""(() => {
     .observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
 })();"""
 
-# Legs kept in files of their own (lib/clicks_first_<leg>_leg.py; never a *_faults.py: the relay imports those). Each
-# defines `PROBE_MARKS` (JS joined into PROBE_JS), `CHECKS` (check names), `UNCAPPED` (background read paths not the
-# browser queue's to cap, C_CAP), `setup(fake)` (FakeOF answers it adds, before the seed), `async visit(ctx, pw, edge,
-# udir, v, *, cs, n, fake, visit_fn)` (after mp-click-N; visit_fn = _visit) and `check(ctx, v, *, cs, n,
-# click_budget_ms, max_inflight)` (after this file's checks).
 LEGS = [importlib.import_module(f"slop.lib.{m.stem}")
         for m in sorted((Path(__file__).resolve().parents[1] / "lib").glob("clicks_first_*_leg.py"))]
 PROBE_JS = PROBE_JS.replace("    // legs' marks\n", "".join(leg.PROBE_MARKS for leg in LEGS))
-UNCAPPED = tuple(p for leg in LEGS for p in leg.UNCAPPED)  # background reads not the browser queue's to cap
+UNCAPPED = tuple(p for leg in LEGS for p in leg.UNCAPPED)
 
 SHOW_CARDS_JS = """() => { const d = [...document.querySelectorAll('dt')].find((x) => x.textContent.trim() === 'Fans');
   if (d) d.scrollIntoView({ block: 'center' }); }"""
@@ -191,8 +117,6 @@ def _path(url: str) -> str:
 
 
 class Net:
-    """Every page request as CDP sees it (one clock): start / end (ms, wall), status, X-Priority, X-Account-Id,
-    Chromium's priority."""
 
     def __init__(self, host: str):
         self.host, self.reqs = host, {}
@@ -224,15 +148,12 @@ class Net:
 
 
 def _end(r: dict) -> float:
-    """When the read left the wire (CDP's monotonic clock, ms); a cancelled one (no status) 20 ms before CDP logs it:
-    the page frees its slot on the abort, a moment before Chromium reports the cancel."""
     if r.get("mono1") is None:
         return float("inf")
     return r["mono1"] * 1000 - (20 if r["status"] is None else 0)
 
 
 def _max_inflight(reqs: list[dict]) -> int:
-    """The most of `reqs` on the wire at once (one clock: CDP's monotonic timestamps)."""
     ev = sorted([(r["mono0"] * 1000, 1) for r in reqs] + [(_end(r), -1) for r in reqs],
                 key=lambda x: (x[0], x[1]))
     n = best = 0
@@ -243,7 +164,6 @@ def _max_inflight(reqs: list[dict]) -> int:
 
 
 async def _quiet(page, quiet_s: float = 3.0, cap_s: float = 90.0) -> None:
-    """No new fetch for `quiet_s` (at most `cap_s`)."""
     last, still, t0 = -1, 0.0, time.time()
     while time.time() - t0 < cap_s:
         n = await page.evaluate("() => performance.getEntriesByType('resource').length")
@@ -257,10 +177,6 @@ async def _quiet(page, quiet_s: float = 3.0, cap_s: float = 90.0) -> None:
 async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=None, early: bool = False,
                  no_bundle: bool = False, shift_s: float = 0.0, done: str | None = None,
                  hold_counts: bool = False) -> dict:
-    """One visit of `path` in a new browser process on profile `udir`; `act(page, net)` runs once the page painted
-    (`early`: at once, the page still loading). `no_bundle`: /admin/screens/* answers 404 (the per-Creator path);
-    `shift_s`: the page's clock that far ahead; `done`: the PROBE_JS mark that means painted (default: the Dashboard's
-    Total earnings; Creator reports extras: fan counts; otherwise Fan rows)."""
     down, up, cpu = NET
     fault = FAULTS.get(ctx.fault or "")
     bctx = await pw.chromium.launch_persistent_context(
@@ -277,7 +193,7 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
             await bctx.add_init_script(js)
         if patches := _client_fault(ctx):
             await bctx.route("**/_next/static/**/*.js", lambda r: _patched(r, ctx, patches, origin=ctx.app))
-        if no_bundle:  # at the relay: the HTML's inline bundle (the Next server's read) 404s too
+        if no_bundle:
             await ctx.owner.post("/__slop/screens-404", json={"on": True})
         if hold_counts:
             async def hold_count(r):
@@ -286,8 +202,6 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
                     counts_started.set()
             await bctx.route("**/api/of/v2/subscriptions/count/all**", hold_count)
         if shift_s:
-            # Shift Date only. Playwright's clock also replaces Performance and
-            # resource timing; CDP and paint marks must retain their native clock.
             await bctx.add_init_script("""(() => {
               const NativeDate = Date, shift = %d;
               window.Date = new Proxy(NativeDate, {
@@ -310,7 +224,7 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
             await page.locator('[aria-controls="creator-reports-extras"]').click(timeout=60_000)
         done = done or ("total" if path == "/" else "fans" if path == REPORTS_PATH else "rows")
         painted, extra = True, {}
-        if early:  # leaves the page while it loads: nothing to wait for
+        if early:
             extra = await act(page, net)
         else:
             try:
@@ -321,21 +235,20 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
             try:
                 await asyncio.wait_for(counts_started.wait(), timeout=5)
             except asyncio.TimeoutError:
-                pass  # C_SNAPSHOT records how many reads were actually held.
+                pass
             extra["snapshot_before_release"] = await page.evaluate(COLLECT_JS)
             await page.evaluate(SHOW_CARDS_JS)
             await page.screenshot(path=str(ctx.out / "screenshots" / f"{name}-held.png"))
             for r in held_counts:
                 await r.continue_()
             await bctx.unroute("**/api/of/v2/subscriptions/count/all**", hold_count)
-            # C_PAINT judges the settled visit; C_SNAPSHOT judges the held phase.
             if not painted:
                 try:
                     await page.wait_for_function(f"() => window.__cf && '{done}' in window.__cf.marks", timeout=60_000)
                     painted = True
                 except Exception:  # noqa: BLE001  recorded by C_PAINT
                     pass
-        if path == REPORTS_PATH and not early:  # the Per-model cards in the reports extras panel
+        if path == REPORTS_PATH and not early:
             await page.evaluate(SHOW_CARDS_JS)
         await page.screenshot(path=str(ctx.out / "screenshots" / f"{name}-trigger.png"))
         if act and painted and not early:
@@ -345,7 +258,6 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
         if path == REPORTS_PATH and urlsplit(page.url).path == REPORTS_PATH:
             await page.evaluate(SHOW_CARDS_JS)
         await page.screenshot(path=str(ctx.out / "screenshots" / f"{name}.png"))
-        # Flush the query cache to IndexedDB now (rqPersister saves on pagehide), as a phone leaving the page does.
         await page.evaluate("() => window.dispatchEvent(new Event('pagehide'))")
         await asyncio.sleep(1.0)
         if path == REPORTS_PATH:
@@ -365,7 +277,6 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
         await bctx.close()
         if no_bundle:
             await ctx.owner.post("/__slop/screens-404", json={"on": False})
-    # what came with the HTML: the Next server's reads for this document (relay-side log; reset by a relay restart)
     reads = (await ctx.owner.get("/__slop/server-reads")).json()["reads"]
     inline = [x for x in reads if x["t0"] >= t_nav - 0.05 and x["path"].startswith(INLINE_READS)]
     if hold_counts:
@@ -375,8 +286,6 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
 
 
 def _bundles(d: dict) -> tuple[list[str], list[str]]:
-    """The visit's screen bundles (CDP): first-page ones (no `accounts=`, cursor 0) and follow-ups (`accounts=`). With
-    no first-page one of its own, the page took the HTML's (inline boot); with one, the server's key guess missed."""
     sb = [r["path"] for r in d["net"] if r["path"].startswith("/admin/screens/")]
     plain = [p for p in sb if "accounts=" not in p and "cursor=" not in p.replace("cursor=0", "")]
     if not plain:
@@ -385,7 +294,6 @@ def _bundles(d: dict) -> tuple[list[str], list[str]]:
 
 
 def _took_inline(d: dict, pre: str) -> bool:
-    """`pre`'s read came with the HTML: the server answered it (< 500) and the page never fetched it itself."""
     return (not any(r["path"].startswith(pre) for r in d["net"])
             and any(x["path"].startswith(pre) and x["status"] < 500 for x in d.get("inline", ())))
 
@@ -458,9 +366,7 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     reports_udir = ctx.stack.tmp / "chrome-reports-phone"
 
     async def leave(page, net) -> dict:
-        """Wait for Creator reports extras' first fan-count read, then switch to S4S settings through the sidebar (a
-        client-side switch to a page with no OF reads; Messages Pro opens a window of its own, the Dashboard stays)."""
-        await page.get_by_role("button", name="Toggle sidebar").tap(timeout=60_000)  # the phone's nav menu
+        await page.get_by_role("button", name="Toggle sidebar").tap(timeout=60_000)
         menu = page.get_by_role("dialog", name="Menu")
         await menu.wait_for(state="visible", timeout=15_000)
         await menu.get_by_text("Share for Share", exact=True).first.tap()
@@ -499,9 +405,6 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
             n_slow = len(fake.calls)
             fake.extra_s[slow] = SLOW_EXTRA_S
             v["reports-slow"] = await _visit(ctx, pw, edge, reports_udir, "reports-slow", REPORTS_PATH, first=False, shift_s=2 * SLOW_SHIFT_S)
-            # the mirror: once Creator 0's late reads answered, the next bundle has it complete with no OF call
-            # its 3 Dashboard reads (users/me, count/all, chart), answered: /api2/ only (the relay's restart
-            # also fetches the signing /hash under the Creator's id, undelayed); calls log on completion
             t_end = time.time() + 30
             while time.time() < t_end and len({c["route"] for c in fake.calls[n_slow:] if c["account"] == slow
                                                and c["route"] in SLOW_ROUTES and c["status"] == 200}) < 3:
@@ -547,14 +450,11 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
              *(f"{k:14} " + " ".join(f"{str(s[c]):>15}" for c in cols) for k, s in summ.items()))
 
     bad5 = [(k, r["path"], r["status"]) for k, d in v.items() for r in d["net"] if (r["status"] or 0) >= 500]
-    # One call per screen: none of the bundle's reads per Creator on the bundle visits (the money rail's
-    # feeds keep their own routes: `own_routes`, reported only).
     def of_base(d: dict) -> Counter:
         return Counter(r["path"].split("?")[0] for r in d["net"] if r["path"].startswith("/api/of/"))
     per = {k: {"of_paths": Counter({p: n for p, n in of_base(v[k]).items() if p in BUNDLE_OF}),
                "own_routes": Counter({p: n for p, n in of_base(v[k]).items() if p not in BUNDLE_OF}),
                "bundles": summ[k]["bundles"], "follow_ups": summ[k]["follow_ups"]} for k in ("dash-first", "reports-first", "mp-first")}
-    # The card bundle belongs to extras activation, not reports document entry (PR #374).
     cards = v["reports-first"]
     activation = cards["marks"].get("extras")
     card_bundles = [r for r in cards["net"] if r["path"].startswith(DASH_SCREEN_PATH)]
@@ -562,15 +462,10 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     per["reports-first"]["bundle_from_extras_ms"] = summ["reports-first"]["bundle_from_extras_ms"]
     per["reports-first"]["bundle_after_activation"] = (activation is not None and bool(card_bundles)
         and all(r["t0"] >= cards["origin"] + activation for r in card_bundles))
-    # One bundle each: the Dashboard's Per-model cards (#586), the extras cards, Messages Pro.
     ctx.check(C_BUNDLE, per["reports-first"]["bundle_after_activation"] and all(
                   not x["of_paths"] and x["bundles"] == 1 and x["follow_ups"] <= 1 for x in per.values()),
               **{k: {**x, "of_paths": dict(x["of_paths"]), "own_routes": dict(x["own_routes"])}
                  for k, x in per.items()})
-    # A document load: the bundle leaves with the auth probe, or comes with the HTML (inline boot: the server sent it
-    # at once); the Dashboard's Applied settings read comes with the HTML (no client read of it leaves before /auth/me).
-    # A Dashboard visit's card bundle is the page's own, one, after its Applied settings answer: the Dashboard boots no
-    # bundle (lib/screenEntry.ts; its Per-model cards mount once the settings fixed the period, #586).
     def entry(d: dict, dash: bool) -> dict:
         first = lambda pre: min((r["t0"] for r in d["net"] if r["path"].startswith(pre)), default=None)  # noqa: E731
         me = [r["end"] for r in d["net"] if r["path"].split("?")[0] == "/auth/me" and r["end"] is not None]
@@ -581,7 +476,6 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
              "bundle_t0": min((r["t0"] for r in page_bundles), default=None),
              "bundle_inline": bool(plain) and not page_bundles,
              "settings_t0": first(settings), "settings_inline": _took_inline(d, settings)}
-        # The Dashboard: its Applied settings timing, its card bundle after them. Messages Pro: its bundle's timing.
         want = ("settings",) if dash else ("bundle",)
         cards = [r for r in d["net"] if r["path"] in plain and r["path"].startswith(DASH_SCREEN_PATH)]
         set_end = [r["end"] for r in d["net"] if r["path"].split("?")[0] == settings and r["end"] is not None]
@@ -595,7 +489,6 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
         return o
     ent = {k: entry(v[k], k.startswith("dash")) for k in ("dash-first", "dash-reload", "mp-first")}
     ctx.check(C_ENTRY, all(e["ok"] for e in ent.values()), **ent)
-    # A slow Creator: the snapshot stays, one follow-up, no fan-out, the mirror updated.
     d = v["reports-slow"]
     plain, follow = _bundles(d)
     of_reads = [r["path"] for r in d["net"] if r["path"].split("?")[0] in BUNDLE_OF]
@@ -608,7 +501,6 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     ctx.check(C_PAINT, all(d["painted"] for k, d in v.items() if k != "reports-leave") and not bad5,
               unpainted=[k for k, d in v.items() if not d["painted"] and k != "reports-leave"], status_5xx=bad5[:8])
 
-    # The queue's cap, over every visit (CDP: request sent -> body loaded).
     def tapped(d: dict) -> str | None:
         r = [x for x in d["net"] if _message_open(x["path"]) is not None]
         return _message_open(r[0]["path"])[0] if r else None
@@ -621,11 +513,7 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     ctx.check(C_CAP, max(inflight.values(), default=0) <= PER_CREATOR and any(inflight.values()),
               max_per_creator=inflight, per_creator=PER_CREATOR)
 
-    # The reload's cards from the snapshot: every fan count painted before any fan-count read answered, and the
-    # figure OF answers (lib/of_wire.py: Creator id % 900 + 100) and the settled page shows.
     d = v["reports-snapshot"]
-    # This visit forces bundle fallback: hold only fan counts so the unpersisted
-    # per-model rows can mount. CDP proves no count response supplied the snapshot.
     reads = [r["end"] - d["origin"] for r in d["net"] if r["end"] is not None
              and "/subscriptions/count/all" in r["path"]]
     painted = d["marks"].get("fans")
@@ -638,17 +526,14 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
               held_counts=d["snapshot_held_counts"], before_release=d["snapshot_before_release"]["settledFans"],
               shown=d["fans"], settled=d["settledFans"], want=want)
 
-    # Leaving Creator reports drops the extras cards' queued per-Creator reads.
     d = v["reports-leave"]
     dash_reads = [r for r in d["net"] if "/subscriptions/count/all" in r["path"] or "/subscribers/chart" in r["path"]]
-    # The switch: Creator reports gone (the page's path changed, seen by the probe on the next DOM change).
     left = d["origin"] + d["marks"]["left"] if "left" in d["marks"] else None
     after = [r["path"] for r in dash_reads if left is not None and r["t0"] > left]
     before = sum(1 for r in dash_reads if left is not None and r["t0"] <= left)
     ctx.check(C_ABORT, left is not None and 0 < before < 2 * n and not after, tap_to_switch_ms=left and round(left - d["t_nav"]),
               sent_before_switch=before, of_total=2 * n, sent_after_switch=after[:8])
 
-    # The taps.
     taps, loading, thread = {}, {}, {}
     for i in range(clicks):
         d = v[f"mp-click-{i}"]

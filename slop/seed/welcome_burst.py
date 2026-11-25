@@ -1,27 +1,3 @@
-"""send_welcome's world (scenarios/2026-10-30-welcome-burst.py): per Creator, three kinds of
-subscriber OnlyFans' subscribe feed shows at once, and the rows the product left for each.
-
-  new          brand-new subs: no `fans` row, no messages, no claim (fresh ids, above the
-               Creator's seeded fans: FAN_ID_BASE + i * 1e6 + NEW_ID_OFFSET + k).
-  welcomed     renewals of fans the welcome already greeted: their `welcome_sent` claim and
-               the two outbound rows that burst wrote (greeting + question,
-               `automation_kind='welcome'`), 2..30 days ago. Two outbound rows is at the
-               NOT-NEW tolerance (> 2 is established), so only the claim keeps them out.
-  established  renewals with a real history: 4 outbound + 10 inbound rows, 3..60 days ago
-               (> 2 out, > 8 in), no claim (they pre-date the automation).
-
-Both renewal kinds are picked from the Creator's seeded fans without a thread (no other
-history). Every seeded message is older than 2 days, past the 12 h contact guard, so the
-guard never decides a case. `of_welcome_on`: the Creators whose OnlyFans welcome
-(`replyOnSubscribe` + a `reply_on_subscribe` template) is on, `round(frac * Creators)`, at
-least one, never all (when there are 2+). `feed`: per Creator, the notification items OF
-serves (`type: subscribed`, `createdAt` 1..30 min ago, `user`), newest first, renewals mixed
-in; the scenario writes it to `of-welcome.json` (lib/welcome_relay.py).
-
-Sizes are the scenario's (`--set new=`, `welcomed=`, `established=`, `of_on_frac=`), randomness only `w.rng("welcome_burst")`.
-Declared: the seeded welcome rows carry no `sent_by_employee_id` (the product's attribution
-resolves the system Automation employee); nothing else differs from what it writes.
-"""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -29,7 +5,8 @@ from datetime import timedelta
 from . import World, ts
 from .fans import FAN_ID_BASE
 
-MSG_ID_BASE = 9_000_980_000_000   # above threads' / followup_drip's / house_funnel's, below the relay's
+# above threads' / followup_drip's / house_funnel's, below the relay's
+MSG_ID_BASE = 9_000_980_000_000
 NEW_ID_OFFSET = 900_000
 QUESTION = "what are you up to rn?"
 _FIRST = ("Alex", "Ben", "Carl", "Dan", "Wren", "Finn", "Gus", "Hank", "Ivan", "Jack", "Kyle", "Liam")
@@ -42,8 +19,6 @@ def _iso(dt) -> str:
 
 def seed(w: World, fans: dict[str, list[dict]], threads: list[dict], *, new: int, welcomed: int,
          established: int, of_on_frac: float) -> dict:
-    """-> {new, welcomed, established: {aid: [fan ids]}, of_welcome_on: [aid], feed: {aid: [items]}};
-    also in w.data["welcome_burst"]."""
     rng = w.rng("welcome_burst")
     threaded = {(t["account_id"], t["fan_id"]) for t in threads}
     aids = [c["id"] for c in w.data["creators"]]
@@ -83,7 +58,7 @@ def seed(w: World, fans: dict[str, list[dict]], threads: list[dict], *, new: int
             at = w.now - timedelta(days=rng.uniform(3, 60))
             last = None
             for j in range(14):
-                d = "out" if j in (0, 3, 7, 10) else "in"     # 4 out, 10 in
+                d = "out" if j in (0, 3, 7, 10) else "in"
                 t, body = at + timedelta(hours=j), rng.choice(_OUT if d == "out" else _IN)
                 last = (msg(aid, f, d, t, body), t, body)
             crows.append((aid, f["id"], last[0], ts(last[1]), last[2], 0))

@@ -60,7 +60,6 @@ describe("the inline video's loading circle", () => {
   });
 });
 
-// F19: the drawer's gif loop survives StrictMode's dev double-mount, and still lets go of its clip on unmount.
 describe("the drawer's gif loop", () => {
   const gif = { id: 3, type: "gif", files: { full: { url: "https://cdn.example/g.mp4" } } } as unknown as VaultMedia;
 

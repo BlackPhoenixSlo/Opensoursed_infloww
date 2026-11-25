@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * useViewLease — the React face of `holdLease` (lib/viewLease.ts, ADR-0031 phase-01): while mounted, this component
- * leases `accountIds` (its own hold, keyed by `source` — a label only — and its `useId`); a new set replaces it, [] or
- * unmount releases it. The open chat (ChatSurface) calls it; the visible-row sources call `useOnScreenLease(source)`,
- * which leases the rows its `track` ref finds on screen (an IntersectionObserver): the rail (MoneyRailPanel), the roster
- * strip (CreatorTabs) and OF Manager's Creator column (CreatorColumn). So the All view, or a chatter with permission
- * "all", leases only what is on screen.
- */
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
@@ -20,15 +12,9 @@ export function useViewLease(accountIds: readonly string[], source = "view"): vo
   useEffect(() => (key ? holdLease(`${source}#${id}`, key.split("\n")) : undefined), [source, id, key]);
 }
 
-/** A row on screen shows some of itself: an edge-adjacent row (ratio 0) does not count. A browser calls back only
- *  when a row crosses a threshold, so 1e-6 (below any real sliver: a layout unit is 1/64 px) splits "touching" from
- *  "showing"; with 0.01 a sliver sliding to edge-adjacent would stay leased. */
+// 1e-6 splits an edge-adjacent row (ratio 0) from one showing a sliver; 0.01 would keep a sliver leased.
 const THRESHOLD = [0, 1e-6];
 
-/** Leases, under `source`, the Creators of the rows on screen now. Returns `track(id, key = id)`: the row element's
- *  ref (stable per key while the row is mounted; a Creator may have several rows, each its own key). Rows clipped by
- *  a scrolling ancestor (the strip, the rail, the column) or outside the viewport are off screen. Without
- *  IntersectionObserver nothing is on screen. */
 export function useOnScreenLease(source: string): (id: string, key?: string) => (el: Element | null) => void {
   const [onScreen, setOnScreen] = useState<readonly string[]>([]);
   useViewLease(onScreen, source);
@@ -66,8 +52,6 @@ export function useOnScreenLease(source: string): (id: string, key?: string) => 
   return useCallback((id: string, key: string = id) => {
     const known = refs.current.get(key);
     if (known) return known;
-    // Stable while the row is mounted (a new ref each render would make React detach and re-attach it, a loss and a
-    // gain); dropped when the row unmounts, so rows that come and go (the rail's) leave nothing behind.
     const ref = (el: Element | null) => {
       const old = elOf.current.get(key);
       if (old === el) return;

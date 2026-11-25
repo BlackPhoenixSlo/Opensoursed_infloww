@@ -7,7 +7,6 @@ const { DEFAULT_SETTINGS, parseSettings, shouldPing, noticesFor, SeenKeys } = re
 const path = require("node:path");
 const fs = require("node:fs");
 
-// One notice shape, three parsers: the page's (canonical), this one and the relay's push.
 const FIXTURE = path.join(__dirname, "..", "..", "service", "tests", "fixtures", "notice_cases.json");
 const { cases } = JSON.parse(fs.readFileSync(FIXTURE, "utf8"));
 
@@ -48,7 +47,7 @@ test("settings: the app's stored JSON over the defaults; the gate", () => {
   assert.equal(s.toast.message, true);
   assert.equal(s.toast.tip, true);
   assert.equal(shouldPing(s, "message"), true);
-  assert.equal(shouldPing(DEFAULT_SETTINGS, "message"), false); // off by default, as in the app
+  assert.equal(shouldPing(DEFAULT_SETTINGS, "message"), false);
   assert.equal(shouldPing(DEFAULT_SETTINGS, "purchases"), true);
   assert.equal(shouldPing({ ...s, enabled: false }, "message"), false);
   assert.equal(shouldPing({ ...s, osPing: false }, "message"), false);
@@ -60,6 +59,6 @@ test("seen keys dedupe and stay bounded", () => {
   assert.equal(seen.claim("a"), true);
   assert.equal(seen.claim("a"), false);
   seen.claim("b");
-  seen.claim("c"); // evicts "a"
+  seen.claim("c");
   assert.equal(seen.claim("a"), true);
 });

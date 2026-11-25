@@ -2,6 +2,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+const platform = vi.hoisted(() => ({ current: "onlyfans" as "onlyfans" | "fansly" }));
+vi.mock("@/hooks/useCan", async () => {
+  const { can } = await import("@/lib/platform");
+  return { useCan: (_: unknown, cap: Parameters<typeof can>[1]) => can(platform.current, cap) };
+});
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { applyData, rowsOf } from "./ofMirrorData";
@@ -43,9 +48,7 @@ describe("Gallery: the chat's real media, OF's tiles and tabs", () => {
     const locked = items.filter((m) => !(m.media ?? []).some((x) => x.canView !== false && x.files?.thumb?.url));
     expect(locked.length).toBeGreaterThan(0);
     expect(tiles.filter((t) => t.querySelector(".b-post__unknown")).map((t) => t.querySelector(".b-post__unknown__price")!.textContent!.trim())).toEqual(locked.map((m) => `$${m.price}`));
-    // Every tile opens the chat at its message (OF's ?firstId=).
     expect(tiles.map((t) => (t.matches("a") ? t : t.querySelector("a"))!.getAttribute("href"))).toEqual(items.map((m) => `/of-manager/messages/chat?chat=3035&firstId=${m.id}`));
-    // A visible tile: its thumb through the image proxy, the sender's avatar, a play button only on a moving first media.
     const visible = tiles.filter((t) => t.querySelector("img.b-photos__item__img"));
     for (const t of visible) expect(t.querySelector("img.b-photos__item__img")!.getAttribute("src")).toMatch(/^\/img\?u=https:\/\/public\.onlyfans\.com\//);
     const moving = items.filter((m) => !locked.includes(m) && ["gif", "video"].includes((m.media ?? []).find((x) => x.canView !== false)?.type ?? ""));
@@ -81,7 +84,6 @@ describe("Gallery: the chat's real media, OF's tiles and tabs", () => {
     ]);
     expect(tabs.filter((a) => a.classList.contains("m-current")).map((a) => a.dataset.oiGallery)).toEqual(["photos"]);
     expect(tabs.some((a) => a.hasAttribute("disabled") || a.getAttribute("title") === NOT_YET)).toBe(false);
-    // Its Back goes to the chat, its header says whose.
     expect(d.querySelector(".b-gallery-wrapper a[aria-label='Back']")!.getAttribute("href")).toBe("/of-manager/messages/chat?chat=3035&tab=pinned");
     expect(d.querySelector(".b-gallery-wrapper .b-chat__user-status")!.textContent).toBe("with Synthetic Creator");
     expect(galleryTab(new URLSearchParams("media=videos"))).toBe("videos");
@@ -94,14 +96,10 @@ describe("Gallery: the chat's real media, OF's tiles and tabs", () => {
     const err = text(draw({ tab: "all", status: "502 Bad Gateway" }));
     expect([err.textContent, err.style.color]).toEqual(["Could not load media: 502 Bad Gateway", "rgb(255, 69, 69)"]);
     expect(text(draw({ tab: "all", items: [] })).textContent).toBe("Nothing found");
-    // The next page's loader under the grid.
     expect(draw({ tab: "all", items, more: true }).querySelector("#oi-gallery-more")).not.toBeNull();
-    // Pages that drew no tile, with more to come: still loading, never a false "Nothing found".
     expect(text(draw({ tab: "audios", items: [], next: true })).textContent).toBe("Loading media…");
-    // The next page failed: its error under the grid, the tiles kept; with no tile, in the prompt.
     const failed = draw({ tab: "all", items, next: true, moreError: "502 Bad Gateway" });
     expect(failed.querySelector("#oi-gallery-more")!.textContent).toBe("Could not load more media: 502 Bad GatewayRetry");
-    // A Retry under the grid and in the prompt (ofMirrorData reads its click); none while the page is fine.
     expect(failed.querySelectorAll("[data-oi-gallery-retry]")).toHaveLength(1);
     expect(draw({ tab: "all", status: "502 Bad Gateway" }).querySelectorAll("[data-oi-gallery-retry]")).toHaveLength(1);
     expect(draw({ tab: "all", items }).querySelectorAll("[data-oi-gallery-retry]")).toHaveLength(0);
@@ -170,11 +168,9 @@ describe("the thread: incoming locked PPVs and tips as OF draws them", () => {
       const btn = b.querySelector<HTMLButtonElement>(".m-purchase-chat button.post-subscribe-btn")!;
       expect([btn.textContent!.trim(), btn.disabled, btn.title]).toEqual([`Unlock for $${m.price}`, true, NOT_YET]);
       expect(b.querySelector(".m-purchase-chat .m-price-lock")!.textContent!.trim()).toBe(`$${m.price}`);
-      // Only the media the Creator may view are pictures (OF's free previews).
       expect(b.querySelectorAll(".b-chat__message__media img.b-post__media__img").length).toBe((m.media ?? []).filter((x) => x.canView !== false && x.files?.thumb?.url).length);
       expect(b.querySelector(".b-chat__message__payment-state")!.textContent!.trim()).toBe(`$${m.price} not paid yet`);
     }
-    // A free message has no card; the Creator's own message never gets one.
     for (const m of locked.filter((x) => !x.canPurchase)) expect(d.querySelector(`[data-oi-data] [data-oi-msg="${m.id}"] .m-purchase-chat`)).toBeNull();
   });
   it("a tip: OF's tip line (the funds icon, the words, a heart) and the fan's note; no price line, no plain text", () => {
@@ -187,7 +183,7 @@ describe("the thread: incoming locked PPVs and tips as OF draws them", () => {
     expect([...line.querySelectorAll("svg")].map((s) => s.getAttribute("data-icon-name"))).toEqual(["icon-funds", "icon-likes"]);
     expect(line.querySelector("[at-attr='msg_tip']")!.textContent).toBe("I sent you a $10.00 tip");
     expect(b.querySelector(".b-chat__message__text-content")!.textContent).toBe("Synthetic tip note");
-    expect(line.hasAttribute("data-v-364cdc78")).toBe(true); // OF's scoped tip style applies
+    expect(line.hasAttribute("data-v-364cdc78")).toBe(true);
     expect(b.querySelector(".b-chat__message__payment-state")).toBeNull();
     expect(b.querySelector(".b-chat__message__text-holder")).toBeNull();
   });
@@ -237,7 +233,7 @@ describe("Find in chat (GET …/messages/search?query=, OF's flat id list)", () 
   };
   const flush = () => new Promise((r) => setTimeout(r, 0));
   const textOf = (m: OFMessage) => (m.text ?? "").replace(/<[^>]+>/g, "").trim();
-  const hits = thread.filter((m) => /synthetic/i.test(textOf(m))).slice(-2).reverse(); // newest first, as OF
+  const hits = thread.filter((m) => /synthetic/i.test(textOf(m))).slice(-2).reverse();
   const ids = hits.map((m) => String(m.id));
 
   it("Find opens OF's bar; 1-2 characters wait, 3 search once the keys stop; the newest hit is drawn, centred and marked", async () => {
@@ -262,7 +258,6 @@ describe("Find in chat (GET …/messages/search?query=, OF's flat id list)", () 
     expect(d.querySelector(".b-chat__search__results-count")!.textContent!.trim()).toBe("1/2");
     const mark = d.querySelector(`[data-oi-msg="${ids[0]}"] .b-chat__message__text-highlighted`)!;
     expect(mark.textContent!.toLowerCase()).toBe("syn");
-    // Up: the older hit; then up is off (the oldest), down on.
     d.querySelector<HTMLButtonElement>("[data-oi-find='prev']")!.click();
     await flush();
     await flush();
@@ -338,7 +333,6 @@ describe("Find in chat (GET …/messages/search?query=, OF's flat id list)", () 
     find.dispose();
     expect(input(d).closest(".b-chat__header")!.classList.contains("m-search-form-visible")).toBe(false);
     expect([input(d).value, d.querySelector(".b-chat__search__results-nav")]).toEqual(["", null]);
-    // Its listeners are gone: a click opens nothing.
     d.querySelector<HTMLButtonElement>("button[at-attr='search_btn']")!.click();
     expect(input(d).closest(".b-chat__header")!.classList.contains("m-search-form-visible")).toBe(false);
   });
@@ -359,7 +353,6 @@ describe("useThreadFind: a gallery tile's ?firstId= jump", () => {
     document.body.appendChild(frame);
     return frame;
   };
-  /** The frame loads the chat page with `messages` drawn (as useOfData would), then fires its load. */
   const load = (frame: HTMLIFrameElement, messages: OFMessage[]) => {
     const d = frame.contentDocument!;
     d.documentElement.innerHTML = html;
@@ -377,7 +370,6 @@ describe("useThreadFind: a gallery tile's ?firstId= jump", () => {
     const d1 = load(frame, thread);
     await waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(d1.getElementById("oi-note")?.textContent).toBe(TOO_FAR), { timeout: 5000 });
-    // The same tile clicked again: a new page load jumps again.
     const d2 = load(frame, thread);
     expect(d2.getElementById("oi-note")).toBeNull();
     await waitFor(() => expect(loadOlder).toHaveBeenCalledTimes(2));
@@ -388,7 +380,6 @@ describe("useThreadFind: a gallery tile's ?firstId= jump", () => {
     const frame = mount();
     const ref = { current: frame };
     let release: () => void = () => {};
-    // Each older page adds a row but never the wanted message; the second waits until released.
     const loadOlder = vi.fn(() => (loadOlder.mock.calls.length === 1 ? Promise.resolve({ added: 1, hasMore: true }) : new Promise<{ added: number; hasMore: boolean }>((r) => (release = () => r({ added: 1, hasMore: true })))));
     const { rerender } = renderHook(({ chat, firstId }) => useThreadFind(ref, "/of-mirror/pages/messages/chat.html", true, "acc", chat, firstId, { hasOlder: true, loadOlder }, 1), { initialProps: { chat: "2006", firstId: "999" as string | null } });
     const d = load(frame, thread);
@@ -416,7 +407,6 @@ describe("useThreadFind: a gallery tile's ?firstId= jump", () => {
     box.getBoundingClientRect = () => ({ top: 100 }) as DOMRect;
     el.getBoundingClientRect = () => ({ top: 900 }) as DOMRect;
     frame.dispatchEvent(new Event("load"));
-    // 900 - 100 + 0 - (400 - 40) / 2 = 620
     await waitFor(() => expect(box.scrollTop).toBe(620));
     expect(loadOlder).not.toHaveBeenCalled();
     frame.remove();

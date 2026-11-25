@@ -1,9 +1,5 @@
 "use client";
 
-/** The Extras drawer and its tools (moved out of `VaultManagePanel`): our tools, which the bundle does not have
- *  (ADR-0003) — the full download (whole vault / open folder), the mirror collect, the describe sweep and its
- *  prompt, the keyword harvest, the duplicates, pack, AI-folder and disagreement reviews, the flags review and the
- *  Inflowwww folders editor. */
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
@@ -19,7 +15,6 @@ import { cn } from "@/lib/utils";
 
 import { cappedCount, DESCRIBE_LIMIT_DEFAULT, DESCRIBE_LIMIT_KEY, parseDescribeLimit } from "./vaultManageActions";
 
-/** The stored "Max" text; never set → the default. */
 function readLimitText(): string {
   try {
     return window.localStorage.getItem(DESCRIBE_LIMIT_KEY) ?? String(DESCRIBE_LIMIT_DEFAULT);
@@ -31,9 +26,6 @@ function readLimitText(): string {
 /** The modals the drawer's tools open. */
 export type ExtrasModal = "dupes" | "packPicker" | "aiFolders" | "flagsReview" | "folders";
 
-/** The Extras drawer: the page's own tools, which the bundle does not have, one click from the header (ADR-0003).
- *  A right sheet over the page; Esc or × closes it, unless a modal above it took the Escape first. It slides in
- *  and out as the other sheets do (`sheet-right`, `useExitGhost`). */
 function ExtrasDrawer({ onClose, children }: { onClose: () => void; children: ReactNode }) {
   const sheetRef = useRef<HTMLElement>(null);
   useExitGhost(true, sheetRef);
@@ -84,37 +76,33 @@ export default function VaultExtrasTools({
   flagsReviewOpen,
   onOpen,
   foldersAllowed = true,
+  removeAllowed,
   settings,
   download,
 }: {
   accountId: string;
   onClose: () => void;
   isCollecting: boolean;
-  /** The Collect is waiting on "continue collecting?" (it asks about every 2000 collected items; `last_run.status`). */
   collectPaused?: boolean;
-  /** null for a restricted chatter: the count is whole-vault. */
   totalSeen: number | null;
   cachedCount: number;
   onCollect: () => void;
-  /** The paused prompt's buttons (`onCollectAnswer` in vaultManageActions). */
   onCollectAnswer?: (answer: "continue" | "stop") => void;
-  /** `limit`: the "Max" input (0 = all). */
   onDescribeAll: (mode: "new" | "restage" | "force", limit: number) => void;
   describeSweep: VaultSweep;
   describeText: { label: string; title: string };
   describeStopped: { text: string; detail: string; tone: "warn" | "info" } | null;
   harvestSweep: VaultSweep;
-  /** The describe plan's data (`useDescribePlan`). */
   plan: ReturnType<typeof useDescribePlan>["data"];
   capped: boolean;
   capReason: string;
   needsReview: number;
   setNeedsReview: (n: number) => void;
-  /** The flags review is up (its offer hides meanwhile). */
   flagsReviewOpen: boolean;
   onOpen: (m: ExtrasModal) => void;
   /** false for a restricted chatter: our own folders are not theirs to see (`allowed_folder_ids_for_chatter`). */
   foldersAllowed?: boolean;
+  removeAllowed: boolean;
   /** The Creator's vault switches (`VaultSettingsSwitches`), last in the drawer. */
   settings?: ReactNode;
   /** "Download full vault" (All media) / "Download full folder" (a rail folder open); `reason` non-empty: off, said
@@ -129,7 +117,6 @@ export default function VaultExtrasTools({
     try {
       window.localStorage.setItem(DESCRIBE_LIMIT_KEY, v);
     } catch {
-      /* private mode: this session only */
     }
   };
   const capNote = (n: number) =>
@@ -154,7 +141,6 @@ export default function VaultExtrasTools({
             "not collected"
           )}
         </span>
-        {/* Every tool shows at every width; the download alone is off on a phone (`downloadGate`). */}
         <button
           type="button"
           data-testid="vault-extras-download"
@@ -237,15 +223,17 @@ export default function VaultExtrasTools({
               ? `Harvesting ${harvestSweepLabel(harvestSweep.progress)}`
               : "Harvest OF"}
           </button>
-          <button
-            type="button"
-            onClick={() => onOpen("dupes")}
-            disabled={cachedCount === 0}
-            className="px-3 py-1.5 rounded-lg text-sm border border-err/50 bg-err/10 text-err hover:bg-err/20 disabled:opacity-50"
-            title="Find re-uploaded copies and remove them from the OF vault (review + confirm first)"
-          >
-            Duplicates
-          </button>
+          {removeAllowed && (
+            <button
+              type="button"
+              onClick={() => onOpen("dupes")}
+              disabled={cachedCount === 0}
+              className="px-3 py-1.5 rounded-lg text-sm border border-err/50 bg-err/10 text-err hover:bg-err/20 disabled:opacity-50"
+              title="Find re-uploaded copies and remove them from the OF vault (review + confirm first)"
+            >
+              Duplicates
+            </button>
+          )}
         <button
           type="button"
           onClick={() => onOpen("packPicker")}
@@ -280,7 +268,7 @@ export default function VaultExtrasTools({
         </button>
       </div>
 
-      {/* The Collect asks about every 2000 collected items; unanswered for 30 min it stops on its own (vault_ai_api). */}
+      {/* The Collect asks about every 2000 items; unanswered for 30 min it stops on its own (vault_ai_api). */}
       {isCollecting && collectPaused && onCollectAnswer && (
         <div
           data-testid="vault-collect-paused"
@@ -308,11 +296,7 @@ export default function VaultExtrasTools({
         </div>
       )}
 
-      {/* A describe pass that DIED rather than finished. Only meaningful once it
-          stops — while it runs the button carries the count — and it survives a
-          reload, because the snapshot lives on the server. */}
       <AiKeyNotice accountId={accountId} kinds={["describe_media"]} />
-      {/* Jev v8 describes + flags every photo (service/vault_jev_pass.py); said only when it cannot run here. */}
       {plan?.jev && !plan.jev.ready && (
         <p data-testid="vault-jev-notice" className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-[11px] text-warn">
           Photos are skipped (not described or flagged) until Jev v8 can run on this server: {plan.jev.reason}
@@ -331,7 +315,6 @@ export default function VaultExtrasTools({
         </div>
       )}
 
-      {/* The flags review, offered when a describe sweep ends with items worth a human's eye. */}
       {needsReview > 0 && !flagsReviewOpen && (
         <div className="rounded-lg border border-ok/50 bg-ok/10 px-3 py-2 flex items-center justify-between gap-3">
           <p className="text-[11px] text-ok">

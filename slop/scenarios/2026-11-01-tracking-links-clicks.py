@@ -1,101 +1,3 @@
-"""Tracking links under a click storm: every public `/t/<slug>` click is stored once and redirected to its own
-target, the internal links' analytics add up, and OnlyFans' own tracking links (Growth > Tracking links) show
-per-link earnings that equal the attribution rule, with one claimers walk per link however many owners read.
-
-World: `agency_inbox` (small 3 Creators x 50 fans, medium 10 x 500) plus seed/tracking_campaigns.py: per
-Creator `links` internal /t/ links with 1..40 past clicks each (hand-labelled referer / user agent / country,
-one at least between 00:00 and 04:00 UTC, else INFRA), one `hot` link with `hot_per_day` clicks a day over 90
-days (small 200, medium 3,500, huge 5,000: each medium hot link has 315,000 raw rows), their raw label columns, including NULL old rows,
-`campaigns` OF tracking links (every 4th with no
-subscriber, one deactivated 20 days after it opened, the oldest with 61 claimers: two claimers pages) whose
-`claimed` fans each claimed 1..3 links, and those fans' ledger (`transactions` as the payouts ingest and the WS
-pump write them: tracked and reversed statuses, WS rows with no net), plus a few fans who claimed nothing.
-OnlyFans' /campaigns side is lib/tracking_relay.py (`of-campaigns.json`).
-
-Report zone: the owner's `report_tz` is America/New_York (PUT before the storm), so every stats day is a New
-York day; the 14 seeded days span the 2026-11-01 DST end.
-
-Load (`--users` anonymous clients, no cookie, redirects not followed): `clicks` GET /t/<slug>, open loop at
-`rate` clicks/s (click k leaves at k / rate on client k % users; `--rate=0`: a closed loop, every client
-clicking back to back, which measures the relay's saturation, not a fan's latency), links drawn from the seed
-with uneven weights, each click a referer / user agent / country and the headers Cloudflare would add
-(`RELAY_ENV` EDGE_PROXIES=cloudflare): X-Forwarded-For a Cloudflare server (`CF_HOPS`), CF-Connecting-IP the
-client's own address (100.64.x.y), CF-IPCountry the plan's country (none for None); 1 in 20 (`SPOOF_SHARE`)
-skips Cloudflare (X-Forwarded-For its own address) with a forged CF-IPCountry, which must be filed XX. Meanwhile owners (max(3, users // 10), each its own
-pool of 4; owner i at home on Creator i % n): wave 1, one Creator after another, every owner opens its
-earnings at once (`GET /admin/of-tracking-links/earnings`: the first open, a cold computation that walks
-every claimers page, with the others waiting on the per-account lock; in the budgeted row); the owner creates
-one OF tracking link per Creator (`POST /admin/of-tracking-links`, the Create dialog: it drops the account's
-60 s memo); wave 2, each owner reloads its home Creator's Links list (the
-OF list and earnings at once) and opens one link's Details (`/{campaign_id}/fans`); then browsing until the
-storm ends (1-3 s think, 70 % on its home Creator: `/admin/tracking-links`, `/summary`, `/{id}/analytics`
-over 7 / 30 / 90 days, the Links list, a Details).
-
-Bot check before redirect (Cloudflare Turnstile, `RELAY_ENV` keys): per Creator `gated` links made through the
-real Create (`POST /admin/tracking-links`, a scheme-less `ofl.ink/...` target; even ones with `bot_check` set
-there, odd ones by `PATCH`), and `gated_clicks` fans (open loop at rate / 10, on max(4, users // 10)
-connections, visit k from its own address 100.96.x.y: one fan, one phone) each GET a gated link's /t/ (the
-Turnstile page), then POST its /verify with a token: 3 in 4 pass (`pass-k`), the rest fail. After the storm
-the verify throttle: one fresh address (`PROBE_IP`) posts VERIFY_CAPACITY failing tokens to one gated link at
-once, then 3 more.
-
-Checks (lib/tracking_faults.py): GATE_CREATE, GATE_PAGE, GATE_VERIFY (siteverify as the storm left it,
-before the throttle probe), GATE_COUNT (the gated links' clicks == the passed verifies; their seeded clicks are
-0), GATE_THROTTLE (the probe: 403 x VERIFY_CAPACITY then 429 + Retry-After x 3, siteverify + VERIFY_CAPACITY,
-no click), CLICKS (rows, click_count, list == seeded + the 302s answered), CLIENT_IP (every
-stored storm click's ip is one of the clients' own addresses, none a Cloudflare or proxy address), REDIRECT,
-BY_DAY (`?days=30`, per New York day: seeded + the 302s answered that day; a 302 sent before New York
-midnight and answered after may count on either day), STATS_SUMMARY (per Creator today / 7 / 30 days, every
-link's sparkline, the top link == the same oracle, gated links' passes included), STATS_BREAKDOWN (per ungated
-link, 30 days in the zone the API names: Opened in / Came from / Country == the hand labels, each summing to
-the total), STATS_INVARIANT (per link: analytics buckets == range raw rows; all raw rows == click_count), CREATED, EARNINGS (every link of each Creator
-listed, the created ones at zero; the oracle derived here from the seed: each tracked sale of a claimer goes
-to the claiming link with the latest createdAt at or before it whose window is still open,
-`of_tracking_api._spend`'s rule, gross / net / fans counted / fans who spent; each link's /fans rows sum to
-its figure; the run is INFRA unless each of the rule's branches occurs in the seed: a sale past a deactivated
-link's end falling back, a sale before any claim, an untracked status inside a window, a fan with several
-links), CLAIMERS (`GET
-/__slop/tracking-calls`: one walk, a call at offset 0, per link with subscribers, of ceil(n / 50) pages; 0 for
-zero-subscriber and created links). Budgets: p95 `/t/` <= 150 ms, earnings (the page's reads) <= 2 s, the stats
-reads (`/summary`, `/:id/analytics`) <= 300 ms in 20 timed reads each after the storm and <= 1200 / 700 ms under
-it (a single-relay saturation guard), plus a separate 90-day hot-link probe <= 600 ms p95;
-p95 vs the last green run (routes with >= 20 calls in both).
-UI (`UI = True`; UI == API only, the oracle is the API checks' job): /growth/redirect-links (its own Growth
-entry since 11-12, was a Tracking links tab) for the Creator the page picks: the summary cards == `/summary` (UI_SUMMARY, screenshots
-`tracking-links-summary`, `tracking-links-trigger`); its hot link's Analytics opened: "{n} clicks · last 30
-days" == the API's total == the DB's rows in that window, 30 bars and the top Opened in row == the API
-(UI_STATS; `tracking-links-stats-30d`, `tracking-links-settled`); the same on a 390 x 844 phone with no
-sideways scroll, loaded and expanded (UI_PHONE; `tracking-links-phone-summary`, `tracking-links-phone-stats`).
-Then, in a fresh page with Playwright's clock installed,
-Growth > Tracking links left open (`growth-viewed-open`): its clock jumped GROWTH_VIEWED_REFRESH_MS less a minute
-in 5 min steps, a pointer move after each (an owner on the page: 10 min without input is Idle mode, which stops
-every poll until the next input) and no refetch, then the last minute: the OF links list and their earnings are read again
-(`growth-viewed-settled`) and the relay read OF's /campaigns for that Creator again (/__slop/tracking-calls).
-
-Bypasses (declared): Cloudflare's siteverify is lib/tracking_relay.py's loopback fake (the product's
-TURNSTILE_VERIFY_URL env seam, set by the relay part; 30 ms a call, a guess; a token passes iff it starts
-`pass-`); the Turnstile widget itself never runs (no browser opens the gate page: the slop browser aborts
-off-host scripts), so the fans post the token the widget would; OnlyFans' /campaigns, /campaigns/{id}/claimers and the create are lib/tracking_relay.py
-(in-process, 50 ms a call, a guess; not lib/of_wire.py: this run has no OF_WIRE), the product's `_make_client`
-falls back to it as for every offline Creator; `of-me.json` answers `me()` with no username, so the share
-URLs are null (OF's username is cosmetic here); the /t/ slugs are custom numeric slugs (`_slugify` keeps
-digits) so the recorder folds them into one `GET /t/:id` row; the past clicks, links, campaigns' claimers and
-ledger are SQL in the product's shape (the WS rows' message ids name no `messages` row); the big link's
-free-trial claimers are OF ids with no `fans` row; the clients are httpx, not browsers (no referer chain, no
-redirect followed: the target is off-host); CF-IPCountry is set by the clients, as the CF hop is today; the
-seed's raw rows include NULL labels classified by the boot job; the click rate is the scenario's (100 / 250 clicks/s small /
-medium, a guess at a bio-link burst); the Cloudflare hop is its headers alone: the clients reach the relay
-straight from loopback (a trusted proxy, as the Next app is), no Traefik or Next in between. Break-it-once: tracking-click-lost-1-in-20 (CLICKS, BY_DAY, STATS_SUMMARY, STATS_BREAKDOWN, GATE_COUNT);
---fault=tracking-stats-utc-days (BY_DAY, STATS_SUMMARY);
---fault=client-addr-cdn-header-ignored (CLIENT_IP, STATS_BREAKDOWN);
---fault=of-tracking-claimers-no-memo (CLAIMERS); --fault=of-tracking-spend-first-link (EARNINGS);
---fault=tracking-bot-check-fails-open (GATE_VERIFY, GATE_COUNT, STATS_SUMMARY, GATE_THROTTLE);
---fault=tracking-classify-raises (STATS_BREAKDOWN);
---fault=tracking-verify-unthrottled (GATE_THROTTLE);
---fault=growth-viewed-no-refetch (client side:
-UI_VIEWED). The page's hour is Playwright's clock jumping (`clock.fast_forward`: due timers fire once, as
-after a laptop lid), not waited (declared).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -121,47 +23,40 @@ from slop.seed import tracking_campaigns
 PROFILE = "agency_inbox"
 UI = True
 FAULT = "tracking-click-lost-1-in-20"
-RELAY_ENV = {"EDGE_PROXIES": "cloudflare",   # the fans come through Cloudflare (deploy/ae/EDGE-CDN.md)
-             # Bot check on: Cloudflare's always-pass test site key; siteverify is lib/tracking_relay.py's fake.
+RELAY_ENV = {"EDGE_PROXIES": "cloudflare",
              "TURNSTILE_SITE_KEY": "1x00000000000000000000AA", "TURNSTILE_SECRET_KEY": "slop-turnstile-secret"}
-GATED_SLUG_BASE = 79_000_000   # the gated links' custom numeric slugs (seed/tracking_campaigns.SLUG_BASE + 9e6)
-PASS_SHARE = 0.75              # gated clicks whose token passes
-VERIFY_CAPACITY = 30           # tracking_links_api.VERIFY_CAPACITY: one address's verify burst before 429
-PROBE_IP = "100.127.255.254"   # GATE_THROTTLE's address: no fan's (CGNAT, outside both fan ranges)
-CF_HOPS = tuple(f"162.158.88.{i}" for i in range(1, 9))   # Cloudflare servers (inside its published ranges)
+GATED_SLUG_BASE = 79_000_000
+PASS_SHARE = 0.75
+VERIFY_CAPACITY = 30
+PROBE_IP = "100.127.255.254"
+CF_HOPS = tuple(f"162.158.88.{i}" for i in range(1, 9))
 T_P95_MS = 150
 EARNINGS_P95_MS = 2000
-STATS_P95_MS = 300   # /summary and 30-day /:id/analytics, 20 timed reads each once the storm is over
-# Under the storm one relay process saturates (250 clicks/s + owner reads): server-side /summary 200-460 ms in
-# the storm, 33-53 ms right after (medium, runs 20261111T062608Z-d344 / 20261111T083333Z-78ca: summary p95
-# 777 / 878, analytics 286 / 483). A saturation guard, not the product budget; a rollup is the followup.
+STATS_P95_MS = 300
 SUMMARY_STORM_P95_MS = 1200
+# one relay process saturates under the storm (250 clicks/s + owner reads): a saturation guard, not the product budget (measured summary p95 777 / 878, analytics 286 / 483)
 ANALYTICS_STORM_P95_MS = 700
-# Measured 315k rows: idle p95 275 ms, two readers 525 ms; allow concurrent readers.
 HOT_90D_P95_MS = 600
 REPORT_TZ = "America/New_York"
 NY = ZoneInfo(REPORT_TZ)
-SPOOF_SHARE = 1 / 20   # clicks that skip Cloudflare with a forged CF-IPCountry
+SPOOF_SHARE = 1 / 20
 FORGED_COUNTRY = "KP"
 RANGES = (7, 30, 90)
-# app/components/growth/redirectStats.ts OPENED_IN (the UI's row label of an API key)
 OPENED_IN = {"instagram": "Instagram app", "tiktok": "TikTok app", "facebook": "Facebook app",
              "threads": "Threads app", "": "Browser", "bot": "Bots & link previews"}
 P95_VS_LAST = (1.5, 100)
-P95_VS_LAST_MIN_N = 20   # under 20 calls a p95 is the slowest of a handful
-THINK_S = (1.0, 3.0)   # an owner between page actions (a guess at a human's)
+P95_VS_LAST_MIN_N = 20
+THINK_S = (1.0, 3.0)
 TRACKED = ("cleared", "pending")
 SUBS = ("subscription", "rebill")
 FIGURES = ("earnings_cents", "earnings_net_cents", "net_missing_count", "fans_counted", "fans_who_spent")
 
 
 def _local_day(hour: str, tz) -> date:
-    """The local day (of `tz`) a UTC hour bucket '%Y-%m-%d %H:00:00' starts in."""
     return datetime.strptime(hour, tracking_campaigns.HOUR).replace(tzinfo=timezone.utc).astimezone(tz).date()
 
 
 def _window(n: int, tz=NY) -> list[str]:
-    """The last `n` days of `tz` ending today, oldest first, as 'YYYY-MM-DD'."""
     today = datetime.now(timezone.utc).astimezone(tz).date()
     return [(today - timedelta(days=n - 1 - i)).isoformat() for i in range(n)]
 
@@ -172,10 +67,9 @@ def _digits(text: str) -> int | None:
 
 
 def _oracle(tc: dict) -> tuple[dict[int, dict], dict[str, int]]:
-    """Per OF link its FIGURES, from the seed alone; and how often each branch of the rule decided a sale."""
     claims: dict[tuple[str, int], list[tuple[datetime, datetime | None, int]]] = defaultdict(list)
     out: dict[int, dict] = {}
-    per_fan: dict[int, dict[int, list[int]]] = defaultdict(dict)   # link -> fan -> [total, subs]
+    per_fan: dict[int, dict[int, list[int]]] = defaultdict(dict)
     for aid, rows in tc["campaigns"].items():
         for r in rows:
             start = datetime.fromisoformat(r["createdAt"][:19])
@@ -227,7 +121,6 @@ class _ClickOracle:
 
 
 def _verified_off(summary, analytics, mine, answers, month):
-    """Plan verdicts are independent of the API; midnight straddles bound the 30-day total."""
     passes = [a for a in answers if a.get("pass") and "verify" in a]
     slugs = {l["slug"] for l in mine}
     relevant = [a for a in passes if a["slug"] in slugs]
@@ -250,7 +143,6 @@ async def _check_stats(ctx, w, reader, links, gated, aids, oracle: _ClickOracle)
     astride = oracle.astride
     storm_labels = oracle.storm_labels
     plan = oracle.plan
-    # ── stats: 30-day series per New York day, summary, breakdowns, raw-row invariant ──
 
     async def analytics(l, days=30):
         r = await reader.get(f"/admin/tracking-links/{l['id']}/analytics?account_id={l['account_id']}&days={days}")
@@ -305,7 +197,7 @@ async def _check_stats(ctx, w, reader, links, gated, aids, oracle: _ClickOracle)
             top_ok = top is None
         elif top is None or top.get("id") not in d30:
             top_ok = False
-        elif not astride_any:   # exact: most clicks, then name, then id
+        elif not astride_any:
             top_ok = top["id"] == min(d30, key=lambda i: (-d30[i][0], name_of[i], i)) and top["clicks"] == d30[top["id"]][0]
         else:
             lo, hi = d30[top["id"]]
@@ -323,7 +215,7 @@ async def _check_stats(ctx, w, reader, links, gated, aids, oracle: _ClickOracle)
     breakdown_bad = []
     for l in links:
         a = an30.get(l["id"], {})
-        tz = ZoneInfo(a["tz"]) if a.get("tz") else timezone.utc   # null tz: UTC days
+        tz = ZoneInfo(a["tz"]) if a.get("tz") else timezone.utc
         lo_day, hi_day = a.get("from", ""), a.get("to", "")
         want = Counter(storm_labels[l["slug"]])
         for (hour, *lab), n in l["seeded"].items():
@@ -377,7 +269,6 @@ async def run(ctx) -> None:
         campaigns=ctx.param("campaigns", w.size["tracking_links_campaigns"]),
         claimed=ctx.param("claimed", w.size["tracking_links_claimed"]),
         hot_per_day=ctx.param("hot_per_day", w.size["tracking_links_hot_per_day"]))
-    # The seed includes pre-existing NULL-labelled rows. Restart so the product's boot job sees them.
     await asyncio.to_thread(ctx.stack.stop_relay)
     await asyncio.to_thread(ctx.stack.start_relay)
     for _ in range(300):
@@ -392,7 +283,7 @@ async def run(ctx) -> None:
     if remaining:
         raise RuntimeError(f"tracking old-row classifier left {remaining} NULL refs")
     n_clicks = ctx.param("clicks", w.size["tracking_links_clicks"])
-    rate = ctx.param("rate", {"small": 100.0, "medium": 250.0, "huge": 400.0}[ctx.scale])   # clicks/s; 0: closed loop
+    rate = ctx.param("rate", {"small": 100.0, "medium": 250.0, "huge": 400.0}[ctx.scale])
     links = tc["links"]
     by_slug = {l["slug"]: l for l in links}
     links_of = {aid: [l for l in links if l["account_id"] == aid] for aid in aids}
@@ -404,10 +295,10 @@ async def run(ctx) -> None:
             for _ in range(n_clicks)]
     no_astride = [l["slug"] for l in links if not l["hot"]
                   and not any(h[:10] != _local_day(h, NY).isoformat() for h, *_ in l["seeded"])]
-    if no_astride:   # no seeded click on a UTC day that is not its New York day: the zone goes untested
+    if no_astride:
         raise RuntimeError(f"tracking seed: no click between UTC and New York midnight on {no_astride[:5]}")
     oracle, branches = _oracle(tc)
-    if not all(branches.values()):   # a seed that cannot tell the rule's branches apart: no verdict
+    if not all(branches.values()):
         raise RuntimeError(f"tracking seed misses a branch of the attribution rule: {branches}")
     ctx.metric("world", {"creators": len(aids), "links": len(links), "campaigns": sum(map(len, tc["campaigns"].values())),
                          "claims": sum(map(len, tc["claimers"].values())), "tx": len(tc["tx"]), "clicks": n_clicks,
@@ -416,7 +307,6 @@ async def run(ctx) -> None:
     if r.status_code != 200:
         raise RuntimeError(f"report_tz PUT -> {r.status_code} {r.text[:200]}")
 
-    # ── gated links: made through the real Create (+ PATCH), scheme-less targets ──
     n_gated = ctx.param("gated", 2)
     gated: list[dict] = []
     create_off: list = []
@@ -442,7 +332,7 @@ async def run(ctx) -> None:
     not_gated = [g["slug"] for g in gated if listed_gate.get(g["id"]) is not True]
     ctx.check(GATE_CREATE, len(gated) == n_gated * len(aids) and not create_off and not not_gated,
               want=n_gated * len(aids), created=len(gated), off=create_off[:5], not_gated=not_gated[:5])
-    grng = w.rng("scenario:tracking-links-clicks:gated")   # its own stream: the plain plan above is unchanged
+    grng = w.rng("scenario:tracking-links-clicks:gated")
     n_gclicks = ctx.param("gated_clicks", max(20, n_clicks // 10)) if gated else 0
     gplan = [(grng.choice(gated), grng.random() < PASS_SHARE) for _ in range(n_gclicks)]
 
@@ -450,16 +340,13 @@ async def run(ctx) -> None:
         return aids[i % len(aids)]
 
     def pick(aid: str, k: int) -> int | None:
-        """The Creator's k-th (mod) OF link with subscribers: the one whose Details an owner opens."""
         return live[aid][k % len(live[aid])] if live[aid] else None
 
-    # ── the storm: anonymous fans clicking /t/<slug> ───────────────────────
-    # (slug, status, location, New York day sent, answered, (country, in-app, referer family) hand labels)
     answers: list[tuple[str, int, str | None, str, str, tuple[str, str, str]]] = []
     fans = [Http(ctx.relay, ctx.rec, limits=1) for _ in range(ctx.users)]
-    gfans = [Http(ctx.relay, ctx.rec, limits=1) for _ in range(max(4, ctx.users // 10))]   # the gated links' fans
+    gfans = [Http(ctx.relay, ctx.rec, limits=1) for _ in range(max(4, ctx.users // 10))]
     n_owners = max(3, ctx.users // 10)
-    owners = [ctx.owner.share(limits=4) for _ in range(n_owners)]   # an owner reads <= 2 at once: nothing queues
+    owners = [ctx.owner.share(limits=4) for _ in range(n_owners)]
     stop = asyncio.Event()
     ctx.rec.stage = "storm"
     t0 = time.perf_counter()
@@ -467,19 +354,18 @@ async def run(ctx) -> None:
     def today() -> str:
         return datetime.now(timezone.utc).astimezone(NY).strftime("%Y-%m-%d")
 
-    ip_of = {id(h): f"100.64.{i // 250}.{i % 250 + 1}" for i, h in enumerate(fans)}   # a phone's CGNAT address each
+    ip_of = {id(h): f"100.64.{i // 250}.{i % 250 + 1}" for i, h in enumerate(fans)}
 
     def fan_ip(h: Http) -> str:
         return ip_of[id(h)]
 
     def gfan_ip(k: int) -> str:
-        """Gated visit k is its own fan, so its own address (the clients are only connections)."""
         return f"100.96.{k // 250}.{k % 250 + 1}"
 
     async def click(h: Http, slug: str, ref_l: tuple, ua_l: tuple, country: str | None, spoof: bool) -> None:
         (ref, ref_label), (ua, ua_label) = ref_l, ua_l
         sent = today()
-        if spoof:   # straight to the box, no Cloudflare: its own address the hop, a forged country
+        if spoof:
             edge = {"x-forwarded-for": fan_ip(h), "cf-connecting-ip": fan_ip(h), "cf-ipcountry": FORGED_COUNTRY}
         else:
             edge = {"x-forwarded-for": CF_HOPS[sum(map(ord, slug)) % len(CF_HOPS)], "cf-connecting-ip": fan_ip(h),
@@ -489,13 +375,12 @@ async def run(ctx) -> None:
             r = await h.get(f"/t/{slug}", headers={"user-agent": ua, **edge, **({"referer": ref} if ref else {})})
             answers.append((slug, r.status_code, r.headers.get("location"), sent, today(), labels))
         except httpx.HTTPError:
-            pass   # Http recorded it as a 599 (the stock no-5xx check); no answer, so no click expected
-        h.c.cookies.clear()   # no cookie, ever
+            pass
+        h.c.cookies.clear()
 
     gated_answers: list[dict] = []
 
     async def gated_click(h: Http, k: int, g: dict, passes: bool) -> None:
-        """The gate page, then the widget's verify (the token it would post)."""
         edge = {"x-forwarded-for": CF_HOPS[k % len(CF_HOPS)], "cf-connecting-ip": gfan_ip(k),
                 "user-agent": tracking_campaigns.UAS[k % len(tracking_campaigns.UAS)][0]}
         a = {"slug": g["slug"], "pass": passes}
@@ -510,13 +395,13 @@ async def run(ctx) -> None:
             a.update(vsent=vsent, vanswered=today(), verify=v.status_code,
                      url=(v.json().get("url") if v.status_code == 200 else ("url" in v.text and "leak") or None))
         except httpx.HTTPError:
-            pass   # recorded as a 599 (the stock no-5xx check)
+            pass
         gated_answers.append(a)
         h.c.cookies.clear()
 
     async def gated_storm() -> None:
         tasks = []
-        grate = max(rate, 10.0) / 10   # a tenth of the plain clicks' pace (closed loop: 10/s)
+        grate = max(rate, 10.0) / 10
         for k, (g, passes) in enumerate(gplan):
             delay = t0 + k / grate - time.perf_counter()
             if delay > 0:
@@ -529,8 +414,6 @@ async def run(ctx) -> None:
             await click(h, *p)
 
     async def paced() -> None:
-        """Open loop: click k leaves at t0 + k / rate on client k % users, whatever the earlier ones did (a
-        busy client queues it in its pool, and that wait is in its latency)."""
         tasks = []
         for k, p in enumerate(plan):
             delay = t0 + k / rate - time.perf_counter()
@@ -543,7 +426,6 @@ async def run(ctx) -> None:
         return await h.get(f"/admin/of-tracking-links/earnings?account_id={aid}", timeout=60)
 
     async def page(h, aid, cid):
-        """The Links list as the page loads it (the list and the earnings at once), then one link's Details."""
         await asyncio.gather(h.get(f"/admin/of-tracking-links?account_id={aid}", timeout=60), earnings(h, aid))
         if cid is not None:
             await h.get(f"/admin/of-tracking-links/{cid}/fans?account_id={aid}", timeout=60)
@@ -583,7 +465,7 @@ async def run(ctx) -> None:
             hot_times.append((time.perf_counter() - start) * 1000 if r.status_code == 200 else float("inf"))
 
     hot_task = asyncio.create_task(hot_reads())
-    for aid in aids:   # wave 1: every owner opens this Creator's earnings at once, the first open among them
+    for aid in aids:
         await asyncio.gather(*(earnings(h, aid) for h in owners))
     created: dict[str, int] = {}
     create_bad: dict[str, int] = {}
@@ -594,7 +476,6 @@ async def run(ctx) -> None:
         else:
             create_bad[aid] = r.status_code
     ctx.check(CREATED, not create_bad, creators=len(aids), created=len(created), failed=create_bad)
-    # wave 2: each owner back on its own Creator's page (the recompute after the create) and one link's Details
     await asyncio.gather(*(page(h, home(i), pick(home(i), i // len(aids))) for i, h in enumerate(owners)))
     browsers = asyncio.gather(*(browse(i, h) for i, h in enumerate(owners)))
     await storm
@@ -606,7 +487,7 @@ async def run(ctx) -> None:
     ctx.rec.stage = "after"
     for h in fans + gfans + owners:
         await h.aclose()
-    quiet: dict[str, list[float]] = {"summary": [], "analytics": []}   # the stats reads off the storm
+    quiet: dict[str, list[float]] = {"summary": [], "analytics": []}
     if hot_link:
         quiet_owner = ctx.owner.share(rec=Recorder())
         aid = hot_link["account_id"]
@@ -618,8 +499,6 @@ async def run(ctx) -> None:
                 quiet[kind].append((time.perf_counter() - start) * 1000 if r.status_code == 200 else float("inf"))
         await quiet_owner.aclose()
 
-    # ── verify throttle: one fresh address, VERIFY_CAPACITY + 3 failing tokens to one gated link ──
-    # Siteverify as the storm left it, before the probe adds to it (GATE_VERIFY reads this one).
     ts_calls = (await ctx.owner.get("/__slop/turnstile-calls")).json()
     probe: dict = {}
     if gated:
@@ -637,8 +516,7 @@ async def run(ctx) -> None:
         clicks_before = link_clicks()
         tp = time.perf_counter()
         try:
-            # The budget drained at once (each take is before the route's first await), then 3 more: the bucket
-            # refills one per 2 s, so the whole probe must take well under that.
+            # the budget drains at once, then 3 more: the bucket refills one per 2 s, so the probe must take well under that
             burst = await asyncio.gather(*(ph.post(f"/t/{g0['slug']}/verify", json={"token": f"fail-probe-{i}"},
                                                    headers=edge) for i in range(VERIFY_CAPACITY)))
             over = [await ph.post(f"/t/{g0['slug']}/verify", json={"token": f"fail-probe-{VERIFY_CAPACITY + i}"},
@@ -661,13 +539,12 @@ async def run(ctx) -> None:
               link=gated[0]["slug"] if gated else None,
               codes=dict(Counter(probe.get("codes", []))), **{k: v for k, v in probe.items() if k != "codes"})
 
-    # ── clicks: stored once per link, every answer a 302 to its own target ──
     con = w.sql()
     try:
         stored = dict(con.execute("SELECT tracking_link_id, COUNT(*) FROM tracking_clicks GROUP BY 1").fetchall())
-        storm_ips = Counter(ip for (ip,) in con.execute(   # the seed's clicks are 203.0.113.x
+        storm_ips = Counter(ip for (ip,) in con.execute(
             "SELECT ip FROM tracking_clicks WHERE (ip IS NULL OR ip NOT LIKE '203.0.113.%') AND ip IS NOT ?",
-            (PROBE_IP,)))   # the throttle probe's clicks are GATE_THROTTLE's (0), not CLIENT_IP's
+            (PROBE_IP,)))
         counter = dict(con.execute("SELECT id, click_count FROM tracking_links").fetchall())
     finally:
         con.close()
@@ -675,9 +552,9 @@ async def run(ctx) -> None:
     for aid in aids:
         for l in (await ctx.owner.get(f"/admin/tracking-links?account_id={aid}")).json().get("links", []):
             listed[l["id"]] = l["click_count"]
-    sure: dict[str, Counter] = defaultdict(Counter)     # slug -> NY day -> clicks sent and answered on it
-    astride: dict[str, Counter] = defaultdict(Counter)  # slug -> NY day -> clicks sent before midnight, answered after
-    storm_labels: dict[str, Counter] = defaultdict(Counter)   # slug -> (country, in-app, referer family) -> 302s
+    sure: dict[str, Counter] = defaultdict(Counter)
+    astride: dict[str, Counter] = defaultdict(Counter)
+    storm_labels: dict[str, Counter] = defaultdict(Counter)
     for s, st, _, sent, answered, labels in answers:
         if st == 302:
             storm_labels[s][labels] += 1
@@ -685,7 +562,7 @@ async def run(ctx) -> None:
             sure[s][sent] += 1
         elif st == 302:
             astride[s].update((sent, answered))
-    for a in gated_answers:   # a gated link's click is the plan's passing verify, on the day it was answered
+    for a in gated_answers:
         if a["pass"] and "verify" in a:
             if a["vsent"] == a["vanswered"]:
                 sure[a["slug"]][a["vsent"]] += 1
@@ -697,7 +574,6 @@ async def run(ctx) -> None:
             seeded_days[l["slug"]][_local_day(hour, NY).isoformat()] += n
 
     def clicks_want(l) -> tuple[Counter, Counter, int]:
-        """Per New York day the least and most clicks the link's stats may show, and their exact total."""
         lo = seeded_days.get(l["slug"], Counter()) + sure[l["slug"]]
         return lo, lo + astride[l["slug"]], lo.total() + astride[l["slug"]].total() // 2
 
@@ -718,7 +594,6 @@ async def run(ctx) -> None:
     ctx.check(REDIRECT, bool(answers) and not bad_redirect, sent=n_clicks, answers=len(answers),
               bad=len(bad_redirect), sample=bad_redirect[:5])
 
-    # ── gated links: the page hides the target, verify decides, clicks == passes ──
     bad_page = [a for a in gated_answers if not (a.get("get") == 200 and a.get("location") is None
                                                  and not a.get("leaked") and a.get("store") == "no-store"
                                                  and a.get("page"))]
@@ -735,7 +610,6 @@ async def run(ctx) -> None:
               verifies=verifies, passes=sum(a["pass"] for a in gated_answers), bad=len(bad_verify),
               sample=bad_verify[:5], siteverify_calls=ts_calls["n"], tokens_not_once=dict(list(twice.items())[:5]),
               bad_secret=ts_calls["bad_secret"], no_remoteip=ts_calls["no_remoteip"])
-    # The plan's verdicts, never the answers: a gate that fails open must not move the expectation with it.
     passed = Counter(a["slug"] for a in gated_answers if a["pass"] and "verify" in a)
     gate_off = {}
     for g in gated:
@@ -750,7 +624,6 @@ async def run(ctx) -> None:
     await _check_stats(ctx, w, reader, links, gated, aids,
                        _ClickOracle(clicks_want, astride, storm_labels, plan, gated_answers))
 
-    # ── OF earnings per link == the oracle; /fans rows sum to it ──────────
     wrong, fans_bad, ids_off, unavailable = {}, {}, {}, []
     for aid in aids:
         body = (await reader.get(f"/admin/of-tracking-links/earnings?account_id={aid}", timeout=60)).json()
@@ -778,7 +651,6 @@ async def run(ctx) -> None:
               unavailable=unavailable, branches=branches,
               oracle_gross=sum(o["earnings_cents"] for o in oracle.values()))
 
-    # ── claimers single-flight: one walk per link, every page once ─────────
     calls = (await ctx.owner.get("/__slop/tracking-calls")).json()["claimers"]
     walks = {k: v.count(0) for k, v in calls.items()}
     subs = {f"{aid}:{r['id']}": r["countSubscribers"] for aid, rows in tc["campaigns"].items() for r in rows}
@@ -792,7 +664,6 @@ async def run(ctx) -> None:
               most_claimers=max(subs.values()), most_pages=max(map(len, calls.values()), default=0),
               claimer_pages=sum(map(len, calls.values())))
 
-    # ── budgets ───────────────────────────────────────────────────────────
     routes = ctx.rec.summary("storm")
     hot_p95 = sorted(hot_times)[math.ceil(len(hot_times) * .95) - 1] if hot_times else float("inf")
     ctx.check(f"p95 hot-link 90-day analytics <= {HOT_90D_P95_MS} ms", hot_p95 <= HOT_90D_P95_MS,
@@ -815,11 +686,10 @@ async def run(ctx) -> None:
                         "clicks_per_s": round(n_clicks / storm_s, 1) if storm_s else None})
     vs_last = [r for r in (t_route, e_route, "POST /t/:id/verify", "GET /admin/of-tracking-links", "GET /admin/of-tracking-links/:id/fans",
                            "GET /admin/tracking-links", s_route, a_route) if r in routes]
-    key = {e_route: f"{e_route} incl. first opens"}   # runs before wave 1 joined the row timed warm reads only
+    key = {e_route: f"{e_route} incl. first opens"}
     ctx.metric("p95_vs_last_green", {key.get(r, r): routes[r]["p95_ms"] for r in vs_last})
     ctx.metric("p95_vs_last_green_n", {key.get(r, r): routes[r]["n"] for r in vs_last})
 
-    # ── UI: Growth > Tracking links, a redirect link's Analytics ─────────
     if ctx.app:
         await _ui(ctx, tc, gated, w)
         await _ui_viewed(ctx, tc)
@@ -841,16 +711,14 @@ _GROWTH_TS = Path(__file__).resolve().parents[2] / "app" / "hooks" / "useGrowth.
 
 
 def _viewed_refresh_ms() -> int:
-    """app/hooks/useGrowth.ts GROWTH_VIEWED_REFRESH_MS, read from the source (one number, the app's)."""
     m = re.search(r"export const GROWTH_VIEWED_REFRESH_MS = ([\d_]+);", _GROWTH_TS.read_text())
     return int(m.group(1).replace("_", ""))
 
 
 async def _ui_viewed(ctx, tc) -> None:
-    """Growth > Tracking links left open: its OF links list and earnings refetch on the hour, page clock jumped."""
     every = _viewed_refresh_ms()
     creator_of = {r["campaignName"]: aid for aid, rows in tc["campaigns"].items() for r in rows}
-    reads: list[tuple[str, int, float]] = []   # (list | earnings, status, wall time)
+    reads: list[tuple[str, int, float]] = []
 
     def on_response(resp) -> None:
         m = re.search(r"/admin/of-tracking-links(/earnings)?\?account_id=", resp.url)
@@ -877,14 +745,13 @@ async def _ui_viewed(ctx, tc) -> None:
         opened = await until(lambda: n("list") >= 1 and n("earnings") >= 1, 30)
         await ui.shot(ctx, page, "growth-viewed-open")
         before = {"list": n("list"), "earnings": n("earnings")}
-        # an owner on the page: a pointer move every 5 min keeps Idle mode (useIdleMode, 10 min without
-        # input: polls stop until the next input) away, as a viewer does
         left, x = every - 60_000, 0
         while left > 0:
             step = min(5 * 60_000, left)
             await page.clock.fast_forward(step)
             left -= step
             x = 400 + (x + 37) % 300
+            # a pointer move per step: 10 min without input is Idle mode (useIdleMode), which stops every poll until the next input
             await page.mouse.move(x, 500)
             await asyncio.sleep(0.3)
         await asyncio.sleep(3)
@@ -904,8 +771,6 @@ async def _ui_viewed(ctx, tc) -> None:
 
 
 async def _open(ctx, page, tc) -> str | None:
-    """/growth/redirect-links with the summary cards loaded; the Creator the page picked (by its seeded
-    "<creator> link 0" redirect link's name in the list)."""
     creator_of = {l["name"]: l["account_id"] for l in tc["links"]}
     await page.goto(f"{ctx.app}/growth/redirect-links", wait_until="domcontentloaded")
     first = page.get_by_role("region", name="Custom redirect links").get_by_text(re.compile(r" link 0$")).first
@@ -920,13 +785,11 @@ async def _cards(page) -> dict:
 
 
 def _row(page, name: str):
-    """A redirect link's row in the list (not the Clicks cards above it: Top link's card carries a name too)."""
     return (page.get_by_role("region", name="Custom redirect links").locator("li")
             .filter(has=page.get_by_text(name, exact=True)).first)
 
 
 async def _expand(page, name: str) -> dict:
-    """Opens the link's Analytics (30 days by default) and reads it once its bars are drawn."""
     row = _row(page, name)
     await row.wait_for(timeout=30_000)
     await row.get_by_role("button", name="Analytics").click()
@@ -964,7 +827,7 @@ async def _ui(ctx, tc, gated, w) -> None:
         got = await _expand(page, listed["name"])
         await ui.shot(ctx, page, "tracking-links-stats-30d")
         a = (await ctx.owner.get(f"/admin/tracking-links/{listed['id']}/analytics?account_id={aid}&days=30")).json()
-        zone = ZoneInfo(a["tz"]) if a.get("tz") else timezone.utc   # null tz: UTC days
+        zone = ZoneInfo(a["tz"]) if a.get("tz") else timezone.utc
         bound = datetime.combine(date.fromisoformat(a["from"]), dtime(0), zone).astimezone(timezone.utc)
         con = w.sql()
         try:

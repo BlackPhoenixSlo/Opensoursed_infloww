@@ -25,7 +25,6 @@ const PLACEHOLDER = /Fan \d|@fan\d|Lorem/;
 const flush = () => new Promise((r) => setTimeout(r, 0));
 const ME = "4242";
 
-// Newest first, as the relay sends them: another creator's post, then the Creator's own (pinned) post.
 const FEED: MirrorPost[] = [
   {
     id: 11,
@@ -46,7 +45,6 @@ const AUTHORS = {
   "4242": { id: 4242, name: "Synthetic Creator", username: "synthcreator" },
 };
 
-// My profile's post row, borrowed as useOfData does (TEMPLATES).
 const POST_TPL = TEMPLATES.post!.pick(new DOMParser().parseFromString(readFileSync(resolve(__dirname, `../public/of-mirror/pages/${TEMPLATES.post!.page}.html`), "utf8"), "text/html"))!;
 const ME_MINI = { id: 4242, name: "Synthetic Creator", username: "synthcreator" };
 
@@ -72,7 +70,6 @@ const more = (r: Element) => r.querySelector(".b-post__tools__more button")!;
 const menuItems = (r: Element) => [...r.querySelectorAll("[data-oi-post-menu] [role=menuitem]")];
 const item = (r: Element, text: string) => menuItems(r).find((i) => i.textContent!.trim() === text)!;
 const likes = (r: Element) => r.querySelector("a[data-testid='post-stat-likes'] > span")?.textContent;
-// Every test loads into the one document: its listeners go after each test.
 const unbinds: (() => void)[] = [];
 const bindPostActions = (doc: Document, h: PostHandlers) => {
   const unbind = bindActions(doc, h);
@@ -107,16 +104,12 @@ describe("home: the home feed", () => {
     expect(rs.map((r) => r.querySelector("div.b-post")!.classList.contains("m-pinned"))).toEqual([false, true]);
     expect(rs.map((r) => r.querySelector(".b-post__date-remaining"))).toEqual([null, null]);
     for (const r of rs) expect(r.textContent).not.toMatch(PLACEHOLDER);
-    // OF's profile links: another creator's OF profile in a new tab, the Creator's own My profile in the top frame; the
-    // date the post on onlyfans.com.
     expect(rs.map((r) => [...r.querySelectorAll(".b-post__avatar a, a.b-username")].map((a) => `${a.getAttribute("href")} ${a.getAttribute("target")} ${a.getAttribute("rel")}`))).toEqual([
       ["https://onlyfans.com/deltafour _blank noopener noreferrer", "https://onlyfans.com/deltafour _blank noopener noreferrer"],
       ["/of-manager/profile _top null", "/of-manager/profile _top null"],
     ]);
     expect(rs.map((r) => r.querySelector(".b-post__date")!.getAttribute("href"))).toEqual(["https://onlyfans.com/11/deltafour", "https://onlyfans.com/12/synthcreator"]);
     expect(visible(doc.querySelector(".b-feed-content .user_posts > .empty-message")!)).toBe(false);
-    // Labels and Post statistics are the Creator's own-post controls: another creator's row has OF's Send Tip in
-    // Post statistics' place instead, shown but never sending (disabled, with the tooltip).
     expect(rs.map((r) => !!r.querySelector(".b-post__labels-controls"))).toEqual([false, true]);
     const tool = rs.map((r) => r.querySelector<HTMLButtonElement>(".b-post__tools__item.m-with-text-button button")!);
     expect(tool.map((b) => b.getAttribute("at-attr"))).toEqual(["post_tip", null]);
@@ -124,7 +117,6 @@ describe("home: the home feed", () => {
     expect(tool[0].querySelector("use")!.getAttribute("href")).toBe("#icon-funds");
     expect([tool[0].disabled, tool[0].title]).toEqual([true, NOT_YET]);
     expect(tool[1].textContent!.trim()).toBe("Post statistics");
-    // Another creator's More keeps Copy link to post (its author's handle stamped); the Creator's own stays live.
     expect(rs.map((r) => (more(r) as HTMLButtonElement).disabled)).toEqual([false, false]);
     expect(rs.map((r) => r.dataset.oiUsername)).toEqual(["deltafour", undefined]);
   });
@@ -132,7 +124,6 @@ describe("home: the home feed", () => {
   it("the nav drawer: Dark mode, the language menu, Log out and Help and support are disabled with the tooltip; Release forms opens its page; the account switcher stays; Close still links", () => {
     const doc = load("home/state-avatar-menu");
     const nav = doc.querySelector("header.l-header")!;
-    // The only live button: the account switcher (ofMirrorIdentity's bindSwitcher).
     expect([...nav.querySelectorAll("button:not([disabled])")]).toEqual([nav.querySelector("[data-oi-switcher] > button")]);
     for (const sel of ["[at-attr='theme_btn']", "[at-attr='logout']", "[data-name='FAQ']"]) expect(nav.querySelector(sel)!.getAttribute("title")).toBe(NOT_YET);
     expect(nav.querySelector("a[data-name='ReleaseForm']")!.getAttribute("href")).toBe("/of-manager/release-forms");
@@ -207,7 +198,6 @@ describe("home: the right column", () => {
     expect(cs[0].querySelector(".b-offer-join__bubble .g-truncated-text")!.textContent).toBe("Synthetic welcome");
     expect(cs[0].querySelector(".b-offer-join__bubble img")!.getAttribute("src")).toBe("/img?u=https://cdn.example/me.jpg");
     expect(cs[1].querySelector(".b-offer-join__bubble")).toBeNull();
-    // OF's toggle chevron goes; Stop promotion stays for ofMirrorOffers (no username here: no Copy link to profile).
     for (const c of cs) expect(c.querySelector(".b-menu-list__icon")).toBeNull();
     expect(cs.map((c) => [...c.querySelectorAll(".b-offer-join__btn button")].map((b) => [b.textContent!.trim(), b.getAttribute("data-oi-finish")]))).toEqual([
       [["Stop promotion", String(PROMOS.filter((p) => !p.isFinished && p.canClaim !== false)[0].id)]],
@@ -239,7 +229,6 @@ describe("home: the right column", () => {
     expect(visible(empty)).toBe(false);
     const rs = [...doc.querySelectorAll(".b-widget__events > div")];
     expect(rs.map((r) => r.lastElementChild!.textContent)).toEqual(["Post · Soonest", "Message · Media", "Stream · Live"]);
-    // OF drops the "+" once the widget lists events.
     expect(doc.querySelector<HTMLElement>("[at-attr='add_event_widget']")!.style.display).toBe("none");
     applyData(doc, "home/index", {});
     expect(doc.documentElement.innerHTML).toBe(html);
@@ -248,7 +237,6 @@ describe("home: the right column", () => {
 
 describe("home: the composer", () => {
   const TOOL = (doc: Document, label: string) => doc.querySelector<HTMLElement>(`.b-make-post__actions [aria-label='${label}']`)!;
-  /** An in-memory Storage, so a test never touches the real sessionStorage. */
   const memory = (): Storage => {
     const m = new Map<string, string>();
     return { get length() { return m.size; }, key: (i) => [...m.keys()][i] ?? null, getItem: (k) => m.get(k) ?? null, setItem: (k, v) => void m.set(k, String(v)), removeItem: (k) => void m.delete(k), clear: () => m.clear() };
@@ -268,7 +256,6 @@ describe("home: the composer", () => {
     doc.querySelector(EDITOR)!.dispatchEvent(new Event("input", { bubbles: true }));
   };
 
-  /** Each composer tool and the Home State page it opens. */
   const HOME_TOOLS = {
     "Add media from vault": "state-vault",
     "Add poll": "state-poll",
@@ -297,7 +284,6 @@ describe("home: the composer", () => {
     expect(post.disabled).toBe(true);
     const headerMore = doc.querySelector<HTMLButtonElement>(".g-page__header button[aria-label='More']")!;
     expect([headerMore.disabled, headerMore.title]).toEqual([true, "Not available in Inflowwww yet"]);
-    // The Scheduled events widget's "+" opens Home's schedule dialog too.
     expect(doc.querySelector("[at-attr='add_event_widget']")!.getAttribute("href")).toBe("/of-manager/home/state-schedule");
   });
 
@@ -375,7 +361,7 @@ describe("home: the composer", () => {
     await flush();
     expect(h.createPost).toHaveBeenCalledTimes(1);
     expect(h.createPost).toHaveBeenCalledWith(expect.objectContaining({ text: "Synthetic poll", voting_type: 1, voting_due: 3 }));
-    expect(h.navigate).toHaveBeenCalledTimes(2); // the duration and its Save; Post stays on Home
+    expect(h.navigate).toHaveBeenCalledTimes(2);
     unbind();
   });
 
@@ -435,7 +421,7 @@ describe("home: the composer", () => {
     type(doc, "Synthetic post");
     expect(post.disabled).toBe(false);
     expect(s.getItem("oi:new-post:home:1")).not.toBeNull();
-    expect(s.getItem("oi:new-post:1")).toBeNull(); // New post's draft is its own
+    expect(s.getItem("oi:new-post:1")).toBeNull();
     post.click();
     await flush();
     expect(h.createPost).toHaveBeenCalledTimes(1);
@@ -487,9 +473,8 @@ describe("home: the composer", () => {
   });
 
   it("home/state-schedule: Next keeps the moment on Home's draft and returns to Home", () => {
-    // Noon, pinned: after 23:00 the default time (now plus an hour) wraps past midnight onto today's date, a moment
-    // already past, and Next refuses it.
     vi.useFakeTimers({ toFake: ["Date"] });
+    // Noon, pinned: after 23:00 the default time (now + 1h) wraps past midnight and Next refuses a past moment.
     vi.setSystemTime(new Date(2026, 9, 17, 12, 0));
     onTestFinished(() => void vi.useRealTimers());
     const doc = load("home/state-schedule");
@@ -509,7 +494,6 @@ describe("home: the composer", () => {
     const unbind = bindPost(doc, "home/state-tag-people", { newWrites: false, handlers: composer(), storage: s, accountId: "1", draftId: "home:1", tagItems });
     const tagRows = () => [...doc.querySelectorAll<HTMLElement>("label.b-rows-lists__item[data-oi-user]")];
     expect(tagRows()).toHaveLength(1);
-    // The feed's data arrives again (a refetch): restore and re-apply leave the dialog's rows alone.
     applyData(doc, "home/state-tag-people", { home: FEED, authors: AUTHORS, templates: { post: POST_TPL }, me: ME_MINI });
     expect(tagRows()).toHaveLength(1);
     expect(rows(doc)).toHaveLength(2);
@@ -530,7 +514,6 @@ describe("home: the composer", () => {
     expect(tile).not.toBeNull();
     const s = memory();
     const unbind = bindPost(doc, HOME_VAULT, { newWrites: false, handlers: composer(), storage: s, accountId: "1", draftId: "home:1" });
-    // Home's post actions are bound too: a vault tile is no post picture (the vault's `data-oi-media` is its id).
     const unbindActions = bindPostActions(doc, handlers());
     tile.click();
     expect(JSON.parse(s.getItem("oi:new-post:home:1")!).media_files).toEqual([61]);
@@ -692,11 +675,10 @@ describe("bindPostActions: the row's Likes, Comments and Post statistics", () =>
     const own = row(doc, 1);
     const tool = (r: Element) => r.querySelector<HTMLButtonElement>(".b-post__tools__item.m-with-text-button button")!;
     expect([tool(own).disabled, tool(own).hasAttribute("title")]).toEqual([false, false]);
-    // The feed's data re-applies (fresh rows): their Post statistics too.
     applyData(doc, "home/index", { home: FEED, authors: AUTHORS, templates: { post: POST_TPL }, me: ME_MINI }, (u) => `/img?u=${u}`);
     await flush();
     expect(tool(row(doc, 1)).disabled).toBe(false);
-    expect(tool(row(doc, 0)).disabled).toBe(true); // another creator's Send Tip
+    expect(tool(row(doc, 0)).disabled).toBe(true);
     unbind();
     expect([tool(row(doc, 1)).disabled, tool(row(doc, 1)).title]).toEqual([true, NOT_YET]);
     bindPostActions(doc, h);
@@ -857,10 +839,8 @@ describe("bindPostActions with bindWrites", () => {
     expect(doc.getElementById("oi-note")!.textContent).toBe("Link copied");
     expect(h.write).not.toHaveBeenCalledWith(expect.anything(), expect.stringContaining("/posts/11/"), expect.anything());
     Reflect.deleteProperty(navigator, "clipboard");
-    // ticket 42 (D22): Report is OF's link to the post's onlyfans.com page, a new tab, Wired, "opens onlyfans.com", not
-    // disabled; its click reaches the browser (bindWrites' fallback and this binder leave it), sends nothing, closes the menu.
     h.write.mockClear();
-    doc.getElementById("oi-note")?.remove();   // Copy link's "Link copied"
+    doc.getElementById("oi-note")?.remove();
     (more(row(doc, 0)) as HTMLButtonElement).click();
     const report = item(row(doc, 0), "Report") as HTMLAnchorElement;
     expect([report.tagName, report.href, report.target, report.rel, report.hasAttribute("data-oi-wired"), report.title]).toEqual(["A", "https://onlyfans.com/11/deltafour", "_blank", "noopener noreferrer", true, HANDOFF_TITLE]);

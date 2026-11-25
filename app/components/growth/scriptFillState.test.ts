@@ -1,7 +1,3 @@
-/**
- * Growth > Scripts' Fill state (docs/spec/phase-02-button-and-popup.md, Testing Decisions, Seam 1): action
- * sequences → state, and the pure copy helpers, as tables. Expected copy is the spec's (issue 05 item 3) verbatim.
- */
 import { describe, expect, it } from "vitest";
 
 import {
@@ -19,7 +15,6 @@ const A = "acc-a";
 const B = "acc-b";
 const SEQ = "New Sub";
 const OTHER = "Old Sub";
-/** Notices, left notes and requests are kept per (Creator, Sequence). */
 const K = fillKey(A, SEQ);
 
 const opt = (over: Partial<FillOption>): FillOption => ({
@@ -41,7 +36,6 @@ const on = (account = A, open: string | null = SEQ): Action[] => [
 const APPLIED = {
   applied: [
     opt({ id: 11, step: 2, media: [701, 702], previews: [701] }),
-    // Two Options of one Step sharing a Slice: counted once.
     opt({ id: 12, step: 2, option: 2, media: [701, 702], previews: [701] }),
     opt({ id: 13, step: 3, media: [703] }),
   ],
@@ -79,8 +73,6 @@ describe("scriptFillReducer", () => {
     expect(s.dialog).toEqual({ sequence: SEQ, req: 1, status: null, refusal: "Could not reach the relay." });
   });
 
-  // W30 F36: a request locks its whole Sequence (`inflight[fillKey]`) until its own answer ends it.
-  // W30 F41/F50: and while the Creator's list query is in error (the caller passes it): read off the cache, not kept here.
   const locked = (s: ScriptFillState, account: string | null, seq: string) => isLocked(s, account, seq, false);
   it.each<[string, Action[], boolean]>([
     ["press locks its Sequence", [{ type: "press", account: A, sequence: SEQ, req: 1 }], true],
@@ -136,8 +128,6 @@ describe("scriptFillReducer", () => {
     expect(s.inflight).toEqual({ [K]: 1 });
   });
 
-  // ASSUMPTION (coordinator override of phase-02:112,156): an `ok` for a Sequence no longer open keeps its notice,
-  // so the write's only Undo is not lost; it shows when that Sequence is opened again.
   it("an ok after switching Sequence keeps its notice (and Undo) for that Sequence, without a dialog", () => {
     const moved = run([{ type: "show", sequence: OTHER }], pressed);
     const ok = run([{ type: "applied", account: A, sequence: SEQ, req: 1, result: APPLIED }], moved);
@@ -160,8 +150,6 @@ describe("scriptFillReducer", () => {
     }
   });
 
-  /* A second Fill of a partly filled Sequence: the server writes only still-empty Options, so write sets never
-     overlap; the notice keeps every write's Undo. */
   const SECOND = {
     applied: [opt({ id: 14, step: 4, media: [704, 705] })],
     undo: [{ id: 14, media_ids: [704, 705], previews: [], price_cents: 900, price_set: true }],
@@ -201,12 +189,10 @@ describe("scriptFillReducer", () => {
     const ok = run([{ type: "applied", account: A, sequence: SEQ, req: 1, result: APPLIED }], away);
     expect(ok.inflight).toEqual({});
     expect(ok.dialog).toBeNull();
-    // B's same-named Sequence shows nothing of it.
     expect(ok.notices[fillKey(B, SEQ)]).toBeUndefined();
     expect(ok.notices[K]).toEqual({ account: A, sequence: SEQ, undo: APPLIED.undo, n: 3, m: 2 });
     const back = run([{ type: "reset", account: A }, { type: "show", sequence: SEQ }], ok);
     const notice = back.notices[K]!;
-    // Its Undo goes to THAT Creator.
     expect(notice.account).toBe(A);
     expect(undoPayload(notice)).toEqual({ sequence: SEQ, undo: APPLIED.undo });
     const undone = run([{ type: "undoPress", account: notice.account, sequence: SEQ, req: 2 },
@@ -257,7 +243,6 @@ describe("scriptFillReducer", () => {
       { type: "describeRefused", account: A, sequence: OTHER, req: 1, message: "cap" },
       { type: "describeRefused", account: A, sequence: SEQ, req: 2, message: "cap" },
     ] as Action[]) expect(run([late], open).dialog?.refusal).toBeNull();
-    // Closed: a late refusal never reopens it.
     const closed = run([{ type: "close" }], open);
     expect(run([{ type: "describeRefused", account: A, sequence: SEQ, req: 1, message: "cap" }], closed).dialog).toBeNull();
   });
@@ -281,7 +266,6 @@ describe("scriptFillReducer", () => {
       { type: "undone", account: A, sequence: SEQ, req: 2, result: { undone: [11, 13], kept: [] } }], filled);
     expect(clean.left).toEqual({});
     expect(run([{ type: "dismiss", account: A, sequence: SEQ }], filled).notices).toEqual({});
-    // Another Creator's same-named Sequence: its dismiss leaves this one's notice.
     expect(run([{ type: "dismiss", account: B, sequence: SEQ }], filled).notices[K]).toBeTruthy();
   });
 
@@ -323,12 +307,10 @@ describe("noticeCounts / noticeText / undoPayload / leftNote", () => {
     ["missing", ["missing", "missing"], { ...z, moved: 2 }, "Undo left 2 steps: 2 moved or deleted."],
     ["mixed", ["edited", "moved", "missing"], { ...z, changed: 1, moved: 2 },
       "Undo left 3 steps: 1 changed since the Fill, 2 moved or deleted."],
-    // Undo on a reserved FM Sequence keeps every entry as `reserved` (service/script_fill_api.py).
     ["reserved", ["reserved", "reserved"], { ...z, reserved: 2 },
       "Undo left 2 steps: 2 in a sequence generated by a script source."],
     ["an unknown reason", ["locked"], { ...z, other: 1 }, "Undo left 1 step: 1 could not be undone."],
   ])("leftNote: %s", (_n, reasons, counts, text) => {
-    // The wire is untyped: an unknown reason reaches leftNote at runtime whatever FillKeptReason says.
     const c = leftNote({ undone: [], kept: reasons.map((reason, i) => ({ id: i, reason: reason as FillKeptReason })) });
     expect(c).toEqual(counts);
     expect(leftText(c)).toBe(text);
@@ -353,7 +335,6 @@ describe("conflictLines", () => {
     ["a quoted price below an earlier Fixed one", { step: 3, rule: "quote_unholdable", price_cents: 500 }, [
       opt({ id: 1, step: 2, price_cents: 900, price_fixed: true }),
     ], "Step 3: $5 is priced below step 2"],
-    // The wire is untyped: a rule this build doesn't know gets a neutral line, not quote_unholdable's.
     ["a rule this build doesn't know", { step: 4, rule: "new_rule" as FillConflictRule, price_cents: 200 }, [
       opt({ id: 1, step: 2, price_cents: 900, price_fixed: true }),
     ], "Step 4: $2 breaks a price rule"],

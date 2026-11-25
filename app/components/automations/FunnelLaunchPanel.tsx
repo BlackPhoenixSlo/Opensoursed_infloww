@@ -1,26 +1,5 @@
 "use client";
 
-/**
- * FunnelLaunchPanel — "Start" a funnel from the Mass Funnels tab.
- *
- * Fires the funnel's OPENING message to a chosen audience via the same path the
- * Mass composer uses (POST /api/of/v2/messages/queue with `funnel_id`), so the
- * mass_run is funnel-linked and reply_mass_funnel walks the reply/PPV steps for
- * every fan who answers. The audience controls map 1:1 to the relay's queue body:
- *   include lists  → user_lists           exclude lists → excluded_user_lists
- *   Online only    → online_only          Skip recently-messaged → exclude_replied_hours
- * (exclude_replied_hours drops fans we sent an OUTBOUND message to in the last N
- *  hours — see service/audiences.resolve_mass_audience.)
- *
- * Real send: a confirm() gate guards the blast. price=0 (the opener is free; the
- * paid PPV lives in a later funnel step). The relay turns the account's
- * follow-ups (the reply_mass_funnel rule) on with a funnel send
- * (mass_queue_api → funnels_api.ensure_funnel_walker), so there is no second
- * "enable" step here: the panel says so and refreshes the switch after.
- *
- * Simplified layout: the opener, Send to, Exclude (MASSDMEXCLUDE ticked), then
- * Online only / skip-recent / auto-unsend folded under "More options".
- */
 
 import { useEffect, useReducer, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -38,13 +17,9 @@ import { useActiveAccounts } from "@/hooks/useAccounts";
 import type { FunnelSummary } from "@/hooks/useFunnels";
 import { ifConfirm } from "@/components/ui/ifConfirm";
 
-// What a funnel opener sends to on open: all fans (Following is one click).
 const OPENER_INCLUDES = ["fans"];
-// Default auto-unsend window for a funnel opener (hours). Pre-fills the field.
 const DEFAULT_UNSEND_HOURS = "4";
 
-/** One account's panel: the caller keys it by `accountId` (list ids are per
- *  account), so a Creator switch mounts a fresh audience. */
 export function FunnelLaunchPanel({
   funnel,
   accountId,
@@ -53,7 +28,6 @@ export function FunnelLaunchPanel({
 }: {
   funnel: FunnelSummary;
   accountId: string | null;
-  /** The account's follow-up switch; off → the panel says starting turns it on. */
   followUpsOn: boolean;
   onClose: () => void;
 }) {
@@ -66,28 +40,22 @@ export function FunnelLaunchPanel({
   const { includes, excludes } = aud;
   const [onlineOnly, setOnlineOnly] = useState(false);
   const [skipMessagedHours, setSkipMessagedHours] = useState("");
-  // Auto-unsend the opener N hours after it sends. When it's unsent we also STOP
-  // enrolling NEW repliers off this mass (the walker keeps going until a buy).
-  // Pre-filled with the default; blank → no per-send auto-unsend.
+  // Once the opener is unsent, no NEW repliers are enrolled from this mass (the walker keeps going until a buy).
   const [unsendHours, setUnsendHours] = useState(DEFAULT_UNSEND_HOURS);
   const [more, setMore] = useState(false);
   const [done, setDone] = useState<string | null>(null);
 
   const { customLists, data: lists, isFetching } = useFanLists(accountId);
 
-  // Default the standing MASSDMEXCLUDE list into the exclude set once the
-  // account's lists settle (not a stale cache mid-refetch); seeded once, so the
-  // operator's untick for a one-off sticks.
+  // Seed MASSDMEXCLUDE once the lists settle (not a stale cache mid-refetch), so an operator's untick sticks.
   useEffect(() => {
     if (!accountId || !lists || isFetching) return;
     dispatch({ type: "seedExclude", accountId, listId: massExcludeListId(lists) });
   }, [accountId, lists, isFetching]);
 
-  // Start waits for that seed, so the opener never goes out before MASSDMEXCLUDE
-  // is excluded (the copy below promises it).
+  // Start waits for the seed so the opener never goes out before MASSDMEXCLUDE is excluded.
   const seeded = aud.seededFor === accountId;
 
-  // An audience can't be both included and excluded (audienceReducer).
   function toggle(side: "in" | "out", id: string) {
     setDone(null);
     dispatch({ type: side === "in" ? "toggleInclude" : "toggleExclude", id });
@@ -128,7 +96,6 @@ export function FunnelLaunchPanel({
       setDone(skipped > 0
         ? `${base} (${skipped} already answered this funnel — skipped.)`
         : base);
-      // The send turned follow-ups on and started a run: refresh the switch and the row's Status.
       void qc.invalidateQueries({ queryKey: ["automation-rules", accountId] });
       void qc.invalidateQueries({ queryKey: ["funnels"] });
     },
@@ -176,7 +143,6 @@ export function FunnelLaunchPanel({
     onlineOnly && "online only",
     skipMessagedHours.trim() !== "" && Number(skipMessagedHours) > 0 && `skip messaged in ${skipMessagedHours} h`,
   ].filter(Boolean).join(" · ");
-  // Infloww's form rows: the label in a left column from `sm`.
   const ROW = "grid gap-1.5 sm:grid-cols-[96px_1fr] sm:gap-4";
   const LBL = "pt-1 text-[14px] text-fg-dim";
 
@@ -211,8 +177,7 @@ export function FunnelLaunchPanel({
         </div>
       </div>
 
-      {/* Exclude: custom lists only — OF silently drops built-in names in
-          excludedLists (fanLists.tsx), so an "All fans" exclude would over-send. */}
+      {/* Exclude: custom lists only; OF silently drops built-in names in excludedLists, so "All fans" would over-send. */}
       {listItems.length > 0 && (
         <div className={ROW}>
           <span className={LBL}>Exclude</span>

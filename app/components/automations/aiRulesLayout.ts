@@ -1,12 +1,3 @@
-/**
- * AI rules page: where each card and edge sits. Pure; no DOM.
- *
- * Rank = longest path over forward edges (an edge whose target comes earlier in the payload is ignored for ranking;
- * drawn, an edge whose target's rank is not after its source's is a back edge, dashed round the side). A node with no forward edge in sits one rank before its first successor. Nodes of one rank go side by
- * side in payload order. `tb` (phone) runs ranks top to bottom; `lr` (desktop) left to right. Edges between the
- * same pair (the six Routes) fan out side by side.
- */
-
 export type Orientation = "tb" | "lr";
 export interface LayoutNode { id: string }
 export interface LayoutEdge { from: string; to: string; label: string }
@@ -39,7 +30,6 @@ export function ranks(nodes: LayoutNode[], edges: LayoutEdge[]): Record<string, 
     const ins = fwd.filter((e) => e.to === n.id);
     rank[n.id] = ins.length ? Math.max(...ins.map((e) => rank[e.from] + 1)) : 0;
   }
-  // Sources pull down next to what they feed (any edge, back ones too: the switches gate the Router).
   for (const n of nodes) {
     if (fwd.some((e) => e.to === n.id)) continue;
     const outs = edges.filter((e) => e.from === n.id && idx.has(e.to)).map((e) => rank[e.to]);
@@ -55,7 +45,7 @@ export function layout(nodes: LayoutNode[], edges: LayoutEdge[], orientation: Or
   const lanes = byRank.map((r) => r ?? []);
   const widest = Math.max(1, ...lanes.map((r) => r.length));
   const tb = orientation === "tb";
-  const along = tb ? CARD_H : CARD_W; // card size along the rank axis
+  const along = tb ? CARD_H : CARD_W;
   const cross = tb ? CARD_W : CARD_H;
   const crossSpan = widest * cross + (widest - 1) * CROSS_GAP;
 
@@ -90,8 +80,6 @@ export function layout(nodes: LayoutNode[], edges: LayoutEdge[], orientation: Or
   return { boxes, edges: out, width, height };
 }
 
-/** A curved path from `s` to `t`. Forward: out of the far side, into the near side. Back: out and in on the outer
- *  side (right in `tb`, bottom in `lr`), bulging away from the cards. `fanIdx` ≥ 0 staggers fanned labels. */
 function route(s: Box, t: Box, off: number, back: boolean, tb: boolean, fanIdx: number) {
   if (back) {
     const bulge = 90 + Math.abs(off);
@@ -104,7 +92,6 @@ function route(s: Box, t: Box, off: number, back: boolean, tb: boolean, fanIdx: 
     const cy = Math.max(y1, y2) + bulge;
     return { path: `M${x1},${y1} C${x1},${cy} ${x2},${cy} ${x2},${y2}`, labelX: (x1 + x2) / 2, labelY: cy - 20 };
   }
-  // Fanned labels stagger along the edge so six Route names never sit on one line.
   const at = fanIdx < 0 ? 0.5 : 0.3 + (fanIdx % 3) * 0.2;
   if (tb) {
     const x1 = s.x + s.w / 2 + off, y1 = s.y + s.h, x2 = t.x + t.w / 2 + off, y2 = t.y;

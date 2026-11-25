@@ -54,9 +54,7 @@ export default function Landing({ next }: { next?: string } = {}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPw, setShowPw] = useState(false);
-  // The password was right and the account has 2FA on (or its Agency requires it): the code step.
   const [challenge, setChallenge] = useState<TwoFactorChallenge | null>(null);
-  // The Relay's typed `account_deactivated` refusal (6.14): why, in a banner over the form.
   const [deactivated, setDeactivated] = useState<string | null>(null);
 
   async function onSubmit(e: React.FormEvent) {
@@ -86,9 +84,8 @@ export default function Landing({ next }: { next?: string } = {}) {
     }
   }
 
-  /** Signed in (the Relay set the cookie, an owner's or an employee's): drop the previous identity's
-   *  caches and start the providers over with a hard navigation, so they mount as the new principal. */
   function signedIn() {
+    // Hard navigation so providers remount as the new principal.
     clearUserLocally();
     window.location.replace(nextHref);
   }

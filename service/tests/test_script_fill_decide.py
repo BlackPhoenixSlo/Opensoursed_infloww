@@ -1,47 +1,7 @@
 #!/usr/bin/env python3
-"""test_script_fill_decide — the Fill decisions (`script_fill_decide`, spec phase 01 › Seam 1), pure
-tables over plain dict rows, no DB. Sequences are AE-shaped (issue 07: 13+ steps, `notes` roles
-"1/3, ppv", "2/3", "3/3, bridge", "1/3, freebie", "ppv no content, lock", mostly unpriced, some at
-1933 / 3967 cents).
-
-  case_roles_table             each `notes` tag, saved price, text amount, clip / photo / count cues,
-                               `no content` beats a price, rows without a step left out
-  case_all_chat_no_paid_steps  bridges and freebies only -> no_paid_steps
-  case_fillable_reasons        every exclusion; the standard_folders and solo_sequences switches; an override flipping a
-                               tier; a `_jev` picks override leaving the stored `_jev` whole
-  case_ae_sequence_worked      the worked 13-step fill: free Step, photos + clip, previews first, prices
-  case_assignment_invariants   photos then one clip last, one Rung + one Shoot, <= 4 photos, each kind
-                               ascends, last Step = top of the pool, no repeats, previews free-safe and first
-  case_asks_table              the asks lexicon, negation / deferral rows (A3), `answers` over the readers
-  case_ask_preference          ask preference inside the window only (never a floor lift), `ask_unmet`
-  case_clip_only_and_previews  clip ask alone; preview on every photo Slice, clip or not (A1); price by clip;
-                               no clip at all -> `no_video`
-  case_coherence               A2: one-Shoot photos, the clip from their Shoot, previous Step's Shoot wins
-  case_plan_gates_unfillable   `plan`'s own gate over unfiltered Shoots: partner, held, rejected, REVIEW
-                               folder, other / missing account never land, even placed to win
-  case_plan_gates_grown_fillable_rows  a `fillable_rows` result grown with another Creator's row: still gated
-  case_free_step_needs_free_safe  free-lane photos seen bare or folder-priced never go free or preview
-  case_no_dupe_set_repeat_in_a_slice  exact dupe set (also Shoots built without it) and near-dupe prints
-  case_kept_reserved / case_kept_dupe_set_reserved
-  case_used_items_last         D6 / A5: other Sequences' items taken last, reused when the rest runs out
-  case_same_step_share         same Role + wants share a Slice; different Role or wants differ
-  case_free_leniency           no free-safe photo -> free_unfilled + ok; any free-safe photo of the pool
-                               fills it; a paid Option with no Slice refuses; all paid kept -> already_filled
-  case_pricing_table           photo max, clip, $200 cap, quotes, clamps, Fixed bounds, branches, gaps
-  case_ladder                  one List price climbs x1.5 to the next dollar ($10/$15/$23/$35), $200 and
-                               next-Fixed caps
-  case_template_prices         template price used, out of range ignored, Fixed / quote beat it, a template
-                               against a Fixed holds or is `price_conflict`, fingerprint follows it
-  case_status_order            reserved > no_paid_steps > already_filled > price_out_of_range > price_conflict
-  case_gap_flag / case_describe_block / case_fingerprint / case_undo_check_table / case_determinism
-  case_plan_from_vault         the offline entry over raw rows + folder prices, coverage computed
-  case_describe_target_reexport
-
-Run: ./venv/bin/python service/tests/test_script_fill_decide.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 import json  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
@@ -57,7 +17,6 @@ T0 = datetime(2026, 7, 1)
 ACCT = "acct-a"
 
 
-# ── Fixtures ─────────────────────────────────────────────────────────
 
 def _jev(lane, kind="photo", bare="n", **extra):
     j = {"v": vault_jev_rules.VERSION, "status": "ok", "lane5": lane, "state": {}, "kind": kind,
@@ -77,7 +36,7 @@ def _flags(vulva, breasts, *, underwear=True, ov="", ob=""):
 
 
 SOLO = {"people_count": 1, "partner_visible": False}
-TIERS = {   # Rung 0 / 1 / 2 (`_with_script_why`): explicit has her pussy on show, so it earns the rung
+TIERS = {
     "sfw": {"clothing_state": "dressed", "acts": ["posing"], "penetration": "none", "explicitness": "sfw",
             **_flags("covered", "covered", ov="jeans", ob="t-shirt")},
     "suggestive": {"clothing_state": "lingerie_on", "acts": ["posing"], "penetration": "none",
@@ -88,10 +47,9 @@ TIERS = {   # Rung 0 / 1 / 2 (`_with_script_why`): explicit has her pussy on sho
 
 
 def _item(mid, tier, kind="photo", lane="$10", colour="white", **kw):
-    """A `full_ai_sell.load_rows`-shaped row plus review_state / operator_overrides_json."""
     fields = {**TIERS[tier], "clothing_items": [f"{colour} bra"], **SOLO,
               vault_jev_rules.JEV_KEY: _jev(lane, kind, "y" if tier == "explicit" else "n")}
-    if lane in vault_jev_rules.PAID:   # the tier the mapper writes a paid lane, never sfw / suggestive (W30 D1)
+    if lane in vault_jev_rules.PAID:
         m = vault_jev_flags.apply(fields, fields[vault_jev_rules.JEV_KEY])
         fields.update({k: m[k] for k in ("explicitness", "breasts_vis", "vulva_vis", "anus_vis")})
     fields = vault_ai_brief.settled_reading(fields)
@@ -104,8 +62,6 @@ def _item(mid, tier, kind="photo", lane="$10", colour="white", **kw):
     return row
 
 
-# White: 3 free-safe sfw photos, 4 suggestive $10 photos, a suggestive clip, 4 explicit $50 photos, an
-# explicit clip — 13 items, over the 10-item ladder cap, so overflow must be usable too.
 WHITE = ([_item(m, "sfw", lane="free") for m in (1, 2, 3)]
          + [_item(m, "suggestive") for m in (4, 5, 6, 7)] + [_item(8, "suggestive", "video", "$50")]
          + [_item(m, "explicit", lane="$50") for m in (9, 10, 11, 12)] + [_item(13, "explicit", "video", "$50")])
@@ -124,7 +80,6 @@ def _row(rid, step, notes="", text="", price=0, media=(), previews=(), script="S
 
 
 def _seq(steps, script="Spicy intro"):
-    """AE-shaped Sequence: `steps` {step: (notes, text, price, media)}; every other step 1..13 a bridge."""
     rows = []
     for step in range(1, max([13, *steps]) + 1):
         notes, text, price, media = steps.get(step, (f"{step}/13, bridge", "how's your day going?", 0, ()))
@@ -132,7 +87,6 @@ def _seq(steps, script="Spicy intro"):
     return rows
 
 
-# Issue 07's typical shape: a freebie, three paid Steps between bridges, the last one a clip.
 S1 = {1: ("1/3, freebie", "hey babe here's a little something", 0, ()),
       3: ("1/3, ppv", "wanna see more? 😈", 0, ()),
       5: ("2/3", "sending you 2 pics 🙈", 0, ()),
@@ -145,7 +99,6 @@ def _cov(remaining=0, described=300):
 
 
 def _plan(rows, items, *, used=(), groups=(), remaining=0, blocked=None, prints=None, shoots=None, **kw):
-    """`plan` the way the route calls it; `shoots` given = built by the caller (the gate cases)."""
     eff = [d.effective(r) for r in items]
     if shoots is None:
         kept = [m for r in rows for m in d._media(r)]
@@ -157,11 +110,9 @@ def _opts(p):
     return {o["step"] if o["option"] == 1 else (o["step"], o["option"]): o for o in p["options"]}
 
 
-# ── Roles ────────────────────────────────────────────────────────────
 
 def case_roles_table():
     rows = [
-        # (notes, text, price, role, wants, count, flags, why)
         ("1/3, ppv", "wanna see more?", 0, "paid_media", "any", 1, [], "ppv note"),
         ("2/3", "", 1933, "paid_media", "any", 1, [], "saved price, no tag"),
         ("3/3, bridge", "so what are you up to", 0, "chat", None, 0, [], "bridge"),
@@ -194,7 +145,6 @@ def case_all_chat_no_paid_steps():
     assert all(o["media"] == [] for o in p["options"]), "nothing proposed"
 
 
-# ── Fillable items ───────────────────────────────────────────────────
 
 def case_fillable_reasons():
     base = _item(1, "suggestive")
@@ -240,7 +190,6 @@ def case_fillable_reasons():
     duo = d.effective({**base, "fields": {**base["fields"], "people_count": 2}})
     assert d.fillable_rows([duo], account_id=ACCT) == [], "solo_sequences defaults on"
     assert [r["media_id"] for r in d.fillable_rows([duo], account_id=ACCT, solo_sequences=False)] == [1]
-    # An operator tier override flips the item onto a Rung (and back off one).
     free = {k: v for k, v in _item(3, "suggestive", lane="free")["fields"].items() if k != "explicitness"}
     flipped = d.effective({**base, "fields": free,
                            "operator_overrides_json": json.dumps({"explicitness_tier": "suggestive"})})
@@ -252,28 +201,21 @@ def case_fillable_reasons():
     down = d.effective({**_item(2, "explicit", lane="$50"),
                         "operator_overrides_json": {"explicitness_tier": "suggestive"}})
     assert vault_scripts._with_script_why(down)["why"]["rung"] == 1, "explicit -> suggestive by override"
-    # A `_jev` picks override is not laid again: the stored `_jev` stays whole.
     stored = base["fields"]["_jev"]
     picked = d.effective({**base, "operator_overrides_json": {"_jev": {"lane": "free"}, "description": "x"}})
     assert picked["fields"]["_jev"] == stored and picked["fields"]["description"] == "x"
 
 
-# ── Assignment ───────────────────────────────────────────────────────
 
 def case_ae_sequence_worked():
     rows = _seq(S1)
     p = _plan(rows, WHITE)
     assert p["status"] == "ok", p
     o = _opts(p)
-    # Free Step: lowest free-safe photo. Per kind, the last Step takes the top: photos' last Step is 5 (7 is a
-    # clip ask), so its 2 pics are the top two (11, 12); clips' last Step 7 takes 13. Two clips, three Steps:
-    # the earliest Step yields (step 5 takes 8, step 3 photos only + `no_video`). Video last; previews:
-    # leftover free-safe photos, listed first, on every Slice holding photos (A1), none on the clip-only one.
     assert (o[1]["media"], o[1]["previews"], o[1]["price_cents"]) == ([1], [], 0)
     assert (o[3]["media"], o[3]["previews"], o[3]["flags"]) == ([2, 4], [2], ["no_video"])
     assert (o[5]["media"], o[5]["previews"], o[5]["flags"]) == ([3, 11, 12, 8], [3], [])
     assert (o[7]["media"], o[7]["previews"]) == ([13], [])
-    # Step 7's $50 List would sit flat on step 5's $50: the ladder lifts it to $50 x 1.5 = $75.
     assert [o[s]["price_cents"] for s in (3, 5, 7)] == [1000, 5000, 7500]
     assert all(o[s]["role"] == "chat" and o[s]["media"] == [] for s in (2, 4, 6, 8, 13))
     assert p["conflict"] is None and p["flags"] == []
@@ -335,11 +277,9 @@ def case_assignment_invariants():
         assert top["photo"] in last_photo["media"], ("the last photo Step holds the top photo", last_photo)
         if any(by_id[m]["kind"] == "video" for m in _locked(paid[-1])):
             assert top["video"] in paid[-1]["media"], ("the last Step's clip is the top clip", paid[-1])
-    # Three clips, four paid Steps: the earliest yields its clip. The 6-pics ask gets 4.
     o = _opts(_plan(seqs[1], items))
     assert [_locked(o[s]) for s in (3, 5, 8, 11)] == [[4], [33, 34, 8], [9, 10, 11, 12, 13], [36, 37]]
     assert o[3]["flags"] == ["no_video"]
-    # A Fixed price never limits the clip (A4 withdrawn): step 9's Fixed $39.67 still takes a $50 clip.
     o = _opts(_plan(seqs[2], items))
     assert (_locked(o[2]), _locked(o[9]), o[9]["flags"], o[9]["price_cents"]) == ([4, 8], [36, 37], [], 3967), o
 
@@ -354,7 +294,6 @@ BLUE = ([_item(m, "sfw", lane="free", colour="blue") for m in (801, 802, 803)]
 
 def case_asks_table():
     rows = [
-        # (text, asks, why)
         ("watch me spread my BARE PUSSY for u", {"genitals"}, "spread / pussy, any case"),
         ("watch me take it all off for you", {"nude"}, "phrase"),
         ("nothing on but a smile", {"nude"}, "phrase"),
@@ -366,7 +305,6 @@ def case_asks_table():
         ("assume the position, class is in session", set(), "whole words only: ass in assume / class"),
         ("", set(), "empty"),
         (None, set(), "none"),
-        # A3: within 4 words after a negation / deferral word the ask is dropped
         ("i'm not showing my pussy yet", set(), "not ... pussy"),
         ("you won’t see me naked", set(), "curly won't ... naked"),
         ("don't make me spread", set(), "don't ... spread"),
@@ -379,14 +317,13 @@ def case_asks_table():
     for text, want, why in rows:
         assert d.asks(text) == want, (why, d.asks(text))
     eff = {m: d.effective(r)["fields"] for m, r in ((r["media_id"], r) for r in BLUE)}
-    assert d.answers(eff[801]) == frozenset() and d.answers(eff[804]) == {"breasts"}   # a $10 is topless
+    assert d.answers(eff[801]) == frozenset() and d.answers(eff[804]) == {"breasts"}
     assert d.answers(eff[810]) == {"genitals", "nude", "breasts"}, d.answers(eff[810])
     assert d.answers({**eff[804], "body_focus": ["ass"]}) == {"ass", "breasts"}
     assert d.answers({**eff[804], "acts": ["fingering"]}) == {"act", "breasts"}
 
 
 def _three(text, items=BLUE):
-    """BLUE under three paid "any" Steps, the first saying `text`: {step: (locked photos, flags)}."""
     rows = _seq({3: ("1/3, ppv", text, 0, ()), 5: ("2/3, ppv", "", 0, ()), 7: ("3/3, ppv", "", 0, ())})
     p = _plan(rows, items)
     assert p["status"] == "ok", (text, p["status"])
@@ -395,12 +332,9 @@ def _three(text, items=BLUE):
 
 
 def case_ask_preference():
-    """Asks are a preference inside the escalation window, never a floor lift (D4 lift withdrawn)."""
     plain = _three("")
     assert plain == {3: ([804], []), 5: ([808], []), 7: ([812], [])}, ("control: even spread, top last", plain)
     rows = [
-        # (step-3 text, items, step-3 photos, step-3 flags, why)
-        # (a $50 clip shows her vulva, a $10 photo her breasts: W30 D1 rows as the Jev mapper stamps them)
         ("let me show you my pussy", BLUE, [804], [], "genitals: no lift, the step's $50 clip 813 answers it"),
         ("get naked for me", BLUE, [804], ["ask_unmet"], "nude answered only above the window: no lift"),
         ("you won't see my pussy yet", BLUE, [804], [], "a negated ask does nothing"),
@@ -414,8 +348,6 @@ def case_ask_preference():
 
 
 def case_clip_only_and_previews():
-    """A clip ask gets the clip alone, no preview; every Slice holding photos gets a free-safe preview,
-    also when it holds a clip (A1). A Slice's List price is its highest locked item, the clip included."""
     o = _opts(_plan(_seq({1: ("1/1, ppv", "a pic for you", 0, ())}), WHITE[:8]))
     assert (o[1]["media"], o[1]["previews"], o[1]["price_cents"]) == ([1, 7, 8], [1], 5000), \
         ("the top $10 photo + the $50 clip: priced by the clip", o[1])
@@ -429,8 +361,6 @@ def case_clip_only_and_previews():
 
 
 def case_coherence():
-    """A2: a Slice's photos come from one Shoot; its clip from that Shoot when one is in reach, else the pool;
-    across Steps the previous Step's Shoot wins a tie inside the window."""
     w2 = [r for r in WHITE if r["media_id"] != 8] + [_item(58, "suggestive", "video", "$50"),
                                                       _item(38, "suggestive", "video", "$50", colour="red")]
     two = _seq({3: ("1/2, ppv", "2 pics", 0, ()), 7: ("2/2, ppv", "the full video", 0, ())})
@@ -438,7 +368,6 @@ def case_coherence():
     assert _locked(o[3]) == [11, 12, 58], ("white photos take the white clip over red 38 sorting first", o[3])
     o = _opts(_plan(two, [r for r in w2 if r["media_id"] != 58]))
     assert _locked(o[3]) == [11, 12, 38], ("no white clip in reach: the pool's", o[3])
-    # Rung-1 photos alternate Shoots in send order: W R R W R W, then rung 2: W R.
     inter = ([_item(m, "sfw", lane="free", colour=c) for m, c in ((700, "white"), (699, "red"))]
              + [_item(m, "suggestive", colour=c) for m, c in
                 ((701, "white"), (702, "red"), (703, "red"), (704, "white"), (705, "red"), (706, "white"))]
@@ -465,13 +394,12 @@ def case_kept_reserved():
 
 def case_kept_dupe_set_reserved():
     rows = _seq({**S1, 3: ("1/3, ppv", "", 0, (99,))})
-    items = WHITE + [_item(99, "suggestive")]   # 99 is a re-upload of 4
+    items = WHITE + [_item(99, "suggestive")]
     p = _plan(rows, items, groups=[[4, 99]])
     assert p["status"] == "ok", p
     every = [m for o in p["options"] if not o["keep"] for m in o["media"]]
     assert 4 not in every and 99 not in every, "a kept id's dupe set is reserved"
-    # The kept copy no longer in the vault: its original 4 stays in the pool and must still be skipped.
-    rows = _seq({**S1, 9: ("ppv", "", 0, (99,))})   # step 3 would take 4, the lowest $10 photo
+    rows = _seq({**S1, 9: ("ppv", "", 0, (99,))})
     p = _plan(rows, WHITE, groups=[[4, 99]])
     o = _opts(p)
     assert p["status"] == "ok" and o[9]["flags"] == ["kept_existing", "kept_unpriced", "removed_media"], p
@@ -480,7 +408,6 @@ def case_kept_dupe_set_reserved():
 
 
 def _white_like(base, colour):
-    """WHITE's 13-item layout at ids base+1..base+13 (free-safe 1-3, $10 4-7, clip 8, $50 9-12, clip 13)."""
     return ([_item(base + m, "sfw", lane="free", colour=colour) for m in (1, 2, 3)]
             + [_item(base + m, "suggestive", colour=colour) for m in (4, 5, 6, 7)]
             + [_item(base + 8, "suggestive", "video", "$50", colour=colour)]
@@ -497,8 +424,6 @@ CLIP_ASK = _seq({1: ("1/2, freebie", "a gift", 0, ()), 3: ("1/2, ppv", "wanna se
 
 
 def case_plan_gates_unfillable():
-    """`plan`'s own Fillable gate: Shoots built from every row, unfiltered, still never yield an unfillable
-    item, even one placed to win (the last Step's clip ask takes the clip latest in send order)."""
     clip = _item(90, "explicit", "video", "$50")
     o = _opts(_plan(CLIP_ASK, WHITE + [clip]))
     assert o[7]["media"] == [90], ("control: a Fillable 90 wins the clip ask", o[7])
@@ -509,12 +434,12 @@ def case_plan_gates_unfillable():
         ({**clip, "needs_review": True}, "review_folder", {}),
         ({**clip, "account_id": "acct-b"}, "not_mine", {}),
         ({**clip, "account_id": None}, "not_mine", {}),
-        ({**clip, "needs_review": True}, None, {"standard_folders": False}),   # switch off: Fillable again
+        ({**clip, "needs_review": True}, None, {"standard_folders": False}),
     ]
     for item, reason, kw in bad:
         eff = [d.effective(r) for r in WHITE + [item]]
         assert d.fillable(eff[-1], account_id=ACCT, **kw) == reason, (reason, kw)
-        shoots = d.build_shoots(eff, [], [], {})   # no caller filter
+        shoots = d.build_shoots(eff, [], [], {})
         assert any(90 in {int(r["media_id"]) for r in s["items"]} for s in shoots), ("precondition", reason)
         p = _plan(CLIP_ASK, WHITE + [item], shoots=shoots, **kw)
         used = {m for x in p["options"] for m in (*x["media"], *x["previews"])}
@@ -522,8 +447,6 @@ def case_plan_gates_unfillable():
 
 
 def case_plan_gates_grown_fillable_rows():
-    """A `fillable_rows` result grown afterwards (append / extend / +=) with another Creator's Fillable row
-    is still gated by `plan`: that row never lands, even placed to win the clip ask."""
     eff = [d.effective(r) for r in WHITE]
     other = d.fillable_rows([d.effective(_item(90, "explicit", "video", "$50", account_id="acct-b"))],
                             account_id="acct-b")
@@ -545,9 +468,6 @@ def case_plan_gates_grown_fillable_rows():
 
 
 def case_carried_why_never_trusted():
-    """A `why` an item carries in from outside is never read: the gate re-derives it from the fields, so a
-    forged one neither admits a partner / rung-less / disputed-free item nor refuses a Fillable one, in
-    `fillable` and in `plan`'s own gate (the clip ask placed to win)."""
     clip = d.effective(_item(90, "explicit", "video", "$50"))
     forged_ok = {"solo": True, "rung": 2, "tier": "explicit", "closes": True, "payoff_acts": [],
                  "reveal": "", "clothing_state": "unclear", "beats": [], "acts": []}
@@ -568,8 +488,6 @@ def case_carried_why_never_trusted():
 
 
 def case_plan_over_vault():
-    """`plan_over_vault` = the Fillable gate, then Shoots (kept media standing for their dupe set), then
-    `plan`, live ids defaulting to every item given (a kept id outside them flags `removed_media`)."""
     rows = _seq({**S1, 3: ("1/3, ppv", "wanna see more? 😈", 0, (4,))})
     eff = [d.effective(r) for r in WHITE + RED + [_item(90, "explicit", "video", "$50", people_count=2)]]
     kept = [m for r in rows for m in d._media(r)]
@@ -589,16 +507,12 @@ def case_plan_over_vault():
 
 
 def case_free_step_needs_free_safe():
-    """A free-lane photo seen bare, or one in a priced folder, never takes the free Step or a preview, even
-    sorting first. Controls: a plain free-lane photo in the same spot does. The paid Step is a clip ask, so a
-    priced 599 is not taken as a locked photo before the free Step is placed."""
     rows = _seq({1: ("1/2, freebie", "a gift", 0, ()), 7: ("2/2, ppv", "the full video", 0, ())})
     black = _white_like(600, "black")
     plain = _item(599, "sfw", lane="free", colour="black")
     p = _plan(rows, black + [plain])
     o = _opts(p)
     assert o[1]["media"] == [599], ("control: a free-safe 599 takes the free Step", o[1])
-    # A firm Jev "y" behind stale covered flags is a dispute (`jev_bare_unflagged`, W30 C1): not Fillable at all.
     bad = [
         (_with(plain, _jev=_jev("free", "photo", "n", breasts_bare="y")), "bare flag", "unpriced_dispute"),
         ({**plain, "folder_cents": 2000}, "folder price", None),
@@ -613,15 +527,13 @@ def case_free_step_needs_free_safe():
 
 
 def case_no_dupe_set_repeat_in_a_slice():
-    """Two Fillable copies of one item never both land, in one Slice or across Slices: an exact dupe set
-    (also when the Shoots were built without the groups) and a near-dupe by stored thumb hash."""
     items = [r for r in WHITE if r["media_id"] not in (10, 11, 12)] + [_item(90, "explicit", lane="$50")]
     rows = _seq({1: ("1/2, freebie", "a gift", 0, ()), 3: ("1/2, ppv", "wanna see more?", 0, ()),
                  7: ("2/2, ppv", "2 pics", 0, ())})
     o = _opts(_plan(rows, items))
     assert _locked(o[7]) == [9, 90, 13], ("control: no dupe set, the 2-pics ask takes both", o[7])
     eff = [d.effective(r) for r in items]
-    unaware = d.build_shoots(eff, [], [], {})   # Shoots that never saw the dupe set
+    unaware = d.build_shoots(eff, [], [], {})
     fp = {"kind": "photo", "md5": "same", "dhash": 0, "ahash": 0}
     for p, why in ((_plan(rows, items, groups=[[9, 90]]), "dupe set"),
                    (_plan(rows, items, groups=[[9, 90]], shoots=unaware), "dupe set, Shoots built without it"),
@@ -632,7 +544,6 @@ def case_no_dupe_set_repeat_in_a_slice():
 
 
 def case_used_items_last():
-    """D6 / A5: items on the Creator's other Sequences are taken last, item by item, never refused."""
     def picks(**kw):
         p = _plan(_seq(S1), WHITE + RED, **kw)
         assert p["status"] == "ok", p["status"]
@@ -687,7 +598,6 @@ def case_free_leniency():
     assert p["fingerprint"] == d.fingerprint(rows, []), "empty write set"
 
 
-# ── Pricing ──────────────────────────────────────────────────────────
 
 def _priced(steps, items=WHITE, **kw):
     p = _plan(_seq(steps), items, **kw)
@@ -704,7 +614,6 @@ def case_pricing_table():
     rich = [_item(63, "explicit", lane="$50", colour="blue", folder_cents=30000)]
     assert _priced({3: ("1/1, ppv", "", 0, ())}, rich)[2] == {3: 20000}, "$200 cap"
     rows = [
-        # (steps, status, conflict, prices, why)
         ({3: ("1/2, ppv", "only $15 babe", 0, ()), 7: ("2/2, ppv", "", 0, ())}, "ok", None, {3: 1500, 7: 5000},
          "quote kept unclamped"),
         ({3: ("1/1, ppv", "just $2", 0, ())}, "price_out_of_range",
@@ -733,20 +642,16 @@ def case_pricing_table():
         assert (status, conflict) == (want_status, want_conflict), (why, status, conflict)
         if want_prices is not None:
             assert {s: prices[s] for s in want_prices} == want_prices, (why, prices)
-    # Branch paths: the $60 alternative at step 3 is above step 7's $40 on one path.
     rows = _seq({7: ("2/2, ppv", "", 4000, ())}) + [_row(301, 3, "1/2, ppv", "", 3000),
                                                    _row(302, 3, "1/2, ppv", "", 6000)]
     p = _plan(rows, WHITE)
     assert (p["status"], p["conflict"]) == ("price_conflict", {"step": 7, "rule": "below_earlier", "price_cents": 4000})
-    # A gap between paid Steps does not break the chain either.
     gap = [_row(401, 1, "1/2, ppv", "", 5000), _row(402, 2, "bridge", "hey"), _row(405, 5, "2/2, ppv", "", 3000)]
     p = _plan(gap, WHITE)
     assert (p["status"], p["flags"]) == ("price_conflict", ["gap"]), p
-    # A non-ok status proposes nothing new.
     assert all(o["media"] == [] for o in p["options"])
 
 
-# Four paid photo Steps over a Shoot whose paid photos all list at $10.
 FLAT = ([_item(m, "sfw", lane="free", colour="black") for m in (701, 702, 703)]
         + [_item(m, "suggestive", colour="black") for m in range(704, 712)])
 FOUR = {1: ("1/5, freebie", "a gift", 0, ()), 3: ("2/5, ppv", "a pic", 0, ()), 5: ("3/5, ppv", "a pic", 0, ()),
@@ -758,7 +663,6 @@ def case_ladder():
     assert (status, prices) == ("ok", {3: 1000, 5: 1500, 7: 2300, 9: 3500}), \
         ("one List price climbs $10 -> $15 -> $23 -> $35", status, prices)
     rows = [
-        # (steps, prices, why)
         ({3: ("1/2, ppv", "", 15000, ()), 5: ("2/2, ppv", "a pic", 0, ())}, {3: 15000, 5: 20000},
          "ladder $225 capped at $200"),
         ({3: ("1/3, ppv", "", 1000, ()), 5: ("2/3, ppv", "a pic", 0, ()), 7: ("3/3, ppv", "", 1200, ())},
@@ -778,7 +682,6 @@ def case_template_prices():
     assert p["status"] == "ok" and {s: o[s]["price_cents"] for s in (3, 5, 7)} == tmpl, "template prices used"
     assert all("template_price" in o[s]["flags"] and not o[s]["price_fixed"] for s in (3, 5, 7)), p["options"]
     rows = [
-        # (steps, template, status, conflict, prices, why)
         (S1, {3: 200}, "ok", None, {3: 1000}, "under $3: ignored, List price"),
         (S1, {3: 25000}, "ok", None, {3: 1000}, "over $200: ignored, List price"),
         (S1, {3: 2500}, "ok", None, {3: 2500, 5: 5000, 7: 7500}, "template unclamped; List after it as before"),
@@ -798,7 +701,6 @@ def case_template_prices():
             assert {s: prices[s] for s in want_prices} == want_prices, (why, prices)
     ignored = _opts(_plan(_seq(S1), WHITE, template_prices={3: 200}))[3]
     assert "template_price" not in ignored["flags"], ignored
-    # The fingerprint follows the written prices: a template that changes them changes it, one ignored does not.
     base = _plan(_seq(S1), WHITE)["fingerprint"]
     assert _plan(_seq(S1), WHITE, template_prices={3: 2500})["fingerprint"] != base
     assert _plan(_seq(S1), WHITE, template_prices={3: 200})["fingerprint"] == base
@@ -832,7 +734,6 @@ def case_describe_block():
     assert _plan(_seq(S1), [], remaining=0)["describe"]["can_describe"] is False
 
 
-# ── Fingerprint, undo, determinism ───────────────────────────────────
 
 def case_fingerprint():
     rows = _seq(S1)
@@ -847,7 +748,6 @@ def case_fingerprint():
     for w in ({**writes[0], "media": [5]}, {**writes[0], "previews": [4]}, {**writes[0], "price_cents": None}):
         assert d.fingerprint(rows, [w]) != fp, w
     assert d.fingerprint(rows, []) != fp
-    # A changed vault input that changes a write changes the plan's fingerprint.
     a, b = _plan(rows, WHITE + RED), _plan(rows, WHITE + RED, used=[35])
     assert a["fingerprint"] != b["fingerprint"]
 
@@ -880,10 +780,8 @@ def case_determinism():
     assert c == a, "Sequence row order does not matter"
 
 
-# ── Offline entry ────────────────────────────────────────────────────
 
 def _raw(r, **kw):
-    """A `vault_items`-shaped row: ai_fields_json text, ISO created_at, refs."""
     out = {"media_id": r["media_id"], "kind": r["kind"], "created_at": r["created_at"].isoformat(),
            "duration_seconds": r["duration_seconds"], "ai_fields_json": json.dumps(r["fields"]),
            "describe_status": "described", "review_state": None, "removed_at": None,
@@ -894,7 +792,7 @@ def _raw(r, **kw):
 
 def case_plan_from_vault():
     raw = [_raw(r) for r in WHITE]
-    raw[12]["refs"] = ["vf:7"]   # the clip
+    raw[12]["refs"] = ["vf:7"]
     raw.append(_raw(_item(70, "explicit", "video", "$50"), removed_at="2026-07-02"))
     p = d.plan_from_vault(_seq(S1), raw, {"vf:7": 9900}, account_id=ACCT)
     o = _opts(p)

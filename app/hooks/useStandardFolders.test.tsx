@@ -1,7 +1,3 @@
-/**
- * useStandardFolders — opening the vault only reads the categories. The sort (POST sync: O(vault) write batches)
- * runs when "Standard folders" is turned on, when the switch is on but no category exists yet, and on Retry.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -66,7 +62,6 @@ describe("useStandardFolders", () => {
 });
 
 describe("turn-on with the rail mounted (rwl3 N2)", () => {
-  // The rail reads the switch, as VaultManagePanel does; its categories GET answers [] until the sort lands.
   const useRail = () => {
     const settings = useVaultSettings(AID);
     return useStandardFolders(AID, !!settings.data?.standard_folders);

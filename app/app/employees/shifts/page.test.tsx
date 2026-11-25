@@ -1,9 +1,3 @@
-/**
- * The `/employees/shifts` route module itself renders the Shift schedule
- * (docs/spec/phase-02-shifts-time-tracking.md, Testing Decisions, seam 2):
- * the week query fires, so the page cannot pass while it mounts nothing or
- * the "not built yet" placeholder. Fixture names and ids are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 
@@ -13,7 +7,6 @@ import { SIDEBAR, isDivider, visibleSidebar } from "@/lib/nav";
 let session: { user: { user_id: string; username: string } | null; chatter: { username: string } | null };
 vi.mock("@/contexts/UserContext", () => { const v = () => ({ user: session.user, loading: false }); return { useUser: v, useOptionalUser: v }; });
 vi.mock("@/contexts/ChatterContext", () => { const v = () => ({ chatter: session.chatter }); return { useChatter: v, useOptionalChatter: v }; });
-// The Shift schedule reads the week start from the Applied settings (spec phase-04, story 20).
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 
 import Page from "@/app/employees/shifts/page";

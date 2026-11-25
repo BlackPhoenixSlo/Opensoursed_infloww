@@ -1,10 +1,3 @@
-/**
- * MessageList — video media and the media count: the video marker on a tile,
- * playback in the viewer, a bubble's "2 photos · 1 video" count, and the
- * fan-history crash guard. The same seam as `MessageList.test.tsx` (kept
- * under 1000 lines): the `MessageList` render through `renderWithProviders`,
- * the relay mocked by URL. Fixture identifiers are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 
@@ -21,8 +14,6 @@ import { baseProps, msg } from "./messageListTestHarness";
 const POSTER = "https://cdn/clip-poster.jpg";
 const CLIP = "https://cdn/clip.mp4";
 
-/** A video as OF sends it: the clip in `full`/`source`, its poster frame in
- *  `preview`, no `thumb`, so a tile that reads `source` gets the raw clip. */
 const video = (over: Partial<OFMedia> = {}): OFMedia => ({
   id: 501,
   type: "video",
@@ -36,7 +27,6 @@ const photo = (id: number): OFMedia => ({
   files: { thumb: { url: `https://cdn/p${id}.jpg` }, source: { url: `https://cdn/p${id}-full.jpg` } },
 });
 
-/** A Fan's free message holding `media`. */
 const incoming = (media: OFMedia[]) => [msg({ id: 1, fromUser: { id: 42 }, media })];
 
 const fetchSpy = vi.fn((..._args: unknown[]) => new Promise<Response>(() => {}));
@@ -55,7 +45,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
-  resetImgBlobs();  // the /img cache is module-wide: a never-settling load would be joined by the next test
+  resetImgBlobs();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   fetchSpy.mockClear();
@@ -63,7 +53,6 @@ afterEach(() => {
   resetComposerHarness();
 });
 
-/** Open the viewer on the bubble's first tile. */
 function openViewer(container: HTMLElement) {
   fireEvent.click(container.querySelector("a[href]")!);
   return document.body.querySelector("[role='dialog']") as HTMLElement;
@@ -117,7 +106,6 @@ describe("MessageList video tiles", () => {
       <MessageList {...baseProps} ownerUserId={555}
                    messages={[msg({ id: 2, fromUser: { id: 555 }, price: 35, media: [video()] })]} />,
     );
-    // The tile's badge (the card's "$35 · not paid" line also prints "$35").
     expect(getByTitle("PPV-locked — fan hasn't unlocked this tile").textContent).toBe("$35");
     expect(getByText("1:05")).toBeTruthy();
   });
@@ -222,7 +210,6 @@ describe("MessageList fan-history crash guard", () => {
     );
     await waitFor(() =>
       expect(relayGet.mock.calls.some((c) => String(c[0]).includes("/admin/vault/fan-history"))).toBe(true));
-    // Let the query resolve and the strip re-render with its data.
     await new Promise((r) => setTimeout(r, 0));
     expect(getByText("for you")).toBeTruthy();
     expect(container.querySelector("a[href]")).toBeTruthy();

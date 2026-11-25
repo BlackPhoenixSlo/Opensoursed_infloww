@@ -82,6 +82,7 @@ export function useAccounts() {
       id: r.account_id,
       nickname: r.nickname,
       color: r.color,
+      platform: r.platform,
       has_session: true,
       // Carry the pause through: has_session=true above is an assumption, so
       // without these two the chatter picker would render a model whose
@@ -206,8 +207,7 @@ export function useActiveAccounts(): AccountMeta[] {
  *  OnlyFans and Fansly shells each list their own creators. The creator
  *  switcher, Messages Pro's tabs and fan list, the chat-list fan-out, the
  *  composers and "pick all models" read it; global listeners must not (they
- *  read useActiveAccounts). A chatter's accounts carry no platform and count
- *  as OnlyFans. */
+ *  read useActiveAccounts). */
 export function usePlatformAccounts(): AccountMeta[] {
   const accounts = useActiveAccounts();
   const platform = usePlatform();

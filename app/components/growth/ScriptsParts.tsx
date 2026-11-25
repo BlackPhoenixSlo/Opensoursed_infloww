@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * Growth > Scripts' parts (`ScriptsPage.tsx`): the More menu, a sidebar row's menu, the Tag / Sequence sidebar, the
- * sequence empty panel, a script row and its chips. Item numbers are the Layout capture's
- * (`docs/infloww-layouts/growth-scripts.md`).
- */
 
 import { useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
@@ -25,10 +20,8 @@ import { cn } from "@/lib/utils";
 
 export const NOT_WIRED = "not wired";
 
-/** A Creator's name on the Scripts page, its dialogs and the All models matrix: nickname, else its own name, else id. */
 export const creatorName = (a: Pick<AccountMeta, "id" | "nickname" | "name">) => a.nickname || a.name || a.id;
 
-/** antd's dropdown: #1f1f1f, radius 8, 32px items at 14px T1, hover #2b2b2b, L1 dividers. */
 const MENU_PANEL =
   "absolute z-20 mt-1 rounded-lg bg-[#1f1f1f] p-1 shadow-lg [html[data-theme=light]_&]:bg-white";
 const MENU_ITEM =
@@ -36,9 +29,6 @@ const MENU_ITEM =
 const MENU_HOVER =
   "hover:bg-[#2b2b2b] focus-visible:bg-[#2b2b2b] [html[data-theme=light]_&]:hover:bg-black/5 [html[data-theme=light]_&]:focus-visible:bg-black/5";
 
-/** The More menu (#12 to #17). Add sequence and Import open submenus in the bundle; they are shown open, as labelled
- *  groups. The trigger is a labelled "+ Add" button (the bundle's bare accent plus read as nothing); its accessible
- *  name stays "More", which tests and slop address. */
 export function MoreMenu({
   onAddScript, onAddSequence, onAddTag, onImportExcel, onImportCreators,
 }: {
@@ -109,18 +99,14 @@ export function MoreMenu({
   );
 }
 
-/** A sidebar row's Share / Rename / Delete menu (#58), in this page's antd dropdown look. Share copies this entry's
- *  scripts to other Creators (or all of them) — the header Share's per-row twin. */
 function RowMenu({
   label, onShare, onRename, onDelete, name = `${label} menu`,
 }: {
   label: string; onShare: () => void; onRename: () => void; onDelete: () => void;
-  /** The trigger's and menu's accessible name (the phone bar's twin is "<entry> actions"). */
   name?: string;
 }) {
   const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
   return (
-    // The row itself answers clicks, Enter and Space: the menu's clicks and keys stop here.
     <div className="contents" onClick={stop} onKeyDown={stop}>
       <Menu align="right" menuLabel={name} panelClassName={cn(MENU_PANEL, "border-0 w-32")}
         itemClassName={cn(MENU_ITEM, "py-0", MENU_HOVER)}
@@ -142,16 +128,11 @@ export interface SidebarItem {
   id: string;
   name: string;
   count: number;
-  /** The fixed entries ("All scripts", the untagged ones) have no menu. */
   fixed?: boolean;
 }
 
 const SEQ_SORTS: Array<[SeqSortBy, string]> = [["custom", "Custom"], ["recent", "Recent"], ["name", "Name"]];
 
-/** The Tag and Sequence sidebar (#53 to #58): 248px, a search, then one row per entry with its script count. The
- *  Sequence sidebar sorts (Custom / Recent / Name; the one on again flips its order). Rows render in steps of 200
- *  (`useRenderCap`), always through the selected one. Below md the search and rows give way to one select (each
- *  entry with its count) and the selected entry's menu, so the scripts show on the first screen. */
 export function Sidebar({
   kind, items, selected, onSelect, onShare, onRename, onDelete, sort, onSort,
 }: {
@@ -162,7 +143,6 @@ export function Sidebar({
   onShare: (item: SidebarItem) => void;
   onRename: (item: SidebarItem) => void;
   onDelete: (item: SidebarItem) => void;
-  /** The Sequence sidebar's sort; the Tag sidebar has none. */
   sort?: SeqSort;
   onSort: (by: SeqSortBy) => void;
 }) {
@@ -181,7 +161,6 @@ export function Sidebar({
       aria-label={kind === "tag" ? "Tags" : "Sequences"}
       className="w-full md:w-[248px] shrink-0 px-3 md:px-4 py-2 border-b md:border-b-0 md:border-r border-border"
     >
-      {/* Phone: the whole list as one select, then the picked entry's Share / Rename / Delete. */}
       <div className="md:hidden mb-2 flex items-center gap-2">
         <IfNativeSelect
           aria-label={`Pick ${noun}`}
@@ -264,7 +243,6 @@ export function Sidebar({
   );
 }
 
-/** A capped list's foot (`useRenderCap`): the scroll sentinel's button, for a click or no IntersectionObserver. */
 export function ShowMore({ left, onClick }: { left: number; onClick: () => void }) {
   return (
     <button type="button" onClick={onClick} className="w-full py-2 text-xs text-fg-dim hover:text-fg">
@@ -273,9 +251,6 @@ export function ShowMore({ left, onClick }: { left: number; onClick: () => void 
   );
 }
 
-/** The bundle's empty panel for Tag and Sequence (#62 to #71): B1 under the whole body, three B-nav cards with no
- *  border, each a 48px icon, its label and a 20px M1 arrow, 12px apart. The bundle's card art is a remote PNG; these
- *  are lucide stand-ins (owner: no Infloww PNG assets). */
 export function SequenceEmpty({ onCreate }: { onCreate: () => void }) {
   const card = (label: string, Icon: LucideIcon, onClick?: () => void) => (
     <button
@@ -305,13 +280,11 @@ export function SequenceEmpty({ onCreate }: { onCreate: () => void }) {
   );
 }
 
-/** The tags and sequences column (#41): three chips, then a "+N" count; a chip opens its tag or sequence. */
 function ScriptChips({
   r, onOpen, hideEmpty = false,
 }: {
   r: SavedReply;
   onOpen: (kind: "tag" | "sequence", name: string) => void;
-  /** Nothing, not a dash, when there is no chip (a sequence card's header line). */
   hideEmpty?: boolean;
 }) {
   const chips: Array<{ kind: "tag" | "sequence"; name: string }> = [
@@ -352,16 +325,11 @@ function ScriptChips({
   );
 }
 
-/** One script (#38 to #49): checkbox, name with its tag and sequence chips under it (or the step in a sequence, the
- *  name and chips then heading the text), then text, media, price, stats and notes, then the actions. The text takes
- *  every pixel the fixed cells leave. Phone-wide the cells wrap under the name. */
 export function ScriptRow({
   r, stepLabel, last, accountId, expanded, checked, onCheck, onEdit, onShare, onDelete, removeLabel, onOpenChip, busy,
 }: {
   r: SavedReply;
-  /** In a sequence, the 72px cell shows the step and the name moves above the text. */
   stepLabel?: string;
-  /** A sequence's last step: no line on to a next card. */
   last?: boolean;
   accountId: string | null;
   expanded: boolean;
@@ -370,15 +338,12 @@ export function ScriptRow({
   onEdit: () => void;
   onShare: () => void;
   onDelete: () => void;
-  /** Set inside a tag or a sequence: the delete action removes the script from it instead (#47, #49). */
   removeLabel?: string;
   onOpenChip: (kind: "tag" | "sequence", name: string) => void;
   busy: boolean;
 }) {
   const media = r.media ?? [];
   const tagged = r.tagged_users?.length ?? 0;
-  // #42: each row expands on its own (the bundle's `scripts-expand` arrow, index.9f50f370.js @14227264); the
-  // Expand scripts switch sets every row.
   const [open, setOpen] = useState(expanded);
   const [switchSeen, setSwitchSeen] = useState(expanded);
   if (switchSeen !== expanded) {
@@ -392,7 +357,6 @@ export function ScriptRow({
     <li
       className={cn(
         "flex flex-wrap sm:flex-nowrap items-start min-h-10 py-2 pl-4 pr-6",
-        // A sequence's steps are numbered cards joined by a line (Infloww's sequence view).
         inSequence ? "relative mx-4 my-3 rounded-lg border border-border" : "border-b border-border",
         checked && "bg-accent/5",
         busy && "opacity-60",
@@ -405,8 +369,6 @@ export function ScriptRow({
         onChange={(e) => onCheck(e.target.checked)}
         className="mt-3 shrink-0 accent-accent"
       />
-      {/* #38, #40: a 180px name cell (72px holding the step in a sequence), 8px 16px padding, at most three lines,
-          its chips (#41) under it rather than in a column of their own, so the text gets that width. */}
       {inSequence ? (
         <div className="relative self-stretch w-[72px] shrink-0 flex justify-center py-1">
           <span
@@ -434,7 +396,6 @@ export function ScriptRow({
             <div aria-label="Tags" className="text-sm"><ScriptChips r={r} onOpen={onOpenChip} hideEmpty /></div>
           </div>
         )}
-        {/* #42: two lines, then the row's arrow or the Expand scripts switch lifts the clamp. */}
         <div ref={textRef} className="flex items-start gap-2">
           <OfRichText as="p" raw={r.text} className={cn("flex-1 text-sm whitespace-pre-wrap break-words", !open && "line-clamp-2")} />
           {overflows && <button
@@ -449,10 +410,7 @@ export function ScriptRow({
         </div>
         {media.length > 0 && <MediaStrip media={media} accountId={accountId} />}
         <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-fg-dim">
-          {/* #44: the price, when the media is priced (`fmtPrice`, not the bundle's "$ 10.00"). */}
           {r.price > 0 && <span aria-label="Price" className="text-warn">{fmtPrice(Math.round(r.price * 100))}</span>}
-          {/* #45: sent, purchases and sales. Sent: the chat sends that rode this script (`POST
-              /admin/saved-replies/sent`); purchases and sales are not kept. */}
           {r.sent_count != null && (
             <span aria-label="Sent" title="Chat sends of this script"
               className="rounded border border-[#FF8A00]/40 bg-[#FF8A00]/10 px-1.5 text-[#FF8A00]">
@@ -466,21 +424,18 @@ export function ScriptRow({
             </span>
           )}
         </div>
-        {/* #46: the internal notes on one line behind a notes icon. */}
         {r.notes && (
           <div aria-label="Internal notes" title={r.notes} className="mt-1 flex items-center gap-1 text-xs text-fg-dim">
             <StickyNote size={12} aria-hidden className="shrink-0" />
             <span className="truncate">{r.notes}</span>
           </div>
         )}
-        {/* An imported step's condition (Infloww's "conditional"): when the chatter sends this option. */}
         {r.conditional && (
           <div aria-label="Condition" title={r.conditional} className="mt-1 text-xs text-fg-dim truncate">
             If: {r.conditional}
           </div>
         )}
       </div>
-      {/* #47, #48: edit, share, delete (or remove), 16px left padding, 24px apart. */}
       <div className="flex items-center gap-6 pl-4 py-2 text-fg-dim">
         <button type="button" aria-label="Edit" onClick={onEdit} disabled={busy} className="hover:text-fg">
           <Pencil size={16} aria-hidden />
@@ -503,8 +458,6 @@ export function ScriptRow({
   );
 }
 
-/** #42: the arrow shows only once the text runs past `lines` lines (the bundle's `mn&&` guard). Read from the full
- * height against the line height, so it holds whether the row is clamped or open; re-read when the width changes. */
 function useOverflowsLines(wrap: RefObject<HTMLElement | null>, lines: number, text: string): boolean {
   const [over, setOver] = useState(false);
   useLayoutEffect(() => {

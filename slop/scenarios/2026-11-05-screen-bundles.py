@@ -1,69 +1,3 @@
-"""One relay call per screen (the owner, 2026-11-05: "why so many requests from server to client,
-can't we bundle them per screen?"). A phone ~250 ms from the host paid a round trip per Creator
-per read: the Dashboard's cold open was 57 relay calls, Messages Pro's All scope 2 per Creator.
-service/screens_api.py answers each screen's first paint in one call:
-GET /admin/screens/dashboard (Applied settings, the accounts list, Per-model stats, and per
-Creator users/me, subscriptions/count/all, subscribers/chart) and GET /admin/screens/inbox (per
-Creator the bell count and the Fan List's 25-chat page at `cursor`: 100 reads for 50 Creators; the
-money rail's feeds and last purchases stay on their own routes).
-
-The world: one Agency with 50 Creators (`one_agency`, plus its neighbour), each with a captured
-session (seed/of_sessions.py) so the relay builds its REAL OFClient; OnlyFans is lib/of_wire.py on
-loopback (`OF_WIRE`, OF_MS 400 per call), each Creator's chat list `chats` of its seeded Fans (at
-most CHATS). CHATTERS restricted chatters (seed/chatters.py, real invite + register), chatter k
-limited to 5 of the Agency's Creators. `--users` clients: the chatters plus owner sessions (each
-its own connection pool: a phone).
-
-Stages (each its own recorder stage):
-  dash-cold   every client opens the Dashboard bundle at once, the relay's caches cold
-  dash-warm   ROUNDS more rounds, every client at once
-  dash-light  LIGHT_ROUNDS rounds of LIGHT clients at once (9 owners + a chatter), the caches warm,
-              after SETTLE_S and one owner bundle that refreshes every cache (a TTL edge would
-              add one OF trip to a round: that cost shows in the warm stages, not the budget)
-  scope       chatter 0 names 5 Agency Creators not its own and the neighbour's Creator, on both
-              bundles; then the neighbour's owner warms its Creator and this owner names it
-  inbox-cold  every client opens the inbox bundle at once (cursor 0), list_chats cold
-  inbox-warm  ROUNDS rounds of cursor 0 then cursor 25 (the Fan List's next page), every client
-  inbox-light the same with LIGHT clients
-  parity      one owner: a bundle of each screen, then every per-Creator route it replaces
-  slow        the relay restarted (SIGKILL, same DB: every cache cold), Creator 0's OF +10 s
-              (`extra_s`), SLOW_USERS owners open the Dashboard at once with deadline_ms
-              SLOW_DEADLINE_MS; then, once Creator 0's reads have finished, one more bundle
-  lanes       the relay restarted again (cold); one owner inbox bundle (100 reads) with `focus=`
-              Creator 1 and deadline_ms LANES_DEADLINE_MS (most reads still running then); TAP_AFTER_S
-              in, a user tap on Creator 2 (its chats); once every (Creator, read) reached OF, a
-              second bundle. Lane stats (/admin/priority-lanes/stats) before and after
-
-Invariants: every bundle answered 200; each lists exactly the caller's Creators (owner: the 50,
-chatter: its 5) and carries everything the cards need (settings, accounts, perModel for the owner,
-per Creator profile + counts + chart; inbox: bell + page + next cursor), a Creator missing a read
-only as `stale` with a 504 `bundle_deadline` (every client at once: 200 bundles saturate the relay's
-one event loop, each inner read paying its route's own role gate and ownership resolve, so the
-deadline answers with what is done) and never in the light stages; OnlyFans saw
-at most one call per Creator per read in the cold rounds (users/me, count/all, chart,
-notifications/count: 200 clients cost OF what one does; a read the deadline cut before dispatch is
-0 and its Creator stale); the bundle's values equal the per-Creator
-routes' bodies (counts match); the slow Creator never holds the screen past deadline_ms + SLACK_MS,
-and its reads, never cancelled, warm the cache the next bundle reads; a restricted chatter never
-sees another Creator's value; the bundle's inner reads are background but the focused Creator's (no
-other Creator user-active, the tap never waits for a lane); reads still queued at the deadline run on
-(every Creator reaches OF, the next bundle is complete with no OF call); lib/of_wire.py saw only
-signed calls it models. Budgets: p95 of the
-light-stage Dashboard and inbox bundles (`BUDGET_MS`, set from a baseline run, tolerance stated there),
-plus the stock P95_VS_LAST on the same keys; the all-at-once p50/p95 and stale counts are metrics.
-
-Bypasses, declared: lib/of_wire.py (OnlyFans' API on loopback, its own declared bypasses), its
-latency OF_MS (a guess at OF behind a residential proxy) and Creator 0's +10 s (a proxy that hangs,
-modelled as its cost); the clients are httpx pools, not browsers; the phone's WAN is not modelled
-here (the bundle removes round trips; the network profiles thread measures them); the slow stage's
-relay restart is a SIGKILL (its caches cold, the DB kept).
-
-Break-it-once (lib/screens_faults.py): screen-bundle-waits-slowest (the per-Creator deadline
-removed: C_SLOW red), screen-bundle-ignores-scope (`accounts=` trusted and the ownership resolver
-skipped: C_SCOPE red, the owner path serves the neighbour's warm counts), screen-bundle-user-priority
-(every inner read at the caller's priority: C_PRIORITY red). Reads queued behind BUNDLE_READS at the
-deadline running on is service/tests/test_screens_api.py's (BUNDLE_READS 1): 100 reads never queue here.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -80,33 +14,29 @@ PROFILE = "one_agency"
 UI = False
 OF_WIRE = True
 FAULT = "screen-bundle-waits-slowest"
-P95_VS_LAST = (2.0, 150)   # measured inbox-light p95 on one code, host load 5-14: 175, 239, 276, 307, 334,
-                           # 413 ms (2.4x spread; the loop ~88 % busy at 10 at once). BUDGET_MS is the hard line
+# measured inbox-light p95 on one code, host load 5-14: 175-413 ms (2.4x spread); BUDGET_MS is the hard line
+P95_VS_LAST = (2.0, 150)
 P95_VS_LAST_MIN_N = 100
 OF_MS = 400
 CHATS = 30
 CHATTERS = 10
 PER_CHATTER = 5
 ROUNDS = 3
-LIGHT = 10   # clients at once in the light stages (warm): every bundle complete
-LIGHT_ROUNDS = 10   # light-stage rounds: 100 Dashboard / 200 inbox samples for a steady p95
-SETTLE_S = 3.0      # before a light stage: the all-at-once stage's late reads finish (they are never cancelled)
-PRIME_DEADLINE_MS = 15000   # then one owner bundle refreshes every cache: counts/users_me 60 s, bell 30 s
-                            # (no serve-stale), so a light round never waits one OF trip on a TTL edge
+LIGHT = 10
+LIGHT_ROUNDS = 10
+SETTLE_S = 3.0
+# one owner bundle refreshes every cache (counts/users_me 60 s, bell 30 s, no serve-stale) so a light round never waits an OF trip on a TTL edge
+PRIME_DEADLINE_MS = 15000
 SLOW_S = 10.0
 SLOW_USERS = 20
 SLOW_DEADLINE_MS = 4000
 SLACK_MS = 750
-LANES_DEADLINE_MS = 300   # the lanes stage: answers with most of its 100 reads still running
+LANES_DEADLINE_MS = 300
 TAP_AFTER_S = 0.15
-DRAIN_S = 60.0            # the lanes stage: every (Creator, read) reaches OF within this
+DRAIN_S = 60.0
 WINDOW = {"from": "2026-10-01T00:00:00Z", "to": "2026-11-01T00:00:00Z"}
 DASH, INBOX = "/admin/screens/dashboard", "/admin/screens/inbox"
 PER_MODEL_CARD = "/#card-per-model"
-# Light-stage p95, --scale=medium --users=200 baseline 20261105T155311Z-2026-11-05-screen-bundles-7b4a:
-# dash-light 220.3 ms (n 100), inbox-light 276.3 ms (n 200). Budget = baseline x 1.5 rounded up to 50 ms
-# (tolerance 50 %: a shared laptop whose load swings 4-12 while other threads run slop; two runs at the
-# same SHA measured 220 / 282 and 276 / 251).
 BUDGET_MS = {"dash-light": 350, "inbox-light": 450}
 
 OF_ROUTES = {"profile": "GET /api2/v2/users/me", "subscriberCounts": "GET /api2/v2/subscriptions/count/all",
@@ -130,7 +60,6 @@ DASH_READS = ("profile", "subscriberCounts", "newFans")
 
 
 def _creators(body: dict) -> set[str]:
-    """The Creators a Dashboard bundle answered (a value or an error per read; not a refused `*`)."""
     return ({a for r in DASH_READS for a in body.get(r, {})}
             | {e["accountId"] for e in body["errors"] if e["accountId"] and e["read"] != "*"})
 
@@ -162,14 +91,12 @@ def _envelope_problem(status, body, *, cold: bool) -> str | None:
 def _dash_problem(status, body, want: set[str], *, owner: bool, cold: bool) -> str | None:
     if problem := _envelope_problem(status, body, cold=cold):
         return problem
-    # A chatter's accounts list is /chatter/me/accounts: never in the bundle.
     if not body.get("settings") or bool(body.get("accounts")) != owner:
         return "no settings/accounts" if owner else "a chatter got an accounts answer"
     ids = _creators(body)
     if ids != want:
         return f"creators {sorted(ids ^ want)[:5]} off"
     late = late_reads(body)
-    # A role hiding the Per-model card (Applied settings' denied_cards): the bundle reads profile only.
     card = PER_MODEL_CARD not in ((body["settings"].get("permissions") or {}).get("denied_cards") or ())
     if card and owner and body.get("perModel") is None and (None, "perModel") not in late:
         return "no perModel"
@@ -227,7 +154,6 @@ async def run(ctx) -> None:
             for i, f in enumerate(fs)]
         n_chats[c["id"]] = len(fs)
 
-    # ── who: CHATTERS restricted chatters + owner sessions ──
     n_chat = max(1, min(int(ctx.param("chatters", CHATTERS)), ctx.users // 20 or 1))
     mine = [aids[(PER_CHATTER * k) % len(aids):][:PER_CHATTER] for k in range(n_chat)]
     seeded = await chatters_seed.seed(w, ctx.owner, main, [f"slop-screens-{k}" for k in range(n_chat)],
@@ -249,17 +175,13 @@ async def run(ctx) -> None:
             return list(fake.calls[n0:])
 
     def one_per(calls, reads) -> dict:
-        """(Creator, read) OF saw more than once: single-flight broken. 0 is a read the deadline
-        cut before it was dispatched (that Creator is stale: the completeness check holds it)."""
         per = Counter((c["account"], c["route"]) for c in calls)
         return {f"{a} {r}": per.get((a, OF_ROUTES[r]), 0) for a in aids for r in reads
                 if per.get((a, OF_ROUTES[r]), 0) > 1}
 
-    light = clients[:LIGHT - 1] + clients[-1:]   # owners + one chatter
+    light = clients[:LIGHT - 1] + clients[-1:]
 
     async def prime(path: str, params: list[dict]) -> None:
-        """Before a light stage: late reads drain, then every Creator's caches are fresh, so the
-        light stage times the warm path (a TTL edge costs one OF trip; the warm stages show it)."""
         await asyncio.sleep(SETTLE_S)
         for p in params:
             st, body, _ = await _get(owners[0], path, deadline_ms=PRIME_DEADLINE_MS, **p)
@@ -274,7 +196,6 @@ async def run(ctx) -> None:
         return [p for (st, b, _), (_, want, owner) in zip(res, who)
                 if (p := _dash_problem(st, b, want, owner=owner, cold=cold))], res
 
-    # ── dash-cold / dash-warm ──
     n0 = len(fake.calls)
     bad, res = await dash_round("dash-cold", cold=True)
     calls = of_calls_since(n0)
@@ -296,7 +217,6 @@ async def run(ctx) -> None:
     ctx.check(C_DASH_LIGHT, not light_bad, rounds=LIGHT_ROUNDS, bundles=LIGHT_ROUNDS * len(light), bad=len(light_bad),
               first=light_bad[:3])
 
-    # ── scope: chatter 0 names Creators it was not given (counts warm in the relay) ──
     ch, ch_mine = chat_http[0], set(mine[0])
     others = [a for a in aids if a not in ch_mine][:5] + [neighbour]
     n0 = len(fake.calls)
@@ -320,8 +240,6 @@ async def run(ctx) -> None:
     if any(set(x) - set(aids) for x in own_lists):
         leaks.append("a chatter bundle listed a Creator outside the Agency")
     nb = [c for c in of_calls_since(n0) if c["account"] == neighbour]
-    # The owner path: no role hook, the ownership resolver is the only gate. The neighbour's owner
-    # warms its Creator's counts + chart; this Agency's owner names that Creator: nothing served.
     nh = w.data["agencies"][1]["http"]
     ctx.rec.stage = "scope"
     _, nwarm, _ = await _get(nh, DASH, **WINDOW)
@@ -338,7 +256,6 @@ async def run(ctx) -> None:
     nb += [c for c in of_calls_since(n1) if c["account"] == neighbour]
     ctx.check(C_SCOPE, not leaks and not nb, asked=len(others), leaks=leaks, neighbour_of_calls=len(nb))
 
-    # ── inbox-cold / inbox-warm ──
     async def inbox_round(stage: str, cursor: int, cold: bool, who=None) -> list[str]:
         who = who or clients
         ctx.rec.stage = stage
@@ -365,7 +282,6 @@ async def run(ctx) -> None:
         bad += await inbox_round("inbox-light", 0, cold=False, who=light)
         bad += await inbox_round("inbox-light", 25, cold=False, who=light)
     ctx.check(C_INBOX_LIGHT, not bad, rounds=LIGHT_ROUNDS, bundles=2 * LIGHT_ROUNDS * len(light), bad=len(bad), first=bad[:3])
-    # ── parity: the bundle vs the per-Creator routes it replaces ──
     one = ctx.owner.share(limits=16)
     ctx.rec.stage = "parity"
     _, bd, _ = await _get(one, DASH, **WINDOW)
@@ -395,7 +311,6 @@ async def run(ctx) -> None:
     for h, _, _ in clients:
         await h.aclose()
 
-    # ── slow: relay restarted (cold), Creator 0's OF +10 s ──
     slow = aids[0]
     ctx.stack.crash_relay()
     await asyncio.to_thread(ctx.stack.start_relay)
@@ -426,7 +341,6 @@ async def run(ctx) -> None:
     walls = sorted(ms for _, _, ms in sres)
     ctx.check(C_SLOW, not sbad, bundles=len(sres), deadline_ms=dl, slack_ms=SLACK_MS, bad=sbad[:4],
               wall_max_ms=round(walls[-1]), wall_p50_ms=round(walls[len(walls) // 2]))
-    # wait until Creator 0's three OF reads (started in the burst above) have answered
     t_end = time.monotonic() + fake.extra_s[slow] + 15
     while time.monotonic() < t_end:
         done = Counter(c["route"] for c in of_calls_since(n0) if c["account"] == slow and c["status"] == 200)
@@ -448,7 +362,6 @@ async def run(ctx) -> None:
     for h in chat_http:
         await h.aclose()
 
-    # ── lanes: a cold inbox bundle (100 reads) with focus=Creator 1; a tap on Creator 2 meanwhile ──
     focus, tapped = aids[1], aids[2]
     ctx.stack.crash_relay()
     await asyncio.to_thread(ctx.stack.start_relay)
@@ -503,7 +416,6 @@ async def run(ctx) -> None:
     ctx.check(C_WIRE, fake.unsigned == 0 and not fake.unmodelled, unsigned=fake.unsigned,
               unmodelled=dict(fake.unmodelled))
 
-    # ── latency ──
     stages = ("dash-cold", "dash-warm", "dash-light", "inbox-cold", "inbox-warm", "inbox-light", "slow", "scope",
               "parity", "slow-after", "lanes")
     http = {s: ctx.rec.summary(s) for s in stages}
@@ -515,7 +427,7 @@ async def run(ctx) -> None:
     ctx.metric("bundle_ms", {k: {"n": v["n"], "p50": v["p50_ms"], "p95": v["p95_ms"]} for k, v in row.items() if v})
     ctx.metric("slow_bundle_ms", {"deadline_ms": dl, "p50": walls[len(walls) // 2], "max": walls[-1]})
     over = {k: (row[k]["p95_ms"], b) for k, b in BUDGET_MS.items() if b and row[k] and row[k]["p95_ms"] > b}
-    if ctx.report.params.get("map"):   # slop/run --map: relay and harness under coverage.py
+    if ctx.report.params.get("map"):
         ctx.skip(C_BUDGET, "coverage run: timings not comparable")
     else:
         ctx.check(C_BUDGET, not over, budget_ms=BUDGET_MS, p95={k: row[k]["p95_ms"] for k in BUDGET_MS}, over=over)

@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * TwoFactorStep: sign-in's second step (service/account_security_api.py), in place
- * of the password form once the Relay answers with a `TwoFactorChallenge`.
- * "verify" asks for a code from the authenticator app (or a backup code);
- * "setup" is the Agency requiring 2FA of a login that has none, so it walks
- * through `TwoFactorSetup` first. Either way the Relay sets the session cookie
- * on success and the caller hard-navigates, as a chatter sign-in does.
- *
- * `TwoFactorSetup` is also Security (personal)'s "Enable 2FA": a QR code of the
- * otpauth:// link to scan from a computer (not on a phone), the setup key to copy or type in, and
- * the link itself to open the authenticator app on a phone. Copy is Infloww's.
- */
 
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
@@ -26,14 +14,9 @@ import { cn } from "@/lib/utils";
 interface InitReply { secret: string; otpauth_uri: string; enrol_token: string }
 interface ActivateReply { recovery_codes: string[]; kind: SignedInKind }
 
-/** The step's text links: Copy buttons, the authenticator link, Cancel. */
 const TEXT_LINK = "text-sm underline underline-offset-4";
-/** The setup key in fours, as authenticator apps print it. */
 const grouped = (secret: string) => secret.replace(/(.{4})/g, "$1 ").trim();
 
-/** The otpauth:// link as a QR code to scan from a computer (a PNG data URL; white quiet zone so it scans on the dark
- *  theme too). Hidden below `sm`: a phone cannot scan its own screen, and the shorter dialog keeps the code field above
- *  the keyboard. */
 function SetupQr({ uri }: { uri: string }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
@@ -62,8 +45,6 @@ export function BackupCodes({ codes }: { codes: string[] }) {
   );
 }
 
-/** Set up 2FA: the key, then a code to prove the app has it, then the backup codes. `ticket` is a sign-in
- *  ticket (no session yet); without one it is the signed-in principal's own setup. */
 export function TwoFactorSetup({ ticket, inputClass, buttonClass, onDone }: {
   ticket?: string;
   inputClass: string;
@@ -155,7 +136,6 @@ export function TwoFactorSetup({ ticket, inputClass, buttonClass, onDone }: {
   );
 }
 
-/** The sign-in forms' second step, in their site look. */
 export default function TwoFactorStep({ challenge, inputClass, buttonClass, onSignedIn, onCancel }: {
   challenge: TwoFactorChallenge;
   inputClass: string;

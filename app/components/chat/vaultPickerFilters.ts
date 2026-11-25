@@ -1,32 +1,20 @@
-/**
- * VaultPicker's filter bar as a pure reducer: media type, folder, sort,
- * hide-seen, length range and the vault search (raw input + the debounced
- * query OF is asked for). The component owns the debounce timer and only
- * dispatches.
- */
-
 import type { FanId } from "@/lib/fanId";
 import type { DurationRange } from "./vaultDurationFilter";
 import type { StatsSort } from "./vaultPickerStats";
 
 export type MediaType = "all" | "photo" | "video" | "gif";
-/** "newest" / "oldest" are OF's order; the stats sorts reorder what's loaded. */
 export type Sort = "newest" | "oldest" | StatsSort;
 
 export interface VaultFilterState {
   type: MediaType;
   listId: FanId | null;
   sort: Sort;
-  /** "Hide content viewed or unlocked by fan, or posted on Creator's feed". */
   hideSeen: boolean;
   lengthRange: DurationRange;
-  /** What's typed in the search box. */
   queryInput: string;
-  /** The debounced, trimmed search sent to OF (wire param `query`). */
   query: string;
 }
 
-/** What's persisted per fan (vaultPickerPersist): folder, sort, type. */
 export type PickerFanState = Pick<VaultFilterState, "listId" | "sort" | "type">;
 
 export type VaultFilterAction =
@@ -36,11 +24,8 @@ export type VaultFilterAction =
   | { type: "setHideSeen"; value: boolean }
   | { type: "setLengthRange"; value: DurationRange }
   | { type: "setQueryInput"; value: string }
-  /** The debounce fired: search for what was typed. */
   | { type: "commitQuery"; value: string }
   | { type: "clearQuery" }
-  /** Picker opened (closed → open): restore this fan's folder / sort / type,
-   *  or All / Newest / All-types when he has none. Search starts clean. */
   | { type: "hydrate"; saved: PickerFanState | null };
 
 export const initialFilters: VaultFilterState = {
@@ -53,8 +38,6 @@ export const initialFilters: VaultFilterState = {
   query: "",
 };
 
-/** `state` itself when nothing changes, so React bails out of the render
- *  exactly as the per-field useStates this replaced did. */
 function patch(state: VaultFilterState, next: Partial<VaultFilterState>): VaultFilterState {
   const keys = Object.keys(next) as (keyof VaultFilterState)[];
   return keys.every((k) => Object.is(state[k], next[k])) ? state : { ...state, ...next };
@@ -89,7 +72,6 @@ export function vaultFiltersReducer(state: VaultFilterState, action: VaultFilter
   }
 }
 
-/** The stats sorts reorder the newest-first pages OF serves. */
 export function fetchSort(sort: Sort): "newest" | "oldest" {
   return sort === "oldest" ? "oldest" : "newest";
 }

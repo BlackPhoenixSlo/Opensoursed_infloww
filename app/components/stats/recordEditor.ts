@@ -1,8 +1,3 @@
-/**
- * RecordEditor's form (ClockRecordsModal): the two `datetime-local` values, the save in flight and its error, as a
- * pure reducer, plus `validateRecord`: nothing to send, the PATCH body (changed fields only), or the inline error.
- */
-
 import { fromZonedInput, toZonedInput, type ClockEdit, type ClockRecord } from "@/lib/shifts";
 
 export interface RecordForm {
@@ -15,17 +10,14 @@ export interface RecordForm {
 export type RecordFormAction =
   | { type: "in"; value: string }
   | { type: "out"; value: string }
-  /** A save refused before sending (`validateRecord`) or by the Relay. */
   | { type: "error"; error: string }
   | { type: "saving" };
 
-/** The record's own times as `datetime-local` values in `tz`; an open record's clock out is "". */
 const startInputs = (r: Pick<ClockRecord, "in_utc" | "out_utc">, tz: string) => ({
   inV: toZonedInput(r.in_utc, tz),
   outV: r.out_utc ? toZonedInput(r.out_utc, tz) : "",
 });
 
-/** The record's times in `tz`; `closing` opens the clock out on `now`. */
 export function initialRecordForm(r: Pick<ClockRecord, "in_utc" | "out_utc">, tz: string, closing: boolean,
   now = new Date()): RecordForm {
   const start = startInputs(r, tz);
@@ -51,13 +43,10 @@ export function recordFormReducer(state: RecordForm, action: RecordFormAction): 
 }
 
 export type RecordCheck =
-  /** Nothing changed: close the editor, send nothing. */
   | { kind: "unchanged" }
   | { kind: "error"; error: string }
-  /** The PATCH body, changed fields only; `closing` sends just `out_utc`. */
   | { kind: "send"; body: ClockEdit };
 
-/** What Save does. The clock out, sent or kept, must be after the clock in, sent or kept. */
 export function validateRecord(r: Pick<ClockRecord, "in_utc" | "out_utc">, form: Pick<RecordForm, "inV" | "outV">,
   tz: string, closing: boolean): RecordCheck {
   const start = startInputs(r, tz);

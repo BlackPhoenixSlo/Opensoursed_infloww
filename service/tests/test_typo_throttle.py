@@ -1,27 +1,7 @@
 #!/usr/bin/env python3
-"""Per-fan '*fix' correction throttle (_common.apply_typo_throttle).
-
-The thumb-typo itself always rides, but the self-correct "*fix" bubble is rate
-limited per fan ACROSS all senders: at most one per _TYPO_FIX_MIN_INTERVAL (1h)
-OR per _TYPO_FIX_MIN_EXCHANGES (50) replies, whichever re-enables first. Without
-this two corrections can land minutes apart and read like a bot.
-
-Covered:
-  case_impl_allow_flag        allow_correction=False suppresses the fix bubble but
-                              keeps the inline slip byte-identical.
-  case_allowed_truth_table    _typo_correction_allowed gate logic (time + count).
-  case_first_fires_then_throttled  back-to-back replies: first corrects, second is
-                              suppressed, the slip still rides, 'since' increments.
-  case_reenables_by_count     state at 50 exchanges → correction allowed again.
-  case_reenables_by_time      state >1h old → correction allowed again.
-  case_state_path_reply_rate  Full AI's `state=` path passes `reply_rate`: 1.0 always
-                              slips, 0.0 never; 'since' still counts each reply.
-
-Run: ./venv/bin/python service/tests/test_typo_throttle.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -38,7 +18,6 @@ from automations._common import (  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Fan  # noqa: E402
 
-# A single bubble that fires a typo + correction on many seeds (room to spare).
 _PARTS = ["honestly could you really believe that happened tonight"]
 
 _AID_N = 0
@@ -51,7 +30,6 @@ def _fresh_account() -> str:
 
 
 def _fix_seed() -> int:
-    """First seed where the impl emits a correction bubble (allow_correction=True)."""
     for s in range(5000):
         _out, emitted = _humanize_typos_impl(_PARTS, random.Random(s),
                                              allow_correction=True)
@@ -74,7 +52,6 @@ async def _state(aid: str, fan_id: int) -> dict:
         return json.loads(f.custom_fields).get(_TYPO_FIX_STATE_KEY, {})
 
 
-# ── Pure cases ─────────────────────────────────────────────────────────
 
 def case_impl_allow_flag():
     seed = _fix_seed()
@@ -84,26 +61,24 @@ def case_impl_allow_flag():
                                          allow_correction=False)
     assert em_a is True and em_b is False, (em_a, em_b)
     assert len(allowed) == 2 and len(blocked) == 1, (allowed, blocked)
-    # the inline slip is decided BEFORE the fix branch → identical either way
     assert allowed[0] == blocked[0], (allowed[0], blocked[0])
 
 
 def case_allowed_truth_table():
     now = datetime(2026, 6, 20, 12, 0, 0)
-    assert _typo_correction_allowed({}, now) is True               # never corrected
+    assert _typo_correction_allowed({}, now) is True
     assert _typo_correction_allowed({"at": None, "since": 3}, now) is True
     recent = (now - timedelta(minutes=5)).isoformat()
     assert _typo_correction_allowed({"at": recent, "since": 3}, now) is False
     old = (now - timedelta(hours=2)).isoformat()
-    assert _typo_correction_allowed({"at": old, "since": 0}, now) is True   # time
+    assert _typo_correction_allowed({"at": old, "since": 0}, now) is True
     assert _typo_correction_allowed(
-        {"at": recent, "since": _TYPO_FIX_MIN_EXCHANGES}, now) is True       # count
+        {"at": recent, "since": _TYPO_FIX_MIN_EXCHANGES}, now) is True
     assert _typo_correction_allowed(
         {"at": recent, "since": _TYPO_FIX_MIN_EXCHANGES - 1}, now) is False
     assert _typo_correction_allowed({"at": "garbage", "since": 0}, now) is True
 
 
-# ── DB-backed throttle cases ───────────────────────────────────────────
 
 def case_first_fires_then_throttled():
     async def go():
@@ -121,7 +96,7 @@ def case_first_fires_then_throttled():
         assert len(second) == 1, ("second reply must be throttled", second)
         assert second[0] == first[0], "the slip still rides, only the fix is dropped"
         st2 = await _state(aid, fan)
-        assert st2.get("since") == 1, st2  # the throttled reply counts toward 50
+        assert st2.get("since") == 1, st2
     asyncio.run(go())
 
 

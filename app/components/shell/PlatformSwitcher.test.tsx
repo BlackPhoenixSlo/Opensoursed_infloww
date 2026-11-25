@@ -1,8 +1,3 @@
-/**
- * The platform selector (Infloww's `SelectPlatform`, index.9f50f370.js @11125100) and what the platform drives: the
- * creator list (usePlatformAccounts; useActiveAccounts stays neutral), the sidebar's page set (lib/nav `sidebarFor`),
- * the scope/route reconcile on any platform change (PlatformSync) and the "Fansly Login" prompt (PlatformGate). The Relay client is mocked; fixture ids are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -35,11 +30,11 @@ vi.mock("@/lib/appliedSettings", () => ({ useAppliedSettings: () => ({ data: und
 vi.mock("@/lib/events", () => ({ eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {} } }));
 
 import PlatformGate, { LOAD_FAILED_LINE, PlatformSync } from "@/components/shell/PlatformGate";
-import PlatformSwitcher from "@/components/shell/PlatformSwitcher";
+import PlatformSwitcher, { platformUnread } from "@/components/shell/PlatformSwitcher";
 import Sidebar from "@/components/shell/Sidebar";
 import { ScopeProvider, useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts, usePlatformAccounts } from "@/hooks/useAccounts";
-import { PLATFORM_KEY, resetPlatformForTests, setPlatform, usePlatform } from "@/lib/platform";
+import { PLATFORMS, PLATFORM_KEY, resetPlatformForTests, setPlatform, usePlatform } from "@/lib/platform";
 import { relay } from "@/lib/relay";
 
 const relayGet = relay.get as unknown as Mock;
@@ -70,7 +65,7 @@ beforeEach(() => {
   counts = {};
   accounts = [
     { id: "of-1", nickname: "Oscar", platform: "onlyfans", has_session: true },
-    { id: "of-2", nickname: "Olive", has_session: true }, // no platform: OnlyFans
+    { id: "of-2", nickname: "Olive", has_session: true },
     { id: "fy-1", nickname: "Fiona", platform: "fansly", has_session: true },
     { id: "fy-2", nickname: "Faye", platform: "fansly", has_session: false },
   ];
@@ -145,6 +140,15 @@ describe("PlatformSwitcher", () => {
     expect(within(row("OnlyFans")).getByLabelText(`${n + 2} unread`)).toBeInTheDocument();
   });
 
+  it("builds one unread bucket per Platform table row", () => {
+    expect(Object.keys(platformUnread(undefined, {}))).toEqual(PLATFORMS.map((p) => p.key));
+  });
+
+  it("counts an account with an unknown platform (mym) as OnlyFans", () => {
+    const out = platformUnread([{ id: "x-1", platform: "mym", has_session: true }], { "x-1": { unread: 4, owe_reply: 0 } });
+    expect(out).toEqual({ onlyfans: { count: 4 }, fansly: { count: 0 } });
+  });
+
   it("no unread: no chip and no dot", async () => {
     render(<Providers><PlatformSwitcher /></Providers>);
     fireEvent.click(trigger());
@@ -198,7 +202,6 @@ describe("PlatformSwitcher", () => {
 });
 
 describe("PlatformSync: a platform change from another window", () => {
-  /** What another tab's setPlatform looks like here: the write lands, then the storage event fires. */
   const otherTabPicks = (p: "onlyfans" | "fansly") =>
     act(() => {
       window.localStorage.setItem(PLATFORM_KEY, p);
@@ -251,7 +254,7 @@ describe("PlatformSync: a platform change from another window", () => {
 });
 
 describe("Sidebar per platform", () => {
-  it("swaps to Fansly's page set and back", async () => {
+  it("swaps to Fansly's page set and back (fansly_manager off: no Fansly Manager group)", async () => {
     render(<Providers><Sidebar /></Providers>);
     const nav = () => screen.getByRole("navigation", { name: "Main" });
     expect(within(nav()).getByRole("link", { name: "Dashboard" })).toBeInTheDocument();
@@ -259,7 +262,7 @@ describe("Sidebar per platform", () => {
 
     act(() => setPlatform("fansly"));
     expect(within(nav()).queryByRole("link", { name: "Dashboard" })).toBeNull();
-    expect(within(nav()).getByRole("button", { name: "Fansly Manager" })).toBeInTheDocument();
+    expect(within(nav()).queryByRole("button", { name: "Fansly Manager" })).toBeNull();
     expect(within(nav()).getAllByRole("link").map((l) => l.textContent)).toEqual(["Scripts", "Message pro", "Vault pro"]);
     expect(within(nav()).getByRole("button", { name: "Creators" })).toBeInTheDocument();
 
@@ -271,14 +274,14 @@ describe("Sidebar per platform", () => {
     window.localStorage.setItem(PLATFORM_KEY, "fansly");
     render(<Providers><Sidebar collapsed /></Providers>);
     expect(screen.getByRole("button", { name: "Platform: Fansly" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Fansly Manager" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Fansly Manager" })).toBeNull();
     expect(screen.getByRole("link", { name: "Vault pro" })).toBeInTheDocument();
   });
 });
 
 describe("PlatformGate", () => {
   it("a page only one platform shows switches the shell to it", async () => {
-    pathname = "/fansly-manager/home";
+    pathname = "/fansly-manager/lists";
     render(<Providers><PlatformSync /><PlatformGate /><Probe /></Providers>);
     await waitFor(() => expect(probe()).toBe("fansly all"));
   });
@@ -299,13 +302,10 @@ describe("PlatformGate", () => {
     const d = await screen.findByRole("dialog", { name: "Fansly Login" });
     expect(d).toHaveTextContent("Please login Fansly");
     fireEvent.click(within(d).getByRole("button", { name: "Log in" }));
-    // Never a blank between the two: the prompt stays until the Add creator flow has loaded.
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(await screen.findByRole("region", { name: "Fansly paste session" })).toBeInTheDocument();
   });
 
-  // PlatformGate loads the Add creator flow with import(); these hold that load, or fail it, until the test says. The
-  // module is a stand-in that shows the flow's title.
   const ADD_CREATOR = "@/components/setup/AddCreatorModal";
   afterEach(() => {
     vi.doUnmock(ADD_CREATOR);
@@ -318,17 +318,14 @@ describe("PlatformGate", () => {
       release = res;
       fail = () => rej(new Error("chunk load failed"));
     });
-    gate.catch(() => {}); // the import may not be waiting on it yet when it fails
+    gate.catch(() => {});
     vi.doMock(ADD_CREATOR, async () => {
       await gate;
       return { default: AddCreatorStandIn };
     });
-    // Applies the queued mock now. vitest applies it on the next import that fetches; the module is cached from
-    // the real-flow test, so an import() racing the one that applies it (the preload and Log in) gets the real one.
     await vi.importActual(ADD_CREATOR);
     return { release, fail };
   }
-  // Lets every import waiting on the gate land, and React render what it set.
   const settle = async () => {
     await act(async () => {
       await import(ADD_CREATOR).catch(() => {});
@@ -361,7 +358,6 @@ describe("PlatformGate", () => {
     await screen.findByRole("dialog", { name: "Fansly Login" });
     chunk.fail();
     await settle();
-    // The stand-in failed (vitest wraps a mock factory's error), not the real module loaded.
     await expect(import(ADD_CREATOR)).rejects.toHaveProperty("cause.message", "chunk load failed");
     expect(screen.getByRole("dialog", { name: "Fansly Login" })).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
@@ -395,7 +391,6 @@ describe("PlatformGate", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(LOAD_FAILED_LINE);
     expect(screen.queryByText("Link Fansly account")).toBeNull();
 
-    // Away to a common page and back: the prompt loads the flow again, and that alone opens nothing.
     chunk = await holdAddCreator();
     pathname = "/creators";
     rerender(<Providers><PlatformGate /></Providers>);
@@ -404,7 +399,7 @@ describe("PlatformGate", () => {
     chunk.release();
     await settle();
     expect(screen.queryByText("Link Fansly account")).toBeNull();
-    expect(screen.queryByRole("alert")).toBeNull(); // a load landed: the error line clears
+    expect(screen.queryByRole("alert")).toBeNull();
 
     fireEvent.click(within(screen.getByRole("dialog", { name: "Fansly Login" })).getByRole("button", { name: "Log in" }));
     expect(await screen.findByText("Link Fansly account")).toBeInTheDocument();
@@ -412,7 +407,7 @@ describe("PlatformGate", () => {
 
   it("Cancel hides the prompt on this page", async () => {
     accounts = [];
-    pathname = "/fansly-manager/home";
+    pathname = "/fansly-manager/lists";
     render(<Providers><PlatformSync /><PlatformGate /></Providers>);
     const d = await screen.findByRole("dialog", { name: "Fansly Login" });
     fireEvent.click(within(d).getByRole("button", { name: "Cancel" }));

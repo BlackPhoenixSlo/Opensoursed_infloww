@@ -1,34 +1,5 @@
 "use client";
 
-/**
- * My AI Chatter > Auto-reply (ours; Infloww has no counterpart; by URL, out of the sidebar since 11-15). The owner's
- * ask: "just autoreply, with options to pick folder who to reply".
- *
- * One switch, the timing (a delay, optionally randomised up to 2x) and WHO to
- * reply to, over the existing `autoreply` engine
- * (service/automations/autoreply.py) and its blob (`/admin/autoreply-config`).
- * WHO is two sources and a fan qualifies on either: (a) folders, an OF custom
- * list (the same lists the Messages Pro folder chips and the mass composer
- * target, so the picker is the house `ListColumn` over `useFanLists`) with an
- * optional spend cap; (b) new fans, subscribed recently and spent little.
- * Photos: two opt-ins, describing the photo he sent (a DeepInfra key) and
- * skipping messages that are only a photo. Human style, at the bottom: the
- * engine's realism layers (human style, typos, non-native English, space before
- * "?"), the same `autoreply` keys of the style blob (`/admin/style-config`)
- * the Settings Auto Convo tab edits; all default ON. Then "AI model (all AI
- * automations)": the ACCOUNT's AI model + effort (`/admin/account-config`,
- * shared with every AI automation that has no pin of its own), sent by the same
- * Save only when it changed; "Default" = null, labelled from the server's
- * `default_model`. A failed config read hides the row (the rest of the page
- * still saves). Under the Save, Model info (ModelInfoBlock, shared with Get to
- * know fans) with its own Save.
- *
- * On Infloww's look (page-parity ticket 16): the page header holds the creator
- * select (`?creator=`), Learn (the blurb), the On / Off pill and the Auto-reply
- * switch, which saves the moment it flips (its own PUT of the stored blob with
- * only `enabled` changed; the far-down Save is for the rest). The form is the
- * S4S-settings blocks with a switch row per option.
- */
 
 import { useReducer } from "react";
 import Link from "next/link";
@@ -73,12 +44,9 @@ export default function AutoReplyPage() {
   if (!accountId) {
     return <PageFrame title={TITLE} creators={creators} actions={LEARN}><NoCreator loading={loading} /></PageFrame>;
   }
-  // Keyed, so switching creator re-seeds the form from that creator's blob.
   return <AutoReplyForm key={accountId} accountId={accountId} creators={creators} />;
 }
 
-/** The load gate: the fields only mount once the stored blob is in hand, so
- *  a failed read can never be saved over the account's real settings. */
 function AutoReplyForm({ accountId, creators }: { accountId: string; creators: CreatorPick }) {
   const cfgQ = useAutoreplyConfig(accountId);
   const brainQ = useAccountConfig(accountId);
@@ -106,6 +74,7 @@ function AutoReplyForm({ accountId, creators }: { accountId: string; creators: C
   );
 }
 
+// Fields mount only once the stored blob is read, so a failed read can never be saved over the account's real settings.
 function AutoReplyFields({
   accountId, creators, stored, defaults, visionKey, brain, refetching,
 }: {
@@ -115,27 +84,21 @@ function AutoReplyFields({
   defaults: AutoreplyConfig;
   visionKey?: AutoreplyKeyState;
   brain?: AccountConfigResp;
-  /** The blob is being re-read: `stored` may be behind the last PUT, so the header switch waits. */
   refetching: boolean;
 }) {
   const replyM = useSaveAutoreplyConfig(accountId);
-  // The header switch's own PUT, built on a fresh read (useAutoreplyConfig.ts): an old tab's switch must not
-  // restore a config someone has since replaced.
+  // Built on a fresh read: an old tab's switch must not restore a config someone has since replaced.
   const switchM = useSwitchAutoreply(accountId);
   const brainM = useSaveAccountConfig(accountId);
-  // A brain PUT (Model info's, or this Save's own) or re-read is out: this Save's brain copy may be stale, so it waits.
   const brainBusy = useAccountConfigBusy(accountId);
-  // Seeded once from defaults ⊕ stored; a refetch does not re-seed (autoReplyForm.ts).
   const [state, dispatch] = useReducer(autoReplyReducer, undefined, () => initState({ ...defaults, ...stored }, brain));
-  // One Save, two PUTs (the brain's only when the model moved): one mutation, pending until both settle, failed if
-  // either did (its error shown), so a half-landed Save never reads "Saved".
+  // One Save, two PUTs: pending until both settle, failed if either did, so a half-landed Save never reads "Saved".
   const saveM = useMutation<void, Error, { reply: AutoreplyConfig; brain: BrainConfig | null }>({
     mutationFn: async ({ reply, brain: b }) => {
       const runs = await Promise.allSettled([
         ...(b ? [brainM.mutateAsync(b).then(() => dispatch({ type: "brainSaved", pick: pickOf(b) }))] : []),
         replyM.mutateAsync(reply),
       ]);
-      // Both failed: the blob's error shows (it is the last run), as before the one mutation.
       const failed = runs.findLast((r): r is PromiseRejectedResult => r.status === "rejected");
       if (failed) throw failed.reason;
     },
@@ -146,7 +109,6 @@ function AutoReplyFields({
   const verdict = usePageSave(saveM, style, unsaved(state), dispatch);
 
   const sw = (k: SwitchKey) => (on: boolean) => verdict.edit({ type: "switch", k, on });
-  /** A number input's bounds, text (as typed until blur, then clamped) and edit, from `LIMITS[k]`. */
   const num = (k: NumberKey) => ({
     min: LIMITS[k][0], max: LIMITS[k][1],
     value: numberText(state, k),
@@ -156,8 +118,6 @@ function AutoReplyFields({
   const { delay } = draft;
   const noSource = !canSubmit(draft);
 
-  // Saves at once: flips the draft (and its sent copy, so "Saved" holds), PUTs the blob as stored now with only
-  // `enabled` changed, and flips back if that PUT fails. Waits while the page Save or a re-read is out (`stored` behind).
   const flip = (on: boolean) => {
     if (!switchPayload(defaults, stored, on)) return;
     dispatch({ type: "switched", on });
@@ -177,7 +137,6 @@ function AutoReplyFields({
         disabled={refetching || saveM.isPending || switchRefused} onChange={flip} /></>}
     >
       <div className="max-w-[720px] space-y-8">
-        {/* Missing key, or the key the last run was refused on (401/402/403). */}
         <AiKeyNotice accountId={accountId} kinds={["autoreply"]} />
 
         {switchM.isError && (
@@ -292,16 +251,12 @@ function AutoReplyFields({
 
         <SaveRow save={verdict} onSave={save} disabled={noSource || switchM.isPending || brainBusy} />
 
-        {/* Same read as the AI model row: with it failed there is nothing to edit (and a re-mount would re-read it
-            under the load gate above). */}
         {brain && <ModelInfoBlock accountId={accountId} />}
       </div>
     </PageFrame>
   );
 }
 
-/** The account's reply model: Default (the server's `default_model`) or a pinned id, plus its effort when the
- *  model takes one (`effort_options[model]`, per provider); the line under it names what runs now. */
 function ModelBlock({ draft, brain, edit }: {
   draft: AutoReplyDraft; brain: AccountConfigResp; edit: (a: AutoReplyEdit) => void;
 }) {

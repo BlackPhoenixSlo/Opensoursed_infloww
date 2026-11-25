@@ -1,28 +1,5 @@
 "use client";
 
-/**
- * A chat composer's own tools (messages/chat and its state-* pages, and New message's: messages/send), OF's MakeFeedPost
- * in a chat (build 202610091632). bindChat (or bindMass) keeps the draft and sends; this wires the tools around the editor:
- * - Format Text (Aa): opens OF's Format text panel the generator put at the top of the sticky panel (New post's capture);
- *   its tools are New post's (bindFormatPanel), so the editor holds OF's markup and Send sends it as the text.
- * - Add GIF: OF's InputGiphy in the composer's `.b-comments__giphy.m-chat-giphy`: a search field over Giphy's trending
- *   or searched GIFs (the Relay's OF Giphy proxy); a pick is the draft's `giphy_id`, shown under the editor with a delete.
- * - Record voice: OF's audio record panel (`.js-chat__audiorecord-panel`): the record button starts and stops the
- *   microphone (MediaRecorder), its timer runs to OF's 30:00 cap; a stopped recording goes up as Add media's upload.
- * - Record video: OF's video-js recorder (`.b-chat__video-message__preview`): camera preview, Record / Stop, OF's 05:00
- *   cap; the clip goes up as Add media's upload. Hidden on a phone or tablet, as OF hides it (`!iOS && !mobile`).
- * - Drop files onto the composer: OF's dropzone (`is-dragover` shows "Drop files to upload"); the files go up as Add
- *   media's.
- * - Send tip: shown only when the fan takes tips (OF: `withUser.tipsEnabled`); it stays disabled (the generator's "Not
- *   available" tooltip): OF's tip is a card payment the Relay's tip route cannot make.
- * OF's rules between them: Add GIF is off with a GIF picked, media other than voice, a price or tagged creators; the
- * price, Record video, Tag creators, Add media and the vault are off with a GIF (a GIF goes with nothing but a voice
- * note; bindChat refuses a drop and collectMessage a body otherwise); Record voice is off once an audio file is attached.
- * A drop takes photos, videos and audio only. Record video asks for mp4 first, then webm (isTypeSupported); Record voice
- * asks for OF's own recorder's types (VOICE_TYPES: mp3, then ogg) and re-encodes anything else to WAV, as OF's does. The
- * File's type has no `;codecs`. Recordings belong to the document, not the bind: a rebind of the same chat keeps them.
- * Opening a tool sends nothing; without a model or an open chat it shows the reason (`ready`).
- */
 
 import type { GiphyItem } from "@/lib/relay";
 import type { ChatDraft, ChatHandlers } from "@/lib/ofMirrorChatShared";
@@ -46,7 +23,6 @@ const VIDEO_BOX = ".b-chat__video-message__preview";
 const DROP = ".b-dropzone__label:not([aria-hidden])";
 const PREVIEW = "oi-chat-gif";
 
-/** OF's caps: a voice message's (its panel's " 0:00 / 30:00 ") and a video message's (its player's 05:00). */
 export const VOICE_MAX_MS = 30 * 60_000;
 export const VIDEO_MAX_MS = 5 * 60_000;
 export const NO_MIC = "No microphone was found";
@@ -56,26 +32,19 @@ export const CAMERA_BLOCKED = "Allow camera access to record a video message";
 export const NO_RECORDER = "This browser cannot record";
 export const NO_GIFS = "Nothing found";
 export const GIF_SEARCH_MS = 400;
-/** A GIF goes alone (OF: with a GIF, no media but a voice note, no price, no tagged creators). */
 export const GIF_ALONE = "Remove the GIF to add media or tag creators";
-/** What a drop takes: OF's dropzone uploads photos, videos and audio only. */
 export const DROP_TYPES = /^(?:image|video|audio)\//;
 export const notMedia = (names: string[]) => `Not a photo, video or audio file: ${names.join(", ")}`;
 
-/** OF hides Record video on phones and tablets. */
 export const isMobile = (ua: string) => /Mobi|Android|iPhone|iPad|iPod/i.test(ua);
 
 export interface ComposerTools {
   editor: HTMLElement;
   draftOf(): ChatDraft;
   update(patch: Partial<ChatDraft>): void;
-  /** The handlers when a write may be made, else null after a note at `anchor`. */
   ready(anchor: Element): ChatHandlers | null;
-  /** The note when no write may be made (no model, no chat), else null. */
   blocked(): string | null;
-  /** Add media's upload of `files` (an audio file counts as a voice note). */
   take(files: File[]): void;
-  /** The draft a recording belongs to (the account and chat): a rebind with the same key keeps a recording going. */
   key?: string;
   tipsEnabled?: boolean;
   mobile: boolean;
@@ -86,27 +55,12 @@ const clock = (ms: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 
-/**
- * The voice note types OF's upload takes, with their extensions, in the order OF's own audio record panel picks them
- * (bundle 24014.js `V()`, constants MakeFeedPost 800378 `xJ`/`ni`): `audio/mpeg` .mp3 where MediaRecorder records it,
- * else `audio/ogg` .ogg, else `audio/wav` .wav from RecordRTC's StereoAudioRecorder, one channel (always WAV on iOS and
- * Safari); OF names it `audiorecord_<id>_<time>.<ext>`. OF refused `audio/mp4` .m4a (signed/create 400 "Invalid file
- * type", live 2026-11-21). Any other audio (Chrome's webm recording, a picked or dropped .m4a) is re-encoded to WAV
- * on its way to the upload (`voiceFile`, called by ofMirrorPost's mediaTaker).
- * ASSUMPTION: OF takes these three for a voice note (rung 3: its own recorder uploads them; only the m4a refusal was
- * measured); overturned by a Live Record voice run refusing the type sent, which then changes this one constant.
- */
+// OF's own recorder order; OF refused audio/mp4 .m4a (signed/create 400 "Invalid file type"), so anything else is re-encoded to WAV. mp3/ogg/wav accepted is assumed.
 export const VOICE_TYPES: Readonly<Record<string, string>> = { "audio/mpeg": "mp3", "audio/ogg": "ogg", "audio/wav": "wav" };
 const WAV = "audio/wav";
-/**
- * The rate a re-encoded voice note is resampled to: OF's recorder asks RecordRTC for 16 kHz (`desiredSampRate`, bundle
- * constant `o4`), on Android only; elsewhere it leaves the input's rate. ASSUMPTION: 16 kHz everywhere (rung 3 + 5:
- * OF's own lowest; a third of a 48 kHz WAV's size under OF's 350 MB cap); overturned by a Live run refusing it.
- */
+// OF's recorder asks 16 kHz on Android only; 16 kHz everywhere is assumed (a third of 48 kHz's size under OF's 350 MB cap).
 export const VOICE_WAV_RATE = 16_000;
-/** The containers a recording is asked for: video mp4 where the browser records it, then webm; voice OF's mp3, then ogg. */
 const RECORD_TYPES = { audio: ["audio/mpeg", "audio/ogg"], video: ["video/mp4", "video/webm"] } as const;
-/** The first of RECORD_TYPES[kind] the browser's MediaRecorder records, or undefined (its own default). */
 export function recordType(win: Window, kind: "audio" | "video"): string | undefined {
   const Rec = (win as unknown as { MediaRecorder?: { isTypeSupported?(t: string): boolean } }).MediaRecorder;
   return RECORD_TYPES[kind].find((t) => {
@@ -117,13 +71,8 @@ export function recordType(win: Window, kind: "audio" | "video"): string | undef
     }
   });
 }
-/** A MIME type without its parameters (`video/webm;codecs=vp8,opus` is `video/webm`). */
 export const bareType = (t: string) => t.split(";")[0].trim().toLowerCase();
 
-/**
- * A media stream's recorder: `stop(save)` ends it (save: the recording goes to `done` with its bare type), every track
- * stopped. `stop` returns whether `done` is still to come (it was recording and `save`).
- */
 function recorder(win: Window, stream: MediaStream, kind: "audio" | "video", done: (blob: Blob, type: string) => void) {
   const Rec = (win as unknown as { MediaRecorder?: typeof MediaRecorder }).MediaRecorder;
   const mimeType = recordType(win, kind);
@@ -153,7 +102,6 @@ function recorder(win: Window, stream: MediaStream, kind: "audio" | "video", don
   };
 }
 
-/** 16-bit PCM WAV bytes of one channel of `samples` (-1..1) at `rate` Hz (OF's voice fallback: one channel). */
 export function wavBytes(samples: Float32Array, rate: number): ArrayBuffer {
   const out = new DataView(new ArrayBuffer(44 + samples.length * 2));
   const ascii = (at: number, s: string) => [...s].forEach((c, i) => out.setUint8(at + i, c.charCodeAt(0)));
@@ -161,13 +109,13 @@ export function wavBytes(samples: Float32Array, rate: number): ArrayBuffer {
   out.setUint32(4, 36 + samples.length * 2, true);
   ascii(8, "WAVE");
   ascii(12, "fmt ");
-  out.setUint32(16, 16, true); // fmt chunk size
-  out.setUint16(20, 1, true); // PCM
-  out.setUint16(22, 1, true); // channels
+  out.setUint32(16, 16, true);
+  out.setUint16(20, 1, true);
+  out.setUint16(22, 1, true);
   out.setUint32(24, rate, true);
-  out.setUint32(28, rate * 2, true); // bytes per second
-  out.setUint16(32, 2, true); // block align
-  out.setUint16(34, 16, true); // bits per sample
+  out.setUint32(28, rate * 2, true);
+  out.setUint16(32, 2, true);
+  out.setUint16(34, 16, true);
   ascii(36, "data");
   out.setUint32(40, samples.length * 2, true);
   samples.forEach((v, i) => {
@@ -177,18 +125,11 @@ export function wavBytes(samples: Float32Array, rate: number): ArrayBuffer {
   return out.buffer;
 }
 
-/** Whether `file` is audio of a type OF's upload refuses (one VOICE_TYPES lacks): `voiceFile` re-encodes it. */
 export function refusedAudio(file: File): boolean {
   const type = bareType(file.type);
   return type.startsWith("audio/") && !Object.hasOwn(VOICE_TYPES, type);
 }
-/** Why an audio file cannot be re-encoded: the browser has no Web Audio decoder. */
 export const NO_DECODER = "this browser cannot convert audio";
-/**
- * `file` as OF's upload takes it: as is unless it is audio of a type VOICE_TYPES lacks, which is decoded (Web Audio, in
- * the app's window, resampled to VOICE_WAV_RATE), mixed to one channel and re-encoded to WAV, same name, `.wav`.
- * Rejects when it cannot be decoded.
- */
 export async function voiceFile(file: File): Promise<File> {
   if (!refusedAudio(file)) return file;
   const w = globalThis as unknown as { OfflineAudioContext?: typeof OfflineAudioContext; webkitOfflineAudioContext?: typeof OfflineAudioContext };
@@ -204,7 +145,6 @@ export async function voiceFile(file: File): Promise<File> {
   return new File([wavBytes(mono, audio.sampleRate)], `${file.name.replace(/\.[^.]*$/, "")}.${VOICE_TYPES[WAV]}`, { type: WAV });
 }
 
-/** The media stream for `kind`, or the note for why there is none. */
 async function streamFor(win: Window, kind: "audio" | "video"): Promise<MediaStream | string> {
   const devices = win.navigator.mediaDevices;
   if (!devices?.getUserMedia || !(win as unknown as { MediaRecorder?: unknown }).MediaRecorder) return NO_RECORDER;
@@ -222,19 +162,11 @@ const stopTracks = (stream: MediaStream | string | null | undefined) => {
   if (stream && typeof stream !== "string") for (const t of stream.getTracks()) t.stop();
 };
 
-/** Where a recording's note goes (the button that opened it); `signal` stops it, nothing kept. */
 interface RecordOptions {
   anchor: Element;
   signal?: AbortSignal;
 }
 
-/**
- * Record a voice message in OF's audio record panel (`.js-chat__audiorecord-panel`, in `doc`): the panel opens asking
- * nothing; its record button asks for the microphone and starts, and again stops and keeps; the timer runs to OF's 30:00
- * cap, which stops and keeps. Back (the default header's) and the recording header's close keep nothing. Resolves the
- * recorded File (OF's mp3 or ogg where MediaRecorder records them, else the browser's own, which the upload re-encodes:
- * `voiceFile`), or null: cancelled, aborted, no panel, or the microphone refused (a red note at `anchor` names why).
- */
 function startVoiceRecorder(doc: Document, { anchor, signal }: RecordOptions): Promise<File | null> {
   const win = doc.defaultView!;
   const panel = doc.querySelector<HTMLElement>(AUDIO_PANEL);
@@ -303,7 +235,6 @@ function startVoiceRecorder(doc: Document, { anchor, signal }: RecordOptions): P
         if (!asking) void start();
         return;
       }
-      // The default header's Back and the recording header's close: nothing is kept.
       if (t.closest("a[aria-label='Back'], .js-message-header-recording button")) {
         ev.preventDefault();
         ev.stopPropagation();
@@ -313,8 +244,7 @@ function startVoiceRecorder(doc: Document, { anchor, signal }: RecordOptions): P
     const onAbort = () => close(false);
     panel.style.display = "";
     doc.body.classList.add("open-panel");
-    // Its record and close buttons are this recorder's: Wired, so bindWrites' fallback never notes them Read-only (a
-    // trusted click runs this capture listener's microtasks first, so a later Read-only note would hide its own).
+    // Wired: bindWrites' fallback must not note them Read-only (a trusted click runs this capture listener's microtasks first, so a later note would hide its own).
     for (const b of panel.querySelectorAll(".b-float-panel__btn-record, .js-message-header-recording button")) b.setAttribute("data-oi-wired", "");
     show(false);
     doc.addEventListener("click", onClick, true);
@@ -322,12 +252,6 @@ function startVoiceRecorder(doc: Document, { anchor, signal }: RecordOptions): P
   });
 }
 
-/**
- * Record a video message in OF's video-js recorder (`.b-chat__video-message__preview`, in `doc`): asks for the camera at
- * once and previews it; its Record button starts, and again stops and keeps; OF's 05:00 cap stops and keeps; its close
- * keeps nothing. Resolves the recorded File (mp4 where MediaRecorder records it, else webm), or null: closed, aborted,
- * no recorder, or the camera refused (a red note at `anchor` names why).
- */
 function startVideoRecorder(doc: Document, { anchor, signal }: RecordOptions): Promise<File | null> {
   const win = doc.defaultView!;
   const box = doc.querySelector<HTMLElement>(VIDEO_BOX);
@@ -399,7 +323,6 @@ function startVideoRecorder(doc: Document, { anchor, signal }: RecordOptions): P
     };
     const onAbort = () => {
       if (stream || rec) return close(false);
-      // Still asking: the stream granted later is stopped at once.
       signal?.removeEventListener("abort", onAbort);
       finish(null);
     };
@@ -429,13 +352,8 @@ function startVideoRecorder(doc: Document, { anchor, signal }: RecordOptions): P
 
 type Recorder = ReturnType<typeof recorder>;
 
-/** The capture whose recorder markup (OF's audio record panel, the video-js recorder) a page without it borrows. */
 const RECORDER_PAGE = "/of-mirror/pages/new-post/index.html";
 
-/**
- * `doc`'s copy of New post's capture (fetched same-origin, never the Relay, parsed inertly), once per page load: keyed
- * by the page's body, so markup put in anew fetches again. A failed fetch is dropped, so the next Record asks again.
- */
 const RECORDER_SRC = new WeakMap<HTMLElement, Promise<Document>>();
 function recorderSource(doc: Document): Promise<Document> {
   const page = doc.body;
@@ -452,21 +370,11 @@ function recorderSource(doc: Document): Promise<Document> {
   return src;
 }
 
-/**
- * Fetch the recorder markup a page without it borrows (Home) ahead of a Record click, so the click draws OF's recorder
- * at once, as OF (which renders it with the composer) does, not one round trip later. A failure here is silent: the
- * click asks again and notes it.
- */
 export function prefetchRecorder(doc: Document): void {
   if (doc.querySelector(AUDIO_PANEL) && doc.querySelector(VIDEO_BOX)) return;
   recorderSource(doc).catch(() => {});
 }
 
-/**
- * Put OF's recorder markup into `doc` when it has none (Home's captures: OF renders it with the composer, the capture did
- * not keep it): the audio record panel and the video-js recorder from New post's capture (recorderSource), after the
- * composer's form as there, with the stylesheets and icons they use that `doc` lacks.
- */
 async function ensureRecorder(doc: Document): Promise<void> {
   if (doc.querySelector(AUDIO_PANEL) && doc.querySelector(VIDEO_BOX)) return;
   const from = await recorderSource(doc);
@@ -488,15 +396,8 @@ async function ensureRecorder(doc: Document): Promise<void> {
   }
 }
 
-/** Where a kept recording goes: its File, and the button that started it (for an upload's note). */
 export type TakeRecording = (files: File[], anchor: Element) => void;
 
-/**
- * A document's recordings (the voice and video recorders' sessions). They outlive a bind: useOfChat rebinds the same
- * frame document when the chat's details change (its name, mute state, tips flag), useOfPost when the model's details
- * load, and a recording (or a permission prompt) must go on through that, its File going to the latest bind's `take`.
- * Only when no bind of the same draft takes the document back (by the end of the task) is it aborted, nothing kept.
- */
 interface Live {
   key: string;
   owners: number;
@@ -507,26 +408,17 @@ interface Live {
   video: boolean;
 }
 const LIVE = new WeakMap<Document, Live>();
-/** Stop `live`'s recordings, keeping nothing. */
 function stopLive(live: Live) {
   live.dead = true;
   live.stop.abort();
 }
 
-/** A bind's handle on its document's recordings (recordSession). */
 export interface RecordSession {
-  /** Whether a `kind` recording is going (no `kind`: either). */
   busy(kind?: "voice" | "video"): boolean;
-  /**
-   * Record a `kind` message in OF's recorder (its note at `anchor`); a kept File goes to the latest bind's take. `borrow`:
-   * first put OF's recorder markup into the document when it has none (Home); a failure there is a red note at `anchor`.
-   */
   record(kind: "voice" | "video", anchor: Element, borrow?: boolean): void;
-  /** This bind is over: unless a bind of the same draft takes the document back in this task, its recordings stop. */
   release(): void;
 }
 
-/** Join `doc`'s recordings for draft `key` (another draft's stop, nothing kept); this bind's `take` gets what is kept. */
 export function recordSession(doc: Document, key: string, take: TakeRecording): RecordSession {
   let live = LIVE.get(doc);
   if (live && (live.dead || live.key !== key)) {
@@ -559,6 +451,7 @@ export function recordSession(doc: Document, key: string, take: TakeRecording): 
     },
     release() {
       L.owners--;
+      // A rebind of the same draft in this task keeps recordings going; otherwise they stop, nothing kept.
       queueMicrotask(() => {
         if (L.owners > 0 || L.dead) return;
         stopLive(L);
@@ -568,7 +461,6 @@ export function recordSession(doc: Document, key: string, take: TakeRecording): 
   };
 }
 
-/** Wire the chat composer's tools in `doc`. `sync` re-applies OF's rules (bindChat calls it on every draft change). */
 export function bindComposer(doc: Document, tools: ComposerTools): { sync(): void; unbind(): void } {
   const { editor, draftOf, update, ready } = tools;
   const win = doc.defaultView!;
@@ -592,24 +484,19 @@ export function bindComposer(doc: Document, tools: ComposerTools): { sync(): voi
   const cleanups: Array<() => void> = [];
   const rec = recordSession(doc, tools.key ?? "", tools.take);
 
-  // Send tip: only where OF shows it.
   if (tipBtn) tipBtn.style.display = tools.tipsEnabled === true ? "" : "none";
-  // Record video: not on a phone or tablet.
   if (videoBtn && tools.mobile) videoBtn.style.display = "none";
 
-  // ---- Format text
   if (panel) cleanups.push(bindFormatPanel(doc, editor, panel, tools.blocked));
   const showFormat = (on: boolean) => {
     if (!panel) return;
-    // OF's toolbar is `d-flex` (display:flex !important): only an important inline display hides it.
     if (on) panel.style.removeProperty("display");
+    // OF's toolbar is `d-flex` (display:flex !important): only an important inline display hides it.
     else panel.style.setProperty("display", "none", "important");
-    // OF renders the panel only while open: its `:has(.b-form-editor)` rule makes room for it under the text box.
     panel.classList.toggle("b-form-editor", on);
     formatBtn?.classList.toggle("m-active", on);
   };
 
-  // ---- GIF picker and the picked GIF
   let gifTimer = 0;
   let gifAsk = 0;
   const gifWrap = () => gifBox?.querySelector<HTMLElement>(".b-comments__giphy__wrapper") ?? null;
@@ -629,7 +516,8 @@ export function bindComposer(doc: Document, tools: ComposerTools): { sync(): voi
           wrap.classList.add("m-empty-list");
           const none = doc.createElement("div");
           none.className = "b-empty-placeholder";
-          none.style.fontSize = "14px"; // OF's wrapper is font-size 0 (its tiles sit edge to edge)
+          // OF's wrapper is font-size 0 (its tiles sit edge to edge).
+          none.style.fontSize = "14px";
           none.textContent = NO_GIFS;
           wrap.append(none);
         }
@@ -650,8 +538,6 @@ export function bindComposer(doc: Document, tools: ComposerTools): { sync(): voi
     for (const a of scope()) el.setAttribute(a, "");
     return el;
   };
-  // A tile as OF draws one: a still frame that sizes the 128px-high tile, and the animated GIF laid over it (OF's
-  // `.b-comments__giphy__img img:last-child` is absolute).
   const gifTile = (g: GiphyItem) => {
     const b = scoped(doc.createElement("button"));
     b.type = "button";
@@ -710,7 +596,6 @@ export function bindComposer(doc: Document, tools: ComposerTools): { sync(): voi
     if (!old) (gifBox ?? editor).after(el);
   };
 
-  // ---- OF's rules between the tools
   const sync = () => {
     const d = draftOf();
     const gif = !!d.giphy_id;
@@ -720,17 +605,14 @@ export function bindComposer(doc: Document, tools: ComposerTools): { sync(): voi
     if (priceBtn) lock(priceBtn, gif);
     if (videoBtn) lock(videoBtn, gif);
     if (voiceBtn) lock(voiceBtn, audio > 0);
-    // OF: Tag creators is off with a GIF (ledger-rea: "Disabled while a GIF is set"); a GIF goes without other media.
     for (const el of [addBtn, vaultBtn, tagBtn]) if (el) lock(el, gif);
     if (gif && gifBox?.classList.contains("m-opened")) openGifs(false);
     showPicked();
   };
 
-  // ---- Events
   const onClick = (ev: MouseEvent) => {
     const t = ev.target as Element | null;
     if (!t?.closest) return;
-    // A GIF set: Add media, the vault and Tag creators take nothing (a keyboard Enter reaches a locked link too).
     const off = draftOf().giphy_id ? [addBtn, vaultBtn, tagBtn].find((el) => el && t.closest(`${ADD_MEDIA_BTN}, ${VAULT_BTN}, ${TAG_BTN}`) === el) : null;
     if (off) {
       ev.preventDefault();
@@ -799,7 +681,6 @@ export function bindComposer(doc: Document, tools: ComposerTools): { sync(): voi
     loadGifs(field.value.trim());
   };
 
-  // ---- Drop files onto the composer (OF's dragUploadArea)
   let depth = 0;
   const onDrag = (ev: DragEvent) => {
     ev.preventDefault();
@@ -811,7 +692,6 @@ export function bindComposer(doc: Document, tools: ComposerTools): { sync(): voi
     if (ev.type !== "drop") return;
     const files = [...(ev.dataTransfer?.files ?? [])];
     if (!files.length || !ready(drop!)) return;
-    // OF's dropzone takes photos, videos and audio; anything else is named and left out.
     const ok = files.filter((f) => DROP_TYPES.test(f.type));
     const bad = files.filter((f) => !DROP_TYPES.test(f.type));
     if (bad.length) note(doc, drop!, notMedia(bad.map((f) => f.name || "file")), true);
@@ -828,7 +708,6 @@ export function bindComposer(doc: Document, tools: ComposerTools): { sync(): voi
     sync,
     unbind() {
       win.clearTimeout(gifTimer);
-      // A rebind of the same draft in this task keeps the recordings; otherwise they stop, nothing kept.
       rec.release();
       for (const type of DRAG) area?.removeEventListener(type, onDrag as EventListener);
       doc.removeEventListener("click", onClick, true);

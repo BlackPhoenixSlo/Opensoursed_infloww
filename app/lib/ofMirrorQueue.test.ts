@@ -44,13 +44,10 @@ const load = (p: string) => {
 };
 const AGENDA_TPL = TEMPLATES.agenda!.pick(new DOMParser().parseFromString(capture(TEMPLATES.agenda!.page), "text/html"))!;
 
-// Synthetic schedule items: the schedule's own id wraps the post's or message's.
 const POST: QueueItem = { id: 901, type: "post", publishDateTime: "2026-10-12T09:05:00", entity: { id: 11, text: "Alpha post", isMediaReady: true } };
 const PINNED: QueueItem = { id: 902, type: "post", publishDateTime: "2026-10-13T09:05:00", entity: { id: 12, text: "Pinned post", isPinned: true, isMediaReady: false } };
-// A scheduled message has its send time on the entity (OF's isSFLMessage is a chat entity without one).
 const CHAT: QueueItem = { id: 903, type: "chat", publishDateTime: "2026-10-14T18:30:00", entity: { id: 22, text: "Alpha chat", scheduledAt: "2026-10-14T18:30:00" } };
 
-// Queue rows: the month pages' agenda items, the saved-for-later pages' OF cards.
 const rows = (doc: Document) => [...doc.querySelectorAll<HTMLElement>(".b-agenda__area-events__item, .b-post.m-queue-post")];
 const more = (row: Element) => row.querySelector<HTMLButtonElement>("[at-attr='more_menu']")!;
 const menu = (doc: Document) => doc.getElementById("oi-queue-menu");
@@ -112,7 +109,6 @@ describe("queue rows: OF's More button", () => {
 });
 
 describe("bindQueue", () => {
-  // Every test shares `document`: its listeners go when it ends.
   const unbinds: (() => void)[] = [];
   afterEach(() => {
     while (unbinds.length) unbinds.pop()!();
@@ -349,7 +345,6 @@ describe("the month pages' calendar (OF's changeMonth / changeDay / tabs)", () =
     expect(sideDay(doc)).toBe("November 1, 2026");
     expect(btn(doc, "prev_month").disabled).toBe(false);
     expect(btn(doc, "prev_day_sidebar").disabled).toBe(false);
-    // Nov 2026: Sunday the 1st to Monday the 30th, then Dec 1-5: five weeks.
     expect(doc.querySelectorAll(".v-calendar-monthly > .v-calendar-weekly__week")).toHaveLength(5);
     expect(cells(doc)).toHaveLength(35);
     expect(cells(doc)[0].querySelector(".b-month-day-cell__value")!.textContent!.trim()).toBe("Nov 1");
@@ -417,13 +412,10 @@ describe("the month pages' calendar (OF's changeMonth / changeDay / tabs)", () =
   });
 });
 
-/** OF's own /api2/v2 queue responses, read through the Relay on 2026-10-17 and scrubbed (app/lib/__fixtures__/of). */
 const fixture = <T,>(name: string): T => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/queue-${name}.json`), "utf8")) as T;
 type Schedules = { list: QueueItem[]; syncInProcess: boolean };
-// October: nothing scheduled. November: one post on the 26th, 02:14 UTC (03:14 in Ljubljana, CET).
 const OCT = fixture<Schedules>("schedules-2026-10");
 const NOV = fixture<Schedules>("schedules-2026-11");
-// /schedules/counters for the same months: an empty month is OF's empty array, not an object.
 const COUNTERS_OCT = fixture<{ list: Record<string, Record<string, number>> | [] }>("counters-2026-10");
 const COUNTERS_NOV = fixture<{ list: Record<string, Record<string, number>> | [] }>("counters-2026-11");
 const ZONE = "Europe/Ljubljana";
@@ -469,7 +461,6 @@ describe("the queue with OF's captured responses", () => {
     expect(sideEmpty(doc)).toBe(true);
     const row = doc.querySelector<HTMLElement>(".l-wrapper__sidebar .b-agenda__area-events__item")!;
     expect(row.dataset).toMatchObject({ oiQueueKind: "post", oiQueueTarget: "2433845504", oiQueueSchedule: "1457214731", oiQueueReady: "true" });
-    // Nothing under the calendar (OF lists the month only in its list view).
     expect(doc.querySelector(".v-calendar")!.nextElementSibling).toBeNull();
   });
 
@@ -536,7 +527,6 @@ describe("Add to queue (the \"+\": OF's NEW_SCHEDULED_EVENT modal)", () => {
   afterEach(() => {
     while (unbinds.length) unbinds.pop()!();
   });
-  // 12:00 in Ljubljana on Oct 12, 2026 (the queue capture's today).
   const NOW = new Date("2026-10-12T10:00:00Z");
   const bound = (page: string, h: QueueHandlers | null, now = NOW) => {
     const doc = load(page);
@@ -578,7 +568,6 @@ describe("Add to queue (the \"+\": OF's NEW_SCHEDULED_EVENT modal)", () => {
     expect(modal(doc)!.querySelector(".modal-title")!.textContent!.trim()).toBe(ADD_TITLE);
     expect(tabs(doc)).toEqual(ADD_TABS.map((t, i) => [t.text, i === 0]));
     expect(modal(doc)!.querySelector(".g-input__help")!.textContent!.trim()).toBe(ADD_HELP.scheduled);
-    // The shown day (the capture's Oct 12) at the Agency zone's time ten minutes from now.
     expect([field(doc, "date").value, field(doc, "time").value]).toEqual(["Oct 12, 2026", "12:10"]);
     expect(types(doc)).toEqual(ADD_MENU.map((e) => [e.atAttr, e.title]));
     expect(modal(doc)!.querySelector(".modal-backdrop")).not.toBeNull();
@@ -598,7 +587,6 @@ describe("Add to queue (the \"+\": OF's NEW_SCHEDULED_EVENT modal)", () => {
       modal(doc)!.querySelector<HTMLButtonElement>(`[at-attr='add_${kind}']`)!.click();
       expect(modal(doc)).toBeNull();
     }
-    // 18:30 in Ljubljana (CEST) is 16:30 UTC.
     expect(h.create.mock.calls.map(([k, d]) => [k, d.toISOString()])).toEqual([
       ["post", "2026-10-21T16:30:00.000Z"],
       ["message", "2026-10-21T16:30:00.000Z"],
@@ -701,14 +689,12 @@ describe("Add to queue (the \"+\": OF's NEW_SCHEDULED_EVENT modal)", () => {
   });
 
   it("createAt: a later day at its midnight in the Agency's zone, as the live modal opens; today ten minutes from now (OF's default)", () => {
-    const now = new Date("2026-10-17T10:00:00Z"); // 12:00 in Ljubljana
+    const now = new Date("2026-10-17T10:00:00Z");
     expect(createAt("2026-10-21", "Europe/Ljubljana", now).toISOString()).toBe("2026-10-20T22:00:00.000Z");
     expect(createAt("2026-10-21", "America/Los_Angeles", now).toISOString()).toBe("2026-10-21T07:00:00.000Z");
     expect(createAt("2026-10-17", "Europe/Ljubljana", now).toISOString()).toBe("2026-10-17T10:10:00.000Z");
-    // 23:55 in Ljubljana: tomorrow's midnight is not ten minutes on, so ten minutes from now.
     const late = new Date("2026-10-17T21:55:00Z");
     expect(createAt("2026-10-18", "Europe/Ljubljana", late).toISOString()).toBe("2026-10-17T22:05:00.000Z");
-    // Across the October DST change (Oct 25 in Europe): midnight of the 26th is UTC+1.
     expect(createAt("2026-10-26", "Europe/Ljubljana", now).toISOString()).toBe("2026-10-25T23:00:00.000Z");
     expect(fromWallClock(wallClock(now, "Asia/Tokyo"), "Asia/Tokyo").getTime()).toBe(now.getTime());
   });
@@ -738,7 +724,6 @@ describe("Add to queue (the \"+\": OF's NEW_SCHEDULED_EVENT modal)", () => {
   });
 });
 
-/** OF's /schedules/later lists (captured: empty) and the guessed shapes of saved-for-later items (marked `_source: guess`). */
 type Later = { _source: string; list: QueueItem[]; hasMore: boolean };
 const SAVED_POSTS = fixture<Later>("saved-posts");
 const SAVED_MESSAGES = fixture<Later>("saved-messages");
@@ -771,7 +756,6 @@ describe("saved for later", () => {
     }
   });
 
-  // A card's parts as the live page shows them: [date, "Later", "to <fan>", time, text].
   const card = (row: Element) => [
     row.querySelector(".m-date-case")!.textContent!.trim(),
     row.querySelector(".b-queue-post-info")!.textContent!.trim(),
@@ -786,7 +770,6 @@ describe("saved for later", () => {
     const doc = page("queue/saved-for-later-posts", SAVED_POST.list, h);
     const [row] = rows(doc);
     expect(row.matches(".b-post.m-queue-post.m-save-later.sfl-post[data-v-48bf68d0]")).toBe(true);
-    // 17:26 UTC is 7:26 pm in Ljubljana (CEST), with OF's star.
     expect(card(row)).toEqual(["Oct 17, 2026", "Later", null, "7:26* pm", "Synthetic saved post"]);
     expect(row.querySelector("svg[data-icon-name='icon-saved-for-later-posts']")).not.toBeNull();
     expect(row.querySelector<HTMLButtonElement>(".b-post__labels-controls button")!.disabled).toBe(true);
@@ -827,8 +810,6 @@ describe("saved for later", () => {
     expect(dayBars({ post: 1 })).toEqual([{ type: "post", name: "1" }]);
   });
 
-  // Not seen live: OF lists a saved-for-later item on a month only once its auto-publishing gives it a date (that switch
-  // stays off on the sandbox), so this month is the guessed shape (queue-saved-month.json) and OF's app.js rule.
   it("a month with saved-for-later items: half-tinted day bars with the scheduled part's width, sfl marks and starred times", () => {
     const doc = load("queue/index");
     drawQueue(doc, new Date(2026, 10, 3), new Date(2026, 9, 17));
@@ -886,7 +867,6 @@ describe("Edit: the composer's draft filled from the item", () => {
       scheduled_date: localIso(new Date("2026-12-15T11:00:00+00:00")),
       edit_id: "48844793592",
     });
-    // A message to lists, with lists left out, media and a price (the same fields OF's ChatsSend reads).
     const media = [{ id: 8105, type: "photo" }] as QueuedMessage["media"];
     expect(messageEditDraft({ ...msg, userIds: [], userLists: ["fans", 1234], excludedLists: [99], media, price: 5 })).toMatchObject({
       user_lists: ["fans", "1234"],
@@ -925,7 +905,6 @@ describe("a scheduled message on the calendar (captured live)", () => {
     drawQueue(doc, new Date(2026, 11, 15), new Date(2026, 9, 17));
     applyData(doc, "queue/index", { queue: day.list, templates: { agenda: AGENDA_TPL }, zone: ZONE });
     const bar = doc.querySelector<HTMLElement>(".v-calendar-monthly .v-event[data-oi-data]")!;
-    // OF's live markup: "v-event v-event-start v-event-end chat white--text", its count as the name.
     expect([bar.dataset.date, bar.className, bar.textContent]).toEqual(["2026-12-15", "v-event v-event-start v-event-end chat white--text", "1"]);
     const side = [...doc.querySelectorAll<HTMLElement>(".l-wrapper__sidebar .b-agenda__area-events__item")].map((a) => [a.dataset.oiQueueKind, a.dataset.oiQueueTarget, a.querySelector(".b-agenda__area-events__item-details")!.textContent]);
     expect(side).toEqual([["chat", "48844793592", "12:00 pm"]]);

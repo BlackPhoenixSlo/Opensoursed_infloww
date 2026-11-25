@@ -1,17 +1,3 @@
-"""The right column's "Search users or posts" reads of the fake OnlyFans (ofm-not-yet ticket 84: the schedule form's
-search read proofs' fake run), read only.
-
-Mounted from app.py:
-
-  GET /api2/v2/users   the users search (of_reads.py `search_users`: `{limit, offset, query, view: "se"}`): the world's
-                       fans whose username or name holds `query` (any case), as a bare list of users in the `se` view
-  GET /api2/v2/posts   the posts search (`search_posts`: `{limit, query, skip_users, format}`): the fake has no feed
-                       posts, so `{"list": [], "hasMore": false}`; with no `query` (the own posts list, `list_posts`)
-                       unmodelled, answered 404 and counted as app.py answers any unmodelled request
-
-ASSUMPTION: matching by a plain substring of username or name stands in for OnlyFans's own search ranking (inferred,
-D29: no capture of how OF matches); overturned by a capture of its answer, which then replaces this filter.
-"""
 from __future__ import annotations
 
 import re

@@ -1,239 +1,10 @@
 #!/usr/bin/env python3
-"""
-Vault ordering and AI folders (`vault_scripts`) — the escalation ladder, the
-send order, and the outfit / purpose folders built from them. Durable
-regression suite (plain-assert, no pytest — repo convention).
-
-A creator shoots an escalating run (clothed → lingerie → nude → touching →
-masturbation). `escalation_score` / `send_sort_key` put any set of items in the
-order to send them (tease first, payoff last), and the AI-folder planner groups
-the vault into outfits and price lanes in that order. (The upload-burst
-clustering / orientation pass and its `script_seq` writer were deleted in
-cleanup Phase 6.)
-
-Cases:
-  case_ladder_orders_the_arc:
-      the ladder is monotone across the real arc — dressed/posing < lingerie
-      tease < nude posing < fingering < orgasm. This ordering IS the product
-      decision, so it gets pinned rather than left to the weights.
-  case_highest_act_wins:
-      a clip that opens with a tease and ends with insertion scores at the
-      INSERTION end. A clip belongs where it finishes, not where it starts.
-  case_penetration_scores_without_acts:
-      `penetration` alone lifts an item even when `acts` came back empty, so a
-      partially-parsed row still lands in the back half.
-  case_unscoreable_is_none_not_zero:
-      an item with no usable V2 fields scores None, NOT 0 — zero would sort it
-      to the front of the script as though it were the tame opener.
-  case_missing_axis_does_not_shift_the_others:
-      an absent axis contributes nothing and never reweights its neighbours —
-      the defect that killed the original weighted blend.
-  case_act_alias_is_scored:
-      the model's menu-adjacent spellings ('stripping', 'rubbing_breasts') score
-      as the menu term; a genuinely unknown act still scores nothing.
-  case_buildup_sends_before_payoff_at_same_rung:
-      the distinction the single 0-100 score could NOT express — a nude tease
-      and a nude fingering clip both scored 60; `stands_alone` separates them.
-  case_rung_outranks_everything_below_it:
-      the explicitness ladder dominates: a suggestive closer still sends before
-      an explicit build-up.
-  case_send_order_reads_brief_not_a_second_taxonomy:
-      ordering consumes vault_ai_brief's payoff set and ladder, so the selling
-      taxonomy cannot drift into two copies.
-  case_price_tiers_split_on_nudity_and_visibility:
-      both tiers are explicit, so heat does not separate them. $50 = fully nude
-      or pussy visible; $10 = breasts out with something still ON. Fully nude is
-      NEVER a $10. Pins the AI- prefix and tier exclusivity too.
-  case_fifty_never_contains_lingerie_on:
-      lingerie_on + explicit is usually a mislabel, so $50 refuses it outright
-      rather than pricing a partial reveal as a full one.
-  case_pussy_and_breasts_are_asked_separately:
-      the split IS the price boundary — she is often covered in one place and
-      bare in the other. $10 = boobs out / pussy covered; $50 = pussy on show;
-      a pussy behind a thong is neither.
-  case_underwear_flag_overrides_the_clothing_enum:
-      `clothing_state` was wrong on ~1 in 3 of the $50 items (fully_nude with
-      panties on). The cheap flags pass answers directly, so when
-      `underwear_visible` exists it beats the enum.
-  case_mass_lane_is_suggestive_only:
-      the old suggestive→explicit band swallowed 92 of 103 items and made every
-      paid item free as well; mass is suggestive ONLY.
-  case_nothing_on_show_is_never_a_tease:
-      a top still on, or turned away, means no reveal to charge for — those go
-      to the mass/story lane and must not fall out of every lane, which is what
-      the old ass/back proxy did to them.
-  case_unflagged_item_is_never_called_mass_safe:
-      the mass-safe lane requires POSITIVE evidence. Absence of flags used to
-      read as "nothing on show" — that is how the graded vault's penetration and dildo
-      clips, and all 472 Ava members, got into the mass-safe folder.
-  case_unflagged_stills_wait_out_of_the_price_lanes:
-      a part-flagged vault (vision cap hit mid-pass) still plans: flagged
-      stills fill $10/$50/safe explicit, unflagged or half-flagged ones are
-      left out of all three — never priced off `clothing_state` — and sit in
-      `explicit 1:1`; `flags.missing` counts them.
-  case_mass_safe_needs_to_know_what_is_in_frame:
-      a SECOND vacuous-truth hole — the old `pussy_covered` answered FABRIC not
-      visibility, so with body_focus empty every "nothing shown" test passed for
-      free. Both the graded vault clips survived the flags fix this way. The enum states
-      "not in frame" outright; `acts` is the independent second lock.
-  case_a_named_garment_means_she_is_dressed:
-      a named garment means she is dressed, which `underwear_visible` alone
-      could not tell (tank top + skirt = no underwear = "nude").
-  case_a_hand_over_her_breast_is_not_being_dressed:
-      `covered` lumps fabric with a hand because for "how much skin is on show"
-      they are the same. For the mass-safe lane they are not — a nude with her
-      hands over her breasts is still a nude.
-  case_not_in_frame_is_an_answer_not_a_silence:
-      why the shape changed at all — under booleans, "cannot see it" and "it is
-      bare" were the same stored value, so no lane could tell safety from
-      ignorance.
-  case_partial_flags_do_not_count_as_checked:
-      every region must be present AND be a state the vocabulary defines; half
-      an answer is not one, and the superseded boolean shape is not one either.
-  case_clip_frames_fold_by_worst_not_by_all:
-      the `all()` fold let a frame that saw nothing vote for exposure — 20 of 21
-      the graded vault clips folded to "uncovered". Regions fold by MAX exposure.
-  case_contradictions_score_only_answered_rows:
-      the free quality metric: describe and flags look at the same image, so
-      where they disagree one is provably wrong. Must not fire on incomplete
-      rows or it measures coverage instead of correctness.
-  case_turned_away_explicit_is_safe_to_mass:
-      tagged explicit for what the scene IS, but only her back/ass is in frame
-      — nothing on show, so it is mass-safe.
-  case_paid_tease_lanes_are_images_only:
-      the paid tiers are stills; clips never leak in.
-  case_suggestive_item_sits_in_both_lanes_at_different_positions:
-      THE multi-folder case end to end — a suggestive still CLOSES the tamer
-      lane and OPENS the spicier one. Impossible if order lived on the item.
-  case_purpose_pool_can_be_restricted_to_leftovers:
-      a kept shoot's media never leaks into the leftover lanes.
-  case_outfit_key_prefers_multiword_colour:
-      'dark blue' wins before 'blue' matches inside it.
-  case_outfit_key_falls_back_and_gives_up:
-      material is the fallback; an unnamed garment yields NO outfit rather than
-      pooling every unattributable item into one junk group.
-  case_same_colour_different_garment_is_a_different_set:
-      the operator's complaint — one 'black' group was three sets. A bodysuit,
-      a bra set and a top are different outfits even in one colour.
-  case_undressing_does_not_split_a_script:
-      a shoot RUNS dressed → undressed, so the outfit key must not split on
-      clothing_state or every real script fragments.
-  case_unrecognised_garment_still_keys_on_colour:
-      an unusual garment wording still groups by colour rather than vanishing.
-  case_outfit_joins_photos_and_videos_into_one_script:
-      THE point — upload bursts are kind-pure, so burst grouping splits a shoot
-      down the middle; the outfit re-joins the stills and the clips.
-  case_same_colour_far_apart_is_two_shoots:
-      the same colour three weeks later is a different shoot.
-  case_one_rung_group_is_a_set_not_a_script:
-      eight equally-suggestive stills in one bra is a set, not a script.
-  case_mixed_media_scripts_rank_first:
-      a shoot with both stills and clips outranks a photo-only one.
-  case_apply_does_not_touch_of_unless_asked:
-      the OF write is opt-in — `confirm` alone never reaches her account.
-  case_mirror_creates_of_lists_and_binds_them:
-      mirroring creates one OF vault list per folder and binds of_list_id.
-  case_mirror_rerun_reuses_the_same_of_list:
-      a second run ADDS to the bound list rather than creating a duplicate list
-      of the same name on her account.
-  case_of_failure_keeps_the_internal_folder:
-      an OF error never rolls back the internal folder — local-without-OF is
-      recoverable, losing the grouping is not.
-  case_plan_previews_without_creating_anything:
-      the preview the vault button shows creates ZERO folders.
-  case_apply_creates_folders_in_send_order:
-      confirming creates exactly the previewed folders, each filled 1..n in the
-      order the preview showed.
-  case_apply_twice_refreshes_instead_of_duplicating:
-      pressing the button again REUSES the folders it made and rewrites membership
-      rather than piling up a second set.
-  case_rebuild_retires_folders_the_plan_no_longer_makes:
-      a previous generation's folders are soft-deleted on rebuild, so a rules or
-      naming change does not leave two versions of the same idea behind.
-  case_retire_never_touches_operator_folders:
-      only rows this module created AND carrying the AI- prefix are retired —
-      an operator folder is safe even if they named it AI- themselves.
-  case_apply_leaves_an_operators_ai_named_folder_alone:
-      an operator folder NAMED like a generated one ("AI-x") is not reused or
-      wiped; the generated folder is made beside it.
-  case_two_shoots_with_one_name_keep_their_own_items:
-      one outfit shot on Jul 1 a year apart (names carry `<Mon D>`) plans as
-      "<n>" (earlier) and "<n> 2", each
-      folder holds only its own shoot, and a re-run reuses the same pair.
-  case_same_name_suffix_follows_start_not_rank:
-      the later shoot outranking the earlier does not move the bare name — a
-      re-rank must not swap two folders' contents.
-  case_mirror_keeps_two_same_named_shoots_apart:
-      each OF list gets only its own shoot's media; none is pushed empty.
-
-  case_disputed_items_read_the_least_harmful_way:
-      per contradiction code, through the real lane cut: never a free lane
-      (stories / mass / safe explicit), priced as the flags see it, copy
-      (`why`) claims only what both passes agree on, no raw beats; a
-      disputed paid item is sold 1:1, a disputed free-tier one is foldered
-      nowhere and counted in the plan's `settled_unlaned`.
-  case_disputed_item_never_opens_a_script:
-      a disputed free-tier still does not join an outfit script (its free
-      opener rungs); a disputed paid one keeps its place.
-
-  case_a_duplicate_set_is_one_item_in_every_folder:
-      a hashed Duplicates set plans as its original only; the copies are in no
-      folder and counted in `dupes_collapsed` (unhashed control: they were).
-  case_collapse_keeps_the_original_unless_it_has_no_reading:
-      `collapse_dupes` table — original kept, an unread original gives way.
-  case_a_colourless_set_keys_on_garment_and_setting:
-      no colour → `<garment class> <setting>`; either half alone is no key.
-  case_keep_zero_builds_lanes_only:
-      apply keep=0 makes no script folder (was 2); absent → 2; junk → 400.
-  case_preview_counts_what_confirm_will_create_keep_and_retire:
-      the plan's `changes` (create / keep / retire / retire_on_of) equal what
-      the apply then does, by the same match.
-
-  case_one_upload_second_splits_by_room:
-      one upload second, three rooms → one script per room; Jev's setting
-      beats the describe's; no room / 'other' joins the nearest part in time
-      (tie → biggest); a room too small is no script. Name carries room + date.
-  case_a_big_shoot_is_capped_to_a_sendable_ladder:
-      30 items → 3 openers / 4 middle / 3 closers, varied, clip closers, send
-      order kept; overflow listed; health "capped from 30".
-  case_burst_frames_collapse_inside_a_rung:
-      stored hashes at NEAR_DUPE_THRESHOLD drop burst frames on the same rung
-      (not re-uploads, not another rung, never an unhashed item); the frame
-      with a Jev reading is kept.
-  case_reveal_breaks_a_tie_inside_a_rung:
-      inside one rung the barer item sends later (flags or Jev); media id last.
-  case_a_skipped_rung_ranks_below_a_full_ladder:
-      rank by opener + middle + closer present and skipped rungs: {1,2,3} >
-      {1,2} > {1,3} > a missing band; no closer still last.
-  case_a_script_with_no_closer_borrows_one:
-      one closer borrowed from outside every kept script — same colour before
-      same room, clip first — appended last, `borrowed`, health says so; none
-      to borrow → "no closer".
-  case_a_borrowed_closer_keeps_the_cap_and_skips_pruned_frames:
-      W30 F12: a full ladder (10) that borrows stays at SCRIPT_SIZE (a non-closer goes to overflow);
-      a frame the script pruned as a near-dupe is never the one borrowed back.
-  case_script_names_and_health:
-      `AI-<colour garment> · <room> · <Mon D>`, capped; health phrase table.
-  case_renamed_scripts_reuse_on_rerun_and_retire_the_old_names:
-      the old `AI-<outfit>` script folder is retired by the first v2 build; a
-      rerun reuses the new one.
-
-Run: cd service/tests && \
-  PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_scripts.py
-Exit 0 = all cases passed. Temp DB bound by _harness (never prod). No OF, no
-network, no LLM — scoring is pure arithmetic over already-stored fields.
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
-# These cases test feature logic, not the account gate (that is
-# test_account_isolation_gate's job). They reach `/admin` routes or
-# `assert_account_owned` with no session, which fails closed (401) since
-# 3b30b486. This is the documented escape hatch (read per call), scoped to this
-# test process.
 import os  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
@@ -247,8 +18,6 @@ from sqlalchemy import select  # noqa: E402
 
 import vault_scripts  # noqa: E402
 
-# The grouping / order cases below pin behaviour on 3-8 item fixtures; the
-# owner size floor (10 pieces, 2 clips) has its own cases, which pass it in.
 vault_scripts.MIN_SCRIPT_ITEMS = 3
 vault_scripts.MIN_SCRIPT_VIDEOS = 0
 from db.engine import get_session  # noqa: E402
@@ -268,7 +37,6 @@ def _next_account() -> str:
 def _fields(clothing: str | None = None, acts: list[str] | None = None,
             penetration: str | None = None, explicitness: str | None = None
             ) -> dict:
-    """A V2 describe payload with only the fields a case cares about."""
     out: dict = {}
     if clothing is not None:
         out["clothing_state"] = clothing
@@ -281,7 +49,6 @@ def _fields(clothing: str | None = None, acts: list[str] | None = None,
     return out
 
 
-# ── The ladder ──────────────────────────────────────────────────────
 
 def case_ladder_orders_the_arc() -> None:
     arc = [
@@ -324,12 +91,6 @@ def case_unscoreable_is_none_not_zero() -> None:
 
 
 def case_missing_axis_does_not_shift_the_others() -> None:
-    """An absent axis must contribute nothing — never reweight its neighbours.
-
-    The original blend re-normalised over the axes present, which made items
-    with different field coverage incomparable: a nude item with no `acts`
-    outscored one with a toy inserted. Max has no such coupling.
-    """
     no_acts = escalation_score(_fields("fully_nude", None, None, "explicit"))
     with_tame_act = escalation_score(_fields("fully_nude", ["posing"], "none", "explicit"))
     assert no_acts == with_tame_act, (
@@ -339,25 +100,15 @@ def case_missing_axis_does_not_shift_the_others() -> None:
 
 
 def case_act_alias_is_scored() -> None:
-    # The model returns menu-adjacent spellings on real batches; an unknown act
-    # is dropped silently, so drift costs signal rather than announcing itself.
     assert (escalation_score(_fields("lingerie_on", ["stripping"]))
             == escalation_score(_fields("lingerie_on", ["strip"]))), "alias not mapped"
     assert (escalation_score(_fields("fully_nude", ["rubbing_breasts"]))
             == escalation_score(_fields("fully_nude", ["groping_own_breasts"])))
-    # An act we have never seen must not crash or invent a rung.
     assert escalation_score(_fields(None, ["lying_on_back"])) is None
 
 
-# ── End to end ──────────────────────────────────────────────────────
 
 async def _seed(aid: str, items: list[tuple]) -> None:
-    """items = [(media_id, minutes_offset, v2_fields[, kind])] in UPLOAD order.
-
-    `kind` defaults to "video". It matters for the outfit cases: real upload
-    bursts are kind-PURE, so a case about joining stills to clips has to seed
-    both or it proves nothing.
-    """
     async with get_session() as s:
         s.add(Account(id=aid))
         await s.commit()
@@ -375,13 +126,6 @@ async def _seed(aid: str, items: list[tuple]) -> None:
 
 
 def case_buildup_sends_before_payoff_at_same_rung() -> None:
-    """The distinction the single 0-100 score could NOT express.
-
-    A nude tease and a nude fingering clip both score 60 on the escalation
-    ladder, so the old key ordered them arbitrarily. `stands_alone` from
-    vault_ai_brief separates them: a clip with no payoff act is a rung that tees
-    up the next send, so it goes first; one that can close goes last.
-    """
     tease = _fields("fully_nude", ["posing", "tease"], "none", "explicit")
     closes = _fields("fully_nude", ["fingering"], "fingers", "explicit")
     assert vault_scripts.send_sort_key(tease) < vault_scripts.send_sort_key(closes), (
@@ -391,8 +135,6 @@ def case_buildup_sends_before_payoff_at_same_rung() -> None:
 
 
 def case_rung_outranks_everything_below_it() -> None:
-    """sfw→suggestive→explicit→hardcore is the night's escalation and dominates:
-    a suggestive clip that CLOSES still sends before an explicit build-up."""
     suggestive_closer = _fields("lingerie_on", ["rubbing_clit"], "none", "suggestive")
     explicit_buildup = _fields("fully_nude", ["posing"], "none", "explicit")
     assert (vault_scripts.send_sort_key(suggestive_closer)
@@ -400,8 +142,6 @@ def case_rung_outranks_everything_below_it() -> None:
 
 
 def case_send_order_reads_brief_not_a_second_taxonomy() -> None:
-    """Ordering consumes vault_ai_brief so the two cannot drift. If the brief's
-    payoff set changes, the order changes with it — no parallel copy here."""
     import vault_ai_brief as brief
     act = sorted(brief._PAYOFF_ACTS)[0]
     assert vault_scripts.send_order_reason(_fields("fully_nude", [act]))["closes"] is True
@@ -421,15 +161,6 @@ def _shot(body: list[str], tier: str, clothing: str, garment: str = "white bra")
 def _flags(vulva: str = "not_in_frame", breasts: str = "not_in_frame",
            anus: str = "not_in_frame", *, underwear: bool = True,
            over_vulva: str = "", over_breasts: str = "", over_anus: str = "") -> dict:
-    """A COMPLETE flags answer. Complete on purpose: a partial one is not an
-    answer at all (`flags_known`), so a test that seeded three of four keys
-    would be exercising the unflagged path while looking like it tested a
-    flagged item.
-
-    `over_*` is what the model NAMED as covering that region. It is optional in
-    the schema but load-bearing in the lanes: `covered` alone does not say
-    whether she is dressed or has a hand in the way.
-    """
     out = {"underwear_visible": underwear, "vulva_vis": vulva,
            "breasts_vis": breasts, "anus_vis": anus}
     for key, val in (("over_vulva", over_vulva), ("over_breasts", over_breasts),
@@ -440,44 +171,30 @@ def _flags(vulva: str = "not_in_frame", breasts: str = "not_in_frame",
 
 
 def _dressed(**kw) -> dict:
-    """Covered by actual clothing — the shape that IS mass-safe."""
     return _flags(vulva="covered", breasts="covered",
                   over_vulva="black lace bodysuit",
                   over_breasts="black lace bodysuit", **kw)
 
 
 def _turned_away(**kw) -> dict:
-    """Shot from behind: her front is not what the camera is looking at, so it
-    is `not_in_frame` rather than `covered` — being turned away is not
-    something covering her."""
     return _flags(vulva="not_in_frame", breasts="not_in_frame",
                   anus="covered", **kw)
 
 
+# Fully nude is never the $10 tier; a price may only rest on a flag that was actually answered.
 def case_price_tiers_split_on_nudity_and_visibility() -> None:
-    """Both tiers are explicit, so heat does not separate them. $50 is the full
-    reveal — fully nude, or her pussy visible. $10 is the middle band: breasts
-    out with something still on. Fully nude is NEVER a $10."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
         (1101, 0.0, _shot(["face"], "sfw", "dressed"), "photo"),
         (1102, 0.1, _shot(["breasts"], "suggestive", "lingerie_on"), "photo"),
-        # explicit, breasts out, pussy NOT in frame -> $10
         (1103, 0.2, {**_shot(["breasts", "nipples"], "explicit", "pulled_down"),
                      **_flags(breasts="bare")}, "photo"),
-        # explicit, FULLY NUDE, pussy not in frame -> $50, never $10
         (1104, 0.3, {**_shot(["breasts"], "explicit", "fully_nude"),
                      **_flags(breasts="bare", underwear=False)}, "photo"),
-        # explicit, pussy visible -> $50
         (1105, 0.4, {**_shot(["pussy"], "explicit", "pulled_aside"),
                      **_flags(vulva="bare", breasts="covered")}, "photo"),
-        # explicit, full body nude -> $50
         (1106, 0.5, {**_shot(["full_body"], "explicit", "fully_nude"),
                      **_flags(breasts="bare", underwear=False)}, "photo"),
-        # Explicit with breasts IN FRAME but never actually looked at. Under the
-        # old shape this priced at $10: `body_focus` said breasts, and a missing
-        # `breasts_covered` read as "not covered" — so a bra-on shot was sold as
-        # a reveal. A price may only rest on a flag that was answered.
         (1107, 0.6, _shot(["breasts", "nipples"], "explicit", "pulled_down"), "photo"),
     ]))
     lanes = {f["lane"]: f for f in asyncio.run(
@@ -487,7 +204,6 @@ def case_price_tiers_split_on_nudity_and_visibility() -> None:
         "$10 is breasts out with something still ON, and only when checked"
     assert {r["media_id"] for r in lanes["tease_50"]["items"]} == {1104, 1105, 1106}, \
         "fully nude / pussy visible / full-body all price at $50"
-    # Content lanes may overlap; two PRICES for one item may not.
     assert not ({r["media_id"] for r in lanes["tease_10"]["items"]}
                 & {r["media_id"] for r in lanes["tease_50"]["items"]}), \
         "an item cannot be both a $10 and a $50"
@@ -495,12 +211,8 @@ def case_price_tiers_split_on_nudity_and_visibility() -> None:
 
 
 def case_fifty_never_contains_lingerie_on() -> None:
-    """`lingerie_on` + explicit is usually a mislabel (panties pulled aside read
-    as lingerie on). Trusting it would price a partial reveal as a full one, so
-    the $50 tier refuses the combination outright."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
-        # Both flagged: the paid tiers only price what was actually looked at.
         (1141, 0.0, {**_shot(["pussy", "breasts"], "explicit", "lingerie_on"),
                      **_flags(vulva="bare", breasts="bare",
                               over_vulva="black lace thong")}, "photo"),
@@ -514,18 +226,12 @@ def case_fifty_never_contains_lingerie_on() -> None:
 
 
 def case_pussy_and_breasts_are_asked_separately() -> None:
-    """The split IS the price boundary. One conflated `genitals_covered` could
-    not express the middle tier: she is very often covered in one place and bare
-    in the other, and that difference is what $10 vs $50 means."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
-        # Boobs out, pussy still behind fabric -> the $10 band.
         (1161, 0.0, {**_shot(["breasts", "nipples", "pussy"], "explicit", "pulled_down"),
                      **_flags(vulva="covered", breasts="bare")}, "photo"),
-        # Pussy on show -> $50, regardless of the breasts.
         (1162, 0.1, {**_shot(["breasts", "pussy"], "explicit", "pulled_aside"),
                      **_flags(vulva="bare", breasts="covered")}, "photo"),
-        # Pussy in frame but behind a thong -> neither tier calls it a reveal.
         (1163, 0.2, {**_shot(["pussy"], "explicit", "lingerie_on"),
                      **_flags(vulva="covered", breasts="covered")}, "photo"),
     ]))
@@ -539,19 +245,12 @@ def case_pussy_and_breasts_are_asked_separately() -> None:
 
 
 def case_underwear_flag_overrides_the_clothing_enum() -> None:
-    """`clothing_state` was measured wrong on ~1 in 3 of the items the $50 tier
-    is built from — `fully_nude` on shots with panties still on, with nothing in
-    the row to contradict it. The cheap flags pass answers that directly, so
-    when `underwear_visible` exists it wins outright."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
-        # The exact failure: enum says nude, the flag says she is not.
         (1151, 0.0, {**_shot(["breasts"], "explicit", "fully_nude"),
                      **_flags(breasts="bare", underwear=True)}, "photo"),
-        # Genuinely nude, flag agrees.
         (1152, 0.1, {**_shot(["breasts"], "explicit", "fully_nude"),
                      **_flags(breasts="bare", underwear=False)}, "photo"),
-        # Something over her vulva is never the full reveal, whatever else shows.
         (1153, 0.2, {**_shot(["pussy"], "explicit", "fully_nude"),
                      **_flags(vulva="covered", underwear=True)}, "photo"),
     ]))
@@ -564,8 +263,6 @@ def case_underwear_flag_overrides_the_clothing_enum() -> None:
 
 
 def case_mass_lane_is_suggestive_only() -> None:
-    """The old suggestive→explicit band swallowed 92 of 103 items and made every
-    paid item free as well."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
         (1111, 0.0, _shot(["face"], "sfw", "dressed"), "photo"),
@@ -579,16 +276,10 @@ def case_mass_lane_is_suggestive_only() -> None:
 
 
 def case_nothing_on_show_is_never_a_tease() -> None:
-    """A top still on, or turned away, means there is no reveal to charge for.
-    Those belong in the mass/story lane, never in a paid tease — and they must
-    not fall out of every lane either, which is what the old `ass`/`back` proxy
-    did to them."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
-        # Top on: breasts in frame but covered, pussy covered.
         (1171, 0.0, {**_shot(["breasts", "face"], "explicit", "lingerie_on"),
                      **_dressed()}, "photo"),
-        # Turned away: her front is not in the picture at all.
         (1172, 0.1, {**_shot(["ass", "back"], "explicit", "fully_nude"),
                      **_turned_away(underwear=False)}, "photo"),
     ]))
@@ -601,21 +292,13 @@ def case_nothing_on_show_is_never_a_tease() -> None:
         assert not got & {1171, 1172}, f"{tier} charged for a non-reveal: {got}"
 
 
+# The mass-safe lane needs positive evidence: absent flags must not read as nothing on show.
 def case_unflagged_item_is_never_called_mass_safe() -> None:
-    """The lane that claims something is safe to put in front of everyone must
-    require POSITIVE evidence. Every other test in it reads "no evidence of
-    exposure", which an unflagged item satisfies trivially — that is how
-    the graded vault's anal-penetration clip and dildo clip landed in the mass-safe
-    folder, and how all 472 members on V1-described Ava got there.
-    """
     aid = _next_account()
     asyncio.run(_seed(aid, [
-        # Flagged and genuinely turned away → safe.
         (1401, 0.0, {**_shot(["ass", "back"], "explicit", "fully_nude"),
                      **_turned_away(underwear=False)}, "photo"),
-        # NEVER looked at by the flags pass → must NOT be called safe.
         (1402, 0.1, _shot(["ass", "back"], "explicit", "fully_nude"), "photo"),
-        # A clip with nothing recorded at all — the a real graded shape.
         (1403, 0.2, {"explicitness": "explicit"}, "video"),
     ]))
     lanes = {f["lane"]: f for f in asyncio.run(
@@ -625,26 +308,16 @@ def case_unflagged_item_is_never_called_mass_safe() -> None:
 
 
 def case_unflagged_stills_wait_out_of_the_price_lanes() -> None:
-    """The vision daily cap usually stops the flags pass part-way. The plan
-    must still build, from the checked stills only: an unchecked one is left
-    out of every flag lane rather than priced off `clothing_state`.
-
-    The half-flagged rows are the teeth: `breasts_vis: bare` with no
-    `underwear_visible` used to price at $10 (`_is_nude` fell back to the
-    enum), and a `vulva_vis: bare` one at $50."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
-        # Flagged: $10, $50, safe explicit.
         (1451, 0.0, {**_shot(["breasts"], "explicit", "pulled_down"),
                      **_flags(breasts="bare")}, "photo"),
         (1452, 0.1, {**_shot(["full_body"], "explicit", "fully_nude"),
                      **_flags(vulva="bare", breasts="bare", underwear=False)}, "photo"),
         (1453, 0.2, {**_shot(["ass"], "explicit", "fully_nude"),
                      **_turned_away(underwear=False)}, "photo"),
-        # Unflagged, enum says fully nude.
         (1454, 0.3, _shot(["full_body", "pussy"], "explicit", "fully_nude"), "photo"),
         (1455, 0.4, _shot(["breasts"], "explicit", "fully_nude"), "photo"),
-        # Half-flagged: not checked either (`flags_known`).
         (1456, 0.5, {**_shot(["breasts"], "explicit", "pulled_down"),
                      "breasts_vis": "bare"}, "photo"),
         (1457, 0.6, {**_shot(["pussy"], "explicit", "fully_nude"),
@@ -664,24 +337,11 @@ def case_unflagged_stills_wait_out_of_the_price_lanes() -> None:
 
 
 def case_mass_safe_needs_to_know_what_is_in_frame() -> None:
-    """The lane went vacuously true TWICE, in two different ways, and the
-    v1 flags could not express the difference that would have stopped either.
-
-    `pussy_covered` asked about FABRIC, so "out of frame" and "bare" both came
-    back False; `body_focus` was the only in-frame signal and it was absent on
-    the dildo clip and lacked `pussy` on the anal one. Both read as "nothing on
-    show". The enum states that difference outright, so the two shapes below
-    are now distinguishable — `not_in_frame` is an answer, not a silence.
-    """
     explicit = {"explicitness": "explicit"}
     anal = {**explicit, **_flags(anus="bare", underwear=False),
             "body_focus": ["ass", "anus", "fingers"]}
     turned_away = {**explicit, **_turned_away(underwear=False),
                    "body_focus": ["ass", "back", "legs"]}
-    # The shape a THIRD hole would take: the flags see nothing anywhere, so
-    # every visibility test passes for free — exactly how the first two got in.
-    # `acts` is what stops it, and `acts` does not depend on the flags being
-    # right about anything.
     blind_dildo = {**explicit, **_flags(underwear=False),
                    "acts": ["toy_insertion"], "body_focus": None}
 
@@ -691,29 +351,18 @@ def case_mass_safe_needs_to_know_what_is_in_frame() -> None:
     assert vault_scripts._lane_covered_explicit(
         vault_scripts.send_order_reason(turned_away), turned_away, "photo"), \
         "a genuinely turned-away shot must still qualify"
-    # `anus` counts as genital exposure wherever exposure is read.
     assert vault_scripts._shows_genitals(anal) is True
 
 
 def case_a_named_garment_means_she_is_dressed() -> None:
-    """A named garment means she is dressed, whatever `underwear_visible` says
-    (that flag asks only about UNDERWEAR), and a hand is not a garment."""
     import vault_ai_brief as brief
 
-    # And a named garment means she is dressed, whatever `underwear_visible`
-    # says — that flag asks only about UNDERWEAR, so a tank top and a skirt
-    # answer False and a fully-dressed street selfie came back nude.
     dressed = {**_flags(), "over_breasts": "pink tank top",
                "over_vulva": "white skirt", "underwear_visible": False}
     assert brief.wearing_something(dressed) is True
     assert vault_scripts._is_nude(dressed) is False, "a dressed selfie read as nude"
     assert vault_scripts._is_nude({**_flags(), "underwear_visible": False}) is True
 
-    # A hand is not a garment. She is still nude behind her own hand, and a
-    # hand-bra nude sells at the full price — but she is NOT nude behind a
-    # thong. `covered` treats the two alike because for "what is on show" they
-    # are alike; nudity must not, because for "what is she wearing" they are
-    # opposites. Both shapes are a real graded rows.
     hand = {**_flags(underwear=False), "over_breasts": "her right hand",
             "over_vulva": "her left thigh"}
     assert brief.wearing_something(hand) is False
@@ -728,12 +377,6 @@ def case_a_named_garment_means_she_is_dressed() -> None:
 
 
 def case_a_hand_over_her_breast_is_not_being_dressed() -> None:
-    """`covered` deliberately lumps fabric with a hand, a thigh and the bedding,
-    because for "how much skin is on show" they are the same thing. For the
-    mass-safe lane they are not: a woman lying fully nude with her hands over
-    her breasts has nothing technically exposed and is still a nude. Sending
-    that to a whole list is the exact mistake the folder exists to prevent.
-    """
     import vault_ai_brief as brief
 
     nude_hands = {"explicitness": "explicit", "clothing_state": "fully_nude",
@@ -752,25 +395,14 @@ def case_a_hand_over_her_breast_is_not_being_dressed() -> None:
     assert safe(dressed), "a woman in a bodysuit must be mass-safe"
     assert safe({"explicitness": "explicit", **_turned_away(underwear=False)}), \
         "a shot from behind must be mass-safe — it is what the lane is FOR"
-    # REGRESSION, from her real vault. "Wearing something" is NOT the test:
-    # six stills of her topless with her hands over her breasts and a thong on
-    # passed a `not _is_nude(...)` rule and went to the mass-safe folder. A
-    # thong is not what makes a topless shot decent, and nudity says nothing
-    # about which HALF of her is dressed.
     topless_thong = {"explicitness": "explicit", "clothing_state": "fully_nude",
                      **_flags(vulva="covered", breasts="covered", anus="covered",
                               underwear=True, over_vulva="pink thong",
                               over_breasts="her hands")}
     assert not vault_scripts._is_nude(topless_thong), "fixture should read clothed"
     assert not safe(topless_thong), "topless-with-hands went to a mass send"
-    # Covered by something the model would not name: this is the one lane where
-    # "we cannot tell you what is covering her" has to read as a no.
     assert not safe(unnamed), "an unexplained `covered` was treated as dressed"
 
-    # REGRESSION, also from her real vault: the model fills every `over_` slot
-    # with the one garment it can see. # is "fully nude except for
-    # pink underwear" — topless — and came back with "pink thong" over her
-    # BREASTS, which passed as clothing. A thong cannot cover breasts.
     thong_on_breasts = {"explicitness": "explicit",
                         **_flags(vulva="covered", breasts="covered",
                                  over_vulva="pink thong",
@@ -779,22 +411,16 @@ def case_a_hand_over_her_breast_is_not_being_dressed() -> None:
         "a thong was accepted as covering her breasts"
     assert brief.garment_over(thong_on_breasts, "vulva_vis") == "pink thong"
     assert not safe(thong_on_breasts), "a topless still reached the mass-safe lane"
-    # A one-piece garment legitimately covers both, so duplication itself is
-    # not the signal — only an impossible pairing is.
     suit = {"explicitness": "explicit",
             **_flags(vulva="covered", breasts="covered",
                      over_vulva="black lace bodysuit",
                      over_breasts="black lace bodysuit")}
     assert safe(suit), "a bodysuit over both regions was rejected as duplication"
 
-    # ...and she is still NUDE behind her own hand, so the price tier keeps her.
     assert vault_scripts._is_nude(nude_hands) is True
 
 
 def case_not_in_frame_is_an_answer_not_a_silence() -> None:
-    """The whole reason the shape changed. Under the booleans, "I cannot see
-    that part of her" and "that part of her is bare" were the same stored
-    value, so a lane could not tell being safe from having no evidence."""
     import vault_ai_brief as brief
 
     unseen = _flags(vulva="not_in_frame")
@@ -808,29 +434,19 @@ def case_not_in_frame_is_an_answer_not_a_silence() -> None:
 
 
 def case_partial_flags_do_not_count_as_checked() -> None:
-    """Half an answer is not an answer — every region must be present AND be a
-    state the vocabulary defines."""
     import vault_ai_brief as brief
 
     assert brief.flags_known(_flags()) is True
     assert brief.flags_known({"vulva_vis": "covered"}) is False
     assert brief.flags_known({}) is False
-    # A region answered with something outside the enum ("no", a stray bool, a
-    # hallucinated word) has not been answered.
     for junk in ("no", True, "hidden", None, ""):
         assert brief.flags_known({**_flags(), "breasts_vis": junk}) is False, \
             f"{junk!r} accepted as a region state"
-    # The superseded boolean shape must not read as flagged either, or every
-    # row written before this change would silently keep its old lane.
     assert brief.flags_known({"underwear_visible": False, "pussy_covered": True,
                               "breasts_covered": True}) is False
 
 
 def case_clip_frames_fold_by_worst_not_by_all() -> None:
-    """`all()` over "covered" booleans collapsed: a frame that simply could not
-    see the region answered False, identically to a frame where she was bare,
-    so any tightly-framed shot marked the whole clip uncovered. 20 of 21
-    the graded vault clips folded that way, which is no signal at all."""
     import vault_ai_brief as brief
 
     assert brief.fold_vis(["covered", "not_in_frame", "covered"]) == "covered", \
@@ -843,9 +459,6 @@ def case_clip_frames_fold_by_worst_not_by_all() -> None:
 
 
 def case_contradictions_score_only_answered_rows() -> None:
-    """The free quality metric. It has to fire on real disagreement and stay
-    silent on rows that are merely incomplete, or it measures coverage instead
-    of correctness and every unflagged vault looks broken."""
     import vault_ai_brief as brief
 
     dressed_but_bare = {"clothing_state": "dressed", "explicitness": "suggestive",
@@ -861,20 +474,14 @@ def case_contradictions_score_only_answered_rows() -> None:
     consistent = {"clothing_state": "lingerie_on", "explicitness": "suggestive",
                   **_flags(vulva="covered", breasts="covered")}
     assert brief.contradictions(consistent) == []
-    # Unflagged: nothing to disagree WITH, so it must score clean.
     assert brief.contradictions({"clothing_state": "dressed"}) == []
     assert all(c in brief.CONTRADICTIONS
                for c in brief.contradictions(dressed_but_bare)), "undocumented code"
 
 
 def case_turned_away_explicit_is_safe_to_mass() -> None:
-    """Tagged explicit because of what the scene IS, but she is turned away and
-    only her back/ass is in frame — nothing is actually on show."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
-        # All three carry the FULL flag set — an item the pass never looked at
-        # is excluded from this lane by design (see
-        # case_unflagged_item_is_never_called_mass_safe).
         (1121, 0.0, {**_shot(["ass", "back"], "explicit", "fully_nude"),
                      **_turned_away(underwear=False)}, "photo"),
         (1122, 0.1, {**_shot(["pussy"], "explicit", "fully_nude"),
@@ -905,9 +512,6 @@ def case_paid_tease_lanes_are_images_only() -> None:
 
 
 def case_suggestive_item_sits_in_both_lanes_at_different_positions() -> None:
-    """THE multi-folder case, end to end. A suggestive still is the spiciest
-    thing in Stories and the mildest thing in Mass, so it must hold a different
-    position in each — impossible if order lived on the item."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
         (1201, 0.0, _outfit(["white top"], ["posing"], "sfw", "dressed"), "photo"),
@@ -940,35 +544,27 @@ def case_purpose_pool_can_be_restricted_to_leftovers() -> None:
 
 
 def case_outfit_key_prefers_multiword_colour() -> None:
-    """'dark blue' must win before 'blue' matches inside it, or two different
-    sets collapse into one."""
     assert vault_scripts.outfit_colour({"clothing_items": ["dark blue lace bra"]}) == "dark blue"
     assert vault_scripts.outfit_colour({"clothing_items": ["blue bra"]}) == "blue"
 
 
 def case_outfit_key_falls_back_and_gives_up() -> None:
     assert vault_scripts.outfit_colour({"clothing_items": ["lace bodysuit"]}) == "lace"
-    # Nothing named → no outfit. Must NOT pool into a junk group.
     assert vault_scripts.outfit_key({"clothing_items": []}) == ""
     assert vault_scripts.outfit_key({}) == ""
     assert vault_scripts.outfit_key(None) == ""  # type: ignore[arg-type]
 
 
 def case_same_colour_different_garment_is_a_different_set() -> None:
-    """The operator's complaint: one 'black' group was three sets. A bodysuit,
-    a bra set and a top are different outfits even in the same colour."""
     body = {"clothing_items": ["black lace bodysuit", "fishnet stockings"]}
     bra = {"clothing_items": ["black lace bra", "black lace panties"]}
     top = {"clothing_items": ["black leather jacket", "black top"]}
     keys = {vault_scripts.outfit_key(f) for f in (body, bra, top)}
     assert keys == {"black bodysuit", "black lingerie_set", "black top"}, keys
-    # Most-identifying garment wins when several are listed.
     assert vault_scripts.garment_class(body) == "bodysuit", "hosiery outranked the set"
 
 
 def case_undressing_does_not_split_a_script() -> None:
-    """A shoot is SUPPOSED to run dressed → undressed. `clothing_state` carries
-    that; the outfit key must not split on it or every real script fragments."""
     on = {"clothing_items": ["pink lace bra"], "clothing_state": "lingerie_on"}
     aside = {"clothing_items": ["pink lace bra"], "clothing_state": "pulled_aside"}
     nude = {"clothing_items": ["pink lace bra"], "clothing_state": "fully_nude"}
@@ -976,20 +572,15 @@ def case_undressing_does_not_split_a_script() -> None:
 
 
 def case_unrecognised_garment_still_keys_on_colour() -> None:
-    """A set is never dropped just because its wording is unusual."""
     assert vault_scripts.outfit_key({"clothing_items": ["red kimono thing"]}) == "red"
 
 
 def case_outfit_joins_photos_and_videos_into_one_script() -> None:
-    """THE point: upload bursts are kind-pure, so burst grouping splits a shoot
-    down the middle. The outfit re-joins the stills and the clips."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
-        # Photo burst — one sitting.
         (701, 0.0, _outfit(["pink lace bra"], ["posing"], "sfw", "dressed"), "photo"),
         (702, 0.1, _outfit(["pink lace bra"], ["tease"], "suggestive"), "photo"),
         (703, 0.2, _outfit(["pink lace panties"], ["tease"], "suggestive"), "photo"),
-        # Clip burst hours later, SAME outfit — a different burst entirely.
         (704, 300.0, _outfit(["pink lace thong"], ["rubbing_clit"], "explicit",
                              "pulled_aside"), "video"),
         (705, 300.1, _outfit(["pink thong"], ["fingering"], "explicit",
@@ -1010,7 +601,6 @@ def case_same_colour_far_apart_is_two_shoots() -> None:
         (801, 0.0, _outfit(["black lace bra"], ["posing"], "sfw", "dressed")),
         (802, 0.1, _outfit(["black lace bra"], ["tease"], "suggestive")),
         (803, 0.2, _outfit(["black lace bra"], ["fingering"], "explicit", "fully_nude")),
-        # Same colour, three weeks later — a different shoot.
         (804, 30240.0, _outfit(["black lace bra"], ["posing"], "sfw", "dressed")),
         (805, 30240.1, _outfit(["black lace bra"], ["tease"], "suggestive")),
         (806, 30240.2, _outfit(["black lace bra"], ["fingering"], "explicit", "fully_nude")),
@@ -1021,8 +611,6 @@ def case_same_colour_far_apart_is_two_shoots() -> None:
 
 
 def case_one_rung_group_is_a_set_not_a_script() -> None:
-    """Eight equally-suggestive stills in the same bra is a set: there is
-    nowhere to walk a fan to, so it is not proposed as a script."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
         (901, 0.0, _outfit(["red satin bra"], ["posing"], "suggestive")),
@@ -1054,8 +642,6 @@ def case_mixed_media_scripts_rank_first() -> None:
 
 
 def case_a_shoot_that_closes_outranks_a_bigger_one_that_cannot() -> None:
-    """No closer → below every shoot with one, whatever its size or media mix;
-    then ladder completeness, then paid depth (capped), then mixed, then size."""
     def shoot(name, *, closes, rungs, paid, mixed, size):
         return {"name": name, "closes_on_own": closes, "rungs": list(range(rungs)),
                 "tiers": {"suggestive": size - paid, "explicit": paid},
@@ -1073,20 +659,13 @@ def case_a_shoot_that_closes_outranks_a_bigger_one_that_cannot() -> None:
 
 
 class _FakeOF:
-    """Records the OF vault-list calls. `fail_on` makes that folder name raise,
-    so partial-failure handling is observable."""
 
     def __init__(self, fail_on: str | None = None) -> None:
         self.created: list[str] = []
-        self.added: list[tuple[int, int]] = []   # (list_id, n_media)
+        self.added: list[tuple[int, int]] = []
         self.fail_on = fail_on
         self._next = 900
-        # Real membership per list. OF's add is APPEND-ONLY, so the fake keeps
-        # a union too — that is what makes the read-back meaningful.
         self.members: dict[int, list[int]] = {}
-        # Set once the request has returned. The read-back is detached, so it
-        # may finish after the response; reads block until then, which forces
-        # that order instead of leaving it to thread scheduling.
         self.responded = threading.Event()
 
     def create_vault_list(self, name: str) -> dict:
@@ -1103,7 +682,6 @@ class _FakeOF:
         return {"success": True}
 
     def vault_media(self, *, limit=100, offset=0, type="all", list_id=None, **kw) -> dict:
-        """Read one list back, paginated like OF's."""
         if not self.responded.wait(timeout=10):
             raise AssertionError("read-back ran inside the request")
         ids = self.members.get(int(list_id), []) if list_id is not None else []
@@ -1112,15 +690,6 @@ class _FakeOF:
 
 async def _apply_with_of(aid: str, fake: _FakeOF, keep: int = 1,
                          mirror: bool = True) -> dict:
-    """Call the endpoint with the OF client faked at the _make_client seam.
-
-    The membership read-back runs DETACHED (`create_task`) so the operator's
-    request does not wait on it. In the server the loop keeps running and it
-    finishes; here `asyncio.run` would cancel it on return, so whether the cache
-    got bound depended on thread scheduling (both mirror-membership cases
-    "xpassed" ~1 run in 4). Await every task the call spawned before returning
-    (bounded: a hang guard, not a tolerance).
-    """
     import automation_executor as ax
     import vault_ai_api
 
@@ -1150,7 +719,6 @@ async def _of_list_ids(aid: str) -> dict[str, int | None]:
 
 
 def case_apply_does_not_touch_of_unless_asked() -> None:
-    """The OF write is opt-in. `confirm` alone must never reach her account."""
     aid = _next_account()
     _plan_seed(aid)
     fake = _FakeOF()
@@ -1168,15 +736,12 @@ def case_mirror_creates_of_lists_and_binds_them() -> None:
     assert res["of_failed"] == 0, res
     assert res["of_mirrored"] == res["folders"], res
     assert all(n.startswith("AI-") for n in fake.created), fake.created
-    # every folder bound to the OF list it created
     bound = asyncio.run(_of_list_ids(aid))
     assert all(v is not None for v in bound.values()), bound
     assert sum(n for _, n in fake.added) == res["items"], "media count differs"
 
 
 def case_mirror_rerun_reuses_the_same_of_list() -> None:
-    """A second run must ADD to the bound list, never create a duplicate list
-    of the same name on her account."""
     aid = _next_account()
     _plan_seed(aid)
     fake = _FakeOF()
@@ -1188,11 +753,6 @@ def case_mirror_rerun_reuses_the_same_of_list() -> None:
 
 
 def case_mirror_binds_membership_into_the_cache() -> None:
-    """The picker resolves an OF folder by scanning each cached item's
-    `of_folder_ids`, and that column is written ONLY by a full collect. So a
-    mirrored folder used to exist on OF while no cached item claimed to be in
-    it: the dropdown counted 4 (from OF) and the grid showed 0 (from cache).
-    Mirroring must bind membership itself."""
     aid = _next_account()
     _plan_seed(aid)
     fake = _FakeOF()
@@ -1214,9 +774,6 @@ def case_mirror_binds_membership_into_the_cache() -> None:
 
 
 def case_mirror_membership_follows_of_not_the_plan() -> None:
-    """OF's add is append-only, so a list carries the union of every generation
-    of the rules that has run. The cache must agree with OF — otherwise the grid
-    hides items the operator can plainly see in her real vault."""
     aid = _next_account()
     _plan_seed(aid)
     fake = _FakeOF()
@@ -1226,7 +783,6 @@ def case_mirror_membership_follows_of_not_the_plan() -> None:
                for f in plan["folders"]}
     lid = next(c["of_list_id"] for c in res["created"] if c["name"] == "AI-mass")
 
-    # a stray from an older ruleset, still on OF but not in the current plan
     stray = 2004
     assert stray not in planned["AI-mass"], planned["AI-mass"]
     assert stray not in fake.members[lid], fake.members[lid]
@@ -1246,8 +802,6 @@ def case_mirror_membership_follows_of_not_the_plan() -> None:
 
 
 def case_of_failure_keeps_the_internal_folder() -> None:
-    """A folder that exists locally but not on OF is recoverable; losing the
-    grouping is not. So an OF error must never roll the internal folder back."""
     aid = _next_account()
     _plan_seed(aid)
     fake = _FakeOF(fail_on="stories")
@@ -1260,8 +814,6 @@ def case_of_failure_keeps_the_internal_folder() -> None:
 
 
 async def _read_order(aid: str, folder_id: int) -> list[tuple[int, int]]:
-    """Read a folder's membership WITHOUT touching it. `_folder_order` re-orders
-    before reading, so it cannot be used to inspect what apply actually wrote."""
     async with get_session() as s:
         rows = (await s.execute(
             select(VaultFolderItem.media_id, VaultFolderItem.manual_order)
@@ -1301,7 +853,6 @@ def case_apply_creates_folders_in_send_order() -> None:
     assert res["new"] == res["folders"] and res["reused"] == 0
     assert asyncio.run(_count_folders(aid)) == res["folders"]
 
-    # Every created folder carries manual_order 1..n in the planned order.
     for spec, made in zip(plan["folders"], res["created"]):
         got = asyncio.run(_read_order(aid, made["folder_id"]))
         assert [m for m, _ in got] == [r["media_id"] for r in spec["items"]], \
@@ -1310,7 +861,6 @@ def case_apply_creates_folders_in_send_order() -> None:
 
 
 def case_apply_twice_refreshes_instead_of_duplicating() -> None:
-    """Pressing the button again must not pile up a second set of folders."""
     aid = _next_account()
     _plan_seed(aid)
     plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=1))
@@ -1319,15 +869,12 @@ def case_apply_twice_refreshes_instead_of_duplicating() -> None:
 
     assert second["reused"] == second["folders"] and second["new"] == 0, second
     assert asyncio.run(_count_folders(aid)) == first["folders"], "folders duplicated"
-    # Membership rewritten, not appended.
     made = second["created"][0]
     got = asyncio.run(_read_order(aid, made["folder_id"]))
     assert len(got) == made["items"], f"membership doubled: {len(got)} vs {made['items']}"
 
 
 def case_rebuild_retires_folders_the_plan_no_longer_makes() -> None:
-    """When the rules or names change, the previous generation's folders must
-    not linger — otherwise the list silently holds two versions of one idea."""
     aid = _next_account()
     _plan_seed(aid)
 
@@ -1347,7 +894,6 @@ def case_rebuild_retires_folders_the_plan_no_longer_makes() -> None:
 
 
 def case_retire_never_touches_operator_folders() -> None:
-    """Only rows this module created AND carrying the AI- prefix are retired."""
     aid = _next_account()
     _plan_seed(aid)
 
@@ -1355,7 +901,6 @@ def case_retire_never_touches_operator_folders() -> None:
         async with get_session() as s:
             s.add(VaultFolder(account_id=aid, name="My favourites",
                               created_by="operator"))
-            # even an AI-named folder is safe if the operator made it
             s.add(VaultFolder(account_id=aid, name="AI-mine actually",
                               created_by="operator"))
             await s.commit()
@@ -1369,7 +914,6 @@ def case_retire_never_touches_operator_folders() -> None:
 
 
 def case_apply_leaves_an_operators_ai_named_folder_alone() -> None:
-    """The reuse lookup is scoped to rows this module made, like retire is."""
     aid = _next_account()
     _plan_seed(aid)
     plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=1))
@@ -1397,10 +941,6 @@ def case_apply_leaves_an_operators_ai_named_folder_alone() -> None:
 
 
 def _split_shoot_seed(aid: str, *, later_bigger: bool = False, later: float = 30240.0) -> None:
-    """One black lace set shot twice, three weeks apart (801-803, 804-806).
-    `later_bigger` adds 807 so the LATER shoot outranks the earlier. `later`
-    (minutes) moves the second shoot — `_A_YEAR_ON` puts it on Jul 1 again, so
-    the two get ONE name (it carries the month and day) and the suffix decides."""
     rows = [
         (801, 0.0, _outfit(["black lace bra"], ["posing"], "sfw", "dressed")),
         (802, 0.1, _outfit(["black lace bra"], ["tease"], "suggestive")),
@@ -1416,21 +956,15 @@ def _split_shoot_seed(aid: str, *, later_bigger: bool = False, later: float = 30
     asyncio.run(_seed(aid, rows))
 
 
-# 365 days on: a different shoot, the same `<Mon D>` in its name.
 _A_YEAR_ON = 365 * 24 * 60.0
 
 
 def _scripts(plan: dict) -> dict[str, set[int]]:
-    """Script folder name → its media ids."""
     return {f["name"]: {int(i["media_id"]) for i in f["items"]}
             for f in plan["folders"] if f["source"] == "script"}
 
 
 def case_two_shoots_with_one_name_keep_their_own_items() -> None:
-    """One outfit shot on Jul 1 two years running is two shoots with one name
-    (the name carries the month and day). The plan names them "<n>" (earlier) and
-    "<n> 2", each folder holds only its own shoot, and a re-run reuses the
-    same pair."""
     aid = _next_account()
     _split_shoot_seed(aid, later=_A_YEAR_ON)
     plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=2))
@@ -1455,9 +989,6 @@ def case_two_shoots_with_one_name_keep_their_own_items() -> None:
 
 
 def case_same_name_suffix_follows_start_not_rank() -> None:
-    """The later shoot is bigger, so it ranks first — the bare name still goes
-    to the shoot that STARTED first. Rank-order suffixing would swap the two
-    folders' contents whenever their rank flipped."""
     aid = _next_account()
     _split_shoot_seed(aid, later_bigger=True, later=_A_YEAR_ON)
     plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=2))
@@ -1471,8 +1002,6 @@ def case_same_name_suffix_follows_start_not_rank() -> None:
 
 
 def case_mirror_keeps_two_same_named_shoots_apart() -> None:
-    """The mirror joins created folders back to plan specs by name. Each OF
-    list must get only its own shoot's media, and none may be pushed empty."""
     aid = _next_account()
     _split_shoot_seed(aid, later=_A_YEAR_ON)
     fake = _FakeOF()
@@ -1497,10 +1026,6 @@ async def _count_folders(aid: str) -> int:
 
 
 def case_explicit_clips_get_a_lane() -> None:
-    """The two price lanes are images-only by design, and nothing then picked
-    the CLIPS up. On the operator's vault that was 21 explicit clips — including
-    the payoff ones — matching no lane at all: the most valuable material in the
-    account was the material the folder system could not see."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
         (1301, 0.0, {**_shot(["pussy"], "explicit", "fully_nude"),
@@ -1509,12 +1034,10 @@ def case_explicit_clips_get_a_lane() -> None:
         (1302, 0.1, {**_shot(["pussy"], "hardcore", "pulled_aside"),
                      **_flags(vulva="bare", breasts="covered",
                               over_breasts="black lace bra")}, "video"),
-        # A suggestive clip is not PPV material — it belongs to the free lanes.
         (1303, 0.2, {**_shot(["body"], "suggestive", "lingerie_on"),
                      **_flags(vulva="covered", breasts="covered",
                               over_vulva="black lace thong",
                               over_breasts="black lace bra")}, "video"),
-        # A still stays out: a photo is priced by the $10/$50 ladder.
         (1304, 0.3, {**_shot(["pussy"], "explicit", "fully_nude"),
                      **_flags(vulva="bare", breasts="bare", underwear=False)}, "photo"),
     ]))
@@ -1526,15 +1049,6 @@ def case_explicit_clips_get_a_lane() -> None:
 
 
 def case_no_paid_item_is_left_out_of_every_lane() -> None:
-    """The complaint behind this: the plan sorted 272 of 327 items and dropped
-    55 without saying so — every one of them explicit or hardcore.
-
-    The five original lanes each answer a specific question, and an item that
-    answers no to all of them was simply lost. The commonest shape is right
-    here: explicit, but fully covered. `safe explicit` refuses it because
-    something IS happening in it; neither price lane wants it because there is
-    no reveal to charge for.
-    """
     aid = _next_account()
     covered_but_explicit = {
         **_shot(["pussy"], "explicit", "pulled_aside"),
@@ -1555,22 +1069,16 @@ def case_no_paid_item_is_left_out_of_every_lane() -> None:
     assert by_lane["explicit_rest"] == {1401}, by_lane
     assert 1401 not in by_lane.get("covered_explicit", set()), \
         "something IS happening in it — it is not mass-safe"
-    # The residual is paid-tier only. An sfw item is already served by `stories`,
-    # so a residual that swept it up would be a dumping ground rather than a
-    # category.
     assert 1402 in by_lane["stories"] and 1402 not in by_lane["explicit_rest"]
 
 
 def _clip(mid: int, at: float, acts: list[str], **people) -> tuple:
-    """An explicit clip — the `clips` lane takes every one of them, so a case
-    about SOLO is not also a case about which lane the item lands in."""
     return (mid, at, {**_shot(["pussy"], "explicit", "fully_nude"),
                       **_flags(vulva="bare", breasts="bare", underwear=False),
                       "acts": acts, **people}, "video")
 
 
 async def _apply_folders(aid: str, *, solo: bool) -> dict[str, int]:
-    """Plan → apply, then the live generated folders as {name: folder_id}."""
     plan = await vault_scripts.plan_ai_folders(aid, keep=0, solo=solo)
     await vault_scripts.apply_ai_folders(aid, plan)
     async with get_session() as s:
@@ -1592,18 +1100,10 @@ async def _folder_members(aid: str, folder_id: int) -> set[int]:
 
 
 def case_solo_cut_keeps_only_her() -> None:
-    """Ticking Solo adds `AI-<lane>-solo`: the same lane, minus everyone else.
-
-    It ADDS rather than filters. The two folders answer different questions —
-    "what may I send here" and "what may I send here to a fan who only wants
-    her" — and an operator who wants both should not have to rebuild to switch.
-    """
     aid = _next_account()
     asyncio.run(_seed(aid, [
         _clip(1501, 0.0, ["toy_insertion"], people_count=1, partner_visible=False),
         _clip(1502, 0.1, ["sex_doggy"], people_count=2, partner_visible=True),
-        # Described by V1 — nobody ever asked who is in it. Not solo: see
-        # case_an_unasked_item_is_never_solo.
         _clip(1503, 0.2, ["masturbation_orgasm"]),
         _clip(1504, 0.3, ["rubbing_clit"], people_count=1),
     ]))
@@ -1615,20 +1115,13 @@ def case_solo_cut_keeps_only_her() -> None:
     solo = lanes["clips_solo"]
     assert {r["media_id"] for r in solo["items"]} == {1501, 1504}, \
         f"a partner clip or an unasked one got into a solo folder: {solo['items']}"
-    # Named after the lane, prefixed exactly once — the name is what an operator
-    # reads in the OF app to know what is in it.
     assert solo["name"] == f"{lanes['clips']['name']}-solo", solo["name"]
     assert solo["name"].startswith("AI-") and solo["name"].count("AI-") == 1, solo["name"]
     assert solo["solo"] is True and solo["solo_of"] == 4, solo
-    # Contiguous send order of its own: a subset that kept the lane's numbering
-    # would open on whatever position its first member held there.
     assert [r["manual_order"] for r in solo["items"]] == [1, 2], solo["items"]
 
 
 def case_solo_is_off_unless_asked() -> None:
-    """No `-solo` folder exists until the box is ticked. The plan is what
-    `apply_ai_folders` retires against, so a solo cut appearing by default would
-    mean every account grows a second set of folders on the next rebuild."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
         _clip(1511, 0.0, ["toy_insertion"], people_count=1, partner_visible=False),
@@ -1639,16 +1132,11 @@ def case_solo_is_off_unless_asked() -> None:
     plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=0))
     assert plan["summary"]["solo_cuts"] == 0, plan["summary"]
     assert plan["solo_coverage"] is None, plan["solo_coverage"]
-    # Every folder answers the question, so no consumer has to test for the key.
     assert all(f["solo"] is False and f["solo_of"] is None for f in plan["folders"]), \
         plan["folders"]
 
 
 def case_a_partner_act_outranks_the_count() -> None:
-    """`people_count: 1` on a clip whose own `acts` say two people is the
-    model counting the person the clip is ABOUT. An act that cannot be done
-    alone IS a second person, whatever the count says — and a partner clip in a
-    solo folder is the wrong thing sold under the wrong promise."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
         _clip(1521, 0.0, ["blowjob"], people_count=1, partner_visible=False),
@@ -1666,14 +1154,10 @@ def case_a_partner_act_outranks_the_count() -> None:
 
 
 def case_an_unasked_item_is_never_solo() -> None:
-    """Only the V2 describe prompt asks who else is in frame. A row that was
-    never asked is not solo — the folder has to be right in the direction it
-    fires — and the coverage count is what tells the operator why an empty
-    `-solo` folder is not breakage."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
-        _clip(1531, 0.0, ["toy_insertion"]),                       # V1: unasked
-        _clip(1532, 0.1, ["toy_insertion"], partner_visible=False),  # asked
+        _clip(1531, 0.0, ["toy_insertion"]),
+        _clip(1532, 0.1, ["toy_insertion"], partner_visible=False),
     ]))
     assert not vault_scripts.is_solo({"acts": ["posing"]}), \
         "no evidence read as solo — the whole vault would be a solo folder"
@@ -1692,11 +1176,6 @@ def case_an_unasked_item_is_never_solo() -> None:
 
 
 def case_solo_folders_are_created_and_retired_like_any_other() -> None:
-    """A solo cut is a folder like the rest: applying creates it, and applying
-    WITHOUT the box retires it. `apply_ai_folders` retires generated folders the
-    current plan no longer makes, so the flag has to reach the apply call — a
-    preview with Solo on, applied with it off, would create the lanes and delete
-    every solo folder in the same breath."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
         _clip(1541, 0.0, ["toy_insertion"], people_count=1, partner_visible=False),
@@ -1716,31 +1195,21 @@ def case_solo_folders_are_created_and_retired_like_any_other() -> None:
 
 
 def case_disputed_items_read_the_least_harmful_way() -> None:
-    """The owner retired the "Fix disagreements" queue: a disagreement is read
-    the least harmful way instead (`vault_ai_brief.settled_reading`)."""
     aid = _next_account()
     agreed_mass = _shot(["face"], "suggestive", "lingerie_on")
     rows = {
-        # sfw_but_bare: describe says sfw, flags see her breasts bare. Used to
-        # sit in stories AND mass; now a $10 (explicit, topless, bottom on).
         2001: {**_shot(["breasts"], "sfw", "pulled_down"),
                **_flags(breasts="bare", vulva="covered", over_vulva="denim shorts")},
-        # dressed_but_bare, suggestive, vulva bare: flags win -> $50; copy dressed.
         2002: {**_shot(["pussy"], "suggestive", "dressed"),
                **_flags(vulva="bare", breasts="covered", over_breasts="white tank top")},
-        # nude_but_clothed: topless with a thong -> $10, never "nothing left".
         2003: {**_shot(["breasts"], "explicit", "fully_nude"),
                **_flags(breasts="bare", vulva="covered", over_vulva="black lace thong")},
-        # nude_but_clothed, covered under named clothing, no act: was safe explicit.
         2004: {**_shot(["breasts"], "explicit", "fully_nude"), **_dressed()},
-        # lingerie_but_nothing_on, nothing bare, suggestive: was stories + mass.
         2005: {**_shot(["face"], "suggestive", "lingerie_on"),
                **_flags(breasts="covered", over_breasts="black top", underwear=False)},
-        # penetration_offscreen: genital act, nothing genital in frame, top on.
         2006: {**_fields("pulled_down", ["rubbing_clit"], "fingers", "explicit"),
                "clothing_items": ["white bra"], "beats": ["fingers inside her"],
                **_flags(breasts="covered", over_breasts="white bra")},
-        # Control: agreed suggestive item stays in the free lanes.
         2007: {**agreed_mass, **_dressed(), "beats": ["turns to camera"]},
     }
     asyncio.run(_seed(aid, [(m, i * 0.1, f, "photo") for i, (m, f) in enumerate(rows.items())]))
@@ -1751,9 +1220,6 @@ def case_disputed_items_read_the_least_harmful_way() -> None:
     assert free & set(rows) == {2007}, f"a disputed item is in a free lane: {free}"
     assert lanes.get("tease_10", set()) & set(rows) == {2001, 2003}, lanes.get("tease_10")
     assert lanes.get("tease_50", set()) & set(rows) == {2002}, lanes.get("tease_50")
-    # Disputed paid items with no tease price are sold 1:1; the disputed
-    # free-tier one (2005: flags see her dressed) may be neither free nor sold
-    # as explicit, so it is in no folder — and the plan counts it.
     assert {2004, 2006} <= lanes["explicit_rest"], lanes["explicit_rest"]
     every = set().union(*lanes.values())
     assert set(rows) - every == {2005}, f"lane misses: {set(rows) - every}"
@@ -1766,7 +1232,6 @@ def case_disputed_items_read_the_least_harmful_way() -> None:
     prices = {m: vault_scripts.shelf_price(f, "photo") for m, f in rows.items()}
     assert prices == {2001: 10, 2002: 50, 2003: 10, 2004: 0, 2005: 0, 2006: 0, 2007: 0}, prices
 
-    # Copy: the reasons a review UI and the outfit scripts show.
     why = {m: vault_scripts.send_order_reason(f) for m, f in rows.items()}
     assert why[2002]["clothing_state"] == "dressed" and why[2002]["tier"] == "explicit"
     assert why[2003]["clothing_state"] == "pulled_down"
@@ -1775,24 +1240,18 @@ def case_disputed_items_read_the_least_harmful_way() -> None:
     assert why[2006]["acts"] == [] and why[2006]["payoff_acts"] == [] \
         and why[2006]["closes"] is False, why[2006]
     assert why[2006]["beats"] == [] and why[2007]["beats"] == ["turns to camera"]
-    # ...and the stored row is untouched: read-time only.
     assert rows[2003]["clothing_state"] == "fully_nude"
 
 
 def case_disputed_item_never_opens_a_script() -> None:
-    """A script is sent from its free rungs up; a disputed free-tier still is
-    never sent free, so it stays out of the shoot. A disputed PAID item
-    (priced, never free) keeps its place."""
     aid = _next_account()
     bra = ["pink lace bra"]
     asyncio.run(_seed(aid, [
         (2101, 0.0, _outfit(bra, ["posing"], "sfw", "dressed"), "photo"),
         (2102, 0.1, _outfit(bra, ["tease"], "suggestive"), "photo"),
-        # lingerie_but_nothing_on, suggestive: a would-be free opener.
         (2103, 0.2, {**_outfit(bra, ["tease"], "suggestive"),
                      **_flags(breasts="covered", over_breasts="pink top",
                               underwear=False)}, "photo"),
-        # nude_but_clothed, explicit, topless with a thong: a paid $10.
         (2104, 0.3, {**_outfit(bra, ["posing"], "explicit", "fully_nude"),
                      **_flags(breasts="bare", vulva="covered",
                               over_vulva="pink lace thong")}, "photo"),
@@ -1802,15 +1261,11 @@ def case_disputed_item_never_opens_a_script() -> None:
     assert len(scripts) == 1, scripts
     ids = [r["media_id"] for r in scripts[0]["items"]]
     assert 2103 not in ids, f"a disputed free-tier still is in a script: {ids}"
-    # 2104's pussy is covered, so the script sends it as suggestive (owner rule,
-    # `earns_paid_rung`) — a free rung, and a disputed item is never free.
     assert set(ids) == {2101, 2102, 2105} and ids[0] == 2101, ids
 
 
-# ── PR-A: dupes, colourless sets, keep 0, retire counts ─────────────
 
 async def _hash(aid: str, packed: dict[int, str]) -> None:
-    """Store `content_hash` as the Duplicates scan leaves it."""
     import vault_dupes
     async with get_session() as s:
         for mid, h in packed.items():
@@ -1821,9 +1276,6 @@ async def _hash(aid: str, packed: dict[int, str]) -> None:
 
 
 def case_a_duplicate_set_is_one_item_in_every_folder() -> None:
-    """Re-uploads share one describe answer, so every copy keys to the same
-    outfit and passes the same lanes: one folder held the photo twice. The
-    plan collapses each Duplicates set to its original before grouping."""
     import vault_dupes
     aid = _next_account()
     _plan_seed(aid)
@@ -1836,7 +1288,6 @@ def case_a_duplicate_set_is_one_item_in_every_folder() -> None:
         return [f["name"] for f in plan["folders"]
                 if {a, b} <= {r["media_id"] for r in f["items"]}]
 
-    # No hashes yet: not candidates, so the copy sits beside its original.
     before = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=1))
     assert _together(before, 2003, 2006), "control: the copy should be foldered unhashed"
 
@@ -1861,7 +1312,6 @@ def case_collapse_keeps_the_original_unless_it_has_no_reading() -> None:
             {"media_id": 6, "fields": {"x": 1}, "describe_status": "failed"}]
     for name, groups, want_kept, want_drop in (
         ("original kept", [[2, 3]], [1, 2, 4, 5, 6], [3]),
-        # W30 F23: a failed row's leftover fields are no reading; the described copy is kept.
         ("failed copy is passed over for the described one", [[1, 6, 4]], [2, 3, 4, 5], [1, 6]),
         ("unread original gives way to the first read copy", [[1, 2, 3]], [2, 4, 5, 6], [1, 3]),
         ("a set with one live member is no set", [[4, 99]], [1, 2, 3, 4, 5, 6], []),
@@ -1873,7 +1323,6 @@ def case_collapse_keeps_the_original_unless_it_has_no_reading() -> None:
 
 
 async def _seed_more(aid: str, items: list[tuple]) -> None:
-    """`_seed` for an account that already exists."""
     async with get_session() as s:
         for mid, minutes, fields, kind in items:
             s.add(VaultItem(
@@ -1884,8 +1333,6 @@ async def _seed_more(aid: str, items: list[tuple]) -> None:
 
 
 def case_a_colourless_set_keys_on_garment_and_setting() -> None:
-    """No colour named used to drop the item from every shoot. Garment class +
-    setting stands in; either half alone is not a key."""
     key = vault_scripts.outfit_key
     assert key({"clothing_items": ["bra", "thong"], "setting": "bedroom"}) == "lingerie_set bedroom"
     assert key({"clothing_items": ["bra"], "setting": "Shower "}) == "lingerie_set shower"
@@ -1909,8 +1356,6 @@ def case_a_colourless_set_keys_on_garment_and_setting() -> None:
 
 
 def case_keep_zero_builds_lanes_only() -> None:
-    """`int(keep or 2)` turned keep=0 into 2 shoots. 0 is lanes only; an absent
-    keep is still 2; a non-number is a 400."""
     from fastapi import HTTPException
 
     import vault_ai_api
@@ -1932,9 +1377,6 @@ def case_keep_zero_builds_lanes_only() -> None:
 
 
 def case_preview_counts_what_confirm_will_create_keep_and_retire() -> None:
-    """The preview says what Confirm does to the folders already there, by the
-    SAME match the apply makes — including how many retired folders are bound
-    to an OF list (the apply unlinks them, never deletes them on OF)."""
     aid = _next_account()
     _plan_seed(aid)
     first = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=1))
@@ -1953,7 +1395,7 @@ def case_preview_counts_what_confirm_will_create_keep_and_retire() -> None:
             await s.commit()
     asyncio.run(_old_generation())
 
-    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=0))   # drops the script
+    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=0))
     ch = plan["changes"]
     lanes = len(plan["folders"])
     assert (ch["create"], ch["keep"], ch["retire"], ch["retire_on_of"]) == (0, lanes, 3, 1), ch
@@ -1967,11 +1409,8 @@ def case_preview_counts_what_confirm_will_create_keep_and_retire() -> None:
     assert res["retired"] == ch["retired"], (res["retired"], ch["retired"])
 
 
-# ── Scripts v2: room split, sendable cap, near-dupes, reveal, borrow, health ──
 
 def _jev_photo(setting: str = "", **extra) -> dict:
-    """A current photo `_jev` (`vault_jev_rules.current`) carrying only what a
-    case reads: the `setting` tag and any region answers in `extra`."""
     import vault_jev_rules
     return {"v": vault_jev_rules.VERSION, "status": "ok", "lane5": "free", "state": {},
             "kind": "photo", "tags": {"setting": setting} if setting else {}, **extra}
@@ -1979,7 +1418,6 @@ def _jev_photo(setting: str = "", **extra) -> dict:
 
 def _bra(tier: str, acts: list[str], clothing: str = "lingerie_on", *, room: str = "",
          jev_room: str = "") -> dict:
-    """One black-lace-bra item; `room` = the describe's setting, `jev_room` = Jev's."""
     out = _outfit(["black lace bra"], acts, tier, clothing)
     if room:
         out["setting"] = room
@@ -1989,22 +1427,16 @@ def _bra(tier: str, acts: list[str], clothing: str = "lingerie_on", *, room: str
 
 
 def case_one_upload_second_splits_by_room() -> None:
-    """Live AE: created_at is OF's upload time, so a whole day sits in one
-    second and the 48h gap never cuts — one script held 93 items from three
-    rooms. Each room is its own script; Jev's setting beats the describe's; an
-    item with no room (or 'other') joins the part nearest it in time, a tie →
-    the biggest part; a room too small to be a script is dropped."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
         (3001, 0.0, _bra("sfw", ["posing"], "dressed", room="bedroom"), "photo"),
         (3002, 0.0, _bra("suggestive", ["tease"], room="bedroom"), "photo"),
         (3003, 0.0, _bra("explicit", ["fingering"], "fully_nude", room="bedroom"), "video"),
         (3004, 0.0, _bra("suggestive", ["posing"], room="bedroom"), "photo"),
-        # describe says bedroom, Jev says bathroom: Jev wins
         (3011, 30.0, _bra("sfw", ["posing"], "dressed", room="bedroom", jev_room="bathroom"), "photo"),
         (3012, 30.0, _bra("suggestive", ["tease"], jev_room="bathroom"), "photo"),
         (3013, 31.0, _bra("explicit", ["fingering"], "fully_nude", room="other"), "video"),
-        (3021, 0.0, _bra("suggestive", ["tease"]), "photo"),               # tie → bedroom (4 > 2)
+        (3021, 0.0, _bra("suggestive", ["tease"]), "photo"),
         (3031, 200.0, _bra("explicit", ["fingering"], "fully_nude", room="kitchen"), "video"),
     ]))
     scripts = {s["name"]: s for s in asyncio.run(vault_scripts.collect_outfit_scripts(aid))}
@@ -2020,8 +1452,6 @@ def case_one_upload_second_splits_by_room() -> None:
 
 
 def _ladder_seed(aid: str, base: int = 3100) -> None:
-    """One bedroom shoot of 30: 8 sfw openers (two not dressed), 12 suggestive
-    build-up, 10 explicit closers (5 stills, 5 clips)."""
     rows = []
     for i in range(8):
         rows.append((base + i, 0.0, _bra("sfw", ["posing"], "dressed" if i < 6 else "lingerie_on",
@@ -2036,10 +1466,6 @@ def _ladder_seed(aid: str, base: int = 3100) -> None:
 
 
 def case_a_big_shoot_is_capped_to_a_sendable_ladder() -> None:
-    """A script is what one fan is walked through in a night: at most
-    SCRIPT_OPENERS / SCRIPT_MIDDLE / SCRIPT_CLOSERS, varied, closers clips
-    first, still in send order. The rest stays out (still in the vault and the
-    lanes) and the health line says how big it was."""
     aid = _next_account()
     _ladder_seed(aid)
     (s,) = asyncio.run(vault_scripts.collect_outfit_scripts(aid))
@@ -2065,11 +1491,6 @@ def case_a_big_shoot_is_capped_to_a_sendable_ladder() -> None:
 
 
 def case_burst_frames_collapse_inside_a_rung() -> None:
-    """Burst frames of one pose sit too far apart for the Duplicates screen
-    (threshold 2) but are one beat to a fan. Inside one rung of one script, a
-    near-identical frame (stored hashes, NEAR_DUPE_THRESHOLD) is dropped; the
-    one with a Jev reading is kept; another rung's look-alike is not touched;
-    an unhashed item is never dropped. No hashing, no new call."""
     import vault_dupes
     aid = _next_account()
     asyncio.run(_seed(aid, [
@@ -2078,7 +1499,7 @@ def case_burst_frames_collapse_inside_a_rung() -> None:
         (3203, 0.0, {**_bra("suggestive", ["tease"]), "_jev": _jev_photo()}, "photo"),
         (3204, 0.0, _bra("suggestive", ["tease"]), "photo"),
         (3205, 0.0, _bra("explicit", ["fingering"], "fully_nude"), "photo"),
-        (3206, 0.0, _bra("suggestive", ["tease"]), "photo"),          # unhashed
+        (3206, 0.0, _bra("suggestive", ["tease"]), "photo"),
     ]))
     far = (1 << 64) - 1
     asyncio.run(_hash(aid, {3201: vault_dupes.pack_hash("1" * 32, far, far),
@@ -2096,8 +1517,6 @@ def case_burst_frames_collapse_inside_a_rung() -> None:
 
 
 def case_reveal_breaks_a_tie_inside_a_rung() -> None:
-    """Same rung, same act, same clothing: the one showing more sends later —
-    not whichever has the smaller media id. Media id stays the last tiebreak."""
     base = _bra("explicit", ["posing"], "fully_nude")
     covered = {**base, **_flags(breasts="covered", vulva="covered", over_breasts="hand",
                                 over_vulva="hand")}
@@ -2109,16 +1528,12 @@ def case_reveal_breaks_a_tie_inside_a_rung() -> None:
     assert [m for _, m in order] == [3, 2, 1], order
     assert key(jev_breasts, media_id=1) > key(base, media_id=2), "Jev's bare answer counts"
     assert key(base, media_id=1) < key(base, media_id=2), "media id is the last tiebreak"
-    # Flags answered "covered" beat Jev's "bare": Jev only fills an unanswered region.
     clash = {**covered, "_jev": _jev_photo(breasts_bare="y")}
     assert vault_scripts.reveal_strength(clash) == 0, "flags pass outranks Jev"
     assert vault_scripts.reveal_strength(jev_breasts) == 1, "Jev fills an unflagged region"
 
 
 def case_explicit_needs_her_pussy_on_show_or_an_act() -> None:
-    """Owner rule: a bare butt in a thong labelled 'explicit' is suggestive in
-    a script. Explicit / hardcore needs the vulva bare (flags, else Jev) or an
-    act in frame."""
     butt = {**_bra("explicit", ["posing"], "fully_nude"),
             **_flags(vulva="covered", breasts="bare", over_vulva="thong")}
     bare = {**_bra("explicit", ["posing"], "fully_nude"), **_flags(vulva="bare")}
@@ -2134,8 +1549,6 @@ def case_explicit_needs_her_pussy_on_show_or_an_act() -> None:
 
 
 def _big_shoot(aid: str, base: int, *, videos: int) -> list[tuple]:
-    """12 black-lace items over one evening: 4 suggestive, 4 explicit with her
-    pussy out, 4 fingering closers; the first `videos` closers are clips."""
     rows = []
     for i in range(12):
         tier, acts, clothing, extra = (
@@ -2148,7 +1561,6 @@ def _big_shoot(aid: str, base: int, *, videos: int) -> list[tuple]:
 
 
 def case_a_script_is_ten_pieces_with_two_clips() -> None:
-    """Owner rule: under 10 pieces or under 2 clips is not a script."""
     for videos, want in ((2, 1), (1, 0)):
         aid = _next_account()
         asyncio.run(_seed(aid, _big_shoot(aid, 3200, videos=videos)))
@@ -2159,14 +1571,12 @@ def case_a_script_is_ten_pieces_with_two_clips() -> None:
             assert sc["size"] == 10 and sc["kinds"].get("video", 0) >= 2, sc
     aid = _next_account()
     full = _big_shoot(aid, 3300, videos=4)
-    nine = full[:7] + full[8:10]  # 9 pieces, 2 clips: only the piece count is short
+    nine = full[:7] + full[8:10]
     asyncio.run(_seed(aid, nine))
     assert asyncio.run(vault_scripts.collect_outfit_scripts(aid, min_items=10, min_videos=2)) == []
 
 
 def case_a_thin_band_is_filled_to_ten() -> None:
-    """One opener, three closers: the cap's band quotas leave room, filled from
-    the left-over middle so the script still reaches SCRIPT_SIZE."""
     def it(mid, kind, rung, closes):
         return {"media_id": mid, "kind": kind, "score": 0,
                 "why": {"rung": rung, "closes": closes, "clothing_state": "nude",
@@ -2178,8 +1588,6 @@ def case_a_thin_band_is_filled_to_ten() -> None:
 
 
 def case_too_few_clips_swaps_a_photo_for_a_left_out_clip() -> None:
-    """3 openers, 4 middle, 3 closers fill the cap with ONE clip (variety picks
-    one per band); the second clip, cut, takes a kept middle photo's place."""
     def it(mid, kind, rung, closes):
         return {"media_id": mid, "kind": kind, "score": 0,
                 "why": {"rung": rung, "closes": closes, "clothing_state": "nude",
@@ -2196,7 +1604,6 @@ def case_too_few_clips_swaps_a_photo_for_a_left_out_clip() -> None:
 
 
 def case_a_room_too_small_falls_back_to_the_whole_shoot() -> None:
-    """Rooms split a shoot only when a room fills a script by itself."""
     aid = _next_account()
     rows = _big_shoot(aid, 3400, videos=2)
     rows = [(m, t, {**f, "setting": "bedroom" if i % 2 else "bathroom"}, k)
@@ -2207,9 +1614,6 @@ def case_a_room_too_small_falls_back_to_the_whole_shoot() -> None:
 
 
 def case_unrated_items_stay_in_their_script() -> None:
-    """An item with no explicitness rung is in no lane, so the shoot script is
-    its only home: it rides after the ladder, outside the cap, and the health
-    line says so."""
     aid = _next_account()
     asyncio.run(_seed(aid, [
         (3101, 0.0, _bra("sfw", ["posing"], "dressed")),
@@ -2226,9 +1630,6 @@ def case_unrated_items_stay_in_their_script() -> None:
 
 
 def case_a_skipped_rung_ranks_below_a_full_ladder() -> None:
-    """Rank by ladder completeness, not rung count: opener + middle + closer
-    present beats a missing band; {1, 3} ranks below {1, 2, 3} AND below
-    {1, 2}. Having a closer still comes first."""
     def shoot(name, rungs, bands, closes=1):
         return {"name": name, "closes_on_own": closes, "rungs": rungs,
                 "bands": dict(zip(("opener", "middle", "closer"), bands)),
@@ -2245,17 +1646,12 @@ def case_a_skipped_rung_ranks_below_a_full_ladder() -> None:
 
 
 def case_a_script_with_no_closer_borrows_one() -> None:
-    """A bathroom part with nothing that closes would be cut dead. It borrows
-    ONE closer from outside every kept script — the same colour beats the same
-    room, a clip beats a still — appended last and marked `borrowed`. An item
-    in another kept script is never taken."""
     aid = _next_account()
-    _ladder_seed(aid)                                              # bedroom: overflow closers
+    _ladder_seed(aid)
     asyncio.run(_seed_more(aid, [
         (3301, 60.0, _bra("sfw", ["posing"], "dressed", room="bathroom"), "photo"),
         (3302, 60.0, _bra("suggestive", ["tease"], room="bathroom"), "photo"),
         (3303, 60.0, _bra("suggestive", ["posing"], room="bathroom"), "video"),
-        # same room, other colour: a worse match than the bedroom's black clips
         (3304, 60.0, {**_outfit(["red silk robe"], ["fingering"], "explicit", "fully_nude"),
                       "setting": "bathroom"}, "video"),
     ]))
@@ -2286,14 +1682,13 @@ def case_a_borrowed_closer_keeps_the_cap_and_skips_pruned_frames() -> None:
     aid = _next_account()
     rows = [(3501 + i, 0.0, _bra("sfw", ["posing"], "dressed", room="bedroom"), "photo") for i in range(3)]
     rows += [(3511 + i, 0.0, _bra("suggestive", ["tease"], room="bedroom"), "photo") for i in range(9)]
-    # Kitchen: two closers, one rung — no script of their own, both borrowable (same colour).
     rows += [(3591, 5.0, _bra("explicit", ["fingering"], "fully_nude", room="kitchen"), "photo"),
              (3592, 5.0, _bra("explicit", ["fingering"], "fully_nude", room="kitchen"), "photo")]
     asyncio.run(_seed(aid, rows))
     pool, _ = asyncio.run(vault_scripts._grouping_rows(aid))
     (s,) = asyncio.run(vault_scripts.collect_outfit_scripts(aid, rows=pool, prints={}))
     assert s["size"] == vault_scripts.SCRIPT_SIZE and not s["closes_on_own"], s["size"]
-    s["near_dupes"] = [*s["near_dupes"], 3591]   # pruned as a burst frame of a kept item
+    s["near_dupes"] = [*s["near_dupes"], 3591]
     vault_scripts.borrow_closers([s], pool)
     assert s["borrowed"] == 3592, s["borrowed"]
     ladder = [r for r in s["items"] if r["why"]["rung"] is not None]
@@ -2303,8 +1698,6 @@ def case_a_borrowed_closer_keeps_the_cap_and_skips_pruned_frames() -> None:
 
 
 def case_script_names_and_health() -> None:
-    """`AI-<colour garment> · <room> · <Mon D>`, no counts, capped at the
-    folder-name max; health lists what to know, worst first, [] when clean."""
     name = vault_scripts.script_name
     assert name("black lingerie_set", "bedroom", datetime(2026, 11, 3)) == \
         "AI-black lingerie · bedroom · Nov 3"
@@ -2328,9 +1721,6 @@ def case_script_names_and_health() -> None:
 
 
 def case_renamed_scripts_reuse_on_rerun_and_retire_the_old_names() -> None:
-    """The v2 names differ from the old `AI-<outfit>` ones: the first build
-    retires the old-named script folder (made by this module) and creates the
-    new; the next build reuses it rather than creating again."""
     aid = _next_account()
     _plan_seed(aid)
 

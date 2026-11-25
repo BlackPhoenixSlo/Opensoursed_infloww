@@ -48,7 +48,7 @@ Recount 2026-11-24 at 672e58bca (`scripts/comment_budget.py --report`): **190,45
 | B05 | service/[m-z]*.py | 200 | 18,422 | 708 | #1056 | a572ff2a2 |
 | B06 | service/tests/test_[a-c]* | 133 | 9,043 | 162 | #1057 | 00fdf0446 |
 | B07 | service/tests/test_[d-h]* + helpers | 148 | 7,486 | 694 | #1059 | a4955f34d |
-| B08 | service/tests/test_[i-r]* | 183 | 9,970 | 78 | #1060 | |
+| B08 | service/tests/test_[i-r]* | 183 | 9,970 | 78 | #1060 | a9318e770 |
 | B09 | service/tests/ rest | | | | | |
 | B10 | app/components/chat | 211 | 7,009 | | | |
 | B11 | app/components/growth, vault | 212 | 5,343 | | | |
@@ -60,11 +60,12 @@ Recount 2026-11-24 at 672e58bca (`scripts/comment_budget.py --report`): **190,45
 | B17 | app/lib rest | 268 | 9,206 | | | |
 | B18 | app/hooks | 207 | 6,593 | | | |
 | B19 | app/app, contexts, app root | 125 | 2,545 | | | |
-| B20 | slop/lib | 246 | 7,050 | | | |
-| B21 | slop/actors, evidence, seed | 93 | 2,083 | | | |
-| B22 | slop/scenarios | 102 | 11,463 | | | |
-| B23 | fansly, desktop, deploy, soak, demo | 187 | 7,432 | | | |
-| B24 | .scratch, .claude, loginExtensionMulti, web, root | 200 | 1,324 | | | |
+| B20 | slop/lib | 228 | 5,997 | 132 | #1064 | 2228657db |
+| B21 | slop scenarios, actors, seed, root | 164 | 10,328 | 187 | #1069 | 12c098418 |
+| B22 | fansly, desktop, deploy, soak, demo | 171 | 5,827 | 234 | #1070 | 60e6d6e1b |
+| B23 | rest dirs + previously skipped files | 200 | 6,909 | 876 | #1073 | 6c6e0313e |
+| B24 | Twin/public-PR-skipped files (server.py, models.py, …) | 55 | 8,414 | 940 | #1076 | |
+| COMB | service/tests/test_[s-z]*, app/lib, app/hooks, app/components, app/app + contexts (B09–B19) | 1733 | 57,941 | 1,785 | #1063 | 63bb88ec3 |
 | B25 | skipped-file sweep | | | | | |
 
 ## Skipped (open PRs / pinned)
@@ -102,6 +103,7 @@ Pinned: files patched by public-sync's strip patches (`.claude/skills/public-syn
 | service/vault_scripts.py | conflicts with Twin main | B05 | |
 | service/vault_settings.py | conflicts with Twin main | B05 | |
 | service/vault_tags.py | conflicts with Twin main | B05 | |
+| app/lib/freeTrial.ts | conflicts with Twin main | COMB | |
 
 ## Decisions
 
@@ -126,6 +128,8 @@ Pinned: files patched by public-sync's strip patches (`.claude/skills/public-syn
 - 2026-11-25 B04: route handlers wired via add_api_route keep their docstring in OpenAPI (test_route_order wired goldens caught a wired handler; restored). Twin check added: batch files whose prune conflicts merging into Twin main are left for the sweep (twin main diverges in ~500 files; deploy-all after #1053 already hit ~25 conflicts in full_ai_* from B02).
 - 2026-11-25 B05: test_of_rich_text perf case (761 ms) and ScriptsPage.test fail only under full-suite load (~50); pass alone.
 - 2026-11-25 Twin gate is per hunk (Fable): prune hunks whose public replay would conflict merging into Twin main stay; B02's 24 already-conflicting service/automations files got those hunks back (budget --allow "Twin-adjacent"). _router_jev.py conflicts for a non-comment reason.
+- 2026-11-25 B09–B19 tested together in one full run-tests (comment_equality proves code identical), shipped as one PR
+- 2026-11-25 Fable (B23 check): prune files touched only by Twin/public-repo PRs now (they never git-merge into private); pinned public-sync targets with a strip-patch regen in the same PR; files of the owner-held nightly slop-fix PRs last.
 
 ## Exceptions kept
 

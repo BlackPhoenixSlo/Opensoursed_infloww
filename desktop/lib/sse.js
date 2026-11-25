@@ -1,24 +1,6 @@
 "use strict";
 
-// A Server-Sent Events client for the MAIN process, so notifications and the
-// badge keep working while the page is crashed, reloading or never loaded.
-//
-// It speaks to the relay's `/events` the way the page's EventSource does
-// (lib/events.ts): the caller's `fetchStream` sends the partition's cookies
-// and `?t=`, and the last `id:` it saw goes back as `Last-Event-ID`, so a
-// reconnect gets the relay's replay (or a `resync` frame when the replay no
-// longer reaches back). EventSource reconnects on its own; this does it by
-// hand with exponential backoff, plus a stale timer, because a half-dead
-// socket never errors: the relay pings every 20 s, so `staleMs` of silence
-// means the pipe is gone.
-//
-// Electron-free on purpose: `fetchStream` and the timers are injected, so
-// test/sse.test.js drives it with fakes.
 
-// Frame parser for the text/event-stream wire format. Feed it decoded text in
-// any chunking; it returns the frames completed so far. A frame with only an
-// `id:` (the relay sends one naming its head at connect) has data null: it
-// moves the resume point but is not an event.
 class SseParser {
   constructor() {
     this.buf = "";
@@ -48,7 +30,8 @@ class SseParser {
         this.data = [];
         continue;
       }
-      if (line.startsWith(":")) continue; // comment (`: connected`, `: ping`)
+      // comment line (`: connected`, `: ping`)
+      if (line.startsWith(":")) continue;
       const colon = line.indexOf(":");
       const field = colon === -1 ? line : line.slice(0, colon);
       let value = colon === -1 ? "" : line.slice(colon + 1);
@@ -61,16 +44,12 @@ class SseParser {
   }
 }
 
-// Exponential backoff with "equal jitter": half the step is fixed, half
-// random, so a relay restart doesn't get every desktop back in the same
-// millisecond. attempt 0 → 0.5–1 s, then 1–2 s, 2–4 s … capped at maxMs.
 function backoffDelay(attempt, { baseMs = 1000, maxMs = 30000, random = Math.random } = {}) {
   const step = Math.min(maxMs, baseMs * 2 ** Math.min(Math.max(0, attempt), 20));
   return Math.round(step / 2 + random() * (step / 2));
 }
 
-// Signed out (401) or not allowed (403) won't fix itself in a second; wait
-// long, and let `kick()` (a successful page load) retry sooner.
+// 401/403 won't fix itself in a second; kick() (a successful page load) retries sooner
 const AUTH_RETRY_MS = 60000;
 
 class SseClient {
@@ -89,7 +68,7 @@ class SseClient {
     this.clearTimer = clearTimer;
     this.random = random;
     this.running = false;
-    this.gen = 0; //            bumps on stop/restart; an older loop sees it and quits
+    this.gen = 0;
     this.attempt = 0;
     this.lastEventId = null;
     this.controller = null;
@@ -113,7 +92,6 @@ class SseClient {
     this.controller = null;
   }
 
-  // New server or token: the old resume point means nothing there.
   restart() {
     this.stop();
     this.lastEventId = null;
@@ -121,8 +99,6 @@ class SseClient {
     this.start();
   }
 
-  // Retry now if we're waiting out a backoff (the page just loaded, the
-  // machine woke up). A live connection is left alone.
   kick() {
     if (!this.running || !this.retryTimer) return;
     this.clearTimer(this.retryTimer);
@@ -173,7 +149,7 @@ class SseClient {
           }
         }
       }
-      outcome = "ended"; // the relay closed it (e.g. after assignment_changed)
+      outcome = "ended";
     } catch (err) {
       if (gen === this.gen) this.log(`[sse] ${controller.signal.aborted ? "stale, reconnecting" : `error: ${err && err.message}`}`);
     } finally {

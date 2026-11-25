@@ -1,10 +1,6 @@
-"""Owner 2026-11-10: 120-user acceptance; 200-user latency is a stretch goal.
-
-Only relay-admission and Vault items use this policy. Correctness/resource checks
-remain mandatory. Small runs retain their original regression budgets.
-"""
 import math
 
+# owner: 120-user acceptance; 200-user latency is a stretch goal
 SCENARIOS = frozenset(('2026-11-05-relay-admission', '2026-11-01-vault-pro-20k'))
 ACCEPTANCE_USERS = 120
 ACCEPTANCE_MS = 700
@@ -19,7 +15,6 @@ def volume_knobs(name, default):
 
 
 def latency_check(ctx, name, values, legacy_limits):
-    """Report every latency, enforce acceptance per action, never call a goal PASS."""
     users = ctx.users
     stretch = users >= STRETCH_USERS
     limit = STRETCH_MS if stretch else ACCEPTANCE_MS

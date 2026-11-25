@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * useAccountConfig — the data layer for the per-account "Brain" editor
- * (account_ai_config) on /automations. Reads/writes the owner-gated
- * /admin/account-config routes (covered by the /admin/:path* rewrite).
- */
 
 import { useIsFetching, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -15,79 +10,34 @@ const BG_CTX: RelayContext = { priority: "background" };
 export interface BrainConfig {
   persona: string | null;
   location: string | null;
-  /**
-   * Structured creator canon pinned into every chat prompt — the facts she must
-   * never contradict. Keys: age, job, home_city, home_country, born_city,
-   * born_country, upbringing, living_situation, relationship, family, pets.
-   * Empty {} = never enriched; nothing renders into the prompt.
-   */
   persona_facts: Record<string, string>;
-  /** ISO 639-1 the creator writes in; "en" default. Gates output language + guard vocab. */
   language: string;
-  /**
-   * Whose voice this account writes in: "her" (every account that has ever run
-   * here) or "him" (the male lane). Set from the Brain panel's Creator dropdown,
-   * and it MUST stay on this type and travel with the form, because
-   * Save PUTs the whole config object back. A field the type doesn't know about
-   * is a field a rebuild silently drops, and dropping this one puts a male
-   * creator back in the female lane mid-conversation.
-   */
+  // Save PUTs the whole config: a field this type drops is silently reset (a male creator back in the female lane).
   voice: string;
-  /** LEGACY IANA zone (e.g. America/Vancouver). No longer settable from the Brain —
-   *  `utc_offset` is the account's one clock, and this is only consulted when that
-   *  is unset. Saving the Brain clears it. */
   timezone: string | null;
   utc_offset: number;
-  /** Daily AI spend cap, cents, applied to EACH provider's spend on its own (UTC day); 0 = AI refused. Server
-   *  semantics: absent key = unchanged; a Chatter's value is ignored; an edit above 10000 is a 422. */
   daily_cost_cap_cents: number;
   model: string | null;
-  /** How hard the picked model may think. "" / null = use the model's own pin.
-   *  The legal values are per PROVIDER, so the editor reads them from
-   *  `effort_options[model]` rather than from a hardcoded list. */
   reasoning_effort: string | null;
   model_by_purpose: Record<string, string>;
   time_activities: Record<string, string>;
   time_images: Record<string, number>;
-  /**
-   * Include-only automation audience. These MUST stay on this type and travel
-   * with the form (Save PUTs the whole config object back — a field the type
-   * doesn't know about is a field a rebuild silently drops, and dropping the
-   * mode would reset an enforced fence to off). Server semantics: absent key =
-   * unchanged; "off" | "shadow" | "enforce"; shadow is mandatory before
-   * enforce unless `audience_enforce_override` rides the same PUT.
-   */
+  // Must stay on this type and travel with the form (Save PUTs it all); absent key = unchanged, shadow before enforce unless override rides the PUT.
   audience_mode: string;
-  /** The picked OF folder id (the server owns the local mirror row). */
   audience_of_list_id: number | null;
-  /** Local lists.id of the mirror row — informational, server-owned. */
   audience_list_id?: number | null;
   audience_auto_add: boolean;
-  /** Transient: rides one PUT to allow direct-to-enforce (logged server-side). */
   audience_enforce_override?: boolean;
-  /**
-   * Co-performer tagging (media_cotag). Always served by GET; optional here so
-   * mocked partials type-check. `cotag_tag_videos` (default false — most
-   * creators are solo) is the collab-account opt-in: true tags EVERY send that
-   * attaches a video even when the AI describe read it as solo, because video
-   * describes miss the POV partner. Server semantics: absent key = unchanged,
-   * so an old client can't clear them while saving something else.
-   */
+  // Server: absent key = unchanged, so an old client can't clear these while saving something else.
   cotag_tag_videos?: boolean;
-  /** Co-creator to tag, no '@'. null / '' = No co-creator tag (the default). */
   cotag_username?: string | null;
-  /** Get to know fans' short "Model info" note, pinned into every chat prompt. Server semantics: absent key =
-   *  unchanged; null = no note (the box then prefills `model_notes_template`). */
   model_notes?: string | null;
 }
 
-/** One creator-canon field, as served by the API — the single source of truth. */
 export interface PersonaFactField {
   key: string;
   label: string;
-  /** Enrich never proposes these: a business decision, or photographic evidence. */
   operator_only: boolean;
-  /** Editor hint. Server-side so the 26 keys are enumerated exactly once. */
   placeholder: string;
 }
 
@@ -99,35 +49,19 @@ export interface LanguageOption {
 export interface AccountConfigResp {
   account_id: string;
   config: BrainConfig;
-  defaults: BrainConfig;    // starter brain for the STORED lane (no images) — seeds
-                            // a blank account, which has no unsaved dropdown yet
-  /** Both lanes' starter brains. "Reset to defaults" reads this by the SELECTED
-   *  voice: the dropdown is local form state until Save, so resolving the lane from
-   *  the stored column refilled a male account with the female brain. */
+  defaults: BrainConfig;
+  // Read by the SELECTED voice: the dropdown is local until Save, so the stored column refilled a male account with the female brain.
   defaults_by_voice: Record<string, BrainConfig>;
-  /** The canon field contract per lane. Read by the SELECTED voice for the same
-   *  reason as `defaults_by_voice`: the labels are what the operator types AGAINST,
-   *  and a female label is an instruction to write female canon. */
   persona_fact_fields_by_voice: Record<string, PersonaFactField[]>;
-  slots: string[];          // the 6 time-of-day slot keys, ordered
-  model_options: string[];  // LLM model ids the account may pick
-  /** What `model: null` runs (the house model); the "Default (…)" label. */
+  slots: string[];
+  model_options: string[];
   default_model: string;
-  // Per model, the reasoning-effort values it accepts (weakest first).
-  // Empty for a model with no reasoning control — the legal set is per
-  // provider, so this cannot be a single shared list.
   effort_options: Record<string, string[]>;
-  purposes: string[];       // per-purpose override targets
-  // What a purpose runs with NOTHING pinned. A purpose listed here does not
-  // inherit `model` — the server holds it on one model whatever the brain says.
-  // Absent key = inherits, as every purpose used to.
+  purposes: string[];
   purpose_defaults?: Record<string, string>;
-  languages: LanguageOption[]; // language codes + labels for the dropdown
-  /** Creator-canon fields, ordered by how often fans ask. Single source of truth. */
+  languages: LanguageOption[];
   persona_fact_fields: PersonaFactField[];
-  /** What the Model info box prefills while `model_notes` is empty (labelled blank lines the prompt skips). */
   model_notes_template?: string;
-  /** Today's (UTC) AI spend per provider, held reservations included (llm_client.spend_today). */
   ai_spend_today?: AiSpendToday;
 }
 
@@ -150,8 +84,7 @@ export function useAccountConfig(accountId: string | null) {
   });
 }
 
-/** `cap`: this Save edits the daily AI spend cap (AiSpendCapCard). Every other Save leaves it out (server: absent =
- *  unchanged), so a stale echoed cap can't undo a limit set elsewhere. */
+// `cap`: only the cap card sends the cap (server: absent = unchanged), so a stale echoed cap can't undo a limit set elsewhere.
 export function useSaveAccountConfig(accountId: string | null, { cap = false }: { cap?: boolean } = {}) {
   const qc = useQueryClient();
   return useMutation<{ account_id: string; config: BrainConfig }, Error, BrainConfig>({
@@ -163,14 +96,12 @@ export function useSaveAccountConfig(accountId: string | null, { cap = false }: 
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["account-config", accountId] });
-      // A new model can need another provider's key (AiKeyNotice resolves it per kind).
       qc.invalidateQueries({ queryKey: ["ai-key-status", accountId] });
     },
   });
 }
 
-/** A brain PUT is out or the brain is being re-read. Each PUT replaces the whole brain, so two Saves of it on one page
- *  (Auto-reply's model + Model info) wait on this: one landing on the other's stale copy would undo it. */
+// Each PUT replaces the whole brain: two Saves on one page wait on this, or one lands on the other's stale copy.
 export function useAccountConfigBusy(accountId: string | null) {
   return useIsMutating({ mutationKey: ["account-config", accountId] }) + useIsFetching({ queryKey: ["account-config", accountId] }) > 0;
 }

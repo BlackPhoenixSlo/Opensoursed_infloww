@@ -1,22 +1,5 @@
 "use client";
 
-/**
- * FanAvatarMenu — the Avatar menu, opened from the Fan's avatar in the Chat
- * header (docs/spec/phase-03-chat-header-message-list.md, H3, M3, F4, F5;
- * ticket 95). Its rows, in order:
- *   • "Subscription status": the Fan's OF user's `subscribedOnData.status`;
- *     with no status but an `expiredAt` in the past, "Expired"
- *   • "Earnings": `subscribedOnData.totalSumm` (dollars this Creator was paid)
- *   • "Special offers ▸": OF's "Give user a discount" (`DiscountSubmenu`),
- *     offered as OF offers it (`discountShown`: a current or past
- *     subscriber, not blocked, on a page priced above OF's floor); else the
- *     row is disabled, its title saying why
- *   • "Add to lists ▸": the Creator's lists from `/chats/folders`, the Fan's
- *     marked; a click POSTs or DELETEs `/lists/{id}/users/{fanId}`. Moved
- *     from the Kebab menu (`ChatActionsMenu`) unchanged but for its Geometry.
- * Unknown values read "—". The Chat header owns the open state, the trigger
- * and the dismissal (`useMenuDismiss`); this module is the menu's box.
- */
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -30,33 +13,28 @@ import { discountShown } from "@/lib/fanDiscount";
 import { useOFUser, type OFSubscribedOnData } from "@/hooks/useOFUser";
 import { useAllChatFolders, type ChatFolder } from "@/hooks/useChatFolders";
 import { usePaidPage } from "@/hooks/usePaidPage";
+import { useCan } from "@/hooks/useCan";
 import { DiscountSubmenu } from "./DiscountSubmenu";
 import { MENU, MENU_ROW, MenuStatusLine, useMenuStatus } from "./MenuParts";
 
-/** The "Subscription status" value (spec F5): the status as OF reports it,
- *  else "Expired" once the expiry has passed, else "—". */
 function subscriptionStatus(sub: OFSubscribedOnData | undefined): string {
   if (sub?.status) return sub.status;
   const expiry = sub?.expiredAt ? new Date(sub.expiredAt).getTime() : NaN;
   return expiry < Date.now() ? "Expired" : "—";
 }
 
-/** The "Earnings" value (spec F5): `totalSumm` is in dollars. */
 function earnings(sub: OFSubscribedOnData | undefined): string {
   return typeof sub?.totalSumm === "number" ? fmtCents(Math.round(sub.totalSumm * 100)) : "—";
 }
 
 export function FanAvatarMenu({ id, accountId, fanId }: { id: string; accountId: string; fanId: FanId }) {
-  // The Fan's full OF profile: no request while cached (the drawer or a prefetch
-  // read it); else one read (useOFUser).
   const fan = useOFUser(accountId, fanId).data;
   const sub = fan?.subscribedOnData;
-  // Warm the lists so "Add to lists ▸" opens at once (shared query key).
   useAllChatFolders(accountId);
-  // The Creator's subscription price (dollars), which bounds the discount.
-  const { subscribePrice: price } = usePaidPage(accountId);
+  const offersShown = useCan(accountId, "discount");
+  const { subscribePrice: price } = usePaidPage(offersShown ? accountId : null);
   const loaded = !!fan && price !== null;
-  const canDiscount = loaded && discountShown(fan, price);
+  const canDiscount = offersShown && loaded && discountShown(fan, price);
   const [submenu, setSubmenu] = useState<"lists" | "discount" | null>(null);
   const { status, flash } = useMenuStatus();
 
@@ -94,18 +72,19 @@ export function FanAvatarMenu({ id, accountId, fanId }: { id: string; accountId:
             <span>Earnings</span>
             <span className="ml-auto text-fg-dim">{earnings(sub)}</span>
           </div>
-          <button
-            type="button"
-            // aria-disabled, not disabled, so the title still shows (as `NotWiredMenuRow`).
-            aria-disabled={!canDiscount}
-            title={canDiscount ? undefined : loaded
-              ? "OF offers a discount only to a current or past subscriber, not blocked, on a paid page"
-              : "Loading…"}
-            onClick={() => canDiscount && setSubmenu("discount")}
-            className={cn(MENU_ROW, canDiscount ? "hover:bg-bg-elev-1" : "text-fg-dim cursor-not-allowed")}
-          >
-            Special offers ▸
-          </button>
+          {offersShown && (
+            <button
+              type="button"
+              aria-disabled={!canDiscount}
+              title={canDiscount ? undefined : loaded
+                ? "OF offers a discount only to a current or past subscriber, not blocked, on a paid page"
+                : "Loading…"}
+              onClick={() => canDiscount && setSubmenu("discount")}
+              className={cn(MENU_ROW, canDiscount ? "hover:bg-bg-elev-1" : "text-fg-dim cursor-not-allowed")}
+            >
+              Special offers ▸
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setSubmenu("lists")}
@@ -129,18 +108,12 @@ function ToggleListsSubmenu({
   onBack: () => void;
 }) {
   const qc = useQueryClient();
-  // The lists an operator can add/remove a fan to come from /chats/folders
-  // (custom + close-friends lists, canAddUsers=true) — NOT the OF /users
-  // listsStates, which only returns SYSTEM buckets (fans/following/…) with
-  // canAddUser=false. Reading listsStates is why this menu used to say "No
-  // lists you can modify" even on accounts with dozens of custom lists.
   const foldersQ = useAllChatFolders(accountId);
-  // In-flight list ids so we disable just the row being toggled.
   const [busy, setBusy] = useState<Set<string>>(new Set());
-  // Optimistic membership overrides — OF's users[] preview is capped so we
-  // can't always know membership up front; flip it locally on click.
+  // OF's users[] preview is capped, so membership isn't always known up front.
   const [override, setOverride] = useState<Map<string, boolean>>(new Map());
 
+  // /chats/folders, not the OF /users listsStates: that only returns system buckets with canAddUser=false.
   const lists = (foldersQ.data ?? []).filter((f) => f.canAddUsers);
 
   function isMember(f: ChatFolder): boolean {
@@ -169,8 +142,6 @@ function ToggleListsSubmenu({
         onFlash(true, `Added to "${f.name || idStr}"`);
       }
       setOverride((prev) => new Map(prev).set(idStr, !currentlyIn));
-      // Membership changed → refresh the folder chips/counts + roster so the
-      // VIP/list view reflects it immediately, and the composers' list counts.
       qc.invalidateQueries({ queryKey: ["chat-folders", accountId] });
       qc.invalidateQueries({ queryKey: ["fan-lists", accountId] });
       qc.invalidateQueries({ queryKey: ["chats"] });

@@ -1,8 +1,3 @@
-/**
- * NotificationBell, top bar: the panel's "See all" opens the full
- * Notifications page, and the bell's own click still opens the panel
- * (docs/spec/phase-05-remaining-parity-gaps.md, stories 44, Testing Decisions).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -20,7 +15,6 @@ const ONE: Acc[] = [{ id: "acc-1", nickname: "Creator One" }];
 const scope = vi.hoisted(() => ({ accountId: "acc-1" as string | null, accounts: [] as Acc[] }));
 vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => scope.accounts }));
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: scope.accountId }) }));
-// lib/webPush at its interface (its HTTP is webPush.test.ts's).
 const wp = vi.hoisted(() => {
   const state = { id: null as string | null, failed: null as string | null };
   return {
@@ -33,7 +27,6 @@ const wp = vi.hoisted(() => {
     testPush: vi.fn(async () => ({ status: 201 })),
   };
 });
-// The quick-reply field at its interface (NotificationQuickReply.test covers its send): a line it holds per mount.
 vi.mock("./NotificationQuickReply", async () => {
   const { useState } = await import("react");
   return {
@@ -60,7 +53,6 @@ import { armRead, resetReadGate } from "@/lib/ofReadGate";
 import { NotificationBell, Row } from "./NotificationBell";
 import { DENIED_MSG, IOS_TAB_MSG } from "./OsPingSettings";
 
-// acc-1 is armed (lib/ofReadGate: its `creator_warmed` came), so the bell reads it; "not armed yet" has its own case.
 beforeEach(() => {
   scope.accountId = "acc-1";
   scope.accounts = ONE;
@@ -127,9 +119,9 @@ describe("NotificationBell (top bar)", () => {
       expect(screen.queryByTestId("bell-count")).toBeNull();
       expect(cleared).toHaveBeenCalledTimes(1);
 
-      await user.click(bell); // close: no event
+      await user.click(bell);
       expect(cleared).toHaveBeenCalledTimes(1);
-      await user.click(bell); // re-open, nothing new: one more
+      await user.click(bell);
       expect(cleared).toHaveBeenCalledTimes(2);
     } finally {
       window.removeEventListener(NOTIF_CLEARED_EVENT, cleared);
@@ -175,7 +167,6 @@ describe("NotificationBell (Messages Pro)", () => {
 describe("NotificationBell (OF mark-read)", () => {
   const PRO = { button: "", icon: "", badge: "", panel: "" };
   const READ = "/api/of/v2/users/notifications/read";
-  /** OF's count says 7 until the mark-read answers. */
   const countSeven = () => relayGet.mockImplementation(async (path: string) =>
     String(path).startsWith("/api/of/v2/users/notifications/count") ? { all: 7 } : { list: [] });
   const posts = () => relayPost.mock.calls.filter(([p]) => p === READ);
@@ -189,7 +180,7 @@ describe("NotificationBell (OF mark-read)", () => {
 
     await userEvent.click(button());
     await screen.findByText("No notifications.");
-    await userEvent.click(screen.getByRole("button", { name: "Tips" }));   // a chip switch sends nothing more
+    await userEvent.click(screen.getByRole("button", { name: "Tips" }));
 
     expect(posts()).toEqual([[READ, undefined, { accountId: "acc-1" }]]);
     expect(await screen.findByText("2")).toBeInTheDocument();
@@ -264,7 +255,6 @@ describe("NotificationBell (Messages Pro, All Models)", () => {
   const button = () => screen.getByRole("button", { name: /^Notifications/ });
   const badge = () => button().querySelector("span")?.textContent ?? null;
 
-  /** acc-1 at 3, acc-2 at 0, acc-3 at 4, acc-4 never read, acc-dead (dead session) at 9. */
   function setup() {
     scope.accountId = null;
     scope.accounts = [
@@ -365,7 +355,6 @@ describe("NotificationBell (has responded)", () => {
 
     expect(await screen.findByText("Kingsley")).toBeInTheDocument();
     expect(screen.getByText(/has responded/)).toBeInTheDocument();
-    // Fan 8 is still unanswered: one Reply left.
     expect(screen.getAllByRole("button", { name: "Reply" })).toHaveLength(1);
   });
 });
@@ -401,7 +390,6 @@ describe("NotificationBell (Agency pane)", () => {
     renderWithProviders(<NotificationBell agency={{ unread: 2, settings: null, panel: <p>Agency feed</p> }} />);
     expect(await screen.findByTestId("bell-count")).toHaveTextContent("2");
 
-    // Only Agency has news: the panel opens on it, and OnlyFans arrivals land meanwhile.
     await user.click(screen.getByRole("button", { name: "Notifications" }));
     expect(await screen.findByText("Agency feed")).toBeInTheDocument();
     act(() => { dispatchNotifArrived(); });
@@ -409,7 +397,6 @@ describe("NotificationBell (Agency pane)", () => {
     expect(screen.queryByText("Agency feed")).toBeNull();
     expect(screen.getByTestId("bell-count")).toHaveTextContent("3");
 
-    // Read on the OnlyFans tab, they are seen as they land.
     await user.click(screen.getByRole("button", { name: "Notifications" }));
     expect(await screen.findByText("No notifications.")).toBeInTheDocument();
     act(() => { dispatchNotifArrived(); });
@@ -447,10 +434,10 @@ describe("NotificationBell (OS notifications: Web Push)", () => {
       await user.click(screen.getByRole("button", { name: "Test" }));
 
       expect(await screen.findByText(/✓ Push on: lock screen alerts active/)).toBeInTheDocument();
-      expect(wp.subscribePush).toHaveBeenCalledTimes(1); // it asks the permission itself
+      expect(wp.subscribePush).toHaveBeenCalledTimes(1);
       expect(Notification.requestPermission).not.toHaveBeenCalled();
       expect(wp.showViaWorker).toHaveBeenCalledWith("Inflowwww test", expect.objectContaining({ tag: "chatterly-test" }));
-      expect(Notification).not.toHaveBeenCalled(); // no in-page notification
+      expect(Notification).not.toHaveBeenCalled();
 
       await user.click(screen.getByRole("button", { name: "Send push in 8 s, lock your phone" }));
       expect(wp.testPush).toHaveBeenCalledWith(8);
@@ -515,7 +502,7 @@ describe("NotificationBell (OS notifications: Web Push)", () => {
 
   it("an iPhone / iPad Safari tab (not installed): Add to Home Screen first, no subscribe", async () => {
     wp.ios = true;
-    wp.supported = false; // a tab there has no PushManager
+    wp.supported = false;
     const user = await openSettings();
     await user.click(screen.getByRole("button", { name: "Test" }));
     expect(await screen.findByText(IOS_TAB_MSG)).toBeInTheDocument();

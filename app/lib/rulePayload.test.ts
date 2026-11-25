@@ -15,7 +15,6 @@ describe("PAYLOAD_RAW", () => {
     ["an array", "[1]", "Payload must be a JSON object"],
     ["null", "null", "Payload must be a JSON object"],
     ["a string", '"x"', "Payload must be a JSON object"],
-    // The switch owns dry_run: a typed one would be dropped and the rule saved live.
     ["a typed dry_run", '{"posts":[],"dry_run":true}', 'Remove "dry_run" here'],
     ["a typed dry_run false", '{"posts":[],"dry_run":false}', 'Remove "dry_run" here'],
   ])("rejects %s", (_name, text, error) => {

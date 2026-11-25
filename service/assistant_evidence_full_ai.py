@@ -1,9 +1,3 @@
-"""service/assistant_evidence_full_ai.py — the fan evidence pack's Full AI Chat lines.
-
-Moved out of `assistant_evidence` as is: the raw `FullAi` record the fetcher (`assistant_fan_pack`) fills, and the
-renderers `assistant_evidence.proven_lines` / `current_lines` call (`_full_ai_rows`, `_full_ai_state`, `_fans_line`).
-Same rules as there: pure (no session, engine or network), reason codes and timestamps only, never a fan's words.
-"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -16,61 +10,50 @@ if TYPE_CHECKING:
 
 
 class FullAiJob(NamedTuple):
-    """One `full_ai_chat` scheduled_jobs row aimed at this fan, raw."""
 
     id: int
-    status: str                  # pending | running | done | error | cancelled
-    run_at: datetime | None      # when it is (was) due
+    status: str
+    run_at: datetime | None
     created_at: datetime | None
-    anchor_at: datetime | None   # his message it was queued off; None = not read
-    tries: int                   # busy re-queues so far (payload `tries`)
+    anchor_at: datetime | None
+    tries: int
     last_error: str | None
-    decided: bool = False        # a live decision on its anchor or a later message
+    decided: bool = False
 
 
 class FullAiDecision(NamedTuple):
-    """One live `ai_decisions` row of his, raw. `reply` holds ONLY the
-    `FULL_AI_REPLY_KEYS` (the fetcher drops the rest): reply_json also carries
-    her bubbles and `fan_info`, i.e. words, and no word goes in this pack."""
 
     created_at: datetime | None
     anchor_at: datetime | None
     route: str
-    status: str                  # sending | sent | unconfirmed | no_send | failed
+    status: str
+    # Only FULL_AI_REPLY_KEYS: reply_json also carries her bubbles and fan_info, and no fan or creator word goes in this pack.
     reply: dict
     jev_error: str | None
 
 
-# The reply_json keys that say WHY a Turn sent nothing or less than all of it.
 FULL_AI_REPLY_KEYS = ("floor_reason", "dropped_reason", "stood_down", "cut",
                       "refusal", "offer_dropped", "attempts")
 
 
 class FullAi(NamedTuple):
-    """Full AI Chat for this account and fan, as LOCAL rows show it.
 
-    `stop` is `full_ai_owner.who_owns` over the facts readable here — never a
-    copy of its order. Fans list MEMBERSHIP is an OnlyFans read: only a FRESH
-    cached read (`fans_read`, full_ai_owner_io.FansRead) goes into that call;
-    otherwise a set list is assumed passed and the Fans line says what is known."""
-
-    off: str | None              # full_ai_owner.OFF_REASONS, None = Live
-    mode: str | None             # the rule's trigger_json mode
-    every_s: Any                 # the rule's every_seconds: the sweep's cadence
-    speed: str                   # checkpoint reply_speed
-    by_webhook: bool             # checkpoint reply_by_webhook
-    fans: Any                    # checkpoint fans {include, exclude}
-    fans_ok: bool                # full_ai_config._fans_error(fans) is None
+    off: str | None
+    mode: str | None
+    every_s: Any
+    speed: str
+    by_webhook: bool
+    fans: Any
+    fans_ok: bool
     spend_cents: int
-    top_spend_cents: int         # 0 = no limit
-    stop: str | None             # who_owns' reason; None = nothing local stops him
+    top_spend_cents: int
+    stop: str | None
     audience_why: str | None
-    jobs: list[FullAiJob]        # pending/running first, then newest
-    decisions: list[FullAiDecision]   # newest first
-    open_at: datetime | None     # his unanswered message (the sweep's Turn end)
-    open_due: datetime | None    # its due time by Reply speed (full_ai_live.due)
-    open_decided: bool           # a live decision row exists on it
-    # Fans list membership off the relay's cached OnlyFans read; None = unknown.
+    jobs: list[FullAiJob]
+    decisions: list[FullAiDecision]
+    open_at: datetime | None
+    open_due: datetime | None
+    open_decided: bool
     fans_read: "FansRead | None" = None
 
 
@@ -78,7 +61,6 @@ class FullAi(NamedTuple):
 # imported: full_ai_config pulls the automation executor into this pure renderer.
 _SPEED_WORDS = {"0-2m": "0-2 min", "0-15-60": "most near 15 min, none past 1h"}
 
-# One phrase per full_ai_owner.REASONS entry (a test pins the key set).
 FULL_AI_STOP = {
     "off_global": "the global switch FULL_AI_CHAT_OFF is on",
     "off_rule": "its rule is switched off",
@@ -94,11 +76,9 @@ FULL_AI_STOP = {
     "top_spend": "his lifetime spend reached the top spend limit (left to "
                  "humans)",
 }
-# not_listed off a malformed stored list.
 _STOP_MALFORMED = "the Fans list's stored config is malformed, so nobody is listed"
 
 
-# ── Full AI Chat ──────────────────────────────────────────────────────
 
 def _speed(fa: FullAi) -> str:
     words = _SPEED_WORDS.get(fa.speed)
@@ -106,7 +86,6 @@ def _speed(fa: FullAi) -> str:
 
 
 def _job_line(fa: FullAi, j: FullAiJob, now: datetime) -> str:
-    """The pending (or running) job: THE answer when a reply is merely waiting."""
     msg = f"his message of {at(j.anchor_at)}" if j.anchor_at else "his message"
     if j.status == "running":
         return f"- Full AI queue: a reply to {msg} is RUNNING now (job {j.id})."
@@ -137,7 +116,6 @@ def _old_job(j: FullAiJob) -> str:
 
 
 def _why(d: FullAiDecision) -> str:
-    """Why a Turn sent nothing or less than all of it — reason codes only."""
     r, bits = d.reply, []
     if d.route == "no_send":
         bits.append("the Router chose no_send")
@@ -165,7 +143,6 @@ def _why(d: FullAiDecision) -> str:
 
 
 def _full_ai_rows(fa: FullAi) -> list[str]:
-    """The stored Full AI rows: his queue job(s) and his newest decisions."""
     now = datetime.utcnow()
     live = [j for j in fa.jobs if j.status in ("pending", "running")]
     out = [_job_line(fa, j, now) for j in live[:1]]
@@ -190,7 +167,6 @@ def _full_ai_rows(fa: FullAi) -> list[str]:
 
 
 def _full_ai_state(fa: FullAi) -> list[str]:
-    """Is Full AI on for this Creator, and what stops it for him? ESSENTIAL."""
     if fa.off == "off_global":
         return ["- Full AI Chat: OFF on every creator — the global switch "
                 "FULL_AI_CHAT_OFF is on. It answers nobody."]
@@ -225,7 +201,6 @@ def _full_ai_state(fa: FullAi) -> list[str]:
 
 
 def _stop_words(fa: FullAi) -> str:
-    """The stop's phrase; not_listed says which of its two causes it is."""
     if fa.stop == "not_listed" and not fa.fans_ok:
         return _STOP_MALFORMED
     return FULL_AI_STOP.get(fa.stop, fa.stop)
@@ -236,8 +211,6 @@ def _ago(seconds: float) -> str:
 
 
 def _fans_line(fa: FullAi) -> str:
-    """The Fans list's setting, and his membership as far as the relay's cached
-    OnlyFans read knows it: a stale read is never stated as fact."""
     if not fa.fans_ok:
         return "- Full AI Fans list: stored config is malformed — nobody is listed."
     inc, exc = fa.fans.get("include") or [], fa.fans.get("exclude") or []

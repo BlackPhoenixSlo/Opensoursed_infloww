@@ -1,5 +1,3 @@
-"""An Agency with Creators, their Fans and an inbox of threads.
-small 3x50 fans, medium 10x500 (5k), huge 10x5000 (50k fans) — see seed.SCALES."""
 from __future__ import annotations
 
 from .. import World, agency, creators, fans, threads

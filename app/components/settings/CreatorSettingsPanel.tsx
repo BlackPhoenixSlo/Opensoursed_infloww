@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * A Settings panel for one Creator's setting (OfConsentTab, OfmWritesTab): the Creator is picked in the panel header,
- * `linked` (a link's `?account=<id>`) when it is one of the session-backed Creators, else the one in scope, else the
- * first; `card(accountId)` draws its setting, keyed by the Creator.
- */
 
 import { useState, type ReactNode } from "react";
 

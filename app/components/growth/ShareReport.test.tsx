@@ -1,7 +1,3 @@
-/**
- * A share link's public report: the key from the URL, one read of `/share/<key>/data`, the links with their counts
- * and (when included) earnings; expired (410) and unknown (404) say so.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 

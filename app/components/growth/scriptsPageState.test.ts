@@ -141,7 +141,6 @@ describe("renameEntry keeps the checked scripts", () => {
       { type: "renameEntry", kind: "tag", from: "Night", to: "Late", order: TAGS, account: null }, opened("VIP")],
     ["another tag while All scripts is open keeps All scripts", {},
       { type: "renameEntry", kind: "tag", from: "Night", to: "Late", order: TAGS, account: null }, opened(null)],
-    // The page renames a pending tag here only while no script carries it (`livePending`); else on the server.
     ["an open pending tag no script carries is renamed in place", { pendingTags: ["Night", "X"], ...opened("Night") },
       { type: "renameEntry", kind: "tag", from: "Night", to: "Late", order: TAGS, account: null },
       { pendingTags: ["Late", "X"], ...opened("Late") }],
@@ -195,7 +194,6 @@ describe("reset (another Creator)", () => {
   );
 });
 
-/** A run's end on Creator `account` (the page's initial null unless given). */
 const end = (ids: number[], error: string | null = null, account: string | null = null): Action =>
   ({ type: "runEnd", ids, error, account });
 
@@ -243,7 +241,6 @@ describe("runs: busy ids, the last error and the ticks", () => {
 
 describe("an answer asked on another Creator than the page shows is dropped", () => {
   type Row = [string, Action[], { busy: number[]; error: string | null; checked: number[]; open: Partial<Record<string, string | null>> }];
-  // On Creator a, VIP and sequence B open, 1 and 7 ticked.
   const onA = st({ ...opened("VIP", "B"), checked: new Set([1, 7]), account: "a" });
   const toB: Action = { type: "reset", account: "b" };
   const toA: Action = { type: "reset", account: "a" };
@@ -308,7 +305,6 @@ describe("the overlay and the search", () => {
     expect(scriptsPageReducer(st(start), action)).toMatchObject(want);
   });
 
-  // The Fill dialog (`fill.dialog`) and `modal` are one overlay, kept exclusive in one step.
   const PRESSED = { ...INITIAL_FILL, account: "a", open: "New Sub", inflight: { [fillKey("a", "New Sub")]: 1 } };
   const FILL_OPEN = { ...INITIAL_FILL, account: "a", open: "New Sub", dialog: { sequence: "New Sub", req: 1, status: "no_fit" as const, refusal: null } };
   const answer: Action = { type: "fill", action: { type: "answered", account: "a", sequence: "New Sub", req: 1, status: "no_fit" } };
@@ -345,7 +341,6 @@ describe("the overlay and the search", () => {
   });
 });
 
-/* ── derivations ─────────────────────────────────────────────────────────── */
 
 const sr = (id: number, over: Partial<SavedReply> = {}): SavedReply =>
   ({ id, account_id: "a", title: `t${id}`, text: `text ${id}`, price: 0, locked_text: false, media: [], ...over });

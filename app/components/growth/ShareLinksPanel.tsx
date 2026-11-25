@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * ShareLinksPanel — Infloww's third tab "Share links" on Free trial links and Tracking links (bundle @14121033,
- * @14128428): a share link is a public, read-only report on some of the Creator's links for someone outside the
- * agency. Create takes a name, the links and "Include earnings"; the report can be viewed for 7 days ("Expires on"),
- * then answers that it expired. Owner-only (the tab is not drawn for a chatter; the relay refuses one too).
- *
- * The report (`/share/<id>.<secret>`, `ShareReport`) shows each link's name, date created and OnlyFans' counts, and
- * with "Include earnings" its net Earnings and Fans who spent; never a fan. Its figures are the ones this page last
- * read: the relay rebuilds them each time the links list here reads OnlyFans (Infloww: "updated at least once every
- * 4 hours"; ours has no scheduler). Delete stops the link at once.
- */
 
 import { useState } from "react";
 import { Plus, Search } from "lucide-react";
@@ -30,7 +19,6 @@ import { cn } from "@/lib/utils";
 const NOUN: Record<EditableKind, string> = { trial: "free trial links", campaign: "tracking links" };
 const MAX_LINKS = 100;
 
-/** The share's public address: same-origin, Next rewrites its data read to the relay. */
 function shareUrl(path: string): string {
   return typeof window === "undefined" ? path : `${window.location.origin}${path}`;
 }
@@ -39,11 +27,10 @@ export default function ShareLinksPanel({ accountId, onAccountChange, kind, link
   accountId: string | null;
   onAccountChange: (id: string) => void;
   kind: EditableKind;
-  /** The Creator's links that can be shared (an OnlyFans id), as the links list read them. */
   links: Array<{ ofId: number; name: string }>;
 }) {
   const q = useLinkShares(accountId, kind);
-  // A tracking link share is filled by the earnings read; opening the tab makes it (the free trial list is the tab's).
+  // A tracking link share is filled by the earnings read; opening the tab makes it.
   useOfTrackingEarnings(kind === "campaign" ? accountId : null);
   const revoke = useRevokeLinkShare(accountId, kind);
   const { reportTz } = useReportTz();

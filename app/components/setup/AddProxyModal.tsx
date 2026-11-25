@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * AddProxyModal: Custom proxy's "+ Add new proxy" modal, laid out from its Layout capture
- * (`docs/infloww-layouts/creators-proxy.md`, #24 to #36; ticket 18). The capture's fields come first: Proxy label,
- * Type, IP address and Port side by side, Username and Password. The label defaults to `host:port`, as the bulk paste
- * labels its rows, because the relay keys a proxy by its label. That default, the https type, Notes, the storage hint
- * and the bulk paste section are ours, each titled `EXTRA_LABEL`. The modal owns its single-add draft;
- * `ProxiesTable` owns the mutation and shows a failed add as its toast (#27; ticket 62). The bulk
- * paste (`BulkPaste`) keeps its own text, type and request; the pasted text is gone once the modal closes.
- */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Eye, EyeOff } from "lucide-react";
@@ -22,10 +13,8 @@ import { relay } from "@/lib/relay";
 export type ProxyScheme = "http" | "https" | "socks5";
 
 export interface ProxyDraft {
-  /** What the user typed in Proxy label; used only once `labelEdited`. */
   label: string;
   labelEdited: boolean;
-  /** #29: none chosen at first. */
   scheme: ProxyScheme | "";
   host: string;
   port: string;
@@ -38,22 +27,18 @@ export const EMPTY_DRAFT: ProxyDraft = {
   label: "", labelEdited: false, scheme: "", host: "", port: "", username: "", password: "", notes: "",
 };
 
-/** The label the draft saves under: the typed one once edited, else `host:port`. */
+// The relay keys a proxy by its label, hence the host:port default.
 export function draftLabel(d: ProxyDraft): string {
   if (d.labelEdited) return d.label;
   const host = d.host.trim();
   return host && d.port ? `${host}:${d.port}` : "";
 }
 
-/** What stops the add: `notWired` (the Relay cannot take it, or the list has not loaded), `invalid` (a field to fill
- *  or fix), `duplicate` (the label is taken; said under Proxy label). */
 export interface DraftProblem {
   kind: "notWired" | "invalid" | "duplicate";
   text: string;
 }
 
-/** The first thing stopping the add, in the form's order, or null. #27 keeps Add proxy off until the form is valid.
- *  `takenLabels` is null until the proxies read lands, and the duplicate guard cannot run before it does. */
 export function draftProblem(d: ProxyDraft, takenLabels: readonly string[] | null): DraftProblem | null {
   const label = draftLabel(d).trim();
   const port = Number(d.port);
@@ -62,7 +47,6 @@ export function draftProblem(d: ProxyDraft, takenLabels: readonly string[] | nul
   if (!label) return invalid("Fill in Proxy label");
   if (!d.scheme) return invalid("Choose a Type");
   if (!d.host.trim()) return invalid("Fill in IP address");
-  // #32: the bundle's Port takes 0; the Relay refuses it (`service/proxies.py`, "port out of range (1-65535)").
   if (d.port !== "" && port === 0) return { kind: "notWired", text: "not wired: port 0, as the Relay takes 1–65535" };
   if (!d.port || !Number.isInteger(port) || port < 1 || port > 65535) return invalid("Port must be 1–65535");
   if (takenLabels.includes(label)) return { kind: "duplicate", text: `A proxy named "${label}" already exists` };
@@ -74,8 +58,6 @@ export interface BulkResp {
   errors: Array<{ line: number; text_redacted: string; reason: string }>;
 }
 
-/** #34: the label 14px above its field, 8px under it; 24px under each field. A group (Type) gets a caption, not a
- *  `<label>`, as it has no single control. */
 function Field({ id, label, extra, children }: { id?: string; label: string; extra?: boolean; children: React.ReactNode }) {
   const caption = <>{label}{extra && <ExtraTag />}</>;
   return (
@@ -102,7 +84,6 @@ export default function AddProxyModal({
   const set = (patch: Partial<ProxyDraft>) => setDraft({ ...draft, ...patch });
   const [showPassword, setShowPassword] = useState(false);
   return (
-    // #24: centred, 800px; no close cross (Escape still closes), and a mask click does not close it.
     <IfModal
       title="Add new proxy"
       width={800}
@@ -110,7 +91,6 @@ export default function AddProxyModal({
       keyboard
       onClose={onClose}
       footer={
-        // #27: Cancel, then Add proxy, right-aligned 8px apart.
         <>
           <IfButton onClick={onClose}>Cancel</IfButton>
           <IfButton variant="primary" onClick={() => onSave(draft)} disabled={problem !== null || saving}
@@ -120,7 +100,6 @@ export default function AddProxyModal({
         </>
       }
     >
-      {/* #28: Proxy label, 32 characters. Its host:port default is ours. */}
       <Field id="add-proxy-label" label="Proxy label">
         <IfInput
           id="add-proxy-label"
@@ -135,7 +114,6 @@ export default function AddProxyModal({
         {duplicate && <IfHelp className="text-err">{duplicate}</IfHelp>}
       </Field>
 
-      {/* #29, #36: Type radios http and socks (the relay's socks5), none chosen at first; https is ours. */}
       <Field label="Type">
         <div role="radiogroup" aria-label="Type" className="flex flex-wrap items-center gap-4">
           {([["http", "http"], ["socks5", "socks"], ["https", "https"]] as const).map(([value, word]) => (
@@ -155,7 +133,6 @@ export default function AddProxyModal({
         </div>
       </Field>
 
-      {/* #30 to #32: IP address and Port side by side, 24px apart, each half; stacked on a phone. */}
       <div className="flex flex-col sm:flex-row sm:gap-6">
         <Field id="add-proxy-host" label="IP address">
           <IfInput
@@ -179,7 +156,6 @@ export default function AddProxyModal({
         </Field>
       </div>
 
-      {/* #33: Username and Password, both optional. */}
       <Field id="add-proxy-user" label="Username">
         <IfInput
           id="add-proxy-user"
@@ -189,7 +165,6 @@ export default function AddProxyModal({
           autoComplete="off"
         />
       </Field>
-      {/* #33: Input.Password, its eye at the right reveals the password on demand. */}
       <Field id="add-proxy-pass" label="Password">
         <div className="relative">
           <IfInput
@@ -229,14 +204,12 @@ export default function AddProxyModal({
   );
 }
 
-/** Ours: the bundle adds one proxy at a time (#42); the relay's bulk add takes one proxy per line. */
 function BulkPaste() {
   const qc = useQueryClient();
   const [bulkText, setBulkText] = useState("");
   const [bulkScheme, setBulkScheme] = useState<ProxyScheme>("http");
-  // The pasted text carries proxy passwords, so it is read from state in the
-  // closure and never becomes a mutation variable (mutations can be persisted).
   const bulkM = useMutation({
+    // Pasted text carries proxy passwords: read from state here, never a mutation variable (mutations can be persisted).
     mutationFn: () => relay.post<BulkResp>("/admin/proxies/bulk", { text: bulkText, scheme: bulkScheme }),
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ["proxies"] });

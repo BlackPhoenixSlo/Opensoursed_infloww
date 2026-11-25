@@ -1,19 +1,5 @@
 #!/usr/bin/env python3
-"""Shift records (roadmap W6 6.6): `GET /admin/shifts/records` and the Owner delete of a Clock event.
-
-- Records are the Agency's Clock events intersecting [from, to), newest clock-in first, every Employee's unless
-  `employee_id` narrows them, each with its sales: the shares credited to its Employee inside its time on its
-  Creator (the Timesheet's Recorded earnings rule), as `sales_cents` and `sales` (how many).
-- `DELETE /admin/shifts/clock-events/{id}` removes the event and writes one `clock.owner_delete` action holding
-  it; another Agency's event or a missing one is 404.
-- Owner or Master only: a chatter 403, no session 401.
-
-The seam is the Relay over HTTP with the shared two-Agency fixture's sessions, over Clock events, messages and
-transactions seeded straight into the temp DB with fixed past timestamps on a Creator this file owns.
-
-Run: ./venv/bin/python service/tests/test_shift_records.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -74,12 +60,13 @@ def _sale(cents: int, at: datetime, fan: int, sender: int | None = None, manual:
 E1, E2 = _employee("records_emp_1"), _employee("records_emp_2")
 EV1 = _event(E1, _at("09:00"), _at("11:00"), account_id=C)
 EV2 = _event(E2, _at("10:00"), _at("12:00"), account_id=C)
-EV_OLD = _event(E1, _at("01:00"), _at("02:00"), account_id=C)  # no sales
+EV_OLD = _event(E1, _at("01:00"), _at("02:00"), account_id=C)
 _sale(1000, _at("09:30"), fan=1, sender=E1)
 _sale(200, _at("10:59"), fan=2, manual=E1)
-_sale(300, _at("11:30"), fan=3, sender=E1)   # after E1's clock-out: no shift's
+_sale(300, _at("11:30"), fan=3, sender=E1)
 _sale(400, _at("11:00"), fan=4, sender=E2)
-_sale(25, _at("11:15"), fan=5, sender=E2, status="pending")  # an uncleared sale counts too
+# pending (uncleared) sales count toward a shift's sales
+_sale(25, _at("11:15"), fan=5, sender=E2, status="pending")
 EV_B = _event(_employee("records_emp_b", owner="agency_b_owner"), _at("09:00"), _at("11:00"),
               owner="agency_b_owner")
 
@@ -158,7 +145,7 @@ def case_an_owner_delete_removes_the_event_with_one_audit_row():
 
 
 def case_an_open_event_can_be_deleted():
-    ev = _event(E2, utc_now(), account_id=C)  # now, so no auto clock-out closes it first
+    ev = _event(E2, utc_now(), account_id=C)
     _delete(OWNER_A, ev)
     assert not _exists(ev), ev
     assert _audit(ev)[0]["before"]["out_utc"] is None, _audit(ev)

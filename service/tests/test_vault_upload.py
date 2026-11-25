@@ -1,38 +1,4 @@
 #!/usr/bin/env python3
-"""Vault batch-upload unit tests — plain asserts, no pytest, no network.
-
-Run: ./venv/bin/python service/tests/test_vault_upload.py
-
-These cover the three pieces where a silent wrong answer is expensive and a
-live test is too slow or too destructive to run often:
-
-  * the S3 ETag, because it is OF's dedupe key and is NOT the file md5 once an
-    upload goes multipart. Getting it wrong doesn't fail loudly — it just
-    re-uploads every large file forever.
-  * Drive link parsing, because a dropped `resourcekey` turns a working public
-    link into a 404 that reads as "not shared".
-  * the run-state reconciler, because a run whose process died must report
-    `interrupted`, never a permanent `running` that locks the account out.
-  * the carrier INTENT record, because it is written before the create call and
-    is the only thing that can find a carrier whose response was lost.
-  * a dedupe hit on a HIDDEN vault item, because reporting it as done is how an
-    operator loses media that no re-upload can ever restore.
-  * the Drive API key never reaching a stored error string.
-  * the size limits, because an override that stops being honoured halfway
-    through the pipeline fails silently and expensively.
-  * the intent hook's FAILURE, because swallowing it and posting anyway is the
-    unrecoverable case the intent record exists to prevent.
-  * the sweep's liveness rule, because deleting a carrier belonging to a run
-    that is still polling fails an item whose media is already on OnlyFans —
-    and writing the sweep's stale snapshot back loses everything that run wrote.
-  * the import lock, because a pid alone is not an identity: container pids are
-    recycled, and "locked out forever" is the failure the lock must not cause.
-  * the write gate, because it is what keeps a carrier out of the slot an
-    automation's fan message reserved.
-
-The live half — carrier minting, multipart PUTs, dedupe against the real vault
-— is exercised by scripts/probe_vault_upload.py against a real session.
-"""
 import asyncio
 import json
 import logging
@@ -76,13 +42,13 @@ def check_raises(label: str, fn, exc) -> None:
     print(f"  FAIL {label}: did not raise")
 
 
-# ── S3 ETag / dedupe key ──────────────────────────────────────────────────
+# the S3 ETag is OF's dedupe key and is not the file md5 once an upload goes multipart
 print("\ns3_etag_and_md5")
 import hashlib
 
 with tempfile.TemporaryDirectory() as td:
     td = Path(td)
-    part = 1024                       # tiny parts so the test stays in memory
+    part = 1024
 
     one = td / "one.bin"
     one.write_bytes(b"a" * 500)
@@ -91,8 +57,6 @@ with tempfile.TemporaryDirectory() as td:
     check("single part: md5 matches key", md5, key)
     check("single part: size", size, 500)
 
-    # Exactly one part is still SINGLE-part — S3 only switches format once a
-    # second part exists. An off-by-one here silently breaks 5 MiB files.
     exact = td / "exact.bin"
     exact.write_bytes(b"b" * part)
     key, _, size = of_client.s3_etag_and_md5(exact, part_size=part)
@@ -123,7 +87,6 @@ with tempfile.TemporaryDirectory() as td:
     check("empty file: size", size, 0)
 
 
-# ── Google Drive link parsing ─────────────────────────────────────────────
 print("\ngdrive.parse_link")
 cases = [
     ("https://drive.google.com/file/d/1AbC_dEf/view?usp=sharing", "file", "1AbC_dEf", None),
@@ -133,7 +96,6 @@ cases = [
      "unknown", "1Uc_id", "0-AbC"),
     ("https://docs.google.com/document/d/1Doc_id/edit", "unknown", "1Doc_id", None),
     ("1BareIdLooksLikeThis", "unknown", "1BareIdLooksLikeThis", None),
-    # resourcekey must survive on the /file/d/ shape too, not just ?id=
     ("https://drive.google.com/file/d/1Keyed/view?resourcekey=0-XyZ", "file", "1Keyed", "0-XyZ"),
 ]
 for link, kind, fid, rkey in cases:
@@ -161,7 +123,6 @@ check("resourcekey -> joined header",
       {"X-Goog-Drive-Resource-Keys": "a/k1"})
 
 
-# ── run-state reconciliation ──────────────────────────────────────────────
 print("\nvault_upload._reconcile")
 running = {"run_id": "r", "account_id": "42", "status": "running"}
 vault_upload._live.pop("42", None)
@@ -171,8 +132,6 @@ vault_upload._live["42"] = "r"
 try:
     check("running row + live process -> running",
           vault_upload._reconcile(running)["status"], "running")
-    # Liveness is per RUN: an older run of an account that is busy with a NEW
-    # import has not somehow come back to life.
     vault_upload._live["42"] = "r2"
     check("older run + account busy with a newer one -> interrupted",
           vault_upload._reconcile(running)["status"], "interrupted")
@@ -181,12 +140,6 @@ finally:
 check("finished row is untouched",
       vault_upload._reconcile({"status": "done", "account_id": "42"})["status"], "done")
 
-# The `mirroring` window. `_mirror_landed` holds the record at `running` on
-# purpose while it writes the local mirror, and that window is now up to
-# `_VAULT_MIRROR_TIMEOUT_S` of serial OF reads — minutes, sitting exactly where
-# every file has ALREADY reached the creator's vault. A restart inside it used
-# to report a fully successful import as "the relay restarted mid-run", and the
-# operator's documented next move is to re-run the batch onto OF's byte dedupe.
 mirroring = {"run_id": "r", "account_id": "42", "status": "running",
              "phase": "mirroring", "terminal_status": "done"}
 check("a restart mid-MIRROR reports the run's decided status, not `interrupted`",
@@ -214,16 +167,10 @@ print("\ncaps are readable from the environment")
 check("MAX_FILES is an int", isinstance(vault_upload.MAX_FILES, int), True)
 check("MAX_BYTES tracks MAX_MB", vault_upload.MAX_BYTES, vault_upload.MAX_MB * 1024 * 1024)
 
-# ── the carrier intent record (the worst failure this feature can cause) ──
-# A carrier post that outlives its run publishes to the creator's whole feed.
-# The dangerous case is not "we forgot to delete it" — it is "the create call's
-# response never came back, so no id was ever learned". The ONLY thing that can
-# find such a post is a record written before the POST went out.
 print("\nof_client.materialize_to_vault: the intent record precedes the POST")
 
 
 class _Recorder:
-    """A stand-in `self` for the unbound method — no session, no network."""
     _VAULT_MARKER = of_client.VAULT_MARKER
     timeout_s = 30
 
@@ -264,7 +211,6 @@ check("the carrier's media come back as listed", res["media"],
       [{"id": 555, "isReady": True}])
 check("the carrier is deleted", rec.deleted, [9001])
 
-# The scenario the record exists for: the POST is sent, the response is lost.
 lost = _Recorder(create_raises=TimeoutError("read timed out"))
 intents: list = []
 try:
@@ -276,8 +222,6 @@ except TimeoutError:
 check("a lost create response still leaves an intent behind",
       intents, [of_client.VAULT_MARKER])
 
-# And the sweep can act on it: a marker-bearing scheduled post whose id no run
-# owns is deletable, which is the only handle on a carrier nobody recorded.
 print("\nvault_upload._sweep_scheduled")
 
 
@@ -288,13 +232,9 @@ class _Scheduled:
         self.fail = fail
         self.windows: list[tuple] = []
 
+    # OF /schedules is the dated calendar: honours the date range, ignores offset/limit, no hasMore; dated carriers are not in later/post
     def schedules(self, *, publish_date=None, publish_date_end=None,
                   time_zone="Europe/Ljubljana", limit=20):
-        """GET /schedules (the dated calendar), like OF (measured live
-        2026-11-21): dated carriers live here, NOT in /schedules/later/post;
-        honours the date range, IGNORES offset and limit, no hasMore. An
-        undated row (publishDateTime null) is answered in every range, so
-        dedupe is exercised too."""
         if self.fail:
             raise RuntimeError("session went stale")
         self.windows.append((publish_date, publish_date_end))
@@ -313,8 +253,6 @@ def _in_days(days: float) -> str:
 
 
 def _row(pid, *, days=5, **post):
-    """A listing row as OF sends it: a queue entry (its own id) wrapping the
-    post, dated `days` out (GET /schedules row shape)."""
     return {"id": 900_000 + pid, "type": "post", "publishDateTime": _in_days(days),
             "createdDateTime": _in_days(-1), "entity": {"id": pid, **post}}
 
@@ -331,9 +269,6 @@ check("leaves a carrier a run already tracks to that run", 3 in sched.deleted, F
 check("reports what it deleted", (got, lost_count), (1, 0))
 check("a listing that ran to the end is a COMPLETE scan", complete, True)
 
-# A queue longer than one read: OF ignores offset/limit on /schedules, so the
-# window is walked in date chunks. 250 posts spread over the month, the
-# carrier 30 days out on the far end — reached, and complete.
 long_queue = ([_row(1000 + n, days=n * 30 / 250, rawText="a real post")
                for n in range(250)]
               + [_row(7, days=of_client.CARRIER_DAYS, rawText=of_client.VAULT_MARKER)])
@@ -344,24 +279,17 @@ check("walks date chunks past one read to reach a far-future carrier",
 check("and says so", (got, complete), (1, True))
 check("more than one read", len(paged.windows) > 1, True)
 
-# "Could not list" must NEVER read the same as "listed, found nothing" — this
-# is the only recovery path an unrecorded carrier has.
 broke = _Scheduled([], fail=True)
 got, lost_count, complete = vault_upload._sweep_scheduled(broke, "42", lambda: set())
 check("a failed listing is an incomplete scan", complete, False)
 check("and is COUNTED as a failure, so the relay shouts", lost_count, 1)
 
-# The queue-row WRAPPER (app/lib/__fixtures__/of/queue-saved-post-item.json, a
-# live later/post capture; /schedules rows wrap the same `entity` — see
-# queue-schedules-2026-11.json below): each row is a queue entry wrapping the
-# post in `entity`, and the
-# row's own `id` is the QUEUE id. Reading the row as the post never found the
-# marker — and had it matched, would have deleted the queue id, not the post.
 _fx = json.loads((Path(__file__).resolve().parents[2] / "app" / "lib"
                   / "__fixtures__" / "of" / "queue-saved-post-item.json").read_text())
 _wrapped = json.loads(json.dumps(_fx["list"][0]))
 _wrapped["entity"]["rawText"] = of_client.VAULT_MARKER
 _wrapped["entity"]["text"] = f"<p>{of_client.VAULT_MARKER}</p>"
+# a queue row wraps the post in `entity`; the row's own id is the QUEUE id, never delete that
 _queue_id, _post_id = _wrapped["id"], _wrapped["entity"]["id"]
 assert _queue_id != _post_id
 real = _Scheduled([_wrapped])
@@ -376,8 +304,6 @@ vault_upload._sweep_scheduled(real, "42", lambda: {str(_post_id)})
 check("captured shape: a recorded post id is known by its entity id",
       real.deleted, [])
 
-# A row with no `entity` is not a post we can identify: skipped and logged,
-# never deleted — not even when its own fields carry the marker.
 class _Capture(logging.Handler):
     def __init__(self):
         super().__init__()
@@ -403,18 +329,11 @@ check("…and is logged", sum("no entity" in m for m in _cap.msgs), 2)
 check("…and deletes nothing else", got, 0)
 check("…and the scan is NOT complete (it may be the carrier)", complete, False)
 
-# ── dated carriers: the sweep reads GET /schedules, not later/post ─────────
-# Live read 2026-11-21 (capture queue--scheduled-post-endpoint): a post with a
-# publish date is ONLY in the date-range calendar; /schedules/later/post is the
-# undated "saved for later" list. A carrier is always dated (CARRIER_DAYS out),
-# so reading later/post never saw one. Row shape: the captured /schedules row.
 print("\nvault_upload._sweep_scheduled: dated carriers via GET /schedules")
 _cal = json.loads((Path(__file__).resolve().parents[2] / "app" / "lib"
                    / "__fixtures__" / "of" / "queue-schedules-2026-11.json").read_text())
 _dated = json.loads(json.dumps(_cal["list"][0]))
 assert _dated["type"] == "post" and _dated["publishDateTime"]
-# The captured shape, but dated relative to NOW: the fixture's fixed date
-# would fall out of the window within days and the tests below go vacuous.
 _dated["publishDateTime"] = _in_days(5)
 _dated["entity"]["text"] = f"<p>{of_client.VAULT_MARKER}</p>"
 _dated["entity"].pop("rawText", None)
@@ -436,14 +355,11 @@ check(f"each chunk spans at most {of_paging.SCHEDULE_CHUNK_DAYS} days",
       max((datetime.fromisoformat(h) - datetime.fromisoformat(l)).days
           for l, h in cal.windows), of_paging.SCHEDULE_CHUNK_DAYS)
 
-# A carrier 29 days out sits in the last chunks: found, so the window covers it.
 far = _Scheduled([_row(29, days=29, text=of_client.VAULT_MARKER)])
 got, lost_count, complete = vault_upload._sweep_scheduled(far, "42", lambda: set())
 check("a carrier 29 days out is found and deleted",
       (far.deleted, got, lost_count, complete), ([29], 1, 0, True))
 
-# The calendar lists scheduled CHATS too. A chat row is never deleted, even if
-# its text happened to carry the marker.
 _chat = {"id": 777, "type": "chat", "publishDateTime": _dated["publishDateTime"],
          "createdDateTime": _dated["createdDateTime"],
          "entity": {"id": 7770, "text": of_client.VAULT_MARKER}}
@@ -452,16 +368,12 @@ got, lost_count, complete = vault_upload._sweep_scheduled(cal, "42", lambda: set
 check("a scheduled CHAT row is never deleted", cal.deleted, [])
 check("…and the scan still completed", (got, lost_count, complete), (0, 0, True))
 
-# A known carrier on the calendar stays with its run.
 cal = _Scheduled([json.loads(json.dumps(_dated))])
 got, _, complete = vault_upload._sweep_scheduled(cal, "42",
                                                  lambda: {str(_dated_pid)})
 check("a recorded dated carrier is kept", (cal.deleted, complete), ([], True))
 
 
-# An INCOMPLETE listing (of_paging.schedules_in_window says why: a full day,
-# a bad reply, ... — tabled in test_of_paging.py) still deletes the marker
-# posts it DID list (presence is proof), but the scan is incomplete.
 _siw_orig = of_paging.schedules_in_window
 of_paging.schedules_in_window = lambda client, days, **kw: (
     [_row(5, days=5, rawText=of_client.VAULT_MARKER)], "2026-11-30: 100 rows in one day")
@@ -474,7 +386,6 @@ finally:
 check("an incomplete listing: listed carrier deleted, counted, incomplete",
       (inc.deleted, got, lost_count, complete), ([5], 1, 1, False))
 
-# A row whose type is missing or unknown is skipped AND logged.
 _cap = _Capture()
 _vlog.addHandler(_cap)
 try:
@@ -492,13 +403,10 @@ check("…and each is logged (a chat row is expected, not logged)",
       sum("has type" in m for m in _cap.msgs), 2)
 
 
-# ── a dedupe hit on a HIDDEN vault item is never 'done' ───────────────────
 print("\nvault_upload._upload_one: hidden dedupe hit")
 
 
 class _FakeClient:
-    """`upload_claim` answers `claim` (a fresh claim by default). A carrier
-    records its intent, then raises `raises` or lists `vault_id`."""
     def __init__(self, claim=None, *, vault_id=1, raises=None):
         self.claim = claim or of_client.UploadClaim(media={"processId": "p"})
         self.vault_id, self.raises = vault_id, raises
@@ -515,7 +423,6 @@ class _FakeClient:
 
 
 def _one(state, item, client, limits):
-    """One file the way a run uploads it: staged, then carried."""
     up = vault_upload._Uploader(state, client, None, None, limits)
     with up.running():
         up.add(item)
@@ -544,15 +451,12 @@ with tempfile.TemporaryDirectory() as td:
     check("a dedupe hit records no carrier intent, because it posts nothing",
           item["carrier_intent"], None)
 
-    # A visible hit is still an ordinary success.
     item2 = vault_upload._item("ok.jpg", str(media), "local", 32)
     state["items"] = [item2]
     _one(state, item2, _FakeClient(of_client.UploadClaim(vault_id=78)),
          vault_upload.Limits())
     check("a visible dedupe hit is done", item2["status"], "done")
 
-    # And the intent SURVIVES a lost response, on disk, in the run record.
-    # (The traceback that path logs is the point of the test, not a failure.)
     logging.getLogger("of-relay.vault_upload").setLevel(logging.CRITICAL)
     item3 = vault_upload._item("big.mov", str(media), "local", 32)
     state["items"] = [item3]
@@ -565,7 +469,6 @@ with tempfile.TemporaryDirectory() as td:
     check("and the intent is on DISK, not just in memory",
           bool((on_disk.get("items") or [{}])[0].get("carrier_intent")), True)
 
-    # ── the max_bytes override is honoured after compression ──────────────
     print("\nvault_upload.Limits: an override reaches the post-compression check")
     small = vault_upload._item("photo.jpg", str(media), "local", 32)
     state["items"] = [small]
@@ -581,10 +484,6 @@ with tempfile.TemporaryDirectory() as td:
     check("and the same file passes a 1 KB ceiling", passing["status"], "done")
 vault_upload.SPOOL_ROOT = _spool_root_orig
 
-# The target-vs-ceiling invariant is only real when media_prep's size-targeted
-# pass can actually run. Enforcing it for a run in which `compress()` is never
-# called logs a loud error about a situation that cannot arise, which is how
-# people learn to scroll past loud errors.
 _HATCH_ON = 200 * 1024 * 1024
 check("the compression target is forced below the upload ceiling — with the "
       "escape hatch ON",
@@ -601,11 +500,6 @@ check("and with the hatch OFF the same pair is not touched, because nothing "
                           target_bytes=300 * 1024 * 1024).checked().target_bytes,
       300 * 1024 * 1024)
 
-# ── two ceilings only pay for themselves when something SHRINKS the file ──
-# A fetch ceiling above the upload ceiling exists so media_prep can judge a
-# file it has on disk. But remux and pass-through do not make anything smaller,
-# so with the hatch off a file between the two numbers is a multi-gigabyte
-# download spent to reach a skip — the exact bug can_shrink exists to prevent.
 print("\nvault_upload.Limits: one ceiling unless something can shrink")
 _off = vault_upload.Limits().checked()
 check("by default the fetch ceiling collapses onto the upload ceiling",
@@ -625,23 +519,17 @@ check("a --max-mb ABOVE the fetch ceiling raises the fetch ceiling with it, "
       _wide.max_download_bytes, 6000 * 1024 * 1024)
 
 
-# ── caps ─────────────────────────────────────────────────────────────────
 print("\nvault_upload._apply_caps")
 plan = [vault_upload._item(f"clip{n}.mp4", f"/tmp/clip{n}.mp4", "local",
                            900 * 1024 * 1024) for n in range(3)]
 plan += [vault_upload._item(f"p{n}.jpg", f"/tmp/p{n}.jpg", "local", 1000)
          for n in range(3)]
 vault_upload._apply_caps(plan, vault_upload.Limits(max_files=4))
-# Oversized video is kept (compression is what rescues it) — and therefore
-# COUNTS, which is the bug: 3 videos + 3 photos with a cap of 4 is 4, not 6.
 kept = [i for i in plan if i["status"] == "pending"]
 check("oversized video counts against the batch cap", len(kept), 4)
 check("the overflow says why",
       "batch cap" in (plan[-1]["error"] or ""), True)
 
-# Sized against the DEFAULT ceiling, which is now 4000 MB: the point of the
-# check is that a non-video gets the upload cap and not the (larger) download
-# cap, not the specific number.
 huge = [vault_upload._item("dump.zip", "/tmp/dump.zip", "local",
                            (vault_upload.MAX_MB + 100) * 1024 * 1024)]
 vault_upload._apply_caps(huge, vault_upload.Limits())
@@ -650,7 +538,6 @@ check("a large non-video is skipped, and says ffmpeg cannot prepare it",
       and "not video ffmpeg can prepare" in huge[0]["error"], True)
 
 
-# ── the Drive API key never reaches disk or the screen ───────────────────
 print("\ngdrive.redact")
 _KEY = "AIza-not-a-real-key-0000000000000000000"
 _api_key_orig = gdrive.api_key
@@ -665,7 +552,6 @@ try:
     check("the key is sent as a header, never a query parameter",
           gdrive._auth(), {"x-goog-api-key": _KEY})
 
-    # End to end: whatever the download raises, the run record must not carry it.
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         vault_upload.SPOOL_ROOT = td
@@ -688,7 +574,6 @@ finally:
     gdrive.api_key = _api_key_orig
 
 
-# ── run ids are validated before they touch a path ───────────────────────
 print("\nvault_upload._run_dir")
 for bad in ("../../etc", "..", "run.json", "42-2026-01-01-abc"):
     check_raises(f"rejects {bad!r}", lambda b=bad: vault_upload._run_dir(b), ValueError)
@@ -697,7 +582,6 @@ check("accepts a generated id",
       "42-20260101T000000-abc123")
 
 
-# ── one predicate for 'can this be compressed?' ──────────────────────────
 print("\nmedia_prep.can_shrink")
 import media_prep  # noqa: E402
 _ffmpeg_orig = media_prep.have_ffmpeg
@@ -721,13 +605,9 @@ finally:
     media_prep.have_ffmpeg = _ffmpeg_orig
 
 
-# ── an intent that cannot be RECORDED must stop the carrier being CREATED ──
-# The whole feature rests on this. The intent hook writes to the same spool
-# volume the import is filling, so its realistic failure is ENOSPC — precisely
-# when a carrier is most likely to be created and never recorded. Logging the
-# failure and posting anyway is an unrecoverable scheduled post on a real feed.
 print("\nof_client.materialize_to_vault: a failed intent hook aborts the POST")
 
+# an intent that cannot be recorded must stop the carrier being created
 blocked = _Recorder()
 check_raises(
     "an intent hook that raises propagates",
@@ -738,8 +618,6 @@ check_raises(
     OSError)
 check("and NO carrier post was created", blocked.order, [])
 
-# The id hook is the same argument one step later: if the id cannot be written
-# down, the carrier is deleted again rather than left live and untracked.
 untracked = _Recorder()
 check_raises(
     "an on_carrier hook that raises propagates too",
@@ -751,9 +629,6 @@ check("and the carrier it could not record is deleted again",
       untracked.deleted, [9001])
 
 
-# ── every OnlyFans write goes through the injected gate ───────────────────
-# The gate is what keeps a carrier out of the slot an automation's fan message
-# reserved. Four writes need it, and until now every test passed `None`.
 print("\nthe write gate: all four writes, and pacing that is policy not identity")
 
 gated: list[str] = []
@@ -765,7 +640,6 @@ def _recording_gate(thunk):
 
 
 class _GateClient:
-    """Records what it was handed, and leaves a carrier for cleanup to chase."""
     def __init__(self):
         self.gate_seen = "not passed"
         self.writes: list = []
@@ -778,8 +652,6 @@ class _GateClient:
         self.gate_seen = gate
         on_carrier_intent(of_client.VAULT_MARKER)
         on_carrier(9001)
-        # Never `on_carrier_deleted`: the carrier's own delete failed, so
-        # _cleanup_carriers has to retry it — through the gate.
         return {"media": [{"id": 5}], "carrier_post_id": 9001,
                 "carrier_deleted": False}
 
@@ -814,10 +686,6 @@ vault_upload.SPOOL_ROOT = _spool_root_orig
 vault_upload.LOCK_DIR = _spool_root_orig / "locks"
 
 
-# ── a stale lock whose pid was recycled is stale ──────────────────────────
-# Container pids are small and recycled. Checking only os.kill(pid, 0) meant a
-# relay OOM-killed at pid 37 locked the feature out forever the moment anything
-# else was handed pid 37.
 print("\nvault_upload._acquire_lock: pid reuse is not liveness")
 
 with tempfile.TemporaryDirectory() as td:
@@ -830,13 +698,11 @@ with tempfile.TemporaryDirectory() as td:
     vault_upload._pid_start = lambda pid: "STARTED-NOW"
     try:
         import json as _json
-        # Same pid, DIFFERENT process: the recycled-pid case.
         lock.write_text(_json.dumps({"pid": os.getpid(), "started": "STARTED-LONG-AGO"}))
         check("a live pid that started at another time is a STALE lock",
               vault_upload._lock_holder("42"), None)
         check("so the lock can be taken", vault_upload._acquire_lock("42") == lock, True)
 
-        # Same pid, same start: a genuinely live holder.
         lock.write_text(_json.dumps({"pid": 1, "started": "STARTED-NOW"}))
         check("a live pid with a matching start time IS the holder",
               (vault_upload._lock_holder("42") or {}).get("pid"), 1)
@@ -844,7 +710,6 @@ with tempfile.TemporaryDirectory() as td:
                      lambda: vault_upload._acquire_lock("42"), RuntimeError)
         check("the account reads as busy", vault_upload._account_is_live("42"), True)
 
-        # Nothing can hold a lock for a day.
         old = time.time() - vault_upload._LOCK_MAX_AGE_S - 60
         os.utime(lock, (old, old))
         check("and a lock older than any real import is stale",
@@ -855,11 +720,6 @@ vault_upload.SPOOL_ROOT = _spool_root_orig
 vault_upload.LOCK_DIR = _spool_root_orig / "locks"
 
 
-# ── the sweep must never touch a run that is still going ──────────────────
-# materialize_to_vault polls for up to 600s per file, and for that whole window
-# the item on disk says "carrier 9001, not deleted". The hourly sweep firing
-# inside that window used to delete the carrier out from under the poll — and
-# then write its own stale snapshot back over run.json.
 print("\nvault_upload.sweep: a live run owns its carriers")
 
 
@@ -898,11 +758,6 @@ with tempfile.TemporaryDirectory() as td:
         return it
 
     live_json = _write_run(td, live_id, status="running", items=[_carrier(1111)])
-    # A different account, so this asserts "the sweep still does its job"
-    # rather than "the sweep does nothing". Account 42 is deliberately left
-    # ENTIRELY alone while it has an importer: an hourly sweep can wait an hour,
-    # and guessing which of a busy account's carriers are orphaned is the guess
-    # that deletes a live one.
     _write_run(td, dead_id, status="failed", items=[_carrier(2222)],
                account="43")
     before = live_json.read_text()
@@ -919,9 +774,6 @@ with tempfile.TemporaryDirectory() as td:
           live_json.read_text(), before)
     check("the sweep reports only what it actually did", res["carriers_deleted"], 1)
 
-    # Cross-process: the CLI's `--sweep` runs in a process whose `_live` is
-    # empty. The lockfile is the only thing that can say the dashboard's import
-    # is running, and without it the sweep deleted live carriers deliberately.
     live_json.write_text(before)
     vault_upload.LOCK_DIR.mkdir(parents=True, exist_ok=True)
     vault_upload._acquire_lock("42")
@@ -936,10 +788,6 @@ vault_upload.SPOOL_ROOT = _spool_root_orig
 vault_upload.LOCK_DIR = _spool_root_orig / "locks"
 
 
-# ── what the operator is warned about ────────────────────────────────────
-# Two ways to get this wrong, and the first version managed both: it missed the
-# intent-only orphan (the dangerous one — no id exists to name it) and it fired
-# on every healthy import, for the second or two a carrier legitimately exists.
 print("\nvault_upload.carriers_outstanding")
 
 _dead = vault_upload._item("a.mp4", None, "local", 1)
@@ -966,40 +814,22 @@ vault_upload._live["42"] = in_flight["run_id"]
 try:
     check("a RUNNING run's carrier is not an escape — it is a normal import",
           vault_upload.carriers_outstanding("42", [in_flight]), (0, 0))
-    # The suppression is per RUN, not per account, and `finished_at` is what
-    # says so — it is written exactly once, in start()'s finally, so it is the
-    # one "this run is over" any process can trust. Inheriting the account's
-    # busy flag meant a week-old escaped carrier was reported as clean for as
-    # long as ANY import was going — and a wedged run kept `_live` set for the
-    # life of the relay, which here is weeks.
     check("but a FINISHED run's carrier stays on screen while a different "
           "run imports", vault_upload.carriers_outstanding("42", [finished]),
           (1, 1))
 finally:
     vault_upload._live.pop("42", None)
 
-# A run that died without saying so is not "in flight" — its carrier is exactly
-# the escape this warning exists for.
 check("an interrupted run's carrier IS an escape",
       vault_upload.carriers_outstanding("42", [vault_upload._reconcile(in_flight)]),
       (1, 1))
 
-# R10: an intent a completed scan cleared is resolved — and it says that in its
-# own field. It used to say it in `carrier_deleted`, asserting a deletion that
-# never happened on a field the CLI and the dashboard read as "a post we named
-# is gone".
 _scanned = dict(_ghost, carrier_scan_clear=True)
 check("an intent a completed scan cleared is not counted",
       vault_upload.carriers_outstanding("42", [{**finished, "items": [_scanned]}]),
       (0, 0))
 
 
-# ── liveness is ONE question with ONE answer ─────────────────────────────
-# It had three implementations: a named predicate, a character-for-character
-# copy inside the warnings, and a narrower `_live`-only rule in the reconciler.
-# One HTTP response could call a run "interrupted" — rendered as "the relay
-# restarted mid-run" — while suppressing its carrier warnings BECAUSE the
-# account was busy. Two answers to one question, in one dict.
 print("\nvault_upload._run_is_live: one predicate, every caller")
 
 with tempfile.TemporaryDirectory() as td:
@@ -1012,9 +842,6 @@ with tempfile.TemporaryDirectory() as td:
     state = vault_upload.read_state(cli_run) or {}
     check("no claim anywhere -> interrupted", state.get("status"), "interrupted")
 
-    # A CLI import in ANOTHER process: `_live` here is empty and the lockfile is
-    # the only witness. Reporting that run as "the relay restarted mid-run" was
-    # the visible half of the split predicate.
     lock = vault_upload._lock_path("42")
     lock.write_text(json.dumps({"pid": os.getpid(),
                                 "started": vault_upload._pid_start(os.getpid()),
@@ -1022,17 +849,12 @@ with tempfile.TemporaryDirectory() as td:
                                 "run_id": cli_run}))
     check("a run another process holds the lock for is LIVE, not interrupted",
           (vault_upload.read_state(cli_run) or {}).get("status"), "running")
-    # And still per-run: the lock names one run, not the account.
     other = "42-20260101T000009-dddddd"
     _write_run(td, other, status="running", items=[])
     check("a DIFFERENT run of the same account is not live off that lock",
           (vault_upload.read_state(other) or {}).get("status"), "interrupted")
     lock.unlink()
 
-    # The in-process claim has the ceiling the lockfile always had. A wedged run
-    # used to keep `_live` set for the life of the relay — weeks — and while it
-    # was set the sweep skipped every run dir of that account and the operator
-    # was told the carriers were clean.
     vault_upload._live["42"] = cli_run
     try:
         check("a live claim with a fresh heartbeat is live",
@@ -1047,16 +869,10 @@ vault_upload.SPOOL_ROOT = _spool_root_orig
 vault_upload.LOCK_DIR = _spool_root_orig / "locks"
 
 
-# ── the marker scan re-asks; pass 1's answers go stale ───────────────────
-# Pass 2 pages OnlyFans — up to fifty sequential round trips — and deletes any
-# marker-bearing post it cannot find in the set of ids it knows. Both that set
-# and "is this account importing?" were snapshots taken before the paging
-# started, so a carrier created DURING the scan was, by construction, unknown.
 print("\nvault_upload.sweep: pass 2 re-asks before every delete")
 
 
 class _MidScan:
-    """Answers the listing, and starts an import while it does."""
 
     def __init__(self, td, on_list):
         self.td, self.on_list = td, on_list
@@ -1064,10 +880,10 @@ class _MidScan:
         self.listed = 0
 
     def schedules(self, *, limit=20, **_kw):
-        if self.listed:         # later date chunks: nothing more scheduled
+        if self.listed:
             return {"list": []}
         self.listed += 1
-        self.on_list()          # ... an import starts, right here
+        self.on_list()
         return {"list": [_row(5555, rawText=of_client.VAULT_MARKER)]}
 
     def delete_post(self, pid):
@@ -1076,16 +892,12 @@ class _MidScan:
 
 
 def _ghost_run(td, run_id, account="42"):
-    """A finished run holding an intent and NO id — the record that puts an
-    account into the marker scan in the first place."""
     it = vault_upload._item("v.mp4", None, "local", 10)
     it.update(carrier_intent={"at": vault_upload._now(),
                               "marker": of_client.VAULT_MARKER},
               status="failed")
     return _write_run(td, run_id, status="failed", items=[it], account=account)
 
-# (a) the new carrier is RECORDED mid-scan: re-reading the run dirs is what
-#     makes it known, and a known id is never touched.
 with tempfile.TemporaryDirectory() as td:
     td = Path(td)
     vault_upload.SPOOL_ROOT = td
@@ -1105,8 +917,6 @@ with tempfile.TemporaryDirectory() as td:
     check("and the listing did happen — this is not a vacuous pass",
           client.listed, 1)
 
-# (b) the account goes LIVE mid-scan: the scan is abandoned, and an abandoned
-#     scan retires nothing.
 with tempfile.TemporaryDirectory() as td:
     td = Path(td)
     vault_upload.SPOOL_ROOT = td
@@ -1132,11 +942,6 @@ vault_upload.SPOOL_ROOT = _spool_root_orig
 vault_upload.LOCK_DIR = _spool_root_orig / "locks"
 
 
-# ── a carrier OnlyFans says is not there cannot publish ──────────────────
-# `materialize_to_vault` reports `carrier_deleted` through its RETURN value, so
-# anything raising between the id and the return — one non-2xx from a 600s poll
-# — propagated past a delete that SUCCEEDED. The item kept "carrier live, never
-# deleted" forever, every retry 404'd, and the red banner could never clear.
 print("\nof_client.post_is_gone: a 404 on the delete is the delete working")
 
 
@@ -1177,8 +982,6 @@ with tempfile.TemporaryDirectory() as td:
     check("and it was actually attempted", gone.tried, [9001])
 vault_upload.SPOOL_ROOT = _spool_root_orig
 
-# The hook half of the same fix: the record is written from of_client's own
-# `finally`, so it is right even when the call is on its way out with an error.
 class _PollDies(_Recorder):
     def get_post(self, post_id):
         raise of_client.OFAPIError("500 for /posts", response=_Resp(500))
@@ -1198,11 +1001,6 @@ check("and it was RECORDED, though the body raised past the return",
       recorded, [9001])
 
 
-# ── releasing a lock must not release somebody else's ────────────────────
-# `start()` pops its `_live` claim and releases the lock as two statements. A
-# second `begin()` landing in between takes a fresh lock — and the first run's
-# release then deleted the NEW run's file, silently turning cross-process
-# exclusion off for the run that was actually going.
 print("\nvault_upload._release_lock: only ever our own")
 
 with tempfile.TemporaryDirectory() as td:
@@ -1212,8 +1010,8 @@ with tempfile.TemporaryDirectory() as td:
     old_run, new_run = "42-20260101T000000-aaa111", "42-20260101T000100-bbb222"
     p = vault_upload._acquire_lock("42", old_run)
     p.unlink()
-    vault_upload._acquire_lock("42", new_run)          # the newer run's lock
-    vault_upload._release_lock(p, old_run)             # the older run finishing
+    vault_upload._acquire_lock("42", new_run)
+    vault_upload._release_lock(p, old_run)
     check("the newer run's lockfile survives the older run's release",
           p.exists(), True)
     check("and it still names the newer run",
@@ -1221,9 +1019,6 @@ with tempfile.TemporaryDirectory() as td:
     vault_upload._release_lock(p, new_run)
     check("its own release does remove it", p.exists(), False)
 
-    # A lock written by a process we cannot see is UNKNOWN, not stale. Reading
-    # "the start times differ" as death across a pid namespace turned G3's
-    # lockout into silent lock-stealing: two importers on one account.
     p.write_text(json.dumps({"pid": os.getpid(), "started": "STARTED-ELSEWHERE",
                              "instance": "another-container", "run_id": "x"}))
     check("a foreign instance with a mismatched start is still a holder",
@@ -1234,12 +1029,6 @@ vault_upload.SPOOL_ROOT = _spool_root_orig
 vault_upload.LOCK_DIR = _spool_root_orig / "locks"
 
 
-# ── the write gate bounds the WAIT; the write itself outlives it ──────────────
-# `run_coroutine_threadsafe` hands back a future whose timeout does not touch
-# the coroutine, so a timed-out carrier POST is still queued and still fires
-# when its pacing slot arrives — after the run ended and after a marker scan
-# has correctly found nothing. Retiring that intent is how a post nobody is
-# tracking reaches the creator's feed thirty days later.
 print("\nvault_upload: an intent whose write may still fire is never retired")
 
 _pending = {"carrier_intent": "MARKER", "carrier_post_id": None,
@@ -1249,10 +1038,6 @@ check("a completed scan does NOT resolve it",
 check("and it keeps the run record alive for the next sweep",
       vault_upload._intent_unresolved({**_pending, "carrier_scan_clear": True}), True)
 
-# The counterpart: the ordinary successful file. An intent is written before
-# EVERY carrier POST and is never cleared once an id is learned, so spelling
-# this without the id check put every account that had ever imported into the
-# hourly scan — a full paged walk of the creator's schedule, for nothing.
 _done = {"carrier_intent": "MARKER", "carrier_post_id": 99,
          "carrier_deleted": True, "carrier_scan_clear": None}
 check("a successfully imported file leaves nothing outstanding",
@@ -1263,27 +1048,14 @@ check("and a completed scan resolves that one",
       vault_upload._intent_unresolved(
           {"carrier_intent": "MARKER", "carrier_scan_clear": True}), False)
 
-# One definition, four askers. This is the rule that has now been spelled by
-# hand in four places and disagreed in two of them.
 _src = (Path(__file__).resolve().parents[1] / "vault_upload.py").read_text()
 check("no hand-rolled copy of the rule survives",
       _src.count('not i.get("carrier_scan_clear")')
       + _src.count('not it.get("carrier_scan_clear")'), 0)
 
-# begin() is the only gate. The cheap in-process pre-check could not see the
-# cross-process lock, so a multi-gigabyte drag-in was staged to disk in full
-# before the lock refused it — and once a wedged run aged past the stall
-# ceiling it answered 409 to the very re-run the dashboard was advising.
 check("is_running is gone", hasattr(vault_upload, "is_running"), False)
 
 
-# ── which ids "landed", and WHEN the caller is told ───────────────────────
-# Both consumers of a finished import — the relay batch route and the CLI —
-# write the ids into the local mirror, and both used to re-derive the filter
-# inline. The interesting half was documented in one copy and absent from the
-# other: a `skipped` item can carry a perfectly real vault id, because a skip is
-# a dedupe onto media that is HIDDEN on OnlyFans. Mirroring one of those puts a
-# tile in the grid for bytes the creator deliberately removed.
 print("\nvault_upload.landed_ids")
 
 check("only `done` counts",
@@ -1305,11 +1077,6 @@ check("a half-written run record read back off disk does not KeyError",
 check("no items, no ids", vault_upload.landed_ids({}), [])
 
 
-# The ORDERING is the fix. The dashboard polls the run's status and fires its
-# query invalidations on the `running → not running` edge, exactly once; a
-# mirror write that lands AFTER that edge is a write nothing refetches, so a
-# large import rendered as the pre-import grid and stayed that way. `start` must
-# therefore call the hook while the run still reports `running` on disk.
 print("\nvault_upload.start: the mirror hook runs BEFORE the run reports finished")
 
 _spool_root_orig2 = vault_upload.SPOOL_ROOT
@@ -1326,7 +1093,6 @@ with tempfile.TemporaryDirectory() as td:
                    "deduped": False, "spooled": False}
     vault_upload._collect = lambda state, *a, **kw: [dict(landed_item)]
 
-    # Every save, in order, as the run's own watchers would read it off disk.
     seen: list[tuple] = []
 
     def _recording_save(state):
@@ -1336,10 +1102,9 @@ with tempfile.TemporaryDirectory() as td:
     vault_upload._save = _recording_save
 
     hook_saw: list[tuple] = []
-    watching: list[str] = []          # the run id the hook should read back
+    watching: list[str] = []
 
     def _hook(ids, details):
-        # What the status route would answer to a poll landing right here.
         hook_saw.append((list(ids),
                          (vault_upload.read_state(watching[-1]) or {}).get("status")))
 
@@ -1360,8 +1125,6 @@ with tempfile.TemporaryDirectory() as td:
           True)
     check("and the run does finish", done_run["status"], "done")
 
-    # A run that FAILED still mirrors what it managed to land: a batch can die
-    # on its last file with a dozen already in the creator's vault.
     seen.clear()
     hook_saw.clear()
 
@@ -1380,9 +1143,6 @@ with tempfile.TemporaryDirectory() as td:
     check("but the files it DID land reach the mirror",
           [h[0] for h in hook_saw], [[4242]])
 
-    # And a hook that raises must never turn a successful import into a failure:
-    # the media is on OnlyFans either way, and a missing mirror row is one
-    # re-collect away.
     hook_saw.clear()
     vault_upload._collect = lambda state, *a, **kw: [dict(landed_item)]
     rid = vault_upload.begin("42")
@@ -1393,17 +1153,6 @@ with tempfile.TemporaryDirectory() as td:
     logging.getLogger("of-relay.vault_upload").setLevel(logging.NOTSET)
     check("a mirror failure does not fail the import", survived["status"], "done")
 
-    # And `Exception` is not the bar. The relay's hook blocks on a
-    # `concurrent.futures.Future`, and a loop shutting down mid-wait raises
-    # `CancelledError` — which since 3.8 IS `asyncio.CancelledError`, a
-    # BaseException. It walked straight past `except Exception` and out of
-    # `start`'s own `finally`, so the run was left `running/mirroring` with no
-    # `finished_at`, the account still claimed in `_live`, the lockfile still on
-    # disk — `begin()` refuses on `_live` unconditionally, so that account could
-    # not be imported into again for the life of the process — and, worst,
-    # `_cleanup_carriers` never ran for a batch whose uploads had all SUCCEEDED.
-    # That is the pass that stops a carrier post publishing to the creator's
-    # whole feed 30 days out.
     hook_saw.clear()
     swept: list[str] = []
     _cleanup_orig = vault_upload._cleanup_carriers
@@ -1442,31 +1191,14 @@ vault_upload.SPOOL_ROOT = _spool_root_orig2
 vault_upload.LOCK_DIR = _lock_dir_orig2
 
 
-# ── many files, one carrier ───────────────────────────────────────────────
-# OnlyFans paces post CREATION (~1 per 10 s), not media per post, so a batch
-# puts up to `carrier_batch` claims on one carrier. These run the real
-# `upload_claim`, `materialize_to_vault` and `vault_carrier.attribute` against
-# a fake OnlyFans, so the attribution of ids back to files is the production
-# code, not a stand-in.
 print("\nvault_upload: claims share a carrier")
 
-# Misses are re-read until the post's ids are all placed; a fake index that
-# never answers would hold every such test for ten minutes. The lag test below
-# turns it back on, with sleep stubbed.
 _hash_wait_orig = vault_carrier.HASH_WAIT_S
 vault_carrier.HASH_WAIT_S = 0
 
 
+# MEASURED: hash index trails the post by seconds (lag); OF accepts but never lists a .webp claim (drop)
 class _FakeOF:
-    """Just enough OnlyFans for the real upload_claim/materialize_to_vault.
-
-    File names steer it: `dup*` is already in the vault, `bad*` is refused by
-    convert, anything else gets a fresh claim. `order` reorders a carrier's
-    media in `get_post`; `hash_misses` are names the hash lookup cannot find;
-    `delete_fails` makes every DELETE a 500; `busy` are names OnlyFans lists
-    with isReady=false (still transcoding); `lag` are names the hash index
-    misses on their first lookup (MEASURED: it trails the post by seconds);
-    `clock` is advanced half a second per upload, for the pacing test."""
     upload_claim = of_client.OFClient.upload_claim
     materialize_to_vault = of_client.OFClient.materialize_to_vault
     _VAULT_MARKER = of_client.VAULT_MARKER
@@ -1475,8 +1207,6 @@ class _FakeOF:
                  create_raises=None, spool=None, run_id=None, drop=(), late=(),
                  busy=(), clock=None, lag=()):
         self.order = order or (lambda media: media)
-        # `drop`: claims OnlyFans accepts but never lists (MEASURED: a .webp).
-        # `late`: claims listed only from the second poll on.
         self.drop, self.late, self.busy = set(drop), set(late), set(busy)
         self.clock = clock
         self.lag, self.lookups = set(lag), {}
@@ -1486,10 +1216,10 @@ class _FakeOF:
         self.create_raises = create_raises
         self.spool, self.run_id = spool, run_id
         self.posts: dict[int, list] = {}
-        self.created: list[list[str]] = []      # names on each carrier, in order
-        self.intents_on_disk: list[dict] = []   # name -> intent, read at POST time
+        self.created: list[list[str]] = []
+        self.intents_on_disk: list[dict] = []
         self.deleted: list[int] = []
-        self.vid = {}                           # name -> the vault id OF minted
+        self.vid = {}
         self._pid = 9000
 
     def upload_media(self, path, **kw):
@@ -1611,10 +1341,8 @@ with tempfile.TemporaryDirectory() as td:
     check("the known-carrier set still names both",
           vault_upload._known_carriers("42") >= {"9001", "9002"}, True)
 
-# Position on the post is never the authority — only each file's own hash is.
-# OnlyFans listing the media in another order than `mediaFiles` must not hand
-# any file its neighbour's id.
 with tempfile.TemporaryDirectory() as td:
+    # position on the post is never the authority, only each file's own hash
     fake = _FakeOF(order=lambda media: list(reversed(media)))
     st = _batch_run(Path(td), _fresh[:4], fake)
     items = _by_name(st)
@@ -1622,9 +1350,6 @@ with tempfile.TemporaryDirectory() as td:
           [items[n]["vault_id"] for n in _fresh[:4]],
           [fake.vid[n] for n in _fresh[:4]])
 
-# The swap the order fallback allowed: [img, vid1, vid2] listed as
-# [img, vid2, vid1] and NO hash answering (index lag, a 429). Position would
-# hand vid1 and vid2 each other's ids, both "done".
 with tempfile.TemporaryDirectory() as td:
     trio = ["f00.jpg", "v1.mp4", "v2.mp4"]
     fake = _FakeOF(order=lambda media: [media[0], media[2], media[1]],
@@ -1638,7 +1363,6 @@ with tempfile.TemporaryDirectory() as td:
           all("could not be told apart" in items[n]["error"] for n in trio), True)
     check("…and the carrier still went", fake.deleted, [9001])
 
-# Same swap, but only the image's hash answers: still nothing by position.
 with tempfile.TemporaryDirectory() as td:
     fake = _FakeOF(order=lambda media: [media[0], media[2], media[1]],
                    hash_misses={"v1.mp4", "v2.mp4"})
@@ -1649,8 +1373,6 @@ with tempfile.TemporaryDirectory() as td:
            for n in ("f00.jpg", "v1.mp4", "v2.mp4")],
           [("done", fake.vid["f00.jpg"]), ("failed", None), ("failed", None)])
 
-# ONE miss is closed by elimination, which needs no order: the post lists n
-# distinct ids, the hash placed n-1 of them, the last id is the last claim's.
 with tempfile.TemporaryDirectory() as td:
     fake = _FakeOF(order=lambda media: list(reversed(media)),
                    hash_misses={"f02.jpg"})
@@ -1660,8 +1382,6 @@ with tempfile.TemporaryDirectory() as td:
           [(items[n]["status"], items[n]["vault_id"]) for n in _fresh[:4]],
           [("done", fake.vid[n]) for n in _fresh[:4]])
 
-# The index trails the post: a miss is re-read, not failed — the live run that
-# found this lost 9 of 13 files to a single pass.
 with tempfile.TemporaryDirectory() as td:
     vault_carrier.HASH_WAIT_S = 600
     _sleep_orig = time.sleep
@@ -1681,8 +1401,6 @@ with tempfile.TemporaryDirectory() as td:
     check("…one re-read pass, of the misses only",
           (len(naps), [fake.lookups[n] for n in _fresh[:4]]), (1, [2, 2, 1, 2]))
 
-# …but not when a claim is missing from the post: then the leftover id is not
-# the leftover claim's to take.
 _grace_orig = of_client._CARRIER_MISSING_GRACE_S
 of_client._CARRIER_MISSING_GRACE_S = 0
 try:
@@ -1697,8 +1415,6 @@ try:
 finally:
     of_client._CARRIER_MISSING_GRACE_S = _grace_orig
 
-# A video still transcoding is listed with its permanent id: the carrier does
-# not wait for it, and only THAT file is flagged.
 with tempfile.TemporaryDirectory() as td:
     fake = _FakeOF(busy={"v1.mp4"})
     st = _batch_run(Path(td), ["f00.jpg", "v1.mp4", "f01.jpg"], fake)
@@ -1713,8 +1429,6 @@ with tempfile.TemporaryDirectory() as td:
           [items[n]["still_transcoding"] for n in ("f00.jpg", "v1.mp4", "f01.jpg")],
           [False, True, False])
 
-# A claim OnlyFans drops must not hold its carrier for the full timeout, and a
-# claim that is merely SLOW must not be cut off by its quicker neighbours.
 _grace_orig = of_client._CARRIER_MISSING_GRACE_S
 try:
     of_client._CARRIER_MISSING_GRACE_S = 0
@@ -1738,7 +1452,6 @@ try:
 finally:
     of_client._CARRIER_MISSING_GRACE_S = _grace_orig
 
-# One carrier that cannot be deleted is ONE scheduled post on the feed.
 with tempfile.TemporaryDirectory() as td:
     fake = _FakeOF(delete_fails=True)
     st = _batch_run(Path(td), _fresh[:3], fake)
@@ -1750,7 +1463,6 @@ with tempfile.TemporaryDirectory() as td:
     check("…and the alarm counts one post, not three",
           vault_upload.carriers_outstanding("42", [st]), (1, 0))
 
-# carrier_batch=1 is the old one-carrier-per-file behaviour.
 with tempfile.TemporaryDirectory() as td:
     fake = _FakeOF()
     st = _batch_run(Path(td), _fresh[:3], fake, carrier_batch=1)
@@ -1763,8 +1475,6 @@ with tempfile.TemporaryDirectory() as td:
     check("carrier_batch below 1 is read as 1",
           vault_upload.Limits(carrier_batch=0).checked().carrier_batch, 1)
 
-# The gate gave up waiting on the carrier create: the post may still be made,
-# so every file on it keeps the intent open — and it is one possible post.
 from concurrent.futures import TimeoutError as _FT  # noqa: E402
 with tempfile.TemporaryDirectory() as td:
     fake = _FakeOF(create_raises=_FT())
@@ -1775,8 +1485,6 @@ with tempfile.TemporaryDirectory() as td:
     check("…and is counted as ONE post that may exist",
           vault_upload.carriers_outstanding("42", [st]), (0, 1))
 
-# A gate CANCELLED out of the carrier create is the same lost race: the relay's
-# `_hop` surfaces a loop-side cancel as concurrent.futures' CancelledError.
 from concurrent.futures import CancelledError as _FC  # noqa: E402
 with tempfile.TemporaryDirectory() as td:
     st = _batch_run(Path(td), _fresh[:3], _FakeOF(create_raises=_FC()))
@@ -1785,8 +1493,6 @@ with tempfile.TemporaryDirectory() as td:
           [("failed", True)] * 3)
     check("…one possible post", vault_upload.carriers_outstanding("42", [st]), (0, 1))
 
-# asyncio's own CancelledError is a BaseException: it must not walk past the
-# batch and leave its files `uploading` forever.
 with tempfile.TemporaryDirectory() as td:
     fake = _FakeOF(create_raises=asyncio.CancelledError())
     try:
@@ -1800,8 +1506,6 @@ with tempfile.TemporaryDirectory() as td:
           [(i["status"], i.get("carrier_write_pending")) for i in disk.get("items", [])],
           [("failed", True)] * 3)
 
-# One file blowing up the loop (a save on a full disk) must not strand the
-# claims already staged: they are carried, then the run stops.
 with tempfile.TemporaryDirectory() as td:
     _upload_one_orig = vault_upload._upload_one
 
@@ -1824,7 +1528,6 @@ with tempfile.TemporaryDirectory() as td:
     check("…and the run says it failed, the rest not uploaded",
           (st["status"], items["f04.jpg"]["status"]), ("failed", "failed"))
 
-# media_prep crashing on one file is that file's failure, not the batch's.
 with tempfile.TemporaryDirectory() as td:
     _prepare_orig = vault_upload.media_prep.prepare
 
@@ -1844,8 +1547,6 @@ with tempfile.TemporaryDirectory() as td:
     check("…the others still share a carrier, and the run finishes",
           (fake.created, st["status"]), ([["f00.jpg", "f02.jpg"]], "done"))
 
-# Housekeeping after a file lands (the Drive memo, the spool unlink) failing on
-# one file must not leave the files after it on the same carrier unrecorded.
 with tempfile.TemporaryDirectory() as td:
     td = Path(td)
     vault_upload.SPOOL_ROOT = td
@@ -1878,7 +1579,6 @@ with tempfile.TemporaryDirectory() as td:
           [("done", fake.vid[n]) for n in _fresh[:3]])
 vault_upload.SPOOL_ROOT = _spool_root_orig
 
-# Shared ids, read back off disk by the cleanup and the sweep.
 _shared = []
 for n in range(10):
     it = vault_upload._item(f"s{n}.jpg", None, "local", 1)
@@ -1909,7 +1609,6 @@ with tempfile.TemporaryDirectory() as td:
     check("…and records it on every file",
           {i["carrier_deleted"] for i in json.loads(rj.read_text())["items"]}, {True})
 
-    # No session for the account: one failure per carrier, said as what it is.
     rj.write_text(json.dumps({**json.loads(rj.read_text()),
                               "items": [dict(i) for i in _shared]}))
     res = vault_upload.sweep(lambda aid: (_ for _ in ()).throw(RuntimeError("503")))
@@ -1918,7 +1617,6 @@ with tempfile.TemporaryDirectory() as td:
            {i["carrier_deleted"] for i in json.loads(rj.read_text())["items"]}),
           (1, {False}))
 
-# Appended files that have queued up while the run was busy share a carrier.
 with tempfile.TemporaryDirectory() as td:
     td = Path(td)
     vault_upload.SPOOL_ROOT = td
@@ -1935,12 +1633,7 @@ with tempfile.TemporaryDirectory() as td:
     check("three queued appended files ride one carrier", fake.created, [_fresh[:3]])
     check("…and all land", [i["status"] for i in st["items"]], ["done"] * 3)
 
-# Pacing is between CARRIERS, counted from the end of the last one — and it is
-# `limits.pace_s` and nothing else. It used to be "did the caller pass a
-# gate?", so a test double, a metrics wrapper — any gate but the relay's own —
-# silently turned pacing off; this run passes a gate on purpose.
 class _StubTime:
-    """`vault_upload.time` with a clock that only moves when told to."""
     def __init__(self, clock, slept):
         self._clock, self._slept = clock, slept
 
@@ -1960,6 +1653,7 @@ with tempfile.TemporaryDirectory() as td:
     _time_orig = vault_upload.time
     vault_upload.time = _StubTime(clock, slept)
     try:
+        # pacing is between carriers, counted from the end of the last, and is limits.pace_s only
         fake = _FakeOF(clock=clock)
         vault_upload.SPOOL_ROOT = Path(td)
         vault_upload.LOCK_DIR = Path(td) / "locks"

@@ -1,26 +1,3 @@
-"""A phone's way to the app: a TLS + HTTP/2 edge in front of the stack's app, behind a
-WAN with a round-trip time, all on loopback.
-
-    Chromium --(RTT)--> DelayProxy --> nghttpx (TLS, h2, as Traefik) --> app (`next start`)
-
-`WanEdge(stack, rtt_ms=190)` starts both and answers `url` (https://localhost:<port>). The
-certificate is self-signed, made per run in the stack's tmp; launch Chromium with
-`edge.chrome_args` (its SPKI pinned as trusted), NOT `ignore_https_errors`: Chromium keeps
-no HTTP cache for a response with a certificate error, so a return visit would refetch
-every immutable chunk.
-
-DelayProxy holds every byte for half the RTT each way, in order, and holds a new
-connection one RTT before its first byte (the TCP handshake), so a fresh connection pays
-connect + TLS 1.3 + request = 3 RTTs before its first response byte, as a live deployment
-measured from the laptop (connect 185 ms, TLS +200 ms, TTFB +195 ms at ~187 ms RTT).
-Bandwidth is not limited here (Chromium's own throttling does it), though the 16-slot
-queue caps each direction at ~1 MiB per one-way delay (~10 MiB/s at 190 ms RTT), far
-above the phone profiles' bandwidth.
-TCP slow start is not modelled (loopback windows), so a large download on a fresh
-connection is a little faster than on a real link. nghttpx's access log
-(`edge-access.log`) keeps each request's time.
-Loopback only: both listen on 127.0.0.1.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -36,7 +13,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-NGHTTPX = shutil.which("nghttpx")   # None: WanEdge stops the run (INFRA), naming it
+NGHTTPX = shutil.which("nghttpx")
 
 
 def _free_port() -> int:
@@ -46,8 +23,6 @@ def _free_port() -> int:
 
 
 class DelayProxy:
-    """TCP on 127.0.0.1:`port` to `upstream`, each direction `one_way_s` late, order kept. Every
-    connection runs on one asyncio loop thread."""
 
     def __init__(self, upstream: tuple[str, int], one_way_s: float):
         self.upstream, self.d = upstream, one_way_s
@@ -73,14 +48,13 @@ class DelayProxy:
             raise SystemExit("slop: the WAN delay proxy did not start")
 
     async def _conn(self, cr: asyncio.StreamReader, cw: asyncio.StreamWriter) -> None:
-        # Owns closing both sides: a pipe ends its direction with EOF (half-close), never closes.
         task = asyncio.current_task()
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         self.connections += 1
         writers, pipes = [cw], []
         try:
-            await asyncio.sleep(2 * self.d)  # SYN out, SYN-ACK back: the client's first byte leaves one RTT later
+            await asyncio.sleep(2 * self.d)
             ur, uw = await asyncio.open_connection(*self.upstream)
             writers.append(uw)
             for w in writers:
@@ -88,7 +62,7 @@ class DelayProxy:
             pipes = [asyncio.create_task(self._pipe(cr, uw)), asyncio.create_task(self._pipe(ur, cw))]
             await asyncio.gather(*pipes)
         except OSError:
-            pass  # upstream refused or a side reset: close both below
+            pass
         finally:
             for t in pipes:
                 t.cancel()
@@ -100,12 +74,11 @@ class DelayProxy:
                 await asyncio.wait(close_waiters, timeout=1)
             finally:
                 for w in writers:
-                    if w.transport.get_write_buffer_size():  # 0: flushed or lost, connection_lost ran or is due
+                    if w.transport.get_write_buffer_size():
                         w.transport.abort()
                 await asyncio.gather(*close_waiters, return_exceptions=True)
 
     async def _pipe(self, src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
-        """src to dst, `d` late; ends with dst's EOF. A failed write (OSError) cancels the reader and raises."""
         q: asyncio.Queue = asyncio.Queue(maxsize=16)
         loop = asyncio.get_running_loop()
 
@@ -139,7 +112,7 @@ class DelayProxy:
     def close(self) -> None:
         async def stop() -> None:
             self._server.close()
-            while self._tasks:  # a connection accepted during the gather starts its task late
+            while self._tasks:
                 tasks = tuple(self._tasks)
                 for task in tasks:
                     task.cancel()
@@ -159,7 +132,6 @@ class DelayProxy:
 
 
 class WanEdge:
-    """nghttpx (TLS, HTTP/2 to the browser, HTTP/1.1 to the app) behind a DelayProxy."""
 
     def __init__(self, stack, rtt_ms: float):
         if not NGHTTPX:
@@ -182,8 +154,7 @@ class WanEdge:
                                  f"--backend=127.0.0.1,{app.port}", "--workers=1", "--no-ocsp", "--no-via",
                                  "--backend-read-timeout=600s", "--frontend-read-timeout=600s",
                                  "--backend-keep-alive-timeout=60s",
-                                 # Traefik's default (entryPoints http2.maxConcurrentStreams; deploy/ sets none), not
-                                 # nghttpx's 100: hung background reads past the cap stall every request after them
+                                 # Traefik's default (deploy/ sets none), not nghttpx's 100: hung background reads past the cap stall every request after them
                                  "--frontend-http2-max-concurrent-streams=250",
                                  f"--accesslog-file={log / 'edge-access.log'}",
                                  "--accesslog-format=$time_iso8601 $status $request_time $method $path $alpn",

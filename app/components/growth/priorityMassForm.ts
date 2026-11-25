@@ -1,13 +1,3 @@
-/**
- * priorityMassForm — the Priority mass message composer's one state: the
- * audience (audienceReducer, delegated as is) plus the message content.
- *
- *   • A real account switch resets the audience only (audienceReducer); the
- *     text, media and price stay.
- *   • `launchError` is the one "can this go" check, in the order the user
- *     sees the reasons; `buildPayload` the POST body.
- */
-
 import type { VaultMedia } from "@/lib/relay";
 import { SENSITIVE_BLOCK_MESSAGE } from "@/lib/sensitiveWords";
 import {
@@ -18,7 +8,6 @@ import {
 export interface PriorityMassState extends AudienceState {
   text: string;
   attached: VaultMedia[];
-  /** The price input as typed (sanitized). */
   price: string;
   previewCount: number;
   lockedText: boolean;
@@ -49,7 +38,6 @@ export function priorityMassReducer(s: PriorityMassState, a: PriorityMassAction)
 
 export const numericPrice = (s: Pick<PriorityMassState, "price">): number => Number(s.price) || 0;
 
-/** Why this can't launch, or null when it can. `sensitive`: the text has blocked words. */
 export function launchError(s: PriorityMassState, sensitive: boolean): string | null {
   if (sensitive) return SENSITIVE_BLOCK_MESSAGE;
   if (!s.accountId) return "Pick a Creator.";
@@ -60,7 +48,6 @@ export function launchError(s: PriorityMassState, sensitive: boolean): string | 
   return null;
 }
 
-/** The `POST /admin/priority-mass/runs` body. */
 export function buildPayload(s: PriorityMassState) {
   const price = numericPrice(s);
   return {

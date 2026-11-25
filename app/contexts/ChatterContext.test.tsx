@@ -1,8 +1,3 @@
-/**
- * ChatterContext — `reprobe` (the gate's Retry after an outage): the cached
- * null from the outage is dropped, so `loading` holds until /chatter/me answers
- * again instead of the gate showing the sign-in form in between.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";

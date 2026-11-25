@@ -1,4 +1,3 @@
-/** MediaStrip: existing callers (no `thumbSrc`) keep the OF-url thumb through `proxyImage`; `thumbSrc` replaces it. */
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 

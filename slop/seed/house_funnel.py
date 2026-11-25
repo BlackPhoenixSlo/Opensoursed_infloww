@@ -1,47 +1,3 @@
-"""House funnel history (`automations.reply_mass_funnel`): one 3-step funnel, and per
-Creator one funnel broadcast sent BROADCAST_H ago to every fan WITHOUT a seeded thread,
-each written as the rows the product leaves: the `mass_message_funnels` row, its
-per-Creator `funnel_account_media` (the PPV step's vault id), the `mass_runs` row
-(status ok, the funnel's id, the audience_filter A10 stores for an explicit-fan send:
-its recipients, no lists, unfenced), one outbound broadcast row per recipient
-(`automation_kind='send_mass_message'`, tagged with the run, as A10 writes it), and, for
-the fans already walking, their `funnel_state` row, the steps they were sent (tagged,
-`funnel_step`), their earlier answers and the `chats` row. A seeded `funnel_state` row
-carries `last_sent_step` = the step index it was last sent (current_step - 1: every seeded
-walk is linear), as the walker stamps it on each send.
-
-Cases (seeded shuffle of each Creator's recipients, `w.rng("house_funnel")`): the first
-`live` fans (the scenario's repliers, `--users` over the Creators) round-robin over the
-LIVE cases, the rest over the QUIET ones:
-  new       answered nothing yet; answers live                 -> enrolled, step 1
-  reply     step 1 sent 3 min ago; answers live                -> step 2
-  ppv       steps 1-2 sent; answers live                       -> the PPV, done
-  buyer     step 1 sent 60 min ago; a chatter's PPV unlocked 20 min ago; answers live
-                                                               -> done offer_taken
-  waiting   step 1 sent 3 min ago, no answer since             -> check_count 1, +4 min
-  past_end  current_step 3, steps 1-3 sent as text (the funnel was edited since: its
-            old 4-step script, now 3)                          -> done
-  silent    never answered                                     -> no walk
-The last JUMP_PER_CREATOR fans of each Creator's shuffled pool (never a LIVE case) are
-held out of that broadcast for `seed_jump`: a second, branching funnel (JUMP_STEPS: step
-1's keyword `jump` routes to step 5, and step 1, step 4 = the jump's c - 1 and step 5
-each carry a different `check_intervals_min`), one more broadcast per Creator to just
-those fans, seeded when the scenario calls it (after the main walk's ticks), so the main
-broadcast's world and ticks never see it.
-`seed_kill` (the scenario's KILL phase, last, after every other tick): per KILL Creator four
-of its THREADED fans (never in the other broadcasts; `w.rng("house_funnel_kill")`): three
-walking a third funnel (KILL_STEPS: one line, then a $KILL_PPV_PRICE PPV of two bubbles, bubble
-0 the PPV) from one more broadcast, each on the PPV step with his answer to step 1 in (`kill`,
-`partial`, `partial_noid`: the scenario's OF behaviour per role; `kill` the highest fan_id, as
-the walker goes in fan_id order), and one `control` fan with no funnel; plus the Creator's persona (lib/wcfi_relay.py's PERSONA, so the welcome chatter's fake
-DeepSeek answers it), the one `account_ai_config` field the Persona tab writes.
-Declared: the buyer's unlock is seeded as the two rows purchase_notifications'
-`_flip_paid` leaves (the chatter PPV flipped `is_paid=1`, `purchased_at` = the
-notification's time, and its `purchase_notices` row), not driven through that poll (it
-reads OF, offline here); the chatter PPV carries one vault media id, as every priced
-OF message does; the earlier lines carry no
-`sent_by_employee_id` (the product resolves the system Automation employee).
-"""
 from __future__ import annotations
 
 import json
@@ -49,7 +5,7 @@ from datetime import timedelta
 
 from . import World, ts
 
-MSG_ID_BASE = 9_000_950_000_000   # above threads' / followup_drip's ids, below the relay's bands
+MSG_ID_BASE = 9_000_950_000_000  # above threads' / followup_drip's ids, below the relay's bands
 BROADCAST_H = 2.0
 PPV_MEDIA_ID = 7_100_000_001
 PPV_PRICE = 24
@@ -63,7 +19,7 @@ STEPS = [
     {"step": 2, "messages": ["I made something just for you"]},
     {"step": 3, "type": "paid_ppv", "price": PPV_PRICE, "messages": ["open this babe"]},
 ]
-LINES = {s["step"]: len(s["messages"]) for s in STEPS}   # step number -> lines sent
+LINES = {s["step"]: len(s["messages"]) for s in STEPS}
 JUMP_PER_CREATOR = 2
 JUMP_MSG_ID_BASE = MSG_ID_BASE + 5_000_000
 JUMP_OPENER = "slop jump funnel opener: say jump"
@@ -76,7 +32,7 @@ JUMP_STEPS = [
     {"step": 4, "check_intervals_min": [2, 13, 20], "messages": ["jump funnel step 4"]},
     {"step": 5, "check_intervals_min": [2, 19, 30], "messages": ["jump funnel step 5"]},
 ]
-JUMP_FROM, JUMP_TO = 0, 4   # step INDEXES: step 1's keyword lands on step 5
+JUMP_FROM, JUMP_TO = 0, 4  # step INDEXES: step 1's keyword lands on step 5
 KILL_MSG_ID_BASE = MSG_ID_BASE + 6_000_000
 KILL_OPENER = "slop kill funnel opener: one more for you"
 KILL_PPV_PRICE = 18
@@ -86,10 +42,9 @@ KILL_STEPS = [
     {"step": 2, "type": "paid_ppv", "price": KILL_PPV_PRICE,
      "messages": ["kill funnel ppv: open me 🔒", "made it just for you"]},
 ]
-KILL_PPV_STEP = 1                     # index of the PPV step: every walking KILL fan is on it
-KILL_ROLES = ("kill", "partial", "partial_noid")   # walking; plus one `control` fan per Creator
+KILL_PPV_STEP = 1
+KILL_ROLES = ("kill", "partial", "partial_noid")
 
-# case -> (current_step, [(direction, minutes ago, funnel step or None)])
 _PLAN = {
     "new": (None, []),
     "reply": (1, [("in", 100, None), ("out", 3, 1)]),
@@ -115,8 +70,6 @@ _CHAT_SQL = ("INSERT INTO chats(account_id, fan_id, last_message_id, last_messag
 
 
 def _audience(fan_ids: list[int]) -> str:
-    """mass_runs.audience_filter as A10 stores an explicit-fan send
-    (send_mass_decide.audience_filter, same key order)."""
     return json.dumps({"user_lists": [], "included_users": list(fan_ids), "excluded_users": [],
                        "list_ids": [], "ref": None, "excluded_user_lists": [], "fence": False})
 
@@ -127,7 +80,6 @@ def _funnel(con, name: str, description: str, opener: str, steps: list[dict], b_
 
 
 def _run(con, aid: str, fid: int, b_at, fan_ids: list[int]) -> int:
-    """A10's broadcast anchor for `fan_ids`, closed ok 2 min after it started."""
     return con.execute(_RUN_SQL, (aid, fid, _audience(fan_ids), len(fan_ids), "send_mass_message", ts(b_at),
                                   ts(b_at + timedelta(minutes=2)), "ok")).lastrowid
 
@@ -140,8 +92,6 @@ def _msg_row(aid, f, mid, direction, when, body, *, kind=None, run=None, step=No
 
 
 def seed(w: World, fans: dict[str, list[dict]], threads: list[dict], live: int) -> dict:
-    """-> {"cases": {(aid, fan_id): case}, "runs": {aid: mass_run_id}, "funnel_id": id,
-    "broadcast_at": datetime, "jump_fans": {aid: [fan]}}; also in w.data["house_funnel"]."""
     rng = w.rng("house_funnel")
     threaded = {(t["account_id"], t["fan_id"]) for t in threads}
     aids = sorted(fans)
@@ -157,7 +107,7 @@ def seed(w: World, fans: dict[str, list[dict]], threads: list[dict], live: int) 
                 "created_at, updated_at) VALUES (?,?,?,?,?,?)",
                 (fid, a, "[]", json.dumps({"3": {"media_files": [PPV_MEDIA_ID], "previews": []}}),
                  ts(b_at), ts(b_at)))
-            runs[a] = _run(con, a, fid, b_at, [])   # audience + count once the recipients are drawn
+            runs[a] = _run(con, a, fid, b_at, [])
 
     seq = MSG_ID_BASE
     cases: dict[tuple[str, int], str] = {}
@@ -194,7 +144,7 @@ def seed(w: World, fans: dict[str, list[dict]], threads: list[dict], live: int) 
                     for i, line in enumerate(s["messages"]):
                         last = msg(a, f, "out", at(mins) + timedelta(seconds=4 * i), line,
                                    kind="reply_mass_funnel", run=runs[a], step=step)
-            if case == "buyer":   # a chatter's PPV, unlocked since the broadcast
+            if case == "buyer":
                 last = msg(a, f, "out", at(50), "something special 🔥", price=CHATTER_PPV_CENTS, paid=1,
                            bought=at(20), media=(CHATTER_PPV_MEDIA_ID,))
                 nrows.append((a, f["id"], last[0], ts(at(20))))
@@ -224,11 +174,6 @@ def seed(w: World, fans: dict[str, list[dict]], threads: list[dict], live: int) 
 
 
 def seed_jump(w: World, jump: dict[str, list[dict]]) -> dict:
-    """The branching funnel (JUMP_STEPS) and, per Creator with held-out fans, one
-    broadcast BROADCAST_H ago to just them, as A10 leaves it (the funnel, the
-    `mass_runs` row, one tagged opener per recipient, its `chats` row). Nobody is
-    enrolled: each answers live, so discovery enrolls him and the same tick sends
-    step 1. -> {"runs": {aid: mass_run_id}, "fans": [(aid, fan_id)], "funnel_id": id}."""
     b_at = w.now - timedelta(hours=BROADCAST_H)
     aids = sorted(a for a, fl in jump.items() if fl)
     con = w.sql()
@@ -251,12 +196,6 @@ def seed_jump(w: World, jump: dict[str, list[dict]]) -> dict:
 
 
 def seed_kill(w: World, threads: list[dict], aids: list[str]) -> dict:
-    """The KILL phase's world (module docstring), as A10 and the walker leave it: the funnel,
-    its per-Creator PPV media, one broadcast per Creator to its three walking fans (the
-    `mass_runs` row, a tagged opener each), their `funnel_state` on the PPV step (step 1 sent
-    3 min ago, his answer 1 min ago), `funnel_responders` row and history, each touched
-    `chats` row moved to his latest line; the Creators' persona.
-    -> {"runs": {aid: mass_run_id}, "fans": {aid: {role: fan_id}}, "funnel_id": id}."""
     from ..lib.wcfi_relay import PERSONA
 
     rng = w.rng("house_funnel_kill")
@@ -276,8 +215,7 @@ def seed_kill(w: World, threads: list[dict], aids: list[str]) -> dict:
             rng.shuffle(pool)
             if len(pool) < len(KILL_ROLES) + 1:
                 continue
-            # The walker goes fan by fan in fan_id order: the hung `kill` fan last.
-            walk = sorted(pool[:len(KILL_ROLES)])
+            walk = sorted(pool[:len(KILL_ROLES)])  # the walker goes in fan_id order: the hung `kill` fan last
             picked = {"partial": walk[0], "partial_noid": walk[1], "kill": walk[2], "control": pool[len(KILL_ROLES)]}
             fans_out[a] = picked
             walking = [picked[r] for r in KILL_ROLES]

@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * usePaidMessages — infinite-scroll PPV list for /messages.
- *
- * Backend: GET /admin/paid-messages (keyset on (sent_at, message_id) DESC, so
- * collapsed mass-broadcast rows interleave by send time). The hook
- * is paginated, so window-focus refetch is OFF — refetching the first
- * page after scrolling four pages deep would create duplicate-row seams.
- * The user can pull-to-refresh by remounting (date-range change) or hit
- * a manual invalidate; that's enough.
- *
- * `maxPages: 20` is a memory cap. At limit=50 that's 1000 rows in cache
- * which is plenty before the user should narrow the filter.
- */
 
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 
@@ -32,62 +19,40 @@ export interface PaidMessageRow {
   message_id: number;
   fan: PaidMessageFan;
   body: string;
-  /** Backend cap (200 for type=paid, 2000 for type=all/free). Set when truncated. */
   body_truncated?: boolean;
   media_count: number;
   price_cents: number;
   is_paid: boolean;
-  /** "in" | "out" | "system" — present once the All-Messages tab landed. */
   direction?: "in" | "out" | "system";
   is_tip?: boolean;
   sent_at: string | null;
-  /** May be null even when `is_paid=true` (lag from the WS pump). UI
-   *  renders this case as "just paid" — do NOT fabricate a timestamp. */
+  // May be null even when is_paid (WS pump lag): render "just paid", never fabricate a timestamp.
   purchased_at: string | null;
   sent_by_employee_id: number | null;
   employee_name: string | null;
-  /** Denormalized "mass-<who>" attribution tag stamped on mass rows at send
-   *  time (e.g. "mass-kingsley1"). "" / null for non-mass or automation sends. */
   sender_name?: string | null;
-  /** Which automation sent this (welcome_chatter_for_info, welcome, send_mass_message, …).
-   *  null = human send or a legacy pre-0032 row. */
   automation_kind?: string | null;
-  /** True when this row is a COLLAPSED mass broadcast (one row standing in for
-   *  N per-fan sends). The fields below are only meaningful then. */
   is_mass_summary?: boolean;
-  /** Recipients in the broadcast (authoritative — from mass_broadcast_cache's
-   *  sent_count, falling back to the run/placeholder count). */
   recipient_count?: number;
-  /** Fans who opened the broadcast (mass_broadcast_cache.viewed_count). Mass
-   *  summary rows only. */
   viewed_count?: number;
-  /** Funnel/campaign name when the broadcast ran a funnel. */
   funnel_name?: string | null;
   mass_run_id?: number | null;
-  /** Mass summary rows: recipients whose copy is marked bought in OUR rows,
-   *  and their sum at the copy's price. A floor for a list-audience blast. */
   purchased_count?: number;
   earnings_cents?: number;
-  /** Seconds from the fan's previous message to this outbound one; null when
-   *  the message before it was not the fan's (or on inbound / mass rows). */
   reply_seconds?: number | null;
   is_unsent?: boolean;
   unsent_at?: string | null;
-  /** Who/what unsent it ("manual:chat", "manual:queue", an automation's reason). */
   unsent_reason?: string | null;
 }
 
 export interface PaidMessagesPage {
   rows: PaidMessageRow[];
-  /** Tiebreaker half of the keyset cursor (message_id of the last row). */
   next_before_id: number | null;
-  /** Primary half of the keyset cursor (ISO send-time of the last row). */
   next_before_sent_at: string | null;
 }
 
-/** Composite keyset cursor: page by (sent_at, message_id) DESC so mass-broadcast
- *  summaries (synthetic 5e15 message_ids) interleave chronologically. */
 export interface PaidMessagesCursor {
+  // Keyset (sent_at, message_id) DESC so collapsed mass summaries (synthetic 5e15 ids) interleave by send time.
   sent_at: string | null;
   id: number;
 }
@@ -95,21 +60,15 @@ export interface PaidMessagesCursor {
 export type PaidStatus = "paid" | "unpaid" | "all";
 export type MessageType = "paid" | "free" | "all";
 export type MessageDirection = "out" | "in" | "any";
-/** Infloww's Type = Employee / AI chatbot: hand-sent vs automation-sent. */
 export type SenderType = "any" | "employee" | "automation";
-/** The Direct messages / OnlyFans mass messages split. */
 export type MessageKind = "all" | "direct" | "mass";
 
 export interface UsePaidMessagesParams extends ReportQueryParams {
   status?: PaidStatus;
-  /** Defaults to "paid" backend-side so omitting preserves PPV semantics. */
   type?: MessageType;
-  /** Defaults to "out" backend-side; same reason. */
   direction?: MessageDirection;
-  /** Exact filter on Message.fan_id (per-fan deep link). */
   fan_id?: FanId | null;
   fan_query?: string | null;
-  /** Message text search (≥2 chars). */
   q?: string | null;
   min_price_cents?: number | null;
   max_price_cents?: number | null;
@@ -139,8 +98,6 @@ export function buildPaidMessagesQuery(
   if (extra?.format && extra.format !== "json") qs.set("format", extra.format);
   if (extra?.format !== "csv") qs.set("limit", String(params.limit ?? 50));
   if (extra?.format !== "csv" && cursor != null) {
-    // Composite (sent_at, message_id) cursor — both halves so the backend can
-    // resume the time-ordered keyset.
     qs.set("before_id", String(cursor.id));
     if (cursor.sent_at != null) qs.set("before_sent_at", cursor.sent_at);
   }
@@ -148,9 +105,6 @@ export function buildPaidMessagesQuery(
 }
 
 export function usePaidMessages(params: UsePaidMessagesParams) {
-  // `enabled` blocks the call until both date sides are populated — the
-  // endpoint requires both. The page guarantees defaults, but during the
-  // brief render before the picker hydrates either may be null.
   const enabled = !!params.from && !!params.to;
 
   return useInfiniteQuery<PaidMessagesPage>({
@@ -185,7 +139,9 @@ export function usePaidMessages(params: UsePaidMessagesParams) {
         : undefined,
     staleTime: 30_000,
     gcTime: 5 * 60 * 1000,
+    // Paginated: refetching page 1 after scrolling deep leaves duplicate-row seams.
     refetchOnWindowFocus: false,
+    // Memory cap: 1000 rows at limit=50.
     maxPages: 20,
     placeholderData: keepPreviousData,
   });

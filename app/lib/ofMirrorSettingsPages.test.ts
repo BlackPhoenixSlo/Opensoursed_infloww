@@ -6,13 +6,9 @@ import type { SettingsData } from "./ofMirrorSettings";
 import { ELSEWHERE } from "./ofMirrorTooltip";
 import { NOT_YET } from "./ofMirrorWrites";
 
-// The host zone pinned before any import (vi.hoisted runs above them; format.ts builds its clock formatter at load,
-// so a later pin would split the date from the time): Kathmandu, +05:45 all year, no DST, so local-time expectations
-// are literals that fail if the module drew UTC or any other zone. Restored after the file.
 vi.hoisted(() => vi.stubEnv("TZ", "Asia/Kathmandu"));
 afterAll(() => vi.unstubAllEnvs());
 
-/** The captured page `settings/<page>` as the frame's document. */
 const load = (page: string) => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/settings/${page}.html`), "utf8");
   return document;
@@ -21,7 +17,6 @@ const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelect
 const $$ = <T extends Element = HTMLElement>(sel: string) => [...document.querySelectorAll<T>(sel)];
 const input = (id: string) => document.getElementById(id) as HTMLInputElement | null;
 
-// ---------------------------------------------------------------- Account
 
 describe("applyAccount: Account menu (settings/account)", () => {
   const phoneRow = () => $("#content a[href='/of-manager/settings/account/phone']")!;
@@ -67,7 +62,6 @@ describe("applyAccount: Account menu (settings/account)", () => {
     expect(face.title).toBe("");
     const titled = input("otp_phone_settings")!;
     titled.title = "Already explained";
-    // The capture ships them disabled: enable both so the disable below is applyAccount's own.
     face.disabled = titled.disabled = false;
     applyAccount(doc, "account/2fa", {}, undefined, false);
     const controls = $$<HTMLInputElement | HTMLButtonElement>("#content input, #content button, #content textarea, #content select");
@@ -77,8 +71,8 @@ describe("applyAccount: Account menu (settings/account)", () => {
       expect(c.title).not.toBe("");
     }
     expect(face.title).toBe(NOT_YET);
-    expect(titled.disabled).toBe(true); // processed like the rest...
-    expect(titled.title).toBe("Already explained"); // ...but an existing title survives
+    expect(titled.disabled).toBe(true);
+    expect(titled.title).toBe("Already explained");
   });
 });
 
@@ -100,7 +94,6 @@ describe("applyAccount: Phone number (settings/account/phone)", () => {
       expect(b.disabled).toBe(true);
       expect(b.title).toBe(NOT_YET);
     }
-    // The generator's telephone entry is gone.
     expect($("input[name='telephone']")).toBeNull();
   });
 
@@ -160,7 +153,6 @@ describe("applyAccount: Email (settings/account/email)", () => {
     expect(input("authUser_email")!.value).toBe("v@example.com");
     expect(hints()).toHaveLength(1);
     expect(hints()[0].textContent).toBe("E-mail v@example.com is verified");
-    // After the help's first node (OF's v-if slot), not first.
     expect(help().firstChild).not.toBe(hints()[0]);
   });
 
@@ -187,9 +179,8 @@ describe("applyAccount: Login sessions (settings/account/sessions)", () => {
   const lists = () => $$("#content .b-sessions-list");
   const rows = (i: number) => [...lists()[i].querySelectorAll<HTMLElement>("[data-oi-session]")];
   const squash = (s: string | null | undefined) => (s ?? "").replace(/\s+/g, " ").trim();
-  // The module draws the browser's local time; the host zone is pinned for this file (see HOST_TZ at the top).
   const T1 = Date.UTC(2026, 9, 9, 13, 4) / 1000;
-  const T2 = Date.UTC(2005, 0, 2, 3, 0) / 1000; // a two-digit year with a leading zero
+  const T2 = Date.UTC(2005, 0, 2, 3, 0) / 1000;
   const SESSIONS = [
     { sessionId: "b", client: "Firefox", os: "Linux", brand: null, ipAddress: "5.6.7.8", countryName: "Croatia", lastActivity: T1 },
     { sessionId: "a", client: "Chrome", os: "macOS", brand: "Apple", ipAddress: "1.2.3.4", countryName: "Slovenia", isCurrent: true, loginMessage: "Logged in" },
@@ -210,7 +201,6 @@ describe("applyAccount: Login sessions (settings/account/sessions)", () => {
     const online = cur.querySelector(".session-time")!;
     expect(["session-time", "m-online", "g-blue"].map((c) => online.classList.contains(c))).toEqual([true, true, true]);
     expect(cur.querySelector(".b-session-location")?.textContent).toBe(" 1.2.3.4 • Slovenia ");
-    // Close all sessions: usable and Wired (ticket 63, ofMirrorSettingsWrites), its house tooltip kept (D1).
     const close = lists()[0].querySelector("button")!;
     expect(close.textContent?.trim()).toBe("Close all sessions");
     expect(close.disabled).toBe(false);
@@ -226,16 +216,14 @@ describe("applyAccount: Login sessions (settings/account/sessions)", () => {
     expect(others.map((r) => r.querySelector("strong")?.textContent)).toEqual(["Firefox", "Safari", "Edge", "Opera"]);
     expect(others.every((r) => r.parentElement?.classList.contains("b-settings__block"))).toBe(true);
     const time = (r: HTMLElement) => r.querySelector(".session-time > span")?.textContent;
-    expect(new Date(T1 * 1000).getTimezoneOffset()).toBe(-345); // the pin took effect
-    expect(time(others[0])).toBe(" 10/9/26 6:49 pm "); // 13:04 UTC + 05:45
-    expect(time(others[1])).toBe(" 1/2/05 8:45 am "); // 03:00 UTC + 05:45
-    // Not a valid time / not a number: empty.
+    expect(new Date(T1 * 1000).getTimezoneOffset()).toBe(-345);
+    expect(time(others[0])).toBe(" 10/9/26 6:49 pm ");
+    expect(time(others[1])).toBe(" 1/2/05 8:45 am ");
     expect(time(others[2])).toBe("  ");
     expect(time(others[3])).toBe("  ");
     expect(others[0].querySelector(".b-session-location")?.textContent).toBe(" 5.6.7.8 - Croatia ");
     expect(others[1].querySelector(".b-session-location")?.textContent).toBe(" 99 - Italy ");
     expect(others[2].querySelector(".b-session-location")?.textContent).toBe("  -  ");
-    // Brand only when set.
     expect(squash(others[0].childNodes[1].textContent)).toBe(", Linux");
     expect(squash(others[1].childNodes[1].textContent)).toBe(", iOS, Apple");
   });
@@ -276,7 +264,6 @@ describe("applyAccount: Login sessions (settings/account/sessions)", () => {
   });
 });
 
-// ---------------------------------------------------------------- Security
 
 describe("applySecurity: Fully private profile (settings/security)", () => {
   const row = () => input("setting_isPrivate")?.closest(".g-input__wrapper") ?? null;
@@ -292,7 +279,7 @@ describe("applySecurity: Fully private profile (settings/security)", () => {
     const i = input("setting_isPrivate")!;
     expect(i.name).toBe("isPrivate");
     expect(i.checked).toBe(true);
-    expect(i.disabled).toBe(false); // ticket 60: saved on change
+    expect(i.disabled).toBe(false);
     expect(i.hasAttribute("data-oi-wired")).toBe(true);
     expect(i.title).toBe(NOT_YET);
     const sw = r.querySelector("label.b-checkbox-switcher")!;
@@ -300,7 +287,6 @@ describe("applySecurity: Fully private profile (settings/security)", () => {
     expect(sw.getAttribute("at-attr")).toBe("isPrivate");
     expect(sw.getAttribute("title")).toBe(NOT_YET);
     expect(r.querySelector("p.g-input__help")?.textContent).toBe("Text will be hidden");
-    // The source row is untouched.
     expect(input("setting_isVisibleOnline")!.name).toBe("isVisibleOnline");
     expect(input("setting_isVisibleOnline")!.disabled).toBe(false);
     expect($("label[for='setting_isVisibleOnline'].b-checkbox-switcher")).not.toBeNull();
@@ -351,7 +337,6 @@ describe("applySecurity: Fully private profile (settings/security)", () => {
   });
 });
 
-// ---------------------------------------------------------------- Messaging
 
 describe("applyMessaging: the Tip switch (settings/messaging)", () => {
   const tip = () => input("messageOnlyFromFriends");
@@ -365,13 +350,12 @@ describe("applyMessaging: the Tip switch (settings/messaging)", () => {
     expect(list.querySelector(".g-input__label")?.textContent).toBe(LABEL);
     expect(tip()!.name).toBe("messageOnlyFromFriends");
     expect(tip()!.checked).toBe(true);
-    expect(tip()!.disabled).toBe(false); // ticket 60: saved on change
+    expect(tip()!.disabled).toBe(false);
     expect(tip()!.hasAttribute("data-oi-wired")).toBe(true);
     expect(tip()!.title).toBe(NOT_YET);
     const sw = list.querySelector("label.b-checkbox-switcher")!;
     expect(sw.getAttribute("for")).toBe("messageOnlyFromFriends");
     expect(sw.getAttribute("at-attr")).toBe("messageOnlyFromFriends");
-    // The Welcome message switch it was cloned from is untouched.
     expect(input("autoMessage")!.disabled).toBe(false);
     expect(input("autoMessage")!.closest(".g-input__wrapper")?.querySelector(".g-input__label")?.textContent).toBe("Send a welcome message to new fans");
   });
@@ -410,7 +394,6 @@ describe("applyMessaging: the Tip switch (settings/messaging)", () => {
 describe("applyMessaging: the welcome message (settings/messaging)", () => {
   const box = () => $("[data-oi-welcome].b-settings__message");
   const msg = () => box()?.querySelector<HTMLElement>(".b-chat__message") ?? null;
-  /** The bubble's look: OF's chat message classes on or off. */
   const bubble = () => Object.fromEntries(["m-has-media", "m-photo", "m-text", "m-from-me"].map((c) => [c, msg()!.classList.contains(c)]));
   const proxy = (u: string) => `/api/img?u=${encodeURIComponent(u)}`;
   const PREVIEW = "https://cdn.of/p/preview.jpg?sig=1";
@@ -435,7 +418,6 @@ describe("applyMessaging: the welcome message (settings/messaging)", () => {
     expect(img.mock.calls.map((c) => c[0])).toEqual([PREVIEW, POSTER, LOOSE]);
     const pics = [...box()!.querySelectorAll("img")];
     expect(pics.map((p) => p.getAttribute("src"))).toEqual([proxy(PREVIEW), proxy(POSTER), proxy(LOOSE)]);
-    // Never the raw url, never the video or voice file.
     const html = box()!.outerHTML;
     for (const raw of [VIDEO, VOICE]) expect(html).not.toContain(raw);
     for (const p of pics) expect([p.style.display, p.style.width, p.style.height]).toEqual(["block", "100%", "auto"]);

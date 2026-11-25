@@ -24,6 +24,7 @@
 import { expect, onTestFinished, vi } from "vitest";
 import { screen, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
+import type { QueryClient } from "@tanstack/react-query";
 
 import type * as RelayModule from "@/lib/relay";
 import type { RelayContext, VaultMedia } from "@/lib/relay";
@@ -188,12 +189,13 @@ export const HARNESS_FAN = 500;
 
 /** Render the Composer as the chat surface does. Returns RTL utils, the
  *  `onSend` spy (what each send puts on the wire) and the API ref. */
-export async function renderComposer(props: Partial<ComposerProps> = {}) {
+export async function renderComposer(props: Partial<ComposerProps> = {}, client?: QueryClient) {
   const { Composer } = await import("./Composer");
   const onSend = vi.fn<(args: SendArgs) => Promise<void>>(() => Promise.resolve());
   const api: React.MutableRefObject<ComposerApi | null> = { current: null };
   const utils = renderWithProviders(
     <Composer accountId="acct-1" fanId={HARNESS_FAN} onSend={onSend} composerApiRef={api} {...props} />,
+    client,
   );
   return { ...utils, onSend, api };
 }

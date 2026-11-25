@@ -1,7 +1,5 @@
 "use client";
 
-/** Smart Messages' "Mass Auto Unsend Messages" tab: the hourly Auto-unsend card, one panel per model, the picked
- *  model's shown (the tab's creator column picks it). A model's class rows show only while its switch is on. */
 
 import { useEffect, useMemo, useReducer } from "react";
 
@@ -18,12 +16,7 @@ import {
   autoUnsendReducer, initialAutoUnsendForm, saveBody, type ClassSetting,
 } from "./autoUnsendForm";
 
-/** Auto-unsend automation: a scheduled `unsend_messages` rule per model, an hourly sweep that unsends broadcasts
- *  older than the set hours, by type (free text / image / PPV); a type left off is kept forever. An Inflowwww extra:
- *  Infloww has per-message Auto-unsend only, and no per-Creator sweep by message type
- *  (docs/spec/infloww-parity-round-2/phase-02b-auto-mass-messages.md). */
 export function AutoUnsendCard({ accountId }: {
-  /** The model whose panel shows. Every panel stays mounted, so an unsaved edit survives a switch. */
   accountId: string | null;
 }) {
   const accounts = useActiveAccounts();
@@ -46,15 +39,9 @@ export function AutoUnsendCard({ accountId }: {
   );
 }
 
-/** Name + cadence of the scheduled auto-unsend rule this tab manages (one
- *  `unsend_messages` automation_rules row per account, keyed by this name). */
 const AUTO_RULE_NAME = "Auto-unsend mass";
-const AUTO_EVERY_SECONDS = 3600; // hourly sweep
+const AUTO_EVERY_SECONDS = 3600;
 
-/** Per-model auto-unsend config. Reads/writes the single `unsend_messages` rule
- *  named AUTO_RULE_NAME for this account; the payload carries
- *  `policy.{mass_text_hours,mass_media_hours,mass_price_hours}` for the enabled
- *  classes (mirrors the backend sweep). */
 export function AutoUnsendPanel({ accountId, label }: { accountId: string; label: string }) {
   const rulesQ = useAutomationRules(accountId);
   const createM = useCreateRule(accountId);
@@ -70,7 +57,6 @@ export function AutoUnsendPanel({ accountId, label }: { accountId: string; label
   const [form, dispatch] = useReducer(autoUnsendReducer, initialAutoUnsendForm);
   const { enabled } = form;
 
-  // Hydrate the form once from the saved rule when it first loads (the reducer ignores later loads).
   useEffect(() => {
     if (!existing) return;
     dispatch({

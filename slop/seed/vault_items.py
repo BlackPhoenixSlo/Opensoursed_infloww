@@ -1,34 +1,3 @@
-"""Vault Pro's mirror: `vault_items` rows per Creator as the product leaves them after Collect sweeps
-(`vault_mirror.row_values`: raw_json in OF's media shape with `listStates`, `of_folder_ids`, kind, duration,
-created_at = OF's second-precision `createdAt`, `search_text` = kind, `last_seen_run_id`), then the passes that
-layer on top: the thumb hash (`vault_dupes.pack_hash` / `HASH_KIND`; none for audio, which has no still, and
-none for a few rows whose thumb is not cached yet), the describe pass (`describe_status` 'described',
-`describe_model` its default, the prose in `description` (photo) or `video_description` (video), tags,
-`explicitness_tier`, `frames_sampled` (video), `ai_fields_json` with `_prompt_version` / `_frames`,
-`search_text` as `vault_ai_vision_decide.build_describe_update` folds it), the flags pass on most described
-rows (the retired qwen flags pass's shape, gone since D52/D54: the regions, `underwear_visible`, an `over_*` garment only where one was named over
-a covered region, `_flags_frames` on video, `_flags_model`, `_flags_v`), an operator grade on some (`_graded`, as
-`vault_ai_fix.record_grade`), OF's search harvest on a few (`of_terms` + the term appended to `search_text`),
-sends (`send_count`, `last_sent_at`) and earlier hides (`removed_at`). Two finished `vault_cache_runs` per
-Creator: an earlier sweep that saw every row then uploaded, and the latest that saw every row not hidden since
-(hidden rows keep the earlier sweep as `last_seen_run_id`, hidden between the two: a sweep that sees a row
-clears `removed_at`, `vault_mirror.MIRROR_REFRESH_FIELDS`). AI folders (`vault_folders` created_by
-'vault_ai_script' + `vault_folder_items` with an int `manual_order`, as `vault_scripts.apply_ai_folders` writes).
-
-Uploads come in sessions (several media within seconds, some in the same second: OF's createdAt has no
-finer grain), media ids rise with time as OF's do. About a fifth of the hashed media are re-uploads planted in
-groups of 2 to 5: each copy is the original's bytes (same md5 and hashes), or a re-encode whose dHash / aHash
-differ from the original's by 0 to 7 bits, each copy flipping bits no other copy of its group flips (so a
-copy is d1 + d2 bits from another copy), cross-group hashes random 64-bit values (never within 8 bits in
-practice). At most one video copy per group is a different edit (a decoy: duration 2 to 5 s off); the other
-video copies are within 1 s. An original that has copies is never hidden. Planted flags: a covered region
-with no garment named (`unexplained_cover`) or a dressed item with a bare region (`dressed_but_bare`); every
-other flagged row is coherent (no `vault_ai_fix.IFFY_REASONS` fires).
-
-`seed(w, creators, n)`: `n` = {account_id: item count}. Randomness only from `w.rng("vault_items")`.
-Returns (and stores in `w.data["vault_items"]`) {account_id: {"of_folders": [{id, name}], "folders": [{id,
-name}], "copies": {copy media_id: {"original", "dd", "da", "exact", "decoy"}} (planted distances to its
-group's original), "iffy": {media_id} (the planted suspects)}}."""
 from __future__ import annotations
 
 import json
@@ -37,20 +6,23 @@ from datetime import timedelta
 
 from . import World, ts
 
-HASH_KIND = "thumb/md5+dhash8+ahash8"   # vault_dupes.HASH_KIND
-FLAGS_VERSION = 3                       # vault_ai_vision._FLAGS_VERSION
-FLAGS_VIDEO_FRAMES = 4                  # the retired qwen flags pass's clip frames (D52/D54)
-FRAME_LADDER = ((30, 6), (180, 9))      # vault_ai_vision_decide._FRAME_LADDER: describe stills by duration
-FRAME_LADDER_MAX = 12                   # vault_ai_vision_decide._FRAME_LADDER_MAX
-PROMPT_VERSION = "v2"                   # vault_ai_vision's default describe prompt
-MODEL = "qwen3-vl-30b"                  # vault_ai_vision's default describe / flags model
-OF_PAGE = 100                           # vault_ai_api._PAGE: a sweep's OF page
-COLLECT_CAP = 200 * OF_PAGE             # vault_ai_api._MAX_PAGES x _PAGE: the most one Collect sweep mirrors
+HASH_KIND = "thumb/md5+dhash8+ahash8"
+# vault_ai_vision._FLAGS_VERSION
+FLAGS_VERSION = 3
+FLAGS_VIDEO_FRAMES = 4
+# vault_ai_vision_decide._FRAME_LADDER: describe stills by duration
+FRAME_LADDER = ((30, 6), (180, 9))
+FRAME_LADDER_MAX = 12
+PROMPT_VERSION = "v2"
+MODEL = "qwen3-vl-30b"
+OF_PAGE = 100
+# vault_ai_api._MAX_PAGES x _PAGE: the most one Collect sweep mirrors
+COLLECT_CAP = 200 * OF_PAGE
 KINDS = (("photo", 0.60), ("video", 0.28), ("gif", 0.04), ("audio", 0.08))
-VIS = ("not_in_frame", "covered", "bare")          # vault_ai_brief.VIS_STATES
-REGIONS = ("vulva_vis", "breasts_vis", "anus_vis")  # vault_ai_brief.VIS_REGIONS
+VIS = ("not_in_frame", "covered", "bare")
+REGIONS = ("vulva_vis", "breasts_vis", "anus_vis")
 OVER = {"vulva_vis": ("over_vulva", "pink lace thong"), "breasts_vis": ("over_breasts", "black lace bra"),
-        "anus_vis": ("over_anus", "denim shorts")}  # vault_ai_brief.OVER_KEYS + a garment it allows there
+        "anus_vis": ("over_anus", "denim shorts")}
 CLOTHING = ("dressed", "lingerie_on", "pulled_aside", "pulled_down", "partially_off", "fully_nude", "unclear")
 OF_FOLDER_NAMES = ("Slop beach set", "Slop lingerie", "Slop shower clips", "Slop customs", "Slop teasers",
                    "Slop VIP")
@@ -58,20 +30,20 @@ AI_FOLDER_NAMES = ("AI-tease 10", "AI-safe explicit", "AI-mirror selfies")
 WORDS = ("lingerie", "shower", "beach", "mirror", "selfie", "bed", "pool", "heels", "bikini", "outfit",
          "tease", "closeup", "pink", "red", "black", "stockings", "gym", "car", "outdoor", "pov")
 HARVEST = ("feet", "cosplay", "travel")
-UNHASHED_P = 0.02      # a photo / video / gif whose thumb is not cached yet (no hash)
-COPY_P = 0.22          # a hashed photo / video / gif is a re-upload of an earlier one
-EXACT_P = 0.35         # a copy that is the original's bytes
-DECOY_P = 0.15         # a video copy that is another edit (duration off by 2-5 s), one per group at most
-DESCRIBED_P = 0.55     # a photo / video the describe pass has done
-FLAGGED_P = 0.85       # a described item the flags pass has done
-GRADED_P = 0.12        # a flagged item an operator graded
-UNDERWEAR_P = 0.5      # underwear_visible where the clothing does not decide it
-UNNAMED_P = 0.10       # a covered region with no garment named
-CONTRA_P = 0.04        # a flagged item called dressed with a bare region
-HARVEST_P = 0.06       # an item OF's search harvest tagged with a term
-HIDDEN_P = 0.03        # an item uploaded before the earlier sweep, hidden since
-SENT_P = 0.12          # an item sent at least once
-AI_FOLDER_P = (0.02, 0.08)   # the share of live items an AI folder holds
+UNHASHED_P = 0.02
+COPY_P = 0.22
+EXACT_P = 0.35
+DECOY_P = 0.15
+DESCRIBED_P = 0.55
+FLAGGED_P = 0.85
+GRADED_P = 0.12
+UNDERWEAR_P = 0.5
+UNNAMED_P = 0.10
+CONTRA_P = 0.04
+HARVEST_P = 0.06
+HIDDEN_P = 0.03
+SENT_P = 0.12
+AI_FOLDER_P = (0.02, 0.08)
 
 
 def _flip(rng, value: int, used: set[int], k: int) -> int:
@@ -119,7 +91,6 @@ def seed(w: World, creators: list[dict], n: dict[str, int]) -> dict:
 
 
 def _timeline(rng, now, cnt: int) -> list:
-    """The upload timeline: sessions over two years, items 0-3 s apart (0: the same second)."""
     times = []
     t = now - timedelta(days=730)
     while len(times) < cnt:
@@ -133,11 +104,9 @@ def _timeline(rng, now, cnt: int) -> list:
 
 
 def _rows(rng, aid, times, ids, of_folders, of_p, run_id, started):
-    """One row per upload as the latest sweep left it, with its planted hash, describe / flags and harvest.
-    Returns ([(at, row)], copies, iffy, the originals that have copies)."""
     kinds, weights = zip(*KINDS)
     rows, copies, iffy = [], {}, set()
-    groups = []   # [{original, kind, dur, md5, dh, ah, used_d, used_a, n, decoy}]
+    groups = []
     for at in times:
         mid = next(ids)
         kind = rng.choices(kinds, weights)[0]
@@ -175,8 +144,6 @@ def _rows(rng, aid, times, ids, of_folders, of_p, run_id, started):
 
 
 def _plant_hash(rng, mid, kind, dur, groups, copies):
-    """(md5, dHash, aHash, duration) for a hashed upload: a copy of a recent group's original (recorded in
-    `copies`) or a new original (appended to `groups`)."""
     pool = [g for g in groups[-400:] if g["n"] < 5 and g["kind"] == kind]
     if not (pool and rng.random() < COPY_P):
         md5, dh, ah = "%032x" % rng.getrandbits(128), rng.getrandbits(64), rng.getrandbits(64)
@@ -203,8 +170,6 @@ def _plant_hash(rng, mid, kind, dur, groups, copies):
 
 
 def _hide_and_send(rng, rows, now, first, kept, early_run) -> None:
-    """Earlier hides: uploaded before the earlier sweep, hidden between the two sweeps; never an original that
-    has copies (`kept`). Sends and the describe end by the hide."""
     for at, row in rows:
         end = now
         if at < first and row["media_id"] not in kept and rng.random() < HIDDEN_P:
@@ -217,7 +182,6 @@ def _hide_and_send(rng, rows, now, first, kept, early_run) -> None:
 
 
 def _ai_folders(rng, con, aid, rows, started) -> list[dict]:
-    """AI folders over live items, as `vault_scripts.apply_ai_folders` writes them."""
     folders = []
     live = [r["media_id"] for r in rows if r["removed_at"] is None]
     for nm in AI_FOLDER_NAMES:
@@ -225,7 +189,7 @@ def _ai_folders(rng, con, aid, rows, started) -> list[dict]:
                           "VALUES (?,?,?,?)", (aid, nm, "vault_ai_script", ts(started))).lastrowid
         picks = rng.sample(live, max(1, int(len(live) * rng.uniform(*AI_FOLDER_P))))
         orders = list(range(len(picks)))
-        for k in range(min(3, len(picks) // 4)):   # the tail pinned last (-1, -2, ...), as reorder allows
+        for k in range(min(3, len(picks) // 4)):
             orders[-1 - k] = -1 - k
         con.executemany("INSERT INTO vault_folder_items(account_id, folder_id, media_id, manual_order, "
                         "added_at) VALUES (?,?,?,?,?)",
@@ -235,15 +199,12 @@ def _ai_folders(rng, con, aid, rows, started) -> list[dict]:
 
 
 def _describe_frames(row: dict) -> int:
-    """Stills the describe sent: 1 for a photo, the duration ladder for a clip (`_frames_for_duration`)."""
     if row["kind"] != "video":
         return 1
     return next((n for limit, n in FRAME_LADDER if (row["duration_seconds"] or 0) < limit), FRAME_LADDER_MAX)
 
 
 def _describe(rng, row: dict) -> bool:
-    """The describe pass's columns (vault_ai_vision_decide.build_describe_update), the flags pass's on most
-    (the retired qwen flags shape), an operator grade on some. True when the flags planted a suspect."""
     tags = rng.sample(WORDS, rng.randint(2, 5))
     desc = f"{rng.choice(('Solo', 'Close', 'Playful', 'Soft'))} {row['kind']} with {tags[0]} and {tags[1]}"
     cl = rng.choice(CLOTHING)
@@ -257,7 +218,7 @@ def _describe(rng, row: dict) -> bool:
         if cl == "dressed":
             regions = {r: "covered" if v == "bare" else v for r, v in regions.items()}
         unnamed = {r for r, v in regions.items() if v == "covered" and rng.random() < UNNAMED_P}
-        if rng.random() < CONTRA_P:    # dressed_but_bare
+        if rng.random() < CONTRA_P:
             cl = fields["clothing_state"] = "dressed"
             bare = rng.choice(REGIONS)
             regions[bare] = "bare"

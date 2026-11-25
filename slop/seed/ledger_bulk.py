@@ -1,30 +1,3 @@
-"""Ledger at volume: the `transactions` rows the payouts ingest and the WS pump write for many
-fans, the paid mass broadcasts the Message dashboard lists, and the free trial / promotion
-claimers Fan reports' Traffic reads (scenarios/2026-11-01-ledger-reports-volume.py).
-
-  transactions   `n` rows over the last `days` days, spread over the Creators by fan count, each
-                 on one of the Creator's fans: kinds the ingest's KIND_CATALOG maps (tip, tip_post,
-                 ppv_message, ppv_post, subscription, rebill, custom), each with that catalog's
-                 description prefix and the fan's name; statuses as `_normalize_status` leaves
-                 them (cleared, pending for the last 7 days, and the reversals chargedback /
-                 refunded / refund_pending plus failed); ledger rows (source 'ledger') carry a
-                 provider id and OF's net / fee (net = gross - round(20%); 1 in 200 with net 0,
-                 as the ingest stores OF's `"net": 0`); 1 in 10 tips is a WS-pump row written as
-                 event_transcoder writes it (source 'ws', status 'cleared', no provider id, no
-                 net: `net_or_80` reads 80% of it), linked to its inbound tip message. The pump's
-                 `fans.lifetime_spend_cents` bump is not written (no report reads it).
-  paid mass      `runs` paid broadcasts per Creator (`mass_runs` closed as the manual send's close
-                 step leaves them: status ok, queue_id, body, sent_at), each copy one outbound
-                 `messages` row (price, `mass_run_id`) to `recipients` of its fans; a buyer's copy
-                 is marked bought (is_paid, purchased_at), as the ledger link does, with its linked
-                 ppv_message sale, 1 in 8 of them since refunded or charged back.
-  link_claimers  1 in 5 fans claimed one of the Creator's 3 trial links / 2 promotions; 1 in 10
-                 of those claimed a second one later (never after now); some without OF's
-                 subscribe_at.
-
-Amounts include ones whose 80% has a fraction >= .5 (742, 1497, 2997), so `net_or_80`'s floor
-differs from a rounding. Deterministic from the World's seed (`w.rng("ledger_bulk")`); ids above
-earnings' (tx 8.1e9) and below threads' history (msg 9e12). `w.data["ledger_bulk"]`: counts."""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -38,14 +11,13 @@ QUEUE_BASE = 870_000_000_000
 
 KINDS = (("tip", 24), ("tip_post", 6), ("ppv_message", 30), ("ppv_post", 10), ("subscription", 6),
          ("rebill", 18), ("custom", 6))
-# transaction_ingest_decide.KIND_CATALOG: a description prefix each kind is classified from.
 PREFIX = {"tip": "Tip from ", "tip_post": "Tip on post from ", "ppv_message": "Payment for message from ",
           "ppv_post": "Post purchase by ", "subscription": "Subscription from ",
           "rebill": "Recurring subscription from ", "custom": "Custom request from "}
 AMOUNTS = (500, 742, 999, 1497, 1500, 2500, 2997, 5000, 10000)
 SUB_AMOUNTS = (499, 999, 1499)
 REVERSALS = (("chargedback", 0.03), ("refunded", 0.03), ("refund_pending", 0.02), ("failed", 0.03))
-BUY_REVERSALS = (("refunded", 0.0625), ("chargedback", 0.0625))  # 1 in 8 bought copies reversed
+BUY_REVERSALS = (("refunded", 0.0625), ("chargedback", 0.0625))
 PRICES = (999, 1497, 2500)
 TX_COLS = ("account_id, fan_id, kind, message_id, amount_cents, currency, occurred_at, ingested_at, "
            "provider_transaction_id, status, net_cents, fee_cents, vat_cents, source, description")
@@ -76,9 +48,6 @@ def seed(w: World, creators: list[dict], *, n: int, days: int = 60, runs: int = 
     con = w.sql()
 
     def tx_row(*, aid, fan, kind, amt, at, status, source="ledger", message_id=None):
-        """One `transactions` row as its writer leaves it: the payouts ingest (source 'ledger': a provider
-        id, OF's net / fee, the catalog description, ingested now) or the WS pump (source 'ws': none of
-        those, ingested as it happened)."""
         nonlocal prov
         ingested, provider, net, fee, vat, desc = ts(at), None, None, None, None, None
         if source == "ledger":
@@ -93,7 +62,6 @@ def seed(w: World, creators: list[dict], *, n: int, days: int = 60, runs: int = 
                      ts(paid_at) if paid_at else None, None, run_id, None, ts(at), ts(at)))
 
     with con:
-        # Paid mass broadcasts first (their copies precede the sales linked to them).
         for c in creators:
             aid, fl = c["id"], fans[c["id"]]
             for _ in range(runs):
@@ -121,7 +89,6 @@ def seed(w: World, creators: list[dict], *, n: int, days: int = 60, runs: int = 
                         st = _status(rng, (w.now - paid_at).total_seconds() / 86400, BUY_REVERSALS)
                         tx_row(aid=aid, fan=fan, kind="ppv_message", amt=price, at=paid_at, status=st, message_id=mid)
 
-        # The bulk ledger, and each Creator's claimers.
         for c, wt in zip(creators, weights):
             aid, fl = c["id"], fans[c["id"]]
             for _ in range(round(n * wt / total_w)):
@@ -138,7 +105,6 @@ def seed(w: World, creators: list[dict], *, n: int, days: int = 60, runs: int = 
                     continue
                 tx_row(aid=aid, fan=fan, kind=kind, amt=amt, at=at, status=_status(rng, age / 86400))
 
-            # Claimers: 1 in 5 fans, on one of 3 trial links / 2 promotions; 1 in 10 of them a second claim.
             links = [("trial", LINK_OF_BASE + int(aid) % 1_000_000 * 10 + j) for j in range(3)] + \
                     [("promo", LINK_OF_BASE + int(aid) % 1_000_000 * 10 + 5 + j) for j in range(2)]
             for fan in fl:

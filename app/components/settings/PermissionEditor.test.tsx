@@ -1,10 +1,3 @@
-/**
- * PermissionEditor — one Permission role's pages and Data scope
- * (docs/spec/settings-tabs/phase-03-roles-sales.md, Testing Decisions).
- *
- * The expected hrefs are collected from `SIDEBAR` here, never through
- * `permissionTabs`, so a derivation that drops, repeats or misfiles a page fails.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 
@@ -14,8 +7,6 @@ import { SIDEBAR, type NavGroup, type NavNode } from "@/lib/nav";
 import { CARD_PERMISSIONS, pageCards } from "@/lib/dashboardCards";
 import { PAGE_ACTIONS } from "@/lib/permissionActions";
 
-/** Every non-divider SIDEBAR href: top-level links and group children. A link that answers to
- *  another page's grant (`permission`: Focus, Growth's Redirect links) is not a page. */
 const ALL: string[] = [];
 for (const n of SIDEBAR) {
   if ("divider" in n) continue;
@@ -44,7 +35,6 @@ function renderEditor(canSave = true) {
   return { onSave, onBack };
 }
 
-/** The page checkboxes' hrefs on the tab `name`, after clicking it (a Function permission's value holds "#"). */
 function hrefsOn(name: string): string[] {
   fireEvent.click(screen.getByRole("tab", { name }));
   return screen.getAllByRole("checkbox").map((c) => (c as HTMLInputElement).value).filter((v) => !v.includes("#"));
@@ -78,7 +68,6 @@ describe("PermissionEditor", () => {
     const union = [...operations, ...growth, ...ofManager];
     expect(union).toHaveLength(ALL.length);
     expect([...union].sort()).toEqual([...ALL].sort());
-    // Operations opens on the top-level links under "General", then each other group in nav order.
     const titles = within(screen.getByRole("tabpanel")).getAllByRole("heading").map((h) => h.textContent);
     expect(titles).toEqual(["General", "Analytics", "Share for Share", "My Automations", "My AI Chatter", "Creators", "Employees"]);
     expect(operations.slice(0, 3)).toEqual(["/", "/messages-pro", "/growth/vault-pro"]);
@@ -122,15 +111,11 @@ describe("PermissionEditor", () => {
     renderWithProviders(<PermissionEditor role={role} onSave={onSave} onBack={vi.fn()} canSave />);
     const unsend = screen.getByRole("checkbox", { name: "Messages Pro: Unsend messages" });
     const exportCsv = screen.getByRole("checkbox", { name: "Messages Pro: Export CSV" });
-    // A stored false is unticked; a key never stored falls back to the page grant, so it reads ticked.
     expect(unsend).not.toBeChecked();
     expect(exportCsv).toBeChecked();
     expect(unsend).toBeEnabled();
-    // The Dashboard has no Function permission, only its card switches.
     expect(screen.getAllByRole("checkbox", { name: /^Dashboard: / }).every((c) => / card$/.test(c.getAttribute("aria-label")!)))
       .toBe(true);
-    // Unticking Export CSV under Messages Pro unticks it under Sales records too (the Relay can't tell the pages
-    // apart); there it stays unusable while that page is unticked.
     fireEvent.click(exportCsv);
     fireEvent.click(screen.getByRole("tab", { name: "Operations" }));
     const salesExport = screen.getByRole("checkbox", { name: "Sales records: Export CSV" });

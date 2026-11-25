@@ -1,28 +1,5 @@
 "use client";
 
-/**
- * AllMessagesTab — outbound + inbound, free + paid view of /admin/paid-messages.
- *
- * Defaults type=all, direction=out per 18_stats_per_fan_csv.md §Filters list:
- *   • Most users land here to see "all the messages this fan got from us"
- *     rather than "everything every fan sent us today". `direction=out`
- *     respects that without dropping inbound entirely (one toggle to view).
- *   • `type=all` is the meaningful generalization over PPV-tab — keeping
- *     it as the default makes the tab name honest.
- *
- * `fan_id` is wired through from the page-level URL state so a deep-link
- * (clicking "all msgs" from the PPV tab, or following a per-fan card)
- * pre-populates the filter. Clearing it falls back to "all fans."
- *
- * MessageDashboardFilters adds Infloww's text, price, sender and unsent
- * filters (both kinds here: Direct and mass are the page's own tabs); an own outbound row gets the Unsend action
- * beside it (the row itself is the Open chat link).
- *
- * With `kind` (the Message dashboard's Direct messages and OnlyFans mass
- * messages tabs, page-parity ticket 30) it is Infloww's surface instead: the
- * staged MessageDashboardForm, the "Last updated" line with Refresh and
- * Export, and MessageDashboardTable, over our outbound messages of that kind.
- */
 
 import { useMemo, useState, type ReactNode } from "react";
 import { RotateCw } from "lucide-react";
@@ -52,13 +29,9 @@ import { TableSkeleton } from "@/components/ui/Skeleton";
 interface Props {
   from: string | null;
   to: string | null;
-  /** Page-level URL state — when set, the row list filters to this fan
-   *  and the filter strip shows the fan-id chip. */
   fanId?: FanId | null;
   onClearFanId?: () => void;
-  /** Infloww's tabs: Direct messages (`direct`) or OnlyFans mass messages (`mass`). Absent = the All tab. */
   kind?: Exclude<MessageKind, "all">;
-  /** With `kind`: the report time zone (Sent time, Last updated) and the page's range box. */
   reportTz?: string | null;
   range?: ReactNode;
 }
@@ -120,15 +93,11 @@ function AllTab({ from, to, fanId, onClearFanId }: Props) {
   const [fanQuery, setFanQuery] = useState("");
   const [dash, setDash] = useState(EMPTY_DASHBOARD_FILTERS);
 
-  // When the user flips Direction → "in", the Employee filter doesn't
-  // apply (inbound has no sending employee). Clear it so a leftover value
-  // doesn't quietly drop the result set to zero on the next fetch.
   const handleDirectionChange = (d: MessageDirection) => {
     setDirection(d);
+    // Inbound has no sending employee; a leftover filter would silently zero the result.
     if (d === "in" && employeeId != null) setEmployeeId(null);
   };
-  // type=free has no PPV concept, so Status loses meaning. Reset to "all"
-  // so the value doesn't filter rows once Status hides.
   const handleTypeChange = (t: MessageType) => {
     setType(t);
     if (t === "free" && status !== "all") setStatus("all");

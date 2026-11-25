@@ -1,56 +1,5 @@
 "use client";
 
-/**
- * EmployeesTab — Manage employees, laid out as Infloww's `EmployeeListPage` (bundle `index.9f50f370.js` @12350186,
- * CSS `_9ql8v`; the parity doc docs/infloww-screens.md §3.8). An Employee is a person with their own login (a
- * `chatter` in the code and the Relay), so their role, Creator access and Data scope are enforced on them. The owner's
- * own row heads the list (role Owner, nothing to edit). The retired name-only rows (`kind: "name"`, the old "Who's
- * chatting?" names) are not shown; their history stays on the Relay.
- *
- * Frame, full bleed under the page header: the group tree (GroupTree) in a 260px #262626 column on the left, the list
- * on #151515 on the right. Picking a tree node filters the list to that group (the root, the Agency, is every group);
- * on a phone the tree folds into a group select above the filters.
- *
- * Title row: the picked node's name with the counts (our extra), "Manage roles & permissions" (Role Settings, where
- * the Admin / Manager / Chatter / VA presets are edited; our extra), "Batch actions" (outlined; with nobody selected
- * it warns "Select at least one employee", as Infloww does) and "+ Add employee". One line of labelled filters: By
- * employee, By Creator, By status (Activated / Deactivated / Pending), By role (our extra), Reset; they apply as you
- * type, so there is no Search button.
- *
- * Pending invites (GET /admin/chatters/invites) follow the logins, as Infloww's pending employee: name, Creators and
- * role from the invite's setup, status "Inactive" with "Resend" (a fresh link, the old one stops working;
- * POST …/invites/{token}/resend) and the action "Delete" (revokes it; DELETE …/invites/{token}).
- *
- * Table (fixed layout, on Infloww's antd table): Employee (name and @username), Assigned Creators (click: Edit; "+
- * Assign" when none), Role (click: Set role), Status, Group (from 2xl up), This month (recorded earnings, then worked
- * of scheduled shifts, from the Shift schedule's Timesheet in the Agency's time zone), Actions "Edit  More". A
- * deactivated row's cells are grey, not links. More opens in a portal: Reset password, Access limits, Deactivate /
- * Activate, Delete (off: an Employee is deactivated, never deleted, so their audit history is kept). Over ten rows a
- * pager shows ten a page.
- *
- * Writes:
- *   • + Add employee / Edit (EmployeeFormModal): POST /admin/employees/login, POST /admin/chatters/invite,
- *     POST /admin/chatters/link, PUT /admin/employees/{id}/setup — name, role, Creators and group in one go
- *   • Set role (RoleModal): PUT /admin/employees/{id}/setup with the role alone
- *   • Reset password: POST /admin/employees/{id}/password (owner-only; refused for a login another Agency shares)
- *   • Deactivate: DELETE /admin/employees/{id} (unlinks the login; history kept); Activate: PATCH is_active
- *   • Batch edit roles: one PUT /admin/settings/roles carrying the whole blob (ADR-0007); Assign: PUT
- *     /admin/employees/{id}/access per Employee; Batch edit group: PUT /admin/employee-groups/members
- *
- * Changing the group or a filter clears the selection, so a batch never writes a row the list hides.
- *
- * ASSUMPTION: Reset password sets the new password directly, where Infloww mails reset instructions (no email on
- * file here). Rung 5. Overturned when Employees carry an email address.
- *
- * ASSUMPTION: earnings and both shift counts share one "This month" column, so the list fits 1280px with the tree.
- * Rung 6: Infloww's list has no shift columns at all. Overturned if the owner wants them apart again.
- *
- * ASSUMPTION: By role's "No role" also matches an assignment naming a role id no role has, which the Role column
- * shows as "Unknown role (<id>)". Rung 3: Role Settings counts it as no role and the Relay refuses it every page.
- *
- * ASSUMPTION: Select all ticks the shown page's rows, as antd's row selection does; a row ticked on another page
- * stays ticked. Rung 3 (antd's default). Overturned if the owner wants Select all to span every page.
- */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, Plus } from "lucide-react";
@@ -82,21 +31,15 @@ import {
 } from "@/components/settings/employeesModalReducer";
 import { usePagedFilters, usePagedRows } from "@/hooks/pagedFilters";
 
-/** The four filters; "" is each select's "All" option. "pending" is the invites not accepted yet. */
 type Filters = { name: string; creator: string; status: "" | "active" | "inactive" | "pending"; role: string };
 const NO_FILTERS: Filters = { name: "", creator: "", status: "", role: "" };
-/** The By role option for an Employee holding no role. */
 const NO_ROLE = "\u0000none";
-/** Rows a page (Infloww: 10, no size changer); the pager shows only past one page. */
 const PAGE_SIZE = 10;
-/** The phone group select's value for the tree root (every group). */
 const ROOT = "root";
 
 type HeldRole = ReturnType<typeof assignedRole>;
 const isOwner = (e: Employee) => e.kind === "owner";
 
-/** Whether `e` passes every filter. All Creators access matches every Creator. A role id no role has counts as
- *  no role, as Role Settings counts it and the Relay refuses it every page. */
 function passes(e: Employee, f: Filters, roleOf: (e: Employee) => HeldRole): boolean {
   const q = f.name.trim().toLowerCase();
   if (q && !e.display_name.toLowerCase().includes(q) && !(e.username ?? "").toLowerCase().includes(q)) return false;
@@ -111,7 +54,6 @@ function passes(e: Employee, f: Filters, roleOf: (e: Employee) => HeldRole): boo
   return true;
 }
 
-/** An invite not accepted yet (GET /admin/chatters/invites), listed as Infloww's pending employee: "Inactive". */
 export interface PendingInvite extends InviteResp {
   created_at: string;
   display_name: string | null;
@@ -121,7 +63,6 @@ export interface PendingInvite extends InviteResp {
 }
 export const INVITES_KEY = ["employees", "invites"];
 
-/** Whether a pending invite passes the filters: only All or Pending status, and its setup's name, Creators and role. */
 function invitePasses(i: PendingInvite, f: Filters, roles: PermissionRole[]): boolean {
   if (f.status && f.status !== "pending") return false;
   const q = f.name.trim().toLowerCase();
@@ -134,20 +75,14 @@ function invitePasses(i: PendingInvite, f: Filters, roles: PermissionRole[]): bo
   return true;
 }
 
-/** The Batch dialogs' native selects. */
 const FILTER = "h-8 min-w-0 bg-bg border border-border rounded-md px-2 text-sm focus:outline-none focus:border-accent";
-/** A labelled filter: 14px T2 label with its colon, 8px to the field. */
 const FILTER_LABEL = "flex items-center gap-2 text-[14px] text-fg-dim whitespace-nowrap";
-/** 12px cell padding (Infloww: 16px) so the list fits beside the tree at 1280px. */
 const TH = cn(IF_TABLE.th, IF_TABLE.thDivider, "px-3");
 const TD = cn(IF_TABLE.td, "px-3");
-/** Infloww's link colour in the table (Assigned Creators, Role) and the warn / ok status colours (sampled). */
 const LINK = "text-[#2d74ff] hover:opacity-80";
 const GREY = "text-muted";
-/** The Group column, from 2xl up (below, the list would not fit beside the tree). */
 const XL_CELL = "hidden 2xl:table-cell";
 
-/** The Assigned Creators cell's text: every Creator, none (""), or the granted Creators' names. */
 function assignedCreators(ids: string[] | null | undefined, creators: AccountMeta[]): string {
   if (ids == null) return "All Creators";
   return ids.map((id) => {
@@ -158,21 +93,17 @@ function assignedCreators(ids: string[] | null | undefined, creators: AccountMet
 
 const MONTH_TIP = `Recorded earnings, then shifts worked of shifts scheduled, this calendar month. ${RECORDED_EARNINGS_TIP}`;
 
-/** The This month cell: earnings and worked/scheduled shifts, "—" until the Timesheet answers. */
 function monthCell(sheet: TimesheetRow[] | undefined, id: number): { earnings: string; shifts: string } {
   if (!sheet) return { earnings: "—", shifts: "" };
   const r = sheet.find((row) => row.key === String(id));
   return { earnings: fmtCents(r?.recorded_earnings_cents ?? 0), shifts: `${r?.shifts_worked ?? 0}/${r?.scheduled_shifts ?? 0} shifts` };
 }
 
-/** The Role cell: the assigned role's name, "" for none, or the stored id no role has (as Role Settings shows it). */
 function roleLabel(role: HeldRole): string {
   if (role === undefined) return "";
   return typeof role === "string" ? unknownRoleLabel(role) : role.name;
 }
 
-/** A link cell (Assigned Creators, Role): the text in Infloww's blue, two lines at most, or "+ Assign" when empty;
- *  grey plain text when the row is not editable (the owner's own, a deactivated one). */
 function LinkCell({ text, editable, onClick, title }: { text: string; editable: boolean; onClick: () => void; title: string }) {
   if (!editable) return <span className={cn(GREY, "line-clamp-2")} title={text || undefined}>{text || "—"}</span>;
   if (!text) {
@@ -189,7 +120,6 @@ function LinkCell({ text, editable, onClick, title }: { text: string; editable: 
   );
 }
 
-/** antd's `message.warning`: a #4d5159 pill at the top centre for three seconds. */
 function useWarning(): [ReactNode, (text: string) => void] {
   const [note, setNote] = useState<{ text: string; at: number } | null>(null);
   useEffect(() => {
@@ -214,7 +144,6 @@ type Line = { kind: "employee"; e: Employee } | { kind: "invite"; i: PendingInvi
 export default function EmployeesTab() {
   const qc = useQueryClient();
 
-  // Every row, so the owner's own heads the list; the retired name-only rows are dropped.
   const { query: q, rows: all } = useRoster({ includeChatterMirrors: true });
   const owner = all.find(isOwner);
   const logins = all.filter((e) => e.kind === "login" || (e.kind === undefined && !!e.chatter_id));
@@ -224,17 +153,13 @@ export default function EmployeesTab() {
   const assignments = rolesBlob.value.assignments ?? {};
   const agencyName = useAgencyName();
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  // The filters, the tree's group and the page in one reducer: a filter or group change lands on page 1 in one action
-  // (usePagedFilters). `group` is the tree's group, or null for the root (every group).
   const { page, set, setPage, clamp, group: pickedId, ...filters } =
     usePagedFilters<Filters & { group: number | null }>({ ...NO_FILTERS, group: null });
   const groupTree = groupsInTreeOrder(useEmployeeGroups().data?.groups ?? []);
   const groupList = groupTree.map((g) => g.group);
-  // A group deleted meanwhile falls back to the root.
   const picked = groupList.find((g) => g.id === pickedId);
   const groupId = picked ? picked.id : null;
   const groupName = (id: number | null | undefined) => groupList.find((g) => g.id === id)?.name ?? "—";
-  // The one way the list resets: patch the filters / group (none: a Batch save), back to page 1, nobody ticked.
   const refilter = (patch: Partial<Filters & { group: number | null }> = {}) => { set(patch); setSelected(new Set()); };
   const pickGroup = (group: number | null) => refilter({ group });
   const [warning, warn] = useWarning();
@@ -251,14 +176,10 @@ export default function EmployeesTab() {
   });
   const targets = shown.filter((e) => !isOwner(e) && selected.has(e.id));
 
-  // Every dialog (row and header modals, Batch dialogs, a resent invite's link): at most one open
-  // (employeesModalReducer.ts).
   const [dialogs, dispatchDialog] = useReducer(employeesModalReducer, initialEmployeesModal);
   const openModal = dialogs.modal;
   const open = (modal: EmployeesModal) => dispatchDialog({ type: "open", modal });
-  // Closes that very dialog (the value it was opened with); a no-op once another is open.
   const close = (modal: EmployeesModal) => dispatchDialog({ type: "close", modal });
-  // A Batch save's own success (mutate-level: a Cancel's reset drops it), closing only the Batch dialog it saved from.
   const closeBatch = (modal: EmployeesModal) => { close(modal); refilter(); };
 
   const invitesQ = useQuery<PendingInvite[]>({
@@ -280,7 +201,6 @@ export default function EmployeesTab() {
     onSettled: () => qc.invalidateQueries({ queryKey: INVITES_KEY }),
   });
 
-  // Ten a page, the logins then the invites.
   const lines: Line[] = [
     ...shown.map((e): Line => ({ kind: "employee", e })),
     ...invites.map((i): Line => ({ kind: "invite", i })),
@@ -324,11 +244,9 @@ export default function EmployeesTab() {
     mutationFn: (id: number) => relay.delete<unknown>(`/admin/employees/${id}`),
     onSettled: () => invalidate(),
   });
-  // The employee cap is a modal (EmployeeLimitModal), not the error line.
   const activateError = isEmployeeLimit(activateM.error) ? null : activateM.error;
   const saveError = (activateError || disableM.error || resendM.error || revokeM.error) as Error | null;
 
-  // The header counts what the table lists (group + filters), not the whole roster; the owner row is not a login.
   const shownLogins = shown.filter((e) => !isOwner(e));
   const active = shownLogins.filter((e) => e.is_active).length;
   const creatorOptions: IfOption[] = [
@@ -647,7 +565,6 @@ function BatchDialog({ open, title, children, canSave, note = null, saving, erro
   title: BatchAction;
   children: React.ReactNode;
   canSave: boolean;
-  /** The Load gate's note, beside Save, while the blob a save replaces has not loaded. */
   note?: GateNote | null;
   onSave: () => void;
 }) {
@@ -673,7 +590,6 @@ function BatchDialog({ open, title, children, canSave, note = null, saving, erro
   );
 }
 
-/** One role for every selected Employee, saved with the rest of the roles blob behind its Load gate. */
 function BatchRoles({ roles, loaded, onSave, ...rest }: BatchProps & {
   roles: PermissionRole[];
   loaded: boolean;
@@ -692,10 +608,8 @@ function BatchRoles({ roles, loaded, onSave, ...rest }: BatchProps & {
   );
 }
 
-/** The "No group" choice of Batch edit group. */
 const NO_GROUP = "none";
 
-/** One group, or none, for every selected Employee. */
 function BatchGroup({ groups, onSave, ...rest }: BatchProps & {
   groups: EmployeeGroup[];
   onSave: (groupId: number | null) => void;
@@ -713,7 +627,6 @@ function BatchGroup({ groups, onSave, ...rest }: BatchProps & {
   );
 }
 
-/** The Creators every selected Employee gets access to. */
 function BatchAssign({ creators, onSave, ...rest }: BatchProps & {
   creators: AccountMeta[];
   onSave: (accountIds: string[]) => void;

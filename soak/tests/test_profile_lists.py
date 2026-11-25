@@ -1,9 +1,3 @@
-"""FakeOF's Things I Like links (ticket 70): GET /users/links answers OF's real item shape (measured live 2026-11-21:
-`{id, sort, url, title, description, image}`, the link in `url`, no `link` key); PUT `{link}` appends one and answers
-the full list; DELETE /users/links/{id} removes only it. Social media's buttons (ticket 69): GET /init serves OF's
-socialMediaProviders (measured live 2026-11-21); PUT /users/social/buttons with a socialMedia outside them gets OF's 400
-(measured: the old host-inferred body `socialMedia: "example"`) and adds nothing; a provider's body is appended. Requests
-go through the fake's real routes (signature check included)."""
 import time
 
 import _path  # noqa: F401

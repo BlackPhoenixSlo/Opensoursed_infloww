@@ -1,9 +1,3 @@
-/**
- * The bio editor over a mocked relay, through the controls the slop UI leg drives: a Display name edit + Save sends
- * only the change and the preview follows the draft; "Add link" sends the dialog's body and the new card shows; "Move
- * up" sends every id in the new order; the custom domain can't be added without BIO_SERVER_IP, else Add domain → DNS
- * records → Check now walks its status → Remove domain; an unknown page says so.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -118,7 +112,6 @@ describe("BioEditor", () => {
     fireEvent.change(dialog.getByLabelText(/Destination/), { target: { value: "https://dest.test/mine" } });
     const file = new File(["image"], "background.png", { type: "image/png" });
     fireEvent.change(dialog.getByLabelText(/Background image/), { target: { files: [file] } });
-    // another tab's link sorts after the new one: only the answer's `link` names which is ours
     const links = [...page.links, LINK("mine", "Mine", 2), LINK("other", "Other tab", 3)];
     relayPost.mockResolvedValueOnce({ ...page, links, link: LINK("mine", "Mine", 2) });
     relayUpload.mockResolvedValueOnce({ ...page, links });
@@ -183,7 +176,6 @@ describe("BioEditor", () => {
     expect(relayPut).toHaveBeenCalledWith("/admin/bio-pages/p1/domain", { domain: "links.example.com" });
     expect(screen.getByRole("heading", { name: "Point links.example.com here" })).toBeTruthy();
     const rows = [...document.querySelectorAll("[data-dns-record]")].map((r) => r.textContent);
-    // Relative name (most registrars' Host field) and the full name under it (co.uk zones, full-name DNS hosts)
     expect(rows).toEqual(["AlinksCopyFull name: links.example.comCopy203.0.113.7Copy",
       "TXT_oflink.linksCopyFull name: _oflink.links.example.comCopyoflink-verify=tok123Copy"]);
     expect(screen.getByText(/use the full name under it/)).toBeTruthy();

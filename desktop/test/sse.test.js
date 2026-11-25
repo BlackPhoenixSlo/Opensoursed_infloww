@@ -32,7 +32,6 @@ test("backoff: grows, jitters inside [step/2, step], caps", () => {
   assert.equal(backoffDelay(-1, { random: () => 1 }), 1000);
 });
 
-// ── client ───────────────────────────────────────────────────────────────────
 
 function streamOf(chunks) {
   const enc = new TextEncoder();
@@ -57,7 +56,6 @@ function fakeTimers() {
     clearTimer: (t) => {
       if (t) t.cleared = true;
     },
-    // The retry timers (not the stale timers, which are cleared).
     live: () => pending.filter((t) => !t.cleared),
   };
 }
@@ -90,7 +88,6 @@ test("client: dispatches JSON events, resumes with the last id, backs off on err
   assert.deepEqual(events, [["api2_chat_message", { x: 1 }], ["ping", {}]]);
   assert.equal(client.lastEventId, "1.6");
 
-  // The stream ended cleanly → quick reconnect (attempt 0).
   let retry = timers.live().at(-1);
   assert.equal(retry.ms, 1000);
   retry.cleared = true;
@@ -98,14 +95,13 @@ test("client: dispatches JSON events, resumes with the last id, backs off on err
   await tick();
   assert.deepEqual(calls, [null, "1.6"]);
 
-  // A network error → attempt 0 then grows.
   retry = timers.live().at(-1);
   assert.equal(retry.ms, 1000);
   retry.cleared = true;
   retry.fn();
   await tick();
   retry = timers.live().at(-1);
-  assert.equal(retry.ms, 2000); // the 502 counts as the next failure
+  assert.equal(retry.ms, 2000);
   client.stop();
 });
 
@@ -129,7 +125,7 @@ test("client: 401 waits long; kick() retries at once; stop() cancels", async () 
   assert.equal(n, 2);
   client.stop();
   assert.equal(timers.live().length, 0);
-  client.kick(); // stopped: no-op
+  client.kick();
   await tick();
   assert.equal(n, 2);
 });

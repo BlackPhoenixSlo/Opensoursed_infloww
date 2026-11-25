@@ -49,7 +49,6 @@ describe("badgeReady (first paint, rule 3)", () => {
 
 describe("badgeUnread", () => {
   const go = { ready: true, search: false };
-  // Today's rule as the Fan List hands it: 2 over every row, 1 per Creator asked for.
   const fallback = () => vi.fn<Fallback>((creators) => (creators === null ? 2 : creators.size));
 
   it("before the network answer: no number, nothing counted", () => {
@@ -107,7 +106,6 @@ describe("unreadBadgeSources (Phase 3's input: each Creator's confirmation time)
       [{ account_id: "a", at: 4_000 }]],
     ["no Last refresh yet → the total's at", store(snap("a", total(3, 2_000), { at: null })), ["a"],
       [{ account_id: "a", at: 2_000 }]],
-    // A reused warm republishes `creator_warmed` with `at` = now and no read: never a confirmation.
     ["a fresh creator_warmed slot never counts", store(snap("a", { ...total(3, 2_000), creator_warmed: { at: 9_999 } },
       { at: 1_000 })), ["a"], [{ account_id: "a", at: 2_000 }]],
     ["order of the ids asked, every id", store(snap("a", total(1, 10)), snap("b", total(2, 20))), ["b", "a"],
@@ -142,7 +140,6 @@ describe("todaysUnread", () => {
   it("a set: today's rule over those Creators' rows and their part of #881's view only", () => {
     expect(todaysUnread(rows, null, { isOwed }, new Set(["b"]), accountOf)).toBe(1);
     expect(todaysUnread(rows, null, { isOwed }, new Set(["a"]), accountOf)).toBe(2);
-    // #881's view (read now) holds only Fan 1: Fan 2 was read elsewhere, so a's rule counts 1.
     const view: UnreadView = { rows: [rows[0]], asOf: Date.now() };
     expect(todaysUnread(rows, view, { isOwed }, new Set(["a"]), accountOf)).toBe(1);
     expect(todaysUnread(rows, view, { isOwed }, new Set(["b"]), accountOf)).toBe(0);

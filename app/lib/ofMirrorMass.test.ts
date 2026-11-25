@@ -17,7 +17,6 @@ import { EMPTY_MESSAGE, NO_DATE, type ChatContext } from "./ofMirrorChatShared";
 import { localIso, SELECT_MODEL, TOO_SOON } from "./ofMirrorWrites";
 import type { VaultUploadResp } from "./relay";
 
-/** A committed messages capture (path under of-mirror/pages/messages). */
 const loadPage = (page: string) => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/messages/${page}.html`), "utf8");
   return document;
@@ -178,7 +177,6 @@ describe("bindMass: New message", () => {
     await flush();
     expect(noteText(doc)).toBe("Scheduled");
     expect(doc.getElementById("oi-chat-summary")).toBeNull();
-    // Clear: the draft keeps its text and lists, sent now.
     storage.setItem(massDraftKey(ACCOUNT), JSON.stringify({ text: "Again", user_lists: ["fans"], scheduled_date: localIso(at) }));
     unbind();
     bindMass(doc, ctxOf(h, storage, { chat: null, lists }));
@@ -230,7 +228,6 @@ describe("bindMass: New message", () => {
     tick(own);
     expect(own.classList.contains("m-not-active")).toBe(true);
     expect(chip(doc)).toBe("12 Selected");
-    // ⊗ drops every pick.
     doc.querySelector<HTMLElement>("#oi-mass-selected [at-attr='filter_delete_btn']")!.click();
     expect(loadMassDraft(storage, ACCOUNT).user_lists).toEqual([]);
     expect(fans.querySelector<HTMLInputElement>("input")!.checked).toBe(false);
@@ -337,7 +334,6 @@ describe("New message: Save for later, the schedule dialog and Edit message", ()
   const ZONE = "Europe/Ljubljana";
   const withPut = () => handlers({ put: vi.fn((_path: string, _body: object) => Promise.resolve({ id: 6105 })) } as never) as ReturnType<typeof handlers> & { put: ReturnType<typeof vi.fn> };
   const modal = (d: Document) => d.getElementById("oi-mass-schedule");
-  // A document of its own: the shared one still holds the listeners earlier tests left bound.
   const loadPage = (page: string) => {
     const d = document.implementation.createHTMLDocument("");
     d.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/messages/${page}.html`), "utf8");
@@ -369,7 +365,6 @@ describe("New message: Save for later, the schedule dialog and Edit message", ()
     send(doc).click();
     expect(h.confirm).toHaveBeenCalledWith("Save this message for later to 12 users on Fans?");
     const want = requests.saveMessageForLater.relay!;
-    // OF's own Save for later (captured live) is POST /messages/queue with isPublishedWithPeriod and no date.
     expect([requests.saveMessageForLater.of.path, requests.saveMessageForLater.of.body.isPublishedWithPeriod, "scheduledDate" in requests.saveMessageForLater.of.body]).toEqual(["/api2/v2/messages/queue", 1, false]);
     expect(h.send).toHaveBeenCalledWith(want.path, want.body);
     await flush();
@@ -389,20 +384,17 @@ describe("New message: Save for later, the schedule dialog and Edit message", ()
     modal(doc)!.querySelector<HTMLInputElement>("input[type='time']")!.value = "10:00";
     footer(doc, "Next").click();
     expect(modal(doc)).toBeNull();
-    // 10:00 in Ljubljana (CET) is 09:00 UTC.
     expect(new Date(loadMassDraft(storage, ACCOUNT).scheduled_date!).toISOString()).toBe("2099-11-07T09:00:00.000Z");
   });
 
   it("an edit of a message with recipients and lists, only its date changed: Send saves it with PUT /messages/queue/{id} (the request shape)", async () => {
-    // The fixture's date (2026-11-07) must stay ahead of "now", or Send refuses it as TOO_SOON: pin the clock before it.
+    // The fixture's date (2026-11-07) must stay ahead of now, or Send refuses it as TOO_SOON.
     vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-01T12:00:00Z") });
     onTestFinished(() => { vi.useRealTimers(); });
     const doc = loadPage("send");
     const storage = memoryStorage();
     const want = requests.rescheduleMessage.relay!;
-    // OF's own Save of an edited message (captured live): PUT /messages/queue/{id} with isScheduled + scheduledDate.
     expect([requests.rescheduleMessage.of.method, requests.rescheduleMessage.of.body.isScheduled]).toEqual(["PUT", 1]);
-    // messageEditDraft of the queued message (app/lib/__fixtures__/of/queue-edit-message.json), rescheduled.
     storage.setItem(
       massDraftKey(ACCOUNT),
       JSON.stringify({ text: "Synthetic scheduled message", user_lists: ["fans", "1234"], user_ids: [501, 502], excluded_user_lists: ["99"], media_files: [8105], price: 5, scheduled_date: want.body.scheduled_date, edit_id: "6105" }),
@@ -411,7 +403,6 @@ describe("New message: Save for later, the schedule dialog and Edit message", ()
     bindMass(doc, ctxOf(h, storage, { chat: null, lists, zone: ZONE }));
     expect(doc.getElementById("oi-chat-summary")!.textContent).toBe("Editing a scheduled message · 2 users picked · 1 excluded list · 1 media · Price: $5 · Scheduled for Nov 7, 10:00 am · Clear · Discard");
     expect(doc.querySelector("#oi-schedule-pill .b-post-piece")!.textContent!.replace(/\s+/g, " ").trim()).toBe("Scheduled for Nov 7, 10:00 am");
-    // The lists are ticked from the draft.
     expect([...doc.querySelectorAll<HTMLInputElement>(".b-chats__scroller label.b-rows-lists__item[data-oi-list] input")].map((b) => b.checked)).toEqual([true, true]);
     send(doc).click();
     expect(h.confirm).toHaveBeenCalledWith("Save this message for Nov 7, 10:00 am to 15 users on Fans, Synthetic list and 2 users picked for $5?");

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import csv_export
 from db.engine import get_session
 from db.models import Account, Chat, Employee, Message, MessageMedia, Transaction
+from events import js_safe_id
 from attribution_backfill import TRACKED_STATUSES
 from stats import _parse_date
 from auth import assert_account_owned, assert_employee_filter_owned, clamp_account_filter
@@ -37,8 +38,8 @@ def _row_to_dict(
 ) -> dict[str, Any]:
     return {
         "account_id": m.account_id,
-        "fan_id": m.fan_id,
-        "message_id": m.message_id,
+        "fan_id": js_safe_id(m.fan_id),
+        "message_id": js_safe_id(m.message_id),
         "direction": m.direction,
         "sender_name": m.sender_name,
         "body": m.body,

@@ -1,13 +1,3 @@
-/**
- * useTabParam — the half of a help-assistant link that makes it land.
- *
- * The link itself is only half the feature: `/growth?tab=promotion` is a
- * broken promise if the page opens on Smart Lists anyway. These cases pin the
- * three properties the callers rely on — it seeds from the URL, it refuses a
- * value the page does not own (a chatter following an owner-only link must not
- * land on a tab their nav does not show), and it is MOUNT-ONLY, so the tab
- * strip stays the source of truth once the reader is on the page.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 

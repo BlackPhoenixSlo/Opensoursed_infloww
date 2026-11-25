@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * useTipsList — infinite-scroll tips list for /messages > Tips tab.
- *
- * Backend: GET /admin/tips-list (keyset on transaction_id DESC). Pagination
- * means window-focus refetch is OFF (refetching page 1 after the user has
- * scrolled four pages deep would leave a duplicate-row seam in the middle).
- * `maxPages: 20` is the memory cap; at limit=50 that's 1000 rows before
- * the user should narrow filters.
- */
 
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 
@@ -33,9 +24,6 @@ export interface TipsListRow {
   tip_note: string | null;
   attributed_employee_id: number | null;
   attributed_employee_name: string | null;
-  /** "tip_message" when the tip is chat-linked AND the linked message has
-   *  a sent_by_employee_id. Null otherwise — including the chat-linked
-   *  case where the message exists but has no attribution. */
   attribution_source: "tip_message" | null;
 }
 
@@ -50,8 +38,6 @@ export interface UseTipsListParams extends ReportQueryParams {
   limit?: number;
 }
 
-/** The list's query string; `csv` is the whole filtered set's export (no
- *  limit or cursor), for `CsvExportButton`. */
 export function buildTipsListQuery(params: UseTipsListParams, beforeId: number | null, csv = false): string {
   const qs = reportQuery(params);
   if (params.fan_query && params.fan_query.length >= 2) {
@@ -67,8 +53,6 @@ export function buildTipsListQuery(params: UseTipsListParams, beforeId: number |
 }
 
 export function useTipsList(params: UseTipsListParams) {
-  // Both date sides are required by the backend; gate the fetch until the
-  // page-level picker has set them.
   const enabled = !!params.from && !!params.to;
 
   return useInfiniteQuery<TipsListPage>({

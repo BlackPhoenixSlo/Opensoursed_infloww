@@ -1,18 +1,3 @@
-"""Earning statistics of the fake OnlyFans (ofm-not-yet ticket 24: Statements' From … To Apply, its fake-mode proof).
-
-Mounted from app.py beside the settings surface (after automations' gate rows, so its fault knobs still apply):
-  GET /payouts/stats   `startDate`/`endDate` honoured ("YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS", UTC; a day-only end
-                       runs to that day's end); `start`/`end` ignored, as OF ignores them (measured 2026-11-21,
-                       service/of_reads.py earning_stats); `by` ignored
-
-The shape is OF's (app/lib/__fixtures__/of/statistics-payouts-stats.json; capture record
-.scratch/ofm-not-yet/captures/statements--custom-period-apply.json): `{list: {months: {<month start, unix s>: {<type>:
-[{time, net, gross}], total_net, total_gross}}, total: {<type>: {total_net, total_gross}, all: {...}}}}`, with only the
-months and types that earned in the range. Sales: the world's ledger rows (/payouts/transactions, typed by their
-description) plus a seeded history made on the first read, one sale per world fan, fan n's (n-1)*9 days and a minute
-before that read, so today and earlier months both earned (a range's totals differ from all time's). Seeded without the
-world's rng (as soak/world.py's Growth), so no other feature's names or history move; fans are synthetic, never real.
-"""
 from __future__ import annotations
 
 import re
@@ -26,12 +11,10 @@ from soak.world import now_utc
 
 _STATE = "_soak_payout_history"
 _KINDS = ("subscribes", "tips", "chat_messages")
-# A ledger row's type, by how OF words its description (soak/world.py World.ledger).
 _LEDGER = (("Tip", "tips"), ("Payment for message", "chat_messages"), ("Subscription", "subscribes"))
 
 
 def history(fake) -> list[tuple[str, datetime, float, float]]:
-    """The seeded sales, (type, when, gross, net), made once per fake."""
     if _STATE not in fake.__dict__:
         at = now_utc()
         rows = []
@@ -53,7 +36,6 @@ def _ledger(fake) -> list[tuple[str, datetime, float, float]]:
 
 
 def _bound(v: str | None, end: bool) -> datetime | None:
-    """OF's startDate/endDate: a day ("YYYY-MM-DD", an end then runs to its last second) or a datetime, UTC; else none."""
     if not v:
         return None
     v = v.strip()
@@ -70,6 +52,7 @@ def _sums(rows) -> dict[str, float]:
     return {"total_net": round(sum(r[3] for r in rows), 2), "total_gross": round(sum(r[2] for r in rows), 2)}
 
 
+# `start`/`end` are ignored, as OF ignores them; only startDate/endDate bound the range
 def stats(fake, start_date: str | None = None, end_date: str | None = None) -> dict[str, Any]:
     lo, hi = _bound(start_date, False), _bound(end_date, True)
     sales = [r for r in history(fake) + _ledger(fake)

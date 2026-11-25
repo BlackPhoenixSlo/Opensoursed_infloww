@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * useFanListMarkRead — the Fan List's read writes: "Mark all as read" (the
- * gear), the select bar's per-chat loop (`markChatsRead`) and the optimistic
- * badge clear per success. FanList passes what they act on.
- */
 
 import { useCallback, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -17,28 +12,17 @@ import { ackedFanIds, relay, type OFChatItem } from "@/lib/relay";
 import { ifAlert, ifConfirm } from "@/components/ui/ifConfirm";
 
 export function useFanListMarkRead({ markable, wholeCreator }: {
-  /** The loaded chats "Mark all as read" acts on. */
   markable: OFChatItem[];
-  /** The Creator whose every unread chat is loaded (one OF write marks them
-   *  all), or null. */
   wholeCreator: string | null;
 }) {
   const qc = useQueryClient();
   const [markingAll, setMarkingAll] = useState(false);
 
-  // Per-success optimistic patch: the read flip the relay announces once the
-  // write landed (flipCachedReadState), so the UI only shows "read" for chats
-  // that actually got marked. The trailing invalidate reconciles against OF either way.
   const markRowRead = useCallback((accountId: string, fanId: FanId) => {
     flipCachedReadState(qc, accountId, { fanId, unread: false, at: relayNow() }, { own: true });
   }, [qc]);
 
-  /** Mark `rows` read on OF, one at a time. Unpaced: a read flip reaches no
-   *  fan, so it must not hold the account's write slot ahead of fan sends.
-   *  Callers pass the unread rows (`isUnreadChat`). Each success clears that
-   *  row's badge at once; the trailing refetch reconciles the rest. Returns
-   *  the rows that failed, a row with no Creator among them. "Mark all as
-   *  read" and the select bar both mark through here. */
+  // Unpaced: a read flip reaches no fan, so it must not hold the write slot ahead of fan sends.
   async function markChatsRead(rows: OFChatItem[]): Promise<OFChatItem[]> {
     const failed: OFChatItem[] = [];
     for (const c of rows) {
@@ -64,9 +48,6 @@ export function useFanListMarkRead({ markable, wholeCreator }: {
     qc.invalidateQueries({ queryKey: ["roster-counts"] });
   }
 
-  /** POST /chats/mark-as-read for `accountId`; `rows` are its unread chats.
-   *  Returns how many failed: a partial write (the relay's 502 with the acked
-   *  fans, service read_flip.acked_fans) fails only the rest. */
   async function markCreatorRead(accountId: string, rows: OFChatItem[]): Promise<number> {
     try {
       await relay.post("/api/of/v2/chats/mark-as-read", undefined, { accountId });

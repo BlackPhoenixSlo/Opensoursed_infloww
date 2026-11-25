@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""Shared refresher reads (phase-01 seam 3): the server's reads helper over a stubbed client.
-
-Ticket 02 rows: requestless reads inside `server._background_reads(aid)` are background-class
-(`_current_priority`, the coalesce class, `_bg_admission`) and run on the Creator's background
-lane, the chats-window rewarm included; outside it a requestless read is "user" and the window
-takes no lane, as today. Ticket 07 rows: a dead-session error from `/users/me` (no request in
-flight, so `_proxy` cannot) marks the Creator dead (the Dead-session map the next tick reads) and
-evicts its client; a transient error marks nothing. Ticket 12 row: a registered contributor's `snapshot` rides
-`values[name]` (null when it answers None); `note_values` from a worker thread publishes once, on the Relay loop, and
-not for a slot `at` alone or an untracked Creator. Ticket 08 rows (`shared_refresher._job` over the helper): a
-terminal 429 holds the exit's `free_at` its `Retry-After` (else 60 s) and the Creator FLOOR_S, `at` kept; another
-failure holds the Creator only; a discarded write-back (invalidation mid-fetch) leaves `at`; a held entry never
-serves the read (bypass), a kept one moves `at`. Ticket 19 rows (`_job`, the window step): a `window_due` raised by
-a client observer during read 1 adds the window in the same job, through a registered reader, background priority,
-Caller kind `walk:shared_refresher`; WS-kept and not asked, or a discarded `/users/me`, reads no window; at most one
-window read per Creator per Cycle whatever asked; no reader registered: the roster rewarm, on the background lane; a
-dead-session error from the window marks the Creator dead. Real relay_coalesce, relay_cache, `_bg_admission`,
-BgLane/BgLease, `_warm_fetch` and `rewarm_roster_count`; only the OF client is faked.
-
-Run: ./venv/bin/python service/tests/test_shared_refresher_reads.py
-"""
 import sys, pathlib; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # noqa: E401,E702
 import _harness  # noqa: E402  (first: temp DB)
 
@@ -46,7 +25,6 @@ def _reset() -> None:
 
 
 def _lane(aid: str) -> dict:
-    """What the Creator's lanes hold right now (called from the OF read's worker thread)."""
     total, bg = server._lanes_for(aid)
     lease = server._bg_lease.get()
     return {"bg_held": bg.held, "total_free": total._value,
@@ -86,7 +64,6 @@ async def case_read_coalesces_in_the_background_class_and_passes_admission():
     await asyncio.sleep(0.05)
     assert ("users_me", aid, "background") in relay_coalesce._inflight, list(relay_coalesce._inflight)
     assert seen["bg"]["lease"] == aid and seen["bg"]["bg_held"] == 1, seen
-    # A click's read (requestless here, so "user") never joins the background flight.
     assert await relay_coalesce.coalesce(("users_me", aid), user_fetch) == "user"
     assert seen["user"]["lease"] is None and seen["user"]["priority"] == "user", seen
     release.set()
@@ -112,7 +89,6 @@ async def case_warm_fetch_inside_context_borrows_the_admitted_slot():
     finally:
         server._load_client = orig
     assert got == {"ok": 1}
-    # One background slot (the loop-admitted lease, borrowed), not a second one on top.
     assert seen == [{"bg_held": 1, "total_free": server._ACCOUNT_LANE_TOTAL - 1, "lease": aid,
                      "priority": "background"}], seen
     assert server._lanes_for(aid)[1].held == 0
@@ -212,8 +188,6 @@ async def case_transient_error_marks_nothing():
 
 
 class _Pooled:
-    """A pooled OF client (real client_pool, real eviction) whose `/users/me` answers a dead session; `swap_to`:
-    a re-bootstrap pools that fresh client while the read is in flight."""
 
     def __init__(self, aid: str, swap_to=None) -> None:
         self.aid, self.swap_to, self.closed = aid, swap_to, False
@@ -245,8 +219,6 @@ async def _pooled_me_fails(aid: str, swap: bool):
 
 
 async def case_dead_session_on_a_replaced_client_keeps_the_fresh_one_and_flags_nothing():
-    """W30-mu #5: the read started on a client a re-bootstrap replaced mid-read: the fresh client stays pooled
-    (`evict(only=)`) and the Creator is not marked dead on the old session's answer."""
     aid = "acct-r30"
     stale, fresh, pooled, dead = await _pooled_me_fails(aid, swap=True)
     assert pooled is fresh and not fresh.closed, ("the fresh client kept", pooled)
@@ -261,9 +233,6 @@ async def case_dead_session_on_the_current_client_evicts_it_and_flags():
 
 
 async def case_dead_session_on_a_cold_pool_flags_only_the_client_the_read_built():
-    """W30-mu #47: nothing pooled when the reads started (`peek` None), so the failure once evicted whichever client
-    was pooled by then: a re-bootstrap's fresh one. Now the client that issued the read (the one `_load_client`
-    built for it) is the one evicted, only while pooled; a replacement stays and nothing is flagged."""
     import client_pool
     aid = "acct-r32"
     _reset()
@@ -297,7 +266,6 @@ class _Resp:
 
 
 class _Me:
-    """`/users/me`: `exc` raised, else ME (after `during()`, e.g. an invalidation landing mid-fetch)."""
 
     def __init__(self, exc: BaseException | None = None, during=None) -> None:
         self.exc, self.during, self.calls = exc, during, 0
@@ -316,8 +284,6 @@ ASK = 500.0
 
 
 async def _run_job(aid: str, client: _Me, prime=None) -> dict:
-    """One `shared_refresher._job` (ticket 08) over the real reads helper; the Creator had a Last refresh; `prime`: a
-    fresh `users_me` entry held before the read."""
     import time
     import app_open_warm
     _reset()
@@ -383,14 +349,13 @@ async def case_discarded_write_back_leaves_at():
 async def case_kept_read_moves_at_and_never_a_cache_hit():
     aid = "acct-r15"
     client = _Me()
-    r = await _run_job(aid, client, prime={"stale": True})     # a held entry the read must not take
+    r = await _run_job(aid, client, prime={"stale": True})
     assert client.calls == 1 and r["entry"] == ME, ("bypass: OF read, the route's entry rewritten", r)
     assert r["ok"] is True and r["at"] > PRIOR_AT and r["state"].last == {aid: ASK} and r["state"].held == {}, r
     assert r["free_at"] is None, r
 
 
 class _Asker:
-    """A contributor whose OF-client observer (run inside read 1) may raise `window_due` (P1 C8, Phase 2's drift)."""
 
     def __init__(self, due: bool = False) -> None:
         self.due, self.lock = due, threading.Lock()
@@ -404,7 +369,6 @@ class _Asker:
 
 
 class _MeAndChats(_Me):
-    """`/users/me` (as `_Me`) and the chats window (`list_chats`: `chats_exc` raised, else one row), lanes seen."""
 
     def __init__(self, aid: str, chats_exc: BaseException | None = None, **kw) -> None:
         super().__init__(**kw)
@@ -420,9 +384,6 @@ class _MeAndChats(_Me):
 
 async def _cycle_jobs(aid: str, client, *, asks: tuple = (), ws_since=50.0, window_at=100.0, reader=True,
                       at: tuple = (ASK,)) -> dict:
-    """`shared_refresher._job` once per ask time in `at` (one Creator, Cycle 600 s, a Last refresh before), the window
-    last read at `window_at` and the socket connected at `ws_since` (None: down; both on the monotonic clock);
-    `asks`: registered contributors; `reader`: register one that records what it saw (False: none, the default)."""
     import app_open_warm
     import of_call_counter
     import of_ws
@@ -476,10 +437,10 @@ async def case_window_due_raised_during_read_1_adds_the_window_in_the_same_job()
     aid = "acct-r16"
     asker = _Asker()
 
-    def observer():                          # the OF client's observer, inside read 1 (a worker thread)
+    def observer():
         with asker.lock:
             asker.due = True
-    r = await _cycle_jobs(aid, _Me(during=observer), asks=(asker,))     # WS-kept: only the ask makes it due
+    r = await _cycle_jobs(aid, _Me(during=observer), asks=(asker,))
     assert r["oks"] == [True], r
     assert r["seen"] == [{"aid": aid, "priority": "background", "caller": "walk:shared_refresher"}], r["seen"]
 
@@ -496,7 +457,6 @@ async def case_no_window_when_kept_and_not_asked_or_me_discarded():
 
 async def case_one_window_read_per_cycle_whatever_asked():
     aid = "acct-r20"
-    # Socket down, reconnect irrelevant, two contributors asking: one read; again inside the Cycle: none; past it: one.
     r = await _cycle_jobs(aid, _Me(), asks=(_Asker(True), _Asker(True)), ws_since=None,
                           at=(ASK, ASK + 30.0, ASK + 600.0))
     assert r["oks"] == [True, True, True], r
@@ -525,7 +485,6 @@ async def case_dead_session_error_from_the_window_marks_the_creator_dead():
 
 
 class _Slot:
-    """A contributor (P1 C8): its state behind a `threading.Lock`, moved from any thread."""
 
     def __init__(self, held: dict) -> None:
         self.held, self.lock = held, threading.Lock()
@@ -547,20 +506,19 @@ async def case_note_values_from_a_worker_thread_publishes_once_on_the_loop():
              events.publish)
     events.publish = lambda e: got.append((e, threading.get_ident()))
 
-    def moved(v):          # a worker thread (the OF client's observer) moves the value and says so
+    def moved(v):
         with slot.lock:
             slot.held[aid] = v
         shared_refresher.note_values(aid)
 
     try:
-        shared_refresher.note_values(aid)   # not started (Knob off): nothing scheduled, nothing raised
+        shared_refresher.note_values(aid)
         shared_refresher.register("t", slot)
-        # Rows: the contributor's answer under `values[name]`; null when it answers None.
         assert shared_refresher.snapshot(aid)["values"] == {"t": {"n": 3, "at": 1}}
         assert shared_refresher.snapshot(other)["values"] == {"t": None}
-        shared_refresher._relay_loop = asyncio.get_running_loop()      # what `start()` captures
+        shared_refresher._relay_loop = asyncio.get_running_loop()
         shared_refresher._state = shared_refresher_decide.State(
-            shown={aid: {"cycle_s": 600.0, "live": "up", "values": {"t": {"n": 3, "at": 1}}}})   # tracked
+            shown={aid: {"cycle_s": 600.0, "live": "up", "values": {"t": {"n": 3, "at": 1}}}})
         seq = shared_refresher.snapshot(aid)["seq"]
         await asyncio.to_thread(moved, {"n": 4, "at": 2})
         for _ in range(3):
@@ -571,8 +529,8 @@ async def case_note_values_from_a_worker_thread_publishes_once_on_the_loop():
         assert ev["__account_id"] == aid and ev["creator_refreshed"]["values"] == {"t": {"n": 4, "at": 2}}, ev
         assert ev["creator_refreshed"]["seq"] == seq + 1
         got.clear()
-        await asyncio.to_thread(moved, {"n": 4, "at": 3})       # its own `at` alone
-        await asyncio.to_thread(shared_refresher.note_values, other)   # not tracked: its next track publishes
+        await asyncio.to_thread(moved, {"n": 4, "at": 3})
+        await asyncio.to_thread(shared_refresher.note_values, other)
         for _ in range(3):
             await asyncio.sleep(0)
         assert got == [], got

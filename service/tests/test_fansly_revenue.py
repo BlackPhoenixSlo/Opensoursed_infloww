@@ -9,15 +9,27 @@ import asyncio  # noqa: E402
 import contextlib  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
+import tempfile  # noqa: E402
 from datetime import datetime  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 from sqlalchemy import select  # noqa: E402
 
+import accounts as account_registry  # noqa: E402
+import fansly_backend  # noqa: E402
 import fansly_revenue  # noqa: E402
 import platforms  # noqa: E402
+import transaction_ingest  # noqa: E402
 import stats  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Fan, Transaction, TransactionScanHistory  # noqa: E402
+from fansly_shim import FanslyShimClient  # noqa: E402
+
+_TMP = tempfile.TemporaryDirectory(prefix="fansly_revenue_")
+account_registry.SESSIONS_DIR = Path(_TMP.name)
+account_registry.ACCOUNTS_DIR = Path(_TMP.name) / "accounts"
+account_registry.ACTIVE_FILE = Path(_TMP.name) / "active.json"
+account_registry.MIGRATED_MARKER = Path(_TMP.name) / ".migrated"
 
 ACCT = "700237824869654528"
 FAN = "900604711209099264"
@@ -40,10 +52,7 @@ class _FeedStub:
 
     def purchases(self):
         self.calls += 1
-        return list(self._rows)
-
-    def unbanked_purchase_codes(self):
-        return set()
+        return {"sales": list(self._rows), "unbanked_seen": {}}
 
 
 class _quiet_lane_errors:
@@ -288,9 +297,6 @@ def case_a_broken_feed_raises_so_backoff_can_work():
         def purchases(self):
             raise RuntimeError("fansly 500")
 
-        def unbanked_purchase_codes(self):
-            return set()
-
     async def go():
         await _seed_account()
         fansly_revenue.fansly_backend = type(
@@ -435,9 +441,6 @@ def case_a_failed_tick_is_counted_exactly_once_on_both_paths():
         def purchases(self):
             raise RuntimeError("fansly 500")
 
-        def unbanked_purchase_codes(self):
-            return set()
-
     async def go():
         await _seed_account()
         import purchase_poll as pp
@@ -470,6 +473,138 @@ def case_a_failed_tick_is_counted_exactly_once_on_both_paths():
                         "a broken feed returned cleanly instead of raising")
             moved = await failures() - before
             assert moved == 1, f"one failed tick counted {moved} times"
+    asyncio.run(go())
+
+
+BUYER = "900604711209099999"
+
+
+class _NotificationFeed(FanslyShimClient):
+    def __init__(self, rows, acct):
+        self.rows = rows
+        self.session = type("_S", (), {"account_id": acct})()
+
+    def _request(self, method, path, **_kw):
+        assert (method, path) == ("GET", "/notifications"), (method, path)
+        return {"notifications": [dict(r) for r in self.rows]}
+
+
+def _raw(nid, code, meta=None, grant="900640044332160000"):
+    row = {"id": nid, "type": code, "correlationId": grant,
+           "correlationGroupId": BUYER, "createdAt": 1788335912}
+    if meta is not None:
+        row["metadata"] = json.dumps(meta)
+    return row
+
+
+def _seen_line(acct, counts):
+    return f"fansly_revenue_unbanked_seen account={acct} counts={counts}"
+
+
+async def _shim_tick(acct, rows):
+    account_registry.save_meta(acct, {"id": acct, "nickname": acct, "platform": "fansly"})
+    async with get_session() as s:
+        if await s.get(Account, acct) is None:
+            s.add(Account(id=acct, nickname="shimfeed"))
+    feed = _NotificationFeed(rows, acct)
+    fansly_revenue.fansly_backend = fansly_backend
+    fansly_backend._pool[acct] = feed
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    lg = logging.getLogger("of-relay.fansly_revenue")
+    prior = lg.level
+    lg.addHandler(handler)
+    lg.setLevel(logging.INFO)
+    try:
+        res = await transaction_ingest.run_one_tick(acct, mode="refresh")
+    finally:
+        lg.removeHandler(handler)
+        lg.setLevel(prior)
+    seen = [r.getMessage() for r in records
+            if r.getMessage().startswith("fansly_revenue_unbanked_seen")]
+    return res, seen, feed
+
+
+async def _shim_rows(acct, *ids):
+    async with get_session() as s:
+        return (await s.execute(select(Transaction).where(
+            Transaction.account_id == acct,
+            Transaction.provider_transaction_id.in_(ids)))).scalars().all()
+
+
+def case_unlock_codes_bank_nothing_and_still_unlock():
+    async def go():
+        acct = "700237824869654771"
+        rows = [_raw("900999000000002008", 2008, {"price": 3000}, grant="g2008"),
+                _raw("900999000000032007", 32007, {"amount": 3000}, grant="g32007")]
+        res, seen, feed = await _shim_tick(acct, rows)
+        assert res["rows_inserted"] == 0, res
+        assert await _shim_rows(acct, *(r["id"] for r in rows)) == []
+        assert seen == [_seen_line(acct, '{"2008": 1, "32007": 1}')], seen
+        assert feed._purchases_by_fan()[BUYER] == {"g2008", "g32007"}
+    asyncio.run(go())
+
+
+def case_a_2007_without_account_media_price_banks_nothing():
+    async def go():
+        acct = "700237824869654772"
+        rows = [_raw("900999000000012007", 2007, {"price": 3000}),
+                _raw("900999000000022007", 2007, {"amount": 3000}),
+                _raw("900999000000042007", 2007),
+                _raw("900999000000062007", 2007, {"accountMediaPrice": -3000}),
+                _raw("900999000000072007", 2007, {"accountMediaPrice": "abc"})]
+        res, seen, _ = await _shim_tick(acct, rows)
+        assert res["rows_inserted"] == 0, res
+        assert await _shim_rows(acct, *(r["id"] for r in rows)) == []
+        assert seen == [_seen_line(acct, '{"2007_unpriced": 5}')], seen
+    asyncio.run(go())
+
+
+def case_a_priced_2007_banks_once_across_two_ticks():
+    async def go():
+        acct = "700237824869654773"
+        nid = "900999000000052007"
+        rows = [_raw(nid, 2007, {"accountMediaPrice": 3000})]
+        first, seen, _ = await _shim_tick(acct, rows)
+        second, _, _ = await _shim_tick(acct, rows)
+        assert (first["rows_inserted"], second["rows_inserted"]) == (1, 0), (first, second)
+        assert seen == [], seen
+        txs = await _shim_rows(acct, nid)
+        assert [(t.kind, t.amount_cents, t.net_cents, t.fee_cents, t.status, t.currency)
+                for t in txs] == [("ppv_message", 300, None, None, "cleared", "USD")], txs
+        async with get_session() as s:
+            fan = await s.get(Fan, (acct, int(BUYER)))
+        assert fan.lifetime_spend_cents == 300, fan.lifetime_spend_cents
+    asyncio.run(go())
+
+
+def case_a_page_without_sales_logs_its_seen_codes():
+    async def go():
+        acct = "700237824869654774"
+        rows = [_raw("900999000000017001", 7001, {"amount": 500}),
+                _raw("900999000000027001", 7001),
+                _raw("900999000000015016", 15016, {"subscriptionStreak": 0}),
+                _raw("900999000000013003", 3003)]
+        res, seen, _ = await _shim_tick(acct, rows)
+        assert res["rows_inserted"] == 0, res
+        assert await _shim_rows(acct, *(r["id"] for r in rows)) == []
+        assert seen == [_seen_line(acct, '{"15016": 1, "7001": 2}')], seen
+    asyncio.run(go())
+
+
+def case_seen_counts_log_only_when_they_change_per_account():
+    async def go():
+        acct, other = "700237824869654775", "700237824869654776"
+        tip = [_raw("900999000000037001", 7001)]
+        two = tip + [_raw("900999000000047001", 7001)]
+        social = [_raw("900999000000033003", 3003)]
+        logged = [(await _shim_tick(acct, page))[1]
+                  for page in (tip, tip, two, two, social, social)]
+        assert logged == [[_seen_line(acct, '{"7001": 1}')], [],
+                          [_seen_line(acct, '{"7001": 2}')], [],
+                          [_seen_line(acct, "{}")], []], logged
+        assert (await _shim_tick(other, tip))[1] == [_seen_line(other, '{"7001": 1}')]
     asyncio.run(go())
 
 

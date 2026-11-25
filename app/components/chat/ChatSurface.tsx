@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * ChatSurface — the right pane: ChatHeader + MessageList + Composer.
- *
- * Owns the per-chat hook (useChatMessages) and the send hook
- * (useSendMessage) — keeping them here means the ChatList re-rendering
- * doesn't unmount the active chat, and switching chats unmounts/remounts
- * this subtree cleanly (we pass a `key` from the parent).
- *
- * Click the header (avatar/name) to open the FanDrawer with the
- * editable profile overlay.
- */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
@@ -27,6 +16,7 @@ import { useSendMessage, type SendStatus } from "@/hooks/useSendMessage";
 import { useLikeMessage } from "@/hooks/useLikeMessage";
 import { useTogglePinMessage } from "@/hooks/useTogglePinMessage";
 import { useChatPinned } from "@/hooks/useChatPinned";
+import { useCan } from "@/hooks/useCan";
 import { setVaultHistory, vaultHistoryKey, type FanVaultHistoryResp } from "@/hooks/useFanVaultHistory";
 import { useUnsendMessage } from "@/hooks/useUnsendMessage";
 import { useCreateSavedReply } from "@/hooks/useSavedReplies";
@@ -71,16 +61,9 @@ interface MeResp {
   avatar?: string | null;
 }
 
-/** Per-account localStorage key holding the model's OF user id. There is
- *  NO synchronous OF user-id source today — the Account model has no
- *  of_user_id column and `meQ` (/users/me) is async, null on first paint.
- *  Caching the resolved id under this key lets the NEXT chat-open hydrate
- *  it synchronously on mount, so bubbles start on the correct side instead
- *  of all-left-then-spread once meQ lands. */
+// No synchronous OF user-id source: cached so the next open starts with bubbles on the right side before meQ lands.
 const ownerIdCacheKey = (accountId: string) => `of-owner:${accountId}`;
 
-/** Read the cached owner id synchronously (SSR-safe). Returns null when
- *  absent / unparseable so the caller falls back to the async meQ. */
 export function readCachedOwnerId(accountId: string): number | null {
   if (typeof window === "undefined") return null;
   try {
@@ -98,55 +81,27 @@ export function ChatSurface({
   markRead = "onOpen", prefetchWindowMs, onSendStart, onSendSettled, onAdvance, onHoldChange, enterAdvances,
 }: {
   accountId: string;
-  /** Number on OnlyFans, a string snowflake on Fansly — the id is passed
-   *  through as the wire sent it, never re-parsed (see `fanIdFromParam`). */
   fanId: number | string;
   chat: OFChatItem;
-  /** Whether Fan insights start open at lg+. Below lg they always start
-   *  closed (one pane at a time). Either way the "Fan insights" toggle
-   *  closes and reopens them; nothing keeps them open. */
   insightsOpenAtStart: boolean;
-  /** Optional mobile-only back arrow. When provided, the header gets a
-   *  `<` button on the left (visible below lg) that runs this callback, and
-   *  so does a swipe right on the Thread below lg (not from the OS's edge
-   *  zones, the Composer, or while Fan insights or a dialog is open).
-   *  /inbox uses it to clear the selected chat and reveal the ChatList
-   *  again on small screens; popout / group don't pass it. */
   onBack?: () => void;
-  /** When the chat is marked read (our marker, and OF's "seen"). A queue
-   *  passes "afterFirstSend": opening (or skipping) a chat marks nothing (its
-   *  head reads peek, so OF leaves it unread too); the first send that reaches
-   *  OF (not a scheduled one, nor a failed one) does. */
   markRead?: "onOpen" | "afterFirstSend";
-  /** A caller that prefetches threads: their fresh window (see useChatMessages). */
   prefetchWindowMs?: number;
-  /** A send (or a Retry) began — before any await. */
   onSendStart?: () => void;
-  /** How that send ended. */
   onSendSettled?: (status: SendStatus) => void;
-  /** Move to the next/previous chat (Composer keys). */
   onAdvance?: (dir: 1 | -1) => void;
-  /** The draft holds media, GIFs or a price (see Composer). */
   onHoldChange?: (held: boolean) => void;
-  /** Enter sends and moves on, as ⌘/Ctrl+Enter (see Composer). */
   enterAdvances?: boolean;
 }) {
   const { current: currentEmployee } = useEmployee();
   const qc = useQueryClient();
-  // This open's local reads in one relay call (first, during render: the hooks below join it).
   useChatScreen(accountId, fanId);
-  // The open chat's Creator holds a View lease while this chat is open (ADR-0031), in the All view too.
   useViewLease(accountId ? [accountId] : [], "chat");
   const { refreshOne: refreshRosterOne } = useRosterCountActions();
 
-  // Fan insights, and the header's Notes / Edit name focus requests (chatDrawer).
   const [drawer, dispatchDrawer] = useReducer(
     chatDrawerReducer,
     insightsOpenAtStart,
-    // Below lg Fan insights start closed: Messages Pro is one pane at a
-    // time there (list → thread → insights slide-over), and a deep-link
-    // would bury the thread under the drawer. The user opens the overlay
-    // from the header ("Fan insights").
     (atStart) => initialChatDrawer(atStart && !(typeof window !== "undefined"
       && window.matchMedia("(max-width: 1023px)").matches)),
   );
@@ -154,20 +109,13 @@ export function ChatSurface({
   const [quoted, setQuoted] = useState<QuotedReply | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
-  // Imperative handle on Composer — lets FanDrawer's "Send to chat"
-  // buttons (on unsold PPVs) preload the composer with that PPV's
-  // text + media + price, identical to picking a saved template.
   const composerApiRef = useRef<ComposerApi | null>(null);
-  // Below lg a swipe right on the Thread is its Back (`onBack`), as the header's
-  // `<` is; never while Fan insights or a dialog is over it.
   const threadRef = useRef<HTMLDivElement>(null);
   useSwipe(threadRef, {
     enabled: !!onBack && !drawerOpen, dir: "right", onSwipe: () => onBack?.(), sheet: { panel: threadRef },
     edgeGuard: OS_EDGE_PX, ignoreWhile: OPEN_DIALOG,
   });
 
-  // Resolve the model account's OF user id — needed to decide direction
-  // (outgoing if message.fromUser.id === ownerUserId).
   const meQ = useQuery<MeResp>({
     queryKey: ["of-me", accountId],
     queryFn: () => relay.get<MeResp>("/api/of/v2/users/me", { accountId }),
@@ -175,12 +123,6 @@ export function ChatSurface({
     refetchOnWindowFocus: false,
   });
 
-  // Owner id, hydrated SYNCHRONOUSLY from localStorage on mount so the very
-  // first paint already has it (no all-left-then-spread flash while meQ is
-  // in flight). meQ is the source of truth once it lands; until then the
-  // cached value from the previous visit stands in. The component is keyed
-  // per-account by the parent, so this initializer re-reads when the
-  // account changes. ownerUserId below prefers the fresh meQ id.
   const [cachedOwnerId, setCachedOwnerId] = useState<number | null>(
     () => readCachedOwnerId(accountId),
   );
@@ -190,7 +132,7 @@ export function ChatSurface({
     setCachedOwnerId(id);
     try {
       window.localStorage.setItem(ownerIdCacheKey(accountId), String(id));
-    } catch { /* quota / privacy mode — the async meQ still drives this session */ }
+    } catch { /* quota / privacy mode: async meQ still drives */ }
   }, [accountId, meQ.data?.id]);
   const ownerUserId = meQ.data?.id ?? cachedOwnerId;
 
@@ -198,45 +140,14 @@ export function ChatSurface({
     accountId, fanId, enabled: true, prefetchWindowMs, peek: markRead === "afterFirstSend",
   });
 
-  // Cold-start seed: local SQLite via /admin/messages/{aid}/{fid}, mapped
-  // to OFMessage shape. Lives in a SEPARATE cache key
-  // (["messages-local-seed", ...]) so it never registers a competing
-  // queryFn on ["messages", aid, fid] (two useQuery on one key would race
-  // their fetches and the real OF call could be skipped). Fetches only
-  // while `handle` has no data; once OF (or the patcher) populates the
-  // real cache it's disabled and never read for rendering again — the
-  // hydration effect below copies it across instead.
-  // Always enabled — NOT gated on `handle.isPending`. The `"messages"` cache is
-  // persisted to localStorage (see providers.tsx), so on a popout / repeat-open
-  // isPending is already false and a pending-gated seed would never run — which
-  // is exactly how ledger-synthesized TIP rows (their ONLY render path is this
-  // seed) went missing from the thread. It's one cheap indexed sqlite query
-  // (5-min staleTime, no refetch-on-mount/focus), and the one-time hydration
-  // below only ADDS rows the cache is missing, so the OF fetch / SSE patcher
-  // stay authoritative.
+  // Separate cache key from ["messages"]: two queryFns on one key would race. Not gated on isPending: the messages cache is persisted, so ledger-synthesized TIP rows (render only via this seed) would go missing.
   const seedQ = useChatMessagesLocal({
     enabled: true,
     accountId,
     fanId,
   });
 
-  // DB-as-render-source: copy the seed ONE-TIME into the real
-  // ["messages", accountId, fanId] cache so DB history renders instantly
-  // through the SAME query the realtime patcher (useInboxRealtime) and the
-  // send-flow (appendLocal/reconcileLocal) write to. The OF fetch then
-  // reconciles into that key in place — seed rows and OF rows share the
-  // real `message_id`, so the MessageList keys (key={String(m.id)}) match
-  // and the swap is a prop update, not a remount: no mid-session flash.
-  //
-  // Guards that keep the patcher the SOLE ongoing writer:
-  //   • a ref so this fires at most once per chat-open (ChatSurface is
-  //     keyed per accountId:fanId, so the ref resets on every switch);
-  //   • a functional updater that NEVER clobbers an already-populated
-  //     cache — if OF resolved first, or the patcher landed a live message
-  //     in the cold-open window, we only fold in seed rows the cache is
-  //     missing, leaving the richer existing rows authoritative.
-  // Deliberately NOT `initialData` on useChatMessages: that re-applies on
-  // every render and fights the patcher.
+  // Once per open; the merge only adds missing rows so the OF fetch / realtime patcher stay authoritative (not `initialData`: it fights the patcher).
   const seedHydratedRef = useRef(false);
   useEffect(() => {
     if (seedHydratedRef.current) return;
@@ -249,24 +160,8 @@ export function ChatSurface({
     );
   }, [seedQ.rows, accountId, fanId, qc]);
 
-  // Older pages get the head page's treatment: scrolling up used to sit on
-  // a live OF round-trip (p50 ~1.5s) with nothing on screen, even though the
-  // same history is already in the local mirror and answers in ~1ms. Fire
-  // both, paint whichever lands first, let OF reconcile.
-  //
-  // The seed writes through mergeSeedIntoMessages — the SAME merge the head
-  // seed uses — so it can only ADD rows the cache is missing and orders them
-  // by created_at. What it deliberately does NOT touch is `oldestCursorRef`
-  // or `hasOlder`: both stay owned by loadOlder's OF response, so a mirror
-  // that runs deeper than OF's window can never move the cursor into a gap
-  // or claim there is more history than OF will actually serve. A mirror
-  // miss (or error) returns [] and the user simply waits on OF, as before.
   const loadOlderSeeded = useCallback(async () => {
-    // The hook drops re-entrant calls; don't pay for a second seed fetch
-    // that the merge would only dedupe away.
     if (handle.isLoadingOlder) return handle.loadOlder();
-    // Read the cursor BEFORE loadOlder runs — it lowers the cursor when OF
-    // answers, and the seed must page from the same boundary OF does.
     const cursor = handle.olderCursor();
     if (cursor != null && accountId && fanId != null) {
       void fetchOlderSeed(accountId, fanId, cursor).then((rows) => {
@@ -280,20 +175,10 @@ export function ChatSurface({
     return handle.loadOlder();
   }, [handle, accountId, fanId, qc]);
 
-  // Search / pinned / ?msg= jumps put a highlight ring on a rendered bubble.
   const { highlightId, jumpToMessage } = useJumpToMessage({
     accountId, fanId, handle, loadOlder: loadOlderSeeded, onJump: () => setSearchOpen(false),
   });
 
-  // `painted` — the first commit that puts real bubbles on screen. This is
-  // the number the thread should be judged on: `delivered` measures OF's
-  // round-trip, but the seed above means the user is usually reading history
-  // long before it lands. `ofSettled` separates the two populations in the
-  // log (false = the seed carried this paint).
-  //
-  // Fires from an effect rather than a ref callback on the first bubble
-  // because MessageList commits in the same pass as this component; the
-  // extra prop would buy nothing but coupling.
   useEffect(() => {
     if (!accountId || fanId == null) return;
     if ((handle.data?.length ?? 0) === 0) return;
@@ -304,37 +189,18 @@ export function ChatSurface({
     });
   }, [accountId, fanId, handle.data, handle.isSuccess]);
 
-  // Prefetch the fan row so opening the drawer is instant. The hook
-  // is cheap (one indexed sqlite lookup) and the data drives the
-  // custom_nickname we want to show in the header.
   const fanQ = useFan(accountId, fanId);
 
-  // Observe the per-fan profile cache that enrichWithUsers populates from
-  // /users/list. ChatList already reads from this side channel so its rows
-  // pick up nickname/name/avatar; the surface header needs the same path
-  // because the `chat` prop is the slim row (enrichment writes to this
-  // cache, not back into the chats list cache). Observe-only: see
-  // useCachedOFUser.
   const profile = useCachedOFUser(accountId, fanId);
 
-  // Header ↻ refresh: a full re-pull of this chat AND the fan, plus a
-  // re-cache into the local SQLite mirror. The plain `handle.refresh()`
-  // only re-fetched the message page, so a fan who just paid a tip / a PPV
-  // could keep showing the stale "unseen"/locked state and the drawer's
-  // sales/revenue lagged. This invalidates every cache the chat + fan panel
-  // render from, then asks the server to re-scrape this fan's chat from OF
-  // so anything the live pull alone misses lands in the persisted history.
   const [isRefreshing, setIsRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
     if (!accountId || fanId == null) return;
     setIsRefreshing(true);
     try {
       await Promise.all([
-        // Live OF re-pull — messages, fan profile (nickname/notice/spend),
-        // local fan row, the PPV gallery + ledger spine behind the drawer's
-        // chart/Sales, and the roster unread badges.
         qc.invalidateQueries({ queryKey: ["messages", accountId, fanId] }),
-        qc.invalidateQueries({ queryKey: ofUserNameKey(accountId, fanId) }), // name + full
+        qc.invalidateQueries({ queryKey: ofUserNameKey(accountId, fanId) }),
         qc.invalidateQueries({ queryKey: ["fan", accountId, fanId] }),
         qc.invalidateQueries({
           queryKey: ["fan-chat-media", accountId, fanId],
@@ -345,27 +211,16 @@ export function ChatSurface({
           exact: false,
         }),
         qc.invalidateQueries({ queryKey: ["last-purchases", accountId] }),
-        // The ?bust= rewarm: the Relay's shared 30 s Hover cooldown is its one budget, so a
-        // press inside it gets the held count with no OF read.
         refreshRosterOne(accountId),
-        // #11: also refresh the account's list/folder membership view so Refresh
-        // updates which lists the fan is in / can be added to — the folder chips
-        // and counts — not just this fan's messages/profile. (of-user above
-        // already refreshes the per-fan listsStates.)
         qc.invalidateQueries({ queryKey: ["chat-folders", accountId] }),
-        // Re-cache into the local mirror: re-scrape this fan's chat from OF so
-        // the persisted history catches a just-paid PPV/tip that the live UI
-        // pull alone wouldn't reconcile. Runs INLINE (not the automation queue)
-        // so it lands in ~1-2s even while a big background scrape sweep is
-        // hogging the bulk lane — the queued path would wait behind it.
-        // Best-effort — the UI already refreshed from OF above regardless.
+        // Inline rescrape (not the automation queue): lands in ~1-2s even while a bulk sweep hogs the lane.
         relay
           .post(
             `/admin/messages/${accountId}/${fanId}/rescrape-now`,
             undefined,
             { accountId },
           )
-          .catch(() => { /* re-cache is best-effort; UI is already fresh */ }),
+          .catch(() => { }),
       ]);
     } finally {
       setIsRefreshing(false);
@@ -390,14 +245,8 @@ export function ChatSurface({
   const pinner = useTogglePinMessage(accountId, fanId);
   const unsender = useUnsendMessage(accountId, fanId);
 
-  // A mass-sent bubble asks "this conversation" or "all recipients" first
-  // (04-messages-pro.md P3); the calls are unchanged.
   const unsend = useUnsendChoice(unsender);
 
-  // "Save as script" from our bubble's menu (roadmap W4 4.2): the message's
-  // text, media and price become a saved reply, under a title the chatter
-  // confirms. Cancel saves nothing. The menu hides it for a message that
-  // would save empty (scriptDraftHasContent).
   const { mutateAsync: createScript } = useCreateSavedReply(accountId);
   const handleSaveAsScript = useCallback(async (msg: OFMessage) => {
     const draft = scriptDraftFromMessage(msg);
@@ -411,13 +260,6 @@ export function ChatSurface({
     }
   }, [createScript]);
 
-  // Pre-warm only the fan-specific cache here — the account-wide ones
-  // (vault-lists, wall-media) are kicked off from the inbox page at app
-  // start so they don't compete with the message fetch on chat-open.
-  // Delay even this small query so the visible message list gets first
-  // crack at the relay's request budget.
-  // The sync walks OF's chat gallery into vault_sends at most once a week per fan (no OF call
-  // otherwise) and answers with the fan's history.
   useEffect(() => {
     if (!accountId || fanId == null) return;
     const t = setTimeout(() => {
@@ -433,16 +275,6 @@ export function ChatSurface({
     return () => clearTimeout(t);
   }, [accountId, fanId, qc]);
 
-  // Backfill historical vault-sends from chat messages already loaded.
-  // We hooked the auto-record at send-time AFTER feature-ship, so any
-  // chat that existed before that has no rows — meaning the picker's
-  // sent/purchased rings stay empty. Walking the message stream and
-  // batch-POSTing missing rows fills that gap lazily, scoped to the
-  // chat the user is actually looking at.
-  //
-  // Idempotent on the backend (dupe-checks by message_id) so it's safe
-  // to fire on every load — older pages picked up via loadOlder also
-  // trigger this when handle.data changes.
   const backfilledKeysRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!accountId || fanId == null) return;
@@ -458,13 +290,9 @@ export function ChatSurface({
       sent_at: string | null;
     }> = [];
     for (const m of messages) {
-      // Keyed as TEXT: a Fansly message id is a snowflake past 2^53, so
-      // Number() collapsed distinct messages onto one key and the dedupe set
-      // below then skipped real sends as "already backfilled".
+      // Text key: a Fansly id is a snowflake past 2^53; Number() collapsed distinct messages.
       const mid = String(m.id ?? "");
       if (!/^\d+$/.test(mid) || /^0+$/.test(mid)) continue;
-      // Only outgoing messages count — incoming ones come from the fan,
-      // not from us, so they have no business in vault_sends.
       if (!sameUserId(m.fromUser?.id, myId)) continue;
       const mediaIds = (m.media ?? [])
         .map((x) => (typeof x.id === "number" ? x.id : Number(x.id)))
@@ -474,15 +302,11 @@ export function ChatSurface({
         message_id: mid,
         media_ids: mediaIds,
         price_cents: Math.max(0, Math.round((m.price || 0) * 100)),
-        // PPV: isOpened flips true once the fan paid. For free sends OF
-        // also reports isOpened=true when the fan opens the chat, which
-        // is meaningless — leave was_purchased null in that case.
+        // OF also reports isOpened on free sends when the fan opens the chat: meaningless, so only PPV counts.
         was_purchased: (m.price ?? 0) > 0 ? !!m.isOpened : null,
         sent_at: m.createdAt || null,
       });
     }
-    // Keyed by id + bought, so a PPV the fan unlocks later goes again (the backend flips its row).
-    // Each key once (its first message), and never one already backfilled or in flight.
     const keyOf = (c: (typeof candidates)[number]) => `${c.message_id}:${c.was_purchased ? 1 : 0}`;
     const firstByKey = new Map<string, (typeof candidates)[number]>();
     for (const c of candidates) if (!firstByKey.has(keyOf(c))) firstByKey.set(keyOf(c), c);
@@ -500,7 +324,6 @@ export function ChatSurface({
         })
       .then(async (resp) => {
         if ((resp?.inserted ?? 0) === 0 && (resp?.updated ?? 0) === 0) return;
-        // The new history comes with the answer (vault_sends_api): set it, no second read.
         if (!(await setVaultHistory(qc, accountId, fanId, resp?.history))) {
           qc.invalidateQueries({ queryKey: vaultHistoryKey(accountId, fanId) });
         }
@@ -511,30 +334,13 @@ export function ChatSurface({
       });
   }, [accountId, fanId, handle.data, meQ.data?.id, qc]);
 
-  // The `chat` prop is a snapshot captured at click time and never refreshed.
-  // After a scope switch the ChatList serves placeholderData while the new
-  // scope's /chats call is in flight, so the row the user clicks can carry
-  // a stale `canSendMessage: false` from the previous scope. That stale
-  // false latches the Composer's "Sending disabled" banner + disables Send
-  // until the user re-mounts via a sibling chat click. Resolve gating
-  // fields from the live chats cache instead, with a subscription that
-  // re-renders when any ["chats", ...] entry updates so polling/SSE feeds
-  // through here too.
   const [chatsCacheTick, setChatsCacheTick] = useState(0);
   useEffect(() => {
     const unsubscribe = qc.getQueryCache().subscribe((event) => {
-      // Only react to the events that change a cached chat row's fields.
-      // `observerResultsUpdated` fires on every dependent component render
-      // and would loop us into useless re-renders.
       if (event.type !== "added" && event.type !== "updated") return;
       const key = event.query.queryKey;
       if (Array.isArray(key) && key[0] === "chats") {
-        // Defer the setState past the current commit. React Query fires
-        // `observerAdded` synchronously while a consumer component (e.g.
-        // ChatList) is rendering — calling setState on ChatSurface from
-        // inside that callback trips React's "setState while rendering
-        // another component" warning. queueMicrotask lands the update
-        // after the in-flight render finishes.
+        // Deferred: observerAdded fires mid-render of ChatList; setState here trips React's warning.
         queueMicrotask(() => setChatsCacheTick((t) => t + 1));
       }
     });
@@ -558,10 +364,6 @@ export function ChatSurface({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, fanId, qc, chatsCacheTick]);
 
-  // The chat-list row holds OF's `lastReadMessageId` — the highest msg id
-  // the fan has marked read. The `chat` prop is the click-time snapshot, so
-  // the newer of it and the live chat cache wins (spec F28): ✓ turns ✓✓
-  // while the Thread is open, and the popout page shows ✓✓ too.
   const lastReadByPeerId = useMemo<number | null>(
     () => newestReadPointer(chat.lastReadMessageId, liveChat?.lastReadMessageId),
     [chat.lastReadMessageId, liveChat],
@@ -571,20 +373,8 @@ export function ChatSurface({
     setQuoted(quoteFromMessage(msg));
   }
 
-  // Server-scheduled sends live in a separate query; merge them into
-  // the message stream as pseudo-bubbles so the operator sees what's
-  // about to go out (and can cancel) without leaving the chat. Memoize
-  // so the MessageList's "did the array change" effect doesn't fire
-  // every render — the auto-scroll-to-bottom depends on a stable ref.
   const scheduledQ = useServerScheduledSends(accountId, fanId);
   const cancelScheduled = useCancelServerScheduled();
-  // The message stream always reads the real ["messages", ...] cache: DB
-  // history is hydrated into it on open (seed-hydration effect above), the
-  // OF fetch reconciles into it, and the realtime patcher + send-flow keep
-  // it live. The seed is never read directly here — reading a different
-  // array reference is what made the old seed-then-discard swap flash
-  // mid-session. Server-scheduled sends (future-dated) are appended as
-  // pseudo-rows so they sort to the bottom as "about to go out" ghosts.
   const mergedMessages: OFMessage[] = useMemo(() => {
     const real = handle.data ?? [];
     const scheduled = scheduledQ.data ?? [];
@@ -592,8 +382,6 @@ export function ChatSurface({
     return [...real, ...scheduled.map((s) => scheduledToPseudoMessage(s, ownerUserId))];
   }, [handle.data, scheduledQ.data, ownerUserId]);
 
-  // When the fan spoke last, the time of that message (Composer's script-step
-  // offer waits for it). Null while we spoke last.
   const lastReal = handle.data?.[handle.data.length - 1];
   const fanSpokeLastAt = lastReal && ownerUserId != null && !sameUserId(lastReal.fromUser?.id, ownerUserId)
     ? lastReal.createdAt ?? null
@@ -605,6 +393,7 @@ export function ChatSurface({
   // on a thread whose only pin sat outside the head page and showed as none.
   // The backlog filter stays as the fallback for the moment before the fetch
   // resolves, and for any account where the call fails.
+  const canPin = useCan(accountId, "pin_message");
   const pinnedQ = useChatPinned(accountId, fanId);
   const pinnedMessages = useMemo(
     () => (pinnedQ.data?.length ? pinnedQ.data
@@ -612,11 +401,6 @@ export function ChatSurface({
     [pinnedQ.data, handle.data],
   );
 
-  // Outbound-bubble "Sent by {employee}" label data. Anchored at the
-  // oldest visible message so loading older pages widens the window
-  // without thrashing every render — react-query treats the new
-  // oldestId as a separate key and serves the previous data while the
-  // wider fetch resolves.
   const oldestVisibleId = useMemo(() => {
     const first = mergedMessages[0]?.id;
     if (first == null) return null;
@@ -626,18 +410,8 @@ export function ChatSurface({
   const attributionQ = useChatAttribution(accountId, fanId, oldestVisibleId);
   const attributionMap = attributionQ.data?.by_msg_id ?? null;
 
-  // Cross-chatter freshness: when a teammate (Slovenia/Kenya/Nigeria/…)
-  // sends from another machine, the WS pump lands the outbound row in
-  // useChatMessages but our attribution map is still cached. Rather than
-  // shortening staleTime (which would re-fetch even on idle chats), we
-  // piggyback on the chat-message arrival itself — invalidate ONLY when
-  // an outbound message newer than the map isn't in it, at most twice per id
-  // (attributionRefresh.ts). Idle chats pay nothing; active chats pay one
-  // fetch (at most two) per teammate-send observed. (ownerUserId is hydrated synchronously above.)
-  // Per chat: the surface is keyed per Creator + Fan, so a switch starts it empty.
   const attributionAsked = useRef<Asked>(new Map());
   const attributionAt = attributionQ.dataUpdatedAt;
-  // A second ask due later (attributionRefresh LAG_MS) re-runs the check then.
   const [attributionRecheck, setAttributionRecheck] = useState(0);
   useEffect(() => {
     if (!accountId || fanId == null || ownerUserId == null) return;
@@ -701,13 +475,15 @@ export function ChatSurface({
        *  and the popover overlays don't fit comfortably on a 360px screen.
        *  Pinned messages are still visible inline (📌 badges on bubbles)
        *  and the desktop bar is unchanged. */}
-      <div className="hidden md:block">
-        <PinnedBar
-          pinned={pinnedMessages}
-          open={pinnedOpen}
-          onToggle={() => setPinnedOpen((v) => !v)}
-        />
-      </div>
+      {canPin && (
+        <div className="hidden md:block">
+          <PinnedBar
+            pinned={pinnedMessages}
+            open={pinnedOpen}
+            onToggle={() => setPinnedOpen((v) => !v)}
+          />
+        </div>
+      )}
 
       <MessageList
         messages={mergedMessages}
@@ -721,7 +497,6 @@ export function ChatSurface({
         loadingOlder={handle.isLoadingOlder}
         olderFailed={handle.olderFailed}
         headSettled={handle.headSettled}
-        // A failure is the pager's Retry state (handle.olderFailed), not an unhandled rejection.
         onLoadOlder={() => { void loadOlderSeeded().catch(() => {}); }}
         onRetry={sender.retry}
         onDiscard={sender.cancelOptimistic}
@@ -732,29 +507,28 @@ export function ChatSurface({
         }}
         onToggleLike={(msg) => liker.toggle(msg)}
         onQuoteReply={onQuoteReply}
-        onTogglePin={(msg) => pinner.toggle(msg)}
+        onTogglePin={canPin ? (msg) => pinner.toggle(msg) : undefined}
         onUnsend={unsend.onUnsend}
         onSaveAsScript={handleSaveAsScript}
         highlightId={highlightId}
         lastReadByPeerId={lastReadByPeerId}
         attribution={attributionMap}
         currentEmployeeName={currentEmployee?.display_name ?? null}
-        // The run avatars (Phase 4 spec Contracts): the Fan's from the row and
-        // profile cache the Fan List reads, ours from the `/me` query above,
-        // so neither costs a relay call.
         fanAvatar={proxyImage(chat.withUser.avatar || profile?.avatar || null, accountId) || null}
         creatorAvatar={proxyImage(meQ.data?.avatar ?? null, accountId) || null}
       />
 
       {unsend.dialog}
 
-      <PinnedPopover
-        pinned={pinnedMessages}
-        ownerUserId={ownerUserId}
-        open={pinnedOpen}
-        onClose={() => setPinnedOpen(false)}
-        onJumpTo={jumpToMessage}
-      />
+      {canPin && (
+        <PinnedPopover
+          pinned={pinnedMessages}
+          ownerUserId={ownerUserId}
+          open={pinnedOpen}
+          onClose={() => setPinnedOpen(false)}
+          onJumpTo={jumpToMessage}
+        />
+      )}
 
       <Composer
         accountId={accountId}
@@ -768,18 +542,9 @@ export function ChatSurface({
         onHoldChange={onHoldChange}
         enterAdvances={enterAdvances}
         onSend={async (args) => {
-          // Closing the pinned popover on send is the second half of the
-          // hide rule (the first half is click-out, owned by the popover
-          // itself). Keep this before the OF call so the panel disappears
-          // even if send returns an error.
+          // Before the OF call so the panel closes even if the send errors.
           setPinnedOpen(false);
-          // OF supports native quote-reply via `replyToMessageId`. Threading
-          // it through the send body makes the fan's OF client render the
-          // quoted message as a card above the reply — same UX as OF web.
           const replyMsgId = quoted?.messageId;
-          // Capture the original message body for the optimistic bubble so
-          // we render the quote card immediately, without waiting for OF
-          // to echo `replyToMessage` back on the next refetch.
           const replySnapshot = quoted
             ? (() => {
                 const orig = (handle.data ?? []).find(
@@ -818,18 +583,11 @@ export function ChatSurface({
         }}
         inflight={sender.inflight}
         canSend={
-          // Trust the live chat cache; never the prop snapshot. A stale
-          // `canSendMessage: false` from a pre-scope-switch click was
-          // freezing the composer until the user clicked away and back.
           liveChat ? liveChat.canSendMessage !== false : true
         }
         cannotSendReason={liveChat?.canNotSendReason ?? null}
       />
 
-      {/* Overlay drawer. Renders whenever the drawer is open — on mobile
-       *  it's the only branch (the pinned column wouldn't fit at 360px).
-       *  At lg+ FanDrawer hides the overlay itself (`lg:hidden`) so the
-       *  in-flow pinned column below takes over. */}
       {drawerOpen && (
         <FanDrawer
           open={drawerOpen}
@@ -843,10 +601,6 @@ export function ChatSurface({
         />
       )}
       </div>
-      {/* Pinned drawer — the in-flow Fan insights column at lg+, a third
-       *  column inside Messages Pro (list | chat | drawer), closable from
-       *  its × and the header toggle. Hidden below lg by FanDrawer itself —
-       *  see its pinned className. */}
       {drawerOpen && (
         <FanDrawer
           pinned

@@ -1,25 +1,10 @@
-/**
- * threadCache — pure `(prev, ...) => next` writes over one chat's message
- * cache (`["messages", accountId, fanId]`, oldest→newest). useChatMessages'
- * optimistic-send callbacks and the live message handler only dispatch here.
- */
-
 import type { OFMessage } from "@/lib/relay";
 import type { SendFailure } from "@/lib/sendFailure";
 
-/** Normalize a message timestamp to a UTC ISO string (…Z).
- *
- *  The relay emits live (`emit_live`) outbound rows — welcome / AI reply / mass
- *  / funnel — with the DB's tz-NAIVE wall clock (`"2026-06-14 09:36:17"`, already
- *  UTC but zone-less). `new Date()` parses that as the VIEWER's local time, which
- *  both skews the bubble's displayed time and corrupts the sort key. REST
- *  `/messages` rows already carry a zone, so the two paths disagreed: live
- *  funnel/mass bubbles rendered at the wrong time AND (see insertByCreatedAt)
- *  stuck out of order. Tag a zone-less value as UTC; pass through one already
- *  zoned. */
 export function toUtcIso(raw: string | undefined): string {
   if (!raw) return new Date().toISOString();
   const s = raw.trim();
+  // Relay live rows carry zone-less UTC; new Date() would read it as the viewer's local time.
   const hasZone = /[zZ]$/.test(s) || /[+-]\d{2}:?\d{2}$/.test(s);
   const candidate = hasZone
     ? s
@@ -28,15 +13,6 @@ export function toUtcIso(raw: string | undefined): string {
   return Number.isNaN(d.getTime()) ? s : d.toISOString();
 }
 
-/** Insert `row` into a thread cache kept in created_at order, instead of
- *  blind-appending. The bug: a live message can enter the cache AFTER newer
- *  rows are already present (a re-run funnel, an out-of-order SSE replay), and a
- *  plain `[...prev, row]` then pins it to the BOTTOM as if it were newest. We
- *  scan from the tail — the overwhelmingly common case is a genuinely new
- *  message that belongs at the end, so that path stays O(1) — and splice the row
- *  in just after the last one that isn't strictly newer (`<=` keeps ties in
- *  arrival order). Timestamps are normalized for the compare so a zoned REST row
- *  and a zone-less live row sort consistently. */
 export function insertByCreatedAt(list: OFMessage[], row: OFMessage): OFMessage[] {
   const t = Date.parse(toUtcIso(row.createdAt));
   if (Number.isNaN(t)) return [...list, row];
@@ -51,13 +27,10 @@ export function insertByCreatedAt(list: OFMessage[], row: OFMessage): OFMessage[
     : [...list.slice(0, i), row, ...list.slice(i)];
 }
 
-/** Append a message (optimistic send); the same `prev` if its id is already there. */
 export function appendMsg(prev: OFMessage[], msg: OFMessage): OFMessage[] {
   return hasId(prev, msg) ? prev : [...prev, msg];
 }
 
-/** Insert a live message in created_at order (insertByCreatedAt); the same
- *  `prev` if its id is already there. */
 export function insertMsg(prev: OFMessage[], msg: OFMessage): OFMessage[] {
   return hasId(prev, msg) ? prev : insertByCreatedAt(prev, msg);
 }
@@ -67,13 +40,6 @@ function hasId(prev: OFMessage[], msg: OFMessage): boolean {
   return prev.some((m) => String(m.id) === incoming);
 }
 
-/** Replace the optimistic row `tempId` with the server's message.
- *
- *  SSE can echo the outbound message (real id) before this HTTP reconcile
- *  resolves. If that row already exists, stamping the same id onto the
- *  optimistic row would create two rows with the same React key. Instead,
- *  fold the optimistic media fallback onto the existing real row and drop the
- *  placeholder. */
 export function reconcileMsg(prev: OFMessage[], tempId: number, serverMsg: OFMessage): OFMessage[] {
   const opt = prev.find((m) => m._tempId === tempId);
   const serverId = String(serverMsg.id);
@@ -88,7 +54,6 @@ export function reconcileMsg(prev: OFMessage[], tempId: number, serverMsg: OFMes
   return prev.map((m) => (m._tempId === tempId ? mergeMedia(m, serverMsg) : m));
 }
 
-/** Mark the optimistic row `tempId` failed (its Retry button shows). */
 export function failMsg(prev: OFMessage[], tempId: number, failure?: SendFailure): OFMessage[] {
   return prev.map((m) =>
     m._tempId === tempId
@@ -103,15 +68,11 @@ export function failMsg(prev: OFMessage[], tempId: number, failure?: SendFailure
   );
 }
 
-/** Remove the optimistic row `tempId` (before a retry, or a cancel). */
 export function dropMsg(prev: OFMessage[], tempId: number): OFMessage[] {
   return prev.filter((m) => m._tempId !== tempId);
 }
 
-/** Merge optimistic media's `files` into a server response — OF's CDN
- *  takes ~2-3s to populate `files.{thumb,source}.url`, so the server
- *  response often comes back with media but no playable URLs. We swap
- *  the optimistic file urls in until the next refresh catches them. */
+// OF's CDN takes ~2-3s to populate file urls, so the server reply often has media with no playable urls.
 function mergeMedia(opt: OFMessage, server: OFMessage): OFMessage {
   if (!opt?.media?.length || !server?.media?.length) return { ...server, _pending: false, _tempId: opt._tempId };
   const byId = new Map<number, OFMessage["media"][number]>();
@@ -125,17 +86,9 @@ function mergeMedia(opt: OFMessage, server: OFMessage): OFMessage {
   return { ...server, media: mergedMedia, _pending: false, _tempId: opt._tempId };
 }
 
-/** Rows a thread cache keeps when trimmed: ~3 of useChatMessages' 30-row
- *  pages, so a reopened thread fills the pane and then pages older again. */
 export const THREAD_KEEP = 90;
 
-/** Keep the newest `keep` real (positive-id) rows plus every optimistic row
- *  (id ≤ 0). Threads persist whole for 7 days, so one deep scroll-up used to
- *  reopen as a ~5,000-row, 127k-node thread forever. The kept rows are the
- *  contiguous newest tail, so paging older from the cache minimum walks no
- *  gap. A reconciled send keeps `_tempId` with its real id and counts as real:
- *  kept beyond the window it would sit below a hole the cursor jumps.
- *  Returns `list` itself when nothing is cut. */
+// Kept rows are the contiguous newest tail so paging older from the cache minimum crosses no gap.
 export function trimThread(list: OFMessage[], keep: number): OFMessage[] {
   const optimistic = (m: OFMessage) => !(Number(m.id) > 0);
   let real = 0;

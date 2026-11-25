@@ -1,7 +1,3 @@
-/**
- * UltraPlanPage — the card shows each send's FULL text and rows from the server, the one OK posts the shown hash,
- * a 404 is a plain line, and an uncertain end says so.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
@@ -25,7 +21,6 @@ const view = (over: Partial<PlanView> = {}): PlanView => ({
 const gets: string[] = [];
 const posts: [string, unknown][] = [];
 let getImpl: () => Promise<PlanView> = async () => view();
-/** The default POST answers running, and the plan reads running from then on (as the Relay would). */
 const toRunning = async () => { const v = view({ status: "running" }); getImpl = async () => v; return v; };
 let postImpl: () => Promise<PlanView> = toRunning;
 const { relayFile, saveBlob } = vi.hoisted(() => ({ relayFile: vi.fn(), saveBlob: vi.fn() }));
@@ -231,7 +226,7 @@ describe("UltraPlanPage", () => {
     expect(screen.queryByRole("button", { name: /^OK/ })).toBeNull();
     const send = screen.getByRole("button", { name: "Send these" });
     expect(send).toBeEnabled();
-    expect(screen.getByText("set 31")).toHaveAttribute("data-pick-caption");  // the AI's words visible on touch
+    expect(screen.getByText("set 31")).toHaveAttribute("data-pick-caption");
     fireEvent.click(screen.getByRole("checkbox", { name: "set 33" }));
     expect(send).toBeDisabled();
     fireEvent.click(screen.getByRole("checkbox", { name: "set 32 (AI pick)" }));
@@ -239,6 +234,6 @@ describe("UltraPlanPage", () => {
       .toBe("Tick exactly 1: 1 of 1 ticked. The AI’s picks start ticked.");
     fireEvent.click(send);
     await vi.waitFor(() => expect(posts).toContainEqual(["/admin/ultra/plans/p1/pick", { step: "pick", ids: [33] }]));
-    await vi.waitFor(() => expect(gets).toHaveLength(2));  // read again at once, not after the poll
+    await vi.waitFor(() => expect(gets).toHaveLength(2));
   });
 });

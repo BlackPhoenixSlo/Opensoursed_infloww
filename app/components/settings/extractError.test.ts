@@ -1,4 +1,3 @@
-/** extractError: OF's `error.message` out of a wrapped relay error, else an HTTP line, else the Error's message. */
 import { describe, expect, it } from "vitest";
 
 import { extractError } from "@/components/settings/extractError";

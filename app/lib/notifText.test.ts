@@ -6,7 +6,6 @@ describe("renderText", () => {
   const html = 'Hi <a href="x">{NAME}</a><b>sent</b>  you   a <i>$5</i> tip';
   const pairs = { "{NAME}": "Jim" };
   it.each([
-    // [tagSep, expected] — the bell drops tags, the toaster and rail space them.
     ["", "Hi Jimsent you a $5 tip"],
     [" ", "Hi Jim sent you a $5 tip"],
   ])("tagSep %j", (sep, want) => {

@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * The pieces the Statistics tabs share (ofMirrorStats and its per-group modules): OF's double-line chart pair on the
- * captured canvases, its chart series, its summary ("<total> <level>"), its fan cell (Fans, Top fans, Referred) and
- * its empty state. Every change is tracked (ofMirrorStatsDom), so an apply undoes the last.
- */
 
 import { BLUE, GREY, chartLabels, clearChart, drawChart, type ValueKind } from "@/lib/ofMirrorChart";
 import { plain } from "@/lib/ofMirrorData";
@@ -17,18 +12,11 @@ import { relay } from "@/lib/relay";
 import { avatarOf, type Fan } from "@/lib/ofMirrorAvatar";
 import { errText } from "@/lib/errText";
 
-/** A chart's points (`{date, count}`, OF's chart lists), else null. */
 export const points = (list: unknown): { date?: string; count?: unknown }[] | null => (Array.isArray(list) ? (list as { date?: string; count?: unknown }[]) : null);
-/** A line: [its points, its tooltip title, how its values read]. */
 export type Line = [list: unknown, title: string, kind: ValueKind];
 
-/** OF's points for a line (DoubleLineChart `J`): a lone point is drawn from 0 at its date. */
 const linePoints = (pts: { date?: string; count?: unknown }[]) => (pts.length === 1 ? [{ count: 0, date: pts[0].date }, pts[0]] : pts);
 
-/**
- * Draw `line` on `canvas` (OF's colour per position, its ticks); none when it has no points. `dates`: the pair's main
- * line's points, whose labels both lines share (OF's DoubleLineChart labels both from its main series).
- */
 export function drawLine(doc: Document, c: HTMLCanvasElement | null | undefined, [list, title, kind]: Line, color: string, ticks: number, xLabels: boolean, tz: string | null, dates?: { date?: string }[]) {
   const raw = points(list);
   if (!c || !raw) return false;
@@ -37,10 +25,6 @@ export function drawLine(doc: Document, c: HTMLCanvasElement | null | undefined,
   track(doc, () => clearChart(c));
   return true;
 }
-/**
- * OF's DoubleLineChart under `root`: `main` on the upper canvas in blue, `aside` under it in grey with the dates, both on
- * the main's dates (a hover reads each line's point at the same index, as OF's tooltip does).
- */
 export function drawPair(doc: Document, root: ParentNode | null | undefined, main: Line, aside: Line | null, tz: string | null) {
   if (!root) return;
   const mainPts = points(main[0]);
@@ -48,14 +32,12 @@ export function drawPair(doc: Document, root: ParentNode | null | undefined, mai
   if (aside) drawLine(doc, root.querySelector<HTMLCanvasElement>("canvas.b-chart__double-line__aside"), aside, GREY, 2, true, tz, mainPts ? linePoints(mainPts) : undefined);
 }
 
-/** OF's series (`{chart, total, delta}`, `gross` for a money one). */
 export interface Series {
   chart: unknown[] | null;
   total: number | null;
   delta: number | null;
   gross?: number | null;
 }
-/** `body[key]` as a series (`{chart, total, delta}`, OF's reply per series); none: null. */
 export function seriesOf(body: unknown, key: string): Series | null {
   const s = at(body, key);
   if (!isObj(s)) return null;
@@ -64,11 +46,6 @@ export function seriesOf(body: unknown, key: string): Series | null {
   return { chart, total: num(s.total), delta: num(s.delta), gross: num(s.gross) };
 }
 
-/**
- * An earnings chart from `/earnings/chart` for OF's tab key `key` (total, subscribes, tips_chat, chat_messages, …): OF's
- * reply is keyed by it (`{chartAmount, chartCount, total, gross, delta}`; OF answers its `messages_*` filter as
- * `chat_messages`, statistics-earnings.js). Today's Relay answers `[]`: null.
- */
 export function earningsSeries(body: unknown, key: string): { amount: unknown[] | null; count: unknown[] | null; total: number | null; gross: number | null; delta: number | null } | null {
   const own = at(body, key);
   if (!isObj(own)) return null;
@@ -77,10 +54,6 @@ export function earningsSeries(body: unknown, key: string): { amount: unknown[] 
   return { amount, count: points(own.chartCount), total: num(own.total), gross: num(own.gross), delta: num(own.delta) };
 }
 
-/**
- * OF's chart box (the generator's `data-oi-chartbox="<key>"`: its summary and its double-line chart, hidden): shown with
- * the series' total (money, or a count), its change and the pair drawn.
- */
 export function fillChartBox(doc: Document, key: string, total: number | null, delta: number | null, isMoney: boolean, main: Line, aside: Line | null, tz: string | null, showDelta = true) {
   const box = doc.querySelector<HTMLElement>(`[data-oi-chartbox='${key}']`);
   if (!box) return;
@@ -93,10 +66,6 @@ export function fillChartBox(doc: Document, key: string, total: number | null, d
   drawPair(doc, box, main, aside, tz);
 }
 
-/**
- * OF's fan cell (Fans, Top fans, Referred: avatar, name, @username), as captured on Fans › Subscriptions. OF links the
- * name to the fan's page, which the mirror does not have: the name alone.
- */
 export function fanCell(doc: Document, u: Fan, img: ((u: string) => string) | undefined) {
   const el = elOf(doc);
   const td = el("td", "m-responsive__equal-width_float m-fans-table-cell m-fans-cell-long");
@@ -115,10 +84,6 @@ export function fanCell(doc: Document, u: Fan, img: ((u: string) => string) | un
   return td;
 }
 
-/**
- * The page's empty state (the generator's `data-oi-empty`) and its table: with rows, the table shows and the empty state
- * goes; none (and none to come), OF's own text; otherwise (still reading) as the generator drew it.
- */
 export function rowsOrEmpty(doc: Document, table: HTMLElement | null | undefined, empty: Element | null | undefined, rows: number, done: boolean) {
   const holder = empty?.closest<HTMLElement>(".empty-message") ?? (empty as HTMLElement | null | undefined);
   if (rows) {
@@ -132,17 +97,11 @@ export function rowsOrEmpty(doc: Document, table: HTMLElement | null | undefined
   if (done && empty && text) setText(doc, empty, text);
 }
 
-/** A Top card's reply keyed by its tabs (`{purchases: item|null, …}`, as OF answers even for one tab). */
 export function topItems(body: unknown, tabs: string[]): Record<string, Record<string, unknown> | null> | null {
   if (!isObj(body)) return null;
   return Object.fromEntries(tabs.map((t) => [t, isObj(body[t]) ? (body[t] as Record<string, unknown>) : null]));
 }
 
-/**
- * OF's Top card (TopPost, TopMassMessage, TopStream, TopStory, TopFan): wherever the generator drew the clean state titled
- * `title`, its section title, its tabs (a tab with nothing disabled, as OF's; each picks `<pick>:<key>` in place) and
- * `body` for the picked tab. Nothing for any tab: OF's own empty text (the clean state's data-oi-empty).
- */
 export function topCard(doc: Document, title: string, tabs: [key: string, text: string][], items: Record<string, unknown> | null, picked: string, pick: string, body: (key: string) => Node[]): string | null {
   const enabled = tabs.filter(([k]) => items?.[k]);
   const cur = enabled.find(([k]) => k === picked)?.[0] ?? enabled[0]?.[0] ?? null;
@@ -170,7 +129,7 @@ export function topCard(doc: Document, title: string, tabs: [key: string, text: 
       b.type = "button";
       b.tabIndex = on ? -1 : 0;
       if (!items[key]) {
-        b.disabled = true; // OF's: nothing for that tab
+        b.disabled = true;
         b.classList.add("m-disabled");
       } else {
         b.setAttribute("data-oi-pick", `${pick}:${key}`);
@@ -188,8 +147,6 @@ export function topCard(doc: Document, title: string, tabs: [key: string, text: 
   return cur;
 }
 
-/** A More menu row: its text (texts_en.json), what a pick does (none: disabled with `notYet`, or `disabledTitle` where another
- *  Inflowwww page does it), OF's row class. */
 export interface MoreItem {
   label: string;
   onPick?: () => void;
@@ -197,11 +154,6 @@ export interface MoreItem {
   className?: string;
 }
 
-/**
- * OF's More button (the card's dots, DropdownWrapper "More"), opening its menu (`groups`, OF's dividers between them) in
- * OF's dropdown markup: a row OF's own action works in place, the rest are disabled with `notYet`. No rows: the button
- * is disabled with `notYet`.
- */
 export function moreButton(doc: Document, notYet: string, groups: MoreItem[][] = []) {
   const b = elOf(doc)("button", "btn dropdown-toggle m-post-btn m-btn-horizontal-dots has-tooltip") as HTMLButtonElement;
   b.type = "button";
@@ -236,12 +188,10 @@ export function moreButton(doc: Document, notYet: string, groups: MoreItem[][] =
   return w;
 }
 
-/** The user lists a count opens (OF's UserList modal, module 905016), by kind: [the Relay path and its id param, its titles]. */
 const USER_LISTS: Record<string, [path: string, param: string, title: string, tipsTitle?: string]> = {
   buyers: ["messages/queue/buyers", "queue_id", "Message buyers"],
   streams: ["streams/viewers", "stream_id", "Stream viewers", "Stream tips"],
   stories: ["stories/viewers", "story_id", "Story viewers", "Story tips"],
-  // The phase-1 Relay's (omf-statistics-relay-2): shown only when useOfStats' second probe finds it.
   "post-buyers": ["posts/buyers", "post_id", "Post Buyers"],
   "post-tips": ["posts/tips", "post_id", "Post tips"],
   "post-likes": ["posts/likes", "post_id", "Post likes"],
@@ -250,10 +200,8 @@ const USER_LISTS: Record<string, [path: string, param: string, title: string, ti
   campaign: ["campaigns/claimers", "campaign_id", "Tracking Link Subscribers"],
 };
 export type UserListKind = keyof typeof USER_LISTS;
-/** OF's user list page (its modal reads 10 at a time as the last row scrolls into view). */
 const USERS_PAGE = 10;
 
-/** A count OF links to its list (a stream's or story's viewers or tippers, a buyer list, an offer's claims): `data-oi-users`. */
 export function usersLink(doc: Document, text: string, kind: UserListKind, id: unknown, tipsOnly = false) {
   const el = elOf(doc)("span", "g-page__link m-click-area g-blue", ` ${text} `);
   el.setAttribute("role", "button");
@@ -262,7 +210,6 @@ export function usersLink(doc: Document, text: string, kind: UserListKind, id: u
   el.setAttribute("data-oi-wired", "");
   return el;
 }
-/** The Relay route of a `data-oi-users` list's page at `offset`. */
 export function usersRoute(mark: string, offset = 0): string | null {
   const [kind, id, tips] = mark.split(":");
   const list = USER_LISTS[kind];
@@ -274,14 +221,8 @@ export function usersRoute(mark: string, offset = 0): string | null {
 
 type UsersCtx = { accountId?: string | null; img?: (u: string) => string };
 const usersCtx = new WeakMap<Document, UsersCtx>();
-/** The account and image proxy the page's Relay reads use (bindUserLists keeps them per page). */
 export const readsCtx = (doc: Document): UsersCtx => usersCtx.get(doc) ?? {};
 
-/**
- * Open OF's user list (its modal: the fans with avatar, name and @username, then Close) for the `data-oi-users` mark
- * `mark`, read from the Relay page by page as its last row scrolls into view (OF's infinite loading); none: "Nothing
- * found"; an error: the Relay's.
- */
 export function openUsers(doc: Document, mark: string, opener?: Element) {
   if (!usersRoute(mark)) return;
   const [kind, , tips] = mark.split(":");
@@ -313,7 +254,6 @@ export function openUsers(doc: Document, mark: string, opener?: Element) {
             tr.append(fanCell(doc, u, img));
             tb.append(tr);
           }
-          // OF's: more while it says so (no flag: a full page may have more).
           const more = b?.hasMore === true || (b?.hasMore === undefined && users.length >= USERS_PAGE);
           const IO = doc.defaultView?.IntersectionObserver;
           if (!more || !users.length || !IO || !tb.lastElementChild) return;
@@ -332,7 +272,6 @@ export function openUsers(doc: Document, mark: string, opener?: Element) {
   }, [{ text: "Close", className: "g-btn m-flat m-btn-gaps m-reset-width", onClick: () => close() }], opener);
 }
 
-/** A `data-oi-users` count opens its user list (openUsers). Bound once per page. */
 export function bindUserLists(doc: Document, ctx: UsersCtx) {
   const bound = usersCtx.has(doc);
   usersCtx.set(doc, ctx);
@@ -345,7 +284,6 @@ export function bindUserLists(doc: Document, ctx: UsersCtx) {
   });
 }
 
-/** A table's rows: a copy of `tpl(item)` per item, filled by `fill`, after the templates; OF's empty row hidden while rows show. */
 export function intoRows<T>(doc: Document, body: Element | null | undefined, items: T[], tpl: (item: T) => HTMLElement | null, fill: (el: HTMLElement, item: T) => void) {
   if (!body) return;
   for (const item of items) {
@@ -361,11 +299,6 @@ export function intoRows<T>(doc: Document, body: Element | null | undefined, ite
 }
 
 
-/**
- * OF's media-count icons (QueuePostItem, notifications chunk module 785090, with is-hide-text-icon): photos (icon-media),
- * videos and GIFs (icon-video), audio (icon-voice), each with its count, then a poll or quiz and a fundraiser; none: null.
- * Markup as Engagement › Messages' captured row.
- */
 export function mediaCounts(doc: Document, item: { media?: unknown; hasVoting?: unknown; votingType?: unknown; fundRaising?: unknown }, notLast: boolean) {
   const media = Array.isArray(item.media) ? (item.media as { type?: string }[]) : [];
   const icons: [icon: string, n?: number][] = [];
@@ -387,7 +320,6 @@ export function mediaCounts(doc: Document, item: { media?: unknown; hasVoting?: 
   return box;
 }
 
-/** A post OF's top post routes answer (`/users/me/stats/top/post`: one per metric, null when none). */
 export interface TopPostItem {
   id?: number | string;
   postedAt?: string;
@@ -399,6 +331,5 @@ export interface TopPostItem {
   stats?: { purchasedSumm?: number | null; lookCount?: number | null; likeCount?: number | null } | null;
   media?: { files?: { thumb?: { url?: string | null } | null } | null }[] | null;
 }
-/** "$0" / "$1,234.50" / 12: OF's tipsAmount as a number. */
 export const amount = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" ? num(v.replace(/[^\d.-]/g, "")) : null);
 

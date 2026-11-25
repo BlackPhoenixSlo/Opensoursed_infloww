@@ -1,5 +1,3 @@
-"""all-models-shared-inbox's refresher checks (lib/all_models_refresher.py), its `refresher-per-subscriber` fault and
-`warm-ignores-reuse` under netting."""
 import asyncio
 import types
 
@@ -13,15 +11,15 @@ def test_per_creator_min_counts_only_the_refresher_kind():
     by = {r.KIND: 20, "walk:app_open_warm": 99}
     assert r.per_creator_min(by, 10, 120) == 1.0
     assert r.per_creator_min({}, 10, 120) == 0.0
-    assert r.per_creator_min(None, 10, 120) is None     # the counter unreadable: no number, the check fails
+    assert r.per_creator_min(None, 10, 120) is None
 
 
 @pytest.mark.parametrize("n3,n1,ok", [
     (1.0, 1.0, True),
-    (1.2, 0.95, True),           # gap 0.25 exactly
-    (1.2, 0.9, False),           # gap 0.3
-    (3.0, 1.0, False),           # per subscriber: the fault's shape
-    (0.0, 0.0, False),           # a refresher reading nothing: the floor
+    (1.2, 0.95, True),
+    (1.2, 0.9, False),
+    (3.0, 1.0, False),
+    (0.0, 0.0, False),
     (0.75, 0.8, False),
     (None, 1.0, False),
 ])
@@ -52,9 +50,9 @@ def test_staleness_past_the_bound_fails():
 
 
 @pytest.mark.parametrize("rows,key", [
-    ({"a": _fr(5), "b": _fr(5, at=False)}, "never"),          # tracked, never refreshed
-    ({"a": _fr(5), "b": None}, "missing"),                    # no `freshness`: the knob off
-    ({"a": _fr(5), "b": _fr(5, cycle_s=None)}, "missing"),    # untracked
+    ({"a": _fr(5), "b": _fr(5, at=False)}, "never"),
+    ({"a": _fr(5), "b": None}, "missing"),
+    ({"a": _fr(5), "b": _fr(5, cycle_s=None)}, "missing"),
 ])
 def test_staleness_gaps_fail(rows, key):
     st = r.staleness([_s("idle", **rows)])
@@ -74,8 +72,6 @@ def test_register_targets_flat_in_n_alone():
 
 
 def test_fault_queues_one_entry_per_further_tab_subscriber(monkeypatch):
-    """Three tab subscribers hold Creator 1 (one tab stream and an unclamped one do not count): its job plus two
-    copies, each its own exit entry, always wanted, each a `shared_refresher` walk of the server's read."""
     ex = types.SimpleNamespace(jobs={}, task=object())
 
     class _Job:
@@ -126,9 +122,8 @@ def test_fault_queues_one_entry_per_further_tab_subscriber(monkeypatch):
 
     for key in ("1#sub1", "1#sub2"):
         asyncio.run(turn(key))
-        del ex.jobs[key]                      # the worker popped it
+        del ex.jobs[key]
     assert walks == [("1", "shared_refresher")] * 2 and reads == ["1", "1"]
-    # Creator 1's own entry still queued: the gate absorbs the next job, never its copies
     assert warm.refresh("1", real_run, wanted=real_wanted) is False
     assert sorted(k for k in ex.jobs if k.startswith("1")) == ["1", "1#sub1", "1#sub2"]
 
@@ -138,10 +133,9 @@ def _sample(t: float, **rows) -> dict:
 
 
 def test_fresh_until_maps_the_relay_clock_through_the_sample():
-    # sample at scenario t=100 (relay now = 1_000_000 ms): a's Last refresh 50 s old, Cycle 60 -> within until t=110
     s = _sample(100.0, a=_fr(50), b=_fr(5), c=_fr(59.5), d=None, e=_fr(5, at=False), f=_fr(5, cycle_s=None))
-    assert r.fresh_until(s, 109.9) == ["a", "b"]              # c's Cycle ended at 100.5
-    assert r.fresh_until(s, 110.0) == ["b"]                   # a's ends at 110
+    assert r.fresh_until(s, 109.9) == ["a", "b"]
+    assert r.fresh_until(s, 110.0) == ["b"]
     assert r.fresh_until(s, 100.4) == ["a", "b", "c"]
     assert r.fresh_until({"t": 0, "rows": {}}, 0) == []
 
@@ -157,14 +151,14 @@ def test_open_after_cycle_every_creator_within_cycle_reused():
 
 
 @pytest.mark.parametrize("kw,why", [
-    ({"warmed": {"a": 5}}, "warm read"),                                  # a within its Cycle was read: no netting
-    ({"warmed": {"a": 5, "b": 5, "c": 5, "d": 5}, "answers": ["started"]}, "warm read"),   # the fault's shape
-    ({"answers": ["started"]}, "answers"),                                # started, yet no Creator past its Cycle read
-    ({"answers": [None]}, "answers"),                                     # the opened post never answered
-    ({"answers": []}, "answers"),                                         # no opened post
+    ({"warmed": {"a": 5}}, "warm read"),
+    ({"warmed": {"a": 5, "b": 5, "c": 5, "d": 5}, "answers": ["started"]}, "warm read"),
+    ({"answers": ["started"]}, "answers"),
+    ({"answers": [None]}, "answers"),
+    ({"answers": []}, "answers"),
     ({"own_total": r.OPEN_TOTAL_MAX + 1}, "own total"),
-    ({"own_total": None}, "own total"),                                   # the counter unreadable
-    ({"fresh": ["a"]}, "within Cycle"),                                   # most Creators past their Cycle: no verdict
+    ({"own_total": None}, "own total"),
+    ({"fresh": ["a"]}, "within Cycle"),
 ])
 def test_open_after_cycle_fails(kw, why):
     v = _verdict(**kw)
@@ -172,8 +166,6 @@ def test_open_after_cycle_fails(kw, why):
 
 
 def test_open_after_cycle_a_creator_past_its_cycle_may_start():
-    """A Creator whose Last refresh had passed its Cycle at the open (between the refresher's slot and its next 5 s
-    tick) is warmed instead: one read, not two; the open then answers `started`."""
     v = _verdict(fresh=["a", "b", "c"], warmed={"d": 6}, answers=["started"])
     assert v["ok"] and v["warm_started_past_cycle"] == ["d"], v
     assert _verdict(fresh=["a", "b", "c"], warmed={"d": 6}, answers=["reused"])["ok"]
@@ -202,12 +194,11 @@ def test_warm_ignores_reuse_forgets_warms_and_the_shared_last_refresh(monkeypatc
 
 
 def _counter(**per) -> dict:
-    """(kind, key, Creator) -> n from `a=(users_me, list_calls)`."""
     out = {}
     for aid, (me, lists) in per.items():
         out[(r.KIND, r.ME_KEY, aid)] = me
         out[(r.KIND, r.LIST_KEY, aid)] = lists
-        out[("route:GET /admin/screens/inbox", r.LIST_KEY, aid)] = 99      # another kind: never counted
+        out[("route:GET /admin/screens/inbox", r.LIST_KEY, aid)] = 99
     return out
 
 
@@ -217,7 +208,7 @@ def test_per_cycle_one_users_me_and_at_most_one_window_a_cycle():
     assert v["cap_reads"] == 3 and v["ok"]
 
 
-@pytest.mark.parametrize("me,lists", [(4, 0), (2, 10)])   # a 4th /users/me in 2 Cycles; a window read every tick
+@pytest.mark.parametrize("me,lists", [(4, 0), (2, 10)])
 def test_per_cycle_over_the_cap(me, lists):
     assert not r.per_cycle(_counter(a=(0, 0)), _counter(a=(me, lists)), ["a"], 120, 60)["ok"]
 
@@ -257,9 +248,9 @@ def test_unread_total_frozen_keeps_each_creators_first_number(monkeypatch):
         monkeypatch.setitem(__import__("sys").modules, name, mod)
     amf._unread_total_frozen()
     ut.observe("1", {"chatMessagesCount": 9}, 1)
-    ut.observe("1", {"chatMessagesCount": 8}, 2)          # a read on OF web: dropped
-    ut.observe("1", {}, 3)                                 # no number: passed through (observe ignores it)
-    ut.observe("2", {"chatMessagesCount": 4}, 4)          # another Creator's first
+    ut.observe("1", {"chatMessagesCount": 8}, 2)
+    ut.observe("1", {}, 3)
+    ut.observe("2", {"chatMessagesCount": 4}, 4)
     assert seen == [("1", 9, 1), ("1", None, 3), ("2", 4, 4)]
 
 
@@ -268,12 +259,12 @@ def _c(phase: str, text):
 
 
 @pytest.mark.parametrize("samples,ok,stale,read", [
-    ([_c("idle", "Unread70"), _c("idle_one_tab", "Unread 64")], True, 0, 2),          # quiet, confirmed: no age
-    ([_c("idle", "Unread70"), _c("idle", "Unread70as of 2 min")], False, 1, 2),      # the fault's shape
-    ([_c("idle", "Unread 70 As Of")], True, 0, 1),                                    # the contract is lower case
-    ([_c("idle", None), _c("idle", "Unread70")], True, 0, 1),                         # a missing sample: no verdict
-    ([_c("idle", None)], False, None, 0),                                             # no text read: fail
-    ([], False, None, 0),                                                             # no sample: fail
+    ([_c("idle", "Unread70"), _c("idle_one_tab", "Unread 64")], True, 0, 2),
+    ([_c("idle", "Unread70"), _c("idle", "Unread70as of 2 min")], False, 1, 2),
+    ([_c("idle", "Unread 70 As Of")], True, 0, 1),
+    ([_c("idle", None), _c("idle", "Unread70")], True, 0, 1),
+    ([_c("idle", None)], False, None, 0),
+    ([], False, None, 0),
 ])
 def test_quiet_stale(samples, ok, stale, read):
     v = r.quiet_stale(samples)
@@ -299,4 +290,4 @@ def test_fresh_ping_off_drops_the_pings_fresh(monkeypatch):
     ev = types.SimpleNamespace(_fresh=lambda sub, sr: {"1": 5})
     monkeypatch.setitem(__import__("sys").modules, "events", ev)
     amf._fresh_ping_off()
-    assert ev._fresh(object(), object()) is None     # events_wire.ping(ts, None) sends `{ts}` only
+    assert ev._fresh(object(), object()) is None

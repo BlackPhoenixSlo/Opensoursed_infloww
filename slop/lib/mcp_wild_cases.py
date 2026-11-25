@@ -1,14 +1,3 @@
-"""The MCP server's hostile case table and its judges (scenarios/2026-11-14-mcp-wild.py), pure: no I/O, so
-lib/test_mcp_wild.py checks the table and every judge without a stack.
-
-A Case is one HTTP request a client could send to POST /admin/mcp (or, for the token-scope and report-file
-cases, another route) with what it must answer: the HTTP status set, the JSON-RPC error code (None: a result
-or a non-JSON-RPC answer), and for tools/call the tool outcome (`tool`: "ok" = result not isError, an int or
-a tuple of ints = isError with that error.status). `who` names the identity the scenario attaches
-(`IDENTITIES`); `xff` gives a hostile sign-in its own throttle bucket (TEST-NET-3 address). `unread`: refused
-on its headers or size before the body is read, so the answer's id is null. `bug` names a suspected product
-bug (file:line) the case is expected to trip until fixed.
-"""
 from __future__ import annotations
 
 import base64
@@ -30,11 +19,11 @@ TOKEN_REFUSED = "not allowed with an access token"
 NEEDS_TOKEN = "this tool needs an access token"
 IDENTITIES = ("anon", "a", "b", "a_revoked", "a_query", "a_lower", "a_emp_hdr", "cookie_a", "cookie_b_plus_a",
               "employee", "garbage", "bare_ifw", "basic", "bearer_empty")
-# What an answer must never show a client: a stack, a source path, an exception class, a driver.
 LEAKS = ("Traceback", 'File "', '.py"', ".py:", "site-packages", "/service/", "sqlalchemy", "sqlite3.",
          "pydantic_core", "Exception:", "Error(", "asyncio.", "httpx.")
 GOOD_PLAN_TEXT = "new set tonight, open it"
-BAD_TOTP_SPREAD = 2   # a wrong code avoids every step in now ± this (the verifier's window is ±1)
+# the verifier accepts step +- 1
+BAD_TOTP_SPREAD = 2
 
 
 @dataclass(frozen=True)
@@ -42,18 +31,18 @@ class Case:
     name: str
     group: str
     who: str = "anon"
-    body: Any = None              # JSON-able (sent as JSON) or bytes (sent raw)
+    body: Any = None
     method: str = "POST"
     path: str = MCP
     headers: tuple[tuple[str, str], ...] = ()
     status: tuple[int, ...] = (200,)
     code: int | None = None
-    tool: Any = None              # None: no tools/call outcome to hold; "ok"; int | tuple[int, ...]
-    checks: tuple[str, ...] = ()  # invariants this case feeds besides the group-wide ones
+    tool: Any = None
+    checks: tuple[str, ...] = ()
     xff: str | None = None
-    unread: bool = False          # refused before the body is read (Origin, credential, version header, size)
+    unread: bool = False
     bug: str = ""
-    secrets: tuple[str, ...] = field(default=(), compare=False)   # request values no answer may echo
+    secrets: tuple[str, ...] = field(default=(), compare=False)
 
 
 def rpc(method: Any, params: Any = None, rid: Any = 1, **extra) -> dict:
@@ -75,8 +64,6 @@ def raw(obj_text: str) -> bytes:
 
 
 def request_id(body: Any) -> Any:
-    """The id an answer must echo: a valid JSON-RPC request's id, else None (the server cannot know it).
-    Raw bytes parse like the server's json.loads (NaN, lone surrogates); unparseable → None."""
     if isinstance(body, bytes):
         try:
             body = json.loads(body)
@@ -93,7 +80,6 @@ def mass_step(aid: str, sid: str = "mass", text: str = GOOD_PLAN_TEXT, **kw) -> 
     return {"id": sid, "tool": "mass_send", "args": {"account_id": aid, "text": text, "user_lists": ["fans"], **kw}}
 
 
-# ── the table ────────────────────────────────────────────────────────────────────────────────────────────
 
 def protocol_cases() -> list[Case]:
     P = "protocol"
@@ -208,7 +194,6 @@ def auth_cases(ids: dict) -> list[Case]:
     ]
 
 
-# (method, path, body) a token must never reach: token_auth's allowlist answers 403 REFUSED.
 def scope_routes(ids: dict) -> list[tuple[str, str, Any]]:
     a, plan = ids["a_aid"], ids["a_plan"] or "0" * 32
     return [
@@ -353,7 +338,6 @@ def plan_cases(ids: dict) -> list[Case]:
 
 
 def plan_followups(ids: dict) -> list[Case]:
-    """Once pl_good stored A's plan: its status (never OK'd) and the OK no token or foreign cookie may give."""
     G = "plans"
     return [
         Case("pl_status_own", G, who="a", body=call("plan_status", {"plan_id": ids["a_plan"]}), tool="ok"),
@@ -367,7 +351,6 @@ def plan_followups(ids: dict) -> list[Case]:
 
 
 def report_file_cases(ids: dict) -> list[Case]:
-    """A's file (made by ar_report_file_ok) and B's (made in setup): only the maker downloads."""
     G, C = "args", ("report_file_owner_only",)
     fa, fb = ids["a_file"], ids["b_file"]
     return [
@@ -383,7 +366,6 @@ def report_file_cases(ids: dict) -> list[Case]:
 
 
 def signup_cases(ids: dict) -> list[Case]:
-    """Anonymous register/login; each on its own X-Forwarded-For (203.0.113.<n>) so throttles never cross cases."""
     G = "signup"
     u, pw, new = ids["a_user"], ids["a_password"], ids["new_user"]
     emp, emp_pw = ids["emp_user"], ids["emp_password"]
@@ -430,8 +412,8 @@ def signup_cases(ids: dict) -> list[Case]:
     return [Case(**{**c.__dict__, "xff": f"203.0.113.{10 + i}"}) for i, c in enumerate(cases)]
 
 
+# n must exceed the per-name throttle bucket (5)
 def login_burst(ids: dict, n: int = 8) -> list[Case]:
-    """`n` wrong passwords for one unknown name from one address: past the per-name bucket (5) → 429."""
     name = ids["new_user"] + "burst"
     return [Case(f"su_burst_{i:02d}", "signup", body=call("login", {"username": name, "password": f"burst-pw-{i}"}),
                  tool=(401, 429), xff="203.0.113.200", secrets=(f"burst-pw-{i}",)) for i in range(n)]
@@ -444,7 +426,6 @@ def two_factor_followup(ids: dict) -> Case:
                 tool="ok", xff="203.0.113.60", secrets=(ids["tf_password"],))
 
 
-# ── the volume mix: (weight, name, who, body); answers judged like the table, statuses histogrammed ─────────
 
 def mix_table(ids: dict) -> list[tuple[int, str, str, Any]]:
     a, b = ids["a_aid"], ids["b_aid"]
@@ -468,7 +449,6 @@ def mix_table(ids: dict) -> list[tuple[int, str, str, Any]]:
     ]
 
 
-# ── judges ───────────────────────────────────────────────────────────────────────────────────────────────
 
 def parse(text: str) -> Any:
     try:
@@ -478,7 +458,6 @@ def parse(text: str) -> Any:
 
 
 def tool_outcome(parsed: Any) -> tuple[bool | None, int | None, Any]:
-    """(isError, error.status, error.detail) of a tools/call result; (None, None, None) when it is none."""
     res = parsed.get("result") if isinstance(parsed, dict) else None
     if not isinstance(res, dict) or "isError" not in res:
         return None, None, None
@@ -489,16 +468,11 @@ def tool_outcome(parsed: Any) -> tuple[bool | None, int | None, Any]:
     return bool(res["isError"]), None, None
 
 
-_BEARER = re.compile(r"bearer(?: |$)", re.IGNORECASE)  # the challenge's scheme, exactly
+_BEARER = re.compile(r"bearer(?: |$)", re.IGNORECASE)
 
 
 def wellformed(status: int, ctype: str, text: str, req_id: Any, *, mcp: bool = True,
                www_auth: str = "") -> str | None:
-    """Why one answer is not a proper answer to a client, else None. An MCP-endpoint answer is a JSON-RPC
-    2.0 object (one of result/error; error {code int known, message non-empty str}; id echoed, None when
-    the request's was unusable; an error code on its HTTP status), a 202 with no body, a 405, or the token
-    layer's 401; every 401 carries a WWW-Authenticate: Bearer challenge (the client's sign-in starts from it).
-    Off the endpoint: any answer below 500."""
     if status >= 500:
         return f"HTTP {status}"
     if not mcp:
@@ -538,7 +512,6 @@ def wellformed(status: int, ctype: str, text: str, req_id: Any, *, mcp: bool = T
 
 
 def leaks(text: str, secrets: tuple[str, ...] = ()) -> list[str]:
-    """What an answer shows that it never should: LEAKS markers and any request secret echoed back."""
     out = [m for m in LEAKS if m in text]
     out += [f"secret:{s[:3]}…" for s in secrets if s and len(s) >= 4 and s in text]
     return out
@@ -549,7 +522,6 @@ def sentinel_hits(text: str, sentinels: tuple[str, ...]) -> list[str]:
 
 
 def expect_problems(case: Case, status: int, parsed: Any) -> list[str]:
-    """How one answer differs from the case's expectation (empty: as expected)."""
     out = []
     if status not in case.status:
         out.append(f"status {status} not in {case.status}")
@@ -577,7 +549,6 @@ def tool_names(parsed: Any) -> set[str]:
 
 
 def redact(obj: Any, secrets: dict[str, str]) -> Any:
-    """`obj` with every secret value (token, password, code) swapped for its <label>, recursively."""
     if isinstance(obj, str):
         for val, lab in sorted(secrets.items(), key=lambda kv: -len(kv[0])):
             if val and len(val) >= 4:
@@ -592,7 +563,6 @@ def redact(obj: Any, secrets: dict[str, str]) -> Any:
 
 
 def short_body(body: Any, limit: int = 600) -> Any:
-    """A request body as evidence: JSON objects kept (long strings cut), raw bytes as a cut repr."""
     if isinstance(body, bytes):
         s = body.decode("utf-8", "backslashreplace")
         return {"raw": s[:limit] + (f"… (+{len(s) - limit} chars)" if len(s) > limit else "")}
@@ -615,7 +585,6 @@ def pct(values: list[float], q: float) -> float | None:
     return round(s[min(len(s) - 1, int(len(s) * q))], 1)
 
 
-# ── TOTP (RFC 6238: SHA-1, 30 s, 6 digits), as service/account_security.totp ─────────────────────────────
 
 def totp(secret_b32: str, step: int) -> str:
     key = base64.b32decode(secret_b32.upper() + "=" * (-len(secret_b32) % 8))
@@ -625,6 +594,5 @@ def totp(secret_b32: str, step: int) -> str:
 
 
 def bad_code(secret_b32: str, step: int) -> str:
-    """A 6-digit code that no step in step ± BAD_TOTP_SPREAD accepts."""
     near = {totp(secret_b32, step + k) for k in range(-BAD_TOTP_SPREAD, BAD_TOTP_SPREAD + 1)}
     return next(c for c in (f"{n:06d}" for n in range(0, 1_000_000, 111_111)) if c not in near)

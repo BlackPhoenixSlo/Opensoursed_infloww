@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * useSellFolders — what Full AI Chat's Content folders picker lists (ticket 49): the Creator's internal vault folders
- * (GET /admin/vault-ai/internal-folders, `vf:<id>`) and OF lists from the mirror (`useOfFoldersMirror`, `of:<id>`).
- * The folder dialog mounts only while open, so that is the gate.
- */
 
 import { useQuery } from "@tanstack/react-query";
 

@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * ImportCaptionsButton — "Import captions" for any text-variant pool: a file
- * (.csv / .txt / .json) or pasted text, parsed by `parseCaptions` and merged by
- * `mergeCaptions` (a lone blank variant is replaced, else appended; dupes of the
- * pool skipped; `max` = the pool's cap). `onImport` gets only the captions that
- * fit; the outcome is toasted. Nothing parsed / nothing fits → toast, no change.
- *
- * Its root is `display: contents`, so in the caller's `flex flex-wrap` row the
- * trigger sits beside "Add variant" and the open panel wraps onto its own
- * full-width line (no absolute popover to overflow a phone or a modal's scroll).
- */
 
 import { useId, useRef } from "react";
 
@@ -21,7 +10,6 @@ import { mergeCaptions, parseCaptions, type MergeResult } from "@/lib/parseCapti
 
 const ACCEPT = ".csv,.tsv,.txt,.json,text/*,application/json";
 
-/** The toast line for one import. */
 export function importSummary(found: number, r: MergeResult, max?: number): string {
   if (!found) return "No captions found.";
   const parts = [`Imported ${r.added.length} caption${r.added.length === 1 ? "" : "s"}`];
@@ -31,11 +19,9 @@ export function importSummary(found: number, r: MergeResult, max?: number): stri
 }
 
 export function ImportCaptionsButton({ current, onImport, max, className }: {
-  /** The pool as it is now (for the blank-replace, dupe and cap counts). */
   current: string[];
   onImport: (items: string[]) => void;
   max?: number;
-  /** Extra trigger classes (the trigger is a kit link button). */
   className?: string;
 }) {
   const { open, setOpen, ref } = useOutsideClose<HTMLDivElement>();
@@ -79,11 +65,10 @@ export function ImportCaptionsButton({ current, onImport, max, className }: {
         onChange={(e) => void onFile(e.target.files?.[0])}
       />
       {open && (
-        // Escape closes this panel only, never the dialog around it (which would drop the whole draft): the modal
-        // skips a defaultPrevented Escape (useModalFocus).
         <div role="dialog" aria-label="Import captions" className="basis-full"
           onKeyDown={(e) => {
             if (e.key !== "Escape") return;
+            // Escape closes this panel only: the modal skips a defaultPrevented Escape (useModalFocus)
             e.preventDefault();
             setOpen(false);
             triggerRef.current?.focus();

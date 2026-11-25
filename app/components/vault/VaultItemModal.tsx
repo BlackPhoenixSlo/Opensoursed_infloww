@@ -1,9 +1,5 @@
 "use client";
 
-/** The vault item popup, laid out from Infloww Vault Pro's media viewer: a dimmed mask over the grid; the media on
- *  black with its date and ‹ › to step through the grid's items (or ← →); "Media details" on the right
- *  (`VaultItemEditor`). A full-screen sheet on a phone. Backdrop, ✕ and Escape close it; with unsaved edits,
- *  closing or stepping away asks first. */
 
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
@@ -15,14 +11,12 @@ import { VaultDeleteButton } from "@/components/vault/VaultSelectionBar";
 import { VaultItemEditor } from "@/components/vault/VaultItemEditor";
 import { type Tile } from "@/components/vault/vaultManageActions";
 
-/** "May 27, 2024", as Infloww's chip; null for a missing or unreadable date. */
 export function mediaDate(iso: string | undefined): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-/** A key the user is typing into a field, not a command for the popup. */
 const typing = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
 
@@ -45,23 +39,18 @@ export default function VaultItemModal({
 }: {
   media: Tile;
   accountId: string;
-  /** The grid's neighbours of `media` (null at an end). */
   prev: Tile | null;
   next: Tile | null;
   onStep: (t: Tile) => void;
   onClose: () => void;
-  /** Escape: the panel closes its full-screen player first, then this. */
   onEscape: () => void;
-  /** Something above the popup has the keys (the full-screen player): ← → do nothing. */
   keysOff: boolean;
   onExpand: () => void;
   onSaved: (updated: Record<string, unknown>) => void;
-  /** Omitted: no "Remove from vault" (the Inflowwww folders editor, which never writes to OnlyFans). */
   onDeleted?: () => void;
   describeSlot: ReactNode;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
-  // The editor's unsaved edits: closing or stepping away asks before throwing them out.
   const dirtyRef = useRef(false);
   const onDirtyChange = useCallback((d: boolean) => {
     dirtyRef.current = d;
@@ -76,10 +65,8 @@ export default function VaultItemModal({
   const step = useCallback((t: Tile) => leave(() => onStep(t)), [leave, onStep]);
   // A layer above (the full-screen player) takes this Escape for itself: nothing is discarded.
   useModalFocus(boxRef, keysOff ? onEscape : () => leave(onEscape));
-  // "More info": closed by default (nobody needs the extras until they ask); kept while stepping.
   const [more, setMore] = useState(false);
 
-  // ← → step through the grid, unless a field has the keys or a layer above (the zoom, the player) is open.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (keysOff || e.defaultPrevented || e.altKey || e.metaKey || e.ctrlKey || typing(e.target)) return;
@@ -100,8 +87,8 @@ export default function VaultItemModal({
   return (
     <div
       className="fixed inset-x-0 top-[var(--vvt,0px)] z-50 h-[var(--vvh,100dvh)] flex items-center justify-center bg-black/70 md:p-6"
-      // pointerdown, not click: a text selection dragged out of a field onto the backdrop must not close it.
       onPointerDown={(e) => {
+        // pointerdown, not click: a text selection dragged out of a field onto the backdrop must not close it.
         if (e.target === e.currentTarget) close();
       }}
     >

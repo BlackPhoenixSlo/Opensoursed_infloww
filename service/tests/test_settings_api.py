@@ -1,18 +1,5 @@
 #!/usr/bin/env python3
-"""Settings blobs: one JSON object per Agency and Blob tab, on the Relay.
-
-`GET /admin/settings/{tab}` reads the signed-in owner's blob (`{}` when none is
-stored) and `PUT /admin/settings/{tab}` replaces it whole (ADR-0007). Only the
-six Blob tabs and `flags` are accepted. The check order is 401 (no User — a Chatter session
-too) → 404 (not a Blob tab) → 413 (body over 64 KB) → 400 (not a JSON object,
-or a value its tab's schema refuses, named by its dotted path). A saved blob is
-stamped `version: 1`; unknown keys are kept. Consumers read a stored blob
-through `applied_blob`, which drops each invalid stored field
-(docs/spec/phase-04-apply-stored-settings.md).
-
-Run: ./venv/bin/python service/tests/test_settings_api.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -93,7 +80,6 @@ def case_put_then_get_round_trips_the_whole_blob():
     assert got.status_code == 200
     assert got.json() == {"tab": "preferences", "config": stamped}, got.json()
 
-    # A second PUT replaces the blob whole: a key it leaves out is gone.
     r = client.put("/admin/settings/preferences", json={"name": "Alpha Two"})
     assert r.status_code == 200
     got = client.get("/admin/settings/preferences").json()
@@ -173,7 +159,6 @@ def case_no_session_is_401_on_get_and_put():
     assert client.get("/admin/settings/account").status_code == 401
     r = client.put("/admin/settings/account", json={"a": 1})
     assert r.status_code == 401, f"{r.status_code}"
-    # 401 comes before 404: an anonymous caller learns nothing about the tabs.
     assert client.get("/admin/settings/nope").status_code == 401
 
 
@@ -190,7 +175,6 @@ def case_chatter_session_is_401():
 def case_two_agencies_are_isolated():
     a = _login("alpha_one")
     b = _login("beta_two")
-    # "roles" is the blob Batch edit roles writes (Phase 5 story 55): same one handler, same isolation.
     for tab in ("sales", "roles"):
         assert a.put(f"/admin/settings/{tab}", json={"who": "Alpha One"}).status_code == 200, tab
         assert b.put(f"/admin/settings/{tab}", json={"who": "Beta Two"}).status_code == 200, tab
@@ -199,7 +183,6 @@ def case_two_agencies_are_isolated():
 
 
 def case_deleting_the_user_removes_its_rows():
-    """CASCADE actually firing — `PRAGMA foreign_keys=ON` is wired at connect."""
     client = _login("gamma_three")
     assert client.put("/admin/settings/roles",
                       json={"who": "Gamma Three"}).status_code == 200
@@ -212,7 +195,6 @@ def case_deleting_the_user_removes_its_rows():
     assert asyncio.run(_rows(_U["gamma"])) == [], "rows outlived their User"
 
 
-# ── Validation and versioning (Phase 4 ticket 20) ───────────────────
 
 def _role(rid: str, name: str, **over) -> dict:
     return {"id": rid, "name": name, "description": "", "permissions": {"/chats": True},
@@ -288,17 +270,14 @@ def case_each_tab_refuses_a_bad_value_naming_its_dotted_path_and_stores_nothing(
         _refused(client, tab, body, path, label)
     assert asyncio.run(_rows(_U["delta"])) == [], "a refused blob was stored"
 
-    # The bounds themselves pass.
     ok = [
         ("account", {"agency_name": "x" * 128}),
         ("preferences", {"tz": "Europe/Paris", "report_tz": "America/New_York", "week_start": "sunday",
                          "language": "es", "hide_trial_popup": True}),
         ("time-tracking", {"enabled": True, "auto_clock_out_minutes": 1, "clock_in_reminder": False}),
         ("time-tracking", {"enabled": True, "auto_clock_out_minutes": 999, "clock_in_reminder": True}),
-        # Unknown ids are kept: the roles blob may hold them later.
         ("time-tracking", {"enabled": True, "role_ids": ["owner", "admin", "role-gone"]}),
         ("time-tracking", {"role_ids": []}),
-        # A preset ending before it starts ends the next day.
         ("shifts", {"presets": [{"start": "00:00", "end": "23:59"}, {"start": "22:00", "end": "06:00"}]
                            * 25}),
         ("shifts", {"presets": []}),
@@ -326,16 +305,13 @@ def case_partial_blobs_save_unknown_keys_round_trip_and_version_is_stamped_1():
     assert r.json() == {"tab": "preferences", "config": want}, r.json()
     assert client.get("/admin/settings/preferences").json()["config"] == want
 
-    # Unknown keys inside a nested object are kept too.
     body = {"attribution": {"messages": "converters", "later_key": "kept"}}
     assert client.put("/admin/settings/sales", json=body).status_code == 200
     assert client.get("/admin/settings/sales").json()["config"] == {**body, "version": 1}
 
-    # An explicit version 1 is accepted as is.
     r = client.put("/admin/settings/messaging", json={"version": 1, "ai_translation": True})
     assert r.status_code == 200 and r.json()["config"] == {"version": 1, "ai_translation": True}, r.text
 
-    # Any other version is refused, and the stored blob is untouched.
     for version in (2, 0, "1", True, None):
         _refused(client, "messaging", {"version": version, "ai_translation": False},
                  "messaging.version", f"version {version!r}")
@@ -357,7 +333,6 @@ def case_role_assignments_must_name_a_held_role_and_ids_and_names_are_unique():
     _refused(client, "roles", {"roles": [*roles, _role("role-c", "  cLOSER ")]},
              "roles.roles.2.name", "case-insensitive duplicate name")
 
-    # The built-in owner and admin always pass, with or without a roles list.
     body = {"assignments": {"emp-1": "owner", "emp-2": "admin"}}
     assert client.put("/admin/settings/roles", json=body).status_code == 200
     body = {"enforce": True, "roles": roles,
@@ -368,10 +343,6 @@ def case_role_assignments_must_name_a_held_role_and_ids_and_names_are_unique():
 
 
 def case_a_batch_edit_roles_save_keeps_every_other_key_and_an_invalid_one_is_refused():
-    """Manage employees' "Batch edit roles" PUTs the whole roles blob with one
-    role set for several Employee ids (docs/spec/phase-05-remaining-parity-
-    gaps.md, story 9). The Relay's validation is the only gate: a save naming
-    a role the blob does not hold is refused and the stored blob is kept."""
     asyncio.run(_seed_user("epsilon_five"))
     client = _login("epsilon_five")
     stored = {"enforce": True, "roles": [_role("role-a", "Closer"), _role("role-b", "Opener")],
@@ -408,11 +379,6 @@ def case_check_order_is_401_then_404_then_413_then_400():
 
 
 def case_a_stored_invalid_field_is_served_unchanged_and_the_next_put_names_it():
-    """A blob written straight into the store (as if saved before this Phase)
-    with one invalid field: GET shows it unchanged, and the next PUT of that
-    same blob answers 400 naming the field. That the field reads at its default
-    with the rest intact is asserted at its consumers' HTTP routes
-    (test_clock_api.py, test_shifts_api.py)."""
     stored = {
         "time-tracking": ({"enabled": True, "auto_clock_out_minutes": 0, "clock_in_reminder": True,
                            "extra": "kept"},

@@ -1,50 +1,7 @@
 #!/usr/bin/env python3
-"""
-Shift schedule and clock decisions — table tests over the pure cores the
-`/admin/shifts` routers call (no DB, no loop):
-
-  case_timesheet_by_employee:  shifts_timesheet.timesheet_rows per Employee: an
-                               occurrence and an event crossing the range edge are
-                               clipped; a multi-employee Shift counts once per
-                               Employee; an open event runs to now and sets
-                               open_now; a share before the range or after now is
-                               not counted; a key with only a sale gets a row.
-  case_timesheet_by_account:   the same per Creator: one count per Creator however
-                               many Employees; only `on_creator` time counts, so an
-                               agency-wide event with no span adds nothing.
-  case_overlap_s:              seconds of [a, b) inside [lo, hi); disjoint → 0.
-  case_find_overlaps_edges:    touching ends never clash; an overlap is reported at
-                               its occurrence start; results in (start, id) order.
-  case_find_overlaps_multi:    own double-staffing once per Creator, first.
-  case_find_overlaps_repeat:   weekly series: the first clashing occurrence, a
-                               cancelled date skipped; `hits` carries every clash
-                               within OVERLAP_HORIZON.
-  case_clock_gate_table:       clock_api.clock_gate: every `_REFUSALS` reason in
-                               precedence, and the allowed rows.
-  case_needs_roles_table:      clock_api.needs_roles: the roles blob is read only
-                               with time tracking on, a saved role list, not owner.
-  case_due_clock_outs_table:   clock_api.due_clock_outs: due exactly at N minutes,
-                               not a microsecond before; heartbeat / audit activity
-                               push the deadline; none open → nothing.
-  case_time_tracking_of:       clock_api.time_tracking_of: defaults (off, 10
-                               minutes, no role list), literal `true` only.
-  case_write_txn_table:        shifts_api._write_txn (the create / edit write
-                               transaction): N concurrent check-then-insert
-                               writers on one slot store exactly one row, its
-                               after-commit hook runs once, after the COMMIT;
-                               a raise stores nothing and runs no hook (a
-                               scratch table of its own).
-  case_create_race_one_lands:  8 concurrent POST /admin/shifts on one Creator
-                               and slot through the real handler, the overlap
-                               check slowed 50 ms: one 200, seven 409, one Shift
-                               row (red if the check leaves the write's
-                               transaction).
-
-Run: ./venv/bin/python service/tests/test_shifts_decide.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; only the last two cases touch it)
+import _harness  # MUST be first: binds temp DB
 
 import asyncio  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
@@ -59,7 +16,7 @@ from shifts_api import _write_txn, find_overlaps  # noqa: E402
 from shifts_timesheet import _overlap_s, timesheet_rows  # noqa: E402
 
 H = timedelta(hours=1)
-LO, HI = datetime(2026, 11, 2), datetime(2026, 11, 9)   # Monday 2 Nov to Monday 9 Nov
+LO, HI = datetime(2026, 11, 2), datetime(2026, 11, 9)
 NOW = datetime(2026, 11, 5, 12)
 
 
@@ -77,21 +34,19 @@ def _share(emp, acc, at, cents):
     return SimpleNamespace(employee_id=emp, account_id=acc, occurred_at=at, amount_cents=cents)
 
 
-# The Timesheet bench: Shift 1 crosses the range's start (Sun 22:00 → Mon 06:00),
-# Shift 2 puts Employees 10 and 11 on Creator c1, and 11 on c2 too.
 SH1 = _shift(1, datetime(2026, 11, 1, 22), datetime(2026, 11, 2, 6))
 SH2 = _shift(2, datetime(2026, 11, 3, 9), datetime(2026, 11, 3, 17))
 ASSIGNED = {1: {(10, "c1")}, 2: {(10, "c1"), (11, "c1"), (11, "c2")}}
-E1 = _event(1, 10, "c1", datetime(2026, 11, 1, 23), datetime(2026, 11, 2, 5))   # crosses LO
-E2 = _event(2, 11, None, datetime(2026, 11, 5, 10))                            # open, agency-wide
+E1 = _event(1, 10, "c1", datetime(2026, 11, 1, 23), datetime(2026, 11, 2, 5))
+E2 = _event(2, 11, None, datetime(2026, 11, 5, 10))
 E3 = _event(3, 11, "c2", datetime(2026, 11, 3, 16), datetime(2026, 11, 3, 18))
 ON_CREATOR = [(E1, "c1", E1.in_utc, E1.out_utc), (E3, "c2", E3.in_utc, E3.out_utc)]
 SALES = {
     1: [_share(10, "c1", datetime(2026, 11, 2, 1), 500),
-        _share(10, "c1", datetime(2026, 11, 1, 23, 30), 700)],   # before the range
-    2: [_share(12, "c3", datetime(2026, 11, 5, 11), 100)],       # a key with no Shift
+        _share(10, "c1", datetime(2026, 11, 1, 23, 30), 700)],
+    2: [_share(12, "c3", datetime(2026, 11, 5, 11), 100)],
     3: [_share(11, "c2", datetime(2026, 11, 3, 17), 300),
-        _share(11, "c2", datetime(2026, 11, 6), 999)],           # after now
+        _share(11, "c2", datetime(2026, 11, 6), 999)],
 }
 
 
@@ -104,8 +59,8 @@ def case_timesheet_by_employee():
     rows = timesheet_rows([SH1, SH2], ASSIGNED, [E1, E2, E3], ON_CREATOR, SALES, lo=LO, hi=HI, now=NOW,
                           by_employee=True)
     want = {
-        10: _tally(2, 1, (6 + 8) * 3600, 5 * 3600, 500, False),        # SH1 clipped to 6h, E1 to 5h
-        11: _tally(1, 1, 8 * 3600, (2 + 2) * 3600, 300, True),         # once for two Creators; E2 to now
+        10: _tally(2, 1, (6 + 8) * 3600, 5 * 3600, 500, False),
+        11: _tally(1, 1, 8 * 3600, (2 + 2) * 3600, 300, True),
         12: _tally(0, 0, 0, 0, 100, False),
     }
     assert rows == want, rows
@@ -116,7 +71,7 @@ def case_timesheet_by_account():
     rows = timesheet_rows([SH1, SH2], ASSIGNED, [E1, E2, E3], ON_CREATOR, SALES, lo=LO, hi=HI, now=NOW,
                           by_employee=False)
     want = {
-        "c1": _tally(2, 1, (6 + 8) * 3600, 5 * 3600, 500, False),      # SH2 once for two Employees
+        "c1": _tally(2, 1, (6 + 8) * 3600, 5 * 3600, 500, False),
         "c2": _tally(1, 1, 8 * 3600, 2 * 3600, 300, False),
         "c3": _tally(0, 0, 0, 0, 100, False),
     }
@@ -141,7 +96,6 @@ def case_find_overlaps_edges():
     mine = _shift(None, datetime(2026, 11, 2, 9), datetime(2026, 11, 2, 17))
     touching_after = _shift(5, datetime(2026, 11, 2, 17), datetime(2026, 11, 2, 20))
     touching_before = _shift(6, datetime(2026, 11, 2, 6), datetime(2026, 11, 2, 9))
-    # A series from the week before whose 2 Nov occurrence starts as `mine` ends.
     touching_series = _shift(7, datetime(2026, 10, 26, 17), datetime(2026, 10, 26, 20), repeat_days="[1]")
     clashes, hits = find_overlaps(mine, [1], ["c1"], {5: (touching_after, {"c1"}), 6: (touching_before, {"c1"}),
                                                       7: (touching_series, {"c1"})})
@@ -173,7 +127,6 @@ def case_find_overlaps_multi():
 
 
 def case_find_overlaps_repeat():
-    # Every Monday 09-17 from 2 Nov; the others are Mondays too.
     mine = _shift(None, datetime(2026, 11, 2, 9), datetime(2026, 11, 2, 17), repeat_days="[1]")
     one_off = _shift(5, datetime(2026, 11, 16, 10), datetime(2026, 11, 16, 11))
     tuesday = _shift(6, datetime(2026, 11, 17, 10), datetime(2026, 11, 17, 11))
@@ -187,7 +140,6 @@ def case_find_overlaps_repeat():
     ], clashes
     starts = hits[7][1]
     assert starts[0] == datetime(2026, 11, 23, 12) and all(s.isoweekday() == 1 for s in starts)
-    # 53 Mondays from 9 Nov inside OVERLAP_HORIZON, less the 9 and 16 Nov cancelled.
     assert datetime(2026, 11, 16, 12) not in starts and len(starts) == 51, len(starts)
 
 
@@ -200,15 +152,14 @@ def case_clock_gate_table():
     roles = {"assignments": {"5": "chatter", "6": 7}}
     chat = frozenset({"chatter"})
     table = [
-        # (tt, roles, emp, owner) → reason
         (TimeTracking(**{**on, "enabled": False}, role_ids=chat), roles, _emp(5, False), False, "time_tracking_off"),
         (TimeTracking(**on, role_ids=None), roles, _emp(5), False, "role_not_enabled"),
         (TimeTracking(**on, role_ids=None), roles, _emp(1), True, "role_not_enabled"),
-        (TimeTracking(**on, role_ids=chat), roles, _emp(1), True, "role_not_enabled"),       # owner not ticked
-        (TimeTracking(**on, role_ids=chat), roles, _emp(9), False, "role_not_enabled"),      # no role
-        (TimeTracking(**on, role_ids=chat), roles, _emp(6), False, "role_not_enabled"),      # role not a str
-        (TimeTracking(**on, role_ids=chat), {}, _emp(5), False, "role_not_enabled"),         # no assignments
-        (TimeTracking(**on, role_ids=chat), roles, None, False, "role_not_enabled"),         # no row yet
+        (TimeTracking(**on, role_ids=chat), roles, _emp(1), True, "role_not_enabled"),
+        (TimeTracking(**on, role_ids=chat), roles, _emp(9), False, "role_not_enabled"),
+        (TimeTracking(**on, role_ids=chat), roles, _emp(6), False, "role_not_enabled"),
+        (TimeTracking(**on, role_ids=chat), {}, _emp(5), False, "role_not_enabled"),
+        (TimeTracking(**on, role_ids=chat), roles, None, False, "role_not_enabled"),
         (TimeTracking(**on, role_ids=chat), roles, _emp(5, False), False, "inactive"),
         (TimeTracking(**on, role_ids=frozenset({"owner"})), {}, _emp(1, False), True, "inactive"),
         (TimeTracking(**on, role_ids=chat), roles, _emp(5), False, None),
@@ -230,7 +181,7 @@ def case_due_clock_outs_table():
     seen = _event(2, 11, "c1", t, last_seen=t + timedelta(minutes=5))
     busy = _event(3, 12, None, t)
     orphan = _event(4, None, "c1", t, agency="b")
-    latest = {12: t + timedelta(minutes=8)}   # the audit read: Employees with rows only
+    latest = {12: t + timedelta(minutes=8)}
     events = [plain, seen, busy, orphan]
     table = [
         (t + timedelta(minutes=10) - timedelta(microseconds=1), []),
@@ -248,7 +199,6 @@ def case_due_clock_outs_table():
 def case_needs_roles_table():
     on = dict(enabled=True, clock_in_reminder=False, auto_clock_out_minutes=10)
     table = [
-        # (enabled, role_ids, owner) → reads the roles blob
         (True, frozenset({"chatter"}), False, True),
         (True, frozenset(), False, True),
         (False, frozenset({"chatter"}), False, False),
@@ -280,7 +230,7 @@ async def case_write_txn_table():
     async def writer(slot: str, hooks: list, fail: bool) -> None:
         async with _write_txn() as s:
             held = (await s.execute(text("SELECT COUNT(*) FROM slot_probe WHERE slot = :s"), {"s": slot})).scalar()
-            await asyncio.sleep(0.01)  # the overlap check's own awaits: let the others read too
+            await asyncio.sleep(0.01)
             if held == 0:
                 await s.execute(text("INSERT INTO slot_probe (slot) VALUES (:s)"), {"s": slot})
                 sa_event.listen(s.sync_session, "after_commit", lambda _s: hooks.append(slot), once=True)
@@ -292,7 +242,6 @@ async def case_write_txn_table():
             return (await conn.execute(text("SELECT COUNT(*) FROM slot_probe WHERE slot = :s"), {"s": slot})).scalar()
 
     table = [
-        # (writers, fail) → rows stored, hooks run
         (2, False, 1, 1),
         (8, False, 1, 1),
         (1, True, 0, 0),
@@ -313,10 +262,10 @@ def case_create_race_one_lands():
     import shifts_api
     from db.engine import get_session
 
-    ids = fx.seed_two_agencies()  # Agency B: no `sales` blob, so the overlap rule is on
+    ids = fx.seed_two_agencies()
     real_check = shifts_api._check_overlaps
 
-    async def slow_check(*a, **kw):  # a slow check: the other writers reach theirs before this one writes
+    async def slow_check(*a, **kw):
         refused = await real_check(*a, **kw)
         await asyncio.sleep(0.05)
         return refused

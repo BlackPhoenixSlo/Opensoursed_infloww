@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""
-vault_sweep stops (11-14: a wrong TypeSafe key failed 5336/5336 photos and the drawer said nothing).
-
-  case_breaker_stops_after_a_run_of_failures:
-      BREAK_AFTER failures in a row stop the sweep with `stop` naming the first error; later ids never visited;
-      `finished_at` stamped.
-  case_neutral_and_successes_never_trip_it:
-      DRM / gone / not-flaggable items don't count; one success resets the streak.
-  case_sweep_stop_is_published:
-      a visit raising SweepStop stops the sweep at that item with its {message, fix}.
-
-Run: cd service && ../venv/bin/python tests/test_vault_sweep_stop.py
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB
@@ -71,7 +58,6 @@ async def case_sweep_stop_is_published():
 
 
 async def case_a_jev_cap_after_another_failure_is_published_apart():
-    """W30 F12: `error` keeps the first detail, so a Jev cap behind a fetch failure rides in `jev_capped`."""
     async def v(m):
         if m == 0:
             return {"ok": False, "status": "fetch_failed", "detail": "fetch failed: 502"}

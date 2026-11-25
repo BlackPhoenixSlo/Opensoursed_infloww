@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# Keep relay logs across a container recreation (the health sweep reads a whole interval
-# through a redeploy). Run from the checkout before the relay's `docker compose up`; idempotent.
-#   1. journald: persistent, bounded (1 GB, 8 days), rate limit raised for relay boot bursts
-#      (journald restarted only when the drop-in changed).
-#   2. compose .env: RELAY_LOG_DRIVER=journald (docker-compose.yml; default `local`). A tracked
-#      .env (a client repo carries it) is never edited here: it prints the line to commit upstream.
-# No systemd-journald: changes nothing, exit 0 (the relay keeps `local`, collect.sh reads docker logs).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENVF="$ROOT/.env"
@@ -35,6 +28,7 @@ else
   echo "journal: persistent enabled (1G / 8 days): $conf"
 fi
 
+# a git-tracked .env (a client repo carries it) is never edited here: print the line to commit upstream
 if grep -q '^RELAY_LOG_DRIVER=' "$ENVF" 2>/dev/null; then
   echo "env: $(grep '^RELAY_LOG_DRIVER=' "$ENVF" | tail -1) (kept)"
 elif git -C "$ROOT" ls-files --error-unmatch .env >/dev/null 2>&1; then

@@ -1,5 +1,3 @@
-/** `calcMinutes`, Infloww's Clocked hours format (bundle `calcMinutes$1` @11228512; "0min" seen live, w5-a), and the
- *  Shift schedule's Agency-zone week (`zonedWeek`, page-parity ticket 18). */
 import { describe, expect, it } from "vitest";
 
 import {
@@ -30,7 +28,6 @@ describe("calcMinutes", () => {
 });
 
 describe("zonedWeek", () => {
-  // Wed 21 Oct 2026 12:00 in Ljubljana (CEST); Sunday 25 Oct falls back at 03:00.
   const NOW = new Date("2026-10-21T10:00:00Z");
   const iso = (d: Date) => d.toISOString();
 
@@ -66,7 +63,6 @@ describe("zonedWeek", () => {
   });
 
   it("reads today in the zone, not in UTC", () => {
-    // 23:30Z on Sunday 18 Oct is already Monday 19 Oct in Ljubljana.
     const { days } = zonedWeek(new Date("2026-10-18T23:30:00Z"), "monday", "Europe/Ljubljana", 0);
     expect(days[0]).toMatchObject({ date: "2026-10-19", today: true });
   });

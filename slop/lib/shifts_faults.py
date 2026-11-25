@@ -1,8 +1,3 @@
-"""The Shift schedule's and the Clock's break-it-once faults (scenarios/2026-11-01-shifts-clock-crowd.py):
-lib/faults.py merges `register(Fault)` into FAULTS. The check names live here and the scenario imports
-them, so a target can never name a check that does not exist. Each patches, inside the relay, the
-product attribute whose bug class it claims; the load never reads which one is on.
-"""
 from __future__ import annotations
 
 RACE = ("shifts: N concurrent POST /admin/shifts on one Creator and slot: exactly one 2xx, the rest 409, "
@@ -27,9 +22,6 @@ UI_REPORTS = ("UI: /analytics/employee-reports' Clocked hours card settles namin
 
 
 def _overlap_check_skipped() -> None:
-    """shifts_api._check_overlaps answers "no clash" whatever is stored, as a write path that forgot the
-    check (or ran it outside the write's transaction against a stale read): every create on a held slot
-    lands. create_shift and edit_shift look it up per call."""
     import shifts_api
 
     async def none(*_a, **_k):
@@ -39,9 +31,6 @@ def _overlap_check_skipped() -> None:
 
 
 def _timesheet_drops_open_shift() -> None:
-    """shifts_api.timesheet_rows (the Timesheet's tally, looked up per call) is handed only the closed
-    Clock events: an Employee still clocked in counts no worked time and no open_now, per Employee and
-    per Creator."""
     import shifts_api
     real = shifts_api.timesheet_rows
 
@@ -53,11 +42,6 @@ def _timesheet_drops_open_shift() -> None:
 
 
 def _clock_in_twice_opens_two() -> None:
-    """The schema without its partial unique index `uq_clock_events_open_employee` (a box whose DB
-    predates it, the case employees.py's Mirror-row docstring records for its own index): clock-in's
-    read-then-insert pre-check is the only guard, so concurrent clock-ins of one chatter open two
-    events. Taken off `db.models.ClockEvent.__table__` before init_db's create_all (the fault applies
-    before the relay's startup)."""
     from db.models import ClockEvent
     table = ClockEvent.__table__
     for ix in [ix for ix in table.indexes if ix.name == "uq_clock_events_open_employee"]:
@@ -65,9 +49,6 @@ def _clock_in_twice_opens_two() -> None:
 
 
 def _shift_cancel_unlocked() -> None:
-    """cancel_shift back on the plain `get_session()` (the pre-fix path): no BEGIN IMMEDIATE before the
-    read, so concurrent "this" cancels on one series each rewrite `cancelled_dates` from the same read
-    and a date is lost. cancel_shift looks `_cancel_txn` up per call."""
     import shifts_api
     from db.engine import get_session
 
@@ -76,12 +57,8 @@ def _shift_cancel_unlocked() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run shifts-clock-crowd --break (the scenario's FAULT)
         "shift-overlap-check-skipped": Fault(_overlap_check_skipped, (RACE,)),
-        # slop/run shifts-clock-crowd --break --fault=timesheet-drops-open-shift --baseline=slop/evidence/<run>
         "timesheet-drops-open-shift": Fault(_timesheet_drops_open_shift, (ORACLE_EMP, ORACLE_ACC)),
-        # slop/run shifts-clock-crowd --break --fault=clock-in-twice-opens-two --baseline=slop/evidence/<run>
         "clock-in-twice-opens-two": Fault(_clock_in_twice_opens_two, (ONE_OPEN,)),
-        # slop/run shifts-clock-crowd --break --fault=shift-cancel-unlocked --baseline=slop/evidence/<run>
         "shift-cancel-unlocked": Fault(_shift_cancel_unlocked, (CANCEL_DATES,)),
     }

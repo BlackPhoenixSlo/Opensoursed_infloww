@@ -56,6 +56,7 @@ import { useCallback, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
+import { useCan } from "@/hooks/useCan";
 import { cn } from "@/lib/utils";
 import { MP } from "@/lib/messagesPro";
 import { EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
@@ -87,6 +88,8 @@ export function ChatActionsMenu({
   const canDelete = useActionAllowed("delete-chat");
   // Restrict and Block are both the "block-fan" Function permission.
   const canBlock = useActionAllowed("block-fan");
+  const platformRestrict = useCan(accountId, "restrict");
+  const platformBlock = useCan(accountId, "block");
   const { status, flash } = useMenuStatus();
   // Holds the Kebab menu and its submenu, so a pointer-down in either is inside.
   const ref = useRef<HTMLDivElement | null>(null);
@@ -238,32 +241,31 @@ export function ChatActionsMenu({
       className={cn(MP.ours.ChatActionsMenu.place, "absolute top-full")}
     >
       <div role="menu" aria-label="More actions" className={cn(MENU_BOX, MP.ours.ChatActionsMenu.box)}>
-        {/* Always offered (was gated on OF's canRestrict, which the thin
-            creator rows often omit — the one chat type this action is FOR).
-            OF itself rejects the rare user it truly can't restrict. */}
-        {canBlock && (
-          <>
-            <Item
-              label={isRestricted ? "Lift restrict" : "Restrict"}
-              disabled={toggleOfRestrict.isPending}
-              onClick={async () => {
-                const ask = isRestricted
-                  ? "Lift the OnlyFans restrict on this Fan?"
-                  : "Restrict this Fan on OnlyFans? The chat is hidden, and the Fan is sent nothing.";
-                if (await ifConfirm(ask, { danger: !isRestricted })) toggleOfRestrict.mutate();
-              }}
-              icon={isRestricted ? "🔓" : "🛑"}
-            />
-            <Item
-              label={blocked ? "Unblock" : "Block"}
-              disabled={toggleBlock.isPending}
-              onClick={async () => {
-                const ask = blocked ? "Unblock this Fan on OnlyFans?" : "Block this Fan on OnlyFans?";
-                if (await ifConfirm(ask, { danger: !blocked })) toggleBlock.mutate();
-              }}
-              icon={blocked ? "✅" : "🚫"}
-            />
-          </>
+        {/* Not gated on OF's canRestrict, which the thin creator rows often
+            omit; OF itself rejects the rare user it truly can't restrict. */}
+        {canBlock && platformRestrict && (
+          <Item
+            label={isRestricted ? "Lift restrict" : "Restrict"}
+            disabled={toggleOfRestrict.isPending}
+            onClick={async () => {
+              const ask = isRestricted
+                ? "Lift the OnlyFans restrict on this Fan?"
+                : "Restrict this Fan on OnlyFans? The chat is hidden, and the Fan is sent nothing.";
+              if (await ifConfirm(ask, { danger: !isRestricted })) toggleOfRestrict.mutate();
+            }}
+            icon={isRestricted ? "🔓" : "🛑"}
+          />
+        )}
+        {canBlock && platformBlock && (
+          <Item
+            label={blocked ? "Unblock" : "Block"}
+            disabled={toggleBlock.isPending}
+            onClick={async () => {
+              const ask = blocked ? "Unblock this Fan on OnlyFans?" : "Block this Fan on OnlyFans?";
+              if (await ifConfirm(ask, { danger: !blocked })) toggleBlock.mutate();
+            }}
+            icon={blocked ? "✅" : "🚫"}
+          />
         )}
         {/* Not wired: the relay has no report route. */}
         <NotWiredMenuRow why="report">

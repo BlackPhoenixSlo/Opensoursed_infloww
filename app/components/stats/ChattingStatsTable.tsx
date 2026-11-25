@@ -1,24 +1,5 @@
 "use client";
 
-/**
- * ChattingStatsTable — Employee reports' "Chatting statistics" (roadmap W5 5.2): Infloww's per-employee chatting
- * metrics with the direct vs mass split of sales, read from `GET /admin/stats/chatting-stats` over the report's
- * range. One row per Employee; the column names and tooltips are Infloww's (`filterOptions$3` / `columnsTips`).
- *
- * Sales, PPV sales and Tips follow the Sales Settings rules (as Per-employee revenue); Direct message sales and
- * OF mass messages sales go to the Employee credited with the sold message. Every message figure leaves out mass and
- * automated messages. Fans chatted and Fans who spent money add up each Creator's distinct fans.
- *
- * Employees and Creators stay pinned left as the figures scroll; each figure shows its change against the window of
- * equal length before. Infloww's frame (page-parity ticket 27): flush on the page, the chatter-role checkbox and the
- * blue-outline Export in the title row, the percentage note, five KPI cards from the same rows (`chattingKpis`), then
- * the legacy antd table (`IF_TABLE`).
- *
- * Not built, as nothing records them: Hours on Messages Pro and the three per-Messages-Pro-hour rates. Response time
- * is one figure over all replies, not split by scheduled or clocked hours. Total number of scheduled hours is the
- * Timesheet's (`GET /admin/shifts/timesheet`, the Clocked hours card's read, owner and Master only): "-" for a chatter. Clocked hours and the per-clocked-hour rates count every Clock event in the range, and are left out
- * for a chatter (null on the wire), as the Timesheet is.
- */
 
 
 import { useMemo, useState } from "react";
@@ -35,7 +16,6 @@ import { calcMinutes, useTimesheet, type TimesheetRow } from "@/lib/shifts";
 import { cn } from "@/lib/utils";
 import { InfoTip } from "@/components/ui/InfoTip";
 
-/** The row's figures: its numeric fields bar the id and the reply count. */
 type NumKey = Exclude<
   { [K in keyof ChattingStatsRow]: ChattingStatsRow[K] extends number | null ? K : never }[keyof ChattingStatsRow],
   "employee_id" | "replies"
@@ -45,7 +25,6 @@ type Key = NumKey | "display_name";
 const pct = (v: number | null) => (v == null ? "—" : `${v.toFixed(2)}%`);
 const rate = (v: number | null) => (v == null ? "—" : v.toFixed(2));
 
-/** The columns in Infloww's order, with its tooltips. `lowerIsBetter` swaps the change's colours, not its arrow. */
 const COLUMNS: {
   key: NumKey; label: string; tip: string; fmt: (r: ChattingStatsRow) => string; lowerIsBetter?: boolean;
 }[] = [
@@ -107,30 +86,18 @@ const COLUMNS: {
     fmt: (r) => rate(r.fans_chatted_per_clocked_hour) },
 ];
 
-/** Read from clocked time, which a chatter is not shown. */
 const CLOCKED: NumKey[] = ["clocked_minutes", "sales_per_clocked_hour_cents", "messages_per_clocked_hour",
   "fans_chatted_per_clocked_hour"];
 
 const CELL = "whitespace-nowrap";
-/** Infloww's two pinned columns (`showPinKeys`): Employees, then Creators beside it, at Employees' fixed width; the
- *  head's on the head colour, the body's on the page's. Creators casts IF_TABLE.fixedRight's shadow mirrored, so the
- *  figures scrolled under the pair read as passing under an edge, not as clipped ("ocked hours"). */
 const PIN_EMP = "sticky left-0 z-[1] w-40 min-w-40 max-w-40";
 const PIN_CREATORS = "sticky left-40 z-[1] max-w-48 shadow-[6px_0_6px_-4px_rgba(0,0,0,.35)] [html[data-theme=light]_&]:shadow-[6px_0_6px_-4px_#f5f6fa]";
 
-/** Infloww's blue-outline "Export" (antd small): 24px, a 1px M1 border, M1 text, radius 4. */
 const EXPORT_OUTLINE = "h-6 gap-1.5 rounded-[4px] border border-accent bg-transparent px-2 py-0 text-[14px] font-normal text-accent hover:border-accent hover:bg-accent/10";
 
 const pctOf = (num: number, den: number) => (den > 0 ? `${((num / den) * 100).toFixed(2)}%` : "-");
 
-/** Infloww's five cards over the table, from the rows on screen (no read of their own). Total sales sums every
- *  Employee's Sales (pending sales included, as the Sales Settings rules count them); Unlock rate is the pooled
- *  ratio, PPVs unlocked over direct PPVs sent; the response time (all replies) is each Employee's average weighted
- *  by its replies. Total number of scheduled hours sums the Timesheet's `scheduled_minutes` (null: no Timesheet read,
- *  Not wired); with `chatterOnly`, only the Chatter role's Employees (`roster`, the read's `chatter_ids`; "…" until
- *  this read's roster arrives, never a sum over nobody). `sheetNote` is the Timesheet's refusal (its 422 text,
- *  "the range is at most 42 days"): the card stays "-" and says why under its label. The scheduled-hours response
- *  time is Not wired: the reply read has no shift filter. */
+// Total sales includes pending sales (Sales Settings rules).
 export function chattingKpis(
   rows: ChattingStatsRow[], sheet: TimesheetRow[] | null = null, chatterOnly = false, sheetNote: string | null = null,
   roster: number[] | null = null,
@@ -149,21 +116,16 @@ export function chattingKpis(
       value: pctOf(sum((r) => r.ppvs_unlocked), sum((r) => r.direct_ppvs_sent)), wired: true },
     { label: "Average response time (based on scheduled hours)",
       tip: "Average time taken to reply to a fan during scheduled shift hours", value: "-", wired: false },
-    // Infloww's card is "based on clocked hours"; the reply read has no clock-in filter, so the label says what it is.
     { label: "Average response time (all replies)",
       tip: "Average time taken by employees to reply to a fan, from the fan's first unanswered message, over every reply, clocked in or not",
       value: replies > 0 ? fmtReplyTime(timed.reduce((s, r) => s + r.avg_reply_seconds! * r.replies, 0) / replies) : "-",
       wired: true },
     { label: "Total number of scheduled hours", tip: "Hours of the shifts scheduled in the time frame",
-      // Decimal hours ("3,425.9h"), so the 28px figure keeps to one line in the card.
       value: waiting ? "…" : scheduled == null ? "-" : `${(scheduled / 60).toLocaleString("en-US", { maximumFractionDigits: 1 })}h`,
       wired: waiting || scheduled != null, ...(scheduled == null && sheetNote ? { note: `Not shown: ${sheetNote}.` } : {}) },
   ];
 }
 
-/** One card: #151515 with a 1px L1 border, radius 4; the value 28px / 600 T1 over a 12px T3 label with its (i). A
- *  Not wired card is titled "not wired", its value "-"; a card with a `note` (why it has no figure) shows it under
- *  the label instead. */
 function KpiCard({ label, tip, value, wired, note }: ReturnType<typeof chattingKpis>[number]) {
   return (
     <div role="group" aria-label={label} title={wired || note ? undefined : "not wired"}
@@ -179,8 +141,6 @@ function KpiCard({ label, tip, value, wired, note }: ReturnType<typeof chattingK
   );
 }
 
-/** A figure's change against the window before (`growthOf`, as Creator reports' growth). The arrow follows the
- *  figure; with `lowerIsBetter` a fall is the good colour. */
 function Change({ cur, prev, lowerIsBetter }: { cur: number | null; prev: number | null | undefined; lowerIsBetter?: boolean }) {
   if (cur == null) return null;
   const g = growthOf(cur, prev);
@@ -197,21 +157,15 @@ export default function ChattingStatsTable({
   from, to, priorFrom = null, priorTo = null, chatterOnly = false, onChatterOnly,
 }: {
   from: string | null; to: string | null;
-  /** The window of equal length before (`useReportRange`'s `priorFromIso`/`priorToIso`); no change shown without. */
   priorFrom?: string | null; priorTo?: string | null;
   chatterOnly?: boolean;
-  /** Draws "Show employees with chatter role only" in the toolbar, where Infloww has it; the page owns the state,
-   *  as the charts and the per-Creator table read it too. */
   onChatterOnly?: (on: boolean) => void;
 }) {
   const q = useChattingStats(from, to, chatterOnly);
-  // One more read for the window before, keyed by Employee for the change under each figure.
   const pq = useChattingStats(priorFrom, priorTo, chatterOnly, priorFrom != null && priorTo != null);
   const before = useMemo(() => new Map((pq.data?.employees ?? []).map((r) => [r.employee_id, r])), [pq.data]);
-  // Scheduled hours: the Clocked hours card's Timesheet read (one query, same key); owner and Master only.
   const ranged = !!from && !!to;
   const sheet = useTimesheet(new Date(from ?? 0), new Date(to ?? 0), "employee", !!useOptionalUser()?.user && ranged);
-  // A range past the Timesheet's limit is refused 422 with the reason, which the card shows instead of a bare "-".
   const sheetNote = sheet.error instanceof RelayError && sheet.error.status === 422 ? sheet.error.message : null;
   const [sortKey, setSortKey] = useState<Key>("sales_cents");
   const [desc, setDesc] = useState(true);
@@ -236,12 +190,10 @@ export default function ChattingStatsTable({
     : COLUMNS.filter((c) => !CLOCKED.includes(c.key));
 
   return (
-    // Flush on the page, as Infloww's; not overflow-hidden, so the Export pop-up is not cut off.
     <section aria-label="Chatting statistics" className="space-y-4">
       <header className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <h2 className="text-[16px] font-medium text-fg">Chatting statistics</h2>
         {onChatterOnly && <ChatterOnlyCheckbox checked={chatterOnly} onChange={onChatterOnly} />}
-        {/* W5 5.9: Infloww's Employee export, total, daily per Employee and by Creator. */}
         {rows.length > 0 && (
           <div className="ml-auto">
             <ExportMenu className={EXPORT_OUTLINE} fileName={`employee-reports_${(from ?? "").slice(0, 10)}_${(to ?? "").slice(0, 10)}`}
@@ -316,7 +268,6 @@ export default function ChattingStatsTable({
   );
 }
 
-/** "Show employees with chatter role only": one per visible Employee reports tab, the page's one state. */
 export function ChatterOnlyCheckbox({ checked, onChange, className }: {
   checked: boolean; onChange: (on: boolean) => void; className?: string;
 }) {

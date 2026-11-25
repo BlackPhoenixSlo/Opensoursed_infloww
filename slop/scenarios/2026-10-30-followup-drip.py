@@ -1,82 +1,3 @@
-"""The follow-up drip (`automations.send_followup`) after its phase machine became one
-pure `decide()` (service/automations/send_followup_decide.py): one tick on every Creator
-at once over an inbox-sized world, checked fan by fan against the rule each fan's history
-puts him under, while the owner's dashboard tabs watch the live stream.
-
-World: `agency_inbox` (one Agency, its Creators, their fans, threads for a share of them),
-plus seed/followup_drip.py: every eligible fan (>= $1 spend) without a thread gets one
-drip case (due step 1, due step 2, inside the 18 h gap, past the 7-day cap, a reply
-mid-drip, a reply after the drip, finished and silent, an expired reply / restart
-cooldown, still cooling). The threaded eligible fans are the natural mix: no state row,
-their last message decides (his -> reply, ours 26 h..7 days ago -> step 1, older ->
-retired, newer -> nothing); a fan within an hour of the 26 h or 7-day line is left out of
-the per-rule checks (`edge`), never out of the counts.
-
-Load: the owner's dashboard tab (actors/manager.OwnerTab: the All-scope reads, its
-`/events` stream, inbox re-reads) and `--users` more `/events` streams on the owner's
-session (each one dashboard tab's live channel, where every nudge fans out), opened before
-the tick over TAB_RAMP_S (20 s, `--set tab_ramp_s=`). Not `--users` full dashboard tabs: 200
-of them re-reading the inbox every 10 s saturate the relay's dashboard reads (/admin/accounts
-14 s, measured: evidence 20261029T231950Z-2026-10-30-followup-drip-ddb7, stopped), which is
-2026-10-28-dashboard-load's flow, and drown the drip's own timing; the tick is
-`POST /__slop/run-automation` (kind `send_followup`, the product's `run_once` under the
-run-slot pool, lib/followup.py `tick`) for every Creator at once; then a second tick the same way.
-
-Invariants: per rule (lib/followup_faults.py names them): the gap, the steps, the cap,
-reply vs restart cooldowns, cooldown expiry before the sweep, the fans held; then the
-counts (LLM calls = OF sends = new followup rows = recorded steps = the runs'
-followups_sent, one nudge per fan at most, no errors), every nudge on every tab's stream,
-and a second tick that nudges nobody, its just-nudged fans held by the drip's gap
-(its contact-guard and send-rest holds equal tick 1's, Creator by Creator). Budget: each Creator's run time per nudge
-(`automation_runs` started -> completed, so not the wait for one of the executor's run
-slots), p95 over the Creators, vs TICK_PER_NUDGE_P95_MS and the last green run.
-
-Faked or bypassed, declared: DeepSeek at its HTTP boundary (lib/automation_relay.py: one fixed
-line for the nudge, 0.4 s); OF's send (lib/relay.py `_OfflineOF.send_message`); the
-supervisor's cadence (the scenario ticks; payload `with_image: false`, so the vault is
-never read, and `limit` = fans per Creator, so the 200-fan sweep ceiling never thins a
-tick); the account DM rate raised to DM_PER_MIN (lib/followup.py) through the real Concurrency panel route.
-SLOP_LIVE=1 is refused (it would spend on the real DeepSeek): every check SKIPs.
-
-Break-it-once: followup-skips-18h-gap (`_MIN_GAP_H` = 0): only the two gap checks go red
-(GAP, and AGAIN: without the gap the contact guard is what holds tick 2).
-
-The run slot pool and the dispatch plan these ticks once also checked are their own flows:
-2026-10-30-run-slot-pool and 2026-10-30-dispatch-plan (same world, lib/followup.py).
-
-A bad tz_offset_minutes (lib/dispatch_tz_faults.py BAD_TZ), after the checks above: one
-send_followup clock rule whose stored offset is "x" is written on the last Creator
-(seed/followup_drip.py `seed_bad_tz_rule`; declared bypass: raw SQL, a hand-edited row the rules
-API refuses; only this phase writes it, so the other follow-up flows never see it). The owner adds
-two good follow-up rules through the real rules route (`POST /admin/automation-rules`): an
-interval one on the first Creator and a daily_at one on the second, in UTC+5:30 with its slot
-10 min ago (creator-local). One real supervisor pass (`POST /__slop/automation-tick`). BAD_TZ:
-the bad rule makes no job, each good rule exactly one, inside the pass; the list route answers
-for all three, a good rule's `next_due_at` (dispatch_plan.next_due) was due before the pass and
-after it is the next fire (interval: its job + 1 h; clock: the slot tomorrow); the bad rule's is
-null. Their runs nudge nobody (tick 2 showed every fan held). Expected traceback, declared: under
---fault=dispatch-bad-tz-aborts-pass the pass logs `automation_rule_materialize_failed` with the
-pre-fix ValueError on "x" (EXPECTED_TRACEBACKS), so only BAD_TZ goes red (the list route reads
-the quiet `dispatch_plan.trigger_of`, which the fault leaves alone).
-
-KILL, last (send once, service/automations/send_marker_decide.py: a nudge killed mid-send is
-never auto-resent; listed "may not have sent", the user retries). KILL Creators = the first
-min(KILL_CREATORS, Creators) (one run per Creator and kind, KILL_CREATORS = the 4 run slots), one
-KILL fan each, seeded by SQL now (seed/followup_drip.py `seed_kill`: a fresh `due1` fan, no
-followup_state row). OF's side is lib/send_once_relay.py (`first_key: fan_text`, the nudge line
-is the same for every fan; KILL fans `hang`; its O_APPEND journal outlives the SIGKILL). One tick
-per KILL Creator (on their own Recorder: they die with the relay) until each KILL fan's nudge is
-accepted and unanswered, the same set for KILL_STABLE_S; SIGKILL (`crash_relay`); OF answers
-normally from then on; restart on the same DB. Then two ticks (each settles first), the owner's
-`GET /admin/unconfirmed-sends`, one `POST /admin/unconfirmed-sends/retry` per KILL fan, one
-more tick. Checks (lib/send_marker_faults.py): DRIP_ONCE, DRIP_MARKED, DRIP_RETRY, and the
-scenario's own KILLED. Bypasses, declared: the KILL fans' `fan_lease` rows (the dead holder's
-900 s TTL) are expired by SQL right after the restart, as if 15 min had passed; the retried fans'
-`fans.automation_paused_until` nulled by SQL before the last tick (a no-op on correct code; the
-house funnel's twin needs it). Fault `followup-sending-marker-ignored` (`Entry.marked` always
-False): only the three KILL checks go red (tick 1 re-sends the hung nudge, whose Sent save
-clears the marker: nothing listed, so no listed `since`: Retry answers 422).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -97,17 +18,17 @@ from slop.seed.followup_drip import BAD_TZ_RAW, seed_bad_tz_rule
 PROFILE = "agency_inbox"
 UI = False
 FAULT = "followup-skips-18h-gap"
-TICK_PER_NUDGE_P95_MS = 1500    # 0.4 s fake LLM + the send + the state writes, per nudge
+TICK_PER_NUDGE_P95_MS = 1500
 P95_VS_LAST = (1.5, 300)
-OF_SEND_ID_BASE = 9_700_000_000_000   # lib/relay.py: the fake OF's message ids (this run's sends)
+OF_SEND_ID_BASE = 9_700_000_000_000
 EDGE_H = 1.0
 TAB_RAMP_S = 20.0
 BAD_TZ_EVERY_S = 3600
-BAD_TZ_OFFSET_MIN = 330          # a half-hour zone (Kolkata)
+BAD_TZ_OFFSET_MIN = 330
 EXPECTED_TRACEBACKS = (("automation_rule_materialize_failed",
                         f"invalid literal for int() with base 10: {BAD_TZ_RAW!r}"),)
-KILL_CREATORS = 4      # the run slots (run_slot): one hung run per Creator, every slot busy
-KILL_HANG_S = 300.0    # the kill comes long before
+KILL_CREATORS = 4
+KILL_HANG_S = 300.0
 KILL_TIMEOUT_S = 120
 KILL_STABLE_S = 3.0
 KILLED = "follow-up kill: SIGKILL landed with each KILL Creator's KILL nudge taken by OF and unanswered"
@@ -118,7 +39,6 @@ def _dt(v) -> datetime | None:
 
 
 def _snapshot(con, aids: list[str]) -> dict:
-    """Per eligible fan: his followup_state row, last in/out, and this run's nudges."""
     q = ",".join("?" * len(aids))
     fans = {(a, int(f)): {} for a, f in con.execute(
         f"SELECT account_id, fan_id FROM fans WHERE account_id IN ({q}) AND lifetime_spend_cents >= 100 "
@@ -143,7 +63,6 @@ def _snapshot(con, aids: list[str]) -> dict:
 
 
 def _natural(row: dict, now: datetime) -> str:
-    """The rule a threaded fan (no state row) falls under, from his last messages."""
     li, lo = row.get("in"), row.get("out")
     if li and (lo is None or li > lo):
         return "n_reply"
@@ -164,9 +83,8 @@ def _verdict(pred, fans, after=None) -> tuple[bool, dict]:
 
 
 async def _bad_tz_phase(ctx, w, aids: list[str]) -> None:
-    """One supervisor pass with a bad-tz rule among good ones (module docstring: BAD_TZ)."""
     ctx.rec.stage = "bad-tz"
-    bad_rid = seed_bad_tz_rule(w, aids[-1])   # first: the lowest id of the three
+    bad_rid = seed_bad_tz_rule(w, aids[-1])
     local = datetime.utcnow() + timedelta(minutes=BAD_TZ_OFFSET_MIN)
     slot_m = max(0, local.hour * 60 + local.minute - 10)
     slot = f"{slot_m // 60:02d}:{slot_m % 60:02d}"
@@ -239,8 +157,6 @@ async def run(ctx) -> None:
     cls = {k: cases.get(k) or _natural(v, t_seed) for k, v in before.items()}
     ctx.metric("classes", dict(Counter(cls.values())))
 
-    # The owner's tab (its reads + stream) and `--users` more live streams on the same
-    # session (each a dashboard tab's /events), opened over TAB_RAMP_S, not in one instant.
     owner_tab = manager.OwnerTab(ctx.owner.share(limits=8), w.rng("scenario:followup-drip:tab"))
     sse_http = ctx.owner.share(limits=max(1, ctx.users) + 4)
     streams = [manager.SseListener(sse_http, resume=True) for _ in range(max(1, ctx.users))]
@@ -345,7 +261,7 @@ async def run(ctx) -> None:
               ended=[t.ended for t in tabs if t.ended][:3])
     sent2 = sum(int(t["res"].get("followups_sent") or 0) for t in ticks2)
     rows2 = sum(len(v.get("nudges", [])) for v in after2.values())
-    def _held_outside(t) -> int:  # due steps the guard or the send rest held, not the drip
+    def _held_outside(t) -> int:
         return int(t["res"].get("skipped_guard") or 0) + int(t["res"].get("skipped_cooldown") or 0)
     held1 = {t["aid"]: _held_outside(t) for t in ticks}
     extra = {t["aid"]: _held_outside(t) - held1.get(t["aid"], 0) for t in ticks2
@@ -353,7 +269,6 @@ async def run(ctx) -> None:
     ctx.check(AGAIN, sent2 == 0 and rows2 == rows and not extra and all(t["status"] == 200 for t in ticks2),
               followups_sent=sent2, new_rows=rows2 - rows, held_by_guard_or_rest_vs_tick1=extra)
 
-    # The product's own run time (automation_runs), not the wait for a run slot.
     per_nudge = sorted((done - st_).total_seconds() * 1000 / max(1, int(stats.get("followups_sent") or 0))
                        for st_, done, stats in runs.values())
     p95 = per_nudge[min(len(per_nudge) - 1, int(round(0.95 * (len(per_nudge) - 1))))]
@@ -375,7 +290,6 @@ async def run(ctx) -> None:
 
 
 async def _drip_tick(ctx, http, aid: str) -> dict:
-    """lib/followup.tick on `http` (the KILL ticks' own pool and Recorder)."""
     r = await http.post("/__slop/run-automation", timeout=900, json={
         "account_id": aid, "kind": "send_followup", "payload": followup.payload(ctx)})
     body = r.json() if r.status_code < 300 else {"error": r.text[:300]}
@@ -384,8 +298,6 @@ async def _drip_tick(ctx, http, aid: str) -> dict:
 
 
 async def _kill_phase(ctx, w, aids: list[str]) -> None:
-    """KILL (module docstring): a nudge killed after OF took it is listed, never re-sent
-    by a tick, and sent once more only on the user's Retry."""
     ctx.rec.stage = "kill"
     kaids = aids[:min(KILL_CREATORS, len(aids))]
     kfans = followup_drip.seed_kill(w, kaids)
@@ -403,7 +315,7 @@ async def _kill_phase(ctx, w, aids: list[str]) -> None:
     for _ in range(2):
         ticks.append(await kill.tick_all())
     listed, get_status = await kill.unconfirmed()
-    retried = await kill.retry(con, {(a, f): {"kind": "followup", "fan_id": f,   # the listed attempt's since
+    retried = await kill.retry(con, {(a, f): {"kind": "followup", "fan_id": f,
                                               "since": (listed.get((a, f)) or {}).get("since", "")}
                                      for a, f in sorted(keys)})
     t_retry = kill.t_retry

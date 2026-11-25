@@ -1,4 +1,3 @@
-"""OnlyFans ledger chargeback phase, scan-settle helpers, and time parsing."""
 from __future__ import annotations
 
 import asyncio
@@ -25,10 +24,6 @@ def parse(s) -> datetime:
 
 
 async def _ticks_ended(ctx, creators: list[str], timeout_s: float = 30.0) -> tuple[bool, str]:
-    """relay.log once every ledger scan that started has ended for each Creator (its
-    `ingest_tx_scan_start` matched by an `ingest_tx_scan_end` or `ingest_tx_scan_failed`), twice
-    0.3 s apart: settle_scans returns when the last scan's status is `ok`, which `_mark_success`
-    stamps before the disputes poll and the scan_end line."""
     t0, prev = time.time(), None
     while True:
         text = (ctx.out / "relay.log").read_text(errors="replace")
@@ -43,30 +38,22 @@ async def _ticks_ended(ctx, creators: list[str], timeout_s: float = 30.0) -> tup
         await asyncio.sleep(0.3)
 
 
-CB_SALES = {  # name -> (Creator index, cents, seconds before the phase, ledger text, paymentType)
+CB_SALES = {
     "a1_ledger_and_dispute": (1, 1234, 30 * 60, "Payment for message from", "chat_messages"),
     "b_dispute_only_aged_out": (1, 3456, 2 * 86400, "Payment for message from", "chat_messages"),
     "c_open": (1, 4567, 50 * 60, "Tip from", "tips"),
     "e1_pair_kept": (2, 999, 2 * 86400, "Tip from", "tips"),
-    "e2_pair_disputed": (2, 999, 2 * 86400 - 1, "Tip from", "tips"),   # same fan as e1, 1 s later
+    "e2_pair_disputed": (2, 999, 2 * 86400 - 1, "Tip from", "tips"),
 }
 CB_REVERSED = ("a1_ledger_and_dispute", "b_dispute_only_aged_out", "e2_pair_disputed")
-CB_APPLIED = 2   # b, e2: a1's ledger undo lands first in the same walk, so its dispute finds it reversed
+# b, e2: a1's ledger undo lands first in the same walk, so its dispute finds it reversed
+CB_APPLIED = 2
 
 
 CB_CHECKS = (CB_MONEY, CB_OPEN, CB_UNMATCHED, CB_REPOLL, CB_CALLS)
 
 
 async def run_chargebacks(ctx, w, creators: list[str], ledger, used: set) -> None:
-    """OF's disputes list against the real refresh walk (README.attribution.md, the module
-    docstring's chargebacks phase). Step 1: the phase's sales land in the fake ledger (status
-    done) and two scans per Creator ingest them; then OF's ledger window drops b and the e pair
-    (the latest n-1 / n-2 rows: they are the oldest). Step 2: the ledger shows a1 `undo`; the disputes list gets a1,
-    b (undo), c (done: open), d (undo, a sale never in the ledger) and e2 (undo, its twin e1
-    1 s earlier, same fan and amount); two scans per Creator. Step 3: two more scans re-poll
-    the same disputes. No sale is disputed while the ledger still calls it `done`: OF's two
-    lists show the same payment's status, and that state (the walk reinstates, the poll
-    re-deducts, every walk) is the product's documented "lifetime follows status both ways"."""
     service_dir = str(Path(__file__).resolve().parents[2] / "service")
     if service_dir not in sys.path:
         sys.path.append(service_dir)
@@ -88,7 +75,8 @@ async def run_chargebacks(ctx, w, creators: list[str], ledger, used: set) -> Non
     aid_of = {k: creators[v[0] % C] for k, v in CB_SALES.items()}
     owner, out = ctx.owner, ctx.stack.tmp / "of-chargebacks.jsonl"
     t0 = now().replace(microsecond=0)
-    sec = lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")   # OF's ledger and disputes: whole seconds
+    # OF's ledger and disputes carry whole seconds
+    sec = lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
     def con_rows() -> tuple[dict, dict, dict]:
         con = w.sql()
@@ -118,25 +106,22 @@ async def run_chargebacks(ctx, w, creators: list[str], ledger, used: set) -> Non
                 "cb_txns": writers(text).get("ledger-chargebacks", 0),
                 "applied": text.count("ingest_cb_applied account="), "cb_calls": led.get("cb_calls", {})}
 
-    # Step 1: the sales, ingested by the real walk.
     _, life0, _ = con_rows()
     sale_row: dict[str, dict] = {}
     for name, (_ci, cents, ago, what, _pt) in CB_SALES.items():
         ledger.add(aid_of[name], fan_of[name], cents, t0, what, created=sec(t0 - timedelta(seconds=ago)))
         sale_row[name] = dict(ledger.last)
     s1 = await snap("ingested")
-    # b, and the e pair, age out of OF's ledger window (each the oldest of its Creator): only the
-    # disputes list can reverse them, so the pair is told apart by the matcher alone.
     await owner.post("/__slop/ledger", json={"latest": {X: ledger.per_aid[X] - 1, Y: ledger.per_aid[Y] - 2}})
 
     def dispute(name: str | None, status: str, ago_s: int, *, row: dict | None = None, ptype: str = "") -> dict:
         row = row or sale_row[name]
         pay = {k: v for k, v in row.items() if k not in ("payoutPendingDays", "refundReason", "id")}
-        pid = hashlib.md5(f"cb{row['id']}".encode()).hexdigest()   # OF's payment id is not the ledger's
+        # OF's payment id is not the ledger's
+        pid = hashlib.md5(f"cb{row['id']}".encode()).hexdigest()
         return {"id": 0, "createdAt": sec(t0 - timedelta(seconds=ago_s)),
                 "paymentType": ptype or CB_SALES[name][4], "payment": {**pay, "id": pid, "status": status}}
 
-    # Step 2: OF reverses them.
     ledger.put(X, {**sale_row["a1_ledger_and_dispute"], "status": "undo", "refundReason": "agent"})
     d_row = {"id": "never-ingested", "user": {"id": fan_d}, "amount": 7.77, "currency": "USD", "net": 6.22,
              "fee": 1.55, "vatAmount": 0, "createdAt": sec(t0 - timedelta(days=3)),
@@ -149,10 +134,8 @@ async def run_chargebacks(ctx, w, creators: list[str], ledger, used: set) -> Non
         for aid, item in items:
             f.write(json.dumps({"account_id": aid, "item": item}) + "\n")
     s2 = await snap("disputed")
-    # Step 3: the same disputes, re-polled.
     s3 = await snap("re-polled")
 
-    # ---- checks ----
     pid = {k: str(r["id"]) for k, r in sale_row.items()}
     key = lambda k: (aid_of[k], fan_of[k])
     fans_cb = sorted({key(k) for k in CB_SALES})
@@ -209,8 +192,6 @@ async def run_chargebacks(ctx, w, creators: list[str], ledger, used: set) -> Non
 
 
 async def settle_scans(owner, creators: list[str]) -> dict:
-    """Per Creator: one scan queued after the last ledger append (A), then another (B), which
-    waits on A's tick lock; B started => A and its relink are done."""
     t0 = time.time()
 
     async def queue(aid: str) -> datetime | None:

@@ -11,7 +11,7 @@ if ! test -x "$PY"; then
   echo "demo-shots: $PY not found (needs the repo's relay venv with uvicorn, FastAPI, Playwright)." >&2
   exit 3
 fi
-# Importing service/secrets_store.py would copy secrets.json into service/secrets/ before the redirect can run; refuse in that state.
+# Importing service/secrets_store.py copies secrets.json into service/secrets/ before the redirect can run; refuse in that state.
 if [ -f "$ROOT/service/secrets.json" ] && [ ! -e "$ROOT/service/secrets/secrets.json" ]; then
   echo "demo-shots: service/secrets.json exists and service/secrets/secrets.json does not; see docs/ui-shots.md." >&2
   exit 3

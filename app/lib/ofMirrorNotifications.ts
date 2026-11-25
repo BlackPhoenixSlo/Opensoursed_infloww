@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * ticket 17: Notifications' binder (every tab): the header's Search users (a fan narrows the tab through `?related_user=`,
- * ofMirrorFeedsNotifications' notificationsHref), the aside's Search users or posts (Home's, bindFeedSearch) and the
- * Scheduled events widget's new-event button (Home's Schedule post state). The tabs' rows render in
- * ofMirrorFeedsNotifications.
- */
 
 import { useEffect, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -18,8 +12,6 @@ import { bindFeedSearch, type FeedSearchHandlers, feedSearchHandlers, rowsIn } f
 import type { SearchUser } from "@/lib/ofMirrorPostDraft";
 import { message, note, SELECT_MODEL } from "@/lib/ofMirrorWrites";
 
-/** The header's Search users button, the form it opens (under the header), the fans list under that form, Scheduled
- *  events' new-event button and Home's Schedule post state it opens. */
 const SEARCH_USERS = ".m-notifications-user-search button[aria-label='Search users']";
 const USER_FORM = "data-oi-notif-search";
 const USER_RESULTS = "oi-notif-users";
@@ -28,7 +20,6 @@ const SCHEDULE_POST = "/of-manager/home/state-schedule";
 const SEARCH_ICON = (name: string) =>
   `<svg class="m-default-size g-icon" data-icon-name="${name}" aria-hidden="true"><use href="#${name}" xlink:href="#${name}"></use></svg>`;
 
-/** `handlers` null: All-Creators scope (Notifications stands in for no model: every control gives the select-a-model note). */
 export interface NotificationsContext {
   page: string;
   relatedUser: string | null;
@@ -37,15 +28,6 @@ export interface NotificationsContext {
   navigate(href: string): void;
 }
 
-/**
- * Wire a Notifications tab (D1: each control keeps its Not-yet title until its Live proof; marked data-oi-wired):
- * - Search users opens a search form under the header; typing (400 ms after it stops) lists OF's users search's fans,
- *   and picking one opens this tab for that fan (?related_user=, notificationsHref); a fan's OF id submitted opens it
- *   at once; Clear opens the tab as is. With a fan in the URL the form shows open with that id.
- * - The aside's Search users or posts: Home's (bindFeedSearch).
- * - Scheduled events' new-event button opens Home's Schedule post state, as Home's own widget; it sends nothing.
- * All-Creators: each gives the select-a-model note and reads nothing. Returns an unbind.
- */
 export function bindNotifications(doc: Document, ctx: NotificationsContext): () => void {
   const button = doc.querySelector<HTMLElement>(SEARCH_USERS);
   for (const el of [button, doc.querySelector(NEW_EVENT)]) el?.setAttribute("data-oi-wired", "");
@@ -62,7 +44,7 @@ export function bindNotifications(doc: Document, ctx: NotificationsContext): () 
     const header = button?.closest(".g-page__header");
     if (!header) return;
     form = doc.createElement("form");
-    form.className = "b-search-form b-form m-default-form m-with-bg"; // OF's in-flow form (the header's is hidden by OF's CSS)
+    form.className = "b-search-form b-form m-default-form m-with-bg";
     form.setAttribute(USER_FORM, "");
     form.setAttribute("data-oi-wired", "");
     form.style.cssText = "display:flex;align-items:center";
@@ -88,7 +70,6 @@ export function bindNotifications(doc: Document, ctx: NotificationsContext): () 
       none.textContent = "Nothing found";
       box.append(none);
     }
-    // OF's names come HTML-escaped: shown as text.
     for (const u of users) {
       const row = doc.createElement("button");
       row.type = "button";
@@ -157,8 +138,6 @@ export function bindNotifications(doc: Document, ctx: NotificationsContext): () 
   };
 }
 
-/** Notifications' tabs: bind Search users, the aside's search and the new-event button on every frame load (reads only
- *  with a single Creator). */
 export function useOfNotifications(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const router = useRouter();

@@ -40,13 +40,11 @@ describe("parseCaptions", () => {
     expect(items[0]).toBe("sometimes i reply with words, sometimes with pics. depends how good your opener is 😉");
     expect(items).toContain('HOT POTATO! Send me a "🤍" in dms real quick!');
     expect(items).toContain("i have an excuse to ruin my sleep schedule and text all night 💘💘");
-    // Nothing mangled: no leftover quotes/CRs, no lone surrogates (cut emoji).
     for (const it of items) {
       expect(it).not.toMatch(/^"|"$|\r/);
       expect(it).toBe(it.trim());
       expect(it.isWellFormed()).toBe(true);
     }
-    // Every emoji in the file survives.
     const emoji = (s: string) => s.match(/\p{Extended_Pictographic}/gu)?.length ?? 0;
     expect(items.reduce((n, it) => n + emoji(it), 0)).toBe(emoji(raw));
   });

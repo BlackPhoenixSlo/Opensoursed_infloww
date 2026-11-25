@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""S4S media and the tamper check (ADR-0015; W7 rows 7.6 and 7.11).
-
-The seam is the Relay over HTTP on the two-Agency bench, and the `s4s_post`
-and `s4s_check` automations run directly, with `ax._make_client` patched to a
-fake: no OnlyFans call is possible. The fake answers each account's vault
-read, serves bytes for the post-time download and the preview, records each
-upload and post, and answers `get_post` as a case sets it. Nothing is stored
-on disk but the temporary directory a post uploads from.
-
-Run: ./venv/bin/python service/tests/test_s4s_media.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -32,7 +21,7 @@ from of_client import OFAPIError  # noqa: E402
 
 A = IDS["creator_a"]
 B = IDS["creator_b"]
-C = "1000051"  # Agency A, never in a request with B
+C = "1000051"
 seed_creators({C: "agency_a_owner"})
 OWNER_A = fx.login_owner("agency_a_owner")
 OWNER_B = fx.login_owner("agency_b_owner")
@@ -43,7 +32,6 @@ PID = {aid: profile(o, aid)["profile_id"] for aid, o in ((A, OWNER_A), (B, OWNER
 PRIMARY = {aid: profile(o, aid)["posts"][0]["id"] for aid, o in ((A, OWNER_A), (B, OWNER_B), (C, OWNER_A))}
 FLAG = "S4S_LIVE_POSTING"
 CDN = "https://cdn2.onlyfans.com/files/a/b/"
-# No 11-second spacing between this suite's fake writes.
 ax.of_write_paced.__kwdefaults__["min_gap_s"] = 0.0
 
 
@@ -65,8 +53,6 @@ class Response:
 
 
 class Fake:
-    """The of-client for every account: a vault (id → item), downloads,
-    uploads and posts recorded with the account that made them."""
 
     def __init__(self, vault=None, *, upload_raises=None, post_now=None, post_raises=None):
         self.vault = vault or {}
@@ -160,7 +146,6 @@ def send(from_id: str, to_id: str, n: int) -> int:
 
 
 def booked(n: int) -> dict[str, S4SSlot]:
-    """A sends B a request for day `n`, B accepts, both slots move just past due."""
     request_id = send(A, B, n)
     r = OWNER_B.post(f"/admin/s4s/requests/{request_id}/accept")
     assert r.status_code == 200, f"accept: {r.status_code} {r.text}"
@@ -181,7 +166,6 @@ def state(slot_id: int) -> tuple:
     return row.status, row.reason
 
 
-# ── Save ─────────────────────────────────────────────────────────────
 
 def case_saving_checks_each_vault_item_with_the_creators_own_session_and_stores_no_file():
     fake = Fake({(A, 11): photo(11), (A, 12): {"id": 12, "type": "video", "files": {"full": {}},
@@ -194,12 +178,10 @@ def case_saving_checks_each_vault_item_with_the_creators_own_session_and_stores_
     assert not hasattr(s4s_media, "MEDIA_ROOT"), "S4S media has a disk store again"
     (post,) = [p for p in profile(OWNER_A, A)["posts"] if p["id"] == PRIMARY[A]]
     assert post["media"] == media, post["media"]
-    # A re-save keeps what is attached (no second read) and detaches the rest.
     fake.reads.clear()
     r = put_media(OWNER_A, A, PRIMARY[A], [11])
     assert r.status_code == 200 and [m["vault_media_id"] for m in r.json()] == [11], r.text
     assert fake.reads == [], "an attached item was read again"
-    # The detached video named no request: pruned.
     assert not rows(S4SMedia, id=media[0]["id"]) and rows(S4SMedia, id=media[1]["id"])
 
 
@@ -223,7 +205,7 @@ def case_only_the_creators_own_agency_saves_and_reads_its_media():
     Fake({(C, 51): photo(51)})
     r = put_media(OWNER_B, C, PRIMARY[C], [51])
     assert r.status_code in (403, 404), r.status_code
-    r = put_media(OWNER_A, C, PRIMARY[A], [51])  # A's post under C's path
+    r = put_media(OWNER_A, C, PRIMARY[A], [51])
     assert r.status_code == 404, r.status_code
     r = put_media(OWNER_A, C, PRIMARY[C], [51])
     assert r.status_code == 200, r.text
@@ -231,14 +213,11 @@ def case_only_the_creators_own_agency_saves_and_reads_its_media():
     fake = Fake({(C, 51): photo(51, files={"full": {"url": f"{CDN}51.jpg"}, "thumb": {"url": f"{CDN}51_t.jpg"}})})
     got = OWNER_A.get(f"/admin/s4s/media/{mid}")
     assert got.status_code == 200 and got.content == b"x" * 1000 and got.headers["content-type"] == "image/jpeg"
-    # The still is the item's thumb, read live with C's own session.
     assert fake.reads == [(C, 51)] and fake.gets == [f"{CDN}51_t.jpg"], (fake.reads, fake.gets)
     assert OWNER_B.get("/admin/s4s/media/abc").status_code == 404
-    # B is in no request with C, but Discovery lists C to B with this item on its Primary post.
     assert OWNER_B.get(f"/admin/s4s/media/{mid}").status_code == 200
     (listed,) = [i for i in OWNER_B.get("/admin/s4s/discover").json() if i["profile_id"] == PID[C]]
     assert listed["primary_media"] == [{"id": mid, "media_type": "photo"}], listed
-    # Hidden from Discovery, or blocked by B: 404 to B, still 200 to A.
     for hide, show in (
         (lambda: OWNER_A.put(f"/admin/s4s/profiles/{C}", json={"discovery_visible": False}),
          lambda: OWNER_A.put(f"/admin/s4s/profiles/{C}", json={"discovery_visible": True})),
@@ -249,13 +228,11 @@ def case_only_the_creators_own_agency_saves_and_reads_its_media():
         assert OWNER_B.get(f"/admin/s4s/media/{mid}").status_code == 404
         assert OWNER_A.get(f"/admin/s4s/media/{mid}").status_code == 200
         assert show().status_code == 200
-    # Off the Primary post: 404 to B.
     other = OWNER_A.post(f"/admin/s4s/profiles/{C}/posts", json={"caption": "Not primary"}).json()
     assert OWNER_A.post(f"/admin/s4s/profiles/{C}/posts/{other['id']}/primary").status_code == 200
     assert OWNER_B.get(f"/admin/s4s/media/{mid}").status_code == 404
     assert OWNER_A.post(f"/admin/s4s/profiles/{C}/posts/{PRIMARY[C]}/primary").status_code == 200
     assert OWNER_A.delete(f"/admin/s4s/profiles/{C}/posts/{other['id']}").status_code == 200
-    # Gone from the vault: no preview.
     Fake()
     assert OWNER_A.get(f"/admin/s4s/media/{mid}").status_code == 404
     assert put_media(OWNER_A, C, PRIMARY[C], []).status_code == 200
@@ -272,7 +249,6 @@ def case_signed_out_is_401_and_a_chatter_is_403_on_every_media_route():
             assert r.status_code == 403, f"{label} as {name}: {r.status_code}"
 
 
-# ── Send, preview, post ──────────────────────────────────────────────
 
 def case_a_request_snapshots_the_primary_media_and_the_partner_may_preview_it():
     Fake({(A, 61): photo(61)})
@@ -283,11 +259,9 @@ def case_a_request_snapshots_the_primary_media_and_the_partner_may_preview_it():
     (req,) = [q for q in OWNER_B.get("/admin/s4s/requests?box=received").json() if q["id"] == request_id]
     assert [m["id"] for m in req["from_media"]] == ids and req["to_media"] == [], req
     assert OWNER_B.get(f"/admin/s4s/media/{ids[1]}").status_code == 200
-    # Detached after the send, the row stays while the request is open.
     assert put_media(OWNER_A, A, PRIMARY[A], [11]).status_code == 200
     (m61,) = rows(S4SMedia, id=ids[1])
     assert m61.post_id is None, "a snapshotted row was pruned"
-    # Declined: nothing needs it now; the next prune removes it.
     assert OWNER_B.post(f"/admin/s4s/requests/{request_id}/decline").status_code == 200
     assert OWNER_B.get(f"/admin/s4s/media/{ids[1]}").status_code == 404, "a declined request still grants"
     asyncio.run(s4s_media.prune())
@@ -297,10 +271,9 @@ def case_a_request_snapshots_the_primary_media_and_the_partner_may_preview_it():
 def case_a_slot_reads_the_partners_vault_item_then_uploads_it_on_the_posters_account_and_posts():
     fake = Fake({(A, 11): photo(11)})
     slots = booked(3)
-    mine = slots[B]  # B posts A's promo: A's vault item 11
+    mine = slots[B]
     res = run_post(B, mine.id)
     assert res["status"] == "ok", res
-    # Read from A's vault with A's session at post time, uploaded with B's.
     assert fake.reads == [(A, 11)] and fake.gets == [f"{CDN}11.jpg"], (fake.reads, fake.gets)
     assert fake.uploads == [(B, "11.jpg", b"x" * 1000)], fake.uploads
     assert not fake.upload_paths[0].parent.exists(), "the temporary download outlived the post"
@@ -316,7 +289,7 @@ def case_a_slot_reads_the_partners_vault_item_then_uploads_it_on_the_posters_acc
 
 
 def case_a_vault_item_gone_ends_media_missing_and_failed_reads_or_uploads_post_nothing():
-    fake = Fake()  # A's item 11 has left A's vault
+    fake = Fake()
     slots = booked(4)
     res = run_post(B, slots[B].id)
     assert res == {"status": "error", "reason": "media_missing", "slot_id": slots[B].id}, res
@@ -335,28 +308,22 @@ def case_a_vault_item_gone_ends_media_missing_and_failed_reads_or_uploads_post_n
     res = run_post(B, slots[B].id)
     assert res["reason"] == "upload_failed" and state(slots[B].id) == ("failed", "upload_failed"), res
     assert fake.posts == []
-    # A's side has no media to upload (B's Primary has none): posts text only.
     assert run_post(A, slots[A].id)["status"] == "ok" and fake.posts[0]["media_files"] == []
 
 
-# ── Tamper check ─────────────────────────────────────────────────────
 
-# A's Primary carries vault item 11 from here on: a slot B posts reads it.
 A_VAULT = {(A, 11): photo(11)}
 
 def case_tamper_reason_reads_deleted_archived_and_edited():
     tr = s4s_check.tamper_reason
-    then = {"text": "<p>Hi <b>there</b></p>", "media": []}  # media still converting at create
+    then = {"text": "<p>Hi <b>there</b></p>", "media": []}
     assert tr(None, then, "Hi there", 1) == "post_deleted"
     assert tr({"isDeleted": True}, then, "", 1) == "post_deleted"
     assert tr({"isArchived": True, "text": "Hi there"}, then, "", 1) == "post_archived"
-    # The media count is the sent files', not the create response's.
     assert tr({"text": "Hi  there", "media": [{"id": 1}]}, then, "", 1) is None
     assert tr({"text": "Hi you", "media": [{"id": 1}]}, then, "", 1) == "post_edited"
     assert tr({"text": "Hi there", "media": []}, then, "", 1) == "post_edited"
-    # A read without `media` skips the count.
     assert tr({"text": "Hi there"}, then, "", 1) is None
-    # A create response without text: the sent text.
     assert tr({"text": "Sent", "media": []}, {"id": 5}, "Sent", 0) is None
 
 
@@ -376,11 +343,9 @@ def case_the_check_ends_a_tampered_slot_failed_and_the_partner_sees_why():
     res = run_check(B, mine.id)
     assert res["tamper"] == "post_edited" and res["moved"], res
     assert state(mine.id) == ("failed", "post_edited")
-    # A sees B's tamper on its own (A's) slot of the pair.
     r = OWNER_A.get(f"/admin/s4s/schedule?from={z(day(-2))}&to={z(day(30))}")
     (item,) = [i for i in r.json() if i["id"] == slots[A].id]
     assert item["partner_issue"] == "post_edited", item
-    # Done: a later check leaves it.
     assert run_check(B, mine.id)["status"] == "skipped"
 
 

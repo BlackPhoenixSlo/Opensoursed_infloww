@@ -1,18 +1,14 @@
-/**
- * FanListFilters — the Fan List's filter row, chip row and folder row, tested at their
- * props, which are the module's public interface
- * (docs/spec/phase-02-fan-list-pane.md, Testing Decisions). The module is
- * stateless: each case renders it at fixed props and reads the callbacks.
- * Later filter tickets add their cases here.
- *
- * Fixture identifiers are invented (this repo mirrors to a public one).
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithProviders } from "@/test-utils";
+import { fanListChips } from "./fanListChips";
 import { FanListFilters } from "./FanListFilters";
+
+const ALL = { kind: "builtin", key: "all" } as const;
+const chipsFor = (platform: "onlyfans" | "fansly", tipsEnabled = false) =>
+  fanListChips({ platforms: [platform], tipsEnabled, pinnedFolderIds: [], active: ALL }).chips;
 
 function renderFilters(props: Partial<Parameters<typeof FanListFilters>[0]> = {}) {
   const callbacks = {
@@ -38,7 +34,7 @@ function renderFilters(props: Partial<Parameters<typeof FanListFilters>[0]> = {}
       blurMode="off"
       compactMedia
       sortMode="recent"
-      tipsEnabled={false}
+      chips={chipsFor("onlyfans")}
       {...callbacks}
       {...props}
     />,
@@ -127,14 +123,13 @@ describe("FanListFilters", () => {
     expect(screen.queryByRole("region", { name: "Inboxes" })).not.toBeInTheDocument();
     cleanup();
 
-    // With "Inbox 2" chosen the selector reads it, and "All inboxes" reports no group.
     const chosen = renderFilters({ groupCount: 3, group: 2 });
     await user.click(within(filterRow()).getByRole("button", { name: "Inbox 2" }));
     await user.click(within(screen.getByRole("region", { name: "Inboxes" })).getByRole("button", { name: "All inboxes" }));
     expect(chosen.onGroupChange).toHaveBeenCalledWith(null);
   });
 
-  it("hides the \"All inboxes\" selector when it is not to be shown (All Models)", () => {
+  it("hides the \"All inboxes\" selector when it is not to be shown (no Creators)", () => {
     renderFilters({ showInboxSelector: false });
 
     expect(screen.queryByRole("button", { name: /All inboxes/ })).not.toBeInTheDocument();
@@ -157,7 +152,6 @@ describe("FanListFilters", () => {
     expect(within(menu).getAllByRole("checkbox").map((b) => b.closest("label")?.textContent)).toEqual([
       "Keep fan info panel open", "Blur images till hover", "Blur images constant", "Compact media previews",
     ]);
-    // The Fan List's old Focus mode (Pause incoming messages, Hide muted) is gone.
     expect(within(menu).queryByText(/Focus|Pause incoming|Hide chats with muted|Only in All/)).not.toBeInTheDocument();
     expect(within(menu).queryAllByRole("radio")).toEqual([]);
     expect(within(menu).queryByText(/Sort by|Newest first|Amount spent|Spend \+/)).not.toBeInTheDocument();
@@ -188,7 +182,6 @@ describe("FanListFilters", () => {
     await user.click(sort);
     expect(sort).toHaveAttribute("aria-expanded", "true");
     const menu = screen.getByRole("region", { name: "Sort" });
-    // The header first, then the four orders, nothing between them.
     expect(Array.from(menu.children, (el) => el.textContent)).toEqual([
       "Sort by",
       "✓Newest first",
@@ -225,7 +218,6 @@ describe("FanListFilters", () => {
 
   it("while an extra order is in force the sort control is active and named by it, and its menu's ✓ moves to that order", async () => {
     const user = userEvent.setup();
-    // Stateless: the parent stores the reported order and passes it back.
     for (const [mode, label] of [["spend", "Amount spent"], ["spend-unread", "Spend + unread on top"], ["hybrid", "Spend + recency"]] as const) {
       renderFilters({ sortMode: mode });
       const sort = within(filterRow()).getByRole("button", { name: `Sort: ${label}` });
@@ -306,15 +298,21 @@ describe("FanListFilters", () => {
     expect(screen.queryByRole("button", { name: "Unread with tips" })).not.toBeInTheDocument();
 
     cleanup();
-    const cb = renderFilters({ tipsEnabled: true });
+    const cb = renderFilters({ chips: chipsFor("onlyfans", true) });
     const chips = within(screen.getByRole("group", { name: "Fan List filters" })).getAllByRole("button").map((b) => b.textContent);
     expect(chips.slice(4, 6)).toEqual(["With Tips", "Unread with tips"]);
     await userEvent.click(screen.getByRole("button", { name: "Unread with tips" }));
     expect(cb.onActiveChange).toHaveBeenLastCalledWith({ kind: "builtin", key: "unread_tips" });
 
     cleanup();
-    renderFilters({ tipsEnabled: true, active: { kind: "builtin", key: "unread_tips" }, activeCount: 3 });
+    renderFilters({ chips: chipsFor("onlyfans", true), active: { kind: "builtin", key: "unread_tips" }, activeCount: 3 });
     expect(screen.getByRole("button", { name: "Unread with tips 3" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("a Fansly scope keeps All, Owe reply and Unread, with no Pinned, With Tips, Unread with tips or Priority", () => {
+    renderFilters({ chips: chipsFor("fansly", true) });
+    const chips = within(screen.getByRole("group", { name: "Fan List filters" })).getAllByRole("button").map((b) => b.textContent);
+    expect(chips).toEqual(["All", "Owe reply", "Unread"]);
   });
 
   it("shows the Unread count in a corner badge, no badge on All, and Pinned and Priority counts only while active", () => {
@@ -347,7 +345,6 @@ describe("FanListFilters", () => {
     expect(chip.querySelector("[aria-live]")).toBeNull();
     expect(screen.getByRole("button", { name: "Pinned" })).not.toHaveAttribute("title");
 
-    // A zero count still carries its age (a stale 0 can be wrong too).
     cleanup();
     renderFilters({ unreadCount: 0, unreadAge: { text: "as of 2 min", title } });
     expect(screen.getByRole("button", { name: "Unread as of 2 min" })).toHaveAttribute("title", title);
@@ -449,7 +446,6 @@ describe("FanListFilters", () => {
     expect(cb.onActiveChange).toHaveBeenCalledTimes(1);
     expect(cb.onActiveChange).toHaveBeenLastCalledWith({ kind: "builtin", key: "all" });
 
-    // Clicking the other folder switches to it rather than clearing.
     await userEvent.click(screen.getByRole("button", { name: "Folder Second Fixture Folder" }));
     expect(cb.onActiveChange).toHaveBeenCalledTimes(2);
     expect(cb.onActiveChange).toHaveBeenLastCalledWith({ kind: "folder", listId: "700000002" });

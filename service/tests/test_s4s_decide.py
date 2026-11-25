@@ -1,26 +1,7 @@
 #!/usr/bin/env python3
-"""
-s4s_decide — table tests over the pure S4S request rules (s4s_common), the
-send-body parse, and the post routes' path-id lookup over HTTP:
-
-  case_send_body_refusals:   `slot_at` missing, not a string or malformed →
-                             400 with today's texts.
-  case_own_post_404:         edit, delete and Primary on an S4S post by path
-                             id: own found; not an id, missing, another
-                             Creator's → 404 "post not found".
-  case_partner_refusal:      self → 400, a block → 404, self first.
-  case_request_refusal:      51st send, opted out, no Primary post, past time,
-                             open pair, either Daily limit full → 409; OK; and
-                             the precedence when several apply.
-  case_next_status:          every (status × verb × box held) cell: the new
-                             status, 404 (not the verb's party) or 409; an
-                             unknown verb is a KeyError.
-
-Run: ./venv/bin/python service/tests/test_s4s_decide.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -75,20 +56,20 @@ def case_own_post_404():
         ("primary", lambda raw: owner_a.post(f"{p}/{raw}/primary")),
         ("DELETE", lambda raw: owner_a.delete(f"{p}/{raw}")),
     )
-    for label, call in routes:  # not an id, missing, another Creator's
+    for label, call in routes:
         for raw in ("abc", str(other + 1000), str(other)):
             r = call(raw)
             assert (r.status_code, r.json()) == (404, {"detail": "post not found"}), (label, raw, r.text)
-    for label, call in routes:  # own: found (DELETE last)
+    for label, call in routes:
         r = call(str(own))
         assert r.status_code == 200, (label, r.status_code, r.text)
 
 
 def case_partner_refusal():
     self_400 = (400, "a Creator cannot send an S4S request to itself")
-    rows = [  # (from, partner, blocked) → refusal
+    rows = [
         ("A", "A", False, self_400),
-        ("A", "A", True, self_400),               # self before block
+        ("A", "A", True, self_400),
         ("A", "B", True, (404, "partner not found")),
         ("A", "B", False, None),
     ]
@@ -108,7 +89,7 @@ def case_request_refusal():
     past_409 = (409, "the proposed time has passed")
     pair_409 = (409, "an open request to this partner already exists")
     full_409 = (409, "a Daily limit is full on that day")
-    rows = [  # overrides of `ok` → refusal
+    rows = [
         ({}, None),
         ({"sent_today": 49}, None),
         ({"sent_today": 50}, sent_409),
@@ -124,7 +105,6 @@ def case_request_refusal():
         ({"booked_from": 2}, full_409),
         ({"booked_to": 2}, full_409),
         ({"booked_to": 1, "to_p": p(daily_limit=1)}, full_409),
-        # precedence: the earlier refusal wins
         ({"sent_today": 50, "from_p": None, "primaries": False}, sent_409),
         ({"to_p": p(opted_in=False), "primaries": False, "slot_at": NOW}, opt_409),
         ({"primaries": False, "slot_at": NOW, "open_pair": True}, primary_409),
@@ -135,10 +115,8 @@ def case_request_refusal():
         assert request_refusal(**{**ok, **over}) == want, (over, want)
 
 
-# Every status an S4S request can hold (the model's CHECK, asserted below).
 STATUSES = ("pending", "accepted", "declined", "skipped", "cancelled", "expired")
 GONE = (409, "this request is no longer pending")
-# (status, verb) → the new status or the refusal, for the verb's own party.
 MOVES = {
     ("pending", "accept"): "accepted", ("pending", "skip"): "skipped",
     ("pending", "decline"): "declined", ("pending", "cancel"): "cancelled",
@@ -147,7 +125,6 @@ MOVES = {
     **{(st, v): GONE for st in ("accepted", "declined", "cancelled", "expired")
        for v in ("accept", "skip", "decline", "cancel")},
 }
-# The box a verb's party holds the request in.
 PARTY = {"accept": "received", "skip": "received", "decline": "received", "cancel": "sent"}
 
 
@@ -161,7 +138,7 @@ def case_next_status():
                 want = MOVES[(status, verb)] if box == PARTY[verb] else (404, "request not found")
                 got = next_status(status, verb, box)
                 assert got == want, (status, verb, box, got)
-    for verb in PARTY:  # a missing row holds no box
+    for verb in PARTY:
         assert next_status(None, verb, None) == (404, "request not found")
     try:
         next_status("pending", "approve", "received")

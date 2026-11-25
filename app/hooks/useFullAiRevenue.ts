@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * useFullAiRevenue — one Creator's Full AI revenue readout (GET /admin/full-ai/revenue, service/full_ai_api.py):
- * when it went live, $ per enrolled Fan over complete 14-day windows, offers / bought / $ per Route. Live rows only;
- * the read settles nothing. Same shape as useFullAiToday; the numbers move slowly: 5 min poll, 1 min while SSE is down.
- */
 
 import { useQuery } from "@tanstack/react-query";
 

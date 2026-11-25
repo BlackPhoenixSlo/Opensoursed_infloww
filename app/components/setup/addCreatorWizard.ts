@@ -32,9 +32,9 @@ import { useCallback, useRef, useState } from "react";
 
 import type { AccountDetails, useSaveAccountDetails } from "@/components/setup/creatorFlow";
 import type { CreatorDetails } from "@/lib/creatorProfiles";
+import { PLATFORMS, type Platform } from "@/lib/platform";
 import type { Employee } from "@/lib/relay";
 
-export type Platform = "onlyfans" | "fansly";
 /** The two ways in: a remote browser (Browserbase) or the Chrome extension's copy. */
 export type Method = "browser" | "extension";
 
@@ -95,7 +95,7 @@ export function initialWizard({ recovery, method, draft, linkAnother }: {
   linkAnother?: { creator: CreatorDetails; linked: readonly Platform[] };
 }): WizardState {
   const taken = linkAnother?.linked ?? [];
-  const platform = recovery ?? (taken.includes("onlyfans") ? "fansly" : "onlyfans");
+  const platform = recovery ?? (PLATFORMS.find((p) => !taken.includes(p.key)) ?? PLATFORMS[0]).key;
   const fresh = !recovery && !draft && !linkAnother;
   return {
     step: fresh ? { kind: "details" } : { kind: "login" },

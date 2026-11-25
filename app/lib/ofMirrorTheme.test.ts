@@ -52,7 +52,7 @@ describe("useOfTheme — Synchronize platform display settings (OnlyFans)", () =
     flipSwitch(true);
     expect(result.current).toBe(true);
     expect(isDark()).toBe(true);
-    expect(document.documentElement.getAttribute("data-theme")).toBe("dark"); // ours untouched
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
     flipSwitch(false);
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
     expect(isDark()).toBe(false);
@@ -63,7 +63,7 @@ describe("useOfTheme — Synchronize platform display settings (OnlyFans)", () =
     const first = renderHook(() => useOfTheme({ current: frame }, "/x"));
     flipSwitch(true);
     first.unmount();
-    applyTheme(doc(), false); // a fresh page
+    applyTheme(doc(), false);
     const { result } = renderHook(() => useOfTheme({ current: frame }, "/y"));
     expect(result.current).toBe(true);
     expect(isDark()).toBe(true);

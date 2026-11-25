@@ -1,4 +1,3 @@
-"""lib/selection.py tables. venv/bin/python -m pytest slop/lib/test_selection.py"""
 from __future__ import annotations
 
 import json
@@ -33,8 +32,6 @@ class Box:
         def shut(self):
             pass
 '''
-#  1 import os / 3 X = 1 / 6 @decorate / 7 def top / 8 comment / 9 y = a / 11 def inner / 12 return y /
-# 13 return inner / 16 class Box / 17 size / 19 async def open / 20 return 1 / 22 class Lid / 23 def shut / 24 pass
 
 
 def test_defs_qualified():
@@ -45,10 +42,10 @@ def test_defs_qualified():
 
 @pytest.mark.parametrize("lines,funcs,module", [
     ([9, 13], ["top"], False),
-    ([11], ["top"], False),            # the nested def statement runs when top runs
+    ([11], ["top"], False),
     ([12], ["top.inner"], False),
-    ([7, 1, 3], [], True),             # def lines and module code: import time, no body ran
-    ([17], [], True),                  # class body: module level
+    ([7, 1, 3], [], True),
+    ([17], [], True),
     ([20, 24], ["Box.Lid.shut", "Box.open"], False),
 ])
 def test_funcs_of_lines(lines, funcs, module):
@@ -120,7 +117,6 @@ def test_parse_hunks_prefixes_and_quoted_paths():
 
 
 def _ins(src: str, at: int, text: str) -> str:
-    """`text` inserted after line `at` (1-based) of src."""
     ls = src.splitlines(keepends=True)
     return "".join(ls[:at] + [text] + ls[at:])
 
@@ -131,7 +127,6 @@ def _ins(src: str, at: int, text: str) -> str:
     ("blank line inserted", _ins(SRC, 3, "\n"), (3, 0, 4, 1), []),
     ("module comment inserted", _ins(SRC, 3, "# hi\n"), (3, 0, 4, 1), []),
     ("module code changed", SRC.replace("X = 1", "X = 2"), (3, 1, 3, 1), [(None, 3), (None, 3)]),
-    # a decorator / signature runs when the enclosing body defines the function: module level here
     ("decorator changed", SRC.replace("@decorate", "@other"), (6, 1, 6, 1), [(None, 6), (None, 6)]),
     ("signature changed", SRC.replace("def top(a)", "def top(a, b=0)"), (7, 1, 7, 1), [(None, 7), (None, 7)]),
     ("nested def signature: the enclosing body", SRC.replace("def inner()", "def inner(z=1)"), (11, 1, 11, 1),
@@ -180,10 +175,8 @@ MAP = {"scenarios": {
     "s-vault": {"sha": "A", "seconds": 30, "pages": ["/growth/vault-pro"],
                 "py": {"service/a.py": ["Box.open"], "service/v.py": ["top"], "slop/lib/app_ts.py": ["run"],
                        "slop/actors/notif_click.py": ["click"]}},
-    # reaches the app's /site-auth route handler over plain HTTP only (no browser)
     "s-api": {"sha": "B", "seconds": 10, "pages": ["/site-auth"], "http_pages": ["/site-auth"],
               "py": {"service/a.py": ["top"], "service/bio_pages/assets.py": ["page"]}},
-    # 17 more that run Box.open and visit /: 20 mapped, so `flow` is reach by at most 3 of them
     **{f"f{i:02d}": {"sha": "A", "seconds": 100 + i, "pages": ["/"], "py": {"service/a.py": ["Box.open"]}}
        for i in range(17)},
 }}
@@ -217,9 +210,9 @@ ALL = set(MAP["scenarios"])
 BROWSER = {n for n, e in MAP["scenarios"].items() if set(e["pages"]) - set(e.get("http_pages", ()))}
 PAGES = {n for n, e in MAP["scenarios"].items() if e["pages"]}
 UNC = "NOT VERIFIED (no scenario reaches): "
-SWEPT = {q for q, *_ in sel.defs(SRC)}  # names the map sha's file had
-RENAMED = SRC.replace("def top(a)", "def top2(a)")  # renamed on main after the sweep
-ADDED = _ins(SRC, 14, "def fresh():\n    return 2\n\n")  # added on main after the sweep (body L16)
+SWEPT = {q for q, *_ in sel.defs(SRC)}
+RENAMED = SRC.replace("def top(a)", "def top2(a)")
+ADDED = _ins(SRC, 14, "def fresh():\n    return 2\n\n")
 
 
 @pytest.mark.parametrize("name,hunks,changed,untracked,want,warns", [
@@ -289,7 +282,6 @@ ADDED = _ins(SRC, 14, "def fresh():\n    return 2\n\n")  # added on main after t
      {**{n: "shared" for n in FILLERS | {"s-vault"}}, "f03": "own"}, []),
     ("new scenario (untracked): own", {}, {"A": []}, ["slop/scenarios/s-new.py"], {"s-new": "own"}, []),
     ("untracked service file: uncovered", {}, {"A": []}, ["service/fresh.py"], {}, [UNC + "service/fresh.py"]),
-    # diff base (merge-base) != map sha: the map is matched by name against the map sha's file
     ("base != map sha, function the sweep saw: its runners", {"A": {"service/a.py": {**BODY, "map_known": SWEPT}}},
      {"A": ["service/a.py"]}, [], {"s-clock": "flow"}, []),
     ("function renamed since the sweep: module level",
@@ -346,9 +338,9 @@ P = {"o": [("own", "x")], "fl": [("flow", "x")], "sh1": [("shared", "x")], "sh2"
 
 
 @pytest.mark.parametrize("budget_s,run,skipped", [
-    (0, ["o", "un", "fl", "sh3", "sh1", "sh2", "la1", "la2"], []),           # no cap: tier, then seconds
-    (60, ["o", "un", "fl"], ["sh3", "sh1", "sh2", "la1", "la2"]),           # own/flow always, even past it
-    (1100, ["o", "un", "fl", "sh3", "sh1"], ["sh2", "la1", "la2"]),         # stops at the first that passes
+    (0, ["o", "un", "fl", "sh3", "sh1", "sh2", "la1", "la2"], []),
+    (60, ["o", "un", "fl"], ["sh3", "sh1", "sh2", "la1", "la2"]),
+    (1100, ["o", "un", "fl", "sh3", "sh1"], ["sh2", "la1", "la2"]),
     (1400, ["o", "un", "fl", "sh3", "sh1", "sh2", "la1", "la2"], []),
 ])
 def test_plan(budget_s, run, skipped):
@@ -356,15 +348,14 @@ def test_plan(budget_s, run, skipped):
 
 
 @pytest.mark.parametrize("budget_s,run,skipped", [
-    (60, ["a"], ["c", "b"]),          # unknown seconds sort last; once full, it is skipped too
-    (100, ["a", "c", "b"], []),       # unknown counts 0 against the budget
+    (60, ["a"], ["c", "b"]),
+    (100, ["a", "c", "b"], []),
 ])
 def test_plan_unknown_seconds(budget_s, run, skipped):
     p = {"a": [("shared", "x")], "b": [("shared", "x")], "c": [("shared", "x")]}
     assert sel.plan(p, {"a": 30, "b": None, "c": 40}, budget_s) == (run, skipped)
 
 
-# ---------- lib/covmap.py ----------
 
 @pytest.fixture
 def app_tree(tmp_path):
@@ -389,7 +380,7 @@ def app_tree(tmp_path):
     ("./y", "comp/z.tsx", "app/comp/y.tsx"),
     ("../lib/x", "comp/z.tsx", "app/lib/x.ts"),
     ("@/lib/idx", "comp/z.tsx", "app/lib/idx/index.tsx"),
-    ("./x.js", "lib/a.ts", "app/lib/x.ts"),            # ESM-style specifier of a .ts source
+    ("./x.js", "lib/a.ts", "app/lib/x.ts"),
     ("./z.css", "comp/z.tsx", "app/comp/z.css"),
     ("react", "lib/a.ts", None),
     ("./missing", "lib/a.ts", None),

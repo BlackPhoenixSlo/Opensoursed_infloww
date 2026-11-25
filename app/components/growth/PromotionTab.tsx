@@ -1,27 +1,5 @@
 "use client";
 
-/**
- * PromotionTab — Growth → Profile promotion's content, laid out as Infloww's (bundle: ProfilePromotionCampaign
- * @13957700, antd's legacy set). The page (`GrowthRailFrame`) draws the 48px header and the creator rail.
- *
- * "Promotion campaigns" with the primary "Create promotion" (Infloww's `CreatePromotionModal`, 520px: User type,
- * Promotion type, Offer limit, Offer expiration, Free trial duration or Discount percent, Message; the body is OF
- * Manager's own promotionBody), the tips box, then "Campaign insights": Show expired, the antd table (Promo / Claims /
- * Revenue / Actions) and its pager, 10 a page; then the settings rows, "Auto-activate campaign" (`PromoReactivateCard`,
- * a read-only status: the per-campaign Keep running tick is the one switch; in Create promotion it is on by default
- * for a discount and off for a Free trial, whose Re-create limit is optional (default No limit), and names the campaign it
- * takes Keep running from; under it, on the dialog and a kept row, the second tick Re-create at 90% filled, ticked by
- * default and off under an Offer limit of 10)
- * and "Add fans to list" (`PromoListRow`, Infloww's account-level switch and list). Infloww puts the two rows above
- * Campaign insights; ours lead with the campaigns, the page's reason (UI flow audit C33). OF is the source of truth; a local mirror keeps the
- * operator's name, the discount (OF does not echo it) and the Keep running switch.
- * Revenue "from N fans" (Infloww's RevenueCell) is the campaign's claimers' spend in our ledger since each claimed,
- * net, over every OF promo a re-armed campaign has been (the relay's cached read, "Updated N min ago"); Spend/Claim
- * and AEPS ride under it. Promotions carry no promo cost in Infloww, so there is no Profit or ROI.
- *
- * Ours, labelled: the Name field, Keep running per campaign, the Refresh button, Delete on an ended mirrored
- * campaign, and Subscription bundles under the table (Infloww has them in OF Manager's settings).
- */
 
 import { Fragment, useEffect, useReducer, useState } from "react";
 import { Info, RotateCw } from "lucide-react";
@@ -59,29 +37,23 @@ import { cn } from "@/lib/utils";
 import { GrowthRailFrame } from "@/components/growth/GrowthFrame";
 import { useGrowthCreator } from "@/hooks/useAccounts";
 
-/** The last create's line on the page: what the relay made, or that the earlier create it met landed. */
 type CreateNotice = PromoCreated | { landed: string };
 
-/** Infloww's UserTypeOptions. */
 const AUDIENCES: IfOption<Audience>[] = [
   { value: "new", label: "New subscribers" },
   { value: "expired", label: "Expired subscribers" },
   { value: "both", label: "Both new and expired" },
 ];
 const MESSAGE_MAX = 500;
-/** A Free trial's Re-create limit choices: No limit (the default: indefinite, owner 2026-11-21), or the relay's 1-10. */
 const NO_LIMIT = "none";
 const RECREATE_LIMITS = [{ value: NO_LIMIT, label: "No limit" }, ...Array.from({ length: RECREATE_MAX - RECREATE_MIN + 1 }, (_, i) => {
   const n = RECREATE_MIN + i;
   return { value: String(n), label: `${n} re-create${n === 1 ? "" : "s"}` };
 })];
-/** A Free trial campaign (OF's 100% off for its duration). */
 const isTrial = (c: PromoCampaign) => c.discount_percent === 100;
 const PAGE_SIZE = 10;
-/** The bundle's titles: 16 / 600 T1. */
 const TITLE = "text-[16px] font-semibold text-fg";
 
-/** Infloww's RevenueCell: the money over "from N fans" (the fans who spent); Spend/Claim and AEPS under it. */
 function Revenue({ m }: { m: PromoCampaign["metrics"] }) {
   const rev = m?.earnings_net_cents ?? null;
   return (
@@ -100,8 +72,6 @@ function Revenue({ m }: { m: PromoCampaign["metrics"] }) {
   );
 }
 
-/** `PromotionCampaignTips`: the info icon, then two bullets, the second with "Learn more" (Infloww's article, Not
- *  wired) in the CTA orange; on the panel colour with a 1px L1 border, radius 8. */
 function Tips() {
   return (
     <div className="flex gap-3 rounded-lg border border-border bg-panel px-4 py-3 text-[14px] text-fg">
@@ -118,7 +88,6 @@ function Tips() {
   );
 }
 
-/** `creatorsLoading`: the Creators read is still out, so no Creator is picked yet (placeholder rows, not the empty state). */
 export default function PromotionTab({ accountId, creatorsLoading = false }: { accountId: string | null; creatorsLoading?: boolean }) {
   const promosQ = usePromotions(accountId);
   const deleteM = useDeletePromotion(accountId);
@@ -128,10 +97,7 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
 
   const [creating, setCreating] = useState(false);
   const [details, setDetails] = useState<string | null>(null);
-  /** The create just made: why it could not keep running (it still went through), or the campaign it took Keep
-   *  running from; or the relay's line that the earlier create it met is on OnlyFans (409 create_landed). */
   const [created, setCreated] = useState<CreateNotice | null>(null);
-  /** The Free trial row being ticked: it offers its optional Re-create limit first. */
   const [retick, setRetick] = useState<PromoCampaign | null>(null);
   const { showExpired, page, set, setPage } = usePagedFilters({ showExpired: false });
 
@@ -157,17 +123,15 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
       <section aria-label="Promotion campaigns" className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className={TITLE}>Promotion campaigns</h2>
-          {/* Not before the campaigns load: the dialog sends the Kept one it showed (expect_taken_from). */}
           <IfButton variant="primary" onClick={() => setCreating(true)} disabled={!accountId || !promosQ.isSuccess}>
             Create promotion
           </IfButton>
         </div>
         <Tips />
-        {/* OF answered without the new promo: nothing proves it exists yet, so never "Created".
-            The relay says whether Keep running can go on it once listed (only when it was ticked). */}
         {created && "landed" in created && (
           <div role="status" className="break-words text-[14px] text-fg-dim">{created.landed}</div>
         )}
+        {/* OF answered without the new promo: nothing proves it exists yet, so never "Created". */}
         {made?.create === "unknown" && (
           <div role="status" className="break-words text-[14px] text-warn">
             Sent, but OnlyFans hasn&apos;t confirmed it. {made.auto_reactivate_refused || "It shows here once OnlyFans lists it"}.
@@ -192,7 +156,6 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
           <div className="flex items-center gap-4">
             <IfSwitch aria-label="Show expired" label="Show expired" checked={showExpired}
               onChange={(on) => set({ showExpired: on })} />
-            {/* Ours: read OnlyFans again now. */}
             <button type="button" aria-label="Refresh" title={`${EXTRA_LABEL}: read OnlyFans again`}
               onClick={() => void promosQ.refetch()} disabled={promosQ.isFetching}
               className="grid h-7 w-7 place-items-center rounded-md border border-border text-fg-dim hover:text-accent disabled:opacity-50">
@@ -201,7 +164,6 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
           </div>
         </div>
 
-        {/* antd's `Table size="middle"`. */}
         <div className="overflow-x-auto">
           <table aria-label="Campaigns" className={cn(IF_TABLE.table, "min-w-[720px]")}>
             <thead>
@@ -236,7 +198,6 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
                         <div className="text-[12px] text-fg-dim">
                           {promoOffer(c)} · {date ? `${date} | ` : ""}{promoAudience(c.promo_type)}
                         </div>
-                        {/* Ours: opt this campaign into the re-arm. OnlyFans-only rows aren't mirrored, so they can't be re-created. */}
                         {c.id != null && (
                           <label className="mt-1 inline-flex items-center gap-1.5 text-[12px] text-fg-dim cursor-pointer" title={EXTRA_LABEL}>
                             <input
@@ -259,7 +220,6 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
                             usable={preemptUsable(c.subscribe_counts)} disabled={reactM.isPending}
                             onChange={(on) => reactM.mutate({ id: c.id!, preempt: on })} />
                         )}
-                        {/* The relay's refusal (another campaign is Kept, a Free trial with no limit…) beside its row. */}
                         {c.id != null && reactM.error && reactM.variables?.id === c.id && (
                           <div role="alert" className="mt-1 max-w-[260px] break-words text-[12px] text-err md:max-w-none">
                             {ofErrorMessage(reactM.error) ?? reactM.error.message}
@@ -284,7 +244,6 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
                         </div>
                       </td>
                     </tr>
-                    {/* Details spans the row, so the fan table's seven columns fit. */}
                     {details === key && (
                       <tr className={IF_TABLE.row}>
                         <td colSpan={4} className="px-4 py-3">
@@ -300,7 +259,6 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
           </table>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          {/* The antd pager, left, with no size changer. */}
           {shown.length > 0 ? (
             <IfPager total={shown.length} noun={shown.length === 1 ? "record" : "records"} page={current} size={PAGE_SIZE} onPage={setPage} />
           ) : <span />}
@@ -315,7 +273,6 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
         </div>
       </section>
 
-      {/* The settings rows after the campaigns they act on (Infloww has them above Campaign insights). */}
       <PromoReactivateCard accountId={accountId} />
 
       <PromoListRow accountId={accountId} />
@@ -332,14 +289,12 @@ export default function PromotionTab({ accountId, creatorsLoading = false }: { a
   );
 }
 
-/** A number select on antd's look (`IfSelect` takes string values). */
 function NumSelect({ label, value, options, onChange }: {
   label: string; value: number; options: { value: string; label: string }[]; onChange: (v: number) => void;
 }) {
   return <IfSelect aria-label={label} value={String(value)} options={options} onChange={(v) => onChange(Number(v))} className="w-full" />;
 }
 
-/** A form row: the label (antd's vertical form: no colon), then the control. */
 function Row({ label, htmlFor, children }: { label: string; htmlFor?: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-2">
@@ -349,7 +304,6 @@ function Row({ label, htmlFor, children }: { label: string; htmlFor?: string; ch
   );
 }
 
-/** A Free trial's optional Re-create limit (null = No limit): full width, so it fits a 390 px phone. */
 function RecreateLimit({ value, onChange }: { value: number | null; onChange: (n: number | null) => void }) {
   return (
     <Row label="Re-create limit">
@@ -363,8 +317,6 @@ function RecreateLimit({ value, onChange }: { value: number | null; onChange: (n
   );
 }
 
-/** Re-create at 90% filled, the second tick under Keep running: its own line, indented 24 px, a 44 px tap row on a
- *  phone. Under an Offer limit of 10 (or none) it can never act, so it shows off, disabled, and says why. */
 function PreemptTick({ checked, usable, disabled = false, onChange, className }: {
   checked: boolean; usable: boolean; disabled?: boolean; onChange: (on: boolean) => void; className: string;
 }) {
@@ -381,7 +333,6 @@ function PreemptTick({ checked, usable, disabled = false, onChange, className }:
   );
 }
 
-/** Ticking Keep running on a Free trial row: its optional Re-create limit first (No limit by default). */
 function TrialRetickModal({ accountId, campaign, onClose }: {
   accountId: string | null; campaign: PromoCampaign; onClose: () => void;
 }) {
@@ -391,7 +342,7 @@ function TrialRetickModal({ accountId, campaign, onClose }: {
     try {
       await reactM.mutateAsync({ id: campaign.id!, auto_reactivate: true, ...(limit === null ? {} : { recreate_limit: limit }) });
       onClose();
-    } catch { /* reactM.error shows the relay's line */ }
+    } catch { }
   }
   return (
     <IfModal
@@ -416,8 +367,6 @@ function TrialRetickModal({ accountId, campaign, onClose }: {
   );
 }
 
-/** `CreatePromotionModal`: 520px, label over control, Cancel then Create. The line over the footer says what
- *  OnlyFans will be asked to run (ours, in place of a second confirm). `kept`: the campaign keeping running now. */
 function CreatePromotionModal({ accountId, kept, onClose, onCreated }: {
   accountId: string | null; kept: TakenFrom | null; onClose: () => void; onCreated: (out: CreateNotice | null) => void;
 }) {
@@ -427,9 +376,9 @@ function CreatePromotionModal({ accountId, kept, onClose, onCreated }: {
   const { name, form, preempt, recreateLimit, takenFrom, err, unresolved } = state;
   const keepOn = keepRunningOn(state);
   const takeover = keepOn ? takeoverNotice(takenFrom?.name) : null;
-  // The line shown is what the create sends (expect_taken_from): follow the campaigns read as it lands.
   const keptId = kept?.id ?? null;
   const keptName = kept?.name ?? "";
+  // The line shown is what the create sends (expect_taken_from): follow the campaigns read as it lands.
   useEffect(() => {
     dispatch({ type: "takenFromLoaded", kept: keptId === null ? null : { id: keptId, name: keptName } });
   }, [keptId, keptName]);
@@ -445,7 +394,6 @@ function CreatePromotionModal({ accountId, kept, onClose, onCreated }: {
   const cap = form.limit ? `up to ${form.limit} claim${form.limit === 1 ? "" : "s"}` : "UNLIMITED claims";
   const ends = form.expiration ? `on offer for ${form.expiration} day${form.expiration === 1 ? "" : "s"}` : "no expiration";
 
-  /** `resolve`: "It did not go through — create anyway" clears the earlier create the relay could not settle. */
   async function create(resolve = false) {
     const payload = buildPayload(state, resolve);
     dispatch({ type: "clear" });
@@ -456,11 +404,11 @@ function CreatePromotionModal({ accountId, kept, onClose, onCreated }: {
       onClose();
     } catch (e) {
       const said = ofErrorMessage(e) ?? errMsg(e, "Create failed");
-      // The earlier create it met is on OnlyFans (the list refreshes): nothing to retry here.
+      // The earlier create it met is on OnlyFans: nothing to retry here.
       if (e instanceof RelayError && landed(e.body)) { onCreated({ landed: said }); onClose(); return; }
       const id = e instanceof RelayError ? unresolvedId(e.body) : null;
-      // Keep running moved meanwhile: show where it is now, so the next Create sends that.
       const moved = e instanceof RelayError ? movedTo(e.body) : undefined;
+      // Keep running moved meanwhile: show where it is now, so the next Create sends that.
       if (moved) dispatch({ type: "takenFromLoaded", kept: moved.kept });
       dispatch(id === null ? { type: "failed", err: said } : { type: "unresolved", id, err: said });
     }
@@ -524,7 +472,6 @@ function CreatePromotionModal({ accountId, kept, onClose, onCreated }: {
             onChange={(e) => set({ message: e.target.value })} placeholder="Shown with the promotion" />
           <span className="self-end text-[12px] text-fg-dim tabular-nums">{form.message.length}/{MESSAGE_MAX}</span>
         </Row>
-        {/* Ours: on by default for a discount, off for a Free trial; the new campaign takes Keep running from any other. */}
         <label className="inline-flex items-center gap-2 text-[14px] text-fg cursor-pointer" title={EXTRA_LABEL}>
           <input type="checkbox" checked={keepOn} onChange={(e) => dispatch({ type: "keepRunning", on: e.target.checked })}
             className="w-3.5 h-3.5 rounded accent-accent cursor-pointer" />
@@ -552,7 +499,6 @@ function CreatePromotionModal({ accountId, kept, onClose, onCreated }: {
   );
 }
 
-/** /growth/profile-promotion: this tab in the Growth rail frame. */
 export function PromotionPage() {
   const creator = useGrowthCreator();
   return (

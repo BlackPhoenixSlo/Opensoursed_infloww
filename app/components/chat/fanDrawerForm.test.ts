@@ -13,9 +13,7 @@ describe("fanDrawerFormReducer", () => {
     ["clean adopt takes fresh", [adopt("Ann", "n1", "a, b"), adopt("Bea", "n2", "c")], { nick: "Bea", notes: "n2", tags: "c" }],
     ["dirty adopt keeps typing", [adopt("Ann", "n1", "a"), edit("nick", "Typed"), edit("notes", "mine"), adopt("Bea", "n2", "b")],
       { nick: "Typed", notes: "mine", tags: "b" }],
-    // Blur saved "Typed": the cache adopt brings it back as fresh, so a later out-of-band value wins again.
     ["adopt after blur-save", [adopt("Ann"), edit("nick", "Typed"), adopt("Typed"), adopt("Cy")], { nick: "Cy", notes: "", tags: "" }],
-    // Chat-list "Old" first paints; the resolved OF read is empty and replaces it.
     ["empty OF value once resolved wins over chat-list value", [adopt("Old", "old note"), adopt("", "")], { nick: "", notes: "", tags: "" }],
     ["dirty field kept through several adopts", [adopt("Ann"), edit("nick", "T"), adopt("Bea"), adopt("Cy")], { nick: "T", notes: "", tags: "" }],
   ])("%s", (_name, actions, want) => {

@@ -1,8 +1,3 @@
-/**
- * Discover creators (docs/spec/phase-03-share-for-share.md, Testing Decisions, seam 2; ADR-0011; page-parity 15),
- * rendered with the relay mocked at `fetch` by URL. The request goes from the creator picked on the rail (`from`).
- * Fixture names and ids are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -14,7 +9,6 @@ const OWN: S4SDiscoveryItem = {
   profile_id: 3, display_name: "Fixture Own", username: "fixture_own", avatar_url: null,
   primary_caption: "Our own promo", primary_media: [], daily_limit: 1, opted_in: true, own_agency: true,
 };
-/** Another Creator of the owner's own Agency: the user's case, two of their own Creators opted in. */
 const SIBLING: S4SDiscoveryItem = {
   profile_id: 5, display_name: "Fixture Sibling", username: "fixture_sibling", avatar_url: null,
   primary_caption: "Sibling promo", primary_media: [], daily_limit: 1, opted_in: true, own_agency: true,
@@ -26,8 +20,6 @@ const OTHER: S4SDiscoveryItem = {
   primary_media: [{ id: 71, media_type: "photo" }, { id: 72, media_type: "video" }, { id: 73, media_type: "photo" }],
 };
 
-/** The rail's creators: one opted in with a Primary post (Discovery's OWN card, which it never shows itself), one
- *  opted out. */
 const SENDER: S4SProfile = {
   account_id: "7000001", profile_id: 3, opted_in: true, discovery_visible: true, daily_limit: 1,
   display_name: "Fixture Own", username: "fixture_own", avatar_url: null,
@@ -43,7 +35,6 @@ let fetchMock: ReturnType<typeof vi.fn>;
 let items: unknown[];
 let sendReply: Response | null;
 let blocks: unknown[];
-/** The Relay's proposed time per sender account id; none (null) unless a case sets one. */
 let proposals: Record<string, string | null>;
 
 beforeEach(() => {
@@ -76,7 +67,6 @@ const openCard = (name: string) =>
 
 describe("DiscoverCreators", () => {
   it("renders one card per Creator with the projection fields only, the own agency's tagged, the rail's own left out", async () => {
-    // A key outside the projection, as a buggy Relay might send, never reaches the page.
     items = [{ ...OTHER, account_id: "7000009" }, OWN, SIBLING];
     renderWithProviders(<DiscoverCreators from={SENDER} />);
     const partner = await screen.findByRole("article", { name: "Fixture Partner" });
@@ -86,10 +76,8 @@ describe("DiscoverCreators", () => {
     expect(within(partner).getByRole("img", { name: "Fixture Partner" })).toHaveAttribute(
       "src", "https://example.invalid/partner.png");
     expect(within(partner).queryByText("Your agency")).toBeNull();
-    // A visible Request, and the Primary post's first still (none on a post with no media).
     expect(within(partner).getByRole("button", { name: "Request" })).toBeInTheDocument();
     expect(within(partner).getByRole("img", { name: "1 of 3, S4S photo" })).toHaveAttribute("src", "/admin/s4s/media/71");
-    // W30 F25: a still loads only when its card scrolls into view (each is a live vault read)
     expect(within(partner).getByRole("img", { name: "1 of 3, S4S photo" })).toHaveAttribute("loading", "lazy");
     expect(within(partner).getByRole("img", { name: "1 of 3, S4S photo" })).toHaveAttribute("decoding", "async");
 
@@ -128,7 +116,6 @@ describe("DiscoverCreators", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Search by name or @username" }), { target: { value: "@part ner" } });
     await waitFor(() => expect(urls()).toContain("/admin/s4s/discover?q=%40part+ner"));
     expect(await screen.findByText("Try searching another keyword")).toBeInTheDocument();
-    // A filtered-out list says nothing about whether other agencies opted in.
     expect(screen.queryByText(EMPTY_LINE)).toBeNull();
   });
 
@@ -173,7 +160,6 @@ describe("DiscoverCreators", () => {
     expect(asked()).toEqual([{ from_account_id: "7000001", to_profile_id: "8" }]);
     expect(within(dialog).getByRole("button", { name: "Send request" })).toBeEnabled();
 
-    // Another rail creator re-proposes for that pair.
     view.rerender(<DiscoverCreators from={OTHER_SENDER} />);
     await waitFor(() => expect(field).toHaveValue("2030-05-06T06:00"));
     expect(asked()[1]).toEqual({ from_account_id: "7000003", to_profile_id: "8" });
@@ -227,7 +213,6 @@ describe("DiscoverCreators", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Previous media" }));
     const last = within(dialog).getByRole("img", { name: "S4S photo 3 of 3" });
     expect(within(dialog).getByRole("button", { name: "Media 3" })).toHaveAttribute("aria-current", "true");
-    // A still the Relay cannot read (the item left the vault) is a placeholder, not an error.
     fireEvent.error(last);
     expect(within(dialog).getByText("Preview unavailable")).toBeInTheDocument();
     expect(within(dialog).queryByRole("alert")).toBeNull();

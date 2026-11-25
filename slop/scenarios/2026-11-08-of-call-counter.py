@@ -1,48 +1,3 @@
-"""The OF call counter (service/of_call_counter.py): every signed OF request the relay sends lands in
-`of_call_stats.json` beside the DB, keyed by (Caller kind, "METHOD folded-path", Creator, status class),
-and the file equals what OnlyFans saw, across a restart with a send in flight.
-
-World: `flat_agency` (small 3 / medium 10 Creators), each with a captured session: the relay's REAL OFClient
-against lib/of_wire.py (`OF_WIRE`). RELAY_ENV: OF_CALL_STATS_FLUSH_S=1 (prod 30), the real automation supervisor
-(SLOP_SUPERVISOR=1).
-
-Phase 1, load (LOAD_S): `--users` owners read Relay routes that reach OF for a random Creator each turn (the
-Dashboard's per-Creator subscriber counts and subscribers chart, the bell's counts with `refresh=1`, the chat
-list and the notifications feed), 1-3 s think. Before it every Creator's WS pump comes up on FakeOF's socket
-(`/__slop/pump-supervise`: the real `_reconcile_pumps`), each connect reading `/users/me`, and the owner sends two
-mass messages to `fans` + `following` on the last Creator through the composer's real `POST /api/of/v2/messages/queue`
-(no roster read follows: the Audience crawl is gone, so neither roster may be called). Meanwhile WALKS ledger walks: one real
-`transaction_ingest.supervisor_cycle()` (lib/sweep_pacing_relay.py), every Creator walked inside
-`of_pacing.walk`, with FakeOF answering Creator 0's first ledger page 429 (`throttle`: the pacer's one retry
-sends it again) and every ledger page of Creator 1 500 (`fail`). Then, once the wire is quiet, the file is
-read against FakeOF's calls.
-Phase 2, restart mid-send: the held-send leg (lib/of_call_counter_<leg>_leg.py, below) starts an automation's mass
-send for Creator 0, FakeOF holds its `POST /api2/v2/messages/queue` HOLD_S (longer than uvicorn's 5 s graceful
-wait), and the relay is stopped (SIGTERM, as `docker stop`) while OF holds it: the shutdown drain finishes the send,
-after the handler's first counter flush. Without a leg the relay is stopped with no send held. The file is read
-with the relay down, then the relay starts again on the same temp dir and the file is read once more, quiet.
-
-Checks:
-  counts_match_wire  after phase 1, per (method, folded path, Creator, status class) the file's counts equal
-                     FakeOF's `/api2/` calls, nothing dropped or extra; the wire saw a 429, its retry and a 5xx.
-  callers_labelled   every driven call in the end file is under its expected Caller kind: the users' reads
-                     `route:GET <Relay path>`, the ledger walk `walk:transactions` (its disputes read
-                     `walk:chargebacks`), the held send its leg's KIND, the WS pumps' `/users/me` `loop:ws-pump`
-                     (no Creator id), the composer's sends `route:POST /api/of/v2/messages/queue`; a roster page
-                     only under the held send's KIND; each driven one seen; zero `unlabelled`.
-  survives_restart   the held send (if a leg) was answered after the SIGTERM and is in the file the stopped relay left;
-                     the file's counts since phase 1 equal the wire's at the stop and again after the restart
-                     (quiet); the restarted relay's `boots` is the stopped one's + 1 and kept every count.
-  no_5xx             no Relay route the users read answered 5xx (the stock check counts every actor call).
-  p95 vs last green  (P95_VS_LAST) the users' route p95s.
-Folding is the spec's rule, written again here: numeric or 16+ hex/dash segments and the segment after
-`/users/` (but me, list, notifications, performers, settings) -> {}, query dropped.
-
-Bypasses (declared): OF at its wire (lib/of_wire.py: 50 ms a call, its own declared answers; the 429 and 500
-armed by the scenario); seeding by SQL (the leg's); the ledger walk's cadence (`/__slop/sweep-pacing/run`);
-the users and the composer sends are httpx clients on the routes (no browser).
-Break-it-once: of-counter-drops-errors (the counter skips every non-2xx answer): only counts_match_wire.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -65,8 +20,8 @@ RELAY_ENV = {"OF_CALL_STATS_FLUSH_S": "1", "SLOP_SUPERVISOR": "1"}
 P95_VS_LAST = (1.5, 100)
 P95_VS_LAST_MIN_N = 30
 LOAD_S = {"small": 20.0, "medium": 40.0, "huge": 40.0}
-HOLD_S = 8.0                 # the held mass send: past uvicorn's 5 s graceful wait, inside RELAY_DRAIN_S (45)
-STOP_GRACE_S = 75.0          # docker-compose.yml stop_grace_period
+HOLD_S = 8.0  # the held mass send: past uvicorn's 5 s graceful wait, inside RELAY_DRAIN_S (45)
+STOP_GRACE_S = 75.0  # docker-compose.yml stop_grace_period
 SEND_TIMEOUT_S = 120.0
 LEDGER = "GET /api2/v2/payouts/transactions"
 QUEUE = "POST /api2/v2/messages/queue"
@@ -81,9 +36,6 @@ EXPECTED_TRACEBACKS = (("ingest_tx_scan_failed", "500 for http"),
 COUNTS = "counts_match_wire"
 LABELS = "callers_labelled"
 RESTART = "survives_restart"
-# Phase 2's held send, in a leg of its own (lib/of_call_counter_<leg>_leg.py; at most one): `KIND` (the Caller kind
-# its queue POST and roster reads carry), `seed(w)` (SQL, before the users) and `async start_send(owner, w, aid)`
-# (starts the send, returns the evidence RESTART reports). None: phase 2 stops the relay with no send held.
 _LEGS = [importlib.import_module(f"slop.lib.{m.stem}")
          for m in sorted((Path(__file__).resolve().parents[1] / "lib").glob("of_call_counter_*_leg.py"))]
 assert len(_LEGS) <= 1, f"of-call-counter: one held-send leg at most, found {[m.__name__ for m in _LEGS]}"
@@ -91,11 +43,9 @@ LEG = _LEGS[0] if _LEGS else None
 SENDER = {LEG.KIND} if LEG else set()
 NO_5XX = "no_5xx"
 
-# The users' reads: Relay route -> the OF read it proxies (/api/of/v2/<x> -> /api2/v2/<x>).
 USER_READS = ("/api/of/v2/subscriptions/count/all", "/api/of/v2/subscriptions/subscribers/chart?by=total",
               "/api/of/v2/users/notifications/count?refresh=1", "/api/of/v2/chats?limit=10&offset=0",
               "/api/of/v2/users/notifications?limit=10&offset=0")
-# OF read -> the Caller kinds its driven calls may carry; every REQUIRED (read, Caller kind) must have been seen.
 CALLERS = {**{"GET /api2/v2/" + p.split("?")[0].removeprefix("/api/of/v2/"): {"route:GET " + p.split("?")[0]}
               for p in USER_READS},
            LEDGER: {"walk:transactions"}, "GET /api2/v2/payouts/chargebacks": {"walk:chargebacks"},
@@ -127,7 +77,6 @@ def _klass(status) -> str:
 
 
 def _wire(fake) -> Counter:
-    """FakeOF's signed API calls, keyed as the counter keys them (Caller kind aside)."""
     with fake.lock:
         calls = list(fake.calls)
     return Counter((c["route"].split(" ", 1)[0] + " " + _fold(c["path"]), c["account"] or "-", _klass(c["status"]))
@@ -149,7 +98,6 @@ async def run(ctx) -> None:
     owner = ctx.owner.share()
     (await owner.put("/admin/my-llm-keys", json={"deepseek": "slop-fake-deepseek"})).raise_for_status()
 
-    # ── every Creator's WS pump on FakeOF's socket (a `loop:` the stack runs) ──
     t_pumps = time.time()
     (await owner.post("/__slop/pump-supervise")).raise_for_status()
     while time.time() - t_pumps < PUMP_UP_S:
@@ -159,7 +107,6 @@ async def run(ctx) -> None:
             break
         await asyncio.sleep(0.25)
 
-    # ── two composer mass sends (list audience: no roster read after) ──
     mass_aid = cs[-1]
     mass_runs = []
     for i in range(MASS_SENDS):
@@ -170,7 +117,6 @@ async def run(ctx) -> None:
     ids = [m["run"] for m in mass_runs if m["run"] is not None]
     ctx.metric("mass_recipients", {"sends": mass_runs})
 
-    # ── phase 1: users + walks, a 429 and 500s at the wire ──
     with fake.lock:
         fake.throttle[(cs[0], LEDGER)] = 1
         fake.fail.add((cs[1 % len(cs)], LEDGER))
@@ -211,7 +157,7 @@ async def run(ctx) -> None:
     stop.set()
     await asyncio.gather(*users, return_exceptions=True)
     await pool.aclose()
-    for _ in range(120):   # the last walk finishes
+    for _ in range(120):
         runs = {x["n"]: x for x in (await hook.get("/__slop/sweep-pacing/runs")).json()["runs"]}
         for x in walks:
             x.update(t1=runs[x["n"]]["t1"], error=runs[x["n"]]["error"])
@@ -241,7 +187,6 @@ async def run(ctx) -> None:
     ctx.metric("of_call_counter_phase1", {"wire_calls": sum(wire1.values()), "keys": len(wire1), "armed": armed,
                                           "callers": sorted({r[0] for r in raw1["rows"]})[:40]})
 
-    # ── phase 2: SIGTERM with a mass send held at OF ──
     aid = cs[0]
     sent, arrived = {"leg": None}, True
     if LEG:

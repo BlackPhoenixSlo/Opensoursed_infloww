@@ -1,36 +1,7 @@
 #!/usr/bin/env python3
-"""
-The vault picker's bought/sent badges: `vault_sends` filled by the chat-open backfill and by
-`POST /admin/vault/fan-history/sync` (OF chat gallery walk, cached per Fan). Fake OF client only.
-
-  case_backfill_flips_bought_never_back:
-      an existing (media, message) row flips to was_purchased=True when an item shows it bought
-      (`updated`, history returned); a later unbought item never flips it back; a re-sent identical
-      batch changes nothing and returns no history.
-  case_backfill_stores_of_created_at:
-      a new row takes the item's `sent_at` (OF createdAt) instead of "now".
-  case_sync_walk_inserts_and_flips:
-      a first sync walks every page (cursor = nextLastId, from_user = the Creator, skip_users=all,
-      limit 50), inserts missing rows with price/createdAt, flips an existing priced+opened row,
-      leaves free sends was_purchased NULL, skips a message from anyone but the Creator, and
-      records the sync row (pages, complete).
-  case_sync_cache_hit_makes_no_of_call:
-      synced within 7 days → zero OF calls, cached history; synced 8 days ago walks again.
-  case_sync_failure_cools_down_an_hour:
-      an OF error → local history, only last_attempt_at written; within the hour
-      zero OF calls; an hour later it walks again.
-  case_sync_page_cap:
-      an endless gallery stops at 10 pages, complete=False.
-  case_sync_concurrent_opens_walk_once:
-      two opens of the same Fan at once → one walk; the second gets the cached history.
-  case_sync_foreign_account_is_refused:
-      another owner's account → 403, no OF call.
-
-Run: venv/bin/python service/tests/test_vault_fan_history_sync.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -112,7 +83,6 @@ def _msg(mid: int, media: list[int], *, price: float = 0, opened: bool = False, 
 
 
 class _Gallery:
-    """A fake OF client: `chat_media` answers `pages` in order (the last one repeats), records its kwargs."""
 
     user_id = ACC
 
@@ -191,8 +161,8 @@ def case_sync_walk_inserts_and_flips() -> None:
     fake = _Gallery([
         {"list": [
             _msg(20, [401], price=9, opened=True),
-            _msg(21, [402], sender=fan),                       # the Fan's own attachment
-            _msg(22, [403], opened=True, sender=None),          # free, no fromUser: the Creator's (from_user)
+            _msg(21, [402], sender=fan),
+            _msg(22, [403], opened=True, sender=None),
         ], "hasMore": True, "nextLastId": "22"},
         {"list": [_msg(23, [404, 405], price=12, created="2025-12-01T00:00:00Z")], "hasMore": False},
     ])

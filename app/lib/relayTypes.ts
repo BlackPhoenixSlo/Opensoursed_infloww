@@ -43,9 +43,8 @@ export interface AccountMeta {
   /** The creator's own display name on the platform (distinct from the
    *  team-set `nickname`). Filled by the setup flow from a live me(). */
   name?: string | null;
-  /** Which platform the account lives on: "onlyfans" (the default for every
-   *  account that predates the field) or "fansly". */
-  platform?: "onlyfans" | "fansly" | null;
+  /** Which platform the account lives on; read it through lib/platform's `accountPlatform`. */
+  platform?: string | null;
   color?: string | null;
   created_at?: string | null;
   last_used_at?: string | null;

@@ -1,9 +1,3 @@
-/**
- * ChatSurface's Fan insights drawer: open or not, and the two focus requests the header's "Notes" (spec F23) and
- * "Edit name" pencil (ticket 142) raise as they open it. Every Fan insights answers a raised count; both are 0
- * again once it closes, so the next open focuses nothing unless asked.
- */
-
 export interface ChatDrawer {
   open: boolean;
   notesRequest: number;
@@ -13,9 +7,7 @@ export interface ChatDrawer {
 export type ChatDrawerAction =
   | { type: "toggle" }
   | { type: "close" }
-  /** Open on Notes. */
   | { type: "openNotes" }
-  /** Open on Nickname. */
   | { type: "editName" };
 
 const CLOSED: ChatDrawer = { open: false, notesRequest: 0, nicknameRequest: 0 };

@@ -1,12 +1,3 @@
-/**
- * GroupTree — Manage employees' group tree, the page's left column (the old Organization Chart tab, folded in by
- * page-parity ticket 17; docs/spec/phase-05-remaining-parity-gaps.md, item 4, stories 31-33).
- *
- * Rendered with the relay mocked at `fetch` by URL, as ManageEmployees.test.tsx does: the stub keeps the Agency's
- * groups (`GET`/`POST /admin/employee-groups`, `PATCH`/`DELETE /admin/employee-groups/{id}`) and serves the `account`
- * Settings blob that names the Agency, so the tree, Add sub-group and Delete group are assertions about the wire.
- * Every name is fake.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -21,7 +12,6 @@ import GroupTree from "@/components/employees/GroupTree";
 
 type Group = { id: number; name: string; parent_id: number | null; employee_count: number };
 
-/** Fixture Sales holds Fixture Nights; Fixture Support holds one Employee; Fixture Nights is empty. */
 const GROUPS: Group[] = [
   { id: 1, name: "Fixture Sales", parent_id: null, employee_count: 0 },
   { id: 2, name: "Fixture Support", parent_id: null, employee_count: 1 },
@@ -77,7 +67,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Each node of the chart as "  "×depth + name, in tree order. */
 function tree(): string[] {
   const out: string[] = [];
   const walk = (list: HTMLElement, depth: number) => {
@@ -200,16 +189,15 @@ describe("GroupTree", () => {
   it("enables Delete group only on a group with no sub-groups and no Employees", async () => {
     await loaded();
     const item = (node: string) => within(openMenu(node)).getByRole("menuitem", { name: "Delete group" });
-    expect(item("Fixture Sales")).toBeDisabled(); // holds Fixture Nights
+    expect(item("Fixture Sales")).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Actions for Fixture Sales" }));
-    expect(item("Fixture Support")).toBeDisabled(); // holds one Employee
+    expect(item("Fixture Support")).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Actions for Fixture Support" }));
     const nights = item("Fixture Nights");
     expect(nights).toBeEnabled();
     fireEvent.click(nights);
     await waitFor(() => expect(tree()).toEqual(["Fixture Agency", "  Fixture Sales", "  Fixture Support"]));
     expect(writes()).toEqual([{ method: "DELETE", url: "/admin/employee-groups/3", body: undefined }]);
-    // Fixture Sales is empty now.
     expect(item("Fixture Sales")).toBeEnabled();
   });
 });
@@ -231,7 +219,6 @@ describe("GroupTree picking", () => {
     expect(tree()).toEqual(["Fixture Agency", "  Fixture Sales", "  Fixture Support"]);
     fireEvent.click(screen.getByRole("button", { name: "Expand Fixture Sales" }));
     expect(tree()).toContain("    Fixture Nights");
-    // A group with no sub-groups has no caret.
     expect(screen.queryByRole("button", { name: /Collapse Fixture Support/ })).toBeNull();
   });
 

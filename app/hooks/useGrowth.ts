@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * useGrowth — data layer for the Growth surfaces that mirror OnlyFans state:
- * Free-Trial links, Tracking/UTM links, and Profile-Promotion campaigns.
- *
- * All three hit owner-gated /admin/* relay routes. Trial + Promo are light
- * mirrors over OF (OF is source of truth; a local row keeps the operator's
- * name + last-seen usage). Tracking links are fully internal (public
- * /t/{slug} redirect + click analytics).
- */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -21,7 +12,6 @@ import { relay, RelayError } from "@/lib/relay";
 import type { LinkMetaPayload } from "@/components/growth/LinkMetaFields";
 import { landed } from "@/components/growth/createPromotionForm";
 
-// ── Free-trial links ──────────────────────────────────────────────────
 
 const TRIAL_KEY = "trial-links";
 
@@ -35,43 +25,29 @@ export interface TrialLink {
   claim_counts: number;
   clicks_count: number | null;
   expired_at: string | null;
-  /** "unknown" when OF didn't return this link, so its state can't be read. */
   status: "active" | "finished" | "unknown";
   created_at: string | null;
   source: "mirror" | "onlyfans";
-  /** Infloww's per-link figures, from the relay's cache (see LinkFigures). */
   metrics: LinkFigures;
-  /** The Edit dialog's fields, kept by the relay (never written to OnlyFans). */
   promo_cost_cents: number | null;
   link_source: string | null;
   tags: string[];
-  /** The OnlyFans list the link's claimers are added to (OnlyFans' own add-to-list), and its name when picked. */
   list_id?: string | null;
   list_name?: string | null;
-  /** The create's reply only: false when OnlyFans' reply had no id, so Source, Promo cost, Tag and List weren't kept. */
   meta_saved?: boolean;
 }
 
-/**
- * A Free trial link's or promotion's figures (relay `link_metrics`): its claimers' spend in our ledger since each
- * claimed, refunds and chargebacks left out. Cents. Every value null while the link's claimers were never read (the
- * UI's "—"); `earnings_*` null too when OnlyFans sent no claim date for any claimer.
- */
 export interface LinkFigures {
   earnings_cents: number | null;
   earnings_net_cents: number | null;
-  /** Claimers with any spend (Spend/Claim's numerator). */
   fans_who_spent: number | null;
-  /** Claimers whose spend is known: Spend/Claim's and AEPS's denominator. */
   fans_counted: number | null;
   claimers: number | null;
-  /** Claimers OnlyFans sent no claim date for: their spend is unknown, not $0. */
+  // Claimers OnlyFans sent no claim date for: spend unknown, not $0.
   spend_unknown: number;
   net_missing_count: number;
 }
 
-/** The cached figures' state on a list read: when they were last checked against OnlyFans, and whether a refresh
- *  is running (the list refetches until it is done). */
 export interface MetricsState {
   metrics_updated_at: string | null;
   metrics_refreshing: boolean;
@@ -80,18 +56,12 @@ export interface MetricsState {
 export interface TrialLinksResult extends MetricsState {
   links: TrialLink[];
   of_available: boolean;
-  /** The account's Sources and Tags in use on any link: the Edit dialog's suggestions and the filters' options. */
   sources: string[];
   tags: string[];
 }
 
-/** While a Growth page is viewed, its lists (and the tracking links' earnings) are read again this often, so
- *  its figures stay under about an hour old: the relay's hourly background prewarm only walks links with a List
- *  (LINK_PREWARM_SCOPE, service/link_prewarm.py). react-query's default `refetchIntervalInBackground: false`
- *  makes it "while the tab is visible". */
 export const GROWTH_VIEWED_REFRESH_MS = 3_600_000;
 
-/** While the relay refreshes the cached figures, read the list again shortly; otherwise hourly while viewed. */
 const whileRefreshing = (q: { state: { data?: Partial<MetricsState> } }) =>
   q.state.data?.metrics_refreshing ? 15_000 : GROWTH_VIEWED_REFRESH_MS;
 
@@ -113,7 +83,6 @@ export function useCreateTrialLink(accountId: string | null) {
     TrialLink, Error,
     {
       name: string; subscribe_days: number; subscribe_counts: number; expired_at?: string | null;
-      /** Offer expiration in days, 0 = none (OF's expireDays). */
       expire_days?: number;
     } & Partial<LinkMetaPayload>
   >({
@@ -131,7 +100,6 @@ export function useDeleteTrialLink(accountId: string | null) {
   });
 }
 
-// ── Tracking / UTM links ──────────────────────────────────────────────
 
 const TRACK_KEY = "tracking-links";
 
@@ -142,7 +110,6 @@ export interface TrackingLink {
   slug: string;
   target_url: string;
   click_count: number;
-  /** "Bot check before redirect": /t/<slug> serves a Cloudflare Turnstile page first. */
   bot_check: boolean;
   path: string;
   created_at: string | null;
@@ -150,23 +117,18 @@ export interface TrackingLink {
 
 export interface TrackingLinksList {
   links: TrackingLink[];
-  /** False when the relay has no Turnstile keys: the bot check is off (gated links 302). */
   bot_check_available: boolean;
 }
 
-/** A redirect link's stats range, in report-zone days. */
 export type StatsDays = 7 | 30 | 90;
 
-/** One row of a breakdown: a class key ("" = browser / direct / unknown) and its clicks. */
 export interface StatsKeyRow { key: string; clicks: number }
 
 export interface TrackingAnalytics {
-  /** The report zone the days are cut in; null = UTC. */
   tz: string | null;
   from: string;
   to: string;
   days: StatsDays;
-  /** Every local day of the range, oldest first, zero-filled. */
   series: Array<{ day: string; clicks: number }>;
   totals: { clicks: number; verified_clicks: number };
   opened_in: StatsKeyRow[];
@@ -174,14 +136,11 @@ export interface TrackingAnalytics {
   country: StatsKeyRow[];
 }
 
-/** Every redirect link of a Creator at a glance (`GET /admin/tracking-links/summary`). */
 export interface TrackingSummary {
   tz: string | null;
   today: string;
   clicks: { today: number; d7: number; d30: number };
-  /** Most clicks in 30 days; null with none. */
   top: { id: number; name: string; clicks: number } | null;
-  /** Link id → its last 7 days' clicks, oldest first. */
   spark: Record<string, number[]>;
   verified_clicks: number;
 }
@@ -227,7 +186,6 @@ export function useDeleteTrackingLink(accountId: string | null) {
   });
 }
 
-/** Keyed under the list's prefix, so a create / patch / delete refreshes it. */
 export function useTrackingSummary(accountId: string | null) {
   return useQuery<TrackingSummary>({
     queryKey: [TRACK_KEY, accountId, "summary"],
@@ -249,9 +207,6 @@ export function useTrackingAnalytics(accountId: string | null, linkId: number | 
   });
 }
 
-// ── OnlyFans-native tracking links (/campaigns) ───────────────────────
-// These are OF's OWN tracking links: OF reports real clicks AND how many of
-// those clicks subscribed — attribution the internal /t/ redirect can't have.
 const OF_TRACK_KEY = "of-tracking-links";
 
 export interface OfTrackingLink {
@@ -259,55 +214,39 @@ export interface OfTrackingLink {
   code: number | null;
   name: string;
   url: string | null;
-  /** True: the URL is built exactly as OnlyFans' own Copy-link builds it. */
   url_verified: boolean;
   clicks: number;
   subscribers: number;
   created_at: string | null;
-  /** When OnlyFans ended the link (set on a deleted one). */
   end_date: string | null;
-  /** Deleted on OnlyFans: Infloww's "Deactivated". The read keeps it, with its counts. */
   is_deleted: boolean;
   source: "onlyfans";
-  /** Merged in client-side from the earnings read (`useOfTrackingEarnings`), gross or net as "Show net earnings"
-   *  picks; absent or null while that read has no figure for the link (the UI's "—"). */
   earnings_cents?: number | null;
   fans_who_spent?: number | null;
-  /** The link's claimers: the denominator of Spending CVR and AEPS. */
   fans_counted?: number | null;
-  /** Net is on and some of the link's transactions have no net figure from OnlyFans yet, so net is understated. */
   earnings_partial?: boolean;
-  /** The Edit dialog's fields, kept by the relay (never written to OnlyFans). */
   promo_cost_cents?: number | null;
   link_source?: string | null;
   tags?: string[];
   list_id?: string | null;
   list_name?: string | null;
-  /** On a create's reply: false when OnlyFans returned no id, so the Edit fields were not stored. */
   meta_saved?: boolean;
 }
 
-/** One link's earnings: its fans' spend from our transactions ledger, from the link's creation on. */
 export interface OfTrackingEarning {
   id: number;
-  /** null: OnlyFans failed on this link's fan list. */
   earnings_cents: number | null;
   earnings_net_cents: number | null;
-  /** Fans who spent beyond the subscription (Infloww's Spending CVR numerator). */
   fans_who_spent: number | null;
-  /** The fans OnlyFans lists under this link (its claimers). */
   fans_counted: number | null;
-  /** Transactions with no net figure yet: the net sum leaves them out. */
   net_missing_count: number;
 }
 
 export interface OfTrackingEarnings {
-  /** false: OnlyFans was unreachable; every earnings cell is "—". */
   available: boolean;
   links: OfTrackingEarning[];
 }
 
-/** Details overlay: one fan of a link, spend in cents by kind, gross and `_net`. */
 export interface OfTrackingFan {
   fan_id: number;
   name: string;
@@ -320,13 +259,11 @@ export interface OfTrackingFan {
   tips_cents: number; tips_net_cents: number;
   other_cents: number; other_net_cents: number;
   net_missing_count: number;
-  /** The fan's other links: their spend is split by time between them, each row holding this link's share. */
   also_claimed_by: number[];
 }
 
 export interface OfTrackingFans {
   fans: OfTrackingFan[];
-  /** When the figures can start (ISO): the later of the link's creation and our ledger's first row. */
   counted_from: string | null;
 }
 
@@ -335,7 +272,6 @@ export interface OfTrackingResult {
   username: string | null;
   url_verified: boolean;
   of_available: boolean;
-  /** The account's Sources and Tags in use on any link (absent while OnlyFans is unreachable). */
   sources?: string[];
   tags?: string[];
 }
@@ -352,8 +288,6 @@ export function useOfTrackingLinks(accountId: string | null) {
   });
 }
 
-/** Per-link earnings. Slower than the list (it reads every link's fan list from OnlyFans, cached on the relay), so
- *  it is its own read: the list shows at once and the earnings columns fill in when this lands. */
 export function useOfTrackingEarnings(accountId: string | null) {
   return useQuery<OfTrackingEarnings>({
     queryKey: [OF_TRACK_KEY, accountId, "earnings"],
@@ -378,7 +312,6 @@ export function useOfTrackingFans(accountId: string | null, campaignId: number |
   });
 }
 
-/** Create on OnlyFans by name; the Edit dialog's fields ride along and are stored for the new link. */
 export type CreateOfTrackingLinkBody = { name: string } & Partial<Omit<LinkMetaBody, "kind" | "of_id">>;
 
 export function useCreateOfTrackingLink(accountId: string | null) {
@@ -399,7 +332,6 @@ export function useDeleteOfTrackingLink(accountId: string | null) {
   });
 }
 
-// ── Profile promotion campaigns ───────────────────────────────────────
 
 const PROMO_KEY = "promotions";
 
@@ -407,8 +339,6 @@ export interface PromoCampaign {
   id: number | null;
   of_promo_id: number | null;
   name: string;
-  /** Percent off the subscription (OF contract). null for OF-only rows (OF
-   *  doesn't echo the discount on list). */
   discount_percent: number | null;
   price_cents: number;
   subscribe_counts: number;
@@ -416,34 +346,20 @@ export interface PromoCampaign {
   message: string | null;
   promo_type: string;
   status: string;
-  /** People who claimed the promo (OF `claimsCount`). */
   subscriber_count: number;
-  /** When on, the promo_reactivate automation re-creates this campaign each
-   *  time OnlyFans marks it finished. Only mirror-backed rows can opt in. */
   auto_reactivate: boolean;
-  /** How many times it has been re-armed so far. */
   reactivate_count: number;
   last_reactivated_at: string | null;
-  /** Only "switch" is read: Re-create at 90% filled is off on this server (the rest of what holds Keep running is in
-   *  `keep_lines`). */
   keep_blocked?: string | null;
-  /** A Free trial's re-creates left before Keep running turns off (null: no limit). */
   recreates_left?: number | null;
-  /** Re-create at 90% filled: the second tick under Keep running (acts only on a Claim cap of 10 or more). */
   preempt?: boolean;
-  /** Why the last run did not re-create the live Kept promo early (service/promo_keep_decide wait_reason; null: not
-   *  waiting). */
   keep_wait?: string | null;
-  /** The card's finished lines (service/promotions_api.keep_lines): `lead` + " until <until>" + ": " + `text`, or just
-   *  `text` with no lead; `off`: someone must act. */
   keep_lines: { lead: string | null; text: string; off: boolean; until: string | null }[];
   created_at: string | null;
   source: "mirror" | "onlyfans";
-  /** Revenue and its fans, over every OF promo the campaign was re-armed as. */
   metrics?: LinkFigures;
 }
 
-/** Profile promotion's "Add fans to list" (Infloww's account-level switch and list; relay `promo_list_settings`). */
 export interface PromoListSetting {
   enabled: boolean;
   list_id: string | null;
@@ -481,8 +397,6 @@ export function usePromotions(accountId: string | null) {
   });
 }
 
-/** POST /admin/promotions' answer: the campaign, why Keep running was refused, and the campaign it took Keep running
- *  from (null: none kept running). */
 export type PromoCreated = PromoCampaign & {
   auto_reactivate_refused?: string; create?: "unknown"; keep_running_taken_from?: { id: number; name: string } | null;
 };
@@ -494,26 +408,18 @@ export function useCreatePromotion(accountId: string | null) {
     {
       name: string; discount: number; subscribe_counts: number;
       subscribe_days: number; message?: string;
-      /** "all" (new subscribers), "expired", or OF's list of both. */
       promo_type?: string | string[];
-      /** Offer expiration in days, 0 = none (OF's finishDays). */
       finish_days?: number;
-      /** Keep running: moves the flag onto the new campaign; refused (created unarmed) says why. */
       auto_reactivate?: boolean;
-      /** A Free trial kept running: optional re-creates allowed (1-10) before Keep running turns off; omitted = no limit. */
       recreate_limit?: number;
-      /** Re-create at 90% filled; only with Keep running on. */
       preempt?: boolean;
-      /** The Kept campaign the dialog showed (null: none); a different one now answers 409 keep_running_moved. */
       expect_taken_from?: number | null;
-      /** "Create anyway": the 409 create_unresolved row's id, cleared before this create. */
       resolve_open?: number;
     }
   >({
     mutationFn: (body) =>
       relay.post<PromoCreated>("/admin/promotions", { account_id: accountId, ...body }),
     onSuccess: () => invalidatePromos(qc, accountId),
-    // 409 create_landed: the earlier create is on OnlyFans — the list shows it.
     onError: (e) => { if (e instanceof RelayError && landed(e.body)) void invalidatePromos(qc, accountId); },
   });
 }
@@ -522,24 +428,19 @@ export function useDeletePromotion(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, number>({
     mutationFn: (id) => relay.delete(`/admin/promotions/${id}`),
-    // Settled, not success: the relay unticks a Kept row before OF's delete, which may fail.
     onSettled: () => invalidatePromos(qc, accountId),
   });
 }
 
-/** The campaigns, and the promo_reactivate rule Keep running owns (the status row reads its last run). */
 function invalidatePromos(qc: ReturnType<typeof useQueryClient>, accountId: string | null) {
   void qc.invalidateQueries({ queryKey: ["automation-rules", accountId] });
   return qc.invalidateQueries({ queryKey: [PROMO_KEY, accountId] });
 }
 
-/** Toggle "keep this promo running" for one campaign: the one switch; the relay turns the rule on/off with it. Or
- *  its second tick, Re-create at 90% filled (`preempt` alone). */
 export function useSetPromoAutoReactivate(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<
     { id: number; auto_reactivate: boolean; preempt: boolean }, Error,
-    /** recreate_limit: a Free trial's optional limit (1-10); omitted = no limit (indefinite). */
     { id: number; auto_reactivate?: boolean; recreate_limit?: number; preempt?: boolean }
   >({
     mutationFn: ({ id, ...body }) => relay.patch(`/admin/promotions/${id}`, body),
@@ -547,9 +448,6 @@ export function useSetPromoAutoReactivate(accountId: string | null) {
   });
 }
 
-/** Deactivate (Infloww's, OF's "Stop promotion"): OF's POST /promotions/{id}/finish ends the offer, the row stays as
- *  ended. As Infloww's ("Auto-activate switch will be turned off"), a campaign set to Keep running is turned off
- *  first, or the re-arm automation would re-create the offer just stopped. */
 export function useFinishPromotion(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, Pick<PromoCampaign, "id" | "of_promo_id" | "auto_reactivate">>({
@@ -565,9 +463,7 @@ export function useFinishPromotion(accountId: string | null) {
   });
 }
 
-// ── Link figures' Details and the Edit dialog (relay link_metrics) ──
 
-/** Spend in cents by Infloww's Details columns, gross and `_net`. */
 export interface SpendBuckets {
   total_cents: number; total_net_cents: number;
   subs_cents: number; subs_net_cents: number;
@@ -579,7 +475,6 @@ export interface SpendBuckets {
   net_missing_count: number;
 }
 
-/** OnlyFans' lifetime sums for the fan with this creator (net), as of the last read of the link's claimers. */
 export interface LifetimeSpend {
   total_cents: number; subs_cents: number; posts_cents: number;
   messages_cents: number; streams_cents: number; tips_cents: number;
@@ -589,26 +484,19 @@ export interface LinkFan {
   fan_id: number;
   name: string;
   username: string;
-  /** OnlyFans' subscribeAt as first read (never moved later); null when OnlyFans sent none. */
   subscribe_at: string | null;
-  /** When the relay first read the fan under the link. */
   first_seen_at: string | null;
-  /** Since claim: ledger spend at or after subscribe_at; null without one. */
   since: SpendBuckets | null;
   lifetime: LifetimeSpend | null;
 }
 
 export interface LinkFans {
   fans: LinkFan[];
-  /** Our ledger's first row (ISO): Since claim cannot count before it. */
   ledger_since: string | null;
   walked_at: string | null;
-  /** A refresh holds the account's OnlyFans reads: these are the cached fans. */
   refreshing: boolean;
 }
 
-/** Details: a free trial link's or promotion's fans. `count` is the row's claim count (the relay re-reads the link
- *  when it moved); `campaignId` folds a re-armed promotion's earlier OF promos in. */
 export function useLinkFans(
   accountId: string | null, kind: "trial" | "promo", ofId: number | null,
   opts: { campaignId?: number | null; count?: number | null } = {},
@@ -627,35 +515,27 @@ export function useLinkFans(
   });
 }
 
-/** Which link the Edit dialog saves: a free trial link, or a tracking link (OF's campaign). */
 export type EditableKind = "trial" | "campaign";
 
 export interface LinkMetaBody {
   kind: EditableKind;
   of_id: number;
-  /** Dollars; null clears it. */
   promo_cost: number | null;
   source: string | null;
   tags: string[];
-  /** An OnlyFans custom list's id: picking one adds the link's claimers to it (OnlyFans' add-to-list). */
   list_id?: string | null;
   list_name?: string | null;
 }
 
-/** The Edit dialog's save: Promo cost, Source and Tag, kept by the relay (nothing written to OnlyFans), and List,
- * which the relay applies with OnlyFans' own add-to-list in the background. */
 export function useSaveLinkMeta(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, LinkMetaBody>({
     mutationFn: (body) => relay.put("/admin/link-meta", { account_id: accountId, ...body }),
-    // Only the list: the tracking links' earnings read is not touched by a cost, source or tag.
     onSuccess: (_r, body) =>
       qc.invalidateQueries({ queryKey: [body.kind === "trial" ? TRIAL_KEY : OF_TRACK_KEY, accountId], exact: true }),
   });
 }
 
-/** Infloww's batch edit: each of Promo cost, Source and Tag the body carries is set on every picked link; one it
- *  leaves out stays as each link has it. List is not batch-edited. */
 export interface LinkMetaBatchBody {
   kind: EditableKind;
   of_ids: number[];
@@ -673,7 +553,6 @@ export function useSaveLinkMetaBatch(accountId: string | null) {
   });
 }
 
-// ── Share links (a public read-only report on some links, 7 days) ─────
 
 const SHARE_KEY = "link-shares";
 
@@ -681,15 +560,12 @@ export interface LinkShare {
   id: number;
   name: string;
   kind: EditableKind;
-  /** `/share/<id>.<secret>`: the public page, same-origin. */
   path: string;
   of_ids: number[];
   include_earnings: boolean;
   created_at: string;
   expires_at: string;
-  /** When its figures were last rebuilt from a read of the links; null until the first. */
   updated_at: string | null;
-  /** "preparing": no read of the links has filled it yet. */
   status: "preparing" | "active" | "expired";
 }
 
@@ -707,7 +583,6 @@ export function useCreateLinkShare(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<LinkShare, Error, { kind: EditableKind; name: string; of_ids: number[]; include_earnings: boolean }>({
     mutationFn: (body) => relay.post<LinkShare>("/admin/link-shares", { account_id: accountId, ...body }),
-    // The new share's rows are filled by the owner's next read of the links: make it now, then list the shares.
     onSuccess: async (_r, body) => {
       await qc.refetchQueries({
         queryKey: body.kind === "trial" ? [TRIAL_KEY, accountId] : [OF_TRACK_KEY, accountId, "earnings"], exact: true,
@@ -725,14 +600,11 @@ export function useRevokeLinkShare(accountId: string | null, kind: EditableKind)
   });
 }
 
-// ── Subscription bundles (the same reads and writes as OF Manager's mirror) ──
 
-/** The page's bundles and price: users/me, as OF's own list reads them (authUser.subscriptionBundles). */
 export function useOfMe(accountId: string | null) {
   return useQuery(ofMeQuery(accountId));
 }
 
-/** Add bundle's options (users/me settings' canAddSubscriberByBundle), under the mirror's own query key. */
 export function useBundleSettings(accountId: string | null) {
   return useQuery({
     queryKey: ["of-settings", "settings", accountId],
@@ -743,7 +615,6 @@ export function useBundleSettings(accountId: string | null) {
   });
 }
 
-/** Add (POST {discount, duration}) or, with an id, edit (PUT /{id} {discount, duration}) a bundle; then users/me again. */
 export function useSaveBundle(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, BundleForm & { id?: Bundle["id"] }>({

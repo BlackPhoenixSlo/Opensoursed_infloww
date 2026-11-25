@@ -1,27 +1,3 @@
-"""Manage creators: each Creator row shows its own OF profile picture, never another Creator's.
-
-The bug (AE, 2026-11-04): /creators showed Wren's (the default Creator's) OF avatar on all 13 rows, while the
-dashboard cards were right. Measured on AE: one `/users/me` (Wren's) answered, then 13 `/img` fetches of Wren's
-thumbnail, one per row's account id. What put Wren's body into the other rows' queries was not reproduced
-locally (dev + prod build, real Chrome, back/forward, reload: all rows distinct). The fix makes the symptom
-impossible: a `/users/me` body counts for a row only when its `id` (OF user id = our account id) is the row's
-own (useAccountAvatar `fetchOwnProfile`), and the table shares the dashboard cards' `["of-profile", id]` entry.
-
-Flow: the owner opens /creators on the agency_inbox stack. The fake OF (`lib/relay.py` `_OfflineOF.me`, via
-`$DEMO_SHOTS_TMP/of-me.json`) answers each Creator with its own picture (`avatars`), except half the non-default
-Creators, which it answers with the default Creator's body (`answer_as`): the AE symptom injected at the wire.
-Bypass, declared: that cross-wiring is faked at the OF boundary, not reproduced from its (unknown) cause.
-
-Checks:
-  OWN_ONLY  — no row's picture names another Creator (the data URL's `#<account id>` fragment == the row's id).
-  OWN_SHOWN — every row answered as itself shows its own picture, so the guard does not just blank rows.
-  The table's rows are /admin/accounts' Creators (the side-effect read).
-  The navigation's health response carries only matching profile IDs; only crossed rows fall back to /users/me.
-  Every displayed image has finished decoding (the fixture uses distinct inline SVGs, no CDN performance claim).
-
-FAULT `avatar-keeps-other-creators-body` reverts the guard in the served JS: OWN_ONLY goes red.
-UI only (`--no-ui` skips): not a volume path, proven once on the real page.
-"""
 from __future__ import annotations
 
 import json
@@ -35,7 +11,6 @@ PROFILE = "agency_inbox"
 UI = True
 FAULT = "avatar-keeps-other-creators-body"
 
-# Each Creators table row: the Creator cell's div whose title is "<extras label>\n<account id>\n…" and its avatar.
 _ROWS = """() => [...document.querySelectorAll('div[title]')].filter((d) => d.title.includes('\\n'))
   .map((d) => ({id: d.title.split('\\n')[1], src: (d.querySelector('img') || {}).src || null}))"""
 
@@ -77,7 +52,7 @@ async def run(ctx) -> None:
             if len(rows) >= len(ids) and sum(1 for x in rows if x["src"]) >= len(own):
                 break
             await page.wait_for_timeout(500)
-        await page.wait_for_timeout(2000)  # any late answer lands before the read
+        await page.wait_for_timeout(2000)
         rows = await page.evaluate(_ROWS)
         await ui.shot(ctx, page, "creators-settled")
         images = await page.locator("table img").evaluate_all(

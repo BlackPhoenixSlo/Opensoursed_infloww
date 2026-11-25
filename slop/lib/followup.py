@@ -1,13 +1,3 @@
-"""The follow-up world and tick the three follow-up scenarios share
-(scenarios/2026-10-30-followup-drip.py, -run-slot-pool.py, -dispatch-plan.py).
-
-`setup`: the profile's world (ctx.world) plus seed/followup_drip.py, the agency's (fake) DeepSeek
-key and the account DM rate raised to DM_PER_MIN through the real Concurrency panel route. `tick`:
-one `POST /__slop/run-automation` (kind `send_followup`, the product's `run_once` under the run-slot
-pool) with `payload`: `with_image: false`, so the vault is never read, and `limit` = fans per
-Creator, so the 200-fan sweep ceiling never thins a tick. `refuse_live`: SLOP_LIVE=1 would spend on the real
-DeepSeek, so every check SKIPs.
-"""
 from __future__ import annotations
 
 import os
@@ -31,7 +21,6 @@ def payload(ctx) -> dict:
 
 
 async def setup(ctx, profile: str) -> dict:
-    """-> the drip seed's result (seed/followup_drip.py); the world is ctx.world."""
     w = await ctx.build(profile)
     drip = followup_drip.seed(w, w.data["fans"], w.data["threads"], frac=float(ctx.param("followup_frac", 1.0)))
     r = await ctx.owner.put("/admin/my-llm-keys", json={"deepseek": "slop-fake-deepseek"})

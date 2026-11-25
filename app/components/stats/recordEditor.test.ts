@@ -4,7 +4,6 @@ import {
   initialRecordForm, recordFormReducer, validateRecord, type RecordForm, type RecordFormAction,
 } from "@/components/stats/recordEditor";
 
-/** Wall clock in New York (EDT, UTC-4 in October). */
 const TZ = "America/New_York";
 const CLOSED = { in_utc: "2026-10-14T13:00:00Z", out_utc: "2026-10-14T15:05:30Z" };
 const OPEN = { in_utc: "2026-10-15T12:00:00Z", out_utc: null };

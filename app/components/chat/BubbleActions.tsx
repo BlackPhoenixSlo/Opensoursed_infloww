@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * BubbleActions — the Bubble action row beside one bubble (Phase 4 spec,
- * Gap rows T1-T3 and T8). The Fan's side: Pin, Reply, Like and Translate as
- * Infloww's quiet line glyphs. Our side:
- * Translate, then a ⋮ "More message actions" menu holding Reply, Pin, Save as
- * script, Details and Unsend (roadmap W4 4.2, 4.11). Details swaps the menu for
- * a small panel in its place. The `can*` rules are the bubble's
- * (`MessageList`'s `Bubble`); this renders nothing when no action applies.
- *
- * From md up the row shows while the pointer is over the bubble's line or
- * focus is inside it (the line is the `group`), by opacity only, so it keeps
- * its width and the bubble never shifts. Below md it always shows.
- */
 
 import { useCallback, useRef, useState } from "react";
 import { EllipsisVertical, Heart, Languages, MessageCircle, Pin } from "lucide-react";
@@ -25,18 +12,13 @@ import { MENU, MENU_ITEM, MENU_ROW } from "./MenuParts";
 import { useMenuDismiss } from "./useMenuDismiss";
 import { fmtPrice } from "@/lib/format";
 
-/** An action's box, its glyph centred, in Infloww's glyph grey with the
- *  hover grey (#d9d9d9, the palette's `--color-fg`). */
 const ACTION = cn(MP.messageList.action, "grid place-items-center shrink-0");
 const GREY = "text-[var(--inf-action,var(--color-fg-dim))] hover:text-fg";
-/** A pressed action (pinned, translated): the Messages Pro accent text. */
 const PRESSED = "text-[var(--inf-accent-text,var(--color-accent))]";
 const ICON = MP.messageList.actionIcon;
 
 export type TranslateState = "idle" | "failed";
 
-/** What our bubble's Details panel needs beyond the message itself (its
- *  sent time and price come off `msg`): what the bubble already worked out. */
 export interface MessageDetailsInfo {
   sentBy: string | null;
   receipt: RunLabel["receipt"];
@@ -65,20 +47,13 @@ export function BubbleActions({
   onQuoteReply?: (msg: OFMessage) => void;
   onToggleLike?: (msg: OFMessage) => void;
   onUnsend?: (msg: OFMessage) => void;
-  /** Ours only: save this message as a script (a saved reply). */
   onSaveAsScript?: (msg: OFMessage) => void;
-  /** Ours only: the Details panel's facts; absent, no Details item. */
   details?: MessageDetailsInfo;
-  /** This bubble shows its translation (its own toggle, or the thread-wide mode). */
   translated: boolean;
-  /** Absent on a message with no text: no Translate. */
   onToggleTranslate?: () => void;
   translateState: TranslateState;
-  /** Line Geometry from the bubble line: the time row's room under a run's
-   *  last bubble, so the row stays centred on the bubble (Part C). */
   className?: string;
 }) {
-  // The ⋮ opens the menu; its Details item swaps it for the Details panel.
   const [panel, setPanel] = useState<"menu" | "details" | null>(null);
   const menuOpen = panel === "menu";
   const menuRef = useRef<HTMLDivElement | null>(null);

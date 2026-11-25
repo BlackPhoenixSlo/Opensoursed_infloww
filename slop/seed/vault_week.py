@@ -1,13 +1,3 @@
-"""The vault mirror as the background collector leaves it (service/vault_collect.py: vault_items upserted from
-OF's media dicts, one `auto:done` vault_cache_runs row), by SQL, from lib/vault_wire.py's vaults, so a scenario
-can start from a collected vault without waiting for the walk. Rows in vault_mirror.row_values' shape.
-`hot_paused` is the collector's walk paused after its hot set: a partial mirror (not `complete`) plus the
-picker pages it cached.
-
-`set_urls` rewrites stored urls the way the product does when it sees a media again (raw_json + the columns
-derived from it, together): `exp` in the past = OF's signature expired; a bumped `gen` = OF re-signed; `egress`
-= signed for that egress (an earlier proxy's listing; wire `ip_bound`).
-"""
 from __future__ import annotations
 
 import json
@@ -19,7 +9,6 @@ from .vault_cache import LISTS_KEY, PICKER_PAGE, cache_row, media_key
 
 
 def _row(aid: str, m: dict, now: str, run_id: int) -> tuple:
-    """The fields vault_mirror.row_values writes for a collector sweep."""
     folders = [ls["id"] for ls in m.get("listStates") or []
                if ls.get("type") == "custom" and ls.get("hasMedia") and ls.get("id")]
     created = datetime.strptime(m["createdAt"], "%Y-%m-%dT%H:%M:%S+00:00")
@@ -55,11 +44,6 @@ def mirror(w: World, wire, uids: list[str], *, phase: str = "auto:done") -> dict
 
 
 def hot_paused(w: World, wire, uids: list[str], *, at: datetime, exp: int) -> dict[str, int]:
-    """The collector's walk paused after its hot set (vault_collect.walk: `auto:hot` done, a person then used the
-    account, so the row stays `running` at `auto:all:0`, pages_done 0, never `complete`), all OF's answers at `at`
-    with thumbs signed to `exp`: the folder list (LISTS_KEY), page 0 of every custom folder, All's page 0 and its
-    prefetch page, each cached under the picker route's key and upserted into the mirror (no run id).
-    Returns the mirror rows per Creator."""
     now = ts(at)
     out = {}
     con = w.sql()
@@ -108,7 +92,6 @@ def expired_exp() -> int:
 
 
 def import_stub(w: World, account_id: str, media_id: int) -> None:
-    """One import-visible local photo, as a prior vault import left it."""
     con = w.sql()
     with con:
         con.execute("INSERT INTO vault_items (account_id, media_id, kind, tags, send_count, created_at, updated_at)"
@@ -118,7 +101,6 @@ def import_stub(w: World, account_id: str, media_id: int) -> None:
 
 
 def utc_epoch(s: str | None) -> float | None:
-    """A vault_cache_runs timestamp (naive UTC, seed ts or SQLAlchemy's) as epoch seconds."""
     if not s:
         return None
     return datetime.fromisoformat(str(s)).replace(tzinfo=timezone.utc).timestamp()

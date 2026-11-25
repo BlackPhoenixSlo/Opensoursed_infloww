@@ -1,49 +1,3 @@
-"""
-service/llm_client.py — pluggable LLM client (DeepSeek + DeepInfra + Z.ai + Anthropic).
-
-ONE async entry point — `chat()` — that every automation runner will eventually
-call instead of POSTing a provider directly (see library/db_data/19_llm_providers.md §2,
-library/db_data/05_grok_extraction.md §1+§7).
-
-Every provider here speaks the OpenAI `/chat/completions` shape, so the client is
-one code path — except Anthropic, whose native Messages API (for prompt
-caching) is a request/response adapter at the edges of that path
-(`llm_anthropic`, picked by `LLMProvider.wire`); `base_url` + `api_key` +
-`model` differ, and so — per MODEL, not
-per provider — does the field that states the reasoning mode. That field is
-carried verbatim by the registry (`llm_models.LLMModel.reasoning_body`) rather
-than derived here; getting it wrong is silent on some models.
-
-Audit + cost live in the Grok tables, generalized for multi-provider use by
-migration 0026 (provider / status / cache_hit_tokens columns + a provider-keyed
-daily rollup):
-
-  * `grok_calls`      — one row per call, written BEFORE the request fires with
-                        `provider` set and `status='pending'`; finalized to
-                        `status='done'` (+ tokens/cost/cache_hit_tokens) or
-                        `status='error'` (+ error_text).
-  * `grok_daily_cost` — per-(day, account_id, provider) rollup (the PK gained
-                        `provider` in 0026). The soft-cap reservation is ATOMIC:
-                        a single INSERT … ON CONFLICT DO UPDATE that increments
-                        cost_cents only while it stays under the cap. The
-                        conflict target is the full (day, account_id, provider)
-                        PK. A plain read-then-decide would let concurrent workers
-                        each pass the check and collectively blow the cap. NOTE:
-                        the cap is enforced per-(account, provider) row; a true
-                        cross-provider account total would sum the provider rows
-                        before reserving.
-
-Privacy (05 §8): `prompt_json` holds the request with every base64 `data:` URI
-replaced by an `<img:mime:bytes:digest>` manifest — all prompt TEXT survives,
-no image bytes are persisted (the images are already cached in the vault, so
-the base64 was only ever a re-encoded copy). `response_json` is not stored at
-all. `response_text` is the one column holding model output verbatim (capped at
-_RESP_TEXT_CAP) — it is PII, and it is kept because it is the documented
-first-line forensic tool. Nothing here is ever logged: log lines carry model /
-provider / purpose / latency / token counts, never message bodies. See the
-redaction block above _insert_pending_call.
-"""
-
 from __future__ import annotations
 
 import json
@@ -71,57 +25,34 @@ from llm_providers import (
 
 log = logging.getLogger("of-relay.llm_client")
 
-# ── Model registry ──────────────────────────────────────────────────────
-# Moved to `llm_models` — WHAT there is to call, next to WHO serves it
-# (`llm_providers`), leaving this module as HOW a call is made. Re-exported so
-# the ~70 modules that read `llm_client.MODELS` keep working; this is still the
-# canonical import site for them.
 from llm_models import LLMModel, MODELS  # noqa: E402,F401
 
 
-# Cost-estimate knobs for the pre-flight cap reservation (_reserve_millicents).
-# The reserve assumes a full output so a single runaway loop can't slip many calls under the cap
-# before the rollup catches up. Costs are counted in MILLICENTS (cents x100) so
-# the seed prices in `llm_models` don't floor to 0 per call.
 _CHARS_PER_TOKEN = 4
 _ASSUMED_OUTPUT_TOKENS = 1024
-_MILLICENTS_PER_CENT = 100  # internal cost unit: 1 cent = 100 millicents
-_DEFAULT_CAP_CENTS = 100  # mirrors AccountAiConfig.daily_cost_cap_cents default
+_MILLICENTS_PER_CENT = 100
+_DEFAULT_CAP_CENTS = 100
 _REQUEST_TIMEOUT_S = 120.0
 
-# Transient-failure retry for the single fire (19 §2 step 4). Every automation
-# funnels through here, and a one-shot POST turned a flaky provider into a
-# permanent per-item failure: a DeepInfra `ReadTimeout` stamped
-# `describe_status='failed'` with no retry, so a 97-item vault sweep left a
-# random 3-5 undone every run and each re-run only rescued some. Only transient
-# faults retry — timeouts, transport/connection errors, 429 and 5xx. A 4xx
-# (auth, bad request, real content refusal) will not improve on a re-fire, so it
-# fails fast as before. The audit row and the cap reservation are made ONCE,
-# outside the loop, and released once on final give-up.
+# Only transient faults retry (timeout, transport, 429, 5xx); 4xx fails fast. Cap reservation and audit row are made once, outside the retry loop.
 _LLM_MAX_ATTEMPTS = 3
-_LLM_RETRY_BACKOFF_S = 1.5          # ×attempt: 1.5s, then 3.0s
-_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504, 529})  # 529 = Anthropic overloaded
+_LLM_RETRY_BACKOFF_S = 1.5
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504, 529})
 
-# Defensive: strip a <think>…</think> reasoning block if a provider ever inlines
-# it into `content` instead of the separate `reasoning_content` field.
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
-# Strip a ```json … ``` (or bare ```) fence some models wrap JSON output in.
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
 
 
-# ── Errors (fail-fast, distinct types so callers can branch) ─────────────
 
 class LLMError(Exception):
-    """Base for all llm_client failures."""
+    pass
 
 
 class LLMConfigError(LLMError):
-    """Unknown model, unknown provider, or missing/empty API key. Fail fast —
-    never silently POST a None bearer token."""
+    pass
 
 
 class LLMCapExceeded(LLMError):
-    """Per-account daily soft-cap would be exceeded — request was NOT sent."""
 
     def __init__(self, account_id: str | None, cap_cents: int, would_be_cents: int):
         self.account_id = account_id
@@ -134,7 +65,6 @@ class LLMCapExceeded(LLMError):
 
 
 class LLMHTTPError(LLMError):
-    """Upstream returned a non-2xx or the request never completed."""
 
     def __init__(self, message: str, *, status: int | None = None):
         self.status = status
@@ -142,9 +72,6 @@ class LLMHTTPError(LLMError):
 
 
 class LLMModelCapTimeout(LLMHTTPError):
-    """No Model-call cap permit within the call's deadline (model_cap): nothing was
-    reserved, recorded or sent. `status` None, so every caller reads it as the model
-    timeout it already handles (Full AI Writer outcome `timeout`, a sender's provider error)."""
 
     def __init__(self, waited_s: float, cap: int):
         self.waited_s, self.cap = waited_s, cap
@@ -152,38 +79,22 @@ class LLMModelCapTimeout(LLMHTTPError):
 
 
 class LLMKeyError(LLMConfigError, LLMHTTPError):
-    """The API key itself is the problem: `kind` is "missing" (none set, or an
-    empty one), "invalid" (the provider answered 401/403) or "no_credit" (402).
-
-    BOTH parents on purpose. As an LLMConfigError every `except LLMConfigError`
-    hard stop (inbound describe, autoreply's photo pass) keeps catching a key
-    the provider rejected; as an LLMHTTPError a 401 still reads `.status` the
-    way callers of the old plain LLMHTTPError do. A new `except LLMKeyError`
-    above a broad `except` is all a call site needs to tell the owner, via
-    `key_error_payload`, instead of failing quietly.
-
-    `str(exc)` keeps the developer text (owner ids, account id) for the server
-    log. It is never what a user is shown — that is `key_error_payload`.
-    """
 
     def __init__(self, kind: str, provider: str, purpose: str = "", *,
                  status: int | None = None, detail: str = "",
                  house: bool = False):
-        self.kind = kind            # "missing" | "invalid" | "no_credit"
+        self.kind = kind
         self.provider = provider
         self.purpose = purpose
-        self.house = house          # an un-owned account: the house key is missing
+        self.house = house
         LLMHTTPError.__init__(self, detail or f"{provider} API key {kind}",
                               status=status)
 
 
-# A provider's answer that means "this key", not "this request": the call can
-# never succeed until someone changes the key, so it is not retried and the
-# caller is told which. 429 stays transient (see _RETRYABLE_STATUS).
+# A key refusal never succeeds on re-fire: not retried, the caller is told which. 429 stays transient.
 _KEY_STATUS = {401: "invalid", 403: "invalid", 402: "no_credit"}
 
 
-# ── One failed attempt → what next (pure; _fire's loop obeys it) ───────────
 
 @dataclass(frozen=True)
 class Retry:
@@ -192,28 +103,19 @@ class Retry:
 
 @dataclass(frozen=True)
 class KeyErr:
-    kind: str           # a _KEY_STATUS value → LLMKeyError(kind)
+    kind: str
 
 
 @dataclass(frozen=True)
 class Fail:
-    reason: str         # "not_retryable" | "attempts_exhausted"
+    reason: str
 
 
 def llm_attempt_outcome(status_or_exc_kind: int | str, attempt: int,
                         max_attempts: int) -> Retry | KeyErr | Fail:
-    """Decide after a failed attempt (0-based `attempt` of `max_attempts`).
-
-    An int is the provider's HTTP status; ANY str means a request-side fault
-    (timeout / transport / non-JSON body), all transient. The str's content is
-    never read (_fire passes the exception class name, for the reader). Only
-    _RETRYABLE_STATUS and request faults retry, and never past the last
-    attempt; a key status is never retried.
-    """
     last = attempt + 1 >= max_attempts
     if isinstance(status_or_exc_kind, str) or status_or_exc_kind in _RETRYABLE_STATUS:
         if not last:
-            # Module global read now, not bound at def time (tests patch it).
             return Retry(_LLM_RETRY_BACKOFF_S * (attempt + 1))
         return Fail("attempts_exhausted")
     kind = _KEY_STATUS.get(status_or_exc_kind)
@@ -221,20 +123,13 @@ def llm_attempt_outcome(status_or_exc_kind: int | str, attempt: int,
         return KeyErr(kind)
     return Fail("not_retryable")
 
-# ── The user's sentence for a key error ─────────────────────────────────────
-# One author for it, so the toast, the automation notice and the help bot all
-# say the same thing. It names a screen, which is product copy rather than
-# money-counting, but it is ONE map beside the error it describes rather than a
-# copy per caller (and never re-composed in the browser).
 KEY_FIX_URL = "/settings/ai-keys"
-# Vault prep (describe + Jev flags) spends its OWN daily budget row, not its provider's: a $1 cap
-# = $1 vault describe + $1 for all other AI, so a vault sweep never starves chats (owner 2026-11-15).
 DESCRIBE_BUDGET = "describe"
 _DESCRIBE_PURPOSES = frozenset({"describe_media", "describe_flags", "vault_jev_flags"})
 
 
+# Vault prep spends its own daily budget row so a vault sweep never starves chats (owner decision).
 def budget_key(purpose: str) -> str:
-    """The daily-cap row a call reserves on: `DESCRIBE_BUDGET` for vault prep, else the shared chat budget."""
     return DESCRIBE_BUDGET if purpose in _DESCRIBE_PURPOSES else "chat"
 
 
@@ -262,14 +157,6 @@ def feature_label(purpose: str) -> str:
 
 
 def key_error_payload(exc: "LLMKeyError", *, feature: str = "") -> dict[str, Any]:
-    """`{error, feature, provider, fix_url, message, fix}` for one key error.
-
-    `message` says what is wrong, `fix` what the OWNER does about it; a chatter
-    is shown `message` alone (AI keys is an owner-only page). Neither ever holds
-    a key, an account id or another agency's name — those stay in `str(exc)`.
-    `feature` overrides the purpose's label (one notice naming several
-    automations); the sentences are worded to read for one feature or a list.
-    """
     feature = feature or feature_label(exc.purpose)
     prov = PROVIDER_LABELS.get(exc.provider, exc.provider)
     if exc.kind == "invalid":
@@ -289,12 +176,9 @@ def key_error_payload(exc: "LLMKeyError", *, feature: str = "") -> dict[str, Any
 
 
 def failure(exc: BaseException, *, capped_text: str, provider_text: str) -> tuple[bool, str] | None:
-    """An llm_client error → (capped: the daily AI cap refused it, the text a user reads); None: any other
-    error. The caller's wording: `capped_text` (the cap), `provider_text` (any other provider error); a key
-    error reads key_error_payload's message + fix."""
     if isinstance(exc, LLMCapExceeded):
         return True, capped_text
-    if isinstance(exc, LLMKeyError):  # before LLMHTTPError: it is one
+    if isinstance(exc, LLMKeyError):
         p = key_error_payload(exc)
         return False, f"{p['message']} {p['fix']}"
     if isinstance(exc, LLMHTTPError):
@@ -302,39 +186,28 @@ def failure(exc: BaseException, *, capped_text: str, provider_text: str) -> tupl
     return None
 
 
-# ── Result ───────────────────────────────────────────────────────────────
 
 @dataclass
 class LLMResult:
-    call_id: int | None          # grok_calls.id (None only if the audit write failed)
+    call_id: int | None
     model: str
     provider: str
-    content: str                 # main assistant text (reasoning stripped)
-    parsed: Any | None           # json.loads(content) when response_format=json_object
+    content: str
+    parsed: Any | None
     reasoning_content: str | None
     tokens_in: int | None
     tokens_out: int | None
-    cache_hit_tokens: int | None  # DeepSeek prompt_cache_hit_tokens (also persisted to grok_calls)
-    cost_cents: int               # MILLICENTS (cents x100) — see _cost_millicents
+    cache_hit_tokens: int | None
+    cost_cents: int
     latency_ms: int
     raw: dict = field(repr=False, default_factory=dict)
-    # Tokens WRITTEN to the provider cache (Anthropic; billed 1.25x input).
-    # Logged + returned, not a grok_calls column (cost_cents already holds it).
+    # Tokens written to the provider cache (Anthropic bills 1.25x input).
     cache_write_tokens: int | None = None
-    # `chat(tools=…)` only: the assistant's function calls, OpenAI shape
-    # [{id, type: "function", function: {name, arguments: <JSON str>}}]; content may then be "".
     tool_calls: list[dict] = field(default_factory=list)
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
 
 def _resolve(model: str) -> tuple[LLMModel, LLMProvider]:
-    """model -> (LLMModel, LLMProvider). Fail-fast on every gap.
-
-    The KEY is deliberately not resolved here: which credential a call bills
-    depends on WHOSE account it is, not on which model it picked. See
-    `_tenant_api_key`.
-    """
     mdl = MODELS.get(model)
     if mdl is None:
         raise LLMConfigError(
@@ -349,22 +222,6 @@ def _resolve(model: str) -> tuple[LLMModel, LLMProvider]:
 
 
 def _resolve_effort(mdl: LLMModel, requested: str, stored: str = "") -> str:
-    """The `reasoning_effort` to put on the wire ("" = send no such field).
-
-    Precedence: an explicit caller value, then the account\'s saved pick, then
-    the model\'s own pin.
-
-    ONE failure policy lives here — an effort this model cannot honour raises,
-    before the cap reservation and the audit row, in the same place a missing
-    credential is caught. A request that cannot be legal must cost neither a cap
-    slot nor a `grok_calls` row.
-
-    The other policy — that a SAVED value which no longer fits is dropped rather
-    than raised on — deliberately does not live here. It belongs where config
-    enters the process (`_account_effort`), because it is a statement about
-    config outliving the choice that made it, not about this call. Keeping the
-    two apart is what lets this function have a single rule.
-    """
     effort = (requested or stored or mdl.reasoning_effort or "").strip()
     if not effort:
         return ""
@@ -377,41 +234,15 @@ def _resolve_effort(mdl: LLMModel, requested: str, stored: str = "") -> str:
 
 
 def effort_options(model: str) -> list[str]:
-    """The reasoning-effort values an operator may pick for one model, weakest
-    first; empty when the model has no such control.
-
-    The one source the Brain editor\'s dropdown and its save-time validation
-    both read, so an option that can be offered is exactly an option that can be
-    stored.
-    """
     mdl = MODELS.get(model)
     return list(mdl.effort_choices) if mdl else []
 
 
 def effort_options_by_model() -> dict[str, list[str]]:
-    """Every model\'s effort choices, keyed by model id — the whole-registry
-    view an editor needs to repopulate its dropdown when the model changes.
-
-    Here rather than composed in the API layer because it is a fact about the
-    registry, and a caller that rebuilds it from `MODELS` is a second place that
-    has to know an unlisted model means "no control" rather than "not a model".
-    """
     return {mid: list(m.effort_choices) for mid, m in MODELS.items()}
 
 
 async def _account_effort(account_id: str, mdl: LLMModel) -> str:
-    """The reasoning effort an operator saved for this account, or "" — and ""
-    is also the answer when what they saved no longer fits this model.
-
-    Dropping rather than raising is the point. Config outlives the choice that
-    made it: moving an account from DeepSeek to z.ai strands a "medium" that is
-    legal on neither the new provider nor any future one, and a value saved
-    months ago must never be able to take a reply lane down today. `resolve_model`
-    treats a stale model id exactly this way for exactly this reason.
-
-    Read only when the model can use one, so the models carrying the traffic pay
-    no query for a feature they cannot express.
-    """
     if not account_id or not mdl.effort_choices:
         return ""
     async with get_session() as s:
@@ -431,55 +262,9 @@ async def _account_effort(account_id: str, mdl: LLMModel) -> str:
 
 async def _tenant_api_key(account_id: str, prov: LLMProvider,
                           purpose: str = "") -> str:
-    """The credential THIS account's call must bill.
-
-    One agency = one key set: the owner of `account_id` (a `users` row) supplies
-    the key for every creator it runs, so two agencies can never spend on one
-    credential. An account with several owners bills the ONLY one of them that
-    holds a key for the provider, and is refused when more than one does. The
-    house key — the process-wide credential this deployment booted
-    with (`llm_providers.house_key`) — is reachable only when the account has NO owner at all (an
-    orphan, or the NULL house-account rollup): there is no tenant to leak
-    across, and refusing those would take the deployment's own maintenance
-    calls down with them.
-
-    Everything else FAILS CLOSED, with ONE named exception. An owner that has not
-    pasted a key for this provider gets an error, never a silent fall-through to
-    the house key: a generic `or house_key` turns every configuration and
-    ownership defect into a successful cross-tenant request billed to the
-    deployment owner, which is both the invariant this function exists to hold
-    and the only alarm that would ever have reported it broken.
-
-    THE EXCEPTION is `llm_providers._FALLBACK_KEY_ENVS`, one row per deliberate
-    hole, today holding only the in-product help assistant on DeepSeek. It is
-    not a widening of the rule above: a different credential entirely, for a
-    route that sends no fan anything, because "where do I paste my API key?" is
-    the question the fail-closed gate makes unanswerable exactly when it is
-    asked. `purpose` selects a row, it does not authorize one — the map decides,
-    so a caller inventing a purpose string finds no row. Empty purpose, unknown
-    pair, or unset value → the old behaviour, byte for byte.
-
-    ⚠️ A fallback call still reserves against and records under `account_id`:
-    the cap that bounds it is the account's, and `grok_calls` has no column for
-    who paid. The log line at the fall-through is the only place the two are
-    told apart today.
-    """
     owners = await tenant_keys.owners_of(account_id)
+    # Two agencies linked to one creator is reachable by design: bill the one holding a key, refuse only when more than one does.
     if len(owners) > 1:
-        # Two AGENCIES are linked to this creator (a master's oversight link is
-        # already dropped by owners_of). REACHABLE BY DESIGN, not a corruption
-        # alarm: two owners each completing a session capture for the same
-        # account, or `auth.admin_grant_user_account` adding a link without
-        # removing one. Bill the ONE of them holding a key for this provider —
-        # when only one can pay there is nothing to guess, and refusing that
-        # kept a live model silent for weeks over a duplicate owner with no key
-        # at all. Refuse only when MORE than one holds a key: neither row order
-        # nor link age says whose credential pays, and billing the wrong agency
-        # silently is the one outcome this path exists to prevent. The Setup
-        # card names the account, its owners and who pays per provider; the
-        # fix for a real dispute is a transfer to whichever should keep it
-        # (DEPLOY.md → Per-agency AI keys). TRANSFER itself is safe: it deletes
-        # the old link in the same transaction as the insert.
         keyed = await tenant_keys.keyed_providers(owners)
         payer = tenant_keys.payer_for(owners, keyed, prov.name)
         if payer:
@@ -491,8 +276,6 @@ async def _tenant_api_key(account_id: str, prov: LLMProvider,
                 f"account {account_id!r} has more than one owner with a "
                 f"{prov.name!r} key — cannot tell which agency to bill"
             )
-        # else: nobody has one — fall through so the missing-key path names
-        # every owner, any of whom can add it.
     if not owners:
         key = house_key(prov.name)
         if not key:
@@ -504,21 +287,12 @@ async def _tenant_api_key(account_id: str, prov: LLMProvider,
     owner = owners[0]
     key = await tenant_keys.get_key(owner, prov.name) if len(owners) == 1 else ""
     if not key:
-        # The deployment's own credential for this purpose, if policy grants one
-        # — "" for every purpose that does not, which is all of them but the
-        # help bot. No feature name appears here on purpose: the policy is one
-        # readable map in `llm_providers`, not an `if` in the billing path.
         shared = fallback_key(purpose, prov.name)
         if shared:
             log.info("fallback_key_used purpose=%s provider=%s account=%s "
                      "owner=%s — billed to THIS DEPLOYMENT, not the agency",
                      purpose, prov.name, account_id, owner)
             return shared
-        # The one log line this feature needs: an agency's models can be split
-        # across providers (`model_by_purpose` is per account AND per purpose),
-        # so "they brought a DeepSeek key" does not mean every one of their
-        # calls has a key. This names the missing pair instead of leaving one
-        # purpose mysteriously dead on one account.
         log.warning("tenant_key_missing provider=%s account=%s owner=%s",
                     prov.name, account_id, ",".join(owners))
         who = (f"agency {owner!r} has" if len(owners) == 1
@@ -530,16 +304,6 @@ async def _tenant_api_key(account_id: str, prov: LLMProvider,
 
 
 async def _user_api_key(user_id: str, prov: LLMProvider, purpose: str) -> str:
-    """The credential a call with NO account bills: the asking agency's own key
-    for the provider, else the purpose's deployment fallback
-    (`llm_providers._FALLBACK_KEY_ENVS` — today only the help bot on DeepSeek).
-
-    NEVER the house key. `_tenant_api_key` hands an un-owned account the house
-    key because there is no tenant to leak across; here there IS one — the
-    asker — and the house key would make the deployment pay for anything any
-    signup sends. With neither key it fails closed, exactly as an owner without
-    a key does.
-    """
     key = await tenant_keys.get_key(user_id, prov.name) or fallback_key(purpose, prov.name)
     if key:
         return key
@@ -551,12 +315,6 @@ async def _user_api_key(user_id: str, prov: LLMProvider, purpose: str) -> str:
 
 async def llm_key_available(account_id: str, provider: str,
                             purpose: str = "") -> bool:
-    """Would `_tenant_api_key` hand this account a key for `provider`? The same
-    policy, answered as a bool and WITHOUT its per-call warning: a ticking
-    engine asks this once per run so a keyless account skips quietly instead of
-    logging `tenant_key_missing` plus a traceback per fan. The editor that shows
-    the "add a key" notice asks the same question. Reads only, no secret leaves.
-    """
     prov = PROVIDERS.get(provider)
     if prov is None:
         return False
@@ -569,16 +327,11 @@ async def llm_key_available(account_id: str, provider: str,
     return tenant_keys.payer_for(owners, keyed, prov.name) is not None
 
 
-# Vision: a single image consumes hundreds–thousands of tokens, NOT the ~10
-# the URL/base64 string length implies. Reserve a conservative flat estimate per
-# image so the daily-cap reservation can't be blown wide open by a describe pass
-# (the "Auto-complete all" silent-overrun bug). Actual usage is reconciled from
-# the provider's usage block after the call; this only governs the pre-flight.
+# An image costs hundreds-thousands of tokens, not its string length; flat estimate keeps the pre-flight cap reservation honest.
 _IMAGE_TOKENS = 1200
 
 
 def _estimate_input_tokens(messages: list[dict], tools: list[dict] | None = None) -> int:
-    # Tool schemas and an assistant's tool_calls travel as input too.
     chars = len(json.dumps(tools, default=str)) if tools else 0
     image_tokens = 0
     for m in messages:
@@ -588,7 +341,6 @@ def _estimate_input_tokens(messages: list[dict], tools: list[dict] | None = None
         if isinstance(c, str):
             chars += len(c)
         elif isinstance(c, list):
-            # OpenAI multimodal content: list of {type: text|image_url, ...} parts.
             for part in c:
                 if isinstance(part, dict) and part.get("type") == "image_url":
                     image_tokens += _IMAGE_TOKENS
@@ -603,23 +355,6 @@ def _estimate_input_tokens(messages: list[dict], tools: list[dict] | None = None
 
 def _cost_millicents(model: str, tokens_in: int, tokens_out: int,
                      cache_hit_tokens: int = 0, cache_write_tokens: int = 0) -> int:
-    """Cost in MILLICENTS (cents x100), the internal unit for the cap rollup.
-
-    Counting in millicents is the whole point of this path: DeepSeek's per-call
-    cost is a fraction of a cent, so the old `int(round(cents))` floored every
-    call to 0 and the daily cap never tripped. At x100 resolution a real
-    automation call records a non-zero cost and the rollup accumulates toward the
-    cap. The grok_calls / grok_daily_cost `cost_cents` INT columns now hold
-    millicents (no schema change — same column, finer unit).
-
-    `cache_hit_tokens` (DeepSeek `prompt_cache_hit_tokens`) is the slice of
-    `tokens_in` billed at the cheap cache-hit rate; the remainder is cache-miss.
-    Clamped to tokens_in so a malformed usage block can't go negative. The
-    pre-flight reservation prices through `_reserve_millicents`, not here.
-
-    `cache_write_tokens` (Anthropic `cache_creation_input_tokens`) is the slice
-    written to the cache, billed at the write rate (1.25x input), else at miss.
-    Same clamp: hit + write never exceed tokens_in."""
     mdl = MODELS.get(model)
     if mdl is None:
         return 0
@@ -636,10 +371,6 @@ def _cost_millicents(model: str, tokens_in: int, tokens_out: int,
 
 
 def _reserve_out_tokens(model: str, max_tokens: int | None = None) -> int:
-    """The output a reservation counts: the real cap where the body states one
-    (the caller's `max_tokens`; else native Anthropic: `llm_anthropic.MAX_TOKENS`,
-    which adaptive thinking may spend in full), else `_ASSUMED_OUTPUT_TOKENS`
-    (an OpenAI-wire call with no max_tokens has no real max to reserve)."""
     if max_tokens:
         return max_tokens
     mdl = MODELS.get(model)
@@ -650,10 +381,6 @@ def _reserve_out_tokens(model: str, max_tokens: int | None = None) -> int:
 
 
 def _reserve_millicents(model: str, tokens_in: int, max_tokens: int | None = None) -> int:
-    """The pre-flight cap reservation, the most this call can bill: no cache
-    info exists yet, so every input token is priced at the dearer of miss and
-    cache-write (Anthropic bills a write at 1.25x input, so all-miss would
-    under-reserve), and the output at `_reserve_out_tokens`."""
     mdl = MODELS.get(model)
     if mdl is None:
         return 0
@@ -662,20 +389,6 @@ def _reserve_millicents(model: str, tokens_in: int, max_tokens: int | None = Non
 
 
 def _cache_hit_tokens(usage: dict) -> int | None:
-    """Cached-input tokens, from whichever field the provider reports them in.
-
-    DeepSeek puts the count at the top level as `prompt_cache_hit_tokens`; the
-    OpenAI-shaped providers nest it at `prompt_tokens_details.cached_tokens`.
-    This is the count the cost path bills at the (far cheaper) hit rate, so
-    reading the wrong one is not a cosmetic miss — it prices the entire input.
-
-    Test for ABSENCE, not truthiness. DeepSeek legitimately reports 0 on a cold
-    prompt, and `top or nested` would throw that real zero away and go looking
-    in the other provider's field; where a provider populates both shapes, that
-    silently bills a cache MISS at the hit rate. The nested object is read
-    defensively because a provider is free to send it as null, or as something
-    that isn't a mapping at all.
-    """
     top = usage.get("prompt_cache_hit_tokens")
     if top is not None:
         return top
@@ -686,9 +399,6 @@ def _cache_hit_tokens(usage: dict) -> int | None:
 
 
 def _reasoning_tokens(usage: dict) -> int | None:
-    """Tokens the model spent thinking, when the provider says. Diagnostic only
-    — it is already counted inside `completion_tokens`, so it is logged and not
-    billed separately (double-counting it would inflate every reasoning call)."""
     details = usage.get("completion_tokens_details")
     if isinstance(details, dict):
         return details.get("reasoning_tokens")
@@ -696,7 +406,6 @@ def _reasoning_tokens(usage: dict) -> int | None:
 
 
 def _clean_content(text: str) -> str:
-    """Drop any inlined reasoning + markdown JSON fence so json.loads can run."""
     if not text:
         return text
     text = _THINK_RE.sub("", text).strip()
@@ -719,33 +428,6 @@ async def _get_cap_cents(account_id: str | None) -> int:
 
 async def cap_state(account_id: str | None, provider: str,
                     model: str | None = None, *, user_id: str | None = None) -> dict[str, Any]:
-    """Today's spend against the describe or shared chat daily cap. Read-only.
-
-    The cap is ENFORCED in `_reserve`, per call, which is the only place it can
-    be enforced correctly. This is the same row read for callers that need to
-    answer "would starting this achieve anything" BEFORE they start it: a
-    background sweep whose every LLM call is refused looks, from the outside,
-    exactly like one that is working — it fans out its fetches, counts its way
-    to done, and leaves the work undone.
-
-    `capped` is computed from the money rather than from the row's sticky
-    `is_capped` flag. That flag is set when a reservation is refused and never
-    cleared, so raising `daily_cost_cap_cents` mid-day makes calls succeed again
-    while it stays True — a gate reading it would keep refusing against a budget
-    that is no longer spent. It is still reported, as `flagged`, because "we hit
-    the cap today" is worth showing even after the cap is raised.
-
-    With `model`, `capped` means "no call on it fits": spent >= cap alone is
-    nearly never True, because a reservation counts a full output, the last one
-    that fit settles to its real, smaller cost, and the spend stays just under
-    the cap while every call is refused. So it is also capped with less left
-    than the smallest reservation (no input, a full output), or
-    with a reservation already refused today (`flagged`) and less than twice
-    that left, which covers the prompt's input. A cap raised since leaves
-    plenty left, so it is not judged spent.
-
-    `user_id` reads the agency rollup instead (see `_ledger`).
-    """
     provider = provider if provider == DESCRIBE_BUDGET else "chat"
     day = datetime.utcnow().strftime("%Y-%m-%d")
     cap_mc = int(await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT)
@@ -754,8 +436,7 @@ async def cap_state(account_id: str | None, provider: str,
         row = (await s.execute(
             select(table.cost_cents, table.is_capped).where(
                 table.day == day,
-                # `== None` renders as `= NULL` and matches nothing, so the
-                # house-account row has to be addressed with IS NULL.
+                # `== None` renders `= NULL` and matches nothing; the house-account row needs IS NULL.
                 col.is_(None) if key is None else col == key,
                 table.provider == provider,
             )
@@ -777,9 +458,6 @@ async def cap_state(account_id: str | None, provider: str,
 
 
 async def spend_today(account_id: str) -> dict[str, Any]:
-    """Today's (UTC) spend per provider for one account, read-only: the rows
-    `_reserve` writes, held reservations included. The cap applies to each
-    provider's row on its own, so this is a list, not one total."""
     day = datetime.utcnow().strftime("%Y-%m-%d")
     async with get_session() as s:
         rows = (await s.execute(
@@ -793,13 +471,6 @@ async def spend_today(account_id: str) -> dict[str, Any]:
 
 
 def _ledger(account_id: str | None, user_id: str | None):
-    """The daily rollup a call reserves against: (table, its scope column, key).
-
-    An account's call rolls up per account in `grok_daily_cost`. A call with no
-    account — `user_id` set, see `chat` — rolls up per agency in
-    `grok_user_daily_cost`, the same shape keyed on `users.id`, because
-    `grok_daily_cost.account_id` is a foreign key to `accounts`.
-    """
     if user_id is not None:
         return GrokUserDailyCost, GrokUserDailyCost.user_id, user_id
     return GrokDailyCost, GrokDailyCost.account_id, account_id
@@ -807,22 +478,8 @@ def _ledger(account_id: str | None, user_id: str | None):
 
 async def _reserve(day: str, account_id: str | None, reserve_cents: int, cap_cents: int,
                    now: datetime, provider: str, user_id: str | None = None) -> int:
-    """Atomically reserve `reserve_cents` against the per-(day, account,
-    provider) cap.
-
-    One statement does the read-check-write: INSERT … ON CONFLICT DO UPDATE that
-    bumps cost_cents/call_count ONLY while the running total stays <= cap. The
-    conflict target is the full (day, account_id, provider) PK (migration 0026).
-    If the bump would breach the cap the DO UPDATE's WHERE is false → the row is
-    neither inserted nor updated → RETURNING is empty → we know we're capped.
-    This is the whole point: concurrent workers can't each pass an independent
-    read.
-
-    Returns the new running cost_cents on success. Raises LLMCapExceeded if the
-    reservation didn't fit. SQLite serializes writers, so the increment + check
-    are race-free even under the worker fan-out.
-    """
     Cost, scope, key = _ledger(account_id, user_id)
+    # One INSERT ... ON CONFLICT DO UPDATE is the read-check-write: a plain read-then-decide lets concurrent workers all pass and blow the cap.
     stmt = (
         sqlite_insert(Cost)
         .values(
@@ -849,8 +506,6 @@ async def _reserve(day: str, account_id: str | None, reserve_cents: int, cap_cen
         total = (await s.execute(stmt)).scalar_one_or_none()
 
         if total is None:
-            # DO UPDATE skipped (cap breach on an existing row). Flag it (05 §7
-            # step 2) and report the capped state.
             existing = await s.scalar(
                 select(Cost.cost_cents).where(
                     Cost.day == day,
@@ -871,10 +526,8 @@ async def _reserve(day: str, account_id: str | None, reserve_cents: int, cap_cen
                 account_id, cap_cents, (existing or 0) + reserve_cents
             )
 
+        # Fresh-INSERT path only: one call's reserve alone exceeds the cap; back out the inserted row.
         if total > cap_cents:
-            # Only reachable on the fresh-INSERT path (the DO UPDATE WHERE can
-            # never return an over-cap total): a single call's reserve alone
-            # exceeds the cap. Back out the row we just inserted and report.
             await s.execute(
                 sa_update(Cost)
                 .where(
@@ -897,10 +550,6 @@ async def _reserve(day: str, account_id: str | None, reserve_cents: int, cap_cen
 async def _adjust_daily(day: str, account_id: str | None, cost_delta: int,
                         count_delta: int, now: datetime, provider: str,
                         user_id: str | None = None) -> None:
-    """Reconcile the rollup after the call: apply the (actual - reserved) cost
-    delta on success, or release the whole reservation on failure. No-op when
-    both deltas are zero (the common case while seed prices are 0). Scoped to the
-    (day, account_id, provider) row the matching _reserve created."""
     if cost_delta == 0 and count_delta == 0:
         return
     Cost, scope, key = _ledger(account_id, user_id)
@@ -920,59 +569,23 @@ async def _adjust_daily(day: str, account_id: str | None, cost_delta: int,
         )
 
 
-# ── Audit receipt (05 §8) ──────────────────────────────────────────────────
-#
-# `prompt_json` used to hold `json.dumps(request_body)` — the ENTIRE outbound
-# body, verbatim. For the vision lanes that body carries base64 `data:` URIs:
-# measured on prod 2026-08-03, `describe_media` averaged 203 KB/row and was
-# **99.3% base64**, making grok_calls 1,325 MB = 52% of the whole DB. Those
-# bytes are a re-encoded copy of vault media we already own, and the column
-# has never been read back — an exhaustive sweep (python/TS/shell/SQL/alembic)
-# found ZERO readers, and `grep -oE 'GrokCall\.[a-z_]+'` never names it.
-#
-# So we keep the WORDS and drop the PIXELS: every `data:` URI becomes an
-# `<img:mime:bytes:digest>` manifest, and everything else is stored verbatim.
-# Measured over real prod rows: 1,199 MB -> 318 MB. Policy points the same way
-# (05 §8: "90-day retention is the privacy ceiling; pruning is mandatory, not
-# optional"); there is no retain-minimum for this table.
-#
-# This stays IN `prompt_json` rather than moving to new columns, deliberately:
-# that column is `NOT NULL` with no server_default, and the boot-time schema
-# walker (db/engine.py:179) SKIPS exactly that shape while the service never
-# runs alembic (db/engine.py:114). Adding or dropping columns here is the one
-# change that could fail silently — `_insert_pending_call` swallows below — so
-# we make zero schema changes and the constraint stays satisfied.
+# prompt_json keeps the words, drops the pixels: base64 data: URIs become manifests (they were 99% of grok_calls size).
+# No schema change here: prompt_json is NOT NULL, which the boot schema walker skips, and the service never runs alembic.
 _DATA_URI_RE = re.compile(r'data:([a-zA-Z0-9.+/-]+);base64,([A-Za-z0-9+/=]+)')
 
 _RESP_TEXT_CAP = int(os.environ.get("LLM_RESP_TEXT_CAP", "4000"))
 
-# What a row stores when redaction itself failed. A literal, in one place, so
-# "is this row degraded?" is one grep and not a copy-pasted string.
 _DEGRADED_STUB = '{"v":1,"degraded":true}'
 
-# Incremented on every fallback to _DEGRADED_STUB. Exposed via
-# audit_degraded_count() -> /admin/stats/grok-calls.
 _AUDIT_DEGRADED = 0
 
-# If disk ever gets tight again, the lever is the retention window that already
-# exists — GROK_CALLS_RETAIN_S (server.py), 30d today. Dropping it to 7d frees
-# the same order of magnitude without a second storage format for this column.
 
 
 def _b64_decoded_len(payload: str) -> int:
-    """Decoded byte count of a base64 payload, without decoding it."""
     return max(0, (len(payload) * 3) // 4 - payload.count("="))
 
 
 def _redact_body(body: Any) -> Any:
-    """Deep copy of `body` with every base64 `data:` URI replaced by a manifest.
-
-    MUST deep-copy: the caller's `messages` list is the SAME object that gets
-    POSTed (chat() passes `messages` straight into `body`, then httpx serializes
-    that dict). A shallow copy would rewrite the outbound request and send
-    `<img:…>` to the provider instead of the image — breaking every vision lane
-    on the first call.
-    """
     if isinstance(body, dict):
         return {k: _redact_body(v) for k, v in body.items()}
     if isinstance(body, list):
@@ -987,14 +600,6 @@ def _redact_body(body: Any) -> Any:
 
 
 def _redacted_json(request_body: dict) -> str:
-    """What lands in `prompt_json`: the full body with every data: URI
-    manifested. All prompt text survives; no image bytes do.
-
-    Never raises. The caller (`_insert_pending_call`) swallows exceptions so a
-    failed audit can't take down a live LLM call — which means a raise here
-    would be INVISIBLE. `audit_degraded` on /admin/stats/grok-calls is how you
-    find out it happened.
-    """
     global _AUDIT_DEGRADED
     try:
         return json.dumps(_redact_body(request_body), ensure_ascii=False, default=str)
@@ -1005,8 +610,6 @@ def _redacted_json(request_body: dict) -> str:
 
 
 def audit_degraded_count() -> int:
-    """How many audit rows fell back to the stub since boot. Read by
-    /admin/stats/grok-calls so a degraded audit is visible, not silent."""
     return _AUDIT_DEGRADED
 
 
@@ -1014,10 +617,6 @@ async def _insert_pending_call(*, purpose: str, provider: str, account_id: str |
                                fan_id: int | None, model: str, endpoint: str,
                                temperature: float, request_body: dict,
                                now: datetime) -> int | None:
-    """Write the grok_calls audit row BEFORE the request fires (05 §4) with
-    `provider` set and `status='pending'` (columns added in 0026). Returns the
-    row id, or None if the audit write itself failed (never block the call on
-    audit)."""
     prompt_audit = _redacted_json(request_body)
     try:
         async with get_session() as s:
@@ -1056,7 +655,6 @@ async def _finalize_call(call_id: int | None, **values: Any) -> None:
         log.exception("llm_client: failed to finalize grok_calls id=%s", call_id)
 
 
-# ── Public entry point ─────────────────────────────────────────────────────
 
 async def chat(
     *,
@@ -1075,74 +673,14 @@ async def chat(
     tool_choice: str | dict | None = None,
     max_tokens: int | None = None,
 ) -> LLMResult:
-    """Call an OpenAI-compatible LLM (DeepSeek, DeepInfra, Z.ai or Anthropic) with full cost + audit.
-
-    Flow (19 §2):
-      1. Resolve model -> provider -> base_url, then the KEY of the agency that
-         owns `account_id` (fail-fast on any gap — see _tenant_api_key).
-     1b. An off-slot automation call waits for a Model-call cap permit
-         (model_cap; LLMModelCapTimeout past its deadline, before step 2).
-      2. ATOMICALLY reserve the estimated cost against the daily soft cap
-         (05 §7) BEFORE firing — raises LLMCapExceeded if it doesn't fit.
-      3. Write a pending `grok_calls` row.
-      4. POST {base_url}/chat/completions (Anthropic: /messages, via the
-         llm_anthropic body/response adapter).
-      5. Fill tokens/cost + finalize the call row; reconcile the daily rollup.
-
-    Args:
-        model:           a key of MODELS (e.g. "deepseek-v4-flash").
-        messages:        OpenAI chat messages (already variable-substituted).
-        purpose:         attribution tag (gen_info / welcome / welcome_chatter_for_info_reply / …).
-        account_id:      per-account cap + audit attribution, AND the agency
-                         whose API key pays for the call (_tenant_api_key).
-                         None with `user_id` set for a call with no account.
-        user_id:         ONLY for a call with no account (account_id None): the
-                         agency (`users.id`) that pays — its own key, else the
-                         purpose's fallback, never the house key
-                         (_user_api_key) — and whose per-agency daily cap
-                         bounds it (`grok_user_daily_cost`, default cap).
-        fan_id:          optional fan attribution.
-        response_format: e.g. {"type": "json_object"} for structured output.
-        temperature:     sampling temperature.
-        reasoning_effort: OPTIONAL override of how hard a reasoning model may
-                         think. Leave it empty and the model's own pin is used
-                         — the right answer almost everywhere, and why this no
-                         longer defaults to a value. The accepted strings are
-                         PER PROVIDER and not interchangeable: DeepSeek takes
-                         "low"/"medium"/"high", Z.ai takes "low"/"high"/"max"
-                         and 400s on "medium" — so the legal set is per MODEL
-                         (`effort_choices`), not per provider. Passing one to a
-                         model that has none is an error, not a no-op. See
-                         `effort_options` / `_resolve_effort`.
-        timeout_s:       OPTIONAL per-request timeout; None keeps
-                         `_REQUEST_TIMEOUT_S`. Full AI Writers pass a short one.
-        max_attempts:    OPTIONAL attempt count; None keeps `_LLM_MAX_ATTEMPTS`.
-                         A Writer passes 1 so a 429 or stall reaches the next
-                         Writer at once. Neither kwarg touches the request body.
-        tools / tool_choice: OPTIONAL function calling, OpenAI shape, DeepSeek
-                         only (Ultra planning). `messages` may then carry an
-                         assistant `tool_calls` and `role: "tool"` answers; the
-                         result's `tool_calls` holds the model's calls (content
-                         may be ""). Other providers → LLMConfigError.
-        max_tokens:      OPTIONAL output cap: sent as the body's `max_tokens`
-                         (native Anthropic: in place of llm_anthropic.MAX_TOKENS)
-                         and reserved in place of the assumed output. None keeps
-                         both as they were.
-
-    Raises:
-        LLMConfigError, LLMCapExceeded, LLMHTTPError — and LLMKeyError (a
-        subclass of both) when the key is missing or the provider rejects it.
-        LLMModelCapTimeout (an LLMHTTPError, status None) when no cap permit came in time.
-    """
     if user_id is not None and account_id is not None:
         raise LLMConfigError("chat() bills an account OR an agency, not both")
+    # Zero attempts would reserve the cap and write a row, then send nothing.
     if max_attempts is not None and max_attempts < 1:
-        # Zero attempts would reserve the cap and write a row, then send nothing.
         raise LLMConfigError(f"max_attempts must be >= 1, got {max_attempts}")
     mdl, prov = _resolve(model)
     native = prov.wire == "anthropic"
     if (response_format or {}).get("type") == "json_object" and not mdl.json_object_ok:
-        # A guaranteed provider 400 on Claude; refuse at no cost.
         raise LLMConfigError(f"model {mdl.id!r} does not support response_format=json_object")
     if native and response_format is not None:
         raise LLMConfigError(f"model {mdl.id!r}: response_format is not translated "
@@ -1150,25 +688,20 @@ async def chat(
     if (tools is not None or tool_choice is not None) and prov.name != "deepseek":
         raise LLMConfigError(f"model {mdl.id!r}: tool calls are DeepSeek only "
                              "(the Anthropic adapter is deferred)")
-    # Before the cap reservation and the audit row, exactly where the old
-    # combined _resolve raised: a call with no usable credential must cost
-    # neither a cap slot nor a grok_calls row. Same for an effort string the
-    # provider would reject.
     stored_effort = "" if reasoning_effort else await _account_effort(account_id, mdl)
     effort = _resolve_effort(mdl, reasoning_effort, stored=stored_effort)
     api_key = (await _user_api_key(user_id, prov, purpose) if user_id is not None
                else await _tenant_api_key(account_id, prov, purpose))
 
     url = prov.base_url.rstrip("/") + ("/messages" if native else "/chat/completions")
-    endpoint = httpx.URL(url).path  # e.g. "/chat/completions" (deepseek), "/v1/messages"
+    endpoint = httpx.URL(url).path
 
-    # ── Build the OpenAI-compatible body ────────────────────────────────
     body: dict[str, Any] = {
-        "model": mdl.wire_model(),  # provider's real name (≠ our id for DeepInfra)
+        "model": mdl.wire_model(),
         "messages": messages,
         "stream": False,
     }
-    if mdl.sends_temperature:   # Claude 4.7+ 400s on it (llm_models)
+    if mdl.sends_temperature:
         body["temperature"] = temperature
     if response_format is not None:
         body["response_format"] = response_format
@@ -1178,45 +711,25 @@ async def chat(
         body["tool_choice"] = tool_choice
     if max_tokens and not native:
         body["max_tokens"] = max_tokens
-    # The reasoning mode, stated explicitly and never by omission — the model
-    # registry holds the exact body keys, so there is nothing to branch on here.
-    #
-    # Omission is the failure this rule was written from. DeepSeek V4 reasons by
-    # default, so an absent `thinking` field means "whatever the provider
-    # defaults to today", and that default moved under us (see llm_models); on
-    # the flash model it burns the whole output budget reasoning and returns
-    # content="" — a silent empty reply, worse than a 400. Omitting the field on
-    # glm-4.5-air leaves it reasoning too. `enable_thinking: false` is the
-    # obvious-looking alternative on both and is SILENTLY IGNORED by both.
-    #
-    # reasoning_content comes back in its own field; we strip it before any JSON
-    # parse.
+    # Reasoning mode is stated explicitly, never by omission: provider defaults moved and flash then returns content=""; `enable_thinking: false` is silently ignored.
     body.update(mdl.reasoning_keys())
     if effort:
         body["reasoning_effort"] = effort
     if native:
-        # Same body, native shape: system → cached block, max_tokens, thinking.
-        # Pure, and before the cap reservation and the audit row: a body it
-        # can't translate costs neither.
         try:
             body = llm_anthropic.to_native_body(body, max_tokens or llm_anthropic.MAX_TOKENS)
         except llm_anthropic.NativeShapeError as e:
             raise LLMConfigError(f"model {mdl.id!r}: {e}") from e
 
-    # ── 1b. Model-call cap (model_cap): an off-slot automation call waits here for a
-    # permit, BEFORE the reservation, the audit row and the request, so a timeout or a
-    # cancel while queued costs none of them. One permit for the call and its retries.
     try:
         async with model_cap.call(_REQUEST_TIMEOUT_S if timeout_s is None else timeout_s,
                                   purpose=purpose):
-            now = datetime.utcnow()   # after the wait: the reservation's day
+            now = datetime.utcnow()
 
-            # ── 2. Atomic pre-flight cap reservation (in millicents) ────────
             hold = await _reserve_call(model, messages, account_id=account_id, user_id=user_id,
                                        provider=budget_key(purpose), now=now,
-                                       tools=tools, max_tokens=max_tokens)  # raises LLMCapExceeded
+                                       tools=tools, max_tokens=max_tokens)
 
-            # ── 3. Pending audit row ────────────────────────────────────────
             call_id = await _insert_pending_call(
                 purpose=purpose, provider=prov.name, account_id=account_id, fan_id=fan_id,
                 model=model, endpoint=endpoint, temperature=temperature,
@@ -1241,14 +754,9 @@ async def chat(
         raise LLMModelCapTimeout(e.waited_s, e.cap) from None
 
 
-# ── chat() steps: reserve → fire → finalize ────────────────────────────────
 
 @dataclass(frozen=True)
 class _Hold:
-    """One call's cap reservation, made ONCE before the fire: refunded when
-    _fire gives up (HTTP or request error), settled to the real cost by
-    _finalize_ok. Pre-existing gap, not covered: a CancelledError mid-fire or
-    an exception inside _finalize_ok leaves the reservation held."""
     now: datetime
     account_id: str | None
     user_id: str | None
@@ -1261,10 +769,9 @@ class _Hold:
 
     async def refund(self) -> None:
         await _adjust_daily(self.day, self.account_id, -self.reserve_mc, -1,
-                            self.now, self.provider, self.user_id)  # release reservation
+                            self.now, self.provider, self.user_id)
 
     async def settle(self, actual_mc: int) -> None:
-        # Reconcile the rollup with the real cost (delta vs. the estimate reserved).
         await _adjust_daily(self.day, self.account_id, actual_mc - self.reserve_mc, 0,
                             self.now, self.provider, self.user_id)
 
@@ -1274,18 +781,14 @@ async def _reserve_call(model: str, messages: list[dict], *, account_id: str | N
                         tools: list[dict] | None = None, max_tokens: int | None = None) -> _Hold:
     est_in = _estimate_input_tokens(messages, tools)
     hold = _Hold(now, account_id, user_id, provider, _reserve_millicents(model, est_in, max_tokens))
-    cap_mc = await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT  # cap is stored in cents
+    cap_mc = await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT
     await _reserve(hold.day, account_id, hold.reserve_mc, cap_mc, now, provider,
-                   user_id)  # raises LLMCapExceeded
+                   user_id)
     return hold
 
 
 @dataclass(frozen=True)
 class ExternalHold:
-    """A reservation + pending audit row for a call made OUTSIDE `chat()` (an
-    SDK that is not OpenAI-shaped, e.g. TypeSafe). `done` writes the receipt and
-    settles the rollup to the real cost — failed calls included, since a
-    multi-step call can bill tokens before it fails."""
     hold: _Hold
     call_id: int | None
 
@@ -1297,20 +800,17 @@ class ExternalHold:
             error_text=None if ok else error[:2000],
             response_text=response[:_RESP_TEXT_CAP] if ok else None,
             latency_ms=latency_ms, tokens_in=tokens_in, tokens_out=tokens_out,
-            cost_cents=actual_mc)  # millicents (see _cost_millicents)
+            cost_cents=actual_mc)
         await self.hold.settle(actual_mc)
 
 
 async def reserve_external(account_id: str | None, provider: str, model: str,
                            reserve_mc: int, *, purpose: str, request: dict,
                            endpoint: str = "") -> ExternalHold:
-    """Reserve `reserve_mc` on the account's purpose-selected daily budget
-    against the same daily cap `chat()` uses, and write the pending audit row.
-    Raises LLMCapExceeded. `request` is the audit body (no image bytes)."""
     now = datetime.utcnow()
     hold = _Hold(now, account_id, None, budget_key(purpose), int(reserve_mc))
-    cap_mc = await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT  # cap is stored in cents
-    await _reserve(hold.day, account_id, hold.reserve_mc, cap_mc, now, hold.provider)  # raises LLMCapExceeded
+    cap_mc = await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT
+    await _reserve(hold.day, account_id, hold.reserve_mc, cap_mc, now, hold.provider)
     call_id = await _insert_pending_call(
         purpose=purpose, provider=provider, account_id=account_id, fan_id=None,
         model=model, endpoint=endpoint or provider, temperature=0.0,
@@ -1320,9 +820,6 @@ async def reserve_external(account_id: str | None, provider: str, model: str,
 
 async def _give_up(call_id: int | None, hold: _Hold, body: dict, msg: str,
                    latency_ms: int) -> None:
-    # On an error row, upgrade the receipt to carry the image-redacted
-    # body: `error_text` is the PROVIDER's sentence, not ours, so this
-    # is the only at-rest record of what we actually sent.
     await _finalize_call(call_id, status="error", error_text=msg[:2000],
                          latency_ms=latency_ms,
                          prompt_json=_redacted_json(body))
@@ -1333,16 +830,9 @@ async def _fire(url: str, headers: dict, body: dict, *, call_id: int | None,
                 hold: _Hold, model: str, purpose: str,
                 timeout_s: float | None = None,
                 max_attempts: int | None = None) -> tuple[dict, int]:
-    """POST with retries; on a terminal failure also finalizes the error row,
-    refunds `hold` and raises LLMKeyError / LLMHTTPError. `timeout_s` /
-    `max_attempts` None = the module defaults, read at call time."""
     provider = MODELS[model].provider
     tries = _LLM_MAX_ATTEMPTS if max_attempts is None else max_attempts
     timeout = _REQUEST_TIMEOUT_S if timeout_s is None else timeout_s
-    # ── 4. Fire (retry transient faults; see _LLM_MAX_ATTEMPTS) ─────────
-    # The reservation + audit row are made ONCE, by the caller. Only the network
-    # round trip repeats; a permanent failure finalizes and releases exactly
-    # once, below, when llm_attempt_outcome stops retrying.
     for attempt in range(tries):
         t0 = time.monotonic()
         try:
@@ -1351,19 +841,16 @@ async def _fire(url: str, headers: dict, body: dict, *, call_id: int | None,
             latency_ms = int(round((time.monotonic() - t0) * 1000))
             resp.raise_for_status()
             data = resp.json()
-            if not isinstance(data, dict):  # a 200 with "…" / [] / null: same handling as a non-JSON body
+            if not isinstance(data, dict):
                 raise ValueError(f"response body is a JSON {type(data).__name__}, not an object")
             return data, latency_ms
         except httpx.HTTPStatusError as e:
             latency_ms = int(round((time.monotonic() - t0) * 1000))
             status = e.response.status_code
             outcome = llm_attempt_outcome(status, attempt, tries)
-            # e.response.text is the provider's error body (not our prompt) → safe to keep.
             snippet = (e.response.text or "")[:500]
             if isinstance(outcome, KeyErr):
-                # …except on a key refusal: providers echo part of the key they
-                # refused ("Your api key: ****abcd"), and this text is stored
-                # (error_text) and carried by the exception. The status says it all.
+                # Providers echo part of a refused key in their error body, and this text is stored.
                 snippet = f"API key {outcome.kind} (provider body withheld: it can echo the key)"
             msg = f"{provider} HTTP {status}: {snippet}"
             if isinstance(outcome, Retry):
@@ -1380,8 +867,6 @@ async def _fire(url: str, headers: dict, body: dict, *, call_id: int | None,
                                   status=status) from e
             raise LLMHTTPError(msg, status=status) from e
         except (httpx.RequestError, ValueError) as e:
-            # httpx.RequestError = timeout / connection / transport, all transient.
-            # ValueError = resp.json() on a non-JSON body; a re-fire may get a clean one.
             latency_ms = int(round((time.monotonic() - t0) * 1000))
             outcome = llm_attempt_outcome(type(e).__name__, attempt, tries)
             msg = f"{provider} request error: {type(e).__name__}: {e}"
@@ -1401,11 +886,10 @@ async def _fire(url: str, headers: dict, body: dict, *, call_id: int | None,
 async def _finalize_ok(data: dict, latency_ms: int, *, call_id: int | None, hold: _Hold,
                        model: str, purpose: str,
                        response_format: dict | None) -> LLMResult:
-    # ── 5. Parse + cost + finalize ──────────────────────────────────────
     choice = (data.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     raw_content = message.get("content") or ""
-    reasoning_content = message.get("reasoning_content")  # DeepSeek thinking
+    reasoning_content = message.get("reasoning_content")
     content = _clean_content(raw_content)
     tool_calls = [{"id": c.get("id") or "", "type": "function",
                    "function": {"name": (c.get("function") or {}).get("name") or "",
@@ -1416,7 +900,7 @@ async def _finalize_ok(data: dict, latency_ms: int, *, call_id: int | None, hold
     tokens_in = usage.get("prompt_tokens")
     tokens_out = usage.get("completion_tokens")
     cache_hit_tokens = _cache_hit_tokens(usage)
-    cache_write_tokens = usage.get("cache_creation_input_tokens")  # Anthropic only
+    cache_write_tokens = usage.get("cache_creation_input_tokens")
     reasoning_tokens = _reasoning_tokens(usage)
 
     actual_mc = _cost_millicents(model, tokens_in or 0, tokens_out or 0,
@@ -1427,8 +911,7 @@ async def _finalize_ok(data: dict, latency_ms: int, *, call_id: int | None, hold
         try:
             parsed = json.loads(content)
         except (json.JSONDecodeError, TypeError):
-            # Don't crash the caller — surface raw content + parsed=None. Log
-            # only the length (never the body — it's PII per 05 §8).
+            # Length only, never the body (PII).
             log.warning("llm_client: response_format=json_object but content did "
                         "not parse (model=%s purpose=%s len=%d)",
                         model, purpose, len(content or ""))
@@ -1436,25 +919,15 @@ async def _finalize_ok(data: dict, latency_ms: int, *, call_id: int | None, hold
     await _finalize_call(
         call_id,
         status="done",
-        # response_json is NOT stored. Its only ever-reader was the one-shot
-        # `status` backfill in migration 20260604_0200 (which tested IS NOT
-        # NULL, never the content) and that has long since run. Everything we
-        # actually use from it — usage counts, finish_reason, fingerprint — is
-        # denormalized into columns right here.
         response_text=(content or (json.dumps(tool_calls) if tool_calls else ""))[:_RESP_TEXT_CAP],
         latency_ms=latency_ms,
         tokens_in=tokens_in,
         tokens_out=tokens_out,
         cache_hit_tokens=cache_hit_tokens,
-        cost_cents=actual_mc,  # millicents (see _cost_millicents)
+        cost_cents=actual_mc,
     )
     await hold.settle(actual_mc)
 
-    # reasoning= is DIAGNOSTIC ONLY and is deliberately not a column. Providers
-    # that report it count it INSIDE completion_tokens (confirmed on both), so
-    # cost and the cap are already right without it; a prod migration for a
-    # counter that only ever answers "is this model thinking more than we think"
-    # is not proportionate. Absent (None) on providers that don't report it.
     log.info("llm_client: %s %s purpose=%s latency=%dms in=%s out=%s cache_hit=%s "
              "cache_write=%s reasoning=%s cost=%dmc",
              hold.provider, model, purpose, latency_ms, tokens_in, tokens_out,
@@ -1470,7 +943,7 @@ async def _finalize_ok(data: dict, latency_ms: int, *, call_id: int | None, hold
         tokens_in=tokens_in,
         tokens_out=tokens_out,
         cache_hit_tokens=cache_hit_tokens,
-        cost_cents=actual_mc,  # millicents (see _cost_millicents)
+        cost_cents=actual_mc,
         latency_ms=latency_ms,
         raw=data,
         cache_write_tokens=cache_write_tokens,

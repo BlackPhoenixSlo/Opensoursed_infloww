@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * LinksListFrame — the HB frame Infloww draws for both its link lists (bundle index.9f50f370.js: one component with
- * `LINK_LIST_VIEW_TYPE.TRACKING` and `.FREETRIAL`, `LINK_LIST_CREATE_TEXT` @14052200): the attribution tip, the
- * filter bar (Creator, the name search, Source, Tag, Date created, the switches, Create and Export), the update row,
- * the HB table with its fixed name and Actions columns, and `HbPager`. Tracking links (`TrackingLinksTab`) and Free
- * trial links (`TrialLinksTab`) render through it; each passes its own rows, columns, switches and row actions.
- *
- * The pieces both pages share (the page frame `GrowthHbFrame` with its title and report time zone, the tabs' toggle
- * look, the creator and Source / Tag filters, HB's switch, the reconnect state, the row actions and their confirm) are
- * exported from here too.
- */
 
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
@@ -42,23 +31,18 @@ import { IfDateInput } from "@/components/ui/ifDateInput";
 
 export const NOT_WIRED = "not wired";
 
-/** The bundle's two list variants and the words that differ between them. */
 export type LinksVariant = "TRACKING" | "FREETRIAL";
 const VARIANT_TEXT: Record<LinksVariant, { create: string; search: string; name: string }> = {
   TRACKING: { create: "Create tracking link", search: "Search tracking link name", name: "Tracking link" },
   FREETRIAL: { create: "Create free trial link", search: "Search free trial link name", name: "Free trial links" },
 };
 
-// ── Time zone and dates ──
 
-/** The Agency's report time zone from the Applied settings (`null`: the browser's), as the Dashboard reads it. */
 export function useReportTz(): { reportTz: string | null; ready: boolean } {
   const applied = useAppliedSettings();
   return { reportTz: applied.data?.preferences?.report_tz ?? null, ready: !applied.isPending };
 }
 
-/** #6 to #9: the report time zone after the title, 8px either side, 14px/1.5, then a 16px info icon whose tooltip
- *  is "Set by your organization". The page header (`GrowthHbFrame`) renders it. */
 function ReportTimeZone() {
   const { reportTz, ready } = useReportTz();
   return (
@@ -69,10 +53,6 @@ function ReportTimeZone() {
   );
 }
 
-/** Tracking links and Free trial links are one HB frame (its Layout capture, #4 to #9): the HB body, a 16px-padded
- *  header with a 24px weight-500 title and the report time zone; its own panels carry the 16px sides. With no
- *  Creator it still draws the whole frame (the Creator filter empty, Create disabled, the table's "No data"). The
- *  page (TrackingLinksPage, TrialLinksPage) draws it around its tab; the list below is `LinksListFrame`. */
 export function GrowthHbFrame({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="min-h-full bg-hb-bg">
@@ -87,20 +67,16 @@ export function GrowthHbFrame({ title, children }: { title: string; children: Re
   );
 }
 
-/** #38: date only, in the report time zone the title names (#6). */
 export function dateOnly(iso: string | null, tz: string | null): string {
   const d = parseUtc(iso);
   return d ? d.toLocaleDateString(undefined, { timeZone: tz ?? undefined }) : "—";
 }
 
-/** The time the relay's read landed, in the report time zone the title names. */
 export function readTime(at: number, tz: string | null): string {
   return new Date(at).toLocaleTimeString(undefined, { timeZone: tz ?? undefined, hour: "numeric", minute: "2-digit" });
 }
 
-// ── Heads and tips ──
 
-/** A head with a tip: the words wrap, the 16px info icon (the bundle's `tips` text) stays on the last word's line. */
 export function TipHead({ title, tip }: { title: string; tip: string }) {
   const cut = title.lastIndexOf(" ");
   return (
@@ -117,16 +93,11 @@ export function Tip({ text }: { text: string }) {
   );
 }
 
-// ── Tabs ──
 
-/** HB's `hb-button--color-toggle-active`: #2c2c2c with white text (light #e5e5e5 with T1). */
 export const TOGGLE_ACTIVE = "bg-[#2c2c2c] text-white [html[data-theme=light]_&]:bg-[#e5e5e5] [html[data-theme=light]_&]:text-fg";
 
 export type FrameTab<T extends string> = { key: T; label: string; extra?: boolean };
 
-/** #10, #12: 16px from the edge, 16px weight 500. The bundle's `HBTab` draws each tab as a 36px toggle button, 12px
- *  padding, 8px radius, the selected one filled. The panel is the caller's, `${idPrefix}-panel-${key}`. A tab with
- *  `extra` (ours, not the bundle's) carries `ExtraTag` from `sm` up. Too wide for the screen (a phone), the strip scrolls. */
 export function FrameTabs<T extends string>({ tabs, value, onChange, label, idPrefix }: {
   tabs: Array<FrameTab<T>>;
   value: T;
@@ -160,40 +131,25 @@ export function FrameTabs<T extends string>({ tabs, value, onChange, label, idPr
   );
 }
 
-// ── Table classes ──
 
-/** #35, #91, #93, #96: the HB table (`HB_TABLE`): a 48px head on #171717 with white 14px/500 text, 48px cells
- *  padded 0 18px over a 1px #2c2c2c rule. */
 export const TH = cn(HB_TABLE.th, "text-start whitespace-normal");
 export const TD = cn(HB_TABLE.td, HB_TABLE.row, "overflow-hidden text-ellipsis whitespace-nowrap");
-/** The fixed cells: the head's on the panel colour, the body's on the page colour they sit over. */
 export const STICKY_TD = "bg-hb-bg";
-/** A fixed right column's scroll cue: a shadow cast left of it (IF_TABLE.fixedRight's look), from a transparent
- *  `after:` box over the cell: under border-collapse Chrome draws neither a sticky cell's border-l nor its box-shadow. */
+// Under border-collapse Chrome draws neither a sticky cell's border-l nor its box-shadow; the shadow is a transparent after: box.
 export const PIN_SHADOW = "after:pointer-events-none after:absolute after:inset-0 after:content-[''] "
   + "after:shadow-[-8px_0_8px_-4px_rgba(0,0,0,.5)] [html[data-theme=light]_&]:after:shadow-[-8px_0_8px_-4px_rgba(0,0,0,.2)]";
-/** The fixed Actions column's left edge: a 1px rule with PIN_SHADOW, then a 24px fade in the cell's own fill over
- *  what scrolls under it, so a head cut there (Earnings at 1280) reads as scrolled under, not as running into
- *  "Actions", and the shadow says there is more to scroll to. */
 const EDGE = cn(PIN_SHADOW, "after:border-l after:border-border "
   + "before:pointer-events-none before:absolute before:inset-y-0 before:right-full before:w-6 before:bg-linear-to-l before:to-transparent before:content-['']");
 const ACTIONS_EDGE_HEAD = cn(EDGE, "before:from-panel");
 const ACTIONS_EDGE = cn(EDGE, "before:from-hb-bg");
-/** The list's fit: 12px sides on the metric cells, a 200px name, a 160px Actions. */
 export const FIT_PAD = "px-3";
 const FIT_NAME = 200;
 const FIT_ACTIONS = 160;
 export const OFF = "disabled:opacity-50 disabled:cursor-not-allowed";
 
-/** A 16px icon led into a 36px control, 12px from its left edge, as the bundle's Search, Source, Tag and Date created
- *  fields draw it (`SearchMdLine` @14060359, `GitMergeLine` @14062703, `Tag01Line` @14064090; the range picker's
- *  own calendar). */
 export const LEAD = "pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg";
 
-// ── Filters ──
 
-/** #19, #20, #80: the Source or Tag filter, HB filled and led by its icon, over the values the Edit dialog set on the
- *  account's links ("" is every link, and shows the label as the placeholder). */
 export function FilterSelect({ label, icon, options, value, onChange }: {
   label: string; icon: typeof GitMerge; options: string[]; value: string; onChange: (v: string) => void;
 }) {
@@ -214,7 +170,6 @@ export function FilterSelect({ label, icon, options, value, onChange }: {
 
 type MetaRow = { link_source?: string | null; tags?: string[] | null };
 
-/** The Source and Tag filters' state and test. */
 export function useMetaFilter() {
   const [source, setSource] = useState("");
   const [tag, setTag] = useState("");
@@ -225,12 +180,10 @@ function metaKeep(l: MetaRow, source: string, tag: string): boolean {
   return (!source || l.link_source === source) && (!tag || (l.tags ?? []).includes(tag));
 }
 
-/** The creator filter (#17, #80): it picks the Creator every read and write on the page is for. */
 export function CreatorFilter({
   accountId, onAccountChange,
 }: { accountId: string | null; onAccountChange: (id: string) => void }) {
   const accounts = useActiveAccounts();
-  // The chip: the creator's avatar with its online dot, the name, the chevron; at most 250px.
   const options: IfOption[] = accounts.map((a) => ({
     value: a.id,
     text: a.nickname || a.id,
@@ -254,7 +207,6 @@ export function CreatorFilter({
   );
 }
 
-/** A 20px avatar with the online dot at its foot (the Creator chip, #17). */
 function CreatorDot({ account }: { account: AccountMeta }) {
   const online = !!account.has_session && !account.session_dead_at;
   return (
@@ -267,8 +219,6 @@ function CreatorDot({ account }: { account: AccountMeta }) {
   );
 }
 
-/** #24 to #26, #80: a 16px label 6px before HB's 40x22 switch, an 18px white knob; on the CTA orange, off #3a3a3a.
- *  Without `onChange` it is disabled and Not wired. */
 export function Switch({ label, on, onChange }: { label: string; on: boolean; onChange?: (on: boolean) => void }) {
   return (
     <span className="mb-4 flex items-center gap-1.5 text-base">
@@ -293,9 +243,7 @@ export function Switch({ label, on, onChange }: { label: string; on: boolean; on
   );
 }
 
-// ── Date created (#21, #22) ──
 
-/** The bundle's `datePresets` (`getDatePresetValue`): from and to, inclusive, around today in the report time zone. */
 const DATE_PRESETS: Array<{ label: string; range: (today: string) => [string, string] }> = [
   { label: "Today", range: (t) => [t, t] },
   { label: "Yesterday", range: (t) => [addDays(t, -1), addDays(t, -1)] },
@@ -305,12 +253,8 @@ const DATE_PRESETS: Array<{ label: string; range: (today: string) => [string, st
   { label: "Last 12 months", range: (t) => [monthStartBefore(t, 12), addDays(t, -1)] },
 ];
 
-/** A bare date input inside the Date created box: no picker glyph (the box leads with its own calendar); a click
- *  opens `IfDateInput`'s calendar. */
 const DATE_FIELD = "min-w-0 flex-1 bg-transparent text-sm outline-none";
 
-/** #21 to #23: a calendar, then "Date created" as a text prefix, the range, then the bundle's presets (its picker's
- *  side panel) as a borderless chevron menu. An inclusive YYYY-MM-DD range in the report time zone; "" is open. */
 function DateCreated({ from, to, onRange, tz }: {
   from: string; to: string; onRange: (from: string, to: string) => void; tz: string | null;
 }) {
@@ -371,10 +315,7 @@ function DateCreated({ from, to, onRange, tz }: {
   );
 }
 
-// ── Tip, reconnect, unreachable ──
 
-/** #14 to #16: the attribution tip: a 40px box on the panel colour with a 1px hairline, a 16px filled "!" badge, the
- *  14px sentence, then "Learn more" 8px after it in the CTA orange (Infloww's own article, off-host: Not wired). */
 export function AttributionTip() {
   return (
     <div className="mb-4 flex min-h-10 items-center gap-2 rounded-lg border border-white/[.09] bg-panel px-3 py-2 text-sm text-fg [html[data-theme=light]_&]:border-black/[.09]">
@@ -389,13 +330,11 @@ export function AttributionTip() {
   );
 }
 
-/** Whether the picked creator's OnlyFans session is dead or missing. */
 export function useSessionGone(accountId: string | null): boolean {
   const a = useActiveAccounts().find((x) => x.id === accountId);
   return !!a && (!a.has_session || !!a.session_dead_at);
 }
 
-/** #68: the bundle's reconnect state for a creator whose OnlyFans session is gone (ticket 04's dead-session art). */
 export function Reconnect() {
   return (
     <EmptyState
@@ -406,7 +345,6 @@ export function Reconnect() {
   );
 }
 
-/** Ours in place of the bundle's reconnect state when the read fails on a live session, labelled as ours. */
 export function Unreachable({ className, text = "OnlyFans not reachable — showing nothing." }: {
   className?: string; text?: string;
 }) {
@@ -418,15 +356,11 @@ export function Unreachable({ className, text = "OnlyFans not reachable — show
   );
 }
 
-// ── Pager (#66) ──
 
-/** `PAGE_SIZE_OPTIONS=["10","20","50"];const DEFAULT_PAGE_SIZE=50`. */
 const PAGE_SIZES = [10, 20, 50] as const;
 export type PageSize = (typeof PAGE_SIZES)[number];
 export const DEFAULT_PAGE_SIZE: PageSize = 50;
 
-/** The bundle's `HBPagination` (`HbPager`): "Total: N records", the pages, then "Per page" and 10 / 20 / 50, over a
- *  1px top rule. It shows only when there are rows. */
 export function Pager({ total, page, size, onPage, onSize }: {
   total: number; page: number; size: PageSize; onPage: (p: number) => void; onSize: (s: PageSize) => void;
 }) {
@@ -436,20 +370,14 @@ export function Pager({ total, page, size, onPage, onSize }: {
   );
 }
 
-// ── Export (#28) ──
 
-/** The bundle emails its export (#81); ours downloads `lines` (the head first) as `<name>-<day>.csv`. */
 export function downloadCsv(name: string, lines: string[][], tz: string | null) {
   saveCsv(`${name}-${dayKey(new Date(), tz)}.csv`, lines);
 }
 
-// ── Row actions (#62 to #64, #94, #95) ──
 
-/** #95: HB's 28px ghost buttons (#2c2c2c), 9px side padding; an icon-only one is 28px square. */
 export const ACT = cn(HB_TABLE.iconButton, "w-auto min-w-7 px-[9px] text-sm", OFF);
 
-/** The dots menu's one action and its confirm: the bundle's Deactivate, or ours (`extra`, labelled). Without `run`
- *  the item is disabled. */
 export type RowMenuAction = {
   label: string;
   extra?: boolean;
@@ -459,11 +387,9 @@ export type RowMenuAction = {
   run?: () => Promise<unknown>;
 };
 
-/** Details, Edit (an icon, as the bundle draws it), then the dots menu, 8px apart (#63). */
 export function RowActions({ name, onDetails, detailsOpen, onEdit, action }: {
   name: string;
   onDetails?: () => void;
-  /** Details opens in place; while it is open the button says "Hide". */
   detailsOpen?: boolean;
   onEdit?: () => void;
   action: RowMenuAction;
@@ -479,8 +405,6 @@ export function RowActions({ name, onDetails, detailsOpen, onEdit, action }: {
   );
 }
 
-/** The dots button, its one-item menu and the item's confirm (`RowActions`' last control; Redirect links' rows). #94:
- *  the menu overlays the viewport under the dots, right-aligned to them, above the table's sticky cells. */
 export function RowMenu({ name, action }: { name: string; action: RowMenuAction }) {
   const [confirming, setConfirming] = useState(false);
   return (
@@ -513,8 +437,6 @@ export function RowMenu({ name, action }: { name: string; action: RowMenuAction 
   );
 }
 
-/** The bundle's Deactivate confirm (`HBModal.confirm`, index.9f50f370.js @14028314): 600px, centred, Cancel then a
- *  red action; a failure keeps it open with the bundle's toast words. */
 function ConfirmModal({ title, confirmLabel, failText, onConfirm, onClose, children }: {
   title: string;
   confirmLabel: string;
@@ -557,10 +479,7 @@ function ConfirmModal({ title, confirmLabel, failText, onConfirm, onClose, child
   );
 }
 
-// ── The frame ──
 
-/** A column after the name (#38 to #55): its head (with the bundle's tip, when it has one) and its cell; `hint` is a
- *  tooltip on the cell when it needs a caveat. The cell carries `data-metric` = the title. */
 export type FrameCol<T> = {
   title: string;
   width: number;
@@ -569,12 +488,8 @@ export type FrameCol<T> = {
   hint?: (row: T) => string | undefined;
 };
 
-/** The rows a frame filters: the name search, Source, Tag and the day created. */
 type FrameRow = MetaRow & { name: string; created_at: string | null };
 
-/** The frame's filter and page state (pagedFilters): the name search, Source and Tag, Date created and the page size,
- *  plus a tab's own fields `extra` (their initial values). Every filter change is one action that also goes back to
- *  page 1; `keep` tests a row against the row filters in the report time zone. */
 export function useFrameFilters<X extends object>(extra: X) {
   const { reportTz } = useReportTz();
   const f = usePagedFilters<FrameFields & X>({
@@ -595,17 +510,10 @@ export function useFrameFilters<X extends object>(extra: X) {
   };
 }
 type FrameFields = { search: string; source: string; tag: string; from: string; to: string; pageSize: PageSize };
-/** The folded filters' defaults, and the fields the phone fold counts (a tab's switches are not counted). */
 const NO_FRAME_FILTERS = { source: "", tag: "", from: "", to: "" };
 const FOLDED = ["source", "tag", ["from", "to"]] as const;
 export type FrameFilters = ReturnType<typeof useFrameFilters>;
 
-/**
- * The Links list: #13 the search panel (the tip, then #17 to #29 the filter bar), #30 to #33 the update row and the
- * table panel, #34 to #66 the table and the pager. `rows` are the rows left after the caller's own filters and
- * `filters.keep`; the frame cuts the pages. `expanded` draws a full-width row under a row (Free trial links'
- * Details, in place). `selection` wires #36's checkboxes and "Batch edit" (the head's box picks the page's rows).
- */
 export default function LinksListFrame<T>({
   variant, accountId, onAccountChange, filters, sources, tags, switches, onCreate, onExport, exportTitle,
   update, notice, loading, columns, rows, rowKey, rowName, nameCell, actions, expanded, selection, phoneMetrics = [],
@@ -616,14 +524,11 @@ export default function LinksListFrame<T>({
   filters: FrameFilters;
   sources: string[];
   tags: string[];
-  /** #24 to #26: the switches after Date created. */
   switches: ReactNode;
   onCreate: () => void;
   onExport: () => void;
   exportTitle: string;
-  /** #30 to #32: the update row; `null` hides it. */
   update: ReactNode;
-  /** Ours, above the table: the "OnlyFans not reachable" line. */
   notice?: ReactNode;
   loading: boolean;
   columns: Array<FrameCol<T>>;
@@ -633,9 +538,7 @@ export default function LinksListFrame<T>({
   nameCell: (row: T) => ReactNode;
   actions: (row: T) => ReactNode;
   expanded?: (row: T) => ReactNode;
-  /** Ours, below `md`: each row is a card with the first three of these columns (by title) that are drawn. */
   phoneMetrics?: string[];
-  /** The picked rows' keys, and Batch edit on them; `canSelect` false leaves a row's box off (no OnlyFans id). */
   selection?: {
     selected: string[];
     onChange: (keys: string[]) => void;
@@ -647,7 +550,6 @@ export default function LinksListFrame<T>({
   const sessionGone = useSessionGone(accountId);
   const exportAllowed = useActionAllowed("export");
   const f = filters;
-  // #66: the reads return every link at once, so the pages are cut here.
   const pages = Math.max(1, Math.ceil(rows.length / f.pageSize));
   const current = Math.min(f.page, pages);
   const shown = rows.slice((current - 1) * f.pageSize, current * f.pageSize);
@@ -668,11 +570,9 @@ export default function LinksListFrame<T>({
 
   return (
     <div>
-      {/* #13: the search panel, 16px padding but none at the bottom. */}
       <div className="px-4 pt-4">
         <AttributionTip />
 
-        {/* #17 to #29: the filter bar, items 16px apart and 16px below. */}
         <div className="flex flex-wrap items-center gap-x-4">
           <CreatorFilter accountId={accountId} onAccountChange={onAccountChange} />
           <span className="relative mb-4 inline-flex w-[280px] max-w-full">
@@ -686,21 +586,16 @@ export default function LinksListFrame<T>({
               onChange={(e) => f.set({ search: e.target.value })}
             />
           </span>
-          {/* Below md, Source to the switches fold behind "Filters"; the Creator, search and actions stay out. */}
           <IfFilterFold active={countActiveFilters(f, NO_FRAME_FILTERS, FOLDED)} className="mb-4 h-9">
-            {/* #19, #20: the Edit dialog's Source and Tag. */}
             <FilterSelect label="Source" icon={GitMerge} options={sources} value={f.source} onChange={(source) => f.set({ source })} />
             <FilterSelect label="Tag" icon={Tag} options={tags} value={f.tag} onChange={(tag) => f.set({ tag })} />
             <DateCreated from={f.from} to={f.to} onRange={(from, to) => f.set({ from, to })} tz={f.reportTz} />
             {switches}
           </IfFilterFold>
-          {/* #27 to #29: right-aligned, 16px apart, 36px tall. Create opens the editor pop-up (#69). */}
           <div className="mb-4 ml-auto flex flex-wrap items-center gap-4">
             <HbButton size="lg" icon={Plus} onClick={onCreate} disabled={!accountId}>
               {text.create}
             </HbButton>
-            {/* #28: the bundle emails an export (#81); ours downloads a CSV of the filtered rows. Hidden where the
-                role denies Export CSV. */}
             {exportAllowed && (
               <HbButton variant="secondary" size="lg" icon={Upload} disabled={rows.length === 0} title={exportTitle} onClick={onExport}>
                 Export
@@ -716,7 +611,6 @@ export default function LinksListFrame<T>({
         </div>
       </div>
 
-      {/* #33: the table panel, 16px at the sides and below. */}
       <div className="px-4 mb-4 space-y-2">
         {update != null && (
           <div className="flex items-center justify-between gap-4">
@@ -732,38 +626,31 @@ export default function LinksListFrame<T>({
             metrics={phoneMetrics.map((t) => columns.find((c) => c.title === t)).filter((c): c is FrameCol<T> => !!c).slice(0, 3)}
           />
         ) : (
-        /* #34: it scrolls sideways past 1000px. */
         <div className="overflow-x-auto">
           <table aria-label="Links list" className={cn(HB_TABLE.table, "min-w-[1000px] table-fixed")}>
             <thead>
               <tr>
-                {/* #36: the picks Batch edit works on. */}
                 <th className={cn(TH, "w-12 md:sticky left-0")}>
                   {sel ? (
                     <input type="checkbox" aria-label="Select all" checked={pagePicked} disabled={pageKeys.length === 0}
                       onChange={(e) => pickPage(e.target.checked)} />
                   ) : <input type="checkbox" disabled title={NOT_WIRED} aria-label="Select all" />}
                 </th>
-                {/* #37: fixed left, after the selection column. */}
                 <th className={cn(TH, "md:sticky left-12")} style={{ width: FIT_NAME }}>{text.name}</th>
                 {columns.map((c) => (
                   <th key={c.title} className={cn(TH, FIT_PAD)} style={{ width: c.width }}>
-                    {/* A head may wrap to fit; a tip's icon stays on the line of the head's last word. */}
                     {c.tip ? <TipHead title={c.title} tip={c.tip} /> : c.title}
                   </th>
                 ))}
-                {/* #56: fixed right. */}
                 <th className={cn(TH, ACTIONS_EDGE_HEAD, "md:sticky right-0 px-2")} style={{ width: FIT_ACTIONS }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                /* Ours: the bundle spins (`loading:{spinning}`); the house draws placeholder rows. */
                 <SkeletonRows cols={span} rows={5} cellClassName={TD} />
               ) : sessionGone && shown.length === 0 ? (
                 <tr><td colSpan={span} className="py-16"><Reconnect /></td></tr>
               ) : shown.length === 0 ? (
-                /* #65: the search art and "No data", centred in ~250px. */
                 <tr><td colSpan={span} className="h-[250px]"><EmptyState kind="search" text="No data" /></td></tr>
               ) : shown.map((r) => (
                 <FrameRows key={rowKey(r)} span={span} more={expanded?.(r)}>
@@ -791,11 +678,8 @@ export default function LinksListFrame<T>({
   );
 }
 
-/** Tailwind's below-`md`: the phone layout. */
 const PHONE = "(max-width: 767px)";
 
-/** Ours below `md` (the bundle has no phone layout): each row a card, the name cell (name and Copy link), three key
- *  figures side by side, then the row's actions and its in-place Details. */
 function PhoneCards<T>({ rows, loading, sessionGone, rowKey, nameCell, actions, expanded, rowBox, metrics }: {
   rows: T[];
   loading: boolean;
@@ -842,7 +726,6 @@ function PhoneCards<T>({ rows, loading, sessionGone, rowKey, nameCell, actions, 
   );
 }
 
-/** A row, and under it the full-width `more` (Details in place) when there is one. */
 function FrameRows({ span, more, children }: { span: number; more: ReactNode; children: ReactNode }) {
   return (
     <>

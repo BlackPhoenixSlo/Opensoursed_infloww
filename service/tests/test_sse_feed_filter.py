@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""WS feed noise filter, SSE type allow-list and inbound typing (backend 1.7, 1.3).
-
-  • Other creators' home-feed frames (post_published / post_expire /
-    post_updated / post_fundraising_updated: ~82% of one account's WS traffic)
-    are dropped before persist AND fan-out; the account's OWN post_published
-    is kept.
-  • broadcast() only pushes the types a browser listens for (SSE_TYPES);
-    anything else is persisted but not serialized to every tab.
-  • An inbound OF `typing` frame becomes ONE `chat_typing {fan_id}` SSE event
-    per fan per 3 s, and still reaches the persist worker's transcode (which
-    touches the Fan row) but gets no event_inbox row (test_persist_batch); the
-    raw frame is not pushed.
-
-Run:  ./venv/bin/python service/tests/test_sse_feed_filter.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -27,7 +12,6 @@ AID = "4242"
 
 
 async def _with_queues(fn):
-    """Run `fn(sub, persisted)` with a live persist queue and one SSE subscriber."""
     persisted = events_persist._Lanes(10_000)
     events_persist._persist_queue = persisted
     sub = await events.subscribe(f"model:{AID}")
@@ -39,7 +23,6 @@ async def _with_queues(fn):
 
 
 def _drain(q) -> list:
-    """Everything queued on an SSE subscriber queue (asyncio.Queue) or the persist queue (events_persist._Lanes)."""
     out = []
     while not q.empty():
         out.append(q.take() if isinstance(q, events_persist._Lanes) else q.get_nowait())
@@ -47,7 +30,6 @@ def _drain(q) -> list:
 
 
 def case_is_feed_noise():
-    # The table is test_events_decide's; this pins the re-export.
     assert events.is_feed_noise is events.ed.is_feed_noise
 
 
@@ -106,11 +88,9 @@ async def case_typing_forwarded_and_throttled():
         got = _drain(sub)
         assert [e["chat_typing"]["fan_id"] for e in got] == [501, 502], got
         assert all(e["__account_id"] == AID for e in got)
-        # The window passes → the next frame for 501 goes out again.
         events._typing_last[(AID, 501)] -= events._TYPING_THROTTLE_S
         await events.handle_event({"__account_id": AID, "typing": {"id": 501}})
         assert len(_drain(sub)) == 1
-        # A frame with no fan id is ignored.
         await events.handle_event({"__account_id": AID, "typing": {}})
         assert _drain(sub) == [], "neither chat_typing nor the raw frame is pushed"
     await _with_queues(_go)

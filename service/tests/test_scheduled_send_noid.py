@@ -1,32 +1,7 @@
 #!/usr/bin/env python3
-"""
-scheduled_send — characterisation of the no-id send path (pins TODAY's behaviour).
-
-OF can answer a send with 200 + `{"success": true}` and NO message id (a silent
-drop). The automated senders (welcome_chatter_for_info, send_followup,
-purchase_followup) answer that with `quarantine_if_undeliverable`: probe
-`get_user`, and on `subscribedOn` falsy mark the fan `expired` + pause a week.
-
-scheduled_send does NOT do that today. It is a human-deferred one-shot: on a
-no-id answer it returns `sent_no_id`, writes no outbound row, sets no cooldown,
-never probes `get_user`, and the job is still marked done (never re-fired).
-These cases pin exactly that, so a future change to it is a deliberate one.
-
-  case_no_id_send_returns_sent_no_id:
-      the send goes out once to the target fan only; result `sent_no_id`,
-      message_id None; no `messages` row; job `done` (a second tick sends
-      nothing); and though get_user would say `subscribedOn: False`,
-      scheduled_send never asks: no get_user call, subscription_status
-      untouched, no pause, no skip_list row.
-  case_id_send_still_sets_cooldown:
-      control: the SAME fan with an id'd answer gets an outbound row + cooldown
-      (proves the no-id assertions above are not vacuous).
-
-Run: ./venv/bin/python service/tests/test_scheduled_send_noid.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -42,7 +17,6 @@ from db.models import Account, Fan, Message, ScheduledJob, SkipList  # noqa: E40
 
 
 class NoIdOF:
-    """send_message answers 200 with no id; get_user reports a LAPSED sub."""
 
     def __init__(self) -> None:
         self.sent: list[tuple[int, str]] = []
@@ -101,7 +75,6 @@ async def _snapshot(aid: str, fid: int, job_id: int):
         return msgs, fan, skip, job
 
 
-# ── Cases ─────────────────────────────────────────────────────────────
 
 async def case_no_id_send_returns_sent_no_id():
     aid, fid = "acc_ss_noid1", 4101
@@ -113,8 +86,8 @@ async def case_no_id_send_returns_sent_no_id():
     res = await run_once(aid, "scheduled_send")
     assert res["status"] == "sent_no_id", res
     assert res["message_id"] is None and res["fan_id"] == fid, res
-    assert fake.sent == [(fid, "later babe")], fake.sent   # only the target, once
-    # Pinned gap: no quarantine_if_undeliverable probe on this path.
+    assert fake.sent == [(fid, "later babe")], fake.sent
+    # Pinned gap: scheduled_send never runs quarantine_if_undeliverable on a no-id answer.
     assert fake.probed == [], f"get_user probed: {fake.probed}"
 
     msgs, fan, skip, job = await _snapshot(aid, fid, job_id)
@@ -124,7 +97,6 @@ async def case_no_id_send_returns_sent_no_id():
     assert skip is None, f"skip_list row written: {skip.reason}"
     assert job is not None and job.status == "done", job and job.status
 
-    # The job is consumed: a second tick sends nothing more.
     again = await run_once(aid, "scheduled_send", job_only=True)
     assert again["status"] == "skipped", again
     assert fake.sent == [(fid, "later babe")], fake.sent
@@ -146,7 +118,7 @@ async def case_id_send_still_sets_cooldown():
     assert len(msgs) == 1 and msgs[0].direction == "out", msgs
     assert fan.automation_paused_until is not None, "cooldown set on an id'd send"
     assert fan.automation_paused_until < datetime.utcnow() + timedelta(days=1), \
-        fan.automation_paused_until   # a short rest, not a quarantine week
+        fan.automation_paused_until
     assert skip is None and job.status == "done", (skip, job.status)
 
 

@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * Fansly Manager > Scheduled Posts: the creator's queued Fansly posts, soonest first, and Cancel. The list is the
- * Relay's `GET /api/of/v2/schedules`, which the Fansly shim answers from Fansly's `GET /post/scheduled` as OF queue
- * items (fansly_shim.schedules). Cancel is the Relay's `DELETE /api/of/v2/messages/queue/{id}`, the route to the
- * shim's `cancel_scheduled` (Fansly's `POST /post/scheduled/{id}/cancel`); a queue item's id is the post id.
- */
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";

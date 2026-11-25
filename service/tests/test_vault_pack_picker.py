@@ -1,96 +1,7 @@
 #!/usr/bin/env python3
-"""
-The pack picker — `/admin/vault-ai/pack-candidates` and `/pack-triage`, plus
-`/admin/vault-ai/folders/{id}/publish`. Plain-assert, no pytest (repo convention).
-
-WHAT THIS PROTECTS. The picker is the only thing standing between the AI upseller
-and a 22% hit rate: the vault's own taxonomy cannot find feet content (measured on
-prod 2026-08-10 — `primary_folder='feet'` is set on ZERO items on either pilot and
-on ZERO of the 68 items the operator hand-picked, while `body_focus` says "feet"
-on 278 items because it lists feet whenever they are merely VISIBLE). So a human
-files each candidate, and these are the invariants that make their verdict
-trustworthy afterwards.
-
-Cases:
-  case_candidates_match_and_carry_rung — confident Jev photos are candidates; a
-      photo whose words say feet but Jev never classified is not; each carries
-      the rung it is filed on now, read from FOLDER MEMBERSHIP (never
-      ai_fields_json, a shared blob).
-  case_triage_creates_all_rungs        — first save makes all three folders with
-      created_by="operator" and of_list_id NULL, even the empty ones.
-  case_verdict_is_exclusive            — re-filing an item moves it; it never
-      ends up on two rungs of the same category.
-  case_reject_removes_everywhere       — a null/"reject" verdict clears the item
-      from every rung, and stores nothing about the rejection.
-  case_resave_is_idempotent            — the same verdicts twice leave identical
-      membership (no duplicate rows, no churn).
-  case_unknown_rung_and_category_400   — a bad rung or category is refused rather
-      than silently filed.
-  case_folder_name_survives_the_reaper — the created folders are exactly what
-      vault_scripts' reaper cannot touch (created_by != vault_ai_script AND no
-      AI- prefix), asserted against the reaper's real predicate.
-  case_owner_auth_403                  — a logged-in non-owner is refused on
-      every route and nothing is written.
-  case_publish_refuses_empty_folder    — empty folder 400s, unknown folder 404s,
-      a non-owner 403s, and none of them construct an OF client.
-  case_publish_binds_then_adds_...     — the happy path against a fake OF: create
-      precedes add, of_list_id is persisted, and a re-publish reuses the list
-      instead of minting a twin.
-  case_triage_refuses_ids_not_in_mirror — W30 F14/N1: no live mirror row → 404
-      not_in_mirror on any rung, nothing written; a reject still goes through.
-  case_publish_reports_what_of_still_holds — publish is ADDITIVE, so an item
-      removed from the rung stays on OF; `stale_on_of` must surface it.
-  case_publish_surfaces_an_of_failure  — an OF error is a 502 that leaves the
-      internal folder and its membership untouched.
-  case_category_lookup_table           — pure: name lookup is case/space-blind;
-      None/""/unknown raise UnknownCategory.
-  case_normalise_verdicts_table        — pure: rung normalising, REJECT_VALUES ->
-      None, last-wins dupes; a non-int media_id raises InvalidMediaIds.
-  case_normalise_verdicts_unknown_rung — pure: a rung not in the category's
-      rungs (incl. another category's) raises UnknownRung.
-  case_price_tier_table                — pure: from `_jev` alone ($100 / $50 /
-      $10 / free only with every body answer "n"); no usable `_jev` -> None.
-  case_jev_likelihood_table            — pure: feet_subject clamped (junk 0),
-      soles / toes boost by noisy-OR, not-in-picture damp.
-  case_candidates_ranked_and_prefilled — route: confident Jev photos (seen,
-      score >= .6) likely-first, then the possible ones (.3 <= score < .6, .59:
-      unticked, `possible`), each with suggested + tier + score;
-      no-Jev words, failed Jev, unseen, videos out; `limit` cuts the unfiled
-      queue only; filed items (a video, a no-Jev photo) always come back after
-      it; a capped scan is deterministic.
-  case_jev_free_ok_table               — pure: a Jev row may ride free only at
-      lane5 free with breasts / crotch / penetration all "n"; no usable _jev -> None.
-  case_jev_pick_preselect_table        — pure: `jev_pick` (the preselect):
-      score >= FEET_PRESELECT_SCORE (.59 no, .6 yes), feet seen,
-      known tier, rung from tier + feet_detail, never tease for an unsafe body.
-  case_candidates_jev_selects_and_ranks — route: a Jev-only feet photo (no word
-      says feet) is found; Jev-unseen, failed Jev and malformed JSON are not; .55
-      and .3 (seen) come back possible, after the confident ones; .29 and .05
-      (seen) are below FEET_POSSIBLE_MIN: out, unless filed; an unsafe
-      confident row comes back unpicked, never free.
-  case_possible_table                  — pure: `possible` = a seen Jev photo at
-      FEET_POSSIBLE_MIN (.3) <= score < the gate (.29 out, .3 in; never a clip / unseen / failed / confident one); `jev_rung` its
-      suggestion without the gate, never free for an unsafe body, unknown tier None.
-  case_triage_refuses_unsafe_free      — route: 400 not_free_safe for a Jev row
-      that is not free-safe on the free rung, nothing written; paid rung / safe
-      Jev / non-Jev rows on it are filed.
-  case_video_never_feet                — route: a feet clip (Jev and words say
-      feet) is no candidate; filing it (or a gif) on any rung is 400
-      feet_photos_only, nothing written; one filed before the rule comes back
-      and its reject is allowed.
-  case_publish_free_rung_skips_unsafe  — route: a not-free-safe Jev row already on
-      the free rung (pre-guard) is flagged `unsafe_on_free`, left out of the free
-      rung's OF push (`skipped_unsafe`); a clip / gif filed on any rung before
-      photos-only is left out (`skipped_videos`); a free rung of only such rows
-      400s folder_empty before any OF client.
-
-Run: cd service/tests && \
-  PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_pack_picker.py
-Exit 0 = all cases passed. Temp DB bound by _harness (never prod).
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -122,22 +33,14 @@ account_registry.list_accounts = (
 )
 account_registry.is_account = lambda aid: aid in _TEST_ACCOUNTS
 
-# ── The OF seam ─────────────────────────────────────────────────────
-#
-# Triage is a pure DB operation and must never reach OnlyFans; publish is the ONE
-# route allowed to. `_armed` starts False so any accidental client construction
-# in a triage case fails loudly, and the publish cases arm it deliberately.
 
 class _FakeOF:
-    """Records calls in order — publish's ordering (bind before add) is a
-    documented invariant, so the order is part of what is asserted."""
 
     def __init__(self):
         self.timeout_s = 5.0
         self.calls: list[tuple] = []
         self.next_list_id = 700
         self.create_fails = False
-        # list_id -> what OF reports in it, which is NOT always what we pushed.
         self.members: dict[int, list[int]] = {}
 
     def create_vault_list(self, name: str) -> dict:
@@ -150,8 +53,6 @@ class _FakeOF:
 
     def add_media_to_vault_list(self, list_id: int, media_ids: list) -> dict:
         self.calls.append(("add", int(list_id), list(media_ids)))
-        # OF's lists are additive — mirror that, because `stale_on_of` exists
-        # precisely to surface what additivity leaves behind.
         have = self.members.setdefault(int(list_id), [])
         have.extend(m for m in media_ids if m not in have)
         return {"ok": True}
@@ -187,7 +88,6 @@ _RUNGS = ("tease", "nude", "nude-body")
 _NAMES = tuple(f"feet-{r}" for r in _RUNGS)
 
 
-# ── Seeders ─────────────────────────────────────────────────────────
 
 async def _seed_user(username: str) -> str:
     uid = uuid.uuid4().hex
@@ -230,7 +130,6 @@ async def _wipe_folders(aid: str) -> None:
 
 
 async def _membership(aid: str) -> dict[str, set[int]]:
-    """{folder_name -> {media_id}} for this account, from MEMBERSHIP rows."""
     async with get_session() as s:
         folders = {
             f.id: f.name for f in (await s.execute(
@@ -270,7 +169,6 @@ def _triage(c: TestClient, verdicts: list[dict], aid: str = _AID, category: str 
                   json={"account_id": aid, "category": category, "verdicts": verdicts})
 
 
-# ── Cases ───────────────────────────────────────────────────────────
 
 async def case_candidates_match_and_carry_rung():
     await _wipe_folders(_AID)
@@ -281,22 +179,15 @@ async def case_candidates_match_and_carry_rung():
     body = r.json()
     got = {int(x["media_id"]) for x in body["candidates"]}
 
-    # 101 and 102 are confident Jev photos; 103's words say feet but Jev never
-    # classified it: it waits for Jev, no word-search candidates (precision only).
     assert 101 in got and 102 in got, f"confident Jev photos must be candidates: {sorted(got)}"
     assert 103 not in got, "a photo Jev has not classified must not be a candidate"
     assert body["rungs"] == list(_RUNGS), body["rungs"]
-    # Nothing filed yet.
     assert all(x["rung"] is None for x in body["candidates"]), body["candidates"]
 
-    # The SHELF ships with the candidates, before any save has happened. This is
-    # what makes the publish buttons reachable on open rather than only in the
-    # moment after a Save — the ladder's shape must not depend on triage progress.
     shelf = body["folders"]
     assert [f["rung"] for f in shelf] == list(_RUNGS), shelf
     assert all(f["folder_id"] is None and f["count"] == 0 for f in shelf), shelf
 
-    # File one, and it must come back carrying its rung.
     assert _triage(c, [{"media_id": 101, "rung": "nude"}]).status_code == 200
     again = c.get("/admin/vault-ai/pack-candidates",
                   params={"account_id": _AID, "category": "feet"}).json()
@@ -305,7 +196,6 @@ async def case_candidates_match_and_carry_rung():
     assert by_id[102] is None, by_id
     assert again["filed"] == 1, again["filed"]
 
-    # …and the shelf now carries real folder ids, so publish is live.
     filled = {f["rung"]: f for f in again["folders"]}
     assert filled["nude"]["count"] == 1, filled
     assert filled["nude"]["folder_id"] is not None, filled
@@ -357,14 +247,11 @@ async def case_reject_removes_everywhere():
     m = await _membership(_AID)
     assert all(101 not in ids for ids in m.values()), f"a reject must clear every rung: {m}"
 
-    # And it comes back as an ordinary unruled candidate — nothing is stored
-    # about the rejection, so there is no reject list to maintain.
     body = c.get("/admin/vault-ai/pack-candidates",
                  params={"account_id": _AID, "category": "feet"}).json()
     by_id = {int(x["media_id"]): x["rung"] for x in body["candidates"]}
     assert by_id[101] is None, by_id
 
-    # "reject" as a string must behave identically to null.
     assert _triage(c, [{"media_id": 101, "rung": "nude"}]).status_code == 200
     assert _triage(c, [{"media_id": 101, "rung": "reject"}]).json()["rejected"] == 1
     m2 = await _membership(_AID)
@@ -412,12 +299,6 @@ async def case_unknown_rung_and_category_400():
 
 
 async def case_folder_name_survives_the_reaper():
-    """The folders must be outside vault_scripts' blast radius, by ITS predicate.
-
-    vault_scripts retires a folder only when created_by == "vault_ai_script" AND
-    the name starts with AI_FOLDER_PREFIX. Assert against the real constant, so
-    renaming the prefix upstream breaks this test rather than the shelf.
-    """
     await _wipe_folders(_AID)
     c = _login(_OWNER_USER)
     assert _triage(c, [{"media_id": 101, "rung": "nude"}]).status_code == 200
@@ -450,14 +331,11 @@ async def case_owner_auth_403():
 
 
 async def case_publish_refuses_empty_folder():
-    """An empty OF list is noise in her vault, so publish refuses BEFORE the
-    network — and refusing must not cost an OF client construction."""
     await _wipe_folders(_AID)
     c = _login(_OWNER_USER)
     assert _triage(c, [{"media_id": 101, "rung": "nude"}]).status_code == 200
     empty_id = await _folder_id("feet-tease")
 
-    # The OF seam is DISARMED here: reaching it at all fails this case.
     r = c.post(f"/admin/vault-ai/folders/{empty_id}/publish", json={"account_id": _AID})
     assert r.status_code == 400, f"expected folder_empty, got {r.status_code} {r.text}"
     assert r.json()["detail"]["error"] == "folder_empty", r.text
@@ -471,12 +349,6 @@ async def case_publish_refuses_empty_folder():
 
 
 async def case_publish_binds_then_adds_and_reuses_the_list():
-    """The happy path of the one route that writes to her OnlyFans account.
-
-    Asserts the ordering the primitive's docstring promises — create, bind
-    of_list_id, THEN add — because a bind that lands after the add is what mints
-    a second list with the same name on the next run.
-    """
     global _armed
     await _wipe_folders(_AID)
     c = _login(_OWNER_USER)
@@ -499,7 +371,6 @@ async def case_publish_binds_then_adds_and_reuses_the_list():
         kinds = [call[0] for call in _OF.calls]
         assert kinds[:2] == ["create", "add"], f"create must precede add: {_OF.calls}"
 
-        # The id is persisted, so a re-publish tops up the SAME list.
         async with get_session() as s:
             assert (await s.get(VaultFolder, fid)).of_list_id == list_id
 
@@ -515,8 +386,6 @@ async def case_publish_binds_then_adds_and_reuses_the_list():
 
 
 async def case_publish_reports_what_of_still_holds():
-    """Publish is additive: an item removed from the rung stays on OF. That has
-    to be VISIBLE, because a silent divergence is a caption that can lie."""
     global _armed
     await _wipe_folders(_AID)
     c = _login(_OWNER_USER)
@@ -532,7 +401,6 @@ async def case_publish_reports_what_of_still_holds():
         assert first.status_code == 200, first.text
         assert first.json()["stale_on_of"] == [], first.text
 
-        # The operator changes their mind: 102 is not a nude after all.
         assert _triage(c, [{"media_id": 102, "rung": "reject"}]).status_code == 200
 
         again = c.post(f"/admin/vault-ai/folders/{fid}/publish", json={"account_id": _AID})
@@ -546,8 +414,6 @@ async def case_publish_reports_what_of_still_holds():
 
 
 async def case_publish_surfaces_an_of_failure():
-    """A failed OF write is a 502 that leaves the INTERNAL folder untouched — a
-    folder that exists locally but not on OF is recoverable; losing it is not."""
     global _armed
     await _wipe_folders(_AID)
     c = _login(_OWNER_USER)
@@ -570,7 +436,6 @@ async def case_publish_surfaces_an_of_failure():
         assert (await s.get(VaultFolder, fid)).of_list_id is None
 
 
-# ── Pure cases (no DB, no client) ───────────────────────────────────
 
 def case_category_lookup_table():
     feet = vault_pack_picker.CATEGORIES["feet"]
@@ -586,7 +451,6 @@ def case_category_lookup_table():
         got = vault_pack_picker.category(raw)
         assert got is want, f"category({raw!r}) -> {got!r}, want {want!r}"
 
-    # "elbows" is pinned at the HTTP level in case_unknown_rung_and_category_400.
     for raw in (None, "", "   ", "foot", "feet-tease", "fe et", "hands"):
         try:
             got = vault_pack_picker.category(raw)
@@ -601,20 +465,16 @@ def case_normalise_verdicts_table():
     rows = [
         ([{"media_id": 1, "rung": "tease"}], {1: "tease"}),
         ([{"media_id": 1, "rung": "nude-body"}], {1: "nude-body"}),
-        # Rung case/whitespace normalised.
         ([{"media_id": 1, "rung": "  NUDE "}], {1: "nude"}),
         ([{"media_id": 1, "rung": "Nude-Body"}], {1: "nude-body"}),
-        # Every REJECT_VALUES member, plus None / missing / casing → None.
         *[([{"media_id": 1, "rung": v}], {1: None})
           for v in sorted(vault_pack_picker.REJECT_VALUES)],
         ([{"media_id": 1, "rung": None}], {1: None}),
         ([{"media_id": 1, "rung": " REJECT "}], {1: None}),
         ([{"media_id": 1, "rung": "None"}], {1: None}),
-        ([{"media_id": 1}], {1: None}),  # missing rung -> "" -> reject
-        # Duplicate media_id: last wins.
+        ([{"media_id": 1}], {1: None}),
         ([{"media_id": 1, "rung": "tease"}, {"media_id": 1, "rung": "nude"}], {1: "nude"}),
         ([{"media_id": 1, "rung": "nude"}, {"media_id": 1, "rung": "reject"}], {1: None}),
-        # Empty input.
         ([], {}),
         (None, {}),
     ]
@@ -622,8 +482,6 @@ def case_normalise_verdicts_table():
         got = vault_pack_picker.normalise_verdicts(feet, given)
         assert got == want, f"normalise_verdicts(feet, {given!r}) -> {got!r}, want {want!r}"
 
-    # A media_id that is not a plain int refuses the whole batch, naming the bad values: never coerced onto
-    # another item (1.9 -> 1, True -> 1), never silently dropped (missing / None / junk / a non-object row).
     bad = [
         ([{"media_id": "12", "rung": "tease"}], ["12"]),
         ([{"media_id": 1.9, "rung": "nude"}], [1.9]),
@@ -647,8 +505,6 @@ def case_normalise_verdicts_table():
 
 def case_normalise_verdicts_unknown_rung():
     feet = vault_pack_picker.CATEGORIES["feet"]
-    # A rung valid for ANOTHER category is refused here. ("soles" is pinned at
-    # the HTTP level in case_unknown_rung_and_category_400.)
     other = vault_pack_picker.Category(name="hands", rungs=("closeup",))
     bad = [
         (feet, [{"media_id": 1, "rung": "closeup"}], "closeup"),
@@ -678,7 +534,6 @@ def _flags(**regions) -> dict:
 
 def _jev_blob(lane5: str = "free", feet_subject: float = 0.9, detail: str = "socks", soles: float = 0.0,
               toes: float = 0.0, seen: str = "y", **body) -> dict:
-    """A `_jev` as `vault_jev_rules.blob` stores it (the keys the picker reads)."""
     return {"v": "v8+nn.10", "status": "ok", "lane5": lane5,
             **{"breasts_bare": "n", "crotch_bare": "n", "penetration": "n", **body},
             "feet_subject": feet_subject,
@@ -690,11 +545,9 @@ def _jev_blob(lane5: str = "free", feet_subject: float = 0.9, detail: str = "soc
 def case_price_tier_table():
     tier = vault_pack_picker.price_tier
     rows = [
-        # No usable `_jev`: unknown, whatever the describe's flags say (Jev prices, nothing else).
         ("no jev, nothing on show", _flags(), None),
         ("no jev, toy inserted", {"penetration": "toy", "vulva_vis": "bare"}, None),
         ("not a dict", None, None),
-        # A Jev row prices from `_jev` alone; free needs all three body answers "n".
         ("jev $50 over covered flags", {**_flags(), "_jev": _jev_blob(lane5="$50")}, 50),
         ("jev $10, unflagged", {"_jev": _jev_blob(lane5="$10")}, 10),
         ("jev $100", {"_jev": _jev_blob(lane5="$100")}, 100),
@@ -710,7 +563,6 @@ def case_price_tier_table():
         ("jev failed: unknown", {**_flags(breasts_vis="bare"), "_jev": {**_jev_blob(), "status": "error"}}, None),
         ("jev without status: unknown", {**_flags(), "_jev": {"lane5": "$50"}}, None),
         ("jev without lane5", {"_jev": {"status": "ok", "feet_subject": 0.9}}, None),
-        # A video's `_jev` is its max frame's: the clip's price.
         ("video jev $100", {"_jev": {**_jev_blob(lane5="$100"), "kind": "video"}}, 100),
     ]
     for name, fields, want in rows:
@@ -724,7 +576,6 @@ def case_jev_likelihood_table():
     assert p(0.07) == 0.07 and p(1.7) == 1.0 and p(-1.0) == 0.0
     for junk in (True, "0.9", None, float("nan")):
         assert p(junk) == 0.0, junk
-    # Soles / bare toes to the camera raise it (noisy-OR, weight _EV_JEV_BOOST); not in picture damps it.
     base = p(0.5)
     assert p(0.5, soles=1.0) > base and p(0.5, toes=0.8) > base, base
     assert abs(p(0.5, soles=1.0) - (1 - 0.5 * (1 - vault_pack_picker._EV_JEV_BOOST))) < 1e-9
@@ -732,7 +583,6 @@ def case_jev_likelihood_table():
 
 
 def case_jev_pick_preselect_table():
-    """`jev_pick`: the rung a Jev row arrives preselected on in the pack picker, else None."""
     feet = vault_pack_picker.category("feet")
     rows = [
         ("score .6, socks, free", _jev_blob(feet_subject=0.6), "tease"),
@@ -761,8 +611,6 @@ def case_jev_pick_preselect_table():
 
 
 def case_possible_table():
-    """`possible`: a seen Jev photo at FEET_POSSIBLE_MIN <= score < FEET_PRESELECT_SCORE; `jev_rung` its suggestion
-    (no gate)."""
     feet = vault_pack_picker.category("feet")
     pv = lambda j: vault_pack_picker.possible(feet, {"_jev": j}) is not None  # noqa: E731
     assert vault_pack_picker.FEET_POSSIBLE_MIN == 0.3
@@ -791,7 +639,6 @@ def case_possible_table():
     ]
     for name, j, want in rungs:
         assert rung(j) == want, f"{name}: jev_rung={rung(j)!r}, want {want!r}"
-        # The gate is the only difference: below it jev_pick says None, at it the same rung.
         assert vault_pack_picker.jev_pick(feet, j) is None
         assert vault_pack_picker.jev_pick(feet, {**j, "feet_subject": 0.9,
                                                  "P": {**j["P"], "feet_focus": 0.9}}) == want, name
@@ -805,14 +652,12 @@ def case_jev_free_ok_table():
         ("jev free, breasts y", {"_jev": _jev_blob(breasts_bare="y")}, False),
         ("jev free, crotch unsure", {"_jev": _jev_blob(crotch_bare="unsure")}, False),
         ("jev free, penetration unsure", {"_jev": _jev_blob(penetration="unsure")}, False),
-        # W30 F1: the describe/flags side vetoes (an operator-locked bare region; a disputed item).
         ("jev safe free, breasts_vis bare (locked)", {"_jev": _jev_blob(), **_flags(breasts_vis="bare")}, False),
         ("jev safe free, dressed but vulva bare", {"_jev": _jev_blob(), **_flags(vulva_vis="bare"),
                                                    "clothing_state": "dressed"}, False),
         ("jev safe free, flags covered", {"_jev": _jev_blob(), **_flags(breasts_vis="covered")}, True),
         ("jev failed", {"_jev": {**_jev_blob(), "status": "error"}}, None),
         ("no jev", _flags(), None),
-        # W30 C3: the veto holds without a usable Jev too (triage refuses only False).
         ("no jev, breasts_vis bare", _flags(breasts_vis="bare"), False),
         ("jev failed, vulva bare", {"_jev": {**_jev_blob(), "status": "error"}, **_flags(vulva_vis="bare")}, False),
         ("not a dict", None, None),
@@ -825,34 +670,23 @@ def case_jev_free_ok_table():
 
 
 async def case_candidates_jev_selects_and_ranks():
-    """A Jev row is selected and ranked from `_jev` alone: a feet photo whose describe never says feet is a
-    candidate; a "feet" describe Jev says has no feet is not; qwen evidence does not make a candidate."""
     c = _login(_OWNER_USER)
     seeds = {
-        # Jev only: no LIKE word anywhere, Jev sees soles to the camera.
         401: {"description": "legs up on the bed", "body_focus": ["legs"],
               "_jev": _jev_blob(feet_subject=0.8, detail="bare", soles=0.9)},
-        # Every qwen signal says feet, Jev sees them but scores them a bystander (.05): below the floor, out.
         402: {"description": "close up of her soles", "primary_folder": "feet", "body_focus": ["feet"],
               "_jev": _jev_blob(feet_subject=0.05, detail="other_shoes")},
-        # The describe says feet, Jev says not in the picture and not the subject: dropped.
         403: {"description": "standing on her feet", "body_focus": ["feet", "face"],
               "_jev": _jev_blob(feet_subject=0.02, detail="not_in_picture", seen="n")},
-        # Jev free but the breasts answer is unsure: ranked, never free.
         404: {"description": "feet on the pillow", **_flags(),
               "_jev": _jev_blob(feet_subject=0.95, detail="bare", breasts_bare="unsure")},
-        # A failed Jev: no candidate (waits for Jev), whatever its words say.
         405: {"description": "her feet in pink socks", "primary_folder": "feet", "body_focus": ["feet"],
               "clothing_items": ["pink socks"], **_flags(),
               "_jev": {**_jev_blob(feet_subject=0.01), "status": "error"}},
-        # Malformed JSON never breaks the read.
         406: None,
-        # Jev free-safe feet at .55: below FEET_PRESELECT_SCORE -> possible, unticked.
         407: {"description": "legs on the sofa", "_jev": _jev_blob(feet_subject=0.55)},
-        # At FEET_POSSIBLE_MIN (.3): possible, last; just below it (.29): out.
         408: {"description": "on the rug", "_jev": _jev_blob(feet_subject=0.3)},
         409: {"description": "on the rug", "_jev": _jev_blob(feet_subject=0.29)},
-        # W30 F1: Jev free + socks (the free rung) but the flags read her breasts bare: never prefilled free.
         412: {"description": "socks on the bed", **_flags(breasts_vis="bare"),
               "_jev": _jev_blob(feet_subject=0.9)},
     }
@@ -860,13 +694,12 @@ async def case_candidates_jev_selects_and_ranks():
         await _seed_item(_JEV, mid, fields=fields)
     async with get_session() as s:
         row = await s.get(VaultItem, (_JEV, 406))
-        row.ai_fields_json = '{"_jev": {"tags": {"feet_any": "y"'   # truncated JSON
+        row.ai_fields_json = '{"_jev": {"tags": {"feet_any": "y"'
         row.search_text = "feet"
     r = c.get("/admin/vault-ai/pack-candidates", params={"account_id": _JEV, "category": "feet"})
     assert r.status_code == 200, r.text
     by = {x["media_id"]: x for x in r.json()["candidates"]}
     order = [x["media_id"] for x in r.json()["candidates"]]
-    # The confident Jev photos, then the possible ones by score; no unseen, no qwen, no failed Jev, none < .3.
     assert order == [404, 412, 401, 407, 408], order
     assert (by[412]["suggested"], by[412]["free_ok"], by[412]["preselect"]) == (None, False, False), by[412]
     for m in (404, 401):
@@ -875,21 +708,17 @@ async def case_candidates_jev_selects_and_ranks():
         (True, False, "tease", 0.55), by[407]
     assert (by[408]["possible"], by[408]["preselect"], by[408]["suggested"], by[408]["score"]) == \
         (True, False, "tease", 0.3), by[408]
-    # Below the floor is no candidate, but a filed one always comes back (so it can be unfiled).
     assert _triage(c, [{"media_id": 409, "rung": "tease"}], aid=_JEV).status_code == 200
     back = c.get("/admin/vault-ai/pack-candidates", params={"account_id": _JEV, "category": "feet"}).json()
     assert {x["media_id"]: x["rung"] for x in back["candidates"]}.get(409) == "tease", back["candidates"]
     assert _triage(c, [{"media_id": 409, "rung": "reject"}], aid=_JEV).status_code == 200
     assert (by[401]["suggested"], by[401]["tier"], by[401]["free_ok"], by[401]["jev"]) == ("nude", 0, True, True)
     assert by[401]["preselect"] is True, by[401]
-    # Confident but the body is unknown: comes back unpicked, never free.
     assert (by[404]["suggested"], by[404]["tier"], by[404]["free_ok"], by[404]["preselect"]) == \
         (None, None, False, False), by[404]
 
 
 async def case_triage_refuses_unsafe_free():
-    """🚨 A Jev row whose body is not known-safe is refused on the free rung (400, nothing written); the same
-    row on a paid rung, a safe Jev row and a non-Jev row on the free rung are filed."""
     await _wipe_folders(_JEV)
     c = _login(_OWNER_USER)
     await _seed_item(_JEV, 410, fields={"description": "feet", "_jev": _jev_blob(lane5="review")})
@@ -908,14 +737,11 @@ async def case_triage_refuses_unsafe_free():
 
 
 def _video_jev(**kw) -> dict:
-    """A video's `_jev` as `vault_jev_rules.video_blob` stores it: the max frame's photo blob + kind video."""
     return {**_jev_blob(**kw), "kind": "video", "vv": 1, "frame": 7, "frames": [], "src": "720", "review": None}
 
 
+# Owner decision: no clips in feet.
 async def case_video_never_feet():
-    """No clips in feet (owner, 2026-11-12): a feet video is no candidate, whatever Jev's max frame or its words
-    say; filing one (or a gif) on any rung is 400 feet_photos_only and writes nothing. One filed before the rule
-    still comes back on its rung and can be rejected. Its tier / free-safety still read Jev's lane (publish skip)."""
     await _wipe_folders(_JEV)
     c = _login(_OWNER_USER)
     clip = {"description": "close up of her soles in white socks", "primary_folder": "feet", "body_focus": ["feet"],
@@ -941,7 +767,6 @@ async def case_video_never_feet():
         assert {k: r.json()["detail"][k] for k in ("error", "media_ids")} == {"error": "feet_photos_only", "media_ids": [420, 421]}, r.text
         assert not any((await _membership(_JEV)).values()), "a refused triage writes nothing"
 
-    # Filed before the rule: it comes back on its rung (so it can be unfiled), and a reject is allowed.
     assert _triage(c, [{"media_id": 401, "rung": "nude"}], aid=_JEV).status_code == 200
     async with get_session() as s:
         s.add(VaultFolderItem(account_id=_JEV, folder_id=await _folder_id("feet-nude", _JEV), media_id=420))
@@ -955,8 +780,6 @@ async def case_video_never_feet():
 
 
 async def case_triage_refuses_ids_not_in_mirror():
-    """W30 F14: an id with no live row in this model's mirror (unknown, removed, another model's) is refused on
-    every rung (404 not_in_mirror, the folder editor's answer; nothing written); rejecting one (rung None) still goes through."""
     await _wipe_folders(_JEV)
     c = _login(_OWNER_USER)
     await _seed_item(_JEV, 430, fields={"description": "feet", "_jev": _jev_blob()})
@@ -974,8 +797,6 @@ async def case_triage_refuses_ids_not_in_mirror():
 
 
 async def case_publish_free_rung_skips_unsafe():
-    """🚨 A row the old prefill put on the free rung before the guard: flagged in candidates and never pushed to
-    the free OF list; a non-free rung is pushed whole."""
     global _armed
     await _wipe_folders(_JEV)
     c = _login(_OWNER_USER)
@@ -983,9 +804,8 @@ async def case_publish_free_rung_skips_unsafe():
                        {"media_id": 404, "rung": "nude-body"}], aid=_JEV).status_code == 200
     tease = await _folder_id("feet-tease", _JEV)
     paid_id = await _folder_id("feet-nude-body", _JEV)
-    async with get_session() as s:   # pre-guard: 410 (Jev review) filed free, as the old prefill could
+    async with get_session() as s:
         s.add(VaultFolderItem(account_id=_JEV, folder_id=tease, media_id=410))
-        # pre photos-only: a clip on the free rung and a gif on a paid one (seeded in case_video_never_feet)
         s.add(VaultFolderItem(account_id=_JEV, folder_id=tease, media_id=420))
         s.add(VaultFolderItem(account_id=_JEV, folder_id=paid_id, media_id=421))
     r = c.get("/admin/vault-ai/pack-candidates", params={"account_id": _JEV, "category": "feet"})
@@ -1013,13 +833,11 @@ async def case_publish_free_rung_skips_unsafe():
     finally:
         _armed = False
 
-    # Only unsafe rows left on the free rung: refused before any OF client (the seam is disarmed).
     assert _triage(c, [{"media_id": 401, "rung": "reject"}, {"media_id": 405, "rung": "reject"}],
                    aid=_JEV).status_code == 200
     r = c.post(f"/admin/vault-ai/folders/{tease}/publish", json={"account_id": _JEV})
     assert r.status_code == 400, r.text
     assert r.json()["detail"] == {"error": "folder_empty", "skipped_unsafe": [410], "skipped_videos": [420]}, r.text
-    # Unfiling them (the picker's toggle-off) is an ordinary reject.
     assert _triage(c, [{"media_id": m, "rung": "reject"} for m in (410, 420, 421)], aid=_JEV).status_code == 200
     m = await _membership(_JEV)
     assert not {410, 420} & m["feet-tease"] and 421 not in m["feet-nude-body"], m
@@ -1029,23 +847,16 @@ async def case_candidates_ranked_and_prefilled():
     c = _login(_OWNER_USER)
     unseen = {**_jev_blob(feet_subject=0.9), "tags": {"feet_any": "n", "feet_focus": "n", "feet_detail": "socks"}}
     seeds = {
-        # (fields, search_text, kind)
         301: ({"description": "her feet in pink socks", "_jev": _jev_blob(feet_subject=0.95)}, None, "photo"),
         302: ({"description": "topless, toes pointed", "_jev": _jev_blob(lane5="$10", feet_subject=0.7)},
               None, "photo"),
-        # .5 + soles to the camera -> .65: in, on the bare rung.
         303: ({"description": "legs up", "_jev": _jev_blob(feet_subject=0.5, soles=1.0, detail="bare")},
               None, "photo"),
-        # .59: possible (after the confident ones, unticked, suggested without the gate).
         304: ({"description": "feet on the sofa", "_jev": _jev_blob(feet_subject=0.59)}, "feet", "photo"),
-        # Every word says feet, no Jev yet: out, it waits for Jev.
         305: ({"description": "close up of her soles", "primary_folder": "feet", "body_focus": ["feet"],
                **_flags()}, "barefoot feet soles", "photo"),
-        # A confident feet clip: out (no videos in feet).
         306: ({"description": "her feet", "_jev": _video_jev(feet_subject=0.95)}, "feet", "video"),
-        # Jev scores feet high but does not see them (no seen tag): out.
         307: ({"description": "feet", "_jev": unseen}, "feet", "photo"),
-        # Confident, body unsure: in, unpicked.
         308: ({"description": "feet on the pillow", "_jev": _jev_blob(feet_subject=0.9, breasts_bare="unsure")},
               None, "photo"),
     }
@@ -1074,8 +885,6 @@ async def case_candidates_ranked_and_prefilled():
     assert sure == sorted(sure, reverse=True) and min(sure) >= vault_pack_picker.FEET_PRESELECT_SCORE, sure
     assert maybe == sorted(maybe, reverse=True) and max(maybe) < vault_pack_picker.FEET_PRESELECT_SCORE, maybe
 
-    # A capped scan is deterministic: the newest (highest) Jev-seen photo ids, every call (308 confident, 304
-    # possible; 307 unseen and the clip never reach the scan).
     real_cap = vault_pack_picker._SCAN_CAP
     vault_pack_picker._SCAN_CAP = 2
     try:
@@ -1084,8 +893,6 @@ async def case_candidates_ranked_and_prefilled():
         vault_pack_picker._SCAN_CAP = real_cap
     assert capped == [[304, 308]] * 3, capped
 
-    # File the top one: it leaves the queue's limit and comes back after it. Items filed before the
-    # precision rule (a no-Jev photo, a below-gate photo, a clip) come back too, never in the queue.
     r = _triage(c, [{"media_id": 301, "rung": "tease"}, {"media_id": 305, "rung": "nude"},
                     {"media_id": 304, "rung": "nude"}], aid=_RANK)
     assert r.status_code == 200, r.text
@@ -1105,11 +912,9 @@ async def _seed_fixtures():
     await _seed_account(_FOREIGN, stranger_uid)
     await _seed_account(_RANK, owner_uid)
     await _seed_account(_JEV, owner_uid)
-    # 101, 102: confident Jev feet photos (seen, score >= FEET_PRESELECT_SCORE).
     await _seed_item(_AID, 101, search_text="barefoot feet soles on the bed",
                      fields={"description": "barefoot on the bed", "_jev": _jev_blob(feet_subject=0.9, detail="bare")})
     await _seed_item(_AID, 102, fields={"description": "legs crossed on the sofa", "_jev": _jev_blob(feet_subject=0.8)})
-    # 103: every word says feet, Jev has not classified it — must never appear as a candidate.
     await _seed_item(_AID, 103, search_text="barefoot feet soles", fields={
         "description": "close up of her soles", "primary_folder": "feet", "body_focus": ["feet"],
     })

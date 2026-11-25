@@ -7,7 +7,6 @@ import { bindWrites, NOT_YET } from "./ofMirrorWrites";
 import { applyIdentity } from "./ofMirrorIdentity";
 import { load, shown, texts, PLACEHOLDER, fan } from "./ofMirrorData.fixtures";
 
-// Local times (no Z): the dates read the same in every time zone. In the Relay's order.
 const NOTIFS: MirrorNotification[] = [
   { type: "subscribed", isRead: false, createdAt: "2026-10-10T10:05:00", text: "subscribed to your profile", user: fan(201, "Alpha One", "alphaone") },
   {
@@ -22,7 +21,6 @@ const NOTIFS: MirrorNotification[] = [
 ];
 const NOTIF_TABS = ["index", "subscribed", "commented", "mentioned", "tip", "purchases", "favorited", "message", "deactivated_media", "tags"].map((t) => `notifications/${t}`);
 const notifs = (doc: Document) => shown(doc, ".b-notifications__list .vue-recycle-scroller__item-view");
-// [name, @handle, text, date, its hover stamp, unread, icon, avatar src] per row shown.
 const notifRows = (doc: Document) =>
   notifs(doc).map((r) => [
     r.querySelector(".b-username .g-user-name")!.textContent,
@@ -66,13 +64,10 @@ describe("notifications: the Creator's notifications", () => {
     const rows = notifs(doc);
     expect(rows.map((r) => r.querySelector("[data-index]")!.getAttribute("data-index"))).toEqual(["0", "1", "2"]);
     expect(rows.map((r) => r.querySelectorAll(".b-list-titles a, .g-avatar__icon, .g-user-name svg, .g-avatar img[src^='data:']").length)).toEqual([0, 0, 0]);
-    // The tab's own row: Likes, Promotions and OnlyFans capture rows with no "Add to favorites" button.
     const add = ["notifications/favorited", "notifications/message", "notifications/deactivated_media"].includes(p) ? undefined : " Add to favorites and other lists ";
     expect(rows.map((r) => r.querySelector(".b-list-titles__item__text")?.textContent)).toEqual(Array(3).fill(add));
-    // Its list buttons (no Relay write behind them) stay disabled with the tooltip.
     for (const b of rows.flatMap((r) => [...r.querySelectorAll("button[at-attr='add_to_list']")])) expect([b.hasAttribute("disabled"), b.getAttribute("title")]).toEqual([true, NOT_YET]);
     for (const r of rows) expect(r.textContent).not.toMatch(PLACEHOLDER);
-    // OF's profile links (the user's avatar, name and handle): their OF profile, in a new tab (those tabs' rows have none).
     expect(rows.map((r) => [...new Set([...r.querySelectorAll("a.g-avatar, a.b-username, a.g-user-username")].map((a) => `${a.getAttribute("href")} ${a.getAttribute("target")} ${a.getAttribute("rel")}`))])).toEqual(
       ["alphaone", "alphatwo", "u203"].map((h) => (add ? [`https://onlyfans.com/${h} _blank noopener noreferrer`] : [])),
     );
@@ -109,7 +104,6 @@ describe("notifications: the Creator's notifications", () => {
   it.each(NOTIF_TABS)("%s: rows hide OF's empty tab (its message and centring); an empty list keeps it; no data restores it byte for byte", (p) => {
     const doc = load(p);
     const html = doc.documentElement.innerHTML;
-    // OF's own status prompts are hidden with "display: none" (ours with "display:none").
     const emptyTab = () => shown(doc, ".b-notifications__list .empty-message").filter((e) => !e.closest("[style*='display: none']")).map((e) => e.textContent?.trim());
     expect(emptyTab()).toEqual(["No notifications currently!"]);
     applyData(doc, p, { notifications: [] });
@@ -130,11 +124,9 @@ describe("notifications: the Creator's notifications", () => {
     expect(doc.querySelector(".b-notifications")!.classList.contains("m-empty-page")).toBe(true);
     expect(shown(doc, ".b-notifications__list *, .b-tabs__nav *").filter((e) => !e.children.length).map((e) => e.textContent).join(" ")).not.toMatch(PLACEHOLDER);
     expect(doc.querySelectorAll(".b-tabs__nav .b-tabs__nav__count")).toHaveLength(0);
-    // Search users, the tab bar's rearrange button, the row's list buttons and the right column's search: no source.
     const off = [...doc.querySelectorAll<HTMLButtonElement | HTMLInputElement>("[aria-label='Search users'], .b-tabs__nav button, [at-attr='add_to_list'], input[name='feed-search-input']")];
     expect(off.length).toBeGreaterThanOrEqual(3);
     for (const b of off) expect([b.disabled, b.title]).toEqual([true, NOT_YET]);
-    // OF's own settings link stays.
     expect(doc.querySelector("a[aria-label='Settings']")?.getAttribute("href")).toBe("/of-manager/settings/notifications");
     applyData(doc, p, { notificationsStatus: null });
     expect(emptyTab()).toEqual(["Loading notifications…"]);
@@ -146,7 +138,6 @@ describe("notifications: the Creator's notifications", () => {
     expect(doc.documentElement.innerHTML).toBe(html);
   });
 
-  // [href, count text or null] per tab shown.
   const tabCounts = (doc: Document) =>
     shown(doc, "a.b-tabs__nav__link[href^='/of-manager/notifications']").map((a) => [
       a.getAttribute("href"),
@@ -182,7 +173,6 @@ const STREAMS: PastStream[] = [
   { id: 3, media: { files: {} }, startedAt: "bad" },
 ];
 
-// ticket 17: Search users' URL state (?related_user=) and the read it makes (spec story 15).
 describe("notifications: Search users narrows a tab to one fan through the page URL", () => {
   const TYPE_TABS = NOTIF_TABS.filter((p) => p !== "notifications/tags");
 
@@ -225,7 +215,6 @@ describe("notifications: Search users narrows a tab to one fan through the page 
 
 describe("streaming dashboard: the Creator's past live streams", () => {
   const P = "streaming/dashboard";
-  // [img src, button, viewers, date, its hover stamp] per thumb shown.
   const thumbs = (doc: Document) =>
     shown(doc, ".b-s-dashboard__thumbs > .b-s-dashboard__thumb-holder").map((t) => [
       t.querySelector("img")?.getAttribute("src") ?? null,
@@ -312,7 +301,7 @@ describe("the stream schedule form: no captured example in its right column", ()
 
   it("no example price, bundle count, promotion or banner; the price line waits for the Creator's own", () => {
     const doc = load(P);
-    expect(shown(doc, ".b-feed__aside .b-offer-join")).toEqual([]); // only OF's card, kept hidden as applyPromotions' template
+    expect(shown(doc, ".b-feed__aside .b-offer-join")).toEqual([]);
     expect(doc.querySelectorAll(".b-feed__aside .b-offer-join")).toHaveLength(1);
     expect(doc.querySelector(".b-feed__aside")!.textContent).not.toMatch(/subscription bundles/);
     expect(doc.querySelector(".banner_place")).toBeNull();
@@ -343,37 +332,31 @@ describe("the stream schedule form: no captured example in its right column", ()
     const plus = doc.querySelector<HTMLButtonElement>("[at-attr='add_event_widget']")!;
     expect([plus.disabled, plus.title, plus.hasAttribute("data-oi-wired")]).toEqual([false, "", true]);
     expect(doc.querySelector<HTMLButtonElement>(".g-page__header > button.g-btn")!.disabled).toBe(false);
-    expect(doc.querySelector(".b-widget__footer a")!.getAttribute("href")).toBe("/of-manager/queue"); // View queue: OF's link
+    expect(doc.querySelector(".b-widget__footer a")!.getAttribute("href")).toBe("/of-manager/queue");
   });
 });
 
-// ticket 83: Phase 4's controls, one row each: [page, control (its Not-yet sweep label), selector, index among the
-// selector's shown matches (null: every one), its [disabled, title, data-oi-wired]]. Each Phase 4 control ticket flips
-// only its own row (a Wired control keeps the Not-yet title until its Live-proof pass, D1). Go live's rows stay pinned
-// until track B's gate ticket closes (D7, D28). A disabled row sends nothing and shows no note when clicked.
 type ControlState = [disabled: boolean, title: string, wired: boolean];
 const OFF: ControlState = [true, NOT_YET, false];
 const SCHED = "streaming/dashboard/create";
 const GO = "streaming/index";
 const PHASE4_CONTROLS: [string, string, string, number | null, ControlState][] = [
-  [SCHED, "Search users or posts", "input[name='feed-search-input']", null, [false, NOT_YET, true]], // ticket 84
-  [SCHED, "Search", "button.m-search-btn", null, [true, NOT_YET, true]], // ticket 84: off until the box has text, as OF's
+  [SCHED, "Search users or posts", "input[name='feed-search-input']", null, [false, NOT_YET, true]],
+  [SCHED, "Search", "button.m-search-btn", null, [true, NOT_YET, true]],
   [SCHED, "Add cover", ".post_media__controls button", null, OFF],
-  [SCHED, "[g-btn.m-with-round-hover]", ".b-icon-text-container button", null, OFF], // the description's format button
-  ["streaming/dashboard", "View stats", ".b-s-dashboard__btn button", null, OFF], // OF's stats modal, never captured
+  [SCHED, "[g-btn.m-with-round-hover]", ".b-icon-text-container button", null, OFF],
+  ["streaming/dashboard", "View stats", ".b-s-dashboard__btn button", null, OFF],
   [GO, "Post to X that I'm Live", ".b-streaming-details__row", 0, OFF],
   [GO, "Available to all subscribers", ".b-streaming-details__row", 1, OFF],
   [GO, "Add a tip goal", ".b-streaming-details__row", 2, OFF],
   [GO, "Show total collected tips to viewers", ".b-streaming-details__row", 3, OFF],
   [GO, "Private comments only with tips", ".b-streaming-details__row", 4, OFF],
-  [GO, "\u200b0 / 500", ".b-streaming-details__row", 5, OFF], // the description
+  [GO, "\u200b0 / 500", ".b-streaming-details__row", 5, OFF],
   [GO, "Start Live Video", ".b-streaming__btn-start", null, OFF],
 ];
-// The page as the app shows it before the controls are read: the dashboard lists two past streams (one View stats each).
-// A binder's unbind runs after its row.
 const PHASE4_PREP: Record<string, (doc: Document) => (() => void) | void> = {
   "streaming/dashboard": (doc) => applyData(doc, "streaming/dashboard", { pastStreams: STREAMS }),
-  [SCHED]: (doc) => bindFeedSearch(doc, { handlers: null }), // ticket 84: the right column search
+  [SCHED]: (doc) => bindFeedSearch(doc, { handlers: null }),
 };
 const prepUnbinds: (() => void)[] = [];
 const stateOf = (e: HTMLElement): ControlState => [
@@ -381,7 +364,6 @@ const stateOf = (e: HTMLElement): ControlState => [
   e.title,
   e.hasAttribute("data-oi-wired"),
 ];
-// The Not-yet sweep's label (scripts/of-mirror-check/sweep_diff.py LABEL_JS, less its date rewrite).
 const labelOf = (e: HTMLElement): string => {
   const t = (e.getAttribute("aria-label") || e.textContent!.trim() || e.getAttribute("placeholder") || "")
     .trim().replace(/\s+/g, " ").slice(0, 60);
@@ -400,7 +382,7 @@ describe("Phase 4's controls on the schedule form, the dashboard and Go live, on
     expect(els.length).toBeGreaterThan(0);
     expect(els.map(labelOf)).toEqual(els.map(() => control));
     expect(els.map(stateOf)).toEqual(els.map(() => want));
-    if (!want[0]) return; // a disabled control: a click sends nothing and shows no note
+    if (!want[0]) return;
     const handlers = { uploadProfileImage: vi.fn(), saveProfile: vi.fn(), setReplyOnSubscribe: vi.fn(), submit: vi.fn(), navigate: vi.fn() };
     const unbind = bindWrites(doc, page, handlers, true);
     for (const e of els) e.click();

@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * /messages-pro/[accountId]/u/[username] — username → user-id redirector.
- *
- * Notification toasts/dropdown rows that came in via OF's SSE `toasts`
- * channel often have only the actor's username (extracted from the HTML
- * blob) — no numeric id, so we can't link straight to the canonical
- * /messages-pro/<accountId>/<fanId> page. This page does the one-shot lookup
- * via the relay and replaces itself with the right URL.
- */
 
 import { use, useEffect, useState } from "react";
 
@@ -42,9 +33,7 @@ export default function ChatByUsernamePage({
           setError(`Couldn't resolve @${username} on this account.`);
           return;
         }
-        // Replace so the back button skips this redirect frame. Carry the
-        // query string across — tip/purchase toasts append ?refresh=media
-        // and the canonical page's one-shot restock reads it on mount.
+        // Carry the query string: tip/purchase toasts append ?refresh=media, read on mount by the canonical page.
         window.location.replace(
           `/messages-pro/${encodeURIComponent(accountId)}/${encodeURIComponent(String(id))}${window.location.search}`,
         );

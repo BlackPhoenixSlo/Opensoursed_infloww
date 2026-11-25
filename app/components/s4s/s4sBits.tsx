@@ -1,7 +1,5 @@
 "use client";
 
-/** Share for Share's shared bits: the partner avatar, UTC dates (Infloww's S4S pages are in UTC), the error text, the
- *  media thumbnails and carousel. */
 
 import { useState } from "react";
 import { ChevronLeft, ChevronRight, Image as ImageIcon, ImageOff, Play, Video } from "lucide-react";
@@ -19,25 +17,21 @@ const MONTHS = [
 export const monthName = (m: number) => MONTHS[m];
 const pad = (n: number) => String(n).padStart(2, "0");
 
-/** "MMMM DD, YYYY" in UTC. */
+// Infloww's S4S pages are in UTC.
 export function utcDate(iso: string | Date): string {
   const d = typeof iso === "string" ? new Date(iso) : iso;
   return `${MONTHS[d.getUTCMonth()]} ${pad(d.getUTCDate())}, ${d.getUTCFullYear()}`;
 }
 
-/** "HH:mm" in UTC. */
 export function utcTime(iso: string): string {
   const d = new Date(iso);
   return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 }
 
-/** The UTC day key "YYYY-MM-DD". */
 export const utcDay = (d: Date) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 
 export const message = (e: unknown) => errText(e);
 
-/** A Creator's avatar as the projection stored it: `px` square, round or with `rounded` corners; the initial when
- *  there is no URL. */
 export function ProjectionAvatar({ item, px, round }: { item: Pick<S4SProjection, "avatar_url" | "display_name">; px: number; round?: boolean }) {
   const shape = round ? "rounded-full" : "rounded-lg";
   const style = { width: px, height: px };
@@ -53,7 +47,6 @@ export function ProjectionAvatar({ item, px, round }: { item: Pick<S4SProjection
   );
 }
 
-/** Thumbnails of S4S media: a still of each item, which the Relay reads live from its Creator's vault (ADR-0015). */
 export function S4SMediaStrip({ media }: { media: S4SMedia[] }) {
   if (media.length === 0) return null;
   return (
@@ -66,9 +59,6 @@ export function S4SMediaStrip({ media }: { media: S4SMedia[] }) {
   );
 }
 
-/** A post's media as Infloww's S4S pop-up shows it: one still at a time (`s4sMediaUrl`), prev/next arrows and a dot
- *  pager when there is more than one, and a photo/video count chip. A post with no media, and a still the Relay cannot
- *  read (the item left its vault), show a placeholder, never an error. */
 export function S4SMediaCarousel({ media, className }: { media: S4SMedia[]; className?: string }) {
   const [at, setAt] = useState(0);
   const [broken, setBroken] = useState<ReadonlySet<number>>(() => new Set());

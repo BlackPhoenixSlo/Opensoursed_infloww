@@ -1,8 +1,3 @@
-/**
- * IngestHealthBanner's strip and row text: `tier` maps an IngestTier to its colours and label, `overallLabel` the
- * strip's sentence (no accounts wins over any tier), `relTime` the "last scan" recency, `truncate` a row's last error,
- * `statusLabel` a row's scan status in words.
- */
 import { describe, expect, it } from "vitest";
 
 import { overallLabel, relTime, statusLabel, tier, truncate } from "@/components/stats/IngestHealthBanner";
@@ -37,7 +32,6 @@ describe("overallLabel", () => {
 describe("relTime", () => {
   const AT = "2026-10-15T12:00:00Z";
   it.each([
-    // mins,  lastScanAt, text
     [null,    null, "Never scanned"],
     [5,       null, "Never scanned"],
     [null,    AT,   "—"],
@@ -59,7 +53,6 @@ describe("relTime", () => {
 
 describe("truncate", () => {
   it.each([
-    // s,                n (default 120), out
     ["abcd",             5,         "abcd"],
     ["abcde",            5,         "abcde"],
     ["abcdef",           5,         "abcd…"],

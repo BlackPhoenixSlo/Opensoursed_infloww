@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * ScheduledForChat — per-chat count + list of queued sends: the "Scheduled"
- * row of the Chat header's Extras overflow (`ChatHeaderExtras`, ticket 92),
- * where the header chip used to be. The row always shows: "…" while the
- * queue loads, then the count, disabled at 0, so the menu's rows never move.
- * A failed load reads "—" (we don't know), disabled, with the relay's error
- * in its tooltip: never a 0 that would invite a second send.
- *
- * Reads from the same /messages/queue endpoint as the Settings tab,
- * filtered to this fan's pending sends. Click the row to open the list
- * under it; each entry has a Cancel button so the operator can ditch a
- * queued send without leaving the chat.
- *
- * We only show direct sends to this fan (not mass ones that happen to
- * include them) — picking apart mass-sends is the Settings tab's job.
- */
 
 import { useState } from "react";
 
@@ -37,14 +21,12 @@ export function ScheduledForChat({
   const cancelM = useCancelScheduled();
   const [open, setOpen] = useState(false);
 
-  // Only this chat's direct sends.
   const mine = rows.filter(
     (m) => (m.userIds?.length ?? 0) === 1 && m.userIds?.[0] === fanId,
   );
 
+  // A failed load disables the row instead of reading 0, which would invite a second send.
   const empty = isLoading || !!error || mine.length === 0;
-  // The tooltip's second line: the relay's error, else the old chip's title
-  // while there is a queue to open.
   const detail = error?.message ?? (empty ? undefined : `${mine.length} scheduled for this fan — click to view/cancel`);
 
   return (

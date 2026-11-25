@@ -1,49 +1,7 @@
 #!/usr/bin/env python3
-"""
-Pushing the AI folders out as REAL OF vault lists — `_mirror_ai_folders_to_of`.
-Plain-assert, no pytest (repo convention).
-
-Why this suite exists: this is the only part of the vault-AI pipeline that
-WRITES to her OnlyFans account, and it used to interleave those writes with a
-purely cosmetic read-back. Per folder it created the list, added the media, then
-re-paged that list out of OF and rewrote every VaultItem row for the account.
-On a 12-folder plan the operator's request ran for minutes; the proxy in front
-of the relay gave up first and the browser showed a bare "Internal Server
-Error". The relay had logged nothing, because a client disconnect cancels the
-handler with `CancelledError` — a BaseException, invisible to the
-`except Exception` that records server errors. Folders the loop hadn't reached
-were simply never made (observed 2026-07-28: two `AI-` folders left with a NULL
-of_list_id), which is also why it "sometimes worked": a small plan finished
-inside the timeout, a big one didn't.
-
-So the ordering is the invariant, not an optimisation: every write lands before
-any read-back, and the read-back is detached.
-
-Cases:
-  case_every_folder_is_made_before_any_readback — all creates+adds happen with
-                                    ZERO membership pages issued, so a request
-                                    that dies during the read-back has already
-                                    made every folder real on OF.
-  case_a_failed_folder_does_not_block_the_rest — one folder's OF create blows
-                                    up; the others are still created and it is
-                                    reported per folder, not raised.
-  case_existing_list_is_reused     — a folder already carrying an of_list_id is
-                                    added to, never re-created (that is how a
-                                    re-run avoids a second list with the
-                                    same name).
-  case_readback_applies_every_list_in_one_pass — gains AND drops, across two
-                                    lists, from a single pass over the vault.
-  case_readback_survives_a_dead_list — one list 500s; the others still land.
-                                    It runs detached, so an escaping exception
-                                    would only ever surface as a GC warning.
-
-Run: cd service/tests && \
-  PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_ai_mirror.py
-Exit 0 = all cases passed. Temp DB bound by _harness (never prod).
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -59,18 +17,14 @@ from db.models import Account, VaultFolder, VaultItem  # noqa: E402
 _AID = "acc_mirror"
 
 
-# ── Fake OF ─────────────────────────────────────────────────────────
 
 class _FakeOF:
-    """Records every call in ORDER — the ordering invariant is the whole point."""
 
     def __init__(self):
         self.timeout_s = 5.0
         self.calls: list[tuple] = []
         self.next_list_id = 900
-        # Names whose create must blow up.
         self.create_fails: set[str] = set()
-        # list_id -> media ids OF reports in it; a list_id in `page_fails` raises.
         self.members: dict[int, list[int]] = {}
         self.page_fails: set[int] = set()
 
@@ -106,7 +60,6 @@ _OF = _FakeOF()
 ax._make_client = lambda _aid, *a, **k: _OF  # type: ignore[assignment]
 
 
-# ── Seeders ─────────────────────────────────────────────────────────
 
 async def _reset_db() -> None:
     async with get_session() as s:
@@ -164,7 +117,6 @@ def _created(pairs: list[tuple[int, str]]) -> list[dict]:
             for fid, n in pairs]
 
 
-# ── Cases ───────────────────────────────────────────────────────────
 
 async def case_every_folder_is_made_before_any_readback():
     await _reset_db()
@@ -177,8 +129,7 @@ async def case_every_folder_is_made_before_any_readback():
 
     assert len(_OF.kinds("create")) == 6, f"expected 6 creates, got {_OF.kinds('create')}"
     assert len(_OF.kinds("add")) == 6, f"expected 6 adds, got {_OF.kinds('add')}"
-    # THE invariant: not one membership page may be issued while folders are
-    # still unmade. This is what a timeout used to cut through.
+    # Invariant: every create/add lands before any read-back, so a request cut mid read-back has already made each folder on OF.
     assert _OF.kinds("page") == [], (
         f"read-back ran inside the request — {len(_OF.kinds('page'))} pages issued "
         f"before every folder was made"
@@ -201,7 +152,6 @@ async def case_a_failed_folder_does_not_block_the_rest():
     by_name = {r["name"]: r for r in out}
     assert by_name["AI-doomed"].get("of_error"), "the failure must be reported, not swallowed"
     assert by_name["AI-doomed"].get("of_list_id") is None
-    # The folder AFTER the failure is the one that regressions kill.
     assert by_name["AI-ok two"].get("of_list_id"), (
         "a folder that failed on OF stopped the ones behind it"
     )
@@ -224,9 +174,6 @@ async def case_existing_list_is_reused():
 async def case_readback_applies_every_list_in_one_pass():
     await _reset_db()
     _OF.reset()
-    # 401 is already in list 700 but OF no longer has it there  -> dropped.
-    # 402 is in neither          but OF reports it in 701       -> gained.
-    # 403 is in 700 and OF agrees                               -> untouched.
     await _seed_item(401, [700])
     await _seed_item(402, [])
     await _seed_item(403, [700])

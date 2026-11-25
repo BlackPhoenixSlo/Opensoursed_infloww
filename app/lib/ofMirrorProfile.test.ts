@@ -23,7 +23,6 @@ const NOT_YET = "Not available in Inflowwww yet";
 const SECTIONS = ".b-profile__sections__count";
 const LABELS = "[at-attr='profile_label']";
 
-/** OF's own /api2/v2 responses for My profile, captured through the Relay and scrubbed (app/lib/__fixtures__/of). */
 const fixture = <T,>(name: string): T => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/profile-${name}.json`), "utf8")) as T;
 const ME = fixture<ProfileUser & { name: string; username: string; avatar: string; header: string; about: string }>("me");
 const HIGHLIGHTS = fixture<{ list: Highlight[]; hasMore: boolean }>("highlights");
@@ -94,7 +93,6 @@ describe("My profile's counts, label tabs and highlights", () => {
     expect([one.disabled, one.title, two.disabled]).toEqual([false, "", false]);
     expect([one, two].map((t) => [t.dataset.oiFull, t.dataset.oiType])).toEqual([[`/img?u=${H1.cover}`, "photo"], [`/img?u=${H2.cover}`, "photo"]]);
     expect([one, two].map((t) => t.dataset.oiHighlight)).toEqual([String(H1.id), String(H2.id)]);
-    // OF's highlight `cover` is the cover story's picture URL.
     expect([one, two].map((t) => t.querySelector("img")?.getAttribute("src"))).toEqual([`/img?u=${H1.cover}`, `/img?u=${H2.cover}`]);
     applyData(doc, "profile/index", {});
     expect(doc.documentElement.innerHTML).toBe(html);
@@ -103,7 +101,6 @@ describe("My profile's counts, label tabs and highlights", () => {
   it("a highlight tile plays its stories in order (GET /stories/highlights/{id}); none or a failure is a note", async () => {
     const doc = load("profile/index");
     applyData(doc, "profile/index", { profile: PROFILE }, (u) => `/img?u=${u}`);
-    // OF's answer: the highlight with its stories (normalizr `highlights` entity, `{stories: [...]}`).
     const answer = {
       id: H1.id,
       title: H1.title,
@@ -119,7 +116,7 @@ describe("My profile's counts, label tabs and highlights", () => {
     await flush();
     expect(highlightStories).toHaveBeenCalledWith(String(H1.id));
     const viewer = doc.getElementById(VIEWER)!;
-    expect(viewer.querySelector("img")!.getAttribute("src")).toBe("/img?u=https://cdn.example/h1.jpg"); // not the cover
+    expect(viewer.querySelector("img")!.getAttribute("src")).toBe("/img?u=https://cdn.example/h1.jpg");
     viewer.querySelector<HTMLButtonElement>("button[aria-label='Next']")!.click();
     expect(viewer.querySelector("video")!.getAttribute("src")).toBe("/img?u=https://cdn.example/h2.mp4");
     viewer.querySelector<HTMLButtonElement>("button[aria-label='Close']")!.click();
@@ -150,11 +147,9 @@ describe("My profile's counts, label tabs and highlights", () => {
       const viewer = doc.getElementById(VIEWER)!;
       const media = () => viewer.querySelector("[data-oi-viewer-media]")!;
       const widths = () => [...viewer.querySelectorAll<HTMLElement>("[data-oi-story-bars] > span > span")].map((b) => b.style.width);
-      // OF's header: the highlight's title and cover, a segment per story.
       expect(viewer.querySelector(".b-story-header__author__title")!.textContent).toBe(H2.title);
       expect(viewer.querySelector(".b-story-header__author img")!.getAttribute("src")).toBe(`/img?u=${H2.cover}`);
-      expect([media().getAttribute("src"), widths()]).toEqual(["/img?u=s1.jpg", ["100%", "0px", "0px"]]); // the current one filling to full
-      // A photo for 5 s, then the next story; a video to its end.
+      expect([media().getAttribute("src"), widths()]).toEqual(["/img?u=s1.jpg", ["100%", "0px", "0px"]]);
       await vi.advanceTimersByTimeAsync(STORY_PHOTO_MS);
       expect([media().tagName, media().getAttribute("src"), widths().slice(0, 1)]).toEqual(["VIDEO", "/img?u=s2.mp4", ["100%"]]);
       await vi.advanceTimersByTimeAsync(STORY_PHOTO_MS);
@@ -247,7 +242,6 @@ describe("bindProfile", () => {
 
   it("Story archive opens a box under the strip with the archived stories (picture, date); a second click closes it", async () => {
     const doc = load("profile/index");
-    // OF's own /stories/archive page: {list, marker, hasMore}, each story {id, createdAt, media}.
     const read = vi.fn(() => Promise.resolve(ARCHIVE));
     const stories = ARCHIVE.list as { createdAt: string; media: { files: { squarePreview: { url: string }; preview: { url: string } } }[] }[];
     const unbind = bindProfile(doc, handlers({ read }));
@@ -303,7 +297,6 @@ describe("bindProfile", () => {
     for (const copy of copies) {
       click(copy);
       await flush();
-      // A toast, not the note: the note sat in the header's button row and pushed EDIT PROFILE aside.
       expect(doc.querySelector("#oi-toast .toast__text")?.textContent).toBe("Link copied");
       expect(doc.getElementById("oi-note")).toBeNull();
       doc.getElementById("oi-toast")?.remove();
@@ -356,7 +349,6 @@ describe("bindProfile", () => {
     const more = header.querySelector(".b-compact-header__settings .dropdown-toggle")!;
     const sticky = [...header.querySelectorAll<HTMLElement>("[data-oi-sticky-only]")];
     const extra = () => sticky.filter((e) => e.style.display !== "none").map((e) => e.getAttribute("aria-label"));
-    // The full header has Edit profile and Copy link; More is the compact header's only, as OF's.
     expect(doc.querySelector(".b-profile__header__user [aria-label='More']")).toBeNull();
     expect(header.querySelector(".b-group-profile-btns")!.lastElementChild!.classList.contains("b-compact-header__settings")).toBe(true);
     const scrollTo = (y: number) => {
@@ -385,14 +377,12 @@ describe("bindProfile", () => {
 
   it("More info expands the bio and Collapse info folds it; Spotify's title folds and opens its section", () => {
     const doc = load("profile/index");
-    // A bio taller than its 85px fold (jsdom lays nothing out).
     Object.defineProperty(doc.querySelector(".b-user-info__content > .g-truncated-text")!, "scrollHeight", { configurable: true, value: 200 });
     const unbind = bindProfile(doc, handlers());
     const bio = doc.querySelector<HTMLElement>("[data-oi-bio-toggle]")!;
     const text = bio.parentElement!.querySelector<HTMLElement>(".g-truncated-text")!;
     expect([bio.style.display, text.classList.contains("m-over-limit"), text.classList.contains("m-collapsed")]).toEqual(["", true, true]);
     click(bio);
-    // OF's expanded box: its own 20vh with a scroll bar (m-over-limit:not(.m-collapsed)), no inline height.
     expect([bio.textContent?.trim(), text.classList.contains("m-collapsed"), text.style.maxHeight]).toEqual(["Collapse info", false, ""]);
     click(bio);
     expect([bio.textContent?.trim(), text.classList.contains("m-collapsed"), text.style.maxHeight]).toEqual(["More info", true, "85px"]);
@@ -429,16 +419,13 @@ describe("bindProfile", () => {
       const bio = doc.querySelector<HTMLElement>("[data-oi-bio-toggle]")!;
       const box = text.parentElement!;
       const state = () => [bio.style.display, box.classList.contains("m-over-limit"), box.classList.contains("m-collapsed")];
-      // A short bio: whole, unfaded, no More info (OF shows it only over the limit).
       expect(observed).toEqual([text]);
       expect(state()).toEqual(["none", false, false]);
-      // Its text grew (a longer bio, a narrower frame): folded, with More info.
       height = 300;
       refit();
       expect(state()).toEqual(["", true, true]);
       click(bio);
       expect(state()).toEqual(["", true, false]);
-      // Short again while open: whole, folded state reset.
       height = 40;
       refit();
       expect([...state(), bio.textContent?.trim(), bio.getAttribute("aria-expanded"), box.style.maxHeight]).toEqual(["none", false, false, "More info", "false", "85px"]);
@@ -475,7 +462,6 @@ describe("profile/state-more-menu: the header's More menu", () => {
 
   it("the open menu's content column stops being a stacking context under the backdrop, so its items take their clicks (U2)", () => {
     const doc = load("profile/state-more-menu");
-    // OF's own rule (its CSS is linked, not inline): the content column is position relative, z-index 0.
     const of = doc.createElement("style");
     of.textContent = ".l-wrapper__content { position: relative; z-index: 0; }";
     doc.head.prepend(of);
@@ -483,7 +469,6 @@ describe("profile/state-more-menu: the header's More menu", () => {
     expect(column.querySelector(".of-state-menu [role='menuitem']")).not.toBeNull();
     expect(doc.querySelector("a.of-state-backdrop")).not.toBeNull();
     expect(getComputedStyle(column).zIndex).toBe("auto");
-    // A page with no open menu keeps OF's.
     load("profile/index").head.prepend(of);
     expect(getComputedStyle(document.querySelector(".l-wrapper__content")!).zIndex).toBe("0");
   });
@@ -532,7 +517,6 @@ describe("standInModel: My profile and Messages in All models show the first mod
     expect(standInModel("/of-mirror/pages/profile/index.html", "9", accounts)).toBeNull();
     expect(standInModel("/of-mirror/pages/home/index.html", null, accounts)).toBeNull();
     expect(standInModel("/of-mirror/pages/profile/index.html", null, [])).toBeNull();
-    // The Vault too, with its state pages; Home's vault dialog is not the Vault page.
     expect(standInModel("/of-mirror/pages/vault/index.html", null, accounts)).toBe("7");
     expect(standInModel("/of-mirror/pages/vault/state-sort-dropdown.html", null, accounts)).toBe("7");
     expect(standInModel("/of-mirror/pages/vault/index.html", "9", accounts)).toBeNull();

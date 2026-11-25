@@ -6,7 +6,6 @@ import { TrackingLinksPage } from "@/components/growth/TrackingLinksTab";
 
 export const metadata: Metadata = { title: "Tracking links" };
 
-/** Its former tabs are Growth entries of their own (11-12): old `?tab=` links land there. */
 const MOVED = new Map([["bio", "/growth/bio-pages"], ["redirects", "/growth/redirect-links"]]);
 
 export default async function Page({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {

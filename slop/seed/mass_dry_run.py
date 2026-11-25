@@ -1,14 +1,3 @@
-"""The two audience fences a mass send subtracts (scenarios/2026-10-31-mass-placeholder-echo.py's dry-run
-tail), per Creator in `fences` ({creator id: {"massdm": [fan], "autofence": [fan]}}):
-  massdm     on the Creator's MASSdmEXCLUDE list (kind 'exclude', system, no OF id, as service/lists.py
-             makes it; joined to the Creator's existing one if it has one)
-  autofence  left out of an include-only audience: an `automation_include` list (system, synced now,
-             OF id `of_list_id_base` + the Creator's index; FakeOF has no such list, nothing reads it
-             there) holding every other `fans` row of the Creator, and `account_ai_config`
-             audience_mode 'enforce' on it: the rows the Settings toggle writes. The product's AUTOFENCE is the known
-             fans minus the include list's members (service/audience_include.py), so exactly these.
-SQL rows only, written in the order the product could have.
-"""
 from __future__ import annotations
 
 from . import World, ts

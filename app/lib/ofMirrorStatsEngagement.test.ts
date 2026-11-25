@@ -1,7 +1,3 @@
-/**
- * Statistics › Engagement's phase-2 parts (ofMirrorStatsEngagement) called directly on the captured mirror pages
- * (app/public/of-mirror/pages/statistics/engagement/*.html) with OF's synthetic replies (app/lib/__fixtures__/of).
- */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
@@ -11,9 +7,7 @@ import type { MassMessage, PostsBy } from "./ofMirrorStatsSources";
 import { chartSpecOf } from "./ofMirrorChart";
 import { NOT_YET } from "./ofMirrorWrites";
 
-// The host zone pinned before any import (a formatter built at module load would keep the old zone): Kathmandu,
-// +05:45 all year, no DST, matching no zone named here, so `tz: null` (the browser's clock) expectations are literals
-// that fail if the module ignored the host zone. Restored after the file.
+// Pinned before any import: a formatter built at module load would keep the old zone.
 vi.hoisted(() => vi.stubEnv("TZ", "Asia/Kathmandu"));
 afterAll(() => vi.unstubAllEnvs());
 
@@ -22,7 +16,6 @@ const load = (p: string) => {
   document.documentElement.innerHTML = capture(p);
   return document;
 };
-/** A page in a Document of its own (as each frame load is): per-Document bindings start unbound. */
 const loadFresh = (p: string) => {
   const doc = document.implementation.createHTMLDocument("");
   doc.documentElement.innerHTML = capture(p);
@@ -37,7 +30,6 @@ const NOW = new Date("2026-10-17T10:00:00Z");
 const START = startOf(fixture("start-date"), TZ);
 const D30 = periodOf("d30", NOW, TZ, START);
 const picks = (p: Partial<Picks> = {}): Picks => ({ ...PICK_DEFAULTS, ...p });
-/** A list reply in any of OF's shapes (`list`, `items`, `users`). */
 type Listed = { list?: unknown[]; items?: unknown[]; users?: unknown[]; hasMore?: boolean };
 const paged = (b: Listed, more: (() => void) | null = null): PagedBody => ({ list: b.list ?? b.items ?? b.users ?? [], hasMore: !!b.hasMore, loading: false, more });
 const ctx = (x: Partial<EngagementCtx> = {}): EngagementCtx => ({ picks: picks(), v2: true, by: "purchases", pick: () => {}, ...x });
@@ -46,10 +38,6 @@ const spec = (doc: Document, sel: string) => {
   return c ? chartSpecOf(c) : undefined;
 };
 
-/**
- * jsdom has no IntersectionObserver (and its document.defaultView is globalThis, measured): a stand-in recording what
- * moreAt observes; `fire()` scrolls it into view.
- */
 function stubIO() {
   const seen: { el: Element; fire: (isIntersecting?: boolean) => void; disconnected: boolean }[] = [];
   class IO {
@@ -81,8 +69,6 @@ describe("messagesRekey: Engagement › Messages' summary from OF's chart for th
   const cases: [name: string, chart: unknown, t: string, key: string, want: string][] = [
     ["direct count", DIRECT, "direct", "messages:massMessages.count.total", "messagesChart:direct_messages.total"],
     ["direct earnings", DIRECT, "direct", "messages:massMessages.earnings.total", "messagesChart:direct_messages_purchases.total"],
-    // OF's single summary change is the purchases' (the count's delta key reads it); the sidebar keeps the overview's
-    // (see the sidebar test under applyEngagement).
     ["direct count delta -> purchases delta", DIRECT, "direct", "messages:massMessages.count.delta", "messagesChart:direct_messages_purchases.delta"],
     ["earnings delta not rekeyed", DIRECT, "direct", "messages:massMessages.earnings.delta", "messages:massMessages.earnings.delta"],
     ["another key", DIRECT, "direct", "posts:posts.count.total", "posts:posts.count.total"],
@@ -93,7 +79,6 @@ describe("messagesRekey: Engagement › Messages' summary from OF's chart for th
     ["today's Relay ([])", [], "group", "messages:massMessages.count.total", "messages:massMessages.count.total"],
     ["series not an object", { group_messages: 5 }, "group", "messages:massMessages.count.total", "messages:massMessages.count.total"],
     ["series an array", { group_messages: [] }, "group", "messages:massMessages.count.total", "messages:massMessages.count.total"],
-    // Only the series' presence is checked, not its field.
     ["series without total", { group_messages: {} }, "group", "messages:massMessages.count.total", "messagesChart:group_messages.total"],
   ];
   it.each(cases)("%s", (_n, chart, t, key, want) => {
@@ -139,25 +124,20 @@ describe("applyMassMessages: one row per mass message", () => {
     const rows = dataRows(doc);
     expect(rows).toHaveLength(6);
     expect(rows.every(visible)).toBe(true);
-    // The template stays hidden; the empty row goes.
     expect(visible(doc.querySelector(".b-statements-table tbody > tr[data-oi-template]")!)).toBe(false);
     expect(texts(doc, ".b-statements-table .empty-message")).toEqual([]);
-    // 01:36 UTC = 03:36 in Ljubljana (+02:00); a free message: dashes for price and purchases.
     expect(cells(rows[0])).toEqual(["Oct 14, 2026, 03:36 am", "1", "0", "—", "—"]);
     expect(cells(rows[5])).toEqual(["Sep 29, 2026, 03:58 pm", "2", "1", "—", "—"]);
     expect(texts(rows[0], ".b-top-statistic__text p")).toEqual(["Synthetic mass message 1"]);
-    // No media: the thumbs go, OF's placeholder box with no picture.
     const img = rows[0].querySelector(".b-top-statistic__img")!;
     expect([img.classList.contains("b-top-statistic__img"), img.classList.contains("b-top-statistic__img--placeholder")]).toEqual([true, true]);
     expect(img.children).toHaveLength(0);
     expect(rows[0].querySelector(".b-content-inside-thumbs")).toBeNull();
-    // Canceled: tinted, "New message" (disabled), OF's undo mark instead of the "i".
     expect(rows[0].classList.contains("m-colored-bg")).toBe(true);
     const btn = rows[0].querySelector<HTMLButtonElement>(".b-top-statistic__btns button")!;
     expect([squash(btn.textContent), btn.disabled, btn.title]).toEqual(["New message", true, NOT_YET]);
     expect(rows[0].querySelector(".g-icon-info")).toBeNull();
     expect(rows[0].querySelector(".b-top-statistic__btns [aria-label='Canceled'] use")!.getAttribute("href")).toBe("#icon-undo");
-    // Still unsendable: "Unsend" and its "i", no tint.
     expect(rows[3].classList.contains("m-colored-bg")).toBe(false);
     expect(texts(rows[3], ".b-top-statistic__btns button")).toEqual(["Unsend"]);
     expect(rows[3].querySelector(".b-top-statistic__btns .g-icon-info")).not.toBeNull();
@@ -178,14 +158,12 @@ describe("applyMassMessages: one row per mass message", () => {
     expect(texts(rows[0], ".b-content-inside-thumbs__count")).toEqual(["2"]);
     expect(rows[0].querySelector(".b-top-statistic__img--placeholder")).toBeNull();
     expect(rows[0].querySelector(".b-top-statistic__btns")).toBeNull();
-    // Nothing known: dashes; a paid price unknown: a dash.
     expect(cells(rows[1])).toEqual(["—", "—", "—", "—", "—"]);
-    // A paid message at $0 with no buyer: OF's money and count, not dashes.
     expect(cells(rows[2]).slice(3)).toEqual(["$0.00", "0"]);
   });
 
   it("the time zone: a named one shifts the wall clock; null reads the browser's (host-local, pinned Kathmandu) clock", () => {
-    expect(new Date(GROUP.items[0].date!).getTimezoneOffset()).toBe(-345); // the pin took effect
+    expect(new Date(GROUP.items[0].date!).getTimezoneOffset()).toBe(-345);
     const at = (tz: string | null) => {
       const doc = load("statistics/engagement/messages");
       applyMassMessages(doc, [GROUP.items[0]], tz);
@@ -194,7 +172,7 @@ describe("applyMassMessages: one row per mass message", () => {
     expect(at(TZ)).toBe("Oct 14, 2026, 03:36 am");
     expect(at("America/New_York")).toBe("Oct 13, 2026, 09:36 pm");
     expect(at("UTC")).toBe("Oct 14, 2026, 01:36 am");
-    expect(at(null)).toBe("Oct 14, 2026, 07:21 am"); // 01:36 UTC + 05:45
+    expect(at(null)).toBe("Oct 14, 2026, 07:21 am");
   });
 
   it("paged with more: the last row observed; read once it scrolls into view (not before), then the observer disconnects", () => {
@@ -222,7 +200,7 @@ describe("applyMassMessages: one row per mass message", () => {
     const doc = load("statistics/engagement/messages");
     applyMassMessages(doc, [], TZ, paged({ items: [], hasMore: true }, vi.fn()));
     expect(texts(doc, ".b-statements-table .empty-message")).toEqual(["Loading…"]);
-    expect(seen).toEqual([]); // no row to observe
+    expect(seen).toEqual([]);
   });
 
   it("none and no more: the generator's text stays, no row", () => {
@@ -253,7 +231,6 @@ describe("applyEngagementPosts: the period's top posts in OF's table", () => {
     expect(texts(doc, ".b-statistics-page-content__wrapper > .empty-message")).toEqual([]);
     expect(doc.querySelector(".b-statistics-page-content__wrapper")!.classList.contains("m-empty-wrapper")).toBe(false);
     const tr = row(doc);
-    // 23:52 UTC Oct 16 = 01:52 Oct 17 in Ljubljana; tips "$0" as money; no price, no purchases: dashes.
     expect(cells(tr)).toEqual(["Oct 17, 2026, 01:52 am", "6", "$0.00", "—", "—"]);
     expect(tr.querySelectorAll(":scope > td")[4].querySelector("span")!.className).toBe("g-semibold");
     expect(tr.querySelector<HTMLImageElement>(".b-top-statistic__img img")!.getAttribute("src")).toBe(img(THUMB));
@@ -293,7 +270,6 @@ describe("applyEngagementPosts: the period's top posts in OF's table", () => {
     expect(texts(doc, "[data-oi-posts-col]")).toEqual([col]);
     const tr = row(doc);
     expect(cells(tr)).toEqual(["Oct 17, 2026, 01:52 am", "1,234", metric, "—", "—"]);
-    // Across the five figure columns exactly one element is bold: the picked metric's.
     const bold = [...tr.querySelectorAll(":scope > td")].slice(0, 5).flatMap((td) => [td, ...td.querySelectorAll("*")]).filter((e) => e.classList.contains("g-semibold"));
     expect(bold).toHaveLength(1);
     expect(bold[0]).toBe(tr.querySelector(boldSel));
@@ -322,8 +298,8 @@ describe("applyEngagementPosts: the period's top posts in OF's table", () => {
     const empty = load("statistics/engagement/posts");
     applyEngagementPosts(empty, data({ postsTop: paged({ items: [], hasMore: false }) }), D30, "comments", img);
     expect(current(empty)).toEqual(["by:comments"]);
-    expect(texts(empty, "[data-oi-posts-col]")).toEqual([]); // the table stays hidden…
-    expect(squash(empty.querySelector("[data-oi-posts-col]")!.textContent)).toBe("Comments"); // …its header set
+    expect(texts(empty, "[data-oi-posts-col]")).toEqual([]);
+    expect(squash(empty.querySelector("[data-oi-posts-col]")!.textContent)).toBe("Comments");
     expect(empty.querySelector<HTMLElement>("[data-oi-table='posts']")!.style.display).toBe("none");
     expect(empty.querySelectorAll("[data-oi-table='posts'] tbody tr")).toHaveLength(0);
   });
@@ -345,7 +321,6 @@ describe("applyEngagement: the phase-2 parts per Engagement page", () => {
     expect([input.disabled, input.hasAttribute("title")]).toEqual([false, false]);
     const links = [...doc.querySelectorAll("[data-oi-users]")];
     expect(links.map((l) => [squash(l.textContent), l.getAttribute("data-oi-users"), l.className])).toEqual([["2", "buyers:55001:0", "g-page__link g-blue"]]);
-    // OF's count span hidden behind the link.
     expect((links[0].previousElementSibling as HTMLElement).style.display).toBe("none");
     expect(spec(doc, ".b-statistics-page-content__wrapper > .b-chart canvas.b-chart__double-line__main")!.series.title).toBe("Purchases");
     expect(spec(doc, ".b-statistics-page-content__wrapper > .b-chart canvas.b-chart__double-line__aside")!.series.title).toBe("Messages");
@@ -362,7 +337,6 @@ describe("applyEngagement: the phase-2 parts per Engagement page", () => {
   });
 
   describe("Messages' search box (OF's SearchOF)", () => {
-    /** The search box binds once per Document (a frame load brings a new one), so not jsdom's shared `document`. */
     const searchBox = (pick: EngagementCtx["pick"]) => {
       vi.useFakeTimers();
       const doc = loadFresh("statistics/engagement/messages");
@@ -384,7 +358,7 @@ describe("applyEngagement: the phase-2 parts per Engagement page", () => {
     it("typing: 3+ characters picked half a second after the last key; fewer never; blank picks none", () => {
       const pick = vi.fn();
       const { clear, type } = searchBox(pick);
-      expect(clear.style.display).toBe("none"); // no search picked
+      expect(clear.style.display).toBe("none");
       type("ab");
       vi.advanceTimersByTime(600);
       expect(pick).not.toHaveBeenCalled();
@@ -524,7 +498,7 @@ describe("applyEngagement: the phase-2 parts per Engagement page", () => {
     applyStats(doc, page, data, D30, { v2: true });
     expect(texts(doc, ".l-wrapper__sidebar [data-oi-summary-card] .b-elements-determinant")).toEqual(want ?? []);
     expect(texts(doc, ".l-wrapper__sidebar .b-useful-data > .empty-message")).toHaveLength(want ? 0 : 1);
-    applyStats(doc, page, {}, D30, { v2: true }); // restored on the next apply
+    applyStats(doc, page, {}, D30, { v2: true });
     expect(doc.querySelector("[data-oi-summary-card]")).toBeNull();
     expect(texts(doc, ".l-wrapper__sidebar .b-useful-data > .empty-message")).toEqual([NOT_YET]);
   });
@@ -542,7 +516,7 @@ describe("applyEngagement: the phase-2 parts per Engagement page", () => {
     msgRows(doc, body);
     applyEngagement(doc, "fans/subscriptions", { massMessages: body, messagesChart: fixture("messages-chart-direct") }, D30, ctx({ picks: picks({ msg: "direct" }) }));
     const main = ".b-statistics-page-content__wrapper > .b-chart canvas.b-chart__double-line__main";
-    expect(doc.querySelector(main)).not.toBeNull(); // the canvas is there, only undrawn
+    expect(doc.querySelector(main)).not.toBeNull();
     expect(spec(doc, main)).toBeUndefined();
     expect(doc.querySelector("[data-oi-users]")).toBeNull();
     expect([...doc.querySelectorAll<HTMLButtonElement>("[data-oi-pick^='msg:']")].every((b) => b.disabled && b.title === NOT_YET)).toBe(true);

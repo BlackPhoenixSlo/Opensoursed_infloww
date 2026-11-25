@@ -1,10 +1,3 @@
-"""scenarios/2026-11-08-consent-required-notice.py's checks and faults (service/consent_notices.py): lib/faults.py
-merges `register(Fault)` into FAULTS. The check names live here and the scenario imports them.
-
-  consent-send-ok-not-clearing  an accepted media send no longer clears the row (the clear-on-send branch
-                                dropped): targets CLEARED_BY_SEND and UI_SETTLED.
-  consent-pinned-readable       `read` no longer refuses a pinned row: targets NOT_DISMISSABLE.
-"""
 from __future__ import annotations
 
 SEND_ROUTE = "POST /api/of/v2/chats/:id/messages"
@@ -55,8 +48,6 @@ def _pinned_readable() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run consent-required-notice --break (the scenario's FAULT)
         "consent-send-ok-not-clearing": Fault(_send_ok_not_clearing, (CLEARED_BY_SEND, UI_SETTLED)),
-        # slop/run consent-required-notice --break --fault=consent-pinned-readable --baseline=...
         "consent-pinned-readable": Fault(_pinned_readable, (NOT_DISMISSABLE,)),
     }

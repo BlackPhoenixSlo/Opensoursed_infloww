@@ -1,51 +1,3 @@
-"""Big model accounts under a DM flood: 5 Agencies, 20 Creators, 3 of them big
-(2k / 10k / 50k fans at small / medium / huge). Fans DM through the OF pump
-boundary at an open-loop rate that ramps per big Creator through stages
-(--dms-per-min=50,100,200, each held --stage-s seconds; normal Creators ~5/min),
-with ~3% tips, ~2% PPV purchases and typing frames mixed in. Meanwhile --users
-chatters work the inbox (head page, thread, mark read, reply) and the owner's
-browser holds a live tab per page in TABS (the All Models inbox, 5 models incl. the
-3 big; two popout chats; Group), each with its own /events stream.
-
-Correctness invariants (any FAIL here is a bug): every frame accepted; zero
-persist drops; every DM in event_inbox and in `messages`; every DM reached its
-Agency's /events stream and no other Agency's; per-thread order on every stream;
-the inbox tab got every DM of its 5 models with no `resync`; unread counts per
-thread match (exact for threads no chatter touched, bounded for the rest); tips
-and PPV purchases each one ledger row; every chatter reply one outbound row;
-every marker DM renders in the tabs that show its thread; no browser tab crashed;
-no 5xx anywhere; every add into the (hidden) Group tab mid-flood, over the real
-BroadcastChannel from a same-origin page in its browser context, is acked exactly
-once and truthfully (ok exactly when the fan is in the tab's registry after it,
-held slots kept in order, the cap kept); a manual send's chat-list bump (lib/chatsCache in node, on the
-owner's real head pages and a real send per model) heads the sent fan's row in its
-Creator's caches, fan id string or number, other Creators' untouched. Whether each
-marker also became an All Models list row is a budget (list-upd), not an invariant:
-the list's pages come from OnlyFans' /chats, held in a slop run, so only an app
-build that inserts live rows can show it.
-
-Budgets (FAIL is red but marked [budget]; never loosened): per stage, p95 per
-relay route, SSE lag (injection -> stream receipt) for the direct listener and
-the browser tab, marker DM -> rendered in its open thread, long tasks per minute, tab heap. The
-known relay defect (CLAUDE.md: p95 ~5 s at 200 concurrent DMs vs 750 ms) is
-labelled where the measured value matches it.
-
-Break-it-once: sse-fanout-reorders-within-thread (fan-out delivers a fan's DM
-after their next one). Nothing is lost and the DB is right, so only the
-per-thread order check on the streams can catch it. --fault=group-ack-before-apply
-(lib/group_faults.py): the Group tab acks an add before applying it.
-
-Declared bypass: headless Chromium never hides a page (measured: visibilityState
-stays "visible" after another page of the context is brought to front, old and new
-headless), so the Group tab's hidden state is emulated (document.visibilityState /
-hidden overridden, visibilitychange fired; unhidden the same way, which runs the
-page's real wake path). A real background tab's timer throttling is not reproduced.
-Declared bypass: the adds come from a bare same-origin page posting `add` messages
-straight onto the BroadcastChannel, not through a source tab's openGroupTab routing
-(which would focus the tab holding a fan, and open an overflow tab rather than add
-past the cap): the bursts deliberately add a held fan and more fans than there is
-room for, to exercise the tab's ack rule, which that routing never sends it.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -77,66 +29,39 @@ P95_BUDGET_MS = {
     "POST /admin/messages/:id/:id/mark-read": 500,
     "POST /api/of/v2/chats/:id/messages": 750,
 }
-# CLAUDE.md: "relay p95 at 200 concurrent DMs is ~5s vs the 750ms budget".
 KNOWN_DEFECT = {"POST /__slop/of-ws-frame": 5000}
-SSE_LAG_BUDGET_MS = 1000       # relay -> a direct /events listener
-TAB_LAG_BUDGET_MS = 2000       # relay -> Next proxy -> a browser tab's EventSource
-ROW_UPDATE_BUDGET_MS = 3000    # marker DM injected -> its text rendered in the open popout / group thread
-LONG_TASKS_PER_MIN_BUDGET = 30  # per tab
-HEAP_BUDGET_MB = 400           # per tab
-# The relay is one Python process (one event loop, the GIL): its mean CPU per stage
-# (ps, lib/procmon.py), 100% = one core. 80 leaves 20% headroom below one core;
-# summary.txt also shows the event-loop thread's own share.
+SSE_LAG_BUDGET_MS = 1000
+TAB_LAG_BUDGET_MS = 2000
+ROW_UPDATE_BUDGET_MS = 3000
+LONG_TASKS_PER_MIN_BUDGET = 30
+HEAP_BUDGET_MB = 400
 CPU_BUDGET_PCT = 80
-# Write-storm check (.scratch/fleet-sharding/03-write-storm.md). A 2 s whole-process
-# stall (SIGSTOP of the relay's process group: a CPU-starved VPS, a long GC pause, a
-# slow disk) in the second stage piles up every in-flight chatter request at once.
-# Before the bounded DB pool, that pile-up opened one SQLite connection (one thread
-# plus a schema parse) per request and turned into a self-sustaining storm: 3-9 cores
-# and multi-second p95 for 10-60 s (measured). The relay must be back to normal soon after.
-# Write transactions per action (write_telemetry writer labels). A reply is its
-# outbound row + chat preview + yield cooldown in ONE transaction, plus the audit
-# row; a mark-read is its audit row only (the unread clear rides the OF-cache
-# writer's batch). Before the writer: 3 and 2 (run ...-0d27 / ...-c205). The 0.05
-# is for one-off writes a first request makes (one per Agency at small: 235 txns for
-# 230 reads), not for a per-call one.
 REPLY_TXNS_MAX = 2.05
 READ_TXNS_MAX = 1.05
 CHECK_OF_WRITER = ("OF-cache writer: every op committed, and no DM / event_inbox write transaction "
                    "outside its batches")
 CHECK_READ_TXNS = f"mark-read: <= {READ_TXNS_MAX:g} write transaction per call (its audit row)"
 CHECK_REPLY_TXNS = f"reply: <= {REPLY_TXNS_MAX:g} write transactions per reply (row + preview + cooldown, audit)"
-STALL_S = 2.0                  # --stall-s=0 turns the stall off; off by default below 60 s stages
-STALL_AT_FRAC = 0.25           # into the second stage
-RECOVER_WINDOW_S = 30          # from SIGCONT
-STORM_CPU_MAX_PCT = 300        # relay process CPU, every second of the window (healthy max ~130; storm 400-1100)
-STORM_REQ_P95_MS = 750         # actor requests SENT after SIGCONT and ended in the window
-# Production write-path telemetry (service/db/write_telemetry.py): one JSON line per
-# interval in relay.log (docker logs in production). Its counts must equal what was injected,
-# its lines must come on time, and its drop counters must read 0.
+# before the bounded DB pool a 2 s stall piled up one SQLite connection per request: 3-9 cores, multi-second p95 for 10-60 s (measured)
+STALL_S = 2.0
+STALL_AT_FRAC = 0.25
+RECOVER_WINDOW_S = 30
+STORM_CPU_MAX_PCT = 300
+STORM_REQ_P95_MS = 750
 TELEMETRY_S = float(os.environ.get("CHATTERLY_WRITE_TELEMETRY_S", "60") or 0)
-TELEMETRY_SLACK_S = 5          # a line's span may be off its interval by this (loop lag, the 2 s stall)
+TELEMETRY_SLACK_S = 5
 MARKER_ID_BASE = 9_690_000_000_000
-EXTRA_TABS = navs.extras("TABS")  # (name, path, ready selector): a flow's own pages (lib/navs.py)
+EXTRA_TABS = navs.extras("TABS")
 TABS = ("inbox", "popout-a", "popout-b", "group", *(t[0] for t in EXTRA_TABS))
-# The app's EventBus in node (lib/events_ts.mjs) on Agency 0's real /events while the load
-# runs: a socket drop with 6 refused connects (the browser's own reconnect + 5 bus retries,
-# so the backoff reaches its cap), one with 2 (it starts again at the minimum), then a pause.
 EVENTS_TS = Path(__file__).resolve().parents[1] / "lib" / "events_ts.mjs"
 CHATS_CACHE_TS = Path(__file__).resolve().parents[1] / "lib" / "chats_cache_ts.mjs"
-SEND_BUMP_LIMIT, SEND_BUMP_PAGE = 100, 20  # head page read, rows per cache page
-# Adds into the hidden Group tab, once per stage mid-flood: new fans of the UI Agency's
-# normal Creators (the first burst more than its free slots, so some are refused) plus one
-# held fan under the other id shape. The cap is read from the app at group_setup.
+SEND_BUMP_LIMIT, SEND_BUMP_PAGE = 100, 20
 GROUP_CHANNEL_TS = Path(__file__).resolve().parents[2] / "app" / "lib" / "groupChannel.ts"
-GROUP_NEW_FANS = (7, 2)        # first stage, every later stage
-GROUP_CALL_S = 30              # one sender / registry call; the ack wait inside it is GROUP_ACK_S
+GROUP_NEW_FANS = (7, 2)
+GROUP_CALL_S = 30
 GROUP_ACK_S = GROUP_CALL_S - 5
 GROUP_REG = """(id) => { try { return JSON.parse(localStorage.getItem('chatterly:group-tab:' + id)); }
   catch (e) { return null; } }"""
-# Every add posted in one task, as a source tab's openGroupTab does; every ack kept per reqId
-# (a second one would show), waiting until each has one (or GROUP_ACK_S: `timedOut`), then
-# 300 ms for late extras.
 GROUP_SEND = """async ([tabId, adds, waitMs]) => {
   const ch = new BroadcastChannel('chatterly-group');
   const reqIds = adds.map((_, i) => 'slop-g-' + i + '-' + Math.random().toString(36).slice(2));
@@ -155,7 +80,7 @@ GROUP_SEND = """async ([tabId, adds, waitMs]) => {
   ch.close();
   return { acks: reqIds.map((r) => got[r] || []), timedOut };
 }"""
-# Emulated page visibility (the declared bypass above): override, fire, report.
+# headless Chromium never hides a page (measured), so the hidden state is emulated
 GROUP_HIDE = """(hidden) => {
   if (hidden) {
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
@@ -174,7 +99,6 @@ def pct(xs, q=0.95):
 
 
 async def loop_lag(samples: list[float], stop: asyncio.Event) -> None:
-    """How late this driver's own event loop wakes (qualifies every latency it measures)."""
     while not stop.is_set():
         t = time.perf_counter()
         await asyncio.sleep(0.1)
@@ -185,12 +109,10 @@ def live(page) -> bool:
     return page.slop["crashed"] is None
 
 
-TAB_CALL_S = 60  # a tab whose main thread can't answer an evaluate / screenshot in this is "stalled"
+TAB_CALL_S = 60
 
 
 async def tab_call(page, what: str, fn, *a):
-    """A tab call that a crashed renderer or a saturated main thread turns into None
-    (recorded in page.slop["stalls"]) instead of ending the run."""
     if not live(page):
         return None
     t0 = time.time()
@@ -215,7 +137,6 @@ async def run(ctx) -> None:
     rates = [int(x) for x in str(ctx.param("dms_per_min", "50,100,200")).split(",")]
     stage_s = ctx.param("stage_s", STAGE_S[ctx.scale])
     normal_dpm = ctx.param("normal_dpm", 5.0)
-    # Off below 60 s stages (small): there a 2 s freeze alone holds >5% of a stage's requests.
     stall_s = ctx.param("stall_s", STALL_S if stage_s >= 60 else 0.0)
     stall: dict = {}
     creators, fans = w.data["creators"], w.data["fans"]
@@ -226,8 +147,6 @@ async def run(ctx) -> None:
     seeded_unread = {(t["account_id"], t["fan_id"]): t["unread"] for t in w.data["threads"]}
     rng = w.rng("scenario:big-model-dm-flood")
 
-    # Marker fans (one per big Creator, all with a thread): only markers write to them
-    # and no chatter touches them, so their rows and unread counts are exact.
     threaded = {aid: [f for f in fans[aid] if (aid, f["id"]) in seeded_unread] for aid in big}
     marker_fans = [rng.choice(threaded[aid]) for aid in big]
     reserved = {(f["account_id"], f["id"]) for f in marker_fans}
@@ -257,12 +176,12 @@ async def run(ctx) -> None:
     tab_takes: dict[str, dict[str, dict]] = {}
     final_rx: dict[str, dict] = {}
     ui_read: set[tuple] = set()
-    ui_read_calls = [0]   # the tabs' own mark-read POSTs (2xx), for the txns-per-call check
+    ui_read_calls = [0]
     ui_reloads: list[str] = []
 
     bus_task: asyncio.Task | None = None
     bus_out: dict = {"error": "the load never started"}
-    group: dict | None = None  # None: no UI
+    group: dict | None = None
     group_bursts: list[dict] = []
     cm = ui.owner_tabs(ctx, len(TABS)) if ctx.app else None
     pages = await cm.__aenter__() if cm else None
@@ -278,12 +197,9 @@ async def run(ctx) -> None:
                 **{n: path for n, path, _ in EXTRA_TABS},
             }
             t0 = time.time()
-            for name, path in urls.items():  # sequential: next dev compiles each route once
+            # next dev compiles each route on first hit; a tab whose chunk load stalls stays blank until webpack's 120 s timeout
+            for name, path in urls.items():
                 await tab[name].goto(f"{ctx.app}{path}", wait_until="domcontentloaded", timeout=300_000)
-            # next dev compiles each route on first hit; a tab whose chunk load stalls
-            # meanwhile stays blank (until webpack's 120 s chunk timeout, then the error
-            # boundary: "Loading chunk ... failed"). A tab counts as rendered once it
-            # shows its rows (an extra tab: its own selector) and no error boundary; else reload it.
             ready = {n: "[data-chat-row]" for n in TABS} | {n: sel for n, _, sel in EXTRA_TABS}
 
             async def rendered(n):
@@ -307,7 +223,7 @@ async def run(ctx) -> None:
             ctx.check("every tab rendered before the load (rows shown, no error boundary)", not broken,
                       broken=broken, reloads=ui_reloads)
             for name in TABS:
-                await ui.take(tab[name])  # drop the page-load samples
+                await ui.take(tab[name])
             ctx.metric("ui_warm_seconds", round(time.time() - t0, 1))
             group = await group_setup(ctx, tab["group"], w, ui_models, big, pools)
 
@@ -325,7 +241,7 @@ async def run(ctx) -> None:
                 await asyncio.sleep(max(0.0, stage_s * (0.5 - STALL_AT_FRAC) - stall_s))
             else:
                 await asyncio.sleep(stage_s / 2)
-            for f in marker_fans:  # one marker DM per big Creator, watched where its thread is open
+            for f in marker_fans:
                 text = f"slop marker {st['name']} {f['account_id'][-4:]}"
                 watchers = [n for n in ("inbox", "popout-a", "popout-b", "group")
                             if n in tab and (n in ("inbox", "group")
@@ -343,15 +259,12 @@ async def run(ctx) -> None:
             if burst:
                 group_bursts.append(await burst)
             st["t1"] = time.time() * 1000
-            # Between stages nothing is attributed to a stage: a slow tab read here must
-            # not stretch the stage it follows (the load keeps running at its rate).
             ctx.rec.stage = paced.stage = None
             st["relay"] = (await ctx.owner.get("/__slop/stats")).json()
             if tab:
                 got = await asyncio.gather(*(tab_call(tab[n], "take", ui.take) for n in TABS))
                 takes = dict(zip(TABS, got))
                 tab_takes[st["name"]] = {n: t for n, t in takes.items() if t is not None}
-                # Kept as they come: a tab that crashes later must not take these with it.
                 ctx.metric(f"tabs {st['name']}", {n: tab_digest(t) for n, t in tab_takes[st["name"]].items()})
                 await tab_call(tab["inbox"], "screenshot", lambda p, nm: ui.shot(ctx, p, nm, 55_000),
                                f"{st['name']}-all-models-inbox")
@@ -361,12 +274,12 @@ async def run(ctx) -> None:
         await chatters.stop()
         await paced.stop()
         quiet = await manager.quiesce(ctx.owner, timeout=300)
-        await asyncio.sleep(2.0)  # SSE tail
+        await asyncio.sleep(2.0)
         if tab:
             for m in markers:
                 m["seen"] = {n: await tab_call(tab[n], "seen", ui.seen, m["text"]) for n in m["watchers"]}
             final_rx = {n: t["rx"] for n in TABS if (t := await tab_call(tab[n], "take", ui.take)) is not None}
-            for n in TABS:  # after the load: the stable end state of every tab
+            for n in TABS:
                 await tab_call(tab[n], "screenshot", lambda p, nm: ui.shot(ctx, p, nm, 55_000), f"end-{n}")
             crashed = {}
             for n in TABS:
@@ -380,7 +293,6 @@ async def run(ctx) -> None:
                       not stalls, budget=True, stalls={n: [(x["what"], next(
                           (st["name"] for st in stages if st["t0"] <= x["at"] <= st["t1"] + TAB_CALL_S * 1000),
                           "after")) for x in v] for n, v in stalls.items()})
-            # Threads the UI itself marked read (an open ChatSurface does, on open).
             for p in pages:
                 for s_, u in p.slop["statuses"]:
                     parts = urlsplit(u).path.split("/")
@@ -394,7 +306,7 @@ async def run(ctx) -> None:
     finally:
         if bus_task is not None and not bus_task.done():
             bus_task.cancel()
-        await chatters.stop()  # idempotent; on a crash, stop the load before its clients close
+        await chatters.stop()
         if hasattr(paced, "_runners"):
             await paced.stop()
         if cm:
@@ -419,8 +331,6 @@ async def run(ctx) -> None:
 
 
 async def group_setup(ctx, page, w, ui_models: list[str], big: list[str], pools: dict) -> dict:
-    """The Group tab's id, a sender page in its browser context (a same-origin static asset with no
-    app code, as a source tab is another page of the same browser) and the fans the bursts add."""
     if not (m := re.search(r"export const GROUP_SLOT_CAP = (\d+);", GROUP_CHANNEL_TS.exists() and GROUP_CHANNEL_TS.read_text() or "")):
         return {"error": f"no `export const GROUP_SLOT_CAP = <n>;` in {GROUP_CHANNEL_TS}"}
     tab_id = await tab_call(page, "group id",
@@ -437,8 +347,6 @@ async def group_setup(ctx, page, w, ui_models: list[str], big: list[str], pools:
 
 
 async def group_burst(ctx, g: dict, stage: str, i: int) -> dict:
-    """One burst into the hidden Group tab while the stage's load runs: hide it, post new fans plus
-    one held fan under the other id shape, read its registry, unhide it. Never raises."""
     out: dict = {"stage": stage}
     if "error" in g:
         return out | {"error": g["error"]}
@@ -468,9 +376,6 @@ async def group_burst(ctx, g: dict, stage: str, i: int) -> dict:
 
 
 def group_expect(before: list, adds: list, cap: int) -> tuple[list[str], list[tuple]]:
-    """The one add rule (app/app/group/slotsReducer.ts), per add in order: "held" (the fan is already in the
-    list, either id shape: ok, list unchanged), "refused" (`cap` reached: not ok), "taken" (appended: ok).
-    Returns the verdicts and the list the tab should hold after."""
     held = [(s["accountId"], str(s["fanId"])) for s in before]
     verdicts = []
     for a, f in adds:
@@ -486,11 +391,6 @@ def group_expect(before: list, adds: list, cap: int) -> tuple[list[str], list[tu
 
 
 def assess_group(ctx, g: dict | None, bursts: list[dict], n_stages: int) -> None:
-    """Per burst: the tab was hidden when the adds came; every add got exactly one ack within GROUP_ACK_S (a
-    timeout is its own failure, not a wrong ack); each ack is ok exactly when the add rule's verdict is held or
-    taken, against the slots the tab held; the registry after holds exactly the rule's list (held slots first, in
-    order; taken fans appended in send order; refused ones absent; no duplicate, the cap kept). Over the run: one
-    burst per stage, some taken and some refused."""
     if g is None:
         ctx.skip(GROUP_HIDDEN_ACK, "no UI (--no-ui): no Group tab")
         return
@@ -503,7 +403,6 @@ def assess_group(ctx, g: dict | None, bursts: list[dict], n_stages: int) -> None
         taken += verdicts.count("taken")
         refused += verdicts.count("refused")
         want_oks = [v != "refused" for v in verdicts]
-        # One type per field: every add's acks as a list ([] none, [ok] one, more: a duplicate ack).
         b["verdicts"], b["want_oks"], b["got_oks"] = verdicts, want_oks, b["acks"]
         got = [(s["accountId"], str(s["fanId"])) for s in (b["after"] or [])]
         brief = {k: b[k] for k in ("stage", "hidden", "shown", "verdicts", "got_oks", "ack_s")} | {"want": want, "got": got}
@@ -518,9 +417,6 @@ def assess_group(ctx, g: dict | None, bursts: list[dict], n_stages: int) -> None
 
 
 async def assess_send_bump(ctx, models: list[str]) -> None:
-    """The send path's chat-list bump (lib/chats_cache_ts.mjs, the app's lib/chatsCache in node) on
-    the owner's real head pages after the load, and one real send per model to its last row's fan.
-    Last of all: the sends add outbound rows the reply and telemetry checks would otherwise count."""
     rows, sends = {}, []
     try:
         for aid in models:
@@ -541,7 +437,7 @@ async def assess_send_bump(ctx, models: list[str]) -> None:
         return
     sent_text = {s["accountId"]: s["text"] for s in sends}
 
-    def bumped(r, v) -> bool:  # the fan's one row heads the cache with the sent text, nothing else moved
+    def bumped(r, v) -> bool:
         return (v["head"] == [r["accountId"], r["fanId"]] and v["copies"] == 1 and v["untouched"]
                 and v["text"] == sent_text[r["accountId"]] and v["before"] == v["after"])
 
@@ -554,8 +450,6 @@ async def assess_send_bump(ctx, models: list[str]) -> None:
 
 
 async def event_bus_run(ctx, agency: dict) -> dict:
-    """lib/events_ts.mjs on the Agency's session: the app's real EventBus through BUS_PLAN.
-    A harness failure comes back as {"error"} (the bus checks fail on it), never a crashed run."""
     cookie = "; ".join(f"{k}={v}" for k, v in agency["http"].c.cookies.items())
     try:
         return await app_ts.run(ctx, EVENTS_TS, {**BUS_PLAN, "base": ctx.relay, "cookie": cookie})
@@ -564,11 +458,6 @@ async def event_bus_run(ctx, agency: dict) -> dict:
 
 
 def assess_event_bus(ctx, out: dict, listener) -> None:
-    """The bus's listeners against the relay's own order: the Agency's direct /events listener
-    (no reconnects) got every DM in relay order. The bus's DMs must be exactly the span of that
-    order from its first DM to its last (nothing dropped, none twice, no resync), in the same
-    order; and the retry delays it armed must be RETRY_MIN doubling to the RETRY_MAX cap through
-    the first outage, then RETRY_MIN again after a socket opened."""
     ctx.metric("event_bus", {k: v for k, v in out.items() if k != "got"} | {"got": len(out.get("got", []))})
     if "error" in out:
         for name in (BUS_NOTHING_DROPPED, BUS_ORDER, BUS_BACKOFF):
@@ -602,7 +491,6 @@ def assess_event_bus(ctx, out: dict, listener) -> None:
 
 
 def telemetry_lines(path) -> list[dict]:
-    """The relay's write_telemetry JSON lines, in order (relay.log = what docker logs holds)."""
     out = []
     for line in path.read_text(errors="replace").splitlines():
         i = line.find(" write_telemetry {")
@@ -612,12 +500,6 @@ def telemetry_lines(path) -> list[dict]:
 
 
 async def assess_telemetry(ctx, dms: list[dict], quiet: dict, actions: dict, ui_reads: int) -> None:
-    """The production telemetry line, read back from relay.log after a forced flush:
-    on time, counts equal to what was injected (frames: every hook frame; DMs per
-    Creator), every drop counter 0, and the write transactions per action: the
-    OF-cache rows (DMs, read state) commit through the OF-cache writer's batches
-    and a reply is one transaction of its own plus its audit row. Plus a summary
-    table of what it measured."""
     cadence = f"write_telemetry lines: one every {TELEMETRY_S:g}s (+-{TELEMETRY_SLACK_S}s) through the run"
     counts = "write_telemetry lines: frames and DMs per account == injected"
     drops = "write_telemetry lines: every drop counter 0 (queue_full, persist_error, transcode_exception)"
@@ -626,7 +508,7 @@ async def assess_telemetry(ctx, dms: list[dict], quiet: dict, actions: dict, ui_
             ctx.skip(name, "CHATTERLY_WRITE_TELEMETRY_S=0 (telemetry off, e.g. the overhead A/B)")
         return
     flushed = (await ctx.owner.post("/__slop/telemetry-flush", json={})).json().get("line")
-    await asyncio.sleep(0.5)  # the log line reaches relay.log (stderr, line-buffered)
+    await asyncio.sleep(0.5)
     lines = telemetry_lines(ctx.out / "relay.log")
     ivl = [x for x in lines if x["reason"] == "interval"]
     span = sum(x["s"] for x in lines)
@@ -664,7 +546,6 @@ async def assess_telemetry(ctx, dms: list[dict], quiet: dict, actions: dict, ui_
               and quiet.get("persist_drops") == 0,
               per_reason=total, drops_cum=cum, persist_drops=quiet.get("persist_drops"))
 
-    # Write transactions per action, by the line's writer labels.
     txns = {}
     for x in lines:
         for wn, w in x["w"].items():
@@ -684,7 +565,6 @@ async def assess_telemetry(ctx, dms: list[dict], quiet: dict, actions: dict, ui_
               txns=reply_txns, replies=replies, per_reply=round(reply_txns / max(1, replies), 3),
               max=REPLY_TXNS_MAX)
 
-    # What the line measured (for sizing the write path), over the whole run.
     writers: dict[str, dict] = {}
     for x in lines:
         for wn, w in x["w"].items():
@@ -738,8 +618,6 @@ async def assess_telemetry(ctx, dms: list[dict], quiet: dict, actions: dict, ui_
 
 
 async def stall_relay(ctx, seconds: float) -> dict:
-    """Freeze the whole relay process group for `seconds` (SIGSTOP / SIGCONT). The load
-    keeps coming: every chatter request and fan frame sent meanwhile waits on the socket."""
     import os
     import signal
     t0 = time.time()
@@ -752,9 +630,6 @@ async def stall_relay(ctx, seconds: float) -> dict:
 
 
 def assess_stall(ctx, stall: dict) -> None:
-    """The 30 s after SIGCONT: every second of relay CPU, and the p95 of the actor
-    requests sent after the relay resumed (the ones frozen in the stall are its own
-    cost, not the recovery's), must stay within normal bounds: no storm."""
     name = (f"relay absorbs a {STALL_S:g}s stall: CPU <= {STORM_CPU_MAX_PCT}% every second and p95 <= "
             f"{STORM_REQ_P95_MS}ms for requests sent in the {RECOVER_WINDOW_S}s after (no SQLite connection storm)")
     if not stall:
@@ -782,7 +657,7 @@ def assess_stall(ctx, stall: dict) -> None:
 
 async def assess(ctx, w, paced, chatters, listeners, markers, stages, tab_takes, final_rx, quiet,
                  seeded_unread, owner_of, ui_models, big, lag_samples, ui_read, tabs) -> None:
-    dms = paced.sent + [m for m in markers if m["status"] < 300]  # every inbound chat message injected
+    dms = paced.sent + [m for m in markers if m["status"] < 300]
     sent_ids = {d["message_id"] for d in dms}
     ctx.metric("load", {"dms": len(paced.sent), "tips": sum(d["kind"] == "tip" for d in paced.sent),
                         "purchases": len(paced.purchases), "typing": paced.typing, "markers": len(markers),
@@ -792,15 +667,13 @@ async def assess(ctx, w, paced, chatters, listeners, markers, stages, tab_takes,
                             round(max(lag_samples), 1) if lag_samples else None})
     ctx.metric("relay_stats", quiet)
 
-    # ── nothing dropped ──────────────────────────────────────────────
     ctx.check("every injected frame accepted, none shed", paced.failed == 0 and paced.shed == 0
               and all(m["status"] < 300 for m in markers), failed=paced.failed, shed=paced.shed)
     ctx.check("relay quiesced (all frames transcoded)", not quiet.get("timed_out"), stats=quiet)
     ctx.check("zero persist-queue drops", quiet.get("persist_drops") == 0, drops=quiet.get("persist_drops"))
     con = w.sql()
     try:
-        # The frame's id is nested ({"api2_chat_message": {"id": ...}}), so event_inbox's
-        # provider_event_id (top-level id/messageId/eventId) is NULL for it: read the payload.
+        # the frame's id is nested, so event_inbox's provider_event_id is NULL for it: read the payload
         inbox_ids = {int(r[0]) for r in con.execute(
             "SELECT json_extract(payload_json, '$.api2_chat_message.id') FROM event_inbox "
             "WHERE event_type='api2_chat_message'") if r[0] is not None}
@@ -832,7 +705,6 @@ async def assess(ctx, w, paced, chatters, listeners, markers, stages, tab_takes,
     ctx.check("every chatter reply is one outbound `messages` row", replies == ok_replies,
               rows=replies, replies=ok_replies)
 
-    # ── SSE: delivered, isolated, in order ───────────────────────────
     by_agency: dict[str, set[int]] = {}
     for d in dms:
         by_agency.setdefault(owner_of[d["account_id"]], set()).add(d["message_id"])
@@ -865,7 +737,6 @@ async def assess(ctx, w, paced, chatters, listeners, markers, stages, tab_takes,
         ctx.check("the All Models tab received every DM of its 5 models, no resync",
                   not (ui_ids - got) and tab_resync == 0, missing=len(ui_ids - got), of=len(ui_ids),
                   resync=tab_resync)
-        # A crashed or stalled tab is its own check; here, the tabs that could answer.
         sound = {n for n in TABS if live(tabs[n]) and not tabs[n].slop.get("stalls")}
         unseen = [m["text"] for m in markers if not all(m.get("seen", {}).get(n) for n in m["watchers"]
                                                         if n != "inbox" and n in sound)]
@@ -877,7 +748,6 @@ async def assess(ctx, w, paced, chatters, listeners, markers, stages, tab_takes,
             ctx.note("  The list's pages come from OnlyFans' /chats (/api/of/v2/chats), held in a slop run; "
                      "an app build that only patches loaded pages leaves the list on its local seed.")
 
-    # ── unread per thread ────────────────────────────────────────────
     inbound: dict[tuple, list[float]] = {}
     for d in dms:
         inbound.setdefault((d["account_id"], d["fan_id"]), []).append(d["t0"])
@@ -890,7 +760,6 @@ async def assess(ctx, w, paced, chatters, listeners, markers, stages, tab_takes,
             if got_u != seeded + len(t0s):
                 exact_bad.append({"thread": key, "got": got_u, "want": seeded + len(t0s)})
         else:
-            # A chatter's last read/reply time is known; a tab's mark-read time is not (lo 0).
             lo = 0 if key in ui_read else sum(t > chatters.last.get(key, float("inf")) for t in t0s)
             if got_u is None or not lo <= got_u <= seeded + len(t0s):
                 bound_bad.append({"thread": key, "got": got_u, "lo": lo, "hi": seeded + len(t0s)})
@@ -909,7 +778,6 @@ async def assess(ctx, w, paced, chatters, listeners, markers, stages, tab_takes,
                 api_bad += 1
     ctx.check("/admin/chats/recent head pages agree on unread (untouched threads)", api_bad == 0, wrong=api_bad)
 
-    # ── per stage: budgets + the table ───────────────────────────────
     rows_out, worst = [], {}
     for st in stages:
         name = st["name"]

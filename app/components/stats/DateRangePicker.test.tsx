@@ -1,8 +1,3 @@
-/**
- * DateRangePicker, the reports' range box (page-parity ticket 25): the trigger shows both days (and the hours with
- * `hours`), the popover's presets call back with `presetRange`, a typed date is Custom, and a span of more than a
- * year is refused with Infloww's line. The clock is pinned to Wed 14 Oct 2026 12:00Z, browser zone UTC.
- */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
@@ -58,7 +53,6 @@ describe("DateRangePicker", () => {
     render(<DateRangePicker from={null} to={null} preset="30d" onChange={onChange} />);
     fireEvent.click(within(open()).getByRole("button", { name: "Last 90 days" }));
     expect(onChange).toHaveBeenLastCalledWith(...presetRange("90d"), "90d");
-    // 90 calendar days, today included.
     expect(presetRange("90d")).toEqual(["2026-07-17", "2026-10-14"]);
     fireEvent.click(screen.getByRole("button", { name: "Last 365 days" }));
     expect(onChange).toHaveBeenLastCalledWith("2025-10-15", "2026-10-14", "365d");
@@ -84,7 +78,6 @@ describe("DateRangePicker", () => {
     const onChange = vi.fn();
     render(<DateRangePicker from="2026-10-07" to="2026-10-14" preset="7d" onChange={onChange} />);
     const dialog = open();
-    // 2025-09-09 to 2026-10-14 is 400 days.
     fireEvent.change(within(dialog).getByLabelText("From date"), { target: { value: "2025-09-09" } });
     expect(onChange).not.toHaveBeenCalled();
     expect(within(dialog).getByRole("alert")).toHaveTextContent(SPAN_LIMIT);
@@ -94,7 +87,6 @@ describe("DateRangePicker", () => {
     expect(onChange).toHaveBeenLastCalledWith("2026-10-01", "2026-10-14", "custom");
     expect(within(dialog).queryByRole("alert")).toBeNull();
 
-    // The bounds' own year, a year back to today, fits.
     fireEvent.change(within(dialog).getByLabelText("From date"), { target: { value: dateBounds()[0] } });
     expect(onChange).toHaveBeenLastCalledWith("2025-10-14", "2026-10-14", "custom");
   });
@@ -118,7 +110,6 @@ describe("DateRangePicker", () => {
     fireEvent.change(within(dialog).getByLabelText("From date"), { target: { value: "2026-10-15" } });
     expect(onChange).not.toHaveBeenCalled();
 
-    // The same hour on both sides is that one hour.
     fireEvent.click(within(dialog).getByRole("combobox", { name: "From hour" }));
     fireEvent.click(screen.getByRole("option", { name: "10 AM" }));
     expect(onChange).toHaveBeenLastCalledWith("2026-10-14T10:00", "2026-10-14T10:00", "custom");

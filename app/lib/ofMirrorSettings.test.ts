@@ -27,8 +27,8 @@ describe("applySettings", () => {
     expect(input(d, "setting_unfollowAutoFollowBack").checked).toBe(false);
     expect(input(d, "setting_recommenderReward").checked).toBe(false);
     expect(input(d, "setting_sendAwardsTop1").checked).toBe(true);
-    expect(input(d, "setting_sendAwardsTop5").checked).toBe(true); // field absent
-    expect(input(d, "dark_mode_switcher").checked).toBe(true); // unmapped
+    expect(input(d, "setting_sendAwardsTop5").checked).toBe(true);
+    expect(input(d, "dark_mode_switcher").checked).toBe(true);
   });
 
   it("sets /users/me checkboxes, text inputs, the watermark help line and the position select", () => {
@@ -47,7 +47,6 @@ describe("applySettings", () => {
     expect(d.querySelector<HTMLInputElement>("[name=watermark_position]")!.value).toBe("top_left");
     expect(d.querySelector(".v-select__selection")!.textContent).toBe("Top left");
 
-    // The open position list marks the model's position; the generated page keeps none of the capture's (nor its text).
     document.documentElement.innerHTML = readFileSync(resolve(__dirname, "../public/of-mirror/pages/settings/security/watermarks/state-options.html"), "utf8");
     const marked = () =>
       [...document.querySelectorAll("[role=listbox] .v-list-item")]
@@ -66,10 +65,9 @@ describe("applySettings", () => {
     applySettings(p, "profile", { me: { website: "https://example.com", location: "" } });
     expect(input(p, "input-website").value).toBe("https://example.com");
     expect(p.querySelector(".v-counter")!.textContent).toBe("19 / 100");
-    // The floating label moves up for a filled field and back down for an empty one.
     expect(input(p, "input-website").closest(".v-input")!.className).toBe("v-input v-input--is-label-active v-input--is-dirty");
     expect(p.querySelector("#input-website")!.closest(".v-input")!.querySelector(".v-label")!.className).toBe("v-label v-label--active");
-    expect(p.querySelector("legend")!.style.width).toBe("6px"); // jsdom: no layout, so the label measures 0
+    expect(p.querySelector("legend")!.style.width).toBe("6px");
     expect(input(p, "input-location").closest(".v-input")!.className).toBe("v-input");
     expect(input(p, "input-location").closest(".v-input")!.querySelector(".v-label")!.className).toBe("v-label");
   });
@@ -87,7 +85,7 @@ describe("applySettings", () => {
     });
     expect(input(d, "toggle_new_tips").checked).toBe(true);
     expect(input(d, "toggle_new_comment").checked).toBe(false);
-    expect(input(d, "toggle_new_stream").checked).toBe(true); // code absent
+    expect(input(d, "toggle_new_stream").checked).toBe(true);
   });
 
   it("checks the matching radio and maps story replies", () => {
@@ -197,7 +195,6 @@ describe("Messaging (OF's settings-messaging.js)", () => {
       `/img?u=${encodeURIComponent("https://cdn.example.invalid/p1.jpg")}`,
       `/img?u=${encodeURIComponent("https://cdn.example.invalid/v2.jpg")}`,
     ]);
-    // Media only: no text bubble, as OF's (no m-text).
     run("");
     expect(d.querySelector(".b-settings__message .b-chat__message")!.className).toBe("b-chat__message m-has-media m-photo m-from-me");
     expect(d.querySelector(".b-settings__message .b-chat__message__text-wrapper")).toBeNull();
@@ -216,7 +213,6 @@ describe("Messaging (OF's settings-messaging.js)", () => {
     expect(d.getElementById("messageOnlyFromFriends")).toBeNull();
     const box = d.querySelector(".b-settings__message")!;
     expect(box.classList.contains("g-disabled")).toBe(false);
-    // Once read, both show: off grays the welcome.
     applyPageExtras(d, "messaging", { me: { subscribePrice: 0, canChat: true }, settings: { replyOnSubscribe: false }, templates: [welcome] }, true);
     expect(d.getElementById("messageOnlyFromFriends")).not.toBeNull();
     expect(d.querySelector(".b-settings__message")!.classList.contains("g-disabled")).toBe(true);
@@ -270,7 +266,6 @@ describe("Account > Login sessions (OF's settings-sessions.js, read-only)", () =
     document.documentElement.innerHTML = readFileSync(resolve(__dirname, "../public/of-mirror/pages/settings/account/sessions.html"), "utf8");
     return document;
   };
-  // Made-up sessions (documentation IPs, no real device or place).
   const at = new Date(2026, 9, 9, 15, 4).getTime() / 1000;
   const SESSIONS = [
     { sessionId: "s2", client: "Firefox 1.0", os: "Linux 1", brand: "", ipAddress: "203.0.113.2", countryName: "Synthetic Land", lastActivity: at, isCurrent: false },
@@ -282,7 +277,7 @@ describe("Account > Login sessions (OF's settings-sessions.js, read-only)", () =
   it("the current session above Close all sessions, the others in their own list, as OF draws them", () => {
     const d = page();
     expect(rows(d)).toEqual([]);
-    expect(d.querySelector("[data-oi-empty]")).toBeNull(); // no invented copy
+    expect(d.querySelector("[data-oi-empty]")).toBeNull();
     for (let i = 0; i < 2; i++) applyPageExtras(d, "account/sessions", { sessions: SESSIONS }, true);
     expect(rows(d)).toEqual([
       "Chrome 1.0, Mac OS 1, Apple Active now 203.0.113.1 • Synthetic Land",
@@ -303,7 +298,6 @@ describe("Account > Login sessions (OF's settings-sessions.js, read-only)", () =
     expect(d.querySelectorAll<HTMLElement>(".b-sessions-list")[1].style.display).toBe("none");
     const buttons = [...d.querySelectorAll<HTMLButtonElement>("#content button")];
     expect(buttons.length).toBeGreaterThan(0);
-    // ticket 63: Close all sessions is usable (ofMirrorSettingsWrites); its Not-yet title stays (D1).
     for (const b of buttons) {
       expect([b.disabled, b.title]).toEqual([b.textContent?.trim() !== "Close all sessions", "Not available in Inflowwww yet"]);
     }

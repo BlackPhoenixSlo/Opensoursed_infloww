@@ -1,24 +1,7 @@
 #!/usr/bin/env python3
-"""test_script_fill_lock_hold — how long `fill/apply` holds the SQLite write lock on a big vault (spec phase 01 ›
-Seam 2b, ticket 11).
-
-A temp DB seeded with 12,000 Fillable-shaped vault items on Creator A of the two-Agency fixture (857 Shoots of
-the decide suite's 13-item shape plus an exact copy of one photo each — 857 dupe pairs — and 2 loose photos; every
-Shoot's last clip in one priced OF list) and one 6-Step Sequence. Apply runs over HTTP 5 times (the Sequence is
-emptied between runs, so each run writes); a timing wrapper around `script_fill_api.immediate_session` (in the
-test, not a product hook) measures BEGIN IMMEDIATE to COMMIT. Prints the median and max hold in ms (plus plan and
-apply wall times) and fails when the max is over 2,000 ms: over the bar, the Phase is re-specced, not patched.
-
-Contended (ticket 11): the same applies while 1 and then 4 `fill/plan` loops run on the SAME event loop
-(httpx ASGITransport, as uvicorn serves the relay: one loop) — the hold bar still holds, and no other plan computes
-while apply holds the write lock. A burst of 5 plans proves two plan computations never overlap (a counting wrapper
-around `script_fill_decide.plan_over_vault`, in the test) and prints the fifth plan's wall: the wait behind 4 others.
-
-Run: ./venv/bin/python service/tests/test_script_fill_lock_hold.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -41,7 +24,7 @@ IDS = fx.seed_two_agencies()
 A = IDS["creator_a"]
 SEQ = "Six step"
 ITEMS = 12_000
-SHOOTS = 857            # 857 x 14 = 11,998, + 2 loose photos
+SHOOTS = 857
 HOLD_MAX_MS = 2_000
 RUNS = 5
 
@@ -50,7 +33,7 @@ async def _seed() -> None:
     rows = []
     for k in range(SHOOTS):
         base = 1_000 + k * 20
-        shoot = sf.shoot(A, base, at=sf.T0 + timedelta(days=3 * k))  # past the 48 h outfit window
+        shoot = sf.shoot(A, base, at=sf.T0 + timedelta(days=3 * k))
         shoot[12]["of_folder_ids"] = json.dumps([7])
         shoot.append(sf.vault_row(A, base + 14, "suggestive", dupe_of=base + 4,
                                   created_at=shoot[3]["created_at"]))
@@ -73,7 +56,7 @@ OWNER = fx.login_owner("agency_a_owner")
 
 _holds: list[float] = []
 _real = script_fill_api.immediate_session
-_locked = threading.Event()             # set from BEGIN IMMEDIATE to COMMIT of a timed apply
+_locked = threading.Event()
 
 
 @contextlib.asynccontextmanager
@@ -89,8 +72,6 @@ async def _timed():
 
 
 class _Overlap:
-    """Counts `plan_over_vault` computations in flight (they run in threads): `peak` > 1 = two overlapped;
-    `in_lock` = computations started while a timed apply held the write lock."""
 
     def __init__(self) -> None:
         self.mu = threading.Lock()
@@ -158,8 +139,6 @@ def case_apply_lock_hold_on_12000_items():
 
 
 async def _contended(plans: int) -> None:
-    """RUNS applies, each while `plans` fill/plan loops run on this loop; asserts the hold bar and that no
-    other plan computed under the write lock."""
     url = f"/admin/saved-replies/fill/{{}}?account_id={A}"
     holds_at = len(_holds)
     stop = asyncio.Event()
@@ -178,11 +157,12 @@ async def _contended(plans: int) -> None:
     with _Overlap() as seen:
         async with _client() as c:
             bg = [asyncio.create_task(loop_plans(c)) for _ in range(plans)]
-            await asyncio.sleep(0.5)          # the plan loops are queued / computing before the first apply
+            await asyncio.sleep(0.5)
             script_fill_api.immediate_session = _timed
             try:
                 for _ in range(RUNS):
-                    await asyncio.to_thread(_empty_sequence)   # off the loop: a plan's write must commit
+                    # Off the loop: a plan's write must commit while the apply holds the write lock.
+                    await asyncio.to_thread(_empty_sequence)
                     t0 = time.perf_counter()
                     r = await c.post(url.format("apply"), json={"sequence": SEQ})
                     walls.append((time.perf_counter() - t0) * 1000)
@@ -214,7 +194,6 @@ async def case_apply_lock_hold_with_4_concurrent_plans():
 
 
 async def case_plan_computations_never_overlap():
-    """5 plans fired at once on one loop: one computation at a time; the slowest waited behind the other 4."""
     url = f"/admin/saved-replies/fill/plan?account_id={A}"
 
     async def one(c: httpx.AsyncClient) -> float:

@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * TagCreatorsPicker — popover for @-tagging other creators in a chat
- * message. Mirrors the desktop app's TagUserPicker: GETs OF's
- * /self/tagged-friend-users, searches by debounced query, multi-selects
- * via row click. Selected ids are owned by the parent (Composer) so the
- * chip row above the textarea can render them outside this popover.
- *
- * OnlyFans rejects userTags ids that aren't on the caller's tagged-friend
- * list with 400, so the picker IS the contract — never let users type
- * arbitrary ids.
- *
- * `messagesPro` (only the Composer passes it) is Infloww's "Tag other
- * Creators": a 34px @ toolbar icon (it took the place of "Mention this fan",
- * TODO.md A5), picks staged until "Add", and "More" ›
- * "Add a tag" › "Release form" Not wired (docs/spec/phase-04-composer-ppv-vault.md).
- */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -40,18 +24,15 @@ export interface TagCreatorsPickerProps {
   selected: TaggedCreatorChoice[];
   onChange: (next: TaggedCreatorChoice[]) => void;
   disabled?: boolean;
-  /** Messages Pro mode: picks apply only on "Add". */
   messagesPro?: boolean;
 }
 
+// OF 400s userTags ids not on the tagged-friend list: the picker is the contract, never free-typed ids.
 export function TagCreatorsPicker({
   accountId, selected, onChange, disabled, messagesPro,
 }: TagCreatorsPickerProps) {
-  // The Infloww palette when opened from Messages Pro; nothing anywhere else.
   const palette = useInflowwPalette();
   const [open, setOpen] = useState(false);
-  // Messages Pro stages picks here, seeded from `selected` on open; closing
-  // without "Add" drops them.
   const [staged, setStaged] = useState<TaggedCreatorChoice[]>([]);
   const [moreOpen, setMoreOpen] = useState(false);
   const picks = messagesPro ? staged : selected;
@@ -62,9 +43,6 @@ export function TagCreatorsPicker({
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  // Portal+fixed coords so the popover escapes the host modal's overflow
-  // clip (post/mass composers were chopping off the bottom and side of
-  // the panel). Auto-picks up vs. down based on which side has room.
   const [coords, setCoords] = useState<PopoverCoords | null>(null);
 
   useEffect(() => {
@@ -166,6 +144,7 @@ export function TagCreatorsPicker({
           )}
         </>}
       </button>
+      {/* Portal: the host modal's overflow clip chopped the popover. */}
       {open && coords && typeof document !== "undefined" && createPortal(
         <div
           ref={popRef}
@@ -263,7 +242,6 @@ export function TagCreatorsPicker({
           )}
           {messagesPro && (
             <div className="border-t border-border">
-              {/* Not wired: the relay lists no release forms (spec, ASSUMPTION). */}
               {moreOpen && (
                 <div role="group" aria-label="Add a tag">
                   <div className={POP_HEAD}>Add a tag</div>
@@ -306,8 +284,6 @@ export function TagCreatorsPicker({
   );
 }
 
-/** Chip row used by the Composer above the textarea so users see who's
- *  tagged without opening the popover. Click ✕ to drop one. */
 export function TaggedCreatorChips({
   selected, onChange,
 }: { selected: TaggedCreatorChoice[]; onChange: (next: TaggedCreatorChoice[]) => void }) {

@@ -1,17 +1,9 @@
-/**
- * ChattingStatsTable — Employee reports' "Chatting statistics" (roadmap W5 5.2).
- *
- * Rendered with the relay mocked at `fetch` by URL: `/admin/stats/chatting-stats` answers the rows, so the request,
- * the direct vs mass split and the formatted figures are assertions about the wire. Every name is fake.
- */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { jsonRes, renderWithProviders } from "@/test-utils";
 
-// The Export pop-up reads the role's denied actions; nothing is denied here.
 vi.mock("@/lib/appliedSettings", () => ({ useAppliedSettings: () => ({ data: undefined }) }));
-// The scheduled-hours card reads the Timesheet for a user session only (owner / Master); none by default.
 let owner = false;
 vi.mock("@/contexts/UserContext", () => ({
   useOptionalUser: () => (owner ? { user: { user_id: "owner-1", username: "owner" } } : { user: null }),
@@ -42,7 +34,6 @@ const IDLE: ChattingStatsRow = {
   messages_per_clocked_hour: null, fans_chatted_per_clocked_hour: null,
 };
 
-/** The 30 days before FROM..TO, as useReportRange gives them. */
 const PRIOR_FROM = "2026-08-16T04:00:00.000Z";
 const PRIOR_TO = "2026-09-15T03:59:59.999Z";
 
@@ -123,16 +114,12 @@ describe("ChattingStatsTable", () => {
       return `${q.get("from")} ${q.get("to")}`;
     }).sort()).toEqual([`${FROM} ${TO}`, `${PRIOR_FROM} ${PRIOR_TO}`].sort()));
     const cells = () => within(within(table).getAllByRole("row")[1]).getAllByRole("cell");
-    // Sales $1,500 against $1,000: up 50%; PPV sales $1,200 against $1,500: down 20%; Tips with nothing before: "-";
-    // the rest flat.
     await waitFor(() => expect(cells()[2].textContent).toBe("$1,500↑50.00%"));
     expect(within(cells()[2]).getByRole("img", { name: "rising" })).toBeTruthy();
     expect(cells()[3].textContent).toBe("$1,200↓20.00%");
     expect(within(cells()[3]).getByRole("img", { name: "falling" })).toBeTruthy();
     expect(cells()[4].textContent).toBe("$300-");
     expect(cells()[5].textContent).toBe("$9000.00%");
-    // Fans chatted 80 against 40 rises in the good colour; Response time 3m 05s against 6m 10s falls, and with a
-    // lower wait the better, the fall takes the good colour.
     const cell = (label: string) => {
       const heads = within(table).getAllByRole("columnheader").map((h) => h.textContent);
       return cells()[heads.findIndex((h) => h?.startsWith(label))];
@@ -214,23 +201,19 @@ describe("ChattingStatsTable", () => {
   });
 
   it("shows Infloww's five cards over the table, computed from the rows, pending sales in Total sales", async () => {
-    // Beta Two's only sale is pending (uncleared): the Relay counts it in sales_cents, so Total sales does too.
     employees = [ROW, { ...IDLE, sales_cents: 2500, ppvs_unlocked: 2, direct_ppvs_sent: 10, replies: 10,
       avg_reply_seconds: 65 }];
     renderWithProviders(<ChattingStatsTable from={FROM} to={TO} />);
     await screen.findByRole("table");
     const card = (name: string) => screen.getByRole("group", { name });
     expect(within(card("Total sales")).getByText("$1,525")).toBeInTheDocument();
-    // Pooled: (10 + 2) unlocked of (40 + 10) sent, not the mean of 25% and 20%.
     expect(within(card("Unlock rate")).getByText("24.00%")).toBeInTheDocument();
-    // Weighted by replies: (185 × 30 + 65 × 10) / 40 = 155s.
     expect(within(card("Average response time (all replies)")).getByText("2m 35s")).toBeInTheDocument();
     for (const name of ["Average response time (based on scheduled hours)", "Total number of scheduled hours"]) {
       expect(card(name)).toHaveAttribute("title", "not wired");
       expect(within(card(name)).getByText("-")).toBeInTheDocument();
     }
     expect(screen.getByText(/^Percentage changes are calculated/)).toBeInTheDocument();
-    // The legacy antd head: #353535 (bg-bg-elev-2), sentence-case labels.
     expect(within(screen.getByRole("table")).getByText("PPV sales")).toHaveClass("bg-bg-elev-2");
   });
 
@@ -255,7 +238,6 @@ describe("ChattingStatsTable", () => {
     const sheet = fetchMock.mock.calls.map(([u]) => new URL(String(u), "http://relay.test"))
       .find((u) => u.pathname === "/admin/shifts/timesheet")!;
     expect(sheet.searchParams.get("group")).toBe("employee");
-    // The scheduled-hours response time stays Not wired.
     expect(screen.getByRole("group", { name: "Average response time (based on scheduled hours)" }))
       .toHaveAttribute("title", "not wired");
   });
@@ -263,12 +245,11 @@ describe("ChattingStatsTable", () => {
   it("chatter role only: scheduled hours of every Chatter-role Employee, one with no chatting too (not only the rows')", async () => {
     owner = true;
     const base = fetchMock.getMockImplementation() as (url: string) => Promise<Response>;
-    // Employee 9 holds the Chatter role and has a 30-minute shift, but chatted nothing: no row of its own.
     fetchMock.mockImplementation(async (url: string) => String(url).split("?")[0] === "/admin/stats/chatting-stats"
       ? jsonRes({ employees: [ROW], attribution_fallback: null, chatter_ids: [1, 9] }) : base(url));
     renderWithProviders(<ChattingStatsTable from={FROM} to={TO} chatterOnly />);
     const card = () => screen.getByRole("group", { name: "Total number of scheduled hours" });
-    await waitFor(() => expect(within(card()).getByText("352h")).toBeInTheDocument()); // 21,090 + 30 minutes
+    await waitFor(() => expect(within(card()).getByText("352h")).toBeInTheDocument());
   });
 
   it("ticking chatter role only: scheduled hours wait for the Chatter roster (loading), never 0h from the last read", async () => {
@@ -285,14 +266,14 @@ describe("ChattingStatsTable", () => {
     expect(within(card()).getByText("…")).toBeInTheDocument();
     expect(within(card()).queryByText("0h")).toBeNull();
     answer(jsonRes({ employees: [ROW], attribution_fallback: null, chatter_ids: [1] }));
-    await waitFor(() => expect(within(card()).getByText("351.5h")).toBeInTheDocument()); // Employee 1's 21,090 minutes
+    await waitFor(() => expect(within(card()).getByText("351.5h")).toBeInTheDocument());
   });
 
   it.each([
     [null, false, "-", false],
     [[] as TimesheetRow[], false, "0h", true],
     [[SHEET(1, 90), SHEET(9, 60)], false, "2.5h", true],
-    [[SHEET(1, 90), SHEET(9, 60)], true, "1.5h", true], // chatter-only: the roster is Employee 1, not 9
+    [[SHEET(1, 90), SHEET(9, 60)], true, "1.5h", true],
     [[SHEET(1, 205_551)], false, "3,425.9h", true],
   ])("scheduled hours from %j (chatterOnly %s) -> %s", (sheet, chatterOnly, value, wired) => {
     const k = chattingKpis([ROW], sheet, chatterOnly, null, [1]).find((c) => c.label === "Total number of scheduled hours")!;

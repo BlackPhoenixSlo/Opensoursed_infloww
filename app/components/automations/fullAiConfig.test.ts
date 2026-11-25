@@ -31,7 +31,6 @@ describe("configLine (a window header's config)", () => {
   });
 });
 
-// ── Style layers, Typos, Writer (the settings column's pure edits) ─────────────────────────────────────────────────
 const ON: StyleLayers = { texting: true, nonnative: true, spacing: true, typos: true, painful: true };
 const OFF: StyleLayers = { texting: false, nonnative: false, spacing: false, typos: false, painful: false };
 
@@ -268,7 +267,6 @@ describe("settingRows: the JSON modal's All settings table", () => {
   ];
   const at = (live: FullAiConfig | null, draft: FullAiConfig | null, key: string) =>
     settingRows(REF, live, draft).find((r) => r.key === key)!;
-  // [name, Live (checkpoint), draft, key, Live cell, Draft cell, changed (draft ≠ Live)]
   it.each<[string, FullAiConfig | null, FullAiConfig | null, string, string, string, boolean]>([
     ["bool same both sides, at default", { gifs: false }, { gifs: false }, "gifs", "false", "false", false],
     ["bool, draft differs from Live", { gifs: false }, { gifs: true }, "gifs", "false", "true", true],

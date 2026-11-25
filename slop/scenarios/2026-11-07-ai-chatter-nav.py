@@ -1,29 +1,3 @@
-"""Sidebar: My Automations split in two, Vault Pro out of Growth, one group open at a time (2026-11-07, 11-08);
-Full AI Chat a top-level link with AI rules a popup on it, the My AI Chatter group out of the sidebar (owner
-11-15: Auto-reply and Get to know fans open by URL only, still Permission pages). The owner on a phone opens
-the nav drawer: Messages Pro, Vault Pro, Growth, Share for Share, My Automations, Full AI Chat as entries (no
-Focus row: #379, Focus opens from Messages Pro; no My AI Chatter, Auto-reply, Get to know fans or AI rules).
-Opening Growth, then My Automations (the pages a flow in files of its own adds: lib/<flow>_nav.py
-`MY_AUTOMATIONS`, then Auto Mass, Auto Post, Auto Story, Auto Funnel, Gen-Info) leaves only My Automations
-open; tapping Full AI Chat closes the drawer on its Off / Live settings; its header's AI rules opens the
-diagram in a popup that Close shuts on the same page. At desktop width Auto-reply opened by URL renders with
-no sidebar entry current, and /ai-rules lights Full AI Chat. A chatter whose enforced role ticks Auto-reply
-only opens it by URL, and the sidebar shows no My AI Chatter, no My Automations, no Full AI Chat, no AI rules
-(owner-only). A nav flow, not a volume one: one owner, one chatter, real routes on the slop temp DB.
-
-World: `agency_inbox`; the chatter through the real invite + register (`seed/chatters`), the role
-through `PUT /admin/settings/roles`.
-
-Invariants: the stored role and the chatter's Applied read (`opt_in` exactly Auto-reply), the three
-sidebars' outlines, the Off / Live settings after the tap, the AI rules popup, no 5xx from the relay in any
-browser. Screenshots: phone-drawer, phone-accordion-trigger (Growth open), phone-accordion (settled: only
-My Automations open), phone-full-ai-chatter (settled; -dark too), phone-ai-rules-popup, desktop-sidebar,
-chatter-auto-reply. --no-ui: the route checks only.
-
-Fault `full-ai-chatter-shown-to-chatter` (nav.ts's Full AI Chat without `chatterHidden`) must turn
-only the chatter-sidebar check red; `sidebar-groups-not-accordion` (Sidebar.tsx keeping every toggled group
-open) only the accordion check.
-"""
 from __future__ import annotations
 
 import json
@@ -46,11 +20,8 @@ RULES = "/ai-rules"
 
 _AUTOMATIONS = (*navs.extras("MY_AUTOMATIONS"), "Auto Mass", "Auto Post", "Auto Story", "Auto Funnel", "Gen-Info")
 MY_AUTOMATIONS = "My Automations: " + " / ".join(_AUTOMATIONS)
-# Gone from the sidebar (owner 11-15): never a row or a link in any of the three sidebars.
 GONE = ("My AI Chatter", "Auto-reply", "Get to know fans", "AI rules")
-# Full AI Chat's Settings line (FullAiChatterPage.tsx): the page that replaced "Coming soon".
 SHADOW = "Live: replies to the fans on its Fans list on OnlyFans. Off: sends nothing."
-# The drawer's entries from Messages Pro to the divider, groups by label.
 ENTRIES = ["Messages Pro", "Vault Pro", "Growth", "Share for Share", "My Automations", "Full AI Chat"]
 
 C_ROLE = "PUT /admin/settings/roles (enforced, a role ticking Auto-reply of the opt-in pages) is stored and read back"
@@ -71,8 +42,6 @@ C_CHATTER = ("chatter (role ticks Auto-reply only): Auto-reply opens by URL; the
 C_5XX = "no 5xx from the relay in any browser session"
 CHECKS = (C_ROLE, C_APPLIED, C_PHONE_DRAWER, C_ACCORDION, C_PHONE_PAGE, C_RULES_POPUP, C_DESKTOP, C_CHATTER, C_5XX)
 
-# The sidebar under `sel` as lines: "Label" for a link, "Group: Child / Child" for a group (its open
-# children only), "—" for the divider.
 _OUTLINE = """(sel) => {
   const nav = document.querySelector(sel + ' nav[aria-label="Main"]');
   if (!nav) return null;
@@ -96,12 +65,10 @@ async def _expand(page, scope: str, groups: tuple[str, ...]) -> None:
 
 
 def _gone(lines: list[str]) -> list[str]:
-    """The GONE labels any outline line names, as a row or a group's page."""
     return [g for g in GONE for line in lines if g in (line.split(": ")[0], *line.split(": ", 1)[-1].split(" / "))]
 
 
 def _window(lines: list[str] | None) -> list[str]:
-    """The lines from My Automations on, up to the divider."""
     lines = lines or []
     start = next((i for i, l in enumerate(lines) if l.startswith("My Automations")), None)
     if start is None:
@@ -111,8 +78,6 @@ def _window(lines: list[str] | None) -> list[str]:
 
 
 async def _role_setup(ctx, w) -> tuple[Http, dict]:
-    """A chatter (real invite + register), assigned a role ticking Auto-reply, Get to know fans, Full AI
-    Chatter, the Dashboard and Messages Pro, on an Agency enforcing role permissions."""
     name = f"{w.user_prefix}{w.seed}ai"
     got = (await chatters.seed(w, ctx.owner, w.user_id, [name],
                                account_ids=[[w.data["creators"][0]["id"]]]))[0]
@@ -159,7 +124,7 @@ async def run(ctx) -> None:
             await toggle.wait_for(timeout=90_000)
             await toggle.tap()
             await page.locator(f"{drawer} nav[aria-label='Main']").wait_for(timeout=30_000)
-            await page.wait_for_timeout(400)  # the sheet's slide-in
+            await page.wait_for_timeout(400)
             lines = await page.evaluate(_OUTLINE, drawer) or []
             await ui.shot(ctx, page, "phone-drawer")
             labels = [l.split(":")[0] for l in lines]
@@ -172,7 +137,7 @@ async def run(ctx) -> None:
 
             expanded = page.locator(f"{drawer} nav[aria-label='Main'] button[aria-expanded='true']")
             await _expand(page, drawer, ("Growth",))
-            await page.wait_for_timeout(300)  # the chevron's turn
+            await page.wait_for_timeout(300)
             first = [t.strip() for t in await expanded.all_text_contents()]
             await ui.shot(ctx, page, "phone-accordion-trigger")
             await _expand(page, drawer, ("My Automations",))
@@ -195,21 +160,19 @@ async def run(ctx) -> None:
                 ctx.metric("phone_page_error", str(e)[:200])
             await page.wait_for_timeout(300)
             await ui.shot(ctx, page, "phone-full-ai-chatter")
-            # The app's default theme (the harness browser runs light): the same page, dark.
             await page.evaluate("() => { localStorage.setItem('chatterly:theme', 'dark'); "
                                 "document.documentElement.removeAttribute('data-theme'); }")
             await page.wait_for_timeout(300)
             await ui.shot(ctx, page, "phone-full-ai-chatter-dark")
             ctx.check(C_PHONE_PAGE, ok, url=page.url)
 
-            # AI rules: a popup over Full AI Chat, never a page change.
             popup = page.get_by_role("dialog", name="AI rules")
             shown = closed = False
             try:
                 await page.get_by_role("button", name="AI rules", exact=True).tap()
                 await popup.get_by_label("AI rules diagram").wait_for(timeout=30_000)
                 shown = True
-                await page.wait_for_timeout(1_000)  # the diagram's read and fit
+                await page.wait_for_timeout(1_000)
                 await ui.shot(ctx, page, "phone-ai-rules-popup")
                 await popup.get_by_role("button", name="Close", exact=True).first.tap()
                 await popup.wait_for(state="detached", timeout=10_000)
@@ -241,7 +204,6 @@ async def run(ctx) -> None:
 
         async with ui.chatter_tab(ctx, http, ctx.app, viewport=DESKTOP) as page:
             await page.goto(f"{ctx.app}{AUTO_REPLY}", wait_until="domcontentloaded")
-            # Auto-reply's header = the role's grant has landed (a denied page shows the denied panel instead).
             opened = True
             try:
                 await page.locator("h1", has_text="Auto-reply").first.wait_for(timeout=90_000)

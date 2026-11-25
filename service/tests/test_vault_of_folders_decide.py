@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""
-vault_of_folders_decide — table tests over the pure rules `vault_of_folders`
-hands off. Its DB / OF side is walked by test_vault_dupes, test_vault_ai_mirror
-and test_vault_foreign_media_guard.
-
-  case_next_folder_ids_table:  read-back membership — add, drop, no-op; input
-                               not mutated.
-  case_parse_folder_ids_table: None / bad JSON / non-int ids → [].
-  case_too_many_table:         exactly max passes, max+1 is the 400 detail.
-  case_parse_threshold_table:  None / "" → default, 0 and "0" stay 0, clamp
-                               9 → 8 and -1 → 0, " 3 " → 3; "x" / [1] / {} /
-                               2.0 / True raise (400 bad_threshold).
-  case_hide_selection_table:   keeper refused, not-a-dupe refused, sent copies
-                               only with allow_sent, order kept, empty input.
-  case_chunks_table:           100 → [100], 205 → [100, 100, 5], [] → [].
-
-No DB, no OF. Run: venv/bin/python service/tests/test_vault_of_folders_decide.py
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first (binds a temp DB; this file never touches it)
@@ -25,7 +7,6 @@ import vault_of_folders_decide as d  # noqa: E402
 
 
 def _table(rows, fn) -> None:
-    """Run every row, collect every mismatch, fail once naming them all."""
     bad = [f"{rid}: {got!r} != {want!r}" for rid, args, want in rows if (got := fn(*args)) != want]
     assert not bad, "\n  " + "\n  ".join(bad)
 

@@ -1,11 +1,3 @@
-"""The composer's mass queue break-it-once fault (scenarios/2026-10-31-mass-placeholder-echo.py):
-lib/faults.py merges `register(Fault)` into FAULTS. It patches the pure decide (and the audience
-resolver) inside the relay; service/mass_queue_api.py calls both through their modules, so the route
-performs what the patched ones say. The check name lives here and the scenario imports it, so the
-target can never name a check that does not exist.
-
-  mass-queue-excluded-kept   slop/run 2026-10-31-mass-placeholder-echo --break --fault=mass-queue-excluded-kept
-"""
 from __future__ import annotations
 
 EXCL = ("excluded fans get no placeholder, no out row, no OF wire userId; "
@@ -13,18 +5,10 @@ EXCL = ("excluded fans get no placeholder, no out row, no OF wire userId; "
 
 
 def _excluded_kept() -> None:
-    """The body's `excluded_users` stay in `user_ids`: mass_queue_decide.strip_excluded is the
-    identity AND audiences.resolve_mass_audience (the route imports it at call time) hands back
-    the caller's own excluded ids among `included_users`, in the caller's order. Both, because
-    `final_audience` inside the resolver already subtracts them: strip_excluded alone is a no-op on
-    this route (measured: NOT CAUGHT). of_sends still drops them from the wire `userIds`, so OF
-    never sends them: only the DB record lies (phantom stubs, recipient_count), i.e. EXCL alone.
-    The wrapper rebuilds `included_users` from the caller's list, so it drops any id the resolver
-    ADDED (recent-chat / unread / thresholded): fine for this scenario only (explicit `user_ids`, no
-    such knob); a scenario using those knobs needs a wrapper that keeps them."""
     import audiences
     import mass_queue_decide as d
 
+    # strip_excluded alone is a no-op on this route (measured: NOT CAUGHT): the resolver already subtracts them
     d.strip_excluded = lambda user_ids, excluded: user_ids
     real = audiences.resolve_mass_audience
 

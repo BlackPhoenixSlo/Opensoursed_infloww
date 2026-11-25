@@ -1,56 +1,3 @@
-"""Share for Share requests under racing owners (service/s4s_requests_api.py, s4s_schedule_api.py, s4s_api.py's
-Discovery and blocks). Owners of BOTH sides act at once through the real routes; nothing posts to OnlyFans.
-
-World (no seed/profiles shape fits, so the scenario composes seeders itself and records metric `seed` with profile
-`s4s_requests`): `agency` n = `agencies`, `creators` spread evenly (`creators_per_agency`),
-`seed/s4s_profiles.py`: an S4S profile per Creator (10% opted out, Daily limit 1-3, 1-3 posts with a Primary),
-`blocks` Agency blocks on other Agencies' Creators. Every size is in seed.SCALES as `s4s_requests_<key>` (`--set key=N`).
-
-Load, every plan drawn from the seed (never from an answer). Days are UTC offsets from today, one per group so no
-group fills another's Daily limit, except FULL_DAY (the first limit group) and UI_DAY (the UI request):
-  sends     POST /admin/s4s/requests for every group below by the sender's owner, at most `--users` at once.
-  race      `race_groups` requests, each answered by `racers` simultaneous calls: receiver's accept/decline/skip
-            ("answer"), or accept/decline vs the sender's cancel ("vs_cancel", no skip: skip then cancel is two
-            legal moves). `--users // racers` groups in flight.
-  limit     `limit_targets` Creators each get limit+2 requests for one day from distinct senders; the target's
-            owner accepts all of them at once (each group's accepts together, all groups together).
-  booking   `bookings` requests accepted once (at most `--users` at once); then per booking the sender's owner
-            cancels its own slot twice at once while the receiver's owner tries the same slot (not its own).
-  blocks    each seeded block: send and proposal both ways (404), Discovery and /blocks of the blocking Agency.
-  cap       Creator S1 sends CAP requests today (send + cancel, so the pair frees), then CAP+1 and CAP+2; Creator S2
-            sends CAP - burst/2 the same way, then `burst` concurrent sends to distinct partners.
-  readers   `--users` owners (agency i % n), each `read_rounds` x four page visits: Requests (GET /requests
-            ?box=received + ?box=sent together), the proposal, Schedule, Discover (GET /discover + /blocks
-            together), THINK_S apart, first visit staggered over 0-3 s, while all of the above runs (stage `load`).
-  idle      SETTLE_S after the last write (stage `settle`), each of the `--users` owners opens Requests once (both
-            boxes), staggered over CALM_SPREAD_S (stage `calm`): GET /requests on an idle relay.
-  UI (UI run only): agency 0's owner opens /share-for-share/requests on its Creator U (which nothing else touches),
-            shot `requests-trigger` (U's one pending request), clicks Accept, shot `requests-settled` (the
-            "Share for Share Scheduled!" modal); then `schedule` (the new slot), `discover-creators`, `settings`.
-            Side effect: the request row accepted with its 2 slots + 2 pending s4s_post jobs, and GET /requests.
-
-Checks: lib/s4s_faults.py (names) — one winner per race, 2 slots + 2 pending jobs per accept else none, Daily limit
-per Creator per day, the CAP/day cap sequential and racing, blocks, one `actions` row per transition, racing slot
-cancels, boxes / schedule / Discovery / proposal against the DB (proposals go to the FULL_DAY target, so the right
-answer is a later day). Budgets: p95 GET /requests <= P95_MS under load (P95_LOAD) and idle (P95_IDLE), load-stage
-p95s <= LOAD_CEILING_MS, P95_VS_LAST over the load-stage routes in VS_LAST_LOAD and the idle GET /requests.
-KNOWN_RED checks are SKIPped with their open finding while they measure red, and FAIL once they measure green.
-
-Bypasses (declared): Agencies through the real POST /auth/register; Creators, S4S profiles, posts and blocks are SQL
-(seed/s4s_profiles.py: the rows the Settings save, the posts routes and POST /blocks write; display fields as an OF
-/users/me read stores them). No OnlyFans: the relay runs no executor (CHATTERLY_TEST_MODE), so the s4s_post jobs
-Accept queues stay pending and are only counted, never run. The UI's GET /admin/s4s/profiles reads each Creator's OF
-/users/me, which fails offline and keeps the stored copy (the product's own fallback). Assertions read the temp DB
-(sqlite, read-only). Guesses: readers' think time (THINK_S; with none, 200 back-to-back readers saturate the relay's
-event loop: loop 84%, GET /requests p95 1525 ms, run 20261101T105220Z-2026-11-01-s4s-requests-race-f18a, measured),
-the idle stage's SETTLE_S and CALM_SPREAD_S. Calls wait CALL_TIMEOUT_S, not the harness's 30 s (the UI's fetch has
-none). A run that crosses 00:00 UTC would shift the CAP/day count (not guarded).
-
-Faults: `s4s-accept-unguarded-update` (the scenario's FAULT) drops `_transition`'s status guard, so racing answers
-both win: one-winner and slots/jobs go red. `s4s-daily-limit-skipped` makes Accept's and the proposal's limit test
-always pass: the Daily-limit and proposal checks go red. `s4s-send-cap-unlocked` runs Send in a deferred
-transaction again (`immediate_session` = get_session), so S2's burst passes the cap: the racing-cap check goes red.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -70,25 +17,21 @@ from slop.seed import s4s_profiles
 UI = True
 FAULT = "s4s-accept-unguarded-update"
 WORLD = "s4s_requests"
-FULL_DAY, UI_DAY, UI_HOUR = 1, 2, 9    # day offsets from today (UTC); the UI request's hour
-HOURS = (7, 22)                        # a planned slot's UTC hour range
-PLAN_HEADROOM = 5                      # planned sends stay <= CAP - this per Creator; the cap senders top up
-WINDOW_DAYS = 41                       # GET /schedule's window (the route allows at most 42 days)
-PROPOSAL_DAYS, PROPOSAL_HOUR = 60, 6   # mirror service/s4s_requests_api.py
-WAIT_MS, MODAL_MS, FADE_MS = 120_000, 30_000, 800  # UI waits; FADE_MS: the modal's fade-in before the shot
-# Past the service's worst answer (busy_timeout 30 s + pool wait), as the UI's fetch (no timeout): at the harness's
-# 30 s a slow write's answer was lost though the server applied it (runs 20261101T111242Z-...-b4a4 and
-# 20261101T111411Z-...-77a7: 3 ReadTimeouts whose transitions are in `actions`; measured). Slowness stays measured
-# by the budgets below; a server 500 still fails the stock no-5xx check.
+FULL_DAY, UI_DAY, UI_HOUR = 1, 2, 9
+HOURS = (7, 22)
+PLAN_HEADROOM = 5
+WINDOW_DAYS = 41
+PROPOSAL_DAYS, PROPOSAL_HOUR = 60, 6
+WAIT_MS, MODAL_MS, FADE_MS = 120_000, 30_000, 800
+# Past the service's worst answer (busy_timeout 30 s + pool wait): at the harness's 30 s a slow write's answer was lost though applied (measured).
 CALL_TIMEOUT_S = 120.0
-SETTLE_S = 5.0        # guess; without it run 20261101T111822Z-...-b3a7's first ~3 s after the burst had all 8 pool
-                      # connections out at 4-12 requests/s and CPU 14-17% (measured; cause unknown)
-CALM_SPREAD_S = 10.0  # guess: --users owners open Requests within 10 s of each other (200 -> 40 reads/s)
-THINK_S = (1.0, 3.0)  # guess: a human owner's think time between page visits, seconds
+SETTLE_S = 5.0
+CALM_SPREAD_S = 10.0
+THINK_S = (1.0, 3.0)
 P95_MS = 400
-LOAD_CEILING_MS = 30_000  # the service's busy_timeout: past it a write answers 500 'database is locked'
-# Wide: the load stage's GET /requests p95 moved 1078-17833 ms with the host's load over 15 medium/200 runs
-# (measured), so only order-of-magnitude regressions are caught; the idle key also has P95_IDLE's absolute 400 ms.
+# the service's busy_timeout: past it a write answers 500 'database is locked'
+LOAD_CEILING_MS = 30_000
+# Wide: load-stage GET /requests p95 moved 1078-17833 ms with host load over 15 medium/200 runs (measured).
 P95_VS_LAST = (5.0, 3000)
 P95_VS_LAST_MIN_N = 30
 REQUESTS = "GET /admin/s4s/requests"
@@ -100,7 +43,6 @@ P95_LOAD = f"p95 {REQUESTS} <= {P95_MS}ms under load (--users owners reading whi
 P95_IDLE = (f"p95 {REQUESTS} <= {P95_MS}ms on an idle relay ({REQUESTS} only: --users owners open Requests "
             f"{SETTLE_S:g} s after the last write, over {CALM_SPREAD_S:g} s)")
 LOAD_CEIL = f"load-stage p95 of {', '.join(VS_LAST_LOAD)} <= {LOAD_CEILING_MS} ms"
-# check name -> "open finding: ..." (SKIPped while it measures red; FAILs once it measures green).
 KNOWN_RED: dict[str, str] = {
     P95_LOAD: ("open finding: at medium/200 the load stage's GET /admin/s4s/requests p95 was 1078-17833 ms over 15 "
                "runs (20261101T113142Z-...-ce12 1078 ms; 20261101T110617Z-...-78c4 17833 ms at host load 76, with 17 "
@@ -110,7 +52,6 @@ KNOWN_RED: dict[str, str] = {
                "(78c4 write telemetry: discover held SQLite's write lock 20.1 s of 60 s), the proposal's up to "
                "2 x 60 _booked reads a call, the relay's 8-connection pool"),
 }
-# A KNOWN_RED entry measured red only at these scales: P95_LOAD passes at small (20 users, load p95 78-147 ms).
 KNOWN_RED_SCALES = {P95_LOAD: ("medium", "huge")}
 NEW = {"accept": "accepted", "decline": "declined", "skip": "skipped", "cancel": "cancelled"}
 
@@ -136,7 +77,6 @@ async def _call(http, method: str, path: str, **kw) -> tuple[int, object]:
 
 
 async def _open_requests(h) -> list:
-    """The Requests page's reads: both boxes, together (as the browser does)."""
     return await asyncio.gather(*(_call(h, "GET", "/admin/s4s/requests", params={"box": box})
                                   for box in ("received", "sent")))
 
@@ -147,7 +87,6 @@ async def _propose(h, frm: str, to_pid: int) -> tuple[int, object]:
 
 
 class _Plan:
-    """Who sends to whom on which day, drawn only from the seed (w.rng("s4s_race_plan")); read-only once built."""
 
     def __init__(self, ctx, w):
         rng = w.rng("s4s_race_plan")
@@ -156,19 +95,18 @@ class _Plan:
         self.owner_of = {aid: p["owner"] for aid, p in self.profs.items()}
         self.ags = [a["user_id"] for a in w.data["agencies"]]
         self.listed = sorted(aid for aid, p in self.profs.items() if p["opted_in"])
-        self.blocked_by: dict[str, set] = defaultdict(set)  # Agency -> account ids it blocked
+        self.blocked_by: dict[str, set] = defaultdict(set)
         for b in self.blocks:
             self.blocked_by[b["agency_user_id"]].add(b["account_id"])
         self.by_ag: dict[str, list] = defaultdict(list)
         for aid in self.listed:
             self.by_ag[self.owner_of[aid]].append(aid)
-        # U: the UI's receiver (agency 0's); X: its sender. S1 / S2: the cap senders.
         self.u = self.by_ag[self.ags[0]][0]
         self.x = self.partners(self.u)[0]
         others = [a for a in self.listed if a not in (self.u, self.x) and self.owner_of[a] != self.ags[0]]
         self.s1, self.s2 = others[0], others[-1]
         self.cap_partners = {s: [b for b in self.partners(s) if b != self.u] for s in (self.s1, self.s2)}
-        self.sent: Counter = Counter()  # planned sends per Creator
+        self.sent: Counter = Counter()
         self._pool = [(a, b) for a in self.listed if a not in (self.u, self.s1, self.s2)
                       for b in self.partners(a) if b != self.u]
         rng.shuffle(self._pool)
@@ -183,12 +121,11 @@ class _Plan:
                 break
             self.bookings.append({"from": pair[0], "to": pair[1], "day": self._next_day(),
                                   "hour": rng.randint(*HOURS)})
-        self.probes = []  # (a Creator of the blocking Agency, the blocked Creator)
+        self.probes = []
         for b in self.blocks:
             mine = [a for a in self.by_ag[b["agency_user_id"]] if a != self.u] or self.by_ag[b["agency_user_id"]]
             if mine:
                 self.probes.append((mine[0], b["account_id"]))
-        # Proposals to the FULL_DAY target, one per other Agency: tomorrow is full for it, so the answer is later.
         full = self.limits[0]["to"] if self.limits else None
         self.proposals = []
         for ag in self.ags:
@@ -199,7 +136,6 @@ class _Plan:
         self.far = self._next_day() + 100
 
     def partners(self, a: str) -> list[str]:
-        """Listed Creators of other Agencies `a` may send to: neither Agency blocked the other's Creator."""
         ag = self.owner_of[a]
         return [b for b in self.listed if self.owner_of[b] != ag
                 and b not in self.blocked_by[ag] and a not in self.blocked_by[self.owner_of[b]]]
@@ -253,7 +189,6 @@ class _Plan:
 
 
 class _Run:
-    """Drives the load through the real routes; every answer lands in a field initialised here."""
 
     def __init__(self, ctx, w, plan: _Plan):
         self.ctx, self.w, self.p = ctx, w, plan
@@ -264,18 +199,18 @@ class _Run:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         self.day0 = datetime(now.year, now.month, now.day)
         self.window = (self.day0, self.day0 + timedelta(days=WINDOW_DAYS))
-        self.ids: dict[tuple, int] = {}  # ("race", i) / ("limit", i, sender) / ("booking", i) / ("ui",) -> request id
+        self.ids: dict[tuple, int] = {}
         self.send_fail: list[dict] = []
-        self.race_statuses: dict[int, list[int]] = {}          # race group -> statuses in verb order
-        self.limit_statuses: dict[int, dict[int, int]] = {}    # limit group -> request id -> accept status
+        self.race_statuses: dict[int, list[int]] = {}
+        self.limit_statuses: dict[int, dict[int, int]] = {}
         self.booking_accept: dict[int, int] = {}
-        self.booking_slots: dict[int, dict[str, int]] = {}     # booking -> poster -> slot id
-        self.booking_cancel: dict[int, dict] = {}              # booking -> {"own": [st, st], "partner": st}
-        self.probe_statuses: dict[int, list[int]] = {}         # probe -> [send c->y, send y->c, prop c->y, prop y->c]
+        self.booking_slots: dict[int, dict[str, int]] = {}
+        self.booking_cancel: dict[int, dict] = {}
+        self.probe_statuses: dict[int, list[int]] = {}
         self.cap_s1: dict = {"fail": [], "extra": []}
         self.cap_s2: dict = {"fail": [], "burst": Counter()}
-        self.seen: dict[int, Counter] = defaultdict(Counter)    # request id -> action names of the 2xx seen
-        self.slot_cancels: Counter = Counter()                  # slot id -> 200 cancels seen
+        self.seen: dict[int, Counter] = defaultdict(Counter)
+        self.slot_cancels: Counter = Counter()
 
     def at(self, day: int, hour: int, minute: int = 0) -> datetime:
         return self.day0 + timedelta(days=day, hours=hour, minutes=minute)
@@ -322,7 +257,7 @@ class _Run:
         async def group(i: int, g: dict) -> None:
             rid = self.ids.get(("race", i))
             if rid is None:
-                return  # SENDS reports it
+                return
             who = {"cancel": g["from"]}
             async with gsem:
                 self.race_statuses[i] = list(await asyncio.gather(
@@ -361,7 +296,7 @@ class _Run:
             b = self.p.bookings[i]
             sid = self.booking_slots[i].get(b["from"])
             if sid is None:
-                return  # SLOT_CANCEL reports it
+                return
             async with self.sem:
                 own1, own2, other = await asyncio.gather(cancel(sid, b["from"]), cancel(sid, b["from"]),
                                                          cancel(sid, b["to"]))
@@ -434,7 +369,6 @@ class _Run:
         await asyncio.gather(*(reader(*pl) for pl in plans))
 
     async def calm(self) -> None:
-        """Each of the --users owners opens Requests once (both boxes), staggered over CALM_SPREAD_S."""
         rng = self.w.rng("s4s_race_calm")
         starts = [rng.uniform(0, CALM_SPREAD_S) for _ in range(self.ctx.users)]
 
@@ -472,7 +406,6 @@ def _db(w) -> dict:
 
 
 def _booked(db: dict) -> Counter:
-    """(poster, UTC day) -> slots not canceled: the product's Daily-limit count (s4s_requests_api._booked)."""
     return Counter((s["poster"], s["slot_at"][:10]) for s in db["slots"] if s["status"] != "canceled")
 
 
@@ -486,7 +419,6 @@ def _first_room_day(booked: Counter, profs: dict, a: str, b: str, day0: datetime
 
 
 async def _final_reads(run: _Run) -> dict:
-    """Each Agency's boxes, schedule, Discovery and blocks, and every planned proposal, at rest."""
     p, out = run.p, {"agencies": {}, "proposals": []}
     for ag in p.ags:
         h = run.writer[ag]
@@ -647,7 +579,6 @@ def _check_cap(run: _Run, db: dict, chk) -> dict:
     chk(CAP_SEQ, not s1["fail"] and [e["status"] for e in s1["extra"]] == [409, 409]
         and all(str(CAP) in (e["detail"] or "") for e in s1["extra"]) and sent_today[p.s1] == CAP,
         stored=sent_today[p.s1], extra=s1["extra"], fail=s1["fail"][:5])
-    # The burst must have crossed the cap (some 201, some 409), else a stored == CAP passes vacuously.
     chk(CAP_RACE, not s2["fail"] and sent_today[p.s2] == CAP and p.burst > 0 and s2["burst"][201] >= 1
         and s2["burst"][409] >= 1, stored=sent_today[p.s2], burst=p.burst,
         burst_statuses=dict(s2["burst"]), fail=s2["fail"][:5])
@@ -698,7 +629,6 @@ async def _visible(loc, timeout_ms: int = WAIT_MS) -> bool:
 
 
 async def _ui(ctx, run: _Run, chk) -> Counter:
-    """Agency 0's owner accepts U's one pending request in the browser, then opens the other sections."""
     from slop.actors import ui
 
     p, rid = run.p, run.ids.get(("ui",))
@@ -720,7 +650,7 @@ async def _ui(ctx, run: _Run, chk) -> Counter:
         shown["modal"] = (await _visible(page.get_by_text("Share for Share Scheduled!").first, MODAL_MS)
                           and await _visible(page.get_by_role("button", name="Got It"), MODAL_MS))
         if shown["modal"]:
-            await page.wait_for_timeout(FADE_MS)  # the modal's fade-in, so the shot is the settled state
+            await page.wait_for_timeout(FADE_MS)
         await ui.shot(ctx, page, "requests-settled")
         acc = [st for m, path, st in answers if m == "POST" and path.endswith(f"/admin/s4s/requests/{rid}/accept")]
         seen[rid] += sum(1 for st in acc if 200 <= st < 300)
@@ -728,7 +658,6 @@ async def _ui(ctx, run: _Run, chk) -> Counter:
         day = run.at(UI_DAY, 0)
         if day.month != run.day0.month:
             await page.get_by_role("button", name="Next month").click(timeout=WAIT_MS)
-        # The list shows the picked calendar day (today by default): pick the slot's day.
         await page.get_by_role("button", name=f"{day:%B %d, %Y}", exact=True).click(timeout=WAIT_MS)
         shown["schedule"] = await _visible(page.locator(f'article[aria-label="S4S slot with {x_name}"]').first)
         await ui.shot(ctx, page, "schedule")
@@ -758,8 +687,6 @@ async def _ui(ctx, run: _Run, chk) -> Counter:
 
 
 def _checker(ctx):
-    """ctx.check, except a KNOWN_RED check (at its scales): SKIP with its finding while it measures red, FAIL as
-    'finding closed' once it measures green, so a stale entry cannot hide a fixed or regressed check."""
     known = {k: v for k, v in KNOWN_RED.items() if ctx.scale in KNOWN_RED_SCALES.get(k, (ctx.scale,))}
 
     def chk(name: str, ok, **detail) -> None:
@@ -782,8 +709,6 @@ def _budgets(ctx, chk) -> None:
             ctx.skip(name, "no samples")
     ceil = {k: load[k]["p95_ms"] for k in VS_LAST_LOAD if k in load}
     chk(LOAD_CEIL, bool(ceil) and max(ceil.values()) <= LOAD_CEILING_MS, budget=True, p95=ceil)
-    # Load-stage keys keep the plain route names (the runs before the idle stage measured their whole run, which
-    # was the load); the idle stage's key is prefixed.
     vs = {k: load[k] for k in VS_LAST_LOAD if k in load} | ({f"calm {REQUESTS}": calm[REQUESTS]}
                                                               if REQUESTS in calm else {})
     ctx.metric("p95_vs_last_green", {k: v["p95_ms"] for k, v in vs.items()})

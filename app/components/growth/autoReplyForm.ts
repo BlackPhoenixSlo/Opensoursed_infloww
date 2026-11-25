@@ -1,64 +1,24 @@
-/**
- * AutoReplyPage's form as a pure reducer — the draft of the `/admin/autoreply-config`
- * blob the page edits (its Human style boxes: components/automations/humanStyle.ts).
- *
- *   • The draft is seeded once from the effective config (defaults ⊕ stored) when
- *     the form mounts (`draftFromConfig`); a refetch does not re-seed it (the
- *     form is keyed by Creator, so switching Creator re-seeds). There is no
- *     hydrate action, so a refetch can never wipe an unsaved edit.
- *   • `buildPayload` sends the STORED blob back with only this page's fields
- *     changed: the PUT replaces the whole blob, so the engine's other knobs
- *     (quiet hours, reply caps) keep whatever they hold.
- *   • Number inputs arrive as the raw text and are clamped to `LIMITS` here
- *     (dollars to cents); blank / junk reads as the low bound. The draft holds
- *     the clamped value (what Save sends); the input shows the text as typed
- *     (`typing`, so a cleared box stays blank instead of snapping to the low
- *     bound under the next keystroke) until blur, when it shows the clamped
- *     value (`numberText`). `typing` sits beside the draft, not in it, so a
- *     blur never turns "Saved" off.
- *   • The state is the draft plus the draft the last Save sent
- *     (automations/sentDraft.ts: `unsaved` holds "Saved" off over an edit made
- *     while that save was in flight).
- *   • `enabled` is the header switch's, which saves at once (its own PUT, not the
- *     page Save): `switched` sets it in the draft AND in the sent draft, so a flip
- *     never turns "Saved" off, and the next page Save sends the same value.
- *   • Model + effort are the ACCOUNT's (`account_ai_config.model` /
- *     `reasoning_effort`, the account-config PUT), not this blob's: seeded by
- *     `brainSeed`, sent by `brainPayload` only while a pick made here has not
- *     landed (`modelTouched`: set by a model/effort edit, cleared by
- *     `brainSaved`) and differs from the latest brain. "" = null (model: the
- *     server's `default_model`; effort: the model's own pin).
- */
-
 import { sentState, withSent, type Saved, type SentState } from "@/components/automations/sentDraft";
 import type { AccountConfigResp, BrainConfig } from "@/hooks/useAccountConfig";
 import type { AutoreplyConfig } from "@/hooks/useAutoreplyConfig";
 
 export interface AutoReplyDraft {
   enabled: boolean;
-  /** `silence_min_minutes`. */
   delay: number;
-  /** Each reply lands in [delay, 2 x delay] (`step_in_max_minutes`). */
   randomise: boolean;
   foldersOn: boolean;
-  /** OF custom list ids, as the ListColumn keys them. */
   folders: Set<string>;
   capOn: boolean;
-  /** Folder spend cap, dollars. */
   cap: number;
   newOn: boolean;
   newHours: number;
-  /** New-fan spend cap, dollars. */
   newMax: number;
   describe: boolean;
   skipPhotoOnly: boolean;
-  /** `account_ai_config.model`; "" = null (the server's `default_model`). */
   model: string;
-  /** `account_ai_config.reasoning_effort`; "" = the model's own pin. */
   effort: string;
 }
 
-/** The account-config read the Model row needs. */
 export type BrainPick = Pick<AccountConfigResp, "model_options" | "effort_options" | "default_model"> & {
   config: Pick<BrainConfig, "model" | "reasoning_effort">;
 };
@@ -68,36 +28,26 @@ export type SwitchKey = KeysOf<boolean>;
 export type NumberKey = KeysOf<number>;
 
 export type AutoReplyState = SentState<AutoReplyDraft> & {
-  /** A model/effort pick made here that no brain PUT has landed yet. */
   modelTouched: boolean;
-  /** A number input's text as typed, until its blur. */
   typing: Partial<Record<NumberKey, string>>;
 };
 
-/** An edit of the draft. */
 export type AutoReplyEdit =
   | { type: "switch"; k: SwitchKey; on: boolean }
-  /** A number input's raw text; clamped to `LIMITS[k]`. */
   | { type: "number"; k: NumberKey; raw: string }
   | { type: "toggleFolder"; id: string }
-  /** "" = Default. A new model resets effort to its own pin (the legal set is per model). */
   | { type: "model"; model: string }
   | { type: "effort"; effort: string };
 
-/** The brain PUT carrying `pick` landed. */
 type BrainSaved = { type: "brainSaved"; pick: Pick2 };
 
-/** A number input lost focus: it shows its clamped draft value again. */
 type NumberBlur = { type: "numberBlur"; k: NumberKey };
 
-/** The header switch flipped (its PUT is out), or flipped back (that PUT failed). */
 export type Switched = { type: "switched"; on: boolean };
 
 export type AutoReplyAction = AutoReplyEdit | Saved | BrainSaved | Switched | NumberBlur;
 
-/** [lo, hi] per number input. The delay tops out well under the engine's
- *  `silence_max_minutes` (default 1115), past which a delay (or its randomised
- *  2x) would never fire. */
+// Delay tops out well under the engine's silence_max_minutes (1115), past which a delay would never fire.
 export const LIMITS: Record<NumberKey, readonly [number, number]> = {
   delay: [0, 240],
   cap: [0, 100_000],
@@ -108,20 +58,14 @@ export const LIMITS: Record<NumberKey, readonly [number, number]> = {
 const toCents = (dollars: number) => Math.round(dollars * 100);
 const toDollars = (cents: number) => Math.round(cents) / 100;
 
-/** A number input's value, clamped; blank / junk reads as `lo`. */
 const clamp = (raw: string, lo: number, hi: number) =>
   Math.max(lo, Math.min(Number(raw) || lo, hi));
 
-/** The dollar inputs: kept to whole cents, so the box shows what Save sends. */
 const DOLLARS: ReadonlySet<NumberKey> = new Set<NumberKey>(["cap", "newMax"]);
 
-/** A number input's text: as typed while it has focus, else the draft's clamped value. */
 export const numberText = (s: AutoReplyState, k: NumberKey): string => s.typing[k] ?? String(s.draft[k]);
 
-/** The model/effort the Model row starts on. A stored model the server no longer
- *  offers runs the default (resolve_model), so it reads "" — and so does an
- *  effort the model does not take. The effort served is what the account runs
- *  (account_config_api `_effective_effort`), so a pinned one shows, not a blank. */
+// The effort served is what the account runs (_effective_effort), so a pinned one shows, not a blank.
 export function brainSeed(b: BrainPick | null | undefined): Pick<AutoReplyDraft, "model" | "effort"> {
   const m = b?.config.model ?? "";
   const model = m && b?.model_options.includes(m) ? m : "";
@@ -129,20 +73,14 @@ export function brainSeed(b: BrainPick | null | undefined): Pick<AutoReplyDraft,
   return { model, effort: e && (b?.effort_options[model] ?? []).includes(e) ? e : "" };
 }
 
-/** The efforts the picked model takes. Default ("") takes none: the PUT refuses
- *  an effort with `model: null`. */
 export const effortChoices = (d: AutoReplyDraft, b: BrainPick): string[] =>
   d.model ? b.effort_options[d.model] ?? [] : [];
 
-/** The model the replies run on right now: the pick, else the server's default. */
 export const answersWith = (d: AutoReplyDraft, b: BrainPick): string => d.model || b.default_model;
 
 type Pick2 = Pick<AutoReplyDraft, "model" | "effort">;
 const samePick = (d: Pick2, s: Pick2) => d.model === s.model && d.effort === s.effort;
 
-/** The account-config PUT body (the latest stored brain `b` echoed, model/effort set), or null with no pick made here
- *  since the last landed brain PUT, or when the pick already is `b`'s — no Save rewrites the brain idly, an unrelated
- *  Save never reverts a model changed elsewhere, and a pick reverted after a Save still goes out. */
 export function brainPayload<C extends BrainPick["config"]>(
   { draft: d, modelTouched }: AutoReplyState, b: BrainPick & { config: C },
 ): C | null {
@@ -150,10 +88,8 @@ export function brainPayload<C extends BrainPick["config"]>(
   return { ...b.config, model: d.model || null, reasoning_effort: d.effort || null };
 }
 
-/** The pick a brain PUT body carries (`brainSaved`'s). */
 export const pickOf = (c: BrainPick["config"]): Pick2 => ({ model: c.model ?? "", effort: c.reasoning_effort ?? "" });
 
-/** The draft for an effective config (defaults ⊕ stored), plus the account's model pick. */
 export function draftFromConfig(eff: AutoreplyConfig, brain?: BrainPick | null): AutoReplyDraft {
   const delay = eff.silence_min_minutes ?? 24;
   return {
@@ -173,33 +109,27 @@ export function draftFromConfig(eff: AutoreplyConfig, brain?: BrainPick | null):
   };
 }
 
-/** The form's state for an effective config: its draft, nothing sent yet. */
 export const initState = (eff: AutoreplyConfig, brain?: BrainPick | null): AutoReplyState =>
   ({ ...sentState(draftFromConfig(eff, brain)), modelTouched: false, typing: {} });
 
-/** Randomise only means something above a 0 delay (the switch is disabled at 0). */
 export const randomiseOn = (d: AutoReplyDraft) => d.randomise && d.delay > 0;
 
-/** Both sources off with the switch on = nobody qualifies: an "on" that never replies. */
+// Both sources off with the switch on: nobody qualifies, an "on" that never replies.
 export const canSubmit = (d: AutoReplyDraft) => !(d.enabled && !d.foldersOn && !d.newOn);
 
-/** The header switch's PUT body: the stored blob with only `enabled` set. Null = refused: turning it on with both
- *  STORED sources off (`defaults` ⊕ `stored`, what the engine reads) would be an "on" that never replies. Judged on
- *  the stored blob, not the draft: the switch saves only `enabled`, so an unsaved source in the draft never lands. */
+// Judged on the stored blob, not the draft: the switch saves only `enabled`, so an unsaved source never lands.
 export function switchPayload(defaults: AutoreplyConfig, stored: AutoreplyConfig, on: boolean): AutoreplyConfig | null {
   const eff = { ...defaults, ...stored };
   if (on && !eff.folders_enabled && !eff.new_fans_enabled) return null;
   return { ...stored, enabled: on };
 }
 
-/** The PUT body: the stored blob with this page's fields set from the draft. */
+// The PUT replaces the whole blob: send the stored one back with only this page's fields changed.
 export function buildPayload(d: AutoReplyDraft, stored: AutoreplyConfig): AutoreplyConfig {
   return {
     ...stored,
     enabled: d.enabled,
     silence_min_minutes: d.delay,
-    // Randomise = each reply lands somewhere in [delay, 2 x delay]; the engine's
-    // step-in range does the draw. 0 = a fixed delay.
     step_in_max_minutes: randomiseOn(d) ? d.delay * 2 : 0,
     folders_enabled: d.foldersOn,
     list_ids: [...d.folders].map(Number),
@@ -212,7 +142,6 @@ export function buildPayload(d: AutoReplyDraft, stored: AutoreplyConfig): Autore
   };
 }
 
-/** One edit of the draft; always a new object (sentDraft.ts `unsaved`). */
 function editDraft(d: AutoReplyDraft, action: AutoReplyEdit): AutoReplyDraft {
   switch (action.type) {
     case "switch":
@@ -237,7 +166,6 @@ function editDraft(d: AutoReplyDraft, action: AutoReplyEdit): AutoReplyDraft {
 const sentReducer = withSent(editDraft);
 
 export function autoReplyReducer(s: AutoReplyState, a: AutoReplyAction): AutoReplyState {
-  // A landed brain PUT clears the pick, unless it moved again while the PUT ran.
   if (a.type === "numberBlur") {
     if (!(a.k in s.typing)) return s;
     const typing = { ...s.typing };
@@ -247,7 +175,6 @@ export function autoReplyReducer(s: AutoReplyState, a: AutoReplyAction): AutoRep
   if (a.type === "brainSaved") return samePick(s.draft, a.pick) ? { ...s, modelTouched: false } : s;
   if (a.type === "switched") {
     const draft = { ...s.draft, enabled: a.on };
-    // A clean form stays clean (sent === draft); a dirty one stays dirty, its sent draft carrying the same flip.
     const sent = s.sent === s.draft ? draft : s.sent && { ...s.sent, enabled: a.on };
     return { ...s, draft, sent };
   }

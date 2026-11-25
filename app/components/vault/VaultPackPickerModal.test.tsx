@@ -1,13 +1,6 @@
-/**
- * VaultPackPickerModal: unsaved verdicts are not dropped by Done or Escape (only the ×, a discard, closes while
- * dirty); a failed Save says so and keeps the verdicts; Publish to OF asks in an IfModal before the same request; the
- * keys (1/2/3, x, Enter, j/k) file the focused tile and Save sends exactly those verdicts, never a bare suggestion.
- * The vault hooks are faked at the module (the candidates query and the two writes); every name is fake.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
-/** Extra candidates for one test (appended after the three base tiles). */
 const extra = vi.hoisted(() => ({ candidates: [] as Record<string, unknown>[], none: false, only: false }));
 
 vi.mock("@/hooks/useVaultCache", () => ({
@@ -54,7 +47,6 @@ function mount() {
   return onClose;
 }
 const btn = (name: string | RegExp) => screen.getByRole("button", { name });
-/** Rule candidate "one" onto the tease rung: one unsaved verdict. */
 const ruleOne = () => fireEvent.click(within(screen.getByText("one").parentElement!).getByRole("button", { name: "tease" }));
 
 describe("VaultPackPickerModal with unsaved verdicts", () => {
@@ -136,16 +128,16 @@ describe("VaultPackPickerModal keys", () => {
     save.mockResolvedValue({ category: "feet", saved: 3, rejected: 1, folders: [] });
     mount();
     expect(tile(1)).toHaveAttribute("aria-current", "true");
-    expect(tile(2)).toHaveTextContent("nude-body?");   // a suggestion, not a verdict
+    expect(tile(2)).toHaveTextContent("nude-body?");
     expect(tile(2)).toHaveTextContent("$10");
     const key = (k: string) => fireEvent.keyDown(document.activeElement ?? document.body, { key: k });
     screen.getByRole("dialog").focus();
-    key("j");                          // -> tile 2
+    key("j");
     expect(tile(2)).toHaveAttribute("aria-current", "true");
-    key("Enter");                      // confirm its suggestion, focus hands on to 3 (2 left "undecided")
+    key("Enter");
     expect(tile(3)).toHaveAttribute("aria-current", "true");
-    key("x");                          // reject 3, focus back to 1
-    key("2");                          // file 1 on nude
+    key("x");
+    key("2");
     expect(btn("Save 3")).not.toBeDisabled();
     fireEvent.click(btn("Save 3"));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
@@ -215,12 +207,12 @@ describe("VaultPackPickerModal preselect", () => {
     expect(tick(6)).toBeChecked();
     expect(tick(7)).toBeChecked();
     expect(tick(8)).toBeChecked();
-    expect(tick(2)).not.toBeChecked();   // a suggestion without preselect: shown, unticked
-    expect(tick(1)).toBeNull();          // no suggestion: nothing to tick
+    expect(tick(2)).not.toBeChecked();
+    expect(tick(1)).toBeNull();
     expect(btn("File 3 preselected")).not.toBeDisabled();
-    fireEvent.click(tick(8)!);           // untick
+    fireEvent.click(tick(8)!);
     expect(tick(8)).not.toBeChecked();
-    fireEvent.click(tick(2)!);           // tick a non-preselected suggestion
+    fireEvent.click(tick(2)!);
     fireEvent.click(btn("File 3 preselected"));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save).toHaveBeenCalledWith("acc-1", "feet", [

@@ -1,22 +1,5 @@
 "use client";
 
-/**
- * The "Do it for me" runner (docs/spec/assistant-do-mode.md, D1): while the run is `running` (doRunReducer.ts) it
- * opens the flow's page, waits for the page to register on the agent bridge, then plays the flow's steps
- * (doFlows.ts `toActions`): per step the cosmetic cursor glides to the field (AgentCursor.tsx), clicks, and the step's
- * action is dispatched into the editor's own reducer; Save is the editor's own (agentBridge). Skip animation plays the
- * rest instantly. A trusted page input outside the bot (or Escape) aborts (isTakeover) — until the save request is out
- * (`saving`): from there it lands either way. A rule editor already open (a person's, maybe half-filled) fails the run
- * before anything moves: it never fills over one, nor navigates away from it. It lives in AssistantProvider, so a
- * route change never stops it. After Save the cursor rests on the new rule's Enabled switch without clicking it.
- * A `mass_edit` run is not played here: it has no form (the provider's apply POST does it, massEdit.ts).
- * A flow whose first step isn't "open" (auto_story: the page is the form) waits for the page's editor itself; one
- * showing a saved rule (not new) fails the run — the agent only sets up a new one.
- * A `full_ai_config` run (phase 03c) isn't played either, but this hook sends it (spec 03c names it here, unlike
- * mass_edit's provider POST): the Full AI page's own rev-checked draft PUT, once per started draft; 200 / 409 / 422
- * each end the run with the card's line (`configApplied` — an answer, not a failure, so no retry re-PUTs), and a 200
- * invalidates that account's `fullAiConfigKey` (the page's refetch on it is ticket 57's).
- */
 
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -36,7 +19,6 @@ const GLIDE_MS = 320;
 const PAUSE_MS = 140;
 const TYPE_MS = 90;
 const DONE_WAIT_MS = 6000;
-/** An editor missing from the bridge is closed only if it isn't back by then (a re-registration is a blip). */
 const CLOSED_GRACE_MS = 500;
 
 const aborted = () => new DOMException("aborted", "AbortError");
@@ -58,7 +40,6 @@ const frame = () => new Promise<void>((r) => {
 const reducedMotion = () =>
   typeof window !== "undefined" && !!window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-/** The saved rule's on/off switch by its aria-label (RuleTable: `Enabled: {name}`; Auto Story: its header switch). */
 const enabledSwitch = (label: string) =>
   [...document.querySelectorAll<HTMLElement>('[role="switch"]')].find((el) => el.getAttribute("aria-label") === label) ?? null;
 
@@ -67,7 +48,6 @@ export function useDoRunner({ run, dispatch, bridge, navigate, employeeId }: {
   dispatch: (a: DoAction) => void;
   bridge: AgentBridge;
   navigate: (href: string) => void;
-  /** The relay context's employee (a full_ai_config PUT). */
   employeeId: number | null;
 }): CursorState | null {
   const queryClient = useQueryClient();
@@ -81,7 +61,6 @@ export function useDoRunner({ run, dispatch, bridge, navigate, employeeId }: {
     navRef.current = navigate;
   });
 
-  // The run: one per start (its draft); leaving `running` aborts it.
   const runDraft = run.phase === "running" ? run.draft : null;
   useEffect(() => {
     const flow = runDraft && canStart(runDraft) ? boundFlow(runDraft) : null;
@@ -138,7 +117,6 @@ export function useDoRunner({ run, dispatch, bridge, navigate, employeeId }: {
         panel = await bridge.waitFor(() => bridge.panel(flow.kind, acct), OPEN_TIMEOUT_MS, signal)
           .catch(late(`The ${flow.title} page didn't open in time — try again.`));
       } else {
-        // The page is the form: its editor registers once its rule is read.
         const page = await bridge.waitFor(() => bridge.anyEditor(flow.kind, acct), OPEN_TIMEOUT_MS, signal)
           .catch(late(`The ${flow.title} page didn't open in time — try again.`));
         if (!page.isNew) throw new Error(`${flow.title} is already set up for this creator — open it to edit; nothing was changed.`);
@@ -166,7 +144,8 @@ export function useDoRunner({ run, dispatch, bridge, navigate, employeeId }: {
         if (step.action === "save") {
           if (animate) { await glide(step); click(); }
           if (signal.aborted) return;
-          dispatch({ type: "saving" });   // from here Stop no longer applies: the request lands either way
+          // From here Stop no longer applies: the request lands either way.
+          dispatch({ type: "saving" });
           const r = await editor.save();
           if (!r.ok) { dispatch({ type: "fail", msg: r.reason }); return; }
           dispatch({ type: "saved" });
@@ -176,8 +155,8 @@ export function useDoRunner({ run, dispatch, bridge, navigate, employeeId }: {
         }
         if (step.action === "reveal") {
           if (animate) { await glide(step); click(); }
-          // A synthetic click (untrusted: never a takeover), only on a closed disclosure.
           const el = document.getElementById(step.target);
+          // Synthetic click is untrusted (never a takeover), only on a closed disclosure.
           if (el?.getAttribute("aria-expanded") === "false") el.click();
           await frame();
           continue;
@@ -190,7 +169,6 @@ export function useDoRunner({ run, dispatch, bridge, navigate, employeeId }: {
           editor.dispatch(frames[f]);
           if (f < frames.length - 1) await sleep(TYPE_MS, signal);
         }
-        // A box the step itself adds (a new caption) exists only now.
         if (!seen) { await frame(); await glide(step); }
         await sleep(PAUSE_MS, signal);
       }
@@ -207,8 +185,8 @@ export function useDoRunner({ run, dispatch, bridge, navigate, employeeId }: {
     };
   }, [runDraft, bridge, dispatch]);
 
-  // A full_ai_config run: one draft PUT per started draft (the ref survives StrictMode's effect re-run).
   const configDraft = run.phase === "running" && run.draft.flow === "full_ai_config" ? run.draft : null;
+  // The ref survives StrictMode's effect re-run: one draft PUT per started draft.
   const configured = useRef<DoDraft | null>(null);
   useEffect(() => {
     if (!configDraft || configDraft.flow !== "full_ai_config" || !configDraft.slots || configured.current === configDraft) return;
@@ -224,7 +202,6 @@ export function useDoRunner({ run, dispatch, bridge, navigate, employeeId }: {
         : { type: "fail", msg: e instanceof Error && e.message ? e.message : "The change didn't go through" }));
   }, [configDraft, employeeId, dispatch, queryClient]);
 
-  // The cursor shows while running; after Save it rests on the switch until the user's next press.
   useEffect(() => {
     if (run.phase !== "done") return;
     const hide = (e: PointerEvent) => { if (e.isTrusted) setCursor(null); };

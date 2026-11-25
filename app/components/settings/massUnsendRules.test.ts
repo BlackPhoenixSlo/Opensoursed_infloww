@@ -19,7 +19,6 @@ const H = 3_600_000;
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
 const OLD = ago(5 * H);
 
-/** An actionable free text broadcast of Creator "a", 5 h old, unless `over` says otherwise. */
 const row = (id: number, over: Partial<MassMessageRow> = {}): MassMessageRow => ({
   id, date: OLD, isFree: true, mediaCount: 0, canUnsend: true, isCanceled: false, __accountId: "a", ...over,
 });
@@ -63,25 +62,24 @@ describe("isActionable", () => {
   });
 });
 
-/** Two Creators' rows: every kind the bar tells apart. */
 const ROWS: MassMessageRow[] = [
-  row(1),                                              // a free text, old
-  row(2, { giphyId: "g" }),                            // a free GIF-only, old
-  row(3, { mediaCount: 2 }),                           // a free image, old
-  row(4, { isFree: false }),                           // a paid text, old
-  row(5, { isFree: false, mediaCount: 1 }),            // a paid image, old
-  row(6, { date: ago(4 * H) }),                        // a free text, exactly 4 h
-  row(7, { date: ago(4 * H - 1) }),                    // a free text, just under 4 h
-  row(8, { date: null }),                              // a free text, no date
-  row(9, { date: "garbage" }),                         // a free text, bad date
-  row(10, { mediaCount: 1, date: ago(H) }),            // a free image, fresh
-  row(11, { isCanceled: true }),                       // a already unsent
-  row(12, { canUnsend: false }),                       // a OF says no
-  row(13, { __accountId: undefined }),                 // no Creator
-  row(21, { __accountId: "b" }),                       // b free text, old
-  row(22, { __accountId: "b", mediaCount: 1 }),        // b free image, old
-  row(23, { __accountId: "b", date: ago(H) }),         // b free text, fresh
-  row(24, { __accountId: "b", isCanceled: true }),     // b already unsent
+  row(1),
+  row(2, { giphyId: "g" }),
+  row(3, { mediaCount: 2 }),
+  row(4, { isFree: false }),
+  row(5, { isFree: false, mediaCount: 1 }),
+  row(6, { date: ago(4 * H) }),
+  row(7, { date: ago(4 * H - 1) }),
+  row(8, { date: null }),
+  row(9, { date: "garbage" }),
+  row(10, { mediaCount: 1, date: ago(H) }),
+  row(11, { isCanceled: true }),
+  row(12, { canUnsend: false }),
+  row(13, { __accountId: undefined }),
+  row(21, { __accountId: "b" }),
+  row(22, { __accountId: "b", mediaCount: 1 }),
+  row(23, { __accountId: "b", date: ago(H) }),
+  row(24, { __accountId: "b", isCanceled: true }),
 ];
 const ids = (rs: MassMessageRow[]) => rs.map((r) => r.id);
 

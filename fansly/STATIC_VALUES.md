@@ -10,9 +10,12 @@ here rather than in a separate `NOTES.md`.
 
 Every row is tagged:
 
-- **✅** — reproduced from our own capture. `test_har_replay.py` rebuilds the
-  browser's requests and asserts on them; **30/30 `fansly-client-check` digests
-  and 11/11 captured writes match**.
+- **✅** — reproduced from our own capture. `test_har_replay.py fanslycalls.har`
+  rebuilt the browser's requests and asserted on them; **30/30
+  `fansly-client-check` digests and 11/11 captured writes matched** (that HAR is
+  gitignored and not in the repo). With no argument it replays the synthetic
+  `fixtures/writes.json`, and `test_signer_vectors.py` checks the signer against
+  node-computed vectors in `fixtures/signer_vectors.json`.
 - **📄** — read straight out of `main.14d24b3e179efdb7.js` (fetched
   2026-08-31) but not exercised by the capture. Solid, unproven.
 - **❓** — still unknown.
@@ -20,7 +23,8 @@ Every row is tagged:
 Re-run the gate any time:
 
 ```
-../venv/bin/python test_har_replay.py            # replay + verify, offline
+../venv/bin/python test_har_replay.py            # replay fixtures/writes.json, offline
+../venv/bin/python test_har_replay.py X.har      # replay a captured HAR instead
 ../venv/bin/python bootstrap_from_har.py X.har --chunk main.js
 ```
 
@@ -365,13 +369,15 @@ one needs its own review.
 | [fansly_signer.py](fansly_signer.py) | §3 cyrb53 + §4 key derivation + §6 clock + `verify_samples()`. Pure, no I/O — mirrors [../service/of_signer.py](../service/of_signer.py). |
 | [fansly_client.py](fansly_client.py) | §1 session + §2 headers + §9 calls. Mirrors [../service/of_client.py](../service/of_client.py). |
 | [bootstrap_from_har.py](bootstrap_from_har.py) | HAR → `sessions/session.json`, verifying the signer in the same pass. The paste-curl analogue. |
-| [test_har_replay.py](test_har_replay.py) | the gate: rebuild every captured write, assert it matches. |
+| [test_har_replay.py](test_har_replay.py) | the gate: rebuild every write in `fixtures/writes.json` (or a HAR given as an argument), assert it matches. |
+| [test_signer_vectors.py](test_signer_vectors.py) | `client_check` against node-computed cyrb53 vectors in `fixtures/signer_vectors.json`. |
 | `sessions/session.json` | captured session, `0600`, gitignored. |
 
 🚨 **[.gitignore](.gitignore) gotcha:** it ignores `*.json` at *every* depth
-here, not just `sessions/`. Right for captured material — but a fixture or
-config JSON you mean to commit gets dropped silently. Force-add it or give it
-another extension.
+here, not just `sessions/`, except `fixtures/*.json` (re-included for the
+synthetic test fixtures). Right for captured material — but any other fixture or
+config JSON you mean to commit gets dropped silently. Put it in `fixtures/`,
+force-add it, or give it another extension.
 
 ---
 

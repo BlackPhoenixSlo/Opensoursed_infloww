@@ -18,7 +18,6 @@ const NAME = new Map([[A, "a"], [B, "b"], [C, "c"]]);
 const run = (s: PickState, ...actions: PickAction[]) => actions.reduce(importPickReducer, s);
 const names = (fs: Iterable<File>) => [...fs].map((f) => NAME.get(f)).sort();
 
-/** A, B, C picked; A and B selected; A and C with details. */
 function three(): PickState {
   return run(
     initialPickState,
@@ -29,7 +28,6 @@ function three(): PickState {
   );
 }
 
-/** The card's invariants: selection and details only ever name picked files. */
 function expectConsistent(s: PickState) {
   for (const f of s.selected) expect(s.picked).toContain(f);
   for (const f of s.details.keys()) expect(s.picked).toContain(f);
@@ -97,7 +95,7 @@ describe("edit", () => {
   it.each(EDITS)("%s", (_, files, values, want) => {
     const s = importPickReducer(three(), { type: "edit", files, values });
     for (const [f, v] of want) expect(s.details.get(f)).toEqual(v);
-    expect(s.details.get(C)).toEqual({ price: "5" }); // untouched
+    expect(s.details.get(C)).toEqual({ price: "5" });
     expect(s.picked).toEqual([A, B, C]);
     expect(names(s.selected)).toEqual(["a", "b"]);
   });

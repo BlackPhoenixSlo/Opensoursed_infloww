@@ -18,7 +18,7 @@ ECHO_ID_BASE = 9_700_000_000_000
 _SEND = re.compile(r"/api2/v2/chats/(\d+)/messages")
 _MUTE = re.compile(r"/api2/v2/chats/(\d+)/mute")
 _RESTRICT = re.compile(r"/api2/v2/users/(\d+)/restrict")
-RESTRICTED_REASON = "of_restricted"   # service/automations/_skiplist.py OF_RESTRICTED_REASON
+RESTRICTED_REASON = "of_restricted"
 
 
 # OF answers a Restricted chat with canSendMessage false, canNotSendReason "muted".
@@ -27,8 +27,6 @@ _KIND_REASON = {"only_friends": "only_friends", "restricted": RESTRICTED_SEND_RE
 
 
 def chat_plan(fans: list[dict], runs: list[tuple[str, int, bool]]) -> list[dict]:
-    """A Creator's chat list for `BadgeWire.seed`: `runs` are `(kind, count, unread)` laid in order over `fans`; kind
-    only_friends | restricted | muted, any other (plain, deep, ...) a plain chat; each row's kind in `kind`."""
     out, it = [], iter(fans)
     for kind, count, is_unread in runs:
         for f in itertools.islice(it, count):
@@ -39,8 +37,6 @@ def chat_plan(fans: list[dict], runs: list[tuple[str, int, bool]]) -> list[dict]
 
 
 def restrict_in_relay(con, seeds: dict[str, list[dict]]) -> None:
-    """The Relay's registry row (`skip_list`, RESTRICTED_REASON) for every `restricted` chat of `seeds`
-    ({aid: chat_plan rows}), on an open world connection; the caller commits."""
     from slop.seed import ts
     now = ts(datetime.utcnow())
     con.executemany("INSERT OR REPLACE INTO skip_list (account_id, fan_id, reason, added_at) VALUES (?, ?, ?, ?)",
@@ -57,9 +53,8 @@ def _first_page(u) -> bool:
     return "id" not in q and "before_id" not in q and (q.get("offset") or ["0"])[0] == "0"
 
 
+# FakeOF.push_ws blocks on the WS loop: frames go out from this thread, never a WS-loop callback (deadlock).
 class _Sender:
-    # FakeOF.push_ws blocks on the WS loop (run_coroutine_threadsafe(...).result), so frames go out from this
-    # thread, never from a WS-loop callback, which would deadlock.
     def __init__(self, wire: "BadgeWire", aid: str) -> None:
         self.wire, self.aid = wire, aid
         self.q: list[tuple[float, int, str, int | None, dict | None]] = []
@@ -113,7 +108,6 @@ class BadgeWire(Wire):
         for s in senders:
             s.stop()
 
-    # ── world ────────────────────────────────────────────────────────────────
     def seed(self, aid: str, fans: list[dict]) -> list[dict]:
         now = datetime.now(timezone.utc)
         rows = []
@@ -156,8 +150,6 @@ class BadgeWire(Wire):
         self._creator_sent(aid, fan, sent, "reply_elsewhere", echo)
 
     def queue_elsewhere(self, aid: str, fans: list[int]) -> int:
-        """A mass message to read `fans` sent on OF's site or in Infloww: each chat headed by it and read, no per-Fan
-        echo (OF pushes none for a mass), then OF's `chat_queue_finish` frame; its queue id."""
         qid = next(self._ids)
         at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
         for fan in fans:
@@ -194,7 +186,6 @@ class BadgeWire(Wire):
         with self.fake.lock:
             self._held.pop(aid, None)
 
-    # ── truth ────────────────────────────────────────────────────────────────
     def raw_counter(self, aid: str) -> int:
         return self.chat_messages_count(aid)
 
@@ -223,7 +214,6 @@ class BadgeWire(Wire):
         with self.fake.lock:
             return {r["withUser"]["id"] for r in self.fake.chats.get(aid, ()) if _fan_last(r)}
 
-    # ── state ────────────────────────────────────────────────────────────────
     def _counts(self, aid: str, row: dict) -> bool:
         return of_counts(row) and row["withUser"]["id"] not in self._uncounted.get(aid, ())
 
@@ -245,9 +235,8 @@ class BadgeWire(Wire):
 
     def _mute(self, aid: str, fan: int, muted: bool, via: str) -> None:
         def flip(r: dict) -> dict:
+            # OF leaves an unread chat unmuted out of its counter (sandbox r1): it counts again on its next read or DM.
             if not muted and r.get("isMutedNotifications") and unread(r):
-                # OF leaves an unread chat unmuted out of its counter (sandbox r1): it counts again on its next read
-                # or DM. Added under the same lock as the flip, so no reader counts it in between.
                 self._uncounted.setdefault(aid, set()).add(fan)
             return {**r, "isMutedNotifications": muted}
         if self._replace(aid, fan, flip) is not None and muted:
@@ -278,7 +267,6 @@ class BadgeWire(Wire):
                 "isFromQueue": False, "isNew": True}})
         self._enqueue(aid, self.delays["echo_counter"], "counter", fan, now)
 
-    # ── frames ───────────────────────────────────────────────────────────────
     def _enqueue(self, aid: str, delay: float, kind: str, fan: int | None, now: float | None = None,
                  frame: dict | None = None) -> None:
         with self._lock:
@@ -302,7 +290,6 @@ class BadgeWire(Wire):
         with self._lock:
             self.frames.append({"t": time.time(), "account": aid, "kind": kind, "value": value})
 
-    # ── the wire ─────────────────────────────────────────────────────────────
     def handle(self, h, method, u, uid, route, raw) -> bool:
         m = _SEND.fullmatch(u.path)
         if method == "POST" and m:
@@ -330,9 +317,7 @@ class BadgeWire(Wire):
 
 
 def _on_answer(h, fn) -> None:
-    # FakeOF's built-in routes answer through h._record: wrapping it on this request's handler sees a 200 answer
-    # before the response goes out, without re-implementing the route. One-shot: a keep-alive connection reuses
-    # this handler for its next requests.
+    # Wrap h._record to see the 200 answer before the response goes out; one-shot, a keep-alive connection reuses this handler.
     record = h._record
 
     def answered(uid_, route_, status, body, *a, **kw):

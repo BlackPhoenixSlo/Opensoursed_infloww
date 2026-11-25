@@ -1,39 +1,7 @@
 #!/usr/bin/env python3
-"""shared_refresher_decide (phase-01 seam 1), as tables. Pure: no clock, no I/O; `now` is passed.
-
-  case_cycle_and_floor:      Knob 10 -> 60 on both tiers; a tab cycle below the lease cycle reads at the lease cycle.
-  case_cycle_spread:         `cycle_s` per Creator in [0.9 x tier, tier], >= 60, stable per Creator, spread.
-  case_lease_gain_and_loss:  a lease gain or loss changes `cycle_s`: one Publish; next due within the new cycle.
-  case_restart_spread:       50 Creators first seen together: first reads spread inside FLOOR_S, not in one tick.
-  case_fifty_by_thirty:      50 Creators x 30 clamps, 10 leased: one Read per due Creator; gaps = its own cycle.
-  case_first_read_spread:    never read: due at first_seen + h(aid) x FLOOR_S, inside FLOOR_S, stable per Creator.
-  case_due_at_last_plus_cycle: due at `last + cycle_s`, not before.
-  case_due_after_warm:       a Creator due (or held) that a warm just read (its Last refresh, shared_refresher.note_refresh)
-                             waits for its next slot: not due now, due at the warm's ask + `cycle_s`.
-  case_skips:                not tracked, tracked but not readable, warm-pending, in flight, held: no Read.
-  case_tracked_empty:        the last tab closed: no effect.
-  case_flat_in_subscribers:  one Read per Creator, however many tabs see it (`tracked` is a set).
-  case_publish_on_first_track_and_change: entering `tracked` publishes once; re-entry keeps Last refresh, publishes.
-  case_after_read:           ok writes Last refresh (the ask time); a failure keeps it, holds the Creator FLOOR_S.
-  case_backoff_ladder:       failures in a row hold max(60, purchase_poll_decide.ladder_s(n)) from each ask, `at`
-                             kept, reset on ok; ticked, a failing Creator's attempts are never under 60 s apart;
-                             a 1025th failure in a row still holds 900 s (no exponent overflow).
-  case_live_of:              dead map -> "dead"; tracked, not readable (deactivated, no session, Fansly) -> None, never
-                             "down"; socket stamp set -> "up", unset -> "down".
-  case_dead_skip:            a Dead session: no Read, `live` "dead", `cycle_s` None, published.
-  case_live_flip_publishes_without_read: up -> down -> up publishes each flip with no Read; `live_since` restarts on
-                             each change, kept while unchanged, dropped with `live` None or untrack.
-  case_changed:              `at` alone, a slot's `at` alone -> no change; values, `live`, `cycle_s`, first track ->
-                             change; the plan publishes a moved value with no Read.
-  case_window_due:           socket down now; reconnected after the window's last read; a contributor asked -> due;
-                             no window held -> due only when asked and no window read landed this boot (R after a
-                             restart); none of these (WS-kept since the read) -> not due.
-
-Run: ./venv/bin/python service/tests/test_shared_refresher_decide.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness  # MUST be first: binds temp DB
 
 import shared_refresher_decide as d  # noqa: E402
 from shared_refresher_decide import Inputs, Knobs, Publish, Read, State  # noqa: E402
@@ -86,7 +54,6 @@ def case_first_read_spread():
         assert d.due_at(None, 600.0, aid, 1000.0) == 1000.0 + h * d.FLOOR_S
     hs = {round(d.h(str(i)), 3) for i in range(200)}
     assert len(hs) > 150, "first reads spread, not bunched"
-    # In plan: never due before its spread slot, always due inside FLOOR_S of first being seen.
     st, _ = d.plan(State(), _inp(0.0, [A]), K)
     slot = d.h(A) * d.FLOOR_S
     assert slot > 1.0, "fixture: A's slot is not at 0"
@@ -105,12 +72,12 @@ def case_due_at_last_plus_cycle():
 
 def case_due_after_warm():
     c = d.cycle_s(False, A, K)
-    due = d.after_read(State(), A, True, 0.0)                 # last read long ago: due now
-    held = d.after_read(due, A, False, 9_000.0)                # and held by a failed attempt
+    due = d.after_read(State(), A, True, 0.0)
+    held = d.after_read(due, A, False, 9_000.0)
     now = 10_000.0
     assert _reads(d.plan(due, _inp(now, [A]), K)[1]) == [A], "fixture: due before the warm"
     for st in (due, held):
-        warmed = d.after_read(st, A, True, now)               # the warm's kept /users/me, at its ask time
+        warmed = d.after_read(st, A, True, now)
         assert warmed.last[A] == now and A not in warmed.held, warmed
         for t, want in ((now, []), (now + c - 0.001, []), (now + c, [A])):
             assert _reads(d.plan(warmed, _inp(t, [A]), K)[1]) == want, (t, want)
@@ -144,7 +111,6 @@ def case_tracked_empty():
 
 
 def case_flat_in_subscribers():
-    # The shell unions every tab's clamp into one set: 1 tab or 30 tabs on A and B is the same input.
     clamps = [frozenset({A, B})] * 30
     tracked = frozenset().union(*clamps)
     _, eff = d.plan(_read_long_ago(A, B), _inp(10_000.0, tracked), K)
@@ -243,8 +209,6 @@ def case_after_read():
 
 
 def case_backoff_ladder():
-    """Failures in a row (a 429 or any other) climb the purchases poll's Backoff ladder: held max(60, ladder_s(n))
-    from each ask, `at` kept; an ok resets it."""
     st = d.after_read(State(), A, True, 0.0)
     t, holds = 1000.0, []
     for _ in range(8):
@@ -257,7 +221,6 @@ def case_backoff_ladder():
     assert A not in st.held and st.last[A] == t, "ok writes Last refresh, clears the hold"
     st = d.after_read(st, A, False, t + 600.0)
     assert st.held[A] == t + 660.0, "the ladder restarts after an ok"
-    # Ticked every 5 s, each Read failing: never two attempts under 60 s apart, gaps follow the ladder.
     st, reads, now = _read_long_ago(B), [], 10_000.0
     while now < 12_000.0:
         if _reads(d.plan(st, _inp(now, [B]), K)[1]) == [B]:
@@ -266,8 +229,6 @@ def case_backoff_ladder():
         now += 5.0
     gaps = [y - x for x, y in zip(reads, reads[1:])]
     assert gaps == [60.0, 60.0, 120.0, 240.0, 480.0, 900.0][:len(gaps)] and len(gaps) >= 5, gaps
-    # W30-mu #6: a Creator failing for weeks (step ~1025 at 900 s each, ~10 days) once overflowed the ladder's
-    # exponent (OverflowError in after_read: no hold written, read every 5 s tick); it stays held 900 s.
     st = d.after_read(State(step={A: 1024}), A, False, t)
     assert st.held[A] == t + 900.0 and st.step[A] == 1025, (st.held, st.step)
     assert _reads(d.plan(st, _inp(t + 5.0, [A]), K)[1]) == [], "held: no Read on the next tick"
@@ -299,7 +260,7 @@ def case_dead_skip():
 
 def case_live_flip_publishes_without_read():
     st = _read_long_ago(A)
-    st, _ = d.plan(st, _inp(0.0, [A], ws_since={A: 0.0}), K)          # read at 0: not due for a Cycle
+    st, _ = d.plan(st, _inp(0.0, [A], ws_since={A: 0.0}), K)
     assert st.shown[A]["live"] == "up" and st.live_since == {A: 0.0}
     st, eff = d.plan(st, _inp(5.0, [A], ws_since={A: 0.0}), K)
     assert eff == [] and st.live_since == {A: 0.0}, "unchanged: no publish, `live_since` kept"
@@ -319,7 +280,6 @@ def case_live_flip_publishes_without_read():
 
 
 def case_changed():
-    """P1 Contract 3: `at` alone, a slot's `at` alone: no change; values, `live`, `cycle_s`, first track: change."""
     base = {"cycle_s": 120.0, "live": "up", "values": {"unread_total": {"n": 3, "at": 1000}}}
 
     def w(**kw):
@@ -340,7 +300,6 @@ def case_changed():
     assert d.changed(w(values={"notif_count": 2}), w(values={"notif_count": 3})), "a scalar slot"
     assert d.changed(base, w(live="down")), "`live`"
     assert d.changed(base, w(cycle_s=600.0)), "`cycle_s`"
-    # The plan publishes a moved value with no Read, and nothing for a moved slot `at`.
     st = _read_long_ago(A)
     st, _ = d.plan(st, _inp(0.0, [A], values={A: {"unread_total": {"n": 3, "at": 1}}}), K)
     assert st.shown[A]["values"] == {"unread_total": {"n": 3, "at": 1}}, st.shown[A]
@@ -353,9 +312,7 @@ def case_changed():
 
 
 def case_window_due():
-    """P1 `window_due(window_at, ws_since, asked, first)`: one clock (monotonic) for the window's read and the socket
-    stamp."""
-    rows = [  # (window_at, ws_since, asked, first, due, why)
+    rows = [
         (100.0, None, False, False, True, "socket down now"),
         (100.0, 150.0, False, False, True, "reconnected after the window's last read"),
         (100.0, 50.0, True, False, True, "a contributor asked"),
@@ -370,7 +327,6 @@ def case_window_due():
 
 
 def case_after_read_never_moves_last_back():
-    """A warm's newer Last refresh (note_refresh during an overrunning job) outlives that job's older ask time."""
     st = d.after_read(d.State(last={"A": 50.0}), "A", True, 20.0)
     assert st.last["A"] == 50.0, st.last
     assert d.after_read(st, "A", True, 80.0).last["A"] == 80.0

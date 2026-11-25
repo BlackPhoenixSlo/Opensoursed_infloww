@@ -1,9 +1,3 @@
-/**
- * fanTyping — the relay's `chat_typing` push marks one Creator's chat with a
- * Fan as typing for a few seconds; the Fan's message ends it.
- *
- * Fixture identifiers are invented (this repo mirrors to a public one).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 

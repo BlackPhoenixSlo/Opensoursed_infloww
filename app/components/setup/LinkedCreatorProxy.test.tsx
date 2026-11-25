@@ -45,7 +45,7 @@ it("fallback on: a failed test deletes the candidate and keeps the creator on it
   await screen.findByText("Your proxy failed its test (timed out). This creator stays on its current proxy (old).");
   expect(relay.delete).toHaveBeenCalledWith("/admin/proxies/proxy.example%3A8080");
   expect(posts()).toEqual(["/admin/proxies", "/admin/proxies/proxy.example%3A8080/test"]);
-  expect(screen.queryByLabelText("Port")).toBeNull(); // folded
+  expect(screen.queryByLabelText("Port")).toBeNull();
 });
 
 it("fallback on: an account on no proxy goes on the default pool when its test fails", async () => {
@@ -107,7 +107,7 @@ it("the copy follows the box as it was at Connect, not as it is after", async ()
   vi.mocked(relay.post).mockImplementation((path) => path.endsWith("/test") ? new Promise((r) => { pass = r; }) : Promise.resolve({ ok: true }));
   setup(); await fill(); connect();
   await waitFor(() => expect(posts()).toContain("/admin/proxies/proxy.example%3A8080/test"));
-  fireEvent.click(screen.getByRole("checkbox")); // disabled while checking: the box stays as submitted
+  fireEvent.click(screen.getByRole("checkbox"));
   pass({ ok: false, error: "x" });
   await screen.findByText(/This creator stays on/);
 });

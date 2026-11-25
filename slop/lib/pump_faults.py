@@ -1,23 +1,14 @@
-"""The pump supervisor's break-it-once faults (scenarios/2026-10-25-session-health-otp.py): lib/faults.py
-merges `register(Fault)` into FAULTS. Each patches `service/pump_reconcile` (`reconcile`, the pure pass
-server.py's `_reconcile_pumps` performs, or `restart_backoff`, the Restart's delay) inside the relay. PROBE_RESTART lives here and the scenario
-imports it, so the target can never name a check that does not exist. WS_PARKED and WS_RETRIES (the
-scenario's WS pump checks) and the windows they name live here for the same reason; lib/faults.py's
-otp-state-not-session-dead still spells WS_PARKED out.
-"""
 from __future__ import annotations
 
 PROBE_RESTART = ("probe recovery: a 2FA Creator OnlyFans lets back in without a re-capture is unflagged by "
                  "the recovery probe, and the next supervisor pass restarts its exited pump (running, socket "
                  "reconnected)")
-# The pump on a 2FA Creator (of_ws_decide, owner Q2): OF ends its socket (a transient: 1 s), then each
-# /users/me answers 101: three retries on the same doubling backoff, the 4th answer parks it.
-WS_RETRY_GAPS_S = (2.0, 4.0, 8.0)  # /users/me -> next /users/me: the backoff after the drop's 1 s
+# 2FA Creator: OF ends the socket (a transient, 1 s), each /users/me answers 101: three retries on the doubling backoff, the 4th answer parks it.
+WS_RETRY_GAPS_S = (2.0, 4.0, 8.0)
 WS_RETRY_SLACK_S = 0.5
-WS_EXIT_SLACK_S = 2.0  # the pump's last /users/me -> the first supervisor pass that must see it exited
-WS_ME_MAX = 2 + len(WS_RETRY_GAPS_S)  # the pump's first /users/me, its retries, the probe's
-WS_WINDOW_S = 25  # flip -> end of phase B, at least: holds the pump's 4th /users/me (~15 s) and >= 2
-                  # supervisor passes after its exit
+WS_EXIT_SLACK_S = 2.0
+WS_ME_MAX = 2 + len(WS_RETRY_GAPS_S)
+WS_WINDOW_S = 25
 WS_PARKED = (f"the WS pump met the 2FA demand and parked: per 2FA Creator at most {WS_ME_MAX} /users/me over "
              f">= {WS_WINDOW_S} s (the pump's 1 + {len(WS_RETRY_GAPS_S)} retries, the probe's), all 400, no "
              f"reconnect, the pump exited within {WS_EXIT_SLACK_S:.0f} s of its last /users/me and supervisor "
@@ -27,17 +18,15 @@ WS_RETRIES = (f"the WS pump retried the 2FA demand: per 2FA Creator, after its f
               f"{', '.join(f'{g - WS_RETRY_SLACK_S:.1f}' for g in WS_RETRY_GAPS_S)} s after the last")
 PUMP_STOP = ("supervisor Stop: a running pump whose Creator lost its session is stopped by the next "
              "supervisor pass (no pump left) and its OF socket closed")
-BACKOFF_WINDOW_S = 25  # Start, the at-once restart, the 15 s one; the 30 s one falls outside
-BACKOFF_WANT_S = [0.0, 15.0]  # the restarts' delays after each exit: 0, then BACKOFF_BASE_S
-BACKOFF_SLACK_S = 2.0         # 1 s passes plus a loaded relay
+BACKOFF_WINDOW_S = 25
+BACKOFF_WANT_S = [0.0, 15.0]
+BACKOFF_SLACK_S = 2.0
 PUMP_BACKOFF = (f"a crash-looping pump (exits without parking) is restarted with backoff: over "
                 f"{BACKOFF_WINDOW_S} s of 1 s supervisor passes, exactly 2 restarts, each "
                 f"{BACKOFF_WANT_S} s (+ <= {BACKOFF_SLACK_S:.0f} s) after the last exit")
 
 
 def _reconcile_never_restarts() -> None:
-    """A pass that drops every Restart: an exited pump whose account is eligible again stays dead.
-    Only the recovery probe leaves that restart to the supervisor (a re-capture restarts its own)."""
     import pump_reconcile
     real = pump_reconcile.reconcile
 
@@ -48,8 +37,6 @@ def _reconcile_never_restarts() -> None:
 
 
 def _reconcile_ignores_parked() -> None:
-    """A pass blind to the dead-session flag: a parked account's exited pump is restarted every pass,
-    so it reconnects into OF's 2FA demand again and again."""
     import pump_reconcile
     real = pump_reconcile.reconcile
 
@@ -60,7 +47,6 @@ def _reconcile_ignores_parked() -> None:
 
 
 def _reconcile_never_stops() -> None:
-    """A pass that drops every Stop: a running pump whose Creator lost its session keeps its socket."""
     import pump_reconcile
     real = pump_reconcile.reconcile
 
@@ -71,8 +57,6 @@ def _reconcile_never_stops() -> None:
 
 
 def _supervisor_ignores_backoff() -> None:
-    """The Restart without its backoff: every pass restarts an exited pump at once (the old
-    supervisor), so a pump that exits without parking is restarted every pass, forever."""
     import pump_reconcile
     real = pump_reconcile.restart_backoff
 
@@ -84,12 +68,8 @@ def _supervisor_ignores_backoff() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run session-health-otp --break --fault=reconcile-never-restarts
         "reconcile-never-restarts": Fault(_reconcile_never_restarts, (PROBE_RESTART,)),
-        # slop/run session-health-otp --break --fault=reconcile-ignores-parked
         "reconcile-ignores-parked": Fault(_reconcile_ignores_parked, (WS_PARKED,)),
-        # slop/run session-health-otp --break --fault=reconcile-never-stops
         "reconcile-never-stops": Fault(_reconcile_never_stops, (PUMP_STOP,)),
-        # slop/run session-health-otp --break --fault=supervisor-ignores-backoff
         "supervisor-ignores-backoff": Fault(_supervisor_ignores_backoff, (PUMP_BACKOFF,)),
     }

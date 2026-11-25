@@ -1,18 +1,7 @@
-/**
- * Unsend must DELETE the exact message id it was given.
- *
- * `Number(msg.id)` rounded a Fansly snowflake and that rounded value became
- * the target of a destructive call: at best a silent 404 so unsend appears to
- * do nothing, at worst a URL naming a different real message. A truncated id
- * on a read path is a stale badge; on a DELETE it is data loss — which is why
- * this one lane gets its own test even though the broader message-id
- * migration is deliberately NOT in this branch.
- */
 import { describe, expect, it } from "vitest";
 
 const FANSLY_MSG = "900715634200489987";
 
-/** The id derivation used by useUnsendMessage / handleUnsend. */
 function unsendId(raw: unknown): string | null {
   const id = String(raw ?? "");
   if (!/^\d+$/.test(id) || /^0+$/.test(id)) return null;

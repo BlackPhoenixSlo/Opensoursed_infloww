@@ -1,22 +1,5 @@
 "use client";
 
-/**
- * Growth > Vault Pro, laid out from its Layout capture (`docs/infloww-layouts/growth-vault-pro.md`, ticket 36).
- *
- * The header is the bundle's: Infloww's 48px page header holding "Vault Pro", "Learn" and "Add media" (#3 to #11),
- * plus our one Extras overflow button left of Add media, which opens our own tools in a right drawer: "Download
- * full vault" / "Download full folder" (the open folder's scope; "Add … to queue" while a run is busy; it starts the
- * app's one download, `VaultDownloadProvider` in the root layout), collect, describe, harvest, duplicates, the pack
- * picker, AI folders and the flags review. The Creator is picked on
- * the creator column left of the page (`CreatorRail`, as Smart lists'), in place of the bundle's header select (#6).
- * Beside it, flush and filling the page (#15, #16), the existing Vault manage panel holds the folder rail and the
- * grid; with no Creator, a static frame of the same rail and toolbar, disabled, around an empty state. "Add media"
- * reveals the existing import card where the bundle puts its upload card: over the whole page (#78), with a back
- * arrow (#79). The card's contents are Phase 5's and are not touched here.
- *
- * What the page owns is which model everything below is scoped to (`VaultAccountProvider`): the grid, the review
- * queue and the importer must agree on it, see `VaultAccount`.
- */
 
 import { useState } from "react";
 import { ArrowLeft, ListFilter, MoreHorizontal, Plus, Search } from "lucide-react";
@@ -33,15 +16,11 @@ import { VaultTour, useVaultTour, type VaultTourStep } from "@/components/vault/
 import { EXTRA_LABEL, EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
 import { Skeleton } from "@/components/ui/Skeleton";
 
-/** #7: the bundle's Learn opens this help article (`openExternalUrl`, index.9f50f370.js @13108064). */
 const LEARN_HREF = "https://help.infloww.com/en/articles/9346888-vault-pro";
 
-/** Ours, in place of the capture's not-a-creator text (#13), which is about a fan account the registry cannot hold. */
 const NO_CREATOR = "No model accounts with a live session.";
-/** The header's off-title while the account list is still being read: no claim that there is no Creator. */
 const LOADING_CREATORS = "Loading model accounts…";
 
-/** The Add media tour (#12): the bundle's `batchUploadEntryJoyrideSteps`, spotlit on the button, to its left. */
 const ADD_MEDIA_TOUR: VaultTourStep[] = [
   {
     target: "[data-tour='vault-add-media']",
@@ -49,8 +28,6 @@ const ADD_MEDIA_TOUR: VaultTourStep[] = [
   },
 ];
 
-/** The upload guide (#118, #119): the bundle's `uploadPageJoyrideSteps$1` and their text (index.9f50f370.js
- *  @12944789 to @12945400), one per step title of the import card, to its right. */
 const UPLOAD_TOUR: VaultTourStep[] = [
   {
     target: "[aria-label='Upload steps'] > li:nth-child(1) h3",
@@ -71,8 +48,6 @@ const UPLOAD_TOUR: VaultTourStep[] = [
   },
 ];
 
-/** The capture's header bar (#3 to #11): title, then Learn, our Extras overflow and Add media at the right; a rule
- *  beneath. On a phone the right-hand group wraps under the title. */
 function VaultHeader({ onAddMedia, onExtras }: {
   onAddMedia: () => void;
   onExtras?: () => void;
@@ -86,10 +61,8 @@ function VaultHeader({ onAddMedia, onExtras }: {
         className="max-md:h-auto max-md:min-h-12 max-md:flex-wrap max-md:gap-y-2 max-md:px-3 max-md:py-1.5"
         actions={
           <div className="flex items-center gap-6">
-            {/* #7 to #9: the book icon and 14px M1 text, to Infloww's help article. */}
             <IfLearn href={LEARN_HREF} className="font-medium" />
             <div className="flex items-center gap-2">
-              {/* Ours (ADR-0003): the one Extras overflow, which opens the tools drawer. */}
               <IfButton
                 size="lg"
                 icon={MoreHorizontal}
@@ -100,7 +73,6 @@ function VaultHeader({ onAddMedia, onExtras }: {
                 disabled={!onExtras}
                 className="w-9 px-0 [&>svg]:h-4 [&>svg]:w-4"
               />
-              {/* #10, #11: antd's primary button, 135px by 36px, a plus before the label. */}
               <IfButton
                 variant="primary"
                 size="lg"
@@ -118,13 +90,7 @@ function VaultHeader({ onAddMedia, onExtras }: {
         }
       />
       {sessionLost && (
-        /* Said, not acted on. This model's OnlyFans session dropped, so she is
-           no longer in the pickable list — but quietly re-adopting the first
-           account that IS would move the operator to a different creator
-           mid-action, remount the whole page under them, and lose the staged
-           import files and the grid selection with no message at all. The
-           selection stays where it was put; every request below will fail
-           until the session is back, and this line is why. */
+        /* Don't re-adopt another account: it would remount the page and lose staged imports and selection. */
         <p className="border-b border-border px-3 py-2 text-xs text-warn sm:px-6" title={EXTRA_LABEL}>
           {account?.nickname || account?.id || "This model"}&apos;s OnlyFans
           session has dropped — nothing on this page can load until it is
@@ -137,9 +103,6 @@ function VaultHeader({ onAddMedia, onExtras }: {
 
 const noop = () => {};
 
-/** The page with no Creator (#13 to #16, the clone's empty frame): the rail's sort row and an empty "All media" row,
- *  the toolbar with every control off, and an empty state where the grid goes. Static: nothing here reads the
- *  relay, and `VaultManagePanel` stays unmounted, as its `accountId` is a string. */
 function VaultEmptyFrame() {
   return (
     <div className={VAULT_PANES_CLASS}>
@@ -191,20 +154,14 @@ function VaultEmptyFrame() {
   );
 }
 
-/** The page body, inside the provider so it can key its children on the model. */
 function VaultProBody() {
   const { accountId, account, accounts, ready, setAccountId } = useVaultAccount();
-  // A model whose session dropped leaves `accounts` but stays selected (`sessionLost`); the column still shows her.
   const options = account && !accounts.some((a) => a.id === account.id) ? [account, ...accounts] : accounts;
   const [adding, setAdding] = useState(false);
   const [extrasOpen, setExtrasOpen] = useState(false);
-  // The bundle's order: the Add media tour once the page has a Creator to add to, the upload guide the first time
-  // the upload card opens. Each shows once (`useVaultTour`); opening the card ends the first, as there.
   const [addTour, closeAddTour] = useVaultTour("batchUploadEntry", accountId !== null && !adding);
   const [uploadTour, closeUploadTour] = useVaultTour("uploadPageStep", accountId !== null && adding);
   return (
-    // `relative`: the import card covers this box while it is open (#78). No page padding: the header bar and the
-    // rail and grid below it run edge to edge, and from `md` up fill the height under the top bar (#15, #16).
     <div className="relative flex flex-col md:h-[calc(100dvh-var(--shell-top,3.5rem))]">
       <VaultHeader
         onAddMedia={() => {
@@ -215,32 +172,12 @@ function VaultProBody() {
       />
       {addTour && !adding && <VaultTour steps={ADD_MEDIA_TOUR} variant="coach" placement="left" spotlightClicks onClose={closeAddTour} />}
       {uploadTour && adding && <VaultTour steps={UPLOAD_TOUR} variant="guide" placement="right" onClose={closeUploadTour} />}
-      {/* Nothing below mounts until the model is known, and that is a contract,
-          not a loading nicety. It makes `accountId` a plain string for the whole
-          subtree (`useVaultAccountId`), which is what removes the null branch
-          from the components below — and with it the "…" placeholder, the disabled
-          Start button, and two hand-written copies of this same empty state.
-          It also stops the first paint mounting the entire page under a
-          placeholder key and throwing it away one render later.
-
-          `key` = the model, so switching one REMOUNTS both rather than
-          re-rendering them with the previous model's state still in hand. The
-          panel holds every selection, the open drawer, the folder filter, the
-          search box and the drag-reorder buffer; the import card holds staged
-          files and folder ids that go to OnlyFans verbatim. Picking a new chip
-          used to leave 30 of the OLD model's media ids selected, and the next
-          "add to folder" wrote those ids into the NEW model's folder. One
-          mechanism for both, because a remount cannot be forgotten the
-          next time a piece of state is added — a reset effect can.
-          The grid's view (folder, type, search, select mode, ticks) is kept
-          per model above the key (`VaultBrowseMemory`): switching back finds
-          that model's own, never the other's. `sort` resets. */}
+      {/* Keyed on the model so a switch REMOUNTS: stale selected media ids from the old model once got written into the new model's folder. Nothing mounts until the model is known (accountId is a plain string below). */}
       <CreatorRail creators={{ accounts: options, value: accountId, onChange: setAccountId }} className="flex min-h-0 flex-col">
         {accountId === null ? (
           ready ? (
             <VaultEmptyFrame />
           ) : (
-            // #13: the bundle spins (`Spin`) while the page loads; ours draws the vault's tiles as placeholders.
             <div role="status" aria-label="Loading" className="grid grid-cols-3 md:grid-cols-6 gap-2 px-3 md:px-6 py-4">
               {Array.from({ length: 8 }, (_, i) => <Skeleton key={i} className="aspect-square w-full rounded-md" />)}
             </div>
@@ -249,10 +186,7 @@ function VaultProBody() {
           <div key={accountId} className="flex-1 min-h-0 flex flex-col">
             <VaultManagePanel extrasOpen={extrasOpen} onCloseExtras={() => setExtrasOpen(false)} />
 
-            {/* #78 to #80: the upload card over the whole page, a 20px back arrow, a 24px body that scrolls. The
-                card stays mounted while hidden, so files staged in it survive closing it; it is remounted with the
-                rest when the model changes. So Back never asks first, as the bundle's does with files picked (#79):
-                nothing is lost, and the title says so. */}
+            {/* Stays mounted while hidden so staged files survive closing it. */}
             <div
               hidden={!adding}
               className="absolute inset-0 z-[1000] flex flex-col bg-bg"
@@ -282,8 +216,7 @@ function VaultProBody() {
 export default function VaultProPage() {
   return (
     <VaultAccountProvider>
-      {/* Above VaultProBody's per-model `key`: each model's folder, select mode and ticks survive a switch. The
-          download lives higher still (root layout, VaultDownloadProvider): it outlives the page. */}
+      {/* Above the per-model key: each model's grid view survives a switch, never the other's. `sort` resets. */}
       <VaultBrowseMemory>
         <VaultProBody />
       </VaultBrowseMemory>

@@ -1,29 +1,5 @@
 "use client";
 
-/**
- * ReadyMadePanel — the ready-made posts & broadcasts page, pinned to one of
- * two rule kinds:
- *
- *   Auto Posts   (auto_posts)   — one post per rule, posted on the rule's
- *                                 schedule, optionally auto-deleted after N hours.
- *   Premade Mass (mass_premade) — one ready broadcast per rule, sent on the
- *                                 rule's schedule, optionally auto-unsent. My Automations calls it
- *                                 Auto Mass (/growth/auto-mass).
- *
- * Unlike the old fire-once tabs, these are now SAVED, persisted definitions
- * stored as `automation_rules` rows (reusing that table — no new schema). Each
- * saved rule shows what's queued next (`next_due_at` / `has_pending_job`) and a
- * compact strip of previous runs (from the executor's run log). "New / Edit"
- * opens ReadyMadeRuleEditor (the rule and its one post / message in one popup)
- * and persists it via the automation-rules create/update hooks; "Run now"
- * enqueues an immediate job off the saved rule.
- *
- * The panel is the page (`only`, My Automations > Auto Post / Auto Mass):
- * Infloww's legacy list page (page-parity ticket 16, copied from Smart Messages
- * › Automated Messages): a PageFrame with the creator column, a header with the
- * blurb as Learn's popover and the primary "New …", then an IF_TABLE of the
- * saved rules with previous runs in an expandable row.
- */
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -46,7 +22,6 @@ import { KIND_COPY } from "@/components/automations/readyMadeContent";
 import type { Kind } from "@/components/compose/payloadRules";
 import { useAgentPanel } from "@/components/assistant/agentBridge";
 
-/** The empty list's line on what a rule does (and, for a mass, where a one-off send lives). */
 const EMPTY_HELP: Record<Kind, React.ReactNode> = {
   auto_posts: "A rule publishes one post on its schedule, and can delete it after the hours you set.",
   mass_premade: (
@@ -57,12 +32,7 @@ const EMPTY_HELP: Record<Kind, React.ReactNode> = {
   ),
 };
 
-/** The panel pinned to one rule kind: how My Automations > Auto Post
- *  (/growth/auto-post) shows the Auto Posts list, and > Auto Mass
- *  (/growth/auto-mass) the mass_premade list. It renders the page (its
- *  PageFrame and header) itself. */
 export default function ReadyMadePanel({ only }: { only: Kind }) {
-  // The creator column's pick, in `?creator=`.
   const creator = useAutomationCreator();
   const accountId = creator.accountId;
 
@@ -72,7 +42,6 @@ export default function ReadyMadePanel({ only }: { only: Kind }) {
   const deleteM = useDeleteRule(accountId);
   const runM = useRunRuleNow(accountId);
 
-  // The open popup: a saved rule, a new one, or none.
   const [editor, setEditor] = useState<AutomationRule | "new" | null>(null);
   const editing = editor === "new" ? null : editor;
   const [deleting, setDeleting] = useState<AutomationRule | null>(null);
@@ -85,7 +54,6 @@ export default function ReadyMadePanel({ only }: { only: Kind }) {
 
   const closeEditor = () => setEditor(null);
 
-  // Switching creators closes a half-open editor (its account would mismatch).
   useEffect(() => {
     closeEditor();
   }, [accountId]);
@@ -121,7 +89,6 @@ export default function ReadyMadePanel({ only }: { only: Kind }) {
 
   const runs = runsQ.data?.runs ?? [];
   const startNew = () => setEditor("new");
-  // The help bot's "Do it for me" opens a new rule here, as the New button does.
   useAgentPanel(only, accountId, startNew);
   const copy = KIND_COPY[only];
 

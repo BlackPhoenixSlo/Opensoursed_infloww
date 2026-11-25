@@ -178,10 +178,6 @@ describe("canFile", () => {
 });
 
 describe("preselect", () => {
-  // P1/P2 Jev preselected (P2 a safe tease), Q a suggestion below the gate (not preselected), N no suggestion,
-  // U preselected but its suggestion is the free rung and Jev says not free-safe (server never does this), S saved,
-  // V a preselected video (server never does this either), M a possible one (below the gate, flagged preselect by
-  // mistake: still never ticked by itself).
   const P1 = item(11, { suggested: "nude", preselect: true, jev: true, free_ok: true });
   const P2 = item(12, { suggested: "tease", preselect: true, jev: true, free_ok: true });
   const Q = item(13, { suggested: "nude", preselect: false });
@@ -256,7 +252,6 @@ describe("possibleOnly", () => {
 describe("canPress", () => {
   const UNSAFE = { jev: true, free_ok: false };
   it.each<[string, Partial<PackCandidate>, PickerState["draft"], string, boolean]>([
-    // Already filed on the free rung before the guard: the press unfiles it, so it stays pressable.
     ["unsafe, saved on tease: tease unfiles", { ...UNSAFE, rung: "tease", unsafe_on_free: true }, {}, "tease", true],
     ["unsafe, saved on tease, drafted off: tease refused", { ...UNSAFE, rung: "tease" }, { 1: null }, "tease", false],
     ["unsafe, drafted on tease: tease unfiles", UNSAFE, { 1: "tease" }, "tease", true],
@@ -264,7 +259,6 @@ describe("canPress", () => {
     ["unsafe, on nude: tease refused", { ...UNSAFE, rung: "nude" }, {}, "tease", false],
     ["unsafe, saved on tease: nude allowed", { ...UNSAFE, rung: "tease" }, {}, "nude", true],
     ["safe, unfiled: tease allowed", { jev: true, free_ok: true }, {}, "tease", true],
-    // A clip filed before photos-only: its rung unfiles it, no other rung files it.
     ["video, saved on nude: nude unfiles", { kind: "video", rung: "nude" }, {}, "nude", true],
     ["video, saved on nude: body refused", { kind: "video", rung: "nude" }, {}, "nude-body", false],
     ["video, drafted off: nude refused", { kind: "video", rung: "nude" }, { 1: null }, "nude", false],

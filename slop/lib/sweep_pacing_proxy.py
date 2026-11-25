@@ -1,30 +1,3 @@
-"""Ledger walk pages paced per bound proxy exit (service/of_pacing.py, OFClient.pace_key), the last stage of
-scenarios/2026-11-05-sweep-pacing.py (tx_proxy_pages_spaced).
-
-PX_N Creators held out of every other check (an empty ledger until now, so the earlier passes
-only completed their backfill) get PX_ROWS ledger rows of the last 6 days each. POOL fake proxies
-(lib/proxy_wire.py) join the pool (`POST /__slop/proxy-pool`, the startup's sync) and each Creator
-is bound through the product's `POST /admin/proxy-pool/assign` (least-used: 2 per proxy, so every
-proxy is shared and the proxies are separate). Phase 1: every Creator's full walk at once
-(`POST /admin/ingest/transactions/{id}/run` mode refresh: supervised_tick, paced as the
-supervisor's). Then an ADR-0030 move: the last proxy's Creators failed over by
-`proxies.failover_pool` (`POST /__slop/sweep-pacing/failover`: its one registry write, the
-clients evicted; each destination probed first). Phase 2: every full walk at once again, 3 a proxy.
-
-Per phase, at OF (lib/sweep_pacing_wire.py's log, each ledger GET's egress = the tunnel it came
-through): per egress, every ledger GET left >= PAGE_GAP_S (- SPACE_SLACK_S) after the one before;
-each Creator's GETs came through the proxy it is bound to at that time (after the move: the new
-one, so the evicted client was rebuilt on the new transport); two egresses sent within
-PAGE_GAP_S / 2 of each other (endpoints proceed independently, not one global slot); every GET 200;
-the move moved exactly the last proxy's Creators onto the others. Ledger totals: each Creator holds
-PX_ROWS rows, their SUM(amount_cents) and its fans' SUM(lifetime_spend_cents) == OF's sum after
-phase 1, unchanged by phase 2.
-
-Bypasses (declared): the move's trigger (a dead proxy's DOWN_AFTER failures, its confirm and two
-failed rechecks, ~100 s) is the hook calling `proxies.failover_pool` on a live proxy; the move
-itself is the product's. OF's limit stays per Creator (lib/sweep_pacing_wire.py): no per-IP
-bucket is modelled, the check measures departure spacing per egress, not 429s.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -39,21 +12,13 @@ from slop.lib.sweep_pacing_evidence import IN_FLIGHT, SCAN_END, held, scan_many
 from slop.lib.sweep_pacing_faults import TX_PROXY_SPACED
 from slop.lib.sweep_pacing_ledger import tx_row
 
-PX_N, POOL, PX_ROWS = 6, 3, 450   # 5 ledger pages a walk (OF's 100 a page)
+PX_N, POOL, PX_ROWS = 6, 3, 450
 WALK_TIMEOUT_S = 180
-# The rest of the scenario's topology (`bind`): AE's Creators are all on proxies, at most 5 on one
-# (measured: proxy-health digests 2026-11-07/08, infloww-eba313d6 after the moves; 13-16 Creators,
-# ~8 pool labels). Direct clients share one slot (the host's IP): every Creator direct would page
-# the whole ledger through it (measured: 20261108T074315Z-2026-11-05-sweep-pacing-8241, ~1.16 s a page).
 PER_PROXY = 5
-BIND_THINK_S = 1.0   # back-to-back binds race the SQL mirror's sync (scenarios/2026-10-28-dead-proxy-interactive-reads.py)
+BIND_THINK_S = 1.0
 
 
 async def bind(ctx, st: ExitStack, groups: list[list[str]]) -> dict[str, str]:
-    """Each group on its own fake proxy (lib/proxy_wire.py, alive until `st` closes), through the
-    product's `POST /admin/proxies` + `POST /admin/proxies/assign` (the owner's custom proxies, so
-    this stage's pool sync never touches them). -> Creator -> "127.0.0.1:<port>". A refused bind ends
-    the run: a Creator left direct would share the host's slot."""
     out: dict[str, str] = {}
     for k, g in enumerate(groups):
         wire = st.enter_context(ProxyWire())
@@ -72,7 +37,6 @@ async def bind(ctx, st: ExitStack, groups: list[list[str]]) -> dict[str, str]:
 
 
 def _bindings(path, aids) -> dict[str, str]:
-    """Creator -> "127.0.0.1:<port>" of the proxy proxies.json binds it to."""
     out = {}
     for p in json.loads(path.read_text()).get("proxies", []):
         for a in p.get("assigned_account_ids") or ():
@@ -86,7 +50,6 @@ def _labels(path) -> dict[str, str]:
 
 
 def _totals(w, aids) -> dict[str, tuple[int, int, int]]:
-    """Creator -> (ledger rows held, their amount cents, its fans' lifetime cents)."""
     out = {}
     for a in aids:
         ids, total, life = held(w, a)
@@ -99,9 +62,6 @@ def _status(w, aids) -> dict[str, str]:
 
 
 async def _walks(ctx, w, sw, aids) -> dict:
-    """Every Creator's full walk at once; its ledger GETs at OF once all ended: each tick's
-    ingest_tx_scan_end (after its disputes poll, which still goes through the proxy; the status
-    settles before it) or, failed, its status settled."""
     t0 = time.time()
     got = await asyncio.gather(*(ctx.owner.post(f"/admin/ingest/transactions/{a}/run", json={"mode": "refresh"})
                                  for a in aids))
@@ -181,7 +141,6 @@ async def run(ctx, w, sw, px: list[str], rows: dict[str, list[dict]], *, gap: fl
 
 
 def ledger_rows(rng, base: int, fan_ids: list[int], now) -> list[dict]:
-    """PX_ROWS rows newest first over the last 6 days (inside the full walk's 7)."""
     step = timedelta(days=6) / PX_ROWS
     return [tx_row(base + k, rng.choice(fan_ids), rng.randint(5, 50) * 100, now - timedelta(minutes=5) - step * k)
             for k in range(PX_ROWS)]

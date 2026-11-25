@@ -1,69 +1,3 @@
-"""The automation lane's part of the slop relay (lib/relay.py loads it: `wire` runs at the
-end of its `_wire`, before any flow's part sorted after it; no `OF` class, so it adds no
-method to `_OfflineOF`): the lane's offline OnlyFans client and a loopback DeepSeek fake.
-
-Without `OF_API_ORIGIN` (no lib/of_wire.py OnlyFans), the lane's OF client
-(`ax._make_client`, every flow's automations) is `_OfflineWalkerOF`: `me()` and
-`send_message` (a priced one answers as OF's PPV and is kept per fan, `of_ppv` at
-/__slop/fake/calls) answer as OF does, as do the methods below and other flows' mixins;
-any other OF call raises `slop: OF is offline ...`. Another flow's part adds
-methods to it with `WALKER_MIXINS.insert(0, cls)` at import: relay.py imports the parts in
-sorted order, so the part sorted last comes first in the MRO, all before `_Walker`.
-
-DeepSeek is faked at its HTTP boundary, keeping its latency and concurrency:
-  POST <own loopback port>/chat/completions   the OpenAI-compatible wire `llm_client`
-       posts to (`llm_providers.PROVIDERS["deepseek"]` re-pointed there; its own port, so
-       it still answers while the relay drains after SIGTERM, a thread per call). Each
-       (purpose, fn) in ANSWERS is asked in list order with the prompt's (system, user)
-       turns; the first that returns text answers (fn counts its own label). Another
-       flow's part adds one with `ANSWERS.insert(0, ...)` at import, so the part sorted
-       last is asked first. Then send_followup's nudge (its user turn carries `Follow-up
-       step:`): one fixed short line. Any other prompt is a 503 (`slop: prompt not faked`,
-       naming the entries' purposes and the nudge; an entry whose purpose is None is faked
-       but not named; other purposes stay unreachable). Each answer after DEEPSEEK_LATENCY_S.
-Calls count by label at relay.py's GET /__slop/fake/calls. With SLOP_LIVE=1 the fake is
-not installed: the run reaches the real API with the caller's test key through the
-guard's allowlist (lib/stack.py).
-
-OF's mass messages are faked on the lane's client too, only when a scenario writes
-`$DEMO_SHOTS_TMP/of-mass.json` ({"send_s": s, "accept_at": 0..1, "cancel_s": s}):
-`send_mass_message` (POST /api2/v2/messages/queue), `cancel_scheduled` (DELETE
-/messages/queue/{id}) and `mass_message_history` (GET /users/me/stats/messages/group,
-UTC dates, newest first). OnlyFans' side lives in `$DEMO_SHOTS_TMP/of-mass.jsonl`,
-one line per step, written straight to the file so it outlives a SIGKILLed relay:
-`send_begin`, `send_accepted` (OF has the mass: it gets its queue id and is in the
-history from here on) after `accept_at` of `send_s`, `send_returned` (the relay has
-OF's answer) at `send_s`; `cancel_begin` / `cancel_done` after `cancel_s`. A Creator in
-`cancel_fail` ({account: "proxy" | "of"}, re-read every call) gets `cancel_refused`
-instead and the cancel raises: "proxy" as curl_cffi's ProxyError after `proxy_s` (the
-proxy's CONNECT 403 once OFClient._proxy_retry's ~6 s of retries ran out; OF never sees
-it), "of" as OF's own error (OFAPIError, a 400) after `cancel_s`. A Creator in
-`send_fail` ({account: "proxy" | "of"}, re-read every call) gets `send_refused` instead of
-`send_begin` and the send raises: "proxy" the same ProxyError after `proxy_s` (OF never sees it),
-"of" OF's own 400 after `accept_at` of `send_s` (AE 2026-11-07: `{"error":{"code":0,"message":
-"Consent not accepted"}}`), as request_json raises it: OFAPIError with the response, here a
-stand-in carrying only its `status_code` and `text` (declared). Every send first builds
-the body the product's real `OFClient.send_mass_message` would POST (`_Walker._wire_body`,
-transport captured; declared: `auto_tag=False`); `send_begin` carries its
-`isConsentAccepted` (`consent`) and how many `mediaFiles` (`media`). A Creator in
-`consent_required` ([account, ...]) whose body has media but no `isConsentAccepted: true`
-gets `send_refused` (`why: "consent"`) and that same OF 400; for such a Creator each answer
-(the 400, a sent one's 2xx) also goes to the product's consent observer as `_http_call`
-hands it over (`_observed`: the consent_required notice flags, then clears). A kill
-between `send_accepted` and `send_returned` is OF accepting a mass the relay never
-heard back about. Blocking sleeps, in the caller's worker thread as the real curl.
-With the same file: `subscribers` / `following` answer empty pages (a send's
-a pre-send roster read), and OF's user lists (`get_lists`, `create_list`, `list_users_in`,
-`add_user_to_list`, `remove_user_from_list`: buyer lists, a send's Auto_Exclude) live
-in this relay process (`_of_lists` / `_of_members`, ids from _OF_LIST_BASE + 1 up),
-`list_s` (0.3 s) a call; a restarted relay finds no list and makes them again. A list
-in `repeat_pages` is OF ignoring the offset: `list_users_in` serves its page 1 on every
-call (`hasMore` true while members remain past it), unpaced (armed without of-mass.json),
-counted `of:repeat_list_page`. A
-Creator in `lists_fail` ({account: n}) gets its first n `get_lists` refused (a
-`lists_refused` line each, counted from the journal, then OF's 500 as OFAPIError).
-"""
-
 import json
 import os
 import threading
@@ -74,13 +8,13 @@ from pathlib import Path
 OF_MASS_QUEUE_BASE = 8_800_000_000
 _OF_LIST_BASE = 6_600_000
 DEEPSEEK_LATENCY_S = 0.4
-_of_lists: dict[str, list[dict]] = {}   # account -> OF's user lists (this process)
+_of_lists: dict[str, list[dict]] = {}
 _of_members: dict[int, set[int]] = {}
-repeat_pages: set[int] = set()   # list ids whose `list_users_in` ignores the offset (page 1 again)
-_mass_lock = threading.Lock()  # queue ids: one accept at a time (the count of accepts so far, all processes)
-_fake_calls: Counter = Counter()  # relay.py's, from wire() on (served at /__slop/fake/calls)
-WALKER_MIXINS: list[type] = []   # other flows' methods on the lane's client, before _Walker's (insert(0))
-ANSWERS: list = []   # (purpose | None, fn(system, user) -> text | None): other flows' DeepSeek prompts (insert(0))
+repeat_pages: set[int] = set()
+_mass_lock = threading.Lock()
+_fake_calls: Counter = Counter()
+WALKER_MIXINS: list[type] = []
+ANSWERS: list = []
 _FOLLOWUP = "the follow-up drip (send_followup)"
 
 
@@ -89,8 +23,7 @@ def _mass_file() -> Path:
 
 
 def _mass_append(row: dict) -> None:
-    """One line, one write(2) on an O_APPEND fd: in the file the moment it returns,
-    whatever happens to this process next."""
+    # one write on an O_APPEND fd: on disk even if the process is SIGKILLed next
     fd = os.open(_mass_file(), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
         os.write(fd, (json.dumps(row) + "\n").encode())
@@ -106,11 +39,6 @@ def _mass_rows() -> list[dict]:
 
 
 def add_lists(rows) -> list[dict]:
-    """OF user lists into this process's `_of_lists` / `_of_members`, all rows under one
-    `_mass_lock`; answers each row's list entry. A row is (account, name, members, lid):
-    lid None mints the next id (`_OF_LIST_BASE` + every list so far + 1, as `create_list`),
-    `name` may be a callable of that id; an explicit lid the account already has keeps its
-    entry, members replaced."""
     out = []
     with _mass_lock:
         for aid, name, members, lid in rows:
@@ -127,15 +55,10 @@ def add_lists(rows) -> list[dict]:
 
 
 class _Walker:
-    """The automation lane's client (`automation_executor._make_client`) in a slop
-    run: never a real OFClient (its curl_cffi transport would pass the socket
-    guard). `me()` answers the account, as OF does for a live session. Joins
-    relay.py's `_OfflineOF` in `wire` (`_OfflineWalkerOF`)."""
 
     def me(self) -> dict:
         return {"id": int(self.account_id)}
 
-    # OF's mass messages (module docstring), when a scenario wrote of-mass.json.
     def _mass_cfg(self) -> dict:
         f = Path(os.environ.get("DEMO_SHOTS_TMP", "")) / "of-mass.json"
         if not f.is_file():
@@ -148,9 +71,6 @@ class _Walker:
         return row
 
     def _wire_body(self, text, price, media_files, kw) -> dict:
-        """The POST /messages/queue body the product's real `OFClient.send_mass_message`
-        builds for this call (its transport stubbed: the body is captured, nothing is
-        sent). Declared: `auto_tag=False`, the co-performer tag lookup is not run."""
         from of_client import OFClient
         c = OFClient.__new__(OFClient)
         c.account_id = self.account_id
@@ -206,10 +126,6 @@ class _Walker:
         return out
 
     def _observed(self, wire: dict, status: int, text: str):
-        """OF's answer as `_Transport._http_call` hands it to the product's consent
-        observer (of_client._observe_consent: the consent_required notice flags on
-        the 400, clears on a 2xx media send); only for a `consent_required` Creator.
-        Declared: the response is a stand-in carrying `status_code` and `text`."""
         from types import SimpleNamespace
         import of_client
         r = SimpleNamespace(status_code=status, text=text)
@@ -218,16 +134,11 @@ class _Walker:
         return r
 
     def subscribers(self, *, type="active", limit=10, offset=0, **_kw) -> dict:
-        """A roster read (audiences.roster_audience_blocking: thresholded / Priority sends):
-        an empty page. Fake, declared: the scenario counts sends, not fans."""
         self._mass_cfg()
         return {"list": [], "hasMore": False}
 
     following = subscribers
 
-    # OF's user lists (buyer lists, a send's Auto_Exclude), in this relay process
-    # only: a restarted relay finds none and makes them again, as on a fresh
-    # account. Each call takes `list_s` (a guess).
     def _list_op(self) -> None:
         time.sleep(float(self._mass_cfg().get("list_s", 0.3)))
 
@@ -308,19 +219,14 @@ class _Walker:
 
 
 def _deepseek_answer(body: dict) -> tuple[int, dict]:
-    """The fake DeepSeek's answer to one chat completion (module docstring)."""
     msgs = body.get("messages") or []
     user = next((m["content"] for m in reversed(msgs) if m.get("role") == "user"), "")
     system = next((m["content"] for m in msgs if m.get("role") == "system"), "")
     text = next((t for _p, fn in ANSWERS for t in [fn(system, user)] if t is not None), None)
     if text is None and "\nFollow-up step: " in user:
-        # send_followup's nudge (its user turn names the step, `_compose_user`):
-        # one short line, as the real model writes it.
         _fake_calls["deepseek:followup"] += 1
         text = "hey you, what are you up to tonight? 😘"
     if text is None:
-        # Only the prompts named above are faked; any other purpose stays as
-        # unreachable as it was before this fake existed.
         _fake_calls["deepseek:other"] += 1
         names = [p for p, _fn in ANSWERS if p is not None] + [_FOLLOWUP]
         return 503, {"error": {"message": f"slop: prompt not faked (named fakes: {', '.join(names)})"}}
@@ -333,9 +239,6 @@ def _deepseek_answer(body: dict) -> tuple[int, dict]:
 
 
 def _serve_deepseek() -> int:
-    """The fake DeepSeek on its own loopback port, a thread per call: it keeps
-    answering while the relay drains after SIGTERM (uvicorn has closed the
-    relay's own socket by then; the real DeepSeek is still there)."""
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class H(BaseHTTPRequestHandler):
@@ -362,7 +265,6 @@ def _serve_deepseek() -> int:
 
 
 def _install_fakes() -> None:
-    """Point DeepSeek at the loopback fake."""
     import dataclasses
 
     import llm_providers

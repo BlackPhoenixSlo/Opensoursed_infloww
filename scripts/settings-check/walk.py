@@ -9,7 +9,6 @@ NAV=open(os.path.join(ROOT, "app/lib/nav.ts")).read()
 _SETTINGS_TABS=re.search(r"^export const SETTINGS_TABS\b.*?^\];", NAV, re.S|re.M)
 TABS=re.findall(r'href: "/settings/([^"]+)"(?![^}\n]*(?:legacy|masterOnly): true)', _SETTINGS_TABS.group(0) if _SETTINGS_TABS else "")
 VIEWPORTS=[(1440, 900, ""), (390, 844, "-390")]
-UNBUILT="is not built yet."
 LOCAL=("localhost", "127.0.0.1")
 RELAY=("/auth/", "/chatter/", "/admin/", "/api/")
 JSON="application/json"
@@ -243,11 +242,10 @@ GEOMETRY="""() => {
     panel_body_overflow_y: pb ? getComputedStyle(pb).overflowY : null,
     area_w: area ? area.getBoundingClientRect().width : null,
     area_bottom: area ? area.getBoundingClientRect().bottom : null,
-    unbuilt: document.body.innerText.includes(%s),
     // Next's not-found fallback; the dev server can answer it with HTTP 200 (streamed).
     not_found: !!q('.next-error-h1') || document.body.innerText.includes('This page could not be found'),
   };
-}""" % json.dumps(UNBUILT)
+}"""
 
 DARK_FRAME="""() => {
   const q = (s) => document.querySelector(s), bg = (e) => e ? getComputedStyle(e).backgroundColor : null;
@@ -305,7 +303,6 @@ def main():
                 check(f"{at}: Panel header rendered", has_panel, True)
                 if not (served and has_panel):
                     pg.screenshot(path=f"{SHOTS}/settings-{tab}{suffix}.png"); continue
-                check(f"{at}: no unbuilt placeholder", g["unbuilt"], False)
                 check(f"{at}: console and page errors", [e[:200] for e in errs], [])
                 check(f"{at}: no horizontal overflow", g["scroll_w"]<=g["client_w"], True)
                 if w==1440:

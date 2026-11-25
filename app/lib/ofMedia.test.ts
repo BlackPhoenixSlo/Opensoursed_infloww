@@ -1,15 +1,3 @@
-/**
- * lib/ofMedia — the browser half of the still-picking rule.
- *
- * The cases are NOT written here: they come from
- * `service/tests/fixtures/of_media_shapes.json`, the same table the python suite
- * asserts `of_shapes.still_url` against. Two implementations of one rule can't
- * share code across the wire, so they share the fixture — add a payload there and
- * whichever side drifts goes red.
- *
- * Read at runtime rather than imported so the fixture stays where python's test
- * data lives, outside the Next tsconfig's rootDir.
- */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -23,6 +11,7 @@ interface FixtureCase {
   media: Record<string, unknown>;
   still: string | null;
 }
+// Cases live in service/tests/fixtures/of_media_shapes.json, shared with the python suite: whichever side drifts goes red.
 const fixture = JSON.parse(
   readFileSync(
     join(__dirname, "..", "..", "service", "tests", "fixtures", "of_media_shapes.json"),
@@ -30,8 +19,6 @@ const fixture = JSON.parse(
   ),
 ) as { sig: string; cases: FixtureCase[] };
 
-/** OF's signed query is long and irrelevant to the decision — appending it to
- *  every url is what proves the extension test reads the PATH, not the string. */
 function withSig<T>(value: T): T {
   return JSON.parse(
     JSON.stringify(value)

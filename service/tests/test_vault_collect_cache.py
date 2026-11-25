@@ -1,28 +1,7 @@
 #!/usr/bin/env python3
-"""vault_cache TTL + proxy-switch staling + invalidate/put race + per-account user activity.
-
-- every key (lists carry signed cover urls too) at most 20 h; the env sets the
-  TTL, capped at 20 h; 0 disables.
-- a proxy change for an account (proxies.save → server._on_proxy_switched)
-  makes its cached vault pages misses; other accounts keep theirs. With the
-  relay's loop running, the rows are also deleted, so a restart (RAM marks
-  gone) cannot serve them.
-- a put whose fetch started before the account's last invalidate is dropped.
-- a user-priority lane entry records the account's last activity; a
-  background one does not (of_pacing.last_user_at).
-- the picker's `revalidate=1` on /vault/lists and /vault/media: an entry
-  younger than VAULT_PICKER_REVALIDATE_S (default 300) is served, an older one
-  is refetched, put and returned (concurrent ones share one OF read);
-  `refresh=1` always fetches; the folder gate runs first; `vault_cache.get`
-  without a max age keeps its meaning. A revalidated page 1 whose ids changed
-  drops its view's other offsets (`vault_cache.drop_view_pages`), not other
-  views' and not page 1's fresh put; unchanged ids keep them.
-
-Run: ./venv/bin/python service/tests/test_vault_collect_cache.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -103,17 +82,15 @@ async def case_proxy_switch_stales_that_account_only():
             await vault_cache.put(aid, k, PAYLOAD, started_at=datetime.utcnow())
     assert await _hit("accMoved", MEDIA) and await _hit("accStays", MEDIA)
     proxy_registry.upsert({"label": "px1", "scheme": "http", "host": "10.0.0.1", "port": 8080})
-    proxy_registry.assign_account("px1", "accMoved")       # egress changes → hook fires
+    proxy_registry.assign_account("px1", "accMoved")
     assert not await _hit("accMoved", MEDIA), "cached signed urls survived a proxy change"
     assert not await _hit("accMoved", LISTS)
     assert await _hit("accStays", MEDIA), "an unrelated account lost its cache"
-    await vault_cache.put("accMoved", MEDIA, PAYLOAD, started_at=datetime.utcnow())      # re-warmed through the new IP
+    await vault_cache.put("accMoved", MEDIA, PAYLOAD, started_at=datetime.utcnow())
     assert await _hit("accMoved", MEDIA), "a fresh put after the switch must serve"
 
 
 async def case_proxy_switch_survives_restart():
-    """On the relay's loop the hook also deletes the rows: with the RAM marks
-    gone (a restart), the old-IP pages are still not served."""
     for k in (LISTS, MEDIA):
         await vault_cache.put("accPersist", k, PAYLOAD, started_at=datetime.utcnow())
     server._on_proxy_switched(["accPersist"])
@@ -121,14 +98,13 @@ async def case_proxy_switch_survives_restart():
         await asyncio.sleep(0.01)
         if await _rows("accPersist") == 0:
             break
-    vault_cache._invalidated_at.clear()                    # "restart": RAM is gone
+    vault_cache._invalidated_at.clear()
     assert await _rows("accPersist") == 0, "proxy switch left the old-IP rows on disk"
     assert not await _hit("accPersist", MEDIA) and not await _hit("accPersist", LISTS)
 
 
 async def case_put_started_before_invalidate_is_dropped():
-    """A fetch that began before an invalidate (an upload, a folder edit, a
-    proxy change) must not write its pre-mutation payload back after it."""
+# a fetch begun before an invalidate must not write its pre-mutation payload back
     t0 = datetime.utcnow()
     await vault_cache.invalidate("accRace")
     await vault_cache.put("accRace", MEDIA, PAYLOAD, started_at=t0)
@@ -144,10 +120,10 @@ def case_user_lane_records_activity_background_does_not():
     with server._priority_lane_background("accLane"):
         pass
     assert of_pacing.last_user_at("accLane") is None, "background lane counted as a user"
-    with server._priority_lane("accLane", priority="user"):   # server job, no request
+    with server._priority_lane("accLane", priority="user"):
         pass
     assert of_pacing.last_user_at("accLane") is None, "requestless job counted as a user"
-    token = server._request_ctx.set(object())                  # a real request in flight
+    token = server._request_ctx.set(object())
     try:
         with server._priority_lane("accLane", priority="user"):
             pass
@@ -156,15 +132,13 @@ def case_user_lane_records_activity_background_does_not():
     assert of_pacing.last_user_at("accLane") is not None
 
 
-# ── the picker's revalidate on /vault/lists and /vault/media ──────────────
 
-RV_MEDIA = vault_cache.vault_media_cache_key()               # the picker's All page 1
+RV_MEDIA = vault_cache.vault_media_cache_key()
 RV_LISTS = vault_cache.vault_lists_cache_key(limit=50)
 OLD = {"list": [{"id": 1}], "hasMore": False}
 
 
 class _FakeOF:
-    """The OF client the routes reach: counts reads, each answers a new id."""
 
     def __init__(self, hold_s: float = 0.0):
         self.media = self.lists = 0
@@ -217,7 +191,7 @@ async def case_revalidate_young_entry_served():
     fake = _FakeOF()
     for key in (RV_MEDIA, RV_LISTS):
         await vault_cache.put("accRv", key, OLD, started_at=datetime.utcnow())
-        await _age("accRv", key, 200)                         # < 300 s
+        await _age("accRv", key, 200)
     with _routes("accRv", fake):
         assert await _media(revalidate=True, refresh=False) == OLD
         assert await _lists(revalidate=True, refresh=False) == OLD
@@ -229,7 +203,7 @@ async def case_revalidate_old_entry_refetched_put_returned():
     fake = _FakeOF()
     for key in (RV_MEDIA, RV_LISTS):
         await vault_cache.put("accRv", key, OLD, started_at=datetime.utcnow())
-        await _age("accRv", key, 400)                         # > 300 s, well inside the 20 h TTL
+        await _age("accRv", key, 400)
     with _routes("accRv", fake):
         assert await _media(refresh=False) == OLD, "no revalidate: the plain read still serves the cache"
         got = await _media(revalidate=True, refresh=False)
@@ -262,7 +236,7 @@ async def case_revalidate_knob_read_at_call_time():
 async def case_refresh_always_fetches():
     fake = _FakeOF()
     for key in (RV_MEDIA, RV_LISTS):
-        await vault_cache.put("accRvL", key, OLD, started_at=datetime.utcnow())   # young
+        await vault_cache.put("accRvL", key, OLD, started_at=datetime.utcnow())
     with _routes("accRvL", fake):
         await _media(refresh=True)
         await _media(refresh=True, revalidate=True)
@@ -272,7 +246,6 @@ async def case_refresh_always_fetches():
 
 
 async def case_concurrent_revalidates_share_one_of_read():
-    """Many chatters opening one Creator's picker at once: one OF read."""
     fake = _FakeOF(hold_s=0.2)
     await vault_cache.put("accRvL", RV_MEDIA, OLD, started_at=datetime.utcnow())
     await _age("accRvL", RV_MEDIA, 900)
@@ -300,11 +273,11 @@ async def case_revalidate_new_ids_drop_the_views_other_offsets():
     aid = "accRvView"
     page2 = vault_cache.vault_media_cache_key(offset=24)
     page3 = vault_cache.vault_media_cache_key(offset=48)
-    photos2 = vault_cache.vault_media_cache_key(type="photo", offset=24)       # another view
+    photos2 = vault_cache.vault_media_cache_key(type="photo", offset=24)
     for key in (RV_MEDIA, page2, page3, photos2, RV_LISTS):
         await vault_cache.put(aid, key, OLD, started_at=datetime.utcnow())
         await _age(aid, key, 400)
-    fake = _FakeOF()                                  # answers id 101: page 1 changed
+    fake = _FakeOF()
     with _routes(aid, fake):
         got = await _media(revalidate=True, refresh=False)
     assert got["list"][0]["id"] == 101, got
@@ -314,7 +287,6 @@ async def case_revalidate_new_ids_drop_the_views_other_offsets():
     assert await vault_cache.get(aid, photos2) == OLD, "another view's page was dropped"
     assert await vault_cache.get(aid, RV_LISTS) == OLD, "the folder list was dropped"
 
-    # Same ids again (page 1 now [101], OF answers [101]): the later pages stay.
     await vault_cache.put(aid, page2, OLD, started_at=datetime.utcnow())
     await _age(aid, RV_MEDIA, 400)
     same = _FakeOF()
@@ -323,7 +295,6 @@ async def case_revalidate_new_ids_drop_the_views_other_offsets():
         assert (await _media(revalidate=True, refresh=False))["list"][0]["id"] == 101
     assert await vault_cache.get(aid, page2) == OLD, "unchanged ids dropped a later page"
 
-    # A plain miss and refresh=1 never drop (only the picker's revalidate compares).
     await vault_cache.put(aid, page2, OLD, started_at=datetime.utcnow())
     with _routes(aid, _FakeOF()):
         await _media(refresh=True)
@@ -332,8 +303,6 @@ async def case_revalidate_new_ids_drop_the_views_other_offsets():
 
 
 async def case_revalidate_empty_answer_drops_the_old_first_page():
-    """W30 #23: the last item gone, the revalidate answers an empty listing (never cached): the old
-    page 1 goes too, so a plain read asks OF again instead of serving it for the 20 h TTL."""
     os.environ.pop("VAULT_PICKER_REVALIDATE_S", None)
     aid = "accRvEmpty"
     await vault_cache.put(aid, RV_MEDIA, OLD, started_at=datetime.utcnow())

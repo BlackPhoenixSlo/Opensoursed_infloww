@@ -1,40 +1,4 @@
 #!/usr/bin/env python3
-"""Vault Pro's download routes (`vault_download_api`): the relay fallback stream, the direct path's re-sign, the
-direct/relay decision. Plain-assert, no pytest (repo convention, `_harness.run()`).
-
-Real HTTP with real owner / chatter logins. Owner A owns accD; chatter `cd` is restricted to OF folder 12.
-Mirror rows: 201 photo in folder 12, 202 video in folder 99, 203 a DRM-only video (no full url) in folder 12.
-
-  case_info_direct_only_without_proxy   — {direct} true for a Direct egress, false for a proxy (and a refused one).
-  case_stream_attachment_and_bytes      — 200, every byte, Content-Disposition attachment `<id>.<ext>`, Content-Length,
-                                          one VAULT_DOWNLOAD slot taken and given back.
-  case_stream_is_lazy                   — the body is relayed chunk by chunk: after the first chunk out, the CDN
-                                          has handed over one chunk, not the file (never read whole).
-  case_403_resigns_once                 — 403 → one listing-window read → the fresh url of the same file → 200.
-  case_403_after_resign_is_403          — the fresh url 403s too (a dead signature): 403, lane free.
-  case_drm_only_is_422_and_unknown_404  — no full url in OF's fresh payload: 422; OF has no such media: 404.
-  case_chatter_folder_gate              — the chatter: 404 outside its folders on download AND resign, 200 inside;
-                                          a `u` naming another media's file is ignored (the row's url is fetched).
-  case_anonymous_refused                — no login: neither route answers bytes or urls.
-  case_resign_returns_fresh_url         — GET /download/resign: {url} for the same file, one by-id read, no bytes.
-  case_resigns_paced_and_429_retried    — two stale downloads: one shared window read, then a by-id read for the
-                                          media the window lacks, >= PAGE_GAP_S apart on
-                                          the Creator (of_pacing walk), OF's 429 waited out and retried, all 200
-                                          (AE 2026-11-10: unpaced, 76 re-signs in 19 s, then 429 and 26 failed).
-  case_transient_resign_failure_retries_soon — a window read that failed in transit is remembered (no by-id read)
-                                          FAIL_TRANSIENT_S, not FAIL_TTL_S: the panel's Retry re-asks OF.
-  case_resign_ignores_foreign_u         — the chatter's resign with a `u` of a hidden media: that media's fresh url
-                                          (cached) never comes back; the visible media's own fresh url does, re-signed
-                                          from its mirror row's url through the listing window (not by id).
-  case_empty_account_id_is_422          — `account_id=` on every route: 422, never an anonymous answer.
-  case_video_is_not_gzipped             — a `video/mp4` upstream streams with its Content-Length, no Content-Encoding.
-  case_disconnect_before_body_frees_slot — the client is gone before the body generator starts: slot back, the
-                                          upstream response closed (the generator's `finally` never runs then).
-  case_full_lane_is_503                 — every slot held: the next download waits SLOT_WAIT_S, then 503, lane intact.
-
-OF and its CDN are faked at `automation_executor._make_client`: no request leaves the process.
-Run: ./venv/bin/python service/tests/test_vault_download.py
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB
@@ -78,7 +42,7 @@ def _payload(mid: int, kind: str, folders: list[int], sig: str = SIG_OLD, drm: b
 
 
 ROWS = {201: ("photo", [12], False), 202: ("video", [99], False), 203: ("video", [12], True)}
-BODY = {mid: bytes([mid % 256]) * (3 * 1024 * 1024 + 17) for mid in ROWS}   # > 1 chunk (CHUNK = 256 KiB)
+BODY = {mid: bytes([mid % 256]) * (3 * 1024 * 1024 + 17) for mid in ROWS}
 
 
 class _Resp:
@@ -97,13 +61,12 @@ class _Resp:
 
 
 class _Client:
-    """The account's client: the CDN answers urls signed `Policy=new` (or every url when `accept_old`)."""
 
     def __init__(self, accept_old: bool = True, fresh: dict | None = None):
         self.account_id, self.timeout_s = AID, 5
         self.accept_old, self.fresh = accept_old, fresh
         self.gets: list[str] = []
-        self.reads: list = []   # OF reads: a media id (by-id) or "p<offset>" (a listing window)
+        self.reads: list = []
         self.chunks_out = 0
         self.ctype = "application/octet-stream"
         self.resps: list[_Resp] = []
@@ -120,7 +83,6 @@ class _Client:
         self.http = SimpleNamespace(get=get)
 
     def vault_media(self, *, offset: int = 0, **_kw):
-        """OF's asc listing: the one media this OF still has (`fresh`), else nothing."""
         with self.lock:
             self.reads.append(f"p{offset}")
         return {"list": [self.fresh] if self.fresh else [], "hasMore": False}
@@ -136,8 +98,6 @@ class _Client:
 
 
 def _use(c: _Client) -> _Client:
-    """`c` is the account's client from now on; the re-sign memory and the mirror rows back as seeded (a re-sign
-    writes the fresh payload over its row)."""
     cdn_resign._fresh.clear()
     cdn_resign._failed.clear()
     cdn_resign._pages.clear()
@@ -246,7 +206,7 @@ def case_403_resigns_once():
     r = _dl(owner, 201)
     assert r.status_code == 200 and r.content == BODY[201], (r.status_code, r.text[:200])
     assert c.gets == [_full(201, "photo") + SIG_OLD, _full(201, "photo") + SIG_NEW], c.gets
-    assert c.reads == ["p0"], c.reads   # its listing window, no by-id read
+    assert c.reads == ["p0"], c.reads
     c.gets.clear()
     assert _dl(owner, 201).status_code == 200
     assert c.gets == [_full(201, "photo") + SIG_NEW] and c.reads == ["p0"], "the fresh url is reused, no 2nd read"
@@ -262,7 +222,7 @@ def case_403_after_resign_is_403():
     assert admission.VAULT_DOWNLOAD.busy == 0
     again = _dl(owner, 201)
     assert again.status_code == 403 and c.reads == ["p0"], (again.status_code, c.reads)
-    assert len(c.gets) == 3, c.gets  # failure memory prevents another OF by-id read
+    assert len(c.gets) == 3, c.gets
 
 
 def case_drm_only_is_422_and_unknown_404():
@@ -272,7 +232,7 @@ def case_drm_only_is_422_and_unknown_404():
     assert r.status_code == 422, (r.status_code, r.text[:200])
     assert c.reads == [203] and c.gets == [], (c.reads, c.gets)
     c = _use(_Client(fresh=None))
-    r = _dl(owner, 777)   # no mirror row, OF has none either
+    r = _dl(owner, 777)
     assert r.status_code in (404,), (r.status_code, r.text[:200])
 
 
@@ -286,7 +246,6 @@ def case_chatter_folder_gate():
     r = _dl(chatter, 777)
     assert r.status_code == 404, ("no mirror row", r.status_code)
     assert c.gets == [] and c.reads == [], (c.gets, c.reads)
-    # Inside: 201. A `u` naming 202's file rides along: ignored, 201's own url is fetched.
     r = _dl(chatter, 201, u=_full(202, "video") + SIG_NEW)
     assert r.status_code == 200 and r.content == BODY[201], (r.status_code, len(r.content))
     assert c.gets == [_full(201, "photo") + SIG_OLD], c.gets
@@ -310,15 +269,12 @@ def case_resign_returns_fresh_url():
     r = owner.get("/admin/vault-ai/download/resign", params={"account_id": AID, "media_id": 201, "u": stale})
     assert r.status_code == 200 and r.json() == {"url": _full(201, "photo") + SIG_NEW}, (r.status_code, r.text)
     assert c.reads == ["p0"] and c.gets == [], (c.reads, c.gets)
-    # Without `u`: the full file of the fresh payload.
     _use(c)
     r = owner.get(f"/admin/vault-ai/download/resign?account_id={AID}&media_id=201")
     assert r.status_code == 200 and r.json()["url"] == _full(201, "photo") + SIG_NEW, r.text
 
 
 class _PacedClient(_Client):
-    """OF reads through `of_pacing.paced` as OFClient.get_json sends them; the first answered OF's 429. Its listing
-    holds 201 only, so 202 falls back to a by-id read."""
 
     def __init__(self):
         super().__init__(accept_old=False)
@@ -353,12 +309,12 @@ def case_resigns_paced_and_429_retried():
     gap, jit = of_pacing.PAGE_GAP_S, of_pacing.JITTER_S
     of_pacing.PAGE_GAP_S, of_pacing.JITTER_S = 0.3, 0.0
     of_pacing._next_at.pop(AID, None)
-    try:   # one after the other: TestClient runs each thread's request on its own loop; the relay has one
+    try:
         out = {m: _dl(owner, m).status_code for m in (201, 202)}
     finally:
         of_pacing.PAGE_GAP_S, of_pacing.JITTER_S = gap, jit
     assert out == {201: 200, 202: 200}, out
-    assert c.reads == ["p0", "p0", 202], c.reads   # one shared window read (429, retried), then 202 by id
+    assert c.reads == ["p0", "p0", 202], c.reads
     gaps = [b - a for a, b in zip(c.at, c.at[1:])]
     assert all(g >= 0.29 for g in gaps), gaps
     assert admission.VAULT_DOWNLOAD.busy == 0
@@ -378,16 +334,15 @@ def case_transient_resign_failure_retries_soon():
     until = cdn_resign._failed[(AID, 201)]
     assert until - time.monotonic() <= cdn_resign.FAIL_TRANSIENT_S, until
     assert cdn_resign._pages[(AID, 0)].until - time.monotonic() <= cdn_resign.FAIL_TRANSIENT_S
-    cdn_resign._failed[(AID, 201)] = time.monotonic() - 1   # FAIL_TRANSIENT_S later
+    cdn_resign._failed[(AID, 201)] = time.monotonic() - 1
     cdn_resign._pages[(AID, 0)] = cdn_resign._pages[(AID, 0)]._replace(until=time.monotonic() - 1)
-    del c.vault_media                                        # OF answers again
+    del c.vault_media
     assert _dl(owner, 201).status_code == 200 and c.reads == ["p0", "p0"], c.reads
 
 
 def case_resign_ignores_foreign_u():
     chatter = _login("/chatter/login", "cd")
     c = _use(_Client(fresh=_payload(201, "photo", [12], sig=SIG_NEW)))
-    # 202 (folder 99, hidden from the chatter) was re-signed earlier for someone else: its fresh url is cached.
     cdn_resign._remember(AID, _payload(202, "video", [99], sig=SIG_NEW))
     r = chatter.get("/admin/vault-ai/download/resign",
                     params={"account_id": AID, "media_id": 201, "u": _full(202, "video") + SIG_OLD})
@@ -440,15 +395,12 @@ def case_disconnect_before_body_frees_slot():
         return {"type": "http.disconnect"}
 
     async def send(m):
-        # A send that yields (the hook chain's memory stream does): the disconnect's cancel lands here, on the
-        # response start, before Starlette ever iterates the body.
         sent.append(m)
         await asyncio.sleep(0.05)
 
     async def go():
         resp = await vault_download_api.download(account_id=AID, media_id=202, u=None)
         assert admission.VAULT_DOWNLOAD.busy == 1, admission.VAULT_DOWNLOAD.busy
-        # ASGI 2.3 (uvicorn's): the disconnect wins the task group, the body generator never starts.
         await resp({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send)
     try:
         asyncio.run(go())
@@ -497,7 +449,6 @@ async def _until(pred, s: float = 3.0) -> bool:
 
 
 def _count_leaves(lane) -> list[int]:
-    """Every slot give-back of `lane` from now on (`__aexit__` goes through `leave` too); undo with `del lane.leave`."""
     n: list[int] = []
     real = type(lane).leave.__get__(lane)
 
@@ -522,8 +473,6 @@ async def _drain(resp) -> bytes:
 
 
 def case_slot_held_until_upstream_close_finishes():
-    """#37: the slot is freed only once the upstream close has finished, so a burst of ended streams never admits new
-    ones while the old curl transfers are still closing."""
     c = _use(_Client())
     orig, orig_close = _no_gate(), vault_download_api._close
     lane = admission.VAULT_DOWNLOAD
@@ -559,8 +508,6 @@ def case_slot_held_until_upstream_close_finishes():
 
 
 def case_send_idle_cuts_a_stalled_consumer():
-    """#39: a browser that takes no chunk for SEND_IDLE_S is cut: the stream ends, upstream is closed, the slot is
-    freed exactly once, and the next download streams."""
     c = _use(_Client())
     orig, idle = _no_gate(), vault_download_api.SEND_IDLE_S
     lane = admission.VAULT_DOWNLOAD
@@ -572,11 +519,11 @@ def case_send_idle_cuts_a_stalled_consumer():
         resp = await vault_download_api.download(account_id=AID, media_id=202, u=None)
 
         async def receive():
-            await asyncio.Event().wait()   # no disconnect: the socket looks alive
+            await asyncio.Event().wait()
 
         async def send(m):
             if m["type"] == "http.response.body":
-                await asyncio.Event().wait()   # the tab stopped reading
+                await asyncio.Event().wait()
         t0 = time.monotonic()
         try:
             await asyncio.wait_for(resp({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send), 3)
@@ -611,8 +558,6 @@ class _Cut(logging.Handler):
 
 
 def _cut_run(chunked: bool):
-    """media 202 through the whole middleware stack (as uvicorn calls it), its upstream dying after one chunk (curl
-    28); `chunked`: the upstream sent no Content-Length. -> (ASGI messages sent, warning lines, exception out)."""
     owner = _login("/auth/login", "ownerd")
     c = _use(_Client())
     get = c.http.get
@@ -639,7 +584,7 @@ def _cut_run(chunked: bool):
     out: list[dict] = []
     asked = []
 
-    async def receive():   # the request once, then (as uvicorn) nothing until the client goes
+    async def receive():
         asked.append(1)
         if len(asked) == 1:
             return {"type": "http.request", "body": b"", "more_body": False}
@@ -660,8 +605,6 @@ def _cut_run(chunked: bool):
 
 
 def case_upstream_cut_mid_body_ends_short_without_raising():
-    """The CDN goes silent / drops mid-body (curl 28 / 18 on the proxy): the stream ends short of its Content-Length
-    (the browser's byte count fails the item), one warning, no exception out of the body, the slot given back."""
     out, lines, exc = _cut_run(chunked=False)
     assert exc is None, repr(exc)
     start, bodies = out[0], [m for m in out if m["type"] == "http.response.body"]
@@ -675,9 +618,6 @@ def case_upstream_cut_mid_body_ends_short_without_raising():
 
 
 def case_chunked_upstream_cut_mid_body_aborts():
-    """Same cut with no Content-Length (chunked): a clean end would read as the whole file and the browser has no
-    length to check, so the final message is dropped too (`cut_short`: uvicorn closes without the terminating chunk);
-    no exception out, one warning, the slot given back."""
     out, lines, exc = _cut_run(chunked=True)
     assert exc is None, repr(exc)
     start, bodies = out[0], [m for m in out if m["type"] == "http.response.body"]
@@ -691,8 +631,6 @@ def case_chunked_upstream_cut_mid_body_aborts():
 
 
 def case_short_body_is_cut_not_completed():
-    """server._CutShortStreams: a body short of its Content-Length never sends the final message (uvicorn then
-    closes the connection, no "shorter than Content-Length" RuntimeError); a full one, HEAD, a 304 pass as sent."""
     import server
 
     def run(method: str, status: int, length: int, chunks: list[bytes]):

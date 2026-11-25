@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
-"""
-POST /admin/translate — the three cache tiers behind the 🌐 chat-translate
-toggle. Durable regression suite (plain-assert, no pytest — repo convention).
-
-Google's gtx endpoint is faked.
-
-Run: cd service/tests && \
-  PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_translate_cache.py
-Exit 0 = all cases passed. Temp DB bound by _harness (never prod).
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -30,14 +20,12 @@ from db.engine import get_session  # noqa: E402
 from db.models import TranslationCache  # noqa: E402
 
 
-# ── Fake gtx ─────────────────────────────────────────────────────────
 
 _calls: list[str] = []
 _fail_for: set[str] = set()
 
 
 class _FakeClient:
-    """Stands in for httpx.AsyncClient as an async context manager."""
     async def __aenter__(self):
         return self
 
@@ -52,7 +40,7 @@ async def _fake_fetch(client, sem, text: str, target: str, source: str = "auto")
     _calls.append(text)
     _sources.append(source)
     if text in _fail_for:
-        return None                       # what a 429 / timeout looks like here
+        return None
     if source != "auto":
         return {"text": f"{source.upper()}:{text}", "lang": source}
     return {"text": f"EN:{text}", "lang": "es"}
@@ -64,7 +52,6 @@ def _install_fakes() -> None:
 
 
 async def _reset() -> None:
-    """Fresh process memory, call log AND durable tier — each case starts cold."""
     _calls.clear()
     _sources.clear()
     _fail_for.clear()
@@ -81,7 +68,6 @@ async def _post(texts: list[str], target: str = "en", hint: str | None = None) -
     return (await translate_api.translate_batch(body))["results"]
 
 
-# ── Cases ────────────────────────────────────────────────────────────
 
 async def case_first_batch_calls_google_once_per_distinct_text():
     _install_fakes()
@@ -89,7 +75,6 @@ async def case_first_batch_calls_google_once_per_distinct_text():
 
     out = await _post(["hola", "hallo", "hallo", "hallo", "adios"])
 
-    # 5 bubbles, 3 distinct — and first-seen order, so the batch is stable.
     assert _calls == ["hola", "hallo", "adios"], f"not deduped: {_calls}"
     assert [r["text"] for r in out] == [
         "EN:hola", "EN:hallo", "EN:hallo", "EN:hallo", "EN:adios"
@@ -118,7 +103,6 @@ async def case_survives_a_relay_restart():
     await _reset()
     await _post(["hola", "adios"])
 
-    # A deploy restarts the relay: process memory is gone, the table is not.
     translate_api._cache.clear()
     _calls.clear()
 
@@ -127,8 +111,6 @@ async def case_survives_a_relay_restart():
     assert _calls == [], f"a restart re-bought cached translations: {_calls}"
     assert [r["text"] for r in out] == ["EN:hola", "EN:adios"], out
     assert [r["lang"] for r in out] == ["es", "es"], f"lang lost across the DB: {out}"
-    # …and the round trip warmed process memory again, so the NEXT batch is free
-    # without touching SQLite either.
     assert len(translate_api._cache) == 2, translate_api._cache
 
 
@@ -145,7 +127,6 @@ async def case_failure_is_not_cached():
         n = (await s.execute(select(func.count()).select_from(TranslationCache))).scalar_one()
     assert n == 1, f"only the SUCCESS may persist, table holds {n}"
 
-    # Google recovers → the retry must actually go out.
     _fail_for.clear()
     _calls.clear()
     out2 = await _post(["hola", "adios"])
@@ -165,27 +146,17 @@ async def case_blank_texts_never_call_out():
 
 
 async def case_results_survive_a_mid_batch_eviction():
-    """The response is built from a per-request map, NOT re-read out of the
-    module cache — which evicts.
-
-    Before this, assembly looked its own answers back up in `_cache` after
-    `_mem_put` had already shed the oldest quarter at the cap. That happened to
-    be safe only because a batch (MAX_TEXTS=100) is smaller than the slice the
-    shed drops (_CACHE_CAP//4 = 2000), an invariant nothing stated or enforced —
-    so raising the batch size would have silently turned successful translations
-    into blank bubbles. Shrink the cache so eviction fires MID-BATCH and assert
-    every text still comes back."""
     _install_fakes()
     await _reset()
     cap = translate_api._CACHE_CAP
-    translate_api._CACHE_CAP = 4          # sheds 1 entry once 4 are held
+    # Eviction must fire mid-batch: responses come from a per-request map, not re-read from the evicting cache.
+    translate_api._CACHE_CAP = 4
     try:
         texts = [f"frase numero {i}" for i in range(12)]
         out = await _post(texts)
         assert all(r is not None for r in out), \
             f"eviction ate {sum(1 for r in out if r is None)}/12 answers: {out}"
         assert [r["text"] for r in out] == [f"EN:{t}" for t in texts], out
-        # The cache really did evict — otherwise this case proves nothing.
         assert len(translate_api._cache) < len(texts), \
             f"no eviction happened, cache holds {len(translate_api._cache)}"
     finally:
@@ -196,8 +167,6 @@ async def case_prune_holds_the_cap():
     _install_fakes()
     await _reset()
 
-    # Shrink the cap so the sweep is testable without 50k rows. The prune is
-    # age-ordered, so seed with explicit, staggered created_at values.
     cap, prune_to = translate_api._DB_CAP, translate_api._DB_PRUNE_TO
     translate_api._DB_CAP, translate_api._DB_PRUNE_TO = 10, 6
     try:
@@ -218,7 +187,6 @@ async def case_prune_holds_the_cap():
         assert left == [f"h{i:02d}" for i in range(6, 12)], \
             f"prune must evict OLDEST first, kept {left}"
 
-        # Under the cap it is a no-op, not a slow drip downward.
         await translate_api._prune()
         async with get_session() as s:
             still = (await s.execute(select(func.count()).select_from(TranslationCache))).scalar_one()

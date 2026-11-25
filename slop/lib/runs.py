@@ -1,14 +1,9 @@
-"""What makes two slop runs the same run by their knobs (lib/cli.py runs, lib/breakit.py baselines,
-p95-vs-last-green, --changed estimates). Run identity (source, env) is lib/identity.py. Stdlib only."""
 from __future__ import annotations
 
-# params that are facts of the run, not knobs: never compared when matching a baseline or a last green run
-# (timeout_s: compared only by --break, lib/breakit.py: a shorter --timeout can turn a fault run red by itself)
 RUN_FACTS = ("git_sha", "git_dirty", "lock_wait_s", "load_at_start", "wire_lock_wait_s", "net_wire_stale",
              "max_threads_proc", "max_sockets_run", "source_id", "source_id_end", "env_id", "env_names", "timeout_s")
 
 
-# Knobs that must match for a previous run to be "the same run" (baseline, last green).
 def same_knobs(have: dict, want: dict) -> dict:
     diff = {k: (have.get(k), v) for k, v in want.items() if have.get(k) != v}
     diff |= {k: (have[k], None) for k in have if k not in want and k not in RUN_FACTS}

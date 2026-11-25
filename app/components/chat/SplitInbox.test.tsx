@@ -1,11 +1,3 @@
-/**
- * SplitInbox — the Split Inbox dialog, tested at its props with the relay
- * mocked by URL (docs/spec/phase-02-fan-list-pane.md, Testing Decisions;
- * tickets 102 and 104). A host owns `open` as FanList does, so "the dialog
- * closes" and "the dialog stays open" are what the Employee sees.
- *
- * Fixture identifiers are invented (this repo mirrors to a public one).
- */
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, within } from "@testing-library/react";
@@ -23,28 +15,31 @@ vi.mock("@/lib/relay", async (orig) => ({
 
 const rosterMock = vi.hoisted(() => ({ rows: [] as unknown[] }));
 vi.mock("@/hooks/useRoster", () => ({ useRoster: () => ({ rows: rosterMock.rows }) }));
+vi.mock("@/hooks/useAccounts", async (orig) => ({
+  ...(await orig<typeof import("@/hooks/useAccounts")>()),
+  usePlatformAccounts: () => [
+    { id: "100000001", nickname: "Fixture Creator One" },
+    { id: "100000009", nickname: "Fixture Creator Nine" },
+  ],
+}));
 
 const ACCOUNT_ID = "100000001";
-/** Chatters on the owner's roster: two see this Creator, one sees another only. */
 const ROSTER = [
   { chatter_id: "c-a", display_name: "Fixture Chatter A", is_active: true, kind: "login", account_ids: null },
   { chatter_id: "c-b", display_name: "Fixture Chatter B", is_active: true, kind: "login", account_ids: [ACCOUNT_ID] },
   { chatter_id: "c-x", display_name: "Fixture Chatter X", is_active: true, kind: "login", account_ids: ["100000009"] },
 ];
-/** A Creator split three ways, with one Fan moved by hand. */
 const STORED = { group_count: 3, assignments: { "200000001": 2 } };
-/** The Fans the Fan List has loaded, in its order, as it passes them in. */
 const FANS = [
   { id: 200000001, name: "Fixture Fan One" },
   { id: 200000002, name: "Fixture Fan Two" },
   { id: 200000003, name: "Fixture Fan Three" },
 ];
-/** The split the mocked relay answers with; STORED unless a case serves another. */
 let stored: { group_count: number; assignments: Record<string, number>; chatter_groups?: Record<string, number> } = STORED;
 
 function Host() {
   const [open, setOpen] = useState(true);
-  return <SplitInbox accountId={ACCOUNT_ID} open={open} onClose={() => setOpen(false)} fans={FANS} />;
+  return <SplitInbox accountIds={[ACCOUNT_ID]} open={open} onClose={() => setOpen(false)} fans={FANS} />;
 }
 
 const dialog = () => screen.queryByRole("dialog", { name: "Split Inbox settings" });
@@ -52,7 +47,6 @@ const countSelect = async () =>
   within((await screen.findByRole("dialog", { name: "Split Inbox settings" })))
     .findByRole("combobox", { name: "Choose the number of groups" });
 
-/** A Fan's group select in the reassign section, named by the Fan. */
 const fanSelect = (name: string) =>
   within(screen.getByRole("region", { name: "Reassign fans to different groups" })).getByRole("combobox", { name });
 const optionsOf = (select: HTMLElement) => within(select).getAllByRole("option").map((o) => o.textContent);
@@ -109,7 +103,6 @@ describe("SplitInbox", () => {
     expect(await screen.findByRole("alert"))
       .toHaveTextContent("owner-only endpoint — chatter sessions cannot perform this action");
     expect(dialog()).toBeInTheDocument();
-    // Nothing is applied: the choice stays, ready to retry.
     expect(await countSelect()).toHaveValue("2");
   });
 
@@ -119,27 +112,22 @@ describe("SplitInbox", () => {
       Promise.resolve({ account_id: ACCOUNT_ID, ...body }));
     renderWithProviders(<Host />);
     const count = await countSelect();
-    // One group: nowhere to move a Fan, so no reassign section.
     await user.selectOptions(count, "1");
     expect(screen.queryByRole("region", { name: "Reassign fans to different groups" })).not.toBeInTheDocument();
 
-    // A count not saved yet: every Fan's select offers its groups, in Fan List order.
     await user.selectOptions(count, "4");
     const region = screen.getByRole("region", { name: "Reassign fans to different groups" });
     expect(within(region).getAllByRole("combobox").map((s) => s.getAttribute("aria-label")))
       .toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]);
     expect(optionsOf(fanSelect("Fixture Fan Two"))).toEqual(["Inbox 1", "Inbox 2", "Inbox 3", "Inbox 4"]);
-    // Fan One shows the group it was moved to.
     expect(fanSelect("Fixture Fan One")).toHaveValue("2");
 
-    // Move Fan Two to a group other than the one it shows.
     const shown = (fanSelect("Fixture Fan Two") as HTMLSelectElement).value;
     const moveTo = shown === "1" ? "2" : "1";
     await user.selectOptions(fanSelect("Fixture Fan Two"), `Inbox ${moveTo}`);
     expect(fanSelect("Fixture Fan Two")).toHaveValue(moveTo);
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    // One PUT: the count, Fan One's stored move, Fan Two's new one, and nothing for Fan Three.
     expect(relayMock.put).toHaveBeenCalledTimes(1);
     expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
       account_id: ACCOUNT_ID,
@@ -150,13 +138,11 @@ describe("SplitInbox", () => {
 
   it("lowering N drops the out-of-range assignments from the PUT body and keeps the in-range ones", async () => {
     const user = userEvent.setup();
-    // Fan One moved to Inbox 2, Fan Two to Inbox 3.
     stored = { group_count: 3, assignments: { "200000001": 2, "200000002": 3 } };
     relayMock.put.mockImplementation((_path: string, body: { config: unknown }) =>
       Promise.resolve({ account_id: ACCOUNT_ID, ...body }));
     renderWithProviders(<Host />);
     await user.selectOptions(await countSelect(), "2");
-    // Inbox 3 is gone from every Fan's select.
     expect(optionsOf(fanSelect("Fixture Fan Two"))).toEqual(["Inbox 1", "Inbox 2"]);
     await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -191,6 +177,85 @@ describe("SplitInbox", () => {
     expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
       account_id: ACCOUNT_ID,
       config: { group_count: 3, assignments: { "200000001": 2 }, chatter_groups: { "c-a": 1 } },
+    });
+  });
+
+  describe("All Models (more than one Creator)", () => {
+    const OTHER_ID = "100000009";
+    const IDS = [ACCOUNT_ID, OTHER_ID];
+    let splits: Record<string, typeof stored>;
+    function AllHost() {
+      const [open, setOpen] = useState(true);
+      return <SplitInbox accountIds={IDS} open={open} onClose={() => setOpen(false)} fans={FANS} />;
+    }
+    beforeEach(() => {
+      splits = {
+        [ACCOUNT_ID]: { group_count: 2, assignments: { "200000001": 2 }, chatter_groups: { "c-a": 1 } },
+        [OTHER_ID]: { group_count: 3, assignments: { "200000009": 3 }, chatter_groups: { "c-a": 2, "c-x": 1 } },
+      };
+      relayMock.get.mockImplementation((path: string) => {
+        const aid = new URLSearchParams(path.split("?")[1]).get("account_id")!;
+        return splits[aid] ? Promise.resolve({ account_id: aid, config: splits[aid] }) : Promise.reject(new Error(path));
+      });
+    });
+
+    it("applies to every Creator: largest count, no reassign section, chatters across Creators with Mixed", async () => {
+      rosterMock.rows = ROSTER;
+      renderWithProviders(<AllHost />);
+      const count = await countSelect();
+      expect(count).toHaveValue("3");
+      expect(screen.getByText("Applies to all 2 models")).toBeInTheDocument();
+      expect(screen.getByText("Move single fans from a model's own tab.")).toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "Reassign fans to different groups" })).not.toBeInTheDocument();
+      const region = screen.getByRole("region", { name: "Chatters" });
+      expect(within(region).getAllByRole("combobox").map((c) => c.getAttribute("aria-label")))
+        .toEqual(["Fixture Chatter A", "Fixture Chatter B", "Fixture Chatter X"]);
+      const a = within(region).getByRole("combobox", { name: "Fixture Chatter A" });
+      expect(a).toHaveValue("mixed");
+      expect(optionsOf(a)).toEqual(["All", "Mixed", "Inbox 1", "Inbox 2", "Inbox 3"]);
+      expect(within(a).getByRole("option", { name: "Mixed" })).toBeDisabled();
+      expect(within(region).getByRole("combobox", { name: "Fixture Chatter B" })).toHaveValue("");
+      expect(within(region).getByRole("combobox", { name: "Fixture Chatter X" })).toHaveValue("1");
+    });
+
+    it("Save PUTs once per Creator, each keeping its own moves, and closes", async () => {
+      const user = userEvent.setup();
+      rosterMock.rows = ROSTER;
+      relayMock.put.mockImplementation((_path: string, body: { account_id: string; config: unknown }) =>
+        Promise.resolve(body));
+      renderWithProviders(<AllHost />);
+      await user.selectOptions(await countSelect(), "2");
+      await user.selectOptions(
+        within(screen.getByRole("region", { name: "Chatters" })).getByRole("combobox", { name: "Fixture Chatter B" }),
+        "Inbox 2",
+      );
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(relayMock.put).toHaveBeenCalledTimes(2);
+      expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
+        account_id: ACCOUNT_ID,
+        config: { group_count: 2, assignments: { "200000001": 2 }, chatter_groups: { "c-a": 1, "c-b": 2 } },
+      });
+      expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
+        account_id: OTHER_ID,
+        config: { group_count: 2, assignments: {}, chatter_groups: { "c-a": 2, "c-x": 1 } },
+      });
+      await vi.waitFor(() => expect(dialog()).not.toBeInTheDocument());
+    });
+
+    it("a failed PUT keeps the dialog open naming the Creator it failed for", async () => {
+      const user = userEvent.setup();
+      relayMock.put.mockImplementation((_path: string, body: { account_id: string; config: unknown }) =>
+        body.account_id === OTHER_ID ? Promise.reject(new RelayError(502, null, "upstream down")) : Promise.resolve(body));
+      renderWithProviders(<AllHost />);
+      await user.selectOptions(await countSelect(), "2");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(await screen.findByRole("alert"))
+        .toHaveTextContent("Not saved for Fixture Creator Nine: upstream down. The other models were saved.");
+      expect(relayMock.put).toHaveBeenCalledTimes(2);
+      expect(dialog()).toBeInTheDocument();
+      expect(await countSelect()).toHaveValue("2");
     });
   });
 });

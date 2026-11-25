@@ -1,28 +1,3 @@
-"""Daily AI spend limit, set in dollars on Settings > AI keys (2026-11-11; app/components/settings/AiSpendCapCard.tsx,
-aiSpendCap.ts; service/account_config_{api,rules}.py; llm_client.spend_today). The owner raises one Creator's
-`account_ai_config.daily_cost_cap_cents` mid-day; llm_client reads it per call, so the next AI call over the old cap
-but under the new one must go through, and no other Creator's limit moves.
-
-World: `agency_inbox`. SQL seed per Creator: an account_ai_config row at the default 100 cents ($1/day) and today's
-(UTC) `grok_daily_cost` row for provider "chat" at 10_000 millicents (= the $1 cap; since #785 llm_client reserves
-every non-describe call, Copilot included, on budget_key(purpose) = "chat", not on the provider's row). The agency's DeepSeek key is set through the real PUT /admin/my-llm-keys. The AI call is Copilot's
-POST /admin/copilot/{account}/{fan}/suggest (deepseek-v4-flash, one reservation of ~25 millicents).
-
-Flow: every Creator's suggest -> 429 (at the cap). Desktop 1440x900: /settings/ai-keys, the card shows $1.00 and
-today's "Chats and other AI" spend; type 5.00 (`ai-cap-trigger`), Save limit -> Saved (`ai-cap-settled`). The card's Creator is
-the one its GET /admin/account-config asked for (scope, else the first). Suggest for that Creator -> 200; the others
-stay 429. Phone 390x844 (touch): same page, 7.50 -> Saved (`ai-cap-trigger-phone`, `ai-cap-settled-phone`).
-Concurrent reads: ctx.users owners GET /admin/account-config (now also sums today's spend) at once.
---no-ui: the limit moves through the same PUT the card sends (the config echoed + the cap); the UI checks skip.
-
-Checks: lib/ai_cap_faults.py (C_REFUSED, C_UI, C_DB, C_ADMIT, C_SCOPED, C_PHONE, C_5XX) + C_READS [budget].
-
-Bypasses (declared): DeepSeek is lib/ai_cap_relay.py's fake at its HTTP wire (llm_client's key lookup, cap
-reservation and cost rows are the product's). Today's spend is seeded by SQL into the row llm_client writes, not
-earned by 400 real calls. A run straddling 00:00 UTC would see a fresh day (spend 0); not guarded. Not a volume path.
-
-FAULT `ai-cap-ui-sends-dollars-as-cents` (client: dollarsToCents drops its x100): C_DB and C_ADMIT alone.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -39,14 +14,14 @@ UI = True
 FAULT = "ai-cap-ui-sends-dollars-as-cents"
 DESKTOP = (1440, 900)
 PHONE = (390, 844)
-WAIT_MS = 120_000          # first visit of /settings compiles it in next dev
-CAP_CENTS = 100            # the column default, $1/day
-SPENT_MC = CAP_CENTS * 100  # millicents: today's shared chat-budget spend = the cap
-BUDGET = "chat"            # llm_client.budget_key("copilot"): the row the cap reads and writes
-BUDGET_LABEL = "Chats and other AI"  # aiSpendCap.providerName("chat")
+WAIT_MS = 120_000
+CAP_CENTS = 100
+SPENT_MC = CAP_CENTS * 100
+BUDGET = "chat"  # llm_client.budget_key("copilot"): the row the cap reads and writes
+BUDGET_LABEL = "Chats and other AI"
 DESKTOP_RAW, DESKTOP_CENTS = "5.00", 500
 PHONE_RAW, PHONE_CENTS = "7.50", 750
-READS_P95_MS = 1_500       # guess: a settings read with one extra grouped select, ctx.users at once
+READS_P95_MS = 1_500
 C_READS = f"--users concurrent GET /admin/account-config (capped at 50) all 200, p95 <= {READS_P95_MS} ms"
 CFG = "/admin/account-config"
 BOX = "Daily AI spend limit in dollars"
@@ -73,13 +48,11 @@ def _caps(w) -> dict[str, int | None]:
 
 
 async def _put_cap(ctx, aid: str, cents: int):
-    """--no-ui: the card's own PUT (the stored config echoed, the cap replaced)."""
     cfg = (await ctx.owner.get(f"{CFG}?account_id={aid}")).json()["config"]
     return await ctx.owner.put(CFG, json={"account_id": aid, "config": {**cfg, "daily_cost_cap_cents": cents}})
 
 
 async def _ui_pass(ctx, tag: str, viewport, touch: bool, raw: str) -> dict:
-    """Open the card, read it, type `raw`, save. Returns what the page showed and asked for."""
     out: dict = {"tag": tag, "asked": [], "errors": []}
     suffix = "" if tag == "desktop" else "-phone"
     async with ui.owner_browser(ctx, viewport=viewport, touch=touch) as page:
@@ -189,7 +162,6 @@ async def run(ctx) -> None:
     ctx.check(C_DB, db1 == DESKTOP_CENTS and db2 == PHONE_CENTS, desktop=db1, phone=db2,
               want=[DESKTOP_CENTS, PHONE_CENTS])
 
-    # Concurrent reads of the settings GET (it now also sums today's spend).
     n = max(1, min(int(ctx.users or 1), 50))
 
     async def one():

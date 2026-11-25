@@ -1,12 +1,7 @@
-/**
- * A PPV's status line ("$45 · paid" / "$9.99 · not paid", spec gap row L6; the price as `fmtPrice` prints it).
- * Split out of `MessageList` (ticket 99). Prices are dollars (`OFMessage.price`).
- */
 import { fmtPrice } from "@/lib/format";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 
-/** The PPV box's colours (palette vars with app fallbacks), shared by the Messages bubble and Full AI's test bubble. */
 export const PPV_BORDER = "border-[var(--inf-ppv-border,var(--color-border))]";
 export const PPV_FILL = "bg-[var(--inf-ppv,var(--color-accent))]";
 
@@ -14,11 +9,6 @@ function dollars(price: number): string {
   return fmtPrice(Math.round(price * 100));
 }
 
-/** The last line inside the PPV card, after its title and media, as the old
- *  Infloww overlay's `.ppv-mini .paid-tag` (the deleted Clone's
- *  `messages.js:885-890`, tag `legacy-ui-final`). Paid is
- *  `isOpened || isPaid` (the caller's rule): `ok` when paid, Infloww's muted
- *  grey otherwise. The Creator's side shows this, never the Fan's unlock bar. */
 export function PpvStatusLine({ price, paid }: {
   price: number;
   paid: boolean;
@@ -31,8 +21,6 @@ export function PpvStatusLine({ price, paid }: {
   );
 }
 
-/** A PPV price as a short label: whole dollars bare, cents otherwise
- *  ("$15", "$29.99"), for MediaStrip's tile pill. */
 export function ppvPriceLabel(price: number): string {
   return `$${price % 1 === 0 ? price : price.toFixed(2)}`;
 }

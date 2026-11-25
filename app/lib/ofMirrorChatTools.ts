@@ -1,35 +1,5 @@
 "use client";
 
-/**
- * A chat's header tools and its ⋮ menu on the OF mirror, as OF's own web app has them (its chat header, chunk 42549; the
- * user menu, chunk 84951; ledger `.scratch/omf-messages-full/ledger.md`). All wiring is runtime DOM over the captured
- * markup; the fan's state is `GET /api/of/v2/users/list?ids=<fan>` (OF's user: displayName, notice, listsStates,
- * isRestricted, isBlocked, its subscription flags), the chat's `GET /api/of/v2/chats/<fan>`.
- *
- * Header (messages/chat and every State page over it: the menu, price, schedule, tag people and vault):
- * - the More (OF's ⋮): Wired; the generator's State link over it opens the menu page for this fan, and on the menu page
- *   goes back to the chat (keepQuery carries the fan).
- * - the name's pencil (OF's UserCustomName, while canEditDisplayName): "Rename user", PUT /subscriptions/<fan>/custom-name
- *   {name} (the Relay's PUT /subscriptions/{id} {displayName}; "" clears; Messages Pro's FanDrawer writer).
- * - the star (OF's lists button): filled (`icon-star-on`, m-active) while the fan is in a list of the Creator's own
- *   (OF's addedLists: listsStates with hasUser, its automatic lists left out); a click opens the lists dialog, each list a
- *   checkbox, POST / DELETE /lists/<list>/users/<fan> at once (OF's USER_LISTS modal).
- * - the notes icon (OF's UserNote, while the fan is or was subscribed): "Add notes" / "Edit notes", PUT
- *   /subscriptions/<fan>/note {note} (the Relay's {notice}; "" deletes it).
- * - the bell: OF's icon for the state (icon-notification / -off).
- * Menu (messages/chat/state-header-menu, OF's items and conditions, in OF's order): the fan's own row (@username, to the
- * profile), Copy link to profile (the clipboard, OF's toast), Rename user, Add to / remove from lists, Give user a
- * discount (OF's PERSONAL_OFFER dialog: percent 5..max in 5s, 1..12 months, Clear; PUT /subscriptions/<fan>/discount
- * {discount, period}), View user's comments (the commented notifications for this fan), Purchases (no such page here:
- * disabled), Hide chat and Mute (ofMirrorChat's), Restrict / Unrestrict @user (POST|DELETE /users/<fan>/restrict, the
- * Relay's extras off: ?ack=false&hide=false), Block / Unblock (Block asks first). Report (ticket 42, D22) opens the chat's
- * onlyfans.com page in a new tab (ofMirrorHandoffs reportHandoffUrl, measured), titled "opens onlyfans.com", nothing
- * through the Relay, both scopes: OF's report form (report-abuse.js) sends captcha data (captchaMixin) and per-reason
- * fields (details-options) the mirror cannot fill, so the operator reports there. With no chat open it stays disabled (NOT_YET).
- * A menu dialog opens over the page with the menu closed; done or cancelled, the chat page comes back (a toast carried
- * to it). Errors show in place. With no model (All models) nothing is sent: "Select a model to save changes".
- * OF has no "Pin chat" and no menu "Mark read/unread" (ledger); mark read/unread is the chat row's swipe (ofMirrorChats).
- */
 
 import { useEffect, type RefObject } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -51,7 +21,6 @@ import {
   DISCOUNT_PERIODS, discountPercents, discountShown, discountSummary, MIN_DISCOUNT, months, offListDiscount, putFanDiscount, wasSubscriber,
 } from "@/lib/fanDiscount";
 
-/** A list on OF's user (`listsStates`): its membership and whether the Creator may add the fan to it. */
 export interface ListState {
   id: string | number;
   type?: string;
@@ -61,7 +30,6 @@ export interface ListState {
   cannotAddUserReason?: string | null;
 }
 
-/** The chat partner as `/users/list` gives it (the fields these tools read). */
 export interface FanState extends OFUserMini {
   displayName?: string | null;
   notice?: string | null;
@@ -78,14 +46,12 @@ export interface FanState extends OFUserMini {
   subscribedIsExpiredNow?: boolean | null;
   isActive?: boolean;
   isDeleted?: boolean;
-  /** OF's personal discount on this fan's subscription, when one is set. */
   subscribedOnData?: { discountPercent?: number | null; discountPeriod?: number | null } | null;
 }
 
-/** OF's automatic lists (953181 `kx`): never "added" by the Creator, so they do not light the star. */
+// OF's automatic lists are never "added" by the Creator, so they do not light the star.
 const AUTO_LISTS = new Set(["fans", "following", "rebill_on", "rebill_off", "tagged", "recent", "purchased"]);
 
-/** OF's addedLists (860157 `G`): the fan's lists that are not automatic, each once. */
 export function addedLists(fan: FanState | undefined): ListState[] {
   const seen = new Set<string>();
   return (fan?.listsStates ?? []).filter((l) => {
@@ -96,17 +62,14 @@ export function addedLists(fan: FanState | undefined): ListState[] {
   });
 }
 
-/** OF's canEditDisplayName (283942): not blocked, and subscribed either way now or before. */
 export const canRename = (f: FanState) =>
   !f.isBlocked && !!(f.subscribedOn || f.subscribedBy || f.subscribedOnExpire || f.subscribedOnExpiredNow || f.subscribedByExpire || f.subscribedIsExpiredNow);
 
-/** The Creator (/users/me) as the menu reads it. */
 export interface ToolsMe {
   subscribePrice?: number | null;
   isPerformer?: boolean | null;
 }
 
-/** What the tools send for the open chat's fan (each refreshes what it changed). */
 export interface ChatToolWrites {
   rename(name: string): Promise<unknown>;
   note(text: string): Promise<unknown>;
@@ -118,26 +81,19 @@ export interface ChatToolWrites {
 
 export interface ChatToolsContext {
   chat: string | null;
-  /** The fan (`/users/list`), once read. */
   fan?: FanState;
-  /** The chat (`/chats/<fan>`), once read. */
   info?: Pick<OFChatItem, "isMutedNotifications"> & { hasPurchasedFeed?: boolean };
   me?: ToolsMe;
-  /** null: All models with no model (nothing is sent). */
   writes: ChatToolWrites | null;
-  /** The open chat's page (a menu dialog returns there). */
   back: string;
-  /** `toast`: OF's toast, carried to the page href opens (carryToast). */
   navigate(href: string, toast?: string): void;
   copy(text: string): Promise<void>;
   img(url: string): string;
 }
 
-/** The chat page's header controls (the generator's data-oi-tool) and the menu's items (its data-oi-menu). */
 const TOOL = "[data-oi-tool]";
 const MENU_ITEM = ".of-state-menu [data-oi-menu]";
 const MENU = ".of-state-menu";
-// The chat header's More (OF's ⋮). Pinned's own header button is ofMirrorMessageMenu's.
 const HEADER_MORE = ".b-chat__header .b-dropdown-wrapper > button.m-btn-vertical-dots:not(.m-size-sm):not([data-oi-pinned-menu])";
 const NOTES_ID = "oi-chat-notes";
 const RENAME_ID = "oi-chat-rename";
@@ -149,7 +105,6 @@ export const COPIED = "Link copied to clipboard";
 export const SAVED = "Saved";
 export const NOT_LOADED_FAN = "This user has not loaded yet";
 
-/** An OF outlined text field (v-text-field, as the Collections list dialog's), or a textarea; its input and row. */
 export function field(doc: Document, label: string, value: string, multi = false): { row: HTMLElement; input: HTMLInputElement | HTMLTextAreaElement } {
   const row = doc.createElement("div");
   row.className = "g-input__wrapper input-text-field m-reset-bottom-gap";
@@ -167,7 +122,6 @@ export function field(doc: Document, label: string, value: string, multi = false
   return { row, input };
 }
 
-/** One checkbox (or radio) row with its label. */
 export function choice(doc: Document, type: "checkbox" | "radio", name: string, label: string, checked: boolean, disabled = false): { row: HTMLLabelElement; box: HTMLInputElement } {
   const row = doc.createElement("label");
   row.className = "b-rows-lists__item g-pointer-cursor";
@@ -182,7 +136,6 @@ export function choice(doc: Document, type: "checkbox" | "radio", name: string, 
   return { row, box };
 }
 
-/** A `<select>` in OF's field frame. */
 function select(doc: Document, label: string, options: { value: number; text: string }[], value: number): { row: HTMLElement; input: HTMLSelectElement } {
   const row = doc.createElement("div");
   row.className = "g-input__wrapper";
@@ -204,14 +157,12 @@ function select(doc: Document, label: string, options: { value: number; text: st
   return { row, input };
 }
 
-/** openModal, its fields this module's (never the read-only fallback's, which would flip a checkbox back). */
 export const dialog: typeof openModal = (...a) => {
   const m = openModal(...a);
   m.modal.setAttribute("data-oi-wired", "");
   return m;
 };
 
-/** A dialog's error line, in its body. */
 export function dialogError(modal: HTMLElement, text: string) {
   const doc = modal.ownerDocument;
   const body = modal.querySelector(".modal-body")!;
@@ -226,20 +177,12 @@ export function dialogError(modal: HTMLElement, text: string) {
   line.textContent = text;
 }
 
-/**
- * The fan tools of `ctx`'s fan (Rename user, notes, lists, discount, Restrict, Block), as the chat header and its menu
- * open them, and closeMenu (the menu page's menu goes, its page staying under a dialog). `menu`: opened from the
- * chat's menu page (a dialog done or cancelled goes back to `menu.back`, its toast carried there); null: the toast
- * shows in place (the chat header, a Collections user card).
- */
 export type FanToolsContext = Pick<ChatToolsContext, "chat" | "fan" | "me" | "writes">;
 export function fanTools(doc: Document, ctx: FanToolsContext, menu: Pick<ChatToolsContext, "back" | "navigate"> | null) {
   const { fan, writes } = ctx;
-  /** The menu goes (OF closes it on a click), its page staying under a dialog. */
   const closeMenu = () => {
     for (const el of doc.querySelectorAll<HTMLElement>(`${MENU}, .of-state-backdrop`)) el.style.display = "none";
   };
-  /** After a menu dialog: back to the chat page (a toast carried there). */
   const done = (text?: string) => {
     if (menu) menu.navigate(menu.back, text);
     else if (text) toast(doc, text);
@@ -252,7 +195,6 @@ export function fanTools(doc: Document, ctx: FanToolsContext, menu: Pick<ChatToo
   const fail = dialogError;
   const cancel = (close: () => void) => ({ text: "Cancel", className: FLAT, onClick: () => (close(), done()) });
 
-  /** A text dialog (Rename user, Notes): Save sends `save(value)`. */
   const textDialog = (id: string, title: string, fieldLabel: string, value: string, multi: boolean, save: (v: string) => Promise<unknown>, opener: Element) => {
     let input: HTMLInputElement | HTMLTextAreaElement | null = null;
     const m = dialog(doc, id, title, (body) => {
@@ -274,7 +216,6 @@ export function fanTools(doc: Document, ctx: FanToolsContext, menu: Pick<ChatToo
       },
     });
     foot.append(modalButton(doc, cancel(close)), saveBtn);
-    // The backdrop or Escape on the menu page: back to the chat, too.
     if (menu) m.modal.addEventListener("click", (ev) => (ev.target as Element).matches(".modal-backdrop") && done());
     (input as HTMLElement | null)?.focus();
   };
@@ -290,7 +231,6 @@ export function fanTools(doc: Document, ctx: FanToolsContext, menu: Pick<ChatToo
     textDialog(NOTES_ID, fan!.notice ? "Edit notes" : "Add notes", "Notes", fan!.notice ?? "", true, (v) => w.note(v), opener);
   };
 
-  /** OF's lists dialog: every list the fan can be put in or is in, a checkbox each, written at once. */
   const lists = (opener: Element) => {
     const w = ready(opener);
     if (!w) return;
@@ -303,7 +243,6 @@ export function fanTools(doc: Document, ctx: FanToolsContext, menu: Pick<ChatToo
         body.append(empty);
       }
       for (const l of rows) {
-        // An automatic list (Fans, Following) is OF's, not the Creator's to change.
         const fixed = AUTO_LISTS.has(l.type ?? "");
         const { row, box } = choice(doc, "checkbox", "oi-list", l.name ?? String(l.id), !!l.hasUser, fixed);
         row.dataset.oiList = String(l.id);
@@ -326,7 +265,6 @@ export function fanTools(doc: Document, ctx: FanToolsContext, menu: Pick<ChatToo
     m.modal.querySelector("footer")!.append(modalButton(doc, { text: "Close", className: FLAT, onClick: () => (m.close(), done()) }));
   };
 
-  /** OF's PERSONAL_OFFER dialog: Discount (percent, months, Clear, Apply); its Free trial tab is not here. */
   const discount = (opener: Element) => {
     const w = ready(opener);
     if (!w) return;
@@ -334,7 +272,7 @@ export function fanTools(doc: Document, ctx: FanToolsContext, menu: Pick<ChatToo
     const current = fan!.subscribedOnData?.discountPercent ?? 0;
     const pct = discountPercents(price);
     let percentSel!: HTMLSelectElement, periodSel!: HTMLSelectElement, help: HTMLElement;
-    // `let`, not `const`: the select handlers below can run while the dialog is built, before Apply exists.
+    // `let`: the select handlers can run while the dialog is built, before Apply exists.
     // eslint-disable-next-line prefer-const
     let apply: HTMLButtonElement | undefined;
     const m = dialog(doc, DISCOUNT_ID, "Give user a discount", (body) => {
@@ -388,12 +326,12 @@ export function fanTools(doc: Document, ctx: FanToolsContext, menu: Pick<ChatToo
     const w = ready(el);
     if (!w) return;
     const on = !fan!.isRestricted;
+    // The Relay's restrict also sends the fan "." and hides the chat unless told not to; OF's does neither.
     w.restrict(on).then(
       () => done(on ? "User restricted" : "User unrestricted"),
       (e) => note(doc, el, `Could not ${on ? "restrict" : "unrestrict"}: ${message(e)}`, true),
     );
   };
-  /** Block asks first (OF's BLOCK_USER dialog); Unblock is at once. */
   const block = (el: HTMLElement) => {
     const w = ready(el);
     if (!w) return;
@@ -419,24 +357,16 @@ export function fanTools(doc: Document, ctx: FanToolsContext, menu: Pick<ChatToo
   return { closeMenu, done, rename, editNotes, lists, discount, restrict, block };
 }
 
-/**
- * Wire the chat header's tools, its More and (on the menu page) its menu in `doc` for `ctx`: the chat page and every
- * State page over it. Returns an unbind.
- */
 export function bindChatTools(doc: Document, page: string, ctx: ChatToolsContext): () => void {
   const { fan, writes } = ctx;
   const onMenu = page === "messages/chat/state-header-menu";
-  // The carried toast, on the page it was carried to (a bind can still see the page it left, while the frame loads).
   takeCarried(doc);
 
-  // ---- header state: the pencil, the star, the notes icon and the bell, as OF draws them for this fan
   const tool = (name: string) => doc.querySelector<HTMLButtonElement>(`${TOOL}[data-oi-tool='${name}']`);
   const pencil = tool("rename");
   const star = tool("lists");
   const notes = tool("notes");
   for (const el of [pencil, star, notes]) el?.setAttribute("data-oi-wired", "");
-  // The More on the chat page and each State page over it: Wired, its Not-yet title kept until its Live proof (decisions
-  // D1). The generator's State link over it takes the click; a State page's dialog covers both (and the tools above).
   doc.querySelector(HEADER_MORE)?.setAttribute("data-oi-wired", "");
   if (fan) {
     if (pencil) pencil.style.display = canRename(fan) ? "" : "none";
@@ -459,7 +389,6 @@ export function bindChatTools(doc: Document, page: string, ctx: ChatToolsContext
     bell.classList.toggle("m-gray", muted);
   }
 
-  // ---- the menu: OF's items for this fan, its own row, the labels for its state
   const items = [...doc.querySelectorAll<HTMLElement>(MENU_ITEM)];
   const item = (key: string) => items.find((i) => i.dataset.oiMenu === key);
   const label = (el: HTMLElement | undefined, text: string) => {
@@ -467,8 +396,6 @@ export function bindChatTools(doc: Document, page: string, ctx: ChatToolsContext
     if (t) t.textContent = ` ${text} `;
   };
   for (const el of items) el.setAttribute("data-oi-wired", "");
-  // Report: OF's form sends its captcha data and per-reason fields, which the mirror cannot fill (ledger).
-  // ticket 42: so the item becomes OF's link to the chat's onlyfans.com page, a new tab (ofMirrorHandoffs); no chat: disabled.
   const reportItem = onMenu ? item("report") : null;
   if (reportItem && ctx.chat) {
     reportItem.querySelector("a.of-state-link")?.remove();
@@ -476,7 +403,6 @@ export function bindChatTools(doc: Document, page: string, ctx: ChatToolsContext
     a.title = HANDOFF_TITLE;
     a.classList.remove("v-list-item--disabled");
   } else if (reportItem) {
-    // A rebind with no chat after one: the link goes too (an <a> with no href, so the click guard below prevents it).
     for (const attr of ["href", "target", "rel"]) reportItem.removeAttribute(attr);
     reportItem.querySelector("a.of-state-link")?.remove();
     reportItem.classList.add("v-list-item--disabled");
@@ -494,7 +420,6 @@ export function bindChatTools(doc: Document, page: string, ctx: ChatToolsContext
     show("restrict", !fan.isBlocked && (!!fan.canRestrict || !!fan.isRestricted));
     label(item("restrict"), fan.isRestricted ? `Unrestrict @${fan.username ?? fan.id}` : "Restrict");
     label(item("block"), fan.isBlocked ? "Unblock" : "Block");
-    // OF's Purchases (while the fan bought something): its page is not in OF Manager.
     const comments = item("comments");
     if (ctx.info?.hasPurchasedFeed && comments && !doc.querySelector("[data-oi-menu='purchases']")) {
       const p = comments.cloneNode(true) as HTMLElement;
@@ -507,7 +432,6 @@ export function bindChatTools(doc: Document, page: string, ctx: ChatToolsContext
       label(p, "Purchases");
       comments.after(p);
     }
-    // The fan's own row on top of the menu (OF's isUserAvatar): its avatar and @username, to the profile.
     const own = doc.querySelector<HTMLAnchorElement>(`${MENU} a.m-user-data-item`);
     if (own) {
       own.setAttribute("data-oi-wired", "");
@@ -539,7 +463,6 @@ export function bindChatTools(doc: Document, page: string, ctx: ChatToolsContext
     }
     const el = t.closest<HTMLElement>(MENU_ITEM);
     const key = el?.dataset.oiMenu;
-    // Hide chat and Mute are ofMirrorChat's; Report's link (ticket 42) is the browser's (a disabled one: nothing).
     if (!el || !key || key === "hide" || key === "mute" || (key === "report" && el.matches("a[href]"))) return;
     ev.preventDefault();
     ev.stopPropagation();
@@ -565,14 +488,10 @@ export function bindChatTools(doc: Document, page: string, ctx: ChatToolsContext
     else if (key === "lists") lists(el);
     else if (key === "discount") discount(el);
   };
-  // Capture: before the menu items' state links (back to the chat) and the read-only fallback.
   doc.addEventListener("click", onClick, true);
-  // An open dialog outlives a rebind (a write refreshes the fan, which binds again): it goes with its own buttons, or
-  // with the page.
   return () => doc.removeEventListener("click", onClick, true);
 }
 
-/** The open chat's fan's writes for `accountId`, each refreshing the mirror's reads and the chat lists. */
 export function chatToolWrites(accountId: string, fan: string, qc: QueryClient): ChatToolWrites {
   const f = encodeURIComponent(fan);
   const refresh = <T,>(r: T) => {
@@ -585,17 +504,13 @@ export function chatToolWrites(accountId: string, fan: string, qc: QueryClient):
     note: (text) => relay.put(`/api/of/v2/subscriptions/${f}/note`, { note: text }, opts).then(refresh),
     list: (id, on) => (on ? relay.post(`/api/of/v2/lists/${encodeURIComponent(id)}/users/${f}`, undefined, opts) : relay.delete(`/api/of/v2/lists/${encodeURIComponent(id)}/users/${f}`, opts)).then(refresh),
     discount: (discount, period) => putFanDiscount(accountId, fan, discount, period).then(refresh),
-    // The Relay's restrict also sends the fan "." and hides the chat (its unrestrict unhides it) unless told not to:
-    // OF's Restrict and Unrestrict do neither.
     restrict: (on) => (on ? relay.post(`/api/of/v2/users/${f}/restrict?ack=false&hide=false`, undefined, opts) : relay.delete(`/api/of/v2/users/${f}/restrict?unhide=false`, opts)).then(refresh),
     block: (on) => (on ? relay.post(`/api/of/v2/users/${f}/block`, undefined, opts) : relay.delete(`/api/of/v2/users/${f}/block`, opts)).then(refresh),
   };
 }
 
-/** A chat page or a State page over it (its menu, price, schedule, tags, vault): its mirror path, else "". */
 const pageOf = (src: string) => /^\/of-mirror\/pages\/(messages\/chat(?:\/state-[a-z-]+)?)\.html$/.exec(src)?.[1] ?? "";
 
-/** The chat header's tools and menu: bind on every frame load and fan or chat change. */
 export function useOfChatTools(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const router = useRouter();

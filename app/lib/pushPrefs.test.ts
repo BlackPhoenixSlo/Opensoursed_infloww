@@ -7,7 +7,6 @@ const s = (over: Partial<NotifSettings> = {}): NotifSettings => ({ ...DEFAULT_NO
 
 describe("pushPrefs", () => {
   it.each([
-    // [label, settings, types]
     ["defaults: messages, purchases, tips and subscribers", s(), ["message", "purchases", "tip", "subscribed"]],
     ["master off", s({ enabled: false }), []],
     ["OS ping off", s({ osPing: false }), []],

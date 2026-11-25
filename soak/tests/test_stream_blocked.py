@@ -1,6 +1,3 @@
-"""FakeOF's Streaming > Blocked users surface (ticket 73): Block a username (by username or OF's `u<id>` handle)
-shows in the next read, a row's DELETE removes it, an unknown name 404s. Requests go through the fake's real routes
-(signature check included)."""
 import time
 
 import _path  # noqa: F401

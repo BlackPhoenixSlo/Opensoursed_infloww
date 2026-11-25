@@ -1,9 +1,3 @@
-/**
- * fanListSort — the Fan List's row order for each sort mode and its chip
- * counts, pure, no React. FanList passes the owe-reply test and the spend
- * lookup it already holds.
- */
-
 import { countsAsUnread, excludedFromBadges, isUnreadChat } from "@/lib/chatUnread";
 import { readElsewhere, unreadOutsideView, type UnreadView } from "@/lib/chatsCache";
 import type { OFChatItem } from "@/lib/relay";
@@ -16,18 +10,12 @@ import {
 } from "@/hooks/useChatSortMode";
 
 export interface FanSortDeps {
-  /** The Fan's spend in cents, 0 when unknown. */
   spendOf: (c: OFChatItem) => number;
-  /** The Fan sent the latest message: we owe a reply. */
   isOwed: (c: OFChatItem) => boolean;
 }
 
-/** Hybrid: below this decayed score (cents), unread rows go first. */
 const LOW_SCORE_CENTS = 300;
 
-/** A chat's attention state: unread (blue badge, `isUnreadChat`), owed (read
- *  but the Fan sent last: yellow dot, owe reply) or idle (we sent last, or no
- *  messages yet). */
 export type Attention = "unread" | "owed" | "idle";
 
 export function attentionOf(c: OFChatItem, isOwed: FanSortDeps["isOwed"]): Attention {
@@ -36,31 +24,24 @@ export function attentionOf(c: OFChatItem, isOwed: FanSortDeps["isOwed"]): Atten
   return "idle";
 }
 
-/** Spend + unread on top's tier, highest first. */
 const TIER: Record<Attention, number> = { unread: 2, owed: 1, idle: 0 };
 
-/** Hybrid's half-life: idle 1h, owe-reply 2h, unread 3h. */
 const HALF_LIFE: Record<Attention, number> = {
   unread: HALF_LIFE_UNREAD,
   owed: HALF_LIFE_UNRESPONDED,
   idle: HALF_LIFE_IDLE,
 };
 
-/** The rows in `mode`'s order. "recent" returns the server order untouched
- *  (the same array). "spend" and "hybrid" rely on the deferred spend — until
- *  it lands the sort no-ops, then re-orders once data arrives. Stable sort
- *  (Array.prototype.sort is stable in all modern engines), so ties (e.g. two
- *  $0 fans) preserve OF's lastActivity ordering. */
 export function sortFanRows(rows: OFChatItem[], mode: ChatSortMode, deps: FanSortDeps): OFChatItem[] {
   const { spendOf, isOwed } = deps;
   if (mode === "recent") return rows;
+  // Stable sort: ties (e.g. two $0 fans) keep OF's lastActivity order.
   const arr = rows.slice();
   if (mode === "spend") {
     arr.sort((a, b) => spendOf(b) - spendOf(a));
     return arr;
   }
   if (mode === "spend-unread") {
-    // Three-tier bucket (`TIER`), then spend desc within each.
     arr.sort((a, b) => {
       const ta = TIER[attentionOf(a, isOwed)];
       const tb = TIER[attentionOf(b, isOwed)];
@@ -69,12 +50,6 @@ export function sortFanRows(rows: OFChatItem[], mode: ChatSortMode, deps: FanSor
     });
     return arr;
   }
-  // hybrid — threshold applies to the DECAYED score, not raw spend.
-  // So a $48 fan starts well above the $3 cutoff, but after ~5h of
-  // silence their score halves down past it and unread rows start
-  // winning. Tiered half-lives keep attention-needing chats up
-  // longer: idle 1h, owe-reply 2h, unread 3h. Within the low-value
-  // bucket, ties between unread rows fall through to raw spend.
   arr.sort((a, b) => {
     const aSpend = spendOf(a);
     const bSpend = spendOf(b);
@@ -86,7 +61,6 @@ export function sortFanRows(rows: OFChatItem[], mode: ChatSortMode, deps: FanSor
       const ua = isUnreadChat(a) ? 1 : 0;
       const ub = isUnreadChat(b) ? 1 : 0;
       if (ua !== ub) return ub - ua;
-      // Both unread (or both read) at low value: raw spend desc.
       if (aSpend !== bSpend) return bSpend - aSpend;
     }
     return bScore - aScore;
@@ -98,8 +72,6 @@ export function attentionCount(rows: OFChatItem[], isOwed: FanSortDeps["isOwed"]
   return rows.filter((c) => countsAsUnread(c) || (isOwed(c) && !excludedFromBadges(c))).length;
 }
 
-/** The chip counts over `rows`, badge-excluded chats never counted (still
- *  listed): All (needs attention: unread or owed), Unread, Owe reply. */
 export function chipCounts(
   rows: OFChatItem[],
   { isOwed }: Pick<FanSortDeps, "isOwed">,
@@ -112,11 +84,6 @@ export function chipCounts(
   };
 }
 
-/** `chipCounts` over the All set, with the Unread chip's complete live view
- *  (`UnreadView`, or null) as the truth for the Unread badge alone: the
- *  view's rows plus All's chats that turned unread after the view was read
- *  (or carry no date). A chat read elsewhere drops out of the badge; All's
- *  own rows and the other counts are left as they are. */
 export function chipCountsWithUnreadView(
   allRows: OFChatItem[],
   view: UnreadView | null,

@@ -1,9 +1,3 @@
-/**
- * New post's tools against OF's own shapes (app/lib/__fixtures__/of/new-post-*.json): formatted text, several files and
- * audio in one pick, a video story, the tag dialog's search, sort, tabs, row menu and invite, the vault dialog's folder
- * search and sort and its media sort, ADD LABELS' sort, a poll's drag to reorder, and the right column's search; the
- * Release form tab's empty placeholder, dialog notes above the footer, OF's sort menu look, and Settings' #promotion.
- */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -107,7 +101,6 @@ describe("Format text: OF's composer markup", () => {
     editor.innerHTML = "<p>Hello <b>bold</b></p>";
     editor.dispatchEvent(new Event("input", { bubbles: true }));
     expect(loadDraft(s, "1").html).toBe("<p>Hello <strong>bold</strong></p>");
-    // a State page round trip: the editor is drawn from the draft's markup
     const d2 = loadPage("new-post/state-schedule");
     bound(bindPost(d2, "new-post/state-schedule", { newWrites: false, handlers: h, storage: s, accountId: "1" }));
     expect(d2.querySelector("[contenteditable][aria-label='Textbox field']")!.innerHTML).toBe("<p>Hello <strong>bold</strong></p>");
@@ -139,7 +132,7 @@ describe("Add media: several files in one pick, audio too", () => {
     const files = fx.uploads.map((u) => new File(["x"], u.name, { type: u.type }));
     Object.defineProperty(picker, "files", { configurable: true, get: () => files });
     picker.dispatchEvent(new Event("change"));
-    expect(d.querySelector<HTMLButtonElement>("button[at-attr='submit_post']")!.disabled).toBe(true); // all three in flight
+    expect(d.querySelector<HTMLButtonElement>("button[at-attr='submit_post']")!.disabled).toBe(true);
     for (let i = 0; i < 10; i++) await flush();
     expect(order).toEqual(fx.uploads.map((u) => u.name));
     const editor = d.querySelector<HTMLElement>("[contenteditable][aria-label='Textbox field']")!;
@@ -230,7 +223,6 @@ describe("Tag other creators: search, sort, tabs, row menu, invite", () => {
     expect(none.after).toBeNull();
     expect(none.scroll).toBe(true);
     expect(empty("tab=forms&q=zz", []).out).toMatchObject({ icon: "icon-search", text: "Nothing found" });
-    // loading (no list yet), forms there, or the Tag user tab: no placeholder
     expect(empty("tab=forms", undefined).out).toBeNull();
     expect(empty("tab=forms", items).out).toBeNull();
     expect(empty("", []).out).toBeNull();
@@ -266,7 +258,6 @@ describe("Vault dialog: folder search and sort, media sort", () => {
   const PAGE = "new-post/state-vault";
   const bindVaultPage = () => {
     const d = loadPage(PAGE);
-    // the folder rows ofMirrorData draws (data-oi-data), named
     const rows = [...d.querySelectorAll<HTMLElement>(".modal.show .l-sidebar-column .b-rows-lists__item")].slice(1, 4);
     ["Beta", "alpha", "Gamma"].forEach((n, i) => {
       rows[i].setAttribute("data-oi-data", "");
@@ -308,7 +299,6 @@ describe("Vault dialog: folder search and sort, media sort", () => {
     click(d.querySelector(".modal.show .l-sidebar-column button[aria-label='Sort']"));
     pickRow(d, "Name");
     expect(h.sortFolders).toHaveBeenCalledWith(fx.relay.sort, fx.relay.order);
-    // the handler's request (useVaultCache.sortOfFolders), as the interceptor caught it
     const post = vi.spyOn(relay, "post").mockResolvedValue({ sorted: true });
     await sortOfFolders(fx.relay.account_id, { sort: fx.relay.sort, order: fx.relay.order });
     expect(post).toHaveBeenCalledWith("/admin/vault-ai/of-folders/sort", expect.anything(), { accountId: fx.relay.account_id });
@@ -368,7 +358,6 @@ describe("Poll and quiz: drag to reorder", () => {
       const input = r.querySelector<HTMLInputElement>("input[at-attr='input']")!;
       input.value = "ABC"[i];
       input.dispatchEvent(new Event("input", { bubbles: true }));
-      // each row 40px tall, stacked
       r.getBoundingClientRect = () => ({ top: i * 40, height: 40, bottom: i * 40 + 40, left: 0, right: 100, width: 100, x: 0, y: i * 40, toJSON: () => ({}) }) as DOMRect;
     });
     const handle = rows()[0].querySelector(".m-drag-btn")!;
@@ -394,11 +383,9 @@ describe("Poll and quiz: drag to reorder", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
       r.getBoundingClientRect = () => ({ top: i * 40, height: 40, bottom: i * 40 + 40, left: 0, right: 100, width: 100, x: 0, y: i * 40, toJSON: () => ({}) }) as DOMRect;
     });
-    // "A" is the correct answer
     click(rows()[0].querySelector(".m-quiz-swithcer"));
     expect(marked()).toEqual([true, false, false]);
     expect(loadDraft(s, "1").voting).toEqual({ type: 2, options: ["A", "B", "C"], correct: 0 });
-    // A dragged below B
     rows()[0].querySelector(".m-drag-btn")!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, clientY: 10 }));
     d.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, cancelable: true, clientY: 75 }));
     d.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
@@ -407,7 +394,6 @@ describe("Poll and quiz: drag to reorder", () => {
     expect(rows()[1].querySelector(".m-quiz-swithcer")!.classList.contains("m-gray")).toBe(false);
     expect(rows()[0].querySelector(".m-quiz-swithcer")!.classList.contains("m-gray")).toBe(true);
     expect(loadDraft(s, "1").voting).toEqual({ type: 2, options: ["B", "A", "C"], correct: 1 });
-    // and a POST body counts it there
     expect(collectPost("Quiz", loadDraft(s, "1"))).toMatchObject({ voting_type: 2, voting_correct_index: 1 });
   });
 });
@@ -458,7 +444,6 @@ describe("Right column search", () => {
 });
 
 describe("Composer toolbar on a narrow screen (OF's resize: overflow into More)", () => {
-  // jsdom has no layout: each shown toolbar item is 40px wide, the composer `width`.
   const layout = (d: Document, width: number) => {
     const actions = d.querySelector<HTMLElement>(".b-make-post__actions")!;
     const btns = actions.querySelector<HTMLElement>(".b-make-post__actions__btns")!;
@@ -478,7 +463,7 @@ describe("Composer toolbar on a narrow screen (OF's resize: overflow into More)"
 
   it("a narrow one moves the last buttons into More until the row fits; a More row clicks its button; unbind puts them back", () => {
     const d = loadPage("new-post/index");
-    const btns = layout(d, 360); // 9 slots: 8 buttons and More
+    const btns = layout(d, 360);
     const before = shown(btns);
     const unbind = bindActionsOverflow(d);
     const after = shown(btns);
@@ -489,7 +474,6 @@ describe("Composer toolbar on a narrow screen (OF's resize: overflow into More)"
     expect(moved.map((b) => b.getAttribute("aria-label"))).toEqual(before.slice(8));
     click(d.getElementById("oi-actions-more"));
     expect(menuRows(d).map((r) => r.textContent?.trim())).toEqual(before.slice(8));
-    // OF's rows carry the button's icon
     expect(menuRows(d)[0].querySelector("use")?.getAttribute("href")).toBe(moved[0].querySelector("use")?.getAttribute("href"));
     const hit = vi.fn((ev: Event) => ev.preventDefault());
     moved[1].addEventListener("click", hit);

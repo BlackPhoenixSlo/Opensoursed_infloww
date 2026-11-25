@@ -1,15 +1,5 @@
-/**
- * storageSync — localStorage-backed `useSyncExternalStore` stores (the
- * `useBlurMode` pattern): the subscribe half, the raw read, and the persisted
- * value/flag factories. A custom event re-reads the store when this window
- * writes it, and `storage` when another window does.
- */
-
 import { useSyncExternalStore } from "react";
 
-/** A `useSyncExternalStore` subscribe function for a store whose writers
- *  dispatch `event` on `window`. Create it once per store, at module level,
- *  so its identity is stable. */
 export function subscribeToStorage(event: string): (onChange: () => void) => () => void {
   return (onChange) => {
     window.addEventListener(event, onChange);
@@ -21,20 +11,11 @@ export function subscribeToStorage(event: string): (onChange: () => void) => () 
   };
 }
 
-/** The raw stored string for `key` — null when the key is absent, when there
- *  is no key yet (`null`, e.g. no signed-in employee), or on the server. */
 export function readStorage(key: string | null): string | null {
   if (key === null || typeof window === "undefined") return null;
   return window.localStorage.getItem(key);
 }
 
-/** A persisted value. `decode` maps the raw stored string (null = absent) to
- *  a value; `encode` maps a value to the string to store, or null to remove
- *  the key.
- *
- *  If a write throws (quota / private mode) the choice is still held in
- *  memory, so every same-tab reader agrees with the click; it is dropped the
- *  moment the stored value changes under it (another tab wrote). */
 export function createStoredValue<T>(
   key: string,
   event: string,
@@ -86,9 +67,6 @@ export function createStoredValue<T>(
   return { read, use: useStoredValue };
 }
 
-/** A persisted on/off preference. Only the NON-default value is stored —
- *  `"0"` for a default-on flag, `"1"` for a default-off one — and choosing the
- *  default removes the key, so a missing key always reads as `def`. */
 export function createStoredFlag(key: string, event: string, def: boolean) {
   const stored = def ? "0" : "1";
   return createStoredValue<boolean>(

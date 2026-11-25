@@ -1,23 +1,7 @@
 #!/usr/bin/env python3
-"""OF Manager Settings: the relay routes its pages use and the OF requests they send.
-
-Read from OF's web bundle (build 202610091632), never observed live:
-- the subscription bundles: create POST /subscriptions/bundles {discount, duration}, edit
-  PUT /subscriptions/bundles/{id} {discount, duration, id}, delete DELETE /subscriptions/bundles/{id}
-  (app.js module 112995, bundles/saveBundle and deleteBundle);
-- the free trial link's "Create link": POST /trials {trialLinkName, subscribeDays, subscribeCounts, expireDays}
-  (ModalTrial saveForm; expireDays 0 = no expiration);
-- QR code's scan count: GET /users/me/profile/views/qr;
-- Streaming > Blocked users, read-only: GET /streams/users/blocked?limit=10[&offset][&query];
-- Streaming > Blocked users' Block a username POST /streams/users/{username}/block and a row's remove
-  DELETE /streams/users/{id}/block, no body (ticket 73, capture settings--streaming-block-username);
-- Account > Login sessions, read-only: GET /sessions (settings-sessions.js); no route ends a session.
-Plain-assert, OF faked (no request leaves the process).
-
-Run: ./venv/bin/python service/tests/test_settings_relay.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
+# Request shapes read from OF's web bundle (build 202610091632), never observed live.
 _harness.bootstrap()
 
 import json  # noqa: E402
@@ -43,7 +27,6 @@ def _capture(name):
 
 
 def _client():
-    """An OFClient whose every request is recorded instead of sent."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.user_id = "4242"
     c.sent = []
@@ -84,12 +67,10 @@ def case_bundle_edit_needs_discount_and_duration():
 
 
 def case_trial_link_create_sends_ofs_expire_days():
-    # The app's trialBody for OF's defaults (TRIAL_DEFAULTS: 10 claims, 7 days' validity, a 7-day trial), a leading-space name.
     body = server._TrialLinkBody(name="  Spring", subscribe_counts=10, expire_days=7, subscribe_days=7)
     method, path, sent, _ = _route(server.of_create_trial_link, body)
     assert (method, path) == ("POST", f"{API}/trials"), (method, path)
     assert sent == {"trialLinkName": "Spring", "subscribeDays": 7, "subscribeCounts": 10, "expireDays": 7}, sent
-    # "No expiration" is 0, still sent; an older caller with no expire_days sends none.
     _, _, sent, _ = _route(server.of_create_trial_link, server._TrialLinkBody(name="", subscribe_counts=0, expire_days=0, subscribe_days=30))
     assert sent == {"trialLinkName": "", "subscribeDays": 30, "subscribeCounts": 0, "expireDays": 0}, sent
     _, _, sent, _ = _route(server.of_create_trial_link, server._TrialLinkBody(name="x"))
@@ -102,16 +83,13 @@ def case_trial_link_create_sends_ofs_expire_days():
         raise AssertionError(f"accepted {bad}")
 
 
-# ticket 61
 def case_tracking_links_sort_is_ofs_field_and_sort():
-    # The bare read stays OF's unpaged list; a Sort pick sends exactly its field and sort (paged, as OF's Reach read).
     assert _route(server.of_tracking_links, field=None, sort=None)[1:] == (f"{API}/campaigns", None, None)
     for field in sorted(server._CAMPAIGN_SORT_FIELDS):
         for sort in ("asc", "desc"):
             _, path, _, params = _route(server.of_tracking_links, field=field, sort=sort)
             assert path == f"{API}/campaigns" and params == {"limit": 100, "offset": 0, "pagination": 1, "field": field, "sort": sort}, params
     assert server._CAMPAIGN_SORT_FIELDS == {"created_date", "name", "subscribers_counts", "clicks_count", "shared"}
-    # A field off the menu, a field with no direction, a direction alone: 422, nothing sent.
     for field, sort in (("bogus", "asc"), ("name", None), (None, "desc"), ("created", "desc")):
         c = _client()
         orig = server._get_client
@@ -127,9 +105,7 @@ def case_tracking_links_sort_is_ofs_field_and_sort():
         assert c.sent == [], c.sent
 
 
-# ticket 74
 def case_tracking_links_shared_with_you_and_share_are_ofs_calls():
-    # The tab's read: OF's share-access GET with its shared-tab params (record settings--tracking-shared-with-you).
     base = {"limit": 100, "offset": 0, "pagination": 1, "with_deleted": 1, "sorting_deleted": 1, "stats": "true"}
     sent = _route(server.of_tracking_links_shared_with_me, field=None, sort=None, limit=100, offset=0)
     assert sent == ("GET", f"{API}/campaigns/share-access", None, base), sent
@@ -148,8 +124,6 @@ def case_tracking_links_shared_with_you_and_share_are_ofs_calls():
         finally:
             server._get_client = orig
         assert c.sent == [], c.sent
-    # The share and its undo: OF's own {campaignId, userId} (the app's body, the vitest's fixture), the undo a DELETE
-    # carrying the same body.
     fx = _fixture("settings-tracking-share-body.json")
     body = server._ShareCampaignBody(**fx["relay"])
     for fn, want in ((server.of_share_campaign_stats, fx["of"]), (server.of_unshare_campaign_stats, fx["undo"])):
@@ -160,18 +134,14 @@ def case_tracking_links_shared_with_you_and_share_are_ofs_calls():
         except ValidationError:
             continue
         raise AssertionError(f"accepted {bad}")
-    # The DELETE is declared before /campaigns/{campaign_id}, so it never reaches the link delete.
     order = [(m, r.path) for r in server.app.routes if hasattr(r, "methods") for m in (r.methods or [])]
     assert order.index(("DELETE", "/api/of/v2/campaigns/share-access")) < order.index(("DELETE", "/api/of/v2/campaigns/{campaign_id}"))
 
-# ticket 66
 _BLOCK_COUNTRIES, _BLOCK_IPS = ("/api/of/v2/users/me/settings/security/blocked-countries",
                                 "/api/of/v2/users/me/settings/security/blocked-ips")
 
 
 def case_block_by_country_and_ip_send_ofs_security_put_and_drop_the_settings_cache():
-    # Records settings--block-by-country / settings--block-by-ip (measured-in-js): OF's PUT /users/me/settings/security
-    # with only that control's keys, the whole list; the picker's names from GET /countries?all=1.
     assert _route(server.of_countries) == ("GET", f"{API}/countries", None, {"all": 1})
     dropped = []
     orig, orig_aid = server.relay_cache.invalidate, server._current_aid
@@ -186,7 +156,6 @@ def case_block_by_country_and_ip_send_ofs_security_put_and_drop_the_settings_cac
     finally:
         server.relay_cache.invalidate, server._current_aid = orig, orig_aid
     assert dropped == [("my_settings", "acct-66")] * 4, dropped
-    # Body allow-list: an extra key, a missing key, a wrong element type or an empty body is 422, nothing sent.
     for fn, bad in ((server.of_block_countries, {"blockedCountries": ["AQ"], "blockedStates": [], "blockedIps": []}),
                     (server.of_block_countries, {"blockedCountries": ["AQ"]}),
                     (server.of_block_countries, {"blockedCountries": "AQ", "blockedStates": []}),
@@ -208,7 +177,6 @@ def case_block_by_country_and_ip_send_ofs_security_put_and_drop_the_settings_cac
         finally:
             server._get_client = orig
         assert c.sent == [], c.sent
-    # The general security PUT still takes the watermarks only: the lists never ride it.
     for bad in ({"blockedIps": ["192.0.2.1"]}, {"blockedCountries": ["AQ"], "blockedStates": []}):
         try:
             server.of_put_security_settings(bad)
@@ -231,7 +199,6 @@ def case_stream_blocked_users_params():
     assert params == {"limit": 10, "offset": 20, "query": "fan"}, params
 
 
-# ticket 73
 def case_stream_block_and_unblock_are_ofs_calls_without_a_body():
     assert _route(server.of_block_stream_viewer, "oi_synthetic.fan-1", None) == (
         "POST", f"{API}/streams/users/oi_synthetic.fan-1/block", None, None)
@@ -239,8 +206,6 @@ def case_stream_block_and_unblock_are_ofs_calls_without_a_body():
 
 
 def case_stream_block_and_unblock_match_the_capture_record():
-    """Ticket 73's capture record (js mode, measured in OF's bundle): the write and the undo send its method and path
-    with no body."""
     rec = _capture("settings--streaming-block-username.json")
     want = {q["role"]: q for q in rec["requests"]}
     assert want["write"]["body"] == {} and want["undo"]["body"] == {}, rec
@@ -261,12 +226,9 @@ def case_routes_registered():
     for want in [("PUT", "/api/of/v2/subscriptions/bundles/{bundle_id}"), ("GET", "/api/of/v2/users/me/profile/views/qr"),
                  ("GET", "/api/of/v2/streams/users/blocked"), ("GET", "/api/of/v2/sessions")]:
         assert want in paths, want
-    # The stream block list's only writes are ticket 73's Block a username and a row's remove (`block-fan`).
     assert {(m, p) for m, p in paths if p.startswith("/api/of/v2/streams/users/") and m not in ("GET", "HEAD")} == {
         ("POST", "/api/of/v2/streams/users/{username}/block"), ("DELETE", "/api/of/v2/streams/users/{user_id}/block")}, \
         "a stream block write route"
-    # The one session write route is Close all sessions (ofm-not-yet ticket 63: DELETE /sessions under account-lockout,
-    # the Relay's backstop kept); no other route ends a login session.
     assert not any(p.startswith("/api/of/v2/sessions") and m not in ("GET", "HEAD") and (m, p) != ("DELETE", "/api/of/v2/sessions")
                    for m, p in paths), "a session write route"
 

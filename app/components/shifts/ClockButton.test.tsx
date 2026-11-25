@@ -1,14 +1,3 @@
-/**
- * The top bar's Clock button (w4-a, Infloww's `ClockInOrOut`): shown only while
- * ClockStatus lets the caller clock in or it has an open event, "Clock in" or
- * "Clock out" with the elapsed time, a confirm before each write, Infloww's
- * toast lines (read here from `lib/notices`, which the toast stack shows), a
- * chatter in two Agencies sent to `ClockDialog`, the heartbeat sent only after
- * real input, and the inactivity notice once per Auto clock out.
- *
- * Rendered with `fetch` mocked by URL; the ClockStatus double is mutable, so a
- * poll is a `refetchQueries`. Ids and names are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -36,7 +25,6 @@ const idle = (): Status => ({
 });
 
 let status: Status;
-/** What `POST /clock-in` answers, or null for the event. */
 let clockInRefusal: { status: number; detail: unknown } | null;
 let fetchMock: ReturnType<typeof vi.fn>;
 let notices: string[];
@@ -124,7 +112,6 @@ describe("ClockButton", () => {
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Yes" }));
     await waitFor(() => expect(notices).toEqual(["Clock in successful"]));
     expect(posts()).toEqual([{ path: "/admin/shifts/clock-in", body: {} }]);
-    // The re-read status has the open event: the button turns into Clock out.
     expect(await screen.findByRole("button", { name: /^Clock out/ })).toBeInTheDocument();
   });
 
@@ -197,7 +184,6 @@ describe("ClockButton", () => {
   });
 
   describe("the lost connection (fake timers)", () => {
-    /** Closed by Auto clock out at `out_utc`; the server's clock reads 17:05 when the test starts. */
     const closedAuto = (id: number, out_utc = "2026-10-14T17:00:00Z"): Status => ({
       ...idle(), last_closed: { clock_event_id: id, out_utc, close_reason: "auto" },
     });
@@ -207,14 +193,12 @@ describe("ClockButton", () => {
       status = { ...idle(), open: open(7) };
       const { queryClient } = renderWithProviders(<ClockButton />);
       await screen.findByRole("button", { name: /^Clock out/ });
-      // The network is down: the beat and the minute's status poll both fail.
       const answer = fetchMock.getMockImplementation() as (u: string, i?: RequestInit) => Promise<Response>;
       fetchMock.mockImplementation(async () => { throw new TypeError("Failed to fetch"); });
       fireEvent.pointerMove(window);
       await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
       expect(fetchMock.mock.calls.some(([u]) => u === "/admin/shifts/clock-heartbeat")).toBe(true);
 
-      // It is back; the first read finds the event auto-closed after the failure.
       fetchMock.mockImplementation(answer);
       status = closedAuto(7, "2026-10-14T17:15:00Z");
       await act(async () => { await queryClient.refetchQueries({ queryKey: CLOCK_STATUS_KEY }); });
@@ -233,7 +217,6 @@ describe("ClockButton", () => {
       fireEvent.pointerMove(window);
       await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
 
-      // The close (17:00) is before the failure (17:05 by the server's clock).
       fetchMock.mockImplementation(answer);
       status = closedAuto(7, "2026-10-14T17:00:00Z");
       await act(async () => { await queryClient.refetchQueries({ queryKey: CLOCK_STATUS_KEY }); });
@@ -248,13 +231,11 @@ describe("ClockButton", () => {
       await screen.findByRole("button", { name: /^Clock out/ });
       const answer = fetchMock.getMockImplementation() as (u: string, i?: RequestInit) => Promise<Response>;
       fetchMock.mockImplementation(async () => { throw new TypeError("Failed to fetch"); });
-      // Twenty minutes of input with the network down: the first beat fails at 17:06, the last at 17:25.
       for (let minute = 0; minute < 20; minute++) {
         fireEvent.pointerMove(window);
         await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
       }
 
-      // The server closed it at 17:15, after the first failure and before the last.
       fetchMock.mockImplementation(answer);
       status = { ...closedAuto(7, "2026-10-14T17:15:00Z"), server_now: "2026-10-14T17:25:00Z" };
       await act(async () => { await queryClient.refetchQueries({ queryKey: CLOCK_STATUS_KEY }); });
@@ -288,11 +269,9 @@ describe("ClockButton", () => {
       fetchMock.mockImplementation(async () => { throw new TypeError("Failed to fetch"); });
       fireEvent.pointerMove(window);
       await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-      // The connection is back: this read answers with the event still open.
       fetchMock.mockImplementation(answer);
       status = { ...status, server_now: "2026-10-14T17:06:00Z" };
       await act(async () => { await queryClient.refetchQueries({ queryKey: CLOCK_STATUS_KEY }); });
-      // Let the read render before the next one (React Query notifies on a later tick).
       await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
 
       status = closedAuto(7);
@@ -335,7 +314,6 @@ describe("useClockHeartbeat", () => {
     expect(beats()).toBe(1);
     expect(queryClient.getQueryData(CLOCK_STATUS_KEY)).toEqual(status);
 
-    // No input since that beat: the next interval sends nothing.
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     expect(beats()).toBe(1);
     fireEvent.keyDown(window, { key: "a" });

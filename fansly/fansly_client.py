@@ -38,23 +38,19 @@ SESSIONS_DIR = HERE / "sessions"
 SESSION_FILE = SESSIONS_DIR / "session.json"
 
 API_BASE = "https://apiv3.fansly.com/api/v1"
-# The upload flow lives on a DIFFERENT host (captured: create/complete/poll all
-# go to mediav2, the bytes go straight to a presigned S3 url). Same auth, same
-# path-only digest, so it is a base-url swap on _request, not a second client.
+# Uploads go to a different host (mediav2; bytes to a presigned S3 url) with the same auth and path-only digest: a base-url swap on _request.
 MEDIA_BASE = "https://mediav2.fansly.com/api/v1"
 ORIGIN = "https://fansly.com"
 REFERER = "https://fansly.com/"
 DEFAULT_TIMEOUT_S = 30
 
-# Angular service-worker bypass — on every call the web client makes.
+# Angular service-worker bypass, sent on every call the web client makes.
 NGSW_PARAMS = {"ngsw-bypass": "true"}
 
-# Message `type` discriminator. 1 is a plain text message; the paid/media types
-# are deliberately not wired up here.
+# Only plain text is wired; paid/media types deliberately are not.
 MESSAGE_TYPE_TEXT = 1
 
-# Device ids are re-fetched after this long. The web client holds one much
-# longer; refetching per run just draws 429s.
+# The web client holds a device id much longer; refetching per run draws 429s.
 DEVICE_ID_TTL_S = 180 * 60
 
 BROWSER_CONSOLE_SNIPPET = """\
@@ -99,7 +95,6 @@ class FanslySession:
         self.user_agent: str = data.get("user_agent") or data.get("userAgent") or ""
         self.check_key: str = data.get("check_key") or signer.CHECK_KEY
 
-        # Optional client hints, purely for header fidelity.
         self.accept_language: str = data.get("accept_language") or "en-US,en;q=0.9"
         self.sec_ch_ua: str = data.get("sec_ch_ua") or ""
         self.sec_ch_ua_platform: str = data.get("sec_ch_ua_platform") or ""
@@ -157,7 +152,6 @@ class FanslyClient:
         self.clock = signer.ClientTimestamp()
         self._digests: signer.DigestCache | None = None
 
-    # -- headers ------------------------------------------------------------
 
     def _digest_cache(self) -> signer.DigestCache:
         """Rebuilt whenever the device id rotates — it is an input to every
@@ -202,7 +196,6 @@ class FanslyClient:
 
         return headers
 
-    # -- transport ----------------------------------------------------------
 
     def _request(
         self,
@@ -215,7 +208,7 @@ class FanslyClient:
         base: str | None = None,
     ) -> Any:
         url = f"{base or API_BASE}{path}"
-        api_path = f"/api/v1{path}"          # what the digest is computed over
+        api_path = f"/api/v1{path}"
 
         if self.dry_run and method != "GET":
             print(f"[dry-run] {method} {url}")
@@ -251,7 +244,6 @@ class FanslyClient:
 
         return payload.get("response")
 
-    # -- bootstrap ----------------------------------------------------------
 
     def ensure_device_id(self) -> str:
         """Fetch a device id if we have none or ours has aged out.
@@ -272,7 +264,6 @@ class FanslyClient:
         self.session.save()
         return self.session.device_id
 
-    # -- reads --------------------------------------------------------------
 
     def me(self) -> dict:
         return self._request("GET", "/account/me")
@@ -306,7 +297,6 @@ class FanslyClient:
             },
         )
 
-    # -- follow / unfollow --------------------------------------------------
 
     def follow(self, account_id: str) -> dict:
         """POST /account/{id}/followers — no body, despite being a POST.
@@ -319,7 +309,6 @@ class FanslyClient:
     def unfollow(self, account_id: str) -> dict:
         return self._request("POST", f"/account/{account_id}/followers/remove")
 
-    # -- messaging ----------------------------------------------------------
 
     def find_group_with(self, account_id: str, scan_limit: int = 100) -> str | None:
         """Existing DM group with this account, if the recent list has one."""
@@ -401,10 +390,7 @@ class FanslyClient:
         }
         if scheduled_for is not None:
             body["scheduledFor"] = scheduled_for
-        # A broadcast is the SAME body on a different path — the web client
-        # branches purely on the group's type (3 = broadcast). Posting a
-        # broadcast group's message to plain /message is the silent-wrong-path
-        # failure to avoid, so the caller states the lane explicitly.
+        # A broadcast is the same body on a different path (group type 3); posting it to /message is the silent wrong-path failure, so the caller states the lane.
         path = "/message/broadcast" if broadcast else "/message"
         return self._request("POST", path, json_body=body)
 
@@ -419,9 +405,6 @@ class FanslyClient:
         return self.send_message(group_id, text)
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def _client(args: argparse.Namespace) -> FanslyClient:
     client = FanslyClient(

@@ -1,7 +1,5 @@
 "use client";
 
-/** One row of the Mass messages tab's table and its Actions menu (moved out of
- *  MassMessagesTab.tsx as is). */
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -16,7 +14,6 @@ import { fmtCents } from "@/lib/messageFormat";
 import { ofPlainText } from "@/lib/ofRichText";
 import { cn } from "@/lib/utils";
 
-// Friendly labels for the automation_kind tokens that produce broadcasts.
 const MASS_AUTOMATION_LABELS: Record<string, string> = {
   send_mass_message: "Mass message",
   reply_mass_funnel: "Funnel reply",
@@ -25,7 +22,6 @@ const MASS_AUTOMATION_LABELS: Record<string, string> = {
   ppv_send: "PPV Library",
 };
 
-/** The bundle's "MMM D, YYYY [at] h:mm A", in the report time zone. */
 function sentAt(iso: string, tz: string | null): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -44,7 +40,6 @@ function sentAt(iso: string, tz: string | null): string {
 
 const SALES_TIP = "Purchases recorded on this broadcast's copies in our records (no OnlyFans read)";
 
-/** A Not wired cell: no Relay read backs the column. */
 function NotWiredCell() {
   return <td title="not wired" className={cn(IF_TABLE.td, "text-muted")}>—</td>;
 }
@@ -70,14 +65,12 @@ export function MassMessageRowItem({
 
   return (
     <tr className={cn(IF_TABLE.row, (busy || m.isCanceled) && "opacity-60")}>
-      {/* Message: one line; "--" when the message is media only (#80). */}
       <td className={cn(IF_TABLE.td, "sticky left-0 bg-panel")}>
         {text
           ? <div className="truncate" title={text}>{text}</div>
           : <span className="text-fg-dim" title="This message contains only media">--</span>}
       </td>
       <td className={IF_TABLE.td}>{m.date ? sentAt(m.date, reportTz) : dash}</td>
-      {/* Sender: the automation that sent it; who sent a manual one has no read. */}
       {m.automationKind ? (
         <td className={cn(IF_TABLE.td, "truncate")} title="Sent by an automation (joined via mass_runs)">
           {MASS_AUTOMATION_LABELS[m.automationKind] ?? m.automationKind}
@@ -102,8 +95,6 @@ export function MassMessageRowItem({
           </span>
         ) : dash}
       </td>
-      {/* Status pill (#98): Sent in the Active colours (#100), Unsent in the
-       *  Canceled colours (#102), from the app's palette. */}
       <td className={IF_TABLE.td}>
         <span
           className={cn(
@@ -114,7 +105,6 @@ export function MassMessageRowItem({
           {m.isCanceled ? SM.massUnsent.label : SM.massSent.label}
         </span>
       </td>
-      {/* Price: "--" when free (#85); priced, but the cache keeps no amount. */}
       {m.isFree ? (
         <td className={IF_TABLE.td}>{dash}</td>
       ) : (
@@ -124,9 +114,6 @@ export function MassMessageRowItem({
       )}
       <td className={IF_TABLE.td}>{m.sentCount ?? 0}</td>
       <td className={IF_TABLE.td}>{m.viewedCount ?? 0}</td>
-      {/* Purchased, Earnings: the copies our rows mark bought (relay's local
-       *  attribution, a floor for a list blast). Withdrawn by, Withdrawn date &
-       *  time: no read. */}
       <td className={IF_TABLE.td} title={SALES_TIP}>{m.isFree ? dash : (m.purchasedCount ?? 0)}</td>
       <td className={IF_TABLE.td} title={SALES_TIP}>{m.isFree ? dash : fmtCents(m.earningsCents ?? 0)}</td>
       <NotWiredCell />
@@ -145,7 +132,6 @@ export function MassMessageRowItem({
                 ? SM_MASS_ACTIONS.unsendTip.label
                 : "OF marked this as no-longer-unsendable",
             },
-            // Duplicate opens the bundle's editor on a copy; no path of ours reads a sent broadcast back into it.
             { label: SM_MASS_ACTIONS.duplicate.label, disabled: true, title: "not wired" },
           ]}
         />
@@ -156,9 +142,6 @@ export function MassMessageRowItem({
 
 type RowAction = { label: string; onClick?: () => void; disabled: boolean; title: string };
 
-/** The bundle's row menu (`OFMMOperateMenu`, capture Notes): a 16px "more" trigger whose menu opens above it, right
- *  aligned. The list scrolls sideways, so the menu is portalled and fixed to the trigger, and closes on a pick, an
- *  outside press, Escape or a scroll. */
 function RowActionsMenu({ items }: { items: RowAction[] }) {
   const [pos, setPos] = useState<{ right: number; bottom: number } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);

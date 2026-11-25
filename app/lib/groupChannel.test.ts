@@ -39,7 +39,6 @@ describe("cleanSlots", () => {
   });
 });
 
-// The receive side of the channel: anything a same-origin page posts.
 describe("cleanGroupMessage", () => {
   const T = { tabId: "t", reqId: "r" };
   it.each<[string, unknown, unknown]>([
@@ -54,8 +53,6 @@ describe("cleanGroupMessage", () => {
     ["add", { ...T, type: "add", accountId: "a", fanId: 1 }, { ...T, type: "add", accountId: "a", fanId: 1 }],
     ["add: Fansly snowflake stays the same string", { ...T, type: "add", accountId: "a", fanId: SNOW },
       { ...T, type: "add", accountId: "a", fanId: SNOW }],
-    // Malformed slot: passed on as it came (only the envelope is judged here); slotsReducer refuses it, and the
-    // tab still owes an ok:false.
     ["add: bad fan id passed on", { ...T, type: "add", accountId: "a", fanId: { n: 1 } },
       { ...T, type: "add", accountId: "a", fanId: { n: 1 } }],
     ["add: missing account passed on", { ...T, type: "add", fanId: 1 }, { ...T, type: "add", accountId: undefined, fanId: 1 }],
@@ -105,8 +102,6 @@ describe("live group tab registry", () => {
     expect(readAllLiveGroupTabs()[0].slots).toEqual([{ accountId: "a", fanId: SNOW }, { accountId: "a", fanId: 5 }]);
   });
 
-  // The fan is in a live tab under the other id shape: focus that tab, never
-  // add him to a second one.
   it.each<[string, number | string, number | string]>([
     ["held as a string, clicked as a number", "123", 123],
     ["held as a number, clicked as a string", 123, "123"],
@@ -150,8 +145,6 @@ describe("parseSlotsParam", () => {
   });
 
   it("round-trips an account id containing the separator", () => {
-    // encodeSlots percent-encodes the account id, so a colon inside it must
-    // survive — the parser splits on the LAST colon and decodes.
     expect(parseSlotsParam(`${encodeURIComponent("a:b")}:42`)).toEqual([
       { accountId: "a:b", fanId: 42 },
     ]);

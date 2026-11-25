@@ -1,8 +1,5 @@
 "use strict";
 
-// The Go live window (lib/of-live-window.js): OnlyFans's own streaming page in a
-// non-persistent per-Creator partition, seeded from the Relay's session read
-// before the first load (ticket 127, D26/D28). Electron is faked.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -21,15 +18,12 @@ const COOKIES = [
   { name: "auth_id", value: "1001", domain: ".onlyfans.com", path: "/", secure: true, httpOnly: false, expires: null },
   { name: "sess", value: "sess-secret-9c1", domain: ".onlyfans.com", path: "/", secure: true, httpOnly: true, expires: 4102444800 },
   { name: "fp", value: "fp-1", domain: "onlyfans.com", path: "/", secure: true, httpOnly: false, expires: null },
-  // Cloudflare's own: never seeded, even if a Relay ever sent them.
   { name: "__cf_bm", value: "cf-1", domain: ".onlyfans.com", path: "/", secure: true, httpOnly: true, expires: null },
   { name: "cf_clearance", value: "cf-2", domain: ".onlyfans.com", path: "/", secure: true, httpOnly: true, expires: null },
   { name: "_cfuvid", value: "cf-3", domain: ".onlyfans.com", path: "/", secure: true, httpOnly: true, expires: null },
-  // Another site's cookie never lands in OnlyFans's partition.
   { name: "sess", value: "other", domain: ".example.com", path: "/", secure: true, httpOnly: true, expires: null },
 ];
 
-// One log of every Electron call, in order, so "before the first load" is checkable.
 function fakeElectron() {
   const log = [];
   const sessions = {};
@@ -101,7 +95,6 @@ test("window factory: own non-persistent partition, cookies and bcTokenSha seede
   const P = "of-live-1001";
   assert.equal(win.opts.webPreferences.partition, P);
   assert.ok(!P.startsWith("persist:"));
-  // The page gets no Node and no preload: no secret crosses a bridge.
   assert.equal(win.opts.webPreferences.contextIsolation, true);
   assert.equal(win.opts.webPreferences.nodeIntegration, false);
   assert.equal(win.opts.webPreferences.sandbox, true);
@@ -110,7 +103,6 @@ test("window factory: own non-persistent partition, cookies and bcTokenSha seede
   const live = f.log.findIndex((e) => e[0] === "load" && e[1] === "https://onlyfans.com/my/streaming");
   assert.ok(live > 0, "the streaming page is loaded");
   const before = f.log.slice(0, live);
-  // Reseeded on every open: cleared before anything is set.
   assert.equal(before[0][0], "clear");
   const cookies = before.filter((e) => e[0] === "cookie").map((e) => e[2]);
   assert.deepEqual(cookies.map((c) => c.name), ["auth_id", "sess", "fp"]);
@@ -120,18 +112,15 @@ test("window factory: own non-persistent partition, cookies and bcTokenSha seede
     [sess.value, sess.domain, sess.path, sess.secure, sess.httpOnly, sess.expirationDate],
     ["sess-secret-9c1", ".onlyfans.com", "/", true, true, 4102444800],
   );
-  // A host-only cookie stays host-only (no domain), a session cookie stays a session cookie.
   const fp = cookies.find((c) => c.name === "fp");
   assert.equal("domain" in fp, false);
   assert.equal("expirationDate" in fp, false);
-  // localStorage.bcTokenSha = x_bc, written in an onlyfans.com document that never touched the network.
   const seedLoad = before.find((e) => e[0] === "load");
   assert.equal(seedLoad[1].startsWith("data:"), true);
   assert.deepEqual(seedLoad[2], { baseURLForDataURL: "https://onlyfans.com/" });
   const js = before.filter((e) => e[0] === "js").map((e) => e[1]);
   assert.equal(js.length, 1);
   assert.match(js[0], /localStorage\.setItem\("bcTokenSha", ?"xbc-secret-7f3a"\)/);
-  // The secret never rides in a URL.
   for (const e of f.log.filter((x) => x[0] === "load")) assert.ok(!e[1].includes(SECRET_XBC));
 });
 
@@ -248,17 +237,14 @@ test("unseeded (the Relay has no session): opens OF's login page for a human, no
   assert.equal(win.opts.webPreferences.partition, "of-live-1001");
   assert.equal(f.log[0][0], "clear");
   assert.equal(f.log.filter((e) => e[0] === "cookie").length, 0);
-  // Never a scripted login: no script runs in the page at all (no auto-fill, no submit, no seed).
   assert.equal(f.log.filter((e) => e[0] === "js").length, 0);
   assert.deepEqual(f.log.filter((e) => e[0] === "load").map((e) => e[1]), ["https://onlyfans.com/"]);
   assert.doesNotMatch(win.webContents.getUserAgent(), /Electron/i);
-  // Camera/mic table and the logout block still hold.
   const h = f.sessions["of-live-1001"].handlers;
   assert.equal(h.check(null, "media", "https://evil.test"), false);
   let out = null;
   h.beforeRequest({ url: "https://onlyfans.com/api2/v2/users/logout" }, (r) => (out = r));
   assert.equal(out.cancel, true);
-  // Unseeded ignores any cookies or x_bc handed in by mistake.
   const g = fakeElectron();
   await openOfLiveWindow(g.deps, { creatorId: "1", unseeded: true, cookies: COOKIES, xBc: SECRET_XBC, chromeMajor: "150" });
   assert.equal(g.log.filter((e) => e[0] === "cookie" || e[0] === "js").length, 0);
@@ -280,14 +266,12 @@ test("goLiveSeed: only an OK {session: null} is sign-in; every non-OK answer (an
   for (const status of [503, 502, 500, 404, 403, 401, 429, 409, 0]) {
     assert.deepEqual(goLiveSeed(status, { session: null }), { refuse: status }, String(status));
   }
-  // An OK answer that is not the Relay's shape is refused, never a sign-in.
   for (const body of [null, {}, { session: undefined }, { cookies: COOKIES, x_bc: SECRET_XBC },
     { session: {} }, { session: { cookies: "x", x_bc: SECRET_XBC } }, { session: { cookies: COOKIES } }, "text"]) {
     assert.deepEqual(goLiveSeed(200, body), { refuse: 0 }, JSON.stringify(body));
   }
 });
 
-// The open flow main.js registers on shell:open-go-live, with the Relay read faked.
 function flow(answer, extra = {}) {
   const f = fakeElectron();
   const calls = [];
@@ -371,7 +355,7 @@ test("open flow: one window per Creator; a second open focuses it; a double clic
     return SEEDED;
   });
   const first = t.openGoLive("1001");
-  const second = await t.openGoLive("1001"); // while the first is still reading
+  const second = await t.openGoLive("1001");
   assert.deepEqual(second, { ok: true });
   release();
   assert.deepEqual(await first, { ok: true });
@@ -397,7 +381,6 @@ test("open flow: a window failure answers a plain error and warns with the messa
   for (const m of t.warned) {
     assert.ok(!m.includes(SECRET_XBC) && !m.includes("sess-secret-9c1"), m);
   }
-  // The in-flight guard is released after a failure.
   const again = await t.openGoLive("1001");
   assert.equal(again.ok, false);
 });

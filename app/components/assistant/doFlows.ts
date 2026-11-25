@@ -1,23 +1,3 @@
-/**
- * "Do it for me" flows (docs/spec/assistant-do-mode.md): what the help bot's runner does for one draft.
- *
- * A flow is a RECIPE over a form's own reducer: `toActions` turns the server's draft slots
- * (POST /admin/assistant/draft) into the editor's existing `RuleEditorAction`s, one AgentStep each, in the order a
- * person would fill the form, plus where the cosmetic cursor points (an element id) and what its bubble says. The
- * runner (useDoRunner.ts) opens the page, dispatches the steps through the agent bridge and saves through the
- * editor's own Save. Pure, so the slots → steps table is tested (doFlows.test.ts).
- *
- * SAFETY: every recipe switches Enabled OFF (and Dry run off) FIRST, right after the form opens and before any content
- * step, so a run stopped halfway never leaves a filled form ON for the user's own Save (rwl W30 F2); the agent's save
- * forces OFF too (D7). The user's toggle is the go-live (D2). A slot left at the blank form's default makes NO step: the agent never "touches" a default it wasn't asked to
- * change (onlineOnly, excludeLastChatHours, the audience).
- *
- * `mass_edit` (D11, existing rules) is no recipe: no editor, no cursor — the server applies it (massEdit.ts).
- * `auto_story` (D13) fills the Auto Story page's own form (autoStoriesForm.ts): no "open" step — the page IS the form.
- * `report_export` is no recipe either: Download POSTs the report recipe and saves the file (doExport.ts).
- * `full_ai_config` (phase 03c) is no recipe: Apply is one draft PUT (fullAiConfigEdit.ts, useDoRunner.ts).
- */
-
 import type { RuleEditorAction } from "@/components/automations/ruleEditorForm";
 import type { Unit } from "@/components/automations/ruleInterval";
 import { KIND_COPY } from "@/components/automations/readyMadeContent";
@@ -29,7 +9,6 @@ import type { ExportSlots } from "./doExport";
 import type { FullAiConfigSlots } from "./fullAiConfigEdit";
 import type { MassEditSlots } from "./massEdit";
 
-/** A flow the runner plays in a form (DO_FLOWS). */
 export type EditorFlowId = "mass_premade" | "auto_story";
 export type DoFlowId = EditorFlowId | "mass_edit" | "report_export" | "full_ai_config";
 
@@ -41,22 +20,17 @@ export interface FolderTiers {
   unknown: number;
 }
 
-/** The mass_premade draft's slots, as the server resolved them (ids, not names). */
 export interface MassPremadeSlots {
   name: string;
   interval: { value: number; unit: Unit };
   captions: string[];
-  /** How many of `captions` the AI wrote. */
   captions_ai: number;
   folder: null | { id: number | string; name: string; photos: number; tiers: FolderTiers };
   online_only: boolean;
-  /** The include list ids, always explicit (default ['fans','following']); [] = a named list the server couldn't
-   *  resolve (`unresolved` says which): the audience is cleared and Save's own gate stops. */
   includes: string[];
   excludes: string[];
   unsend_after_hours: number | null;
   exclude_last_chat_hours: number | null;
-  /** The optional knobs (absent / null = the form's default). */
   price?: number | null;
   media_count?: number | null;
   exclude_replied_hours?: number | null;
@@ -66,17 +40,13 @@ export interface MassPremadeSlots {
   recent_chat_limit?: number | null;
 }
 
-/** The auto_story draft's slots (the server fills every key; a key at the blank form's default makes no step). */
 export interface AutoStorySlots {
   folder: null | { id: number | string; name: string; photos: number; tiers?: FolderTiers };
   mode: "clock" | "interval";
-  /** "HH:MM", clock mode. */
   times: string[];
   every_hours: number;
   per_run: number;
-  /** 0 = keep. */
   hours_to_live: number;
-  /** null = forever. */
   max_runs: number | null;
 }
 
@@ -85,13 +55,10 @@ interface DraftBase {
   summary: string;
   assumptions: string[];
   unresolved: string[];
-  /** A human sentence: the flow:null pointer to Q&A, or the error's words. */
   answer: string;
   error: string | null;
 }
 
-/** POST /admin/assistant/draft's 200 (always 200). `account_id` null: asked in General (no model) — an export or
- *  no draft. */
 export type DoDraft = DraftBase & (
   | { flow: "mass_premade"; account_id: string; slots: MassPremadeSlots | null }
   | { flow: "auto_story"; account_id: string; slots: AutoStorySlots | null }
@@ -101,43 +68,30 @@ export type DoDraft = DraftBase & (
   | { flow: null; account_id: string | null; slots: null }
 );
 
-/** `reveal`: click a disclosure open (only when `aria-expanded="false"`) so the next fields show. */
 export type AgentAction<A = RuleEditorAction | AutoStoriesAction> = A | "open" | "save" | "reveal";
 
-/** `A`: the form's own action type (a flow's steps only ever dispatch into its one form). */
 export interface AgentStep<A = RuleEditorAction | AutoStoriesAction> {
-  /** The element id the cursor goes to. */
   target: string;
   action: AgentAction<A>;
-  /** The cursor bubble's words. */
   label: string;
-  /** A caption the runner may type in visibly (typingFrames). */
   typing?: boolean;
-  /** The step that switches the form OFF (set by the recipe builders; leftFilled reads it, rwl W30 S4). */
   off?: true;
 }
 
 export interface DoFlow<S, A> {
   kind: AgentKind;
-  /** The page's name in the runner's messages ("The Auto Mass page didn't open in time"). */
   title: string;
-  /** The page's path: a Q&A answer linking here offers the swap. */
   routeBase: string;
   route: (accountId: string) => string;
   toActions: (slots: S) => AgentStep<A>[];
-  /** The plan card's plain-words lines. */
   planLines: (slots: S) => string[];
-  /** The saved rule's on/off switch, by its aria-label: the done cursor rests on it (never clicks it). */
   savedSwitch: (slots: S) => string;
-  /** The done card's line. */
   doneText: string;
 }
 
-/** A draft's flow with its slots bound: what the runner and the plan card call. */
 export interface BoundFlow {
   kind: AgentKind;
   title: string;
-  /** The draft's model: the run opens its page and form. */
   accountId: string;
   route: (accountId: string) => string;
   steps: AgentStep[];
@@ -158,7 +112,7 @@ function rowPatch(patch: Partial<Row>): RuleEditorAction {
 function massToActions(s: MassPremadeSlots): AgentStep<RuleEditorAction>[] {
   const steps: AgentStep<RuleEditorAction>[] = [
     { target: `rm-${MP}-new`, action: "open", label: "Opening a new Auto Mass…" },
-    // ALWAYS first after open: the rule is OFF before anything is filled (D2, F2).
+    // Enabled OFF first: a run stopped halfway must never leave a filled form ON.
     { target: `rm-${MP}-enabled`, action: { type: "field", patch: { enabled: false, dryRun: false } }, label: "Leaving it OFF — you turn it on", off: true },
   ];
   const name = s.name.trim();
@@ -181,7 +135,6 @@ function massToActions(s: MassPremadeSlots): AgentStep<RuleEditorAction>[] {
   });
   if (s.folder) {
     steps.push({ target: `pm-${MP}-folder`, action: rowPatch({ folderId: String(s.folder.id) }), label: `Picking folder “${s.folder.name}”…` });
-    // The count box shows only once a folder is set.
     if (pos(s.media_count) && s.media_count !== 1) {
       steps.push({ target: `pm-${MP}-media-count`, action: rowPatch({ mediaCount: String(s.media_count) }), label: `${s.media_count} photos per mass` });
     }
@@ -205,15 +158,13 @@ function massToActions(s: MassPremadeSlots): AgentStep<RuleEditorAction>[] {
       label: h > 0 ? `Skip fans chatted with in ${h}h` : "Not skipping recent chats",
     });
   }
-  // Empty = a named list the server couldn't resolve: cleared, so Save's own gate stops on "no audience" — never
-  // left at the default (that would widen it to everyone).
+  // Empty includes = unresolved named list; never fall back to the default (would widen to everyone).
   if (!sameSet(s.includes, BLANK.includes)) {
     steps.push({ target: `pm-${MP}-lists-panel`, action: rowPatch({ includes: [...s.includes] }), label: "Picking who gets it…" });
   }
   if (!sameSet(s.excludes, BLANK.excludes)) {
     steps.push({ target: `pm-${MP}-lists-panel`, action: rowPatch({ excludes: [...s.excludes] }), label: "Excluding lists…" });
   }
-  // Behind "More settings": opened first; each set knob one step (the two guards keep an explicit 0 = off).
   const more: AgentStep<RuleEditorAction>[] = [];
   for (const [key, field, id, label] of MORE) {
     const v = s[key];
@@ -229,7 +180,6 @@ function massToActions(s: MassPremadeSlots): AgentStep<RuleEditorAction>[] {
 
 const pos = (v: number | null | undefined): v is number => typeof v === "number" && v > 0;
 
-/** The "More settings" knobs: slot key, Row field, element id suffix, cursor label. */
 const MORE: Array<[keyof MassPremadeSlots, keyof Row, string, (v: number) => string]> = [
   ["exclude_replied_hours", "excludeRepliedHours", "replied", (v) => (v > 0 ? `Skip fans I messaged in ${v}h` : "Not skipping fans I messaged")],
   ["exclude_inbound_hours", "excludeInboundHours", "inbound", (v) => (v > 0 ? `Skip fans who messaged in ${v}h` : "Not skipping fans who messaged")],
@@ -241,11 +191,11 @@ const MORE: Array<[keyof MassPremadeSlots, keyof Row, string, (v: number) => str
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const SYSTEM_LABEL = new Map(SYSTEM_AUDIENCES.map((a) => [a.id, a.label]));
 
-/** "Spring tease — 41/60 flagged · 0 explicit · 19 unknown — likely SFW". Never "safe": the tiers are a guess. */
 export function folderLine(f: NonNullable<MassPremadeSlots["folder"]>): string {
   const t = f.tiers;
   const explicit = t.explicit + t.hardcore;
   const flagged = Math.max(0, f.photos - t.unknown);
+  // Never "safe": the tiers are a guess.
   const verdict = explicit > 0 ? "has explicit photos" : flagged === 0 ? "not flagged yet" : "likely SFW";
   return `${f.name} — ${flagged}/${f.photos} flagged · ${explicit} explicit · ${t.unknown} unknown — ${verdict}`;
 }
@@ -298,10 +248,7 @@ const storySet = (patch: Partial<typeof STORY_BLANK>): AutoStoriesAction => ({ t
 const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 const whole = (v: number, lo: number) => Math.max(lo, Math.round(v) || 0);
 
-/** Enabled OFF first, then the Auto Story page's own order: folder, when to post (mode, then its times or hours),
- *  stories per run, delete after, total runs; then Save. */
 function storyToActions(s: AutoStorySlots): AgentStep<AutoStoriesAction>[] {
-  // ALWAYS first: the rule is OFF before anything is filled (D2, F2).
   const steps: AgentStep<AutoStoriesAction>[] = [
     { target: "story-enabled", action: storySet({ enabled: false }), label: "Leaving it OFF — you turn it on", off: true },
   ];
@@ -367,7 +314,6 @@ export const DO_FLOWS: {
     route: (accountId) => `/growth/auto-story?creator=${encodeURIComponent(accountId)}`,
     toActions: storyToActions,
     planLines: storyPlanLines,
-    // AutoStoriesTab's HeaderSwitch (its label is the page title).
     savedSwitch: () => "Auto Story",
     doneText: "Created OFF — turn it on with the Auto Story switch when ready",
   },
@@ -380,24 +326,19 @@ function bind<S, A extends RuleEditorAction | AutoStoriesAction>(f: DoFlow<S, A>
   };
 }
 
-/** The runnable draft's flow, bound to its slots; null for a mass_edit draft (no form) or no slots. */
 export function boundFlow(d: DoDraft): BoundFlow | null {
   if (d.flow === "mass_premade" && d.slots) return bind(DO_FLOWS.mass_premade, d.slots, d.account_id);
   if (d.flow === "auto_story" && d.slots) return bind(DO_FLOWS.auto_story, d.slots, d.account_id);
   return null;
 }
 
-/** The step that switches the form OFF: the builder's marker, never a guess from the patch's shape. */
 const isOffStep = (st: AgentStep) => st.off === true;
 
-/** A run that stopped (aborted / failed) while on step index `step`: did it leave the form open and filled? Only past
- *  the OFF step — which precedes every content step, so a filled form is always OFF. */
 export function leftFilled(steps: AgentStep[], step: number | undefined): boolean {
   const off = steps.findIndex(isOffStep);
   return off >= 0 && step !== undefined && step > off;
 }
 
-/** The line after a stopped run: what the page holds now. */
 export function stoppedLine(how: { aborted: string } | { failed: string }, filled: boolean): string {
   if ("aborted" in how) {
     return filled
@@ -408,10 +349,8 @@ export function stoppedLine(how: { aborted: string } | { failed: string }, fille
   return filled ? `${msg} The form is left open for you, switched OFF.` : msg;
 }
 
-/** The fixed note under every plan card. */
 export const PLAN_NOTE = "Photos added to this folder later are included too.";
 
-/** The flow whose page an answer link opens (query / hash ignored), or null. */
 export function flowForHref(href: string): EditorFlowId | null {
   const path = href.split(/[?#]/)[0].replace(/\/+$/, "");
   for (const [id, f] of Object.entries(DO_FLOWS) as Array<[EditorFlowId, { routeBase: string }]>) {
@@ -420,8 +359,6 @@ export function flowForHref(href: string): EditorFlowId | null {
   return null;
 }
 
-/** A typing step's visible frames: the newest caption growing in `chunks` slices (the earlier ones whole). Any other
- *  step is its own single frame. */
 export function typingFrames(step: AgentStep, chunks = 4): Array<RuleEditorAction | AutoStoriesAction> {
   const a = step.action;
   if (typeof a === "string") return [];

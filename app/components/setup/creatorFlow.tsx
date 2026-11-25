@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * The pieces Infloww's Creators flows share (Add creator, Edit account details, Edit creator details, Delete creator),
- * rebuilt from the Dashboard bundle (`~/Downloads/infloww-remote-web/index.9f50f370.js`, offsets cited per piece) with
- * the English from Infloww's own en locale chunk (`index.526c4a9d.js`, fetched from the public
- * embed-remote-web.infloww.com asset path and de-obfuscated statically; the key is cited beside each string).
- * "Infloww" in a string reads "Inflowwww", our name.
- */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Camera, Check, Info, Loader2, Plus, X } from "lucide-react";
@@ -19,19 +12,16 @@ import { GENDERS, SETTINGS_NOT_LOADED, avatarDataUrl, type CreatorDetails, type 
 import { cn } from "@/lib/utils";
 import { BRAND_NAME } from "@/lib/brand";
 
-// Split out, re-exported so importers keep `@/components/setup/creatorFlow`.
 export {
   FIELD, FlowButton, FlowModal, HB_DIM, LinkedLine, RADIO, RADIO_GROUP, RADIO_ITEM, STEP_TITLE, StepIndicator, T,
 } from "@/components/setup/creatorFlowUi";
 export { applyProxy, currentProxy, type ProxyChoice, type ProxyList } from "@/components/setup/proxyApi";
 
-// ── Toasts (Infloww's `message$4.success` / `showHBSnackbar`) ─────────────────────────────────────────────────────
 
 const TOAST_EVENT = "creators-toast";
 export function toast(text: string, tone: "ok" | "err" = "ok") {
   window.dispatchEvent(new CustomEvent(TOAST_EVENT, { detail: { text, tone } }));
 }
-/** One toast at a time, top centre, 3s (`position:{top:60},duration:3`, index.9f50f370.js @12490079). */
 export function CreatorToaster() {
   const [t, setT] = useState<{ text: string; tone: "ok" | "err"; n: number } | null>(null);
   useEffect(() => {
@@ -57,10 +47,8 @@ export function CreatorToaster() {
 
 const LABEL = "mb-1 block text-sm font-medium";
 
-// ── Creator details: `CreatorsDetailsForm` (index.9f50f370.js @12408534) ─────────────────────────────────────────
 
 const NAME_RE = /^[0-9a-zA-Z_\s一-龥]+$/;
-/** The form's rules: name required (trimmed) and of letters, digits, `_` and spaces; gender required. */
 export function creatorDetailsError(v: CreatorDetails): string | null {
   if (!v.name.trim()) return T.enterName;
   if (!NAME_RE.test(v.name)) return T.namePattern;
@@ -83,7 +71,6 @@ export function CreatorsDetailsForm({ value, onChange, showTitle }: {
       {showTitle && <p className={cn(STEP_TITLE, "mb-0")}>{T.creatorDetails}</p>}
       <div>
         <span className={LABEL}>{T.displayImage}</span>
-        {/* AvatarUpload: a round picker. */}
         <button
           type="button" aria-label={T.displayImage} onClick={() => file.current?.click()}
           className="relative grid h-16 w-16 place-items-center overflow-hidden rounded-full border border-dashed border-white/[.24] bg-[#161616] hover:border-cta [html[data-theme=light]_&]:bg-black/5"
@@ -121,7 +108,6 @@ export function CreatorsDetailsForm({ value, onChange, showTitle }: {
   );
 }
 
-// ── Account details: `EditCreatorForm` (index.9f50f370.js @12470033) ─────────────────────────────────────────────
 
 export interface AccountDetails {
   nickname: string;
@@ -130,8 +116,6 @@ export interface AccountDetails {
   notes: string;
 }
 
-/** The Employees a Creator is assigned to: explicit Creator access holding the account. An Employee with access to
- *  every Creator (`account_ids: null`) is assigned already and is shown checked, fixed. */
 export const assignedIds = (roster: Employee[] | null, accountId: string) =>
   (roster ?? []).filter((e) => e.account_ids?.includes(accountId)).map((e) => e.id);
 
@@ -139,7 +123,6 @@ export function EditCreatorForm({ value, onChange, tags, roster }: {
   value: AccountDetails;
   onChange: (v: AccountDetails) => void;
   tags: string[];
-  /** The active roster; null when the read was refused (Not wired). */
   roster: Employee[] | null;
 }) {
   const id = useId();
@@ -155,8 +138,6 @@ export function EditCreatorForm({ value, onChange, tags, roster }: {
       </div>
       <div>
         <label htmlFor={`${id}-tag`} className={LABEL}>{T.tagOptional}</label>
-        {/* HBSelect over the agency's Tags with `allowClear`; ours also takes a new Tag typed in (no Tag management
-            screen to create one first). */}
         <span className="relative block">
           <input
             id={`${id}-tag`} list={`${id}-tags`} placeholder={T.tag} maxLength={32} value={value.tag} className={FIELD}
@@ -185,8 +166,6 @@ export function EditCreatorForm({ value, onChange, tags, roster }: {
   );
 }
 
-/** `SelectEmployee` (index.9f50f370.js @12468303): Infloww's role cascader, here the active roster as a checklist
- *  with a search box. An Employee who can open every Creator is checked and fixed (change it on Employees). */
 function SelectEmployee({ value, onChange, roster }: {
   value: number[]; onChange: (v: number[]) => void; roster: Employee[] | null;
 }) {
@@ -233,8 +212,6 @@ function SelectEmployee({ value, onChange, roster }: {
   );
 }
 
-/** The active Employees, the ones with a login (`queryEmployeeCascader`), under the table's key; null when refused.
- *  Their Creator access is the enforced one, so assigning one here limits what they see. */
 export function useRoster(): Employee[] | null {
   const q = useQuery<{ employees: Employee[] }>({
     queryKey: ["employees", "active"],
@@ -245,26 +222,17 @@ export function useRoster(): Employee[] | null {
   return q.error ? null : (q.data?.employees ?? []).filter((e) => !!e.chatter_id);
 }
 
-/**
- * Saves the account details (`updateCreator`: nickname, group, employeeIds, description) to what backs each:
- *   nickname   → PATCH /admin/accounts/{id}
- *   employees  → PUT /admin/employees/{eid}/access, for each Employee whose assignment changed (Creator access)
- *   tag, notes → the `creators` profile (useCreatorProfiles), with any Creator details passed along
- */
 export function useSaveAccountDetails(profiles: ReturnType<typeof useCreatorProfiles>) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async ({ accountId, before, roster, details, creator, draftId }: {
       accountId: string;
-      /** The nickname the account had, so an unchanged one sends no PATCH. */
       before: string;
       roster: Employee[] | null;
       details: AccountDetails;
       creator?: Partial<CreatorDetails>;
       draftId?: string;
     }) => {
-      // The tag, notes and Creator details live in the settings blob: without it nothing is saved, rather than a
-      // half save the form calls done.
       if (!profiles.wired) throw new Error(SETTINGS_NOT_LOADED);
       const nick = details.nickname.trim();
       if (nick && nick !== before) {
@@ -288,9 +256,7 @@ export function useSaveAccountDetails(profiles: ReturnType<typeof useCreatorProf
   });
 }
 
-// ── Proxy selection: `SelectProxyUI` (index.9f50f370.js @12426358) ───────────────────────────────────────────────
 
-/** `fresh`: refetch on mount even when cached, for a caller that must show the relay's state after a write. */
 export function useProxyList(fresh = false) {
   return useQuery<ProxyList>({
     queryKey: ["proxies", "list"],
@@ -304,7 +270,6 @@ export const INFLOWWWW_PROXY = `${BRAND_NAME} proxy`;
 export const NO_PROXY = "No proxy (server IP)";
 
 
-/** One line for a choice: the pool by name, a custom proxy by label, scheme and address, else No proxy. */
 export function proxyText(choice: ProxyChoice, list?: ProxyList) {
   if (choice.type === "infloww") return INFLOWWWW_PROXY;
   if (choice.type === "none" || !choice.label) return NO_PROXY;
@@ -315,7 +280,6 @@ export function proxyText(choice: ProxyChoice, list?: ProxyList) {
 export function SelectProxyUI({ value, onChange }: { value: ProxyChoice; onChange: (v: ProxyChoice) => void }) {
   const proxiesQ = useProxyList();
   const poolEmpty = !proxiesQ.data?.pool?.size;
-  // `checkCustomProxyById` on a pick: our egress-IP check.
   const pick = async (label: string) => {
     onChange({ type: "custom", label, ok: null });
     try {
@@ -375,7 +339,6 @@ export function SelectProxyUI({ value, onChange }: { value: ProxyChoice; onChang
               </li>
             ))}
           </ul>
-          {/* `CreateProxy`: our proxies live on Creators › Custom proxy. */}
           <a href="/creators/proxy" target="_blank" rel="noreferrer" className="inline-flex h-8 items-center gap-1 rounded-lg bg-[#2c2c2c] px-3 text-sm font-medium hover:bg-[#383838] [html[data-theme=light]_&]:bg-black/[.09]">
             <Plus className="h-4 w-4" aria-hidden />{T.newProxy}
           </a>
@@ -385,6 +348,5 @@ export function SelectProxyUI({ value, onChange }: { value: ProxyChoice; onChang
   );
 }
 
-/** Whether a choice may go on: a custom proxy only once its check passed (`mn`, index.9f50f370.js @12427600). */
 export const proxyChoiceReady = (v: ProxyChoice) => v.type !== "custom" || (!!v.label && v.ok === true);
 

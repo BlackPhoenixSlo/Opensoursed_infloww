@@ -1,28 +1,3 @@
-"""A relay crash in the middle of a fan DM flood. The local DB is a best-effort
-cache of OnlyFans for OF-sourced rows (db/of_writer.py: no durable outbox), so a
-SIGKILL may lose what the relay held in memory: frames still in the persist queue
-and the OF-cache writer's open batch. This bounds that loss and shows the normal
-OF read path fills it back in.
-
-Flow: --users fans DM their Creators in the pump's shape (fan_dm.serial, open loop
-at --rate frames/s per Creator). Partway through, the relay is SIGKILLed (no
-shutdown hook runs), stays down DOWN_S while fans keep writing (OnlyFans holds
-those; the relay never sees them), then starts again on the same DB. Afterwards
-OnlyFans' side of the record (every DM sent, seen or not) is written to the fake
-OF read (lib/relay.py `_OfflineOF.get_messages`) and the chat's own refresh,
-POST /admin/messages/{aid}/{fan}/rescrape-now (the chat scrape), runs per thread.
-
-Invariants: loss is bounded (every DM the relay took more than LOSS_WINDOW_MS
-before the kill is in its thread); after the refill every DM OnlyFans holds is in
-its thread, none twice. Measured, not asserted: how many taken DMs were lost and
-how close to the kill they were.
-
-Bypass (declared): the fan pump uses its own Recorder, so the transport errors of
-frames sent into the outage (the relay is down: they never arrive) are counted in
-metric `pump` instead of failing the stock "no 5xx or transport error" check. Every
-manager call (thread reads, rescrape-now) is recorded as usual.
-Break-it-once: of-writer-holds-batches-3s (lib/faults.py).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -38,9 +13,9 @@ PROFILE = "agency_inbox"
 UI = False
 FAULT = "of-writer-holds-batches-3s"
 RECENT_MAX = 100
-LOSS_WINDOW_MS = 1000      # a DM the relay took longer ago than this before the kill must have been written
-DOWN_S = 2.0               # relay down this long, fans still writing
-KILL_AT_FRAC = 0.5         # of the flood's scheduled length
+LOSS_WINDOW_MS = 1000
+DOWN_S = 2.0
+KILL_AT_FRAC = 0.5
 CHECK_BOUNDED = f"crash loses only DMs the relay took < {LOSS_WINDOW_MS}ms before the kill"
 CHECK_REFILL = "after rescrape-now every DM OnlyFans holds is in its thread"
 CHECK_NO_DUP = "rescrape-now added no DM twice"
@@ -50,7 +25,7 @@ P95_MS = {"POST /admin/messages/:id/:id/rescrape-now": 2000}
 async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
     per_fan = ctx.param("per_fan", w.size["dm_flood_per_fan"])
-    rate = ctx.param("rate", 5.0)  # frames/s per Creator
+    rate = ctx.param("rate", 5.0)
     creators, fans = w.data["creators"], w.data["fans"]
     k = min(RECENT_MAX, math.ceil(ctx.users / len(creators)))
     rng = w.rng("scenario:relay-crash")
@@ -72,7 +47,8 @@ async def run(ctx) -> None:
     up_ms = time.time() * 1000
     recs = await flood
     await pool.aclose()
-    owner = ctx.owner.share()  # fresh connections: the old pool's sockets died with the relay
+    # fresh connections: the old pool's sockets died with the relay
+    owner = ctx.owner.share()
     stats = await manager.quiesce(owner)
 
     taken = [r for r in recs if r["status"] < 300]
@@ -103,7 +79,6 @@ async def run(ctx) -> None:
     ctx.check(CHECK_BOUNDED, not late, lost_older=len(late), lost_total=len(lost),
               oldest_ms=round(max((kill_ms - r["t1"] for r in lost), default=0), 1))
 
-    # OnlyFans' side of the record: every DM a fan sent, whether the relay saw it or not.
     truth = ctx.stack.tmp / "of-truth.jsonl"
     with truth.open("w") as fh:
         for r in recs:

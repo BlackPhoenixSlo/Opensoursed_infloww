@@ -10,7 +10,6 @@ import { uploadFailed } from "./ofMirrorPost";
 import { localIso, NOT_YET, SELECT_MODEL } from "./ofMirrorWrites";
 import type { GiphyItem, TaggedFriendUser, VaultMedia, VaultUploadResp } from "./relay";
 
-/** The committed chat captures (the generator's output). */
 const loadPage = (page: string) => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/messages/${page}.html`), "utf8");
   document.body.className = "";
@@ -66,18 +65,15 @@ const $ = <T extends Element = HTMLElement>(d: ParentNode, sel: string) => d.que
 const send = (d: Document) => $<HTMLButtonElement>(d, "button[at-attr='send_btn']");
 const editor = (d: Document) => $(d, "[contenteditable][aria-label='Textbox field']");
 const noteText = (d: Document) => d.getElementById("oi-note")?.textContent;
-/** Type `text` into the composer. */
 const typeText = (d: Document, text: string) => {
   editor(d).innerHTML = `<p>${text}</p>`;
   editor(d).dispatchEvent(new Event("input", { bubbles: true }));
 };
-/** Pick `files` (one pick) in Add media's hidden picker. */
 const pick = (d: Document, ...files: File[]) => {
   const input = $<HTMLInputElement>(d, "input[type='file'][data-oi-wired]");
   Object.defineProperty(input, "files", { value: files, configurable: true });
   input.dispatchEvent(new Event("change"));
 };
-/** Nothing but the asked-for calls reached the Relay. */
 const writes = (h: H) => [h.send, h.upload, h.toggleTag, h.inviteGuest, h.mute, h.hide].reduce((n, f) => n + f.mock.calls.length, 0);
 
 afterEach(() => {
@@ -119,11 +115,8 @@ describe("the chat composer's tools", () => {
     const panel = $(d, "[data-oi-format-panel]");
     expect(panel.style.display).toBe("none");
     expect(panel.parentElement!.classList.contains("b-make-post__sticky-panel")).toBe(true);
-    // Closed, it isn't OF's .b-form-editor: OF's `.b-create-post-form:has(.b-form-editor)` rule would take its 56px off
-    // the text box's max-height (the box shrank to a sliver and the editor vanished once media was added).
     expect(d.querySelector(".b-create-post-form .b-form-editor")).toBeNull();
     for (const icon of ["icon-bold", "icon-italic", "icon-text-colour", "icon-clear-format"]) expect(d.getElementById(icon), icon).not.toBeNull();
-    // New message's composer has them too (its Format panel in place); off a composer (its list pages) they stay disabled.
     const m = loadPage("send");
     for (const label of ["Add media", "Add GIF", "Record video", "Record voice", "Format Text", "Tag other creators", "Add media from vault", "Message price", "Scheduled messages"]) {
       expect($(m, `[aria-label='${label}']`).hasAttribute("disabled"), label).toBe(false);
@@ -157,7 +150,6 @@ describe("the chat composer's tools", () => {
     const d = loadPage("chat");
     const s = memoryStorage();
     const h = handlers();
-    // jsdom has no editing commands: bold wraps the selection in <b>, as a browser does.
     d.execCommand = vi.fn((name: string) => {
       if (name !== "bold") return true;
       const r = d.getSelection()!.getRangeAt(0);
@@ -180,10 +172,8 @@ describe("the chat composer's tools", () => {
     d.dispatchEvent(new Event("selectionchange"));
     $(panel, "button[aria-label='Bold']").click();
     expect(loadChatDraft(s, ACCOUNT, CHAT).html).toBe("<p><strong>Hi</strong> there</p>");
-    // The same words stay selected, so a second tool (Text Color) formats them too.
     expect(d.getSelection()!.toString()).toBe("Hi");
     un();
-    // A State page round trip: the editor comes back formatted.
     loadPage("chat");
     un = bindChat(d, "messages/chat", ctxOf(h, s));
     expect(editor(d).innerHTML).toBe("<p><strong>Hi</strong> there</p>");
@@ -228,7 +218,6 @@ describe("the chat composer's tools", () => {
     expect(box.classList.contains("m-opened")).toBe(false);
     expect(d.querySelector("#oi-chat-gif .b-comments__giphy-item img")!.getAttribute("src")).toBe("https://media.giphy.com/media/g2/200.webp");
     expect(d.getElementById("oi-chat-summary")!.textContent).toContain("GIF");
-    // OF's rules: with a GIF, Add GIF, the price and Record video are off.
     expect($(d, "button[aria-label='Add GIF']").hasAttribute("disabled")).toBe(true);
     expect($(d, "[at-attr='price_btn']").style.pointerEvents).toBe("none");
     expect($(d, "button.js-chat__video-record-btn").hasAttribute("disabled")).toBe(true);
@@ -237,7 +226,6 @@ describe("the chat composer's tools", () => {
     expect(h.send).toHaveBeenCalledWith(`/api/of/v2/chats/${CHAT}/messages`, { text: "", price: 0, media_files: [], giphy_id: "g2" });
     expect(writes(h)).toBe(1);
     un();
-    // Delete
     const d2 = loadPage("chat");
     saveDraft(s, draft({ giphy_id: "g1", giphy_thumb: "t" }));
     const un2 = bindChat(d2, "messages/chat", ctxOf(h, s));
@@ -294,12 +282,6 @@ describe("the chat composer's tools", () => {
   });
 });
 
-/**
- * A fake microphone / camera: getUserMedia's stream and a MediaRecorder whose stop() hands over one chunk.
- * `supported`: the types its isTypeSupported says yes to (absent: no isTypeSupported); `recorded`: the mimeType it
- * reports for an asked type (a browser adds codecs). `hold`: getUserMedia waits for `grant()`. `undecodable`: the
- * decoder (`stubDecoder`) cannot decode the recording.
- */
 function fakeMedia(fail?: string, opts: { supported?: string[]; recorded?: (asked: string) => string; hold?: boolean; undecodable?: boolean } = {}) {
   const tracks = [{ stop: vi.fn() }];
   const stream = { getTracks: () => tracks } as unknown as MediaStream;
@@ -311,7 +293,6 @@ function fakeMedia(fail?: string, opts: { supported?: string[]; recorded?: (aske
   class Rec {
     static isTypeSupported = opts.supported ? (t: string) => opts.supported!.includes(t) : undefined;
     state = "inactive";
-    // As a browser that picks its default: the type then comes from the kind recorded.
     mimeType = "";
     asked?: string;
     ondataavailable: ((e: { data: Blob }) => void) | null = null;
@@ -336,10 +317,6 @@ function fakeMedia(fail?: string, opts: { supported?: string[]; recorded?: (aske
   return { getUserMedia, tracks, recorders, decoded, grant: () => grant() };
 }
 
-/**
- * The upload's audio re-encoder's decoder (voiceFile's OfflineAudioContext): two channels of 2 samples at the
- * context's rate (`rates`: each context's), or, `undecodable`, the browser's decode error.
- */
 function stubDecoder(undecodable = false) {
   const decoded: ArrayBuffer[] = [];
   const rates: number[] = [];
@@ -372,7 +349,7 @@ describe("Record voice and Record video", () => {
     const panel = $(d, ".js-chat__audiorecord-panel");
     expect(panel.style.display).toBe("");
     expect(d.body.classList.contains("open-panel")).toBe(true);
-    expect(m.getUserMedia).not.toHaveBeenCalled(); // opening asks for nothing
+    expect(m.getUserMedia).not.toHaveBeenCalled();
     $(panel, ".b-float-panel__btn-record").click();
     await flush();
     expect(m.getUserMedia).toHaveBeenCalledWith({ audio: true });
@@ -384,7 +361,7 @@ describe("Record voice and Record video", () => {
     await flush();
     expect(h.upload).toHaveBeenCalledTimes(1);
     const file = h.upload.mock.calls[0][0];
-    expect(file.type).toBe("audio/wav"); // the browser's default (webm) re-encoded: OF's voice types only
+    expect(file.type).toBe("audio/wav");
     expect(file.name).toMatch(/^voice-\d+\.wav$/);
     await flush();
     expect(loadChatDraft(s, ACCOUNT, CHAT)).toMatchObject({ media_files: [{ processId: "p1" }], audio: 1 });
@@ -498,7 +475,6 @@ describe("Record voice and Record video", () => {
     expect(h.send).not.toHaveBeenCalled();
     expect(editor(d).textContent).toBe("hello");
     expect(loadChatDraft(s, ACCOUNT, CHAT)).toMatchObject({ text: "hello", media_files: [], upload_failed: { voice: "Invalid file type" } });
-    // Asked again, OK: sent without the media, and the failure is gone with the draft.
     h.confirm.mockReturnValue(true);
     send(d).click();
     expect(h.confirm).toHaveBeenCalledTimes(2);
@@ -544,7 +520,6 @@ describe("Record voice and Record video", () => {
     send(d).click();
     expect(h.confirm).toHaveBeenCalledWith(uploadFailed({ "a.jpg": "Invalid file type" }));
     expect(h.send).not.toHaveBeenCalled();
-    // A later pick of the same file that uploads forgets it.
     upload.mockResolvedValueOnce({ ready: true, deduped: false, vault_id: null, send_with: [{ processId: "p3" }] });
     pick(d, new File(["x"], "a.jpg", { type: "image/jpeg" }));
     await flush();
@@ -595,7 +570,6 @@ describe("Record voice and Record video", () => {
     expect(h.upload).toHaveBeenCalledTimes(1);
     expect(h.upload.mock.calls[0][0].name).toMatch(/^video-\d+\.webm$/);
     expect(box.classList.contains("g-hidden")).toBe(true);
-    // Open again and close: nothing more is uploaded.
     $(d, "button.js-chat__video-record-btn").click();
     await flush();
     $(box, ".js-video-message-close").click();
@@ -673,21 +647,18 @@ describe("Tag other creators (messages/chat/state-tag-people)", () => {
     expect(loadChatDraft(s, ACCOUNT, CHAT).tags).toEqual([
       { id: 2001, type: "user", name: "Synth Creator 1" },
       { id: 77, type: "guest", name: "Synth Guest" },
-      { id: 88, type: "document", name: "Synth & Form" }, // OF's HTML-encoded name, decoded
+      { id: 88, type: "document", name: "Synth & Form" },
     ]);
-    // Unticking drops it.
     const first = $<HTMLInputElement>(rows[2], "input[type='checkbox']");
     first.checked = false;
     first.dispatchEvent(new Event("change", { bubbles: true }));
     expect(loadChatDraft(s, ACCOUNT, CHAT).tags!.map((t) => t.id)).toEqual([2001, 77]);
-    // The tabs keep the chat.
     $(d, ".modal.show .b-tabs__nav__link:not(.m-current)").click();
     expect(h.navigate).toHaveBeenCalledWith(`/of-manager/messages/chat/state-tag-people?tab=forms&chat=${CHAT}`);
     un();
     d = loadPage("chat");
     un = bindChat(d, "messages/chat", ctxOf(h, s));
     expect(d.getElementById("oi-chat-summary")!.textContent).toContain("Tagged: Synth Creator 1, Synth Guest");
-    // Tags turn Add GIF off (OF: release forms).
     expect($(d, "button[aria-label='Add GIF']").hasAttribute("disabled")).toBe(true);
     editor(d).innerHTML = "<p>hi</p>";
     editor(d).dispatchEvent(new Event("input", { bubbles: true }));
@@ -738,7 +709,7 @@ describe("devils-advocate fixes: GIF alone, drops, recorder types, rebinds", () 
       expect(el.hasAttribute("disabled")).toBe(true);
       expect(el.style.pointerEvents).toBe("none");
       const click = new MouseEvent("click", { bubbles: true, cancelable: true });
-      el.dispatchEvent(click); // a keyboard Enter on the focused control
+      el.dispatchEvent(click);
       expect(click.defaultPrevented).toBe(true);
       expect(noteText(d)).toBe(GIF_ALONE);
     }
@@ -746,7 +717,6 @@ describe("devils-advocate fixes: GIF alone, drops, recorder types, rebinds", () 
     drag(area(d), "drop", [new File(["x"], "a.jpg", { type: "image/jpeg" })]);
     expect(h.upload).not.toHaveBeenCalled();
     expect(noteText(d)).toBe(GIF_ALONE);
-    // Delete the GIF: they come back.
     $(d, "[data-oi-gif-delete]").click();
     for (const el of [tag, add, vault]) expect(el.hasAttribute("disabled")).toBe(false);
     expect(writes(h)).toBe(0);
@@ -763,7 +733,6 @@ describe("devils-advocate fixes: GIF alone, drops, recorder types, rebinds", () 
     drag(area(d), "drop", [new File(["v"], "v.webm", { type: "audio/webm" })]);
     await flush();
     expect(h.upload).toHaveBeenCalledTimes(1);
-    // A dropped webm goes up as OF's WAV, as a recording does.
     expect([h.upload.mock.calls[0][0].name, h.upload.mock.calls[0][0].type]).toEqual(["v.wav", "audio/wav"]);
     await flush();
     expect(loadChatDraft(s, ACCOUNT, CHAT)).toMatchObject({ giphy_id: "g1", media_files: [{ processId: "p1" }], audio: 1 });
@@ -808,7 +777,6 @@ describe("devils-advocate fixes: GIF alone, drops, recorder types, rebinds", () 
     const un = bindChat(d, "messages/chat", ctxOf(h, s));
     pick(d, new File(["a"], "a.m4a", { type: "audio/mp4" }));
     await flush();
-    // OF refused audio/mp4 .m4a live (2026-11-21): decoded at 16 kHz, one channel, re-encoded as WAV.
     const up = h.upload.mock.calls[0][0];
     expect([up.name, up.type, dec.decoded.length, dec.rates]).toEqual(["a.wav", "audio/wav", 1, [VOICE_WAV_RATE]]);
     const v = new DataView(await up.arrayBuffer());
@@ -835,17 +803,15 @@ describe("devils-advocate fixes: GIF alone, drops, recorder types, rebinds", () 
       const f = h.upload.mock.calls[0][0];
       return { asked: m.recorders[0].asked, type: f.type, name: f.name, decoded: m.decoded.length };
     };
-    // OF's own recorder's order (24014.js V()): mpeg, then ogg, kept as recorded; anything else re-encoded to WAV.
     expect(await voiceOf(["audio/mpeg", "audio/ogg", "audio/mp4"])).toMatchObject({ asked: "audio/mpeg", type: "audio/mpeg", decoded: 0 });
     expect((await voiceOf(["audio/mpeg"])).name).toMatch(/^voice-\d+\.mp3$/);
     const ogg = await voiceOf(["audio/ogg", "audio/mp4", "audio/webm"]);
     expect(ogg).toMatchObject({ asked: "audio/ogg", type: "audio/ogg", decoded: 0 });
     expect(ogg.name).toMatch(/^voice-\d+\.ogg$/);
-    // Chrome (mp4 and webm only): never audio/mp4 .m4a, which OF refused live (2026-11-21): the browser's own, as WAV.
+    // OF refused audio/mp4 .m4a, so it is re-encoded as 16 kHz mono WAV.
     const wav = await voiceOf(["audio/mp4", "audio/webm"]);
     expect(wav).toMatchObject({ asked: undefined, type: "audio/wav", decoded: 1 });
     expect(wav.name).toMatch(/^voice-\d+\.wav$/);
-    // Only webm recordable: webm is asked for.
     const m2 = fakeMedia(undefined, { supported: ["video/webm"], recorded: (t) => `${t};codecs=vp8,opus` });
     const d2 = loadPage("chat");
     const h2 = handlers();
@@ -893,7 +859,6 @@ describe("devils-advocate fixes: GIF alone, drops, recorder types, rebinds", () 
     expect(m.tracks[0].stop).toHaveBeenCalled();
     expect(m.recorders).toHaveLength(0);
     expect(writes(h)).toBe(0);
-    // The camera too.
     const v = fakeMedia(undefined, { hold: true });
     const d2 = loadPage("chat");
     const un2 = bindChat(d2, "messages/chat", ctxOf(h, memoryStorage()));
@@ -915,7 +880,6 @@ describe("devils-advocate fixes: GIF alone, drops, recorder types, rebinds", () 
     $(d, "button[aria-label='Record voice']").click();
     $(d, ".b-float-panel__btn-record").click();
     await flush();
-    // useOfChat's effect: the old bind's cleanup, then the new bind, in one go.
     un();
     un = bindChat(d, "messages/chat", ctxOf(h, s, { fan: { name: "Fan A renamed", muted: true, tipsEnabled: true } }));
     await flush();
@@ -928,7 +892,6 @@ describe("devils-advocate fixes: GIF alone, drops, recorder types, rebinds", () 
     await flush();
     expect(loadChatDraft(s, ACCOUNT, CHAT)).toMatchObject({ media_files: [{ processId: "p1" }], audio: 1 });
     un();
-    // Another chat on the same document: the recording does not follow it.
     const m2 = fakeMedia();
     const d2 = loadPage("chat");
     const h2 = handlers();
@@ -976,11 +939,11 @@ describe("New message: the chat composer's tools on the Mass draft", () => {
     Object.defineProperty(picker, "files", { value: [file], configurable: true });
     picker.dispatchEvent(new Event("change"));
     expect(h.upload).toHaveBeenCalledWith(file);
-    expect(send(d).disabled).toBe(true); // uploading
+    expect(send(d).disabled).toBe(true);
     await flush();
     expect(loadMassDraft(s, ACCOUNT).media_files).toEqual([{ processId: "p1" }]);
     expect(d.getElementById("oi-chat-summary")!.textContent).toContain("1 media");
-    expect(send(d).disabled).toBe(false); // media alone is a message
+    expect(send(d).disabled).toBe(false);
     send(d).click();
     expect(h.send).toHaveBeenCalledWith("/api/of/v2/messages/queue", { text: "", user_lists: ["fans"], media_files: [{ processId: "p1" }] });
     un();
@@ -999,7 +962,6 @@ describe("New message: the chat composer's tools on the Mass draft", () => {
     expect(h.send).not.toHaveBeenCalled();
     expect(editor(d).textContent).toBe("hi all");
     expect(loadMassDraft(s, ACCOUNT)).toMatchObject({ text: "hi all", upload_failed: { "a.jpg": "Invalid file type" } });
-    // OK to both asks (the failed upload, then the audience): sent without the media.
     h.confirm.mockReturnValue(true);
     send(d).click();
     expect(h.confirm).toHaveBeenCalledTimes(3);
@@ -1080,7 +1042,6 @@ describe("New message: the chat composer's tools on the Mass draft", () => {
     [...d.querySelectorAll<HTMLElement>(".modal.show .b-tabs__nav__link")][3].click();
     expect(h.navigate).toHaveBeenCalledWith("/of-manager/messages/send/state-vault?list=7&type=video");
     un();
-    // The Video tab's page: the tick is still there (ofMirrorData pre-marks it), and so is the bar.
     expect(loadVaultPick(s, vaultPickKey(ACCOUNT, "messages/send/state-vault")).ids).toEqual([62]);
     d = loadPage("send/state-vault");
     applyData(d, "messages/send/state-vault", { vaultMedia: [{ id: 62, type: "photo" } as VaultMedia], picked: [62] });
@@ -1120,7 +1081,6 @@ describe("New message: the chat composer's tools on the Mass draft", () => {
     let un = bindMass(d, mass(h, s, { tagItems: ITEMS }), "messages/send/state-tag-people");
     const rows = [...d.querySelectorAll<HTMLElement>("label.b-rows-lists__item[data-oi-user]")];
     expect(rows.map((r) => r.getAttribute("data-oi-user"))).toEqual(["2001", "77"]);
-    // In the dialog, shown; the Send to lists behind it are New message's own.
     expect(rows.every((r) => r.closest(".modal.show") && r.style.display !== "none")).toBe(true);
     expect([...d.querySelectorAll(".b-chats__scroller label.b-rows-lists__item[data-oi-list]")].map((r) => r.getAttribute("data-oi-list"))).toEqual(["fans"]);
     const tick = (r: HTMLElement, on: boolean) => {

@@ -1,9 +1,5 @@
 "use client";
 
-/**
- * The Relay's typed employee cap refusal (`employee_limit`: service/employees.py `_employee_limit`, a 409
- * with `{limit, active}`) as a modal instead of an error line. Renders nothing for any other error.
- */
 
 import { RelayError } from "@/lib/relay";
 import { errorCode } from "@/lib/twoFactor";

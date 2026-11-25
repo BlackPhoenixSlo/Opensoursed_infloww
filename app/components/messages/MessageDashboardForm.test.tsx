@@ -1,8 +1,3 @@
-/**
- * MessageDashboardForm — Infloww's staged filter form (page-parity 30): nothing applies until Search, Search hands
- * up every wired param plus the tab's kind, Reset clears and applies, and the unwired choices say so.
- * Every identifier is invented (this repo mirrors to a public one).
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -56,7 +51,6 @@ describe("MessageDashboardForm", () => {
       account_id: "100000001",
       fan_id: null,
       fan_query: "",
-      // A reversed pair is swapped, as Infloww does.
       min_price_cents: 450,
       max_price_cents: 1000,
       status: "paid",

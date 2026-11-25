@@ -1,44 +1,5 @@
 "use client";
 
-/**
- * useAccountStateEvents — turn the relay's account-state SSE events into
- * react-query invalidations, so the queries they cover can drop their fast
- * polls to a slow safety poll (see `ssePoll`). Mounted once, in ScopeProvider.
- *
- * The relay already scopes these to the signed-in principal's Creators and
- * Agency; nothing here filters. `creator_warmed` (the App-open warm read a
- * Creator) reaches every tab that can access the Creator, whatever its scope;
- * it also arms that Creator's money-list and count reads at once
- * (lib/ofReadGate.ts: an unleased Creator reads nothing until then). Its
- * notifications count is written into the cache, not re-read; the rail and
- * bell lists re-read only when what is cached was read before the warm
- * (`warmMark`).
- * Its `roster` body is ignored: roster-counts is the Relay's.
- *
- * `chat_read_changed` (a chatter or an automation marked a chat read / unread,
- * or every chat read, through the relay; any-scope) flips the row's unread
- * flags in every cached chat list holding the Creator, All Models lists
- * included, and adds / drops it in the cached Unread lists: no read. A list
- * page read after the event's `at` already reflects it and is left alone; one
- * read before it and committed after gets it at its commit (lib/chatsCache
- * `patchChatCaches`).
- *
- * `chat_restrict_changed` (an OF restrict or lift through the relay; any-scope) writes the fan's restrict flags
- * into every cached chat list and his cached OF user (`flipCachedRestrict`): no OF read.
- *
- * `creator_refreshed` (the Shared refresher's snapshot of a Creator changed; any-scope) goes into the tab's
- * Freshness store (hooks/useCreatorFreshness.ts) and nowhere else: it arms no read and re-reads no money list,
- * so the event adds no OF call. A stream ping's `fresh` (`{aid: at}`, the Knob on) dispatches `confirmed` there:
- * a quiet Creator's confirmation, with no event. A ping whose `badge` (`{aid: v}`) differs from a held Badge version
- * (`badgeBehind`: a dropped event) refetches the accounts lists, whose answer reseeds the store (0 OF calls). A reconnect's replayed `creator_refreshed` goes the same way, and
- * `resync`'s refetch of everything re-reads the accounts lists, whose answers reseed it (useAccounts).
- *
- * `transaction_recorded` (a sale landed in the ledger, sent after its commit by
- * the OF ingest, the WS pump and the Fansly lane) refetches the open reports
- * and dashboard, so they are live without a poll: at once, then at most once
- * more per SALES_MIN_MS. Not the infinite Sales records list, which would
- * re-walk every loaded page; its Refresh button covers it.
- */
 
 import { useEffect } from "react";
 import { useQueryClient, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
@@ -80,20 +41,14 @@ const KEYS: Record<string, (aid: string | undefined, body: Body) => QueryKey[]> 
   ],
 };
 
-/** A busy Agency finishes runs back to back: their invalidations are
- *  gathered and sent at most once per this window. */
 export const COALESCE_MS = 2_000;
 const COALESCED = new Set(["rule_run_finished", "scheduled_send_changed"]);
-/** `resync` refetches every query; a flapping link must not repeat that. */
 export const RESYNC_MIN_MS = 30_000;
-/** A sale refetches the heavy reports; a busy Agency sells back to back. */
 export const SALES_MIN_MS = 30_000;
 const SALES_ROOTS = new Set<unknown>(["stats", "dashboard", "competitor"]);
 const refetchedOnSale = (key: QueryKey) =>
   SALES_ROOTS.has(key[0]) && !(key[0] === "stats" && key[1] === "sales-records");
 
-/** Run `fn` now, then at most once more per `ms`: a call inside the window
- *  schedules one trailing run at its end, so a change is never lost. */
 function throttle(fn: () => void, ms: number) {
   let last = -Infinity;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -107,15 +62,8 @@ function throttle(fn: () => void, ms: number) {
     cancel: () => { if (timer) clearTimeout(timer); },
   };
 }
-/** `creator_warmed`'s body (service/app_open_warm.py `_publish`): the warmed notif count, when the relay still
- *  held it. */
 interface WarmBody { notif_count?: number }
 
-/** What a warm does to one cached query of its Creator when it comes:
- *  - `write` the value the event carries, no read;
- *  - `must` re-read at the flush: a read in flight now may have been served before the warm;
- *  - `unless` re-read at the flush unless a read ends first: what it holds (data or an error) is from before;
- *  - `skip`: never read; its first read, from now on, is served the warm's entries. */
 export type WarmMark = "write" | "must" | "unless" | "skip";
 
 export function warmMark(
@@ -135,7 +83,7 @@ function takeFlip(qc: QueryClient, accountId: string, flip: ReadFlip, own: boole
   flipStamps.set(qc, byAccount);
   const rec: FlipRecord = byAccount.get(accountId) ?? { all: -Infinity, fans: new Map() };
   byAccount.set(accountId, rec);
-  // This tab stamps its own write after the answer, later than the Relay's stamp of it: the Relay's echo records `at`.
+  // This tab stamps its own write after the answer, later than the Relay's stamp: the Relay's echo records `at`.
   const at = own ? null : flip.at;
   if (at !== null && at < rec.all) return null;
   if (flip.fanId === null) {
@@ -189,9 +137,6 @@ export function optimisticRead(
   };
 }
 
-/** An OF restrict or lift (`chat_restrict_changed`) written into this tab with no OF read: the fan's rows in every
- *  cached chat list (`applyRestrictFlip`), his cached full OF user's `isRestricted`, and the Relay's DB-only
- *  automation-restrict answer re-read. */
 export function flipCachedRestrict(qc: QueryClient, accountId: string, flip: RestrictFlip): void {
   patchChatCaches(qc, accountId, (data) => applyRestrictFlip(data, accountId, flip));
   const fanId = fanIdFromParam(String(flip.fanId));
@@ -204,8 +149,6 @@ export function flipCachedRestrict(qc: QueryClient, accountId: string, flip: Res
 
 const ACCOUNTS_LISTS: QueryKey[] = [["accounts"], ["chatter", "self", "accounts"]];
 
-/** The SSE-relaxed polls (`ssePoll`). When the stream drops, one refetch
- *  re-arms each at its offline rate instead of waiting out the live one. */
 const SSE_POLLED: QueryKey[] = [
   ["scheduled-sends"], ["automation-rules"], ["stats", "automation-runs"],
   ["app-errors", "recent"], ["roster-counts"], ["full-ai-today"],
@@ -255,9 +198,6 @@ export function useAccountStateEvents(): void {
       }),
     );
 
-    // The warm's re-reads, per query hash, flushed COALESCE_MS after the first (a warm lands Creator by Creator).
-    // A read ending after the warm came drops an `unless` (it was served the warm's entries); a `must`'s first
-    // ending is the read in flight when the warm came, so it becomes an `unless`.
     const cache = qc.getQueryCache();
     const warmPending = new Map<string, { queryKey: QueryKey; must: boolean }>();
     let warmTimer: ReturnType<typeof setTimeout> | null = null;
@@ -306,9 +246,6 @@ export function useAccountStateEvents(): void {
       if (e.__account_id && flip) flipCachedRestrict(qc, e.__account_id, flip);
     }));
 
-    // The relay could not replay what this tab missed: refetch everything.
-    // Leading refetch, then at most one trailing one per window, so a resync
-    // that lands while the first refetch is in flight is not lost.
     const resync = throttle(() => void invalidateVaultQueries(qc), RESYNC_MIN_MS);
     offs.push(eventBus.on("resync", resync.call), resync.cancel);
 
@@ -319,13 +256,10 @@ export function useAccountStateEvents(): void {
     let wasConnected = false;
     let dropped = false;
     offs.push(eventBus.onStateChange((connected) => {
-      // Idle mode closed it on purpose: its polls are paused too (useIdleMode).
       if (wasConnected && !connected && !eventBus.isPaused()) {
         invalidate(SSE_POLLED);
         dropped = true;
       }
-      // The Badge-version ping refetches the accounts answer, not roster-counts: a `creator_refreshed` missed
-      // while down is caught here.
       if (connected && dropped) {
         invalidate([["roster-counts"]]);
         dropped = false;

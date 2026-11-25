@@ -1,25 +1,12 @@
-/**
- * A vault gif's loop on its picker tile (VaultGifLoop.tsx): which layer shows.
- * OnlyFans stores a gif as a short .mp4 (service/of_shapes.py `still_url`), so a
- * tile showing only the still never moves, and one whose first frame is black is
- * a black tile. The video paints over the still only while it actually plays;
- * paused, buffering or not attached, the still shows. An error is the still for good.
- * Off screen the clip is detached (src removed, decoder buffers released), and at most MAX_GIF_LOOPS hold one at
- * once across every tile (`gifSlots`).
- */
-
+// OF stores a gif as a short .mp4, so a still never moves; the video shows only while it actually plays.
 export interface GifLoopState {
-  /** The src is on the element (on screen with a slot, or hovered under reduced motion). */
   attached: boolean;
-  /** The element fired `playing` and has not paused since. */
   playing: boolean;
-  /** The element errored. */
   failed: boolean;
 }
 
 export type GifLoopAction =
   | { type: "attach" }
-  /** Off screen (or unhovered): the src comes off. */
   | { type: "detach" }
   | { type: "playing" }
   | { type: "paused" }
@@ -43,21 +30,14 @@ export function gifLoopReducer(s: GifLoopState, a: GifLoopAction): GifLoopState 
   }
 }
 
-/** Mount the <video> (it carries the observer before it has a src). */
 export const gifMounted = (s: GifLoopState) => !s.failed;
-/** Paint the video over the still. */
 export const gifVisible = (s: GifLoopState) => s.attached && s.playing && !s.failed;
 
-/** How many gif loops may hold a video decoder at once, across every tile: a phone has a handful (iOS Safari), and
- *  a 500-item vault has no cap of its own. */
+// A phone (iOS Safari) has a handful of video decoders; a 500-item vault has no cap of its own.
 export const MAX_GIF_LOOPS = 4;
 
-/** The loops' slots. A tile on screen asks (`acquire`): granted now (true), or queued, and `onGrant` runs when a slot
- *  frees, in ask order. `release` on leave, error or unmount: frees its slot (granting the next in line) or leaves the
- *  queue. */
 export function gifSlots(max: number) {
   const held = new Set<object>();
-  // Insertion-ordered: the first to ask is the first granted.
   const queue = new Map<object, () => void>();
   return {
     acquire(who: object, onGrant: () => void): boolean {

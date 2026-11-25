@@ -1,29 +1,5 @@
 "use client";
 
-/**
- * ManagedAgencyKeysCard — Setup → set OTHER agencies' AI keys. Founder only.
- *
- * The managed flow this deployment runs: an agency links its model and the
- * founder does everything else, keys included. That was already possible at
- * /admin/manage → AI keys, but nothing in the app links to that page — you had
- * to know the URL — so in practice it did not exist. This puts the same form
- * where someone looking for it actually looks: next to their own keys.
- *
- * Two things make the list usable rather than a wall of names:
- *
- *   • It is ordered and filtered by whether an agency has a model that can
- *     TALK. A dead session sends nothing, so a key pasted under its owner buys
- *     nothing until the session is re-captured — and most agencies here are in
- *     that state. Default ON, because the default question is "who is worth a
- *     key right now", not "who exists".
- *   • `needs a key` marks the row that is actually costing something: a live
- *     model with no credential for it to run on.
- *
- * One agency is expanded at a time. Each carries its own admin-password field
- * because the write is founder-gated per request — there is no session-wide
- * "unlocked" state to get wrong, and a password typed for one agency cannot
- * leak into a save for another.
- */
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -61,14 +37,7 @@ export default function ManagedAgencyKeysCard() {
       );
       setAgencies(data.agencies);
     } catch (err) {
-      // 401/403 is the ordinary non-founder answer and means "draw nothing".
-      // ANYTHING else is a real failure and must stay on screen: this same
-      // `load` runs after a successful save, and folding a 500 into the
-      // not-a-founder branch would delete the card — and the form inside it —
-      // moments after the write landed, leaving no note, no row, and no way
-      // back short of a page reload.
-      // 401 as well as 403: require_master refuses an absent principal and a
-      // non-master on different codes, and both mean "not for you".
+      // Only 401/403 mean not-a-founder; any other failure must stay visible, since load also runs after a save.
       if (err instanceof RelayError && (err.status === 401 || err.status === 403)) {
         setForbidden(true);
         return;
@@ -79,7 +48,6 @@ export default function ManagedAgencyKeysCard() {
 
   useEffect(() => { void load(); }, [load]);
 
-  // Not a founder: draw nothing at all rather than an error nobody can act on.
   if (forbidden) return null;
   if (agencies === null) {
     return (
@@ -99,10 +67,6 @@ export default function ManagedAgencyKeysCard() {
     );
   }
 
-  // OTHER agencies — the card says so, and "Your AI keys" (Settings → AI keys)
-  // already owns this founder's own row. Listing it twice on one page would give the
-  // same stored key two write paths whose caches never hear about each other,
-  // so whichever card you did not save through keeps showing the old hint.
   const others = agencies.filter((a) => a.user_id !== me?.user_id);
   const shown = liveOnly ? others.filter((a) => a.live_accounts > 0) : others;
   const needing = others.filter(needsKey).length;

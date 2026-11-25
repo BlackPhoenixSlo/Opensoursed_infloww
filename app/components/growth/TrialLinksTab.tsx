@@ -1,30 +1,5 @@
 "use client";
 
-/**
- * TrialLinksTab — Growth → Free trial links, Infloww's Tracking links frame in its FREETRIAL variant
- * (`LinksListFrame`, bundle `LINK_LIST_VIEW_TYPE.FREETRIAL`): the attribution tip, the filters (Creator, "Search free
- * trial link name", Source, Tag, Date created), the two switches, "Create free trial link" and Export, the update
- * row, then the table: Free trial links, Date created, Claim ("3 / ∞"), and Infloww's free trial figures
- * (`FREE_TRIAL_LINK_CUSTOM_METRIC_OPTIONS`, with its tooltips): Spend/Claim, Promo cost, Earnings, Fans who spent,
- * Profit, AEPS and ROI. Infloww's free trial table has no CPC or CPS. Infloww's Dashboard tab is left out (owner:
- * YAGNI until asked). The third tab, "Share links" (`ShareLinksPanel`, owner-only), makes public read-only reports
- * on picked links. The row checkboxes pick links for Batch edit (`LinkBatchEditDialog`: Source, Promo cost, Tag).
- *
- * Mint / label / delete OnlyFans free-trial links and read their redemptions. Create is the bundle's editor pop-up:
- * Infloww's and OF's fields (Link name, Offer limit, Offer expiration, Free trial duration; the body is OF Manager's
- * own trialBody), then Source, Promo cost, Tag and List (`LinkMetaFields`, shared with Edit); List is OnlyFans' own
- * add-to-list on the link's claimers (`POST /lists/{id}/users/trial/{id}/claims`, confirmed live 2026-10-19). A new
- * link's List takes its fans from the first claim on. When OnlyFans' create reply carries no link id, the link is
- * made but the four fields can't be kept, and the pop-up says so.
- *
- * Earnings is the link's claimers' spend in our ledger since each claimed (the relay's cached read, "Updated N min
- * ago", refreshed past an hour); Promo cost, Source and Tag are kept by the relay. OF is the source of truth; a local
- * mirror keeps the operator's name so the list renders even when a live OF fetch is unavailable.
- *
- * Row actions: Details (who claimed, `OfferClaimers`, opened under the row, with its Export fans), Edit (`LinkEditDialog`) and the dots
- * menu's Delete: the OnlyFans delete, ours and labelled (the bundle's menu has Deactivate). "Show deactivated
- * links" is Not wired: the relay keeps no deleted free trial links to show.
- */
 
 import { useState } from "react";
 import { RotateCw } from "lucide-react";
@@ -53,8 +28,6 @@ import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { ofErrorMessage } from "@/lib/ofMirrorWrites";
 import { cn } from "@/lib/utils";
 
-/** Infloww's free trial figures for one row, in its column order (after Date created and Claim); `null` gives the
- *  heads (every value "—"). `net` picks the net or gross earnings, as "Show net earnings". */
 export function trialFigures(l: TrialLink | null, net: boolean): Array<{ title: string; tip?: string; value: string }> {
   const m = l?.metrics;
   const earnings = m ? (net ? m.earnings_net_cents : m.earnings_cents) : null;
@@ -70,13 +43,10 @@ export function trialFigures(l: TrialLink | null, net: boolean): Array<{ title: 
   ];
 }
 
-/** The figures' widths: the bundle's for the Tracking links columns of the same names (Spend/Claim as Spending CVR),
- *  so no head overprints its neighbour. */
 const FIGURE_WIDTH: Record<string, number> = {
   "Spend/Claim": 159, "Promo cost": 139, Earnings: 139, "Fans who spent": 185, Profit: 139, AEPS: 123, ROI: 139,
 };
 
-/** The columns the Edit dialog fills, drawn once some link has a value (as Tracking links' `visibleCols`). */
 const META_COLS: Array<FrameCol<TrialLink> & { has: (l: TrialLink) => boolean }> = [
   { title: "Source", width: 120, has: (l) => !!l.link_source, cell: (l) => l.link_source || DASH },
   { title: "Tag", width: 180, has: (l) => !!l.tags?.length, cell: (l) => (l.tags?.length ? l.tags.join(", ") : DASH) },
@@ -88,7 +58,6 @@ const META_COLS: Array<FrameCol<TrialLink> & { has: (l: TrialLink) => boolean }>
 
 const keyOf = (l: TrialLink, i = 0) => (l.id != null ? `m-${l.id}` : `of-${l.of_trial_id ?? i}`);
 
-/** Ours under the name: the trial's length, clicks and expiry (the bundle's row has only the name and Copy link). */
 function trialMeta(l: TrialLink): string {
   const parts = [`${l.subscribe_days}-day trial`];
   if (l.clicks_count != null) parts.push(`${l.clicks_count} click${l.clicks_count === 1 ? "" : "s"}`);
@@ -101,9 +70,7 @@ const TABS: Array<{ key: TabKey; label: string }> = [{ key: "list", label: "Link
 
 export default function TrialLinksTab({ accountId, onAccountChange, accountsLoading = false }: {
   accountId: string | null;
-  /** The Creators list is still loading (no Creator picked yet): placeholder rows, not "No data". */
   accountsLoading?: boolean;
-  /** The creator filter picks the Creator every read and write below is for. */
   onAccountChange: (id: string) => void;
 }) {
   const linksQ = useTrialLinks(accountId);
@@ -119,7 +86,6 @@ export default function TrialLinksTab({ accountId, onAccountChange, accountsLoad
   const [editing, setEditing] = useState<TrialLink | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
   const [batch, setBatch] = useState(false);
-  // Infloww's "Show net earnings", on by default.
   const [net, setNet] = useState(true);
 
   const all = linksQ.data?.links ?? [];
@@ -128,7 +94,6 @@ export default function TrialLinksTab({ accountId, onAccountChange, accountsLoad
   const unreachable = !!linksQ.data && !ofAvailable && !sessionGone;
   const sources = linksQ.data?.sources ?? [];
   const tagOptions = linksQ.data?.tags ?? [];
-  // The picks still in the list (a filter or another Creator leaves the rest out).
   const pickedRows = links.filter((l) => l.of_trial_id != null && picked.includes(keyOf(l)));
   const shown = owner ? tab : "list";
 
@@ -173,7 +138,6 @@ export default function TrialLinksTab({ accountId, onAccountChange, accountsLoad
           onCreate={() => setCreating(true)}
           onExport={exportCsv}
           exportTitle={`${EXTRA_LABEL}: downloads a CSV of the filtered links; Infloww emails its export`}
-          /* One status line: OnlyFans unreachable wins over "Not read yet"; an earlier read keeps its age beside it. */
           update={linksQ.data ? (
             <>
               {unreachable ? (
@@ -193,7 +157,6 @@ export default function TrialLinksTab({ accountId, onAccountChange, accountsLoad
                   <ExtraTag />
                 </span>
               )}
-              {/* Ours: read OnlyFans again now. */}
               <button type="button" aria-label="Refresh" title={`${EXTRA_LABEL}: read OnlyFans again`}
                 onClick={() => void linksQ.refetch()} disabled={linksQ.isFetching}
                 className={cn(HB_TABLE.iconButton, "disabled:opacity-50")}>
@@ -269,9 +232,6 @@ export default function TrialLinksTab({ accountId, onAccountChange, accountsLoad
   );
 }
 
-/** "Create free trial link": the bundle's editor pop-up (480px, Cancel then Save): OnlyFans' fields, then Source,
- *  Promo cost, Tag and List. It closes once OnlyFans made the link; a reply that lost the four fields says so in
- *  place of the form, so a second Save can't mint a duplicate. */
 function CreateTrialModal({ accountId, sources, tags, onClose }: {
   accountId: string | null;
   sources: string[];
@@ -342,7 +302,6 @@ function CreateTrialModal({ accountId, sources, tags, onClose }: {
   );
 }
 
-/** /growth/free-trial-links: this tab in the Growth HB frame. */
 export function TrialLinksPage() {
   const { accountId, setAccountId, loading } = useGrowthCreator();
   return (

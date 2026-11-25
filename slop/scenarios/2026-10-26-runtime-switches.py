@@ -1,48 +1,3 @@
-"""Settings > System > Runtime switches: the master flips the relay's env kill
-switches and caps from the UI (GET /admin/system/switches, PUT
-/admin/system/switches/{env}), and the consumer acts on it at once, no restart.
-
-Flow, one master (the run's owner, `users.is_admin` set by SQL as an operator
-does; there is no API for it):
-1. Storm: `--users` concurrent saves at once (each with the founder admin
-   password, as the panel sends it), half on W7_WEBHOOK_DISPATCH_DISABLED
-   (true / false mixed), half on SMART_LIST_MAX_ACTIVE (1..50).
-   Invariants: every PUT 200; the relay's cache (GET's override and effective
-   value) equals the stored runtime_switches row; one `actions` audit row per 200
-   (nothing dropped); the cap's override reaches its consumer: GET
-   /admin/smart-lists `max_active` matches, and with the cap set to (active + 2)
-   two more activations pass and the third is refused 409. Then both are
-   cleared: no row left, source back to default.
-2. W7 from the UI (or the same PUTs with --no-ui): type the admin password,
-   toggle the W7 row on, fans of
-   one Creator DM it (POST /__slop/of-ws-frame, the pump's shape) and no W7
-   dispatch job is queued; toggle it back off, which CLEARS the override (no
-   stored `false` that would outrank a later env change), other fans DM and
-   each gets exactly one. Creator 0 has the per-account webhook config on and an enabled
-   welcome_chatter_for_info rule (SQL), so a dispatch is a pending
-   `scheduled_jobs` row for that fan (the supervisor does not run in a slop
-   stack, so it stays pending and is countable). Every DM lands in its thread.
-   Screenshots: switches-before, switch-w7-on (the trigger, settled),
-   switch-w7-cleared.
-
-3. W7 same-fan burst (W7 on): each of N fans sends 2 DMs back to back (the pump's
-   shape, `fan_dm.say`: a few ms apart, so their two dispatches overlap), plus fans
-   on a short per-fan cooldown (fans.automation_paused_until = now + 30 s, SQL, as
-   a sender writes it) and fans on a far one (past webhook_dispatch_decide's
-   MAX_DEFER_S) doing the same. Invariants: every burst and short-cooldown fan
-   has exactly one dispatch job (lib/w7_faults.BURST); each short-cooldown fan's
-   job is due at its cooldown end, a far-cooldown fan gets none. Precondition (else
-   INFRA): the same-fan DM gap p50 is under the fault's hold, so the two dispatches
-   of a fan really overlap and a green burst says something about the serial.
-   Faults (lib/w7_faults.py, `--break --fault=`): `w7-dispatch-unserialized` (the
-   per-fan serial bypassed, its race made deterministic), `w7-dedup-ignored` (the
-   pending-job read ignored); each targets the burst check only.
-
-Fault `runtime-switch-env-bypass`: `_global_kill_switch` reads the env var
-directly, as before this change, so the UI's override never reaches the
-consumer. Only the "no dispatch while on" check goes red.
-Budget: PUT p95 under the storm.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -59,11 +14,11 @@ from slop.lib import w7_faults
 PROFILE = "agency_inbox"
 UI = True
 FAULT = "runtime-switch-env-bypass"
-SAVE_P95_MS = 1500   # PUT /admin/system/switches/{env}, --users of them at once
+SAVE_P95_MS = 1500
 P95_VS_LAST = (2.0, 100)
 W7, CAP = "W7_WEBHOOK_DISPATCH_DISABLED", "SMART_LIST_MAX_ACTIVE"
 KIND = "welcome_chatter_for_info"
-ADMIN_PW = "slop-admin-not-for-prod"   # slop/lib/stack.py's ADMIN_PASSWORD for the relay
+ADMIN_PW = "slop-admin-not-for-prod"
 
 CK_STORM_200 = "concurrent saves: every PUT /admin/system/switches answered 200"
 CK_STORM_ROW = "concurrent saves: the relay's cache (GET override and effective value) equals the stored row"
@@ -83,8 +38,6 @@ CK_DEFER = ("W7 cooldown burst: a fan on a short cooldown has its one job due at
 
 
 def _decide():
-    """The product's pure W7 decisions (stdlib only), read from the repo so the far
-    cooldown follows its MAX_DEFER_S (registered first: its dataclasses look it up)."""
     path = Path(__file__).resolve().parents[2] / "service/webhook_dispatch_decide.py"
     spec = importlib.util.spec_from_file_location("slop_w7_decide", path)
     mod = sys.modules[spec.name] = importlib.util.module_from_spec(spec)
@@ -93,17 +46,14 @@ def _decide():
 
 
 COOLDOWN_S, FAR_S = 30, _decide().MAX_DEFER_S + 600
-GAP_MAX_MS = w7_faults.HOLD_S * 1000   # same-fan DMs closer than the fault's hold race without the serial
+GAP_MAX_MS = w7_faults.HOLD_S * 1000
 UI_CHECKS = (CK_UI_ON, CK_UI_CLEAR, "no 5xx in the browser session")
 
 
 def _seed(w, aid: str) -> None:
-    """The master role and W7's own gates for Creator `aid`: the per-account
-    webhook config on (no delay) and an enabled welcome_chatter_for_info rule."""
     con = w.sql()
     with con:
         con.execute("UPDATE users SET is_admin=1 WHERE id=?", (w.user_id,))
-        # The ORM's own defaults for the NOT NULL columns (no server default to lean on).
         con.execute("INSERT OR IGNORE INTO account_ai_config (account_id, utc_offset, daily_cost_cap_cents)"
                     " VALUES (?, 0, 100)", (aid,))
         con.execute("UPDATE account_ai_config SET webhook_config_json=? WHERE account_id=?",
@@ -114,16 +64,14 @@ def _seed(w, aid: str) -> None:
 
 
 def _free_fans(w, aid: str) -> list[dict]:
-    """Creator `aid`'s fans W7 would wake an automation for: not skip-listed, not mid-funnel."""
     con = w.sql()
     skip = {r[0] for r in con.execute("SELECT fan_id FROM skip_list WHERE account_id=?", (aid,))}
-    skip |= {r[0] for r in con.execute("SELECT fan_id FROM funnel_state")}   # any funnel (no account column)
+    skip |= {r[0] for r in con.execute("SELECT fan_id FROM funnel_state")}
     con.close()
     return [f for f in w.data["fans"][aid] if f["id"] not in skip]
 
 
 def _jobs(w, aid: str, fan_ids: set[int]) -> dict[int, list[str]]:
-    """W7 dispatch jobs per fan (payload only_fan_ids): their run_at, as stored."""
     con = w.sql()
     out: dict[int, list[str]] = {}
     for payload, run_at in con.execute("SELECT payload_json, run_at FROM scheduled_jobs"
@@ -140,8 +88,6 @@ def _counts(jobs: dict[int, list[str]]) -> dict[int, int]:
 
 
 def _groups(ctx, fans: list[dict], sizes: list[int]) -> list[list[dict]] | None:
-    """`fans` cut into consecutive groups of `sizes`; too few fans is INFRA (None),
-    never a silently shrunk group."""
     if len(fans) < sum(sizes):
         ctx.report.infra = ctx.report.infra or f"{len(fans)} free fans, the fan groups need {sum(sizes)}"
         return None
@@ -173,8 +119,6 @@ def _body(v) -> dict:
 
 
 async def _cap_holds(ctx, aid: str, stormed: int) -> None:
-    """GET max_active follows the storm's override; then cap = active + 2 lets two
-    activations through and refuses the third (smart_lists_api's quota UPDATE)."""
     lists = (await ctx.owner.get(f"/admin/smart-lists?account_id={aid}")).json()
     active = sum(1 for x in lists.get("lists", []) if x.get("is_active"))
     cap = active + 2
@@ -207,7 +151,7 @@ async def _storm(ctx, w, aid: str) -> None:
         try:
             r = await pool.request("PUT", f"/admin/system/switches/{name}", json=_body(v))
             return r.status_code
-        except Exception as e:   # transport error: recorded by the stock invariants too
+        except Exception as e:
             return repr(e)
 
     statuses = await asyncio.gather(*(put(name, v) for name, v in sends))
@@ -250,12 +194,11 @@ async def _dms(ctx, fans: list[dict], ids, text: str) -> list[dict]:
 
 
 async def _wait_jobs(w, aid: str, fan_ids: set[int], want: int | None, timeout: float) -> dict[int, list[str]]:
-    """Poll until `want` fans have a job (None: wait the whole `timeout`, for a negative check)."""
     t0 = asyncio.get_running_loop().time()
     while True:
         got = _jobs(w, aid, fan_ids)
         if want is not None and len(got) >= want:
-            await asyncio.sleep(0.5)   # a second job per fan would land now
+            await asyncio.sleep(0.5)
             return _jobs(w, aid, fan_ids)
         if asyncio.get_running_loop().time() - t0 > timeout:
             return got
@@ -263,7 +206,6 @@ async def _wait_jobs(w, aid: str, fan_ids: set[int], want: int | None, timeout: 
 
 
 def _pause(w, aid: str, fans: list[dict], until: datetime) -> str:
-    """A per-fan cooldown as a sender writes it (fans.automation_paused_until, naive UTC)."""
     at = until.strftime("%Y-%m-%d %H:%M:%S.%f")
     con = w.sql()
     with con:
@@ -274,7 +216,6 @@ def _pause(w, aid: str, fans: list[dict], until: datetime) -> str:
 
 
 async def _burst(ctx, w, aid: str, burst: list[dict], short: list[dict], far: list[dict]) -> None:
-    """Phase 3: every fan sends 2 DMs back to back (fan_dm.say, serial per Creator)."""
     now = datetime.utcnow()
     short_at = _pause(w, aid, short, now + timedelta(seconds=COOLDOWN_S))
     _pause(w, aid, far, now + timedelta(seconds=FAR_S))
@@ -312,7 +253,6 @@ async def _burst(ctx, w, aid: str, burst: list[dict], short: list[dict], far: li
 
 
 async def _source_shows(row, text: str) -> None:
-    """Wait for the row's Source cell to read `text`; a timeout is left to the UI check to judge."""
     try:
         await row.get_by_test_id("switch-source").filter(has_text=text).wait_for(timeout=15_000)
     except Exception:
@@ -320,7 +260,6 @@ async def _source_shows(row, text: str) -> None:
 
 
 async def _row_state(page, checked: str) -> dict:
-    """The W7 row once its toggle reads `checked` and its 150 ms slide has ended (a settled screenshot)."""
     row = page.get_by_test_id(f"switch-{W7}")
     toggle = row.get_by_role("switch", name=W7)
     try:

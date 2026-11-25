@@ -1,8 +1,3 @@
-/**
- * PerModelKpiGrid's OnlyFans reads go only to a Creator with a live session: a
- * Creator with no captured session (or a flagged one) makes no OF call and its
- * card shows the ledger's figures under the Creators page's label.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 
@@ -56,7 +51,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** The OF reads sent, as [path, X-Account-Id]. */
 const ofReads = () => fetchMock.mock.calls
   .map(([url, init]) => [new URL(String(url), "http://localhost").pathname,
     new Headers((init as RequestInit | undefined)?.headers).get("X-Account-Id")] as const)
@@ -80,11 +74,9 @@ describe("PerModelKpiGrid on a Creator with no live OnlyFans session", () => {
     const off = within(card("nosession"));
     expect(off.getByText("Not connected")).toBeInTheDocument();
     expect(off.getAllByText("$34").length).toBeGreaterThan(0);
-    // The ledger decides paid/free (no profile to wait for), and OF's figures read "—", never a spinner's "…".
     expect(off.getByText("free")).toBeInTheDocument();
     expect(off.queryByText("…")).toBeNull();
     expect(within(card("dead")).getByText("Disconnected")).toBeInTheDocument();
-    // In the ledger but not in the accounts read: no account on this host (prod's 404 Unknown account_id).
     expect(within(card("gone")).getByText("Not connected")).toBeInTheDocument();
     expect(within(card("live")).queryByText(/connected/i)).toBeNull();
   });

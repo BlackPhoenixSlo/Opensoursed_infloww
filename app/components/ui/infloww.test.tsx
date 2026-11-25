@@ -448,7 +448,6 @@ describe("HbPager", () => {
     expect(per).toHaveTextContent("10");
     await userEvent.click(per);
     expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["10", "20", "50"]);
-    // A page-foot menu opens upward, inside the viewport.
     expect(screen.getByRole("listbox").parentElement).toHaveClass("bottom-full");
     expect(screen.getByRole("listbox").parentElement).not.toHaveClass("top-full");
     await userEvent.click(screen.getByRole("option", { name: "20" }));
@@ -486,7 +485,6 @@ describe.each([
           <Modal title="Create message" width={722} closable={closable} onClose={() => setOpen(false)}
             footer={<><button type="button">Cancel</button><button type="button">OK</button></>}>
             <input aria-label="Name" />
-            {/* A non-modal picker portaled to body, like the composers' emoji / template pickers. */}
             {picker && createPortal(<div><input aria-label="Search emoji" /><button type="button">Smile</button></div>, document.body)}
           </Modal>
         )}
@@ -547,7 +545,6 @@ describe.each([
     );
     const first = screen.getByRole("textbox", { name: "First" });
     first.focus();
-    // `First` is the box's only focusable: Tab and Shift+Tab stay on it, never on a locked control.
     expect(fireEvent.keyDown(first, { key: "Tab" })).toBe(false);
     expect(first).toHaveFocus();
     expect(fireEvent.keyDown(first, { key: "Tab", shiftKey: true })).toBe(false);
@@ -581,7 +578,6 @@ describe.each([
     expect(fireEvent.keyDown(search, { key: "Tab" })).toBe(true);
     expect(fireEvent.keyDown(search, { key: "Escape" })).toBe(true);
     expect(screen.getByRole("dialog")).toBeInTheDocument();
-    // Back inside the box the trap holds again.
     within(dialog).getByRole("textbox", { name: "Name" }).focus();
     for (let i = 0; i < 6; i++) {
       await userEvent.tab();
@@ -614,8 +610,6 @@ describe.each([
     const toggle = within(dialog).getByRole("button", { name: "Layer" });
     fireEvent.click(toggle);
     toggle.focus();
-    // Last focusable: with a layer on top the lower box does not wrap and Escape is not taken; the layer (its own
-    // trap) takes Tab back into itself.
     expect(fireEvent.keyDown(toggle, { key: "Escape" })).toBe(true);
     expect(onClose).not.toHaveBeenCalled();
     expect(fireEvent.keyDown(toggle, { key: "Tab" })).toBe(false);
@@ -666,7 +660,6 @@ describe.each([
       expect(upper).toHaveBeenCalledTimes(1);
       expect(lower).not.toHaveBeenCalled();
       expect(onWindow).not.toHaveBeenCalled();
-      // A key the modal does not take still reaches the window.
       fireEvent.keyDown(screen.getByRole("textbox", { name: "Upper field" }), { key: "a" });
       expect(onWindow).toHaveBeenCalledTimes(1);
     } finally {
@@ -697,7 +690,6 @@ describe.each([
       const openBoth = screen.getByRole("button", { name: "Open both" });
       openBoth.focus();
       fireEvent.click(openBoth);
-      // A background update drops the inner (fireEvent's click moves no focus).
       fireEvent.click(screen.getByRole("button", { name: "Drop inner" }));
       const box = screen.getByRole("dialog", { name: "Outer" });
       expect(box).toContainElement(document.activeElement as HTMLElement);
@@ -737,7 +729,6 @@ describe.each([
     const upper = screen.getByRole("dialog", { name: "Upper" });
     const field = within(upper).getByRole("textbox", { name: "Upper field" });
     field.focus();
-    // A background update drops the lower modal (fireEvent's click moves no focus).
     fireEvent.click(screen.getByRole("button", { name: "Drop lower" }));
     expect(screen.queryByRole("dialog", { name: "Lower" })).not.toBeInTheDocument();
     expect(field).toHaveFocus();
@@ -887,7 +878,6 @@ describe("IfModal footerSlot", () => {
     fireEvent.click(save);
     expect(onSubmit).toHaveBeenCalledTimes(1);
     cleanup();
-    // Alone (no slot provided) the buttons sit inline under the body.
     render(<Editor />);
     expect(screen.getByRole("textbox", { name: "Name" }).closest("form")).toContainElement(screen.getByRole("button", { name: "Save" }));
   });

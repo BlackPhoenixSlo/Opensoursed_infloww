@@ -1,37 +1,3 @@
-"""A Jev-classified vault for Build AI folders' "Topic folders (Jev)" (scenarios/2026-11-12-vault-topic-folders.py):
-`vault_items` rows by SQL for one Creator (columns as seed/vault_flags_partial.py writes them), each item's
-`ai_fields_json["_jev"]` a Jev v8 blob as `vault_jev_rules.blob` stores it (v, status, lane5, lane, the three
-bare answers, `tags`, `P`; a clip's also kind "video", vv, frames, review, `read_lane5` when review, as
-`vault_jev_rules.video_blob` stores it) (Jev is on for every Creator since #511), plus the describe fields the act
-topics read (`acts`, `primary_folder`). Every item is planted in one class, so the topic folders have an exact oracle
-written from the planted answers and the spec, not from the product's rules:
-
-  hit       one topic's answers only (BASE hits no topic), at one lane the topic allows:
-            free (all three "n") / $10 (breasts y) / $50 (crotch y) / $100 (penetration y)   -> AI-<name> <price>
-            price: "split" topics the lane; "explicit" (toy play, masturbation, blowjob, sex) $10 -> $50,
-            $50 -> $100, $100 -> $150; "free" (good morning, clean for promo, clothed tease) free only.
-            The body topics also take ANY item by its bare answers (`_body`, from the spec): tits (breasts y +
-            breasts focus / topless), pussy (crotch y), masturbation (penetration y, no toy), clothed tease
-            (free, nothing bare, everyday / lingerie_or_bodysuit / swimwear) -> an item may be in several folders.
-  guard     lane5 free but breasts / crotch / penetration "unsure" or breasts "y", on a split topic -> no topic folder
-  wrong     a free-only topic at a paid lane5 ($10: no body topic either), an explicit topic at free -> none
-  review    lane5 "review" on a split topic (a photo)                                              -> none
-  stale     an older Jev version / a failed Jev, on a split topic                                   -> none
-  nojev     no `_jev` at all                                                                        -> none
-  clip      a current clip `_jev` on spread at $50                                   -> AI-spread $50 (+ AI-pussy $50)
-  clip_review_paid  a review clip (lane5 review) reading $10 on bikini            -> AI-bikini $10 (paid read lane)
-  clip_review_free  a review clip reading free on bikini        -> none (a review clip is never free; nor clothed tease)
-  feet      Jev feet answers on a BASE photo (feet score .59-.9, socks / bare, free / $10, body safe or not):
-            no feet topic (owner 2026-11-13: feet live in the vault's Feet pack only)                -> none
-Every (topic, allowed lane) hit and every other class is planted at least once; the rest is random.
-Sizes: SIZES `vault_topic_items` (items per Creator), merged on import.
-
-`seed(w, creator, n)` -> (and `w.data["vault_topic_folders"]`) {"account_id", "want": {media_id: [folder names]}
-for every item in a topic folder (split by price), "want_unsplit": {media_id: [AI-<name>]} (the "Split topics by
-price" switch off), "want_names" / "want_unsplit_names" (sorted), "none": {class: [ids]}, "bare": [ids whose bare
-answers are not all "n"], "items" (photos + clips), "with_jev" (those with a current `_jev`)}.
-Randomness only from `w.rng("vault_topic_folders")`.
-"""
 from __future__ import annotations
 
 import json
@@ -42,12 +8,11 @@ from . import World, merge_sizes, ts
 SIZES = {"vault_topic_items": (150, 600, 2_000)}
 merge_sizes(SIZES)
 
-MODEL, PROMPT_VERSION = "qwen3-vl-30b", "v2"   # as seed/vault_items.py
-JEV_V = "v8+nn.10"                             # service/vault_jev_rules.VERSION
-JEV_VV = "jv1"                                 # service/vault_jev_rules.VIDEO_VERSION
+MODEL, PROMPT_VERSION = "qwen3-vl-30b", "v2"
+JEV_V = "v8+nn.10"  # service/vault_jev_rules.VERSION
+JEV_VV = "jv1"
 
-# Topic slug -> (folder name, price kind, the Jev answers that make it a hit, the describe fields that do). Written
-# from the spec, not imported. G/G and butt plug are not offered (no signal).
+# G/G and butt plug are not offered (no signal).
 TOPICS = {
     "heels_stockings": ("heels & stockings", "split", {"wears_heels": "y"}, {}),
     "butt_tease": ("butt tease", "split", {"butt_focus": "y"}, {}),
@@ -70,20 +35,18 @@ TOPICS = {
     "clean_promo": ("clean for promo", "free", {"added_text": "nothing_added"}, {}),
     "nude": ("nudes", "split", {"outfit": "nude"}, {}),
     "tits": ("tits", "split", {"topless": "y"}, {}),
-    "pussy": ("pussy", "split", {}, {}),                         # crotch_bare y: the lane's bare answers
+    "pussy": ("pussy", "split", {}, {}),
     "masturbation": ("masturbation", "explicit", {}, {"acts": ["fingering"]}),
     "blowjob": ("blowjob", "explicit", {}, {"acts": ["blowjob"]}),
     "sex": ("sex", "explicit", {}, {"primary_folder": "sex_with_partner"}),
     "clothed_tease": ("clothed tease", "free", {"outfit": "lingerie_or_bodysuit"}, {}),
-    "dance_strip": ("dance & strip", "split", {}, {"acts": ["twerking"]}),   # alias -> twerk
+    "dance_strip": ("dance & strip", "split", {}, {"acts": ["twerking"]}),
     "gym_yoga": ("gym & yoga", "split", {"setting": "gym"}, {}),
 }
 NOUL = ("wears_heels", "wears_stockings_or_fishnets", "butt_focus", "butt_bare", "breasts_focus", "see_through",
         "nipple_through_fabric", "legs_spread", "mirror_selfie", "smiling", "looking_at_camera", "feet_in_water",
         "mouth_tease", "tongue_out", "watermark", "censor_edit", "phone_visible", "multi_panel", "topless",
         "self_touch")
-# Hits no topic: one person, face shown, facing the camera, standing, no toy, "lingerie" (no topic's spelling, so not
-# clothed tease) in the living room, a caption.
 BASE_CHOICE = {"people_count": "one", "added_text": "caption", "toy": "no_toy", "outfit": "lingerie",
                "setting": "living_room", "pose": "standing", "framing": "full_body", "face_visible": "face_visible",
                "facing": "toward"}
@@ -93,7 +56,7 @@ CLOTHED = ("everyday_clothes", "lingerie_or_bodysuit", "swimwear")
 BARE = {"free": ("n", "n", "n"), "$10": ("y", "n", "n"), "$50": ("y", "y", "n"), "$100": ("y", "y", "y"),
         "review": ("unsure", "n", "n")}
 GUARD = (("unsure", "n", "n"), ("n", "unsure", "n"), ("n", "n", "unsure"), ("y", "n", "n"))
-# feet class -> (feet_subject, feet_detail, lane5, bare answers). No topic folder for any (feet: the Feet pack only).
+# No topic folder for any feet class: feet live in the vault's Feet pack only.
 FEET_CLASSES = {
     "tease": (0.8, "socks", "free", BARE["free"]),
     "nude": (0.8, "bare", "free", BARE["free"]),
@@ -103,7 +66,6 @@ FEET_CLASSES = {
     "unsafe": (0.9, "socks", "free", ("unsure", "n", "n")),
     "unsafe_y": (0.9, "socks", "free", ("y", "n", "n")),
 }
-# Lanes a topic's hit can be planted at: its price kind's, narrowed where its own rule needs a bare answer.
 LANES = {"tits": ("$10", "$50", "$100"), "pussy": ("$50", "$100")}
 
 
@@ -113,13 +75,11 @@ def allowed(slug: str) -> tuple[str, ...]:
 
 
 def price(slug: str, lane: str) -> str:
-    """The price a topic names a lane: explicit topics up the $50 / $100 / $150 ladder."""
     return EXPLICIT_OF[lane] if TOPICS[slug][1] == "explicit" else lane
 
 
 def _body(tags: dict, lane: str, bare: tuple[str, str, str], review_clip: bool,
           partner_fields: bool = False) -> set[tuple[str, str]]:
-    """The (slug, price) folders the body / clothed topics add to ANY item with a current `_jev`, from the spec."""
     bb, cb, pen = bare
     if lane == "free":
         ok = bare == BARE["free"] and not review_clip and tags.get("outfit") in CLOTHED
@@ -147,8 +107,6 @@ def _jev(slug: str, lane5: str, bare: tuple[str, str, str], v: str = JEV_V, stat
 
 
 def _clip_jev(slug: str, lane: str, bare: tuple[str, str, str], review: bool) -> dict:
-    """`vault_jev_rules.video_blob`'s shape: the max frame's blob + kind / vv / frames; a review reading under $100
-    is lane5 "review" with its own lane kept as `read_lane5`."""
     j = {**_jev(slug, lane, bare), "kind": "video", "vv": JEV_VV, "frame": 0, "frames": [], "src": "720",
          "review": "few_frames" if review else None, "bytes": 0}
     if review:
@@ -157,7 +115,6 @@ def _clip_jev(slug: str, lane: str, bare: tuple[str, str, str], review: bool) ->
 
 
 def _feet_jev(feet_subject: float, detail: str, lane5: str, bare: tuple[str, str, str]) -> dict:
-    """A BASE photo (no other topic) with Jev's feet answers (`vault_jev_rules.blob`: feet_subject, P, tags)."""
     tags = {**BASE_CHOICE, **{q: "n" for q in NOUL}, "feet_any": "y", "feet_focus": "y", "feet_detail": detail}
     bb, cb, pen = bare
     return {"v": JEV_V, "status": "ok", "state": {}, "lane5": lane5, "lane": lane5, "breasts_bare": bb,
@@ -166,11 +123,10 @@ def _feet_jev(feet_subject: float, detail: str, lane5: str, bare: tuple[str, str
                   "bare_toes_visible": 0.0}}
 
 
-CLIPS = {"clip": False, "clip_review_paid": True, "clip_review_free": True}   # class -> review reading
+CLIPS = {"clip": False, "clip_review_paid": True, "clip_review_free": True}
 
 
 def _classes() -> list[tuple]:
-    """Every planted class once: (class, slug, lane, bare, extra)."""
     split = [s for s, t in TOPICS.items() if t[1] == "split"]
     out: list[tuple] = [("hit", s, p, BARE[p], None) for s in TOPICS for p in allowed(s)]
     out += [("guard", split[k % len(split)], "free", g, None) for k, g in enumerate(GUARD)]
@@ -230,7 +186,7 @@ def seed(w: World, creator: dict, n: int) -> dict:
         if cls in ("hit", "clip", "clip_review_paid"):
             placed = {(slug, price(slug, lane5))} | _body(_tags(slug), lane5, bare, cls == "clip_review_paid", slug == "sex")
         elif cls in ("wrong", "guard", "clip_review_free"):
-            placed = _body(_tags(slug), lane5, bare, cls == "clip_review_free", slug == "sex")   # by construction: none
+            placed = _body(_tags(slug), lane5, bare, cls == "clip_review_free", slug == "sex")
         if placed:
             out["want"][mid] = sorted(f"AI-{TOPICS[s][0]} {p}" for s, p in placed)
             out["want_unsplit"][mid] = sorted({f"AI-{TOPICS[s][0]}" for s, _ in placed})

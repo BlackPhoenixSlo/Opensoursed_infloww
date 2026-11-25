@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * The Fill dialog (CONTEXT.md › Script fill; docs/spec/phase-02-button-and-popup.md): one `IfModal` that opens
- * only when a Fill cannot run. Its copy is `dialogFor` over the fresh Fill plan (read on every open), the Creator's
- * describe sweep and the last refusal; the page owns the state and this only calls back.
- *
- * "Describe content" starts describe-all with `target: 1000`; a refused start hands its sentence back
- * (`onDescribeRefused`). The settle edge refreshes the plan only on an observed running → idle change, so after
- * a start that resolves null the plan is refreshed here too (a zero-work answer, a sweep that ended between polls).
- * Nothing fills itself: "Ready to fill." waits for the press.
- */
 
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -23,11 +13,8 @@ import { cn } from "@/lib/utils";
 export function ScriptFillDialog({ accountId, dialog, busy, onFill, onDescribeRefused, onClose }: {
   accountId: string | null;
   dialog: FillDialogState;
-  /** The Sequence's Fill or Undo is in flight. */
   busy: boolean;
-  /** The dialog's "Fill with content": fills `dialog.sequence`. */
   onFill: (sequence: string) => void;
-  /** A refused describe start, for the request whose dialog started it (`dialog.sequence`, `dialog.req`). */
   onDescribeRefused: (pin: Pick<FillDialogState, "sequence" | "req">, message: string) => void;
   onClose: () => void;
 }) {
@@ -51,6 +38,7 @@ export function ScriptFillDialog({ accountId, dialog, busy, onFill, onDescribeRe
     const pin = { sequence: dialog.sequence, req: dialog.req };
     const refusal = await sweep.start({ target: DESCRIBE_TARGET });
     if (refusal) onDescribeRefused(pin, refusal);
+    // The settle edge refreshes only on an observed running -> idle change; a start that resolves null (zero-work answer) needs this refresh.
     else void qc.invalidateQueries({ queryKey: [...planKey] });
   }
 

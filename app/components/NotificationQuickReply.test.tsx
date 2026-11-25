@@ -1,5 +1,3 @@
-/** The bell's quick reply on the real send outcome: only a send that went out reads "Sent"; a failed one keeps its
- *  bubble (flagged, with Retry) and the line; a throw never leaves the field stuck; the bubble is ours. */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +6,6 @@ const send = vi.fn();
 const retry = vi.fn();
 const cancelOptimistic = vi.fn();
 const sendOpts = vi.fn();
-// The Fan's thread cache as the bell reads it (the Thread's Retry writes the same rows).
 const thread: { data?: Array<{ id: number; _tempId?: number; _pending?: boolean }> } = {};
 vi.mock("@/hooks/useChatMessages", () => ({ useChatMessages: () => thread }));
 vi.mock("@/hooks/useSendMessage", () => ({
@@ -59,7 +56,6 @@ describe("QuickReplyField", () => {
     expect(field().value).toBe("hi");
   });
 
-  // The failed bubble stays stashed (the real send leaves it for Retry); the mock stands in for that.
   const failOnce = (text: string) => {
     const failure = { reason: "Fan blocked you" };
     send.mockImplementationOnce(async () => {

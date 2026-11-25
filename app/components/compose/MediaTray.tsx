@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * MediaTray — shared attachment strip for the New-post + Mass-message
- * modals. Renders thumbnails for already-attached vault media plus an
- * "Add from vault" button.
- *
- * Upload-from-computer is intentionally removed for now (the producer
- * pipeline has open bugs; revisit once those are fixed). Vault-pick +
- * reorder + PPV preview-count UI remain functional.
- */
 
 import { Fragment } from "react";
 import { ChevronLeft, ChevronRight, Image as ImageIcon, Minus, Plus, X } from "lucide-react";
@@ -20,7 +11,6 @@ import { proxyImage } from "@/lib/mediaUrl";
 import { IfButton } from "@/components/ui/infloww";
 import { cn } from "@/lib/utils";
 
-/** The free-previews stepper's −/+ buttons. */
 const STEP = "grid h-10 w-10 place-items-center rounded border border-border text-fg hover:border-accent hover:text-accent disabled:opacity-30 md:h-6 md:w-6";
 
 export function MediaTray({
@@ -31,11 +21,7 @@ export function MediaTray({
   attached: VaultMedia[];
   onChange: (next: VaultMedia[]) => void;
   onOpenVaultPicker: () => void;
-  /** Per-message PPV price (dollars). When > 0, tiles show FREE/PAID
-   *  badges + a divider chip. Omit for free-only callers. */
   price?: number;
-  /** How many leading tiles are free previews. Required alongside `price`
-   *  for the badge/divider UI to render. */
   previewCount?: number;
   onPreviewCountChange?: (n: number) => void;
 }) {
@@ -93,7 +79,6 @@ export function MediaTray({
               m.files?.preview?.url ||
               null;
             const thumb = proxyImage(rawThumb, accountId);
-            // A fresh upload can't be a free teaser yet (lib/composeDraft canBeFreePreview).
             const isFreeTile = idx < effectivePreviewCount && canBeFreePreview(m);
             const isDragging = reorder.draggingIndex === idx;
             const isDragOver = reorder.dragOverIndex === idx && !isDragging;

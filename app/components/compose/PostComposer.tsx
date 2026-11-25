@@ -85,8 +85,8 @@ export function PostComposer({
   const setAccountId = useCallback((id: string) => dispatch({ type: "setAccount", id }), [dispatch]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const textRef = useRef<ComposeTextBoxHandle | null>(null);
-  // OF rich text: OnlyFans accounts only (all-models: the platform's, whose accounts these all are).
-  const allowRich = useOfRichAllowed(accountId);
+  // OF rich text: OnlyFans accounts only (all-models: the first row's).
+  const allowRich = useOfRichAllowed(allModels ? activeAccounts[0]?.id : accountId);
   // A subscription page has no paid-post lane on OF, so the price field is not
   // an option there and its price reads as 0 (postComposerReducer `postPrice`)
   // — a typed or template price can't block or ride into the post. The relay
@@ -197,7 +197,7 @@ export function PostComposer({
       >
         <div className="space-y-4">
           <IncludeModelsChips
-            noun="post" allModels={allModels} locked={locked}
+            noun="post" accounts={activeAccounts} allModels={allModels} locked={locked}
             onAllModels={(on) => dispatch({ type: "setAllModels", on })}
             accountId={accountId} onAccount={setAccountId}
           />

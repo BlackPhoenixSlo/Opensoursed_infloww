@@ -1,7 +1,5 @@
 "use client";
 
-/** An Ultra plan's numbered step list (plan page + help bot Ultra panel): each server card (PlanStepCard), and the
- *  waiting judge's pick card right under its step. Ticks dispatch to ultraRunReducer. */
 import { cn } from "@/lib/utils";
 import { PickCard } from "./PickCard";
 import { PlanStepCard } from "./PlanStepCard";

@@ -19,9 +19,6 @@ import TimeTrackingTab from "@/components/settings/TimeTrackingTab";
 import YourAccountTab from "@/components/settings/YourAccountTab";
 import { SETTINGS_TABS } from "@/lib/nav";
 
-/** Each Settings tab's Panel, keyed by its full href ("/settings/<tab>"); a
- *  Panel renders its own SettingsPanel. An href with no Panel is a 404
- *  (docs/spec/settings-tabs/phase-05-billing-balance-about.md). */
 const SETTINGS_PANELS: Partial<Record<string, ComponentType>> = {
   "/settings/account": YourAccountTab,
   "/settings/preferences": PreferencesTab,
@@ -44,7 +41,6 @@ const SETTINGS_PANELS: Partial<Record<string, ComponentType>> = {
 
 export default async function Page({ params }: { params: Promise<{ tab: string }> }) {
   const { tab } = await params;
-  // Your Balance (what an agency paid Infloww) was removed; old links land on Your Account.
   if (tab === "balance") redirect("/settings/account");
   const link = SETTINGS_TABS.find((t) => t.href === `/settings/${tab}`);
   if (!link) notFound();

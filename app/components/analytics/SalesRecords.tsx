@@ -1,75 +1,5 @@
 "use client";
 
-/**
- * SalesRecords — Analytics > Sales records (docs/spec/phase-05-remaining-parity-gaps.md, item 3; ticket 33,
- * stories 19-21, 25, 26 and 29): one row per sale from `GET /admin/stats/sales-records`, with the Rule that
- * credited it and who assigned it. In Infloww it is the second tab of Employee reports (bundle `SalesRecord`,
- * `SalesFilter`, `SalesTable`); page-parity ticket 28 gives it that tab's body.
- *
- * It is the tab's body alone (the toolbar, the batch bar, the table): Employee reports' frame (EmployeeReport, on
- * both its routes) draws the title, the UTC label and the icon Refresh.
- *
- * Toolbar, in the bundle's order: Creator tag (Not wired: Creators carry no tags), Creator, Employees/groups,
- * the assigned filter, Sales types, then the range (Day / Week / Month / Custom, in the Agency's report time zone,
- * through the shared `DateRangePicker`) and Reset; Export at the right downloads the Relay's CSV of the whole
- * filtered set (50,000 rows at most). Rows load as the end of the table scrolls into view (`before_id` pages), then
- * "You have reached the end of the page". Under Role enforcement the Relay narrows a chatter's rows to its Data
- * scope; the page shows what it is given.
- *
- * Earnings: every row the read returns counts, pending (uncleared) sales included: they show with Status
- * "Pending" under the default filters and are in the CSV.
- *
- * Action > "Reassign" (ticket 34, stories 22 and 23): an owner picks another Employee of the Agency, "No one" or
- * "Clear assignment", and Save sends the existing manual attribute route (`useAttributeTip`, body
- * `{employee_id|"no_one"|null}`), which refuses a chatter, another Agency's sale and an Employee outside the sale's
- * Agency, and records the `sales.reassign` action that "Assigned by" reads. Saving refetches the read, so the row's
- * Employee, Rule and Assigned by are the Relay's answer. "No one" (roadmap W6 6.5) credits the sale to nobody
- * whatever the Rules say; its row reads Employee "No one", Rule "Manual".
- *
- * Batch (roadmap W6 6.5, Infloww's "N sales records selected"): each row's checkbox, or "Select all" in the
- * selection column's head for the loaded rows, picks sales; the bar above the table reassigns them in one call
- * (`useBatchAttribute`, every sale or none). A batch holds at most MAX_BATCH (500) sales, the Relay's cap: "Select
- * all" picks the first 500 loaded, a row past it cannot be ticked, and the bar says so. A filter change drops the
- * selection.
- *
- * The assigned filter (bundle `baseOptions`): Assigned and unassigned sales, Assigned sales only or Unassigned sales
- * only, sent as `assigned`. As in Infloww, "Unassigned sales only" is disabled while an Employee or group is picked,
- * and the Employees/groups filter while it is chosen (the two together match nothing).
- *
- * ASSUMPTION: the page opens on (and Reset returns to) Assigned and unassigned sales and Month, although Infloww's
- * form opens on and resets to "Assigned sales only". Rung 3 (ticket 28: Reset sends no filter params; an agency
- * checks its unassigned sales first). Overturned by the owner wanting Infloww's default.
- *
- * ASSUMPTION: the picker lists the roster `GET /admin/employees` returns (`useRoster`, Mirror Employees and
- * deactivated Employees included, as the Employees filter), which the Relay scopes to the owner's Agency; for the
- * Master that roster is every Agency's, and the Relay's 400 refuses an Employee outside the sale's Agency. Rung 3
- * (the Employees filter's own source). Overturned if the picker should narrow by Creator access (`account_ids`),
- * which no Mirror Employee carries today, or hide deactivated Employees.
- *
- * ASSUMPTION: the selection column, the Action column and Reassign show for an owner session only, as the Employees
- * filter does; a chatter, whom the Relay refuses 403, gets none. Rung 3. Overturned if the owner grants Reassign to
- * a role.
- *
- * ASSUMPTION: Creator, Employees and Sales types are single-choice selects ("All …" or one value), although the
- * Relay takes several of each (`account_id*`, `employee_id*`, `kind*`). Rung 5: no multi-select primitive in the
- * app. Overturned if the owner wants several at once, which needs only the select changed.
- *
- * ASSUMPTION: Day is today, and Week and Month are the reports' own 7d and 30d presets (`presetRange`: the last 7
- * or 30 days through today, in the report time zone), so Month is Employee reports' 30d window; the page opens on
- * Month, as the other reports open on 30d (useReportRange). Rung 3 (the shared picker) for the spans; the Inventory
- * names the presets only. Overturned by Infloww's own preset definitions.
- *
- * ASSUMPTION: the Employees filter's options are the Agency's roster (`GET /admin/employees`), read only for an
- * owner session; a chatter, whom that list refuses (403), gets no Employees filter. Rung 3 (the Relay's own
- * rule, phase-05 story 13). Overturned if chatters with an "all" Data scope should filter by Employee.
- *
- * The Employees filter also lists the Agency's Employee groups (ticket 36, story 20; `useEmployeeGroups`, in tree
- * order) as "Group: …" choices; picking one sends `group_id` in place of `employee_id`, so one choice is one filter.
- *
- * Status is Infloww's pill (bundle `styles.status`): Complete (`cleared`), Pending (`pending`), Reverse
- * (`chargedback`) and Refunded (`refunded`, `refund_pending`). The read lists tracked sales only (`cleared`,
- * `pending`), so the two reversal labels show only if it ever lists reversals.
- */
 
 import { useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
@@ -94,7 +24,6 @@ import { InfoTip } from "@/components/ui/InfoTip";
 
 const ROUTE = "/admin/stats/sales-records";
 
-/** The sale kinds the read lists (service/sales_attribution.py `CREDITED_KINDS`), with their Type labels. */
 export const SALES_TYPES: { kind: string; label: string }[] = [
   { kind: "ppv", label: "PPV" },
   { kind: "ppv_message", label: "PPV message" },
@@ -104,7 +33,6 @@ export const SALES_TYPES: { kind: string; label: string }[] = [
   { kind: "tip_post", label: "Tip on post" },
   { kind: "tip_stream", label: "Tip on stream" },
   { kind: "custom", label: "Custom" },
-  // Credited too since Employee reports credit each kind by its Sales Settings rule (`CREDITED_KINDS`).
   { kind: "subscription", label: "Subscription" },
   { kind: "rebill", label: "Rebill" },
   { kind: "referral", label: "Referral" },
@@ -118,7 +46,6 @@ const RULE_LABELS: Record<string, string> = {
   unassigned: "Unassigned",
 };
 
-// Infloww's status pills (bundle `_status_1uff5`: 14px, radius 24, 4px 8px; the HB signal colours).
 const REFUNDED = "bg-[#fb609f] text-white [html[data-theme=light]_&]:bg-[#ff5c9e]";
 const STATUS: Record<string, { label: string; className: string }> = {
   cleared: { label: "Complete", className: "bg-ok text-white" },
@@ -159,11 +86,8 @@ interface SalesRecordsPage {
   next_before_id: number | null;
 }
 
-/** Infloww's Date presets (docs/infloww-screens.md, Sales records) on the shared picker's spans; Day keeps the
- *  picker's own label. */
 const DATE_PRESETS = ["day", "7d", "30d"] as const;
 const DATE_LABELS = { "7d": "Week", "30d": "Month" };
-/** The range Reset returns to: useReportRange's opening preset. */
 const DEFAULT_PRESET: RangePreset = "30d";
 
 const assignedOptions = (employeePicked: boolean): IfOption[] => [
@@ -176,17 +100,13 @@ interface Filters {
   from: string | null;
   to: string | null;
   accountId: string;
-  /** An Employee id, or GROUP + an Employee group id. */
   employeeId: string;
   kind: string;
-  /** "" (all sales), "assigned" or "unassigned". */
   assigned: string;
 }
 
-/** The Employees filter's value prefix for an Employee group. */
 const GROUP = "group:";
 
-/** The read's query string for these filters (no paging: `before_id` is per page, and CSV takes none). */
 function filterQuery(f: Filters): URLSearchParams {
   const qs = new URLSearchParams();
   if (f.from) qs.set("from", f.from);
@@ -199,7 +119,6 @@ function filterQuery(f: Filters): URLSearchParams {
   return qs;
 }
 
-/** Infloww's "MMM D, YYYY h:mma" ("May 4, 2026 10:00am") in the report time zone. */
 function fmtWhen(iso: string, timeZone: string | null): string {
   const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
     timeZone: timeZone ?? undefined, year: "numeric", month: "short", day: "numeric",
@@ -210,10 +129,7 @@ function fmtWhen(iso: string, timeZone: string | null): string {
 
 const CELL = cn(IF_TABLE.td, "whitespace-nowrap py-2 h-12");
 const HEAD = cn(IF_TABLE.th, IF_TABLE.thDivider);
-// Action pins right from `sm` up; on a phone a pinned 122px column left the rest a sliver ("E" for Employee), so
-// there it scrolls with the row (IF_TABLE.unpinPhone, RuleTable's precedent).
 
-/** The batch bar: how many sales are selected, a picker, "Reassign selected" and "Clear selection". */
 function BatchReassign({ txIds, employees, capped, onDone }: {
   txIds: number[]; employees: ReassignEmployee[]; capped: boolean; onDone: () => void;
 }) {
@@ -240,7 +156,6 @@ function BatchReassign({ txIds, employees, capped, onDone }: {
   );
 }
 
-/** The Action cell: "Reassign", then a picker (`reassignChoices`), Save and Cancel. */
 function ReassignCell({ txId, employees }: { txId: number; employees: ReassignEmployee[] }) {
   const [open, setOpen] = useState(false);
   const [choice, setChoice] = useState("");
@@ -263,11 +178,11 @@ function ReassignCell({ txId, employees }: { txId: number; employees: ReassignEm
   );
 }
 
+// Pending (uncleared) sales count as earnings: shown as Status "Pending" and included in the CSV.
 export default function SalesRecords() {
   const { user } = useUser();
   const { preset, from: fromDay, to: toDay, fromIso, toIso, reportTz, ready, handleRange } = useReportRange();
   const accounts = useAccounts().data?.accounts ?? [];
-  // The Agency's roster, Mirror Employees included: the Employees filter's and Reassign's options.
   const employees = useRoster({ includeChatterMirrors: true }).rows;
   const pickers = employees.map((e) => ({ id: e.id, label: e.display_name }));
   const groups = groupsInTreeOrder(useEmployeeGroups(!!user).data?.groups ?? []);
@@ -278,7 +193,6 @@ export default function SalesRecords() {
   const [assigned, setAssigned] = useState("");
 
   const qs = filterQuery({ from: fromIso, to: toIso, accountId, employeeId, kind, assigned });
-  // The batch selection, kept for the filters it was made under only.
   const [picked, setPicked] = useState<{ query: string; ids: number[] }>({ query: "", ids: [] });
   const selected = picked.query === qs.toString() ? picked.ids : [];
   const select = (ids: number[]) => setPicked({ query: qs.toString(), ids });
@@ -311,7 +225,6 @@ export default function SalesRecords() {
   const allPicked = pickable.length > 0 && pickable.every((id) => selected.includes(id));
   const full = selected.length >= MAX_BATCH;
 
-  // Infinite scroll: the next page loads when the sentinel under the table comes within 200px of the viewport.
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = pages;
   const sentinel = useLoadMoreSentinel(hasNextPage, isFetchingNextPage, fetchNextPage, pages.isError);
 
@@ -399,8 +312,6 @@ export default function SalesRecords() {
 
   return (
     <div className="space-y-4">
-      {/* On a phone it wraps, so Export drops under the filters instead of running off the edge; from `sm` up the
-          filters shrink and wrap beside it. */}
       <div className="flex items-start justify-between gap-4 max-sm:flex-wrap">
         <div className="flex flex-wrap items-center gap-2">
           <span title="not wired">

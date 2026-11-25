@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * Vault Pro's guided tours (growth-vault-pro#12, #118, #119, and the upload card's selection-bar tour), as the bundle
- * runs them through react-joyride (index.9f50f370.js @12944029 to @12949500 and @13101441 to @13108700), without the
- * dependency: a dimmed page, a spotlight on the target, and one tooltip beside it.
- *
- * Seen-once store: the bundle's own, `localStorage["vaultProOnboarding"]`, a JSON object of `{ <key>: "1" }`
- * (`getVaultProOnboardingCache` / `setVaultProOnboardingItemShow` @12944304). As there, a tour is marked seen the
- * moment it shows, not when it is dismissed, so a reload mid-tour never repeats it. Removing the key brings the
- * tours back.
- */
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -20,7 +10,6 @@ import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 
 const STORE = "vaultProOnboarding";
 
-/** The bundle's `VaultProOnboardingKeyMap` values (@12944029) for the tours built here. */
 export type VaultTourKey = "batchUploadEntry" | "uploadPageStep" | "batchEdit" | "uploadBtn";
 
 function readStore(): Record<string, string> {
@@ -32,17 +21,14 @@ function readStore(): Record<string, string> {
   }
 }
 
-/** `checkVaultProOnboardingItemShow`. */
 export function vaultTourSeen(key: VaultTourKey): boolean {
   return readStore()[key] === "1";
 }
 
-/** `setVaultProOnboardingItemShow`. */
 export function markVaultTourSeen(key: VaultTourKey): void {
   window.localStorage.setItem(STORE, JSON.stringify({ ...readStore(), [key]: "1" }));
 }
 
-/** True once, the first time `when` holds and the tour `key` has not been seen; marks it seen then (the bundle's way). */
 export function useVaultTour(key: VaultTourKey, when: boolean): [boolean, () => void] {
   const [open, setOpen] = useState(false);
   useEffect(() => {
@@ -56,20 +42,9 @@ export function useVaultTour(key: VaultTourKey, when: boolean): [boolean, () => 
 
 export type VaultTourStep = { target: string; title?: string; content: string };
 
-/** Joyride's default spotlight padding and the gap the bundle's tooltips keep from it. */
 const PAD = 10;
 const GAP = 12;
 
-/**
- * One tour, in one of the bundle's two cards:
- *  - "coach": an icon, the text and "Got it", which moves to the next step or, on the last, closes (#12, and the
- *    selection bar's two steps, @12947586);
- *  - "guide": the upload guide's card, a title, the text, the numbered step markers, then "Next" and, on the last,
- *    "Start upload" (#118, #119). Its tours have no close button and ignore the overlay and Escape, so "Skip" is ours,
- *    labelled.
- * `spotlightClicks` lets the spotlit target take clicks, as the Add media tour's does. `overlayClose` lets a click on
- * the dimmed page close the tour, joyride's default, which the selection bar's tour keeps.
- */
 export function VaultTour({
   steps,
   variant,
@@ -98,7 +73,6 @@ export function VaultTour({
     const el = document.querySelector(step.target);
     if (el && "scrollIntoView" in el && typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "nearest" });
     const place = () => {
-      // The target's contents, not its box: a step title is a full-width block, and the bundle spotlights its text.
       const t = document.querySelector(step.target);
       let r: DOMRect | null = null;
       if (t) {
@@ -128,8 +102,6 @@ export function VaultTour({
     height: rect.height + 2 * PAD,
   };
   const clamp = (v: number, max: number) => Math.max(8, Math.min(v, max));
-  // Beside the target on the placement's side, top-aligned with it; below it (above, near the bottom) when that side
-  // has no room, as on a phone. "top" sits centred above it. Centred on screen when the target is not on the page.
   const side = hole && placement !== "top" && (placement === "left" ? hole.left - GAP - width : hole.left + hole.width + GAP);
   const fits = typeof side === "number" && side >= 8 && side + width <= vw - 8;
   const below = hole && (hole.top + hole.height + GAP + tipH <= vh - 8 ? hole.top + hole.height + GAP : hole.top - GAP - tipH);
@@ -141,7 +113,6 @@ export function VaultTour({
         ? { left: side as number, top: clamp(hole.top, vh - tipH - 8) }
         : { left: clamp(hole.left, vw - width - 8), top: clamp(below as number, vh - tipH - 8) };
   const lit = hole;
-  // The blocker takes every click but the spotlight's when `spotlightClicks` (an even-odd hole in its clip path).
   const clip =
     spotlightClicks && lit
       ? `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${lit.left}px ${lit.top}px, ${lit.left + lit.width}px ${lit.top}px, ${lit.left + lit.width}px ${lit.top + lit.height}px, ${lit.left}px ${lit.top + lit.height}px, ${lit.left}px ${lit.top}px)`

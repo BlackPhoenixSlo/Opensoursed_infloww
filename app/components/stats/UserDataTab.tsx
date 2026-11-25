@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * UserDataTab — the per-fan profile data gen_info builds, read live from our
- * DB so the team can check it in-app. Search, and scan the columns:
- * name / nickname / spend / msgs / short bio / Q1-3 / Tease1-3 / note-on-OF.
- * The Creator is the page's (Fan reports' creator column).
- *
- * Source: GET /admin/stats/per-fan-data (usePerFanData) → service/fan_data.py
- * build_fan_data.
- */
 
 import { useMemo, useState } from "react";
 
@@ -27,7 +18,6 @@ function fmtDate(iso: string): string {
 }
 
 export default function UserDataTab({ accountId }: {
-  /** The page's Creator. */
   accountId: string;
 }) {
   const [q, setQ] = useState("");
@@ -46,7 +36,6 @@ export default function UserDataTab({ accountId }: {
   return (
     <Card className="p-4 space-y-3">
       <header className="flex flex-wrap items-center justify-between gap-3">
-        {/* Fan data: an Inflowwww extra (ADR-0003; docs/infloww-screens.md "Fan reports") */}
         <div className="min-w-0" title={EXTRA_LABEL}>
           <h2 className="text-sm font-medium text-fg">User data</h2>
           <p className="text-xs text-fg-dim">

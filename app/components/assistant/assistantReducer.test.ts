@@ -70,7 +70,6 @@ describe("assistantReducer", () => {
     expect(s.turns.map((t) => [t.id, t.answer, t.error])).toEqual([[0, "x", "cap"], [1, "a1", null]]);
   });
 
-  // rwl W30 M18: "sent by do-mode" is the turn's own bit (was a Set in the widget beside this reducer)
   it("an ask do-mode sent carries fromDo through its answer; a plain one has none; another identity drops both", () => {
     const s = run([ask(0), { type: "asked", id: 1, question: "q1", ts: TS, thread: "tN", accountId: null, fromDo: true },
       answer(1), { type: "asked", id: 2, question: "q2", ts: TS, thread: "tN", accountId: null, fromDo: false }],
@@ -80,7 +79,6 @@ describe("assistantReducer", () => {
     expect(run([{ type: "principal", id: "u1" }, { type: "principal", id: "u2" }], s).turns).toEqual([]);
   });
 
-  // rwl W30 F9: impersonation start / end (or signing in as another) never shows nor continues the last one's chat.
   describe("principal", () => {
     const who = (id: string | null): AssistantAction => ({ type: "principal", id });
     const owner = run([who("u1"), scope("A"), roster(["A", "B"]), ask(0, "q", "A", "t1"),
@@ -103,7 +101,6 @@ describe("assistantReducer", () => {
   });
 
   it("is pure: never mutates the state it is given", () => {
-    // Deep-frozen: in strict mode (ES modules) any write throws.
     const from = Object.freeze(run([ask(0), ask(1)], hydratedState(false)));
     from.turns.forEach((t) => Object.freeze(t));
     Object.freeze(from.turns);
@@ -171,9 +168,6 @@ describe("history", () => {
     expect(assistantReducer(s, { type: "history_requested" })).toBe(s);
   });
 
-  // A failed or slow history read, then a reload, must not show this
-  // session's turn twice — under Earlier AND in the conversation. turn(-10)
-  // is row 9, the row the ask below wrote.
   it.each<[string, AssistantAction[], number[]]>([
     ["load after the answer: its row is dropped from Earlier",
       [ask(0), answer(0, 9), loaded([turn(-1), turn(-10)])], [-1]],
@@ -246,15 +240,12 @@ describe("threads", () => {
       { id: "t1", focus: "A", title: "h1", count: 2, last: "2026-11-09T11:00:00Z" },
       { id: "t2", focus: null, title: "h2", count: 1, last: "2026-11-09T10:00:00Z" },
     ]);
-    // Opening an old thread shows only its turns; an ask continues it.
     const o = run([{ type: "open_thread", thread: "t1", focus: "A" }, ask(1, "more", "A", "t1")], s);
     expect(turnsOf(o.active, o.history, o.turns).map((t) => t.question)).toEqual(["h1", "h3", "more"]);
     expect(o.turns[1].thread).toBe("t1");
     expect(turnsOf(null, o.history, o.turns)).toEqual([]);
   });
 
-  // FOCUS: follows the app switcher; a pick holds until the next switch; a
-  // started chat locks it (a switch is only held), and New chat adopts it.
   it.each<[string, AssistantAction[], Partial<AssistantCore>]>([
     ["starts General", [], { focus: null, active: null, held: false }],
     ["follows the switcher on home", [scope("A")], { focus: "A", appFocus: "A" }],
@@ -275,8 +266,6 @@ describe("threads", () => {
     expect(run(actions, hydratedState(true))).toMatchObject(want);
   });
 
-  // ROSTER: the owned accounts; the focus stays raw and is resolved against it
-  // on read, comparisons use resolved values, and a started thread is never retargeted.
   it.each<[string, AssistantAction[], Partial<AssistantCore>, Focus | undefined]>([
     ["before the roster: the unresolved focus goes out", [scope("X")], { focus: "X" }, "X"],
     ["a home focus the roster lacks stays raw and sends the first account", [scope("X"), roster(["A", "B"])], { focus: "X" }, "A"],

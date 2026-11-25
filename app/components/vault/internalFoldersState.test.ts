@@ -1,4 +1,3 @@
-/** The Inflowwww folders editor's reducer and rules (`internalFoldersState.ts`), as tables. Every name is fake. */
 import { describe, expect, it } from "vitest";
 
 import type { InternalFolder } from "@/hooks/useInternalFolders";
@@ -36,7 +35,6 @@ describe("foldersReducer", () => {
 
   it("a new search drops the ticks (they may be out of view); the type filter keeps them", () => {
     const s = ticked(1);
-    // Typing alone changes nothing but the box: the query settles later.
     expect(foldersReducer(s, { type: "draft", value: "re" })).toEqual({ ...s, draft: "re" });
     expect(foldersReducer(s, { type: "query", value: "red" }).selected.size).toBe(0);
     expect(foldersReducer(s, { type: "query", value: "" })).toBe(s);
@@ -111,7 +109,6 @@ describe("barActions", () => {
 
 describe("reorderTarget", () => {
   const items = [1, 2, 3, 4, 5].map((id) => ({ id }));
-  /** The folder after the press (the relay's `place_before`), or null when the press is off. */
   const after = (sel: number[], dir: ReorderDir, hasMore = false) => {
     const t = reorderTarget(items, new Set(sel), dir, hasMore);
     if (!t) return null;

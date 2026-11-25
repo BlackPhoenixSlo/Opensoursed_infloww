@@ -1,29 +1,5 @@
 #!/usr/bin/env python3
-"""The wrong numbers roadmap Safety S4, S5, S6 and S8 name, the batch revenue read (W2 2.8), and Employee
-reports' rollup read (W2 2.1, 2.2).
-
-  S4   Messages sent (Creator reports and Employee reports) counts an Employee's own sends only: no message of
-       a mass message (`mass_run_id`), none an automation sent (`automation_kind`), none stamped with the
-       Automation sentinel Employee, no inbound one.
-  S5   Active subs is counted as of the window's end, not now: a fan whose subscription ended after the window
-       counts, one who subscribed after it does not.
-  S6   New subs counts the fans whose subscription began in the window, free and trial ones too: those leave no
-       sale, so OF's own roster (`subscriber_snapshot.subscribe_at`) supplies them, each fan once.
-  S8   A day bucket follows the report zone's offset at each sale's hour, so the days either side of a
-       daylight-saving change each keep their own sales; a zone whose offset is not a whole hour is cut by
-       the minute.
-  2.8  `/admin/stats/revenue?account_id=a,b` answers the sum of the two single reads in one call, and one id
-       outside the caller's Creators is 403.
-  2.1  Employee reports sum the hourly rollup (`credited_sales(grouped=True)`); its figures equal the per-sale
-       read's under every Sales Settings rule.
-
-Each case was red before its fix (S4 counted 6 sends, S5 counted the fans active today, S6 missed the free
-sub, S8 put the 23:30 EST sale on the next day, 2.8 refused the comma list 403). Seeded straight
-into the temp DB; no network.
-
-Run: ./venv/bin/python service/tests/test_stats_number_fixes.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -116,9 +92,9 @@ def case_s4_messages_sent_counts_only_an_employees_own_sends():
     at = datetime(2026, 2, 10, 12, 0)
     _message(C1, 1, E1, at)
     _message(C1, 2, E1, at)
-    _message(C1, 3, E1, at, mass_run_id=777)                      # one recipient of a mass message
-    _message(C1, 4, E1, at, automation_kind="welcome_new_sub")    # an automation's send credited to E1
-    _message(C1, 5, AUTO, at)                                     # the Automation sentinel's
+    _message(C1, 3, E1, at, mass_run_id=777)
+    _message(C1, 4, E1, at, automation_kind="welcome_new_sub")
+    _message(C1, 5, AUTO, at)
     _message(C1, 6, None, at, direction="in")
     _message(C1, 7, E2, at)
     window = "from=2026-02-10&to=2026-02-10"
@@ -135,7 +111,6 @@ def case_s5_active_subs_are_counted_as_of_the_windows_end():
          Fan(account_id=C2, fan_id=5, subscribed_at=datetime(2026, 1, 1), subscription_expires_at=datetime(2026, 3, 1)))
     body = _get("/admin/stats/per-model?from=2026-03-01&to=2026-03-15")
     assert body["active_subs_source"] == "subscription_expires_at", body["active_subs_source"]
-    # Fans 1 and 4 were subscribed on 15 March; 2 had not subscribed yet; 5 had lapsed; 3 has no start date.
     assert _model(body, C2)["active_subs_count"] == 3, _model(body, C2)
 
 
@@ -143,9 +118,9 @@ def case_s6_new_subs_count_free_and_trial_subscribers_once_each():
     in_window = datetime(2026, 4, 10, 9, 0)
     _sale(C3, "subscription", 999, in_window, fan=1)
     _sale(C3, "subscription", 999, in_window, fan=8, status="refunded")
-    _add(SubscriberSnapshot(account_id=C3, fan_id=1, subscribe_at=in_window, seen_at=in_window),   # the paid one
-         SubscriberSnapshot(account_id=C3, fan_id=2, subscribe_at=datetime(2026, 4, 12), seen_at=in_window),  # free
-         SubscriberSnapshot(account_id=C3, fan_id=3, subscribe_at=datetime(2026, 3, 1), seen_at=in_window),   # before
+    _add(SubscriberSnapshot(account_id=C3, fan_id=1, subscribe_at=in_window, seen_at=in_window),
+         SubscriberSnapshot(account_id=C3, fan_id=2, subscribe_at=datetime(2026, 4, 12), seen_at=in_window),
+         SubscriberSnapshot(account_id=C3, fan_id=3, subscribe_at=datetime(2026, 3, 1), seen_at=in_window),
          SubscriberSnapshot(account_id=C3, fan_id=4, subscribe_at=None, seen_at=in_window))
     assert _model(_get("/admin/stats/per-model?from=2026-04-01&to=2026-04-30"), C3)["new_subs_count"] == 2
 
@@ -178,7 +153,7 @@ def case_employee_reports_from_the_rollup_equal_the_per_sale_read_under_every_ru
     _sale(C2, "custom", 450, datetime(2026, 6, 3, 0, 0), fan=25, manual=E1, status="pending")
     _sale(C2, "subscription", 1200, datetime(2026, 6, 3, 1, 0), fan=26)
     _sale(C2, "rebill", 1200, datetime(2026, 6, 3, 1, 0), fan=27, manual=E2)
-    start, end = datetime(2026, 6, 1, 0, 30), datetime(2026, 6, 3, 0, 59, 59)  # partial hours at both edges
+    start, end = datetime(2026, 6, 1, 0, 30), datetime(2026, 6, 3, 0, 59, 59)
 
     def sums(grouped: bool) -> dict:
         sales, _ = asyncio.run(credited_sales([C1, C2], start, end, grouped=grouped))
@@ -192,8 +167,6 @@ def case_employee_reports_from_the_rollup_equal_the_per_sale_read_under_every_ru
              {"exclude_welcome": True, "exclude_of_fee": True,
               "attribution": {"messages": "sender", "posts_tips": "converters", "subscriptions_chatter_opt_in": True}},
              {})
-    # Sales Settings are versioned (roadmap W6 6.4): each blob is saved from the start, so it credits every sale
-    # in the window; then a second version from mid-window splits it, which credits sale by sale.
     def save(blob: dict, since: str = "1970-01-01T00:00:00Z") -> None:
         r = OWNER_A.put("/admin/settings/sales", json=blob, params={"effective_from": since})
         assert r.status_code == 200, r.text
@@ -215,11 +188,9 @@ def case_employee_reports_from_the_rollup_equal_the_per_sale_read_under_every_ru
 
 
 def case_s8_day_buckets_follow_the_zones_offset_at_each_hour():
-    # New York springs forward on 2026-03-08 at 07:00 UTC (EST -5 -> EDT -4).
-    _sale(C1, "tip", 1, datetime(2026, 3, 8, 4, 30))    # 2026-03-07 23:30 EST
-    _sale(C1, "tip", 10, datetime(2026, 3, 9, 3, 30))   # 2026-03-08 23:30 EDT
-    _sale(C1, "tip", 100, datetime(2026, 3, 9, 4, 30))  # 2026-03-09 00:30 EDT
-    # Kolkata is UTC+5:30: 18:20 UTC is 23:50 that day, 18:40 UTC is 00:10 the next.
+    _sale(C1, "tip", 1, datetime(2026, 3, 8, 4, 30))
+    _sale(C1, "tip", 10, datetime(2026, 3, 9, 3, 30))
+    _sale(C1, "tip", 100, datetime(2026, 3, 9, 4, 30))
     _sale(C1, "tip", 1000, datetime(2026, 3, 20, 18, 20))
     _sale(C1, "tip", 10000, datetime(2026, 3, 20, 18, 40))
 

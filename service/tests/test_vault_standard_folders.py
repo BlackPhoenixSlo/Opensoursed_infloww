@@ -1,5 +1,4 @@
-"""Real temporary SQLite placement; no AI, OF requests, or fan messages."""
-import _harness  # first: binds a throwaway DB before engine imports
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import asyncio
@@ -69,7 +68,7 @@ async def case_seed_and_concurrent_refresh():
     async with get_session() as s:
         s.add_all([Account(id="standard-a"), Account(id="standard-b")])
     import vault_settings
-    for account in ("standard-a", "standard-b"):   # both per-Creator switches on: off is test_vault_settings.py
+    for account in ("standard-a", "standard-b"):
         await vault_settings.put(account, folder_price_final=True, standard_folders=True)
     async with get_session() as s:
         s.add_all([
@@ -182,10 +181,10 @@ async def case_saved_price_beats_ai_and_haggling():
     from automations import full_ai_sell as sell, full_ai_turn as turn
     from unittest.mock import AsyncMock, patch
     rows = [{"media_id": 55, "kind": "photo", "fields": {}, "folder_cents": 3500, "list_cents": 3500,
-             "folder_final": True}]   # `load_rows` marks rows when `vault_settings.folder_price_final` is on
+             "folder_final": True}]
     chosen = sell._offer(rows, [], sell.Ask("anything", "photo", 1), free=False)
     assert sell.folder_price(chosen) == 3500
-    hold = sell.hold_folder_price   # the one clamp `_sell` runs last (rwl3 A9)
+    hold = sell.hold_folder_price
     assert hold(sell.tease_price(chosen, 1000)).price_cents == 3500
     assert hold(sell.tease_price(chosen, 0)).price_cents == 3500
     free = sell._offer(rows, [], sell.Ask("anything", "photo", 1), free=True)

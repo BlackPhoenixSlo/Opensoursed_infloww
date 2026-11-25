@@ -1,7 +1,3 @@
-/**
- * Below lg the sidebar is an off-canvas drawer: the top bar's toggle opens
- * it, Escape closes it, and so does navigating to another route.
- */
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -15,16 +11,13 @@ vi.mock("@/components/AgencyNotifications", () => ({ useAgencyUnread: () => null
 vi.mock("@/components/ErrorBadge", () => ({ ErrorBadge: () => null }));
 vi.mock("@/components/shifts/ClockButton", () => ({
   default: () => null,
-  // A marker: ClockButton.test covers what the heartbeat sends.
   ClockHeartbeat: () => <span data-testid="clock-heartbeat" />,
 }));
-// The time-zone label's Applied settings read: nothing stored, so the browser's zone.
 vi.mock("@/lib/appliedSettings", () => ({
   useAppliedSettings: () => ({ data: undefined }),
   useAppliedSettingsAfterMount: () => ({ settings: undefined, failed: false }),
   useAgencyTimeZone: () => Intl.DateTimeFormat().resolvedOptions().timeZone,
 }));
-// The platform selector and gate read accounts and roster counts (PlatformSwitcher.test covers them).
 vi.mock("@/components/shell/PlatformSwitcher", () => ({
   default: () => null,
   usePlatformUnread: () => ({ onlyfans: { count: 0 }, fansly: { count: 0 } }),
@@ -36,7 +29,6 @@ import { settled } from "@/test-utils";
 
 beforeEach(() => {
   pathname = "/";
-  // Phone width: (min-width: 1024px) never matches.
   window.matchMedia = vi.fn().mockReturnValue({
     matches: false,
     addEventListener: vi.fn(),
@@ -44,7 +36,6 @@ beforeEach(() => {
   }) as unknown as typeof window.matchMedia;
 });
 
-// While the modal drawer is open Radix aria-hides the rest of the page.
 const toggle = () => screen.getByRole("button", { name: "Toggle sidebar", hidden: true });
 
 describe("AppShell drawer below lg", () => {
@@ -63,7 +54,6 @@ describe("AppShell drawer below lg", () => {
   });
 
   it("closes on a swipe left on the drawer or its backdrop, not on a swipe right", async () => {
-    // A 160px drawer (the test DOM has no layout): a 150px drag carries it past 75%.
     const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(160);
     render(<AppShell>page</AppShell>);
     const pt = (x: number) => ({ clientX: x, clientY: 300 });
@@ -82,7 +72,6 @@ describe("AppShell drawer below lg", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(toggle()).toHaveAttribute("aria-expanded", "false");
 
-    // The backdrop (the page beside the drawer) closes it too.
     fireEvent.click(toggle());
     swipe(document.querySelector("[data-state='open'].fixed.inset-0")!, 350, 200);
     await settled();
@@ -98,8 +87,8 @@ describe("AppShell drawer below lg", () => {
       fireEvent.touchEnd(el, { touches: [], changedTouches: [{ clientX: x1, clientY: y1 }] });
     };
     const page = main();
-    swipe(page, 10, 200);                      // iOS / Android back zone
-    swipe(page, 150, 160, 600);                // a vertical scroll
+    swipe(page, 10, 200);
+    swipe(page, 150, 160, 600);
     swipe(screen.getByLabelText("field"), 150, 300);
     const modal = document.createElement("div");
     modal.setAttribute("role", "dialog");
@@ -124,7 +113,6 @@ describe("AppShell drawer below lg", () => {
   });
 });
 
-/** Desktop width: (min-width: 1024px) matches. */
 const desktop = () => {
   window.matchMedia = vi.fn().mockReturnValue({
     matches: true,
@@ -168,7 +156,6 @@ describe("AppShell on Messages Pro: a window of its own (ADR-0002)", () => {
         expect(screen.queryByRole("button", { name: "Toggle sidebar" })).toBeNull();
         expect(main().style.getPropertyValue("--shell-top")).toBe("0px");
         expect(main()).toHaveTextContent("page");
-        // No Clock button here, so the clock's heartbeat runs headless (w4-a).
         expect(screen.getByTestId("clock-heartbeat")).toBeInTheDocument();
       });
     }
@@ -180,7 +167,6 @@ describe("AppShell on Messages Pro: a window of its own (ADR-0002)", () => {
     const open = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
     const { container } = render(<AppShell>page</AppShell>);
     const sidebar = container.querySelector("#app-sidebar") as HTMLElement;
-    // No separate pop-out arrow: the row itself opens the window.
     expect(sidebar.querySelector('a[aria-label="Open Messages Pro in a new tab"]')).toBeNull();
     const row = [...sidebar.querySelectorAll("a")].find((a) => a.textContent === "Messages Pro")!;
     expect(row).toHaveAttribute("href", "/messages-pro");
@@ -191,13 +177,11 @@ describe("AppShell on Messages Pro: a window of its own (ADR-0002)", () => {
     expect(popup.focus).toHaveBeenCalled();
     expect(screen.getByRole("banner")).toBeInTheDocument();
 
-    // A second click finds the window showing Messages Pro: focus it, no reload.
     popup.location = { pathname: "/messages-pro/acc1/123", search: "", href: "kept" };
     fireEvent.click(row);
     expect(open).toHaveBeenCalledTimes(2);
     expect(popup.location.href).toBe("kept");
 
-    // The collapsed rail's icon does the same.
     fireEvent.click(toggle());
     fireEvent.click(sidebar.querySelector('a[aria-label="Messages Pro"]')!);
     expect(open).toHaveBeenCalledTimes(3);
@@ -212,7 +196,6 @@ describe("AppShell on Messages Pro: a window of its own (ADR-0002)", () => {
     const sidebar = container.querySelector("#app-sidebar") as HTMLElement;
     expect(sidebar.querySelector('[aria-label="0 unread"]')).toHaveTextContent("0");
     const extra = screen.getByRole("button", { name: "Open another Messages Pro window" });
-    // A sibling of the row's link, never nested in it.
     expect(extra.closest("a")).toBeNull();
     fireEvent.click(extra);
     expect(open).toHaveBeenCalledWith("/messages-pro", "_blank", expect.stringContaining("popup"));
@@ -288,7 +271,6 @@ describe("AppShell on Messages Pro: a window of its own (ADR-0002)", () => {
     fireEvent.click(toggle());
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(toggle()).toHaveAttribute("aria-expanded", "false");
-    // Collapsed is Infloww's icon rail, not gone: still shown, 60px, icons named for screen readers.
     const rail = container.querySelector("#app-sidebar") as HTMLElement;
     expect(rail).toHaveClass("lg:flex", "w-[60px]");
     expect(rail.querySelector('a[aria-label="Dashboard"]')).not.toBeNull();
@@ -346,7 +328,6 @@ describe("AppShell on OF Manager from lg up: Infloww's icon rail", () => {
     const { container } = render(<AppShell>page</AppShell>);
     const rail = container.querySelector("#app-sidebar")!;
     expect(rail).toHaveClass("lg:flex", "w-[60px]");
-    // Icons only: the labels are names, not text, and the version line is gone.
     expect(rail).not.toHaveTextContent("Dashboard");
     expect(rail).not.toHaveTextContent(/Version/);
     expect(screen.getByRole("link", { name: "Dashboard" })).toHaveAttribute("href", "/");
@@ -376,7 +357,6 @@ describe("AppShell on OF Manager from lg up: Infloww's icon rail", () => {
       fireEvent.keyDown(flyout, { key: "Escape" });
       expect(screen.queryByRole("menu")).toBeNull();
 
-      // Leaving closes it after the same delay.
       fireEvent.click(group);
       expect(screen.getByRole("menu")).toBeInTheDocument();
       fireEvent.mouseLeave(group);
@@ -415,7 +395,6 @@ describe("AppShell on OF Manager from lg up: Infloww's icon rail", () => {
     expect(sidebar).toHaveClass("w-64");
     expect(sidebar).toHaveTextContent("Dashboard");
     expect(toggle()).not.toBeDisabled();
-    // The user's own collapse still folds it to the rail, as on main.
     fireEvent.click(toggle());
     expect(sidebar).toHaveClass("w-[60px]");
   });

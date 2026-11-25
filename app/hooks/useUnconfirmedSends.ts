@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * useUnconfirmedSends — one Creator's funnel / follow-up steps that may not
- * have sent (GET /admin/unconfirmed-sends, service/unconfirmed_sends_api.py)
- * plus a per-row Retry (POST /admin/unconfirmed-sends/retry) and It went through
- * (POST /admin/unconfirmed-sends/dismiss, asked first). The rows are the
- * query's; each row's op overlay is the pure reducer in
- * components/automations/unconfirmedSendsReducer.ts; this fetches and
- * dispatches. Mount it keyed by `accountId` (a Creator switch starts fresh).
- */
 
 import { useCallback, useMemo, useReducer } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -34,7 +25,6 @@ export function useUnconfirmedSends(accountId: string) {
       return r.rows ?? [];
     },
     staleTime: 30_000,
-    // An IN_FLIGHT ("Sending") row turns UNCONFIRMED or clears on its own.
     // eslint-disable-next-line local/no-fixed-polling -- state flips on timeout, no row written
     refetchInterval: 60_000,
     refetchOnWindowFocus: true,
@@ -62,7 +52,8 @@ export function useUnconfirmedSends(accountId: string) {
     }
     dispatch({ type: "done", key: row.key, op, result });
     const out = retryOutcome(result.status);
-    if (out === "error" && result.status !== 409) return;   // a 409: the row changed, show it as it is now
+    // A 409: the row changed, show it as it is now.
+    if (out === "error" && result.status !== 409) return;
     qc.setQueryData<UnconfirmedRow[]>([KEY, accountId], (d) => settleRows(d, row.key, out));
     void qc.invalidateQueries({ queryKey: [KEY, accountId] });
   }, [accountId, qc]);

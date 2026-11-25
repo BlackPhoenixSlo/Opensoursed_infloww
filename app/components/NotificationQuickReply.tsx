@@ -1,7 +1,5 @@
 "use client";
 
-/** The bell's quick reply to a message notification (NotificationBell's QuickReply): a line sent to the Fan's chat
- *  through the Thread's send hook. Its own module so the hooks stay out of the shell's first load. */
 import { useReducer, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 
@@ -16,9 +14,7 @@ import { sendStash } from "@/lib/sendStash";
 
 export function QuickReplyField({ accountId, fanId, name }: { accountId: string; fanId: FanId; name: string }) {
   const [state, dispatch] = useReducer(quickReplyReducer, QUICK_REPLY_EMPTY);
-  // Enabled: the thread read is what keeps the optimistic write from dating a cold thread fresh with one row.
   const handle = useChatMessages({ accountId, fanId });
-  // The Creator's own OF user: the bubble's sender, so it sits on our side.
   const meQ = useQuery(ofMeQuery(accountId));
   const sender = useSendMessage({
     accountId, fanId, hookHandle: handle,
@@ -29,11 +25,7 @@ export function QuickReplyField({ accountId, fanId, name }: { accountId: string;
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!canSubmit(state)) return;
-    // A failed send keeps its bubble, flagged failed, in the Fan's thread: the inbox row already reads as our
-    // reply, and the bubble's Retry (the send stash is shared) is the trace that it didn't go. Sending again
-    // from here retries that bubble (same line) or replaces it (new line): one bubble, one send per message.
-    // The Thread may have got there first: the send stash says whether the bubble is still retryable or went out;
-    // its cached row whether a Thread Retry is sending it now.
+    // A failed send keeps its bubble; resending retries or replaces it: one bubble, one send per message.
     const id = state.failed?.tempId;
     const plan = planSubmit(state, {
       stashed: id != null && sendStash.get(id) !== undefined,

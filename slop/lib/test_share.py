@@ -1,6 +1,3 @@
-"""Shared run (lib/share.py) through `share.main` with an injected child command: a tiny script that counts its
-starts in a file, blocks on a barrier file and exits with a chosen code. Each schedule asserts exit codes,
-printed lines and the child-start count. venv/bin/python -m pytest slop/lib/test_share.py"""
 from __future__ import annotations
 
 import fcntl
@@ -60,7 +57,6 @@ def _git(repo, *a):
 
 @pytest.fixture
 def w(tmp_path):
-    """A throwaway checkout, a share dir, the child script and the knobs every request of a test shares."""
     root = tmp_path / "repo"
     root.mkdir()
     (root / ".gitignore").write_text("count\nbarrier\nstopped\nshare/\n")
@@ -104,7 +100,7 @@ def w(tmp_path):
                              identity.env_id(os.environ)[0])
 
     yield W()
-    W.barrier.write_text("go\n")  # let any orphaned child end
+    W.barrier.write_text("go\n")
     for p in W.procs:
         if p.poll() is None:
             p.kill()
@@ -117,7 +113,6 @@ def _out(p: subprocess.Popen, timeout: float = 30) -> tuple[int, bytes]:
 
 
 def _lead_and_follow(w, *extra: str):
-    """A leader whose child is blocked on the barrier, and a follower that has joined it."""
     lead = w.start(*extra)
     w.until(lambda: w.starts() == 1)
     fol = w.start(*extra)
@@ -165,15 +160,14 @@ def test_leader_cancelled_leaves_followers_its_log_and_infra(w):
     lead.send_signal(signal.SIGTERM)
     lc, lo = _out(lead)
     fc, fo = _out(fol)
-    assert lc == 3 and b"child stopped" in lo  # stopped as nightly stops a child: SIGINT first
+    assert lc == 3 and b"child stopped" in lo
     assert b"slop: INFRA shared run: leader cancelled (SIGTERM)" in lo and b"follower stopped" not in lo
     assert fc == 3 and lo in fo
     assert b"slop: INFRA shared run of pid %d: leader cancelled/died without a result" % lead.pid in fo
-    assert w.starts() == 1 and not list(w.dir.glob("*.result.json"))  # cancelled: no result published
+    assert w.starts() == 1 and not list(w.dir.glob("*.result.json"))
 
 
 def test_cancelled_leader_is_infra_even_when_its_child_exits_0(w):
-    """R5-8: a child that exits 0 on the leader's SIGINT is no success (red before: the leader returned it)."""
     lead, fol = _lead_and_follow(w, "stopcode=0")
     lead.send_signal(signal.SIGTERM)
     (lc, lo), (fc, fo) = _out(lead), _out(fol)
@@ -185,11 +179,11 @@ def test_leader_cancelled_after_its_child_closed_stdout_stops_it_gracefully(w):
     marker = w.count.parent / "stopped"
     lead, fol = _lead_and_follow(w, "close=1", f"stopped={marker}")
     w.until(lambda: b"slop: folder" in (w.dir / f"{w.key('close=1', f'stopped={marker}')}.{_nonce(w, 'close=1', f'stopped={marker}')}.log").read_bytes())
-    time.sleep(0.3)  # the tee has seen EOF: the leader sits in p.wait()
+    time.sleep(0.3)
     lead.send_signal(signal.SIGTERM)
     lc, lo = _out(lead)
     fc, fo = _out(fol)
-    assert marker.read_text() == "SIGINT\n"  # nightly's graceful stop, not kill_tree's SIGTERM
+    assert marker.read_text() == "SIGINT\n"
     assert lc == 3 and b"slop: INFRA shared run: leader cancelled (SIGTERM)" in lo and b"follower stopped" not in lo
     assert fc == 3 and b"leader cancelled/died without a result" in fo and w.starts() == 1
 
@@ -213,8 +207,6 @@ def test_source_changed_mid_run_is_infra_with_no_second_child(w):
 
 
 def test_a_later_request_leads_fresh(w):
-    """Proves only that a request after the run ended leads a new execution (the lock is free by then); the
-    "never serve a finished generation" mutation is caught by the rollover/publication-gap schedules below."""
     w.release()
     assert _out(w.start())[0] == 0
     code, out = _out(w.start())
@@ -226,7 +218,6 @@ def _nonce(w, *extra: str) -> str:
 
 
 def _hold(w) -> int:
-    """This test as a leader that holds the lock but has not published its <key>.json yet."""
     w.dir.mkdir(parents=True, exist_ok=True)
     fd = os.open(w.dir / f"{w.key()}.lock", os.O_RDWR | os.O_CREAT, 0o644)
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -246,7 +237,7 @@ def _publish(w, nonce: str, log: bytes, result: dict | None = None) -> None:
 def test_publication_gap_of_1s_joins_the_new_generation(w, stale):
     src = identity.source_id(w.count.parent)
     fd = _hold(w)
-    if stale:  # A finished (result published), B leads before the follower reads
+    if stale:
         _publish(w, "a", b"A output\n", {"exit": 1, "source_id_end": src})
     fol = w.start()
     time.sleep(1)
@@ -269,21 +260,19 @@ def test_publication_gap_over_10s_is_infra_did_not_publish(w):
 
 
 def test_rollover_returns_a_while_b_still_runs(w):
-    """A published its result; the lock is held again (B's run): the follower answers with A at once."""
     src = identity.source_id(w.count.parent)
     fd = _hold(w)
     _publish(w, "a", b"A output\n")
     fol = w.start()
     assert fol.stdout.readline() == PREFIX + b"%d (started T)\n" % os.getpid()
     _publish(w, "a", b"A output\n", {"exit": 1, "source_id_end": src})
-    _publish(w, "b", b"B output\n")  # B leads; the lock stays held for its whole run
+    _publish(w, "b", b"B output\n")
     code, out = _out(fol, timeout=10)
     os.close(fd)
     assert code == 1 and out == b"A output\n" and w.starts() == 0
 
 
 def test_a_new_leader_never_deletes_an_earlier_generation(w):
-    """Another caller's shorter SLOP_SHARE_WAIT_S must not remove a generation a default-wait follower may still read."""
     k = w.key()
     w.dir.mkdir(parents=True, exist_ok=True)
     old = [w.dir / f"{k}.a.log", w.dir / f"{k}.a.result.json"]
@@ -304,7 +293,6 @@ def _in_process(w, monkeypatch, capfdbinary, *extra: str) -> tuple[int, bytes]:
 
 @pytest.mark.parametrize("where", ["publication", "spawn"])
 def test_leader_cancelled_while_publishing_or_spawning_never_orphans_a_child(w, monkeypatch, capfdbinary, where):
-    """A signal inside write_atomic (before any child) or inside Popen (child forked, not yet returned)."""
     marker = w.count.parent / "stopped"
     kids = []
     if where == "publication":
@@ -319,10 +307,10 @@ def test_leader_cancelled_while_publishing_or_spawning_never_orphans_a_child(w, 
 
         def hit(cmd, *a, **k):
             p = real(cmd, *a, **k)
-            if "barrier=" not in " ".join(map(str, cmd)):  # identity's git calls
+            if "barrier=" not in " ".join(map(str, cmd)):
                 return p
             kids.append(p)
-            w.until(lambda: w.starts() == 1)  # the child is running and blocked on the barrier
+            w.until(lambda: w.starts() == 1)
             os.kill(os.getpid(), signal.SIGTERM)
             return p
         monkeypatch.setattr(share.subprocess, "Popen", hit)
@@ -333,14 +321,14 @@ def test_leader_cancelled_while_publishing_or_spawning_never_orphans_a_child(w, 
         assert code == 3 and w.starts() == 0
     else:
         assert code == 3 and marker.read_text() == "SIGINT\n" and kids[0].poll() is not None
-    [lock] = w.dir.glob("*.lock")  # released: the next request can lead
+    [lock] = w.dir.glob("*.lock")
     fcntl.flock(os.open(lock, os.O_RDWR), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 def test_follower_wait_is_bounded(w):
     lead = w.start()
     w.until(lambda: w.starts() == 1)
-    fol = w.start(env={**os.environ, "SLOP_SHARE_WAIT_S": "1"})  # admission-only: same Run identity
+    fol = w.start(env={**os.environ, "SLOP_SHARE_WAIT_S": "1"})
     fc, fo = _out(fol)
     assert fc == 3 and fo.startswith(PREFIX) and b"SLOP_SHARE_WAIT_S=1" in fo
     assert lead.poll() is None
@@ -371,16 +359,14 @@ def test_nightly_children_never_share(tmp_path, monkeypatch):
 
 
 def test_leader_liveness_is_pid_and_start_time():
-    """A reused pid (another start time) is not the leader: no follower waits on an unrelated process."""
     me = os.getpid()
     assert share._leader_alive({"pid": me, "pid_start": share.procs.start_time(me)})
     assert not share._leader_alive({"pid": me, "pid_start": "Mon Jan  1 00:00:00 2001"})
-    assert share._leader_alive({"pid": me})  # a generation published before pid_start: pid only
+    assert share._leader_alive({"pid": me})
     assert not share._leader_alive({"pid": "x"})
 
 
 def test_follower_reads_the_leader_start_time_at_most_every_few_seconds(tmp_path, monkeypatch):
-    """The follower polls every STEP_S: a pid probe each time, the start time (a `ps` off Linux) once per START_CHECK_S."""
     calls = []
     real = share.procs.start_time
     monkeypatch.setattr(share.procs, "start_time", lambda pid: (calls.append(pid), real(pid))[1])
@@ -388,17 +374,15 @@ def test_follower_reads_the_leader_start_time_at_most_every_few_seconds(tmp_path
     meta = {"pid": me, "pid_start": real(me), "nonce": "n", "source_id": "s"}
     lock = tmp_path / "k.lock"
     held, fd = os.open(lock, os.O_RDWR | os.O_CREAT), os.open(lock, os.O_RDWR)
-    share.fcntl.flock(held, share.fcntl.LOCK_EX)  # the live leader's lock: another open file, so it conflicts
+    share.fcntl.flock(held, share.fcntl.LOCK_EX)
     try:
-        assert share._follow(fd, tmp_path, "k", meta, wait_s=1.0) == share.INFRA  # SLOP_SHARE_WAIT_S ran out
+        assert share._follow(fd, tmp_path, "k", meta, wait_s=1.0) == share.INFRA
     finally:
         os.close(held), os.close(fd)
     assert len(calls) == 1
 
 
 def test_share_stays_stdlib_only():
-    """slop/run starts it with the system python3 before the gate: it imports with no site-packages, and
-    without lib/nightly.py."""
     code = "import sys; sys.path.insert(0, %r); import slop.lib.share; print('slop.lib.nightly' in sys.modules)"
     out = subprocess.run([sys.executable, "-I", "-S", "-c", code % str(REPO)], capture_output=True, text=True, check=True).stdout
     assert out.strip() == "False"

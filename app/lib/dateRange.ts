@@ -1,16 +1,3 @@
-/**
- * dateRange.ts — shared date-boundary helpers for the date-range pickers.
- *
- * These three primitives (daysAgoISO / todayISO / toLocalIso) were copied
- * verbatim between app/app/messages/page.tsx and app/app/stats/page.tsx.
- * Two copies of UTC/local day-boundary math drift: a fix in one page
- * silently leaves the other wrong, and the boundary logic is
- * correctness-sensitive (it keeps a Pacific user's "today" aligned with
- * their wall clock). Centralized here so both consumers share one copy.
- */
-
-/** The wall-clock parts of instant `at` in `timeZone` (the browser's when
- *  null or absent). */
 function wallParts(at: Date, timeZone?: string | null) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: timeZone ?? undefined, hourCycle: "h23",
@@ -20,65 +7,44 @@ function wallParts(at: Date, timeZone?: string | null) {
   return { y: part("year"), m: part("month"), d: part("day"), h: part("hour"), mi: part("minute"), s: part("second") };
 }
 
-/** YYYY-MM-DD for `n` days ago (picker output format), in `timeZone` (the
- *  Agency's report time zone), or the browser's when null or absent. */
 export function daysAgoISO(n: number, timeZone?: string | null): string {
   const { y, m, d } = wallParts(new Date(), timeZone);
   return new Date(Date.UTC(y, m - 1, d - n)).toISOString().slice(0, 10);
 }
 
-/** YYYY-MM-DD for today (picker output format), in `timeZone` when given. */
 export function todayISO(timeZone?: string | null): string {
   return daysAgoISO(0, timeZone);
 }
 
-/** The reports' fixed range presets: today alone, or the last 7, 30, 90 or 365 days. */
 export type FixedRangePreset = "day" | "7d" | "30d" | "90d" | "365d";
 
-/** Each preset's calendar days, today included. */
 export const PRESET_DAYS: Record<FixedRangePreset, number> = { day: 1, "7d": 7, "30d": 30, "90d": 90, "365d": 365 };
 
-/** A report preset's `[from, to]`: exactly its `PRESET_DAYS` calendar days
- *  ending today, so "Last 7 days" is today and the 6 days before (Infloww's
- *  stop at yesterday; ours keep today, so today's pending sales show), in
- *  `timeZone` when given (docs/spec/phase-04-apply-stored-settings.md, story
- *  18). Every report's "Last N days" is this window. */
+// Keeps today (unlike Infloww's, which stops at yesterday) so today's pending sales show.
 export function presetRange(p: FixedRangePreset, timeZone?: string | null): [string, string] {
   return [daysAgoISO(PRESET_DAYS[p] - 1, timeZone), todayISO(timeZone)];
 }
 
-/** The YYYY-MM-DD day `n` days after `day` (negative `n` = before), in UTC so no DST shift moves it. */
 export function addDayStr(day: string, n: number): string {
   const [y, m, d] = day.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
 }
 
-/** The day `n` years after YYYY-MM-DD `day`; a Feb 29 with no Feb 29 that
- *  year lands on Mar 1. */
 export function shiftYears(day: string, n: number): string {
   const [y, m, d] = day.split("-").map(Number);
   return new Date(Date.UTC(y + n, m - 1, d)).toISOString().slice(0, 10);
 }
 
-/** The pickable days of Infloww's range pickers, `[min, max]`: none before one
- *  year ago, none after two days ahead, counted from today in `timeZone` (the
- *  report time zone; the browser's when null or absent). */
 export function dateBounds(timeZone?: string | null): [string, string] {
   const today = todayISO(timeZone);
   return [shiftYears(today, -1), addDayStr(today, 2)];
 }
 
-/** How far `timeZone`'s wall clock (the browser's when null or absent) is
- *  ahead of UTC at instant `at`, in ms. */
 function zoneOffsetMs(at: number, timeZone?: string | null): number {
   const { y, m, d, h, mi, s } = wallParts(new Date(at), timeZone);
   return Date.UTC(y, m - 1, d, h, mi, s) - Math.floor(at / 1000) * 1000;
 }
 
-/** The first instant of the day whose midnight read as UTC is `wall`, in
- *  `timeZone` (the browser's when null or absent). Of the two offset guesses,
- *  the earliest instant already on that day: on a day whose midnight is
- *  skipped that is the change itself, on one whose midnight repeats the first. */
 function dayStartMs(wall: number, timeZone?: string | null): number {
   const first = wall - zoneOffsetMs(wall, timeZone);
   const second = wall - zoneOffsetMs(first, timeZone);
@@ -89,8 +55,6 @@ function dayStartMs(wall: number, timeZone?: string | null): number {
   return [Math.min(first, second), Math.max(first, second)].find(onDay) ?? Math.max(first, second);
 }
 
-/** The current calendar month in `timeZone` (the browser's when null or
- *  absent): its first instant, up to the next month's first instant. */
 export function monthRange(timeZone?: string | null): [Date, Date] {
   const { y, m } = wallParts(new Date(), timeZone);
   return [
@@ -99,17 +63,6 @@ export function monthRange(timeZone?: string | null): [Date, Date] {
   ];
 }
 
-// Convert a bare YYYY-MM-DD (picker output) into a full UTC-instant ISO
-// string with millisecond precision: the day's first instant, or with
-// `end=true` 1 ms before the next day's, in `timeZone` when given (the
-// Agency's report time zone, so every report consumer gets the same window:
-// phase-04 spec, story 18) or else the browser's. Ending at the next day's
-// start means a skipped or repeated hour never leaves a gap or overlap.
-// Backend `_parse_date` (stats.py) converts the tzinfo back to UTC; this
-// keeps a Pacific user's "today" boundary aligned with their wall clock.
-// A YYYY-MM-DDTHH:00 (the picker's hour precision) is that wall-clock hour's
-// first instant, or with `end=true` 1 ms before the next hour's. Anything
-// else that already has a time component is passed through.
 export function toLocalIso(date: string | null, end: boolean, timeZone?: string | null): string | null {
   if (!date) return null;
   const hour = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):00$/.exec(date);
@@ -129,11 +82,6 @@ export function toLocalIso(date: string | null, end: boolean, timeZone?: string 
 
 const HOUR_MS = 3_600_000;
 
-/** The range of equal length just before picker range `[from, to]` (YYYY-MM-DD, or YYYY-MM-DDTHH:00 at hour
- *  precision), for the reports' change against the previous period; null without both ends or with `to` before
- *  `from`. Counted on the wall clock, whole hours with each day running 12 AM to 11 PM, and given back in the same
- *  form, so `toLocalIso` places it in the report time zone: a range over a daylight-saving change keeps its
- *  wall-clock hours, and a whole-day range gives whole days. */
 export function priorRange(from: string | null, to: string | null): [string, string] | null {
   const wall = (v: string, end: boolean) => Date.parse(`${v.length > 10 ? v : `${v}T${end ? "23" : "00"}:00`}:00Z`);
   const back = (at: number, end: boolean) => {
@@ -147,17 +95,8 @@ export function priorRange(from: string | null, to: string | null): [string, str
   return [back(f - (t - f + HOUR_MS), false), back(f - HOUR_MS, true)];
 }
 
-/** The Dashboard's period tabs, by id (docs/infloww-layouts/dashboard.md,
- *  #22-#25 and #96; `last30Days` replaces the previous calendar-month tab). */
 export type Period = "yesterday" | "today" | "week" | "month" | "last30Days";
 
-/** A Dashboard period's `[from, to]` instants: whole days cut at midnight in
- *  `timeZone` (the Agency's report time zone, the browser's when null), `to`
- *  1 ms before the next period's first instant. `week` is the seven days from
- *  the last `weekStart`, `month` the whole calendar month, as the bundle cuts
- *  them (docs/spec/infloww-parity-round-2/phase-01-dashboard.md, Interfaces;
- *  stories 7, 8 and 10); `last30Days` the reports' "Last 30 days" (`presetRange("30d")`, today and the 29 calendar
- *  days before), so one label is one window on the Dashboard and in Creator reports. */
 export function periodWindow(
   period: Period, timeZone: string | null, weekStart: "monday" | "sunday",
 ): [string, string] {

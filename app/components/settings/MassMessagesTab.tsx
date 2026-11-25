@@ -1,25 +1,5 @@
 "use client";
 
-/**
- * MassMessagesTab — past mass-message broadcasts, per account.
- *
- * Reads broadcasts from the relay's local cache + offers bulk-cancel
- * actions. Unlike per-chat unsend, mass-message unsend has no edit
- * window — OF reports `canUnsend: true, unsendSeconds: 1000000` on
- * these rows long after the 24h chat window has closed.
- *
- * Bulk actions run client-side over the model chips' scope (massUnsendRules.ts
- * `bulkTargets`; "Hide unsent" never matters); each row's cancel mutation
- * already write-throughs the cache + invalidates the read query, so the UI
- * converges without manual refetch logic. The hourly Auto-unsend card is its
- * own Smart Messages tab (`AutoUnsendCard`).
- *
- * Above the card, the capture's OF filter bar (#66 to #79): Search for message and Sending Date filter the
- * loaded rows client side when Search is pressed (or Enter), Reset clears them, Export downloads the listed
- * rows as CSV (`massFilterBar.ts`). The bulk actions act on the filtered rows only. A Sending Date older than
- * the "Sent in" window widens it until Reset, as the cache read takes `days_back` alone (up to 365 days, 100 rows per
- * Creator); with a filter applied and a Creator's read full, a line says older matches may be hidden (`mayHideOlder`).
- */
 
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
@@ -51,19 +31,16 @@ import { useBulkUnsend } from "./useBulkUnsend";
 
 const RANGE_OPTIONS = RANGE_DAYS.map((days) => ({ label: `Last ${days} days`, days }));
 
-/** What the page shows for a failed refresh / load; the raw error stays in the tooltip and the console. */
 const REFRESH_FAILED = "Couldn't refresh from OnlyFans. Check the creator's connection.";
 const LOAD_FAILED = "Couldn't load sent mass messages.";
 
+// OF keeps canUnsend: true (unsendSeconds 1000000) on mass rows long after the 24h chat window; no edit window here.
 export default function MassMessagesTab() {
   const accounts = useActiveAccounts();
   const accountIds = useMemo(() => accounts.map((a) => a.id), [accounts]);
   const [filter, dispatch] = useReducer(massFilterReducer, initialMassFilter);
-  // The model chips (`models`, empty = every Creator; bulk actions take this scope) and "Hide unsent" are the
-  // reducer's too: with the bar they decide the listed rows and the bulk targets.
   const { daysBack, draft, hideUnsent, models: selectedModels } = filter;
-  // The bulk unsend run: its action, "N of M" progress and the note it left. Held by the query
-  // client, not this tab (useBulkUnsend.ts), so it and its close-tab warning outlive a tab switch.
+  // Bulk run lives in the query client so it and its close-tab warning outlive a tab switch.
   const { run: bulk, clear: clearBulk, nothing: nothingToBulk, start: startBulk } = useBulkUnsend();
   const bulkRunning = bulk.running;
   const bulkLine = bulkStatusLine(bulk);
@@ -77,11 +54,8 @@ export default function MassMessagesTab() {
   const { rows: loaded, isLoading, isFetching, error, queries, limit } = useMassMessages(accountIds, { daysBack });
   const cancelM = useCancelMassMessage();
   const refreshM = useRefreshMassMessages();
-  // Broadcasts OF is still delivering; each one's finish refreshes its Creator's rows.
   const sending = useMassQueueProgress(accountIds, daysBack);
-  // The Sent date & time column reads in the report time zone, as the bundle's does.
   const reportTz = useAppliedSettings().data?.preferences?.report_tz ?? null;
-  // The filter bar's applied search + Sending Date; everything below (list, counts, bulk) reads these rows.
   const rows = useMemo(() => filterMassRows(loaded, filter.applied, reportTz), [loaded, filter.applied, reportTz]);
 
   const refreshVia = (vars: { accountIds: string[]; daysBack: number }) =>
@@ -91,8 +65,6 @@ export default function MassMessagesTab() {
     refreshVia({ accountIds, daysBack });
   };
 
-  // First-mount auto-warm: if the cache is empty for this account/range,
-  // fire a refresh so the user doesn't sit on an empty list.
   const autoRefreshedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (isLoading || isFetching || refreshM.isPending) return;
@@ -105,8 +77,6 @@ export default function MassMessagesTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountIds.join(","), daysBack, isLoading, isFetching]);
 
-  // Drop ids from the filter set when the account is no longer active so
-  // we don't render an empty list filtered by a model that's gone.
   useEffect(() => {
     dispatch({ type: "liveModels", ids: accountIds });
   }, [accountIds]);
@@ -116,16 +86,11 @@ export default function MassMessagesTab() {
   const accountName = (id?: string) =>
     accounts.find((a) => a.id === id)?.nickname || id || "?";
 
-  // Filter visible rows by selected models. Empty set = show everything.
-  // Bulk actions share the model chips' scope (not the "Hide unsent" box).
   const visibleRows = useMemo(
     () => visibleMassRows(rows, selectedModels, hideUnsent),
     [rows, selectedModels, hideUnsent],
   );
 
-  /** Unsend a target subset of rows, Creator by Creator, one at a time
-   *  (`unsendByCreator`), with one combined confirmation up front; a run
-   *  already going (even one started before a remount) refuses a second. */
   async function bulkCancel(actionKey: BulkAction, label: string) {
     clearBulk();
     const targets = bulkTargets(rows, selectedModels, actionKey, Date.now());
@@ -142,14 +107,10 @@ export default function MassMessagesTab() {
     await startBulk(actionKey, targets);
   }
 
-  // Counters for the button labels — shows up-front whether each action
-  // will do anything before the user clicks. The age gates move with the
-  // clock, so a one-minute tick keeps "(N)" in step with the click's count.
   const counts = useMemo(
     () => bulkCounts(rows, selectedModels, now),
     [rows, selectedModels, now],
   );
-  // A search / Sending Date reads only the loaded rows: the newest `limit` per Creator. Say so when one came back full.
   const olderHidden = mayHideOlder(
     filter.applied,
     accountIds.flatMap((id, i) => (selectedModels.size === 0 || selectedModels.has(id) ? [queries[i]?.data?.length ?? 0] : [])),
@@ -158,10 +119,6 @@ export default function MassMessagesTab() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* The OF filter bar (#66, #73, #76, #77, #79), all 32px: fields 12px
-       *  apart at the sides (#74), labels 8px from their field (#75), buttons
-       *  8px apart (#78). The search box is 230px (#66), Sending Date antd's
-       *  250px range. Search (or Enter) applies, Reset clears. */}
       <form
         className="flex flex-wrap items-center"
         onSubmit={(e) => { e.preventDefault(); dispatch({ type: "apply", now: Date.now() }); }}
@@ -198,8 +155,6 @@ export default function MassMessagesTab() {
       </form>
       <IfCard title="Mass messages" extra={(
         <div className="flex items-center gap-3 flex-wrap justify-end">
-          {/* An Inflowwww extra: the list's own filters, where Infloww's
-           *  OF list has the filter bar above it. */}
           <ExtraTag />
           <IfSwitch label="Hide unsent" checked={hideUnsent} onChange={(on) => dispatch({ type: "hideUnsent", on })} />
           <IfNativeSelect
@@ -255,10 +210,6 @@ export default function MassMessagesTab() {
           </div>
         )}
 
-        {/* Bulk action bar. Disabled when nothing matches so the user
-         *  doesn't fire a confirmation just to be told "nothing to do".
-         *  An Inflowwww extra: Infloww's OF list unsends one row at a time,
-         *  from its Actions column (capture growth-smart-messages#94). */}
         <div className="hidden md:flex items-center gap-2 flex-wrap mb-4 pb-4 border-b border-border">
           <span className="text-[14px] text-fg-dim">
             Bulk actions ({counts.all} unsendable in view)
@@ -294,16 +245,10 @@ export default function MassMessagesTab() {
           </div>
         ))}
 
-        {/* The OF child's list as the capture's table (#80 to #94) in a
-         *  horizontal scroller, Message pinned left and Actions right as antd
-         *  pins them; a container, so the empty line spans its visible width. */}
         <div className="@container overflow-x-auto">
           <table className={cn(IF_TABLE.table, "table-fixed")} style={{ width: TABLE_WIDTH }}>
             <thead>
               <tr>
-                {/* The bundle's middle-size head (`IF_TABLE`): 46px on #353535,
-                 *  a 1px rule under it and a 1px by 22px divider after every
-                 *  column but the last (capture Notes). */}
                 {COLUMNS.map((c) => (
                   <th
                     key={c.label}
@@ -315,8 +260,6 @@ export default function MassMessagesTab() {
                     )}
                   >
                     {c.label === "Creator" ? (
-                      // Ours: the list spans the active Creators, where the
-                      // bundle's shows the one picked in the header.
                       <span className="inline-flex items-center gap-1.5 whitespace-nowrap">{c.label}<ExtraTag /></span>
                     ) : c.label}
                   </th>
@@ -327,10 +270,6 @@ export default function MassMessagesTab() {
               {visibleRows.length === 0 ? (
                 <tr>
                   <td colSpan={COLUMNS.length} className="p-0">
-                    {/* The bundle's heights (capture Notes): a 420px box while
-                     *  loading; empty, 12px of cell padding and 220px of
-                     *  margin above and below the 90px illustration (our
-                     *  redrawn art, `EmptyState size="md"`) and the line. */}
                     {isLoading || refreshing ? (
                       <div className="sticky left-0 w-[100cqw] h-[420px] grid place-items-center text-[14px] text-muted">
                         {isLoading ? "Loading…" : "Fetching from OF…"}
@@ -373,7 +312,6 @@ export default function MassMessagesTab() {
   );
 }
 
-/** A failed read's plain line and its Retry; the raw error is the line's tooltip. */
 function FailLine({ text, detail, onRetry }: { text: string; detail: string; onRetry: () => void }) {
   return (
     <div role="alert" className="mb-3 flex flex-wrap items-center gap-x-3 text-[14px] text-err">
@@ -383,8 +321,6 @@ function FailLine({ text, detail, onRetry }: { text: string; detail: string; onR
   );
 }
 
-/** The capture's OF columns, with our Creator column (an Inflowwww extra)
- *  before Actions. */
 const COLUMNS: readonly { label: string; width: number }[] = [
   ...SM_MASS_COLUMNS.slice(0, -1),
   { label: "Creator", width: 200 },

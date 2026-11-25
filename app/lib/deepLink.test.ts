@@ -39,9 +39,9 @@ describe("pick", () => {
     { text: "Advanced", kind: "toggle" },
   ];
   it.each([
-    ["OF mass messages", 1], // exact, the tab over the same-named heading
-    ["the Auto-unsend card", 2], // prefix of the heading's text
-    ["mass messages", -1], // a suffix is not a match
+    ["OF mass messages", 1],
+    ["the Auto-unsend card", 2],
+    ["mass messages", -1],
     ["Advanced settings", -1],
     ["the Advanced section", 4],
     ["+", -1],

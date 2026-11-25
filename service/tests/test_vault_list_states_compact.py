@@ -1,41 +1,7 @@
 #!/usr/bin/env python3
-"""
-`vault_items.raw_json` and `vault_response_cache` keep only the `listStates`
-entries with `hasMedia`.
-Plain-assert, no pytest (repo convention).
-
-Why: OF sends EVERY list the creator has on every media item (measured 786 per
-item, 780 `hasMedia: false`), so each raw_json was ~100 KB and one box held
-2 GB of them; the relay OOM'd when the vault opened. Every reader uses only the
-`hasMedia` entries, so the rest is cut on write (`vault_mirror.compact_list_states`)
-and once from existing rows at boot (`engine.compact_vault_list_states_once`,
-which also empties `vault_response_cache`: it refills from OF).
-
-Cases:
-  case_helper_table — the pure rule: drops falsy hasMedia + non-dicts, keeps the
-      key (an empty list, never removed), returns the SAME object when nothing
-      is dropped, never mutates its input.
-  case_row_values_writes_compact_raw_json — the write path: raw_json trimmed,
-      of_folder_ids unchanged, the caller's OF dict untouched.
-  case_cache_put_trims_media_pages_and_by_id — vault_cache.put stores media
-      pages and by-id media trimmed; a /vault/lists page's folders (their own
-      `hasMedia: false`) are untouched; the caller's payload is not mutated.
-  case_compaction_streams_and_only_rewrites_what_shrinks — 786 lists incl. 3
-      hasMedia → 3; no-listStates / already-compact / junk / NULL rows byte-equal;
-      of_folder_ids + updated_at never move; batches of 2 cross the keyset; the
-      marker stops a second run; vault_response_cache emptied.
-  case_init_db_compacts_at_boot — a fresh box (init_db's create_all branch) is
-      marked done; a pre-#816 box's boot (catch-up branch, no marker) applies
-      both (row compacted, cache wiped, marker written); a populated box with no
-      alembic stamp (create_all branch) compacts too (W30 F24).
-
-Run: cd service/tests && \
-  PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_list_states_compact.py
-Exit 0 = all cases passed. Temp DBs only (never prod).
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -56,8 +22,8 @@ import vault_mirror  # noqa: E402
 db_engine = importlib.import_module("db.engine")  # `db.engine` the attr is the AsyncEngine
 
 
+# OF sends every list the creator has on every media item (measured 786, 780 hasMedia false)
 def _lists(n: int, has: tuple[int, ...]) -> list[dict]:
-    """`n` OF lists as one media item carries them; ids in `has` hold the media."""
     out = [{"id": 1, "type": "posts", "name": "Posts", "hasMedia": False, "canAddMedia": False}]
     out += [{"id": 100 + i, "type": "custom", "name": f"L{i}", "hasMedia": (100 + i) in has,
              "canAddMedia": True} for i in range(n - 1)]
@@ -67,7 +33,6 @@ def _lists(n: int, has: tuple[int, ...]) -> list[dict]:
 def case_helper_table():
     keep = {"id": 7, "type": "custom", "hasMedia": True}
     rows = [
-        # (input, expected listStates or "same")
         ({"id": 1}, "same"),
         ({"id": 1, "listStates": None}, "same"),
         ({"id": 1, "listStates": []}, "same"),
@@ -99,7 +64,6 @@ def case_row_values_writes_compact_raw_json():
     assert json.loads(v["of_folder_ids"]) == [105, 300, 700], v["of_folder_ids"]
     assert m == before, "the caller's OF dict must not be mutated"
     assert len(v["raw_json"]) < 1000, len(v["raw_json"])
-    # no listStates key stays absent (vault_runs: missing = "keep known folders")
     v2 = vault_mirror.row_values("acc", {"id": 6, "type": "photo"})
     assert "listStates" not in json.loads(v2["raw_json"])
 
@@ -149,11 +113,11 @@ def case_compaction_streams_and_only_rewrites_what_shrinks():
     bloated = {"id": 1, "type": "photo", "listStates": _lists(786, (101, 150, 800))}
     seed = {
         1: json.dumps(bloated),
-        2: json.dumps({"id": 2, "type": "photo"}),                       # no listStates
-        3: json.dumps({"id": 3, "listStates": [{"id": 9, "hasMedia": True}]}),  # already compact
+        2: json.dumps({"id": 2, "type": "photo"}),
+        3: json.dumps({"id": 3, "listStates": [{"id": 9, "hasMedia": True}]}),
         4: "{not json",
         5: None,
-        6: json.dumps({"id": 6, "listStates": [{"id": 1, "hasMedia": False}]}),  # all dropped
+        6: json.dumps({"id": 6, "listStates": [{"id": 1, "hasMedia": False}]}),
     }
     with eng.begin() as c:
         c.exec_driver_sql("CREATE TABLE vault_items (account_id VARCHAR NOT NULL, media_id BIGINT NOT NULL, "
@@ -183,7 +147,6 @@ def case_compaction_streams_and_only_rewrites_what_shrinks():
     with eng.connect() as c:
         assert c.execute(sa.text("SELECT count(*) FROM vault_response_cache")).scalar() == 0, "cache wiped"
 
-    # marker: a second run does nothing, even with a fresh bloated row
     with eng.begin() as c:
         c.execute(sa.text("UPDATE vault_items SET raw_json = :r WHERE media_id = 1"),
                   {"r": json.dumps(bloated)})
@@ -193,15 +156,12 @@ def case_compaction_streams_and_only_rewrites_what_shrinks():
 
 
 def case_init_db_compacts_at_boot():
-    """The relay never runs alembic: the harness DB was built by init_db (fresh
-    branch, stamped), so this second boot takes the catch-up branch."""
     eng = sa.create_engine(db_engine.sync_database_url())
     raw = json.dumps({"id": 77, "type": "photo", "listStates": _lists(50, (110,))})
     with eng.begin() as c:
         assert c.execute(sa.text("SELECT 1 FROM data_migrations WHERE name = :n"),
                          {"n": db_engine._VAULT_LIST_STATES_COMPACT}).first() is not None, \
             "the fresh-box branch marks it done (nothing to compact; a 2nd boot must not wipe the cache)"
-        # Now play a box from before #816: no marker, a fat row, a cached page.
         c.execute(sa.text("DELETE FROM data_migrations WHERE name = :n"),
                   {"n": db_engine._VAULT_LIST_STATES_COMPACT})
         c.execute(sa.text("INSERT OR IGNORE INTO accounts (id, nickname, color) VALUES ('boot', 'boot', '#aaaaaa')"))
@@ -219,7 +179,6 @@ def case_init_db_compacts_at_boot():
     with eng.connect() as c:
         assert c.execute(sa.text("SELECT count(*) FROM vault_response_cache")).scalar() == 0, "cache wiped"
 
-    # W30 F24: a POPULATED box with no alembic stamp takes the create_all branch — it still compacts.
     with eng.begin() as c:
         c.execute(sa.text("DELETE FROM data_migrations WHERE name = :n"), {"n": db_engine._VAULT_LIST_STATES_COMPACT})
         c.execute(sa.text("DROP TABLE alembic_version"))

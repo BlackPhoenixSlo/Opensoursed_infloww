@@ -1,11 +1,3 @@
-/**
- * EmployeeReportCharts — Employee reports' Overview and Employee performance charts (roadmap W5 5.10), and the shared
- * chart rule they read (`components/stats/chart`).
- *
- * Rendered with the relay mocked at `fetch` by URL: `/admin/stats/chatting-stats` answers the Chatting statistics rows
- * without `bucket`, and the summed and per-Employee series with it, so the requests are assertions about the wire.
- * Every name is fake.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -28,7 +20,6 @@ const fig = (sales: number, sent: number) => ({
   sales_cents: sales, direct_messages_sent: sent, direct_ppvs_sent: 1, ppvs_unlocked: 1, fans_chatted: 2,
 });
 
-/** A tab's body over the shared reads, as EmployeeReport mounts it (the page owns the tabs and the bucket). */
 function Tab({ tab, bucket = "day" }: { tab: "overview" | "performance"; bucket?: Gran }) {
   const props = useEmployeeCharts(FROM, TO, bucket);
   return tab === "overview" ? <EmployeeOverviewCharts {...props} /> : <EmployeePerformance {...props} />;
@@ -67,7 +58,6 @@ describe("chart rule", () => {
     expect(allowed(62)).toEqual(["week"]);
     expect(allowed(365)).toEqual(["week", "month"]);
     expect(allowed(366)).toEqual(["month"]);
-    // October in Berlin: 745 hours from its first midnight to its last day's end.
     expect(rangeDays("2026-09-30T22:00:00.000Z", "2026-10-31T22:59:59.999Z")).toBe(31);
     expect(rangeDays(FROM, TO)).toBe(30);
   });
@@ -145,7 +135,6 @@ describe("EmployeeReportCharts", () => {
     const data = { bucket: "day", series: [{ start: "2026-09-15T00:00", ...fig(700, 2) }],
       attribution_fallback: null } as unknown as ChattingSeriesResp;
     renderWithProviders(<EmployeePerformance data={data} error={false} bucket="day" rows={ROWS} rowsPending={false} />);
-    // The top seller is picked: Beta Two, shown as the tag and in the select; it has no points of its own.
     expect(screen.getAllByText("Beta Two").length).toBeGreaterThan(0);
     const sales = screen.getByRole("region", { name: "Sales" });
     expect(within(sales).getAllByTestId("chart-hover")[0].textContent).toBe("Sep 15\nEmployee sales: $0");

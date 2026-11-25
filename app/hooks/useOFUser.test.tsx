@@ -1,11 +1,3 @@
-/**
- * useOFUser — the full profile on its own key (`["of-user", aid, fid, "full"]`),
- * apart from the name key the chat list, notifications and name lookups write:
- * a name write never refreshes the full read's freshness, a slim name lookup
- * can't answer for it, a money invalidation reaches the full key alone (and is
- * read on the next open), and a reader moving to a Fan with only a name reads
- * his full profile.
- */
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
@@ -31,7 +23,6 @@ const paths = () => relayGet.mock.calls.map(([p]) => p as string);
 
 beforeEach(() => {
   client = makeTestQueryClient();
-  // Seeds stand for a cache read earlier: kept with no reader mounted.
   client.setDefaultOptions({ queries: { ...client.getDefaultOptions().queries, gcTime: Infinity } });
   relayGet.mockReset();
   relayPatch.mockReset();
@@ -46,7 +37,6 @@ describe("useOFUser", () => {
     await waitFor(() => expect(result.current.data?.subscribedOnData).toEqual({ totalSumm: 9 }));
     expect(paths()).toEqual(["/api/of/v2/users/1"]);
     expect(client.getQueryData(NAME(1))).toMatchObject({ customNickname: "Team nick", lastSeen: "2026-10-20T10:00:00Z" });
-    // Only the name fields: the money block stays on the full key.
     expect(client.getQueryData(NAME(1))).not.toHaveProperty("subscribedOnData");
   });
 
@@ -71,7 +61,7 @@ describe("useOFUser", () => {
     const { rerender } = renderHook(({ f }) => useOFUser("a", f), { wrapper, initialProps: { f: 1 } });
     await act(async () => {});
     expect(paths()).toEqual([]);
-    rerender({ f: 2 });   // a FanDrawer not keyed by Fan, moving on
+    rerender({ f: 2 });
     await act(async () => {});
     expect(paths()).toEqual(["/api/of/v2/users/2"]);
   });
@@ -92,13 +82,11 @@ describe("useOFUser", () => {
       ? { 1: { name: "Named" } }
       : { id: 1, subscribedOnData: { discountPercent: 15 } }));
     const { result } = renderHook(() => {
-      // The Deep link's own /users/list lookup on the name key, as MessagesPro mounts it.
       useQuery(ofUserNameQuery("a", 1));
       return useOFUser("a", 1);
     }, { wrapper });
     await act(async () => {});
     relayGet.mockClear();
-    // DiscountSubmenu's invalidation.
     await act(async () => { await client.invalidateQueries({ queryKey: FULL(1), exact: true }); });
     await waitFor(() => expect(result.current.data?.subscribedOnData).toEqual({ discountPercent: 15 }));
     expect(paths()).toEqual(["/api/of/v2/users/1"]);

@@ -1,99 +1,3 @@
-"""OnlyFans asks a Creator's login for a 2FA code (HTTP 400, code 101 with
-`payload.otpState`, on every call): the account is flagged (account_health,
-reason otp_required), its owner gets ONE session_dead notification that opens
-Browserbase login (the sign-in that takes the code), the Creators table shows the
-repair badge, the account's automations pause and its WS pump parks, while every
-other Creator and Agency keeps sending; a re-capture resumes all of it.
-
-The world: five Agencies, twenty Creators (multi_agency_big_models, mass fans by
-SQL), each with a captured session in the bootstrap's shape (seed/of_sessions.py),
-so the relay builds its REAL OFClient, and a healthy account_health row (an earlier
-episode it recovered from). OnlyFans is lib/of_wire.py on loopback
-(`OF_WIRE`: the relay's `OF_API_ORIGIN`), answering /users/me (with the WS
-ticket), the hash CDN, the signing chunk and the DM send, serving OF's chat
-WebSocket, and, for a Creator whose login wants 2FA, every /api2/ call with OF's
-code-101 body. Every Creator's REAL of_ws pump runs against that socket (started
-by `POST /__slop/pump-supervise`, one pump-supervisor pass, after every executor
-tick). `--users` operators (each on its Agency owner's session) schedule
-near-term DMs through the real `POST /api/of/v2/scheduled-sends`; the executor
-fires them through `POST /__slop/automation-tick` (one real supervisor pass: due
-pairs, run slots, the dead-session probe; the 30 s cadence bypassed); each owner
-keeps `/events` open and polls `/admin/accounts` and the bell.
-
-Phase A: every Creator healthy, every pump connected, every send delivered. Then
-OnlyFans asks OTP_IDX's Creators (one of Agency 0, the UI owner's; two of Agency 1)
-and READER (Agency 1, no automations: no operator schedules for it) for a code,
-and ends OTP_IDX's sockets, so their pumps reconnect through /users/me while
-READS concurrent inbox reads per Creator (the real `GET /api/of/v2/chats`: half in
-one burst at the flip, which the old read-then-write flip lets each notify, half
-spread over the pump's 1 s reconnect) meet the same 101: many callers of two kinds
-at once. One of them (RACE_IDX) sends all its READS at the flip and OnlyFans holds the first
-8 (its client's signed slots), so the rest wait for a slot when the first 400 evicts that
-client: most (3-4 of the 4; one may take a freed slot first) are refused as retired and each
-re-runs once on the current client, all before its
-pump's reconnect. READER's socket stays up: only its one inbox read can flag it. Once all are
-flagged, phase B schedules more for every Creator while the executor ticks and the
-pump supervisor passes; the window from the flip is at least WS_WINDOW_S, which
-holds the pump's 3 retries (2, 4, 8 s after the drop's 1 s), its exit and supervisor
-passes after it, which an unbounded reconnect loop would outlast still running. Phase C: OnlyFans
-takes the logins again and each owner re-captures each flagged Creator through the
-real `POST /admin/session/bootstrap` (paste-curl, a signed /users/me curl); the
-executor drains the parked sends. Phase D: OnlyFans asks one healthy Creator for a
-code and ends its socket, its pump exits flagged; then OnlyFans lets it back in with
-no re-capture, one executor tick's recovery probe clears the flag, and the supervisor
-pass after it must restart the exited pump (nothing else does). Phase E: a healthy
-Creator's session file vanishes from disk (no endpoint does that and leaves the pump
-up), so the next supervisor pass must Stop its running pump and its OF socket closes;
-then, its session back, its pump crash-loops (exits at once without parking,
-lib/pump_relay.py) under 1 s supervisor passes, and each restart must come its
-backoff (0, then 15 s) after the exit, no sooner and not much later. Alongside, from phase A
-on: OnlyFans ends one more healthy Creator's socket (WS_GAP_IDX, used by no other phase) GAP_DROPS
-times, each after its pump reconnected (backoff 1, 2, 4 s: the next would be 8), lets the socket stay
-up RESET_AFTER_S (+ UP_MARGIN_S), and ends it once more.
-
-Invariants: account_health flags exactly the 2FA Creators (otp_required); one
-session_dead notification per (owner, 2FA Creator) though many callers met the 101
-at once, data.href the Browserbase relink, none for any other owner, and each
-affected owner's /events carried it; every concurrent read answered 502 (upstream
-400), and at least one of RACE_IDX's was first refused as retired (the race happened);
-READER's read flagged and notified it; per OTP_IDX Creator at most five
-/users/me over the window (the pump's 1 + 3 retries, the probe's), the retries each
-at least its backoff (2, 4, 8 s, less 0.5) after the last, and its pump exited within
-2 s of its last /users/me and stayed parked through the supervisor passes; after
-detection a 2FA Creator makes no run (no automation_runs row), no OF call but
-/users/me (the pump's, the probe's), its sends stay pending; every healthy Creator's send reached OF once, in fire-time
-order, with its outbound message row (nothing dropped, counts match), Agencies 2-4
-untouched; /admin/accounts shows each owner its 2FA Creators paused (the UI's
-side-effect check). Recovery: the flags clear, every parked send reaches OF exactly
-once in fire-time order with its outbound row, no second notification, each pump
-reconnects; a probe-cleared Creator's pump is restarted by the next supervisor pass; a
-running pump whose Creator lost its session is stopped and its socket closed; a
-crash-looping pump's restarts respect the backoff and keep coming; after a socket up
-RESET_AFTER_S, a dropped one reconnects within WS_GAP_MAX_S (its backoff started over).
-UI: the bell's 2FA row (trigger) opens Creators with Browserbase login
-(settled), the row reads, and the Creator's row shows the "automations paused"
-badge naming Browserbase login. Budgets: route p95s and the tick's, vs the last
-green run.
-Bypasses, declared: lib/of_wire.py (OnlyFans' API and WebSocket on loopback, its
-own declared bypasses), the executor's 30 s and the pump supervisor's 15 s cadence
-(the hooks), the pump start re-pointed past _run_ui_safe's no-op (lib/relay.py);
-phase E's lost session is the harness moving the Creator's latest.json aside, and its
-crash-looping pump body is the harness's, and its crash switch stops a pump still
-running (lib/pump_relay.py);
-the reads' 502s go to their own recorder (they are this scenario's expected
-answer, checked below, not the stock no-5xx check's); RELAY_ENV's ACCOUNT_LANE_TOTAL=12 (default 5:
-the per-account lane above the client's 8 signed slots, so RACE_IDX's burst queues on the slots, not
-in the lane) and lib/of_wire.py's hold on RACE_IDX's first 8 inbox reads (0.4 s, then 1.4 s).
-Break-it-once: otp-state-not-session-dead (the classifier's 101 branch reverted);
-session-dead-claim-not-atomic (the read-then-write flip it replaced);
-retired-read-not-rerun (_proxy blind to an evicted client: no GET re-run, any 101 evicts the fresh one;
-the 2FA Creators' retired reads, RACE_IDX's at least, answer 502 with upstream 500).
-reconcile-never-restarts, reconcile-ignores-parked (lib/pump_faults.py: the supervisor
-pass without its Restart, or blind to the dead-session flag); reconcile-never-stops (the
-pass without its Stop); supervisor-ignores-backoff (every Restart at once);
-of-ws-backoff-never-resets (lib/egress_faults.py: decide() deaf to Failed.up_s, the gap is 8 s).
-Screenshots: trigger-bell-2fa-row, settled-browserbase-login, settled-creators-badge.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -116,35 +20,21 @@ PROFILE = "multi_agency_big_models"
 UI = True
 OF_WIRE = True
 FAULT = "otp-state-not-session-dead"
-OTP_IDX = (3, 5, 9)  # Agency 0 (UI owner): Creator 3; Agency 1: Creators 5 and 9 (profile's owner layout)
+OTP_IDX = (3, 5, 9)
 RELINK = "/creators?relink=browserbase"
-READS = 12  # concurrent inbox reads per OTP_IDX Creator at the flip, alongside its pump's reconnect
-# The slot-wait race (retired-read-not-rerun): otp[RACE_IDX]'s READS all at the flip, OF holds the first
-# SIGNED_SLOTS, so the rest wait for a signed slot on its client; the first answer (400) evicts that client
-# and the waiters are refused as retired (a GET re-runs once on the current client). All before its pump's
-# reconnect (1 s): a pump waiting on that slot would be refused too and retry off its schedule.
-RACE_IDX = 1  # Agency 1's Creator 5 (not the UI owner's)
-SIGNED_SLOTS = 8  # service/of_client.py: signed calls in flight per OFClient (OFClient.SIGNED_SLOTS)
-# The first held answers and evicts; the rest keep their slots past a polling waiter's 0.25 s re-check.
+READS = 12
+RACE_IDX = 1
+SIGNED_SLOTS = 8
 RACE_HOLD_S = (0.4,) + (1.4,) * (SIGNED_SLOTS - 1)
-# Declared bypass: the per-account lane (default 5) at READS, above SIGNED_SLOTS, so the burst queues on the
-# client's signed slots (an evict refuses a waiter there), not in the lane (it then loads the current client).
 RELAY_ENV = {"ACCOUNT_LANE_TOTAL": str(READS)}
-WS_GAP_IDX = 2    # healthy[2]: healthy[0] is phase D's, healthy[1] phase E's
-GAP_DROPS = 3     # socket ends before the long uptime: the pump's backoff 1, 2, 4 s, the next 8
-UP_MARGIN_S = 5.0  # the long uptime past RESET_AFTER_S
-# The run that meets OF's 2FA demand logs its OFAPIError (automation_run_failed): expected (under the
-# fault; a green run's pump and reads flag first); the scenario's own checks count the runs.
+WS_GAP_IDX = 2
+GAP_DROPS = 3
+UP_MARGIN_S = 5.0
 EXPECTED_TRACEBACKS = (("automation_run_failed", "otpState"),
-                       # The Creators strip's badge read of a 2FA Creator (the UI's page) logs OF's 101.
                        ("roster-counts: OF read failed", "otpState"))
-# Every operator posts its sends at the same instant (--users=200: a 400-request write herd);
-# they queue on the relay's DB pool (8 connections): measured p50 588 / p95 842 ms at medium/200
-# (20261025T231231Z-...-9276). A herd budget, not a single post's; p95-vs-last-green guards drift.
+# 200 operators post at once and queue on the relay's 8-connection DB pool: measured p50 588 / p95 842 ms at medium/200
 P95_MS = {"POST /api/of/v2/scheduled-sends": 1500, "GET /admin/accounts": 750,
           "GET /admin/agency-notifications": 500,
-          # A pass waits for its runs, and a Creator's DMs are spaced by the executor's own
-          # of_write_paced (_OF_WRITE_GAP_S, 11 s, kept real): a pass with a second send is >= 11 s.
           "POST /__slop/automation-tick": 15000}
 P95_VS_LAST = (1.5, 150)
 VIEWPORT = (1440, 1000)
@@ -184,9 +74,6 @@ async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
     cs = w.data["creators"]
     of_sessions.seed(w, cs)
-    # Every Creator lost its session once before and recovered (the healthy row
-    # phase C leaves): the flip then meets an existing row, which a read-then-write
-    # claim lets every simultaneous caller take (a fresh row only collides on the key).
     con = w.sql()
     with con:
         con.executemany("INSERT INTO account_health (account_id) VALUES (?)", [(c["id"],) for c in cs])
@@ -199,7 +86,7 @@ async def run(ctx) -> None:
     flagged_want = [*otp, reader]
     healthy = [a for a in ids if a not in flagged_want]
     ags = w.data["agencies"]
-    by_agency = defaultdict(list)  # the Creators operators schedule for: all but READER
+    by_agency = defaultdict(list)
     for c in cs:
         if c["id"] != reader:
             by_agency[c["owner"]].append(c["id"])
@@ -209,17 +96,17 @@ async def run(ctx) -> None:
                              "fake_of": fake.origin})
 
     pools = {a["user_id"]: a["http"].share(limits=max(10, ctx.users)) for a in ags}
-    read_rec = Recorder()  # the 2FA reads' expected 502s (checked below), not the stock no-5xx check's
+    read_rec = Recorder()
     readers_http = {a["user_id"]: a["http"].share(rec=read_rec, limits=READS * 4) for a in ags}
     rng = w.rng("session_health_otp")
-    plan = []  # (user, agency user id): each operator works one Agency's Creators
+    plan = []
     for u in range(ctx.users):
         plan.append((u, ags[u % len(ags)]["user_id"]))
     sched: list[dict] = []
     picks = {u: [] for u, _ in plan}
     per_phase = ctx.param("sends_per_user", 2)
     seat = Counter()
-    for u, ag in plan:  # round-robin over the Agency's Creators, so each phase reaches every Creator
+    for u, ag in plan:
         j, mine = seat[ag], by_agency[ag]
         seat[ag] += 1
         for k in range(2 * per_phase):
@@ -255,7 +142,7 @@ async def run(ctx) -> None:
             await asyncio.sleep(rng.uniform(0.5, 1.5))
 
     ticks: list[dict] = []
-    passes: list[dict] = []  # pump-supervisor passes: (t, phase, pump states)
+    passes: list[dict] = []
 
     async def supervise() -> dict:
         b = (await ctx.owner.post("/__slop/pump-supervise")).json()
@@ -298,7 +185,6 @@ async def run(ctx) -> None:
             await asyncio.sleep(0.25)
         return True
 
-    # ── every Creator's pump on OF's socket ───────────────────────────────────
     await supervise()
     up = await wait_for(lambda: {c["account"] for c in fake.ws_connects} >= set(ids), 30)
     with fake.lock:
@@ -310,7 +196,6 @@ async def run(ctx) -> None:
     readers = [asyncio.create_task(owner_reader(a["user_id"])) for a in ags]
     ws_gap = asyncio.create_task(_ws_gap(fake, healthy[WS_GAP_IDX]))
 
-    # ── Phase A: every login healthy ──────────────────────────────────────────
     ctx.rec.stage = "healthy"
     done_a = asyncio.Event()
     ops = asyncio.gather(*(operator(u, ag, picks[u][:per_phase]) for u, ag in plan))
@@ -321,7 +206,6 @@ async def run(ctx) -> None:
     n_a = len(sched)
     a_snap = fake.snapshot()
 
-    # ── OnlyFans asks for 2FA: OTP_IDX's sockets end, inbox reads meet the 101 at once ──
     race = otp[RACE_IDX]
     race_key = (race, "GET /api2/v2/chats")
     with fake.lock:
@@ -332,8 +216,6 @@ async def run(ctx) -> None:
     reads: list[dict] = []
 
     async def inbox_read(aid: str, k: int) -> None:
-        # Half at the same instant (simultaneous claims), half spread over the pump's 1 s reconnect;
-        # the race Creator's all at once (RACE_IDX).
         burst = READS if aid == race else READS // 2
         await asyncio.sleep(0 if k < burst else 1.5 * (k - burst + 1) / (READS - burst))
         r = await readers_http[owner_of[aid]].get(f"/api/of/v2/chats?limit=10&offset={10 * k}&refresh=1",
@@ -345,7 +227,7 @@ async def run(ctx) -> None:
     dropped = asyncio.create_task(asyncio.to_thread(fake.drop_ws, otp))
     await asyncio.gather(*(inbox_read(a, k) for a in otp for k in range(READS)), inbox_read(reader, 0))
     with fake.lock:
-        unheld = fake.hold.pop(race_key, [])  # holds no read reached OF for: none expected
+        unheld = fake.hold.pop(race_key, [])
     dropped = await dropped
     detected = await wait_for(lambda: flagged_now() >= set(flagged_want), 20)
     detected_t = time.time()
@@ -358,14 +240,14 @@ async def run(ctx) -> None:
     await ops
     done_b.set()
     await drainer
-    while time.time() - flip_t < WS_WINDOW_S:  # the window the old reconnect loop would fill
+    while time.time() - flip_t < WS_WINDOW_S:
         await tick()
         await asyncio.sleep(1)
     end_b = time.time()
     ctx.rec.stage = None
     stop_readers.set()
     await asyncio.gather(*readers)
-    await asyncio.sleep(0.5)  # the last SSE frames
+    await asyncio.sleep(0.5)
 
     con = w.sql()
     con.row_factory = None
@@ -386,11 +268,9 @@ async def run(ctx) -> None:
     def dt(s: str | None) -> datetime | None:
         return datetime.fromisoformat(s) if s else None
 
-    # ── account_health ────────────────────────────────────────────────────────
     flagged = {a: r for a, (d, r) in health.items() if d}
     ctx.check(C_ROW, flagged == {a: "otp_required" for a in flagged_want}, flagged=flagged, want=flagged_want)
 
-    # ── notifications: DB rows, the API each owner reads, the SSE wire ────────
     got = Counter((ag, a) for ag, a, *_ in notes)
     want = Counter((owner_of[a], a) for a in flagged_want)
     bad_data = [{"account": a, "data": d, "text": t} for _ag, a, _k, t, d, _r in notes
@@ -417,9 +297,7 @@ async def run(ctx) -> None:
                                              "session_dead": v["session_dead"]} for ag, v in sse.items()},
               streams_ended={ag: li.ended for ag, li in lis.items() if li.ended})
 
-    # ── the reads, READER ─────────────────────────────────────────────────────
     log_text = "\n".join(p.read_text(errors="replace") for p in sorted(ctx.out.glob("relay*.log")))
-    # of_client._http_call logs each refused call; server._proxy logs each GET it re-runs.
     retired = sum(1 for ln in log_text.splitlines() if f"http_error account={race} " in ln
                   and "url=/api2/v2/chats type=OFSessionRetired" in ln)
     reruns = log_text.count(f"client evicted mid-read account={race}:")
@@ -435,7 +313,6 @@ async def run(ctx) -> None:
               reason=flagged.get(reader), notes=got[(owner_of[reader], reader)], via_proxy_logged=via_proxy,
               automation_rows=reader_rows)
 
-    # ── the WS pump: 3 retries, then parked ───────────────────────────────────
     with fake.lock:
         calls = list(fake.calls)
         conns = list(fake.ws_connects)
@@ -443,16 +320,12 @@ async def run(ctx) -> None:
     for a in otp:
         me = [c for c in calls if c["account"] == a and c["route"] == "GET /api2/v2/users/me"
               and flip_t <= c["t"] <= end_b]
-        # The pump's retries: from its first /users/me, each next one >= its backoff later (the probe's
-        # /users/me, if any, may fall between: skipped).
         picked = me[:1]
         for gap in WS_RETRY_GAPS_S:
             nxt = next((c for c in me if c["t"] - picked[-1]["t"] >= gap - WS_RETRY_SLACK_S), None) if picked else None
             if nxt is None:
                 break
             picked.append(nxt)
-        # Passes from WS_EXIT_SLACK_S after the pump's last /users/me (the 101 it gives up on; the flip if
-        # none): an exit due then, not at a hard-coded time, so a slow relay still leaves passes to count.
         exit_t = (picked[-1]["t"] if picked else flip_t) + WS_EXIT_SLACK_S
         states = [p["pumps"].get(a) for p in passes if p["t"] >= exit_t]
         ws[a] = {"users_me": dict(Counter(c["status"] for c in me)),
@@ -467,7 +340,6 @@ async def run(ctx) -> None:
     ctx.check(C_WS_RETRY, all(v["retries_ok"] for v in ws.values()),
               per_creator={a: v["users_me_s_after_flip"] for a, v in ws.items()})
 
-    # ── the pause ─────────────────────────────────────────────────────────────
     calls_after = defaultdict(Counter)
     for c in calls:
         if c["t"] >= detected_t and c["account"] in otp and c["route"].split(" ")[1].startswith("/api2/"):
@@ -490,7 +362,6 @@ async def run(ctx) -> None:
                                              and s["status"] == 200))
     ctx.check(C_PAUSE, all(p["ok"] for p in pause.values()), per_creator=pause)
 
-    # ── healthy Creators: nothing dropped, counts match, order kept ───────────
     texts = {}
     for _id, a, p, run_at, st, _n in jobs:
         texts[(a, json.loads(p)["text"])] = (st, run_at)
@@ -506,11 +377,6 @@ async def run(ctx) -> None:
             got_t = [m["text"].removeprefix("<p>").removesuffix("</p>") for m in sends.get(a, [])]
             lost += [(a, t) for t in want_t if t not in got_t]
             dup += [(a, t) for t, n in Counter(got_t).items() if n > 1]
-            # Fire-time order among what was scheduled: a Creator's sends run one at a time (the
-            # executor's (account, kind) lock), so send i was claimed after send i-1 reached OF; a
-            # send due earlier whose POST had returned by then must not go after it. Operators post
-            # while ticks drain, and run_at is the client's clock, so a send committed after a
-            # claim may carry an earlier run_at: that is no reordering.
             got = [(texts[(a, m_t)][1], m["t"], done_at.get((a, m_t), float("inf")))
                    for m, m_t in zip(sends.get(a, []), got_t) if (a, m_t) in texts]
             bad = [(got[i][0], got[j][0]) for i in range(1, len(got)) for j in range(i + 1, len(got))
@@ -538,7 +404,6 @@ async def run(ctx) -> None:
     ctx.check("phase A (before OnlyFans asked for 2FA): every send of every Creator delivered",
               sum(a_snap["sends"].values()) == n_a, sent=sum(a_snap["sends"].values()), scheduled=n_a)
 
-    # ── what the UI reads: /admin/accounts per owner ──────────────────────────
     seen = {}
     for a in ags:
         body = (await pools[a["user_id"]].get("/admin/accounts")).json()
@@ -556,7 +421,6 @@ async def run(ctx) -> None:
         for n in UI_CHECKS:
             ctx.skip(n, "--no-ui")
 
-    # ── Phase C: OnlyFans takes the logins again; each owner re-captures ──────
     ctx.rec.stage = "recovery"
     n_notes = len(notes)
     fake.set_otp([])
@@ -600,9 +464,6 @@ async def run(ctx) -> None:
               reconnected=sorted({c["account"] for c in fake.ws_connects if c["t"] >= rec_t} & set(flagged_want)),
               pumps={a: pumps.get(a) for a in flagged_want})
 
-    # ── Phase D: OnlyFans lets a 2FA Creator back in, no re-capture ───────────
-    # The recovery probe clears the flag and restarts nothing; only the next supervisor
-    # pass brings the exited pump back (service/pump_reconcile.reconcile's Restart).
     probe_a = healthy[0]
     fake.set_otp([probe_a])
     await asyncio.to_thread(fake.drop_ws, [probe_a])
@@ -616,7 +477,7 @@ async def run(ctx) -> None:
     parked_d = probe_a in flagged_now() and state_d == "exited"
     fake.set_otp([])
     clear_t = time.time()
-    await tick()  # the executor's pass (its recovery probe), then one supervisor pass
+    await tick()
     cleared_d = probe_a not in flagged_now()
     after_d = passes[-1]["pumps"].get(probe_a)
     back_d = await wait_for(lambda: any(c["account"] == probe_a and c["t"] >= clear_t
@@ -626,7 +487,7 @@ async def run(ctx) -> None:
               pump_after_pass=after_d, socket_reconnected=back_d)
     await _phase_e_stop(ctx, w, fake, healthy[1], supervise, wait_for)
     await _phase_e_backoff(ctx, healthy[1], supervise)
-    g = await ws_gap  # sleeps out the long uptime here if the phases ended sooner
+    g = await ws_gap
     ctx.check(WS_GAP, len(g["early_gaps_s"]) == GAP_DROPS and None not in g["early_gaps_s"]
               and g["early_gaps_s"][-1] >= 3.0 and g["reconnects_while_up"] == 0
               and (g["up_s"] or 0) >= RESET_AFTER_S and g["gap_s"] is not None and g["gap_s"] <= WS_GAP_MAX_S,
@@ -634,7 +495,6 @@ async def run(ctx) -> None:
     ctx.check("lib/of_wire.py saw only signed calls it models", fake.unsigned == 0 and not fake.unmodelled,
               unsigned=fake.unsigned, unmodelled=dict(fake.unmodelled))
 
-    # ── budgets ───────────────────────────────────────────────────────────────
     p95s, ns = {}, {}
     for stage in ("healthy", "otp", "recovery"):
         routes = ctx.rec.summary(stage)
@@ -658,8 +518,6 @@ async def run(ctx) -> None:
 
 
 async def _ws_gap(fake, aid: str) -> dict:
-    """GAP_DROPS socket ends, the long uptime, one more end (module docstring); gaps: each end to the
-    pump's next socket (lib/of_wire.py's ws_connects)."""
     async def reconnect(after: float, timeout_s: float = 40.0) -> float | None:
         t_end = time.time() + timeout_s
         while time.time() < t_end:
@@ -691,7 +549,6 @@ async def _ws_gap(fake, aid: str) -> dict:
 
 
 async def _phase_e_stop(ctx, w, fake, aid: str, supervise, wait_for) -> None:
-    """Supervisor Stop of a running pump whose Creator lost its session (module docstring)."""
     latest = w.sessions / "accounts" / aid / "latest.json"
     lost = latest.with_name("latest.json.slop-lost")
     before = (await ctx.owner.get("/__slop/pumps")).json()["pumps"].get(aid)
@@ -708,8 +565,6 @@ async def _phase_e_stop(ctx, w, fake, aid: str, supervise, wait_for) -> None:
 
 
 async def _phase_e_backoff(ctx, aid: str, supervise) -> None:
-    """A crash-looping pump's restart backoff (module docstring). The crash switch stops a pump
-    still running (lib/pump_relay.py), so this does not rest on _phase_e_stop's Stop."""
     await ctx.owner.post("/__slop/pump-crash", json={"account_ids": [aid]})
     try:
         t_end = time.time() + BACKOFF_WINDOW_S
@@ -719,7 +574,6 @@ async def _phase_e_backoff(ctx, aid: str, supervise) -> None:
         starts = (await ctx.owner.get("/__slop/pump-crash")).json()["starts"].get(aid, [])
     finally:
         await ctx.owner.post("/__slop/pump-crash", json={"account_ids": []})
-    # starts[0] is the Start (restart count 0); starts[k+1] is restart attempt k.
     gaps = [round(b - a, 2) for a, b in zip(starts, starts[1:])]
     off = [(k, g, d) for k, (g, d) in enumerate(zip(gaps, BACKOFF_WANT_S)) if not d - 0.5 <= g <= d + BACKOFF_SLACK_S]
     ctx.check(PUMP_BACKOFF, len(gaps) == len(BACKOFF_WANT_S) and not off, creator=aid, starts=len(starts),
@@ -752,7 +606,7 @@ async def _ui(ctx, otp, owner_of, me, by_id) -> None:
             await dialog.wait_for(timeout=60_000)
             region = dialog.get_by_role("region", name="Browserbase login")
             await region.wait_for(timeout=30_000)
-            await page.wait_for_timeout(300)  # the modal moves focus to the section after it opens
+            await page.wait_for_timeout(300)
             focused = await region.evaluate("r => r === document.activeElement || r.contains(document.activeElement)")
             bell_closed = await page.get_by_role("tab", name="Agency").count() == 0
             await page.wait_for_timeout(800)

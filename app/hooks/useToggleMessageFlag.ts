@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * useToggleMessageFlag — the shared body of useLikeMessage and
- * useTogglePinMessage: flip a boolean on a chat message optimistically in the
- * ["messages", accountId, fanId] cache, POST (on) or DELETE (off) the wire
- * path, and revert the flip if the request fails, telling the operator why
- * (a Fansly account answers 501: it has no message pinning).
- */
 
 import { useCallback } from "react";
 import { useQueryClient, type QueryKey } from "@tanstack/react-query";
@@ -17,13 +10,9 @@ import { relay, type OFMessage } from "@/lib/relay";
 import { isValidFanId, type FanId } from "@/lib/fanId";
 
 export interface MessageFlagSpec {
-  /** The OFMessage field the toggle flips. */
   field: "isLiked" | "isPinned";
-  /** Console tag on a failed request, e.g. "like". */
   label: string;
-  /** The wire path for message `id`; the same path is POSTed and DELETEd. */
   path: (id: string, fanId: FanId) => string;
-  /** A query to invalidate once the request succeeded. */
   invalidates?: (accountId: string, fanId: FanId) => QueryKey;
 }
 
@@ -47,9 +36,7 @@ export function useToggleMessageFlag(
   const toggle = useCallback(
     async (msg: OFMessage) => {
       if (!accountId || fanId == null) return;
-      // Exact, not Number(): a Fansly message id is a snowflake past 2^53,
-      // so a rounded value here would flip a DIFFERENT message (or 404).
-      if (!isValidFanId(msg.id)) return; // optimistic / pseudo bubbles
+      if (!isValidFanId(msg.id)) return;
       const id = String(msg.id);
       const next = !msg[field];
       patchLocal(id, next);

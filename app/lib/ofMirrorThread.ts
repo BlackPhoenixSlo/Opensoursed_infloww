@@ -1,24 +1,5 @@
 "use client";
 
-/**
- * A chat's thread tools on the OF mirror, as OF's own web app has them (its chats module 204607 and the chat header,
- * chunk 42549; the message item, 82027; the gallery grid item; ledger `.scratch/omf-messages-full/ledger.md`):
- *
- * - Find (the header's "Find"): OF's find bar (`m-search-form-visible` on the header). 3+ characters search 500 ms after
- *   the last key, Enter at once: GET /api/of/v2/chats/<fanId>/messages/search?query= (OF's flat list of message ids,
- *   newest first). The bar counts "1/3"; its up arrow walks to an older hit, the down arrow to a newer one. A hit not drawn
- *   yet is reached by loading the thread's older pages (before_id; the Relay has no `firstId` window, so up to
- *   FIND_PAGES pages, as Messages Pro's ChatSearch), then centred, the query marked in it
- *   (`b-chat__message__text-highlighted`). Closing the bar clears it. A gallery tile's `?firstId=<message>` opens the
- *   chat at that message the same way.
- * - Gallery (messages/chat/gallery): the chat's media messages, a tile each (OF's grid item: the sender's avatar, the
- *   first picture, a play button on a video or GIF, the price label on a PPV, its media counts or length), a locked tile
- *   (OF's lock card with the price) for a PPV the Creator cannot view, a tile linking to the chat at that message. Its
- *   tabs are OF's: All, Unlocked (`opened=1`), Purchased (`purchased=1&from_user=<Creator>`), Photos, Videos, Audio (the
- *   type is a path segment, /media/photos). Read through Messages Pro's useFanChatMedia, 20 a page by OF's `last_id`
- *   cursor as the grid is scrolled to its end.
- * Nothing here writes or marks a chat read.
- */
 
 import { useCallback, useEffect, useRef, type RefObject } from "react";
 import { relay, type OFMedia, type OFMessage, type OFUserMini } from "@/lib/relay";
@@ -28,7 +9,6 @@ import { message, note } from "@/lib/ofMirrorWrites";
 import { fanIdFromParam } from "@/lib/fanId";
 import type { ChatMediaKind } from "@/hooks/useFanChatMedia";
 
-/** OF's fields on a chat message the shared type does not name (OFW 82027: tips, purchases, media readiness). */
 export type ThreadMessage = OFMessage & {
   tipAmount?: number | null;
   tipText?: string | null;
@@ -37,31 +17,25 @@ export type ThreadMessage = OFMessage & {
   canPurchaseReason?: string;
 };
 
-// ---------------------------------------------------------------- shared
 
 const CHAT = "/of-manager/messages/chat";
 export const GALLERY_PAGE = `${CHAT}/gallery`;
 export const PINNED_PAGE = `${CHAT}/pinned`;
 
-/** A chat page's link: the open chat, the chat list's view kept, `extra` after it. */
 export function chatHref(path: string, chat: string, listQuery = "", extra = ""): string {
   return `${path}?chat=${encodeURIComponent(chat)}${listQuery ? `&${listQuery}` : ""}${extra ? `&${extra}` : ""}`;
 }
 
-/** A message's text as plain text (OF's markup dropped; a line break or paragraph a newline). */
 export const plainText = (html: string | null | undefined) => {
   const el = (typeof document !== "undefined" ? document : null)?.createElement("div");
   if (!el) return (html ?? "").replace(/<[^>]+>/g, "");
   el.innerHTML = (html ?? "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>\s*<p[^>]*>/gi, "\n");
   return (el.textContent ?? "").trim();
 };
-/** OF's unsend countdown: m:ss. */
 export const countdown = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
-/** OF's price words: "$5", "$15.99". */
 export const dollars = (n: number | null | undefined) => `$${Number.isInteger(n ?? 0) ? n ?? 0 : (n ?? 0).toFixed(2)}`;
 
-/** An SVG sprite icon as OF draws it (the page's own sprite has every icon the Messages pages draw: MESSAGES_ICONS). */
 export function icon(doc: Document, name: string, cls = "g-icon"): SVGSVGElement {
   const svg = doc.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", cls);
@@ -74,7 +48,6 @@ export function icon(doc: Document, name: string, cls = "g-icon"): SVGSVGElement
   return svg;
 }
 
-/** Point an existing sprite icon at `name`. */
 export function setIconName(svg: Element | null | undefined, name: string) {
   if (!svg) return;
   svg.setAttribute("data-icon-name", name);
@@ -86,10 +59,6 @@ export function setIconName(svg: Element | null | undefined, name: string) {
 
 const KIND_ICON: Record<string, string> = { photo: "icon-media", video: "icon-video", audio: "icon-voice", gif: "icon-gif" };
 
-/**
- * OF's attachment icons for a message's media (its `listOfAttachmentIcons`): photos with their count; videos, audio and
- * GIFs with their count when more than one, else the length; then a text frame when the message has words.
- */
 export function attachmentIcons(media: readonly OFMedia[], hasText = false): { icon: string; content: string | null }[] {
   const out: { icon: string; content: string | null }[] = [];
   for (const kind of ["photo", "video", "audio", "gif"]) {
@@ -102,7 +71,6 @@ export function attachmentIcons(media: readonly OFMedia[], hasText = false): { i
   return out;
 }
 
-/** Fill OF's `ul.b-purchase__list` with `icons`, each a copy of its first item (its icon and count re-pointed). */
 export function fillIcons(list: Element | null, icons: { icon: string; content: string | null }[]) {
   if (!list) return;
   const tpl = list.querySelector("li");
@@ -124,22 +92,15 @@ export function fillIcons(list: Element | null, icons: { icon: string; content: 
   list.replaceChildren(...items);
 }
 
-// ---------------------------------------------------------------- gallery
 
-/** The gallery's tabs: OF's media path segment (photos, videos, audios), its Unlocked or Purchased filter, or All. */
 export type GalleryTab = "all" | "opened" | "purchased" | ChatMediaKind;
 const GALLERY_TABS: readonly GalleryTab[] = ["all", "opened", "purchased", "photos", "videos", "audios"];
 
-/** The open tab from the app URL's `?media=` (All without one). */
 export function galleryTab(params: { get(key: string): string | null }): GalleryTab {
   const v = params.get("media");
   return (GALLERY_TABS as readonly string[]).includes(v ?? "") ? (v as GalleryTab) : "all";
 }
 
-/**
- * useFanChatMedia's options for a tab: every message both ways (All, a type), the fan's viewed ones (Unlocked:
- * `opened=1`), or the Creator's PPVs the fan paid for (Purchased: `purchased=1&from_user=<Creator>`, OF's call).
- */
 export function galleryRequest(tab: GalleryTab): { purchased: boolean; creatorOnly: boolean; opened?: boolean; kind?: ChatMediaKind } {
   if (tab === "purchased") return { purchased: true, creatorOnly: true };
   if (tab === "opened") return { purchased: false, creatorOnly: false, opened: true };
@@ -149,15 +110,10 @@ export function galleryRequest(tab: GalleryTab): { purchased: boolean; creatorOn
 
 export interface GalleryData {
   tab: GalleryTab;
-  /** The tiles so far, newest first; undefined while the first page is read (or after it failed). */
   items?: ThreadMessage[];
-  /** null: the first page is being read; a string: it failed. */
   status?: string | null;
-  /** The next page is being read. */
   more?: boolean;
-  /** OF has more pages (a page whose items all drew no tile still has its next one asked for). */
   next?: boolean;
-  /** The next page failed: its error, shown under the grid (no more pages are asked for). */
   moreError?: string;
 }
 
@@ -165,7 +121,6 @@ const GRID = ".b-gallery-wrapper .b-photos";
 const PROMPT = ".b-gallery-wrapper [data-oi-empty]";
 const PRELOADER = "oi-gallery-more";
 
-/** The picture a tile shows: its first photo, video or GIF's thumb (OF's grid item), else any still. */
 const thumbOf = (media: readonly OFMedia[]) => {
   const m = media.find((x) => ["photo", "video", "gif"].includes(x.type ?? "") && x.canView !== false);
   return (m?.files?.thumb?.url as string | undefined) ?? (m?.files?.squarePreview?.url as string | undefined) ?? (m?.files?.preview?.url as string | undefined) ?? null;
@@ -177,7 +132,6 @@ function galleryTile(tpls: Record<string, Element>, m: ThreadMessage, chat: stri
   const mine = String(m.fromUser?.id ?? "") !== chat;
   const pic = thumbOf(media);
   const href = chatHref(CHAT, chat, ctx.listQuery, `firstId=${encodeURIComponent(String(m.id))}`);
-  // A PPV the Creator cannot view (another creator's, in OF's own words "chat-purchase"): OF's lock card with its price.
   if (!pic && (m.price ?? 0) > 0 && media.some((x) => x.canView === false)) {
     const el = make(tpls.locked);
     el.removeAttribute("style");
@@ -190,8 +144,6 @@ function galleryTile(tpls: Record<string, Element>, m: ThreadMessage, chat: stri
     return el;
   }
   const visible = media.filter((x) => x.canView !== false);
-  // Nothing viewable at all: no tile. A viewable item with no picture (a voice note, an audio file) is OF's tile with its
-  // kind's icon in place of the picture.
   if (!pic && !visible.length) return null;
   const moving = visible.some((x) => x.type === "video" || x.type === "gif");
   const el = make(moving ? tpls.video : tpls.photo);
@@ -212,9 +164,7 @@ function galleryTile(tpls: Record<string, Element>, m: ThreadMessage, chat: stri
   const avatar = el.querySelector(".g-avatar");
   if (who) setAvatar(avatar, who, ctx.img);
   else avatar?.remove();
-  // OF's play button only when the first visible media moves.
   if (!["gif", "video", "audio"].includes(visible[0]?.type ?? "")) el.querySelector(".b-photos__item__play-btn")?.remove();
-  // A PPV's price label: unlocked once the fan opened it, locked while the Creator's own is unpaid (OF's paidStatus).
   if (!m.isFree && (m.price ?? 0) > 0 && (m.isOpened || mine)) {
     const label = doc.createElement("span");
     label.className = "b-element-label m-payment-label m-position-compact";
@@ -233,10 +183,6 @@ export interface GalleryContext {
   listQuery: string;
 }
 
-/**
- * The gallery page for `chat`: its tabs link to that chat's views (the open one current), and its grid shows `g`'s
- * tiles (OF's "Nothing found" when there are none; "Loading media…" or the red error before the first page).
- */
 export function applyGallery(ctx: GalleryContext, chat: string, g: GalleryData) {
   const { doc } = ctx;
   for (const a of doc.querySelectorAll<HTMLAnchorElement>("a[data-oi-gallery]")) {
@@ -267,7 +213,6 @@ export function applyGallery(ctx: GalleryContext, chat: string, g: GalleryData) 
     });
     if (tiles.length) prompt.style.display = "none";
     else if (g.status === null || !g.items || ((g.next || g.more) && !g.moreError)) {
-      // Before the first page, or while pages with no tile are followed by their next one: still loading.
       text.textContent = typeof g.status === "string" ? `Could not load media: ${g.status}` : "Loading media…";
       if (typeof g.status === "string") text.style.color = "#ff4545";
     } else if (g.moreError) {
@@ -280,7 +225,6 @@ export function applyGallery(ctx: GalleryContext, chat: string, g: GalleryData) 
       track(doc, () => retry.remove());
     }
   }
-  // The next page's error under the grid (the grid keeps its tiles).
   if (g.moreError && tiles.length) {
     const box = doc.createElement("div");
     box.id = PRELOADER;
@@ -291,7 +235,6 @@ export function applyGallery(ctx: GalleryContext, chat: string, g: GalleryData) 
     grid.after(box);
     track(doc, () => box.remove());
   }
-  // OF's loader under the grid while the next page is read.
   if (g.more && tiles.length) {
     const box = doc.createElement("div");
     box.id = PRELOADER;
@@ -302,7 +245,6 @@ export function applyGallery(ctx: GalleryContext, chat: string, g: GalleryData) 
   }
 }
 
-/** The gallery's Retry after a failed page (ofMirrorData reads its click). */
 function retryButton(doc: Document): HTMLButtonElement {
   const b = doc.createElement("button");
   b.type = "button";
@@ -313,45 +255,34 @@ function retryButton(doc: Document): HTMLButtonElement {
   return b;
 }
 
-/** The gallery header's "with <name>" (and the pinned page's): OF's `message.pretext_with`. */
 export function applyWith(doc: Document, fan: OFUserMini | null) {
   if (!fan) return;
   for (const el of doc.querySelectorAll(".b-gallery-wrapper .b-chat__user-status, [data-oi-with]")) setText(doc, el, `with ${nameOf(fan)}`);
 }
 
-// ---------------------------------------------------------------- find
 
-/** OF's find: the fewest characters it searches by itself, and its debounce. */
 export const FIND_MIN = 3;
 export const FIND_MS = 500;
-/** How many older pages a hit not drawn yet is looked for in (Messages Pro's ChatSearch: 12). */
 export const FIND_PAGES = 12;
-/** A hit older than FIND_PAGES pages back (the Relay has no `firstId` window to open the thread at it). */
 export const TOO_FAR = "This message is too far back to show";
 const HIGHLIGHT = "b-chat__message__text-highlighted";
 
-// The chat header's find bar (the chat list's header has its own, `m-with-bg`, ofMirrorChats').
 const findForm = (doc: Document) => doc.querySelector<HTMLFormElement>(".b-chat__header form.b-chat__search-form.m-absolute");
 const header = (doc: Document) => findForm(doc)?.closest<HTMLElement>(".b-chat__header") ?? null;
 const findInput = (doc: Document) => findForm(doc)?.querySelector<HTMLInputElement>("input[name='query']") ?? null;
 const findBtn = (doc: Document) => doc.querySelector<HTMLButtonElement>("button[at-attr='search_btn']");
 
 export interface FindContext {
-  /** OF's message search: the matching message ids, newest first. */
   search(query: string): Promise<string[]>;
-  /** Draw message `id` if it is not yet (older pages), true once it is drawn; `stale()` true: give up (a newer search). */
   reveal(id: string, stale: () => boolean): Promise<boolean>;
 }
 
-/** The thread's message `id` (its bubble), if drawn. */
 export const bubbleOf = (doc: Document, id: string) => doc.querySelector<HTMLElement>(`${THREAD_BOX} .b-chat__item-message[data-oi-data] [data-oi-msg="${CSS.escape(id)}"]`);
 
-/** Unwrap every highlighted match. */
 function clearHighlight(doc: Document) {
   for (const h of [...doc.querySelectorAll(`.${HIGHLIGHT}`)]) h.replaceWith(...h.childNodes);
 }
 
-/** Mark `query` in message `id`'s text (case-insensitive, as OF's), and centre the message when `center`. */
 export function highlight(doc: Document, id: string, query: string, center: boolean) {
   clearHighlight(doc);
   const el = bubbleOf(doc, id);
@@ -383,7 +314,6 @@ export function highlight(doc: Document, id: string, query: string, center: bool
   if (center) centre(doc, el);
 }
 
-/** Scroll the thread so `el` sits in its middle (OF's verticallyCenterMessage). */
 export function centre(doc: Document, el: HTMLElement) {
   const box = doc.querySelector<HTMLElement>(THREAD_BOX);
   if (!box) return;
@@ -391,10 +321,6 @@ export function centre(doc: Document, el: HTMLElement) {
   box.scrollTop = Math.max(0, top - (box.clientHeight - el.offsetHeight) / 2);
 }
 
-/**
- * Wire the chat header's Find in `doc`. Returns its teardown and `redrawn` (call after every thread redraw: the
- * current hit's mark is put back, the view left where it is).
- */
 export function bindFind(doc: Document, ctx: FindContext): { dispose: () => void; redrawn: () => void } {
   const state = { ids: [] as string[], index: null as number | null, query: "", searching: false, searched: false, gen: 0 };
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -431,7 +357,6 @@ export function bindFind(doc: Document, ctx: FindContext): { dispose: () => void
     }
     const n = state.ids.length;
     box.querySelector(".b-chat__search__results-count")!.textContent = ` ${n ? (state.index ?? 0) + 1 : 0}/${n} `;
-    // OF: up (older) is off at the oldest hit, down (newer) at the newest.
     const off = { prev: (state.index ?? 0) + 1 >= n, next: (state.index ?? 0) <= 0 };
     for (const b of box.querySelectorAll<HTMLButtonElement>("[data-oi-find]")) {
       const d = off[b.dataset.oiFind as "prev" | "next"];
@@ -466,7 +391,6 @@ export function bindFind(doc: Document, ctx: FindContext): { dispose: () => void
     if (shown) highlight(doc, id, state.query, true);
     else if (form) note(doc, form, TOO_FAR, true);
   };
-  /** A new query supersedes the one running (its search, or its older pages being read for a hit). */
   const run = async (q: string) => {
     if (!q.length) return;
     const gen = ++state.gen;
@@ -549,7 +473,6 @@ export function bindFind(doc: Document, ctx: FindContext): { dispose: () => void
   doc.addEventListener("submit", onSubmit, true);
   return {
     dispose: () => {
-      // The bar closes with the binding (another chat opens with no query, count or mark from this one).
       show(false);
       btn?.blur();
       doc.removeEventListener("click", onClick, true);
@@ -563,7 +486,6 @@ export function bindFind(doc: Document, ctx: FindContext): { dispose: () => void
   };
 }
 
-/** OF's search answer: a flat id list (or `{list}`), as strings. */
 export const searchIds = (r: unknown): string[] => (Array.isArray(r) ? r : Array.isArray((r as { list?: unknown })?.list) ? (r as { list: unknown[] }).list : []).map((v) => String(typeof v === "object" && v !== null && "id" in v ? (v as { id: unknown }).id : v));
 
 const settle = (doc: Document, id: string, ms: number) =>
@@ -583,10 +505,6 @@ interface ThreadPaging {
   loadOlder: () => Promise<{ added: number; hasMore: boolean }>;
 }
 
-/**
- * The chat page's Find and `?firstId=` jump (see the module comment), for useOfData: `thread` is its useChatMessages
- * (older pages by before_id, shared with the scroll-up loader), `drawn` changes with every redraw.
- */
 export function useThreadFind(frameRef: RefObject<HTMLIFrameElement | null>, src: string, on: boolean, accountId: string | null, chat: string | null, firstId: string | null, thread: ThreadPaging, drawn: unknown, pinned = false) {
   const paging = useRef(thread);
   paging.current = thread;
@@ -595,7 +513,6 @@ export function useThreadFind(frameRef: RefObject<HTMLIFrameElement | null>, src
   const want = useRef({ chat, firstId });
   want.current = { chat, firstId };
 
-  /** Older pages until `id` is drawn: at most FIND_PAGES reads (one still in flight is waited for, not counted). */
   const reveal = useCallback(async (doc: Document, id: string, stale: () => boolean = () => false) => {
     let reads = 0;
     for (let tries = 0; tries <= FIND_PAGES * 3; tries++) {
@@ -608,7 +525,6 @@ export function useThreadFind(frameRef: RefObject<HTMLIFrameElement | null>, src
     return false;
   }, []);
 
-  /** A gallery tile's ?firstId=: once per page load, as soon as the thread has drawn. */
   const jump = useCallback(() => {
     const b = bound.current;
     const { chat: c, firstId: id } = want.current;
@@ -617,7 +533,6 @@ export function useThreadFind(frameRef: RefObject<HTMLIFrameElement | null>, src
     if (!b || !key || jumped.current === key || !b.doc.querySelector(`${THREAD_BOX} [data-oi-msg]`)) return;
     jumped.current = key;
     const doc = b.doc;
-    // Another chat or firstId, or another frame document: stop paging (it would page the new chat) and stay quiet.
     const stale = () => want.current.chat !== c || want.current.firstId !== id || bound.current?.doc !== doc;
     void reveal(doc, id!, stale).then((shown) => {
       if (stale()) return;
@@ -640,8 +555,6 @@ export function useThreadFind(frameRef: RefObject<HTMLIFrameElement | null>, src
       const doc = frame.contentDocument;
       if (!doc?.body) return;
       const find = bindFind(doc, {
-        // The pinned page searches its pins (OF's filter=pinned); its hits are the pins drawn (a Relay that drops the
-        // filter answers every message's).
         search: async (q) => {
           const ids = searchIds(await relay.get<unknown>(`/api/of/v2/chats/${encodeURIComponent(String(fanId))}/messages/search?query=${encodeURIComponent(q)}${pinned ? "&filter=pinned" : ""}`, { accountId }));
           return pinned ? ids.filter((id) => bubbleOf(doc, id)) : ids;
@@ -649,7 +562,6 @@ export function useThreadFind(frameRef: RefObject<HTMLIFrameElement | null>, src
         reveal: (id, stale) => reveal(doc, id, stale),
       });
       bound.current = { doc, redrawn: find.redrawn };
-      // A new page load (the same gallery tile clicked again) jumps again, at once if the thread is already drawn.
       jumped.current = null;
       jump();
       undo = () => {
@@ -665,7 +577,6 @@ export function useThreadFind(frameRef: RefObject<HTMLIFrameElement | null>, src
     };
   }, [frameRef, src, on, accountId, chat, reveal, jump, pinned]);
 
-  // Every redraw: the current hit's mark back; the ?firstId= jump once its message can be drawn.
   useEffect(() => {
     const b = bound.current;
     if (!b || !on || !chat) return;

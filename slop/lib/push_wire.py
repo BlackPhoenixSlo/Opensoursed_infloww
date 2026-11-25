@@ -1,25 +1,3 @@
-"""A Web Push service at its wire, on loopback (`PushWire`): what the relay's push_send POSTs to
-(FCM / Mozilla / Apple stand-in). A stdlib `ThreadingHTTPServer` in the harness process, a thread
-per request, like lib/of_wire.py, and NOT a `/__slop` route in the relay: a relay posting to its own
-loop would hide loop stalls in the frame -> push number.
-
-  POST /push/<sub>   one push to device `sub` (registered with `device(sub, priv, auth)`: the real
-                     P-256 private key + 16-byte auth secret the device PUT the public halves of).
-                     Recorded (`records`, one dict per request: sub, t_recv epoch s, status, headers,
-                     body length, vapid verdict, plaintext JSON or decrypt error), then answered:
-                     403 when the VAPID header is invalid, else what the sub is armed with, else 201.
-
-VAPID check (RFC 8292): `Authorization: vapid t=<JWT>, k=<b64url raw P-256 key>`; the JWT is ES256
-and verifies under k; k == `vapid_key` (set from the relay's GET /push/key, when known); aud == this
-endpoint's origin; sub = mailto: with a non-empty host that is not localhost / loopback; exp in the
-future and <= 24 h ahead. Decryption: aes128gcm (RFC 8291) with the device's private key + auth
-secret (http_ece), so a body encrypted to the wrong keys is a decrypt error, never a pass.
-
-`arm(sub, status=410)`: every request to it answers 410 (gone). `arm(sub, status=429, once=True)`: the
-next one answers 429 (Retry-After 1), then normal. `arm(sub, latency_s=x)`: each answer after x s.
-Declared: the real services' other behaviour (TTL storage, collapse, quotas) is not modelled; latency
-0 unless armed (a guess: FCM answers in ~50-150 ms from a server).
-"""
 from __future__ import annotations
 
 import base64
@@ -52,7 +30,7 @@ class _Arm:
 
 @dataclass
 class Device:
-    priv: object  # cryptography EllipticCurvePrivateKey
+    priv: object
     auth: bytes
     arm: _Arm = field(default_factory=_Arm)
 
@@ -67,7 +45,6 @@ def _loopback(host: str) -> bool:
 
 
 def check_vapid(header: str | None, origin: str, want_key: str | None, now: float) -> tuple[bool, str, dict]:
-    """(ok, why, claims) for one Authorization header."""
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -107,8 +84,8 @@ def check_vapid(header: str | None, origin: str, want_key: str | None, now: floa
     return True, "", claims
 
 
+# not a /__slop route in the relay: a relay posting to its own loop would hide loop stalls in the frame -> push number
 class PushWire:
-    """`with PushWire() as wire:` serves on 127.0.0.1:<free port>; `wire.origin`, `wire.endpoint(sub)`."""
 
     def __init__(self) -> None:
         self.devices: dict[str, Device] = {}

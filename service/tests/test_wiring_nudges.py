@@ -1,50 +1,10 @@
 #!/usr/bin/env python3
-"""
-On/off WIRING for the nudge_online sender — the Settings tab's "Enabled" box,
-followed through the real API handler into the persisted key, and from that key
-into the runtime gate. Each case is one checkpoint: does OFF actually stop sends
-(including a job that was already queued), and does ON actually schedule?
-
-What each tab writes (app/components/settings/*):
-  NudgeOnlineTab                 → PUT /admin/nudge-config {config.enabled}
-                                   → account_ai_config.nudge_config_json.enabled
-                                   THEN a second POST/PATCH of the rule.
-Runtime gates:
-  _materialize_due_rules  reads automation_rules.is_enabled (schedules, or not)
-  nudge_online(+_fire)    read nudge_config_json.enabled (default True), never
-                          the rule
-
-  case_nudge_online_config_off_stops_detector_and_queued_fire:
-      PUT enabled=false → the detector no-ops AND an already-queued fire job
-      skips "disabled" (control account still sends).
-  case_nudge_online_put_syncs_rule:
-      [fixed] PUT /admin/nudge-config alone never touches the rule, so a half-
-      failed tab save (PUT ok, rule PATCH fails) leaves the tab reading ON from
-      the config while the rule stays OFF and nothing ever ticks.
-  case_nudge_online_rule_off_stops_queued_fire:
-      [fixed] the Automations/Ready-made toggle (PATCH is_enabled=false) stops the
-      detector but a fire job already queued still sends — the fire gate reads
-      only the config.
-  case_nudge_online_share_keeps_each_models_images:
-      Share (PUT /admin/nudge-config/bulk) copies settings + lines to each
-      model, keeps each model's own slot images (vault ids never cross
-      accounts) and syncs each model's rule to the shared `enabled`.
-  case_nudge_config_slots_shape_is_checked:
-      slots shape enforced (single + bulk): bad text/image/day/slot → 422.
-  case_nudge_config_legacy_null_slot_still_saves:
-      a legacy null day/slot saves (single + bulk, Off too), stored as absent.
-
-Run: ./venv/bin/python service/tests/test_wiring_nudges.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
-# The route handlers are driven directly, not over HTTP, so there is no request
-# principal for `assert_account_owned` to read and it fails closed (401). The
-# documented escape hatch, used for its intended purpose (as test_ai_chatter.py).
 import os  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
@@ -64,7 +24,6 @@ from db.models import AccountAiConfig  # noqa: E402
 from nudge_config_api import _BulkBody, _ConfigBody, put_nudge_config, put_nudge_config_bulk  # noqa: E402
 
 
-# ── Fake OF (no network): every surface the nudge senders touch ───────
 
 class FakeOF:
     def __init__(self, online=()):
@@ -108,7 +67,6 @@ async def _rule(rid: int) -> AutomationRule:
         return await s.get(AutomationRule, rid)
 
 
-# ── nudge_online: TWO stores — config.enabled (gate) + rule (cadence) ──
 
 _NUDGE_CFG = {
     "enabled": True, "delay_minutes": 0, "jitter_minutes": 0,
@@ -120,10 +78,6 @@ _NUDGE_CFG = {
 
 
 async def _nudge_tab_save(aid: str, enabled: bool, rule_id: int | None) -> int:
-    """NudgeOnlineTab.save(): PUT the config (which syncs the detector rule
-    server-side), THEN patch the rule it already knows about — or, on a first
-    save, just refetch the one the PUT created (no client-side POST: that made a
-    second 60s detector)."""
     await put_nudge_config(_ConfigBody(account_id=aid, config={**_NUDGE_CFG, "enabled": enabled}))
     if rule_id is None:
         async with get_session() as s:
@@ -137,13 +91,9 @@ async def _nudge_tab_save(aid: str, enabled: bool, rule_id: int | None) -> int:
 
 
 async def _warm_with_queued_fire(aid: str, fan: int) -> None:
-    """Warm the account, then let the materialized detector job enqueue ONE due
-    nudge_online_fire job for `fan` (delay 0)."""
     async with get_session() as s:
         s.add(NudgeState(account_id=aid, fan_id=1,
                          last_seen_online_at=datetime.utcnow() - timedelta(days=1)))
-        # PUT drops `require_welcomed` (not in _validate_config), so the default
-        # welcomed-gate holds: give the fan an old welcome.
         s.add(WelcomeSent(account_id=aid, fan_id=fan,
                           sent_at=datetime.utcnow() - timedelta(days=2)))
     await _materialize_due_rules()
@@ -155,7 +105,6 @@ async def _warm_with_queued_fire(aid: str, fan: int) -> None:
 
 
 async def case_nudge_online_config_off_stops_detector_and_queued_fire():
-    # Control: ON end to end → the queued fire really sends.
     on = "w_no_ctl"
     await _seed_account(on)
     fake = _use_fake(online=[5101])
@@ -164,7 +113,6 @@ async def case_nudge_online_config_off_stops_detector_and_queued_fire():
     res = await run_once(on, "nudge_online_fire")
     assert res.get("sent") == 1 and len(fake.dms) == 1, (res, fake.dms)
 
-    # OFF via the tab while a fire job is already queued.
     aid = "w_no_off"
     await _seed_account(aid)
     fake = _use_fake(online=[5201])
@@ -176,7 +124,6 @@ async def case_nudge_online_config_off_stops_detector_and_queued_fire():
     res = await run_once(aid, "nudge_online_fire")
     assert res.get("sent") == 0 and res.get("skipped") == "disabled", res
     assert fake.dms == [], fake.dms
-    # And the detector itself no-ops on the config flag (e.g. a Run-now press).
     det = await run_once(aid, "nudge_online", payload={})
     assert det.get("enabled") is False and det.get("enqueued") == 0, det
 
@@ -186,7 +133,6 @@ async def case_nudge_online_put_syncs_rule():
     await _seed_account(aid)
     rule = await create_rule(RuleCreate(account_id=aid, kind="nudge_online", name="Nudge online",
                                         every_seconds=60, payload={}, is_enabled=False))
-    # Tab save, turning ON — the PUT lands, the rule PATCH after it does not.
     await put_nudge_config(_ConfigBody(account_id=aid, config={**_NUDGE_CFG, "enabled": True}))
     assert (await _rule(rule["id"])).is_enabled is True, \
         "config says ON (and the tab shows ON) but the rule that runs the engine is OFF"
@@ -200,7 +146,6 @@ async def case_nudge_online_rule_off_stops_queued_fire():
     fake = _use_fake(online=[5301])
     rid = await _nudge_tab_save(aid, True, None)
     await _warm_with_queued_fire(aid, 5301)
-    # ReadyMadePanel.tsx:178 / AutomationsPanel.tsx:116 — rule only, config untouched.
     await update_rule(rid, RulePatch(is_enabled=False))
 
     await run_once(aid, "nudge_online_fire")
@@ -233,7 +178,6 @@ async def case_nudge_online_share_keeps_each_models_images():
         "default": {"evening": {"text": ["eve {name}"], "image": [901]}, "night": {"text": ["n"], "image": []}},
         "friday": {"night": {"text": [], "image": [902]}},
     }, t["slots"]
-    # A model with nothing saved gets the lines, none of the source's vault ids.
     assert (await _saved(fresh))["slots"] == {
         "default": {"evening": {"text": ["eve {name}"], "image": []}, "night": {"text": ["n"], "image": []}},
     }
@@ -243,14 +187,12 @@ async def case_nudge_online_share_keeps_each_models_images():
                 AutomationRule.account_id == a, AutomationRule.kind == "nudge_online"))).scalars().all()
         assert on == [True], (a, on)
 
-    # Shared OFF parks the target's rule.
     await put_nudge_config_bulk(_BulkBody(account_ids=[tgt], config={**shared, "enabled": False}))
     async with get_session() as s:
         on = (await s.execute(select(AutomationRule.is_enabled).where(
             AutomationRule.account_id == tgt, AutomationRule.kind == "nudge_online"))).scalars().all()
     assert on == [False], on
 
-    # W30-SM F5: a share that omits `enabled` leaves each target's rule as it is (as a single save does).
     r = await put_nudge_config_bulk(_BulkBody(account_ids=[tgt], config={"delay_minutes": 7}))
     async with get_session() as s:
         on = (await s.execute(select(AutomationRule.is_enabled).where(
@@ -262,10 +204,6 @@ async def case_nudge_online_share_keeps_each_models_images():
 
 
 async def case_nudge_config_slots_shape_is_checked():
-    """W30-SM F7: slots are day bucket → slot → {text: [str], image: [int]}; a string
-    `text` (sent letter by letter), a non-numeric image id (the whole slot fails), an
-    unknown day or slot are refused 422 (single and bulk); digit-string ids are
-    stored as ints, unknown entry keys dropped."""
     from fastapi import HTTPException
     aid = "w_slots_shape"
     await _seed_account(aid)
@@ -298,9 +236,6 @@ async def case_nudge_config_slots_shape_is_checked():
 
 
 async def case_nudge_config_legacy_null_slot_still_saves():
-    """W30-SM F33: a stored `null` day or slot (the sender skips it: that slot
-    inherits the next bucket's lines) round-trips from the editor; Save (an Off
-    save too) must not 422 on it. Single and bulk store it as absent."""
     aid = "w_slots_legacy_null"
     await _seed_account(aid)
     legacy = {"friday": None, "default": {"evening": {"text": ["hi"]}, "night": None}}

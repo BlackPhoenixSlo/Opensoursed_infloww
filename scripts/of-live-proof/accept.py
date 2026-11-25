@@ -25,7 +25,8 @@ COMMITTED_OVERLAYS = (ROOT / "docs" / "of-manager" / "not-yet-sweep-2026-11-21-l
 SWEEP_SECTIONS = {3: ("settings", "profile")}
 RETRYABLE = re.compile(r"Page\.goto: Timeout|no Mirror frame")
 LOCK_HELD = "refused: lock held"
-LOCK_WAIT, LOCK_TRIES = 15, 80  # 20 min of another lane's runs at most
+# 15 s x 80 = 20 min of another lane's runs at most.
+LOCK_WAIT, LOCK_TRIES = 15, 80
 _EVIDENCE = re.compile(r"^ofm-live-proof: evidence (\S+)", re.M)
 
 

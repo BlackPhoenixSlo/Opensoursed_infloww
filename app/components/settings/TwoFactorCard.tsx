@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * Security (personal)'s Two-factor authentication and Other sessions cards
- * (service/account_security.py), for whoever is signed in, owner or employee.
- *
- * 2FA: Enable walks through `TwoFactorSetup` in a modal; once on, New backup
- * codes and Disable each ask for a current code. Disable is off while the
- * employee's Agency requires 2FA. Turning 2FA on signs out every other session
- * (the Relay re-issues this one's cookie). Other sessions: "Log out other
- * sessions" ends every session but this one.
- */
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -27,7 +17,6 @@ interface Status { enabled: boolean; enabled_at: string | null; recovery_codes_l
 
 const STATUS_KEY = ["auth", "2fa"];
 
-/** Disable or New backup codes: a current code (or a backup code), then the action. */
 function CodeModal({ action, onClose }: { action: "disable" | "recovery-codes"; onClose: () => void }) {
   const qc = useQueryClient();
   const [code, setCode] = useState("");
@@ -80,7 +69,7 @@ export function TwoFactorCard() {
   const [modal, setModal] = useState<"setup" | "disable" | "recovery-codes" | null>(null);
   const s = q.data;
   const close = () => setModal(null);
-  // Closing setup re-reads the status: 2FA may have gone on before the backup codes' Continue.
+  // 2FA may have gone on before the backup codes' Continue, so closing re-reads the status.
   const closeSetup = () => { close(); void qc.invalidateQueries({ queryKey: STATUS_KEY }); };
 
   const control = !s ? null : s.enabled ? (

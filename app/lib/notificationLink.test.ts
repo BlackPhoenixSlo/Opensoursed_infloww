@@ -21,7 +21,6 @@ describe("notificationHref", () => {
   });
 
   it("links a Fan known by username alone to its resolver, still marked, and nobody to nothing", () => {
-    // The resolver keeps the query on its way to the id's Deep link.
     expect(notificationHref("300", { username: "ann b" })).toBe("/messages-pro/300/u/ann%20b?fanTab=ann+b");
     expect(notificationHref("300", { username: "ann", name: "Ann" }, { refresh: true }))
       .toBe("/messages-pro/300/u/ann?refresh=media&fanTab=Ann");
@@ -56,7 +55,7 @@ describe("openNotification", () => {
     const focus = vi.fn();
     const open = vi.spyOn(window, "open").mockReturnValue({ location, focus } as unknown as Window);
     const stale = vi.fn();
-    setFanTabOpener(stale)(); // unregistered: the page unmounted
+    setFanTabOpener(stale)();
     openNotification("/messages-pro/300/555?fanTab=Ann");
     expect(open).toHaveBeenCalledWith("", "messages-pro", "popup,width=1470,height=915");
     expect(location.href).toBe("/messages-pro/300/555?fanTab=Ann");

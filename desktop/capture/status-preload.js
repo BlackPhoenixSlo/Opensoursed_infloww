@@ -1,10 +1,7 @@
 "use strict";
 
-// Preload for the LOCAL capture-status window (renderer/capture.html, file://).
-// Trusted local page → safe to bridge the capture IPC surface. Every method maps
-// to an ipcMain handler in of-capture.js that additionally verifies a file://
-// sender, so the remote OnlyFans window can never drive these.
 
+// Every method maps to an ipcMain handler in of-capture.js that verifies a file:// sender, so the remote OnlyFans window cannot drive these.
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("fasttCapture", Object.freeze({

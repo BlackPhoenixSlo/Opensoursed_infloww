@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * Statistics › Overview (and the Top cards other tabs share) with the phase-2 Relay reads (omf-statistics-relay), read
- * only once useOfStats' probe finds that Relay; until then the page keeps the generator's honest state:
- * - Earnings: OF's category radios and chart (`/earnings/chart` with OF's eight `<c>_amount` series: the picked row's
- *   daily amount), the period's gross and net per category from it (StatisticsOverview's statisticData);
- * - Top highlights (and Engagement's, Fans' sidebars): OF's Top Message (`/users/me/stats/top/message`), Top Stream
- *   (`…/top/stream`), Top Story (`…/top/story`) and Top Fan (`…/top/fan`) cards, each with its tabs;
- * - Activity Streak: OF's Current / Longest streak counts and this month's calendar with the streak days marked
- *   (`/streaks`, `/streaks/top`, `/users/me/stats/today-activity`).
- */
 
 import { BLUE } from "@/lib/ofMirrorChart";
 import { plain } from "@/lib/ofMirrorData";
@@ -32,21 +22,13 @@ export interface OverviewCtx {
   v2: boolean;
   img?: (u: string) => string;
   userStart: Date | null;
-  /** The phase-1 Relay (useOfStats' second probe): the per-post stats and buyer lists. */
   v3?: boolean;
-  /** The Creator's username (the post links OF copies), while known. */
   username?: string | null;
-  /** The page (Top Post's menu has "View post" on Overview only). */
   sub?: string;
 }
 
 
-// ---------------------------------------------------------------- Earnings
 
-/**
- * Overview › Earnings' period figures from OF's chart once it answers: the period row's net (`total.total`) and each
- * category's gross and net (`<row>.gross|total`), else the overview's (Phase 1's keys).
- */
 export const overviewRekey = (chart: unknown) => (el: Element, key: string) => {
   if (!isObj(chart)) return key;
   const name = el.closest(".b-stats-row__label")?.querySelector("input[name]")?.getAttribute("name");
@@ -80,15 +62,12 @@ function earningsPage(doc: Document, data: StatsData, p: Period, x: OverviewCtx)
   if (isObj(series)) drawLine(doc, canvas, [series.chartAmount, title, "money"], BLUE, 4, true, p.key === "24h" ? "UTC" : p.tz);
 }
 
-// ---------------------------------------------------------------- Top cards
 
 const STREAM_TABS: [string, string][] = [["purchases", "Purchases"], ["tips", "Tips"], ["views", "Viewers"], ["likes", "Likes"], ["comments", "Comments"]];
 const STORY_TABS: [string, string][] = [["tips", "Tips"], ["views", "Viewers"], ["likes", "Likes"], ["comments", "Comments"]];
 const FAN_TABS: [string, string][] = [["total", "Total"], ["subscriptions", "Subscriptions"], ["tips", "Tips"], ["messages", "Messages"]];
-/** Fans' sidebar Top Fan adds Streams (statistics-fans.js). */
 export const FANS_FAN_TABS: [string, string][] = [...FAN_TABS, ["streams", "Streams"]];
 
-/** OF's card header: the date, the price with its lock, the More button with the card's menu (`menu`). */
 function header(doc: Document, date: Date | null, price: number | null, tz: string | null, menu: MoreItem[][] = []) {
   const el = elOf(doc);
   const h = el("div", "b-top-statistic__header");
@@ -103,12 +82,9 @@ function header(doc: Document, date: Date | null, price: number | null, tz: stri
   h.append(d);
   return h;
 }
-/** A stream's or story's media rows (TopStream's dropdownItems, TopStory's): composers this Mirror does not open. */
 const COMPOSE: MoreItem[] = ["Add to a new post", "Send to post in a new tab", "Add to a new message", "Add to your story"].map((label) => ({ label }));
-/** Their last row: OF's stream statistics modal (it plays the recording) and story viewer are not built. */
 const DETAILED: MoreItem[] = [{ label: "View detailed statistics" }];
 
-/** Copy `text` and show OF's toast `done` (else "Failed to copy to clipboard"). */
 function copy(doc: Document, text: string, done: string) {
   const clipboard = doc.defaultView?.navigator.clipboard;
   const failed = () => toast(doc, "Failed to copy to clipboard");
@@ -116,11 +92,6 @@ function copy(doc: Document, text: string, done: string) {
   clipboard.writeText(text).then(() => toast(doc, done), failed);
 }
 
-/**
- * Top Post's More menu (PostDropdown, statistics-overview chunk module 480916, its postMixin flags for the Creator's
- * own post): "Copy link to post" (OF's post link, copied), the post writes (pin, share to story, edit, archive, add a
- * tag) and "View post" (OF's post page) disabled, "Show who bought" and "View detailed statistics" with the phase-1 Relay.
- */
 export function postMenu(doc: Document, post: Record<string, unknown>, x: Pick<OverviewCtx, "v3" | "username" | "sub">, tz: string | null): MoreItem[][] {
   if (post.isDeleted) return [];
   const id = post.id;
@@ -138,7 +109,6 @@ export function postMenu(doc: Document, post: Record<string, unknown>, x: Pick<O
   return [first, [{ label: "View detailed statistics", onPick: x.v3 && id != null ? () => openPostStats(doc, id, tz, undefined, !!post.streamId) : undefined }]];
 }
 
-/** OF's picture box (the thumb through the Relay's image proxy). */
 function picture(doc: Document, url: unknown, img: ((u: string) => string) | undefined, cls = "b-top-statistic__img") {
   if (typeof url !== "string" || !url || !img) return null;
   const box = elOf(doc)("div", cls);
@@ -148,14 +118,13 @@ function picture(doc: Document, url: unknown, img: ((u: string) => string) | und
   box.append(i);
   return box;
 }
-/** OF's figures table (TopStreamBody, TopStory): a row per figure, the picked tab's in bold; a value may be OF's link. */
 function figures(doc: Document, rows: [label: string, value: (string | Node)[], bold: boolean][]) {
   const el = elOf(doc);
   const t = el("table", "table m-list-determination m-reset-mb");
   for (const [label, value, bold] of rows) {
     const tr = el("tr");
     const v = el("td", `text-right${bold ? " g-semibold" : ""}`);
-    v.append(" ", ...value.map((x) => (typeof x === "string" ? doc.createTextNode(x) : x)), " "); // OF pads each value with spaces
+    v.append(" ", ...value.map((x) => (typeof x === "string" ? doc.createTextNode(x) : x)), " ");
     tr.append(el("td", "", label), v);
     t.append(tr);
   }
@@ -164,7 +133,6 @@ function figures(doc: Document, rows: [label: string, value: (string | Node)[], 
 const thumbOf = (item: Record<string, unknown>) =>
   at(item, "media.files.thumb.url") ?? (Array.isArray(item.media) ? at(item.media.find((m) => at(m, "files.thumb.url")), "files.thumb.url") : undefined);
 
-/** Overview › Earnings: one month row per month from the Creator's start (or the first month with earnings) to now. */
 function applyMonths(doc: Document, data: StatsData, p: Period, userStart: Date | null) {
   const tpl = doc.querySelector<HTMLElement>("[data-oi-template='month']");
   const months = moneyOf("earningStats", data.stats).earningStats?.months;
@@ -191,7 +159,7 @@ function applyMonths(doc: Document, data: StatsData, p: Period, userStart: Date 
     if (head) head.textContent = title;
     const span = el.querySelector(".b-stats-row__total-net > span");
     if (span) {
-      const n = net.get(`${y}-${m}`) ?? 0; // a month /payouts/stats lists no earnings for: OF's $0.00
+      const n = net.get(`${y}-${m}`) ?? 0;
       span.textContent = ` ${usd(n)} `;
       span.classList.toggle("m-zero-value", Math.round(n) === 0);
     }
@@ -200,16 +168,9 @@ function applyMonths(doc: Document, data: StatsData, p: Period, userStart: Date 
   }
 }
 
-/** OF's Top Post tabs in order (248806 `Gn`), their titles (texts_en.json streaming_summary_<key>_title), money or not. */
 const POST_TABS: [key: string, title: string, money: boolean][] = [
   ["purchases", "Purchases", true], ["tips", "Tips", true], ["views", "Views", false], ["likes", "Likes", false], ["comments", "Comments", false],
 ];
-/**
- * Top Post (TopPost, Overview › Top highlights and Engagement › Posts), once `/users/me/stats/top/post` names a post for a
- * metric: the date, price with OF's lock, its first picture (the Relay's image proxy) or OF's no-picture layout, its text,
- * "Full stat" (OF's Post statistics popup with the phase-1 Relay, else disabled), its More menu (postMenu) and OF's
- * footer of its non-zero figures, the picked one marked.
- */
 function topPost(doc: Document, body: unknown, p: Period, x: OverviewCtx) {
   const items = topItems(body, POST_TABS.map(([k]) => k));
   topCard(doc, "Top Post", POST_TABS.map(([k, t]) => [k, t]), items, x.picks.tpost, "tpost", (k) => {
@@ -254,14 +215,12 @@ function topPost(doc: Document, body: unknown, p: Period, x: OverviewCtx) {
   });
 }
 
-/** Top Message (TopMassMessage): its date, price, More menu, picture, text, Unsend (phase 4: disabled) and OF's purchases and views. */
 function topMessage(doc: Document, body: unknown, p: Period, x: OverviewCtx) {
   const items = topItems(body, ["purchases"]);
   topCard(doc, "Top Message", [["purchases", "Purchases"]], items, "purchases", "tmsg", (k) => {
     const m = items![k]!;
     const el = elOf(doc);
     const stat = el("div", "b-top-statistic");
-    // TopMassMessage's menu: "Show who bought" (a paid message with buyers: its buyer list), then Unsend (phase 4).
     const who: MoreItem[] = !m.isFree && num(m.purchasedCount) ? [{ label: "Show who bought", onPick: x.v2 && m.id !== undefined ? () => openUsers(doc, `buyers:${String(m.id)}:0`) : undefined }] : [];
     stat.append(header(doc, dateOf(m.date), num(m.price), p.tz, [who, [{ label: "Unsend", className: "m-danger", disabledTitle: ELSEWHERE.unsendMass }]]));
     const pic = picture(doc, thumbOf(m), x.img);
@@ -288,8 +247,6 @@ function topMessage(doc: Document, body: unknown, p: Period, x: OverviewCtx) {
     const bought = num(m.purchasedCount);
     if (bought && !m.isFree) {
       const s = el("span", "b-dot-item b-summary-list__item m-lowercase g-md-text m-default-font-weight d-inline-block m-current");
-      // OF's own figure: TopMassMessage's footer renders utils-money with `purchasedCount * price` (statistics-overview
-      // chunk, module 309753); the reply carries no sum of its own.
       const sum = usd(bought * (num(m.price) ?? 0));
       s.append(x.v2 && m.id !== undefined ? usersLink(doc, sum, "buyers", m.id) : el("span", "", sum), doc.createTextNode(" purchases "));
       inner.append(s);
@@ -304,11 +261,9 @@ function topMessage(doc: Document, body: unknown, p: Period, x: OverviewCtx) {
   });
 }
 
-/** A count: OF's link to its list when it has one (and the Relay reads it), else the number. */
 const linked = (doc: Document, n: number, kind: "streams" | "stories", id: unknown, tips: boolean, links: boolean): string | Node =>
   links && n > 0 && id !== undefined ? usersLink(doc, ofCount(n), kind, id, tips) : ofCount(n);
 
-/** A stream's card (TopStreamBody): date, price, picture, Viewers (purchases), Likes, Comments, Tips (their sum). */
 export function streamBody(doc: Document, s: Record<string, unknown>, k: string, tz: string | null, img: ((u: string) => string) | undefined, links: boolean): Node[] {
   const el = elOf(doc);
   const pic = picture(doc, at(s, "media.files.thumb.url"), img, "b-top-statistic__img b-photos m-reset-grid");
@@ -325,7 +280,6 @@ export function streamBody(doc: Document, s: Record<string, unknown>, k: string,
   return [header(doc, dateOf(s.startedAt), num(s.price), tz, [s.media && s.canAddToPosts ? COMPOSE : [], DETAILED]), b];
 }
 
-/** A story's card (TopStory): date, price, picture, Viewers, Likes, Comments, Tips (their sum). */
 export function storyBody(doc: Document, s: Record<string, unknown>, k: string, tz: string | null, img: ((u: string) => string) | undefined, links: boolean): Node[] {
   const el = elOf(doc);
   const pic = picture(doc, at(s, "media.0.files.thumb.url") ?? at(s, "media.files.thumb.url"), img);
@@ -343,7 +297,6 @@ export function storyBody(doc: Document, s: Record<string, unknown>, k: string, 
   return [header(doc, dateOf(s.createdAt), num(s.price), tz, [media ? COMPOSE : [], DETAILED]), b];
 }
 
-/** Top Stream (TopStream). */
 function topStream(doc: Document, body: unknown, p: Period, x: OverviewCtx) {
   const items = topItems(body, STREAM_TABS.map(([k]) => k));
   topCard(doc, "Top Stream", STREAM_TABS, items, x.picks.tstream, "tstream", (k) => {
@@ -353,7 +306,6 @@ function topStream(doc: Document, body: unknown, p: Period, x: OverviewCtx) {
   });
 }
 
-/** Top Story (TopStory). */
 function topStory(doc: Document, body: unknown, p: Period, x: OverviewCtx) {
   const items = topItems(body, STORY_TABS.map(([k]) => k));
   topCard(doc, "Top Story", STORY_TABS, items, x.picks.tstory, "tstory", (k) => {
@@ -363,11 +315,9 @@ function topStory(doc: Document, body: unknown, p: Period, x: OverviewCtx) {
   });
 }
 
-/** A top fan's sum for a tab (OF's subscriber: totalSumm, subscribesSumm, tipsSumm, messagesSumm, streamsSumm). */
 const FAN_SUMS: Record<string, string> = { total: "totalSumm", subscriptions: "subscribesSumm", tips: "tipsSumm", messages: "messagesSumm", streams: "streamsSumm" };
 export const fanSum = (fan: Record<string, unknown>, key: string) => num(at(fan, `subscribedOnData.${FAN_SUMS[key]}`) ?? fan[FAN_SUMS[key]]);
 
-/** OF's Top Fan body (TopFan): the fan with their price and time subscribed, the tab's total. */
 export function topFanBody(doc: Document, fan: Record<string, unknown>, key: string, img: ((u: string) => string) | undefined) {
   const el = elOf(doc);
   const stat = el("div", "b-top-statistic");
@@ -402,13 +352,11 @@ export function topFanBody(doc: Document, fan: Record<string, unknown>, key: str
   return stat;
 }
 
-/** Top Fan on Overview › Top highlights (TopFan). Fans' sidebar card (with its actions) is ofMirrorStatsFans'. */
 function topFan(doc: Document, body: unknown, x: OverviewCtx) {
   const items = topItems(body, FAN_TABS.map(([k]) => k));
   topCard(doc, "Top Fan", FAN_TABS, items, x.picks.fan, "fan", (k) => [topFanBody(doc, items![k]!, k, x.img)]);
 }
 
-// ---------------------------------------------------------------- Activity Streak
 
 interface Streak {
   id?: unknown;
@@ -420,7 +368,6 @@ interface Streak {
 }
 const dayKey = (w: { y: number; m: number; d: number }) => `${w.y}-${pad(w.m)}-${pad(w.d)}`;
 
-/** OF's streak counts (OverviewStreaks): the active streak's days (with today's activity and its rest days) and the top one's. */
 export function streakCounts(list: Streak[], top: unknown, today: unknown, now: Date, tz: string | null) {
   const was = isObj(today) && Object.values(today).some(Boolean);
   const todayN = was ? 1 : 0;
@@ -433,21 +380,15 @@ export function streakCounts(list: Streak[], top: unknown, today: unknown, now: 
   return { current, longest, today: was };
 }
 
-/** OF's duration (OverviewStreaks' getTime: dayjs' "H[h] m[min]" from an hour, else "m[min] s[sec]"). */
 export const streakTime = (sec: number) => {
   const h = Math.floor(sec / 3600) % 24;
   const m = Math.floor((sec % 3600) / 60);
   return sec >= 3600 ? `${h}h ${m}min` : `${m}min ${Math.floor(sec % 60)}sec`;
 };
-/** OverviewStreaks' topStreakDataMap: the Longest streak's rows. */
 const TOP_ROWS: [title: string, field: string, time?: boolean][] = [
   ["Created posts", "postsCount"], ["Published stories", "storiesCount"], ["Replies to followers", "chatsCount"], ["Time in live streaming", "streamsDuration", true],
 ];
 
-/**
- * OF's Longest streak tab (OverviewStreaks, `?tab=top`): "Your longest streak was on <dates>. …active <days> days, with:",
- * its counts and, when the overview's earnings for its dates have a total and a change, "Total earnings".
- */
 function topStreakView(doc: Document, top: Streak & Record<string, unknown>, summary: unknown, p: Period, today: boolean) {
   const el = elOf(doc);
   const fmt = (d: Date | null) => (d ? dayText(d, p.tz) : "");
@@ -482,11 +423,6 @@ function topStreakView(doc: Document, top: Streak & Record<string, unknown>, sum
   return view;
 }
 
-/**
- * OF's Activity Streak (OverviewStreaks): the Current / Longest tabs with their counts; Current streak: the calendar month
- * `smonth` months back (OF's v-calendar, weeks from Sunday) with the streak days marked as OF marks them, its month
- * switch from the Creator's first month to this one; Longest streak: topStreakView (disabled with no top streak, as OF's).
- */
 function streaksPage(doc: Document, data: StatsData, p: Period, x: OverviewCtx) {
   const box = doc.querySelector<HTMLElement>("[data-oi-streaks]");
   const list = at(data.streaks, "list");
@@ -500,14 +436,13 @@ function streaksPage(doc: Document, data: StatsData, p: Period, x: OverviewCtx) 
   setText(doc, counts[1], ` ${longest} `);
   const li = counts[0]?.closest(".b-tabs__nav__item");
   if (li) setClass(doc, li, "m-no-streak", !current);
-  // The tabs (TabOF): the picked one current, the other with OF's hover; Longest only with a top streak.
   const top = Object.keys(data.streaksTop).length ? (data.streaksTop as Streak & Record<string, unknown>) : null;
   const tab = x.picks.stab === "top" && top ? "top" : "current";
   for (const b of box.querySelectorAll<HTMLElement>("[data-oi-pick^='stab:']")) {
     const k = b.getAttribute("data-oi-pick")!.slice(5);
     if (k === "top") {
       if (top) enable(doc, b);
-      else setAttr(doc, b, "title", null); // OF's is-disabled tab, no tooltip
+      else setAttr(doc, b, "title", null);
     }
     const on = k === tab;
     setClass(doc, b, "m-current", on);
@@ -527,7 +462,6 @@ function streaksPage(doc: Document, data: StatsData, p: Period, x: OverviewCtx) 
   const shown = monthBack(real, back);
   const now = { ...real, y: shown.y, m: shown.m };
   setText(doc, box.querySelector(".b-streaks-swither__time"), ` ${MONTHS[now.m - 1]} ${now.y} `);
-  // The month switch: back to the Creator's first month, forward to this one (OF's isChangeMonthDisable).
   const since = x.userStart ? wallOf(x.userStart, p.tz) : null;
   for (const b of box.querySelectorAll<HTMLElement>("[data-oi-streak-month]")) {
     const prev = b.getAttribute("data-oi-streak-month") === "prev";
@@ -539,7 +473,6 @@ function streaksPage(doc: Document, data: StatsData, p: Period, x: OverviewCtx) 
     setClass(doc, b, "m-gray", off);
     setClass(doc, b, "m-default-color", !off);
   }
-  // The marks per day of the month (OF's getDayClasses).
   const marks = new Map<string, string[]>();
   const mark = (k: string, cls: string) => marks.set(k, [...(marks.get(k) ?? []), cls]);
   const keyOf = (iso: string | undefined) => {
@@ -563,7 +496,6 @@ function streaksPage(doc: Document, data: StatsData, p: Period, x: OverviewCtx) 
     }
   }
   if (today && !marks.has(todayKey)) mark(todayKey, "vc-marked-day vc-marked-single m-active-streak");
-  // The grid: OF's weeks of this month, the days around it `v-outside`.
   const cal = box.querySelector(".v-calendar-monthly");
   const weekTpl = cal?.querySelector(".v-calendar-weekly__week");
   if (!cal || !weekTpl) return;
@@ -591,7 +523,6 @@ function streaksPage(doc: Document, data: StatsData, p: Period, x: OverviewCtx) 
   }
 }
 
-/** The Overview tabs' (and the shared Top cards') phase-2 parts for page `sub`. */
 export function applyOverview(doc: Document, sub: string, data: StatsData, p: Period, x: OverviewCtx) {
   if (sub === "overview/earnings") earningsPage(doc, data, p, x);
   applyMonths(doc, data, p, x.userStart);

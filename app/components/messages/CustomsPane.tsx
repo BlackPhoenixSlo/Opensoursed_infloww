@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * CustomsPane — the expanded row of CustomsTab's Section: the open row's
- * handoff bar, order span, brief and thread, as `customsPaneReducer`'s `Pane`
- * holds them. Render only: the Section owns the reducer, the requests and the
- * refs, and hands in what each button does.
- */
 
 import { fmtPrice } from "@/lib/format";
 
@@ -14,16 +8,7 @@ import {
   type ContextMsg, type Pane, type PaneRow,
 } from "./customsPaneReducer";
 
-/** The fan's own words, most likely to BE the work order.
- *
- *  His longest inbound message in the pane. No model, no inference, no
- *  paraphrase — a summary that quietly rewrites "25 back 25 front" is worse
- *  than no summary at all, because the operator films against it. This is
- *  verbatim or nothing, and when it guesses wrong the raw thread is directly
- *  underneath it.
- *
- *  Tip rows carry no body of their own (the money is the content), so they are
- *  skipped; very short replies ("ok", "yes") never carry a brief. */
+// Verbatim or nothing: a paraphrase that rewrites "25 back 25 front" is worse than none. Tip rows have no body.
 function workOrderQuote(msgs: ContextMsg[]): string | null {
   let best: string | null = null;
   for (const m of msgs) {
@@ -42,15 +27,10 @@ export default function CustomsPane({
   onCopy,
   onRetryBrief,
 }: {
-  /** The row as listed now (its `tipped_at` may have moved since `pane.at`). */
   row: PaneRow;
-  /** This row's open pane. */
   pane: Pane;
-  /** Re-open the row at its current tip ("read again"). */
   onReadAgain: () => void;
-  /** Copy the handoff from what `pane` has loaded. */
   onCopy: () => void;
-  /** Re-ask the brief for `pane` (same open, same `pane.at`). */
   onRetryBrief: () => void;
 }) {
   const phase = briefPhase(pane.brief);
@@ -73,8 +53,6 @@ export default function CustomsPane({
             No messages stored around this tip.
           </p>
         )}
-        {/* He tipped again since this pane was read: the brief and
-            thread are the old tip's, the total is the new one. */}
         {pane.at !== row.tipped_at && (
           <p className="mb-2 text-xs text-warn">
             He tipped again since this was read &mdash;{" "}
@@ -86,14 +64,6 @@ export default function CustomsPane({
             </button>
           </p>
         )}
-        {/* THE HANDOFF, first and above the model brief, because
-            this is what actually gets sent on: username, account,
-            his words. The brief below is the optional read-it-for-me
-            layer — it was the ONLY layer, which is the "too
-            complicated" the operator named. The bar is drawn with
-            the pane; only Copy waits on `canCopy`, NOT on the
-            thread: the handoff is brief + order, and "order lookup
-            failed" must show while the thread still loads. */}
         <div className="mb-3 flex items-center gap-2">
           <button
             onClick={onCopy}
@@ -126,17 +96,11 @@ export default function CustomsPane({
             </span>
           )}
           {!row.of_username && (
-            // The one case the handoff cannot fill in. Say it
-            // where the copy happens, not after it is pasted.
             <span className="text-xs opacity-60">
               no @username stored &mdash; try &ldquo;Pull&rdquo;
             </span>
           )}
         </div>
-        {/* THE ORDER — the same lines the copy button falls back to
-            when there is no brief (same `speaker`). Rendered ABOVE the raw thread because it IS the answer:
-            the thread below is a window around the money, and on a
-            layaway custom the money is months from the ask. */}
         {span && span.lines.length > 0 && (
           <div className="mb-3 rounded border border-ok/40 bg-ok/5 px-3 py-2">
             <p className="text-xs font-semibold">
@@ -169,7 +133,6 @@ export default function CustomsPane({
               ))}
             </div>
             {span.truncated && (
-              // Never let an EDIT look like the whole thread.
               <p className="mt-1 text-[11px] opacity-50">
                 Long thread &mdash; showing only the lines that
                 mention the order.
@@ -177,8 +140,6 @@ export default function CustomsPane({
             )}
           </div>
         )}
-        {/* WHAT TO DO. Loads with the row — this is the handoff
-            body, so it is never behind a second click. */}
         <div className="mb-3">
           {phase === "loading" && (
             <p className="text-xs opacity-60">Reading the thread…</p>
@@ -258,8 +219,6 @@ export default function CustomsPane({
                   {m.from_fan ? "fan" : "us"}
                 </span>
                 <span className="min-w-0">
-                  {/* A tip row has no body — show the money, which
-                      is the thing being explained. */}
                   {m.is_tip ? (
                     <em className="not-italic font-semibold">
                       💸 tipped{" "}

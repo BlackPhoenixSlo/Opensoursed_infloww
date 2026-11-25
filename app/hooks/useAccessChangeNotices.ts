@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * useAccessChangeNotices — a chatter's toast when the Agency changes what it
- * may do: "Your permissions were updated." and "You've been unassigned from
- * <Creator>." (Infloww's live revoke, 04 M20).
- *
- * `permissions_changed` and `assignment_changed` are Agency-wide and empty:
- * every session of the Agency gets them whoever's grants moved. So each one
- * snapshots what it covers, and the refetch it triggers
- * (useAccountStateEvents) is compared with that: only the session whose own
- * applied permissions or Creator list changed is told. An owner session
- * makes these changes and is never told.
- */
 
 import { useEffect } from "react";
 import { useQueryClient, type Query, type QueryClient } from "@tanstack/react-query";
@@ -24,13 +12,11 @@ import { eventBus } from "@/lib/events";
 import { pushNotice } from "@/lib/notices";
 import { isChatterOnly } from "@/lib/session";
 
-/** A refetch that has not landed by then is not this event's. */
+// A refetch that has not landed by then is not this event's.
 export const SETTLE_MS = 30_000;
 const LABEL = "Access";
 
-/** Call `fn` with each query matching `prefix` whose data a fetch replaces,
- *  until it returns true or SETTLE_MS passes. A `setQueryData` (logout's
- *  `[]`) is no fetch, and a failed fetch replaces nothing. */
+// A setQueryData (logout's `[]`) is no fetch, and a failed fetch replaces nothing.
 function onRefetched(qc: QueryClient, prefix: readonly unknown[], fn: (q: Query) => boolean): void {
   const stop = () => { clearTimeout(timer); unsubscribe(); };
   const timer = setTimeout(stop, SETTLE_MS);

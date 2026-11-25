@@ -1,12 +1,3 @@
-/**
- * The Creator warm-up (hover) and the All Models pick: one plain `?bust=`
- * rewarm per Creator (`refreshOne` with no `force`: the Relay's shared Hover
- * cooldown is the one budget), then the chat lists refetch. And
- * warmUpMayRefetch — the warm-up's post-bust invalidation, run against a real
- * QueryClient: a chat list loading its next page keeps that page, and any
- * settled list (its next page landed, failed, or restored from the snapshot)
- * is refetched, so the badge and the list read the same window.
- */
 import { createElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
@@ -76,7 +67,6 @@ async function warmUpAfter(before: Before) {
   let reads = 0;
   let failNext = before === "next page failed";
   const gates: Array<() => void> = [];
-  // The one read held at the wire across the warm-up: the next page's, or the plain refetch's head.
   const heldRead = before === "next page in flight" ? 2 : before === "plain refetch in flight" ? 3 : 0;
   const options = {
     queryKey: KEY,

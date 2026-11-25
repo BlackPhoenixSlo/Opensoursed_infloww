@@ -1,16 +1,5 @@
 "use strict";
 
-// OS-encrypted secrets in the config store (today: only the relay share token).
-//
-// The value is encrypted with Electron's `safeStorage` (macOS Keychain, Windows
-// DPAPI, Linux libsecret/kwallet) and kept base64 under `<key>Enc`. When the OS
-// offers no real encryption — `isEncryptionAvailable()` false, or Linux falling
-// back to the 'basic_text' backend, which is a hardcoded key — we keep the old
-// plaintext `<key>` field (the file is still mode 600). A plaintext value left
-// by an older build is moved to `<key>Enc` on first read.
-//
-// The codec is injected so this module never requires electron (unit tests use
-// a fake). Codec shape: { available(), encrypt(str) -> base64, decrypt(base64) -> str }.
 
 function safeStorageCodec(safeStorage, platform = process.platform) {
   return {
@@ -18,6 +7,7 @@ function safeStorageCodec(safeStorage, platform = process.platform) {
       try {
         if (!safeStorage || !safeStorage.isEncryptionAvailable()) return false;
         if (platform === "linux" && typeof safeStorage.getSelectedStorageBackend === "function") {
+          // Linux basic_text backend is a hardcoded key: not encryption
           return safeStorage.getSelectedStorageBackend() !== "basic_text";
         }
         return true;
@@ -47,9 +37,7 @@ function deleteSecret(store, key) {
   if (store.get(encKey(key)) !== undefined) store.delete(encKey(key));
 }
 
-// Returns the secret, "" when none is stored, or null when one is stored but
-// can't be decrypted (keychain denied, encryption gone, corrupt value). Callers
-// treat null as "missing, ask again".
+// "" when none stored, null when stored but undecryptable (keychain denied, corrupt): callers treat null as missing
 function getSecret(store, key, codec) {
   const enc = store.get(encKey(key));
   if (typeof enc === "string" && enc) {
@@ -63,9 +51,8 @@ function getSecret(store, key, codec) {
   const plain = String(store.get(key, "") || "");
   if (plain && codec.available()) {
     try {
-      setSecret(store, key, plain, codec); // migrate: encrypt, drop the plaintext
+      setSecret(store, key, plain, codec);
     } catch {
-      /* encryption failed — keep using the plaintext copy */
     }
   }
   return plain;

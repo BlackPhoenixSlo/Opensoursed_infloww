@@ -1,22 +1,5 @@
-/**
- * vaultLinksFile — the download's links file, pure: one line / row per item with a link that opens it on a computer
- * without searching the vault. Written before the media (desktop: into the picked folder; phone: its own "Save links"
- * share), as `.txt` (paste into a downloader) and `.html` (double-click, click a link).
- *
- * Link per item (docs/spec/vault-download.md):
- * - `cdn`: the item's signed CDN url, only when the account is direct (no proxy: OF signed it for the relay's egress,
- *   which may be this computer's) and the url has > MIN_LEFT_MS left. OF signs vault urls for ~24 h from listing
- *   (measured 2026-11-08: listed 04:30 / 16:32 UTC -> DateLessThan 04:00 / 16:00 next day), not 2 days, so the file
- *   is named after the earliest CDN expiry in it.
- * - `app`: `<origin>/admin/vault-ai/download?...`, the relay stream (works on any computer logged in to the app,
- *   re-signs itself, never expires). Proxied accounts always (their CDN urls are bound to the proxy's IP), and a
- *   direct item whose url is expired / unreadable.
- * - `drm`: no full-quality url (DRM-only video): "no link (DRM)".
- */
-
 import { type DlItem } from "@/components/vault/vaultDownloadReducer";
 
-/** A CDN url with less than this left is listed as its app link instead. */
 export const MIN_LEFT_MS = 10 * 60 * 1000;
 export const DRM_TEXT = "no link (DRM)";
 
@@ -25,10 +8,8 @@ export interface LinksOpts {
   accountId: string;
   creator: string;
   label: string;
-  /** The account has no proxy (`/admin/vault-ai/download/info`). */
   direct: boolean;
   now: number;
-  /** The read-only share link's token, when the page runs on one (the app link needs it then). */
   token?: string | null;
 }
 
@@ -40,12 +21,10 @@ export interface LinksFile {
   htmlName: string;
   txt: string;
   html: string;
-  /** Earliest CDN expiry (ms) among the links, null when none is a CDN link. */
   validUntil: number | null;
   rows: LinkRow[];
 }
 
-/** A CloudFront-signed url's expiry in ms: canned `Expires=`, or a custom Policy's DateLessThan. Null if unreadable. */
 export function urlExpiry(url: string): number | null {
   let q: URLSearchParams;
   try {
@@ -67,8 +46,6 @@ export function urlExpiry(url: string): number | null {
   }
 }
 
-/** The relay stream's path for one media (`GET /admin/vault-ai/download`): the one builder for the runner's relay
- *  fetch (with `u`, the url the listing carried) and the links file's app link (without: it must outlive the url). */
 export function downloadPath(accountId: string, id: number, o: { u?: string | null; token?: string | null } = {}): string {
   const p = new URLSearchParams({ account_id: accountId, media_id: String(id) });
   if (o.u) p.set("u", o.u);
@@ -76,12 +53,10 @@ export function downloadPath(accountId: string, id: number, o: { u?: string | nu
   return `/admin/vault-ai/download?${p}`;
 }
 
-/** The relay stream link for one media, absolute (opened from a file, not the app). */
 export function appLink(o: Pick<LinksOpts, "origin" | "accountId" | "token">, id: number): string {
   return `${o.origin.replace(/\/+$/, "")}${downloadPath(o.accountId, id, { token: o.token })}`;
 }
 
-/** "2026-11-09 16:00 UTC". */
 export function utcStamp(ms: number): string {
   return new Date(ms).toISOString().slice(0, 16).replace("T", " ") + " UTC";
 }
@@ -94,6 +69,7 @@ export function linkRows(items: DlItem[], o: LinksOpts): LinkRow[] {
   return items.map((it) => {
     const app = appLink(o, it.id);
     const exp = it.url ? urlExpiry(it.url) : null;
+    // OF signs vault urls for ~24 h from listing; MIN_LEFT_MS keeps a link from expiring before it is opened.
     const cdn = o.direct && it.url && exp !== null && exp - o.now > MIN_LEFT_MS;
     const link: LinkKind = !it.url ? "drm" : cdn ? "cdn" : "app";
     return { id: it.id, name: it.name, kind: it.kind, folder: it.folder, link,
@@ -108,7 +84,7 @@ export function buildLinksFile(items: DlItem[], o: LinksOpts): LinksFile {
   const base = validUntil === null ? "links-valid-while-logged-in"
     : `links-valid-until-${new Date(validUntil).toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-")}UTC`;
   const origin = o.origin.replace(/\/+$/, "");
-  const nApp = rows.filter((r) => r.link !== "drm").length;   // CDN rows carry an app link too (html backup)
+  const nApp = rows.filter((r) => r.link !== "drm").length;
   const head = [
     `${o.creator}: ${o.label} (${rows.length} files), made ${utcStamp(o.now)}`,
     validUntil === null ? "Valid until: no expiry (app links)" : `Valid until ${utcStamp(validUntil)} (OnlyFans CDN links, signed ~24 h)`,

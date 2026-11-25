@@ -28,11 +28,6 @@ import urllib.request
 
 import websockets
 
-# PORT is read from the environment so a second browser (a second account, on a
-# second profile) can be driven with `PORT=9223 drive.py ...`. This was
-# hardcoded until 2026-09-02, which silently sent every `PORT=9223` invocation
-# to :9222 instead — two windows read as one account and looked like a login
-# bug in the browser rather than a bug here.
 PORT = int(os.environ.get("PORT", "9222"))
 
 
@@ -49,14 +44,7 @@ async def call(ws, mid: int, method: str, params: dict | None = None) -> dict:
     while True:
         msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=30))
 
-        # A native JS dialog blocks the page until answered, so `Page.navigate`
-        # never returns and the caller just hangs. Fansly raises `beforeunload`
-        # when you navigate away from a composer holding unsent text. Answer it
-        # inline, here, so EVERY command is dialog-safe rather than only nav.
-        #
-        # beforeunload/alert: accept. confirm/prompt: DISMISS — auto-confirming
-        # an unknown native dialog could commit something destructive, and
-        # Fansly's own confirms are DOM modals, so a native one is unexpected.
+        # A native dialog blocks the page and Page.navigate never returns. beforeunload/alert: accept; confirm/prompt: DISMISS (auto-confirming an unknown native dialog could commit something destructive).
         if msg.get("method") == "Page.javascriptDialogOpening":
             dtype = (msg.get("params") or {}).get("type", "")
             accept = dtype in ("beforeunload", "alert")
@@ -100,14 +88,11 @@ async def main() -> int:
             print(f"[{i}] {t.get('title','')[:60]!r}\n     {t.get('url','')[:140]}")
         return 0
 
-    # Prefer a fansly tab if one is open, else the first page.
     tgt = next((t for t in targets if "fansly.com" in (t.get("url") or "")), targets[0])
 
     async with websockets.connect(tgt["webSocketDebuggerUrl"],
                                   max_size=100 * 1024 * 1024) as ws:
-        # Page domain on for EVERY command, not just nav: a click can trigger a
-        # navigation, and without Page.enable the beforeunload dialog event
-        # never arrives — the page would sit blocked and the command time out.
+        # Page domain on for every command: without it the beforeunload dialog event never arrives and the command times out.
         await call(ws, 900, "Page.enable")
 
         if cmd == "nav":
@@ -133,15 +118,13 @@ async def main() -> int:
 
 
         elif cmd == "type":
-            # REAL key events. Angular's composer listens for keydown/input from
-            # a trusted-looking sequence; setting .value directly fires nothing,
-            # so a synthetic assignment produces no typing frame at all.
             sel = sys.argv[3] if len(sys.argv) > 3 else None
             if sel:
                 await evaluate(ws, 1, f"(()=>{{const e=document.querySelector({json.dumps(sel)});"
                                       "if(e){e.focus();return 'focused';}return 'NOT FOUND';})()")
             mid = 10
             for ch in arg:
+                # REAL key events: Angular's composer ignores a synthetic .value assignment.
                 for typ in ("keyDown", "char", "keyUp"):
                     mid += 1
                     p = {"type": typ, "text": ch, "key": ch}
@@ -159,14 +142,11 @@ async def main() -> int:
 
 
         elif cmd == "insert":
-            # Input.insertText goes through the browser's real editing pipeline,
-            # so ngModel/valueChanges fire. dispatchKeyEvent alone left the
-            # textarea empty (verified: .value === "") — Chrome will not
-            # synthesize the edit from a bare keyDown.
             sel = sys.argv[3] if len(sys.argv) > 3 else "textarea.message-input"
             print(await evaluate(ws, 1,
                 f"(()=>{{const e=document.querySelector({json.dumps(sel)});"
                 "if(!e)return 'NOT FOUND';e.focus();e.click();return 'focused';})()"))
+            # Input.insertText goes through the real editing pipeline so ngModel fires; dispatchKeyEvent alone left the textarea empty.
             mid = 20
             for ch in arg:
                 mid += 1

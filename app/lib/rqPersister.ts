@@ -1,11 +1,3 @@
-/**
- * The React Query snapshot store: one IndexedDB record, shared by every tab of
- * the origin (the pop-out included), so it is the same cross-tab cache the
- * localStorage persister was — without localStorage's ~5MB origin quota, which
- * the snapshot used to fill and so starve every other localStorage write.
- *
- * Dependency-free on purpose: three one-shot requests are all a persister needs.
- */
 import type { DehydrateOptions } from "@tanstack/react-query";
 import {
   persistQueryClientRestore,
@@ -20,7 +12,6 @@ import { onIdle } from "@/lib/idle";
 const DB_NAME = "chatterly-rq";
 const STORE = "snapshot";
 const KEY = "cache";
-/** The localStorage key the snapshot lived under before IndexedDB. */
 export const LEGACY_LOCALSTORAGE_KEY = "chatterly-rq-cache";
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -29,7 +20,7 @@ function openDb(): Promise<IDBDatabase> {
     const req = indexedDB.open(DB_NAME, 1);
     req.onupgradeneeded = () => req.result.createObjectStore(STORE);
     req.onsuccess = () => {
-      // The browser may close an idle connection (Safari does): reopen next time.
+            // Safari may close an idle connection: reopen next time
       req.result.onclose = () => { dbPromise = null; };
       resolve(req.result);
     };
@@ -38,8 +29,6 @@ function openDb(): Promise<IDBDatabase> {
   return dbPromise;
 }
 
-/** One request in its own transaction; resolves once the transaction COMMITS,
- *  so an awaited delete is on disk before a hard navigation tears the page down. */
 async function run<T>(mode: IDBTransactionMode, op: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
@@ -50,12 +39,9 @@ async function run<T>(mode: IDBTransactionMode, op: (s: IDBObjectStore) => IDBRe
   });
 }
 
-/** Async persister over the store above: one write per call, the snapshot
- *  stored as a JSON string. Throttling is `persistQueryClientLazily`'s job. */
 export function createIdbPersister(): Persister {
   return {
     async persistClient(client) {
-      // A failed write (quota, private mode) only costs the next tab its warm start.
       await run("readwrite", (s) => s.put(JSON.stringify(client), KEY)).catch(() => {});
     },
     async restoreClient() {
@@ -66,39 +52,19 @@ export function createIdbPersister(): Persister {
   };
 }
 
-/** How long a due save may wait for the browser to go idle. */
 const SAVE_IDLE_TIMEOUT_MS = 1_000;
 
-/** The cache changed since the last save. */
 let dirty = false;
-/** Cancels the save scheduled for the dirty cache, if any. */
 let pendingSave: (() => void) | null = null;
-/** The live persister's flush (save now), while one is wired. */
 let flushNow: (() => void) | null = null;
 
-/** Save the snapshot now, not on the throttle: for a write the next page load must show (a reload a second
- *  after it would otherwise restore the snapshot from before it). A no-op with no persister wired. */
 export function flushPersistedCache(): void {
   flushNow?.();
 }
 
-/** Window events that write the snapshot now: the tab hiding or going away,
- *  and the window losing focus — which is what opening a pop-out or a new tab
- *  does, so the new page restores what this one just loaded. */
+// blur too: opening a pop-out or new tab must let the new page restore what this one just loaded
 const FLUSH_EVENTS = ["pagehide", "blur"] as const;
 
-/**
- * `persistQueryClient` with the save off the hot path. The library's version
- * dehydrates the whole cache on EVERY cache event (a fetch's start and end, each
- * of the chat list enrichment's per-Fan writes) and only throttles the write.
- * Here a cache event just marks the snapshot dirty; one save — dehydrate,
- * stringify, write — runs `throttleMs` after the first change, in an idle
- * callback, and again on a flush event. A hidden tab doesn't save on a timer
- * (it saved as it hid, and the visible tab's snapshot is the fresher one): it
- * saves on its next flush event, or once it is visible again.
- *
- * `dehydrateOptions` is called once per save, so it may rank the cache then.
- */
 export function persistQueryClientLazily({
   throttleMs,
   dehydrateOptions,
@@ -153,9 +119,6 @@ export function persistQueryClientLazily({
   return [() => unsubscribe(), restored];
 }
 
-/** Drop the snapshot, and forget the unsaved changes that could re-stamp it.
- *  Readwrite transactions on one store commit in creation order, so this lands
- *  after any write already in flight. Never rejects. */
 export async function clearPersistedCache(): Promise<void> {
   pendingSave?.();
   pendingSave = null;
@@ -163,5 +126,5 @@ export async function clearPersistedCache(): Promise<void> {
   if (typeof indexedDB === "undefined") return;
   try {
     await run("readwrite", (s) => s.delete(KEY));
-  } catch { /* nothing persisted, or no IndexedDB: nothing to drop */ }
+  } catch { }
 }

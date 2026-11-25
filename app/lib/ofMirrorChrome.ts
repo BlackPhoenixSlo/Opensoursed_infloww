@@ -1,30 +1,13 @@
 "use client";
 
-/**
- * OF's own left nav (header.l-header: avatar, Home ... More, NEW POST) hidden in the mirror frame, as Infloww hides it:
- * a stylesheet injected into the page at runtime (its preload pages/of/common.css, docs/infloww-of-manager-rea.md §1.9),
- * so the 385 mirror files stay as generated. The header stays in the DOM (identity badges, tests) but is invisible
- * and takes no clicks; OF's main column fills the width. Navigation is our sidebar's OF Manager submenu.
- */
 
 import { useEffect, type RefObject } from "react";
 
 export const OF_CHROME_STYLE_ID = "oi-of-chrome";
 
-/** On the page's <html> while the Fan insights column lies over the frame's right 280px (OfManagerChrome). */
 export const OF_INSIGHTS_ATTR = "data-oi-insights";
-/** The Fan insights column's width over the frame's right edge. */
 export const OF_INSIGHTS_PX = 280;
 
-/** Infloww's rules, minus its Electron-only ones (-webkit-app-region, its fan-item hover colour); plus, for the
- *  mirror's fixed captures, no width caps on the right column and the two-pane pages (chats, vault, settings: OF caps
- *  them at 368px and 999px), so they run to the frame's edge as in Infloww's window rather than leaving the nav's gap,
- *  and no #content edge line where the nav ended. With the Fan insights column over the frame's right 280px, the chats
- *  page leaves it that room, as Infloww's column inside OF's `.b-chats__conversations` does: OF keeps its wide layout
- *  (the chat list beside the chat, from 1004px), which a frame narrowed by the column would drop. Below 1004px the chat
- *  list is OF's one column, full width, with no "Select any Conversation" pane (a chat's pages hide the list there:
- *  scripts/of-mirror.mjs), as OF renders on a phone. On a phone the
- *  composer's icon row scrolls inside itself so Send stays in view (else the frame scrolls sideways). */
 export const OF_CHROME_CSS = `
 .l-header{position:absolute!important;pointer-events:none!important}
 .l-header>nav{opacity:0!important;visibility:hidden!important}
@@ -45,7 +28,6 @@ html[${OF_INSIGHTS_ATTR}] .b-chats__conversations-content{max-width:none!importa
 .b-make-post__actions .b-chat__btn-submit{flex:0 0 auto!important}
 `;
 
-/** Add the stylesheet to `doc` once; true once it is there. */
 export function injectOfChrome(doc: Document | null | undefined): boolean {
   if (!doc?.head) return false;
   if (doc.getElementById(OF_CHROME_STYLE_ID)) return true;
@@ -56,7 +38,6 @@ export function injectOfChrome(doc: Document | null | undefined): boolean {
   return true;
 }
 
-/** Hide OF's nav in the frame: as soon as the page's <head> parses (no flash of the nav), and again on every load. */
 export function useOfChrome(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   useEffect(() => {
     const frame = frameRef.current;

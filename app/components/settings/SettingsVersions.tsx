@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * A versioned Settings tab's effective date and history (roadmap W6 6.4, service/settings_api.py): the Sales and
- * Time tracking tabs save a new version effective from a chosen time, now by default, and every sale and Clock
- * event reads the version in effect at its own time. So a save from today leaves past figures alone, and a
- * backdated one recomputes what falls between its time and the next version, which the warning names.
- *
- * Infloww's words: "Set effective date", "Settings history", "Effective as of". As Infloww, a time later than now
- * is refused (FUTURE); the Relay refuses its save too.
- */
 
 import type { SettingsVersion } from "@/lib/settingsBlob";
 import { Section } from "@/components/settings/SettingsPanel";
@@ -19,19 +10,14 @@ const when = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyl
 
 const SMALL = "text-[length:var(--if-fs-sm)] leading-5";
 
-/** Infloww's refusal of an effective time later than now (`settings0190`). */
 const FUTURE = "The effective time start later than the current time, please reset it.";
 
 export default function SettingsVersions({ effective, history, recomputes, also, editing = true, show = "both" }: {
   effective: { value: string | null; set: (at: string | null) => void };
   history: SettingsVersion[];
-  /** What a backdated save recomputes, as a sentence's subject: "Sales credited to employees". */
   recomputes: string;
-  /** A sentence after the backdate warning. */
   also?: string;
-  /** The date field shows only while the tab is being edited. */
   editing?: boolean;
-  /** Which part to draw, so a tab can put the date field by its Save and the history at the bottom. */
   show?: "date" | "history" | "both";
 }) {
   const now = new Date();
@@ -39,7 +25,6 @@ export default function SettingsVersions({ effective, history, recomputes, also,
   const atMs = at ? Date.parse(at) : null;
   const later = (iso: string | null) => iso !== null && atMs !== null && Date.parse(iso) > atMs;
   const future = atMs !== null && atMs > now.getTime();
-  // The next version after the chosen time bounds what the save reaches (`history` is latest first).
   const next = at ? history.filter((h) => later(h.effective_from)).at(-1)?.effective_from ?? null : null;
 
   return (

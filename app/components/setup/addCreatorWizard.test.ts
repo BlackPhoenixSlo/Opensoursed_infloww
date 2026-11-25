@@ -6,6 +6,7 @@ import {
   type LinkedStep, type WizardAction, type WizardState, type WizardStep,
 } from "@/components/setup/addCreatorWizard";
 import type { AccountDetails } from "@/components/setup/creatorFlow";
+import { PLATFORMS, type Platform } from "@/lib/platform";
 
 const ACCOUNT: AccountDetails = { nickname: "Bella", tag: "", employeeIds: [], notes: "" };
 const BELLA = { name: "Bella", gender: "Female" as const };
@@ -14,7 +15,6 @@ const ACC: LinkedStep = { kind: "linked", accountId: "a", account: ACCOUNT, busy
 const ACC_SAVING: LinkedStep = { ...ACC, busy: true };
 const SUCCESS: WizardStep = { kind: "success" };
 
-/** A state on `step`: OnlyFans, Browser login, nothing taken. */
 function on(step: WizardStep, over: Partial<WizardState> = {}): WizardState {
   return { ...initialWizard({}), step, ...over };
 }
@@ -42,6 +42,14 @@ describe("initialWizard", () => {
     const s = initialWizard(props);
     expect(s.step).toEqual(LOGIN);
     expect(s).toMatchObject({ platform: plat, method: m, recovery });
+  });
+  it.each<[readonly Platform[], Platform]>([
+    [[], PLATFORMS[0].key],
+    [["onlyfans"], "fansly"],
+    [["fansly"], "onlyfans"],
+    [["onlyfans", "fansly"], PLATFORMS[0].key],
+  ])("Link another with %j linked defaults to the first unlinked table key, %s", (linked, plat) => {
+    expect(initialWizard({ linkAnother: { creator: BELLA, linked } }).platform).toBe(plat);
   });
   it("a draft's details (with its id) are the Creator, and its id the draftId", () => {
     const draft = { ...BELLA, id: "d1", created_at: "t" };
@@ -135,7 +143,6 @@ describe("linked", () => {
       .toMatchObject({ step: { kind: "linked", accountId: "of-1" }, busy: IDLE });
   });
   it.each<[string, WizardState]>([
-    // A Browser login settling after the Extension linked another account must not replace it (or its typed details).
     ["a late sign-in for another account on the linked step", on(ACC)],
     ["the same account again on the linked step (keeps its details)", on({ ...ACC, accountId: "of-1", account: { ...ACCOUNT, nickname: "Typed" } })],
     ["while saving", on(ACC_SAVING)],
@@ -267,14 +274,12 @@ describe("buildAccountPayload", () => {
   });
 });
 
-/** The component's dispatch: on the newest state, and true only when the wizard took the action. */
 describe("useWizardReducer", () => {
   it("two submitStarts before a re-render: the first is taken, the second refused", () => {
     const { result } = renderHook(() => useWizardReducer({ draft: { ...BELLA, id: "d1" } }));
     const dispatch = result.current[1];
     act(() => { dispatch(LINKED); });
     const taken: boolean[] = [];
-    // One act: no re-render between the two (a double-click's worst case).
     act(() => { taken.push(dispatch(START), dispatch(START)); });
     expect(taken).toEqual([true, false]);
     expect(result.current[0].step).toMatchObject({ kind: "linked", busy: true });

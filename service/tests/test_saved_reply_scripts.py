@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""Growth > Scripts' tags, internal notes and sequences on the saved-replies routes.
-
-The seam is the Relay over HTTP with the shared two-Agency fixture's owner
-sessions: a script's tags and notes round-trip through create / PUT / list, a
-PUT that omits them keeps them, and `/admin/saved-replies/relabel` renames,
-deletes and bulk-adds tags and renames or ungroups sequences.
-
-Run: ./venv/bin/python service/tests/test_saved_reply_scripts.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -51,7 +42,6 @@ def case_tags_and_notes_round_trip_and_a_put_without_them_keeps_them():
     assert r.json()["tags"] == ["Opener", "VIP"] and r.json()["notes"] == "only after 9pm", r.json()
     r = c.put(f"/admin/saved-replies/{row['id']}", json={"text": "hello", "tags": [], "notes": ""})
     assert r.json()["tags"] == [] and r.json()["notes"] is None, r.json()
-    # An old row with no tags reads as [].
     assert _new(c)["tags"] == []
 
 
@@ -69,21 +59,16 @@ def case_tag_rename_delete_add_and_remove_from_one_script():
     a = _new(c, title="a", tags=["Opener"])
     b = _new(c, title="b", tags=["Opener", "VIP"])
     z = _new(c, title="z")
-    # Rename merges into an existing tag without duplicating it.
     r = _relabel(c, kind="tag", **{"from": "Opener"}, to="VIP")
     assert r.status_code == 200 and r.json() == {"updated": 2}, r.text
     tags = {x["title"]: x["tags"] for x in _list(c)}
     assert tags == {"a": ["VIP"], "b": ["VIP"], "z": []}, tags
-    # Add to the selected scripts.
     assert _relabel(c, kind="tag", to="Night", ids=[a["id"], z["id"]]).json() == {"updated": 2}
-    # Remove one script from a tag.
     assert _relabel(c, kind="tag", **{"from": "VIP"}, ids=[b["id"]]).json() == {"updated": 1}
     tags = {x["title"]: x["tags"] for x in _list(c)}
     assert tags == {"a": ["VIP", "Night"], "b": [], "z": ["Night"]}, tags
-    # Delete a tag everywhere.
     assert _relabel(c, kind="tag", **{"from": "Night"}).json() == {"updated": 2}
     assert {x["title"]: x["tags"] for x in _list(c)} == {"a": ["VIP"], "b": [], "z": []}
-    # Adding with no selection is refused; so is an over-long name.
     assert _relabel(c, kind="tag", to="x").status_code == 400
     assert _relabel(c, kind="tag", to="x" * 33, ids=[a["id"]]).status_code == 400
 
@@ -101,7 +86,6 @@ def case_sequence_rename_clash_and_ungroup():
     assert _relabel(c, kind="sequence", **{"from": "Welcome"}).json() == {"updated": 2}
     seq = {x["title"]: (x["script_id"], x["script_step"]) for x in _list(c)}
     assert seq == {"s1": (None, None), "s2": (None, None), "o1": ("Other", 1)}, seq
-    # A sequence edit needs its name.
     assert _relabel(c, kind="sequence", to="x", ids=[1]).status_code == 400
 
 
@@ -110,7 +94,6 @@ def case_relabel_is_scoped_to_the_owners_creator():
     owner_b = fx.login_owner("agency_b_owner")
     r = _relabel(owner_b, acc=A, kind="tag", **{"from": "VIP"})
     assert r.status_code == 403, r.text
-    # B's own Creator: nothing tagged, nothing updated.
     assert _relabel(owner_b, acc=B, kind="tag", **{"from": "VIP"}).json() == {"updated": 0}
     c = fx.login_owner("agency_a_owner")
     assert any(x["tags"] == ["VIP"] for x in _list(c)), "B's relabel touched A's scripts"
@@ -125,10 +108,8 @@ def case_text_is_sanitized_and_capped_at_6500_plain_characters():
     r = c.put(f"/admin/saved-replies/{row['id']}", json={"text": "<b>x</b><img src=y>"})
     assert r.status_code == 200 and r.json()["text"] == "<p><strong>x</strong></p>", r.text
     assert next(x for x in _list(c) if x["id"] == row["id"])["text"] == "<p><strong>x</strong></p>"
-    # bare tags beside an iframe fail closed: stored escaped whole, nothing dropped
     r = c.put(f"/admin/saved-replies/{row['id']}", json={"text": "<b>x</b><iframe>y</iframe>"})
     assert r.status_code == 200 and r.json()["text"] == "<p>&lt;b&gt;x&lt;/b&gt;&lt;iframe&gt;y&lt;/iframe&gt;</p>", r.text
-    # the limit counts what a fan reads: 6500 characters inside heavy markup is fine, 6501 is not
     span = '<span class="m-editor-fs__l m-editor-fc__blue-1">'
     edge = "<p>" + (span + "x" * 100 + "</span>") * 65 + "</p>"
     assert _new(c, title="edge", text=edge)["text"] == edge
@@ -138,15 +119,12 @@ def case_text_is_sanitized_and_capped_at_6500_plain_characters():
         r = c.put(f"/admin/saved-replies/{row['id']}", json=body)
         assert r.status_code == 400, r.text
     plain = "hey <3 & <VIP20>"
-    assert _new(c, title="plain", text=plain)["text"] == plain  # plain text: byte-identical
-    # markup that keeps nothing a fan would read is refused, never stored blank (the bulk import's rule);
-    # OF's own empty markup and an empty text (a media-only script) are not that
+    assert _new(c, title="plain", text=plain)["text"] == plain
     for text in ("<img src=x>", "<font color=red></font>"):
         r = c.post(f"/admin/saved-replies?account_id={A}", json={"text": text})
         assert r.status_code == 400 and "nothing a fan would read" in r.text, (text, r.text)
         assert c.put(f"/admin/saved-replies/{row['id']}", json={"text": text}).status_code == 400
     assert _new(c, title="media", text="<p></p>")["text"] == "<p></p>" and _new(c, title="m2", text="")["text"] == ""
-    # a body past MARKUP_MAX is a 422 before it is read at all (the same cap as the chat send's text)
     import server
     from of_rich_text import MARKUP_MAX
     assert server.SendMessageBody.model_fields["text"].metadata[0].max_length == MARKUP_MAX
@@ -179,12 +157,9 @@ def case_concurrent_list_reads_share_a_run_and_still_check_ownership_each():
     assert [r.status_code for r in mine] == [200] * 20 and {r.text for r in mine} == {mine[0].text}
     assert mine[0].json()["list"] == want, "a coalesced read differs from a lone one"
     assert theirs.status_code == 403, theirs.text
-    # Every read went through the coalescer and some shared a run (at most one runs at a time: the
-    # never-join-a-started-run rule is pinned in test_relay_coalesce.py).
     st = relay_coalesce.stats()
     runs, shared = st["first_calls"].get("saved_replies_list", 0), st["coalesced_hits"].get("saved_replies_list", 0)
     assert runs + shared == 20 and runs < 20, f"20 concurrent reads: {runs} DB reads, {shared} shared"
-    # A read after a write shows it.
     _new(c, title="after the burst")
     assert any(x["title"] == "after the burst" for x in _list(c))
 

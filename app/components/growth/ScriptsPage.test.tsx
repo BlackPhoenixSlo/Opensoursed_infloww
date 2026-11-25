@@ -1,21 +1,12 @@
-/**
- * Growth > Scripts, the page component (docs/spec/infloww-parity-round-2/phase-02-growth-pages.md, Testing
- * Decisions, Seam 1; ticket 35). Rendered with `@/lib/relay` mocked and a fresh QueryClient over two placeholder
- * Creators; Creator A has two saved replies, Creator B none. What is pinned:
- *
- *  - the header, the More menu, the toolbar, the list control and a script row appear in the Layout capture's
- *    order, and every label transcribed here is read back from the capture on disk next to its Item ID;
- *  - the saved replies list as scripts, and create, edit and delete reach the same `/admin/saved-replies` routes as
- *    the Templates tab;
- *  - every Not wired control is disabled, titled "not wired" and calls nothing; a Not wired cell shows "—";
- *  - no welcome editor renders (ticket 43 moved it to Smart Messages); every extra carries `EXTRA_LABEL`;
- *  - switching the creator control makes the next saved-reply read and write carry the other Creator's id.
- */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+vi.mock("@/contexts/UserContext", async (orig) => ({
+  ...(await orig<typeof import("@/contexts/UserContext")>()),
+  useOptionalUser: () => ({ user: { user_id: "owner-A" }, loading: false }),
+}));
 
 vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();
@@ -26,26 +17,22 @@ vi.mock("@/lib/relay", async (importOriginal) => {
     },
   };
 });
-// The caller's folder access (Fill needs Whole-vault access): an owner's (disabled query) unless a test says so.
 const access = vi.hoisted(() => ({ q: { isLoading: false, isError: false, data: undefined as { restricted?: boolean } | undefined } }));
 vi.mock("@/hooks/useVaultMedia", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/hooks/useVaultMedia")>()),
   useChatterFolderAccess: () => access.q,
 }));
-// The list's render step (200 rows a press): a test may shrink it to reach Show more with a few rows.
 const renderCap = vi.hoisted(() => ({ step: undefined as number | undefined }));
 vi.mock("@/hooks/useRenderCap", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/hooks/useRenderCap")>();
   return { useRenderCap: (total: number, key: string, step?: number) => mod.useRenderCap(total, key, renderCap.step ?? step) };
 });
-// The Vault picker is a portal modal with its own reads; closed it renders nothing, so it is stubbed out here.
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
 vi.mock("@/hooks/useAccounts", () => ({
   useActiveAccounts: () => [
     { id: "acc-a", nickname: "Creator A", has_session: true },
     { id: "acc-b", nickname: "Creator B", has_session: true },
   ],
-  // useOfRichAllowed's (never-run) query
   ownerAccountsQuery: (u?: string) => ({ queryKey: ["accounts", u ?? "anon"], queryFn: async () => ({ accounts: [] }) }),
 }));
 
@@ -55,6 +42,14 @@ import { relay, RelayError } from "@/lib/relay";
 import { QueryClient } from "@tanstack/react-query";
 import { renderWithProviders } from "@/test-utils";
 
+const ownerCache = () => {
+  const c = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  c.setQueryData(["accounts", "owner-A"], {
+    accounts: [{ id: "acc-a", platform: "onlyfans" }, { id: "acc-b", platform: "onlyfans" }], active_account_id: null,
+  });
+  return c;
+};
+
 const get = relay.get as unknown as Mock;
 const post = relay.post as unknown as Mock;
 const put = relay.put as unknown as Mock;
@@ -62,21 +57,18 @@ const patch = relay.patch as unknown as Mock;
 const del = relay.delete as unknown as Mock;
 const uploadFile = relay.uploadFile as unknown as Mock;
 
-/* ── the Layout capture, read from disk ─────────────────────────────────── */
 
 const CAPTURE = readFileSync(
   resolve(__dirname, "../../../docs/infloww-layouts/growth-scripts.md"),
   "utf8",
 );
 
-/** The capture's Items row for `id`, which must exist and must hold `label`. */
 function expectInCapture(id: string, label: string) {
   const row = CAPTURE.split("\n").find((l) => l.startsWith(`| ${id} |`));
   expect(row, `capture row ${id}`).toBeTruthy();
   expect(row, `capture row ${id} holds "${label}"`).toContain(label);
 }
 
-/** Each element follows the one before it in document order. */
 function expectInOrder(els: Element[]) {
   for (let i = 1; i < els.length; i++) {
     expect(
@@ -86,7 +78,6 @@ function expectInOrder(els: Element[]) {
   }
 }
 
-/* ── fixtures ───────────────────────────────────────────────────────────── */
 
 const TEMPLATES = "/api/of/v2/messages/templates";
 const SETTINGS = "/api/of/v2/users/me/settings";
@@ -120,7 +111,6 @@ beforeEach(() => {
   access.q = { isLoading: false, isError: false, data: undefined };
   serve();
   vi.stubGlobal("confirm", () => true);
-  // Desktop width: the phone-only scroll-into-view of an opened editor stays off.
   vi.stubGlobal("matchMedia", (q: string) => ({ matches: true, media: q }));
 });
 afterEach(() => {
@@ -129,13 +119,12 @@ afterEach(() => {
 });
 
 async function mount() {
-  renderWithProviders(<ScriptsPage />);
+  renderWithProviders(<ScriptsPage />, ownerCache());
   await screen.findByText("Hey there");
 }
 
 const rows = () => screen.getAllByRole("listitem").filter((li) => li.closest("[aria-label='Scripts list']"));
 const textbox = () => screen.getByPlaceholderText("Enter your message...");
-/** Types into the script's rich Text field (a contenteditable: one paragraph per line). */
 const typeBody = (v: string) => {
   const el = textbox();
   el.innerHTML = v.split("\n").map((l) => `<p>${l}</p>`).join("");
@@ -144,17 +133,14 @@ const typeBody = (v: string) => {
 const nameBox = () => screen.getByPlaceholderText("Enter name");
 const openMore = () => fireEvent.click(screen.getByRole("button", { name: "More" }));
 const writes = () => post.mock.calls.length + put.mock.calls.length + patch.mock.calls.length + del.mock.calls.length;
-/** Opens the select named `name` and picks `option` from its listbox. */
 function pick(name: string, option: string) {
   fireEvent.click(screen.getByRole("combobox", { name }));
   fireEvent.click(within(screen.getByRole("listbox", { name })).getByRole("option", { name: new RegExp(`${option}$`) }));
 }
-/** The creator column left of the page (`CreatorRail`, Smart lists'), and its row for a Creator. */
 const column = () => screen.getByTestId("of-creator-column");
 const creatorRow = (name: string) => within(column()).getByRole("button", { name: new RegExp(name) });
 const pickCreator = (name: string) => fireEvent.click(creatorRow(name));
 
-/* ── the capture's structure, in order ──────────────────────────────────── */
 
 describe("Scripts follows the capture's order", () => {
   it("shows the header: title, Learn, Share, More; the creator selector is the column left of the page", async () => {
@@ -167,8 +153,6 @@ describe("Scripts follows the capture's order", () => {
     ];
     for (const h of header) expectInCapture(h.id, h.label);
     expectInOrder(header.map((h) => h.el));
-    // The capture's creator selector (#6) is the creator column now: not in the header, under it, left of the
-    // toolbar and list, showing the open Creator.
     expectInCapture("growth-scripts#6", "creator selector");
     const banner = screen.getByRole("banner");
     expect(within(banner).queryByRole("combobox", { name: "Creator" })).toBeNull();
@@ -177,7 +161,6 @@ describe("Scripts follows the capture's order", () => {
     expect(column().nextElementSibling!.contains(screen.getByRole("tab", { name: "Sequence" }))).toBe(true);
     expect(creatorRow("Creator A")).toHaveAttribute("aria-current", "true");
     expect(creatorRow("Creator B")).not.toHaveAttribute("aria-current");
-    // Learn carries the book icon, in T1 ink.
     const learn = screen.getByRole("button", { name: "Learn" });
     expect(learn.querySelector("svg")).toHaveClass("lucide-book-open");
     expect(learn).toHaveClass("text-fg");
@@ -204,7 +187,6 @@ describe("Scripts follows the capture's order", () => {
     expect(within(menu).getByRole("menuitem", { name: "Create new" })).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
     fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
-    // Wraps to the last enabled item (Use template and Import from tag are Not wired).
     expect(within(menu).getByRole("menuitem", { name: "From other creators" })).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
@@ -243,7 +225,6 @@ describe("Scripts follows the capture's order", () => {
     for (const [id, label] of items) expectInCapture(id, label);
     const els = items.map(([, label]) => within(menu).getByText(label, { exact: true }));
     expectInOrder(els);
-    // #17: a divider after Add script and one before Import.
     const seps = within(menu).getAllByRole("separator");
     expect(seps).toHaveLength(2);
     expectInOrder([els[0], seps[0], els[1]]);
@@ -261,11 +242,9 @@ describe("Scripts follows the capture's order", () => {
     ];
     for (const t of toolbar) expectInCapture(t.id, t.label);
     expectInOrder([...toolbar.map((t) => t.el), rows()[0]]);
-    // Opens on Tag (#23), on its "All scripts" entry.
     expectInCapture("growth-scripts#23", "ScriptType.Tags");
     expect(screen.getByRole("tab", { name: "Tag" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("button", { name: /All scripts/ })).toHaveAttribute("aria-current", "true");
-    // Manage scripts swaps the tabs for a back arrow and its title (#31), and sorts (#33).
     fireEvent.click(screen.getByRole("button", { name: "Manage scripts" }));
     expectInCapture("growth-scripts#31", "back arrow");
     expect(screen.queryByRole("tab", { name: "Tag" })).toBeNull();
@@ -279,7 +258,6 @@ describe("Scripts follows the capture's order", () => {
     };
     expect(options("Sort by")).toEqual(["Recent", "Name"]);
     expect(options("Sort order")).toEqual(["Ascending", "Descending"]);
-    // Starts on Recent and Descending (#33).
     expect(screen.getByRole("combobox", { name: "Sort by" })).toHaveTextContent("Recent");
     expect(screen.getByRole("combobox", { name: "Sort order" })).toHaveTextContent("Descending");
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
@@ -313,7 +291,6 @@ describe("Scripts follows the capture's order", () => {
     pickCreator("Creator B");
     expect(await screen.findByText("Try out our new sequence feature")).toBeInTheDocument();
     expect(screen.queryByText("Hey there")).toBeNull();
-    // Three borderless cards, each with its arrow under the label.
     const cards = ["Create new sequence", "Use a template", "Import from tag"]
       .map((name) => screen.getByRole("button", { name }));
     for (const card of cards) {
@@ -325,7 +302,6 @@ describe("Scripts follows the capture's order", () => {
   });
 });
 
-/* ── saved replies are the scripts ──────────────────────────────────────── */
 
 describe("the saved replies are the scripts", () => {
   it("lists each saved reply with its title, text, price, media and tagged Creators", async () => {
@@ -333,13 +309,11 @@ describe("the saved replies are the scripts", () => {
     const [first, second] = rows();
     expect(within(first).getByText("Greeting")).toBeInTheDocument();
     expect(within(first).getByText("Hey there")).toBeInTheDocument();
-    // Media: one tile per attached item (a placeholder with its type, since the fixture has no thumbnail).
     expect(within(first).getByText("photo")).toBeInTheDocument();
     expect(within(first).getByLabelText("Tagged Creators: 2")).toBeInTheDocument();
     expect(within(first).queryByText(/^\$\d/)).toBeNull();
     expect(within(second).getByText("Unlock this one")).toBeInTheDocument();
     expect(within(second).getByText("$12.50")).toBeInTheDocument();
-    // Stable hooks for UI tests: the price span's label, each media tile's id.
     expect(within(second).getByLabelText("Price")).toHaveTextContent("$12.50");
     expect(within(first).queryByLabelText("Price")).toBeNull();
     expect(first.querySelectorAll("[data-media-id]").length).toBeGreaterThan(0);
@@ -390,7 +364,6 @@ describe("the saved replies are the scripts", () => {
 });
 
 describe("each row expands on its own (#42)", () => {
-  // jsdom lays nothing out: "Hey there" is given three 20px lines, every other text one.
   beforeEach(() => {
     const cs = window.getComputedStyle;
     vi.spyOn(window, "getComputedStyle").mockImplementation((el, pseudo) => {
@@ -429,7 +402,6 @@ describe("each row expands on its own (#42)", () => {
   });
 });
 
-/* ── the script editor modal ────────────────────────────────────────────── */
 
 describe("the script editor is the capture's 535px modal (#72 to #79)", () => {
   async function openAdd() {
@@ -442,7 +414,6 @@ describe("the script editor is the capture's 535px modal (#72 to #79)", () => {
   it("is a 535px dialog titled Add script, with Name, Tags, Text, Message price, Internal notes in the capture's order", async () => {
     const dialog = await openAdd();
     expectInCapture("growth-scripts#72", "535px");
-    // IfModal's antd box (jsdom drops its `min(535px, …)` width, so the source pins the 535).
     expect(dialog).toHaveClass("rounded-[10px]");
     expect(readFileSync(resolve(__dirname, "ScriptModals.tsx"), "utf8")).toMatch(/<IfModal title=\{title\} width=\{535\}/);
     for (const [id, label] of [
@@ -503,7 +474,6 @@ describe("the script editor is the capture's 535px modal (#72 to #79)", () => {
     const notes = within(dialog).getByLabelText("Internal notes");
     expect(notes).toHaveAttribute("maxLength", "256");
     fireEvent.change(notes, { target: { value: "only after 9pm" } });
-    // A sequence without a step cannot be saved: the chat's next-step suggestion needs both.
     fireEvent.change(within(dialog).getByLabelText("Sequence"), { target: { value: "New Sub" } });
     expect(within(dialog).getByText("Enter a step")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "OK" })).toBeDisabled();
@@ -531,7 +501,6 @@ describe("the script editor is the capture's 535px modal (#72 to #79)", () => {
   });
 });
 
-/* ── the saved-reply editor's own controls, inside the script modal ─────── */
 
 describe("the saved-reply editor's own controls follow the bundle's script modal", () => {
   async function openEdit(i: number) {
@@ -553,7 +522,7 @@ describe("the saved-reply editor's own controls follow the bundle's script modal
       path === LIST_A
         ? Promise.resolve({ list: [{ ...REPLIES[1], script_id: "flow", script_step: 2 }] })
         : reads(path, ctx));
-    renderWithProviders(<ScriptsPage />);
+    renderWithProviders(<ScriptsPage />, ownerCache());
     await screen.findByText("Unlock this one");
     fireEvent.click(within(rows()[0]).getByRole("button", { name: "Edit" }));
     const dialog = screen.getByRole("dialog", { name: "Edit script" });
@@ -578,7 +547,6 @@ describe("the saved-reply editor's own controls follow the bundle's script modal
     expect(within(dialog).queryByRole("button", { name: /FREE|PPV/ })).toBeNull();
     const paid = within(dialog).getByRole("checkbox", { name: "Paid" });
     expect(paid).toBeChecked();
-    // The count is drawn in the accent, as the bundle's is, so the line spans two elements.
     const ppvLine = (t: string) => within(dialog).getByText((_, el) => el?.tagName === "SPAN" && el.textContent === t
       && !Array.from(el.children).some((c) => c.textContent === t));
     expect(ppvLine("1 of 1 selected as PPV")).toBeInTheDocument();
@@ -606,7 +574,6 @@ describe("the saved-reply editor's own controls follow the bundle's script modal
   });
 });
 
-/* ── Import and Share (#94 to #98) ─────────────────────────────────────── */
 
 describe("Import from Excel, Import from other creators and Share copy scripts", () => {
   it("From Excel uploads the file to the import route and reports the counts and each failed row", async () => {
@@ -637,7 +604,6 @@ describe("Import from Excel, Import from other creators and Share copy scripts",
   it("All creators hides the header's write actions (they would act on the hidden Creator) until a Creator's pick", async () => {
     await mount();
     expect(screen.getByRole("button", { name: "Share" })).toBeInTheDocument();
-    // The creator column's picker, then its All creators entry.
     fireEvent.click(screen.getByRole("button", { name: /All creators/ }));
     fireEvent.click(screen.getAllByRole("button", { name: /All creators/ }).at(-1)!);
     await waitFor(() => expect(screen.queryByRole("button", { name: "More" })).toBeNull());
@@ -653,7 +619,6 @@ describe("Import from Excel, Import from other creators and Share copy scripts",
     fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitem", { name: "From other creators" }));
     expectInCapture("growth-scripts#97", "Up to 5 creators can be selected");
     const dialog = screen.getByRole("dialog", { name: "Import scripts from other creators" });
-    // The open Creator is not offered as its own source.
     expect(within(dialog).queryByRole("checkbox", { name: "Creator A" })).toBeNull();
     fireEvent.click(within(dialog).getByRole("checkbox", { name: "Creator B" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
@@ -677,7 +642,6 @@ describe("Import from Excel, Import from other creators and Share copy scripts",
     });
     fireEvent.click(within(screen.getByRole("dialog", { name: "Shared" })).getAllByRole("button", { name: "Close" })[0]);
     fireEvent.click(within(rows()[0]).getByRole("checkbox"));
-    // Cancel keeps the selection; only a Share that went through clears it.
     fireEvent.click(screen.getByRole("button", { name: "Share" }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Share script with other Creators" }))
       .getByRole("button", { name: "Cancel" }));
@@ -693,7 +657,6 @@ describe("Import from Excel, Import from other creators and Share copy scripts",
   });
 });
 
-/* ── Not wired ──────────────────────────────────────────────────────────── */
 
 describe("controls with nothing behind them are Not wired", () => {
   it("disables and titles every Not wired control, and none of them calls the relay", async () => {
@@ -726,7 +689,6 @@ describe("controls with nothing behind them are Not wired", () => {
   });
 });
 
-/* ── extras ─────────────────────────────────────────────────────────────── */
 
 describe("Inflowwww extras", () => {
   it("renders no welcome editor: it lives on Smart Messages' Delayed welcome row (ticket 43)", async () => {
@@ -734,10 +696,8 @@ describe("Inflowwww extras", () => {
     expect(screen.queryByRole("heading", { name: "Welcome message" })).toBeNull();
     expect(screen.queryByRole("button", { name: "+ Set welcome" })).toBeNull();
     expect(screen.queryByText(/No welcome message set/)).toBeNull();
-    // Nor does the page read the welcome slot or its switch.
     expect(get.mock.calls.map(([p]) => p)).not.toContain(TEMPLATES);
     expect(get.mock.calls.map(([p]) => p)).not.toContain(SETTINGS);
-    // Its source uses neither welcome write.
     const src = readFileSync(resolve(__dirname, "ScriptsPage.tsx"), "utf8");
     expect(src).not.toMatch(/useUpsertWelcome|useToggleReplyOnSubscribe|WelcomeEditor/);
   });
@@ -745,40 +705,36 @@ describe("Inflowwww extras", () => {
   it("titles every other extra EXTRA_LABEL: the tagged-Creators count", async () => {
     await mount();
     expect(within(rows()[0]).getByLabelText("Tagged Creators: 2")).toHaveAttribute("title", EXTRA_LABEL);
-    // #6: the creator select is Infloww's own now, so it carries no label (its script count is left out, YAGNI).
     expectInCapture("growth-scripts#6", "showScriptCount");
     expect(screen.getByRole("combobox", { name: "Creator" }).closest(`[title="${EXTRA_LABEL}"]`)).toBeNull();
   });
 
   it("titles the house Loading… line EXTRA_LABEL", async () => {
     get.mockImplementation(() => new Promise(() => {}));
-    renderWithProviders(<ScriptsPage />);
+    renderWithProviders(<ScriptsPage />, ownerCache());
     expect(await screen.findByText("Loading…")).toHaveAttribute("title", EXTRA_LABEL);
   });
 
   it("titles the house Failed to load line EXTRA_LABEL", async () => {
     get.mockImplementation(() => Promise.reject(new Error("boom")));
-    renderWithProviders(<ScriptsPage />);
+    renderWithProviders(<ScriptsPage />, ownerCache());
     expect(await screen.findByText(/Failed to load/, undefined, { timeout: 5000 })).toHaveAttribute("title", EXTRA_LABEL);
   });
 
   it("drops the Templates card's heading, Refresh and local-only note", async () => {
     await mount();
     expect(screen.queryByRole("heading", { name: "Templates" })).toBeNull();
-    // The creator column's own "Refresh creators" aside, nothing on the page refreshes.
     expect(screen.queryAllByRole("button", { name: /Refresh/ }).filter((b) => !column().contains(b))).toEqual([]);
     expect(screen.queryByText(/OF won.t see them/)).toBeNull();
   });
 });
 
-/* ── the creator control ────────────────────────────────────────────────── */
 
 describe("the creator control scopes every read and write", () => {
   it("switching to Creator B reads B's saved replies and creates the next script under B", async () => {
     await mount();
     fireEvent.click(within(rows()[0]).getByRole("button", { name: "Edit" }));
     pickCreator("Creator B");
-    // The open draft belongs to Creator A, so the switch closes it.
     expect(screen.queryByRole("dialog")).toBeNull();
     await screen.findByText("Try out our new sequence feature");
     expect(get.mock.calls.map(([p]) => p)).toContain(LIST_B);
@@ -792,7 +748,6 @@ describe("the creator control scopes every read and write", () => {
   });
 });
 
-/* ── tags and sequences ─────────────────────────────────────────────────── */
 
 describe("tags and sequences are stored on the scripts", () => {
   const RELABEL = "/admin/saved-replies/relabel?account_id=acc-a";
@@ -810,11 +765,10 @@ describe("tags and sequences are stored on the scripts", () => {
     const reads = get.getMockImplementation()!;
     get.mockImplementation((path: string, ctx?: { accountId?: string }) =>
       path === LIST_A ? Promise.resolve({ list: TAGGED }) : reads(path, ctx));
-    renderWithProviders(<ScriptsPage />);
+    renderWithProviders(<ScriptsPage />, ownerCache());
     await screen.findByText("Hey there");
   }
   const sidebar = (name: string) => screen.getByRole("complementary", { name });
-  // A script's name cell, or in a sequence its numbered step.
   const titles = () => rows().map((r) => r.querySelector(".line-clamp-3, [aria-label^='Step ']")?.textContent);
 
   it("lists All scripts, each tag with its count, then Uncategorized; a tag shows only its scripts", async () => {
@@ -836,7 +790,6 @@ describe("tags and sequences are stored on the scripts", () => {
     expect([...pick.options].map((o) => o.textContent)).toEqual([
       "All scripts · 5", "Opener · 2", "VIP · 1", "Uncategorized · 3",
     ]);
-    // All scripts is fixed: no menu beside it.
     expect(within(side).queryByRole("button", { name: "All scripts actions" })).toBeNull();
     fireEvent.change(pick, { target: { value: "Opener" } });
     expect(titles()).toEqual(["Greeting", "ask location"]);
@@ -901,7 +854,6 @@ describe("tags and sequences are stored on the scripts", () => {
 
   type Relabel = { kind: "tag" | "sequence"; from?: string; to?: string; ids?: number[] };
   type Live = { id: number; tags?: string[]; script_id?: string | null; [k: string]: unknown };
-  /** The list GET answers the relabels POSTed so far, as the relay applies them. */
   async function mountLive(extra: Live[] = []) {
     let data = structuredClone([...TAGGED, ...extra]) as Live[];
     const reads = get.getMockImplementation()!;
@@ -918,7 +870,7 @@ describe("tags and sequences are stored on the scripts", () => {
       });
       return Promise.resolve({ updated: 1 });
     });
-    renderWithProviders(<ScriptsPage />);
+    renderWithProviders(<ScriptsPage />, ownerCache());
     await screen.findByText("Hey there");
   }
   const openRow = (side: string) => sidebar(side).querySelector("[aria-current='true'] span")?.textContent;
@@ -950,7 +902,6 @@ describe("tags and sequences are stored on the scripts", () => {
     await waitFor(() => expect(within(sidebar("Tags")).queryByText("Openers")).toBeNull());
     expect(openRow("Tags")).toBe("VIPs");
     expect(box("Greeting")).toBeChecked();
-    // The open tag, last of the tags: the next row drawn is Uncategorized, where Greeting now is, unchecked.
     rowMenu("Tags", "VIPs", "Delete");
     await waitFor(() => expect(openRow("Tags")).toBe("Uncategorized"));
     expect(box("Greeting")).not.toBeChecked();
@@ -971,14 +922,13 @@ describe("tags and sequences are stored on the scripts", () => {
     expect(screen.getByRole("heading", { name: "New Sub" })).toBeInTheDocument();
   });
 
-  /** Creator A with TAGGED, opened on VIP; Creator B with one script ("for B"). */
   async function mountTwoCreators() {
     const B_ROW = { id: 9, account_id: "acc-b", title: "B script", text: "for B", price: 0, locked_text: false, media: [] };
     const reads = get.getMockImplementation()!;
     get.mockImplementation((path: string, ctx?: { accountId?: string }) =>
       path === LIST_A ? Promise.resolve({ list: TAGGED })
         : path === LIST_B ? Promise.resolve({ list: [B_ROW] }) : reads(path, ctx));
-    renderWithProviders(<ScriptsPage />);
+    renderWithProviders(<ScriptsPage />, ownerCache());
     await screen.findByText("Hey there");
     fireEvent.click(within(sidebar("Tags")).getByText("VIP"));
   }
@@ -994,7 +944,6 @@ describe("tags and sequences are stored on the scripts", () => {
     pickCreator("Creator A");
     await screen.findByText("Hey there");
     expect(screen.queryByText("relay down")).toBeNull();
-    // An open name modal and the search belong to the Creator they were opened on.
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
     fireEvent.change(screen.getByRole("searchbox", { name: "Search scripts" }), { target: { value: "9pm" } });
     rowMenu("Tags", "Opener", "Rename");
@@ -1011,7 +960,6 @@ describe("tags and sequences are stored on the scripts", () => {
     post.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
     fireEvent.click(within(rows()[0]).getByRole("button", { name: "Remove from tag" }));
     await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
-    // Back on A while the remove is out: Greeting's row (All scripts now) still waits, no second POST.
     pickCreator("Creator B");
     await screen.findByText("for B");
     pickCreator("Creator A");
@@ -1019,7 +967,6 @@ describe("tags and sequences are stored on the scripts", () => {
     const greetingDelete = () => within(rows().find((r) => r.textContent!.includes("Hey there"))!)
       .getByRole("button", { name: "Delete" });
     expect(greetingDelete()).toBeDisabled();
-    // On B when it fails: B shows no error; back on A the row is free again.
     pickCreator("Creator B");
     await screen.findByText("for B");
     fail(new Error("relay down"));
@@ -1088,7 +1035,6 @@ describe("tags and sequences are stored on the scripts", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "OK" }));
     await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
     expect(post.mock.calls[0]).toEqual([RELABEL, { kind: "tag", to: "Night", ids: [1, 2] }]);
-    // Select all, then Delete removes them in one request.
     fireEvent.click(screen.getByRole("button", { name: /All scripts/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
     fireEvent.click(within(screen.getByRole("toolbar", { name: "Selection" })).getByRole("button", { name: /Delete/ }));
@@ -1117,7 +1063,6 @@ describe("tags and sequences are stored on the scripts", () => {
     expect(titles()).toEqual(["Greeting"]);
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
     fireEvent.click(screen.getByRole("button", { name: "Manage scripts" }));
-    // Recent, descending: the newest edit first.
     expect(titles()[0]).toBe("Unlock");
     pick("Sort by", "Name");
     pick("Sort order", "Ascending");
@@ -1125,7 +1070,6 @@ describe("tags and sequences are stored on the scripts", () => {
   });
 });
 
-/* ── an imported library: sequence meta, sort, send count, 10k rows ─────── */
 
 describe("an imported library", () => {
   const META = "/admin/saved-replies/sequences?account_id=acc-a";
@@ -1137,7 +1081,7 @@ describe("an imported library", () => {
     const reads = get.getMockImplementation()!;
     get.mockImplementation((path: string, ctx?: { accountId?: string }) =>
       path === LIST_A ? Promise.resolve({ list }) : path === META ? Promise.resolve({ list: metas }) : reads(path, ctx));
-    renderWithProviders(<ScriptsPage />);
+    renderWithProviders(<ScriptsPage />, ownerCache());
   }
   const seqOrder = () =>
     [...screen.getByRole("complementary", { name: "Sequences" }).querySelectorAll("li > [role='button'] span.truncate")]
@@ -1173,7 +1117,6 @@ describe("an imported library", () => {
     expect(b.querySelector("[data-connector]")).toBeNull();
     expect(within(a).getByLabelText("Sent")).toHaveTextContent("Sent 3");
     expect(within(b).getByLabelText("Condition")).toHaveTextContent("If: if she asks");
-    // Purchases and sales stay not wired.
     expect(within(a).getByLabelText("Stats")).toHaveAttribute("title", "not wired");
   });
 
@@ -1184,7 +1127,7 @@ describe("an imported library", () => {
     }));
     mountLib(list, []);
     await screen.findByText("body 1");
-    expect(rows()).toHaveLength(201); // 200 and the Show more row
+    expect(rows()).toHaveLength(201);
     fireEvent.click(screen.getByRole("button", { name: "Show more (9800)" }));
     expect(rows()).toHaveLength(401);
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
@@ -1194,7 +1137,6 @@ describe("an imported library", () => {
   });
 });
 
-/* ── Fill with content (docs/spec/phase-02-button-and-popup.md, Seam 2) ─────────────────────────────────────── */
 
 describe("Fill with content", () => {
   const APPLY_A = "/admin/saved-replies/fill/apply?account_id=acc-a";
@@ -1206,7 +1148,6 @@ describe("Fill with content", () => {
     id, account_id: account, title, text: `${title} text`, price, locked_text: false, media: [], script_id: seq,
     script_step: step, updated_at: "2026-11-01T00:00:00",
   });
-  // "New Sub" skips step 2 (the gap sentence); "Old Sub" is a second Sequence; Creator B holds a same-named one.
   const A_ROWS = [row(21, "acc-a", "New Sub", 1, "say hi"), row(22, "acc-a", "New Sub", 3, "sell set", 0),
     row(23, "acc-a", "New Sub", 3, "sell set alt", 0), row(24, "acc-a", "Old Sub", 1, "old one")];
   const B_ROWS = [row(31, "acc-b", "New Sub", 1, "b hi")];
@@ -1225,7 +1166,6 @@ describe("Fill with content", () => {
   const OK = { status: "ok", plan: plan("ok"), undo: UNDO,
     applied: [opt(22, 3, [701, 702], [701]), opt(23, 3, [701, 702], [701]), opt(21, 1, [703])] };
 
-  /** A promise the test settles by hand (the relay's answer arrives when the test says). */
   function deferred<T>() {
     let resolve!: (v: T) => void;
     let reject!: (e: unknown) => void;
@@ -1234,7 +1174,6 @@ describe("Fill with content", () => {
   }
 
   let sweepStatus: { running: boolean; progress: unknown };
-  /** The relay for these tests: `routes` answers POSTs by path; everything else as `serve`. */
   function mountFill(routes: Record<string, (body: unknown) => Promise<unknown>>, client?: QueryClient) {
     sweepStatus = { running: false, progress: null };
     const reads = get.getMockImplementation()!;
@@ -1270,7 +1209,6 @@ describe("Fill with content", () => {
     expect(applyCalls()).toEqual([[APPLY_A, { sequence: "New Sub" }]]);
     const reads = listReads();
     answer.resolve(OK);
-    // Distinct media ids (previews included, two Options sharing a Slice once); distinct Steps; then the gap.
     const notice = await screen.findByRole("status", { name: "Fill notice" });
     expect(notice).toHaveTextContent("Added 3 items to 2 steps");
     expect(within(notice).getByRole("button", { name: "Undo" })).toBeEnabled();
@@ -1279,7 +1217,6 @@ describe("Fill with content", () => {
     await waitFor(() => expect(listReads()).toBeGreaterThan(reads));
     expect(fillButton()).toBeEnabled();
     expect(screen.queryByRole("dialog")).toBeNull();
-    // Another Sequence and back: the notice (and its Undo) is still there.
     fireEvent.click(within(screen.getByRole("complementary", { name: "Sequences" })).getByText("Old Sub"));
     await screen.findByRole("heading", { name: "Old Sub" });
     expect(screen.queryByRole("status", { name: "Fill notice" })).toBeNull();
@@ -1315,7 +1252,6 @@ describe("Fill with content", () => {
     answer = SECOND;
     fireEvent.click(fillButton());
     await waitFor(() => expect(screen.getByRole("status", { name: "Fill notice" })).toHaveTextContent("Added 4 items to 3 steps"));
-    // A zero-write ok leaves it as it was.
     answer = { status: "ok", plan: plan("ok"), applied: [], undo: [] };
     fireEvent.click(fillButton());
     await waitFor(() => expect(applyCalls()).toHaveLength(3));
@@ -1336,7 +1272,6 @@ describe("Fill with content", () => {
     ok.resolve(OK);
     await screen.findByRole("heading", { name: "New Sub" });
     await waitFor(() => expect(fillButton()).toBeEnabled());
-    // B's same-named Sequence shows nothing of A's write.
     expect(screen.queryByRole("status", { name: "Fill notice" })).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
     pickCreator("Creator A");
@@ -1349,7 +1284,6 @@ describe("Fill with content", () => {
     await waitFor(() => expect(screen.queryByRole("status", { name: "Fill notice" })).toBeNull());
   });
 
-  // ASSUMPTION (coordinator override of phase-02:112,156): the write happened, so its notice and Undo are kept.
   it("an ok answered after switching Sequence opens no dialog, refetches the list, and its notice waits on that Sequence", async () => {
     const ok = deferred<unknown>();
     mountFill({ [APPLY_A]: () => ok.promise });
@@ -1369,7 +1303,6 @@ describe("Fill with content", () => {
     expect(within(notice).getByRole("button", { name: "Undo" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Dismiss Fill notice" }));
     expect(screen.queryByRole("dialog")).toBeNull();
-    // A non-ok answer that lands on another Sequence opens no dialog either.
     const late = deferred<unknown>();
     post.mockImplementation((path: string) => (path === APPLY_A ? late.promise : Promise.reject(new Error(path))));
     fireEvent.click(fillButton());
@@ -1430,7 +1363,6 @@ describe("Fill with content", () => {
     const first = await screen.findByRole("dialog", { name: "Fill with content" });
     fireEvent.click(within(first).getAllByRole("button", { name: "Close" }).at(-1)!);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    // A fresh plan says ok: the dialog offers the press, never fills by itself.
     answer = { status: "not_enough_content", plan: plan("not_enough_content"), applied: [], undo: [] };
     fresh = plan("ok");
     fireEvent.click(fillButton());
@@ -1461,7 +1393,6 @@ describe("Fill with content", () => {
     await waitFor(() => expect(post.mock.calls.some(([p]) => p === DESCRIBE)).toBe(true));
     expect(post.mock.calls.find(([p]) => p === DESCRIBE)).toEqual([DESCRIBE, { account_id: "acc-a", target: 1000 }, { accountId: "acc-a" }]);
     expect(await screen.findByText("Checked 12 of 880. Keeps going if you close this.")).toBeInTheDocument();
-    // Nothing fills itself.
     expect(applyCalls()).toHaveLength(1);
   });
 
@@ -1499,8 +1430,6 @@ describe("Fill with content", () => {
       .toHaveTextContent("This sequence is generated by a script source and is not filled.");
   });
 
-  // W30 F30b/F36: a Fill in flight locks every step of its Sequence (Edit disabled) until its answer; no draft can
-  // open on them, so no whole-row PUT races the write. W30 F30: whatever the answer, the lock ends.
   const editOf = (i: number) => within(rows()[i]).getByRole("button", { name: "Edit" });
   it.each<[string, () => Promise<unknown>]>([
     ["a refused apply (404 sequence_not_found)",
@@ -1544,8 +1473,6 @@ describe("Fill with content", () => {
     [1, 2].forEach((i) => expect(editOf(i)).toBeEnabled());
   });
 
-  // W30 F41: a Fill or Undo whose list reload fails leaves stale rows: they stay locked (a whole-row PUT of them
-  // would undo the write) until a reload of the list succeeds.
   it.each<[string, boolean]>([["Fill", false], ["Undo", true]])(
     "a %s whose list reload fails keeps the steps locked until Reload succeeds", async (_n, undo) => {
       let listDown = false;
@@ -1560,7 +1487,7 @@ describe("Fill with content", () => {
       if (undo) fireEvent.click(within(notice).getByRole("button", { name: "Undo" }));
       const reload = await screen.findByRole("button", { name: "Reload" });
       [0, 1, 2].forEach((i) => expect(editOf(i)).toBeDisabled());
-      fireEvent.click(reload);   // still down: stays locked
+      fireEvent.click(reload);
       await waitFor(() => expect(reload).toBeEnabled());
       [0, 1, 2].forEach((i) => expect(editOf(i)).toBeDisabled());
       listDown = false;
@@ -1569,8 +1496,6 @@ describe("Fill with content", () => {
       expect(screen.queryByRole("button", { name: "Reload" })).toBeNull();
     });
 
-  // W30 F50: the lock reads the list query's own error state, so it survives the page unmounting and mounting again
-  // over the same cache (the app keeps a failed query 5 min with its old rows).
   it("a failed list reload after a Fill keeps the steps locked across a remount", async () => {
     let listDown = false;
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 }, mutations: { retry: false } } });
@@ -1584,7 +1509,7 @@ describe("Fill with content", () => {
     page.unmount();
     renderWithProviders(<ScriptsPage />, client);
     await openSequence();
-    await waitFor(() => expect(listReads()).toBeGreaterThan(2));   // the remount's own refetch, still down
+    await waitFor(() => expect(listReads()).toBeGreaterThan(2));
     await screen.findByRole("button", { name: "Reload" });
     [0, 1, 2].forEach((i) => expect(editOf(i)).toBeDisabled());
     listDown = false;
@@ -1592,8 +1517,6 @@ describe("Fill with content", () => {
     await waitFor(() => expect(editOf(0)).toBeEnabled());
   });
 
-  // W30 F36: the lock is the Sequence's, not a snapshot of its rows: a row Show more brings in after the press is locked.
-  // W30 F48: a render step of 2 reaches Show more with one extra row (205 extra rows timed out under load).
   it("a step that Show more renders after the press is locked too", async () => {
     const extra = [row(1000, "acc-a", "New Sub", 4, "extra 0")];
     A_ROWS.push(...extra);
@@ -1604,7 +1527,7 @@ describe("Fill with content", () => {
       await openSequence();
       fireEvent.click(fillButton());
       await waitFor(() => expect(applyCalls()).toHaveLength(1));
-      expect(rows()).toHaveLength(3);   // 2 steps + the Show more item
+      expect(rows()).toHaveLength(3);
       fireEvent.click(screen.getByRole("button", { name: /^Show more/ }));
       expect(rows()).toHaveLength(4);
       expect(editOf(3)).toBeDisabled();
@@ -1616,7 +1539,6 @@ describe("Fill with content", () => {
     }
   });
 
-  // W30 F35: Undo is off while a draft is open on a row it would revert, one moved out of the Sequence since too.
   it("Undo is disabled while a draft is open on a row of its list that left the Sequence", async () => {
     const MOVED = { id: 24, media_ids: [704], previews: [], price_cents: 0, price_set: false };
     mountFill({ [APPLY_A]: async () => ({ ...OK, undo: [...UNDO, MOVED] }) });
@@ -1633,7 +1555,7 @@ describe("Fill with content", () => {
     const undo = within(screen.getByRole("status", { name: "Fill notice" })).getByRole("button", { name: "Undo" });
     expect(undo).toBeDisabled();
     expect(undo).toHaveAttribute("title", "Save or close the open step first");
-    expect(fillButton()).toBeEnabled();   // 24 is not a step of this Sequence: only Undo waits
+    expect(fillButton()).toBeEnabled();
   });
 
   it("an open edit of one of the Sequence's steps disables Fill with \"Save or close the open step first\"", async () => {

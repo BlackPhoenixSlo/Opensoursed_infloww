@@ -1,37 +1,7 @@
 #!/usr/bin/env python3
-"""
-The storyboard BUILD lane — `admission.STORYBOARD_BUILD`. Plain-assert, no
-pytest (repo convention).
-
-Why this suite exists. A storyboard build is an mp4 download AND an ffmpeg
-process, so alone among the relay's admission lanes the scarce resource is CPU
-rather than descriptors, and the box has two cores. `storyboard._storyboard_locks`
-stops the SAME video being built twice and says nothing at all about N DIFFERENT
-videos, which is the case that actually happens: a describe sweep runs
-`vault_ai_api._VISION_GLOBAL_CONCURRENCY` items at once and every un-warmed clip
-among them starts a build inside its vision slot.
-
-The lane therefore has to hold for BOTH entry points, and they are in different
-modules — `storyboard._ensure_storyboard_frame` (a /img/scrub hover) and
-`vault_frames.warm_one_sync` (the collect warm phase, and describe). A cap that
-only covered the hover would have left the expensive path exactly as it was, so
-these cases drive both and assert their SUM is bounded.
-
-Cases:
-  case_distinct_videos_are_capped  — N different videos through the scrub path
-                                     never exceed the cap, and all still build.
-  case_the_describe_path_shares_the_build_lane
-                                   — the same holds through warm_one_sync.
-  case_a_busy_lane_is_retryable_not_a_cooldown
-                                   — a rejection is `busy`, and `busy` maps to
-                                     the RETRY side of the reason vocabulary.
-
-Exit 0 = all cases passed. Temp DB bound by _harness (never prod); the
-storyboard store is bound to a throwaway temp dir BEFORE server is imported.
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 import os  # noqa: E402
 import tempfile  # noqa: E402
@@ -43,9 +13,6 @@ from pathlib import Path  # noqa: E402
 
 _TMP = Path(tempfile.gettempdir()) / f"storyboard_cap_test_{uuid.uuid4().hex}"
 os.environ["STORYBOARD_DIR"] = str(_TMP / "storyboard")
-# Bind the cap to a small, known number. Reading it off the module under test
-# would make every assertion below tautological — it would pass at any value,
-# including one that never bounds anything.
 os.environ["STORYBOARD_BUILD_CONCURRENCY"] = "2"
 
 import admission  # noqa: E402
@@ -57,8 +24,6 @@ _BUILD_CAP = 2
 
 
 class _Meter:
-    """Counts real overlap. Builds run on worker threads, so this is guarded by
-    a lock — it measures what actually collided, not scheduling intent."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -83,9 +48,6 @@ class _FakeRequest:
 
 
 def case_distinct_videos_are_capped():
-    """`_storyboard_locks` stops the SAME video building twice. Nothing stopped
-    N different videos putting N ffmpeg processes on a 2-core box — that is what
-    `_STORYBOARD_BUILD_CAP` is for, and it is the only CPU-bound lane here."""
     meter = _Meter()
     real_dl = storyboard._storyboard_download
     real_extract = storyboard._storyboard_extract_batch
@@ -133,13 +95,6 @@ def case_distinct_videos_are_capped():
 
 
 def case_the_describe_path_shares_the_build_lane():
-    """The gate has to hold for `vault_frames.warm_one_sync`, not just for a
-    hover — that is the path a DESCRIBE takes when it meets an un-warmed clip,
-    and it runs up to `_VISION_GLOBAL_CONCURRENCY` wide. A cap that only covered
-    /img/scrub would have left the expensive lane exactly as it was.
-
-    Both entry points are driven together here, because they take the SAME
-    semaphore and the thing worth proving is that their SUM is bounded."""
     meter = _Meter()
     real_extract = storyboard._storyboard_extract_batch
 
@@ -194,21 +149,16 @@ def case_the_describe_path_shares_the_build_lane():
 
 
 def case_a_busy_lane_is_retryable_not_a_cooldown():
-    """`busy` must land on the retry side of the reason vocabulary. Anything
-    unmapped falls to `no_variant`, which is the 7-day DRM cool-off — so a clip
-    that merely arrived while ffmpeg was saturated would be frozen out of
-    describe for a week. That exact confusion froze 1,777 items once already."""
     assert vault_frames._WARM_REASON.get("busy") == "fetch_failed", (
         "a full build lane resolved to "
         f"{vault_frames._WARM_REASON.get('busy', 'no_variant (UNMAPPED)')!r} — "
         "being busy says nothing about the clip and must never cool it off"
     )
 
-    # And the outcome really is `busy` when there is no slot to be had.
     held = [admission.STORYBOARD_BUILD.enter(f"hold{i}") for i in range(_BUILD_CAP)]
     assert all(held), "could not saturate the build lane"
     real_wait = admission.STORYBOARD_BUILD.wait_s
-    admission.STORYBOARD_BUILD.wait_s = 0.05   # don't sit through the real wait
+    admission.STORYBOARD_BUILD.wait_s = 0.05
     try:
         out = vault_frames.warm_one_sync(
             object(), "https://cdn2.onlyfans.com/files/v/vv/blocked/source.mp4", 10.0)

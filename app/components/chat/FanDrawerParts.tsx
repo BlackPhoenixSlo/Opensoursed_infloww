@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * FanDrawer's building blocks: the head, the Insights block and its rows, the inline
- * editors, the Subscription auto-renewal and Profile language labels, the tab and block
- * titles, the Chat header's focus request hook, the mass-exclude switch and the
- * AI profile card.
- */
 
 import { type ChangeEvent, useEffect, useId, useRef, useState } from "react";
 
@@ -20,11 +14,7 @@ import { type InsightsBlockId } from "./useInsightsBlocks";
 import { InfoTip } from "@/components/ui/InfoTip";
 import { IfDateInput } from "@/components/ui/ifDateInput";
 
-/** 🚫 Mass-exclude toggle — flags a fan onto MASSdmEXCLUDE so every mass send,
- *  priced or not (mass DM / mass PPV / online blast / nudge), skips them. It
- *  mirrors a server-side List(kind='exclude') to a same-named pinned OF list.
- *  Excluded fans STILL get welcomes / AI replies / manual 1:1s. Shares its query
- *  key with the chat-header ⋯ menu toggle so both stay in sync. Optimistic. */
+// Excluded fans still get welcomes / AI replies / manual 1:1s; only mass sends skip them.
 export function MassExcludeToggle({
   accountId, fanId, title, hint,
 }: {
@@ -62,16 +52,6 @@ export function MassExcludeToggle({
   );
 }
 
-/**
- * A Chat header focus request (Notes, spec F23; Nickname, ticket 142). A count
- * higher than this instance has answered calls `onAsk` during this render (the
- * switch to Insights) and becomes `asked`, which keys the field's block so it
- * remounts expanded (its one collapse rule); the effect then scrolls to and
- * focuses the field once it exists. It starts at 0, so an instance the click
- * itself mounts answers too. The hidden twin's field is `display: none` and
- * cannot take focus, so only the visible instance does. No field yet (the Fan
- * is still loading): `ready` re-runs the effect when it lands.
- */
 export function useFocusRequest<T extends HTMLElement>(request: number | undefined, onAsk: () => void, ready: unknown) {
   const ref = useRef<T>(null);
   const focusedRef = useRef(0);
@@ -80,6 +60,7 @@ export function useFocusRequest<T extends HTMLElement>(request: number | undefin
     setAsked(request ?? 0);
     onAsk();
   }
+  // The hidden twin's field is display:none and cannot take focus, so only the visible instance does.
   useEffect(() => {
     const field = ref.current;
     if (asked <= focusedRef.current || !field) return;
@@ -90,7 +71,6 @@ export function useFocusRequest<T extends HTMLElement>(request: number | undefin
   return { ref, asked };
 }
 
-/** Each Insights block's title, as its head and the "+" menu read it. */
 export const BLOCK_TITLE: Record<InsightsBlockId, string> = {
   spending: "Spending behavior", org: "Organization metrics", subscription: "Subscription",
   profile: "Profile", lists: "Lists", notes: "Notes",
@@ -100,15 +80,12 @@ export const BLOCK_TITLE: Record<InsightsBlockId, string> = {
 export type InsightsTab = "insights" | "sales" | "notes";
 export const INSIGHTS_TABS: InsightsTab[] = ["insights", "sales", "notes"];
 export const TAB_LABEL: Record<InsightsTab, string> = { insights: "Insights", sales: "Sales", notes: "Notes" };
-/** A tab's hover text. */
 export const TAB_HINT: Record<InsightsTab, string> = {
   insights: "Fan insights: profile, spending and more",
   sales: "Sales: this fan's PPVs and purchases",
   notes: "Notes about this fan",
 };
-/** The head reads the tab (Clone `messages.js:1614`). */
 const TAB_TITLE: Record<InsightsTab, string> = { insights: "Fan insights", sales: "Sales", notes: "Notes" };
-/** The Clone's 20px tab icons (`messages.html:845-847`): eye, tag, note. */
 export const TAB_ICON: Record<InsightsTab, React.ReactNode> = {
   insights: (
     <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className={MP.insights.tabIcon}>
@@ -128,9 +105,6 @@ export const TAB_ICON: Record<InsightsTab, React.ReactNode> = {
   ),
 };
 
-/** The drawer's head is the title only (16px/700, padding 16/16/10, no rule),
- *  reading the active tab. The "+" then × sit on its right; "+" lists
- *  the removed Insights blocks, and picking one adds it back. */
 export function InsightsHead({ uid, tab, setTab, blocks, onClose, addOpen, setAddOpen, addRef }: {
   uid: string; tab: InsightsTab; setTab: (t: InsightsTab) => void;
   blocks: { removed: InsightsBlockId[]; add: (id: InsightsBlockId) => void }; onClose: () => void;
@@ -186,8 +160,6 @@ export function InsightsHead({ uid, tab, setTab, blocks, onClose, addOpen, setAd
   );
 }
 
-/** An editable Profile value styled as the Clone's `.nick-edit`
- *  (`messages.html:320-321`): the control, then a 13px pencil, gap 8px. */
 export function NickEdit({ children }: { children: React.ReactNode }) {
   return (
     <span className={cn(MP.insights.nickEdit, "flex items-center justify-end")}>
@@ -200,11 +172,8 @@ export function NickEdit({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** The Clone's `.hr` (`messages.html:309`, FI17): a 1px line drawn as a
- *  fill, so the `<hr>`'s own top border is off. */
 export const RULE = cn(MP.insights.rule, MP.ours.FanDrawer.rule, "bg-border");
 
-/** An always-rendered input that reads as an inline right-aligned 13.5px value. */
 export const INLINE_EDIT = cn(
   MP.ours.FanDrawer.inlineEdit,
   "min-w-0 flex-1 bg-transparent text-right focus:outline-none focus:ring-1 focus:ring-accent",
@@ -212,8 +181,6 @@ export const INLINE_EDIT = cn(
 
 export const MM_DD = /^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
-/** A Profile value saved on blur; "" clears it. With `pattern`, anything
- *  else that does not match goes back to the saved value (Birthday's MM-DD). */
 export function BlurEdit({ id, saved, type = "text", pattern, inputMode, maxLength, placeholder, title, onSave }: {
   id: string; saved: string | null; type?: "text" | "date"; pattern?: RegExp;
   inputMode?: "numeric"; maxLength?: number; placeholder?: string; title?: string;
@@ -238,7 +205,6 @@ export function BlurEdit({ id, saved, type = "text", pattern, inputMode, maxLeng
   );
 }
 
-/** The wall clock in `zone`, ticking each minute (a pinned drawer stays open all day). */
 export function LocalTime({ zone }: { zone: string | null }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -264,37 +230,24 @@ export function toneClass(tone: Tone): string {
   return TONE_CLASS[tone];
 }
 
-/** An Insights tab block's place in its layout (`useInsightsBlocks`): the
- *  grip's drag and arrow-key move, the block as a drop target, and its ×. */
 export type BlockCard = {
   onDragStart: (e: React.DragEvent) => void;
   onDragOver: (e: React.DragEvent) => void;
   onDrop: (e: React.DragEvent) => void;
   onDragEnd: (e: React.DragEvent) => void;
   onMove: (dir: -1 | 1) => void;
-  /** This block is the one being dragged. */
   dragging: boolean;
-  /** Another block is being dragged over this one. */
   over: boolean;
   onRemove: () => void;
 };
 
-/** An Insights block: the Clone's `.card` (`messages.html:295`) with its
- *  `.card-head` (`:296-301`): a grip, the title, and a chevron that
- *  collapses the rows. Starts expanded; not saved. With `card` (the Insights
- *  tab's blocks) the grip drags the block to a new place (↑/↓ move it from
- *  the keyboard) and a × removes it; without, the grip is not wired. */
 export function InsightsBlock({
   title, plainTitle, lead, children, trail, card,
 }: {
   title: string;
-  /** Render the title as the Clone's plain `.ct` span, not an h3: for a block
-   *  whose title the pane head already shows as its h2 (Sales on the Sales tab). */
   plainTitle?: boolean;
-  /** Content above the rows that is not a row, e.g. Spending behavior's headline pair. */
   lead?: React.ReactNode;
   children?: React.ReactNode;
-  /** Content below the rows that is not a row, e.g. the Purchases over time chart. */
   trail?: React.ReactNode;
   card?: BlockCard;
 }) {
@@ -325,7 +278,6 @@ export function InsightsBlock({
             type="button"
             draggable
             onDragStart={(e) => {
-              // The whole block follows the pointer, not just the grip.
               const block = e.currentTarget.closest("section");
               if (block) e.dataTransfer.setDragImage?.(block, 0, 0);
               card.onDragStart(e);
@@ -381,8 +333,6 @@ export function InsightsBlock({
   );
 }
 
-/** A block row, the Clone's `.mrow.plain` (`messages.html:310-316`): the
- *  term left, the value right, both 13.5px, padding 6px 0. */
 export function InsightsRow({ term, value }: { term: React.ReactNode; value: React.ReactNode }) {
   return (
     <div className={cn(MP.insights.metric, MP.ours.FanDrawer.row, "flex items-start justify-between")}>
@@ -392,7 +342,6 @@ export function InsightsRow({ term, value }: { term: React.ReactNode; value: Rea
   );
 }
 
-/** The Clone's `.badge-val` Geometry (`messages.html:315`) in our colours. */
 export function Badge({ children }: { children: React.ReactNode }) {
   return (
     <span className={cn(MP.insights.badge, "inline-block bg-bg-elev-2")}>
@@ -401,7 +350,6 @@ export function Badge({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** The Clone's 14px `.info-i` (`messages.html:302`); `title` is its tooltip (`InfoTip`). */
 export function InfoIcon({ title }: { title: string }) {
   return (
     <InfoTip text={title} icon={
@@ -413,17 +361,14 @@ export function InfoIcon({ title }: { title: string }) {
   );
 }
 
-/** OF's status semantics (`interpretSubStatus`): "active" renews, "Set to
- *  Expire" does not, an expired sub cannot; anything else is unknown. */
+// OF status semantics: "Set to Expire" does not renew, an expired sub cannot.
 export function autoRenewal(status: SubStatusDisplay): string {
   if (status.expired || status.short === "Won't renew") return "Off";
   if (status.short === "Active") return "On";
   return "—";
 }
 
-// Per-fan language override options. "Default (account)" is the empty value — it clears
-// the override so the fan follows the account's language. Picking one pins it MANUAL,
-// so gen_info's auto-detection can never change it.
+// Picking a language pins it MANUAL so gen_info's auto-detection never changes it.
 export const LANGUAGE_OPTIONS: { code: string; label: string }[] = [
   { code: "en", label: "English" },
   { code: "es", label: "Español" },
@@ -455,8 +400,6 @@ function petLabel(p: unknown): string {
   return String(p);
 }
 
-// Read-only card summarising what gen_info learned: the detected language, the rich
-// note, the extracted facts, a dated timeline, and the openers it wrote.
 export function ProfileCard({ fan }: { fan: FanRecord }) {
   const p = fan.profile;
   const facts: [string, string | null | undefined][] = [

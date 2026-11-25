@@ -484,8 +484,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         }
 
     if wants_mass and client is None:
-        backend = platforms.for_account(account_id).backend
-        if backend is not None and refusal(backend.Shim, "mass_message_history"):
+        if platforms.refusal_for_account(account_id, "mass_message_history"):
             mass_skipped = "platform_lacks:mass_message_history"
             wants_mass = False
             targets = [t for t in targets if t["kind"] != "mass"]

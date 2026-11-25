@@ -1,29 +1,18 @@
 "use client";
 
-/**
- * RawJsonModal — the one raw-JSON editor dialog (presentation only). The callers own loading, parsing and saving:
- * EditRuleJsonModal (PATCH one automation rule) and JsonConfigModal (a per-account config blob).
- * Its parts, controlled (the caller owns the text): `RawJsonEditor` (textarea, or a status line instead, and the error
- * under it) and `RawJsonActions` (Reformat and Save with its busy label). FullAiSettings' config JSON renders two of
- * each in its own dialog.
- */
 
 import { useState, type ReactNode } from "react";
 
 import { IfButton, IfHelp, IfModal, IfTextArea } from "@/components/ui/infloww";
 import { cn } from "@/lib/utils";
 
-/** The textarea (or `status` instead of it) and the error under it. */
 export function RawJsonEditor({ label, text, onText, error, status, placeholder, className }: {
-  /** The textarea's accessible name. */
   label: string;
   text: string;
   onText: (text: string) => void;
   error?: string | null;
-  /** Shown instead of the textarea (loading / load failed). */
   status?: ReactNode;
   placeholder?: string;
-  /** The textarea's height and text size. */
   className?: string;
 }) {
   return (
@@ -45,7 +34,6 @@ export function RawJsonEditor({ label, text, onText, error, status, placeholder,
   );
 }
 
-/** Reformat, then `children` (the dialog's Cancel), then Save ("Saving…"-style `busyLabel` while `busy`). */
 export function RawJsonActions({
   onReformat, reformatDisabled, onSave, saveDisabled, busy, saveLabel = "Save", busyLabel = "Saving…", reformatClassName, children,
 }: {
@@ -56,7 +44,6 @@ export function RawJsonActions({
   busy?: boolean;
   saveLabel?: string;
   busyLabel?: string;
-  /** For a row with no gap of its own (the dialog footer). */
   reformatClassName?: string;
   children?: ReactNode;
 }) {
@@ -74,20 +61,17 @@ export function RawJsonActions({
 export function RawJsonModal({
   name, subtitle, text, onText, error, status, busy, onReformat, onSave, onClose,
 }: {
-  /** "Edit raw JSON · {name}". */
   name: string;
   subtitle?: ReactNode;
   text: string;
   onText: (text: string) => void;
   error?: string | null;
-  /** Shown instead of the textarea (loading / load failed); disables Reformat and Save. */
   status?: ReactNode;
   busy?: boolean;
   onReformat: () => void;
   onSave: () => void;
   onClose: () => void;
 }) {
-  // Escape closes only an untyped buffer (the caller's async seed is not a user edit), and never mid-save.
   const [typed, setTyped] = useState(false);
   return (
     <IfModal

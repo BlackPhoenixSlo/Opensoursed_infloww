@@ -1,35 +1,3 @@
-/**
- * CustomsTab's pane, with the real component and the relay mocked: every
- * request is held until the test answers it, in the order the test picks.
- *
- *   • Read A then B, replies interleaved out of order: only B's render, and
- *     "Copy handoff" copies B's brief under B's username.
- *   • Close + reopen the same row: the first open's late replies are dropped.
- *   • Pull A then Pull B: each spinner clears only on its own pull; a pull
- *     answering ok=false re-reads nothing and says so on the row.
- *   • Pull A, then Read B before the rescrape answers: A does not reopen over
- *     B and no (paid) brief is asked for A.
- *   • Read A, Pull A, Hide A before the rescrape answers: A stays closed and
- *     no second (paid) brief is asked for A.
- *   • A failed order lookup shows (and Copy enables) before the thread lands.
- *   • A clipboard write that settles after close + reopen notes nothing.
- *   • Refresh after an owed fan tips again keeps his open pane and says it was
- *     read at the older tip.
- *   • A rejected clipboard write says so.
- *   • Two "Worth a look" rows for one fan are two rows, not one.
- *   • "try again" on a failed brief after Refresh moved the row's tip asks at
- *     the pane's tip time, not the row's new one.
- *   • Sent on a row mid-Pull: its ok rescrape reopens nothing and asks for no
- *     (paid) brief; another fan's Pull still reopens its row. Dismiss on one
- *     of a fan's review rows stops a Pull on his other one (the backend
- *     settles the fan).
- *   • Sent on the open row: while the clear POST is in flight the pane stays
- *     and Read / Pull are off; it closes once the POST succeeds, and a failed
- *     clear leaves row and pane as they were (no second brief).
- *   • Dismiss on one of a fan's review rows: Read / Pull are off on his OTHER
- *     row too while the POST runs (the backend settles the fan), and come back
- *     if it fails; another fan's row stays usable.
- */
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -54,7 +22,6 @@ const row = (fan_id: number, name: string, over: Record<string, unknown> = {}) =
 });
 
 let customs: ReturnType<typeof row>[] = [];
-/** Held replies per `<endpoint>:<fan>`, in the order they were asked. */
 const pending = new Map<string, ((v: unknown) => void)[]>();
 const defer = (k: string) =>
   new Promise((res) => pending.set(k, [...(pending.get(k) ?? []), res]));
@@ -66,7 +33,6 @@ relay.get.mockImplementation((url: string) => {
   if (url.startsWith("/admin/customs/order")) return defer(`order:${fanOf(url)}`);
   return Promise.reject(new Error(`unexpected ${url}`));
 });
-/** Every POST body, in order. */
 let posts: { url: string; body: Record<string, unknown> }[] = [];
 relay.post.mockImplementation((url: string, body: { fan_id: number }) => {
   posts.push({ url, body });
@@ -77,7 +43,6 @@ relay.post.mockImplementation((url: string, body: { fan_id: number }) => {
   return Promise.reject(new Error(url));
 });
 
-/** Answer the `i`-th held request for `k`. */
 async function settle(k: string, v: unknown, i = 0) {
   const res = pending.get(k)?.[i];
   if (!res) throw new Error(`no pending ${k}[${i}]`);
@@ -129,7 +94,6 @@ describe("CustomsTab pane", () => {
     await settle("brief:1", briefReply("Alice"));
     await settle("ctx:1", ctxReply("Alice"));
     await settle("order:2", orderReply("Bob"));
-    // Brief still in flight: the copy would be a fallback, so it is not offered.
     expect(copyBtn()).toBeDisabled();
     await settle("order:1", orderReply("Alice"));
     await settle("brief:2", briefReply("Bob"));
@@ -154,9 +118,9 @@ describe("CustomsTab pane", () => {
     render(<CustomsTab />);
     const alice = await rowOf("Alice");
     await click(readBtn(alice));
-    await click(readBtn(alice)); // Hide
+    await click(readBtn(alice));
     expect(screen.queryByText("Reading…")).toBeNull();
-    await click(readBtn(alice)); // Read again
+    await click(readBtn(alice));
 
     await answerAll(1, "Stale", 0);
     expect(screen.queryByText(/Stale/)).toBeNull();
@@ -181,7 +145,6 @@ describe("CustomsTab pane", () => {
     expect(pullBtn(alice)).toHaveTextContent("Pull");
     expect(within(alice).getByText("Pull failed")).toHaveAttribute("title", "boom");
     expect(pullBtn(bob)).toHaveTextContent("…");
-    // A failed pull opens nothing and asks for no (paid) brief.
     expect(pending.has("ctx:1")).toBe(false);
     expect(pending.has("brief:1")).toBe(false);
 
@@ -211,7 +174,7 @@ describe("CustomsTab pane", () => {
     await click(readBtn(alice));
     await answerAll(1, "Alice");
     await click(pullBtn(alice));
-    await click(readBtn(alice)); // Hide
+    await click(readBtn(alice));
     await settle("rescrape:1", { ok: true, status: "complete" });
     expect(pullBtn(alice)).toHaveTextContent("Pull");
     expect(readBtn(alice)).toHaveTextContent("Read");
@@ -225,7 +188,6 @@ describe("CustomsTab pane", () => {
     await click(readBtn(await rowOf("Alice")));
     await settle("brief:1", briefReply("Alice"));
     expect(copyBtn()).toBeDisabled();
-    // Resolving with a rejected promise fails the held order lookup.
     await settle("order:1", Promise.reject(new Error("timeout")));
     expect(screen.getByText("Reading…")).toBeInTheDocument();
     expect(screen.getByText(/order lookup failed \(timeout\)/)).toBeInTheDocument();
@@ -240,8 +202,8 @@ describe("CustomsTab pane", () => {
     await click(readBtn(alice));
     await answerAll(1, "Alice");
     await click(copyBtn());
-    await click(readBtn(alice)); // Hide
-    await click(readBtn(alice)); // Read again
+    await click(readBtn(alice));
+    await click(readBtn(alice));
     await act(async () => finish());
     expect(screen.queryByText("Copied")).toBeNull();
   });
@@ -350,7 +312,6 @@ describe("CustomsTab pane", () => {
     const [k1, k2] = (await screen.findAllByText("Carl")).map((el) => el.closest("tr")!);
     await click(pullBtn(k1));
     await click(dismissBtn(k2));
-    // K1's rescrape answers ok while the clear is still in flight.
     await settle("rescrape:1", { ok: true, status: "complete" });
     expect(pending.has("brief:1")).toBe(false);
     expect(pending.has("ctx:1")).toBe(false);
@@ -375,7 +336,6 @@ describe("CustomsTab pane", () => {
     const dan = await rowOf("Dan");
     expect(readBtn(dan)).toBeEnabled();
     expect(pullBtn(dan)).toBeEnabled();
-    // A click on K1 now asks nothing (no paid brief on a fan being settled).
     await click(readBtn(k1));
     await click(pullBtn(k1));
     expect(pending.has("brief:1")).toBe(false);
@@ -392,7 +352,6 @@ describe("CustomsTab pane", () => {
     await click(sentBtn(alice));
     expect(sentBtn(alice)).toHaveTextContent("…");
     expect(screen.getByText("Alice brief")).toBeInTheDocument();
-    // Leaving the queue: no Read / Pull (a read would pay for a brief).
     expect(readBtn(alice)).toBeDisabled();
     expect(pullBtn(alice)).toBeDisabled();
     await settle("clear:1", { ok: true });

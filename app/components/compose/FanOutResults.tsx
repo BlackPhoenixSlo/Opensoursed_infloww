@@ -6,17 +6,12 @@ import { IfButton } from "@/components/ui/infloww";
 
 import { fanOutNote, summarizeFanOut, type FanOutProgress, type FanOutResult } from "./fanOut";
 
-/** The all-models fan-out's per-model outcomes; while the content is locked
- *  (compose/fanOut `fanOutLocked`), the lock note and Start over (off while a
- *  send is in flight: compose/fanOut `discardResults`). */
 export function FanOutResults({
   results, noun, locked, busy, onStartOver,
 }: {
   results: FanOutResult[];
-  /** What was sent: "post", "broadcast". */
   noun: string;
   locked: boolean;
-  /** A send in flight. */
   busy: boolean;
   onStartOver: () => void;
 }) {
@@ -43,15 +38,10 @@ export function FanOutResults({
   );
 }
 
-/** The footer's status line: the round in flight ("Sending to k / N…"), else
- *  why the button is off (the form changed since any send error: it wins),
- *  else the last send's error, else the failures a retry still owes (all
- *  rounds). A visible line, not the button's title: a phone has no hover. */
 export function FanOutStatus({
   progress, verb, invalid, error, results,
 }: {
   progress: FanOutProgress | null;
-  /** "Posting", "Sending". */
   verb: string;
   invalid: string | null;
   error: string | null;

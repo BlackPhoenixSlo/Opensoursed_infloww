@@ -1,47 +1,3 @@
-"""Creator badges scenario 5 (docs/spec/creator-badges/phase-0E-slop-and-fake-of-realism.md story 24, scenario row 5;
-phase-0C stories 6, 12, 36): a deep inbox shows "9+" for 32 and never OF's raw 35, its Muted chats show no dot, its
-incomplete Unread list flips no Fan to read, and a same-value swap on a Creator with a complete list settles every dot.
-
-World: `flat_agency`; each Creator a captured session (the relay's REAL OFClient against lib/of_wire.py, `OF_WIRE`)
-whose OF is lib/badge_wire.py with counter frames on. Deep Creators (X; TIERS `deep`): RESTRICTED registry-restricted
-unread chats (OF's restrict + the Relay's `skip_list` row), MUTED Muted unread chats, DEEP_PLAIN plain unread chats,
-in that order: counter 35, red 32; the Unread list (Muted left out) is 35 rows, 4 pages of 10, and the Relay reads
-2, so it is incomplete. Swap Creators (Y; TIERS `swap`): SWAP_UNREAD plain unread, AWAITING read Fan-last (awaiting
-reply: E2's 5-amber leg; all inside the 25-row window), SWAP_READ read Creator-last (a complete 2-page list). X has
-no Fan to spare (50 chats, the small scale's 50 Fans). Every Live connection up (`/__slop/pump-supervise`).
-
-Actors: one headless tab per Creator (actors/badge_tab.py: `/events?lease=1`, a View lease, so each Creator has an
-Open tab and Attribution reads run); one owner stream keeping every `chat_read_changed` and DM frame (`_Flips`). One
-Chromium tab on /messages-pro with X's tab picked (UI runs): screenshots `badge-edge-deep-inbox-trigger` (the legs
-fired) and `badge-edge-deep-inbox-settled` (SETTLE_S later; both show the Amber circle beside the Red one, metric
-`screenshots.amber`), Creator tab titles sampled every DOM_EVERY_S, the Fan List rows read before and after, once
-the tab's own `/api/of/v2/chats` read for X (let through) answered (none in LIVE_LIST_S: INFRA, the rows are
-FanList's local-DB seed).
-
-Legs, at once once every slot holds its truth: X, `read_elsewhere` on its first plain unread chat (window row 18);
-Y, `read_elsewhere` on one unread chat and a DM on one read chat (the first awaiting one: amber -1, the read +1) in
-the same instant, so both counter frames carry the same value and only the read's (0.8 s after the DM, outside its
-0.5 s window) is Unexplained.
-
-Checks: NINE_PLUS (X: held slot `n` 32, the app's redCircle text "9+", roster-counts `unread` 32, the Chromium tab
-title "9+ unread" when sampled); MUTED_NO_DOT (X: every Muted chat's row in the Relay's chats answer keeps
-`isMutedNotifications` true, and no Muted row in the Fan List draws an Unread marker); RAW_COUNTER_NEVER_RENDERED
-(`raw_leak` over every served slot `n`, roster-counts `unread`, SSE slot and tab title); INCOMPLETE_NO_FLIP (X: no
-`chat_read_changed` to read, while an Attribution read ran after the leg, and the held slot `n` ends at
-`truth_red`: red still follows the counter); SWAP_SETTLES (Y: the dot per Fan, the seed plus every flip and DM in
-arrival order under FanRow's rule, `badge_metrics.dots`, equals `truth_unread` after the settle); NO_PHANTOM_AMBER
-(E2's 5-amber leg, `no_phantom_amber`: every Amber circle the tab held or the Chromium title drew is at most the
-amber truth of the last AMBER_SLACK_S, so no Creator-last Fan and no Fan off X's incomplete list counts, and when
-settled it equals truth on a complete list, at most truth on X; through `badge_metrics.amber_gate`: SKIP while
-Phase F's `amber` is absent from the accounts answer, FAIL under `--set require_amber=1`). NINE_PLUS, MUTED_NO_DOT and
-RAW_COUNTER_NEVER_RENDERED `ctx.skip` while Phase B's slot is absent; INCOMPLETE_NO_FLIP and SWAP_SETTLES while
-Phase C's completeness (service/badge_reads_decide.py `complete`) is absent. Pumps not all up or a Creator with no
-counter frame after its leg is INFRA. Evidence `deep-inbox.json`.
-
-Bypasses (declared): OF at its wire (lib/badge_wire.py on lib/of_wire.py); the tabs are API tabs (one Chromium tab:
-the machine gate); the tab's store and display rule run in node (lib/badge_tab_ts.mjs); the per-Fan dot model is
-`badge_metrics.dots` (the Chromium Fan List is the real-path view of X).
-"""
 from __future__ import annotations
 
 import ast
@@ -133,20 +89,16 @@ def phase_c() -> bool:
 
 
 def title_text(title: str) -> tuple[str, str] | None:
-    """(Creator name, its circle's text: a digit or "9+") from CreatorTabs' title; None for grey."""
     m = _TITLE.fullmatch(title)
     return (m.group(1), m.group(2)) if m else None
 
 
 def row_fan(text: str, fan_ids: set[int]) -> int | None:
-    """The one Fan of `fan_ids` a Fan List row's text names (its name or handle carries the id), else None."""
     hits = {int(x) for x in _ID.findall(text)} & fan_ids
     return next(iter(hits)) if len(hits) == 1 else None
 
 
 def live_list(answers: list[tuple[float, str | None, int]], aid: str, since: float) -> bool:
-    """The browser's own chats read for `aid` answered 200 at or after `since`: the Fan List shows OF's rows, not
-    FanList's local-DB seed (/admin/chats/recent: the world's rows, no Muted flag)."""
     return any(s == 200 and a == aid and t >= since for t, a, s in answers)
 
 
@@ -157,7 +109,6 @@ def nine_plus(slot_n, text, roster_n, dom_text) -> tuple[bool, dict]:
 
 def muted_no_dot(muted: set[int], api_rows: list[dict], dom_rows: list[tuple[int | None, bool]]) -> tuple[bool | None,
                                                                                                           dict]:
-    """Muted Fans' rows in the Relay's chats answer keep `isMutedNotifications` true; none draws a dot in the DOM."""
     api = [r for r in api_rows if (r.get("withUser") or {}).get("id") in muted]
     lost = sorted(r["withUser"]["id"] for r in api if r.get("isMutedNotifications") is not True)
     dom = [(f, d) for f, d in dom_rows if f in muted]
@@ -186,17 +137,12 @@ def swap_settles(rows: dict[int, tuple[bool, bool]], events: list[tuple[float, i
 
 
 def amber_title(title: str) -> int | None:
-    """The Amber circle CreatorTabs' title states ("9+" as 9, a floor), None when it states none."""
     m = _AMBER_TITLE.search(title)
     return None if not m else 9 if m.group(1) == "9+" else int(m.group(1))
 
 
 def no_phantom_amber(slot: list[tuple[float, int]], dom: list[tuple[float, int]], truth: list[tuple[float, int]],
                      end: float, complete: bool, slack: float = AMBER_SLACK_S) -> tuple[bool | None, dict]:
-    """One Creator: every Amber circle drawn (`slot` the tab's held slot, `dom` the Chromium title), at its draw and
-    `slack` after each truth change, is at most the most amber truth held within `slack` before; at `end` the held
-    slot equals truth where the Creator's Unread list is `complete`, else is at most it (a Fan the incomplete list
-    could not name stays out of amber until a window read)."""
     truth, slot = sorted(truth), sorted(slot)
     tk = [t for t, _ in truth]
 
@@ -222,8 +168,6 @@ def no_phantom_amber(slot: list[tuple[float, int]], dom: list[tuple[float, int]]
 
 
 def fire(wire: BadgeWire, target: dict[str, int], pair: dict[str, tuple[int, int]]) -> None:
-    """The legs: each deep Creator's target read elsewhere; each swap Creator's (unread, read) pair read and DMed in
-    one instant, so both counter frames (the DM's 1 ms, the read's click delay) carry the same value."""
     for a, fan in target.items():
         wire.read_elsewhere(a, fan)
     for a, (gone, new) in pair.items():
@@ -232,7 +176,6 @@ def fire(wire: BadgeWire, target: dict[str, int], pair: dict[str, tuple[int, int
 
 
 def merge(per: dict[str, tuple[bool | None, dict]]) -> tuple[bool | None, dict]:
-    """One verdict over Creators: FAIL if any fails, SKIP (None) when none was judged, else PASS."""
     oks = [ok for ok, _d in per.values() if ok is not None]
     return (None if not oks else all(oks)), {a: d for a, (_ok, d) in per.items()}
 
@@ -243,8 +186,6 @@ def _check(ctx, name: str, per: dict[str, tuple[bool | None, dict]]) -> None:
 
 
 class _Flips(SseListener):
-    """The owner's stream: every `chat_read_changed` as `(t, Creator, fan | None, unread)`; DM frames in `meta` /
-    `received_at` (SseListener)."""
 
     def __init__(self, http) -> None:
         super().__init__(http, resume=True, states=("chat_read_changed",))

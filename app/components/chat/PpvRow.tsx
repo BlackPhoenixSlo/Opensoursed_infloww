@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * PpvRow — the Composer's PPV row (docs/spec/phase-04-composer-ppv-vault.md,
- * Gap rows 10–14, Interfaces): a controlled `role="group"` named "PPV row" in
- * the deleted Clone's order (messages.html:739–753, tag legacy-ui-final):
- *
- *   "PPV" · "$" + price · lock text · attachments (children) · "at" · "Clear"
- *
- * With media attached the Composer puts `FreePreviews` first among the
- * children, as the earlier in-OF overlay composer showed its stepper (TODO.md A2).
- *
- * No box; it wraps. The Composer decides when it shows and owns every value;
- * this module only lays the row out. Its Geometry is the Clone's (`.comp-x`,
- * messages.html:514–518; `.btn-sm`, :499), from `MP.ppvRow` (PV1–PV9), in
- * Infloww's input typography since look-and-feel ticket 148 (Gap row C11:
- * 14px at 140%, radius 4px, the 85px price field with its `$` inside).
- */
 
 import type { ReactNode } from "react";
 
@@ -25,31 +9,23 @@ import { cn } from "@/lib/utils";
 import { fmtPrice } from "@/lib/format";
 import { IfDateInput } from "@/components/ui/ifDateInput";
 
-/** A field's box (`MP.ppvRow.input`, PV4) in our colours: the price field's
- *  box around its `$` and input, and through `FIELD` every bare field.
- *  `:focus-within` also matches a focused bare input. */
 const FIELD_BOX = cn(
   MP.ppvRow.input,
   "bg-bg border-border focus-within:border-accent has-disabled:opacity-40",
 );
 
-/** A bare field (Clone `.comp-x input`) in the field box's style. Exported
- *  for the ⏱ Timed message's minutes field. */
 export const FIELD = cn(FIELD_BOX, "focus:outline-none placeholder:text-muted disabled:opacity-40");
 
 export interface PpvRowProps {
-  /** The sanitized price string; a value above 0 makes the send paid. */
   price: string;
   onPrice: (raw: string) => void;
   lockText: boolean;
   onLockText: (on: boolean) => void;
-  /** Schedule mode shows "at" and its date field. */
   scheduleOn: boolean;
   at: string;
   onAt: (value: string) => void;
   onClear: () => void;
   disabled?: boolean;
-  /** The attachment tiles and GIF chips, between "lock text" and "at". */
   children?: ReactNode;
 }
 
@@ -64,8 +40,6 @@ export function PpvRow({
       className={cn(MP.ppvRow.row, "flex flex-wrap items-center text-fg-dim")}
     >
       <span className={cn(MP.ppvRow.label, "text-fg")}>PPV</span>
-      {/* The box is the field (look-and-feel C11): "$" drawn inside it,
-       *  then the input, which draws no box of its own. */}
       <label
         className={cn(FIELD_BOX, MP.ppvRow.price, "flex items-center")}
       >
@@ -122,15 +96,12 @@ export function PpvRow({
   );
 }
 
-/** The free previews stepper: how many leading tiles go out unlocked. Its
- *  buttons work only on a paid message (`enabled`); a free one has no split. */
 export function FreePreviews({
   count, total, enabled, onStep,
 }: {
   count: number;
   total: number;
   enabled: boolean;
-  /** One fewer / one more than `count` (the reducer clamps, `stepPreviews`). */
   onStep: (by: 1 | -1) => void;
 }) {
   const step = "w-6 h-6 grid place-items-center rounded border border-border hover:bg-bg-elev-1 disabled:opacity-30";
@@ -165,18 +136,15 @@ export function FreePreviews({
   );
 }
 
-/** datetime-local needs `YYYY-MM-DDTHH:MM` in local time (no Z). */
 export function toLocalInput(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** Describe the schedule in plain English. Both ranges are server-side now and
- *  survive reload; short delays (≤ 15 min) ride our executor queue, longer ones
- *  OF's native queue. */
 function describeSchedule(value: string): string {
   const d = new Date(value);
   const deltaMs = d.getTime() - Date.now();
+  // Short delays ride our executor queue, longer ones OF's native queue.
   if (deltaMs <= EXECUTOR_MAX_MINUTES * 60_000) {
     const mins = Math.max(1, Math.round(deltaMs / 60_000));
     return `Sending in ${mins} min (scheduled)`;

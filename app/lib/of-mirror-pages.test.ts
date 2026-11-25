@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { OF_MIRROR_SECTIONS } from "./of-mirror-pages";
 
-const PAGES = path.join(process.cwd(), "public/of-mirror/pages") // vitest runs from app/;
+const PAGES = path.join(process.cwd(), "public/of-mirror/pages")
 
 const fileOf = (section: string, sub: string) => `${section}/${sub || "index"}.html`;
 

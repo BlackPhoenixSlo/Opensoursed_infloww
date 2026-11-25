@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * IngestHealthBanner — traffic-light header for transaction-ingest health.
- *
- * Shape mirrors CoverageHeader: a single click-to-expand strip with a
- * traffic-light dot, a label, and a chevron. Expanding reveals per-account
- * rows with last-scan recency, row counters, and per-account "re-sync" /
- * "pause 1h" actions.
- *
- * Backfill is deliberately *not* exposed here — it's an admin-recovery
- * surface (synthesis §8). When we ship /admin/ingest, the empty-state /
- * red-state hint will link to it.
- */
 
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -33,8 +21,6 @@ export function tier(t: IngestTier): { text: string; dot: string; label: string 
   return                       { text: "text-err",  dot: "bg-err",  label: "Action needed" };
 }
 
-/** A row's scan status in words: the ledger backfill's between-ticks states and its give-up, and
- *  full walks failing while recent walks pass (/health derives it from full_walk_failures; tier colours it). Others as the API says them. */
 export function statusLabel(status: string): string {
   if (status === "backfill_partial") return "backfilling · still working";
   if (status === "backfill_stalled") return "backfill stalled";
@@ -141,26 +127,15 @@ function AccountRow({ row }: { row: IngestAccountRow }) {
   const pauseMut = useIngestPause();
   const resumeMut = useIngestResume();
 
-  // Paused-until honoured by the supervisor — if it's in the future, no
-  // tick will fire for this account, and the user needs to click resume
-  // (or wait it out) for re-syncs to take effect.
   const pausedFor = row.paused_until ? new Date(row.paused_until).getTime() - Date.now() : 0;
   const isPaused = pausedFor > 0;
   const pausedMinsLeft = Math.ceil(pausedFor / 60_000);
 
-  // Data-driven scanning state: snapshot the row's last_scan_at when the
-  // user clicks, then watch it advance — that's the only honest signal
-  // a tick actually ran. Wall-clock 12s cap covers the unhappy path
-  // where the supervisor never gets to this account (paused, error).
-  // 3s + 10s one-shot invalidations replace the old 2s polling loop —
-  // same UX, ~6x fewer reads on the health endpoint.
   const [scanUntil, setScanUntil] = useState<number>(0);
   const [scanFrom, setScanFrom] = useState<string | null>(null);
   const [collisionMsg, setCollisionMsg] = useState<string | null>(null);
   const isScanning = scanUntil > 0 && Date.now() < scanUntil;
 
-  // Bail out of scanning as soon as last_scan_at advances past the
-  // click snapshot. Trusts the server-side stamp instead of guessing.
   useEffect(() => {
     if (!isScanning || scanFrom == null) return;
     if (row.last_scan_at && row.last_scan_at > scanFrom) {
@@ -188,14 +163,9 @@ function AccountRow({ row }: { row: IngestAccountRow }) {
       clearTimeout(t2);
       clearTimeout(stop);
     };
-    // scanUntil is in deps so a rapid double-click restarts the
-    // 3s/10s/12s timer set — without it React skips the effect re-run
-    // (isScanning stayed true), the second click's stop timer never
-    // fires, and the user's second window is silently truncated by
-    // the first click's stop. See library/db_data/17_banner_ui_audit.md.
+  // scanUntil in deps: a rapid double-click must restart the timers, else the first click's stop truncates the second window.
   }, [isScanning, scanUntil, qc]);
 
-  // Auto-clear the inline collision banner after 4s — no extra UI to dismiss.
   useEffect(() => {
     if (!collisionMsg) return;
     const t = setTimeout(() => setCollisionMsg(null), 4000);
@@ -212,9 +182,6 @@ function AccountRow({ row }: { row: IngestAccountRow }) {
         setScanFrom(null);
         const msg = (err as { status?: number; message?: string })?.message ?? "";
         const status = (err as { status?: number })?.status;
-        // 409 = supervisor tick already running this account. Be
-        // explicit so the user knows the click registered but a
-        // concurrent scan is in progress.
         if (status === 409 || msg.includes("409") || msg.toLowerCase().includes("already")) {
           setCollisionMsg("already scanning — try again in a moment");
         } else if (msg) {

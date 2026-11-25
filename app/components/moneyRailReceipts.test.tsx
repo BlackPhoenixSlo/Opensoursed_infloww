@@ -1,20 +1,3 @@
-/**
- * Read receipts and bot attribution compare IDS, never float64.
- *
- * Two id comparisons in replyStateOf outlived the first FanId sweep because
- * both are invisible on the current data:
- *
- *   • `seen: lastRead >= lm.id` — `Math.max` forces a receipt id through
- *     float64 (900805852249276416 -> ...400) and then compares a number
- *     against the wire's STRING id. Fansly sends no receipts yet
- *     (lastReadMessageId is null on every live row, verified 2026-09-02),
- *     which is the only reason it never showed a wrong ✓✓.
- *   • `byBot: lastOutbound.messageId === lm.id` — a `Number()`-parsed
- *     attribution id strict-compared against a string. False for two
- *     independent reasons, so `byBot` could never fire on Fansly.
- *
- * These pin both against the real ids.
- */
 import { describe, expect, it } from "vitest";
 
 import { lastOutboundOf, replyStateOf } from "@/components/useMoneyRailFeed";
@@ -32,7 +15,7 @@ const chat = (over: Record<string, unknown> = {}) => ({
 describe("lastOutboundOf", () => {
   it("keeps a Fansly snowflake exact instead of rounding it", () => {
     const got = lastOutboundOf({ by_msg_id: { [MSG]: { automation_kind: "welcome_chatter_for_info" } } } as never);
-    expect(String(got?.messageId)).toBe(MSG);          // not "900805852249276400"
+    expect(String(got?.messageId)).toBe(MSG);
     expect(got?.automationKind).toBe("welcome_chatter_for_info");
   });
 

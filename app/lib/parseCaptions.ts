@@ -1,22 +1,3 @@
-/**
- * parseCaptions — turn a pasted/uploaded caption file into a text-variant pool.
- *
- *   • JSON (text starts with `[` / `{` and parses): an array of strings, an
- *     array of objects (first string `text|caption|message|content` field), or
- *     an object holding such an array under one of those keys.
- *   • CSV: RFC-4180 quotes (`""` escapes, newlines inside quotes), `\t` / `;` /
- *     `,` sniffed from the first records (one that splits them all into the same
- *     >1 cell count; none → single column). A header row with a
- *     `text|caption|message|content|variant(s)` cell picks that column, else
- *     column 0. Chosen for a `.csv`/`.tsv` file; for a paste only when it is
- *     clearly tabular (header / clean quoted cells / tab columns), so a plain
- *     caption with a comma is never split.
- *   • Text: one caption per non-empty line, a fully quoted line unquoted.
- *   • Always: trimmed, empties dropped, exact duplicates dropped, order kept.
- *
- * `mergeCaptions` is the one pool-merge rule every editor uses.
- */
-
 export type CaptionFormat = "csv" | "json" | "text";
 
 export interface ParsedCaptions {
@@ -56,15 +37,12 @@ function fromJson(text: string): string[] | null {
   return v.map(pick).filter((s): s is string => s !== null);
 }
 
-/** RFC-4180 records. `delim` null = single column (only quotes + newlines).
- *  `ok` is false when a quote opens mid-cell, text follows a closing quote, or
- *  a quote never closes (the parse still returns its lenient best effort). */
 function records(text: string, delim: string | null): { rows: string[][]; ok: boolean } {
   const rows: string[][] = [];
   let row: string[] = [];
   let cell = "";
-  let quoted = false;   // inside a quoted cell
-  let wasQuoted = false; // current cell closed a quote
+  let quoted = false;
+  let wasQuoted = false;
   let ok = true;
   const endCell = () => { row.push(cell); cell = ""; wasQuoted = false; };
   const endRow = () => { endCell(); rows.push(row); row = []; };
@@ -137,17 +115,11 @@ export function parseCaptions(text: string, hint?: { filename?: string }): Parse
 
 export interface MergeResult {
   pool: string[];
-  /** The captions that went in, in order. */
   added: string[];
-  /** Already in the pool (exact match), skipped. */
   dupes: number;
-  /** Over `max`, cut. */
   dropped: number;
 }
 
-/** Imported captions into a pool: a lone blank variant is replaced, otherwise
- *  appended; exact duplicates of what is there are skipped; `max` caps the
- *  pool size (the rest is counted as dropped). */
 export function mergeCaptions(pool: string[], items: string[], max?: number): MergeResult {
   const base = pool.length === 1 && !pool[0].trim() ? [] : pool;
   const have = new Set(base.map((p) => p.trim()));

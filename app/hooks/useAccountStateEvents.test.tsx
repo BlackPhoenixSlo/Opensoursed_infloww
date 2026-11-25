@@ -23,7 +23,6 @@ vi.mock("@/lib/events", () => ({
   },
 }));
 
-// useAccounts' principal, for the resync row (null: usePrincipalId's "anon", as every other row has it).
 let mockUser: { user_id: string; username: string } | null = null;
 vi.mock("@/contexts/UserContext", async (orig) => ({
   ...(await orig<object>()),
@@ -75,7 +74,6 @@ describe("useAccountStateEvents", () => {
     expect(keys()).toEqual(["ALL"]);
     act(() => { vi.advanceTimersByTime(1); });
     expect(keys()).toEqual(["ALL", "ALL"]);
-    // A window with a single resync has no trailing refetch.
     act(() => { vi.advanceTimersByTime(RESYNC_MIN_MS); });
     emit("resync");
     act(() => { vi.advanceTimersByTime(2 * RESYNC_MIN_MS); });
@@ -134,9 +132,7 @@ describe("useAccountStateEvents", () => {
       ({ __account_id: aid, creator_warmed: { account_id: aid, at: "2026-11-09T10:00:00Z", ...extra } });
     const ROSTER = ["roster-counts", "u1"];
     const qcKeep = () => new QueryClient({ defaultOptions: { queries: { gcTime: Infinity, retry: false, staleTime: 0 } } });
-    /** A query with no data and no read (an unarmed reader's entry, lib/ofReadGate `off`). */
     const empty = (qc: QueryClient, queryKey: unknown[]) => qc.getQueryCache().build(qc, { queryKey });
-    /** A query whose read is in flight; `end()` lands it. */
     function inFlight(qc: QueryClient, queryKey: unknown[], data: unknown) {
       let end!: () => void;
       void qc.fetchQuery({ queryKey, queryFn: () => new Promise((r) => { end = () => r(data); }) });
@@ -145,7 +141,6 @@ describe("useAccountStateEvents", () => {
     beforeEach(() => { resetReadGate(); resetRosterCountsModuleState(); });
 
     it.each([
-      // [case, state, hasValue, want]
       ["a read in flight: re-read (it may predate the warm)", { fetchStatus: "fetching", dataUpdatedAt: 5, errorUpdatedAt: 0 }, true, "must"],
       ["data, the event carries the value: written", { fetchStatus: "idle", dataUpdatedAt: 5, errorUpdatedAt: 0 }, true, "write"],
       ["no data, the event carries the value: written (an unarmed count's first read)", { fetchStatus: "idle", dataUpdatedAt: 0, errorUpdatedAt: 0 }, true, "write"],
@@ -161,8 +156,8 @@ describe("useAccountStateEvents", () => {
       const counts = { counts: { 7: { unread: 0, owe_reply: 0 }, 9: { unread: 4, owe_reply: 0 } } };
       qc.setQueryData(ROSTER, counts);
       qc.setQueryData(["of-notif-count", "7"], 1);
-      qc.setQueryData(["notif-list", "7", "tip"], { list: [] });         // read before the warm
-      empty(qc, ["notif-list", "8", "tip"]);                              // unarmed: never read
+      qc.setQueryData(["notif-list", "7", "tip"], { list: [] });
+      empty(qc, ["notif-list", "8", "tip"]);
       empty(qc, ["of-notif-count", "8"]);
       const { keys } = mount(qc);
       emit("creator_warmed", warmed("7", { roster: { unread: 2, owe_reply: 1, as_of: 200 }, notif_count: 5, now: Date.now() }));
@@ -193,7 +188,6 @@ describe("useAccountStateEvents", () => {
       const endPurchases = inFlight(qc, ["notif-list", "7", "purchases"], { list: [] });
       const { keys } = mount(qc);
       emit("creator_warmed", warmed("7"));
-      // A read of the tip list starts and ends after the warm came: served the warm's entry.
       await act(async () => { await qc.fetchQuery({ queryKey: ["notif-list", "7", "tip"], queryFn: async () => ({ list: [1] }) }); });
       await endPurchases();
       act(() => { vi.advanceTimersByTime(COALESCE_MS); });
@@ -222,7 +216,6 @@ describe("useAccountStateEvents", () => {
   });
 
   describe("creator_refreshed", () => {
-    // No principal provider mounted: usePrincipalId's "anon".
     const STORE = ["creator-freshness", "anon"];
     const snap = (seq: number, at: number) => ({
       account_id: "7", boot: 1000, seq, now: 5_000, at, cycle_s: 600, live: "up", live_since: null, values: {},
@@ -236,7 +229,7 @@ describe("useAccountStateEvents", () => {
       const { keys } = mount(qc);
       emit("creator_refreshed", refreshed(2, 4_000));
       expect((qc.getQueryData(STORE) as Record<string, unknown>)["7"]).toMatchObject({ seq: 2, at: 4_000 });
-      emit("creator_refreshed", refreshed(1, 3_000));  // older (a replay): the newer stays
+      emit("creator_refreshed", refreshed(1, 3_000));
       expect((qc.getQueryData(STORE) as Record<string, unknown>)["7"]).toMatchObject({ seq: 2, at: 4_000 });
       act(() => { vi.advanceTimersByTime(COALESCE_MS * 2); });
       expect(isArmed("7")).toBe(false);
@@ -259,7 +252,7 @@ describe("useAccountStateEvents", () => {
       emit("ping", { ts: 9.9, fresh: { "7": 9_000, "8": 9_000 } });
       const held = () => (qc.getQueryData(STORE) as Record<string, Record<string, unknown>>);
       expect(held()["7"]).toMatchObject({ seq: 2, at: 9_000, now: 9_900, values: slot });
-      expect(held()).not.toHaveProperty("8");  // no snapshot to move
+      expect(held()).not.toHaveProperty("8");
       emit("ping", { ts: 10.9, fresh: { "7": 8_000 } });
       expect(held()["7"]).toMatchObject({ at: 9_000, now: 9_900 });
       expect(isArmed("7")).toBe(false);
@@ -278,7 +271,6 @@ describe("useAccountStateEvents", () => {
       mount(qc);
       emit("creator_refreshed", refreshed(2, 4_000));
       emit("ping", { ts: 9.9, fresh: { "7": 9_000 } });
-      // The stream dropped; its reconnect replays the change it missed (seq 3, read before the ping's `at`).
       emit("creator_refreshed", { __account_id: "7", creator_refreshed: { ...snap(3, 6_000), live: "down" } });
       expect((qc.getQueryData(STORE) as Record<string, unknown>)["7"]).toMatchObject({ seq: 3, live: "down", at: 9_000 });
     });
@@ -398,11 +390,11 @@ describe("useAccountStateEvents", () => {
       .map((c) => `${c.__accountId}:${c.withUser.id}:${c.hasUnread ? 1 : 0}`);
 
     emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 9, unread: 0, at: 1 } });
-    for (const [n, k] of Object.entries(lists)) expect(qc.getQueryData(k)).toBe(before[n]);  // unknown fan: no-op
+    for (const [n, k] of Object.entries(lists)) expect(qc.getQueryData(k)).toBe(before[n]);
 
     emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 7, unread: 0, at: 1 } });
     expect(unreadOf(lists.model)).toEqual(["a1:7:0", "a1:8:1"]);
-    expect(unreadOf(lists.unread)).toEqual(["a1:8:1"]);  // the Unread list (none on screen) drops it
+    expect(unreadOf(lists.unread)).toEqual(["a1:8:1"]);
     expect(unreadOf(lists.all)).toEqual(["a2:7:1", "a1:7:0"]);
     expect(qc.getQueryData(lists.other)).toBe(before.other);
 
@@ -410,7 +402,7 @@ describe("useAccountStateEvents", () => {
     expect(unreadOf(lists.model)).toEqual(["a1:7:0", "a1:8:0"]);
     expect(unreadOf(lists.unread)).toEqual([]);
     emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 8, unread: 1, at: 3 } });
-    expect(unreadOf(lists.unread)).toEqual(["a1:8:1"]);  // copied in from a cached list
+    expect(unreadOf(lists.unread)).toEqual(["a1:8:1"]);
     expect(unreadOf(lists.model)).toEqual(["a1:7:0", "a1:8:1"]);
     expect(spy).not.toHaveBeenCalled();
   });
@@ -470,12 +462,12 @@ describe("useAccountStateEvents", () => {
       .map((c) => `${c.withUser.id}:${c.hasUnread ? 1 : 0}`);
     emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 7, unread: 1, at: 200 } });
     emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 7, unread: 0, at: 100 } });
-    expect(unreadOf()).toEqual(["7:1", "8:0", "9:1"]);            // the older read, arriving late, changes nothing
+    expect(unreadOf()).toEqual(["7:1", "8:0", "9:1"]);
     emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 8, unread: 1, at: 300 } });
     emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: "all", unread: 0, at: 250 } });
-    expect(unreadOf()).toEqual(["7:0", "8:1", "9:0"]);            // all read but fan 8, marked unread after it
+    expect(unreadOf()).toEqual(["7:0", "8:1", "9:0"]);
     emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 9, unread: 1, at: 240 } });
-    expect(unreadOf()).toEqual(["7:0", "8:1", "9:0"]);            // older than the mark-all
+    expect(unreadOf()).toEqual(["7:0", "8:1", "9:0"]);
   });
 
   it("this tab's own flip records no stamp: a newer remote flip the Relay stamped before the tab's clock applies (W30-mu #50)", () => {
@@ -486,7 +478,7 @@ describe("useAccountStateEvents", () => {
     mount(qc);
     const unread = () => (qc.getQueryData(key) as { pages: { rows: { hasUnread: boolean }[] }[] }).pages[0].rows[0]
       .hasUnread;
-    flipCachedReadState(qc, "a1", { fanId: 7, unread: true, at: 500 }, { own: true });   // stamped after the answer
+    flipCachedReadState(qc, "a1", { fanId: 7, unread: true, at: 500 }, { own: true });
     expect(unread()).toBe(true);
     emit("chat_read_changed", { __account_id: "a1", chat_read_changed: { fan_id: 7, unread: 0, at: 400 } });
     expect(unread()).toBe(false);

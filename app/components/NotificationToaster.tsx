@@ -1,29 +1,5 @@
 "use client";
 
-/**
- * NotificationToaster — listens to OF's SSE `toasts` event, renders a
- * transient toast top-right, and bumps the bell badge by 1 per arrival.
- *
- * Badge ownership lives in NotificationBell (tab-local counter). This
- * component only fires `chatterly:notif-arrived` events; the bell
- * subscribes and increments. No polling, no count diffing, no
- * cross-tab baseline — every tab starts at 0 and counts forward.
- *
- * We still mirror each arrival into localStorage via appendNotifHistory
- * so the bell dropdown can display likes / mentions that OF's own
- * /notifications endpoint drops.
- *
- * Two non-OF sources share the stack. The clock-in reminder
- * (docs/spec/phase-02-shifts-time-tracking.md, Clock-in reminder): for a
- * Chatter session it polls `GET /admin/shifts/me` every minute and shows
- * "Your shift on <Creator> has started." once per (shift_id,
- * occurrence_start), keyed in localStorage, with a "Clock in" action that
- * clocks in at once through `useClock` (or opens `ClockDialog` for a chatter
- * in two Agencies, who names a Creator). And the app's one-line notices
- * (`lib/notices`), such as the clock's "Clock in successful" and a chatter's
- * access changes (`useAccessChangeNotices`). In-app only: no
- * email, push or OS notification.
- */
 
 import { useEffect } from "react";
 
@@ -47,14 +23,11 @@ import {
 } from "./toastStore";
 import { useNotificationDelta } from "./useNotificationDelta";
 
-/** The SSE lanes (`useNotificationDelta`), as a leaf that renders nothing: a
- *  render boundary, so its scope/accounts/settings re-renders skip ToastStack. */
 function NotificationDeltaPoller() {
   useNotificationDelta();
   return null;
 }
 
-/** The live chat patcher (`useInboxRealtime`) for every page, as its own leaf like the poller above. */
 function InboxRealtimeListener() {
   useInboxRealtime();
   return null;
@@ -152,40 +125,26 @@ function ToastStack() {
 const REMINDED_KEY = "chatterly:shift-reminders:v1";
 const MAX_REMINDED = 200;
 
-/** Atomically claim a reminder key: false = already shown in this browser
- *  (persisted, so a reload does not repeat it), true = now marked shown.
- *  Keeps the newest MAX_REMINDED keys. Keys carry the chatter id, so two
- *  chatters sharing a browser are each reminded. */
+// Persisted so a reload does not repeat a reminder; keys carry the chatter id so shared browsers each get theirs.
 function claimReminder(key: string): boolean {
   let seen: string[] = [];
   try {
     const raw = JSON.parse(window.localStorage.getItem(REMINDED_KEY) ?? "[]");
     if (Array.isArray(raw)) seen = raw.filter((k): k is string => typeof k === "string");
-  } catch { /* unreadable: start over */ }
+  } catch { }
   if (seen.includes(key)) return false;
   try {
     window.localStorage.setItem(REMINDED_KEY, JSON.stringify([...seen, key].slice(-MAX_REMINDED)));
-  } catch { /* storage full or blocked: the toast still shows once in this tab */ }
+  } catch { }
   return true;
 }
 
-/**
- * The clock-in reminder: a Chatter session's `GET /admin/shifts/me` poll
- * (the Relay decides when `reminder` is set), one toast per occurrence.
- *
- * ASSUMPTION: the reminder toast ignores the notification Settings toggles
- * (they are per OF notification type) and does not bump the bell badge or
- * enter its history; the agency's `clock_in_reminder` is its only switch. It
- * keeps the stack's usual 8-second lifetime. Rung 3 for the lifetime, rung 5
- * for the rest. Overturned if the reminder must honour the master toggle or
- * stay until dismissed.
- */
+// Ignores the notification Settings toggles, the bell badge and history; the agency's clock_in_reminder is its only switch.
 function ClockInReminder() {
   const user = useOptionalUser()?.user ?? null;
   const chatter = useOptionalChatter()?.chatter ?? null;
   const me = useMyShifts(!user && !!chatter);
   const clock = useClock(!user && !!chatter);
-  // Stable, and reads the clock as it is when the toast's button runs.
   const act = clock.act;
   const reminder = me.data?.reminder ?? null;
   const accounts = me.data?.accounts;
@@ -215,7 +174,6 @@ function ClockInReminder() {
   return clock.picking ? <ClockDialog onClose={clock.closePicker} /> : null;
 }
 
-/** `lib/notices`' one-line notices as cards in the stack, with the usual lifetime. */
 function NoticeBridge() {
   useEffect(() => onNotice((n) => pushToast({
     id: n.id,
@@ -233,7 +191,6 @@ function NoticeBridge() {
 }
 
 export function NotificationToaster() {
-  // A chatter's "permissions updated" / "unassigned from" notices.
   useAccessChangeNotices();
   return (
     <>

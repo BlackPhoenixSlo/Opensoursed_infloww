@@ -7,15 +7,6 @@ import { useEmployee } from "@/contexts/EmployeeContext";
 import { relay } from "@/lib/relay";
 import { ifConfirm } from "@/components/ui/ifConfirm";
 
-/** "Onboard most recent N" — a one-shot run button for process_old_fans that
- *  needs no id list: enqueues {kind:"process_old_fans", payload:{recent_limit,
- *  recent_by}} (same /admin/automation/enqueue + employee-id pattern as UnsendCard
- *  / PremadeForm). The backend builds the batch from the N most-recently
- *  subscribed/messaged fans. Confirms first — it spends LLM credits on gen_info.
- *
- *  `pushToOf` adds `push_to_of: true` (apply_profiles also writes the nickname +
- *  note onto OnlyFans); `intro` and `action` replace the default copy. Shared by
- *  the rules editor (process_old_fans) and My Automations > Gen-Info. */
 export function OnboardRecentCard({ accountId, pushToOf = false, intro, action = "Onboard most recent N" }: {
   accountId: string;
   pushToOf?: boolean;

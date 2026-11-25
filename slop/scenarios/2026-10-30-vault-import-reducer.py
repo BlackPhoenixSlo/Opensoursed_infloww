@@ -1,46 +1,3 @@
-"""Vault import's pick list (app/components/vault/importPickReducer.ts) on the real UI and the real relay
-route: one owner, one browser (1440x900), `agency_inbox` (3 Creators), Creator 0's vault mirror seeded by
-SQL (one `vault_items` row, as a collect leaves it, so the import's details have a mirror to land on).
-A layout flow, not a volume one: `--users` and `--scale` change nothing, so no latency budget.
-
-Vault Pro > Add media: pick 4 tiny files (a.jpg, b.png, c.mp4, d.jpg, made by ffmpeg in the run's temp
-dir); Hashtags + price on a.jpg, Notes on b.png, c.mp4 and d.jpg; deselect b.png; Delete d.jpg; then
-Start import. Expected (VaultImportCard: only `chosenOf` is sent, each file with its own `details`;
-each file leaves the list once the relay has it):
-  - the browser sends a.jpg in `POST .../vault/upload/batch` (keep_open=1) and c.mp4 in one
-    `POST .../batch/append` (last=1), each with its own meta, nothing for b.png or d.jpg;
-  - the relay's run (`GET .../upload/status?run_id=`) lists exactly a.jpg + c.mp4, both done;
-  - OnlyFans (lib/vault_relay.py) received exactly those two files' bytes (sha256);
-  - their `vault_items` rows carry the typed hashtags, price and notes; no row for b or d;
-  - the card settles with b.png still listed, unchecked, and the run summary "2 in vault".
-Screenshots import-trigger (the list just before Start) and import-settled.
-
-Bypasses (declared): the browser-side capture (requests.json) has each file part's name, not its bytes
-(Chromium's DevTools request body omits Blob parts); the bytes are checked at OnlyFans' side. OnlyFans' side of the import is lib/vault_relay.py (its docstring: the upload claim
-in-process, the carrier post at OF's REST shape, the product's own `materialize_to_vault`). Every other
-`/api/of/*` read stays held (ui.py), so the folder picker is empty. Vault Pro's onboarding tours are
-marked seen in localStorage (a returning owner). The vault spool is in the run's temp dir.
-
-Fault (client side, `lib/vault_faults.py`): `import-sends-unselected` (`chosenOf` returns every picked
-file, the selection ignored): the deselected b.png is sent too, so every check of the flow goes red.
-
-Restricted chatter's picker folder menu (also `--no-ui`): one chatter (seed/chatters: invite + register, Creator 1
-only) holds one `chatter_folder_access` row (as PUT /admin/chatters/{id}/folder-access writes it) to 1 of Creator
-1's 3 OnlyFans folders, the one OF lists empty (hasMedia false: emptied on OF since the grant, a case the picker
-keeps by design). Signed in with its own cookie (POST /chatter/login), it reads GET /chatter/me/folder-access and
-every GET /api/of/v2/vault/lists page (fetchAllVaultLists' walk, limit 50); both answers go to the app's own
-`components/chat/vaultPickerFolders.ts` `folderSelectItems` in node (lib/app_ts.py + lib/picker_ts.mjs). Check: the
-menu is exactly the allowed folder, named as granted (`picker-folders.json`); with UI, also the chatter's real
-picker in Chromium (a Creator 1 Fan's chat, the composer's Vault button, the folder menu's options read from the DOM;
-screenshots restricted-picker-trigger, restricted-picker-menu; `_restricted_picker_ui` declares its bypasses).
-The relay already filters vault/lists to
-the allowed set (server.of_vault_lists), so the 2 others' absence is recorded as evidence (`absent`), not a pass
-condition of its own; the menu's own allowlist is what keeps a granted folder the lists leave out. Bypasses (declared): Creator 1's OF folder list is the relay's own cache row
-(`vault_response_cache`, as vault_cache.put stores OF's answer), seeded by SQL (the relay never reaches OnlyFans; the
-import's upload invalidates Creator 0's rows only); the lists page walk and useVaultLists' select are copies
-(Python here, lib/picker_ts.mjs), the hook being React. Fault (client side, `lib/picker_faults.py`):
-`picker-ignores-folder-access` (the restricted branch off: the menu is OF's lists) turns that check red only.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -71,14 +28,14 @@ CHECKS = (SENT_FILES, PROTOCOL, RUN_ITEMS, OF_BYTES, DB_ROWS, SETTLED_UI)
 BATCH, APPEND, STATUS = "/api/of/v2/vault/upload/batch", "/api/of/v2/vault/upload/batch/append", \
     "/api/of/v2/vault/upload/status"
 ROW_BOXES = "input[type=checkbox][aria-label^='Select ']:not([aria-label='Select all media'])"
-SEED_MEDIA = 9001  # the mirror's one pre-existing row
-FILES = {  # name -> ffmpeg lavfi source (distinct bytes each)
+SEED_MEDIA = 9001
+FILES = {
     "a.jpg": ["-f", "lavfi", "-i", "color=c=red:s=32x32", "-frames:v", "1"],
     "b.png": ["-f", "lavfi", "-i", "color=c=green:s=32x32", "-frames:v", "1"],
     "c.mp4": ["-f", "lavfi", "-i", "testsrc=s=64x64:d=1:r=10", "-pix_fmt", "yuv420p", "-c:v", "libx264"],
     "d.jpg": ["-f", "lavfi", "-i", "color=c=blue:s=32x32", "-frames:v", "1"],
 }
-EDITS = {  # name -> {column header: typed value}
+EDITS = {
     "a.jpg": {"Hashtags": "#slopa, beach", "Suggested price": "12.50"},
     "b.png": {"Notes": "b is deselected"},
     "c.mp4": {"Notes": "clip c notes"},
@@ -88,8 +45,7 @@ SENT = ["a.jpg", "c.mp4"]
 WANT_META = {"a.jpg": {"hashtags": ["slopa", "beach"], "price_cents": 1250}, "c.mp4": {"notes": "clip c notes"}}
 PICKER_TS = Path(__file__).resolve().parents[1] / "lib" / "picker_ts.mjs"
 LISTS = "/api/of/v2/vault/lists"
-LISTS_PAGE = 50  # fetchAllVaultLists' page
-# Creator 1's OF folders: (id, name, photos, videos); the granted one is empty on OF (hasMedia false).
+LISTS_PAGE = 50
 PICKER_FOLDERS = ((7101, "Slop picker customs", 0, 0), (7102, "Slop picker teasers", 4, 1),
                   (7103, "Slop picker vip", 2, 3))
 ALLOWED = PICKER_FOLDERS[0]
@@ -108,7 +64,6 @@ def _make_files(ctx) -> dict:
 
 
 async def _restricted_picker(ctx, w, creator: dict) -> None:
-    """A folder-restricted chatter's picker folder menu (module docstring), also --no-ui."""
     aid = creator["id"]
     body = {"list": [{"id": fid, "type": "custom", "name": name, "hasMedia": bool(p + v), "canUpdate": True,
                       "canDelete": True, "photosCount": p, "videosCount": v, "gifsCount": 0, "audiosCount": 0,
@@ -125,7 +80,7 @@ async def _restricted_picker(ctx, w, creator: dict) -> None:
         login = await http.post("/chatter/login", json={"username": rec["username"], "password": rec["password"]})
         access = await http.get(f"/chatter/me/folder-access?account_id={aid}")
         lists, statuses, offset = [], [], 0
-        for _ in range(20):  # fetchAllVaultLists' walk
+        for _ in range(20):
             r = await http.get(f"{LISTS}?view=main&limit={LISTS_PAGE}&offset={offset}", headers={"X-Account-Id": aid})
             statuses.append(r.status_code)
             page = r.json() if r.status_code == 200 else {}
@@ -145,7 +100,6 @@ async def _restricted_picker(ctx, w, creator: dict) -> None:
         ensure_ascii=False))
     items = out["items"]
     others = [f[0] for f in PICKER_FOLDERS if f is not ALLOWED]
-    # With UI: the chatter's real picker shows exactly that menu (option value = folder id, text = label).
     ui_ok = shown is None or shown.get("options") == [[str(ALLOWED[0]), ALLOWED[1]]]
     ctx.check(RESTRICTED_MENU, login.status_code == 200 and access.status_code == 200 and set(statuses) == {200}
               and out["restricted"] and [i["id"] for i in items] == [ALLOWED[0]]
@@ -156,13 +110,6 @@ async def _restricted_picker(ctx, w, creator: dict) -> None:
 
 
 async def _restricted_picker_ui(ctx, w, http, aid: str) -> dict:
-    """The restricted chatter in Chromium (its own login cookie): a Creator 1 Fan's chat (deep link), the
-    composer's Vault button (screenshot restricted-picker-trigger), the folder menu clicked open and its options
-    read from the DOM (screenshot restricted-picker-menu). Bypass (declared): headless Chromium draws no native
-    <select> popup, so for the end shot the opened select is given `size` = its option count (rendered as a
-    list in place); the options are the app's own. GET vault/lists is let through (the relay answers it from
-    its cache row); every other /api/of/ read stays held. Returns {fan, options: [[value, text]], ...} or
-    {error}: a step that cannot complete is the check's FAIL."""
     fans = [t["fan_id"] for t in w.data.get("threads", []) if t["account_id"] == aid] or \
         [f["id"] for f in w.data["fans"][aid]]
     got: dict = {"fan": fans[0]}
@@ -173,7 +120,7 @@ async def _restricted_picker_ui(ctx, w, http, aid: str) -> dict:
         await page.route(lambda u: urlsplit(u).path == LISTS, lists_through)
         async with captured(ctx, page, got, "failed-restricted-picker"):
             dialog = await open_vault_picker(page, ctx, aid, fans[0], timeout=WAIT_MS)
-            for _ in range(300):  # settled: both the access and the lists reads answered
+            for _ in range(300):
                 seen = [s for s, u in page.slop["statuses"] if urlsplit(u).path in (LISTS, "/chatter/me/folder-access")]
                 if len(seen) >= 2:
                     break
@@ -181,11 +128,12 @@ async def _restricted_picker_ui(ctx, w, http, aid: str) -> dict:
             await page.wait_for_timeout(1000)
             got["trigger_shot"] = await ui.shot(ctx, page, "restricted-picker-trigger")
             menu = dialog.locator("select[title='Filter by folder']")
-            got["options"] = []  # no folder menu rendered: no items
+            got["options"] = []
             if await menu.count():
                 await menu.click(timeout=10_000)
                 got["options"] = await menu.evaluate(
                     "s => [...s.options].map(o => [o.value, o.textContent.trim()])")
+                # Headless Chromium draws no native <select> popup: size = option count renders the list in place.
                 await menu.evaluate("s => { s.size = Math.max(2, s.options.length); s.focus(); }")
                 await page.wait_for_timeout(300)
             got["menu_shot"] = await ui.shot(ctx, page, "restricted-picker-menu")
@@ -195,7 +143,6 @@ async def _restricted_picker_ui(ctx, w, http, aid: str) -> dict:
 
 
 def _parts(req) -> dict:
-    """A multipart request's fields: {name: [value | {"filename", "size", "sha256"}]}."""
     body = req.post_data_buffer or b""
     ctype = req.headers.get("content-type", "")
     msg = BytesParser(policy=email_default).parsebytes(b"Content-Type: " + ctype.encode() + b"\r\n\r\n" + body)
@@ -204,8 +151,6 @@ def _parts(req) -> dict:
         name = part.get_param("name", header="content-disposition")
         data = part.get_payload(decode=True) or b""
         fn = part.get_filename()
-        # A file part's bytes: Chromium's DevTools request body leaves Blob parts out (measured: 0 bytes), so
-        # only its name is kept here; the bytes are checked where they land (lib/vault_relay.py's claims).
         val = {"filename": fn} if fn else data.decode("utf-8", "replace")
         out.setdefault(name, []).append(val)
     return out
@@ -239,7 +184,6 @@ async def _flow(ctx, page, chk, files: dict, creator: dict) -> None:
     listed_before = [await r.get_attribute("aria-label") for r in await page.locator(ROW_BOXES).all()]
     await start.click(timeout=10_000)
 
-    # The relay's run, by the id the batch route answered.
     run_id = None
     for _ in range(600):  # up to 5 min: each carrier is two paced OF writes (~11 s apart)
         await asyncio.sleep(0.5)
@@ -258,7 +202,6 @@ async def _flow(ctx, page, chk, files: dict, creator: dict) -> None:
     await ui.shot(ctx, page, "import-settled")
     (ctx.out / "requests.json").write_text(json.dumps(sent, indent=2))
 
-    # 1. what the browser sent
     names = [f["filename"] for r in sent for f in r["fields"].get("files", [])]
     metas = {f["filename"]: m for r in sent for f, m in zip(r["fields"].get("files", []),
                                                             json.loads((r["fields"].get("meta") or ["[]"])[0]))}
@@ -268,13 +211,11 @@ async def _flow(ctx, page, chk, files: dict, creator: dict) -> None:
     chk(PROTOCOL, shape == [(BATCH, ["1"], None, creator["id"]), (APPEND, None, ["1"], creator["id"])]
         and all(r["fields"].get("run_id", [run_id])[0] == run_id for r in sent[1:]), requests=shape, run_id=run_id)
 
-    # 2. the relay's run
     items = [(i.get("name"), i.get("status")) for i in status.get("items") or []]
     chk(RUN_ITEMS, items == [(n, "done") for n in SENT] and status.get("status") == "done"
         and (status.get("details_saved") or {}).get("applied") == len(SENT), items=items,
         run_status=status.get("status"), details_saved=status.get("details_saved"))
 
-    # 3. OnlyFans' side
     fake = (await ctx.owner.get("/__slop/vault/fake")).json()
     (ctx.out / "of-fake.json").write_text(json.dumps(fake, indent=2))
     got = [(c["name"], c["sha256"]) for c in fake["claims"]]
@@ -283,7 +224,6 @@ async def _flow(ctx, page, chk, files: dict, creator: dict) -> None:
     chk(OF_BYTES, sorted(got) == sorted(want) and all(c["deleted"] for c in fake["carriers"]), claims=got,
         want=want, remuxed=remuxed, carriers=[(c["post_id"], c["media_ids"], c["deleted"]) for c in fake["carriers"]])
 
-    # 4. the mirror rows
     con = ctx.world.sql()
     rows = con.execute("SELECT media_id, kind, tags, notes, suggested_price_cents FROM vault_items "
                        "WHERE account_id=? ORDER BY media_id", (creator["id"],)).fetchall()
@@ -297,7 +237,6 @@ async def _flow(ctx, page, chk, files: dict, creator: dict) -> None:
                  "c.mp4": {"tags": [], "notes": "clip c notes", "price_cents": None}}
     chk(DB_ROWS, new == want_rows, rows=new, want=want_rows)
 
-    # 5. the card after the run
     left = [await r.get_attribute("aria-label") for r in await page.locator(ROW_BOXES).all()]
     b_box = page.get_by_label("Select b.png", exact=True)
     b_checked = await b_box.is_checked() if await b_box.count() else None

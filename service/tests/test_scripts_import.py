@@ -1,18 +1,5 @@
 #!/usr/bin/env python3
-"""Growth > Scripts' Excel import and copy between Creators (service/scripts_import_api.py).
-
-Import reads every sheet of an .xlsx in Infloww's format: the sheet name is the tag, row 1 names the `name`, `text`
-and `note` columns, a blank row is skipped, a sheet over 1000 rows refuses the file, and a bad or duplicate row is a
-failed row in the result, never an error. Copy moves scripts between Creators with their name, text, tags, notes and
-sequence, drops media (ADR-0008), and skips a name the target already has. Both sit under /admin/saved-replies/, so
-Role enforcement refuses a chatter whose role lacks Scripts, and each account goes through
-`assert_account_owned`.
-
-The seam is the Relay over HTTP with real session cookies from the shared two-Agency fixture.
-
-Run: ./venv/bin/python service/tests/test_scripts_import.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -42,7 +29,6 @@ _REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
 
 def _book(sheets: dict[str, list[list[str]]]) -> bytes:
-    """A workbook with one sheet per entry, cells as inline strings (B2-style refs, so gaps stay gaps)."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         entries = "".join(f'<sheet name="{escape(n)}" sheetId="{i}" r:id="rId{i}"/>'
@@ -80,13 +66,11 @@ def _wipe(acc: str = A) -> None:
     asyncio.run(go())
 
 
-# ── Excel import ─────────────────────────────────────────────────────
 
 def case_each_sheet_is_a_tag_and_columns_are_read_by_header():
     _wipe()
     data = _book({
         "Openers": [["name", "text", "note"], ["hi", "hey you", "first msg"], ["", "", ""], ["ask", "how was your day?"]],
-        # Header in another order and case; "Notes" is read as the note column.
         "VIP": [["Text", "Notes", "Name"], ["missed you", "whales only", "vip hello"]],
     })
     r = _import(OWNER_A, data)
@@ -151,7 +135,6 @@ def case_a_sheet_over_1000_rows_or_a_non_xlsx_or_empty_file_is_refused():
     r = _import(OWNER_A, _book({"Empty": [["name", "text", "note"]]}))
     assert r.status_code == 422 and "no scripts" in r.json()["detail"], r.text
     assert _list(OWNER_A) == []
-    # 1000 rows under the header is the limit, not over it.
     r = _import(OWNER_A, _book({"Full": big[:1001]}))
     assert r.status_code == 200 and r.json()["success_count"] == 1000, r.text[:200]
     _wipe()
@@ -194,7 +177,6 @@ def case_role_enforcement_maps_both_routes_to_scripts():
     assert r.status_code == 200, r.text
 
 
-# ── Copy (Share / Import from other creators) ────────────────────────
 
 def case_copy_keeps_text_tags_notes_and_sequence_drops_media_and_skips_taken_names():
     _wipe(A)
@@ -205,7 +187,6 @@ def case_copy_keeps_text_tags_notes_and_sequence_drops_media_and_skips_taken_nam
             media=[{"id": 77, "type": "photo"}], previews=[77])
     mk(A, title="Kept", text="only on A")
     mk(B, title="KEPT", text="B already has this name")
-    # A text-only priced script (an Infloww import's) keeps its price; a Condition option keeps its condition.
     mk(A, title="if bought", text="thanks", price=7.5, conditional="if he bought", script_id="Night", script_step=2)
     r = MASTER.post("/admin/saved-replies/copy", json={"from_account_ids": [A], "to_account_ids": [B]})
     assert r.status_code == 200 and r.json() == {
@@ -219,7 +200,6 @@ def case_copy_keeps_text_tags_notes_and_sequence_drops_media_and_skips_taken_nam
     assert (p["media"], p["previews"], p["price"], p["locked_text"], p["tagged_users"]) == ([], [], 0, False, []), p
     c = got["if bought"]
     assert (c["price"], c["conditional"], c["script_id"], c["script_step"]) == (7.5, "if he bought", "Night", 2), c
-    # Copying again skips everything; the sources are untouched.
     r = MASTER.post("/admin/saved-replies/copy", json={"from_account_ids": [A], "to_account_ids": [B]})
     assert r.json() == {"copied": 0, "skipped": 4, "media_dropped": 0}, r.text
     a = {x["id"]: x for x in _list(MASTER, A)}
@@ -231,7 +211,6 @@ def case_copy_with_ids_shares_only_those_scripts():
     _wipe(B)
     one = MASTER.post(f"/admin/saved-replies?account_id={A}", json={"title": "one", "text": "1"}).json()
     MASTER.post(f"/admin/saved-replies?account_id={A}", json={"title": "two", "text": "2"})
-    # Past SQLite's bound-variable cap of old builds (999): read in chunks; past the cap, 422.
     r = MASTER.post("/admin/saved-replies/copy",
                     json={"from_account_ids": [A], "to_account_ids": [B],
                           "ids": [one["id"], *range(10**9, 10**9 + 1500)]})
@@ -251,17 +230,15 @@ def case_copy_refuses_an_account_the_caller_does_not_hold_and_bad_bodies():
     assert r.status_code == 422, r.text
     r = OWNER_A.post("/admin/saved-replies/copy", json={"from_account_ids": [A] * 6, "to_account_ids": [A]})
     assert r.status_code == 422, r.text
-    assert [x["title"] for x in _list(MASTER, B)] == ["one"]  # the previous case's copy, nothing new
+    assert [x["title"] for x in _list(MASTER, B)] == ["one"]
     r = OWNER_A.post("/admin/saved-replies/copy", json={"from_account_ids": [A], "to_account_ids": [""]})
     assert r.status_code == 422, r.text
-    # Share to all creators names no targets of its own: both at once is refused, never one silently winning.
     r = OWNER_A.post("/admin/saved-replies/copy",
                      json={"from_account_ids": [A], "to_account_ids": [A], "all_creators": True})
     assert r.status_code == 422, r.text
 
 
 def _creator_c() -> str:
-    """A third Creator the Master holds, so two sources can feed one target."""
     c = "1000003"
     (fx.account_registry.ACCOUNTS_DIR / c).mkdir(exist_ok=True)
 
@@ -284,10 +261,6 @@ def _rows(acc: str) -> list[tuple]:
 
 
 def case_a_sequence_is_copied_whole_or_skipped_whole():
-    """A sequence arrives whole, "N.M" options included; one whose name the target already uses is skipped whole
-    (the target's partial one stays as it has it). Two sources sharing a sequence name: the first picked brings it,
-    the other's is skipped, so a later share of the other adds nothing. Same-named scripts in two sequences both
-    land; a loose script still skips a name the target has."""
     c = _creator_c()
     for acc in (A, B, c):
         _wipe(acc)
@@ -296,27 +269,24 @@ def case_a_sequence_is_copied_whole_or_skipped_whole():
         json={"title": title, "text": text or title, "script_id": seq, "script_step": step})
     assert mk(A, "a1", 1).status_code == 200
     mk(A, "a2.1", 2)
-    mk(A, "a2.2", 2)                          # step 2's second option
-    mk(A, "hi", 1, seq="Day")                 # the same name in another sequence
+    mk(A, "a2.2", 2)
+    mk(A, "hi", 1, seq="Day")
     mk(A, "hi", 1, seq="Eve", text="hi eve")
     mk(B, "b1", 1)
     mk(B, "b3", 3)
-    mk(c, "c2 renamed", 2)                    # c's own, partial Night: stays as c has it
+    mk(c, "c2 renamed", 2)
     assert _copy([A, B], [c]) == {"copied": 2, "skipped": 5, "media_dropped": 0}
     assert _rows(c) == [("Day", 1, "hi"), ("Eve", 1, "hi"), ("Night", 2, "c2 renamed")], _rows(c)
     _wipe(c)
     assert _copy([A, B], [c]) == {"copied": 5, "skipped": 2, "media_dropped": 0}
     whole_a = [("Day", 1, "hi"), ("Eve", 1, "hi"), ("Night", 1, "a1"), ("Night", 2, "a2.1"), ("Night", 2, "a2.2")]
     assert _rows(c) == whole_a, _rows(c)
-    # [A, B] then B: B's Night is skipped whole, never landing loose or beside A's.
     assert _copy([B], [c]) == {"copied": 0, "skipped": 2, "media_dropped": 0}
     assert _copy([A, B], [c]) == {"copied": 0, "skipped": 7, "media_dropped": 0}
     assert _rows(c) == whole_a, _rows(c)
-    # The pick order decides: B first brings B's Night.
     _wipe(c)
     assert _copy([B, A], [c]) == {"copied": 4, "skipped": 3, "media_dropped": 0}
     assert _rows(c) == [("Day", 1, "hi"), ("Eve", 1, "hi"), ("Night", 1, "b1"), ("Night", 3, "b3")], _rows(c)
-    # A loose script skips a name the target has, a step's included.
     _wipe(B)
     MASTER.post(f"/admin/saved-replies?account_id={B}", json={"title": "B1", "text": "loose"})
     assert _copy([B], [c]) == {"copied": 0, "skipped": 1, "media_dropped": 0}
@@ -325,26 +295,21 @@ def case_a_sequence_is_copied_whole_or_skipped_whole():
 
 
 def case_a_tag_share_brings_each_of_its_sequences_whole():
-    """A tag share selects a sequence's tagged steps only; the copy brings that whole sequence (every step and
-    option, in step order), so a later share of the sequence adds nothing, and the target's own edits and deletions
-    afterwards survive every re-share."""
     for acc in (A, B):
         _wipe(acc)
     mk = lambda title, step=None, seq="Night", tags=(): MASTER.post(  # noqa: E731
         f"/admin/saved-replies?account_id={A}",
         json={"title": title, "text": title, "script_id": seq if step else None, "script_step": step,
               "tags": list(tags)}).json()
-    mk("n3", 3)                               # made first: the copy still inserts in step order
+    mk("n3", 3)
     mk("n2.1", 2)
     n1 = mk("n1", 1, tags=["VIP"])
     mk("n2.2", 2)
     promo = mk("promo", tags=["VIP"])
-    # The VIP tag's share: its scripts' ids (as the page's `entryIds`).
     assert _copy([A], [B], ids=[n1["id"], promo["id"]]) == {"copied": 5, "skipped": 0, "media_dropped": 0}
     night = sorted((x["id"], x["title"]) for x in _list(MASTER, B) if x["script_id"] == "Night")
     assert [t for _, t in night] == ["n1", "n2.1", "n2.2", "n3"], night
     assert _copy([A], [B]) == {"copied": 0, "skipped": 5, "media_dropped": 0}
-    # B renames its step 1 and deletes step 3: its own edits win over the source's.
     by_title = {x["title"]: x["id"] for x in _list(MASTER, B)}
 
     async def edit() -> None:
@@ -360,8 +325,6 @@ def case_a_tag_share_brings_each_of_its_sequences_whole():
 
 
 def case_identical_copies_at_once_land_each_script_once():
-    """Two identical shares at once (a double click, two tabs): one copy into a Creator at a time, so the later sees
-    the earlier's rows: no duplicate script, no 500 on the sequence header's unique (account_id, name)."""
     import httpx
     import server
     for acc in (A, B):
@@ -390,11 +353,8 @@ def case_identical_copies_at_once_land_each_script_once():
         _wipe(acc)
 
 
-# ── Share to all creators + sequence meta + all-models overview ──────
 
 def _mk_creator(aid: str, owner_user: str) -> None:
-    """A fresh owned Creator (registry meta + Account row + user_accounts link) so the
-    principal's roster (`owned_account_ids`) picks it up."""
     fx.account_registry.upsert_account(aid, nickname=f"creator_{aid}", color="#aaaaaa")
 
     async def go() -> None:
@@ -415,9 +375,6 @@ def _seq_metas(client, acc: str) -> dict[str, dict]:
 
 
 def case_share_to_all_resolves_the_owned_roster_and_carries_sequence_meta():
-    """`all_creators` resolves the targets to the principal's full owned roster server-side
-    (no `to_account_ids` needed), copies price/media-free, carries the sequence header, and a
-    re-share adds 0 rows (the no-dup proof). Sequence meta is idempotent on (account_id, name)."""
     src, d1, d2 = "1000010", "1000011", "1000012"
     for aid in (src, d1, d2):
         _mk_creator(aid, "agency_a_owner")
@@ -440,9 +397,7 @@ def case_share_to_all_resolves_the_owned_roster_and_carries_sequence_meta():
     assert r.status_code == 200, r.text
     body = r.json()
     assert set(body) == {"copied", "skipped", "media_dropped"}, body
-    # The source is no target: none of its own rows counts as skipped.
     assert body["skipped"] == 0, body
-    # Every other creator got both scripts, media/price dropped, the sequence header carried.
     for dst in (d1, d2):
         got = {x["title"]: x for x in _list(OWNER_A, dst)}
         assert set(got) == {"n1", "n2"}, (dst, got)
@@ -450,7 +405,6 @@ def case_share_to_all_resolves_the_owned_roster_and_carries_sequence_meta():
         assert (got["n2"]["media"], got["n2"]["price"]) == ([], 0), got["n2"]
         meta = _seq_metas(OWNER_A, dst).get("NightD")
         assert meta and (meta["position"], meta["created_by"], meta["description"]) == (3, "07", "warm-up"), meta
-    # Re-share: 0 rows added (true no-op), and no duplicate meta row.
     r2 = OWNER_A.post("/admin/saved-replies/copy",
                       json={"from_account_ids": [src], "all_creators": True})
     assert r2.status_code == 200 and r2.json()["copied"] == 0, r2.text
@@ -460,8 +414,6 @@ def case_share_to_all_resolves_the_owned_roster_and_carries_sequence_meta():
 
 
 def case_overview_lists_each_sequence_and_tag_per_account():
-    """GET /admin/saved-replies/overview: a lean matrix of sequence step counts and tag
-    script counts per owned Creator (no bodies). Only the principal's creators appear."""
     src, d1, d2 = "1000010", "1000011", "1000012"
     for aid in (src, d1, d2):
         _mk_creator(aid, "agency_a_owner")
@@ -471,11 +423,9 @@ def case_overview_lists_each_sequence_and_tag_per_account():
             for aid in (src, d1, d2):
                 await s.execute(delete(SavedReply).where(SavedReply.account_id == aid))
                 await s.execute(delete(SavedReplySequence).where(SavedReplySequence.account_id == aid))
-            # d1: SeqX (2 steps), one tagged VIP; a loose VIP script.
             s.add(SavedReply(account_id=d1, title="x1", text="a", script_id="SeqX", script_step=1,
                              tags_json='["VIP"]'))
             s.add(SavedReply(account_id=d1, title="x2", text="b", script_id="SeqX", script_step=2))
-            # d2: SeqX (1 step); two loose VIP scripts.
             s.add(SavedReply(account_id=d2, title="y1", text="c", script_id="SeqX", script_step=1))
             s.add(SavedReply(account_id=d2, title="v1", text="d", tags_json='["VIP"]'))
             s.add(SavedReply(account_id=d2, title="v2", text="e", tags_json='["VIP"]'))
@@ -492,10 +442,8 @@ def case_overview_lists_each_sequence_and_tag_per_account():
     assert vip["per_account"] == {d1: 1, d2: 2}, vip
 
 
-# ── The xlsx reader ──────────────────────────────────────────────────
 
 def _raw_sheet(cells: str) -> bytes:
-    """A one-sheet workbook whose single row holds `cells` verbatim (refs written by hand)."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("xl/workbook.xml",
@@ -520,13 +468,11 @@ def case_a_far_cell_ref_costs_one_entry_and_past_xfd_is_ignored():
     assert [n for n, _ in read_xlsx(data, first_only=True)] == ["T"]
     from sensitive_words_api import read_xlsx_first_column
     assert read_xlsx_first_column(data) == ["name"]
-    # Through the import: the far cells cost nothing and the header row still reads.
     r = _import(OWNER_A, data)
     assert r.status_code == 422 and "no scripts" in r.json()["detail"], r.text
 
 
 def case_a_zip_bomb_is_refused_by_total_size_and_sheet_count():
-    """R8: one small sheet part listed as many sheets is read once per listing."""
     import xlsx_io
 
     def listed(times: int) -> bytes:

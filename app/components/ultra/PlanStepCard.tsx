@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * One step of an Ultra plan as the server's card draws it (service/ultra_decide.py `card`): its title, what kind of
- * step it is, its rows (a send: Creator, audience, price, media count, when; a judge: question, candidates, picks;
- * a write or read: every arg) and a send's FULL text exactly as it will go out. Once it ran: its state, the error,
- * the note (fewer fans than approved), the id it made (a send's OnlyFans id; a report file: ReportDownload) or
- * a judge's picks, and a link to where it landed. `data-step-num` / `data-state` let a container (the Ultra panel) style the number and a running
- * step's progress line.
- */
 import Link from "next/link";
 
 import { cn } from "@/lib/utils";
@@ -17,7 +9,6 @@ import { STEP_LABEL, type PlanCard, type StepStatus } from "./ultraRunReducer";
 const EFFECT_LABEL: Record<PlanCard["effect"], string> = {
   send: "Sends to fans", write: "Changes", read: "Reads", judge: "AI picks",
 };
-/** Send tools that do not message fans now (service/toolbox_sends.py: post_create, RULE_KIND). */
 const TOOL_LABEL: Record<string, string> = {
   post_create: "Posts to the feed", auto_mass: "Turns on a recurring rule", auto_story: "Turns on a recurring rule",
 };
@@ -33,7 +24,6 @@ export function PlanStepCard({ card, step, index }: {
 }) {
   const state = step?.state ?? "pending";
   const ids = step?.result?.ids;
-  // report_file's id is the held file's (service/report_recipe_api.py GET /admin/reports/files/{id}, 15 min).
   const fileId = card.tool === "report_file" && state === "done" ? step?.result?.id : undefined;
   return (
     <li data-step={card.id} data-state={state}

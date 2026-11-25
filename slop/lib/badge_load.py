@@ -1,5 +1,3 @@
-"""Creator badges load scenarios' shared world and actors (2a badge-load-elsewhere, 2b badge-load-amber): the chat
-plan, the elsewhere Driver on lib/badge_wire.py, DotTab, and the pumps / tabs bring-up."""
 from __future__ import annotations
 
 import asyncio
@@ -32,8 +30,6 @@ def phase_b(slot) -> bool:
 
 
 class DotTab(BadgeTab):
-    """A BadgeTab that also keeps what moves a fan's dot: `dots[aid]` = (arrival t, fan, unread) per
-    `chat_read_changed` and per fan DM its stream carried."""
 
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
@@ -55,7 +51,6 @@ class DotTab(BadgeTab):
 
 
 class Driver:
-    """Elsewhere actions and fan DMs on the fake, each truth change logged: `truth` = (t, aid, fan, unread, cause)."""
 
     def __init__(self, wire: BadgeWire, plain: dict[str, list[int]]) -> None:
         self.wire, self.plain = wire, plain

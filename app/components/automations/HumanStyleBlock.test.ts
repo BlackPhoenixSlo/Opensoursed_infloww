@@ -5,7 +5,6 @@ import { usePageSave } from "./HumanStyleBlock";
 
 type Edit = { type: "field"; v: number };
 
-/** usePageSave over stub halves; `log` records the calls in order. */
 function setup({
   pageFailed = false, styleFailed = false, pending = false, success = false, clean = true, pageUnsaved = false,
 } = {}) {

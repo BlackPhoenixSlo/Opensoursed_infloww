@@ -1,23 +1,5 @@
 "use client";
 
-/**
- * Manage employees' modals and row menu, after Infloww's (bundle `index.9f50f370.js`: `EmployeeListPage`,
- * `AddModelComponent$3` with `modelType` 1 add / 2 edit, `MoreOperations`, the Reset password `AddModelComponent`):
- *
- *   • EmployeeFormModal — "+ Add employee" and "Edit": Name, Role, Group, Creators. Adding also picks how they
- *     sign in. Infloww mails an invite to an email address; here the owner either makes the login outright
- *     (username + password, POST /admin/employees/login), mints a one-shot invite link carrying the same setup
- *     (POST /admin/chatters/invite, applied when it is accepted), or adds an existing login by username
- *     (POST /admin/chatters/link). Edit saves PUT /admin/employees/{id}/setup.
- *   • RoleModal — the Role cell / "Set role": one role, with the link to Role Settings where the presets live.
- *   • ResetPasswordModal — Infloww mails reset instructions; the owner sets the new password here instead
- *     (POST /admin/employees/{id}/password).
- *   • AccessLimitsModal — the login's Creator and vault-folder limits (AccessEditor).
- *   • RowMenu — the row's "More", the header's "Batch actions" and the group tree's ⋮ dropdowns, rendered in a portal
- *     so the table or the tree column never clips or scrolls them.
- *   • Modal — every dialog here, on Infloww's antd modal (`IfModal`).
- *   • InviteLinkModal — a pending invite's fresh link after Resend (POST /admin/chatters/invites/{token}/resend).
- */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
@@ -37,7 +19,6 @@ import type { EmployeeGroup } from "@/lib/employeeGroups";
 import type { PermissionRole } from "@/components/settings/PermissionEditor";
 import { cn } from "@/lib/utils";
 
-/** Where the Admin / Manager / Chatter / VA presets are edited. */
 export const ROLE_SETTINGS_HREF = "/settings/roles";
 export function ManageRolesLink({ className }: { className?: string }) {
   return (
@@ -48,8 +29,6 @@ export function ManageRolesLink({ className }: { className?: string }) {
 }
 
 
-/** Infloww's antd modal (`IfModal`, 440 wide, `wide` 640) while `open`; `onOpenChange(false)` closes it.
- *  `footerSlot`: the form inside puts its buttons in the modal's footer (`EditorFooter`). */
 export function Modal({ open, onOpenChange, title, children, wide = false, footerSlot = false }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -67,9 +46,7 @@ export function Modal({ open, onOpenChange, title, children, wide = false, foote
 }
 
 function Footer({ form, error, saving, canSave, label, onCancel }: {
-  /** The form's id: the footer sits outside it. */
   form: string;
-  /** The save mutation's error (null/undefined: none). */
   error: unknown;
   saving: boolean;
   canSave: boolean;
@@ -85,10 +62,8 @@ function Footer({ form, error, saving, canSave, label, onCancel }: {
   );
 }
 
-/** Role options for an Employee: every role but Owner. */
 export const assignableRoles = (roles: PermissionRole[]) => roles.filter((r) => r.id !== "owner");
 
-/** Every Employee holds a role (the Relay gives none the built-in Chatter): `id` when it is assignable, else Chatter. */
 const roleOrChatter = (roles: PermissionRole[], id: string | undefined) =>
   id && assignableRoles(roles).some((r) => r.id === id) ? id : "chatter";
 
@@ -111,7 +86,6 @@ function RoleSelect({ id, roles, value, onChange }: {
   );
 }
 
-/** Creators: every Creator (null) or the ticked ones. */
 function CreatorPicker({ creators, value, onChange }: {
   creators: AccountMeta[];
   value: string[] | null;
@@ -152,7 +126,6 @@ const SIGN_IN: Array<{ key: SignIn; label: string }> = [
 
 export interface InviteResp { token: string; expires_at: string; accept_path: string; }
 
-/** An invite's link to copy and send: from "+ Add employee" by invite link, or a pending row's Resend. */
 function InviteLink({ invite, onDone }: { invite: InviteResp; onDone: () => void }) {
   const linkId = useId();
   const [copied, setCopied] = useState(false);
@@ -167,7 +140,7 @@ function InviteLink({ invite, onDone }: { invite: InviteResp; onDone: () => void
       <div className="flex items-center gap-2">
         <IfInput id={linkId} readOnly value={url} onFocus={(e) => e.currentTarget.select()} className="min-w-0 flex-1" />
         <IfButton onClick={async () => {
-          try { await navigator.clipboard.writeText(url); setCopied(true); } catch { /* select by hand */ }
+          try { await navigator.clipboard.writeText(url); setCopied(true); } catch { }
         }}>{copied ? "Copied" : "Copy"}</IfButton>
       </div>
       <EditorFooter><IfButton variant="primary" onClick={onDone}>Done</IfButton></EditorFooter>
@@ -175,7 +148,6 @@ function InviteLink({ invite, onDone }: { invite: InviteResp; onDone: () => void
   );
 }
 
-/** A pending invite's fresh link after Resend (the old link stops working). */
 export function InviteLinkModal({ invite, onClose }: { invite: InviteResp; onClose: () => void }) {
   return (
     <Modal open onOpenChange={onClose} title="Invite link" footerSlot>
@@ -184,10 +156,8 @@ export function InviteLinkModal({ invite, onClose }: { invite: InviteResp; onClo
   );
 }
 
-/** "+ Add employee" (no `employee`) or "Edit" (that row). */
 export function EmployeeFormModal({ employee, roleId, roles, creators, groups, onClose }: {
   employee?: Employee;
-  /** The row's current role id ("" for none); only Edit passes it. */
   roleId?: string;
   roles: PermissionRole[];
   creators: AccountMeta[];
@@ -291,7 +261,6 @@ function EmployeeForm({ employee, initialRole, roles, creators, groups, onDone }
   );
 }
 
-/** The Role cell / "Set role". */
 export function RoleModal({ employee, roleId, roles, onClose }: {
   employee: Employee;
   roleId: string;
@@ -332,7 +301,6 @@ function RoleForm({ employee, initial, roles, onDone }: {
   );
 }
 
-/** Reset password: the owner sets the Employee's new password. */
 export function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
   return (
     <Modal open onOpenChange={onClose} title="Reset password" footerSlot>
@@ -382,7 +350,6 @@ function PasswordForm({ employee, onDone }: { employee: Employee; onDone: () => 
   );
 }
 
-/** The login's Creator and vault-folder limits. */
 export function AccessLimitsModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
   return (
     <Modal open onOpenChange={onClose} title="Access limits" wide>
@@ -397,28 +364,21 @@ export interface RowMenuItem {
   disabled?: boolean;
   title?: string;
   danger?: boolean;
-  /** The item's text colour while enabled (the group tree's #2d74ff "Add sub-group", #e05757 "Delete group"). */
   className?: string;
 }
 
 const TRIGGER = {
-  /** A row's "More": #999 text, M1 on hover (Infloww's `MoreOperations`). */
   link: "text-[14px] text-muted hover:text-accent",
-  /** The header's "Batch actions": 160x32, radius 4, a 1px #1677ff outline and #1677ff 500 text, a 15px chevron. */
   outline: "inline-flex h-8 w-40 items-center justify-center gap-2 rounded border border-[#1677ff] text-[14px] font-medium text-[#1677ff] hover:bg-[#1677ff]/10",
-  /** The group tree's ⋮ at a row's right. */
   kebab: "grid h-6 w-6 shrink-0 place-items-center rounded text-fg-dim hover:text-fg",
 } as const;
 
-/** "More": a dropdown in a portal, placed under its trigger (flipped above near the bottom of the window). */
 export function RowMenu({ label = "More", ariaLabel, items, variant = "link", disabled = false, guard }: {
   label?: string;
-  /** Names a trigger whose text is not its name (the ⋮). */
   ariaLabel?: string;
   items: RowMenuItem[];
   variant?: keyof typeof TRIGGER;
   disabled?: boolean;
-  /** Asked on a click before opening; false keeps it shut (Batch actions with nobody selected). */
   guard?: () => boolean;
 }) {
   const [open, setOpen] = useState(false);

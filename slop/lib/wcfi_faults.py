@@ -1,14 +1,3 @@
-"""The welcome chatter's break-it-once faults (lib/faults.py merges `register(Fault)` into
-FAULTS). Each patches a module wcfi (`automations.welcome_chatter_for_info`) calls through,
-inside the throwaway relay, never service/:
-
-  wcfi-skiplist-ignored   scenarios/2026-10-30-welcome-chatter-walk (its FAULT)
-  wcfi-turn-sent-twice    the same scenario, --break --fault=wcfi-turn-sent-twice
-  reply-shape-echo-kept   the same scenario, --break --fault=reply-shape-echo-kept
-
-The flow's check names live here and its scenario imports them, so a target can never name
-a check that does not exist.
-"""
 from __future__ import annotations
 
 TURNS = ("one-turn-per-reply: every DM of an open fan (we spoke last, or his own line was "
@@ -26,11 +15,6 @@ ECHO = ("no echoed bubble reached OF: a reply that repeats the fan's DM is dropp
 
 
 def _wcfi_skiplist_ignored() -> None:
-    """wcfi's verdict forgets the stop-lists: a `Skip("listed")` (blacklist / skip_list) is
-    re-decided as if he were on neither. Exercised by the scenario's BLACKLISTED fans only:
-    W7 wakes the lane for them and they get a reply; its skip-listed fans never reach
-    run() (W7 wakes no lane for them). Everything around the verdict (reads, sends,
-    counters) is the product's."""
     from dataclasses import replace
 
     from automations import wcfi_decide as wd
@@ -43,16 +27,10 @@ def _wcfi_skiplist_ignored() -> None:
             return real(replace(snap, listed=False))
         return v
 
-    wd.decide = decide  # wcfi.run looks it up per fan (`wcfi_decide.decide`)
+    wd.decide = decide
 
 
 def _wcfi_turn_sent_twice() -> None:
-    """The turn's bubble loop runs twice: after wcfi persists a text bubble
-    (`write_outbound_attribution`, looked up per call in wcfi's module), the same bubble
-    goes to OF again through the run's client seam (`automation_executor._make_client`)
-    and is persisted under OF's new id. Rows and OF agree (nothing dropped), the turn is
-    counted once, so only the double-send check can see it. Declared: the hook wraps wcfi's
-    persist call, as no wcfi-only send function exists (the bubble send is inline)."""
     import asyncio
     from datetime import datetime
 
@@ -74,10 +52,6 @@ def _wcfi_turn_sent_twice() -> None:
 
 
 def _reply_shape_echo_kept() -> None:
-    """The shaping's echo drop never fires: the predicate `_reply_shape.shape_parts` reads
-    as its module attribute per call answers False, so a bubble that parrots the fan's
-    DM goes to OF with the rest of the reply. Exercised by the scenario's echo fans
-    only (the fake DeepSeek echoes nobody else); the turn and its counts are unchanged."""
     from automations import _reply_shape
 
     _reply_shape._looks_like_echo = lambda _part, _echo_of: False

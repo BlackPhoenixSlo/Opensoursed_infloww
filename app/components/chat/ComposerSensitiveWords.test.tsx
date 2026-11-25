@@ -1,8 +1,3 @@
-/**
- * Growth > Sensitive words in the Messages Pro Composer. As in Infloww's chat,
- * a draft holding a listed word shows "Input contains prohibited language:
- * [word]" above the text, and Send stays enabled (a warning, not a block).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

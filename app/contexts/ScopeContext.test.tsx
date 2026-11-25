@@ -1,9 +1,3 @@
-/**
- * The page SSE override: the bus follows the override while it is mounted,
- * `eventScope` reports what the bus follows, and unmount hands the bus back
- * to the inbox scope — which the override never touches (not on a hard load,
- * not when the scope is changed while it is mounted).
- */
 import { useEffect, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
@@ -83,7 +77,6 @@ describe("WatcherScope", () => {
   const W = "w1";
   const pick = (id: string, over: string) => JSON.stringify({ id, over });
   function Probe({ out }: { out: { inner?: ReturnType<typeof useScope> } }) { out.inner = useScope(); return null; }
-  /** A Pop-out's `?account=`: a child's mount effect picks `id` for this window only. */
   function PopOut({ id }: { id: string }) {
     const { setScope } = useScope();
     useEffect(() => { setScope({ kind: "model", accountId: id }, { persist: false }); }, [setScope, id]);
@@ -141,7 +134,6 @@ describe("WatcherScope", () => {
     await act(async () => {});
     expect(inner().accountId).toBe("c3");
     expect(outer().accountId).toBe("c3");
-    // Not saved: the opener keeps its scope and its watcher pick.
     expect(window.localStorage.getItem("chatterly:scope")).toBe("model:c1");
     expect(window.localStorage.getItem(WATCHER_PICK_KEY)).toBe(pick(W, "model:c1"));
   });
@@ -164,7 +156,6 @@ describe("WatcherScope", () => {
     expect(inner().accountId).toBe("c2");
     await act(async () => {});
     expect(window.localStorage.getItem(WATCHER_PICK_KEY)).toBeNull();
-    // A change back to the old Creator does not bring it back.
     act(() => outer().setScope({ kind: "model", accountId: "c1" }));
     expect(inner().accountId).toBe("c1");
   });
@@ -207,7 +198,6 @@ describe("WatcherScope", () => {
     await act(async () => {});
     expect(inner().accountId).toBe("c1");
     expect(window.localStorage.getItem(WATCHER_PICK_KEY)).toBeNull();
-    // Picking it anyway never reaches the outer scope.
     act(() => inner().setScope({ kind: "model", accountId: W }, { persist: false }));
     expect(outer().accountId).toBe("c1");
   });

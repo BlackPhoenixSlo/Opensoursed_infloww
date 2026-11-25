@@ -1,51 +1,3 @@
-"""The fan-info sweep (`automations.gen_info`, Automation 02) at volume after its persist plan became pure
-(service/automations/gen_info_plan.py `plan_persist`): every Creator's gen_info rule is run at once with the owner's
-"Run now", the real supervisor runs them, and every fan it profiles is checked against what his seed says, while
-`--users` owner tabs keep opening fans' drawers.
-
-World: `agency_inbox` (an Agency, its Creators, fans, a short thread for some: never past gen_info's 8-message
-gate) plus seed/fan_info_history.py, `--set fans=` per Creator (12 small, 60 medium, 150 huge): fans with 10-16
-inbound lines, a quarter with an operator-pinned language (`language_source='manual'`) the fake detects as another,
-a quarter with a month-old profile whose extract comes back empty, the rest never profiled. The Agency's DeepSeek
-key is a dummy set through the real Setup > Keys route (`PUT /admin/my-llm-keys`); one gen_info rule per Creator
-(every 24 h, `limit` LIMIT, gen_info's default) by SQL, as the rules API writes it, with its last job an hour ago.
-
-Flow: `--users` owner tabs open drawers (`GET /admin/fans/{creator}/{fan}`, the seeded fans, think time
-THINK_S) from before the press until every run is done; the owner presses Run now on every rule at once
-(`POST /admin/automation-rules/{id}/run-now`, which wakes the supervisor); the scenario waits for each Creator's
-`automation_runs` row to complete; then every seeded fan's drawer is read once more.
-
-Checks (names in lib/fan_info_faults.py):
-  PIN     every manual fan keeps his language and source (DB and drawer), though the fake answered him another
-          language past the 40-char evidence floor (the seeder asserts both) and his profile was regenerated.
-  KEEP    every keep fan's fan_profiles nickname / short_bio / bullet_points / original_name are the seeded ones
-          after a regeneration (last_generated_at moved) whose extract returned them empty.
-  OWN     every seeded fan's occupation / hobbies carry his own marker, a non-keep fan's short_bio /
-          bullet_points too, a non-manual fan has his own detected language (source 'ai'); DB and drawer agree;
-          OF's drawer push took one Fan note per fan, naming his marker and no other fan's.
-  COUNTS  one ok run per Creator after Run now; its stats: candidates == the SQL oracle (fans with an inbound
-          message, capped at LIMIT), attempted == generated == the seeded fans, skipped_fresh the rest, failed /
-          capped / deferred_for_scrape 0; the fake saw each seeded fan's prompt exactly once and no other gen_info
-          prompt; fan_profiles rows and fans rows written this run == generated == done gen_info grok_calls.
-Budgets: Run now -> run done p95 per Creator (RUN_P95_MS), the drawer read p95 (DRAWER_P95_MS) and both vs the last
-green run; plus the stock no 5xx / no unexpected Traceback.
-
-Bypasses (declared):
-  - DeepSeek is lib/fan_info_relay.py's answer on lib/automation_relay.py's loopback fake (`llm_client.chat`
-    with its key lookup, cap reservation, grok_calls rows and parse is the product's); per fan from
-    `fan-info-extracts.json`, told apart by the display name on the prompt's first line (the seeder makes it
-    unique); 0.4 s per answer (DEEPSEEK_LATENCY_S, a guess). SLOP_LIVE=1 is refused (every check SKIPs).
-  - OnlyFans is automation_relay's offline walker; gen_info's nickname / Fan notes push (PUT /subscriptions/{fan})
-    is kept and answered there by lib/fan_info_relay.py (OF's answer body a guess; the product ignores it).
-  - The rules and their last job (an hour ago, so the 24 h cadence is not due and only Run now fires) are SQL,
-    the rows the rules API and the materializer write; fans, messages, chats and old profiles are SQL
-    (seed/fan_info_history.py docstring).
-  - The owner tabs are one owner session's connection pool, not browsers.
-
-Break-it-once: gen-info-manual-language-overwritten (the scenario's FAULT: gen_info_plan.MANUAL_LANGUAGE_SOURCES
-emptied, the SQL pin never holds) turns only PIN red; `--fault=gen-info-facts-cross-fan` (plan_persist reuses the
-previous fan's facts) only OWN.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -66,18 +18,16 @@ from slop.seed import fan_info_history, ts
 PROFILE = "agency_inbox"
 UI = False
 FAULT = "gen-info-manual-language-overwritten"
-RELAY_ENV = {"SLOP_SUPERVISOR": "1"}   # the real supervisor: Run now's wake drains the jobs
-LIMIT = 200                 # the rule's sweep ceiling (gen_info's _DEFAULT_FAN_LIMIT)
+RELAY_ENV = {"SLOP_SUPERVISOR": "1"}  # the real supervisor: Run now's wake drains the jobs
+LIMIT = 200
 EVERY_S = 86_400
 RUN_TIMEOUT_S = 900
-THINK_S = (2.0, 6.0)        # an owner reading one drawer before the next (a guess)
-# measured at medium / 200 users (slop/evidence/20261102T165855Z-2026-11-02-fan-info-sweep-30df): Run now -> done
-# p95 19,966 ms (runs go 4 at a time: 6.8 / 13.4 / 19.9 s waves), drawer p95 15 ms; small: 1.6 s / 27 ms
+THINK_S = (2.0, 6.0)
 RUN_P95_MS = 40_000
 DRAWER_P95_MS = 500
 P95_VS_LAST = (2.0, 2000)
 FAKE_KEY = "slop-fake-deepseek"
-MARKER = re.compile(r"\bzq[a-z]+\b")   # seed/fan_info_history.tag
+MARKER = re.compile(r"\bzq[a-z]+\b")
 
 
 def _dt(v) -> datetime | None:
@@ -85,7 +35,6 @@ def _dt(v) -> datetime | None:
 
 
 def _runs(con, run0: int) -> dict[str, list[dict]]:
-    """Every gen_info run after `run0`, per Creator, oldest first."""
     out: dict[str, list[dict]] = defaultdict(list)
     for rid, a, st, done, status, stats, err in con.execute(
             "SELECT id, account_id, started_at, completed_at, status, stats_json, error_text FROM automation_runs "
@@ -96,7 +45,6 @@ def _runs(con, run0: int) -> dict[str, list[dict]]:
 
 
 def _seed_rules(w, aids: list[str]) -> dict[str, int]:
-    """One gen_info rule per Creator as the rules API writes it, with its last job an hour ago (done)."""
     con = w.sql()
     now = w.now
     rules = {}
@@ -140,7 +88,6 @@ async def run(ctx) -> None:
     con.close()
     t_start = datetime.utcnow()
 
-    # ── owner tabs opening drawers ────────────────────────────────────────
     rng = w.rng("scenario:fan-info-sweep")
     plans = [[fans[rng.randrange(len(fans))] for _ in range(64)] for _ in range(max(1, ctx.users))]
     thinks = [[rng.uniform(*THINK_S) for _ in range(64)] for _ in range(len(plans))]
@@ -156,7 +103,7 @@ async def run(ctx) -> None:
             try:
                 r = await tabs_http.get(f"/admin/fans/{f['account_id']}/{f['fan_id']}")
                 reads[r.status_code] += 1
-            except httpx.HTTPError:   # recorded as 599 by the client: the stock no-5xx check fails, the tab goes on
+            except httpx.HTTPError:
                 reads[599] += 1
             try:
                 await asyncio.wait_for(stop.wait(), thinks[i][j % 64])
@@ -168,7 +115,6 @@ async def run(ctx) -> None:
     tabs = asyncio.gather(*(tab(i) for i in range(len(plans))))
     await asyncio.sleep(THINK_S[1])
 
-    # ── Run now on every rule at once ─────────────────────────────────────
     pressed: dict[str, datetime] = {}
     statuses: dict[str, int] = {}
 
@@ -187,13 +133,12 @@ async def run(ctx) -> None:
             break
         await asyncio.sleep(0.1)
     timed_out = time.monotonic() > deadline
-    await asyncio.sleep(1.0)   # a second run, were one to start late, shows up
+    await asyncio.sleep(1.0)  # a second run, were one to start late, shows up
     stop.set()
     await tabs
     ctx.rec.stage = None
     await tabs_http.aclose()
 
-    # ── what landed ───────────────────────────────────────────────────────
     seen = (await ctx.owner.get("/__slop/fan-info/calls")).json()
     calls, pushes = seen["calls"], seen["pushes"]
     sem = asyncio.Semaphore(16)
@@ -228,7 +173,6 @@ async def run(ctx) -> None:
     def fresh(at) -> bool:
         return at is not None and at >= t_start
 
-    # PIN
     manual = [f for f in fans if f["role"] == "manual"]
     pin_bad = {}
     for f in manual:
@@ -244,7 +188,6 @@ async def run(ctx) -> None:
               min_in_chars=min((f["in_chars"] for f in manual), default=None),
               evidence_floor=fan_info_history.EVIDENCE_MIN_CHARS)
 
-    # KEEP
     keep = [f for f in fans if f["role"] == "keep"]
     keep_bad = {}
     for f in keep:
@@ -257,7 +200,6 @@ async def run(ctx) -> None:
     ctx.check(KEEP, bool(keep) and not keep_bad, keep=len(keep), fields=list(fan_info_history.KEEP_FIELDS),
               wrong=len(keep_bad), e_g=dict(list(keep_bad.items())[:4]))
 
-    # OWN
     own_bad = {}
     for f in fans:
         k, m = (f["account_id"], f["fan_id"]), f["marker"]
@@ -277,7 +219,6 @@ async def run(ctx) -> None:
         if got != want or api_got != api_want:
             own_bad[f"{k[0]}/{k[1]}"] = {"want": want, "db": {x: v for x, v in got.items() if v != want[x]},
                                          "drawer": {x: v for x, v in api_got.items() if v != api_want[x]}}
-    # ... and OF's drawer push (Fan notes) for each fan names only his own marker
     by_fan = defaultdict(list)
     for p in pushes:
         by_fan[(p["account_id"], p["fan_id"])].append(p)
@@ -292,7 +233,6 @@ async def run(ctx) -> None:
               e_g=dict(list(own_bad.items())[:3]), of_push_wrong=len(push_bad),
               of_push_e_g=dict(list(push_bad.items())[:3]), of_pushes=len(pushes))
 
-    # COUNTS
     n_seed = Counter(f["account_id"] for f in fans)
     cnt_bad = {}
     for a in aids:
@@ -321,7 +261,6 @@ async def run(ctx) -> None:
               never_asked=never[:4], unknown_prompts=unknown[:4], timed_out=timed_out, drawer_reads=dict(reads),
               wrong=cnt_bad, grok_call_status=dict(Counter(s for (_, s), n in gcalls.items() for _ in range(n))))
 
-    # Budgets
     lat = [(x["done"] - pressed[a]).total_seconds() * 1000 for a in aids for x in runs.get(a, [])[:1]
            if x["done"] and a in pressed]
     p95 = pct(lat)

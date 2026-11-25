@@ -1,9 +1,3 @@
-/**
- * lib/ofRichText: OF rich text's allow-list parse, the plain-text helpers every preview uses, and the editor's value
- * contract (lib/ofRichTextEditor), as tables. `hasHtml` / `ofText` / `ofPlain` and the relay's `has_html` / `of_text` /
- * `of_plain` assert one table (service/tests/fixtures/of_rich_text_cases.json, read at runtime: it lives with the
- * python test data, outside the Next tsconfig's rootDir).
- */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -25,6 +19,7 @@ describe("parseOfHtml", () => {
   const rows: [string, string, unknown][] = [
     ["plain lines", "a\nb", [[run("a")], [run("b")]]],
     ["paragraphs", "<p>a</p><p></p><p>b</p>", [[run("a")], [], [run("b")]]],
+    // OF's measured wire: span outermost, size class first.
     ["OF's nesting", '<p><span class="m-editor-fs__l m-editor-fc__blue-1"><strong><em>x</em></strong></span></p>',
       [[run("x", { bold: true, italic: true, color: "m-editor-fc__blue-1", size: "m-editor-fs__l" })]]],
     ["legacy nesting (strong > em > span)", '<p><strong><em><span class="m-editor-fc__blue-1 m-editor-fs__l">x</span></em></strong></p>',
@@ -47,23 +42,20 @@ describe("parseOfHtml", () => {
 
 interface SharedCase { name: string; text: string; markup: boolean; sent: string; plain: string }
 type Names = Record<"known" | "active" | "blocks" | "drop" | "unknown", string[]>;
-/** Built as `parts` concatenated (`[piece, times]`); has_html + of_text + of_plain within the fixture's max_ms. */
 type PerfRow = { name: string; parts: [string, number][] };
 const FIXTURE = JSON.parse(readFileSync(
   join(__dirname, "..", "..", "service", "tests", "fixtures", "of_rich_text_cases.json"), "utf8",
 )) as { cases: SharedCase[]; names: Names; perf: { max_ms: number; rows: PerfRow[] } };
 const SHARED = FIXTURE.cases;
 
-/** Rows from the fixture's name lists, as service/tests/test_of_rich_text.py `name_rows`: [text, markup, plain]. */
 function nameRows(names: Names): [string, boolean, string | null][] {
   const [known, active, blocks, drop] = (["known", "active", "blocks", "drop"] as const).map((k) => new Set(names[k]));
   const pool = [...new Set([...known, ...active, ...blocks, ...drop, ...names.unknown])].sort();
   return pool.flatMap((n) => {
     const tag = known.has(n) || active.has(n);
     const rows: [string, boolean, string | null][] = [
-      // prose in angles: plain unless an active name (or `<p `: OF's own markup starts so, `isOfHtml`)
       [`<${n} coming soon>`, active.has(n) || n === "p", null],
-      [`x <${n} id=1>y`, true, null], // a known name: bare formatting; any other: fails closed
+      [`x <${n} id=1>y`, true, null],
       [`<${n}>`, tag, null],
     ];
     if (n !== "p" && n !== "br") {
@@ -98,9 +90,6 @@ describe("shared table with the relay (has_html / of_text / of_plain)", () => {
     expect(ofText(c.text)).toBe(c.sent);
     expect(ofPlain(c.text)).toBe(c.plain);
   });
-  // The editor's escape decision is the relay's: typed text it would read as markup is stored escaped (the fan reads
-  // what was typed), anything else stays the plain text.
-  // (U+00A0 aside: the editor's plain text writes it as a space, by design.)
   it.each(SHARED.filter((c) => c.text && !/[\r\n\u00a0]/.test(c.text)).map((c) => [c.name, c] as const))("editor: %s", (_n, c) => {
     const root = document.createElement("div");
     const p = document.createElement("p");
@@ -122,7 +111,7 @@ describe("formatting detection", () => {
     ["<p><strong>hi</strong></p>", true, true],
     ['<p><span class="m-editor-fc__default">hi</span></p>', true, true],
     ['<p><span class="x">hi</span></p>', true, false],
-    ["<b>no paragraph</b>", false, true], // bare tags: the relay sends them as markup (`ofText`)
+    ["<b>no paragraph</b>", false, true],
     ["<i love you>", false, false],
     ["  <P>x</P>", true, false],
   ];
@@ -140,7 +129,7 @@ describe("ofPlainText / ofPreviewText", () => {
     ["<p>x<script>evil()</script></p>", "x", "x"],
     ["&amp;lt; &#39; &#x41; &nbsp;", "&lt; ' A", "&lt; ' A"],
     ["  plain\n\ntext  ", "plain\n\ntext", "plain text"],
-    ["code <VIP20>", "code <VIP20>", "code <VIP20>"], // tag-shaped prose is not a tag
+    ["code <VIP20>", "code <VIP20>", "code <VIP20>"],
     ["<p>a</p><blockquote>b</blockquote>", "a\nb", "a b"],
     ["<br/>", "", ""],
     ["&amp; &nbsp; &#39; &lt;b&gt; &quot;", "&   ' <b> \"", "& ' <b> \""],
@@ -161,7 +150,7 @@ describe("plainToOfHtml / foldBlankParagraphs", () => {
   ])("plain %j", (s, want) => expect(plainToOfHtml(s)).toBe(want));
   it.each([
     ["<p>a</p><p></p><p>b</p>", "<p>a<br><br>b</p>"],
-    ["<p>a</p><p></p><p></p><p>b</p>", "<p>a<br><br><br>b</p>"], // n blanks = n+1 <br>: plain keeps n blank lines (D)
+    ["<p>a</p><p></p><p></p><p>b</p>", "<p>a<br><br><br>b</p>"],
     ["<p>a</p><p>b</p>", "<p>a</p><p>b</p>"],
   ])("fold %j", (s, want) => expect(foldBlankParagraphs(s)).toBe(want));
 });
@@ -172,7 +161,6 @@ describe("editor value contract", () => {
     setOfHtml(root, editorHtmlOf(value));
     return root;
   };
-  // (stored value, what the untouched editor reads back)
   const rows: [string, string][] = [
     ["plain one line", "plain one line"],
     ["line 1\nline 2", "line 1\nline 2"],
@@ -218,7 +206,7 @@ describe("editor value contract", () => {
 describe("entities, quoted '>' and block tags (item 7)", () => {
   it.each<[string, string]>([
     ["&hellip; &rsquo; &eacute; &mdash;", "\u2026 \u2019 \u00e9 \u2014"],
-    ["&amp;hellip;", "&hellip;"], // decoded once
+    ["&amp;hellip;", "&hellip;"],
     ["&notanentity;", "&notanentity;"],
   ])("decode %j", (s, want) => expect(decodeEntities(s)).toBe(want));
 
@@ -254,11 +242,11 @@ describe("Codex A: typed text that looks like markup round-trips as text", () =>
   };
   it.each<string>(["<p>Use <VIP20></p>", "<p>", "<P class=x>hi", "Use <b>bold</b> literally"])("%j", (text) => {
     const v = editorValue(typed(text));
-    expect(v).not.toBe(text); // emitted escaped, never as live markup
-    expect(ofPlainText(v)).toBe(text); // the fan reads what was typed
+    expect(v).not.toBe(text);
+    expect(ofPlainText(v)).toBe(text);
     const back = document.createElement("div");
     setOfHtml(back, editorHtmlOf(v));
-    expect(editorValue(back)).toBe(v); // stable on reload
+    expect(editorValue(back)).toBe(v);
     expect(back.textContent).toBe(text);
   });
   it("text the relay reads as plain stays plain", () =>
@@ -339,8 +327,6 @@ describe("Codex C: paste keeps OF's formatting only", () => {
   ])("%s", (_n, html, want) => expect(pastedOfHtml(html, document)).toBe(want));
 });
 
-/** OF's own wire (measured: onlyfans.com web app, POST /api2/v2/chats/:id/messages, 2026-11-06; OF echoed it, 200):
- *  size + colour on a bold word. Every serializer writes this shape: span outermost, size class first. */
 const OF_WIRE = '<p><span class="m-editor-fs__l m-editor-fc__blue-2"><strong>safgsfg</strong></span></p>';
 
 describe("OF's wire format (HAR)", () => {

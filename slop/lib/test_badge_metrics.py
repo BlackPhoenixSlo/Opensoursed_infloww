@@ -167,13 +167,13 @@ R1, R2 = (100.0, 101.5, "1"), (140.0, 141.5, "1")
 
 
 @pytest.mark.parametrize("answers, judged, stale", [
-    ([(99.0, 101.6, "1", 101.5)], 0, []),                    # sent before any read: its own leader, unjudged
-    ([(100.4, 101.6, "1", 101.5)], 1, []),                   # joined R1 in flight, answered its fold
-    ([(100.4, 100.45, "1", 60.0)], 1, [(100.4, 100.45, "1", 60.0)]),   # joined R1, answered the older fold (D6)
-    ([(120.0, 120.01, "1", 101.5)], 1, []),                  # after R1 landed, inside 30 s: the held fold is R1's
-    ([(139.0, 141.6, "1", 141.5)], 1, []),                   # the leader of R2, judged against R1
-    ([(141.0, 141.6, "1", 101.5)], 1, [(141.0, 141.6, "1", 101.5)]),   # sent in R2's flight, answered R1's fold
-    ([(120.0, 120.01, "2", 1.0)], 0, []),                    # another Creator: no read of its own yet
+    ([(99.0, 101.6, "1", 101.5)], 0, []),
+    ([(100.4, 101.6, "1", 101.5)], 1, []),
+    ([(100.4, 100.45, "1", 60.0)], 1, [(100.4, 100.45, "1", 60.0)]),
+    ([(120.0, 120.01, "1", 101.5)], 1, []),
+    ([(139.0, 141.6, "1", 141.5)], 1, []),
+    ([(141.0, 141.6, "1", 101.5)], 1, [(141.0, 141.6, "1", 101.5)]),
+    ([(120.0, 120.01, "2", 1.0)], 0, []),
 ])
 def test_stale_answers(answers, judged, stale):
     assert stale_answers(answers, [R1, R2]) == (judged, stale)
@@ -183,12 +183,12 @@ ROWS = {1: (True, False), 2: (False, False), 3: (True, True), 4: (True, False)}
 
 
 @pytest.mark.parametrize("events, want", [
-    ([], {1: True, 2: False, 3: False, 4: True}),                         # Muted unread draws no dot
-    ([(5.0, 1, False), (5.1, 2, True)], {1: False, 2: True, 3: False, 4: True}),   # a same-value swap
-    ([(6.0, 1, True), (5.0, 1, False)], {1: True, 2: False, 3: False, 4: True}),   # time order, not list order
-    ([(5.0, 3, True)], {1: True, 2: False, 3: False, 4: True}),           # a Muted fan flipped unread: still none
-    ([(5.0, None, False), (6.0, 4, True)], {1: False, 2: False, 3: False, 4: True}),  # mark all read, then a DM
-    ([(5.0, 9, True)], {1: True, 2: False, 3: False, 4: True, 9: True}),  # a Fan new to the list
+    ([], {1: True, 2: False, 3: False, 4: True}),
+    ([(5.0, 1, False), (5.1, 2, True)], {1: False, 2: True, 3: False, 4: True}),
+    ([(6.0, 1, True), (5.0, 1, False)], {1: True, 2: False, 3: False, 4: True}),
+    ([(5.0, 3, True)], {1: True, 2: False, 3: False, 4: True}),
+    ([(5.0, None, False), (6.0, 4, True)], {1: False, 2: False, 3: False, 4: True}),
+    ([(5.0, 9, True)], {1: True, 2: False, 3: False, 4: True, 9: True}),
 ])
 def test_dots(events, want):
     assert dots(ROWS, events) == want

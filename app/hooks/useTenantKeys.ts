@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * useTenantKeys — Setup → Keys, the signed-in AGENCY's own LLM keys.
- *
- *   GET /admin/my-llm-keys   masked status per provider (never the raw key)
- *   PUT /admin/my-llm-keys   { provider: value }; "" clears; send ONLY what
- *                            changed — an absent provider keeps its stored key.
- *
- * Distinct from useSecrets (/admin/secrets), which holds the DEPLOYMENT's house
- * keys. These are yours: every OF account you own bills the key you paste here,
- * so no other agency can spend on your credential and you cannot spend on
- * theirs. Requires a signed-in owner — a chatter session gets a 401.
- */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -19,24 +7,17 @@ import { relay } from "@/lib/relay";
 
 export interface TenantKeyStatus {
   set: boolean;
-  /** "••••" + last four. Rendered as a placeholder, NEVER as a field value —
-   *  round-tripping it back would be rejected by the server (and would
-   *  otherwise overwrite a working key with its own mask). */
   hint: string;
 }
 
 export type TenantKeysStatus = Record<string, TenantKeyStatus>;
 
-/** An account two owners are linked to. Per provider, the ONE owner holding a
- *  key pays (`pays`). A provider BOTH hold a key for is `contested`: the relay
- *  refuses rather than guess whose money it is, and AI on that provider stays
- *  stopped until a link is removed. A provider in neither list is one nobody
- *  has set — either owner's key fixes it. */
 export interface SharedAccount {
   account_id: string;
   nickname: string;
   owners: string[];
   pays: Record<string, string>;
+  // Both owners hold a key: the relay refuses rather than guess whose money it is, so AI on that provider stays stopped.
   contested: string[];
 }
 

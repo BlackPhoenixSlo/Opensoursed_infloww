@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""The OF Manager's Statements and Statistics money reads (app/lib/ofMirrorMoney.ts).
-
-Each relay route the mirror calls must reach OF as OF's own client sends it
-(build 202610091632, module 874727 and the referral/chargeback stores in app.js):
-
-  GET /payouts/balances                      -> payoutAvailable, payoutPending, minPayoutSumm, withdrawalPeriod(Options)
-  GET /payouts/stats                         -> {list: {total, months}} (OF sends no query on the page; ours adds by=day,
-                                                 the shape the legacy UI read live)
-  GET /payouts/stats?startDate&endDate       -> the same for a Custom period (ticket 24: OF's Apply, YYYY-MM-DD; OF
-                                                 ignores start/end, measured 2026-11-21 on the Proof Creator)
-  GET /payments/referrals/balance            -> referralEarnings
-  GET /payouts/chargebacks/ratio?startDate&endDate (the date picker's last 30 days) -> chargebacksRatio
-
-Plain-assert, OF faked (no request leaves the process). The money writes
-(POST/PATCH /payouts/requests, wired in c62b1280) are test_payout_writes.py's.
-
-Run: ./venv/bin/python service/tests/test_statements_reads.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -27,7 +9,6 @@ import of_stats_api  # noqa: E402  # after server: its routes load with it
 
 
 def _client():
-    """An OFClient whose every GET is recorded instead of sent."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.sent = []
     c.get_json = lambda path, params=None: c.sent.append((path, params)) or {"ok": 1}
@@ -35,12 +16,10 @@ def _client():
 
 
 def _via_route(fn, *args, **kw):
-    """Call a relay route with OF faked; return (body, [(path, params)])."""
     c = _client()
     orig = server._get_client
     server._get_client = lambda: c
     try:
-        # The cached routes (server._account_ttl) keep the plain one as __wrapped__.
         out = getattr(fn, "__wrapped__", fn)(*args, **kw)
     finally:
         server._get_client = orig
@@ -59,9 +38,7 @@ def case_earning_stats_path():
 
 
 def case_earning_stats_range_reaches_of_as_start_date_and_end_date():
-    """ticket 24: the route's `startDate`/`endDate` (OF's own names) reach OF as they are (statements-earning-stats.js
-    applyDatePicker; capture record statements--custom-period-apply). OF ignores `start`/`end` (all-time answer,
-    measured 2026-11-21), so neither is ever sent."""
+# OF ignores start/end (all-time answer): only startDate/endDate scope the period
     _, sent = _via_route(server.of_earning_stats, by="day", startDate="2026-10-01", endDate="2026-10-31")
     assert sent == [(f"{of_client.API_BASE}/payouts/stats",
                      {"by": "day", "startDate": "2026-10-01", "endDate": "2026-10-31"})], sent

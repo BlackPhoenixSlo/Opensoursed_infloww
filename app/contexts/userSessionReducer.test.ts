@@ -10,7 +10,6 @@ import {
 const ALICE: AuthedUserDTO = { user_id: "u1", username: "alice" };
 const BOB: AuthedUserDTO = { user_id: "u2", username: "bob" };
 
-/** Run actions from `from`, collecting every effect in order. */
 function run(actions: UserSessionAction[], from: UserSessionState = initialUserSession) {
   const effects: UserSessionEffect[] = [];
   const state = actions.reduce((s, a) => {
@@ -22,13 +21,10 @@ function run(actions: UserSessionAction[], from: UserSessionState = initialUserS
 }
 
 const bootedWith = (snapshot: AuthedUserDTO | null) => run([{ type: "bootStart", snapshot }]).state;
-/** Signed in as ALICE, boot settled, nothing in flight. */
 const signedIn = run([{ type: "bootStart", snapshot: null }, { type: "bootOk", user: ALICE }]).state;
 const revalidating = run([{ type: "revalidateStart", hidden: false }], signedIn).state;
-/** The boot probe over an ALICE snapshot could not reach the relay. */
 const unreachable = run([{ type: "bootStart", snapshot: ALICE }, { type: "bootNetErr" }]).state;
 const settled: UserSessionState = { ...initialUserSession, boot: "settled" };
-/** No chatter signed in, none being probed. */
 const NO_CHATTER = { present: false, loading: false };
 const CHATTER = { present: true, loading: false };
 
@@ -277,7 +273,6 @@ describe("the banner: the sign-in form at once over an unsettled boot", () => {
   const SLOW: UserSessionAction = { type: "probeSlow" };
 
   it.each<[string, UserSessionAction[], { present: boolean; loading: boolean }, GateScreen, UserSessionState["banner"]]>([
-    // item 3: a 403 from the proxy
     ["boot 403: the sign-in form + blocked banner", [BOOT, R403], NO_CHATTER, "login", "blocked"],
     ["boot 403 while the chatter probe runs: still the form", [BOOT, R403], CHATTER_LOADING, "login", "blocked"],
     ["boot 403 over a snapshot: the form, nobody shown", [{ type: "bootStart", snapshot: ALICE }, R403], NO_CHATTER,
@@ -290,7 +285,6 @@ describe("the banner: the sign-in form at once over an unsettled boot", () => {
     ["Retry while blocked, 401: the plain form", [BOOT, R403, RETRY, R401], NO_CHATTER, "login", null],
     ["Retry while blocked, 403 again: the banner stays", [BOOT, R403, RETRY, R403], NO_CHATTER, "login", "blocked"],
     ["Retry while blocked, net error: the retry screen", [BOOT, R403, RETRY, NET], NO_CHATTER, "retry", null],
-    // item 4: no answer after ME_SLOW_MS
     ["probing, not slow, chatter loading: wait", [BOOT], CHATTER_LOADING, "loading", null],
     ["slow: the sign-in form + slow banner", [BOOT, SLOW], NO_CHATTER, "login", "slow"],
     ["slow while the chatter probe runs: still the form", [BOOT, SLOW], CHATTER_LOADING, "login", "slow"],
@@ -311,7 +305,6 @@ describe("the banner: the sign-in form at once over an unsettled boot", () => {
     ["slow after a plain net error (retry screen): no-op", [BOOT, NET, SLOW], NO_CHATTER, "retry", null],
     ["a login from under the banner: signed in, banner gone", [BOOT, R403, { type: "confirmed", user: ALICE }],
       NO_CHATTER, "signed-in", null],
-    // the chatter probe hung (/chatter/me has no timeout): a late answer never puts the gate back to waiting
     ["slow then 200 user, chatter hung: the shell", [BOOT, SLOW, answer({ type: "answered", user: ALICE })],
       CHATTER_LOADING, "signed-in", null],
     ["slow then 200 null, chatter hung: the plain form stays", [BOOT, SLOW, answer({ type: "answered", user: null })],

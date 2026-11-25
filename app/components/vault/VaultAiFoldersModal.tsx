@@ -1,43 +1,5 @@
 "use client";
 
-/**
- * VaultAiFoldersModal — preview, then create, the AI-generated vault folders.
- *
- * Two kinds of folder come out of `service/vault_scripts.py`:
- *
- *   SCRIPTS — one shoot. Media grouped by the OUTFIT she is wearing (upload
- *     bursts are kind-pure, so grouping by upload splits a shoot's stills from
- *     its clips), ordered non-explicit → explicit. Sell these as a set.
- *   LANES — cut by heat and by how much is covered: Stories, Mass, Safe
- *     explicit, and the $10 / $50 tease tiers. An item may legitimately appear
- *     in several lanes and holds an INDEPENDENT position in each, which is why
- *     order lives on the folder membership rather than on the media.
- *
- * Ticking SOLO adds a `-solo` cut of each lane — `AI-tease 10-solo` is
- * `AI-tease 10` with everyone but her taken out. It adds rather than filters:
- * the two answer different questions, and an operator who wants both should not
- * have to rebuild the folders to switch between them.
- *
- * Nothing is written until the operator presses Create. The relay re-derives
- * the plan on apply rather than trusting what this preview posted, so a preview
- * left open while the vault changes underneath cannot write a stale grouping.
- * Every folder is prefixed `AI-`, re-running refreshes those folders instead of
- * duplicating them, and a folder the operator made by hand is never touched.
- *
- * TOPIC FOLDERS (Jev) are opt-in: a checklist of topics (`service/vault_topic_folders.py`), none ticked by
- * default. Each ticked topic adds one folder per price (`AI-bikini free`, `AI-bikini $10`, …; explicit topics
- * $50 / $100 / $150, never free) cut from the photos' and clips' Jev answers; a free one never holds anything Jev
- * saw bare, nor a clip Jev wants reviewed. "Split topics by price" off makes one `AI-<topic>` folder each instead.
- * Unticking a topic (or flipping the split) retires the folders it no longer makes on the next build (the preview's
- * retire line names them). Disabled until Jev is on and has read some items. No feet topic: feet live in the vault's
- * Feet pack only (VaultPackPickerModal).
- *
- * Before Confirm the plan's `changes` says what it does to the AI- folders already there (create / keep / retire);
- * retiring one bound to an OnlyFans list unlinks that list, so the button says so. Options live in
- * `vaultAiFoldersForm.ts` (pure reducer); keep runs 0 (lanes only) to 20.
- *
- * No OF writes: these are internal folders. Nothing here sends anything.
- */
 
 import { useEffect, useReducer, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -107,8 +69,6 @@ function FolderCard({
               .map(([k, n]) => `${n} ${k}`)
               .join(", ")}
             {isScript && ` · ${folder.closes_on_own} can close`}
-            {/* "12 of 34" is the honest read: a solo cut that happens to be the
-                whole lane is a real answer, and so is one that is a third of it. */}
             {folder.solo && ` · ${folder.size} of ${folder.solo_of} in the lane`}
           </p>
           {isScript && !!folder.health?.length && (
@@ -185,16 +145,11 @@ export default function VaultAiFoldersModal({
   const { keep, solo, mirrorToOf, topics, split } = form;
 
   const plan = useAiFolderPlan(accountId, { keep, solo, topics, split }, true);
-  // The topic checklist (+ Jev coverage) does not depend on the options, so it stays drawn from the previous plan
-  // while a toggle re-plans; everything else reads only this toggle's plan (`fresh`).
   const catalogue = plan.data?.topic_catalogue ?? [];
   const jev = plan.data?.jev;
   const fresh = plan.isPlaceholderData ? undefined : plan.data;
   const topicsOn = topicsUsable(jev);
 
-  // Items that land in more than one folder — the case the per-folder ordering
-  // exists for. Flagged in the preview so the overlap is visible up front
-  // rather than discovered later in the picker.
   const seen = new Map<number, number>();
   for (const f of fresh?.folders ?? []) {
     for (const it of f.items) seen.set(it.media_id, (seen.get(it.media_id) ?? 0) + 1);
@@ -204,12 +159,10 @@ export default function VaultAiFoldersModal({
   const applyM = useMutation({
     mutationFn: (opts: ReturnType<typeof buildPayload>) => applyAiFolders(accountId, opts),
     onSuccess: () => {
-      // The folder rail and any per-folder grid are now stale.
       qc.invalidateQueries({ queryKey: ["vault-internal-folders", accountId] });
       qc.invalidateQueries({ queryKey: ["vault-of-folders-mirror", accountId] });
       invalidateVaultQueries(qc, { queryKey: ["vault-lists", accountId] });
       qc.invalidateQueries({ queryKey: ["vault-mirror-items"] });
-      // The preview's create / keep / retire counts were against the folders before this build.
       qc.invalidateQueries({ queryKey: ["vault-ai-folder-plan", accountId] });
     },
     onError: (e) => console.error("apply AI folders failed", e),
@@ -217,43 +170,27 @@ export default function VaultAiFoldersModal({
   const busy = applyM.isPending;
   const result: ApplyAiFoldersResult | undefined = applyM.data;
 
+  // Same options as the preview: the server re-derives the plan and retires folders it no longer makes, so dropping `solo` would delete every -solo folder.
   function onCreate() {
-    // The SAME options the preview was built from: the server re-derives the
-    // plan and retires generated folders it no longer makes, so applying
-    // without `solo` would create the lanes and delete every `-solo` folder
-    // in the same call. It retires only the folders this preview listed.
     applyM.mutate(buildPayload(form, changes));
   }
-  /** An option change makes the last build's result stale (its error stays). */
   const optionChanged = () => { if (applyM.isSuccess) applyM.reset(); };
 
   const s = fresh?.summary;
   const changes = fresh?.changes;
   const flags = fresh?.flags;
-  // Only when the box is ticked AND some described item was never asked who
-  // else is in it — the one case where an empty solo cut is correct but reads
-  // as breakage.
   const cov = solo ? fresh?.solo_coverage : null;
   const soloGap = cov?.unknown ? cov : null;
-  // Unchecked stills are left out of the flag lanes (safe explicit, $10, $50) server-side (never
-  // guessed), so this informs and offers the catch-up; it does not block.
   const flagsMissing = !!flags && flags.missing > 0;
   const submittable = canSubmit(busy, fresh?.folders.length ?? 0);
 
-  // A whole-vault sweep runs for minutes in the background, so this watches it
-  // rather than holding a request open. Polling starts on the click AND on open
-  // when a sweep is already going (started from another tab, or before a reload).
-  // `since` is when we last asked to watch. Comparing it against the query's
-  // own timestamp is what stops the click from reading the PREVIOUS poll's
-  // `running: false` and cancelling itself before the first real answer lands.
+  // `since` stops the click reading the previous poll's `running: false` and cancelling itself before the first real answer.
   const [since, setSince] = useState(() => Date.now());
   const flagsStatus = useVaultFlagsStatus(accountId, since > 0);
   const sweep = flagsStatus.data;
   const sweeping = !!sweep?.running;
 
   useEffect(() => {
-    // Stop polling once it finishes, and re-plan on the fresh flags: the three
-    // lanes that need them (safe explicit, $10, $50) were starved until now.
     if (since > 0 && flagsStatus.dataUpdatedAt > since && !sweep?.running) {
       setSince(0);
       plan.refetch();
@@ -453,8 +390,6 @@ export default function VaultAiFoldersModal({
           )}
         </IfHelp>
       )}
-      {/* What Confirm does to the AI- folders already there, on the vault as it is now. The apply re-plans and
-          retires only the folders listed here; one that went stale since is left in place (`skipped_retire`). */}
       {changes && (
         <div className="mt-2 text-[13px]">
           <p className="tabular-nums">Confirm {changesLine(changes)}</p>
@@ -472,9 +407,7 @@ export default function VaultAiFoldersModal({
           )}
         </div>
       )}
-      {/* An empty solo cut on a V1-described vault is CORRECT — `is_solo`
-          refuses to call an item solo without the evidence — and reads as
-          broken. Say which it is. */}
+      {/* An empty solo cut on a V1-described vault is correct (`is_solo` needs the evidence) but reads as broken. */}
       {soloGap && (
         <div className="mt-4 flex flex-wrap items-center gap-x-2 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-accent">
           <b>{soloGap.unknown} of {soloGap.described} described items were never asked who else is in them,</b>

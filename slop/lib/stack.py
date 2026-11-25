@@ -1,34 +1,3 @@
-"""Throwaway local stack per run: the slop relay on a temp SQLite DB and, when a
-scenario needs the UI, `next dev` behind demo-shots' fetch guard. Free loopback
-ports, own process groups, torn down on exit (a failed start too); app/tsconfig.json
-and app/next-env.d.ts (which `next dev` rewrites at boot) are restored where they still
-hold slop's rewrite; what a killed run left behind (a group member that outlived
-teardown too), the next Stack puts right (lib/recovery.py). Same safety model as
-scripts/demo-shots/run.sh: nothing leaves the machine.
-
-`shards=N` (N > 1, a fleet): N relays, each on its own temp dir `tmp/sNN/` (DB,
-sessions, secrets, off-host log), port, process group and SESSION_SECRET;
-`apps` lists the shard indexes that also get a `next dev` (own NEXT_DIST_DIR
-`.next/slop-sNN`, own port). `relay_env[i]` / `app_env[i]` are extra env the
-caller fills in before `__enter__` (e.g. FLEET_SECRET, FLEET_PEERS from
-lib/edge.py). `shards=1` is the stack as before.
-
-`boxes={"b1": (0, 1), "b2": (2,)}` (a two-box fleet, lib/box.py): each shard's
-dir is a box's real layout, `tmp/<box>/shards/sNN/` with `data/chatterly.db`,
-`service/` (DEMO_SHOTS_TMP: sessions/, secrets/) and `.env` (the shard's
-SESSION_SECRET / CHATTER_SESSION_SECRET, as fleet.py's deploy writes it), so the
-box-side scripts (oi-backup, oi-restore, oi-epoch) run on it unchanged.
-`app_mode="prod"` (a scenario's `APP_MODE`) serves the app as production does instead of
-`next dev`: `next build` into `.next/slop-prod` with the run's RELAY_URL (the rewrites are
-baked into the build's routes-manifest), then `next start`; minified, split chunks, so a
-page-load measurement sees the bundle a phone downloads. One shard only.
-
-`spawn()` / `wait_ready()` / `kill_group()` let a scenario start a relay
-elsewhere (a restored shard on the other box) and SIGKILL a process group.
-
-`SLOP_PY` overrides the Python that runs relays and declared sidecars (default the repo venv), so
-the harness also runs inside the relay image (deploy/fleet/calibrate.sh).
-"""
 from __future__ import annotations
 
 import contextlib
@@ -54,11 +23,9 @@ APP_LOCK = ROOT / recovery.APP_LOCK
 APP_STATE = ROOT / recovery.APP_STATE
 
 
+
 def _lock_app() -> int:
-    """One stack with `next dev` per checkout: they share app/.next/slop* and
-    rewrite (and restore) app/tsconfig.json and next-env.d.ts, so a second one
-    breaks the first (measured: a concurrent fleet-200 run's `next dev s01`
-    exited). An flock, so a killed run never leaves it held. Returns the fd."""
+    # shared app/.next/slop* and tsconfig rewrites: a second `next dev` stack breaks the first (measured)
     APP_LOCK.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(APP_LOCK, os.O_RDWR | os.O_CREAT, 0o644)
     try:
@@ -84,7 +51,6 @@ def _ports(n: int) -> list[int]:
 
 
 def sid(i: int) -> str:
-    """Shard id of shard index i: s01, s02, ..."""
     return f"s{i + 1:02d}"
 
 
@@ -100,7 +66,7 @@ class Stack:
             raise SystemExit(f"slop: app_mode {app_mode!r} (dev, or prod on one shard)")
         self.app_mode = app_mode
         self.shards = max(1, int(shards))
-        recovery.sweep()  # a killed run's process groups
+        recovery.sweep()
         self._run_state = recovery.RunState()
         self._app_files = recovery.AppFiles(ROOT / "app", RESTORE, APP_STATE)
         fleet = self.shards > 1
@@ -118,7 +84,7 @@ class Stack:
         self.shard_box = {i: b for b, ix in self.boxes.items() for i in ix}
         if self.boxes and sorted(self.shard_box) != list(range(self.shards)):
             raise SystemExit(f"slop: boxes {self.boxes} must place each of the {self.shards} shards exactly once")
-        if self.boxes:  # a box's real layout (deploy/fleet: /opt/oi/shards/sNN/{data,service,.env})
+        if self.boxes:
             self.shard_tmps = [self.box_root(self.shard_box[i]) / "shards" / s for i, s in enumerate(self.shard_ids)]
             self.shard_dbs = [t / "data" / "chatterly.db" for t in self.shard_tmps]
             self.shard_svc = [t / "service" for t in self.shard_tmps]
@@ -127,22 +93,20 @@ class Stack:
             self.shard_dbs = [t / "relay.db" for t in self.shard_tmps]
             self.shard_svc = list(self.shard_tmps)
         self.shard_sessions = [t / "sessions" for t in self.shard_svc]
-        self.offhost_dirs = list(self.shard_svc)  # DEMO_SHOTS_TMP of every relay ever started (spawn() adds)
+        self.offhost_dirs = list(self.shard_svc)
         self.app_urls = {i: f"http://127.0.0.1:{self.app_ports[i]}" for i in self.apps}
         self.relay_env: dict[int, dict[str, str]] = {i: {} for i in range(self.shards)}
         self.app_env: dict[int, dict[str, str]] = {i: {} for i in self.apps}
         self.shard_pids: list[int] = []
         self._relay_envs: list[dict[str, str]] = []
-        # shard 0 under the names a one-relay scenario uses
         self.relay, self.db, self.sessions = self.shard_urls[0], self.shard_dbs[0], self.shard_sessions[0]
         self.app = self.app_urls.get(0) if not fleet and ui else None
         self._relay_port, self._dead = self.relay_ports[0], dead
         self._lock: int | None = None
-        self.waits: list[dict] = []  # each readiness wait: {name, seconds, polls (requests sent)}
-        self.teardown_s: float | None = None  # its latest __exit__ (a failed start's partial one too)
+        self.waits: list[dict] = []
+        self.teardown_s: float | None = None
 
     def box_root(self, box: str) -> Path:
-        """A box's /opt/oi (boxes= runs)."""
         return self.tmp / box
 
     def _log(self, kind: str, i: int) -> str:
@@ -153,7 +117,7 @@ class Stack:
             raise SystemExit(f"slop: {PY} not found (needs the repo venv: uvicorn, FastAPI, Playwright; or SLOP_PY)")
         if (ROOT / "service/secrets.json").exists() and not (ROOT / "service/secrets/secrets.json").exists():
             raise SystemExit("slop: service/secrets.json without service/secrets/secrets.json; see docs/ui-shots.md")
-        try:  # whatever fails from here (lock, relay spawn, a wait) tears down what started: __exit__
+        try:
             self._start()
         except BaseException:
             self.__exit__(None, None, None)
@@ -161,9 +125,9 @@ class Stack:
         return self
 
     def _start(self) -> None:
-        if self.apps:  # only `next dev` rewrites these
+        if self.apps:
             self._lock = _lock_app()
-            self._app_files.save()  # after a killed holder's files are put back
+            self._app_files.save()
         self.logdir.mkdir(parents=True, exist_ok=True)
         base = {k: v for k, v in os.environ.items() if k != "OPENINFLOWW_LEGACY_AUTOMATIONS"}
         waits = []
@@ -182,29 +146,22 @@ class Stack:
                 DEEPINFRA_API_KEY="slop-fake", GOOGLE_DRIVE_API_KEY="slop-fake",
                 DEMO_SHOTS_ROOT=str(ROOT), DEMO_SHOTS_TMP=str(svc), DEMO_SHOTS_RELAY_PORT=str(self.relay_ports[i]),
                 SLOP_FAULT=self.fault or "", SLOP_PROFILE="1" if self.profile else "",
-                # TypeSafe answers from the relay's loopback fake when a flow's relay plugin
-                # (lib/<flow>_relay.py) serves one, as DeepSeek does (the plugin points it there).
                 TYPESAFE_API_KEY="slop-fake", TYPESAFE_BASE_URL=f"{self.shard_urls[i]}/__slop/fake/typesafe",
-                # The Dockerfile's: on SIGTERM open streams (/events) are cut after 5 s and the
-                # shutdown hook runs (lib/relay.py passes it to uvicorn.run).
                 UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN="5",
             )
             if os.environ.get("SLOP_LIVE") == "1":
-                # A declared live single run (README "Live runs"): the real TypeSafe
-                # and DeepSeek with the caller's test keys, the guard opened to those
-                # two names only; nothing else changes.
                 env.update(DEMO_SHOTS_ALLOW_HOSTS="api.typesafe.ai,api.deepseek.com", SLOP_LIVE="1",
                            DEEPSEEK_API_KEY=os.environ.get("DEEPSEEK_API_KEY", ""),
-                           # the help bot's company-key fallback (llm_providers._FALLBACK_KEY_ENVS)
                            HELP_ASSISTANT_DEEPSEEK_KEY=os.environ.get("DEEPSEEK_API_KEY", ""),
                            TYPESAFE_API_KEY=os.environ.get("TYPESAFE_API_KEY", ""))
                 env.pop("TYPESAFE_BASE_URL", None)
             env.update(self.relay_env.get(i, {}))
             self._relay_envs.append(env)
-            if self.boxes:  # what deploy's shard .env carries (and restic backs up)
+            if self.boxes:
                 (t / ".env").write_text("".join(f"{k}={env[k]}\n" for k in ("SESSION_SECRET", "CHATTER_SESSION_SECRET")))
             p = self._spawn(self.py_cmd("slop/lib/relay.py"), env, self._log("relay", i), cwd=ROOT)
             self.shard_pids.append(p.pid)
+            # /livez, not /health: /health is 503 until an OF account is loaded, which a slop stack never has
             waits.append((f"relay {self.shard_ids[i]}" if self.shards > 1 else "relay",
                           f"{self.shard_urls[i]}/livez", 60 if self.shards == 1 else 180, p))
         dead = f"http://127.0.0.1:{self._dead}"
@@ -220,12 +177,9 @@ class Stack:
                 continue
             p = self._spawn(["node", "node_modules/next/dist/bin/next", "dev", "--webpack", "-H", "127.0.0.1",
                              "-p", str(self.app_ports[i])], nenv, self._log("next", i), cwd=ROOT / "app")
-            # One `next dev` at a time: each compiles /login on its first request, and three
-            # compiling at once beside ten booting relays missed 300 s (fleet-200 under
-            # `slop/run all`: 20261026T000937Z-2026-10-24-fleet-200-bdc0, s02 ReadTimeout).
+            # one `next dev` at a time: three compiling /login at once beside ten booting relays missed 300 s
             self._wait(f"next dev {self.shard_ids[i]}" if self.shards > 1 else "next dev",
                        f"{self.app_urls[i]}/login", 300, p, app=True)
-        # /livez, not /health: /health is 503 until an OF account is loaded, which a slop stack never has.
         for name, url, timeout, p in waits:
             self._wait(name, url, timeout, p)
         for name in self.sidecars:
@@ -233,19 +187,12 @@ class Stack:
 
     @property
     def relay_pid(self) -> int:
-        """Shard 0's relay; also its process group id (start_new_session)."""
         return self.shard_pids[0]
 
     def crash_relay(self, i: int = 0) -> float:
-        """SIGKILL relay `i`'s process group (no shutdown hook runs: what it held in
-        memory is gone, as in an OOM kill or a host reboot). Returns the epoch time."""
         return self.kill_group(self.shard_pids[i])
 
     def stop_relay(self, i: int = 0, grace_s: float = 75.0) -> tuple[float, float | None]:
-        """SIGTERM relay `i`'s process group, as `docker stop` does, and wait up to
-        `grace_s` (docker-compose.yml's stop_grace_period) for it to exit; past that
-        SIGKILL, as docker does. Returns (epoch time of the SIGTERM, seconds until
-        it exited, or None when it had to be killed)."""
         pid = self.shard_pids[i]
         return self._stop_proc(pid, grace_s)
 
@@ -269,7 +216,6 @@ class Stack:
         return t, took
 
     def kill_group(self, pid: int) -> float:
-        """SIGKILL the process group `pid` leads (one this stack spawned); reaped. Returns the epoch time."""
         t = time.time()
         try:
             os.killpg(pid, signal.SIGKILL)
@@ -282,8 +228,6 @@ class Stack:
         return t
 
     def py_cmd(self, script: str) -> list[str]:
-        """How a guarded Python process starts. Under `slop/run --map` it runs under coverage.py,
-        lines only, one data file per process in <dir> (lib/covmap.py reads them)."""
         relay = str(ROOT / script)
         cov = os.environ.get("SLOP_COVERAGE")
         if not cov:
@@ -296,14 +240,8 @@ class Stack:
         return self.py_cmd("slop/lib/relay.py")
 
     def _prod_app(self, nenv: dict[str, str], i: int) -> None:
-        """`next build` (the Dockerfile's `pnpm build`) into .next/slop-prod against this run's relay,
-        then `next start` (its `pnpm start`). The build's wall time lands in next-build.log."""
         nenv = dict(nenv, NEXT_DIST_DIR=".next/slop-prod", NODE_ENV="production")
         t0 = time.time()
-        # `next build` rewrites next-env.d.ts, and adds a dist dir's type paths to tsconfig.json unless its
-        # exact includes already list them (a new dist dir): slop's rewrite, noted while it builds (as `_wait`
-        # does for a boot), so AppFiles' one rule puts them back at exit; a user's edit made after the build is
-        # kept (one made during it counts as the build's, as in a boot).
         build = self._spawn(["node", "node_modules/next/dist/bin/next", "build", "--turbopack"], nenv,
                             "next-build.log", cwd=ROOT / "app")
         deadline = time.monotonic() + 900
@@ -317,7 +255,7 @@ class Stack:
                     raise SystemExit(f"slop: next build not done after 900s; see {self.logdir}/next-build.log")
                 time.sleep(0.5)
         finally:
-            if self._lock is not None:  # the build's last rewrite (since the last poll) is slop's too
+            if self._lock is not None:
                 self._app_files.note_written()
         with open(self.logdir / "next-build.log", "a") as fh:
             fh.write(f"\nslop: next build exit {build.returncode} in {time.time() - t0:.1f}s\n")
@@ -329,11 +267,9 @@ class Stack:
         self._wait("next start", f"{self.app_urls[i]}/login", 120, p, app=True)
 
     def relay_env_of(self, i: int) -> dict[str, str]:
-        """A copy of the env relay `i` was started with (to start it elsewhere with changes)."""
         return dict(self._relay_envs[i])
 
     def spawn(self, cmd: list[str], env: dict[str, str], log: str, *, mode: str = "a") -> subprocess.Popen:
-        """Start a process in its own group, logging to the run folder; torn down with the stack."""
         if env.get("DEMO_SHOTS_TMP"):
             d = Path(env["DEMO_SHOTS_TMP"])
             if d not in self.offhost_dirs:
@@ -344,20 +280,16 @@ class Stack:
         self._wait(name, url, timeout, proc)
 
     def start_relay(self, i: int = 0, timeout: int = 60) -> None:
-        """Start relay `i` again on the same DB, port and env; its log appends to relay.log."""
         p = self._spawn(self.relay_cmd(), self._relay_envs[i],
                         self._log("relay", i), cwd=ROOT, mode="a")
         self.shard_pids[i] = p.pid
         self._wait(f"relay {self.shard_ids[i]}", f"{self.shard_urls[i]}/livez", timeout, p)
 
     def stop_sidecar(self, name: str, grace_s: float = 45.0) -> tuple[float, float | None]:
-        """SIGTERM sidecar `name`'s process group, as `docker stop` does; past `grace_s` SIGKILL. Returns (epoch
-        time of the SIGTERM, seconds until it exited, or None when it had to be killed)."""
         p = self.sidecar_procs[name]
         return self._stop_proc(p.pid, grace_s)
 
     def start_sidecar(self, name: str, timeout: int = 60, *, mode: str = "a") -> None:
-        """Start sidecar `name` again on the same DB, port and env; its log appends."""
         script, port_env, health = self.sidecars[name]
         env = dict(self._relay_envs[0], **{port_env: str(self.extra_ports[port_env])})
         p = self._spawn(self.py_cmd(script), env, self._log(name, 0), cwd=ROOT, mode=mode)
@@ -372,20 +304,11 @@ class Stack:
         return p
 
     def _wait(self, name: str, url: str, timeout: int, proc: subprocess.Popen, *, app: bool = False) -> None:
-        """Ready = an HTTP answer below 500 (a 5xx while booting is not ready). Recorded in `waits`, failed ones too.
-        `app`: a `next` boot, whose app-file rewrites are slop's (noted); any other wait (a relay restart mid-run)
-        notes nothing, so a user's edit by then stays theirs.
-
-        Polls back off 0.1, 0.2, 0.4, 0.8 s then every 1 s; each sleep is capped at what is left of `timeout`.
-        Each request's httpx timeout is min(60 s, what is left): 60 s so a stuck request still returns to the
-        process-exit check. httpx applies it per operation (connect, each read, write, pool), an inactivity bound,
-        not a total one: a server that trickles bytes can hold a request longer. The run's `--timeout` is the final
-        bound."""
         last, m0, polls, delay = "no answer", time.monotonic(), 0, 0.1
         deadline, note = m0 + timeout, app and self._lock is not None
         try:
             while (left := deadline - time.monotonic()) > 0:
-                if note:  # `next` rewrites the app files while it boots
+                if note:
                     self._app_files.note_written()
                 if proc.poll() is not None:
                     raise SystemExit(f"slop: {name} exited during startup; see {self.logdir}")
@@ -401,18 +324,13 @@ class Stack:
                 delay = min(delay * 2, 1.0)
             raise SystemExit(f"slop: {name} not ready at {url} after {timeout}s (last: {last}); see {self.logdir}")
         finally:
-            if note:  # `next`'s last boot rewrite (since the last poll) is slop's too
+            if note:
                 self._app_files.note_written()
             self.waits.append({"name": name, "seconds": round(time.monotonic() - m0, 3), "polls": polls})
 
     def __exit__(self, *exc) -> None:
-        """Tear down (idempotent): SIGTERM every group, wait for its leader (10 s, 45 with sidecars; then SIGKILL), then every
-        recorded group still holding a member (a leader's child that outlived it) goes the recovery way
-        (recovery.kill_groups); the run record is kept for any group left after that (the next sweep's)."""
         t0 = time.monotonic()
-        # Only leaders not yet reaped (poll() reaps): a reaped leader's pid (a finished `next build`, a relay that
-        # died) may lead someone else's group by now; its members, if any, go the start-checked way below.
-        # Cleared once torn down: an interrupted teardown (cli.py) redoes it all.
+        # only unreaped leaders: a reaped leader's pid may lead someone else's group by now
         procs = [p for p in self.procs if p.poll() is None]
         for p in procs:
             try:
@@ -443,6 +361,6 @@ class Stack:
         self._run_state.close(left)
         self.procs = []
         if self._lock is not None:
-            os.close(self._lock)  # releases the flock
+            os.close(self._lock)
             self._lock = None
         self.teardown_s = round(time.monotonic() - t0, 3)

@@ -13,7 +13,6 @@ const isSsePoll = (v) =>
 
 const isFalse = (v) => v?.type === "Literal" && v.value === false;
 
-/** `ssePoll(…)`, or `cond ? ssePoll(…) : false` (either way round): polls on ssePoll or not at all. */
 const isAllowed = (v) =>
   isSsePoll(v) ||
   (v?.type === "ConditionalExpression" &&

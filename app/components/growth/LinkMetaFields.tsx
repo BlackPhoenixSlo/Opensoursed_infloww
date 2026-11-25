@@ -1,22 +1,5 @@
 "use client";
 
-/**
- * LinkMetaFields — the fields Infloww's link editor (`LinkEditorFormContent`, index.9f50f370.js @14007983) puts under
- * the name: Source, Promo cost, Tag and List. One definition for the Edit dialog (`LinkEditDialog`) and the Create
- * tracking link pop-up, so the two cannot drift.
- *
- * Source, Promo cost and Tag are kept by the relay (`PUT /admin/link-meta`, or the create's own body) and never
- * written to OnlyFans. Source and Tag are free text with the account's values in use as suggestions; Infloww requires
- * a Source, ours is optional, so a link can carry a cost without one.
- *
- * List is OnlyFans' own "Add to list" on the link's claimers (`POST /lists/{id}/users/campaign/{id}/claimers` for a
- * tracking link, `/users/trial/{id}/claims` for a free trial link, both captured live): the relay adds every fan who
- * claimed the link to the picked list, in the background. Fans who claim later are added when the link's figures are
- * next read from OnlyFans: the relay's hourly pre-warm, or the page opened. OnlyFans adds nobody twice.
- * The options are every custom list of the account (`useFanLists` pages past 50). Changing or clearing the List does
- * not take fans out of the old one, and the select says so once it differs from the stored List (Infloww's
- * "Editing the list will not affect already-added fans"; the Edit dialog's Save is the confirm).
- */
 
 import { useState } from "react";
 import { X } from "lucide-react";
@@ -28,9 +11,8 @@ import { PROMO_COST_MAX_LENGTH, formatPromoCost, parsePromoCost, promoCostText }
 import { cn } from "@/lib/utils";
 
 const FIELD = "h-9 w-full bg-bg border border-border rounded-lg px-3 text-sm disabled:opacity-50 disabled:cursor-not-allowed";
-const TEXT_MAX = 100;   // Infloww's "Source name" and "Tag name" inputs
+const TEXT_MAX = 100;
 const TAGS_MAX = 20;
-/** The relay's cap on a stored list name. */
 export const LIST_NAME_MAX = 64;
 
 export function FieldLabel({ htmlFor, text, optional }: { htmlFor: string; text: string; optional?: boolean }) {
@@ -41,10 +23,8 @@ export function FieldLabel({ htmlFor, text, optional }: { htmlFor: string; text:
   );
 }
 
-/** A Create whose OnlyFans reply had no link id: the link exists, but the fields could not be kept for it. */
 export const META_LOST = "Link created; Source, Promo cost, Tag and List weren't saved. Use Edit.";
 
-/** A link's stored fields, as the relay's reads carry them. */
 export interface LinkMetaValues {
   promo_cost_cents?: number | null;
   link_source?: string | null;
@@ -53,7 +33,6 @@ export interface LinkMetaValues {
   list_name?: string | null;
 }
 
-/** What the relay stores: `PUT /admin/link-meta`'s fields, and the create's. */
 export interface LinkMetaPayload {
   promo_cost: number | null;
   source: string | null;
@@ -64,7 +43,6 @@ export interface LinkMetaPayload {
 
 export type LinkMetaState = ReturnType<typeof useLinkMetaFields>;
 
-/** The fields' state, seeded from a link's stored values (none for a new link). */
 export function useLinkMetaFields(initial: LinkMetaValues = {}) {
   const [source, setSource] = useState(initial.link_source ?? "");
   const [cost, setCost] = useState(promoCostText(initial.promo_cost_cents));
@@ -73,7 +51,6 @@ export function useLinkMetaFields(initial: LinkMetaValues = {}) {
   const [list, setList] = useState<{ id: string; name: string } | null>(
     initial.list_id ? { id: initial.list_id, name: initial.list_name ?? "" } : null,
   );
-  // The List the link feeds now (none for a new link): what a change or a clear is told against.
   const [storedListId] = useState<string | null>(initial.list_id || null);
   const costValue = parsePromoCost(cost);
   const costBad = costValue != null && Number.isNaN(costValue);
@@ -84,7 +61,6 @@ export function useLinkMetaFields(initial: LinkMetaValues = {}) {
     setTag("");
   }
 
-  /** The body to send; a tag typed but not added yet is meant, so it is kept. */
   function payload(): LinkMetaPayload {
     const typed = tag.trim();
     const all = typed && !tags.some((x) => x.toLowerCase() === typed.toLowerCase())
@@ -95,7 +71,6 @@ export function useLinkMetaFields(initial: LinkMetaValues = {}) {
     };
   }
 
-  /** Something beyond the name was filled in (the Create pop-up says when OnlyFans' reply lost it). */
   function filled(): boolean {
     const p = payload();
     return p.promo_cost != null || !!p.source || p.tags.length > 0 || !!p.list_id;
@@ -107,16 +82,12 @@ export function useLinkMetaFields(initial: LinkMetaValues = {}) {
   };
 }
 
-/** Source, Promo cost, Tag and List, 24px apart as the editor's form lays them out (the caller's flex gap). */
 export default function LinkMetaFields({ f, id, accountId, sources, tags: tagOptions, noList }: {
   f: LinkMetaState;
-  /** The fields' id prefix: `${id}-source`, `${id}-cost`, `${id}-tag`, `${id}-list`. */
   id: string;
   accountId: string | null;
-  /** The account's Sources and Tags in use: the inputs' suggestions. */
   sources: string[];
   tags: string[];
-  /** Batch edit: no List (it adds fans on OnlyFans, one link at a time). */
   noList?: boolean;
 }) {
   const { customLists, isLoading } = useFanLists(noList ? null : accountId);
@@ -124,7 +95,6 @@ export default function LinkMetaFields({ f, id, accountId, sources, tags: tagOpt
   const lists = customLists
     .filter((l) => /^\d+$/.test(String(l.id)))
     .map((l) => ({ id: String(l.id), name: l.name ?? `List ${l.id}` }));
-  // A stored List no longer in OnlyFans' answer (deleted on OnlyFans, or the read failed) still shows.
   if (f.list && !lists.some((l) => l.id === f.list!.id)) lists.unshift({ id: f.list.id, name: f.list.name || `List ${f.list.id}` });
 
   return (
@@ -144,7 +114,6 @@ export default function LinkMetaFields({ f, id, accountId, sources, tags: tagOpt
       </div>
       <div className="flex flex-col gap-2">
         <FieldLabel htmlFor={`${id}-cost`} text="Promo cost" optional />
-        {/* A "$" prefix, 11 characters (Infloww's `PromoCostField`). */}
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-fg-dim" aria-hidden>$</span>
           <input
@@ -212,13 +181,10 @@ export default function LinkMetaFields({ f, id, accountId, sources, tags: tagOpt
   );
 }
 
-/** The List's helper text: what is added now, and when later claimers are. */
 export const LIST_HELP =
   "Adds the link's fans to this OnlyFans list now. Fans who claim later are added when its figures are next read " +
   "from OnlyFans, about every hour. Changing it leaves fans already added in the old list.";
 
-/** Under the List select: what saving will do. A new link or no stored List: what List does. A different list
- *  than the stored one, or None over it: what happens to the fans already added (Infloww's Modify / Delete copy). */
 function ListNote({ stored, picked }: { stored: string | null; picked: string | null }) {
   if (stored && picked && picked !== stored) {
     return <div role="status" className="text-xs text-warn">Editing the list will not affect already-added fans.</div>;

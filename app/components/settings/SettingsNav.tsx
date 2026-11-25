@@ -1,10 +1,5 @@
 "use client";
 
-/** Settings' left tab list (docs/infloww-screens.md §3.10). Data: lib/nav.ts.
- *  md and up it is Infloww's Tab list (docs/spec/settings-tabs/phase-00-shell-tokens-blob.md
- *  rows 3-7): 25% of the Tab area, 18.75% once the Tab area is 1200px wide, its own
- *  scroll, 64px icon rows on Infloww's colours (`--if-*`, ADR-0009). Below md it is
- *  one select naming the open tab (a phone showed 3 of 13 tabs in a strip with no hint of the rest). */
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";

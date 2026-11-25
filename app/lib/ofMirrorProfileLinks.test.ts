@@ -35,7 +35,6 @@ const type = (id: string, text: string) => {
   el.value = text;
   el.dispatchEvent(new Event("input", { bubbles: true }));
 };
-// GET /init's socialMediaProviders, a slice of the 22 measured live 2026-11-21 (OF's order: instagram first).
 const IG: SocialProvider = { socialMedia: "instagram", label: "Instagram", isLink: false, isShowAt: false };
 const TT: SocialProvider = { socialMedia: "tiktok", label: "Tiktok", isLink: false, isShowAt: true };
 const AMZ: SocialProvider = { socialMedia: "amazon", label: "Amazon", isLink: true, isShowAt: false };
@@ -54,7 +53,6 @@ afterEach(() => {
   unbinds = [];
 });
 
-/** Both write layers bound on settings/<page> as the frame binds them; returns the sent writes. */
 function bind(page: string, opts: { scope?: "all"; fail?: string; reply?: unknown; standIn?: boolean; data?: unknown[]; init?: unknown } = {}) {
   const doc = load(page);
   if (opts.data) drawLinks(doc, LISTS[page], opts.data, true);
@@ -112,13 +110,13 @@ describe("socialButtonBody (OF's form submit, 67786.js)", () => {
     [AMZ, "Shop", " http://amzn.to/abc ", { socialMedia: "amazon", label: "Shop", link: "http://amzn.to/abc", username: "" }],
   ])("%j %j %j", (provider, label, value, want) => expect(socialButtonBody(label, value, provider)).toEqual(want));
   it.each([
-    [null, "Label", "alpha"], // no provider (init unread): OF's Save is off without socialMedia
+    [null, "Label", "alpha"],
     [IG, "", "alpha"],
     [IG, "  ", "alpha"],
     [IG, "Label", ""],
     [IG, "Label", "@"],
-    [IG, "Label", "https://instagram.com/alpha"], // a username provider refuses a link (username_should_not_link)
-    [AMZ, "Label", "amazon.com/x"], // a link provider needs the scheme (user_must_be_url)
+    [IG, "Label", "https://instagram.com/alpha"],
+    [AMZ, "Label", "amazon.com/x"],
     [AMZ, "Label", "https://nodot/x"],
     [AMZ, "Label", "javascript:alert(1)"],
     [IG, "x".repeat(256), "alpha"],
@@ -145,9 +143,9 @@ describe("Social media's list (ticket 69)", () => {
     const d = load("social-media");
     for (let i = 0; i < 2; i++) applyPageExtras(d, "social-media", { socialButtons: [B1, B2] }, true);
     expect(labels()).toEqual(["My Insta", "My TikTok"]);
-    expect(d.querySelectorAll("[data-oi-link-row] a[href]").length).toBe(0); // never a live link out of the Mirror
+    expect(d.querySelectorAll("[data-oi-link-row] a[href]").length).toBe(0);
     expect([...d.querySelectorAll("[data-oi-link-remove]")].every((b) => b.hasAttribute("data-oi-wired"))).toBe(true);
-    applyPageExtras(d, "social-media", {}, true); // still loading: the drawn list stays
+    applyPageExtras(d, "social-media", {}, true);
     expect(labels()).toEqual(["My Insta", "My TikTok"]);
   });
 });
@@ -179,10 +177,10 @@ describe("Social media's Add button (ticket 69)", () => {
     expect((document.getElementById("oi-link-label") as HTMLInputElement).value).toBe("Instagram");
     expect([field().placeholder, at().hidden]).toEqual(["Username", true]);
     type("oi-link-url", "alpha");
-    pickProvider("tiktok"); // username -> username: the field keeps its text, "@" shows
+    pickProvider("tiktok");
     expect((document.getElementById("oi-link-label") as HTMLInputElement).value).toBe("Tiktok");
     expect([field().value, field().placeholder, at().hidden]).toEqual(["alpha", "Username", false]);
-    pickProvider("amazon"); // username -> link: OF keeps link and username apart, the field empties
+    pickProvider("amazon");
     expect([field().value, field().placeholder, at().hidden]).toEqual(["", "Link", true]);
     expect(saveBtn()!.disabled).toBe(true);
   });
@@ -192,14 +190,14 @@ describe("Social media's Add button (ticket 69)", () => {
     add().click();
     type("oi-link-url", "");
     expect(saveBtn()!.disabled).toBe(true);
-    type("oi-link-url", "https://instagram.com/alpha"); // a link in a Username field
+    type("oi-link-url", "https://instagram.com/alpha");
     expect(saveBtn()!.disabled).toBe(true);
     type("oi-link-url", "alpha");
     expect(saveBtn()!.disabled).toBe(false);
     type("oi-link-label", " ");
     expect(saveBtn()!.disabled).toBe(true);
     pickProvider("amazon");
-    type("oi-link-url", "amazon.com/x"); // OF's link check wants the scheme
+    type("oi-link-url", "amazon.com/x");
     expect(saveBtn()!.disabled).toBe(true);
     type("oi-link-url", "https://amazon.com/x");
     expect(saveBtn()!.disabled).toBe(false);
@@ -300,10 +298,8 @@ describe("Social media's remove (ticket 69)", () => {
   });
 });
 
-// ticket 70
 const LINKS = LISTS.links;
 const createBtn = () => document.querySelector<HTMLButtonElement>(LINKS.add)!;
-// OF's real GET /users/links item (measured live 2026-11-21): `url`, no `link`.
 const liked = (id: number, url: string) => ({
   id,
   sort: id,
@@ -342,7 +338,7 @@ describe("Things I Like's list (ticket 70)", () => {
     expect(SOURCE_PATHS.thingsLinks).toBe("/api/of/v2/users/links");
     const d = load("links");
     for (let i = 0; i < 2; i++) applyPageExtras(d, "links", { thingsLinks: [L1, L2] }, true);
-    expect(L1).not.toHaveProperty("link"); // regression: OF's item has no `link`, the row still shows its url
+    expect(L1).not.toHaveProperty("link");
     expect(labels()).toEqual([L1.url, L2.url]);
     expect(d.querySelectorAll("[data-oi-link-row] a[href]").length).toBe(0);
     expect([...d.querySelectorAll("[data-oi-link-remove]")].every((b) => b.hasAttribute("data-oi-wired"))).toBe(true);

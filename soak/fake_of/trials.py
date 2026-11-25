@@ -1,18 +1,3 @@
-"""Free trial links surface of the fake OnlyFans (Phase 3 tickets 61 and 64: the trial sort radios' and trial Create
-link's fake-mode proofs), one state for every read and write.
-
-Mounted from app.py beside the settings surface (after automations' gate rows, so its fault knobs still apply):
-  GET    /trials          the link list, newest first, `offset`/`limit` honoured (bare default page: three links);
-                          `field` + `sort` sort server-side (TRIAL_KEYS); a bare list (service/of_reads.py
-                          `trial_links`), or {list, hasMore} with `pagination` (`trial_links_sorted`)
-  POST   /trials          `{trialLinkName, subscribeDays, subscribeCounts, expireDays?}` (of_sends `create_trial_link`)
-  DELETE /trials/{id}     removes the link (of_sends `delete_trial_link`)
-
-Rows start from the captured fixture settings-trials.json (app/lib/__fixtures__/of) plus TRIALS (claim counts
-that make a sort visible), newest first. Every write is logged with its body and applied before the response, so the
-next read reflects it. The write replies are the fake's own (no capture of OF's): the created link (its `id` is what
-the Live proof's Undo log row records), and `{success: true}`.
-"""
 from __future__ import annotations
 
 import copy
@@ -49,7 +34,7 @@ def trials(fake) -> list[dict[str, Any]]:
 
 async def _list(fake, req: Request, ok) -> Response:
     p = req.query_params
-    off, lim = int(p.get("offset") or 0), int(p.get("limit") or 3)   # OF's bare page is three links (of_reads)
+    off, lim = int(p.get("offset") or 0), int(p.get("limit") or 3)
     rows = links.sort_rows(req, trials(fake), TRIAL_KEYS)
     page = rows[off:off + lim]
     return ok(req, {"list": page, "hasMore": off + lim < len(rows)} if "pagination" in p else page)

@@ -1,14 +1,3 @@
-"""The Mass messages tab's cached broadcasts (scenarios/2026-10-29-state-reducers.py, section 1c): per
-Creator, `copies` x each of KINDS as `mass_broadcast_cache` rows, the way `mass_broadcast_cache.upsert_many`
-writes OF's feed items, fetched now (newer than every `mass_runs` row, so the tab's read never calls OF).
-
-  KINDS   (kind, hours ago, free, media count, giphy id, unsent, OF can still unsend): free text, GIF-only,
-          image, paid text, paid image (5-9 h old); fresh free text (1 h, and 3 h: under the 4 h gate with an
-          hour's margin for a slow run); an already unsent one; one OF says can no longer be unsent.
-
-Queue ids are ID_BASE + Creator index * 100_000 + copy * 100 + kind index (below lib/of_wire.py's own
-ids). Each copy is `copy` seconds older than the first. Deterministic: no randomness, only `now`.
-"""
 from __future__ import annotations
 
 import json
@@ -31,7 +20,6 @@ ID_BASE = 7_700_000_000
 
 
 def seed(w: World, creators: list[str], copies: int) -> dict[tuple[str, int], dict]:
-    """Writes the rows; returns them by (Creator, queue id): kind, hours, free, media, gif, canceled, can_unsend."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     rows: dict[tuple[str, int], dict] = {}
     con = w.sql()

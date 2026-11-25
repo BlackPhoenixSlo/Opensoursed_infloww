@@ -1,9 +1,5 @@
 "use client";
 
-/** Dashboard schedule and personal shifts.
- * Owners see assigned employees across the selected dashboard period; chatters
- * keep their personal shifts and clock actions.
- */
 
 import { useEffect, useState, type ReactNode } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
@@ -27,7 +23,6 @@ const BUTTON =
   "text-xs px-3 py-1.5 rounded-lg bg-bg-elev-1 hover:bg-bg-elev-2 border border-border disabled:opacity-50";
 const OFF = "Time tracking is off";
 
-/** The capture's card (#8, #9) and title (#12, #15): `IfCard`, named by its title; `after` sits right after it. */
 function Card({ title, tip, after, className, scrollable = false, children }: {
   title: string; tip?: string; after?: ReactNode; className?: string; scrollable?: boolean; children: ReactNode;
 }) {
@@ -40,7 +35,6 @@ function Card({ title, tip, after, className, scrollable = false, children }: {
   );
 }
 
-/** The loading line, or the error line with Retry, or null once loaded. */
 function loadGate(q: UseQueryResult<unknown>, what: string): ReactNode {
   if (q.isPending) return <p className="text-sm text-fg-dim">{`Loading ${what}…`}</p>;
   if (q.isError) {
@@ -54,7 +48,6 @@ function loadGate(q: UseQueryResult<unknown>, what: string): ReactNode {
   return null;
 }
 
-/** "Time tracking is off", ours: the bundle's cards have no such line. */
 function TimeTrackingOff() {
   return (
     <p title={EXTRA_LABEL} className="text-[12px] text-muted">
@@ -63,7 +56,6 @@ function TimeTrackingOff() {
   );
 }
 
-/** Now, re-read every poll so an elapsed time moves while the data does not. */
 function useNow(): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -73,13 +65,11 @@ function useNow(): number {
   return now;
 }
 
-/** "1h 05m" from `iso` to `now`. */
 function elapsed(iso: string, now: number): string {
   const minutes = Math.max(0, Math.floor((now - new Date(iso).getTime()) / 60_000));
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
-/** The named parts of `iso` in `tz` (the viewer's zone when `tz` is empty). */
 function partsIn(iso: string, tz: string, opts: Intl.DateTimeFormatOptions): Record<string, string> {
   return Object.fromEntries(
     new Intl.DateTimeFormat("en-US", { ...opts, timeZone: tz || undefined })
@@ -87,35 +77,27 @@ function partsIn(iso: string, tz: string, opts: Intl.DateTimeFormatOptions): Rec
   );
 }
 
-/** The bundle's shift date, `dddd, MMM. D, YYYY` (#69): "Wednesday, Oct. 14, 2026". */
 function shiftDate(iso: string, tz: string): string {
   const p = partsIn(iso, tz, { weekday: "long", month: "short", day: "numeric", year: "numeric" });
   return `${p.weekday}, ${p.month}. ${p.day}, ${p.year}`;
 }
 
-/** The bundle's shift time, `hh:mm A` (#69): "03:00 PM". */
 function shiftTime(iso: string, tz: string): string {
   const p = partsIn(iso, tz, { hour: "2-digit", minute: "2-digit", hour12: true });
   return `${p.hour}:${p.minute} ${p.dayPeriod}`;
 }
 
 type PillState = "before" | "now" | "after";
-/** The time pill's tint (#72): grey for a past shift, the bundle's green for one in progress, its red for an
- *  upcoming one, drawn in the house tokens (ADR-0010). */
 const PILL: Record<PillState, string> = {
   before: "bg-fg-dim/10 text-fg",
   now: "bg-ok/10 text-ok",
   after: "bg-err/10 text-err",
 };
 
-/** The empty art and "No data" (#73, #93), 225px down from the card's title from `md` (#74). The live capture shows
- *  the plain "data" art here (16-dashboard.png), not the clock one. */
 function NoData() {
   return <EmptyState className="py-8 md:pt-[225px] md:pb-0" />;
 }
 
-/** The "My shifts" card: the capture's title and tooltip (#65, #66), the full height of the bottom box from `md`
- *  (#67), its body scrolling as the bundle's `overflow:"overlay"`. */
 function MyShiftsFrame({ children, owner = false }: { children: ReactNode; owner?: boolean }) {
   return (
     <Card
@@ -142,7 +124,6 @@ function OwnerScheduledShifts({ from, to, ready }: { from?: string; to?: string;
   const q = useShiftWeek({ weekStart: from ? new Date(from) : weekStart,
     weekEnd: to ? new Date(Date.parse(to) + 1) : addDays(weekStart, 7) }, ready);
   const now = useNow();
-  // One row per time slot, every Shift's employees kept (#8).
   const rows = groupOccurrences(q.data?.occurrences ?? []);
   return (
     <MyShiftsFrame owner>
@@ -180,7 +161,6 @@ function scheduleTime(iso: string, tz: string) {
   return `${p.hour}:${p.minute}`;
 }
 
-/** One of the chatter's occurrences as the bundle's shift row (#69 to #72). */
 function ShiftRow({ o, now, creator }: { o: MyShiftOccurrence; now: number; creator: string }) {
   const start = new Date(o.occurrence_start).getTime();
   const end = new Date(o.occurrence_end).getTime();
@@ -200,8 +180,6 @@ function ShiftRow({ o, now, creator }: { o: MyShiftOccurrence; now: number; crea
   );
 }
 
-/** One "My shifts" week heading and its occurrences; nothing when it has none. The split is ours (phase-04, story
- *  20), so the heading carries the label. */
 function WeekGroup({ label, list, now, creator }: {
   label: string;
   list: MyShiftOccurrence[];
@@ -221,22 +199,6 @@ function WeekGroup({ label, list, now, creator }: {
   );
 }
 
-/**
- * ASSUMPTION: a chatter's card says "Time tracking is off" only when none of
- * its Creators' Agencies has it on; with one on, the card lists as usual and
- * the dialog explains a Creator that is off. The Shifts list whatever the
- * flag, as the bundle's card lists them (ticket 53). Rung 5. Overturned if a
- * chatter linked to two Agencies must see the off state per Creator on the
- * card.
- *
- * ASSUMPTION: the card's "week" (docs/spec/phase-04, story 20) is where its
- * today-plus-seven-days list splits into "This week" and "Next week", at the
- * Agency's week start in the browser's timezone; the range itself stays
- * Phase 2's. Rung 4: additive, and no occurrence leaves the card. The bundle
- * lists the header's period instead (#66), so the headings are labelled ours.
- * Overturned if the owner wants the card to follow the header's period, which
- * needs a period on `GET /admin/shifts/me`.
- */
 function ChatterMyShifts() {
   const q = useMyShifts();
   const now = useNow();

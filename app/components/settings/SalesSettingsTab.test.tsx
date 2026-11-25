@@ -1,9 +1,3 @@
-/**
- * SalesSettingsTab — the Sales Settings Panel (docs/spec/settings-tabs/phase-03-roles-sales.md).
- *
- * Rendered with the relay mocked at `fetch` by URL: the stub serves the `sales` Settings blob, so every
- * save assertion is an assertion about the wire.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -13,7 +7,6 @@ import SalesSettingsTab, { windowAfter } from "@/components/settings/SalesSettin
 type Call = { method: string; url: string; body: unknown };
 
 let fetchMock: ReturnType<typeof vi.fn>;
-/** What GET /admin/settings/sales answers. */
 let getReply: () => Response;
 
 function calls(): Call[] {
@@ -25,7 +18,6 @@ function calls(): Call[] {
 }
 const puts = () => calls().filter((c) => c.method === "PUT");
 
-/** The spec's `SalesBlob` with every default: what an empty stored blob saves. */
 const DEFAULTS = {
   exclude_welcome: false,
   exclude_of_fee: false,
@@ -52,7 +44,6 @@ afterEach(() => {
 
 const save = () => screen.getByRole("button", { name: /save/i });
 const group = (name: string) => screen.getByRole("radiogroup", { name });
-/** The radios' label texts in `name`'s group, every one or only the checked ones. */
 const radioNames = (name: string, onlyChecked = false) =>
   within(group(name)).getAllByRole("radio")
     .filter((r) => !onlyChecked || (r as HTMLInputElement).checked)
@@ -78,7 +69,6 @@ describe("SalesSettingsTab", () => {
     expect(screen.getAllByRole("radio")).toHaveLength(5);
     expect(screen.getByText("Subscriptions, Streams & Referrals")).toBeInTheDocument();
     expect(screen.getAllByRole("checkbox").map((c) => c.closest("label")?.textContent)).toEqual(["Opt in to chatters"]);
-    // Every field is applied (phase-04 spec, story 55): no "not applied yet" note in any wording.
     expect(screen.queryByText(/not applied yet|is applied yet/i)).toBeNull();
     expect(screen.queryByText(/saved for your organization/i)).toBeNull();
     expect(screen.queryByText(/learn more/i)).toBeNull();
@@ -87,10 +77,8 @@ describe("SalesSettingsTab", () => {
   it("says under the radios that Shift schedule credits sales only while Time tracking is on", () => {
     renderWithProviders(<SalesSettingsTab />);
     const line = screen.getByText((_, el) => el?.tagName === "P" && el.textContent === "Shift schedule credits sales only while Time tracking is on.");
-    // Under the radios: after the last attribution control (the opt-in checkbox) in document order.
     const optIn = screen.getByRole("checkbox", { name: "Opt in to chatters" });
     expect(optIn.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // Save sits in the Panel header row (Infloww's edit-btn-wrap), not after the body.
     expect(save().closest('[data-settings="panel-header"]')).not.toBeNull();
   });
 
@@ -252,7 +240,6 @@ describe("SalesSettingsTab", () => {
       "The effective time start later than the current time, please reset it.");
     expect(screen.queryByRole("note")).toBeNull();
 
-    // 5 May is before the version of 7 May, which bounds what the save reaches.
     fireEvent.change(field, { target: { value: "2026-05-05T00:00" } });
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("note")).toHaveTextContent(/will be recomputed/);

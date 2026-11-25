@@ -1,12 +1,3 @@
-/**
- * My AI Chatter › Get to know fans: the switch (and its On / Off pill) sits in the page header, the settings show with no rule and
- * the switch off (catalog defaults), and their Save then creates the rule OFF (never the switch). The Model info box opens on the
- * relay's prewritten template while the account has no note (its untouched label lines never reach a
- * prompt: service/tests/test_bio_consistency.py), but on the stored note once there is one. Save sends
- * the stored brain back with only `model_notes` changed. A Human style box toggled while the style save is in
- * flight survives its success (and the next Save sends it); a cutoff typed while the rule PATCH is in flight keeps
- * "Saved" off once it lands.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -86,7 +77,6 @@ describe("Get to know fans", () => {
     renderWithProviders(<GetToKnowFansPage />, makeTestQueryClient());
     await screen.findByRole("spinbutton", { name: "Message cutoff" });
     await screen.findByRole("textbox", { name: "Model info" });
-    // slop/scenarios/2026-10-29-state-reducers.py `_gtkf_save`.
     const hits = document.evaluate("//section[h2[normalize-space()='When the chat ends']]/following-sibling::div[button][1]/button",
       document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
     expect(hits.snapshotLength).toBe(1);
@@ -130,12 +120,12 @@ describe("Get to know fans", () => {
     const save = screen.getAllByRole("button", { name: "Save" })[0];
     fireEvent.click(save);
     await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole("switch", { name: /Human style/ }));   // while the PUT is out
+    fireEvent.click(screen.getByRole("switch", { name: /Human style/ }));
     land({ account_id: ACC, config: { [`typos_${KIND}`]: false } });
     await waitFor(() => expect(save).not.toBeDisabled());
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.getByRole("switch", { name: /Human style/ })).not.toBeChecked();
-    expect(screen.queryByText("Saved")).toBeNull();   // the in-flight toggle is not saved yet
+    expect(screen.queryByText("Saved")).toBeNull();
 
     relayPut.mockResolvedValue({ account_id: ACC, config: {} });
     fireEvent.click(save);
@@ -170,7 +160,7 @@ describe("Get to know fans", () => {
     const save = screen.getAllByRole("button", { name: "Save" })[0];
     fireEvent.click(save);
     await waitFor(() => expect(relayPatch).toHaveBeenCalledTimes(1));
-    fireEvent.change(cutoff, { target: { value: "12" } });   // while the PATCH is out
+    fireEvent.change(cutoff, { target: { value: "12" } });
     land(RULE);
     await waitFor(() => expect(save).not.toBeDisabled());
     await new Promise((r) => setTimeout(r, 50));

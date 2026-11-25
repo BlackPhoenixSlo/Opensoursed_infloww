@@ -1,9 +1,3 @@
-/**
- * The Audit log tab (roadmap W6 6.16): the server's readable label over the
- * raw method + path, and a from/to day filter sent as UTC bounds (`to` is the
- * next local midnight, so its day is included), and the app's own background
- * writes hidden unless "Show system writes" is ticked.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 

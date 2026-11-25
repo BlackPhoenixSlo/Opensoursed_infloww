@@ -1,17 +1,3 @@
-/**
- * /messages-pro as the app renders it: AppShell → the Messages Pro layout →
- * the page, inside renderWithProviders with the real ScopeProvider.
- *
- * Seam 1 of docs/spec/phase-00-pop-out-window.md (Testing Decisions). The
- * only stubs are the relay client at its module boundary (fixture Creator,
- * Fans and Thread), `next/navigation` per case, the user / chatter /
- * employee contexts as `components/shell/AppShell.test.tsx` stubs them, and
- * the browser APIs jsdom lacks. The Fan List (FanList), the Thread
- * (ChatSurface) and Fan insights (FanDrawer) render for real. Every later
- * Phase 0 ticket adds its case here.
- *
- * Fixture identifiers are invented (this repo mirrors to a public one).
- */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -21,9 +7,6 @@ const { relayGet, nav } = vi.hoisted(() => {
   return { relayGet: vi.fn(), nav };
 });
 
-// Next hands back the SAME URLSearchParams for the life of a navigation, so
-// the mock caches it per search string (see analytics/message-dashboard's
-// page.render.test.tsx for why a fresh object per render breaks pages).
 let cachedSearch = { key: "\u0000", value: new URLSearchParams() };
 function searchParams() {
   if (cachedSearch.key !== nav.search) {
@@ -59,7 +42,6 @@ vi.mock("@/lib/relay", async (importOriginal) => {
   };
 });
 
-// As AppShell.test.tsx stubs them: an owner signed in, no chatter, no employee.
 vi.mock("@/contexts/UserContext", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/contexts/UserContext")>();
   const value = { user: { username: "owner" }, logout: vi.fn() };
@@ -87,7 +69,6 @@ import MessagesProLayout from "./layout";
 import MessagesProPage from "./page";
 import DeepLinkPage from "./[accountId]/[fanId]/page";
 
-/* ── fixtures: one Creator, three Fans, one Thread ─────────────────────── */
 
 const ACCOUNT_ID = "100000001";
 const CREATOR = { id: 100000001, name: "Test Creator", username: "testcreator", avatar: null };
@@ -107,7 +88,6 @@ const THREAD = [
     media: [], mediaCount: 0, isLiked: false, isPinned: false,
   },
 ];
-// The second Fan's Thread holds one Pinned message.
 const PINNED_TEXT = "Fixture pinned message";
 const PINNED_THREAD = [
   {
@@ -130,7 +110,6 @@ const ACCOUNT = {
   color: "#e8618c", has_session: true, session_dead_at: null, created_at: ago(43_200), last_used_at: ago(5),
 };
 
-/** FanRecord in lib/relay.ts, empty but for the identity fields. */
 function fanRecord(f: (typeof FANS)[number]) {
   return {
     account_id: ACCOUNT_ID, fan_id: f.id, of_username: f.username, of_display_name: f.name,
@@ -142,7 +121,6 @@ function fanRecord(f: (typeof FANS)[number]) {
   };
 }
 
-/** Answers one relay GET by path, shaped like the relay answers it. */
 async function fixture(path: string): Promise<unknown> {
   const [p] = String(path).split("?");
   if (p === "/admin/accounts") return { accounts: [ACCOUNT], active_account_id: ACCOUNT_ID };
@@ -156,17 +134,14 @@ async function fixture(path: string): Promise<unknown> {
     const list = messages[1] === String(FANS[0].id) ? THREAD : messages[1] === String(FANS[1].id) ? PINNED_THREAD : [];
     return { list, hasMore: false };
   }
-  // The Fan profile lookup and the Fan List's enrichment: a map of the asked-for Fans.
   if (p === "/api/of/v2/users/list") {
     const q = new URLSearchParams(String(path).split("?")[1] ?? "");
     const ids = q.getAll("ids").flatMap((v) => v.split(","));
     return Object.fromEntries(FANS.filter((f) => ids.includes(String(f.id))).map((f) => [String(f.id), fanUser(f)]));
   }
-  // One Fan's OnlyFans profile (Fan insights and the Thread's menu read it).
   const ofUser = /^\/api\/of\/v2\/users\/(\d+)$/.exec(p);
   const ofUserFan = ofUser && FANS.find((f) => String(f.id) === ofUser[1]);
   if (ofUserFan) return fanUser(ofUserFan);
-  // Fan insights' reads (shapes as scripts/ui-shots.sh answers them).
   const fanPath = new RegExp(`^/admin/fans/${ACCOUNT_ID}/(\\d+)(/ppv-history)?$`).exec(p);
   if (fanPath?.[2]) {
     return { items: [], summary: { count: 0, max_cents: 0, avg_cents: 0, tips_cents: 0, messages_cents: 0, posts_cents: 0 } };
@@ -176,9 +151,7 @@ async function fixture(path: string): Promise<unknown> {
   return { list: [], items: [], rows: [], hasMore: false, next_cursor: null };
 }
 
-/* ── a second Creator, for the Deep link scope case ────────────────────── */
 
-/** Where ScopeProvider saves the scope (`contexts/ScopeContext.tsx`). */
 const SCOPE_KEY = "chatterly:scope";
 const OTHER_ACCOUNT_ID = "100000002";
 const OTHER_ACCOUNT = { ...ACCOUNT, id: OTHER_ACCOUNT_ID, nickname: "Other Creator", name: "Other Creator", color: "#4a90d9" };
@@ -189,7 +162,6 @@ const OTHER_CHATS = [{
   lastMessage: { ...CHATS[0].lastMessage, id: 800000009, text: `Hello from ${OTHER_FAN.name}`, fromUser: fanUser(OTHER_FAN) },
 }];
 
-/** `fixture`, with a second Creator whose Fan List holds one other Fan. */
 async function twoCreatorFixture(path: string, opts?: { accountId?: string }): Promise<unknown> {
   const [p, qs = ""] = String(path).split("?");
   if (p === "/admin/accounts") return { accounts: [ACCOUNT, OTHER_ACCOUNT], active_account_id: ACCOUNT_ID };
@@ -201,9 +173,7 @@ async function twoCreatorFixture(path: string, opts?: { accountId?: string }): P
   return fixture(path);
 }
 
-/* ── jsdom gaps ─────────────────────────────────────────────────────────── */
 
-/** `matchMedia` for a viewport this many pixels wide. */
 function stubViewport(width: number) {
   window.matchMedia = ((query: string) => {
     const min = /min-width:\s*(\d+)px/.exec(query);
@@ -236,9 +206,6 @@ class FakeEventSource {
   removeEventListener() {}
   close() {}
 }
-// Installed for the whole file, outside vi.stubGlobal: a scope change (a Deep
-// link's) schedules the SSE bus's reconnect 50ms out (lib/events.ts setScope),
-// which may fire after a case's teardown and read `EventSource.OPEN`.
 Object.defineProperty(globalThis, "EventSource", { value: FakeEventSource, configurable: true, writable: true });
 
 beforeEach(() => {
@@ -260,24 +227,18 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** The page module Next routes `pathname` to: the index, or a Deep link. */
 function routePage(pathname: string) {
   const deepLink = /^\/messages-pro\/([^/]+)\/([^/]+)$/.exec(pathname);
   if (!deepLink) return <MessagesProPage />;
-  // Already fulfilled, as React's `use` marks a settled thenable, so the page
-  // reads its params on first render instead of suspending until a retry that
-  // jsdom's act queue would only flush if something else re-rendered.
   const value = { accountId: deepLink[1], fanId: deepLink[2] };
   const params = Object.assign(Promise.resolve(value), { status: "fulfilled", value });
   return <DeepLinkPage params={params} />;
 }
 
-/** The route tree at `url`, with the location set to it. */
 function routeTree(url: string) {
   const [pathname, search = ""] = url.split("?");
   nav.pathname = pathname;
   nav.search = search;
-  // The Thread reads `msg` from the real location, as the browser would have it.
   window.history.replaceState(null, "", url);
   return (
     <ScopeProvider>
@@ -288,38 +249,31 @@ function routeTree(url: string) {
   );
 }
 
-/** The route as the app renders it at `url`, over `client`'s cache when given. */
 function renderRoute(url: string, client?: QueryClient) {
   return renderWithProviders(routeTree(url), client);
 }
 
-/** A client-side navigation to `url`: the providers, AppShell and layout stay mounted. */
 function navigateTo(rendered: ReturnType<typeof renderRoute>, url: string) {
   rendered.rerender(routeTree(url));
 }
 
-/** The app chrome a Pop-out window drops: the sidebar and the top bar's toggle. */
 function expectNoAppChrome(container: HTMLElement) {
   expect(container.querySelector("#app-sidebar")).toBeNull();
   expect(screen.queryByRole("button", { name: "Toggle sidebar" })).toBeNull();
 }
 
-/** Pinned messages live in the Thread's pinned bar: no left column of them (ADR-0002). */
 function expectNoPinnedColumn() {
   expect(screen.queryByRole("complementary", { name: "Pinned messages" })).toBeNull();
 }
 
-/** The Thread's header: the one holding the "Fan insights" toggle. */
 function threadHeader() {
   return screen.getByRole("button", { name: "Fan insights" }).closest("header")!;
 }
 
-/** The Fan's row in the Fan List (its name also shows in the Thread header once selected). */
 function rowOf(f: (typeof FANS)[number]) {
   return screen.getAllByText(f.name).map((el) => el.closest("[data-chat-row]")).find(Boolean)!;
 }
 
-/** Relay GETs for this Fan's Thread messages so far. */
 function messageCalls(f: (typeof FANS)[number]) {
   return relayGet.mock.calls.map(([path]) => String(path)).filter((p) => p.startsWith(`/api/of/v2/chats/${f.id}/messages`));
 }
@@ -337,16 +291,12 @@ describe("the Messages Pro route", () => {
     expect(row).not.toBeNull();
     await userEvent.click(row!);
 
-    // The Thread: its message list asks the relay for this Fan's messages and paints them.
     expect(await screen.findByText(THREAD_TEXT)).toBeInTheDocument();
     expect(relayGet.mock.calls.map(([path]) => String(path))).toContainEqual(
       expect.stringContaining(`/api/of/v2/chats/${FANS[0].id}/messages`),
     );
     expect(screen.queryByText("Select any conversation to start")).toBeNull();
 
-    // Fan insights, pinned open beside the Thread on desktop, shows the Fan's record.
-    // ChatSurface mounts two FanDrawers (overlay and pinned column; CSS shows one
-    // per width), so the Nickname field is found at least once rather than exactly once.
     expect((await screen.findAllByRole("textbox", { name: "Nickname" })).length).toBeGreaterThan(0);
     expect(relayGet.mock.calls.map(([path]) => String(path))).toContain(`/admin/fans/${ACCOUNT_ID}/${FANS[0].id}`);
     expectNoPinnedColumn();
@@ -355,7 +305,6 @@ describe("the Messages Pro route", () => {
   it("the selected Fan's row is marked aria-current and scrolled into view once per selection", async () => {
     renderRoute("/messages-pro");
     const scroll = vi.mocked(Element.prototype.scrollIntoView);
-    /** scrollIntoView calls made on `row`, with their options. */
     const scrollsOf = (row: Element) => scroll.mock.calls.filter((_, i) => scroll.mock.contexts[i] === row);
 
     for (const f of FANS) expect(await screen.findByText(f.name)).toBeInTheDocument();
@@ -367,13 +316,11 @@ describe("the Messages Pro route", () => {
     for (const f of FANS.slice(1)) expect(rowOf(f)).not.toHaveAttribute("aria-current");
     expect(scrollsOf(rowOf(FANS[0]))).toEqual([[{ block: "nearest" }]]);
 
-    // Later renders of the same selection: closing Fan insights, and re-clicking the Fan.
     await userEvent.click(screen.getByRole("button", { name: "Fan insights" }));
     await userEvent.click(rowOf(FANS[0]));
     expect(rowOf(FANS[0])).toHaveAttribute("aria-current", "true");
     expect(scrollsOf(rowOf(FANS[0]))).toHaveLength(1);
 
-    // A new selection moves the marker and scrolls its own row once.
     await userEvent.click(rowOf(FANS[1]));
     expect(await screen.findByText(PINNED_TEXT)).toBeInTheDocument();
     expect(rowOf(FANS[1])).toHaveAttribute("aria-current", "true");
@@ -395,7 +342,6 @@ describe("the Messages Pro route", () => {
     expect(await screen.findByText(THREAD_TEXT)).toBeInTheDocument();
     expectNoAppChrome(container);
 
-    // Fan insights: open on selection, and the toggle beside it closes and reopens it.
     const toggle = screen.getByRole("button", { name: "Fan insights" });
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(await screen.findByRole("complementary", { name: "Fan insights" })).toBeInTheDocument();
@@ -409,8 +355,6 @@ describe("the Messages Pro route", () => {
     expect(screen.getByRole("complementary", { name: "Fan insights" })).toBeInTheDocument();
     expectNoPinnedColumn();
 
-    // Home goes back to this window's inbox root and empties the Thread
-    // there; it never leads into the app.
     const home = within(screen.getByRole("region", { name: "Fan tabs" })).getByRole("link", { name: "Home" });
     expect(home).toHaveAttribute("href", "/messages-pro");
     await userEvent.click(home);
@@ -422,7 +366,6 @@ describe("the Messages Pro route", () => {
   it("windowed Deep link: a Deep link URL with window=1 renders without the app sidebar", async () => {
     const { container } = renderRoute(`/messages-pro/${ACCOUNT_ID}/${FANS[0].id}?window=1`);
 
-    // The Deep link's Thread renders, and no app chrome around it.
     expect(await screen.findByText(THREAD_TEXT)).toBeInTheDocument();
     expectNoAppChrome(container);
     expectNoPinnedColumn();
@@ -434,7 +377,6 @@ describe("the Messages Pro route", () => {
     expect(await screen.findByText(THREAD_TEXT)).toBeInTheDocument();
     expectNoAppChrome(container);
     expectNoPinnedColumn();
-    // Home is Messages Pro's inbox root, not the app's dashboard.
     expect(within(screen.getByRole("region", { name: "Fan tabs" })).getByRole("link", { name: "Home" })).toHaveAttribute("href", "/messages-pro");
   });
 
@@ -462,7 +404,6 @@ describe("the Messages Pro route", () => {
     for (const f of FANS.slice(1)) expect(rowOf(f)).not.toHaveAttribute("aria-current");
     expect(scroll.mock.contexts.filter((el) => el === rowOf(FANS[0]))).toHaveLength(1);
 
-    // The Thread is the Fan's, and Fan insights start closed for this Fan.
     expect(await screen.findByText(THREAD_TEXT)).toBeInTheDocument();
     expect(threadHeader()).toHaveTextContent(FANS[0].name);
     const toggle = screen.getByRole("button", { name: "Fan insights" });
@@ -473,7 +414,6 @@ describe("the Messages Pro route", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("complementary", { name: "Fan insights" })).toBeInTheDocument();
 
-    // Any other Fan then opens as in-app: Fan insights open.
     await userEvent.click(rowOf(FANS[1]));
     expect(await screen.findByText(PINNED_TEXT)).toBeInTheDocument();
     expect(threadHeader()).toHaveTextContent(FANS[1].name);
@@ -495,7 +435,6 @@ describe("the Messages Pro route", () => {
   });
 
   it("Deep link before the list: with the Fan List pending, the Thread shows the Fan from the profile lookup", async () => {
-    // The Fan List's request never answers; everything else does.
     relayGet.mockImplementation((path: string) =>
       String(path).split("?")[0] === "/api/of/v2/chats" ? new Promise(() => {}) : fixture(path),
     );
@@ -523,33 +462,27 @@ describe("the Messages Pro route", () => {
       expect(rowOf(FANS[0])).toHaveAttribute("aria-current", "true");
       expect(await screen.findByText(THREAD_TEXT)).toBeInTheDocument();
       expect(threadHeader()).toHaveTextContent(FANS[0].name);
-      // The realtime event scope follows this window's scope.
       await vi.waitFor(() => expect(busScope).toHaveBeenLastCalledWith(`model:${ACCOUNT_ID}`));
-      // The saved scope is untouched, so the Employee's other windows keep theirs.
       expect(window.localStorage.getItem(SCOPE_KEY)).toBe(`model:${OTHER_ACCOUNT_ID}`);
       expect(scopeWrites()).toEqual([]);
     }
 
-    // First render: the window opens straight at the Deep link.
     const first = renderRoute(link);
     await expectArrived();
     first.unmount();
 
-    // From the index page (scoped to the saved Creator) into the Deep link.
     busScope.mockClear();
     const rendered = renderRoute("/messages-pro");
     expect(await screen.findByText(`Hello from ${OTHER_FAN.name}`)).toBeInTheDocument();
     navigateTo(rendered, link);
     await expectArrived();
 
-    // After arrival, a switch the Employee makes is saved, as today.
     await userEvent.click(screen.getByRole("tab", { name: "Other Creator" }));
     expect(await screen.findByText(`Hello from ${OTHER_FAN.name}`)).toBeInTheDocument();
     expect(scopeWrites()).toEqual([[SCOPE_KEY, `model:${OTHER_ACCOUNT_ID}`]]);
   });
 
   it("Deep link, Fan not in the list: the Thread still shows the Fan, no row is marked, and no further pages are fetched", async () => {
-    // The Fan List's first page lacks the link's Fan and says more pages exist.
     relayGet.mockImplementation(async (path: string) => {
       const answer = await fixture(path);
       if (String(path).split("?")[0] !== "/api/of/v2/chats") return answer;
@@ -563,11 +496,9 @@ describe("the Messages Pro route", () => {
     await vi.waitFor(() => expect(threadHeader()).toHaveTextContent(FANS[0].name));
     expect(container.querySelectorAll("[data-chat-row]")).toHaveLength(2);
     expect(container.querySelectorAll("[data-chat-row][aria-current]")).toHaveLength(0);
-    // With no saved scope (All Models), the Fan List is still the link's Creator's, and nothing is saved.
     expect(screen.queryByRole("heading", { name: "All Models" })).toBeNull();
     expect(window.localStorage.getItem(SCOPE_KEY)).toBeNull();
 
-    // Give a hunt for the Fan time to page on, then count.
     await new Promise((r) => setTimeout(r, 50));
     const pages = relayGet.mock.calls
       .map(([path]) => String(path))
@@ -578,7 +509,6 @@ describe("the Messages Pro route", () => {
   });
 
   it("Deep link with msg: selecting another Fan removes msg before that Fan's Thread asks for messages, and it asks once", async () => {
-    // The second Fan's Thread has older pages, so a stale `msg` would page back through them.
     const searchAtFirstAsk: string[] = [];
     relayGet.mockImplementation((path: string) => {
       const p = String(path);
@@ -591,9 +521,6 @@ describe("the Messages Pro route", () => {
     renderRoute(`/messages-pro/${ACCOUNT_ID}/${FANS[0].id}?foo=1&msg=900000099#h`);
 
     expect(await screen.findByText(THREAD_TEXT)).toBeInTheDocument();
-    // A bare click: the row's pointerdown prefetch would otherwise ask for the
-    // first page before the Thread exists, and the Thread's own ask is the one
-    // that must not see `msg`.
     fireEvent.click(await screen.findByText(`Hello from ${FANS[1].name}`));
 
     expect(await screen.findByText(PINNED_TEXT)).toBeInTheDocument();
@@ -601,19 +528,14 @@ describe("the Messages Pro route", () => {
     expect(window.location.pathname).toBe(`/messages-pro/${ACCOUNT_ID}/${FANS[0].id}`);
     expect(window.location.search).toBe("?foo=1");
     expect(window.location.hash).toBe("#h");
-    // Give a stale `msg` time to page back, then count.
     await new Promise((r) => setTimeout(r, 50));
     expect(messageCalls(FANS[1])).toHaveLength(1);
   });
 
   it("Deep link refresh (spec case 5): refresh=media refetches the Thread and the Fan's money data once, then leaves the URL", async () => {
     const fan = FANS[0];
-    // The app's persisted caches keep these for a day; keep the seeds until
-    // Fan insights mounts their readers (the house client collects at once).
     const client = makeTestQueryClient();
     client.setDefaultOptions({ queries: { ...client.getDefaultOptions().queries, gcTime: Infinity } });
-    // The six query families the one-Fan page invalidated, seeded as a
-    // localStorage-rehydrated tab would hold them: fresh by their staleTimes.
     const emptyMedia = { pages: [{ list: [], hasMore: false }], pageParams: [null] };
     client.setQueryData(["messages", ACCOUNT_ID, fan.id], THREAD);
     client.setQueryData(["of-user", ACCOUNT_ID, fan.id], fanUser(fan));
@@ -626,12 +548,10 @@ describe("the Messages Pro route", () => {
     });
     client.setQueryData(["last-purchases", ACCOUNT_ID], []);
 
-    /** Relay GETs so far, per query family. */
     const paths = () => relayGet.mock.calls.map(([path]) => String(path));
     const fetches = () => ({
       thread: messageCalls(fan).length,
       profile: paths().filter((p) => p === `/api/of/v2/users/list?ids=${fan.id}&view=m`).length,
-      // The full /users/{id} read (the money block): once, at arrival, whether or not Fan insights is open.
       fullProfile: paths().filter((p) => p === `/api/of/v2/users/${fan.id}`).length,
       fan: paths().filter((p) => p === `/admin/fans/${ACCOUNT_ID}/${fan.id}`).length,
       media: paths().filter((p) => p.startsWith(`/api/of/v2/chats/${fan.id}/media`)).length,
@@ -642,29 +562,23 @@ describe("the Messages Pro route", () => {
 
     const first = renderRoute(`${link}?window=1&foo=1&refresh=media#h`, client);
 
-    // At arrival: the Thread and every query mounted with it, at once.
     expect(await screen.findByText(THREAD_TEXT)).toBeInTheDocument();
-    // The name lookup is not money: its fresh copy stays.
     await vi.waitFor(() => expect(fetches()).toMatchObject({ thread: 1, profile: 0, fullProfile: 1, fan: 1 }));
     expect(fetches()).toMatchObject({ media: 0, ppvHistory: 0, purchases: 0 });
-    // `refresh` is dropped; every other parameter and the hash stay.
     expect(window.location.pathname).toBe(link);
     expect(window.location.search).toBe("?window=1&foo=1");
     expect(window.location.hash).toBe("#h");
 
-    // Opening Fan insights fetches its money data rather than painting the seeds.
     const toggle = screen.getByRole("button", { name: "Fan insights" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(toggle);
     expect(await screen.findByRole("complementary", { name: "Fan insights" })).toBeInTheDocument();
     await vi.waitFor(() => expect(fetches()).toMatchObject({ media: 1, ppvHistory: 1, purchases: 1 }));
 
-    // Once each.
     await new Promise((r) => setTimeout(r, 50));
     const once = { thread: 1, profile: 0, fullProfile: 1, fan: 1, media: 1, ppvHistory: 1, purchases: 1 };
     expect(fetches()).toEqual(once);
 
-    // A reload at the URL it left, over the same cache, fetches nothing more.
     first.unmount();
     renderRoute(`${link}${window.location.search}${window.location.hash}`, client);
     expect(await screen.findByText(THREAD_TEXT)).toBeInTheDocument();
@@ -693,13 +607,12 @@ describe("the Messages Pro route", () => {
   });
 
   it("the Window header has no Scope switcher, Errors or \"+\" Extras overflow, as Infloww's (TODO.md B2)", async () => {
-    // One error in the last 24h, so the badge (hidden at zero) would show.
     relayGet.mockImplementation((path: string) => String(path).startsWith("/admin/errors")
       ? Promise.resolve({ count: 1, since_hours: 24, list: [] })
       : fixture(path));
     renderWithProviders(routeTree("/messages-pro"));
     for (const f of FANS) expect(await screen.findByText(f.name)).toBeInTheDocument();
-    await new Promise((r) => setTimeout(r, 1200)); // past the error badge's deferred first read
+    await new Promise((r) => setTimeout(r, 1200));
     const header = within(screen.getByRole("region", { name: "Window header" }));
     expect(header.queryAllByTitle(/Scope switcher|Error badge/)).toHaveLength(0);
     expect(header.queryByRole("button", { name: EXTRAS_OVERFLOW_LABEL })).toBeNull();

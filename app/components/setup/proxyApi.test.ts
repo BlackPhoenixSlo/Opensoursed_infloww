@@ -1,4 +1,3 @@
-/** proxyOps: the relay calls a proxy change makes, in order. A wrong proxy on a Creator can get it banned. */
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 vi.mock("@/lib/relay", () => ({ relay: { post: vi.fn() } }));

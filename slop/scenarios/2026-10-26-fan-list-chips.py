@@ -1,68 +1,3 @@
-"""Messages Pro Fan List: Owe reply is a chip after All, the sort control and the
-pencil ("Pin lists as chips") are icon buttons after the gear, and the "+"
-Extras overflow is gone (ADR-0003 amended 2026-10-26).
-
-Flow: the inbox world (`agency_inbox`: threads whose trailing inbound run is
-unread). Per Creator, `fresh` fans DM and `tippers` tip through the pump hook
-(serial per Creator), then a chatter opens `opened` unread chats without
-replying (the real `POST .../mark-read`), so they turn read but unresponded.
-The Fan List's OF /chats read is answered from the relay's own view of that
-inbox (`/admin/chats/recent`, plus each thread's last message from
-`/admin/messages` for who sent it and whether it was a tip), so its chip counts
-are the relay's. The owner then works the Fan List in Chromium: Owe reply,
-an extra sort, a reload, one Creator's pencil and its folder picker.
-
-Invariants: every frame and mark-read 2xx; each fresh / tipper chat unread, each
-opened chat read and owed. UI: the chips on screen in order (All, Owe reply,
-Pinned, Unread, With Tips, the pinned lists, Priority) with no "+"; the Unread
-and Owe reply counts equal those of the chats the Fan List loaded (25 a Creator
-a page), Owe reply's in amber, shown whether or not it is on; with Owe reply on,
-exactly the owed rows list and the owe dot marks exactly the read-owed ones
-(none while All is on); an extra sort turns the sort button blue, names it,
-moves the menu's check mark to it and puts the unread rows first; the choice is
-in localStorage and survives a reload; the pencil shows only for one Creator
-with an OF list, opens the folder picker, and a pin there is one write that
-adds the list's chip; the filter row keeps one line at the 400px pane; a Fan's
-name typed fast into the search box (one Creator) is one search for the box's
-text, and the rows are its matches; no console error and no 5xx in the browser
-session.
-
-The ranked inbox at volume (also `--no-ui`): per Creator and for the All Models
-union, the app's own `sortFanRows` + `chipCounts` (fanListSort.ts, in node through
-lib/app_ts.py + lib/fan_list_ts.mjs) over the relay's view: every sort mode lists
-each chat once (Newest first untouched); Amount spent is spend desc, Spend + unread
-on top is unread / read-owed / the rest with spend desc in each, Spend + recency
-puts its high-score rows first by score then the low ones unread first; the chip
-counts are the view's own tally; ties in every mode keep the view's order. Then
-`--users` owners arrive open loop (OWNER_RATE a second) and read the view
-(`/admin/chats/recent`, then `/admin/messages` of OWNER_THREADS of its chats, a
-think time apart): no non-2xx, no owner error, p95 per route within its budget and
-vs the last green run.
-
-Bypasses, declared:
-- OF's /chats (GET /api/of/v2/chats) is answered in the browser from the
-  relay's view above (paged by offset/limit; `unread` and `who_tipped` filtered
-  as OF does; `pinned`, `priority`, `unread_tips` and a list answer empty);
-- OF's chat lists are faked at the browser's wire: GET /api/of/v2/chats/folders
-  answers three unpinned lists for the first Creator (none for the others), and
-  PATCH /api/of/v2/lists/{id}/pin-chat is recorded and flips the list's
-  `isPinnedToChat`, so the picker's next read shows it;
-- the search is counted at the browser's wire, where /chats is answered: each
-  is a request the app sends the relay (its OF search is not run). The typing
-  pace (SEARCH_KEY_MS) is a guess at a fast typist;
-- every other /api/of/* read stays held (actors/ui.py), so spend, tipsEnabled
-  ("Unread with tips") and the profile reads are absent;
-- console lines for requests the harness itself aborts (off-host URLs) or answers
-  404 (the screen bundles, actors/ui.py `screen_bundle_404`) are not counted as the
-  app's errors;
-- the ranking checks' spend is synthetic: the Fan List's OF spend batch is held at
-  the browser's wire (above; on screen only the relay's recent tip spend shows), so
-  node ranks on a spend map drawn from `--seed` (`w.rng("scenario:fan-list-chips:spend")`,
-  one per chat of the view: SPEND_ZERO of them $0, the rest 10^U(2,5) cents), not the
-  relay's numbers; node's `Date.now` is pinned to one instant for the call, so the
-  hybrid score is recomputed exactly here (half-lives idle 1 h, owed 2 h, unread 3 h;
-  low below 300 cents, the spec's).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -82,9 +17,9 @@ from slop.lib import fan_list_faults as F
 PROFILE = "agency_inbox"
 UI = True
 FAULT = "fan-list-owe-reply-last-sort-never-active"
-VIEWPORT = (1470, 915)  # the owner's reference shot: a 400px Fan List pane
-NARROW = (320, 700)  # below lg the Fan List is the whole screen: the narrowest phone
-PHONE = (390, 844)  # a common phone: the sort menu opened and an order picked there
+VIEWPORT = (1470, 915)
+NARROW = (320, 700)
+PHONE = (390, 844)
 SORT_MENU = ["Sort by", "Newest first", "Amount spent", "Spend + unread on top", "Spend + recency"]
 OWE_DOT = "Read · awaiting your reply"
 EXTRA_SORT = "Spend + unread on top"
@@ -92,24 +27,18 @@ SORT_KEY = "chatterly:chat-sort-mode"
 CHIPS = ["All", "Owe reply", "Pinned", "Unread", "With Tips", "Priority"]
 PINNED = "VIP whales"
 PIN_LISTS = "Pin lists as chips"
-PLUS = re.compile(r" extras$")  # "<brand> extras", the overflow trigger's name
-SEARCH_KEY_MS = 100  # the gap between keys of a fast typist (a guess: ~120 words a minute)
+PLUS = re.compile(r" extras$")
+SEARCH_KEY_MS = 100
 TS = Path(__file__).resolve().parents[1] / "lib" / "fan_list_ts.mjs"
 ALL = "all-models"
-SPEND_ZERO = 0.25  # share of the view's chats ranked at $0 (ties keep OF's order)
-HALF_LIFE_H = {"unread": 3, "owed": 2, "idle": 1}  # Spend + recency's decay (spec)
-TIER = {"unread": 2, "owed": 1, "idle": 0}  # Spend + unread on top's buckets, highest first (spec)
+SPEND_ZERO = 0.25
+HALF_LIFE_H = {"unread": 3, "owed": 2, "idle": 1}
+TIER = {"unread": 2, "owed": 1, "idle": 0}
 LOW_SCORE_CENTS = 300
-OWNER_THREADS = 5  # threads each owner opens after the Fan List read
-# Owners arrive open loop (seeded exponential gaps, a slow relay does not slow arrivals): --users of them at
-# OWNER_RATE a second, each pausing OWNER_THINK_S (uniform) before each thread it opens (guesses: a shift's
-# owners trickle in; a glance at the list, then a click).
+OWNER_THREADS = 5
 OWNER_RATE = 10.0
 OWNER_THINK_S = (0.5, 1.5)
 RECENT, MESSAGES = "GET /admin/chats/recent", "GET /admin/messages/:id/:id"
-# Product targets, as chatter-crowd's (/admin/chats/recent 750 ms, any other chatter route 500 ms). The first
-# green paced medium --users=200 run measured p95 recent 14.7 ms, messages 8.8 ms
-# (20261102T172119Z-2026-10-26-fan-list-chips-35aa).
 RECENT_P95_MS, MESSAGES_P95_MS = 750, 500
 P95_VS_LAST = (2.0, 100)
 P95_VS_LAST_MIN_N = 20
@@ -155,7 +84,6 @@ async def run(ctx) -> None:
         fresh += picks[:n_fresh]
         tippers += picks[n_fresh:]
 
-    # Fans DM and tip, the pump's shape: one frame in flight per Creator.
     ids = iter(range(9_700_000_000_000, 9_800_000_000_000))
     frames = [(f, fan_dm.frame(next(ids), f, "slop chips: new dm")) for f in fresh]
     frames += [(f, fan_dm.frame(next(ids), f, "slop chips: tip", tip_dollars=rng.choice([5, 10, 20, 50])))
@@ -173,8 +101,6 @@ async def run(ctx) -> None:
               sent=len(statuses), want=len(frames))
     ctx.check("relay quiesced", not stats.get("timed_out"), stats=stats)
 
-    # A chatter opens unread chats and does not reply: read, still owed. Only chats the view
-    # holds (/admin/chats/recent's newest 100 a Creator; a read keeps a chat's place there).
     hit = {(f["account_id"], f["id"]) for f in fresh + tippers}
     opened = []
     for c in creators:
@@ -206,9 +132,6 @@ async def run(ctx) -> None:
 
 
 async def _view(ctx, creators) -> dict[str, list[dict]]:
-    """Each Creator's chats as the relay holds them, in OF /chats' row shape,
-    newest first: who sent the last message (`fromUser`) and whether the fan
-    ever tipped, from the thread."""
     sem = asyncio.Semaphore(16)
     out = {}
     for c in creators:
@@ -234,15 +157,12 @@ def _key(r) -> str:
 
 
 def _state(r) -> str:
-    """The view's attention state of a chat: unread (the row's unread mark), owed (read, the Fan
-    sent last) or idle."""
     if r["hasUnread"] or (r.get("unreadMessagesCount") or 0) > 0:
         return "unread"
     return "owed" if r["_fanLast"] else "idle"
 
 
 def _score(r, cents: int, now_ms: int) -> float:
-    """Spend + recency's decayed score (useChatSortMode's hybridScore, restated)."""
     if not cents:
         return 0.0
     iso = (r.get("lastMessage") or {}).get("createdAt")
@@ -258,8 +178,6 @@ def _score(r, cents: int, now_ms: int) -> float:
 
 
 def _desc(xs) -> int | None:
-    """The first index where `xs` (tuples or numbers) rises, None when non-increasing (1e-9 relative slack
-    for the float scores)."""
     for i in range(len(xs) - 1):
         a, b = xs[i], xs[i + 1]
         a, b = (a, b) if isinstance(a, tuple) else ((a,), (b,))
@@ -273,7 +191,6 @@ def _desc(xs) -> int | None:
 
 
 def _slim(r) -> dict:
-    """The fields of a view row the app's sort and counts read."""
     return {"__accountId": r["__accountId"], "hasUnread": r["hasUnread"],
             "unreadMessagesCount": r.get("unreadMessagesCount") or 0,
             "withUser": {"id": r["withUser"]["id"], "isRestricted": bool(r["withUser"].get("isRestricted"))},
@@ -281,8 +198,6 @@ def _slim(r) -> dict:
 
 
 async def _ranked(ctx, w, view, creators) -> None:
-    """The app's sortFanRows + chipCounts in node over the view, per Creator and All Models, judged
-    against the view's own states, the seeded spend and the spec's score."""
     rng = w.rng("scenario:fan-list-chips:spend")
     rows_all = sorted((r for c in creators for r in view[c["id"]]), key=_key)
     spend = {_key(r): 0 if rng.random() < SPEND_ZERO else int(10 ** rng.uniform(2, 5)) for r in rows_all}
@@ -307,8 +222,6 @@ async def _ranked(ctx, w, view, creators) -> None:
             keeps[name] = bad
         st = {k: _state(by[k]) for k in want_keys}
         sc = {k: _score(by[k], spend[k], now) for k in want_keys}
-        # Each ordered subsequence and its sort key; every key ends with the view position (ascending),
-        # so ties must keep OF's order (the sort is stable).
         o, pos = got["orders"], {k: i for i, k in enumerate(want_keys)}
         hy = o["hybrid"]
         high = [k for k in hy if sc[k] >= LOW_SCORE_CENTS]
@@ -344,9 +257,6 @@ async def _ranked(ctx, w, view, creators) -> None:
 
 
 async def _owners(ctx, w, view, creators) -> None:
-    """`--users` owners read the Fan List view, arriving open loop at OWNER_RATE a second: owner i reads
-    Creator i's recent chats (round robin), then opens OWNER_THREADS of them, OWNER_THINK_S apart. The
-    threads are sampled from the view read before the load, never from an owner's own answer."""
     rng = w.rng("scenario:fan-list-chips:owners")
     k = ctx.param("owner_threads", OWNER_THREADS)
     rate = ctx.param("owner_rate", OWNER_RATE)
@@ -399,9 +309,6 @@ async def _owners(ctx, w, view, creators) -> None:
 
 
 def _chats_answer(view, url: str, account: str | None, loaded: dict) -> dict:
-    """OF's GET /chats for one Creator, from the view (filters as OF applies them).
-    The rows of plain recent pages go into `loaded`: the chats the Fan List holds,
-    which its chip counts are over."""
     q = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
     rows = list(view.get(account or "", []))
     f = q.get("filter")
@@ -422,8 +329,6 @@ def _chats_answer(view, url: str, account: str | None, loaded: dict) -> dict:
 
 
 def _lists_fixture(account_id: str) -> tuple[dict, list]:
-    """OF's chat lists for one Creator (GET /chats/folders) and its pin write
-    (PATCH /lists/{id}/pin-chat); `pins` records each write."""
     rows = {9001: {"id": 9001, "name": PINNED, "type": "custom", "usersCount": 14},
             9002: {"id": 9002, "name": "Big tippers", "type": "custom", "usersCount": 8},
             9003: {"id": 9003, "name": "Close friends", "type": "close_friends", "usersCount": 3}}
@@ -457,8 +362,6 @@ async def _route_lists(page, lists: dict, pins: list) -> None:
 
 
 async def _open(ctx, page, view, lists, pins):
-    """Messages Pro on All Models with the fakes above; returns the /chats URLs
-    answered and the chats loaded (filled as the Fan List pages)."""
     served, loaded = [], {}
     await _route_lists(page, lists, pins)
 
@@ -478,7 +381,7 @@ async def _open(ctx, page, view, lists, pins):
 async def _goto(ctx, page) -> None:
     await page.goto(f"{ctx.app}/messages-pro", wait_until="domcontentloaded")
     await page.locator("[data-chat-row]").first.wait_for(timeout=90_000)
-    await page.wait_for_timeout(2500)  # let every Creator's pages land and the counts settle
+    await page.wait_for_timeout(2500)
 
 
 def _tally(rows) -> dict:
@@ -500,8 +403,6 @@ def _sort_button(page):
 
 
 async def _chips_on_screen(page) -> list[str]:
-    """The chip row's chips left to right as they are laid out (not in DOM
-    order), each by its name without its count badge."""
     return await _chip_row(page).evaluate(
         """g => [...g.querySelectorAll('button')].filter(b => b.getBoundingClientRect().width > 0)
              .map(b => ({ x: b.getBoundingClientRect().left, name: [...b.childNodes]
@@ -511,7 +412,6 @@ async def _chips_on_screen(page) -> list[str]:
 
 
 async def _badge(page, name: str) -> dict:
-    """The corner badge of the chip named `name`: its number and whether it is amber."""
     return await _chip_row(page).evaluate(
         """(g, name) => { const b = [...g.querySelectorAll('button')]
              .find(b => (b.childNodes[0]?.textContent || '').trim() === name);
@@ -522,8 +422,6 @@ async def _badge(page, name: str) -> dict:
 
 
 async def _sort_look(page) -> dict:
-    """The sort button's state and colours next to an active chip's (the All
-    chip's while it is on): blue is the active chip's background."""
     return await page.evaluate(
         """() => { const s = [...document.querySelectorAll('button')].find(b =>
                (b.getAttribute('aria-label') || '').startsWith('Sort: '));
@@ -535,8 +433,6 @@ async def _sort_look(page) -> dict:
 
 
 async def _menu_marks(page) -> dict:
-    """The sort menu's entries, the one carrying the check mark, and its pressed state; `items` is
-    every child top to bottom (a row by its name without ✓ or sub-line, a divider as "|")."""
     return await page.locator("section[aria-label=Sort]").evaluate(
         """m => { const rows = [...m.querySelectorAll('button')].map(b => ({
                text: b.textContent.trim(), pressed: b.getAttribute('aria-pressed') }));
@@ -548,7 +444,6 @@ async def _menu_marks(page) -> dict:
 
 
 async def _menu_place(page) -> dict:
-    """The open sort menu's box against its trigger's and the Fan List pane's."""
     return await page.evaluate(
         """() => { const box = e => { const r = e.getBoundingClientRect();
                return { l: Math.round(r.left), r: Math.round(r.right), t: Math.round(r.top), b: Math.round(r.bottom) }; };
@@ -561,7 +456,6 @@ async def _menu_place(page) -> dict:
 
 
 async def _rows(page) -> list[dict]:
-    """The rendered Fan rows top to bottom: each one's @handle and whether it is unread."""
     return await page.evaluate(
         """() => [...document.querySelectorAll('[data-chat-row]')].map(r => ({
              key: ([...r.querySelectorAll('span')].find(s => /^@\\S+$/.test(s.textContent || '')) || {}).textContent
@@ -570,8 +464,6 @@ async def _rows(page) -> list[dict]:
 
 
 async def _row_handles(page) -> list[str]:
-    """Each rendered Fan row's @handle, top to bottom (its handle span's text:
-    an off-screen row's `content-visibility: auto` empties innerText)."""
     return await page.evaluate(
         """() => [...document.querySelectorAll('[data-chat-row]')].map(r => {
              const h = [...r.querySelectorAll('span')].find(s => /^@\\S+$/.test(s.textContent || ''));
@@ -579,7 +471,6 @@ async def _row_handles(page) -> list[str]:
 
 
 async def _no_plus(page) -> dict:
-    """The Fan List's "+" triggers, "✎" chips and "+" chips."""
     chips = await _chips_on_screen(page)
     return {"plus_triggers": await page.locator('[data-mp-pane="fan-list"]').get_by_role("button", name=PLUS).count(),
             "lists_chips": await _chip_row(page).get_by_role("button", name=re.compile(r"✎|^Lists$")).count(),
@@ -587,8 +478,6 @@ async def _no_plus(page) -> dict:
 
 
 async def _filter_lines(page) -> dict:
-    """How many lines the filter row's items take (by each item's vertical
-    centre), and each item's box."""
     return await _filter_row(page).evaluate(
         """g => { const items = [...g.children].filter(e => e.getBoundingClientRect().width > 0 &&
                e.childElementCount > 0);
@@ -602,7 +491,6 @@ async def _filter_lines(page) -> dict:
 
 
 async def _crop(ctx, page, name: str) -> str:
-    """The filter row and the chip row across the Fan List pane."""
     box = await page.evaluate(
         """() => { const a = document.querySelector('[role=group][aria-label="Inbox, settings and sort"]');
              const b = document.querySelector('[role=group][aria-label="Fan List filters"]');
@@ -617,8 +505,6 @@ async def _crop(ctx, page, name: str) -> str:
 
 
 async def _creator_tab(page, creator) -> None:
-    """Picks one Creator: its Window header tab, or below lg (no tabs) the
-    header's "Creator" picker."""
     tab = page.get_by_role("tab", name=creator["nickname"])
     if await tab.count() and await tab.first.is_visible():
         await tab.first.click()
@@ -626,7 +512,7 @@ async def _creator_tab(page, creator) -> None:
         await page.get_by_role("combobox", name="Creator").click()
         await page.get_by_role("option", name=creator["nickname"]).first.click()
     await page.get_by_role("button", name="All inboxes").wait_for(timeout=30_000)
-    await page.wait_for_timeout(1500)  # the Creator's chats and OF lists land
+    await page.wait_for_timeout(1500)
 
 
 async def _pencil_shown(page, timeout_ms: int) -> bool:
@@ -638,9 +524,6 @@ async def _pencil_shown(page, timeout_ms: int) -> bool:
 
 
 def _console_errors(ctx, aborted: list[str]) -> list[dict]:
-    """Console errors and uncaught errors the session logged (actors/notif_click's
-    capture), less a failed load of a URL the harness itself aborted (off-host) or
-    answered 404 (a screen bundle: actors/ui.py `screen_bundle_404`, a declared bypass)."""
     path = ctx.out / "console-fan-list.jsonl"
     rows = [json.loads(ln) for ln in path.read_text().splitlines()] if path.exists() else []
     off = set(aborted)
@@ -649,8 +532,6 @@ def _console_errors(ctx, aborted: list[str]) -> list[dict]:
 
 
 async def _search(ctx, page, served: list[str], view, creator, shots: dict) -> dict:
-    """The owner opens the search box on one Creator and types a Fan's name as a
-    fast typist does; the /chats requests that carry a `query` are the searches."""
     rows = view[creator["id"]]
     name = next(r["withUser"]["name"] for r in rows if r["withUser"].get("name"))
     want = sorted(r["withUser"]["username"] for r in rows if name.lower() in (r["withUser"].get("name") or "").lower())
@@ -667,7 +548,7 @@ async def _search(ctx, page, served: list[str], view, creator, shots: dict) -> d
                                      arg=len(want), timeout=15_000)
     except Exception:  # noqa: BLE001 — judged below
         settled = False
-    await page.wait_for_timeout(1500)  # a late search would land here
+    await page.wait_for_timeout(1500)
     handles = sorted(h or "" for h in await _row_handles(page))
     shots["q"] = await ui.shot(ctx, page, "q-search-settled")
     sent = [{k: v[0] for k, v in parse_qs(urlsplit(u).query).items()} for u in served[start:]]
@@ -702,12 +583,11 @@ async def _screens(ctx, view, creators) -> None:
         lines_all = await _filter_lines(page)
         dots_all = await page.get_by_label(OWE_DOT, exact=True).count()
 
-        # Owe reply on: only the owed chats, read-owed ones dotted.
         await _chip_row(page).get_by_role("button", name=re.compile(r"^Owe reply\b")).click()
         await page.wait_for_timeout(1500)
         handles = await _row_handles(page)
         n_rows = len(handles)
-        lt = _tally(loaded.values())  # Owe reply may page on to fill
+        lt = _tally(loaded.values())
         owed = sorted(r["withUser"].get("username") or "" for r in loaded.values() if r["_fanLast"])
         owe_on = await _badge(page, "Owe reply")
         dots_on = await page.get_by_label(OWE_DOT, exact=True).count()
@@ -721,9 +601,8 @@ async def _screens(ctx, view, creators) -> None:
         ctx.check(C_DOTS, dots_all == 0 and dots_on == lt["owe_reply_read"],
                   in_all=dots_all, in_owe=dots_on, loaded_read_owed=lt["owe_reply_read"])
         await _chip_row(page).get_by_role("button", name="All", exact=True).click()
-        await page.wait_for_timeout(800)  # the chips' colour transition
+        await page.wait_for_timeout(800)
 
-        # An extra sort: the sort button turns active, its menu's ✓ moves, unread rows lead.
         rows_newest = await _rows(page)
         look_default = await _sort_look(page)
         await _sort_button(page).click()
@@ -758,17 +637,14 @@ async def _screens(ctx, view, creators) -> None:
                   unread_first=unread_first, reordered=reordered, rows=len(rows_sorted),
                   unread_rows=sum(flags))
 
-        # The side effect: the choice is stored, and a reload reads it back.
         stored = await page.evaluate(f"() => localStorage.getItem({json.dumps(SORT_KEY)})")
         await _goto(ctx, page)
         after_reload = await _sort_look(page)
-        # Its name only: the active look is C_SORT's to judge.
         ctx.check(C_SORT_STORED, stored == "spend-unread" and after_reload["label"] == f"Sort: {EXTRA_SORT}",
                   stored=stored, after_reload=after_reload)
         await _sort_button(page).click()
         await page.locator("section[aria-label=Sort]").get_by_role("button", name="Newest first").click()
 
-        # One Creator with OF lists: the pencil, its picker, a pin.
         await _creator_tab(page, c0)
         pencil_c0 = await _pencil_shown(page, 30_000)
         lines_one = await _filter_lines(page)
@@ -797,7 +673,7 @@ async def _screens(ctx, view, creators) -> None:
             await page.wait_for_timeout(300)
             shots["g"] = await shot(page, "g-pencil-picker-open")
             box = page.locator("label").filter(has_text=PINNED).get_by_role("checkbox")
-            await box.click()  # controlled: it flips once the pin write lands
+            await box.click()
             await page.wait_for_function(
                 "name => [...document.querySelectorAll('label')].some(l => l.textContent.includes(name)"
                 " && l.querySelector('input').checked && !l.querySelector('input').disabled)", arg=PINNED,
@@ -813,14 +689,12 @@ async def _screens(ctx, view, creators) -> None:
             chips_pinned = await _chips_on_screen(page)
             shots["h"] = await shot(page, "h-list-pinned-as-chip")
             shots["hc"] = await _crop(ctx, page, "h-list-pinned-as-chip-crop")
-            # The chip row scrolls sideways: bring the list's chip into view for its picture.
             await _chip_row(page).get_by_role("button", name=f"Folder {PINNED}").scroll_into_view_if_needed()
             await page.wait_for_timeout(300)
             shots["hs"] = await _crop(ctx, page, "h-list-pinned-chip-scrolled-into-view-crop")
         ctx.check(C_PIN, pinned_chip and pins == [{"account": c0["id"], "list": 9001, "pinned": True, "known": True}],
                   pins=pins, chip=pinned_chip, picker_open=picker_open)
 
-        # A Creator with no OF list has no pencil.
         await _creator_tab(page, c1)
         pencil_c1 = await _pencil_shown(page, 5000)
         ctx.check(C_PENCIL, not pencil_all_models and pencil_c0 and picker_open and not pencil_c1,
@@ -839,7 +713,6 @@ async def _screens(ctx, view, creators) -> None:
         aborted += page.slop["offhost_aborted"]
         statuses += page.slop["statuses"]
 
-    # 2x crops of the filter and chip rows: All Models, then one Creator (its list pinned).
     async with ui.owner_browser(ctx, viewport=VIEWPORT, scale=2) as page:
         console.watch(page.context)
         await _open(ctx, page, view, lists, pins)
@@ -853,7 +726,6 @@ async def _screens(ctx, view, creators) -> None:
         aborted += page.slop["offhost_aborted"]
         statuses += page.slop["statuses"]
 
-    # The narrowest phone: the Fan List is the whole screen.
     async with ui.owner_browser(ctx, viewport=NARROW, scale=2) as page:
         console.watch(page.context)
         await _open(ctx, page, view, lists, pins)
@@ -870,7 +742,6 @@ async def _screens(ctx, view, creators) -> None:
         aborted += page.slop["offhost_aborted"]
         statuses += page.slop["statuses"]
 
-    # A 390px phone: the sort menu's trigger, the menu open, and the order picked there.
     async with ui.owner_browser(ctx, viewport=PHONE, scale=2) as page:
         console.watch(page.context)
         await _open(ctx, page, view, lists, pins)

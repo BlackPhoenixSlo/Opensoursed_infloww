@@ -1,13 +1,3 @@
-"""OnlyFans' media upload at its wire, for lib/of_wire.py (its route table lists these routes: vault/media/hash,
-signed/create, the S3 PUT, signed/finish, convert's claim, GET / DELETE a post). `FakeOF.upload` is one
-`UploadWire`; the request handler hands it every request it did not answer itself (`handle`), and a scenario reads
-its records with `snapshot()`. Everything is kept per Creator in arrival order and guarded by `FakeOF.lock`.
-
-A claim is minted into the vault only once something REFERENCES it (a chat send's or a post's `mediaFiles` names
-its processId), as OF does; one vault id per S3 object (ETag + size). A carrier post's listing (GET posts/{id})
-names its media in a deterministic shuffled order (seeded by the post id): OF's order is arbitrary
-(service/of_upload.py `materialize_to_vault`), so the product must attribute ids by content, not position.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -31,7 +21,6 @@ RECORDS = ("uploads", "s3_puts", "claims", "carriers", "lookups", "minted")
 
 
 def _form(ctype: str, raw: bytes) -> dict[str, str]:
-    """A multipart/form-data body's fields (stdlib `email`), name -> text."""
     msg = BytesParser(policy=email_default).parsebytes(b"Content-Type: " + ctype.encode() + b"\r\n\r\n" + raw)
     return {p.get_param("name", header="content-disposition"): (p.get_payload(decode=True) or b"").decode()
             for p in msg.iter_parts()}
@@ -40,29 +29,24 @@ def _form(ctype: str, raw: bytes) -> dict[str, str]:
 class UploadWire:
     def __init__(self, fake: "FakeOF"):
         self.fake = fake
-        # Per Creator, in arrival order.
-        self.uploads: dict[str, list[dict]] = {}   # signed/create: {t, key, client_key, parts, token, upload_id, ...}
-        self.s3_puts: dict[str, list[dict]] = {}   # {t, key, part, size, md5, ok}
-        self.claims: dict[str, list[dict]] = {}    # convert claims: {t, key, etag, location, bucket, name, ...}
-        self.carriers: dict[str, list[dict]] = {}  # posts deleted: {t, id, media_ids}
-        self.lookups: dict[str, list[dict]] = {}   # vault/media/hash reads: {t, h, size, hit}
-        self.minted: dict[str, list[dict]] = {}    # vault media minted from claims: {id, etag, size, name, ...}
-        self.s3: dict[str, dict] = {}              # S3 key -> the stored object {uid, size, sha256, etag, parts}
-        self._s3_up: dict[str, dict] = {}          # S3 key -> {uid, rec (its `uploads` row), parts {n: (md5, bytes)}}
-        self._by_pid: dict[str, dict] = {}         # processId -> its claim row
-        self._vault_by_pid: dict[str, int] = {}    # processId -> the vault id it minted
-        self._vault_by_etag: dict[tuple, int] = {}  # (Creator, S3 ETag, size) -> vault id
-        self._seen: dict[str, tuple[int, int]] = {}  # per Creator, (sends, posts) already scanned for references
+        self.uploads: dict[str, list[dict]] = {}
+        self.s3_puts: dict[str, list[dict]] = {}
+        self.claims: dict[str, list[dict]] = {}
+        self.carriers: dict[str, list[dict]] = {}
+        self.lookups: dict[str, list[dict]] = {}
+        self.minted: dict[str, list[dict]] = {}
+        self.s3: dict[str, dict] = {}
+        self._s3_up: dict[str, dict] = {}
+        self._by_pid: dict[str, dict] = {}
+        self._vault_by_pid: dict[str, int] = {}
+        self._vault_by_etag: dict[tuple, int] = {}
+        self._seen: dict[str, tuple[int, int]] = {}
 
     def snapshot(self) -> dict:
-        """Copies of the records (RECORDS, per Creator) and the S3 objects."""
         with self.fake.lock:
             return {**{k: {a: list(v) for a, v in getattr(self, k).items()} for k in RECORDS}, "s3": dict(self.s3)}
 
     def _mint_referenced(self, uid: str) -> None:
-        """Give every claim of this Creator that a chat send or a post names (`mediaFiles`, by processId) its
-        vault media, once per S3 object (ETag + size). Scans only the sends / posts that arrived since the last
-        call (a claim is always answered before the product can name it). Holds `fake.lock`."""
         sends, posts = self.fake.sends.get(uid, []), self.fake.posts.get(uid, [])
         i, j = self._seen.get(uid, (0, 0))
         self._seen[uid] = (len(sends), len(posts))
@@ -86,7 +70,6 @@ class UploadWire:
                 self._vault_by_pid[pid] = vid
 
     def _s3_ok(self, h, uid: str, etag: str) -> None:
-        """S3's answer to a PUT: 200, empty body, the object's (part's) ETag."""
         with self.fake.lock:
             self.fake.calls.append({"t": time.time(), "account": uid, "route": "PUT /s3/{key}", "status": 200})
         h.send_response(200)
@@ -95,7 +78,6 @@ class UploadWire:
         h.end_headers()
 
     def handle(self, h, method: str, u: SplitResult, uid: str, route: str, raw: bytes) -> bool:
-        """Answer one of the upload's routes on handler `h`; False: not one of them."""
         fake, now = self.fake, time.time()
         if method == "GET" and u.path == "/api2/v2/vault/media/hash":
             q = parse_qs(u.query)
@@ -219,7 +201,8 @@ class UploadWire:
                     ids = [self._vault_by_pid[str(mf["processId"])] for mf in post.get("mediaFiles") or ()
                            if isinstance(mf, dict) and str(mf.get("processId")) in self._vault_by_pid]
                     listed = [dict(fake.vault[uid][v]) for v in ids]
-                    random.Random(post_id).shuffle(listed)  # OF's listing order is arbitrary (docstring)
+                    # OF's listing order is arbitrary: the product must attribute ids by content, not position
+                    random.Random(post_id).shuffle(listed)
                     if method == "DELETE":
                         self.carriers.setdefault(uid, []).append({"t": now, "id": post_id, "media_ids": ids})
             if post is None:

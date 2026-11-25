@@ -1,11 +1,3 @@
-/**
- * ReadyMadeRuleEditor (Auto Post / Auto Mass create + edit popup), both kinds. What is pinned: the post / message
- * fields sit in the popup itself (no Compose dialog, no "Use in rule"), Create waits on content (and a mass on an
- * audience) with a help line naming it, an unparseable Raw JSON buffer is described on the textarea (no alert), a
- * failed save is alerted, a payload the form can't hold losslessly shows a notice + Raw JSON only and saves untouched
- * byte for byte, Escape never drops an edit and nothing closes the popup mid-save. The state transitions are the pure
- * tables in ruleEditorForm.test.ts.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 
@@ -16,7 +8,6 @@ vi.mock("@/lib/relay", async (importOriginal) => {
 vi.mock("@/hooks/useVaultMedia", () => ({
   useVaultListsRevalidated: () => ({ data: { list: [] }, isLoading: false, isFetching: false, refresh: vi.fn() }),
 }));
-// The vault picker's last props (it renders nothing).
 type PickerProps = { open: boolean; onClose: () => void };
 const picker = vi.hoisted(() => ({ all: [] as PickerProps[] }));
 vi.mock("@/components/chat/VaultPicker", () => ({
@@ -33,7 +24,6 @@ import { renderWithProviders } from "@/test-utils";
 const post = relay.post as unknown as Mock;
 const patchM = relay.patch as unknown as Mock;
 
-/** The dialog's enabled primaries. No role/attr names IfButton's variant, so this reads its `bg-accent` fill. */
 const enabledPrimaries = (dialog: HTMLElement) =>
   within(dialog).getAllByRole("button").filter((b) => b.classList.contains("bg-accent") && !b.hasAttribute("disabled"));
 
@@ -53,7 +43,7 @@ describe.each<[Kind, string, string, string, RegExp, string, string]>([
     const create = within(dialog).getByRole("button", { name: "Create" });
     expect(within(dialog).queryByRole("button", { name: "Compose" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: /use in rule/i })).toBeNull();
-    expect(within(dialog).queryByRole("dialog")).toBeNull(); // no nested composer
+    expect(within(dialog).queryByRole("dialog")).toBeNull();
     expect(create).toBeDisabled();
     expect(create).toHaveAccessibleDescription(`Add ${content} to enable Create.`);
 
@@ -69,7 +59,6 @@ describe.each<[Kind, string, string, string, RegExp, string, string]>([
     const dialog = open();
     fireEvent.change(within(dialog).getByPlaceholderText(placeholder), { target: { value: "Hello" } });
     const create = within(dialog).getByRole("button", { name: "Create" });
-    // R8 / D6: a paid post with no image never sends, so Create waits and says why; a paid message only warns.
     fireEvent.change(within(dialog).getByLabelText("Price (USD)"), { target: { value: "12" } });
     if (kind === "auto_posts") {
       expect(create).toBeDisabled();
@@ -84,7 +73,7 @@ describe.each<[Kind, string, string, string, RegExp, string, string]>([
     await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1));
     const [, body] = post.mock.calls[0];
     expect(body).toMatchObject({ account_id: "acc-a", kind, every_seconds: 86400, is_enabled: true });
-    expect(body.name).toBe(kind === "auto_posts" ? "Auto post" : "Auto mass"); // the placeholder, not the bare kind
+    expect(body.name).toBe(kind === "auto_posts" ? "Auto post" : "Auto mass");
     expect(body.payload[key]).toHaveLength(1);
     expect(body.payload[key][0]).toMatchObject({ text: "Hello" });
     expect(body.payload[key][0].price).toBeUndefined();
@@ -115,7 +104,7 @@ describe.each<[Kind, string, string, string, RegExp, string, string]>([
     fireEvent.change(within(dialog).getByRole("textbox", { name: `${items} JSON` }), { target: { value: `{ "${key}": [] }` } });
     expect(save).toBeDisabled();
     expect(within(dialog).getByText(`Add at least one ${item} with ${content} to enable Save changes.`)).toBeTruthy();
-    expect(enabledPrimaries(dialog)).toEqual([]); // Save waits
+    expect(enabledPrimaries(dialog)).toEqual([]);
   });
 
   it("an unparseable buffer marks the textarea invalid and describes it with the parse error, never an alert", () => {
@@ -124,7 +113,7 @@ describe.each<[Kind, string, string, string, RegExp, string, string]>([
     const ta = within(dialog).getByRole("textbox", { name: `${items} JSON` });
     expect(ta).toHaveAttribute("aria-invalid", "false");
     fireEvent.change(ta, { target: { value: `{ "${key}": [ {` } });
-    fireEvent.change(ta, { target: { value: `{ "${key}": [ { "` } }); // a second invalid keystroke: still no alert
+    fireEvent.change(ta, { target: { value: `{ "${key}": [ { "` } });
     expect(within(dialog).queryByRole("alert")).toBeNull();
     expect(ta).toHaveAttribute("aria-invalid", "true");
     expect(ta).toHaveAccessibleDescription(new RegExp(`^Add at least one ${item} with ${content} to enable Create\\. Payload is not valid JSON`));
@@ -143,8 +132,6 @@ describe.each<[Kind, string, string, string, RegExp, string, string]>([
   });
 });
 
-// A payload the one-item Composer can't hold losslessly keeps running; the fields would drop its timers / other keys.
-// The notice says why (readyMadeContent `formHoldNotice`).
 const SETTINGS = "Uses settings the Composer can't edit — edit in Raw JSON.";
 const fans = { user_lists: ["fans"] };
 describe.each<[Kind, string, [string, Record<string, unknown>, string][], Record<string, unknown>]>([
@@ -193,7 +180,7 @@ describe.each<[Kind, string, [string, Record<string, unknown>, string][], Record
     expect(path).toBe("/admin/automation-rules/2");
     expect(JSON.stringify(body.payload)).toBe(JSON.stringify(payload));
     expect(body.name).toBe("Old drip");
-    expect(body.every_seconds).toBeUndefined(); // the stored interval stays
+    expect(body.every_seconds).toBeUndefined();
   });
 
   it("a one-item rule opens its fields filled in", () => {
@@ -204,7 +191,6 @@ describe.each<[Kind, string, [string, Record<string, unknown>, string][], Record
   });
 });
 
-// R7: the legacy view holds a mass to the backend's audience test too, and says why Save waits.
 describe("Auto Mass legacy payload that reaches nobody", () => {
   it("untouched it saves (U2: a rename changes nothing it sends); edited, Save changes waits with the reason", () => {
     const editing: AutomationRule = {
@@ -316,7 +302,6 @@ describe("Auto Mass: a message that reaches nobody can't be saved", () => {
     fireEvent.click(screen.getByRole("button", { name: "All fans" }));
     fireEvent.click(screen.getByRole("button", { name: "Following" }));
     expect(create).toBeDisabled();
-    // D5: "Send to online only" (on by default) filters an audience, it isn't one.
     expect(create).toHaveAccessibleDescription(
       "Online only filters an audience: pick All fans, Following or a list to enable Create.");
     fireEvent.click(screen.getByRole("button", { name: "Send to online only" }));

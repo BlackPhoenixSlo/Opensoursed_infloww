@@ -1,31 +1,3 @@
-/**
- * My Automations > Auto-reply, the page component. Rendered with `@/lib/relay`
- * mocked and a fresh QueryClient over one Creator. What is pinned:
- *
- *  - the stored folder pick seeds "Fans in folders" with that OF list ticked,
- *    and Save sends the stored blob back with only the page's fields changed
- *    (the PUT replaces the whole blob);
- *  - timing: delay 0 is allowed, randomise saves step_in_max = 2 x delay and
- *    reads back from it;
- *  - new fans + the folder cap save as cents; both sources off cannot save;
- *  - no LLM key for the engine's provider (the relay's `/admin/ai-key-status`
- *    notice) shows the AiKeyNotice linking to /settings/ai-keys; a key hides it;
- *  - the two photo options ship off, save as `describe_photos` /
- *    `skip_photo_only`, and a missing DeepInfra key shows its own link;
- *  - the Human style boxes at the bottom render the style blob's `autoreply`
- *    layers (default ON), and Save PUTs only the touched ones to style-config;
- *    a box toggled while that PUT is in flight survives its success, and
- *    "Saved" waits until no edit made during a save is left unsaved;
- *  - the page header (page-parity ticket 16) holds the On / Off pill and the
- *    Auto-reply switch, which saves at once (the stored blob with only `enabled`
- *    changed, no Save), refuses "on" with both sources off and flips back on a
- *    failed PUT; `?creator=` picks the Creator whose blob seeds the form;
- *  - Model: the account config's model, "Default (<default_model>)" = null; a
- *    changed pick PUTs the stored brain back with only model/effort set, an
- *    untouched one sends no account-config PUT; no config read, no row. The
- *    "AI model (all AI automations)" block sits after Human style; Model info
- *    (shared with Get to know fans) under the Save, with its own.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -178,7 +150,6 @@ describe("AutoReplyPage", () => {
     expect(screen.getByRole("spinbutton", { name: "New fan window in hours" })).toHaveValue(72);
     expect(screen.getByRole("spinbutton", { name: "New fan spend cap in dollars" })).toHaveValue(10);
 
-    // Both off: nobody would qualify, so Save is refused.
     fireEvent.click(screen.getByRole("switch", { name: "Fans in folders" }));
     fireEvent.click(screen.getByRole("switch", { name: "New fans" }));
     expect(screen.getByText(/nobody gets a reply/)).toBeInTheDocument();
@@ -200,7 +171,7 @@ describe("AutoReplyPage", () => {
     fireEvent.click(screen.getByRole("switch", { name: "New fans" }));
     const hours = screen.getByRole("spinbutton", { name: "New fan window in hours" });
     fireEvent.change(hours, { target: { value: "" } });
-    expect(hours).toHaveValue(null);   // not snapped to 1
+    expect(hours).toHaveValue(null);
     for (const v of ["7", "72", "728", "7289"]) fireEvent.change(hours, { target: { value: v } });
     expect(hours).toHaveValue(7289);
     const cap = screen.getByRole("spinbutton", { name: "New fan spend cap in dollars" });
@@ -259,12 +230,12 @@ describe("AutoReplyPage", () => {
     const nonnative = screen.getByRole("switch", { name: /^Non-native English/ });
     const spacing = screen.getByRole("switch", { name: /Space before/ });
     expect(human).toBeChecked();
-    expect(typos).not.toBeChecked();   // an explicit stored false is honoured
+    expect(typos).not.toBeChecked();
     expect(nonnative).toBeChecked();
     expect(spacing).toBeChecked();
 
     fireEvent.click(nonnative);
-    expect(spacing).toBeDisabled();    // only applies while Non-native is on
+    expect(spacing).toBeDisabled();
     fireEvent.click(typos);
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -287,12 +258,12 @@ describe("AutoReplyPage", () => {
     fireEvent.click(await screen.findByRole("switch", { name: /Realistic typos/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
-    fireEvent.click(screen.getByRole("switch", { name: /Human style/ }));   // while the PUT is out
+    fireEvent.click(screen.getByRole("switch", { name: /Human style/ }));
     land({ account_id: "acc-a", config: { typos_autoreply: false } });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled());
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.getByRole("switch", { name: /Human style/ })).not.toBeChecked();
-    expect(screen.queryByText("Saved")).toBeNull();   // the in-flight toggle is not saved yet
+    expect(screen.queryByText("Saved")).toBeNull();
 
     put.mockResolvedValue({ account_id: "acc-a", config: {} });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -311,7 +282,7 @@ describe("AutoReplyPage", () => {
     const delay = await screen.findByRole("spinbutton", { name: "Reply delay in minutes" });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
-    fireEvent.change(delay, { target: { value: "9" } });   // while the PUT is out
+    fireEvent.change(delay, { target: { value: "9" } });
     land({ account_id: "acc-a", config: {} });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled());
     await new Promise((r) => setTimeout(r, 50));
@@ -333,7 +304,7 @@ describe("AutoReplyPage", () => {
     expect(sw).toHaveAttribute("aria-checked", "true");
     expect(within(bar).getByText("On")).toBeInTheDocument();
 
-    fireEvent.change(delay, { target: { value: "30" } });   // an unsaved edit the switch must not send
+    fireEvent.change(delay, { target: { value: "30" } });
     fireEvent.click(sw);
     expect(sw).toHaveAttribute("aria-checked", "false");
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
@@ -342,7 +313,6 @@ describe("AutoReplyPage", () => {
     }]);
     expect(within(bar).getByText("Off")).toBeInTheDocument();
 
-    // The page Save then sends the switched value with the edit.
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled());
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
@@ -353,7 +323,6 @@ describe("AutoReplyPage", () => {
     mockReads({ config: { list_ids: [11] } });
     renderWithProviders(<AutoReplyPage />);
     await screen.findByRole("switch", { name: "Fans in folders" });
-    // Another operator has since saved a new audience; this tab still caches the old one.
     const base = get.getMockImplementation()!;
     get.mockImplementation((path: string, ...rest: unknown[]) => path.startsWith("/admin/autoreply-config")
       ? Promise.resolve({ account_id: "acc-a", config: { enabled: true, list_ids: [22], new_fans_enabled: true }, defaults: {} })
@@ -386,7 +355,7 @@ describe("AutoReplyPage", () => {
   it("the header switch judges the stored sources: an unsaved source in the draft does not let it turn on", async () => {
     mockReads({ config: { enabled: false, folders_enabled: false, new_fans_enabled: false } });
     renderWithProviders(<AutoReplyPage />);
-    fireEvent.click(await screen.findByRole("switch", { name: "Fans in folders" }));   // draft only, not saved
+    fireEvent.click(await screen.findByRole("switch", { name: "Fans in folders" }));
     const sw = within(screen.getByRole("banner")).getByRole("switch", { name: "Auto-reply" });
     expect(sw).toBeDisabled();
     fireEvent.click(sw);
@@ -428,7 +397,6 @@ describe("AutoReplyPage", () => {
   });
 
   describe("Model", () => {
-    /** Pick `option` in the Model select, Save, and return the account-config PUT's config. */
     async function pickAndSave(option: string) {
       fireEvent.click(await screen.findByRole("combobox", { name: "Model" }));
       fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: option }));
@@ -485,7 +453,6 @@ describe("AutoReplyPage", () => {
     });
 
     it("save a pick, then pick the opened one back: the second Save sends it (never a false Saved)", async () => {
-      // The brain read answers with what the last PUT stored.
       const brain: Record<string, unknown> = {};
       mockReads({ brain });
       put.mockImplementation((p: string, body: { config: Record<string, unknown> }) => {

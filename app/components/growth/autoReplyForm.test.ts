@@ -7,7 +7,6 @@ import {
   initState, numberText, randomiseOn, switchPayload, type AutoReplyAction, type AutoReplyDraft, type AutoReplyEdit, type BrainPick, type NumberKey,
 } from "./autoReplyForm";
 
-/** service/automations/autoreply.py `_defaults()`. */
 const DEFAULTS: AutoreplyConfig = {
   enabled: false, silence_min_minutes: 24, silence_max_minutes: 1115, step_in_max_minutes: 0,
   max_nudges: 1, min_gap_minutes: 5, last_n_messages: 12, quiet_hours_json: null,
@@ -16,10 +15,8 @@ const DEFAULTS: AutoreplyConfig = {
   describe_photos: false, skip_photo_only: false,
 };
 
-/** The state after `actions`, from the draft `from`. */
 const runState = (actions: AutoReplyAction[], from: AutoReplyDraft = draftFromConfig(DEFAULTS)) =>
   actions.reduce(autoReplyReducer, { draft: from, sent: null, modelTouched: false, typing: {} });
-/** The draft after `actions`, from `from`. */
 const run = (actions: AutoReplyEdit[], from?: AutoReplyDraft) => runState(actions, from).draft;
 
 describe("round trip: buildPayload(draftFromConfig(c), c) = c", () => {
@@ -61,7 +58,6 @@ describe("round trip: buildPayload(draftFromConfig(c), c) = c", () => {
   });
 
   it.each<[string, Partial<AutoreplyConfig>, number]>([
-    // A range the page cannot express is normalised to [d, 2d] on save (unchanged from before).
     ["a non-2x range", { silence_min_minutes: 10, step_in_max_minutes: 30 }, 20],
     ["equal = no spread", { silence_min_minutes: 10, step_in_max_minutes: 10 }, 0],
     ["a range over a 0 delay", { silence_min_minutes: 0, step_in_max_minutes: 15 }, 0],
@@ -141,7 +137,6 @@ describe("number text: as typed until blur, clamped in the draft and payload", (
   const typed = (k: NumberKey, ...raws: string[]): AutoReplyAction[] => raws.map((raw) => ({ type: "number", k, raw }));
   const blur = (k: NumberKey): AutoReplyAction => ({ type: "numberBlur", k });
   it.each<[string, AutoReplyAction[], NumberKey, string, keyof AutoreplyConfig, number]>([
-    // name, actions, input, its text after, payload field, payload value
     ["clear then type 7289 (no snap to 1 under the keystrokes)",
       typed("newHours", "", "7", "72", "728", "7289"), "newHours", "7289", "new_fan_hours", 7289],
     ["blank stays blank while typing", typed("newHours", ""), "newHours", "", "new_fan_hours", 1],
@@ -195,9 +190,8 @@ describe("unsaved: 'Saved' only while nothing changed since the last Save sent",
 });
 
 describe("header switch: saves at once, never touches 'Saved'", () => {
-  const savedState = runState([{ type: "saved" }]);   // a Save landed, nothing edited since
+  const savedState = runState([{ type: "saved" }]);
   it.each<[string, AutoReplyAction[], boolean, boolean]>([
-    // name, actions after a landed Save, enabled, unsaved
     ["flip on a clean form: stays clean", [{ type: "switched", on: true }], true, false],
     ["flip then flip back (failed PUT): clean, off", [{ type: "switched", on: true }, { type: "switched", on: false }], false, false],
     ["flip on a dirty form: stays dirty", [{ type: "number", k: "delay", raw: "9" }, { type: "switched", on: true }], true, true],
@@ -205,7 +199,7 @@ describe("header switch: saves at once, never touches 'Saved'", () => {
     const s = actions.reduce(autoReplyReducer, savedState);
     expect(s.draft.enabled).toBe(enabled);
     expect(unsaved(s)).toBe(dirty);
-    if (s.sent) expect(s.sent.enabled).toBe(enabled);   // the next Save sends the same flip
+    if (s.sent) expect(s.sent.enabled).toBe(enabled);
   });
 
   it("before any Save the sent draft stays null", () => {
@@ -239,7 +233,6 @@ describe("canSubmit", () => {
   });
 });
 
-/** A slice of account_config_api's GET: the house model, one model with efforts, one without. */
 const BRAIN = (model: string | null, reasoning_effort: string | null = ""): BrainPick => ({
   default_model: "deepseek-v4-flash",
   model_options: ["deepseek-v4-flash", "deepseek-v4-pro", "claude-opus-5-5"],

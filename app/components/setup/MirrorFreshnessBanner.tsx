@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * MirrorFreshnessBanner — on /creators, founder only (a maintainer's task, not
- * an agency's): OF Manager's mirror is behind when OF's live build is newer than
- * the one it was captured from (OF_MIRROR_BUILD, written by scripts/of-mirror.mjs).
- * The live build is the one the relay already reads off OF's API responses
- * (live_rev.py) and /admin/rev/live reports, so this costs no extra OF call.
- * Dismissible per live build.
- */
 
 import { useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -28,7 +20,6 @@ const subscribeDismissed = (cb: () => void) => {
   return () => window.removeEventListener(DISMISS_EVENT, cb);
 };
 
-/** A build id's yyyymmddhhmm prefix ("202610091632-c45cc0ac3f"), or null for anything else. */
 const buildTime = (rev: string | null | undefined) => rev?.match(/^(\d{12})-/)?.[1] ?? null;
 
 export default function MirrorFreshnessBanner() {
@@ -49,11 +40,10 @@ export default function MirrorFreshnessBanner() {
   const dismiss = () => {
     try {
       window.localStorage.setItem(DISMISS_LS_KEY, rev);
-    } catch { /* ignore */ }
+    } catch { }
     window.dispatchEvent(new CustomEvent(DISMISS_EVENT));
   };
 
-  // HB's inline warning alert (page-parity 02): #ffa15f on its 12% tint, 8px corners, no border.
   return (
     <div role="alert" title={EXTRA_LABEL} className="rounded-lg bg-[rgba(255,161,95,.12)] px-4 py-3 text-[#ffa15f]">
       <div className="flex items-start gap-3">

@@ -1,10 +1,3 @@
-/**
- * VaultDuplicatesModal through the real component + react-query: a threshold
- * change while confirming must take "Yes, remove them" away (the frozen set
- * belonged to the old scan), the hide request must carry exactly the ids
- * frozen at confirm (even when a refetch changed the scan underneath), a failed
- * hide is never resent, and a double click sends once. Only the relay wire is faked.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -32,7 +25,6 @@ const cluster = (original: number, dupes: number[]): DupeCluster => ({
   original: member(original), dupes: dupes.map(member), band: "identical", worst: 0,
   all_exact: true, sent_dupes: 0,
 });
-/** Threshold 2 finds two sets; the looser threshold 4 finds a third. */
 const SCANS: Record<string, DupeCluster[]> = {
   "2": [cluster(1, [11, 12]), cluster(2, [21])],
   "4": [cluster(1, [11, 12]), cluster(2, [21]), cluster(3, [31])],
@@ -85,21 +77,17 @@ describe("VaultDuplicatesModal confirm over a threshold change", () => {
     mount();
     await screen.findByText("Remove 3 copies from OnlyFans…");
 
-    // Select: untick #21, leaving 11 + 12, and ask to remove them.
     fireEvent.click(tile(21));
     fireEvent.click(screen.getByText("Remove 2 copies from OnlyFans…"));
     expect(screen.getByText("Yes, remove them")).toBeTruthy();
 
-    // A new scan while confirming: the confirm row goes, nothing is sent.
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "4" } });
     expect(screen.queryByText("Yes, remove them")).toBeNull();
     expect(hideCalls()).toHaveLength(0);
 
-    // The new scan lands with every copy ticked again (unticked set reset).
     await screen.findByText("Remove 4 copies from OnlyFans…");
     expect(hideCalls()).toHaveLength(0);
 
-    // Confirm the scan on screen, then Yes: the request carries the frozen set.
     fireEvent.click(screen.getByText("Remove 4 copies from OnlyFans…"));
     fireEvent.click(screen.getByText("Yes, remove them"));
     await screen.findByText(/Removed 4/);
@@ -118,7 +106,6 @@ describe("VaultDuplicatesModal hide request", () => {
     fireEvent.click(await screen.findByText("Remove 3 copies from OnlyFans…"));
     expect(screen.getByText(/^Removes 3 from your real vault/)).toBeTruthy();
 
-    // Same threshold, the scan now finds a third set: the live selection grows to 4.
     scans["2"] = SCANS["4"];
     await qc.invalidateQueries({ queryKey: ["vault-duplicates"] });
     await screen.findByText("4 selected for removal");
@@ -166,7 +153,6 @@ describe("VaultDuplicatesModal hide request", () => {
 });
 
 describe("the state-reducers slop scenario's selectors match this modal", () => {
-  // Its page.evaluate reading the ticked copies, run here on the same DOM.
   const scenario = readFileSync(resolve(__dirname, "../../../slop/scenarios/2026-10-29-state-reducers.py"), "utf8");
   const js = /TICKED_DUPES = """([\s\S]*?)"""/.exec(scenario)![1];
   const ticked = new Function(`return (${js})();`) as () => number[];
@@ -180,7 +166,6 @@ describe("the state-reducers slop scenario's selectors match this modal", () => 
     fireEvent.click(tile(21));
     expect(tile(21)).toHaveAttribute("aria-pressed", "false");
     expect(ticked()).toEqual([11, 12]);
-    // page.get_by_role("dialog", name="Duplicate media").get_by_role("button", name="Close")
     within(screen.getByRole("dialog", { name: "Duplicate media" })).getByRole("button", { name: "Close" });
   });
 });

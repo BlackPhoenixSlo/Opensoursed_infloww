@@ -1,8 +1,3 @@
-/**
- * The answer's live cards (spec D12): a figure comes from the endpoint with the
- * asker's session, never from the model. A role the endpoint refuses (403)
- * reads "Not available for your role" — never $0.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 
@@ -18,10 +13,8 @@ import { renderWithProviders } from "@/test-utils";
 import { AnswerText } from "./AnswerText";
 import { openablePages } from "./prepass";
 
-/** Every page an owner may open: these cases are about the text, not the role (rwl W30 S3: `pages` is required). */
 const ALL = openablePages({ chatterOnly: false, grantedPages: null });
 
-/** The relay's 403 as `request` throws it: a status on the error. */
 const forbidden = () => Object.assign(new Error("relay 403"), { status: 403 });
 
 function serve(routes: Record<string, unknown>) {
@@ -80,11 +73,10 @@ describe("AnswerText markers", () => {
     expect(screen.getByText("$123")).toBeTruthy();
     expect(container.querySelector("p")?.textContent).toBe("Your best fans spent. Settings has 3 tabs.");
     const [path] = relayGet.mock.calls.find(([p]) => String(p).startsWith("/admin/stats/fan-report"))!;
-    expect(String(path)).not.toContain("account_id"); // all = every account the session sees
+    expect(String(path)).not.toContain("account_id");
     expect(String(path)).toContain("from=");
   });
 
-  /** `/users/me` per account: a count, an Error to reject, or undefined (no count). */
   function serveUnread(byAccount: Record<string, number | Error | undefined>) {
     relayGet.mockImplementation((path: string, ctx?: { accountId?: string }) => {
       if (path.startsWith("/admin/settings/applied")) return Promise.resolve({});
@@ -143,11 +135,11 @@ describe("AnswerText markers", () => {
       }
       return Promise.resolve({ rows: [{ total_cents: 500 }] });
     });
-    renderWithProviders(<AnswerText pages={ALL} text="Today: [[data:revenue|today|this]]" focus="1002" />); // app scope: 1001
+    renderWithProviders(<AnswerText pages={ALL} text="Today: [[data:revenue|today|this]]" focus="1002" />);
     expect(await screen.findByText("$5")).toBeTruthy();
     const [path] = relayGet.mock.calls.find(([p]) => String(p).startsWith("/admin/stats/revenue"))!;
     const from = new URL(String(path), "http://x").searchParams.get("from");
-    expect(from).toMatch(/T0[45]:00:00\.000Z$/); // New York midnight, not UTC's
+    expect(from).toMatch(/T0[45]:00:00\.000Z$/);
   });
 
   it("a chat marker is a button into the fan's chat once the handle resolves; else plain text", async () => {

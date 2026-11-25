@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * OF's "Post statistics" popup (POST_STAT, chunk 60969 module 228572), opened by a post's "Full stat" and its More menu's
- * "View detailed statistics": "Some statistics may be delayed or approximated", the multi-line chart of the picked
- * figures and a row per figure (MultipleLineChartRadioButton: a check, the title, the count, linked to its list when OF
- * links it, and a sum), then Duration / Average when the post has a view duration. Its numbers are the Relay's
- * `/posts/stats?post_id` (OF's `/posts/{id}/stats?withChart=true`), mapped as OF's store does (app.js `setPostStat`).
- * That route is the phase-1 Relay's (omf-statistics-relay-2): callers enable the buttons only when postStatsProbe finds
- * it (Statistics' Full stat and menus, useOfStats; a post row's Post statistics, useOfPostActions).
- */
 
 import { chartLabels, drawLines, type ValueKind } from "@/lib/ofMirrorChart";
 import { usd } from "@/lib/ofMirrorMoney";
@@ -19,12 +10,7 @@ import { relay, RelayError } from "@/lib/relay";
 import { errText } from "@/lib/errText";
 
 export const POST_STATS_PROBE = "/api/of/v2/posts/stats";
-/**
- * Whether the Relay has the phase-1 per-item reads (omf-statistics-relay-2, `/posts/stats` among them): that route
- * without a post id answers `{supported: true}` (no OnlyFans request, and a 2xx, so the browser logs no error on every
- * page); a Relay from before that answers 422 there, one without the route 404, and a role without Statistics 403. The
- * query answers true for `{supported: true}` or the 422.
- */
+// The route without a post id answers {supported: true} with no OF request, so the browser logs no error per page; a Relay from before answers 422.
 export const postStatsProbe = (accountId: string | null | undefined) => ({
   queryKey: ["of-mirror-data", accountId, POST_STATS_PROBE],
   queryFn: () =>
@@ -34,14 +20,12 @@ export const postStatsProbe = (accountId: string | null | undefined) => ({
     ),
 });
 
-/** The Relay route of a post's stats, or null for a non-numeric id. */
 export const postStatsRoute = (id: unknown) => (/^\d+$/.test(String(id ?? "")) ? `/api/of/v2/posts/stats?post_id=${String(id)}` : null);
 
 type Point = { date?: string; count?: unknown };
 const pts = (v: unknown): Point[] => (Array.isArray(v) ? (v as Point[]) : []);
 const values = (list: Point[]) => list.map((p) => num(p.count) ?? 0);
 
-/** One of OF's figure rows (datasetData): its id, title, colour, row class, count, sum, list, chart and partner line. */
 export interface StatRow {
   id: string;
   title: string;
@@ -56,7 +40,6 @@ export interface StatRow {
   relatedTo?: string;
 }
 
-/** OF's figure rows for a `/posts/{id}/stats` reply (228572's datasetData over setPostStat's fields), in its order. */
 export function postStatRows(stats: unknown, isStream = false): StatRow[] {
   if (!isObj(stats)) return [];
   const n = (k: string) => num(stats[k]) ?? 0;
@@ -64,14 +47,12 @@ export function postStatRows(stats: unknown, isStream = false): StatRow[] {
     { id: "purchases", title: "Purchases", color: "#7CB342", className: "m-purchases", count: n("purchasedCount"), sum: n("purchasedSumm"), list: "post-buyers", tooltip: isStream ? "This number includes stream purchases" : undefined, chart: pts(stats.purchasesChart) },
     { id: "views", title: "Views", color: "#00AFF0", className: "m-viewers", count: n("lookCount"), chart: pts(stats.lookChart) },
     { id: "uniq-views", title: "Unique viewers", color: "#6b6b6b", className: "m-unique-viewers", count: n("uniqueLookCount"), chart: pts(stats.uniqueLookChart), hidden: true, relatedTo: "views" },
-    // OF links Likes to the post's likers (UserList PostLikes: `/posts/{id}/favorites`).
     { id: "likes", title: "Likes", color: "#EC407A", className: "m-likes", count: n("likeCount"), list: "post-likes", chart: pts(stats.likeChart) },
     { id: "comment", title: "Comments", color: "#FFA000", className: "m-comments", count: n("commentCount"), chart: pts(stats.commentChart) },
     { id: "tips", title: "Tips", color: "#9575CD", className: "m-tips", count: n("tipCount"), sum: num(stats.tipSum) ?? 0, list: "post-tips", chart: pts(stats.tipChart) },
   ];
 }
 
-/** OF's view duration (moment-duration-format "HH:mm:ss", its leading zero units trimmed). */
 export function durationText(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
   const parts = [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60];
@@ -79,7 +60,6 @@ export function durationText(seconds: number): string {
   return parts.map((p) => String(p).padStart(2, "0")).join(":");
 }
 
-/** OF's check (CheckboxOF with `m-pseudo-checkbox`). */
 function check(doc: Document, id: string, on: boolean) {
   const el = elOf(doc);
   const box = el("span", "b-input-radio__container m-pseudo-checkbox");
@@ -95,7 +75,6 @@ function check(doc: Document, id: string, on: boolean) {
   return box;
 }
 
-/** Fill the popup's `body` with `stats` (the Relay's reply) for post `postId`. */
 export function fillPostStats(doc: Document, body: HTMLElement, postId: unknown, stats: unknown, tz: string | null, isStream = false) {
   const el = elOf(doc);
   body.replaceChildren(el("div", "g-sm-text g-gray-text", " Some statistics may be delayed or approximated "));
@@ -105,7 +84,7 @@ export function fillPostStats(doc: Document, body: HTMLElement, postId: unknown,
   const tab = el("div", "b-tab-stats m-current");
   const wrap = el("div", "b-chart__wrapper b-chart");
   const canvas = el("canvas", "b-chart__multiple-line") as HTMLCanvasElement;
-  canvas.height = 200; // OF's chartHeight
+  canvas.height = 200;
   canvas.style.height = "200px";
   wrap.append(canvas);
   const labels = chartLabels(pts(at(stats, "commentChart")).map((p) => p.date), tz);
@@ -132,7 +111,7 @@ export function fillPostStats(doc: Document, body: HTMLElement, postId: unknown,
     if (r.list && r.count > 0 && postId !== undefined) {
       const link = usersLink(doc, count, r.list, postId);
       link.addEventListener("click", (ev) => {
-        ev.stopPropagation(); // OF's doEmit: the list opens, the line stays
+        ev.stopPropagation();
         ev.preventDefault();
         openUsers(doc, link.getAttribute("data-oi-users")!, link);
       });
@@ -141,7 +120,6 @@ export function fillPostStats(doc: Document, body: HTMLElement, postId: unknown,
     if (r.sum !== undefined) val.append(el("span", "d-inline-flex", ` (${usd(r.sum)}) `));
     row.append(val);
     row.addEventListener("click", () => {
-      // OF's toggleDatasetHandler: the row's line and the line related to it (Views' Unique viewers).
       const on = !active.has(r.id);
       for (const id of [r.id, ...rows.filter((x) => x.relatedTo === r.id).map((x) => x.id)]) {
         if (on) active.add(id);
@@ -173,7 +151,6 @@ export function fillPostStats(doc: Document, body: HTMLElement, postId: unknown,
   draw();
 }
 
-/** Open the popup for post `postId`, read from the Relay. */
 export function openPostStats(doc: Document, postId: unknown, tz: string | null, opener?: Element, isStream = false) {
   const route = postStatsRoute(postId);
   if (!route) return;
@@ -192,7 +169,6 @@ export function openPostStats(doc: Document, postId: unknown, tz: string | null,
     });
 }
 
-/** A post's "Full stat" button: it opens the popup with the phase-1 Relay (`v3`), else disabled with the tooltip. */
 export function fullStat(doc: Document, post: { id?: unknown; streamId?: unknown }, v3: boolean, tz: string | null) {
   const b = elOf(doc)("button", "g-btn m-flat m-btn-gaps m-ex-sm", " Full stat ") as HTMLButtonElement;
   b.type = "button";

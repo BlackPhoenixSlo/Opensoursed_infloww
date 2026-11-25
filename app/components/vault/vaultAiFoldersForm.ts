@@ -1,23 +1,10 @@
-/**
- * "Build AI folders" options: how many shoots stay script folders, the solo cut, the OnlyFans mirror, the ticked
- * Jev topic folders and whether they split by price. All of them go into ONE apply payload and must match the preview the operator saw (the server re-derives the plan and retires
- * what it no longer makes, limited to the folders the preview listed), so they live in one pure reducer; VaultAiFoldersModal only dispatches.
- *
- * `confirmLabel` / `changesLine` turn the plan's `changes` (what Confirm does to the AI- folders already there) into
- * the copy shown before Confirm. Retiring a folder bound to an OnlyFans list unlinks that list, so the button says so.
- */
-
-/** Shoots kept as their own folder: 0 (lanes only) .. 20, the route's range. */
 export const KEEP_CHOICES: readonly number[] = Array.from({ length: 21 }, (_, i) => i);
 
 export interface AiFoldersForm {
   keep: number;
   solo: boolean;
   mirrorToOf: boolean;
-  /** Ticked topic slugs (`service/vault_topic_folders.py`), sorted so the preview's query key and the apply body
-   *  never differ by order. None by default: the build is unchanged until the operator opts in. */
   topics: string[];
-  /** Topic folders split by price (`AI-bikini free`, `AI-bikini $10`, …); off = one `AI-<topic>` folder each. */
   split: boolean;
 }
 
@@ -27,7 +14,6 @@ export type Action =
   | { type: "mirror"; on: boolean }
   | { type: "split"; on: boolean }
   | { type: "topic"; slug: string; on: boolean }
-  /** "Select all": every topic the plan offered (`slugs` = its catalogue). */
   | { type: "topicsAll"; slugs: readonly string[] }
   | { type: "topicsNone" };
 
@@ -61,8 +47,6 @@ export function aiFoldersFormReducer(state: AiFoldersForm, action: Action): AiFo
   }
 }
 
-/** The apply call's options: exactly the preview's, plus the folder ids the preview showed retiring
- *  (`expectedRetire`): the server re-plans and retires only those, never a folder the operator was not shown. */
 export function buildPayload(form: AiFoldersForm, changes: PlanChanges | null | undefined): {
   keep: number; solo: boolean; mirrorToOf: boolean; topics: string[]; split: boolean; expectedRetire: number[];
 } {
@@ -70,7 +54,6 @@ export function buildPayload(form: AiFoldersForm, changes: PlanChanges | null | 
     expectedRetire: (changes?.retired ?? []).map((r) => r.folder_id) };
 }
 
-/** Topic checkboxes are live only when some item carries Jev's answers (Jev is on for every photo). */
 export function topicsUsable(jev: { with_jev: number } | null | undefined): boolean {
   return !!jev && jev.with_jev > 0;
 }
@@ -80,7 +63,6 @@ export function keepLabel(n: number): string {
   return `top ${n} ${n === 1 ? "shoot" : "shoots"}`;
 }
 
-/** What Confirm does to the AI- folders already there (the plan's `changes`). */
 export interface PlanChanges {
   create: number;
   keep: number;
@@ -93,7 +75,6 @@ export function canSubmit(busy: boolean, folders: number): boolean {
   return !busy && folders > 0;
 }
 
-/** "will create 3 · keep 9 · retire 2"; null before the plan lands. */
 export function changesLine(changes: PlanChanges | null | undefined): string | null {
   if (!changes) return null;
   return `will create ${changes.create} · keep ${changes.keep} · retire ${changes.retire}`;

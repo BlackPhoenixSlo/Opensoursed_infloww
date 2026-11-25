@@ -1,8 +1,3 @@
-"""Fansly Creators: a seeded Creator turned into a Fansly account the way the login extension's Fansly capture leaves
-it: `meta.json` `platform: "fansly"` and a `fansly_session.json` beside it (service/fansly_backend.py), so the relay
-builds the REAL `FanslyShimClient` for it. Its Fansly API is lib/fansly_relay.py's loopback fake (armed by the
-scenario). The session is synthetic: `token` `slop-fansly-<id>` (the fake tells the Creators apart by it),
-a fixed device id, the signer's default check key."""
 from __future__ import annotations
 
 import json

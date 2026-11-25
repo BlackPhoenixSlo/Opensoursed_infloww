@@ -1,9 +1,3 @@
-/**
- * The public bio page's own script (service/bio_pages/public/script.js) in jsdom: its served index.html body, one
- * Profile JSON and Reveal answer from a stubbed fetch, a user agent per row. Pins what the editor promises: a Link with
- * the 18+ Age Gate never Reveals from a `?link=` shortcut until Continue (asked once: the in-app Continue hands the
- * shortcut out with `age=ok`), and a Reveal answer is navigated to only as an http(s) address, else error + Retry.
- */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -27,8 +21,6 @@ type VirtualConsole = { on(ev: string, fn: (e: Error) => void): void; off(ev: st
 const virtualConsole = () => (globalThis as unknown as { jsdom: { virtualConsole: VirtualConsole } }).jsdom.virtualConsole;
 let onJsdomError: ((e: Error) => void) | null = null;
 
-/** Load the page at /alice?link=<shortcut> (more query may follow) under `ua`; Reveal answers `realUrl`. Resolves once
- * the Profile renders. */
 async function load(ua: string, shortcut: string | null, realUrl = "https://dest.test/x") {
   vi.spyOn(navigator, "userAgent", "get").mockReturnValue(ua);
   window.history.replaceState({}, "", shortcut ? `/alice?link=${shortcut}` : "/alice");
@@ -41,13 +33,11 @@ async function load(ua: string, shortcut: string | null, realUrl = "https://dest
     return { ok: true, json: async () => body } as Response;
   });
   vi.stubGlobal("fetch", fetchMock);
-  // jsdom reports each navigation to another document as "Not implemented: navigation" on its virtual console
   const navErrors: string[] = [];
   onJsdomError = (e: Error) => { if (/navigation/i.test(e.message)) navErrors.push(e.message); };
   virtualConsole().on("jsdomError", onJsdomError);
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
-  // The script's DOMContentLoaded handler, run once here (never left on document for the next row)
   const onDocument = vi.spyOn(document, "addEventListener").mockImplementation(() => {});
   new Function(SCRIPT)();
   const ready = onDocument.mock.calls.find(([type]) => type === "DOMContentLoaded")![1] as () => void;
@@ -117,7 +107,7 @@ describe("Link Shortcut and the 18+ Age Gate", () => {
   it("age=ok covers only that load's shortcut: a tap on another adult card still gates", async () => {
     const page = await load(DESKTOP, "adultesc0001&age=ok");
     await vi.waitFor(() => expect(page.reveals()).toBe(1));
-    (document.querySelectorAll(".link-card")[0] as HTMLElement).click();  // adult0000001
+    (document.querySelectorAll(".link-card")[0] as HTMLElement).click();
     await page.settle();
     expect(gateOpen()).toBe(true);
     expect(page.reveals()).toBe(1);
@@ -128,7 +118,7 @@ describe("Reveal answers navigated to", () => {
   it.each([
     ["https://dest.test/x", 1],
     ["/local/path", 1],
-    ["javascript:window.__pwned=1", 0],  // jsdom never runs it; the __pwned check below stays as the guard
+    ["javascript:window.__pwned=1", 0],
     ["data:text/html,<b>x</b>", 0],
     ["vbscript:msgbox(1)", 0],
   ])("%s → %d navigation(s)", async (realUrl, navigations) => {
@@ -136,7 +126,7 @@ describe("Reveal answers navigated to", () => {
     await vi.waitFor(() => expect(page.reveals()).toBe(1));
     await page.settle();
     expect(page.navErrors.length).toBe(navigations);
-    expect(shown("revealError")).toBe(navigations === 0);  // a rejected answer shows the toast with Retry
+    expect(shown("revealError")).toBe(navigations === 0);
     expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
   });
 
@@ -152,7 +142,7 @@ describe("Reveal answers navigated to", () => {
       expect(shown("overlayError")).toBe(true);
       expect(btn.getAttribute("aria-disabled")).toBeNull();
       expect(page.navErrors.length).toBe(0);
-      btn.click();  // Retry Reveals again
+      btn.click();
       await vi.waitFor(() => expect(page.reveals()).toBe(2));
     });
 });

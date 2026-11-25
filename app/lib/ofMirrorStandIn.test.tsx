@@ -25,14 +25,12 @@ const load = (page: string) => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/messages/${page}.html`), "utf8");
   document.body.className = "";
 };
-/** The frame as useOfChat reads it: the page in it is loaded (readyState complete), so it binds at once. */
 const frame = { contentDocument: document, addEventListener: () => {}, removeEventListener: () => {} } as unknown as HTMLIFrameElement;
 
 function Composer({ src }: { src: string }) {
   useOfChat(useRef(frame), src);
   return null;
 }
-/** OfMirrorFrame's stand-in over the composer hook, as in All models. */
 function Page({ src }: { src: string }) {
   return (
     <ScopeOverride accountId={useStandIn(src)}>
@@ -59,12 +57,10 @@ describe("New message back from its vault while the model list answers nothing (
       </QueryClientProvider>
     );
 
-    // The vault open for the stand-in model: a tile ticked.
     load("send/state-vault");
     const { rerender } = render(wrap(<Page key={VAULT_SRC} src={VAULT_SRC} />));
     sessionStorage.setItem(vaultPickKey(MODEL, MASS_VAULT), JSON.stringify({ ids: [22], thumbs: [""] }));
 
-    // The model list answers nothing for a moment (a refetch's empty answer), then Close: a fresh page, New message.
     qc.setQueryData(ACCOUNTS, { accounts: [], active_account_id: null });
     load("send");
     rerender(wrap(<Page key={SEND_SRC} src={SEND_SRC} />));

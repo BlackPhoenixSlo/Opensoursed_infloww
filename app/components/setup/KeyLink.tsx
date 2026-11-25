@@ -1,5 +1,3 @@
-/** "Get your key ↗" under a key field — straight to the vendor's API-key page. */
-
 import { keyUrl } from "@/components/setup/providerFields";
 
 export default function KeyLink({ name }: { name: string }) {

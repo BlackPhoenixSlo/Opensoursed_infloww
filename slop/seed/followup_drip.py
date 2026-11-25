@@ -1,40 +1,3 @@
-"""Follow-up drip history (`automations.send_followup`): for the eligible fans (>= $1
-lifetime spend) WITHOUT a seeded thread, one drip case per fan, each written as the
-rows the drip and the chat would have left: the `messages` (his lines, the chatter's,
-the earlier nudges as `automation_kind='followup'` outbound rows), the `chats` row and,
-when the drip had already touched him, his `followup_state` row. Times are hours
-before `w.now`, each case at least 2 h from any rule boundary (26/64/120 h steps,
-18 h gap, 12 h contact guard, 168 h cap), so the tick's outcome is fixed by the case.
-
-Cases, round-robin over a seeded shuffle of each Creator's candidates
-(`w.rng("followup_drip")`); `--set followup_frac=` (default 1.0) takes a share of them:
-  due1             silent 30 h, never nudged               -> step 1
-  due2             anchor 70 h, step 1 40 h ago            -> step 2
-  gap              anchor 70 h, step 1 14 h ago            -> held by the 18 h gap
-  cap              anchor 200 h, steps 1-2 out             -> completed (7-day cap)
-  reply            anchor 80 h, step 1 out, he wrote 5 h ago -> reply_cooldown 26 h
-  restart          all three out, he wrote 2 h ago         -> restart_cooldown 72 h
-  waiting          all three out, no reply                 -> unchanged
-  reply_expired    reply_cooldown ended 4 h ago; a chatter answered him 29 h ago
-                                                          -> tracking, step 1 same tick
-  restart_expired  restart_cooldown ended 8 h ago; a chatter answered 78 h ago
-                                                          -> tracking, cycle 2, step 1
-  cooling          reply_cooldown until 10 h from now      -> unchanged
-Declared: the earlier nudges carry no `sent_by_employee_id` (the product's attribution
-resolves the system Automation employee); nothing else differs from what it writes.
-
-`seed_kill` (not part of `seed`; only 2026-10-30-followup-drip's KILL phase calls it, last): per
-KILL Creator one fan who subscribed since the drip's other ticks (a new `fans` row, KILL_FAN_OFFSET
-past the profile's ids, $25 spend) with the `due1` history (his line 40 h ago, ours 30 h ago), its
-`chats` row and NO followup_state row: the drip's first-cycle fan, whose send marker the mark's
-upsert creates.
-
-`seed_bad_tz_rule` (not part of `seed`; only 2026-10-30-followup-drip's bad-tz phase calls it):
-one enabled send_followup clock rule (`daily_at` 00:00) whose stored `tz_offset_minutes` is "x"
-(lib/dispatch_tz_faults.py BAD_TZ). Declared bypass: raw SQL. No build ever wrote a non-number
-there (the rules API 422s it since 0676f0921): it is a hand-edited / raw-SQL row the API
-refuses, which a supervisor pass must skip without stopping.
-"""
 from __future__ import annotations
 
 import json
@@ -42,12 +5,10 @@ from datetime import timedelta
 
 from . import World, fans as _fans, ts
 
-MSG_ID_BASE = 9_000_900_000_000   # above threads' history ids, below the relay's bands
+MSG_ID_BASE = 9_000_900_000_000
 CASES = ("due1", "due2", "gap", "cap", "reply", "restart", "waiting",
          "reply_expired", "restart_expired", "cooling")
 
-# case -> (messages as (direction, hours ago, is a nudge), state or None)
-# state: (phase, cycle, anchor h, last reply h, cooldown_until h (negative = future), {step: h})
 _PLAN = {
     "due1": ([("in", 40, 0), ("out", 30, 0)], None),
     "due2": ([("in", 80, 0), ("out", 70, 0), ("out", 40, 1)],
@@ -70,15 +31,14 @@ _PLAN = {
     "cooling": ([("in", 60, 0), ("out", 50, 0), ("in", 16, 0)],
                 ("reply_cooldown", 1, 50, 16, -10, {})),
 }
-KILL_FAN_OFFSET = 900_000   # past any Creator's fans (fans.py: FAN_ID_BASE + creator * 1e6 + k)
+KILL_FAN_OFFSET = 900_000
 KILL_MSG_ID_BASE = MSG_ID_BASE + 9_000_000
 KILL_SPEND_CENTS = 2500
-BAD_TZ_RAW = "x"   # seed_bad_tz_rule's stored tz_offset_minutes
+BAD_TZ_RAW = "x"
 _IN, _OUT, _NUDGE = "u up?", "hey you", "thinking of you 😘"
 
 
 def seed(w: World, fans: dict[str, list[dict]], threads: list[dict], frac: float = 1.0) -> dict:
-    """-> {"cases": {(account_id, fan_id): case}}; also in w.data["followup_drip"]."""
     rng = w.rng("followup_drip")
     threaded = {(t["account_id"], t["fan_id"]) for t in threads}
     seq = MSG_ID_BASE
@@ -131,8 +91,6 @@ def seed(w: World, fans: dict[str, list[dict]], threads: list[dict], frac: float
 
 
 def seed_bad_tz_rule(w: World, account_id: str) -> int:
-    """One enabled send_followup clock rule on `account_id` with tz_offset_minutes "x" (the
-    module docstring's declared bypass) -> its id."""
     con = w.sql()
     with con:
         rid = con.execute(
@@ -145,7 +103,6 @@ def seed_bad_tz_rule(w: World, account_id: str) -> int:
 
 
 def seed_kill(w: World, aids: list[str]) -> dict[str, dict]:
-    """One fresh `due1` fan per Creator in `aids` (module docstring) -> {aid: fan dict}."""
     index = {c["id"]: i for i, c in enumerate(w.data["creators"])}
     out: dict[str, dict] = {}
     frows, mrows, crows = [], [], []

@@ -1,27 +1,5 @@
 "use client";
 
-/**
- * Employees > "Shift schedule" (docs/spec/phase-02-shifts-time-tracking.md, App; Inventory §3.8), in the look of
- * Infloww's legacy `Index$1` (bundle @16768636; page-parity ticket 18): the 48px header with the Agency's time zone
- * and a gear for "Shift Settings", then antd line tabs "Shift schedule" / "Shift history" (`?tab=history`) with
- * "Create shift(s)" or "Export" at the tab bar's right.
- *
- * The week is the Agency's: its week start day (Monday when never saved; spec phase-04, story 20) and its time zone
- * (Settings › Your Preferences, `useAgencyTimeZone`), cut by `zonedWeek`, so `from` / `to`, the day columns, today
- * and the tile times all read in that zone. "Date:" steps a week either way and "This week" comes home; the Creator
- * and Employee filters go to `GET /admin/shifts`, the Employee group filter (its sub-groups included) is applied to
- * the week's occurrences here, and "Reset" clears all three. Filters apply as they are picked (no "Search"). The
- * grid is `ShiftGrid`; "Shift history" is `ShiftHistory` (the Timesheet, by Employee or by Creator) or `ShiftRecords`
- * ("By shift", one row per worked shift) over the same week, picked by its "Group by" strip. Owner-only: a chatter reaching the
- * route by URL gets a sentence, and the Relay 403s the endpoints anyway.
- *
- * Infloww's tip says Shift times do not follow daylight saving time; ours do (each Shift keeps its `tz`), so the
- * same yellow line says that instead.
- *
- * ASSUMPTION: the Employee filter offers the whole active roster including chatters' Mirror Employees (they can be
- * on a Shift), and the Creator filter offers the owner's Creators from /admin/accounts. Rung 5: the two lists the
- * app already loads. Overturned by Inventory evidence of other choices.
- */
 
 import { useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
@@ -57,7 +35,6 @@ type Tab = "scheduling" | "history";
 const isHistory = (v: string): v is "history" => v === "history";
 const TZ_TIP = "Shift times are shown in your organization's time zone (Settings › Your Preferences)";
 
-/** "UTC+02:00 ⓘ" after the title: the zone the grid reads in (00's report-time-zone look). */
 function TzLabel({ zone }: { zone: string }) {
   return (
     <span className="flex shrink-0 items-center gap-1 text-[14px] text-fg-dim tabular-nums">
@@ -91,7 +68,6 @@ export default function ShiftSchedule() {
   );
 }
 
-/** A query item: "Label:" 14px T1 at line-height 28px, 8px before its control, 15px right of and under it. */
 function Query({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="mb-[15px] mr-[15px] flex min-w-0 max-w-full items-center">
@@ -125,8 +101,6 @@ function WeekCalendar({ tz }: { tz: string }) {
   const exportAllowed = useActionAllowed("export");
   const [tab, setTab] = useState<Tab>("scheduling");
   useTabParam("tab", isHistory, setTab);
-  // The shown week is "this week" plus `weeksAway`, so it follows the week start and the zone once the Applied
-  // settings load, and "This week" re-reads the clock.
   const [now, setNow] = useState(() => new Date());
   const [weeksAway, setWeeksAway] = useState(0);
   const { days } = zonedWeek(now, firstDay, tz, weeksAway);
@@ -134,9 +108,7 @@ function WeekCalendar({ tz }: { tz: string }) {
   const [accountId, setAccountId] = useState("");
   const [groupId, setGroupId] = useState("");
   const [group, setGroup] = useState<TimesheetGroup>("employee");
-  // "By shift": Shift records in place of the Timesheet (roadmap W6 6.6); `group` keeps the Timesheet's grouping.
   const [byShift, setByShift] = useState(false);
-  // null = closed; { editing: null } = "Create shift(s)" (a preset from an empty cell); else that Shift.
   const [shiftsWindow, setShiftsWindow] = useState<{ editing: ShiftOccurrence | null; preset?: ShiftPreset } | null>(null);
 
   const week = useShiftWeek({ weekStart: days[0].start, weekEnd: days[6].end, employeeId, accountId }, !!user);
@@ -163,7 +135,6 @@ function WeekCalendar({ tz }: { tz: string }) {
     </>
   );
 
-  // The Employee group filter: the picked group and every group under it.
   const inGroup = new Set<number>();
   if (groupId) {
     const add = (id: number) => { inGroup.add(id); groups.filter((g) => g.parent_id === id).forEach((g) => add(g.id)); };
@@ -175,7 +146,6 @@ function WeekCalendar({ tz }: { tz: string }) {
     ? all.filter((o) => o.employees.some((e) => inGroup.has(groupOf.get(e.id) ?? -1)))
     : all;
 
-  // One row per Creator on a shown Shift (just the picked Creator when the filter is on), by name.
   const accountById = new Map(accounts.map((a) => [a.id, a]));
   const rowIds = accountId ? [accountId] : [...new Set(shown.flatMap((o) => o.accounts.map((a) => a.id)))];
   const rows: GridRow[] = rowIds.map((id) => {
@@ -191,7 +161,6 @@ function WeekCalendar({ tz }: { tz: string }) {
     value: String(g.id), text: g.name, label: <span style={{ paddingLeft: depth * 16 }}>{g.name}</span>,
   }));
 
-  /** A tile's Delete: an occurrence of a weekly series asks its scope first, a one-off confirms. */
   const del = useShiftDelete({
     onDone: () => void queryClient.invalidateQueries({ queryKey: ["shifts"] }),
     onError: (e, o) => pushNotice({

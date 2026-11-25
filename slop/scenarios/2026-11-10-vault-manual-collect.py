@@ -1,51 +1,3 @@
-"""Vault Pro's manual Collect (POST /admin/vault-ai/collect, `vault_ai_api._run_collect`): OF walked in the describe
-sweep's priority order (`vault_collect_plan`, PR #615), each page's stills downloaded before the next OF call, every
-media counted and downloaded once.
-
-World: `flat_agency`, vault_manual_creators Creators (3 / 6 / 10), each with a captured OF session (the relay's
-REAL OFClient against lib/of_wire.py, `OF_WIRE`) and a vault of vault_manual_items media (450 / 1,500 / 5,000) in
-6 folders (lib/vault_wire.py, `mp4`: each video carries a playable 240p clip, so Collect's storyboard warm runs
-ffmpeg on it). OF's CDN is lib/img_relay.py's fake (`pictures`), every thumb / full / 240p armed; vault_stills'
-and storyboard's stores point into the run's temp dir (lib/vault_collect_relay.py). Storyboards of all but each
-Creator's newest COLD_VIDEOS videos are already on disk (an earlier Collect's), so the warm phase fetches exactly
-those few clips. The background collector is off (VAULT_COLLECT_ENABLED=0): every untyped OF vault call is the
-manual Collect's.
-
-Load (stage `collect`): --users picker users (max(--users, Creators), round-robin over the Creators: the Vault
-picker's typed pages `GET /api/of/v2/vault/media?type=photo|video` (a type the Collect never sends, so their OF
-calls are told apart by the query), Vault Pro's grid `GET /admin/vault-ai/items` and the progress poll `GET
-/admin/vault-ai/collect/status`, 1-3 s think). The owner presses Collect for every Creator at once, then polls each
-Creator's status every 0.5 s until no run is running.
-
-Checks (lib/vault_manual_collect_faults.py names), per Creator, on its untyped OF vault calls after the press:
-  collect_newest_first      (name kept; the order is vault_collect_plan's since #615) exactly: the folder list
-                            (lists offset 0, LISTS_PAGE, ... while hasMore); then rounds of {the next FOLD folders
-                            in rail order, each paged whole (list=<id>, desc, limit 100, offsets 0, 100, ... until
-                            hasMore false) -> the next TOP_PAGES All pages desc -> the next BOTTOM_PAGES All pages
-                            asc} until the desc and asc cursors meet or one hits the end and every folder is paged,
-                            nothing else. The warm phase's 240p clip fetches all after the last walk call, newest
-                            first.
-  collect_first_batch_early (a) the first page the walk gets (rail folder 1, page 0): every media's thumb AND full
-                            fetched from the CDN (200) before the walk's next media call reached OF; (b) every
-                            newest-100 media's thumb AND full fetched (200) before the desc walk's 2nd page (offset
-                            STEP = 99: All pages overlap one item) reached OF.
-  collect_complete          the run is done (status done, not running, no error: uncapped), total_seen == upserted
-                            == the fake's media count, vault_items == that count, /cache/summary complete + count,
-                            every media's thumb and full still on disk.
-  collect_once              every thumb and full key fetched exactly once (all 200), each cold clip exactly once, no
-                            pre-warmed clip fetched.
-  collect_status_p95        p95 of the status poll and the readers during the stage within BUDGET_MS; stock p95 vs
-                            last green (P95_VS_LAST) on the same keys.
-
-Bypasses (declared): OF at its wire (lib/of_wire.py + lib/vault_wire.py: no DRM videos, so no poster frames; no
-audio / gifs), OF's CDN in the relay process (lib/img_relay.py, small PNGs and one 12 s test clip), stills /
-storyboard dirs re-pointed by env (lib/vault_collect_relay.py, which also would start the collector: off here),
-storyboards of older videos pre-written by the harness into the run's temp store (12 tiny files each, keyed as
-storyboard._video_path_hash), picker users are httpx clients (no browser).
-Break-it-once: manual-collect-asc-first (default; the pre-change asc-first sweep: collect_newest_first +
-collect_first_batch_early), --fault=manual-collect-warm-at-end (the pre-#615 newest/folders/asc order, downloads
-after the walk: collect_first_batch_early; collect_newest_first also fails, as noise).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -71,36 +23,30 @@ FAULT = "manual-collect-asc-first"
 RELAY_ENV = {"VAULT_COLLECT_ENABLED": "0", "SLOP_VAULT_STILLS": "1"}
 SIZES = {"vault_manual_creators": (3, 6, 10), "vault_manual_items": (450, 1_500, 5_000)}
 merge_sizes(SIZES)
-P95_VS_LAST = (1.5, 100)   # the harness norm; (1.10, 25) flapped on small runs under host load (+0.8 ms over)
+P95_VS_LAST = (1.5, 100)
 P95_VS_LAST_MIN_N = 30
 STATUS = "GET /admin/vault-ai/collect/status"
-# Set from measurement (medium, 200 users, 6 Creators collecting at once): new order 1726/1816/1963 ms
-# (20261111T063254Z-...-142c) vs old download-at-end 1382/1688/1845 ms (20261111T075952Z-...-break-6f8e),
-# p50 equal (~280/350/490): the ceiling is the 200-user load on SQLite, not the order. ~1.3x headroom.
+# measured medium/200 users, 6 Creators collecting: new order 1726/1816/1963 ms vs old download-at-end 1382/1688/1845; the ceiling is the 200-user load on SQLite, not the order
 BUDGET_MS = {STATUS: 2300, "GET /admin/vault-ai/items": 2400, "GET /api/of/v2/vault/media": 2600}
-PAGE, PICKER_PAGE, NEWEST = 100, 24, 100   # vault_ai_api._PAGE, vault_collect.PICKER_PAGE, the newest batch
-STEP = PAGE - 1                            # vault_collect_plan: All cursors overlap one item
-LISTS_PAGE = 50                            # vault_collect.LISTS_PAGE
-FOLD, TOP_PAGES, BOTTOM_PAGES = 10, 5, 1   # vault_collect_plan.FOLD / TOP_PAGES / BOTTOM_PAGES
+PAGE, PICKER_PAGE, NEWEST = 100, 24, 100
+STEP = PAGE - 1
+LISTS_PAGE = 50
+FOLD, TOP_PAGES, BOTTOM_PAGES = 10, 5, 1
 COLD_VIDEOS = 4
-STORYBOARD_FRAMES = 12                     # storyboard._STORYBOARD_FRAMES
+STORYBOARD_FRAMES = 12
 CDN_LATENCY_S = 0.01
 _KEY = re.compile(r"[^/]+/files/v/([^/]+)/(\d+)/(\w+)\.(?:jpg|mp4)")
 
 
 def _sb_hash(uid: str, mid: int) -> str:
-    """storyboard._video_path_hash of the clip's url: sha1(host + path)[:20]."""
     return hashlib.sha1(f"{HOST}{cdn_path(uid, mid, '240p')}".encode()).hexdigest()[:20]
 
 
 def _is_collect(c: dict) -> bool:
-    """An OF vault call the Collect made: lists, or an untyped media page (pickers always send a type)."""
     return c["route"] == "lists" or (c["route"] == "media" and "type" not in c["query"])
 
 
 def _want(folders: list[int], sizes: dict[int, int], n_items: int) -> list[tuple]:
-    """The walk vault_collect_plan designs over the fake (lib/vault_wire: hasMore false on the last page, full or not;
-    desc and asc meet once their position ranges overlap), modelled here, not imported."""
     seq: list[tuple] = [("lists", o) for o in range(0, max(len(folders), 1), LISTS_PAGE)]
     fi = 0
     off, cov = {"desc": 0, "asc": 0}, {"desc": 0, "asc": 0}
@@ -123,7 +69,6 @@ def _want(folders: list[int], sizes: dict[int, int], n_items: int) -> list[tuple
 
 
 def _order(calls: list[dict], folders: list[int], sizes: dict[int, int], n_items: int) -> dict:
-    """The Collect's OF calls against the designed priority order. Returns {ok, why, seq}."""
     seq = []
     for c in calls:
         q = c["query"]
@@ -152,11 +97,10 @@ async def run(ctx):
     armed = await arm_run(ctx.owner, ctx.stack.tmp, vw.assets(cs), CDN_LATENCY_S, pictures=True)
     stills = stills_dir(ctx.stack.tmp)
 
-    # Storyboards an earlier Collect left: every video but each Creator's newest COLD_VIDEOS.
     cold: dict[str, list[int]] = {}
     warm_n = 0
     for a in cs:
-        vids = [m for m in vw.vault(a)["media"] if m["type"] == "video"]   # newest first
+        vids = [m for m in vw.vault(a)["media"] if m["type"] == "video"]
         cold[a] = [m["id"] for m in vids[:COLD_VIDEOS]]
         for m in vids[COLD_VIDEOS:]:
             d = stills / "storyboards" / _sb_hash(a, m["id"])
@@ -167,7 +111,6 @@ async def run(ctx):
     ctx.note(f"{len(cs)} Creators x {n_items} media; CDN {armed}; storyboards pre-warmed {warm_n}, "
              f"cold {sum(map(len, cold.values()))}")
 
-    # ── load + press ──
     ctx.rec.stage = "collect"
     stop = asyncio.Event()
     n_pick = max(len(cs), ctx.users)
@@ -194,7 +137,7 @@ async def run(ctx):
                 pass
 
     tasks = [asyncio.create_task(picker(i, cs[i % len(cs)])) for i in range(n_pick)]
-    await asyncio.sleep(1.0)   # readers on before the press
+    await asyncio.sleep(1.0)
     t_press = time.time()
     presses = await asyncio.gather(*(ctx.owner.post(f"/admin/vault-ai/collect?account_id={a}") for a in cs))
     press = {a: (r.status_code, r.json() if r.status_code == 200 else r.text[:200]) for a, r in zip(cs, presses)}
@@ -216,7 +159,6 @@ async def run(ctx):
     ctx.metric("vault_manual_collect", {"seconds": round(t_end - t_press, 1), "press": press,
                                         "wire_vault_calls": len(fake.vault_calls), "cdn_calls": len(cdn)})
 
-    # ── per Creator records ──
     wire: dict[str, list[dict]] = {a: [] for a in cs}
     typed = Counter()
     for c in fake.vault_calls:
@@ -256,7 +198,6 @@ async def run(ctx):
         if o["why"]:
             order_bad[a] = {"why": o["why"], "seq_head": o["seq"][:10], "calls": len(o["seq"])}
 
-        # first batch early
         first_ok: dict[tuple[int, str], float] = {}
         for c in fetch[a]:
             if c["status"] == 200 and c["variant"] in ("thumb", "full"):
@@ -266,13 +207,11 @@ async def run(ctx):
             return [(m, var) for m in ids for var in ("thumb", "full")
                     if by is None or first_ok.get((m, var), float("inf")) >= by]
         mcalls = [c for c in calls if c["route"] == "media"]
-        # (a) the walk's first page: rail folder 1's page 0, its stills in before the next media call
         f1 = rail[0] if rail else None
         i1 = next((i for i, c in enumerate(mcalls) if f1 is not None and str(c["query"].get("list")) == str(f1)
                    and int(c["query"].get("offset") or 0) == 0), None)
         first_by = mcalls[i1 + 1]["t"] if i1 is not None and i1 + 1 < len(mcalls) else None
         first_late = late([m["id"] for m in media if f1 in m["folders"]][:PAGE], first_by) if f1 else [None]
-        # (b) the newest 100 in before the desc walk's 2nd page
         second = next((c["t"] for c in mcalls if c["query"].get("list", "all") == "all"
                        and c["query"].get("sort") == "desc" and int(c["query"].get("offset") or 0) == STEP), None)
         new_late = late([x["id"] for x in media[:NEWEST]], second)
@@ -281,7 +220,6 @@ async def run(ctx):
                             "first_late_head": first_late[:4], "second_page_t": second, "late": len(new_late),
                             "late_head": new_late[:4]}
 
-        # complete
         s = status.get(a, {})
         thumbs = {p.name for p in (stills / "thumbs" / a).glob("*.jpg")}
         images = {p.name for p in (stills / "images" / a).glob("*.jpg")}
@@ -296,7 +234,6 @@ async def run(ctx):
                 and got["complete"] is True and not got["thumbs_missing"] and not got["images_missing"]):
             complete_bad[a] = got
 
-        # once
         keys = Counter(c["key"] for c in fetch[a])
         non200 = [(c["key"], c["status"]) for c in fetch[a] if c["status"] != 200]
         want_keys = {f"{HOST}{cdn_path(a, m['id'], var)}": 1 for m in media for var in ("thumb", "full")}

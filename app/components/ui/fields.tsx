@@ -7,7 +7,6 @@ import { cn } from "@/lib/utils";
 export function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      {/* `IfLabel`'s look (14px, no colon); the label still wraps its field. */}
       <span className="mb-2 block text-[14px] text-fg">{label}</span>
       {children}
     </label>
@@ -19,9 +18,7 @@ export function NumInput({
 }: Omit<React.ComponentProps<typeof IfInput>, "value" | "onChange" | "min"> & {
   value: number; onChange: (v: number) => void; min?: number;
 }) {
-  // Raw keystrokes live in a draft (a box bound straight to the number shows "040" after typing 40 and can't be
-  // cleared). The draft shows while value matches the draft's last agreed value; an external value change takes
-  // precedence, even when the box is clear.
+  // Raw keystrokes live in a draft (a number-bound box shows "040" after typing 40 and cannot be cleared); an external value change wins.
   const [draft, setDraft] = useState<{ text: string; base: number } | null>(null);
   const showDraft = draft !== null && value === draft.base;
   return (

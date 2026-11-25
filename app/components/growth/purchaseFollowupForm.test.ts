@@ -15,8 +15,6 @@ const run = (actions: PurchaseAction[], over: Partial<PurchaseFollowupConfig> = 
   actions.reduce(purchaseReducer, initPurchase({ ...CONFIG, ...over }, TEMPLATE));
 const EXTRAS = { media_ids: [], price_cents: 0, starts_at: null, ends_at: null, unsend_minutes: 0, frequency: "once" };
 
-// Same input → the body the old inline onSubmit built (HEAD PurchaseFollowupEditor.tsx):
-// { enabled, text: text.trim(), ...collectExtras(extras, { delay: true, frequency: true, initial: opened }) }.
 describe("buildPayload pins the old inline save", () => {
   it.each<[string, PurchaseAction[], Partial<PurchaseFollowupConfig>, unknown]>([
     ["untouched: the template, the delay row left out (the Relay keeps it)", [], {},

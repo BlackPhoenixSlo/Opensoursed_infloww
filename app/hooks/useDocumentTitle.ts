@@ -3,13 +3,11 @@
 import { useEffect } from "react";
 import { BRAND_NAME } from "@/lib/brand";
 
-/** Set document.title and keep it set. Next's layout reapplies its static
- *  metadata title on re-renders/HMR, so a plain `document.title = X` loses.
- *  A MutationObserver on <head> re-asserts our value whenever it changes. */
 export function useDocumentTitle(title: string, enabled = true): void {
   useEffect(() => {
     if (!enabled) return;
     document.title = title;
+    // Next's layout reapplies its static title on re-renders/HMR; a plain assignment loses.
     const obs = new MutationObserver(() => {
       if (document.title !== title) document.title = title;
     });

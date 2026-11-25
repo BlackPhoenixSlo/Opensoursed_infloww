@@ -1,5 +1,3 @@
-"""Phase C badge scenarios' checks over synthetic traces: each passes on the right behaviour and fails on the broken
-one it guards (the CAUGHT side, without a relay)."""
 import asyncio
 from collections import Counter
 from pathlib import Path
@@ -23,11 +21,11 @@ def _page(t, offset, account=A):
 
 
 @pytest.mark.parametrize("starts, ok", [
-    ([0, 31, 62], True),                    # one shared rewarm per 30 s
-    ([0, 29.5, 60], True),                  # inside JITTER_S of the cooldown
-    ([0, 28.9], False),                     # broken: early
-    ([0, 5, 10, 15], False),                # broken: no cooldown, every hover reads
-    ([0, 0.2], False),                      # broken: a per-principal cooldown, two chatters read at once
+    ([0, 31, 62], True),
+    ([0, 29.5, 60], True),
+    ([0, 28.9], False),
+    ([0, 5, 10, 15], False),
+    ([0, 0.2], False),
 ])
 def test_hover_one_read_per_30s(starts, ok):
     calls = [_win(t) for t in starts] + [_page(t + 0.5, 10) for t in starts] + [_win(3, account=B)]
@@ -42,9 +40,9 @@ def test_hover_checks_unjudged_without_reads():
 
 
 @pytest.mark.parametrize("answers, ok, joined", [
-    ([(0.5, 1.6, A, 1.55), (2.0, 2.01, A, 1.55)], True, 1),        # follower waited; held fold after landing
-    ([(0.5, 0.52, A, -40.0)], False, 1),                           # broken: follower answered the older fold
-    ([(31.2, 31.21, A, 1.55)], False, 1),                          # broken: in the second read, answered the first
+    ([(0.5, 1.6, A, 1.55), (2.0, 2.01, A, 1.55)], True, 1),
+    ([(0.5, 0.52, A, -40.0)], False, 1),
+    ([(31.2, 31.21, A, 1.55)], False, 1),
     ([(10.0, 10.01, A, 1.55)], True, 0),
 ])
 def test_hover_answers_fresh(answers, ok, joined):
@@ -106,11 +104,11 @@ def test_row_fan():
 
 @pytest.mark.parametrize("slot_n, text, roster_n, dom, ok", [
     (32, "9+", 32, "9+", True),
-    (32, "9+", 32, None, True),             # no Chromium tab sampled
-    (35, "9+", 32, "9+", False),            # broken: the raw counter in the slot
-    (32, "9+", 35, "9+", False),            # broken: roster-counts serves raw
-    (32, "32", 32, "9+", False),            # broken: no 9+ cap
-    (32, "9+", 32, "35", False),            # broken: the tab title shows raw
+    (32, "9+", 32, None, True),
+    (35, "9+", 32, "9+", False),
+    (32, "9+", 35, "9+", False),
+    (32, "32", 32, "9+", False),
+    (32, "9+", 32, "35", False),
     (None, "9+", 32, None, False),
 ])
 def test_nine_plus(slot_n, text, roster_n, dom, ok):
@@ -123,9 +121,9 @@ def _row(fan, muted=True):
 
 @pytest.mark.parametrize("api, dom, ok", [
     ([_row(1), _row(2), _row(9, muted=False)], [(1, False), (9, True), (None, True)], True),
-    ([_row(1), _row(2, muted=False)], [], False),          # broken: a Muted row lost its flag
-    ([_row(1)], [(1, True)], False),                       # broken: a Muted row draws a dot
-    ([_row(9, muted=False)], [(9, True)], None),           # no Muted row seen: unjudged
+    ([_row(1), _row(2, muted=False)], [], False),
+    ([_row(1)], [(1, True)], False),
+    ([_row(9, muted=False)], [(9, True)], None),
 ])
 def test_muted_no_dot(api, dom, ok):
     assert deep.muted_no_dot({1, 2}, api, dom)[0] is ok
@@ -141,10 +139,10 @@ def test_flips_methods_not_shadowed_by_sse_listener_fields():
 
 @pytest.mark.parametrize("answers, ok", [
     ([(10.0, "x", 200)], True),
-    ([(9.0, "x", 200)], False),             # before the pick: the All Models read, the model list still seeds
-    ([(10.0, "y", 200)], False),            # another Creator's list
+    ([(9.0, "x", 200)], False),
+    ([(10.0, "y", 200)], False),
     ([(10.0, "x", 504)], False),
-    ([], False),                            # held: the rows are the local-DB seed
+    ([], False),
 ])
 def test_live_list(answers, ok):
     assert deep.live_list(answers, "x", 10.0) is ok
@@ -152,11 +150,11 @@ def test_live_list(answers, ok):
 
 @pytest.mark.parametrize("flips, reads, n, ok", [
     ([], 1, 31, True),
-    ([(5.0, 7, True)], 2, 31, True),                       # a flip to unread is allowed from any list
-    ([(5.0, 7, False)], 1, 31, False),                     # broken: a read flip from the incomplete list
-    ([(5.0, None, False)], 1, 31, False),                  # broken: mark-all from the incomplete list
-    ([], 1, 32, False),                                    # broken: red stopped following the counter
-    ([(5.0, 7, False)], 0, 31, None),                      # no Attribution read after the leg: unjudged
+    ([(5.0, 7, True)], 2, 31, True),
+    ([(5.0, 7, False)], 1, 31, False),
+    ([(5.0, None, False)], 1, 31, False),
+    ([], 1, 32, False),
+    ([(5.0, 7, False)], 0, 31, None),
 ])
 def test_incomplete_no_flip(flips, reads, n, ok):
     assert deep.incomplete_no_flip(flips, reads, n, 31)[0] is ok
@@ -166,10 +164,10 @@ SWAP_ROWS = {1: (True, False), 2: (True, False), 3: (False, False)}
 
 
 @pytest.mark.parametrize("events, ok", [
-    ([(4.9, 3, True), (6.0, 1, False), (6.0, 3, True)], True),   # the DM frame, then the Attribution flips
-    ([(4.9, 3, True)], False),                                   # broken: same-value frame ignored, 1 kept its dot
-    ([(6.0, 1, False)], False),                                  # broken: the DM's dot lost
-    ([(4.9, 3, True), (6.0, 1, False), (6.5, 2, False)], False),  # broken: a phantom read flip
+    ([(4.9, 3, True), (6.0, 1, False), (6.0, 3, True)], True),
+    ([(4.9, 3, True)], False),
+    ([(6.0, 1, False)], False),
+    ([(4.9, 3, True), (6.0, 1, False), (6.5, 2, False)], False),
 ])
 def test_swap_settles(events, ok):
     assert deep.swap_settles(SWAP_ROWS, events, {2, 3})[0] is ok
@@ -200,15 +198,15 @@ SLOT_Y = [(1.0, 10), (50.2, 9), (54.0, 10)]
 
 
 @pytest.mark.parametrize("slot, dom, truth, complete, ok", [
-    (SLOT_Y, [(30.0, 9)], TRUTH_Y, True, True),                    # Y: DM -1 at once, the read +1 after its read
-    ([(1.0, 0)], [(30.0, 0)], [(0.0, 0), (50.0, 1)], False, True),  # X: the incomplete list names no Fan: stays 0
-    ([(1.0, 0), (52.0, 1)], [], [(0.0, 0), (50.0, 1)], False, True),   # X: a window read later counts the target
-    ([(1.0, 11)], [], TRUTH_Y, True, False),                       # broken: a Creator-last Fan counted
-    (SLOT_Y + [(70.0, 11)], [], TRUTH_Y, True, False),             # broken: amber above truth later on
-    (SLOT_Y, [(60.0, 11)], TRUTH_Y, True, False),                  # broken: the title draws one more
-    ([(1.0, 0), (49.0, 1)], [], [(0.0, 0), (50.0, 1)], False, False),  # broken: X counted before the read
-    ([(1.0, 10), (50.2, 9)], [], TRUTH_Y, True, False),            # broken: complete list, settles off truth
-    ([(1.0, 10), (49.0, 10)], [], [(0.0, 10), (49.0, 8)], True, False),  # broken: held 10 past the slack
+    (SLOT_Y, [(30.0, 9)], TRUTH_Y, True, True),
+    ([(1.0, 0)], [(30.0, 0)], [(0.0, 0), (50.0, 1)], False, True),
+    ([(1.0, 0), (52.0, 1)], [], [(0.0, 0), (50.0, 1)], False, True),
+    ([(1.0, 11)], [], TRUTH_Y, True, False),
+    (SLOT_Y + [(70.0, 11)], [], TRUTH_Y, True, False),
+    (SLOT_Y, [(60.0, 11)], TRUTH_Y, True, False),
+    ([(1.0, 0), (49.0, 1)], [], [(0.0, 0), (50.0, 1)], False, False),
+    ([(1.0, 10), (50.2, 9)], [], TRUTH_Y, True, False),
+    ([(1.0, 10), (49.0, 10)], [], [(0.0, 10), (49.0, 8)], True, False),
     ([], [], TRUTH_Y, True, None),
 ])
 def test_no_phantom_amber(slot, dom, truth, complete, ok):
@@ -273,10 +271,10 @@ def _unread(t0, account=A, status=200, offset=0, dur=0.3):
 
 
 @pytest.mark.parametrize("drawn, ok", [
-    ({A: [(0, 3), (12, "grey")]}, True),                 # greyed before the window, stays grey
-    ({A: [(0, 3)]}, False),                              # broken: a dead Creator keeps its last number
-    ({A: [(12, "grey"), (30, 0)]}, False),               # broken: unknown served as 0
-    ({A: [(12, "grey"), (61, 2)]}, True),                # after the window: not judged
+    ({A: [(0, 3), (12, "grey")]}, True),
+    ({A: [(0, 3)]}, False),
+    ({A: [(12, "grey"), (30, 0)]}, False),
+    ({A: [(12, "grey"), (61, 2)]}, True),
     ({A: []}, None),
 ])
 def test_grey_not_zero(drawn, ok):
@@ -285,10 +283,10 @@ def test_grey_not_zero(drawn, ok):
 
 
 @pytest.mark.parametrize("calls, logs, ok", [
-    ([_unread(15)], [], True),                            # before the window (the relay had not learnt it yet)
-    ([_unread(25)], [], False),                           # broken: OF saw a read for a dead Creator
-    ([], [(30.0, A)], False),                             # broken: tried through a dead proxy (relay.log only)
-    ([_unread(25, account=B)], [(30.0, B)], True),        # another Creator
+    ([_unread(15)], [], True),
+    ([_unread(25)], [], False),
+    ([], [(30.0, A)], False),
+    ([_unread(25, account=B)], [(30.0, B)], True),
     ([], [], True),
 ])
 def test_no_reads(calls, logs, ok):
@@ -298,15 +296,15 @@ def test_no_reads(calls, logs, ok):
 
 
 @pytest.mark.parametrize("calls, ok", [
-    ([_unread(9.7, status=429), _unread(31)], True),      # next read after the 20 s hold
-    ([_unread(9.7, status=429), _unread(15)], False),     # broken: hold ignored
-    ([_unread(9.7, status=429), _unread(11.2, status=429), _unread(31.5)], True),   # paced's one retry: no early read
-    ([_unread(9.7, status=429), _unread(11.2, status=429), _unread(12.6)], False),   # broken: a 2nd retry
-    ([_unread(9.7, status=429), _unread(11.2), _unread(15)], None),   # the retry got through: no hold
-    ([_unread(9.7, status=429), _unread(12, offset=10)], False),   # broken: page 2 inside the hold
-    ([_unread(9.7, status=429), _unread(12, account=B)], True),    # another Creator's read
-    ([_unread(9.7), _unread(12)], None),                  # no 429 met: unjudged
-    ([{**_win(9.7), "status": 429}, _unread(15)], False),  # broken: a window read's 429 holds the exit too
+    ([_unread(9.7, status=429), _unread(31)], True),
+    ([_unread(9.7, status=429), _unread(15)], False),
+    ([_unread(9.7, status=429), _unread(11.2, status=429), _unread(31.5)], True),
+    ([_unread(9.7, status=429), _unread(11.2, status=429), _unread(12.6)], False),
+    ([_unread(9.7, status=429), _unread(11.2), _unread(15)], None),
+    ([_unread(9.7, status=429), _unread(12, offset=10)], False),
+    ([_unread(9.7, status=429), _unread(12, account=B)], True),
+    ([_unread(9.7), _unread(12)], None),
+    ([{**_win(9.7), "status": 429}, _unread(15)], False),
     ([{**_win(9.7), "status": 429}, _unread(31)], True),
     ([{**_win(9.7, account=B), "status": 429}, _unread(15)], None),
 ])
@@ -317,11 +315,11 @@ def test_reads_hold_on_429(calls, ok):
 
 @pytest.mark.parametrize("starts, ok", [
     ([15, 30, 45], True),
-    ([16, 33], True),                                     # inside 15 s +- 5 s
-    ([15], False),                                        # broken: one poll
-    ([], False),                                          # broken: no poll while the socket was down
-    ([15, 17, 30], False),                                # broken: polled 2 s apart
-    ([15, 40], False),                                    # broken: 25 s gap
+    ([16, 33], True),
+    ([15], False),
+    ([], False),
+    ([15, 17, 30], False),
+    ([15, 40], False),
 ])
 def test_socket_down_poll_15s(starts, ok):
     calls = [_unread(t) for t in starts] + [_unread(t + 0.4, offset=10) for t in starts] + [_unread(20, account=B)]
@@ -330,23 +328,23 @@ def test_socket_down_poll_15s(starts, ok):
 
 
 @pytest.mark.parametrize("drawn, ok", [
-    ([(0, 2), (8, 3)], True),                             # 3 s after the fault ended
-    ([(0, 2), (40, 3)], False),                           # broken: 35 s
-    ([(0, 2)], False),                                    # broken: never recovered
+    ([(0, 2), (8, 3)], True),
+    ([(0, 2), (40, 3)], False),
+    ([(0, 2)], False),
     ([(0, 2), (6, "grey"), (7, 3)], True),
 ])
 def test_recovery_under_30s(drawn, ok):
     truth = [(0, 2), (5, 3)]
     got, detail = degraded.judge_recovery([(A, "flap", 5.0, 60.0, truth, drawn)])
     assert got is ok, detail
-    assert degraded.judge_recovery([(A, "flap", 5.0, 20.0, truth, drawn)])[0] is None   # under 30 s left: unjudged
+    assert degraded.judge_recovery([(A, "flap", 5.0, 20.0, truth, drawn)])[0] is None
 
 
 @pytest.mark.parametrize("planned, steps, ok", [
     (3, [(0, 1), (1, 2), (2, 3)], True),
-    (3, [(0, 1), (1, 2)], False),                         # broken: the walk stopped
-    (3, [(0, 1), (1, 21), (21, 22)], False),              # broken: one step blocked 20 s
-    (3, [(0, 1), (1, None), (2, 3)], False),              # broken: one step never answered
+    (3, [(0, 1), (1, 2)], False),
+    (3, [(0, 1), (1, 21), (21, 22)], False),
+    (3, [(0, 1), (1, None), (2, 3)], False),
     (0, [], None),
 ])
 def test_focus_walk_completes(planned, steps, ok):
@@ -360,8 +358,8 @@ def _counter(t, account):
 
 @pytest.mark.parametrize("drawn, calls, frames, ok", [
     ([(0, 4), (100.5, "grey")], [_unread(110, account=B)], [_counter(108, B)], True),
-    ([(0, 4)], [], [], False),                                            # broken: the old number stays
-    ([(0, 4), (100.5, 0)], [], [], False),                                # broken: memory-only state served as 0
+    ([(0, 4)], [], [], False),
+    ([(0, 4), (100.5, 0)], [], [], False),
     ([(0, 4), (100.5, "grey")], [_unread(t, account=B) for t in (105, 125, 145)], [_counter(108, B)], False),
     ([(0, 4), (100.5, "grey")], [_unread(105, account=B), _unread(170, account=B)], [_counter(108, B)], True),
 ])
@@ -371,10 +369,10 @@ def test_grey_after_restart(drawn, calls, frames, ok):
 
 
 @pytest.mark.parametrize("calls, back, ok", [
-    ([_unread(t, account=B) for t in (115, 130, 145)], {}, True),         # socket never back: its 15 s polls
-    ([_unread(t, account=B) for t in (115, 130, 145)], {B: 150.0}, True),  # polls before it came back
-    ([_unread(t, account=B) for t in (115, 130, 145)], {B: 100.3}, False),  # broken: socket up, no frame
-    ([_unread(t, account=B) for t in (115, 117, 119)], {}, False),         # broken: socket-down polls 2 s apart
+    ([_unread(t, account=B) for t in (115, 130, 145)], {}, True),
+    ([_unread(t, account=B) for t in (115, 130, 145)], {B: 150.0}, True),
+    ([_unread(t, account=B) for t in (115, 130, 145)], {B: 100.3}, False),
+    ([_unread(t, account=B) for t in (115, 117, 119)], {}, False),
 ])
 def test_restart_socket_down_polls_are_no_storm(calls, back, ok):
     got, detail = degraded.judge_restart(calls, [], A, [(0, 4), (100.5, "grey")], 100.0, 101.0, 160.0, back)
@@ -432,7 +430,6 @@ def test_degraded_proxy_down_roster_traceback_is_expected(tmp_path):
 
 
 class _IpBucket:
-    """login_throttle's per-IP bucket on one loopback address: a token per attempt, given back on a right password."""
 
     def __init__(self, capacity):
         self.level = capacity

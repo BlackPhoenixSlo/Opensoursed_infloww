@@ -1,8 +1,3 @@
-/**
- * readAllFanLists: every OnlyFans fan list through the relay proxy, which caps a page at 50. The first read is exactly
- * `?limit=50` (the cache other surfaces share asks the same), the next ones add `&offset=<rows so far>`, and the walk
- * stops on `hasMore:false`, an empty page, a page with no new id, a bare array, or after 40 pages.
- */
 import { describe, expect, it, vi } from "vitest";
 
 import { FAN_LISTS_MAX_PAGES, readAllFanLists, type FanList, type ListsResp } from "@/components/audience/fanLists";

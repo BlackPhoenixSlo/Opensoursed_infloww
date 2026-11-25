@@ -26,7 +26,6 @@ describe("formatPrice / initForm", () => {
 
 describe("folderPriceReducer + canSave", () => {
   it.each([
-    // [current stored cents, typed text, canSave, why]
     [null, "25", true, "new price"],
     [null, "", false, "blank"],
     [null, "5", false, "under $10"],

@@ -15,7 +15,6 @@ function tpl(over: Partial<PickedTemplate> = {}): PickedTemplate {
   };
 }
 
-/** A paid draft with a GIF picked and a lock on — what a template replaces. */
 const dirty: Required<ComposeDraft> = {
   text: "old", attached: [media(1)], price: "25", previewCount: 1, lockedText: true,
   taggedCreators: [{ id: 7, name: "seven", username: "s", avatar: null }],
@@ -24,7 +23,6 @@ const dirty: Required<ComposeDraft> = {
 
 describe("applyTemplate", () => {
   it.each([
-    // [name, template, expected price, lockedText]
     ["a FREE template clears a typed price and the lock", tpl(), "", false],
     ["a paid template sets its price, lock off", tpl({ price: 12 }), "12", false],
     ["a paid template sets its price and its lock", tpl({ price: 12, lockedText: true }), "12", true],
@@ -95,9 +93,6 @@ describe("previewIdsFor / canBeFreePreview — the one free-preview rule", () =>
   ])("canBeFreePreview: %s", (_n, m, want) => {
     expect(canBeFreePreview(m)).toBe(want);
   });
-  // Both call shapes read the one rule: the chat Composer's (`buildSendArgs`,
-  // and PpvTiles' FREE badge via chat/composerDraft's re-export) and the mass
-  // / post composers' (`previewIdsFor`).
   it("chat/composerDraft re-exports this predicate, not a copy", () => {
     expect(chatCanBeFreePreview).toBe(canBeFreePreview);
   });

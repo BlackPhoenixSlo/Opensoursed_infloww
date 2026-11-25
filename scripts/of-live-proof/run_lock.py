@@ -82,6 +82,7 @@ def index_update(creator: str, add: Path | None = None, drop=()) -> None:
         logs = [str(p) for p in index_logs(creator) if str(p) not in gone]
         if add is not None and str(Path(add).resolve()) not in logs:
             logs.append(str(Path(add).resolve()))
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")  # atomic: a reader never sees half a write
+        # atomic: a reader never sees half a write
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(logs))
         os.replace(tmp, path)

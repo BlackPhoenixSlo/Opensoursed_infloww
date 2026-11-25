@@ -1,7 +1,3 @@
-/**
- * CsvExportButton hides itself once the session's role denies the Export CSV Function permission
- * (any `<page>#export` in the Applied settings' `denied_actions`); the Relay refuses the download either way.
- */
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 

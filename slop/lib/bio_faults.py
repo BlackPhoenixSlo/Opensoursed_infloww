@@ -1,9 +1,3 @@
-"""Bio pages' break-it-once faults (scenarios/2026-11-11-bio-pages-public.py, 2026-11-11-bio-pages-editor.py):
-lib/faults.py merges `register(Fault)` into FAULTS. Each patches a module attribute of service/bio_pages looked up at
-call time. A fault is applied in both the relay (lib/relay.py) and the bio process (lib/bio.py); the public ones
-patch bio_pages.app's modules, the admin ones (relay-side bio_pages.admin) do nothing in the bio process. The check
-names live here and the scenarios import them, so a target can never name a check that does not exist.
-"""
 from __future__ import annotations
 
 import os
@@ -58,8 +52,6 @@ def _bio_process() -> bool:
 
 
 def _admin_reorder_drops_last() -> None:
-    """A reorder writes every sort_order but the last id's (bug class: an off-by-one in the write loop). The answer P
-    is read back from the DB, so it shows the wrong order honestly: only BIO_ADMIN_ORDER goes red."""
     if _bio_process():
         return
     from bio_pages import admin
@@ -73,7 +65,6 @@ def _admin_reorder_drops_last() -> None:
 
 
 def _admin_no_owner_filter() -> None:
-    """Remove the shared owner predicates, reaching page, link and file routes."""
     if _bio_process():
         return
     from bio_pages import admin
@@ -85,7 +76,6 @@ def _admin_no_owner_filter() -> None:
 
 
 def _admin_delete_keeps_files() -> None:
-    """File cleanup never runs (bug class: the unlink after commit skipped): replaced and deleted files stay."""
     if _bio_process():
         return
     from bio_pages import files
@@ -94,8 +84,6 @@ def _admin_delete_keeps_files() -> None:
 
 
 def _admin_url_ignores_status() -> None:
-    """The editor's URL uses the custom domain whatever its status (bug class: the `live` test dropped), so a
-    pending domain that serves nothing is shown and linked: only BIO_PUBLIC_URLS goes red."""
     if _bio_process():
         return
     from bio_pages import admin
@@ -109,9 +97,6 @@ def _admin_url_ignores_status() -> None:
 
 
 def _click_lost_1_in_20() -> None:
-    """Every 20th Click write is dropped (bug class: the bounded event write swallowed, so the visitor still gets the
-    destination and the stat is gone). `bio_pages.app` calls `store.record` through the module: every 20th `click`
-    returns at once, writing nothing and logging nothing. Only BIO_COUNTS goes red."""
     import itertools
 
     from bio_pages import store
@@ -128,15 +113,12 @@ def _click_lost_1_in_20() -> None:
 
 
 def _reveal_limit_off() -> None:
-    """Reveal is never rate-limited (bug class: the click guard dropped): `guard.allow` always says yes."""
     from bio_pages import guard
 
     guard.allow = lambda _ip: True
 
 
 def _json_leaks_destination() -> None:
-    """The Profile JSON carries each Link's destination (bug class: a field allowlist widened, the leak v2's
-    public-profile.js exists to prevent). `bio_pages.app` calls `decide.public_profile` through the module."""
     from bio_pages import decide, store
 
     real = decide.public_profile
@@ -163,10 +145,6 @@ def _json_leaks_destination() -> None:
 
 
 def _escape_href_off_host() -> None:
-    """The card's href is built from a URL other than the escape target (bug class: a Destination or another host
-    handed to Instagram's open-in-browser link, what flagged links in-app): the served script.js points it at
-    dest.slop.test, same path. Only the bio process serves it; the href is the only thing that changes, so only
-    BIO_ESCAPE_TAP goes red."""
     if not _bio_process():
         return
     from bio_pages import app
@@ -179,7 +157,6 @@ def _escape_href_off_host() -> None:
 
 
 def _page_loads_offhost() -> None:
-    """A served stylesheet imports an off-host asset; only BIO_NO_OFFHOST_LOAD goes red."""
     if not _bio_process():
         return
     from bio_pages import app
@@ -189,16 +166,12 @@ def _page_loads_offhost() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run bio-pages-public --break (the scenario's FAULT)
         "bio-click-lost-1-in-20": Fault(_click_lost_1_in_20, (BIO_COUNTS,)),
-        # slop/run bio-pages-public --break --fault=<name>
         "bio-reveal-limit-off": Fault(_reveal_limit_off, (BIO_LIMIT,)),
         "bio-json-leaks-destination": Fault(_json_leaks_destination, (BIO_NO_LEAK, BIO_PROFILE_JSON)),
         "bio-escape-href-off-host": Fault(_escape_href_off_host, (BIO_ESCAPE_TAP,)),
         "bio-page-loads-offhost": Fault(_page_loads_offhost, (BIO_NO_OFFHOST_LOAD,)),
-        # slop/run bio-pages-editor --break (the scenario's FAULT)
         "bio-admin-reorder-drops-last": Fault(_admin_reorder_drops_last, (BIO_ADMIN_ORDER,)),
-        # slop/run bio-pages-editor --break --fault=<name>
         "bio-admin-no-owner-filter": Fault(_admin_no_owner_filter, (BIO_ADMIN_TENANCY,)),
         "bio-admin-delete-keeps-files": Fault(_admin_delete_keeps_files, (BIO_ADMIN_FILES,)),
         "bio-admin-url-ignores-status": Fault(_admin_url_ignores_status, (BIO_PUBLIC_URLS,)),

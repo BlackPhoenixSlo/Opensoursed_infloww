@@ -1,7 +1,3 @@
-// ISOLATED-world bridge — receives the Fansly capture from the MAIN world and
-// persists it to chrome.storage.local (which the MAIN world can't touch), then
-// pings the service worker. Mirror of bridge.js for the OF side.
-
 (function () {
   "use strict";
 
@@ -11,16 +7,16 @@
     if (!data || data.__fansly_capture !== true || !data.payload) return;
 
     const p = data.payload;
-    if (!p.token || !p.accountId) return;   // not a usable session yet
+    if (!p.token || !p.accountId) return;
 
     try {
       chrome.runtime.sendMessage({ type: "fanslyCapture", payload: p });
     } catch (_) {}
 
-    // Merge so a header-only refresh never wipes an earlier fuller capture.
     chrome.storage.local.get(["lastFanslyCapture"]).then((cur) => {
+      // merge so a header-only refresh never wipes an earlier fuller capture
       const prev = (cur && cur.lastFanslyCapture) || {};
-      // Never carry one account's handle onto another's capture.
+      // never carry one account's handle onto another's capture
       const sameAcct = !prev.accountId
         || String(prev.accountId) === String(p.accountId || "");
       chrome.storage.local.set({

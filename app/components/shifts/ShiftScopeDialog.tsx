@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * Infloww's "Edit recurring shift" / "Delete recurring shift" choice (roadmap W6 6.3): an edit or a delete opened
- * from one occurrence of a weekly series asks how far it reaches. Edit: "Only this shift" or "This and all future
- * shifts"; Delete: "This shift", "This shift and following" or "All shifts". The pick is sent as `scope` with the
- * occurrence's start (lib/shifts.ts `ShiftScopeAt`). A pick that reaches a shift already started says so in
- * Infloww's words: "Past shifts will also be modified" for an edit, "All records of past shifts will be
- * permanently deleted" for a delete.
- *
- * A one-off Shift has no choice to make: its edit saves at once and its delete keeps the `window.confirm` it had.
- * `useShiftDelete` is the one delete step, from the Shifts window and from a calendar tile alike.
- */
 
 import { useState, type ReactNode } from "react";
 
@@ -18,7 +7,6 @@ import { IfButton, IfModal } from "@/components/ui/infloww";
 import { cancelShift, type ShiftOccurrence, type ShiftScope, type ShiftScopeAt } from "@/lib/shifts";
 import { ifConfirm } from "@/components/ui/ifConfirm";
 
-/** A one-off Shift's delete confirmation (a soft cancel). */
 export const CANCEL_CONFIRM = "Cancel this Shift? It leaves the calendar and stays in the history.";
 
 export type ScopeAction = "edit" | "delete";
@@ -40,7 +28,6 @@ const CHOICES: Record<ScopeAction, { title: string; options: { scope: ShiftScope
   },
 };
 
-/** Whether `o` repeats, so an edit or a delete asks its scope. */
 export const isRecurring = (o: ShiftOccurrence) => !!o.repeat_days?.length;
 
 export default function ShiftScopeDialog({ action, occurrence, onPick, onClose }: {
@@ -51,7 +38,6 @@ export default function ShiftScopeDialog({ action, occurrence, onPick, onClose }
 }) {
   const { title, options, past } = CHOICES[action];
   const [scope, setScope] = useState<ShiftScope>("this");
-  // "all" starts at the series' first occurrence; "this" and "following" at the one opened.
   const from = scope === "all" ? occurrence.start_utc : occurrence.occurrence_start;
   const reachesPast = new Date(from).getTime() < Date.now();
 
@@ -83,8 +69,6 @@ export default function ShiftScopeDialog({ action, occurrence, onPick, onClose }
   );
 }
 
-/** Delete an occurrence: a weekly series' asks its scope (render `dialog`), a one-off's confirms; then
- *  `cancelShift`, and `onDone` or `onError`. */
 export function useShiftDelete({ onDone, onError }: {
   onDone: () => void;
   onError: (e: unknown, o: ShiftOccurrence) => void;

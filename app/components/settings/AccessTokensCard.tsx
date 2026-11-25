@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * Settings → AI keys → Access tokens: the owner's own access tokens, for an AI app (an MCP client) that acts as
- * them. List (hint, expiry, last use), New token (name + expiry; the token shown once, with Copy) and Revoke.
- * The dialog's state is `accessTokensForm` (a reducer); the relay is service/owner_tokens_api.py, which only an
- * owner's browser session reaches — a token cannot list, mint or revoke tokens.
- */
 
 import { useReducer, useState } from "react";
 
@@ -48,7 +42,7 @@ export default function AccessTokensCard() {
     }
   };
   const tokens = q.data?.tokens ?? [];
-  const [now] = useState(() => Date.now()); // render stays pure; the card is short-lived
+  const [now] = useState(() => Date.now());
 
   return (
     <Card

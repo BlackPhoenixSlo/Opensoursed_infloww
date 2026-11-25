@@ -1,7 +1,3 @@
-/**
- * Fan reports' frame (page-parity 29): the creator column lists the Creators beside the report and picks the first
- * (Infloww reports one Creator at a time, with no "All creators" row, owner P2-5); Total fans is Not wired; the per-fan data sits under an "Inflowwww extras" heading.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -18,7 +14,6 @@ vi.mock("@/hooks/useAccounts", () => ({
   useAccounts: () => ({ isPending: false, data: { accounts: ACCOUNTS } }),
   useActiveAccounts: () => ACCOUNTS,
 }));
-/** The Agency's saved report time zone; null is none saved. */
 const prefs = vi.hoisted(() => ({ reportTz: "UTC" as string | null }));
 vi.mock("@/lib/appliedSettings", () => ({
   useAppliedSettings: () => ({
@@ -59,7 +54,6 @@ describe("FanReport", () => {
     const reads = renderPage();
     const column = within(screen.getByRole("complementary", { name: "Creators" }));
     const rows = column.getAllByTestId("of-creator-row").map((r) => r.textContent);
-    // Each Creator row starts with its avatar's initial.
     expect(rows).toEqual(["MMia", "ZZoe"]);
     await waitFor(() => expect(reads().at(-1)).toContain("account_id=7"));
     expect(column.getByRole("button", { name: /Mia/ })).toHaveAttribute("aria-current", "true");
@@ -72,7 +66,6 @@ describe("FanReport", () => {
     const reads = renderPage();
     await waitFor(() => expect(reads().length).toBeGreaterThan(0));
     expect(reads().every((p) => p.includes("account_id="))).toBe(true);
-    // The column's head read "All creators" over a report scoped to its first Creator.
     const column = within(screen.getByRole("complementary", { name: "Creators" }));
     expect(column.queryByText("All creators")).toBeNull();
     fireEvent.click(screen.getByRole("combobox", { name: "Creator" }));
@@ -86,19 +79,16 @@ describe("FanReport", () => {
     expect(within(card).getByTestId("total-fans-not-wired")).toHaveAttribute("title", "not wired");
     const extras = screen.getByRole("region", { name: "Inflowwww extras" });
     expect(within(extras).getByText("User data for 7")).toBeInTheDocument();
-    // One creator picker: the column's.
     expect(within(extras).queryByRole("combobox")).toBeNull();
   });
 
   it("counts the days in UTC when no report time zone is saved, as the read groups New fans", async () => {
-    // A New York browser: its local days would cut the window 4 hours off the read's UTC days.
     vi.stubEnv("TZ", "America/New_York");
     vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-10-21T02:00:00Z") });
     prefs.reportTz = null;
     const reads = renderPage();
     await waitFor(() => expect(reads().length).toBeGreaterThan(0));
     const q = new URLSearchParams(reads().at(-1)!.split("?")[1]);
-    // Today in UTC is 21 Oct (still 20 Oct in New York): 30 UTC days through it.
     expect(q.get("from")).toBe("2026-09-22T00:00:00.000Z");
     expect(q.get("to")).toBe("2026-10-21T23:59:59.999Z");
     expect(screen.getAllByText("UTC+00:00").length).toBeGreaterThan(0);

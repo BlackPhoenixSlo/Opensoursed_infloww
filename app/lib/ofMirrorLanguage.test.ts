@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bindLanguage, LANGUAGE_PAGE, LANGUAGES } from "./ofMirrorLanguage";
 
-/** Settings > Display > Language: OF's list, one checked, kept in the browser (OF: client-only), Display's row label. */
 
 const load = (page: string) => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/${page}.html`), "utf8");

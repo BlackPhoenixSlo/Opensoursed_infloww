@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""
-session_stamps.session_verdict, impersonation_verdict and blocks_write —
-table tests over a signed-in cookie's fate on one request, as
-auth.session_middleware (30-day idle, LAST_SEEN_TOUCH_S) and
-chatters._session_identity (30-day idle, LAST_SEEN_TOUCH_S) apply it, and
-over an impersonate cookie's. Both session comparisons are strict: exactly at
-a threshold is still the shorter fate.
-
-  case_table:       ok / touch / expired at and around each boundary, revoked
-                    (issued before, at, after sessions_valid_after).
-  case_thresholds:  the callers' numbers are unchanged.
-  case_impersonation: session_stamps.impersonation_verdict (auth._apply_impersonation): TTL
-                    strict (age == ttl applies), founder binding, a None parse clears.
-  case_impersonate_malformed: every cookie shape auth._parse_impersonate_cookie rejects
-                    parses to None and so clears; a good one applies.
-  case_blocks_write: session_stamps.blocks_write (auth.session_middleware): every mutating
-                    method x exempt / non-exempt path; GET/HEAD/OPTIONS and not impersonating
-                    never block.
-
-Run: ./venv/bin/python service/tests/test_session_verdict.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first (binds a temp DB; this file never touches it)
@@ -39,7 +18,6 @@ def ago(**kw) -> datetime:
     return NOW - timedelta(**kw)
 
 
-# (label, issued_ms, valid_after, last_seen) -> verdict
 TABLE = [
     ("just seen", ISSUED, None, NOW, "ok"),
     ("seen in the future (clock skew)", ISSUED, None, NOW + timedelta(minutes=5), "ok"),
@@ -76,7 +54,6 @@ def case_thresholds():
     assert auth.IMPERSONATE_TTL_SECONDS == IMP_TTL
 
 
-# (label, parsed cookie, signed-in founder) -> verdict
 IMP_TABLE = [
     ("fresh, own founder: apply", ("u2", "f1", NOW_S), "f1", "apply"),
     ("issued in the future (clock skew): apply", ("u2", "f1", NOW_S + 60), "f1", "apply"),
@@ -130,20 +107,19 @@ def case_impersonate_malformed():
     assert not bad, "\n".join(bad)
 
 
-# (method, path, impersonating) -> blocked
 BLOCKS_TABLE = [
     ("POST", "/admin/messages", True, True),
     ("PATCH", "/admin/messages", True, True),
     ("PUT", "/admin/users/u2", True, True),
     ("DELETE", "/admin/users/u2", True, True),
     ("POST", "/", True, True),
-    ("POST", "/auth", True, True),                   # no slash: not under /auth/
+    ("POST", "/auth", True, True),
     ("POST", "/api/auth/logout", True, True),
-    ("DELETE", "/admin/Impersonate", True, True),    # case-sensitive
+    ("DELETE", "/admin/Impersonate", True, True),
     ("POST", "/admin/impersonate", True, False),
     ("DELETE", "/admin/impersonate", True, False),
     ("PATCH", "/admin/impersonate/exit", True, False),
-    ("PUT", "/admin/impersonated", True, False),     # a prefix, as ever
+    ("PUT", "/admin/impersonated", True, False),
     ("POST", "/auth/logout", True, False),
     ("DELETE", "/auth/", True, False),
     ("GET", "/admin/messages", True, False),

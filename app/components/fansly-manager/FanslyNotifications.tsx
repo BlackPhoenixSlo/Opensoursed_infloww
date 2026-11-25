@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * Fansly Manager > Notifications: the creator's Fansly notification feed and its unread counts, over the Relay's
- * OF routes `/api/of/v2/users/notifications` and `/count`, which the Fansly shim answers from Fansly's
- * `GET /notifications` in OF's shapes (fansly_shim.notifications / notifications_count). A tab filters on the OF type
- * the shim maps each Fansly code to; Fansly answers one page, so the feed is its first 50 rows.
- * Opening it marks the Creator's notifications read once, after the All feed answers, the way Fansly web acks on its
- * notifications page (`POST /users/notifications/read` → fansly_shim.notifications_read → `/notifications/ack`).
- */
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -28,7 +20,6 @@ interface Notification {
   user: { name?: string; username?: string } | null;
 }
 
-/** The shim's unread badge keys (notifications_count); Purchases has none. */
 type Counts = Partial<Record<"all" | "tips" | "subscribes" | "hearts" | "comments", number>>;
 const COUNT_KEY: Partial<Record<Tab, keyof Counts>> = {
   all: "all", tip: "tips", subscribed: "subscribes", favorited: "hearts", commented: "comments",

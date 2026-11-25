@@ -1,8 +1,3 @@
-"""Fans: one `fans` row per Creator x Fan (column list as scripts/demo-shots/seed.py).
-
-A flow's own `fans` columns are set by its `seed/<flow>_fan_columns.py` (`fill(con, account_ids)`: the rows this call
-inserted, in its transaction), when present.
-"""
 from __future__ import annotations
 
 import importlib
@@ -19,13 +14,11 @@ _COLUMNS = [importlib.import_module(f"{__package__}.{p.stem}")
 
 
 def fill_fan_columns(con, account_ids: list[str]) -> None:
-    """Run every `*_fan_columns.py` hook on the given Creators' fresh rows (also used by scripts/demo-shots/seed.py)."""
     for mod in _COLUMNS:
         mod.fill(con, account_ids)
 
 
 def seed(w: World, creators: list[dict], per_creator: int | dict[str, int] | None = None) -> dict[str, list[dict]]:
-    """`per_creator`: one size for all, or {creator id: size} (e.g. a few big Creators)."""
     sizes = per_creator if isinstance(per_creator, dict) else {}
     default = int(per_creator if isinstance(per_creator, int) else w.size["fans_per_creator"])
     rng = w.rng("fans")

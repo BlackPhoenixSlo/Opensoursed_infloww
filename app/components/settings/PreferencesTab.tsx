@@ -40,8 +40,6 @@ const WEEK_STARTS = [
   { value: "sunday", label: "Sunday" },
 ] as const;
 
-/** Every zone this browser knows, plus `value` when the list lacks it, so a stored zone stays selected; 400+
- *  zones, so the list has a filter box. */
 function ZoneSelect({ id, value, list, onChange, describedBy }: {
   id: string;
   value: string;
@@ -54,7 +52,6 @@ function ZoneSelect({ id, value, list, onChange, describedBy }: {
   return <FieldSelect searchable id={id} aria-describedby={describedBy} value={value} options={options} onChange={onChange} />;
 }
 
-/** A field's one help line, between its label and its control. */
 function Help({ id, children }: { id: string; children: string }) {
   return <p id={id} className="mb-2 text-[length:var(--if-fs-sm)] text-[var(--if-fg-3)]">{children}</p>;
 }

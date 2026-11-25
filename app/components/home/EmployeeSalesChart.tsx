@@ -13,32 +13,26 @@ const money = (cents: number) => (cents / 100).toLocaleString("en-US", {
   style: "currency", currency: "USD", minimumFractionDigits: 2,
 });
 
-/** The days drawn: those up to `today` ("YYYY-MM-DD", the zone the series was cut in). Points are ascending, so
- *  this is a prefix; a day still to come has no sales yet, so it keeps its axis slot but no line, marker or tooltip. */
 export const shownPoints = (points: EmployeeSalesPoint[], today?: string) =>
   today ? points.filter((p) => p.start <= today) : points;
 
-/** The days labelled: one per `stride` (a label per 65px of plot), counted back from the last day so the newest day
- *  is always named (from the first, a phone's 30 days ended on Nov 9 of Nov 18). */
+// Counted back from the last day so the newest day is always named.
 export function labelled(n: number, plotWidth: number): number[] {
   const stride = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(plotWidth / 65))));
   return Array.from({ length: n }, (_, i) => i).filter((i) => (n - 1 - i) % stride === 0);
 }
 
-/** Daily attributed sales, with zero days retained and keyboard-accessible point details. */
 export function EmployeeSalesChart({ points: days, today }: { points: EmployeeSalesPoint[]; today?: string }) {
   const [ref, width] = useChartWidth();
   const [active, setActive] = useState<number | null>(null);
   const points = shownPoints(days, today);
   const left = 55, right = Math.max(left + 1, width - 8), top = 24, bottom = 315;
   const peak = Math.max(100, ...points.map((p) => p.revenue_cents));
-  // A little headroom, rounded in dollars, with five equal intervals as in the reference.
   const unit = 10 ** Math.floor(Math.log10(peak / 100));
   const max = Math.ceil(peak / 100 * 1.1 / unit * 2) / 2 * unit * 100;
   const slot = (right - left) / Math.max(1, days.length);
   const x = (i: number) => left + slot * (i + 0.5);
   const y = (value: number) => bottom - value / max * (bottom - top);
-  // Monotone cubic interpolation: round the curve without inventing peaks or dipping below zero.
   const slopes = points.slice(1).map((p, i) => (y(p.revenue_cents) - y(points[i].revenue_cents)) / slot);
   const tangents = points.map((_, i) => {
     if (i === 0) return slopes[0] ?? 0;

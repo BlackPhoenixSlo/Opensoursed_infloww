@@ -1,7 +1,3 @@
-"""The full chat sweep cadence's break-it-once faults (service/sweep_cadence.py, whose `tick`
-looks `plan` up in its module): lib/faults.py merges `register(Fault)` into FAULTS. The check names
-live here and scenarios/2026-11-07-chat-sweep-cadence.py imports them.
-"""
 from __future__ import annotations
 
 ONE_OPEN = "at most one open full sweep per live Creator after every relay restart and cadence pass"
@@ -22,9 +18,6 @@ DEFER_NET = ("the Silent mass-only chats' history pages, sweep plus triggered ba
 
 
 def _sweep_every_pass() -> None:
-    """The pre-fix shape in the new loop: every pass enqueues a sweep for every live Creator,
-    open job or recent sweep or not (the boot seed ran once per restart, with no dedupe).
-    The collapse is unchanged, so only the open-count and cadence checks can see it."""
     import sweep_cadence as sc
 
     real = sc.plan
@@ -38,28 +31,18 @@ def _sweep_every_pass() -> None:
 
 
 def _failfast_only_before_first_scan() -> None:
-    """The pre-fix stop (service/automations/scrape_chats.py, whose sweep looks
-    `_systemic_failure` up in its module): no failure counts as systemic, so the sweep stops
-    only on its non-404 failures before the first scraped chat; after one good chat it reads
-    every remaining chat into the limit and finishes as a full sweep."""
     from automations import scrape_chats
 
     scrape_chats._systemic_failure = lambda _e: False
 
 
 def _history_eager() -> None:
-    """Knob SCRAPE_EAGER_HISTORY on (service/automations/scrape_chats.py reads it at call time): every
-    first scrape gets today's both-ends backfill, so a Silent mass-only chat costs the deep pages again."""
     import os
 
     os.environ["SCRAPE_EAGER_HISTORY"] = "1"
 
 
 def _no_deferred_trigger() -> None:
-    """The Click read triggers enqueue nothing: service/webhook_dispatch.py's
-    `enqueue_fan_scrape`, which the thread_click_read hook's backfill looks up in its module
-    at call time, claims nothing for source "deferred_history" and returns False (a fan
-    reply or a warm buys none either way); the blast-reply and gen_info scrapes are untouched."""
     import webhook_dispatch
 
     orig = webhook_dispatch.enqueue_fan_scrape
@@ -74,12 +57,8 @@ def _no_deferred_trigger() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run 2026-11-07-chat-sweep-cadence --break (the scenario's FAULT)
         "sweep-enqueued-every-pass": Fault(_sweep_every_pass, (ONE_OPEN, ANCHOR)),
-        # slop/run 2026-11-07-chat-sweep-cadence --break --fault=failfast-only-before-first-scan
         "failfast-only-before-first-scan": Fault(_failfast_only_before_first_scan, (FAILFAST,)),
-        # slop/run 2026-11-07-chat-sweep-cadence --break --fault=history-eager
         "history-eager": Fault(_history_eager, (DEFER, DEFER_NET)),
-        # slop/run 2026-11-07-chat-sweep-cadence --break --fault=no-deferred-trigger
         "no-deferred-trigger": Fault(_no_deferred_trigger, (BACKFILL_ON_DEMAND,)),
     }

@@ -1,9 +1,3 @@
-/**
- * Requests (docs/spec/phase-03-share-for-share.md, Testing Decisions, seam 2; page-parity 15), for the creator picked
- * on the rail, rendered with the relay mocked at `fetch` by URL: "Latest request" one pending received request at a
- * time with Accept / Decline / Skip, then the Received and Sent tables with Infloww's status words, Review and Cancel
- * behind its confirm. Every request is shown from its stored snapshots. Fixture names and ids are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -110,7 +104,6 @@ describe("S4SRequests", () => {
     sent = [];
     mount();
     expect(await screen.findByText("You haven’t received any requests from other Creators")).toBeInTheDocument();
-    // One message, no empty Latest request box, and no "share your link" (there is none).
     expect(screen.queryByRole("region", { name: "Latest request" })).toBeNull();
     expect(screen.queryByText(/Share your link/)).toBeNull();
     expect(screen.getByRole("link", { name: "Discover Creators" })).toHaveAttribute(

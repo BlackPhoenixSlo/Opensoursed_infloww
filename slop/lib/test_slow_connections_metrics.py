@@ -1,5 +1,3 @@
-"""thread_reads: an older page (`before_id`) is its own read per cursor, never the open's local read; a route read twice
-(attribution bare, then `since_id`) stays a duplicate."""
 import re
 
 from slop.lib.slow_connections_metrics import thread_reads
@@ -12,7 +10,6 @@ def _g(path: str, start: float = 0, account: str | None = None) -> dict:
 
 
 def test_one_route_per_creator_is_not_a_dupe():
-    """Two Creators' reads of one route (the thread's Creator, another the warm reached) are each one read."""
     r = thread_reads([_g("/api/of/v2/users/notifications?type=tip", account="1"),
                       _g("/api/of/v2/users/notifications?type=tip", account="2")], 100, LOCAL)
     assert r["dupes"] == {}

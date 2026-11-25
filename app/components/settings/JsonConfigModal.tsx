@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * EditRawJsonButton + JsonConfigModal — an in-app raw-JSON editor for a
- * per-account config blob. A config surface stores its settings as a JSON
- * object behind a GET/PUT pair
- * (GET /admin/<x>-config?account_id=… → { config }, PUT /admin/<x>-config
- * with { account_id, config }). This modal loads that blob, lets an owner
- * hand-edit it, validates with JSON.parse (must be a JSON object) before
- * saving, and invalidates the surface's React Query key so the normal
- * typed UI reflects the change.
- *
- * Validation: parse, require an object (not array/scalar/null), surface the
- * parser's message inline.
- */
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -28,8 +15,6 @@ const BG_CTX: RelayContext = { priority: "background" };
 
 export type ConfigSurface = "nudge-config";
 
-/** `queryKey` is the React-Query key the surface's typed hook reads under, so a
- *  raw save invalidates the RIGHT cache and the typed UI refreshes. */
 const SURFACES: Record<
   ConfigSurface,
   { label: string; path: string; queryKey: (accountId: string) => unknown[] }
@@ -98,9 +83,8 @@ function JsonConfigModal({
     refetchOnWindowFocus: false,
   });
 
-  // Seed the textarea from the loaded config, but stop overwriting once the
-  // user starts editing so an in-flight refetch can't stomp their changes.
   useEffect(() => {
+    // Stop seeding once the user edits so a refetch cannot stomp their changes.
     if (q.data && !dirty) {
       setText(JSON.stringify(q.data.config ?? {}, null, 2));
     }

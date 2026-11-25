@@ -5,9 +5,6 @@ import { IfBody, InflowwPageHeader } from "@/components/ui/infloww";
 
 export const metadata: Metadata = { title: "Paste logins" };
 
-/** Creators > Paste logins: the Connect card for many OnlyFans logins at once (ultra-mode ticket 11). Reached from the
- *  Add creator modal's Browser login, MCP's connect_account `logins_url`, and a failed login's notification
- *  (`?queue=<id>` resumes that queue). */
 export default async function Page({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const queue = (await searchParams).queue;
   return (

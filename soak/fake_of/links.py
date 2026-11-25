@@ -1,24 +1,3 @@
-"""Tracking links of the fake OnlyFans (ofm-not-yet tickets 61, 74); free trial links live in trials.py.
-
-Mounted from app.py ahead of the generic rows:
-
-  GET    /campaigns                 tracking links, {list, hasMore}; `field` + `sort` sort server-side (`sort_rows`);
-                                    a link this account shares carries `sharedWith` (ticket 74)
-  GET    /campaigns/share-access    "Shared with you": SHARED, other creators' links shared with this account
-  POST   /campaigns/share-access    {campaignId, userId}: shares one of CAMPAIGNS with that performer
-  DELETE /campaigns/share-access    the same body: stops sharing it (OF's undo, a DELETE with a JSON body)
-  GET    /users/performers-search   the share dialog's username search over PERFORMERS (`query`, a bare list)
-
-Ticket 74's request shapes are its record's (settings--tracking-shared-with-you, measured-in-js); the replies
-({success: true}) and the own list's `sharedWith` are the fake's own. Shares live in the fake's state (one per fake),
-applied before the reply, so the next read reflects them.
-
-Shapes are the Relay's readers' and the mirror's (service/of_reads.py tracking_links / trial_links_sorted,
-app/lib/ofMirrorSubscription.ts Campaign / Trial). The rows are stored in no sorted order, so a mirror that kept the
-served order shows a sort only when the sort reached here. The field names are the Settings kebab State pages' radios,
-the pairing `inferred` (D29: no capture of the settings page's own sorted read); `shared` keeps the stored order.
-`sort_rows` is shared with trials.py.
-"""
 from __future__ import annotations
 
 import copy
@@ -37,7 +16,6 @@ CAMPAIGNS: list[dict[str, Any]] = [
     {"id": 6101, "campaignCode": 1, "campaignName": "Alpha link", "countSubscribers": 7, "countTransitions": 9,
      "createdAt": "2026-02-01T00:00:00+00:00", "isDeleted": False},
 ]
-# ticket 74: a synthetic peer creator (the share dialog's pick) and the one link a peer shares with this account.
 PERFORMERS: list[dict[str, Any]] = [{"id": 7401, "name": "Synthetic Peer", "username": "synthpeer"}]
 SHARED: list[dict[str, Any]] = [
     {"id": 7491, "campaignCode": 91, "campaignName": "Peer link", "countSubscribers": 4, "countTransitions": 12,
@@ -51,7 +29,6 @@ CAMPAIGN_KEYS = {"created_date": "createdAt", "name": "campaignName", "subscribe
 
 
 def sort_rows(req: Request, rows: list, keys: dict) -> list:
-    """`rows` sorted by the request's `field` + `sort` (asc | desc) when `keys` maps the field, else as stored."""
     p = req.query_params
     key, sort = keys.get(p.get("field") or ""), p.get("sort")
     if key and sort in ("asc", "desc"):
@@ -61,7 +38,6 @@ def sort_rows(req: Request, rows: list, keys: dict) -> list:
 
 
 def shares(fake) -> dict[int, dict[str, Any]]:
-    """campaignId -> the performer it is shared with, this fake's own."""
     return fake.__dict__.setdefault(_STATE, {})
 
 
@@ -103,7 +79,7 @@ async def _performers(fake, req: Request, ok) -> Response:
 
 ROUTES: list[tuple[str, re.Pattern, Any]] = [
     ("GET", re.compile(r"/api2/v2/campaigns"), _campaigns),
-    ("GET", re.compile(r"/api2/v2/campaigns/share-access"), _shared),          # ticket 74
+    ("GET", re.compile(r"/api2/v2/campaigns/share-access"), _shared),
     ("POST", re.compile(r"/api2/v2/campaigns/share-access"), _share),
     ("DELETE", re.compile(r"/api2/v2/campaigns/share-access"), _share),
     ("GET", re.compile(r"/api2/v2/users/performers-search"), _performers),

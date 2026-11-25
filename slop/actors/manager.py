@@ -1,6 +1,3 @@
-"""The agency manager watching the inbox: an SSE listener on GET /events (the
-browser's realtime channel) and inbox reads on the local-DB endpoints the
-Fan List and Thread seed from (/admin/chats/recent, /admin/messages/...)."""
 from __future__ import annotations
 
 import asyncio
@@ -10,8 +7,6 @@ from collections import Counter
 
 
 def chat_messages(obj) -> list[dict]:
-    """Every api2_chat_message payload in one SSE `data:` (a frame, or any
-    batch/list shape that wraps frames)."""
     out: list[dict] = []
     if isinstance(obj, dict):
         m = obj.get("api2_chat_message")
@@ -27,8 +22,6 @@ def chat_messages(obj) -> list[dict]:
 
 
 def events_of(obj) -> list[dict]:
-    """Every event dict in one SSE `data:` (the event itself, or the members'
-    `data` of an `event: batch`): the dicts that carry `__account_id` or a chat message."""
     out: list[dict] = []
     if isinstance(obj, dict):
         if "__account_id" in obj or "api2_chat_message" in obj:
@@ -44,30 +37,12 @@ def events_of(obj) -> list[dict]:
 
 
 class SseListener:
-    """Collects every api2_chat_message frame the session's /events stream delivers,
-    in arrival order, with its arrival time (epoch ms) and every event name's count
-    (`resync` = the relay's per-subscriber queue overflowed). `accounts` counts the
-    `__account_id` of every event the stream carried (any type); `meta[id]` is a chat
-    message's (account id, fan id) as its event named them.
-
-    `resume=True` is the browser's EventSource: when the relay ends the stream (it does after
-    an `assignment_changed` or `sessions_revoked`, events.py sse_stream) it reconnects after
-    `retry_s` (Chromium's default 3 s) with `Last-Event-ID` = the last `id:` it saw, and the
-    relay replays what it missed; `reconnects` counts them. Off, a closed stream is `ended`.
-
-    `states=("agency_notifications", ...)`: every event of those types (alone or in a
-    batch) is kept in `state_events` as (type, its fields, its `__account_id`), in order.
-
-    `last_id`: the first connect already sends `Last-Event-ID` (a dropped stream's reconnect).
-
-    `lease=True` opens the stream as the app does (`?lease=1`: an app tab, its clamp Open-tab Creators); every
-    ping's data goes to `_ping` (a no-op here)."""
 
     def __init__(self, http, scope: str = "all", *, resume: bool = False, retry_s: float = 3.0,
                  states: tuple[str, ...] = (), last_id: str | None = None, lease: bool = False):
         self.http, self.scope, self.resume, self.retry_s = http, scope, resume, retry_s
         self.lease = lease
-        self._resume_from = last_id  # the first connect sends Last-Event-ID: a browser tab's reconnect
+        self._resume_from = last_id
         self.states = tuple(states)
         self.state_events: list[tuple[str, dict, str | None]] = []
         self.last_id: str | None = last_id
@@ -79,8 +54,8 @@ class SseListener:
         self.meta: dict[int, tuple[str, int | None]] = {}
         self.frames = 0
         self.status: int | None = None
-        self.connected_ms: float | None = None  # epoch ms of the stream's first body line
-        self.ended: str | None = None  # why the stream stopped before stop(), if it did
+        self.connected_ms: float | None = None
+        self.ended: str | None = None
         self.connected = asyncio.Event()
         self._task: asyncio.Task | None = None
 
@@ -99,7 +74,7 @@ class SseListener:
         else:
             self.ended = self.ended or "stream closed by the relay"
         finally:
-            self.connected.set()  # never leave start() waiting on a stream that is gone
+            self.connected.set()
 
     async def _stream(self) -> None:
         hdr = {"Last-Event-ID": self.last_id} if (self.reconnects or self._resume_from) and self.last_id else {}
@@ -111,13 +86,12 @@ class SseListener:
                 self.connected.set()
             event = None
             async for line in r.aiter_lines():
+                # the relay registers the subscriber before it yields `: connected`; headers alone prove nothing
                 if not self.connected.is_set():
-                    # the relay registers the subscriber before it yields `: connected` (events.py
-                    # sse_stream); the headers alone come before that, so they prove nothing
                     self.connected_ms = time.time() * 1000
                     self.connected.set()
                 if not line:
-                    event = None  # a blank line ends the SSE event
+                    event = None
                 elif line.startswith("id:"):
                     self.last_id = line[3:].strip() or self.last_id
                 elif line.startswith("event:"):
@@ -183,14 +157,6 @@ class SseListener:
 
 
 class OwnerTab:
-    """The Agency owner's dashboard tab in its default All scope (no account filter):
-    the tab-open reads (UserContext /auth/me, useAccounts /admin/accounts, appliedSettings,
-    useRosterCounts, ErrorBadge), ONE `/events?scope=all` stream, the All-scope inbox head
-    (`/admin/chats/recent?limit=25`, useRecentChatsLocal.ts) and the 60 s poll
-    (/admin/accounts has a 60 s staleTime; roster-counts is read at open only). The real tab reads the inbox head
-    at open and on every scope switch (5 min stale cache, no interval); this one re-reads it
-    every `inbox_s` (the owner flicking back to All), so each stage has samples.
-    `inbox`: (end epoch s, ms, status) per head read; `rows_seen`: every row's account."""
 
     TAB_OPEN = ("/auth/me", "/admin/accounts", "/admin/settings/applied", "/admin/accounts/roster-counts",
                 "/admin/errors?since_hours=24&limit=50")
@@ -240,13 +206,11 @@ class OwnerTab:
                 return
 
     async def start(self) -> None:
-        """Open the tab: the stream first (as lib/events.ts on mount), then the reads."""
         await self.lis.start()
         await asyncio.gather(*(self._get(p) for p in self.TAB_OPEN), self._head())
         self._tasks = [asyncio.create_task(self._inbox()), asyncio.create_task(self._polls())]
 
     async def stop(self) -> None:
-        """End the reads; the stream keeps listening until close()."""
         self._stop.set()
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
@@ -268,8 +232,6 @@ async def thread_messages(http, account_id: str, fan_id: int, limit: int = 200) 
 
 
 async def quiesce(http, timeout: float = 120) -> dict:
-    """Wait until the relay has run transcode() on every frame it received
-    (`processed`; `transcoded` counts only the ones that wrote without error)."""
     t0 = asyncio.get_running_loop().time()
     while True:
         s = (await http.get("/__slop/stats")).json()

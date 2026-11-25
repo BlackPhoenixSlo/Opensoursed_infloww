@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * EditRuleJsonModal — a raw-JSON editor for ONE automation rule's payload
- * (`steps_json`), for the bespoke single-rule tab (Auto stories, its "More
- * actions" menu) that builds its payload with a custom form. It lets an owner
- * hand-edit the payload object, validates it (parse + must be an object),
- * and PATCHes via the same /admin/automation-rules/{id} path the typed form uses
- * — server-side unknown keys pass through untouched, so hand edits are safe.
- *
- * Mirrors JsonConfigModal (the per-account config-blob editor) but targets a
- * rule row rather than a config surface. Single-rule assumption: these tabs keep
- * exactly one rule per (account, kind); if several exist we edit the first and
- * say so, and with none the menu item is disabled until the form saves one.
- */
 
 import { useState } from "react";
 

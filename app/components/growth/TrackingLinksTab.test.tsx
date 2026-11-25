@@ -1,40 +1,3 @@
-/**
- * Growth > Tracking links, the page component (docs/spec/infloww-parity-round-2/phase-02-growth-pages.md, Testing
- * Decisions, Seam 1; ticket 38). Rendered as the route renders it (`TrackingLinksPage`), with
- * `@/lib/relay` mocked and a fresh QueryClient over two placeholder Creators. What is pinned:
- *
- *  - the tabs, the attribution tip, the filter bar and the Links list column headers appear in the Layout capture's
- *    order, and every label transcribed here is read back from the capture on disk next to its Item ID;
- *  - name, date created, clicks and subs (thousands commas) come from the OnlyFans tracking-link read, and
- *    Subscription CVR is subs divided by clicks ("—" with no clicks); only the columns with data draw, so the table
- *    has no Promo cost / earnings heads (the cut-off "Promo co") until their data exists;
- *  - the filters: Date created (a client-side range on the day created, with the bundle's six presets) and "Show
- *    deactivated links" (deleted links hidden until it is on, then shown with the "Deactivated" chip); "Show net
- *    earnings" is not drawn while no earnings column has data; Export downloads a CSV of the filtered rows;
- *  - the earnings read (claimers x the ledger) fills Earnings, Fans who spent, Spending CVR, EPC, AEPS and the
- *    Dashboard's Total earnings; "Show net earnings" (on by default) switches them, one state across both tabs; a link
- *    with no figure shows "—"; Details opens the link's fans with the bundle's columns, a "Total:" row and a search;
- *  - the tabs are the capture's alone (Share links the owner's); our Redirect links is its own Growth page
- *    (`RedirectLinksPage`, /growth/redirect-links): the custom redirect links with the creator filter (Bio pages:
- *    `bio/BioPagesPanel.test.tsx`); the "OnlyFans not reachable" note shows under its condition, and the old "Confirm
- *    the link once" note is gone;
- *  - "Create tracking link" opens the capture's editor pop-up (ticket 39): its labels in the capture's order, the name
- *    creating the link through the existing write for the picked Creator, and Source / Promo cost / Tag / List (the
- *    Edit dialog's fields) sent in the same request; a reply without an id says the fields were not saved;
- *  - each row's Actions are the capture's Details, Edit and the dots menu with Deactivate, which is the OnlyFans
- *    delete behind the bundle's confirm, disabled on a deactivated link; Edit saves Source, Promo cost, Tag and List
- *    to the relay (never OnlyFans), which fill Promo cost, Profit, CPC, CPS, ROI, Source, Tag and List ("—" with no
- *    cost) and the Source and Tag filters on both tabs; List offers the account's custom OnlyFans lists;
- *  - the Dashboard tab holds the capture's filters and seven KPI cards in its order (ticket 40): Total clicks, Total
- *    subs, the overall Subscription CVR and Total earnings are sums over the reads for the picked Creator ("—" with no
- *    data); Avg CPC, Avg CPS and Avg ROI are pooled over the links with a Promo cost ("—" without one); "Last
- *    updated: " says when the read landed;
- *  - switching the creator filter makes the next tracking-link read carry the second Creator's `account_id`;
- *  - the regrade's follow-up (ticket 59): the title carries the report time zone from the Applied settings, the tabs
- *    are the bundle's filled pill, the filters lead with their icons, the bundle's tooltips sit on the metric heads
- *    and four Dashboard cards, the update row and the house lines are labelled as ours, "Link copied" holds 5 s, and
- *    the table pages by 10 / 20 / 50.
- */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -44,19 +7,16 @@ import type { ChatterFlatAccountDTO, ChatterMeDTO } from "@/contexts/ChatterCont
 
 vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();
-  // Unstubbed verbs stay the REAL ones, so a new call fails loudly instead of reaching a live relay.
   return {
     ...mod,
     relay: { ...mod.relay, get: vi.fn(), put: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
   };
 });
-// An owner session reads `/admin/accounts`; a chatter session reads the mocked chatter account list.
 const session = vi.hoisted(() => ({ chatter: null as ChatterMeDTO | null }));
 vi.mock("@/contexts/UserContext", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/contexts/UserContext")>()),
   useUser: () => ({ user: session.chatter ? null : { user_id: "owner-1" } }),
 }));
-// The Applied settings read rides the Creator in scope; none here.
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 vi.mock("@/contexts/ChatterContext", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/contexts/ChatterContext")>()),
@@ -87,26 +47,22 @@ const relayPost = relay.post as unknown as Mock;
 const relayPut = relay.put as unknown as Mock;
 const relayDelete = relay.delete as unknown as Mock;
 
-/* ── the Layout capture, read from disk ─────────────────────────────────── */
 
 const CAPTURE = readFileSync(
   resolve(__dirname, "../../../docs/infloww-layouts/growth-tracking-links.md"),
   "utf8",
 );
 
-/** The capture's Items row for `id`, which must exist and must hold `label`. */
 function expectInCapture(id: string, label: string) {
   const row = CAPTURE.split("\n").find((l) => l.startsWith(`| ${id} |`));
   expect(row, `capture row ${id}`).toBeTruthy();
   expect(row, `capture row ${id} holds "${label}"`).toContain(label);
 }
 
-/** a precedes b in document order. */
 function expectBefore(a: Element, b: Element) {
   expect(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 }
 
-/* ── fixtures: two placeholder Creators, two OnlyFans links, one redirect ─ */
 
 const A = { id: "1000001", nickname: "Creator A", has_session: true };
 const B = { id: "1000002", nickname: "Creator B", has_session: true };
@@ -115,24 +71,17 @@ const LINK = (over: Record<string, unknown>) => ({
   id: 1, code: 11, name: "Link one", url: "https://example.test/c11", url_verified: false,
   clicks: 0, subscribers: 0, created_at: null, end_date: null, is_deleted: false, source: "onlyfans", ...over,
 });
-// Worked example: 25 subs over 200 clicks is a 12.50% Subscription CVR.
 const LINKS = [
   LINK({ id: 1, code: 11, name: "Link one", clicks: 200, subscribers: 25, created_at: "2026-03-14T12:00:00Z" }),
   LINK({ id: 2, code: 12, name: "Link two", clicks: 0, subscribers: 0, created_at: null }),
 ];
 
 let ofResult: { links: unknown[]; username: string | null; url_verified: boolean; of_available: boolean };
-/** The earnings read (claimers x ledger); unavailable by default, so the earnings columns stay hidden. */
 let earnings: { available: boolean; links: unknown[] };
-/** The Details read for any link. */
 let fansResult: unknown;
-/** The Agency's report time zone in the Applied settings read. Asia/Kolkata has no daylight saving: UTC+05:30. */
 let reportTz: string | null;
-/** OnlyFans' lists read (the Edit dialog's List): two custom lists and a built-in, which is not offered. */
 let fanLists: unknown[];
-/** The Function permissions the Applied settings read says the role denies. */
 let deniedActions: string[];
-/** Redirect links' summary read and per-link analytics (`days` → its zero-filled series; country all XX or not). */
 let redirectSummary: unknown;
 let analyticsCountry: Array<{ key: string; clicks: number }>;
 function analyticsFor(days: number) {
@@ -200,28 +149,23 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Mount the route's page and wait for the first link row. */
 async function mount() {
   renderWithProviders(<TrackingLinksPage />);
   await waitFor(() => expect(screen.getByText("Link one")).toBeTruthy());
 }
 
-/** Mount Growth → Redirect links (/growth/redirect-links); its container. */
 function mountRedirects(): HTMLElement {
   return renderWithProviders(<RedirectLinksPage />).container;
 }
 
-/** The Links list table. */
 function table(): HTMLTableElement {
   return screen.getByRole("table", { name: "Links list" }) as HTMLTableElement;
 }
 
-/** The header cells' text, in order. */
 function headers(): string[] {
   return within(table()).getAllByRole("columnheader").map((th) => th.textContent?.trim() ?? "");
 }
 
-/** The body cell under header `title` in the row whose name is `name`. */
 function cell(name: string, title: string): HTMLElement {
   const i = headers().indexOf(title);
   expect(i, `column ${title}`).toBeGreaterThanOrEqual(0);
@@ -229,13 +173,11 @@ function cell(name: string, title: string): HTMLElement {
   return within(row).getAllByRole("cell")[i];
 }
 
-/** Pick `option` in the listbox behind `combobox`: the HB selects are a button + listbox, not a native select. */
 function choose(combobox: HTMLElement, option: string | RegExp) {
   fireEvent.click(combobox);
   fireEvent.click(screen.getByRole("option", { name: option }));
 }
 
-/** The options' text behind `combobox` (opens and closes it). */
 function optionsOf(combobox: HTMLElement): string[] {
   fireEvent.click(combobox);
   const out = within(screen.getByRole("listbox")).getAllByRole("option").map((o) => o.textContent ?? "");
@@ -243,8 +185,6 @@ function optionsOf(combobox: HTMLElement): string[] {
   return out;
 }
 
-/** The capture's Links list columns after the selection column that the OnlyFans read fills (#37 to #41, #56, in
- *  #57's order). */
 const COLUMNS: Array<{ id: string; title: string }> = [
   { id: "growth-tracking-links#37", title: "Tracking link" },
   { id: "growth-tracking-links#38", title: "Date created" },
@@ -254,7 +194,6 @@ const COLUMNS: Array<{ id: string; title: string }> = [
   { id: "growth-tracking-links#56", title: "Actions" },
 ];
 
-/** The capture's columns with no data behind them yet (#42 to #55): none of them draws. */
 const NO_DATA_COLUMNS: Array<{ id: string; title: string }> = [
   { id: "growth-tracking-links#42", title: "Promo cost" },
   { id: "growth-tracking-links#43", title: "Earnings" },
@@ -318,7 +257,6 @@ describe("Tracking links, in the capture's order", () => {
   it("shows a selection column, then only the capture's columns that have data, in its order", async () => {
     await mount();
     const got = headers();
-    // The selection column (#36) leads and has no title.
     expect(got[0]).toBe("");
     expect(got.slice(1)).toEqual(COLUMNS.map((c) => c.title));
     for (const c of COLUMNS) expectInCapture(c.id, `"${c.title}"`);
@@ -330,7 +268,6 @@ describe("Tracking links, in the capture's order", () => {
       expectInCapture(c.id, `"${c.title}"`);
       expect(headers(), c.title).not.toContain(c.title);
     }
-    // Nothing on the page is a not-wired metric cell any more.
     for (const td of within(table()).getAllByRole("cell")) expect(td.getAttribute("title")).not.toBe("not wired");
   });
 
@@ -356,7 +293,6 @@ describe("Links list rows from the OnlyFans read", () => {
     expect(cell("Link one", "Clicks").textContent).toBe("200");
     expect(cell("Link one", "Subs").textContent).toBe("25");
     expect(cell("Link one", "Subscription CVR").textContent).toBe("12.50%");
-    // Date only (#38): the year, and no time of day.
     expect(cell("Link one", "Date created").textContent).toMatch(/2026/);
     expect(cell("Link one", "Date created").textContent).not.toMatch(/:/);
     expect(within(cell("Link one", "Tracking link")).getByRole("button", { name: "Copy link" })).toBeTruthy();
@@ -390,7 +326,6 @@ describe("Links list rows from the OnlyFans read", () => {
   });
 });
 
-/** Open the pop-up from the filter bar's create button. */
 function openEditor(): HTMLElement {
   fireEvent.click(screen.getByRole("button", { name: "Create tracking link" }));
   return screen.getByRole("dialog", { name: "Create tracking link" });
@@ -419,10 +354,7 @@ describe("the Create tracking link pop-up", () => {
     ];
     for (const it of items) expectInCapture(it.id, it.label);
     expectInCapture("growth-tracking-links#69", "Create");
-    // #74: name, Source, Promo cost, Tag, List.
     for (let i = 1; i < items.length; i++) expectBefore(items[i - 1].el, items[i].el);
-    // #72, #73: "Optional" after Promo cost, Tag and List, and after Source, which Infloww requires and we do not
-    // (the Edit dialog's fields, one definition); #70, #72: the length limits.
     expectInCapture("growth-tracking-links#72", "Optional");
     expect(within(dlg).getAllByText("Optional")).toHaveLength(4);
     expectInCapture("growth-tracking-links#70", "`maxLength:100`");
@@ -524,14 +456,12 @@ describe("the Create tracking link pop-up", () => {
     fireEvent.change(within(dlg).getByRole("textbox", { name: "Tracking link name" }), { target: { value: "New link" } });
     fireEvent.click(within(dlg).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
-    // The title row's close does the same.
     fireEvent.click(within(openEditor()).getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(relayPost).not.toHaveBeenCalled();
   });
 });
 
-/** The Actions cell of the row named `name`. */
 function actions(name: string): HTMLElement {
   return cell(name, "Actions");
 }
@@ -549,11 +479,9 @@ describe("the row Actions", () => {
     expect((btns[2] as HTMLButtonElement).disabled).toBe(false);
   });
 
-  /** Open the dots menu of the row named `name` and return its Deactivate item. */
   function deactivateItem(name: string): HTMLButtonElement {
     fireEvent.click(within(actions(name)).getByRole("button", { name: `More actions for ${name}` }));
     const items = within(screen.getByRole("menu")).getAllByRole("menuitem");
-    // Infloww's menu holds Deactivate alone: no second "Delete on OnlyFans" entry.
     expect(items.map((i) => i.textContent)).toEqual(["Deactivate"]);
     return items[0] as HTMLButtonElement;
   }
@@ -617,9 +545,7 @@ describe("deactivated links", () => {
     expectInCapture("growth-tracking-links#58", "the \"Deactivated\" chip");
     expect(within(name).getByText("Deactivated")).toBeTruthy();
     expect(within(name).queryByRole("button", { name: "Copy link" })).toBeNull();
-    // Its counts survive the delete.
     expect(cell("Old link", "Clicks").textContent).toBe("9");
-    // A live row keeps its copy and has no chip.
     expect(within(cell("Link one", "Tracking link")).queryByText("Deactivated")).toBeNull();
     fireEvent.click(sw);
     expect(within(table()).queryByText("Old link")).toBeNull();
@@ -640,7 +566,6 @@ describe("deactivated links", () => {
   });
 });
 
-/** The dots menu's Deactivate item of the row named `name`. */
 function deactivateItemOf(name: string): HTMLButtonElement {
   fireEvent.click(within(actions(name)).getByRole("button", { name: `More actions for ${name}` }));
   return within(screen.getByRole("menu")).getByRole("menuitem", { name: "Deactivate" }) as HTMLButtonElement;
@@ -648,7 +573,6 @@ function deactivateItemOf(name: string): HTMLButtonElement {
 
 describe("the Date created filter", () => {
   const DAY = 86_400_000;
-  /** An ISO time `days` days ago. */
   const ago = (days: number) => new Date(Date.now() - days * DAY).toISOString();
 
   it("filters the rows by a typed range on the day created, and leaves out links with no date", async () => {
@@ -693,7 +617,6 @@ describe("the Date created filter", () => {
 describe("Export", () => {
   it("downloads a CSV of the filtered rows, every page, with the columns shown", async () => {
     let blob: Blob | null = null;
-    // jsdom has no object URLs: lend them for this test and put the originals back after.
     const saved = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
     URL.createObjectURL = vi.fn((b: Blob) => { blob = b; return "blob:tracking-links"; });
     URL.revokeObjectURL = vi.fn();
@@ -745,7 +668,6 @@ describe("our notes and extras", () => {
     expect(within(panel).getByRole("heading", { level: 1, name: "Redirect links" })).toBeTruthy();
     const section = await within(panel).findByRole("region", { name: /Custom redirect links/ });
     expectBefore(within(panel).getByRole("combobox", { name: "Creator" }), section);
-    // The redirect read's link is listed without opening a second control.
     await waitFor(() => expect(within(section).getByText("Redirect one")).toBeTruthy());
   });
 
@@ -754,7 +676,7 @@ describe("our notes and extras", () => {
     await waitFor(() => expect(within(panel).getByRole("img", { name: "Last 7 days: 0, 0, 1, 0, 0, 0, 2" })).toBeTruthy());
     const value = (k: string) => panel.querySelector(`[data-stat="${k}"] [data-value]`)?.textContent;
     expect([value("today"), value("d7"), value("d30"), value("top")]).toEqual(["2", "3", "1,210", "Top redirect"]);
-    expect(panel.querySelector('[data-stat="verified"]')).toBeNull();   // keyless server has no indicator
+    expect(panel.querySelector('[data-stat="verified"]')).toBeNull();
     expect(relayGet).toHaveBeenCalledWith(`/admin/tracking-links/summary?account_id=${A.id}`);
   });
 
@@ -798,7 +720,6 @@ describe("our notes and extras", () => {
     fireEvent.change(name, { target: { value: "Bad" } });
     fireEvent.change(target, { target: { value: "javascript:alert(1)" } });
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
-    // The pop-up stays open with the relay's detail as its error.
     await waitFor(() => expect(within(dlg).getByRole("alert").textContent).toBe(detail));
     expect(relayPost).toHaveBeenCalledWith("/admin/tracking-links",
       expect.objectContaining({ name: "Bad", target_url: "javascript:alert(1)" }));
@@ -809,7 +730,6 @@ describe("our notes and extras", () => {
     relayPatch.mockReset();
     relayPatch.mockRejectedValueOnce(new RelayError(500, {}, "relay 500"));
     const base = relayGet.getMockImplementation()!;
-    // Only the list read: /admin/tracking-links/summary and /{id}/analytics keep the base mock.
     relayGet.mockImplementation((path: string) => (String(path).startsWith("/admin/tracking-links?")
       ? Promise.resolve({ bot_check_available: true, links: [
         { id: 7, name: "Redirect one", slug: "r1", path: "/t/r1", target_url: "https://example.test/", click_count: 3, bot_check: false },
@@ -834,30 +754,25 @@ describe("our notes and extras", () => {
 });
 
 describe("the Dashboard tab", () => {
-  // The capture's seven, grouped as the Analytics pages' statistics cards (owner): Performance, then Promo cost.
   const KPIS = ["Total clicks", "Total subs", "Subscription CVR", "Total earnings", "Avg CPC", "Avg CPS", "Avg ROI"];
   const AVG_KPIS = ["Avg CPC", "Avg CPS", "Avg ROI"];
 
-  /** Mount the route's page, open the Dashboard tab and return its panel. */
   async function dashboard(): Promise<HTMLElement> {
     renderWithProviders(<TrackingLinksPage />);
     fireEvent.click(await screen.findByRole("tab", { name: "Dashboard" }));
     return screen.getByRole("tabpanel", { name: "Dashboard" });
   }
 
-  /** The KPI card titled `title`. */
   function card(panel: HTMLElement, title: string): HTMLElement {
     return within(panel).getByText(title).closest('[role="group"]') as HTMLElement;
   }
 
-  /** The value a KPI card shows, under its title. */
   function value(panel: HTMLElement, title: string): string {
     return card(panel, title).lastElementChild?.textContent ?? "";
   }
 
   it("shows the capture's filters, its seven KPI cards in Performance then Promo cost, then \"Last updated: \"", async () => {
     const panel = await dashboard();
-    // The bundle's `LinkDashboard` renders the filters, the cards, then the update line under them.
     const items = [
       { id: "growth-tracking-links#80", label: '"Creator"', el: within(panel).getByRole("combobox", { name: "Creator" }) },
       { id: "growth-tracking-links#80", label: '"Source"', el: within(panel).getByRole("combobox", { name: "Source" }) },
@@ -871,8 +786,6 @@ describe("the Dashboard tab", () => {
   });
 
   it("computes Total clicks, Total subs and the overall Subscription CVR from the read, for the picked Creator", async () => {
-    // Worked example: 1200 + 800 + 0 clicks is 2,000 (the bundle's thousands commas), 300 + 100 + 0 subs is 400, and
-    // 400 over 2,000 is a 20.00% CVR over the whole read, not the mean of the links' own CVRs.
     ofResult.links = [
       LINK({ id: 1, name: "Link one", clicks: 1200, subscribers: 300 }),
       LINK({ id: 2, name: "Link two", clicks: 800, subscribers: 100 }),
@@ -905,16 +818,13 @@ describe("the Dashboard tab", () => {
 
   it("shows — on Avg CPC, Avg CPS and Avg ROI while no link has a Promo cost, and titles no tile not wired", async () => {
     const panel = await dashboard();
-    // The fixture's Link one (200 clicks) and Link two (0 clicks), neither with a cost.
     await waitFor(() => expect(value(panel, "Total clicks")).toBe("200"));
     for (const t of AVG_KPIS) {
       expect(card(panel, t).getAttribute("title"), t).toBeNull();
       expect(value(panel, t), t).toBe("—");
     }
-    // The earnings read is unavailable here: "—", never $0.00.
     expect(card(panel, "Total earnings").getAttribute("title")).toBeNull();
     expect(value(panel, "Total earnings")).toBe("—");
-    // No earnings data, so no net switch to flip.
     expect(within(panel).queryByRole("switch", { name: "Show net earnings" })).toBeNull();
   });
 
@@ -931,7 +841,6 @@ describe("the Dashboard tab", () => {
     const panel = await dashboard();
     await waitFor(() => expect(value(panel, "Total clicks")).toBe("200"));
     relayGet.mockClear();
-    // Worked example for Creator B: 5 subs over 50 clicks is a 10.00% CVR.
     ofResult = {
       links: [LINK({ id: 9, name: "Link nine", clicks: 50, subscribers: 5 })],
       username: "creator_b", url_verified: false, of_available: true,
@@ -962,7 +871,6 @@ describe("the creator filter", () => {
   });
 });
 
-/* ── ticket 59: the regrade's follow-up ─────────────────────────────────── */
 
 describe("the page header (ticket 59)", () => {
   it("carries the report time zone after the title, with its info icon and \"Set by your organization\"", async () => {
@@ -978,7 +886,6 @@ describe("the page header (ticket 59)", () => {
   });
 
   it("prints Date created in the report time zone the header names", async () => {
-    // 20:00 UTC on 14 March is 01:30 on 15 March in Asia/Kolkata.
     ofResult.links = [LINK({ id: 1, name: "Late link", created_at: "2026-03-14T20:00:00Z" })];
     renderWithProviders(<TrackingLinksPage />);
     await screen.findByText("UTC+05:30");
@@ -1002,7 +909,6 @@ describe("the tabs, filters and tooltips (ticket 59)", () => {
     await mount();
     const on = screen.getByRole("tab", { name: "Links list" });
     const off = screen.getByRole("tab", { name: "Dashboard" });
-    // HB's toggle-active fill, #2c2c2c in dark.
     expect(on.classList.contains("bg-[#2c2c2c]")).toBe(true);
     expect(off.classList.contains("bg-[#2c2c2c]")).toBe(false);
     for (const t of [on, off]) {
@@ -1018,7 +924,6 @@ describe("the tabs, filters and tooltips (ticket 59)", () => {
       screen.getByPlaceholderText("Search tracking link name"),
       within(screen.getByRole("group", { name: "Date created" })).getByText("Date created"),
     ];
-    // Source and Tag are HB selects: the lead icon sits inside the button, before the label and the chevron.
     for (const name of ["Source", "Tag"]) {
       const cb = screen.getByRole("combobox", { name });
       const svgs = cb.querySelectorAll("svg");
@@ -1141,9 +1046,6 @@ describe("the update row, copy feedback, pager and house lines (ticket 59)", () 
 });
 
 describe("earnings: claimers x the ledger", () => {
-  // Worked example: Link one (200 clicks, 25 subs) earned $1,234.50 gross / $987.60 net from 5 fans who spent.
-  // EPC is $1,234.50 / 200 = $6.17 (net $4.94), AEPS / 25 = $49.38 (net $39.50), Spending CVR 5 / 25 = 20.00%.
-  // Link two has no subs and earned $0.00; its EPC and AEPS are "—" (nothing to divide by).
   beforeEach(() => {
     earnings = {
       available: true,
@@ -1183,10 +1085,8 @@ describe("earnings: claimers x the ledger", () => {
     const ths = within(table).getAllByRole("columnheader");
     const width = (t: string) => parseInt(ths[headers().indexOf(t)].style.width, 10);
     expect(ths).toHaveLength(12);
-    // #41, #43, #44, #45, #48, #50: the capture's widths.
     expect([width("Subscription CVR"), width("Earnings"), width("Fans who spent"), width("Spending CVR"), width("EPC"), width("AEPS")])
       .toEqual([179, 139, 185, 159, 123, 123]);
-    // A head may wrap rather than run into the next one.
     expect(ths.every((th) => th.classList.contains("whitespace-normal"))).toBe(true);
     expect(table.parentElement?.classList.contains("overflow-x-auto")).toBe(true);
   });
@@ -1204,7 +1104,6 @@ describe("earnings: claimers x the ledger", () => {
     expect(cell("Link one", "Earnings").textContent).toBe("$1,235");
     expect(cell("Link one", "EPC").textContent).toBe("$6.17");
     expect(cell("Link one", "AEPS").textContent).toBe("$49.38");
-    // One state across the tabs, as the bundle's `getSharedValues`.
     fireEvent.click(screen.getByRole("tab", { name: "Dashboard" }));
     const panel = screen.getByRole("tabpanel", { name: "Dashboard" });
     const sw = within(panel).getByRole("switch", { name: "Show net earnings" });
@@ -1239,14 +1138,12 @@ describe("earnings: claimers x the ledger", () => {
     const c = cell("Link one", "Earnings");
     expect(c.textContent).toBe("$988 *");
     expect(c.getAttribute("title")).toMatch(/^Partial/);
-    // Gross has every cent: no marker.
     fireEvent.click(screen.getByRole("switch", { name: "Show net earnings" }));
     expect(cell("Link one", "Earnings").textContent).toBe("$1,235");
     expect(cell("Link one", "Earnings").getAttribute("title")).toBeNull();
   });
 
   it("uses the link's claimers for Spending CVR and AEPS, the fans its numerators are counted from", async () => {
-    // 5 of 20 claimers spent (25.00%), $1,234.50 gross over 20 is $61.73; Subs (25) is OnlyFans' own count.
     (earnings.links[0] as Record<string, unknown>).fans_counted = 20;
     await mountWithEarnings();
     fireEvent.click(screen.getByRole("switch", { name: "Show net earnings" }));
@@ -1269,10 +1166,8 @@ describe("earnings: claimers x the ledger", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Dashboard" }));
     const panel = screen.getByRole("tabpanel", { name: "Dashboard" });
     const value = () => (within(panel).getByText("Total earnings").closest('[role="group"]') as HTMLElement).lastElementChild as HTMLElement;
-    // Net: $987.60 + $0.00 + $80.00 = $1,067.60, partial because Link failed has no figure.
     await waitFor(() => expect(value().textContent).toBe("$1,068 *"));
     expect(value().getAttribute("title")).toMatch(/^Partial/);
-    // Clicks stay over the live links: 200 + 0 + 1.
     expect((within(panel).getByText("Total clicks").closest('[role="group"]') as HTMLElement).lastElementChild?.textContent).toBe("201");
   });
 
@@ -1305,17 +1200,13 @@ describe("earnings: claimers x the ledger", () => {
     ]);
     const row = (label: string) =>
       within(within(t).getByText(label).closest("tr") as HTMLElement).getAllByRole("cell").map((c) => c.textContent);
-    // Net by default: Alice's $40.00 gross is $32.00 net.
     expect(row("Alice").slice(1)).toEqual(["$32", "$8", "$0", "$20", "$0", "$4"]);
     expect(row("Total:").slice(1)).toEqual(["$36", "$8", "$2", "$20", "$2", "$4"]);
     expect(within(t).getByText(/also came through another link/)).toBeTruthy();
-    // The honest window: the later of the link's creation and the ledger's first row, in the report time zone.
     expect(within(details).getByText(/Spend from our ledger since .*2026/)).toBeTruthy();
-    // The search narrows the rows and the Total: row with them.
     fireEvent.change(within(details).getByPlaceholderText("Search fan name"), { target: { value: "bob" } });
     expect(within(t).queryByText("Alice")).toBeNull();
     expect(row("Total:")[1]).toBe("$4");
-    // Back to the list.
     fireEvent.click(within(details).getByRole("button", { name: /Tracking links/ }));
     expect(screen.getByRole("table", { name: "Links list" })).toBeTruthy();
   });
@@ -1336,9 +1227,6 @@ describe("earnings: claimers x the ledger", () => {
 });
 
 describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
-  // Worked example: Link one cost $250.00 and earned $987.60 net over 200 clicks and 25 subs, so Profit $737.60,
-  // CPC $250.00 / 200 = $1.25, CPS $250.00 / 25 = $10.00, ROI $737.60 / $250.00 x 100 = 295.04%. Link two has no
-  // cost: every cost-based cell is "—".
   beforeEach(() => {
     ofResult = {
       ...ofResult,
@@ -1369,7 +1257,6 @@ describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
     for (const t of ["Promo cost", "Profit", "CPC", "CPS", "ROI", "Source", "Tag"]) {
       expect(cell("Link two", t).textContent, t).toBe("—");
     }
-    // Gross earnings move Profit and ROI with the switch.
     fireEvent.click(screen.getByRole("switch", { name: "Show net earnings" }));
     expect(one("Profit")).toBe("$985");
     expect(one("ROI")).toBe("393.80%");
@@ -1415,7 +1302,6 @@ describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
     fireEvent.keyDown(tag, { key: "Enter" });
     const list = within(dlg).getByRole("combobox", { name: "List Optional" }) as HTMLButtonElement;
     expect(list.disabled).toBe(false);
-    // The account's custom lists; OnlyFans' built-ins are not offered (its add-to-list takes a list's number).
     await waitFor(() => expect(list.textContent).not.toMatch(/Loading/));
     expect(optionsOf(list)).toEqual(["None", "VIP", "Whales"]);
     choose(list, "VIP");
@@ -1447,16 +1333,12 @@ describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
     fireEvent.click(within(actions("Link one")).getByRole("button", { name: "Edit Link one" }));
     const dlg = screen.getByRole("dialog", { name: "Edit tracking link" });
     const list = within(dlg).getByRole("combobox", { name: "List Optional" });
-    // The stored List shows before the lists load: wait in the open menu for them, then close it.
     fireEvent.click(list);
     await within(screen.getByRole("listbox")).findByRole("option", { name: "Whales" });
     fireEvent.click(list);
     expect(optionsOf(list)).toEqual(["None", "Old promo fans", "VIP", "Whales"]);
     expect(list.textContent).toBe("Old promo fans");
-    // Under the select, what saving does: the List's helper while unchanged, Infloww's Modify copy on another list,
-    // its Delete copy on None.
     expect(within(dlg).queryByRole("status")).toBeNull();
-    // Later claimers are added by the next figures read (about hourly); the copy says so, not "as fans claim".
     expect(within(dlg).getByText(
       "Adds the link's fans to this OnlyFans list now. Fans who claim later are added when its figures are next read " +
       "from OnlyFans, about every hour. Changing it leaves fans already added in the old list.",
@@ -1473,10 +1355,6 @@ describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
   });
 
   it("fills Avg CPC, Avg CPS and Avg ROI pooled over the links with a Promo cost, net or gross", async () => {
-    // Worked example: Link one cost $250.00 (200 clicks, 25 subs, $987.60 net / $1,234.50 gross), Link two $50.00
-    // (0 clicks, 0 subs, $0.00). Avg CPC = $300.00 / 200 = $1.50, Avg CPS = $300.00 / 25 = $12.00, Avg ROI =
-    // ($987.60 − $300.00) / $300.00 × 100 = 229.20% net, ($1,234.50 − $300.00) / $300.00 = 311.50% gross. The mean of
-    // the two links' own ROIs (295.04% and −100.00%) would be 97.52%: pooled, a $50 link does not weigh like a $250 one.
     ofResult.links[1] = { ...(ofResult.links[1] as object), promo_cost_cents: 5000 };
     renderWithProviders(<TrackingLinksPage />);
     fireEvent.click(await screen.findByRole("tab", { name: "Dashboard" }));
@@ -1488,7 +1366,6 @@ describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
     expect(value("Avg CPS")).toBe("$12");
     fireEvent.click(within(panel).getByRole("switch", { name: "Show net earnings" }));
     expect(value("Avg ROI")).toBe("311.50%");
-    // A Source filter that leaves only uncosted links: "—".
     choose(within(panel).getByRole("combobox", { name: "Source" }), "Twitter");
     for (const t of ["Avg CPC", "Avg CPS", "Avg ROI"]) expect(value(t), t).toBe("—");
   });
@@ -1500,7 +1377,6 @@ describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Dashboard" }));
     const panel = screen.getByRole("tabpanel", { name: "Dashboard" });
     const val = () => (within(panel).getByText("Avg ROI").closest('[role="group"]') as HTMLElement).lastElementChild;
-    // Over Link one alone: ($987.60 − $250.00) / $250.00 = 295.04%, marked partial.
     await waitFor(() => expect(val()?.textContent).toBe("295.04% *"));
     expect(val()?.getAttribute("title")).toMatch(/^Partial/);
   });
@@ -1529,7 +1405,6 @@ describe("the HB frame (page-parity ticket 11)", () => {
     expect(screen.getByPlaceholderText("Search tracking link name")).toBeTruthy();
     expect(screen.getByRole("combobox", { name: "Source" })).toBeTruthy();
     expect((screen.getByRole("button", { name: "Create tracking link" }) as HTMLButtonElement).disabled).toBe(true);
-    // The Creators read answered empty: only then the table's empty state, never while it runs.
     expect(await within(table()).findByText("No data")).toBeTruthy();
   });
 

@@ -1,12 +1,3 @@
-"""Many small Agencies on ONE relay (chatter-crowd `--layout=agencies`): `agencies` Agencies x
-`models_per_agency` Creators each (default 20 x 5 = 100 models), no big Creator: a small
-agency (~$10k/mo over 5 models, ~$2k/mo a model) runs one chatter and normal fan traffic.
-Agency 0 is the run's owner (`w.owner`). Every Creator `fans_per_creator` fans; threads as
-seed/threads.py. Product-writable rows only (the same seeders as one_agency), deterministic
-from --seed.
-
-The scenario passes its knobs in `w.data["many_agencies"]` ({"agencies": n, "models_per_agency":
-m}; ctx.build calls build(w) with no arguments); missing: the defaults below."""
 from __future__ import annotations
 
 from .. import World, agency, fans, threads

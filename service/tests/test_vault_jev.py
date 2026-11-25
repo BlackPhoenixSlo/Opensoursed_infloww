@@ -1,36 +1,4 @@
 #!/usr/bin/env python3
-"""
-Jev v8 vault flags (`vault_jev`, `vault_jev_rules`, the `vault_jev_pass` / `vault_ai_vision` wiring) — the
-default for every vault photo and clip (no setting); clips: 12 frames, maxF (D53/D54).
-Plain-assert suite (repo convention), no network: TypeSafe and NudeNet are faked
-at the module seams (`vault_jev._client`, `_load_detector`, `nudenet_scores`).
-
-Cases:
-  golden replay      every bench flags8c s2A..s5B record (set5 = 5dev only) through
-                     `vault_jev_rules.final` == the bench's own score8 + settle nn.10
-                     (fixture made by .scratch/jev-vault-bench/p8-golden-gen.py)
-  question spec      `vault_jev.spec()` == the spec generated from jev_flags8/jev_crop8
-  failed, no SDK     `_failed` with typesafe_sdk unimportable → "error", never ImportError (rwl-a F16)
-  geometry           shrink / crops / enc output sizes == the bench functions'
-  pipeline           pass 1 → 2 → L over the fake client: model pin + header, the
-                     blob, spend on the `typesafe` cap row + audit row
-  nothing to pay     audio, or a photo / clip whose `_jev` is current and flags in sync: no TypeSafe / NudeNet call
-  tier column        the pass writes `explicitness_tier` from Jev's reading; a stale one is fixed free; a locked one kept
-  no NudeNet         refuses before any TypeSafe call; status stamped, fields kept
-  cap                over the account's daily cap: no call, nothing written, the
-                     flags sweep stops
-  carry              re-describe keeps `_jev`; describe / flags copies carry it
-  wiring             describe runs Jev first and never the qwen flags call for a photo / clip; a photo
-                     Jev cannot read is skipped (Jev's status, nothing written, no qwen); the flags sweep
-                     stamps from Jev (never qwen); reuse needs Jev consistency
-  clips              bench combine (top-3 targets by sev, lane = max frame, pack round-trip); run_video:
-                     pass 1 + NudeNet ×12, pass 2/L ≤3, spend, last-frame lane, MIN_L_EDGE; a low-res
-                     source → `jev_review` dispute; frame source (real ffmpeg): 720 + scrub under the 240
-                     hash, over cap → 240, no 720 → 240, both over → posters, 403 → fetch_failed
-                     one absolute deadline per clip (thread + ffmpeg inside it, a slow finish kept), short lane wait
-
-Run: cd service/tests && PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_jev.py
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB
@@ -42,7 +10,6 @@ import os  # noqa: E402
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 import tempfile  # noqa: E402
 
-# the clip frame source writes scrub frames: a throwaway store, bound before storyboard is imported
 os.environ["STORYBOARD_DIR"] = tempfile.mkdtemp(prefix="jev-video-test-sb-")
 
 import asyncio  # noqa: E402
@@ -73,7 +40,7 @@ from db.models import Account, AccountAiConfig, GrokCall, GrokDailyCost, VaultIt
 FIX = Path(__file__).parent / "fixtures" / "vault_jev"
 GOLDEN = json.load(gzip.open(FIX / "golden.json.gz", "rt"))["images"]
 DESCRIBE_GOLD = json.load(gzip.open(FIX.parent / "vault_describe_jev" / "golden.json.gz", "rt"))["cases"]
-for _c in DESCRIBE_GOLD:   # bench blobs predate the stored region states: empty = every hidden region covered
+for _c in DESCRIBE_GOLD:
     _c["jev"].setdefault("state", {})
 FIELDS = ("lane5", "lane", "breasts_bare", "crotch_bare", "penetration", "settled")
 
@@ -88,10 +55,9 @@ def _size(b: bytes) -> list[int]:
     return list(PImage.open(io.BytesIO(b)).size)
 
 
-# ── Pure: golden, spec, geometry ─────────────────────────────────────
 
 def case_golden_replay():
-    assert len(GOLDEN) == 674, len(GOLDEN)   # 337 images × runs A/B
+    assert len(GOLDEN) == 674, len(GOLDEN)
     assert not any(g["img"].startswith("set6/") for g in GOLDEN)
     bad = []
     for g in GOLDEN:
@@ -100,7 +66,6 @@ def case_golden_replay():
         if got != g["expect"]:
             bad.append((g["run"], g["img"], got, g["expect"]))
     assert not bad, f"{len(bad)} mismatches, first: {bad[:3]}"
-    # The fixture exercises every branch that matters.
     lanes = {g["expect"]["lane5"] for g in GOLDEN}
     assert lanes == {"free", "$10", "$50", "$100"}, lanes
     assert any(g["expect"]["settled"] == "nn.10" for g in GOLDEN)
@@ -120,7 +85,7 @@ def case_question_spec():
 def case_failed_without_sdk():
     import sys
     saved = sys.modules.get("typesafe_sdk")
-    sys.modules["typesafe_sdk"] = None          # import raises ImportError
+    sys.modules["typesafe_sdk"] = None
     try:
         assert vault_jev._failed(RuntimeError("boom")) == "error"
     finally:
@@ -160,7 +125,6 @@ def case_merge_keeps_fields_on_failure():
     assert vault_jev.merge(prev, vault_jev.JevResult(ok=False, status="capped"), now) == prev
 
 
-# ── Fakes ────────────────────────────────────────────────────────────
 
 class _Resp:
     def __init__(self, d):
@@ -182,7 +146,6 @@ class _FakeClient:
 
 
 class _Seams:
-    """Patch the Jev seams; restores on exit. `nn=None` → NudeNet unavailable."""
 
     def __init__(self, rec, nn, *, key="test-key"):
         self.client, self.nn, self.key = _FakeClient(rec), nn, key
@@ -242,8 +205,6 @@ async def _fields(aid, mid=7001) -> dict:
 
 
 class _Collect:
-    """Fake `vault_frames.collect` (a photo's still) and `collect_jev_video` (a clip's frames: `clip`, default
-    12 copies of `data`; `review` / `src` / `transient` as the frame source would report them; [] → `reason`)."""
 
     def __init__(self, data, clip=None, *, src="720", review=None, reason="fetch_failed", transient=False):
         self.data, self.calls, self.clip_calls = data, 0, 0
@@ -270,7 +231,6 @@ class _Collect:
         vault_frames.collect, vault_frames.collect_jev_video = self.saved
 
 
-# ── Pipeline + billing ───────────────────────────────────────────────
 
 async def case_pipeline_all_passes_and_spend():
     g = _golden_with("resp2", "respL")
@@ -284,7 +244,7 @@ async def case_pipeline_all_passes_and_spend():
     assert [c["n"] for c in sm.client.calls] == [len(vault_jev.Q), 12, 2]
     assert all(c["model"] == "jev-1.14.0" and c["headers"] == {"TypeSafe-Danger-Zone-Images": "true"}
                for c in sm.client.calls)
-    assert sm.client.calls[0]["state"] == {"photo": [576, 1024]}           # ≤ EDGE: no upscale
+    assert sm.client.calls[0]["state"] == {"photo": [576, 1024]}
     assert sm.client.calls[2]["state"] == {"full_photo": [576, 1024], "lower_part": [576, 614]}
     tok = sum(g["rec"][k]["usage"]["input_tokens"] for k in ("resp", "resp2", "respL"))
     assert b["tok"] == tok and res["cost_millicents"] == vault_jev.cost_millicents(tok) > 0
@@ -303,23 +263,19 @@ async def case_cap_respected():
     with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)):
         res = await vault_jev_pass.one(aid, 7001)
         assert res["status"] == "jev_capped" and sm.client.calls == [], res
-        assert await _fields(aid) == {"description": "kept"}   # capped writes nothing
+        assert await _fields(aid) == {"description": "kept"}
     async with get_session() as s:
         rows = (await s.execute(select(GrokDailyCost).where(GrokDailyCost.account_id == aid))).scalars().all()
     assert all(r.provider == "typesafe" and r.cost_cents == 0 for r in rows), rows
 
 
 async def case_jev_cap_skips_jev_not_the_sweep():
-    """A Jev cap only skips Jev for the rest of the sweep: photo and clip visits count as failed `jev_capped`
-    (never `capped`, which would stop the sweep), no qwen flags call for the clip, and only the first item
-    fetches a still / clip and tries to reserve."""
     g = _golden_with("resp")
     aid = await _seed(cap_cents=0, mids=(7001, 7002, 7003), fields={"description": "kept"})
-    async with get_session() as s:   # a clip whose flags are missing: Jev work too
+    async with get_session() as s:
         s.add(VaultItem(account_id=aid, media_id=7004, kind="video", tags="[]", created_at=datetime(2026, 5, 1)))
         await s.commit()
     oc = vault_ai_vision._FLAGS_CONCURRENCY
-    # One at a time, so "after the cap" is well defined (in-flight visits each try once).
     vault_ai_vision._FLAGS_CONCURRENCY = 1
     try:
         with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)) as col:
@@ -333,11 +289,10 @@ async def case_jev_cap_skips_jev_not_the_sweep():
     assert prog["capped"] is False and prog["done"] == 4 and prog["failed"] == 4, prog
     assert sm.client.calls == [] and col.calls + col.clip_calls == 1, col.calls
     assert "cap" in prog["error"].lower(), prog
-    assert "cap" in prog["notice"].lower(), prog   # W30 M2: the generic `notice` the result carries
+    assert "cap" in prog["notice"].lower(), prog
 
 
 def _known_flags() -> dict:
-    """A flags blob `flags_current` accepts (the brief's FLAG_KEYS)."""
     import vault_ai_brief
     out = {k: "covered" for k in vault_ai_brief.VIS_REGIONS}
     out["underwear_visible"] = False
@@ -346,8 +301,6 @@ def _known_flags() -> dict:
 
 
 async def case_nothing_to_pay_makes_no_calls():
-    """Audio never gets Jev; a photo or clip whose `_jev` is current with its flags in sync is not re-run (and a
-    drifted one is re-stamped for free). A clip's qwen-era flags with no `_jev` are stale (Jev work)."""
     g = _golden_with("resp")
     qwen = await _seed(kind="video", fields={"_flags_v": vault_ai_vision._FLAGS_VERSION, **_known_flags()})
     aud = await _seed(kind="audio")
@@ -367,7 +320,6 @@ async def case_nothing_to_pay_makes_no_calls():
         assert not rules.current({"_jev": {**vblob, "vv": "old"}}), "a clip blob of another VIDEO_VERSION"
     assert sm.client.calls == [] and sm.nn_calls == 0 and col.calls == col.clip_calls == 0
     assert await _fields(drift) == synced, "a drifted photo was not re-stamped from its `_jev`"
-    # W30 M3: an outage already tripped stops only the visits that need a call, never an AI-read item
     out = vault_jev_pass.Sweep()
     out.failed_in_row = vault_jev_pass.DOWN_AFTER
     with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)) as col:
@@ -377,8 +329,6 @@ async def case_nothing_to_pay_makes_no_calls():
 
 
 async def case_old_blob_without_state_reruns_once():
-    """A v8 `_jev` stored before the region states (same VERSION, no `state`) is not current: the next visit pays
-    Jev once and stores a blob with `state`; the visit after pays nothing."""
     g = _golden_with("resp")
     old = {"v": rules.VERSION, "status": "ok", "lane5": "$10", "lane": "$10", "settled": False,
            "breasts_bare": "y", "crotch_bare": "n", "penetration": "n", "tags": {"outfit": "nude"}, "at": "old"}
@@ -399,8 +349,6 @@ async def _async_none(*a, **k):
 
 
 async def case_concurrent_visits_pay_once():
-    """The describe and the flags sweep visit the same photo at once: one Jev pass pays, the other waits and finds
-    the row current (None, no call). W30 F23."""
     g = _golden_with("resp")
     aid = await _seed()
     with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)) as col:
@@ -409,8 +357,6 @@ async def case_concurrent_visits_pay_once():
     assert len(sm.client.calls) == 1 and col.calls == 1, (sm.client.calls, col.calls)
     assert vault_jev_pass._inflight == {}, "lock slots dropped once nobody waits"
 
-    # The first visit's paid call FAILS (TypeSafe charged, no reading): the waiter takes that result, it does not
-    # pay again; the spend is counted once across both results. W30 C3.
     calls = []
 
     async def paid_error(account_id, img):
@@ -432,9 +378,6 @@ async def case_concurrent_visits_pay_once():
 
 
 async def case_waiter_takes_only_a_paid_failure():
-    """A waiter takes only a failure the pass it waited on PAID for. A capped sweep's visit (no call) never answers an
-    operator re-read waiting behind it: that re-read pays its own call. A call that made the outage (`down_stop`
-    raises after stamping) still hands its failure to the waiter, which never pays again. W30 D2."""
     g = _golden_with("resp")
     aid = await _seed()
     capped = vault_jev_pass.Sweep()
@@ -453,7 +396,7 @@ async def case_waiter_takes_only_a_paid_failure():
 
     aid = await _seed()
     sweep = vault_jev_pass.Sweep()
-    sweep.failed_in_row = vault_jev_pass.DOWN_AFTER - 1   # this visit's failure makes the outage
+    sweep.failed_in_row = vault_jev_pass.DOWN_AFTER - 1
     saved = vault_jev.run, vault_jev.preflight
     vault_jev.run, vault_jev.preflight = paid_error, _async_none
     try:
@@ -468,9 +411,6 @@ async def case_waiter_takes_only_a_paid_failure():
 
 
 async def case_jev_writes_the_tier_column():
-    """The Jev pass writes `explicitness_tier` (folder picks / the admin read the column) from its reading: an
-    undescribed photo gets it on the paid pass; a stale column beside current flags (a v2 describe's qwen tier)
-    is flags work, fixed free with no call; an operator-locked column keeps its value and is not drift."""
     g = _golden_with("resp")
 
     async def _row(aid):
@@ -493,9 +433,9 @@ async def case_jev_writes_the_tier_column():
         assert want and row.explicitness_tier == want, (row.explicitness_tier, want)
         paid = len(sm.client.calls)
         stale = "sfw" if want != "sfw" else "hardcore"
-        await _set(aid, explicitness_tier=stale)                     # a pre-Jev describe's tier
+        await _set(aid, explicitness_tier=stale)
         assert await vault_ai_vision._flags_todo(aid) == [7001]
-        assert await vault_jev_pass.one(aid, 7001) is None         # re-stamped free
+        assert await vault_jev_pass.one(aid, 7001) is None
         assert (await _row(aid)).explicitness_tier == want and await vault_ai_vision._flags_todo(aid) == []
         await _set(aid, explicitness_tier=stale, locked_fields_json=json.dumps(["explicitness_tier"]))
         assert await vault_ai_vision._flags_todo(aid) == [], "a locked column read as drift"
@@ -506,7 +446,7 @@ async def case_jev_writes_the_tier_column():
 
 async def case_no_nudenet_refuses_and_stamps():
     g = _golden_with("resp")
-    prev = {"description": "kept", "_jev": {"v": rules.VERSION, "status": "error", "lane5": "$50"}}  # stale → runs
+    prev = {"description": "kept", "_jev": {"v": rules.VERSION, "status": "error", "lane5": "$50"}}
     aid = await _seed(fields=prev)
     with _Seams(g["rec"], None) as sm, _Collect(_jpeg(576, 1024)) as col:
         res = await vault_jev_pass.one(aid, 7001)
@@ -520,14 +460,13 @@ async def case_no_nudenet_refuses_and_stamps():
     async with get_session() as s:
         assert (await s.execute(select(GrokDailyCost).where(GrokDailyCost.account_id == aid))).first() is None
 
-    # The real loader, no weights configured: refuses (and remembers it).
     saved = (vault_jev._nn_det, vault_jev._nn_err, os.environ.pop(vault_jev.NUDENET_PATH_ENV, None))
     vault_jev._nn_det = vault_jev._nn_err = None
     try:
         ok, why = vault_jev.nudenet_status()
         assert not ok and vault_jev.NUDENET_PATH_ENV in why, why
         os.environ[vault_jev.NUDENET_PATH_ENV] = "/nonexistent/640m.onnx"
-        assert not vault_jev.nudenet_status()[0]   # cached failure
+        assert not vault_jev.nudenet_status()[0]
     finally:
         vault_jev._nn_det, vault_jev._nn_err = saved[0], saved[1]
         os.environ.pop(vault_jev.NUDENET_PATH_ENV, None)
@@ -547,8 +486,6 @@ async def case_no_key_refuses_before_fetch():
 
 
 async def case_agency_typesafe_key_wins_over_the_server_key():
-    """The account's agency's own TypeSafe key is what Jev is called with (and readies the pass with no server
-    key); another agency's creator stays on the server key, here none: `no_key`."""
     import tenant_keys
     from db.models import User, UserAccount
     g = _golden_with("resp")
@@ -571,8 +508,6 @@ async def case_agency_typesafe_key_wins_over_the_server_key():
 
 
 async def case_refusal_logs_once_per_sweep():
-    """A refusal (`no_key`) logs ONE `vault_jev skipped status= account=` line per sweep (proxy-health
-    `vault_jev_errors` alerts on it), one per call without a sweep; every item is still stamped."""
     import logging
     g = _golden_with("resp")
     aid = await _seed(mids=(7001, 7002, 7003))
@@ -599,8 +534,6 @@ async def case_refusal_logs_once_per_sweep():
 
 
 async def case_loaded_detector_takes_no_lock_or_thread():
-    """Once NudeNet is loaded, `_load_detector` / `preflight` / `plan` never touch the load lock or the
-    default thread pool (a held lock here would hang them)."""
     import asyncio
     saved = (vault_jev._nn_det, vault_jev._nn_err, asyncio.to_thread, llm_providers.typesafe_key)
     sentinel = object()
@@ -616,7 +549,7 @@ async def case_loaded_detector_takes_no_lock_or_thread():
         assert await asyncio.wait_for(vault_jev.preflight(), 1) is None
         assert await vault_jev.nudenet_ready() == (True, "")
         assert await vault_jev_pass.plan() == {"ready": True, "reason": ""}
-        vault_jev._nn_det, vault_jev._nn_err = None, "gone"   # a remembered failure: also lock-free
+        vault_jev._nn_det, vault_jev._nn_err = None, "gone"
         assert await vault_jev.nudenet_ready() == (False, "gone")
     finally:
         asyncio.to_thread = saved[2]
@@ -625,7 +558,6 @@ async def case_loaded_detector_takes_no_lock_or_thread():
     assert not hasattr(vault_jev, "_nn_lock")
 
 
-# ── Carry across re-describe / copies ────────────────────────────────
 
 def case_redescribe_and_copies_carry_jev():
     jev = {"v": rules.VERSION, "status": "ok", "lane5": "$10", "state": {}}
@@ -639,23 +571,22 @@ def case_redescribe_and_copies_carry_jev():
     src_cols = {"ai_fields_json": json.dumps({"description": "d", "_jev": jev})}
     vals = decide.build_copy_update(src_cols, prev_ai={"_jev": own}, locked=set(), overrides={},
                                     fixable=(), src_id=1, now=datetime(2026, 11, 11))
-    assert json.loads(vals["ai_fields_json"])["_jev"] == jev          # source's good answer
+    assert json.loads(vals["ai_fields_json"])["_jev"] == jev
     vals = decide.build_copy_update({"ai_fields_json": json.dumps({"description": "d"})},
                                     prev_ai={"_jev": own}, locked=set(), overrides={},
                                     fixable=(), src_id=1, now=datetime(2026, 11, 11))
-    assert json.loads(vals["ai_fields_json"])["_jev"] == own          # source has none: keep own
+    assert json.loads(vals["ai_fields_json"])["_jev"] == own
     failed = {**jev, "status": "error"}
     vals = decide.build_copy_update({"ai_fields_json": json.dumps({"_jev": failed})},
                                     prev_ai={}, locked=set(), overrides={},
                                     fixable=(), src_id=1, now=datetime(2026, 11, 11))
-    assert "_jev" not in json.loads(vals["ai_fields_json"])           # a failure is not copied
+    assert "_jev" not in json.loads(vals["ai_fields_json"])
 
     assert decide.build_flags_copy({"_jev": own}, {"_flags_v": 3, "_jev": jev}, locked=set(),
                                    src_id=1)["_jev"] == jev
     assert decide.build_flags_copy({"_jev": own}, {"_flags_v": 3}, locked=set(), src_id=1)["_jev"] == own
 
 
-# ── Wiring ───────────────────────────────────────────────────────────
 
 async def case_describe_runs_jev_first():
     g = _golden_with("resp")
@@ -665,7 +596,6 @@ async def case_describe_runs_jev_first():
     async def _desc(aid, mid, **k):
         order.append("describe")
         f = await _fields(aid, mid)
-        # describe sees (and so carries) the `_jev` written just before it
         order.append("jev-before" if "_jev" in f else "no-jev")
         return {"media_id": mid, "ok": True, "status": "described", "cost_millicents": 70}
 
@@ -679,8 +609,7 @@ async def case_describe_runs_jev_first():
             assert res["cost_millicents"] == 70 + res["jev_cost_millicents"] and res["jev_cost_millicents"] > 0
             assert res["jev_lane5"] == g["expect"]["lane5"]
             f = await _fields(aid)
-            assert vault_jev_flags.in_sync(f, ()) and f["_flags_model"] == "jev", f   # flags from Jev
-            # current → a second describe does not re-run Jev
+            assert vault_jev_flags.in_sync(f, ()) and f["_flags_model"] == "jev", f
             n = len(sm.client.calls)
             res2 = await vault_ai_vision._describe_and_flag(aid, 7001)
             assert len(sm.client.calls) == n and "jev_status" not in res2, res2
@@ -689,7 +618,7 @@ async def case_describe_runs_jev_first():
             vid = await _seed(kind="video")
             res = await vault_ai_vision._describe_and_flag(vid, 7001)
             assert order == ["describe", "jev-before"], f"a clip got the qwen flags call: {order}"
-            assert len(sm.client.calls) >= n + 12 and res["jev_status"] == "ok", res   # pass 1 on 12 frames
+            assert len(sm.client.calls) >= n + 12 and res["jev_status"] == "ok", res
             f = await _fields(vid)
             assert f["_jev"]["kind"] == "video" and vault_jev_flags.in_sync(f, ()) and f["_flags_model"] == "jev"
     finally:
@@ -697,9 +626,6 @@ async def case_describe_runs_jev_first():
 
 
 async def case_describe_skips_photo_jev_cannot_read():
-    """No NudeNet on one item's route: the photo is skipped with Jev's status — no describe call, no qwen flags,
-    describe_status untouched, never a v2 describe. Inside a sweep it STOPS it (`SweepStop`, no item can be read).
-    No TypeSafe key: an LLMKeyError("missing") everywhere (the sweep's `key_error`; the route's 424). 11-14."""
     import vault_sweep
     g = _golden_with("resp")
     o_chat = llm_client.chat
@@ -735,8 +661,6 @@ async def case_describe_skips_photo_jev_cannot_read():
 
 
 async def case_describe_stops_on_rejected_typesafe_key():
-    """TypeSafe 401/403 (a wrong key, e.g. a LangSmith key pasted as TypeSafe, 11-14) / 402: not a per-photo skip but
-    an LLMKeyError — the describe sweep stops at the first photo with `key_error`, the drawer's sentence."""
     from contextlib import nullcontext
     from typesafe_sdk import TypeSafeAPIError, TypeSafeAuthenticationError
     import vault_sweep
@@ -773,7 +697,7 @@ async def case_flags_sweep_from_jev_never_qwen():
         await s.commit()
     with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)):
         todo = await vault_ai_vision._flags_todo(aid)
-        assert sorted(todo) == [7001, 7002, 7003], todo   # qwen-flagged photos are stale: no `_jev`
+        assert sorted(todo) == [7001, 7002, 7003], todo
         vault_ai_vision._flags_running.add(aid)
         await vault_ai_vision._run_flags_all(aid, todo)
         assert len(sm.client.calls) >= 2 + 12
@@ -811,8 +735,6 @@ async def case_dupe_followers_get_the_leaders_jev():
 
 
 async def case_forced_flags_never_qwen_on_photos_nor_repays_jev():
-    """flags-all {force} never calls qwen for a photo and never re-pays a current `_jev`; nor does the named-set
-    probe (`_jev_and_flag(force=True)`)."""
     g = _golden_with("resp")
     aid = await _seed(mids=(7001, 7002), fields={"_flags_v": 99, **_known_flags()})
     with _Seams(g["rec"], g["nn"]) as sm, _Collect(_jpeg(576, 1024)):
@@ -824,15 +746,12 @@ async def case_forced_flags_never_qwen_on_photos_nor_repays_jev():
         for m in (7001, 7002):
             assert vault_jev_flags.in_sync(await _fields(aid, m), ()), m
         await vault_ai_vision._run_flags_all(aid, await vault_ai_vision._flags_todo(aid, force=True), force=True)
-        res = await vault_ai_vision._jev_and_flag(aid, 7001, force=True)   # the grading probe's call
+        res = await vault_ai_vision._jev_and_flag(aid, 7001, force=True)
         assert len(sm.client.calls) == n and "jev_status" not in res, res
         assert res["ok"] and res["status"] == "flagged", res
 
 
 async def case_photo_reuse_needs_jev():
-    """A photo is a describe copy source only with a Jev-fed describe on the `_jev` it holds (a pre-Jev / v2
-    photo describe never), and a flags source only with flags (and the `explicitness_tier` column) in sync with a
-    current `_jev`; a flags copy writes the copy's column too."""
     c = next(x for x in DESCRIBE_GOLD if x["path"] == "prose")
     j = c["jev"]
     fed = vault_jev_flags.apply({"description": "d", "_describe": vault_describe_jev.meta("prose", j, "m"),
@@ -849,9 +768,8 @@ async def case_photo_reuse_needs_jev():
                 ({"description": "d"}, [], None, False, False),                                       # pre-Jev
                 ({"description": "d", "_flags_v": 3, **_known_flags()}, [], None, False, False),      # qwen flags
                 (fed, [], x, True, True),
-                ({**fed, "breasts_vis": "covered"}, [], x, True, False),                             # flags drifted
-                (dict(fed), [], qwen, True, False),                                  # the column kept qwen's tier
-                # an operator-locked flag / column is not drift: in sync for the todo, the reuse plan and the copy
+                ({**fed, "breasts_vis": "covered"}, [], x, True, False),
+                (dict(fed), [], qwen, True, False),
                 ({**fed, "breasts_vis": "covered"}, ["breasts_vis"], x, True, True),
                 (dict(fed), ["explicitness_tier"], qwen, True, True)):
             aid = await _seed(mids=(7001, 7002))
@@ -877,8 +795,6 @@ async def case_photo_reuse_needs_jev():
 
 
 async def case_write_keeps_current_jev():
-    """A describe / flags write built from a row read before a concurrent Jev pass landed keeps that
-    `_jev` (the other sweep's paid answer) instead of the stale read's."""
     jev = {"v": rules.VERSION, "status": "ok", "lane5": "$10", "state": {}}
     aid = await _seed(fields={"description": "old", "_jev": jev})
     await vault_ai_vision._write_item(aid, 7001, describe_status="described",
@@ -887,13 +803,11 @@ async def case_write_keeps_current_jev():
     assert vault_jev_pass.keep_current(None, '{"a": 1}') == '{"a": 1}'
     assert json.loads(vault_jev_pass.keep_current(json.dumps({"_jev": jev}),
                                                   json.dumps({"_jev": {"status": "error"}})))["_jev"] == jev
-    # a row whose flags are Jev's keeps them too (a stale read's qwen-era flags never win)
     full = {**jev, "lane": "$10", "settled": False, "breasts_bare": "y", "crotch_bare": "n", "tags": {}}
     cur = vault_jev_flags.apply({"description": "old", "_jev": full}, full)
     got = json.loads(vault_jev_pass.keep_current(json.dumps(cur), json.dumps({"description": "new",
                                                                               "breasts_vis": "covered"})))
     assert got["description"] == "new" and got["breasts_vis"] == "bare" and vault_jev_flags.in_sync(got, ()), got
-    # a describe's fresh clothing_items name the garments (the photo's only garment source); a lock keeps its value
     got = json.loads(vault_jev_pass.keep_current(json.dumps(cur), json.dumps({"description": "new",
                                                                               "clothing_items": ["black thong"]})))
     assert got["over_vulva"] == "black thong" and "over_breasts" not in got and vault_jev_flags.in_sync(got, ()), got
@@ -910,15 +824,12 @@ async def case_write_keeps_current_jev():
     assert (await _fields(aid2))["over_vulva"] == "red skirt", "_write_item passes the row's locks"
 
 
-# ── Clips (D53 hr12 maxF, D54) ───────────────────────────────────────
 
 def _p1(g):
     return rules.derive8({"resp": g["rec"]["resp"]})
 
 
 def _gold(lane5, *, has=("resp",), need=None):
-    """A golden record (NudeNet run) of exactly passes `has`, final lane `lane5`; `need` "need2" / "needL" → pass 1
-    asks for it, None → pass 1 asks for neither."""
     for g in GOLDEN:
         if g["nn"] is None or set(g["rec"]) != set(has) or g["expect"]["lane5"] != lane5:
             continue
@@ -929,9 +840,6 @@ def _gold(lane5, *, has=("resp",), need=None):
 
 
 class _FrameSeams(_Seams):
-    """`_Seams` per frame: `frames` = [(jpeg, golden)]; each TypeSafe / NudeNet call is matched to its frame by the
-    size of the image it sends (frames sized so pass 1 / 2 / L send them unscaled). A pass the record lacks (a
-    target the bench never called) answers pass 1's own answers to those questions."""
 
     def __init__(self, frames):
         super().__init__(frames[0][1]["rec"], frames[0][1]["nn"])
@@ -968,14 +876,10 @@ class _FrameSeams(_Seams):
 
 
 def _clip(golds):
-    """12 frames (distinct sizes, pass-1 / pass-2 shrink and the lower crops leave them unscaled) for `golds`."""
     return [(_jpeg(600 + 4 * i, 480), g) for i, g in enumerate(golds)]
 
 
 def case_video_pure_combine():
-    """The bench combine (jv-jev.py / jv-score.py): top-3 targets by `sev` among frames derive8 asks for (else the
-    pass-1 max record's ask → top-3 overall, else none); lane = the max frame's, ties to the higher sev; packed
-    answers derive the same as the raw ones (every golden record)."""
     free, p100, p10 = _gold("free"), _gold("$100"), _gold("$10")
     need = [g for g in GOLDEN if g["nn"] is not None and _p1(g)["need2"]][:5]
     recs = [{"resp": (need[i // 2] if i % 2 and i // 2 < 5 else free)["rec"]["resp"]} for i in range(12)]
@@ -994,7 +898,7 @@ def case_video_pure_combine():
     ds, i = rules.video_final(recs, sc)
     assert i == 7 and ds[i]["lane5"] == "$100" and ds[4]["lane5"] == "$10", (i, [d["lane5"] for d in ds])
     ds, i = rules.video_final([{"resp": free["rec"]["resp"]}] * 3, [free["nn"]] * 3)
-    assert i == 0 and ds[0]["lane5"] == "free"   # all tied: the first
+    assert i == 0 and ds[0]["lane5"] == "free"
 
     o1, o2 = rules.ORDER["1"], rules.ORDER["2"]
     for g in GOLDEN:
@@ -1009,15 +913,11 @@ def case_video_pure_combine():
 
 
 def case_video_order_pinned():
-    """The stored frame layout (`vault_jev_rules.ORDER`, frozen) is the one `vault_jev`'s questions build: a
-    question change must bump VIDEO_VERSION and re-pin it. The region-pick map is one (`REGION_BODY`). W30 R1/R6."""
     import vault_jev_manual
     built = {"1": rules.order_of(vault_jev.Q), "2": rules.order_of(vault_jev.Q2),
              "L": rules.order_of(vault_jev.crop_questions({"full_photo": 0, "lower_part": 0}))}
     norm = lambda o: {p: [(k, c) for k, c in v] for p, v in o.items()}  # noqa: E731
     assert norm(rules.ORDER) == norm(built)
-    # ORDER is tied to the stored frames' VIDEO_VERSION: a frame unpacks positionally, so editing ORDER under the
-    # same version mis-decodes stored clips (a wrong `body_free`). A real change = new VIDEO_VERSION + its hash here.
     import hashlib
     import json
     pinned = {"jv1": "2e3e32214924f395ba6106264c8cb32995ddd768081e0fd6030b8b6f871ef4a4"}
@@ -1028,9 +928,6 @@ def case_video_order_pinned():
 
 
 async def case_video_pipeline_maxF_top3_and_spend():
-    """`run_video` over 12 frames: pass 1 + NudeNet on every frame, pass 2 / L only on ≤3 targets, lane = the max
-    frame's; the blob is the max frame's photo blob + every frame packed (re-derives the same lane), spend on one
-    `typesafe` hold; the flags mapper reads it."""
     free, p50 = _gold("free"), _gold("$50", has=("resp", "resp2"), need="need2")
     golds = [free] * 12
     golds[7] = p50
@@ -1047,7 +944,7 @@ async def case_video_pipeline_maxF_top3_and_spend():
     assert [f["lane5"] for f in b["frames"]].count("$50") >= 1 and b["frames"][7]["lane5"] == "$50"
     assert "2" in b["frames"][7] and all("2" not in f for i, f in enumerate(b["frames"]) if i not in sm.passes("resp2"))
     assert rules.current({"_jev": b}) and vault_jev_flags.reading(b) is not None
-    recs, scores = rules.frame_recs(json.loads(json.dumps(b)))   # as stored
+    recs, scores = rules.frame_recs(json.loads(json.dumps(b)))
     ds, top = rules.video_final(recs, scores)
     assert top == 7 and [d["lane5"] for d in ds] == [f["lane5"] for f in b["frames"]]
     tok = sum(sm.frames[c["frame"]][1]["rec"].get(c["pass"], {"usage": {"input_tokens": 1000}})["usage"]["input_tokens"]
@@ -1059,8 +956,6 @@ async def case_video_pipeline_maxF_top3_and_spend():
 
 
 async def case_video_stops_frames_on_rejected_key():
-    """A refused TypeSafe key (401) on a clip: no frame request after the first refusal — at most the
-    FRAME_CONCURRENCY already in flight, not all 12; the clip's status is the key's. W30 F11."""
     from typesafe_sdk import TypeSafeAuthenticationError
     frames = _clip([_gold("free")] * 12)
     aid = await _seed(kind="video")
@@ -1076,8 +971,6 @@ async def case_video_stops_frames_on_rejected_key():
 
 
 async def case_client_cache_keeps_live_loop_clients():
-    """Past 8 cached TypeSafe clients only dead loops' entries go; this loop's stay (never orphaned unclosed
-    while another call uses them). W30 F19."""
     saved = dict(vault_jev._clients)
     me = id(asyncio.get_running_loop())
     try:
@@ -1094,7 +987,6 @@ async def case_client_cache_keeps_live_loop_clients():
 
 
 async def case_video_first_frame_is_not_the_lane():
-    """A clip whose only paid frame is the last one takes that frame's lane, never the first frame's."""
     free, p100 = _gold("free"), _gold("$100")
     frames = _clip([free] * 11 + [p100])
     aid = await _seed(kind="video")
@@ -1104,7 +996,6 @@ async def case_video_first_frame_is_not_the_lane():
 
 
 async def case_video_min_dimension_skips_pass_l():
-    """A frame whose lower crops would be under MIN_L_EDGE (Jev 400s on 400x202) skips pass L, recorded."""
     gl = _gold("$10", has=("resp", "respL"), need="needL")
     aid = await _seed(kind="video")
     small = [(_jpeg(400, 202), gl)]
@@ -1120,11 +1011,6 @@ async def case_video_min_dimension_skips_pass_l():
 
 
 async def case_video_pass_review_and_no_frames():
-    """`vault_jev_pass.one` on a clip: frames from `collect_jev_video` → `_jev` (kind video) + Jev flags; a
-    low-res source (`review`) makes the clip disputed (never a free lane: `vault_ai_brief`) and, under $100, its
-    `lane5` "review" — an unknown tier the pack picker never prefills free — its flags still read off the lane it
-    read (`read_lane5`); a $100 review clip keeps $100; no frames → nothing written, no Jev call, the frame
-    source's status."""
     import vault_ai_brief
     import vault_pack_picker
     free = _gold("free")
@@ -1137,7 +1023,7 @@ async def case_video_pass_review_and_no_frames():
     assert f["_jev"]["review"] == "no_720" and f["_flags_model"] == "jev" and vault_jev_flags.in_sync(f, ())
     assert f["_jev"]["read_lane5"] == "free" and vault_jev_flags.reading(f["_jev"]) is not None
     assert vault_pack_picker.price_tier(f) is None, "a review clip priced as a known free tier"
-    assert vault_ai_vision._flags_todo is not None and await vault_jev_pass.one(aid, 7001) is None   # current, in sync
+    assert vault_ai_vision._flags_todo is not None and await vault_jev_pass.one(aid, 7001) is None
     p100 = _clip([_gold("$100")] * 12)
     aid100 = await _seed(kind="video")
     with _FrameSeams(p100), _Collect(b"", [f for f, _ in p100], src="240", review="over_cap"):
@@ -1158,8 +1044,6 @@ async def case_video_pass_review_and_no_frames():
 
 
 def _mp4(w: int, h: int, secs: int = 12, rate: int = 4) -> bytes:
-    """A real clip (`rate` frames a second). A short one needs a real frame rate: at 4 fps the last of 12 seeks
-    into a 3 s clip lands past its last frame (11/12, a short set)."""
     import subprocess
     out = Path(tempfile.mkdtemp()) / "c.mp4"
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
@@ -1181,7 +1065,6 @@ class _HttpResp:
 
 
 class _FakeOF:
-    """The account's client (`http.get` per url) + `resolve_fresh` + posters, patched into vault_frames."""
 
     def __init__(self, media, bodies, posters=0):
         self.media, self.bodies, self.posters, self.gets = media, bodies, posters, []
@@ -1212,11 +1095,6 @@ class _FakeOF:
 
 
 async def case_video_frame_source():
-    """`collect_jev_video` (real ffmpeg): the 720p mp4 → 12 native frames, and the 400px scrub frames written
-    under the 240p url's storyboard hash; 720p over the cap → the 240p frames, `over_cap`; no 720p and no
-    `files.full` → 240p, `no_720`; both over the cap → posters, `poster_only`; a 720p 403 → the 240p,
-    `src_failed`; every mp4 403 → posters, `poster_only`, and with no posters either `fetch_failed` (retried); a
-    full storyboard is left alone."""
     import storyboard
     v720, v240 = _mp4(160, 96), _mp4(64, 40)
     u720, u240 = "https://cdn.test/files/a/720.mp4?sig=1", "https://cdn.test/files/a/240.mp4?sig=1"
@@ -1275,9 +1153,6 @@ async def case_video_frame_source():
 
 
 async def case_video_short_frame_set_never_priced():
-    """A source that lands fewer than 12 frames (ffmpeg exits 0 short) is not read: the next source is (`review`
-    src_failed); with every source short, the fullest set is read, `review` few_frames, and the clip lands in the
-    "review" lane (never priced free)."""
     import vault_pack_picker
     v720, v240 = _mp4(160, 96), _mp4(64, 40)
     u720, u240 = "https://cdn.test/files/s/720.mp4?sig=1", "https://cdn.test/files/s/240.mp4?sig=1"
@@ -1311,7 +1186,6 @@ async def case_video_short_frame_set_never_priced():
 
 
 async def _age_hold(aid: str, mid: int) -> None:
-    """Move a held clip's `failed_at` back past its backoff (`vault_jev_pass.retry_due`)."""
     async with get_session() as s:
         item = await s.get(VaultItem, (aid, mid))
         f = json.loads(item.ai_fields_json)
@@ -1323,10 +1197,6 @@ async def _age_hold(aid: str, mid: int) -> None:
 
 
 async def case_video_transient_source_retried():
-    """Frames read after a source failed briefly (`transient`) are not read and not stamped current: `fetch_failed`,
-    `_jev.retries` counted, no Jev call, the clip due again once its backoff passed (a sweep's visit before then
-    fetches nothing: `jev_retry_wait`); the RETRY_MAXth such visit reads them (the `review` reading stands, current).
-    A clean read clears the count; a real verdict (no_720) is read at once."""
     frames = _clip([_gold("free")] * 12)
     clip = [f for f, _ in frames]
     aid = await _seed(kind="video", fields={"description": "kept"})
@@ -1336,8 +1206,8 @@ async def case_video_transient_source_retried():
         f = await _fields(aid)
         assert res["status"] == "fetch_failed" and not res["ok"] and sm.client.calls == [], res
         assert f["_jev"]["retries"] == n and not rules.current(f) and f["description"] == "kept", f["_jev"]
-        assert 7001 not in await vault_jev_pass.clips_due(aid)   # inside its backoff
-        assert 7001 not in await vault_ai_vision._flags_todo(aid)   # one `sweep_due` for every sweep (W30 R7)
+        assert 7001 not in await vault_jev_pass.clips_due(aid)
+        assert 7001 not in await vault_ai_vision._flags_todo(aid)
         with _FrameSeams(frames) as sm, _Collect(b"", clip, transient=True) as col:
             res = await vault_jev_pass.one(aid, 7001, sweep=vault_jev_pass.Sweep())
         assert res["status"] == vault_jev_pass.RETRY_WAIT and col.clip_calls == 0 and sm.client.calls == [], res
@@ -1350,7 +1220,6 @@ async def case_video_transient_source_retried():
     assert rules.current(f) and f["_jev"]["review"] == "src_failed" and "retries" not in f["_jev"], f["_jev"]
     assert vault_jev_flags.reading(f["_jev"]) is not None and f["_flags_model"] == "jev"
     assert await vault_jev_pass.clips_due(aid) == set()
-    # one brief failure, then a clean read: the reading is the clean one, the count gone
     aid2 = await _seed(kind="video")
     with _FrameSeams(frames), _Collect(b"", clip, src="poster", review="poster_only", transient=True):
         assert (await vault_jev_pass.one(aid2, 7001))["status"] == "fetch_failed"
@@ -1358,7 +1227,6 @@ async def case_video_transient_source_retried():
         res = await vault_jev_pass.one(aid2, 7001)
     f2 = await _fields(aid2)
     assert res["ok"] and res["lane5"] == "free" and "retries" not in f2["_jev"] and rules.current(f2), f2["_jev"]
-    # a real verdict is read the first time
     aid3 = await _seed(kind="video")
     with _FrameSeams(frames), _Collect(b"", clip, src="240", review="no_720"):
         res = await vault_jev_pass.one(aid3, 7001)
@@ -1366,9 +1234,6 @@ async def case_video_transient_source_retried():
 
 
 async def case_video_held_reading_is_never_free():
-    """A clip with an old free reading (due again: a version bump) whose sources then fail briefly: its `_jev` is held
-    as review (old lane kept as `read_lane5`), so its stale flags price unknown (`price_tier` None), read disputed and
-    sit in no free lane, the tier column unknown; a $100 one stays $100."""
     import vault_ai_brief
     import vault_pack_picker
     import vault_scripts
@@ -1383,7 +1248,7 @@ async def case_video_held_reading_is_never_free():
     async with get_session() as s:
         it = await s.get(VaultItem, (aid, 7001))
         assert it.explicitness_tier is not None
-        f["_jev"]["v"] = "v7+old"   # a rules bump: due again
+        f["_jev"]["v"] = "v7+old"
         it.ai_fields_json = json.dumps(f)
         await s.commit()
     with _FrameSeams(frames) as sm, _Collect(b"", clip, src="poster", review="poster_only", transient=True):
@@ -1404,10 +1269,6 @@ async def case_video_held_reading_is_never_free():
 
 
 async def case_video_no_frames_retried_then_terminal():
-    """Every source failing briefly with no frame at all (no posters, the deadline): held (review, `retries`) and
-    retried; the RETRY_MAXth such visit gives up (`vault_jev_rules.gave_up`: its own status, not current, no lane read,
-    so no flags re-mapped) and no sweep fetches or reselects the clip again (a sweep's visit: `jev_gave_up`, neutral);
-    the item's own route (no sweep) may re-read it. A no-variant clip (DRM) still writes nothing."""
     import vault_pack_picker
     frames = _clip([_gold("free")] * 12)
     aid = await _seed(kind="video", fields={"description": "kept"})
@@ -1428,7 +1289,6 @@ async def case_video_no_frames_retried_then_terminal():
         res = await vault_jev_pass.one(aid, 7001, sweep=vault_jev_pass.Sweep())
     assert res["status"] == rules.GAVE_UP and not res["ok"] and col.clip_calls == 0, res
     assert res["status"] in vault_sweep.NEUTRAL
-    # the pre-F4 terminal stamp (status ok) reads the same
     legacy = {**f["_jev"], "status": "ok"}
     assert rules.gave_up({"_jev": legacy}) and not rules.current({"_jev": legacy})
     aid2 = await _seed(kind="video", fields={"description": "kept"})
@@ -1438,14 +1298,11 @@ async def case_video_no_frames_retried_then_terminal():
 
 
 async def case_jev_outage_stops_jev_for_the_sweep():
-    """`DOWN_AFTER` Jev call failures in a row (an outage) stop Jev for the rest of the sweep like the cap: every
-    sweep stops on the failure that makes the streak, no later still / clip fetched; a success in between resets
-    the count."""
     sw = vault_jev_pass.Sweep()
     for r in ({"status": "error", "call_failed": True},) * 2 + ({"ok": True, "status": "ok"},):
         sw.note(r)
     assert not sw.skip and sw.failed_in_row == 0
-    sw.note({"status": "error", "detail": "unreadable frame"})   # the item's image, not the call
+    sw.note({"status": "error", "detail": "unreadable frame"})
     assert sw.failed_in_row == 0
     clips = tuple(range(7301, 7307))
     aid = await _seed(kind="video", mids=clips)
@@ -1455,8 +1312,8 @@ async def case_jev_outage_stops_jev_for_the_sweep():
     async def down(account_id, frames, **k):
         calls.append(1)
         return vault_jev.JevResult(ok=False, status="error", detail="ConnectError: down", cost_millicents=7,
-                                   tok=0, call_failed=True)   # a call that failed after TypeSafe billed it
-    vault_jev.run_video, vault_ai_vision._FLAGS_CONCURRENCY = down, 1   # one at a time: "in a row" is exact
+                                   tok=0, call_failed=True)
+    vault_jev.run_video, vault_ai_vision._FLAGS_CONCURRENCY = down, 1
     try:
         with _Seams(*(lambda g: (g["rec"], g["nn"]))(_golden_with("resp"))), _Collect(_jpeg(576, 1024)) as col:
             vault_ai_vision._flags_running.add(aid)
@@ -1466,19 +1323,14 @@ async def case_jev_outage_stops_jev_for_the_sweep():
     prog = vault_ai_vision._flags_progress[aid]
     assert len(calls) == vault_jev_pass.DOWN_AFTER and col.clip_calls == vault_jev_pass.DOWN_AFTER, \
         (len(calls), col.clip_calls)
-    # the visit that makes the outage STOPS the sweep and says why (no silent skip of the rest; W30 R5)
     n = vault_jev_pass.DOWN_AFTER
     assert prog["done"] == n and prog["failed"] == n and prog["capped"] is False, prog
-    # the stopping visit's spend is counted too (W30 C6)
     assert prog["cost_millicents"] == 7 * n and prog.get("jev_cost_millicents") == 7 * n, prog
     assert "3 calls in a row" in prog["stop"]["message"] and "ConnectError: down" in prog["stop"]["message"], prog
     assert admission.JEV_VIDEO.busy == 0
 
 
 async def case_video_no_720_reads_full_first():
-    """No 720p rendition (probe 11-12: 3/30, natives 640x480 / 564x360, `files.full` the native file): `full` is
-    tried before the 240p; off `full` the reading is `review` no_720 only when its frames' short side < 480; off
-    the 240p (no `full`, or `full` over the cap) always no_720. A 720p clip never reaches `full` while 240 reads."""
     u240, ufull = "https://cdn.test/files/b/240.mp4?sig=1", "https://cdn.test/files/b/full.mp4?sig=1"
     v240, hi, lo = _mp4(64, 40), _mp4(640, 480, 3, 24), _mp4(564, 360, 3, 24)
     item = VaultItem(account_id="acc_nf", media_id=2, kind="video", duration_seconds=3)
@@ -1518,10 +1370,6 @@ async def case_video_no_720_reads_full_first():
 
 
 async def case_video_one_deadline():
-    """One absolute deadline per clip, set when `collect_jev_video` starts: the download + ffmpeg thread gets that
-    same deadline (not lane entry + budget), ffmpeg's timeout never runs past it, and a slow clip that the thread
-    still finishes is used, never thrown away as `fetch_failed` by an outer timer; the lane waits briefly (the
-    visit holds a vision slot meanwhile)."""
     import time
     import vault_stills
     t = time.monotonic()
@@ -1535,7 +1383,7 @@ async def case_video_one_deadline():
 
     def slow(client, media, dur, deadline):
         seen["deadline"] = deadline
-        time.sleep(max(0.0, deadline - time.monotonic()) + 0.3)   # finishes just past the budget
+        time.sleep(max(0.0, deadline - time.monotonic()) + 0.3)
         return vault_frames.JevFrames([_jpeg(160, 96)] * 12, "ok", src="720")
     vault_frames.JEV_VIDEO_TIMEOUT_S, vault_frames._jev_frames_sync = 1, slow
     try:
@@ -1543,7 +1391,7 @@ async def case_video_one_deadline():
             real = vault_stills.resolve_fresh
 
             async def fresh(*a, **k):
-                await asyncio.sleep(0.3)   # the re-sign eats into the same budget
+                await asyncio.sleep(0.3)
                 return await real(*a, **k)
             vault_stills.resolve_fresh = fresh
             t0 = time.monotonic()
@@ -1556,9 +1404,6 @@ async def case_video_one_deadline():
 
 
 async def case_sweep_clips_queue_for_the_lane():
-    """More clips than `JEV_VIDEO` slots in one sweep: every clip waits for its lane slot BEFORE its vision slot
-    (`vault_jev_pass.clip_lane`) — none fails "lane full" however short the lane's own wait — the frame reads never
-    exceed the lane's cap, photos (walked after the newer clips) are visited while clips still queue, no slot leaks."""
     import threading
     import time
     g = _golden_with("resp")
@@ -1584,12 +1429,11 @@ async def case_sweep_clips_queue_for_the_lane():
                 live[0] -= 1
 
     async def photo(account_id, item, raw, want=1):
-        seen["photo_during_clips"] |= live[0] > 0 or bool(admission.JEV_VIDEO._waiters)   # clips still queued
+        seen["photo_during_clips"] |= live[0] > 0 or bool(admission.JEV_VIDEO._waiters)
         return vault_frames.Collected([vault_ai_vision.vision.img_data_url(_jpeg(576, 1024))], "ok")
     saved = (vault_frames._jev_frames_sync, vault_frames.collect, admission.JEV_VIDEO.wait_s,
              vault_ai_vision._FLAGS_CONCURRENCY, admission.JEV_VIDEO.rejected)
     vault_frames._jev_frames_sync, vault_frames.collect = slow, photo
-    # any lane wait inside a visit fails; one sweep slot past the lane's: a queued clip holding it would stall photos
     admission.JEV_VIDEO.wait_s, vault_ai_vision._FLAGS_CONCURRENCY = 0.01, cap + 1
     try:
         with _Seams(g["rec"], g["nn"]), _FakeOF({"duration": 12, "videoSources": {"720": "https://cdn.test/v.mp4"}}, {}):
@@ -1613,9 +1457,6 @@ async def case_sweep_clips_queue_for_the_lane():
 
 
 async def case_video_previews_first():
-    """D58: a clip with OF's preview set reads those (src `preview`, no mp4 GET at all; review only when long); some of them
-    failing → still read, `transient` (retried); one preview on a 12 s clip → the mp4 ladder; one on a 2 s clip →
-    the preview. `previews_enough` / `preview_count` table."""
     v720, v240 = _mp4(160, 96), _mp4(64, 40)
     u720, u240 = "https://cdn.test/files/p/720.mp4?sig=1", "https://cdn.test/files/p/240.mp4?sig=1"
 
@@ -1630,8 +1471,7 @@ async def case_video_previews_first():
     with _FakeOF(media(9), {u720: v720, u240: v240}, posters=5) as of:
         got = await vault_frames.collect_jev_video("acc_pv", item)
     assert got.src == "preview" and len(got.frames) == 5 and got.transient and of.gets == [], got[1:]
-    assert got.review == "few_frames", got[1:]   # kept after RETRY_MAX only as a review reading
-    # a sweep's mp4 slot (`lane_ahead`) is handed back on a preview read, not held through Jev's call
+    assert got.review == "few_frames", got[1:]
     busy0 = admission.JEV_VIDEO.busy
     async with vault_frames.lane_ahead("t"):
         with _FakeOF(media(9), {u720: v720, u240: v240}, posters=9) as of:
@@ -1645,7 +1485,6 @@ async def case_video_previews_first():
     with _FakeOF(media(1, dur=2), {u720: v720, u240: v240}, posters=1) as of:
         got = await vault_frames.collect_jev_video("acc_pv", short)
     assert got.src == "preview" and len(got.frames) == 1 and of.gets == [], (got[1:], of.gets)
-    # a long clip read off previews is `review` long (9 frames over minutes can miss the act); env-tunable
     long_item = VaultItem(account_id="acc_pv", media_id=4, kind="video", duration_seconds=221)
     for env, dur, want in ((None, 121, "long"), (None, 120, None), ("300", 221, None), ("300", 301, "long"),
                            ("junk", 221, "long"), ("-5", 100, None)):
@@ -1663,7 +1502,7 @@ async def case_video_previews_first():
     unknown = VaultItem(account_id="acc_pv", media_id=5, kind="video", duration_seconds=None)
     with _FakeOF(media(9, dur=0), {u720: v720, u240: v240}, posters=9) as of:
         got = await vault_frames.collect_jev_video("acc_pv", unknown)
-    assert got.src == "preview" and got.review == "long", got[1:]   # unknown length: may be long (W30 F12)
+    assert got.src == "preview" and got.review == "long", got[1:]
     for n, dur, want in ((0, 5, False), (1, 12, False), (2, 12, False), (3, 12, True), (9, 3000, True),
                          (1, 2, True), (1, 3, True), (2, 4, False), (1, 0, False)):
         assert vault_frames.previews_enough(media(n, dur), dur) is want, (n, dur)
@@ -1672,8 +1511,6 @@ async def case_video_previews_first():
 
 
 async def case_preview_stills_spread_and_partial():
-    """`_poster_stills` (real) asks for `want` previews spread over the set, the clip's end included; the describe
-    (`_collect_video`) takes a preview read only when enough of them landed, else it goes on to the mp4."""
     import vault_stills
     asked, ok = [], set()
 
@@ -1695,17 +1532,16 @@ async def case_preview_stills_spread_and_partial():
         got = await vault_frames._poster_stills("acc_sp", 7, media, 6, "")
         assert sorted(asked) == vault_frames.spread(9, 6) and 8 in asked and len(got.images) == 6, asked
         asked.clear()
-        ok.clear(); ok.add(0)   # 1 of 6 landed: not a reading of the clip → the mp4 path (none here: posters)
+        ok.clear(); ok.add(0)
         media["videoSources"] = {"240": "https://cdn.test/v/240.mp4?sig=1"}
         got = await vault_frames._collect_video("acc_sp", 7, media, None, 6)
         assert warmed == ["https://cdn.test/v/240.mp4?sig=1"], warmed
         warmed.clear()
-        ok.update({3, 5})       # 3 landed: enough
+        ok.update({3, 5})
         got = await vault_frames._collect_video("acc_sp", 7, media, None, 6)
         assert len(got.images) == 3 and warmed == [], (len(got.images), warmed)
     finally:
         vault_stills.bytes_for, vault_stills.resolve_fresh, vault_frames.warm_one_sync = saved
-    # previews a Jev pass already stored answer off disk: no re-sign (OF GET) first (W30 F13)
     import tempfile
     from pathlib import Path
     signed = []
@@ -1727,9 +1563,8 @@ async def case_preview_stills_spread_and_partial():
             vault_stills.POSTER_DIR, vault_stills.resolve_fresh = o_dir, o_fresh
 
 
+# a rename across dirs raises EXDEV in the container (measured on AE): _publish_scrub must not rename across them
 def case_publish_scrub_across_filesystems():
-    """`_publish_scrub` never renames across directories: in the container the temp dir and the storyboard store
-    are different filesystems (EXDEV, measured on AE). A rename between two dirs raises here as it did there."""
     import errno
     import os
     import tempfile
@@ -1756,8 +1591,6 @@ def case_publish_scrub_across_filesystems():
 
 
 def case_video_cap_env_and_budget():
-    """`JEV_VIDEO_CAP_BYTES` env overrides the 50 MB cap (unset / junk / <= 0 → default); the per-clip budget
-    covers a cap-sized file at ~1 MB/s (240 s at 50 MB, as before) and stays bounded."""
     import os
     saved = os.environ.pop("JEV_VIDEO_CAP_BYTES", None)
     try:

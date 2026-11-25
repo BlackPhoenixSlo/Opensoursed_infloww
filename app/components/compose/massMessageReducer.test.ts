@@ -22,7 +22,6 @@ const tpl = (over: Partial<PickedTemplate> = {}): PickedTemplate => ({
   source: "local", text: "t", displayText: "t", mediaCount: 0, price: 0, lockedText: false,
   isWelcome: false, media: [], previews: [], taggedUsers: [], ...over,
 });
-/** Every audience field, comparable. */
 const audience = (s: MassForm) => ({
   includes: sorted(s.includes), excludes: sorted(s.excludes), smartInclude: sorted(s.smartInclude),
   smartExclude: sorted(s.smartExclude), seededFor: s.seededFor,
@@ -73,11 +72,6 @@ describe("massMessageReducer — audience", () => {
     expect([sorted(s.smartInclude), sorted(s.smartExclude)]).toEqual([inc, exc]);
   });
 
-  // The audience has ONE owner and ONE reset: each of these is a single
-  // reducer step that leaves every audience field at the default (lists,
-  // Smart Lists, the MASSDMEXCLUDE seed). A second reset path — an effect, a
-  // hook holding its own picks — has nothing left to reset: the composer reads
-  // only the segment list from useSmartLists, and the step below did it all.
   const picked = (over: Partial<MassForm> = {}) => run(form(over),
     { type: "toggleInclude", id: "L" }, { type: "toggleExclude", id: "X" },
     { type: "toggleSmartInclude", id: 1 }, { type: "toggleSmartExclude", id: 2 },
@@ -92,9 +86,6 @@ describe("massMessageReducer — audience", () => {
     expect(audience(massMessageReducer(s, action))).toEqual(DEFAULT_AUDIENCE);
   });
 
-  // #19-1: setAccount delegates to audience/audienceReducer, whose first pick
-  // (null → A) keeps what was clicked. Before, compose reset the audience (and
-  // dropped media / previews / tags) on null → A too.
   it("CHANGED: the first pick (null → A) is no switch: the audience and media stay", () => {
     const s = run(form({ accountId: null, attached: [media(1)], previewCount: 1, taggedCreators: [tag(1)] }),
       { type: "toggleInclude", id: "L" }, { type: "toggleExclude", id: "X" }, { type: "toggleSmartInclude", id: 1 });
@@ -116,7 +107,6 @@ describe("massMessageReducer — audience", () => {
     expect(massMessageReducer(s, { type: "setAccount", id: "acc1" })).toBe(s);
     const on = run(s, { type: "setAllModels", on: true }, { type: "cycleSystem", id: "recent" });
     expect(massMessageReducer(on, { type: "setAllModels", on: true })).toBe(on);
-    // All-models on dropped the account already: its implied null is no reset either.
     expect(massMessageReducer(on, { type: "setAccount", id: null })).toBe(on);
   });
 
@@ -135,7 +125,6 @@ describe("massMessageReducer — audience", () => {
     expect([...s.excludes]).toEqual(["M"]);
     s = run(s, { type: "toggleExclude", id: "M" }, { type: "seedExclude", accountId: "acc1", listId: "M" });
     expect(s.excludes.size).toBe(0);
-    // A → all-models → back to A: the reset re-arms the seed.
     s = run(s, { type: "setAllModels", on: true }, { type: "setAllModels", on: false },
       { type: "setAccount", id: "acc1" }, { type: "seedExclude", accountId: "acc1", listId: "M" });
     expect([...s.excludes]).toEqual(["M"]);
@@ -191,8 +180,6 @@ describe("massMessageReducer — text, template, gifs, fan-out", () => {
     expect([s.gifFailures, s.progress]).toEqual([[{ id: "g2", error: "boom" }], null]);
     expect(validateMass(s, ctx())).toBe(MASS_ALREADY_SENT);
   });
-  // Same as the post (#13-1): once a model sent it, an edit would reach only
-  // the failed models, so the content is locked until Start over.
   const partial = form({ allModels: true, accountId: null, results: [ok("a"), bad("b")] });
   it.each<[string, MassAction]>([
     ["text", fieldAction("text", "edited")],
@@ -216,9 +203,6 @@ describe("massMessageReducer — text, template, gifs, fan-out", () => {
   ])("%s", (_n, actions, want) => {
     expect(run(partial, ...actions)).toMatchObject(want);
   });
-  // A round in flight (round 1: no results yet): its body is built, so an
-  // edit would show content it doesn't send, and all-models off would land
-  // its results in one-account mode.
   const inFlight = form({ allModels: true, accountId: null, progress: { done: 0, total: 2 } });
   it.each<[string, MassAction]>([
     ["text", fieldAction("text", "edited")],
@@ -251,7 +235,8 @@ describe("validateMass — the one check (button and mutation)", () => {
     ["a ready form", {}, {}, null],
     ["a spent form (broadcast landed, a GIF send failed) first", { gifFailures: [], text: "" }, { sensitive: true }, MASS_ALREADY_SENT],
     ["sensitive word first", { text: "" }, { sensitive: true }, SENSITIVE_BLOCK_MESSAGE],
-    ["no account", { accountId: null }, {}, "Pick an account"],
+    ["no account", { accountId: null }, { broadcastCount: 0 }, "Pick an account"],
+    ["an account that may not send (a forced Fansly id)", {}, { broadcastCount: 0 }, "Pick an account"],
     ["all-models with no model included", { allModels: true, accountId: null }, { broadcastCount: 0 }, "No models picked for broadcast"],
     ["BUG: the last failed model excluded after a round (was: No active models)",
       { allModels: true, accountId: null, results: [ok("a"), bad("b")] }, { broadcastCount: 0 },

@@ -34,24 +34,18 @@ import {
 import { errText } from "@/lib/errText";
 import { relay } from "@/lib/relay";
 
-/** One account's Full AI config query key: Do mode's full_ai_config apply invalidates it on 200 (spec 03c), and the
- *  page's config read below refetches. */
 export const fullAiConfigKey = (accountId: string) => ["full-ai-config", accountId] as const;
 
 export function useFullAiConfig(accountId: string, state: TestChatState, dispatch: Dispatch<TestChatAction>) {
-  // The handlers read the newest state (a click lands after the render that enabled it).
   const ref = useRef(state);
   useEffect(() => { ref.current = state; }, [state]);
 
-  // Always read fresh (no cache kept off the page, no stale window): the reducer, not the cache, is the page's copy.
   const q = useQuery({
     queryKey: fullAiConfigKey(accountId),
     queryFn: () => relay.get<ConfigBody>(`/admin/full-ai/config?account_id=${encodeURIComponent(accountId)}`, { accountId }),
     staleTime: 0, gcTime: 0, retry: false, refetchOnWindowFocus: false,
   });
   const { data, error, refetch } = q;
-  // The answer already dispatched: the first is `loaded`, each later one `externalDraft` (the reducer drops an old rev).
-  // During Reload the answer is Reload's own `loaded` (dispatched below even when the body is unchanged), never both.
   const seen = useRef<ConfigBody | null>(null);
   const reloading = useRef(false);
   useEffect(() => {
@@ -61,7 +55,6 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
     if (reloading.current) return;
     dispatch(first ? { type: "loaded", body: data } : { type: "externalDraft", body: data });
   }, [data, dispatch]);
-  // A read that lands while a write of ours is out is held by the reducer and offered again once the write settles.
   useEffect(() => {
     if (error) dispatch({ type: "configFailed", errors: [`Couldn't read the Full AI config: ${errText(error, "Request failed")}`] });
   }, [error, dispatch]);
@@ -79,7 +72,6 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
     }
   }, [refetch, dispatch]);
 
-  /** PUT `draft` on `rev` (the reducer already marks it storing); true once stored. */
   const store = useCallback(async (draft: FullAiConfig, rev: number): Promise<boolean> => {
     try {
       const body = await relay.put<ConfigBody>("/admin/full-ai/config/draft", { account_id: accountId, draft, rev }, { accountId });
@@ -91,8 +83,6 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
     }
   }, [accountId, dispatch]);
 
-  /** Store `draft` as the draft on `rev` (default the page's; the JSON modal passes the rev it opened at, so a draft
-   *  stored meanwhile answers 409); true once stored. */
   const putDraft = useCallback(async (draft: FullAiConfig, rev?: number): Promise<boolean> => {
     const s = ref.current;
     if (!canEdit(s)) return false;
@@ -101,7 +91,6 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
     return store(draft, rev ?? s.rev);
   }, [dispatch, store]);
 
-  /** Keep mine: the page's draft stored on the applied draft's rev (not while the photo request is out: `keepMineSave`). */
   const keepMine = useCallback(() => {
     const put = keepMineSave(ref.current);
     if (!put) return;
@@ -109,10 +98,8 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
     dispatch({ type: "saveDraft" });
     void store(put.draft, put.rev);
   }, [dispatch, store]);
-  /** Take theirs: the applied draft replaces the page's edit (nothing to write). */
   const takeTheirs = useCallback(() => dispatch({ type: "takeTheirs" }), [dispatch]);
 
-  /** One control's change, stored at once. */
   const edit = useCallback((patch: Partial<FullAiConfig>) => {
     const d = ref.current.draft;
     if (d) void putDraft({ ...d, ...patch });
@@ -130,8 +117,6 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
     }
   }, [accountId, dispatch]);
 
-  /** Store `checkpoint` straight in (the checkpoint JSON) on `rev` (as `putDraft`); the old one becomes `previous`.
-   *  True once stored. */
   const putCheckpoint = useCallback(async (checkpoint: FullAiConfig, rev?: number): Promise<boolean> => {
     const s = ref.current;
     if (!canEdit(s)) return false;
@@ -164,17 +149,11 @@ export function useFullAiConfig(accountId: string, state: TestChatState, dispatc
 
   const save = useCallback(() => void commit("save"), [commit]);
   const rollback = useCallback(() => void commit("rollback"), [commit]);
-  /** The Writer select's options (the GET's `writer_models`; empty until it answers). */
   const writerModels = data?.writer_models ?? [];
-  /** Writer model → provider (the GET's `writer_providers`; undefined until it answers). */
   const writerProviders = data?.writer_providers;
-  /** Provider → name (the GET's `provider_labels`). */
   const providerLabels = data?.provider_labels;
-  /** Provider → {set} on the owner's keys (the GET's `owner_keys`; undefined until it answers, null on a failed read). */
   const ownerKeys = data?.owner_keys;
-  /** Every key the JSON takes (the GET's `reference`; empty until it answers). */
   const reference = data?.reference ?? [];
-  /** The controls' server constants (the GET's `limits`; null until it answers). */
   const limits = data?.limits ?? null;
   return { edit, putDraft, putCheckpoint, putAudience, save, rollback, reload, keepMine, takeTheirs, writerModels, writerProviders, providerLabels, ownerKeys, reference, limits };
 }

@@ -4,8 +4,6 @@ import { makeSlotGate } from "./slotGate";
 
 type Op = readonly ["acquire" | "release", string];
 
-/** Drive one gate through `ops`; a token is one grant callback per name. Returns who was granted, in order, and the
- *  most slots held at once (a slot is held from its grant to its first release). */
 function drive(limit: number, ops: readonly Op[]) {
   const gate = makeSlotGate(limit);
   const tokens = new Map<string, () => void>();

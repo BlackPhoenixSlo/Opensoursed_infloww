@@ -1,14 +1,3 @@
-"""
-Prove the Fansly WS pump translates wsv3 frames into the event the relay's
-transcoder already routes on — offline, against the frames captured in
-capture/RECIPES.md. No network, no socket.
-
-The pump's whole value is that `event_transcoder.transcode` needs no edit, and
-that rests on two things this file pins: the triple-decode is done right, and
-the yielded key is exactly `api2_chat_message`.
-
-    ../venv/bin/python test_ws_translate.py
-"""
 from __future__ import annotations
 
 import json
@@ -27,7 +16,6 @@ class _FakeSession:
 
 
 class _FakeClient:
-    """Just the surface FanslyWebSocket reads off a client."""
     session = _FakeSession()
     account_id = ACCOUNT_ID
     user_agent = _FakeSession.user_agent
@@ -44,7 +32,6 @@ class _FakeClient:
 
 
 def _frame(service_id: int, event: dict) -> dict:
-    """Build a real wsv3 t:10000 frame — triple-encoded, like the wire."""
     return {"t": 10000,
             "d": json.dumps({"serviceId": service_id,
                              "event": json.dumps(event)})}
@@ -55,7 +42,6 @@ def check(cond, label, fails):
         fails.append(label)
 
 
-# ── the captured frames (RECIPES §"Captured events") ────────────────────
 
 INBOUND = {"type": 1, "message": {
     "type": 1, "senderId": FAN_ID,
@@ -93,7 +79,6 @@ def main(argv) -> int:
     fails: list[str] = []
     ws = FanslyWebSocket(_FakeClient())
 
-    # ── the inbound message: the whole point of the pump ────────────────
     ev = ws._translate(_frame(5, INBOUND))
     check(ev is not None, "inbound message translates at all", fails)
     if ev:
@@ -104,17 +89,14 @@ def main(argv) -> int:
         check(m["fromUser"]["id"] == FAN_ID,
               "fromUser.id is the FAN — this is what makes direction 'in'", fails)
         check(m["text"] == "hey there", "text carried", fails)
-        # Snowflakes exceed 2^53; a float/int here would corrupt the id.
         check(isinstance(m["id"], str) and isinstance(m["fromUser"]["id"], str),
               "ids are STRINGS (snowflakes exceed 2^53)", fails)
         check(m["mediaCount"] == 1,
               "attachment counted even though the frame carries no accountMedia[]", fails)
-        # createdAt is float epoch SECONDS on this socket, not ms.
         check(m["createdAt"].startswith("2026-"),
               f"createdAt parsed as epoch seconds (got {m['createdAt']})", fails)
     print("inbound: triple-decoded and reshaped into api2_chat_message")
 
-    # ── the outbound echo passes through; the transcoder decides direction ──
     ev = ws._translate(_frame(5, OUTBOUND_ECHO))
     check(ev is not None, "outbound echo is NOT dropped by the pump", fails)
     if ev:
@@ -122,10 +104,8 @@ def main(argv) -> int:
               "echo's fromUser.id == us, so transcode marks it 'out'", fails)
     print("outbound echo: passed through — direction is the transcoder's call")
 
-    # ── duplicates are normal on this socket ───────────────────────────
     dup = ws._translate(_frame(5, INBOUND))
     check(dup is None, "a repeated frame is deduped on (serviceId, type, id)", fails)
-    # ...and the dedupe ring must stay bounded on a pump that lives for weeks.
     for i in range(700):
         ws._translate(_frame(5, {"type": 1, "message": {
             "id": f"9512285817054{i:05d}", "senderId": FAN_ID,
@@ -134,7 +114,6 @@ def main(argv) -> int:
           f"dedupe ring stays bounded (got {len(ws._seen)})", fails)
     print(f"dedupe: duplicates dropped, ring bounded at {len(ws._seen)}")
 
-    # ── frames we don't translate yield NOTHING, never a raw envelope ───
     for label, sid, frame in (("typing announce", 5, TYPING),
                               ("read receipt", 4, READ_RECEIPT),
                               ("presence", 8, PRESENCE)):
@@ -149,7 +128,6 @@ def main(argv) -> int:
           "a malformed envelope is dropped, not raised", fails)
     print("untranslated frames: dropped silently, no raw envelopes escape")
 
-    # ── the token comes off the session, never from me() ────────────────
     check(ws._read_token() == "SECRET-TOKEN", "token read from the session", fails)
 
     class _NoToken:

@@ -1,8 +1,3 @@
-/**
- * Details' fan table over the relay's link_metrics fans read (synthetic fans): the "Since claim / Lifetime" toggle,
- * Infloww's columns and summary row, the link figures over the since-claim spend, the claim date (or first seen),
- * and "—" where a mode has no figure for a fan.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -12,7 +7,6 @@ vi.mock("@/lib/relay", async (importOriginal) => {
   return { ...mod, relay: { ...mod.relay, get: vi.fn(), put: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() } };
 });
 
-/** Function permissions the role denies (`useActionAllowed`); none unless a case adds one. */
 const denied = vi.hoisted(() => new Set<string>());
 vi.mock("@/components/shell/useGrantedPages", () => ({ useActionAllowed: (action: string) => !denied.has(action) }));
 
@@ -52,7 +46,6 @@ const FANS: LinkFans = {
       lifetime: { total_cents: 2000, subs_cents: 0, posts_cents: 0, messages_cents: 0, streams_cents: 0, tips_cents: 2000 },
     }),
     fan(70000003, { lifetime: { total_cents: 0, subs_cents: 0, posts_cents: 0, messages_cents: 0, streams_cents: 0, tips_cents: 0 } }),
-    // OnlyFans sent no subscribedOnData: no claim date, no figures.
     fan(70000004, { subscribe_at: null, since: null, lifetime: null }),
   ],
   ledger_since: "2026-08-20T00:00:00Z",
@@ -87,9 +80,7 @@ describe("OfferClaimers", () => {
     await waitFor(() => expect(rows()).toHaveLength(4));
     expect(screen.getByRole("radio", { name: "Since claim" }).getAttribute("aria-checked")).toBe("true");
     expect(cells(0)).toEqual(["Synth Fan 70000001 @synth70000001", "Sep. 02, 2026", "$54", "$0", "$38", "$15", "$0", "$0"]);
-    // No display name: the id.
     expect(cells(1)[0]).toBe("#70000002 @synth70000002");
-    // No claim date from OnlyFans: first seen, and "—" rather than $0.
     expect(cells(3).slice(1)).toEqual(["Sep. 03, 2026 (first seen)", "—", "—", "—", "—", "—", "—"]);
     expect(sum()).toEqual(["Total", "$74", "$0", "$38", "$15", "$0", "$20"]);
     expect(metrics()).toBe("Earnings $74 · Fans who spent 2 · Spend/Claim 66.67%");
@@ -106,7 +97,6 @@ describe("OfferClaimers", () => {
     expect(cells(3).slice(2).every((c) => c === "—")).toBe(true);
     expect(sum()).toEqual(["Total", "$119", "$0", "$60", "$39", "$0", "$20"]);
     expect(document.querySelector("[data-caveat]")?.textContent).toMatch(/lifetime totals \(net\).*as read Oct\. 18, 2026/);
-    // The link's figures stay the since-claim ones (they are the list's).
     expect(metrics()).toBe("Earnings $74 · Fans who spent 2 · Spend/Claim 66.67%");
   });
 

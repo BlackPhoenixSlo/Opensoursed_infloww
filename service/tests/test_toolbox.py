@@ -1,34 +1,5 @@
 #!/usr/bin/env python3
-"""Toolbox (`toolbox.call`, `toolbox_decide`, `report_files`; docs/plans/ultra-mode/issues/04-toolbox.md,
-05-mcp-server.md) on the two-Agency bench, through the real app in-process.
-
-Cases:
-  case_identity_isolated_both_ways — inside a real outer request (B's cookie): an inner call as A's token
-                                     sees A, one without creds is a 401 (never B), one with the outer's own
-                                     creds sees B; the outer user is B after each.
-  case_every_tool_runs_as_owner    — each v1 read tool answers 200 for A's own Creator, open_url set.
-  case_cross_agency_refused        — A's token never reads Creator B: by id per tool (403/400), by name in a
-                                     recipe (400), and the list tools leave it out; an unknown id is refused.
-  case_not_nude                    — vault_search not_nude: only a current Jev "free" reading, body answers "n", no toy, no bare region flag
-  case_current_sql                 — vault_jev_rules.current_sql agrees with current() row by row
-                                     (photo, or a clip with its frames); no / old / failed / review / toy out.
-  case_args_refused                — unknown key, missing id, limit over 30: 422 per field, no request.
-  case_send_refused                — an effect="send" tool: 403, no request sent.
-  case_shaping_limits              — 50 rows / reports 200, 500-char strings, ~24k cap (halving, then 413),
-                                     row_count + truncated, data_only wrap, error shape.
-  case_open_url_host               — X-Forwarded-Host / APP_PUBLIC_URL, never Host; bad host → bare path.
-  case_client_address_passed       — the inner request sees the caller's address, not 127.0.0.1.
-  case_report_file_scoped          — report_file: download for the creating user (token or cookie) only,
-                                     404 to the other Agency, 401 without creds, 404 after 15 min.
-  case_report_file_refused_keeps_own — a put refused Full drops none of the caller's files; per-user bytes cap.
-  case_report_file_caps            — per-user 10 / 20 MB, global 50 / 100 MB: the caller's own oldest file
-                                     goes, never another user's (else Full, 429); one file over 20 MB → 413.
-
-Seeded straight into the temp DB; no network.
-
-Run: ./venv/bin/python service/tests/test_toolbox.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -88,8 +59,6 @@ def _status(out) -> int:
     return out["error"]["status"] if "error" in out else 200
 
 
-# Throwaway routes on this process's app object only (the spike's pattern): who the inner request is,
-# what address it comes from, and an outer route that makes an inner call mid-request.
 async def _whoami(request: Request):
     u = auth.get_request_user()
     return {"user": u.username if u else None}
@@ -113,7 +82,6 @@ async def _outer(request: Request):
 
 @contextlib.contextmanager
 def _allowed(*tools):
-    """These throwaway tools' routes on the token allowlist (token_auth reads td.TOOLS) while inside."""
     saved = td.TOOLS
     td.TOOLS = saved + tools
     try:
@@ -140,7 +108,6 @@ def case_identity_isolated_both_ways() -> None:
 
 
 def _a_page() -> str:
-    """A bio page of Agency A (no Creator: no OnlyFans read), made by A's own cookie."""
     r = A.post("/admin/bio-pages", json={"username": f"a_page_{len(_PAGES)}", "display_name": "A"})
     assert r.status_code == 201, r.text
     _PAGES.append(r.json()["profile"]["id"])
@@ -156,7 +123,7 @@ def case_every_tool_runs_as_owner() -> None:
             "describe_all_plan": {"account_id": CA}, "automation_kinds": {}, "automation_rules_list": {"account_id": CA}, "bio_pages_list": {},
             "report_catalogue": {}, "report_run": {"recipe": {"dataset": "sales", "window": WEEK}},
             "report_file": {"recipe": {"dataset": "sales", "window": WEEK}}, "bio_page_get": {"pid": _a_page()}}
-    reads = {n for n, t in BY_NAME.items() if t.effect == "read"}  # writes: test_toolbox_writes.py
+    reads = {n for n, t in BY_NAME.items() if t.effect == "read"}
     assert set(args) == reads, reads ^ set(args)
     for name, a in args.items():
         out = _call(name, a)
@@ -182,7 +149,6 @@ def case_cross_agency_refused() -> None:
     assert CB not in str(_call("stats_per_model")) and CB not in str(_call("automation_rules_list"))
     sales = _call("report_run", {"recipe": {"dataset": "sales", "window": WEEK, "metrics": ["gross"]}})
     assert "creator_b" not in str(sales) and "creator_a" in str(sales), sales
-    # and the other way: B's token never sees A
     assert _status(_call("vault_search", {"account_id": CA}, CREDS_B)) == 403
     assert [c["id"] for c in _call("creators_list", {}, CREDS_B)["accounts"]] == [CB]
 
@@ -197,7 +163,7 @@ _FLAGS_CLEAN = {"underwear_visible": True, "vulva_vis": "covered", "breasts_vis"
 
 def case_not_nude() -> None:
     clip = {"kind": "video", "vv": vault_jev_rules.VIDEO_VERSION, "frames": []}
-    rows = {  # media id → (kind, ai_fields_json, not nude?)
+    rows = {
         8801: ("photo", _jev(), True),
         8802: ("video", _jev(**clip), True),
         8803: ("photo", _jev("$10"), False),
@@ -208,12 +174,9 @@ def case_not_nude() -> None:
         8808: ("video", _jev(kind="video", vv="old", frames=[]), False),
         8809: ("photo", {"description": "x"}, False),
         8810: ("photo", None, False),
-        # W30 F1: a body answer not "n", or a region flag bare (an operator lock), is not "not nude".
         8811: ("photo", _jev(crotch_bare="unsure"), False),
         8812: ("photo", {**_jev(), "breasts_vis": "bare"}, False),
         8813: ("photo", {**_jev(), "breasts_vis": "covered", "vulva_vis": "not_in_frame"}, True),
-        # W30 F1 r2: disputed (`vault_ai_brief.is_disputed`) is never "not nude": an unsettled contradiction
-        # (fully_nude yet a garment, nothing bare) and a row carrying the settled marker.
         8814: ("photo", {**_jev(), **_FLAGS_CLEAN, "clothing_state": "fully_nude"}, False),
         8815: ("photo", {**_jev(), "_settled": ["dressed_but_bare"]}, False),
         8816: ("photo", {**_jev(), **_FLAGS_CLEAN, "clothing_state": "lingerie_on"}, True),
@@ -229,7 +192,6 @@ def case_not_nude() -> None:
     asyncio.run(seed())
     got = {r["id"] for r in _call("vault_search", {"account_id": CA, "query": "nudetest", "not_nude": True})["data_only"]["list"]}
     assert got == {m for m, (_, _, ok) in rows.items() if ok}, got
-    # newest first by media id: SQL page 8816, 8814 (Python-vetoed), 8813 → one shown, hasMore stays true
     short = _call("vault_search", {"account_id": CA, "query": "nudetest", "not_nude": True, "limit": 2})["data_only"]
     assert [r["id"] for r in short["list"]] == [8816] and short["hasMore"] is True, short
     every = {r["id"] for r in _call("vault_search", {"account_id": CA, "query": "nudetest"})["data_only"]["list"]}
@@ -237,7 +199,6 @@ def case_not_nude() -> None:
 
 
 def case_current_sql() -> None:
-    """vault_jev_rules.current (Python) and current_sql (the listing's SQL) agree, row by row."""
     clip = {"kind": "video", "vv": vault_jev_rules.VIDEO_VERSION, "frames": []}
     blobs = [_jev(), _jev("$10"), _jev(**clip), _jev(v="v7"), _jev(status="failed"), _jev(kind="video"),
              _jev(kind="video", vv="old", frames=[]), _jev(kind="video", vv=vault_jev_rules.VIDEO_VERSION),
@@ -309,13 +270,13 @@ def case_shaping_limits() -> None:
     assert "row_count" not in out["data_only"], out.keys()
     out = td.shape_result(lst, 200, {"items": [{"s": "x" * 600}], "note": "y" * 900})
     assert out["items"][0]["s"] == "x" * 500 + "…" and len(out["note"]) == 501, out
-    assert out["truncated"] is True and out["row_count"] == 1, out  # a clipped string is a cut result
+    assert out["truncated"] is True and out["row_count"] == 1, out
     one = td.Tool("o", "o", "GET", "/x", td.NoArgs, "read")
     out = td.shape_result(one, 200, {"a": {"b": ["z" * 501]}})
-    assert out["a"]["b"][0] == "z" * 500 + "…" and out["truncated"] is True, out  # nested, no rows list
+    assert out["a"]["b"][0] == "z" * 500 + "…" and out["truncated"] is True, out
     assert "truncated" not in td.shape_result(one, 200, {"a": "z" * 500}), "nothing cut, nothing claimed"
     out = td.shape_result(keep, 200, {"list": [{"id": 1}], "hasMore": True})
-    assert out["truncated"] is True and out["row_count"] == 1, out  # upstream says there is more
+    assert out["truncated"] is True and out["row_count"] == 1, out
     assert td.shape_result(keep, 200, {"list": [{"id": 1}], "hasMore": False})["truncated"] is False
     out = td.shape_result(lst, 200, {"items": [{"s": "x" * 499, "t": "z" * 499} for _ in range(50)]})
     assert td._size(out) <= td.MAX_CHARS + 100 and len(out["items"]) < 50 and out["truncated"] is True
@@ -346,14 +307,12 @@ def case_open_url_host() -> None:
         assert _call("creators_list", {}, fwd)["open_url"] == "https://agency.example.org/creators"
     finally:
         os.environ.pop("APP_PUBLIC_URL")
-    # Through a real request whose Host is the relay's: the public host comes from X-Forwarded-Host.
     r = B.get("/admin/zz-toolbox/outer", params={"inner": "self"},
               headers={"Host": "relay.internal:8000", "X-Forwarded-Host": "app.example.com",
                        "X-Forwarded-Proto": "https"})
     assert r.json()["inner"]["open_url"] == "https://app.example.com/creators", r.json()
     r = B.get("/admin/zz-toolbox/outer", params={"inner": "self"}, headers={"Host": "relay.internal:8000"})
     assert r.json()["inner"]["open_url"] == "/creators", r.json()
-    # ...while the inner request keeps the caller's Host + X-Forwarded-*: bio public URLs as the caller's.
     fwd_self = toolbox.Creds(authorization=f"Bearer {TOK_A}", host="relay.internal:8000",
                              forwarded_host="app.example.com", forwarded_proto="https")
     assert _call("bio_pages_list", {}, fwd_self)["public_base"] == "https://app.example.com/p"
@@ -376,11 +335,11 @@ def case_report_file_scoped() -> None:
     path = out["download_url"].removeprefix("https://app.example.com")
     client = _harness.make_client()
     r = client.get(path, headers={"Authorization": f"Bearer {TOK_A}"})
-    lines = r.text.splitlines()  # then notes ("# …"): the bench's Creators were added today (W30 C3 history gaps)
+    lines = r.text.splitlines()
     assert r.status_code == 200 and lines[:2] == ["Creator,Gross ($)", "creator_a,10.0"] \
         and all(x.startswith("# ") for x in lines[2:]), r.text
     assert 'attachment; filename="sales_' in r.headers["content-disposition"] and r.headers["cache-control"] == "no-store"
-    assert A.get(path).status_code == 200  # the same owner by cookie
+    assert A.get(path).status_code == 200
     assert B.get(path).status_code == 404 and client.get(path, headers={"Authorization": f"Bearer {TOK_B}"}).status_code == 404
     assert _harness.make_client().get(path).status_code == 401
     assert client.get("/admin/reports/files/nope", headers={"Authorization": f"Bearer {TOK_A}"}).status_code == 404
@@ -395,7 +354,6 @@ def case_report_file_scoped() -> None:
 
 
 def case_report_file_refused_keeps_own() -> None:
-    """A refused put drops nothing (preflight), and one user's bytes stop at MAX_BYTES_PER_USER."""
     saved = dict(report_files._files)
     report_files._files.clear()
     real = (report_files.MAX_BYTES, report_files.MAX_BYTES_PER_USER)
@@ -404,13 +362,13 @@ def case_report_file_refused_keeps_own() -> None:
         a = report_files.put("A", "a.csv", "text/csv", b"a" * 10)
         b = report_files.put("B", "b.csv", "text/csv", b"b" * 60)
         c = report_files.put("C", "c.csv", "text/csv", b"c" * 25)
-        try:  # 95 held; A's 20 fits only by evicting B or C: refused, A's own file kept
+        try:
             report_files.put("A", "a2.csv", "text/csv", b"a" * 20)
             raise AssertionError("put past MAX_BYTES accepted")
         except report_files.Full:
             pass
         assert all(report_files.get(f.id, f.user_id) is f for f in (a, b, c)), "a refused put dropped a file"
-        b2 = report_files.put("B", "b2.csv", "text/csv", b"b" * 5)  # B at its own cap: its oldest goes first
+        b2 = report_files.put("B", "b2.csv", "text/csv", b"b" * 5)
         assert report_files.get(b.id, "B") is None and report_files.get(b2.id, "B") is b2
     finally:
         report_files.MAX_BYTES, report_files.MAX_BYTES_PER_USER = real
@@ -429,27 +387,27 @@ def case_report_file_caps() -> None:
         assert len(mine) == report_files.MAX_PER_USER and report_files.get(first.id, "u1") is None
         report_files._files.clear()
         others = [report_files.put(f"v{i}", "b.csv", "text/csv", b"2") for i in range(report_files.MAX_FILES)]
-        try:  # full of other users' files: refused, none of theirs evicted
+        try:
             report_files.put("u1", "a.csv", "text/csv", b"1")
             raise AssertionError("put past MAX_FILES evicted another user's file")
         except report_files.Full:
             pass
         assert all(report_files.get(f.id, f.user_id) is f for f in others)
         report_files._files.pop(others[0].id)
-        mine1 = report_files.put("u1", "a.csv", "text/csv", b"1")  # room for one: taken
-        mine2 = report_files.put("u1", "a.csv", "text/csv", b"1")  # full again: the caller's own oldest goes
+        mine1 = report_files.put("u1", "a.csv", "text/csv", b"1")
+        mine2 = report_files.put("u1", "a.csv", "text/csv", b"1")
         assert report_files.get(mine1.id, "u1") is None and report_files.get(mine2.id, "u1") is mine2
         assert all(report_files.get(f.id, f.user_id) is f for f in others[1:])
         report_files._files.clear()
         cap = report_files.MAX_BYTES_PER_USER
         n_full = report_files.MAX_BYTES // cap
         fillers = [report_files.put(f"w{i}", "c.csv", "text/csv", b"x" * cap) for i in range(n_full)]
-        try:  # over MAX_BYTES only by evicting another user's file: refused
+        try:
             report_files.put("u3", "c.csv", "text/csv", b"x")
             raise AssertionError("put past MAX_BYTES evicted another user's file")
         except report_files.Full:
             pass
-        new = report_files.put("w0", "c.csv", "text/csv", b"x" * cap)  # its own oldest goes
+        new = report_files.put("w0", "c.csv", "text/csv", b"x" * cap)
         assert report_files.get(fillers[0].id, "w0") is None and report_files.get(new.id, "w0") is new
         assert all(report_files.get(f.id, f.user_id) is f for f in fillers[1:])
         try:

@@ -1,4 +1,3 @@
-"""Clone app/node_modules into a linked worktree before its venv exists."""
 import fcntl
 import os
 import shutil
@@ -44,7 +43,7 @@ def clone(main: Path, root: Path) -> bool:
                 subprocess.run(["cp", "-R", str(source) + "/.", str(tmp)], check=True)
             tmp.chmod(0o755)
             if dest.is_symlink():
-                dest.unlink()  # unlink only the worktree link, never its target
+                dest.unlink()  # unlink only the worktree link, never its target  # unlink only the worktree link, never its target
             os.replace(tmp, dest)
             return True
         finally:

@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * useTheme — reads/writes the active theme as a `data-theme` attribute
- * on `<html>`, with localStorage persistence so the choice survives
- * reloads + popout windows.
- *
- * SSR-safe: the initial state matches whatever the pre-hydration script
- * in layout.tsx already wrote, so there's no flash of wrong theme.
- */
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -22,15 +14,8 @@ function readInitialTheme(): Theme {
 }
 
 export function useTheme() {
-  // Lazy init so we don't run the DOM read on every render. The pre-
-  // hydration script in layout.tsx has already set data-theme to the
-  // persisted value before React boots, so `readInitialTheme` always
-  // returns the user's actual preference.
   const [theme, setThemeState] = useState<Theme>(readInitialTheme);
 
-  // React to the same setting being toggled from another tab. The
-  // popout window and the inbox tab share localStorage; without this
-  // listener flipping the theme in one would leave the other stale.
   useEffect(() => {
     function onStorage(e: StorageEvent) {
       if (e.key !== STORAGE_KEY || !e.newValue) return;
@@ -39,7 +24,6 @@ export function useTheme() {
       setThemeState(next);
     }
     window.addEventListener("storage", onStorage);
-    // Another useTheme in this window (the top bar, OF's Dark mode switch) changed it.
     const observer = new MutationObserver(() => setThemeState(readInitialTheme()));
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     return () => {
@@ -50,7 +34,7 @@ export function useTheme() {
 
   const setTheme = useCallback((next: Theme) => {
     document.documentElement.setAttribute("data-theme", next);
-    try { window.localStorage.setItem(STORAGE_KEY, next); } catch { /* ignore */ }
+    try { window.localStorage.setItem(STORAGE_KEY, next); } catch { }
     setThemeState(next);
   }, []);
 

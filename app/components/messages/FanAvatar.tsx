@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * FanAvatar — round fan thumbnail shared by the /messages row components
- * (MessageRow, MessageRowGeneric, TipRow). Falls back to the first letter
- * of `alt` when there's no avatar URL.
- */
 
 import { proxyImage } from "@/lib/mediaUrl";
 import { cn } from "@/lib/utils";

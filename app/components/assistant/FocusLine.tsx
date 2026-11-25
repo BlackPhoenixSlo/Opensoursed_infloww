@@ -1,8 +1,5 @@
 "use client";
 
-/** "Currently selected: <focus>" above the help bot's composer
- *  (AssistantWidget.tsx). Presentation only: the focus rules are the reducer's
- *  (assistantReducer.ts, FOCUS / ROSTER). */
 
 import { useCallback, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
@@ -12,22 +9,14 @@ import type { AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import type { Focus } from "./assistantReducer";
 
-/** "General", or the model's nickname. */
 export function focusLabel(focus: Focus, accounts: AccountMeta[]): string {
   if (focus === null) return "General";
   const a = accounts.find((x) => x.id === focus);
   return a?.nickname || focus;
 }
 
-/** No captured session, or a deactivated Creator: the bot still answers about
- *  it (it reads the relay's rows, never OnlyFans), but nothing runs on it now. */
 const offline = (a: AccountMeta) => !a.has_session || !a.is_active;
 
-/** Click to focus the bot on General or one owned model (an offline one is
- *  marked). While a started chat holds off an app switch (`held`) to a model,
- *  it offers that model (`appFocus`) as a new chat. A move to all models (a
- *  page with no creator picker: Dashboard, Settings) offers nothing — the chat
- *  just stays on its model; New chat still lands on General. */
 export function FocusLine({
   focus, accounts, canGeneral, started, held, appFocus, onPick, onNewChat,
 }: {

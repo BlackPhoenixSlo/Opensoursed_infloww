@@ -1,12 +1,3 @@
-/**
- * ClockedHoursCard — Employee reports' "Clocked hours" (docs/spec/phase-05-remaining-parity-gaps.md, item 2,
- * stories 14-18).
- *
- * Rendered with the relay mocked at `fetch` by URL: `/admin/shifts/clocked-in` answers the Agency's
- * time-tracking flag and `/admin/shifts/timesheet` Phase 2's rollup, so the request, the rows, the empty states
- * and the Export CSV are assertions about the wire. The expected hours and CSV text are worked by hand from the
- * fixture's minutes and cents. Every name is fake.
- */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -22,9 +13,7 @@ vi.mock("@/contexts/UserContext", () => ({
   }),
 }));
 
-// The Clocked hours modal (w4-a) reads the Agency's zone.
 vi.mock("@/lib/appliedSettings", () => ({ useAgencyTimeZone: () => "UTC" }));
-/** Function permissions the role denies (`useActionAllowed`); none unless a case adds one. */
 const denied = vi.hoisted(() => new Set<string>());
 vi.mock("@/components/shell/useGrantedPages", () => ({ useActionAllowed: (action: string) => !denied.has(action) }));
 
@@ -33,7 +22,6 @@ import ClockedHoursCard from "@/components/stats/ClockedHoursCard";
 const FROM = "2026-09-15T04:00:00.000Z";
 const TO = "2026-10-15T03:59:59.999Z";
 
-/** 450 minutes is 7h 30min (7.50 h); 61 minutes is 1h 1min (1.02 h, 1.0166… rounded). */
 const ROWS = [
   { key: "1", display_name: "Alpha One", scheduled_shifts: 4, shifts_worked: 3, scheduled_minutes: 960,
     worked_minutes: 450, recorded_earnings_cents: 12345, open_now: false, employee_id: 1, group_name: null },
@@ -43,7 +31,6 @@ const ROWS = [
 
 let tracking: boolean;
 let rows: typeof ROWS;
-/** A Timesheet refusal to answer instead of the rows, or null for the rows. */
 let refusal: { status: number; detail: string } | null;
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -70,7 +57,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** Every Timesheet request sent so far. */
 function timesheetCalls(): URL[] {
   return fetchMock.mock.calls
     .map(([url]) => new URL(String(url), "http://relay.test"))
@@ -148,7 +134,6 @@ describe("ClockedHoursCard", () => {
 
   it("exports the visible rows as CSV text", async () => {
     let blob: Blob | null = null;
-    // jsdom has no object URLs: lend them for this test and put the originals back after.
     const saved = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
     URL.createObjectURL = vi.fn((b: Blob) => { blob = b; return "blob:clocked-hours"; });
     URL.revokeObjectURL = vi.fn();

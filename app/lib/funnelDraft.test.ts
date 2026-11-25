@@ -72,7 +72,7 @@ describe("FUNNEL_RAW", () => {
   it("save keeps the step numbers as written (gaps, `next` targets); an unnumbered step gets max + 1", () => {
     const s = edit(body([
       { step: 1, messages: ["a"], next: { default: 4 } },
-      { messages: ["c"] }, // unnumbered → max + 1 = 5, not its position (2)
+      { messages: ["c"] },
       { step: 4, type: "paid_ppv", price: 9, messages: ["b"] },
     ]));
     expect(s.error).toBeNull();
@@ -132,7 +132,6 @@ describe("PPV price", () => {
 });
 
 describe("editFunnel", () => {
-  // Loaded with a gap (ids 1, 3): typed edits keep the ids.
   const two: FunnelDraft = { ...DRAFT, steps: [reply("a", 1), { ...reply("b", 3), messages: ["b", "c"] }] };
   const ids = (d: FunnelDraft) => saveBody(d).steps.map((s) => s.step);
   const msgs = (d: FunnelDraft) => d.steps.map((s) => s.messages);
@@ -215,15 +214,12 @@ describe("stepErrorText (server 422 → step named by position)", () => {
       "Step 1 next.keyword must be a non-empty object of {word: step}"],
     ["step[0].next.keyword has a blank keyword", "Step 1 next.keyword has a blank keyword"],
     ["step[0].next.keyword['hi'] must be a whole number", "Step 1 next.keyword['hi'] must be a whole number"],
-    // dangling `next` target (cross-step check): the id is unknown → said so, id kept for the raw view
     ["step[1].next.default → step 9 references no existing step",
       "Step 2 next.default points to a step that does not exist (id 9)."],
     ["step[0].next.keyword['buy'] → step 4 references no existing step",
       "Step 1 next.keyword['buy'] points to a step that does not exist (id 4)."],
-    // an id that exists in the sent list → its position, still worded as an error (gapped ids 1, 3, 7)
     ["step[0].next.bought → step 7 references no existing step",
       "Step 1 next.bought points to Step 3 (id 7), which the server could not find."],
-    // not a step error → unchanged
     ["steps must be a list", "steps must be a list"],
     ["steps are not JSON-serialisable: bad", "steps are not JSON-serialisable: bad"],
     ["name is required", "name is required"],
@@ -256,7 +252,6 @@ describe("load repair (stored check_intervals_min the validators refuse)", () =>
     ["bool entry", [true], true],
     ["mixed (pre-validator row)", [0, "x"], true],
   ])("%s", (_name, iv, dropped) => {
-    // reply steps are the ones the server refuses; PPV rows predate the validator
     for (const type of [undefined, "paid_ppv"]) {
       const s = { step: 3, ...(type ? { type } : {}), messages: ["a"], ...(iv === undefined ? {} : { check_intervals_min: iv }) } as FunnelStep;
       const d = funnelDraftOf(stored([s]));
@@ -281,9 +276,9 @@ describe("load repair (stored check_intervals_min the validators refuse)", () =>
     expect(warn.mock.calls[0][0]).toContain(`(id ${f.id})`);
     expect(warn.mock.calls[0][0]).toContain("Step 2");
     expect(warn.mock.calls[0][0]).toContain("dropped on save");
-    funnelDraftOf(f); // re-open on the same page load
+    funnelDraftOf(f);
     expect(warn).toHaveBeenCalledTimes(1);
-    funnelDraftOf(stored(f.steps)); // another funnel
+    funnelDraftOf(stored(f.steps));
     expect(warn).toHaveBeenCalledTimes(2);
   });
 

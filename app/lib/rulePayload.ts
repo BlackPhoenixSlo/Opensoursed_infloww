@@ -1,14 +1,8 @@
-/**
- * Raw-JSON codec over a ready-made rule payload (automations/ReadyMadePanel):
- * a JSON object (blank text = `{}`). `dry_run` is the Dry-run switch's (it re-merges it on save), so a typed
- * `dry_run` is refused rather than dropped: silently stripping it would save a rule live that the text says is dry.
- */
-
 import { parseJsonObject, type RawJsonCodec } from "@/lib/rawJsonReducer";
 
 export type Payload = Record<string, unknown>;
 
-/** `p` without `dry_run` (a copy). */
+// dry_run belongs to the Dry-run switch; a typed one is refused, not dropped, or a live rule would save as dry.
 export function withoutDryRun(p: Payload | undefined): Payload {
   const out = { ...p };
   delete out.dry_run;

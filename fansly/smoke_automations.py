@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""smoke_automations.py — prove the Fansly automation lanes with commands, not docs.
-
-    ../venv/bin/python fansly/smoke_automations.py preflight
-    ../venv/bin/python fansly/smoke_automations.py sweep
-    ../venv/bin/python fansly/smoke_automations.py roundtrip
-
-Exit 0 = pass. Every subcommand calls assert_session_alive() first: a non-NULL
-`account_health.session_dead_at` is a stop, never something this script repairs.
-
-Run from anywhere; paths resolve off this file, not the cwd.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -27,7 +16,7 @@ SERVICE = os.path.join(ROOT, "service")
 DB = os.path.join(SERVICE, "chatterly.db")
 sys.path.insert(0, SERVICE)
 sys.path.insert(0, os.path.join(HERE, "capture"))
-os.chdir(SERVICE)  # the service modules resolve chatterly.db relative to cwd
+os.chdir(SERVICE)
 
 ACCT = "700237824869654528"
 FAN_ID = "900604711209099264"
@@ -57,6 +46,7 @@ async def assert_session_alive(where: str) -> None:
     rows = sql("select session_dead_at from account_health where account_id=?", (ACCT,))
     dead = rows[0][0] if rows else None
     if dead:
+        # a non-NULL session_dead_at is a stop, never something this script repairs
         print(f"\n!! STOP ({where}): account_health.session_dead_at = {dead!r}")
         print(f"   row: {rows[0]!r}")
         raise SystemExit(2)
@@ -80,22 +70,17 @@ def relay_log_path() -> str:
     return cands[0]
 
 
-# ── preflight ────────────────────────────────────────────────────────────
 async def preflight() -> int:
     print("== preflight ==")
     await assert_session_alive("preflight start")
 
-    # 1. relay answers 200 for THIS account. `/health` resolves the account from
-    # X-Account-Id, so the bare call probes whichever account is active — here an
-    # OF account behind a flaky proxy whose CONNECT-403 escapes _health_one's
-    # OFAPIError catch as a 500. That says nothing about Fansly, so scope it.
     code = subprocess.run(
         ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "30",
+         # /health resolves the account from X-Account-Id; the bare call probes whichever is active (an OF account behind a flaky proxy 500s on CONNECT-403), so scope it
          "-H", f"X-Account-Id: {ACCT}", f"{RELAY}/health"],
         capture_output=True, text=True).stdout.strip()
     check(f"relay /health == 200 for account {ACCT}", code == "200", f"got {code}")
 
-    # 2. the deepseek key belongs to THIS account's single owner. Count only.
     import tenant_keys
     owners = await tenant_keys.owners_of(ACCT)
     if not check(f"exactly one billable owner for {ACCT}", len(owners) == 1,
@@ -106,10 +91,8 @@ async def preflight() -> int:
                 (owners[0],))[0][0]
         key_ok = check("owner has exactly 1 deepseek key row", n == 1, f"count={n}")
 
-    # 3. session_dead_at — already asserted above, recorded as a numbered check
     check("account_health.session_dead_at is NULL", True)
 
-    # 4. both CDP ports list a fansly.com tab
     for port, who in ((9222, "fan"), (9223, "creator")):
         try:
             tabs = page_targets(port)
@@ -119,7 +102,6 @@ async def preflight() -> int:
         except Exception as e:
             check(f"CDP :{port} ({who}) has a fansly.com tab", False, repr(e)[:120])
 
-    # 5. registry covers every kind the enabled rules name
     from automation_registry import load_automation_plugins, registered_kinds, is_registered
     load_automation_plugins()
     kinds = registered_kinds()
@@ -134,7 +116,6 @@ async def preflight() -> int:
     return 1 if _fail else 0
 
 
-# ── sweep ────────────────────────────────────────────────────────────────
 def honours_dry_run(kind: str) -> bool:
     from automation_registry import get_automation
     fn = get_automation(kind)
@@ -173,7 +154,7 @@ async def sweep() -> int:
         got = sql("select status, stats_json, error_text from automation_runs where id=?", (run_id,))
         status, stats, err = got[0] if got else ("?", "", "no run row")
         if err and "database is locked" in err:
-            # contention with the 30s supervisor tick, not a finding — one retry
+            # contention with the 30s supervisor tick, not a finding
             print(f"  {kind:28} locked, retrying once")
             r = await asyncio.wait_for(run_once(ACCT, kind, payload={"dry_run": True}), 120)
             got = sql("select status, stats_json, error_text from automation_runs where id=?",
@@ -195,9 +176,7 @@ async def sweep() -> int:
     return 1 if bad else 0
 
 
-# ── roundtrip ────────────────────────────────────────────────────────────
 async def drive_eval(port: int, expr: str):
-    """Evaluate JS in the first fansly.com page on `port` (drive.py's own machinery)."""
     import websockets
     from drive import evaluate
     tabs = [t for t in page_targets(port) if "fansly.com" in (t.get("url") or "")]
@@ -242,7 +221,6 @@ async def roundtrip() -> int:
         print("  !! fan POST did not return a message id — stopping")
         return 1
 
-    # 3. relay lines, past the offset only
     want = [f"msg={msg_id}", "w7_dispatch", "automation_run_ok"]
     kind = rid = None
     deadline = time.time() + 90
@@ -276,7 +254,6 @@ async def roundtrip() -> int:
             print("   ", l[:220])
         return 1
 
-    # 4. creator reply newer than baseline
     reply = None
     deadline = time.time() + 180
     while time.time() < deadline:
@@ -290,11 +267,9 @@ async def roundtrip() -> int:
         await asyncio.sleep(5)
     print(f"  creator reply: {reply!r}")
 
-    # 5. the run row, by id
     got = sql("select status, stats_json, error_text from automation_runs where id=?", (rid,))
     print(f"  run row {rid}: {got[0] if got else 'MISSING'}")
 
-    # 6. cost line
     cost = sql("select day, provider, cost_cents, call_count from grok_daily_cost "
                "where account_id=? and provider='deepseek' order by day desc limit 1", (ACCT,))
     print(f"  cost: {cost[0] if cost else 'no deepseek row yet'}")

@@ -1,18 +1,3 @@
-"""A described vault the flags pass reached only part of (scenarios/2026-11-10-vault-ai-folders-partial-flags.py):
-`vault_items` rows by SQL for one Creator, as Collect + the describe pass (+ the flags pass on some) leave them
-(columns as seed/vault_items.py writes them). Each photo is planted in one class, so the AI folder plan's paid
-lanes have an exact oracle:
-
-  ten        explicit, flagged: breasts bare, vulva / anus not in frame, underwear on    -> AI-tease 10
-  fifty      explicit, flagged: vulva + breasts bare, no underwear, fully_nude          -> AI-tease 50
-  ten_raw    explicit, NO flags, clothing_state partially_off (a $10 by its describe)    -> explicit 1:1 only
-  fifty_raw  explicit, NO flags, clothing_state fully_nude (a $50 by its describe)       -> explicit 1:1 only
-  soft       suggestive, flagged on half (all covered / out of frame)                    -> stories / mass
-plus explicit videos (-> clips). Sizes: SIZES `vault_ai_items` (photos + videos per Creator), merged on import.
-
-`seed(w, creator, n)` -> (and `w.data["vault_flags_partial"]`) {"account_id", "ten", "fifty", "ten_raw",
-"fifty_raw", "soft", "videos": [media ids], "stills": photos, "flagged": flagged photos}. Randomness only from
-`w.rng("vault_flags_partial")`."""
 from __future__ import annotations
 
 import json
@@ -23,7 +8,7 @@ from . import World, merge_sizes, ts
 SIZES = {"vault_ai_items": (60, 400, 2_000)}
 merge_sizes(SIZES)
 
-MODEL, PROMPT_VERSION, FLAGS_VERSION = "qwen3-vl-30b", "v2", 3   # as seed/vault_items.py
+MODEL, PROMPT_VERSION, FLAGS_VERSION = "qwen3-vl-30b", "v2", 3
 MIX = (("ten", 0.15), ("fifty", 0.15), ("ten_raw", 0.12), ("fifty_raw", 0.12), ("soft", 0.26), ("video", 0.20))
 
 
@@ -55,7 +40,7 @@ def seed(w: World, creator: dict, n: int) -> dict:
     aid = creator["id"]
     names, weights = zip(*MIX)
     classes = [rng.choices(names, weights)[0] for _ in range(n)]
-    for i, c in enumerate(names):   # every class at least twice
+    for i, c in enumerate(names):
         classes[2 * i:2 * i + 2] = [c, c]
     rng.shuffle(classes)
     ids = sorted(rng.sample(range(2_500_000_000, 4_200_000_000), n))

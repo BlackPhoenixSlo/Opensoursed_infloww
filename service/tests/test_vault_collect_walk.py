@@ -1,25 +1,7 @@
 #!/usr/bin/env python3
-"""vault_collect — the background vault week-cache collector.
-
-Fake OF client at the client seam (`ax._make_client`), real DB, real
-vault_cache, real mirror upserts, real route bodies for the key check.
-
-Covers: pacing (≥GAP_S between OF calls), one account at a time, skip a busy
-account + bounded starvation, dead-session accounts never called, resume of an
-errored / interrupted walk at its cursor (a "restart"), a stale account gets the
-hot set + thumbs without a second full walk, the pages it caches are the ones
-the picker routes read (same keys), thumbs for every media with a live link, newest first (VAULT_COLLECT_THUMB_WARM_MAX caps). Interruptions
-(manual Collect, a person mid-walk, a proxy change) pause at the cursor without an
-error; the page cap is not a full walk; one bad folder page does not stop the walk;
-thumb workers stop together; old auto rows are pruned; every OF call is inside an
-of_pacing walk. A thumbs pass with every file on disk parses no raw_json and checks
-the files off the event loop; only the missing ones' payloads are read.
-
-Run: ./venv/bin/python service/tests/test_vault_collect_walk.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds a throwaway temp DB
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -56,7 +38,7 @@ vault_stills.THUMB_DIR = Path(tempfile.mkdtemp(prefix="vc_thumbs_"))
 _JPEG = b"\xff\xd8\xff\xe0" + b"0" * 64
 _thumb_fetches: list[str] = []
 _THUMB_DELAY = [0.0]
-_THUMB_HOLD_AT = [0]               # this fetch (1-based) waits for _THUMB_GATE
+_THUMB_HOLD_AT = [0]
 _THUMB_GATE = threading.Event()
 
 
@@ -78,11 +60,9 @@ vc._user_active_at = lambda aid: _ACTIVE.get(aid)
 
 
 class FakeOF:
-    """Vault of `n` items; ids 1..n, newer = higher id. Every 10th item is in
-    folder 7 (custom, hasMedia); folder 8 is custom but empty; 'posts' is built-in."""
 
-    calls: list[tuple[float, str, str, dict]] = []   # shared across accounts
-    walks: list[str | None] = []                      # of_pacing walk kind per call
+    calls: list[tuple[float, str, str, dict]] = []
+    walks: list[str | None] = []
     _inflight = 0
     peak = 0
     _lock = threading.Lock()
@@ -188,8 +168,6 @@ async def case_pacing_gap_between_every_of_call():
     assert [(r.status, r.phase) for r in runs] == [("done", "auto:done")], runs
     assert runs[0].total_seen == 250 and runs[0].pages_done == 3, (runs[0].total_seen, runs[0].pages_done)
     assert await _mirror_count("accP") == 250
-    # Picker shapes: lists at 50/page, dropdown folder 7 only (8 empty, posts built-in),
-    # All page 0 + offset 24 at limit 24 desc, then the walk at 100 asc.
     kinds = [(c[2], c[3].get("limit"), c[3].get("offset"), c[3].get("list_id"), c[3].get("sort"))
              for c in FakeOF.calls]
     assert kinds[:4] == [("lists", 50, 0, None, None), ("media", 24, 0, 7, "desc"),
@@ -198,8 +176,6 @@ async def case_pacing_gap_between_every_of_call():
 
 
 async def case_cached_pages_are_what_the_picker_routes_read():
-    """Real route bodies, client that would blow up: every answer must come
-    from what the collector cached, under the route's own keys."""
     await _reset("accK")
     await vc.tick()
     real_aid, real_gate, real_client = server._current_aid, server._allowed_folder_ids_for_chatter, server._get_client
@@ -246,7 +222,6 @@ async def case_thumbs_cap_takes_newest():
 
 
 async def case_thumbs_skip_expired_links():
-    """A dead signed link is never fetched (it would 403): its tile fills on view, re-signed."""
     await _reset("accTx")
     real = FakeOF._item
     FakeOF._item = lambda self, i: {**real(self, i), "files": {"thumb": {"url":
@@ -261,7 +236,6 @@ async def case_thumbs_skip_expired_links():
 
 
 async def case_thumbs_present_cost_no_payload_reads():
-    """#851: the pass ran `is_file` + `load_json` per live row on the event loop every run (12.6k rows on AE)."""
     await _reset("accTp")
     await vc.tick()
     assert len(_thumb_fetches) == 250
@@ -294,13 +268,13 @@ async def case_thumbs_present_cost_no_payload_reads():
 
 async def case_one_account_at_a_time():
     await _reset("accA", "accB")
-    await asyncio.gather(vc.tick(), vc.tick())   # second tick finds the lock held
+    await asyncio.gather(vc.tick(), vc.tick())
     walked = {c[1] for c in FakeOF.calls}
     assert len(walked) == 1, f"two accounts walked at once: {walked}"
     assert FakeOF.peak == 1, f"peak concurrent OF calls {FakeOF.peak}"
     await vc.tick()
     assert {c[1] for c in FakeOF.calls} == {"accA", "accB"}
-    await vc.tick()   # both fresh now → nothing due
+    await vc.tick()
     n = len(FakeOF.calls)
     await vc.tick()
     assert len(FakeOF.calls) == n, "a fresh account was walked again"
@@ -310,18 +284,18 @@ async def case_skip_busy_then_bounded_starvation():
     await _reset("accBusy")
     vc.MAX_SKIP_S = 0.4
     try:
-        _ACTIVE["accBusy"] = time.monotonic() + 3600      # someone is always clicking
+        _ACTIVE["accBusy"] = time.monotonic() + 3600
         await vc.tick()
         assert FakeOF.calls == [], "walked an account in use"
-        vault_runs.manual_running.add("accBusy")              # manual Collect running
+        vault_runs.manual_running.add("accBusy")
         await asyncio.sleep(0.45)
         await vc.tick()
         assert FakeOF.calls == [], "walked an account under a manual Collect"
         vault_runs.manual_running.discard("accBusy")
-        await vc.tick()                                    # skipped > MAX_SKIP_S → walks anyway
+        await vc.tick()
         assert FakeOF.calls, "starved past MAX_SKIP_S"
         assert "accBusy" not in vault_runs.manual_running
-        (run,) = await _runs("accBusy")                    # the forced walk does not yield
+        (run,) = await _runs("accBusy")
         assert (run.status, run.phase) == ("done", "auto:done"), (run.status, run.phase)
     finally:
         vc.MAX_SKIP_S = 1800
@@ -329,19 +303,17 @@ async def case_skip_busy_then_bounded_starvation():
 
 
 async def case_bursty_person_cannot_starve_past_max_skip():
-    """Quiet at every pick, busy again mid-walk: MAX_SKIP_S counts from the first
-    yield (a quiet pick does not restart it), so the walk is eventually forced."""
     await _reset("accBurst")
     vc.MAX_SKIP_S = 0.4
     t0 = time.monotonic()
     try:
         yields = 0
         while time.monotonic() - t0 < 4:
-            _ACTIVE.clear()                                 # quiet when the tick picks
+            _ACTIVE.clear()
             n = len(FakeOF.calls)
             walk = asyncio.create_task(vc.tick())
             await _until(lambda: len(FakeOF.calls) > n or walk.done())
-            _ACTIVE["accBurst"] = time.monotonic()          # …and back mid-walk
+            _ACTIVE["accBurst"] = time.monotonic()
             await asyncio.wait_for(walk, 5)
             (run,) = await _runs("accBurst")
             if run.status == "done":
@@ -370,11 +342,9 @@ async def case_error_backoff_then_resume_at_cursor():
     assert (run.status, run.phase, run.pages_done) == ("error", "auto:all:200", 2), (
         run.status, run.phase, run.pages_done)
     assert "session dead" in (run.error or "")
-    # Inside the 1 h backoff: not retried.
     FakeOF.calls.clear()
     await vc.tick()
     assert FakeOF.calls == [], "retried inside the error backoff"
-    # "Restart": the process is gone, the row is what is left. Session healed, backoff over.
     _CLIENTS["accR"] = FakeOF("accR", n=350)
     async with get_session() as s:
         r = await s.get(VaultCacheRun, run.id)
@@ -416,10 +386,8 @@ async def case_stale_account_gets_hot_set_not_full_walk():
 
 
 async def case_weekly_full_rewalk():
-    """Hot-only refreshes keep the latest auto:done fresh; the full walk still
-    comes back once the last FULL one is older than FULL_S."""
     await _reset("accW")
-    await vc.tick()                                   # full walk (pages_done 3)
+    await vc.tick()
     async with get_session() as s:
         for r in (await s.execute(select(VaultCacheRun))).scalars():
             r.finished_at = datetime.utcnow() - timedelta(seconds=vc.FULL_S + 60)
@@ -436,9 +404,6 @@ async def case_weekly_full_rewalk():
 
 
 async def case_manual_collect_preempts_the_collector():
-    """The button never 409s behind the collector: it stops the walk (no error,
-    the row stays running at its cursor, released within one gap) and runs its
-    own sweep."""
     await _reset("accM", n=350)
     vc.GAP_S = 0.5
     try:
@@ -451,13 +416,13 @@ async def case_manual_collect_preempts_the_collector():
         overlap: list[bool] = []
         real_make = ax._make_client
 
-        def _make(aid):   # the manual sweep's first step after `preempt`
+        def _make(aid):
             overlap.append(aid in vc._auto_running)
             return real_make(aid)
         ax._make_client = _make
         t0 = time.monotonic()
         try:
-            r = await vault_ai_api.start_collect(account_id="accM")   # would 409 if shared
+            r = await vault_ai_api.start_collect(account_id="accM")
             assert r["status"] == "running", r
             await asyncio.wait_for(walk, 5)
             while not overlap:
@@ -474,10 +439,9 @@ async def case_manual_collect_preempts_the_collector():
     auto = [r for r in await _runs("accM") if (r.phase or "").startswith("auto:")]
     assert len(auto) == 1 and auto[0].status == "running" and auto[0].error is None, (
         [(r.status, r.phase, r.error) for r in auto])
-    assert auto[0].phase == "auto:hot", auto[0].phase       # cursor kept, not reset
+    assert auto[0].phase == "auto:hot", auto[0].phase
     s = await vault_ai_api.cache_summary(account_id="accM")
     assert s["complete"] is True and s["last_run"]["status"] == "done", s
-    # Next resume: the manual sweep already walked All → straight to thumbs.
     async with get_session() as ss:
         row = await ss.get(VaultCacheRun, auto[0].id)
         row.phase, row.finished_at = "auto:all:200", datetime.utcnow() - timedelta(hours=2)
@@ -487,7 +451,6 @@ async def case_manual_collect_preempts_the_collector():
 
 
 async def case_legacy_abandoned_row_starts_fresh():
-    """A row left `abandoned` by the old attempt cap is not terminal: a fresh walk starts."""
     await _reset("accE")
     async with get_session() as s:
         s.add(VaultCacheRun(account_id="accE", status="abandoned", phase="auto:all:200",
@@ -502,7 +465,6 @@ async def case_legacy_abandoned_row_starts_fresh():
 
 
 async def case_error_is_plain_and_retried_at_cursor():
-    """No attempt counter in the error text; past the 1 h backoff the walk resumes at its cursor."""
     await _reset("accE2", fail_at_offset=0)
     await vc.tick()
     async with get_session() as s:
@@ -525,8 +487,6 @@ async def _until(pred, timeout: float = 5.0) -> None:
 
 
 async def case_person_mid_walk_pauses_at_cursor():
-    """A person on the account mid-walk: the walk stops before its next OF call,
-    no error, row running at its cursor; nothing while they stay; resumed there."""
     await _reset("accY", n=350)
     walk = asyncio.create_task(vc.tick())
     await _until(lambda: any(c[3].get("limit") == 100 for c in FakeOF.calls))
@@ -550,8 +510,6 @@ async def case_person_mid_walk_pauses_at_cursor():
 
 
 async def case_proxy_switch_stops_the_walk():
-    """server._on_proxy_switched stops the walk on its old-IP client (cursor kept,
-    no error); the next tick resumes it with a fresh client."""
     await _reset("accX", n=350)
     made: list[str] = []
     real_make = ax._make_client
@@ -588,15 +546,12 @@ def _kinds(calls) -> list[tuple]:
 
 
 async def _switched(*aids: str) -> None:
-    """A proxy switch through the product's hook, its loop task given time to run."""
     server._on_proxy_switched(list(aids))
     for _ in range(50):
         await asyncio.sleep(0.01)
 
 
 async def case_proxy_switch_rewarms_fresh_account_first():
-    """After the switch the next tick walks that account's hot set although its last run
-    is fresh: after an interrupted walk (rank 0), ahead of a never-walked and a stale one."""
     await _reset("accRw", "accRwI", "accRwN", "accRwS", n=150)
     async with get_session() as s:
         now = datetime.utcnow()
@@ -607,7 +562,7 @@ async def case_proxy_switch_rewarms_fresh_account_first():
                             finished_at=now - timedelta(seconds=vc.STALE_S + 60)))
         s.add(VaultCacheRun(account_id="accRwI", status="running", phase="auto:all:100",
                             pages_done=1, total_seen=100, upserted=100))
-    await vc.tick()                                   # the interrupted walk first (rank 0)
+    await vc.tick()
     assert {c[1] for c in FakeOF.calls} == {"accRwI"}, FakeOF.calls
     await _switched("accRw")
     FakeOF.calls.clear()
@@ -618,7 +573,7 @@ async def case_proxy_switch_rewarms_fresh_account_first():
         order.append({c[1] for c in FakeOF.calls[n:]})
     assert order == [{"accRw"}, {"accRwN"}, {"accRwS"}], order
     rw = [c for c in FakeOF.calls if c[1] == "accRw"]
-    assert _kinds(rw) == _HOT_KINDS, _kinds(rw)       # hot set only: the full walk is fresh
+    assert _kinds(rw) == _HOT_KINDS, _kinds(rw)
     runs = await _runs("accRw")
     assert runs[-1].status == "done" and len(runs) == 2, [(r.status, r.phase) for r in runs]
 
@@ -656,8 +611,6 @@ async def case_proxy_switch_mid_thumbs_rewarms_then_resumes_thumbs():
 
 
 async def case_proxy_rewarm_interrupted_hot_retries_before_saved_phase():
-    """A person interrupts the proxy rewarm, not its saved All/thumbs phase.
-    The next quiet tick must finish hot pages before resuming that cursor."""
     for phase in ("auto:all:100", "auto:thumbs", "auto:thumbs:capped"):
         aid = "accRwYield"
         await _reset(aid, n=150)
@@ -666,7 +619,7 @@ async def case_proxy_rewarm_interrupted_hot_retries_before_saved_phase():
                                 pages_done=1, total_seen=100, upserted=100))
         await _switched(aid)
         walk = asyncio.create_task(vc.tick())
-        await _until(lambda: len(FakeOF.calls) >= 2)  # lists + first hot folder
+        await _until(lambda: len(FakeOF.calls) >= 2)
         _ACTIVE[aid] = time.monotonic()
         await asyncio.wait_for(walk, 5)
         (paused,) = await _runs(aid)
@@ -730,7 +683,7 @@ async def case_proxy_rewarm_hot_error_keeps_backoff():
 
 async def case_proxy_switch_second_request_is_one_entry():
     await _reset("accRw2", n=150)
-    await vc.tick()                                   # first walk: fresh from here on
+    await vc.tick()
     await _switched("accRw2")
     await _switched("accRw2")
     FakeOF.calls.clear()
@@ -742,8 +695,6 @@ async def case_proxy_switch_second_request_is_one_entry():
 
 
 async def case_proxy_switch_setup_failure_does_not_keep_rank_1():
-    """The re-warm walk's setup raises (client build): the run errors, and the next pick
-    is the stale rival, not the switched account again (its error backoff holds)."""
     await _reset("accRwF", "accRwR", n=150)
     async with get_session() as s:
         now = datetime.utcnow()
@@ -789,8 +740,6 @@ async def case_page_cap_is_not_a_full_walk():
 
 
 async def case_capped_walk_after_full_walk_is_not_complete():
-    """The vault outgrew the cap: an older uncapped walk (manual here) must not keep
-    `complete` true once the newest walk was capped."""
     await _reset("accGrow", n=350)
     async with get_session() as s:
         s.add(VaultCacheRun(account_id="accGrow", status="done", phase="done", pages_done=3,
@@ -808,9 +757,6 @@ async def case_capped_walk_after_full_walk_is_not_complete():
 
 
 async def case_resume_after_capped_manual_walk_is_not_complete():
-    """An auto row preempted mid-All by a manual Collect that ended capped: the resume
-    skips All (walked recently) but did not walk the vault, so it must not end as the
-    newest uncapped walk and turn `complete` back on."""
     await _reset("accPC", n=350)
     now = datetime.utcnow()
     async with get_session() as s:
@@ -830,8 +776,6 @@ async def case_resume_after_capped_manual_walk_is_not_complete():
 
 
 async def case_error_or_preempt_clears_the_skip_streak():
-    """Only a yield to a person keeps the MAX_SKIP_S streak; a walk that errors or is
-    preempted (proxy switch / manual Collect) drops it, so the next retry is not forced."""
     await _reset("accSt", n=350, fail_at_offset=100)
     vc._skipped_since["accSt"] = time.monotonic() - 3600
     await vc.tick()
@@ -850,25 +794,23 @@ async def case_error_or_preempt_clears_the_skip_streak():
 
 
 async def case_capped_walk_paused_in_thumbs_stays_capped():
-    """The cap survives a pause in the thumbs phase (resume must not turn it into a
-    full walk), and a capped vault is not re-walked from 0 every STALE_S."""
     await _reset("accCap2", n=350)
     vc.WALK_MAX_PAGES = 2
     try:
         walk = asyncio.create_task(vc.tick())
         await _until(lambda: len(_thumb_fetches) >= 1)
-        _ACTIVE["accCap2"] = time.monotonic()        # a person arrives mid-thumbs
+        _ACTIVE["accCap2"] = time.monotonic()
         await asyncio.wait_for(walk, 5)
         (run,) = await _runs("accCap2")
         assert (run.status, run.phase) == ("running", "auto:thumbs:capped"), (run.status, run.phase)
         _ACTIVE.clear()
-        await vc.tick()                               # resumes the thumbs
+        await vc.tick()
         (run,) = await _runs("accCap2")
         assert (run.status, run.phase) == ("done", "auto:done") and "capped" in (run.error or ""), (
             run.status, run.phase, run.error)
         s = await vault_ai_api.cache_summary(account_id="accCap2")
         assert s["complete"] is False, "a capped walk resumed in thumbs reported the vault complete"
-        async with get_session() as s:                # stale (6 h+) but within FULL_S
+        async with get_session() as s:
             r = await s.get(VaultCacheRun, run.id)
             r.finished_at = datetime.utcnow() - timedelta(seconds=vc.STALE_S + 60)
             await s.commit()
@@ -891,12 +833,10 @@ async def case_bad_folder_page_does_not_stop_the_walk():
 
 
 async def case_thumb_workers_stop_together():
-    """One worker's Preempted stops its sibling too: a sibling mid-fetch when the
-    walk stops fetches nothing more after it returns (the walk drops its abort flag)."""
     await _reset("accTh")
     vc.THUMB_CONCURRENCY = 2
     _THUMB_DELAY[0] = 0.02
-    _THUMB_HOLD_AT[0] = 2          # the second worker's first fetch hangs
+    _THUMB_HOLD_AT[0] = 2
     _THUMB_GATE.clear()
     try:
         walk = asyncio.create_task(vc.tick())
@@ -904,7 +844,7 @@ async def case_thumb_workers_stop_together():
         vc._abort["accTh"].set()
         await asyncio.wait_for(walk, 2)
         n = len(_thumb_fetches)
-        _THUMB_GATE.set()          # the held fetch returns after the walk is over
+        _THUMB_GATE.set()
         await asyncio.sleep(0.3)
         assert len(_thumb_fetches) == n and n < 100, f"thumbs fetched on after the walk: {n} → {len(_thumb_fetches)}"
     finally:
@@ -917,8 +857,6 @@ async def case_thumb_workers_stop_together():
 
 
 async def case_old_auto_runs_pruned():
-    """A new auto run prunes the account's older ones past AUTO_RUNS_KEPT, never
-    the newest full walk; `complete` and the weekly re-walk still see it."""
     await _reset("accPr")
     now = datetime.utcnow()
     async with get_session() as s:
@@ -952,18 +890,18 @@ async def case_folder_page_without_list_states_keeps_membership():
     _CLIENTS["accU"] = FakeOF("accU", list_states=False)
     async with get_session() as s:
         s.add(VaultCacheRun(account_id="accU", status="done", phase="done",
-                            finished_at=datetime.utcnow()))           # full walk fresh
+                            finished_at=datetime.utcnow()))
         s.add(VaultItem(account_id="accU", media_id=250, kind="photo", of_folder_ids="[5]",
                         created_at=datetime(2026, 1, 1)))
     await vc.tick()
     assert not any(c[3].get("limit") == 100 for c in FakeOF.calls)
     async with get_session() as s:
-        a = await s.get(VaultItem, ("accU", 250))   # in folder 7's page AND All's
-        b = await s.get(VaultItem, ("accU", 240))   # folder 7's page only
-    assert json.loads(a.of_folder_ids) == [5, 7], a.of_folder_ids   # All's page kept it
+        a = await s.get(VaultItem, ("accU", 250))
+        b = await s.get(VaultItem, ("accU", 240))
+    assert json.loads(a.of_folder_ids) == [5, 7], a.of_folder_ids
     assert json.loads(b.of_folder_ids) == [7], b.of_folder_ids
     async with get_session() as s:
-        c = await s.get(VaultItem, ("accU", 249))   # All's page only, unknown folders
+        c = await s.get(VaultItem, ("accU", 249))
     assert json.loads(c.of_folder_ids) == [], c.of_folder_ids
 
 

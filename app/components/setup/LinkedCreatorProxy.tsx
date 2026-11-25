@@ -12,8 +12,6 @@ import { currentProxy } from "./proxyApi";
 import { useReportBusy } from "./useReportBusy";
 import { IfButton, IfInput, IfLabel, IfNativeSelect } from "@/components/ui/infloww";
 
-/** Optional post-login proxy setup (the switch: `connectNewProxy`). The account's current proxy stays until the new
- *  one passed its test and is assigned. Mount it keyed by the account, so another account starts a fresh form. */
 export default function LinkedCreatorProxy({ accountId, onBusy }: { accountId: string; onBusy: (busy: boolean) => void }) {
   const [state, dispatch] = useReducer(linkedProxyReducer, INITIAL_LINKED_PROXY);
   const { draft, open, fallback, busy, outcome } = state;

@@ -1,28 +1,5 @@
 "use client";
 
-/**
- * MessagesFilters — controls for the PPV list.
- *
- * The page owns the date range (DateRangePicker is rendered in the
- * header). Everything else lives here: account picker, employee picker,
- * paid/unpaid/all toggle, and the fan-search input.
- *
- * Fan search debounces to 250ms on the parent's side via the
- * `onFanQueryCommit` callback — we also gate at <2 chars locally so the
- * inline "≥2 chars" hint matches the backend's 400 response.
- *
- * The Employee picker reads the owner's active roster through useRoster, which
- * waits for an owner session and never retries a 401/403: the list is
- * owner-only at the Relay, so a chatter's picker lists no Employees.
- *
- * ASSUMPTION: this file is outside ticket 30's Owns list; it changes because
- * ticket 30 made the list refuse chatters, and this inline query then sent a
- * request that always got 403 (with retries) on every chatter mount. Mirror
- * Employees stay listed (includeChatterMirrors) as before, and the cache
- * staleTime becomes useRoster's 10s. Rung 5 (smallest fix, reviewer's
- * remedy). Overturned if chatters need an Employee filter, which would then
- * read a roster scoped to their Agencies.
- */
 
 import { useEffect, useState } from "react";
 
@@ -40,16 +17,11 @@ interface Props {
   onEmployeeChange: (id: number | null) => void;
   status: PaidStatus;
   onStatusChange: (s: PaidStatus) => void;
-  /** Defaults to true so the Status toggle keeps rendering for PPV tabs;
-   *  pass false (e.g. from TipsTab) to hide it where it does nothing. */
   showStatus?: boolean;
   fanQuery: string;
   onFanQueryChange: (q: string) => void;
-  /** When omitted, the Type segmented control isn't rendered (PPV tab
-   *  doesn't need it). Pass it from AllMessagesTab. */
   type?: MessageType;
   onTypeChange?: (t: MessageType) => void;
-  /** Same — Direction only renders when the parent owns the state. */
   direction?: MessageDirection;
   onDirectionChange?: (d: MessageDirection) => void;
 }
@@ -69,21 +41,12 @@ export default function MessagesFilters({
   direction,
   onDirectionChange,
 }: Props) {
-  // Backend rule (service/messages.py): Status only meaningful when
-  // type !== "free", Employee only meaningful when direction === "out".
-  // We mirror that in the UI so the user doesn't see filters that get
-  // silently ignored. Side-effect resets (e.g. clear employeeId when
-  // direction flips to "in") happen in the parent — this component
-  // stays a pure controlled input.
-  // `showStatus` (prop, default true) lets a surface with no status
-  // concept (tips) drop the toggle entirely.
   const renderStatus = showStatus && type !== "free";
   const employeeDisabled = direction === "in";
   const accounts = useActiveAccounts();
+  // Roster is owner-only at the Relay: a chatter's picker lists no Employees (no 403 retries).
   const { rows: employees } = useRoster({ includeDisabled: false, includeChatterMirrors: true });
 
-  // Local mirror so typing feels instant; we only push upstream after the
-  // string has been stable for 250ms. Reset when the parent string clears.
   const [localFan, setLocalFan] = useState(fanQuery);
   useEffect(() => {
     setLocalFan(fanQuery);
@@ -93,8 +56,6 @@ export default function MessagesFilters({
       if (localFan !== fanQuery) onFanQueryChange(localFan);
     }, 250);
     return () => window.clearTimeout(handle);
-    // onFanQueryChange is stable from the parent; we intentionally key
-    // off the local string only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localFan]);
 

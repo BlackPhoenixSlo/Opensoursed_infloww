@@ -7,13 +7,12 @@ import { rowsOf } from "./ofMirrorPaging";
 import type { OFChatItem, OFMessage, OFUserMini } from "./relay";
 import { load, shown, texts, PLACEHOLDER } from "./ofMirrorData.fixtures";
 
-/** OF's own /api2/v2 responses for Messages, captured through the Relay and scrubbed (app/lib/__fixtures__/of). */
 const msgFixture = <T,>(name: string): T => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/messages-${name}.json`), "utf8")) as T;
 
 describe("Messages from OF's captured responses (app/lib/__fixtures__/of)", () => {
   const listed = rowsOf<OFChatItem>(msgFixture("chats"))!;
   const users = msgFixture<Record<string, OFUserMini & { displayName?: string }>>("users-list");
-  const MODEL = 1001; // the Creator's id in the fixtures
+  const MODEL = 1001;
   const img = (u: string) => `/img?u=${u}`;
 
   it("/chats sends each partner bare (an id); withChatUsers fills in its name, handle and avatar from /users/list", () => {
@@ -24,7 +23,6 @@ describe("Messages from OF's captured responses (app/lib/__fixtures__/of)", () =
       const u = users[String(c.withUser.id)];
       expect(c.withUser).toMatchObject({ id: c.withUser.id, username: u.username, avatar: u.avatar, name: u.displayName || u.name });
     }
-    // OF answers [] when it resolves none; a partner it did not return keeps its id.
     expect(withChatUsers(listed, [])).toEqual(listed);
     const { [String(listed[0].withUser.id)]: _dropped, ...rest } = users;
     expect(withChatUsers(listed, rest)[0]).toBe(listed[0]);
@@ -50,7 +48,7 @@ describe("Messages from OF's captured responses (app/lib/__fixtures__/of)", () =
     expect(shown(doc, ".b-chats__item__link").map((a) => a.getAttribute("href"))).toEqual(rows.map((c) => `/of-manager/messages/chat?chat=${c.withUser.id}`));
     expect(shown(doc, ".b-chats__item .g-avatar img").map((i) => i.getAttribute("src"))).toEqual(rows.map((c) => img(c.withUser.avatar!)));
     expect(texts(doc, ".b-chats__item__last-message__content")).toEqual(rows.map((c) => (c.lastMessage?.text ?? "").replace(/<[^>]+>/g, "") || (c.lastMessage?.mediaCount ? "Media" : "")));
-    expect(shown(doc, ".b-chats__item.m-unread")).toEqual([]); // every captured chat is read
+    expect(shown(doc, ".b-chats__item.m-unread")).toEqual([]);
     for (const r of shown(doc, ".b-chats__item")) expect(r.textContent).not.toMatch(PLACEHOLDER);
     expect(shown(doc, ".b-chats__scroller [data-oi-empty]").filter((e) => !(e as HTMLElement).style.display.includes("none"))).toEqual([]);
   });
@@ -69,7 +67,6 @@ describe("Messages from OF's captured responses (app/lib/__fixtures__/of)", () =
       applyData(doc, "messages/index", { chats: rowsOf<OFChatItem>(msgFixture(name))! });
       expect(texts(doc, ".b-chats__scroller [data-oi-empty] .empty-message"), name).toEqual(["Nothing found"]);
     }
-    // OF has no "tips" filter (the page's With Tips tab stays disabled): the Relay passes on its 400.
     expect(JSON.stringify(msgFixture("chats-with-tips"))).toContain("Invalid filter");
   });
 
@@ -129,7 +126,7 @@ describe("the chat list's rows and their partners (chatRowsOf, pendingPartners)"
   });
   it("a new chat at the top (a new /users/list key) keeps the known rows instead of the whole list loading again", () => {
     const rows = chatRowsOf([[bare(3), bare(1), bare(2)]], [["1", "2", "3"]], [{ isPending: true }], users(1, 2))!;
-    expect(rows.map((c) => c.withUser.name)).toEqual(["Name 1", "Name 2"]); // 3 shows once it is named
+    expect(rows.map((c) => c.withUser.name)).toEqual(["Name 1", "Name 2"]);
   });
   it("a later page still asking stops the list there; a chat on two pages shows once", () => {
     const rows = chatRowsOf([[bare(1)], [bare(1), bare(4)]], [["1"], ["1", "4"]], [{ isPending: false, data: users(1) }, { isPending: false, data: users(1, 4) }], {})!;

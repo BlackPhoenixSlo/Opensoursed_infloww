@@ -30,7 +30,7 @@ _TOPICS = [re.compile(p) for p in (
     r"(^|/)add-funds?(/|$)",
     r"^/payouts/(methods?|types?|systems?|accounts?|legal|settings?)(/|$)",
     r"(^|/)payout-?(methods?|types?|systems?)(/|$)",
-    r"(^|[/_-])dac7([/_-]|$)",  # a segment, never a hex hash (a cdn2 /files/ hash once held "dac7")
+    r"(^|[/_-])dac7([/_-]|$)",
     r"(^|/)(support|tickets?)(/|$)",
     r"password",
     r"(^|/)(change-)?emails?(/|$)",
@@ -41,11 +41,10 @@ _TOPICS = [re.compile(p) for p in (
 # Writes only: GET /payouts/requests is the Statements payout history read.
 _CRITICAL_WRITES = ("/payouts/requests",)
 _SIGN_IN_KEYS = frozenset({"username", "email", "phone", "password"})
-# Non-GET /sessions is refused outright, not as lockout: Close all sessions gets a Mocked proof only.
 _DENIED_PATHS = ("/users/logout", "/users/delete/request", "/log")
+# Non-GET /sessions is refused outright, not as lockout: Close all sessions gets a Mocked proof only.
 _SESSIONS = "/sessions"
 _STREAM_START = (("POST", "/streams"),)
-# Guess: block-by-IP/country paths are not captured yet; replace with the measured path.
 _LOCKOUT = re.compile(r"block[a-z_-]*?(ips?|countr(y|ies))$|^(ips?|countr(y|ies))[-_]?block")
 
 _CHAT_SEND = re.compile(r"^/chats/([^/]+)/messages$")
@@ -305,8 +304,8 @@ def _match(proof: Proof, method: str, path: str, body: Any, run: Run, host: str 
     for key, w in arms:
         if spent.get(key, 0) < w.max:
             return key, w
+    # An undo's {id} binds only to ids an allowed write created, so an undo cannot delete a real post or list.
     for i, w in enumerate(proof.undo):
-        # An undo's {id} binds only to ids an allowed write created, so an undo cannot delete a real post or list.
         m = fits(w, templates=True)
         kinds = {**run.keys, "id": _undo_ids(w, run)}
         named = {"id"} | declared_kinds(proof)
@@ -386,6 +385,7 @@ def read_id_query(kind: str, source, fan, now: datetime | None = None) -> tuple[
     return f"/api2/v2/chats/{fan}/messages", {"limit": 10, "order": "desc"}
 
 
+# isScheduled is not trusted alone: a date under POST_LEAD ahead, past or unreadable publishes now.
 def _scheduled_ahead(body: Any, at: datetime | None) -> bool:
     if not isinstance(body, dict) or not body.get("isScheduled") or at is None:
         return False
@@ -399,7 +399,6 @@ def _scheduled_ahead(body: Any, at: datetime | None) -> bool:
 def _fan_visible(method: str, api: str, body: Any, proof: Proof, key: tuple, at: datetime | None) -> bool:
     if method == "PUT" and _PUBLISH.match(api):
         return True
-    # isScheduled is not trusted alone: a date under POST_LEAD ahead, past or unreadable publishes now.
     if method in ("POST", "PUT", "PATCH") and _POST.match(api):
         return not _scheduled_ahead(body, at)
     if method in ("POST", "PUT") and _QUEUE.match(api):

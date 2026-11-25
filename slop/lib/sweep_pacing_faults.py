@@ -1,68 +1,3 @@
-"""Background OF walks' faults (lib/faults.py merges `register(Fault)` into FAULTS), for
-scenarios/2026-11-05-sweep-pacing.py. The check names live here and the scenario imports them,
-so a target can never name a check that does not exist.
-
-  sweep-unpaced        service/of_pacing.py's pacer off: no gap between a Creator's background
-                       pages (PAGE_GAP_S = JITTER_S = 0). OF's 429 still retried once, but a
-                       Creator's walks drain its bucket (lib/sweep_pacing_wire.py) within a second,
-                       retries meet a second 429 and the roster crawls fail: spacing and the counts
-                       go red (measured: 5 of 5, small at host load 25-40, medium at 6-99). Noise,
-                       no targets (races, measured): no_429_on_user_reads / no_5xx (a person's
-                       lookup meeting GROWTH's empty bucket: 2/2 small under load, 0/3 medium) and
-                       growth_refresh_walked (which GROWTH walk meets the second 429 first: 2/5);
-                       user_read_p95 is a budget.
-                       growth_route_not_blocked stays green (no lock is held across a page).
-  sweep-no-429-retry   OF's 429 never retried (`retry_after` finds none: the walks' pages and the
-                       name fill's lookups). The pacer kept.
-  tx-cadence-300       the ledger supervisor back on the old 300 s cadence
-                       (transaction_ingest._TICK_INTERVAL_S = 300 in the relay, as
-                       INGEST_TICK_INTERVAL_S=300 would set it): the same pages a pass at 3x the
-                       passes an hour, so tx_calls_budget goes red. Every page and row unchanged.
-  tx-recent-window-ignored  harness side (the scenario sets lib/sweep_pacing_wire.py's
-                       `window = False`): OF ignores the ledger's startDate, so a recent walk
-                       pages the whole ledger like a full one: tx_calls_budget red, and the relay's
-                       guard logs ingest_tx_recent_window_ignored (tx_recent_window_kept
-                       red). Every row still lands (walk_counts_match stays green).
-  tx-recent-startdate-iso  harness side (the scenario sets lib/sweep_pacing_wire.py's
-                       `startdate_iso = True`): the recent walk's startDate reaches OF as an ISO
-                       datetime, which OF answers with an empty list (measured): the row added
-                       10 h before the recent pass never lands and the relay logs
-                       ingest_tx_recent_walk_empty (tx_recent_catches_new_row red).
-  tx-backfill-offset-walk  the backfill back on offset paging, complete on an empty page: OF's
-                       offset cap reads as the end. DEEP and REACT record complete past 600 rows.
-  tx-backfill-complete-on-empty  an empty page ends the walk as complete, marker walk kept:
-                       REACT's blank page reads as the end, the rows below it never land.
-  tx-backfill-marker-exclusive  markers one second low (ties and the next page's first row skipped).
-  tx-backfill-lifetime-on-reread  a re-read row adds its amount to the fan's lifetime again.
-  tx-backfill-flips-uncapped  a backfill's old status flips announce as a recent walk's do.
-  tx-backfill-uncapped  no per-tick page cap.
-  tx-backfill-poll-only-complete  disputes polled only once a backfill is complete: the disputed row
-                       REACT's walk puts back stays revenue through the partial tick.
-  tx-backfill-poll-every-tick  disputes polled on every tick, whatever moved: the calls bound goes red.
-  tx-backfill-gap-unread  a resumed read short of newest_seen reads as if it got there: the walk goes
-                       on from its cursor, GAP's rows between the read and newest_seen never land.
-  tx-backfill-blank-first-page  a blank first page reads as an empty window: BLANK records complete.
-  tx-backfill-failure-counted  a tick that held pages counts its failure: DEEP, its streak at 2, pauses.
-  tx-backfill-short-gap-unwalked  a reactivation inside 7 days gets no walk: BLANK, 6 days off, keeps its top 600.
-  tx-backfill-crowded  4 backfills at once, the pace measured over CROWD's bucket: a retry's 429 ends a tick.
-  tx-backfill-dispute-repolled  the disputes poll ignores a row's status (lib/ledger_faults.py's bug
-                       class): every backfill tick deducts the disputed sale again.
-  tx-full-watermark-forgotten  the full-walk watermark back in memory: a Creator this process has not
-                       stamped walks full whatever last_full_at says (a restart re-walks everyone).
-  tx-failed-full-not-stamped  a failed full walk on a backfilled Creator leaves last_full_at (the
-                       pre-fix rule, AE 2026-11-08): its next tick in the same period walks full again.
-  tx-full-failure-hidden  /health ignores full_walk_failures (the pre-fix rule, W28 review #1/#9): F
-                       reads ok / green there after a passing recent walk although its full walk failed.
-  tx-proxy-pacing-bypassed  ledger walk pages paced per Creator only (of_pacing's proxy-paced kinds
-                       empty: no exit slot): Creators on one proxy page at once.
-  promo-memo-cleared-on-need-ids  of_promos' capped-history memo cleared by a need_ids stop too (the
-                       pre-review rule, spec D4; of_promos.paged_of_fetch reports STOP_NEED as STOP_END):
-                       pass 2 pages to the live promo and answers those pages alone, pass 3 rereads
-                       the whole cap (promo_cap_once red).
-  prewarm-all-accounts  link_prewarm's prewarm back on LINK_PREWARM_SCOPE=all (`prewarm_scope` answers
-                       `all`: today's pass): every Creator without a List, DISPLAY's display-only links
-                       too, gets its Growth lists read in the background (prewarm_scope red).
-"""
 from __future__ import annotations
 
 PAGES_SPACED = "pages_spaced"
@@ -266,7 +201,8 @@ def _tx_full_watermark_forgotten() -> None:
     from datetime import datetime
 
     import transaction_ingest as ti
-    mine: set[str] = set()   # Creators this process stamped (the old in-memory dict's keys)
+    # Creators this process stamped (the old in-memory dict's keys)
+    mine: set[str] = set()
     real_ok, real_fail, real_decide = ti._mark_success, ti._record_failure, ti._decide_mode
 
     async def ok(account_id, **kw):
@@ -323,7 +259,8 @@ def _promo_memo_cleared_on_need_ids() -> None:
     async def relabelled(*a, **kw):
         rows = await real(*a, **kw)
         if rows is not None and rows.stop == of_promos.STOP_NEED:
-            rows.stop = of_promos.STOP_END     # a need_ids stop reads as the real end: the memo clears
+            # a need_ids stop reads as the real end: the memo clears
+            rows.stop = of_promos.STOP_END
         return rows
     of_promos.paged_of_fetch = relabelled
 
@@ -335,17 +272,11 @@ def _prewarm_all_accounts() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run sweep-pacing --break
         "sweep-unpaced": Fault(_unpaced, (PAGES_SPACED, COUNTS)),
-        # slop/run sweep-pacing --break --fault=sweep-no-429-retry --baseline=<green run>
         "sweep-no-429-retry": Fault(_no_retry, (RETRY_ONCE, TERMINAL, COUNTS)),
-        # slop/run sweep-pacing --break --fault=tx-cadence-300 --baseline=<green run>
         "tx-cadence-300": Fault(_tx_cadence_300, (TX_BUDGET,)),
-        # slop/run sweep-pacing --break --fault=tx-recent-window-ignored --baseline=<green run>
         WINDOW_IGNORED: Fault(None, (TX_BUDGET, TX_WINDOW)),
-        # slop/run sweep-pacing --break --fault=tx-recent-startdate-iso --baseline=<green run>
         STARTDATE_ISO: Fault(None, (TX_NEW_ROW,)),
-        # slop/run sweep-pacing --break --fault=<name> --baseline=<green run>
         "tx-backfill-offset-walk": Fault(_bf_offset_walk, (BF_DROPPED, BF_PARTIAL)),
         "tx-backfill-complete-on-empty": Fault(_bf_complete_on_empty, (BF_DROPPED, BF_PARTIAL)),
         "tx-backfill-marker-exclusive": Fault(_bf_marker_exclusive, (BF_DROPPED, BF_ONCE)),
@@ -365,6 +296,5 @@ def register(Fault) -> dict:
         "tx-full-failure-hidden": Fault(_tx_full_failure_hidden, (TX_FAILED_FULL,)),
         "tx-proxy-pacing-bypassed": Fault(_tx_proxy_pacing_bypassed, (TX_PROXY_SPACED,)),
         "promo-memo-cleared-on-need-ids": Fault(_promo_memo_cleared_on_need_ids, (PROMO_CAP,)),
-        # slop/run sweep-pacing --break --fault=prewarm-all-accounts --baseline=<green run>
         "prewarm-all-accounts": Fault(_prewarm_all_accounts, (PREWARM_SCOPE,)),
     }

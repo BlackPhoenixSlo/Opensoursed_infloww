@@ -1,76 +1,3 @@
-"""Reads a person waits on, for Creators whose proxy has died (the fail-fast interactive reads).
-Prod 2026-10-28: a proxy answering CONNECT 403 made the Fan List (`/chats`), the bell
-(`/users/notifications`) and a thread (`/chats/{fan}/messages`) run OFClient's full
-proxy retry, 5 tries with 0.4-3.2 s pauses, so each read took ~7 s to its 502. Now
-`server._proxy` marks a request that is not `X-Priority: background` interactive and
-its GETs take 2 tries with one pause; background work and every write keep 5. Pauses are
-equal jitter (of_client.retry_step: half to all of the 0.2 / 0.4-3.2 s ceilings).
-
-The world: one Agency with 50 Creators (`one_agency`), each with a captured session
-(seed/of_sessions.py), so the relay builds its REAL OFClient; OnlyFans is lib/of_wire.py
-on loopback (`OF_WIRE`). DEAD (5, `--set dead=`) Creators are put on one proxy,
-lib/proxy_wire.py, through the product's own `POST /admin/proxies` and
-`POST /admin/proxies/assign` (the owner, signed in); each reads `users/me` once through
-it while it is alive (the client is built and its x-hash fetched, as on prod before
-the proxy failed). Then the proxy dies, and at once: one background read per dead
-Creator (`GET /api/of/v2/users/notifications/count`, `X-Priority: background`, as the
-app's polls are tagged), and `--users` people, arriving at seeded times over ARRIVE_S
-(5 s, `--set arrive_s=`; while the background reads are still retrying), each open one
-Creator drawn from the seed among the DEAD and HEALTHY (10) others, firing that
-Creator's three reads together:
-dead: `/chats` (Fan List), `/users/notifications` (bell), `/chats/{fan}/messages`
-(thread); healthy: `/chats`, `/users/me`, `/users/notifications/count` (what
-lib/of_wire.py models).
-
-Invariants: the binding went through and the warm-up tunneled; every read of a dead
-Creator answered 502 `proxy_unreachable` (none dropped: users' reads + background reads);
-interactive dead reads p95 <= INTERACTIVE_MS (budget); every background dead read took
-5 refused CONNECTs plus the pauses' 3 s floor at least (half their 6 s ceiling) and at
-most those plus the 6 s ceiling plus BG_SLACK_MS; per upstream call, the relay's own
-`proxy_error_retry` / `proxy_error` lines show 2 tries for an interactive route and 5 for
-the background one, and the dead proxy saw exactly that many refused CONNECTs (plus one
-per `proxy_probe` line, should proxy_health probe it); a read someone waits on never
-counts toward marking the proxy bad: EARLY_S after the death, with DOWN_AFTER or more
-interactive reads already failed, the proxy's `health` (GET /admin/proxies) reads no more
-errors than background chains had ended by then (jittered pauses let some end inside
-5 s) and is not `bad`; after the background reads it reads one
-error each and still `suspect` (the confirm waits CONFIRM_GAP_S, 30 s, past a blip); every
-healthy Creator's read answered 200 meanwhile; lib/of_wire.py saw only signed calls it
-models. p95 of the healthy reads vs the last green run.
-Torn registry (before the death, proxy alive): TORN (5) more Creators, bound to the same proxy
-after the DEAD ones (THINK_S apart) and never read before, each read `users/me` once while
-the harness rewrites the relay's proxies.json in place in a loop (truncate, half, 2 ms, the
-rest: what `save`'s in-place write shows a reader); every client the relay builds for them must name the proxy
-(its `client_egress` line), none direct or refused, all reads 200, and at least one of those
-build lines carries `registry=torn` (a build did meet a torn file: the check is not vacuous).
-
-Bypasses, declared: the dead proxy is SOCKS5 on loopback that refuses each CONNECT after
-0.33 s (lib/proxy_wire.py: measured per-try time on prod; curl 97 not 56, both
-`ProxyError`); background work is the `X-Priority: background` route, not a no-request
-job (ingest, automations: covered by service/tests/test_proxy_retry_interactive.py);
-the dead reads' 502s go to their own recorder (the expected answer, checked here, not the
-stock no-5xx check's); people are httpx pools, not browsers; all `--users` at the same
-instant (`--set arrive_s=0`) measures the relay's own queue instead: healthy reads p95
-~4 s with 600 at once (…-f18d, …-b46e), the cliff 2026-10-28-scoped-reads-fanout
-documents; a seeded thread is not
-needed for the dead thread read (it never reaches OnlyFans); the owner pauses THINK_S
-(1 s) between adding the proxy and binding Creators: back to back, the product's
-fire-and-forget SQL mirror syncs (`_kick_db_sync`) race and one logs `sync_from_disk
-failed` (UNIQUE proxies.label), a product race outside this flow, not hidden by
-EXPECTED_TRACEBACKS; the torn registry is the harness writing the relay's temp proxies.json
-(outside service/), SETTLE_S after the binds, so their fire-and-forget SQL mirror syncs (which
-read the file too) are done before it starts.
-
-Break-it-once: interactive-reads-full-proxy-retry (the 5-try policy back for interactive
-reads) turns only the budget and the tries check red; `--fault=interactive-failures-counted`
-(an interactive read's failure counts toward bad again) turns only the counting check red; `--fault=relay-cache-failure-not-shared`
-(callers queued behind a failed relay_cache fetch each go upstream again, one after
-another: the bell's and Fan List's readers of one dead Creator wait N failures) turns
-only the budget red, at `--scale=medium --users=200` (at small no reader queues behind
-another, so it is NOT CAUGHT there: measured 2026-10-28);
-`--fault=proxies-torn-read-goes-direct` (lib/egress_faults.py: a torn read is an empty
-registry again) turns only the torn-registry check red.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -93,19 +20,20 @@ P95_VS_LAST = (1.5, 100)
 P95_VS_LAST_MIN_N = 30
 DEAD = 5
 HEALTHY = 10
-INTERACTIVE_MS = 1500   # a read someone waits on, dead proxy, request to 502
-BG_PAUSE_CAP_MS = 6000  # 0.4 + 0.8 + 1.6 + 3.2 s: the full policy's jittered pauses' ceiling (floor: half)
-BG_SLACK_MS = 1500      # relay + loopback overhead on top (a guess)
-FAN = 4242              # the thread a person opens on a dead Creator
+INTERACTIVE_MS = 1500
+# 0.4 + 0.8 + 1.6 + 3.2 s: the full policy's jittered pauses' ceiling (floor: half)
+BG_PAUSE_CAP_MS = 6000
+BG_SLACK_MS = 1500
+FAN = 4242
 LABEL = "slop-dead"
-ARRIVE_S = 5.0          # people open their Creator over this window (seeded times)
-THINK_S = 1.0           # the owner's pause between adding the proxy and binding Creators
-EARLY_S = 5.0           # the health read after the death, while most 5-try chains still retry
-DOWN_AFTER = 3          # service/proxy_health.py: counted failures that would start the confirm
-BG_TRIES = 5            # full proxy retry policy for background reads
-BG_RECORD_SLACK_S = 0.5  # a chain records its failure just before its 502 lands
-TORN = 5                # proxied Creators whose first client is built while proxies.json is rewritten
-SETTLE_S = 3.0          # the binds' SQL mirror syncs (db/import_legacy reads proxies.json) end before the rewrites
+ARRIVE_S = 5.0
+THINK_S = 1.0
+EARLY_S = 5.0
+DOWN_AFTER = 3
+BG_TRIES = 5
+BG_RECORD_SLACK_S = 0.5
+TORN = 5
+SETTLE_S = 3.0
 
 DEAD_READS = {
     "chats": "/api/of/v2/chats?limit=25&offset=0&order=recent",
@@ -118,7 +46,7 @@ HEALTHY_READS = {
     "notifications/count": "/api/of/v2/users/notifications/count",
 }
 BG_READ = "/api/of/v2/users/notifications/count"
-BG_ROUTE = "/api2/v2/users/notifications/count"   # its OnlyFans route, in the relay's log lines
+BG_ROUTE = "/api2/v2/users/notifications/count"
 
 C_BIND = "dead proxy: bound through /admin/proxies, each Creator's first users/me tunneled through it"
 C_ANS = "dead proxy: every read answered 502 proxy_unreachable, none dropped"
@@ -155,13 +83,12 @@ def _unreachable(r: dict) -> bool:
 
 
 async def _torn_registry(ctx, owner, torn: list[str], bound: list[int]) -> None:
-    """TORN's first reads while proxies.json is rewritten in place in a loop (module docstring)."""
     path, log = ctx.stack.tmp / "proxies.json", ctx.out / "relay.log"
     await asyncio.sleep(SETTLE_S)
     whole = path.read_bytes()
     stop, cycles = threading.Event(), [0]
 
-    def rewrite() -> None:   # the bypass, declared: the harness's writes, as `save`'s in-place write
+    def rewrite() -> None:
         half = len(whole) // 2
         while not stop.is_set():
             with open(path, "r+b") as f:
@@ -172,8 +99,8 @@ async def _torn_registry(ctx, owner, torn: list[str], bound: list[int]) -> None:
                 f.write(whole[half:])
                 f.flush()
             cycles[0] += 1
-            time.sleep(0.0002)   # whole only briefly, so most builds meet a torn file (at 1 ms: 2 of 5
-            #                      direct under the fault, 20261031T042016Z-…-break-b090)
+            # whole only briefly so most builds meet a torn file (at 1 ms: 2 of 5 went direct under the fault)
+            time.sleep(0.0002)
 
     off = log.stat().st_size
     writer = threading.Thread(target=rewrite, name="slop-torn-proxies", daemon=True)
@@ -185,7 +112,7 @@ async def _torn_registry(ctx, owner, torn: list[str], bound: list[int]) -> None:
         stop.set()
         await asyncio.to_thread(writer.join)
         path.write_bytes(whole)
-    await asyncio.sleep(0.5)  # the relay's last log lines reach relay.log
+    await asyncio.sleep(0.5)
     with open(log, "rb") as f:
         f.seek(off)
         text = f.read().decode(errors="replace")
@@ -221,17 +148,13 @@ async def run(ctx) -> None:
 async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], torn: list[str]) -> None:
     owner, fake = ctx.owner, ctx.of_wire
 
-    # ── the owner puts DEAD Creators on the proxy (the product's routes), each reads once through it ──
     r = await owner.post("/admin/proxies", json={"label": LABEL, "scheme": "socks5", "host": "127.0.0.1",
                                                   "port": proxy.port, "notes": "slop: dies mid-run"})
     bound = [r.status_code]
-    await asyncio.sleep(THINK_S)  # the owner picks Creators (docstring: the SQL mirror's race)
+    # back to back, the product's fire-and-forget SQL mirror syncs race (`sync_from_disk failed`, UNIQUE proxies.label)
+    await asyncio.sleep(THINK_S)
     for a in dead:
         bound.append((await owner.post("/admin/proxies/assign", json={"label": LABEL, "account_id": a})).status_code)
-    # TORN's binds before the warm-up (each bind evicts every pooled client, DEAD's warm ones too), THINK_S
-    # apart: back to back, a bind's save truncates proxies.json under the last one's SQL mirror sync
-    # (db/import_legacy reads it raw: `sync_from_disk failed`, measured 1 in 20 binds,
-    # 20261031T041506Z-…-b090).
     torn_bound = []
     for a in torn:
         await asyncio.sleep(THINK_S)
@@ -243,12 +166,11 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
               routes=bound, warm={x["aid"]: x["status"] for x in warm}, tunneled=tunneled)
     await _torn_registry(ctx, owner, torn, torn_bound)
 
-    # ── the proxy dies; background reads and people's reads land together ──
     rng = w.rng("dead_proxy_people")
     picks = [rng.choice(dead + healthy) for _ in range(ctx.users)]
-    dead_rec = Recorder()  # the dead reads' expected 502s, checked below (declared)
+    dead_rec = Recorder()
     n_dead_reads = sum(len(DEAD_READS) for a in picks if a in dead)
-    pool = 3 * len(picks) + len(dead)  # every read in flight at once
+    pool = 3 * len(picks) + len(dead)
     dead_http, live_http = owner.share(rec=dead_rec, limits=pool), owner.share(limits=pool)
     n0 = len(fake.calls)
     c0 = len(proxy.connects)
@@ -268,7 +190,7 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
     early_task = asyncio.create_task(early())
     bg = [asyncio.create_task(_read(dead_http, BG_READ, a, "background", {"X-Priority": "background"}))
           for a in dead]
-    await asyncio.sleep(0.05)  # the background calls are in their retry when people arrive
+    await asyncio.sleep(0.05)
 
     arrive_s = float(ctx.param("arrive_s", ARRIVE_S))
     when = w.rng("dead_proxy_arrivals")
@@ -287,7 +209,7 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
     ctx.rec.stage = None
     for h in (dead_http, live_http):
         await h.aclose()
-    await asyncio.sleep(0.5)  # the relay's last log lines reach relay.log
+    await asyncio.sleep(0.5)
     with proxy.lock:
         refused = [c for c in proxy.connects[c0:] if not c["alive"]]
 
@@ -318,8 +240,6 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
               min_ms=round(min(bms), 1) if bms else None, max_ms=round(max(bms), 1) if bms else None,
               floor_ms=floor_ms, ceil_ms=ceil_ms, n=len(bms))
 
-    # Per upstream call, the relay's own lines: N-1 `proxy_error_retry ... attempt=k/N <route>`
-    # then one `proxy_error ... url=<route>`; the proxy refused exactly sum(N) CONNECTs.
     text = (ctx.out / "relay.log").read_text(errors="replace")
     calls, retries, ns = Counter(), Counter(), defaultdict(set)
     for m in _FINAL.finditer(text):
@@ -333,7 +253,7 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
                    "want": want_n[route]}
            for route in calls
            if ns[route] != {want_n[route]} or retries[route] != calls[route] * (want_n[route] - 1)}
-    probes = len(_PROBE.findall(text))   # proxy_health's own probes through it (none expected in this window)
+    probes = len(_PROBE.findall(text))
     ctx.check(C_TRIES, bool(calls) and BG_ROUTE in calls and len(calls) > 1 and not off
               and sum(tries.values()) == len(refused) - probes,
               upstream_calls=dict(calls), off=off, tries=sum(tries.values()), refused_connects=len(refused),
@@ -341,7 +261,7 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
 
     failed_early = sum(1 for x in inter if x["end"] <= early_at)
     bg_early = sum(1 for x in bgs if x["end"] <= early_read_at + BG_RECORD_SLACK_S)
-    if failed_early < DOWN_AFTER:   # nothing to tell apart yet (few people, or reads slower than the budget)
+    if failed_early < DOWN_AFTER:
         ctx.skip(C_COUNT, f"only {failed_early} interactive reads had failed {EARLY_S} s after the death "
                           f"(need {DOWN_AFTER})")
     else:
@@ -373,7 +293,6 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
         "killed_at": round(killed_at, 3), "people_done_at": round(max((x["end"] for x in people), default=0), 3),
         "healthy_ms": {"n": len(lms), "p50": pct(lms, 0.5), "p95": pct(lms, 0.95)},
         "upstream_calls": dict(calls), "refused_connects": len(refused)})
-    # The relay's own refusal telemetry at the end (evidence only; the refusal scenario checks it).
     end_health = await health()
     ctx.metric("dead_proxy_health", {k: end_health.get(k) for k in ("refusals", "inflight", "inflight_peak")})
     ctx.metric("http_dead", dead_rec.summary())

@@ -1,20 +1,11 @@
 "use client";
 
-/**
- * ChatSearch — in-chat history search panel backed by OF's native
- * `/chats/{id}/messages/search?query=` endpoint.
- *
- * The OF endpoint returns just an array of message IDs (newest first).
- * Previews come from whatever messages we already have in the React
- * Query cache. For IDs not yet loaded, the row shows "(load context)"
- * and clicking pages older messages back until the target is reached
- * (capped to keep OF happy with its cursor rate limit).
- */
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { relay, type OFMessage } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
+import { useCan } from "@/hooks/useCan";
 import { stripHtmlPreview } from "@/lib/htmlPreview";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
@@ -28,38 +19,31 @@ export interface ChatSearchProps {
   ownerUserId: number | null;
   hasOlder: boolean;
   loadingOlder: boolean;
-  /** The last older page failed (or timed out): auto-fill stops and a Retry
-   *  shows; nothing re-fires into the failure on its own. */
   olderFailed?: boolean;
-  /** Rejects when the page fails or times out (15s). */
   onLoadOlder: () => Promise<{ added: number; hasMore: boolean }> | void;
   onPick: (messageId: number) => void;
   onClose: () => void;
 }
 
-const MAX_PAGES_TO_LOAD = 12; // cap older-page pulls per search session
-const AUTO_FILL_COUNT = 3;    // how many top hits we auto-page back to preview
+// Cap older-page pulls per search: OF's cursor rate limit.
+const MAX_PAGES_TO_LOAD = 12;
+const AUTO_FILL_COUNT = 3;
 
 export function ChatSearch(props: ChatSearchProps) {
   const {
     accountId, fanId, messages, ownerUserId,
     hasOlder, loadingOlder, olderFailed = false, onLoadOlder, onPick, onClose,
   } = props;
+  const allowed = useCan(accountId, "chat_search");
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
   const [ids, setIds] = useState<number[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
-  // Tracks a per-result "loading context" state so the user gets feedback
-  // when clicking a not-yet-loaded match triggers a page-back loop.
   const [jumpingId, setJumpingId] = useState<number | null>(null);
-  // True while the auto-fill loop is pulling pages to preview the top hits.
   const [autoFilling, setAutoFilling] = useState(false);
-  // Sentinel: only auto-fill once per (query, top-ids) tuple — without this,
-  // every byId update re-triggers the effect and we'd spam loadOlder.
   const autoFillKeyRef = useRef<string>("");
   const inputRef = useRef<HTMLInputElement | null>(null);
-  // Debounce so each keystroke doesn't slam OF's search endpoint.
   useEffect(() => {
     const t = setTimeout(() => setDebounced(q.trim()), 250);
     return () => clearTimeout(t);
@@ -67,8 +51,6 @@ export function ChatSearch(props: ChatSearchProps) {
 
   useEffect(() => {
     inputRef.current?.focus();
-    // The Esc is spent here (`preventDefault`): a page that acts on an Esc
-    // nothing took (e.g. to leave a mode) leaves it alone.
     function onKey(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
       e.preventDefault();
@@ -78,11 +60,9 @@ export function ChatSearch(props: ChatSearchProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Run the OF search on the debounced query. Empty query clears state
-  // without firing a request.
   useEffect(() => {
     let cancelled = false;
-    if (!debounced) {
+    if (!debounced || !allowed) {
       setIds([]);
       setError(null);
       setSearching(false);
@@ -97,9 +77,7 @@ export function ChatSearch(props: ChatSearchProps) {
       )
       .then((resp) => {
         if (cancelled) return;
-        // OF responds with either a flat array of ids OR an envelope like
-        // {list: [...]}. Accept both so we don't silently break if OF
-        // tweaks the shape.
+        // OF answers a flat id array or {list: [...]}; accept both.
         const list = Array.isArray(resp)
           ? resp
           : Array.isArray((resp as { list?: unknown[] })?.list)
@@ -120,10 +98,8 @@ export function ChatSearch(props: ChatSearchProps) {
         if (!cancelled) setSearching(false);
       });
     return () => { cancelled = true; };
-  }, [debounced, accountId, fanId]);
+  }, [debounced, accountId, fanId, allowed]);
 
-  // Build a quick lookup so each result row can render its preview from
-  // the messages we already have on screen.
   const byId = useMemo(() => {
     const m = new Map<number, OFMessage>();
     for (const msg of messages) {
@@ -133,17 +109,11 @@ export function ChatSearch(props: ChatSearchProps) {
     return m;
   }, [messages]);
 
-  // Auto-fill the top hits' previews by paging older messages in until
-  // the first AUTO_FILL_COUNT ids are present. Keyed on (query, top-ids)
-  // so it runs exactly once per result set even though byId changes each
-  // time a page lands.
   useEffect(() => {
     if (!debounced || ids.length === 0 || !hasOlder || olderFailed) return;
     const top = ids.slice(0, AUTO_FILL_COUNT);
     const key = `${debounced}|${top.join(",")}`;
     if (autoFillKeyRef.current === key) return;
-    // If everything is already on screen, mark this set as done without
-    // running the loop — cheap path for re-searches over already-loaded history.
     if (top.every((id) => byId.has(id))) {
       autoFillKeyRef.current = key;
       return;
@@ -154,9 +124,7 @@ export function ChatSearch(props: ChatSearchProps) {
     (async () => {
       try {
         for (let i = 0; i < MAX_PAGES_TO_LOAD && !cancelled; i++) {
-          // We can't rely on `byId` here — closure has a stale snapshot. Read
-          // the DOM (Bubble stamps `data-msg-id` on each bubble) so we can
-          // bail out the moment every target id is rendered.
+          // DOM, not byId: the closure holds a stale snapshot.
           const allLoaded = top.every((id) =>
             document.querySelector(`[data-msg-id="${CSS.escape(String(id))}"]`),
           );
@@ -166,20 +134,14 @@ export function ChatSearch(props: ChatSearchProps) {
           if (!ok || ok.added === 0 || !ok.hasMore) break;
         }
       } catch {
-        // A failed / timed-out page: stop; `olderFailed` shows the Retry.
       } finally {
         if (!cancelled) setAutoFilling(false);
       }
     })();
-    // A cancelled run never clears its own flag, and the re-run may return
-    // early (olderFailed / exhausted), so clear it here.
     return () => { cancelled = true; setAutoFilling(false); };
-    // We intentionally don't depend on byId — the DOM check inside the
-    // loop handles "did the previous page bring our targets in?" itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debounced, ids, hasOlder, olderFailed]);
 
-  /** The failed state's Retry: one manual page, then auto-fill may run again. */
   function retryOlder() {
     autoFillKeyRef.current = "";
     setError(null);
@@ -187,12 +149,10 @@ export function ChatSearch(props: ChatSearchProps) {
   }
 
   async function handlePick(id: number) {
-    // If the bubble's already on screen, just jump.
     if (byId.has(id)) {
       onPick(id);
       return;
     }
-    // Otherwise page back until found (or we exhaust history / cap).
     if (!hasOlder) {
       setError("Match is older than what's been loaded, and OF says there is no more history.");
       return;
@@ -202,23 +162,14 @@ export function ChatSearch(props: ChatSearchProps) {
       for (let i = 0; i < MAX_PAGES_TO_LOAD; i++) {
         const res = await onLoadOlder();
         const ok = res && typeof res === "object" && "added" in res ? res : null;
-        // `byId` is recomputed each render — read it via the latest message
-        // snapshot we got back. We can't see updated state in this loop
-        // closure, so check via the DOM hook: just look at the current
-        // messages prop on next tick. Simplest reliable approach: peek the
-        // result counts and break if either we got nothing back or we
-        // exhausted history.
         if (!ok) break;
         if (ok.added === 0) break;
         if (!ok.hasMore) break;
-        // Quick exit — if the new page contained the id we're after, jump.
-        // We check via document because state hasn't propagated to us yet.
         const el = document.querySelector(`[data-msg-id="${CSS.escape(String(id))}"]`);
         if (el) break;
       }
       onPick(id);
     } catch {
-      // A failed / timed-out page: stay put, say so; Retry is beside it.
       setError("Couldn’t load older messages to reach that match.");
     } finally {
       setJumpingId(null);

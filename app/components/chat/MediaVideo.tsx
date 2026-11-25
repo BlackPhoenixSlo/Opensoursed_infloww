@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * MediaVideo — what a bubble's media strip and viewer do differently for a
- * video: the ▶ and duration on its tile, the poster it shows instead of the
- * raw clip, playback in the viewer, and the bundle's "2 photos · 1 video"
- * count. Split out of `MessageList.tsx`, which renders these.
- *
- * A video is OF's `type === "video"`. Its clip is `files.full` (or `source`,
- * or a bare `url`); its poster is the first still `stillUrl` finds, which
- * skips the clip by extension. Both load through the relay's `/img` proxy,
- * which forwards Range requests, so `<video>` can seek.
- */
 
 import { useEffect, useRef } from "react";
 
@@ -25,14 +14,11 @@ export function isVideoMedia(m: OFMedia): boolean {
   return m.type === "video";
 }
 
-/** The raw (unproxied) clip URL, or null when OF gave none (locked, unbought). */
 export function clipUrl(m: OFMedia): string | null {
   if (m.canView === false) return null;
   return m.files?.full?.url || m.files?.source?.url || m.url || null;
 }
 
-/** "2 photos · 1 video" for a bundle; "" for a single item. Anything that is
- *  not a video or audio counts as a photo. */
 export function mediaCountLabel(items: OFMedia[]): string {
   if (items.length < 2) return "";
   const n = { photo: 0, video: 0, audio: 0 };
@@ -44,7 +30,6 @@ export function mediaCountLabel(items: OFMedia[]): string {
   ].filter(Boolean).join(" · ");
 }
 
-/** The ▶ (viewable tiles only) and the duration, painted on a video tile. */
 export function VideoTileMarks({ media, glyph, duration }: { media: OFMedia; glyph: boolean; duration: boolean }) {
   const label = duration ? fmtDuration(media.duration ?? media.files?.full?.duration) : "";
   return (
@@ -67,9 +52,6 @@ export function VideoTileMarks({ media, glyph, duration }: { media: OFMedia; gly
   );
 }
 
-/** The viewer's body on a video: a `<video>` with controls and its poster
- *  (never autoplaying), paused when the viewer pages away; or the poster and
- *  "Video not available" when there is no clip to play. */
 export function ViewerVideo({ media, accountId }: { media: OFMedia; accountId: string | null }) {
   const ref = useRef<HTMLVideoElement | null>(null);
   useEffect(() => {

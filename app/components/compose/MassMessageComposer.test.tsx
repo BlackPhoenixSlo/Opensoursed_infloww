@@ -13,14 +13,30 @@
  *   • an all-models partial failure locks the content and the retry sends
  *     the same body from the failed model only.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { makeTestQueryClient, renderWithProviders } from "@/test-utils";
 import { relay } from "@/lib/relay";
 import { MassMessageComposer } from "@/components/compose/MassMessageComposer";
 import { MASS_ONE_GIF_ALL_MODELS } from "@/components/compose/massMessageReducer";
 import { PRICE_NOTE } from "@/lib/sendGuards";
+import { resetPlatformForTests, setPlatform } from "@/lib/platform";
+
+type Fixture = { id: string; nickname: string; color: string; platform?: string };
+const BASE: Fixture[] = [{ id: "acct1", nickname: "A", color: "#fff" }, { id: "acct2", nickname: "B", color: "#fff" }];
+const fixtures = vi.hoisted(() => ({ accounts: [] as Fixture[] }));
+vi.mock("@/hooks/useCan", async () => {
+  const { accountPlatform, can } = await import("@/lib/platform");
+  const useAccountPlatform = (id: string | null | undefined) => {
+    const a = fixtures.accounts.find((x) => x.id === id);
+    return a ? accountPlatform(a) : null;
+  };
+  return {
+    useAccountPlatform,
+    useCan: (id: string | null | undefined, cap: Parameters<typeof can>[1]) => can(useAccountPlatform(id), cap),
+  };
+});
 
 const postSpy = vi.fn(async (..._a: unknown[]) => ({}));
 vi.mock("@/lib/relay", async (importOriginal) => {
@@ -32,9 +48,18 @@ vi.mock("@/contexts/ScopeContext", () => {
   const all = { scope: { kind: "all" } };
   return { useScope: () => all };
 });
-vi.mock("@/hooks/useAccounts", () => {
-  const accounts = [{ id: "acct1", nickname: "A", color: "#fff" }, { id: "acct2", nickname: "B", color: "#fff" }];
-  return { useActiveAccounts: () => accounts, usePlatformAccounts: () => accounts, ownerAccountsQuery: (u?: string) => ({ queryKey: ["accounts", u ?? "anon"], queryFn: async () => ({ accounts }) }) };
+vi.mock("@/hooks/useAccounts", async () => {
+  const { useMemo } = await import("react");
+  const { accountPlatform, usePlatform } = await import("@/lib/platform");
+  return {
+    useActiveAccounts: () => fixtures.accounts,
+    usePlatformAccounts: () => {
+      const platform = usePlatform();
+      const all = fixtures.accounts;
+      return useMemo(() => all.filter((a) => accountPlatform(a) === platform), [all, platform]);
+    },
+    ownerAccountsQuery: (u?: string) => ({ queryKey: ["accounts", u ?? "anon"], queryFn: async () => ({ accounts: fixtures.accounts }) }),
+  };
 });
 vi.mock("@/hooks/useAllModelsInclude", () => ({
   useAllModelsInclude: () => ({ isIncluded: () => true, toggle: vi.fn() }),
@@ -65,10 +90,15 @@ vi.mock("@/components/chat/GifPicker", () => ({
   ),
 }));
 
+beforeEach(() => {
+  fixtures.accounts = BASE;
+});
 afterEach(() => {
   cleanup();
   postSpy.mockClear();
   vi.restoreAllMocks();
+  window.localStorage.clear();
+  resetPlatformForTests();
 });
 
 const REASON = "Add text, media, or a GIF";
@@ -136,6 +166,68 @@ describe("MassMessageComposer — the button and the send read one check", () =>
     fireEvent.click(btn);
     await new Promise((r) => setTimeout(r, 20));
     expect(postSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("MassMessageComposer — only massSenders send", () => {
+  const NOVA: Fixture = { id: "fs1", nickname: "Nova", color: "#fff", platform: "fansly" };
+  const options = () => within(screen.getByLabelText("Post as")).queryAllByRole("option").map((o) => o.textContent);
+  const allModels = () => fireEvent.click(screen.getByRole("checkbox", { name: /Broadcast from ALL models/ }));
+
+  it("a Fansly Creator is no option and no All-models chip; the OnlyFans ones stay, in order", async () => {
+    fixtures.accounts = [BASE[0], NOVA, BASE[1]];
+    renderWithProviders(<MassMessageComposer onClose={() => {}} />);
+    expect(options()).toEqual(["A", "B"]);
+    allModels();
+    expect(screen.getByText("(2/2 included)")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Nova/ })).toBeNull();
+  });
+
+  it("a forced Fansly id is no sender: Broadcast refuses and POSTs nothing", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fixtures.accounts = [BASE[0], NOVA];
+    renderWithProviders(<MassMessageComposer forcedAccountId="fs1" onClose={() => {}} />);
+    typeText("hello");
+    const btn = broadcast();
+    await waitFor(() => expect(btn.getAttribute("title")).toBe("Pick an account"));
+    fireEvent.click(btn);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  it("a forced OnlyFans Creator with no session still POSTs from her id", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const onClose = vi.fn();
+    renderWithProviders(<MassMessageComposer forcedAccountId="ofX" onClose={onClose} />);
+    typeText("hello");
+    const btn = broadcast();
+    await waitFor(() => expect(btn).toHaveProperty("disabled", false));
+    fireEvent.click(btn);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    expect((postSpy.mock.calls[0] as [string, unknown, { accountId: string }])[2].accountId).toBe("ofX");
+  });
+
+  it("in Fansly mode there is no sender at all", async () => {
+    setPlatform("fansly");
+    fixtures.accounts = [NOVA];
+    renderWithProviders(<MassMessageComposer onClose={() => {}} />);
+    expect(options()).toEqual(["(no active sessions)"]);
+    typeText("hello");
+    await waitFor(() => expect(broadcast().getAttribute("title")).toBe("Pick an account"));
+    allModels();
+    expect(screen.getByText("No active sessions.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Aa" })).toBeNull();
+  });
+
+  it.each<[string, Fixture[], boolean]>([
+    ["OnlyFans All-models keeps Aa", [BASE[0], BASE[1]], true],
+    ["a leading Fansly row is skipped for the first OnlyFans sender", [NOVA, BASE[0]], true],
+  ])("All-models rich text follows the first sender: %s", async (_label, accounts, aa) => {
+    fixtures.accounts = accounts;
+    renderWithProviders(<MassMessageComposer onClose={() => {}} />);
+    allModels();
+    expect(!!screen.queryByRole("button", { name: "Aa" })).toBe(aa);
   });
 });
 

@@ -1,8 +1,3 @@
-/**
- * PlatformSwitches — Your Preferences' per-platform switches (roadmap 8.10):
- * OnlyFans display sync and notifications per platform, this browser's own
- * localStorage choices, on by default and applied without the blob's Save.
- */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { renderToString } from "react-dom/server";
@@ -26,7 +21,7 @@ describe("PlatformSwitches", () => {
       expect(sw("Platform notifications", name).getAttribute("aria-checked")).toBe("true");
     }
     expect(within(section("Synchronize platform display settings")).queryByRole("switch", { name: "Fansly" })).toBeNull();
-    expect(readNotifSettings().osPing).toBe(false); // the old blob's other keys kept
+    expect(readNotifSettings().osPing).toBe(false);
   });
 
   it("server-renders the defaults whatever is stored, so hydration matches", () => {

@@ -1,9 +1,3 @@
-/**
- * AutoUnsendPanel's form as a pure reducer: the rule's on/off and the three message classes (free text, image /
- * video, PPV), each on or off with its hours. The saved rule seeds it once (`hydrate`, ignored after the first);
- * `canSave` and `buildPayload` read it for the Save.
- */
-
 export type AutoClass = "text" | "img" | "price";
 
 export interface ClassSetting { on: boolean; h: number }
@@ -13,18 +7,15 @@ export interface AutoUnsendForm {
   text: ClassSetting;
   img: ClassSetting;
   price: ClassSetting;
-  /** The saved rule has seeded the form; later loads leave it alone. */
   hydrated: boolean;
 }
 
 export type AutoUnsendAction =
-  /** The saved rule landed: its on/off and `payload.policy`. */
   | { type: "hydrate"; isEnabled: boolean; policy: Record<string, number> }
   | { type: "enabled"; on: boolean }
   | { type: "classOn"; cls: AutoClass; on: boolean }
   | { type: "hours"; cls: AutoClass; hours: number };
 
-/** Each class's policy key (the Relay's sweep reads these) and its hours when off in the saved rule. */
 const CLASS_KEY: Record<AutoClass, { key: string; fallback: number }> = {
   text: { key: "mass_text_hours", fallback: 4 },
   img: { key: "mass_media_hours", fallback: 24 },
@@ -60,17 +51,13 @@ export function autoUnsendReducer(state: AutoUnsendForm, action: AutoUnsendActio
   }
 }
 
-/** Save guard: an empty policy is never sent. The Relay reads one as the per-chat sweep of outbound DMs
- *  (`not wants_mass`, unsend_messages.py). */
+// An empty policy is never sent: the Relay reads one as the per-chat sweep of outbound DMs.
 export const canSave = (s: AutoUnsendForm) => s.text.on || s.img.on || s.price.on;
 
-/** What Save sends: a new rule (`create`, always with a policy) or a patch of the saved one (`update`, `ruleId`). */
 export type SaveBody =
   | { kind: "create"; is_enabled: boolean; payload: { policy: Record<string, number> } }
   | { kind: "update"; id: number; is_enabled: boolean; payload?: { policy: Record<string, number> } };
 
-/** The Save's body, or null when Save is off. A saved rule can always be turned off: with no class on it keeps its
- *  saved policy (no payload sent), as the class rows hide while the rule is off. `ruleId` = the saved rule's, or null. */
 export function saveBody(s: AutoUnsendForm, ruleId: number | null): SaveBody | null {
   if (canSave(s)) {
     const payload = buildPayload(s);
@@ -81,7 +68,6 @@ export function saveBody(s: AutoUnsendForm, ruleId: number | null): SaveBody | n
   return ruleId != null && !s.enabled ? { kind: "update", id: ruleId, is_enabled: false } : null;
 }
 
-/** The rule's payload: the hours of each class that is on. */
 export function buildPayload(s: AutoUnsendForm): { policy: Record<string, number> } {
   const policy: Record<string, number> = {};
   for (const cls of CLASSES) if (s[cls].on) policy[CLASS_KEY[cls].key] = s[cls].h;

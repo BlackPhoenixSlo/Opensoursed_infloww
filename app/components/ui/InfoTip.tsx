@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * The ⓘ that explains the thing next to it: a styled tooltip that opens at once on hover or keyboard focus and on a
- * tap (phones have no hover), above the icon (below when the viewport has no room), clamped to the viewport. It
- * renders in a portal, so a card's `overflow` never clips it. Escape, a tap elsewhere, blur or the pointer leaving
- * close it. Replaces the native `title`, which waits ~1s, is unstyled and never shows on touch.
- */
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -16,7 +10,6 @@ import { cn } from "@/lib/utils";
 const GAP = 6;
 const EDGE = 8;
 
-/** Where the tip sits: above the trigger, centred, unless it would leave the viewport. */
 export function placeTip(
   trigger: Pick<DOMRect, "top" | "bottom" | "left" | "width">,
   tip: Pick<DOMRect, "width" | "height">,
@@ -32,11 +25,8 @@ export function placeTip(
 export function InfoTip({
   text, label, icon, iconClassName = "h-3.5 w-3.5", className, ...rest
 }: Omit<HTMLAttributes<HTMLSpanElement>, "children" | "title"> & {
-  /** The explanation shown in the tip. */
   text: string;
-  /** The icon's accessible name; defaults to `text`. */
   label?: string;
-  /** Another glyph than lucide's `Info`. */
   icon?: ReactNode;
   iconClassName?: string;
 }) {
@@ -45,7 +35,7 @@ export function InfoTip({
   const tip = useRef<HTMLDivElement>(null);
   const id = useId();
 
-  // Measured before paint, so the tip never flashes at 0,0; it renders hidden until placed.
+  // Measured before paint so the tip never flashes at 0,0; it renders hidden until placed.
   useLayoutEffect(() => {
     const el = tip.current;
     const t = trigger.current?.getBoundingClientRect();

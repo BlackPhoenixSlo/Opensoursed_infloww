@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * useFanSpend — bulk lifetime-spend lookup for ChatList row chips.
- *
- * Reads from our local SQLite (`/admin/fans/{aid}/spend-batch`), which the
- * WS pump + event-transcoder keep within seconds of OF for any active fan.
- * This is dramatically faster than the old `/users/list?view=x` round-trip
- * (one SQL query vs N OF API calls) and survives a tab close because the
- * query is persisted by providers.tsx.
- *
- * If a fan has never been touched by the pump (cold-start, brand new fan),
- * the DB returns no row and the spend is unknown: the row shows the photo
- * and no pill — the next chat-list tick will enrich the fan and the WS pump
- * will populate spend on first purchase/tip event.
- *
- * Cap is 200 ids per call (backend enforces); we chunk at 200 to match.
- */
 
 import { useCallback, useMemo } from "react";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
@@ -24,15 +8,11 @@ import { relay, type OFChatItem } from "@/lib/relay";
 import { compareFanIds, type FanId } from "@/lib/fanId";
 
 export interface FanSpend {
-  /** Lifetime total in cents. */
   spend_cents: number;
-  /** ISO timestamp when the subscription ends, or null. */
   expired_at: string | null;
-  /** Subscription status string: "active", "expired", etc. */
   subscription_status: string | null;
 }
 
-/** The spend-batch reply cached under `["fan-spend", aid, ids]`. */
 export interface SpendBatchResp {
   spend: Record<string, {
     spend_cents: number;
@@ -51,13 +31,8 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-/** One spend-batch request: an account and up to CHUNK of its fan ids,
- *  comma-joined (`key`). */
 interface SpendGroup { accountId: string; key: string }
 
-/** The fan set as `aid\tid,id,…` lines, one per CHUNK-sized group — ids
- *  sorted so the same set always yields the same keys (not `a - b`, which is
- *  NaN on a snowflake — see compareFanIds). */
 function spendGroupsSig(rows: OFChatItem[]): string {
   const byAcct = new Map<string, Set<FanId>>();
   for (const r of rows) {
@@ -68,6 +43,7 @@ function spendGroupsSig(rows: OFChatItem[]): string {
   }
   const lines: string[] = [];
   for (const [aid, idSet] of byAcct) {
+    // Sorted so one set always yields the same keys; not `a - b`, NaN on a snowflake id.
     for (const c of chunk(Array.from(idSet).sort(compareFanIds), CHUNK)) {
       lines.push(`${aid}\t${c.join(",")}`);
     }
@@ -75,8 +51,6 @@ function spendGroupsSig(rows: OFChatItem[]): string {
   return lines.join("\n");
 }
 
-/** `rows` as spend-batch groups. `rows` changes identity on every SSE patch;
- *  the groups only when the fan set does — so query keys stay stable. */
 function useSpendGroups(rows: OFChatItem[]): SpendGroup[] {
   const sig = spendGroupsSig(rows);
   return useMemo(() => (sig ? sig.split("\n") : []).map((line) => {
@@ -85,7 +59,6 @@ function useSpendGroups(rows: OFChatItem[]): SpendGroup[] {
   }), [sig]);
 }
 
-/** The key and fetcher for a group's spend. */
 function spendBatchQuery(g: SpendGroup) {
   return {
     queryKey: ["fan-spend", g.accountId, g.key] as const,
@@ -97,9 +70,7 @@ function spendBatchQuery(g: SpendGroup) {
   };
 }
 
-// One `select` per account, kept for the module's life: react-query re-runs
-// a select whose identity changed on every render, and a fresh Map each time
-// re-renders the observer — a loop.
+// One select per account for the module's life: a fresh select/Map each render re-renders the observer in a loop.
 const selectByAccount = new Map<string, (resp: SpendBatchResp) => Map<string, FanSpend>>();
 function selectSpendFor(accountId: string) {
   let fn = selectByAccount.get(accountId);
@@ -135,13 +106,6 @@ function combineSpend(
   };
 }
 
-/** Spend for `rows`' fans, keyed `aid:fid`, fresh for `staleTime`; `persist`
- *  keeps it in the persisted cache (providers.tsx reads `meta.persist`).
- *    • `settled` — every account's spend query has finished fetching.
- *    • `loaded` — every account's spend for these fans has landed; a refetch
- *      keeps it, a re-key (new fans) clears it until the new key lands.
- *    • `refetch` — refetch exactly these queries, optionally only
- *      `accountIds`'. Stable while the fan set is. */
 export function useFanSpendBatch(
   rows: OFChatItem[],
   { staleTime, persist }: { staleTime: number; persist: boolean },
@@ -173,9 +137,6 @@ export function useFanSpendBatch(
   return { spend, settled, loaded, refetch };
 }
 
-/** The Fan List chips' spend: 24h fresh (the DB is kept fresh by the WS pump
- *  + transcoder, so no re-fetch on tab focus or interval) and persisted, so
- *  the chip survives a reload. `loaded` as useFanSpendBatch's. */
 export function useFanSpend(rows: OFChatItem[]): { spend: Map<string, FanSpend>; loaded: boolean } {
   return useFanSpendBatch(rows, { staleTime: DAY_MS, persist: true });
 }

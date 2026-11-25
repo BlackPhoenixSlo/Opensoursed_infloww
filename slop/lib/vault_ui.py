@@ -1,4 +1,3 @@
-"""Shared browser and proxy setup for the vault scenarios."""
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +32,6 @@ async def _await_bound(owner, label: str, account_id: str | None, bound: bool,
 
 
 async def proxy_ready(owner, label: str, account_id: str | None = None, timeout_s: float = 10.0) -> None:
-    """Wait until the product's proxy registry exposes a created or assigned proxy."""
     await _await_bound(owner, label, account_id, True, timeout_s)
 
 
@@ -72,7 +70,6 @@ TOURS_SEEN = ("localStorage.setItem('vaultProOnboarding', JSON.stringify({batchU
 
 async def open_vault_picker(page, ctx, account_id: str, fan_id: int, *, timeout: int = 60_000,
                             navigate: bool = True):
-    """Open the Messages Pro vault picker and return its dialog."""
     if navigate:
         await page.goto(f"{ctx.app}/messages-pro/{account_id}/{fan_id}",
                         wait_until="domcontentloaded", timeout=timeout)
@@ -99,7 +96,6 @@ async def cdn_calls(ctx, since: int = 0, *, allow_failure: bool = False) -> list
 
 @asynccontextmanager
 async def proxy_bind(owner, label: str, *, notes: str, account_id: str | None = None):
-    """Create a wire proxy and optionally bind it; always unbind and close it."""
     with ProxyWire() as wire:
         binding = ProxyBinding(wire, owner, label)
         r = await owner.post("/admin/proxies", json={"label": label, "scheme": "socks5",
@@ -126,7 +122,6 @@ async def proxy_bind(owner, label: str, *, notes: str, account_id: str | None = 
 
 @asynccontextmanager
 async def captured(ctx, page, data: dict, name: str):
-    """Record a browser error and its failed screenshot in `data`."""
     try:
         yield
     except Exception as e:  # noqa: BLE001 — the scenario check reports it

@@ -1,27 +1,5 @@
 "use client";
 
-/**
- * The top bar's Clock button, Infloww's `ClockInOrOut` (bundle @10503600,
- * shown by `HeaderSignButton` @11153536), between the bell and the avatar (header @11162567).
- *
- * It reads `GET /admin/shifts/clock-status` (any session) and renders only
- * while the caller may clock in (`can_clock`) or has an open event. Idle it
- * reads "Clock in"; clocked in, "Clock out" and the elapsed time in Infloww's
- * `convertSeconds` format at 62% opacity, moved every 30 seconds. A click
- * asks "Confirm clock in?" / "Confirm clock out?", then clocks through
- * `useClock` (the agency-wide clock: no Creator), whose toast says "Clock in
- * successful" or a 409's "You are already clocked in". A chatter in two
- * Agencies (`reason: "pick_creator"`) opens `ClockDialog` to name a Creator.
- *
- * While clocked in, `useClockHeartbeat` renews the event after real input
- * (Infloww's `useMouseMoveDetection` @10588799 and `ClockTimeInterval`
- * @10626350), and a status that comes back with the event closed by Auto
- * clock out shows "You have been clocked out due to inactivity" once, or
- * Infloww's "…as your internet connection was lost." when the tab's
- * network attempts (heartbeats and status reads) had failed at the network
- * level with no success since, the first at or before the close. The Relay's sweep still
- * does the closing either way; only the line differs.
- */
 
 import * as Dialog from "@radix-ui/react-dialog";
 import { useQueryClient, type UseQueryResult } from "@tanstack/react-query";
@@ -42,23 +20,12 @@ import {
 } from "@/lib/shifts";
 
 
-/** The input that counts as activity, Infloww's mouse and keyboard. */
 const ACTIVITY = ["pointermove", "pointerdown", "keydown", "wheel"] as const;
-/** The elapsed label's step. */
 const TICK_MS = 30_000;
 
-/** A fetch that never got an HTTP answer (a `RelayError` is an answer), or the browser offline. */
 const networkFailed = (e: unknown) =>
   !(e instanceof RelayError) || (typeof navigator !== "undefined" && navigator.onLine === false);
 
-/**
- * Renews the `open` event (`POST /clock-heartbeat`) every 60 seconds, or 30
- * with `minutes` (`auto_clock_out_minutes`) ≤ 3 as Infloww's
- * `ClockTimeInterval`, but only when there was input since the last beat, so
- * an idle open tab does not keep anyone clocked in. Each answer replaces the
- * cached ClockStatus; a beat that got no HTTP answer calls `onLost` with the
- * event's id. Nothing while `open` is null.
- */
 export function useClockHeartbeat(open: ClockEvent | null, minutes: number, onLost: (eventId: number) => void) {
   const queryClient = useQueryClient();
   const openId = open?.clock_event_id ?? null;
@@ -75,7 +42,6 @@ export function useClockHeartbeat(open: ClockEvent | null, minutes: number, onLo
       beat = Date.now();
       clockHeartbeat().then(
         (status) => queryClient.setQueryData<ClockStatus>(CLOCK_STATUS_KEY, status),
-        // A failed beat: the next poll or beat reads the status again.
         (e) => { if (networkFailed(e)) lost.current(openId); },
       );
     }, minutes <= 3 ? 30_000 : 60_000);
@@ -86,12 +52,9 @@ export function useClockHeartbeat(open: ClockEvent | null, minutes: number, onLo
   }, [minutes, openId, queryClient]);
 }
 
-/** The server's clock minus this device's, in ms, as of the latest status read (0 before one). */
 const serverSkew = (query: UseQueryResult<ClockStatus>) =>
   query.data ? Date.parse(query.data.server_now) - query.dataUpdatedAt : 0;
 
-/** "1 h 23 min" since `iso` by the server's clock (`skew`: server minus this
- *  device, in ms), re-read every 30 seconds. */
 function Elapsed({ since, skew }: { since: string; skew: number }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -105,22 +68,6 @@ function Elapsed({ since, skew }: { since: string; skew: number }) {
   );
 }
 
-/**
- * The Auto clock out's notice, once per event, and the one record it reads:
- * the open event whose network attempts (a status read here, or a heartbeat
- * through the returned `onLost`) failed with no success since, and when the
- * first of them failed, by the server's clock. Every successful status read, a
- * heartbeat's answer included, first announces an Auto clock out it
- * reveals, then clears that record. The connection-lost line needs that
- * first failure at or before the close: a beat that fails after it (a laptop
- * waking with its network still down) found the event already closed for
- * inactivity.
- *
- * ASSUMPTION: "You have been clocked out due to inactivity" shows only for
- * an event this tab saw open, so a page opened after an Auto clock out does
- * not announce it. Rung 5: Infloww's client says it when it notices the idle
- * itself. Overturned if the owner wants it on the next visit too.
- */
 function useAutoClockOutNotice(query: UseQueryResult<ClockStatus>) {
   const seenOpen = useRef(new Set<number>());
   const announced = useRef(new Set<number>());
@@ -128,8 +75,8 @@ function useAutoClockOutNotice(query: UseQueryResult<ClockStatus>) {
   const status = query.data;
   const openId = status?.open?.clock_event_id ?? null;
   const skew = serverSkew(query);
-  // The first failure counts: in an outage that outlasts the deadline the later ones come after the close.
   const markLost = useCallback((id: number) => {
+    // first failure counts: later ones in a long outage come after the close
     if (lost.current?.id !== id) lost.current = { id, at: Date.now() + skew };
   }, [skew]);
 
@@ -149,15 +96,11 @@ function useAutoClockOutNotice(query: UseQueryResult<ClockStatus>) {
       pushNotice({ id: `clock:auto:${last.clock_event_id}`, text, label: "Time tracking" });
     }
     lost.current = null;
-    // Every successful read: each carries a new `server_now`, so a new `status`.
   }, [status, query.dataUpdatedAt]);
 
   return markLost;
 }
 
-/** A window's clock session: the signed-in caller's `useClock`, the Auto
- *  clock out's notice, and the heartbeat after input. Every window that can
- *  hold an open event runs one. */
 function useClockSession() {
   const { user } = useUser();
   const { chatter } = useChatter();
@@ -168,9 +111,6 @@ function useClockSession() {
   return clock;
 }
 
-/** The clock session with no button, for a window with no top bar (Messages
- *  Pro): input there keeps the caller's open event alive, and an Auto clock
- *  out says so, as in the main window. */
 export function ClockHeartbeat() {
   useClockSession();
   return null;
@@ -193,7 +133,6 @@ export default function ClockButton() {
         // ("Clock in") or `ClockOutLine` ("Clock out" and the time since).
         className={HEADER_TILE}
         disabled={clock.busy}
-        // A chatter in two Agencies picks a Creator in ClockDialog instead of confirming.
         onClick={() => (clock.picks ? void clock.act() : setConfirming(true))}
       >
         {open ? <ClockOutLine aria-hidden className={HEADER_TILE_ICON} /> : <ClockCheckLine aria-hidden className={HEADER_TILE_ICON} />}
@@ -207,13 +146,11 @@ export default function ClockButton() {
       {clock.picking && <ClockDialog onClose={clock.closePicker} />}
       <Dialog.Root open={confirming} onOpenChange={setConfirming}>
         <Dialog.Portal>
-          {/* IfModal's look on Radix: antd's 416px confirm, the 70% mask, the kit box. */}
           <Dialog.Overlay className={`fixed inset-0 z-40 ${IF_MODAL_MASK}`} />
           <Dialog.Content
             aria-describedby={undefined}
             className={`fixed left-1/2 top-1/2 z-50 w-[416px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 space-y-6 px-6 pb-5 pt-[22px] ${IF_MODAL_BOX}`}
           >
-            {/* Infloww's sign modal has no title: the question is its body, and OK reads "Yes" (bundle @10634621). */}
             <Dialog.Title className="text-[14px] font-normal">
               {open ? CLOCK_TEXT.confirmOut : CLOCK_TEXT.confirmIn}
             </Dialog.Title>

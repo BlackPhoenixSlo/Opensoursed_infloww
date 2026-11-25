@@ -1,10 +1,3 @@
-/**
- * Growth's Profile promotion on Infloww's legacy page (page-parity ticket 12): Create promotion in its pop-up with
- * Infloww's/OF's fields (the body OF Manager sends) and Keep running, the Auto-activate status row, Add fans to
- * list, Campaign insights' table with Show expired, Deactivate behind Infloww's confirm, the pager, bundles under it; a promotion's Revenue
- * "from N fans" from the relay's cache; an earlier unanswered create's "create anyway"; a Free trial's optional Re-create limit
- * (default No limit, owner 2026-11-21) and the Takeover line, and the second tick, Re-create at 90% filled (docs/spec/phase-01-promo-preempt.md). The free trial links tests are in TrialLinksTab.test.tsx.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -52,12 +45,10 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 const mount = (ui: React.ReactElement) => render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 
-/** Click `combobox`, then its option. */
 function choose(combobox: HTMLElement, option: string | RegExp) {
   fireEvent.click(combobox);
   fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: option }));
 }
-/** The combobox's option names (opens it, reads, closes it). */
 function optionsOf(combobox: HTMLElement) {
   fireEvent.click(combobox);
   const names = within(screen.getByRole("listbox")).getAllByRole("option").map((o) => o.textContent);
@@ -321,7 +312,6 @@ describe("PromotionTab", () => {
     expect(within(table).getByText("2 / 10")).toBeTruthy();
     expect(within(table).getByText(/Oct\. 01, 2026 \| For expired and new subscribers/)).toBeTruthy();
     expect(screen.getByText(/Total: 1 record/)).toBeTruthy();
-    // Bundles follow the table in the page.
     const bundles = screen.getByRole("region", { name: "Subscription bundles" });
     expect(table.compareDocumentPosition(bundles) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(screen.getByRole("switch", { name: "Show expired" }));
@@ -495,7 +485,6 @@ describe("Profile promotion's Add fans to list", () => {
       if (path === "/api/of/v2/users/me") return Promise.resolve({ subscribePrice: 10, subscriptionBundles: [] });
       return Promise.resolve({});
     });
-    // The relay answers with the saved setting.
     put.mockImplementation((_p: string, body: Record<string, unknown>) =>
       Promise.resolve({ enabled: body.enabled, list_id: body.list_id, list_name: body.list_name }));
   });
@@ -518,7 +507,6 @@ describe("Profile promotion's Add fans to list", () => {
     mount(<PromoListRow accountId="a1" />);
     await waitFor(() => expect(optionsOf(select())).toEqual(["None", "VIP", "Whales"]));
     expect(toggle().disabled).toBe(true);
-    // Later claimers are added by the next figures read (about hourly); the copy says so, not "as fans claim".
     expect(screen.getByText("Adds every promotion's fans to this OnlyFans list, then new claimers about hourly."))
       .toHaveAttribute("title", "Adds every promotion's fans to this OnlyFans list now. Fans who claim later are added " +
         "when the figures are next read from OnlyFans, about every hour. Fans already added stay in it.");
@@ -560,7 +548,6 @@ describe("Profile promotion's Add fans to list", () => {
     await waitFor(() => expect(put).toHaveBeenCalledWith("/admin/promo-list",
       { account_id: "a1", enabled: false, list_id: "800001", list_name: "VIP" }));
     await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("false"));
-    // Off with a list kept: switching on again needs no confirm.
     fireEvent.click(toggle());
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(put).toHaveBeenLastCalledWith("/admin/promo-list",

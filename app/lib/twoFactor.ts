@@ -1,18 +1,7 @@
-/**
- * Sign-in's second step (service/account_security_api.py). A password sign-in (or
- * an invite sign-up) whose principal has 2FA on, or whose Agency requires it,
- * answers with a `TwoFactorChallenge` instead of a session cookie. The
- * contexts' `login` / `register` throw it as `TwoFactorRequired`, so callers
- * that only know "signed in or an error" keep working, and the sign-in forms
- * catch it and render `TwoFactorStep`.
- */
-
 import { RelayError } from "@/lib/relay";
 
 export interface TwoFactorChallenge {
-  /** "verify": enter a code; "setup": the Agency requires 2FA and this login has none yet. */
   two_factor: "verify" | "setup";
-  /** Signed, five minutes; names the principal. */
   ticket: string;
   username: string;
 }
@@ -29,8 +18,6 @@ export function isTwoFactorChallenge(x: unknown): x is TwoFactorChallenge {
   return typeof x === "object" && x !== null && "two_factor" in x && "ticket" in x;
 }
 
-/** A sign-in POST's error as `RelayError`, its message the Relay's words: a
- *  plain `detail`, or a typed one's `message` (`{code, message}`). */
 export function authError(status: number, parsed: unknown): RelayError {
   const detail = typeof parsed === "object" && parsed && "detail" in parsed
     ? (parsed as { detail: unknown }).detail
@@ -43,9 +30,6 @@ export function authError(status: number, parsed: unknown): RelayError {
   return new RelayError(status, parsed, message);
 }
 
-/** Auth routes' POST: JSON both ways, the session cookie same-origin.
- *  Resolves to the parsed body (text if not JSON, `null` if empty); a
- *  non-2xx throws `authError`. */
 export async function postAuthJSON<T>(path: string, body: unknown): Promise<T> {
   const r = await fetch(path, {
     method: "POST",
@@ -55,18 +39,13 @@ export async function postAuthJSON<T>(path: string, body: unknown): Promise<T> {
   });
   const text = await r.text();
   let parsed: unknown = text;
-  try { parsed = text ? JSON.parse(text) : null; } catch { /* keep text */ }
+  try { parsed = text ? JSON.parse(text) : null; } catch { }
   if (!r.ok) throw authError(r.status, parsed);
   return parsed as T;
 }
 
 export type SignedInKind = "user" | "chatter";
 
-/** The sign-in form's one password check, owners then employees
- *  (`POST /auth/sign-in`, service/account_security_api.py). Resolves to the
- *  kind of session the Relay set; throws `TwoFactorRequired` for the code
- *  step, else `authError` (401 wrong password, 403 `account_deactivated`,
- *  429 `too_many_attempts`). */
 export async function signIn(username: string, password: string): Promise<SignedInKind> {
   const parsed = await postAuthJSON<{ kind: SignedInKind } | TwoFactorChallenge>(
     "/auth/sign-in", { username, password });
@@ -74,8 +53,6 @@ export async function signIn(username: string, password: string): Promise<Signed
   return parsed.kind;
 }
 
-/** A typed refusal's `code` ("account_deactivated", "too_many_attempts",
- *  "employee_limit", "invalid_code", ...), if `err` is one. */
 export function errorCode(err: unknown): string | undefined {
   if (!(err instanceof RelayError)) return undefined;
   const detail = (err.body as { detail?: unknown } | null)?.detail;

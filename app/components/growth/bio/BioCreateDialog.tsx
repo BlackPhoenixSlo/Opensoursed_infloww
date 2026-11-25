@@ -1,8 +1,5 @@
 "use client";
 
-/** "New bio page": the address (username), the display name and an optional Creator. A picked Creator prefills the
- *  name and a username from its OF profile (the shared `/users/me` query); the server adds its OnlyFans link. A
- *  created page opens in the editor. State: `bioCreateForm.ts`. */
 import { useEffect, useId, useReducer } from "react";
 import { useRouter } from "next/navigation";
 

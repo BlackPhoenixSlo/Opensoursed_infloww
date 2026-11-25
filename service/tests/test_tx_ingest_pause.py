@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
-"""
-transaction_ingest's failure backoff: what counts toward the auto-pause.
-
-    case_proxy_refusal_is_not_counted   a proxy CONNECT 403 (curl 56, the
-        transient IPRoyal DC refusal) never reached OF: the streak stays where
-        it was and the account is not paused
-    case_three_real_failures_pause_30_min
-    case_success_resets_the_streak
-
-Run: ./venv/bin/python service/tests/test_tx_ingest_pause.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 

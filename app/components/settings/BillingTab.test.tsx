@@ -1,6 +1,3 @@
-/**
- * BillingTab — the self-hosted, free line, then the support block (tip link + crypto addresses); no request.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen } from "@testing-library/react";
 

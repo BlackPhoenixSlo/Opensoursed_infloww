@@ -1,7 +1,3 @@
-/**
- * InfiniteListFooter — what the foot of a list shows in each paging state, and that its sentinel, once seen,
- * asks for the next page only when there is one, none is loading and the list is not in error.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 
@@ -26,7 +22,6 @@ afterEach(() => {
 
 describe("InfiniteListFooter", () => {
   it.each([
-    // state,                     hasNext, fetching, error, button,      disabled, end line,             fetches when seen
     ["more to load",              true,    false,    false, "Load more", false,    null,                 1],
     ["loading the next page",     true,    true,     false, "Loading…",  true,     null,                 0],
     ["the list is in error",      true,    false,    true,  "Load more", false,    null,                 0],

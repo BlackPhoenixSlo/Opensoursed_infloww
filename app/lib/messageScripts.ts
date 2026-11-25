@@ -1,13 +1,3 @@
-/**
- * Messages Pro scripts from and onto a chat (roadmap W4 4.2):
- *   • `scriptDraftFromMessage` — "Save as script" on one of our bubbles turns
- *     the sent message back into a saved-reply draft (text, its OF formatting kept, media, price,
- *     free previews, GIF).
- *   • `scriptPickWarning` — the "Use script?" guard: what to warn about before
- *     a script lands in the composer for this Fan (media he already bought,
- *     media deleted from the vault). Null when there is nothing to say.
- */
-
 import type { SavedReplyDraft } from "@/hooks/useSavedReplies";
 import type { FanVaultEntry } from "@/hooks/useFanVaultHistory";
 import type { PickedTemplate } from "@/components/chat/TemplatePicker";
@@ -17,16 +7,13 @@ import { giphyUrl } from "@/lib/ofMedia";
 import { hasOfFormatting, ofPlainText, ofText } from "@/lib/ofRichText";
 
 export function scriptDraftFromMessage(msg: OFMessage): SavedReplyDraft {
-  // Vault ids only: a saved reply stores numeric OF media ids. Free previews
-  // lead, since the composer reads a script's first `previews.length` tiles
-  // as the free ones.
   const media = (msg.media ?? [])
     .map((m) => ({ id: Number(m.id), type: m.type, files: vaultFilesFromChat(m.files) }))
     .filter((m) => Number.isSafeInteger(m.id) && m.id > 0);
   const price = msg.price && msg.price > 0 ? msg.price : 0;
+    // vault ids only (saved replies store numeric OF media ids); free previews lead since the composer reads the first previews.length tiles as the free ones
   const previewSet = new Set(price > 0 ? msg.previews ?? [] : []);
   const ordered = [...media.filter((m) => previewSet.has(m.id)), ...media.filter((m) => !previewSet.has(m.id))];
-  // A formatted message keeps its OF markup (allow-listed), so the script sends formatted; else its plain text.
   const raw = msg.text ?? "";
   const plain = ofPlainText(raw);
   const text = hasOfFormatting(raw) ? ofText(raw) : plain;
@@ -42,8 +29,6 @@ export function scriptDraftFromMessage(msg: OFMessage): SavedReplyDraft {
   };
 }
 
-/** Whether saving `msg` as a script keeps anything: text, a vault media item
- *  or a GIF. Our bubble's menu offers "Save as script" only then. */
 export function scriptDraftHasContent(msg: OFMessage): boolean {
   const d = scriptDraftFromMessage(msg);
   return !!d.text || !!d.media?.length || !!d.gifId;

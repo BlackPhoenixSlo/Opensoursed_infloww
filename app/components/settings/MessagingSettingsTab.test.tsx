@@ -1,9 +1,3 @@
-/**
- * MessagingSettingsTab — the Messaging settings Panel: the AI translation switch only (docs/spec/settings-tabs/phase-04-time-tracking-messaging.md).
- *
- * Rendered with the relay mocked at `fetch` by URL: the stub serves the `messaging` Settings blob,
- * so every save assertion is an assertion about the wire.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -13,15 +7,11 @@ import MessagingSettingsTab from "@/components/settings/MessagingSettingsTab";
 type Call = { method: string; url: string; body: unknown };
 
 const URL = "/admin/settings/messaging";
-/** The stored blob: translation off with a legacy prompt the Relay now refuses (over 2,000 characters), so a PUT
- *  that carries it would fail. */
 const STORED = { ai_translation: false, prompt: "p".repeat(2001) };
 const SWITCH = "Enable AI translation in Messages Pro for employees in your organization";
 
 let fetchMock: ReturnType<typeof vi.fn>;
-/** What GET answers. */
 let getReply: () => Response | Promise<Response>;
-/** What PUT answers, given the body it was sent. */
 let putReply: (body: unknown) => Response | Promise<Response>;
 
 function calls(): Call[] {
@@ -51,7 +41,6 @@ afterEach(() => {
 });
 
 const toggle = () => screen.getByRole("switch", { name: SWITCH });
-/** A Card's box, found from its title span (Card: box > header row > title span). */
 const card = (title: string) => screen.getByText(title, { selector: "span" }).parentElement!.parentElement as HTMLElement;
 
 async function mountLoaded() {

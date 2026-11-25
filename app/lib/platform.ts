@@ -25,23 +25,46 @@ import { useSyncExternalStore } from "react";
 
 import type { AccountMeta } from "@/lib/relay";
 
-export type Platform = "onlyfans" | "fansly";
+export const CAPABILITIES = [
+  "pin_message", "mark_unread", "restrict", "block", "chat_search", "chat_media", "vault_remove", "mass_message",
+  "discount", "native_templates", "filter_tips", "filter_priority", "filter_folders", "rich_text",
+] as const;
+export type Capability = (typeof CAPABILITIES)[number];
 
 /** The selector's platforms, in Infloww's order. Infloww's mym and Fanvue
  *  (behind `featureInfo.mymEnter` / `fanvueEnter`, @11128150) are not
  *  platforms here: PlatformSwitcher lists them as disabled "Coming soon" rows. */
-export const PLATFORMS: readonly Platform[] = ["onlyfans", "fansly"];
+export const PLATFORMS = [
+  { key: "onlyfans", label: "OnlyFans", lacks: [] },
+  { key: "fansly", label: "Fansly", lacks: [
+    "pin_message", "mark_unread", "restrict", "block", "chat_search", "chat_media", "vault_remove", "mass_message",
+    "discount", "native_templates", "filter_tips", "filter_priority", "filter_folders", "rich_text",
+  ] },
+] as const satisfies readonly { key: string; label: string; lacks: readonly Capability[] }[];
 
-export const PLATFORM_NAME: Record<Platform, string> = { onlyfans: "OnlyFans", fansly: "Fansly" };
+export type Platform = (typeof PLATFORMS)[number]["key"];
+
+export const PLATFORM_NAME = Object.fromEntries(PLATFORMS.map((p) => [p.key, p.label])) as Record<Platform, string>;
 
 export const PLATFORM_KEY = "chatterly:platform";
 const DEFAULT: Platform = "onlyfans";
 
-const parse = (raw: string | null): Platform => (raw === "fansly" ? "fansly" : DEFAULT);
+const isPlatform = (raw: unknown): raw is Platform => PLATFORMS.some((p) => p.key === raw);
+
+const parse = (raw: string | null): Platform => (isPlatform(raw) ? raw : DEFAULT);
 
 /** An account's platform; one with no `platform` predates the field and is OnlyFans. */
 export const accountPlatform = (a: Pick<AccountMeta, "platform">): Platform =>
-  a.platform === "fansly" ? "fansly" : "onlyfans";
+  isPlatform(a.platform) ? a.platform : DEFAULT;
+
+const LACKS = new Map<Platform, ReadonlySet<Capability>>(
+  PLATFORMS.map((p): [Platform, ReadonlySet<Capability>] => [p.key, new Set<Capability>(p.lacks)]),
+);
+
+export function can(platform: Platform | null, cap: Capability): boolean {
+  const lacks = platform === null ? undefined : LACKS.get(platform);
+  return !!lacks && !lacks.has(cap);
+}
 
 const listeners = new Set<() => void>();
 const changeListeners = new Set<(p: Platform) => void>();

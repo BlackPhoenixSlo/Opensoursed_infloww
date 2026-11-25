@@ -1,7 +1,3 @@
-"""The chat media flow's break-it-once faults (scenarios/2026-11-02-img-chat-media.py): lib/faults.py merges
-`register(Fault)` into FAULTS. The check names live here and the scenario imports them, so a target can never name
-a check that does not exist. Each patches a product module attribute inside the relay.
-"""
 from __future__ import annotations
 
 import hashlib
@@ -27,22 +23,18 @@ NO_OFFHOST = "img: no off-host curl_cffi target (server-offhost.jsonl has no cur
 
 
 def _cache_never_hits() -> None:
-    """The disk cache never answers: every lookup (first look and the in-slot re-read) misses."""
     import img_api
 
     img_api._img_cache_lookup = lambda u: None
 
 
 def _key_keeps_signature() -> None:
-    """The disk-cache key is the whole URL, query (Policy / Signature) included, not host + path: OF re-signing a
-    URL busts its cached bytes (what `_img_cache_key`'s docstring guards against)."""
     import img_api
 
     img_api._img_cache_key = lambda u: hashlib.sha1(u.encode("utf-8")).hexdigest()
 
 
 def _lane_unbounded() -> None:
-    """IMG_FETCH admits every request at once (busy still counted): no ceiling on concurrent CDN fetches."""
     import admission
 
     lane = admission.IMG_FETCH
@@ -63,11 +55,6 @@ def _lane_unbounded() -> None:
 
 
 def _on_pool_tokens() -> None:
-    """The #172 cycle back (see `admission.Lane.enter_async`), both halves on the anyio threadpool: IMG_FETCH's wait
-    parks a pool thread (`enter_async` runs the blocking `enter` there), and the failed-fetch close that releases a
-    slot (`img_api._close_then_exit`: every stale 403) needs a pool token while the slot is held (the executor thread
-    hands it to the main loop's pool and waits, the hop of upload_faults._upload_on_loop). Slots, cap, wait_s and the
-    503 are unchanged."""
     import asyncio
 
     import admission
@@ -90,19 +77,9 @@ def _on_pool_tokens() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run img-chat-media --break (the scenario's FAULT; --break runs small / 20 by default). Its probe-hit
-        # p95 goes red too: noise (a p95 miss is not a catch).
         "img-cache-never-hits": Fault(_cache_never_hits, (WARM_HIT, CDN_COLLAPSE)),
-        # slop/run img-chat-media --break --fault=img-cache-key-keeps-signature (any scale)
-        # The rotated reopen misses and refetches (a cold herd's load, nothing more): only WARM_HIT.
         "img-cache-key-keeps-signature": Fault(_key_keeps_signature, (WARM_HIT,)),
-        # slop/run img-chat-media --break --fault=img-fetch-lane-unbounded
-        # Not CDN_COLLAPSE: with no ceiling the in-slot re-read collapses less, but not reliably to 0 (measured,
-        # small / 20: collapsed 5 vs the baseline's 75, max calls per asset 3, never over the cap, CDN_COLLAPSE green,
-        # 20261103T185251Z-2026-11-02-img-chat-media-break-be88): it may show as noise.
+        # not CDN_COLLAPSE: with no ceiling the in-slot re-read collapses less but not reliably to 0 (measured), so it may show as noise
         "img-fetch-lane-unbounded": Fault(_lane_unbounded, (MAX_INFLIGHT,)),
-        # slop/run img-chat-media --scale=medium --users=200 --no-ui --break --fault=img-fetch-on-pool-tokens
-        # (at small / 20 the herd never outnumbers the threadpool: nothing to catch there). Expected noise: EXPIRED,
-        # REJECTED and the stock 5xx (the wedge's own lane 503s).
         "img-fetch-on-pool-tokens": Fault(_on_pool_tokens, (COLD_HERD,)),
     }

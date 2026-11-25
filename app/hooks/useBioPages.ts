@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * Bio pages (Growth → Bio pages, /growth/bio-pages): the owner's link-in-bio pages over `/admin/bio-pages`
- * (service/bio_pages/admin.py). The list is `["bio-pages"]`, one page `["bio-pages", pid]`. Every write under a page
- * answers the whole page (`BioPage`), so each write puts that answer in the page's cache entry and marks the list
- * stale. Remounts always re-read because another tab may have changed or deleted a page.
- */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { errText } from "@/lib/errText";
@@ -21,10 +15,6 @@ export type StockIcon = (typeof STOCK_ICONS)[number];
 export const isBioMode = (mode: string): mode is BioMode => BIO_MODES.some((m) => m === mode);
 export const isStockIcon = (icon: string | null): icon is StockIcon => STOCK_ICONS.some((s) => s === icon);
 
-/** A page's custom domain. `status`: "pending" (waiting for DNS), "pending_cert" (getting the certificate), "live".
- *  One page's own read adds the records to set (ofl.ink v2's: A, AAAA when the server has one, TXT
- *  `_oflink` = `oflink-verify=<token>`, names relative to the zone) and the last check's time. */
-/** `name` relative to the zone as the API guesses it (last two labels; `@` = the domain itself), `fqdn` the full name. */
 export interface BioDomainRecord { type: string; name: string; fqdn?: string; value: string }
 export interface BioDomain { domain: string; status: string; records?: BioDomainRecord[]; checked?: string | null }
 
@@ -53,18 +43,14 @@ export interface BioProfile {
   bio: string;
   avatar: string;
   avatar_url: string;
-  /** The page backdrop's file URL; "" = none. */
   background_url: string;
   account_id: string | null;
   mode: string;
   verified: boolean;
   custom_domain: BioDomain | null;
   public_url: string | null;
-  /** The short address that redirects to the page (BIO_SHORT_URL), null when this server has none. */
   short_url?: string | null;
-  /** The IPv4 a custom domain's A record names (BIO_SERVER_IP); null when this server takes no custom domains. */
   domain_server_ip?: string | null;
-  /** The page's own address, custom domain or not (the base's `/<username>`); null when this server has none. */
   home_url?: string | null;
   created_at: string;
   updated_at: string;
@@ -89,10 +75,8 @@ export interface BioLink {
   updated_at: string;
 }
 
-/** `P`: what every read and write of one page answers. */
 export interface BioPage { profile: BioProfile; links: BioLink[] }
 
-/** With a Creator an empty `display_name` takes its OnlyFans name and the page starts with an "OnlyFans" link. */
 export type ProfileCreate = { username: string; display_name: string; account_id?: string };
 export type ProfilePatch = Partial<{ display_name: string; bio: string; mode: BioMode; verified: boolean; account_id: string | null }>;
 export type LinkBody = Partial<{
@@ -106,7 +90,6 @@ export const stockIconUrl = (stem: StockIcon) => `${BASE}/stock/${stem}.webp`;
 const pagePath = (pid: string) => `${BASE}/${encodeURIComponent(pid)}`;
 const linkPath = (pid: string, lid: string) => `${pagePath(pid)}/links/${encodeURIComponent(lid)}`;
 
-/** A refused write as the form shows it: the API's `{field, msg}` (422 / 409) names the field, anything else is one line. */
 export function bioFailure(e: unknown, fallback: string): { msg: string; fields: string[] } {
   const detail = e instanceof RelayError && e.body && typeof e.body === "object"
     ? (e.body as { detail?: unknown }).detail : undefined;
@@ -157,7 +140,6 @@ export function useDeleteBioPage(pid: string) {
   });
 }
 
-/** A write under `/{pid}`: its answer is the page. A refused one re-reads the page (a 409 "the links changed"). */
 function usePageWrite<V, P extends BioPage = BioPage>(pid: string, call: (v: V) => Promise<P>) {
   const qc = useQueryClient();
   return useMutation({
@@ -173,30 +155,24 @@ function usePageWrite<V, P extends BioPage = BioPage>(pid: string, call: (v: V) 
 export const usePatchBioPage = (pid: string) =>
   usePageWrite(pid, (body: ProfilePatch) => relay.patch<BioPage>(pagePath(pid), body));
 
-/** A file uploads the avatar; `null` removes it. */
 export const useBioAvatar = (pid: string) =>
   usePageWrite(pid, (file: File | null) => file
     ? relay.uploadFile<BioPage>(`${pagePath(pid)}/avatar`, file)
     : relay.delete<BioPage>(`${pagePath(pid)}/avatar`));
 
-/** A photo of the page's Creator's vault as the avatar (the relay fetches and encodes it). The item's type goes along:
- *  the relay refuses anything but a photo, so its message is the one refusal the card shows. */
 export const useBioAvatarFromVault = (pid: string) =>
   usePageWrite(pid, (m: { id: number; type: string }) =>
     relay.post<BioPage>(`${pagePath(pid)}/avatar/vault`, { media_id: m.id, type: m.type }));
 
-/** A file uploads the page's background; `null` removes it. */
 export const useBioBackground = (pid: string) =>
   usePageWrite(pid, (file: File | null) => file
     ? relay.uploadFile<BioPage>(`${pagePath(pid)}/background`, file)
     : relay.delete<BioPage>(`${pagePath(pid)}/background`));
 
-/** A photo of the page's Creator's vault as the page's background (photo only, like the avatar). */
 export const useBioBackgroundFromVault = (pid: string) =>
   usePageWrite(pid, (m: { id: number; type: string }) =>
     relay.post<BioPage>(`${pagePath(pid)}/background/vault`, { media_id: m.id, type: m.type }));
 
-/** Answers the page and the created link (service/bio_pages/admin.py create_link). */
 export const useCreateBioLink = (pid: string) =>
   usePageWrite(pid, (body: LinkBody) => relay.post<BioPage & { link: BioLink }>(`${pagePath(pid)}/links`, body));
 
@@ -209,26 +185,21 @@ export const useDeleteBioLink = (pid: string) =>
 export const useReorderBioLinks = (pid: string) =>
   usePageWrite(pid, (ids: string[]) => relay.put<BioPage>(`${pagePath(pid)}/links/order`, { ids }));
 
-/** A photo of the page's Creator's vault as a link's background (the relay fetches and encodes it, photo only). */
 export const useBioLinkBackgroundFromVault = (pid: string) =>
   usePageWrite(pid, ({ lid, m }: { lid: string; m: { id: number; type: string } }) =>
     relay.post<BioPage>(`${linkPath(pid, lid)}/background/vault`, { media_id: m.id, type: m.type }));
 
-/** A file uploads the link's background; `null` removes it. */
 export const useBioLinkBackground = (pid: string) =>
   usePageWrite(pid, ({ lid, file }: { lid: string; file: File | null }) => file
     ? relay.uploadFile<BioPage>(`${linkPath(pid, lid)}/background`, file)
     : relay.delete<BioPage>(`${linkPath(pid, lid)}/background`));
 
-/** Set (or replace) the page's custom domain; the same domain keeps its token. */
 export const useSetBioDomain = (pid: string) =>
   usePageWrite(pid, (domain: string) => relay.put<BioPage>(`${pagePath(pid)}/domain`, { domain }));
 
 export const useRemoveBioDomain = (pid: string) =>
   usePageWrite(pid, () => relay.delete<BioPage>(`${pagePath(pid)}/domain`));
 
-/** Check DNS and the certificate now: answers `{status, problems}` (v2's check), the problems what is left to do;
- *  the page (its domain's new status) goes to the cache like any page write. */
 export function useCheckBioDomain(pid: string) {
   const qc = useQueryClient();
   return useMutation({

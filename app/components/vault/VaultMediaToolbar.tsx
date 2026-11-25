@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * The Vault grid's toolbar, laid out from Vault Pro's Layout capture (`docs/infloww-layouts/growth-vault-pro.md`,
- * #38 to #68; ticket 37): the search box (type select, input, icon) and the sort box with its popover, then the
- * "Media:" tabs, with the media tools (Refresh, Select all, the Grid / Table switch) on the right.
- *
- * What a read backs is wired to the grid's existing state: the Caption search is the grid's search, the tabs are its
- * type filter, "Recent" with Ascending / Descending is its newest / oldest sort, Refresh reloads it and Select all
- * selects what is loaded. The rest is shown with the house marker (disabled, `title="not wired"`, no handler): the
- * Note and Hashtag searches, the date filter, every sort field but Recent, the hide switch, the video length picker
- * and the table view, since no Vault read answers them.
- *
- * `disabled` greys every control (the page's no-Creator frame, where there is no vault to search).
- */
 
 import { CheckSquare, LayoutGrid, List, ListFilter, RotateCw, Search } from "lucide-react";
 
@@ -23,10 +10,8 @@ import { cn } from "@/lib/utils";
 
 export type MediaType = "all" | "photo" | "video" | "gif" | "audio";
 export type MediaSort = "newest" | "oldest";
-/** Per-type file counts of the chosen folder; `null` for All media, which has none. */
 export type TypeCounts = Partial<Record<Exclude<MediaType, "all">, number>> | null;
 
-/** #57: the capture's tabs, in its order and spelling (`defaultViewTypes`). */
 const TYPE_TABS: { key: MediaType; label: string }[] = [
   { key: "all", label: "All" },
   { key: "photo", label: "Photo" },
@@ -35,7 +20,6 @@ const TYPE_TABS: { key: MediaType; label: string }[] = [
   { key: "audio", label: "Audio" },
 ];
 
-/** #51: the sort fields. Only Recent has a read (the grid's date order); the statistics fields are listed too. */
 const SORT_FIELDS: { label: string; wired: boolean }[] = [
   { label: "Recent", wired: true },
   { label: "Most liked", wired: false },
@@ -45,7 +29,6 @@ const SORT_FIELDS: { label: string; wired: boolean }[] = [
   { label: "Revenue", wired: false },
 ];
 
-/** #52: the directions, over the grid's newest / oldest. */
 const DIRECTIONS: { label: string; sort: MediaSort }[] = [
   { label: "Ascending", sort: "oldest" },
   { label: "Descending", sort: "newest" },
@@ -55,7 +38,6 @@ const SWITCH_TEXT = "Hide content viewed or unlocked by fan, or posted on Creato
 
 const NOT_WIRED = "not wired";
 
-/** A select option no read backs: listed, off, and titled not wired. */
 const notWiredOption = (value: string, label: string): IfOption => ({
   value,
   text: label,
@@ -63,24 +45,19 @@ const notWiredOption = (value: string, label: string): IfOption => ({
   label: <span title={NOT_WIRED}>{label}</span>,
 });
 
-/** #41: the search types. Only Caption is the grid's search. */
 const SEARCH_TYPES: IfOption[] = [
   { value: "caption", label: "Caption" },
   notWiredOption("note", "Note"),
   notWiredOption("hashtag", "Hashtag"),
 ];
 
-/** #62: the video length options, on the Video tab only. Only "All" is the grid's read. */
 const VIDEO_LENGTHS: IfOption[] = [
   { value: "All", label: "All" },
   ...["< 1 min", "1 - 5 mins", "5 - 10 mins", "> 10 mins"].map((l) => notWiredOption(l, l)),
 ];
 
-/** The toolbar's 40px boxes (#39, #47): 1px L1 on the page colour (B-nav), radius 8. Exported for the page's
- *  no-Creator frame. */
 export const TOOLBAR_BOX = "h-10 rounded-lg border border-border bg-bg";
 
-/** #47 to #53: the sort box, which keeps the field's name ("Recent") and opens the popover. */
 function SortBox({ sort, onSort, disabled }: { sort: MediaSort; onSort: (s: MediaSort) => void; disabled?: boolean }) {
   const { open, setOpen, ref } = useOutsideClose();
   const direction = DIRECTIONS.find((d) => d.sort === sort)!.label;
@@ -122,7 +99,6 @@ function SortBox({ sort, onSort, disabled }: { sort: MediaSort; onSort: (s: Medi
       </button>
 
       {open && (
-        // antd's dropdown: #1f1f1f (white in light), radius 8, no border.
         <div
           role="menu"
           className={cn(
@@ -130,7 +106,6 @@ function SortBox({ sort, onSort, disabled }: { sort: MediaSort; onSort: (s: Medi
             "right-0 top-full w-64 z-20 rounded-lg border-0 bg-[#1f1f1f] [html[data-theme=light]_&]:bg-white max-md:max-h-72 max-md:overflow-y-auto",
           )}
         >
-          {/* #50: dates. All time is the grid's only range; Go to date has no read. */}
           {radio("All time", true, close)}
           {radio("Go to date", false)}
           <div className="my-1 border-t border-border" />
@@ -138,7 +113,6 @@ function SortBox({ sort, onSort, disabled }: { sort: MediaSort; onSort: (s: Medi
           <div className="my-1 border-t border-border" />
           {DIRECTIONS.map((d) => radio(d.label, d.sort === sort, () => { onSort(d.sort); close(); }))}
           <div className="my-1 border-t border-border" />
-          {/* #53: no read reports what a fan viewed or unlocked. */}
           <button
             type="button"
             role="menuitemcheckbox"
@@ -181,30 +155,22 @@ export default function VaultMediaToolbar({
   type: MediaType;
   onType: (t: MediaType) => void;
   typeCounts: TypeCounts;
-  /** Files loaded in the grid; Select all shows while at most 40 are (#65). */
   loadedCount: number;
   onRefresh: () => void;
-  /** A Refresh is in flight: the icon spins and the button waits. */
   refreshing?: boolean;
-  /** The last Refresh fell short (OnlyFans unreachable, or the refresh failed): said beside the button. */
   refreshNote?: string | null;
   onSelectAll: () => void;
   selectMode: boolean;
   onToggleSelect: () => void;
-  /** Select all off: the grid still shows the previous view's tiles while the new one loads. */
   selectAllOff?: boolean;
-  /** Every control off (the no-Creator frame). */
   disabled?: boolean;
 }) {
   const iconBox =
     "w-7 h-7 mx-1.5 grid place-items-center rounded-[20px] text-fg-dim hover:text-fg hover:bg-bg-elev-1 disabled:opacity-50 disabled:cursor-not-allowed";
   return (
     <>
-      {/* #38: 16px 24px, search left and the sort box right; on a phone the sort box wraps under the search. */}
       <div className="px-3 md:px-6 py-4 flex flex-wrap md:flex-nowrap items-center gap-2 md:gap-0">
-        {/* #39 to #46: one bordered box holding the type select, the input and the icon. */}
         <div className={cn(TOOLBAR_BOX, "flex-1 min-w-0 flex items-center")}>
-          {/* #41, #42: antd's borderless select, 111px with a right rule, its text M1. */}
           <IfSelect
             aria-label="Search type"
             value="caption"
@@ -233,13 +199,10 @@ export default function VaultMediaToolbar({
         <SortBox sort={sort} onSort={onSort} disabled={disabled} />
       </div>
 
-      {/* #54: 0 24px 16px, the tabs left and the tools right; when the pane is too narrow for both, the tabs wrap
-          (never clipped under the tools) and the tools drop to the right of the next line. */}
       <div className="px-3 md:px-6 pb-4 flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-y-2 min-w-0">
           <span className="text-sm mr-2 shrink-0">Media:</span>
           {TYPE_TABS.map((t) => {
-            // #58: a type with no files in the chosen folder is off. All media has no per-type count.
             const off = disabled || (t.key !== "all" && typeCounts?.[t.key] === 0);
             const on = type === t.key;
             return (
@@ -276,7 +239,6 @@ export default function VaultMediaToolbar({
             </div>
           )}
         </div>
-        {/* #63 to #68: the media tools, 32px tall; icons in 28px boxes. */}
         <div className="h-8 ml-auto shrink-0 flex items-center">
           {refreshNote && <span role="status" className="mr-2 text-[12px] text-warn">{refreshNote}</span>}
           <button type="button" aria-label="Refresh" title="Refresh" onClick={onRefresh} disabled={disabled || refreshing}
@@ -306,7 +268,6 @@ export default function VaultMediaToolbar({
             >
               <LayoutGrid size={16} aria-hidden />
             </button>
-            {/* #67, #73: no read fills the table's columns (tagged Creators, uploader, notes). */}
             <button
               type="button"
               aria-label="Table view"
@@ -317,7 +278,6 @@ export default function VaultMediaToolbar({
               <List size={16} aria-hidden />
             </button>
           </div>
-          {/* Ours: picking files one by one, which the capture records no control for. */}
           <button
             type="button"
             onClick={onToggleSelect}

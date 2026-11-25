@@ -1,59 +1,10 @@
 #!/usr/bin/env python3
-"""
-The whole-vault flags sweep (`vault_ai_vision.flags_all` + `_run_flags_all`).
-Durable regression suite (plain-assert, no pytest — repo convention).
-
-WHY THIS EXISTS. The sweep used to run inline in its own POST. A vault of 327
-items at ~3.4s each is ~18 minutes, so the app's proxy dropped the socket and
-the operator was shown "Internal Server Error" — for a sweep that was
-SUCCEEDING. The relay never logged a 500; the evidence was in the app container
-(`Failed to proxy .../flags-all  Error: socket hang up`, ECONNRESET). Three
-things followed from that one shape:
-
-  * the request looked failed while the work carried on invisibly;
-  * the coroutine survives client disconnect, so every retry click added
-    ANOTHER concurrent sweep over the same rows;
-  * with the flags incomplete, the three lanes that need them stay starved, so
-    the folder plan sorted 198 of 327 items and the SORTER got blamed.
-
-Cases:
-  case_post_returns_before_the_sweep_finishes:
-      the endpoint answers while the sweep is still running. This is the bug.
-  case_second_click_does_not_start_a_second_sweep:
-      one sweep per account, so a button that appears to have failed cannot
-      multiply the work (and the spend) behind it.
-  case_status_reports_progress_and_db_coverage:
-      progress is this process's counter and dies with a restart; coverage is
-      read from the DB, so a UI reconnecting after a redeploy still sees where
-      the vault stands.
-  case_todo_skips_current_and_keeps_stale:
-      resumability. The sweep only ever visits missing/stale rows, so a restart
-      costs the items in flight and nothing else.
-  case_named_ids_stay_inline:
-      the grading probe passes explicit media_ids and wants the ANSWERS in the
-      response, not a job id.
-  case_a_failing_item_does_not_stop_the_sweep:
-      one bad item must not strand the other 300.
-  case_done_counts_visits_so_a_finished_pass_reads_as_finished:
-      `done` counts VISITS, so done==total means "this pass is over" — the one
-      question the counter is ever asked. Owned by `vault_sweep.run`.
-
-Run: cd service/tests && \
-  PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_flags_sweep.py
-Exit 0 = all cases passed. Temp DB bound by _harness (never prod). No OF, no
-network, no LLM.
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
 
 _harness.bootstrap()
 
-# These cases test feature logic, not the account gate (that is
-# test_account_isolation_gate's job). They reach `/admin` routes or
-# `assert_account_owned` with no session, which fails closed (401) since
-# 3b30b486. This is the documented escape hatch (read per call), scoped to this
-# test process.
 import os  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
@@ -69,8 +20,6 @@ import vault_jev_pass  # noqa: E402
 from _jev_fixtures import video_jev  # noqa: E402
 
 
-# A DeepInfra key is present for any describe path these cases touch; flags-all itself no longer needs one
-# (`case_flags_need_no_deepinfra_key`, W30 F9).
 async def _key_present(*_a, **_k) -> bool:
     return True
 
@@ -89,24 +38,18 @@ def _next_account() -> str:
 
 
 def _flagged(v: int = vault_ai_vision._FLAGS_VERSION) -> dict:
-    """A COMPLETE flags answer at version `v` — `flags_known` needs every
-    region, so a partial one would exercise the unflagged path while looking
-    like a flagged item."""
     return {"underwear_visible": False, "vulva_vis": "not_in_frame",
             "breasts_vis": "covered", "anus_vis": "not_in_frame",
             "over_breasts": "black top", "_flags_v": v}
 
 
 def _synced() -> dict:
-    """A clip whose flags are its current `_jev`'s (D54: a clip's flags are stamped from Jev, never qwen)."""
     j = video_jev()
     return vault_jev_flags.apply({"_jev": j}, j)
 
 
 async def _seed(aid: str, rows: list[tuple[int, dict | None]],
                 kind: str = "video") -> None:
-    """Clips by default (their flags are their Jev pass's, `vault_jev_pass.safe`, faked here by `_Gate`), the
-    `explicitness_tier` column as the Jev pass leaves it (the blob's `explicitness`)."""
     base = datetime(2026, 7, 1, 12, 0, 0)
     async with get_session() as s:
         s.add(Account(id=aid))
@@ -119,9 +62,6 @@ async def _seed(aid: str, rows: list[tuple[int, dict | None]],
 
 
 class _Gate:
-    """Stand-in for the Jev pass (`vault_jev_pass.safe`, which stamps a photo's /
-    clip's flags) that can be held open, so a case can observe the sweep WHILE it
-    runs rather than only after."""
 
     def __init__(self, *, hold: bool = False, fail: set[int] | None = None) -> None:
         self.calls: list[int] = []
@@ -141,14 +81,13 @@ class _Gate:
             fields = json.loads(item.ai_fields_json) if item.ai_fields_json else {}
             fields.update(_synced())
             item.ai_fields_json = json.dumps(fields)
-            item.explicitness_tier = fields["explicitness"]   # the Jev pass writes the column too
+            item.explicitness_tier = fields["explicitness"]
             await s.commit()
         return {"media_id": media_id, "ok": True, "status": "ok", "lane5": "free",
                 "cost_millicents": 1}
 
 
 async def _drain(aid: str) -> None:
-    """Let the background task finish before the next case reuses the module."""
     for _ in range(200):
         if aid not in vault_ai_vision._flags_running:
             return
@@ -156,7 +95,6 @@ async def _drain(aid: str) -> None:
     raise AssertionError("sweep never finished")
 
 
-# ── Cases ────────────────────────────────────────────────────────────
 
 async def case_post_returns_before_the_sweep_finishes():
     aid = _next_account()
@@ -169,7 +107,6 @@ async def case_post_returns_before_the_sweep_finishes():
         assert out["status"] == "running", out
         assert out["candidates"] == 10, out
         assert out["already"] is False, out
-        # The work has NOT been done yet — that is the whole point.
         await asyncio.sleep(0.05)
         assert len(gate.calls) < 10, (
             "the endpoint waited for the sweep it was supposed to hand off")
@@ -194,8 +131,6 @@ async def case_second_click_does_not_start_a_second_sweep():
         assert second["already"] is True and third["already"] is True, (second, third)
         gate.release.set()
         await _drain(aid)
-        # Each item flagged exactly once. Before the guard, three clicks meant
-        # three concurrent sweeps over the same rows — triple the spend.
         assert sorted(gate.calls) == list(range(620, 626)), gate.calls
     finally:
         gate.release.set()
@@ -204,7 +139,6 @@ async def case_second_click_does_not_start_a_second_sweep():
 
 async def case_status_reports_progress_and_db_coverage():
     aid = _next_account()
-    # Photos (coverage counts stills): a photo's flags come from its Jev pass, held open here.
     await _seed(aid, [(i, None) for i in range(640, 644)], kind="photo")
     gate = _Gate(hold=True)
     orig, vault_jev_pass.safe = vault_jev_pass.safe, gate
@@ -225,7 +159,6 @@ async def case_status_reports_progress_and_db_coverage():
         done = await vault_ai_vision.flags_all_status(account_id=aid)
         assert done["running"] is False, done
         assert done["progress"]["done"] == 4 and done["progress"]["failed"] == 0, done
-        # Coverage is the DURABLE half — it survives the process losing its counter.
         assert done["coverage"]["ready"] is True, done["coverage"]
         vault_ai_vision._flags_progress.pop(aid, None)
         after_restart = await vault_ai_vision.flags_all_status(account_id=aid)
@@ -239,25 +172,20 @@ async def case_status_reports_progress_and_db_coverage():
 async def case_todo_skips_current_and_keeps_stale():
     aid = _next_account()
     await _seed(aid, [
-        (660, _synced()),                               # current — skip
-        (661, _flagged()),                              # qwen-flagged (pre-D54 clip) — redo
-        (662, None),                                    # never flagged — do
-        (663, {**_synced(), "vulva_vis": "bare"}),      # drifted from its `_jev` — redo
+        (660, _synced()),
+        (661, _flagged()),
+        (662, None),
+        (663, {**_synced(), "vulva_vis": "bare"}),
     ])
-    # a stale `explicitness_tier` column (a pre-Jev describe's tier) beside in-sync flags is drift too
     await _seed(aid2 := _next_account(), [(664, _synced())])
     async with get_session() as s:
         (await s.get(VaultItem, (aid2, 664))).explicitness_tier = "sfw"
         await s.commit()
     assert await vault_ai_vision._flags_todo(aid2) == [664]
-    # NEWEST-first (_seed stamps created_at ascending, so 663 is the most
-    # recent). The order is asserted, not just the membership, because `limit`
-    # makes it decide WHICH items a bounded pass covers at all.
     todo = await vault_ai_vision._flags_todo(aid)
     assert todo == [663, 662, 661], todo
     assert await vault_ai_vision._flags_todo(aid, force=True) == [663, 662, 661, 660]
     assert await vault_ai_vision._flags_todo(aid, limit=2) == [663, 662]
-    # A named set is taken as given — the caller is asking for these.
     assert await vault_ai_vision._flags_todo(aid, only={660}) == [660]
 
 
@@ -268,7 +196,6 @@ async def case_named_ids_stay_inline():
     orig, vault_jev_pass.safe = vault_jev_pass.safe, gate
     try:
         out = await vault_ai_vision.flags_all({"account_id": aid, "media_ids": [670]})
-        # Answers in the response, not a job id — the grading probe reads these.
         assert out["flagged"] == 1 and out["failed"] == 0, out
         assert out["complete"] is True, out
         assert "status" not in out, "a named set must not be handed off"
@@ -279,7 +206,6 @@ async def case_named_ids_stay_inline():
 
 
 async def case_flags_need_no_deepinfra_key():
-    """Flags make no DeepInfra call: a TypeSafe-only account (no DeepInfra key) runs them, no 424. W30 F9."""
     aid = _next_account()
     await _seed(aid, [(680, None)])
     gate = _Gate()
@@ -308,26 +234,12 @@ async def case_a_failing_item_does_not_stop_the_sweep():
         prog = vault_ai_vision._flags_progress[aid]
         assert prog["done"] == 5 and prog["failed"] == 1, prog
         assert prog["error"] == "provider down", prog
-        # The one bad row is exactly what a re-run picks up.
         assert await vault_ai_vision._flags_todo(aid) == [682]
     finally:
         vault_jev_pass.safe = orig
 
 
 async def case_done_counts_visits_so_a_finished_pass_reads_as_finished():
-    """`done` is items VISITED, not items that succeeded.
-
-    The two vault sweeps used to disagree about this — describe counted visits,
-    flags counted successes — while ONE frontend type and ONE set of formatters
-    rendered both as "done/total". So a flags pass that finished with 13 failures
-    parked at 487/500 forever and read as a sweep that had stalled. Now both go
-    through `vault_sweep.run`, which owns the definition; `failed` carries the
-    rest.
-
-    Calls `_run_flags_all` directly rather than the POST, because every case in
-    this file that goes through the route is 401 until the test harness grows a
-    session (pre-existing, see the module note).
-    """
     aid = _next_account()
     ids = list(range(690, 695))
     await _seed(aid, [(i, None) for i in ids])

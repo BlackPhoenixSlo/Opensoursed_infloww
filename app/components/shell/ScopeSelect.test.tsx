@@ -1,7 +1,3 @@
-/**
- * ScopeSelect — the below-lg creator picker (OF Manager, Messages Pro) now that the top bar has no model filter:
- * each creator, reading and writing ScopeContext; "All creators" only with `pickAll` (Messages Pro), none in OF Manager.
- */
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 

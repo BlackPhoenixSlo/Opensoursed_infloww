@@ -1,11 +1,3 @@
-/**
- * The OS notice an SSE frame becomes — one shape, three parsers (design.md
- * B3): this page (toastStore's lanes → `noticeOf`), the desktop app's stream
- * (desktop/lib/relay-notices.js) and the relay's Web Push
- * (service/push_notice.py). The table is `service/tests/fixtures/
- * notice_cases.json`, the expectations taken from THIS side's output; each
- * other parser's test reads the same file, so whichever drifts goes red.
- */
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -23,7 +15,6 @@ interface Case { name: string; frame: Record<string, unknown>; settings?: Partia
 const FIXTURE = join(__dirname, "..", "..", "service", "tests", "fixtures", "notice_cases.json");
 const fixture = JSON.parse(readFileSync(FIXTURE, "utf8")) as { note: string; cases: Case[] };
 
-/** The arrivals each lane of useNotificationDelta delivers for a frame. */
 function arrivals(frame: Record<string, unknown>): Arrival[] {
   const aid = typeof frame.__account_id === "string" ? frame.__account_id : null;
   if ("api2_chat_message" in frame) {
@@ -42,7 +33,6 @@ function arrivals(frame: Record<string, unknown>): Arrival[] {
   return [];
 }
 
-/** The OS notices that pass the per-type gate (push and the desktop app skip a type with no key). */
 function notices(c: Case): Notice[] {
   const s: NotifSettings = {
     ...DEFAULT_NOTIF_SETTINGS, ...c.settings, toast: { ...DEFAULT_NOTIF_SETTINGS.toast, ...c.settings?.toast },
@@ -56,7 +46,6 @@ function notices(c: Case): Notice[] {
     });
 }
 
-// UPDATE_NOTICE_FIXTURE=1: rewrite every `expect` from this side's output (review the diff).
 if (process.env.UPDATE_NOTICE_FIXTURE) {
   for (const c of fixture.cases) c.expect = notices(c);
   writeFileSync(FIXTURE, JSON.stringify(fixture, null, 2) + "\n");

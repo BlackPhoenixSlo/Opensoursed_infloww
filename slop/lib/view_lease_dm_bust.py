@@ -1,22 +1,3 @@
-"""The plain-DM leg of scenarios/2026-11-09-view-lease-purchases-tiers.py (phase-01 1b, story 52; check DM_NO_BUST in
-lib/view_lease_faults.py): a plain inbound DM keeps the money feeds' relay cache, a tip DM clears it.
-
-`run` on one Creator nobody leases and with no purchase in flight (the scenario passes an ALL_OFF one): the owner reads
-the rail's and the bell's money reads through the relay (`GET /api/of/v2/users/notifications` with the rail's
-`limit=NOTIF_PAGE_SIZE` for `purchases` and `tip`, and `/count`), which fills the pass-through's 30 s cache. Then
-PLAIN_N plain DMs (actors/fan_dm.frame: isTip false, price 0) enter at the pump boundary (`/__slop/of-ws-frame`), one at
-a time; once each one's `messages` row is written (the transcoder clears the cache right after it) the owner reads the
-three again, as the browser does on an inbound. Then one tip DM, and the same read. Fake-OF calls on those three reads
-(`limit=NOTIF_PAGE_SIZE` tells the rail's purchases read from the loop's `limit=10` poll) are counted per stage.
-
-DM_NO_BUST: every read answered 200, the priming read one OF call for each of the three (the cache's TTL starts
-there), no OF call after any plain DM, one OF call for each of the three after the tip,
-and the whole leg inside the pass-through's TTL (WINDOW_MAX_S), so a call can only come from a bust. Evidence
-`dm-no-bust.json`.
-
-Bypasses (declared): fans' frames at the pump boundary (`/__slop/of-ws-frame`); the rail's reads replayed by an httpx
-owner client (the same paths the rail builds, `app/lib/notifText.ts` notifPath), not a browser.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -30,17 +11,16 @@ from slop.lib.view_lease_feed import until
 
 PLAIN_N = 5
 ID_BASE = 9_570_000_000_000
-NOTIF_PAGE_SIZE = 20           # app/lib/notifText.ts: the rail's page (the purchases loop asks for 10)
-WINDOW_MAX_S = 25.0            # server.py of_notifications / _count: ttl_seconds=30.0, less slack
-LANDED_S = 10.0                # a frame's `messages` row written (the bust follows it in the same task)
-SETTLE_S = 0.3                 # from the row's commit to the transcoder task resuming past its bust
+NOTIF_PAGE_SIZE = 20
+WINDOW_MAX_S = 25.0
+LANDED_S = 10.0
+SETTLE_S = 0.3
 READS = {"purchases": f"/api/of/v2/users/notifications?limit={NOTIF_PAGE_SIZE}&offset=0&type=purchases",
          "tip": f"/api/of/v2/users/notifications?limit={NOTIF_PAGE_SIZE}&offset=0&type=tip",
          "count": "/api/of/v2/users/notifications/count"}
 
 
 def _calls(fake, aid: str, lo: float) -> dict[str, int]:
-    """`aid`'s fake-OF calls on the three money reads arriving from `lo` on."""
     out = {k: 0 for k in READS}
     with fake.lock:
         for c in fake.calls:
@@ -84,9 +64,9 @@ async def run(ctx, aid: str) -> None:
         return {"message_id": mid, "tip": tip, "status": r.status_code, "landed": ok, "t_read": t}
 
     t0 = time.time()
-    statuses.extend(await _read(owner, aid))      # fills the cache: the TTL anchor
+    statuses.extend(await _read(owner, aid))
     t_plain = time.time()
-    primed = _calls(fake, aid, t0)                # one OF call each, or the cache was not cold at t0
+    primed = _calls(fake, aid, t0)
     plain = [await dm(fans[k % len(fans)], 0) for k in range(PLAIN_N)]
     t_tip = time.time()
     after_plain = _calls(fake, aid, t_plain)

@@ -2,14 +2,6 @@
 
 import { useEffect, type RefObject } from "react";
 
-/** A Chat header menu's dismissal (spec, Implementation Decisions, Menus):
- *  while `open`, a pointer-down outside `ref` or Escape calls `close`. The
- *  Escape is stopped at `document`, so one Escape closes one layer and Find's
- *  `window` listener (ChatSearch) never hears it. Put `ref` on the element
- *  holding both the trigger and the menu, so a press on the trigger toggles
- *  rather than closes and reopens. A menu with a submenu inside `ref` passes
- *  `escape`, which closes one layer, while an outside pointer-down still calls
- *  `close` (the Kebab menu, ticket 140). */
 export function useMenuDismiss(
   ref: RefObject<HTMLElement | null>, open: boolean, close: () => void, escape: () => void = close,
 ) {
@@ -20,9 +12,9 @@ export function useMenuDismiss(
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      // Focus in a modal outside this menu (a confirm it opened): that modal's Escape, not ours.
       const at = document.activeElement;
       if (at?.closest('[aria-modal="true"]') && !ref.current?.contains(at)) return;
+      // One Escape closes one layer; Find's window listener must not hear it.
       e.stopPropagation();
       escape();
     };

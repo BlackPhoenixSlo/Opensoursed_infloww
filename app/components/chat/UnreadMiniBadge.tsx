@@ -1,24 +1,3 @@
-/**
- * UnreadMiniBadge — the unread badge on a Creator tab and a Fan tab, `.mini-badge`
- * (docs/spec/phase-01-window-chrome-tabs.md, Gap table), a pill in Infloww's
- * unread red (`err`, #ff7c71, 2026-10-18 capture) with white text. It brings
- * its own leading space for the tab's accessible name ("Name 3 unread"); a
- * flex row drops whitespace-only text, so it does not show. `count` null is
- * unread with no number known: the badge shows empty.
- *
- * GreyMiniBadge — the Creator tab's Grey circle: the unread count is unknown
- * (creator-badges 0B), an empty grey pill, never a blank.
- *
- * OweMiniBadge — the Creator tab's Amber circle (creator-badges 0F), after the
- * unread one: the Fan List's owe-dot amber (`warn`), tinted and ringed so it
- * never reads as the solid red unread; `count` null is its grey form (amber
- * unknown), the Grey circle's fill in the amber ring.
- *
- * NotifMiniBadge — the Creator tab's notification badge, the Creator's OnlyFans
- * notification count in the Notifications button's teal (`--inf-online`),
- * capped at "99+" like Infloww's.
- */
-
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 

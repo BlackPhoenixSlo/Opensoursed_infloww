@@ -1,19 +1,3 @@
-"""The help bot's "Do it for me" vault (scenarios/2026-11-11-assistant-do-auto-mass.py): `vault_items` rows by SQL
-for one Creator, as Collect + the describe pass leave them (columns as seed/vault_flags_partial.py writes them), in
-three OF vault folders (`raw_json.listStates`, `of_folder_ids`) whose per-photo `explicitness_tier` is the draft's
-folder oracle (service/assistant_draft.py `folder_stats` / `rank_sfw`):
-
-  SFW teasers  every photo flagged, sfw or suggestive, none explicit           -> the SFW pick
-  Spicy        MORE sfw photos than SFW teasers, but a few explicit            -> a "most sfw photos" pick lands here
-  Unflagged    the MOST photos, none flagged (tier NULL, never described)     -> a "biggest / no explicit" pick lands here
-plus a few videos in SFW teasers (only photos join an Auto mass from a folder, so they never count).
-
-Fixed shape, not a volume path: the counts ARE the oracle, so no `w.size` key. Media ids and the tier order inside a
-folder come from `w.rng("assistant_do_vault")`.
-
-`seed(w, creator)` -> (and `w.data["assistant_do_vault"]`) {"account_id", "sfw_id", "folders": {name: {"id",
-"photos", "videos", "tiers": {tier: n}}}, "of_lists": [OF's /vault/lists items, for lib/of_wire.py's
-`vault_lists`]}."""
 from __future__ import annotations
 
 import json
@@ -21,8 +5,7 @@ from datetime import timedelta
 
 from . import World, ts
 
-MODEL, PROMPT_VERSION = "qwen3-vl-30b", "v2"   # as seed/vault_items.py
-# (OF folder id, name, photo tiers in order (None = not flagged), videos)
+MODEL, PROMPT_VERSION = "qwen3-vl-30b", "v2"
 FOLDERS = (
     (5_301, "SFW teasers", ("sfw",) * 7 + ("suggestive",) * 3, 2),
     (5_302, "Spicy", ("sfw",) * 20 + ("suggestive",) * 2 + ("explicit",) * 2, 0),
@@ -32,7 +15,6 @@ SFW_ID = FOLDERS[0][0]
 
 
 def _of_list(fid: int, name: str, photos: int, videos: int) -> dict:
-    """One custom vault folder as OF's GET /api2/v2/vault/lists items read (the editor's folder select)."""
     return {"id": fid, "type": "custom", "name": name, "hasMedia": True, "canUpdate": True, "canDelete": True,
             "photosCount": photos, "videosCount": videos, "gifsCount": 0, "audiosCount": 0, "medias": []}
 

@@ -1,10 +1,3 @@
-/**
- * SecurityOrgTab — the Security (organization) Panel (docs/spec/settings-tabs/phase-02-security.md, Seam 1).
- *
- * Rendered inside `UserProvider`, with the relay mocked at `fetch` by URL: `/auth/me` is a synthetic
- * owner, `/admin/employees` the roster and `/admin/settings/security` the `security` blob, so every
- * write is an assertion about the wire.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -24,7 +17,6 @@ const ROSTER = {
 };
 
 let fetchMock: ReturnType<typeof vi.fn>;
-/** What GET /admin/employees answers. */
 let rosterReply: () => Response;
 let stored: Record<string, unknown>;
 
@@ -64,7 +56,6 @@ function mount() {
   );
 }
 
-/** The table's body rows (every row but the header row). */
 const bodyRows = () => within(screen.getByRole("table")).getAllByRole("row").slice(1);
 
 describe("SecurityOrgTab", () => {

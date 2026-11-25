@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * SubscriptionBundles — OF's "Subscription bundles" section (Settings > Subscription > promotion campaign), on Growth's
- * Profile promotion page. One implementation with OF Manager's mirror: the same reads (users/me's subscriptionBundles
- * and price, users/me settings' canAddSubscriberByBundle, under the mirror's own query keys), the same writes (POST
- * /subscriptions/bundles {discount, duration}, DELETE /{id}) and the same rules (ofMirrorOffers' bundleOptions,
- * bundleAmount, bundleBlock; ofMirrorSubscription's bundleLabel and OF's delete confirm). Edit is OF's own
- * bundles/saveBundle with an id (PUT /{id} {discount, duration}), which OF's settings page does not offer.
- */
 
 import { useState } from "react";
 
@@ -21,7 +13,6 @@ import { ASKS, bundleLabel, type Bundle } from "@/lib/ofMirrorSubscription";
 import { ofErrorMessage } from "@/lib/ofMirrorWrites";
 import { cn } from "@/lib/utils";
 
-/** The open editor: a new bundle, or the bundle being edited. */
 type Editing = { id?: Bundle["id"] } & BundleForm;
 
 export default function SubscriptionBundles({ accountId }: { accountId: string | null }) {

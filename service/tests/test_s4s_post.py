@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""The `s4s_post` automation: a due S4S slot posts on its own Creator's
-account through Auto Post, behind the live-posting flag
-(docs/spec/phase-03-share-for-share.md, Interfaces and Testing Decisions;
-ticket 19).
-
-The seam is the one `test_auto_posts.py` uses: the automation is run directly
-(`s4s_post.run`, and once through the executor's `run_once` on the job Accept
-queued) with the of-client patched to a fake, so no OnlyFans call is
-possible. Slots are booked over HTTP (send, then Accept) on the two-Agency
-bench; a request cannot be sent for a past time, so each case then moves its
-slots' `slot_at` into the past straight in the temp DB. `S4S_LIVE_POSTING`
-defaults on; it is set only inside this process, per call (`with_env`). Every case books on its
-own UTC days, so one case never fills another's Daily limit.
-
-Run: ./venv/bin/python service/tests/test_s4s_post.py   (exit 0 = green)
-"""
 import _harness  # MUST be first — binds a throwaway temp DB before any db import
 
 _harness.bootstrap()
@@ -37,9 +21,9 @@ from db.models import S4SSlot, ScheduledJob, User, UserAccount  # noqa: E402
 
 A = IDS["creator_a"]
 B = IDS["creator_b"]
-P1, P2 = "1000031", "1000032"   # the opt-out pair (Agency A, Agency B)
-X, LEAVER = "1000033", "1000034"  # LEAVER (Agency B) later leaves every Agency
-X2, ORPHAN = "1000035", "1000036"  # ORPHAN's Agency C is later deleted
+P1, P2 = "1000031", "1000032"
+X, LEAVER = "1000033", "1000034"
+X2, ORPHAN = "1000035", "1000036"
 seed_creators({P1: "agency_a_owner", P2: "agency_b_owner", X: "agency_a_owner", LEAVER: "agency_b_owner",
                X2: "agency_a_owner", ORPHAN: "agency_c_owner"}, users=("agency_c_owner",))
 
@@ -60,8 +44,6 @@ FLAG = "S4S_LIVE_POSTING"
 
 
 class Fakes:
-    """One fake of-client per account, all recording into one list: each
-    create_post call with the account whose client made it."""
 
     def __init__(self, result=None, raises: Exception | None = None, during_post=None):
         self.calls: list[dict] = []
@@ -69,9 +51,6 @@ class Fakes:
         self._next = 70000
         self._result = result
         self._raises = raises
-        # Called inside create_post, which Auto Post runs in a worker thread
-        # (ax.of_write_with_retry: asyncio.to_thread(fn)), so it may commit
-        # through the `db` fixture while the run's post call is in flight.
         self._during_post = during_post
         ax._make_client = self._client  # type: ignore[attr-defined]
         ax._write_gates.clear()  # no 11s spacing left over from an earlier case's post
@@ -82,6 +61,7 @@ class Fakes:
         class Client:
             user_id = "999"
 
+            # runs in Auto Post's worker thread (to_thread), so it may commit through the db fixture mid-post
             def create_post(self, text, media_files=None, price=0, previews=None):
                 fakes.calls.append({"account_id": account_id, "text": text, "media_files": list(media_files or []),
                                     "price": price})
@@ -102,7 +82,6 @@ class Fakes:
 
 
 def day(n: int, hour: int = 10) -> datetime:
-    """`n` UTC days after today, at hour:00 UTC."""
     today = datetime.utcnow().date()
     return datetime(today.year, today.month, today.day) + timedelta(days=n, hours=hour)
 
@@ -129,8 +108,6 @@ def slot(slot_id: int) -> S4SSlot:
 
 
 def booked(from_id: str, to_id: str, n: int, late: timedelta = timedelta(minutes=1)) -> dict[str, S4SSlot]:
-    """Send and accept one request for day `n`, then move both slots to `late`
-    before now (a request cannot be sent for a past time). The slots by poster."""
     r = OWNER_OF[from_id].post("/admin/s4s/requests", json={
         "from_account_id": from_id, "to_profile_id": PID[to_id], "slot_at": z(day(n))})
     assert r.status_code == 201, f"send {from_id}→{to_id}: {r.status_code} {r.text}"
@@ -168,20 +145,17 @@ def state(slot_id: int) -> tuple:
 
 
 def last_audit(action: str, slot_id: int) -> tuple:
-    """(account_id, employee_id, payload) of the newest `action` row on this slot."""
     found = [a for a in audit_rows(action) if a.target_type == "s4s_slot" and a.target_id == str(slot_id)]
     assert found, f"no {action} row for slot {slot_id}"
     return found[-1].account_id, found[-1].employee_id, json.loads(found[-1].payload_json)
 
 
-# ── Registration ─────────────────────────────────────────────────────
 
 def case_s4s_post_is_the_registered_runner_for_the_jobs_accept_queues():
     load_automation_plugins()
     assert get_automation("s4s_post") is s4s_post.run
 
 
-# ── The live-posting flag ────────────────────────────────────────────
 
 def case_with_the_flag_set_off_a_due_slot_ends_canceled_live_posting_off_with_zero_calls():
     fakes = Fakes()
@@ -197,7 +171,6 @@ def case_with_the_flag_set_off_a_due_slot_ends_canceled_live_posting_off_with_ze
     assert (payload["slot_id"], payload["request_id"], payload["reason"]) == (
         mine.id, mine.request_id, "live posting off"), payload
     assert payload["agency_user_id"] == IDS["agency_a_owner"], payload
-    # A canceled slot is left alone, flag or no flag.
     run_live(A, mine.id)
     assert state(mine.id) == ("canceled", "live posting off") and fakes.calls == []
 
@@ -207,7 +180,6 @@ def case_the_flag_is_read_on_every_call_never_at_import():
     slots = booked(A, B, 2)
     assert run_off(B, slots[B].id)["status"] == "skipped"
     assert fakes.calls == [] and state(slots[B].id) == ("canceled", "live posting off")
-    # The same imported module, the flag now unset in this process: on by default, it posts.
     assert FLAG not in os.environ
     assert run(A, slots[A].id)["status"] == "ok"
     assert len(fakes.calls) == 1 and state(slots[A].id)[0] == "posted"
@@ -216,7 +188,7 @@ def case_the_flag_is_read_on_every_call_never_at_import():
 def case_with_the_flag_on_it_posts_once_on_the_posters_own_account_and_queues_the_24h_removal():
     fakes = Fakes()
     slots = booked(A, B, 3)
-    mine, theirs = slots[B], slots[A]  # B posts A's caption; A posts B's
+    mine, theirs = slots[B], slots[A]
     before = datetime.utcnow()
     res = run_live(B, mine.id)
     assert res["status"] == "ok", res
@@ -248,11 +220,9 @@ def case_with_the_flag_on_it_posts_once_on_the_posters_own_account_and_queues_th
         mine.id, mine.request_id, row.post_id, 70001), payload
     assert CAPTION[A] not in json.dumps(payload), "the audit row carries the caption"
 
-    # A posted slot is never posted again.
     assert run_live(B, mine.id)["status"] == "skipped"
     assert len(fakes.calls) == 1
 
-    # "In progress" until the unsend automation deletes the post, then "Completed".
     assert reads(OWNER_B, mine) == ("posted", "In progress", None)
     db(update(ScheduledJob).where(ScheduledJob.id == unsend.id).values(run_at=datetime.utcnow() - timedelta(seconds=1)))
     done = asyncio.run(run_once(B, "unsend_messages"))
@@ -276,17 +246,13 @@ def case_the_executor_runs_the_job_accept_queued_and_marks_it_done():
 def case_a_slot_runs_only_on_its_posters_account():
     fakes = Fakes()
     slots = booked(A, B, 5)
-    res = run_live(A, slots[B].id)  # the partner's account names B's slot
+    res = run_live(A, slots[B].id)
     assert res["status"] == "skipped", res
     assert fakes.calls == [] and state(slots[B].id) == ("scheduled", None)
 
 
-# ── The #advertisement tag ───────────────────────────────────────────
 
 def case_each_side_posts_the_partners_caption_its_mention_and_the_advertisement_tag_last():
-    """Infloww: "Infloww will automatically insert #advertisement at the end
-    of each post." Each poster's text names the OTHER Creator, whose @mention
-    OnlyFans renders as the link to onlyfans.com/<partner>."""
     fakes = Fakes()
     slots = booked(A, B, 15)
     assert run_live(A, slots[A].id)["status"] == "ok"
@@ -294,7 +260,6 @@ def case_each_side_posts_the_partners_caption_its_mention_and_the_advertisement_
     by_poster = {c["account_id"]: c["text"] for c in fakes.calls}
     assert by_poster == {A: f"{CAPTION[B]}\n@fixture_beta\n#advertisement",
                          B: f"{CAPTION[A]}\n@fixture_alpha\n#advertisement"}, by_poster
-    # The tag is added at post time; the slot keeps the caption plus @mention.
     assert slot(slots[A].id).text == f"{CAPTION[B]}\n@fixture_beta", slot(slots[A].id).text
     assert slot(slots[B].id).text == f"{CAPTION[A]}\n@fixture_alpha", slot(slots[B].id).text
 
@@ -304,7 +269,6 @@ def case_the_advertisement_tag_is_never_added_twice():
     once = s4s_post._advertised("hi\n@x")
     assert s4s_post._advertised(once) == once, s4s_post._advertised(once)
     assert s4s_post._advertised(once + "\n  ") == once
-    # A slot whose text already ends with the tag posts it once, and its retry posts nothing.
     fakes = Fakes()
     mine = booked(A, B, 16)[A]
     db(update(S4SSlot).where(S4SSlot.id == mine.id).values(text=f"{mine.text}\n#advertisement"))
@@ -313,7 +277,6 @@ def case_the_advertisement_tag_is_never_added_twice():
     assert [c["text"].count("#advertisement") for c in fakes.calls] == [1], fakes.calls
 
 
-# ── Interrupted, missed, failed ──────────────────────────────────────
 
 def case_a_slot_left_mid_post_ends_failed_interrupted_with_zero_calls():
     fakes = Fakes()
@@ -337,14 +300,13 @@ def case_a_run_24_hours_or_more_late_ends_canceled_missed_with_zero_calls():
     run_live(A, late[A].id)
     assert state(late[A].id) == ("canceled", "missed")
     assert fakes.calls == []
-    # Just under a day late still posts.
     nearly = booked(A, B, 8, late=timedelta(hours=23, minutes=50))
     assert run_live(A, nearly[A].id)["status"] == "ok"
     assert [c["account_id"] for c in fakes.calls] == [A]
 
 
 def case_an_error_result_ends_failed_with_its_reason():
-    fakes = Fakes(result={})  # OF answered without a post id
+    fakes = Fakes(result={})
     mine = booked(A, B, 9)[A]
     res = run_live(A, mine.id)
     assert res["status"] == "error", res
@@ -369,17 +331,12 @@ def case_a_raised_post_call_ends_failed_and_the_retry_posts_nothing():
     status, reason = state(mine.id)
     assert status == "failed" and "of_error 500" in reason, (status, reason)
     assert "of_error 500" in last_audit("s4s.slot_fail", mine.id)[2]["reason"]
-    # The executor's retry finds a failed slot and posts nothing.
     run_live(A, mine.id)
     assert len(fakes.calls) == 1 and state(mine.id)[0] == "failed"
 
 
 def case_a_slot_another_run_failed_mid_post_is_neither_recorded_posted_nor_ok():
-    """The posted step is status-guarded like every other: a slot some other
-    run marked `failed` while this run's post call was in flight keeps that
-    end, gets no `s4s.slot_post` row, and the run does not answer ok."""
     mine = booked(A, B, 14)[A]
-    # The other run's `interrupted_mid_post`, committed while this run's post call is in flight.
     fakes = Fakes(during_post=lambda: db(update(S4SSlot).where(S4SSlot.id == mine.id)
                                          .values(status="failed", reason="interrupted_mid_post")))
     res = run_live(A, mine.id)
@@ -391,7 +348,6 @@ def case_a_slot_another_run_failed_mid_post_is_neither_recorded_posted_nor_ok():
     assert not [a for a in audit_rows("s4s.slot_post") if a.target_id == str(mine.id)], "a failed slot got s4s.slot_post"
 
 
-# ── Opt-out and departed Creators ────────────────────────────────────
 
 def case_after_an_opt_out_both_slots_end_canceled_with_zero_calls():
     fakes = Fakes()

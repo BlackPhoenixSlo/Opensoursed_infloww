@@ -1,29 +1,17 @@
 "use client";
 
-/**
- * FanListStates — what the Fan List shows in place of, before or after its
- * rows: the empty line, the cold-load skeleton and "Load more
- * conversations", in the Clone's text and geometry
- * (docs/spec/phase-02-fan-list-pane.md, States; Gap rows 26-28). FanList
- * decides when each shows.
- */
 
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 
 const G = MP.fanList;
 
-/** The Clone's skeleton holds six rows (`SKEL_ROWS`, mj:472; Gap row 27). */
 const SKELETON_ROWS = 6;
 
-/** The line an empty list shows, the Clone's (mj:575). Refresh lives in the
- *  sort line, so it has no button of its own (spec, States). `text` replaces
- *  the line when a narrowing (Online Fans) has emptied a loaded list. */
 export function FanListEmpty({ text = "No conversations found" }: { text?: string } = {}) {
   return <div className={cn(G.empty, "text-fg-dim")}>{text}</div>;
 }
 
-/** Six placeholder rows at the Fan row's size while the first page loads. */
 export function FanListSkeleton() {
   return (
     <div role="list" aria-label="Loading conversations" aria-busy="true">
@@ -44,8 +32,6 @@ export function FanListSkeleton() {
   );
 }
 
-/** The list's last line while more chats exist, the Clone's (mj:581). The
- *  count of chats loaded so far sits in its tooltip. */
 export function LoadMoreConversations({ loaded, onClick }: { loaded: number; onClick: () => void }) {
   return (
     <button
@@ -59,8 +45,6 @@ export function LoadMoreConversations({ loaded, onClick }: { loaded: number; onC
   );
 }
 
-/** The end of a Fan List drawn up to its render cap: "Show N more" draws the
- *  next step of rows already loaded (fanListPaging's ROW_RENDER_STEP). */
 export function ShowMoreRows({ count, onClick }: { count: number; onClick: () => void }) {
   return (
     <button

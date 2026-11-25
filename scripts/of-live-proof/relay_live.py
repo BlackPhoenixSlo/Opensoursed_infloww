@@ -204,12 +204,12 @@ def _guard_egress() -> None:
     import of_session_stream
     real = cffi.Session.request
 
-    # libcurl resends once when a reused keep-alive connection dies, so a lost-reply write could reach OF twice; writes get a fresh connection.
     fresh = threading.local()
     real_set = cffi_session.set_curl_options
 
     def set_curl_options(c, *a, **k):
         out = real_set(c, *a, **k)
+        # libcurl resends once when a reused connection dies, so a lost-reply write could reach OF twice; writes get a fresh one.
         if getattr(fresh, "write", False):
             c.setopt(CurlOpt.FRESH_CONNECT, 1)
         return out

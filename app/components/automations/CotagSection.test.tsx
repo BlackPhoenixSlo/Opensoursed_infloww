@@ -1,15 +1,3 @@
-/**
- * TAG A CO-CREATOR, WHICH ONE, OR NO ONE (ticket 85).
- *
- *  1. "No co-creator tag" is the default, and Remove hands the form ''
- *     (the server stores blank as no tag).
- *  2. The co-creator can be any OnlyFans creator: typing searches OF's
- *     performers-search and a result is the pick, stored as its handle.
- *  3. A stored handle shows as the pick whatever the search says, and a failed
- *     search keeps it.
- *  4. CotagForm (Settings › Co-creator tag) hands its Save to the tab; it saves the stored config back with
- *     only the co-tag key changed: the account-config PUT replaces what it holds.
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";

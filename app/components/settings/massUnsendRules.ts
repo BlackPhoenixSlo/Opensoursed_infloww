@@ -1,48 +1,30 @@
-/**
- * The Mass messages tab's row rules: which rows show, which a bulk unsend
- * picks, and the order it runs them in (`unsendByCreator`). OF's mass unsend
- * is irreversible, so the bulk pick is here, time injected (`now`), tested in
- * massUnsendRules.test.ts.
- */
-
 import { runFanOut } from "@/components/compose/fanOut";
 import type { MassMessageRow } from "@/hooks/useMassMessages";
 
-/** The bulk actions of the tab's bar; each button's key. */
 export type BulkAction = "all" | "non-image" | "with-image" | "free-text-old";
 
-/** True when the row carries non-GIF visual media (photos / videos).
- *  GIFs live under `giphyId`, not `media[]`, so GIF-only rows return
- *  false here. Used by the bulk-action filters. */
 export function hasImageMedia(m: MassMessageRow): boolean {
   return (m.mediaCount ?? 0) > 0;
 }
 
-/** Age gate for every TYPED bulk action (non-image / with-images / free text) —
- *  mirrors the backend unsend_messages `policy.mass_text_hours` (a blast has
- *  done its job after this long). "Unsend all" ignores it on purpose so
- *  fresh sends can still be pulled. */
 export const BULK_MIN_AGE_H = 4;
 
+// "Unsend all" ignores this gate on purpose so fresh sends can still be pulled.
 export function olderThanHours(m: MassMessageRow, hours: number, now: number): boolean {
-  if (!m.date) return false; // unknown sent time → never auto-eligible
+  if (!m.date) return false;
   const t = new Date(m.date).getTime();
   if (Number.isNaN(t)) return false;
   return (now - t) / 3_600_000 >= hours;
 }
 
-/** Free (no price) + image-less + older than the threshold — the exact set the
- *  backend `policy.mass_text_hours` sweep targets. GIF-only counts as image-less. */
 export function isFreeTextOld(m: MassMessageRow, now: number): boolean {
   return !!m.isFree && !hasImageMedia(m) && olderThanHours(m, BULK_MIN_AGE_H, now);
 }
 
-/** In the model-chip scope: an empty set is every model. */
 function inScope(r: MassMessageRow, models: ReadonlySet<string>): boolean {
   return models.size === 0 || (!!r.__accountId && models.has(r.__accountId));
 }
 
-/** The listed rows: the model chips' scope, and unsent ones dropped when hidden. */
 export function visibleMassRows(
   rows: MassMessageRow[],
   models: ReadonlySet<string>,
@@ -53,15 +35,12 @@ export function visibleMassRows(
   return out;
 }
 
-/** A row whose Creator is known, so its cancel can route. */
 export type ActionableRow = MassMessageRow & { __accountId: string };
 
-/** A row any bulk action may unsend: OF still allows it, not unsent, its Creator known. */
 export function isActionable(r: MassMessageRow): r is ActionableRow {
   return !!r.canUnsend && !r.isCanceled && !!r.__accountId;
 }
 
-/** The action's own filter, over an actionable row. */
 export function matchesBulk(action: BulkAction, r: MassMessageRow, now: number): boolean {
   switch (action) {
     case "all":
@@ -75,8 +54,6 @@ export function matchesBulk(action: BulkAction, r: MassMessageRow, now: number):
   }
 }
 
-/** The rows a bulk `action` unsends: in the model chips' scope, actionable, and
- *  its filter's. The "Hide unsent" box never matters: an unsent row is never actionable. */
 export function bulkTargets(
   rows: MassMessageRow[],
   models: ReadonlySet<string>,
@@ -86,8 +63,6 @@ export function bulkTargets(
   return rows.filter((r): r is ActionableRow => inScope(r, models) && isActionable(r) && matchesBulk(action, r, now));
 }
 
-/** The bulk bar's buttons, in order: `label` + " (count)" is the button text,
- *  `confirm` heads the confirmation, `title` the hover hint. */
 export const BULK_ACTIONS: readonly { action: BulkAction; label: string; confirm: string; title?: string }[] = [
   { action: "all", label: "Unsend all", confirm: "Unsend ALL visible broadcasts" },
   {
@@ -100,9 +75,6 @@ export const BULK_ACTIONS: readonly { action: BulkAction; label: string; confirm
     label: `Unsend with images >${BULK_MIN_AGE_H}h`,
     confirm: `Unsend broadcasts that include images / videos, older than ${BULK_MIN_AGE_H}h`,
   },
-  // The free-text cleanup — same target set as the backend unsend_messages
-  // `policy.mass_text_hours` sweep: free (no price), image-less, past the age
-  // gate. Keeps revenue (PPV/image) blasts.
   {
     action: "free-text-old",
     label: `Unsend free text >${BULK_MIN_AGE_H}h`,
@@ -111,7 +83,6 @@ export const BULK_ACTIONS: readonly { action: BulkAction; label: string; confirm
   },
 ];
 
-/** Each bulk action's target count (the button labels' numbers). */
 export function bulkCounts(
   rows: MassMessageRow[],
   models: ReadonlySet<string>,
@@ -122,13 +93,7 @@ export function bulkCounts(
   return out;
 }
 
-/** Unsend `targets` Creator by Creator (`runFanOut`, first-listed Creator
- *  first), one delete at a time within each: one OF delete in flight, never
- *  a burst on a Creator or on the proxy it shares. The browser's order is the
- *  only pacing: the relay's 11 s write gate would make 200 unsends a 36 min
- *  run and hold that Creator's automation behind it. Never throws; returns how
- *  many deletes failed. `onProgress(done, total)` follows each delete, `done`
- *  counting successes and failures alike. */
+// One OF delete in flight, Creator by Creator: the relay's 11 s write gate would make 200 unsends a 36 min run and block that Creator's automation.
 export async function unsendByCreator(
   targets: readonly ActionableRow[],
   cancel: (row: ActionableRow) => Promise<unknown>,

@@ -1,23 +1,5 @@
 "use client";
 
-/**
- * TemplatePicker — popover for picking a saved reply or the welcome
- * message template, then inserting it into the composer.
- *
- * Two sources merged into one list:
- *   • OF welcome message (badge: 👋) — only one per account.
- *   • Local saved replies — Chatterly-side, since OF rejects template
- *     creates for everything else.
- *
- * Pick a row → its text fills the textarea + its media attaches to the
- * outgoing message.
- *
- * "/" search (look-and-feel ticket 150): a non-null `slashQuery` opens the
- * same panel filtered by that keyword while focus stays in the Composer's
- * input. Enter and Escape count only in that input: Enter picks the first
- * match through `onPick`; Escape, a pick or a press outside closes it through
- * `onSlashClose`.
- */
 
 import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -37,40 +19,23 @@ import { fmtPrice } from "@/lib/format";
 import { hasHtml, isOfHtml, ofPlainText, ofText } from "@/lib/ofRichText";
 import { OfRichText } from "./OfRichText";
 
-/** Unified shape so Composer doesn't care where the row came from. */
 export interface PickedTemplate {
   source: "of" | "local";
-  text: string;       // plain text the textarea wants
-  displayText: string; // possibly HTML for the picker preview
+  text: string;
+  displayText: string;
   mediaCount: number;
   price: number;
   lockedText: boolean;
   isWelcome: boolean;
   media: VaultMedia[];
   title?: string;
-  /** Vault ids inside `media` that should ride along UNLOCKED when
-   *  `price > 0` is applied to the composer. Local templates carry this
-   *  directly; OF templates can't, so they default to empty. */
   previews: number[];
-  /** OF user ids of creators to @-tag when this template is applied.
-   *  Local-only — OF welcome templates don't carry userTags. */
   taggedUsers: number[];
-  /** Optional Giphy id stored on the template (local only). On apply the
-   *  composer seeds its picked-gifs state with this so the GIF is sent
-   *  alongside the text. */
   gifId?: string | null;
-  /** Animated preview URL to render the chip without a fresh Giphy fetch. */
   gifUrl?: string | null;
-  /** Script grouping (local only). Templates that share a `scriptId` form
-   *  a sequence ordered by `scriptStep` — picking one advances the chat's
-   *  next-in-script bubble. */
   scriptId?: string | null;
   scriptStep?: number | null;
-  /** The saved reply's id (local only): a send that rode it bumps its send
-   *  count (`markScriptSent`). */
   replyId?: number;
-  /** Ids inside `media` deleted from the vault since the script was saved
-   *  (local only), for the composer's "Use script?" warning. */
   removedMediaIds?: number[];
 }
 
@@ -96,8 +61,6 @@ function fromOF(t: OFMessageTemplate): PickedTemplate {
 export function fromLocal(r: SavedReply): PickedTemplate {
   return {
     source: "local",
-    // A formatted script's markup stays in `displayText` (the composer sends it while the text is untouched); bare
-    // tags (an old row: `hey <b>babe</b>`) load as the OF markup the relay would send (`ofText`), never as raw tags.
     text: hasHtml(r.text) ? ofPlainText(r.text) : r.text,
     displayText: isOfHtml(r.text) ? r.text : ofText(r.text),
     mediaCount: r.media?.length ?? 0,
@@ -124,32 +87,14 @@ export function fromLocal(r: SavedReply): PickedTemplate {
 export interface TemplatePickerProps {
   accountId: string | null;
   onPick: (t: PickedTemplate) => void;
-  /** Surfaces that can't currently send vault images (mass / post / model-to-
-   *  models) pass this to hide templates whose media contains any photo/video/
-   *  audio. GIF-only templates (no photo/video/audio media — GIFs live in the
-   *  template's `gifId`, not in `media`) pass through. */
   hideImageTemplates?: boolean;
-  /** Messages Pro: the trigger is the "Scripts" pill. Only the Composer
-   *  passes it; the panel is unchanged. */
   messagesPro?: boolean;
-  /** "/" search: the keyword after a draft's leading "/" ("" for "/" alone).
-   *  A string opens the panel filtered by it without taking focus from the
-   *  Composer input, whose Enter then picks the first match and whose Escape
-   *  closes it. Null or absent: today's behaviour. */
   slashQuery?: string | null;
-  /** Called when the "/" search list closes (Escape, a pick, a press outside). */
   onSlashClose?: () => void;
-  /** The chat's script cursor (Composer, a user script). Its rows are listed
-   *  first, by step, after the pinned script's. */
   activeScriptId?: string | null;
-  /** A fan chat: the script source's current script (lib/chatSlots.ts),
-   *  whose rows are always listed first, by step, under a header. The
-   *  source's other rows stay hidden unless searched for (its
-   *  `searchPrefix`, "/" search included). */
   pinnedScriptId?: string | null;
 }
 
-/** A row's search text (title, body, script id), lower-cased once per row. */
 const haystacks = new WeakMap<PickedTemplate, string>();
 function haystackOf(t: PickedTemplate): string {
   let h = haystacks.get(t);
@@ -160,15 +105,10 @@ function haystackOf(t: PickedTemplate): string {
   return h;
 }
 
-/** Returns true when the template carries no photo/video/audio attachment.
- *  Templates with only text or only a GIF reference pass the filter. */
 function templateHasNoImageMedia(t: PickedTemplate): boolean {
   if (!t.media || t.media.length === 0) return true;
   return !t.media.some((m) => {
     const tp = (m.type || "").toLowerCase();
-    // "gif" templates live in the standalone gifId/gifUrl fields when added;
-    // any media entry with photo/video/audio (or unknown non-gif) counts as
-    // an image-bearing template.
     return tp !== "gif";
   });
 }
@@ -177,14 +117,12 @@ export function TemplatePicker({
   accountId, onPick, hideImageTemplates, messagesPro, slashQuery = null, onSlashClose,
   activeScriptId = null, pinnedScriptId = null,
 }: TemplatePickerProps) {
-  // The Infloww palette when opened from Messages Pro; nothing anywhere else.
   const palette = useInflowwPalette();
   const [pillOpen, setPillOpen] = useState(false);
   const [typedSearch, setTypedSearch] = useState("");
   const slash = slashQuery !== null;
   const open = pillOpen || slash;
   const search = slash ? slashQuery : typedSearch;
-  /** Close the panel, whichever way it is open. */
   const close = () => {
     setPillOpen(false);
     if (slash) onSlashClose?.();
@@ -193,8 +131,6 @@ export function TemplatePicker({
     onPick(t);
     close();
   };
-  /** "/" search: the element that had focus when the list opened (the
-   *  Composer input). Only its keys and presses drive the list. */
   const anchorRef = useRef<Element | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
@@ -203,15 +139,12 @@ export function TemplatePicker({
   const [coords, setCoords] = useState<PopoverCoords | null>(null);
   const tplQ = useTemplates(open ? accountId : null);
   const replyQ = useSavedReplies(open ? accountId : null);
-  // Each open reads the list again: a cached one can be a restored snapshot that predates a script just saved on the
-  // Scripts page (its save only marks the closed picker's query stale). The cached rows show meanwhile.
   const refetchReplies = replyQ.refetch;
+  // Re-read on every open: a cached list can be a restored snapshot predating a script just saved.
   useEffect(() => {
     if (open && accountId) void refetchReplies({ cancelRefetch: false });
   }, [open, accountId, refetchReplies]);
 
-  // Reset + focus search when opening so picker is keyboard-first. "/"
-  // search leaves focus in the Composer input.
   useEffect(() => {
     if (!open) {
       setTypedSearch("");
@@ -230,7 +163,6 @@ export function TemplatePicker({
     const t = e.target as Node;
     if (rootRef.current?.contains(t)) return;
     if (popRef.current?.contains(t)) return;
-    // "/" search: pressing in the Composer input keeps the list.
     if (slash && t === anchorRef.current) return;
     close();
   });
@@ -257,18 +189,14 @@ export function TemplatePicker({
     };
   }, [open]);
 
-  // Welcome first (it's most-often used as the high-leverage reply),
-  // then saved replies — newest-edit first as the local API returns.
-  // Memoized on the queries' data: a library runs to 10k scripts.
   const { allItems, visibleByImageFilter } = useMemo(() => {
     const welcome = (tplQ.data ?? []).find((t) => t.template === "reply_on_subscribe");
     const all = [...(welcome ? [fromOF(welcome)] : []), ...(replyQ.data ?? []).map(fromLocal)];
     return { allItems: all, visibleByImageFilter: hideImageTemplates ? all.filter(templateHasNoImageMedia) : all };
   }, [tplQ.data, replyQ.data, hideImageTemplates]);
   const hiddenCount = hideImageTemplates ? allItems.length - visibleByImageFilter.length : 0;
-  // The script source's rows only when searched for or current; the pinned
-  // script first, then the active script, each by step; the rest keep their order.
   const q = search.trim().toLowerCase();
+  // Memoized: a library runs to 10k scripts.
   const pool = useMemo(() => {
     const lead = [...new Set([pinnedScriptId, activeScriptId])].filter((id): id is string => !!id);
     const source = SCRIPT_SOURCE;
@@ -283,20 +211,13 @@ export function TemplatePicker({
       || (rank(a) < lead.length ? (a.scriptStep ?? 0) - (b.scriptStep ?? 0) : 0));
   }, [visibleByImageFilter, q, pinnedScriptId, activeScriptId]);
 
-  // Search across title, body text, and script id — case-insensitive, over
-  // the whole pool (only the rendering is capped, below).
   const items = useMemo(() => {
     if (!q) return pool;
     return pool.filter((t) => haystackOf(t).includes(q));
   }, [q, pool]);
-  // 200 rows at a time, more as the list's foot scrolls in.
   const { cap, hasMore, more, sentinel } = useRenderCap(items.length, `${open}|${q}`);
 
-  // "/" search: the Composer input keeps focus, so its Enter and Escape are
-  // heard here as they bubble; keys from anywhere else are left alone. The
-  // Composer stops its own send on Enter. Escape closes one layer only (the
-  // house rule, `useModalFocus` in ifModal.tsx): stopped at `document`, it never
-  // reaches the `window` Escape of Find or the overlay Fan insights.
+  // Escape stops at document so it never reaches the window Escape of Find or Fan insights.
   const onSlashKey = useEffectEvent((e: KeyboardEvent) => {
     if (isImeComposing(e) || e.target !== anchorRef.current) return;
     if (e.key === "Escape") {
@@ -467,7 +388,6 @@ export function TemplatePicker({
   );
 }
 
-/** Back-compat: composer calls this with the picked item's media. */
 export function templateMediaToVault(t: PickedTemplate): VaultMedia[] {
   return t.media;
 }

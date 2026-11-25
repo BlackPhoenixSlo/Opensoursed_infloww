@@ -1,9 +1,3 @@
-"""Five Agencies, twenty Creators; three of them big. Agency 0 (the run's owner,
-the one the UI signs in as) holds the 3 big Creators plus 2 normal ones, so its
-All Models inbox has 5 models; the other 15 Creators spread over Agencies 1-4.
-Big: `big_fans_per_creator` fans each (small 2k, medium 10k, huge 50k); normal:
-`fans_per_creator` (50 / 500 / 5k). Threads as seed/threads.py.
-`build(w, creators=n)`: n Creators instead of 20 (same Agencies, big and UI ones)."""
 from __future__ import annotations
 
 from .. import World, agency, fans, threads

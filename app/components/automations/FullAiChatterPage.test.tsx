@@ -8,7 +8,6 @@ import type { QueryClient } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();
-  // Every verb mocked, so nothing here can reach a live relay.
   return {
     ...mod,
     relay: {
@@ -50,7 +49,6 @@ const rule = (is_enabled: boolean) => ({
 
 const TODAY = {
   since: "2026-11-13T00:00:00Z",
-  // Keys out of Route order, so the strip's order comes from the page, not the payload.
   counts: { no_send: 1, chat: 7, ai_dare: 2, sext: 6, make_right: 3, sell_now: 5, tease: 4 },
   jev_failed: 8,
   rows: [
@@ -65,21 +63,16 @@ const TODAY = {
 
 const TEMPLATE = "Name: \nAge: \nFrom: \nPersonality: \nLikes: \nWon't do (hard limits): ";
 const CONFIG = { version: 1, reply_speed: "0-2m", text_style: "girl", gifs: false, writers: ["euryale-v2.3"] };
-/** The GET's `reference` (`full_ai_config.reference`), a few keys. */
 const REFERENCE = [
   { key: "version", default: 1, allowed: "1", about: "Config format version.", page: null },
   { key: "reply_speed", default: "0-2m", allowed: "0-2m | 0-15-60", about: "How long she waits before replying.", page: "Reply speed" },
   { key: "gifs", default: false, allowed: "true | false", about: "Sticker GIFs in her replies.", page: "GIFs" },
   { key: "sext_on", default: true, allowed: "true | false", about: "Sexting. Off: she stays in normal chat.", page: null },
 ];
-/** The GET's `limits` (`full_ai_config.limits`). */
 const LIMITS = { max_writers: 6, reply_speeds: ["0-2m", "0-15-60"], default_reply_speed: "0-2m",
   info_questions: ["pick", "list"], caption_writers: ["chat", "caption"] };
-/** The GET's `writer_providers` (model → provider). */
 const WRITER_PROVIDERS = { "euryale-v2.3": "nanogpt", "hermes-4-405b": "openrouter", "glm-5.3-flash": "zai" };
-/** The GET's `provider_labels` (provider → name). */
 const PROVIDER_LABELS = { nanogpt: "NanoGPT", openrouter: "OpenRouter", zai: "Z.ai (GLM)", deepinfra: "DeepInfra" };
-/** The GET's `owner_keys` (the Creator's billing owner's keys, what Live checks): booleans only. */
 const OWNER_KEYS = { nanogpt: { set: true }, openrouter: { set: false }, zai: { set: false }, deepinfra: { set: false } };
 const configBody = (over: Record<string, unknown> = {}) =>
   ({ checkpoint: CONFIG, previous: null, draft: CONFIG, rev: 3, errors: [], reference: REFERENCE, limits: LIMITS,
@@ -87,8 +80,6 @@ const configBody = (over: Record<string, unknown> = {}) =>
 const MODE_OFF = { mode: "off", off_switch: false, blockers: [] as string[] };
 let modeRead: Record<string, unknown> = MODE_OFF;
 const PREPARE_IDLE = { run_id: null, steps: [], started_at: null, finished_at: null };
-/** The reads every mount answers: the Full AI config, the account config (Model info); the signed-in user's keys
- *  (GET /admin/my-llm-keys) say the opposite of `owner_keys`, so the LLM keys row proves which one it reads. */
 const baseGet = (p: string): unknown => {
   if (p.startsWith("/admin/full-ai/config")) return configBody();
   if (p.startsWith("/admin/account-config")) {
@@ -155,7 +146,7 @@ describe("Full AI Chat page", () => {
     expect(modePuts()[0][1]).toEqual({ account_id: "acc-a", mode: "live" });
     await waitFor(() => expect(modeNow()).toBe("Live"));
     expect(modeButton("Live").getAttribute("aria-pressed")).toBe("true");
-    expect(relayPost).not.toHaveBeenCalled();   // never the shared rule switch
+    expect(relayPost).not.toHaveBeenCalled();
   });
 
   it("reads a legacy rule as Shadow (records only); Off writes off with no confirm", async () => {
@@ -271,7 +262,6 @@ describe("Full AI Chat page", () => {
     expect(popup()).not.toBeNull();
     fireEvent.keyDown(within(dialog).getByLabelText("AI rules diagram"), { key: "Escape" });
     await waitFor(() => expect(popup()).toBeNull());
-    // The page stays where it was.
     expect(screen.getByRole("group", { name: "Mode" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "AI rules" }));
@@ -279,7 +269,6 @@ describe("Full AI Chat page", () => {
     expect(popup()).toBeNull();
   });
 
-  // GET /admin/full-ai/rules answers to the /ai-rules grant, not /full-ai-chatter's.
   it.each<[string, Set<string> | null, boolean, boolean]>([
     ["owner (every page)", null, false, true],
     ["role granted /ai-rules", new Set(["/full-ai-chatter", "/ai-rules"]), false, true],
@@ -294,20 +283,17 @@ describe("Full AI Chat page", () => {
   });
 });
 
-// ── Test chat ────────────────────────────────────────────────────────────────────────────────────────────────────
 type Body = { account_id: string; pair: string; side: "checkpoint" | "draft"; n: number; text: string };
 const answer = (over: Record<string, unknown> = {}) => ({
   row_id: 11, route: "chat", heat: 2, route_row: "otherwise", dropped: [], parts: [{ text: "hey babe" }],
   writer: "euryale-v2.3", attempts: [{ writer: "euryale-v2.3", outcome: "ok", ms: 800 }], wait_s: 0,
   status: "sent", fan_info: {}, ...over,
 });
-/** A row as GET /admin/full-ai/test/session returns it (`full_ai_test.session_row`): no `dropped`. */
 const sessionRow = (over: Record<string, unknown> = {}) =>
   Object.fromEntries(Object.entries(answer(over)).filter(([k]) => k !== "dropped"));
 const PHONE = "(max-width: 639px)";
 const turnCalls = () => relayPost.mock.calls.filter((c) => String(c[0]) === "/admin/full-ai/test/turn");
 
-/** The page with the turn route answering per side (`bySide`), and the session read answering `session`. */
 const mountChat = (
   bySide: Record<string, (b: Body) => unknown>,
   session: unknown = { rows: [] },
@@ -357,7 +343,7 @@ describe("Full AI Chat page › Test chat", () => {
     expect(await win("Live settings").findByText("hey babe")).toBeTruthy();
     expect(await win("Draft").findByText("hi there")).toBeTruthy();
     expect(win("Live settings").getByText("hey")).toBeTruthy();
-    await waitFor(() => expect(sendBtn().disabled).toBe(true)); // the composer is empty again
+    await waitFor(() => expect(sendBtn().disabled).toBe(true));
     await say("you?");
     await waitFor(() => expect(turnCalls().length).toBe(4));
     expect(turnCalls().slice(2).map((c) => (c[1] as Body).n)).toEqual([2, 2]);
@@ -532,25 +518,20 @@ describe("Full AI Chat page › Test chat", () => {
   });
 });
 
-// ── Settings column (ticket 39) ──────────────────────────────────────────────────────────────────────────────────
 const putCalls = () => relayPut.mock.calls.filter((c) => String(c[0]) === "/admin/full-ai/config/draft");
-/** The first draft write; under a loaded run it can land after the click's act() settles. */
 const firstPut = () => waitFor(() => { expect(putCalls().length).toBeGreaterThan(0); return putCalls()[0][1]; });
 const postsTo = (path: string) => relayPost.mock.calls.filter((c) => String(c[0]) === path);
 const AUDIENCE = "/admin/full-ai/config/audience";
 const blockers = () => screen.queryByRole("list", { name: "Live blockers" });
 const audiencePuts = () => relayPut.mock.calls.filter((c) => String(c[0]) === AUDIENCE);
-/** The audience write's answer: the patch on every side, rev + 1 per write (from the mount's 3). */
 const audienceAnswer = (patch: Record<string, unknown>, rev: number) =>
   configBody({ checkpoint: { ...CONFIG, ...patch }, draft: { ...CONFIG, ...patch }, rev });
 const btn = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
 
-/** The page with the config read answering `config` (a function: called per read), writes answered by `put` / `post`. */
 const mountSettings = (
   config: unknown = configBody(),
   { put, post, get }: {
     put?: (b: Record<string, unknown>, path: string) => unknown; post?: (path: string, b: Record<string, unknown>) => unknown;
-    /** Extra GET answers; `undefined` falls through to the defaults. */
     get?: (path: string) => unknown;
   } = {},
 ) => {
@@ -596,7 +577,6 @@ describe("Full AI Chat page › Settings", () => {
     expect(within(items[3]).getByRole("switch", { name: "Typos" }).getAttribute("aria-checked")).toBe("true");
     expect((within(items[4]).getByRole("checkbox", { name: "euryale-v2.3" }) as HTMLInputElement).checked).toBe(true);
     expect(within(items[5]).getByRole("switch", { name: "GIFs" }).getAttribute("aria-checked")).toBe("false");
-    // The plain switches read the server defaults on a draft without the keys.
     expect(within(items[6]).getByRole("switch", { name: "Sexting" }).getAttribute("aria-checked")).toBe("true");
     expect(within(items[7]).getByRole("switch", { name: "Lead-in questions" }).getAttribute("aria-checked")).toBe("true");
     const questions = within(items[8]).getByRole("radiogroup", { name: "Questions" });
@@ -673,7 +653,7 @@ describe("Full AI Chat page › Settings", () => {
     expect(await firstPut()).toEqual({ account_id: "acc-a", draft: { ...CONFIG, gifs: true }, rev: 3 });
     expect(putCalls()).toHaveLength(1);
     expect(sendBtn().disabled).toBe(true);
-    expect(screen.getAllByText("Saving draft…").length).toBe(2);   // the settings column's status and Send's block
+    expect(screen.getAllByText("Saving draft…").length).toBe(2);
     await act(async () => { store(configBody({ draft: { ...CONFIG, gifs: true }, rev: 4 })); });
     await waitFor(() => expect(sendBtn().disabled).toBe(false));
     expect(screen.queryByText("Saving draft…")).toBeNull();
@@ -757,7 +737,7 @@ describe("Full AI Chat page › Settings", () => {
     expect(audiencePuts().length).toBe(0);
     expect(box().value).toBe("1000");
     await act(async () => { fireEvent.change(box(), { target: { value: "1000" } }); fireEvent.blur(box()); });
-    expect(audiencePuts().length).toBe(0);   // unchanged: nothing stored
+    expect(audiencePuts().length).toBe(0);
     await act(async () => { fireEvent.change(box(), { target: { value: "250.5" } }); fireEvent.blur(box()); });
     expect(audiencePuts()[0][1]).toEqual({ account_id: "acc-a", top_spend_cents: 25050 });
     await waitFor(() => expect(box().value).toBe("250.5"));
@@ -793,7 +773,7 @@ describe("Full AI Chat page › Settings", () => {
     const dialog = within(await screen.findByRole("dialog", { name: "Fans" }));
     const seg = (name: string) => within(dialog.getByRole("radiogroup", { name }));
     expect(await dialog.findByRole("radiogroup", { name: "VIP" })).toBeTruthy();
-    expect(dialog.queryByRole("radiogroup", { name: "Fans" })).toBeNull();   // a built-in (no whole-number id) is not offered
+    expect(dialog.queryByRole("radiogroup", { name: "Fans" })).toBeNull();
     expect(seg("Old").getByRole("radio", { name: "Include" }).getAttribute("aria-checked")).toBe("true");
     expect(seg("VIP").getByRole("radio", { name: "Neither" }).getAttribute("aria-checked")).toBe("true");
     fireEvent.click(seg("VIP").getByRole("radio", { name: "Include" }));
@@ -1030,11 +1010,9 @@ describe("Full AI Chat page › Settings", () => {
   });
 });
 
-// ── An assistant Apply lands (ticket 57: Do mode invalidates `fullAiConfigKey`, the page refetches) ──────────────────
 describe("Full AI Chat page › applied draft", () => {
   beforeEach(() => { relayPut.mockReset(); });
   const slower = { ...CONFIG, reply_speed: "0-15-60" };
-  /** The config read answers rev 3 until `apply()` stores the slower draft as rev 4; then the assistant invalidates. */
   const mountApplied = (opts: Parameters<typeof mountSettings>[1] = {}) => {
     let body = configBody();
     mountSettings(() => Promise.resolve(body), opts);
@@ -1080,7 +1058,7 @@ describe("Full AI Chat page › applied draft", () => {
     expect(speed().getByRole("radio", { name: "0-15-60 min" }).getAttribute("aria-checked")).toBe("true");
     expect(settings().getByRole("switch", { name: "GIFs" }).getAttribute("aria-checked")).toBe("false");
     expect(sendBtn().disabled).toBe(false);
-    expect(putCalls().length).toBe(1);   // the refused edit only: Take theirs writes nothing
+    expect(putCalls().length).toBe(1);
   });
 
   it("Keep mine re-stores the page's draft on the applied rev", async () => {
@@ -1105,7 +1083,6 @@ describe("Full AI Chat page › applied draft", () => {
   });
 
   it("JSON open while an Apply lands: both Save buttons go off and the alert says to copy the text first (rwl-c R2-3)", async () => {
-    // rwl-c F1: the boxes were read at rev 3; storing them would overwrite the Apply's draft (the server 409s on rev 3).
     const apply = mountApplied();
     await loadedConfig();
     fireEvent.click(btn("JSON (Live + Draft)"));
@@ -1167,7 +1144,6 @@ describe("Full AI Chat page › applied draft", () => {
     const reads = () => relayGet.mock.calls.filter((c) => String(c[0]).startsWith("/admin/full-ai/config")).length;
     const before = reads();
     await act(async () => { await client.invalidateQueries({ queryKey: fullAiConfigKey("acc-a") }); });
-    // Let the refetched body reach the page (React Query notifies on a timer) while the PUT is still out.
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect([reads(), speed().getByRole("radio", { name: "0-2 min" }).getAttribute("aria-checked")]).toEqual([before + 1, "true"]);
     await act(async () => { land(configBody({ draft: { ...CONFIG, gifs: true }, rev: 4 })); });
@@ -1189,11 +1165,9 @@ describe("Full AI Chat page › applied draft", () => {
   });
 });
 
-// ── Selling (ticket 49) ──────────────────────────────────────────────────────────────────────────────────────────
 describe("Full AI Chat page › Selling settings", () => {
   beforeEach(() => { relayPut.mockReset(); });
   const FOLDERS = { include: [], exclude: ["of:9"] };
-  /** mountSettings with the folder reads and Prepare content's status answering too. */
   const mountSell = (opts: Parameters<typeof mountSettings>[1] = {}, prepare: () => unknown = () => PREPARE_IDLE) =>
     mountSettings(configBody({ draft: { ...CONFIG, folders: FOLDERS } }), { ...opts, get: (p) => {
       if (p.startsWith("/admin/vault-ai/internal-folders")) return { list: [{ id: 4, name: "AI-lingerie", items: 12 }] };
@@ -1223,7 +1197,6 @@ describe("Full AI Chat page › Selling settings", () => {
       ["Unasked offers", "Chat tease", "Implied asks", "Nearest piece", "Fill the set", "Match his count", "Spacing", "He likes"]
         .map((n) => [n, "true", false]));
     expect(settings().getByText("Test chat + live.")).toBeTruthy();
-    // Sell group sits inside Sell's own top-level item.
     const items = [...screen.getByRole("list", { name: "Settings" }).children] as HTMLElement[];
     expect(items.length).toBe(13);
     expect(within(items[11]).getByRole("list", { name: "Sell settings" })).toBeTruthy();
@@ -1301,7 +1274,6 @@ describe("Full AI Chat page › Selling settings", () => {
 });
 
 describe("Full AI Chat page › PPV bubble", () => {
-  // Checkpoint's Offer carries `items` (2 clips + the free preview photo); Draft's is an older row without them.
   const ITEMS = [{ id: 21, kind: "video", seconds: 42 }, { id: 22, kind: "video", seconds: 30 }, { id: 23, kind: "photo", seconds: null }];
   const offer = (price_cents: number) => ({ kind: "offer", ref: 21, price_cents, list_cents: price_cents, media: [21, 22], previews: [23],
     ...(price_cents ? { items: ITEMS } : {}), refusal: null });
@@ -1310,7 +1282,6 @@ describe("Full AI Chat page › PPV bubble", () => {
     parts: [{ text: "u want this?", ppv: { ref: 21, price_cents, media: [21, 22], previews: [23] } }],
   });
   const settleCalls = () => postsTo("/admin/full-ai/test/settle");
-  /** Checkpoint answers a $15 Offer (row 31), Draft a free item (row 32); the settle route answers `settle`. */
   const mountPpv = async (settle: (b: Record<string, unknown>) => unknown = (b) => ({ row_id: b.row_id, outcome: b.outcome })) => {
     mountChat({ checkpoint: () => ppvAnswer(31, 1500), draft: () => ppvAnswer(32, 0) });
     const inner = relayPost.getMockImplementation()!;
@@ -1330,12 +1301,12 @@ describe("Full AI Chat page › PPV bubble", () => {
     expect([...win("Live settings").getByTestId("ppv").querySelectorAll("img")].map((i) => i.getAttribute("src"))).toEqual([21, 22, 23].map(
       (id) => `/admin/vault-ai/thumb?account_id=acc-a&media_id=${id}`));
     expect(cp.getByText("$15")).toBeTruthy();
-    expect(cp.getByTestId("ppv-media").textContent).toBe("2 videos · 1:12");     // the locked clips, not the preview
+    expect(cp.getByTestId("ppv-media").textContent).toBe("2 videos · 1:12");
     expect(win("Live settings").getByRole("button", { name: "Buy" })).toBeTruthy();
     expect(win("Live settings").getByRole("button", { name: "Decline" })).toBeTruthy();
     const draft = await win("Draft").findByTestId("ppv");
     expect(within(draft).getByText("Free")).toBeTruthy();
-    expect(within(draft).queryByTestId("ppv-media")).toBeNull();                // no `items`: no line
+    expect(within(draft).queryByTestId("ppv-media")).toBeNull();
     expect(win("Draft").queryByRole("button", { name: "Buy" })).toBeNull();
     expect(win("Draft").queryByRole("button", { name: "Decline" })).toBeNull();
   });

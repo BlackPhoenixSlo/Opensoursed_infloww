@@ -1,4 +1,3 @@
-"""A standalone scenario must load without imports left by an earlier run."""
 from pathlib import Path
 import subprocess
 import sys

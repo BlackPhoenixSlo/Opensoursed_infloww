@@ -1,6 +1,3 @@
-/** The Vault manager's actions (moved out of `VaultManagePanel`): plain async functions, no React. The panel only
- *  wires them — it hands each the deps it reads and the one `busy` line they share. */
-
 import { type QueryClient } from "@tanstack/react-query";
 
 import { ifAlert, ifConfirm } from "@/components/ui/ifConfirm";
@@ -21,34 +18,25 @@ import { type VaultSweep } from "@/hooks/useVaultSweep";
 import { type FanId } from "@/lib/fanId";
 import { ApiKeyError, type VaultMedia } from "@/lib/relay";
 
-/** A vault item as the manager holds it: the mirror row plus its describe read-out. */
 export type Tile = VaultMedia & { _ai?: Record<string, unknown> };
 
-/** The panel's one busy line ("describing 3/10", "adding to OF…"). `get` reads it synchronously (a ref), so a second
- *  call in the same tick sees the first one's mark — the button's `disabled` only lands on the next render. */
+// `get` reads a ref: a second call in the same tick must see the first one's mark (`disabled` lands only on the next render)
 export interface Busy {
   get: () => string;
   set: (s: string) => void;
 }
 
-/** What the panel hands every action: the account, the query cache and the busy line, plus the bits of its state an
- *  action reads or resets. */
 export interface ManageDeps {
   accountId: string;
   qc: QueryClient;
   busy: Busy;
-  /** The ticked files (`vaultBrowseReducer`). */
   selected: ReadonlySet<number>;
   clearSelection: () => void;
-  /** Everything that answers "what is in this vault" — `invalidateVaultGrid`. */
   refreshAll: () => void;
-  /** The server's sentence for the AI cap (`VisionCapState.blocked_reason`). */
   capReason: string;
   refetchPlan: () => void;
 }
 
-/** The Collect run has something for the grid: it has seen media, or (when its totals are hidden from a restricted
- *  chatter) it is past paging OF ("media") or no longer running. */
 export function collectHasNews(run: CollectRun | null | undefined): boolean {
   if (!run) return false;
   return (run.total_seen ?? 0) > 0 || run.phase !== "media" || run.status !== "running";
@@ -60,7 +48,6 @@ export async function onCollect(d: Pick<ManageDeps, "accountId" | "qc" | "refres
   try {
     await startCollect(accountId);
   } catch {
-    /* already running */
   }
   qc.invalidateQueries({ queryKey: cacheSummaryKey(accountId) });
   const polls = 4;
@@ -68,8 +55,7 @@ export async function onCollect(d: Pick<ManageDeps, "accountId" | "qc" | "refres
     await new Promise((r) => setTimeout(r, 2500));
     qc.invalidateQueries({ queryKey: cacheSummaryKey(accountId) });
     const st = await fetchCollectStatus(accountId).catch(() => null);
-    // The last poll refreshes regardless: a restricted chatter sees no totals, so a vault still paging OF ("media")
-    // after the window would otherwise leave its grid stale.
+    // the last poll refreshes regardless: a restricted chatter sees no totals, so a vault still paging OF would leave its grid stale
     if (collectHasNews(st?.run) || i === polls - 1) {
       d.refreshAll();
       break;
@@ -77,29 +63,23 @@ export async function onCollect(d: Pick<ManageDeps, "accountId" | "qc" | "refres
   }
 }
 
-/** The paused Collect's prompt: walk on or stop, then re-read the summary (it is polled while the run holds the
- *  account, paused included). A 409 means it was already answered (another tab, a double press): nothing to say. */
 export async function onCollectAnswer(answer: "continue" | "stop", d: Pick<ManageDeps, "accountId" | "qc">) {
   try {
     await answerCollect(d.accountId, answer);
   } catch {
-    /* already answered */
   }
   d.qc.invalidateQueries({ queryKey: cacheSummaryKey(d.accountId) });
 }
 
-/** The describe sweep's "Max" input: one value per browser (localStorage). */
 export const DESCRIBE_LIMIT_KEY = "vaultDescribeLimit";
 export const DESCRIBE_LIMIT_DEFAULT = 2000;
 
-/** The stored "Max" text as a limit: never set → the default; empty / 0 / junk → 0 (all). */
 export function parseDescribeLimit(raw: string | null): number {
   if (raw == null) return DESCRIBE_LIMIT_DEFAULT;
   const n = Math.floor(Number(raw.trim()));
   return raw.trim() && Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-/** How many of `n` items a sweep capped at `limit` describes (0 = all). */
 export function cappedCount(n: number, limit: number): number {
   return limit > 0 ? Math.min(n, limit) : n;
 }
@@ -111,15 +91,12 @@ export async function onDescribeAll(
     capped: boolean;
     plan: { total?: number; restage?: number } | undefined;
     promptVersion: "v1" | "v2";
-    /** The "Max" input (`parseDescribeLimit`); 0 = all. */
     limit: number;
   },
 ) {
   const { describeSweep, capped, capReason, promptVersion, limit } = d;
   if (describeSweep.busy) return;
   if (capped) {
-    // Reachable with a plan up to 30s stale (its staleTime) — the button is
-    // already grey once the refetch lands. Say it rather than no-op.
     await ifAlert(capReason);
     d.refetchPlan();
     return;
@@ -178,24 +155,19 @@ export async function newFolderWithSelection(d: ManageDeps) {
   }
 }
 
-/** Describe the ticked files, one paid LLM call each. */
 export async function describeSelected(d: ManageDeps) {
   const { accountId, busy, selected, capReason } = d;
   if (selected.size === 0 || busy.get()) return;
   const ids = [...selected];
-  // STOPS on the cap rather than grinding through the rest: every remaining
-  // call would be refused before it fires, so continuing only keeps the
-  // operator watching a counter that describes nothing. One exit either way.
+  // stop on the cap: every remaining call would be refused before it fires
   let stopped = "";
   for (let i = 0; i < ids.length && !stopped; i++) {
     busy.set(`describing ${i}/${ids.length}`);
     const r = await describeMedia(accountId, ids[i]).catch((e) => {
-      if (e instanceof ApiKeyError) stopped = "key"; // toasted by relay.ts; stop, don't repeat it per item
+      if (e instanceof ApiKeyError) stopped = "key";
       return null;
     });
     if (r?.status === "capped") {
-      // `detail` and `capReason` are the same sentence from the same author
-      // (the relay's `_vision_budget`) — this only picks whichever arrived.
       stopped = `${r.detail ?? capReason}\n\n` +
         `Described ${i} of ${ids.length} before the cap.`;
     }
@@ -209,10 +181,8 @@ export async function describeSelected(d: ManageDeps) {
   }
 }
 
-/** The busy line while `describeOne` runs — the drawer's Describe button reads it to say "Describing…". */
 export const DESCRIBING = "describing";
 
-/** Describe the open item — one paid LLM call. */
 export async function describeOne(m: Tile, d: ManageDeps & { setPreview: (t: Tile) => void }) {
   const { accountId, busy } = d;
   if (busy.get()) return;
@@ -227,7 +197,7 @@ export async function describeOne(m: Tile, d: ManageDeps & { setPreview: (t: Til
     d.setPreview({ ...m, _ai: { ...(m._ai ?? {}), ...r } });
     d.qc.invalidateQueries({ queryKey: mirrorItemsKey(accountId) });
   } catch (e) {
-    if (!(e instanceof ApiKeyError)) throw e; // the key toast already says why
+    if (!(e instanceof ApiKeyError)) throw e;
   } finally {
     busy.set("");
   }

@@ -5,7 +5,6 @@ import {
   type RawJsonAction, type RawJsonCodec, type RawJsonState,
 } from "./rawJsonReducer";
 
-// ── The reducer over a toy codec: a list of positive ints ─────────────────
 
 const INTS: RawJsonCodec<number[]> = {
   parse(text) {

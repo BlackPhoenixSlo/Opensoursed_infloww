@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * useHotkeys — window-level keyboard shortcuts, Infloww's Messages Pro set
- * (gap 04 M17): Ctrl+W closes the Fan tab, Cmd/Ctrl+Shift+S flips SFW.
- *
- * A binding's `keys` is "+"-joined modifiers then one key, e.g. "ctrl+w" or
- * "mod+shift+s". `mod` is Cmd or Ctrl (Infloww's "Shift+Ctrl/Meta+S"); a
- * modifier not named must be up, so "ctrl+w" leaves the Mac's Cmd+W (the
- * Electron menu's window close) alone. A letter matches `e.key`, or the
- * physical key when the layout types something else there (Ctrl+W on a
- * Cyrillic layout types "ц"). A matched key always loses its default, so the
- * Electron menu's Ctrl+W never closes the window here; an auto-repeat is
- * claimed without running the binding again. IME composition is left alone.
- */
 
 import { useEffect, useEffectEvent } from "react";
 

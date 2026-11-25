@@ -1,31 +1,7 @@
 #!/usr/bin/env python3
-"""smart_list_rules — table tests over the pure Smart Lists rule engine (the shell
-is smart_lists_api: it loads normalised fans from the DB and maps a 422 to the
-route). No DB, no loop:
-
-  case_numeric_table:     every numeric op incl. between, on a v1 top-level field
-                          (lifetime_spend), a ledger fact (total_spend:creator:all)
-                          and last_active_days (None never matches).
-  case_date_table:        within_last / more_than / between, expires_at
-                          within_next; a missing date never matches.
-  case_enum_table:        status / renew ==, != (case-insensitive); other ops False.
-  case_tag_table:         has / not_has (case-insensitive); other ops False.
-  case_resolve_match:     blank rules = everyone; all vs any; fan_id None skipped;
-                          output sorted.
-  case_validate_errors:   unknown field / unknown op per field kind / bad values ->
-                          422 with the exact text the routes always answered.
-  case_max_rules:         _MAX_RULES rules accepted, one more -> 422 "at most 20 rules".
-  case_validate_defaults: scope / timeframe / days defaults; values coerced.
-  case_rule_readers:      recent_spend windows (default 30, clamped 1..3650, bad
-                          days skipped); which fields read the roster snapshot.
-  case_reexported:        smart_lists_api re-exports the names it and its importers use
-                          as the same objects.
-
-Run: ./venv/bin/python service/tests/test_smart_list_rules.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness  # MUST be first: binds temp DB
 
 from fastapi import HTTPException  # noqa: E402
 
@@ -40,7 +16,6 @@ def _fan(**kw) -> dict:
 
 
 def case_numeric_table():
-    # (fan, rule, expected)
     rows = []
     for field, fan in (
         ("lifetime_spend", _fan(lifetime_spend=500)),
@@ -56,10 +31,9 @@ def case_numeric_table():
             ("!=", 499, True), ("!=", 500, False),
             ("between", [400, 600], True), ("between", [500, 500], True),
             ("between", [501, 600], False),
-            ("has", 500, False),  # not a numeric op
+            ("has", 500, False),
         ):
             rows.append((fan, {"field": field, "op": op, "value": v}, want))
-    # scoped / timeframed ledger key, missing fact = 0
     rows += [
         (_fan(facts={"tips_spend:org:30d": 900}),
          {"field": "tips_spend", "op": ">=", "value": 900, "scope": "org", "timeframe": "30d"}, True),
@@ -84,7 +58,7 @@ def case_date_table():
         (f(3), "sub_start", "within_last", 7, True),
         (f(7), "sub_start", "within_last", 7, True),
         (f(8), "sub_start", "within_last", 7, False),
-        (f(-1), "sub_start", "within_last", 7, False),  # future date is not "last"
+        (f(-1), "sub_start", "within_last", 7, False),
         (f(31), "sub_start", "more_than", 30, True),
         (f(30), "sub_start", "more_than", 30, False),
         (f(10), "sub_start", "between", [5, 10], True),
@@ -93,15 +67,14 @@ def case_date_table():
         (f(-2), "expires_at", "within_next", 3, True),
         (f(-3), "expires_at", "within_next", 3, True),
         (f(-4), "expires_at", "within_next", 3, False),
-        (f(0), "expires_at", "within_next", 3, False),  # already passed / now
+        (f(0), "expires_at", "within_next", 3, False),
         (f(None), "sub_start", "within_last", 9999, False),
         (f(None), "sub_start", "more_than", 0, False),
-        (f(3), "sub_start", ">=", 0, False),  # not a date op
+        (f(3), "sub_start", ">=", 0, False),
     ]
     for fan, field, op, v, want in rows:
         got = _eval_rule({"field": field, "op": op, "value": v}, fan)
         assert got is want, f"{field} {op} {v} on {fan}: {got} != {want}"
-    # scoped date key
     fan = _fan(facts={"last_purchase_at:org": 2})
     assert _eval_rule({"field": "last_purchase_at", "op": "within_last", "value": 3,
                        "scope": "org"}, fan) is True
@@ -161,7 +134,7 @@ def case_resolve_match():
         ({"rules": [big, vip]}, [2]),
         ({"match": "all", "rules": [big, vip]}, [2]),
         ({"match": "ANY", "rules": [big, vip]}, [1, 2, 3]),
-        ({"match": "nonsense", "rules": [big, vip]}, [2]),  # anything but any = all
+        ({"match": "nonsense", "rules": [big, vip]}, [2]),
     ]
     for rules, want in rows:
         got = resolve(rules, fans)
@@ -184,10 +157,8 @@ def case_validate_errors():
         ({"match": "some"}, "match must be 'all' or 'any'"),
         ({"rules": {"a": 1}}, "rules.rules must be a list"),
         ({"rules": ["x"]}, "each rule must be an object"),
-        # unknown field
         (one(field="bogus", op="==", value=1), "unknown field 'bogus'"),
         (one(op="==", value=1), "unknown field None"),
-        # unknown op, per field kind
         (one(field="lifetime_spend", op="has", value=1),
          "lifetime_spend needs a numeric operator (!=, <, <=, ==, >, >=, between)"),
         (one(field="total_spend", op="within_last", value=1),
@@ -201,7 +172,6 @@ def case_validate_errors():
         (one(field="status", op="has", value="active"), "status needs == or !="),
         (one(field="renew", op=">", value="on"), "renew needs == or !="),
         (one(field="tag", op="==", value="vip"), "tag needs 'has' or 'not_has'"),
-        # bad values
         (one(field="lifetime_spend", op=">=", value="lots"), "lifetime_spend value must be a number"),
         (one(field="lifetime_spend", op=">=", value=None), "lifetime_spend value must be a number"),
         (one(field="tips_spend", op="between", value=5), "tips_spend between needs [low, high]"),
@@ -271,8 +241,8 @@ def case_rule_readers():
 
 def case_reexported():
     import smart_lists_api as api
-    names = ("resolve", "_validate_rules", "uses_subscription_facts",   # imported from api elsewhere
-             "_SUM_FIELDS", "_LEDGER_MONEY", "_windows_in_rules")           # the api's own body
+    names = ("resolve", "_validate_rules", "uses_subscription_facts",
+             "_SUM_FIELDS", "_LEDGER_MONEY", "_windows_in_rules")
     for n in names:
         assert getattr(api, n) is getattr(R, n), n
 

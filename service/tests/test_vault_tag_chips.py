@@ -1,24 +1,7 @@
 #!/usr/bin/env python3
-"""The Vault Pro grid's tag chips (service/vault_tags.py + vault_ai_api routes).
-
-Real HTTP, real owner / chatter logins, temp DB. Mirror rows for accT:
-  201 col tags ["feet","bed"]                       202 ai tags ["Feet","Lingerie"] (model case)
-  203 ai primary_folder "Feet", ai tags ["shower"]  204 col ["feet_soles"] (not "feet": exact match)
-  205 feet in all three sources (counted once)       206 col ["lingerie"], ai_fields_json malformed
-  207 video, col ["feet","lingerie"]                 208 removed, col ["feet"]
-  210 in OF folder 12, col ["feet"]                  901 other Creator, col ["feet"]
-
-  items ?tags=          AND, the three sources, case-blind, exact element, removed / foreign out
-  /tag-facets           counts per tag over the grid's filters (type, folder, picked tags), total
-  /folders/from-tags    created_by=operator, members == the filter's result, default name, unique name,
-                        400 tags_required / no_items, survives the vault_scripts reaper's predicate
-  chatter (folder 12)   facets soft-deny outside its folder, scoped inside; save 403; nothing written
-
-Run: ./venv/bin/python service/tests/test_vault_tag_chips.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import json  # noqa: E402
@@ -162,12 +145,10 @@ async def case_save_as_folder():
     assert await _members(named.json()["folder_id"]) == FEET - {207}
     for f in await _folders():
         assert f.created_by == "operator" and f.of_list_id is None and f.deleted_at is None, f.__dict__
-        # vault_scripts.apply_ai_folders retires only created_by == AI_FOLDER_CREATOR AND AI- prefix.
         assert f.created_by != vault_scripts.AI_FOLDER_CREATOR
 
     assert c.post("/admin/vault-ai/folders/from-tags",
                   json={"account_id": AID, "tags": []}).json()["detail"]["error"] == "tags_required"
-    # W30 F6: a pack rung's name (any case) is the picker's; a tag folder under it would become the rung.
     r = c.post("/admin/vault-ai/folders/from-tags", json={"account_id": AID, "tags": ["feet"], "name": "Feet-Tease"})
     assert r.status_code == 400 and r.json()["detail"]["error"] == "reserved_name", r.text
     r = c.post("/admin/vault-ai/folders/from-tags", json={"account_id": AID, "tags": ["nope"]})
@@ -195,7 +176,6 @@ async def case_chatter_scope():
 
 
 async def case_escaped_non_ascii_tag_matches():
-    """W30 F20: json.dumps stores "café" as "caf\\u00e9"; the raw-text prefilter must still find it."""
     async with get_session() as s:
         s.add(Account(id="accU", nickname="U"))
     async with get_session() as s:

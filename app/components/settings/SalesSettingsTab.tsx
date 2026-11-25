@@ -1,25 +1,5 @@
 "use client";
 
-/**
- * Sales Settings (docs/spec/settings-tabs/phase-03-roles-sales.md): three
- * toggles and the earnings attribution rules, saved whole to the `sales`
- * Settings blob behind the Load gate. Subscriptions, Streams & Referrals are
- * credited by the shift schedule, with only the chatter opt-in to choose.
- * Every field is applied (docs/spec/phase-04-apply-stored-settings.md, story
- * 55), so the Panel carries no "not applied yet" note: the toggles and rules
- * credit sales in Employee reports and the Timesheet's Recorded earnings
- * (service/sales_attribution.py), and "Multiple employees per shift" is also
- * the Relay's Shift overlap rule (service/shifts_api.py), which Shift Settings
- * on the Shift schedule edits too.
- *
- * Converters' window (Infloww: "Sale is attributed to the last Chatter who messaged the fan within X hours and Y
- * minutes of the sale"): one value in seconds for every row, `attribution.converters_window_seconds`, 1 h by
- * default, 1 min to 999 h 59 min, entered as Infloww's hours (0-999) and minutes (0-59) inputs.
- *
- * Versioned (roadmap W6 6.4): a save takes effect from "Set effective date", now by default, and a sale reads the
- * version in effect when it was made, so a backdated save recredits only the sales from then (SettingsVersions).
- * The date field is the Panel's first section, right under Save; the history stays at the bottom.
- */
 
 import Link from "next/link";
 
@@ -53,11 +33,6 @@ const DEFAULTS: SalesBlob = {
 const MAX_HOURS = 999;
 const MAX_MINUTES = 59;
 
-/**
- * The window after one of its two inputs changes to `raw` (empty is 0), clamped to Infloww's InputNumber bounds.
- * Never both 0: like Infloww, clearing the hours with 0 minutes snaps to 1 hour, clearing the minutes with 0
- * hours to 1 minute.
- */
 export function windowAfter(seconds: number, part: "hours" | "minutes", raw: string): number {
   const n = Math.trunc(Number(raw)) || 0;
   let hours = Math.floor(seconds / 3600);
@@ -87,19 +62,15 @@ const POSTS_TIPS = [
   { value: "converters", label: "Converters" },
 ] as const;
 
-/** "1 hour", "2 hours". */
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-/** One option row: a radio or checkbox and its text, side by side. */
 const OPTION = "inline-flex items-center gap-2 cursor-pointer";
 
-/** The attribution radiogroups' layout: one wrapping row. */
 const GROUP = "flex flex-wrap gap-x-6 gap-y-2";
 
 export default function SalesSettingsTab() {
   const blob = useSettingsBlob<SalesBlob>("sales", DEFAULTS);
   const v = blob.value;
-  // Merged key by key: a stored partial `attribution` still renders and saves every key (spec story 26).
   const attribution = { ...DEFAULTS.attribution, ...v.attribution };
   const attribute = (patch: Partial<Attribution>) => blob.set({ attribution: { ...attribution, ...patch } });
   const windowS = attribution.converters_window_seconds;
@@ -114,11 +85,9 @@ export default function SalesSettingsTab() {
       actions={<SaveRow {...blob.save} gateNote={null} look="settings" onSave={() => blob.commit({ attribution })} />}
     >
       <BlobNotes className="mb-4" note={blob.save.gateNote} q={blob.query} />
-      {/* By Save, so nobody saves without seeing when the rules start. */}
       <SettingsVersions show="date" effective={blob.effective} history={blob.history}
         recomputes="sales credited to employees (Employee reports, the Timesheet's Recorded earnings)" />
       <Section>
-        {/* The three switches in one bordered card, a rule between rows. */}
         <div className="rounded-[var(--if-toggle-radius)] border border-[var(--if-line)] divide-y divide-[var(--if-line)]">
           {TOGGLES.map((t) => (
             <div key={t.key} className="h-12 px-[var(--if-row-px)] flex items-center gap-4">

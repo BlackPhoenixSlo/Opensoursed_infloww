@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * Infloww's own page primitives (page-parity ticket 00), built once so every page ticket swaps its hand-rolled copy
- * for one of these. Two sets, because Infloww ships two design systems side by side:
- *
- * - The legacy antd set (`--tc-*` tokens): `InflowwPageHeader`, `IfCard`, `IfTabs`, `IfBody`, `IfInput`, `IfTextArea`,
- *   `IfSelect`, `IfSegmented`, `IfRangePicker`, `IfButton`, `IfLearn`, `IfFilterFold` (+ `countActiveFilters`),
- *   `IfCreatorSelect` (+ `useCreatorParam`), `IfModal`, `IfPager`, `IfSwitch`, `IfLabel`, `IfHelp`, `IF_TABLE`. Most
- *   Growth pages, the Dashboard, Employees, Custom proxy.
- * - The HB set (the new design system): `HbButton`, `HbFilter`/`HbSelect`, `HB_TABLE`, `HbPager`, `HbModal`, on the
- *   `bg-hb-bg` page body. Manage creators, Tracking links.
- *
- * `EmptyState` serves both. Measurements: `.scratch/page-parity/00-shared-infloww-primitives.md` §3 (live captures
- * `.scratch/infloww-live/16-dashboard.png`, `01-home.png`; the bundle's `index.9fc9db54.css`). Dark values are the
- * sampled ones; light values ride on the theme tokens, or on a `[html[data-theme=light]_&]:` override where a sampled
- * dark hex has no token.
- */
 
 import {
   forwardRef, useCallback, useId, useRef, useState, useSyncExternalStore,
@@ -35,14 +19,11 @@ import { utcOffsetLabel } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
 
 export type { EmptyKind } from "@/components/ui/emptyArt";
-// Split out, re-exported so importers keep `@/components/ui/infloww`.
 export { HbFilter, HbFilterLg, HbSelect, IfNativeSelect, IfSelect, type IfOption } from "@/components/ui/ifSelect";
 export { HbPager, IfPager } from "@/components/ui/ifPager";
 export { HbModal, IfModal } from "@/components/ui/ifModal";
 
-// ── Page header ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** "UTC-09:00 ⓘ": the report time zone after a title (16-dashboard.png title row; dashboard.md #16-#19). */
 function UtcLabel({ zone }: { zone: string | null }) {
   return (
     <span className="flex shrink-0 items-center gap-1 text-[14px] text-fg-dim tabular-nums">
@@ -52,23 +33,15 @@ function UtcLabel({ zone }: { zone: string | null }) {
   );
 }
 
-/**
- * Infloww's `PageHeader$1`: a 48px bar, `padding:0 24px`, the page colour with a 1px L1 rule under it, the one `<h1>`
- * at 16px / 600 T1. `extra` sits 24px right of the title (a creator select, a note); `actions` (and `children`, the
- * same slot) sit right-aligned in the same row, 16px apart.
- */
 export function InflowwPageHeader({
   title, utc, extra, actions, children, weight = "semibold", onBack, className,
 }: {
   title: ReactNode;
-  /** The report time zone id; `null` = the browser's zone; leave it out to show none. */
   utc?: string | null;
   extra?: ReactNode;
   actions?: ReactNode;
   children?: ReactNode;
-  /** `medium` = 16 / 500, the few pages whose title CSS says so (Sensitive words). */
   weight?: "semibold" | "medium";
-  /** Draws a back chevron before the title (Notifications). */
   onBack?: () => void;
   className?: string;
 }) {
@@ -95,25 +68,13 @@ export function InflowwPageHeader({
   );
 }
 
-/** The legacy list-page body under the header (or the tabs): `padding:16px 24px`. */
 export function IfBody({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
   return <div className={cn("px-6 py-4", className)} {...rest} />;
 }
 
-// ── Empty state ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 const ART_HEIGHT = { sm: 40, md: 90, lg: 100 } as const;
 
-/**
- * Infloww's `Empty$1` (`._empty-wrap_1iayr_1 img{height:100px;margin-bottom:8px}`, text T3): the illustration, 8px,
- * then a 14px #999 line, centred. `size="sm"` is the antd table's simple empty (40px art, 32px above and below);
- * `md` the 90px art Sensitive words uses. `kind="error"` with `onRetry` adds `AbnormalRequestError`'s primary "Retry"
- * 10px below; `action` puts any other button there. `art={false}` drops the illustration (an empty box inside a form,
- * e.g. a rule editor's "No content yet"); `help` goes under the text (pass an `IfHelp` line); other div attributes (role, aria-*) pass through. `data-empty-state` names it
- * for slop's page sweep (an empty state on screen before a page's first read answered is a false one). Sticky left and
- * at most the viewport less 32px, so inside a wide table's `colSpan` row it stays in view when the table scrolls
- * sideways (antd's fixed empty row; a phone would otherwise cut the art and its button off); inert elsewhere.
- */
 export function EmptyState({
   kind = "data", text = "No data", help, onRetry, action, size = "lg", art = true, className, textClassName, ...rest
 }: Omit<HTMLAttributes<HTMLDivElement>, "children"> & {
@@ -141,10 +102,7 @@ export function EmptyState({
   );
 }
 
-// ── Card ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** A legacy page card: #262626, 12px corners, no border, `padding:20px 24px 16px`; the title 16px / 500 white with
- *  an optional ⓘ 9px after it, and `extra` at the title row's right. `Card` stays for our own panels. */
 export function IfCard({
   title, info, extra, className, children, ...rest
 }: Omit<HTMLAttributes<HTMLElement>, "title"> & { title?: ReactNode; info?: string; extra?: ReactNode }) {
@@ -166,13 +124,9 @@ export function IfCard({
   );
 }
 
-// ── Buttons ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** antd's button: 32px (`lg` 36px), radius 6, 14px, `padding:0 15px`, an icon 8px before the label. `primary` M1 fill
- *  and white text; `default` a 1px L1 outline, T1 text, transparent; `link` M1 text only. */
 type IfButtonVariant = "primary" | "default" | "link";
 
-/** IfButton's classes, for a link that should look like one (e.g. a Next `<Link>` CTA). */
 export function ifButtonClass(variant: IfButtonVariant = "default", size: "md" | "lg" = "md", className?: string) {
   return cn(
     "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md text-[14px] transition-colors",
@@ -202,17 +156,12 @@ export const IfButton = forwardRef<
 ));
 IfButton.displayName = "IfButton";
 
-/** A Save's state: running, just landed, or its failure's message. */
 export interface SaveVerdict { pending: boolean; saved: boolean; error: string | null }
 
-/** A save mutation's verdict; `clean` = nothing edited since it landed ("Saved" shows only then). */
 export const saveVerdict = (
   m: { isPending: boolean; isSuccess: boolean; error: Error | null }, clean = true,
 ): SaveVerdict => ({ pending: m.isPending, saved: m.isSuccess && clean, error: m.error ? m.error.message || "Save failed" : null });
 
-/** The one Save row of a page, a card or an editor's footer: Save ("Saving…" while it runs), `children` (a counter),
- *  a `warn` (why it is refused), "Saved" or the failed save's message. `form`: a submit for that form (an editor's
- *  footer sits outside its form). */
 export function SaveRow({ save, onSave, disabled, warn, label = "Save", form, children }: {
   save: SaveVerdict;
   disabled?: boolean;
@@ -234,12 +183,8 @@ export function SaveRow({ save, onSave, disabled, warn, label = "Save", form, ch
   );
 }
 
-/** Learn's text-button look (accent text, an icon before it); also the Vault Pro header's Download. */
 export const LEARN = "inline-flex items-center gap-1 text-[14px] text-accent hover:text-accent-hover";
 
-/** The header's "Learn" link: a 16px book, then 14px M1 text, to the help article (new tab). With no `href`: `tip`
- *  makes it a button that opens the help text in a popover under it (Escape or an outside click closes it); with
- *  neither it is a disabled button titled "not wired", at half opacity but never grey. */
 export function IfLearn({ href, tip, children = "Learn", className }: {
   href?: string;
   tip?: ReactNode;
@@ -277,8 +222,6 @@ export function IfLearn({ href, tip, children = "Learn", className }: {
   );
 }
 
-/** HB's button: `primary` the orange action fill with black text, `secondary` #2c2c2c with white; 36px (`sm` 28px),
- *  radius 4, 14px / 500, a 16px leading icon. `lg` is Manage creators' "Add creator": 36px, 16px text, radius 8. */
 export const HbButton = forwardRef<
   HTMLButtonElement,
   ButtonHTMLAttributes<HTMLButtonElement> & IconProp & { variant?: "primary" | "secondary"; size?: "sm" | "md" | "lg" }
@@ -304,10 +247,7 @@ export const HbButton = forwardRef<
 ));
 HbButton.displayName = "HbButton";
 
-// ── Legacy fields ───────────────────────────────────────────────────────────────────────────────────────────────
 
-/** antd's input at 32px (`size="lg"` 36px); `search` draws the 14px search icon at the right. `className` sizes the
- *  box (`w-[320px]`); the input fills it. */
 export const IfInput = forwardRef<
   HTMLInputElement,
   Omit<InputHTMLAttributes<HTMLInputElement>, "size"> & { size?: "md" | "lg"; search?: boolean }
@@ -323,8 +263,6 @@ export const IfInput = forwardRef<
 ));
 IfInput.displayName = "IfInput";
 
-/** antd's TextArea: the same field box as `IfInput`, `padding:4px 11px`, drag-resizable in height. `className` sizes
- *  it (full width by default). */
 export const IfTextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(
   ({ className, ...rest }, ref) => (
     <textarea
@@ -336,8 +274,6 @@ export const IfTextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes
 );
 IfTextArea.displayName = "IfTextArea";
 
-/** antd's vertical form label (label above the field, so no colon): 14px T1, 8px under it; `required` draws the red
- *  asterisk after the text (the saved-replies editor's "Name *"). Label attributes (`htmlFor`, `id`) pass through. */
 export function IfLabel({ required, className, children, ...rest }: LabelHTMLAttributes<HTMLLabelElement> & {
   required?: boolean;
   children: ReactNode;
@@ -350,16 +286,10 @@ export function IfLabel({ required, className, children, ...rest }: LabelHTMLAtt
   );
 }
 
-/** One quiet line of help under a field (antd's `extra`): 12px T3. Div attributes (`id` for aria-describedby) pass through. */
 export function IfHelp({ className, children, ...rest }: HTMLAttributes<HTMLDivElement> & { children: ReactNode }) {
   return <div {...rest} className={cn("mt-1 text-[12px] text-muted", className)}>{children}</div>;
 }
 
-/** antd's date range (250x32): "Start date → End date" with a calendar icon at the right, as one box (a `group`). Two
- *  native date inputs inside, transparent; an empty end that has no focus is a text box showing antd's 12px T3
- *  placeholder (a date box would show "mm/dd/yyyy"); a click opens the browser's picker (no custom calendar). Emits
- *  both ends together. `id` goes on the first end, for a `<label htmlFor>`; `disabled` (with `title`, "not wired")
- *  dims the box and needs no `onChange`. */
 export function IfRangePicker({ from = "", to = "", onChange, id, disabled, title, className }: {
   from?: string;
   to?: string;
@@ -402,8 +332,6 @@ export function IfRangePicker({ from = "", to = "", onChange, id, disabled, titl
   );
 }
 
-/** antd's segmented radio strip: #262626 with a 1px L1 border, 4px padding, radius 4; 24px tabs, 12px T2, the active
- *  one #353535 with M1 text (the Dashboard's period tabs). */
 export function IfSegmented<T extends string>({ options, value, onChange, "aria-label": ariaLabel, className }: {
   options: IfOption<T>[];
   value: T;
@@ -428,24 +356,17 @@ export function IfSegmented<T extends string>({ options, value, onChange, "aria-
   );
 }
 
-/** antd's line tabs: a 48px full-width bar with an L1 rule, the first tab 24px in, 32px between, 14px T1; the active
- *  tab M1 with a 2px M1 underline; a disabled tab T4, `aria-disabled`, its `title` the tooltip. The arrows move focus along the strip, Enter / Space picks (the native button
- *  click), Home / End jump. `extra` sits at the bar's right (Shifts' "Create shift(s)"). `wrap`: below `sm` the tabs wrap
- *  onto more 40px rows instead of scrolling off the right edge. */
 export function IfTabs<T extends string>({ tabs, value, onChange, extra, idPrefix, "aria-label": ariaLabel, className, wrap }: {
   tabs: IfOption<T>[];
   value: T;
   onChange: (value: T) => void;
   extra?: ReactNode;
-  /** Gives each tab the id `<idPrefix>-tab-<value>` and `aria-controls="<idPrefix>-panel-<value>"`, so the caller's
-   *  `role="tabpanel"` (id `<idPrefix>-panel-<value>`) can point back with `aria-labelledby`. */
   idPrefix?: string;
   "aria-label"?: string;
   className?: string;
   wrap?: boolean;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
-  // The Tab stop: the selected tab, or the first when `value` names none.
   const stop = tabs.some((t) => t.value === value) ? value : tabs[0]?.value;
   const onKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     const btns = Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]:not(:disabled)') ?? []);
@@ -487,8 +408,6 @@ export function IfTabs<T extends string>({ tabs, value, onChange, extra, idPrefi
   );
 }
 
-/** antd's switch: a 44x22 track, an 18px white knob 2px in; on #2d74ff, off white at 25%; disabled (and `loading`)
- *  at .65 opacity, `loading` spinning a 14px loader in the knob; the label 16px after it. Space / Enter toggles. */
 export function IfSwitch({ id, checked, onChange, label, loading, disabled, "aria-label": ariaLabel, className }: {
   id?: string;
   checked: boolean;
@@ -521,19 +440,13 @@ export function IfSwitch({ id, checked, onChange, label, loading, disabled, "ari
   );
 }
 
-// ── Phone filter fold ───────────────────────────────────────────────────────────────────────────────────────────
 
-/** How many of `filters` differ from `defaults`: each entry a field of `values`, or a group of fields counted once
- *  (a date range's two ends). `IfFilterFold`'s count. */
 export function countActiveFilters<F extends object, K extends keyof F>(
   values: F, defaults: Pick<F, K>, filters: ReadonlyArray<K | readonly K[]>,
 ): number {
   return filters.filter((f) => (Array.isArray(f) ? f : [f]).some((k: K) => values[k] !== defaults[k])).length;
 }
 
-/** Below `md`, a filter bar's fields behind one "Filters (n active)" button (`active`: `countActiveFilters`), opened
- *  in place; `md`+ draws them inline as if unwrapped (`display: contents`). Keep the search and the actions outside.
- *  `className` styles the button (its bar's spacing). */
 export function IfFilterFold({ active, className, children }: { active: number; className?: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const id = useId();
@@ -553,11 +466,9 @@ export function IfFilterFold({ active, className, children }: { active: number; 
   );
 }
 
-// ── Creator select + ?creator= ──────────────────────────────────────────────────────────────────────────────────
 
 const creatorName = (a: AccountMeta | WatcherAccount) => a.nickname || a.name || a.id;
 
-/** A 20px creator avatar with the online dot (a live session) at its foot. */
 function CreatorAvatar({ account }: { account: AccountMeta }) {
   const online = !!account.has_session && !account.session_dead_at;
   return (
@@ -570,20 +481,14 @@ function CreatorAvatar({ account }: { account: AccountMeta }) {
   );
 }
 
-/** The `IfCreatorSelect` value of its "All creators" option (no account id is empty). */
 const ALL_CREATORS = "";
 
-/** The legacy header's creator picker: 160x32 on `--tc-select-creator-b` #1E1E1E, a 20px avatar with the online dot,
- *  the name, a chevron. Pair it with `useCreatorParam` so the page body reads the same pick. `onAll` adds "All
- *  creators" first, picked while `value` is null. */
 export function IfCreatorSelect({ accounts, value, onChange, onAll, allLabel, watchers, searchable, disabled, className }: {
   accounts: AccountMeta[];
   value: string | null | undefined;
   onChange: (accountId: string) => void;
   onAll?: () => void;
-  /** Relabels the "All creators" option (Scripts' "All models"), default "All creators". */
   allLabel?: string;
-  /** Watcher accounts, listed after the creators as disabled options (`CreatorRail`'s `watchers`). */
   watchers?: WatcherAccount[];
   searchable?: boolean;
   disabled?: boolean;
@@ -667,10 +572,7 @@ export function useCreatorParam(accounts: AccountMeta[] | undefined): [string | 
   return [id, set];
 }
 
-// ── Tables ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** HB table classes: head and fixed Action column #171717 (`surface-level-01`), head text white 14px / 500, 48px rows
- *  with a 1px #2c2c2c rule, 18px cell padding, white 14px cells; `iconButton` the Action column's 28px #2c2c2c box. */
 export const HB_TABLE = {
   table: "w-full border-collapse text-[14px]",
   th: cn("h-12 whitespace-nowrap bg-panel px-[18px] text-left font-medium", HB_TEXT),
@@ -680,9 +582,6 @@ export const HB_TABLE = {
   iconButton: cn("grid h-7 w-7 place-items-center rounded-[4px] hover:opacity-80", HB_FILL_3, HB_TEXT),
 } as const;
 
-/** Legacy antd table classes: a 46px head on #353535 with 14px / 500 T3 text and 22px L1 dividers between head cells
- *  (`thDivider` on every head cell; the last one hides it), L1 row rules, 14px T1 cells with 16px padding, and the
- *  100px "Actions" column fixed right with a left shadow (`fixedRight` on cells, `fixedRightHead` on its head cell). */
 export const IF_TABLE = {
   table: "w-full border-collapse text-[14px]",
   th: "relative h-[46px] whitespace-nowrap bg-bg-elev-2 px-4 text-left font-medium text-muted [html[data-theme=light]_&]:bg-[#fafbff]",
@@ -691,7 +590,6 @@ export const IF_TABLE = {
   td: "p-4 text-fg",
   fixedRight: "sticky right-0 w-[100px] bg-bg shadow-[-6px_0_6px_-4px_rgba(0,0,0,.35)] [html[data-theme=light]_&]:shadow-[-6px_0_6px_-4px_#f5f6fa]",
   fixedRightHead: "sticky right-0 w-[100px] shadow-[-6px_0_6px_-4px_rgba(0,0,0,.35)] [html[data-theme=light]_&]:shadow-[-6px_0_6px_-4px_#f5f6fa]",
-  /** On a phone the fixed column scrolls with the row, its shadow off (with `fixedRight` / `fixedRightHead`). */
   unpinPhone: "max-sm:static max-sm:shadow-none max-sm:[html[data-theme=light]_&]:shadow-none",
 } as const;
 

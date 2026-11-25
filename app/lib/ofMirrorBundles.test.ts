@@ -9,7 +9,6 @@ import { CARRY_MS, frameNavigate } from "./ofMirrorPost";
 import { applySubscription, bindSubscription, PRICE_FIRST, type Bundle, type SubData, type SubHandlers } from "./ofMirrorSubscription";
 import { RelayError } from "./relay";
 
-/** Settings > Subscription's bundles: the rows, Add bundle and its dialog, the delete, OF's gray and OF's error. */
 
 interface Side {
   me: OfMe & { subscriptionBundles: Bundle[] };
@@ -36,7 +35,6 @@ const load = (page: string) => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/${page}.html`), "utf8");
   return document;
 };
-/** `page` loaded as the frame document at its own URL (the carried toast reads it). */
 const at = (page: string) => {
   window.history.replaceState(null, "", `/of-mirror/pages/${page}.html`);
   return load(page);
@@ -71,7 +69,6 @@ describe("the bundle rows", () => {
       expect(r.querySelector(".b-offer-join__content")?.classList.contains("g-disabled")).toBe(false);
     });
     expect(header().classList.contains("m-disabled-block")).toBe(false);
-    // A duration (12 months) is left: Add bundle opens the dialog.
     expect(addBundle().getAttribute("href")).toBe(`/of-manager/${BUNDLE_MODAL}`);
     expect(addBundle().hasAttribute("disabled")).toBe(false);
   });
@@ -92,7 +89,6 @@ describe("the bundle rows", () => {
     expect(a.hasAttribute("href")).toBe(false);
     expect(a.hasAttribute("disabled")).toBe(true);
     expect(a.title).toBe(PRICE_FIRST);
-    // Priced again (another model): the link comes back.
     applySubscription(d, PAGE, data(free.empty), free.empty.me, true, undefined, false, free.empty.settings);
     expect(a.getAttribute("href")).toBe(`/of-manager/${BUNDLE_MODAL}`);
     expect(a.hasAttribute("disabled")).toBe(false);
@@ -121,7 +117,7 @@ describe("delete", () => {
     const row = bundleRows()[1];
     click(row.querySelector("button[aria-label='Delete']"));
     expect(h.confirm).toHaveBeenCalledTimes(1);
-    await Promise.resolve(); // OF's ModalConfirm answers
+    await Promise.resolve();
     expect(h.remove).toHaveBeenCalledWith(fx.delete.relay.path);
     await flush();
     expect(row.isConnected).toBe(false);
@@ -134,7 +130,7 @@ describe("delete", () => {
     const row = bundleRows()[1];
     const del = row.querySelector<HTMLButtonElement>("button[aria-label='Delete']")!;
     click(del);
-    await Promise.resolve(); // OF's ModalConfirm answers
+    await Promise.resolve();
     expect(del.disabled).toBe(true);
     await flush();
     expect(row.isConnected).toBe(true);
@@ -160,7 +156,6 @@ describe("Add bundle's dialog", () => {
       submit: ReturnType<typeof vi.fn>;
       navigate: ReturnType<typeof vi.fn>;
     };
-  /** WriteHandlers whose navigate is the hooks' (frameNavigate over the test's document as the frame's): router.push is `push`. */
   const framed = (submit: WriteHandlers["submit"], push = vi.fn()) => ({ h: writes({ submit, navigate: vi.fn(frameNavigate({ current: { contentDocument: document } as HTMLIFrameElement }, push)) }), push });
 
   it("offers only the durations with no bundle yet, shows OF's amount and POSTs {discount, duration}", async () => {
@@ -188,7 +183,7 @@ describe("Add bundle's dialog", () => {
     pick(d, 1, "12 months");
     expect(save().disabled).toBe(true);
     expect(d.querySelector(".modal.show p.g-input__help")?.classList.contains("m-danger")).toBe(true);
-    expect(textOf(d.querySelector(".modal.show p.g-input__help"))).toBe("Maximum bundle price is $50"); // OF's bundle_max_price_error
+    expect(textOf(d.querySelector(".modal.show p.g-input__help"))).toBe("Maximum bundle price is $50");
     expect(typeof collectBundle(d)).toBe("string");
   });
 
@@ -203,14 +198,11 @@ describe("Add bundle's dialog", () => {
     await flush();
     expect(h.navigate).toHaveBeenCalledWith(back, fx.error.message);
     expect(push).toHaveBeenCalledWith(back);
-    // A rebind of the dialog's page it left, while the frame loads, keeps it.
     unbinds.push(bindWrites(at(BUNDLE_MODAL), BUNDLE_MODAL, h, true));
     expect(document.querySelector("#oi-toast")).toBeNull();
-    // The new frame's about:blank placeholder binds first (OfMirrorFrame's key={src}): it neither shows nor uses up the toast.
     const blank = document.implementation.createHTMLDocument("");
     unbinds.push(bindWrites(blank, PAGE, h, true));
     expect(blank.querySelector("#oi-toast")).toBeNull();
-    // The page under the dialog binds next: the toast shows there.
     const page = at(PAGE);
     unbinds.push(bindWrites(page, PAGE, h, true));
     expect(textOf(page.querySelector("#oi-toast .toast__text"))).toBe(fx.error.message);
@@ -244,7 +236,6 @@ describe("Add bundle's dialog", () => {
   });
 
   it("the frame already back on the page under the dialog when the save fails: the toast shows there at once, no navigation", async () => {
-    // The dialog's own (old) frame document, apart from the frame's document now.
     const d = document.implementation.createHTMLDocument("");
     d.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/${BUNDLE_MODAL}.html`), "utf8");
     unbinds.push(bindBundleDialog(d, fx.me, fx.settings));
@@ -252,7 +243,6 @@ describe("Add bundle's dialog", () => {
     const { h, push } = framed(vi.fn(() => new Promise((_, reject) => (fail = reject))));
     unbinds.push(bindWrites(d, BUNDLE_MODAL, h, true));
     click(d.querySelector(".modal.show .modal-footer button"));
-    // The user went back (Cancel) before OF answered: the same URL again would not reload the frame.
     const page = at(PAGE);
     unbinds.push(bindWrites(page, PAGE, writes(), true));
     fail(relayError());

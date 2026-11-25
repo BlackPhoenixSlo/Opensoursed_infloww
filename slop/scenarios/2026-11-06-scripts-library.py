@@ -1,64 +1,3 @@
-"""Growth > Scripts holds an Infloww library: sequences (~17 steps each) + tags on one Creator, bulk-imported.
-
-Flow (agency_inbox stack): a deterministic dump in the real capture's shape (`--seed`; `--sequences=` overrides the
-scale's `scripts_library_sequences`; the real library is 44 sequences / 764 scripts) is written to
-`<tmp>/infloww-dump/`: steps carry `script_name` (two ambiguous pairs only `script_name_candidates`), notes (some
-empty), emoji, day-only dates ("Oct 13, 2026"), a description on some; the deep (middle) sequence also has "N.M"
-options with a condition and prices. tags.json holds Infloww's fixed views "All scripts" and "Uncategorized" plus
-one real tag over a few steps (an ambiguous one included) and LOOSE scripts in no sequence. It is imported into the
-first session-backed Creator by the real CLI (`scripts/import_infloww_scripts.py`, a subprocess signed in as the
-owner over `POST /auth/login`) through `POST /admin/saved-replies/bulk`: a `--dry-run` first, the import, then
-again (a no-op). Nothing is seeded by SQL here: the import is the act under test. Each CLI run leaves
-`import-<k>.txt` + its `--report` JSON; the independent read-back leaves `read-back-diff.json`.
-
-Real-data proof: `--dump=<dir>` imports a captured dump instead (client content: keep the run folder out of git,
-slop/evidence/* is ignored) and opens EVERY sequence in the UI, not only the deep one.
-
-Checks (names in lib/scripts_library_faults.py):
-  IMPORT_COUNTS  the dry run counts every step and writes nothing; the CLI's counts == the dump (one row per script:
-                 steps + LOOSE); nothing failed; its own field-by-field read-back exits 0.
-  REIMPORT_NOOP  the second run creates nothing.
-  READ_BACK      GET /admin/saved-replies: every script once; each sequence's rows in (step, id) order == the dump's
-                 steps in (N, M) order, name (candidates resolved first-free) / text / notes / condition / price /
-                 tags equal; All scripts / per tag / untagged == the dump's views; /sequences has each meta
-                 (position, by, day, description).
-  LIST_P95       serial GET /admin/saved-replies p95 under the scale's budget (LIST_P95_MS).
-  LIST_LOAD      --users owners each read the whole list at once: all 200, each the full row count.
-  UI_SIDEBAR     /growth/scripts, Sequence tab: rendered + "Show more (k)" == sequences, in dump order, each count ==
-                 its stored rows; the sidebar search finds the last one.
-  UI_STEPS       the deep sequence (`--dump`: each) opened from the sidebar: its cards' label / name / text / notes
-                 == the dump in step order, header "Created by：<by>" and "Created on：<day>".
-  UI_EXPAND      the last opened sequence: a card's arrow shows iff its two-line clamp cuts text (synthetic: every LONG
-                 step has one and some short card has none; an 8-word text may wrap past two lines in the narrow
-                 column); clicking one lifts the clamp and turns it "Collapse script".
-  UI_TAGS        Tag tab: All scripts / the tag / Uncategorized counts == the dump's; the script search finds the
-                 last sequence's step 1.
-  UI_SEND        /messages-pro chat: picker search for a sequence's step 1, pick, Enter -> the send goes out,
-                 "Next in “<seq>” · step 2" shows, and that row's sent_count is 1 (API).
-  SHARE_ALL      POST /admin/saved-replies/copy {from:[aid], all_creators:true} resolves the owner's whole Creator
-                 roster SERVER-SIDE and copies the library to every other owned Creator (each then holds >= the
-                 source's coverage), carrying each new sequence's header (position / created_by); 4-key response.
-  SHARE_ALL_NOOP a second identical share copies 0 (per-target dedup is a true no-op); coverage unchanged.
-  ALL_MODELS_VIEW GET /admin/saved-replies/overview lists every owned Creator and, per sequence / tag name, each
-                 Creator's count == that Creator's own stored rows (an independent per-account read-back of the lean
-                 projection).
-  UI_ALL_MODELS  /growth/scripts, the Creator column's "All creators" pick: the matrix's columns == the overview's
-                 accounts == the whole roster, its Sequence and Tag rows (rendered + "Show more (k)") == the overview
-                 in order, each cell's count (missing = 0) == per_account; the header's write actions (Learn, Share,
-                 More and its Add script / Create new / Add tag / From Excel / From other creators), shown on a
-                 Creator first, are gone; every Creator's GET /admin/saved-replies row count unchanged across it.
-p95 vs the last green run on the serial and concurrent list reads (volume tag).
-
-FAULT `scripts-bulk-drops-last-step`: the import loses each sequence's last step (`_parse_sequence`'s steps trimmed):
-IMPORT_COUNTS, READ_BACK, UI_STEPS and UI_TAGS go red; the re-import, sidebar, load, send and all-models (UI vs the
-overview) checks stay green.
-A second fault `scripts-share-drops-a-creator` (`--fault=`): `owned_account_ids` loses its last Creator, so
-SHARE_ALL, ALL_MODELS_VIEW and UI_ALL_MODELS go red while SHARE_ALL_NOOP stays green.
-A client fault `scripts-expand-arrow-always` (`--fault=`): the row's arrow drops its overflow guard, so UI_EXPAND
-goes red (an arrow on short steps that does nothing) and every other check stays green.
-Bypass, declared: OF's own /me is held by the slop browser, so the chat's creator id is preset in localStorage
-(`of-owner:<account>`), as fm-auto-reply-walk does.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -87,25 +26,20 @@ ROOT = Path(__file__).resolve().parents[2]
 CLI = ROOT / "scripts" / "import_infloww_scripts.py"
 LIST = "/admin/saved-replies"
 SERIAL_READS = 10
-READS_PER_USER = 1  # each owner opens the page once, all at once
-# Serial GET /admin/saved-replies p95 budget (ms) by scale, measured on the owner's laptop 2026-11-06:
-# small (24 sequences, 434 rows) 9-11 ms -> 100 (headroom for the machine's other slop runs); medium
-# (100, 1,809 rows; ~2.3x the real 764-script library) 75-82 ms -> 250; huge (300) not measured, ~3x medium.
+READS_PER_USER = 1
+# Measured on the owner's laptop: small 9-11 ms, medium (~2.3x the real 764-script library) 75-82 ms; huge not measured, ~3x medium.
 LIST_P95_MS = {"small": 100, "medium": 250, "huge": 750}
 VIEWPORT = (1440, 900)
 TAG = "Slop NS"
-LOOSE = 5  # tag scripts in no sequence: standalone rows
+LOOSE = 5
 WORDS = ("hey", "babe", "miss", "you", "so", "much", "today", "special", "just", "for", "you", "unlock", "now",
          "tell", "me", "what", "you", "like", "naughty", "surprise", "weekend", "pics", "video", "custom")
 EMOJI = ("😭", "💖", "⭐", "❤️", "👆", "")
-# The deep sequence's steps whose text runs past the row's two-line clamp (UI_EXPAND); never its last (the
-# drops-last-step fault must leave UI_EXPAND green), nor step 1 / 2 (the chat's picker).
 LONG = (7, 13, 19)
 DAYS = ("Sep 16, 2026", "Sep 22, 2026", "Oct 1, 2026", "Oct 13, 2026")
 
 
 def _dump(w, n: int) -> tuple[list[dict], list[dict], dict, dict]:
-    """(sequences.json, tags.json, truth {(sequence, label): (name, tags)}, expected view counts)."""
     rng = w.rng("scripts-library")
     seqs: list[dict] = []
     names: dict[tuple[str, str], str] = {}
@@ -114,7 +48,6 @@ def _dump(w, n: int) -> tuple[list[dict], list[dict], dict, dict]:
         deep = i == n // 2
         steps: list[dict] = []
         for k in range(1, (22 if deep else rng.randint(10, 26)) + 1):
-            # Options only in the deep one (the real library has none); never on step 1 / 2 (the chat names step 2).
             opts = rng.choice((2, 3)) if deep and k >= 3 and k % 4 == 0 else 1
             for m in range(1, opts + 1):
                 label = f"{k}.{m}" if opts > 1 else str(k)
@@ -134,8 +67,6 @@ def _dump(w, n: int) -> tuple[list[dict], list[dict], dict, dict]:
         if i % 7 == 3:
             q["description"] = f"Slop description {i}"
         seqs.append(q)
-    # Two ambiguous pairs, as the real capture had: step 4 of two sequences with identical text + notes, the
-    # name recovered only as candidates. The importer gives the first sequence's the first candidate.
     ambiguous = []
     for a, b in ((1, 2), (3, 4)) if n >= 10 else ():
         sa, sb = seqs[a]["steps"][3], seqs[b]["steps"][3]
@@ -159,10 +90,6 @@ def _dump(w, n: int) -> tuple[list[dict], list[dict], dict, dict]:
 
 
 def _real(path: Path) -> tuple[list[dict], list[dict], dict, dict, int]:
-    """`--dump=<dir>`: a captured Infloww dump instead of the synthetic one (the real-data proof; its content never
-    enters the repo, the run folder holds it). Truth is worked out here, apart from the CLI: a step's name is its
-    `script_name`, else the first of its `script_name_candidates` no step uses yet (dump order); real tags join by
-    name; the views' own lengths are the counts. -> (sequences, tags, truth, views, loose)."""
     seqs = json.loads((path / "sequences.json").read_text(encoding="utf-8"))
     tags = json.loads((path / "tags.json").read_text(encoding="utf-8"))
     used = {st.get("script_name") for q in seqs for st in q["steps"]} - {None}
@@ -188,7 +115,6 @@ def _order(label: str) -> tuple[int, int]:
 
 
 async def _cli(ctx, aid: str, dump: Path, username: str, run: str, *extra: str) -> tuple[int, str]:
-    """The real CLI as a subprocess; its output -> `<run>.txt`, its JSON reconciliation -> `<run>.json`."""
     env = {**os.environ, "RELAY_USER": username, "RELAY_PASS": PASSWORD}
     env.pop("SHARE_TOKEN", None)
     p = await asyncio.create_subprocess_exec(
@@ -201,7 +127,6 @@ async def _cli(ctx, aid: str, dump: Path, username: str, run: str, *extra: str) 
 
 
 def _counts(out: str) -> dict[str, int]:
-    """The CLI's reconciliation lines as numbers."""
     c: dict[str, int] = {}
     for key, rx in (("seq", r"sequences in dump (\d+): created (\d+), replaced (\d+), already there (\d+), "
                             r"failed (\d+)"),
@@ -242,7 +167,6 @@ async def run(ctx) -> None:
     ctx.note(f"Creator {aid}: dump {n} sequences, {n_steps} steps, {loose} loose tag scripts; views {views}")
     user = w.data["agency"]["username"]
 
-    # 1. Import with the real CLI: a dry run (writes nothing), the import, then again (a no-op).
     code0, out0 = await _cli(ctx, aid, dump, user, "import-0-dry-run", "--dry-run")
     c0 = _counts(out0)
     after_dry = len((await ctx.owner.get(LIST, params={"account_id": aid})).json().get("list", []))
@@ -263,7 +187,6 @@ async def run(ctx) -> None:
               and c2.get("tags1") == 0 and c2.get("tags2") == 0 and c2.get("tags3") == loose,
               exit=code2, counts=c2)
 
-    # 2. Read-back: serial reads (latency) and the dump's every field.
     serial: list[float] = []
     body: dict = {}
     for _ in range(SERIAL_READS):
@@ -276,7 +199,6 @@ async def run(ctx) -> None:
     for x in rows:
         if x.get("script_id"):
             by_seq.setdefault(x["script_id"], []).append(x)
-    # Field by field: (sequence, step N, text, notes, condition, price, name, tags) per row vs the dump.
     diffs: list[dict] = []
     fields = ("step", "text", "notes", "conditional", "price", "name", "tags")
     for q in seqs:
@@ -315,7 +237,6 @@ async def run(ctx) -> None:
     ctx.check(LIST_P95, p95_serial is not None and p95_serial <= budget, budget=True, p95_ms=p95_serial, budget_ms=budget, rows=len(rows),
               reads=SERIAL_READS)
 
-    # 3. --users owners read the whole list at once.
     clients = [ctx.owner.share(limits=2) for _ in range(ctx.users)]
     lat: list[float] = []
     seen: list[tuple[int, int]] = []
@@ -340,14 +261,12 @@ async def run(ctx) -> None:
     ctx.metric("scripts_library", {"rows": len(rows), "sequences": n, "import_s": import_s,
                                    "list_bytes": len(json.dumps(body))})
 
-    # 4. Share-to-all + the all-models overview (API; the library lives only on `aid` so far).
     ov = await _share_and_overview(ctx, aid, accounts, by_seq, metas, len(rows))
 
     if not ctx.app:
         for c in (UI_SIDEBAR, UI_STEPS, UI_EXPAND, UI_TAGS, UI_ALL_MODELS, UI_SEND):
             ctx.skip(c, "--no-ui")
         return
-    # Synthetic: the deep sequence's cards; a real dump: every sequence's.
     await _ui_page(ctx, seqs, seqs if real else [seqs[n // 2]], truth, {k: len(v) for k, v in by_seq.items()}, views,
                    accounts, ov, bool(real))
     fans = [t["fan_id"] for t in w.data["threads"] if str(t["account_id"]) == aid]
@@ -359,9 +278,6 @@ OVERVIEW = f"{LIST}/overview"
 
 
 async def _coverage(client, aid: str) -> tuple[dict[str, int], dict[str, int]]:
-    """A Creator's own coverage straight off GET /admin/saved-replies: {sequence script_id: step rows} and
-    {tag: scripts carrying it} — the lean overview's counts worked out independently (the library is FM-free, so
-    every row counts, matching the endpoint's FM filter)."""
     rows = (await client.get(LIST, params={"account_id": aid})).json().get("list", [])
     seqs: dict[str, int] = {}
     tags: dict[str, int] = {}
@@ -374,7 +290,6 @@ async def _coverage(client, aid: str) -> tuple[dict[str, int], dict[str, int]]:
 
 
 def _expect(roster: list[str], cov: dict[str, tuple[dict[str, int], dict[str, int]]]) -> tuple[dict, dict]:
-    """The overview's expected per-account maps (name -> {account: count}) from each Creator's own coverage."""
     seqs: dict[str, dict[str, int]] = {}
     tags: dict[str, dict[str, int]] = {}
     for t in roster:
@@ -388,23 +303,17 @@ def _expect(roster: list[str], cov: dict[str, tuple[dict[str, int], dict[str, in
 
 async def _share_and_overview(ctx, aid: str, accounts: list[dict], by_seq: dict[str, list[dict]],
                               src_metas: dict[str, dict], src_rows: int) -> dict:
-    """SHARE_ALL, ALL_MODELS_VIEW, SHARE_ALL_NOOP -> the overview as last read (UI_ALL_MODELS's expectation)."""
     roster = [str(a["id"]) for a in accounts]
     others = [t for t in roster if t != aid]
-    # A shared sequence arrives whole: every row, a step's "N.M" options included (they share a `script_step`), so
-    # the coverage is the source's row count per sequence.
     aid_seqs = {k: len(v) for k, v in by_seq.items()}
     aid_tags = (await _coverage(ctx.owner, aid))[1]
 
-    # SHARE_ALL: resolve the roster server-side (to=[] with all_creators) and copy to every other Creator.
     share = (await ctx.owner.post(COPY, json={"from_account_ids": [aid], "all_creators": True})).json()
     keys_ok = set(share) == {"copied", "skipped", "media_dropped"}
     cov = {t: await _coverage(ctx.owner, t) for t in roster}
-    # Every other Creator now holds at least the source's coverage (they began without these run-unique names).
     spread_bad = [t for t in others
                   if any(cov[t][0].get(nm, 0) < c for nm, c in aid_seqs.items())
                   or any(cov[t][1].get(nm, 0) < c for nm, c in aid_tags.items())]
-    # A new sequence's header rode along: a sampled sequence's meta on an other Creator == the source's.
     sample = next(iter(aid_seqs), None)
     src_meta = src_metas.get(sample) if sample else None
     meta_ok = False
@@ -415,13 +324,11 @@ async def _share_and_overview(ctx, aid: str, accounts: list[dict], by_seq: dict[
         meta_ok = bool(tm and tm.get("position") == src_meta.get("position")
                        and tm.get("created_by") == src_meta.get("created_by")
                        and tm.get("description") == src_meta.get("description"))
-    # The source's stored rows (as read back, FM-free), not the dump's: an import fault is READ_BACK's, not this.
     ctx.check(SHARE_ALL, keys_ok and share.get("copied") == src_rows * len(others) and share.get("skipped") == 0
               and not spread_bad and meta_ok,
               response=share, roster=len(roster), others=len(others), src_rows=src_rows,
               spread_bad=spread_bad[:5], meta_sequence=sample, meta_ok=meta_ok)
 
-    # ALL_MODELS_VIEW: the lean overview == an independent per-account read-back over the whole roster.
     exp_seq, exp_tag = _expect(roster, cov)
     ov = (await ctx.owner.get(OVERVIEW)).json()
     ov_acc = {a["id"] for a in ov.get("accounts", [])}
@@ -432,7 +339,6 @@ async def _share_and_overview(ctx, aid: str, accounts: list[dict], by_seq: dict[
               missing_accounts=sorted(set(roster) - ov_acc), extra_accounts=sorted(ov_acc - set(roster)),
               seq_match=ov_seq == exp_seq, tag_match=ov_tag == exp_tag, sequences=len(ov_seq), tags=len(ov_tag))
 
-    # SHARE_ALL_NOOP: a second identical share copies nothing and leaves the overview unchanged.
     reshare = (await ctx.owner.post(COPY, json={"from_account_ids": [aid], "all_creators": True})).json()
     ov2 = (await ctx.owner.get(OVERVIEW)).json()
     ov2_seq = {s["name"]: s["per_account"] for s in ov2.get("sequences", [])}
@@ -462,7 +368,6 @@ def _cards_want(q: dict, truth: dict) -> list[dict]:
 
 
 async def _open_sequence(page, q: dict, want: list[dict]) -> tuple[list[dict], list[str]]:
-    """Open `q` from the sidebar (searched by name, the exact row clicked): its cards and the header lines shown."""
     name = q["name"].strip()
     await page.get_by_label("Search sequences").fill(name)
     row = page.locator('aside[aria-label="Sequences"] li div[role="button"]').filter(
@@ -483,9 +388,6 @@ _ARROWS = r"""() => [...document.querySelectorAll('[aria-label^="Step "]')].map(
 
 
 async def _ui_expand(ctx, page, long: set[str] | None) -> None:
-    """The open sequence's arrows (#42): one iff the clamp cuts text; `long` (synthetic) are steps that must have one,
-    and some card must have none (so a dead arrow on every card is red).
-    The first arrow clicked lifts its clamp and reads "Collapse script"."""
     got: list[dict] = []
     after: dict = {}
     try:
@@ -543,7 +445,6 @@ async def _ui_page(ctx, seqs: list[dict], opened: list[dict], truth: dict, store
                   dump_order=order_ok, first=[(i["name"], i["count"]) for i in items[:6]], count_bad=count_bad[:3],
                   search=found)
 
-        # Each opened sequence: its cards (label, name, text, notes) and header == the dump.
         bad: list[dict] = []
         shoot = {0, 5, len(opened) // 2, len(opened) - 1}
         for j, q in enumerate(opened):
@@ -570,7 +471,7 @@ async def _ui_page(ctx, seqs: list[dict], opened: list[dict], truth: dict, store
         probe = " ".join(next(s for s in seqs[-1]["steps"] if s["step"] == "1")["text"].split())[:40]
         try:
             await page.get_by_role("tab", name="Tag").click()
-            await page.get_by_label("Search tags").fill("")  # the sidebar search carries over from Sequence
+            await page.get_by_label("Search tags").fill("")
             await page.wait_for_function(f"() => ({_SIDEBAR})('Tags')?.items.length >= 3", timeout=30_000)
             tag_counts = {i["name"]: i["count"] for i in (await page.evaluate(_SIDEBAR, "Tags"))["items"]}
             await page.get_by_role("button", name="Search", exact=True).click()
@@ -587,8 +488,6 @@ async def _ui_page(ctx, seqs: list[dict], opened: list[dict], truth: dict, store
         await _ui_all_models(ctx, page, accounts, ov)
 
 
-# The header's write actions, hidden while All models is on: (role, accessible name). Shown on a Creator first;
-# the menu items only exist with More open.
 HEADER_WRITES = (("button", "Learn"), ("button", "Share"), ("button", "More"))
 MORE_ITEMS = ("Add script", "Create new", "Add tag", "From Excel", "From other creators")
 _MATRIX = r"""() => { const t = document.querySelector('table'); if (!t) return null;
@@ -603,7 +502,6 @@ _MATRIX = r"""() => { const t = document.querySelector('table'); if (!t) return 
 
 
 async def _present(page) -> dict[str, int]:
-    """How many of each header write action the page shows (the More menu's items as menuitems)."""
     got = {name: await page.get_by_role(role, name=name, exact=True).count() for role, name in HEADER_WRITES}
     for name in MORE_ITEMS:
         got[name] = await page.get_by_role("menuitem", name=name, exact=True).count()
@@ -611,11 +509,9 @@ async def _present(page) -> dict[str, int]:
 
 
 async def _ui_all_models(ctx, page, accounts: list[dict], ov: dict) -> None:
-    """UI_ALL_MODELS: the Creator column's All models pick -> the matrix == the overview, no write action, no write."""
     roster = [str(a["id"]) for a in accounts]
     rows_of = {t: len((await ctx.owner.get(LIST, params={"account_id": t})).json().get("list", [])) for t in roster}
     cols = [str(a["id"]) for a in ov.get("accounts", [])]
-    # A column's title is creatorName: nickname, else name, else id (roster meta first, then the overview's own).
     meta = {str(a["id"]): a for a in accounts}
     names_ok = lambda i, title: title in {meta.get(cols[i], {}).get("nickname"), meta.get(cols[i], {}).get("name"),  # noqa: E731
                                           (ov["accounts"][i] or {}).get("nickname"), cols[i]} - {None, ""}
@@ -624,13 +520,12 @@ async def _ui_all_models(ctx, page, accounts: list[dict], ov: dict) -> None:
     after: dict[str, int] = {}
     err = None
     try:
-        # On a Creator the actions are there (so their absence below is not vacuous): More opened for its items.
         await page.get_by_role("button", name="More", exact=True).click()
         await page.get_by_role("menuitem", name="Add script", exact=True).wait_for(timeout=10_000)
         before = await _present(page)
         await page.keyboard.press("Escape")
         col = page.locator('aside[aria-label="Creators"]')
-        await col.locator("button[aria-expanded]", has_text="All creators").click()  # the menu, not Collapse
+        await col.locator("button[aria-expanded]", has_text="All creators").click()
         pick = col.locator("button:not([aria-expanded])", has_text=re.compile(r"^All creators$"))
         await pick.wait_for(timeout=10_000)
         await ui.shot(ctx, page, "scripts-all-models-trigger")
@@ -675,7 +570,7 @@ async def _ui_send(ctx, aid: str, fan, q: dict, by_seq: dict[str, list[dict]]) -
         ctx.check(UI_SEND, False, reason=f"no thread on Creator {aid}")
         return
     step1 = next(s for s in q["steps"] if s["step"] == "1")
-    key = " ".join(step1["text"].split())[:30]  # the picker search, and the hit's visible start
+    key = " ".join(step1["text"].split())[:30]
     row = next((x for x in by_seq.get(q["name"].strip(), []) if x["script_step"] == 1), None)
     status, bubble, err = None, False, None
     want = f"Next in “{q['name'].strip()}” · step 2"

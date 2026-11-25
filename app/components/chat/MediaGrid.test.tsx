@@ -1,14 +1,3 @@
-/**
- * MediaStrip tile geometry (T-GRID).
- *
- * Media renders as small fixed-footprint thumbnails. Every tile's box is
- * computed up-front by mediaTileBox() from the payload's width/height (NOT
- * from <img> onload), and the image plus every placeholder (lock /
- * processing / skeleton) read the SAME box — so the async byte swap never
- * reflows. These tests pin the pure size function and the rendered inline
- * box, including the null-dimension fallback (OF didn't size it) and the
- * processing-placeholder-matches-image invariant.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent } from "@testing-library/react";
 
@@ -16,8 +5,6 @@ import { renderWithProviders } from "@/test-utils";
 import { MessageList, mediaTileBox } from "@/components/chat/MessageList";
 import type { OFMedia, OFMessage } from "@/lib/relay";
 
-// jsdom lacks IntersectionObserver (MediaTile's lazy-load path) — no-op stub
-// so the lazy tiles stay in their skeleton state.
 class IOStub {
   observe() {}
   unobserve() {}
@@ -46,7 +33,6 @@ function media(over: Partial<OFMedia> & { id: number }): OFMedia {
   } as OFMedia;
 }
 
-/** One incoming message (so no vault query / no PPV badges) carrying media. */
 function withMedia(items: OFMedia[]): OFMessage {
   return {
     id: 1,
@@ -60,9 +46,6 @@ function withMedia(items: OFMedia[]): OFMessage {
 beforeEach(() => {
   window.localStorage.clear();
   vi.stubGlobal("IntersectionObserver", IOStub);
-  // The most-recent message's first media fetches eagerly; keep that fetch
-  // pending forever so the tile stays a skeleton. We only assert on the <a>
-  // wrapper + its inline box, both of which render synchronously.
   vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
 });
 afterEach(() => {
@@ -76,13 +59,11 @@ describe("mediaTileBox", () => {
     expect(mediaTileBox(false)).toEqual({ w: 155, h: 155 });
   });
   it("ignores the media's width/height (the box must NOT depend on async dims)", () => {
-    // Same square no matter the orientation — landscape, portrait, square, or
-    // unknown all reserve the identical box, so a late dims PATCH can't reflow.
-    expect(mediaTileBox(false, 1200, 800)).toEqual({ w: 155, h: 155 }); // wide
-    expect(mediaTileBox(false, 800, 1200)).toEqual({ w: 155, h: 155 }); // tall
-    expect(mediaTileBox(false, null, null)).toEqual({ w: 155, h: 155 }); // unknown
-    expect(mediaTileBox(true, 800, 1200)).toEqual({ w: 64, h: 64 }); // compact, tall
-    expect(mediaTileBox(true, null, null)).toEqual({ w: 64, h: 64 }); // compact, unknown
+    expect(mediaTileBox(false, 1200, 800)).toEqual({ w: 155, h: 155 });
+    expect(mediaTileBox(false, 800, 1200)).toEqual({ w: 155, h: 155 });
+    expect(mediaTileBox(false, null, null)).toEqual({ w: 155, h: 155 });
+    expect(mediaTileBox(true, 800, 1200)).toEqual({ w: 64, h: 64 });
+    expect(mediaTileBox(true, null, null)).toEqual({ w: 64, h: 64 });
   });
 });
 
@@ -108,8 +89,8 @@ describe("MediaStrip tile box", () => {
         {...baseProps}
         messages={[
           withMedia([
-            media({ id: 100, width: 1200, height: 800 }), // landscape
-            media({ id: 200, width: 800, height: 1200 }), // portrait
+            media({ id: 100, width: 1200, height: 800 }),
+            media({ id: 200, width: 800, height: 1200 }),
           ]),
         ]}
       />,
@@ -136,15 +117,12 @@ describe("MediaStrip tile box", () => {
   });
 
   it("a still-processing tile reserves the SAME square the loaded image will (no reflow on load)", () => {
-    // No files → no thumb yet → the placeholder. It must claim the same box
-    // the image will, so the swap doesn't shove content.
     const { container } = renderWithProviders(
       <MessageList
         {...baseProps}
         messages={[withMedia([{ id: 400, type: "photo", width: 800, height: 1200 } as OFMedia])]}
       />,
     );
-    // No <a> (no thumb) — the placeholder is a div carrying the box.
     const ph = container.querySelector('div[style*="width"]') as HTMLElement;
     expect(ph).toBeTruthy();
     expect(ph.style.width).toBe("64px");
@@ -162,12 +140,10 @@ describe("MediaLightbox (click-to-zoom)", () => {
     );
     fireEvent.click(container.querySelector("a")!);
 
-    // Overlay is portaled to <body>, so query the document, not the container.
     const dialog = document.querySelector('[role="dialog"]') as HTMLElement;
     expect(dialog).toBeTruthy();
     expect(dialog.querySelector("img")).toBeTruthy();
 
-    // Clicking the backdrop (the dialog root) closes it.
     fireEvent.click(dialog);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });

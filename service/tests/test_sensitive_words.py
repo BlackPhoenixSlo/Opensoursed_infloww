@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""Growth > Sensitive words on the Relay (service/sensitive_words_api.py).
-
-One list per Agency, as Infloww keeps it. `GET /admin/sensitive-words` is the read every composer makes, a
-chatter's too (the union of its Agencies' lists when it names no Creator); everything under
-`/admin/sensitive-words/` (add, update, delete, export, template, import) is owner session or Master: 401 signed
-out, 403 for a chatter. A word is trimmed, inner whitespace collapsed, 1 to 32 characters, and held once whatever
-its case: a repeat is a failed row in the import result, never an error. Excel import reads column A of the first
-sheet under a header row; export writes the list back the same way.
-
-The seam is the Relay over HTTP with real session cookies from the shared two-Agency fixture.
-
-Run: ./venv/bin/python service/tests/test_sensitive_words.py   (exit 0 = green)
-"""
 import _harness  # MUST be first — binds a throwaway temp DB before any db import
 
 _harness.bootstrap()
@@ -76,7 +63,6 @@ def _writes(client) -> list:
     ]
 
 
-# ── Sessions ─────────────────────────────────────────────────────────
 
 def case_signed_out_is_401_on_the_read_and_every_write():
     _reset()
@@ -112,7 +98,6 @@ def case_another_agencys_list_is_invisible_and_untouched():
     assert _words(OWNER_A) == ["fixture mine"]
 
 
-# ── Add, update, delete ──────────────────────────────────────────────
 
 def case_add_trims_holds_each_word_once_in_any_case_and_reports_each_failure():
     _reset()
@@ -131,22 +116,19 @@ def case_add_trims_holds_each_word_once_in_any_case_and_reports_each_failure():
 
 
 def case_a_listed_phrase_matches_across_any_whitespace_and_only_between_boundaries():
-    """The matcher a Priority mass create and every leg refuse on (`_wordfilter.sensitive_hits`,
-    app/lib/sensitiveWords.ts's rule), first against the list as stored (inner whitespace
-    collapsed)."""
     _reset()
     _add(OWNER_A, ["cash  app", "ass"])
     listed = _words(OWNER_A)
     assert listed == ["ass", "cash app"], listed
     for text, words, want in (
-            ("pay me on cash  app", listed, ["cash app"]),        # double space
-            ("pay me on Cash\tApp", listed, ["cash app"]),        # tab, any case
-            ("cash\n  app?", listed, ["cash app"]),               # newline + spaces
-            ("cashapp me", listed, []),                           # no whitespace: another word
-            ("see you after class", listed, []),                  # "ass" inside a word
+            ("pay me on cash  app", listed, ["cash app"]),
+            ("pay me on Cash\tApp", listed, ["cash app"]),
+            ("cash\n  app?", listed, ["cash app"]),
+            ("cashapp me", listed, []),
+            ("see you after class", listed, []),
             ("nice ASS!", listed, ["ass"]),
             ("text me on Tele\tgram", ["tele gram"], ["tele gram"]),
-            ("cashapp_me", ["cashapp"], ["cashapp"])):            # "_" is a boundary
+            ("cashapp_me", ["cashapp"], ["cashapp"])):
         assert sensitive_hits(text, words) == want, (text, words, sensitive_hits(text, words))
 
 
@@ -170,7 +152,6 @@ def case_delete_removes_the_named_words_in_any_case():
     assert _words(OWNER_A) == ["venmo"]
 
 
-# ── Excel ────────────────────────────────────────────────────────────
 
 def case_export_and_template_are_xlsx_with_the_header_row():
     _reset()

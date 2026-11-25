@@ -1,9 +1,3 @@
-/**
- * FanListBulkBar — the Fan List's select mode bar (W4 4.4).
- *
- * The relay client is mocked at its module boundary, as ChatHeader.test.tsx
- * mocks it, and the lists read is stubbed. Fixture identifiers are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -18,7 +12,6 @@ vi.mock("@/lib/relay", () => ({
   },
 }));
 
-/** Function permissions the role denies (`useActionAllowed`); none unless a case adds one. */
 const denied = vi.hoisted(() => new Set<string>());
 vi.mock("@/components/shell/useGrantedPages", () => ({ useActionAllowed: (action: string) => !denied.has(action) }));
 
@@ -125,7 +118,6 @@ describe("FanListBulkBar", () => {
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith(
       "/api/of/v2/lists/users", { "900000001": [READ.withUser.id, UNREAD.withUser.id] }, { accountId: ACCOUNT_ID }));
     expect(await bar().findByText(/Added 2 Fans to "Fixture VIPs"/)).toBeInTheDocument();
-    // The mass composer's list counts (the shared fan-lists cache) go stale too.
     expect(invalidatedKeys(cb.invalidate)).toContainEqual(["fan-lists", ACCOUNT_ID]);
   });
 

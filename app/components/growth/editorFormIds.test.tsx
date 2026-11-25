@@ -1,7 +1,3 @@
-/**
- * Two editors mounted at once (two Creators' pop-ups, two employee dialogs): each footer Save sits outside its form
- * (`form={id}`), so each form id must be its instance's own or the second Save submits the first form.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";

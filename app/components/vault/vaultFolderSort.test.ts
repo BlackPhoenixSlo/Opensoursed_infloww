@@ -16,7 +16,6 @@ describe("parseFolderSort", () => {
 });
 
 describe("folderSortAfter", () => {
-  // The relay's rule (service/vault_ai_api.py sort_of_folders): sort or "recent", order or "desc".
   const prev = { sort: "name", order: "asc" } as const;
   it.each([
     ["a sort and order", { sort: "recent", order: "desc" }, { sort: "recent", order: "desc" }],

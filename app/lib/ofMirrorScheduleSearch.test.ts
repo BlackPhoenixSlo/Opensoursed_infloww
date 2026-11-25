@@ -1,4 +1,3 @@
-/** ticket 84: the stream schedule form's right column search (streaming/dashboard/create), against the real page. */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +18,6 @@ const search = () => ({
   searchUsers: vi.fn(() => Promise.resolve([{ id: 5001, name: "Synthetic Fan", username: "fan1" }] as never)),
   searchPosts: vi.fn(() => Promise.resolve({ list: [{ id: 6001, text: "<p>Hello</p>", author: { id: 77, username: "yourmodel" } }] } as never)),
 });
-/** A valid schedule form (two days ahead, 18:30): a stray send from the search would go through. */
 const fillDate = (d: Document) => {
   const day = localIso(new Date(Date.now() + 2 * 86_400_000)).slice(0, 10);
   d.querySelector<HTMLInputElement>("input[name='date']")!.value = day;
@@ -62,10 +60,10 @@ describe("schedule form's search (ticket 84)", () => {
       ["Hello · @yourmodel", "/of-manager/profile", "_top"],
     ]);
     expect(button(d).disabled).toBe(false);
-    box(d).form!.requestSubmit(); // Enter in the box
-    button(d).click(); // the Search button
+    box(d).form!.requestSubmit();
+    button(d).click();
     await flush();
-    expect(h.searchUsers).toHaveBeenCalledTimes(3); // each ran the search at once
+    expect(h.searchUsers).toHaveBeenCalledTimes(3);
     expect(links()).toHaveLength(2);
     expect(w.submit).not.toHaveBeenCalled();
     expect(w.navigate).not.toHaveBeenCalled();
@@ -78,9 +76,9 @@ describe("schedule form's search (ticket 84)", () => {
     let answer = (_v: unknown) => {};
     const h = { ...search(), searchUsers: vi.fn(() => new Promise((r) => { answer = r; }) as never) };
     unbinds.push(bindFeedSearch(d, { handlers: h }));
-    await type(d, "syn");                                  // the search is out
+    await type(d, "syn");
     box(d).value = "";
-    box(d).dispatchEvent(new Event("input", { bubbles: true }));   // cleared: no debounce wait
+    box(d).dispatchEvent(new Event("input", { bubbles: true }));
     answer([{ id: 5001, name: "Synthetic Fan", username: "fan1" }]);
     vi.useRealTimers();
     await flush();

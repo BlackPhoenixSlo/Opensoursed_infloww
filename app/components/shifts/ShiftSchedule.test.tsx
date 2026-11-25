@@ -1,21 +1,8 @@
-/**
- * ShiftSchedule — the Shift schedule's week grid, its tabs and its Shifts window
- * (docs/spec/phase-02-shifts-time-tracking.md, Testing Decisions, seam 2; page-parity ticket 18).
- *
- * Rendered with `fetch` mocked by URL, so every assertion is about the wire or the rendered text. The browser's
- * timezone is pinned to Asia/Tokyo and the Agency's (Settings › Your Preferences, `preferences.tz`) to
- * America/New_York, so anything that reads in New York reads in the Agency's zone. The clock is Wednesday 14 Oct
- * 2026, 12:00 in New York, so each expected `from`/`to` below is a worked example: Monday 12 Oct 00:00 EDT is
- * 04:00Z, and the week that ends on Sunday 1 Nov (the fall-back day) ends at Monday 2 Nov 00:00 EST, which is 05:00Z.
- *
- * Fixture names and ids are invented.
- */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { jsonRes, renderWithProviders } from "@/test-utils";
 
-// The session: an Agency owner unless a case signs in a Chatter only.
 let session: { user: { user_id: string; username: string } | null; chatter: { username: string } | null };
 vi.mock("@/contexts/UserContext", () => { const v = () => ({ user: session.user, loading: false }); return { useUser: v, useOptionalUser: v }; });
 vi.mock("@/contexts/ChatterContext", () => { const v = () => ({ chatter: session.chatter }); return { useChatter: v, useOptionalChatter: v }; });
@@ -26,7 +13,7 @@ vi.mock("@/lib/csv", () => ({ downloadCsv: (...args: unknown[]) => downloadCsv(.
 import ShiftSchedule from "@/components/shifts/ShiftSchedule";
 import SalesSettingsTab from "@/components/settings/SalesSettingsTab";
 
-const NOW = "2026-10-14T16:00:00.000Z"; // Wed 14 Oct 2026, 12:00 EDT (Thu 01:00 in Tokyo)
+const NOW = "2026-10-14T16:00:00.000Z";
 const AGENCY_TZ = "America/New_York";
 
 const ROSTER = {
@@ -35,7 +22,6 @@ const ROSTER = {
     { id: 42, display_name: "Blake", color: null, is_active: true, chatter_id: "c-1", group_id: null },
   ],
 };
-/** "Night shift" with "Weekend" under it; Avery is in the sub-group. */
 const GROUPS = {
   groups: [
     { id: 1, name: "Night shift", parent_id: null, employee_count: 0 },
@@ -46,8 +32,6 @@ const ACCOUNTS = {
   accounts: [{ id: "1000001", nickname: "creator_one" }, { id: "1000002", nickname: "creator_two" }],
   active_account_id: null,
 };
-/** Tue 13 Oct 09:00–17:00 EDT, Thu 15 Oct 04:00–08:00 EDT (a Ljubljana Shift,
- *  10:00–14:00 there) and Fri 16 Oct 22:00 → Sat 02:00 EDT. */
 const WEEK = {
   occurrences: [
     {
@@ -58,8 +42,6 @@ const WEEK = {
       accounts: [{ id: "1000001", display_name: "creator_one" }],
     },
     {
-      // Every Thursday since 8 Oct, through 31 Dec: the edit starts from the
-      // occurrence clicked and asks how far it reaches.
       shift_id: 3, occurrence_start: "2026-10-15T08:00:00Z", occurrence_end: "2026-10-15T12:00:00Z",
       start_utc: "2026-10-08T08:00:00Z", end_utc: "2026-10-08T12:00:00Z",
       tz: "Europe/Ljubljana", repeat_days: [4], repeat_until: "2026-12-31",
@@ -76,7 +58,6 @@ const WEEK = {
   ],
 };
 
-/** The Timesheet of the week: Avery by Employee, the two Creators by Creator. */
 const BY_EMPLOYEE = {
   rows: [
     { key: "41", display_name: "Avery", scheduled_shifts: 3, shifts_worked: 2, scheduled_minutes: 1200,
@@ -92,8 +73,6 @@ const BY_CREATOR = {
   ],
 };
 
-/** The week's Shift records (roadmap W6 6.6): Avery's closed shift on creator_one with two sales, and Blake on
- *  the agency-wide clock now, with none. */
 const RECORDS = {
   records: [
     { clock_event_id: 7, employee_id: 41, account_id: "1000001", shift_id: 1, in_utc: "2026-10-13T13:00:00Z",
@@ -106,13 +85,9 @@ const RECORDS = {
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let weekReply: () => Response;
-/** The Agency's week start, as `GET /admin/settings/applied` answers it (spec phase-04, story 20). */
 let weekStartDay: "monday" | "sunday";
-/** The Function permissions the same read says the role denies. */
 let deniedActions: string[];
-/** What GET /admin/settings/sales answers. */
 let salesReply: () => Response;
-/** The reply to every create, edit and cancel. */
 let writeReply: (method: string, path: string, body: Record<string, unknown> | null) => Response;
 
 beforeAll(() => {
@@ -164,7 +139,6 @@ afterEach(() => {
   window.history.replaceState(null, "", "/");
 });
 
-/** Every week query sent so far, as its query parameters. */
 function weekQueries(): Record<string, string>[] {
   return fetchMock.mock.calls
     .map(([url]) => new URL(String(url), "http://relay.test"))
@@ -173,7 +147,6 @@ function weekQueries(): Record<string, string>[] {
 }
 const lastWeekQuery = () => weekQueries().at(-1);
 
-/** The last Timesheet query sent, as its query parameters. */
 function lastTimesheetQuery(): Record<string, string> | undefined {
   return fetchMock.mock.calls
     .map(([url]) => new URL(String(url), "http://relay.test"))
@@ -182,7 +155,6 @@ function lastTimesheetQuery(): Record<string, string> | undefined {
     .at(-1);
 }
 
-/** Every create, edit and cancel sent so far. */
 function writes(): { method: string; path: string; body: unknown }[] {
   return fetchMock.mock.calls
     .filter(([, init]) => (init?.method ?? "GET") !== "GET")
@@ -199,10 +171,8 @@ async function expectLastQuery(want: Record<string, string>) {
 
 const THIS_WEEK = { from: "2026-10-12T04:00:00.000Z", to: "2026-10-19T04:00:00.000Z" };
 const button = (name: string) => screen.getByRole("button", { name });
-/** One Creator's day cell in the grid. */
 const cell = (creator: string, day: string) => within(screen.getByRole("gridcell", { name: `${creator}, ${day}` }));
 const dayHeads = () => screen.getAllByRole("columnheader").map((h) => h.getAttribute("aria-label"));
-/** Renders and waits until the Agency's zone has moved the week to New York. */
 async function renderAtAgencyWeek() {
   renderWithProviders(<ShiftSchedule />);
   await expectLastQuery(THIS_WEEK);
@@ -216,18 +186,15 @@ describe("ShiftSchedule", () => {
     expect(dayHeads()).toEqual([
       "Mon 12 Oct", "Tue 13 Oct", "Wed 14 Oct", "Thu 15 Oct", "Fri 16 Oct", "Sat 17 Oct", "Sun 18 Oct",
     ]);
-    // Already Thursday in Tokyo; Wednesday is today in New York.
     const wed = screen.getByRole("columnheader", { name: "Wed 14 Oct" });
     expect(wed).toHaveClass("text-accent");
     expect(screen.getByRole("columnheader", { name: "Thu 15 Oct" })).not.toHaveClass("text-accent");
-    // The header names the zone the grid reads in.
     expect(screen.getByText("UTC-04:00")).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /organization's time zone/ })).toBeInTheDocument();
   });
 
   it("starts the week, This week and the Shift history on Sunday for a Sunday-start Agency", async () => {
     weekStartDay = "sunday";
-    // Sunday 11 Oct 00:00 EDT is 04:00Z.
     const SUNDAY_WEEK = { from: "2026-10-11T04:00:00.000Z", to: "2026-10-18T04:00:00.000Z" };
     renderWithProviders(<ShiftSchedule />);
     await expectLastQuery(SUNDAY_WEEK);
@@ -249,9 +216,7 @@ describe("ShiftSchedule", () => {
 
     fireEvent.click(button("Next week"));
     await expectLastQuery({ from: "2026-10-19T04:00:00.000Z", to: "2026-10-26T04:00:00.000Z" });
-    // The grid header's chevrons step the same week.
     fireEvent.click(button("Show next week"));
-    // Sunday 1 Nov falls back: the week is seven local days, 169 hours.
     await expectLastQuery({ from: "2026-10-26T04:00:00.000Z", to: "2026-11-02T05:00:00.000Z" });
     expect(screen.getByText("26 Oct – 1 Nov 2026")).toBeInTheDocument();
 
@@ -265,7 +230,6 @@ describe("ShiftSchedule", () => {
 
   it("adds the Employee and Creator filters to the query, and Reset clears them", async () => {
     await renderAtAgencyWeek();
-    // A chatter's Mirror Employee is a choice too: it can be on a Shift.
     await waitFor(() => {
       fireEvent.click(screen.getByRole("combobox", { name: "Employee" }));
       expect(screen.getByRole("option", { name: "Blake" })).toBeInTheDocument();
@@ -278,7 +242,6 @@ describe("ShiftSchedule", () => {
     });
     fireEvent.click(screen.getByRole("option", { name: "creator_two" }));
     await expectLastQuery({ ...THIS_WEEK, employee_id: "42", account_id: "1000002" });
-    // A filter survives week navigation.
     fireEvent.click(button("Next week"));
     await expectLastQuery({
       from: "2026-10-19T04:00:00.000Z", to: "2026-10-26T04:00:00.000Z", employee_id: "42", account_id: "1000002",
@@ -297,9 +260,7 @@ describe("ShiftSchedule", () => {
       .toEqual(["creator_one", "creator_two"]);
     const tue = cell("creator_one", "Tue 13 Oct");
     expect(tue.getByText("9:00 AM - 5:00 PM")).toBeInTheDocument();
-    // Two Employees: the first, then how many more.
     expect(tue.getByText("Avery +1")).toBeInTheDocument();
-    // 02:00Z on Saturday is Friday 22:00 in New York: it sits on Friday.
     const fri = cell("creator_two", "Fri 16 Oct");
     expect(fri.getByText("10:00 PM - 2:00 AM")).toBeInTheDocument();
     expect(fri.getByText("Blake")).toBeInTheDocument();
@@ -315,7 +276,6 @@ describe("ShiftSchedule", () => {
     await renderAtAgencyWeek();
     for (const creator of ["creator_one", "creator_two"]) {
       const tile = await waitFor(() => cell(creator, "Tue 13 Oct").getByRole("button", { name: /9:00 AM - 5:00 PM/ }));
-      // Avery is the first Employee seen: Infloww's first colour. The 13 Oct Shift has ended by 14 Oct, so grey.
       expect(tile.querySelector("[data-bar]")).toHaveStyle({ background: "#D9D9D9" });
     }
   });
@@ -323,7 +283,6 @@ describe("ShiftSchedule", () => {
   it("colours a Shift still to come by its first Employee", async () => {
     await renderAtAgencyWeek();
     const thu = await waitFor(() => cell("creator_two", "Thu 15 Oct").getByRole("button", { name: /4:00 AM - 8:00 AM/ }));
-    // First seen order: Avery (#FF7875) on shift 1, then Blake (#FFC069).
     expect(thu.querySelector("[data-bar]")).toHaveStyle({ background: "#FF7875" });
     const fri = cell("creator_two", "Fri 16 Oct").getByRole("button", { name: /10:00 PM - 2:00 AM/ });
     expect(fri.querySelector("[data-bar]")).toHaveStyle({ background: "#FFC069" });
@@ -333,7 +292,6 @@ describe("ShiftSchedule", () => {
     await renderAtAgencyWeek();
     fireEvent.focus(await screen.findByRole("button", { name: /4:00 AM - 8:00 AM/ }));
     const thu = within(screen.getByRole("dialog", { name: "Shift details" }));
-    // Its own wall clock: 10:00–14:00 in Ljubljana.
     expect(thu.getByText("Thursday, October 15, 2026 (GMT+02:00, Europe/Ljubljana)")).toBeInTheDocument();
     expect(thu.getByText("10:00 AM - 2:00 PM")).toBeInTheDocument();
     expect(thu.getByText("Repeats: Weekly on Thu, until Dec. 31, 2026")).toBeInTheDocument();
@@ -370,12 +328,10 @@ describe("ShiftSchedule", () => {
       fireEvent.click(screen.getByRole("combobox", { name: "Employee group" }));
       expect(screen.getByRole("option", { name: "Night shift" })).toBeInTheDocument();
     });
-    // Avery is in "Weekend", under "Night shift"; Blake is in no group.
     fireEvent.click(screen.getByRole("option", { name: "Night shift" }));
     expect(screen.queryByRole("button", { name: /10:00 PM - 2:00 AM/ })).toBeNull();
     expect(screen.getByRole("button", { name: /9:00 AM - 5:00 PM/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /4:00 AM - 8:00 AM/ })).toBeInTheDocument();
-    // Client-side: the query does not change.
     expect(lastWeekQuery()).toEqual(THIS_WEEK);
     fireEvent.click(button("Reset"));
     expect(screen.getByRole("button", { name: /10:00 PM - 2:00 AM/ })).toBeInTheDocument();
@@ -443,17 +399,13 @@ describe("ShiftSchedule", () => {
       fireEvent.change(r.getByLabelText("End"), { target: { value: end } });
       fireEvent.click(r.getByRole("checkbox", { name: employee }));
       fireEvent.click(r.getByRole("checkbox", { name: creator }));
-      // A new row's timezone is the Agency's, not the browser's Tokyo.
       expect(r.getByText("America/New_York")).toBeInTheDocument();
     };
-    // Row 1: every Friday from 16 Oct, "Never".
     fill(rows()[0], "2026-10-16T09:00", "2026-10-16T17:00", "Avery", "creator_one");
     fireEvent.click(within(rows()[0]).getByRole("checkbox", { name: "Repeat weekly" }));
     fireEvent.click(within(rows()[0]).getByRole("checkbox", { name: "Fri" }));
     expect((within(rows()[0]).getByLabelText("Repeat Ends") as HTMLSelectElement).value).toBe("never");
-    // Row 2: refused by the server.
     fill(rows()[1], "2026-10-17T10:00", "2026-10-17T12:00", "Blake", "creator_two");
-    // Row 3: Mondays and Wednesdays through 31 Dec.
     fill(rows()[2], "2026-10-19T08:30", "2026-10-19T12:00", "Avery", "creator_two");
     const r3 = within(rows()[2]);
     fireEvent.click(r3.getByRole("checkbox", { name: "Repeat weekly" }));
@@ -476,16 +428,13 @@ describe("ShiftSchedule", () => {
         start_utc: "2026-10-19T12:30:00.000Z", end_utc: "2026-10-19T16:00:00.000Z", tz: "America/New_York",
         repeat_days: [1, 3], repeat_until: "2026-12-31", employee_ids: [41], account_ids: ["1000002"] } },
     ]);
-    // Only the refused row stays, with its own reason; the window stays open.
     await waitFor(() => expect(rows()).toHaveLength(1));
     const left = within(rows()[0]);
     expect(left.getByText("Blake (42) cannot access creator creator_two (1000002)")).toBeInTheDocument();
     expect((left.getByLabelText("Start") as HTMLInputElement).value).toBe("2026-10-17T10:00");
     expect(left.getByRole("checkbox", { name: "Blake" })).toBeChecked();
-    // The saved rows show up: the week is asked again.
     await waitFor(() => expect(weekQueries().length).toBeGreaterThan(queriesBefore));
 
-    // Fixed and sent again, it saves and the window closes.
     writeReply = () => jsonRes({ shift_id: 100, status: "scheduled" });
     fireEvent.click(left.getByRole("checkbox", { name: "creator_two" }));
     fireEvent.click(left.getByRole("checkbox", { name: "creator_one" }));
@@ -508,7 +457,6 @@ describe("ShiftSchedule", () => {
     fireEvent.click(dialog.getByRole("button", { name: "+ Add Shift" }));
     const rows = () => dialog.getAllByRole("group", { name: /^Shift \d+$/ }).map((r) => within(r));
     await waitFor(() => expect(rows()[1].getByRole("checkbox", { name: "Blake" })).toBeInTheDocument());
-    // Two rows, the same Blake / creator_two pair.
     rows().forEach((row, i) => {
       fireEvent.change(row.getByLabelText("Start"), { target: { value: `2026-10-1${7 + i}T10:00` } });
       fireEvent.change(row.getByLabelText("End"), { target: { value: `2026-10-1${7 + i}T12:00` } });
@@ -516,14 +464,12 @@ describe("ShiftSchedule", () => {
       fireEvent.click(row.getByRole("checkbox", { name: "creator_two" }));
     });
 
-    // Declined: asked once, nothing more is sent and both rows keep the Relay's reason.
     fireEvent.click(dialog.getByRole("button", { name: "OK" }));
     await waitFor(() => expect(dialog.getAllByText("Blake (42) cannot access creator creator_two (1000002)"))
       .toHaveLength(2));
     expect(confirm.mock.calls).toEqual([["Grant Blake access to creator_two?"]]);
     expect(writes()).toHaveLength(2);
 
-    // Confirmed: asked once more, both rows again with grant_access, and the window closes.
     confirm.mockReturnValue(true);
     fireEvent.click(dialog.getByRole("button", { name: "OK" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Create shift(s)" })).toBeNull());
@@ -548,8 +494,6 @@ describe("ShiftSchedule", () => {
     const dialog = within(await screen.findByRole("dialog", { name: "Edit shift" }));
     expect(dialog.queryByRole("button", { name: "+ Add Shift" })).toBeNull();
     const row = within(dialog.getByRole("group", { name: "Shift 1" }));
-    // The occurrence clicked, in the Shift's own zone (not the Agency's New
-    // York): Thu 15 Oct 10:00–14:00 CEST, the zone the repeats follow too.
     expect((row.getByLabelText("Start") as HTMLInputElement).value).toBe("2026-10-15T10:00");
     expect((row.getByLabelText("End") as HTMLInputElement).value).toBe("2026-10-15T14:00");
     expect(row.getByText("Europe/Ljubljana")).toBeInTheDocument();
@@ -559,14 +503,12 @@ describe("ShiftSchedule", () => {
     await waitFor(() => expect(row.getByRole("checkbox", { name: "Avery" })).toBeChecked());
     expect(row.getByRole("checkbox", { name: "creator_two" })).toBeChecked();
 
-    // 15:00 in Ljubljana (CEST, UTC+2) is 13:00Z.
     fireEvent.change(row.getByLabelText("End"), { target: { value: "2026-10-15T15:00" } });
     fireEvent.change(row.getByLabelText("Repeat Ends"), { target: { value: "never" } });
     fireEvent.click(row.getByRole("checkbox", { name: "Blake" }));
     const queriesBefore = weekQueries().length;
     fireEvent.click(dialog.getByRole("button", { name: "OK" }));
 
-    // A weekly series asks how far the edit reaches; this and every later Thursday, none of them past.
     const scope = within(await screen.findByRole("dialog", { name: "Edit recurring shift" }));
     expect(scope.getByRole("radio", { name: "Only this shift" })).toBeChecked();
     expect(writes()).toEqual([]);
@@ -589,8 +531,6 @@ describe("ShiftSchedule", () => {
     const row = within(dialog.getByRole("group", { name: "Shift 1" }));
     await waitFor(() => expect(row.getByRole("checkbox", { name: "Avery" })).toBeInTheDocument());
     await waitFor(() => expect(row.getByRole("checkbox", { name: "creator_one" })).toBeInTheDocument());
-    // 02:30 on 8 Mar 2026 does not exist in New York; like the server's
-    // _to_utc (fold=0) it reads as 02:30 EST, 07:30Z.
     fireEvent.change(row.getByLabelText("Start"), { target: { value: "2026-03-08T02:30" } });
     fireEvent.change(row.getByLabelText("End"), { target: { value: "2026-03-08T10:00" } });
     fireEvent.click(row.getByRole("checkbox", { name: "Avery" }));
@@ -607,7 +547,6 @@ describe("ShiftSchedule", () => {
     fireEvent.click(await screen.findByRole("button", { name: /4:00 AM - 8:00 AM/ }));
     const dialog = within(await screen.findByRole("dialog", { name: "Edit shift" }));
     const row = within(dialog.getByRole("group", { name: "Shift 1" }));
-    // 02:30 on 25 Oct 2026 happens twice in Ljubljana; fold=0 is CEST, 00:30Z.
     fireEvent.change(row.getByLabelText("Start"), { target: { value: "2026-10-25T02:30" } });
     fireEvent.change(row.getByLabelText("End"), { target: { value: "2026-10-25T10:00" } });
     fireEvent.click(dialog.getByRole("button", { name: "OK" }));
@@ -651,8 +590,6 @@ describe("ShiftSchedule", () => {
     fireEvent.click(row.getByRole("checkbox", { name: "creator_one" }));
     fireEvent.click(dialog.getByRole("button", { name: "OK" }));
 
-    // 13:00Z on 13 Oct is 09:00 EDT; 09:00Z on 3 Dec is 04:00 EST; an id the
-    // window has no name for is shown as the id.
     expect(await row.findByText(
       'Not saved: "Multiple employees per shift" is off (Shift Settings). ' +
       "creator_one: more than one Employee on this Shift; " +
@@ -695,7 +632,6 @@ describe("ShiftSchedule", () => {
     ]);
     await waitFor(() => expect(salesToggle()).toHaveAttribute("aria-checked", "true"));
 
-    // Opened again, it shows the stored value.
     fireEvent.click(button("Shift Settings"));
     const again = within(await screen.findByRole("dialog", { name: "Shift Settings" }));
     expect(again.getByRole("switch", {
@@ -739,7 +675,6 @@ describe("ShiftSchedule", () => {
     const scope = within(await screen.findByRole("dialog", { name: "Delete recurring shift" }));
     expect(scope.getAllByRole("radio").map((r) => r.closest("label")?.textContent))
       .toEqual(["This shift", "This shift and following", "All shifts"]);
-    // The series began on 8 Oct, before now (14 Oct); this occurrence (15 Oct) has not.
     fireEvent.click(scope.getByRole("radio", { name: "All shifts" }));
     expect(scope.getByText("All records of past shifts will be permanently deleted")).toBeInTheDocument();
     fireEvent.click(scope.getByRole("radio", { name: "This shift" }));
@@ -789,7 +724,7 @@ describe("ShiftSchedule", () => {
     expect(downloadCsv).toHaveBeenCalledWith("shift-history-2026-10-12.csv", [
       ["Employee", "Scheduled Shifts", "Shifts Worked", "Scheduled hours", "Worked hours", "Recorded earnings"],
       ["Avery", 3, 2, "20h 00m", "4h 30m", "$170"],
-      ["Blake", 1, 1, "4h 00m", "1h 05m", "$2.50"], // the CSV keeps the cents (fmtPrice); the table shows "$3"
+      ["Blake", 1, 1, "4h 00m", "1h 05m", "$2.50"],
     ]);
 
     fireEvent.click(screen.getByRole("tab", { name: "Shift schedule" }));
@@ -914,7 +849,6 @@ describe("ShiftSchedule", () => {
     fireEvent.click(within(avery).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(writes()).toEqual([{ method: "POST", path: "/admin/ingest/transactions/attribute",
       body: { employee_id: "no_one", clock_event_id: 7 } }]));
-    // The sale shared with another Employee on the shift stays theirs, and the row says so.
     expect(await within(avery).findByRole("status")).toHaveTextContent(
       "1 split sale was left unchanged: shared with other employees on the shift.");
 

@@ -1,9 +1,3 @@
-/**
- * anchorPanel — fixed-position coords for a popover anchored to a trigger. Pure. Opens below the trigger when the
- * preferred height fits there (or below has more room), else above; the panel's edge follows the trigger's `align`
- * side, clamped into the viewport.
- */
-
 export interface PopoverCoords {
   top?: number;
   bottom?: number;
@@ -12,7 +6,6 @@ export interface PopoverCoords {
   maxHeight: number;
 }
 
-/** `r` is the trigger's getBoundingClientRect(); `panel` the panel's width and preferred height. */
 export function anchorPanel(
   r: Pick<DOMRect, "top" | "bottom" | "left" | "right">,
   panel: { width: number; height: number },

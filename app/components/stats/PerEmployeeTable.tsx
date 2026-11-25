@@ -1,25 +1,5 @@
 "use client";
 
-/**
- * PerEmployeeTable — sortable rollup of Employee × (optional) Account.
- *
- * Columns: Employee | Messages | PPVs | PPV Rev | Tip Rev | Total
- * Default sort: revenue DESC (matches the backend's own ordering).
- *
- * `by_account` toggles between two views:
- *   • on  (default) — expand each employee row to show per-account
- *                     subtotals from `per_account[]`
- *   • off            — show only the totals-per-employee row
- *
- * The synthetic "Unattributed" employee (employee_id=null) is rendered
- * with a muted highlight so revenue credited to no one (unlinked PPVs and
- * tips, and sales a Sales Settings rule leaves Unattributed) stays visible —
- * silently dropping it would make the totals not match per-model.
- *
- * An Inflowwww extra on Employee reports (page-parity ticket 27): the sales settings notice now sits once above the
- * page's tabs (EmployeeReport), and the table's own Export went (README Phase 2, P2-3): Chatting statistics'
- * Export, Display by creator, writes the same per-Creator lines.
- */
 
 import { Fragment, useMemo, useState } from "react";
 
@@ -31,18 +11,13 @@ import { usePerEmployee, type PerEmployeeRow, type PerEmployeeAccountRow } from 
 type SortKey = "display_name" | "messages_sent" | "ppv_conversions" | "revenue_cents";
 type SortDir = "asc" | "desc";
 
+// Unattributed stays listed or totals stop matching per-model; PPV+Tip may trail Total (custom, subscription, rebill, referral cents): Total is authoritative.
 interface Props {
   from: string | null;
   to: string | null;
-  /** Only the Employees holding the Chatter role. */
   chatterOnly?: boolean;
 }
 
-// The backend sends a real {ppv,tip} split for the "Unattributed" bucket too,
-// so every row's kind cells render the same way. Note PPV+Tip can differ from
-// Total by `custom`-kind cents (rare) and by subscription, rebill and referral
-// cents credited by a manual override or the Sales Settings subscriptions
-// opt-in — Total is the authoritative column.
 function fmtKindCents(c: number): string {
   return fmtCentsBlankZero(c);
 }
@@ -72,9 +47,6 @@ export default function PerEmployeeTable({ from, to, chatterOnly = false }: Prop
     return rows;
   }, [q.data, sortKey, sortDir]);
 
-  // Default-on filter: chatters with zero revenue in the window crowd the
-  // list and bury the people who actually earned. Footer count + "hidden"
-  // pill keeps the omission discoverable.
   const visible = useMemo<PerEmployeeRow[]>(
     () => (hideZeroRev ? sorted.filter((r) => r.revenue_cents > 0) : sorted),
     [sorted, hideZeroRev],
@@ -263,9 +235,6 @@ export default function PerEmployeeTable({ from, to, chatterOnly = false }: Prop
                     {fmtCentsBlankZero(visible.reduce((s, r) => s + r.revenue_by_kind.ppv, 0))}
                   </td>
                   <td className="hidden md:table-cell px-2 md:px-4 py-2.5 text-right tabular-nums font-medium">
-                    {/* Every row (Unattributed included) carries a real by-kind
-                        split — fold uniformly. PPV+Tip may trail Total; see the
-                        note above fmtKindCents. */}
                     {fmtCentsBlankZero(visible.reduce((s, r) => s + r.revenue_by_kind.tip, 0))}
                   </td>
                   <td className="px-2 md:px-4 py-2.5 text-right tabular-nums font-semibold">

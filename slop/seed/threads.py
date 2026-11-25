@@ -1,6 +1,3 @@
-"""Threads: message history + the `chats` row per (Creator, Fan) for a fraction
-of fans. unread_count = the trailing run of inbound messages, as the transcoder
-would have left it. Message ids stay below every synthetic band the relay uses."""
 from __future__ import annotations
 
 from datetime import timedelta

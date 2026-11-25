@@ -17,7 +17,6 @@ const run = (actions: LifecycleAction[], init = cfg()): LifecycleDraft =>
   actions.reduce(lifecycleReducer, initLifecycle(init, EXAMPLE));
 const EXPIRY: LifecycleRules = { hours: { min: 1, max: 120 }, refusal: null };
 const PLAIN: LifecycleRules = { refusal: null };
-/** The extras a default draft collects (frequency on, as the old inline code asked). */
 const EXTRAS = { media_ids: [], price_cents: 0, starts_at: null, ends_at: null, unsend_minutes: 0, frequency: "once" };
 
 describe("initLifecycle", () => {
@@ -39,8 +38,6 @@ describe("initLifecycle", () => {
   });
 });
 
-// Same input → the body the old inline onSubmit built (HEAD LifecycleMessageEditor.tsx):
-// { enabled, messages: clean, ...(copy.hours ? { hours: n } : {}), ...collected }.
 describe("buildPayload pins the old inline save", () => {
   it.each<[string, LifecycleAction[], LifecycleRules, unknown]>([
     ["untouched, off, no hours knob", [], PLAIN,

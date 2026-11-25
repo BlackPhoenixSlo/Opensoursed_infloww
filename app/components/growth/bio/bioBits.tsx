@@ -1,7 +1,5 @@
 "use client";
 
-/** Bits the bio pages screens share: the Mode names and help (v2 `profile.js:105-108`), the page avatar and a page
- *  address with Copy and Open. */
 import { ExternalLink } from "lucide-react";
 
 import { CopyButton } from "@/components/ui/CopyButton";
@@ -15,7 +13,6 @@ export const MODE_HELP: Record<BioMode, string> = {
     + "a Visitor already in a real browser never sees it.",
 };
 
-/** A round avatar from the page's image (a background, so no `<img>` sizing), else the name's first letter. */
 export function PageAvatar({ url, name, size = 32, className }: { url: string; name: string; size?: number; className?: string }) {
   return (
     <span aria-hidden
@@ -26,7 +23,6 @@ export function PageAvatar({ url, name, size = 32, className }: { url: string; n
   );
 }
 
-/** The page's address (or its path while this server has no public bio address), with Copy and Open when public. */
 export function PageAddress({ url, path, className }: { url: string | null; path: string; className?: string }) {
   return (
     <div className={cn("flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5", className)}>

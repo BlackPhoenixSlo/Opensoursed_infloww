@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * AI rules (/ai-rules, and Full AI Chat's "AI rules" popup: `AiRulesDiagram fill`): the Full AI Turn as a zoomable diagram, read from GET /admin/full-ai/rules?mode=test (Live runs the same Turn; no Shadow view, owner 11-15).
- * Every prompt, question, table and switch on a card comes from the live code objects (service/automations/
- * full_ai_rules.py). Wheel zooms at the pointer, drag pans, two fingers pinch, keys + / - / 0; a click opens the card
- * in a drawer (bottom sheet on phone) with the full text. View state: aiRulesView.ts; positions: aiRulesLayout.ts.
- */
 import { useEffect, useMemo, useReducer, useRef } from "react";
 import { PageFrame } from "@/components/shell/PageFrame";
 import { relay } from "@/lib/relay";
@@ -23,7 +17,6 @@ export default function AiRulesPage() {
   return <PageFrame title="AI rules"><AiRulesDiagram /></PageFrame>;
 }
 
-/** The toolbar and the diagram; `fill`: as tall as its parent (Full AI Chat's popup), else the window less the header. */
 export function AiRulesDiagram({ fill = false }: { fill?: boolean }) {
   const [s, dispatch] = useReducer(aiRulesReducer, INITIAL);
   const box = useRef<HTMLDivElement>(null);
@@ -49,7 +42,6 @@ export function AiRulesDiagram({ fill = false }: { fill?: boolean }) {
     return () => ro.disconnect();
   }, []);
 
-  // A new diagram (reducer's pendingFit) fits once; later resizes keep the view.
   useEffect(() => {
     if (s.pendingFit && lay) dispatch({ type: "fit", w: lay.width, h: lay.height });
   }, [s.pendingFit, lay]);
@@ -121,8 +113,6 @@ export function AiRulesDiagram({ fill = false }: { fill?: boolean }) {
   );
 }
 
-/** Pointer gestures on the viewport: one pointer pans, two pinch (zoom at their midpoint + pan); the wheel zooms at
- *  the cursor. A press that moves past DRAG_PX is a drag, so its release doesn't open a card. */
 function useGestures(box: React.RefObject<HTMLDivElement | null>, dispatch: React.Dispatch<Action>) {
   const pts = useRef(new Map<number, { x: number; y: number }>());
   const moved = useRef(0);
@@ -181,7 +171,6 @@ function useGestures(box: React.RefObject<HTMLDivElement | null>, dispatch: Reac
   return { handlers, dragged: () => moved.current > DRAG_PX };
 }
 
-/** `onClick` (pointer, drag-guarded by the page) and `onOpen` (keyboard) both open the drawer. */
 function Card({ node, detail, selected, style, onClick, onOpen }: {
   node: RuleNode; detail: boolean; selected: boolean; style: React.CSSProperties; onClick: () => void; onOpen: () => void;
 }) {
@@ -211,7 +200,6 @@ function Card({ node, detail, selected, style, onClick, onOpen }: {
           <div className="pt-1 text-[11px] text-muted">{node.blocks.length} blocks · open</div>
         </>
       ) : (
-        // Zoomed out: big title + summary only, so the overview still reads.
         <>
           <h3 className="text-[34px] font-semibold leading-tight text-fg">{node.title}</h3>
           <p className="mt-2 line-clamp-4 text-[18px] text-fg-dim">{node.summary}</p>

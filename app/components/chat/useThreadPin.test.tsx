@@ -1,8 +1,3 @@
-/**
- * useThreadPin's timers and the top sentinel's observer, driven through the
- * real hook with a fake IntersectionObserver that, like the real one, reports
- * its target once (asynchronously) on observe().
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render } from "@testing-library/react";
 
@@ -39,7 +34,6 @@ function Thread({ messages, hasOlder = true, loadingOlder = false, olderFailed =
   );
 }
 
-/** Advance fake time, then flush the observers' microtask deliveries. */
 const advance = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
 
 beforeEach(() => {
@@ -60,7 +54,7 @@ describe("useThreadPin backstop", () => {
     const { container, rerender } = render(<Thread messages={rows(2)} onLoadOlder={load} />);
     const pinned = () => (container.firstElementChild as HTMLElement).dataset.pinned;
     await advance(1000);
-    rerender(<Thread messages={rows(3)} onLoadOlder={load} />); // the seed, then OF's head page
+    rerender(<Thread messages={rows(3)} onLoadOlder={load} />);
     await advance(1000);
     rerender(<Thread messages={rows(4)} onLoadOlder={load} />);
     await advance(AUTO_PIN_BACKSTOP_MS - 2000 - 1);
@@ -75,7 +69,7 @@ describe("useThreadPin sentinel auto-load", () => {
     const load = vi.fn();
     render(<Thread messages={rows(2)} onLoadOlder={load} />);
     await advance(AUTO_PIN_BACKSTOP_MS - 1);
-    expect(load).not.toHaveBeenCalled(); // pinned: the first paint's trivially-visible sentinel is ignored
+    expect(load).not.toHaveBeenCalled();
     await advance(1);
     expect(load).toHaveBeenCalledTimes(1);
   });
@@ -128,9 +122,9 @@ describe("useThreadPin sentinel auto-load", () => {
 describe("useThreadPin short-chat fill", () => {
   it("a sentinel still in view fills as soon as the head settles, before the backstop", async () => {
     const load = vi.fn();
-    const { rerender } = render(<Thread messages={rows(3)} onLoadOlder={load} />); // the seed
+    const { rerender } = render(<Thread messages={rows(3)} onLoadOlder={load} />);
     await advance(10);
-    expect(load).not.toHaveBeenCalled(); // head not in yet: the seed's cursor is not OF's
+    expect(load).not.toHaveBeenCalled();
     rerender(<Thread messages={rows(3)} headSettled onLoadOlder={load} />);
     await advance(10);
     expect(load).toHaveBeenCalledTimes(1);
@@ -142,11 +136,11 @@ describe("useThreadPin short-chat fill", () => {
     await advance(10);
     expect(load).toHaveBeenCalledTimes(1);
     rerender(<Thread messages={rows(3)} headSettled loadingOlder onLoadOlder={load} />);
-    rerender(<Thread messages={rows(5)} headSettled onLoadOlder={load} />); // still short
+    rerender(<Thread messages={rows(5)} headSettled onLoadOlder={load} />);
     await advance(10);
     expect(load).toHaveBeenCalledTimes(2);
     rerender(<Thread messages={rows(5)} headSettled loadingOlder onLoadOlder={load} />);
-    sentinelVisible = false; // the page pushed the sentinel out of its margin
+    sentinelVisible = false;
     rerender(<Thread messages={rows(9)} headSettled onLoadOlder={load} />);
     await advance(10);
     expect(load).toHaveBeenCalledTimes(2);
@@ -176,7 +170,6 @@ describe("useThreadPin short-chat fill", () => {
 });
 
 describe("useThreadPin load-older anchor (pre-commit snapshot)", () => {
-  // jsdom lays nothing out: fake 100px rows in a 400px viewport.
   const fakeGeometry = (el: HTMLElement) => {
     let top = 0;
     Object.defineProperty(el, "clientHeight", { configurable: true, get: () => 400 });
@@ -194,14 +187,14 @@ describe("useThreadPin load-older anchor (pre-commit snapshot)", () => {
     const load = vi.fn();
     const { container, rerender } = render(<Thread messages={range(31, 60)} headSettled onLoadOlder={load} />);
     const c = fakeGeometry(container.firstElementChild as HTMLElement);
-    await advance(AUTO_PIN_BACKSTOP_MS); // the auto-pin lets go
-    c.scrollTop = 0; // the user wheeled to the top
+    await advance(AUTO_PIN_BACKSTOP_MS);
+    c.scrollTop = 0;
     rerender(<Thread messages={range(1, 60)} headSettled onLoadOlder={load} />);
-    expect(c.scrollTop).toBe(3000); // row 31 sits where it was: 30 rows × 100px further down
+    expect(c.scrollTop).toBe(3000);
     rerender(<Thread messages={range(1, 61)} headSettled onLoadOlder={load} />);
-    expect(c.scrollTop).toBe(3000); // an incoming message while scrolled up: none
-    c.scrollTop = c.scrollHeight; // back at the bottom
+    expect(c.scrollTop).toBe(3000);
+    c.scrollTop = c.scrollHeight;
     rerender(<Thread messages={range(1, 62)} headSettled onLoadOlder={load} />);
-    expect(c.scrollTop).toBe(c.scrollHeight - 400); // pinned to the new bottom
+    expect(c.scrollTop).toBe(c.scrollHeight - 400);
   });
 });

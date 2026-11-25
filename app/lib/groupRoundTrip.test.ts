@@ -1,12 +1,3 @@
-/**
- * The group lane's id round trip.
- *
- * `parseSlotsParam` used to read the id back with `Number(...)`, so every
- * "👥 group" click on a Fansly chat — and the money rail's "open last 8
- * buyers" — landed on a rounded snowflake that names no real fan. The writer
- * (`encodeSlots`, module-private) was always correct: it interpolates the id
- * as text. These drive the public parser with exactly the strings it writes.
- */
 import { describe, expect, it } from "vitest";
 
 import { parseSlotsParam } from "@/lib/groupChannel";
@@ -31,7 +22,6 @@ describe("parseSlotsParam id fidelity", () => {
   });
 
   it("de-duplicates the same fan across id shapes", () => {
-    // "7" and 7 are one fan; the slot list must not hold both.
     expect(parseSlotsParam("acc:7,acc:7")).toHaveLength(1);
   });
 });

@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * Statistics › Engagement with the phase-2 Relay reads (omf-statistics-relay), read only once useOfStats' probe finds
- * that Relay; until then the page keeps the generator's honest state:
- * - Messages: OF's Mass messages / Direct messages tabs (`/users/me/stats/messages/group|direct`, 10 a page, paged back
- *   by the last item's date; a search of 3+ characters by offset), the search box, OF's chart and summary per tab
- *   (`/messages/queue/chart`: "<n> messages" and the purchases' sum; purchases over messages) and a row's purchases opening
- *   its buyers (`/messages/queue/buyers?queue_id=`);
- * - Posts: the Tips / Views / Likes / Comments chips get their own summary and chart (`/posts/chart?by=`: the metric over
- *   posts), the table reads on by OF's offset;
- * - Streaming and Stories: OF's metric tabs, the period's streams / stories as OF's cards (`/streams/top`, `/stories/top`)
- *   whose Viewers and Tips open their lists, OF's summary and chart (`/streams/chart`, `/stories/chart`: the metric over
- *   the duration / stories).
- */
 
 import { viewDuration } from "@/lib/ofMirrorChart";
 import { plain } from "@/lib/ofMirrorData";
@@ -25,12 +12,6 @@ import { fullStat } from "@/lib/ofMirrorStatsPostStat";
 import { storyBody, streamBody } from "@/lib/ofMirrorStatsOverview";
 import { DASH, usd } from "@/lib/ofMirrorMoney";
 
-/**
- * Engagement › Messages: one row per mass message (OF's EngagementTopStatisticsRow). Its buttons as OF's: one that can
- * still be unsent keeps "Unsend" (disabled with the tooltip until UNSEND is built) and its "i"; a canceled one shows
- * "New message" (OF's composer with the message, not built: disabled with the tooltip) and OF's "Canceled" undo mark on
- * a tinted row; any other none. The next page is read when the last row scrolls into view.
- */
 export function applyMassMessages(doc: Document, items: MassMessage[], tz: string | null, paged?: Partial<PagedBody>) {
   const tpl = doc.querySelector<HTMLElement>(".b-statements-table tbody > tr[data-oi-template]");
   intoRows(doc, tpl?.parentElement, items, () => tpl, (el, m) => {
@@ -41,7 +22,6 @@ export function applyMassMessages(doc: Document, items: MassMessage[], tz: strin
     if (sent) sent.textContent = count(m.sentCount);
     const viewed = cell(el, 2)?.querySelector("span");
     if (viewed) viewed.textContent = count(m.viewedCount);
-    // A free message: OF's dash for its price and purchases.
     const price = num(m.price);
     const priceCell = cell(el, 3);
     if (priceCell) priceCell.textContent = !m.isFree && price !== null ? ` ${usd(price)} ` : " — ";
@@ -52,7 +32,6 @@ export function applyMassMessages(doc: Document, items: MassMessage[], tz: strin
     const media = num(m.mediaCount) ?? 0;
     if (!media) {
       el.querySelector(".b-content-inside-thumbs")?.remove();
-      // OF's box for a message with no media: its placeholder, no picture.
       const img = el.querySelector(".b-top-statistic__img");
       if (img) {
         img.className = "b-top-statistic__img b-top-statistic__img--placeholder";
@@ -79,22 +58,11 @@ export function applyMassMessages(doc: Document, items: MassMessage[], tz: strin
 }
 
 
-/** A post OF's `/posts/top` lists (the fields its row shows). */
 interface TopRowPost extends TopPostItem {
   stats?: { purchasedSumm?: number | null; lookCount?: number | null; likeCount?: number | null; commentCount?: number | null } | null;
 }
-/** The metric column's title per tab (OF's dynamicTitle, texts_en.json). */
 const POSTS_COLUMN: Record<PostsBy, string> = { purchases: "Tips", tips: "Tips", views: "Likes", likes: "Likes", comments: "Comments" };
 
-/**
- * Engagement › Posts for the metric tab `by`: OF's current tab; the period's top posts (`/posts/top?by=`) in OF's
- * table, a row per post (EngagementTopStatisticsRow): its date, views, the metric's column (tips as money, else likes or
- * comments), price, purchases (tips and purchases linked to their lists with the phase-1 Relay), the picked metric in
- * bold, its picture (through the Relay's image proxy), text and "Full stat" (OF's Post statistics popup with the
- * phase-1 Relay, else disabled with the tooltip). Purchases also shows OF's summary ("<n> posts" and the
- * purchases' sum, its change) and chart (purchases over posts, `/posts/chart`); the other metrics' charts need OF's
- * chart filter, which the Relay does not forward: none. No post: OF's empty text (PROOFS).
- */
 export function applyEngagementPosts(doc: Document, data: StatsData, p: Period, by: PostsBy, img: ((u: string) => string) | undefined, v3 = false) {
   pickTabs(doc, "by", by);
   setText(doc, doc.querySelector("[data-oi-posts-col]"), ` ${POSTS_COLUMN[by]} `);
@@ -121,7 +89,6 @@ export function applyEngagementPosts(doc: Document, data: StatsData, p: Period, 
     const metric = el("td", "m-responsive__before-line-over");
     const metricValue = by === "comments" ? ` ${ofCount(num(st.commentCount) ?? 0)} ` : by === "views" || by === "likes" ? ` ${ofCount(num(st.likeCount) ?? 0)} ` : ` ${usd(amount(post.tipsAmount) ?? 0)} `;
     const tips = amount(post.tipsAmount) ?? 0;
-    // OF's row links a post's tips and purchases to their lists (EngagementTopStatisticsRow 155391): the phase-1 Relay's.
     const linked = (text: string, kind: "post-tips" | "post-buyers", n: number): string | Node => (v3 && n > 0 && post.id != null ? usersLink(doc, text.trim(), kind, post.id) : text);
     const mv = el("span", by === "tips" || by === "likes" || by === "comments" ? "g-semibold" : "");
     mv.append(by === "tips" || by === "purchases" ? linked(metricValue, "post-tips", tips) : metricValue);
@@ -163,7 +130,7 @@ export function applyEngagementPosts(doc: Document, data: StatsData, p: Period, 
   display(doc, doc.querySelector<HTMLElement>("[data-oi-posts-summary]"), !!chart);
   display(doc, doc.querySelector<HTMLElement>("[data-oi-posts-chart]"), !!chart);
   const n = num(at(data.postsChart, "posts.total"));
-  setText(doc, doc.querySelector("[data-oi-posts-word]"), n === 1 ? "post" : "posts"); // OF's post_plural
+  setText(doc, doc.querySelector("[data-oi-posts-word]"), n === 1 ? "post" : "posts");
 }
 
 
@@ -175,12 +142,7 @@ export interface EngagementCtx {
   pick: (name: "q", value: string) => void;
 }
 
-/** A messages-chart figure (OF's `<key>.total|delta`) for the tab `t`. */
 const messagesKey = (chart: unknown, key: string, field: "total" | "delta") => (isObj(chart) && isObj(chart[key]) ? `messagesChart:${key}.${field}` : null);
-/**
- * Engagement › Messages' chart summary from OF's chart for the tab (its messages and their purchases), else the
- * overview's. The sidebar Summary (OF's SummaryBlock) always reads the overview's `massMessages`.
- */
 export const messagesRekey = (chart: unknown, t: string) => (el: Element, key: string) => {
   if (el.closest(".l-wrapper__sidebar")) return key;
   const map: Record<string, string | null> = {
@@ -190,18 +152,15 @@ export const messagesRekey = (chart: unknown, t: string) => (el: Element, key: s
   };
   return map[key] ?? key;
 };
-/** Engagement › Posts' summary for a chip (`/posts/chart?by=`), else Phase 1's (Purchases). */
 export const postsRekey = (chart: unknown, by: PostsBy) => (_el: Element, key: string) =>
   key.startsWith("postsChart:purchases.") && isObj(chart) && isObj(chart[by]) ? `postsChart:${by}.${key.slice("postsChart:purchases.".length)}` : key;
 
 const searchBound = new WeakMap<Document, EngagementCtx>();
-/** OF's search box (SearchOF): a search of 3+ characters (or none) is picked half a second after the last key. */
 function bindSearch(doc: Document, form: HTMLElement, x: EngagementCtx) {
   const bound = searchBound.has(doc);
   searchBound.set(doc, x);
   const input = form.querySelector<HTMLInputElement>("input[type='search']");
   const button = form.querySelector<HTMLButtonElement>("button[type='submit']");
-  // Enabled for the page's life (not undone between applies, so typing keeps its focus).
   for (const el of [input, button]) {
     if (!el || !el.disabled) continue;
     el.disabled = false;
@@ -245,13 +204,11 @@ function messagesPage(doc: Document, data: StatsData, p: Period, x: EngagementCt
     const form = doc.querySelector<HTMLElement>("[data-oi-search]");
     if (form) bindSearch(doc, form, x);
   }
-  // A row's purchases: its buyers (OF's link), with the phase-2 Relay.
   const list = (data.massMessages as Partial<PagedBody> | undefined)?.list as Row[] | undefined;
   const rows = [...doc.querySelectorAll(".b-statements-table tbody > tr[data-oi-data]")];
   if (x.v2 && list)
     rows.forEach((tr, i) => {
       const m = list[i];
-      // The purchases cell (Phase 1 writes its count into OF's span, over OF's link).
       const span = tr.querySelectorAll(":scope > td")[4]?.querySelector<HTMLElement>("span");
       const n = num(m?.purchasedCount);
       if (!span || !m || m.isFree || !n) return;
@@ -267,7 +224,6 @@ function messagesPage(doc: Document, data: StatsData, p: Period, x: EngagementCt
   if (bought?.chart) drawPair(doc, doc.querySelector(".b-statistics-page-content__wrapper > .b-chart"), [bought.chart, "Purchases", "money"], sent?.chart ? [sent.chart, "Messages", "count"] : null, p.key === "24h" ? "UTC" : p.tz);
 }
 
-/** The metric's title (texts_en.json streaming_summary_<key>_title), its money kind, its plural. */
 const METRIC: Record<string, [title: string, money: boolean, plural: string]> = {
   purchases: ["Purchases", true, "purchases"], tips: ["Tips", true, "tips"], views: ["Viewers", false, "viewers"],
   likes: ["Likes", false, "likes"], comments: ["Comments", false, "comments"],
@@ -280,7 +236,6 @@ function postsPage(doc: Document, data: StatsData, p: Period, x: EngagementCtx) 
   if (tbody && body?.more) moreAt(doc, tbody.lastElementChild, body.more);
   const s = seriesOf(data.postsChart, x.by);
   if (!x.v2 || !s || x.by === "purchases" || !body?.list?.length) return;
-  // The chip's own summary ("<n> posts" and its figure) and chart, as OF's StatisticsEngagementPosts.
   const summary = doc.querySelector<HTMLElement>("[data-oi-posts-summary]");
   display(doc, summary, true);
   display(doc, doc.querySelector<HTMLElement>("[data-oi-posts-chart]"), true);
@@ -294,10 +249,6 @@ function postsPage(doc: Document, data: StatsData, p: Period, x: EngagementCtx) 
   drawPair(doc, doc.querySelector("[data-oi-posts-chart]"), [s.chart, POSTS_TITLE[x.by], isMoney ? "money" : "count"], posts?.chart ? [posts.chart, "Posts", "count"] : null, p.key === "24h" ? "UTC" : p.tz);
 }
 
-/**
- * The sidebar Summary of Streaming and Stories from the overview read, in OF's Summary rows, once it shows activity
- * in the period (else the card keeps its empty text, which applyEmpties fills when the period is proven empty).
- */
 function summaryCard(doc: Document, kind: "streams" | "stories", data: StatsData) {
   const o = at(kind === "streams" ? data.streams : data.story, kind);
   const span = [...doc.querySelectorAll<HTMLElement>(".l-wrapper__sidebar .b-useful-data > .empty-message [data-oi-empty]")][0];
@@ -330,7 +281,6 @@ function summaryCard(doc: Document, kind: "streams" | "stories", data: StatsData
   if (header) setClass(doc, header, "m-without-content", false);
 }
 
-/** Streaming and Stories: tabs, the period's cards, OF's summary and chart while it has some. */
 function listPage(doc: Document, kind: "streams" | "stories", data: StatsData, p: Period, x: EngagementCtx) {
   const by = x.picks[kind];
   if (x.v2) {
@@ -372,7 +322,6 @@ function listPage(doc: Document, kind: "streams" | "stories", data: StatsData, p
   drawPair(doc, chartBox, [s.chart, title, isMoney ? "money" : "count"], other?.chart ? [other.chart, kind === "streams" ? "Duration" : "Stories", kind === "streams" ? "duration" : "count"] : null, p.key === "24h" ? "UTC" : p.tz);
 }
 
-/** The Engagement tabs' phase-2 parts for page `sub`. */
 export function applyEngagement(doc: Document, sub: string, data: StatsData, p: Period, x: EngagementCtx) {
   if (sub === "engagement/messages") messagesPage(doc, data, p, x);
   if (sub === "engagement/posts") postsPage(doc, data, p, x);

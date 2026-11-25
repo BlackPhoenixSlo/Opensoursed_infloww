@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * FanDrawer's Sales pieces: the Sales table, the Purchases over time bars,
- * the purchased-media rows (with the video hover-scrub thumb and the media
- * lightbox) and the Unsold PPVs block's body.
- */
 
 import { useEffect, useState } from "react";
 
@@ -26,10 +21,6 @@ import {
 } from "./fanDrawerSales";
 import { type PickedTemplate } from "./TemplatePicker";
 
-/** The Clone's Sales table (`messages.js:1525-1528`, `.stab` at
- *  `messages.html:488-492`): Date, Gross, Net and Sent by at 12px, one row
- *  per ledger item. Nothing when the ledger is empty; the media rows below
- *  carry the empty text. */
 export function SalesTable({ items }: { items: PpvHistoryItem[] }) {
   if (items.length === 0) return null;
   const th = cn(MP.insights.salesHead, "border-border text-fg-dim");
@@ -63,12 +54,8 @@ export function SalesTable({ items }: { items: PpvHistoryItem[] }) {
   );
 }
 
-/** How many sale rows to render before "show more". */
 const INITIAL_SALE_ROWS = 3;
 
-/** The Clone's Purchases over time bars (`messages.js:1472-1504`, `.bars`
- *  and `.axis` at `messages.html:493-496`): 12 gross-cent buckets from the
- *  Fan's first purchase to now. Shown on Insights and atop the Sales tab. */
 export function PurchasesOverTime({ items, loading }: { items: PpvHistoryItem[]; loading: boolean }) {
   if (loading && items.length === 0) {
     return <div className={cn(MP.ours.FanDrawer.status, "text-fg-dim")}>Loading purchase history…</div>;
@@ -99,11 +86,6 @@ export function PurchasesOverTime({ items, loading }: { items: PpvHistoryItem[];
   );
 }
 
-/** The purchased-media rows, last in the Sales tab's Sales block (below the
- *  table, under the block's own title). Renders newest-first; first `INITIAL_SALE_ROWS` shown,
- *  remainder revealed via a "Show N more" button at the BOTTOM (so
- *  scrolling down naturally exposes more, the way infinite-scroll
- *  feeds work). */
 export function PpvSalesSection({
   items, loading,
   chatMedia, chatMediaLoading, chatMediaFetching, chatMediaUpdatedAt,
@@ -114,40 +96,20 @@ export function PpvSalesSection({
   loading: boolean;
   chatMedia: FanChatMediaItem[];
   chatMediaLoading: boolean;
-  /** True whenever React Query is fetching ANY page (initial OR
-   *  background SWR refetch). Spins the refresh button while active. */
   chatMediaFetching: boolean;
-  /** ms epoch the cached chat-media was last refreshed. 0 if never. */
   chatMediaUpdatedAt: number;
   accountId: string;
-  /** Current page size requested from both ppv-history + chat-media. */
   salesLimit: number;
-  /** Bumps the page size in the parent. Hidden once we've hit the
-   *  server cap or the ledger has clearly returned fewer rows than
-   *  requested (= no more to load). */
   onLoadMore: () => void;
-  /** Invalidates the chat-media cache and refetches both purchased +
-   *  unsold filter modes. Wired to the ↻ button above the media rows. */
   onRefresh: () => void;
-  /** Opens a media tile in the drawer-level lightbox. Lifted to the
-   *  drawer so its Esc handler can yield to the open lightbox. */
   onOpenMedia: (m: LightboxMedia) => void;
-  /** True while either upstream is mid-refetch — used to disable the
-   *  Load-more button so a fast double-click doesn't queue two bumps. */
   serverFetching: boolean;
 }) {
-  // OF gallery is the spine (thumbnails + text); ledger items get
-  // fuzzy-matched on top for accounting/employee. Falls back to a
-  // ledger-only render when OF hasn't responded yet so the section
-  // never blanks.
   const detailRows = buildSaleRows(chatMedia, items);
 
   const [showAll, setShowAll] = useState(false);
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set());
 
-  // Delay the "loading media…" text by 300ms so cached data — which resolves
-  // almost instantly — renders its timestamp directly instead of flashing the
-  // loading state for a frame or two.
   const [showLoading, setShowLoading] = useState(false);
   useEffect(() => {
     if (!(chatMediaLoading && chatMedia.length === 0)) {
@@ -211,8 +173,6 @@ export function PpvSalesSection({
               onOpenMedia={onOpenMedia}
             />
           ))}
-          {/* Show-more lives at the BOTTOM — newest-first feed pattern,
-           *  scroll down to load older. */}
           {hiddenCount > 0 && !showAll && (
             <button
               type="button"
@@ -231,12 +191,6 @@ export function PpvSalesSection({
               Show less
             </button>
           )}
-          {/* Server-side pagination. Only meaningful once everything
-           *  already fetched is visible (i.e. user has expanded the
-           *  client-side hidden rows) — otherwise "Load more" would
-           *  confuse with "Show more". Hidden when the ledger came back
-           *  with fewer rows than requested (no more to fetch) OR we're
-           *  at the server's hard cap. */}
           {showAll
             && items.length >= salesLimit
             && salesLimit < 200 && (
@@ -255,18 +209,11 @@ export function PpvSalesSection({
   );
 }
 
-/** Latest 2 unsold PPVs the creator has sent this fan, the Unsold PPVs
- *  block's body. Each row has a "Send to chat" button that populates the
- *  parent Composer with the exact same payload (text + media + price) so the
- *  operator can re-pitch the unlock in one click; without `onComposeWith`
- *  (read-only) the button is hidden. Always renders: a status line while
- *  loading, when the read failed, and when there are none. */
 export function UnsoldPpvsSection({
   items, loading, failed, onRetry, accountId, onComposeWith,
 }: {
   items: FanChatMediaItem[];
   loading: boolean;
-  /** The OF read failed and nothing of this Fan's is loaded. */
   failed: boolean;
   onRetry: () => void;
   accountId: string;
@@ -308,11 +255,6 @@ function UnsoldPpvRow({
   const thumbs = pickThumbs(item.media);
   const handleSend = () => {
     if (!onComposeWith) return;
-    // Synthesize a PickedTemplate so Composer's existing onPickTemplate
-    // handler does the full replace (text + attached vault media + price
-    // + lock + previewCount). VaultMedia ids ARE the same ids OF returns
-    // on chat-media `media[i].id`, so attaching by id Just Works on send.
-    // Chat-media files can lack a url; vaultFilesFromChat drops those.
     const media: VaultMedia[] = item.media.map((mm) => ({
       id: mm.id,
       type: (mm.type as VaultMedia["type"]) || "photo",
@@ -325,9 +267,7 @@ function UnsoldPpvRow({
       displayText: item.text,
       mediaCount: item.mediaCount ?? media.length,
       price: item.price ?? 0,
-      // OF chat-media doesn't expose lockedText separately; we leave it
-      // off so the resend defaults to unlocked-text, matching what the
-      // operator usually wants for a follow-up pitch.
+      // OF chat-media has no lockedText; resend defaults to unlocked text.
       lockedText: false,
       isWelcome: false,
       media,
@@ -403,8 +343,6 @@ function PpvSaleRow({
   const accounting = formatAccounting(row);
   return (
     <div className="rounded-md bg-[var(--inf-card,var(--color-bg-elev-1))] border border-[var(--inf-card-border,var(--color-border))] overflow-hidden">
-      {/* Header row — green price pill + full date + expand chevron.
-       *  Clicking anywhere on this strip toggles the body text. */}
       <button
         type="button"
         onClick={onToggle}
@@ -422,17 +360,12 @@ function PpvSaleRow({
         </span>
       </button>
 
-      {/* Media strip — horizontal scroll, vault-style square tiles.
-       *  Click a tile to open it in the lightbox. Videos hover-scrub. */}
       {row.thumbs.length > 0 && (
         <div className="flex gap-1.5 overflow-x-auto px-2 pb-2 -mt-0.5 scrollbar-thin">
           {row.thumbs.map((t, i) => {
             const openInLightbox = () => {
               if (!t.rawFullUrl && !t.rawUrl && !t.rawVideoUrl) return;
               onOpenMedia({
-                // Videos: prefer the playable mp4 so the lightbox's
-                // <video> can stream it. Photos fall through to the
-                // best still.
                 proxiedUrl: proxyImage(
                   t.isVideo ? (t.rawVideoUrl || t.rawFullUrl || t.rawUrl)
                             : (t.rawFullUrl || t.rawUrl),
@@ -478,23 +411,13 @@ function PpvSaleRow({
         </div>
       )}
 
-      {/* Expanded body — full text + accounting/employee. The screenshot's
-       *  "Read more" is implicit here: header click opens / closes. */}
       {expanded && (
         <div className={MP.ours.FanDrawer.saleBody}>
           {row.text ? (
             <div className="text-fg whitespace-pre-wrap break-words">{row.text}</div>
           ) : row.thumbs.length > 0 ? (
-            // OF matched but no caption — just media. Don't say
-            // "media only" as a body since the thumbs above already
-            // make that obvious.
             null
           ) : (
-            // No OF match at all. The accounting line still shows
-            // below; the user knows what was paid even without the
-            // captioned content cached. Common causes: the OF gallery
-            // page that contains this sale hasn't been loaded yet (try
-            // Load more), or the message was deleted on OF.
             <div className="text-fg-dim italic">
               No matching OnlyFans gallery item — try Load more, or the
               original message may have been deleted.
@@ -516,15 +439,6 @@ function PpvSaleRow({
   );
 }
 
-/** Video thumb with vault-style hover scrub. Hover-intent debounce
- *  (HOVER_DELAY_MS) kills brush-past thrash; once committed we render
- *  all 12 storyboard frames as overlayed <img> with opacity toggled,
- *  cycling every SCRUB_INTERVAL_MS. Dwell, frame count and pace come from
- *  useHoverPreview, shared with VaultPicker so the relay's /img/scrub disk
- *  cache (keyed by mp4 hash + frame index, not by caller) serves every
- *  surface — so a re-hover is free.
- *  On mouseleave (or unmount) we fire-and-forget a /img/scrub/cancel POST
- *  so the relay can abort the build if it's still mid-download. */
 export function VideoScrubThumb({
   thumb, accountId, onClick,
 }: {
@@ -532,21 +446,15 @@ export function VideoScrubThumb({
   accountId: string;
   onClick: () => void;
 }) {
-  // Dwell, per-hover session id, slideshow cursor, the cold-build countdown
-  // (same ETA as VaultPicker) and the cancel POST all live in the hook.
   const hover = useHoverPreview(HOVER_DELAY_MS);
   const { sid, frame } = hover.state;
   const hovered = hover.state.id !== null;
   const frameReady = hover.state.scrub === "ready";
   const countdownSec = scrubCountdownSec(hover.state);
-  // Touch devices synthesise mouseenter on tap, so every tap on this thumb
-  // would commit a 12-frame relay ffmpeg storyboard build (and the cancel
-  // POST rides on mouseleave, which may never fire) while the click opens
-  // the lightbox on top of it. Real pointers keep the hover-scrub exactly
-  // as it is today.
   const [canHover] = useState(
     () =>
       typeof window !== "undefined" &&
+      // Touch synthesises mouseenter on tap, which would start a 12-frame ffmpeg storyboard build.
       window.matchMedia("(hover: hover) and (pointer: fine)").matches,
   );
 
@@ -554,14 +462,11 @@ export function VideoScrubThumb({
     <button
       type="button"
       onClick={(e) => { e.stopPropagation(); onClick(); }}
-      // One tile per hook here, so the tile id `start` keys on is a constant 0.
       onMouseEnter={canHover ? () => hover.start(0, thumb.durationSec, thumb.rawVideoUrl) : undefined}
       onMouseLeave={canHover ? () => hover.stop() : undefined}
       className="relative shrink-0 w-20 h-20 rounded-md bg-bg-elev-2 border border-border overflow-hidden group"
       title={canHover ? "Hover to scrub, click to play" : "Tap to play"}
     >
-      {/* Static thumb — always rendered as the loading state /
-       *  fallback when frames fail. Frames fade in on top. */}
       {thumb.rawUrl ? (
         <img
           src={proxyImage(thumb.rawUrl, accountId)}
@@ -576,9 +481,6 @@ export function VideoScrubThumb({
       {hovered && sid &&
         Array.from({ length: SCRUB_FRAMES }).map((_, idx) => (
           <img
-            // Per-frame key bound to the session id so re-hovers force
-            // fresh elements — prevents a stale paint from the previous
-            // hover bleeding into the new session.
             key={`${sid}-${idx}`}
             src={proxyScrubFrame(
               thumb.rawVideoUrl,
@@ -590,9 +492,6 @@ export function VideoScrubThumb({
             alt=""
             aria-hidden={idx !== frame}
             decoding="async"
-            // The first frame that paints clears the shimmer (any frame, so a
-            // failed frame-0 fetch can't pin it); a frame-0 error drops the
-            // shimmer so we fall back to the static thumb.
             {...hover.frameProps(idx)}
             style={{
               opacity: idx === frame && frameReady ? 1 : 0,
@@ -600,11 +499,6 @@ export function VideoScrubThumb({
             className="absolute inset-0 w-full h-full object-cover transition-opacity duration-200"
           />
         ))}
-      {/* Cold-build shimmer + countdown — covers the thumb while the
-       *  relay is extracting the storyboard. Unmounts as soon as a frame
-       *  paints (the slideshow takes over) or frame 0 fails. Cached videos
-       *  go straight to ready on the first frame's onLoad so the shimmer
-       *  is invisible there. */}
       {hovered && hover.state.scrub === "loading" && (
         <>
           <div aria-hidden className="scrub-shimmer pointer-events-none" />
@@ -628,8 +522,6 @@ export function VideoScrubThumb({
 }
 
 export function MediaLightbox({ media, onClose }: { media: LightboxMedia; onClose: () => void }) {
-  // Close on Esc — mirrors the drawer's own Esc handling so the keyboard
-  // story is consistent (Esc collapses one layer at a time).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);

@@ -1,9 +1,3 @@
-/**
- * The Composer's script source slot (lib/chatSlots.ts `scriptSource`), with a stand-in plugin: its step fills the
- * "Next in" bubble when no user Script has a step to go, its action sits beside that bubble and drafts into the
- * composer without a pick, End script, Skip and a send of its step go back to it, and the Scripts picker hides its other scripts
- * and lists the current one first under its label.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 

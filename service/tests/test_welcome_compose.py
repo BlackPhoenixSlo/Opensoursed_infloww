@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""
-welcome_compose — what a welcome SAYS, driven through the real `run_once`
-dispatcher (registry, automation_runs) against a fake OFClient + a patched
-llm_client.chat. No network. The burst text is `_compose_bubbles`' (greeting,
-the slot's activity line, the operator's question), so every case checks the
-wire text against the composer's own output.
-
-  case_no_id_send_still_welcomes:  OF answers a send with no message id: the
-      composed bubbles still go out, the fan is claimed once, and no outbound
-      `messages` row is written (nothing to key it on).
-  case_dry_run_composes_but_sends_nothing:  dry_run composes and counts a
-      would-send, but no OF send, no claim, no row.
-  case_llm_cap_never_blocks_compose:  an LLM daily-cap trip cannot stop a
-      welcome (compose is deterministic).
-  case_max_welcomes_caps_the_batch:  `max_welcomes` caps the batch, the rest
-      wait for the next tick; a bare id greets as "cutie".
-
-Every patch (ax._make_client, llm_client.chat) is scoped to its case and restored.
-
-Run: ./venv/bin/python service/tests/test_welcome_compose.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
@@ -41,8 +20,6 @@ from llm_client import LLMCapExceeded  # noqa: E402
 
 
 class FakeOF:
-    """Serves a canned subscribe feed; records sends. `with_id=False` answers a
-    send the way OF sometimes does: 200 with no message id."""
 
     def __init__(self, subs: list[dict], *, with_id: bool = True):
         self._subs = subs
@@ -56,6 +33,7 @@ class FakeOF:
 
     def send_message(self, chat_id, text, *, media_files=None, **kw) -> dict:
         self.sent.append((int(chat_id), text, list(media_files or [])))
+        # OF sometimes answers a send 200 with no message id
         if not self.with_id:
             return {"text": text}
         self._next_id += 1
@@ -85,7 +63,6 @@ def _patched(mod, name: str, value):
 
 @contextlib.contextmanager
 def _world(subs: list[dict], *, llm=None, **kw):
-    """The fake OF client, and `llm_client.chat` (default: must not run)."""
     fake = FakeOF(subs, **kw)
 
     async def _boom(**kw):
@@ -96,7 +73,6 @@ def _world(subs: list[dict], *, llm=None, **kw):
 
 
 async def _seed(aid: str) -> dict:
-    """An account with a brain (bubble 2) — returns the cfg compose reads."""
     async with get_session() as s:
         if await s.get(Account, aid) is None:
             s.add(Account(id=aid))
@@ -152,7 +128,6 @@ async def case_dry_run_composes_but_sends_nothing():
         assert fake.sent == [] and fake.followed == [], (fake.sent, fake.followed)
         ws, msgs = await _rows(aid)
         assert ws == [] and msgs == [], (ws, msgs)
-        # Not claimed, so the next real tick still welcomes both.
         res2 = await run_once(aid, "send_welcome",
                               payload={"with_image": False, "follow_back": False})
     assert res2["welcomes_sent"] == 2, res2
@@ -190,7 +165,6 @@ async def case_max_welcomes_caps_the_batch():
         ws, msgs = await _rows(aid)
         assert ws == [71, 72], ws
         assert len(msgs) == len(want), len(msgs)
-        # The capped-out fan is next tick's; the bare id greets as "cutie", never "#8812".
         fake.sent.clear()
         res2 = await run_once(aid, "send_welcome", payload=pay)
     assert res2["welcomes_sent"] == 1 and res2["new_subscribers"] == 1, res2

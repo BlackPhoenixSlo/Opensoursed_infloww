@@ -1,8 +1,3 @@
-/**
- * The OF Manager notifications page marks the model's notifications read the way OF web does: one
- * `POST /users/notifications/read` when the All tab opens (after its list answers), then the page's own tab counts
- * are re-read. Driven through the real useOfData with the Relay mocked at its module boundary.
- */
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
@@ -20,13 +15,11 @@ vi.mock("@/lib/relay", async (importOriginal) => ({
   },
 }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams() }));
-// One model in scope (`scope.accountId`), as the OF Manager page has it.
 vi.mock("@/contexts/ScopeContext", () => ({
   useScope: () => ({ accountId: scope.accountId, scope: { kind: "model", accountId: scope.accountId } }),
   useEventScopeOverride: () => {},
   useDropWatcherScope: () => {},
 }));
-// An owner signed in (as ChatHeader.test.tsx stubs it): the page's chat-list hook reads the accounts.
 vi.mock("@/contexts/UserContext", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/contexts/UserContext")>();
   const value = { user: { user_id: "u-owner", username: "owner" }, loading: false, logout: vi.fn() };
@@ -70,19 +63,17 @@ describe("OF Manager notifications page: OF's mark-read", () => {
     await waitFor(() => expect(writes()).toEqual([[NOTIF_READ_PATH, undefined, { accountId: "1" }]]));
     const listAt = relayGet.mock.invocationCallOrder[relayGet.mock.calls.findIndex(([p]) => p === NOTIFICATIONS["notifications/index"])];
     expect(listAt).toBeLessThan(relayPost.mock.invocationCallOrder[0]);
-    await waitFor(() => expect(countReads()).toHaveLength(2)); // the page's counts, re-read after the write
+    await waitFor(() => expect(countReads()).toHaveLength(2));
     for (let i = 0; i < 5; i++) rerender({ src: PAGE("notifications/index") });
     await flush();
     expect(writes()).toHaveLength(1);
 
-    // Another model on the same page: its own one write.
     scope.accountId = "2";
     rerender({ src: PAGE("notifications/index") });
     await waitFor(() => expect(writes()).toHaveLength(2));
     expect(writes()[1][2]).toEqual({ accountId: "2" });
     unmount();
 
-    // A new open of the page: one more.
     renderHook(() => useOfData(frame, PAGE("notifications/index")), { wrapper });
     await waitFor(() => expect(writes()).toHaveLength(3));
     await flush();
@@ -100,7 +91,7 @@ describe("OF Manager notifications page: OF's mark-read", () => {
     renderHook(() => useOfData(frame, PAGE("notifications/index")), { wrapper: ({ children }) => <QueryClientProvider client={(client = new QueryClient())}>{children}</QueryClientProvider> });
     await waitFor(() => expect(writes()).toHaveLength(1));
     await flush();
-    expect(countReads()).toHaveLength(2); // the first page's one read, this page's one read: no re-read
+    expect(countReads()).toHaveLength(2);
     cleanup();
 
     relayPost.mockClear();

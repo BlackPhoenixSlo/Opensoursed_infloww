@@ -1,8 +1,5 @@
 "use client";
 
-/** The vault item popup's editor (`VaultItemModal`): the media pane it is handed, then Infloww's "Media details"
- *  panel — Category, Hashtags, Description, Suggested price always shown; the rest (exposure, tier, caption, script,
- *  the AI and Jev read-outs) behind "More info". Draft/baseline/save state is `vaultItemEditorReducer`. */
 
 import { type ReactNode, useEffect, useReducer, useState } from "react";
 
@@ -32,8 +29,7 @@ import {
   type JevPicks,
 } from "@/components/vault/jevPicks";
 
-/** PATCH /admin/vault-ai/items/{id} — override + lock the operator-edited fields
- *  (contract §6c). `fields` carries only the changed keys so only those lock. */
+// Sends only changed fields: the override endpoint locks exactly those, so a Describe rerun cannot clobber them.
 async function saveVaultItem(
   accountId: string,
   mediaId: number,
@@ -46,13 +42,8 @@ async function saveVaultItem(
   );
 }
 
-// explicitness tiers the pricing bands key off (contract §1 bands_by_tier).
 const TIER_OPTIONS = ["safe", "suggestive", "explicit", "graphic", "unknown"];
 
-// What the model found, ranked by what an operator actually acts on. PRIMARY is
-// shown expanded; everything else sits below the fold behind a toggle. `beats`
-// leads because it's the clip's ordered progression — the whole reason a long
-// video is worth describing.
 const AI_PRIMARY = [
   "acts",
   "clothing_state",
@@ -61,8 +52,6 @@ const AI_PRIMARY = [
   "primary_folder",
   "explicitness",
 ] as const;
-// Shown elsewhere (beats, the editable columns). `_`-prefixed keys are bookkeeping or another pass's blob (`_jev`,
-// read out by `JevReading`) and are skipped too.
 const AI_HIDE = new Set(["beats", "description", "tags"]);
 
 function fmtAi(v: unknown): string {
@@ -87,8 +76,6 @@ function AiRows({ entries }: { entries: [string, unknown][] }) {
   );
 }
 
-/** The V2 describe taxonomy (`_ai.fields`, projected from `ai_fields_json`).
- *  Read-only — the editable, lockable fields are the real columns. */
 function AiFieldsPanel({ fields }: { fields?: Record<string, unknown> }) {
   const [open, setOpen] = useState(false);
   if (!fields) return null;
@@ -139,7 +126,6 @@ function AiFieldsPanel({ fields }: { fields?: Record<string, unknown> }) {
   );
 }
 
-/** `_ai.fields._jev`, as `service/vault_jev_rules.blob` writes it (the per-frame answers stripped by the relay). */
 interface JevBlob {
   status?: string;
   lane5?: string;
@@ -163,8 +149,6 @@ const LANE_TONE: Record<string, string> = {
 const pct = (n: unknown) => (typeof n === "number" ? `${Math.round(n * 100)}%` : "—");
 const words = (s: string) => s.replace(/_/g, " ");
 
-/** The Jev pass's reading of this item: its price lane, each region's state, NudeNet's scores and its tag answers.
- *  Nothing when the item has no `_jev`; only the status when the pass failed. */
 function JevReading({ jev }: { jev: unknown }) {
   if (!jev || typeof jev !== "object") return null;
   const j = jev as JevBlob;
@@ -233,8 +217,6 @@ const JEV_LABEL: Partial<Record<JevKey, string>> = {
   feet_detail: "feet",
 };
 
-/** The operator's Jev answers (`jevPicks`): one select per key, unset = the AI's reading (shown in the blank
- *  option). Content and Feet up front; the rest behind "Details". Only dispatches. */
 function JevPicker({ ai, picks, onPick }: {
   ai: Record<string, unknown>; picks: JevPicks; onPick: (k: JevKey, v: string | null) => void;
 }) {
@@ -293,10 +275,8 @@ function JevPicker({ ai, picks, onPick }: {
   );
 }
 
-/** The comma list the reducer holds, as chips. */
 export const splitTags = (s: string) => s.split(",").map((t) => t.trim()).filter(Boolean);
 
-/** Infloww's Hashtags box: chips with ×, type and press Enter (or a comma) to add. Edits the reducer's `tags` string. */
 function HashtagInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [text, setText] = useState("");
   const chips = splitTags(value);
@@ -341,8 +321,6 @@ function HashtagInput({ value, onChange }: { value: string; onChange: (v: string
   );
 }
 
-/** The OF folders this media is in (`listStates`, as OF's vault listing and the mirror's raw row carry it); null when
- *  the tile has no `listStates` at all. */
 function folderNames(m: Tile): string[] | null {
   const ls = (m as { listStates?: unknown }).listStates;
   if (!Array.isArray(ls)) return null;
@@ -355,9 +333,6 @@ const LABEL = "text-[11px] uppercase tracking-wide text-fg-dim";
 const INPUT =
   "w-full px-2 py-1.5 rounded-md text-base md:text-sm bg-bg-elev-1 border border-border focus:border-accent outline-none";
 
-/** Click-to-edit details for one tile: description, hashtags, price up front; tier, exposure, caption, script and the
- *  read-outs behind "More info". Save writes ONLY the changed fields through the override+lock endpoint (contract
- *  §6c), so a later Describe rerun can't clobber what the operator touched. */
 export function VaultItemEditor({
   media,
   accountId,
@@ -372,13 +347,10 @@ export function VaultItemEditor({
   media: Tile;
   accountId: string;
   onSaved: (updated: Record<string, unknown>) => void;
-  /** Told whenever the draft gains or loses unsaved edits (the popup asks before discarding them). */
   onDirtyChange: (dirty: boolean) => void;
-  /** The media pane: left on desktop, on top (42% of the sheet, so it shrinks with the keyboard) on a phone. */
   mediaSlot?: ReactNode;
   deleteSlot?: ReactNode;
   describeSlot?: ReactNode;
-  /** "More info" is open. The popup holds it, so it stays as it was while ← → step through items. */
   more: boolean;
   onToggleMore: () => void;
 }) {
@@ -388,11 +360,9 @@ export function VaultItemEditor({
     !!ai.description || !!ai.video_description || !!(ai.tags as unknown[] | undefined)?.length;
   const folders = folderNames(media);
 
-  // Draft vs a per-field baseline, and the save — see `vaultItemEditorReducer`.
-  // The open item's `_ai` can change under the editor (Re-describe, the merge
-  // after a save): untouched fields follow it, edited ones keep the edit.
   const [ed, dispatch] = useReducer(vaultItemEditorReducer, ai, (a) =>
     initialEditorState(fieldsFromAi(a), picksFromAi(a)));
+  // The open item's _ai can change under the editor (re-describe, post-save merge): untouched fields follow it, edited ones keep the edit.
   useEffect(() => {
     const a = (media._ai ?? {}) as Record<string, unknown>;
     dispatch({ type: "refresh", fields: fieldsFromAi(a), picks: picksFromAi(a) });
@@ -425,7 +395,6 @@ export function VaultItemEditor({
 
   return (
     <div className="flex flex-1 min-h-0 min-w-0 flex-col md:flex-row">
-      {/* Phone: a thin title bar (the ✕ sits in it), the media, then the details. */}
       <div className="md:hidden shrink-0 h-11 flex items-center px-3 pr-12 text-[13px] text-fg-dim border-b border-border">
         {idLine}
       </div>
@@ -546,7 +515,6 @@ export function VaultItemEditor({
           )}
         </div>
 
-        {/* Actions: the panel's foot on desktop, a bottom bar on a phone — never over the media. */}
         <div className="shrink-0 border-t border-border bg-panel px-4 pt-2.5 pb-[max(10px,env(safe-area-inset-bottom))]">
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -564,7 +532,8 @@ export function VaultItemEditor({
             {saved && !err ? (
               <span className="text-ok">
                 {(() => {
-                  const n = saved.filter((k) => k !== "jev").length;   // the Jev picks lock nothing
+                  // The Jev picks lock nothing.
+                  const n = saved.filter((k) => k !== "jev").length;
                   return n ? `Saved — locked ${n} field${n === 1 ? "" : "s"}` : "Saved";
                 })()}
               </span>

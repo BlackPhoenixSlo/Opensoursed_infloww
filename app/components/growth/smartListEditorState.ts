@@ -1,12 +1,3 @@
-/**
- * smartListEditorState — the Smart list editor: its field catalogue (FIELD_DEFS, the ops and defaults per field,
- * the UI ⇄ wire rule conversion) and its state as a pure reducer: the name, the match, the condition rows, the
- * last "Preview count" answer and the error. Any rule or match edit bumps `rev` and drops the preview and the error
- * (the count must be of the rules on screen; the user runs Preview again), and a preview answer (or its error) for
- * an older `rev` is dropped, never shown. `validateRule` gates Save and Preview: a numeric field needs a number, a
- * `between` both bounds, lower ≤ upper.
- */
-
 import type {
   SmartField, SmartOp, SmartPreview, SmartRule, SmartRules, SmartScope, SmartTimeframe,
 } from "@/hooks/useSmartLists";
@@ -18,8 +9,8 @@ export interface FieldDef {
   label: string;
   group: string;
   kind: Kind;
-  scoped?: boolean;     // creator | org
-  timeframe?: boolean;  // all | today | … | 90d
+  scoped?: boolean;
+  timeframe?: boolean;
 }
 
 export const FIELD_DEFS: FieldDef[] = [
@@ -66,8 +57,6 @@ export function opsFor(field: SmartField): SmartOp[] {
   return ["has", "not_has"];
 }
 
-/** UI rule row — values kept as strings (dollars for money, days for dates); converted to the wire shape (cents /
- *  days) on save. */
 export interface RuleUI {
   field: SmartField; op: SmartOp; value: string; value2: string; days: string;
   scope: SmartScope; timeframe: SmartTimeframe;
@@ -116,8 +105,6 @@ export function fromUI(r: RuleUI): SmartRule {
 
 const isNum = (v: string) => Number.isFinite(Number(v));
 
-/** Why a row can't be saved or previewed, or null. A numeric field (money, days, date) needs its value as a number;
- *  a `between` both bounds as numbers, lower ≤ upper; "Spend in the last N days" its days as a number. */
 export function validateRule(r: RuleUI): string | null {
   const kind = defOf(r.field).kind;
   if (kind === "enum" || kind === "tag") return null;
@@ -136,33 +123,25 @@ export function validateRule(r: RuleUI): string | null {
 
 export interface EditorState {
   name: string;
-  /** Save was tried with no name. */
   nameErr: boolean;
   match: "all" | "any";
   rows: RuleUI[];
-  /** Bumped by every rule / match edit: a preview of an older rev is dropped. */
+  // A preview or error answer for an older rev is dropped, never shown.
   rev: number;
-  /** The last preview, of `rev`'s rules; null after any rule / match edit. */
   preview: SmartPreview | null;
-  /** The last Preview or Save error; null after any rule / match edit. */
   err: string | null;
 }
 
 export type Action =
   | { type: "name"; name: string }
-  /** Save was tried and `saveRefusal` gave `reason`: a missing name is flagged; invalid rows show their own reason. */
   | { type: "saveRefused"; reason: SaveRefusal }
   | { type: "match"; match: "all" | "any" }
-  /** Field change: the op, value and value2 reset to the new field's defaults. */
   | { type: "field"; i: number; field: SmartField }
   | { type: "row"; i: number; patch: Partial<Omit<RuleUI, "field">> }
   | { type: "add" }
   | { type: "remove"; i: number }
-  /** A preview answer for the rules at `rev`. */
   | { type: "previewed"; rev: number; data: SmartPreview }
-  /** A preview of the rules at `rev` failed. */
   | { type: "previewFailed"; rev: number; message: string }
-  /** Preview or Save started: the old error goes. */
   | { type: "start" }
   | { type: "saveFailed"; message: string };
 
@@ -175,7 +154,6 @@ export function initEditor(name: string, rules: SmartRules | null): EditorState 
   };
 }
 
-/** A rules edit: new rows / match, the preview and the error dropped. */
 const edited = (s: EditorState, patch: Partial<Pick<EditorState, "rows" | "match">>): EditorState =>
   ({ ...s, ...patch, rev: s.rev + 1, preview: null, err: null });
 
@@ -208,15 +186,12 @@ export function rulesReducer(s: EditorState, a: Action): EditorState {
   }
 }
 
-/** Every row valid: Preview is allowed (and the Save button enabled). */
 export const rulesValid = (s: Pick<EditorState, "rows">): boolean => s.rows.every((r) => validateRule(r) === null);
 
 export type SaveRefusal = "name" | "rules";
 
-/** Why Save may not write (no name first, then an invalid row), or null. */
 export const saveRefusal = (s: Pick<EditorState, "name" | "rows">): SaveRefusal | null =>
   !s.name.trim() ? "name" : rulesValid(s) ? null : "rules";
 
-/** The wire rules for Preview and Save. */
 export const buildRules = (s: Pick<EditorState, "match" | "rows">): SmartRules =>
   ({ match: s.match, rules: s.rows.map(fromUI) });

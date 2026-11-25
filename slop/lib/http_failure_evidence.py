@@ -1,4 +1,3 @@
-"""Bounded browser 5xx evidence for local scenarios; no request cookies or auth."""
 import asyncio
 import time
 from urllib.parse import urlsplit

@@ -1,25 +1,6 @@
-"""POST /admin/vault-ai/sync — Vault Pro's Refresh reads OnlyFans, not a cache.
-
-REGRESSION (report 2026-11-05): a folder made on OnlyFans and new media never showed after
-Refresh. The button only re-ran React Query reads: `/api/of/v2/vault/lists` answered from the relay's day-long
-`vault_cache`, and a collected account's grid reads the local mirror, which only a full Collect fills.
-
-Cases:
-  case_drops_the_listing_cache       — the relay's cached vault/lists + media rows are gone after a sync.
-  case_no_mirror_reads_no_of         — an account the grid reads live: cache dropped, OF untouched.
-  case_new_media_lands_newest_first  — the walk stops at the first page with nothing new.
-  case_folder_is_read_whole          — a folder view reads every page (membership of OLD media updates).
-  case_page_cap                      — never more than _SYNC_MAX_PAGES OF reads.
-  case_concurrent_presses_share_one_walk — two Refreshes of one Creator at once: one OF walk, both answered.
-  case_of_failure_is_502_and_clears  — OF raising: 502, and the coalescer holds no in-flight walk after it.
-  case_operator_fields_survive       — tags / notes / prices / locks survive a sync; a soft-deleted media OF
-                                       still lists comes back (`removed_at` lifted).
-
-Run: ./venv/bin/python service/tests/test_vault_sync.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -51,7 +32,7 @@ def _media(mid: int, folders=()) -> dict:
 
 class _FakeOF:
     def __init__(self, items: list[dict]):
-        self.items = items  # newest first, as OF answers sort=desc
+        self.items = items
         self.calls: list[tuple] = []
         self.delay_s = 0.0
         self.boom = False
@@ -59,7 +40,7 @@ class _FakeOF:
     def vault_media(self, *, limit=24, offset=0, type="all", sort="desc", list_id=None, **_kw):  # noqa: A002
         self.calls.append((offset, list_id, sort))
         if self.delay_s:
-            time.sleep(self.delay_s)  # a worker thread, as of_client's blocking read
+            time.sleep(self.delay_s)
         if self.boom:
             raise RuntimeError("OF unreachable")
         rows = [m for m in self.items if list_id is None
@@ -111,13 +92,12 @@ async def case_no_mirror_reads_no_of():
 
 
 async def case_new_media_lands_newest_first():
-    old = list(range(1, 251))           # 250 mirrored
+    old = list(range(1, 251))
     await _reset(mirror_ids=old)
-    newest = [_media(m) for m in range(400, 250, -1)]  # 150 new on OF, newest first
+    newest = [_media(m) for m in range(400, 250, -1)]
     of = _FakeOF(newest + [_media(m) for m in reversed(old)])
     _use(of)
     r = await api.sync_from_of(account_id=AID, of_folder_id=None)
-    # page 1: 100 new, page 2: 50 new + 50 known, page 3: nothing new -> stop
     assert [c[0] for c in of.calls] == [0, 100, 200], of.calls
     assert all(c[2] == "desc" for c in of.calls), of.calls
     assert r["new"] == 150 and r["pages"] == 3, r
@@ -126,7 +106,6 @@ async def case_new_media_lands_newest_first():
 
 async def case_folder_is_read_whole():
     await _reset(mirror_ids=[1, 2, 3])
-    # 1..3 are OLD media the creator just moved into a new OF folder.
     of = _FakeOF([_media(m, folders=[FOLDER]) for m in (3, 2, 1)])
     _use(of)
     r = await api.sync_from_of(account_id=AID, of_folder_id=FOLDER)
@@ -168,7 +147,7 @@ async def case_of_failure_is_502_and_clears():
     else:
         raise AssertionError("an OF failure answered 200")
     assert not [k for k in relay_coalesce._inflight if k[0] == "vault_sync"], relay_coalesce._inflight
-    of.boom = False  # the next press walks again, nothing stuck
+    of.boom = False
     r = await api.sync_from_of(account_id=AID, of_folder_id=None)
     assert r["pages"] == 1 and len(of.calls) == 2, (r, of.calls)
 

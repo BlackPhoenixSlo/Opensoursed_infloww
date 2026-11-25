@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""Screen bundles (service/screens_api.py): one call answers a screen's first paint with
-exactly what the per-Creator routes answer, under the same authorization, and never waits
-for the slowest Creator.
-
-The seam is the Relay over HTTP with real session cookies (the shared two-Agency fixture,
-plus a second Creator for Agency A), so every hook runs as for the browser. OnlyFans is a
-recording fake behind `server._load_client` (the per-Creator resolver still runs first).
-
-Run: ./venv/bin/python service/tests/test_screens_api.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -46,14 +36,12 @@ for aid in (A1, B1, A2):
     d = account_registry.ACCOUNTS_DIR / aid
     d.mkdir(exist_ok=True)
     account_registry.upsert_account(aid, nickname=f"n{aid}")
-    (d / "latest.json").write_text(json.dumps({"session": "s.json"}))   # has_session
+    (d / "latest.json").write_text(json.dumps({"session": "s.json"}))
 
 EMP_A = asyncio.run(employees.get_or_create_mirror_employee(
     IDS["chatter_a"], IDS["agency_a_owner"], display_name="chatter_a", color="#bbbbbb"))
-# One event loop for every request, as in the running relay: TestClient's
-# default is a fresh loop per request, which strands relay_cache's locks and
-# makes the loop's shutdown wait for a slow Creator's worker thread.
-_LOOP = contextlib.ExitStack()   # held for the process: closing it stops the loop
+# One loop for every request as in the relay: TestClient's per-request loop strands relay_cache's locks
+_LOOP = contextlib.ExitStack()
 PORTAL = _LOOP.enter_context(anyio.from_thread.start_blocking_portal())
 
 
@@ -69,11 +57,10 @@ WINDOW = {"from": "2026-10-01T00:00:00Z", "to": "2026-10-31T00:00:00Z"}
 
 
 class FakeOF:
-    """Each Creator's OnlyFans: bodies derived from its id, every call recorded."""
 
     def __init__(self, aid: str, slow_s: float = 0.0, fail: set[str] | None = None) -> None:
         self.aid, self.slow_s, self.fail = aid, slow_s, fail or set()
-        self.more_fans = 0   # OF's fan count moved since (serve-stale)
+        self.more_fans = 0
 
     def _call(self, name: str, body):
         with LOCK:
@@ -122,8 +109,8 @@ def _use(**fakes: FakeOF) -> None:
     import relay_cache
     import screens_api
     relay_cache._cache.clear()
-    screens_api._SHARED.clear()   # a finished read is reused for SHARE_S: never across cases
-    screens_api._LAST.clear()     # nor a last value (serve-stale)
+    screens_api._SHARED.clear()
+    screens_api._LAST.clear()
 
 
 server._load_client = lambda aid: FAKES[aid]
@@ -136,16 +123,12 @@ def _get(client, path: str, aid: str | None = None, **params):
 
 
 def _view(env: dict) -> dict:
-    """The screen envelope (screens_api.run_screen: one answer per read) as per-read maps, for these checks: `errors`
-    (every answer with a status), `refreshing` ({accountId, read}), an unscoped read's body under its name, a scoped
-    read's `{accountId: body}` (answer order). Same shape as slop/lib/screen_bundle.py bundle_view (tests never import
-    slop), plus the envelope's own asserts (one answer per (accountId, read))."""
     assert set(env) == {"answers", "asOf"} and isinstance(env["asOf"], int), set(env)
     v: dict = {"errors": [], "refreshing": [], "asOf": env["asOf"]}
     seen: set[tuple] = set()
     for a in env["answers"]:
         assert ("body" in a) != ("status" in a) and {"accountId", "read"} <= set(a), a
-        assert (a["accountId"], a["read"]) not in seen, f"duplicate answer {a}"   # the maps below would hide it
+        assert (a["accountId"], a["read"]) not in seen, f"duplicate answer {a}"
         seen.add((a["accountId"], a["read"]))
         if "status" in a:
             v["errors"].append(a)
@@ -160,7 +143,6 @@ def _view(env: dict) -> dict:
 
 
 def _late(v: dict) -> set[tuple]:
-    """The (accountId, read) pairs answered past the bundle's deadline."""
     return {(e["accountId"], e["read"]) for e in v["errors"]
             if e["status"] == 504 and e["detail"] == {"upstream_status": "bundle_deadline"}}
 
@@ -193,7 +175,6 @@ def _reset_roles() -> None:
     _put(OWNER_A, "roles", {"enforce": False})
 
 
-# ── Same bodies as the per-Creator routes ──────────────────────────────────
 
 def case_owner_dashboard_is_the_per_creator_routes_in_one_call():
     _use(a1=FakeOF(A1), a2=FakeOF(A2), b1=FakeOF(B1))
@@ -252,8 +233,6 @@ def _lanes() -> dict[str, dict]:
 
 
 def case_only_the_open_creator_reads_as_the_user():
-    """A user-priority bundle: every other Creator's inner reads are background (their lane's
-    background cap, never user-active), the focused one keeps the caller's priority."""
     _use(a1=FakeOF(A1), a2=FakeOF(A2))
     of_pacing._last_user.clear()
     before = _lanes()
@@ -267,15 +246,13 @@ def case_only_the_open_creator_reads_as_the_user():
 
 
 def case_reads_queued_at_the_deadline_run_on():
-    """More reads than BUNDLE_READS and a deadline before the queue drains: the queued reads still
-    reach OF, so the next bundle is complete with no new OF call (never the same tail skipped)."""
     import screens_api
     _use(a1=FakeOF(A1, slow_s=0.3), a2=FakeOF(A2, slow_s=0.3))
     real, screens_api.BUNDLE_READS = screens_api.BUNDLE_READS, 1
     try:
         first = _dash(OWNER_A, deadline_ms=100)
         assert len({(e["accountId"], e["read"]) for e in first["errors"]}) >= 5, first["errors"]
-        time.sleep(7 * 0.3 + 0.8)   # 7 reads (per-model has no OF call), one at a time
+        time.sleep(7 * 0.3 + 0.8)
         n = len(CALLS)
         assert sorted(set(CALLS)) == sorted({(a, c) for a in (A1, A2) for c in ("me", "counts", "chart")}), CALLS
     finally:
@@ -285,7 +262,6 @@ def case_reads_queued_at_the_deadline_run_on():
     assert CALLS[n:] == [], CALLS[n:]
 
 
-# ── Scope ──────────────────────────────────────────────────────────────────
 
 def case_chatter_sees_only_its_creators_and_naming_another_reads_nothing():
     _use(a1=FakeOF(A1), a2=FakeOF(A2), b1=FakeOF(B1))
@@ -303,8 +279,6 @@ def case_chatter_sees_only_its_creators_and_naming_another_reads_nothing():
 
 
 def case_a_shared_inbox_read_never_crosses_a_split_inbox_binding():
-    """Identical reads share one answer per principal (`_shared`): two chatters bound to different Split Inbox
-    groups and the owner, asking within SHARE_S, each get their own rows."""
     _use(a1=FakeOF(A1), a2=FakeOF(A2))
     put = lambda cfg: OWNER_A.put("/admin/split-inbox", json={"account_id": A1, "config": cfg})
     assert put({"group_count": 2, "assignments": {},
@@ -348,7 +322,6 @@ def case_a_hidden_per_model_card_reads_none_of_it():
         _reset_roles()
 
 
-# ── Never the slowest Creator ──────────────────────────────────────────────
 
 def case_a_slow_creator_is_stale_and_the_rest_is_on_time():
     _use(a1=FakeOF(A1), a2=FakeOF(A2, slow_s=1.5))
@@ -391,8 +364,6 @@ def case_counts_are_one_of_read_across_concurrent_dashboards():
 
 
 def case_identical_reads_in_flight_run_once():
-    """190 owner phones opening the inbox together: each Creator's page is annotated (3 DB
-    reads) once, not once per phone; each caller still passed its own gate."""
     _use(a1=FakeOF(A1, slow_s=0.2), a2=FakeOF(A2, slow_s=0.2))
     real, ran = server._annotate_chat_rows, []
 
@@ -428,9 +399,6 @@ def case_a_failed_read_is_never_reused():
 
 
 def case_a_warm_cache_never_reaches_a_caller_without_that_creator():
-    """Codex #7: relay_cache answers a hit before any route code, so the gate runs first. B1's
-    counts and chart are warm from its own owner; owner A (no role hook: the resolver is its only
-    gate; a chatter's role hook also checks the Agency) names B1: nothing read, nothing served."""
     _use(a1=FakeOF(A1), a2=FakeOF(A2), b1=FakeOF(B1))
     warm = _dash(_one_loop(fx.login_owner("agency_b_owner")))
     assert warm["subscriberCounts"][B1] is not None, warm
@@ -442,16 +410,12 @@ def case_a_warm_cache_never_reaches_a_caller_without_that_creator():
 
 
 
-# ── Serve-stale: the last value at once, the read behind it ───────────────
 
 def _active(v: dict, aid: str) -> int:
     return v["subscriberCounts"][aid]["subscribers"]["active"]
 
 
 def case_the_last_value_answers_at_once_and_the_follow_up_has_the_new_one():
-    """Past the relay's caches (cleared: their 60 s TTL passed), A1's OF slow and its fan count moved: the bundle
-    answers at once with the last values (each `refreshing`), the reads run behind it through the same
-    single-flight path, and the client's follow-up (`accounts=`, never a last value) has the new count."""
     import relay_cache
     import screens_api
     _use(a1=FakeOF(A1), a2=FakeOF(A2))
@@ -459,7 +423,7 @@ def case_the_last_value_answers_at_once_and_the_follow_up_has_the_new_one():
     assert first["refreshing"] == [] and first["errors"] == [], first
     old = _active(first, A1)
     relay_cache._cache.clear()
-    screens_api._SHARED.clear()   # SHARE_S passed too
+    screens_api._SHARED.clear()
     FAKES[A1].slow_s, FAKES[A1].more_fans = 1.0, 5
     t0 = time.monotonic()
     got = _dash(OWNER_A)
@@ -470,14 +434,12 @@ def case_the_last_value_answers_at_once_and_the_follow_up_has_the_new_one():
         (a, r) for a in (A1, A2) for r in ("profile", "subscriberCounts", "newFans")}, got["refreshing"]
     follow = _dash(OWNER_A, accounts=f"{A1},{A2}", deadline_ms=5000)
     assert follow["refreshing"] == [] and _active(follow, A1) == old + 5, follow
-    assert CALLS.count((A1, "counts")) == 2, CALLS   # the first, then one behind the answer the follow-up joined
+    assert CALLS.count((A1, "counts")) == 2, CALLS
     again = _dash(OWNER_A)
     assert _active(again, A1) == old + 5 and again["refreshing"], again
 
 
 def case_a_last_value_is_only_its_own_principals():
-    """Keyed by the session's principal: the same Creators' last values are never another principal's answer
-    (a chatter of the Agency, the other Agency's owner): each reads them as on a first visit."""
     _use(a1=FakeOF(A1), a2=FakeOF(A2), b1=FakeOF(B1))
     assert _dash(OWNER_A)["refreshing"] == []
     assert _dash(OWNER_A)["refreshing"], "the owner's own second bundle: its last values"
@@ -488,8 +450,6 @@ def case_a_last_value_is_only_its_own_principals():
 
 
 def case_a_last_value_never_outlives_its_gate():
-    """The gate runs before any last value: a chatter whose role loses the Dashboard gets the route's own 403,
-    not the counts it saw a moment ago."""
     _use(a1=FakeOF(A1), a2=FakeOF(A2))
     warm = _dash(CHATTER_A)
     assert warm["subscriberCounts"][A1] is not None, warm

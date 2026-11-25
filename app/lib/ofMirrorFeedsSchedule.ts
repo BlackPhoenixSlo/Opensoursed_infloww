@@ -1,16 +1,13 @@
 "use client";
 
-/** The queue and Home's Scheduled events widget: the calendar, the agenda, the saved-for-later cards. */
 
 import { localIso, NOT_YET, parseDate } from "@/lib/ofMirrorWrites";
 import { clock, dayOf, dropClass, fill, make, plain, stamp, track, valid } from "@/lib/ofMirrorDom";
 import { isSavedForLater, QUEUE, queueActions, SCHEDULES, wallClock, type Month, type QueueItem, type QueueKind } from "@/lib/ofMirrorFeedsShared";
 
-/** OF's "more" icon (its sprite symbol: the queue pages' cut-down sprite lacks it). */
 const SVG = "http://www.w3.org/2000/svg";
 const MORE_ICON = "M6 10a2 2 0 1 0 2 2 2 2 0 0 0-2-2zm12 0a2 2 0 1 0 2 2 2 2 0 0 0-2-2zm-6 0a2 2 0 1 0 2 2 2 2 0 0 0-2-2z";
 
-/** Home's Scheduled events widget reads the next 30 days' queue, by the queue pages' /schedules route. */
 export const upcoming = (now: Date): Month => {
   const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 30);
   return { start: localIso(now).slice(0, 10), end: localIso(end).slice(0, 10) };
@@ -18,10 +15,6 @@ export const upcoming = (now: Date): Month => {
 export const eventsRoute = (now: Date) => SCHEDULES.route(upcoming(now))!;
 const EVENT_KIND: Record<string, string> = { post: "Post", chat: "Message", stream: "Stream" };
 
-/**
- * Home's Scheduled events widget: the three soonest items still ahead of `now`, in place of "You have no scheduled
- * events." (kept when there is none), each its date and time, then its kind and text (or "Media"), as plain rows.
- */
 export function applyEvents(doc: Document, items: QueueItem[], now: Date) {
   const empty = doc.querySelector<HTMLElement>(".b-widget .b-widget__body > .empty-message");
   const rows = items
@@ -50,7 +43,6 @@ export function applyEvents(doc: Document, items: QueueItem[], now: Date) {
   }
   fill(doc, [empty], []);
   empty.after(list);
-  // OF drops the widget's "+" (Add to queue) once it lists events.
   const plus = empty.parentElement!.querySelector<HTMLElement>(":scope > .b-new-event-btn");
   const style = plus?.getAttribute("style") ?? null;
   plus?.style.setProperty("display", "none");
@@ -63,14 +55,8 @@ export function applyEvents(doc: Document, items: QueueItem[], now: Date) {
 }
 
 
-/** The item types the calendar's event bars count (OF's /schedules/counters keys). */
 const DAY_TYPES = ["post", "chat", "stream"];
 
-/**
- * Items per local day of `zone` and type, in OF's /schedules/counters shape ({"2026-11-26": {"post": 1}}; a
- * saved-for-later post or message counts as `saved_for_later_post` / `saved_for_later_chat`, as OF's counters do): what a
- * month page's calendar marks. Items with no time or another type are not counted.
- */
 export function dayCounts(items: QueueItem[], zone?: string): Record<string, Record<string, number>> {
   const out: Record<string, Record<string, number>> = {};
   for (const i of items) {
@@ -83,20 +69,12 @@ export function dayCounts(items: QueueItem[], zone?: string): Record<string, Rec
   return out;
 }
 
-/** One calendar event bar: OF's type class, its name (the count) and, for a half-tinted bar, the scheduled part in %. */
 export interface DayBar {
   type: string;
   name: string;
   value?: string;
 }
 
-/**
- * A day's counters as OF's queue store turns them into calendar events (app.js schedule module `R`): a day with both
- * scheduled and saved-for-later posts gets one "posts" bar named by their sum, its `value` the scheduled share in percent
- * (OF's stylesheet paints the bar half-tinted and the `v-event-summary__level` part of that width full); the same for
- * "chats"; any other count is its own bar ("post", "chat", "stream", or "sfl-post" / "sfl-chat" for saved for later
- * alone), named by the count.
- */
 export function dayBars(counts: Record<string, number>): DayBar[] {
   const left = { ...counts };
   const bars: DayBar[] = [];
@@ -113,18 +91,12 @@ export function dayBars(counts: Record<string, number>): DayBar[] {
   return bars;
 }
 
-/**
- * Mark a month page's day cells with OF's calendar event bars (`v-event` and the bar's type, painted by its queue
- * stylesheet: `.v-event.post|chat|stream|posts|chats|sfl-post|sfl-chat`), each a `v-event-summary` with the bar's name
- * and, for a half-tinted bar, a `v-event-summary__level` of `value`% width: the queue chunk's v-calendar event slot.
- */
 function markDays(doc: Document, counts: Record<string, Record<string, number>>) {
   for (const [day, types] of Object.entries(counts)) {
     const cell = doc.querySelector(`.v-calendar-monthly .b-month-day-cell__value[at-attr='date:${day}']`)?.closest(".v-calendar-weekly__day");
     if (!cell) continue;
     for (const { type, name, value } of dayBars(types)) {
       const bar = doc.createElement("div");
-      // white--text: Vuetify's event colour class, as OF's calendar renders its events.
       bar.className = `v-event v-event-start v-event-end ${type} white--text`;
       bar.dataset.oiData = "";
       bar.dataset.date = day;
@@ -142,7 +114,6 @@ function markDays(doc: Document, counts: Record<string, Record<string, number>>)
   }
 }
 
-/** The month the queue's calendar shows ("October 2026" in its header): its first and last day, yyyy-mm-dd. */
 export function queueMonth(doc: Document): Month | null {
   for (const el of doc.querySelectorAll(".b-queue-header__date")) {
     const m = /^([a-z]+) (\d{4})$/i.exec(el.textContent?.trim() ?? "");
@@ -152,34 +123,19 @@ export function queueMonth(doc: Document): Month | null {
   return null;
 }
 
-/** The event ofMirrorQueue sends on the frame's document when the queue's month, day or tabs change in place. */
 export const QUEUE_CHANGE = "oi-queue-change";
 
-/** The month pages' tabs (OF's multiple-choice type filter: none selected shows every type), by their text -> the item type. */
 export const QUEUE_TABS: Record<string, string> = { Posts: "post", Messages: "chat", Streams: "stream" };
 
-/** The item types of the queue tabs selected (OF's `m-current`); none: every type. */
 export function queueTypes(doc: Document): string[] {
   return [...doc.querySelectorAll(".g-page__subheader .b-tabs__nav__link.m-current")].flatMap((t) => QUEUE_TABS[t.textContent?.trim() ?? ""] ?? []);
 }
 
-/** The day the queue's right column shows ("October 12, 2026" in its header), yyyy-mm-dd. */
 export function queueDay(doc: Document): string | null {
   const d = parseDate(doc.querySelector(".l-wrapper__sidebar .b-queue-header__date")?.textContent ?? "");
   return d && localIso(new Date(d[0], d[1] - 1, d[2])).slice(0, 10);
 }
 
-/**
- * A queue page's items, one OF agenda section per day (soonest first; undated items, as saved for later, in one
- * section with no date), each its time, its text (a stream's description, or "Media") and its source's colour mark,
- * the days and times those of `zone` (wallClock). OF captured no item, so they are built from its agenda classes in
- * the page's agenda scope. A post or message with an id (queueActions) also gets OF's round "More" button and its
- * actions in data-oi-queue-* (ofMirrorQueue opens the menu). The list view fills its own agenda block, the
- * saved-for-later pages a copy of the borrowed one in place of their empty state, only when there is an item. A month
- * page keeps the shown month's items of the selected tabs: its calendar marks their days with OF's event bars and
- * counts (markDays), and the right column lists the shown day's in place of its "no scheduled events for this day"
- * (OF's day view); the borrowed block only lends its agenda scope there, as OF lists nothing under its calendar.
- */
 export function applyQueue(doc: Document, page: string, items: QueueItem[], tpl: Element | undefined, zone?: string) {
   const src = QUEUE[page];
   const month = src.month ? queueMonth(doc) : null;
@@ -196,7 +152,6 @@ export function applyQueue(doc: Document, page: string, items: QueueItem[], tpl:
   if (!rows.length) return;
   const calendar = doc.querySelector(".v-calendar-monthly");
   if (calendar) markDays(doc, dayCounts(rows.map((r) => r.item), zone));
-  // The saved-for-later pages: OF's own cards (ScheduleEventDayView), not agenda rows.
   const sflEmpty = !src.month ? doc.querySelector<HTMLElement>(".saved-for-later > .empty-message") : null;
   if (sflEmpty && src.kind) {
     for (let el = sflEmpty.closest(".m-empty-content"); el; el = sflEmpty.closest(".m-empty-content")) dropClass(doc, el, "m-empty-content");
@@ -223,13 +178,11 @@ export function applyQueue(doc: Document, page: string, items: QueueItem[], tpl:
     const item = built("a", "b-agenda__area-events__item d-flex", parent);
     if (r.mark) item.classList.add(r.mark);
     const content = built("div", "b-agenda__area-events__item-content", item);
-    // OF's agenda time; "h:mm* a" for an item saved for later (app.js schedule module `D`).
     built("div", "b-agenda__area-events__item-details", content).textContent = r.at ? (isSavedForLater(r.item) ? clock(r.at).replace(/\s/, "* ") : clock(r.at)) : "";
     built("div", "b-agenda__area-events__item-inward", content).textContent = plain(r.body.text) || plain(r.body.description) || ((r.body.mediaCount ?? 0) > 0 ? "Media" : "");
     if (r.actions) {
       const a = r.actions;
       Object.assign(item.dataset, { oiQueueKind: a.kind, oiQueueTarget: a.target, oiQueueSchedule: a.schedule, oiQueueReady: String(a.ready), oiQueuePinned: String(a.pinned) });
-      // OF's ScheduleEventDropdown activator (round dots); data-oi-wired: ofMirrorQueue owns its click, not the read-only fallback.
       const more = built("button", "btn dropdown-toggle m-post-btn m-btn-round-dots", built("div", "b-post__tools__more b-dropdown-wrapper m-dropdown-v2", item));
       const attrs = { type: "button", "aria-label": "More", "aria-haspopup": "true", "aria-expanded": "false", "at-attr": "more_menu", "data-oi-wired": "" };
       for (const [k, v] of Object.entries(attrs)) more.setAttribute(k, v);
@@ -239,7 +192,6 @@ export function applyQueue(doc: Document, page: string, items: QueueItem[], tpl:
     }
   };
   if (!calendar) {
-    // OF's empty-page layout centres the block.
     for (let el = agenda.closest(".m-empty-content"); el; el = agenda.closest(".m-empty-content")) dropClass(doc, el, "m-empty-content");
     const sections: HTMLElement[] = [];
     let day: string | undefined;
@@ -258,7 +210,6 @@ export function applyQueue(doc: Document, page: string, items: QueueItem[], tpl:
     const empty = agenda.querySelector<HTMLElement>(":scope > .empty-message");
     fill(doc, empty ? [empty] : [], sections, [agenda]);
   }
-  // The right column: the day it shows.
   const side = src.month ? doc.querySelector<HTMLElement>(".l-wrapper__sidebar") : null;
   const sideEmpty = side?.querySelector<HTMLElement>(":scope > .empty-message");
   const shown = src.month ? queueDay(doc) : null;
@@ -271,17 +222,10 @@ export function applyQueue(doc: Document, page: string, items: QueueItem[], tpl:
   dropClass(doc, side, "m-empty-section");
 }
 
-/** OF's card scopes (ScheduleEventDayView and its queue rows), linked on the queue pages by the generator. */
 const CARD = "data-v-48bf68d0";
 const CARD_ROW = "data-v-48f703ce";
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-/**
- * One saved-for-later item as OF's saved-for-later pages show it (ScheduleEventDayView, captured live 2026-10-17): its
- * kind's icon, the day it was saved ("Oct 17, 2026"), "Later" and, for a message, who it goes to ("to <username>"), the
- * More button, the time with OF's star ("7:26* pm"), a post's disabled "Add labels" and the text. Its ids go on the card
- * (data-oi-queue-*) for ofMirrorQueue's row menu.
- */
 export function sflCard(doc: Document, page: string, i: QueueItem, kind: QueueKind, zone?: string): HTMLElement {
   const body = i.entity ?? i;
   const at = valid(i.publishDateTime || i.createdDateTime);

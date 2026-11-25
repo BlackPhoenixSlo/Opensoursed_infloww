@@ -14,14 +14,14 @@ describe("readMarker", () => {
   });
 
   it.each([
-    ["data", "online_fans|now|all"], // dropped metric
+    ["data", "online_fans|now|all"],
     ["data", "revenue|forever|this"],
     ["data", "revenue|today|mine"],
     ["data", "revenue|today"],
     ["data", "revenue|today|this|extra"],
-    ["data", "unread|today|this"], // unread is live only
-    ["data", "revenue|now|this"], // a range metric needs a range
-    ["chat", "lena"], // no @
+    ["data", "unread|today|this"],
+    ["data", "revenue|now|this"],
+    ["chat", "lena"],
     ["chat", "@"],
     ["chat", "@lena smith"],
   ])("%s:%s is invalid", (kind, body) => {

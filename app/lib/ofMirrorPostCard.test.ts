@@ -1,4 +1,3 @@
-/** OF's post card extras on the mirror's post rows (drawPostCard through applyData): price, locked block, counter, poll, viewer files. */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -51,7 +50,6 @@ describe("a priced post (U8, OF's PostPrice and PostPurchase)", () => {
     const details = r.querySelectorAll(".b-post__header .b-username-row .b-post__profile-details")[1];
     expect(text(details.querySelector(".b-price"))).toBe("$28");
     expect(details.querySelector(".b-price use")?.getAttribute("href")).toBe("#icon-locked");
-    // No file it can view: no picture, never the template's.
     expect(r.querySelector(".post_media")).toBeNull();
     const block = r.querySelector(".b-post__content > .b-post__unknown.m-default-bg")!;
     expect([...block.querySelectorAll(".b-purchase__list-item")].map((li) => [li.querySelector("use")?.getAttribute("href"), text(li)])).toEqual([
@@ -62,7 +60,6 @@ describe("a priced post (U8, OF's PostPrice and PostPurchase)", () => {
     const unlock = block.querySelector<HTMLButtonElement>("button.post-subscribe-btn")!;
     expect(text(unlock)).toBe("Unlock post for $28");
     expect([unlock.disabled, unlock.title]).toEqual([true, NOT_YET]);
-    // OF's scope ids, as the live capture's, so its stylesheet lays the block out.
     expect(block.hasAttribute("data-v-99afd7e6") && block.querySelector(".b-subscribe-block")!.hasAttribute("data-v-752dbaa6")).toBe(true);
   });
 
@@ -153,7 +150,6 @@ describe("a poll or quiz (G1, OF's PostVotingWrapper, read-only)", () => {
     expect(options.map((o) => o.querySelector(".post-vote-button")!.className)).toEqual(["post-vote-button m-break-word m-unvoted", "post-vote-button m-break-word m-voted"]);
     expect([...block.querySelectorAll(".post_voting_due__item")].map(text)).toEqual(["Poll", "4 Votes", "2 days left"]);
     expect(block.querySelector(".post_voting_due use")?.getAttribute("href")).toBe("#icon-poll");
-    // Every element (but the icons' <use>) carries the voting stylesheet's scope.
     expect([block, ...block.querySelectorAll("*:not(use)")].every((e) => e.hasAttribute("data-v-7e8caff8"))).toBe(true);
   });
 

@@ -1,31 +1,5 @@
 "use client";
 
-/**
- * PersonaClaims — "what the creator told him", in the fan drawer.
- *
- * The chat engines record every self-claim the creator makes to a fan and paste the
- * merged result into the prompt as "you already told him this — never give him a
- * different version". A pre-send check then verifies the draft against it. All of
- * that ran with no operator surface at all: a wrong claim could not be seen, let
- * alone corrected.
- *
- * WHAT THIS SHOWS is the merged block itself — every topic claimed so far, in
- * the prompt's own order and wording. The server builds it (`_persona
- * .resolved_claims`, the same function the prompt block renders), so this panel
- * displays what the AI is actually told instead of a second opinion about it.
- * Rebuilding the override rule here is the same two-implementations-of-one-rule
- * hazard that once had the browser and the server disagreeing about which media
- * had a readable still.
- *
- * The first version of this panel led with three input boxes — age, location,
- * job. That was backwards: those three are the only topics with a PATCH-editable
- * mirror column, which is a storage detail, not a limit on what can be claimed.
- * Accounts do tell fans their nationality, living situation, pets —
- * all of which reach the prompt and none of which had a box. So the list leads,
- * and a row is editable when it happens to have a column behind it.
- *
- * Its own file because FanDrawer is already 1.7k lines.
- */
 
 import { useEffect, useState } from "react";
 
@@ -38,16 +12,8 @@ const O = MP.ours.PersonaClaims;
 
 type ClaimColumn = NonNullable<ResolvedClaim["column"]>;
 
-/** One pinned canon fact, as it reaches every prompt on this account. */
 export interface CanonFact { key: string; label: string; value: string }
 
-/** The canon half: the account's pinned facts, filled ones only, in the field
- *  contract's own order (which is "how often fans actually ask").
- *
- *  Filled-only because a blank slot is not something the creator has been told to
- *  say — it is a gap the model improvises into, and improvised answers are what
- *  shows up in the per-fan ledger below. Listing 26 empty rows on every fan would
- *  bury the three that matter. */
 export function canonFacts(
   facts: Record<string, string> | undefined,
   fields: { key: string; label: string }[] | undefined,
@@ -58,30 +24,20 @@ export function canonFacts(
     .map((fld) => ({ key: fld.key, label: fld.label, value: f[fld.key] }));
 }
 
-/** `at` is an ISO stamp from the server; show the date only — the hour of a
- *  months-old claim is noise, and a bad value must not render "Invalid Date". */
 export function claimDate(at: string | null | undefined): string {
   if (!at) return "";
   const d = new Date(at);
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString();
 }
 
-/** Newest last is how it is stored and how it reads as a conversation, so the
- *  list is NOT reversed. Entries with no claim text are dropped — an empty row
- *  tells the operator nothing and only makes the real ones harder to scan. */
 export function visibleClaims(claims: PersonaClaim[] | undefined): PersonaClaim[] {
   return (claims ?? []).filter((c) => (c?.claim ?? "").trim() !== "");
 }
 
-/** Rows worth rendering: the server already merged and ordered them; this only
- *  drops anything with no value, which the prompt would print as a bare label. */
 export function visibleResolved(rows: ResolvedClaim[] | undefined): ResolvedClaim[] {
   return (rows ?? []).filter((r) => (r?.value ?? "").trim() !== "");
 }
 
-/** History worth showing UNDER the merged list: the claims that are no longer
- *  the current answer. A row whose exact text is already on screen would just be
- *  the same sentence twice. */
 export function supersededClaims(
   claims: PersonaClaim[] | undefined, resolved: ResolvedClaim[] | undefined,
 ): PersonaClaim[] {
@@ -99,16 +55,12 @@ export function PersonaClaims({
   const rows = visibleResolved(fan.persona_claims_resolved);
   const older = supersededClaims(fan.persona_claims, fan.persona_claims_resolved);
 
-  // Shares the ["account-config", id] cache with the header's ℹ︎ popover, so on a
-  // model whose info has been opened once this costs nothing.
   const cfgQ = useAccountConfig(accountId);
   const canon = canonFacts(cfgQ.data?.config?.persona_facts,
                            cfgQ.data?.persona_fact_fields);
 
   return (
     <div className="space-y-3 border-t border-border pt-3">
-      {/* STEP 1 — the canon. Identical for every fan on this account, so it is
-       *  collapsed: it is context for reading the ledger, not per-fan news. */}
       <details className="group">
         <summary className="flex cursor-pointer items-baseline justify-between gap-2 list-none">
           <span className={cn(O.heading, "uppercase text-fg-dim group-hover:text-fg")}>
@@ -136,7 +88,6 @@ export function PersonaClaims({
         )}
       </details>
 
-      {/* STEP 2 — what was improvised for THIS fan. */}
       <div className="space-y-2">
       <div className="flex items-baseline justify-between gap-2">
         <span className={cn(O.heading, "uppercase text-fg-dim")}>
@@ -192,9 +143,6 @@ export function PersonaClaims({
   );
 }
 
-/** One merged row. Read-only unless the topic has a mirror column behind it, in
- *  which case clicking the pencil turns it into an input that commits on blur —
- *  saving per keystroke would PATCH the fan once per character. */
 function ClaimRow({
   row, onCommit,
 }: {
@@ -204,8 +152,7 @@ function ClaimRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(row.value);
 
-  // Re-sync when the row changes underneath us — switching fans reuses this
-  // component, and a stale draft would show the previous fan's claim.
+  // Switching fans reuses this component; a stale draft would show the previous fan's claim.
   useEffect(() => { setDraft(row.value); setEditing(false); }, [row.value]);
 
   if (editing) {

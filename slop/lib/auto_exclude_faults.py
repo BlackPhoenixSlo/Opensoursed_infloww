@@ -1,9 +1,3 @@
-"""Auto_Exclude past the 20k backstop: break-it-once faults (scenarios/2026-11-03-auto-exclude-25k.py).
-lib/faults.py merges `register(Fault)` into FAULTS. Each patches the product function whose bug
-class it names (service/audiences.py, service/auto_exclude_decide.py, service/mass_queue_api.py), by
-module attribute, inside the throwaway relay. The check names live here and the scenario imports
-them, so a target can never name a check that does not exist.
-"""
 from __future__ import annotations
 
 NO_EXCLUDED_SENT = ("AE_NO_EXCLUDED_SENT: no send reached a fan of its guard (bar ids OF refused to list, "
@@ -21,10 +15,6 @@ MANUAL_NO_EXCLUDED_SENT = ("AE_MANUAL_NO_EXCLUDED_SENT: no composer blast (POST 
 
 
 def _refresh_blocks_send() -> None:
-    """The send awaits the full refresh inline: a send that would schedule the background refresh
-    runs it inside `ensure_exclude_list`, under the caller's `broadcast_lock` (its holds then take
-    no lock of their own: the send already holds it, and the lock is not reentrant). Everything else
-    is the product's."""
     import contextlib
     import contextvars
 
@@ -37,6 +27,7 @@ def _refresh_blocks_send() -> None:
     def schedule(account_id, client):
         pending[str(account_id)] = client
 
+    # the inline send already holds broadcast_lock and it is not reentrant: its holds take none
     def broadcast_lock(account_id):
         return contextlib.nullcontext() if inline.get() else real_lock(account_id)
 
@@ -57,11 +48,6 @@ def _refresh_blocks_send() -> None:
 
 
 def _remove_unlocked() -> None:
-    """The refresh runs outside `broadcast_lock` and batches against the guard it read when it
-    began, never re-checked against the newest one: a stale member a send has just guarded again
-    (and so did not re-add: the mirror holds it) is removed between that send's sync and its OF
-    POST. The crawl, the batch rule and the mirror updates are the product's (the batch rule reads a
-    copy of the mirror: unlocked, a send's add may grow it mid-read)."""
     import contextlib
     import contextvars
 
@@ -93,8 +79,6 @@ def _remove_unlocked() -> None:
 
 
 def _refresh_skips_readd() -> None:
-    """auto_exclude_decide.next_batch never answers adds: the refresh only removes, so a guard id
-    dropped on OF's side is not put back by it."""
     import auto_exclude_decide
 
     real = auto_exclude_decide.next_batch
@@ -106,10 +90,6 @@ def _refresh_skips_readd() -> None:
 
 
 def _readds_whole_guard() -> None:
-    """A big-list send re-asserts every guard id one by one (today's past-the-backstop cost)
-    instead of only the ids its mirror lacks: `audiences._add_missing_blocking` is handed an empty
-    member set when it is a mirror's (the confirmed adds still join the mirror). Small lists (a
-    crawled member set) are the product's."""
     import audiences
 
     real = audiences._add_missing_blocking
@@ -127,11 +107,6 @@ def _readds_whole_guard() -> None:
 
 
 def _manual_lock_early() -> None:
-    """The composer route's pre-fix hold (service/mass_queue_api.py before W24): `broadcast_lock`
-    around `ensure_exclude_list` only, released before the route's `mass_runs` mint and OF POST, so an
-    automation send's sync or a refresh batch can rewrite Auto_Exclude before OF reads the blast's
-    `excludedLists`. Wraps the seam `mass_queue_api._exclude_list_held` (looked up per call): the real
-    sync, its lock released before the route's block runs."""
     import contextlib
 
     import mass_queue_api
@@ -149,14 +124,9 @@ def _manual_lock_early() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run auto-exclude-25k --break (the scenario's FAULT)
         "auto-exclude-refresh-blocks-send": Fault(_refresh_blocks_send, (SEND_LATENCY,)),
-        # slop/run auto-exclude-25k --break --fault=auto-exclude-remove-unlocked --baseline=...
         "auto-exclude-remove-unlocked": Fault(_remove_unlocked, (NO_EXCLUDED_SENT,)),
-        # slop/run auto-exclude-25k --break --fault=auto-exclude-refresh-skips-readd --baseline=...
         "auto-exclude-refresh-skips-readd": Fault(_refresh_skips_readd, (EXTERNAL_READD,)),
-        # slop/run auto-exclude-25k --break --fault=auto-exclude-readds-whole-guard --baseline=...
         "auto-exclude-readds-whole-guard": Fault(_readds_whole_guard, (SEND_LATENCY,)),
-        # slop/run auto-exclude-25k --break --fault=auto-exclude-manual-lock-early --baseline=...
         "auto-exclude-manual-lock-early": Fault(_manual_lock_early, (MANUAL_NO_EXCLUDED_SENT,)),
     }

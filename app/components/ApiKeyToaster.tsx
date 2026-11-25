@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * ApiKeyToaster — the ONE notification for "this AI feature has no usable API
- * key" (missing, empty, or rejected by the provider).
- *
- * `relay.ts` raises `API_KEY_ERROR_EVENT` for every 424 `api_key_*` answer, and
- * a vault sweep that stopped on a key raises it with its snapshot's payload, so
- * no feature can fail quietly on a key again — and none has to render its own.
- * Mounted once in `app/layout.tsx`.
- *
- * The sentences are the relay's (`llm_client.key_error_payload`). An owner gets
- * the fix and a link to Settings › AI keys; a chatter cannot open that page
- * (`chatterHidden`), so gets the problem and "Ask your agency owner to add it".
- */
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -25,11 +12,9 @@ import {
   type ApiKeyErrorPayload,
 } from "@/lib/relay";
 
-/** Identical (feature, provider, error) toasts inside this window are one. */
 export const DEDUPE_MS = 10_000;
 const SHOW_MS = 15_000;
 
-/** The payload's sentences, for an owner or a chatter. Shared with `AiKeyNotice`. */
 export function ApiKeyMessage({ payload }: { payload: ApiKeyErrorPayload }) {
   const chatter = useOptionalChatter()?.chatter ?? null;
   return (

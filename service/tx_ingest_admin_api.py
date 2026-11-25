@@ -1,18 +1,3 @@
-"""service/tx_ingest_admin_api.py — the transactions-ingest admin surface
-(per-account `transaction_scan_history` watermark + Unattributed-sales views)
-and the on-demand subscriber-roster crawl.
-
-  GET  /admin/ingest/transactions/health  → per-account scan tier (+ last_full_attempt_at, full_walk_failures), scoped to the caller's accounts
-  POST /admin/ingest/transactions/{account_id}/run  (202) → one refresh/backfill scan now (a backfill on a done walk restarts it and ends any pause)
-  POST /admin/roster/{account_id}/crawl  → one subscriber-roster crawl now, past its TTL
-  POST /admin/ingest/transactions/{account_id}/pause  (202) → pause the supervisor for N hours
-  POST /admin/ingest/transactions/{account_id}/resume  (202) → clear `paused_until`
-  GET  /admin/ingest/transactions/orphan-tips  → Unattributed tip transactions
-  GET  /admin/ingest/transactions/sales-needing-attribution  → Unattributed confirmed sales
-
-Included mid-file in server.py for route order (pinned by
-service/tests/test_route_order.py).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -38,45 +23,18 @@ log = logging.getLogger("of-relay.tx_ingest_admin_api")
 router = APIRouter()
 
 
-# ── /admin/ingest/transactions/* — Phase F supervisor admin surface ─
-# Read/write surface over `transaction_scan_history` (the per-account
-# watermark for the OF payouts/transactions ingest job) plus a few
-# observability queries on `transactions`. Sits next to the other
-# /admin/* routes; share-token gate fires via middleware so no
-# per-route auth dep is needed.
 
-# Reported, never persisted: full_walk_failures > 0 (full walks failed or cut short since the
-# last completed one, whatever the recent walks do) turns a between-ticks green status into this
-# (_health_status). An in-flight one keeps its word (a scan is running); the tier is not green either way.
+# Reported, never persisted: a between-ticks green status becomes this while a full walk is owed.
 FULL_WALK_FAILED = "full_walk_failed"
 _BETWEEN_TICKS_GREEN = ("idle", "ok", BACKFILL_PARTIAL)
 _GREEN_STATUSES = (*_BETWEEN_TICKS_GREEN, *IN_FLIGHT)
 
 
 def _health_status(current_status: str, full_walk_failures: int) -> str:
-    """The status a /health row reports: the persisted one, but FULL_WALK_FAILED for a between-ticks
-    green one (idle, ok, backfill_partial) while a full walk is owed. refreshing/backfilling (in
-    flight), paused, error, backfill_stalled/_given_up keep their word. The persisted status stays
-    (the in-flight skip and /run's 409 read it); last_error keeps the failed walk's line."""
     return FULL_WALK_FAILED if full_walk_failures and current_status in _BETWEEN_TICKS_GREEN else current_status
 
 
 def _tx_ingest_tier(minutes_since_scan: float | None, current_status: str, full_walk_failures: int) -> str:
-    """Health tier per synthesis §7, on the reported status (_health_status) and the count.
-    green:  scanned within 30m AND status in {idle, ok, refreshing, backfilling, backfill_partial}
-            AND full_walk_failures == 0
-    yellow: 30 < minutes_since_scan <= 360
-    red:    minutes_since_scan > 360 OR status in {paused, error, never_scanned}
-    (backfill_stalled, a walk stopped short of done, and backfill_given_up, one given up after
-    repeated stops, persisted until a new backfill: not green, the reason in last_error;
-    full_walk_failures > 0, reported full_walk_failed between ticks: not green, in flight too,
-    until a full walk completes)
-
-    Note: 'refreshing'/'backfilling' here are the in-flight steady states
-    (tick START stamps them, _mark_success then stamps 'ok'). A row
-    sitting in those states still counts as green if the timestamp is
-    fresh — it means a scan is actively running.
-    """
     if current_status in ("paused", "error", "never_scanned"):
         return "red"
     if minutes_since_scan is None:
@@ -97,10 +55,7 @@ async def admin_ingest_tx_health() -> dict[str, Any]:
     from db.models import Account, TransactionScanHistory
     from sqlalchemy import select
     now = datetime.utcnow()
-    # Scope to the signed-in principal's account_ids union (same rule as
-    # /admin/accounts and the picker). Unauthed callers (internal curl /
-    # cron) still see every row. Without this filter the Ingest health
-    # banner would list models the chatter has no permission to act on.
+    # Scoped to the principal's accounts; unauthed internal callers still see every row.
     user = _get_request_user()
     chatter = _get_request_chatter() if user is None else None
     if user is not None:
@@ -159,10 +114,6 @@ async def admin_ingest_tx_health() -> dict[str, Any]:
                 "minutes_since_scan": round(mins, 2) if mins is not None else None,
                 "tier": _tx_ingest_tier(mins, status, fails),
             }
-        # Scheduling state, not proof of success: the last ATTEMPTED full walk's window
-        # end (completed, failed or cut short; refused by the proxy after page 1 too, never one
-        # refused before it), or its seed (decide_mode: first sight, an outage). Whether those walks
-        # completed is full_walk_failures (> 0: not green; status full_walk_failed between ticks).
         full = h.last_full_at if h is not None else None
         entry["last_full_attempt_at"] = full.isoformat() if full else None
         accounts_out.append(entry)
@@ -183,8 +134,6 @@ class _TxRunBody(BaseModel):
 async def _scan_history_or_404(
     s: AsyncSession, account_id: str,
 ) -> TransactionScanHistory | None:
-    """404 unless `account_id` is a known account; else its
-    `transaction_scan_history` row (None if it has none yet)."""
     from db.models import Account, TransactionScanHistory
     from sqlalchemy import select
     acct = (await s.execute(
@@ -207,20 +156,11 @@ async def admin_ingest_tx_run(
     mode = (body.mode if body else "refresh") or "refresh"
     async with get_session() as s:
         h = await _scan_history_or_404(s, account_id)
-        # A backfill on a done (or given-up) walk is a new walk from the top, down to the
-        # account's floor: one lone tick would read green on an account it leaves unfinished.
-        # The restart (trigger_backfill) also ends a /pause: the operator asked for the walk now.
+        # A backfill on a done walk restarts from the top (a lone tick would read green on an unfinished account) and also ends a /pause.
         restart = mode == "backfill" and h is not None and bool(h.fully_backfilled)
         floor = h.backfill_floor if h is not None else None
         if h is not None and h.current_status in ("backfilling", "refreshing"):
-            # Stale-age escape valve. last_scan_at is stamped at tick
-            # START (transaction_ingest.run_one_tick), so its age ==
-            # how long the row has been parked at this status. A real
-            # in-flight tick holds an asyncio.Lock + finishes well under
-            # _STALE_INFLIGHT_S; anything older is a tombstone from a
-            # process restart or cancelled task that escaped both the
-            # try/finally and the boot sweep — we must NOT keep locking
-            # the user's manual Refresh out forever.
+            # last_scan_at is stamped at tick start, so its age is time parked at this status; older than the stale limit is a tombstone from a restart, not a live scan.
             from transaction_ingest import _STALE_INFLIGHT_S  # type: ignore[import-not-found]
             age_s = (
                 (datetime.utcnow() - h.last_scan_at).total_seconds()
@@ -237,11 +177,6 @@ async def admin_ingest_tx_run(
                 account_id, h.current_status, age_s,
             )
 
-    # Lock peek removed: run_one_tick now stamps current_status to
-    # "refreshing"/"backfilling" at the START of the tick (inside the
-    # session that took the lock), so the upstream current_status check
-    # at line 4714 catches in-flight scans without needing to import
-    # supervisor internals here. See library/db_data/17_round2_synthesis.md.
     if restart:
         from transaction_ingest import trigger_backfill  # type: ignore[import-not-found]
         await trigger_backfill(account_id, since=floor)
@@ -254,7 +189,7 @@ async def admin_ingest_tx_run(
             log.info("admin_ingest_tx_run: transaction_ingest not yet available; no-op")
             return
         try:
-            await supervised_tick(account_id, mode)   # paced, as the supervisor's
+            await supervised_tick(account_id, mode)
         except Exception:
             log.warning("run_one_tick failed for %s", account_id, exc_info=True)
 
@@ -342,10 +277,6 @@ async def admin_ingest_tx_orphan_tips(
     Optional `from` / `to` (ISO date) scope to the dashboard's window."""
     from db.engine import get_session
     from sqlalchemy import text as sql_text
-    # LEFT JOIN employees so we return the chatter's display_name with the
-    # row — the UI used to look this up against the current owner's roster
-    # and fell back to "Employee {id}" when the employee was scoped out
-    # (e.g. transferred). The DB has the canonical name; surface it here.
     sql = """
       SELECT t.id, t.account_id, t.fan_id, t.amount_cents, t.occurred_at,
              t.description, t.kind, t.attributed_employee_id,
@@ -375,7 +306,6 @@ async def admin_ingest_tx_orphan_tips(
         sql += " AND t.occurred_at >= :start"
         params["start"] = from_
     if to:
-        # End-of-day for bare ISO dates so "to=YYYY-MM-DD" includes that day.
         sql += " AND t.occurred_at <= :end"
         params["end"] = f"{to} 23:59:59" if len(to) == 10 else to
     sql += " ORDER BY t.occurred_at DESC LIMIT :lim"
@@ -397,7 +327,6 @@ async def admin_ingest_tx_orphan_tips(
                     int(r.attributed_employee_id)
                     if r.attributed_employee_id is not None else None
                 ),
-                # "No one" (sales_attribution.NO_ONE) names no Employee row.
                 "attributed_employee_name": ("No one" if r.attributed_employee_id == 0
                                              else r.attributed_employee_name),
             }
@@ -490,8 +419,6 @@ async def admin_sales_needing_attribution(
         params["end"] = f"{to} 23:59:59" if len(to) == 10 else to
     orphan_cte += " ORDER BY o.occurred_at DESC LIMIT :lim"
 
-    # Distinct non-mass 1:1 senders to (account, fan) in the window before the
-    # sale — the assignment candidates. `mass_run_id IS NULL` keeps blasts out.
     # lookback_days is a validated int (Query ge=1 le=90), safe to inline.
     cand_sql = sql_text(
         f"""
@@ -541,7 +468,6 @@ async def admin_sales_needing_attribution(
                     int(r.attributed_employee_id)
                     if r.attributed_employee_id is not None else None
                 ),
-                # "No one" (sales_attribution.NO_ONE) names no Employee row.
                 "attributed_employee_name": ("No one" if r.attributed_employee_id == 0
                                              else r.attributed_employee_name),
                 "candidate_chatters": cands,

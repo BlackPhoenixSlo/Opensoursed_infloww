@@ -1,22 +1,5 @@
 "use client";
 
-/**
- * useRosterCounts — per-model inbox badge counts for the left roster strip.
- *
- *   • unread    → number of CONVERSATIONS with unread messages (blue badge:
- *                 fans waiting to be read).
- *   • owe_reply → conversations READ but the fan spoke last, i.e. we owe a
- *                 reply (orange badge: seen, not yet answered).
- *
- * Backed by GET /admin/accounts/roster-counts, scoped to the signed-in
- * principal. Both principals get badges: an owner sees its own models, a
- * chatter sees the union across every linked owner (the same set its roster
- * strip already renders). The Relay's answer is cached as is: the tab keeps no
- * count of its own. Polls every 5 min (60s while SSE is down) only while some
- * Creator has no live `unread_total` slot: with every
- * slot present the snapshot, the Badge version, mount and the SSE reconnect
- * keep it fresh.
- */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -43,8 +26,6 @@ export interface RosterCountsResp {
 
 const EMPTY: Record<string, RosterCount> = {};
 
-/** Per-principal cache key. An owner's counts must never bleed into a chatter's
- *  view (or vice-versa) on an identity switch in the same browser. */
 export function rosterCountsKey(principalId: string): readonly [string, string] {
   return ["roster-counts", principalId] as const;
 }
@@ -52,7 +33,6 @@ export function rosterCountsKey(principalId: string): readonly [string, string] 
 const rosterPollNeeded = (rows: readonly SeedRow[]) =>
   rows.some((r) => r.freshness?.values.unread_total == null);
 
-/** Read from the principal's accounts answer, never fetched here; no answer yet polls. */
 function useRosterPollNeeded(chatterOnly: boolean, userId: string | undefined): boolean {
   const owner = useQuery({ ...ownerAccountsQuery(userId), enabled: false, select: (d) => rosterPollNeeded(d.accounts) });
   const chatter = useQuery({
@@ -80,8 +60,6 @@ export function useRosterCounts(): Record<string, RosterCount> {
   }, [counts, freshness, reachable]);
 }
 
-/** The counts, and whether their first read is over (answered, failed, or
- *  never asked: no principal) — before it, every count reads 0. */
 export function useRosterCountsRead(): { counts: Record<string, RosterCount>; settled: boolean } {
   const user = useOptionalUser()?.user;
   const chatter = useOptionalChatter()?.chatter;
@@ -100,17 +78,13 @@ export function useRosterCountsRead(): { counts: Record<string, RosterCount>; se
   return { counts: q.data?.counts ?? EMPTY, settled: !q.isPending || q.fetchStatus === "idle" };
 }
 
-// Module scope: every useRosterCountActions() instance (strip, chat surface, hover) shares one bust per Creator.
 const inFlightRefresh = new Map<string, Promise<void>>();
 
-/** Tests only: forget in-flight busts, so one case's bust cannot swallow the next's. */
 export function resetRosterCountsModuleState() {
   inFlightRefresh.clear();
 }
 
 export interface RosterCountActions {
-  /** Rewarm this ONE Creator's count (`?bust=`, under the Relay's shared Hover cooldown) and write its answer as
-   *  is. Concurrent calls for one Creator share one request. */
   refreshOne: (accountId: string) => Promise<void>;
 }
 
@@ -125,7 +99,7 @@ export function useRosterCountActions(): RosterCountActions {
       const pending = inFlightRefresh.get(cacheKey);
       if (pending) return pending;
       const run = (async () => {
-        // A full read in flight may have been served before the bust: cancelled, so it cannot land after it.
+        // A full read in flight may have been served before the bust: cancel so it cannot land after it.
         await qc.cancelQueries({ queryKey: rosterCountsKey(principalId) });
         try {
           const resp = await relay.get<RosterCountsResp>(
@@ -138,7 +112,6 @@ export function useRosterCountActions(): RosterCountActions {
             }));
           }
         } catch {
-          // Best-effort: the next snapshot, Badge version or mount read brings the Relay's count.
         }
       })();
       inFlightRefresh.set(cacheKey, run);

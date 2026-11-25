@@ -1,39 +1,5 @@
 "use client";
 
-/**
- * Composer — the chat's draft state and its send. The chrome is
- * `ComposerToolbar`'s two rows: the button row with the inline input, and the
- * bottom toolbar ending in Send (docs/spec/phase-04-composer-ppv-vault.md).
- *
- * Send routes through the chat's owning account_id, not the global scope
- * — this is the whole point of Unified Inbox. Parent passes accountId
- * (== chat.__accountId) so this works whether scope is "all" or a single
- * model.
- *
- * Enter sends; Shift+Enter inserts a newline. A draft that is "/" + a keyword
- * lists the matching Scripts, and Enter loads the first instead of sending
- * (look-and-feel ticket 150). The "PPV" pill opens the
- * `PpvRow`; a typed "PPV price" > 0 sends `price` and `lockedText`. The Vault
- * icon opens VaultPicker; picked media show as tiles in the PPV row and ride
- * along on send as `attached`. Upload (the computer's file chooser), a file
- * dropped on the Composer or an image pasted into the input uploads to the
- * vault (`useComposerUploads`); each file is a chip until it lands, then a tile
- * like a Vault pick. Send does not wait for a file still uploading: the send
- * takes the upload over (`uploads.handOff`) and goes out when it lands.
- * Schedule and the Timed message do wait, as scheduling needs the media ids.
- *
- * Attaching media (a Vault pick, an upload, a drop, a paste) opens the PPV
- * row with its price, whose free previews stepper then shows inline; a price
- * of 0 (or none) sends the media free (TODO.md A2, A3).
- *
- * "Aa" (OnlyFans accounts only, `useOfRichAllowed`) shows OF's formatting
- * toolbar and puts the text in OF's rich editor (`OfRichTextEditor`), as OF's
- * and Infloww's composers do; a formatted script picked opens there, formatted.
- * Otherwise the plain textarea, byte-identical to before. The rich editor keeps
- * Enter / Shift+Enter, "/" search, emoji and AI inserts at the caret and the
- * per-chat draft (text + markup, lib/chatDrafts); the send carries the markup
- * while there is formatting, else the plain text (composerDraft `richText`).
- */
 
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 
@@ -89,67 +55,33 @@ import { ifConfirm } from "@/components/ui/ifConfirm";
 
 export type { SendArgs } from "./composerDraft";
 
-// VaultPicker is heavy (hover-scrub state, fan-vault-history, wall-media,
-// per-fan MRU localStorage). The composer mounts on every chat surface,
-// but the picker only renders when the chatter clicks 📎. Dynamic +
-// render-gate keeps the picker chunk off the inbox boot bundle.
 const VaultPicker = dynamic(
   () => import("./VaultPicker").then((m) => m.VaultPicker),
   { ssr: false },
 );
 
-/** The script source's action beside its next-step bubble (lib/chatSlots.ts), if any. */
 const StepAction = SCRIPT_SOURCE?.StepAction ?? null;
 
-/** Imperative API exposed via `composerApiRef`. The parent can call
- *  these to drive the composer from outside (e.g. FanDrawer's
- *  "Send to chat" buttons on unsold PPVs). */
 export interface ComposerApi {
-  /** Replace text + attachments + price wholesale, identical to picking
-   *  a saved template. Use this to populate the composer from arbitrary
-   *  sources (template picker, prior message, unsold PPV, etc). */
   applyTemplate(t: PickedTemplate): void;
 }
 
 export interface ComposerProps {
   accountId: string | null;
-  /** The Fan whose chat this is: every send goes to it (the parent keys the
-   *  Composer by Creator and Fan), and it drives the vault picker's per-fan
-   *  badges + filter. */
   fanId: FanId;
-  /** When the fan spoke last, that message's time (ISO), else null: the
-   *  script source (lib/chatSlots.ts) reads its next step for it. */
   fanSpokeLastAt?: string | null;
-  /** The Fan's name, for a refused schedule's notice in the other chats. */
   fanName?: string | null;
-  /** May resolve to the send's outcome: a send waiting on its uploads
-   *  returns at once, and the extra GIFs of a multi-GIF send wait on its
-   *  `settled`, going out only if it was sent, so the Fan gets them after it,
-   *  in pick order. */
   onSend: (args: SendArgs) => void | Promise<SendOutcome | undefined | void>;
   disabled?: boolean;
   inflight?: number;
   placeholder?: string;
-  /** When OF reports the chat as un-sendable (e.g., unsubscribed fan),
-   *  pass `canSend=false` + `cannotSendReason` so the composer disables
-   *  the controls and surfaces the reason instead of letting the user
-   *  burn time on a guaranteed-fail send. */
   canSend?: boolean;
   cannotSendReason?: string | null;
-  /** Quoted-reply context. When set, we render the `ReplyStrip` between the
-   *  rows — the parent is responsible for prepending the quote text
-   *  to the actual send body so the wire shape matches OF's expectations. */
   quoted?: QuotedReply | null;
   onClearQuoted?: () => void;
-  /** Optional outbound ref for parents that need to drive the composer
-   *  imperatively. The composer attaches a `ComposerApi` to `.current`
-   *  for the lifetime of the mount; null on unmount. */
   composerApiRef?: React.MutableRefObject<ComposerApi | null>;
-  /** Queue keys for a caller that steps through chats, and whether the draft holds more than its text (useQueueKeys). */
   onAdvance?: (dir: 1 | -1) => void;
   onHoldChange?: (held: boolean) => void;
-  /** Plain Enter sends and moves on too (useQueueKeys). With
-   *  `onAdvance`, a Send & next button beside Send does what ⌘/Ctrl+Enter does. */
   enterAdvances?: boolean;
 }
 
@@ -159,161 +91,100 @@ export function Composer({
   quoted, onClearQuoted,
   composerApiRef, onAdvance, onHoldChange, enterAdvances,
 }: ComposerProps) {
-  // The text is the chat's draft (sessionStorage), so it survives a Fan
-  // switch and the Fan List marks the row "[Draft]"; a send empties it.
   const [text, setText] = useChatDraft(accountId, fanId);
-  // "/" search (look-and-feel ticket 150): the whole draft is "/" alone or "/"
-  // + non-space characters. Escape closes the list until the draft changes.
   const [slashClosedFor, setSlashClosedFor] = useState<string | null>(null);
   const slashQuery = /^\/\S*$/.test(text) && text !== slashClosedFor ? text.slice(1) : null;
-  // The rest of the draft — price, lock, media, previews, schedule, tags,
-  // GIFs (./composerDraft). Lock-text is opt-in (asks #6 + #17); the
-  // one-time migration toast below explains the change to returning users.
-  // OF rich text: OnlyFans accounts only (a Fansly account never authors OF markup).
   const allowRich = useOfRichAllowed(accountId);
-  // The draft's markup survives a chat switch with its text (lib/chatDrafts), and reopens in the rich editor.
   const [draft, act] = useReducer(composerDraft, null, () => {
     const rich = allowRich ? readChatRich(accountId, fanId) : null;
     return { ...EMPTY_DRAFT, rich, mode: richMode(PLAIN_MODE, { type: "loaded", formatted: !!rich, allowed: allowRich }) };
   });
-  // Saved as it changes, never while rich text is off (a cold accounts cache, a Fansly fallback): this mount
-  // never read the stored markup, so its null would wipe it.
   const savedRich = useRef(draft.rich);
+  // Never save while rich text is off (cold accounts cache): this mount never read the stored markup, so null would wipe it.
   useEffect(() => {
     if (!allowRich || draft.rich === savedRich.current) return;
     savedRich.current = draft.rich;
     writeChatRich(accountId, fanId, draft.rich);
   }, [allowRich, accountId, fanId, draft.rich]);
-  // The draft's markup while formatted (one read for the editor and the translation strip).
   const richHtml = richText(draft, text);
   const { price, priceOpen, lockedText, attached, scheduleOpen, scheduleAt, taggedCreators, pickedGifs } = draft;
-  // The whole draft as last rendered, for a refused schedule that settles
-  // after the chatter has typed on (`afterRefusedSchedule`); null once the
-  // chat closed (a switch remounts the Composer), as there is none to go into.
   const latestRef = useRef<LiveDraft | null>({ text, draft, uploadChips: 0 });
   const [gifPickerOpen, setGifPickerOpen] = useState(false);
   useEffect(() => () => {
     latestRef.current = null;
   }, []);
-  // The tiles' blob previews (./useBlobPreviews).
   const previews = useBlobPreviews(attached);
   const setTags = (tags: TaggedCreatorChoice[]) => act({ type: "setTags", tags });
   const [pickerOpen, setPickerOpen] = useState(false);
-  /** Transient confirmation after a quick-send / scheduler fires. Lets the
-   *  user know the message is queued locally — the textarea clears, so
-   *  without this the action looks like nothing happened. */
   const [sendToast, setSendToast] = useState<string | null>(null);
-  // Refused schedules the chatter typed on past, or left the chat during
-  // (`afterRefusedSchedule`, ./refusedOffers): every chat lists them, each its
-  // own notice, until restored or dismissed, never timed out or replaced by a
-  // toast, as each holds the only copy of its draft.
   const { offers: refusedOffers } = useRefusedOffers();
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const editorRef = useRef<OfRichTextEditorHandle | null>(null);
-  // The text box on show: the rich editor ("Aa", a formatted draft), else the textarea.
   const richOn = allowRich && draft.mode.rich;
-  // Only one is mounted (a ref is null once unmounted), so this reads the box on show even from a stale closure.
   const focusInput = () => (editorRef.current ? editorRef.current.focus() : textareaRef.current?.focus());
-  // Per-fan vault history — drives the green "BOUGHT" badge so the chatter
-  // can see at a glance which attached tiles the fan already paid for (and
-  // can avoid charging again).
   const fanVaultQ = useFanVaultHistory(accountId, fanId);
 
-  // The "Next in" bubbles: the chat's user Script, else the script source's.
   const scripts = useScriptSuggestions(accountId, fanId, fanSpokeLastAt);
 
-  // Uploads from the computer. The Composer remounts per Fan chat, so they
-  // are per Fan as the rest of the draft is.
   const uploads = useComposerUploads(accountId, (media) => act({ type: "uploaded", media }));
   const fullDraft = { text, draft, uploadChips: uploads.chips.length };
   useLayoutEffect(() => {
     latestRef.current = fullDraft;
   });
   const uploadDisabled = !!disabled || !accountId;
-  // Send hands a running upload to the send; a schedule needs the media ids
-  // now, so the Schedule button and the Timed message wait for it.
   const sendCtx = {
     text, disabled, chatCanSend, uploading: uploads.uploading, uploadFailed: !!uploads.failed, now: Date.now(),
   };
-  // Paid, the PPV row, the price note, Send's state… (composerView).
   const view = composerView(draft, { ...sendCtx, uploadChips: uploads.chips.length });
-  // Growth > Sensitive words: Infloww's chat composer warns above the input
-  // and still sends (its desktop preload); the mass message composer blocks.
-  // The draft in the Fan's language (Use / Send translation, Alt+T). Its
-  // translation is what Send translation sends, so it is checked too.
   const outbound = useOutboundTranslation(accountId, fanId, text);
   const sensitiveHits = useSensitiveHits(`${text}\n${outbound.translated ?? ""}`, accountId);
 
   const reorder = useReorder(attached, (next) => act({ type: "reorder", attached: next }), (m) => m.id);
-  // Surface OF's block reason at the top of the composer when sending is
-  // disallowed. Saves the user from typing a message that will 400.
   const blocked = !chatCanSend;
   const queue = useQueueKeys({ accountId, fanId, held: view.held, onAdvance, onHoldChange, enterAdvances });
 
-  /** A notice that goes after `ms`; the next one replaces it. */
   function showToast(msg: string, opts: { ms?: number } = {}) {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setSendToast(msg);
     toastTimerRef.current = setTimeout(() => setSendToast(null), opts.ms ?? 6000);
   }
 
-  /** A whole draft back into the Composer, over what is there. */
   function putBack(fd: FullDraft) {
     setText(fd.text);
     act({ type: "restore", snapshot: fd.draft });
   }
 
-  /** Only in the offer's own chat (the notice offers it nowhere else). */
   function restoreOffer(offer: RefusedOffer) {
     putBack(offer);
     dispatchRefusedOffers({ type: "removed", id: offer.id });
   }
 
-  /** Its media's blob previews go with it, unless something else shows them. */
   function dismissOffer(offer: RefusedOffer) {
     previews.forget(dismissRefusedOffer(offer, attached.map((m) => m._localPreview)));
   }
 
-  // Clear any pending toast/migration-banner timer on unmount so it can't
-  // fire setSendToast after the composer is gone (chat switches remount it).
   useEffect(() => () => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
   }, []);
 
-  /** `opts.text` replaces the draft (Send translation); `opts.advance` moves on after (useQueueKeys). */
   async function submit(opts?: { delayMinutes?: number; text?: string; advance?: boolean }) {
     const body = (opts?.text ?? text).trim();
-    // One clock for the check and the send: a schedule whose time passed
-    // since the render goes out at once, and is checked as one.
     const now = Date.now();
     if (!canSend(draft, { ...sendCtx, text: body, now })) return;
-    // A typed price > 0 makes it PPV; a Timed message's delay wins over the
-    // explicit "at". The first GIF rides on this send, the rest go as
-    // GIF-only sends below (gifPlan).
-    // A translation sent in the draft's place is plain text (its strip says so); so is every Fansly send.
     const args = buildSendArgs(draft, {
       text: body, delayMinutes: opts?.delayMinutes, now, plainOnly: !allowRich || opts?.text !== undefined,
     });
     const { trailing: trailingGifs } = gifPlan(pickedGifs);
-    // Infloww's send-rate guard: a send at once within 3 s of the model's last
-    // one (any of its Fans) stays in the composer, with OF's reason above it.
+    // Infloww's send-rate guard: a send at once within 3 s of the model's last one stays in the composer.
     if (!args.scheduledAt && !claimSendGap(accountId)) {
       showToast(`⚠ ${SEND_GAP_NOTE}`);
       return;
     }
-    // A schedule's toast waits for the enqueue to SUCCEED (below; both paths
-    // are server-side, so it survives reload and every chatter sees it): a
-    // refused one (a Fansly PPV/media send the relay 400s) must not clear the
-    // composer under a "Scheduled ✓". This snapshot hands the operator their
-    // message back then; it also holds the Script step this message rode.
     const refused: FullDraft = { text, draft };
-    // An identity switch while it is in flight makes its refusal stale.
     const epoch = readRefusedOffers().epoch;
     previews.markSent(draft.attached);
     emptyComposer("sent");
-    // Files still uploading go with this send (canSend keeps a schedule from
-    // getting here while one runs). The chatter types on at once.
     if (!args.scheduledAt) {
       const pending = uploads.handOff();
       if (pending.length > 0) args.uploads = pending;
@@ -326,43 +197,28 @@ export function Composer({
       if (opts?.advance) queue.advanceAfter(sending, !!args.scheduledAt);
       sent = await sending;
     } catch (err) {
-      // Only the scheduled paths reject up to here; an immediate send carries
-      // its own failure on the red bubble (with a retry), so it must not be
-      // double-reported or have its text pushed back into the composer.
+      // An immediate send carries its failure on the red bubble (with retry); only scheduled paths reject here.
       if (!args.scheduledAt) throw err;
       const why = err instanceof Error && err.message ? err.message : "unknown error";
       if (afterRefusedSchedule(latestRef.current) === "restore") {
         putBack(refused);
         showToast(`⚠ Not scheduled — ${why}`);
       } else {
-        // The chatter has typed on, or left the chat: their edits stay, the
-        // refused one waits beside them, in every chat. One from before an
-        // identity switch is dropped, its previews revoked.
         const shown = latestRef.current?.draft.attached.map((m) => m._localPreview) ?? [];
         previews.forget(offerRefusedSchedule({ ...refused, accountId, fanId, fanName, why }, epoch, shown));
       }
       return;
     }
     if (args.scheduledAt) showToast(scheduledToast(args.scheduledAt, Date.now(), EXECUTOR_MAX_MINUTES));
-    // Advance the Script if the just-sent message rode a step of one (the
-    // draft's `script`, set by its template pick).
     advanceScript?.(!!sent?.failure);
-    // A send at once that rode a saved reply counts toward its send count
-    // once OF took it (a schedule is not counted: it has not gone out).
     const replyId = sentReplyId(refused.draft);
     if (replyId != null && sent && !args.scheduledAt) {
       void sent.settled.then((ended) => (ended.sent ? markScriptSent(replyId) : undefined));
     }
-    // Fan out additional GIFs as standalone sends. Each carries only its
-    // own giphyId — no text, no attachments — to mirror OF web behavior.
-    // Behind a send still waiting on its files they wait too, off the
-    // Composer's path, so the Fan gets them after it, in pick order; and
-    // only if it went out: a discarded message (or an identity switch) or a
-    // failed upload drops them (the chatter resends; Retry sends the message
-    // alone).
     const sendGifs = async () => {
       for (const g of trailingGifs) await onSend({ text: "", giphyId: g.id });
     };
+    // Extra GIFs go only after the send landed, in pick order, so the Fan gets them after it.
     if (args.uploads && sent) {
       void sent.settled.then((ended) => (ended.sent ? sendGifs() : undefined));
     } else {
@@ -370,8 +226,6 @@ export function Composer({
     }
   }
 
-  // The inline input starts at one line and grows with the text; CSS
-  // `max-h-48` caps it and scrolls beyond (spec, Gap row 5).
   useLayoutEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
@@ -379,29 +233,20 @@ export function Composer({
     if (ta.scrollHeight) ta.style.height = `${ta.scrollHeight}px`;
   }, [text]);
 
-  // Autofocus the textarea on mount. The Composer remounts whenever the
-  // user picks a different chat (ChatSurface passes a `key` upstream),
-  // so this gives them a typing cursor the same frame the chat opens —
-  // no extra click needed.
   useEffect(() => {
     focusInput();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount
   }, []);
 
-  // No auto-seed: 0 previews is a legitimate choice on PPV (sends
-  // everything locked). The ± stepper lets the user opt into a leading
-  // free teaser when they want one.
 
   function onKeyDown(e: React.KeyboardEvent<HTMLElement>) {
     // An IME's Enter picks its candidate: no key here sends or moves on.
     if (isImeComposing(e)) return;
-    // The open "/" list picks its first match on this Enter (TemplatePicker),
-    // so "/keyword" is never sent from here, translated or not.
     if (e.key === "Enter" && !e.shiftKey && slashQuery !== null) {
       e.preventDefault();
       return;
     }
-    const advance = queue.isAdvanceKey(e); // queue keys: sends (the translation too), then moves on
+    const advance = queue.isAdvanceKey(e);
     if (outboundTranslationKey(e, outbound, setText, (t) => sendTranslation(t, advance))) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -414,7 +259,6 @@ export function Composer({
     submit({ text: translated, advance });
   }
 
-  /** The rich editor's value (markup while formatted, else plain): the draft's text and markup. */
   function onRichChange(value: string) {
     const next = richFromEditor(value, editorPlain);
     setText(next.text);
@@ -422,7 +266,6 @@ export function Composer({
     if (next.text !== slashClosedFor) setSlashClosedFor(null);
   }
 
-  /** "Aa": the toolbar on (the text into the rich editor) or off; the caret stays in the text box. */
   function onAa() {
     act({ type: "aa" });
     setTimeout(focusInput, 0);
@@ -451,8 +294,6 @@ export function Composer({
     act({ type: "removeAttachment", id });
   }
 
-  /** "Clear": everything the PPV row lists goes, the typed text stays
-   *  (spec, The PPV row; Clone messages.js:1857–1861). */
   function clearPpvRow() {
     act({ type: "clearPpv" });
     uploads.clear();
@@ -473,8 +314,6 @@ export function Composer({
     focusInput();
   }
 
-  /** Image and video files dragged from the computer onto the Composer upload;
-   *  a tile being reordered carries no files and is left to its own handler. */
   function onDropFiles(e: React.DragEvent) {
     const files = Array.from(e.dataTransfer?.files ?? []);
     if (files.length === 0 || uploadDisabled) return;
@@ -482,9 +321,6 @@ export function Composer({
     uploads.add(files);
   }
 
-  /** An image pasted into the input uploads instead of inserting text. A
-   *  clipboard that also holds text (spreadsheet cells, rich text, which carry
-   *  a picture of themselves) pastes the text. */
   function onPaste(e: React.ClipboardEvent<HTMLElement>) {
     if (Array.from(e.clipboardData?.types ?? []).includes("text/plain")) return;
     const files = Array.from(e.clipboardData?.files ?? []).filter(isUploadable);
@@ -494,26 +330,17 @@ export function Composer({
   }
 
   function onPickSuggestion(suggestion: string) {
-    // An AI Copilot suggestion goes in at the cursor for the chatter to edit;
-    // it is sent only when they press Send.
     if (editorRef.current) return editorRef.current.insert(suggestion);
     const ta = textareaRef.current;
     if (ta) insertAtCursor(ta, text, suggestion, setText);
     else setText((t) => (t ? `${t} ${suggestion}` : suggestion));
   }
 
-  /** A source step's action's draft: like a Copilot suggestion, never a
-   *  script pick, so a template picked earlier no longer advances a script on Send. */
   function onStepDraft(draft: string) {
     act({ type: "dropScript" });
     onPickSuggestion(draft);
   }
 
-  /** A script picked in the Scripts list or the next-step suggestion: the
-   *  "Use script?" guard (roadmap W4 4.2) asks first when this Fan already
-   *  bought some of its media (the BOUGHT badge's history) or some was
-   *  deleted from the vault. A chat-media resend (`applyTemplate`) is not a
-   *  script pick, so it skips the guard. */
   async function onPickScript(t: PickedTemplate) {
     const warning = scriptPickWarning(t, fanVaultQ.data?.by_media);
     if (warning && !(await ifConfirm(`${warning}\n\nInsert it anyway?`))) return;
@@ -521,22 +348,15 @@ export function Composer({
   }
 
   function onPickTemplate(t: PickedTemplate) {
-    // Template = snapshot: text, media, previews, price and GIF replace the
-    // draft's, so the FREE-first order baked in at save time survives. Its
-    // Script step rides on the draft, so the send advances the Script.
-    // A formatted one opens in the rich editor, formatted (OnlyFans only; Fansly gets its plain text).
     setText(t.text);
     act({ type: "pickTemplate", t, allowRich });
     setTimeout(focusInput, 0);
   }
 
-  // Publish the imperative API to the parent's ref while we're mounted.
-  // Stored via a stable inner ref so `onPickTemplate`'s identity churn
-  // (it captures every render's closures) doesn't keep re-firing the
-  // outer effect; we just update the function inside the box each render.
   const composerApiBoxRef = useRef<ComposerApi>({
-    applyTemplate: () => { /* set on first render */ },
+    applyTemplate: () => { },
   });
+  // Updated through a stable box so onPickTemplate's identity churn does not re-fire the effect below.
   composerApiBoxRef.current.applyTemplate = onPickTemplate;
   useEffect(() => {
     if (!composerApiRef) return;
@@ -553,14 +373,8 @@ export function Composer({
           if (!uploadDisabled && Array.from(e.dataTransfer?.types ?? []).includes("Files")) e.preventDefault();
         }}
         onDrop={onDropFiles}
-        // shrink-0: never let the flex parent compress the composer when
-        //   the keyboard or a tall preview tray pushes the page.
-        // pb safe-area: keeps the bottom toolbar above iOS Safari's home-indicator bar.
         className={cn(MP.composer.root, "shrink-0 border-[var(--inf-rule,var(--color-border))] bg-[var(--inf-pane,var(--color-panel))]")}
       >
-        {/* Notices sit above row 1 so they never displace an Infloww
-         *  control (spec, Layout). With no notice the wrapper is hidden, so
-         *  its padding does not push row 1 down. */}
         <div className={cn(MP.ours.Composer.notices, "empty:hidden")}>
           {blocked && (
             <div className={cn(MP.ours.Composer.notice, "bg-err/10 border-err/30 text-err")}>
@@ -678,7 +492,6 @@ export function Composer({
               maxLength={OF_TEXT_MAX}
               placeholder={placeholder ?? 'Press "/" + keyword to quickly search scripts'}
               aria-label="Message"
-              // The textarea's box (row 2, 16px), growing to max-h-48 then scrolling; the toolbar wraps above it.
               className="w-full min-w-0 rounded-none border-0 bg-transparent"
               inputClassName={cn(MP.composer.input, MP.ours.Composer.input, MP.ours.Composer.richInput)}
             />
@@ -695,10 +508,6 @@ export function Composer({
               rows={1}
               disabled={disabled}
               placeholder={placeholder ?? 'Press "/" + keyword to quickly search scripts'}
-              // Row 2 (look-and-feel C6): 16px at every width, which also stops
-              // iOS Safari zooming in. Height follows the text, padding
-              // included (see the layout effect above); the placeholder stays
-              // on one line so it never grows the row.
               className={cn(MP.composer.input, MP.ours.Composer.input, "w-full bg-transparent placeholder:text-muted placeholder:truncate focus:outline-none resize-none overflow-y-auto")}
             />
           )}
@@ -807,21 +616,15 @@ export function Composer({
         </ComposerToolbar>
       </div>
 
-      {/* Render-gated dynamic import: the picker chunk only fetches when
-       *  the user actually opens it. Composer mounts on every chat
-       *  surface so this matters for cold-inbox latency. */}
       {pickerOpen && (
         <VaultPicker
           open={pickerOpen}
           onClose={() => setPickerOpen(false)}
           accountId={accountId}
           fanId={fanId}
-          // Real vault ids only: a claim's negative id is no vault item.
           initialSelectedIds={attached.filter(canBeFreePreview).map((m) => m.id)}
           onConfirm={onPicked}
           messagesPro
-          // The Clone's sheet (SH1, SH2, SH5, SH6): the picker is shared with
-          // other screens, so it takes them as props and never reads the module.
           sheet={MP.sheet}
         />
       )}
@@ -829,9 +632,6 @@ export function Composer({
   );
 }
 
-/** A refused schedule's notice. Restore and ✕ only in the chat it was written
- *  in: elsewhere its draft is not shown, so ✕ there would lose its only copy
- *  unseen. */
 function RefusedOfferNotice({ offer, here, onRestore, onDismiss }: {
   offer: RefusedOffer; here: boolean; onRestore: () => void; onDismiss: () => void;
 }) {
@@ -857,9 +657,6 @@ function RefusedOfferNotice({ offer, here, onRestore, onDismiss }: {
   );
 }
 
-/** Same shape, offset N minutes into the future. Used by ⏱'s "Send at" preset
- *  buttons (+5m, +10m, …) so picking a preset feels like a normal input
- *  fill — the input itself shows the resolved time. */
 function localFutureForInput(minutes: number): string {
   return toLocalInput(new Date(Date.now() + minutes * 60_000));
 }

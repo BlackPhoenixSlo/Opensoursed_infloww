@@ -3,11 +3,10 @@
 # Currency assumed USD: no currency field, and accountMediaPrice is presumably in the creator's payout currency (a non-US creator would be mislabelled).
 # /notifications has no date cursor: a row seen once stays banked (uq_tx_provider_id makes re-seeing a no-op), so this must run on a cadence.
 # status="cleared": there is no pending lifecycle to observe.
-# Purchases only: no live tip (7001) or stream ticket (45012) ever captured, and a kind inferred from an unverified code books revenue that never happened.
+# Banking set is {2007} via accountMediaPrice; 2008/32007 only unlock, this poll is the only money writer (chat tips never banked), unbanked code counts logged on change.
 from __future__ import annotations
 
 import asyncio
-import functools as _functools
 import json
 import logging
 from datetime import datetime, timezone
@@ -22,11 +21,8 @@ from db.models import Transaction, TransactionScanHistory
 
 log = logging.getLogger("of-relay.fansly_revenue")
 
+_last_seen: dict[str, dict[str, int]] = {}
 
-@_functools.lru_cache(maxsize=1)
-def _log_unbanked_codes(codes: frozenset) -> None:
-    if codes:
-        log.info("fansly_revenue_unbanked_purchase_codes codes=%s", sorted(codes))
 
 _KIND = "ppv_message"
 
@@ -128,17 +124,21 @@ async def run_one_tick(account_id: str) -> TickResult:
         client = await asyncio.to_thread(fansly_backend.get_client, account_id)
     except FileNotFoundError:
         return TickResult(rows_inserted=0, error="no_session")
-    _log_unbanked_codes(frozenset(client.unbanked_purchase_codes()))
 
     try:
         # to_thread: the shim is synchronous requests and this holds the per-account tick lock; inline it stalls the relay event loop.
-        rows = await asyncio.to_thread(client.purchases)
+        feed = await asyncio.to_thread(client.purchases)
     except Exception:
         # Raise, don't swallow: the supervisor's own except records the failure, so recording here would double-count and trip the 3-strike pause after 2.
         log.warning("fansly_revenue_feed_failed account=%s", account_id, exc_info=True)
         raise
 
-    sales = [x for x in (parse_purchase(r) for r in rows) if x is not None]
+    seen = feed["unbanked_seen"]
+    if _last_seen.get(account_id, {}) != seen:
+        _last_seen[account_id] = dict(seen)
+        log.info("fansly_revenue_unbanked_seen account=%s counts=%s",
+                 account_id, json.dumps(seen, sort_keys=True))
+    sales = [x for x in (parse_purchase(r) for r in feed["sales"]) if x is not None]
     if not sales:
         await _mark_scanned(account_id, inserted=0)
         return TickResult(rows_inserted=0)

@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * Per-model settings values for the OF settings mirror (public/of-mirror/pages/settings).
- * The pages show placeholder toggle/field states; we fetch the model's settings (a selected model, or in All models
- * the first one: OfMirrorFrame's standInModel) and set the mapped controls after each frame load.
- * Only the fields named in SETTINGS_MAP are read (never stream keys or tokens); the account email is shown to the
- * owner as OF shows it, read-only (applyPageExtras). Unmapped controls and failed fetches keep the placeholders.
- * applyPageExtras draws what OF computes rather than reads (build 202610091632): the price lines of Profile and Fans,
- * Fans' referral switch off while free, and every Account page's controls disabled. PAGE_EXTRAS names each page's
- * sources and drawer; the Account, Messaging and Security drawers are in ofMirrorSettingsPages.
- */
 
 import { useEffect, type RefObject } from "react";
 import { usePathname } from "next/navigation";
@@ -25,46 +15,35 @@ import { drawObsServer, STREAM_KEY_MASK } from "@/lib/ofMirrorObsServer";
 
 type Transport = "email" | "message" | "toast" | "webpush";
 export type SettingsSource = "settings" | "me" | "story" | "templates" | "sessions" | "socialButtons" | "init" | "thingsLinks" | `notifications:${Transport}` | "countries";
-/** A settings page's sources' bodies (source -> response body; undefined while loading or after a failure). */
 export type SettingsData = Partial<Record<SettingsSource, unknown>>;
 type Value = boolean | string | null | undefined;
 type Data = Record<string, unknown>;
 
 export interface SettingsEntry {
   source: SettingsSource;
-  /** A top-level field of the source, or a reader over the whole source body. */
   field: string | ((data: unknown) => Value);
-  /** "help": write `Current: <value>` into the control's help line instead of its value. */
   target?: "help";
 }
 
-/** Relay route per source (`X-Account-Id` comes from the scope). */
 export const SOURCE_PATHS: Record<SettingsSource, string> = {
   settings: "/api/of/v2/users/me/settings",
   me: "/api/of/v2/users/me",
   story: "/api/of/v2/users/settings/story",
-  // OF's message templates: Messaging shows the welcome one (reply_on_subscribe).
   templates: "/api/of/v2/messages/templates",
-  // Account > Login sessions, read-only (OF's settings-sessions.js; nothing here ends a session).
   sessions: "/api/of/v2/sessions",
-  // ticket 69: Social media's buttons (ofMirrorProfileLinks).
   socialButtons: "/api/of/v2/users/social/buttons",
-  // ticket 69: Add button's providers (OF's GET /init, the Relay keeps only `socialMediaProviders`).
   init: "/api/of/v2/init",
-  // ticket 70: Things I Like's links (ofMirrorProfileLinks).
   thingsLinks: "/api/of/v2/users/links",
   "notifications:email": "/api/of/v2/users/settings/notifications/email?group=1",
   "notifications:message": "/api/of/v2/users/settings/notifications/message?group=1",
   "notifications:toast": "/api/of/v2/users/settings/notifications/toast?group=1",
   "notifications:webpush": "/api/of/v2/users/settings/notifications/webpush?group=1",
-  // ticket 66: Block by country's picker list (OF's GET /countries?all=1).
   countries: "/api/of/v2/countries?all=1",
 };
 
 const of = (source: SettingsSource, fields: string[], id = (f: string) => `setting_${f}`) =>
   Object.fromEntries(fields.map((f) => [id(f), { source, field: f } as SettingsEntry]));
 
-/** `group=1` body: `[{code, items: [{code, isEnabled}]}]`; the toggle for item `code` is `toggle_<code>`. */
 const notifications = (t: Transport, codes: string[]) =>
   Object.fromEntries(
     codes.map((code) => [
@@ -83,11 +62,10 @@ const notifications = (t: Transport, codes: string[]) =>
 
 const coStreaming: SettingsEntry = { source: "settings", field: "coStreamingRequestFrom" };
 
-/** Page (sub path under settings/) -> control `id` (or `name`) -> value source. */
+// Only these fields are read (never stream keys or tokens).
 export const SETTINGS_MAP: Record<string, Record<string, SettingsEntry>> = {
   profile: of("me", ["location", "website", "wishlist"], (f) => `input-${f}`),
   fans: of("settings", ["isAutoFollowBack", "unfollowAutoFollowBack", "recommenderReward", "sendAwardsTop1", "sendAwardsTop5"]),
-  // The welcome message's master flag.
   messaging: { autoMessage: { source: "settings", field: "replyOnSubscribe" } },
   security: {
     ...of("me", ["isVisibleOnline", "showSubscribersCount", "showMediaCount", "isWantComments"]),
@@ -156,7 +134,6 @@ export const SETTINGS_MAP: Record<string, Record<string, SettingsEntry>> = {
     "new_stream",
     "new_chat_message",
   ]),
-  // OF's 2FA switches (module 739988's page, chunk 9779): the authenticator app, SMS and Face ID. Shown, never saved.
   "account/2fa": {
     show_otp_settings: { source: "settings", field: "appOtp" },
     otp_phone_settings: { source: "settings", field: "phoneOtp" },
@@ -171,17 +148,14 @@ export const SETTINGS_MAP: Record<string, Record<string, SettingsEntry>> = {
       },
     },
   },
-  // Radios: the one whose value equals the field is checked.
   streaming: { allowSubscribers: coStreaming, allowFriends: coStreaming, allowNobody: coStreaming },
 };
 
-/** The sources a settings page reads: its mapped controls' and its PAGE_EXTRAS entry's. */
 export function sourcesFor(page: string): SettingsSource[] {
   const base = page.replace(/\/state-[^/]+$/, "");
   return [...new Set([...Object.values(settingsEntriesFor(page) ?? {}).map((e) => e.source), ...(extraFor(base)?.sources ?? [])])];
 }
 
-/** The map for a settings page; a `<page>/state-<name>` page shares its page's controls. */
 export function settingsEntriesFor(page: string): Record<string, SettingsEntry> | null {
   const base = page.replace(/\/state-[^/]+$/, "");
   return Object.hasOwn(SETTINGS_MAP, base) ? SETTINGS_MAP[base] : null;
@@ -194,13 +168,8 @@ const read = (e: SettingsEntry, data: unknown): Value => {
   return typeof v === "boolean" || typeof v === "string" || v === null ? v : undefined;
 };
 
-/** "bottom_right" -> "Bottom right" (OF's labels for its option values). */
 const label = (v: string) => (v ? v[0].toUpperCase() + v.slice(1).replace(/_/g, " ") : v);
 
-/**
- * A select's open list (a state page's, found by its activator's aria-owns, wherever the menu was moved) marks the
- * option titled `text` as Vuetify marks the selected one, and only that one.
- */
 function selectOption(doc: Document, input: HTMLInputElement, text: string) {
   const id = input.closest(".v-select")?.querySelector("[aria-owns]")?.getAttribute("aria-owns");
   const list = id ? doc.getElementById(id) : null;
@@ -211,10 +180,6 @@ function selectOption(doc: Document, input: HTMLInputElement, text: string) {
   }
 }
 
-/**
- * Set the mapped controls of `page` in `doc` from `data` (source -> response
- * body). Idempotent; controls whose source or field is missing stay as they are.
- */
 export function applySettings(doc: Document, page: string, data: SettingsData): void {
   const entries = settingsEntriesFor(page);
   if (!entries) return;
@@ -222,7 +187,6 @@ export function applySettings(doc: Document, page: string, data: SettingsData): 
     if (data[e.source] === undefined) continue;
     const v = read(e, data[e.source]);
     if (v === undefined) continue;
-    // Tag checks, not instanceof: the frame's elements belong to its own window.
     const el = doc.getElementById(key) ?? doc.querySelector(`input[name="${key}"]`);
     if (el?.tagName === "INPUT") {
       const input = el as HTMLInputElement;
@@ -235,7 +199,6 @@ export function applySettings(doc: Document, page: string, data: SettingsData): 
       } else {
         input.value = v;
         if (input.type !== "hidden") floatLabel(input, !!v);
-        // A select's hidden value input: show the matching option label too.
         const shown = input.type === "hidden" ? input.closest(".v-select")?.querySelector(".v-select__selection") : null;
         if (shown) shown.textContent = label(v);
         if (input.type === "hidden") selectOption(doc, input, label(v));
@@ -246,10 +209,8 @@ export function applySettings(doc: Document, page: string, data: SettingsData): 
   }
 }
 
-/** OF's price for a menu line: "$9.69" (two decimals). */
 const dollars = (p: number) => `$${p.toFixed(2)}`;
 
-/** OF's `<span class="b-amount-price m-num">{PRICE}</span> per month` (message_type_price_per_month) into `el`. */
 function perMonth(el: Element, price: number) {
   const doc = el.ownerDocument;
   const amount = doc.createElement("span");
@@ -258,9 +219,7 @@ function perMonth(el: Element, price: number) {
   el.replaceChildren(amount, doc.createTextNode(" per month"));
 }
 
-/** The "Following price" / "Subscription price and bundles" line: the menu row linking to Subscription with that title. */
 function priceLine(doc: Document, title: string): HTMLElement | null {
-  // The settings menu has a same-titled link without a line; the page's own row carries it.
   for (const a of doc.querySelectorAll("a[href='/of-manager/settings/subscription']")) {
     const sub = a.querySelector<HTMLElement>(".b-menu-list__subtext");
     if (sub && a.querySelector(".b-menu-list__text")?.textContent?.trim() === title) return sub;
@@ -268,15 +227,8 @@ function priceLine(doc: Document, title: string): HTMLElement | null {
   return null;
 }
 
-/** The OBS Stream Key as the mirror shows it: never the key, only that there is one. */
 export { STREAM_KEY_MASK };
 
-/**
- * Profile and Fans' price lines: profile's "Subscription price and bundles" says "$P per month, N subscription bundles"
- * (no line while free; module 41290's Ae); fans' "Following price" says "$P per month", or "Free" (free_placeholder), and
- * "1 Free month for referrer" is disabled while free (settings-fans.js). The lines lose data-oi-price, so useOfIdentity
- * (which shows "$5.00 per month" as "Free per month") leaves them be.
- */
 function priceLines(doc: Document, base: string, data: SettingsData): void {
   const me = objectOf<{ subscribePrice?: unknown; subscriptionBundles?: unknown }>(data.me);
   if (!me) return;
@@ -298,20 +250,14 @@ function priceLines(doc: Document, base: string, data: SettingsData): void {
   }
   if (base === "fans") {
     const reward = doc.getElementById("setting_recommenderReward") as HTMLInputElement | null;
-    if (reward) reward.disabled = !price; // OF's own rule (disabled: !authUser.subscribePrice), not a missing route
+    if (reward) reward.disabled = !price;
   }
 }
 
-/**
- * Streaming: the OBS server dropdown's shown choice (ticket 72, ofMirrorObsServer: OF's obs_agora on load) and its pair:
- * the Server field holds its server, the Stream Key stays masked (its value never enters the page); the Copy buttons
- * copy on click (ofMirrorStreamCopy).
- */
 function obsServer(doc: Document, _base: string, data: SettingsData): void {
   drawObsServer(doc, data.settings);
 }
 
-/** Watermarks (OF's setDataFromStore): the custom text field holds the model's text, blank when it is the default "OnlyFans.com/<username>". */
 function watermarkText(doc: Document, _base: string, data: SettingsData): void {
   const me = objectOf<{ watermarkText?: unknown; username?: unknown }>(data.me);
   const field = doc.getElementById("input-watermark-text") as HTMLInputElement | null;
@@ -323,15 +269,11 @@ function watermarkText(doc: Document, _base: string, data: SettingsData): void {
   if (counter) counter.textContent = (counter.textContent ?? "").replace(/^\s*\d+/, String([...field.value].length));
 }
 
-/** A settings page's extras: the sources it reads beyond its mapped controls', and what OF computes from them on it. */
 interface PageExtra {
   sources: SettingsSource[];
-  /** `writable`: OFM_NEW_WRITES_ENABLED on (ofMirrorNewWrites); off, the controls it would enable for a new write stay Not yet. */
   apply(doc: Document, base: string, data: SettingsData, img: (url: string) => string, writable: boolean): void;
 }
-/** Every Account page: its controls disabled, OF's masked phone and the model's email (ofMirrorSettingsPages). */
 const ACCOUNT: PageExtra = { sources: [], apply: applyAccount };
-/** Page (sub path under settings/, no State page suffix) -> its extras. Each `apply` reads only its own `sources`. */
 const PAGE_EXTRAS: Record<string, PageExtra> = {
   profile: { sources: ["me"], apply: priceLines },
   fans: { sources: ["me"], apply: priceLines },
@@ -344,39 +286,23 @@ const PAGE_EXTRAS: Record<string, PageExtra> = {
   "account/phone": { sources: ["settings"], apply: applyAccount },
   "account/2fa": { sources: ["settings", "me"], apply: applyAccount },
   "account/sessions": { sources: ["sessions"], apply: applyAccount },
-  // ticket 60
   "notifications/email": { sources: ["notifications:email"], apply: applyEmailFrequency },
-  // ticket 66
   "security/block_by_country": { sources: ["settings", "countries"], apply: settingsRead },
   "security/block_by_ip": { sources: ["settings"], apply: settingsRead },
-  // ticket 69
   "social-media": { sources: ["socialButtons", "init"], apply: (doc, base, data, _img, writable) => drawLinks(doc, LISTS[base], data.socialButtons, writable) },
-  // ticket 70
   links: { sources: ["thingsLinks"], apply: (doc, base, data, _img, writable) => drawLinks(doc, LISTS[base], data.thingsLinks, writable) },
 };
-// ticket 66
-/** Fired on a page's document when its settings read lands: Block by country/IP's binder (ofMirrorSettingsWrites) loads it. */
 export const SETTINGS_READ = "oi-settings-read";
-/** Block by country and Block by IP: the binder's reducer draws them; this only tells it the read landed. */
 function settingsRead(doc: Document): void {
   doc.dispatchEvent(new (doc.defaultView?.Event ?? Event)(SETTINGS_READ));
 }
-/** A page's extras; any other Account page's is ACCOUNT. */
 const extraFor = (base: string): PageExtra | null => (Object.hasOwn(PAGE_EXTRAS, base) ? PAGE_EXTRAS[base] : base.startsWith("account/") ? ACCOUNT : null);
 
-/** Draw what OF computes on settings `page` rather than reads into a control (its PAGE_EXTRAS entry). Idempotent.
- *  `writable`: OFM_NEW_WRITES_ENABLED on (useOfmNewWrites). */
 export function applyPageExtras(doc: Document, page: string, data: SettingsData, writable: boolean, img: (url: string) => string = (u) => u): void {
   const base = page.replace(/\/state-[^/]+$/, "");
   extraFor(base)?.apply(doc, base, data, img, writable);
 }
 
-/**
- * OF's settings layout below its LG media query (1004px, module 480343): the menu column renders only on the settings
- * root (`isLgMQ || route Settings`), and a sub-page's header shows its own title, not "Settings" (isSidebarTitle). The
- * capture is the desktop one, so this sheet hides what OF would not render. The root (/of-manager/settings, which on a
- * wide screen shows Edit profile, as OF redirects there) shows only the menu under "Settings".
- */
 export const NARROW_CSS = `@media (max-width: 1003.98px) {
 html:not(.oi-settings-root) .b-settings__nav { display: none !important; }
 html:not(.oi-settings-root) .b-settings__header__left-col .g-page-title { display: none !important; }
@@ -384,13 +310,8 @@ html:not(.oi-settings-root) .g-page__header > a.g-page__header__btn { display: n
 html.oi-settings-root .b-settings__content, html.oi-settings-root .g-page__header > :not(.b-settings__header__left-col) { display: none !important; }
 }`;
 
-/** OF's narrow layout (below LG): the width a settings page is laid out as a single column under. */
 const NARROW = "(max-width: 1003.98px)";
 
-/**
- * Put the narrow-layout sheet in a settings page and mark the root. Narrow, as OF there: the root's menu marks no
- * page current (its route is Settings), and a sub-page's back arrow leads to the settings menu. Idempotent.
- */
 export function applyLayout(doc: Document, root: boolean): void {
   doc.documentElement.classList.toggle("oi-settings-root", root);
   const narrow = !!doc.defaultView?.matchMedia?.(NARROW).matches;
@@ -407,19 +328,14 @@ export function applyLayout(doc: Document, root: boolean): void {
 
 const combine = (results: UseQueryResult<unknown>[]) => results.map((r) => r.data);
 
-/**
- * Single-model scope on a settings page: fetch the sources its mapped controls
- * need and apply them to the frame on every load. Otherwise does nothing.
- */
 export function useOfSettings(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const root = usePathname() === "/of-manager/settings";
   const page = /^\/of-mirror\/pages\/settings\/(.+)\.html$/.exec(src)?.[1] ?? "";
   const sources = page ? sourcesFor(page) : [];
-  const newWrites = useOfmNewWrites(!!page, accountId); // OFM_NEW_WRITES_ENABLED (ofMirrorNewWrites)
+  const newWrites = useOfmNewWrites(!!page, accountId);
   const values = useQueries({
     queries: sources.map((s) => ({
-      // "me" shares useOfIdentity's cache entry.
       queryKey: s === "me" ? ["of-me", accountId] : ["of-settings", s, accountId],
       queryFn: () => relay.get(SOURCE_PATHS[s], { accountId }),
       enabled: !!accountId,

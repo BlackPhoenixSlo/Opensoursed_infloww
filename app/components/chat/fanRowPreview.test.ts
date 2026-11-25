@@ -13,9 +13,7 @@ const idle = { typing: false, draft: "", selected: false };
 
 describe("fanRowPreview: the last message", () => {
   it.each([
-    // name, lastMessage, text, title
     ["free text", { text: "hellooo", isFree: true }, "you: hellooo", undefined],
-    // OF's own shape for a free chatter/FM text: lockedText true, price 0.
     ["lockedText on a free text: no lock", { text: "hellooo", isFree: true, lockedText: true, price: 0 }, "you: hellooo", undefined],
     ["lockedText without isFree: no lock", { text: "let's talk :))", lockedText: true }, "you: let's talk :))", undefined],
     ["/chats PPV (isFree false, no price)", { text: "<p>new set</p>", isFree: false, mediaCount: 3 }, "you: 🔒 new set", "🔒 paid message (PPV)"],

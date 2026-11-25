@@ -1,30 +1,7 @@
 #!/usr/bin/env python3
-"""
-vault_ai_vision_decide — table tests over the pure rules the vision passes hand
-off (`vault_ai_vision` keeps the DB / frame / LLM side; test_vault_ai_describe
-and test_vault_flags_sweep walk that on a DB).
-
-  case_frames_for_duration_table:     the duration ladder.
-  case_parse_describe_table:          JSON pulled out of prose, else {}.
-  case_next_attempt_table:            30b → 235b ONCE, never past 235b.
-  case_describe_selection_table:      the WHOLE where clause (live, describable,
-                                      mode), run on a real SQLite table — the
-                                      set the sweep walks = the plan's count;
-                                      restage re-scans a photo / clip whose
-                                      describe was not Jev-fed.
-  case_describe_answer_table:         headline fields of an answer.
-  case_build_describe_update_table:   locks, carried flags, operator fixes, stamps.
-  case_describe_tier_follows_locked_explicitness: tier column = Jev's column_tier.
-  case_is_terminal_table:             Terminal failure statuses + the terminal
-                                      held Jev blob; failed / fetch_failed retry.
-  case_coverage_table:                goal = min(target, describable) − terminal,
-                                      remaining = max(0, goal − described).
-
-No DB of the app's, no OF, no LLM. Run: venv/bin/python service/tests/test_vault_ai_vision_decide.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness  # MUST be first: binds temp DB
 
 import json  # noqa: E402
 from datetime import datetime  # noqa: E402
@@ -40,7 +17,6 @@ FIXABLE = ("clothing_state", "vulva_vis", "acts")
 
 
 def _table(rows, fn) -> None:
-    """Run every row, collect every mismatch, fail once naming them all."""
     bad = [f"{rid}: {got!r} != {want!r}" for rid, args, want in rows if (got := fn(*args)) != want]
     assert not bad, "\n  " + "\n  ".join(bad)
 
@@ -71,25 +47,23 @@ def case_next_attempt_table():
 
 
 def case_describe_selection_table():
-    """Evaluate the WHOLE clause on a real SQLite table, the way both consumers
-    do — account, removed_at and kind included, so no caller re-adds them."""
     eng = create_engine("sqlite://")
     VaultItem.__table__.create(eng)
     v2 = json.dumps({"_prompt_version": "v2"})
     v1 = json.dumps({"_prompt_version": "v1"})
 
-    def fed(path):   # a v2-stamped describe row with its `_describe` meta, serialised as the product writes it
+    def fed(path):
         meta = vault_describe_jev.meta(path, {"v": 8, "at": "2026-11-01"}, "qwen3-vl-235b")
         return json.dumps({"_prompt_version": "v2", "_jev": {"v": 8}, "_describe": meta}, ensure_ascii=False)
-    rows = [  # media_id, describe_status, ai_fields_json, account, kind, removed
+    rows = [
         (1, None, None, "a", "photo", False), (2, "described", v2, "a", "photo", False),
         (3, "described", v1, "a", "video", False), (4, "described", None, "a", "photo", False),
         (5, "blocked_drm", v2, "a", "video", False), (6, "refused", None, "a", "photo", False),
         (7, "described", json.dumps({"x": 1}), "a", "photo", False),
-        (8, None, None, "b", "photo", False),      # other account: never
-        (9, None, None, "a", "audio", False),      # no frame: never
-        (10, None, None, "a", "photo", True),      # gone from OF: never
-        (11, "described", fed("prose"), "a", "photo", False),   # Jev-fed: current under restage v2
+        (8, None, None, "b", "photo", False),
+        (9, None, None, "a", "audio", False),
+        (10, None, None, "a", "photo", True),
+        (11, "described", fed("prose"), "a", "photo", False),
         (12, "described", fed("vid"), "a", "video", False),
         (13, "described", fed("v6"), "a", "photo", False),
         (14, "described", fed("v2"), "a", "photo", False),      # v2 path: stale whatever its version
@@ -153,8 +127,6 @@ def case_build_describe_update_table():
             call_id=42, now=N)
         return {**vals, "ai_fields_json": json.loads(vals["ai_fields_json"])}
 
-    # flags are CARRIED from the previous blob (not the describe answer); the
-    # rest of the previous blob ("stale") is not.
     ai = {**data, "_prompt_version": "v2", "_frames": 9,
           "vulva_vis": "covered", "over_vulva": "thong", "_flags_v": 3}
     stamps = {"describe_status": "described", "describe_model": "qwen3-vl-235b",
@@ -176,16 +148,12 @@ def case_build_describe_update_table():
         ("operator fix: only locked AND fixable; None deletes",
          (False, ["vulva_vis", "acts", "sellable"],
           {"vulva_vis": "bare", "acts": None, "clothing_state": "nude", "sellable": False}),
-         # vulva_vis: locked+fixable wins over the carried flag; acts: None deletes;
-         # clothing_state: fixable not locked -> model; sellable: locked not fixable -> model
          {**photo, "ai_fields_json": {**{k: v for k, v in ai.items() if k != "acts"},
                                       "vulva_vis": "bare"}}),
     ], build)
 
 
 def case_describe_tier_follows_locked_explicitness():
-    """Beside a current `_jev`, the tier column is `column_tier` of the written blob — an operator-locked
-    `explicitness` (FIXABLE) included — so describe and the Jev pass never flip it between them."""
     import vault_jev_flags as jf
     import vault_jev_rules as rules
     assert "explicitness" in __import__("vault_ai_fix").FIXABLE
@@ -217,8 +185,6 @@ def _held(terminal):
 
 
 def case_is_terminal_table():
-    """Terminal failure: not described and `refused` / `blocked_drm` / `gone`, or the terminal held Jev blob
-    (`held_blob(terminal=True)`). `failed` / `fetch_failed` and the non-terminal hold stay retryable."""
     ok_jev = {"status": "ok", "lane5": "$10", "review": "ok"}
     _table([
         ("refused", ("refused", {}), True),
@@ -241,7 +207,6 @@ def case_is_terminal_table():
 
 
 def case_coverage_table():
-    """goal = min(target, describable) − terminal; remaining = max(0, goal − described)."""
     vault = ([("described", {})] * 4 + [("refused", {}), ("blocked_drm", None), (None, {"_jev": _held(True)})]
              + [("failed", {}), (None, None), ("fetch_failed", {})])
 

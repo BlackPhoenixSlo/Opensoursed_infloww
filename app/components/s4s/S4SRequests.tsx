@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * Requests (Inventory §3.6; docs/spec/phase-03-share-for-share.md, UI and Contracts), on Infloww's `Index$6`
- * (page-parity 15), for the creator picked on the rail: "Latest request" shows its pending received requests one at a
- * time, "(i/N)", with Accept, Decline, Skip and View Schedule; Accept opens "Share for Share Scheduled!". Ours: with no
- * pending request the box is not drawn (Infloww's empty box spoke of a share link we have none of); both tabs' empty
- * states carry Infloww's Sent-tab "Discover Creators" button. Under it
- * "Your requests": Received and Sent tabs over a table (Creators, Request Date, Status, Operation) with "Review" on a
- * new received request and "Cancel" (behind Infloww's confirm) on a sent one, 10 a page. Every request shows the
- * Creators as the request stored them at send time, never a live read of the other Agency (ADR-0011). A skipped
- * request is gone from Received and still reads "Request Sent" under Sent (the Relay decides both). Times are UTC.
- * Ours: the proposed time line (our requests carry one), and both sides' media as the request snapshotted them: the
- * partner's that your Creator posts, and your own that they post, seen before Accept (ADR-0015).
- */
 
 import Link from "next/link";
 import { useState } from "react";
@@ -34,7 +21,6 @@ const OUTLINE = "border-accent text-accent";
 export const CANCEL_CONFIRM =
   "Your request is waiting to be accepted by the creator, are you confirming that you want to cancel your request?";
 
-/** Infloww's status words and `.request-status` colours. */
 function statusOf(r: S4SRequest): { text: string; color?: string } {
   switch (r.status) {
     case "pending": return { text: r.box === "received" ? "New Request" : "Request Sent" };
@@ -47,7 +33,6 @@ function statusOf(r: S4SRequest): { text: string; color?: string } {
 
 const scheduleHref = (accountId: string) => `/share-for-share/schedule?creator=${encodeURIComponent(accountId)}`;
 
-/** One action on a request, then the lists read again. */
 function useAct() {
   const qc = useQueryClient();
   const [busy, setBusy] = useState(false);
@@ -94,7 +79,6 @@ export default function S4SRequests({ profile, accountId }: { profile: S4SProfil
   );
 }
 
-/** The pending received requests for this creator's profile, one at a time. */
 function LatestRequest({ profileId, accountId, onAccepted }: {
   profileId: number | null;
   accountId: string;
@@ -106,7 +90,6 @@ function LatestRequest({ profileId, accountId, onAccepted }: {
   const i = Math.min(at, Math.max(0, pending.length - 1));
   const current = pending[i];
 
-  // Ours: no new request, no box; Received's empty state below says so once, with the way to Discover.
   if (!current && !q.isError) return null;
   return (
     <section aria-label="Latest request" className="mb-8">
@@ -127,7 +110,6 @@ function LatestRequest({ profileId, accountId, onAccepted }: {
   );
 }
 
-/** A received request's partner block and Infloww's buttons: Accept, Decline, then Skip and View Schedule. */
 function RequestDetail({ request: r, accountId, onDone, onSkip }: {
   request: S4SRequest;
   accountId: string;
@@ -281,7 +263,6 @@ function RequestTable({ box, profileId, accountId, onReview }: {
   );
 }
 
-/** One side's snapshotted media, labelled; nothing when it has none. */
 function MediaGroup({ label, media }: { label: string; media: S4SMedia[] }) {
   if (media.length === 0) return null;
   return (

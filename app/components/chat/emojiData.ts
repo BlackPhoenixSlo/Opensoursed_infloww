@@ -1,14 +1,5 @@
-/**
- * Emoji picker data — the quick-row defaults and the full tabbed set with
- * search keywords. Pure data, no React; EmojiBar renders it.
- */
-
 export const QUICK_EMOJIS = ["❤️", "😍", "🔥", "👍", "😂", "💀", "✨", "🎉"] as const;
 
-/**
- * Each entry: [emoji, keywords]. Keywords drive search and let one emoji
- * surface under multiple terms (e.g. 🍆 matches "eggplant" AND "cock").
- */
 type EmojiEntry = readonly [string, readonly string[]];
 
 const FLIRTY: readonly EmojiEntry[] = [
@@ -759,7 +750,6 @@ const CATEGORIES: Category[] = [
 
 const ALL_ENTRIES: EmojiEntry[] = CATEGORIES.flatMap((c) => [...c.items]);
 
-/** Backwards-compat: callers that import EMOJI_LIST get the bare strings. */
 export const EMOJI_LIST: readonly string[] = ALL_ENTRIES.map(([e]) => e);
 
 export { ALL_ENTRIES, CATEGORIES };

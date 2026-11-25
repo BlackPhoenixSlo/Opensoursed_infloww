@@ -1,28 +1,3 @@
-"""Creator badges scenario 2b (docs/spec/creator-badges/phase-0E-slop-and-fake-of-realism.md row 2b, stories 20 and
-27a; Phase F: phase-0F-amber-awaiting-reply.md): under 2a's elsewhere load plus replies with echoes, chatter replies
-and mass sends, the Amber circle follows awaiting-reply truth within 8 s at p95 (30 s max), no Fan sits in both
-circles, and it ends on truth.
-
-World: 2a's (`flat_agency`, the tier's Creators on lib/badge_wire.py, lib/badge_load.py `plan` of CHATS chats inside
-the 25-row window) with AWAITING of its read plain chats Fan-last, so amber starts above 0. One headless tab per
-Creator (lib/badge_load.py DotTab: actors/badge_tab.py plus every `chat_read_changed` and DM its stream carried).
-
-Load, per Creator for the tier's seconds: 2a's Driver and PATTERN (lib/badge_load.py: 10 silent reads, 10 replies
-elsewhere, 5 mark-unreads, 15 refill DMs per Creator-min), except a reply elsewhere sends its Creator echo (the
-fake's default) and goes to an awaiting Fan while REPLY_AMBER_MIN are awaiting; a chatter reply through the Relay's
-send route every CHAT_EVERY_S to an awaiting Fan (else an unread one); a mass every QUEUE_EVERY_S to QUEUE_TO read
-plain Fans, awaiting first (`BadgeWire.queue_elsewhere`: no per-Fan echo, then `chat_queue_finish`). Chat sends land
-between DM windows (CHAT_AT_S). Then SETTLE_S of nothing moving.
-
-Checks (pure `judge`): AMBER_P95_UNDER_8S / AMBER_MAX_UNDER_30S (lib/badge_metrics `lag` from each amber truth change
-in the load to the tab's Amber circle); NO_FAN_IN_BOTH (`in_both`: the Amber circle never counts more Fans than are
-outside the Relay's per-Fan Red view and held Fan-last); FINAL_EQUALS_TRUTH (each Amber circle = `truth_amber`
-after the settle). Every check goes through `badge_metrics.amber_gate`: SKIP while Phase F's `amber` is absent from the
-accounts answer, FAIL then and when unjudged under `--set require_amber=1`. The raw OF counter is never asserted.
-
-Bypasses (declared): OF at its wire (lib/badge_wire.py on lib/of_wire.py); tabs are API tabs; masses are sent
-elsewhere (the fake), not through the Relay's mass route.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -75,7 +50,6 @@ def plan(fans: list[dict]) -> list[dict]:
 
 
 class Driver(badge_load.Driver):
-    """2a's Driver with echoed replies elsewhere, chatter replies through the Relay and masses elsewhere."""
 
     def __init__(self, wire: BadgeWire, plain: dict[str, list[int]], http) -> None:
         super().__init__(wire, plain)
@@ -165,13 +139,6 @@ def in_both(drawn: list[tuple[float, int]], pool: list[int], dots0: dict[int, in
             dots: dict[int, list[tuple[float, int]]], last0: dict[int, bool], last: dict[int, list[tuple[float, bool]]],
             syncs: dict[int, list[float]], windows: list[float], lo: float, hi: float,
             eps: float = BOTH_SLACK_S) -> tuple[int, list[tuple[float, int, int]]]:
-    """The Relay publishes amber as a count, so a Fan in both circles shows as the Amber circle `drawn` counting more
-    Fans of `pool` than can be amber outside the Red circle: Fans whose dot (`dots`, the Relay's own per-Fan Red view)
-    is read and whose chat the Relay holds as Fan-last, both at some moment within `eps`. The Relay holds a chat's
-    last message as truth (`last`) stood at its newest sync: a DM or echo frame for that Fan (`syncs`) or a page-0
-    window read's start (`windows`, the Relay's mass re-read included; a mass has no per-Fan frame); before any
-    sync, Fan-last. Judged at every Amber change and
-    `eps` after every dot change or sync in [lo, hi]. -> (judged, [(t, amber, candidates)])."""
     drawn = sorted(drawn, key=lambda x: x[0])
     dot_s, rel_s = {}, {}
     for f in pool:
@@ -199,9 +166,6 @@ def in_both(drawn: list[tuple[float, int]], pool: list[int], dots0: dict[int, in
 def judge(truth: dict[str, list[tuple[float, int]]], drawn: dict[str, list[tuple[float, int]]],
           legs: tuple[float, float, float], final: dict[str, int],
           both: dict[str, dict]) -> dict[str, tuple[bool | None, dict]]:
-    """Every check's (ok | None, detail). `truth[aid]` the amber truth changes (t, n); `drawn[aid]` the tab's Amber
-    circle (t, n); `legs` (load start, load end, settled); `final[aid]` amber truth when settled; `both[aid]`
-    `in_both`'s keyword inputs past `drawn`."""
     out: dict[str, tuple[bool | None, dict]] = {}
     t0, t1, te = legs
     lags, worst = [], []

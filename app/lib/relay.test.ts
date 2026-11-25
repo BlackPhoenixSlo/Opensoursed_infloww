@@ -1,12 +1,3 @@
-/**
- * describeLoadError — the one place an upstream failure becomes English.
- *
- * It lives in relay.ts beside the code that formats `upstream <status>: <body>`,
- * because the two must agree on that shape. These cases pin the split that
- * actually matters to an operator: a 404 is PERMANENT (the thing is gone; no
- * amount of retrying helps) while a timeout/network/session error is transient
- * and retrying is exactly right.
- */
 import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -25,18 +16,14 @@ const err = (m: string) => new Error(m);
 
 describe("describeLoadError", () => {
   it("reads the real 404 body a deleted fan produces", () => {
-    // Verbatim from prod: fan 582413509 deleted his account mid-conversation.
     const raw = 'upstream 404: {"error":{"code":0,"message":"User not found"}}';
     const out = describeLoadError(err(raw), "This fan's OnlyFans account no longer exists.");
     expect(out).toBe("This fan's OnlyFans account no longer exists.");
-    // The raw json must never reach the operator.
     expect(out).not.toContain('{"error"');
     expect(out).not.toContain("upstream");
   });
 
   it("defaults a 404 to wording that is true ANYWHERE", () => {
-    // The caller decides what was missing. A roster or vault-list query must not
-    // claim a fan's account is gone — that default was a bug caught in review.
     expect(describeLoadError(err("upstream 404: nope"))).toBe("OnlyFans no longer has this.");
   });
 
@@ -91,7 +78,6 @@ describe("describeLoadError", () => {
   });
 });
 
-// ── The typed API-key refusal (424 `api_key_*`) ─────────────────────────────
 
 const KEY_PAYLOAD: ApiKeyErrorPayload = {
   error: "api_key_invalid", feature: "Vault describe", provider: "deepinfra",
@@ -117,12 +103,11 @@ describe("parseResponse › API-key errors", () => {
     window.removeEventListener(API_KEY_ERROR_EVENT, on);
 
     expect(err).toBeInstanceOf(ApiKeyError);
-    expect(err).toBeInstanceOf(RelayError); // every existing `instanceof RelayError` still holds
+    expect(err).toBeInstanceOf(RelayError);
     expect(err.status).toBe(424);
     expect(err.payload).toEqual(KEY_PAYLOAD);
-    // The relay's sentence, so inline `e.message` fallbacks read right too.
     expect(err.message).toBe(KEY_PAYLOAD.message);
-    expect(seen).toEqual([KEY_PAYLOAD]); // one toast event per refusal
+    expect(seen).toEqual([KEY_PAYLOAD]);
   });
 
   it("leaves every other error a plain RelayError, with no toast", async () => {
@@ -137,7 +122,6 @@ describe("parseResponse › API-key errors", () => {
   });
 });
 
-// ── Scoped calls skip the browser cache (Chrome's per-URL cache lock) ───────
 
 describe("request › cache mode", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -188,10 +172,9 @@ describe("request › a failed screen bundle's reads keep a slot (slop fan-list-
       sent.push(url.split("?")[0]);
       if (url.startsWith("/admin/screens/")) return Promise.resolve(new Response("{}", { status: 404 }));
       if (url.startsWith("/api/of/v2/chats")) return Promise.resolve(new Response('{"list":[],"hasMore":false}'));
-      return new Promise<Response>(() => {});  // OnlyFans never answers the rail's feeds
+      return new Promise<Response>(() => {});
     }));
     renderHook(() => useScreen(INBOX));
-    // The bundle failed before the screen mounted (the HTML's inline answer lands first), then the rail mounts first.
     await prefetchScreenBundle(INBOX);
     const bg = { accountId: "a", priority: "background" as const };
     void relay.get("/api/of/v2/users/notifications?limit=10", bg);
@@ -226,15 +209,15 @@ describe("request › a failed screen bundle's reads keep a slot (slop fan-list-
     vi.spyOn(AbortSignal, "timeout").mockReturnValue(timer.signal);
     const sent: string[] = [];
     vi.stubGlobal("fetch", vi.fn((url: string) => {
-      if (!url.includes("/notifications")) sent.push(url.split("?")[0]);  // the earlier tests' queued rail feeds
+      if (!url.includes("/notifications")) sent.push(url.split("?")[0]);
       return Promise.resolve(new Response('{"list":[],"hasMore":false}'));
     }));
     try {
-      seedInline({ [bundlePath(INBOX)]: new Promise(() => {}) });   // the HTML stream never sends it
+      seedInline({ [bundlePath(INBOX)]: new Promise(() => {}) });
       renderHook(() => useScreen(INBOX));
       const page = relay.get("/api/of/v2/chats?limit=25&offset=0&order=recent", { accountId: "a" });
       await new Promise((r) => setTimeout(r, 0));
-      expect(sent).toEqual([]);                                          // waiting on the inline answer
+      expect(sent).toEqual([]);
       timer.abort(new DOMException("timed out", "TimeoutError"));
       await expect(page).resolves.toEqual({ list: [], hasMore: false });
       expect(sent).toEqual(["/api/of/v2/chats"]);
@@ -249,7 +232,6 @@ describe("request › a failed screen bundle's reads keep a slot (slop fan-list-
   ])("$name", async ({ answerMs }) => {
     vi.useFakeTimers();
     try {
-      // The timeout on the fake clock (jsdom's AbortSignal.timeout may hold its own).
       vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
         const c = new AbortController();
         setTimeout(() => c.abort(new DOMException("timed out", "TimeoutError")), ms);
@@ -258,7 +240,7 @@ describe("request › a failed screen bundle's reads keep a slot (slop fan-list-
       const bundle = { answers: [{ accountId: "a", read: "chats", body: { list: ["b"], hasMore: false } }] };
       const sent: string[] = [];
       vi.stubGlobal("fetch", vi.fn((url: string, init: RequestInit) => {
-        if (!url.includes("/notifications")) sent.push(url.split("?")[0]);  // the earlier test's queued rail feeds
+        if (!url.includes("/notifications")) sent.push(url.split("?")[0]);
         if (!url.startsWith("/admin/screens/")) return Promise.resolve(new Response('{"list":[],"hasMore":false}'));
         return new Promise<Response>((res, rej) => {
           init.signal!.addEventListener("abort", () => rej(init.signal!.reason));
@@ -269,7 +251,7 @@ describe("request › a failed screen bundle's reads keep a slot (slop fan-list-
       const page = relay.get("/api/of/v2/chats?limit=25&offset=0&order=recent", { accountId: "a" });
       await vi.advanceTimersByTimeAsync(answerMs ?? BUNDLE_TIMEOUT_MS - 1);
       if (answerMs == null) {
-        expect(sent).toEqual(["/admin/screens/inbox"]);   // still waiting just before the bound
+        expect(sent).toEqual(["/admin/screens/inbox"]);
         await vi.advanceTimersByTimeAsync(1);
       }
       await expect(page).resolves.toEqual(answerMs != null ? bundle.answers[0].body : { list: [], hasMore: false });
@@ -280,13 +262,10 @@ describe("request › a failed screen bundle's reads keep a slot (slop fan-list-
   });
 });
 
-// ── Background reads: the per-Creator queue (lib/relaySchedule.ts), and `unqueued` past it ───
 
 describe("request › background queue", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  // Creator "q1"'s background slots (2, or 1 while a failed screen bundle reserves one: an earlier test's) all held by
-  // OF reads that never settle (slow OnlyFans / proxies; 3 cover both), then one more read.
   it.each([
     { name: "an unqueued read goes out at once, still X-Priority: background", unqueued: true, sent: true },
     { name: "a normal background read waits for a slot", unqueued: false, sent: false },
@@ -309,12 +288,12 @@ describe("request › background queue", () => {
       for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
       const payouts = f.mock.calls.filter((c) => c[0].includes("/payouts/")).length;
       expect(payouts).toBeGreaterThanOrEqual(1);
-      expect(payouts).toBeLessThan(3);  // the slots are full: one payouts read still waits
+      expect(payouts).toBeLessThan(3);
       const q = f.mock.calls.find((c) => c[0] === "/api/of/v2/lists");
       expect(!!q).toBe(sent);
       if (q) expect(new Headers(q[1].headers).get("X-Priority")).toBe("background");
     } finally {
-      ac.abort();  // a red row must not leave its reads on the module's slots
+      ac.abort();
       await Promise.all(calls);
     }
   });

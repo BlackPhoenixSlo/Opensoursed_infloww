@@ -1,16 +1,12 @@
 "use client";
 
-/** `infloww.tsx`'s pagers (re-exported there): `IfPager`, `HbPager`, and `pageItems`, the page run both draw. */
 
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import { HB_DIM, HB_FILL_1, HB_FILL_2, HB_HAIR, HB_TEXT, Listbox } from "@/components/ui/ifSelect";
 import { cn } from "@/lib/utils";
 
-// ── Pagers ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** The pagers' page run (not rc-pagination's; antd's exact run is `pagerItems` in setup/ProxiesTable.tsx): every page
- *  up to 7, else the first, the last, and two either side of the current, with "…". */
 export function pageItems(page: number, pages: number): (number | "…")[] {
   if (pages <= 7) return Array.from({ length: pages }, (_, i) => i + 1);
   const start = Math.max(2, Math.min(page - 2, pages - 5));
@@ -25,7 +21,6 @@ export function pageItems(page: number, pages: number): (number | "…")[] {
 
 const pageCount = (total: number, size: number) => Math.max(1, Math.ceil(total / Math.max(1, size)));
 
-/** The page buttons both pagers share; `item(current)` styles one page box. */
 function PageButtons({ page, pages, onPage, arrow, item }: {
   page: number;
   pages: number;
@@ -53,8 +48,6 @@ function PageButtons({ page, pages, onPage, arrow, item }: {
   );
 }
 
-/** antd's pagination, left-aligned: "Total: N records" 14px T1, then prev / pages / next, 32px items 8px apart, radius
- *  6; the current page a 1px M1 outline and M1 text; disabled arrows T4. No size changer. */
 export function IfPager({ total, noun = "records", page, size, onPage, className }: {
   total: number;
   noun?: string;
@@ -77,12 +70,8 @@ export function IfPager({ total, noun = "records", page, size, onPage, className
   );
 }
 
-/** HB's pager footer: a 1px #232323 rule above; "Total: N creators" #a3a3a3, prev / next 28px boxes on #232323, the
- *  current page a #1a1a1a box with a white digit; then "Per page" and the size select (#1a1a1a, 10 / 20 / 50). Pin
- *  it to the page foot with the caller's layout. */
 export function HbPager({ total, count = total, noun, page, size, sizes = [10, 20, 50], onPage, onSize, className }: {
   total: number;
-  /** The number the label shows when it differs from the paged `total` (rows that are not the noun). */
   count?: number;
   noun: string;
   page: number;
@@ -115,7 +104,7 @@ export function HbPager({ total, count = total, noun, page, size, sizes = [10, 2
           triggerClassName={cn("h-7 rounded-[4px] px-2 text-[14px]", HB_FILL_1, HB_TEXT)}
           chevronClassName={cn("h-4 w-4", HB_TEXT)}
           menuClassName={cn("border bg-panel", HB_HAIR)}
-          // The pager sits at the page foot, so its menu opens upward or it runs off the viewport.
+          // The pager sits at the page foot, so its menu opens upward or runs off the viewport.
           openUp
         />
       </span>

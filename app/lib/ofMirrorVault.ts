@@ -1,36 +1,5 @@
 "use client";
 
-/**
- * The Vault page of the OF mirror (vault/index and its state-* pages) against the relay.
- *
- * The page's view lives in the app URL: ?list= (the open folder, see ofMirrorData), ?type= (the All / Photo / GIF /
- * Video / Audio tabs), ?field= and ?sort= (the media sort dropdown: OF's `field` recent | most-liked | highest-tips |
- * buyers and `sort` asc | desc), ?date= (its "Go to date": OF's `beforePublishDate`, YYYY-MM-DD), ?q= (OF's own vault
- * search, sent as `query`) and ?slist= (the folder column's Search, OF's own ?slist=, sent to GET /vault/lists as
- * `query`). ofMirrorData asks for the media with all of them but slist (vaultMediaPath), for the folders with slist
- * (vaultListsPath). Links to the page itself and to its state pages keep the view; a folder row starts a
- * fresh one, and the rail, the side menu and Back go to the bare Vault (its folder list on a phone), as OF's. The folders and media are the model's only (no example in any scope); with all models the page is the
- * first model's (OfMirrorFrame's stand-in, "Showing <model>, pick a model to switch"), its writes too. vault/list (OF's
- * custom folder page, which no row opens any more) gets the view too.
- *
- * Writes, for the model shown (no model at all: "Select a model to save changes"), through the relay's existing vault
- * routes (/admin/vault-ai/of-folders*, /admin/vault-ai/items/{id}/hide, /api/of/v2/vault/upload/*):
- * - "Create new category" (state-add-list): Save creates the folder (POST /vault/lists {name}) and opens it. The same
- *   modal with ?edit=1 renames the open folder (PATCH /vault/lists/{id} {name}).
- * - The folder sort dropdown (state-lists-sort-dropdown): a pick sends POST /vault/lists/sort {sort, order}.
- * - The action row under the media tabs: UPLOAD (a batch vault import, filed into the open folder), RENAME and DELETE
- *   for an open custom folder (delete keeps its media in the vault; confirmed), and for the selected tiles (a tile's
- *   checkbox selects it; a click elsewhere on it opens the media in the viewer, see bindActions): ADD TO / MOVE TO a folder, REMOVE FROM FOLDER and REMOVE FROM VAULT (OF's hide; it has no
- *   undo, so it is confirmed), and for one selected tile EDIT TAGS: Infloww's tag editor, the media's Inflowwww tags
- *   (read from the Relay's vault copy, GET /admin/vault-ai/items; saved with PATCH /admin/vault-ai/items/{id} {tags}).
- * - The folder sort's "Customize order" (?customize=1, as OF's: off while a folder search is open): the folder column
- *   turns into OF's custom order (title "Customize order", X cancels, the check saves), every folder with a drag handle
- *   and All media pinned; the check sends POST /vault/lists/sort {customOrder, sort: "custom"} (the Relay's
- *   /admin/vault-ai/of-folders/sort {custom_order}).
- * - vault/list's header More (ticket 34, bindFolderMore): OF's folder menu for the open custom folder, Rename (the
- *   ?edit=1 modal above) and Delete (confirmed, then the bare Vault), as the action row's RENAME and DELETE. Only with
- *   OFM_NEW_WRITES_ENABLED on (ofMirrorNewWrites); off it stays as captured, disabled with the Not-yet title.
- */
 
 import { useEffect, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -52,15 +21,11 @@ import { useOfmNewWrites } from "@/lib/ofMirrorNewWrites";
 export const VAULT = "/of-manager/vault";
 const VIEW_KEYS = ["list", "type", "field", "sort", "date", "q", "slist"] as const;
 export type VaultView = Record<(typeof VIEW_KEYS)[number], string | null>;
-/** The keys that open a media view (a phone shows the media alone): all but the folder search. */
 const MEDIA_KEYS = VIEW_KEYS.filter((k) => k !== "slist");
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
-/** The media tabs, in OF's order (All sends no type). */
 export const TYPES = [null, "photo", "gif", "video", "audio"] as const;
-/** The media sort dropdown's fields and their titles (OF's own words; recent is the default). */
 export const FIELDS: Record<string, string> = { recent: "Recent", "most-liked": "Most liked", "highest-tips": "Highest tips", buyers: "Buyers" };
 
-/** The view in `params` (unknown values dropped). */
 export function viewOf(params: { get(key: string): string | null }): VaultView {
   const type = params.get("type");
   const field = params.get("field");
@@ -76,7 +41,6 @@ export function viewOf(params: { get(key: string): string | null }): VaultView {
   };
 }
 
-/** `base` with the view's set values as its query ("" for none). */
 export function vaultHref(view: Partial<VaultView>, base = VAULT): string {
   const q = new URLSearchParams();
   for (const k of VIEW_KEYS) if (view[k]) q.set(k, view[k]!);
@@ -84,7 +48,6 @@ export function vaultHref(view: Partial<VaultView>, base = VAULT): string {
   return s ? `${base}?${s}` : base;
 }
 
-/** The relay read for the view's media: GET /api/of/v2/vault/media (its `list_id`, `type`, `field`, `sort`, `query`). */
 export function vaultMediaPath(view: VaultView): string {
   const q = [
     ["list_id", view.list],
@@ -97,10 +60,8 @@ export function vaultMediaPath(view: VaultView): string {
   return `/api/of/v2/vault/media?limit=24${q.map(([k, v]) => `&${k}=${encodeURIComponent(v!)}`).join("")}`;
 }
 
-/** The relay read for the view's folders: GET /api/of/v2/vault/lists (VAULT_LISTS), with the folder search as `query`. */
 export const vaultListsPath = (view: Pick<VaultView, "slist">) => (view.slist ? `${VAULT_LISTS}&query=${encodeURIComponent(view.slist)}` : VAULT_LISTS);
 
-/** GET /api/of/v2/vault/lists: the folders, OF's folder sort and the "All media" counts. */
 export interface VaultLists {
   list?: VaultList[];
   all?: Partial<VaultList>;
@@ -108,7 +69,6 @@ export interface VaultLists {
   order?: string;
 }
 
-/** An import run's end state (GET /api/of/v2/vault/upload/status). */
 export interface UploadRun {
   status?: string;
   error?: string | null;
@@ -121,34 +81,24 @@ export interface VaultHandlers {
   renameFolder(id: string, name: string): Promise<unknown>;
   deleteFolder(id: string): Promise<unknown>;
   sortFolders(sort: string, order: string): Promise<unknown>;
-  /** OF's Customize order: the folders' ids in their new order. */
   customOrder(ids: (number | string)[]): Promise<unknown>;
   addToFolder(id: string, mediaIds: number[]): Promise<unknown>;
   removeFromFolder(id: string, mediaIds: number[]): Promise<unknown>;
-  /** OF's "Remove from vault" (a hide; no undo). */
   hide(mediaIds: number[]): Promise<unknown>;
-  /** A batch vault import of `files` (filed into `listId`), settled when the run ends. */
   upload(files: File[], listId: string | null): Promise<UploadRun>;
-  /** The media's Inflowwww tags; null when the Relay's vault copy does not hold it (it cannot be tagged yet). */
   tags(mediaId: number): Promise<string[] | null>;
-  /** Save the media's tags (the Relay lower-cases and dedupes them); the tags as saved. */
   saveTags(mediaId: number, tags: string[]): Promise<string[]>;
   confirm(text: string): boolean;
 }
 
 export interface VaultContext {
   view: VaultView;
-  /** ?edit=1: the add-list modal renames the open folder. */
   edit: boolean;
-  /** ?customize=1: the folder column is in OF's Customize order. */
   customize?: boolean;
-  /** "Go to date"'s first day: the model's first published post or join day (OF's), when the app has it. */
   minDate?: string | null;
   lists?: VaultLists;
   navigate(href: string): void;
-  /** null: no single model selected. */
   handlers: VaultHandlers | null;
-  /** OFM_NEW_WRITES_ENABLED (useOfmNewWrites): vault/list's header More is bound; false, it stays as captured. */
   newWrites: boolean;
 }
 
@@ -164,22 +114,18 @@ const SAVE = ".modal-footer button[type='submit']";
 export const BAR = "oi-vault-bar";
 const TILE = "[data-oi-media]";
 
-/** The open folder, when it is a custom one (only those can be renamed, deleted or emptied). */
 const customFolder = (ctx: VaultContext) => ctx.lists?.list?.find((l) => String(l.id) === ctx.view.list && l.type === "custom") ?? null;
 const selected = (doc: Document) => [...doc.querySelectorAll<HTMLElement>(`${TILE}.selected`)].map((t) => Number(t.dataset.oiMedia)).filter(Boolean);
 const wire = (el: Element | null | undefined) => el?.setAttribute("data-oi-wired", "");
 
-/** Point `a` at `href`, remembering its captured href (so a rebind starts from it). */
 function setHref(a: HTMLAnchorElement, href: string) {
   a.dataset.oiHref ??= a.getAttribute("href") ?? "";
   a.setAttribute("href", href);
 }
 const capturedHref = (a: HTMLAnchorElement) => a.dataset.oiHref ?? a.getAttribute("href") ?? "";
 
-/** The links that leave the view, as OF's: the rail (the phone's bottom bar), the side menu and the column's Back. */
 const LEAVE = "a.l-header__menu__item, a.l-sidebar__menu__item, a.g-page__header__btn[aria-label='Back']:not([at-attr='close_search'])";
 
-/** Links to the Vault page and its state pages keep the view (a folder row, a dropdown pick and LEAVE are set apart). */
 function keepView(doc: Document, view: VaultView) {
   for (const a of doc.querySelectorAll<HTMLAnchorElement>("a[href^='/of-manager/vault']")) {
     if (a.matches(ROW) || a.matches(LEAVE)) continue;
@@ -190,18 +136,11 @@ function keepView(doc: Document, view: VaultView) {
   if (close) setHref(close, vaultHref({ ...view, q: null }));
 }
 
-/** OF's one-column width (its CSS stacks the two columns below 1004px). */
 const NARROW = "(max-width: 1003.98px)";
 export const VIEW_OPEN = "data-oi-vault-view";
 
 export const PHONE_BACK = "oi-vault-back";
 
-/**
- * A phone, as OF's own: an open view (a folder, a type, a sort or a search: OF's /my/vault/list/<id> screen) shows
- * the media alone, under a Back (the folder column's own, copied before the media's title) to the folder list; the
- * bare Vault shows the folders, then All media's grid under them (never the folder column stuck over the grid, as
- * OF's desktop column is). Returns its undo.
- */
 function phoneColumns(doc: Document, view: VaultView): () => void {
   const style = doc.createElement("style");
   style.textContent =
@@ -226,7 +165,6 @@ function phoneColumns(doc: Document, view: VaultView): () => void {
   };
 }
 
-/** Media type tabs in TYPES' order: `type`'s is current (and not clickable); all are wired. */
 export function markTypeTabs(tabs: Element[], type: string | null) {
   tabs.forEach((t, i) => {
     const on = (TYPES[i] ?? null) === type;
@@ -236,7 +174,6 @@ export function markTypeTabs(tabs: Element[], type: string | null) {
   });
 }
 
-/** The media tabs and the sort title show the view. */
 function showView(doc: Document, view: VaultView) {
   markTypeTabs([...doc.querySelectorAll(`${RIGHT} .b-tabs__nav__link`)], view.type);
   const title = doc.querySelector(`${RIGHT} .b-content-filter__title`);
@@ -250,20 +187,13 @@ function showView(doc: Document, view: VaultView) {
   }
 }
 
-/** The folder sorts (OF's `sort` on GET /vault/lists) and their titles, as the folder sort dropdown words them. */
 export const LIST_SORTS: Record<string, string> = { default: "Default", name: "Name", recent: "Recent", media: "Media", custom: "Custom" };
 
-/** Today in local time, as OF's date picker's last day. */
 const today = (): Day => {
   const d = new Date();
   return { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() };
 };
 
-/**
- * The media sort's "Go to date", as OF's: its pick opens OF's day popup (ofMirrorDatepicker) from the model's first
- * published post or join day (`minDate`, when the app has it) to today; the day applied is the view's ?date= (OF's
- * `beforePublishDate`), and the item reads it. "All time" drops it.
- */
 function bindGoToDate(doc: Document, item: Element, ctx: VaultContext) {
   const { view, minDate } = ctx;
   item.querySelector("a.of-state-link")?.remove();
@@ -285,7 +215,6 @@ function bindGoToDate(doc: Document, item: Element, ctx: VaultContext) {
   });
 }
 
-/** The media sort dropdown: each pick links to the view with that field, order or date; the view's are checked. */
 function bindMediaSort(doc: Document, ctx: VaultContext) {
   const { view } = ctx;
   for (const item of doc.querySelectorAll(SELECT)) {
@@ -310,17 +239,13 @@ function bindMediaSort(doc: Document, ctx: VaultContext) {
   }
 }
 
-/** A folder sort dropdown radio of the sort group (the other group is the order). */
 const isSortRadio = (radio: HTMLInputElement) => /-sort-/.test(radio.name);
 
-/** The folder sort dropdown: the folders' sort and order are checked; a pick sends them (POST /vault/lists/sort) and closes it. */
 function bindListSort(doc: Document, ctx: VaultContext): () => void {
   const sort = ctx.lists?.sort ?? "default";
   const order = ctx.lists?.order ?? "desc";
   const pick = (radio: HTMLInputElement) => (isSortRadio(radio) ? { sort: radio.value, order } : { sort, order: radio.value });
-  // As OF's (its list sort's orderDisabled): the order is off for a custom order.
   const unordered = sort === "custom";
-  // Customize order: off while a folder search is open, as OF's.
   for (const item of doc.querySelectorAll(SELECT)) {
     if (item.querySelector("input[type='radio']")) continue;
     wire(item);
@@ -329,7 +254,7 @@ function bindListSort(doc: Document, ctx: VaultContext): () => void {
   }
   for (const radio of doc.querySelectorAll<HTMLInputElement>(`${SELECT} input[type='radio']`)) {
     const isSort = isSortRadio(radio);
-    wire(radio.closest(SELECT)); // its click is this handler's, not its State page link's
+    wire(radio.closest(SELECT));
     radio.checked = isSort ? radio.value === sort : radio.value === order && !unordered;
     if (isSort) continue;
     const item = radio.closest(SELECT)!;
@@ -340,7 +265,6 @@ function bindListSort(doc: Document, ctx: VaultContext): () => void {
   const onClick = (ev: MouseEvent) => {
     const item = (ev.target as Element | null)?.closest?.(SELECT);
     if (!item) return;
-    // Before the frame's own link handler: the dropdown closes once OF has the new order.
     ev.preventDefault();
     ev.stopPropagation();
     if (item.classList.contains("v-list-item--disabled")) return;
@@ -358,7 +282,6 @@ function bindListSort(doc: Document, ctx: VaultContext): () => void {
   return () => doc.removeEventListener("click", onClick, true);
 }
 
-/** "Create new category" (or, with ?edit=1, the open folder's rename): Save is on while the name has text. */
 function bindFolderForm(doc: Document, ctx: VaultContext): () => void {
   const input = doc.querySelector<HTMLInputElement>(NAME);
   const save = doc.querySelector<HTMLButtonElement>(SAVE);
@@ -407,13 +330,10 @@ function bindFolderForm(doc: Document, ctx: VaultContext): () => void {
   };
 }
 
-// ticket 34: the folder page's header More (vault/list), OF's folder menu.
 export const FOLDER_MORE = `${RIGHT} [at-attr='list_dropdown'] > button`;
-/** The menu rows' tooltip while no custom folder is open (All media, a type tab: nothing to rename or delete). */
 export const NO_FOLDER = "Open a custom folder to rename or delete it";
 
 type Run = (job: () => Promise<unknown>, done: string, fail: string) => void;
-/** Run `job`, then say `done` (or the error) under `el`; `el` is off while it runs (no second click), then `after`. */
 function runner(doc: Document, el: HTMLElement, after?: () => void): Run {
   return (job, done, fail) => {
     el.style.pointerEvents = "none";
@@ -431,23 +351,13 @@ function runner(doc: Document, el: HTMLElement, after?: () => void): Run {
   };
 }
 
-/** The open folder's rename: the "Create new category" modal with ?edit=1 (bindFolderForm), with the view. */
 const renameHref = (view: VaultView) => vaultHref(view, `${VAULT}/state-add-list`) + (view.list ? "&" : "?") + "edit=1";
 
-/** The custom folder's delete (the action row's DELETE, vault/list's More → Delete): confirmed, then the bare Vault. */
 function deleteFolder(ctx: VaultContext, handlers: VaultHandlers, folder: VaultList, run: Run) {
   if (!handlers.confirm(`Delete the folder "${folder.name}"? Its media stay in the vault.`)) return;
   run(() => handlers.deleteFolder(String(folder.id)).then(() => ctx.navigate(VAULT)), "Deleted", "Could not delete");
 }
 
-/**
- * vault/list's header More: enabled and Wired, its Not-yet title dropped (D1: Live proofs vault.more.rename and
- * vault.more.delete passed, docs/of-manager/captures/vault--more.json), it opens OF's folder menu, Rename and Delete, for the open custom folder (else both rows are off). Rename opens the open folder's
- * "Rename category" modal (state-add-list?edit=1, as the action row's RENAME); Delete is the action row's DELETE.
- * ASSUMPTION: OF's folder menu holds Rename and Delete (spec story 26 "as captured"; no capture of the menu, the v-menu
- * is empty in vault/list.html), worded as the action row's; overturned by a capture of OF's menu, whose items then
- * replace these.
- */
 function bindFolderMore(doc: Document, ctx: VaultContext): () => void {
   const more = doc.querySelector<HTMLButtonElement>(FOLDER_MORE);
   if (!more) return () => {};
@@ -473,7 +383,6 @@ function bindFolderMore(doc: Document, ctx: VaultContext): () => void {
   };
 }
 
-/** One of OF's flat text buttons (the modals' CANCEL / SAVE style), Wired. */
 function flatButton(doc: Document, text: string, act: string): HTMLButtonElement {
   const b = doc.createElement("button");
   b.type = "button";
@@ -486,37 +395,23 @@ function flatButton(doc: Document, text: string, act: string): HTMLButtonElement
 
 export const VIEWER = "oi-vault-viewer";
 
-/** One media the viewer shows: its file (already through `img`) and OF's type (photo, gif, video, audio). */
 export interface ViewerItem { src: string; type?: string | null }
 
-/** The open viewer's close, per document (it holds the viewer's key listener). */
 const closers = new WeakMap<Document, () => void>();
 
-/** Close the open viewer, if any. */
 export function closeViewer(doc: Document) {
   closers.get(doc)?.();
   doc.getElementById(VIEWER)?.remove();
 }
 
-/** A tile's media for the viewer (`data-oi-full`, `data-oi-type`), or null for a tile with no file to show. */
 export const viewerItem = (el: HTMLElement): ViewerItem | null => (el.dataset.oiFull ? { src: el.dataset.oiFull, type: el.dataset.oiType } : null);
 
 const ROUND = "position:absolute;width:40px;height:40px;border:0;border-radius:50%;background:rgba(0,0,0,.5);color:#fff;font-size:28px;line-height:1;cursor:pointer";
 
-/** Whose stories the viewer plays (story mode): their name and avatar, as OF's story header. */
 export interface StoryAuthor { name: string; avatar?: string | null }
 
-/** How long OF's story player shows a photo before the next story. */
 export const STORY_PHOTO_MS = 5000;
 
-/**
- * `items[start]` full size over the page, as OF's viewer (PhotoSwipe / video.js): a photo, a video with its player, a GIF
- * looping, an audio's player; with more than one item, previous and next buttons and the ← / → keys step through them
- * (stopping at either end). Closed by ×, the backdrop or Escape. `story` (a story strip's or highlight's tile): OF's
- * story player instead: a segment per story across the top (the seen ones full, the current one filling), its author's
- * header under them, each photo for STORY_PHOTO_MS and each video to its end, then the next story; after the last it
- * closes.
- */
 export function openViewer(doc: Document, items: ViewerItem[], start = 0, story?: StoryAuthor) {
   closeViewer(doc);
   if (!items.length) return;
@@ -542,7 +437,6 @@ export function openViewer(doc: Document, items: ViewerItem[], start = 0, story?
   let timer: ReturnType<typeof setTimeout> | undefined;
   const bars: HTMLElement[] = [];
   if (story) {
-    // OF's story header (b-story-header): the segments, then the author's avatar and name, over a dark gradient.
     const head = doc.createElement("div");
     head.className = "b-story-header";
     head.style.cssText = "position:absolute;left:0;right:0;top:0;z-index:2;padding:12px 56px 40px 12px;pointer-events:none;background:linear-gradient(rgba(0,0,0,.66),transparent)";
@@ -576,7 +470,6 @@ export function openViewer(doc: Document, items: ViewerItem[], start = 0, story?
     head.append(segs, author);
     box.append(head);
   }
-  /** Story mode: the segments for story `at` (its own filling over `ms`, 0: by the video's time), and the next story after it. */
   const play = (media: HTMLImageElement | HTMLMediaElement) => {
     if (!story) return;
     clearTimeout(timer);
@@ -591,7 +484,8 @@ export function openViewer(doc: Document, items: ViewerItem[], start = 0, story?
       media.addEventListener("ended", () => (at === items.length - 1 ? shut() : step(1)));
       return;
     }
-    void bar.offsetWidth; // (the reset width applies before the transition starts)
+    // Force reflow so the reset width applies before the transition starts.
+    void bar.offsetWidth;
     bar.style.transition = `width ${STORY_PHOTO_MS}ms linear`;
     bar.style.width = "100%";
     timer = setTimeout(() => (at === items.length - 1 ? shut() : step(1)), STORY_PHOTO_MS);
@@ -601,7 +495,6 @@ export function openViewer(doc: Document, items: ViewerItem[], start = 0, story?
     const media = doc.createElement(type === "photo" || !type ? "img" : type === "audio" ? "audio" : "video") as HTMLImageElement | HTMLMediaElement;
     media.src = src;
     media.style.cssText = "max-width:100%;max-height:100%;object-fit:contain";
-    // (Not instanceof: the frame's elements are of its own window.)
     if ("autoplay" in media) {
       media.autoplay = true;
       media.controls = type !== "gif";
@@ -650,11 +543,6 @@ export function openViewer(doc: Document, items: ViewerItem[], start = 0, story?
   doc.body.append(box);
 }
 
-/**
- * The action row under the media tabs (a single model only): rebuilt from the selected tiles on every change.
- * A tile, as OF's: its checkbox selects it, and so does a click anywhere on it while any is selected; otherwise the
- * click opens it in the viewer (a media without a file to show is selected). Returns an unbind, which removes both.
- */
 function bindActions(doc: Document, ctx: VaultContext, handlers: VaultHandlers): () => void {
   const tabs = doc.querySelector(`${RIGHT} .b-tabs__nav`);
   if (!tabs) return () => {};
@@ -671,7 +559,6 @@ function bindActions(doc: Document, ctx: VaultContext, handlers: VaultHandlers):
   doc.body.append(file);
   const folder = customFolder(ctx);
   const others = (ctx.lists?.list ?? []).filter((l) => l.type === "custom" && String(l.id) !== ctx.view.list);
-  /** The tag editor's media and its field, while it is open. */
   let editor: { id: number; input: HTMLInputElement } | null = null;
 
   const draw = () => {
@@ -699,13 +586,11 @@ function bindActions(doc: Document, ctx: VaultContext, handlers: VaultHandlers):
     bar.replaceChildren(...parts);
   };
 
-  /** Run `job`, then say `done` (or the error) under the row; the row is off while it runs. */
   const run = runner(doc, bar, () => draw());
   const clear = () => {
     for (const t of doc.querySelectorAll(`${TILE}.selected`)) toggleTile(t, false);
   };
 
-  /** Infloww's tag editor for one media: its tags, comma-separated, in one field; Save (or Enter) writes them. */
   const editTags = (id: number) => {
     const input = doc.createElement("input");
     input.type = "text";
@@ -735,7 +620,6 @@ function bindActions(doc: Document, ctx: VaultContext, handlers: VaultHandlers):
     );
   };
 
-  /** The row's buttons by their `data-oi-act`; each gets the media selected at its click. */
   const acts: Record<string, (ids: number[]) => void> = {
     upload: () => file.click(),
     tags: (ids) => {
@@ -771,7 +655,6 @@ function bindActions(doc: Document, ctx: VaultContext, handlers: VaultHandlers):
     const tile = target.closest<HTMLElement>(`${RIGHT} ${TILE}`);
     if (tile) {
       if (!target.closest(".checkbox-item") && !selected(doc).length && tile.dataset.oiFull) {
-        // The folder's loaded tiles, in grid order, for the viewer's previous / next.
         const tiles = [...doc.querySelectorAll<HTMLElement>(`${RIGHT} ${TILE}`)].filter((t) => t.dataset.oiFull);
         return openViewer(doc, tiles.map((t) => viewerItem(t)!), tiles.indexOf(tile));
       }
@@ -825,10 +708,6 @@ function bindActions(doc: Document, ctx: VaultContext, handlers: VaultHandlers):
 
 export const LISTS_SEARCH = "oi-lists-search";
 
-/**
- * The folder column's Search, as OF's: its button opens a search form in the column's header (a copy of the media
- * search's); a search is the view's ?slist= (GET /vault/lists `query`), and the form's Back drops it. Returns its undo.
- */
 function bindFolderSearch(doc: Document, ctx: VaultContext): () => void {
   const header = doc.querySelector<HTMLElement>(".l-sidebar-column .g-page__header");
   const opener = header?.querySelector<HTMLButtonElement>("button[aria-label='Search']");
@@ -866,16 +745,13 @@ function bindFolderSearch(doc: Document, ctx: VaultContext): () => void {
 
 export const CUSTOMIZE = "data-oi-customize";
 export const ORDER_BOX = "oi-custom-order";
-/** The view in OF's Customize order. */
 export const customizeHref = (view: VaultView) => {
   const href = vaultHref(view);
   return `${href}${href.includes("?") ? "&" : "?"}customize=1`;
 };
-/** OF's icon-drag (its sprite's, as on New post's poll), which the Vault pages' cut-down sprite does not carry. */
 const ICON_DRAG =
   "M6 7a2 2 0 102 2 2 2 0 00-2-2zm12 4a2 2 0 10-2-2 2 2 0 002 2zm-6-4a2 2 0 102 2 2 2 0 00-2-2zm6 6a2 2 0 102 2 2 2 0 00-2-2zm-6 0a2 2 0 102 2 2 2 0 00-2-2zm-6 0a2 2 0 102 2 2 2 0 00-2-2z";
 
-/** One of OF's icon buttons (`icon` from the page's sprite), Wired. */
 function iconButton(doc: Document, cls: string, label: string, icon: string): HTMLButtonElement {
   const b = doc.createElement("button");
   b.type = "button";
@@ -886,11 +762,6 @@ function iconButton(doc: Document, cls: string, label: string, icon: string): HT
   return b;
 }
 
-/**
- * OF's Customize order of the folder column: its title "Customize order" with an X before it (cancel) and a check in
- * place of the sort (save); every folder, in OF's order, with a drag handle (by pointer, so a phone's touch drags too),
- * All media pinned first. The check sends the folders' ids in their new order and goes back to the view. Returns its undo.
- */
 function bindCustomOrder(doc: Document, ctx: VaultContext, handlers: VaultHandlers): () => void {
   const column = doc.querySelector(".l-sidebar-column");
   const rows = column?.querySelector<HTMLElement>(".b-rows-lists");
@@ -918,7 +789,6 @@ function bindCustomOrder(doc: Document, ctx: VaultContext, handlers: VaultHandle
 
   const box = rows.cloneNode(false) as HTMLElement;
   box.id = ORDER_BOX;
-  /** A row as shown, inert (no link): its own text and covers, from the folder list on the page. */
   const still = (row: Element) => {
     const el = row.cloneNode(true) as HTMLElement;
     for (const a of el.querySelectorAll("a")) {
@@ -999,10 +869,6 @@ function bindCustomOrder(doc: Document, ctx: VaultContext, handlers: VaultHandle
   };
 }
 
-/**
- * Wire the Vault page `page` (its path under of-mirror/pages: vault/index or vault/state-*) in `doc` for `ctx`.
- * Returns an unbind.
- */
 export function bindVault(doc: Document, page: string, ctx: VaultContext): () => void {
   if (page !== "vault/index" && page !== "vault/list" && !page.startsWith("vault/state-")) return () => {};
   const { view, handlers, navigate } = ctx;
@@ -1017,7 +883,7 @@ export function bindVault(doc: Document, page: string, ctx: VaultContext): () =>
   if (page === "vault/state-lists-sort-dropdown") unbinds.push(bindListSort(doc, ctx));
   if (page === "vault/state-add-list") unbinds.push(bindFolderForm(doc, ctx));
   if (page === "vault/index" && handlers) unbinds.push(bindActions(doc, ctx, handlers));
-  if (page === "vault/list" && ctx.newWrites) unbinds.push(bindFolderMore(doc, ctx)); // ticket 34
+  if (page === "vault/list" && ctx.newWrites) unbinds.push(bindFolderMore(doc, ctx));
 
   const search = doc.querySelector<HTMLInputElement>(`${RIGHT} ${SEARCH}`);
   const header = search?.closest(".g-page__header");
@@ -1029,14 +895,13 @@ export function bindVault(doc: Document, page: string, ctx: VaultContext): () =>
       const i = [...doc.querySelectorAll(`${RIGHT} .b-tabs__nav__link`)].indexOf(tab);
       return navigate(vaultHref({ ...view, type: TYPES[i] ?? null }));
     }
-    // The opener sits in the filter row, not the header it opens: aria-expanded marks the open form on it too.
     const opener = target.closest(`${RIGHT} ${OPEN_SEARCH}`);
     if (opener) {
       header.classList.add(SEARCH_OPEN);
       opener.setAttribute("aria-expanded", "true");
       search.focus();
     } else if (target.closest(`${RIGHT} ${CLOSE_SEARCH}`)) {
-      header.classList.remove(SEARCH_OPEN); // its link drops ?q=
+      header.classList.remove(SEARCH_OPEN);
       doc.querySelector(`${RIGHT} ${OPEN_SEARCH}`)?.setAttribute("aria-expanded", "false");
       search.value = "";
     }
@@ -1055,14 +920,11 @@ export function bindVault(doc: Document, page: string, ctx: VaultContext): () =>
   };
 }
 
-/** How many of the Relay's vault copy the tag editor looks through for a media's tags (the route's most). */
 export const TAGS_SCAN = 1000;
 const POLL_MS = 2000;
-/** How long an upload's status is polled (as long as its "Uploading…" note shows) before the action bar comes back. */
 export const UPLOAD_TIMEOUT_MS = 600_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Ask `status` every `pollMs` until the run stops; past `timeoutMs` give up (the import may still finish on the Relay). */
 export async function pollUpload<T extends { running?: boolean }>(status: () => Promise<T>, pollMs = POLL_MS, timeoutMs = UPLOAD_TIMEOUT_MS): Promise<T> {
   const end = Date.now() + timeoutMs;
   while (Date.now() < end) {
@@ -1073,7 +935,6 @@ export async function pollUpload<T extends { running?: boolean }>(status: () => 
   throw new Error(`still importing after ${Math.round(timeoutMs / 60_000)} minutes, check the Vault later`);
 }
 
-/** The Vault page and its state pages: bind on every frame load and view change. */
 export function useOfVault(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const params = useSearchParams();
@@ -1082,12 +943,10 @@ export function useOfVault(frameRef: RefObject<HTMLIFrameElement | null>, src: s
   const page = /^\/of-mirror\/pages\/(.+)\.html$/.exec(src)?.[1] ?? "";
   const isVault = page.startsWith("vault/");
   const query = params.toString();
-  // The same query (key and path) as ofMirrorData's folder list: one fetch for both.
   const lists = useQuery(mirrorQuery<VaultLists>(accountId, vaultListsPath(viewOf(params)), isVault)).data;
-  // "Go to date"'s first day, as OF's: the model's first published post, else its join day.
   const me = useQuery(ofMeQuery(accountId)).data as { firstPublishedPostDate?: string | null; joinDate?: string | null } | undefined;
   const minDate = me?.firstPublishedPostDate || me?.joinDate || null;
-  const newWrites = useOfmNewWrites(page === "vault/list", accountId); // OFM_NEW_WRITES_ENABLED off: the header More stays Not yet
+  const newWrites = useOfmNewWrites(page === "vault/list", accountId);
 
   useEffect(() => {
     const frame = frameRef.current;

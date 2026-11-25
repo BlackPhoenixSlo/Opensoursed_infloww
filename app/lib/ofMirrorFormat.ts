@@ -1,30 +1,12 @@
 "use client";
 
-/**
- * New post's Format text panel (new-post/state-format-text, OF's TextEditorToolbar) and the markup it leaves in the post
- * text. OF's composer is a tiptap editor whose getHTML() is the post's `text` (MakeFeedPost onUpdate; build
- * 202610091632): one `<p>` per paragraph, `<br>` inside one, Bold as `<strong>`, Italic as `<em>`, and Text Color and
- * Text Size as one `textStyle` mark, a `<span>` whose class holds OF's classes (`m-editor-fc__gray | __blue-1 |
- * __blue-2 | __default`, `m-editor-fs__lg | __l | __default | __s | __sm`); its sanitizer allows only strong, span, em, br
- * and p, and the class attribute. Nesting and class order are OF's wire (MEASURED, a chat send from onlyfans.com,
- * 2026-11-06: `<p><span class="m-editor-fs__l m-editor-fc__blue-2"><strong>x</strong></span></p>`, echoed as is):
- * the span outermost (tiptap's textStyle mark ranks above bold), size class before colour class; em inside strong
- * (StarterKit's order, inferred). An outer mark stays open across the next run that shares it (ProseMirror's
- * DOMSerializer), so `runsHtml` writes what OF's editor would.
- *
- * In the mirror's editor the browser's own editing commands do the work (bold, italic, foreColor, fontSize,
- * removeFormat), and `normalize` turns what they leave (b, i, font) into OF's markup at once, so the editor always holds
- * OF's tags and classes (the mirrored stylesheet draws them). `ofHtml` serializes the editor the way tiptap does.
- */
 
-/** OF's text colours (TEXT_EDITOR Yc.LIST: its cssValue -> class; the divider dropped) and sizes (Aw.LIST). */
 export const COLORS = [
   { cls: "m-editor-fc__gray", css: "#8a96a3", label: "Grey" },
   { cls: "m-editor-fc__blue-1", css: "#00aff0", label: "Light blue" },
   { cls: "m-editor-fc__blue-2", css: "#1b98e0", label: "Medium blue" },
   { cls: "m-editor-fc__default", css: "", label: "Default" },
 ] as const;
-/** OF's sizes, largest first; `font` is the legacy <font size> the browser's fontSize command writes for each. */
 export const SIZES = [
   { cls: "m-editor-fs__lg", font: "7", label: "Largest" },
   { cls: "m-editor-fs__l", font: "6", label: "Large" },
@@ -32,7 +14,6 @@ export const SIZES = [
   { cls: "m-editor-fs__s", font: "2", label: "Small" },
   { cls: "m-editor-fs__sm", font: "1", label: "Smallest" },
 ] as const;
-/** Only OF's own class names count: a pasted class like `m-editor-fc__x"onclick="…` is not one, so it never reaches the markup. */
 export const COLOR_CLASSES: ReadonlySet<string> = new Set(COLORS.map((c) => c.cls));
 export const SIZE_CLASSES: ReadonlySet<string> = new Set(SIZES.map((s) => s.cls));
 const COLOR_RE = { test: (c: string) => COLOR_CLASSES.has(c) };
@@ -43,10 +24,7 @@ const hex = (c: string): string => {
   if (!m) return c.trim().toLowerCase();
   return `#${[m[1], m[2], m[3]].map((n) => Number(n).toString(16).padStart(2, "0")).join("")}`;
 };
-/** What foreColor writes for Text Color "Default" (no colour of its own): a placeholder only this maps. */
 const DEFAULT_CSS = "#000001";
-/** A colour (hex or rgb) as OF's class (its PASTE_CONVERT_MATRIX; the Default placeholder as OF's default class), or
- *  null. */
 export const colorClass = (c: string | null | undefined): string | null => {
   if (!c) return null;
   const h = hex(c);
@@ -54,7 +32,6 @@ export const colorClass = (c: string | null | undefined): string | null => {
 };
 const sizeClass = (n: string | null) => SIZES.find((s) => s.font === n)?.cls ?? null;
 
-/** The OF classes an element carries (a span's own, a <font>'s colour and size, an inline style colour). */
 function classesOf(el: Element): string[] {
   const out = [...el.classList].filter((c) => COLOR_RE.test(c) || SIZE_RE.test(c));
   if (el.tagName === "FONT") {
@@ -68,10 +45,6 @@ function classesOf(el: Element): string[] {
   return out;
 }
 
-/**
- * Rewrite the browser's editing leftovers in `root` into OF's markup: b -> strong, i -> em, font and styled spans -> a
- * span with OF's classes (none: unwrapped), any other inline element unwrapped. Paragraphs and line breaks stay.
- */
 export function normalize(root: Element): void {
   const doc = root.ownerDocument;
   const swap = (el: Element, tag: string, cls?: string[]) => {
@@ -82,7 +55,6 @@ export function normalize(root: Element): void {
     return n;
   };
   const unwrap = (el: Element) => el.replaceWith(...el.childNodes);
-  // Deepest first, so a replaced parent never strands a child.
   for (const el of [...root.querySelectorAll("*")].reverse()) {
     const tag = el.tagName;
     if (tag === "P" || tag === "BR" || tag === "DIV") continue;
@@ -99,11 +71,9 @@ export function normalize(root: Element): void {
       }
     } else unwrap(el);
   }
-  // A browser's <div> line in a contenteditable is OF's <p>.
   for (const div of [...root.querySelectorAll(":scope > div")]) swap(div, "p");
 }
 
-/** A run of equally marked text (`classes`: OF's size then colour class, space-separated), or a line break. */
 export interface Run {
   text: string;
   bold: boolean;
@@ -113,10 +83,8 @@ export interface Run {
 }
 
 const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/ /g, "&nbsp;");
-/** An attribute value: the whitelisted classes need none of this, but a quote can never close the attribute. */
 const escapeAttr = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-/** A paragraph's text runs, each with the marks its ancestors (up to `p`) give it. */
 function runsOf(p: Node): Run[] {
   const runs: Run[] = [];
   const walk = (n: Node, bold: boolean, italic: boolean, color: string | null, size: string | null) => {
@@ -141,14 +109,11 @@ function runsOf(p: Node): Run[] {
 
 const sameMarks = (a: Run, b: Run) => !a.br && !b.br && a.bold === b.bold && a.italic === b.italic && a.classes === b.classes;
 
-/**
- * A paragraph's runs as OF's markup: per run its marks outermost first (span with its classes, strong, em); an open
- * mark the next run also starts with stays open, the rest close (ProseMirror's DOMSerializer). A `<br>` closes all.
- */
 export function runsHtml(runs: readonly Run[]): string {
   let out = "";
   const open: string[] = [];
   for (const r of runs) {
+    // OF's measured wire nesting: span outermost, size class before colour, em inside strong.
     const want = r.br ? [] : [r.classes ? `span ${r.classes}` : "", r.bold ? "strong" : "", r.italic ? "em" : ""].filter(Boolean);
     let keep = 0;
     while (keep < open.length && keep < want.length && open[keep] === want[keep]) keep++;
@@ -163,7 +128,6 @@ export function runsHtml(runs: readonly Run[]): string {
   return out;
 }
 
-/** The editor's paragraphs (a bare text or inline child is one paragraph, as tiptap parses it). */
 function paragraphs(root: Element): Node[] {
   const out: Node[] = [];
   let loose: Node[] = [];
@@ -184,11 +148,6 @@ function paragraphs(root: Element): Node[] {
   return out;
 }
 
-/**
- * The editor as OF's post text (tiptap's getHTML): `<p>` per paragraph, an empty one `<p></p>`, each run of equally
- * marked text as `<span class="fs fc"><strong><em>text</em></strong></span>` (the marks it has, `runsHtml`). A trailing <br> that a
- * browser keeps in an empty paragraph is dropped.
- */
 export function ofHtml(root: Element): string {
   return paragraphs(root)
     .map((p) => {
@@ -205,17 +164,10 @@ export function ofHtml(root: Element): string {
     .join("");
 }
 
-/** Whether the editor holds any of OF's formatting (else the post goes as plain text, as before formatting existed). */
 export const hasFormatting = (root: Element): boolean => paragraphs(root).some((p) => runsOf(p).some((r) => !r.br && (r.bold || r.italic || !!r.classes)));
 
-/** Whose content is never text (dropped whole) by every TS sanitizer, as service/of_rich_text.py `_DROP_CONTENT`. */
 export const DROP_CONTENT = /^(script|style|template|noscript|iframe|object|textarea|title|head)$/i;
 
-/**
- * OF's markup (a saved draft's, a script's, a message's) back into `root`: only p, br, strong, em and span with OF's
- * classes are kept (b and i as strong and em); anything else is unwrapped to its text (script, style and the like
- * dropped whole), so it can never inject markup into the frame.
- */
 export function setOfHtml(root: Element, html: string): void {
   const doc = root.ownerDocument;
   const tpl = doc.createElement("template");
@@ -228,7 +180,8 @@ export function setOfHtml(root: Element, html: string): void {
       }
       if (n.nodeType !== 1) continue;
       const el = n as Element;
-      if (DROP_CONTENT.test(el.tagName)) continue; // never text (a script's code), as OF's sanitizer and the relay's drop it
+      // Never text (a script's code): dropped whole, as OF's sanitizer and the relay do.
+      if (DROP_CONTENT.test(el.tagName)) continue;
       const tag = { P: "p", BR: "br", STRONG: "strong", B: "strong", EM: "em", I: "em", SPAN: "span" }[el.tagName];
       if (!tag) {
         clean(el, to);
@@ -250,25 +203,18 @@ export function setOfHtml(root: Element, html: string): void {
   const frag = doc.createDocumentFragment();
   clean(tpl.content, frag);
   root.replaceChildren(frag);
-  // An empty paragraph keeps a <br>, so the caret has a line to sit on.
   for (const p of root.querySelectorAll("p")) if (!p.childNodes.length) p.append(doc.createElement("br"));
 }
 
-// ---------------------------------------------------------------- the panel
 
 export type FormatCommand = { kind: "bold" } | { kind: "italic" } | { kind: "clear" } | { kind: "color"; cls: string } | { kind: "size"; cls: string };
 
-/** The browser's editing command; false where there is none (jsdom). */
 export const execCommand = (doc: Document | undefined, name: string, value?: string): boolean =>
   typeof doc?.execCommand === "function" ? doc.execCommand(name, false, value) : false;
-/** Whether the browser's typing style has `name` (bold, italic) armed; false where it cannot say. */
 export const commandState = (doc: Document | undefined, name: string): boolean => {
   try { return typeof doc?.queryCommandState === "function" && doc.queryCommandState(name); } catch { return false; }
 };
 
-/** B, I, a colour or a size through the browser's command (b, i, font: `normalize` makes them OF's markup; Default
- *  colour writes the placeholder `colorClass` maps), on a selection or, collapsed, as its typing style. Clear is the
- *  caller's (no browser command does it). */
 export function execFormat(doc: Document, cmd: Exclude<FormatCommand, { kind: "clear" }>): boolean {
   execCommand(doc, "styleWithCSS", "false");
   if (cmd.kind === "bold" || cmd.kind === "italic") return execCommand(doc, cmd.kind);
@@ -276,11 +222,6 @@ export function execFormat(doc: Document, cmd: Exclude<FormatCommand, { kind: "c
   return execCommand(doc, "fontSize", SIZES.find((s) => s.cls === cmd.cls)?.font ?? "3");
 }
 
-/**
- * Apply `cmd` to the editor's selection with the browser's editing commands, then `normalize`. Text Color "Default" and
- * Text Size "Default" set OF's own default classes, as OF's toggleClass does. Clear Formatting also unwraps OF's spans
- * inside the selection. Returns whether the browser ran it (a collapsed or outside selection: nothing to format).
- */
 export function applyFormat(editor: HTMLElement, cmd: FormatCommand): boolean {
   const doc = editor.ownerDocument;
   const sel = doc.getSelection();
@@ -295,7 +236,6 @@ export function applyFormat(editor: HTMLElement, cmd: FormatCommand): boolean {
       if (range.intersectsNode(span) && sel.containsNode(span, false)) span.replaceWith(...span.childNodes);
     }
   }
-  // normalize rebuilds the nodes; keep the selection (by text offsets), so a second tool formats the same words.
   const at = textOffsets(editor, sel);
   normalize(editor);
   if (at) restoreOffsets(editor, sel, at);

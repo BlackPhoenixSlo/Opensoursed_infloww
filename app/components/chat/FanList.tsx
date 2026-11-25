@@ -37,9 +37,11 @@ import { useChatSortMode } from "@/hooks/useChatSortMode";
 import { useDeferredMount } from "@/hooks/useDeferredMount";
 import { useFanActivity } from "@/hooks/useLastPurchases";
 import { useAllChatFolders, useChatFolders } from "@/hooks/useChatFolders";
+import { useAccountPlatform } from "@/hooks/useCan";
 import { useScope } from "@/contexts/ScopeContext";
 import { useIsChatterOnly } from "@/components/shell/useIsChatterOnly";
 import { MP } from "@/lib/messagesPro";
+import { usePlatform } from "@/lib/platform";
 import { ofMeQuery } from "@/lib/ofMe";
 import { CHATS_PAGE } from "@/lib/screenBundle";
 import { cn } from "@/lib/utils";
@@ -51,6 +53,7 @@ import { type FanId, lastMessageFromFan } from "@/lib/fanId";
 import { excludedFromBadges, isUnreadChat } from "@/lib/chatUnread";
 import { sessionConnectivity } from "@/lib/sessionConnectivity";
 import { FanListBulkBar } from "./FanListBulkBar";
+import { fanListChips } from "./fanListChips";
 import { FanListFilters, type ActiveChip } from "./FanListFilters";
 import { FanListHeader } from "./FanListHeader";
 import { FanListEmpty, FanListSkeleton, LoadMoreConversations, ShowMoreRows } from "./FanListStates";
@@ -117,7 +120,7 @@ export function FanList({
   const accounts = usePlatformAccounts();
   const creatorName = useAccountLabel(scope.kind === "model" ? scope.accountId : null);
   const qc = useQueryClient();
-  const [active, setActive] = useState<ActiveChip>({ kind: "builtin", key: "all" });
+  const [picked, setPicked] = useState<ActiveChip>({ kind: "builtin", key: "all" });
   // `typed` is the search box; `query` is the search the list runs, `typed`
   // trimmed once it rests SEARCH_DEBOUNCE_MS. Clearing the box applies at once.
   const [typed, setTyped] = useState("");
@@ -129,6 +132,44 @@ export function FanList({
   const [blurMode, setBlurMode] = useBlurMode();
   const [compactMedia, setCompactMedia] = useCompactMedia();
   const [sortMode, setSortMode] = useChatSortMode();
+  // Defer non-critical decoration queries (spend, last purchase, folders)
+  // so they don't compete with /chats + enrichWithUsers for OF bandwidth
+  // and the relay thread pool on cold load. Two tiers so chips don't all
+  // pop in at once:
+  //   • foldersReady  (~2.5s) — folder list + activity (cheap, local DB)
+  //   • spendReady    (~5.5s) — /users/list view=x spend chips
+  //                              (heaviest OF call, lands last)
+  const foldersReady = useDeferredMount(2500);
+  const spendReady = useDeferredMount(5500);
+  // Pinned chat-folders (per single account). Unified mode hides them
+  // because pinning is per-account on OF's side.
+  const singleAcctId = scope.kind === "model" ? scope.accountId : null;
+  const shownCreators = useMemo(
+    () => (scope.kind === "model" ? [scope.accountId] : accounts.map((a) => a.id)),
+    [scope, accounts],
+  );
+  // The Split Inbox group chosen in "All inboxes"; session state per Creator set.
+  const inbox = useInboxGroup(shownCreators);
+  const pinnedFolders = useChatFolders(foldersReady ? singleAcctId : null).data ?? [];
+  // The pencil ("Pin lists as chips") shows once the Creator has any OF list (mj:3067); same fetch.
+  const hasLists = !!useAllChatFolders(foldersReady ? singleAcctId : null).data?.length;
+  // "Unread with tips" is OF's per-Creator filter, offered only while the
+  // Creator has tips on (as OF's own chats list gates it, ofMirrorChats.ts).
+  const tipsEnabled = useQuery({
+    ...ofMeQuery(foldersReady ? singleAcctId : null),
+    select: (me) => me.tipsEnabled === true,
+  }).data ?? false;
+  const scopedPlatform = useAccountPlatform(singleAcctId);
+  const platform = usePlatform();
+  const scopePlatforms = useMemo(() => [scopedPlatform ?? platform], [scopedPlatform, platform]);
+  // The filter the list runs: a chip the scope hides reads as All in this render, so no request carries it.
+  const { chips, active } = fanListChips({
+    platforms: scopePlatforms, tipsEnabled, pinnedFolderIds: pinnedFolders.map((f) => String(f.id)), active: picked,
+  });
+  useEffect(() => {
+    if (active !== picked) setPicked(active);
+  }, [active, picked]);
+
   // The list on screen; a new one gets a fresh paging budget (one action).
   // `accountKey` is useChatList's: the Creator, or in All Models the set.
   const accountKey = chatListAccountKey(scope, accounts);
@@ -245,45 +286,6 @@ export function FanList({
       prefetchTimerRef.current = null;
     }
   }, []);
-
-  // Defer non-critical decoration queries (spend, last purchase, folders)
-  // so they don't compete with /chats + enrichWithUsers for OF bandwidth
-  // and the relay thread pool on cold load. Two tiers so chips don't all
-  // pop in at once:
-  //   • foldersReady  (~2.5s) — folder list + activity (cheap, local DB)
-  //   • spendReady    (~5.5s) — /users/list view=x spend chips
-  //                              (heaviest OF call, lands last)
-  const foldersReady = useDeferredMount(2500);
-  const spendReady = useDeferredMount(5500);
-
-  // Pinned chat-folders (per single account). Unified mode hides them
-  // because pinning is per-account on OF's side.
-  const singleAcctId = scope.kind === "model" ? scope.accountId : null;
-  // The Split Inbox group chosen in "All inboxes"; session state per Creator.
-  const inbox = useInboxGroup(singleAcctId);
-  const pinnedFolders = useChatFolders(foldersReady ? singleAcctId : null).data ?? [];
-  // The pencil ("Pin lists as chips") shows once the Creator has any OF list (mj:3067); same fetch.
-  const hasLists = !!useAllChatFolders(foldersReady ? singleAcctId : null).data?.length;
-  // "Unread with tips" is OF's per-Creator filter, offered only while the
-  // Creator has tips on (as OF's own chats list gates it, ofMirrorChats.ts).
-  const tipsEnabled = useQuery({
-    ...ofMeQuery(foldersReady ? singleAcctId : null),
-    select: (me) => me.tipsEnabled === true,
-  }).data ?? false;
-
-  // If the active folder chip got unpinned (or we switched into unified
-  // scope), fall back to "All" so we don't hold a phantom selection.
-  useEffect(() => {
-    if (active.kind !== "folder") return;
-    const stillPinned = pinnedFolders.some((f) => String(f.id) === active.listId);
-    if (!stillPinned) setActive({ kind: "builtin", key: "all" });
-  }, [active, pinnedFolders]);
-  // Likewise when "Unread with tips" leaves the chip row.
-  useEffect(() => {
-    if (!tipsEnabled && active.kind === "builtin" && active.key === "unread_tips") {
-      setActive({ kind: "builtin", key: "all" });
-    }
-  }, [active, tipsEnabled]);
 
   // Server-side filter to send to /chats. The standard built-ins map 1:1
   // (with "all" → null). `owe-reply` is client-side only — we still pull
@@ -472,10 +474,6 @@ export function FanList({
   useEffect(() => {
     if (!badgeIsReady && holdsCopyOnly && !accountsFetching) void refetchAccounts({ cancelRefetch: false });
   }, [badgeIsReady, holdsCopyOnly, accountsFetching, refetchAccounts]);
-  const shownCreators = useMemo(
-    () => (scope.kind === "model" ? [scope.accountId] : accounts.map((a) => a.id)),
-    [scope, accounts],
-  );
   const unreadBadge = useMemo(() => {
     const accountOf = (c: OFChatItem) => c.__accountId ?? (scope.kind === "model" ? scope.accountId : "");
     const fallback = (creators: ReadonlySet<string> | null) =>
@@ -763,13 +761,14 @@ export function FanList({
         <FanListHeader
           title={scope.kind === "all" ? "All Models" : creatorName}
           creatorId={singleAcctId}
+          scopePlatforms={scopePlatforms}
           query={typed}
           onQueryChange={setTyped}
           galleryFan={selected}
         />
         {actions}
         <FanListFilters
-          showInboxSelector={scope.kind === "model"}
+          showInboxSelector={shownCreators.length > 0}
           groupCount={inbox.groupCount}
           group={inbox.group}
           groupLocked={inbox.locked}
@@ -790,14 +789,14 @@ export function FanList({
           sortMode={sortMode}
           onSortModeChange={setSortMode}
           active={active}
-          onActiveChange={setActive}
+          onActiveChange={setPicked}
           unreadCount={unreadCount ?? 0}
           unreadAge={unreadAge}
           activeCount={activeCount}
           oweReplyCount={oweReplyCount}
           pinnedFolders={pinnedFolders}
           hasLists={hasLists}
-          tipsEnabled={tipsEnabled}
+          chips={chips}
           onOpenFolderPicker={() => setPickerOpen(true)}
         />
         {picks && (
@@ -812,9 +811,9 @@ export function FanList({
           />
         )}
       </div>
-      {singleAcctId && (
+      {shownCreators.length > 0 && (
         <SplitInbox
-          accountId={singleAcctId} open={splitInboxOpen} onClose={() => setSplitInboxOpen(false)} fans={splitFans}
+          accountIds={shownCreators} open={splitInboxOpen} onClose={() => setSplitInboxOpen(false)} fans={splitFans}
         />
       )}
       {pickerOpen && singleAcctId && (

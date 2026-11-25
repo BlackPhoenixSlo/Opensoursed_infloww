@@ -21,7 +21,6 @@ describe("HANDOFFS", () => {
     ["settings--streaming-obs", "settings/streaming", "https://obsproject.com/download"],
     ["settings--streaming-chat-link", "settings/streaming", "https://onlyfans.com/my/streaming/chat"],
     ["settings--streaming-obs-widgets", "settings/streaming", "https://obs-settings.onlyfans.com/"],
-    // ticket 58 r10: OF's own pages (measured), Spotify's settings page (inferred) on every page it shows.
     ["settings--account-google-sign-in", "settings/account/google", "https://onlyfans.com/my/settings/account/google"],
     ["settings--account-x-sign-in", "settings/account/x", "https://onlyfans.com/my/settings/account/x"],
     ["settings--account-connected-connect", "settings/account/connected", "https://onlyfans.com/my/settings/account/connected"],
@@ -82,7 +81,6 @@ describe("bindHandoffs", () => {
       expect(a.rel).toBe("noopener noreferrer");
       expect(a.hasAttribute("data-oi-wired")).toBe(true);
       expect(a.hasAttribute("aria-disabled")).toBe(false);
-      // D1: a `live` entry (its Live proof passed) drops the Not-yet title; the rest keep it.
       if (h.live) expect(a.hasAttribute("title"), h.key).toBe(false);
       else expect(a.title, h.key).toBe(NOT_YET);
     }
@@ -122,13 +120,12 @@ describe("bindHandoffs", () => {
     const d = page(p);
     const undo = bindHandoffs(d, p);
     const field = d.querySelector<HTMLInputElement>("#settings_connect_account")!;
-    // D1: the field's Live proof passed (title dropped); Connect's is parked (title kept).
     expect([field.disabled, field.readOnly, field.hasAttribute("data-oi-wired"), field.hasAttribute("title")]).toEqual([false, true, true, false]);
     const a = control(d, "Connect") as HTMLAnchorElement;
     expect(a.title).toBe(NOT_YET);
     const clicks: string[] = [];
     a.addEventListener("click", (e) => {
-      e.preventDefault(); // jsdom does not navigate; the click reaching the anchor is the hand-off
+      e.preventDefault();
       clicks.push(a.href);
     });
     field.click();
@@ -157,8 +154,6 @@ describe("bindHandoffs", () => {
   });
 });
 
-// ticket 42: the three Reports' hand-offs (D22), from a fixture post (ofMirrorHome.test's another creator's post 11 by
-// @deltafour) and chat (fan 2014, ofMirrorChatTools.test's).
 describe("reportHandoffUrl", () => {
   it.each([
     ["post", reportHandoffUrl("post", { postId: 11, username: "deltafour" }), "https://onlyfans.com/11/deltafour", "/11/deltafour"],

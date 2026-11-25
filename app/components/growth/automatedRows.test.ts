@@ -1,4 +1,3 @@
-/** The Automated Messages tab's row helpers (automatedRows): Status, the nudge's lines, the settings' cells, dates. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type NudgeSlots } from "@/hooks/useNudgeConfig";
@@ -13,18 +12,17 @@ const FUTURE = "2026-10-21T12:00:00Z";
 
 describe("statusOf", () => {
   it.each([
-    // [on, payload, want]
     [false, undefined, "Canceled"],
-    [false, { starts_at: FUTURE }, "Canceled"], // off wins over any date
+    [false, { starts_at: FUTURE }, "Canceled"],
     [true, undefined, "Active"],
     [true, {}, "Active"],
     [true, { starts_at: FUTURE }, "Scheduled"],
     [true, { starts_at: PAST }, "Active"],
     [true, { ends_at: PAST }, "Completed"],
-    [true, { ends_at: "2026-10-20T12:00:00Z" }, "Completed"], // the Expiry instant itself is past
+    [true, { ends_at: "2026-10-20T12:00:00Z" }, "Completed"],
     [true, { ends_at: FUTURE }, "Active"],
     [true, { starts_at: PAST, ends_at: FUTURE }, "Active"],
-    [true, { starts_at: "not a date" }, "Active"], // a bad stamp is no date
+    [true, { starts_at: "not a date" }, "Active"],
   ] as const)("on=%s %j is %s", (on, payload, want) => {
     expect(statusOf(on, payload as Record<string, unknown> | undefined, NOW)).toBe(want);
   });
@@ -65,17 +63,16 @@ describe("extrasCells", () => {
 
 describe("extrasCells Price", () => {
   it.each<[unknown, string]>([
-    // [price_cents as stored, Price]
     [undefined, "--"],
     [0, "--"],
-    [-500, "--"], // not a price: dropped
-    [12.5, "--"], // a fraction of a cent is not a stored price
+    [-500, "--"],
+    [12.5, "--"],
     [1, "$0.01"],
     [99, "$0.99"],
     [100, "$1"],
-    [1005, "$10.05"], // the .005-dollar boundary
+    [1005, "$10.05"],
     [2999, "$29.99"],
-    [123_456_789, "$1,234,567.89"], // large
+    [123_456_789, "$1,234,567.89"],
     [999_999_999_99, "$999,999,999.99"],
   ])("%s cents is %s", (cents, want) => {
     const payload = { media_ids: [1], price_cents: cents };
@@ -85,18 +82,17 @@ describe("extrasCells Price", () => {
 
 describe("shortDate and dayOf", () => {
   it.each<[string | null, string | null, string | null, string | null]>([
-    // [iso, report zone, shortDate, dayOf]
     [null, "UTC", null, null],
     ["", "UTC", null, null],
     ["garbage", "UTC", null, null],
     ["2026-10-19T23:30:00Z", "UTC", "Oct 19, 2026", "2026-10-19"],
     ["2026-10-19T23:30:00Z", "Europe/Ljubljana", "Oct 20, 2026", "2026-10-20"],
-    ["2026-01-01T03:00:00Z", "America/New_York", "Dec 31, 2025", "2025-12-31"], // year rollover west of UTC
+    ["2026-01-01T03:00:00Z", "America/New_York", "Dec 31, 2025", "2025-12-31"],
     ["2024-02-29T12:00:00Z", "UTC", "Feb 29, 2024", "2024-02-29"],
-    ["2026-11-01T05:30:00Z", "America/New_York", "Nov 1, 2026", "2026-11-01"], // DST fall back
-    ["2026-10-31T10:00:00Z", "Pacific/Kiritimati", "Nov 1, 2026", "2026-11-01"], // UTC+14
-    ["2026-10-31T10:00:00Z", "Pacific/Pago_Pago", "Oct 30, 2026", "2026-10-30"], // UTC−11
-    ["2026-03-08T07:00:00Z", "America/New_York", "Mar 8, 2026", "2026-03-08"], // DST spring forward
+    ["2026-11-01T05:30:00Z", "America/New_York", "Nov 1, 2026", "2026-11-01"],
+    ["2026-10-31T10:00:00Z", "Pacific/Kiritimati", "Nov 1, 2026", "2026-11-01"],
+    ["2026-10-31T10:00:00Z", "Pacific/Pago_Pago", "Oct 30, 2026", "2026-10-30"],
+    ["2026-03-08T07:00:00Z", "America/New_York", "Mar 8, 2026", "2026-03-08"],
   ])("%s in %s", (iso, tz, short, day) => {
     expect(shortDate(iso, tz)).toBe(short);
     expect(dayOf(iso, tz)).toBe(day);

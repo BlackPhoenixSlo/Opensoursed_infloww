@@ -1,6 +1,3 @@
-"""Agencies: one owner `users` row each, created through the real POST /auth/register.
-The first is the run's owner (`w.owner`, `w.user_id`); every further one gets its
-own signed-in session (`w.data["agencies"][i]["http"]`)."""
 from __future__ import annotations
 
 from . import World
@@ -15,7 +12,8 @@ async def _register(http, username: str) -> str:
 
 
 async def seed(w: World, n: int = 1) -> str:
-    from slop.lib.client import Http  # lazy: seeders stay importable without httpx
+    # lazy: seeders stay importable without httpx
+    from slop.lib.client import Http
 
     out = []
     for i in range(n):

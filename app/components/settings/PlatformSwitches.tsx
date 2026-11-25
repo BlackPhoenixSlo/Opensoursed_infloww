@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * Your Preferences' per-browser switches: the app's own theme (useTheme, the avatar menu's
- * Light/Dark mode), then, as Infloww's, "Synchronize platform
- * display settings" (our theme on OF Manager's mirror, useOfTheme) and
- * notifications per platform (the toaster's pings, notifSettings). Both are
- * this browser's own choices in localStorage, applied at once, so they sit
- * outside the Preferences blob and its Save. Fansly has no display sync: it
- * has no platform page here for our display settings to reach.
- */
 
 import { useSyncExternalStore } from "react";
 
@@ -25,8 +16,7 @@ export default function PlatformSwitches() {
   const sync = useOfDisplaySync();
   const { theme, setTheme } = useTheme();
   const { settings, update } = useNotificationSettings();
-  // useNotificationSettings reads localStorage in its first render; the server's markup and hydration show the
-  // defaults, and the stored switches right after.
+  // localStorage is read in the first render: server markup and hydration show defaults, stored switches right after.
   const hydrated = useSyncExternalStore(noSubscribe, () => true, () => false);
   const platforms = hydrated ? settings.platforms : DEFAULT_NOTIF_SETTINGS.platforms;
   return (
@@ -51,7 +41,7 @@ export default function PlatformSwitches() {
         />
       </Section>
       <Section title="Platform notifications">
-        {PLATFORMS.map((p) => (
+        {PLATFORMS.map(({ key: p }) => (
           <ToggleRow
             key={p}
             title={PLATFORM_NAME[p]}

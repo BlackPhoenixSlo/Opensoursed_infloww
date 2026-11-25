@@ -1,53 +1,3 @@
-"""The shell's per-Creator scoped reads fired all at once (the phone-load work). The app now
-sends every Creator-scoped relay GET (`X-Account-Id`) with `cache: "no-store"`
-(app/lib/relay.ts), so Chrome no longer holds its per-URL cache lock and runs one Agency's
-per-Creator reads together instead of one after another: up to ~50 at once per client, the
-relay's caches cold.
-
-The world: one Agency with 50 Creators (`one_agency`, plus its neighbour), each with a
-captured session (seed/of_sessions.py), so the relay builds its REAL OFClient; OnlyFans is
-lib/of_wire.py on loopback (`OF_WIRE`), answering /users/me, /chats and
-/users/notifications/count. `--users` clients, at most CLIENTS (5, `--set clients=`, see the
-cap below; each its own connection pool on the owner's session: a browser tab) fire, at once
-and with nothing cached in the relay, what the shell and Messages Pro read per Creator: `GET /api/of/v2/users/me` (the avatar),
-`GET /api/of/v2/chats?limit=25&offset=0&order=recent` (the Fan List's first page) and
-`GET /api/of/v2/users/notifications/count` (the bell), for every Creator. Then the relay is
-restarted (cold again) and one client reads the same set the way Chrome did before: each
-of the three URLs Creator after Creator, the three URLs side by side.
-
-Invariants: every call answered 200 (no 5xx, nothing dropped: clients x Creators x 3);
-each answer is that Creator's (users/me's id); OnlyFans saw exactly one call per Creator per
-read in the cold burst (single-flight: the relay's per-key lock and coalescing, so N clients
-cost OF what one does); lib/of_wire.py saw only signed calls it models. Metrics: p95 per
-read (the recorder's `burst` / `serial` stages) and per-client wall time, concurrent vs serial. Budget: the burst's p95 per read vs the
-last green run.
-
-Bypasses, declared: lib/of_wire.py (OnlyFans' API on loopback, its own declared bypasses), its
-latency raised to OF_MS (400 ms per call, `--set of_ms=`; a guess at OF behind a residential
-proxy, where lib/of_wire.py's 50 ms default lets the relay's own queueing hide a stampede);
-OF's chat list and bell are empty; the clients are httpx pools with
-every request in flight at once (HTTP/2's shape; Chrome on HTTP/1.1 holds 6 per origin, so
-this is the worst case), not browsers; the serial pass runs after a relay restart (SIGKILL,
-same DB) so its caches are cold too.
-
-The client cap hides a measured relay cliff. CLIENTS (5) keeps the run below a cliff between
-10 and 20 cold clients: 10 clients (1500 reads at once) pass (evidence
-20261028T072716Z-2026-10-28-scoped-reads-fanout-c663); 20 (3000) leave 1725-2045 reads past
-the client's 30 s timeout (…-0f18 and …-d1a7 at host load 225-287, and …-6729 started on a quiet
-host, load 4). That is the relay's per-request path (threads ~1900-2200, DB pool spills), not
-OnlyFans': single-flight held in every one of them. `--set clients=20` reproduces it.
-`--users` above 5 (`slop/run all`'s 20) still runs 5 clients. Even at 5 the DB pool is the
-wait: every read checks out a connection (pool_wait_n ~ reads), p95 1 s of the ~2 s read p95
-(…-1000). `--scale` changes only the seeded fans and threads, which these reads never touch
-(OF's chat list is empty): small and medium run the same load (…-041f vs …-1000).
-
-Break-it-once: relay-cache-no-single-flight (each miss its own lock: users/me, whose only
-guard is relay_cache's lock, reaches OF once per client).
-
-Write scope (lib/scope_faults.py): one owner send to a seeded fan with no X-Account-Id
-on this multi-Creator Agency must be a 400 `account_required` that OF never sees;
-`--fault=write-scope-falls-back-active` restores the active-Creator fallback, so it is sent.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -95,12 +45,11 @@ async def run(ctx) -> None:
     aids = [c["id"] for c in w.data["creators"] if c["owner"] == main]
     fake = ctx.of_wire
     fake.latency_s = float(ctx.param("of_ms", OF_MS)) / 1000
-    n_clients = max(1, min(ctx.users, int(ctx.param("clients", CLIENTS))))  # the cap: docstring
+    n_clients = max(1, min(ctx.users, int(ctx.param("clients", CLIENTS))))
     per_client = len(aids) * len(READS)
     ctx.metric("burst", {"clients": n_clients, "creators": len(aids), "reads_per_client": per_client,
                          "of_ms": round(fake.latency_s * 1000)})
 
-    # ── cold concurrent burst: every client, every Creator, every read, at once ──
     clients = [ctx.owner.share(limits=per_client) for _ in range(n_clients)]
     n0 = len(fake.calls)
     ctx.rec.stage = "burst"
@@ -131,7 +80,6 @@ async def run(ctx) -> None:
     ctx.check(C_ONE, not off, creators=len(aids), off=dict(list(off.items())[:8]), n_off=len(off),
               of_calls=len(of_calls))
 
-    # ── serial pass on a cold relay: Chrome's per-URL lock, the three URLs side by side ──
     ctx.stack.crash_relay()
     await asyncio.to_thread(ctx.stack.start_relay)
     one = ctx.owner.share(limits=len(READS))
@@ -151,7 +99,6 @@ async def run(ctx) -> None:
     ctx.check(C_WIRE, fake.unsigned == 0 and not fake.unmodelled, unsigned=fake.unsigned,
               unmodelled=dict(fake.unmodelled))
 
-    # ── a write naming no Creator: refused, never sent as whichever Creator is active ──
     def of_sends() -> int:
         with fake.lock:
             return sum(len(v) for v in fake.sends.values())

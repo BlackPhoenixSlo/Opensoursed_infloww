@@ -1,54 +1,3 @@
-"""Customs tab (Messages dashboard > Customs, `?tab=customs`): open row A, then row B before A's
-replies are back. A's late thread / order / brief must never land in B's pane, Copy handoff must
-stay disabled until B's brief and order have settled, and the copy must carry B's @username and
-B's work order only. One owner, one browser (1440x900), `agency_inbox` (3 Creators) plus two owed
-fans by SQL (`seed/customs.py`: A on Creator 0, B on Creator 1, A's tip older so A's row is first).
-A race flow, not a volume one: `--users` and `--scale` change nothing, so no latency budget.
-
-Timeline (held at the browser's wire by a page route, then let through to the relay unchanged):
-  1. Read on A: A's GET /admin/customs/context, GET /admin/customs/order, POST /admin/customs/brief
-     are all held.
-  2. Read on B: B's context goes through; B's order and brief are held. Copy handoff shows (drawn
-     with the pane) and must be disabled. Screenshot `trigger-b-in-flight`.
-  3. B released: B's order and brief answer; Copy must turn enabled.
-  4. A released (HOLD_A_S after the clicks at the earliest): A's three replies answer AFTER B's.
-     Then B's pane must still be B's alone. Screenshot `settled-b-after-a-late`.
-  5. Copy handoff clicked, the clipboard read back (permissions granted to the app's origin):
-     B's @username, account and tag, nothing of A's. Side effects: the clipboard text
-     (`clipboard.txt`), GET /admin/customs/order for B (`order-b.json`), the request timeline
-     (`timeline.json`), all in the run folder; screenshot `copied-b-pane` (the whole pane, brief
-     included, with "Copied").
-  6. Pull on A (A's POST rescrape-now held), then Hide B and Read B: a NEWER open. B's three
-     replies answer, then A's rescrape is let through and answers ok (OF's side of A's thread is
-     `of-truth.jsonl`, so the product's real scrape runs). A must reopen nothing: no context,
-     order or paid brief asked for A after it, B's pane still open and B's alone. Screenshot
-     `pull-a-after-b-reopen`; the rescrape's answer is `rescrape-a.json`.
-  7. (last: it settles A) Pull on A again (its rescrape held), then Sent on A: the real POST
-     /admin/customs/clear, A's row leaves the queue. A's rescrape is let through and answers ok.
-     A must reopen nothing: no context, order or paid brief asked for A after Sent, and no pane
-     shows A (B's pane, still open, is recorded). Screenshot `sent-mid-pull`. Separately, the
-     clear itself: its POST answered 200, A's `fans.customs_owed_at` (NULL now) read from the
-     DB, and GET /admin/customs without A (side effect `cleared-a.json`).
-
-Bypasses (declared): A's three requests and B's order + brief are HELD at the browser's wire
-(a Playwright page route; nothing else about them changes) to make the race deterministic. The
-brief's LLM call (DeepSeek) is answered by lib/customs_relay.py's loopback fake (0.4 s, a brief
-in the product's schema read off the transcript the product built); no LLM key is real (the
-Agency's key is `slop-fake-deepseek`, stored through the real PUT /admin/my-llm-keys) and the
-guard refuses every off-host name. A's rescrape-now is HELD at the browser's wire too (then let
-through unchanged); its OF read (`get_messages`) is lib/relay.py's, from `of-truth.jsonl` (A's
-newest message, as OF holds it). Every other `/api/of/*`
-read stays held (ui.py). Owed fans are SQL (seed/customs.py), as customs_watch + the transcoder
-+ transaction_ingest leave them.
-
-Fault (client side, lib/customs_faults.py): `customs-pane-seq-unguarded` drops the reducer's seq
-guard, so A's late replies fill B's pane; only the pane, clipboard and API checks go red.
-`customs-pull-reopens-stale` drops Pull's newer-open condition (`mayReopen`'s `paneMoved`), so
-A's ok rescrape reopens A over B and asks for a paid brief; only the Pull check goes red.
-`customs-clear-keeps-pull-reopen` drops Pull's fan-cleared condition (`fanCleared`), so A's ok
-rescrape reopens the cleared A and asks for a paid brief; only the Sent-mid-Pull check goes red
-(the clear's own side effects stay green).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -64,7 +13,7 @@ PROFILE = "agency_inbox"
 UI = True
 FAULT = "customs-pane-seq-unguarded"
 VIEWPORT = (1440, 900)
-WAIT_MS = 120_000  # first visit of a page compiles it in next dev
+WAIT_MS = 120_000
 HOLD_A_S = 2.0
 CHECKS = (RACE, GATE, PANE_B, CLIP_B, API_B, PULL_STALE, CLEAR_PULL, CLEARED)
 KINDS = ("context", "order", "brief")
@@ -87,7 +36,6 @@ def _who(req, a: dict, b: dict) -> tuple[str | None, str | None]:
 
 
 class _Timeline:
-    """Every held request (A's and B's customs reads, A's rescrape): asked, let through, answered."""
 
     def __init__(self) -> None:
         self.t0 = time.monotonic()
@@ -125,8 +73,6 @@ def _pane(page):
 
 async def _drive(ctx, w, page, a: dict, b: dict, chk) -> None:
     tl = _Timeline()
-    # A's reads wait on "A", B's order + brief on "B" (B's context goes through). A's rescrapes
-    # wait on their own gate each: the 1st (step 6) on pulls[0], the 2nd (step 7) on pulls[1]; no 3rd.
     gates = {"A": asyncio.Event(), "B": asyncio.Event()}
     pulls = (asyncio.Event(), asyncio.Event())
 
@@ -136,11 +82,11 @@ async def _drive(ctx, w, page, a: dict, b: dict, chk) -> None:
             return await route.fallback()
         tl.add(who, kind, "asked")
         if kind == "rescrape":
-            await pulls[len(tl.seen(who, "rescrape", "asked")) - 1].wait()  # a 3rd: IndexError
+            await pulls[len(tl.seen(who, "rescrape", "asked")) - 1].wait()
         elif who == "A" or kind != "context":
             await gates[who].wait()
         tl.add(who, kind, "let_through")
-        await route.fallback()  # the context route continues it to the relay
+        await route.fallback()
 
     def done(req):
         who, kind = _who(req, a, b)
@@ -180,7 +126,7 @@ async def _drive(ctx, w, page, a: dict, b: dict, chk) -> None:
     await asyncio.sleep(max(0.0, HOLD_A_S - (tl.now() - t_click_a)))
     gates["A"].set()
     await tl.until(lambda: tl.answered("A"), 30, "A's three replies answered")
-    await page.wait_for_timeout(800)  # React renders whatever A's replies dispatched
+    await page.wait_for_timeout(800)
     pane_after = await pane.inner_text()
     hide_rows = [await _row(page, f).get_by_role("button", name="Hide", exact=True).count() for f in (a, b)]
     await ui.shot(ctx, page, "settled-b-after-a-late")
@@ -201,7 +147,7 @@ async def _drive(ctx, w, page, a: dict, b: dict, chk) -> None:
         await copy.click()
         await page.get_by_text("Copied", exact=True).wait_for(timeout=5_000)
         clip = await page.evaluate("navigator.clipboard.readText()")
-        await pane.screenshot(path=str(ctx.out / "screenshots" / "copied-b-pane.png"))  # the whole pane, brief too
+        await pane.screenshot(path=str(ctx.out / "screenshots" / "copied-b-pane.png"))
     (ctx.out / "clipboard.txt").write_text(clip)
     foreign = [s for s in (a["tag"], f"@{a['username']}", f"-account: {a['account_name']}", a["call"]) if s in clip]
     want = [f"-username: @{b['username']}", f"-account: {b['account_name']}", b["tag"], f"-call him: {b['call']}"]
@@ -224,7 +170,6 @@ async def _drive(ctx, w, page, a: dict, b: dict, chk) -> None:
 
 
 async def _pull_after_reopen(ctx, page, a: dict, b: dict, chk, tl: _Timeline, pull_gate: asyncio.Event) -> None:
-    """Step 6: Pull on A (its rescrape held), then a newer open (Hide B, Read B) before it answers."""
     await _row(page, a).get_by_role("button", name="Pull", exact=True).click()
     await tl.until(lambda: tl.seen("A", "rescrape", "asked"), 10, "A's rescrape asked")
     t_hide = tl.now()
@@ -236,8 +181,8 @@ async def _pull_after_reopen(ctx, page, a: dict, b: dict, chk, tl: _Timeline, pu
         pull_gate.set()
     rescrape = await (await got.value).json()
     (ctx.out / "rescrape-a.json").write_text(json.dumps(rescrape, indent=2))
-    await _row(page, a).get_by_role("button", name="Pull", exact=True).wait_for(timeout=10_000)  # pullDone
-    await page.wait_for_timeout(1_500)  # a reopen's three requests would be asked by now
+    await _row(page, a).get_by_role("button", name="Pull", exact=True).wait_for(timeout=10_000)
+    await page.wait_for_timeout(1_500)
     a_asked = tl.seen("A", KINDS, "asked", after=t_release)
     pane_pull = await _pane(page).inner_text()
     hide_pull = [await _row(page, f).get_by_role("button", name="Hide", exact=True).count() for f in (a, b)]
@@ -249,7 +194,6 @@ async def _pull_after_reopen(ctx, page, a: dict, b: dict, chk, tl: _Timeline, pu
 
 
 async def _sent_mid_pull(ctx, w, page, a: dict, b: dict, chk, tl: _Timeline, pull_gate: asyncio.Event) -> None:
-    """Step 7: Pull on A (its rescrape held), Sent on A (the real clear), then the rescrape answers ok."""
     t_pull = tl.now()
     await _row(page, a).get_by_role("button", name="Pull", exact=True).click()
     await tl.until(lambda: tl.seen("A", "rescrape", "asked", after=t_pull), 10, "A's second rescrape asked")
@@ -265,7 +209,7 @@ async def _sent_mid_pull(ctx, w, page, a: dict, b: dict, chk, tl: _Timeline, pul
     async with page.expect_response(lambda r: r.url.endswith("/rescrape-now")) as got:
         pull_gate.set()
     rescrape = await (await got.value).json()
-    await page.wait_for_timeout(1_500)  # a reopen's three requests would be asked by now
+    await page.wait_for_timeout(1_500)
     a_asked = tl.seen("A", KINDS, "asked", after=t_sent)
     pane = await _pane(page).inner_text() if await _pane(page).count() else ""
     hide_b = await _row(page, b).get_by_role("button", name="Hide", exact=True).count()
@@ -282,8 +226,6 @@ async def _sent_mid_pull(ctx, w, page, a: dict, b: dict, chk, tl: _Timeline, pul
         "clear_status": clear_status, "rescrape": rescrape,
         "db_fans_a": {"customs_owed_at": owed_at, "customs_cleared_at": cleared_at},
         "get_admin_customs_rows_for_a": a_listed}, indent=2))
-    # B's pane is recorded, not required: under customs-pull-reopens-stale step 6 already replaced it
-    # with A's, and this check must stay about step 7 alone.
     chk(CLEAR_PULL, rescrape.get("ok") is True and not a_asked and a["tag"] not in pane,
         rescrape_ok=rescrape.get("ok"), a_asked_after_sent=a_asked, b_pane_open=hide_b == 1,
         b_tag_shown=b["tag"] in pane, a_tag_shown=a["tag"] in pane)
@@ -296,8 +238,6 @@ async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
     a, b = customs.seed(w, 2)
     customs.write_of_truth(ctx.stack.tmp / "of-truth.jsonl", a)
-    # The Agency's own DeepSeek key, through the real route (the brief bills the tenant's key, never a
-    # platform one); it is fake, and only lib/customs_relay.py's loopback DeepSeek ever sees it.
     (await ctx.owner.put("/admin/my-llm-keys", json={"deepseek": "slop-fake-deepseek"})).raise_for_status()
     listed = (await ctx.owner.get("/admin/customs")).json().get("customs") or []
     ctx.metric("customs_rows", [{k: r.get(k) for k in ("account_id", "fan_id", "of_username", "tip_cents",

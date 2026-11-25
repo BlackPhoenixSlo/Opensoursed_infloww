@@ -18,6 +18,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { relay, type OFMessage } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
+import { useCan } from "@/hooks/useCan";
 
 interface PinnedResp {
   list?: OFMessage[];
@@ -28,9 +29,10 @@ export function useChatPinned(
   fanId: FanId | null,
   enabled = true,
 ) {
+  const allowed = useCan(accountId, "pin_message");
   return useQuery<OFMessage[]>({
     queryKey: ["chat-pinned", accountId ?? "", String(fanId ?? "")],
-    enabled: !!accountId && !!fanId && enabled,
+    enabled: !!accountId && !!fanId && enabled && allowed,
     // Pins change when a human clicks pin/unpin or the AI writes one — neither
     // is frequent, and neither is urgent enough to justify refetching per
     // render. A minute keeps an operator's own pin from looking like it failed.

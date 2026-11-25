@@ -1,73 +1,20 @@
-"""The vault describe sweep's part of the slop relay (lib/relay.py loads it: `wire` runs at the end of its
-`_wire`; no `OF` class, so it adds no OnlyFans method). Used by scenarios/2026-11-01-vault-describe-sweep.py.
-
-Inert unless the run wrote `$DEMO_SHOTS_TMP/deepinfra.json` (the scenario does, through `arm_run` below) AND then
-armed it: without the file `POST /__slop/vault-describe/arm` is a 409 that changes nothing, and nothing else here
-runs (the fake's port only exists after an arm), so every other scenario's relay is untouched.
-
-  arm_run(http, tmp, items, latency_s)  (harness side, the scenario calls it before the seeder writes rows)
-       writes `deepinfra.json` {items: {"WxH": [acct, id, outcome]}, latency_s} for the seeder's planned items,
-       then POSTs the arm hook and answers its body.
-  POST /__slop/vault-describe/arm {video_urls}   (loopback; 409 without the file or under SLOP_LIVE=1)
-       0. reads `deepinfra.json` once (it is written before the arm and never after).
-       1. DeepInfra's OpenAI-compatible wire, on its own loopback port (ThreadingHTTPServer, a thread per call,
-          like lib/automation_relay.py's DeepSeek): `llm_providers.PROVIDERS["deepinfra"]` re-pointed there
-          (`dataclasses.replace`), so `llm_client.chat` (key, cap reservation, grok_calls row, retries, cost)
-          runs unchanged and only the HTTP answer is the fake's.
-       2. The vision passes' still stores (`vault_stills.IMAGE_DIR` / `THUMB_DIR` / `POSTER_DIR`,
-          `storyboard._STORYBOARD_DIR`, module globals read at call time) re-pointed into
-          `$DEMO_SHOTS_TMP/vault-describe/`, so `vault_frames.collect` reads the seeded local stills (a photo's
-          `IMAGE_DIR/<acct>/<id>.jpg`, a clip's warmed storyboard frames) and never touches OnlyFans or the
-          checkout's /tmp stores. Answers {dirs, port, frames: storyboard._STORYBOARD_FRAMES,
-          hashes: {video url: storyboard._video_path_hash(url)}}.
-  GET  /__slop/vault-describe/calls?since=N&until=M   {calls}: every call the fake answered, in arrival order, [N:M].
-  GET  /__slop/vault-describe/count                   {n}: how many calls so far.
-
-What the fake answers (per call; the item is read off the first image's pixel size, which the seeder makes unique
-per item: `shrink_data_url` never enlarges, so the flags pass's re-encode keeps it; a clip frame of the Jev scenario
-by its size + tint, `image_key` / `item_key` below):
-  a POST to any path but /chat/completions -> 404 (recorded: purpose "other", answer "unknown", billed 0)
-  not a describe/flags prompt, or no seeded item -> 503 (recorded, answer "unknown", billed 0)
-  describe prompt (`vault_ai_vision._DESCRIBE_PROMPT_V2` / `_DESCRIBE_PROMPT`), by the item's outcome in the file:
-    ok      -> a describe answer whose description is `describe_text(acct, id, model)`
-    refuse  -> M30: "I'm sorry, I can't help with that." (`vision.is_refusal`), M235: the ok answer
-    blank   -> "" from both models
-  flags prompt (`FLAGS_PROMPT` below: the product has no qwen flags call since D52/D54, only the
-  `*-still-calls-qwen-flags` faults send it) -> the flags JSON, plus a hostile `description` / `tags` the flags pass must ignore
-  Jev-fed describe prompts (`vault_describe_jev`, D51: a base prompt with the VERIFIED FACTS block right before its
-  "RULES" line) are describe calls too, told apart by `recipe` (`recipe_of`): "v6" (`_DESCRIBE_PROMPT_V2` + facts,
-  the ok JSON above) or "prose" (`PROSE_PROMPT` + facts: `{"description": prose_text(...), "clothing_items":
-  PROSE_GARMENTS}`, the marker sentence plus one sentence per lane-critical claim, `PROSE_CLAIMS`, which the product
-  must scrub down to the planted facts, and garments it must store as they are), or "vid" (a clip, D54:
-  `_DESCRIBE_PROMPT_V2` + the clip facts block, `vault_describe_jev.VIDEO_HEAD`; the ok JSON above).
-Usage per answer (`_usage`), billed by `_billed_mc` from `llm_models.MODELS`' listed prices directly (not the
-product's `llm_client._cost_millicents`, so a wrong product formula cannot agree with itself): that per-call
-`billed_mc` is what the scenario sums against what the sweeps report. Every call waits `latency_s` (file; real
-describe calls take ~14 s, compressed: declared).
-Record per call: i, t, purpose (describe|flags|other), model, account_id, media_id, answer, images, key (the first
-image's `image_key`), tokens_in, tokens_out, billed_mc, auth (the request carried the agency's dummy key as a
-Bearer), and on describe calls recipe (v2|v6|prose|vid), facts (the facts block's lines), hedge (the photo or clip
-review hedge is one of them).
-"""
-
 import json
 import os
 import threading
 import time
 from pathlib import Path
 
-M30, M235 = "qwen3-vl-30b", "qwen3-vl-235b"  # the sweep's model and its escalation (vault_ai_vision)
+M30, M235 = "qwen3-vl-30b", "qwen3-vl-235b"
 _REFUSAL = "I'm sorry, I can't help with that."
-FAKE_KEY = "slop-fake-deepinfra"  # the agency's dummy DeepInfra key (PUT /admin/my-llm-keys); never a real one
+FAKE_KEY = "slop-fake-deepinfra"
 HOSTILE_DESC = "FLAGS PASS MUST NOT WRITE THIS"
 HOSTILE_TAG = "flagspass"
-# The retired qwen flags call's prompt, re-sent only by lib/vault_jev_faults.py's qwen-flags faults (D52/D54).
 FLAGS_PROMPT = "slop: the retired qwen flags prompt. Answer the flags JSON."
 _lock = threading.Lock()
 _calls: list[dict] = []
 _cfg: dict = {"items": {}, "latency_s": 0.0}
 _port: int | None = None
-CFG_FILE = "deepinfra.json"  # in $DEMO_SHOTS_TMP
+CFG_FILE = "deepinfra.json"
 
 
 def _file() -> Path:
@@ -82,10 +29,7 @@ def size_key(wh) -> str:
     return f"{wh[0]}x{wh[1]}"
 
 
-# A clip's frames (scenarios/2026-11-11-vault-jev-flags.py, lib/img_relay.py `mp4_frames`): flat colour, frame i of
-# tint g = clip_rgb(g, i). Blue CLIP_B marks a clip frame (the seeder's photo stills are blue 120); red spells the
-# frame, green the tint, so a clip is told by (pixel size, tint) and a frame by its red. Survives h264 yuv420p, the
-# product's JPEG re-encodes and its 400 px scrub scale (measured 11-12: worst channel error 2 of the 9 / 14 margin).
+# blue marks a clip frame; survives h264 yuv420p, the product's JPEG re-encodes and 400 px scrub (measured: worst channel error 2 of 9/14 margin)
 CLIP_B = 230
 
 
@@ -98,8 +42,6 @@ def clip_key(wh, g: int) -> str:
 
 
 def image_key(data: bytes) -> tuple[str | None, int | None]:
-    """(item key, clip frame index | None) of one image: a photo's `size_key`, a clip frame's `clip_key` + its
-    frame; (None, None) for bytes that are no image."""
     import io
 
     from PIL import Image
@@ -115,16 +57,13 @@ def image_key(data: bytes) -> tuple[str | None, int | None]:
 
 
 def item_key(it: dict) -> str:
-    """The key `image_key` reads off an item's describe images: a clip with a `tint` by its scrub size + tint."""
     return clip_key(it["size"], it["tint"]) if it.get("tint") is not None else size_key(it["size"])
 
 
 def describe_text(account_id, media_id, model: str) -> str:
-    """The description the fake's ok answer carries for one item and model (the scenario reads it back)."""
     return f"slop vault item {account_id}:{media_id} described by {model}"
 
 
-# The prose recipe's answer: the marker, then one sentence per lane-critical claim (in this order).
 PROSE_CLAIMS = {"nipple": "Her nipples are visible.", "vulva": "Her pussy is visible.",
                 "pen": "A toy is inserted into her."}
 
@@ -137,8 +76,6 @@ def prose_text(account_id, media_id, model: str) -> str:
 
 
 def recipe_of(text: str) -> tuple[str | None, list[str]]:
-    """(recipe, fact lines) of a describe prompt: v2 = today's (V2 / v1, verbatim); v6 / prose = the Jev-fed base
-    with a facts block before its "RULES" line; (None, []) = not a describe prompt."""
     import vault_ai_vision
     import vault_describe_jev
 
@@ -156,7 +93,6 @@ def recipe_of(text: str) -> tuple[str | None, list[str]]:
 
 
 async def arm_run(http, tmp: Path, items: list[dict], latency_s: float) -> dict:
-    """Harness side: the outcomes file for the seeder's planned items, then the arm hook. Answers the arm body."""
     (Path(tmp) / CFG_FILE).write_text(json.dumps({
         "latency_s": latency_s,
         "items": {item_key(it): [it["account_id"], it["media_id"], it["outcome"]]
@@ -168,14 +104,12 @@ async def arm_run(http, tmp: Path, items: list[dict], latency_s: float) -> dict:
 
 
 def _usage(purpose: str, answer: str, images: int) -> tuple[int, int]:
-    """(prompt_tokens, completion_tokens) the fake reports for one answer."""
     if purpose == "flags":
         return 600, 60
     return 1000 + 400 * images, {"ok": 250, "refuse": 12, "blank": 0}.get(answer, 0)
 
 
 def _billed_mc(model: str, t_in: int, t_out: int) -> int:
-    """What DeepInfra would bill, in millicents, at the model's listed per-1k prices (no cache hits reported)."""
     import llm_models
 
     m = llm_models.MODELS[model]
@@ -186,7 +120,7 @@ def _size_of(data_url: str) -> str | None:
     import base64
     try:
         return image_key(base64.b64decode(data_url.partition(",")[2]))[0]
-    except ValueError:  # not base64: no item
+    except ValueError:
         return None
 
 

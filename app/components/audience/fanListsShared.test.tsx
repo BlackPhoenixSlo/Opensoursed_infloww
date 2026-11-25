@@ -1,8 +1,3 @@
-/**
- * The `["fan-lists", account]` cache is shared: the Mass premade composer and the funnel launch panel read it too.
- * Whichever screen loads first fills it, so every reader must read every list (readAllFanLists), or a link's List
- * select opened after the composer would offer only the first 50.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -37,7 +32,6 @@ function ListSelect() {
 
 afterEach(() => { cleanup(); get.mockClear(); });
 
-/** The List select is the house listbox: open it once, then count its options past "None". */
 const options = () => {
   const trigger = document.getElementById("shared-list")!;
   if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);

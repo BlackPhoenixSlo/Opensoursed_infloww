@@ -1,20 +1,5 @@
 "use client";
 
-/**
- * useMassMessages — list + cancel past mass-message broadcasts.
- *
- * Reads from the relay's local SQLite cache (`mass_broadcast_cache`) via
- * `/admin/mass-messages` for a snappy first render. The Refresh button
- * triggers POST `/admin/mass-messages/refresh`, which pulls from OF +
- * upserts the cache + returns the fresh rows in one roundtrip.
- *
- * The previous live-OF passthrough (`/api/of/v2/users/me/stats/messages/group`)
- * still works and write-throughs into the same cache — used as a fallback
- * if the DB is empty on first ever visit (no cached rows yet).
- *
- * Each row stamped with `__accountId` so cancel routes through the
- * right session.
- */
 
 import {
   useMutation,
@@ -53,13 +38,8 @@ export interface MassMessageRow {
   unsendSeconds?: number | null;
   template?: string | null;
   fetched_at?: string | null;
-  /** Which automation produced this broadcast (joined via mass_runs.queue_id).
-   *  null = a manual UI broadcast or a pre-0032 run. */
   automationKind?: string | null;
-  /** Funnel/campaign name when the broadcast ran a funnel. */
   funnelName?: string | null;
-  /** Buyers and their sum (cents, at the copy's price) from OUR rows of this
-   *  broadcast's copies — no OF read; a floor for a list-audience blast. */
   purchasedCount?: number;
   earningsCents?: number;
   __accountId?: string;
@@ -90,12 +70,7 @@ async function fetchCached(accountId: string, daysBack: number, limit: number): 
   return (resp.items ?? []).map((it) => ({ ...it, __accountId: accountId }));
 }
 
-/** Flatten + sort the per-account rows inside `useQueries`' `combine`, which
- *  re-runs only when a query result changes and structurally shares its
- *  output, so `rows` keeps its reference across renders. Module-level so the
- *  function reference is stable. (A `useMemo` keyed on `queries.map(q =>
- *  q.data)` broke on a cold load: that list is empty while the Creators load,
- *  React compares only the old length, so the memo never recomputed.) */
+// Not a useMemo on queries.map(q => q.data): on a cold load that list is empty and React compares only the old length, so it never recomputed.
 function combineQueries(queries: UseQueryResult<MassMessageRow[]>[]) {
   const rows = queries
     .flatMap((q) => q.data ?? [])
@@ -115,13 +90,9 @@ export function useMassMessages(accountIds: string[], opts: MassMessagesOptions 
     queries: accountIds.map((accountId) => ({
       queryKey: [KEY_PREFIX, accountId, daysBack, limit] as const,
       queryFn: () => fetchCached(accountId, daysBack, limit),
-      // Cache is local SQLite — practically instant + cheap to re-read,
-      // but we still get React Query's de-duplication across mounts.
-      staleTime: 5 * 60 * 1000,   // 5min before considered stale
-      gcTime: 30 * 60 * 1000,     // keep in memory across nav for 30min
+      staleTime: 5 * 60 * 1000,
+      gcTime: 30 * 60 * 1000,
       refetchOnWindowFocus: false,
-      // Hold the previously-rendered rows during refetch/key-change so
-      // the list doesn't flicker to empty when `daysBack` changes.
       placeholderData: (prev: MassMessageRow[] | undefined) => prev,
     })),
     combine: combineQueries,
@@ -134,7 +105,6 @@ export function useMassMessages(accountIds: string[], opts: MassMessagesOptions 
   return { rows, isLoading, isFetching, error, queries, daysBack, limit };
 }
 
-/** Pull one account's broadcasts from OF into the relay's cache. */
 async function refreshAccount(accountId: string, daysBack: number, limit: number): Promise<number> {
   const qs = new URLSearchParams({
     account_id: accountId,
@@ -145,10 +115,6 @@ async function refreshAccount(accountId: string, daysBack: number, limit: number
   return resp.written;
 }
 
-/** Hit OF + upsert into the cache for every account, then invalidate
- *  the read queries so they pick up the fresh rows. One mutation call
- *  fans out to N accounts, `CREATOR_POOL` at a time (never every Creator's
- *  OF read at once); any failure fails the call once all have settled. */
 export function useRefreshMassMessages() {
   const qc = useQueryClient();
   return useMutation<
@@ -166,8 +132,6 @@ export function useRefreshMassMessages() {
       return res.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
     },
     onSuccess: (_data, vars) => {
-      // Invalidate every per-account list query; React Query will
-      // refetch from the DB and pick up the new rows.
       vars.accountIds.forEach((accountId) => {
         qc.invalidateQueries({ queryKey: [KEY_PREFIX, accountId] });
       });
@@ -175,7 +139,6 @@ export function useRefreshMassMessages() {
   });
 }
 
-/** A broadcast OF is still delivering: its queue id and Creator. */
 export interface MassQueueSending {
   queueId: number;
   accountId: string;
@@ -186,18 +149,9 @@ interface QueueFrame {
   isCanceled?: boolean;
 }
 
-/**
- * The listed Creators' broadcasts OF is still delivering (`chat_queue_update` / `chat_queue_finish` SSE frames,
- * service/events.py). A sent broadcast is not in the cache until OF lists it, so the in-flight ones come back here
- * rather than as rows; the finish frame drops it and refreshes that Creator's list from OF, so the new row lands with
- * its sent count. No count while sending: an update frame's `total` and `pending` are not trustworthy (the first
- * carries `total: -1`), only the finish frame's, and the refreshed row shows that. A cancelled queue is dropped, and
- * so is everything on a `resync` or a lost stream, since a finish frame may have been missed.
- */
 export function useMassQueueProgress(accountIds: string[], daysBack: number, limit = 100): MassQueueSending[] {
   const qc = useQueryClient();
   const [inFlight, setInFlight] = useState<Map<number, MassQueueSending>>(() => new Map());
-  // Read inside the listeners, so a new Creators list or range doesn't resubscribe.
   const scope = useRef({ accountIds, daysBack, limit });
   useEffect(() => {
     scope.current = { accountIds, daysBack, limit };
@@ -216,6 +170,7 @@ export function useMassQueueProgress(accountIds: string[], daysBack: number, lim
       next.delete(queueId);
       return next;
     });
+    // No count while sending: an update frame's total/pending are untrustworthy (the first carries total -1).
     const offUpdate = eventBus.on("chat_queue_update", (env) => {
       const got = frameOf(env, "chat_queue_update");
       if (!got) return;
@@ -247,9 +202,6 @@ export function useMassQueueProgress(accountIds: string[], daysBack: number, lim
   return [...inFlight.values()];
 }
 
-/** Unsend one broadcast, then flip its row's `isCanceled` in the caches so
- *  the UI stops showing it as unsendable without waiting for the refetch.
- *  Takes the client, not a hook, so a bulk run outlives the tab (useBulkUnsend). */
 export async function cancelMassMessage(
   qc: QueryClient,
   { id, accountId }: { id: number; accountId: string },

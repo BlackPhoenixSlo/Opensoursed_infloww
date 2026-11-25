@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * OutboundTranslation — Infloww's composer translation (04 M15/M16): the
- * chatter writes in their own language and the Fan gets it in the Fan's.
- * Each Fan has a language (`useFanLanguage`); while the strip is open the
- * draft is translated into it through /admin/translate's `target` (cached in
- * `translation_cache`), and the strip offers "Use translation" (the draft
- * becomes the translation, Shift+Alt+R) and "Send translation" (Ctrl+Enter,
- * which while the strip is open never sends the untranslated draft).
- * Alt+T, or the Translate popover's "Translate my messages" (the Composer
- * hands it `toggle`), opens and closes it; it opens by itself for a Fan whose
- * language is set. Absent while the
- * Agency's AI translation is off for a chatter, and on a composer with no Fan.
- */
 
 import { useEffect, useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -33,16 +20,13 @@ export interface OutboundTranslation {
   toggle: () => void;
   target: string | null;
   setTarget: (code: string | null) => void;
-  /** The current draft in the Fan's language; null while none is ready. */
   translated: string | null;
   translating: boolean;
-  /** The relay gave no translation for the draft as it stands. */
   failed: boolean;
   retry: () => void;
 }
 
 export function useOutboundTranslation(accountId: string | null, fanId: FanId | null, text: string): OutboundTranslation {
-  // A chatter's is unknown until the Applied read answers: off till then.
   const allowed = useTranslationAllowed(accountId) === true;
   const available = fanId != null && allowed;
   const [target, setTarget] = useFanLanguage(accountId, fanId);
@@ -70,7 +54,6 @@ export function useOutboundTranslation(accountId: string | null, fanId: FanId | 
     staleTime: Infinity,
     retry: false,
   });
-  // Only a translation of the draft as it stands now: never send an older one.
   const current = on && !!draft && settled === draft;
   return {
     available, open: available && open, toggle, target, setTarget,
@@ -81,7 +64,6 @@ export function useOutboundTranslation(accountId: string | null, fanId: FanId | 
   };
 }
 
-/** The composer textarea's translation keys; true when one was handled. */
 export function outboundTranslationKey(
   e: React.KeyboardEvent, t: OutboundTranslation, replace: (s: string) => void, send: (s: string) => void,
 ): boolean {
@@ -92,8 +74,7 @@ export function outboundTranslationKey(
     return true;
   }
   if (!t.open) return false;
-  // While the strip is open Ctrl+Enter is always "Send translation": with none
-  // ready yet it does nothing, never the untranslated draft.
+  // While the strip is open Ctrl+Enter never sends the untranslated draft.
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
     if (t.translated) send(t.translated);
@@ -107,7 +88,6 @@ export function outboundTranslationKey(
   return false;
 }
 
-/** The strip in the composer's notice stack. */
 export function OutboundTranslationStrip({
   t, onUse, onSend, canSend, formatted = false,
 }: {
@@ -115,7 +95,6 @@ export function OutboundTranslationStrip({
   onUse: (s: string) => void;
   onSend: (s: string) => void;
   canSend: boolean;
-  /** The draft holds OF formatting: the translation is plain text, so its strip says the formatting goes. */
   formatted?: boolean;
 }) {
   const selectId = useId();

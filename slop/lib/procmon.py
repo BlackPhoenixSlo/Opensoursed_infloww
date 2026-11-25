@@ -1,17 +1,3 @@
-"""Relay CPU and memory, sampled from outside the process, per load stage.
-
-Every second `ps` reports the relay process group's cumulative CPU time and RSS
-(the relay is its own process group: stack.py starts it with start_new_session).
-CPU% over an interval = delta CPU seconds / delta wall seconds * 100, so 100% is
-one core busy; it can pass 100% when executor threads work outside the GIL. Each
-interval is tagged with `rec.stage` at its start, the same tag the HTTP recorder
-uses, so the per-stage table lines up with the per-stage p95s. Nothing runs inside
-the relay for this.
-
-With `--profile`, the relay wrapper (lib/relay.py, never service/) also runs a
-stack sampler; this monitor tells it the current stage on every change and
-fetches the per-stage profiles before the stack goes down.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -22,15 +8,12 @@ import time
 from pathlib import Path
 
 INTERVAL_S = 1.0
-# Upper bounds (ms) of the pool-wait histogram lib/relay.py _db_probe reports; half-open
-# (`ms < b`): bucket 100 holds [75,100) ms.
+# half-open (`ms < b`): bucket 100 holds [75,100) ms
 WAIT_BOUNDS_MS = (0.5, 1, 2, 5, 10, 25, 50, 75, 100, 250, 500, 1000, 2000, float("inf"))
-_PS: dict = {"t": 0.0, "out": "", "lock": None, "loop": None}  # one `ps -A` per 0.5 s for every monitor (fleet)
+_PS: dict = {"t": 0.0, "out": "", "lock": None, "loop": None}
 
 
 def _proc_all() -> str:
-    """`ps -A -o pgid=,time=,rss=` read from /proc, for Linux without procps (the relay
-    image calibrate.sh runs the harness in): TIME as 0:<seconds>, RSS in KiB."""
     tick, page_kb = os.sysconf("SC_CLK_TCK"), os.sysconf("SC_PAGE_SIZE") // 1024
     out = []
     for pid in os.listdir("/proc"):
@@ -38,16 +21,17 @@ def _proc_all() -> str:
             continue
         try:
             with open(f"/proc/{pid}/stat") as f:
-                st = f.read().rpartition(")")[2].split()  # fields after the command name
+                st = f.read().rpartition(")")[2].split()
         except OSError:
-            continue  # gone meanwhile
+            continue
         out.append(f"{st[2]} 0:{(int(st[11]) + int(st[12])) / tick:.2f} {int(st[21]) * page_kb}")
     return "\n".join(out)
 
 
 async def _ps_all() -> str:
     loop = asyncio.get_running_loop()
-    if _PS["loop"] is not loop:  # one lock per event loop: --break runs two loops in one process
+    # one lock per event loop: --break runs two loops in one process
+    if _PS["loop"] is not loop:
         _PS.update(lock=asyncio.Lock(), loop=loop, t=0.0)
     async with _PS["lock"]:
         if time.monotonic() - _PS["t"] > 0.5 and shutil.which("ps") is None:
@@ -61,7 +45,6 @@ async def _ps_all() -> str:
 
 
 def wait_p95(hist: list[int]) -> float | None:
-    """The bucket upper bound (ms, exclusive) holding the 95th percentile pool wait."""
     n = sum(hist)
     if not n:
         return None
@@ -74,16 +57,10 @@ def wait_p95(hist: list[int]) -> float | None:
 
 
 def pool_bent(spills: int, wait_p95_ms: float | None, gate: dict) -> bool:
-    """Decision 5's pool gate, the one predicate every gate site calls (chatter-crowd's
-    judge_stage, lib/cli.py's POOL_GATE check): bent on any spill above the gate, or a
-    pool-wait p95 bucket whose (exclusive) upper bound is over the gate, so bucket 100
-    ([75,100) ms) holds "< 100 ms" and bucket 250 does not. A null wait p95 (no checkout
-    timed) passes; null spills never get here (missing pool data is `nodata` upstream)."""
     return spills > gate["spills"] or (wait_p95_ms is not None and wait_p95_ms > gate["wait_p95_ms"])
 
 
 def _cpu_seconds(s: str) -> float:
-    """ps TIME: [[dd-]hh:]mm:ss.cc."""
     days, _, rest = s.rpartition("-")
     total = 0.0
     for part in rest.split(":"):
@@ -104,21 +81,19 @@ def pct(xs: list[float], q: float = 0.95) -> float | None:
 class ProcMon:
     def __init__(self, pgid: int, rec, relay_http, *, profile: bool = False):
         self.pgid, self.rec, self.http, self.profile = pgid, rec, relay_http, profile
-        self.samples: list[dict] = []  # {t, stage, cpu_s, rss_mb, loop_s, loop_t}
-        self._tl_i = 0  # rec.timeline read so far
-        self.intervals: list[dict] = []  # {stage, wall_s, cpu_s, cpu_pct, loop_pct, rss_mb}
+        self.samples: list[dict] = []
+        self._tl_i = 0
+        self.intervals: list[dict] = []
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
         self.profile_stage: str | None = None
         self.profile_errors: list[str] = []
-        self.nested_at: dict = {}  # top stacks of nested DB checkouts (lib/relay.py _db_probe)
-        self._fresh = False  # the next sample starts a new series (follow())
-        self._ticks = 0  # samples taken (a coverage save every 5th under --map)
-        self._lost = 0  # polls by samples that left no interval (process not seen): counted lost, next interval
+        self.nested_at: dict = {}
+        self._fresh = False
+        self._ticks = 0
+        self._lost = 0
 
     def follow(self, pgid: int, relay_http) -> None:
-        """Watch another process group from now on (the shard's relay restarted elsewhere, e.g.
-        restored on another box). No interval spans the switch: CPU counters restart."""
         self.pgid, self.http, self._fresh = pgid, relay_http, True
 
     async def _ps(self) -> tuple[float, float] | None:
@@ -136,12 +111,9 @@ class ProcMon:
     async def _loop(self) -> None:
         while not self._stop.is_set():
             stage = self.rec.stage
-            t_pre, mono_pre = time.time(), time.monotonic()  # stamps around this sample's reads
+            t_pre, mono_pre = time.time(), time.monotonic()
             got, loop, threads = await asyncio.gather(self._ps(), self._loop_cpu(), self._threads())
             t_post, mono_post = time.time(), time.monotonic()
-            # One /__slop/loop-cpu poll per sample. Lost (raised or non-200): the relay may have
-            # reset its pool histogram, so that interval's waits are gone. Pool missing: answered
-            # without the wait histogram or the spill counter.
             lost = loop is None
             db_now = (loop or {}).get("db") or {}
             missing = not lost and ((db_now.get("wait") or {}).get("hist") is None or db_now.get("spills") is None)
@@ -176,13 +148,9 @@ class ProcMon:
                                                "db_wait_max_ms": (db.get("wait") or {}).get("max_ms"),
                                                "host_load1": s["load1"], "polls": 1 + self._lost,
                                                "polls_lost": int(lost) + self._lost, "pool_missing": int(missing),
-                                               # the interval's span: just before the first sample's
-                                               # reads to just after the last's (epoch s, monotonic s)
                                                "t_pre": round(prev["t_pre"], 3), "t_post": round(s["t_post"], 3),
                                                "mono_pre": round(prev["mono_pre"], 3),
                                                "mono_post": round(s["mono_post"], 3),
-                                               # Q: the loop thread's run-queue wait and timeslices
-                                               # (schedstat deltas; null off Linux), context only
                                                "q_run_delay_ms": round((q[1] - pq[1]) / 1e6, 3) if q and pq else None,
                                                "q_slices": q[2] - pq[2] if q and pq else None,
                                                **self._requests_until(s["t"])})
@@ -202,15 +170,13 @@ class ProcMon:
                 pass
 
     def _requests_until(self, t: float) -> dict:
-        """Actor calls that ended since the last sample (~`t`): how many, and the slowest (ms)."""
         tl = getattr(self.rec, "timeline", None) or []
         ms = [c[3] for c in tl[self._tl_i:] if not c[1].startswith("GET /__slop")]
         self._tl_i = len(tl)
         return {"req_n": len(ms), "req_max_ms": round(max(ms), 1) if ms else None}
 
     async def _threads(self) -> int | None:
-        """Threads in the relay process now (each pooled SQLite connection is one aiosqlite thread)."""
-        if shutil.which("ps") is None:  # Linux without procps: the relay is its group's leader
+        if shutil.which("ps") is None:
             try:
                 return len(os.listdir(f"/proc/{self.pgid}/task")) or None
             except OSError:
@@ -221,7 +187,6 @@ class ProcMon:
         return n if n > 0 else None
 
     async def _loop_cpu(self) -> dict | None:
-        """The relay's loop CPU and pool counters; None for a lost poll (raised or non-200)."""
         try:
             r = await self.http.get("/__slop/loop-cpu")
             return r.json() if r.status_code == 200 else None
@@ -229,7 +194,6 @@ class ProcMon:
             return None
 
     async def save_coverage(self) -> None:
-        """`slop/run --map`: the relay writes its coverage data so far (a SIGKILLed relay keeps it)."""
         try:
             await self.http.post("/__slop/coverage-save")
         except Exception:  # noqa: BLE001 — a lost save: the next one, or the relay's exit, writes it
@@ -251,7 +215,6 @@ class ProcMon:
             await self._task
 
     def summary(self) -> dict:
-        """Per stage (and `run`, every interval): CPU mean / p95 / max %, cores, RSS max / end."""
         groups: dict[str, list[dict]] = {}
         for iv in self.intervals:
             groups.setdefault(iv["stage"] or "-", []).append(iv)
@@ -311,7 +274,6 @@ class ProcMon:
              "db_nested_at": self.nested_at}, indent=1))
 
     async def fetch_profile(self, out: Path) -> dict | None:
-        """The relay's per-stage stack profiles -> profile.json + profile-<stage>.txt."""
         if not self.profile:
             return None
         try:
@@ -346,7 +308,6 @@ def _dash(v) -> object:
 
 
 def render(stage: str, p: dict, n: int, hz: int) -> list[str]:
-    """Sample weights are wall ms (each look weighs the time since the previous one)."""
     wall = p["wall_ms"] or 1
     out = [f"stage {stage}: {wall / 1000:.1f}s sampled (~{hz} Hz target per sampler; idle = leaf blocked in "
            "select/wait/queue get; lib/relay.py _Sampler)"]
@@ -364,7 +325,6 @@ def render(stage: str, p: dict, n: int, hz: int) -> list[str]:
 
 
 def socket_fds() -> int | None:
-    """Socket fds this process holds (TCP and unix, as ~/.slop/gate.py's socket guard counts them)."""
     import stat
 
     try:
@@ -381,11 +341,6 @@ def socket_fds() -> int | None:
 
 
 def socket_endpoints(ports: set[int]) -> dict:
-    """Opt-in socket inventory for a slop process, grouped by TCP endpoint ports.
-
-    A socket wrapper is detached before it can close the process's original fd.
-    This is intentionally sampled sparingly: it inspects every open descriptor.
-    """
     import socket
     import stat
     from collections import Counter

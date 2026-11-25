@@ -1,8 +1,3 @@
-/**
- * TemplateDraftEditor driven by its real host hook (`useSavedReplyEditor`), `@/lib/relay` mocked. Pins the saved
- * reply wire body: edit an existing reply's text and Save → PUT /admin/saved-replies/:id with FREE tiles first,
- * previews kept, script pair and tags carried; a new reply → POST; a relay 4xx shows OF's message.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
@@ -68,7 +63,7 @@ describe("TemplateDraftEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "open" }));
     expect(screen.getByText("Edit saved reply")).toBeTruthy();
     expect(screen.getByPlaceholderText("Template text")).toHaveValue("old");
-    expect(screen.getByRole("button", { name: "FREE" })).toBeTruthy(); // tile 12 is a preview
+    expect(screen.getByRole("button", { name: "FREE" })).toBeTruthy();
 
     typeText("  new text  ");
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -90,7 +85,7 @@ describe("TemplateDraftEditor", () => {
       notes: "note",
     });
     expect(post).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.queryByText("Edit saved reply")).toBeNull()); // draft closes
+    await waitFor(() => expect(screen.queryByText("Edit saved reply")).toBeNull());
   });
 
   it("a new reply: Save disabled until text, then POSTs the empty-field defaults", async () => {

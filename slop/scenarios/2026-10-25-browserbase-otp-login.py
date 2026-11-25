@@ -1,84 +1,3 @@
-"""Add creator > Browserbase login with OnlyFans 2FA. The owner starts a served
-login (POST /admin/login/remote/start); the relay drives a remote Chromium
-through OnlyFans' login form until OnlyFans asks for the 2FA code (job state
-"otp"); the code typed on the card (POST /admin/login/remote/{id}/otp) is
-typed into OnlyFans' own 2FA field by the job's thread. A wrong code comes back
-as rejected ("OnlyFans didn't accept that code …") with the job still on the prompt, and the next
-code signs in: capture, persist, link to the owner. A flow, not a volume one:
-one owner, five logins (three over the API, two through the card in the app:
-desktop, then a phone).
-
-The outside world is lib/browserbase.py, on loopback: Browserbase's API (a
-fresh local Chromium per session, driven by the relay over CDP), its live view
-(a stand-in showing that Chromium's tab) and OnlyFans' site (login form, 2FA
-prompt, chats page with a signed request and OF's signing module, which the
-login extension's interceptor captures). Every OnlyFans page carries a hidden
-reCAPTCHA frame; the 2FA page a decoy form whose button is the page's first
-submit button; a sent code takes OnlyFans VERIFY_MS ("Verifying…", no field)
-to answer. `POST /__slop/browserbase` points the relay at it. Once linked,
-the relay's REAL OFClient reads the account's /users/me from lib/of_wire.py on
-loopback (`OF_WIRE`: the relay's OF_API_ORIGIN), whose profile for the card's
-Creator (`profiles`) is a realistic one: display name, @username and a photo.
-Bypass, declared: the photo is an SVG data URL (as 2026-11-04-creator-avatars'),
-so the browser shows it without the relay's /img fetching off-host. Everything
-between is the relay's own code.
-
-The logins:
-  API    a wrong code (a second one meanwhile is 409), rejected as soon as the
-         prompt is back; the right code signs in; then 409 / 400 on the done job.
-  AUTO   OnlyFans' 2FA field sends its form itself on the last digit: a wrong
-         code is rejected (never "couldn't type"), the right one signs in.
-  LATE   a job started with a short window (JOB_WINDOW_S via the hook, declared
-         time compression): a code after its deadline is 404, as an expired job.
-  card   (UI) the code field with the live view, "1234-5678" pasted is the
-         8-digit code (wrong: rejected on the card), the right code links it.
-  phone  (UI, 390x844 touch) the same Add creator walk on a phone: details,
-         platform (Fansly picked first: its desktop-only line, no Done, then
-         back to OnlyFans), Browser login, the right code, linked. One more fake
-         login (one more local Chromium, as the card's), no wrong code.
-
-Invariants: the job stops on the 2FA prompt with a live view though a hidden
-captcha frame is on the page, and no status ever says "challenge"; a wrong
-code is reported as rejected (from the prompt coming back, inside
-OTP_VERIFY_S) and the job stays on the prompt; the right code signs in and the
-session is saved and linked to the owner (`accounts` + `user_accounts` rows,
-GET /admin/accounts); OnlyFans' field got exactly the submitted codes, each
-sent with the 2FA form's own VERIFY button (or by the field itself), the
-decoy never; one code at a time (409); a code for a finished job is 409, for
-an expired one 404; a malformed code or body is 400, never echoed; no 2FA
-code (wrong or right, any login) or password in any status, error,
-relay.log or next.log; every Browserbase session is released.
-The card login enters through the Add creator modal as the owner does: details and platform, then two
-choices, Browser login (first, checked) and Extension; the Extension panel is
-looked at, then Browser login starts with no proxy in its body (the relay's
-automatic pick), and Done on the linked screen saves and closes. The OF
-profile's display name (OF_NAME) differs from the typed Creator name (UI_NAME):
-the linked screen shows the account's OF photo and @username on the chip and
-keeps the typed name in the Nickname field; after Done the Creators row shows
-the typed name (not the OF name, not "Account <id>"), the photo and the OF user
-id in Creator ID, and the stored nickname is the typed name (accounts row,
-GET /admin/accounts). If the wizard steps fail, that is recorded on the failing
-check and every later card check is skipped (never a crash that hides them); a card
-that never links skips the name / row / nickname / persisted checks (its link check
-is the red one).
-The phone pass: every step up to the 2FA prompt (details, platform, Browser login, 2FA
-prompt) fits 390px (the page no wider than the viewport, no element of the dialog past
-either edge) with its primary button (Next, Next, Start browser login, Submit code) inside
-the viewport as the app leaves it and what a tap on its centre hits (elementFromPoint:
-not clipped by the modal's scrolling body); the linked step's fit (Done in view) is part of the
-link check, so the fault's red stays on its targets; Fansly on a phone shows its desktop-only line on
-the platform and sign-in steps and the sign-in step has no visible Done; the right code
-links the account (linked screen, job done, user_accounts row). Not pressed: the
-phone's Done (the desktop card covers the save).
-Screenshots: trigger-add-creator, add-creator-two-choices, add-creator-extension,
-add-creator-browser, card-otp-prompt, card-otp-pasted, card-otp-rejected,
-card-otp-linked, add-creator-done; phone-trigger-add-creator, phone-details,
-phone-platform, phone-fansly-desktop-only, phone-browser-login, phone-otp-prompt,
-phone-linked.
-Break-it-once: FAULT otp-code-never-consumed (the job never reads the code);
---fault=challenge-counts-hidden-frames (the pre-fix challenge check: any
-captcha frame counts, on screen or not).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -100,28 +19,27 @@ VIEWPORT = (1440, 1000)
 PASSWORD = "slop-of-Password-77"
 OTP, WRONG = "246810", "135791"
 AUTO_WRONG = "975310"
-PASTED, PASTED_CODE = "1234-5678", "12345678"  # the card's wrong code, pasted with its dash
+PASTED, PASTED_CODE = "1234-5678", "12345678"
 API_EMAIL, API_UID = "otp-api@slop.test", "990000101"
 UI_EMAIL, UI_UID = "otp-card@slop.test", "990000102"
-UI_NAME = "Mia Rose"  # the Creator name typed in the wizard
-OF_NAME, UI_HANDLE = "Mia Rose OF", "miarose"  # the card Creator's OF profile (lib/of_wire.py `profiles`)
-AUTO_EMAIL, AUTO_UID = "otp-auto@slop.test", "990000103"  # its 2FA field submits itself
-LATE_EMAIL, LATE_UID = "otp-late@slop.test", "990000104"  # its job runs out of time on the prompt
-PHONE_EMAIL, PHONE_UID = "otp-phone@slop.test", "990000105"  # the phone pass's Creator
+UI_NAME = "Mia Rose"
+OF_NAME, UI_HANDLE = "Mia Rose OF", "miarose"
+AUTO_EMAIL, AUTO_UID = "otp-auto@slop.test", "990000103"
+LATE_EMAIL, LATE_UID = "otp-late@slop.test", "990000104"
+PHONE_EMAIL, PHONE_UID = "otp-phone@slop.test", "990000105"
 PHONE_NAME, PHONE_HANDLE = "Ava Lane", "avalane"
 PHONE = (390, 844)
-MOBILE_FANSLY_LINE = "The Fansly paste session is desktop-only."  # AddCreatorModal's MOBILE_FANSLY_LINE
-OTP_VERIFY_S = 15  # remote_login.OTP_VERIFY_S
-CAPTURE_RESERVE_S = 60  # remote_login.CAPTURE_RESERVE_S: no code once past expires_at - this
-LATE_WINDOW_S = 80  # the LATE job's JOB_WINDOW_S: its code deadline is 20 s after its start
-VERIFY_S = OTP_VERIFY_S + 20  # plus a poll and OnlyFans' answer
-# A rejection this soon after the code came from OnlyFans showing the prompt again (VERIFY_MS + a relay poll
-# + a status poll), not from the OTP_VERIFY_S timer.
+MOBILE_FANSLY_LINE = "The Fansly paste session is desktop-only."
+OTP_VERIFY_S = 15
+CAPTURE_RESERVE_S = 60
+LATE_WINDOW_S = 80
+VERIFY_S = OTP_VERIFY_S + 20
+# a rejection this soon came from OnlyFans showing the prompt again, not from the OTP_VERIFY_S timer
 QUICK_S = OTP_VERIFY_S - 5
 ASK = "OnlyFans asks for the 2FA code"
-REJECTED = "OnlyFans didn't accept that code (or hasn't answered yet) — try again"  # remote_login.OTP_REJECTED
-CHECKING = "checking the 2FA code"  # remote_login.OTP_CHECKING
-NOT_TYPED = "couldn't type the 2FA code"  # remote_login.OTP_NOT_TYPED (prefix)
+REJECTED = "OnlyFans didn't accept that code (or hasn't answered yet) — try again"
+CHECKING = "checking the 2FA code"
+NOT_TYPED = "couldn't type the 2FA code"
 CODES = (OTP, WRONG, AUTO_WRONG, PASTED_CODE, PASTED)
 TERMINAL = ("done", "error", "cancelled")
 
@@ -161,7 +79,6 @@ PHONE_CHECKS = (
 
 
 def _photo(uid: str) -> dict:
-    """OF's avatar fields, as an SVG data URL (declared bypass: no off-host /img fetch)."""
     svg = ("<svg xmlns='http://www.w3.org/2000/svg' width='144' height='144'><rect width='144' height='144' "
            "fill='#c2410c'/><circle cx='72' cy='58' r='26' fill='#fed7aa'/><rect x='30' y='94' width='84' "
            "height='50' rx='25' fill='#fed7aa'/></svg>")
@@ -169,7 +86,6 @@ def _photo(uid: str) -> dict:
     return {"avatar": url, "avatarThumbs": {"c50": url, "c144": url}}
 
 
-# The Creators table row of `uid`: the Creator cell (its div titled "<extras>\n<id>\n…"), and the Creator ID cell.
 _ROW = """(uid) => {
   const heads = [...document.querySelectorAll('thead th')].map((th) => th.innerText.trim());
   const row = [...document.querySelectorAll('tbody tr')]
@@ -182,7 +98,6 @@ _ROW = """(uid) => {
 }"""
 
 
-# The page's width against the viewport, and every element of the dialog that reaches past either edge.
 _FITS = """(dlg) => {
   const W = innerWidth, past = [];
   for (const e of [dlg, ...dlg.querySelectorAll('*')]) {
@@ -194,7 +109,6 @@ _FITS = """(dlg) => {
 }"""
 
 
-# Is the button what a tap on its centre hits (not clipped by the modal's scrolling body, not under its header/footer)?
 _HIT = """(e) => {
   const r = e.getBoundingClientRect();
   const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
@@ -204,8 +118,6 @@ _HIT = """(e) => {
 
 
 async def _fits(page, dlg, primary) -> dict:
-    """One step on the phone: no horizontal overflow; the primary button inside the viewport and what a tap on its
-    centre hits."""
     got = await dlg.evaluate(_FITS)
     box = await primary.bounding_box()
     got["primary"] = box and {k: round(v) for k, v in box.items()}
@@ -217,7 +129,6 @@ async def _fits(page, dlg, primary) -> dict:
 
 
 async def _until(owner: Http, jid: str, cond, timeout: float, seen: list) -> dict:
-    """Poll the job's status (as the card does) until cond(status) or timeout; every status is kept in `seen`."""
     deadline = time.monotonic() + timeout
     while True:
         st = (await owner.get(f"/admin/login/remote/{jid}")).json()
@@ -238,7 +149,6 @@ async def _start(ctx, owner: Http, email: str, nickname: str, seen: list) -> str
 
 
 async def _finish(owner: Http, jid: str, seen: list) -> dict:
-    """The job's final status; a job still running is cancelled (and its Browserbase session released)."""
     st = (await owner.get(f"/admin/login/remote/{jid}")).json()
     if st.get("state") not in TERMINAL:
         await owner.post(f"/admin/login/remote/{jid}/cancel")
@@ -310,7 +220,6 @@ async def _api_login(ctx, owner: Http, world: World, seen: list) -> None:
 
 
 async def _auto_login(ctx, owner: Http, seen: list) -> None:
-    """OnlyFans' 2FA field submits itself on the last digit, so it is gone when the relay reads it back."""
     name = ("API: a 2FA field that submits itself on the last digit: the code counts as sent (never \"couldn't "
             "type\"), a wrong one is rejected, the right one signs in")
     jid = await _start(ctx, owner, AUTO_EMAIL, "Slop 2FA auto", seen)
@@ -335,13 +244,12 @@ async def _auto_login(ctx, owner: Http, seen: list) -> None:
 
 
 async def _late_login(ctx, owner: Http, hooks: Http, world: World, seen: list) -> None:
-    """A job that runs out of its window on the 2FA prompt takes no code: 404, as an expired job."""
     name = "API: a 2FA code for a job past its window is 404 (expired) and never reaches OnlyFans"
     hook = {"api": world.api, "chunk_url_tpl": world.chunk_url_tpl}
     assert (await hooks.post("/__slop/browserbase", json={**hook, "job_window_s": LATE_WINDOW_S})).status_code == 200
     try:
         jid = await _start(ctx, owner, LATE_EMAIL, "Slop 2FA late", seen)
-    finally:  # only this job gets the short window
+    finally:
         assert (await hooks.post("/__slop/browserbase", json=hook)).status_code == 200
     if jid is None:
         return ctx.check(name, False, start="refused")
@@ -363,9 +271,7 @@ async def _late_login(ctx, owner: Http, hooks: Http, world: World, seen: list) -
 
 
 async def _card_login(ctx, world: World, owner: Http, seen: list) -> list[str]:
-    """The card's login through the Add creator modal; returns the 2FA codes the card actually submitted."""
     sent: list[str] = []
-    # The linked account's /users/me goes through to the relay (its REAL OFClient, lib/of_wire.py behind it).
     async with ui.owner_browser(ctx, viewport=VIEWPORT, through=("/api/of/v2/users/me",)) as page:
         await page.context.grant_permissions(["clipboard-read", "clipboard-write"], origin=ctx.app)
         await page.goto(f"{ctx.app}/creators", wait_until="domcontentloaded")
@@ -376,9 +282,6 @@ async def _card_login(ctx, world: World, owner: Http, seen: list) -> list[str]:
         dlg = page.get_by_role("dialog", name="Add creator")
         next_step = dlg.get_by_role("button", name="Next", exact=True)
         group = dlg.get_by_role("radiogroup", name="Login method")
-        # The wizard's steps never throw past here: a failed step fails the first check not yet recorded and
-        # skips every later card check. Each value is awaited before its check takes its name, so a throw leaves
-        # the name for the failure.
         wizard = iter((*WIZARD_CHECKS, CARD_CHECKS[0]))
         try:
             await dlg.get_by_label("Creator name", exact=True).wait_for(timeout=30_000)
@@ -408,7 +311,7 @@ async def _card_login(ctx, world: World, owner: Http, seen: list) -> list[str]:
                 if c != failed:
                     ctx.skip(c, f"the wizard stopped at: {failed}")
             return sent
-        await page.wait_for_timeout(500)  # the modal's pop-in
+        await page.wait_for_timeout(500)
         radios = group.get_by_role("radio")
         names = [(await r.evaluate("e => e.closest('label').innerText")).split("\n")[0].strip()
                  for r in await radios.all()]
@@ -456,7 +359,7 @@ async def _card_login(ctx, world: World, owner: Http, seen: list) -> list[str]:
         prompt = True
         try:
             await field.wait_for(timeout=90_000)
-            await page.wait_for_timeout(2500)  # the live view stand-in's next frame
+            await page.wait_for_timeout(2500)
         except Exception:  # noqa: BLE001
             prompt = False
         live = await page.get_by_title("Browserbase live view").count()
@@ -471,7 +374,6 @@ async def _card_login(ctx, world: World, owner: Http, seen: list) -> list[str]:
                 ctx.skip(c, "the card never showed the 2FA field")
             return sent
 
-        # A real paste: the clipboard holds "1234-5678", Ctrl/Cmd+V in the focused field.
         submit = page.get_by_role("button", name="Submit code")
         await field.click()
         await page.evaluate("(t) => navigator.clipboard.writeText(t)", PASTED)
@@ -481,7 +383,7 @@ async def _card_login(ctx, world: World, owner: Http, seen: list) -> list[str]:
         await ui.shot(ctx, page, "card-otp-pasted")
         tries_before = len(world.otp_tries)
         await submit.click()
-        sent.append(pasted)  # what the field held is what the card sends
+        sent.append(pasted)
         rejected = page.get_by_role("alert").filter(has_text="OnlyFans didn't accept that code")
         try:
             await rejected.wait_for(timeout=VERIFY_S * 1000)
@@ -494,7 +396,7 @@ async def _card_login(ctx, world: World, owner: Http, seen: list) -> list[str]:
         await ui.shot(ctx, page, "card-otp-rejected")
         ctx.check(CARD_CHECKS[5], shown and await field.is_editable(), rejected_shown=shown)
 
-        try:  # locked while a code is still being checked (not for long, when the first was rejected)
+        try:
             await field.fill(OTP, timeout=10_000)
             await submit.click(timeout=10_000)
             sent.append(OTP)
@@ -506,13 +408,13 @@ async def _card_login(ctx, world: World, owner: Http, seen: list) -> list[str]:
             done = True
         except Exception:  # noqa: BLE001
             done = False
-        if not done:  # the link check (CARD_CHECKS[6]) says why; nothing after it can be judged
+        if not done:
             for c in (*PREFILL_CHECKS, CHECK_PERSISTED):
                 ctx.skip(c, "the card never linked the account")
         nick, chip_img, handle = "", 0, 0
         if done:
             nick_field = dlg.get_by_label("Nickname")
-            try:  # the OF profile's chip (photo + @username) lands after the link
+            try:
                 await dlg.get_by_text(f"@{UI_HANDLE}").first.wait_for(timeout=30_000)
                 await dlg.locator("img").first.wait_for(timeout=10_000)
             except Exception:  # noqa: BLE001
@@ -569,7 +471,6 @@ async def _card_login(ctx, world: World, owner: Http, seen: list) -> list[str]:
 
 
 async def _phone_login(ctx, owner: Http, seen: list) -> list[str]:
-    """The Add creator walk in a phone's context (390x844, touch); returns the 2FA codes it submitted."""
     sent: list[str] = []
     steps: dict[str, dict] = {}
     fansly: dict = {}
@@ -585,7 +486,7 @@ async def _phone_login(ctx, owner: Http, seen: list) -> list[str]:
             next_step = dlg.get_by_role("button", name="Next", exact=True)
             await dlg.get_by_label("Creator name", exact=True).fill(PHONE_NAME, timeout=30_000)
             await dlg.get_by_label("Gender", exact=True).select_option("Female")
-            await page.wait_for_timeout(500)  # the modal's pop-in
+            await page.wait_for_timeout(500)
             steps["details"] = await _fits(page, dlg, next_step)
             await ui.shot(ctx, page, "phone-details")
             await next_step.click()
@@ -620,7 +521,7 @@ async def _phone_login(ctx, owner: Http, seen: list) -> list[str]:
 
             field = page.get_by_label("2FA code")
             await field.wait_for(timeout=90_000)
-            await page.wait_for_timeout(2500)  # the live view stand-in's next frame
+            await page.wait_for_timeout(2500)
             submit = page.get_by_role("button", name="Submit code")
             steps["2FA prompt"] = await _fits(page, dlg, submit)
             await ui.shot(ctx, page, "phone-otp-prompt")
@@ -636,7 +537,6 @@ async def _phone_login(ctx, owner: Http, seen: list) -> list[str]:
         except Exception as e:  # noqa: BLE001
             error = f"{type(e).__name__}: {str(e)[:300]}"
             await ui.shot(ctx, page, "phone-stopped")
-    # Up to the prompt: nothing here needs a code consumed (the link, and the linked step's fit, are PHONE_CHECKS[2]'s).
     want = ["details", "platform", "browser login", "2FA prompt"]
     ctx.check(PHONE_CHECKS[0], list(steps) == want and all(v["ok"] for v in steps.values()),
               steps=steps, unmeasured=[s for s in want if s not in steps], error=error)
@@ -656,7 +556,7 @@ async def run(ctx) -> None:
     await ctx.build(PROFILE)
     async with async_playwright() as p:
         chromium = p.chromium.executable_path
-    hooks = Http(ctx.relay, Recorder())  # the hook calls are not actor calls
+    hooks = Http(ctx.relay, Recorder())
     seen: list[dict] = []
     accounts = {API_EMAIL: API_UID, UI_EMAIL: UI_UID, AUTO_EMAIL: AUTO_UID, LATE_EMAIL: LATE_UID,
                 PHONE_EMAIL: PHONE_UID}
@@ -674,8 +574,8 @@ async def run(ctx) -> None:
                   and not [s for s in seen if s.get("state") == "challenge"],
                   statuses=len(seen), challenge_statuses=len([s for s in seen if s.get("state") == "challenge"]),
                   captcha_frame_loads=world.captcha_frames)
-        card_sent: list[str] = []  # the codes the card submitted (none when its flow stopped before the prompt)
-        phone_sent: list[str] = []  # likewise, the phone pass's
+        card_sent: list[str] = []
+        phone_sent: list[str] = []
         if ctx.app is None:
             for c in (*WIZARD_CHECKS, *CARD_CHECKS, *PREFILL_CHECKS, CHECK_PERSISTED, *PHONE_CHECKS):
                 ctx.skip(c, "--no-ui")
@@ -695,7 +595,7 @@ async def run(ctx) -> None:
                   bool(clicked) and set(clicked) == {"click"} and via[AUTO_UID]
                   and set(via[AUTO_UID]) == {"auto"} and world.decoys == 0,
                   via=via, decoy_sends=world.decoys)
-        await asyncio.sleep(1)  # the job thread's release call
+        await asyncio.sleep(1)
         sessions = {sid: s["released"] for sid, s in world.sessions.items()}
         ctx.check("every Browserbase session the relay created was released", bool(sessions)
                   and all(sessions.values()), sessions=sessions)

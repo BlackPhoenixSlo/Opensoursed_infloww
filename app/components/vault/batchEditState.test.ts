@@ -9,7 +9,6 @@ const run = (acts: BatchEditAction[]) => acts.reduce(batchEditReducer, BATCH_EDI
 
 describe("batchEditReducer", () => {
   it.each<[string, BatchEditAction[], boolean, string[], RowMeta]>([
-    // name, actions, All on, shown keys, Save payload
     ["opens on Hashtags + Notes", [], false, ["hashtags", "notes"], { hashtags: "", notes: "" }],
     ["typed values go out, untouched shown fields as \"\"", [{ type: "set", key: "notes", value: "beach" }], false,
       ["hashtags", "notes"], { hashtags: "", notes: "beach" }],

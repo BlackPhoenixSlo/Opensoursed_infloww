@@ -57,7 +57,6 @@ const ctx = (over: Partial<ChatsContext> = {}): ChatsContext => ({
   folderSort: { sort: "custom", order: "desc" },
   ...over,
 });
-/** The list page with the captured chats (named from /users/list), as useOfData draws them. */
 const listWithRows = (name = "index", listQuery = "") => {
   const doc = page(name);
   const rows = withChatUsers(rowsOf<OFChatItem>(fixture("messages-chats"))!, fixture("messages-users-list"));
@@ -79,7 +78,7 @@ describe("chatsView / chatsRequest: OF's GET /chats params (its chats-list fetch
     expect(req("tab=unread").filter).toBe("unread");
     expect(req("tab=who_tipped").filter).toBe("who_tipped");
     expect(fixture<{ detail: { upstream_body: string } }>("messages-chats-with-tips").detail.upstream_body).toContain("Invalid filter");
-    expect(rowsOf(fixture("messages-chats-who-tipped"))).toEqual([]); // OF's real answer to who_tipped: a list
+    expect(rowsOf(fixture("messages-chats-who-tipped"))).toEqual([]);
   });
   it("With Tips with the dropdown's Unread is unread_tips; the dropdown filter is ignored where OF hides its group", () => {
     expect(req("tab=who_tipped&filter=unread").filter).toBe("unread_tips");
@@ -113,9 +112,9 @@ describe("the chat list's tabs (messages/index)", () => {
     bindChatList(d, ctx());
     expect(tab(d, "all").classList.contains("m-current")).toBe(true);
     expect(tab(d, "pinned").textContent?.replace(/\s+/g, " ").trim()).toBe("Pinned 3");
-    expect(tab(d, "priority").closest("li")!.style.display).toBe("none"); // countPriorityChat 0
-    expect(tab(d, "unread").closest("li")!.style.display).toBe("none"); // chatMessagesCount 0
-    expect(tab(d, "who_tipped").closest("li")!.style.display).toBe(""); // tipsEnabled
+    expect(tab(d, "priority").closest("li")!.style.display).toBe("none");
+    expect(tab(d, "unread").closest("li")!.style.display).toBe("none");
+    expect(tab(d, "who_tipped").closest("li")!.style.display).toBe("");
     const folders = [...d.querySelectorAll<HTMLButtonElement>("[data-oi-tab='folder']")];
     expect(folders.map((b) => [b.textContent?.trim(), b.disabled])).toEqual(
       FOLDERS.filter((f) => f.isPinnedToChat).map((f) => [f.name, !f.usersCount]),
@@ -138,7 +137,7 @@ describe("the chat list's tabs (messages/index)", () => {
     expect(c.navigate).toHaveBeenLastCalledWith("/of-manager/messages?tab=pinned&order=old&q=ab");
     d.querySelector<HTMLButtonElement>("[data-oi-tab='folder'][data-oi-folder='following']")!.click();
     expect(c.navigate).toHaveBeenLastCalledWith("/of-manager/messages?folder=following&order=old&q=ab");
-    tab(d, "all").click(); // already current: nothing
+    tab(d, "all").click();
     expect(c.navigate).toHaveBeenCalledTimes(2);
   });
   it("on a chat page the tabs keep the chat open", () => {
@@ -266,10 +265,10 @@ describe("the sort dropdown (messages/state-filter-dropdown)", () => {
     bindChatList(d2, ctx({ view: { ...ALL, tab: "who_tipped" } }));
     expect(d2.querySelector<HTMLElement>("[data-oi-chats='filter:unread_tips']")!.style.display).toBe("none");
     expect(d2.querySelector<HTMLElement>("[data-oi-chats='filter:unread']")!.style.display).toBe("");
-    expect(d2.querySelector<HTMLElement>("[data-oi-chats='filter:priority']")!.style.display).toBe("none"); // OF: no Priority on With Tips
+    expect(d2.querySelector<HTMLElement>("[data-oi-chats='filter:priority']")!.style.display).toBe("none");
     const d3 = page("state-filter-dropdown");
     bindChatList(d3, ctx({ me: { ...ME, tipsEnabled: undefined } }));
-    expect(d3.querySelector<HTMLElement>("[data-oi-chats='filter:unread_tips']")!.style.display).toBe("none"); // only tipsEnabled === true
+    expect(d3.querySelector<HTMLElement>("[data-oi-chats='filter:unread_tips']")!.style.display).toBe("none");
   });
   it("from a chat: every option and the backdrop go back to that chat", () => {
     const d = page("state-filter-dropdown");
@@ -467,13 +466,13 @@ describe("the thread's scroll (older messages, polls): threadScroll / keepThread
   it("a first draw (or a view at the newest message) goes to the end, as OF opens a chat", () => {
     const d = page("chat");
     box(d, 2000, 500, 0);
-    expect(threadScroll(d, "2001")).toBeNull(); // nothing real drawn yet
+    expect(threadScroll(d, "2001")).toBeNull();
     const d2 = drawn();
     const b = box(d2, 2600, 500, 0);
     keepThreadScroll(d2, "2001", null);
     expect(b.scrollTop).toBe(2600);
     box(d2, 2000, 500, 1490);
-    expect(threadScroll(d2, "2001")).toBeNull(); // within 40px of the end: a new message is followed
+    expect(threadScroll(d2, "2001")).toBeNull();
   });
   it("older messages put in above keep what is in view (no jump)", () => {
     const d = drawn();
@@ -481,7 +480,6 @@ describe("the thread's scroll (older messages, polls): threadScroll / keepThread
     box(d, 2000, 500, 100);
     const was = threadScroll(d, "2001");
     expect(was?.fromEnd).toBe(1900);
-    // An older page arrived: one more message above the oldest one drawn, 1500px taller.
     const messages = rowsOf<OFMessage>(fixture("messages-thread"))!;
     const older = { ...messages[messages.length - 1], id: 1, createdAt: "2020-01-01T00:00:00Z" } as OFMessage;
     applyData(d, "messages/chat", { chat: "2001", thread: { fan: null, messages: [...messages, older] } });
@@ -497,7 +495,7 @@ describe("the thread's scroll (older messages, polls): threadScroll / keepThread
     const messages = rowsOf<OFMessage>(fixture("messages-thread"))!;
     const newer = { ...messages[0], id: 99999999999999, createdAt: "2030-01-01T00:00:00Z" } as OFMessage;
     applyData(d, "messages/chat", { chat: "2001", thread: { fan: null, messages: [newer, ...messages] } });
-    const b = box(d, 2300, 500, 0); // 300px arrived below
+    const b = box(d, 2300, 500, 0);
     keepThreadScroll(d, "2001", was);
     expect(b.scrollTop).toBe(100);
   });
@@ -506,7 +504,7 @@ describe("the thread's scroll (older messages, polls): threadScroll / keepThread
     keepThreadScroll(d, "2001", null);
     box(d, 2000, 500, 100);
     expect(threadScroll(d, "2001")).not.toBeNull();
-    expect(threadScroll(d, "3001")).toBeNull(); // the box still shows 2001
+    expect(threadScroll(d, "3001")).toBeNull();
     const b = box(d, 2400, 500, 100);
     keepThreadScroll(d, "3001", threadScroll(d, "3001"));
     expect(b.scrollTop).toBe(2400);
@@ -521,7 +519,6 @@ describe("the thread's scroll (older messages, polls): threadScroll / keepThread
 });
 
 describe("a row's swipe: OF's Mark as Read / Mark as Unread (its SwipeOut), never on open", () => {
-  // A held button while moving (OF's swipe needs one); `buttons: 0` is a move after the button was let go elsewhere.
   const ev = (type: string, x: number, y = 10, buttons = type === "pointermove" ? 1 : 0) => new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons });
   const swipe = (el: Element, to: number) => {
     el.dispatchEvent(ev("pointerdown", 300));
@@ -548,10 +545,9 @@ describe("a row's swipe: OF's Mark as Read / Mark as Unread (its SwipeOut), neve
     const nav = vi.fn();
     const unbind = bindChatList(d, ctx({ writes: w, navigate: nav }));
     const read = rows(d).find((r) => !r.hasAttribute("data-oi-unread"))!;
-    // A click (no drag) marks nothing.
     read.dispatchEvent(ev("pointerdown", 300));
     read.dispatchEvent(ev("pointerup", 300));
-    swipe(read, 240); // 60 px: short of OF's threshold
+    swipe(read, 240);
     expect(w.markRead).not.toHaveBeenCalled();
     swipe(read, 150);
     expect(w.markRead).toHaveBeenCalledTimes(1);
@@ -561,7 +557,6 @@ describe("a row's swipe: OF's Mark as Read / Mark as Unread (its SwipeOut), neve
     expect(read.hasAttribute("data-oi-unread")).toBe(true);
     swipe(read, 150);
     expect(w.markRead).toHaveBeenLastCalledWith(read.dataset.oiChat, true);
-    // The row slid back.
     expect(read.closest(".swipeout")!.querySelector<HTMLElement>(".swipeout-content")!.style.transform).toBe("");
     unbind();
   });
@@ -574,18 +569,18 @@ describe("a row's swipe: OF's Mark as Read / Mark as Unread (its SwipeOut), neve
     const capture = vi.fn();
     box.setPointerCapture = capture;
     row.dispatchEvent(ev("pointerdown", 300));
-    row.dispatchEvent(ev("pointermove", 298)); // a jitter, no drag
+    row.dispatchEvent(ev("pointermove", 298));
     row.dispatchEvent(ev("pointerup", 298));
     expect(capture).not.toHaveBeenCalled();
     const click = ev("click", 298);
     row.dispatchEvent(click);
-    expect(click.defaultPrevented).toBe(false); // the click opens the chat
+    expect(click.defaultPrevented).toBe(false);
     row.dispatchEvent(ev("pointerdown", 300));
     row.dispatchEvent(ev("pointermove", 290));
-    expect(capture).toHaveBeenCalled(); // (by every binder still on this shared test document)
+    expect(capture).toHaveBeenCalled();
     const n = capture.mock.calls.length;
     row.dispatchEvent(ev("pointermove", 280));
-    expect(capture).toHaveBeenCalledTimes(n); // once per drag, not per move
+    expect(capture).toHaveBeenCalledTimes(n);
     row.dispatchEvent(ev("pointerup", 280));
     unbind();
   });
@@ -600,7 +595,7 @@ describe("a row's swipe: OF's Mark as Read / Mark as Unread (its SwipeOut), neve
     row.dispatchEvent(ev("pointermove", 290));
     row.dispatchEvent(ev("pointermove", 150));
     expect(content.style.transform).toBe("translateX(-150px)");
-    row.dispatchEvent(ev("pointermove", 140, 10, 0)); // the button came up outside the frame
+    row.dispatchEvent(ev("pointermove", 140, 10, 0));
     expect(content.style.transform).toBe("");
     row.dispatchEvent(ev("pointerup", 140));
     row.dispatchEvent(ev("pointerdown", 300));
@@ -638,7 +633,6 @@ describe("a row's swipe: OF's Mark as Read / Mark as Unread (its SwipeOut), neve
   });
 });
 
-// ticket 16: the chat list's client-side tools (select mode, story 29; the folders dialog's Sort, story 30).
 describe("selectHref: select mode is the list's ?select=1 (no other GET /chats param)", () => {
   it.each([
     [null, ALL, true, "/of-manager/messages?select=1"],
@@ -657,8 +651,6 @@ describe("pickAll: OF's Select all / Deselect", () => {
   ])("picked %j of %j -> %j", (picked, ids, want) => expect([...pickAll(new Set(picked), ids)]).toEqual(want));
 });
 
-// Folders Sort (story 30): OF's lists sort menu (captured: messages/send/state-list-dropdown, radios recent | name |
-// people | custom, then asc | desc), client-side over the folders /chats/folders already read.
 const F = [
   { id: "30", name: "Bravo", usersCount: 5 },
   { id: "10", name: "alpha", usersCount: 9 },

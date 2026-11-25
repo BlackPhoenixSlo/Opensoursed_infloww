@@ -1,76 +1,3 @@
-"""Smart Messages' Priority mass message at its 5,000-fan cap: one direct message per fan of a
-frozen audience, sent at most once even when the relay dies mid-send, stoppable, and refused
-when its text holds a Sensitive word (service/priority_mass_api.py, automations/priority_mass.py).
-
-World: `agency_inbox` (seed/fans.py, seed/threads.py: the contact guard's history) plus
-seed/priority_mass_audience.py for three Creators: A (roster `--roster_a`, SCALES
-`priority_mass_roster_a`: 7,000 at medium, of whom ~5,600 pass, so the cap bites), B and C
-(their seeded fans). Per Creator: two OF include lists, one OF exclude list (OF's side:
-`$DEMO_SHOTS_TMP/of-rosters.json`, read by the freeze through lib/priority_mass_relay.py) plus
-OF's MASSDMEXCLUDE list (members drawn from the first include list; the API runs name none of it), a
-local MASSdmEXCLUDE list, blacklist rows and, for A's priced run, fans who own its media (purchased
-`vault_sends`). Sensitive words only through the real `POST /admin/sensitive-words/add` and
-`/import` (an .xlsx).
-
-Drive, all through the real routes: the Agency's words added and imported; four texts holding
-them posted (`POST /admin/priority-mass/runs`, Creator C) -> 422 SENSITIVE_BLOCK_MESSAGE; runs A
-(priced $5, media), B and C launched, A posted again at once (-> 409); legs via `POST
-/__slop/run-automation {kind: priority_mass, claim: true}`, one driver per run (the real
-supervisor ticks too, SLOP_SUPERVISOR=1, its boot heal is the crash path); `--users` owners poll
-`GET /admin/priority-mass/runs` (their Creator's, every ~`poll_s`). B is cancelled once OF took
-CANCEL_AFTER of its fans. A's fan at 40% of its frozen list hangs at OF (OF took it, no answer):
-the relay is SIGKILLed, started again on the same DB, the boot heal's `reconciled_orphans` line
-awaited, then `/resume` on A (live) and B (cancelled), and every run is driven to its end. Leg
-scan: while A's hung leg holds the executor's (A, priority_mass) run lock (`run_once` answers
-`in_flight`, to the drivers and the supervisor alike), run S is posted on A, clean (SCAN_TEXT, priced
-as A; its audience the OF list SCAN_LIST: SCAN_N of A's fans on none of A's other lists, no local
-exclusion, unguarded), then SCAN_WORD is added through `POST /admin/sensitive-words/add`; S's first
-leg can only run after the restart (its own driver then). UI run (not --no-ui): /growth/smart-messages >
-Mass Messages > Priority mass messages picks A and shows its sent count (screenshots trigger + settled,
-checked against the DB), /growth/sensitive-words adds a word through its Add dialog (trigger + settled;
-the word is then listed and refused), then New Message > Priority mass message, 'Post as' B (its run
-settled, cancelled): OF's MASSDMEXCLUDE is pre-ticked in Exclude (screenshot
-priority-mass-ui-1-massdm-preticked), "slop vip" ticked in Include, Send; the run's legs driven to its
-end; Priority mass messages lists it Done with its DB sent count (screenshot
-priority-mass-ui-2-run-settled); the POST body (priority-mass-ui-body.json), the run row's audience,
-its frozen fans and OF's record are read for UI_SEED. Then the Automated tab's column picks C and
-New Message > OF mass message / Message online fans open on C (screenshots sm-creator-*), the OF
-one's Broadcast caught in the browser and aborted (sm-creator-sends.json): UI_CREATOR.
-
-Checks (names in lib/priority_mass_faults.py): FROZEN (per run: OF include lists minus the OF
-exclude list, minus blacklist / MASSdmEXCLUDE / contact guard (seeded messages out GUARD_H["out"]
-h, in GUARD_H["in"] h; a fan whose last such message is within 60 s of a window edge at the
-freeze counts as decided by the product) / media owners (priced), the first 5,000 by fan id;
-resolved / excluded / capped counts too); ONCE (OF's record: no fan twice per Creator); ROWS
-(per Creator, all its runs' rows vs its OF record, S's with A's; plus every OF send carries its run's
-price); CRASH (the hung fan's row was `claimed` at the kill
-and the next leg's stale sweep turned it `unknown`/`interrupted`); SETTLED; CANCEL; REFUSE;
-REPEAT; RESUME; LEG_SCAN (S: error naming SCAN_WORD, its fans frozen, none sent by OF; the word
-added while S was still `resolving` with no row); UI_SEED, UI_CREATOR (UI run only); budget p95 GET
-/admin/priority-mass/runs <= GET_P95_MS; P95_VS_LAST over that and A's leg time per fan sent.
-
-Bypasses (declared): OF's lists and sends are faked at the client boundary (lib/automation_relay.py's
-walker lists, fed by lib/priority_mass_relay.py; `list_s` LIST_S a call, a guess); the UI
-composer's `GET /api/of/v2/lists` answered at the browser's wire from the same of-rosters.json lists
-(the relay's offline OF client has no `get_lists`; OF's shape {id, name, type, usersCount}); the 11 s
-per-Creator write gap compressed to WRITE_GAP_S (`of-pm.json`, lib/priority_mass_relay.py; the
-gate itself is the product's); the account DM rate raised to DM_PER_MIN through the real
-Concurrency panel route (`POST /lanes-panel/config`); the supervisor's cadence (the drivers claim
-legs in between); the hung send's blocked worker thread (OF never answering, HANG_S); the
-import's .xlsx is built with the product's own stdlib writer (service/xlsx_io.py `write_xlsx`).
-UI_CREATOR's OF-mass Broadcast is aborted at the browser after its request is read (a send to C's
-fans would enter ONCE / ROWS's OF record).
-S's ordering behind A's hung leg (the hang hook above).
-The legs' own Recorder keeps the crash's in-flight transport error out of the stock no-5xx check
-(checked here instead).
-Break-it-once: `pm-claimed-row-resent-after-crash` (FAULT: `_leg` requeues a crash's claim):
-ONCE + CRASH; `pm-cancel-keeps-pending` (cancel_run without its sweep): CANCEL;
-`pm-sensitive-word-ignored` (`_sensitive_words` reads nothing): REFUSE; `pm-leg-exact-scan-only`
-(the leg's `priority_mass.sensitive_hits` finds nothing): LEG_SCAN; `pm-ui-no-massdm-seed` (the
-composer's MASSDMEXCLUDE seed reverted, client side; UI run only): UI_SEED;
-`sm-mass-composer-first-creator` (Smart Messages' mass composers get no Creator, client side; UI run
-only): UI_CREATOR.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -102,23 +29,22 @@ DM_PER_MIN = 100_000
 WRITE_GAP_S = 0.02
 LIST_S = 0.05
 HANG_S = 900.0
-MAX_RECIPIENTS = 5_000        # automations/priority_mass.py MAX_RECIPIENTS
-# service/audiences.py BROADCAST_DEFAULT_OUTBOUND_H / _INBOUND_H (the contact guard's windows, h)
+MAX_RECIPIENTS = 5_000  # automations/priority_mass.py MAX_RECIPIENTS
 GUARD_H = {"out": 6, "in": 2}
-SENSITIVE_BLOCK_MESSAGE = "Please check the contents of the messages"   # priority_mass_api.py
+SENSITIVE_BLOCK_MESSAGE = "Please check the contents of the messages"
 CANCEL_AFTER = 15
 HANG_AT = 0.4
-EDGE_S = 60                   # contact-guard window edge tolerance at the freeze
+EDGE_S = 60
 RUN_TIMEOUT_S = 1500
 HEAL_TIMEOUT_S = 60
-OF_SEND_ID_BASE = 9_700_000_000_000   # lib/relay.py: the fake OF's message ids
-EMPTY_LIST = pma.OF_LIST_BASE + 999   # an OF list with no members (the refusal posts')
-SCAN_LIST = pma.OF_LIST_BASE + 998  # run S's audience (LEG_SCAN)
+OF_SEND_ID_BASE = 9_700_000_000_000
+EMPTY_LIST = pma.OF_LIST_BASE + 999
+SCAN_LIST = pma.OF_LIST_BASE + 998
 SCAN_N = 20
-SCAN_WORD = "pay pal"               # listed only after S is created
-SCAN_TEXT = "tip me on pay  pal, {name}"   # two spaces: the leg's exact scan misses it
+SCAN_WORD = "pay pal"
+SCAN_TEXT = "tip me on pay  pal, {name}"  # two spaces: the leg's exact scan misses it
 LIVE = ("resolving", "running")
-UI_TEXT = "hi {name}, thinking of you today"   # the UI run's text (not B's API text: REPEAT)
+UI_TEXT = "hi {name}, thinking of you today"
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -130,20 +56,17 @@ def _xlsx(words: list[str]) -> bytes:
 
 
 def _pm_cfg(tmp: Path, hang: dict | None = None) -> None:
-    """lib/priority_mass_relay.py's control file, replaced whole (the relay reads it on every send)."""
     t = tmp / "of-pm.json.tmp"
     t.write_text(json.dumps({"write_gap_s": WRITE_GAP_S, "hang": hang or {}}))
     os.replace(t, tmp / "of-pm.json")
 
 
 def _legs(q, rid: int) -> Counter:
-    """The run's queued legs by status (pending / running)."""
     return Counter(dict(q("SELECT status, COUNT(*) FROM scheduled_jobs WHERE kind='priority_mass' AND status IN "
                           "('pending','running') AND payload_json=? GROUP BY status", (json.dumps({"run_id": rid}),))))
 
 
 def _guarded(last_msg: dict[str, list[tuple]], fz: datetime) -> tuple[set[int], set[int]]:
-    """The contact guard at the freeze `fz`: (certain, within EDGE_S of a window's edge)."""
     certain, amb = set(), set()
     for direction, hours in GUARD_H.items():
         cut = fz - timedelta(hours=hours)
@@ -157,13 +80,11 @@ def _guarded(last_msg: dict[str, list[tuple]], fz: datetime) -> tuple[set[int], 
 
 
 def _last_msg(q, aid: str) -> dict[str, list[tuple]]:
-    """Per direction, (fan, the last seeded message's created_at) — the product's own sends left out."""
     return {d: q("SELECT fan_id, MAX(created_at) FROM messages WHERE account_id=? AND direction=? "
                  "AND message_id < ? GROUP BY fan_id", (aid, d, OF_SEND_ID_BASE)) for d in GUARD_H}
 
 
 def _massdm_local(q, aid: str) -> set[int]:
-    """The Creator's local MASSdmEXCLUDE list's fans."""
     return {f for (f,) in q("SELECT m.fan_id FROM list_members m JOIN lists l ON l.id=m.list_id WHERE "
                             "l.account_id=? AND l.kind='exclude' AND l.name='MASSdmEXCLUDE'", (aid,))}
 
@@ -171,14 +92,11 @@ def _massdm_local(q, aid: str) -> set[int]:
 def _frozen_oracle(of_lists: list[dict], include: list[int], exclude: list[int], local: set[int],
                    last_msg: dict[str, list[tuple]], fz: datetime | None, got: set[int],
                    counts: tuple) -> tuple[bool, dict]:
-    """FROZEN for one run. `local`: blacklist | MASSdmEXCLUDE | media owners; `last_msg`: per
-    direction, (fan, last seeded message's created_at); `fz`: the freeze; `got`: the frozen fans;
-    `counts`: the run's (resolved, excluded, capped)."""
     by_id = {x["id"]: set(x["members"]) for x in of_lists}
     resolved = set().union(*(by_id[i] for i in include)) - set().union(*(by_id[i] for i in exclude))
     certain, amb = _guarded(last_msg, fz) if fz is not None else (set(), set())
     excl = (local | certain) & resolved
-    amb_out = (amb & resolved) - excl - got          # the product excluded these at the edge
+    amb_out = (amb & resolved) - excl - got
     eligible = sorted(resolved - excl - amb_out)
     want = set(eligible[:MAX_RECIPIENTS])
     rc, ec, cc = counts
@@ -191,8 +109,6 @@ def _frozen_oracle(of_lists: list[dict], include: list[int], exclude: list[int],
 
 
 def _rows_verdict(rows: dict[int, tuple], of: list[dict], price: float) -> tuple[bool, dict]:
-    """ROWS for one run: `rows` {fan: (status, message_id, reason)}, `of` its Creator's OF record,
-    `price` its run's (every OF send carries it)."""
     of_by: dict[int, list[int]] = {}
     for s in of:
         of_by.setdefault(s["fan_id"], []).append(s["id"])
@@ -207,15 +123,11 @@ def _rows_verdict(rows: dict[int, tuple], of: list[dict], price: float) -> tuple
 
 
 def _run_rows(q, rid: int) -> dict[int, tuple]:
-    """Run `rid`'s rows: {fan: (status, message_id, reason)}."""
     return {int(f): (st, mid, reason) for f, st, mid, reason in q(
         "SELECT fan_id, status, message_id, reason FROM priority_mass_recipients WHERE run_id=?", (rid,))}
 
 
 def _scan_setup(q, aid: str, pool, lists: list[dict]) -> dict:
-    """LEG_SCAN's OF list SCAN_LIST: SCAN_N of `aid`'s fans on none of its `lists`, no local
-    exclusion (blacklist, MASSdmEXCLUDE, media owners: S is priced as A), unguarded now (the
-    guard only lifts)."""
     on_list = set().union(*(x["members"] for x in lists))
     owners = {f for (f,) in q("SELECT fan_id FROM vault_sends WHERE account_id=? AND was_purchased=1 AND "
                               "media_id=?", (aid, pma.MEDIA_ID))}
@@ -228,7 +140,6 @@ def _scan_setup(q, aid: str, pool, lists: list[dict]) -> dict:
 
 
 async def _scan_post(ctx, q, aid: str, priced: dict) -> dict:
-    """S posted on `aid`, clean, then SCAN_WORD listed; S's status and frozen rows at the add."""
     r = await ctx.owner.post("/admin/priority-mass/runs", json={
         "account_id": aid, "text": SCAN_TEXT, "user_lists": [str(SCAN_LIST)], **priced})
     scan = {"create": r.status_code, "rid": int(r.json()["id"]) if r.status_code == 200 else None}
@@ -242,8 +153,6 @@ async def _scan_post(ctx, q, aid: str, priced: dict) -> dict:
 
 
 def _scan_verdict(q, scan: dict, of: list[dict], fans: list[int]) -> tuple[bool, dict]:
-    """LEG_SCAN: S was `resolving` with no row at the add, then stopped (error, the word) with its
-    fans frozen and none sent, and OF got nothing for them."""
     st, err = q("SELECT status, last_error FROM priority_mass_runs WHERE id=?", (scan["rid"],))[0]
     rows = Counter(x for (x,) in q("SELECT status FROM priority_mass_recipients WHERE run_id=?", (scan["rid"],)))
     of_n = sum(1 for s in of if s["fan_id"] in fans)
@@ -254,8 +163,6 @@ def _scan_verdict(q, scan: dict, of: list[dict], fans: list[int]) -> tuple[bool,
 
 
 async def _kill_restart_heal(ctx) -> dict:
-    """SIGKILL the relay, OF answers normally again, start it on the same DB, await the boot
-    heal's `reconciled_orphans` line."""
     log = ctx.out / "relay.log"
 
     def heals() -> int:
@@ -293,7 +200,6 @@ async def run(ctx) -> None:
         finally:
             con.close()
 
-    # OF's side: the lists (automation_relay's walker serves them, `list_s` a call).
     (tmp / "of-mass.json").write_text(json.dumps({"list_s": LIST_S}))
     lists = {aid: a["lists"] for aid, a in aud.items()}
     lists[C] = [*lists[C], {"id": EMPTY_LIST, "name": "slop empty", "members": []}]
@@ -312,7 +218,6 @@ async def run(ctx) -> None:
                          "pool": {k: len(v["pool"]) for k, v in aud.items()},
                          "no_row": {k: len(v["no_row"]) for k, v in aud.items()}})
 
-    # ── Sensitive words: added, imported; four texts holding them refused ──────
     added = await ctx.owner.post("/admin/sensitive-words/add", json={"words": ["Venmo", "cash  app"]})
     imported = await ctx.owner.post("/admin/sensitive-words/import", files={"file": (
         "words.xlsx", _xlsx(["WhatsApp", "telegram me"]),
@@ -330,7 +235,6 @@ async def run(ctx) -> None:
               and all(400 <= s < 500 and d == SENSITIVE_BLOCK_MESSAGE for s, d in refusals) and rows_bad == 0,
               add=added.text[:200], imported=imported.text[:200], refusals=refusals, run_rows=rows_bad)
 
-    # ── Launch A (priced), B, C; A again at once ───────────────────────────────
     def body(aid: str, text: str, priced: bool = False) -> dict:
         a = aud[aid]
         return {"account_id": aid, "text": text, "user_lists": [str(x) for x in a["include"]],
@@ -351,7 +255,6 @@ async def run(ctx) -> None:
     def run_status(rid: int) -> str:
         return q("SELECT status FROM priority_mass_runs WHERE id=?", (rid,))[0][0]
 
-    # ── Load: owners poll; one driver per run ─────────────────────────────────
     users = max(1, ctx.users)
     watch = [A, B, C]
 
@@ -359,7 +262,7 @@ async def run(ctx) -> None:
         return [ctx.owner.share(limits=2) for _ in range(users)]
 
     https = shares()
-    leg_rec = Recorder()            # legs: long by design, and one dies with the relay
+    leg_rec = Recorder()  # legs: long by design, and one dies with the relay
     legs_http = ctx.owner.share(rec=leg_rec, limits=8)
     up = asyncio.Event()
     up.set()
@@ -376,7 +279,7 @@ async def run(ctx) -> None:
                 try:
                     await https[u].get(f"/admin/priority-mass/runs?account_id={aid}")
                 except httpx.HTTPError:
-                    pass                # Http recorded it (599): the stock no-transport-error check
+                    pass
                 try:
                     await asyncio.wait_for(stop.wait(), poll_s * rng.uniform(0.6, 1.4))
                 except asyncio.TimeoutError:
@@ -387,8 +290,6 @@ async def run(ctx) -> None:
     ended: dict[str, str] = {}
 
     async def drive(key: str, aid: str, rid: int) -> None:
-        """Legs on `aid` until run `rid` (`key`: its Creator, or "scan") ended (`run_once` claims
-        the Creator's earliest due leg, whichever of its runs)."""
         while time.monotonic() < deadline:
             await up.wait()
             t0 = time.perf_counter()
@@ -396,7 +297,7 @@ async def run(ctx) -> None:
                 r = await legs_http.post("/__slop/run-automation", timeout=900, json={
                     "account_id": aid, "kind": "priority_mass", "claim": True})
             except httpx.HTTPError:
-                await asyncio.sleep(0.2)    # leg_rec recorded it (599)
+                await asyncio.sleep(0.2)
                 continue
             res = (r.json().get("result") or {}) if r.status_code == 200 else {"status": f"http {r.status_code}"}
             ms = (time.perf_counter() - t0) * 1000
@@ -423,7 +324,6 @@ async def run(ctx) -> None:
     t_send = time.monotonic()
     drivers = {aid: asyncio.create_task(drive(aid, aid, rid)) for aid, rid in runs.items()}
 
-    # B: cancelled once OF took CANCEL_AFTER of its fans (its own watcher, not gated on A).
     cancel: dict = {}
 
     async def cancel_b() -> None:
@@ -439,7 +339,6 @@ async def run(ctx) -> None:
 
     canceller = asyncio.create_task(cancel_b())
 
-    # The crash target: A's fan at HANG_AT of its frozen list (sent in fan-id order).
     await asyncio.wait_for(a_frozen.wait(), 600)
     frozen_a = [f for (f,) in q("SELECT fan_id FROM priority_mass_recipients WHERE run_id=? ORDER BY fan_id",
                                 (runs[A],))]
@@ -448,7 +347,6 @@ async def run(ctx) -> None:
     hang_ready.set()
     await canceller
 
-    # A: OF took the hung fan's message, no answer: SIGKILL, restart, boot heal, resume.
     crash: dict = {"hit": False}
     while hang_fan and time.monotonic() < deadline and not drivers[A].done():
         if any(s["account_id"] == A and s["fan_id"] == hang_fan for s in read_sends(tmp)):
@@ -460,20 +358,18 @@ async def run(ctx) -> None:
         await asyncio.sleep(0.1)
     scan: dict = {}
     if crash["hit"]:
-        # S: A's hung leg holds the (A, priority_mass) run lock, so S's first leg waits for the restart.
         scan = await _scan_post(ctx, q, A, {k: bodies[A][k] for k in ("price", "media_files", "previews")})
         up.clear()
         stop.set()
         await pollers
         crash |= await _kill_restart_heal(ctx)
-        old = ctx.owner                 # their connections died with the relay
+        old = ctx.owner  # their connections died with the relay
         for h in (*https, legs_http):
             await h.aclose()
         ctx.owner = old.share()
         await old.aclose()
         https = shares()
         legs_http = ctx.owner.share(rec=leg_rec, limits=8)
-        # Resume: A is live (its leg requeued by the heal), B cancelled.
         ra = await ctx.owner.post(f"/admin/priority-mass/runs/{runs[A]}/resume")
         st_a, legs_a = run_status(runs[A]), _legs(q, runs[A])
         rb = await ctx.owner.post(f"/admin/priority-mass/runs/{runs[B]}/resume")
@@ -484,6 +380,7 @@ async def run(ctx) -> None:
         stop = asyncio.Event()
         pollers = asyncio.create_task(poll(stop))
         if scan["rid"] is not None:
+            # S's first leg waits for the restart: A's hung leg holds the (A, priority_mass) run lock.
             drivers["scan"] = asyncio.create_task(drive("scan", A, scan["rid"]))
     else:
         ctx.skip(RESUME, "the crash leg did not run")
@@ -493,7 +390,6 @@ async def run(ctx) -> None:
     send_s = round(time.monotonic() - t_send, 1)
     ctx.rec.stage = None
 
-    # ── Verdicts ──────────────────────────────────────────────────────────────
     of = read_sends(tmp)
     per_fan = Counter((s["account_id"], s["fan_id"]) for s in of)
     dups = {f"{a}:{f}": n for (a, f), n in per_fan.items() if n > 1}
@@ -503,7 +399,6 @@ async def run(ctx) -> None:
     status_of = {aid: q("SELECT status, resolved_count, excluded_count, capped_count, last_error "
                         "FROM priority_mass_runs WHERE id=?", (rid,))[0] for aid, rid in runs.items()}
 
-    # FROZEN: the oracle per run.
     black = {f for (f,) in q("SELECT fan_id FROM blacklist")}
     frozen_detail, frozen_ok = {}, True
     for aid in runs:
@@ -518,8 +413,6 @@ async def run(ctx) -> None:
     ctx.check(FROZEN, frozen_ok, **frozen_detail)
     ctx.metric("frozen", frozen_detail)
 
-    # ROWS: a Creator's sent rows (all its runs': S's fans are on none of A's lists, S priced as A) vs
-    # OF's record, by fan; every OF send carries its run's price.
     rows_detail, rows_ok = {}, True
     for aid in runs:
         mine = {**rows[aid], **(_run_rows(q, scan["rid"]) if aid == A and scan.get("rid") else {})}
@@ -528,7 +421,6 @@ async def run(ctx) -> None:
         rows_ok &= ok
     ctx.check(ROWS, rows_ok, **rows_detail)
 
-    # CRASH: the hung fan: claimed at the kill, then the stale sweep's unknown/interrupted, sent once.
     hf = rows[A].get(hang_fan) if hang_fan else None
     ctx.check(CRASH, crash["hit"] and crash.get("healed") and crash.get("claimed_at_kill") == "claimed"
               and hf is not None and hf[0] == "unknown" and hf[2] == "interrupted"
@@ -536,14 +428,12 @@ async def run(ctx) -> None:
               hang_fan=hang_fan, row=hf, of_sends=per_fan.get((A, hang_fan), 0),
               **{k: v for k, v in crash.items() if k != "resume"})
 
-    # SETTLED: A and C done, nothing pending or claimed.
     left = {aid[-4:]: dict(Counter(st for st, _m, _r in rows[aid].values() if st in ("pending", "claimed")))
             for aid in (A, C)}
     ctx.check(SETTLED, all(status_of[aid][0] == "done" for aid in (A, C)) and not any(left.values())
               and ended.get(A) == "done" and ended.get(C) == "done",
               runs={aid[-4:]: status_of[aid][0] for aid in runs}, left=left, ended=ended)
 
-    # CANCEL: B's pending -> skipped, at most one send after.
     t_c = cancel.get("t_done")
     after = [s for s in of if s["account_id"] == B and t_c is not None and s["t"] > t_c]
     bst = Counter(st for st, _m, _r in rows[B].values())
@@ -553,7 +443,6 @@ async def run(ctx) -> None:
               cancel={k: v for k, v in cancel.items() if k != "body"}, rows=dict(bst), skipped_by_cancel=skipped_c,
               sends_after=len(after))
 
-    # LEG_SCAN: S stopped at its first leg on the word listed after its create; OF got nothing from it.
     if not crash["hit"]:
         ctx.skip(LEG_SCAN, "the crash leg did not run")
     elif scan.get("rid") is None:
@@ -562,13 +451,11 @@ async def run(ctx) -> None:
         ok, detail = _scan_verdict(q, scan, [s for s in of if s["account_id"] == A], scan_list["members"])
         ctx.check(LEG_SCAN, ok, **detail, ended=ended.get("scan"))
 
-    # Legs: every leg answered 200; transport errors (Http records 599) only the crash's in-flight leg(s).
     leg_5xx, leg_599 = leg_rec.count(lambda s: 500 <= s < 599), leg_rec.count(lambda s: s == 599)
     ctx.check("legs: no 5xx, a transport error only for the leg in flight at the SIGKILL",
               leg_5xx == 0 and leg_599 <= (len(runs) if crash["hit"] else 0),
               five_xx=leg_5xx, transport=leg_599, errors=leg_rec.errors[:10])
 
-    # Budgets.
     p95s = {}
     route = "GET /admin/priority-mass/runs"
     summ = ctx.rec.summary().get(route)
@@ -594,7 +481,6 @@ async def run(ctx) -> None:
         "interrupted": sum(x["interrupted"] or 0 for x in leg_log), "ended": ended, "crash": crash,
         "leg_http": leg_rec.summary()})
 
-    # ── UI: the runs list, and a word added through Sensitive words' dialog ────
     ui_runs = "UI: Priority mass messages lists A's run with its sent / total as the DB counts"
     ui_word = "UI: a word added in Sensitive words' Add dialog is listed and refuses a run"
     ui_listed = "UI: a run launched from the composer is listed Done with its sent / total as the DB counts"
@@ -610,7 +496,6 @@ async def run(ctx) -> None:
 
 
 async def _runs_tab(ctx, page, aid: str):
-    """Priority mass messages opened; its Creator picker (holding `aid`) returned, not yet picked."""
     await page.goto(f"{ctx.app}/growth/smart-messages?tab=mass", wait_until="domcontentloaded", timeout=180_000)
     await page.get_by_role("tab", name="Priority mass messages").click(timeout=120_000)
     picker = page.locator(f"select:has(option[value='{aid}'])").first
@@ -619,7 +504,6 @@ async def _runs_tab(ctx, page, aid: str):
 
 
 async def _run_listed(picker, page, aid: str, line: str, status: str) -> bool:
-    """`aid` picked: does a run row labelled `status` read `line` (its sent / total)?"""
     await picker.select_option(aid)
     rows = page.get_by_role("listitem").filter(has_text=status)
     try:
@@ -658,7 +542,7 @@ async def _ui(ctx, A: str, C: str, rid: int, q, ui_runs: str, ui_word: str) -> N
                 timeout=30_000)
         except Exception:  # noqa: BLE001
             listed = False
-        await page.wait_for_timeout(1_000)      # the dialog's fade-out
+        await page.wait_for_timeout(1_000)
         await ui.shot(ctx, page, "sensitive-words-2-saved")
     after = (await ctx.owner.get("/admin/sensitive-words")).json().get("words", [])
     r = await ctx.owner.post("/admin/priority-mass/runs", json={
@@ -670,10 +554,6 @@ async def _ui(ctx, A: str, C: str, rid: int, q, ui_runs: str, ui_word: str) -> N
 
 
 async def _ui_creator(ctx, C: str, creators: list[dict]) -> None:
-    """Smart Messages: the column picks C (not the first Creator); New Message > OF mass message and
-    > Message online fans each open their composer posting as C. The OF one's Broadcast is caught at
-    the browser and aborted (declared bypass: a real send to C's fans would enter ONCE / ROWS's OF
-    record); its X-Account-Id is the side effect checked."""
     from slop.actors import ui
 
     nick = next(c["nickname"] for c in creators if c["id"] == C)
@@ -724,7 +604,6 @@ async def _ui_creator(ctx, C: str, creators: list[dict]) -> None:
 
 
 async def _ui_seed(ctx, B: str, of_lists: list[dict], aud_b: dict, q, ui_listed: str) -> None:
-    """The composer pre-ticks B's OF MASSDMEXCLUDE list; launched from the UI, driven to its end."""
     from slop.actors import ui
 
     massdm = next(x for x in of_lists if x["id"] == aud_b["massdm_of"])
@@ -733,9 +612,6 @@ async def _ui_seed(ctx, B: str, of_lists: list[dict], aud_b: dict, q, ui_listed:
     tmp = ctx.stack.tmp
     before = {s["fan_id"] for s in read_sends(tmp) if s["account_id"] == B}
     black = {f for (f,) in q("SELECT fan_id FROM blacklist")}
-    # The list's fans the run would message but for it: VIP's, minus B's earlier sends, the blacklist,
-    # the local MASSdmEXCLUDE and the contact guard now (edge fans counted as guarded too). The guard
-    # only lifts with time, so they are unguarded at the freeze too. None: this --seed proves nothing.
     certain, amb = _guarded(_last_msg(q, B), datetime.utcnow())
     witness = sorted(members & set(vip["members"]) - before - black - _massdm_local(q, B) - certain - amb)
     if not witness:
@@ -793,7 +669,6 @@ async def _ui_seed(ctx, B: str, of_lists: list[dict], aud_b: dict, q, ui_listed:
         status = (await resp.value).status
         await dlg.wait_for(state="hidden", timeout=30_000)
 
-        # The run's legs, to its end (the supervisor ticks too).
         row = q("SELECT id FROM priority_mass_runs WHERE account_id=? AND text=?", (B, UI_TEXT))
         rid = row[0][0] if row else None
         deadline = time.monotonic() + RUN_TIMEOUT_S

@@ -1,33 +1,3 @@
-"""The view-lease scenario's `rail` leg (ticket 23, phase-01 1b; scenarios/2026-11-09-view-lease-purchases-tiers.py) and
-the App-open warm's read set, which its `warm` leg counts too.
-
-Read set (service/app_open_warm.py, server.app_open_warm_reads), per Creator at the fake-OF wire (`read_class`): the
-purchases feed (`feed`, the poll's page), page 0 of the chats window (`chats`, roster-counts' recompute), the rail's
-tip and purchases lists (`list:tip`, `list:purchases`: RAIL_LIMIT rows) and the bell's count (`count`). `pass_through`
-reads them back through the pass-through routes, as a tab would after `creator_warmed` (the rail's two lists, the
-bell's count, the Fan List's page 0 per Creator, then the strip's roster counts): the warm's entries answer, no OF call.
-
-`run`, the purchases loop not running yet (so no feed read but the warm's and the Select refresh's): the earlier warm
-ages past REUSE_S and its leases lapse, then the owner's Chromium opens Messages Pro with its saved scope one Creator
-A (localStorage `chatterly:scope` = `model:A`; viewport VIS_VIEWPORT, the strip shows about 7 of 10; `through`: the
-rail's and strip's reads let through), a document load whose `opened: true` post warms every Creator. An owner
-`/events?scope=model:A` stream (actors/manager.SseListener) records each `creator_warmed` it gets. Settled: an owner
-`scope=all` stream got every Creator's `creator_warmed`, then the wire quiet. Then an Idle Creator B (not A, not in the page's last
-lease post, warmed above) gets one tip (`POST /__slop/of-ws-frame`, OF's `toasts` frame): RAIL_OUT_OF_SCOPE_LIVE:
-the open answered `warm: started`, the A-scoped stream got `creator_warmed` for every Creator and B's tip, the rail
-row (`/messages-pro/B/<fan>`) shows within RAIL_TIP_S, and the fake OF saw no call for B from the tip until
-RAIL_QUIET_S after the row showed. Then, the page closed, the owner polls roster-counts ROSTER_POLLS times (the
-strip's poll; returned as its p95 vs the last green). RAIL_LEASED_ONLY (tickets 24, 25): the relay's OF calls under
-a `route:` Caller kind (lib/of_call_stats.py, the counter file settled before the open and after those polls) on the
-money lists (POLL_ROUTE) or the count (COUNT_ROUTE), and roster-counts' (ROSTER_KIND) chats window reads, are only
-for Creators the page's lease posts named (`account_ids` or `selected`) in that span: the rail, bell, counters and
-strip badges of an unleased Creator read once it is warmed, from the warm (its `walk:app_open_warm` kind is not
-counted). A roster-counts `bust` counts too: in this leg only a selection or a hover sends one.
-Screenshots `rail-trigger-open` (just opened), `rail-settled` (rail and strip
-after the warm), `rail-tip-b` (B's row in A's tab). Evidence `rail-scope.json`. Then the warm ages past REUSE_S again
-(the tiers' Select refresh reads Creators the warm marked current). Fault `money-events-scope-only`
-(lib/view_lease_faults.py): only RAIL_OUT_OF_SCOPE_LIVE.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -46,17 +16,18 @@ READ_SET = ("feed", "chats", "list:tip", "list:purchases", "count")
 COUNT_ROUTE = POLL_ROUTE + "/count"
 CHATS_ROUTE = "GET /api2/v2/chats"
 ROSTER_KIND = "route:GET /admin/accounts/roster-counts"
-ROSTER_POLLS = 20        # P95_VS_LAST_MIN_N: fewer is a max, not a p95
-RAIL_SETTLE_S = 60.0     # the open to every Creator's count read (groups of 4 at ~5 s a Creator)
-RAIL_SSE_S = 5.0         # then every `creator_warmed` on the A-scoped stream
-RAIL_TIP_S = 5.0         # the tip frame to its row in A's rail
-RAIL_QUIET_S = 3.0       # past the row: still no call for B (the rail's re-reads, a lease-gain refresh)
-TIP_FAN = 5              # B's seeded fan who tips (0-4 are other legs')
+# P95_VS_LAST_MIN_N: fewer is a max, not a p95
+ROSTER_POLLS = 20
+# every Creator's count read: groups of 4 at ~5 s a Creator
+RAIL_SETTLE_S = 60.0
+RAIL_SSE_S = 5.0
+RAIL_TIP_S = 5.0
+RAIL_QUIET_S = 3.0
+TIP_FAN = 5
 TIP_ID = 7_700_060_000
 
 
 def read_class(c: dict) -> str | None:
-    """Which read of the warm's read set a fake-OF call is, or None."""
     if is_feed(c):
         return "feed"
     if c["route"] == COUNT_ROUTE:
@@ -72,7 +43,6 @@ def read_class(c: dict) -> str | None:
 
 
 def read_set(fake, lo: float, hi: float = float("inf")) -> dict[str, dict[str, int]]:
-    """Per Creator, its read-set calls by class with t0 in [lo, hi)."""
     out: dict[str, Counter] = {}
     with fake.lock:
         for c in fake.calls:
@@ -83,7 +53,6 @@ def read_set(fake, lo: float, hi: float = float("inf")) -> dict[str, dict[str, i
 
 
 def read_calls(fake, lo: float, hi: float) -> dict[str, list[tuple[float, str]]]:
-    """Per Creator, its read-set calls (t0 - lo, class) in [lo, hi): evidence."""
     out: dict[str, list[tuple[float, str]]] = {}
     with fake.lock:
         for c in fake.calls:
@@ -100,7 +69,6 @@ def _times(fake, aid: str, cls: str, lo: float) -> list[float]:
 
 
 def warmed_on_wire(fake, creators: list[str], lo: float) -> bool:
-    """Every Creator's count read (the warm's last) came after its first feed read since `lo`."""
     for a in creators:
         f, n = _times(fake, a, "feed", lo), _times(fake, a, "count", lo)
         if not f or not any(x > f[0] for x in n):
@@ -109,7 +77,6 @@ def warmed_on_wire(fake, creators: list[str], lo: float) -> bool:
 
 
 async def pass_through(ctx, creators: list[str]) -> dict:
-    """A tab's reads of the warmed entries through the pass-through routes; their answers and the OF calls made."""
     fake = ctx.of_wire
     paths = (f"/api/of/v2/users/notifications?limit={RAIL_LIMIT}&offset=0&type=tip",
              f"/api/of/v2/users/notifications?limit={RAIL_LIMIT}&offset=0&type=purchases",
@@ -135,8 +102,6 @@ TAB_READ_KEYS = (POLL_ROUTE, COUNT_ROUTE)
 
 
 def route_reads(raw: dict, keys: tuple[str, ...] = TAB_READ_KEYS) -> Counter:
-    """(Creator, key) -> n: the counter file's OF calls a pass-through route made (Caller kind `route:…`) on `keys`,
-    and roster-counts' chats window reads (key `roster-counts`)."""
     out: Counter = Counter()
     for kind, key, aid, _st, n in raw["rows"]:
         if kind == ROSTER_KIND and key == CHATS_ROUTE:
@@ -155,8 +120,6 @@ async def _route_reads(ctx) -> Counter | None:
 
 
 def leased_only(before: Counter | None, after: Counter | None, posts: list[dict]) -> dict:
-    """RAIL_LEASED_ONLY's evidence: the span's tab reads by Creator and key, the Creators the posts leased, and the
-    reads for any other Creator (`stray`, empty when it holds)."""
     leased = set()
     for p in posts:
         leased |= set(p["body"].get("account_ids") or [])
@@ -176,14 +139,12 @@ def _last_read(fake) -> float:
 
 
 async def age_out(fake, reuse_s: float, floor_s: float = 0.0) -> float:
-    """Until the last read-set call is older than `reuse_s` + 1 s (the warm marks lapse), at least `floor_s`."""
     wait = max(floor_s, _last_read(fake) + reuse_s + 1.0 - time.time())
     await asyncio.sleep(wait)
     return round(wait, 2)
 
 
 async def _roster_polls(ctx) -> dict:
-    """ROSTER_POLLS owner roster-counts reads in a row: their statuses and p95 (ms)."""
     ms: list[float] = []
     statuses: Counter = Counter()
     for _ in range(ROSTER_POLLS):
@@ -210,7 +171,6 @@ async def run(ctx, creators: list[str], roles: dict[str, list[str]], through, *,
     waited = await age_out(fake, reuse_s, ttl_s + 1.0)
     tab_reads0 = await _route_reads(ctx)
     a = roles["owner"][0]
-    # `all` (not under test) settles the warm; `model:A` is A's tab's stream, the one under test.
     h_all, h_a = ctx.owner.share(limits=2), ctx.owner.share(limits=2)
     obs_all = SseListener(h_all, scope="all", states=("creator_warmed",))
     obs = SseListener(h_a, scope=f"model:{a}", states=("creator_warmed",))

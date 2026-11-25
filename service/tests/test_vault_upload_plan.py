@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""Vault import's pure half (`vault_upload_plan`) — table tests, plain asserts,
-no pytest, no network. Plus `vault_upload._admit` (which feeds `_apply_caps`)
-with `_save` patched, against files in a temp dir.
-
-Run: ./venv/bin/python service/tests/test_vault_upload_plan.py
-"""
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -19,8 +13,6 @@ import vault_upload_plan as plan  # noqa: E402
 
 @contextmanager
 def ffmpeg(present: bool):
-    """`can_shrink` asks `have_ffmpeg`; pin it so the video rows mean the same
-    thing on every box, and put it back after."""
     orig = media_prep.have_ffmpeg
     media_prep.have_ffmpeg = lambda: present
     try:
@@ -41,9 +33,6 @@ def check(label: str, got, want) -> None:
 
 
 MB = 1024 * 1024
-# Compress hatch ON (threshold under COMPRESS_OFF_MB, target under the upload
-# cap): the only setting in which `checked()` keeps a download cap above the
-# upload cap, which the video rows below need.
 LIM = plan.Limits(max_files=2, max_bytes=10 * MB, max_download_bytes=50 * MB,
                   compress_over_bytes=5 * MB, target_bytes=9 * MB).checked()
 check("LIM: compress on", LIM.compress_enabled, True)
@@ -157,9 +146,6 @@ with tempfile.TemporaryDirectory() as td:
         vault_upload._save = orig_save
 
 print("_price_cents / parse_meta")
-# The wire is already cents (the card does Math.round(dollars * 100),
-# app/components/vault/VaultImportDetails.tsx:60-61). "9.99" → 9 pins truncation
-# of a fractional cents string; it is not a dollars → cents conversion.
 for raw, want in [("9.99", 9), (999, 999), ("0", 0), (0, 0), ("-5", 0), (-5, 0),
                   ("abc", None), (None, None), ("", None), ([1], None)]:
     check(f"_price_cents({raw!r})", plan._price_cents(raw), want)

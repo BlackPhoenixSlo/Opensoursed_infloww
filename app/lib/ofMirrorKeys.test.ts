@@ -3,7 +3,6 @@ import { QueryClient } from "@tanstack/react-query";
 import { afterChatWrite, afterProfileWrite, MIRROR, mirrorKey, mirrorUnder } from "./ofMirrorKeys";
 import { mirrorQuery } from "./ofMirrorData";
 
-/** Every key a model's page could have cached, for models A and B, and one nobody's write touches. */
 const KEYS: Record<string, unknown[]> = {
   "mirror A path": [MIRROR, "A", "/api/of/v2/chats/1"],
   "mirror A pages": [MIRROR, "A", "/api/of/v2/posts", "pages"],

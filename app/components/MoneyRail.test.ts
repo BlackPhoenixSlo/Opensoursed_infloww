@@ -13,7 +13,6 @@ const ACCOUNT = "5551";
 const ME = 5551;
 const FAN = 999;
 
-/** Attribution for the newest outbound row. `kind` null = a human chatter. */
 function attrib(messageId: number, kind: string | null): AttributionResponse {
   return {
     by_msg_id: {
@@ -32,7 +31,6 @@ function chat(over: Partial<OFChatItem>): OFChatItem {
   return { withUser: { id: FAN }, ...over } as OFChatItem;
 }
 
-/** Freshly fetched /chats/{id}: real ids, real receipt, but up to 60s old. */
 function detailWith(lastMsg: {
   id: number;
   text: string;
@@ -75,21 +73,17 @@ describe("replyStateOf", () => {
       null,
       ACCOUNT,
     );
-    // outbound=false is what paints the orange "awaiting your reply" dot.
     expect(st).toMatchObject({ outbound: false, seen: false, unread: false });
   });
 
   it("uses the optimistic chat-list row when a chatter has just replied", () => {
-    // The regression: sending patches the chat-list row with the new TEXT but
-    // reuses the previous lastMessage.id (useSendMessage). Preferring the
-    // 60s-stale detail fetch here reverted the row to the fan's old message.
     const detail = detailWith(
       { id: 102, text: "Made me hard", from: FAN, at: "2026-07-12T09:23:00Z" },
       102,
     );
     const optimistic = chat({
       lastMessage: {
-        id: 102, // stale id — the send hasn't been reconciled yet
+        id: 102,
         text: "ok",
         fromUser: { id: ME },
         createdAt: "2026-07-12T09:35:00Z",
@@ -100,9 +94,6 @@ describe("replyStateOf", () => {
     const st = replyStateOf(detail, optimistic, ACCOUNT);
     expect(st?.text).toBe("ok");
     expect(st?.outbound).toBe(true);
-    // The dot must clear: we spoke last, so nobody owes the fan a reply.
-    // And we must NOT claim "seen" off the stale id (lastRead 102 >= id 102)
-    // — the fan cannot have read a message sent one second ago.
     expect(st?.seen).toBe(false);
     expect(st?.stale).toBe(true);
   });
@@ -168,8 +159,6 @@ describe("replyStateOf — a bot reply doesn't discharge the thread", () => {
   });
 
   it("does not blame the bot when the attribution row is for an OLDER message", () => {
-    // The chatter just replied (id 301); our DB still only knows the AI's 300.
-    // Claiming byBot here would flash an orange dot at someone who just replied.
     const st = replyStateOf(
       detailWith({ id: 301, text: "ok", from: ME, at: "2026-07-12T09:41:00Z" }, 300),
       null,
@@ -189,8 +178,6 @@ describe("replyStateOf — a bot reply doesn't discharge the thread", () => {
       lastReadMessageId: 300,
     });
     const st = replyStateOf(detail, optimistic, ACCOUNT, lastOutboundOf(attrib(300, "welcome_chatter_for_info")));
-    // The stale optimistic id collides with the AI's real id — without the
-    // `stale` guard this would keep the AI's dot on the chatter's own reply.
     expect(st).toMatchObject({ text: "ok", outbound: true, byBot: false, seen: false, stale: true });
   });
 
@@ -205,8 +192,6 @@ describe("anchorFor", () => {
   const VH = 800;
 
   it("pins to the bottom when the panel sits in the lower half", () => {
-    // Dropped near the bottom → expanding must grow UP, so the bottom edge is
-    // the one that stays put.
     expect(anchorFor(700, 68, VH)).toBe("bottom");
   });
 
@@ -215,8 +200,6 @@ describe("anchorFor", () => {
   });
 
   it("decides on the panel's centre, not its top edge", () => {
-    // Top edge is above the midpoint (390 < 400) but the centre is below it,
-    // so this belongs to the bottom half.
     expect(anchorFor(390, 200, VH)).toBe("bottom");
   });
 });
@@ -232,14 +215,11 @@ describe("clampToViewport", () => {
   });
 
   it("pulls the panel back inside when it would hang off the edges", () => {
-    // 1000 - 290 = 710 is the furthest left the panel can sit.
     expect(clampToViewport(9999, 9999, 420)).toEqual({ x: 710, y: 720 });
     expect(clampToViewport(-50, -50, 420)).toEqual({ x: 0, y: 0 });
   });
 
   it("always leaves the header grabbable, even for a tall panel", () => {
-    // y is capped at innerHeight - 80 regardless of panel height, so the drag
-    // handle can never be scrolled off the bottom where it can't be grabbed.
     expect(clampToViewport(0, 5000, 420).y).toBe(720);
   });
 
@@ -314,7 +294,6 @@ describe("payerIdOf / distinctPayers", () => {
     row("a", { id: 2 }), row("a", { id: 3 }),
   ];
   it.each([
-    // [cap, expected] — order kept, one per account × fan, payerless rows skipped
     [undefined, ["a:1", "b:1", "a:2", "a:3"]],
     [2, ["a:1", "b:1"]],
     [3, ["a:1", "b:1", "a:2"]],
@@ -336,7 +315,6 @@ describe("railDockReducer", () => {
   });
 
   it.each([
-    // [label, action, expected dock, saves]
     ["dragMove clamps, pins to the top, and never saves",
       { type: "dragMove", x: 9999, y: -5, panelH: 420, viewportW: 1000, viewportH: 800 } as const,
       { open: false, x: 710, y: 0, anchor: "top" }, 0],
@@ -357,7 +335,6 @@ describe("railDockReducer", () => {
   });
 
   it.each([
-    // [label, start, action, expected dock, viewportH, saves]
     ["a top-anchored dock pulled back on screen, saved",
       placed({ x: 900, y: 700 }), { type: "resize", viewportW: 500, viewportH: 400, panelH: 68 } as const,
       { x: 210, y: 332, anchor: "top" }, 400, 1],

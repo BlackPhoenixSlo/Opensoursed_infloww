@@ -1,25 +1,7 @@
 #!/usr/bin/env python3
-"""The manual "Collect all" sweep (vault_ai_api._run_collect) walks OF in the
-describe sweep's priority order and asks the operator every 2000 new items.
-
-Fake OF client at the client seam (`ax._make_client`), real DB, real mirror
-upserts, real still stores in a temp dir (CDN fetch faked).
-
-Covers: OF call order folder list → rail folders paged whole → 5 newest pages →
-1 oldest page → … until the cursors meet (vault_collect_plan); each page's thumbs +
-full stills are on disk before the next OF call; a folder's page 0 refills the
-picker cache; nothing counted or downloaded twice; the run ends done + complete;
-the page cap still ends capped (not complete); storyboards warm newest first;
-pause after COLLECT_PAUSE_EVERY new items (status "paused", OF idle), continue
-resumes, stop → storyboards warmed + done, not complete; an unanswered pause
-auto-stops; continue/stop 409 when nothing is paused; prepare content's harvest
-never pauses; a still whose fetch came back empty is fetched again (W30 F19).
-
-Run: ./venv/bin/python service/tests/test_vault_manual_collect_order.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds a throwaway temp DB
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -48,7 +30,7 @@ vault_stills.THUMB_DIR, vault_stills.IMAGE_DIR, vault_stills.POSTER_DIR = (
 _JPEG = b"\xff\xd8\xff\xe0" + b"0" * 64
 _fetches: list[str] = []
 _warmed: list[str] = []
-_FAIL_ONCE: set[str] = set()   # urls whose next fetch raises (a CDN blow-up mid-warm)
+_FAIL_ONCE: set[str] = set()
 _EMPTY_ONCE: set[str] = set()  # urls whose next fetch yields nothing (an expired signature's 403)
 
 
@@ -68,13 +50,11 @@ vault_frames.warm_one_sync = lambda client, url, dur: _warmed.append(url)
 
 
 class FakeOF:
-    """Vault of ids 1..n, newer = higher id. Every 10th item is in folder 7 (custom,
-    hasMedia); folder 8 is custom but empty. Ids in `videos` are clips."""
 
     def __init__(self, aid: str, n: int, videos: tuple[int, ...] = (), fail_lists: bool = False):
         self.aid, self.n, self.videos, self.fail_lists = aid, n, set(videos), fail_lists
         self.calls: list[tuple] = []
-        self.on_disk_at_call: list[set[int]] = []   # media ids with thumb+image when each call began
+        self.on_disk_at_call: list[set[int]] = []
 
     def _snap(self, kind: tuple) -> None:
         self.calls.append(kind)
@@ -168,9 +148,9 @@ def _all_calls(of: FakeOF) -> list[tuple]:
 async def case_call_order_folders_then_newest_until_met():
     of, run = await _collect("accO", 250)
     assert of.calls == [
-        ("lists", 50, 0),                   # folder list
-        ("media", 100, 0, 7, "desc"),       # folder 7 whole (25 items; 8 empty, posts built-in)
-        ("media", 100, 0, None, "desc"),    # newest pages (step 99: one shared id) … no more on the third
+        ("lists", 50, 0),
+        ("media", 100, 0, 7, "desc"),
+        ("media", 100, 0, None, "desc"),
         ("media", 100, 99, None, "desc"),
         ("media", 100, 198, None, "desc"),
     ], of.calls
@@ -183,7 +163,6 @@ async def case_call_order_folders_then_newest_until_met():
         stamps = set((await ss.execute(select(VaultItem.last_seen_run_id).where(
             VaultItem.account_id == "accO"))).scalars())
     assert stamps == {run.id}, stamps
-    # Folder 7's page 0 refills the picker's cache (its limit-24 slot, sliced from the 100).
     body = await vault_cache.get("accO", vault_cache.vault_media_cache_key(
         type="all", list_id=7, offset=0, limit=24, sort="desc", field="recent", q_norm=""))
     assert body is not None, "folder page 0 not cached for the picker"
@@ -191,8 +170,6 @@ async def case_call_order_folders_then_newest_until_met():
 
 
 async def case_rounds_interleave_and_cursors_meet():
-    """1300 items, folder 7 = 130 (two pages): folder whole → desc pages 0-4 → asc 0 →
-    desc pages 5-9 → asc 99 → desc 990 → desc 1089 (ids 211..112) meets asc (All cursors step 99)."""
     of, run = await _collect("accR", 1300)
     assert [c[2] for c in of.calls if c[0] == "media" and c[3] == 7] == [0, 100], of.calls
     assert of.calls.index(("media", 100, 100, 7, "desc")) < of.calls.index(("media", 100, 0, None, "desc"))
@@ -233,8 +210,6 @@ async def case_storyboards_warm_newest_first():
 
 
 async def case_folder_list_failure_does_not_stop_the_walk():
-    """One 429 on the folder list (no retry on the manual path) costs the folders'
-    head start, never the Collect."""
     of, run = await _collect("accL", 250, fail_lists=True)
     assert of.calls == [("lists", 50, 0)] + [
         ("media", 100, o, None, "desc") for o in (0, 99, 198)], of.calls
@@ -243,9 +218,7 @@ async def case_folder_list_failure_does_not_stop_the_walk():
 
 
 async def case_failed_warm_is_retried_by_the_walk():
-    """A still whose download blew up on the folder page is fetched again when the
-    newest walk meets that media, not skipped as already handled."""
-    _FAIL_ONCE.add("https://cdn.example/accW/t20.jpg")   # 20: new on folder 7's page
+    _FAIL_ONCE.add("https://cdn.example/accW/t20.jpg")
     of, run = await _collect("accW", 250)
     assert run.status == "done" and run.total_seen == 250, (run.status, run.error)
     assert _fetches.count("https://cdn.example/accW/t20.jpg") == 2, "failed thumb never retried"
@@ -254,9 +227,7 @@ async def case_failed_warm_is_retried_by_the_walk():
 
 
 async def case_empty_warm_is_retried_by_the_walk():
-    """W30 F19: a still whose fetch came back empty (nothing written) is not counted as downloaded:
-    the newest walk fetches it again."""
-    _EMPTY_ONCE.add("https://cdn.example/accE/t20.jpg")   # 20: new on folder 7's page
+    _EMPTY_ONCE.add("https://cdn.example/accE/t20.jpg")
     of, run = await _collect("accE", 250)
     assert run.status == "done", (run.status, run.error)
     assert _fetches.count("https://cdn.example/accE/t20.jpg") == 2, "empty thumb never retried"
@@ -264,9 +235,6 @@ async def case_empty_warm_is_retried_by_the_walk():
 
 
 async def case_pause_every_2000_then_continue():
-    """2300 items: the walk pauses on the first page that takes it to ≥2000 new,
-    OF stays idle while paused, the status says so (not interrupted), continue walks
-    to the end (the counter restarts: no second ask for the last 270)."""
     assert api.COLLECT_PAUSE_EVERY == 2000
     aid = "accP"
     of = await _reset(aid, 2300)
@@ -302,9 +270,8 @@ async def case_stop_warms_and_is_not_a_full_walk():
         api.COLLECT_PAUSE_EVERY = saved
     run = await _run(r["run_id"])
     assert len(of.calls) == n_calls, "OF called after stop"
-    assert (run.status, run.phase) == ("done", "stopped"), (run.status, run.phase)   # stopped: not a walk (F2)
+    assert (run.status, run.phase) == ("done", "stopped"), (run.status, run.phase)
     assert run.error == f"stopped by operator at {st['total_seen']} items", run.error
-    # Folder 7 (100) + desc 0-200 (1000..701) → 370 new at the pause: clips 1000 and 995, not 3.
     assert _warmed == [f"https://cdn.example/{aid}/v{i}.mp4" for i in (1000, 995)], _warmed
     s = await api.cache_summary(account_id=aid)
     assert s["complete"] is False and s["last_run"]["status"] == "done", s

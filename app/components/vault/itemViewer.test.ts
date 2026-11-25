@@ -1,4 +1,3 @@
-/** The folders editor's viewer + player reducer (`itemViewer.ts`), as a table. */
 import { describe, expect, it } from "vitest";
 
 import type { Tile } from "@/components/vault/vaultManageActions";
@@ -29,12 +28,10 @@ describe("viewerReducer", () => {
     ["saved merges into the open item's _ai",
       [{ type: "open", media: t(1, { a: 1, tags: ["x"] }) }, { type: "saved", mediaId: 1, updated: { tags: ["y"] } }],
       { a: 1, tags: ["y"] }],
-    // W30 C7: save on 1, step to 2 before the answer — 2 keeps its own _ai.
     ["a stale item's answer is ignored",
       [{ type: "open", media: t(1, { tags: ["x"] }) }, { type: "open", media: t(2, { tags: ["z"] }) },
         { type: "saved", mediaId: 1, updated: { tags: ["y"] } }],
       { tags: ["z"] }],
-    // W30 C7 / M1: only _ai's keys merge, not the response's media_id / id / kind / locked_fields.
     ["extra keys are not merged",
       [{ type: "open", media: t(1, {}) }, { type: "saved", mediaId: 1, updated: {
         media_id: 1, id: 1, kind: "photo", locked_fields: ["tags"], description: "d", fields: { a: 1 },

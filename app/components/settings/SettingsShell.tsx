@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * Infloww's Settings frame (docs/spec/settings-tabs/phase-00-shell-tokens-blob.md):
- * the 48px Settings header ("Settings", our "Desktop app" link, also on the About tab, and a ✕ that leaves
- * Settings, over a full-width rule) over the
- * Tab area: a size container that fills the viewport under the app's top bar
- * (md and up), in which the Tab list and the Panel each scroll on their own. Reads Infloww's `--if-*` tokens
- * (globals.css, ADR-0009), which is why the header lives here and not in the
- * server layout. A tab hidden from a Chatter (`chatterHidden`), opened by URL
- * in a Chatter-only session, shows the denied-page panel instead of its Panel
- * (the Relay refuses its routes too).
- */
 
 import { usePathname, useRouter } from "next/navigation";
 import { X } from "lucide-react";
@@ -39,8 +28,6 @@ export default function SettingsShell({ children }: { children: React.ReactNode 
       >
         <h1 className="text-[length:var(--if-fs-lg)] font-[var(--if-fw-title)] text-[var(--if-fg)]">Settings</h1>
         <div className="ml-auto flex items-center gap-3">
-          {/* Get the desktop app. A plain <a>, not next/link: /download is a static file in public/, outside the
-              router. Hidden below sm and inside the desktop app. */}
           {!inApp && (
             <a
               href={DESKTOP_URL}
@@ -67,8 +54,6 @@ export default function SettingsShell({ children }: { children: React.ReactNode 
         className="@container flex flex-col md:flex-row gap-5 md:gap-0 p-3 sm:p-6 md:p-0 md:h-[calc(100dvh-var(--shell-top,3.5rem)-var(--if-header-h))]"
       >
         <SettingsNav />
-        {/* A Settings tab renders its own Panel (header + scrolling body, SettingsPanel.tsx), so a
-            slot holding one is a bare frame; a Legacy tab, or a 404, keeps the padded slot. */}
         <div className="flex-1 min-w-0 md:overflow-y-auto md:p-[var(--if-panel-pad)] md:has-[>[data-settings=panel]]:p-0">
           {ownerOnly ? <DeniedPagePanel /> : children}
         </div>

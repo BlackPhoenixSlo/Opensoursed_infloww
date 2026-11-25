@@ -1,9 +1,5 @@
 "use client";
 
-/** The help bot's "Do it for me" pieces (docs/spec/assistant-do-mode.md): the do-mode conversation (the request, the
- *  plan card from the server's draft, the run's progress and outcome) and the phone's pill ("Doing it… · Stop", then
- *  the outcome · Open).
- *  Presentation only: AssistantPanel passes the run (doRunReducer.ts) and its callbacks. */
 
 import type { ReactNode } from "react";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
@@ -15,7 +11,6 @@ import { diffLine, type FullAiConfigSlots } from "./fullAiConfigEdit";
 import { canStart, type DoOutcome, type DoRun } from "./doRunReducer";
 import { editPlanText, resultHeadline, resultLines, type EditResult, type MassEditSlots } from "./massEdit";
 
-/** The messenger's card (home screen cards, Do plan/results). */
 export const CARD = "rounded-xl border border-border bg-bg-elev-1 [[data-look=messenger]_&]:bg-white [html[data-theme=light]_&]:bg-white px-6 py-[17px] leading-5 shadow-[0_2px_8px_rgba(0,0,0,0.06)]";
 
 const BUBBLE_ME = "self-end max-w-[85%] rounded-2xl rounded-br-md bg-fg text-panel px-3.5 py-2 text-[13px] whitespace-pre-wrap break-words";
@@ -31,15 +26,12 @@ export const DO_HINT =
   + "Owners can also export a report — e.g. “last month's sales per Creator as Excel”, "
   + "or change a Creator's Full AI Chat draft — e.g. “reply slower”.";
 
-/** The plan card's text, pure (DoMode.test.ts): the flow's plain-words lines, the draft's assumptions and open
- *  questions, and the fixed note. */
 export function planCardText(d: DoDraft): { lines: string[]; assumptions: string[]; unresolved: string[]; note: string } | null {
   const flow = canStart(d) ? boundFlow(d) : null;
   if (!flow) return null;
   return { lines: flow.planLines, assumptions: d.assumptions, unresolved: d.unresolved, note: PLAN_NOTE };
 }
 
-/** The fixed note under an edit plan card. */
 export const EDIT_NOTE = "Nothing gets switched on — rules that are off stay off. LIVE = on now and will send more.";
 
 function Notes({ assumptions, unresolved }: { assumptions: string[]; unresolved: string[] }) {
@@ -67,7 +59,6 @@ function Notes({ assumptions, unresolved }: { assumptions: string[]; unresolved:
   );
 }
 
-/** The mass_edit plan card: the change, "N rules · M models", each model's rules with before → after. */
 function EditPlanCard({ draft, slots, children }: { draft: DoDraft; slots: MassEditSlots; children?: ReactNode }) {
   const t = editPlanText(slots);
   return (
@@ -99,7 +90,6 @@ function EditPlanCard({ draft, slots, children }: { draft: DoDraft; slots: MassE
   );
 }
 
-/** The apply's per-rule outcome: ✓ or the skip reason. */
 function EditResults({ results, slots }: { results: EditResult[]; slots: MassEditSlots }) {
   return (
     <div className={cn(CARD, "self-stretch px-5 py-4 text-[13px] text-fg")} role="status" data-testid="do-edit-results">
@@ -117,12 +107,8 @@ function EditResults({ results, slots }: { results: EditResult[]; slots: MassEdi
 
 type ShownRun = Exclude<DoRun, { phase: "off" | "idle" | "drafting" }>;
 
-/** A message as one sentence ending in a full stop. */
 const sentence = (msg: string) => msg.trim().replace(/[.\s]*$/, ".");
 
-/** The do-mode conversation for a flow with no steps (mass_edit, report_export, full_ai_config): the plan card with
- *  its start button → the busy line while the one request is out → `done(outcome)`, or the failure / abort line with Start
- *  over (and Try again, `retry`: a new attempt). `card` renders the flow's card around the planned buttons. */
 function DirectThread({ run, on, request, card, startLabel, canGo = true, busy, done, failed, retry = false,
   startOverWhenDone = false }: {
   run: ShownRun; on: DoCallbacks; request: ReactNode; card: (actions?: ReactNode) => ReactNode; startLabel: string;
@@ -158,7 +144,6 @@ function DirectThread({ run, on, request, card, startLabel, canGo = true, busy, 
   );
 }
 
-/** mass_edit: plan card → applying → results (no cursor, no Stop once out). */
 function EditThread({ run, draft, slots, on, request }: {
   run: ShownRun; draft: DoDraft; slots: MassEditSlots; on: DoCallbacks; request: ReactNode;
 }) {
@@ -172,7 +157,6 @@ function EditThread({ run, draft, slots, on, request }: {
   );
 }
 
-/** The report_export plan card: what the file holds (no row count — that would cost a second run). */
 function ExportPlanCard({ draft, slots, children }: { draft: DoDraft; slots: ExportSlots; children?: ReactNode }) {
   return (
     <div className={cn(CARD, "self-stretch px-5 py-4 text-[13px] text-fg")} data-testid="do-export-plan">
@@ -186,8 +170,6 @@ function ExportPlanCard({ draft, slots, children }: { draft: DoDraft; slots: Exp
   );
 }
 
-/** report_export: plan card → Download → building → the saved file, or the error and Try again (a new attempt).
- *  Download stays off while a name is unresolved (canStart). */
 function ExportThread({ run, draft, slots, on, request }: {
   run: ShownRun; draft: DoDraft; slots: ExportSlots; on: DoCallbacks; request: ReactNode;
 }) {
@@ -206,10 +188,8 @@ function ExportThread({ run, draft, slots, on, request }: {
   );
 }
 
-/** The fixed note under a full_ai_config card: the assistant only edits the draft. */
 export const CONFIG_NOTE = "Only the Draft changes. Make draft live on the Full AI Chat page copies it to the Live settings.";
 
-/** The full_ai_config card: the Creator, each changed setting before → after. */
 function ConfigCard({ draft, slots, children }: { draft: DoDraft; slots: FullAiConfigSlots; children?: ReactNode }) {
   return (
     <div className={cn(CARD, "self-stretch px-5 py-4 text-sm text-fg")} data-testid="do-config-plan">
@@ -222,7 +202,6 @@ function ConfigCard({ draft, slots, children }: { draft: DoDraft; slots: FullAiC
   );
 }
 
-/** full_ai_config: card → Apply (one draft PUT) → the PUT's line (a 409 / 422 says why; no retry — ask again). */
 function ConfigThread({ run, draft, slots, on, request }: {
   run: ShownRun; draft: DoDraft; slots: FullAiConfigSlots; on: DoCallbacks; request: ReactNode;
 }) {
@@ -264,11 +243,9 @@ export interface DoCallbacks {
   skipAnimation: () => void;
   cancel: () => void;
   stop: () => void;
-  /** Send the request to Q&A instead (a flow:null draft). */
   askAsQuestion: (request: string) => void;
 }
 
-/** The do-mode conversation. `text` renders an answer (markdown + links) like a Q&A bubble. */
 export function DoThread({ run, on, text }: { run: DoRun; on: DoCallbacks; text: (body: string, muted?: boolean) => ReactNode }) {
   if (run.phase === "off") return null;
   if (run.phase === "idle") return <div className={cn(BUBBLE_BOT, "text-fg")}>{DO_HINT}</div>;
@@ -286,12 +263,10 @@ export function DoThread({ run, on, text }: { run: DoRun; on: DoCallbacks; text:
     return <>{request}<div className={cn(BUBBLE_BOT, "text-fg-dim")}>{run.msg}</div></>;
   }
   if (!draft) return null;
-  // An export with an unresolved name still shows its card (Download off), not the Q&A swap.
   if (draft.flow === "report_export" && draft.slots && !draft.error) {
     return <ExportThread run={run} draft={draft} slots={draft.slots} on={on} request={request} />;
   }
   if (!canStart(draft)) {
-    // Not a flow the bot can do (or the draft failed): its sentence, and the Q&A swap.
     return (
       <>
         {request}
@@ -349,15 +324,12 @@ export function DoThread({ run, on, text }: { run: DoRun; on: DoCallbacks; text:
   );
 }
 
-/** Phone: the pill instead of the sheet — while running, and after a run (not a failed draft) until the user taps
- *  Open on that outcome (`expanded`, the run object they opened). */
 export function pillFor(run: DoRun, expanded: DoRun | null): boolean {
   if (run.phase === "running") return true;
   const ranOver = run.phase === "done" || run.phase === "aborted" || (run.phase === "failed" && run.draft !== null);
   return ranOver && expanded !== run;
 }
 
-/** The pill's short outcome line once the run is over (DoMode.test.ts). */
 export function pillStatus(run: DoRun): string {
   if (run.phase === "done") {
     const o = run.outcome;
@@ -371,8 +343,6 @@ export function pillStatus(run: DoRun): string {
   return run.phase === "running" && run.saving ? "Saving…" : "Doing it…";
 }
 
-/** Phone portrait during a run and after it: the sheet folds to this pill so the form under it shows. Running → Stop
- *  (none once saving); over → the outcome and Open (back to the sheet with the full card). */
 export function DoPill({ run, onStop, onOpen }: { run: DoRun; onStop: () => void; onOpen: () => void }) {
   const running = run.phase === "running";
   const btn = "h-9 rounded-full bg-white px-4 text-[14px] font-medium text-black";

@@ -1,16 +1,3 @@
-/**
- * "Earnings by channel" is one of Infloww's Overview sections (Inventory §3.4, C[H276166]; the Layout capture
- * docs/infloww-layouts/analytics-creator-reports.md, analytics-creator-reports#42 and #70), so the Creator Reports
- * card renders it among them, after Earnings trends and beside Earnings breakdown, with no "Inflowwww extra"
- * title (docs/spec/infloww-parity-round-2/phase-03-creator-reports.md, ticket 21).
- *
- * Ticket 60: the page lies flush (#41) while the Dashboard's embed keeps its card; it opens with "Show net earnings"
- * on (#33) and on its own range, the last 30 days through today, with the bundle's presets and bounds (#21 to #24);
- * with no Creator the tiles print "$0", and the loading and error texts are labelled; the statistics header stays
- * in view (#108); Creator performance has its own bar and donut geometry (#161, #164, #167), its growth rows the count
- * (#166); and the letter tracking is applied (#53, #165). The clock is pinned to Fri 16 Oct 2026 12:00Z, the report
- * time zone UTC. jsdom does no layout, so the geometry is read off the SVG and the styles.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -19,7 +6,6 @@ vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();
   return { ...mod, relay: { ...mod.relay, get: vi.fn() } };
 });
-// The card's window reads the Applied settings for the Creator in scope.
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 
 import CompetitorReports from "@/components/home/CompetitorReports";
@@ -42,7 +28,6 @@ const KIND_ROWS = [
   { kind: "tip", total_cents: 10000, count: 1, net_cents: 8000 },
 ];
 
-/** The Relay by path: the Applied settings, the per-model read's `creators`, and the revenue reads' rows. */
 function relayWith(creators: unknown[], kindRows = KIND_ROWS, applied: unknown = APPLIED) {
   get.mockImplementation(async (path: string) => {
     if (path.startsWith("/admin/settings/applied")) return applied;
@@ -60,7 +45,6 @@ function renderCard(ui = <CompetitorReports />) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return { ...render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>), client };
 }
-/** The revenue reads sent so far, as their query parameters. */
 const revenueReads = () => get.mock.calls
   .map(([p]) => String(p))
   .filter((p) => p.startsWith("/admin/stats/revenue"))
@@ -84,7 +68,6 @@ describe("CompetitorReports labels", () => {
         ? { preferences: { tz: null, report_tz: null, week_start: "monday" } }
         : { rows: [], per_model: [] });
     renderCard();
-    // analytics-creator-reports#61, #70, #77: Earnings trends, then the channel row's two cards.
     const channel = await screen.findByRole("heading", { name: "Earnings by channel" });
     const trends = screen.getByRole("heading", { name: "Earnings trends" });
     const breakdown = screen.getByRole("heading", { name: "Earnings breakdown" });
@@ -109,7 +92,6 @@ describe("CompetitorReports frame (#41)", () => {
     const cardRoot = card.container.firstElementChild as HTMLElement;
     expect(cardRoot.className).toMatch(/\bborder\b/);
     expect(cardRoot.style.background).toBe("var(--color-panel)");
-    // overflow-hidden would trap the statistics header's sticky top; the card clips instead.
     expect(cardRoot.className).not.toMatch(/overflow-hidden/);
   });
 });
@@ -162,7 +144,6 @@ describe("CompetitorReports defaults (#21 to #24, #33)", () => {
       "Custom", "Last 7 days", "Last 30 days", "Last 90 days", "Last 365 days", "2026",
       "October", "September", "August", "July", "June", "May",
     ]);
-    // #22: a year back to two days ahead.
     expect(screen.getByLabelText("From date")).toHaveAttribute("min", "2025-10-16");
     expect(screen.getByLabelText("To date")).toHaveAttribute("max", "2026-10-18");
 
@@ -173,7 +154,6 @@ describe("CompetitorReports defaults (#21 to #24, #33)", () => {
     pick("2026");
     expect(pill).toHaveTextContent("Jan 1, 2026");
     expect(pill).toHaveTextContent("Oct 16, 2026");
-    // This month runs through today; an earlier month is whole.
     pick("October");
     expect(pill).toHaveTextContent("Oct 1, 2026");
     expect(pill).toHaveTextContent("Oct 16, 2026");
@@ -181,7 +161,6 @@ describe("CompetitorReports defaults (#21 to #24, #33)", () => {
     expect(pill).toHaveTextContent("Sep 1, 2026");
     expect(pill).toHaveTextContent("Sep 30, 2026");
     expect(within(presets).getByRole("button", { name: "September" })).toHaveAttribute("aria-pressed", "true");
-    // #14: Custom keeps the range shown, not a 7-day one.
     pick("Custom");
     expect(pill).toHaveTextContent("Sep 1, 2026");
     expect(pill).toHaveTextContent("Sep 30, 2026");
@@ -204,7 +183,6 @@ describe("CompetitorReports states (#58)", () => {
       const icon = (await tile(name)).querySelector("dt svg")!;
       expect((icon as SVGElement).style.color).toBe(`rgb(${TILE_ICON[key].rgb})`);
     }
-    // Total stays on the page's accent.
     expect(((await tile("Total earnings")).querySelector("dt svg") as SVGElement).style.color).toBe("");
   });
 
@@ -212,7 +190,6 @@ describe("CompetitorReports states (#58)", () => {
     get.mockImplementation(async (path: string) =>
       path.startsWith("/admin/settings/applied") ? APPLIED : { rows: [], per_model: [] });
     renderCard();
-    // The tile comes before the Creator statistics card of the same name.
     const [total] = await screen.findAllByRole("group", { name: "Total earnings" });
     await waitFor(() => expect(total).toHaveTextContent("$0"));
     expect(screen.getByRole("group", { name: "Subscriptions" })).toHaveTextContent("$0");
@@ -270,7 +247,6 @@ describe("CompetitorReports Creator performance (#161, #164, #166, #167)", () =>
     expect(bar.tagName.toLowerCase()).toBe("rect");
     expect(bar).not.toHaveAttribute("rx");
     expect(Number(bar.getAttribute("width"))).toBeCloseTo(25, 5);
-    // The plot's bottom is 30px above the 336px chart's: the label's 11px baseline sits 16px under it.
     const label = within(section).getByText("Sep 17", { selector: "text" });
     expect(Number(label.getAttribute("y"))).toBe(306 + 16 + 11);
   });
@@ -282,7 +258,6 @@ describe("CompetitorReports Creator performance (#161, #164, #166, #167)", () =>
     expect(donut.getAttribute("class")).toContain("h-[180px]");
     expect(donut.getAttribute("class")).toContain("mt-[35px]");
     const rings = donut.querySelectorAll("circle");
-    // The ring's middle at 74.5% of 90px, 11% of it wide.
     expect(Number(rings[0].getAttribute("r"))).toBeCloseTo(67.05, 5);
     expect(Number(rings[0].getAttribute("stroke-width"))).toBeCloseTo(9.9, 5);
     expect([...rings].slice(1).map((c) => c.getAttribute("stroke"))).toEqual(["#3467ff", "#2ad4ac"]);
@@ -296,7 +271,6 @@ describe("CompetitorReports Creator performance (#161, #164, #166, #167)", () =>
     await openPerformance();
     const growth = await screen.findByRole("list", { name: "Earnings growth" });
     const subs = await within(growth).findByText("Subscription");
-    // Net is on: the count is the channel's net.
     await waitFor(() => expect(subs.closest("li")).toHaveTextContent(/^\$120(?!\.)/));
   });
 });
@@ -327,7 +301,6 @@ describe("CompetitorReports growth against a window with unknown days", () => {
     const base = get.getMockImplementation()!;
     const half = KIND_ROWS.map((r) => ({ ...r, total_cents: r.total_cents / 2, net_cents: r.net_cents / 2 }));
     let missing = 3;
-    // The window before Sep 17-Oct 16 is Aug 18-Sep 16: half the earnings, and (first) 3 Creator-days with no figure.
     get.mockImplementation(async (path: string) => {
       const q = new URLSearchParams(path.split("?")[1] ?? "");
       if (path.startsWith("/admin/stats/revenue") && q.get("group_by") === "kind" && q.get("from")?.startsWith("2026-08-18"))
@@ -358,7 +331,6 @@ describe("CompetitorReports referrals (#50, #75)", () => {
     renderCard();
     const summary = await screen.findByRole("heading", { name: "Earnings summary" });
     const card = summary.closest("section")!;
-    // Net is on: $200.00 of sales and $10.00 of referrals, the same in net.
     await waitFor(() => expect(within(card).getByRole("group", { name: "Total earnings" })).toHaveTextContent("$210"));
     expect(within(card).getByRole("group", { name: "Referrals" })).toHaveTextContent("$10");
     expect(screen.getByText(/Referrals from OnlyFans are unavailable for 1 creator/)).toHaveAttribute("title", "Inflowwww extra");
@@ -386,7 +358,6 @@ describe("CompetitorReports referrals that could not be read (#6, #19)", () => {
     await waitFor(() => expect(referrals.children[1]).toHaveTextContent(/^-$/));
     expect(referrals).toHaveAttribute("title", "OnlyFans referrals are unavailable for this period");
     expect(total.querySelector("[data-partial]")).toHaveTextContent("*");
-    // #22: Total keeps a growth, both windows without referrals (the same sales either side here), and says so.
     await waitFor(() => expect(growthOf(total)).toHaveTextContent(/^0\.00%$/));
     expect(growthOf(total)).toHaveAttribute("title", TOTAL_GROWTH_EXCL);
     expect(growthOf(referrals)).toHaveTextContent(/^-$/);
@@ -405,14 +376,11 @@ describe("CompetitorReports referrals that could not be read (#6, #19)", () => {
     const total = within(card).getByRole("group", { name: "Total earnings" });
     await waitFor(() => expect(total).toHaveTextContent("$210"));
     const referrals = within(card).getByRole("group", { name: "Referrals" });
-    // The window before's sales answered (Subscriptions has its growth), and its referrals read failed.
     await waitFor(() => expect(growthOf(within(card).getByRole("group", { name: "Subscriptions" }))).toHaveTextContent("0.00%"));
-    // $200 of sales against $200 before: 0.00%, not +5% from this window's $10 referrals, never -100%.
     await waitFor(() => expect(growthOf(total)).toHaveAttribute("title", TOTAL_GROWTH_EXCL));
     expect(growthOf(total)).toHaveTextContent(/^0\.00%$/);
     expect(growthOf(referrals)).toHaveTextContent(/^-$/);
     expect(total.querySelector("[data-partial]")).toBeNull();
-    // The sales channels keep theirs.
     expect(growthOf(within(card).getByRole("group", { name: "Subscriptions" }))).toHaveTextContent("0.00%");
   });
 
@@ -545,7 +513,6 @@ describe("CompetitorReports reversals (#101, #122, #170)", () => {
     renderCard();
     const cards = await screen.findByRole("list", { name: "Creator statistics cards" });
     await waitFor(() => expect(within(cards).getByRole("group", { name: "Refunded" })).toHaveTextContent("$40"));
-    // The ledger's Refunds row is gross, beside Gross earnings.
     await waitFor(() => expect(screen.getByRole("group", { name: "Refunds" })).toHaveTextContent("$50"));
   });
 
@@ -563,7 +530,6 @@ describe("CompetitorReports reversals (#101, #122, #170)", () => {
     renderCard();
     fireEvent.click(await screen.findByRole("tab", { name: "Creator performance" }));
     const chart = await screen.findByRole("img", { name: "Earnings heatmap chart" });
-    // Net is on: the slot holds its net.
     const hot = await within(chart).findByRole("img", { name: "Mon 9 PM: $200" });
     expect(hot.getAttribute("fill")).toBe("rgb(52,103,255)");
     expect(within(chart).getByRole("img", { name: "Sun 12 AM: $0" }).getAttribute("fill")).toBe("rgb(239,244,255)");
@@ -575,7 +541,6 @@ describe("CompetitorReports page-parity 26 (#7, #148, #172)", () => {
   it("prints the report time zone as its UTC offset, the zone's name on hover", async () => {
     relayWith([CREATOR], KIND_ROWS, { preferences: { tz: null, report_tz: "Europe/Ljubljana", week_start: "monday" } });
     renderCard();
-    // 16 Oct 2026 is summer time in Ljubljana.
     const label = await screen.findByText("UTC+02:00");
     expect(label).toHaveAttribute("title", "Europe/Ljubljana");
     expect(screen.queryByText("Europe/Ljubljana")).toBeNull();
@@ -611,7 +576,6 @@ describe("CompetitorReports page-parity 26 (#7, #148, #172)", () => {
   });
 
   it("counts a pending (uncleared) sale in Total earnings, the reads never narrowed to cleared", async () => {
-    // The relay's default status counts cleared and pending sales (service/stats.py); the $30.00 tip here is pending.
     const pendingTip = { kind: "tip", total_cents: 3000, count: 1, net_cents: 2400 };
     relayWith(
       [{ ...CREATOR, revenue_by_kind: { subscription: 15000, tip: 3000 }, pending_revenue_cents: 3000, total_revenue_cents: 18000 }],
@@ -620,7 +584,6 @@ describe("CompetitorReports page-parity 26 (#7, #148, #172)", () => {
     renderCard();
     const summary = await screen.findByRole("heading", { name: "Earnings summary" });
     const card = summary.closest("section")!;
-    // Net is on: $120.00 cleared plus the pending tip's $24.00.
     await waitFor(() => expect(within(card).getByRole("group", { name: "Total earnings" })).toHaveTextContent("$144"));
     expect(within(card).getByRole("group", { name: "Tips" })).toHaveTextContent("$24");
     expect(revenueReads().filter((q) => q.has("status")).every((q) => q.get("status") === "reversed")).toBe(true);

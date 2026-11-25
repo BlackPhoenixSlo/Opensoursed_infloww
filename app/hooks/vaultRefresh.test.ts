@@ -22,7 +22,6 @@ import { relay, RelayError } from "@/lib/relay";
 const post = relay.post as unknown as Mock;
 const reload = invalidateVaultGrid as unknown as Mock;
 
-// R2-6: only "OnlyFans could not be reached" reads as the saved-vault note; anything else is an error.
 describe("ofUnreachable", () => {
   it.each<[string, unknown, boolean]>([
     ["relay 502 (OF failed)", new RelayError(502, null), true],
@@ -34,7 +33,6 @@ describe("ofUnreachable", () => {
   ])("%s", (_n, e, want) => expect(ofUnreachable(e)).toBe(want));
 });
 
-// F1/F15: the whole-set rule (picker grid, whole-vault/folder downloads, focus prefetch): a partial mirror never.
 describe("vaultWholeSource", () => {
   it.each<[string, Parameters<typeof vaultWholeSource>[0], VaultSource]>([
     ["summary not in yet", undefined, "live"],
@@ -44,12 +42,10 @@ describe("vaultWholeSource", () => {
     ["`complete` missing", { count: 300 }, "live"],
     ["walk done but empty", { count: 0, complete: true }, "live"],
     ["walk done, media held", { count: 300, complete: true }, "mirror"],
-    // H1 (#329): a restricted chatter's count is its folders' only; `complete` is still the whole-vault flag.
     ["restricted chatter, walk done, its folders hold media", { count: 12, complete: true }, "mirror"],
   ])("%s", (_n, summary, want) => expect(vaultWholeSource(summary)).toBe(want));
 });
 
-// U4: the picker waits for the summary's first answer; it never paints the live listing over a collected vault.
 describe("vaultPickerSource", () => {
   const done = { count: 300, complete: true };
   it.each<[string, Parameters<typeof vaultPickerSource>[0], VaultSource | "pending"]>([
@@ -62,7 +58,6 @@ describe("vaultPickerSource", () => {
     ["null answer", { data: null, isLoading: false }, "live"],
   ])("%s", (_n, summary, want) => expect(vaultPickerSource(summary)).toBe(want));
 
-  // #15: a summary read that never answers must not hold the grid on Loading for good.
   it.each<[string, Parameters<typeof vaultPickerSource>[0], VaultSource | "pending"]>([
     ["still in flight after the wait", { data: undefined, isLoading: true }, "live"],
     ["late answer: collected vault", { data: done, isLoading: false }, "mirror"],
@@ -70,7 +65,6 @@ describe("vaultPickerSource", () => {
   ])("waited out, %s", (_n, summary, want) => expect(vaultPickerSource(summary, true)).toBe(want));
 });
 
-// F15: the browse rule (manager grid, its thumb reload + selection download): a partial mirror is the mirror.
 describe("vaultBrowseSource", () => {
   it.each<[string, Parameters<typeof vaultBrowseSource>[0], VaultSource]>([
     ["summary not in yet", undefined, "live"],
@@ -78,12 +72,10 @@ describe("vaultBrowseSource", () => {
     ["partial mirror (collector page cap, never complete)", { count: 300, complete: false }, "mirror"],
     ["`complete` missing", { count: 300 }, "mirror"],
     ["walk done, media held", { count: 300, complete: true }, "mirror"],
-    // H1 (#329): a restricted chatter's own folders' count.
     ["restricted chatter, its folders hold media", { count: 12, complete: false }, "mirror"],
   ])("%s", (_n, summary, want) => expect(vaultBrowseSource(summary)).toBe(want));
 });
 
-// F17/F18: both grids' Refresh mutation.
 describe("useOfRefresh", () => {
   beforeEach(() => { post.mockReset(); reload.mockClear(); cleanup(); });
 
@@ -124,8 +116,6 @@ describe("useOfRefresh", () => {
     expect(result.current.note).toBeNull();
   });
 
-  // F24: pending lives with the Creator's mutation, not the observer: a reopen (or switch back) mid-sync stays
-  // disabled, so no second POST /admin/vault-ai/sync.
   it.each<[string, (string | null)[]]>([
     ["close + reopen", [null, "A"]],
     ["switch to B and back", ["B", "A"]],
@@ -182,9 +172,6 @@ describe("refreshVaultFromOf", () => {
   });
 });
 
-// R3-6: what each source reloads for broken thumbnails. The mirror: its items again. The live listing (fetch-diet 17):
-// every loaded page of the view on screen through the relay's age gate, page 1 first, put back in place; no cache
-// drop (POST), so page 1 joins the picker open's own revalidate; a view not on screen is only marked stale.
 describe("reloadBrokenThumbs", () => {
   it("mirror: the mirror's items again", async () => {
     const log: string[] = [];

@@ -1,9 +1,3 @@
-/**
- * OfRichText (an OF body as the fan sees it) and OfRichTextEditor (the script editor's Text field) in jsdom: the
- * renderer builds OF's marks as elements (never raw HTML), plain bodies render as the plain text they always did;
- * the editor loads plain and markup values, emits plain text until there is formatting, never reloads its own echo,
- * and inserts at the caret.
- */
 import { createRef } from "react";
 import { act, fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -13,7 +7,6 @@ import { OfRichTextEditor, type OfRichTextEditorHandle } from "@/components/ui/O
 
 describe("OfRichText", () => {
   const rows: [string, string, string, string | null][] = [
-    // (name, raw, text shown, inner HTML of the rich root or null for the plain path)
     ["plain text", "hi\nthere", "hi\nthere", null],
     ["plain text with an angle-bracket code, as written", "code <VIP20>", "code <VIP20>", null],
     ["plain text with an entity, as written", "a &amp; b", "a &amp; b", null],
@@ -56,12 +49,12 @@ describe("OfRichTextEditor", () => {
     const onChange = vi.fn();
     const { container, rerender } = render(<OfRichTextEditor value="hey" onChange={onChange} />);
     const el = box(container);
-    el.innerHTML = "<p><b>hey</b></p>"; // what the browser's bold leaves
+    el.innerHTML = "<p><b>hey</b></p>";
     fireEvent.input(el);
     expect(onChange).toHaveBeenLastCalledWith("<p><strong>hey</strong></p>");
     const node = el.querySelector("strong");
     rerender(<OfRichTextEditor value="<p><strong>hey</strong></p>" onChange={onChange} />);
-    expect(el.querySelector("strong")).toBe(node); // same node: the caret stays where it was
+    expect(el.querySelector("strong")).toBe(node);
   });
 
   it("loads a stored formatted script through the allow-list and lights its marks in the toolbar", () => {
@@ -132,7 +125,7 @@ describe("OfRichTextEditor", () => {
     act(() => { document.dispatchEvent(new Event("selectionchange")); });
     act(() => ref.current!.insert("XY"));
     expect(onChange).toHaveBeenLastCalledWith("abXYe");
-    act(() => ref.current!.insert("Z")); // collapsed caret, full: refused
+    act(() => ref.current!.insert("Z"));
     expect(onChange).toHaveBeenLastCalledWith("abXYe");
   });
 });

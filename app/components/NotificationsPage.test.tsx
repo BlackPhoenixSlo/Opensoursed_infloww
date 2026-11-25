@@ -1,10 +1,3 @@
-/**
- * NotificationsPage: the full page at /notifications reached from the bell's
- * "See all" (docs/spec/phase-05-remaining-parity-gaps.md, stories 40-44,
- * Testing Decisions): the eight tabs, Tips / gear Not wired, Mark all read's OF write per Creator,
- * the same request (path and Creator scope) as the bell for the same tab, and
- * "Load more" advancing the offset on a single-type tab.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -50,12 +43,10 @@ afterEach(() => {
   localStorage.clear();
 });
 
-/** The feed reads made so far, as [path, accountId]. */
 const feedReads = () => relayGet.mock.calls
   .filter(([path]) => String(path).startsWith(FEED))
   .map(([path, ctx]) => [String(path), (ctx as { accountId?: string } | undefined)?.accountId]);
 
-/** `n` rows of one type, newest first, about placeholder Fans. */
 const rows = (n: number, from = 0) => Array.from({ length: n }, (_, i) => ({
   id: from + i + 1,
   type: "subscribed",
@@ -66,8 +57,6 @@ const rows = (n: number, from = 0) => Array.from({ length: n }, (_, i) => ({
 
 const WIRED = ["All", "Subscriptions", "Purchases", "Comments", "Mentions", "Likes", "Messages"];
 
-/** Clicks each wired tab of the bell's open panel and returns its feed reads. The Creators leased by this tab, so
- *  the bell reads them as the page does (an unleased one waits for its warm: lib/ofReadGate.ts). */
 async function bellReads(): Promise<string[][]> {
   const release = holdLease("test", accounts.map((a) => a.id));
   renderWithProviders(<NotificationBell />);
@@ -201,7 +190,6 @@ describe("NotificationsPage", () => {
     expect(await screen.findByText("Fan 25")).toBeInTheDocument();
     expect(screen.getByText("Fan 1")).toBeInTheDocument();
     expect(feedReads()).toContainEqual([`${FEED}limit=20&offset=20&type=subscribed`, "acc-1"]);
-    // A short page is the end of the feed.
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 
@@ -222,7 +210,6 @@ describe("NotificationsPage", () => {
     expect(await screen.findByText("Fan 25")).toBeInTheDocument();
     expect(screen.getByText("Fan 103")).toBeInTheDocument();
     expect(feedReads()).toContainEqual([`${FEED}limit=20&offset=20&type=subscribed`, "acc-1"]);
-    // acc-2's first page was short: its feed has ended, so it is not read again.
     expect(feedReads().filter(([path, aid]) => aid === "acc-2" && String(path).includes("offset=20"))).toEqual([]);
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });

@@ -1,7 +1,3 @@
-/**
- * CreatorSettingsPanel — the Creator a per-Creator Settings panel shows (OfConsentTab, OfmWritesTab): a link's
- * `?account=` when it is a session-backed Creator, else the one in scope, else the first; none: the empty text.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";

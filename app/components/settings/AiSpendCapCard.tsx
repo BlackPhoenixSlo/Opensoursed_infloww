@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * AiSpendCapCard — Settings → AI keys, one Creator's daily AI spend limit
- * (`account_ai_config.daily_cost_cap_cents`, the account-config PUT; rules in
- * aiSpendCap.ts). llm_client reserves the Creator's paid model calls (chat,
- * automations, vault describes; not TypeSafe/Jev checks) against it, per provider per UTC day, and reads
- * it per call, so a raise lets the very next call through.
- *
- * Owner-only: the tab is hidden from a Chatter, and the relay ignores a
- * Chatter's value anyway. The Creator is picked in the card header (the one in
- * scope, else the first); the form remounts per Creator so an edit never
- * carries over.
- */
 
 import { useState } from "react";
 

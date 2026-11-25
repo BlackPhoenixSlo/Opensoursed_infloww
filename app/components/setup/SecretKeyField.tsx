@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * One server key's row: its label, whether it is set and from where, a clear
- * button when the server would accept one, and the masked field. Shared by
- * the "Server keys" card and the Drive key card, which edit the same
- * /admin/secrets store — two copies of this row had already drifted.
- */
 
 import { useId } from "react";
 
@@ -41,10 +35,7 @@ export default function SecretKeyField({
         ) : (
           <Badge color="muted">not set</Badge>
         )}
-        {/* The SERVER says whether a clear would be accepted. Deriving it here
-            from `source` got it exactly backwards for the founder password:
-            offered in the one state set_many refuses, hidden in the one state
-            it permits. */}
+        {/* The server says whether a clear is accepted; deriving it from `source` got the founder password backwards. */}
         {k.clearable && (
           <button
             type="button"

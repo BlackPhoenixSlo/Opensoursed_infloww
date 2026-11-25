@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * useTopTippers — right-rail leaderboard for /messages.
- *
- * Backend: GET /admin/top-tippers. Single page (the leaderboard caps at
- * 100 rows server-side), so window-focus refetch is ON — a chatter who
- * just landed a $200 tip wants to see it bubble up immediately when they
- * tab back to the page.
- */
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -39,8 +31,6 @@ export interface UseTopTippersParams extends ReportQueryParams {
   limit?: number;
 }
 
-/** The leaderboard's query string; `csv` is every tipper's export (no
- *  limit), for `CsvExportButton`. */
 export function buildTopTippersQuery(params: UseTopTippersParams, csv = false): string {
   const qs = reportQuery(params);
   if (csv) qs.set("format", "csv");

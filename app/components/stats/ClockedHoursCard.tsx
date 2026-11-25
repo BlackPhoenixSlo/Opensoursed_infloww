@@ -1,37 +1,5 @@
 "use client";
 
-/**
- * ClockedHoursCard — Employee reports' "Clocked hours" (docs/spec/phase-05-remaining-parity-gaps.md, item 2,
- * stories 14-18): per Employee, the scheduled Shifts, Shifts worked, clocked hours and Recorded earnings over
- * the report's range, read from Phase 2's Timesheet rollup (`GET /admin/shifts/timesheet?group=employee`).
- * The card turns the rollup's minutes into hours and does no other arithmetic; range, timezone and open-clock
- * handling are the rollup's. Of Infloww's four views only "Total by employee" is built; the other three are
- * Not wired (ADR-0008), because the Timesheet groups by Employee or by Creator only. "Export" downloads the
- * visible rows as CSV on the client (the `CompetitorReports` precedent). No new Relay endpoint.
- *
- * ASSUMPTION: the time-tracking flag is read from `GET /admin/shifts/clocked-in`, because the Applied settings read carries no time-tracking key
- * (app/lib/appliedSettings.ts `AppliedSettings`). With time tracking off the card says so and requests no
- * Timesheet, even if clock time was recorded while it was on. Rung 3 for the source, rung 5 for the gate.
- * Overturned if the owner wants past clock time shown while time tracking is off.
- *
- * ASSUMPTION: the card renders only for a user session (an owner, or the Master, which is a `users` row with
- * `is_admin`; CONTEXT.md, Master), the same `user` gate as the Dashboard's Scheduled shifts card (ShiftCards.tsx `MyShiftsCard`),
- * because the Timesheet and the clocked-in read are owner and Master only (403 for a chatter); a chatter's
- * Employee reports simply lack it. Rung 3. Overturned when the Timesheet gains a Data scope for chatters (spec,
- * Implementation Decisions).
- *
- * ASSUMPTION: a range longer than the Timesheet allows (42 days, the Relay's limit) shows the Relay's own 422
- * refusal text as a neutral note, not an error; the client keeps no copy of the limit. Rung 5. Overturned if
- * the owner wants long ranges (the Relay's limit raised, or the range split on the client).
- *
- * ASSUMPTION: the table shows hours in Infloww's `calcMinutes` ("7h 30min", "0min") and money with `fmtCents`; the CSV
- * carries decimal hours to two places and dollars to two places (CompetitorReports' `dollars`), headed by the
- * table's column names. Rung 3. Overturned by Infloww's own export columns (its export is xlsx).
- *
- * The CSV helpers are lib/csv.ts, shared with ClockRecordsModal (its twins are listed there).
- *
- * A row's Clocked hours opens ClockRecordsModal, that Employee's Clock events (w4-a).
- */
 
 import { useState, type ReactNode } from "react";
 
@@ -45,10 +13,8 @@ import { RelayError } from "@/lib/relay";
 import { calcMinutes, RECORDED_EARNINGS_TIP, useClockedIn, useTimesheet, type TimesheetRow } from "@/lib/shifts";
 
 export const PLATFORM_NOTICE = "Clocked hours are not differentiated by platform.";
-/** Infloww's report wording for the Clocked hours column. */
 export const CLOCKED_HOURS_TIP = "Number of hours worked based on clocked time, rounded up to the nearest minute";
 
-/** Infloww's view picker (H262078); only the first is built. */
 const BUILT_VIEW = "Total by employee";
 const NOT_WIRED_VIEWS = [
   "Total creators by day (daily) by employee",
@@ -71,12 +37,14 @@ function downloadTimesheet(rows: TimesheetRow[]) {
 
 export default function ClockedHoursCard({ from, to }: { from: string | null; to: string | null }) {
   const { user } = useUser();
+  // Timesheet and clocked-in reads are owner/Master only (403 for a chatter)
   if (!user) return null;
   return <OwnerClockedHours from={from} to={to} />;
 }
 
 function OwnerClockedHours({ from, to }: { from: string | null; to: string | null }) {
   const tracking = useClockedIn(true);
+  // time-tracking flag comes from clocked-in: Applied settings carries no such key; off = no Timesheet request
   const on = tracking.data?.time_tracking_enabled === true;
   const ranged = !!from && !!to;
   const sheet = useTimesheet(new Date(from ?? 0), new Date(to ?? 0), "employee", on && ranged);
@@ -85,7 +53,6 @@ function OwnerClockedHours({ from, to }: { from: string | null; to: string | nul
   const [records, setRecords] = useState<TimesheetRow | null>(null);
   const exportAllowed = useActionAllowed("export");
 
-  // The one place the card's state is decided: `table` is set only where the table renders, and Export follows it.
   let table: TimesheetRow[] | null = null;
   let body: ReactNode = null;
   if (failed instanceof RelayError && failed.status === 422) {
@@ -127,7 +94,6 @@ function OwnerClockedHours({ from, to }: { from: string | null; to: string | nul
                 <td className={`${CELL} text-right tabular-nums`}>{r.scheduled_shifts}</td>
                 <td className={`${CELL} text-right tabular-nums`}>{r.shifts_worked}</td>
                 <td className={`${CELL} text-right tabular-nums`}>
-                  {/* Infloww's cell: a #1890ff link, no underline, in `calcMinutes` ("0min"; live w5-a). */}
                   <button type="button" className="text-accent hover:opacity-80"
                     title={`${r.display_name}'s clock records`} onClick={() => setRecords(r)}>
                     {calcMinutes(r.worked_minutes)}

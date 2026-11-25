@@ -1,23 +1,11 @@
 "use client";
 
-/**
- * Statistics' period (OF's period menu, the button the generator marks data-oi-period): Last 24 hours, Last 7/30/90/180/
- * 365 days, this and last year, All time and the last six months, with OF's rules (build 202610091632: PeriodDatepicker,
- * statistics-fans' period table): the start is the day's first instant (24 hours: now less a day), the end now, both
- * clamped to the Creator's start (`/users/me/start-date-model`); `startDate` is sent as that wall time, `endDate` as UTC
- * when it is today. Custom opens OF's date picker (ofMirrorDatepicker): its first day's start to its last day's end,
- * titled "Custom", its dates with their times ("12:00 am, Sep 01 - 11:59 pm, Sep 15, 2026"). Dates and the "(local time
- * UTC +02:00)" note follow the owner's time zone (`preferences.tz`, the top bar's UTC label), else the browser's. The
- * period is kept while moving between the tabs, as OF keeps it.
- */
 
 import { useSyncExternalStore } from "react";
 import { isoDay, openDatepicker, parseDay, type Day } from "@/lib/ofMirrorDatepicker";
 import { MONTHS, SHORT, display, pad, setText, wallOf, type Wall } from "@/lib/ofMirrorStatsDom";
 
-// ---------------------------------------------------------------- the period
 
-/** OF's periods: Last 24 hours, Last <n> days, a year, `m<n>`: the month n months back, All time, `c<from>_<to>`: Custom. */
 export type PeriodKey = "24h" | `d${number}` | `y${number}` | `m${number}` | "all" | `c${string}`;
 export const DEFAULT_PERIOD: PeriodKey = "d30";
 const DAYS = [7, 30, 90, 180, 365];
@@ -25,20 +13,16 @@ const DAYS = [7, 30, 90, 180, 365];
 export interface Period {
   key: PeriodKey;
   now: Date;
-  /** The owner's time zone (IANA), else null: the browser's. */
   tz: string | null;
   start: Date;
   end: Date;
-  /** OF's `startDate` / `endDate` ("YYYY-MM-DD HH:mm:ss"). */
   startApi: string;
   endApi: string;
-  /** The menu button's title ("Last 30 days") and its dates ("Sep 17, 2026", "Oct 17, 2026"). */
   title: string;
   from: string;
   to: string;
 }
 
-/** The instant whose wall clock in `tz` is `w` (fields may overflow: Date.UTC normalises them). */
 function instant(w: Wall, tz: string | null): Date {
   const want = Date.UTC(w.y, w.m - 1, w.d, w.h, w.mi, w.s);
   let at = want;
@@ -50,34 +34,28 @@ function instant(w: Wall, tz: string | null): Date {
 }
 
 const apiOf = (w: Wall) => `${w.y}-${pad(w.m)}-${pad(w.d)} ${pad(w.h)}:${pad(w.mi)}:${pad(w.s)}`;
-/** OF's "MMM DD, YYYY". */
 const dayLabel = (w: Wall) => `${SHORT[w.m - 1]} ${pad(w.d)}, ${w.y}`;
-/** OF's "h:mm a, MMM DD" (and ", YYYY"). */
 const timeLabel = (w: Wall, year: boolean) => `${w.h % 12 || 12}:${pad(w.mi)} ${w.h < 12 ? "am" : "pm"}, ${SHORT[w.m - 1]} ${pad(w.d)}${year ? `, ${w.y}` : ""}`;
 const sameDay = (a: Wall, b: Wall) => a.y === b.y && a.m === b.m && a.d === b.d;
 
-/** "2021-09-28 16:24:48" (`/users/me/start-date-model`, the owner's wall time as OF reads it) as an instant. */
 export function startOf(body: unknown, tz: string | null): Date | null {
   const s = (body as { startDate?: unknown } | null)?.startDate;
   const m = typeof s === "string" ? /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(s) : null;
   return m ? instant({ y: +m[1], m: +m[2], d: +m[3], h: +m[4], mi: +m[5], s: +m[6] }, tz) : null;
 }
 
-/** A Custom key's first and last days (not a Custom key, or not two real days in order: null). */
 export function customDays(key: string): [Day, Day] | null {
   const m = /^c(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})$/.exec(key);
   const a = m && parseDay(m[1]);
   const b = m && parseDay(m[2]);
   return a && b && isoDay(a) <= isoDay(b) ? [a, b] : null;
 }
-/** The Custom key for `from` to `to`. */
 export const customKey = (from: Day, to: Day): PeriodKey => `c${isoDay(from)}_${isoDay(to)}`;
 
 export function isPeriodKey(v: string): v is PeriodKey {
   return v === "24h" || v === "all" || /^(d(7|30|90|180|365)|y\d{4}|m[0-5])$/.test(v) || !!customDays(v);
 }
 
-/** The period `key` at `now` in `tz`, clamped to the Creator's start `userStart` (OF's rules: see the header). */
 export function periodOf(key: PeriodKey, now: Date, tz: string | null, userStart: Date | null): Period {
   const w = wallOf(now, tz);
   const day = (y: number, m: number, d: number, end = false) => instant({ y, m, d, h: end ? 23 : 0, mi: end ? 59 : 0, s: end ? 59 : 0 }, tz);
@@ -122,17 +100,11 @@ export function periodOf(key: PeriodKey, now: Date, tz: string | null, userStart
     startApi: apiOf(sw),
     endApi: sameDay(ew, w) ? apiOf(wallOf(end, "UTC")) : apiOf(ew),
     title,
-    // OF's Custom start carries its year when the end is in another year; Last 24 hours' never does.
     from: timed ? timeLabel(fw, key[0] === "c" && fw.y !== ew.y) : dayLabel(fw),
     to: timed ? timeLabel(ew, true) : dayLabel(ew),
   };
 }
 
-/**
- * OF's Custom period picker's days (ofMirrorDatepicker): `start`..`end` picked, `now` as today, pickable from the
- * Creator's start (`/users/me/start-date-model`; none: from `start`) to today, each the calendar day in `tz` (null: the
- * browser's). Statistics' Custom opens on the period shown; Statements' From … To (ticket 20) on today (start = end = now).
- */
 export function pickerDays(start: Date, end: Date, now: Date, tz: string | null, userStart: Date | null): { start: Day; end: Day; today: Day; userStart: Day | null } {
   const day = (at: Date): Day => {
     const w = wallOf(at, tz);
@@ -141,27 +113,18 @@ export function pickerDays(start: Date, end: Date, now: Date, tz: string | null,
   return { start: day(start), end: day(end), today: day(now), userStart: userStart ? day(userStart) : null };
 }
 
-// ---------------------------------------------------------------- Statements' From … To (ticket 20)
 
-/**
- * The picked days as the earning statistics read asks them: OF's Apply sends `/payouts/stats?startDate=&endDate=`, each
- * the owner's calendar day as "YYYY-MM-DD" (capture record statements--custom-period-apply, measured in OF's JS), and the
- * instants they cover in `tz`: the first day's midnight to the last day's 23:59:59, at most `now`. Days in either order.
- * Apply re-reads with its params (ticket 24, ofMirrorMoney's earningStatsRoute).
- */
 export function statementsRange(a: Day, b: Day, now: Date, tz: string | null): { params: { startDate: string; endDate: string }; start: Date; end: Date } {
   const [from, to] = isoDay(a) <= isoDay(b) ? [a, b] : [b, a];
   const p = periodOf(customKey(from, to), now, tz, null);
   return { params: { startDate: isoDay(from), endDate: isoDay(to) }, start: p.start, end: p.end };
 }
 
-/** OF's menu (PeriodDatepicker's datesList): its items in order; null: a divider; key null: Custom (it opens the date picker). */
 export function periodMenu(now: Date, tz: string | null, userStart: Date | null): ({ title: string; key: PeriodKey | null } | null)[] {
   const w = wallOf(now, tz);
   const age = userStart ? Math.floor((now.getTime() - userStart.getTime()) / 86_400_000) : Infinity;
   const startY = userStart ? wallOf(userStart, tz) : null;
   const years = [w.y, ...(startY && w.y > startY.y ? [w.y - 1] : [])];
-  // OF's months: this one and back, at most six, none before the Creator's start.
   const since = startY ? (w.y - startY.y) * 12 + (w.m - startY.m) : 5;
   const months = Array.from({ length: Math.min(since + 1, 6) }, (_, i) => i);
   return [
@@ -177,9 +140,7 @@ export function periodMenu(now: Date, tz: string | null, userStart: Date | null)
   ];
 }
 
-// The period picked, kept across the Statistics tabs (each a fresh frame) until a reload, as OF keeps it.
 let picked: PeriodKey = DEFAULT_PERIOD;
-/** Everyone the period or a pick tells of a change (ofMirrorStatsSources' picks share it). */
 export const listeners = new Set<() => void>();
 export function setPeriod(key: PeriodKey): void {
   if (key === picked) return;
@@ -191,29 +152,23 @@ export const subscribe = (l: () => void) => {
   return () => listeners.delete(l);
 };
 export const usePeriodKey = () => useSyncExternalStore(subscribe, () => picked, () => DEFAULT_PERIOD);
-/** The period picked (outside React). */
 export const currentPeriodKey = () => picked;
 
-/** The menu button's title and every date range (data-oi-range="tz": with OF's local time note). */
 export function applyRange(doc: Document, p: Period) {
   for (const el of doc.querySelectorAll("[data-oi-period-title]")) setText(doc, el, ` ${p.title} `);
   const range = `${p.from} - ${p.to}`;
   for (const el of doc.querySelectorAll("[data-oi-range]")) setText(doc, el, el.getAttribute("data-oi-range") === "tz" ? ` ${range} (local time ${utcOffset(p.now, p.tz)}) ` : ` ${range} `);
-  // Overview › Earnings: OF draws no period row for a month or All time (its month rows say it).
   display(doc, doc.querySelector<HTMLElement>("[data-name='period']"), !(p.key === "all" || p.key[0] === "m"));
 }
 
-/** "UTC +02:00": OF's local time note, for `tz` (the browser's when null). */
 export function utcOffset(now: Date, tz: string | null) {
   const w = wallOf(now, tz);
   const m = Math.round((Date.UTC(w.y, w.m - 1, w.d, w.h, w.mi, w.s) - Math.floor(now.getTime() / 1000) * 1000) / 60_000);
   return `UTC ${m < 0 ? "-" : "+"}${pad(Math.floor(Math.abs(m) / 60))}:${pad(Math.abs(m) % 60)}`;
 }
 
-// ---------------------------------------------------------------- the menu
 
 const MENU = "data-oi-period-menu";
-/** OF's period menu (its v-menu markup, from the captured menu) under the button. */
 function openMenu(doc: Document, button: HTMLElement, p: Period, userStart: Date | null) {
   closeMenu(doc);
   const menu = doc.createElement("div");
@@ -240,9 +195,9 @@ function openMenu(doc: Document, button: HTMLElement, p: Period, userStart: Date
     el.className = `m-with-rectangle-hover m-tb-sm v-list-item v-list-item--link theme--light${i === 0 ? " m-sticky-item m-first" : ""}`;
     el.textContent = ` ${item.title} `;
     if (!item.key) {
-      el.setAttribute("data-oi-period-custom", ""); // OF's date picker
+      el.setAttribute("data-oi-period-custom", "");
     } else {
-      el.setAttribute("data-oi-period-key", item.key); // OF marks no item as the current one
+      el.setAttribute("data-oi-period-key", item.key);
     }
     list.append(el);
   });
@@ -254,12 +209,7 @@ function closeMenu(doc: Document) {
   doc.querySelector(`[${MENU}]`)?.remove();
   doc.querySelector("[data-oi-period]")?.setAttribute("aria-expanded", "false");
 }
-/** Each page's period and Creator start, as its last apply saw them (the menu reads them when it opens). */
 const shown = new WeakMap<Document, { p: Period; userStart: Date | null }>();
-/**
- * The period button opens the menu; an item picks its period, Custom opens OF's date picker on the period shown (its
- * Apply picks those days); a click elsewhere or Escape closes the menu.
- */
 export function bindMenu(doc: Document, p: Period, userStart: Date | null) {
   const bound = shown.has(doc);
   shown.set(doc, { p, userStart });

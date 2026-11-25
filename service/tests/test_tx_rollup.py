@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""Materialised attribution and the hourly and daily rollups (roadmap W2 2.1, 2.2; service/tx_rollup.py).
-
-The triggers keep `transactions.credit_*` equal to the attribution view's row for every sale the view
-carries, and `tx_hourly` / `tx_daily` equal to the ledger summed per bucket, across every kind of write the writers make:
-a sale inserted before or after its message, a relink (message_id repointed), a late chatter message, a
-sender changed (to a human, an automation, the Automation Employee, a mass send), a message moved or deleted
-(placeholder adoption), a manual reassign and its undo, a status flip, an amount, net, fee or VAT corrected, a
-sale deleted. The touches (the linked sender, the converter candidate: the last human chatter's send within
-999 h 59 min) and the credit under Converters' default 1 h window are checked against the view itself
-(revision 0099) and the rollups against a GROUP BY over the ledger, after every step of a seeded random history. `window_sums` over any window equals the
-same sums read straight off the ledger rows. The once-per-box backfill credits a ledger written before the
-triggers existed, chunk by chunk, and an interrupted run starts over. The triggers install in one
-transaction, only the missing or changed ones. A row whose `occurred_at` SQLite cannot parse, or one inserted
-with its credit already set, keeps both exact; hard-deleting an Employee (the FK's ON DELETE SET NULL on
-their messages) recredits their sales.
-
-Seeded straight into the temp DB through a plain sync connection (the triggers fire on any writer); no
-network. Lookback messages get distinct timestamps: the view leaves a tie's order undefined.
-
-Run: ./venv/bin/python service/tests/test_tx_rollup.py   (exit 0 = green)
-"""
 import _harness  # MUST be first — binds a throwaway temp DB before any db import
 
 _harness.bootstrap()
@@ -40,7 +19,6 @@ ENGINE = sa.create_engine(os.environ["CHATTERLY_DB_URL"])
 ACCOUNTS = ("9100001", "9100002")
 KINDS = ("ppv_message", "ppv_post", "tip", "tip_post", "custom", "subscription", "tip_stream")
 STATUSES = ("cleared", "pending", "refunded")
-# 14 is the Automation sentinel (employees.get_automation_employee_id): its sends are no chatter's touch.
 AUTOMATION_EMPLOYEE = 14
 EMPLOYEES = (None, 11, 12, 13, AUTOMATION_EMPLOYEE)
 AUTOMATIONS = (None, None, "welcome_new_sub", "reply_mass_funnel")
@@ -84,7 +62,6 @@ def _assert_exact(where: str) -> None:
 
 
 class History:
-    """A random ledger and message history, mutated one write at a time."""
 
     def __init__(self, seed: int) -> None:
         self.rng = random.Random(seed)
@@ -94,8 +71,6 @@ class History:
         self.txs: list[int] = []
 
     def _at(self) -> datetime:
-        # Distinct, increasing timestamps with a random offset (no lookback ties), dense enough that many
-        # sales have a chatter send inside the 1 h window and many do not.
         self.minute += self.rng.randint(1, 45)
         return T0 + timedelta(minutes=self.minute, seconds=self.rng.randint(0, 59),
                               microseconds=self.rng.randint(0, 999_999))
@@ -120,7 +95,7 @@ class History:
         else:
             aid, fan, mid = r.choice(ACCOUNTS), r.randint(1, 3), None
             if r.random() < 0.1:
-                mid = self.next_mid  # a sale whose message is not here yet
+                mid = self.next_mid
                 self.next_mid += 1
         if mid is not None and _sql("SELECT 1 FROM transactions WHERE account_id = :a AND fan_id = :f "
                                     "AND message_id = :m", a=aid, f=fan, m=mid):
@@ -166,7 +141,6 @@ class History:
             _sql("DELETE FROM messages WHERE account_id = :a AND fan_id = :f AND message_id = :m",
                  a=msg[0], f=msg[1], m=msg[2])
         elif step == "reassign":
-            # 0 is the "No one" override (sales_attribution.NO_ONE).
             _sql("UPDATE transactions SET attributed_employee_id = :e WHERE id = :t", e=r.choice(EMPLOYEES + (0,)),
                  t=tid)
         elif step == "status":
@@ -199,7 +173,6 @@ def case_credit_and_rollup_stay_exact_across_every_write():
         n = conn.execute(text("SELECT COUNT(*) FROM per_employee_revenue_with_attribution")).scalar()
     assert rules == {"manual", "converters", "unassigned"}, f"every rule exercised, got {rules}"
     assert n > 50, f"the view carried {n} sales; the history is too thin to prove anything"
-    # Both sides of the window and every kind of send that is no touch were exercised.
     [(inside, outside, linked_other)] = _sql(
         "SELECT SUM(credit_rule = 'converters'), "
         "SUM(credit_rule = 'unassigned' AND credit_converter_id IS NOT NULL), "
@@ -215,8 +188,6 @@ def case_the_sql_revenue_kinds_are_the_python_ones():
 
 
 def case_one_message_moves_every_sale_it_credits():
-    """The named writes, one at a time, with the credit written out by hand: (employee, rule, automation
-    kind, linked sender, converter candidate)."""
     aid, fan = ACCOUNTS[0], 99
 
     def credit(tid):
@@ -239,43 +210,43 @@ def case_one_message_moves_every_sale_it_credits():
     ppv = tx("ppv_message", day, mid=555)
     tip = tx("tip", day + timedelta(minutes=30))
     assert credit(ppv) == nobody and credit(tip) == nobody
-    msg(555, day - timedelta(minutes=1), 11, "welcome_new_sub")      # the PPV's message arrives late
+    msg(555, day - timedelta(minutes=1), 11, "welcome_new_sub")
     assert credit(ppv) == (None, "unassigned", "welcome_new_sub", 11, None), credit(ppv)
     assert credit(tip) == nobody, credit(tip)
-    msg(554, day - timedelta(minutes=2), AUTOMATION_EMPLOYEE)         # the Automation Employee: no touch either
+    msg(554, day - timedelta(minutes=2), AUTOMATION_EMPLOYEE)
     assert credit(ppv)[4] is None and credit(tip) == nobody
-    msg(556, day - timedelta(minutes=10), 13)                         # a chatter's send: both sales' converter
+    msg(556, day - timedelta(minutes=10), 13)
     assert credit(ppv) == (13, "converters", "welcome_new_sub", 11, 13), credit(ppv)
     assert credit(tip) == (13, "converters", None, None, 13), credit(tip)
-    msg(558, day + timedelta(minutes=10), 12)                         # after the PPV, before the tip
+    msg(558, day + timedelta(minutes=10), 12)
     assert credit(tip) == (12, "converters", None, None, 12) and credit(ppv)[0] == 13
     _sql("UPDATE messages SET automation_kind = 'reply_mass_funnel' WHERE account_id = :a AND fan_id = :f "
-         "AND message_id = 558", a=aid, f=fan)                          # it was an automation's after all
+         "AND message_id = 558", a=aid, f=fan)
     assert credit(tip) == (13, "converters", None, None, 13), credit(tip)
     _sql("UPDATE messages SET sent_by_employee_id = 11 WHERE account_id = :a AND fan_id = :f AND message_id = 556",
          a=aid, f=fan)
     assert credit(tip)[0] == 11 and credit(ppv)[0] == 11
-    _sql("UPDATE transactions SET attributed_employee_id = 13 WHERE id = :t", t=ppv)  # manual reassign
+    _sql("UPDATE transactions SET attributed_employee_id = 13 WHERE id = :t", t=ppv)
     assert credit(ppv) == (13, "manual", "welcome_new_sub", 11, 11), credit(ppv)
     _sql("UPDATE transactions SET attributed_employee_id = NULL WHERE id = :t", t=ppv)
     assert credit(ppv) == (11, "converters", "welcome_new_sub", 11, 11), credit(ppv)
     _sql("UPDATE messages SET created_at = :c WHERE account_id = :a AND fan_id = :f AND message_id = 556",
-         c=_ts(day - timedelta(minutes=61)), a=aid, f=fan)              # moved out of the PPV's hour
+         c=_ts(day - timedelta(minutes=61)), a=aid, f=fan)
     assert credit(ppv) == (None, "unassigned", "welcome_new_sub", 11, 11), credit(ppv)
     assert credit(tip) == (None, "unassigned", None, None, 11), credit(tip)
     _sql("UPDATE messages SET created_at = :c WHERE account_id = :a AND fan_id = :f AND message_id = 556",
-         c=_ts(day - timedelta(minutes=60)), a=aid, f=fan)              # exactly 1 h: inside
+         c=_ts(day - timedelta(minutes=60)), a=aid, f=fan)
     assert credit(ppv)[:2] == (11, "converters"), credit(ppv)[:2]
     _sql("DELETE FROM messages WHERE account_id = :a AND fan_id = :f AND message_id = 556", a=aid, f=fan)
     assert credit(ppv) == (None, "unassigned", "welcome_new_sub", 11, None) and credit(tip) == nobody
     _sql("DELETE FROM messages WHERE account_id = :a AND fan_id = :f AND message_id = 555", a=aid, f=fan)
     assert credit(ppv) == nobody and credit(tip) == nobody
-    msg(557, day - timedelta(days=40), 11)                            # far back: still the candidate
+    msg(557, day - timedelta(days=40), 11)
     assert credit(tip) == (None, "unassigned", None, None, 11), credit(tip)
-    _sql("UPDATE transactions SET message_id = 557 WHERE id = :t", t=ppv)  # relink
+    _sql("UPDATE transactions SET message_id = 557 WHERE id = :t", t=ppv)
     assert credit(ppv) == (None, "unassigned", None, 11, 11), credit(ppv)
     _sql("UPDATE messages SET created_at = :c WHERE account_id = :a AND fan_id = :f AND message_id = 557",
-         c=_ts(day - timedelta(hours=999, minutes=59, seconds=1)), a=aid, f=fan)  # past 999 h 59 min
+         c=_ts(day - timedelta(hours=999, minutes=59, seconds=1)), a=aid, f=fan)
     assert credit(ppv) == (None, "unassigned", None, 11, None), credit(ppv)
     assert credit(tip) == nobody, credit(tip)
     _assert_exact("after the named writes")
@@ -292,7 +263,6 @@ def _raw_sums(account_ids, start, end):
     if end is not None:
         conds.append("occurred_at <= :e")
         params["e"] = _ts(end)
-    # 0, the "No one" override, is nobody, as in the rollups.
     rows = _sql("SELECT kind, NULLIF(credit_employee_id, 0), SUM(amount_cents), SUM(COALESCE(net_cents, 0)), "
                 "SUM(net_cents IS NULL), SUM(COALESCE(net_cents, amount_cents * 8 / 10)), COUNT(*), "
                 "SUM(COALESCE(fee_cents, 0)), SUM(COALESCE(vat_cents, 0)) "
@@ -318,11 +288,11 @@ def case_window_sums_equal_the_ledger_for_any_window():
         a = lo + (hi - lo) * rng.random()
         b = a + timedelta(minutes=rng.choice((3, 59, 61, 600, 5_000, 40_000)), seconds=rng.random())
         windows.append((rng.choice((None, list(ACCOUNTS), [ACCOUNTS[1]])), a, b))
-    windows.append((None, lo, lo))                                        # one sale's instant
-    windows.append((None, lo.replace(minute=0, second=0, microsecond=0), None))  # starts on an hour
+    windows.append((None, lo, lo))
+    windows.append((None, lo.replace(minute=0, second=0, microsecond=0), None))
     midnight = lo.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-    windows.append((None, midnight, midnight + timedelta(days=20) - timedelta(microseconds=1)))  # whole days
-    windows.append((None, None, midnight + timedelta(days=9, hours=5)))   # open start, ends mid-day
+    windows.append((None, midnight, midnight + timedelta(days=20) - timedelta(microseconds=1)))
+    windows.append((None, None, midnight + timedelta(days=9, hours=5)))
     for account_ids, start, end in windows:
         got = asyncio.run(go(account_ids, start, end))
         want = _raw_sums(account_ids, start, end)
@@ -330,11 +300,8 @@ def case_window_sums_equal_the_ledger_for_any_window():
 
 
 def case_hour_buckets_land_on_the_zones_local_day():
-    """S8: each hour is placed by the zone's offset at that hour, so the hours either side of a DST change
-    land on the right local day."""
     from zoneinfo import ZoneInfo
     ny = ZoneInfo("America/New_York")
-    # 2026-03-08: New York springs forward at 07:00 UTC (EST -5 -> EDT -4).
     days = tx_rollup.local_days(["2026-03-08 04:00:00", "2026-03-09 03:00:00", "2026-03-09 04:00:00",
                                  "2026-11-02 04:00:00", "2026-11-02 05:00:00"], ny)
     assert days == {"2026-03-08 04:00:00": "2026-03-07", "2026-03-09 03:00:00": "2026-03-08",
@@ -356,9 +323,8 @@ def case_triggers_install_in_one_transaction_and_only_when_changed():
     _sql("DROP TRIGGER trg_tx_rollup_del")
     _sql("DROP TRIGGER trg_tx_credit_upd")
     _sql("CREATE TRIGGER trg_tx_credit_upd AFTER UPDATE ON transactions BEGIN SELECT 1; END")
-    _sql("CREATE TRIGGER trg_tx_rollup_ins AFTER INSERT ON transactions BEGIN SELECT 1; END")  # retired
+    _sql("CREATE TRIGGER trg_tx_rollup_ins AFTER INSERT ON transactions BEGIN SELECT 1; END")
     stale = _triggers()
-    # A definition that fails to create rolls back the whole install: no trigger dropped meanwhile is lost.
     original = dict(tx_rollup.TRIGGERS)
     tx_rollup.TRIGGERS["trg_tx_zz_broken"] = "AFTER INSERT ON no_such_table BEGIN SELECT 1; END"
     try:
@@ -376,9 +342,6 @@ def case_triggers_install_in_one_transaction_and_only_when_changed():
 
 
 def case_no_emptied_bucket_is_left_whichever_trigger_fires_first():
-    """A relink changes a sale's credit (trg_tx_credit_upd's UPDATE) and its `linked` bucket key
-    (trg_tx_rollup_upd) in one statement. Each trigger recreated last fires in a different order; every
-    order leaves exactly the ledger's buckets, no zero row behind."""
     aid, fan = ACCOUNTS[1], 55
     for i, recreate in enumerate((None, "trg_tx_credit_upd", "trg_tx_rollup_upd", "trg_tx_credit_upd")):
         if recreate:
@@ -401,7 +364,7 @@ def case_no_emptied_bucket_is_left_whichever_trigger_fires_first():
 
 def case_a_failed_catch_up_boots_on_after_every_other_step_and_heals_in_the_background():
     import sys
-    eng_mod = sys.modules["db.engine"]  # `db.engine` the attribute is the AsyncEngine
+    eng_mod = sys.modules["db.engine"]
     real_ensure, real_w7, real_delays = tx_rollup.ensure, eng_mod.backfill_w7_rules_once, eng_mod.TX_ROLLUP_RETRY_S
     calls, w7 = [], []
 
@@ -464,8 +427,6 @@ def case_a_row_inserted_with_its_credit_set_is_counted_once():
 
 
 def case_hard_deleting_an_employee_recredits_their_sales():
-    """messages.sent_by_employee_id is ON DELETE SET NULL: SQLite runs that action as an UPDATE of each
-    message, which fires trg_msg_credit_upd, so the Employee's sales fall back to unassigned."""
     eid = _sql("INSERT INTO employees (display_name, color, is_active, created_at) "
                "VALUES ('rollup_gone', '#cccccc', 1, :c) RETURNING id", c=_ts(T0))[0][0]
     aid, fan, at = ACCOUNTS[0], 77, datetime(2026, 9, 1, 12)
@@ -481,7 +442,7 @@ def case_hard_deleting_an_employee_recredits_their_sales():
     credited = "SELECT credit_employee_id FROM transactions WHERE id IN (:p, :t) ORDER BY id"
     assert _sql(credited, p=ppv, t=tip) == [(eid,), (eid,)]
     with ENGINE.begin() as conn:
-        conn.exec_driver_sql("PRAGMA foreign_keys = ON")  # as every app connection runs
+        conn.exec_driver_sql("PRAGMA foreign_keys = ON")
         conn.execute(text("DELETE FROM employees WHERE id = :e"), {"e": eid})
     assert _sql("SELECT sent_by_employee_id FROM messages WHERE message_id = 88800001") == [(None,)]
     assert _sql(credited, p=ppv, t=tip) == [(None,), (None,)]
@@ -503,7 +464,6 @@ def case_backfill_credits_a_ledger_written_before_the_triggers_and_resumes():
     _sql("DELETE FROM data_migrations WHERE name = :n", n=tx_rollup._BACKFILL)
     pending = _sql("SELECT COUNT(*) FROM transactions")[0][0]
 
-    # Interrupted after its first chunk: that chunk stays credited, the marker unset; the next run starts over.
     chunk, real, calls = tx_rollup._CHUNK, tx_rollup._credit_chunk, []
 
     def flaky(conn, lo, hi):
@@ -522,7 +482,7 @@ def case_backfill_credits_a_ledger_written_before_the_triggers_and_resumes():
     left = _sql("SELECT COUNT(*) FROM transactions WHERE credit_rule IS NULL")[0][0]
     assert 0 < left < pending and pending - left <= 40, (pending, left)
     assert not _sql("SELECT 1 FROM data_migrations WHERE name = :n", n=tx_rollup._BACKFILL)
-    History(seed=3).sale()  # the triggers are live while it is pending
+    History(seed=3).sale()
 
     try:
         assert tx_rollup.ensure(ENGINE) is True, "the next boot runs it again"
@@ -535,8 +495,6 @@ def case_backfill_credits_a_ledger_written_before_the_triggers_and_resumes():
 
 
 def case_a_box_backfilled_before_fee_and_vat_rebuilds_them_once():
-    """A box whose rollups predate the fee and VAT sums (the old marker set, the new columns all 0 from
-    init_db's ADD COLUMN default) rebuilds them on its next boot, once."""
     assert _sql("SELECT SUM(fee_cents) + SUM(vat_cents) FROM tx_hourly")[0][0], "the history carries fees"
     _sql("UPDATE tx_hourly SET fee_cents = 0, vat_cents = 0")
     _sql("UPDATE tx_daily SET fee_cents = 0, vat_cents = 0")

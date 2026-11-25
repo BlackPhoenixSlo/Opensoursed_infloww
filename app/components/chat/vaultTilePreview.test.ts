@@ -44,7 +44,6 @@ describe("tilePreview", () => {
   });
 
   it.each([
-    // posters, beat → visible poster, first poster (frame 0 skipped when there is another)
     [5, 0, 1, 1], [5, 11, 4, 1], [1, 7, 0, 0], [0, 3, 0, 0], [2, 11, 1, 1],
   ])("%i posters on beat %i show poster %i, start %i", (posterCount, frame, idx, start) => {
     const pv = tilePreview(hovering({ frame }), { ...drm, posterCount });

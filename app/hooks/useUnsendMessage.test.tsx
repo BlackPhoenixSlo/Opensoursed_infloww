@@ -1,13 +1,3 @@
-/**
- * useUnsendMessage — the unsent bubble must not come back on reload.
- *
- * Clicking unsend dropped the row from ["messages", …] and called OF, but the
- * DB-seed cache (useChatMessagesLocal) kept it —
- * and ChatSurface re-hydrates that seed into the thread on every mount. The
- * bubble reappeared as an EMPTY locked shell, since seed rows carry no media
- * and a PPV's mirror body is blank. (The relay flips `messages.is_unsent` on
- * the same DELETE; this is the in-session half of the same fix.)
- */
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -28,8 +18,6 @@ const relayDelete = relay.delete as unknown as Mock;
 const ACCT = "acct1";
 const FAN = 42;
 const MID = 10977996348669;
-// The seed module owns the key shape; spell it out here and the test would
-// keep passing after a rename that broke the real prune.
 const SEED_KEY = [...seedKey(ACCT, FAN), 30] as const;
 
 function msg(id: number): OFMessage {
@@ -49,8 +37,6 @@ function seedRows() {
 }
 
 beforeEach(() => {
-  // gcTime: Infinity — these caches have no observers (we write them with
-  // setQueryData), and a 0 gcTime evicts them mid-assertion.
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
   relayDelete.mockReset();
 });
@@ -70,8 +56,6 @@ describe("useUnsendMessage", () => {
 
     expect(client.getQueryData<OFMessage[]>(["messages", ACCT, FAN])?.map((m) => Number(m.id)))
       .toEqual([MID - 1]);
-    // Pre-fix this still held MID — ChatSurface's seed hydration painted it
-    // back on the next mount as an empty $200 shell.
     expect(seedIds()).toEqual([MID - 1]);
   });
 
@@ -109,7 +93,6 @@ describe("useUnsendMessage", () => {
     expect(seedIds()).toEqual([MID, MID - 1]);
   });
 
-  // W30 W4: restoring the whole snapshot revived B, which OF had unsent meanwhile.
   it("a refused unsend puts back only its own bubble, in place; a concurrent unsend that OF took stays gone", async () => {
     const [A, B, C] = [MID, MID - 1, MID - 2];
     client.setQueryData(["messages", ACCT, FAN], [msg(C), msg(A), msg(B)]);
@@ -129,7 +112,6 @@ describe("useUnsendMessage", () => {
       .toEqual([C, A]);
   });
 
-  // W30 final [codex+deepseek]: a refetch mid-DELETE swaps in fresh objects; the re-insert looked its neighbour up by reference.
   it("a refused unsend goes back before its neighbour even after a refetch replaced the cached objects", async () => {
     const [A, B, C, D] = [1, 2, 3, 4];
     client.setQueryData(["messages", ACCT, FAN], [msg(A), msg(B), msg(C), msg(D)]);
@@ -139,7 +121,7 @@ describe("useUnsendMessage", () => {
     const { result } = renderHook(() => useUnsendMessage(ACCT, FAN), { wrapper });
     await act(async () => {
       const b = result.current.unsendOne(msg(B));
-      client.setQueryData(["messages", ACCT, FAN], [msg(A), msg(C), msg(D)]);   // the refetch: new objects
+      client.setQueryData(["messages", ACCT, FAN], [msg(A), msg(C), msg(D)]);
       refuse(new Error("older than 24h"));
       await expect(b).rejects.toThrow();
     });
@@ -148,7 +130,6 @@ describe("useUnsendMessage", () => {
       .toEqual([A, B, C, D]);
   });
 
-  // W30 S1: only the mirror menu guarded the DELETE; ChatSurface and UnsendMessageButton (each its own hook) sent another.
   it("a second hook instance on the same QueryClient shares the DELETE in flight (and its refusal); another QueryClient sends its own", async () => {
     client.setQueryData(["messages", ACCT, FAN], [msg(MID)]);
     const answers: ((r: unknown) => void)[] = [];

@@ -1,54 +1,3 @@
-"""Bio pages, public side (standalone service/bio_pages process on BIO_PORT): under a visit storm every
-page, Profile JSON and Reveal answers what v2 would, no destination leaks, every Page View and Click is counted once,
-the click guard refuses only abusers, the TLS Ask answers from the real rows and the bio port and the relay port
-answer none of each other's routes; in a phone's in-app browser the Escape Overlay card escapes on a tap only where
-it should (iOS 17+ Instagram, BIO_ESCAPE_TAP on) and only to the escape target.
-
-World: `agency_inbox` (small 3 Creators, medium 10) plus seed/bio_pages.py: per Creator `profiles` bio Profiles of
-`links` Links each (modes, 18+, tracking, default codes, a geo rule on every 4th), one spare domain, a live and a
-pending custom domain per Creator, DAYS days of past bio_daily counts, an avatar file on the first Escape Mode
-Profile. The oracle (Profile JSON bytes, destinations, past counts) is built by the seeder, not by service code.
-
-Load (`--users` anonymous httpx clients to http://127.0.0.1:BIO_PORT, no cookie, redirects not followed): `visits`
-visits, open loop at `rate` visits/s (visit k leaves at k / rate on client k % users; `--rate=0`: a closed loop).
-In parallel, the relay handles `/t/` redirects at `shared_click_rate`/s and fan DMs until the storm ends while bio flushes every
-0.5 s; their persisted rows are checked exactly. Each visit is one fan with its own `X-Forwarded-For: 100.64.x.y` (the bio service trusts a loopback peer's header,
-client_addr's default) and a Cloudflare country/region pick: the page (`/<u>`, `/<u>/<code>` on 127.0.0.1:BIO_PORT, the
-bio.slop.test primary, the spare host, or a live custom host `/` or `/<code>`; 1 in 10 also fetches /script.js and
-/style.css), then the Profile JSON, the ping, and with p = `reveal_share` one Reveal of a random Link with the
-browser's `Sec-Fetch-Site: same-origin` and script.js's trackingId rule (the path code on a tracking Link, else its
-default code). `abusers` (`--set abusers=3`) each, inside one wall-clock minute: 5 cross-origin Reveals, then 2 x
-limit Reveals and 2 x limit pings on one Profile (BIO_REVEAL_LIMIT_PER_MINUTE).
-
-Checks (lib/bio_faults.py): BIO_PAGE, BIO_PROFILE_JSON, BIO_REVEAL, BIO_NO_LEAK, BIO_COUNTS (a call that crossed UTC
-midnight may count on either day), BIO_LIMIT, BIO_TLS_ASK, BIO_ISOLATION, BIO_NO_5XX, BIO_SHARED_DB_NO_LOCK,
-BIO_ESCAPE_TAP, BIO_NO_OFFHOST_LOAD; plus the stock checks.
-Budgets: p95 page <= PAGE_P95_MS, Profile JSON <= JSON_P95_MS, ping and Reveal <= WRITE_P95_MS (their writes wait
-without a database write wait), shared /t/ <= 150 ms, shared fan DM <= 300 ms, and every p95 vs the last green run
-(P95_VS_LAST: tagged volume).
-
-UI (Chromium, phone viewport, on http://127.0.0.1:BIO_PORT/<u>): the Profile renders with its Links
-(`bio-pages-trigger`), a tap on an 18+ Link opens the age gate (`bio-pages-settled`), Continue navigates to the
-oracle's destination (the off-host navigation is aborted by the slop browser, its URL asserted) and that Link's
-bio_daily clicks for today go +1 (DB side effect). Then the avatar Profile's `/<u>/<code>` under ESCAPE_CASES' user
-agents (390x844): the Escape Overlay over the blurred avatar (`bio-escape-card-phone`, iOS 17 Instagram), the
-card's href read and tapped twice (stateless: each tap is one navigation), every navigation and Reveal the page
-sends recorded from load on (the served card flag is the server side).
-
-Bypasses (declared): no Caddy or Cloudflare in front: their headers (X-Forwarded-For, CF-IPCountry, CF-Region-Code)
-are sent by the client; CHATTERLY_TEST_MODE neuters the relay's pumps and ingest, but redirect clicks and fan DMs
-exercise its real write paths; httpx clients, not browsers, except the one UI visit; the
-destination host is aborted by the slop browser; BIO_NO_OFFHOST_LOAD: the only off-host request is the Continue navigation to the destination host (the recorder proves itself on it), no off-host sub-resource at all. The TLS Ask's 503 (DB down) is covered by
-service/tests/test_bio_app.py, not here. Single shard only: one bio sidecar shares the first shard DB. Escape card:
-desktop Chromium with each in-app user agent set over CDP (Emulation.setUserAgentOverride), not iOS WebKit or
-Instagram's webview; Instagram's native Open/Cancel prompt is not modelled: Chromium drops the instagram:// navigation, which stands in for Cancel; the flag-off case rewrites the served card flag from 1 to 0 in the browser (one bio process per run, flag on); the avatar file is written by the
-seeder, not uploaded.
-
-Break-it-once: FAULT bio-click-lost-1-in-20 (every 20th Click write dropped) -> BIO_COUNTS;
-`--fault=bio-page-loads-offhost` (served stylesheet imports a CDN asset) -> BIO_NO_OFFHOST_LOAD;
-`--fault=bio-reveal-limit-off` -> BIO_LIMIT; `--fault=bio-json-leaks-destination` -> BIO_NO_LEAK, BIO_PROFILE_JSON;
-`--fault=bio-escape-href-off-host` -> BIO_ESCAPE_TAP.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -77,11 +26,10 @@ P95_VS_LAST_MIN_N = 20
 SIDECARS = {"bio": ("slop/lib/bio.py", "BIO_PORT", "/internal/healthz")}
 BIO_PORT = 0
 LIMIT = 30
-# EDGE_PROXIES = the fans' X-Forwarded-For range: stands in for Cloudflare, whose location headers the bio service
-# believes only from an edge hop (client_addr.from_edge).
+# EDGE_PROXIES stands in for Cloudflare: the bio service believes location headers only from an edge hop (client_addr.from_edge)
 RELAY_ENV = {"BIO_FLUSH_SECONDS": "0.5", "BIO_ESCAPE_TAP": "1", "BIO_PRIMARY_HOSTS": "127.0.0.1,localhost,bio.slop.test",
              "BIO_REVEAL_LIMIT_PER_MINUTE": str(LIMIT), "EDGE_PROXIES": "100.64.0.0/10"}
-PAGE_P95_MS, JSON_P95_MS, WRITE_P95_MS = 60, 80, 150   # [g]
+PAGE_P95_MS, JSON_P95_MS, WRITE_P95_MS = 60, 80, 150
 SHARED_REDIRECT_P95_MS, SHARED_DM_P95_MS = 150, 300
 UI_NAME = ("UI: a bio page renders its Links, an 18+ tap opens the age gate, Continue goes to the oracle's "
            "destination and bio_daily counts the click")
@@ -131,7 +79,6 @@ async def run(ctx) -> None:
     plan = bio_visitor.plan(rng, profiles, n_visits, reveal_share)
     call = vis.call
 
-    # ── pre-storm probes: roots, TLS Ask, isolation ──────────────────────
     probe = vis.clients[0]
     roots_bad = []
     for host in ("127.0.0.1", "bio.slop.test", bio_pages.SPARE, profiles[1]["pending"] or "nobody.bio.slop.test"):
@@ -172,9 +119,8 @@ async def run(ctx) -> None:
     await relay.aclose()
     ctx.check(BIO_ISOLATION, not iso_bad, bad=iso_bad)
 
-    # ── the storm ────────────────────────────────────────────────────────
     into = time.time() % 60
-    if into > 45:   # the abusers' bursts must sit inside one guard minute
+    if into > 45:
         await asyncio.sleep(60 - into + 0.2)
     ctx.rec.stage = "storm"
     t0 = time.perf_counter()
@@ -249,7 +195,6 @@ async def run(ctx) -> None:
     storm_s = time.perf_counter() - t0
     ctx.rec.stage = "after"
 
-    # ── counts: nothing dropped (late writes finish on their own: wait for them, bounded) ──
     views_ok, clicks_ok = vis.views_ok, vis.clicks_ok
     want_v, want_c = len(views_ok), len(clicks_ok)
     past_v = sum(v for v, _ in bp["past"].values())
@@ -301,7 +246,6 @@ async def run(ctx) -> None:
               redirects=len(redirects), redirect_bad=redirect_bad[:5], dms=len(dms),
               missing_dms=len(sent_ids - stored_ids), relay_stats=relay_stats, lock_lines=lock_lines[:5])
 
-    # ── the rest of the invariants ───────────────────────────────────────
     ctx.check(BIO_PAGE, not vis.page_bad, visits=n_visits, bad=vis.page_bad[:10])
     ctx.check(BIO_PROFILE_JSON, not vis.json_bad, bad=vis.json_bad[:5])
     ctx.check(BIO_REVEAL, bool(clicks_ok) and not vis.reveal_bad, reveals=sum(v["link"] is not None for v in plan),
@@ -319,7 +263,6 @@ async def run(ctx) -> None:
     fives = sum(n for s, n in vis.status.items() if s >= 500)
     ctx.check(BIO_NO_5XX, fives == 0, count=fives, statuses=dict(vis.status))
 
-    # ── budgets ──────────────────────────────────────────────────────────
     routes = ctx.rec.summary("storm")
     for route, budget in (("bio shared db GET /t/:id", SHARED_REDIRECT_P95_MS),
                           ("bio shared db POST /__slop/of-ws-frame", SHARED_DM_P95_MS)):
@@ -342,7 +285,6 @@ async def run(ctx) -> None:
                         "profiles": len(profiles), "links": sum(len(p["links"]) for p in profiles)})
     await vis.aclose()
 
-    # ── UI ───────────────────────────────────────────────────────────────
     if ctx.app:
         await _ui(ctx, w, profiles)
         await _escape_ui(ctx, profiles)
@@ -355,7 +297,7 @@ async def run(ctx) -> None:
 async def _ui(ctx, w, profiles) -> None:
     p = next(p for p in profiles if any(lk["is_adult"] for lk in p["links"]))
     link = next(lk for lk in p["links"] if lk["is_adult"])
-    want = bio_visitor.want_url(link, bio_visitor.tid_for(link, None), "US", "")   # no proxy in front: visitor location falls back to US
+    want = bio_visitor.want_url(link, bio_visitor.tid_for(link, None), "US", "")
     day = bio_visitor.day()
 
     def clicks() -> int:
@@ -370,7 +312,7 @@ async def _ui(ctx, w, profiles) -> None:
     nav = rendered = gate = False
     nav_url = None
     offhost_aborted = []
-    offhost_subresources = []   # off-host requests that are not a navigation: a CDN asset, a prefetch of the destination
+    offhost_subresources = []
     async with ui.owner_browser(ctx, viewport=(390, 844), touch=True) as page:
         page.on("request", lambda r: offhost_subresources.append(r.url)
                 if urlsplit(r.url).hostname not in ("127.0.0.1", "localhost") and not r.is_navigation_request()
@@ -390,7 +332,7 @@ async def _ui(ctx, w, profiles) -> None:
                 gate = True
             except Exception:  # noqa: BLE001
                 pass
-            await page.wait_for_timeout(400)   # the overlay's 300 ms transition, for the shot
+            await page.wait_for_timeout(400)
             await ui.shot(ctx, page, "bio-pages-settled")
             if gate:
                 try:
@@ -401,15 +343,13 @@ async def _ui(ctx, w, profiles) -> None:
                     nav = nav_url == want
                 except Exception:  # noqa: BLE001
                     pass
-                # expect_request resolves on the request event; the context route that records + aborts it runs
-                # after, so wait (bounded) for it before reading the list (copied at once, it came back empty: ...-4697)
                 for _ in range(50):
                     if any(urlsplit(u).hostname == urlsplit(want).hostname for u in page.slop["offhost_aborted"]):
                         break
                     await asyncio.sleep(0.1)
         offhost_aborted = list(page.slop["offhost_aborted"])
     after = before
-    for _ in range(40):   # allow several bio flush intervals
+    for _ in range(40):
         after = clicks()
         if after > before:
             break

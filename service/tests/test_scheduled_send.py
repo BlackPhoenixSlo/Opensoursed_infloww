@@ -1,60 +1,7 @@
 #!/usr/bin/env python3
-"""
-scheduled_send — one-shot deferred human send (executor-fired).
-
-This is the server-side replacement for the old in-browser local-wait timer:
-a chatter schedules a ≤15-min DM, the relay enqueues a `scheduled_jobs` row
-(kind="scheduled_send") with run_at + the scheduling chatter's employee id, and
-the executor fires it. Because it's a DB row it survives reload and is shared /
-cancelable across every chatter on the account.
-
-Cases (all drive the REAL run_once dispatcher → registry wiring exercised):
-  case_fires_and_attributes:
-      a due job sends via of_client, writes an outbound `messages` row stamped
-      with the SCHEDULING chatter's employee id (the cross-chatter attribution
-      claim), and the job is marked 'done'.
-  case_media_and_ppv_passthrough:
-      media_files / price / previews / giphy reach of_client.send_message intact.
-  case_empty_payload_skips:
-      a payload with no text/media/gif sends nothing and still completes.
-  case_run_at_naive_utc:
-      the relay's ISO→naive-UTC parse (Z and +offset) matches what the schema
-      compares against (datetime.utcnow()).
-  case_fansly_account_fires_through_the_shim:
-      a Fansly account's job routes through _make_client's platform branch to
-      the shim (positional `text` included) and the job ends 'done' — the two
-      bugs that left Fansly sends stuck on "sending now…".
-  case_attribution_raises_after_send_parks_not_resends:
-      send once: the DM went out, then the attribution write raised -> exactly
-      1 OF send, the job ends 'error' ("may have sent"), never pending; a
-      second run finds nothing to claim.
-  case_read_timeout_parks:
-      OF's answer never came (curl ReadTimeout: maybe sent) -> job 'error'
-      ("may have sent"), 1 attempt at OF, never requeued.
-  case_rate_limit_before_send_retries_as_today:
-      OF refused it (its rate-limit 400, both tries: nothing sent) -> back to
-      'pending' with the retry backoff, no "may have sent".
-  case_cancel_in_rate_limit_pause_retries:
-      OF's 400, then the run is cancelled during the async pause before the
-      retry: nothing was sent, so the job goes back to 'pending', not parked.
-  case_cancel_while_send_out_parks:
-      the run is cancelled while OF has the send and has not answered (the
-      worker thread runs on): job 'error' ("may have sent"), never requeued.
-  case_refused_write_then_unrelated_raise_retries:
-      a one-shot whose write the proxy refused (handled by the sender), then
-      an unrelated raise: nothing was sent -> 'pending', not parked.
-  case_may_have_sent_table:
-      of_write_paced's per-attempt classifier over the real exception classes:
-      OFDenied/OFDeactivated, curl ProxyError, couldn't-connect (7), any 4xx
-      (OF's rate-limit 400 too) -> surely not sent; ReadTimeout, Timeout (every
-      curl 28: curl_cffi never raises its ConnectTimeout), other ConnectionError,
-      5xx, no response, a cancel, unknown -> may have.
-
-Run: ./venv/bin/python service/tests/test_scheduled_send.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -68,12 +15,9 @@ from automation_executor import enqueue_job, run_once  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Employee, Message, ScheduledJob  # noqa: E402
 
-assert scheduled_send is not None  # silence "imported but unused"
+assert scheduled_send is not None
 
-# The GENUINE construction seam, grabbed before any case swaps it for a fake.
-# `_use_fake` overwrites `ax._make_client` and never restores it, so a case
-# that needs the real platform branch (the Fansly one below) cannot recover it
-# by reading the attribute at call time — it would get the previous case's fake.
+# `_use_fake` never restores _make_client; the Fansly case needs the genuine one, not the previous case's fake.
 _REAL_MAKE_CLIENT = ax._make_client
 
 OWN_ID = "555"
@@ -81,7 +25,6 @@ EMP_ID = 42
 
 
 class FakeOF:
-    """Records the full send_message call so we can assert passthrough."""
 
     def __init__(self) -> None:
         self.sent: list[dict] = []
@@ -116,7 +59,6 @@ async def _seed() -> None:
 
 
 async def _enqueue_due(payload: dict) -> int:
-    """Enqueue a scheduled_send job already PAST due so run_once claims it."""
     return await enqueue_job(
         OWN_ID, "scheduled_send",
         payload=payload,
@@ -125,7 +67,6 @@ async def _enqueue_due(payload: dict) -> int:
     )
 
 
-# ── Cases ─────────────────────────────────────────────────────────────
 
 def case_fires_and_attributes():
     fake = _use_fake()
@@ -176,15 +117,6 @@ def case_media_and_ppv_passthrough():
 
 
 def case_manual_deferral_does_not_auto_tag():
-    """The composer's =<15-min deferral is a HUMAN send, and the co-performer
-    auto-tag is for senders with no operator at the picker.
-
-    This matters only since the tag started landing: the chat body now carries
-    `rfTag`, so an auto id here would publicly name a co-performer the operator
-    never selected -- while the immediate send (server.py of_send_message) and
-    the >15-min OF-queue send, the same button either side of this one, both
-    pass auto_tag=False. Derived from the `manual` stamp rather than hardcoded,
-    so a job enqueued without it still auto-tags."""
     fake = _use_fake()
     import asyncio
     asyncio.run(_seed())
@@ -196,8 +128,6 @@ def case_manual_deferral_does_not_auto_tag():
     assert asyncio.run(run_once(OWN_ID, "scheduled_send"))["status"] == "ok"
     assert fake.sent[0]["auto_tag"] is False, fake.sent[0]
 
-    # No `manual` stamp = not the composer. The auto tag stays on, because the
-    # release-form rule is exactly what protects a sender with no human on it.
     fake2 = _use_fake()
     asyncio.run(_enqueue_due({
         "fan_id": 3232, "text": "automated", "media_files": [501],
@@ -229,15 +159,9 @@ def case_run_at_naive_utc():
 
 
 def case_list_shows_only_human_sends():
-    """GET /scheduled-sends lists a human's queued `scheduled_send` rows and
-    nothing else. The retired selling engine used to surface its Human Rhythm
-    wake here as a text-less `ai_reply` row; a leftover pending row of that kind
-    must not put a phantom countdown in the thread."""
     import server  # noqa: E402
     from starlette.requests import Request
 
-    # RESTORE this: _harness.run shares one process, so leaving the registry
-    # stubbed would silently hand a fake account to every case added after us.
     _real_get_account = server.account_registry.get_account
     server.account_registry.get_account = lambda a: {"id": a}  # type: ignore[attr-defined]
     soon = datetime.utcnow() + timedelta(minutes=4)
@@ -246,7 +170,6 @@ def case_list_shows_only_human_sends():
         await _seed()
         await enqueue_job(OWN_ID, "scheduled_send",
                           payload={"fan_id": 111, "text": "hey you"}, run_at=soon)
-        # A leftover wake of the retired engine (historical kind name).
         await enqueue_job(OWN_ID, "ai_chatter",
                           payload={"only_fan_ids": [111], "rhythm_resume": True},
                           run_at=soon)
@@ -266,21 +189,6 @@ def case_list_shows_only_human_sends():
 
 
 def case_fansly_account_fires_through_the_shim():
-    """A Fansly account's deferred send must reach the SHIM, not an OFClient.
-
-    Two bugs made every Fansly scheduled send hang on "sending now…" forever:
-    `ax._make_client` had no platform branch (server._load_client did), so the
-    executor built an OFClient for an account with no OF session — FileNotFound,
-    three retries, job parked; and the shim declared `text` keyword-only while
-    this automation (like OFClient) passes it positionally — TypeError even once
-    routed. The ghost bubble stays on screen the whole time because the list
-    endpoint shows `pending` rows.
-
-    So this case deliberately does NOT patch `_make_client` — the platform
-    branch inside it is the thing under test. It stubs the two seams that
-    branch consults: the account registry's platform, and the Fansly registry
-    entry's Backend module client pool.
-    """
     import asyncio
 
     import platforms
@@ -289,9 +197,6 @@ def case_fansly_account_fires_through_the_shim():
     fid = 4444
 
     class FakeShim:
-        """Mirrors FanslyShimClient.send_message's real signature, including the
-        keyword-only tail — so a positional `text` here fails exactly as the
-        shipped shim did."""
         def __init__(self):
             self.sent = []
 
@@ -323,8 +228,6 @@ def case_fansly_account_fires_through_the_shim():
         assert len(shim.sent) == 1, f"shim never called: {shim.sent}"
         assert shim.sent[0]["text"] == "want to see the rest?", shim.sent[0]
 
-        # ...and the job must be CONSUMED. A job left 'pending' is precisely what
-        # keeps the "sending now…" ghost on screen tick after tick.
         async def _job():
             async with get_session() as s:
                 return (await s.execute(
@@ -335,15 +238,12 @@ def case_fansly_account_fires_through_the_shim():
         assert job is not None and job.status == "done", \
             f"job left {job and job.status} — the ghost bubble never clears"
     finally:
-        # _harness.run shares one process: leaving these stubbed would hand a
-        # phantom Fansly account to every case added after this one.
         ax._make_client = prev_make_client                      # type: ignore[attr-defined]
         ax.account_registry.get_platform = real_get_platform    # type: ignore[attr-defined]
         backend.get_client = real_get_client
 
 
 class RaisingOF(FakeOF):
-    """send_message raises `exc` (after recording the attempt) instead of answering."""
 
     def __init__(self, exc: Exception) -> None:
         super().__init__()
@@ -411,8 +311,6 @@ def _rate_limit_400(fan_id: int):
 
 
 class _RateLimitPause:
-    """of_write_paced's rate-limit pause (11 s) as `pause_s`: of_write_with_retry,
-    which it calls by module name, wrapped (the retry logic itself unchanged)."""
 
     def __init__(self, pause_s: float) -> None:
         self.pause_s, self.real = pause_s, ax.of_write_with_retry
@@ -447,9 +345,8 @@ def case_rate_limit_before_send_retries_as_today():
 
 
 async def _cancel_once(pred, timeout_s: float = 30.0) -> None:
-    """Run the due scheduled_send, cancel it once `pred()` holds; it must re-raise."""
     import asyncio
-    ax._write_gates.clear()   # no 11 s spacing behind the previous case's send
+    ax._write_gates.clear()
     task = asyncio.create_task(run_once(OWN_ID, "scheduled_send"))
     t0 = asyncio.get_running_loop().time()
     while not pred():
@@ -492,7 +389,7 @@ def case_cancel_while_send_out_parks():
 
         def send_message(self, chat_id, text, **kw) -> dict:
             self.out.set()
-            release.wait(30)   # OF has it; its answer has not come back
+            release.wait(30)
             return super().send_message(chat_id, text, **kw)
 
     fake = HangingOF()
@@ -521,12 +418,12 @@ def case_refused_write_then_unrelated_raise_retries():
 
     async def sender(account_id, payload, *, run_id):
         client = ax._make_client(account_id)
-        try:   # a sender that handles a refused write and goes on
+        try:
             await ax.of_write_paced(account_id, lambda: client.send_message(1, "x"),
                                     send_purpose="manual")
         except curl.exceptions.ProxyError:
             pass
-        raise RuntimeError("database is locked")   # unrelated, after nothing was sent
+        raise RuntimeError("database is locked")
 
     register("scheduled_send")(sender)
     ax._write_gates.clear()
@@ -553,7 +450,7 @@ def case_may_have_sent_table():
         return OFAPIError(f"{status} for https://onlyfans.com/api2/v2/chats/1/messages",
                           response=SimpleNamespace(status_code=status))
     couldnt = curl.exceptions.ConnectionError("Failed to connect to proxy")
-    couldnt.code = 7   # curl_cffi.const.CurlECode.COULDNT_CONNECT
+    couldnt.code = 7
     rows = [
         (OFDeniedError("refused: POST /api2/v2/users/logout"), False),
         (OFDeactivatedError("refused: POST /chats/1/messages (Creator deactivated)"), False),
@@ -562,7 +459,7 @@ def case_may_have_sent_table():
         (_rate_limit_400(1), False),
         (http(403), False),
         (http(404), False),
-        (Exception("400 ... Please Allow 10 seconds before"), True),   # no response = unconfirmed
+        (Exception("400 ... Please Allow 10 seconds before"), True),
         (curl.exceptions.ReadTimeout("Operation timed out after 30000 ms"), True),
         (curl.exceptions.Timeout("timed out"), True),
         (curl.exceptions.ConnectionError("Connection reset by peer"), True),
@@ -573,7 +470,7 @@ def case_may_have_sent_table():
         (http(502), True),
         (OFAPIError("no response"), True),
         (asyncio.CancelledError(), True),
-        (RuntimeError("attribution insert failed"), True),   # unknown: conservative
+        (RuntimeError("attribution insert failed"), True),
     ]
     for e, want in rows:
         assert ax._may_have_sent(e) is want, (repr(e), want)

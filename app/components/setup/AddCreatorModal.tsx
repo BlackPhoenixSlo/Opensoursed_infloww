@@ -43,14 +43,15 @@
 
 import { Globe, Puzzle, User, UserPlus } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import LinkedCreatorProxy from "./LinkedCreatorProxy";
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
 import {
-  buildAccountPayload, canBack, canClose, canNext, canPickPlatform, profileName, useWizardReducer, type Method, type Platform,
+  buildAccountPayload, canBack, canClose, canNext, canPickPlatform, profileName, useWizardReducer, type Method,
   type BusySource, type WizardState,
 } from "@/components/setup/addCreatorWizard";
+import { PLATFORMS, PLATFORM_NAME, type Platform } from "@/lib/platform";
 import BrowserbaseLoginCard from "@/components/setup/BrowserbaseLoginCard";
 import FanslyPasteSessionCard, { FANSLY_FORM_ID, FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
 import {
@@ -81,8 +82,6 @@ const SECTIONS = {
   fansly: { id: "add-creator-fansly", name: "Fansly paste session", platform: "fansly", method: "extension" },
 } as const;
 export type SectionKey = keyof typeof SECTIONS;
-
-export const PLATFORM_LABEL: Record<Platform, string> = { onlyfans: "OnlyFans", fansly: "Fansly" };
 
 function Section({ k, hidden, children }: { k: SectionKey; hidden?: boolean; children: ReactNode }) {
   const s = SECTIONS[k];
@@ -142,7 +141,7 @@ function MethodChoice({ state, onChange }: { state: WizardState; onChange: (m: M
   );
 }
 
-export default function AddCreatorModal({ extInstalled, onClose, at, draft, linkAnother }: {
+export default function AddCreatorModal({ extInstalled, onClose, at, draft, linkAnother, expectedAccountId }: {
   extInstalled: boolean | null;
   onClose: () => void;
   /** A row's recovery action: straight to the sign-in that performs it. */
@@ -151,6 +150,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   draft?: DraftCreator;
   /** "Link another account": the Creator's details and the platforms it has an account on. */
   linkAnother?: { creator: CreatorDetails; linked: Platform[] };
+  expectedAccountId?: string;
 }) {
   const profiles = useCreatorProfiles();
   const roster = useRoster();
@@ -205,11 +205,48 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
 
   const title = fresh ? T.addCreator : ROW_LINK_TITLE;
   const nickname = recovery ? "" : details.name;
-  const other: Platform = of ? "fansly" : "onlyfans";
   // Not closable while the Extension or the proxy Connect runs (canClose): no ×, no Escape, Cancel off.
   const closable = canClose(state);
   const close = () => { if (closable) onClose(); };
   const cancel = <IfButton onClick={close} disabled={!closable}>{T.cancel}</IfButton>;
+
+  const loginCards: Record<Platform, ReactNode> = {
+    onlyfans: (
+      <>
+        <Section k="browserbase" hidden={!of || method !== "browser"}>
+          <BrowserbaseLoginCard
+            onLinked={linked("onlyfans")} initialNickname={nickname} keepProxy={recovery} active={of && method === "browser"}
+            onBusy={reportBusy.login}
+          />
+          {!recovery && (
+            <Link href={LOGINS_PAGE} className="mt-3 inline-block text-sm text-accent hover:text-accent-hover">
+              Several creators? Paste all their logins at once
+            </Link>
+          )}
+        </Section>
+        <Section k="paste" hidden={!of || method !== "extension"}>
+          {/* No extension on a phone. */}
+          <div className="hidden md:block">
+            <PasteCurlCard
+              extInstalled={extInstalled} onLinked={linked("onlyfans")} initialNickname={nickname}
+              attach={recovery ? undefined : attachDefaultProxy} active={of && method === "extension"} onBusy={reportBusy.extension}
+            />
+          </div>
+          <p className="md:hidden text-sm text-muted">{MOBILE_PASTE_LINE}</p>
+        </Section>
+      </>
+    ),
+    fansly: platform === "fansly" && (
+      <Section k="fansly">
+        <p className="md:hidden text-sm text-muted">{MOBILE_FANSLY_LINE}</p>
+        <div className="hidden md:block">
+          <FanslyPasteSessionCard
+            onLinked={linked("fansly")} initialNickname={nickname} formId={FANSLY_FORM_ID} expectedAccountId={expectedAccountId}
+          />
+        </div>
+      </Section>
+    ),
+  };
 
   let body: ReactNode;
   let footer: ReactNode;
@@ -236,7 +273,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
           <p className={cn("text-sm", HB_DIM)}>{T.stepOf(2, 3)}</p>
           <p className="text-sm font-medium text-fg">{T.whichPlatform}</p>
           <div role="radiogroup" aria-label={T.platform} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {(["onlyfans", "fansly"] as const).map((value) => (
+            {PLATFORMS.map(({ key: value, label }) => (
               <label key={value} className={cn(
                 "flex cursor-pointer items-center gap-3 rounded-lg border p-4 transition-colors",
                 platform === value ? "border-accent bg-accent/10" : "border-border hover:border-accent",
@@ -248,7 +285,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
                   onChange={() => dispatch({ type: "setField", field: "platform", value })} className="sr-only"
                 />
                 <PlatformLogo platform={value} className="h-5 w-5" />
-                <span className="text-base font-medium">{PLATFORM_LABEL[value]}</span>
+                <span className="text-base font-medium">{label}</span>
               </label>
             ))}
           </div>
@@ -267,47 +304,19 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
       body = (
         <div className="space-y-6">
           {fresh && (
-            <p className={cn("text-sm", HB_DIM)}>{T.stepOf(3, 3)} · {T.linkPlatformAccount(PLATFORM_LABEL[platform])}</p>
+            <p className={cn("text-sm", HB_DIM)}>{T.stepOf(3, 3)} · {T.linkPlatformAccount(PLATFORM_NAME[platform])}</p>
           )}
           <MethodChoice state={state} onChange={(value) => dispatch({ type: "setField", field: "method", value })} />
-          <Section k="browserbase" hidden={!of || method !== "browser"}>
-            <BrowserbaseLoginCard
-              onLinked={linked("onlyfans")} initialNickname={nickname} keepProxy={recovery} active={of && method === "browser"}
-              onBusy={reportBusy.login}
-            />
-            {!recovery && (
-              <Link href={LOGINS_PAGE} className="mt-3 inline-block text-sm text-accent hover:text-accent-hover">
-                Several creators? Paste all their logins at once
-              </Link>
-            )}
-          </Section>
-          <Section k="paste" hidden={!of || method !== "extension"}>
-            {/* No extension on a phone. */}
-            <div className="hidden md:block">
-              <PasteCurlCard
-                extInstalled={extInstalled} onLinked={linked("onlyfans")} initialNickname={nickname}
-                attach={recovery ? undefined : attachDefaultProxy} active={of && method === "extension"} onBusy={reportBusy.extension}
-              />
-            </div>
-            <p className="md:hidden text-sm text-muted">{MOBILE_PASTE_LINE}</p>
-          </Section>
-          {!of && (
-            <Section k="fansly">
-              <p className="md:hidden text-sm text-muted">{MOBILE_FANSLY_LINE}</p>
-              <div className="hidden md:block">
-                <FanslyPasteSessionCard onLinked={linked("fansly")} initialNickname={nickname} formId={FANSLY_FORM_ID} />
-              </div>
-            </Section>
-          )}
-          {canPickPlatform(state, other) && (
+          {PLATFORMS.map(({ key }) => <Fragment key={key}>{loginCards[key]}</Fragment>)}
+          {PLATFORMS.filter(({ key }) => key !== platform && canPickPlatform(state, key)).map(({ key, label }) => (
             <button
-              type="button" onClick={() => dispatch({ type: "setField", field: "platform", value: other })}
+              key={key} type="button" onClick={() => dispatch({ type: "setField", field: "platform", value: key })}
               className="inline-flex items-center gap-1.5 text-[13px] text-accent hover:text-accent-hover"
             >
-              <PlatformLogo platform={other} className="h-3.5 w-3.5" />
-              {of ? "Link a Fansly account instead" : "Link an OnlyFans account instead"}
+              <PlatformLogo platform={key} className="h-3.5 w-3.5" />
+              {`Link ${/^[aeiou]/i.test(label) ? "an" : "a"} ${label} account instead`}
             </button>
-          )}
+          ))}
         </div>
       );
       // Infloww's Fansly sign-in: Done beside Cancel submits the session (`creators0108`, @12411710); none on a phone,

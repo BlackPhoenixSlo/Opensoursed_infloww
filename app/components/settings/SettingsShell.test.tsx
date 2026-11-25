@@ -1,9 +1,3 @@
-/**
- * The Settings layout (app/app/settings/layout.tsx) rendered as a component:
- * the Settings header with "Settings" and the ✕ that leaves Settings (the
- * "Desktop app" link moved to About), and the Tab list under it; then the Panel parts every
- * Settings tab is built from (docs/spec/settings-tabs/phase-00-shell-tokens-blob.md).
- */
 import { fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -29,7 +23,6 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/settings/account",
   useRouter: () => ({ back, push }),
 }));
-// The session: an Agency owner unless a test signs in a Chatter only.
 let session: { user: { username: string; is_admin?: boolean } | null; chatter: { username: string } | null };
 vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: session.user }) }));
 vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: session.chatter }) }));
@@ -90,7 +83,6 @@ describe("Settings header", () => {
   });
 });
 
-// The 15 Settings tabs in nav order (docs/infloww-screens.md §3.10, plus Co-creator tag, OnlyFans consent, OF Manager writes, AI keys and the Audit log).
 const SETTINGS = [
   "/settings/account",
   "/settings/preferences",

@@ -1,21 +1,3 @@
-/**
- * ticket 66: Settings › Security and privacy's Block by country and Block by IP, Lockout controls. Pure state and
- * bodies; ofMirrorSettingsWrites binds the pages, ofMirrorSettingsPages draws them.
- * - Block by country: OF's settings-country.js save() PUTs /users/me/settings/security `{blockedCountries,
- *   blockedStates}`, the whole lists (record settings--block-by-country, measured-in-js). The picker names the
- *   countries from OF's GET /countries?all=1 (`[{code, name}]`, measured-in-js). Its states picker (GET
- *   /countries/{id}/states) is not built, so blockedStates goes back as read.
- * - Block by IP: settings-ip.js save() PUTs `{blockedIps}`, the textarea's lines, or [] when it is empty
- *   (measured-in-js). Cancel puts the saved list back and sends nothing (measured). ASSUMPTION: each line is trimmed
- *   and blank lines dropped (rung 5): OF splits on newline alone; the body's shape is OF's.
- * Each Save goes through its own Relay route under `account-lockout`, never the general security PUT, after a confirm
- * naming what it blocks. bindBlockByCountry / bindBlockByIp (ofMirrorSettingsWrites' NEW_WRITERS) bind the pages:
- * a dispatch redraws the page from its reducer, the only drawer of the picks and the IP field; a settings read landing
- * (SETTINGS_READ) dispatches `load`, which the reducer drops while an edit is on screen. Until a settings read has
- * landed (pending or failed) nothing is editable and Save stays off: a Save then would PUT empty lists over OF's.
- * Lockout controls: only with a model picked (else the Select-model note, nothing sent).
- */
-
 import { closeMenu, showMenu } from "@/lib/ofMirrorMenu";
 import { SETTINGS_READ } from "@/lib/ofMirrorSettings";
 import { countryPicker, countryPickerNotYet, drawCountries, ipForm, ipFormNotYet, showIps } from "@/lib/ofMirrorSettingsPages";
@@ -31,7 +13,6 @@ export interface Country {
   name: string;
 }
 
-/** OF's country list (GET /countries?all=1): the entries with a string code and name. */
 export function countriesOf(read: unknown): Country[] {
   if (!Array.isArray(read)) return [];
   return read.flatMap((c) =>
@@ -45,8 +26,6 @@ export interface Blocked {
   ips: string[];
 }
 
-/** The block lists in the settings read (GET /users/me/settings); a missing or malformed list is empty. null: no read
- *  (pending or failed), so the lists are unknown. */
 export function blockedOf(settings: unknown): Blocked | null {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) return null;
   const s = settings as Record<string, unknown>;
@@ -58,17 +37,13 @@ export function blockedOf(settings: unknown): Blocked | null {
 
 const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
 
-// ── Block by country ──────────────────────────────────────────────────────────────────────────────────────────────
 
 export interface CountryState {
-  /** The saved list (the settings read, or the last Save). */
   initial: string[];
   picked: string[];
-  /** The saved blockedStates, sent back unchanged. */
   states: number[];
   search: string;
   saving: boolean;
-  /** A settings read supplied the lists; before it nothing is editable. */
   loaded: boolean;
 }
 
@@ -81,7 +56,6 @@ export type CountryAction =
   | { type: "saved" }
   | { type: "failed" };
 
-/** `b` null: no settings read yet; empty and not editable until `load`. */
 export const countryInit = (b: Pick<Blocked, "countries" | "states"> | null): CountryState => ({
   initial: [...(b?.countries ?? [])],
   picked: [...(b?.countries ?? [])],
@@ -92,12 +66,12 @@ export const countryInit = (b: Pick<Blocked, "countries" | "states"> | null): Co
 });
 
 export const countryDirty = (s: CountryState) => !sameSet(s.initial, s.picked);
-/** Save: only once loaded, with a change, and not while one is saving. */
+// Save stays off until a settings read lands: a Save then would PUT empty lists over OF's.
 export const canSubmitCountries = (s: CountryState) => s.loaded && !s.saving && countryDirty(s);
 
 export function countryReducer(s: CountryState, a: CountryAction): CountryState {
   switch (a.type) {
-    case "load": // a fresh settings read: taken only while nothing is picked or saving; the typed search stays
+    case "load":
       return s.saving || countryDirty(s) ? s : { ...countryInit({ countries: a.countries, states: a.states }), search: s.search };
     case "toggle":
       if (s.saving || !s.loaded) return s;
@@ -110,24 +84,21 @@ export function countryReducer(s: CountryState, a: CountryAction): CountryState 
       return canSubmitCountries(s) ? { ...s, saving: true } : s;
     case "saved":
       return { ...s, initial: [...s.picked], search: "", saving: false };
-    case "failed": // the page goes back to the saved list
+    case "failed":
       return { ...s, picked: [...s.initial], saving: false };
   }
 }
 
-/** OF's body: the whole picked list, the states as read. */
+// blockedStates goes back as read: the states picker is not built.
 export const countryPayload = (s: CountryState) => ({ blockedCountries: [...s.picked], blockedStates: [...s.states] });
 
-/** The countries whose name holds `search` (any case); all of them for an empty search. */
 export function filterCountries(list: Country[], search: string): Country[] {
   const q = search.trim().toLowerCase();
   return q ? list.filter((c) => c.name.toLowerCase().includes(q)) : list;
 }
 
-/** A code's name in OF's list, else the code itself. */
 export const countryName = (list: Country[], code: string) => list.find((c) => c.code === code)?.name ?? code;
 
-/** The confirm before Save, naming the countries it blocks. */
 export const countryAsk = (names: string[]): Ask => ({
   title: "Block by country?",
   text: names.length
@@ -136,11 +107,9 @@ export const countryAsk = (names: string[]): Ask => ({
   ok: "Save",
 });
 
-// ── Block by IP ───────────────────────────────────────────────────────────────────────────────────────────────────
 
 const OCTET = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
 
-/** One line of OF's IP form: `1.2.3.4`, `1.2.3.4/24`, `1.2.*.4` (OF's help text), or an IPv6 address or network. */
 export function isIpEntry(entry: string): boolean {
   const [addr, bits, extra] = entry.split("/");
   if (extra !== undefined || addr === "") return false;
@@ -159,26 +128,20 @@ export function isIpEntry(entry: string): boolean {
   }
 }
 
-/** The textarea's entries: one per line, trimmed, blank lines dropped. */
 export const ipLines = (text: string) =>
   text
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
 
-/** The lines that are not an IP entry. */
 export const badIps = (text: string) => ipLines(text).filter((l) => !isIpEntry(l));
 
-/** The textarea's text for a saved list (OF's `blockedIps.join('\n')`). */
 export const ipText = (ips: string[]) => ips.join("\n");
 
 export interface IpState {
-  /** The saved list (the settings read, or the last Save). */
   saved: string[];
-  /** The field's text. */
   text: string;
   saving: boolean;
-  /** A settings read supplied the list; before it the field takes no edit. */
   loaded: boolean;
 }
 
@@ -190,13 +153,10 @@ export type IpAction =
   | { type: "saved" }
   | { type: "failed" };
 
-/** `ips` null: no settings read yet; empty and not editable until `load`. */
 export const ipInit = (ips: string[] | null): IpState => ({ saved: [...(ips ?? [])], text: ipText(ips ?? []), saving: false, loaded: ips !== null });
 
-/** The field differs from the saved list's text (Cancel puts it back). */
 export const ipDirty = (s: IpState) => s.text !== ipText(s.saved);
 export const canCancelIps = (s: IpState) => !s.saving && ipDirty(s);
-/** Save: once loaded, every line an IP entry, the list changed, and not while one is saving. */
 export const canSubmitIps = (s: IpState) => {
   const lines = ipLines(s.text);
   return s.loaded && !s.saving && badIps(s.text).length === 0 && !(lines.length === s.saved.length && lines.every((l, i) => l === s.saved[i]));
@@ -204,25 +164,23 @@ export const canSubmitIps = (s: IpState) => {
 
 export function ipReducer(s: IpState, a: IpAction): IpState {
   switch (a.type) {
-    case "load": // a fresh settings read: taken only while the field is unedited and nothing is saving
+    case "load":
       return s.saving || ipDirty(s) ? s : ipInit(a.ips);
     case "edit":
       return s.saving || !s.loaded ? s : { ...s, text: a.text };
-    case "cancel": // back to the saved list; nothing is sent
+    case "cancel":
       return s.saving ? s : { ...s, text: ipText(s.saved) };
     case "save":
       return canSubmitIps(s) ? { ...s, saving: true } : s;
     case "saved":
       return ipInit(ipLines(s.text));
-    case "failed": // the page goes back to the saved list
+    case "failed":
       return { ...s, text: ipText(s.saved), saving: false };
   }
 }
 
-/** OF's body: the lines, or [] when empty. */
 export const ipPayload = (s: IpState) => ({ blockedIps: ipLines(s.text) });
 
-/** The confirm before Save, naming the addresses it blocks. */
 export const ipAsk = (ips: string[]): Ask => ({
   title: "Block by IP?",
   text: ips.length
@@ -231,12 +189,9 @@ export const ipAsk = (ips: string[]): Ask => ({
   ok: "Save",
 });
 
-// ── Binders ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** No new write bound (its control absent). One definition: ofMirrorSettingsWrites imports it. */
 export const NONE: NewWriteBinding = { unbind: () => {} };
 
-/** Block by country (settings/security/block_by_country): the picker, its chips and the header Save. */
 export function bindBlockByCountry({ doc, data, locked, unlocked }: NewWriteEnv): NewWriteBinding {
   const picker = countryPicker(doc, !locked);
   if (!picker) return NONE;
@@ -252,7 +207,6 @@ export function bindBlockByCountry({ doc, data, locked, unlocked }: NewWriteEnv)
     cs = countryReducer(cs, a);
     draw();
   };
-  /** The country list under the picker (filtered by the typed text); a pick adds or removes that country. */
   const open = (again: boolean) => {
     if (!unlocked(picker.box)) return;
     if (again) closeMenu(doc);
@@ -320,7 +274,6 @@ export function bindBlockByCountry({ doc, data, locked, unlocked }: NewWriteEnv)
   };
 }
 
-/** Block by IP (settings/security/block_by_ip): the field, its Cancel and Save. */
 export function bindBlockByIp({ doc, data, locked, unlocked }: NewWriteEnv): NewWriteBinding {
   const ipf = ipForm(doc, !locked);
   if (!ipf) return NONE;

@@ -1,19 +1,5 @@
 "use client";
 
-/**
- * VaultTagChips — the Vault grid's tag chip row (ours, not Infloww's) and its "Save as folder".
- *
- * Under the toolbar: one sideways-scrolling row of the busiest tags over what the grid shows (type, search, open
- * folder, the chips already picked), each with its item count (GET /admin/vault-ai/tag-facets). A tap picks or drops
- * a chip (`vaultBrowseReducer` `toggleTag`, kept per Creator); picked chips AND together and lead the row. Hidden when
- * the view has no tags, none is picked and nothing was saved, and off the mirror (the live OF listing has no tags).
- *
- * With a chip picked, "Save as folder" opens a small form (`tagFolderForm`): the name (the tags joined until typed),
- * Save. The relay resolves the items from the same filters (at most `TAG_FOLDER_MAX`), so the folder holds every
- * match, not just the loaded page; it is a local folder created by the operator, which the AI-folder rebuild never
- * retires. Saving never writes to OnlyFans: the saved row ("Saved locally · name · N items") stays under the chips
- * with Publish, which asks first (stating N items) and then calls the existing POST /admin/vault-ai/folders/{id}/publish.
- */
 
 import { useReducer } from "react";
 
@@ -35,12 +21,10 @@ const CHIP = "shrink-0 inline-flex items-center gap-1.5 h-8 px-3 rounded-full bo
 
 export default function VaultTagChips({ accountId, enabled, type, query, ofFolderId, tags, onToggle, onClear }: {
   accountId: string;
-  /** The grid reads the mirror (tags live there only). */
   enabled: boolean;
   type: string;
   query: string;
   ofFolderId: FanId | null;
-  /** The picked chips, from the browse state. */
   tags: readonly string[];
   onToggle: (tag: string) => void;
   onClear: () => void;

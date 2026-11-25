@@ -1,13 +1,3 @@
-/**
- * The bio editor's Profile card: the saved profile (`base`), the Creator's edits (`draft`), the save in flight and its
- * refusal. A pure reducer (BioEditor holds it, the card only dispatches) with `isDirty`, the API's profile rules
- * mirrored (`decide.check_profile`) and the PATCH body: only what changed, so an untouched legacy value never blocks a
- * save.
- *
- * `hydrate` (a fresh read of the page) is IGNORED while the draft is dirty: a focus refetch or another write's answer
- * landing mid-edit must not wipe what the Creator typed (the `nudgeOnlineReducer.ts` trap). The base is kept with it,
- * so the PATCH still holds only the Creator's own changes; `saved` takes the answer as both.
- */
 import { isBioMode, type BioMode, type BioPage, type BioProfile, type ProfilePatch } from "@/hooks/useBioPages";
 import { chars, MAX_BIO, MAX_DISPLAY_NAME, NAME_MSG, type FormError } from "@/components/growth/bio/bioRules";
 export { MAX_BIO } from "@/components/growth/bio/bioRules";
@@ -39,7 +29,6 @@ export const initProfileForm = (profile: BioProfile): BioProfileForm => {
   return { base: draft, draft, busy: false, error: null };
 };
 
-/** A legacy mode the API no longer offers reads as the public page reads it: Escape. */
 export const asMode = (m: string): BioMode => isBioMode(m) ? m : "escape_ig";
 
 export const draftOf = (p: BioProfile): ProfileDraft => ({
@@ -60,7 +49,6 @@ export function profileFormError(d: ProfileDraft, base: ProfileDraft | null = nu
   return null;
 }
 
-/** The PATCH body: each changed field (the name trimmed), or null when nothing changed. */
 export function buildProfilePatch(base: ProfileDraft, draft: ProfileDraft): ProfilePatch | null {
   const out: ProfilePatch = {};
   if (draft.displayName !== base.displayName) out.display_name = draft.displayName.trim();
@@ -76,6 +64,7 @@ export const canSubmit = (f: BioProfileForm) => !f.busy && isDirty(f) && profile
 export function bioProfileReducer(state: BioProfileForm, action: Action): BioProfileForm {
   switch (action.type) {
     case "hydrate": {
+      // A refetch or another write's answer mid-edit must not wipe what the Creator typed.
       if (isDirty(state) || state.busy) return state;
       const fresh = draftOf(action.profile);
       if (same(state.base, fresh)) return state;

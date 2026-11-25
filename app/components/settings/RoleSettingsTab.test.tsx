@@ -1,11 +1,3 @@
-/**
- * RoleSettingsTab — the Role Settings Panel (docs/spec/settings-tabs/phase-03-roles-sales.md).
- *
- * Rendered inside `UserProvider` with the relay mocked at `fetch` by URL: the stub serves `/auth/me`, the
- * roster and the `roles` Settings blob, so every save assertion is an assertion about the wire. The
- * new role's id comes from `Date.now()`, pinned here to 1760000000000, which is
- * "mgj6k3cw" in base 36.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -19,7 +11,6 @@ import { PAGE_ACTIONS } from "@/lib/permissionActions";
 type Call = { method: string; url: string; body: unknown };
 
 let fetchMock: ReturnType<typeof vi.fn>;
-/** What GET /admin/settings/roles answers next. */
 let getReply: () => Response;
 
 function calls(): Call[] {
@@ -31,9 +22,6 @@ function calls(): Call[] {
 }
 const puts = () => calls().filter((c) => c.method === "PUT");
 
-/** Every SIDEBAR page a role is keyed by, collected here from the nav itself:
- *  links and group children, dividers and links answering to another page's
- *  grant (`permission`: Focus, Growth's Redirect links) skipped. */
 const HREFS: string[] = [];
 for (const n of SIDEBAR) {
   if ("divider" in n) continue;
@@ -47,7 +35,6 @@ const MY_AUTOMATIONS = ["/growth/auto-post", "/growth/auto-story", "/growth/auto
 const builtIn = () => ({ ...pages(true), ...Object.fromEntries(MY_AUTOMATIONS.map((h) => [h, false])) });
 const OWNER = { id: "owner", name: "Owner", description: "", permissions: builtIn(), scope: "all" };
 const ADMIN = { id: "admin", name: "Admin", description: "", permissions: builtIn(), scope: "all" };
-/** Team Leader, Chatter and Creator: built in since w5-a (Infloww's live default roles), each granting only its pages. */
 const only = (hrefs: string[]) => ({ ...pages(false), ...Object.fromEntries(hrefs.map((h) => [h, true])) });
 const CHATTING = [
   "/messages-pro", "/of-manager/messages", "/of-manager/notifications", "/growth/scripts", "/growth/get-to-know-fans",
@@ -61,7 +48,6 @@ const DEFAULT_ROLES = [
       "/analytics/employee-reports", "/analytics/message-dashboard", "/analytics/sales-records",
     ]),
   },
-  // The built-in Chatter opens the Dashboard without its revenue cards (roadmap 5.12).
   { id: "chatter", name: "Chatter", description: "", scope: "self",
     permissions: { ...only(["/", ...CHATTING]), ...Object.fromEntries(REVENUE_CARD_KEYS.map((k) => [k, false])) } },
   {
@@ -81,13 +67,11 @@ const BUILT_IN_DESCRIPTIONS = [
   "Dashboard and chatting pages, own chats only", "OF Manager pages: posts, vault, queue, profile",
 ];
 const ALPHA = { id: "role-alpha", name: "Alpha Role", description: "Stored", permissions: { "/": false }, scope: "self" };
-/** Grants Dashboard and Scripts, plus a stale href no nav page has; every other page is absent. */
 const BETA = {
   id: "role-beta", name: "Beta Role", description: "",
   permissions: { "/": true, "/growth/scripts": true, "/stale-page": true }, scope: "self",
 };
 
-/** Gamma Three is disabled, so the Relay's `include_disabled=false` roster leaves it out. */
 const ROSTER = [
   { id: 1, display_name: "Alpha One", color: "#a78bfa", is_active: true, chatter_id: "c1" },
   { id: 2, display_name: "Beta Two", color: "#60a5fa", is_active: true, chatter_id: "c2" },
@@ -126,12 +110,10 @@ function mount() {
 }
 
 const addRole = () => screen.getByRole("button", { name: "+ Add Role" });
-/** The Roles table's body rows, each as its cells' text. */
 const rows = () =>
   within(screen.getByRole("table", { name: "Roles" })).getAllByRole("row").slice(1)
     .map((r) => within(r).getAllByRole("cell").map((c) => c.textContent));
 
-/** Opens "Add Role" once the blob has loaded and fills the two Fields. */
 async function fillAddRole(name: string, description = "") {
   await waitFor(() => expect(addRole()).toBeEnabled());
   fireEvent.click(addRole());
@@ -141,13 +123,11 @@ async function fillAddRole(name: string, description = "") {
   return within(dialog).getByRole("button", { name: "Submit" });
 }
 
-/** Resolves once the active roster has loaded, which the pageless count reads. */
 async function rosterLoaded() {
   await waitFor(() => expect(calls().some((c) => c.url === "/admin/employees?include_disabled=false")).toBe(true));
   await new Promise((r) => setTimeout(r, 20));
 }
 
-/** Clicks "Edit" on the row named `name` once the blob has loaded; returns the "Edit Role" dialog. */
 async function openEdit(name: string) {
   await waitFor(() => expect(addRole()).toBeEnabled());
   const row = within(screen.getByRole("table", { name: "Roles" })).getByRole("cell", { name }).closest("tr")!;
@@ -155,7 +135,6 @@ async function openEdit(name: string) {
   return within(screen.getByRole("dialog", { name: "Edit Role" }));
 }
 
-/** Clicks "Set Permissions" on the row named `name` once the blob has loaded. */
 async function openPermissions(name: string) {
   await waitFor(() => expect(addRole()).toBeEnabled());
   const row = within(screen.getByRole("table", { name: "Roles" })).getByRole("cell", { name }).closest("tr")!;
@@ -164,7 +143,6 @@ async function openPermissions(name: string) {
 }
 
 const NOT_ENFORCED = "Saved for your organization; not enforced until Enforce role permissions is on.";
-/** The "Enforce role permissions" switch, once the blob has loaded. */
 async function enforceSwitch() {
   const s = await screen.findByRole("switch", { name: "Enforce role permissions" });
   await waitFor(() => expect(s).toBeEnabled());
@@ -205,7 +183,6 @@ describe("RoleSettingsTab", () => {
         }],
       },
     }]);
-    // The built-ins grant every page, including both ends of the nav, and nothing legacy or footer.
     expect(OWNER.permissions).toMatchObject({ "/": true, "/of-manager/home": true, "/employees": true });
     expect(ADMIN.permissions).toMatchObject({ "/growth/smart-messages": true, "/growth/auto-mass": false });
     expect(Object.keys(OWNER.permissions)).not.toContain("/automations");
@@ -323,7 +300,6 @@ describe("RoleSettingsTab", () => {
       body: {
         roles: [OWNER, ADMIN, ...DEFAULT_ROLES, ALPHA, {
           ...BETA,
-          // Every Function permission and Dashboard card explicit too, each on: none was stored false.
           permissions: { ...pages(false), ...actions(true), ...cards(true), "/growth/scripts": true, "/stale-page": true },
           scope: "subordinates",
         }],
@@ -355,14 +331,13 @@ describe("RoleSettingsTab", () => {
     const held = new Promise<void>((r) => { answer = r; });
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if (init?.method !== "PUT") return served(url, init);
-      await held; // the PUT stays in flight until the second click has landed
+      await held;
       return jsonRes({ detail: "roles save boom" }, 500);
     });
     mount();
     await openPermissions("Beta Role");
     const save = screen.getByRole("button", { name: "Save" });
     fireEvent.click(save);
-    // While the first PUT is in flight Save is disabled, so a second click sends nothing: one PUT, not two.
     await waitFor(() => expect(save).toBeDisabled());
     fireEvent.click(save);
     answer();
@@ -419,7 +394,6 @@ describe("RoleSettingsTab", () => {
     expect(puts()).toEqual([]);
   });
 
-  /** Clicks "Delete" on the row named `name` once the blob has loaded. */
   const deleteRole = async (name: string) => {
     await waitFor(() => expect(addRole()).toBeEnabled());
     const row = within(screen.getByRole("table", { name: "Roles" })).getByRole("cell", { name }).closest("tr")!;
@@ -454,7 +428,6 @@ describe("RoleSettingsTab", () => {
   });
 
   it("a custom role's Status switch saves disabled at once, confirming when an active Employee holds it; built-ins stay on", async () => {
-    // Beta Role grants pages and Beta Two holds it; Alpha Role is held by no one.
     const stored = { roles: [ALPHA, BETA], assignments: { "2": "role-beta" } };
     getReply = () => jsonRes({ tab: "roles", config: stored });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -472,7 +445,6 @@ describe("RoleSettingsTab", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Beta Role status" }));
     expect(confirm).toHaveBeenCalledWith('Disable the role "Beta Role"? 1 active Employee holds it and will be refused every page.');
     await waitFor(() => expect(puts()).toHaveLength(2));
-    // A disabled role grants no page: the warning counts Beta Two.
     expect(await screen.findByText(/1 active Employee holds a role granting no page/)).toBeInTheDocument();
   });
 
@@ -491,7 +463,6 @@ describe("RoleSettingsTab", () => {
 
     it("turning it on confirms with the count of active Employees whose role grants no page, then saves enforce and drops the note",
       async () => {
-        // Alpha One holds a role no role has, Beta Two Alpha Role (no page ticked); Gamma Three is disabled and not counted.
         const stored = {
           enforce: false, roles: [ALPHA], assignments: { "1": "role-gone", "2": "role-alpha", "3": "role-alpha" },
         };

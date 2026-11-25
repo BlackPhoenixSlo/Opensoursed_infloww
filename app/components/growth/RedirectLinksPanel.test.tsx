@@ -1,7 +1,3 @@
-/**
- * RedirectLinksPanel: the Clicks tip claims "passed checks only" only when the bot check can run (Turnstile keys set),
- * and only since it was turned on; Create sends one link however often Enter is pressed while it is in flight.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
@@ -55,7 +51,7 @@ describe("RedirectLinksPanel", () => {
   });
 
   it("Enter pressed again while Create is in flight sends one link", async () => {
-    growth.create.mockReturnValue(new Promise(() => {})); // a slow create: never answers in this test
+    growth.create.mockReturnValue(new Promise(() => {}));
     render(<RedirectLinksPanel accountId="a1" onAccountChange={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /Create redirect link/ }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tree" } });

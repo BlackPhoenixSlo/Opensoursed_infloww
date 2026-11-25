@@ -1,15 +1,3 @@
-/**
- * Timed message (seam 1: the `Composer`; docs/spec/phase-04-composer-ppv-vault.md,
- * Timed message and Contracts). ⏱ "Timed message" holds the draft for a whole
- * number of minutes, 1 to 60, through the Composer's existing delayed submit:
- * every check asserts at `onSend` or on "Start"'s enabled state.
- *
- * Ticket 31 adds the Timed message and removes the ▾ quick-send split.
- * Ticket 32 adds the "Timed reminder" tab: a per-Fan countdown that never
- * sends, held at module level and under
- * `chatterly:timed-reminder:<accountId>:<fanId>`. Module state outlives a
- * test, so each reminder test uses its own Fan.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -31,13 +19,11 @@ afterEach(() => {
 const NOW = "2026-10-13T10:00:00.000Z";
 const textbox = () => screen.getByPlaceholderText('Press "/" + keyword to quickly search scripts') as HTMLTextAreaElement;
 
-/** Freeze the clock. Only Date is faked: user-event's timers stay real. */
 function freezeClock() {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOW));
 }
 
-/** Open ⏱ and return its minutes field and "Start". */
 async function openTimed(user: UserEvent) {
   await user.click(
     within(screen.getByRole("toolbar", { name: "Composer buttons" }))
@@ -50,7 +36,6 @@ async function openTimed(user: UserEvent) {
   };
 }
 
-/** Pick the synthetic GIFs, in order, through the GIF picker. */
 async function pickGifs(user: UserEvent, titles: string[]) {
   routeRelay("/giphy/proxy/gifs/trending", () => ({
     data: titles.map((title, i) => ({
@@ -167,14 +152,11 @@ describe('Timed message: precedence over "at"', () => {
   });
 });
 
-/* ── Timed reminder ──────────────────────────────────────────────────── */
 
 const ALERT = "Timed reminder — time's up";
 const storageKey = (fanId: number) => `chatterly:timed-reminder:acct-1:${fanId}`;
 const countdown = () => screen.queryByText(/^Timed reminder · \d+:\d\d$/);
 
-/** Fake every timer from NOW, still advancing with the wall clock so React
- *  and user-event keep running; a test step adds a few real milliseconds. */
 function fakeTimers() {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date(NOW));
@@ -184,7 +166,6 @@ async function advance(ms: number) {
   await act(async () => { vi.advanceTimersByTime(ms); });
 }
 
-/** Open ⏱, switch to "Timed reminder", set the minutes and press "Start". */
 async function startReminder(user: UserEvent, minutes: string) {
   await openTimed(user);
   await user.click(screen.getByRole("tab", { name: "Timed reminder" }));
@@ -224,8 +205,6 @@ describe("Timed reminder", () => {
     await startReminder(user, "1");
 
     expect(screen.getByText("Timed reminder · 1:00")).toBeInTheDocument();
-    // The fire time is "Start" plus one minute, and "Start" came a few real
-    // milliseconds after NOW.
     const firesIn = Number(localStorage.getItem(storageKey(3201))) - Date.parse(NOW);
     expect(firesIn).toBeGreaterThanOrEqual(60_000);
     expect(firesIn).toBeLessThan(61_000);

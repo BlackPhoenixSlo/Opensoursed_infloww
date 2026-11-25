@@ -1,61 +1,26 @@
-/**
- * The /group tab's state as a pure reducer: the slot list, which pane the
- * mobile tab strip shows, and the BroadcastChannel add-acks still owed. Every
- * write the page makes (mount hydrate, Fan List pick, money-rail replace,
- * BroadcastChannel add / replace, wake / heartbeat reconcile, pane close, tab
- * pick) is an action here; the page only dispatches.
- *
- *   • "Same fan" is `sameSlot` (lib/groupChannel): fan ids arrive as numbers
- *     (OF) or strings (Fansly snowflakes), and `123` / `"123"` are one fan.
- *   • Slots from outside (storage, a channel message, a DOM event) are
- *     untrusted: anything that is not `isGroupSlot` is dropped, and only
- *     `accountId` + `fanId` are kept.
- *   • `add` is the one add rule: a held fan is accepted with the list
- *     unchanged, a full list (GROUP_SLOT_CAP) or a malformed slot refuses,
- *     anything else is appended. With a `reqId` (a channel add) the result is
- *     queued as `{reqId, ok}` in `acks`, decided here against the very state
- *     the add is applied to — so a burst of adds in one tick each get the ack
- *     of what this tab actually did. The page posts queued acks from an
- *     effect and drains them with `acksSent`.
- *   • `replace` takes the valid, de-duplicated part of its list (capped); an
- *     empty result changes nothing and acks ok:false.
- *   • `active` follows the fan, not the index: an add shows the new slot; a
- *     remove / drop / replace keeps showing the same fan if it is still
- *     there, else the same position clamped to the list.
- *   • An action that changes nothing returns the same state (no render).
- */
-
 import { GROUP_SLOT_CAP, isGroupSlot, sameSlot, type GroupSlot } from "@/lib/groupChannel";
 
 export interface Ack { reqId: string; ok: boolean }
 
 export interface SlotsState {
-  /** False until the mount effect has read storage / the seed params. */
   hydrated: boolean;
   slots: GroupSlot[];
-  /** Index into `slots` of the pane the mobile tab strip shows. */
   active: number;
-  /** add-acks decided but not yet posted on the channel. */
   acks: Ack[];
 }
 
 export type Action =
-  /** Mount: the restored or seeded list, minus fans an older live tab holds. */
   | { type: "hydrate"; slots: readonly GroupSlot[]; heldElsewhere: readonly { slots: readonly GroupSlot[] }[] }
-  /** A Fan List pick (no reqId) or a channel `add` (reqId: ack owed). Untrusted: decided here (isGroupSlot). */
   | { type: "add"; slot: unknown; reqId?: string }
-  /** Money rail "open last 8": the channel (reqId) or the same-tab DOM event. Untrusted entries: dropped here. */
   | { type: "replace"; slots: readonly unknown[]; reqId?: string }
   | { type: "remove"; slot: GroupSlot }
-  /** Wake / heartbeat reconcile: drop slots any of `others` also holds. */
   | { type: "dropHeldBy"; others: readonly { slots: readonly GroupSlot[] }[] }
   | { type: "select"; index: number }
-  /** These acks were posted; take them off the queue. */
   | { type: "acksSent"; reqIds: readonly string[] };
 
 export const initialSlotsState: SlotsState = { hydrated: false, slots: [], active: 0, acks: [] };
 
-/** Valid slots only, `accountId` + `fanId` only, first of each fan, capped. */
+// Slots from storage, a channel or a DOM event are untrusted: keep only valid ones, only accountId + fanId.
 function clean(list: readonly unknown[]): GroupSlot[] {
   const out: GroupSlot[] = [];
   for (const x of list) {
@@ -70,14 +35,10 @@ function heldBy(s: GroupSlot, others: readonly { slots: readonly GroupSlot[] }[]
   return others.some((t) => t.slots.some((x) => sameSlot(x, s)));
 }
 
-/** The slots none of `others` holds: what `dropHeldBy` with the same
- *  `others` leaves. A tab beats with this, not its current list, so the slots
- *  it is about to yield are never advertised. */
 export function keptSlots(slots: readonly GroupSlot[], others: readonly { slots: readonly GroupSlot[] }[]): GroupSlot[] {
   return slots.filter((s) => !heldBy(s, others));
 }
 
-/** New slot list; `active` stays on the same fan if present, else clamps. */
 function withSlots(state: SlotsState, slots: GroupSlot[]): SlotsState {
   const shown = state.slots[state.active];
   const idx = shown ? slots.findIndex((s) => sameSlot(s, shown)) : -1;
@@ -85,6 +46,7 @@ function withSlots(state: SlotsState, slots: GroupSlot[]): SlotsState {
   return { ...state, slots, active };
 }
 
+// ack decided against the very state the add applies to, so a burst gets per-add truth
 function owe(state: SlotsState, reqId: string | undefined, ok: boolean): SlotsState {
   return reqId === undefined ? state : { ...state, acks: [...state.acks, { reqId, ok }] };
 }

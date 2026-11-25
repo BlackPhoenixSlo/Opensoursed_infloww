@@ -1,24 +1,7 @@
 #!/usr/bin/env python3
-"""
-vault_import_decide — table tests over the pure rules the vault import routes
-(vault_import_api) hand off. The routes themselves are walked by
-test_vault_import_extras, test_vault_drive_configured and test_http_hooks.
-
-  case_batch_body_refusal_table:  411 no / junk / zero length (no disk read),
-                                  413 over the room, two copies on one device,
-                                  the free floor, the run cap.
-  case_fan_mismatch_table:        same fan, other id, id without name, neither.
-  case_metas_for_parts_table:     metas shorter / longer than parts, nameless
-                                  parts skipped without shifting.
-  case_status_body_table:         a count per real item status, an unknown
-                                  status counted nowhere but `total`, and the
-                                  route's final key order (run fields + card).
-
-No DB, no OF. Run: venv/bin/python service/tests/test_vault_import_decide.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness  # MUST be first: binds temp DB
 
 from types import SimpleNamespace  # noqa: E402
 
@@ -29,7 +12,6 @@ _GB = 10 ** 9
 
 
 def _table(rows, fn) -> None:
-    """Run every row, collect every mismatch, fail once naming them all."""
     bad = [f"{rid}: {got!r} != {want!r}" for rid, args, want in rows if (got := fn(*args)) != want]
     assert not bad, "\n  " + "\n  ".join(bad)
 
@@ -67,7 +49,6 @@ def case_batch_body_refusal_table():
         ("floor past free, room 0 -> 413", ("1", _disk(_GB, False), _caps(2 * _GB)), 413),
         ("run cap tighter than disk -> 413", ("11", _disk(10 * _GB, False), _caps(0, 2, 5)), 413),
     ], _status)
-    # Texts byte-identical to the pre-move server.py.
     assert d.batch_body_refusal(None, _no_disk, _no_disk) == (411, (
         "this upload needs a content-length — the server has to know how big a batch is before it starts "
         "writing it to disk, and a chunked body cannot be measured until it has already landed there. Send it "
@@ -106,7 +87,6 @@ def case_metas_for_parts_table():
     ], d.metas_for_parts)
 
 
-# The status route's answer for a run, key for key, as the pre-move server.py built it.
 _ROUTE_KEYS = ["running", "run_id", "status", "phase", "error", "filing_error", "details_saved", "fan_id",
                "finished_at", "total", *ITEM_STATUSES, "carriers_undeletable", "carriers_unrecorded", "items",
                "drive_import_configured", "upload_limits", "details_saved_here"]
@@ -135,7 +115,6 @@ def case_status_body_table():
         ("carriers unrecorded from the roll-up", ("carriers_unrecorded",), 1),
     ], body.get)
     assert "not-a-status" not in body and body["items"] is items
-    # The route appends the card's fields; the final order is the pre-move one.
     card = {"drive_import_configured": True, "upload_limits": {"max_file_mb": 200, "max_files": 40},
             "details_saved_here": False}
     assert list({**body, **card}) == _ROUTE_KEYS, list({**body, **card})

@@ -1,4 +1,3 @@
-/** "Desktop update available": desktop shell only, older shell only, closed per latest version. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 

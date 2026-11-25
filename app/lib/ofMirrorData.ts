@@ -1,32 +1,5 @@
 "use client";
 
-/**
- * Real rows on the OF mirror's list pages. With a single model selected (on Messages and My profile also in All
- * models: the first model, see standInModel), the messages list (its partners named from /users/list), the chat page,
- * the vault's folder list and the collections user lists show that model's rows (via the relay) instead of the captured
- * examples: each example row node is hidden and the template row is cloned
- * per real row, keeping OF's markup and classes. Rows link with the real id:
- * a chat to /of-manager/messages/chat?chat=<fanId> (its header, title and
- * thread then show that chat; links to its state/modal pages keep the query),
- * a vault folder to /of-manager/vault?list=<id> (the media grid then shows that
- * folder's media; with no ?list= the vault's ALL MEDIA; the Vault page's grid loads OF's next 24 as it is scrolled to its
- * end: vaultPagesQuery), a user list to
- * /of-manager/collections/user-lists/list?list=<id> (title and user cards; its Posts tab, list/posts?list=<id>, the list's
- * users' posts, ?postType= its type chip, as OF's).
- * New post's vault dialog (new-post/state-vault) shows the same vault media grid, the Post draft's
- * picks marked (ofMirrorPost handles the tile clicks).
- * A chat message's media shows in OF's own media bubble markup.
- * The feed pages (Home, My profile, its Media tab, All bookmarks, the queue, the notifications, Statements' Earnings, Payouts and Referrals, Streaming's dashboard and the schedule form's right column) are drawn by the ofMirrorFeeds* leaves;
- * a real post row's like, comments and (the Creator's own post) More menu are ofMirrorHome's; another creator's post's
- * More button is disabled with the "Not available in Inflowwww yet" tooltip; collections' writes are ofMirrorCollections'.
- * Home and the notifications tabs keep no example (the generator drops Home's example post, fan stories, alerts and
- * promo cards, and every tab's example rows and counts; the story tiles are the Creator's own active stories, GET /users/{id}/stories, then the creators GET /stories lists: stripUsers, with GET /streams/feed's live and scheduled streams and the watched creators after the promotion tile: applyStories): with no data they show OF's own empty states. Elsewhere, all models, no data yet or a relay error: the examples stay (and their
- * ?row= links still work, see useOfRow). The query is read from the app URL;
- * the frame's src never carries it.
- * The code lives in leaves (ofMirrorDom, ofMirrorData{Chats,Vault,Lists,Queries,Of}); this module keeps the page map,
- * applyData and useOfData, and re-exports what was cut from here: rowsOf, plain and mirrorQuery for their many importers,
- * ofMirrorPaging's other names for ofMirrorData.test or no reader at all.
- */
 
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
@@ -50,7 +23,6 @@ import { useChatPinned } from "@/hooks/useChatPinned";
 import { useFanChatMedia } from "@/hooks/useFanChatMedia";
 import { applyGallery, galleryRequest, galleryTab, useThreadFind } from "@/lib/ofMirrorThread";
 import { applyProfile, applyProfileStatus, applyRecent, mediaKind, ofKind, PROFILE_CHANGE } from "@/lib/ofMirrorProfile";
-// The leaves this module's code was cut into, and the ofMirrorFeeds* leaves.
 import { restore, sameId, setText, toggleTile, type Part } from "@/lib/ofMirrorDom";
 import { applyChatLinks, applyChats, applyChatsMore, applyChatsStatus, applyThread, keepThreadScroll, OLDER_PX, THREAD_BOX, threadScroll } from "@/lib/ofMirrorDataChats";
 import { applyListSort, applyVaultAll, applyVaultLists, applyVaultMedia, applyVaultStatus } from "@/lib/ofMirrorDataVault";
@@ -64,63 +36,49 @@ import { applyEvents, applyQueue, eventsRoute, QUEUE_CHANGE, queueMonth } from "
 import { applyNotificationCounts, applyNotifications, applyNotificationsStatus, NOTIFICATION_COUNTS, NOTIFICATIONS, notificationsRoute, relatedUserOf } from "@/lib/ofMirrorFeedsNotifications";
 import { useMarkNotifsReadOnOpen } from "@/lib/ofMirrorNotifsRead";
 import { applyPastStreams, applyPayouts, applyStatementsStatus, applyTransactions } from "@/lib/ofMirrorFeedsStatements";
-// Re-exported: what was cut from here (into ofMirrorPaging and the leaves), so its importers still read it from here.
 export { nextFeedOffset, nextMarker, nextOffset, pageRows, POSTS_PAGE, rowsOf, uniqueRows } from "@/lib/ofMirrorPaging";
 export { plain } from "@/lib/ofMirrorDom";
 export { mirrorQuery } from "@/lib/ofMirrorDataQueries";
 
-/** Page (path under of-mirror/pages, or the page its state-* / modal-* subpage belongs to) -> the data it shows. */
 export const DATA_PAGES: Record<string, Part[]> = {
   "messages/index": ["chats"],
-  messages: ["chats"], // messages/state-*
+  messages: ["chats"],
   "messages/chat": ["chats", "thread"],
   "vault/index": ["vaultLists", "vaultMedia"],
-  vault: ["vaultLists", "vaultMedia"], // vault/state-*
+  vault: ["vaultLists", "vaultMedia"],
   "vault/list": ["vaultLists", "vaultMedia"],
-  // New post: the right column's promotions and Scheduled events widget (as Home's).
   "new-post/index": ["promotions", "events"],
-  "new-post": ["promotions", "events"], // new-post/state-*
-  [VAULT_DIALOG]: ["promotions", "events", "vaultLists", "vaultMedia"], // its picks read from the Post draft
-  [CHAT_VAULT]: ["chats", "thread", "vaultLists", "vaultMedia"], // its picks read from the Chat draft
-  [MASS_VAULT]: ["vaultLists", "vaultMedia"], // New message's: its picks read from the Mass draft
-  // A chat's Gallery: the chat list (its markup borrowed, TEMPLATES' chatList) and the chat's media.
+  "new-post": ["promotions", "events"],
+  [VAULT_DIALOG]: ["promotions", "events", "vaultLists", "vaultMedia"],
+  [CHAT_VAULT]: ["chats", "thread", "vaultLists", "vaultMedia"],
+  [MASS_VAULT]: ["vaultLists", "vaultMedia"],
   "messages/chat/gallery": ["chats", "chatList", "gallery"],
-  // A chat's pinned messages: OF's chat page (the generator builds it from the chat capture), its thread the pins.
   "messages/chat/pinned": ["chats", "thread"],
-  // Collections: the user lists column on every user-lists page; the index shows its first list's users, as OF does.
   "collections/index": ["userLists", "listUsers"],
   "collections/user-lists/list": ["userLists", "listUsers"],
-  // A list's Posts tab: its users' posts (their row borrowed, TEMPLATES' post).
   [LIST_POSTS]: ["userLists", "listPosts"],
   "collections/user-lists/subscribers/active": ["userLists", "subscribers"],
-  // Following and its tabs: the lists, their row borrowed (TEMPLATES' listRow).
   "collections/user-lists/subscriptions": ["userLists", "listRow"],
   "collections/user-lists/subscriptions/active": ["userLists", "listRow"],
   "collections/user-lists/subscriptions/expired": ["userLists", "listRow"],
   "collections/user-lists/subscriptions/attention": ["userLists", "listRow"],
   "collections/user-lists/subscriptions/posts": ["userLists", "listRow"],
   "collections/post-labels/archived": ["labels"],
-  // My profile: its wall (or Media grid), its counts, label tabs and highlights, the Recent strip (the media posts) and
-  // the right column's promotions.
   "profile/index": ["posts", "profileMedia", "profile", "promotions"],
-  profile: ["posts", "profileMedia", "profile", "promotions"], // profile/state-*
+  profile: ["posts", "profileMedia", "profile", "promotions"],
   "profile/media": ["profileMedia", "profile", "promotions"],
   "collections/bookmarks/all": ["bookmarks"],
-  // Every queue page: the month pages (calendar, list view and their tab states) and the saved-for-later pages.
   ...Object.fromEntries(Object.keys(QUEUE).map((p) => [p, ["queue"] as Part[]])),
-  // Every notifications tab, with the tab bar's counts and the right column's promotions and Scheduled events widget (as Home's).
   ...Object.fromEntries(Object.keys(NOTIFICATIONS).map((p) => [p, ["notifications", "notificationCounts", "promotions", "events"] as Part[]])),
   "streaming/dashboard": ["pastStreams"],
-  // The stream schedule form: the right column's promotions and Scheduled events widget (as Home's).
   "streaming/dashboard/create": ["promotions", "events"],
   "statements/earnings": ["transactions"],
-  "statements/index": ["transactions"], // its default tab is Earnings
+  "statements/index": ["transactions"],
   "statements/payouts": ["payouts"],
   "statements/referrals": ["referrals"],
-  // Home: its feed, its story strip, the right column's promotions and its Scheduled events widget.
   "home/index": ["home", "stories", "promotions", "events"],
-  home: ["home", "stories", "promotions", "events"], // home/state-*
-  [HOME_VAULT]: ["home", "stories", "promotions", "events", "vaultLists", "vaultMedia"], // its picks read from Home's Post draft
+  home: ["home", "stories", "promotions", "events"],
+  [HOME_VAULT]: ["home", "stories", "promotions", "events", "vaultLists", "vaultMedia"],
 };
 
 export const partsOf = (page: string): Part[] => {
@@ -128,11 +86,9 @@ export const partsOf = (page: string): Part[] => {
   return Object.hasOwn(DATA_PAGES, key) ? DATA_PAGES[key] : [];
 };
 
-/** Show `data` on `page` in `doc` (the examples again for parts it lacks; idempotent). */
 export function applyData(doc: Document, page: string, data: MirrorData, img: (u: string) => string = (u) => u): void {
   restore(doc);
   const parts = partsOf(page);
-  // A composer's vault dialog keeps its folder picks on its own page (a chat's: with its ?chat=).
   const vaultBase =
     page === VAULT_DIALOG || page === HOME_VAULT || page === MASS_VAULT
       ? `/of-manager/${page}`
@@ -170,7 +126,6 @@ export function applyData(doc: Document, page: string, data: MirrorData, img: (u
     applyColumnPosts(doc, { posts: data.listPosts, tpl: data.templates.post, me: data.me && String(data.me.id), authors: data.authors, more: data.listPostsMore }, img);
   if (parts.includes("labels") && data.labelsStatus !== undefined) applyColumnStatus(doc, LABELS_COLUMN, data.labelsStatus);
   if (parts.includes("labels") && data.labels) applyLabels(doc, data.labels, data.label ?? null);
-  // My profile: the wall (profile/index) or the Media grid (profile/media) has the page's "No posts yet".
   const grid = page === "profile/media";
   if (parts.includes("posts") && !grid && data.postsStatus !== undefined) applyProfileStatus(doc, data.postsStatus);
   if (parts.includes("posts") && !grid && data.posts) {
@@ -202,7 +157,6 @@ export function applyData(doc: Document, page: string, data: MirrorData, img: (u
   if (parts.includes("events") && data.events) applyEvents(doc, data.events, data.now ?? new Date());
 }
 
-/** On a DATA_PAGES page with a single model selected, show the model's rows on every frame load and data or query change. */
 export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const params = useSearchParams();
@@ -212,44 +166,31 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const parts = partsOf(page);
   const q = (part: Part, path: string | null) => mirrorQuery(accountId, path, parts.includes(part));
   const enc = (v: string | null) => (v ? encodeURIComponent(v) : null);
-  // The chat list: Messages Pro's useChatList (offset pages, OF's filter / list_id / order / query from the URL's view,
-  // its 90s head poll) under Messages Pro's key, though its page size (CHATS_PAGE) makes it its own entry. Nothing here marks a chat read.
   const isChats = parts.includes("chats");
   const view = chatsView(params);
   const listQuery = chatsQuery(view);
+  // Nothing here marks a chat read.
   const chatList = useChatList({ ...chatsRequest(view), limit: CHATS_PAGE, enabled: isChats && !!accountId });
-  // The top unread threads, first tier only: activity inside the frame never reaches this window.
   useUnreadMessagesPrefetch(chatList.data, chatList.fetchedLive, UNREAD_PREFETCH_TIERS.slice(0, 1));
   const loadMoreChats = useRef(chatList.loadMore);
   loadMoreChats.current = chatList.loadMore;
-  // Each page's partners (each /chats row carries only its partner's id).
   const { ids: pageIds, reads: partners, key: partnersKey } = usePageUsers(accountId, chatList.pages ?? [], (c: OFChatItem) => c?.withUser?.id, isChats);
-  // The partners this view has resolved so far, by id: a page whose /users/list key changed (a new chat came in at the
-  // top) keeps showing the partners already known while the new call runs, instead of the whole list going back to
-  // "Loading chats…"; a new tab, sort, folder or search starts empty (its rows wait for their partners).
   const known = useRef<{ view: string; users: Record<string, OFUserMini> }>({ view: listQuery, users: {} });
   if (known.current.view !== listQuery) known.current = { view: listQuery, users: {} };
   for (const p of partners) if (p.data && typeof p.data === "object" && !Array.isArray(p.data)) Object.assign(known.current.users, p.data);
-  // A page with no partner ids asks nothing (its query is disabled, so TanStack keeps it pending for ever): never waited on.
   const partnersPending = pendingPartners(pageIds, partners);
   const isGallery = parts.includes("gallery");
   const detail = useQuery(mirrorQuery(accountId, chat && chatPath(chat), parts.includes("thread") || isGallery));
   const fanId = chat ? fanIdFromParam(chat) : null;
-  // The pinned page's thread is the chat's pinned messages (Messages Pro's useChatPinned: OF's messages?filter=pinned).
   const isPinnedPage = page === "messages/chat/pinned";
   const pinned = useChatPinned(accountId, fanId, isPinnedPage);
-  // The open chat's messages: Messages Pro's useChatMessages (the newest 30, older ones by before_id as the thread is
-  // scrolled up, its poll). It sends no mark-as-read.
   const thread = useChatMessages({ accountId, fanId, enabled: parts.includes("thread") && !isPinnedPage && !!chat && !!accountId });
-  // The Gallery: Messages Pro's useFanChatMedia for the open tab (OF's last_id pages).
   const gTab = galleryTab(params);
   const gallery = useFanChatMedia(accountId, fanId, { ...galleryRequest(gTab), enabled: isGallery && !!chat });
   const vaultSearch = viewOf(params).slist;
-  const vaultLists = vaultListsPath({ slist: vaultSearch }); // with the Vault page's folder search (?slist=)
+  const vaultLists = vaultListsPath({ slist: vaultSearch });
   const vault = useQuery(q("vaultLists", vaultLists));
   useRevalidate(accountId, parts.includes("vaultLists") ? vaultLists : null, vault);
-  // The Vault page pages its grid (each page past the cache); a composer's vault dialog reads the first 24 (the query
-  // ofMirrorPost shares), cached first, then rechecked.
   const vaultPage = isVaultPage(page) && parts.includes("vaultMedia");
   const dialogMedia = !vaultPage && parts.includes("vaultMedia") ? vaultMediaOf(params) : null;
   const vaultMedia = useQuery(q("vaultMedia", dialogMedia));
@@ -257,14 +198,11 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const vaultPages = useInfiniteQuery(vaultPagesQuery(accountId, vaultPage ? vaultMediaOf(params) : null));
   const vaultRead = vaultPage ? vaultPages : vaultMedia;
   const lists = useQuery(q("userLists", USER_LISTS));
-  // The open list: the page's ?list, else (as on OF) the first list.
   const first = rowsOf<UserList>(lists.data)?.[0]?.id;
   const list = params.get("list") ?? ((parts.includes("listUsers") || parts.includes("listPosts")) && first != null ? String(first) : null);
-  // Search users (ofMirrorCollections): the page's ?query, OF's own `query` on the list's users.
   const usersQuery = params.get("query");
   const members = useQuery(q("listUsers", list && `/api/of/v2/lists/${enc(list)}/users?limit=50${usersQuery ? `&query=${enc(usersQuery)}` : ""}`));
   const postType = postTypeOf(params.get("postType"));
-  // A list's Posts tab: OF's pages of 10, each next one when OF's loading row scrolls into view (MorePages).
   const listPostsRoute = list && listPostsPath(list, postType);
   const listPosts = useInfiniteQuery(offsetPagesQuery(accountId, listPostsRoute, parts.includes("listPosts")));
   const listPostRows = useMemo(() => uniqueRows(pageRows<MirrorPost>(listPosts.data?.pages)), [listPosts.data]);
@@ -273,47 +211,36 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const labels = useQuery(mirrorQuery(accountId, "/api/of/v2/labels", parts.includes("labels") || parts.includes("profile")));
   const ofMeQ = useQuery(ofMeQuery(accountId));
   const ofMe = ofMeQ.data;
-  // My profile's rows wait on the Creator's id: loading while it is read, its error if that failed.
   const ofMeStatus = ofMeQ.isError ? message(ofMeQ.error) : ofMeQ.isPending ? null : undefined;
   const meId = ofMe?.id;
   const me = meId != null ? `/api/of/v2/users/${enc(String(meId))}` : null;
-  // My profile's wall: OF's pages of 20, each next one (before the last one's tailMarker) when OF's loading row scrolls into view.
   const posts = useInfiniteQuery(markerPagesQuery(accountId, me && `${me}/posts?limit=${POSTS_PAGE}&format=infinite`, parts.includes("posts")));
   const postRows = useMemo(() => uniqueRows(pageRows<MirrorPost>(posts.data?.pages)), [posts.data]);
   const photos = useQuery(q("profileMedia", me && `${me}/posts/photos?limit=24`));
   const videos = useQuery(q("profileMedia", me && `${me}/posts/videos?limit=24`));
   const highlights = useQuery(q("profile", me && `${me}/stories/highlights`));
-  // Home's strip: the Creator's own active stories (OF's userStories tile).
   const myStories = useQuery(q("stories", me && `${me}/stories`));
   const bookmarks = useQuery(q("bookmarks", "/api/of/v2/posts/bookmarks/all?limit=20"));
-  // The month the queue's calendar shows: read from the frame once it has loaded (see apply).
   const [month, setMonth] = useState<Month | null>(null);
   const zone = useAgencyZone();
   const queue = useQuery(q("queue", Object.hasOwn(QUEUE, page) ? QUEUE[page].route(month, zone) : null));
-  // One fan's notifications (OF's ?related_user=): Search users on any tab (ticket 17), a chat menu's "View user's
-  // comments" on the commented tab. Type tabs re-read for the fan; Tags filters its mentions as read (relatedOnly).
   const relatedUser = Object.hasOwn(NOTIFICATIONS, page) ? relatedUserOf(params) : null;
   const notifications = useQuery(q("notifications", notificationsRoute(page, relatedUser)));
   const notificationCounts = useQuery(q("notificationCounts", NOTIFICATION_COUNTS));
-  // The All tab's open sends OF's mark-read once, as OF web does; then its counts are re-read.
   useMarkNotifsReadOnOpen(accountId, page, notifications);
   const newTags = ofMe?.newTagsCount;
   const pastStreams = useQuery(q("pastStreams", me && `${me}/streams?limit=8`));
-  // Statements' Earnings: OF's pages of 10 (app.js), each next one when OF's loading row scrolls into view (MorePages).
   const transactions = useInfiniteQuery(offsetPagesQuery(accountId, `${TRANSACTIONS}?limit=${TRANSACTIONS_PAGE}`, parts.includes("transactions")));
   const payouts = useQuery(q("payouts", "/api/of/v2/payouts/requests?limit=20"));
   const referrals = useQuery(q("referrals", "/api/of/v2/payouts/requests/referral?limit=20"));
-  // Home's feed: OF's pages of 20 by offset, each next one when OF's loading row scrolls into view (MorePages).
   const home = useInfiniteQuery(offsetPagesQuery(accountId, `/api/of/v2/posts?limit=${POSTS_PAGE}`, parts.includes("home"), nextFeedOffset));
   const homeRows = useMemo(() => uniqueRows(pageRows<MirrorPost>(home.data?.pages)), [home.data]);
   const stories = useQuery(q("stories", STORIES_FEED));
   const streams = useQuery(q("stories", STREAMS_FEED));
-  // The home feed's (or a list's Posts tab's) authors (its posts carry only their author's id), as the chat list's partners.
   const feedPages = parts.includes("listPosts") ? (listPosts.data?.pages ?? []).map((p) => rowsOf<MirrorPost>(p) ?? []) : (home.data?.pages ?? []).map((p) => rowsOf<MirrorPost>(p) ?? []);
   const { reads: authorPages, key: authorsKey } = usePageUsers(accountId, feedPages, (p: MirrorPost) => p.author?.id, parts.includes("home") || parts.includes("listPosts"));
   const promotions = useQuery(q("promotions", "/api/of/v2/promotions"));
-  const events = useQuery(q("events", eventsRoute(new Date()))); // one key a day
-  // A borrowed row: its committed capture, fetched same-origin (never the Relay) and parsed inertly, once per session.
+  const events = useQuery(q("events", eventsRoute(new Date())));
   const need = (Object.keys(TEMPLATES) as Template[]).find((t) => TEMPLATES[t]!.parts.some((p) => parts.includes(p)) && TEMPLATES[t]!.page !== page);
   const from = need && TEMPLATES[need]!.page;
   const template = useQuery({
@@ -328,7 +255,6 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
     retry: false,
   });
 
-  // The Statements table's rows: loading until they (Referrals: and their borrowed row) are here; either failing is the error.
   const stmt = parts.includes("transactions") ? transactions : parts.includes("payouts") ? payouts : parts.includes("referrals") ? referrals : null;
   const statementsStatus = stmt ? feedStatus(stmt, need ? template : null) : undefined;
   const data = useMemo<MirrorData>(() => {
@@ -345,24 +271,17 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
       if (!doc?.body) return;
       const m = queueMonth(doc);
       setMonth((was) => (was?.start === m?.start && was?.end === m?.end ? was : m));
-      // The draft is the one copy of the picks: read on every apply, as a tile click changes it without a re-render.
       const draft = !accountId ? null : page === VAULT_DIALOG ? accountId : page === HOME_VAULT ? homeDraft(accountId) : null;
       const picked = draft ? loadDraft(window.sessionStorage, draft).media_files.filter((m) => typeof m === "number") : undefined;
-      // A chat's or New message's vault dialog: its ticks (attached only by its Add), over its tabs and folders.
       const chatPicked = accountId && chat && page === CHAT_VAULT ? loadVaultPick(window.sessionStorage, vaultPickKey(accountId, CHAT_VAULT, chat)).ids : undefined;
       const massPicked = accountId && page === MASS_VAULT ? loadVaultPick(window.sessionStorage, vaultPickKey(accountId, MASS_VAULT)).ids : undefined;
-      // A composer's vault dialog never shows the captured folders and media: the Creator's, else none (All-Creators, loading).
       const dialog = page === VAULT_DIALOG || page === HOME_VAULT || page === CHAT_VAULT || page === MASS_VAULT;
       const real: MirrorData = accountId ? data : {};
       const shown: MirrorData = dialog ? { ...real, vaultLists: real.vaultLists ?? [], vaultAll: real.vaultAll ?? {}, vaultMedia: real.vaultMedia ?? [] } : real;
-      // The Vault page's selected tiles stay selected when its grid is drawn again (its next page arrived).
       const held = isVaultPage(page) ? [...doc.querySelectorAll<HTMLElement>("[data-oi-media].selected")].map((t) => t.dataset.oiMedia) : [];
-      // The thread's scroll, read before the redraw empties it (older messages or a poll never move what is in view).
       const was = threadScroll(doc, chat);
-      // An error note under a message (a message menu write's: its undo redraws the thread) stays under it.
       const noted = doc.getElementById("oi-note");
       const notedMsg = noted?.previousElementSibling?.getAttribute("data-oi-msg");
-      // Another tab, sort, folder or search starts the list at its top, as OF's.
       const list = doc.querySelector<HTMLElement>(".b-chats__scroller");
       if (list && list.dataset.oiView !== listQuery) {
         list.dataset.oiView = listQuery;
@@ -376,7 +295,6 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
         if (tile) toggleTile(tile, true);
       }
     };
-    // The queue's month, day and tabs change in place (ofMirrorQueue): its rows follow, and a new month is asked for.
     let doc: Document | null = null;
     const onLoad = () => {
       doc?.removeEventListener(QUEUE_CHANGE, apply);
@@ -395,8 +313,6 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
     };
   }, [frameRef, src, page, data, accountId, chat, listQuery]);
 
-  // The Vault page's infinite scroll, as OF's: near the end of whatever scrolls the grid (the page, or its column), the
-  // next 24; checked again once each page is drawn, so a grid shorter than the frame keeps loading.
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = vaultPages;
   useEffect(() => {
     const frame = frameRef.current;
@@ -404,7 +320,7 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
     const near = (el: Element | null | undefined) => !!el && el.scrollHeight > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - MORE_PX;
     const check = (el?: Element | null) => {
       const d = frame.contentDocument;
-      if (d?.querySelector("[data-oi-media]") && near(el ?? d.scrollingElement)) void fetchNextPage({ cancelRefetch: false }); // a page in flight is not asked again
+      if (d?.querySelector("[data-oi-media]") && near(el ?? d.scrollingElement)) void fetchNextPage({ cancelRefetch: false });
     };
     const onScroll = (ev: Event) => {
       const t = ev.target as Document | Element;
@@ -425,15 +341,10 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
     };
   }, [frameRef, src, vaultPage, data, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  // The chat list's infinite scroll, as OF's: near the end of whatever scrolls the list (its column, or the page on a
-  // phone), the next page; checked again once each page is drawn, so a list shorter than the frame keeps loading. Only
-  // once the last page's rows are drawn (their partners are here), and never while the list is hidden (a chat on a phone).
   const chatsNext = isChats && !!accountId && chatList.hasMore && !chatList.isFetchingMore && !partnersPending;
   useEffect(() => {
     const frame = frameRef.current;
     if (!frame || !chatsNext) return;
-    // OF's infinite loader sits under the last row: the next page once that row's end is within CHATS_MORE_PX of the visible
-    // part of the list (the list's own scroll box, or the frame's viewport when the page scrolls).
     const check = () => {
       const d = frame.contentDocument;
       const win = d?.defaultView;
@@ -460,10 +371,6 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
     };
   }, [frameRef, src, chatsNext, data]);
 
-  // The thread's older messages, as OF's: near the top of the thread, the page before its oldest (before_id); checked
-  // again once each page is drawn, so a thread shorter than its box keeps loading. keepThreadScroll holds the view.
-  // After a failed page (`olderFailed`) only a scroll asks again: no check on
-  // attach, so the failure can't re-fire itself each time loading settles.
   const { hasOlder, isLoadingOlder, loadOlder, olderFailed } = thread;
   const olderNext = parts.includes("thread") && !isPinnedPage && !!chat && !!accountId && hasOlder && !isLoadingOlder;
   useEffect(() => {
@@ -488,12 +395,10 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
     };
   }, [frameRef, src, olderNext, olderFailed, loadOlder, data]);
 
-  // The Gallery's next page, as OF's grid: near the end of whatever scrolls it (its column, or the page on a phone).
   const galleryNext = isGallery && !!gallery.hasNextPage && !gallery.isFetchingNextPage && !gallery.isPlaceholderData && !gallery.isFetchNextPageError && !galleryStalled(gallery.data?.pages ?? []);
   const fetchGallery = gallery.fetchNextPage;
   const refetchGallery = gallery.refetch;
   const galleryMoreFailed = gallery.isFetchNextPageError;
-  // The gallery's Retry (after a failed page): that page again, or the first one.
   useEffect(() => {
     const frame = frameRef.current;
     if (!frame || !isGallery) return;
@@ -523,7 +428,6 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
       const win = d?.defaultView;
       const tiles = d?.querySelectorAll<HTMLElement>(".b-gallery-wrapper .b-photos > [data-oi-data]");
       const last = tiles?.[tiles.length - 1];
-      // Pages whose items all drew no tile: the next one at once (else the grid would wait under "Loading media…").
       if (win && !last && d?.querySelector(".b-gallery-wrapper .b-photos")) return void fetchGallery({ cancelRefetch: false });
       if (!win || !last || !last.checkVisibility?.()) return;
       const box = last.closest<HTMLElement>(".b-feed-content");
@@ -546,12 +450,7 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
     };
   }, [frameRef, src, galleryNext, fetchGallery, data]);
 
-  // The chat page's Find and a gallery tile's ?firstId= jump (ofMirrorThread), on the same thread paging.
-  // The pinned page's Find: its pins, all drawn (no older pages to read).
-  // ticket 16: the header menu's State page has the chat page's own Find (the other State pages' backdrop covers the chat
-  // header, so no click reaches theirs: ticket 16's carve-out).
   useThreadFind(frameRef, src, (page === "messages/chat" || page === "messages/chat/state-header-menu" || isPinnedPage) && !!accountId, accountId, chat, isPinnedPage ? null : params.get("firstId"), isPinnedPage ? NO_PAGING : thread, data, isPinnedPage);
 }
 
-/** The pinned page's thread: one page, nothing older. */
 const NO_PAGING = { hasOlder: false, loadOlder: async () => ({ added: 0, hasMore: false }) };

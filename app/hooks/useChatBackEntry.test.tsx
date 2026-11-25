@@ -1,8 +1,3 @@
-/**
- * useChatBackEntry: below lg an open Thread has its own history entry, so the
- * platform's back closes the Thread before leaving Messages Pro, and the
- * Thread's own back (button, swipe) goes through that same entry.
- */
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -70,14 +65,14 @@ describe("useChatBackEntry", () => {
   it("a Forward back onto the Thread's entry stays there (unmarked) and a further Forward still works", async () => {
     render(<Pane />);
     press("open");
-    window.history.pushState({ later: true }, "", "/later");        // a page opened from the chat
-    act(() => window.history.back());                               // back onto the open chat's entry
+    window.history.pushState({ later: true }, "", "/later");
+    act(() => window.history.back());
     await waitFor(() => expect(window.location.pathname).toBe("/messages-pro"));
-    act(() => window.history.back());                               // back to the Fan List
+    act(() => window.history.back());
     await waitFor(() => expect(pane()).toHaveTextContent("list"));
 
     const go = vi.spyOn(window.history, "back");
-    act(() => window.history.forward());                            // Forward onto the chat's entry
+    act(() => window.history.forward());
     await waitFor(() => expect(marked()).toBe(false));
     expect(go).not.toHaveBeenCalled();
     expect(window.location.pathname).toBe("/messages-pro");

@@ -195,7 +195,7 @@ class Fixtures:
             rows = self.chats(c["id"])
             f = one("filter")
             if f == "unread":
-                rows = [r for r in rows if r["hasUnread"]]
+                rows = [r for r in rows if r["unreadMessagesCount"]]
             elif f:
                 rows = []
             lim = int(one("limit") or 25)

@@ -1,37 +1,7 @@
 #!/usr/bin/env python3
-"""
-Send once (send_marker_decide / send_marker_store) through both drip senders:
-the marker is committed right before the first OF call; a marked row is never
-auto-sent; each tick's settle saves a dead attempt's landed step as sent; only
-the user's Retry (unconfirmed_sends_api) sends a maybe-sent step again.
-
-House funnel (reply_mass_funnel):
-  case_once_*:   marked before bubble 0's call (after an emptied bubble, after the
-                 hold; never on a dry run or a stale tick `now`); bubble 0 landed →
-                 Sent (one PPV); an id-less return or a may-have-sent raise →
-                 unconfirmed, never auto-resent; a 4xx or a raise before the call →
-                 no marker; a marked row is not due; a fresh mark is IN_FLIGHT
-                 (Retry 409); a Retry that cleared a live attempt's row wins over
-                 the attempt's own failure write.
-  case_settle_*: a dead attempt's landed step is saved Sent at `sending_at` (a
-                 purchase since then converts), not listed; an id-less landing, an
-                 IN_FLIGHT row, a funnel-less row and a shortened funnel's row are left
-                 alone (the tick goes on).
-Follow-up (send_followup):
-  case_fu_once_*: a fresh fan with no row is marked after the DM-rate turn, before
-                 the send; a 4xx clears it; a read timeout → unconfirmed, never
-                 re-sent; a raise in the turn writes nothing and probes nothing; a
-                 stale tick `now` still marks IN_FLIGHT (Retry 409).
-  case_fu_settle_landed_is_sent_at_sending_at: a marked row whose nudge landed →
-                 Sent(step, sending_at), marker cleared, nothing sent.
-
-Also the shared fixtures of test_unconfirmed_sends.py (owner session, GET, Retry).
-
-Run: ./venv/bin/python service/tests/test_send_once.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -60,14 +30,13 @@ from of_client import OFAPIError  # noqa: E402
 import unconfirmed_sends_api as usa  # noqa: E402
 
 a11._STEP_GAP_S = 0
-T0 = datetime.utcnow().replace(microsecond=0) - timedelta(days=1)   # broadcast time
+T0 = datetime.utcnow().replace(microsecond=0) - timedelta(days=1)
 T_REPLY1 = T0 + timedelta(minutes=5)
 
 
-# ── Shared fixtures ───────────────────────────────────────────────────
 
 class _Killed(BaseException):
-    """The relay dies mid-call (SIGKILL stand-in): no handler runs, the marker stays."""
+    pass
 
 
 class _Resp:
@@ -84,8 +53,6 @@ def _http_400() -> OFAPIError:
 
 
 def _late_clock(real_dt, late: list):
-    """`datetime` whose utcnow() runs 1000 s behind while late[0]: a tick's `now`
-    taken before a long serial wait."""
     class _Clock(datetime):
         @classmethod
         def utcnow(cls):
@@ -94,7 +61,6 @@ def _late_clock(real_dt, late: list):
 
 
 def _restart() -> None:
-    """A new relay process: every marker of the old one is pre-boot (no live call)."""
     smd.BOOT_TS = datetime.utcnow()
 
 
@@ -111,8 +77,6 @@ async def _get(aid: str, *, as_=None) -> list[dict]:
 
 
 async def _retry(aid: str, *, as_=None, **body) -> dict:
-    """No `since` given → the row's as listed now (the app always sends the listed one);
-    an unlisted row → an old time (unmarked / 404 / 403 answer before it matters)."""
     if "since" not in body:
         try:
             listed = await _get(aid, as_=as_)
@@ -137,7 +101,6 @@ async def _status(coro) -> int:
 
 
 def _db(sql: str, args: tuple):
-    """Straight off the DB file (send_message runs in a worker thread)."""
     with sqlite3.connect(str(_harness.DB_PATH)) as c:
         return c.execute(sql, args).fetchone()
 
@@ -148,7 +111,6 @@ async def _seed_account(aid: str) -> None:
             s.add(Account(id=aid))
 
 
-# ── House funnel ──────────────────────────────────────────────────────
 
 _PPV2 = [{"step": 1, "type": "paid_ppv", "price": 24, "messages": ["ppv a", "ppv b"]}]
 _PPV2_NEXT = [
@@ -159,10 +121,6 @@ _PPV2_NEXT = [
 
 
 class ScriptedOF:
-    """Bubble i does `script[i]`: "id" (landed, createdAt now), "noid" (returned
-    without an id), "kill" (_Killed), a callable (run, then the next item is its
-    answer: see case_once_retry_during_a_live_attempt_wins) or an exception
-    instance (raised). Records every call's text and the row's marker then."""
 
     def __init__(self, script: list, mass_run_id: int):
         self.script, self.mr = list(script), mass_run_id
@@ -216,14 +174,12 @@ async def _funnel_run(aid: str, steps: list[dict]) -> int:
 
 
 async def _replier(aid: str, mr: int, fan: int) -> None:
-    """The broadcast to him + his reply: discovery enrolls him, step 1 is due."""
     await _seed_msg(aid, fan, 5_000_000_000_000_000 + mr * 100_000 + fan, "out", T0,
                     mass_run_id=mr, body="hey")
     await _seed_msg(aid, fan, 7_000_000 + fan, "in", T_REPLY1, body="haha a lot")
 
 
 async def _ppv_fan(aid: str, fan: int, steps=None, *, script) -> tuple[int, ScriptedOF]:
-    """A replier on a 2-bubble PPV step, the fake OF scripted per bubble."""
     mr = await _funnel_run(aid, steps or _PPV2)
     await _replier(aid, mr, fan)
     fake = ScriptedOF(script, mr)
@@ -232,7 +188,6 @@ async def _ppv_fan(aid: str, fan: int, steps=None, *, script) -> tuple[int, Scri
 
 
 async def _tick(aid: str, **payload) -> dict | None:
-    """One tick; None when the relay 'died' in it."""
     try:
         return await run_once(aid, "reply_mass_funnel", payload=payload)
     except _Killed:
@@ -245,7 +200,6 @@ async def _state(mass_run_id: int, fan_id: int) -> FunnelState | None:
 
 
 async def _force_due(aid: str, mass_run_id: int, fan_id: int) -> None:
-    """Time passes: the row is due, the send's rest and the fan lease are over."""
     async with get_session() as s:
         await s.execute(update(FunnelState).where(
             FunnelState.mass_run_id == mass_run_id, FunnelState.fan_id == fan_id
@@ -326,13 +280,10 @@ async def case_once_bubble0_read_timeout_is_unconfirmed():
 
 
 async def case_once_retry_during_a_live_attempt_wins():
-    """A Retry clears a >900 s mark while its call is still out; the call then
-    raises a may-have-sent timeout: its write must not re-mark the row (it is
-    conditional on the mark it wrote), so the Retry's clear stands."""
     aid = "acc_once_live"
 
     def _retry_meanwhile(fan: int):
-        with sqlite3.connect(str(_harness.DB_PATH)) as c:   # the Retry's clear
+        with sqlite3.connect(str(_harness.DB_PATH)) as c:
             c.execute("UPDATE funnel_state SET sending_at=NULL, sending_ctx=NULL WHERE fan_id=?",
                       (fan,))
         return curl_exc.ReadTimeout("read timed out")
@@ -390,27 +341,24 @@ async def case_once_marked_row_is_not_due():
 async def case_once_dry_run_marks_and_settles_nothing():
     aid = "acc_once_dry"
     mr, fake = await _ppv_fan(aid, 90010, script=["id", "kill"])
-    await _tick(aid)                                  # bubble 0 landed, then died
+    await _tick(aid)
     _restart()
     res = await _tick(aid, dry_run=True)
     st = await _state(mr, 90010)
     assert st.sending_at is not None and st.current_step == 0, ("dry run settles nothing", st)
     assert res["advanced"] == 0, res
-    # a dry run over a fresh replier marks nothing either
     await _replier(aid, mr, 90011)
     res = await _tick(aid, dry_run=True)
     assert res["advanced"] == 1 and await _state(mr, 90011) is None, res
 
 
 async def case_once_stale_tick_now_marks_in_flight_and_retry_409s():
-    """The mark is the wall clock at the mark, not the tick's `now`: a serial tick
-    whose `now` is 1000 s old still marks a live send IN_FLIGHT (Retry 409)."""
     aid = "acc_once_stale"
     mr, fake = await _ppv_fan(aid, 90012, script=["kill"])
     real_dt, real_hold, late = a11.datetime, a11.hold_with_typing, [True]
 
     async def _hold(*a, **k):
-        late[0] = False                    # the serial wait: the tick's `now` aged
+        late[0] = False
         return await real_hold(*a, **k)
     a11.datetime, a11.hold_with_typing = _late_clock(real_dt, late), _hold
     try:
@@ -442,9 +390,6 @@ async def case_settle_killed_after_bubble0_advances_not_listed():
 
 
 async def case_settle_uses_sending_at_so_a_purchase_converts():
-    """PPV step with a `next` map, bought between the send and the settle: the
-    settle stamps last_ppv_sent_at = sending_at, so the next tick sees the
-    purchase (Checked bought → Convert). Stamping `now` would hide it."""
     aid = "acc_settle_bought"
     mr, fake = await _ppv_fan(aid, 90014, _PPV2_NEXT, script=["id", "kill"])
     assert await _tick(aid) is None
@@ -463,7 +408,7 @@ async def case_settle_uses_sending_at_so_a_purchase_converts():
                       created_at=bought))
     _restart()
     await ax.release_fan_lease(aid, 90014)
-    await _tick(aid)                                   # settle → step 2, not yet due
+    await _tick(aid)
     st = await _state(mr, 90014)
     assert (st.current_step, st.sending_at, st.last_ppv_sent_at) == (1, None, marked), st
     await _force_due(aid, mr, 90014)
@@ -490,8 +435,7 @@ async def case_settle_noid_landing_stays_listed():
 async def case_settle_skips_in_flight_and_funnel_less_rows():
     aid = "acc_settle_skip"
     mr, fake = await _ppv_fan(aid, 90016, script=["id", "kill"])
-    assert await _tick(aid) is None                    # no restart: IN_FLIGHT
-    # a funnel-less row (mass_runs.funnel_id NULL), marked long ago, its message landed
+    assert await _tick(aid) is None
     async with get_session() as s:
         other = MassRun(account_id=aid, funnel_id=None, status="ok", recipient_count=1,
                       started_at=T0)
@@ -510,7 +454,7 @@ async def case_settle_skips_in_flight_and_funnel_less_rows():
 async def case_settle_shortened_funnel_row_stays_listed_tick_proceeds():
     aid = "acc_settle_short"
     mr, fake = await _ppv_fan(aid, 90018, [{"step": 1, "messages": ["m1"]}], script=["id"])
-    await _seed_state(mr, 90019, current_step=3,       # marked on a step since removed
+    await _seed_state(mr, 90019, current_step=3,
                       sending_at=datetime.utcnow() - timedelta(hours=1), sending_ctx="{}")
     res = await _tick(aid)
     assert res["advanced"] == 1 and fake.calls == ["m1"], (res, fake.calls)
@@ -519,17 +463,13 @@ async def case_settle_shortened_funnel_row_stays_listed_tick_proceeds():
     assert [r["fan_id"] for r in await _get(aid)] == ["90019"]
 
 
-# ── Follow-up ─────────────────────────────────────────────────────────
 
 def _fu_marker(aid: str, fid: int):
-    """(sending_at, sending_ctx, unconfirmed_at), or None (no row)."""
     return _db("SELECT sending_at, sending_ctx, unconfirmed_at FROM followup_state"
                " WHERE account_id=? AND fan_id=?", (aid, fid))
 
 
 class MarkerOF:
-    """Records the row's marker at each send; then does `then`: None (returns),
-    an exception instance (raised) or "kill" (_Killed)."""
 
     def __init__(self, aid: str, then=None):
         self.aid, self.then = aid, then
@@ -552,7 +492,6 @@ class MarkerOF:
 
 
 async def _due_fan(aid: str, fid: int, then=None) -> MarkerOF:
-    """A first-cycle fan with NO followup_state row, step 1 due (48 h silent)."""
     await _seed_account(aid)
     async with get_session() as s:
         s.add(Fan(account_id=aid, fan_id=fid, of_display_name="Bob", lifetime_spend_cents=500))
@@ -648,7 +587,7 @@ async def case_fu_once_stale_tick_now_marks_in_flight_and_retry_409s():
     real_dt, real_turn, late = send_followup.datetime, send_followup.dm_rate.turn, [True]
 
     async def _turn(account_id, **kw):
-        late[0] = False                    # the serial wait: the tick's `now` aged
+        late[0] = False
         return await real_turn(account_id, **kw)
     send_followup.datetime, send_followup.dm_rate.turn = _late_clock(real_dt, late), _turn
     try:
@@ -681,5 +620,5 @@ async def case_fu_settle_landed_is_sent_at_sending_at():
     assert fake.sent == [] and res["followups_sent"] == 0, (fake.sent, res)
 
 
-if __name__ == "__main__":   # test_unconfirmed_sends.py imports the fixtures above
+if __name__ == "__main__":
     _harness.run()

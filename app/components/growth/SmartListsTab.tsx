@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * SmartListsTab — Growth → Smart lists, on Infloww's `SmartLists` page (page-parity 13): GrowthRailFrame draws the
- * 48px header and the creator rail; this is the content: the top box ("Search list name", "Create list"), the table
- * (List name, Criteria, Incl. expired, Fans, Actions), "Create smart list" / "Edit smart list" at 600 and the
- * "Delete smart list?" confirm at 416.
- *
- * A smart list is a saved rule set — spend (this creator or the whole agency, with a timeframe), purchase and message
- * recency, subscription facts, tags — resolved when used; reuse it as a mass-message audience (include/exclude in the
- * composer). Sync (Infloww's Smart lists Beta) keeps a real OnlyFans list in step with it, so Fans shows that list's
- * member count; an unsynced list has none ("-"). Ours, labelled: Match any (Infloww is all-only), the exact-count
- * preview, the active-list quota line and the preset cards that pre-fill the builder.
- */
 
 import { useReducer, useRef, useState, type ReactNode } from "react";
 import { Plus, PlusCircle, X } from "lucide-react";
@@ -33,12 +21,10 @@ import { GrowthRailFrame } from "@/components/growth/GrowthFrame";
 import { useGrowthCreator } from "@/hooks/useAccounts";
 import { TableSkeleton } from "@/components/ui/Skeleton";
 
-/** Ours: the header's tooltip (Infloww's page has no description). */
 export const SMART_LISTS_ABOUT =
   "Saved dynamic fan lists: build the criteria once (spend / recency / subscription / tag) and reuse the list as a " +
   "mass-message audience, or sync it to an OnlyFans list. Preview the exact count before you save.";
 
-/** The condition row's native selects at antd's 32px. */
 const SELECT_CLS =
   "h-8 rounded-md border border-border bg-transparent px-2 text-[14px] text-fg focus:outline-none focus:border-accent";
 
@@ -75,18 +61,15 @@ function summarize(rules: SmartRules): string {
   return rules.rules.map(describe).join(rules.match === "any" ? " OR " : " AND ");
 }
 
-/** A rule that keeps only active subscribers (so the list leaves expired fans out). */
 const activeOnly = (r: SmartRule) =>
   r.field === "status" && ((r.op === "==" && r.value === "active") || (r.op === "!=" && r.value === "expired"));
 
-/** Infloww's "Incl. expired": does the list let expired fans in? */
 export function includesExpired(rules: SmartRules): boolean {
   const rs = rules.rules ?? [];
   if (!rs.length) return true;
   return rules.match === "any" ? !rs.every(activeOnly) : !rs.some(activeOnly);
 }
 
-// ── Presets: the legacy segments + Smart Tags, as builder pre-fills (ours) ──
 
 interface Preset { group: string; name: string; hint: string; rules: SmartRules }
 const all = (...rules: SmartRule[]): SmartRules => ({ match: "all", rules });
@@ -146,7 +129,6 @@ interface Draft { key: number; editing: SmartList | null; name: string; rules: S
 
 export default function SmartListsTab({ accountId, accountsLoading = false }: {
   accountId: string | null;
-  /** The Creators are still loading: the list is loading, not "no creator". */
   accountsLoading?: boolean;
 }) {
   const pageQ = useSmartListsPage(accountId);
@@ -202,7 +184,6 @@ export default function SmartListsTab({ accountId, accountsLoading = false }: {
   );
 
   let body: ReactNode;
-  // The Creators or this Creator's lists still loading: the list's rows as placeholder bars, not an empty state.
   if (!accountId) body = accountsLoading ? <TableSkeleton rows={5} /> : <EmptyState kind="creator" text="No creator connected yet" />;
   else if (pageQ.isLoading) body = <TableSkeleton rows={5} />;
   else if (pageQ.isError) body = <EmptyState kind="error" text={errMsg(pageQ.error, "Failed to load")} onRetry={() => void pageQ.refetch()} />;
@@ -211,7 +192,6 @@ export default function SmartListsTab({ accountId, accountsLoading = false }: {
 
   return (
     <div className="space-y-4">
-      {/* The bundle's top box: the search, then Create list, right-aligned, 16px apart. */}
       <div className="flex flex-wrap items-center justify-end gap-4">
         {maxActive > 0 && lists.length > 0 && (
           <span className="mr-auto flex items-center gap-2 text-[12px] text-fg-dim">
@@ -250,8 +230,6 @@ export default function SmartListsTab({ accountId, accountsLoading = false }: {
 
       {actionErr && <div role="alert" className="text-[12px] text-err">{actionErr}</div>}
 
-      {/* The state (loading, empty, error) sits under the table, not in a row of it, so on a phone it is centred on
-          the screen rather than on the 720px table. */}
       <div>
       <div className="overflow-x-auto">
         <table aria-label="Smart lists" className={cn(IF_TABLE.table, "min-w-[720px]")}>
@@ -281,7 +259,6 @@ export default function SmartListsTab({ accountId, accountsLoading = false }: {
                   </td>
                   <td className={cn(IF_TABLE.td, "text-fg-dim")}>{summarize(l.rules)}</td>
                   <td className={IF_TABLE.td}>{includesExpired(l.rules) ? "Yes" : "No"}</td>
-                  {/* An unsynced list is resolved when used, so it has no stored count. */}
                   <td className={IF_TABLE.td}>{l.is_active && l.member_count != null ? l.member_count : "-"}</td>
                   <td className={cn(IF_TABLE.td, IF_TABLE.fixedRight)}>
                     <span className="flex items-center gap-4">
@@ -327,8 +304,6 @@ export default function SmartListsTab({ accountId, accountsLoading = false }: {
   );
 }
 
-/** Infloww's `CreateListPop`: "Create smart list" / "Edit smart list" at 600, the name, the criteria with "Add
- *  condition". Ours, labelled: Match any (Infloww is all-only) and the exact-count preview. */
 function SmartListEditor({
   accountId, editing, initialName, initialRules, onClose, onSave,
 }: {
@@ -508,7 +483,6 @@ function SmartListEditor({
   );
 }
 
-/** /growth/smart-lists: this tab in the Growth rail frame, its title carrying SMART_LISTS_ABOUT. */
 export function SmartListsPage() {
   const creator = useGrowthCreator();
   return (

@@ -45,19 +45,16 @@ const loadPage = (page: string) => {
   return document;
 };
 const flush = () => new Promise((r) => setTimeout(r, 0));
-/** Every bind a test makes is undone after it (the jsdom document is shared). */
 const unbinds: (() => void)[] = [];
 const bound = (u: () => void) => void unbinds.push(u);
 afterEach(() => unbinds.splice(0).forEach((u) => u()));
 const click = (el: Element | null) => el!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-/** Open the dialog's `i`-th dropdown and pick the row labelled `label`. */
 const pick = (doc: Document, i: number, label: string) => {
   click(doc.querySelectorAll(".modal.show .v-input.v-select")[i]);
   const row = [...doc.querySelectorAll("#oi-menu [data-oi-value]")].find((r) => r.textContent?.trim() === label);
   expect(row, `menu row ${label}`).toBeTruthy();
   click(row!);
 };
-/** A dialog tab by its text (the copy over New post carries no ids). */
 const tabEl = (doc: Document, text: string) => [...doc.querySelectorAll(".modal.show .b-tabs__nav__link")].find((t) => t.textContent?.trim() === text) ?? null;
 const tab = (doc: Document, text: string) => click(tabEl(doc, text));
 
@@ -118,7 +115,7 @@ describe("promotion campaign (Start campaign)", () => {
   });
 
   it("offers OF's discount steps for the price", () => {
-    expect(discountOptions(9.99).map((o) => o.value)).toEqual(["5", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55", "60", "65"]); // floor(100 * (9.99 - 3) / 9.99) = 69
+    expect(discountOptions(9.99).map((o) => o.value)).toEqual(["5", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55", "60", "65"]);
     expect(discountOptions(100).at(-1)?.value).toBe("95");
   });
 
@@ -196,7 +193,6 @@ describe("free trial links page", () => {
     expect(navigate).toHaveBeenLastCalledWith("/of-manager/settings/subscription/trial-links?field=claims_count&sort=asc&tab=shared");
   });
 
-  // ticket 61
   it("the kebab State page's radios open the base page's sort, as the menu's picks; titles stay", () => {
     const page = "settings/subscription/trial-links/state-kebab";
     const doc = loadPage(page);
@@ -212,7 +208,6 @@ describe("free trial links page", () => {
     expect(hrefs.expire_date).toBe("/of-manager/settings/subscription/trial-links?field=expire_date");
     expect(hrefs.asc).toBe("/of-manager/settings/subscription/trial-links?field=claims_count&sort=asc");
     expect(hrefs.create_date).toBe("/of-manager/settings/subscription/trial-links");
-    // Each URL is the base page's read for that pick.
     expect(trialsRoute(trialViewOf(new URLSearchParams(hrefs.asc!.split("?")[1])))).toBe("/api/of/v2/trials?field=claims_count&sort=asc");
     expect(radios.filter((r) => r.checked).map((r) => r.value)).toEqual(["claims_count", "desc"]);
     expect(doc.querySelector(".trial-sorting-dropdown > a.of-state-link[aria-label='Toggle']")!.getAttribute("href")).toBe("/of-manager/settings/subscription/trial-links?field=claims_count");
@@ -230,7 +225,6 @@ describe("free trial links page", () => {
     input.dispatchEvent(new Event("input"));
     await vi.advanceTimersByTimeAsync(300);
     expect(searchPerformers).toHaveBeenCalledWith("synth");
-    // OF's escaped name shows as text
     expect(root.querySelector("[data-oi-performer]")!.textContent).toBe("Synthetic & Creator @synthetic");
     click(root.querySelector("[data-oi-performer]"));
     expect(input.value).toBe("@synthetic");
@@ -337,7 +331,6 @@ describe("New post's offer tiles and dialogs (OF's PromoteProfile and CreateTria
     expect(SUBMITS[NEW_POST_PROMOTION].then(doc)).toBe("/of-manager/settings/subscription#promotion");
     expect(SUBMITS[NEW_POST_TRIAL].send).toBe("/api/of/v2/trials");
     expect(SUBMITS[NEW_POST_TRIAL].then(loadPage(NEW_POST_TRIAL))).toBe(AFTER_NEW_POST_TRIAL);
-    // On Settings each still returns to its Cancel's tab.
     expect(SUBMITS[TRIAL_MODAL].then(loadPage(TRIAL_MODAL))).toBe("/of-manager/settings/subscription/trial-links");
   });
 });

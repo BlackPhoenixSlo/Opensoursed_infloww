@@ -1,5 +1,3 @@
-"""The Scripts library flow's break-it-once fault (scenarios/2026-11-06-scripts-library.py): lib/faults.py merges
-`register(Fault)` into FAULTS. Every check the scenario records is named here and the scenario imports it."""
 from __future__ import annotations
 
 IMPORT_COUNTS = ("scripts library: the CLI's bulk import creates every dump sequence and step, one row per script "
@@ -34,8 +32,6 @@ UI_ALL_MODELS = ("scripts page: \"All models\" (Creator column) shows the covera
 
 
 def _drop_last_step() -> None:
-    """The bulk import silently loses each sequence's last step: `scripts_import_api._parse_sequence`'s steps (looked
-    up per call) trimmed by one."""
     import scripts_import_api
 
     real = scripts_import_api._parse_sequence
@@ -47,9 +43,6 @@ def _drop_last_step() -> None:
 
 
 def _share_drops_a_creator() -> None:
-    """Share-to-all and the all-models view both resolve the roster through `accounts_admin_api.owned_account_ids`;
-    this drops its last Creator, so share-to-all skips one Creator and the overview omits it (the class of a roster
-    resolver that loses a tenant)."""
     import accounts_admin_api
 
     real = accounts_admin_api.owned_account_ids
@@ -58,11 +51,7 @@ def _share_drops_a_creator() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run scripts-library --break --baseline=<green folder>
         "scripts-bulk-drops-last-step": Fault(_drop_last_step, (IMPORT_COUNTS, READ_BACK, UI_STEPS, UI_TAGS)),
-        # slop/run scripts-library --break --fault=scripts-share-drops-a-creator --baseline=<green folder>
         "scripts-share-drops-a-creator": Fault(_share_drops_a_creator, (SHARE_ALL, ALL_MODELS_VIEW, UI_ALL_MODELS)),
-        # slop/run scripts-library --break --fault=scripts-expand-arrow-always --baseline=<green folder>
-        # ScriptRow's arrow loses its overflow guard (ScriptsParts.tsx `{overflows && <button`): one on every card.
         "scripts-expand-arrow-always": Fault(None, (UI_EXPAND,), browser=((r"\boverflows &&", "true &&"),)),
     }

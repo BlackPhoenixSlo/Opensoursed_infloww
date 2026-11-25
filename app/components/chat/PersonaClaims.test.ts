@@ -1,11 +1,3 @@
-/**
- * PersonaClaims — the two pure rules behind "what she told him".
- *
- * The ledger is written by the chat engines and read by the pre-send consistency
- * check; this panel is the first place an operator can see it. Both helpers guard
- * against a real shape the server can send: a claim row with no text (the
- * extractor recorded a topic but nothing usable) and an `at` that isn't a date.
- */
 import { describe, expect, it } from "vitest";
 
 import {
@@ -26,8 +18,6 @@ describe("visibleClaims", () => {
   });
 
   it("drops rows with no usable claim text", () => {
-    // A topic with an empty claim tells the operator nothing and only makes the
-    // real rows harder to scan.
     expect(visibleClaims([
       { topic: "job", claim: "" },
       { topic: "job", claim: "   " },
@@ -55,9 +45,6 @@ describe("canonFacts — step 1, what is pinned into every prompt", () => {
   });
 
   it("shows only filled slots", () => {
-    // A blank slot is not something she was told to say — it is a gap she will
-    // improvise into, and that improvisation shows up in the per-fan ledger.
-    // Listing every empty row would bury the ones that are actually set.
     expect(canonFacts({ age: "22", job: "", height: "   " }, fields)
       .map((f) => f.key)).toEqual(["age"]);
   });
@@ -69,10 +56,8 @@ describe("canonFacts — step 1, what is pinned into every prompt", () => {
 });
 
 describe("visibleResolved", () => {
+  // Not re-sorted/re-merged here: the override rule lives in _persona.resolved_claims; a second implementation made browser and server disagree.
   it("keeps the server's merge and order — it is the prompt's own line-up", () => {
-    // Deliberately NOT re-sorted or re-merged here: the override rule lives in
-    // _persona.resolved_claims, and a second implementation is what made the
-    // browser and the server disagree about media stills.
     const rows: ResolvedClaim[] = [
       { label: "where you are", value: "en rosario", column: "persona_location_claimed", at: null },
       { label: "nationality", value: "soy argentina", column: null, at: "2026-07-25T19:46:42" },
@@ -90,8 +75,6 @@ describe("visibleResolved", () => {
 
 describe("supersededClaims", () => {
   it("shows only what is NO LONGER the current answer", () => {
-    // She said Chile, then Córdoba. Córdoba is live; Chile is history. Printing
-    // Córdoba in both lists would just be the same sentence twice.
     const claims: PersonaClaim[] = [
       { topic: "current location", claim: "estoy acá en Chile", at: "2026-07-25T19:00:00" },
       { topic: "city", claim: "en córdoba", at: "2026-07-25T20:44:39" },
@@ -118,8 +101,6 @@ describe("claimDate", () => {
   });
 
   it("renders nothing for junk instead of 'Invalid Date'", () => {
-    // The column is free-text on the server; a bad value must degrade to blank,
-    // never paint "Invalid Date" into the drawer.
     expect(claimDate("not-a-date")).toBe("");
     expect(claimDate("")).toBe("");
     expect(claimDate(undefined)).toBe("");

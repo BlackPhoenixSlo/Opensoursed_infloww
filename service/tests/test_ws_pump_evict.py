@@ -1,23 +1,6 @@
-"""
-The OF WebSocket pump after client_pool.evict (service/of_ws.py + server.py's
-pump). Eviction (a new OF x_of_rev in sign_rules, a session probe, a proxy
-edit) retires the old OFClient's signed sessions; every later signed call on it
-raises "signed session retired". The pump used to keep the OFClient it was
-built with, so each reconnect's GET /users/me failed on the retired handle
-forever (AE 2026-11-10: 40 finals/account/20 min until a container restart).
-
-  case_reconnect_after_evict_uses_the_pooled_client:
-      a pump connected through the real pool; evict mid-pump and drop the
-      socket; the next reconnect reads /users/me on the FRESH pooled client and
-      connects again, the retired one is never asked again.
-
-No network beyond a loopback websockets server; OFClient.from_account is stubbed.
-
-Run: ./venv/bin/python service/tests/test_ws_pump_evict.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -27,7 +10,7 @@ import accounts as account_registry  # noqa: E402
 import client_pool  # noqa: E402
 from of_client import OFSessionRetired  # noqa: E402
 
-_harness.make_client()  # neutralises the startup spawns before `server` serves
+_harness.make_client()
 import server  # noqa: E402
 
 AID = "acc_ws_evict"
@@ -42,7 +25,7 @@ async def case_reconnect_after_evict_uses_the_pooled_client() -> None:
     drop_first = asyncio.Event()
 
     async def serve(conn) -> None:
-        await conn.recv()  # {"act":"connect",...}
+        await conn.recv()
         conns.append(len(conns) + 1)
         n = conns[-1]
         await conn.send(f'{{"conn":{n}}}')
@@ -58,7 +41,6 @@ async def case_reconnect_after_evict_uses_the_pooled_client() -> None:
     built: list["_Fake"] = []
 
     class _Fake:
-        """An OFClient as the pool sees it: retirable, /users/me signed."""
         proxy_url = None
         user_agent = "ua"
         user_id = 1
@@ -96,10 +78,10 @@ async def case_reconnect_after_evict_uses_the_pooled_client() -> None:
                 break
             await asyncio.sleep(0.05)
         assert got and got[0].get("conn") == 1, got
-        client_pool.evict(AID)  # e.g. sign_rules saw a new x_of_rev
+        client_pool.evict(AID)
         assert built[0].retired
         drop_first.set()
-        for _ in range(100):  # reconnect backoff is 1 s
+        for _ in range(100):
             if len(got) >= 2:
                 break
             await asyncio.sleep(0.05)

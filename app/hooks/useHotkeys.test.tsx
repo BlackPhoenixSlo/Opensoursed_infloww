@@ -1,10 +1,3 @@
-/**
- * useHotkeys — the Messages Pro shortcuts (gap 04 M17). The cases pin what a
- * chatter feels: a modifier not named keeps the binding off (Cmd+W must stay
- * the window close), `mod` takes Cmd or Ctrl, Ctrl+W still matches on a
- * layout whose W key types another letter, a matched key always loses its
- * default, and a held key fires once.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 
@@ -37,9 +30,7 @@ describe("matchesHotkey", () => {
   });
 
   it("matches the physical key when the layout types a non-Latin letter, and the typed letter otherwise", () => {
-    // Cyrillic (ЙЦУКЕН): the W key types "ц".
     expect(matchesHotkey("ctrl+w", key({ key: "ц", code: "KeyW", ctrlKey: true }))).toBe(true);
-    // AZERTY: the key labelled W sits where QWERTY has Z.
     expect(matchesHotkey("ctrl+w", key({ key: "w", code: "KeyZ", ctrlKey: true }))).toBe(true);
     expect(matchesHotkey("ctrl+w", key({ key: "z", code: "KeyW", ctrlKey: true }))).toBe(false);
   });

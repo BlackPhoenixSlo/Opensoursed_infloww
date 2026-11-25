@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * Growth > Sensitive words: the Agency's list (`GET /admin/sensitive-words`,
- * service/sensitive_words_api.py) and the matcher every composer runs on it.
- *
- * The matcher is Infloww's (`matchSensitiveWords` in its remote web bundle and
- * desktop preload): case-insensitive; a word matches only between boundaries
- * (start or end of text, whitespace, punctuation, an emoji), so "ass" never
- * trips on "class"; a phrase matches across any run of whitespace; a word with
- * an emoji in it is matched against the raw text, any other word against the
- * text with its emoji blanked out. Each hit is reported once, as listed.
- */
 
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
@@ -18,13 +7,9 @@ import { useMemo } from "react";
 import { relay } from "@/lib/relay";
 
 export const SENSITIVE_WORDS_KEY = ["sensitive-words"] as const;
-/** Infloww's input limit for one word. */
 export const SENSITIVE_WORD_MAX = 32;
-/** Infloww's Add sensitive word modal holds at most this many rows. */
 export const SENSITIVE_WORD_ROWS_MAX = 20;
-/** Shown under a composer's text when it holds a listed word (Infloww's wording). */
 export const SENSITIVE_HIT_LEAD = "Input contains prohibited language: ";
-/** The refusal of a mass message or Smart Message holding a listed word (Infloww's wording). */
 export const SENSITIVE_BLOCK_MESSAGE = "Please check the contents of the messages";
 
 const EMOJI_SRC =
@@ -48,7 +33,6 @@ const textPattern = (s: string) => s.trim().split(/\s+/).filter(Boolean).map(esc
 function buildPattern(word: string): RegExp {
   const w = word.trim();
   if (!containsEmoji(w)) return new RegExp(`${LB}${textPattern(w)}${LA}`, "iu");
-  // Text between emoji keeps its own spacing, as Infloww's does.
   const parts: string[] = [];
   const re = emojiRe();
   let last = 0;
@@ -76,7 +60,6 @@ export function compileWords(words: readonly string[]): CompiledWord[] {
     .map((original) => ({ original, pattern: buildPattern(original), hasEmoji: containsEmoji(original) }));
 }
 
-/** The listed words `text` holds, each once, in list order. */
 export function matchSensitiveWords(text: string, compiled: readonly CompiledWord[]): string[] {
   if (!text || compiled.length === 0) return [];
   const noEmoji = text.replace(emojiRe(), " ");
@@ -84,7 +67,6 @@ export function matchSensitiveWords(text: string, compiled: readonly CompiledWor
   return [...new Set(hits.map((h) => h.original))];
 }
 
-/** The tab a word is listed under on the page: its first letter A-Z, else "Special symbol". */
 export const SPECIAL_TAB = "Special symbol";
 export const LETTER_TABS = [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ", SPECIAL_TAB] as const;
 export function tabOf(word: string): string {
@@ -92,8 +74,6 @@ export function tabOf(word: string): string {
   return c >= "A" && c <= "Z" ? c : SPECIAL_TAB;
 }
 
-/** The Agency's list. `accountId` names the Creator being written for, so a
- *  chatter linked to several Agencies reads that Creator's Agency's list. */
 export function useSensitiveWords(accountId?: string | null) {
   return useQuery({
     queryKey: [...SENSITIVE_WORDS_KEY, accountId ?? null],
@@ -105,7 +85,6 @@ export function useSensitiveWords(accountId?: string | null) {
   });
 }
 
-/** The listed words `text` holds, for a composer writing as `accountId`. */
 export function useSensitiveHits(text: string, accountId?: string | null): string[] {
   const words = useSensitiveWords(accountId).data?.words;
   const compiled = useMemo(() => compileWords(words ?? []), [words]);

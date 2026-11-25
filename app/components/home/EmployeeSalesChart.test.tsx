@@ -1,7 +1,3 @@
-/**
- * Employee sales' x labels: one per 65px of plot, counted back from the newest day so it is always named (a phone's
- * 30 days read Oct 20, Oct 30, Nov 9 and never reached Nov 18).
- */
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 

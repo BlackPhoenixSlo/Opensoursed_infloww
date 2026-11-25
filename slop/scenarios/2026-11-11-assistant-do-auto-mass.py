@@ -1,72 +1,3 @@
-"""Help bot "Do it for me" builds an Auto mass from one sentence (docs/spec/assistant-do-mode.md; service/
-assistant_draft.py, app/components/assistant/{DoMode.tsx, doFlows.ts, useDoRunner.ts, AgentCursor.tsx}).
-
-World: `agency_inbox`, a captured session per Creator against lib/of_wire.py (`OF_WIRE`). Creator 0 (C) gets the
-vault of seed/assistant_do_vault.py (SQL): "SFW teasers" (every photo flagged sfw/suggestive), "Spicy" (more sfw
-photos, but 2 explicit), "Unflagged" (most photos, none flagged); OF's side holds the same folders (`vault_lists`)
-and two custom fan lists, MASSdmEXCLUDE and VIP. DeepSeek is lib/assistant_do_relay.py's fake: PHRASE -> its intent.
-
-Flow: POST /admin/assistant/draft {PHRASE} as the owner (the API pick, also under --no-ui). Then the owner's browser,
-desktop 1440x900 and phone portrait 390x844: warm /growth/auto-mass (first compile), open /growth/auto-post, open the
-help bot, focus C, the "Do it for me" card, type PHRASE, Enter -> the plan card (`plan-<pass>`), Do it -> the agent
-cursor mid-run, the page moved to Auto mass (`cursor-<pass>`; phone: the sheet folded to its pill) -> "Created OFF"
-and the rule's row in the table (`settled-desktop`; phone: the pill stays with "Created OFF · Open" over the table,
-`settled-phone-table`, then Open -> the sheet's card, `settled-phone-card`).
-The phone pass's rule is "Hourly SFW mass 2" (the draft names around the desktop one).
-
-Checks:
-  plan_card_shown        the plan card with Do it, its lines: every hour, 10 AI captions, the SFW teasers folder, online
-                         and offline fans, unsend after 1h, saved OFF; nothing in "Couldn't match"
-  folder_is_sfw_teasers  every draft (API + each pass) picked folder SFW teasers (not Spicy / Unflagged), plan says so
-  rule_saved_disabled    each pass's automation_rules row (SQL): kind mass_premade, is_enabled 0; every POST body the
-                         agent sent has is_enabled false
-  rule_payload_matches   each row: trigger every_seconds 3600, one message, online_only false, the 10 captions,
-                         media_folder_id SFW teasers, unsend_after_hours 1, fans + following, MASSdmEXCLUDE not in
-                         excluded_user_lists
-  no_send_happened       OF's wire saw the lists read and no mass / chat / post send or unsend
-  no_5xx                 no 5xx to the drafts or in either browser session
-Side effects: rules.json (rows + POST bodies), drafts.json.
-
-EDIT (spec D11, owner 2026-11-12: bulk edits of existing Auto mass rules). Seeded by SQL before the browser: an
-Auto mass (unsend after 8h) on Creator 1 (ON) and Creator 2 (OFF), and one on a Creator of a second Agency
-(registered through POST /auth/register, its account rows by SQL), ON, unsend 8h. After the create passes (so C's
-new rules, unsend 1h, join the plan), the owner's desktop browser: help bot -> Do it for me -> EDIT_PHRASE (the
-owner's words) -> the edit plan card (`edit-plan`) -> Do it -> the per-rule results (`edit-results`). --no-ui: the
-same draft + POST /admin/assistant/edit/apply through the API.
-  edit_plan_card_shown        the card says "Unsend after → never", ≥2 models, has Do it; the other Agency's rule
-                              is in no draft
-  edit_unsend_off_all_models  every Auto mass rule on the owner's Creators has no unsend left (SQL) and every
-                              apply result is ok
-  edit_enabled_unchanged      each owner rule's is_enabled as before the edit (the ON one stays ON); the apply sent
-                              only the unsend change
-  edit_other_account_untouched the other Agency's rule byte-identical (steps, trigger, is_enabled), never in an
-                              apply body
-Side effects: edit.json (before/after rows, drafts, apply bodies + answers).
-FAULT `assistant-edit-skips-second-account` (`--break --fault=assistant-edit-skips-second-account`, relay side:
-apply_one answers ok and changes nothing on any rule outside the focused Creator): edit_unsend_off_all_models alone.
-
-FAULT `assistant-do-skips-disabled` (client: drops BOTH OFF layers -- ReadyMadeRuleEditor's forced-OFF guard in the
-agent save and doFlows.ts' "Leaving it OFF" step patch, since either alone keeps the rule OFF and would mask the
-other; the blank editor's enabled default stands): rule_saved_disabled alone. Each rewrite must match, else INFRA. No
-automation tick runs here (no supervisor), so an enabled rule still sends nothing.
-
-VIDEO (opt-in, `--set video=1`; off = all of the above unchanged): the desktop pass alone, recorded (Playwright
-record_video, 1440x900) at human pace: an intro title, PHRASE typed ~35 ms/char, a pause on the plan card, the
-animated run played out, a hold on the done card + the rule's row (Enabled off), then a "What this cost" card. The
-cost prices the exact draft prompt the fake DeepSeek got (lib/assistant_do_relay.py PROMPTS: system + user + its
-completion) with service/llm_models.py's own `deepseek-v4-flash` rates: tokens by tiktoken cl100k if importable,
-else chars/4 (labelled; an estimate either way); cold call (all input a cache miss), warm (system prefix cached),
-per 100 / 1000 setups; plus the draft's assistant_turns row (its cost is off the fake's synthetic usage).
-Outputs: video/do-mode-demo.webm, do-mode-demo.mp4 (ffmpeg H.264, trimmed to the intro), cost.json.
-  video_recorded         (video=1 only) do-mode-demo.mp4 exists and is > 100 KB
-
-Bypasses (declared): OnlyFans is lib/of_wire.py; the browser's /api/of/v2/lists and /api/of/v2/vault/lists go
-through to the relay and on to it, every other /api/of/ read stays held (actors/ui). DeepSeek is the fake above
-(the intent is canned; the folder, lists, name and unsend hours are the product's own resolution). Not a volume
-path: one owner, one sentence, proven on the real page. EDIT: the "no opt-in" leg is not driven (an owner session
-always passes the Auto Mass opt-in gate); the account the plan must not reach is another Agency's (the session's
-clamp), and service/tests/test_assistant_draft.py covers a refused account with a patched opt_in_refusal.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -94,8 +25,8 @@ OF_WIRE = True
 FAULT = "assistant-do-skips-disabled"
 DESKTOP = (1440, 900)
 PHONE = (390, 844)
-WAIT_MS = 120_000   # first visit of a page compiles it in next dev
-RUN_MS = 180_000    # the animated run: ~18 steps, 10 typed captions
+WAIT_MS = 120_000
+RUN_MS = 180_000
 THROUGH = ("/api/of/v2/vault/lists", "/api/of/v2/lists")
 DRAFT, RULES = "/admin/assistant/draft", "/admin/automation-rules"
 DONE = "Created OFF — turn it on in the table when ready"
@@ -103,7 +34,6 @@ MASS_EXCLUDE = {"id": 880_001, "type": "custom", "name": "MASSdmEXCLUDE"}
 VIP = {"id": 880_002, "type": "custom", "name": "VIP"}
 PLAN_WANT = ("Every hour", "Captions: 10 (10 AI-written — edit later)", "Audience: online and offline fans",
              "Unsend after 1h", "Saved OFF — you turn it on")
-# OF wire routes that send or unsend (lib/of_wire.py `route`: numbers as {id}).
 SEND_ROUTES = ("POST /api2/v2/messages/queue", "POST /api2/v2/chats/{id}/messages", "POST /api2/v2/posts",
                "DELETE /api2/v2/messages/queue/{id}")
 
@@ -116,17 +46,13 @@ C_EPLAN, C_EOFF, C_EENABLED, C_EOTHER = (
 EDIT_APPLY = "/admin/assistant/edit/apply"
 EDIT_UNSEND_H = 8
 EDIT_CHANGE_LINE = "Unsend after → never"
-# video=1 (module docstring): pacing, outputs, the model priced.
 TYPE_MS, INTRO_S, PLAN_HOLD_S, DONE_HOLD_S, COST_HOLD_S = 35, 2.5, 1.5, 3.0, 6.0
 VIDEO_DIR, WEBM, MP4, MP4_MIN_BYTES = "video", "do-mode-demo.webm", "do-mode-demo.mp4", 100_000
 COST_MODEL = "deepseek-v4-flash"
-# SLOP_LIVE=1 (README "Live runs"): the real DeepSeek on the company key (HELP_ASSISTANT_DEEPSEEK_KEY, set by
-# lib/stack.py from the caller's DEEPSEEK_API_KEY); captions are the model's own, the cost card is the real bill.
 LIVE = os.environ.get("SLOP_LIVE") == "1"
 LLM_MODELS = Path(__file__).resolve().parents[2] / "service" / "llm_models.py"
 INTRO_TITLE = "Help bot · Do it for me — Auto mass"
 
-# Finite animations (the sheet's pop in / out) done; a skeleton's endless pulse does not count.
 _SETTLED = """() => document.getAnimations().filter((a) => a.playState === 'running'
   && a.effect && a.effect.getComputedTiming().iterations !== Infinity).length === 0"""
 
@@ -174,8 +100,6 @@ def _live_texts_ok(texts) -> bool:
 
 
 class _Recorder:
-    """A browser whose new_context records video (Playwright takes record_video_* only there): ui._owner_page's
-    context, nothing else changed."""
 
     def __init__(self, browser, vdir: Path, size) -> None:
         self._b = browser
@@ -190,7 +114,6 @@ class _Recorder:
 
 @asynccontextmanager
 async def _video_browser(ctx, viewport, vdir: Path):
-    """ui.owner_browser (through=THROUGH, desktop), its context recording into `vdir`."""
     vdir.mkdir(parents=True, exist_ok=True)
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(args=ui.LAUNCH_ARGS)
@@ -216,8 +139,6 @@ _CARD = ("background:#0f141c;color:#f3f6fa;border:1px solid #2a3442;border-radiu
 
 
 async def _overlay(page, oid: str, inner: str, hold_s: float, shot=None) -> str | None:
-    """A fixed card over the page for `hold_s` (video only: the recording's titles); `shot` (ctx, name): a
-    screenshot of it, its path."""
     await page.evaluate(_OVERLAY_ADD, [f"slop-{oid}", inner])
     t0 = time.monotonic()
     path = await ui.shot(shot[0], page, shot[1]) if shot else None
@@ -266,7 +187,6 @@ def _cost_html(c: dict) -> str:
 
 
 def _tokens(text: str) -> tuple[int, str]:
-    """(tokens, how): tiktoken cl100k when importable and its table loads, else chars/4."""
     try:
         import tiktoken
         return len(tiktoken.get_encoding("cl100k_base").encode(text)), "tiktoken cl100k_base (estimate)"
@@ -275,7 +195,6 @@ def _tokens(text: str) -> tuple[int, str]:
 
 
 def _llm_models():
-    """service/llm_models.py by path (stdlib only; registered so its dataclasses resolve)."""
     spec = importlib.util.spec_from_file_location("slop_llm_models", LLM_MODELS)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
@@ -284,8 +203,6 @@ def _llm_models():
 
 
 def _cost_live(w, aid: str, row_id=None) -> dict:
-    """SLOP_LIVE=1: the real bill — the draft's grok_calls row (DeepSeek's own usage block) priced from
-    llm_models.py, beside the assistant_turns row's cost_millicents (cents x 100) the cap charged."""
     con = w.sql()
     try:
         cols = ("id", "model", "tokens_in", "cache_hit_tokens", "tokens_out", "latency_ms", "status")
@@ -321,7 +238,6 @@ def _cost_live(w, aid: str, row_id=None) -> dict:
 
 
 def _cost(ctx, w, aid: str, row_id=None) -> dict:
-    """The draft's price (module docstring, VIDEO): the newest captured PHRASE prompt, cost.json's body."""
     if LIVE:
         return _cost_live(w, aid, row_id)
     f = ctx.stack.tmp / PROMPTS
@@ -365,7 +281,6 @@ def _cost(ctx, w, aid: str, row_id=None) -> dict:
 
 
 async def _mp4(ctx, src: str | None, trim_s: float) -> dict:
-    """The recording renamed to video/WEBM (kept) and ffmpeg'd to MP4 (H.264, yuv420p, faststart; from the intro)."""
     webm, mp4 = ctx.out / VIDEO_DIR / WEBM, ctx.out / MP4
     res = {"webm": None, "mp4": None, "trim_s": round(trim_s, 2), "error": None}
     if not src or not Path(src).is_file():
@@ -390,7 +305,6 @@ async def _mp4(ctx, src: str | None, trim_s: float) -> dict:
 
 
 async def _focus(page, nick: str) -> str:
-    """Point the bot at the Creator (Do it for me sets up one model's page); returns the focus label."""
     btn = page.locator('[aria-label^="Help bot focus: "]').first
     await btn.wait_for(timeout=30_000)
     if await btn.get_attribute("aria-label") != f"Help bot focus: {nick}":
@@ -401,8 +315,6 @@ async def _focus(page, nick: str) -> str:
 
 async def _pass(ctx, aid: str, nick: str, tag: str, viewport, touch: bool, video: Path | None = None,
                 cost=None) -> dict:
-    """One owner browser through the flow (module docstring); everything the checks read. `video`: record into
-    that dir at human pace (module docstring, VIDEO); `cost(row_id)` -> the cost card's dict."""
     res: dict = {"tag": tag, "drafts": [], "saves": [], "shots": {}, "errors": []}
     browser = (_video_browser(ctx, viewport, video) if video
                else ui.owner_browser(ctx, viewport=viewport, touch=touch, through=THROUGH))
@@ -425,7 +337,7 @@ async def _pass(ctx, aid: str, nick: str, tag: str, viewport, touch: bool, video
             await page.goto(f"{ctx.app}/growth/auto-post?creator={aid}", wait_until="domcontentloaded")
             launcher = page.locator('button[aria-label="Help assistant"], button[aria-label="Show help assistant"]')
             await launcher.first.wait_for(timeout=WAIT_MS)
-            if video:   # the mp4 starts here: the warm-up's compile waits are cut (trim_s, a margin early)
+            if video:
                 try:
                     await page.wait_for_function(_SETTLED, timeout=15_000)
                 except Exception:  # noqa: BLE001 — a page still moving is fine under the title
@@ -457,18 +369,17 @@ async def _pass(ctx, aid: str, nick: str, tag: str, viewport, touch: bool, video
             if video:
                 await asyncio.sleep(PLAN_HOLD_S)
 
-            await do_it.click(timeout=10_000)   # inside the bot: no takeover
+            await do_it.click(timeout=10_000)
             cursor = page.locator("[data-agent-cursor]")
             await cursor.wait_for(timeout=WAIT_MS)
-            try:   # the captions are the long stretch: catch the cursor typing one
+            try:
                 await cursor.filter(has_text="Typing captions").wait_for(timeout=30_000)
             except Exception:  # noqa: BLE001 — any mid-run frame still proves the cursor
                 pass
             res["cursor_label"] = (await cursor.inner_text()).strip() if await cursor.count() else None
             res["pill"] = await page.locator("[data-assistant-ui][role=status]", has_text="Doing it…").count()
-            res["shots"]["cursor"] = await ui.shot(ctx, page, f"cursor-{tag}")   # mid-run: no settle wait
+            res["shots"]["cursor"] = await ui.shot(ctx, page, f"cursor-{tag}")
 
-            # Phone: once over, the pill keeps the outcome ("Created OFF · Open") over the page; desktop: the card.
             done_pill = page.locator("[data-assistant-ui][role=status]", has_text="Created OFF")
             if touch:
                 await done_pill.wait_for(timeout=RUN_MS)
@@ -482,7 +393,7 @@ async def _pass(ctx, aid: str, nick: str, tag: str, viewport, touch: bool, video
             switch = page.get_by_role("switch", name=f"Enabled: {name or RULE_NAME}", exact=True)
             await switch.wait_for(timeout=30_000)
             res["switch_checked"] = await switch.get_attribute("aria-checked")
-            if video:   # the done card + the new row, Enabled off
+            if video:
                 await switch.scroll_into_view_if_needed(timeout=10_000)
                 await asyncio.sleep(DONE_HOLD_S)
             if touch:
@@ -514,7 +425,7 @@ async def _pass(ctx, aid: str, nick: str, tag: str, viewport, touch: bool, video
             except Exception:  # noqa: BLE001
                 res["saves"].append({"status": r.status, "body": r.request.post_data_json, "rule": None})
         res["statuses"] = list(page.slop["statuses"])
-        if video:   # the webm is written when its context closes
+        if video:
             try:
                 res["video_src"] = await page.video.path() if page.video else None
                 await page.context.close()
@@ -533,8 +444,7 @@ def _edit_rule(con, aid: str, name: str, enabled: bool, now) -> int:
 
 
 async def _seed_edit(w, creators: list[dict]) -> dict:
-    """EDIT's world (module docstring): two owner rules (ON / OFF) and another Agency's ON rule, all unsend 8h."""
-    from slop.lib.client import Http   # as seed/agency.py: a second signed-in session
+    from slop.lib.client import Http
     other_uid = await agency._register(Http(str(w.owner.c.base_url), w.owner.rec), f"{w.user_prefix}{w.seed}edit")
     c1, c2 = creators[1], creators[2] if len(creators) > 2 else creators[1]
     con = w.sql()
@@ -566,7 +476,6 @@ def _unsend_left(row: dict) -> list:
 
 
 async def _edit_pass(ctx, aid: str, nick: str) -> dict:
-    """EDIT in the owner's desktop browser (module docstring): plan card, Do it, the per-rule results."""
     res: dict = {"drafts": [], "applies": [], "shots": {}, "errors": []}
     async with ui.owner_browser(ctx, viewport=DESKTOP, through=THROUGH) as page:
         drafts, applies = [], []
@@ -622,7 +531,6 @@ async def _edit_pass(ctx, aid: str, nick: str) -> dict:
 
 
 async def _edit_api(ctx, aid: str) -> dict:
-    """EDIT under --no-ui: the same draft, then the apply its plan card would send."""
     res: dict = {"drafts": [], "applies": [], "shots": {}, "errors": [], "statuses": []}
     r = await ctx.owner.post(DRAFT, json={"request": EDIT_PHRASE, "account_id": aid})
     body = r.json() if r.status_code == 200 else None
@@ -640,7 +548,6 @@ async def _edit_api(ctx, aid: str) -> dict:
 
 
 async def _edit_checks(ctx, w, aid: str, nick: str, seeded: dict, before: dict[int, dict]) -> list[tuple[int, str]]:
-    """EDIT's flow + its four checks (module docstring); the 5xx it saw."""
     ep = await _edit_pass(ctx, aid, nick) if ctx.app else await _edit_api(ctx, aid)
     owners, other = seeded["owner_accounts"], seeded["other_account"]
     after = _rules_raw(w, owners + [other])
@@ -704,8 +611,8 @@ async def run(ctx) -> None:
         fake.list_users[VIP["id"]] = [910_003]
         fake.vault_lists[aid] = vault["of_lists"]
 
-    # Do-mode bills the agency's own key (no platform fallback, unlike Q&A): set one, as lib/followup.py does.
-    if not LIVE:   # live: no agency key, so the draft takes the company-key fallback (D8)
+    # Do-mode bills the agency's own key (no platform fallback, unlike Q&A); live: no agency key, so the draft takes the company-key fallback.
+    if not LIVE:
         r = await ctx.owner.put("/admin/my-llm-keys", json={"deepseek": "slop-fake-deepseek"})
         ctx.metric("agency_deepseek_key", {"status": r.status_code})
 
@@ -715,7 +622,7 @@ async def run(ctx) -> None:
 
     video = str(ctx.param("video", "0")).lower() in ("1", "true", "yes", "on")
     passes = []
-    if ctx.app and video:   # module docstring, VIDEO: the desktop pass alone, recorded
+    if ctx.app and video:
         passes.append(await _pass(ctx, aid, nick, "desktop", DESKTOP, False, video=ctx.out / VIDEO_DIR,
                                   cost=lambda row_id: _cost(ctx, w, aid, row_id)))
     elif ctx.app:
@@ -723,7 +630,6 @@ async def run(ctx) -> None:
         passes.append(await _pass(ctx, aid, nick, "phone", PHONE, True))
     drafts += [{"via": p["tag"], **d} for p in passes for d in p["drafts"]]
 
-    # folder_is_sfw_teasers: the server's pick in every draft, and each plan card's folder line.
     folders = [{"via": d["via"], "folder": _folder_of(d["body"])} for d in drafts]
     plan_folder = [next((x for x in p.get("plan_lines") or [] if x.startswith("Folder: ")), None) for p in passes]
     ctx.check(C_FOLDER, api.status_code == 200

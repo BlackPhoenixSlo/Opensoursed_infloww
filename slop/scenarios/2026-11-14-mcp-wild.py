@@ -1,57 +1,3 @@
-"""MCP wild (service/mcp_api.py, token_auth.py, toolbox.py, report_recipe_api.py, ultra_api.py): POST /admin/mcp
-under malformed, hostile and concurrent calls answers a proper JSON-RPC error (or the token layer's 401/403),
-never a crash, never another Agency's data, never a send. No LLM anywhere: every path here is pure.
-
-World: `agency_inbox` (Agency A = the run's owner, its Creators on lib/of_wire.py via `OF_WIRE`). Built here:
-Agency B through the real POST /auth/register, one Creator (creators._add, i=2000) whose nickname, a bio page +
-link (SQL bio_profiles/bio_links) and a sales row (SQL transactions, SENTINEL_CENTS) carry B-only sentinel strings;
-B's token (real POST /admin/owner-tokens), B's plan (MCP propose_plan, never OK'd) and B's report file (MCP
-report_file). A: tokens main / to-revoke (then DELETE'd) / mix; an Employee (real invite + /chatter/login, Creator
-0 assigned); a 2FA owner (real register, then SQL users.totp_secret: declared bypass).
-
-Flow: every case of lib/mcp_wild_cases.py in order: protocol, auth, token scope (direct routes), args, plans (+ the
-never-OK'd plan's follow-ups), report files, sign-up/login (each on its own X-Forwarded-For 203.0.113.x so the
-login throttles never cross cases; then a burst of 8 wrong logins on one name/address), the 2FA right code. Then
-the volume mix: MIX[--scale] (clients, seconds) concurrent clients, each looping weighted picks of mix_table()
-(tokens A/B, anon, revoked, cookie, garbage, batch, send tool …). Each answer is judged like a case.
-
-Checks:
-  no_5xx                      no case and no mix call answers ≥500 or a transport error
-  jsonrpc_errors_wellformed   every /admin/mcp answer is JSON-RPC 2.0 (one of result/error; error {code known
-                              int, message}; id echoed, None when unusable or refused before the body is read
-                              (Case.unread); code on its HTTP status), a bodiless 202, a 405, or the token
-                              layer's 401 with WWW-Authenticate: Bearer
-  no_send_ever                fake OF saw no SEND_ROUTES call and holds no send/queue/post/unsend; automation_rules
-                              rows unchanged; no plan running/done/needs_you; every send-tool call refused
-  no_cross_agency             no answer to A/anon holds a B sentinel, none to B an A sentinel; A's calls on B's
-                              Creator/page/plan/file refused (403/404); B's rows hash the same before/after; no
-                              bio page on B's Creator but B's own
-  send_tools_never_listed     tools/list for tokens A and B (cases + mix) names no send tool, lists both builtins
-  anonymous_only_three_tools  anon (and token-in-query) tools/list == sign_in/connect_account/register_account/login, and
-                              an anon data tool / propose_plan / plan_status call is HTTP 401 -32001 (the MCP
-                              sign-in challenge) with open_url in error.data
-  revoked_token_dead          the revoked token: 401 on MCP (cases + mix) and on its report file
-  origin_refused              any Origin header (anon or token): 403 -32600
-  cookie_refused              owner cookie / Basic / employee cookie without a token: 401 -32001 (employee: 401/403)
-  token_scope_403             a token on 16 routes off its allowlist (admin, OF send, rules, Ultra OK/new): 403 REFUSED
-  employee_no_token           the employee's cookie gets no MCP answer and its login tool call isError 403, no token
-  errors_are_plain            no error (rpc message, tool detail, plain 4xx text) shows a stack, path, exception,
-                              driver, or a password/code/token the request carried
-  report_file_owner_only      a report file downloads for its maker only: other Agency 404, anon 401/403, revoked 401
-  no_stuck_plans              at the end no ultra_plans row is planning/running; this run's plans are awaiting_ok
-  cases_answer_as_specified   every case without a named check answers its table status / code / tool outcome
-Side effects: mcp-wild.json (every case: request redacted, HTTP status, rpc code + message, tool isError/status/
-detail, ms, problems; the mix: p50/p95 per pick and overall, status histogram, sample problems).
-
-FAULT `mcp-anon-sees-token-builtins` (mcp_api._builtins ignores `token`): anonymous_only_three_tools alone.
-
-Bypasses (declared): OnlyFans is lib/of_wire.py (no real account; no folder-create handler, so no case creates a
-folder on A). B's Creator, bio page/link and sales row and the 2FA secret are SQL (no product route makes them
-without OF or an authenticator). X-Forwarded-For from loopback (a trusted proxy, client_addr.py) gives each hostile
-login its own throttle bucket. No plan is ever OK'd (the OK needs a browser cookie and would send). Not covered:
-an expired token (needs a clock or SQL on owner_tokens: product-path free but the 401 is the revoked one's code),
-the 15-minute report-file expiry (TTL), MAX_PER_USER report files, report_run's 429 (needs a run in flight).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -73,7 +19,7 @@ PROFILE = "agency_inbox"
 UI = False
 OF_WIRE = True
 FAULT = "mcp-anon-sees-token-builtins"
-MIX = {"small": (40, 60), "medium": (80, 120), "large": (160, 300)}   # (concurrent clients, seconds)
+MIX = {"small": (40, 60), "medium": (80, 120), "large": (160, 300)}
 SENTINEL_CENTS = 777_777
 SEND_ROUTES = ("POST /api2/v2/messages/queue", "POST /api2/v2/chats/{id}/messages", "POST /api2/v2/posts",
                "DELETE /api2/v2/messages/queue/{id}")
@@ -88,17 +34,16 @@ B_TABLES = (("accounts", "SELECT * FROM accounts WHERE id=?", "aid"),
 
 
 class Wild:
-    """The run's identities and every judged answer."""
 
     def __init__(self, ctx):
         self.ctx, self.rec = ctx, ctx.rec
         self.hdrs: dict[str, dict[str, str]] = {}
-        self.secrets: dict[str, str] = {}      # value -> label, for evidence redaction
+        self.secrets: dict[str, str] = {}
         self.rows: list[dict] = []
         self.fails: dict[str, list[str]] = defaultdict(list)
         self.a_sent: tuple[str, ...] = ()
         self.b_sent: tuple[str, ...] = ()
-        self.lists: dict[str, list[set]] = defaultdict(list)    # who -> tools/list name sets
+        self.lists: dict[str, list[set]] = defaultdict(list)
         self.http = Http(ctx.relay, ctx.rec, limits=8)
         self.query_token = ""
 
@@ -125,7 +70,7 @@ class Wild:
             path = f"{mc.MCP}?token={self.query_token}&access_token={self.query_token}"
         else:
             path = case.path
-        http.c.cookies.clear()       # only the identity's own Cookie header, never a jar picked up on the way
+        http.c.cookies.clear()
         t0 = time.perf_counter()
         try:
             r = await http.request(case.method, path, route=route, expect=tuple(range(400, 500)), **kw)
@@ -150,7 +95,7 @@ class Wild:
                "text": None if parsed is not None else mc.redact(text[:300], self.secrets), "bug": case.bug or None}
         res = parsed.get("result") if isinstance(parsed, dict) else None
         sc = res.get("structuredContent") if isinstance(res, dict) else None
-        data = err.get("data")   # an anonymous data-tool call: HTTP 401 -32001, the connect link in error.data
+        data = err.get("data")
         row["open_url"] = any(isinstance(d, dict) and "open_url" in d for d in (sc, data))
         row["checks"] = list(case.checks)
         problems = mc.expect_problems(case, status, parsed)
@@ -160,13 +105,11 @@ class Wild:
             self.fail(C_5XX, f"{tag}HTTP {status} {text[:120]!r}")
         if on_mcp and (why := mc.wellformed(status, ctype, text, rid, www_auth=www)):
             self.fail(C_WELLFORMED, tag + why)
-        # Plain errors: an rpc message, a tool error, a plain 4xx body.
         err_text = " ".join(str(x) for x in (err.get("message"), tdetail) if x) or (text if status >= 400 else "")
         auth = self.hdrs.get(case.who, {}).get("Authorization", "")
         secrets = case.secrets + ((auth[7:],) if auth[:7].lower() == "bearer " and len(auth) > 11 else ())
         if err_text and (bad := mc.leaks(err_text, secrets)):
             self.fail(C_PLAIN, f"{tag}{bad}")
-        # Cross-Agency: sentinels of the other side in anything answered.
         other = self.a_sent if case.who == "b" else self.b_sent
         if hits := mc.sentinel_hits(text, other):
             self.fail(C_CROSS, f"{tag}holds {hits}")
@@ -233,7 +176,6 @@ def _sql_one(w, q: str, args=()) -> list:
 
 
 async def _agency_b(ctx, w, wild: Wild) -> dict:
-    """Agency B: register, one Creator with sentinels, a bio page + link, a sales row, its token."""
     http = Http(ctx.relay, ctx.rec)
     uname = f"{w.user_prefix}{w.seed}mcpb"
     uid = await agency._register(http, uname)
@@ -325,7 +267,6 @@ async def _mix(ctx, wild: Wild, ids: dict, clients: int, seconds: float) -> dict
             "status_histogram": dict(sorted(hist.items())), "problems": dict(probs), "problem_sample": sample}
 
 
-# Each mix pick's expectation: (statuses, rpc code, tool outcome, checks fed).
 _MIX_STATUS = {
     "v_list_a": ((200,), None, None, (C_SEND_LISTED,)), "v_list_b": ((200,), None, None, (C_SEND_LISTED,)),
     "v_list_anon": ((200,), None, None, (C_ANON3,)), "v_ping": ((200,), None, None, ()),
@@ -339,7 +280,7 @@ _MIX_STATUS = {
     "v_cookie": ((401,), -32001, None, (C_COOKIE,)), "v_anon_data": ((401,), -32001, None, (C_ANON3,)),
     "v_bad_args": ((200,), None, 422, ()), "v_notification": ((202,), None, None, ()),
 }
-_MIX_UNREAD = frozenset({"v_cookie"})   # refused on its Cookie before the body is read: id null
+_MIX_UNREAD = frozenset({"v_cookie"})
 
 
 async def run(ctx):
@@ -348,14 +289,13 @@ async def run(ctx):
     a_creators = w.data["creators"]
     a_aid = a_creators[0]["id"]
 
-    # ── identities ──
     b = await _agency_b(ctx, w, wild)
     of_sessions.seed(w, a_creators + [{"id": b["aid"]}])
     _, tok_a = await _mint(ctx.owner, "slop mcp-wild A")
     rid, tok_rev = await _mint(ctx.owner, "slop mcp-wild A revoked")
     r = await ctx.owner.request("DELETE", f"/admin/owner-tokens/{rid}")
     ctx.check("setup: the to-revoke token is revoked (DELETE /admin/owner-tokens/{id})", r.status_code in (200, 204),
-              http_status=r.status_code)   # not `status`: that key is the check's own pass/fail (report.py)
+              http_status=r.status_code)
     wild.query_token = tok_a
     for v, lab in ((tok_a, "token:a"), (tok_rev, "token:a_revoked")):
         wild.secrets[v] = lab
@@ -373,7 +313,8 @@ async def run(ctx):
         "cookie_a": {"Cookie": _cookie(ctx.owner)}, "employee": {"Cookie": _cookie(emp_http)},
         "garbage": {"Authorization": "Bearer ifw_slopgarbage0000000000000000"}, "bare_ifw": {"Authorization": "Bearer ifw_"},
         "basic": {"Authorization": "Basic " + base64.b64encode(b"slop:slop").decode()},
-        "bearer_empty": {"Authorization": "Bearer"},   # h11 refuses "Bearer " (trailing OWS is no header value)
+        # h11 refuses "Bearer " (trailing OWS is no header value)
+        "bearer_empty": {"Authorization": "Bearer"},
     })
     wild.hdrs["cookie_b_plus_a"] = {**wild.hdrs["cookie_b_plus_a"], "Authorization": f"Bearer {tok_a}"}
     for k in ("cookie_a", "employee", "cookie_b_plus_a"):
@@ -387,7 +328,6 @@ async def run(ctx):
            "emp_user": emp_name, "emp_password": emp["password"], "tf_user": tf["user"], "tf_password": tf["password"],
            "squat": f"slopsquat{w.seed % 100000}", "tf_bad_code": "", "a_plan": None, "b_plan": None, "a_file": None, "b_file": None}
 
-    # B's plan and report file, through B's own token (positive controls; the plan is never OK'd).
     out = await wild.run(mc.Case("setup_b_plan", "setup", who="b", body=mc.call("propose_plan", {
         "summary": "slop mcp-wild B plan", "steps": [mc.mass_step(b["aid"])]}), tool="ok"))
     ids["b_plan"] = _find(_sc(out), "plan_id") or "e" * 32
@@ -398,7 +338,6 @@ async def run(ctx):
     b_before = _b_snapshot(w, b["uid"], b["aid"])
     rules_before = _sql_one(w, "SELECT COUNT(*) FROM automation_rules")[0][0]
 
-    # ── the table ──
     for case in mc.protocol_cases() + mc.auth_cases(ids) + mc.args_cases(ids):
         await wild.run(case)
     out = await wild.run(mc.Case("ar_report_file_ok", "args", who="a", body=mc.call("report_file", {
@@ -411,7 +350,7 @@ async def run(ctx):
             ids["a_plan"] = _find(_sc(out), "plan_id") or "b" * 32
     for case in mc.plan_followups(ids) + mc.scope_cases(ids) + mc.report_file_cases(ids):
         await wild.run(case)
-    ids["tf_bad_code"] = mc.bad_code(tf["secret"], int(time.time() // 30))   # off now ± BAD_TOTP_SPREAD steps
+    ids["tf_bad_code"] = mc.bad_code(tf["secret"], int(time.time() // 30))
     for case in mc.signup_cases(ids):
         await wild.run(case)
     burst = [await wild.run(c) for c in mc.login_burst(ids)]
@@ -419,14 +358,12 @@ async def run(ctx):
     ids["tf_code"] = mc.totp(tf["secret"], int(time.time() // 30))
     await wild.run(mc.two_factor_followup(ids))
 
-    # ── volume ──
     clients, seconds = MIX.get(ctx.scale, MIX["small"])
     clients, seconds = ctx.param("clients", clients), ctx.param("seconds", seconds)
     mix = await _mix(ctx, wild, ids, clients, seconds)
     ctx.metric("mix", {k: mix[k] for k in ("clients", "seconds", "calls", "rps", "p50_ms", "p95_ms",
                                             "status_histogram")})
 
-    # ── end state ──
     fake = ctx.of_wire
     with fake.lock:
         send_calls = [c for c in fake.calls if c.get("route") in SEND_ROUTES]
@@ -452,7 +389,6 @@ async def run(ctx):
         wild.fail(C_STUCK, f"stuck plans {stuck}")
     if not_waiting := [p for p in plans if p[0] in ours and p[2] != "awaiting_ok"]:
         wild.fail(C_STUCK, f"this run's plans not awaiting_ok: {not_waiting}")
-    # tools/list sets per identity.
     for who in ("a", "b"):
         for names in wild.lists.get(who, []):
             if names & set(mc.SEND_TOOLS) or not mc.TOKEN_BUILTINS <= names:
@@ -466,14 +402,14 @@ async def run(ctx):
     for who, c in (("a", C_SEND_LISTED), ("b", C_SEND_LISTED), ("anon", C_ANON3)):
         if not wild.lists.get(who):
             wild.fail(c, f"no tools/list answer for {who}")
-    for row in wild.rows:   # anon data-tool refusals carry the connect link
+    for row in wild.rows:
         refused = row["tool_status"] == 401 or (row["status"] == 401 and C_ANON3 in row["checks"])
         if row["who"] in ("anon", "a_query") and refused and not row["open_url"]:
             wild.fail(C_ANON3, f"{row['name']}: 401 without open_url")
 
     by_check = {c: [r["name"] for r in wild.rows if c in r["checks"]] for c in
                 (C_ORIGIN, C_COOKIE, C_SCOPE, C_EMPLOYEE, C_REPORT_FILE, C_REVOKED)}
-    for c, names in by_check.items():   # a check with no case behind it is no proof
+    for c, names in by_check.items():
         if not names:
             wild.fail(c, "no case ran")
     for c, extra in ((C_5XX, {"cases": len(wild.rows), "mix_calls": mix["calls"]}),
@@ -489,7 +425,7 @@ async def run(ctx):
                           wild.secrets),
          "cases": wild.rows, "mix": mix, "failures": wild.fails,
          "suspected_bugs": sorted({r["bug"] for r in wild.rows if r["bug"]})},
-        indent=2, ensure_ascii=False, default=str), errors="backslashreplace")   # lone surrogates echoed back
+        indent=2, ensure_ascii=False, default=str), errors="backslashreplace")
     for h in (wild.http, b["http"], emp_http):
         await h.aclose()
 

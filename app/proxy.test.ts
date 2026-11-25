@@ -1,7 +1,3 @@
-/**
- * proxy.ts's matcher is spelled out for Next's static analysis; it must still name every BOOTED route and the
- * header the proxy drops.
- */
 import { describe, expect, it } from "vitest";
 
 import { BOOT_PATH_HEADER, BOOTED } from "@/lib/inlineBoot";

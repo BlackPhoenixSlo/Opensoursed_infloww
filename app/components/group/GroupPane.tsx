@@ -1,20 +1,5 @@
 "use client";
 
-/**
- * GroupPane — one column inside /group. Slim version of ChatSurface
- * tuned for many panes on screen at once:
- *
- *   • Hard 20-message cap (most recent only, no load-older).
- *   • No image/video rendering — media collapses to a "📎 N" chip so a
- *     wall of 8 panes doesn't pull megabytes of OF CDN traffic. PPV /
- *     locked text shows a 🔒 marker.
- *   • Compact composer: textarea + send button. No vault, no schedule,
- *     no quote. PPV price toggle is hidden by default — group mode is
- *     for fast volume chatting, not crafted PPV blasts.
- *
- * Reuses the existing message + send hooks so optimistic bubbles, SSE
- * patches, and retry-on-fail all "just work" without re-implementing.
- */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -46,9 +31,6 @@ export function GroupPane({
   fanId: FanId;
   onClose: () => void;
 }) {
-  // Reuse the popout's user-lookup query key so cache is shared across
-  // routes — if the user just came from a single chat with this fan,
-  // the avatar/name renders instantly.
   const userQ = useQuery({
     ...ofUserNameQuery(accountId, fanId),
     enabled: Number.isFinite(fanId),
@@ -64,10 +46,6 @@ export function GroupPane({
 
   const handle = useChatMessages({ accountId, fanId, enabled: true });
 
-  // Synthesize the minimal OFChatItem shape useSendMessage expects (it
-  // only reads accountId + fanId from props but the chat-list patching
-  // helper looks up by withUser.id). Memoize so the sender hook doesn't
-  // see a new reference each render.
   const chat: OFChatItem = useMemo(
     () => ({
       withUser: {
@@ -92,37 +70,27 @@ export function GroupPane({
     hookHandle: handle,
   });
 
-  // Mark-as-read on mount: same fire-and-forget pattern as ChatSurface,
-  // without the chat-list cache patch (the group tab doesn't show one).
   const markedRef = useRef(false);
   useEffect(() => {
     if (markedRef.current) return;
     markedRef.current = true;
     relay
       .post(`/api/of/v2/chats/${fanId}/mark-as-read`, undefined, { accountId })
-      .catch(() => { /* silent — next ChatSurface open will retry */ });
+      .catch(() => { });
   }, [accountId, fanId]);
 
-  // Backlog backfill. The SSE handler (useInboxRealtime) eagerly seeds
-  // the messages cache with each incoming bubble — which counts as
-  // "fresh data" to useQuery, so opening a pane on a chat that's only
-  // ever been touched by SSE (never via /messages fetch) ends up
-  // showing 1–2 bubbles with no context. One refresh() call after first
-  // settle pulls the real backlog (limit=30, single OF call) so the
-  // pane has history. Gated by a ref so it never re-fires.
   const backfilledRef = useRef(false);
   useEffect(() => {
     if (backfilledRef.current) return;
     if (handle.isLoading) return;
     const len = handle.data?.length ?? 0;
-    if (len === 0) return; // wait for first data (empty chat is fine)
-    if (len >= 10) return; // already have plenty of context
+    // SSE seeds the cache with one bubble, which useQuery counts as fresh: one refresh pulls the real backlog.
+    if (len === 0) return;
+    if (len >= 10) return;
     backfilledRef.current = true;
     void handle.refresh();
   }, [handle.isLoading, handle.data, handle.refresh]);
 
-  // Last 20 only — sliced after the merge so optimistic bubbles still
-  // appear at the bottom on send.
   const messages = useMemo(() => {
     const all = handle.data ?? [];
     return all.slice(Math.max(0, all.length - MESSAGE_DISPLAY_CAP));
@@ -140,19 +108,14 @@ export function GroupPane({
   const headerAvatar = proxyImage(userQ.data?.avatar ?? null, accountId);
   const accountLabel = useAccountLabel(accountId);
 
-  // Composer state — local, the parent doesn't care.
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Auto-stick to the bottom whenever a new message lands (incoming SSE,
-  // optimistic send, or initial load). Tracking the last message id (and
-  // pending flag — bubbles flip pending→sent in place) instead of just
-  // the array length, because at the 20-message cap the length stays
-  // constant while the tail rolls forward as older items fall off.
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const last = messages[messages.length - 1];
   const lastKey = last ? `${String(last.id)}:${last._pending ? 1 : 0}` : "";
+  // Keyed on the tail id, not length: at the 20-message cap the length stays constant while the tail rolls.
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -170,15 +133,12 @@ export function GroupPane({
       await sender.send({ text: value });
     } finally {
       setSending(false);
-      // Re-focus so the user can keep typing without grabbing the mouse.
       taRef.current?.focus();
     }
   };
 
   return (
     <div className="flex flex-col min-w-0 min-h-0 h-full bg-bg border border-border rounded-lg overflow-hidden">
-      {/* Header — fan avatar + name + close. Click name → opens dedicated
-       *  popout in a new tab for the full-fidelity surface. */}
       <header className="flex items-center gap-2 px-2 py-1.5 border-b border-border bg-panel">
         <a
           href={`/messages-pro/${encodeURIComponent(accountId)}/${fanId}`}
@@ -216,9 +176,6 @@ export function GroupPane({
         </button>
       </header>
 
-      {/* Message list — newest at bottom. A useLayoutEffect above pins
-       *  the scroll to the bottom on mount + every new message arrival
-       *  (SSE or optimistic). */}
       <div
         ref={scrollRef}
         className="flex-1 min-h-0 overflow-y-auto px-2 py-2 space-y-1 flex flex-col"
@@ -239,7 +196,6 @@ export function GroupPane({
         ))}
       </div>
 
-      {/* Composer — bare minimum. Enter to send, Shift+Enter for newline. */}
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -261,8 +217,7 @@ export function GroupPane({
           placeholder={`Message ${headerName}…`}
           className={cn(
             "flex-1 min-w-0 resize-none bg-bg border border-border rounded px-2 py-1.5",
-            // Mobile keeps text-base (≥16px) so iOS Safari doesn't auto-zoom
-            // on focus; desktop tightens back to text-xs for the dense grid.
+            // text-base (>=16px) on mobile so iOS Safari does not zoom on focus.
             "text-base md:text-xs",
             "placeholder:text-muted focus:outline-none focus:border-accent",
             "max-h-24",
@@ -280,8 +235,6 @@ export function GroupPane({
           {sender.inflight > 0 ? "…" : "send"}
         </button>
       </form>
-      {/* Hint that this is a fast-chat surface only. Helps explain why
-       *  there's no vault picker / image preview / etc. */}
       <div className="px-2 py-0.5 text-[9px] text-fg-dim bg-panel border-t border-border/40 flex items-center justify-between">
         <span>fast-chat · last {MESSAGE_DISPLAY_CAP} · no images</span>
         <span>{messages.length}</span>
@@ -290,9 +243,6 @@ export function GroupPane({
   );
 }
 
-/** A single bubble. Same direction-inference as MessageList; media gets
- *  collapsed into a chip. Tooltip exposes the createdAt so the chatter
- *  has a sanity check on staleness. */
 function GroupMessageRow({
   msg,
   ownerId,

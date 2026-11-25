@@ -1,29 +1,16 @@
 "use client";
 
-/**
- * One runtime dropdown for the Mirror's menus no capture holds open: the sort menus (free trial links, tag dialog,
- * ADD LABELS, the vault dialog's folders and media), the format panel's Text Size and Text Color, a tag row's More.
- * It is drawn in OF's own dropdown markup (the captured free trial links Sort menu: `v-menu__content m-dropdown-list`,
- * `m-radio-dropdown-item` rows with OF's radio, `v-divider` between groups; a plain row is a `v-list-item` title), under
- * its anchor, inside the anchor's document. Where it would run past the anchor's dialog or column it is right-aligned to
- * the anchor, as OF's sort menus; radio rows carry OF's radio scoped-style mark (RADIO_SCOPE). A click outside or
- * Escape closes it; a pick closes it and calls `onPick`. Every row is marked data-oi-wired (bindWrites' click fallback leaves it alone). Only one menu is open at a time.
- */
 
 import { OF_INSIGHTS_ATTR, OF_INSIGHTS_PX } from "@/lib/ofMirrorChrome";
 
 export interface MenuOption {
   value: string;
   label: string;
-  /** A row shown in this CSS class (OF's text colour and size rows carry their own class). */
   className?: string;
-  /** A plain row's icon (an OF sprite id, `icon-media`), before its text as OF's composer More rows. */
   icon?: string;
-  /** A plain row shown disabled with this tooltip (a click on it does nothing and keeps the menu open). */
   disabled?: string;
 }
 
-/** A group of radio rows (`value`: the checked one), or plain rows when `radio` is false. */
 export interface MenuGroup {
   name: string;
   options: MenuOption[];
@@ -32,31 +19,20 @@ export interface MenuGroup {
 }
 
 const MENU_ID = "oi-menu";
-/** OF's radio component's scoped-style attribute (its captured dropdown rows carry it). */
 const RADIO_SCOPE = "data-v-af619994";
-/** OF's dropdown list's scoped-style attributes (the captured sort menus' `v-list m-dropdown-v-list`). */
 const LIST_SCOPE = ["data-v-d2f665f6", "data-v-55f3fe86"];
-/** OF's SM width (its breakpoint map: XS 500, SM 768, MD 1004): below it a sort menu is OF's phone dropdown. */
 export const SM_QUERY = "(max-width: 767.98px)";
-/** OF's sort dropdown's phone class (its scoped CSS lays it out). */
 export const MODAL_VIEW = "m-modal-view";
-/** Its scoped-style mark, which that CSS needs on the menu. */
 const DROPDOWN_SCOPE = "data-v-55f3fe86";
 
-/** The open menu in `doc`, if any. */
 export const openMenu = (doc: Document) => doc.getElementById(MENU_ID);
 
-/** Close the open menu (if any). */
 export function closeMenu(doc: Document): void {
   const el = openMenu(doc);
   if (!el) return;
   (el as HTMLElement & { _oiClose?: () => void })._oiClose?.();
 }
 
-/**
- * Open a menu of `groups` under `anchor` (a second call on the same anchor closes it, as OF's toggle). `onPick(group,
- * value)` runs after the menu closes. Returns the menu element.
- */
 export function showMenu(doc: Document, anchor: Element, groups: MenuGroup[], onPick: (group: string, value: string) => void): HTMLElement | null {
   const was = openMenu(doc) as (HTMLElement & { _oiAnchor?: Element }) | null;
   closeMenu(doc);
@@ -68,8 +44,6 @@ export function showMenu(doc: Document, anchor: Element, groups: MenuGroup[], on
   menu.className = "v-menu__content theme--light menuable__content__active m-dropdown-list";
   const list = doc.createElement("div");
   list.className = "v-list m-dropdown-v-list v-sheet theme--light shown";
-  // A sort menu (radio rows only) takes OF's dropdown list's scoped-style marks, as its captured sort menus: the rows'
-  // block layout and paddings, OF's border, radius, shadow and divider colour. Plain-row menus keep their own look.
   const sortMenu = groups.every((g) => g.radio !== false);
   if (sortMenu) for (const a of LIST_SCOPE) list.setAttribute(a, "");
   groups.forEach((g, gi) => {
@@ -108,8 +82,6 @@ export function showMenu(doc: Document, anchor: Element, groups: MenuGroup[], on
         row.className = "m-reset-wcag-link-focus m-radio-dropdown-item m-with-rectangle-hover m-tb-sm g-radio-container v-list-item v-list-item--link theme--light";
         const box = doc.createElement("span");
         box.className = "b-input-radio__container";
-        // OF's radio component's scoped-style mark (app.css `[data-v-af619994]`): its hidden input, the ring with its gap
-        // before the text, the blue checked ring; without it the browser's own radio shows, touching the text.
         box.setAttribute(RADIO_SCOPE, "");
         const input = doc.createElement("input");
         input.type = "radio";
@@ -138,33 +110,25 @@ export function showMenu(doc: Document, anchor: Element, groups: MenuGroup[], on
   menu.append(list);
   const r = anchor.getBoundingClientRect();
   const win = doc.defaultView;
-  // A sort menu below OF's SM width: OF's phone dropdown, a full-screen dimmed box with the list in its middle (its scoped
-  // CSS lays it out; see ofMirrorPhone); a press on the box outside the list closes it, as OF's.
   const phone = sortMenu && win?.matchMedia?.(SM_QUERY).matches === true;
   if (phone) {
     menu.classList.add(MODAL_VIEW);
     menu.setAttribute(DROPDOWN_SCOPE, "");
     doc.body.append(menu);
   } else {
-    // The Fan insights column lies over the frame's right edge: a menu stays left of it (else it opens under the column).
     const winWidth = (win?.innerWidth ?? 1024) - (doc.documentElement.hasAttribute(OF_INSIGHTS_ATTR) ? OF_INSIGHTS_PX : 0);
     menu.style.cssText = `position:absolute;top:${r.bottom + (win?.scrollY ?? 0) + 4}px;left:0;min-width:220px;max-width:256px;z-index:1100;display:block`;
-    // ...and its content box none of its own (OF's `.v-menu__content.m-dropdown-list[data-v-55f3fe86]`; the list draws it).
     if (sortMenu) menu.style.cssText += ";background:none;border:none;box-shadow:none;border-radius:0";
     doc.body.append(menu);
-    // Under the anchor from its left edge; where that would run past the anchor's dialog or page column, OF's right-aligned
-    // dropdown instead (its right edge on the anchor's, as OF's sort menus).
     const width = menu.getBoundingClientRect().width || 220;
     const column = anchor.closest(".modal-content") ?? anchor.closest(".g-page__content, .l-wrapper__content, main");
     const edge = Math.min(column ? column.getBoundingClientRect().right : winWidth, winWidth);
     const x = r.left + width > edge ? r.right - width : r.left;
     menu.style.left = `${Math.max(8, Math.min(x, winWidth - width - 8)) + (win?.scrollX ?? 0)}px`;
-    // As Vuetify's menus: one that would run past the window's foot moves up until it fits (never above the top).
     const height = menu.getBoundingClientRect().height;
     const winHeight = win?.innerHeight ?? 768;
     if (r.bottom + 4 + height > winHeight - 8) menu.style.top = `${Math.max(8, winHeight - 8 - height) + (win?.scrollY ?? 0)}px`;
   }
-  // The anchor says its menu is open, as OF's toggles do (a Vuetify select by its own class).
   const expanded = anchor.getAttribute("aria-expanded");
   anchor.setAttribute("aria-expanded", "true");
   const select = anchor.matches(".v-select") && !anchor.classList.contains("v-select--is-menu-active");
@@ -186,7 +150,6 @@ export function showMenu(doc: Document, anchor: Element, groups: MenuGroup[], on
   const esc = (ev: KeyboardEvent) => {
     if (ev.key === "Escape") close();
   };
-  // A press in the menu keeps the editor's selection (Text Size and Text Color format it).
   menu.addEventListener("mousedown", (ev) => ev.preventDefault());
   menu.addEventListener("click", (ev) => {
     const row = (ev.target as Element | null)?.closest?.<HTMLElement>("[data-oi-group]");
@@ -209,7 +172,6 @@ export function showMenu(doc: Document, anchor: Element, groups: MenuGroup[], on
   return menu;
 }
 
-/** OF's Ascending / Descending group (the sort menus' second group). */
 export const ORDER_GROUP = (value: string | null | undefined): MenuGroup => ({
   name: "order",
   value: value ?? "desc",

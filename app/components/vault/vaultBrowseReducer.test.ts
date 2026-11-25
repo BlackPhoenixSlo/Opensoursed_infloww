@@ -37,9 +37,6 @@ describe("selection", () => {
 });
 
 describe("a new folder or search clears the ticks (select mode stays)", () => {
-  // Bug: the old panel kept `selected` across these, so the bar's actions
-  // ("Add to category", "New OF folder with these", "Describe selected") acted
-  // on files from the previous folder / search.
   it.each<[string, BrowseAction, Partial<BrowseState>]>([
     ["folder", { type: "folder", id: 29271410 }, { folderId: 29271410 }],
     ["Fansly album snowflake", { type: "folder", id: "900605470987055104" }, { folderId: "900605470987055104" }],
@@ -91,7 +88,7 @@ describe("the Photo / Video filter keeps the ticks", () => {
 });
 
 describe("hiddenByFilter: ticks the filter hides (every bar action still takes them)", () => {
-  const three = run([{ type: "toggle", media: m(3, "gif") }], ticked);   // photo 1, video 2, gif 3
+  const three = run([{ type: "toggle", media: m(3, "gif") }], ticked);
   it.each<[string, BrowseAction[], number, string]>([
     ["All media: none hidden", [], 0, "Selected 3"],
     ["Photo: the video and the gif", [{ type: "mediaType", value: "photo" }], 2, "3 selected · 2 hidden by filter"],

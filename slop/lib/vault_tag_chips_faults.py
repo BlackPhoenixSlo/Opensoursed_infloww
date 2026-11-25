@@ -1,6 +1,3 @@
-"""Vault Pro's tag chips and "Save as folder": check names and break-it-once faults, for
-scenarios/2026-11-11-vault-tag-chips.py. lib/faults.py merges `register(Fault)`.
-"""
 from __future__ import annotations
 
 FACETS = "tag_facets_counts"
@@ -14,8 +11,6 @@ NO_5XX = "tag_chips_no_5xx"
 
 
 def _ignore_ai_tags() -> None:
-    """The tag filter matches the tags column and primary_folder only, not `ai_fields_json.tags` (the describe
-    model's raw list): every item tagged by the describe pass alone drops out of the grid and its saved folder."""
     import vault_tags as vt
     from sqlalchemy import case, func, literal, select
 
@@ -36,6 +31,5 @@ def _ignore_ai_tags() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run 2026-11-11-vault-tag-chips --break (the scenario's FAULT), server.
         "tag-filter-ignores-ai-tags": Fault(_ignore_ai_tags, (FILTER, SAVED, PUBLISHED, MEMBERS)),
     }

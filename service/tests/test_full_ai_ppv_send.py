@@ -1,36 +1,7 @@
 #!/usr/bin/env python3
-"""test_full_ai_ppv_send — the live priced bubble (phase 05, ticket 86): `full_ai_ppv.send_priced`
-lands a reserved row SENT, CLEAR or UNCONFIRMED and records the media it delivered.
-
-Rows are reserved the live way: `full_ai_test.send` builds the Offer columns and the `ppv` dict, the
-row is committed `status='sending'`. OF = `_of_fixtures.FakeOF` / `PpvFailOF` (+ small subclasses);
-no network, no LLM.
-
-  case_send_outcome_table          the pure table: id; id-less ± read-back id; media reject;
-                                   unreachable fan; timeout ± read-back id; read-back raised
-  case_priced_sent                 FakeOF, 1500: one call (price 15.0, locked + previews, previews);
-                                   `offer_message_id`; `messages` row out / full_ai_chat / 1500;
-                                   `vault_sends` = locked ids, `was_purchased` NULL
-  case_purchase_stamp_owns         `is_paid` flip + `ownership.try_stamp_message`: the vault rows read
-                                   purchased, `owned_or_seen_media` = locked (mutation target)
-  case_media_rejected_clears       `mediaFiles` reject: one OF call, Offer NULL, dropped media, no
-                                   vault row, out of `sent_media_of` / `open_offer_of`; locked +
-                                   preview ids re-checked by id, a 404 leaves the mirror
-  case_unreachable_clears          "Cannot send message": CLEAR send, the fan skip-listed
-  case_timeout_read_back           timeout + read-back finds it: SENT with that id; finds nothing /
-                                   read-back raises: UNCONFIRMED, row kept, `full_ai_ppv_unconfirmed`
-  case_free_item                   price 0: unlocked, vault price 0 / NULL, `stamp_media_owned` never;
-                                   refused media: text lands, Offer NULL, dropped media
-  case_haggle_unsends_old          `over_message_id` → one unsend(old, fan); a raising unsend keeps SENT
-  case_cancel_after_of_call        CancelledError between the OF call and the write: row reserved
-  case_second_call_sends_nothing   a row with `offer_message_id` makes no OF call
-  case_send_purpose                reaches the audit before the OF call; missing → no call
-
-Run: ./venv/bin/python service/tests/test_full_ai_ppv_send.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds a throwaway temp DB (PROD-fallback footgun)
 
 _harness.bootstrap()
 
@@ -78,7 +49,6 @@ _TIMEOUT = TimeoutError("The read operation timed out")
 
 
 class UnsendOF(FakeOF):
-    """FakeOF that records unsends; `fail` makes each one raise."""
 
     def __init__(self, fail: bool = False):
         super().__init__()
@@ -93,7 +63,6 @@ class UnsendOF(FakeOF):
 
 
 class MediaRejectOF(FakeOF):
-    """Refuses any send carrying media (OF's `mediaFiles` 400); text alone lands."""
 
     def send_message(self, chat_id, text, **kw):
         if kw.get("media_files"):
@@ -103,7 +72,6 @@ class MediaRejectOF(FakeOF):
 
 
 class GoneMediaOF(PpvFailOF):
-    """PpvFailOF whose by-id vault read 404s every id (the creator deleted them on OF)."""
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
@@ -120,7 +88,6 @@ class ReadFailOF(PpvFailOF):
 
 
 class SlowOF(FakeOF):
-    """OF takes the PPV, then the answer is slow: the run is cancelled while it waits."""
 
     def __init__(self):
         super().__init__()
@@ -139,8 +106,6 @@ def _pick(cents: int = 1500, media=LOCKED, previews=PREVIEWS) -> Pick:
 
 
 async def _reserve(pick: Pick, *, route: str = "sell_now") -> tuple[int, int, dict]:
-    """A live row reserved as 04a's sender leaves it: Offer columns by `full_ai_test.send`,
-    `status='sending'`, committed. Returns (row id, fan id, the last bubble's `ppv`)."""
     async with get_session() as s:
         if await s.get(Account, A) is None:
             s.add(Account(id=A, nickname="acct86"))
@@ -161,7 +126,7 @@ async def _reserve(pick: Pick, *, route: str = "sell_now") -> tuple[int, int, di
 
 async def _send(fake, rid: int, fan: int, ppv: dict, **kw):
     kw.setdefault("send_purpose", "gated")
-    kw.setdefault("min_gap_s", 2.0)        # full_ai_live.WRITE_GAP_S's default (its env knob unset)
+    kw.setdefault("min_gap_s", 2.0)
     return await send_priced(fake, row_id=rid, account_id=A, fan_id=fan,
                              text="this one is just for u", ppv=ppv, **kw)
 
@@ -207,7 +172,6 @@ def _logs():
         lg.removeHandler(h)
 
 
-# ── Pure ─────────────────────────────────────────────────────────────
 
 def case_send_outcome_table():
     table = [
@@ -224,7 +188,6 @@ def case_send_outcome_table():
         assert send_outcome(*args) == want, (name, send_outcome(*args), want)
 
 
-# ── send_priced ──────────────────────────────────────────────────────
 
 async def _sent_case() -> tuple[int, int, int, FakeOF]:
     rid, fan, ppv = await _reserve(_pick())
@@ -267,7 +230,7 @@ async def case_media_rejected_clears():
                 s.add(VaultItem(account_id=A, media_id=mid, kind="photo", created_at=datetime.utcnow()))
     fake = GoneMediaOF(_media_reject(), taken=False)
     out = await _send(fake, rid, fan, ppv)
-    await asyncio.gather(*list(_send_failure._RECHECK_TASKS))   # the re-check runs detached
+    await asyncio.gather(*list(_send_failure._RECHECK_TASKS))
     assert sorted(fake.byid) == sorted(LOCKED + PREVIEWS), fake.byid
     async with get_session() as s:
         for mid in LOCKED + PREVIEWS:
@@ -292,7 +255,6 @@ async def case_unreachable_clears():
 
 
 async def case_timeout_read_back():
-    # OF took it: the read-back finds it at that price → SENT with its id.
     rid, fan, ppv = await _reserve(_pick())
     fake = PpvFailOF(_TIMEOUT, taken=True)
     out = await _send(fake, rid, fan, ppv)
@@ -302,7 +264,6 @@ async def case_timeout_read_back():
     assert (await _row(rid)).offer_message_id == listed
     assert [(m.message_id, m.price_cents) for m in await _msgs(fan)] == [(listed, 1500)]
     assert [v.media_id for v in await _vault(fan)] == list(LOCKED)
-    # Nothing found, or the read-back raising: UNCONFIRMED, the row as reserved, one log line.
     for of in (PpvFailOF(_TIMEOUT, taken=False), ReadFailOF(_TIMEOUT, taken=False)):
         rid, fan, ppv = await _reserve(_pick())
         with _logs() as lines:
@@ -325,12 +286,11 @@ async def case_free_item():
         out = await _send(fake, rid, fan, ppv)
         assert out.outcome == SENT and out.message_id, out
         assert fake.sent == [{"fan_id": fan, "text": "this one is just for u",
-                              "media_files": [8611]}], fake.sent       # unlocked: no price
+                              "media_files": [8611]}], fake.sent
         vs = await _vault(fan)
         assert [(v.media_id, v.price_cents, v.was_purchased) for v in vs] == [(8611, 0, None)], vs
         assert [(m.price_cents, m.automation_kind) for m in await _msgs(fan)] == [(0, "full_ai_chat")]
         assert (await _row(rid)).offer_message_id == out.message_id
-        # OF refuses the media: the text lands alone, no Offer stands.
         rid, fan, ppv = await _reserve(_pick(0, media=(8612,), previews=()), route="make_right")
         fake = MediaRejectOF()
         out = await _send(fake, rid, fan, ppv)
@@ -338,7 +298,6 @@ async def case_free_item():
         assert [x.get("media_files") for x in fake.sent] == [[8612], []], fake.sent
         assert _cleared(await _row(rid)) and await _vault(fan) == []
         assert [(m.message_id, m.price_cents) for m in await _msgs(fan)] == [(out.message_id, 0)]
-        # A Free send that raises: no read-back (price 0 would match any free message of ours).
         class _TimeoutFree(FakeOF):
             def send_message(self, chat_id, text, **kw):
                 raise TimeoutError("read timed out")
@@ -359,7 +318,7 @@ async def case_haggle_unsends_old():
         rid, fan, ppv = await _reserve(_pick())
         old = await _send(FakeOF(), rid, fan, ppv)
         rid2, _, ppv2 = await _reserve(_pick(1200))
-        async with get_session() as s:     # the haggle row to the same fan
+        async with get_session() as s:
             await s.execute(update(AiDecision).where(AiDecision.id == rid2).values(fan_id=fan))
         fake = UnsendOF(fail=fail)
         out = await _send(fake, rid2, fan, ppv2, over_message_id=old.message_id)
@@ -383,7 +342,7 @@ async def case_cancel_after_of_call():
         pass
     assert len(fake.sent) == 1
     r = await _row(rid)
-    assert _reserved(r) and r.outcome is None, r.__dict__     # 05's unconfirmed Offer: 85 links it
+    assert _reserved(r) and r.outcome is None, r.__dict__
     assert await _vault(fan) == [] and await _msgs(fan) == []
 
 
@@ -408,13 +367,11 @@ async def case_send_purpose():
     try:
         rid, fan, ppv = await _reserve(_pick())
         await _send(FakeOF(), rid, fan, ppv)
-        # W30 F8 / S8: the POST goes through the write seam, which audits it (once).
         assert seen == [("gated", "of_write_paced")], seen
         seen.clear()
         rid, fan, ppv = await _reserve(_pick(0, media=(8621,), previews=()), route="make_right")
         await _send(FakeOF(), rid, fan, ppv)
         assert seen == [("gated", "of_write_paced"), ("gated", "send_dropping_bad_media")], seen
-        # Untagged: the harness's test mode raises before any OF call; the row stays reserved.
         rid, fan, ppv = await _reserve(_pick())
         fake = FakeOF()
         try:

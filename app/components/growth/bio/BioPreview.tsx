@@ -1,20 +1,11 @@
 "use client";
 
-/**
- * The bio editor's live preview: the public page drawn in React from `previewModel` (the draft, not the saved page),
- * its markup and look after `public/script.js` renderProfile/renderLinks and `style.css` (black page, 100px avatar, the verified badge,
- * #1C1C1E cards; a background card at 2.5:1 until its image loads, then the image's natural ratio, with its text at the
- * foot and the icon top-left; the page's own background picture cover-fit under a 55% black scrim, like
- * body.has-backdrop). Never an iframe: the real
- * page counts a view on load and shows only what is saved. The look is approximated; "Open" shows the real page.
- */
 import { Lock } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { bgAspectRatio, type ImageSize, type PreviewModel } from "@/components/growth/bio/bioPreviewModel";
 import { cn } from "@/lib/utils";
 
-/** Matches service/bio_pages/public/images/verified.svg. */
 function VerifiedBadge() {
   return <svg aria-label="Verified" viewBox="0 0 24 24" className="h-5 w-5">
     <circle cx="12" cy="12" r="11" fill="#1d9bf0" />
@@ -23,7 +14,6 @@ function VerifiedBadge() {
   </svg>;
 }
 
-/** Natural sizes of the cards' background images, measured as each loads, like the public page's img.onload. */
 function useImageRatios(urls: readonly string[]): (url: string) => string {
   const [sizes, setSizes] = useState<Record<string, ImageSize>>({});
   const key = urls.join("\n");
@@ -40,6 +30,7 @@ function useImageRatios(urls: readonly string[]): (url: string) => string {
   return (url) => bgAspectRatio(sizes[url] ?? null);
 }
 
+// Never an iframe: the real page counts a view on load.
 export function BioPreview({ model, className }: { model: PreviewModel; className?: string }) {
   const ratios = useImageRatios(model.links.map((l) => l.backgroundUrl));
   return (

@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * useRailDock — where the Buys & tips rail sits (`MoneyRail`): the per-surface
- * dock (position, anchor edge, open bit) read from and written to
- * localStorage, the header drag, and the resize clamp that keeps it on screen.
- */
 
 import { useEffect, useReducer, useRef } from "react";
 
@@ -12,19 +7,12 @@ import { useDragPress } from "./useDragPress";
 import { DEFAULT_DOCK, readDock, writeDock, type DockState, type Surface } from "@/lib/moneyRailStorage";
 
 const PANEL_W = 290;
-/** One row's height. The body's max-height is rows × this, so "small = 1 row"
- *  is a window onto the feed, not a truncation — the list still scrolls. */
 export const ROW_H = 68;
 
-/** Which edge a panel occupying [top, top+height] should pin to: whichever the
- *  panel's centre is nearer. */
 export function anchorFor(top: number, height: number, viewportH: number): "top" | "bottom" {
   return top + height / 2 > viewportH / 2 ? "bottom" : "top";
 }
 
-/** Keep the panel on screen — after a drag, a resize, or a restore into a
- *  window smaller than the one the position was saved from. Always leaves the
- *  header grabbable. The viewport defaults to the window's. */
 export function clampToViewport(
   x: number, y: number, panelH: number,
   viewportW = window.innerWidth, viewportH = window.innerHeight,
@@ -39,13 +27,8 @@ export function clampToViewport(
 
 export interface RailDockState {
   dock: DockState;
-  /** Needed to cap the body height against the viewport. Kept in state (not
-   *  read during render) so SSR and the first client render agree. */
   viewportH: number;
-  /** The saved dock has been read (client only). */
   mounted: boolean;
-  /** Bumped by every change the dock must be saved after (drop, toggle, a
-   *  resize that moved it) — never by a drag move. The hook writes on it. */
   saves: number;
 }
 
@@ -53,21 +36,17 @@ export const initialRailDock: RailDockState = { dock: DEFAULT_DOCK, viewportH: 0
 
 export type RailDockAction =
   | { type: "load"; dock: DockState; viewportH: number }
-  /** The panel's top-left wants to be at (x, y) mid-drag. */
   | { type: "dragMove"; x: number; y: number; panelH: number; viewportW: number; viewportH: number }
-  /** The drag ended; `rect` is where the panel now is (null if unmeasurable). */
   | { type: "drop"; rect: { top: number; bottom: number; height: number } | null; viewportH: number }
   | { type: "resize"; viewportW: number; viewportH: number; panelH: number }
   | { type: "toggle" };
 
+// Drag positions from the top; the anchor is decided on drop.
 export function railDockReducer(state: RailDockState, a: RailDockAction): RailDockState {
   switch (a.type) {
     case "load":
       return { ...state, dock: a.dock, viewportH: a.viewportH, mounted: true };
     case "dragMove": {
-      // While dragging we position from the TOP — it follows the pointer 1:1
-      // and needs no knowledge of the panel's height. The anchor is decided
-      // once, on drop.
       const { x, y } = clampToViewport(a.x, a.y, a.panelH, a.viewportW, a.viewportH);
       return { ...state, dock: { ...state.dock, x, y, anchor: "top" } };
     }
@@ -78,7 +57,6 @@ export function railDockReducer(state: RailDockState, a: RailDockAction): RailDo
         dock = {
           ...dock,
           anchor,
-          // Re-express the offset against the edge we just pinned to.
           y: anchor === "bottom"
             ? Math.max(0, a.viewportH - a.rect.bottom)
             : Math.max(0, a.rect.top),
@@ -91,9 +69,7 @@ export function railDockReducer(state: RailDockState, a: RailDockAction): RailDo
       let next = state.viewportH === a.viewportH ? state : { ...state, viewportH: a.viewportH };
       if (cur.x == null || cur.y == null) return next;
       const h = a.panelH;
-      // clampToViewport works in top-space, so a bottom-anchored offset has
-      // to be converted in and back out — clamping it directly would treat a
-      // distance-from-bottom as a distance-from-top.
+      // clampToViewport works in top-space: convert a bottom-anchored offset in and back out.
       const top = cur.anchor === "bottom" ? a.viewportH - cur.y - h : cur.y;
       const c = clampToViewport(cur.x, top, h, a.viewportW, a.viewportH);
       const y = cur.anchor === "bottom"
@@ -109,19 +85,13 @@ export function railDockReducer(state: RailDockState, a: RailDockAction): RailDo
 }
 
 export function useRailDock(surface: Surface) {
-  // Dock state is per-surface, so it can't be read during the first render
-  // (the server doesn't know the surface OR localStorage). Hydration-gate the
-  // whole panel and load in an effect keyed by surface — a client-side nav
-  // between /inbox and /group re-reads the other surface's saved spot.
   const [state, dispatch] = useReducer(railDockReducer, initialRailDock);
   const { dock, mounted, viewportH, saves } = state;
   useEffect(() => {
+    // Per-surface dock can't be read in first render (SSR): load in an effect keyed by surface.
     dispatch({ type: "load", dock: readDock(surface), viewportH: window.innerHeight });
   }, [surface]);
 
-  // Save after a drop, a toggle or a resize that moved the dock — keyed on
-  // `saves` alone, so a surface change (which only loads) never writes the old
-  // surface's dock under the new one's key.
   useEffect(() => {
     if (saves > 0) writeDock(surface, dock);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -129,8 +99,6 @@ export function useRailDock(surface: Surface) {
 
   const panelRef = useRef<HTMLDivElement | null>(null);
 
-  // A press on the header is a drag or a click (useDragPress); the drag
-  // positions from the panel's top-left at press time.
   const { onPointerDown: onHeaderPointerDown, swallowClick } = useDragPress({
     begin: () => {
       const rect = panelRef.current?.getBoundingClientRect();
@@ -153,13 +121,11 @@ export function useRailDock(surface: Surface) {
   });
 
   const toggle = () => {
-    // The pointerup that ended a drag also lands here as a click. Eat it once.
+    // The pointerup that ended a drag also lands as a click: eat it.
     if (swallowClick()) return;
     dispatch({ type: "toggle" });
   };
 
-  // Restoring a saved spot into a smaller window (or resizing after a drag)
-  // could park the dock off-screen with no way to grab it back.
   useEffect(() => {
     if (!mounted) return;
     const onResize = () => dispatch({
@@ -172,6 +138,5 @@ export function useRailDock(surface: Surface) {
     return () => window.removeEventListener("resize", onResize);
   }, [mounted]);
 
-  // `swallowClick`: every other button in the dragged header asks it first.
   return { dock, mounted, viewportH, panelRef, swallowClick, onHeaderPointerDown, toggle };
 }

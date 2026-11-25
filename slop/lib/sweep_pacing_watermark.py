@@ -1,32 +1,3 @@
-"""The ledger full walk's persisted watermark (transaction_scan_history.last_full_at), the last two
-stages of scenarios/2026-11-05-sweep-pacing.py, after its own checks (their logs are taken).
-
-restart (tx_restart_keeps_full_schedule): every backfilled, unpaused Creator gets a watermark by
-SQL, from the product's crc32 phases (`PHASE_PIN: false`, so the stage runs on the real ones):
-alternately in its previous period (due) or at the start of its current one (not due); a Creator
-within MARGIN_S of its next boundary is always due, so no clock tick flips a verdict mid-stage.
-CROWD (one shared OF bucket: 8 full walks at once would 429 each other) is stamped not due and
-left out of the verdict.
-The relay is SIGKILLed (`crash_relay`) and started on the same DB, then two supervisor passes run.
-Pass A: exactly the due Creators walk full (their ingest_tx_scan_start mode and their unfiltered
-ledger GETs at OF), the rest recent, their watermark untouched; the due ones' stamped >= the restart.
-Pass B: nobody walks full (a Creator whose period boundary falls between pass A and pass B is not asserted there).
-
-failed (tx_failed_full_consumes_period): one of those Creators F (not CROWD's shared bucket, the
-most time to its boundary), made due by SQL, its full walk's first page answered 429 twice (the
-send and of_pacing's one retry: the terminal second 429). Pass 1: F walks full and fails (exactly
-two 429s, no other unfiltered GET), error kept (status error, streak + 1, the 429 in last_error,
-full_walk_failures 1), rows held unchanged, watermark stamped in this period. Pass 2 (same period):
-F walks recent, no unfiltered GET, and the passing recent walk leaves the failure showing (the
-count kept, the 429 still in last_error; GET /admin/ingest/transactions/health: status
-full_walk_failed, not green). Its watermark moved back one
-period by SQL (the boundary crossed: time compression, declared); pass 3: F walks full again,
-completes, streak 0, full_walk_failures 0, ok.
-
-Bypasses (declared): the watermarks are seeded by SQL (rows the product writes: a full walk's
-window end); the boundary crossing is the watermark moved back one period, not the clock; the
-supervisor's 900 s sleep is `/__slop/sweep-pacing/run` as in the rest of the scenario.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -39,7 +10,7 @@ from slop.lib.sweep_pacing_faults import TX_FAILED_FULL, TX_RESTART
 from slop.lib.sweep_pacing_wire import TOO_MANY
 from slop.seed import ts
 
-MARGIN_S = 300.0          # a Creator this close to its next boundary is seeded due
+MARGIN_S = 300.0
 PASS_TIMEOUT_S = 300
 
 
@@ -52,7 +23,6 @@ def _dt(v) -> datetime | None:
 
 
 def _bucket_start(epoch: float, phase: float, every: float) -> float:
-    """Epoch of the start of the period `epoch` falls in (transaction_ingest_decide.full_bucket)."""
     return ((epoch + phase) // every) * every - phase
 
 
@@ -63,8 +33,6 @@ async def _runs(http, ids=()) -> dict:
 
 
 async def tx_pass(http, sw, timeout_s: float = PASS_TIMEOUT_S) -> dict:
-    """One supervisor pass, returned once it ended; per Creator its walk modes and its unfiltered
-    ledger GETs at OF."""
     n0 = len((await _runs(http))["runs"])
     t0 = time.time()
     (await http.post("/__slop/sweep-pacing/run", json={"job": "tx_cycles", "cycles": 1})).raise_for_status()
@@ -107,10 +75,9 @@ async def run(ctx, w, sw, *, shared: set[str]) -> None:
     got = await _runs(http, done)
     every, phases = float(got["full_every_s"]), {a: float(p) for a, p in got["phases"].items()}
 
-    # ── restart: mixed persisted phases, SIGKILL, the same DB ───────────────
     now = time.time()
     left = {a: _bucket_start(now, phases[a], every) + every - now for a in done}
-    asserted = [a for a in done if a not in shared]   # CROWD's shared bucket: stamped not due, not asserted
+    asserted = [a for a in done if a not in shared]
     due = {a for k, a in enumerate(asserted) if k % 2 == 0} | {a for a in done if left[a] < MARGIN_S}
     seed = {a: _utc(_bucket_start(now, phases[a], every) + (-1 if a in due else 1)) for a in done}
     _stamp(w, seed)
@@ -130,8 +97,6 @@ async def run(ctx, w, sw, *, shared: set[str]) -> None:
         stamped = _dt(scan_a.get(a, {}).get("last_full_at"))
         ok_stamp = (stamped is not None and stamped >= restart_at - timedelta(seconds=1)) if a in due \
             else stamped == seed[a]
-        # A due Creator (left < MARGIN_S) whose boundary falls between pass A and pass B's end is due again
-        # in pass B: its full walk there is correct, so pass B only asserts the ones still in A's period.
         crossed = _bucket_start(a_pass["t0"], phases[a], every) != _bucket_start(b_pass["t1"], phases[a], every)
         ok_b = crossed or (b_pass["modes"].get(a) == ["recent"] and not b_pass["full"].get(a))
         ok = (a_pass["modes"].get(a) == want and bool(a_pass["full"].get(a)) == (a in due) and ok_stamp and ok_b)
@@ -148,7 +113,6 @@ async def run(ctx, w, sw, *, shared: set[str]) -> None:
               pass_a_s=round(a_pass["t1"] - a_pass["t0"], 1), pass_b_s=round(b_pass["t1"] - b_pass["t0"], 1),
               errors=a_pass["errors"] + b_pass["errors"])
 
-    # ── failed: a terminal second 429 on the full walk spends the period ────
     now = time.time()
     left = {a: _bucket_start(now, phases[a], every) + every - now for a in done if a not in shared}
     f = max(left, key=left.get) if left else None
@@ -169,7 +133,7 @@ async def run(ctx, w, sw, *, shared: set[str]) -> None:
     h2 = next((a for a in r.json()["accounts"] if str(a["account_id"]) == f), {})
     stamped = _dt(s1["last_full_at"])
     if stamped is not None:
-        _stamp(w, {f: stamped - timedelta(seconds=every)})   # the boundary crossed (declared)
+        _stamp(w, {f: stamped - timedelta(seconds=every)})
     p3 = await tx_pass(http, sw)
     s3, held3 = scan_many(w, [f])[f], held_count(w, f)
     steps = {

@@ -1,8 +1,3 @@
-/**
- * The vision-flags bits the Flags review cards draw: a region's name, a region state's colours,
- * the "over" lines (what covers a region), the item's meta line, and its reasons list.
- */
-
 import { AlertTriangle } from "lucide-react";
 
 export const REGION_LABEL: Record<string, string> = {
@@ -11,7 +6,6 @@ export const REGION_LABEL: Record<string, string> = {
   anus_vis: "anus",
 };
 
-/** A region state's colours for the Flags review's picked button. */
 export const STATE_TONE: Record<"strong", Record<string, string>> = {
   strong: {
     bare: "border-err/70 bg-err/20 text-err",
@@ -20,7 +14,6 @@ export const STATE_TONE: Record<"strong", Record<string, string>> = {
   },
 };
 
-/** What covers each region ("vulva: thong"), one line each; nothing when no region has one. */
 export function OverLines({ over }: { over: Record<string, string> }) {
   const named = Object.entries(over).filter(([, v]) => v);
   if (!named.length) return null;
@@ -35,7 +28,6 @@ export function OverLines({ over }: { over: Record<string, string> }) {
   );
 }
 
-/** "#id · kind · explicitness · clothing_state", then the lanes it sits in when given. */
 export function MediaMeta({ item, lanes = [] }: {
   item: { media_id: number; kind: string; explicitness: string; clothing_state: string };
   lanes?: string[];
@@ -48,7 +40,6 @@ export function MediaMeta({ item, lanes = [] }: {
   );
 }
 
-/** Why the card is here, one warning line each; nothing when empty. */
 export function Reasons({ items, tone }: { items: string[]; tone: "warn" | "err" }) {
   if (!items.length) return null;
   return (

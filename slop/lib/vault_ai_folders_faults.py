@@ -1,6 +1,3 @@
-"""Vault Pro's "Build AI folders" with a partly flagged vault: check names and break-it-once faults, for
-scenarios/2026-11-10-vault-ai-folders-partial-flags.py. lib/faults.py merges `register(Fault)`.
-"""
 from __future__ import annotations
 
 PLAN = "ai_folders_plan_partial_flags"
@@ -16,8 +13,6 @@ SCRIPTS_CAPPED = "scripts_capped_named"
 
 
 def _dupe_collapse_off() -> None:
-    """The plan groups every copy of a duplicate set again (the pre-PR-A behaviour): `collapse_dupes` keeps all
-    rows and drops nothing, so a re-upload sits beside its original in the same folder."""
     import vault_scripts as vs
 
     if not hasattr(vs, "collapse_dupes"):
@@ -26,8 +21,6 @@ def _dupe_collapse_off() -> None:
 
 
 def _script_cap_off() -> None:
-    """Scripts are the whole shoot again (the pre-v2 behaviour): `cap_ladder` keeps every item and leaves nothing
-    over, so the big bedroom part plans as all of it and has no overflow closer to lend."""
     import vault_scripts as vs
 
     if not hasattr(vs, "cap_ladder"):
@@ -36,9 +29,6 @@ def _script_cap_off() -> None:
 
 
 def _guess_unflagged() -> None:
-    """The $10 lane guesses an unflagged paid still from its describe `clothing_state` (partially_off /
-    pulled_down / pulled_aside) instead of leaving it out until the flags pass looked: the pre-flags fallback
-    measured wrong on ~1 in 3 stills."""
     import vault_ai_brief
     import vault_scripts as vs
 
@@ -57,17 +47,10 @@ def _guess_unflagged() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run 2026-11-10-vault-ai-folders-partial-flags --break (the scenario's FAULT): every copy of a
-        # duplicate set planned again (server, vault_scripts.collapse_dupes).
         "ai-folders-dupe-collapse-off": Fault(_dupe_collapse_off, (NO_DUPES,)),
-        # --fault=ai-folders-create-blocked-on-flags
-        # app/components/vault/VaultAiFoldersModal.tsx: Create disabled again while any still lacks flags (the
-        # pre-change `!flags.ready` block). `next dev` serves the module inside eval("..."), unminified.
         "ai-folders-create-blocked-on-flags": Fault(None, (CREATE_ENABLED,), browser=(
             (r"(disabled:\s*)(!submittable\b)", r"\1flagsMissing || \2"),
         )),
-        # --fault=ai-folders-guess-unflagged: unflagged paid stills guessed into the $10 lane (server).
         "ai-folders-guess-unflagged": Fault(_guess_unflagged, (PLAN, PAID_ONLY)),
-        # --fault=ai-folders-script-cap-off: scripts uncapped, the whole shoot (server, vault_scripts.cap_ladder).
         "ai-folders-script-cap-off": Fault(_script_cap_off, (SCRIPTS_CAPPED,)),
     }

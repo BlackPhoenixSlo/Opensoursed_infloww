@@ -1,9 +1,3 @@
-/**
- * The Fansly sign-in against Infloww's (`FanslyLogin`, index.9f50f370.js @12411710): Done beside Cancel, its error
- * wording (creators0187 / creators0310 / creators0416), the linked account as fansly.com/username with its avatar,
- * an expired session's row (fansly0003, relink at the Fansly paste step), and one Fansly account per Creator
- * (creators0408). The Relay client is mocked; fixture ids are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -16,7 +10,8 @@ vi.mock("@/lib/relay", async (importOriginal) => ({
 
 import AccountsTable from "@/components/setup/AccountsTable";
 import AddCreatorModal from "@/components/setup/AddCreatorModal";
-import { FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
+import { EditAccountModal } from "@/components/setup/EditCreatorModal";
+import FanslyPasteSessionCard, { FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
 import { relay, RelayError } from "@/lib/relay";
 
 const relayGet = relay.get as unknown as Mock;
@@ -49,17 +44,14 @@ describe("Add creator, Fansly sign-in", () => {
   it("has Infloww's Done beside Cancel, and Done submits the pasted session", async () => {
     relayPost.mockResolvedValue({ ok: true, account_id: "fy-1", platform: "fansly", name: "Fiona" });
     renderWithProviders(<AddCreatorModal extInstalled={null} at="fansly" onClose={() => {}} />);
-    // The footer: the dialog's last row.
     expect(within(dialog().lastElementChild as HTMLElement).getAllByRole("button").map((b) => b.textContent))
       .toEqual(["Cancel", "Done"]);
-    // The card draws no submit of its own inside the flow.
     expect(within(dialog()).queryByRole("button", { name: "Connect Fansly account" })).toBeNull();
 
     fireEvent.change(within(dialog()).getAllByRole("textbox")[0], { target: { value: BLOB } });
     fireEvent.click(btn("Done"));
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/session/fansly", expect.objectContaining({ token: "tok", accountId: "fy-1", user_agent: "UA" })));
 
-    // Linked: the avatar and fansly.com/username, not the raw id.
     expect(await within(dialog()).findByText("fansly.com/fiona")).toBeInTheDocument();
     expect(within(dialog()).getByText("Fiona")).toBeInTheDocument();
     expect(dialog().querySelector('img[src="https://cdn3.fansly.com/a.jpg"]')).not.toBeNull();
@@ -76,13 +68,18 @@ describe("Add creator, Fansly sign-in", () => {
     expect(relayPost).not.toHaveBeenCalled();
   });
 
-  it("a relay refusal reads creators0187, with the relay's answer below", async () => {
-    relayPost.mockRejectedValue(new RelayError(400, { detail: "bad session" }));
+  it.each([
+    [400, FANSLY_T.accountInfoError, "this session signs in as Fansly account fy-2, not fy-1"],
+    [409, FANSLY_T.loginFailed, "fy-1 is already an onlyfans Creator"],
+    [500, FANSLY_T.loginFailed, "boom"],
+  ])("a relay %i reads its wording, with the relay's detail below", async (status, wording, detail) => {
+    relayPost.mockRejectedValue(new RelayError(status, { detail }));
     renderWithProviders(<AddCreatorModal extInstalled={null} at="fansly" onClose={() => {}} />);
     fireEvent.change(within(dialog()).getAllByRole("textbox")[0], { target: { value: BLOB } });
     fireEvent.click(btn("Done"));
-    const out = await within(dialog()).findByText(new RegExp(FANSLY_T.loginFailed.replace(".", "\\.")));
-    expect(out).toHaveTextContent("bad session");
+    const out = await within(dialog()).findByText((_, el) => el?.tagName === "PRE" && !!el.textContent?.startsWith(wording));
+    expect(out).toHaveTextContent(`${status} FAILED`);
+    expect(out).toHaveTextContent(detail);
   });
 
   it("a failed account-info read on the linked step reads creators0416", async () => {
@@ -104,6 +101,57 @@ describe("Add creator, Fansly sign-in", () => {
   });
 });
 
+describe("Fansly card", () => {
+  const paste = (blob: string) => {
+    fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: blob } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect Fansly account" }));
+  };
+
+  it("a success with name null shows the id and no account-info line", async () => {
+    relayPost.mockResolvedValue({ ok: true, account_id: "fy-1", platform: "fansly", name: null });
+    renderWithProviders(<FanslyPasteSessionCard />);
+    paste(BLOB);
+    expect(await screen.findByText(/Connected Fansly account fy-1/)).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(FANSLY_T.accountInfoError))).toBeNull();
+  });
+
+  it("a success with a name shows it", async () => {
+    relayPost.mockResolvedValue({ ok: true, account_id: "fy-1", platform: "fansly", name: "Fiona" });
+    renderWithProviders(<FanslyPasteSessionCard />);
+    paste(BLOB);
+    expect(await screen.findByText(/Connected Fansly account fy-1 \(Fiona\)/)).toBeInTheDocument();
+  });
+
+  it("with an expected id, a blob for another account is refused with no request", async () => {
+    renderWithProviders(<FanslyPasteSessionCard expectedAccountId="fy-9" />);
+    paste(BLOB);
+    expect(await screen.findByText(/fy-1, not fy-9/)).toHaveTextContent(FANSLY_T.loginFailed);
+    expect(relayPost).not.toHaveBeenCalled();
+  });
+
+  it("with an expected id, a matching blob posts as today", async () => {
+    relayPost.mockResolvedValue({ ok: true, account_id: "fy-1", platform: "fansly", name: "Fiona" });
+    renderWithProviders(<FanslyPasteSessionCard expectedAccountId="fy-1" />);
+    paste(BLOB);
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/session/fansly", expect.objectContaining({ accountId: "fy-1", token: "tok" })));
+  });
+
+  it("an 18-digit expected id matches the blob's exact id", async () => {
+    relayPost.mockResolvedValue({ ok: true, account_id: "900539700124344320", platform: "fansly", name: null });
+    renderWithProviders(<FanslyPasteSessionCard expectedAccountId="900539700124344320" />);
+    paste('{"token":"tok","accountId":900539700124344320,"user_agent":"UA"}');
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/session/fansly", expect.objectContaining({ accountId: "900539700124344320" })));
+  });
+
+  it("a Fansly row's relink opens the modal whose card refuses another account's blob", async () => {
+    renderWithProviders(<AddCreatorModal extInstalled={null} at="fansly" expectedAccountId="fy-9" onClose={() => {}} />);
+    fireEvent.change(within(dialog()).getAllByRole("textbox")[0], { target: { value: BLOB } });
+    fireEvent.click(btn("Done"));
+    expect(await within(dialog()).findByText(/fy-1, not fy-9/)).toBeInTheDocument();
+    expect(relayPost).not.toHaveBeenCalled();
+  });
+});
+
 describe("Manage creators, an expired Fansly session", () => {
   it("reads Disconnected with fansly0003, relinks at the Fansly paste step, and offers no OnlyFans recovery", async () => {
     accounts = [{ id: "fy-1", nickname: "Fiona", platform: "fansly", has_session: true }];
@@ -113,10 +161,19 @@ describe("Manage creators, an expired Fansly session", () => {
     expect(await screen.findByTitle(FANSLY_T.rebind)).toHaveTextContent("Disconnected");
 
     fireEvent.click(screen.getByRole("button", { name: "Link creator account" }));
-    expect(onLink).toHaveBeenLastCalledWith("fansly");
+    expect(onLink).toHaveBeenLastCalledWith("fansly", "fy-1");
 
     fireEvent.click(screen.getByRole("button", { name: "More actions for Fiona" }));
     expect(screen.queryByRole("group", { name: "Recovery" })).toBeNull();
+  });
+
+  it("Edit creator's Link on a disconnected Fansly account relinks with its id", () => {
+    const onLink = vi.fn();
+    renderWithProviders(
+      <EditAccountModal account={{ id: "fy-1", nickname: "Fiona", platform: "fansly", has_session: true, is_active: true, proxy_down: false }} conn="Disconnected" onClose={() => {}} onLink={onLink} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Link account" }));
+    expect(onLink).toHaveBeenLastCalledWith("fansly", "fy-1");
   });
 
   it("an OnlyFans row keeps its own relink and recovery", async () => {

@@ -60,9 +60,6 @@ describe("firstUsableFolderId", () => {
 
 describe("folderChips", () => {
   it.each<[string, unknown[], Record<string, number>, Array<[unknown, string]>]>([
-    // TODO known bug, pinned not spec: count keys are strings, so on numeric (OF)
-    // folder ids the global tier never matches and OF's order fills in; the
-    // "most used" chips never show for OF. String (Fansly) ids work, below.
     ["known bug: numeric ids skip the global tier (MRU, then OF order); capped, deduped", [2], { "3": 5, "2": 9, "1": 1 },
       [[2, "mru"], [1, "default"], [3, "default"]]],
     ["no history: OF's first folders", [], {}, [[1, "default"], [2, "default"], [3, "default"]]],

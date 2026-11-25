@@ -35,7 +35,6 @@ describe("validateRule", () => {
   });
 });
 
-/** A state that has a preview of rev 0's rules. */
 const previewed = (): EditorState =>
   rulesReducer(initEditor("Whales", null), { type: "previewed", rev: 0, data: P });
 
@@ -61,7 +60,7 @@ describe("rulesReducer", () => {
     ["a save error shows", { type: "saveFailed", message: "x" }, { err: "x" }],
     ["a preview answer clears the error", { type: "previewed", rev: 1, data: P }, { preview: P, err: null }],
   ])("%s", (_, action, want) => {
-    const s0 = { ...rulesReducer(initEditor("", null), { type: "add" }), err: "old" }; // rev 1
+    const s0 = { ...rulesReducer(initEditor("", null), { type: "add" }), err: "old" };
     const s = rulesReducer(s0, action);
     if (want === "same") expect(s).toBe(s0);
     else expect(s).toMatchObject(want);

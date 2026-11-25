@@ -1,26 +1,5 @@
 "use client";
 
-/**
- * FunnelEditor — create / edit one mass-message funnel (W8-P1), on top of the
- * funnels CRUD API (service/funnels_api.py). A funnel is GLOBAL: an opener
- * (`opening_message`, sent by send_mass_message) plus an ordered list of steps
- * reply_mass_funnel walks per replying fan. Two step shapes:
- *
- *   REPLY — poll the fan on `check_intervals_min`, then send one of a message
- *           VARIANT pool (first ≤2 used) or generate via `prompt`/`generate`.
- *   PPV   — sales copy at a price (`type:"paid_ppv"`).
- *
- * This editor is TEXT-ONLY. PPV MEDIA is per-account (vault ids don't carry
- * between models), so each model maps its own via the FunnelMediaPane ("Media"
- * action in `MassFunnelsTab`) — NOT here.
- *
- * The steps show as a timeline of cards (StepCard), one open at a time; the
- * raw JSON sits behind the footer's "Edit as JSON".
- *
- * `MassFunnelsTab` is the list (Infloww's Smart Messages table: status pills,
- * phone rows with a "⋯" menu) with the editor and the delete confirm as
- * dialogs: My Automations > Auto Funnel.
- */
 
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { MoreHorizontal, Plus } from "lucide-react";
@@ -56,21 +35,18 @@ import {
   useUpdateRule,
 } from "@/hooks/useAutomations";
 
-/** The poller that actually advances funnels past the opener is a per-account
- *  recurring `reply_mass_funnel` automation rule. The opener (send_mass_message)
- *  is funnel-linked, but no reply/PPV step moves while this rule is missing or
- *  disabled — so the tab surfaces & toggles it. Default cadence: every 2 min. */
+// No reply / PPV step moves past the opener while this per-account rule is missing or disabled.
 const WALKER_KIND = "reply_mass_funnel";
 const WALKER_EVERY_S = 120;
 
-// ── Single-funnel editor ────────────────────────────────────────────────
 
+// Text only: PPV media is per-account (vault ids don't carry between models), mapped in FunnelMediaPane.
 export function FunnelEditor({
   funnelId,
   onClose,
   onSaved,
 }: {
-  funnelId: number | null; // null = create
+  funnelId: number | null;
   onClose: () => void;
   onSaved?: () => void;
 }) {
@@ -80,21 +56,14 @@ export function FunnelEditor({
   const updateM = useUpdateFunnel();
 
   const [seeded, setSeeded] = useState(!isEdit);
-  // The draft + the raw-JSON escape hatch (lib/rawJsonReducer): hand-edit the
-  // whole funnel body `{ name, opening_message, description, steps }` (paste
-  // steps, tweak a field the form doesn't expose). Unknown step keys pass
-  // through; see lib/funnelDraft for how known keys and `step` numbers are kept.
   const [draft, rawDispatch] = useRawJson(FUNNEL_RAW, () => EMPTY_FUNNEL);
   // Escape closes only an untouched draft: the load's seed, a mode switch and a failed save are not edits.
   const { touched, dispatch } = useTouched(draft, rawDispatch, isFunnelSeed);
-  // One step card open at a time; editFunnel moves it with its step (funnelDraft.followOpen).
   const { name, description, opening, steps, open } = draft.value;
   const edit = (e: FunnelEdit) => dispatch({ type: "update", fn: (d) => editFunnel(d, e) });
-  // Opening a card is not an edit (Escape still closes an untouched draft).
   const toggle = (i: number) => rawDispatch({ type: "update", fn: (d) => editFunnel(d, { type: "toggleStep", i }) });
   const fail = (error: string) => dispatch({ type: "fail", error });
 
-  // Seed once from the loaded funnel (edit mode). Create mode starts blank.
   useEffect(() => {
     if (seeded || !fullQ.data) return;
     rawDispatch({ type: "set", value: funnelDraftOf(fullQ.data) });
@@ -104,7 +73,7 @@ export function FunnelEditor({
   const busy = createM.isPending || updateM.isPending;
 
   async function save() {
-    if (!canSubmit(draft)) return; // the raw buffer's parse error is already shown
+    if (!canSubmit(draft)) return;
     let body: FunnelBody;
     try {
       body = saveBody(draft.value);
@@ -120,7 +89,6 @@ export function FunnelEditor({
       onSaved?.();
       onClose();
     } catch (e) {
-      // The server's 422 names steps by step[i] / id → by position, as on the cards.
       fail(stepErrorText((e as Error)?.message || "Save failed", body.steps));
     }
   }
@@ -145,7 +113,6 @@ export function FunnelEditor({
       size="editor"
       footer={(
         <>
-          {/* The JSON escape hatch: reachable, not prominent (fast imports). */}
           <IfButton variant="link" onClick={() => dispatch({ type: draft.raw ? "close" : "open" })}
             className="mr-auto">
             {draft.raw ? "Back to form" : "Edit as JSON"}
@@ -195,7 +162,6 @@ export function FunnelEditor({
         </div>
       </section>
 
-      {/* The follow-up steps as a timeline (Infloww Scripts' sequence steps). */}
       <section>
         <h3 className="text-[14px] font-medium text-fg">Follow-up steps ({steps.length})</h3>
         <IfHelp className="mb-3">
@@ -236,9 +202,7 @@ export function FunnelEditor({
 
 const isFunnelSeed = (a: { type: RawJsonAction<unknown>["type"] }) => a.type === "set" || a.type === "open" || a.type === "close" || a.type === "fail";
 
-// ── Auto Funnel list: header actions, follow-up switch, table, dialogs ──
 
-/** Without a `frame` the header's Learn and "New funnel" sit right above the body. */
 const inlineFrame = (actions: ReactNode, body: ReactNode) => (
   <div className="space-y-3">
     <div className="flex items-center justify-end gap-4">{actions}</div>
@@ -247,11 +211,9 @@ const inlineFrame = (actions: ReactNode, body: ReactNode) => (
 );
 
 const FUNNEL_COLUMNS = ["Funnel", "Status", "Steps", "Fans in funnel", "Last started", "Actions"] as const;
-/** Below `sm` a row is the Funnel cell (status + fans under the name) and a "⋯" menu. */
 const WIDE_ONLY = new Set<string>(["Status", "Steps", "Fans in funnel", "Last started"]);
 const LINK = "text-accent hover:text-accent-hover disabled:cursor-not-allowed disabled:opacity-50";
 
-/** The shared pill, or a dash while this creator's stats load. */
 function FunnelPill({ status }: { status: FunnelStatus | null }) {
   return status ? <StatusPill status={status} className="leading-[inherit]" /> : <span className="text-muted">—</span>;
 }
@@ -259,17 +221,12 @@ function FunnelPill({ status }: { status: FunnelStatus | null }) {
 type RowAction = "Start" | "Edit" | "Media" | "Delete";
 const ROW_ACTIONS: RowAction[] = ["Start", "Edit", "Media", "Delete"];
 
-/** Auto Funnel's list (Infloww's Smart Messages table): the "Follow up on replies" switch, then a row per funnel
- *  with this creator's Status, Steps, Fans in funnel and Last started (funnels_api `?account_id=` stats); Start and
- *  Media open under their row, the editor and the delete confirm are dialogs. `frame(actions, body)` places Learn and
- *  "New funnel" (Auto Funnel passes them to its page header). */
 export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
   accountId: string | null;
   frame?: (actions: ReactNode, body: ReactNode) => ReactNode;
 }) {
   const listQ = useFunnels(accountId);
   const deleteM = useDeleteFunnel();
-  // One open at a time: the editor dialog (new or a funnel) or a row's Start / Media panel.
   const [panel, setPanel] = useState<{ k: "new" } | { k: "edit" | "start" | "media"; id: number } | null>(null);
   const openOn = (k: "edit" | "start" | "media", id: number) => panel?.k === k && panel.id === id;
   const [deleting, setDeleting] = useState<{ id: number; name: string } | null>(null);
@@ -277,7 +234,6 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
 
   const funnels = listQ.data ?? [];
 
-  // ── Follow-ups (the per-account reply_mass_funnel rule, "reply walking") ──
   const rulesQ = useAutomationRules(accountId);
   const walker = useMemo(
     () => (rulesQ.data ?? []).find((r) => r.kind === WALKER_KIND) ?? null,
@@ -289,8 +245,6 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
   const walkerBusy = createRuleM.isPending || updateRuleM.isPending;
   const [walkerErr, setWalkerErr] = useState<string | null>(null);
 
-  /** Flip the per-account follow-ups on/off (create the rule on first enable). Starting a funnel turns it on
-   *  server-side too (mass_queue_api → funnels_api.ensure_funnel_walker). */
   async function setWalker(enabled: boolean) {
     if (!accountId) return;
     setWalkerErr(null);
@@ -325,7 +279,6 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
     }
   }
 
-  /** One row's panel at a time: Start or Media, toggled. */
   const openPanel = (k: "start" | "media", id: number) => setPanel(openOn(k, id) ? null : { k, id });
   const act = (f: FunnelSummary, a: RowAction) => {
     if (a === "Start") openPanel("start", f.id);
@@ -354,7 +307,6 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
   const everyMin = Math.round((walker?.every_seconds ?? WALKER_EVERY_S) / 60);
   const body = (
     <div className="space-y-4">
-      {/* Follow-ups: without them a funnel sends the opener and stops. Starting a funnel turns them on. */}
       {accountId && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <IfSwitch label="Follow up on replies" checked={walkerOn} disabled={walkerBusy || rulesQ.isLoading}
@@ -398,7 +350,6 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
                       <td className={cn(IF_TABLE.td, "w-full max-w-0")}>
                         <span className="block truncate font-medium">{f.name}</span>
                         <span className="block truncate text-[12px] text-muted max-sm:hidden">{f.description || f.opening_message}</span>
-                        {/* Phone: the hidden columns, under the name. */}
                         <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted sm:hidden">
                           <FunnelPill status={status} />
                           {f.stats && f.stats.last_started_at && <span>{fans}{ago && ` · ${ago}`}</span>}
@@ -419,7 +370,6 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
                           <button type="button" className={LINK} disabled={deleteM.isPending} onClick={() => act(f, "Delete")}>Delete</button>
                         </span>
                         <span className="sm:hidden">
-                          {/* Phone: the same four actions in a "⋯" menu. */}
                           <Menu label={<MoreHorizontal className="h-4 w-4" aria-hidden />} ariaLabel={`More actions for ${f.name}`}
                             align="right" items={ROW_ACTIONS.map((a) => ({ label: a, onClick: () => act(f, a),
                               disabled: a === "Delete" && deleteM.isPending }))} />

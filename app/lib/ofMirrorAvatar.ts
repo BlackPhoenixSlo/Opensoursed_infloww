@@ -1,19 +1,12 @@
 "use client";
 
-/**
- * OF's avatar as the mirror draws it (the Statistics fan cells, a list row's member stack, Stream's blocked users, the
- * tag dialog): picture, else OF's text avatar (initials), else its profile icon; and the two element builders it needs.
- * A leaf: imports nothing of the mirror, so ofMirrorData and the Statistics modules can both use it.
- */
 
-/** An element of `doc` with OF's classes and text. */
 export const elOf = (doc: Document) => (tag: string, cls = "", text?: string) => {
   const e = doc.createElement(tag);
   if (cls) e.className = cls;
   if (text !== undefined) e.textContent = text;
   return e;
 };
-/** OF's icon (`<svg class="g-icon"><use href="#icon-…">`). */
 export function iconOf(doc: Document, name: string, cls = "g-icon") {
   const svg = doc.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("aria-hidden", "true");
@@ -25,21 +18,17 @@ export function iconOf(doc: Document, name: string, cls = "g-icon") {
   svg.append(use);
   return svg;
 }
-/** A user OF draws an avatar for: a fan it lists (`/subscriptions/subscribers/*`, `/users/me/referrals`, the top fan), a list's member, a post's author, a blocked user. */
 export interface AvatarUser {
   id?: number | string;
   name?: string | null;
   username?: string | null;
   avatar?: string | null;
   avatarThumbs?: { c50?: string | null; c144?: string | null } | null;
-  /** The Creator's rename of the user: OF's initials are of it over `name`. */
   displayName?: string | null;
   isActive?: boolean;
   isDeleted?: boolean;
 }
-/** The Statistics pages' name for it (their users are fans). */
 export type Fan = AvatarUser;
-/** OF's text avatar (its avatar component's initials): one word's first two (its first emoji out), else two words' first letters. */
 export function textAvatar(name: string): string {
   const emoji = /(\u00a9|\u00ae|[\u2000-\u3300]|\ud83c[\ud000-\udfff]|\ud83d[\ud000-\udfff]|\ud83e[\ud000-\udfff])/;
   const words = name.split(/\s+/);
@@ -51,14 +40,11 @@ export function textAvatar(name: string): string {
   }
   return out.join("").toUpperCase();
 }
-/** OF's initials avatar ("Cl" for Cliff, "M2" for "Marcus, 29"), of the display name over the name; a user named only by
- *  its login (`u<id>`, no display name): none, OF's profile icon instead. */
 export const initials = (u: AvatarUser) => {
   const name = (u.displayName || u.name || "").trim();
   if (!name || (!u.displayName && u.name === `u${u.id}`)) return "";
   return textAvatar(name);
 };
-/** OF's avatar (`g-avatar`): the picture through the Relay's image proxy, else initials, else the profile icon. */
 export function avatarOf(doc: Document, u: AvatarUser, size: 36 | 50, img: ((u: string) => string) | undefined, cls = "m-absolute") {
   const el = elOf(doc);
   const box = el("span", `g-avatar m-reset-wcag-link-focus ${cls} m-w${size}`);

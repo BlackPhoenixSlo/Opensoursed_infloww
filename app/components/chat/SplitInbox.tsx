@@ -18,14 +18,22 @@
 
 import { useId, useMemo, useReducer } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 import { IfButton } from "@/components/ui/infloww";
+import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { useRoster } from "@/hooks/useRoster";
 import { useSplitInbox } from "@/hooks/useSplitInbox";
 import type { FanId } from "@/lib/fanId";
-import { groupOf, type SplitInboxConfig } from "@/lib/splitInbox";
+import { relay } from "@/lib/relay";
+import {
+  groupOf, splitInboxKey, splitInboxQueryOptions, type SplitInboxConfig, type SplitInboxResponse,
+} from "@/lib/splitInbox";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 import { useInflowwPalette } from "./InflowwPalette";
+import {
+  allChatterGroupOf, buildPayloads, initAllForm, scopeChatters, splitInboxAllFormReducer,
+} from "./splitInboxAllForm";
 import { buildPayload, chatterGroupOf, initForm, splitInboxFormReducer } from "./splitInboxForm";
 
 const GROUP_COUNTS = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
@@ -39,9 +47,9 @@ export interface SplitInboxFan {
 }
 
 export function SplitInbox({
-  accountId, open, onClose, fans,
+  accountIds, open, onClose, fans,
 }: {
-  accountId: string;
+  accountIds: readonly string[];
   open: boolean;
   onClose: () => void;
   /** The Fans loaded in the Fan List, listed for reassigning (no search). */
@@ -60,7 +68,9 @@ export function SplitInbox({
         >
           <Dialog.Title className="mb-4 text-base font-semibold">Split Inbox settings</Dialog.Title>
           {/* Mounted only while open; it shares the Fan List's Split Inbox query. */}
-          <SplitInboxBody accountId={accountId} onClose={onClose} fans={fans} />
+          {accountIds.length === 1
+            ? <SplitInboxBody accountId={accountIds[0]} onClose={onClose} fans={fans} />
+            : <SplitInboxAllBody accountIds={accountIds} onClose={onClose} />}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -158,6 +168,116 @@ function SplitInboxForm({
                     className={SELECT_CLASS}
                   >
                     <option value="">All</option>
+                    {groups.map((n) => <option key={n} value={n}>Inbox {n}</option>)}
+                  </select>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+      {save.isError && (
+        <p role="alert" className="mt-3 text-sm text-err">{save.error.message}</p>
+      )}
+      <div className="mt-5 flex justify-end gap-2">
+        <Dialog.Close asChild>
+          <IfButton>Cancel</IfButton>
+        </Dialog.Close>
+        <IfButton variant="primary" onClick={submit} disabled={save.isPending}>
+          {save.isPending ? "Saving…" : "Save"}
+        </IfButton>
+      </div>
+    </>
+  );
+}
+
+const toStored = (results: { data?: SplitInboxResponse; error: Error | null }[]) => ({
+  configs: results.map((r) => r.data?.config ?? null),
+  error: results.find((r) => r.error && !r.data)?.error ?? null,
+});
+
+function SplitInboxAllBody({ accountIds, onClose }: { accountIds: readonly string[]; onClose: () => void }) {
+  const { configs, error } = useQueries({
+    queries: accountIds.map((id) => splitInboxQueryOptions(id)), combine: toStored,
+  });
+  const stored = useMemo(
+    () => (configs.every((c) => c) ? new Map(accountIds.map((id, i) => [id, configs[i]!] as const)) : null),
+    [accountIds, configs],
+  );
+  if (error) return <p role="alert" className="text-sm text-err">{error.message}</p>;
+  if (stored) return <SplitInboxAllForm accountIds={accountIds} stored={stored} onClose={onClose} />;
+  return <p className="text-sm text-fg-dim">Loading…</p>;
+}
+
+function SplitInboxAllForm({
+  accountIds, stored, onClose,
+}: { accountIds: readonly string[]; stored: ReadonlyMap<string, SplitInboxConfig>; onClose: () => void }) {
+  const [form, dispatch] = useReducer(splitInboxAllFormReducer, stored, initAllForm);
+  const { rows: roster } = useRoster({ includeDisabled: false });
+  const chatters = useMemo(() => scopeChatters(roster, accountIds), [roster, accountIds]);
+  const accounts = usePlatformAccounts();
+  const qc = useQueryClient();
+  const save = useMutation<void, Error, Map<string, SplitInboxConfig>>({
+    mutationFn: async (payloads) => {
+      const ids = [...payloads.keys()];
+      const results = await Promise.allSettled(ids.map((aid) =>
+        relay.put<SplitInboxResponse>(`/admin/split-inbox`, { account_id: aid, config: payloads.get(aid) })));
+      const failed = ids.flatMap((aid, i) => {
+        const r = results[i];
+        return r.status === "rejected" ? [{ aid, reason: r.reason as unknown }] : [];
+      });
+      if (failed.length === 0) return;
+      const nameOf = (aid: string) => accounts.find((a) => a.id === aid)?.nickname || aid;
+      const first = failed[0].reason;
+      throw new Error(
+        `Not saved for ${failed.map((f) => nameOf(f.aid)).join(", ")}` +
+        `${first instanceof Error ? `: ${first.message}` : ""}. The other models were saved.`,
+      );
+    },
+    onSettled: (_d, _e, payloads) =>
+      Promise.all([...payloads.keys()].map((aid) => qc.invalidateQueries({ queryKey: splitInboxKey(aid) }))),
+  });
+  const headingId = useId();
+  const chattersId = useId();
+  const { groupCount } = form;
+  const groups = GROUP_COUNTS.slice(0, groupCount);
+  const submit = () => save.mutate(buildPayloads(form, stored, chatters), { onSuccess: onClose });
+  return (
+    <>
+      <p className="-mt-3 mb-4 text-sm text-fg-dim">Applies to all {accountIds.length} models</p>
+      <section aria-labelledby={headingId} className="flex flex-col gap-2">
+        <h3 id={headingId} className="text-sm font-medium">Choose the number of groups</h3>
+        <select
+          aria-labelledby={headingId}
+          value={groupCount}
+          onChange={(e) => dispatch({ type: "count", n: Number(e.target.value) })}
+          disabled={save.isPending}
+          className={SELECT_CLASS}
+        >
+          {GROUP_COUNTS.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+        {groupCount > 1 && <p className="text-xs text-fg-dim">Move single fans from a model&apos;s own tab.</p>}
+      </section>
+      {groupCount > 1 && chatters.length > 0 && (
+        <section aria-labelledby={chattersId} className="mt-4 flex flex-col gap-2">
+          <h3 id={chattersId} className="text-sm font-medium">Chatters</h3>
+          <ul className="max-h-48 overflow-y-auto flex flex-col gap-2">
+            {chatters.map((c) => {
+              const value = allChatterGroupOf(form, stored, c);
+              return (
+                <li key={c.id} className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 truncate text-sm">{c.name}</span>
+                  <select
+                    aria-label={c.name}
+                    value={value ?? ""}
+                    onChange={(e) => dispatch({
+                      type: "bindChatter", chatterId: c.id, group: e.target.value === "" ? null : Number(e.target.value),
+                    })}
+                    disabled={save.isPending}
+                    className={SELECT_CLASS}
+                  >
+                    <option value="">All</option>
+                    {value === "mixed" && <option value="mixed" disabled>Mixed</option>}
                     {groups.map((n) => <option key={n} value={n}>Inbox {n}</option>)}
                   </select>
                 </li>

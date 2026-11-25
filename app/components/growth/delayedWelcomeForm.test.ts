@@ -36,7 +36,6 @@ describe("initWelcome", () => {
   });
 });
 
-// Same input → the request the old inline save() built (HEAD DelayedWelcomeEditor.tsx).
 describe("buildSave pins the old inline requests", () => {
   it.each<[string, AutomationRule | null, WelcomeEdit[], unknown]>([
     ["no rule, untouched: create off with the Brain lane's defaults", null, [], {
@@ -96,7 +95,6 @@ describe("one gate: welcomeIssues / canSubmit / buildSave agree", () => {
   });
 });
 
-// The rule as written (a save's answer, or a newer read): reseed from it, unless the draft holds an edit.
 describe("welcomeReducer: saved, then landed", () => {
   const ANSWER = RULE({ every_seconds: 17 * 60 }, { message: "As saved" });
   const typed: WelcomeEdit = { type: "patch", patch: { variants: ["Typed while saving"] } };
@@ -110,7 +108,6 @@ describe("welcomeReducer: saved, then landed", () => {
       { minutes: 10, variants: [""], unsaved: true }],
     ["an edit after a clean land: unsaved", [{ type: "saved" }, { type: "landed", rule: ANSWER }, typed],
       { minutes: 17, variants: ["Typed while saving"], unsaved: true }],
-    // The rule as the cache reads it now (a refetch, another tab, the first read after a failed one).
     ["untouched since mount, a newer rule: reseeded, reads saved", [{ type: "live", rule: ANSWER }],
       { minutes: 17, variants: ["As saved"], unsaved: false }],
     ["typed, a newer rule: the edit stays", [typed, { type: "live", rule: ANSWER }],
@@ -121,7 +118,6 @@ describe("welcomeReducer: saved, then landed", () => {
   });
 });
 
-// What a save merges into, a newer read (incl. the rule deleted elsewhere), and a failed save.
 describe("welcomeReducer: merge target, live, failed", () => {
   const ON = RULE({ id: 7, every_seconds: 600 }, { message: "On the server" });
   const OTHER = RULE({ id: 9, is_enabled: false, every_seconds: 1200 }, { message: "From another tab" });

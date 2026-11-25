@@ -1,31 +1,3 @@
-"""Inbox under a fan DM burst: --users fans DM their Creators; the manager watches
-/events and the inbox. Frames enter in the pump's shape (actors/fan_dm.serial):
-one frame in flight per Creator, every Creator at once, as fast as the relay
-takes them, or open loop at --rate=N frames/s per Creator. Proves the WS ingest
-path (pump boundary -> persist worker -> transcoder -> chats/messages -> SSE)
-loses nothing under load and the inbox's unread counts add up.
-
-Invariants: every DM accepted; zero persist-queue drops; every DM reaches the SSE
-stream; every DM is in its thread (/admin/messages); each fan's unreadMessagesCount
-(/admin/chats/recent) == seeded unread + DMs sent; the burst fans head their
-Creator's inbox; UI: Messages Pro shows the burst, and a click on a notification of a
-fan's DM (toast in the main window and in Messages Pro, top bar bell row, /notifications
-row, OS notification; in the browser and in the desktop app) opens that Fan as a Fan tab
-in the one Messages Pro window (actors/notif_click; `--set desktop=0` skips Electron).
-Quick reply (the Messages Pro bell's Reply, app/components/NotificationQuickReply.tsx):
-one Fan DMs two Creators (the same Fan id on both; the second Creator's chat is made by
-the ingest), Messages Pro on All Models lists both rows in its bell; Reply on the second
-Creator's row, a line typed and sent: OF got exactly that one send, as that Creator to
-that Fan with the typed text, nothing to the first Creator (lib/relay.py `of_sends`), the
-line is in that thread (/admin/messages) and not in the other; the field read Sent and
-the other Creator's row still offers Reply (screenshots quick-reply-trigger / -settled).
-Declared bypass: the bell's OF notifications feed is answered empty at the wire (as in
-actors/notif_click), so the rows are the DMs' own (the SSE history mirror).
-Budgets: end-to-end p95 (frame handed to the relay -> on the manager's /events stream)
-and the inbox read p95s. Break-it-once: transcoder-drops-1-in-10,
-`--fault=notif-click-opens-browser-tab` and `--fault=quick-reply-to-wrong-fan` (targets in
-lib/faults.py).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -39,17 +11,15 @@ from slop.actors import fan_dm, manager, notif_click, ui
 PROFILE = "agency_inbox"
 UI = True
 FAULT = "transcoder-drops-1-in-10"
-# Budgets (ms). E2E: frame handed to the relay -> that message on the manager's
-# /events SSE stream. P95_MS: real inbox read routes, per actor call.
 E2E_P95_MS = 500
 P95_MS = {"GET /admin/chats/recent": 500, "GET /admin/messages/:id/:id": 500}
-RECENT_MAX = 100  # /admin/chats/recent limit cap: per-creator targets stay within one page
+RECENT_MAX = 100
 
 
 async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
     per_fan = ctx.param("per_fan", w.size["inbox_unread_per_fan"])
-    rate = ctx.param("rate", 0.0)  # frames/s per Creator; 0 = closed loop (next frame when the last returns)
+    rate = ctx.param("rate", 0.0)
     creators, fans = w.data["creators"], w.data["fans"]
     k = min(RECENT_MAX, math.ceil(ctx.users / len(creators)))
     rng = w.rng("scenario:inbox-burst")
@@ -68,7 +38,7 @@ async def run(ctx) -> None:
     burst_s = asyncio.get_running_loop().time() - t0
     sent = [r for r in recs if r["status"] < 300]
     stats = await manager.quiesce(ctx.owner)
-    await asyncio.sleep(1.0)  # let the SSE tail flush
+    await asyncio.sleep(1.0)
     await sse.stop()
     await pool.aclose()
     ctx.metric("burst_seconds", round(burst_s, 2))
@@ -93,7 +63,6 @@ async def run(ctx) -> None:
     else:
         ctx.skip(name, "no DM reached /events: no samples")
 
-    # Threads: every injected id present in its fan's timeline.
     sem = asyncio.Semaphore(20)
     by_fan: dict[tuple, set[int]] = {}
     for s in sent:
@@ -108,7 +77,6 @@ async def run(ctx) -> None:
     ctx.check("every DM is in its thread (/admin/messages)", sum(gaps) == 0,
               missing=sum(gaps), threads_short=sum(1 for g in gaps if g))
 
-    # Inbox: unread counts add up and the burst fans head each Creator's list.
     bad_unread, bad_order = [], 0
     for c in creators:
         rows = await manager.recent_chats(ctx.owner, c["id"], RECENT_MAX)
@@ -153,7 +121,6 @@ async def run(ctx) -> None:
             ctx.check(UI_CHECKS[0], seen and rows > 0, rows=rows, url=page.url)
             ctx.check(UI_CHECKS[1], not relay_5xx, count=len(relay_5xx))
 
-        # Notification clicks: fans of the first Creator, quiet after the burst.
         c0 = creators[0]["id"]
         clicks = await notif_click.browser(ctx, c0, fans[c0])
         if ctx.param("desktop", 1):
@@ -183,9 +150,8 @@ def _plain(html: str | None) -> str:
 
 
 async def _quick_reply(ctx, creators: list[dict], fans: dict) -> dict:
-    """The Messages Pro bell's quick reply (module docstring): one Fan, two Creators, Reply on the second's row."""
     a, b = creators[0]["id"], creators[1]["id"]
-    used = {f["id"] for f in notif_click.distinct(fans[a])[:5]}  # notif_click's Fans
+    used = {f["id"] for f in notif_click.distinct(fans[a])[:5]}
     fan = next((f for f in notif_click.distinct(fans[a]) if f["id"] not in used), None)
     if fan is None:
         for n in QR_CHECKS:
@@ -199,9 +165,9 @@ async def _quick_reply(ctx, creators: list[dict], fans: dict) -> dict:
     async def sends() -> list[dict]:
         return (await ctx.owner.get("/__slop/fake/calls?sends=1")).json()["of_sends"]
 
-    async def feed(r):  # declared bypass: OF's notifications feed empty, the rows are the DMs' own
+    async def feed(r):
         url = r.request.url
-        if "/money" in url:  # the rail's combined read: each asked money type, empty
+        if "/money" in url:
             types = parse_qs(urlsplit(url).query).get("types", [""])[0].split(",")
             await r.fulfill(json={t: {"list": [], "hasMore": False} for t in types if t})
             return
@@ -215,7 +181,7 @@ async def _quick_reply(ctx, creators: list[dict], fans: dict) -> dict:
         reply_btn = page.get_by_role("button", name="Reply", exact=True)
         rows = {c: page.locator("div").filter(has_text=line[c]).filter(has=reply_btn).last for c in (a, b)}
         got["dm_tries"] = 0
-        for got["dm_tries"] in range(1, 4):   # a DM the transcoder fault drops is sent again (new id)
+        for got["dm_tries"] in range(1, 4):
             for c in (a, b):
                 await fan_dm.inject(ctx.owner, c, fan_dm.frame(next(ids), fan, line[c]))
             if await bell.get_attribute("aria-expanded") != "true":
@@ -226,11 +192,11 @@ async def _quick_reply(ctx, creators: list[dict], fans: dict) -> dict:
                 break
             except Exception:  # noqa: BLE001
                 continue
-        mark = len(await sends())   # no send of this step can have gone yet
+        mark = len(await sends())
         try:
             await rows[b].get_by_role("button", name="Reply", exact=True).click(timeout=10_000)
             field = rows[b].get_by_role("textbox", name=f"Reply to {fan['name']}")
-            await field.wait_for(timeout=60_000)   # the field's module is lazy
+            await field.wait_for(timeout=60_000)
             await field.fill(typed)
             got["trigger_png"] = await ui.shot(ctx, page, "quick-reply-trigger")
             await page.evaluate(SENT_JS)
@@ -240,7 +206,6 @@ async def _quick_reply(ctx, creators: list[dict], fans: dict) -> dict:
         except Exception as e:  # noqa: BLE001 — a step that cannot complete is the checks' FAIL
             got["error"] = f"{type(e).__name__}: {e}"[:400]
             got["sent_seen"] = await page.evaluate("() => !!window.__slopQrSent")
-        # Settled: the replied row says who responded (chat_responded), the other Creator's still offers Reply.
         responded = page.locator("div").filter(has_text=line[b]).filter(has_text="has responded").last
         try:
             await responded.wait_for(timeout=15_000)
@@ -249,7 +214,7 @@ async def _quick_reply(ctx, creators: list[dict], fans: dict) -> dict:
             got["replied_row_responded"] = False
         got["other_row_reply"] = await rows[a].get_by_role("button", name="Reply", exact=True).count() == 1
         got["settled_png"] = await ui.shot(ctx, page, "quick-reply-settled")
-        await asyncio.sleep(1.0)  # a stray second send would have reached OF by now
+        await asyncio.sleep(1.0)
         new = (await sends())[mark:]
     got["of_sends"] = new
     threads = {c: [m for m in await manager.thread_messages(ctx.owner, c, fan["id"]) if _plain(m.get("body")) == typed]
@@ -277,7 +242,6 @@ def _pcts(xs: list[float]) -> dict:
 
 
 def _pump_metrics(recs: list[dict], rate: float) -> dict:
-    """Per Creator: frames, achieved frames/s, and (open loop) how far sends lagged their schedule."""
     out = {}
     for aid in sorted({r["account_id"] for r in recs}):
         rs = [r for r in recs if r["account_id"] == aid]

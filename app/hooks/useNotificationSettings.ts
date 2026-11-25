@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * useNotificationSettings — read/write the toaster prefs with re-render
- * on change.
- *
- * Subscribes to the custom "chatterly:notif-settings" event we fire from
- * writeNotifSettings so other components (the bell, the toaster) refresh
- * the moment the user flips a toggle. Also listens to "storage" so popout
- * tabs stay in sync.
- */
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -35,12 +26,8 @@ export function useNotificationSettings() {
     };
   }, []);
 
-  // Side effects (localStorage write + event dispatch) MUST live outside
-  // setSettings' updater function — React calls updaters during render in
-  // concurrent mode, and dispatching an event from a render triggered a
-  // setState in the sibling NotificationDeltaPoller. Read `settings` from
-  // closure instead and pass the next value directly to setSettings.
   const update = useCallback((patch: Partial<NotifSettings>) => {
+    // Side effects stay out of setSettings' updater: React runs updaters during render and the event setState'd a sibling.
     const next = { ...settings, ...patch };
     setSettings(next);
     writeNotifSettings(next);

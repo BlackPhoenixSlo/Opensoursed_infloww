@@ -9,16 +9,12 @@ import { DASH, PARTIAL, TIPS, count, cvr, linkAverages, money } from "@/componen
 import { hasNetCols, useLinks, type TabProps } from "@/components/growth/TrackingLinksList";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 
-/** The date and time the relay's read landed, in the report time zone. */
 function readStamp(at: number, tz: string | null): string {
   return new Date(at).toLocaleString(undefined, {
     timeZone: tz ?? undefined, year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
   });
 }
 
-/** The read's totals for one Creator; null while there is no read to sum. `earnings` (every link, deactivated ones
- *  too: their money was earned) is null until some link has a figure; `partial` when some link has none, or net
- *  leaves transactions out. */
 type Totals = { clicks: number; subscribers: number; earnings: number | null; partial: boolean } | null;
 
 type Averages = ReturnType<typeof linkAverages>;
@@ -26,16 +22,6 @@ const orNull = (v: string): string | null => (v === DASH ? null : v);
 
 type Kpi = { title: string; tip?: string; value: (t: NonNullable<Totals>, a: Averages, cost: number) => string | null };
 
-/**
- * #77's seven cards, laid out as the Analytics pages' Creator statistics cards (owner: the Dashboard reads like the
- * rest of Analytics): "Performance" (Total clicks, Total subs, Subscription CVR, Total earnings), then "Promo cost"
- * (ours: Total promo cost, then Avg CPC, Avg CPS and Avg ROI). Total clicks, Total subs and the overall Subscription
- * CVR are sums over the read; Total earnings over the earnings read. Avg CPC, Avg CPS and Avg ROI are ours (Infloww
- * does not say how it averages): pooled over the links with a Promo cost, deactivated ones too (their cost was
- * spent), after the Source and Tag filters: Σcost / Σclicks, Σcost / Σsubs, and (Σearnings − Σcost) / Σcost × 100
- * over the costed links with an earnings figure, net or gross as the toggle says ("—" with no costed link or a
- * divisor of 0).
- */
 const PERFORMANCE: Kpi[] = [
   { title: "Total clicks", value: (t) => count(t.clicks) },
   { title: "Total subs", value: (t) => count(t.subscribers) },
@@ -61,8 +47,7 @@ export function Dashboard({ accountId, onAccountChange, net, onNet }: TabProps) 
   const { reportTz } = useReportTz();
   const ids = { perf: useId(), cost: useId() };
   const ofAvailable = q.data?.of_available ?? false;
-  // No read, or OnlyFans unreachable: "—", never a zero that reads as a real total. Clicks and subs are over the
-  // live links, as they were before the read carried the deactivated ones; earnings are over every link.
+  // No read or OF unreachable: "—", never a zero that reads as a real total.
   const totals: Totals = q.data && ofAvailable
     ? links.reduce<NonNullable<Totals>>(
       (t, l) => ({
@@ -75,7 +60,6 @@ export function Dashboard({ accountId, onAccountChange, net, onNet }: TabProps) 
     )
     : null;
   const averages = linkAverages(links);
-  // Every costed link, deactivated ones too, as the averages pool them.
   const cost = links.reduce((c, l) => c + (l.promo_cost_cents && l.promo_cost_cents > 0 ? l.promo_cost_cents : 0), 0);
 
   const cards = (kpis: Kpi[], label: string) => (
@@ -93,12 +77,10 @@ export function Dashboard({ accountId, onAccountChange, net, onNet }: TabProps) 
 
   return (
     <div className="px-4 pt-4 mb-4">
-      {/* #80: Creator, Source, Tag and Show net earnings (`LinkDashboardFilters`, index.9f50f370.js @13976167). */}
       <div className="flex flex-wrap items-center gap-x-4">
         <CreatorFilter accountId={accountId} onAccountChange={onAccountChange} />
         <FilterSelect label="Source" icon={GitMerge} options={q.data?.sources ?? []} value={mf.source} onChange={mf.setSource} />
         <FilterSelect label="Tag" icon={Tag} options={q.data?.tags ?? []} value={mf.tag} onChange={mf.setTag} />
-        {/* Drawn once a net-aware column has data, as on Links list (`hasNetCols`). */}
         {hasNetCols(all, reportTz) && <Switch label="Show net earnings" on={net} onChange={onNet} />}
       </div>
       {!q.isLoading && !ofAvailable && <Unreachable className="mb-4" />}
@@ -117,8 +99,6 @@ export function Dashboard({ accountId, onAccountChange, net, onNet }: TabProps) 
           )}
         </section>
       </div>
-      {/* #80: "Last updated: " under the cards, right-aligned, 16px down (`LinkDashboardUpdateInfo`, @13977563): when
-          the relay's read of OnlyFans landed, in the report time zone, as the Links list's update row says. */}
       <p className="mt-4 text-right text-sm text-fg-dim">
         <span>Last updated: {q.dataUpdatedAt > 0 ? readStamp(q.dataUpdatedAt, reportTz) : "—"}</span>
       </p>

@@ -1,23 +1,5 @@
 "use client";
 
-/**
- * Settings → System: the deployment master's ops back-office (users.is_admin only).
- *
- *   - the server's house keys and other agencies' keys (the founder cards from /creators, mounted as-is);
- *   - the runtime switches: every env kill switch / cap of the relay with its env value, the override
- *     set here and the effective value (GET /admin/system/switches); a toggle or number sets the
- *     override (PUT /admin/system/switches/{env}, with the founder admin password), "Clear override"
- *     goes back to env / default. It applies at the relay's next read, no restart. A toggle or number
- *     that lands back on the env / default value CLEARS the override rather than storing it (a stored
- *     one would outrank a later env change); an override that disagrees with a set env var is badged;
- *   - every account × automation: rule on/off vs config on/off, a disagreement highlighted
- *     (GET /admin/system/automations);
- *   - the recent run log and failed / pending jobs across all accounts (GET /admin/system/runs).
- *
- * Read-only for automations: no toggles there. Hidden from the Tab list for everyone else (nav.ts
- * `masterOnly`), and a direct URL by anyone else is a 404, never this Panel. The relay gates both routes
- * with require_master regardless; this hiding is UI hygiene, not the gate.
- */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { notFound } from "next/navigation";
@@ -66,9 +48,7 @@ interface RuntimeSwitch {
   override_at: string | null;
   override_by: string | null;
   source: "override" | "env" | "default";
-  /** What "Clear override" goes back to (env value, else default). */
   fallback: SwitchValue;
-  /** The override differs from a SET env var, so it outranks any env change until cleared. */
   overrides_env: boolean;
   effective: SwitchValue;
   active: boolean;
@@ -108,7 +88,6 @@ function when(iso: string | null): string {
 
 const onOff = (v: boolean | null) => (v === null ? "none" : v ? "on" : "off");
 
-/** One matrix cell: the short state, the mismatch in the danger colour, details in the title. */
 function Cell({ a }: { a: AutomationState | undefined }) {
   if (!a) return <span className={DIM}>—</span>;
   const title = [
@@ -147,7 +126,6 @@ function sourceText(k: RuntimeSwitch): string {
   return "default";
 }
 
-/** One switch: a toggle (bool) or a number box with Set (number), and Clear override. */
 function SwitchRow({ k, busy, save }: { k: RuntimeSwitch; busy: boolean; save: (v: SwitchValue | null) => void }) {
   const [draft, setDraft] = useState<string | null>(null);
   const num = draft ?? String(k.effective);
@@ -157,7 +135,7 @@ function SwitchRow({ k, busy, save }: { k: RuntimeSwitch; busy: boolean; save: (
     Number.isInteger(n) &&
     (k.minimum === null || n >= k.minimum) &&
     (k.maximum === null || n <= k.maximum);
-  // Back on the env / default value: clear, never store an override equal to it.
+  // Back on the env/default value: clear, since a stored override would outrank a later env change.
   const set = (v: SwitchValue) => save(v === k.fallback ? null : v);
   return (
     <tr className={TABLE_ROW} data-testid={`switch-${k.env}`}>
@@ -226,7 +204,6 @@ function SwitchRow({ k, busy, save }: { k: RuntimeSwitch; busy: boolean; save: (
 
 interface SystemSwitches {
   switches: RuntimeSwitch[];
-  /** The relay read its override table; false = it runs on env / defaults and is retrying. */
   loaded: boolean;
 }
 
@@ -303,7 +280,6 @@ function AutomationsSection() {
     retry: false,
   });
   const accounts = q.data?.accounts ?? [];
-  // Columns: every kind any account reports, in the relay's order.
   const kinds: { kind: string; label: string }[] = [];
   for (const acct of accounts)
     for (const a of acct.automations) if (!kinds.some((k) => k.kind === a.kind)) kinds.push({ kind: a.kind, label: a.label });
@@ -340,7 +316,6 @@ function AutomationsSection() {
 }
 
 function RunsSection() {
-  // The kind box applies on Enter or Refresh, not per keystroke.
   const [draft, setDraft] = useState("");
   const [kind, setKind] = useState("");
   const [status, setStatus] = useState<Status>("");
@@ -416,9 +391,8 @@ function RunsSection() {
 
 export default function SystemTab() {
   const { user, loading } = useUser();
-  // Nothing is drawn (and nothing fetched) until the session is known; then anyone
-  // but the master gets the 404 page, so the tab's existence is never confirmed.
   if (loading) return null;
+  // 404, never a forbidden page: the tab's existence is not confirmed to non-masters; relay gates with require_master anyway.
   if (user?.is_admin !== true) notFound();
   return (
     <SettingsPanel title="System">

@@ -12,7 +12,7 @@ describe("useMenuStatus", () => {
     act(() => result.current.flash(true, "one"));
     act(() => vi.advanceTimersByTime(2000));
     act(() => result.current.flash(false, "two"));
-    act(() => vi.advanceTimersByTime(1000)); // the first timer's 2.5 s are up
+    act(() => vi.advanceTimersByTime(1000));
     expect(result.current.status).toEqual({ ok: false, msg: "two" });
     act(() => vi.advanceTimersByTime(1500));
     expect(result.current.status).toBeNull();

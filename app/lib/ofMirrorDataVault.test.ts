@@ -6,7 +6,6 @@ import { isVaultPage, nextVaultOffset, vaultPageMedia, vaultPagesQuery } from ".
 import type { VaultList, VaultMediaResp } from "./relay";
 import { load, shown, texts } from "./ofMirrorData.fixtures";
 
-/** OF's own /api2/v2 vault responses, captured through the Relay and scrubbed (app/lib/__fixtures__/of/vault-*.json). */
 const vaultFixture = <T,>(name: string): T => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/vault-${name}.json`), "utf8")) as T;
 const LISTS = vaultFixture<{ list: VaultList[]; all: Partial<VaultList>; sort: string; order: string }>("lists");
 const MEDIA = (name: string) => vaultFixture<VaultMediaResp>(`media-${name}`);
@@ -20,7 +19,6 @@ describe("the Vault page from OF's captured responses (app/lib/__fixtures__/of)"
   it("All media, then every folder in OF's order, with OF's counts and covers; the open one marked; then back", () => {
     const doc = load("vault/index");
     const html = doc.documentElement.innerHTML;
-    // Before any data: All media alone, its cover set hidden and pictureless.
     expect(texts(doc, ".b-rows-lists__item__name")).toEqual(["All media"]);
     expect(shown(doc, ".b-media-set")).toEqual([]);
     applyData(doc, "vault/index", { vaultLists: LISTS.list, vaultAll: LISTS.all }, IMG);
@@ -32,7 +30,6 @@ describe("the Vault page from OF's captured responses (app/lib/__fixtures__/of)"
     for (const l of LISTS.list) {
       const row = folderRow(doc, l.name);
       expect(covers(row)).toEqual((l.medias ?? []).slice(0, 3).map((m) => IMG(m.url!)));
-      // OF draws no set at all for a folder without media.
       if (!l.medias?.length) expect(row.querySelector(".b-media-set")).toBeNull();
       expect(row.querySelector("a")!.getAttribute("href")).toBe(`/of-manager/vault?list=${l.id}`);
     }
@@ -126,7 +123,6 @@ describe("the Vault page's infinite scroll (OF's offset pages)", () => {
     const relay = await import("./relay");
     const get = vi.spyOn(relay.relay, "get").mockResolvedValue(MEDIA("video"));
     await (q.queryFn as (c: { pageParam: number }) => Promise<unknown>)({ pageParam: 24 });
-    // Past the Relay's day-long vault cache, as OF's own Vault reads every page fresh.
     expect(get).toHaveBeenCalledWith(`${path}&offset=24`, { accountId: "1" }, undefined, { refresh: true });
     get.mockRestore();
   });

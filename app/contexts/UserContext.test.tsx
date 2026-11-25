@@ -1,19 +1,3 @@
-/**
- * UserContext — focus / visibility revalidation (frontend-review-lows fix).
- *
- * Pre-fix, UserProvider fetched /auth/me ONLY once on mount, so a stale
- * impersonation overlay (another tab stopped impersonating, the cookie
- * expired) lingered until a hard reload. The fix adds a second effect that
- * re-validates /auth/me when the tab regains focus / becomes visible. These
- * tests pin that contract — and would all fail against the pre-fix code,
- * which has no focus/visibility listener at all:
- *   • a window "focus" re-fetches /auth/me and adopts the fresh user;
- *   • visibilitychange revalidates while VISIBLE but is a no-op while HIDDEN;
- *   • an already-in-flight revalidation is not double-fired by a second focus
- *     (the `inFlight` guard);
- *   • the revalidate never flips `loading` back on (so it can't reflash the
- *     picker).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -78,17 +62,13 @@ describe("UserContext focus/visibility revalidation", () => {
     fetchMock.mockResolvedValueOnce(jsonRes(ALICE)).mockResolvedValue(jsonRes(BOB));
     renderProvider();
 
-    // Mount fetch settled → the one and only fetch so far.
     expect(await screen.findByText("alice")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     act(() => { window.dispatchEvent(new Event("focus")); });
 
-    // The whole point of the fix: focus pulls a fresh /auth/me and swaps the
-    // user in without a reload.
     expect(await screen.findByText("bob")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    // The revalidate never reflashes the picker: loading stays settled.
     expect(screen.getByTestId("loading")).toHaveTextContent("ready");
   });
 
@@ -98,7 +78,6 @@ describe("UserContext focus/visibility revalidation", () => {
     expect(await screen.findByText("alice")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    // Hidden tab: neither a visibilitychange nor a focus should hit the network.
     setVisibility("hidden");
     act(() => {
       document.dispatchEvent(new Event("visibilitychange"));
@@ -107,7 +86,6 @@ describe("UserContext focus/visibility revalidation", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("user")).toHaveTextContent("alice");
 
-    // Back to visible: a visibilitychange now revalidates.
     setVisibility("visible");
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     expect(await screen.findByText("bob")).toBeInTheDocument();
@@ -124,17 +102,15 @@ describe("UserContext focus/visibility revalidation", () => {
     expect(await screen.findByText("alice")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    // Two focus events back-to-back: the first starts the fetch and sets the
-    // inFlight guard, so the second must be dropped (no second request).
     act(() => {
       window.dispatchEvent(new Event("focus"));
       window.dispatchEvent(new Event("focus"));
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2); // mount + exactly one focus
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     await act(async () => { releaseFocus(); await pending; });
     expect(await screen.findByText("bob")).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(2); // still no third fetch
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -216,7 +192,6 @@ describe("UserContext boot against an unreachable relay", () => {
   });
 
   it("a hung boot probe times out into the retry state", async () => {
-    // AbortSignal.timeout's timer, made firable by hand.
     const timeout = new AbortController();
     const spy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
     try {
@@ -248,8 +223,6 @@ describe("UserContext boot against an unreachable relay", () => {
     expect(await screen.findByText("alice")).toBeInTheDocument();
     act(() => { window.dispatchEvent(new Event("focus")); });
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    // A focus only probes once the previous one settled, so a third fetch
-    // proves the rejection landed — and the user survived it.
     await vi.waitFor(() => {
       act(() => { window.dispatchEvent(new Event("focus")); });
       expect(fetchMock).toHaveBeenCalledTimes(3);
@@ -269,10 +242,8 @@ describe("UserContext boot against an unreachable relay", () => {
 
     act(() => { screen.getByRole("button", { name: "Clear" }).click(); });
     expect(screen.getByTestId("user")).toHaveTextContent("none");
-    // A macrotask: every microtask of the late answer has run by then.
     await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
     expect(screen.getByTestId("user")).toHaveTextContent("none");
-    // The dropped probe no longer blocks the next focus.
     act(() => { window.dispatchEvent(new Event("focus")); });
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
@@ -289,7 +260,6 @@ describe("UserContext boot against an unreachable relay", () => {
     act(() => { window.dispatchEvent(new Event("focus")); });
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
-    // A new QueryClient re-creates `send`, so the boot effect re-runs.
     rerender(tree(new QueryClient()));
     await act(async () => { release(); await pending; });
     expect(await screen.findByText("bob")).toBeInTheDocument();
@@ -299,7 +269,6 @@ describe("UserContext boot against an unreachable relay", () => {
 });
 
 describe("UserContext boot behind a blocking proxy or a silent relay", () => {
-  // A signed-in answer writes the auth snapshot; the next mount would paint it (a warm boot, no banner).
   beforeEach(() => { localStorage.clear(); });
 
   it("a 403 at boot is the blocked banner at once; Retry re-probes and signs in once it answers", async () => {

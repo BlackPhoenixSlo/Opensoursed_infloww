@@ -1,8 +1,3 @@
-/**
- * Regression guard: after an error, recovery keeps PaidMessagesTab auto-loading (a Retry that brings rows back, and
- * a failed page seen again by the sentinel, both load the next page).
- * Every identifier is invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, screen } from "@testing-library/react";
 

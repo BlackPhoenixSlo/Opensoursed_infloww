@@ -1,12 +1,3 @@
-/**
- * My Automations > Auto Funnel: `AutoFunnelPage` over `MassFunnelsTab` on
- * Infloww's legacy list page (page-parity ticket 16). Rendered with
- * `@/lib/relay` mocked over one Creator. What is pinned: Learn and "New funnel"
- * in the page header, the "Follow up on replies" switch that creates the
- * walker rule, the funnels as a table with this creator's Status / Fans in
- * funnel, the editor as a dialog (steps as cards, one open), and Delete
- * through a dialog, never `window.confirm`.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -26,9 +17,7 @@ vi.mock("@/hooks/useAccounts", async (importOriginal) => {
   };
 });
 
-// The Media pane's vault picker needs the user context; its slots are what's pinned here.
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
-// The Start panel reads the signed-in employee.
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: { id: 1 } }) }));
 
 import AutoFunnelPage from "@/components/automations/AutoFunnelPage";
@@ -40,7 +29,6 @@ const post = relay.post as unknown as Mock;
 const del = relay.delete as unknown as Mock;
 const put = relay.put as unknown as Mock;
 
-/** Funnel 1 as stored: ids with a gap, step 1 routes to step 7. */
 const GAPPED = {
   id: 1, name: "strokes", description: "the default", opening_message: "hey", step_count: 2,
   steps: [{ step: 1, messages: ["a"], next: { default: 7 } }, { step: 7, type: "paid_ppv", price: 9, messages: ["b"] }],
@@ -83,7 +71,6 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     const row = (await within(table).findByText("strokes")).closest("tr")!;
     expect(within(row).getByText("3")).toBeTruthy();
     expect(within(row).getByText("7")).toBeTruthy();
-    // Follow-ups off (no rule) with fans walking → Paused, in the wide cell and the phone line.
     expect(within(row).getAllByText("Paused")).toHaveLength(2);
     expect(get).toHaveBeenCalledWith("/admin/funnels?account_id=acc-a", expect.anything());
     for (const name of ["Media", "Start", "Edit", "Delete"]) expect(within(row).getByRole("button", { name })).toBeTruthy();
@@ -153,7 +140,7 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     expect(within(dialog).getByText("Step 1 price must be a whole number ≥ 0.")).toBeTruthy();
     fireEvent.click(create());
     fireEvent.click(typed());
-    expect(within(dialog).getByPlaceholderText(/opening_message/)).toBeTruthy(); // still raw
+    expect(within(dialog).getByPlaceholderText(/opening_message/)).toBeTruthy();
     expect(post).not.toHaveBeenCalledWith("/admin/funnels", expect.anything());
 
     fireEvent.change(area, { target: { value: JSON.stringify({ name: "n", opening_message: "o", steps: [
@@ -182,11 +169,9 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Back to form" }));
     expect((dialog.querySelector("#funnel-name") as HTMLInputElement).value).toBe("n");
     fireEvent.click(within(dialog).getByRole("button", { name: "Create funnel" }));
-    // Typed save keeps the step number; no price → none sent (server default).
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/funnels", {
       name: "n", opening_message: "o", description: null, steps: [{ step: 7, type: "paid_ppv", messages: ["b"] }],
     }));
-    // The server's 0-based `step[0]` + id reads as the step's position.
     expect(await within(dialog).findByText("Step 1 next.default points to a step that does not exist (id 9).")).toBeTruthy();
   });
 
@@ -258,7 +243,6 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Add pasted" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(put).toHaveBeenCalled());
-    // The step's static pool is capped at the 2 the walker sends.
     expect(savedSteps()[2]).toEqual({ step: 8, messages: ["x", "y"] });
   });
 

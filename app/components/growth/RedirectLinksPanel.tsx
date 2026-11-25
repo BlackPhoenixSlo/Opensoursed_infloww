@@ -22,14 +22,11 @@ import { LinkStats, ClickSparkline } from "@/components/growth/RedirectLinkStats
 const BOT_CHECK_HINT = "Fans pass a Cloudflare bot check (Turnstile) before the redirect; only passed checks count as clicks.";
 const BOT_CHECK_OFF = "Unavailable: the server has no Turnstile keys (TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY).";
 
-/** The internal link is same-origin (Next rewrites /t/* to the relay). */
 function publicUrl(path: string): string {
   if (typeof window === "undefined") return path;
   return `${window.location.origin}${path}`;
 }
 
-/** /growth/redirect-links (an Inflowwww extra, its own Growth entry since 11-12; was a Tracking links tab): the panel in
- *  the Growth HB frame, every viewer of the page as before. */
 export function RedirectLinksPage() {
   const { accountId, setAccountId } = useGrowthCreator();
   return (
@@ -39,10 +36,6 @@ export function RedirectLinksPage() {
   );
 }
 
-/** Growth → Redirect links (an Inflowwww extra): the creator filter and
- *  "Create redirect link" (its pop-up, as the other link tabs create), the "Clicks" cards (the Dashboard tab's
- *  SectionTitle and StatCards), then that Creator's internal redirect links, each with its 7-day sparkline and
- *  Analytics. */
 export function RedirectLinksPanel({ accountId, onAccountChange }: {
   accountId: string | null;
   onAccountChange: (id: string) => void;
@@ -165,8 +158,6 @@ export function RedirectLinksPanel({ accountId, onAccountChange }: {
   );
 }
 
-/** "Create redirect link": Name, Target URL and the bot check (`customRedirectForm`'s reducer), Cancel then Create;
- *  it closes once the relay made the link, and keeps the form with the error otherwise. */
 function CreateRedirectModal({ accountId, botAvailable, onClose }: {
   accountId: string | null;
   botAvailable: boolean;
@@ -174,17 +165,15 @@ function CreateRedirectModal({ accountId, botAvailable, onClose }: {
 }) {
   const createM = useCreateTrackingLink(accountId);
   const [form, dispatch] = useReducer(redirectFormReducer, INITIAL_FORM);
-  // Enter again before `isPending` re-renders (or at all: the form's submit ignores the disabled button) must not
-  // create a second link.
   const busy = useRef(false);
 
   async function create() {
+    // A second Enter before isPending re-renders must not create a second link.
     if (busy.current) return;
     const why = formError(form);
     if (why) { dispatch({ type: "fail", err: why }); return; }
     busy.current = true;
     try {
-      // A target the relay refuses comes back as its 422 detail, shown as the error.
       await createM.mutateAsync(buildPayload(form, botAvailable));
       onClose();
     } catch (e) { dispatch({ type: "fail", err: errMsg(e, "Create failed") }); }
@@ -224,7 +213,6 @@ function CreateRedirectModal({ accountId, botAvailable, onClose }: {
           <span className="text-fg-dim text-[11px]">{botAvailable ? "· Cloudflare Turnstile" : "· not set up on this server"}</span>
         </label>
         {form.err && <div role="alert" className="text-err text-xs">{form.err}</div>}
-        {/* Enter in a field submits. */}
         <button type="submit" hidden aria-hidden tabIndex={-1} />
       </form>
     </HbModal>

@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * UltraPlanPage — `/ultra/plans/[id]`, the page an MCP client's `propose_plan` links (its open_url; ultra tickets
- * 06 + 13). The owner reads every step as the server drew it (a send: Creator, audience, price, media count and its
- * FULL text), presses the one OK, which posts the hash of exactly that plan (POST /admin/ultra/plans/{id}/ok), then
- * the page re-reads it every 2 s while it runs, with Cancel; a `needs_you` judge shows its pick card (PickCard,
- * "Send these" posts exactly pick_n). When it ends: each step's state and link, and a plain
- * statement for uncertain / interrupted / expired. State lives in `ultraRunReducer` (this only dispatches); I/O in `useUltraPlan`.
- *
- * Signed out, AuthGate's in-place sign-in comes back here (`signInReturn`). A chatter or another owner gets the
- * Relay's 403 / 404 as a line, never the plan.
- */
 import { useReducer } from "react";
 
 import { EmptyState, IfButton, IfBody, InflowwPageHeader } from "@/components/ui/infloww";
@@ -19,8 +8,7 @@ import { PlanSteps } from "./PlanSteps";
 import { useUltraPlan } from "./useUltraPlan";
 import { INITIAL_RUN, planActions, refreshNote, statusNote, ultraRunReducer } from "./ultraRunReducer";
 
-// The sticky bar's height (border 1 + pt/pb 12 each + h-9 buttons, gap-2 between when stacked) plus the phone
-// safe-area, so the last step can scroll clear of it: stacked on a phone, one row from `sm`.
+// Sticky bar height plus phone safe-area, so the last step scrolls clear of it.
 const BAR_PAD_TWO = "pb-[calc(105px+env(safe-area-inset-bottom))] sm:pb-[calc(61px+env(safe-area-inset-bottom))]";
 const BAR_PAD_ONE = "pb-[calc(61px+env(safe-area-inset-bottom))]";
 

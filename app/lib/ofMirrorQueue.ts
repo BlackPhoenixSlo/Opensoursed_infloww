@@ -1,36 +1,5 @@
 "use client";
 
-/**
- * The queue rows' "More" menu (OF's ScheduleEventDropdown, queue chunk `queue-page`, build 202610091632). applyQueue
- * gives each real post or message row the round "More" button and its ids (data-oi-queue-*); a click opens OF's
- * dropdown list beside it:
- * - a post: Pin to / Unpin from your profile (POST /posts/{id}/pin, OF's toggle), Edit post, Post now, Delete post;
- * - a message: Edit message, Message now, Delete message.
- * The saved-for-later pages' rows have the same menu (OF's SavedForLater page uses the same ScheduleEventDropdown).
- * "Post now" / "Message now" sends PUT /schedules/{scheduleId}/publish (the schedule item's own id), greyed out while
- * OF says the media is not ready or the row has no schedule id. Delete asks first (OF's confirm) and then sends
- * DELETE /posts/{id} or DELETE /messages/queue/{id}. Edit opens the existing composer filled from the item, as OF's
- * (PostsEdit, and ChatsSend with ?scheduleMessageId= or ?SFLMessageId=): Edit post reads GET /posts/{id} onto the Post
- * draft (postEditDraft) and opens New post, Edit message reads GET /messages/queue/{id} onto the Mass draft
- * (messageEditDraft) and opens New message; their Post / Send then save the same item (PUT /api/of/v2/queue/posts/{id},
- * PUT /api/of/v2/messages/queue/{id}), and a new date there is
- * OF's reschedule.
- * A success refreshes the page's rows (useOfData refetches); a failure shows the relay error under the row.
- * With no single model selected every action sends nothing and says "Select a model to save changes".
- *
- * "Add to queue" (the queue pages' "+", the saved-for-later pages' "+" and the Scheduled events widget's "+" on New post
- * and Go live) opens OF's NEW_SCHEDULED_EVENT modal (chunk 24564, module 536492): "Add to queue", two tabs (Scheduled,
- * Save for later; a saved-for-later page opens on the second), the date and time (the shown day at the Agency zone's time
- * ten minutes from now, OF's default) and one button per type, which opens that type's composer on that moment
- * (createHref) or saving for later (laterHref); Cancel closes it.
- *
- * bindCalendar makes the month pages' own controls act in place, as OF's queue page does (its queue chunk): the month
- * arrows (back greyed out on the current month), a day cell of today or later, the right column's day arrows (back
- * greyed out on today) and the Posts / Messages / Streams tabs (several at once; none shows every type). It draws the
- * calendar weeks, the header's month, the right column's day and the view switch's ?date= link, and sends QUEUE_CHANGE
- * so useOfData shows that month's (and day's) items of those tabs, asking the Relay for a new month. Today (the month
- * and day it opens on, what is past) is the Agency's time zone's (the top bar's), not the browser's.
- */
 
 import { useEffect, type RefObject } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -56,38 +25,23 @@ export interface QueueHandlers {
   remove(kind: QueueKind, target: string): Promise<unknown>;
   pin(target: string): Promise<unknown>;
   confirm(text: string): boolean;
-  /** Add to queue > Scheduled > a type: open `kind`'s composer scheduled at `at` (createHref). */
   create(kind: CreateKind, at: Date): void;
-  /** Add to queue > Save for later > a type: open `kind`'s composer saving for later (laterHref). */
   later(kind: LaterKind): void;
-  /** Edit post / Edit message: load the item, fill its composer's draft and open it. */
   edit(kind: QueueKind, target: string): Promise<unknown>;
 }
 
 type Action = "pin" | "edit" | "now" | "delete";
-/** What Add to queue schedules: a post (New post), a mass message (New message) or a stream (Go live's schedule form). */
 export type CreateKind = "post" | "message" | "stream";
-/** What Add to queue saves for later (OF's Save for later tab has no stream). */
 export type LaterKind = "post" | "message";
 
 const MENU_ID = "oi-queue-menu";
 const MODAL_ID = "newScheduleEventModal";
-/** A queue row (an agenda item on the month pages, OF's card on the saved-for-later pages) with its ids, and its More button. */
 const ROWS = [".b-agenda__area-events__item[data-oi-queue-kind]", ".b-post.m-queue-post[data-oi-queue-kind]"];
 const ROW = ROWS.join(", ");
 const MORE = "[at-attr='more_menu']";
 const ROW_MORE = ROWS.map((r) => `${r} ${MORE}`).join(", ");
-/**
- * OF's "Add to queue" buttons: the queue pages' header, list view and right column ones, the saved-for-later pages' two
- * (data-oi-add) and the Scheduled events widget's (the generator marks them all Wired).
- */
 const ADD = "[at-attr='add_event_header'], [at-attr='add_event_page'], [at-attr='add_event_sidebar'], [at-attr='add_event_widget'], [data-oi-add]";
 
-/**
- * OF's Add to queue modal (NEW_SCHEDULED_EVENT, chunk 24564): its title, tabs, help lines and the buttons per tab with
- * OF's icons and routes (PostsCreate, ChatsSend, StreamingCreateEditSchedule), the words as the live modal shows them
- * (captured 2026-10-17; OF's CSS sets the title, tabs and buttons in capitals).
- */
 export const ADD_TITLE = "Add to queue";
 export const ADD_TABS: { key: "scheduled" | "later"; text: string }[] = [
   { key: "scheduled", text: "Scheduled" },
@@ -107,10 +61,6 @@ export const LATER_MENU: { atAttr: string; title: string; kind: LaterKind; icon:
   { atAttr: "later_message", title: "Mass message", kind: "message", icon: "saved-for-later-message" },
 ];
 
-/**
- * OF's menu entries per kind: its at-attr, title and action, the titles as the live menus show them (captured
- * 2026-10-17; "Unpin from your profile page" is OF's other pin key, not seen live). ASSUMPTION: the confirm texts.
- */
 export function queueMenu(a: QueueActions): { atAttr: string; title: string; action: Action; disabled?: boolean; tooltip?: string; danger?: boolean }[] {
   const now = !a.ready || !a.schedule;
   if (a.kind === "post")
@@ -132,23 +82,17 @@ export const CONFIRM_DELETE: Record<QueueKind, string> = {
   chat: "Are you sure you want to delete this scheduled message?",
 };
 
-/** Post now / Message now sends at once (a queued mass or paid message goes out to fans), so it asks first. */
+// Post now / Message now sends at once (a queued mass or paid message goes out to fans), so it asks first.
 export const CONFIRM_PUBLISH: Record<QueueKind, string> = {
   post: "Publish this post now?",
   chat: "Send this message now?",
 };
 
-/** A row's actions, as applyQueue stored them. */
 export function actionsOf(row: HTMLElement): QueueActions {
   const d = row.dataset;
   return { kind: d.oiQueueKind as QueueKind, target: d.oiQueueTarget ?? "", schedule: d.oiQueueSchedule ?? "", ready: d.oiQueueReady !== "false", pinned: d.oiQueuePinned === "true" };
 }
 
-/**
- * Open OF's Add to queue modal in `doc` (on its Save for later tab with `later`), its date and time `wall` (a wall clock
- * of `zone`); a type's button hands `handlers` the picked moment (at least a minute ahead of `now`, else the note) or
- * the type to save for later. Returns the modal.
- */
 export function openAddModal(doc: Document, handlers: QueueHandlers, opts: { later: boolean; wall: Date; zone?: string; now: () => Date; opener?: Element }): HTMLElement {
   let tab: "scheduled" | "later" = opts.later ? "later" : "scheduled";
   let fields = dateTimeFields(doc, opts.wall, wallClock(opts.now(), opts.zone));
@@ -223,14 +167,8 @@ export function openAddModal(doc: Document, handlers: QueueHandlers, opts: { lat
   return modal;
 }
 
-/**
- * Bind the queue rows' "More" menus and the "Add to queue" buttons in `doc` (handlers null: no single model). The Add
- * to queue modal opens on the shown day (the right column's, else today in `zone`) at `zone`'s time ten minutes from
- * now (createAt). Returns an unbind.
- */
 export function bindQueue(doc: Document, handlers: QueueHandlers | null, zone?: string, now: () => Date = () => new Date()): () => void {
   let busy = false;
-  // The open menu -> the row it acts on.
   const rowOf = new WeakMap<Element, HTMLElement>();
   const close = () => {
     const menu = doc.getElementById(MENU_ID);
@@ -272,7 +210,6 @@ export function bindQueue(doc: Document, handlers: QueueHandlers | null, zone?: 
     rowOf.set(menu, row);
   };
 
-  /** Send one row action; a failure notes `<fail>: <relay error>` under the row. */
   const run = (row: HTMLElement, send: () => Promise<unknown>, fail: string, done?: string) => {
     busy = true;
     send().then(
@@ -300,7 +237,6 @@ export function bindQueue(doc: Document, handlers: QueueHandlers | null, zone?: 
     if (handlers.confirm(CONFIRM_DELETE[a.kind])) run(row, () => handlers.remove(a.kind, a.target), "Could not delete");
   };
 
-  /** "+": OF's Add to queue modal, on the right column's day (today on a page with none); Save for later on its pages. */
   const add = (plus: HTMLElement) => {
     if (!handlers) return note(doc, plus, SELECT_MODEL);
     const t = now();
@@ -339,7 +275,6 @@ export function bindQueue(doc: Document, handlers: QueueHandlers | null, zone?: 
   const onKey = (ev: KeyboardEvent) => {
     if (ev.key === "Escape") close();
   };
-  // The menu is placed in the viewport: it closes when anything scrolls.
   const onScroll = () => close();
 
   doc.addEventListener("click", onClick);
@@ -355,34 +290,23 @@ export function bindQueue(doc: Document, handlers: QueueHandlers | null, zone?: 
 }
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
-/** A local day as yyyy-mm-dd (OF's route date). */
 export const ymd = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 
-/** OF's changeMonth: a month on or back (the day kept, or the month's last); today if that is not after today, else the month's first day. */
 export function shiftMonth(date: Date, by: 1 | -1, today: Date): Date {
   const m = date.getMonth() + by;
   const s = new Date(date.getFullYear(), m, Math.min(date.getDate(), new Date(date.getFullYear(), m + 1, 0).getDate()));
   return s.getTime() <= dayStart(today).getTime() ? dayStart(today) : new Date(s.getFullYear(), s.getMonth(), 1);
 }
 
-/** The day a queue page opens on: its ?date= (yyyy-mm-dd), else today. */
 export function queueStart(date: string | null, today: Date): Date {
   const d = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? parseDate(date) : null;
   return d ? new Date(d[0], d[1] - 1, d[2]) : dayStart(today);
 }
 
-// Not `instanceof`: the frame's elements are of the frame's window.
 const setDisabled = (b: Element | null, off: boolean) => b?.toggleAttribute("disabled", off);
 
-/**
- * A month page as OF draws it for `date`: the header's month, the back arrow greyed out on today's month, the
- * calendar's weeks (Sunday first; each cell OF's v-past / v-present / v-future, v-outside off the month, `date`
- * selected, its value "Nov 1" on a month's first day), the right column's day with its back arrow greyed out on
- * today, and the view switch's link carrying ?date=. The cells (and weeks) shown are kept and redrawn, a longer month
- * adding copies of the first.
- */
 export function drawQueue(doc: Document, date: Date, today: Date): void {
   const t0 = dayStart(today);
   for (const el of doc.querySelectorAll(".g-page__subheader .b-queue-header__date")) el.textContent = ` ${date.toLocaleDateString("en-US", { month: "long", year: "numeric" })} `;
@@ -404,7 +328,6 @@ export function drawQueue(doc: Document, date: Date, today: Date): void {
   for (let d = addDays(first, -first.getDay()); d <= addDays(last, 6 - last.getDay()); d = addDays(d, 1), n++) {
     if (d.getDay() === 0) shown.push(weeks[shown.length] ?? (weeks[0].cloneNode(false) as Element));
     const cell = old[n] ?? (tpl.cloneNode(true) as Element);
-    // A new cell copies the first's: not its event bars (applyQueue's, undone by the next apply).
     if (!old[n]) for (const bar of cell.querySelectorAll("[data-oi-data]")) bar.remove();
     const past = d < t0;
     cell.className = ["v-calendar-weekly__day", past ? "v-past" : ymd(d) === ymd(t0) ? "v-present" : "v-future", ...(d.getMonth() !== date.getMonth() ? ["v-outside"] : [])].join(" ");
@@ -424,10 +347,8 @@ export function drawQueue(doc: Document, date: Date, today: Date): void {
 const ARROWS = "[at-attr='prev_month'], [at-attr='next_month'], [at-attr='prev_day_sidebar'], [at-attr='next_day_sidebar']";
 const TAB = ".g-page__subheader .b-tabs__nav__link";
 
-/** Bind a month page's calendar, arrows and tabs in `doc`, opened on `start`; `now` is the clock. Returns an unbind. */
 export function bindCalendar(doc: Document, start: Date, now: () => Date): () => void {
   let date = dayStart(start);
-  // A selected tab's check mark, kept for the tabs selected later (none on a page captured with no tab selected).
   let check = doc.querySelector(`${TAB} .b-tabs__nav__icon`)?.cloneNode(true) as Element | undefined;
   const changed = () => doc.dispatchEvent(new Event(QUEUE_CHANGE));
   const go = (next: Date) => {
@@ -472,11 +393,6 @@ export function bindCalendar(doc: Document, start: Date, now: () => Date): () =>
   return () => doc.removeEventListener("click", onClick);
 }
 
-/**
- * The moment Add to queue opens on for `day` (yyyy-mm-dd, a day of `zone`, the Agency's), as the live modal does: a
- * later day at its midnight (OF's queue passes the selected day), today (or a day already past) ten minutes from `now`,
- * OF's own default and minimum (the modal's `add(10, "minutes")`).
- */
 export function createAt(day: string, zone: string | undefined, now: Date): Date {
   const d = parseDate(day);
   const soon = new Date(now.getTime() + 600_000);
@@ -485,12 +401,6 @@ export function createAt(day: string, zone: string | undefined, now: Date): Date
   return minuteAhead(midnight, soon) ? midnight : soon;
 }
 
-/**
- * Where Add to queue > Scheduled > `kind` goes for `accountId`, with its schedule (`at`) put on that composer's draft, as
- * OF's goToScheduleEvent(route, {scheduleDate}): New post with the Post draft's `posted_at` (named under its editor),
- * New message with the Mass draft's `scheduled_date`, the stream schedule form with its date and time filled in
- * (?date=, ?time=). The drafts' other fields are kept; a draft that was editing a queued item starts a new one.
- */
 export function createHref(kind: CreateKind, at: Date, storage: Storage, accountId: string): string {
   if (kind === "post") {
     saveDraft(storage, accountId, { ...loadDraft(storage, accountId), posted_at: localIso(at), save_for_later: undefined, edit_id: undefined });
@@ -504,7 +414,6 @@ export function createHref(kind: CreateKind, at: Date, storage: Storage, account
   return `/of-manager/streaming/dashboard/create?date=${ymd(at)}&time=${encodeURIComponent(time)}`;
 }
 
-/** Where Add to queue > Save for later > `kind` goes for `accountId`: its composer, the draft saving for later (no date). */
 export function laterHref(kind: LaterKind, storage: Storage, accountId: string): string {
   if (kind === "post") {
     saveDraft(storage, accountId, { ...loadDraft(storage, accountId), save_for_later: true, posted_at: undefined, edit_id: undefined });
@@ -514,7 +423,6 @@ export function laterHref(kind: LaterKind, storage: Storage, accountId: string):
   return "/of-manager/messages/send";
 }
 
-/** GET /api/of/v2/posts/{id}: what Edit post reads (OF's post; only the fields the composer keeps). */
 export interface EditablePost {
   id: number | string;
   rawText?: string | null;
@@ -527,12 +435,6 @@ export interface EditablePost {
   canEditSchedule?: boolean;
 }
 
-/**
- * The Post draft that edits `post`, as OF's PostsEdit fills MakeFeedPost: its text, media (their ids, OF's
- * uploadedFilesUrl for media already on the post), price, labels and its schedule (`postedAt`, or saved for later), and
- * `edit_id` so Post saves this post (PUT) instead of making a new one. `img` maps a picture's url for the thumbs row
- * (the Relay's image proxy); a media item with no picture gets "" (a plain square).
- */
 export function postEditDraft(post: EditablePost, img: (url: string) => string = (u) => u): PostDraft {
   const media = (post.media ?? []).filter((m) => m.id != null);
   const price = Number(post.price) || 0;
@@ -553,13 +455,11 @@ export function postEditDraft(post: EditablePost, img: (url: string) => string =
   };
 }
 
-/** GET /api/of/v2/messages/queue/{id}: what Edit message reads (OF's queued message, format=scheduled). */
 export interface QueuedMessage {
   id: number | string;
   text?: string | null;
   rawText?: string | null;
   price?: number | string | null;
-  /** Its send time; none: saved for later. */
   scheduledAt?: string | null;
   media?: OFMedia[] | null;
   userIds?: (number | string)[] | null;
@@ -567,11 +467,6 @@ export interface QueuedMessage {
   excludedLists?: (number | string)[] | null;
 }
 
-/**
- * The Mass draft that edits `msg`, as OF's ChatsSend loads a queued message (setDataSchedule, setDataMessage): its text,
- * media, price, recipients (`userIds`), lists (`userLists`) and excluded lists, its schedule (`scheduledAt`, else saved
- * for later), and `edit_id` so Send saves this message (PUT) instead of sending a new one.
- */
 export function messageEditDraft(msg: QueuedMessage): MassDraft {
   const media = (msg.media ?? []).filter((m) => m.id != null);
   const price = Number(msg.price) || 0;
@@ -588,21 +483,14 @@ export function messageEditDraft(msg: QueuedMessage): MassDraft {
   };
 }
 
-/**
- * An item's text as an edit draft holds it: OF's `rawText` (else its `text`), when it is OF's markup (a paragraph), as
- * its plain lines and, while formatted, the markup itself (`html`: the editor loads it through setOfHtml), so a
- * formatted item edits formatted and no tag ever shows as text.
- */
 export function editorBody(rawText: string | null | undefined, text: string | null | undefined): { text: string; html?: string } {
   const raw = rawText ?? text ?? "";
   if (!isOfHtml(raw)) return { text: rawText ?? plain(text) };
   return { text: ofPlainText(raw), ...(hasOfFormatting(raw) ? { html: raw.trim() } : {}) };
 }
 
-/** The pages whose Scheduled events widget has OF's Add to queue "+" (New post's and Go live's schedule form). */
 const WIDGET_PAGE = /^(?:new-post\/(?:index|state-[^/]+)|streaming\/dashboard\/create)$/;
 
-/** The queue pages (QUEUE): bind the rows' menus (and a month page's calendar) on every frame load; a success refetches the page's rows. */
 export function useOfQueue(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId, setScope } = useScope();
   const qc = useQueryClient();
@@ -612,10 +500,8 @@ export function useOfQueue(frameRef: RefObject<HTMLIFrameElement | null>, src: s
   const page = /^\/of-mirror\/pages\/(.+)\.html$/.exec(src)?.[1] ?? "";
   const queue = Object.hasOwn(QUEUE, page);
   const month = queue && !!QUEUE[page].month;
-  // The Add to queue "+" also works on the Scheduled events widget's pages.
   const on = queue || WIDGET_PAGE.test(page);
 
-  // The month pages' calendar, arrows and tabs: in either scope (they only change what is shown).
   useEffect(() => {
     const frame = frameRef.current;
     if (!frame || !month) return;
@@ -649,7 +535,6 @@ export function useOfQueue(frameRef: RefObject<HTMLIFrameElement | null>, src: s
           remove: (kind, id) => relay.delete(kind === "post" ? `/api/of/v2/posts/${enc(id)}` : `/api/of/v2/messages/queue/${enc(id)}`, ctx).then(done),
           pin: (id) => relay.post(`/api/of/v2/posts/${enc(id)}/pin`, undefined, ctx).then(done),
           confirm: (text) => window.confirm(text),
-          // In All models the composers act for the model the queue shows (standInModel): it becomes the scope.
           create: (kind, at) => open(createHref(kind, at, window.sessionStorage, accountId)),
           later: (kind) => open(laterHref(kind, window.sessionStorage, accountId)),
           edit: async (kind, id) => {

@@ -1,9 +1,3 @@
-/**
- * W30 F15: a Fill plan lives under the persisted `saved-replies` prefix, so it carries `meta.persist: false`
- * (the persister's opt-out, components/providers.tsx) however it enters the cache: the dialog's read, or a
- * press's non-`ok` answer / 409 `stale` seeding it with no dialog open. Otherwise a reload restores a stale
- * "Ready to fill".
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";

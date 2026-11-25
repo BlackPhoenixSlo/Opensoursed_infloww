@@ -1,8 +1,5 @@
 "use strict";
 
-// Toast stack (lib/toast-window.js). Renders what main sends with textContent
-// only, never innerHTML: names and message text come from fans. Silent, like
-// the native notifications: the page plays its own alert sounds.
 
 const stack = document.getElementById("stack");
 

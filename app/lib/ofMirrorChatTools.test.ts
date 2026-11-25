@@ -26,7 +26,7 @@ const page = (p: string) => {
 };
 const fixture = <T,>(name: string): T => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/${name}.json`), "utf8")) as T;
 const users = fixture<Record<string, FanState>>("messages-users-list");
-const FAN_ID = "2014"; // a subscriber in two of the Creator's lists
+const FAN_ID = "2014";
 const FAN = users[FAN_ID];
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -131,7 +131,7 @@ describe("the chat header's tools, from OF's user (/users/list)", () => {
     const w = writes({ list: vi.fn((id: string) => (id === "755017319" ? Promise.reject(new Error("400 Bad Request")) : Promise.resolve({}))) });
     bind(d, "messages/chat", ctx({ writes: w }));
     tool(d, "lists").click();
-    expect(modal(d).hasAttribute("data-oi-wired")).toBe(true); // its checkboxes are this binder's, not the read-only fallback's
+    expect(modal(d).hasAttribute("data-oi-wired")).toBe(true);
     const rows = [...modal(d).querySelectorAll<HTMLElement>("[data-oi-list]")];
     const want = FAN.listsStates!.filter((l) => l.hasUser || l.canAddUser);
     expect(rows.map((r) => r.dataset.oiList)).toEqual(want.map((l) => String(l.id)));
@@ -142,7 +142,6 @@ describe("the chat header's tools, from OF's user (/users/list)", () => {
     expect(w.list).toHaveBeenLastCalledWith("1320999428", false);
     box("755017382").click();
     expect(w.list).toHaveBeenLastCalledWith("755017382", true);
-    // A write refreshes the fan, which binds again: the dialog stays open.
     bind(d, "messages/chat", ctx({ writes: w, fan: { ...FAN, listsStates: FAN.listsStates!.map((l) => (String(l.id) === "755017382" ? { ...l, hasUser: true } : l)) } }));
     expect(modal(d)).not.toBeNull();
     box("755017319").click();
@@ -199,8 +198,6 @@ describe("the chat's ⋮ menu (messages/chat/state-header-menu): OF's items for 
     expect(push).toHaveBeenCalledWith(c.back);
     expect(d.getElementById("oi-toast")).toBeNull();
     unbind();
-    // A bind while the frame still shows the menu page it left (a rebind on a fan refresh), or about:blank, leaves the
-    // toast for the chat page.
     bind(page("chat/state-header-menu"), "messages/chat/state-header-menu", ctx());
     expect(document.getElementById("oi-toast")).toBeNull();
     window.history.replaceState({}, "", "/");
@@ -211,7 +208,6 @@ describe("the chat's ⋮ menu (messages/chat/state-header-menu): OF's items for 
     const chat = page("chat");
     bind(chat, "messages/chat", ctx());
     expect(text(chat.getElementById("oi-toast"))).toBe(COPIED);
-    // Shown once: the next bind of the chat page has none.
     chat.getElementById("oi-toast")!.remove();
     bind(page("chat"), "messages/chat", ctx());
     expect(document.getElementById("oi-toast")).toBeNull();
@@ -275,7 +271,6 @@ describe("the chat's ⋮ menu (messages/chat/state-header-menu): OF's items for 
     button(set.d, "Clear").click();
     await flush();
     expect(set.c.writes!.discount).toHaveBeenCalledWith(0, 1);
-    // An off-list current discount (13%, set elsewhere) shows as it is, but Apply waits for one OF offers.
     const odd = menu({ fan: { ...FAN, subscribedOnData: { discountPercent: 13, discountPeriod: 1 } } });
     item(odd.d, "discount").click();
     const sel = modal(odd.d).querySelector<HTMLSelectElement>("select")!;
@@ -304,14 +299,12 @@ describe("the chat's ⋮ menu (messages/chat/state-header-menu): OF's items for 
     expect(bad.d.getElementById("oi-note")!.textContent).toBe("Could not restrict: 403 Forbidden");
   });
 
-  // ticket 42 (D22): Report hands off to the chat's onlyfans.com page (OF's form sends captcha data the mirror cannot fill).
   it("Report is OF's link to the chat's onlyfans.com page: a new tab, Wired, 'opens onlyfans.com', not disabled; its click is the browser's and sends nothing", async () => {
     const relayPost = vi.spyOn(relay, "post");
     const { d, c } = menu();
     const r = item(d, "report") as HTMLAnchorElement;
     expect([r.tagName, r.href, r.target, r.rel, r.hasAttribute("data-oi-wired"), r.title]).toEqual(["A", `https://onlyfans.com/my/chats/chat/${FAN_ID}/`, "_blank", "noopener noreferrer", true, HANDOFF_TITLE]);
     expect([r.getAttribute("aria-disabled"), r.classList.contains("v-list-item--disabled"), r.querySelector("a.of-state-link"), text(r)]).toEqual([null, false, null, "Report"]);
-    // Its click reaches the browser (a new tab): the binder's capture listener leaves it alone.
     let prevented: boolean | null = null;
     const seen = (ev: Event) => { prevented = ev.defaultPrevented; ev.preventDefault(); };
     d.addEventListener("click", seen);
@@ -323,7 +316,6 @@ describe("the chat's ⋮ menu (messages/chat/state-header-menu): OF's items for 
     expect(c.navigate).not.toHaveBeenCalled();
     expect(Object.values(c.writes!).every((f) => (f as ReturnType<typeof vi.fn>).mock.calls.length === 0)).toBe(true);
     expect(relayPost).not.toHaveBeenCalled();
-    // A rebind (the fan refreshed) keeps the one link.
     bind(d, "messages/chat/state-header-menu", c);
     expect(d.querySelectorAll(".of-state-menu [data-oi-menu='report']")).toHaveLength(1);
     expect((item(d, "report") as HTMLAnchorElement).href).toBe(`https://onlyfans.com/my/chats/chat/${FAN_ID}/`);
@@ -371,7 +363,7 @@ describe("chatToolWrites: the exact Relay requests", () => {
     const del = vi.spyOn(relay, "delete").mockResolvedValue({});
     const w = chatToolWrites("acc", "800000002", qc);
     const o = { accountId: "acc" };
-    expect(Object.keys(w).sort()).toEqual(["block", "discount", "list", "note", "rename", "restrict"]); // no report write
+    expect(Object.keys(w).sort()).toEqual(["block", "discount", "list", "note", "rename", "restrict"]);
     await w.rename("Founder");
     await w.note("");
     await w.list("1320999428", true);

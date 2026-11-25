@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Vault-folder-prices migration (0123) matches create_all on temp SQLite, is idempotent, downgrades, and stays on the one head's line."""
 from __future__ import annotations
 
-import _harness  # MUST be first: temp DB env guard
+import _harness  # MUST be first: binds temp DB
 
 import os  # noqa: E402
 import sqlite3  # noqa: E402
@@ -46,7 +45,7 @@ def _alembic(url: str, fn, rev: str) -> None:
 
 def case_single_head():
     script = ScriptDirectory.from_config(_cfg())
-    heads = script.get_heads()  # later revisions chain after REV; still one head, REV on its line
+    heads = script.get_heads()
     assert len(heads) == 1 and REV in {r.revision for r in script.iterate_revisions(heads[0], PREV)}, heads
 
 
@@ -66,7 +65,6 @@ def case_upgrade_and_downgrade():
         assert got == want and got[0], (got, want)
         _alembic(url, command.downgrade, PREV)
         assert "vault_folder_prices" not in sa.inspect(engine).get_table_names()
-        # Inspector guard: a DB that create_all already brought up upgrades without error.
         with engine.begin() as con:
             con.execute(sa.text("DROP TABLE accounts"))
         Base.metadata.create_all(engine)

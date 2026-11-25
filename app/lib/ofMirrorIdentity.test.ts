@@ -51,7 +51,6 @@ describe("applyIdentity", () => {
     const about = '<p>I travel.<br /><br />All content is mine. By <a href="https://onlyfans.com/away?url=x">site.com</a>.</p>';
     expect(bioOf({ about })).toBe("I travel.\n\nAll content is mine. By site.com.");
     expect(bioOf({ about: "<p>one</p><p>two</p>" })).toBe("one\ntwo");
-    // OF's nl2br markup: "<br />\n" is one line break, not two.
     expect(bioOf({ about: "one<br />\ntwo<br />\n<br />\nthree" })).toBe("one\ntwo\n\nthree");
     const d = doc();
     applyIdentity(d, { ...me, rawAbout: undefined, about });
@@ -71,12 +70,10 @@ describe("applyIdentity", () => {
     const d = doc();
     applyIdentity(d, { ...me, header: "https://cdn.onlyfans.com/h.jpg", avatar: "https://cdn.onlyfans.com/a.jpg" }, (u) => `/img?u=${u}`);
     expect(d.querySelector(".b-profile__header__cover-img")!.getAttribute("src")).toBe("/img?u=https://cdn.onlyfans.com/h.jpg");
-    // A picture inside the placeholder (OF paints the placeholder's ::after over its own background), once on a re-apply.
     applyIdentity(d, { ...me, avatar: "https://cdn.onlyfans.com/a.jpg" }, (u) => `/img?u=${u}`);
     const own = d.querySelector(".m-text-avatar:not(.of-fan)")!;
     expect([...own.children].map((c) => c.getAttribute("src"))).toEqual(["/img?u=https://cdn.onlyfans.com/a.jpg"]);
     expect(own.textContent).toBe("");
-    // A fan's avatar keeps its placeholder.
     expect(d.querySelector(".of-fan img")).toBeNull();
     expect(d.querySelector(".of-fan")!.textContent).toBe(" F ");
   });
@@ -120,7 +117,6 @@ describe("applyIdentity", () => {
     const d = document;
     const count = (f: string) => d.querySelector<HTMLElement>(`[data-oi-count='${f}']`)!;
     const fields = ["notificationsCount", "chatMessagesCount", "subscribersCount", "subscribesCount"];
-    // The capture's "12+", "12", "12 Fans" and "123 Following" are gone: badges hidden and empty, Fans and Following "—".
     expect(fields.map((f) => count(f).textContent)).toEqual(["", "", " — ", " — "]);
     expect(fields.slice(0, 2).map((f) => count(f).style.display)).toEqual(["none", "none"]);
     expect(d.querySelectorAll(".l-header__menu__item__count:not([data-oi-count]), .l-sidebar__user-data__item__count:not([data-oi-count])")).toHaveLength(0);
@@ -138,7 +134,6 @@ describe("applyIdentity", () => {
     const d = document;
     const box = d.querySelector<HTMLElement>(".b-user-info__content > .g-truncated-text")!;
     const more = d.querySelector<HTMLElement>("[data-oi-bio-toggle]")!;
-    // jsdom lays nothing out: the box's content is 30px a row.
     Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => 30 * box.children.length });
     applyIdentity(d, { about: "Line one", location: "Paris", website: "example.com", wishlist: null });
     const rows = () => [...box.querySelectorAll("p.b-user-info__detail")].map((r) => [r.querySelector("use")?.getAttribute("href"), r.lastElementChild!.tagName, r.textContent, r.lastElementChild!.getAttribute("href")]);
@@ -148,7 +143,7 @@ describe("applyIdentity", () => {
     ]);
     expect([...box.querySelectorAll("p.b-user-info__detail, p.b-user-info__detail > *")].every((e) => e.hasAttribute("data-v-2def40d5"))).toBe(true);
     for (const icon of ["icon-location", "icon-link", "icon-trial"]) expect(d.getElementById(icon)).not.toBeNull();
-    expect([more.style.display, box.classList.contains("m-over-limit")]).toEqual(["", true]); // 90px: over OF's 85
+    expect([more.style.display, box.classList.contains("m-over-limit")]).toEqual(["", true]);
     applyIdentity(d, { about: "Only line", location: "", wishlist: "https://wish.example/list" });
     expect(rows()).toEqual([["#icon-trial", "A", "https://wish.example/list", "https://wish.example/list"]]);
     expect([more.style.display, box.classList.contains("m-over-limit")]).toEqual(["none", false]);
@@ -160,7 +155,6 @@ describe("applyIdentity", () => {
   });
 });
 
-/** OF's own /api2/v2/users/me and the Relay's /admin/accounts, captured and scrubbed (app/lib/__fixtures__/of). */
 const fixture = <T,>(name: string): T => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/avatar-menu-${name}.json`), "utf8")) as T;
 const ME = fixture<OfMe & { name: string; username: string; avatar: string }>("me");
 const ACCOUNTS = fixture<{ accounts: { id: string; nickname: string; has_session: boolean }[] }>("accounts").accounts;
@@ -190,7 +184,6 @@ describe("the avatar menu (home/state-avatar-menu)", () => {
     expect(s.querySelector(".l-sidebar__avatar img")!.getAttribute("src")).toBe(`/img?u=${ME.avatar}`);
     expect([...s.querySelectorAll(".l-sidebar__user-data__item")].map(text)).toEqual([`${ME.subscribersCount} Fans`, `${ME.subscribesCount} Following`]);
     expect(s.textContent).not.toMatch(/Your Model|yourmodel|—/);
-    // Verified and visible online, as the capture already shows.
     expect(s.querySelector(".l-sidebar__username .g-user-name")!.classList.contains("m-verified")).toBe(true);
     expect(s.querySelector<HTMLElement>(".l-sidebar__avatar .g-avatar__icon")!.style.display).toBe("");
   });
@@ -208,12 +201,10 @@ describe("the avatar menu (home/state-avatar-menu)", () => {
       ["Settings", "/of-manager/settings"],
       ["Streaming", "/of-manager/streaming/dashboard"],
       ["Statements", "/of-manager/statements"],
-      // OF's own Statistics link opens Overview (the bare section is Infloww's landing, next.config.ts).
       ["Statistics", "/of-manager/statistics/overview/earnings"],
       ["Promotions", "/of-manager/settings/subscription"],
       ["Release forms", "/of-manager/release-forms"],
       ["Your сards (to subscribe)", "/of-manager/bank/payments"],
-      // canReceiveManualPayout: OF's bank row, not the capture's "Add bank (to earn)".
       ["Bank (to earn)", "/of-manager/bank"],
       ["Help and support", true],
       ["Dark mode", true],
@@ -262,13 +253,11 @@ describe("the avatar menu (home/state-avatar-menu)", () => {
     ]);
     expect(rows[0].querySelector("use")!.getAttribute("href")).toBe("#icon-done");
     expect(menu.querySelector("a")!.getAttribute("href")).toBe("/creators");
-    // A pick closes it and selects that model (the ticked one too: in All models it is only the stand-in).
     menu.querySelector<HTMLButtonElement>("[data-oi-model='1001']")!.click();
     expect([onPick.mock.calls, d.querySelector("[data-oi-switcher-menu]")]).toEqual([[["1001"]], null]);
     toggle.click();
     d.querySelector<HTMLButtonElement>("[data-oi-model='2']")!.click();
     expect([onPick.mock.calls, d.querySelector("[data-oi-switcher-menu]")]).toEqual([[["1001"], ["2"]], null]);
-    // Escape and a click outside close it; the unbind leaves it shut and deaf.
     toggle.click();
     d.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(d.querySelector("[data-oi-switcher-menu]")).toBeNull();

@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * PaidMessagesTab — owns the filter state and the infinite-scroll list.
- *
- * The date range comes in from the page; everything else (model,
- * employee, status, fan search) is local to this tab so switching to
- * the Tips tab in the future doesn't pollute its filter state.
- *
- * Pagination is keyset (message_id DESC) via usePaidMessages, paged by
- * InfiniteListFooter.
- */
 
 import { useMemo, useState } from "react";
 
@@ -40,11 +30,7 @@ export default function PaidMessagesTab({ from, to }: Props) {
       account_id: accountId,
       employee_id: employeeId,
       status,
-      // PPV-tab semantics: outbound priced messages only. type=paid +
-      // direction=out are backend defaults, but we set them explicitly
-      // here so the CSV export reflects what the tab actually shows
-      // (Status: All|Paid|Unpaid still applies — that's what the user
-      // ticks to widen between paid-only and paid+unpaid).
+      // explicit so the CSV export matches what the PPV tab shows (also backend defaults)
       type: "paid" as const,
       direction: "out" as const,
       fan_query: fanQuery,

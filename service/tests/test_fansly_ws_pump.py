@@ -9,6 +9,7 @@ import asyncio  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
 import sys  # noqa: E402
+import tempfile  # noqa: E402
 from contextlib import contextmanager  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -16,11 +17,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "fansly"))
 
 from sqlalchemy import select  # noqa: E402
 
+import accounts as account_registry  # noqa: E402
 import event_transcoder as et  # noqa: E402
 import webhook_dispatch  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import Account, Message  # noqa: E402
+from db.models import Account, Fan, Message, Transaction  # noqa: E402
 from fansly_ws import FanslyWebSocket  # noqa: E402
+
+_TMP = tempfile.TemporaryDirectory(prefix="fansly_ws_pump_")
+account_registry.SESSIONS_DIR = Path(_TMP.name)
+account_registry.ACCOUNTS_DIR = Path(_TMP.name) / "accounts"
+account_registry.ACTIVE_FILE = Path(_TMP.name) / "active.json"
+account_registry.MIGRATED_MARKER = Path(_TMP.name) / ".migrated"
 
 _AID = "700237824869654528"
 _FAN = "500251712226222080"
@@ -74,10 +82,22 @@ def _wire(service_id: int, event: dict) -> dict:
                              "event": json.dumps(event)})}
 
 
-async def _seed_account() -> None:
+async def _seed_account(aid: str = _AID, platform: str | None = "fansly") -> None:
+    meta = {"id": aid, "nickname": aid}
+    if platform:
+        meta["platform"] = platform
+    account_registry.save_meta(aid, meta)
     async with get_session() as s:
-        if await s.get(Account, _AID) is None:
-            s.add(Account(id=_AID))
+        if await s.get(Account, aid) is None:
+            s.add(Account(id=aid))
+
+
+async def _money(aid: str, fan: int) -> tuple[int, int]:
+    async with get_session() as s:
+        txs = (await s.execute(select(Transaction.id).where(
+            Transaction.account_id == aid, Transaction.fan_id == fan))).scalars().all()
+        row = await s.get(Fan, (aid, fan))
+    return len(txs), (row.lifetime_spend_cents or 0) if row else 0
 
 
 async def _drain_tasks() -> None:
@@ -147,6 +167,42 @@ async def case_outbound_echo_does_not_persist():
     assert after == before, ("an outbound echo must not persist here", before, after)
 
 
+async def case_fansly_tip_frame_persists_but_never_banks():
+    await _seed_account()
+    mid = "900544249226047999"
+    frame = {"type": 1, "message": {**_INBOUND["message"], "id": mid,
+                                    "content": "a tip", "totalTipAmount": 3000}}
+    before = await _money(_AID, int(_FAN))
+    ws = FanslyWebSocket(_FakeClient())
+    event = ws._translate(_wire(5, frame))
+    assert event is not None
+    m = event["api2_chat_message"]
+    assert m["isTip"] is True and "tipAmount" not in m, m
+
+    await et.transcode({"__account_id": _AID, **event})
+    await _drain_tasks()
+
+    rows = [r for r in await _rows() if r.message_id == int(mid)]
+    assert len(rows) == 1 and rows[0].direction == "in", rows
+    assert await _money(_AID, int(_FAN)) == before, (
+        "a Live connection tip wrote money", before, await _money(_AID, int(_FAN)))
+
+
+async def case_onlyfans_tip_frame_still_banks():
+    aid, fan, mid = "9999002", 354841559, 10001090338390
+    await _seed_account(aid, platform=None)
+    txs, spend = await _money(aid, fan)
+    await et.transcode({"__account_id": aid, "api2_chat_message": {
+        "id": mid, "text": "I sent you a $10.00 tip ", "price": 0, "isTip": True,
+        "tipAmount": 10, "fromUser": {"id": fan},
+        "createdAt": "2026-06-13T03:30:28+00:00", "responseType": "message"}})
+    await _drain_tasks()
+    async with get_session() as s:
+        tx = (await s.execute(select(Transaction).where(
+            Transaction.account_id == aid, Transaction.message_id == mid))).scalars().all()
+    assert [(t.kind, t.amount_cents) for t in tx] == [("tip", 1000)], tx
+    assert await _money(aid, fan) == (txs + 1, spend + 1000)
+
 
 @contextmanager
 def _captured_info(logger_name: str):
@@ -189,5 +245,7 @@ if __name__ == "__main__":
         case_inbound_frame_persists_and_triggers,
         case_duplicate_frame_persists_once,
         case_outbound_echo_does_not_persist,
+        case_fansly_tip_frame_persists_but_never_banks,
+        case_onlyfans_tip_frame_still_banks,
         case_inbound_frame_logs_once,
     )

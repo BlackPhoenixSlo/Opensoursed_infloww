@@ -1,19 +1,3 @@
-"""A headless Creator tab (docs/spec/creator-badges/phase-0E-slop-and-fake-of-realism.md, "One headless tab actor"):
-an open app tab on its Creators. It follows `/events?lease=1`, renews its View lease on them (so roster-counts reads
-their windows and folds their Restricted unread), seeds from `GET /admin/accounts`, polls
-`GET /admin/accounts/roster-counts` only to record served numbers, and refetches the accounts answer when a ping's
-`badge` says it is behind (Phase B's one-behind-ping refetch).
-
-The tab holds no copy of the app's client logic: its Freshness store is the app's own `creatorFreshnessReducer`, the
-behind decision the app's `badgeBehind` (app/lib/creatorFreshness.ts), and `classify` the app's `redCircle`
-(app/components/chat/redCircle.ts), all run in node through lib/app_ts.py (`open_ts`, lib/badge_tab_ts.mjs), one
-action at a time in arrival order, as the app's hooks dispatch them. Seeds and events are kept to the tab's Creators
-before they go in (the reducer is per Creator, so this is the app's store seen through the tab's Creators).
-
-`slots[aid]`: every change of the held `values.unread_total`, `(t, slot)`; `served`: every badge number the tab was
-served, `(t, aid, n, source)` with `t` the value's own time (the slot's `at`, roster-counts' `as_of`; arrival when it
-has none) and source sse | accounts | roster. `observed[aid]`: `(t, kind, n)` per Red/Grey/Amber change (kind red |
-grey | amber; red 0 when the circle draws none), filled by `classify`. Times are epoch seconds."""
 from __future__ import annotations
 
 import asyncio
@@ -27,7 +11,6 @@ BADGE_TAB_TS = Path(__file__).resolve().parents[1] / "lib" / "badge_tab_ts.mjs"
 
 
 async def open_ts(ctx, n: int = 1) -> list:
-    """`n` node sessions running lib/badge_tab_ts.mjs; tabs share them (`ts=`), the caller closes them."""
     from slop.lib import app_ts
     return [await app_ts.session(ctx, BADGE_TAB_TS) for _ in range(n)]
 
@@ -55,7 +38,6 @@ class BadgeTab(SseListener):
         self._halt = asyncio.Event()
 
     def held(self, aid: str):
-        """The `values.unread_total` the tab holds for `aid`, or None."""
         return ((self.state.get(aid) or {}).get("values") or {}).get("unread_total")
 
     async def start(self) -> None:
@@ -178,11 +160,9 @@ class BadgeTab(SseListener):
                   obj.get("badge"))
 
     def red(self, aid: str) -> list[tuple[float, int | str]]:
-        """The Red circle as this tab drew it, `(t, n)`, grey as "grey" (never a number)."""
         return [(t, n if kind == "red" else "grey") for t, kind, n in self.observed.get(aid, ()) if kind != "amber"]
 
     def fill(self, circle_of) -> None:
-        """`observed` from the held slots: `circle_of(slot)` is the app's redCircle on it."""
         for aid, changes in self.slots.items():
             out: list[tuple[float, str, int | None]] = []
             last_red, last_amber = None, None
@@ -200,7 +180,6 @@ class BadgeTab(SseListener):
 
 
 async def classify(tabs: list[BadgeTab], ts) -> None:
-    """Every tab's `observed`, from one node call of the app's redCircle over every distinct slot the tabs held."""
     keys = sorted({json.dumps(s, sort_keys=True) for tab in tabs for ch in tab.slots.values() for _, s in ch})
     circles = (await ts.call({"op": "circles", "slots": [json.loads(k) for k in keys]}))["circles"] if keys else []
     by = dict(zip(keys, circles))

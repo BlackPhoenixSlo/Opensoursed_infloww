@@ -1,22 +1,9 @@
-/**
- * useAllModelsInclude — exclude-list semantics.
- *
- * The set used to be stored as an INCLUDE list materialized from the
- * account roster on the first toggle: any model captured after that
- * moment (or whose session was down right then) wasn't in the list and
- * silently vanished from the roster, the unified fan-out, and the
- * composer pickers. These tests pin the inverted encoding: absence
- * means included, only explicit unchecks are remembered, and the legacy
- * key is deleted rather than migrated.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 
 const STORAGE_KEY = "chatterly:allModelsExclude";
 const LEGACY_KEY = "chatterly:allModelsInclude";
 
-// The module keeps a "legacy key cleared" flag, so tests import it fresh
-// to exercise the first-read path deterministically.
 async function freshHook() {
   const mod = await import("@/hooks/useAllModelsInclude");
   return mod.useAllModelsInclude;
@@ -51,8 +38,6 @@ describe("useAllModelsInclude exclude-list semantics", () => {
   });
 
   it("a model that appears AFTER an exclusion exists is still included", async () => {
-    // The old include-list read "not in the list" as excluded, so a model
-    // captured after the first toggle never surfaced anywhere.
     const useAllModelsInclude = await freshHook();
     const { result } = renderHook(() => useAllModelsInclude());
     act(() => result.current.toggle("old-model"));
@@ -63,7 +48,6 @@ describe("useAllModelsInclude exclude-list semantics", () => {
     window.localStorage.setItem(LEGACY_KEY, JSON.stringify(["the graded vault"]));
     const useAllModelsInclude = await freshHook();
     const { result } = renderHook(() => useAllModelsInclude());
-    // Under legacy semantics one account (absent from the list) was hidden.
     expect(result.current.isIncluded("one account")).toBe(true);
     expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull();
   });
@@ -98,9 +82,6 @@ describe("useAllModelsInclude exclude-list semantics", () => {
   });
 
   it("two rapid toggles both land (no stale-state clobber)", async () => {
-    // Clicking a second checkbox before the first click's re-render commits
-    // used to compute from the stale set and drop the first change; toggle
-    // now applies on top of a fresh storage read.
     const useAllModelsInclude = await freshHook();
     const { result } = renderHook(() => useAllModelsInclude());
     const staleToggle = result.current.toggle;

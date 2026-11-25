@@ -1,52 +1,3 @@
-"""A described, flagged, Jev-classified vault for the feet pack picker (scenarios/2026-11-11-vault-feet-picker.py):
-`vault_items` rows by SQL for one Creator, as Collect + the describe pass + the flags pass + Jev v8 leave them
-(columns as seed/vault_items.py writes them), plus a few keepers already on `feet-nude` (an operator folder, as
-vault_pack_picker.triage writes it). Each item is planted in one class, so the candidate set, ranking and prefill
-have an exact oracle written here, never read off the service.
-
-PRECISION ONLY (vault_pack_picker): a candidate is a Jev photo that sees the feet at score >= .6. Below the gate, a
-Jev photo that sees the feet at score >= .3 (FEET_POSSIBLE_MIN) is POSSIBLE: queued after every candidate, `possible`
-true, never preselected, `suggested` its rung without the gate (tier + covering). Below .3: no candidate. Nothing else.
-
-  keepers = the candidates (Jev photos, `_jev.status` ok, feet seen, score >= .6)        suggested   tier
-    measured   weak describe (legs in pantyhose), Jev feet_subject 0.95, stockings, free  tease       0
-    jev_free   weak describe, Jev socks, NO qwen flags, lane5 free                        tease       0
-    jev_paid   soles in socks, qwen flags covered, Jev lane5 $50                          nude-body   50
-    jev_unsure Jev lane5 free BUT breasts_bare unsure, socks; qwen flags covered          -           None  (free guard)
-    jev_review Jev lane5 review, socks                                                     -           None  (free guard)
-    jev_soles  no feet word anywhere (outside the LIKE set); Jev soles + bare             nude        0   (Jev finds it)
-  PRESELECTED (arrive ticked): the keepers with a suggestion (measured, jev_free, jev_paid, jev_soles).
-  possible (seen, .3 <= score < the gate; after the candidates, unticked)              suggested   tier
-    jev_maybe  Jev feet_subject 0.55 (< FEET_PRESELECT_SCORE .6), socks, lane5 free, body "n"  tease       0
-    jev_floor  Jev feet_subject 0.30 (== FEET_POSSIBLE_MIN), socks, lane5 free, body "n"       tease       0
-  below the floor (seen, score < .3): not candidates (BELOW_FLOOR)
-    jev_low      Jev feet_subject 0.29, socks, lane5 free, body "n"
-    measured_no  tagged feet / primary_folder feet, but Jev feet_subject 0.05, other shoes
-  not candidates
-    tease / bare / ten / fifty / raw_nude / raw_socks / raw_bare   feet photos by every describe word and flag, but
-               Jev has not classified them (no `_jev`): they wait for Jev
-    jev_video  a CLIP: Jev max frame feet .95 socks free, feet words (no videos in feet)
-    jev_absent   body_focus feet + "on her feet", but Jev: feet not in the picture
-    bystander lingerie pose, feet one of four body_focus parts
-    mention   "standing on her feet" in the description only
-    ambiguous soles in frame, but riding a toy (a payoff act)
-  filler     nothing about feet (outside the LIKE set)
-Pre-guard free rung: one `jev_unsure` and one `jev_free` keeper on `feet-tease` (as the old prefill could file
-them before the free guard): the unsafe one must come back `unsafe_on_free` and never reach OF's free list.
-Pre-rule rows: one `tease` (no Jev) and one `jev_video` on `feet-nude` (filed before precision-only): they come back
-on their rung, never in the queue.
-`_jev` rows follow the Jev storage contract (`vault_jev_rules.blob` / `video_blob`: v, status, lane5, breasts_bare /
-crotch_bare / penetration, feet_subject, P, tags; a clip's adds kind "video").
-
-Sizes: SIZES `vault_feet_items` (items per Creator), merged on import.
-
-`seed(w, creator, n)` -> (and `w.data["vault_feet"]`) {"account_id", "classes": {cls: [media ids]},
-"keepers": [ids], "unknown_tier": [keeper ids with an unknown Jev tier (JEV_UNSAFE)], "expect": {id: {"suggested",
-"tier"}}, "preselect": {id: rung} (PRESELECT keepers, pre-filed ones included), "possible": {id: {"suggested",
-"tier"}} (POSSIBLE rows), "below_floor": [ids of BELOW_FLOOR rows], "filed": {id: rung},
-"free_unsafe": [the jev_unsure id on feet-tease], "free_safe": [the jev_free id on feet-tease], "pre_rule": [the
-tease + jev_video ids on feet-nude], "like_set": [ids the pre-change query matched, by media_id]}. Randomness only
-from `w.rng("vault_feet")`; media ids shuffled across classes so media_id order is the base rate."""
 from __future__ import annotations
 
 import json
@@ -57,31 +8,25 @@ from . import World, merge_sizes, ts
 SIZES = {"vault_feet_items": (300, 2_000, 12_000)}
 merge_sizes(SIZES)
 
-MODEL, PROMPT_VERSION, FLAGS_VERSION = "qwen3-vl-30b", "v2", 3   # as seed/vault_items.py
+MODEL, PROMPT_VERSION, FLAGS_VERSION = "qwen3-vl-30b", "v2", 3
 MIX = (("tease", 0.04), ("bare", 0.04), ("ten", 0.025), ("fifty", 0.025), ("raw_nude", 0.02), ("raw_socks", 0.015),
        ("raw_bare", 0.015), ("measured", 0.015), ("jev_free", 0.015), ("jev_paid", 0.015),
        ("jev_unsure", 0.015), ("jev_review", 0.015), ("jev_soles", 0.015), ("jev_maybe", 0.015),
        ("jev_video", 0.015), ("bystander", 0.13), ("mention", 0.09), ("ambiguous", 0.05), ("measured_no", 0.015),
        ("jev_absent", 0.015), ("jev_floor", 0.015), ("jev_low", 0.015), ("filler", 0.415))
-# The candidates (confident Jev photos) and their (suggested, tier): written from the spec, not the service.
 KEEPERS = {"measured": ("tease", 0), "jev_free": ("tease", 0), "jev_paid": ("nude-body", 50),
            "jev_unsure": (None, None), "jev_review": (None, None), "jev_soles": ("nude", 0)}
-# Jev photos that see the feet at .3 <= score < the gate: POSSIBLE, (suggested, tier) without the gate. From the spec.
 POSSIBLE = {"jev_maybe": ("tease", 0), "jev_floor": ("tease", 0)}
-# Jev photos that see the feet below FEET_POSSIBLE_MIN (.3): no candidate at all (unless filed).
 BELOW_FLOOR = ("jev_low", "measured_no")
-# Feet by every describe word / flag, no `_jev`: no candidate until Jev classifies them.
 NO_JEV = ("tease", "bare", "ten", "fifty", "raw_nude", "raw_socks", "raw_bare")
 VIDEO = ("jev_video",)
-# Keepers that arrive PRESELECTED (a known, safe suggestion): written from the spec, not the service.
 PRESELECT = ("measured", "jev_free", "jev_paid", "jev_soles")
-# Jev rows whose body is not free-safe: never prefilled, free rung refused (`feet_jev_free_guard`).
 JEV_UNSAFE = ("jev_unsure", "jev_review")
-JEV_V = "v8+nn.10"   # the Jev storage contract's version string
-FILED_P = 0.08   # keepers already on feet-nude before the run (the queue must leave them out)
+JEV_V = "v8+nn.10"
+FILED_P = 0.08
 FILED_FOLDER = "feet-nude"
-FREE_FOLDER = "feet-tease"   # the free rung: one unsafe + one safe Jev keeper pre-filed (pre-guard)
-PRE_RULE = ("tease", "jev_video")   # one of each on feet-nude, filed before precision-only
+FREE_FOLDER = "feet-tease"
+PRE_RULE = ("tease", "jev_video")
 
 _COVERED = {"breasts_vis": "covered", "vulva_vis": "covered", "anus_vis": "not_in_frame"}
 _OUT = {"breasts_vis": "not_in_frame", "vulva_vis": "not_in_frame", "anus_vis": "not_in_frame"}
@@ -89,8 +34,6 @@ _OUT = {"breasts_vis": "not_in_frame", "vulva_vis": "not_in_frame", "anus_vis": 
 
 def _jev(feet_subject: float, lane5: str = "free", detail: str = "socks", *, soles: float = 0.0, toes: float = 0.0,
          seen: str = "y", **body: str) -> dict:
-    """An `ai_fields_json["_jev"]` block as `vault_jev_rules.blob` stores it (the keys the picker reads + identity).
-    Body answers default "n"; `seen` is tags.feet_any (feet in the picture)."""
     return {"v": JEV_V, "status": "ok", "lane5": lane5, "lane": lane5, "settled": False,
             **{"breasts_bare": "n", "crotch_bare": "n", "penetration": "n", **body},
             "feet_subject": feet_subject,
@@ -100,8 +43,6 @@ def _jev(feet_subject: float, lane5: str = "free", detail: str = "socks", *, sol
 
 
 def _fields(cls: str, k: int) -> dict:
-    """The stored describe (+ flags) for a class. Filler and non-feet words never contain the LIKE terms
-    (feet / soles / toes / barefoot / bare feet)."""
     f: dict = {"_prompt_version": PROMPT_VERSION, "_frames": 1, "acts": [], "partner_visible": False}
     flags: dict | None = None
     if cls == "tease":
@@ -174,7 +115,7 @@ def _fields(cls: str, k: int) -> dict:
                  clothing_items=["grey socks", "joggers"], clothing_state="fully_clothed", explicitness="safe",
                  description=f"Curled up on the sofa in grey socks ({k})", _jev=_jev(0.55))
         flags = {**_COVERED, "over_breasts": "grey hoodie", "over_vulva": "grey joggers"}
-    elif cls in ("jev_floor", "jev_low"):   # at / just below FEET_POSSIBLE_MIN
+    elif cls in ("jev_floor", "jev_low"):
         f.update(primary_folder="legs", body_focus=["legs", "feet"], tags=["legs", "socks"],
                  clothing_items=["white socks", "shorts"], clothing_state="fully_clothed", explicitness="safe",
                  description=f"Sitting on the rug in white socks ({k})",
@@ -230,7 +171,6 @@ def _search_text(f: dict) -> str:
 
 
 def _old_like(f: dict) -> bool:
-    """The pre-change candidate query: search_text LIKE %feet% OR ai_fields_json LIKE %"feet"%."""
     return "feet" in _search_text(f) or '"feet"' in json.dumps(f)
 
 
@@ -239,7 +179,7 @@ def seed(w: World, creator: dict, n: int) -> dict:
     aid = creator["id"]
     names, weights = zip(*MIX)
     classes = [rng.choices(names, weights)[0] for _ in range(n)]
-    for i, c in enumerate(names):   # every class at least three times
+    for i, c in enumerate(names):
         classes[3 * i:3 * i + 3] = [c, c, c]
     rng.shuffle(classes)
     ids = sorted(rng.sample(range(2_500_000_000, 4_200_000_000), n))
@@ -277,7 +217,7 @@ def seed(w: World, creator: dict, n: int) -> dict:
                 out["preselect"][mid] = rung
             if rng.random() < FILED_P:
                 out["filed"][mid] = FILED_FOLDER.removeprefix("feet-")
-        elif cls in POSSIBLE:   # never pre-filed: no rng draw, so every other pick is unchanged
+        elif cls in POSSIBLE:  # never pre-filed: no rng draw, so every other pick is unchanged
             rung, tier = POSSIBLE[cls]
             out["possible"][mid] = {"suggested": rung, "tier": tier}
         elif cls in BELOW_FLOOR:
@@ -285,10 +225,10 @@ def seed(w: World, creator: dict, n: int) -> dict:
     # After the loop (no rng draw): the first unfiled of each class, so every other pick is unchanged.
     for cls, key in (("jev_unsure", "free_unsafe"), ("jev_free", "free_safe")):
         mid = next((m for m in out["classes"][cls] if m not in out["filed"]), None)
-        if mid is not None:   # none left: the scenario's check goes red on the empty list
+        if mid is not None:
             out["filed"][mid] = FREE_FOLDER.removeprefix("feet-")
             out[key].append(mid)
-    for cls in PRE_RULE:   # filed before precision-only: back on their rung, never in the queue
+    for cls in PRE_RULE:
         mid = next((m for m in out["classes"][cls] if m not in out["filed"]), None)
         if mid is not None:
             out["filed"][mid] = FILED_FOLDER.removeprefix("feet-")

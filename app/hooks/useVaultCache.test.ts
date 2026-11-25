@@ -1,8 +1,3 @@
-/**
- * useVaultCache's writes that every page shares: `sortOfFolders` saves the folder sort label (so the rail, the
- * OF-mirror Vault page and the new-post dialog agree), `invalidateVaultGrid` saves the query snapshot, and
- * `hideDuplicates` stops on a later batch's failure one way, thrown or answered, its progress only what it hid.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
@@ -67,7 +62,7 @@ describe("invalidateVaultGrid", () => {
 });
 
 describe("hideDuplicates", () => {
-  const ids = Array.from({ length: 501 }, (_, i) => i + 1); // batches of 250, 250, 1
+  const ids = Array.from({ length: 501 }, (_, i) => i + 1);
   const ok = (batch: number[]) => ({ hidden: batch.length, hidden_ids: batch, refused: {} });
   const batchOf = (call: unknown[]) => (call[1] as { media_ids: number[] }).media_ids;
 
@@ -82,7 +77,7 @@ describe("hideDuplicates", () => {
     const res = await hideDuplicates(AID, ids, { onProgress });
     expect(h.post).toHaveBeenCalledTimes(2);
     expect(res).toMatchObject({ hidden: 250, of_error: "boom", not_hidden: ids.slice(250) });
-    expect(onProgress.mock.calls.map(([done]) => done)).toEqual([250, 250]); // the failed batch hid nothing
+    expect(onProgress.mock.calls.map(([done]) => done)).toEqual([250, 250]);
   });
 
   it("a later batch OF half refused stops the same way", async () => {
@@ -117,7 +112,6 @@ describe("useOfSearch", () => {
     h.post.mockReturnValue(new Promise((r) => { answer = r; }));
     let refetched!: () => void;
     const { qc, result } = setup("leggings");
-    // The mounted grid (fresh, so only the invalidate refetches it).
     qc.setQueryData(mirrorItemsKey(AID), {});
     const unsub = new QueryObserver(qc, {
       queryKey: mirrorItemsKey(AID), staleTime: Infinity,
@@ -142,8 +136,6 @@ describe("useOfSearch", () => {
     expect(h.post).toHaveBeenCalledTimes(1);
   });
 
-  // F5 (#429): neither OF's search nor the grid's refetch may hold the spinner forever; closing the picker aborts it.
-  // Only the search itself can fail it: a harvest that answered is never "OnlyFans search failed" (rwl W30 round 2).
   it.each([["OF's search never answers", "post", true], ["the grid's refetch never answers", "grid", false]] as const)(
     "%s: searching ends after OF_SEARCH_MS, failed %s", async (_n, hang, failed) => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -179,7 +171,6 @@ describe("useOfSearch", () => {
     unmount();
     await waitFor(() => expect(sig?.aborted).toBe(true));
   });
-  // W30 C8: a partial harvest (OF failed mid-walk, not cached server-side) is retried on the next search.
   it.each([["of", 1], ["of_partial", 2]] as const)("a %s answer, searched again: %s OF call(s)", async (source, calls) => {
     h.post.mockResolvedValue({ ids: [1], count: 1, source });
     const { qc, result, unmount } = setup("leggings");

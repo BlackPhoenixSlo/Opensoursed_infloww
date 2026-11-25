@@ -1,22 +1,5 @@
 "use client";
 
-/**
- * My AI Chatter > Get to know fans (ours; by URL, out of the sidebar since 11-15). The AI info-gather automation
- * (`welcome_chatter_for_info`, service/automations/welcome_chatter_for_info.py) on a page of its own: the header
- * switch (with its On / Off pill) turns the kind on or off for the creator the moment it flips
- * (`/admin/automation-rules/switch`, which creates its rule from the catalog defaults the first time, else wakes the
- * one there). Its settings (the message cutoff and the closing PPV, the rule's payload) and the engine's Human style
- * boxes (the style blob, as Auto-reply's page shows its own) show whether it is on or off, rule or not, seeded from
- * the rule's payload else the catalog defaults, saved together by one Save; with no rule yet that Save creates it OFF
- * (getToKnowFansForm.ts `ruleSave`). Model info (ModelInfoBlock, also on Auto-reply) is the account's note every chat
- * prompt pins, with its own Save.
- *
- * Model info is for anyone with access to the account. The switch and settings ride the rule routes, which this
- * page does not grant on its own (service/permissions.py PAGE_MAP), so a role without them sees why instead.
- *
- * The rule PATCH sends the STORED payload back with only this page's fields changed (the rule's cadence and dev knobs
- * keep theirs). The style PUT merges, so it sends only the boxes touched here.
- */
 
 import { useReducer, useState } from "react";
 
@@ -43,7 +26,6 @@ import { gtkfReducer, initState, invalidReason, limitsOf, ruleSave } from "./get
 const TITLE = "Get to know fans";
 const KIND = "welcome_chatter_for_info";
 const NUMBER = "w-20";
-/** The catalog summary when the kinds read has none yet. */
 const BLURB = "Chats with fans to learn about them and build their profile, then can send one closing PPV.";
 
 const learn = (tip: string) => (
@@ -55,7 +37,6 @@ export default function GetToKnowFansPage() {
   if (!accountId) {
     return <PageFrame title={TITLE} creators={creators} actions={learn(BLURB)}><NoCreator loading={loading} /></PageFrame>;
   }
-  // Keyed, so switching creator re-seeds the settings and the Model info box.
   return <GetToKnowFans key={accountId} accountId={accountId} creators={creators} />;
 }
 
@@ -65,7 +46,6 @@ function GetToKnowFans({ accountId, creators }: { accountId: string; creators: C
   const switchM = useSwitchKind(accountId);
 
   const rules = (rulesQ.data ?? []).filter((r) => r.kind === KIND);
-  // The row the switch keeps on (ensure_kind_rule: the running one, else the oldest).
   const rule = rules.find((r) => r.is_enabled) ?? rules[0] ?? null;
   const on = rules.some((r) => r.is_enabled);
   const meta = kindsQ.data?.find((k) => k.kind === KIND);
@@ -101,8 +81,6 @@ function GetToKnowFans({ accountId, creators }: { accountId: string; creators: C
           </p>
         ) : null}
 
-        {/* Once per creator, on or off, rule or not: the switch creating or parking the rule never re-seeds it, and a
-            failed refetch (data kept) never unmounts the typed settings. */}
         {rulesQ.data !== undefined && meta && <RuleSettings accountId={accountId} rule={rule} meta={meta} />}
 
         <ModelInfoBlock accountId={accountId} />
@@ -111,8 +89,6 @@ function GetToKnowFans({ accountId, creators }: { accountId: string; creators: C
   );
 }
 
-/** The rule's own settings, seeded once from its payload, else the catalog defaults (getToKnowFansForm.ts), plus the
- *  Human style boxes. */
 function RuleSettings({ accountId, rule, meta }: {
   accountId: string; rule: AutomationRule | null; meta: AutomationKind;
 }) {
@@ -127,7 +103,6 @@ function RuleSettings({ accountId, rule, meta }: {
   const verdict = usePageSave(saveM, style, unsaved(state), dispatch);
   const invalid = invalidReason(state.draft, lim);
 
-  // A rule this page's last Save created counts until the rules refetch shows it, so a second Save PATCHes it.
   const save = () =>
     verdict.save(() => saveM.mutate(ruleSave(state.draft, rule ?? saveM.data ?? null, meta, accountId)));
 

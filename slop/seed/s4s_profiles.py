@@ -1,19 +1,3 @@
-"""S4S Settings (`s4s_profiles`), S4S posts (`s4s_posts`) and Agency blocks (`s4s_blocks`), as the
-owner's Settings save, the posts routes and POST /admin/s4s/blocks leave them (service/s4s_api.py).
-
-Per Creator: a profile, opted in unless drawn opted out (`opted_out_frac`), visible in Discovery, a
-Daily limit of 1-3 and the display fields an OnlyFans `/users/me` read stores (display_name = the
-Creator's name, username = its nickname lowercased + the last 4 of its id); 1-3 posts, the first one
-Primary (the routes make the first post Primary). Blocks: `blocks` distinct (Agency, Creator of another
-Agency) pairs drawn in one sample (fewer only if fewer exist), each with the Creator's S4S projection at
-block time (`s4s_requests_api._projection`); only opted-in Creators are blocked (the route 404s others).
-
-`seed(w, creators, *, opted_out_frac, blocks)` returns w.data["s4s_profiles"]:
-  {"profiles": {account_id: {profile_id, account_id, owner, opted_in, daily_limit, username,
-                display_name, caption}},
-   "blocks": [{agency_user_id, account_id, profile_id}]}
-Randomness only from w.rng("s4s_profiles").
-"""
 from __future__ import annotations
 
 import json

@@ -1,11 +1,3 @@
-/**
- * Lock text through the rendered Composer (seam 1): a send clears it, so the
- * next PPV goes out unlocked unless the chatter ticks it again, and a refused
- * schedule hands it back with the rest of the draft (composerDraft `sent` /
- * `restore`): its media and free previews too, or, when the chatter has typed
- * on since, as its own notice with Restore, which no later toast replaces
- * (`afterRefusedSchedule`).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -31,8 +23,6 @@ const tiles = () => screen.queryAllByRole("button", { name: "Remove attachment" 
 const previews = () => within(screen.getByRole("group", { name: "Free previews" }));
 const restoreButtons = () => screen.queryAllByRole("button", { name: "Restore" });
 
-/** Vault → the stub's fixture media ($10 and $25: the price becomes 25.00),
- *  then one free preview. */
 async function attachWithPreview(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "Vault" }));
   await user.click(await screen.findByRole("button", { name: "Confirm fixture media" }));
@@ -52,7 +42,7 @@ describe("Composer: lock text", () => {
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     expect(onSend.mock.calls[0][0]).toEqual({ text: "one", price: 5, lockedText: true });
 
-    resetSendGapForTests(); // the 3 s send-rate guard
+    resetSendGapForTests();
     await user.click(ppvPill());
     expect(lock()).not.toBeChecked();
     await user.type(price(), "6");
@@ -78,7 +68,7 @@ describe("Composer: lock text", () => {
     expect(textbox().value).toBe("later");
     expect(price().value).toBe("5");
     expect(lock()).toBeChecked();
-    expect(restoreButtons()).toHaveLength(0); // put back already: nothing to offer
+    expect(restoreButtons()).toHaveLength(0);
   });
 
   it("a refused schedule hands back the media and free previews too", async () => {
@@ -103,7 +93,7 @@ describe("Composer: lock text", () => {
 
   it("typed on while the schedule was in flight: the new draft stays; a later toast leaves the offer, whose Restore brings the refused one back", async () => {
     const user = userEvent.setup();
-    const { onSend } = await renderComposer({ fanId: 1 }); // an offer names a Fan's chat
+    const { onSend } = await renderComposer({ fanId: 1 });
     let refuse!: (err: Error) => void;
     onSend.mockImplementationOnce(() => new Promise<void>((_, reject) => { refuse = reject; }));
 
@@ -122,7 +112,6 @@ describe("Composer: lock text", () => {
     expect(textbox().value).toBe("something else");
     expect(tiles()).toHaveLength(0);
 
-    // The new draft schedules fine: its "Scheduled" toast does not replace the offer.
     await pickSendAt(user, 5);
     await user.click(textbox());
     await user.keyboard("{Enter}");

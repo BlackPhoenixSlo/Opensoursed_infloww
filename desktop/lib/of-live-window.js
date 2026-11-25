@@ -1,39 +1,9 @@
 "use strict";
 
-// Go live (ticket 127, D28): OnlyFans's own /my/streaming page in a desktop
-// window, one NON-persistent partition per Creator (`of-live-<creatorId>`), so
-// the session never touches disk. Every open reseeds it from the Relay's session
-// read: the auth cookies (never Cloudflare's own) plus localStorage.bcTokenSha =
-// x_bc, both before the first load. A cookie copy without bcTokenSha killed the
-// session in the D26 spike ("Wrong user" 301).
-//
-// Nothing here is ever written back to the Relay, and nothing is logged: the
-// cookies and x_bc live only in this partition's memory and the OF page itself.
-// The window gets no preload and no Node, so the secrets cross no bridge.
-// Camera and mic are allowed for onlyfans.com only; OF logout is blocked (both
-// the request and a navigation), because logging out here would end the
-// Creator's session everywhere.
-//
-// No Relay session for the Creator (the Relay's explicit `{"session": null}`,
-// never any other answer): the window opens unseeded on OF's login page (the
-// site root) for a human to sign in. Never a scripted login: no
-// script runs in the page, nothing is filled or submitted (D28 addendum: a
-// scripted login stalls on OF's anti-bot check).
-//
-// Electron and the Relay read are injected ({ BrowserWindow, session,
-// fetchSession }) so node tests can fake them, as lib/toast-window.js does;
-// main.js keeps only the IPC registration and its sender-origin check.
-//
-// ASSUMPTION: the ticket says "parameterise the existing capture window"; that
-// factory is bound to the capture flow's global state and interceptor preload,
-// so the shared part (Chrome UA + client hints) moved to lib/of-ua.js and both
-// windows use it. Overturned by: a reviewer wanting one factory with flags.
-// ASSUMPTION: "secrets never reach the renderer" means the app's renderer and
-// preload.js; the OF page's own renderer must hold bcTokenSha (D26). Overturned
-// by: a way to seed OF's localStorage without a renderer.
 
 const ofUa = require("./of-ua");
 
+// Non-persistent partition per Creator, reseeded on every open: auth cookies (never Cloudflare's) plus localStorage.bcTokenSha = x_bc before the first load; a cookie copy without bcTokenSha killed the session ("Wrong user" 301). Nothing is written back or logged; no preload/Node in the window.
 const OF_ORIGIN = "https://onlyfans.com";
 const LIVE_PATH = "/my/streaming";
 const LOGIN_PATH = "/";
@@ -54,21 +24,17 @@ function parse(url) {
   }
 }
 
-// https://onlyfans.com or a subdomain, default port only.
 function isOfOrigin(url) {
   const u = parse(url);
   if (!u || u.protocol !== "https:" || u.port !== "") return false;
   return u.hostname === "onlyfans.com" || u.hostname.endsWith(".onlyfans.com");
 }
 
-// Camera + mic ("media") on onlyfans.com only; every other permission and
-// every other origin is denied.
 function allowPermission(permission, origin) {
   return permission === "media" && isOfOrigin(origin);
 }
 
-// OF's logout endpoints (/api2/v2/users/logout, /users/helper-logout, from the
-// captured bundle) and any */logout page.
+// OF logout is blocked: logging out here would end the Creator's session everywhere.
 function isLogoutUrl(url) {
   if (!isOfOrigin(url)) return false;
   return /(^|\/)(helper-)?logout\/?$/.test(parse(url).pathname);
@@ -78,8 +44,6 @@ function isCloudflareCookie(name) {
   return /^(__cf|_cf|cf_)/i.test(String(name || ""));
 }
 
-// One Relay cookie → Electron cookies.set details, or null when it must not be
-// seeded (Cloudflare's, another site's, expired, nameless).
 function cookieDetails(c) {
   if (!c || !c.name || isCloudflareCookie(c.name)) return null;
   const host = "onlyfans.com";
@@ -96,7 +60,6 @@ function cookieDetails(c) {
     secure: !!c.secure,
     httpOnly: !!c.httpOnly,
   };
-  // A leading dot is a domain cookie; no dot (or none) stays host-only.
   if (raw.startsWith(".")) d.domain = raw;
   if (exp != null) d.expirationDate = exp;
   return d;
@@ -161,9 +124,7 @@ async function openOfLiveWindow(deps, opts) {
   });
 
   if (!unseeded) {
-    // Write bcTokenSha into the origin's localStorage from a document that is
-    // that origin but never touches the network (measured: it persists into the
-    // next real load of the same non-persistent partition).
+    // seed bcTokenSha from a document of the OF origin that never touches the network (measured: it persists into the next real load of this partition)
     await wc.loadURL("data:text/html,", { baseURLForDataURL: OF_ORIGIN + "/" });
     await wc.executeJavaScript(`localStorage.setItem("bcTokenSha", ${JSON.stringify(xBc)}); void 0`);
   }
@@ -173,10 +134,7 @@ async function openOfLiveWindow(deps, opts) {
   return win;
 }
 
-// The Relay's session read → what to open. Only an OK answer whose body says
-// `{"session": null}` is the sign-in mode; an OK seed must carry a cookie list
-// and x_bc; every other answer (any 503 included: deploy downtime, a proxy, a
-// broken session file) is refused with its status.
+// Only an OK answer with `{"session": null}` is sign-in mode (never a scripted login: it stalls on OF's anti-bot check); every other answer, any 503 included, is refused with its status.
 function goLiveSeed(status, body) {
   if (status < 200 || status > 299) return { refuse: status || 0 };
   const s = body && typeof body === "object" && "session" in body ? body.session : undefined;
@@ -185,15 +143,9 @@ function goLiveSeed(status, body) {
   return { refuse: 0 };
 }
 
-// The Go live open flow, one per app. deps: { BrowserWindow, session,
-// fetchSession(creatorId) → Response-like {status, json()}, platform,
-// chromeMajor, focusWindow(win), warn(msg) }. Returns
-// openGoLive(creatorId) → {ok, signIn?, error?}: one window per Creator (a second
-// open focuses it), a double click opens one, the seed is dropped after use and
-// never logged.
 function createGoLive(deps) {
-  const windows = new Map(); // creatorId -> BrowserWindow
-  const opening = new Set(); // creatorIds being opened
+  const windows = new Map();
+  const opening = new Set();
   const warn = deps.warn || (() => {});
   return async function openGoLive(rawId) {
     const creatorId = typeof rawId === "string" ? rawId.trim() : "";
@@ -232,7 +184,6 @@ function createGoLive(deps) {
       });
       return signIn ? { ok: true, signIn: true } : { ok: true };
     } catch (err) {
-      // The message only: never the seed.
       warn("[go-live] open failed: " + (err && err.message));
       return { ok: false, error: goLiveRefusal(0) };
     } finally {

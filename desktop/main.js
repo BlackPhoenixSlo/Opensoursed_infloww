@@ -1,38 +1,5 @@
 "use strict";
 
-// ───────────────────────────────────────────────────────────────────────────
-// Inflowwww desktop shell — main process.
-//
-// A thin, deliberately-boring Electron window onto the Inflowwww Next app
-// (server URL: env OPENINFLOWW_URL > stored Settings). Every launch opens the
-// Settings window first unless the user ticked "Don't show this again" or the
-// env override is set; a failed load always reopens it. It imports NOTHING
-// from app/ or service/ and ships no product code — it only knows a URL and a
-// relay share token. Deleting this folder leaves the web app untouched.
-//
-// Design comes from the fusion review (the old plan/DESKTOP_APP_PLAN.md, tag legacy-ui-final → "FUSION
-// HARDENING") and was hardened by a second adversarial multi-agent review:
-//   • Remote-load only (same origin as the app ⇒ cookies/SSE/rewrites work
-//     with zero relay changes). NEVER bundle the UI (that's a relay redesign).
-//   • Deny-by-default navigation on will-navigate / will-redirect /
-//     will-frame-navigate; external links → OS browser; same-origin popouts
-//     (group view) allowed as child windows on the shared partition.
-//   • Least privilege: nodeIntegration off, contextIsolation on, sandbox on, no
-//     Node/IPC bridge exposed to the remote page (only a static version object).
-//     The local Settings page gets its own trusted preload.
-//   • The trust origin is read LIVE from config inside each handler, so changing
-//     the server in Settings can't leave a window trusting the old origin.
-//   • Seed the relay share token into the partition (cookie + localStorage via
-//     the frontend's own ?t= mechanism) ONCE, only on a 2xx load, keeping the
-//     token out of URLs/logs/history everywhere else.
-//   • A real in-app "Log Out / Clear Session" destroys the on-disk credential —
-//     the fusion revocation concern.
-//
-// What this shell deliberately does NOT do: capture OnlyFans sessions. Per the
-// fusion review that stays in the Chrome extension (moving it into Electron is a
-// detection regression against the creator's account). The app consumes the
-// session the relay already holds; it never creates one.
-// ───────────────────────────────────────────────────────────────────────────
 
 const { app, BrowserWindow, Menu, Tray, shell, ipcMain, session, screen, nativeImage, clipboard } = require("electron");
 const { safeStorage, crashReporter, Notification, powerMonitor, powerSaveBlocker } = require("electron");
@@ -57,11 +24,8 @@ const { createGoLive, goLiveRefusal } = require("./lib/of-live-window");
 const { chromeMajor } = require("./lib/of-ua");
 
 const IS_DEV = process.argv.includes("--dev");
-// Internal identifiers keep the old "fastt" name on purpose: renaming the
-// partition would drop every user's session.
+// keeps the old "fastt" name on purpose: renaming the partition drops every user's session
 const PARTITION = "persist:fastt";
-// Dev-only: `--screenshot-to <path>` captures the first window (Settings or the
-// main window) ~3s after it loads, writes a PNG and quits.
 const SCREENSHOT_TO = (() => {
   const i = process.argv.indexOf("--screenshot-to");
   return i !== -1 && process.argv[i + 1] ? path.resolve(process.argv[i + 1]) : null;
@@ -70,44 +34,32 @@ const SHELL_VERSION = app.getVersion();
 const EXTERNAL_SCHEMES = new Set(["http:", "https:", "mailto:", "tel:", "sms:"]);
 
 app.setName("Inflowwww");
-// userData keeps the pre-rename "OpenInfloww" folder name on purpose, like the
-// partition above: setName alone would move it and log every user out.
+// keeps the pre-rename "OpenInfloww" folder on purpose: setName alone would move it and log every user out
 app.setPath("userData", path.join(app.getPath("appData"), "OpenInfloww"));
 
-// ── Pre-ready: local log, crash dumps, advanced options ─────────────────────
-// console.* also goes to <userData>/logs/main.log with the share token redacted
-// (lib/logfile.js). Crash dumps stay local (<userData>/Crashpad); nothing uploads.
 const SECRET_CODEC = safeStorageCodec(safeStorage);
 const LOG = createLogFile({
   dir: path.join(app.getPath("userData"), "logs"),
-  getSecrets: () => [tokenCache && tokenCache.token], // in-memory only, never the keychain
+  getSecrets: () => [tokenCache && tokenCache.token],
 });
 mirrorConsole(console, LOG);
 crashReporter.start({ uploadToServer: false });
-// The one config store, read before ready because hardware acceleration must be
-// decided then.
 const store = new Store(app.getPath("userData"));
 const ADVANCED = readAdvanced(store);
 applyBeforeReady(app, ADVANCED);
 app.whenReady().then(() => applyAfterReady(app, ADVANCED));
 
-// ── Single-instance + app links ─────────────────────────────────────────────
-// A second launch focuses whatever window we have. An `inflowwww://chat/…` link
-// (lib/deeplink.js) opens that chat: macOS delivers it via `open-url` (at launch
-// too, before ready), Windows/Linux as an argument — startup process.argv, or
-// the `second-instance` argv when the app is already running.
 const { SCHEME, parseDeepLink, deepLinkFromArgv, chatLinkForUrl } = require("./lib/deeplink");
 const { createReloadLimiter, routeToRemember } = require("./lib/recovery");
 
-let pendingRoute = null; // an app link waiting for the next loadApp()
-let loadStarted = false; // the startup loadApp() has run (it consumes a queued link)
+let pendingRoute = null;
+let loadStarted = false;
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   pendingRoute = deepLinkFromArgv(process.argv);
   if (process.defaultApp) {
-    // `electron .` run: the OS must launch the Electron binary with our app path.
     if (process.argv.length >= 2) app.setAsDefaultProtocolClient(SCHEME, process.execPath, [path.resolve(process.argv[1])]);
   } else {
     app.setAsDefaultProtocolClient(SCHEME);
@@ -131,29 +83,21 @@ function focusWindow(w) {
   w.focus();
 }
 
-// Show the main window (it may be hidden: macOS hide-on-close), else load the
-// app, or Settings when there is no server yet.
 function showMain() {
   if (mainWindow && !mainWindow.isDestroyed()) return focusWindow(mainWindow);
   isConfigured() ? loadApp() : openSettingsWindow();
 }
 
-// Open an app-link route in the main window. It is queued in pendingRoute and
-// loaded by the next loadApp(): the startup one (app not ready / still booting),
-// the one after Settings is saved (not configured yet), or the one called here.
 function openRoute(route) {
   if (!route) return;
   pendingRoute = route;
-  if (!app.isReady()) return; // isConfigured() reads the keychain, which needs ready
+  if (!app.isReady()) return;
   if (!isConfigured()) return openSettingsWindow();
-  if (!loadStarted) return; // startup gap: the startup loadApp() takes it
+  if (!loadStarted) return;
   if (mainWindow && !mainWindow.isDestroyed()) focusWindow(mainWindow);
   loadApp();
 }
 
-// The Messages Pro window while it is open (lib/window-open.js). A route of its
-// own (a notification's link, a Messages Pro link opened as a tab) opens there,
-// focused, leaving the main window where it is. False: none open, or not one.
 let messagesProWindow = null;
 function openInMessagesPro(route) {
   return openInMessagesProWindow(messagesProWindow, route, originOf(currentConfig().base), focusWindow);
@@ -161,51 +105,38 @@ function openInMessagesPro(route) {
 
 let mainWindow = null;
 let settingsWindow = null;
-let settingsShowsProblem = false; // Settings is up because a load failed
+let settingsShowsProblem = false;
 let boundsSaveTimer = null;
-let isQuitting = false; // set by before-quit; see the main window's close handler
+let isQuitting = false;
 let screenshotArmed = false;
 
 function liveWindow() {
-  // Prefer a currently-VISIBLE window (Settings when it is up) over a
-  // backgrounded main window, so a second launch focuses what the user is
-  // actually looking at.
   const wins = [settingsWindow, mainWindow].filter((w) => w && !w.isDestroyed());
   return wins.find((w) => w.isVisible()) || wins[0] || null;
 }
 
-// ── URL / token helpers ─────────────────────────────────────────────────────
 
 function normalizeBase(rawUrl) {
-  // Returns the http(s) ORIGIN only (no path) or null. We only ever load the app
-  // root and append the route ourselves, so keeping a user-supplied path would
-  // double it and give a sub-path-scoped cookie.
   try {
     const u = new URL(String(rawUrl).trim());
     if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-    return serverOrigin(u.origin); // a saved/typed landing URL → the app (lib/origin.js)
+    return serverOrigin(u.origin);
   } catch {
     return null;
   }
 }
 
 function regDomain(host) {
-  // Approx registrable domain (last two labels). Correct for our 2-label domains
-  // (your-host.example.com, onlyfans.com); a multi-part TLD like co.uk would over-narrow, but
-  // we only use it to keep a window navigating within the SITE it's already on.
   if (!host) return "";
   const parts = String(host).split(".");
   return parts.slice(-2).join(".");
 }
 
-// OPENINFLOWW_URL overrides the stored server URL for this run only; it is
-// never written to the config store.
 const ENV_URL = normalizeBase(process.env.OPENINFLOWW_URL || "");
 if (process.env.OPENINFLOWW_URL && !ENV_URL) {
   console.warn("[openinflowwww] ignoring OPENINFLOWW_URL (not a valid http(s) URL):", process.env.OPENINFLOWW_URL);
 }
 
-// The URL as shown to the user: no ?t= token, no query, no hash.
 function displayUrl(rawUrl) {
   try {
     const u = new URL(rawUrl);
@@ -219,10 +150,7 @@ function seedMarker(base, token) {
   return crypto.createHash("sha256").update(`${base} ${token}`).digest("hex").slice(0, 24);
 }
 
-// The share token is OS-encrypted on disk (lib/secret.js) and decrypted once,
-// on first use after ready; config:save and clearSession replace this cache.
-// unreadable = stored but undecryptable → treated as missing.
-let tokenCache = null; // { token, unreadable }
+let tokenCache = null;
 
 function shareTokenState() {
   if (!tokenCache) {
@@ -233,25 +161,17 @@ function shareTokenState() {
 }
 
 function currentConfig() {
-  // No built-in default server: a guessed URL (it used to be localhost:3001)
-  // silently points the app at whatever happens to run there. Unset → Settings.
   const base = ENV_URL || normalizeBase(store.get("serverUrl", "")) || null;
   return { base, token: shareTokenState().token };
 }
 
 function isConfigured() {
-  // "configured" is tracked explicitly so a deliberately tokenless (share-gate
-  // disabled) install still auto-loads the app instead of re-prompting forever.
-  // An undecryptable token sends the user back to Settings to paste it again;
-  // config:save then drops the bad blob, so this can't loop.
   if (ENV_URL) return true;
   if (shareTokenState().unreadable) return false;
   const { base, token } = currentConfig();
   return !!store.get("configured", false) || !!(base && token);
 }
 
-// Proactively (re)write the relay share-token cookie into the partition so even
-// the top-level HTML request carries it and it never lapses mid-use.
 async function refreshShareCookie(base, token) {
   if (!token) return;
   const ses = session.fromPartition(PARTITION);
@@ -271,18 +191,13 @@ async function refreshShareCookie(base, token) {
   }
 }
 
-// Decide the URL to load. On the first load for a given (server, token) we append
-// ?t= so the frontend's resolveShareToken() persists it to localStorage (needed
-// for SSE, which sends no cookies; resolveShareToken() reads it on any route).
-// `route` is an app path (an app link or the route to restore), default the
-// Dashboard (/). Not /inbox: that redirects to Messages Pro, which is a window
-// of its own (the page sees to that, app/components/shell/AppShell.tsx).
 async function computeLoadUrl(route) {
   const { base, token } = currentConfig();
   if (!base) return null;
   const target = `${base}${route || "/"}`;
-  if (!token) return target; // gate-off / not yet tokened → let the UI's own login show.
+  if (!token) return target;
 
+  // the ?t= is needed for SSE, which sends no cookies
   await refreshShareCookie(base, token);
 
   const marker = seedMarker(base, token);
@@ -299,15 +214,8 @@ function markSeeded() {
   if (base && token) store.set("seededFor", seedMarker(base, token));
 }
 
-// ── Security: applied to EVERY web contents (main + popouts + local pages) ───
 
 function guardNavigation(event, url) {
-  // Deny-by-default. Allowed in-window: (1) the Inflowwww app origin, and (2) staying
-  // within the SITE the window is already on. The main window is always on
-  // your-host.example.com, so (2) does not widen its policy — it exists so the OnlyFans
-  // capture window can navigate onlyfans.com (login redirects) in-window instead
-  // of being ejected. Foreign http(s) + mailto/tel/sms → OS browser; every other
-  // scheme (file:, custom) is blocked outright.
   const appOrigin = originOf(currentConfig().base);
   let u;
   try {
@@ -321,7 +229,6 @@ function guardNavigation(event, url) {
   try {
     curHost = new URL(event.sender.getURL()).hostname;
   } catch {
-    /* no current url */
   }
   if (curHost && u.hostname && regDomain(u.hostname) === regDomain(curHost)) return;
   event.preventDefault();
@@ -329,18 +236,11 @@ function guardNavigation(event, url) {
 }
 
 function hardenContents(contents) {
-  // Gate TOP-LEVEL navigation only: will-navigate + its server-side 30x redirects.
-  // Intentionally NOT will-frame-navigate — it fires for every sub-frame, and
-  // ejecting cross-origin IFRAMES (recaptcha, payment, embeds — present on the OF
-  // login page) to the OS browser would break them and spam external opens.
-  // Sub-frames load in-frame like a normal browser; the browser sandboxes them.
+  // top-level only, not will-frame-navigate: ejecting cross-origin iframes (recaptcha, payment on the OF login page) to the OS browser would break them
   contents.on("will-navigate", guardNavigation);
   contents.on("will-redirect", guardNavigation);
 
-  // window.open / target=_blank: same-origin → in-app child window on the shared
-  // partition (keeps group-view popouts + BroadcastChannel working), or the open
-  // Messages Pro window for a Messages Pro link opened as a tab
-  // (lib/window-open.js); anything else → OS browser, never a new in-app window.
+  // same-origin -> in-app child window on the shared partition (keeps group-view popouts + BroadcastChannel working); else OS browser, never a new in-app window
   contents.setWindowOpenHandler((details) => {
     const { url } = details;
     const appOrigin = originOf(currentConfig().base);
@@ -383,8 +283,6 @@ function hardenContents(contents) {
 
   contents.on("will-attach-webview", (event) => event.preventDefault());
 
-  // Right-click menu: spellcheck suggestions + cut/copy/paste. A typing-heavy
-  // chat tool needs these; without a handler the OS/Chromium menu never shows.
   contents.on("context-menu", (_e, params) => {
     const template = [];
     for (const s of params.dictionarySuggestions) {
@@ -413,7 +311,7 @@ function hardenContents(contents) {
 
 function lockDownSession() {
   const ses = session.fromPartition(PARTITION);
-  const allow = new Set(["notifications"]); // the UI already fires web Notifications.
+  const allow = new Set(["notifications"]);
 
   ses.setPermissionRequestHandler((wc, permission, cb) => {
     if (!allow.has(permission)) return cb(false);
@@ -421,12 +319,10 @@ function lockDownSession() {
   });
   ses.setPermissionCheckHandler((wc, permission, requestingOrigin) => {
     if (!allow.has(permission)) return false;
-    // Chromium may hand over "https://host/" or "" (lib/origin.js parses; "" → the page's URL).
     return isAppOrigin(requestingOrigin || (wc ? wc.getURL() : ""), originOf(currentConfig().base));
   });
 }
 
-// ── Window bounds ─────────────────────────────────────────────────────────────
 
 function sanitizeBounds(saved) {
   const def = { width: 1440, height: 900 };
@@ -434,9 +330,7 @@ function sanitizeBounds(saved) {
   const width = Number.isFinite(saved.width) ? saved.width : def.width;
   const height = Number.isFinite(saved.height) ? saved.height : def.height;
   if (!Number.isFinite(saved.x) || !Number.isFinite(saved.y)) return { width, height };
-  // Drop x/y (let Electron center) if the saved rect no longer overlaps any
-  // display — otherwise a monitor that's been unplugged strands the window
-  // off-screen and invisible.
+  // no overlap with any display (unplugged monitor): drop x/y so Electron centers it
   const overlaps = screen.getAllDisplays().some((d) => {
     const w = d.workArea;
     return saved.x < w.x + w.width && saved.x + width > w.x && saved.y < w.y + w.height && saved.y + height > w.y;
@@ -455,7 +349,6 @@ function scheduleBoundsSave() {
   boundsSaveTimer = setTimeout(persistBounds, 400);
 }
 
-// ── Windows ─────────────────────────────────────────────────────────────────
 
 function armScreenshot(win) {
   if (!SCREENSHOT_TO || screenshotArmed) return;
@@ -474,9 +367,7 @@ function armScreenshot(win) {
   });
 }
 
-// Show on first paint, or after `ms` regardless: a load that never paints (a
-// stuck navigation, a hung server) must not leave an invisible window that the
-// Dock says is running. Only the first show is forced; a later hide is respected.
+// forced show after ms: a load that never paints must not leave an invisible window the Dock says is running
 function showWhenReady(win, ms = 8000) {
   let shown = false;
   win.once("show", () => (shown = true));
@@ -502,7 +393,7 @@ function createMainWindow() {
       sandbox: true,
       webviewTag: false,
       spellcheck: true,
-      backgroundThrottling: false, // keep SSE/reconnect alive while minimized/occluded
+      backgroundThrottling: false,
       devTools: IS_DEV,
       partition: PARTITION,
       additionalArguments: [`--infloww-rea-shell-version=${SHELL_VERSION}`],
@@ -515,8 +406,7 @@ function createMainWindow() {
   mainWindow.on("move", scheduleBoundsSave);
   mainWindow.on("close", (e) => {
     persistBounds();
-    // macOS: closing hides the window so the page keeps running (SSE,
-    // notifications, sounds); the Dock icon (activate) shows it again.
+    // macOS: closing hides the window so SSE, notifications and sounds keep running
     if (process.platform !== "darwin" || isQuitting) return;
     e.preventDefault();
     if (mainWindow.isFullScreen()) {
@@ -530,7 +420,6 @@ function createMainWindow() {
     mainWindow = null;
     syncChatLinkItem();
   });
-  // Looking at the app: the stream's unseen DMs are seen.
   mainWindow.on("focus", () => {
     if (!streamUnseen) return;
     streamUnseen = 0;
@@ -539,40 +428,31 @@ function createMainWindow() {
 
   const wc = mainWindow.webContents;
 
-  // Keep "Copy App Link to This Chat" enabled only while on a chat.
   wc.on("did-navigate-in-page", (_e, _url, isMainFrame) => {
     if (isMainFrame) syncChatLinkItem();
   });
 
-  // Unread badge from the page title (best-effort; see lib/badge.js), or the
-  // stream's own count while the page is down.
   wc.on("page-title-updated", (_e, title) => {
     titleUnread = parseUnread(title);
     refreshBadge();
   });
 
-  // Mark the (server, token) pair seeded ONLY on a genuine 2xx main-frame load —
-  // never on an HTTP error/gate page, which would suppress the ?t= reseed.
   wc.on("did-navigate", (_e, navUrl, httpResponseCode) => {
     syncChatLinkItem();
     const { base } = currentConfig();
+    // seed ?t= only on a genuine 2xx main-frame load, never on an HTTP error/gate page
     if (base && navUrl.startsWith(base) && httpResponseCode >= 200 && httpResponseCode < 300) {
       markSeeded();
-      relayStream.kick(); // signed in now? retry a stream the relay refused
+      relayStream.kick();
     }
   });
 
-  // Connection failure → Settings, so a wrong URL can be fixed right there.
   wc.on("did-fail-load", (_e, errorCode, errorDesc, validatedURL, isMainFrame) => {
     if (!isMainFrame) return;
-    if (errorCode === -3) return; // ERR_ABORTED — superseded/redirected load.
+    if (errorCode === -3) return;
     showLoadProblem(errorDesc, validatedURL);
   });
 
-  // Renderer crash / hang → reload on its own, at most 3 times in 5 minutes
-  // (lib/recovery.js); past that, Settings with the failure noted instead of a reload loop.
-  // A window torn down on purpose (logout's destroy()) is never brought back;
-  // the check runs a tick later so it also holds if the event fires mid-destroy.
   const win = mainWindow;
   const reloads = createReloadLimiter();
   const recover = () => {
@@ -588,7 +468,6 @@ function createMainWindow() {
   return mainWindow;
 }
 
-// The main window's app link when it is on a chat, else null (lib/deeplink.js).
 function currentChatLink() {
   if (!mainWindow || mainWindow.isDestroyed()) return null;
   return chatLinkForUrl(mainWindow.webContents.getURL(), originOf(currentConfig().base));
@@ -600,15 +479,11 @@ function syncChatLinkItem() {
   if (item) item.enabled = !!currentChatLink();
 }
 
-// The main window's current route on the configured server (its last committed
-// URL, which a crashed or failed page still reports), else null — so a server
-// change or a fresh window (reopen, after logout) starts at the Dashboard.
 function currentRoute() {
   if (!mainWindow || mainWindow.isDestroyed()) return null;
   return routeToRemember(mainWindow.webContents.getURL(), originOf(currentConfig().base));
 }
 
-// Load a queued app link, else restore the current route, else the Dashboard.
 async function loadApp() {
   loadStarted = true;
   const route = pendingRoute || currentRoute();
@@ -617,14 +492,11 @@ async function loadApp() {
     openSettingsWindow();
     return;
   }
-  if (pendingRoute === route) pendingRoute = null; // a link that arrived meanwhile stays queued
+  if (pendingRoute === route) pendingRoute = null;
   if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
   const wc = mainWindow.webContents;
-  // loadURL resolves for an HTTP error page too, so note the main-frame status.
   let status = 0;
   const onNavigate = (_e, _url, code) => (status = code);
-  // guardNavigation blocks a redirect off the app origin (http → https, apex →
-  // www); that fails the load with no did-fail-load, so note it here.
   let blockedRedirect = "";
   const onRedirect = (e) => {
     if (e.isMainFrame && e.defaultPrevented) blockedRedirect = e.url;
@@ -634,8 +506,6 @@ async function loadApp() {
   try {
     await mainWindow.loadURL(target);
   } catch (err) {
-    // did-fail-load already opens Settings; swallow the aborted/network
-    // rejection so it doesn't surface as an unhandled promise rejection.
     if (IS_DEV) console.warn("[loadApp] loadURL rejected:", err && err.message);
     if (blockedRedirect) showLoadProblem(`The server redirected to ${displayUrl(blockedRedirect)}.`, target);
     return;
@@ -643,13 +513,10 @@ async function loadApp() {
     wc.removeListener("did-navigate", onNavigate);
     wc.removeListener("will-redirect", onRedirect);
   }
-  // 4xx/5xx (a wrong server's 404, the share gate's 401) → Settings.
   if (status >= 400) showLoadProblem(`The server answered HTTP ${status}.`, target);
   else watchForBlankPage(wc, target);
 }
 
-// True when the page shows no text, no running animation (a spinner) and no
-// visible image/control: a blank or black page.
 const BLANK_PAGE_CHECK = `(() => {
   const b = document.body;
   if (!b) return true;
@@ -661,8 +528,6 @@ const BLANK_PAGE_CHECK = `(() => {
   });
 })()`;
 
-// A 2xx load can still render nothing (a broken bundle, a server that answers an
-// empty page). Give the app ~10s to hydrate; blank the whole time → Settings.
 async function watchForBlankPage(wc, url) {
   for (let i = 0; i < 10; i++) {
     await new Promise((r) => setTimeout(r, 1000));
@@ -673,8 +538,6 @@ async function watchForBlankPage(wc, url) {
   showLoadProblem("The page loaded blank.", url);
 }
 
-// Any failed load reopens Settings, ignoring "Don't show this again", with what
-// failed shown on top; its Save & Open is the retry.
 function showLoadProblem(desc, url) {
   console.warn("[load] failed:", desc, displayUrl(url));
   openSettingsWindow({ desc: desc || "", url: displayUrl(url) });
@@ -693,11 +556,8 @@ function openSettingsWindow(problem) {
     return;
   }
   settingsShowsProblem = !!problem;
-  // Only parent/modal to the main window when it is actually VISIBLE. A macOS
-  // document-modal sheet on a hidden/absent parent may never present, stranding
-  // the user with no way forward from the error/logout state.
+  // parent/modal only to a VISIBLE main window: a macOS sheet on a hidden parent may never present
   const anchor = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? mainWindow : undefined;
-  // Fit short screens; the page scrolls if a long failure note still overflows.
   const display = anchor ? screen.getDisplayMatching(anchor.getBounds()) : screen.getPrimaryDisplay();
   const win = new BrowserWindow({
     width: 520,
@@ -723,21 +583,14 @@ function openSettingsWindow(problem) {
   showWhenReady(win);
   armScreenshot(win);
   win.on("closed", () => {
-    if (settingsWindow !== win) return; // detached by Save & Open
+    if (settingsWindow !== win) return;
     settingsWindow = null;
-    // Dismissed without saving after a failed load: close the blank main window
-    // too rather than leave it empty. On macOS the Dock icon then retries the
-    // load; elsewhere the app quits.
     if (settingsShowsProblem && mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
   });
   win.loadFile(file, { search });
 }
 
-// After a native OnlyFans capture saves an account, refresh the hosted UI so the
-// new account shows up in the Accounts list without a manual Cmd+R. A plain
-// reload isn't enough — the UI hydrates a PERSISTED React-Query cache
-// (localStorage `chatterly-rq-cache`) and shows the stale account list. Clearing
-// that cache key first forces a fresh fetch on reload.
+// the UI hydrates a PERSISTED React-Query cache (localStorage chatterly-rq-cache); a plain reload shows the stale account list
 function reloadMainAfterCapture() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents
@@ -746,7 +599,6 @@ function reloadMainAfterCapture() {
       try {
         mainWindow.webContents.reload();
       } catch {
-        /* ignore */
       }
     });
 }
@@ -765,14 +617,10 @@ async function clearSession() {
   store.set("seededFor", "");
   store.set("configured", false);
   stopBackground();
-  // Tear the authenticated window down entirely (a fresh one is created on the
-  // next load). destroy() is synchronous, so openSettingsWindow() below sees
-  // no live main window and opens a normal, non-modal settings window.
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
   openSettingsWindow();
 }
 
-// ── IPC (only from our LOCAL trusted page: config.html) ──────────────────────
 
 function isTrustedLocalSender(event) {
   const url = event.senderFrame ? event.senderFrame.url : "";
@@ -795,12 +643,10 @@ ipcMain.handle("config:get", (event) => {
 
 ipcMain.handle("config:save", async (event, incoming) => {
   if (!isTrustedLocalSender(event)) return { ok: false, error: "untrusted sender" };
-  // A bare host ("inflowwww.com", "localhost:3011") gets http://, as in a browser.
   const raw = String((incoming && incoming.serverUrl) || "").trim();
   const base = normalizeBase(/^[a-z][a-z\d+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`);
   if (!base) return { ok: false, error: "Enter a valid http(s) server URL." };
 
-  // normalizeBase keeps the origin only, so a pasted #hash/path/query is dropped.
   const patch = {
     serverUrl: base,
     configured: true,
@@ -808,30 +654,26 @@ ipcMain.handle("config:save", async (event, incoming) => {
     ...advancedPatch(incoming),
   };
   const token = incoming && typeof incoming.shareToken === "string" ? incoming.shareToken.trim() : "";
-  if (token) patch.seededFor = ""; // force a fresh ?t= seed for the new token
+  if (token) patch.seededFor = "";
   store.setMany(patch);
   if (token) {
     setSecret(store, "shareToken", token, SECRET_CODEC);
     tokenCache = { token, unreadable: false };
   } else if (shareTokenState().unreadable) {
-    deleteSecret(store, "shareToken"); // saved blank over an undecryptable token: drop it
+    deleteSecret(store, "shareToken");
     tokenCache = { token: "", unreadable: false };
   }
 
-  // Detach before closing: a fast failure of the load below must open a fresh
-  // Settings window, not reuse this closing one.
   const closing = settingsWindow;
   settingsWindow = null;
   settingsShowsProblem = false;
   if (closing && !closing.isDestroyed()) closing.close();
   await loadApp();
-  showMain(); // loadApp() reuses a main window macOS hide-on-close may have hidden
-  startBackground(); // the server or token may have changed
+  showMain();
+  startBackground();
   return { ok: true };
 });
 
-// Settings → Advanced → Restart: keep the switches as shown, then relaunch so
-// they take effect.
 ipcMain.handle("app:restart", (event, incoming) => {
   if (!isTrustedLocalSender(event)) return;
   const patch = advancedPatch(incoming);
@@ -845,22 +687,11 @@ ipcMain.handle("app:quit", (event) => {
   app.quit();
 });
 
-// Triggered by the native "Connect OnlyFans" button that preload.js injects into
-// the hosted page. Only the app's OWN remote origin may fire it, and all it does
-// is open a login window — no data crosses.
 ipcMain.handle("shell:add-of-account", (event) => {
   if (!isAppOrigin(event.senderFrame ? event.senderFrame.url : "", originOf(currentConfig().base))) return;
   openOfCaptureFlow(() => currentConfig(), reloadMainAfterCapture);
 });
 
-// Go live (ticket 127, D28): OnlyFans's own streaming page for one Creator in a
-// window on its own in-memory partition (lib/of-live-window.js holds the flow).
-// The page sends only the Creator id; the session is read here, from the Relay,
-// through the app partition (the signed-in owner's cookies), and goes straight
-// into the window's partition: never to the page, never logged, never written
-// back. The Relay gates it (OF_LIVE_WINDOW_ENABLED, default off: 404), refuses
-// chatters, and answers {"session": null} when the Creator has no session (the
-// window then opens OF's login page for a person; nothing is scripted).
 const openGoLive = createGoLive({
   BrowserWindow,
   session,
@@ -884,10 +715,7 @@ ipcMain.handle("shell:open-go-live", (event, rawId) => {
   return openGoLive(rawId);
 });
 
-// Notifications for the hosted page (`fasttShell.notify`, row 3.3) and the
-// relay stream below; see lib/notify.js. macOS shows them in our own toast
-// window (lib/toast-window.js): Electron 42+ there delivers OS notifications
-// only for a signed app, and builds are unsigned. Elsewhere, native ones.
+// macOS: our own toast window; Electron 42+ delivers OS notifications there only for a signed app, and builds are unsigned
 const TOASTS =
   process.platform === "darwin"
     ? createToasts({
@@ -902,14 +730,9 @@ const notifier = registerNotifyIpc({
   ipcMain,
   Notification: TOASTS ? TOASTS.ToastNotification : Notification,
   getAppOrigin: () => originOf(currentConfig().base),
-  // A notification's link opens in the Messages Pro window when one is open;
-  // else the main window loads it and hands it to a new one (AppShell).
   onClick: (appPath) => (appPath ? openInMessagesPro(appPath) || openRoute(appPath) : showMain()),
 });
 
-// ── Relay requests from the main process ────────────────────────────────────
-// Authenticated as the page's own fetches are: the partition's cookies (as
-// capture/of-capture.js) plus `?t=` (app/lib/relay.ts).
 function relayFetch(pathname, init = {}) {
   const { base, token } = currentConfig();
   if (!base) return Promise.reject(new Error("no server configured"));
@@ -928,16 +751,12 @@ async function relayJson(pathname, init = {}) {
   return resp.ok ? resp.json().catch(() => ({})) : null;
 }
 
-// ── Notifications + badge while the page can't (lib/sse.js) ─────────────────
-// The page notifies and badges from its own event stream. While it is crashed,
-// reloading or not loaded, this main-process stream does it instead; while the
-// page runs, it only keeps the page's notification settings at hand.
 
-const seenNotices = new SeenKeys(); // the relay's replay must not ping twice
-let notifSettings = DEFAULT_SETTINGS; // the page's, as last read
-let notifBrand = DEFAULT_BRAND; // the page's name (app/lib/brand.ts), as last read
-let titleUnread = 0; // from the page title (lib/badge.js)
-let streamUnseen = 0; // inbound DMs that arrived while the page was down
+const seenNotices = new SeenKeys();
+let notifSettings = DEFAULT_SETTINGS;
+let notifBrand = DEFAULT_BRAND;
+let titleUnread = 0;
+let streamUnseen = 0;
 
 function refreshBadge() {
   applyBadge({ app, win: mainWindow, nativeImage, count: Math.max(titleUnread, streamUnseen) });
@@ -961,7 +780,6 @@ async function readNotifSettings() {
     notifSettings = parseSettings(raw[0]);
     if (typeof raw[1] === "string" && raw[1]) notifBrand = raw[1];
   } catch {
-    /* keep the last known */
   }
 }
 
@@ -991,7 +809,6 @@ const relayStream = new SseClient({
   log: (msg) => console.log(msg),
 });
 
-// ── Sleep / lock pauses the time-tracking clock (lib/clock-pause.js) ─────────
 
 const CLOCK_POLL_MS = 60000;
 let clockTimer = null;
@@ -1020,15 +837,12 @@ function watchPower() {
   powerMonitor.on("lock-screen", pause("lock"));
   powerMonitor.on("resume", () => {
     relayStream.kick();
-    // Woken to a lock screen: unlock-screen clocks back in.
     if (powerMonitor.getSystemIdleState(1) === "locked") return;
     clock.resume("wake").catch(() => {});
   });
   powerMonitor.on("unlock-screen", () => clock.resume("unlock").catch(() => {}));
 }
 
-// Start (or restart, after a server/token change) what talks to the relay from
-// the main process. A no-op until configured.
 function startBackground() {
   if (!isConfigured() || !currentConfig().base) return;
   relayStream.restart();
@@ -1046,7 +860,6 @@ function stopBackground() {
   refreshBadge();
 }
 
-// ── Menu ─────────────────────────────────────────────────────────────────────
 
 function buildMenu() {
   const isMac = process.platform === "darwin";
@@ -1157,7 +970,6 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-// HTTP cache only: cookies and storage stay, so the user stays logged in.
 async function clearCacheAndRelaunch() {
   await session
     .fromPartition(PARTITION)
@@ -1167,8 +979,7 @@ async function clearCacheAndRelaunch() {
   app.exit(0);
 }
 
-// Menu-bar (macOS) / notification-area icon: the way back to a hidden window.
-let tray = null; // kept referenced, or GC removes the icon
+let tray = null;
 function createTray() {
   try {
     tray = new Tray(nativeImage.createFromPath(path.join(__dirname, "assets", "tray.png")));
@@ -1188,14 +999,12 @@ function createTray() {
   if (process.platform !== "darwin") tray.on("click", showMain);
 }
 
-// ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
-  // Log the bundle's signing state once at boot (why: lib/signing.js).
   describeSigning({ isPackaged: app.isPackaged })
     .then((d) => console.log("[infloww-rea-shell]", summarize(d)))
     .catch(() => {});
-  // Windows shows toasts only for an app with an AppUserModelID (= build.appId).
+  // Windows shows toasts only for an app with an AppUserModelID (= build.appId)
   if (process.platform === "win32") app.setAppUserModelId("org.openinflowwww.desktop");
 
   app.setAboutPanelOptions({
@@ -1204,16 +1013,10 @@ app.whenReady().then(async () => {
     copyright: "© Inflowwww contributors",
   });
 
-  // Harden every web contents that ever gets created — main, popouts, and the
-  // local Settings page.
   app.on("web-contents-created", (_e, contents) => hardenContents(contents));
 
+  // a service worker left registered by the previous run (/sw-images.js, origin-wide) makes the next launch's first navigation hang forever, so no window appears; cached images are kept
   lockDownSession();
-  // A service worker left registered by the previous run (the app's /sw-images.js,
-  // scoped to the whole origin) makes the first navigation of the next launch hang
-  // forever in Electron, so the main window never reaches ready-to-show and no
-  // window appears. Unregister it before loading; the app re-registers it, and the
-  // cached images (Cache Storage) are kept.
   await session
     .fromPartition(PARTITION)
     .clearStorageData({ storages: ["serviceworkers"] })
@@ -1222,14 +1025,12 @@ app.whenReady().then(async () => {
     statusPreload: path.join(__dirname, "capture", "status-preload.js"),
     statusHtml: path.join(__dirname, "renderer", "capture.html"),
     interceptorPreload: path.join(__dirname, "capture", "of-interceptor-preload.js"),
-    appPartition: PARTITION, // Finish & Save posts with the app's session cookie
+    appPartition: PARTITION,
   });
   buildMenu();
   createTray();
   watchPower();
 
-  // Settings first on every launch, unless the user opted out (and has a
-  // config to load) or the env override names the server.
   if (ENV_URL || (isConfigured() && store.get("skipStartupSettings", false))) {
     await loadApp();
   } else {
@@ -1240,8 +1041,6 @@ app.whenReady().then(async () => {
   app.on("activate", showMain);
 });
 
-// Cmd+Q / menu Quit fires this before any window closes, so the macOS
-// hide-on-close lets the main window really close.
 app.on("before-quit", () => {
   isQuitting = true;
   relayStream.stop();

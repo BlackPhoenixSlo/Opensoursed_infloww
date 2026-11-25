@@ -25,9 +25,8 @@ describe("attributionAsks", () => {
     expect(attributionAsks(msgs, me, map, T, asked, T + 60_000).ask).toEqual(want);
   });
 
-  // The relay may not have written a just-sent message's attribution when the first re-read lands.
   describe("a second ask, when the first re-read landed too soon", () => {
-    const sent = T - 1000; // the map (fetchedAt T) landed 1 s after the send
+    const sent = T - 1000;
     it("not before LAG_MS after the send: look again then", () => {
       expect(attributionAsks([out(10, sent)], me, {}, T, once(T - 50), T + 100)).toEqual({ ask: [], recheckAt: sent + LAG_MS });
     });

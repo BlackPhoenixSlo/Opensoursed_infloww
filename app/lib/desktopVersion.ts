@@ -1,14 +1,10 @@
-/**
- * The newest desktop shell build, as /download offers it. On a release bump all three together: desktop/package.json
- * "version", app/public/download.html (a static page outside the bundle, so its "v0.2.5" is not importable) and this.
- */
+// On a release bump change desktop/package.json, app/public/download.html (static, not importable) and this together.
 export const LATEST_DESKTOP_VERSION = "0.2.5";
 
-/** True when `version` ("0.2.0", "v0.2.0", "0.2.0-beta.1") is a lower major.minor.patch than `latest`. An
- *  unreadable version (the shell's "unknown", a missing one) is never older: no banner on a guess. */
 export function isOlderVersion(version: string | null | undefined, latest: string): boolean {
   const a = parse(version);
   const b = parse(latest);
+  // An unreadable version is never older: no banner on a guess.
   if (!a || !b) return false;
   for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] < b[i];
   return false;

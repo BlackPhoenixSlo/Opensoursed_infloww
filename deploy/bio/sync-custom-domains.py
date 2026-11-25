@@ -30,7 +30,6 @@ import sys
 import time
 from pathlib import Path
 
-# bio_pages/decide.py HOSTNAME (the bio app serves nothing else)
 HOSTNAME = re.compile(r"([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]")
 SERVICE = "bio-custom-domains"
 _RULE = re.compile(r"Host\(`([^`]+)`\)")
@@ -44,7 +43,7 @@ def valid(domain: str) -> bool:
     return len(domain) <= 253 and bool(HOSTNAME.fullmatch(domain))
 
 
-VERIFIED = ("pending_cert", "live")  # bio_pages/decide.py VERIFIED (stdlib-only copy, pinned by its test)
+VERIFIED = ("pending_cert", "live")
 
 
 def read_domains(db: Path) -> list[str]:
@@ -189,7 +188,7 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--db", type=Path, default=Path("/root/opensoursed_infloww/service/data/chatterly.db"))
     p.add_argument("--out", type=Path, default=Path("/root/traefik-dynamic/bio-custom-domains.yml"))
-    p.add_argument("--upstream", default="http://127.0.0.1:8790")  # README: public BIO_PORT
+    p.add_argument("--upstream", default="http://127.0.0.1:8790")
     p.add_argument("--entrypoint", default="websecure")
     p.add_argument("--resolver", default="letsencrypt")
     p.add_argument("--state", type=Path, default=Path("/var/lib/bio-custom-domains/state.json"))

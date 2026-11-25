@@ -47,7 +47,7 @@ def test_idle_keepalive_expires_and_fresh_connection_still_answers():
 
         def do_GET(self):
             if self.path == "/slow":
-                time.sleep(0.5)  # active work outlives the idle limit
+                time.sleep(0.5)
             self.send_response(200)
             self.send_header("Content-Length", "2")
             self.end_headers()
@@ -105,7 +105,7 @@ def test_idle_close_s_closes_a_parked_keepalive_and_the_client_reconnects():
             time.sleep(0.05)
         assert server.idle_closed == 1
         c.close()
-        c.request("GET", "/")  # a fresh connection still answers
+        c.request("GET", "/")
         assert c.getresponse().read() == b"ok"
     finally:
         server.shutdown()

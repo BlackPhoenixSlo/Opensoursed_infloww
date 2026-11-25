@@ -1,27 +1,3 @@
-"""Creator badges scenario 3 (docs/spec/creator-badges/phase-0E-slop-and-fake-of-realism.md story 21; phase-0C story
-36): 30 chatters hovering 10 Creators for 2 min cost at most one page-0 `list_chats` window read per Creator per 30 s
-(the shared Hover cooldown), and every hover answers the fold of the newest read, never an older one.
-
-World: `flat_agency` with CREATORS Creators, each a captured session (the relay's REAL OFClient against
-lib/of_wire.py, `OF_WIRE`) whose OF is lib/badge_wire.py (counter frames off: nothing here moves the counter), each
-OF chat list CHATS chats, UNREAD of them unread. Every window page answers WINDOW_PAGE_S late (`route_s`), so a
-read is in flight long enough for other hovers to land inside it. CHATTERS Employees (real invite + register), each
-working every Creator, each signed in with its own login.
-
-Actors: each chatter loops for HOVER_S: `GET /admin/accounts/roster-counts?bust=<random Creator>` (the hover
-warm-up / All Models pick), then HOVER_EVERY_S. No chatter opens `/events` or a View lease, so no Creator has an
-Open tab: the Shared refresher and Attribution read nothing, and every page-0 window call is a bust's.
-
-Checks: HOVER_ONE_READ_PER_30S (page-0 window calls, `lib/badge_metrics.window_reads`, per Creator at least
-COOLDOWN_S - JITTER_S apart, `gap_ok`); HOVER_ANSWERS_FRESH (every bust answer's `as_of` is no older than the newest
-window read of its Creator that started before the bust was sent: a bust landing while a read is in flight waits
-for it, `stale_answers`). Fewer than MIN_BUSTS answers, a failed chatter login, more than ERROR_MAX of busts
-failing, or no bust landing inside a read (the follower path unexercised) is INFRA. Every check `ctx.skip`s while
-Phase C's Hover cooldown (service/badge_reads_decide.py `hover`) is absent. Evidence `shared-hover.json`.
-
-Bypasses (declared): OF at its wire (lib/badge_wire.py on lib/of_wire.py); hovers are API calls, no browser (the
-app's hover chain is one `?bust=` then a list refetch the warm entry answers; the refetch is Phase D's subject).
-"""
 from __future__ import annotations
 
 import ast
@@ -48,8 +24,8 @@ TIERS = {"small": {"creators": 10, "chatters": 30, "hover_s": 120.0},
 HOVER_ONE_READ_PER_30S = "HOVER_ONE_READ_PER_30S"
 HOVER_ANSWERS_FRESH = "HOVER_ANSWERS_FRESH"
 CHECKS = (HOVER_ONE_READ_PER_30S, HOVER_ANSWERS_FRESH)
-COOLDOWN_S = 30.0       # badge_reads_decide.HOVER_COOLDOWN_MS
-JITTER_S = 1.0          # ASSUMPTION: the relay stamps the bust, its page-0 call starts a lane wait later
+COOLDOWN_S = 30.0  # badge_reads_decide.HOVER_COOLDOWN_MS
+JITTER_S = 1.0  # ASSUMPTION: the relay stamps the bust, its page-0 call starts a lane wait later
 HOVER_EVERY_S = (2.0, 5.0)
 WINDOW_PAGE_S = 0.5
 WINDOW_ROUTE = "GET /api2/v2/chats"
@@ -72,7 +48,6 @@ def phase_c() -> bool:
 
 
 def judge(calls: list[dict], answers: list[tuple[float, float, str, float]], creators: list[str]) -> dict:
-    """{check: (ok | None, detail)} over the fake's calls and the bust answers (sent, answered, Creator, as_of s)."""
     reads = window_reads(calls)
     per, worst = {}, {}
     for aid in creators:
@@ -90,7 +65,6 @@ def judge(calls: list[dict], answers: list[tuple[float, float, str, float]], cre
 
 
 def joined(answers: list[tuple[float, float, str, float]], calls: list[dict]) -> int:
-    """Busts sent while a window read of their Creator was in flight."""
     reads = window_reads(calls)
     return sum(1 for s, _a, aid, _o in answers if any(a == aid and t0 <= s < t for t0, t, a in reads))
 

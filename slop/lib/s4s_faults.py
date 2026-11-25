@@ -1,7 +1,3 @@
-"""Share for Share requests' break-it-once faults (scenarios/2026-11-01-s4s-requests-race.py): lib/faults.py
-merges `register(Fault)` into FAULTS. Each patches service/s4s_requests_api.py inside the throwaway relay. The check
-names live here and the scenario imports them, so a target can never name a check that does not exist.
-"""
 from __future__ import annotations
 
 ONE_WINNER = ("s4s race: racing answers on one request (accept/decline/skip by the receiver, or accept/decline vs "
@@ -10,7 +6,8 @@ SLOTS_JOBS = ("s4s race: every accepted request has exactly 2 slots (one per sid
               "s4s_post job, every other request none; s4s_post jobs == 2 x accepted, none ran")
 DAILY_LIMIT = ("s4s race: booked (not canceled) slots per Creator per UTC day <= its Daily limit after concurrent "
                "accepts, and each over-subscribed Creator got exactly min(senders, limit) accepts")
-CAP = 50  # a Creator's S4S requests per UTC day: service/s4s_common.py MAX_SENT_PER_DAY
+# service/s4s_common.py MAX_SENT_PER_DAY
+CAP = 50
 CAP_SEQ = f"s4s race: a Creator's request {CAP + 1} and {CAP + 2} of the UTC day -> 409, {CAP} rows stored"
 CAP_RACE = (f"s4s race: concurrent sends across the {CAP}/day boundary store exactly {CAP} requests for that "
             "Creator (the rest 409)")
@@ -35,10 +32,6 @@ PROPOSAL = ("s4s race: GET /requests/proposal answers 06:00 UTC of the first day
 
 
 def _accept_unguarded_update() -> None:
-    """`_transition`'s guarded UPDATE loses its status condition (`WHERE status IN movable`): the move trusts the
-    handler's earlier read, so two answers that both read `pending` both change the row and both answer 2xx (the
-    bug class of a check-then-write transition). Rewritten from the function's own source, so every other line
-    is the product's; the routes look `_transition` up in the module, so they call the patched one."""
     import inspect
     import textwrap
 
@@ -54,9 +47,6 @@ def _accept_unguarded_update() -> None:
 
 
 def _daily_limit_skipped() -> None:
-    """Accept's and the proposal's Daily limit test always says there is room: `_book` books whatever the
-    Creator already has on that day, and the proposal answers tomorrow even when it is full. Send keeps its own
-    count (s4s_common.request_refusal, unpatched)."""
     import s4s_requests_api as m
 
     async def never_full(s, p, slot_at) -> bool:
@@ -66,9 +56,6 @@ def _daily_limit_skipped() -> None:
 
 
 def _send_cap_unlocked() -> None:
-    """Send runs in a deferred transaction again (`immediate_session` = get_session, not BEGIN IMMEDIATE): concurrent
-    sends from one Creator all count the same requests sent today before any INSERT, so a burst across the cap stores
-    more than CAP. `send_request` looks `immediate_session` up in the module at call time, so it uses the patched one."""
     import inspect
 
     import s4s_requests_api as m
@@ -81,10 +68,7 @@ def _send_cap_unlocked() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run s4s-requests-race --break (the scenario's FAULT)
         "s4s-accept-unguarded-update": Fault(_accept_unguarded_update, (ONE_WINNER, SLOTS_JOBS)),
-        # slop/run s4s-requests-race --break --fault=s4s-daily-limit-skipped --baseline=slop/evidence/<run-dir>
         "s4s-daily-limit-skipped": Fault(_daily_limit_skipped, (DAILY_LIMIT, PROPOSAL)),
-        # slop/run s4s-requests-race --break --fault=s4s-send-cap-unlocked --baseline=slop/evidence/<run-dir>
         "s4s-send-cap-unlocked": Fault(_send_cap_unlocked, (CAP_RACE,)),
     }

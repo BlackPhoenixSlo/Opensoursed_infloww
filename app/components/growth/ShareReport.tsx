@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * ShareReport — the public page behind a share link (`/share/<id>.<secret>`, `ShareLinksPanel`): no sign-in, no app
- * shell (AuthGate renders it bare). It reads `/share/<key>/data` (the relay's public route, outside every gate) once
- * and draws the links the owner picked: name, date created, OnlyFans' counts and, with "Include earnings", net
- * Earnings, Fans who spent and Spend share. Never a fan. Unknown link: "not found"; revoked or past 7 days: expired.
- */
 
 import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
@@ -31,7 +25,6 @@ type Report = {
   include_earnings: boolean;
   updated_at: string | null;
   expires_at: string;
-  /** False: no read of the links has filled it yet. */
   ready: boolean;
   links: Row[];
 };

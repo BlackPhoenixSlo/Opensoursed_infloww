@@ -28,11 +28,11 @@ describe("ifDateValue", () => {
   });
 
   it("builds a Sunday-first six-week grid", () => {
-    const g = monthGrid("2026-11"); // Nov 1 2026 is a Sunday
+    const g = monthGrid("2026-11");
     expect(g).toHaveLength(42);
     expect(g[0]).toBe("2026-11-01");
     expect(g[41]).toBe("2026-12-12");
-    expect(monthGrid("2026-02")[0]).toBe("2026-02-01"); // Sunday too
+    expect(monthGrid("2026-02")[0]).toBe("2026-02-01");
     expect(monthGrid("2026-10")[0]).toBe("2026-09-27");
   });
 

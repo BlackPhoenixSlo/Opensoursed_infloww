@@ -1,14 +1,4 @@
-/**
- * settlePool — `Promise.allSettled` with at most `limit` calls in flight.
- *
- * For one user action that reads OnlyFans once per Creator (a refresh, a
- * warm): 5-10 Creators share a proxy, so firing every Creator at once is a
- * burst on it. Results come back in input order, like `allSettled`; one
- * failure never stops the rest. Writes go Creator by Creator instead
- * (`runFanOut`, components/compose/fanOut.ts).
- */
-
-/** The pool most per-Creator OnlyFans reads in one action use. */
+// 5-10 Creators share a proxy: firing every Creator at once is a burst on it.
 export const CREATOR_POOL = 2;
 
 export async function settlePool<T, R>(

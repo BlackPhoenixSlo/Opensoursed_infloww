@@ -1,7 +1,3 @@
-/**
- * Growth's Smart lists on Infloww's `SmartLists` page (page-parity 13): the top box (search, Create list), the
- * table heads, the empty text, "Create smart list" / "Edit smart list" pop-ups and the "Delete smart list?" confirm.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";

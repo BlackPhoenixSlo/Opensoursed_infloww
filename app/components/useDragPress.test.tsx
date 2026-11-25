@@ -3,7 +3,6 @@ import { renderHook } from "@testing-library/react";
 
 import { dragThreshold, useDragPress } from "./useDragPress";
 
-/** A window pointer event with the fields the hook reads. */
 function fire(type: string, pointerId: number, clientX: number, clientY = 0) {
   const ev = new MouseEvent(type, { clientX, clientY });
   Object.defineProperty(ev, "pointerId", { value: pointerId });

@@ -1,4 +1,3 @@
-/** OF Manager's page header and creator column (Infloww's, docs/infloww-of-manager-rea.md §1.5, §1.7). */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,7 +5,6 @@ import userEvent from "@testing-library/user-event";
 vi.mock("@/lib/events", () => ({ eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {} } }));
 const nav = vi.hoisted(() => ({ path: "/of-manager/home", search: "" }));
 vi.mock("next/navigation", () => ({ usePathname: () => nav.path, useSearchParams: () => new URLSearchParams(nav.search) }));
-// Messages Pro's FanDrawer stands in as its props (FanInsights.test.tsx covers the drawer itself).
 vi.mock("@/components/chat/FanDrawer", () => ({
   FanDrawer: (p: { pinned?: boolean; accountId: string; fanId: number | string; chat: { withUser: { id: number | string; name?: string } }; onClose: () => void }) => (
     <aside aria-label="Fan insights" data-pinned={String(!!p.pinned)} data-account={p.accountId} data-fan={String(p.fanId)}>
@@ -15,7 +13,6 @@ vi.mock("@/components/chat/FanDrawer", () => ({
     </aside>
   ),
 }));
-// Messages Pro's Scripts picker stands in as a button picking one script.
 const SCRIPT = vi.hoisted(() => ({ source: "local", text: "Script hi", displayText: "Script hi", mediaCount: 1, price: 0, lockedText: false, isWelcome: false, media: [{ id: 61, type: "photo" }], previews: [], taggedUsers: [] }));
 vi.mock("@/components/chat/TemplatePicker", () => ({
   TemplatePicker: (p: { accountId: string; onPick(t: unknown): void }) => <button type="button" data-account={p.accountId} onClick={() => p.onPick(SCRIPT)}>Scripts</button>,
@@ -23,9 +20,7 @@ vi.mock("@/components/chat/TemplatePicker", () => ({
 const media = vi.hoisted(() => ({ desktop: true }));
 vi.stubGlobal("matchMedia", (q: string) => ({ matches: media.desktop, media: q, addEventListener: () => {}, removeEventListener: () => {} }));
 vi.mock("@/components/ui/AccountAvatarPicture", () => ({ AccountAvatarPicture: () => null }));
-// useStandIn's principal (the frame's last stand-in is kept per principal).
 vi.mock("@/contexts/UserContext", () => { const v = () => ({ user: { user_id: "owner-1" } }); return { useUser: v, useOptionalUser: v }; });
-// The `account` blob holds each creator's Tag (useCreatorProfiles); every other read is the notification count.
 const TAGS = { tab: "account", config: { creators: { profiles: { "2": { tag: "VIP" } } } } };
 const get = vi.fn(async (path: string, _opts?: unknown): Promise<unknown> => (path === "/admin/settings/account" ? TAGS : { all: 250 }));
 vi.mock("@/lib/relay", () => ({ relay: { get: (path: string, opts?: unknown) => get(path, opts) }, RelayError: class extends Error {} }));
@@ -35,7 +30,6 @@ vi.mock("@/components/shell/useGrantedPages", () => ({ useGrantedPages: () => gr
 let rosterCounts: Record<string, { unread: number; owe_reply: number }> = {};
 vi.mock("@/hooks/useRosterCounts", () => ({ useRosterCounts: () => rosterCounts }));
 let watchers: { id: string; nickname?: string | null; name?: string | null; has_session?: boolean; role: "watcher" }[] = [];
-/** The accounts read failed with nothing cached. */
 let readFailed = false;
 vi.mock("@/hooks/useAccounts", () => ({
   useAccounts: () => (readFailed ? { isSuccess: false, isError: true, data: undefined } : { isSuccess: true, data: { accounts, watchers } }),
@@ -56,7 +50,6 @@ import { OfManagerChrome } from "./OfManagerChrome";
 
 const ui = () => renderWithProviders(<ScopeProvider><OfManagerChrome><p>OF view</p></OfManagerChrome></ScopeProvider>);
 
-// The test Creators leased by this tab: counts read as they always have (the unleased gate: lib/ofReadGate.test.ts).
 let release: () => void = () => {};
 beforeEach(() => { localStorage.clear(); watchers = []; readFailed = false; granted = null; rosterCounts = {}; nav.path = "/of-manager/home"; nav.search = ""; media.desktop = true; resetReadGate(); release = holdLease("test", ["1", "2", "3"]); });
 afterEach(() => { cleanup(); get.mockClear(); release(); });
@@ -114,7 +107,6 @@ describe("OfManagerChrome", () => {
     expect(dead).toHaveAttribute("title", "asdf · Disconnected");
     expect(live).toHaveAttribute("title", "kim");
     await waitFor(() => expect(live).toHaveTextContent("99+"));
-    // The OF count reads only; the column's Tags read (the `account` blob) is not an OF call.
     const ofCounts = get.mock.calls.filter(([path]) => path === "/api/of/v2/users/notifications/count");
     expect(ofCounts.map((c) => (c[1] as { accountId: string }).accountId)).toEqual(["3"]);
   });
@@ -198,7 +190,6 @@ describe("OfManagerChrome", () => {
     fireEvent.click(screen.getByRole("button", { name: "VIP" }));
     fireEvent.click(screen.getByRole("button", { name: "All tags" }));
     expect(screen.getAllByTestId("of-creator-row")).toHaveLength(2);
-    // Clearing the Tag filter changes no scope.
     expect(localStorage.getItem("chatterly:scope")).toBeNull();
   });
 
@@ -226,14 +217,13 @@ describe("OfManagerChrome", () => {
   it("the automatic pick for a saved All creators is a stand-in (settings locked, hint shown); clicking the Creator unlocks", () => {
     accounts = [{ id: "1", nickname: "dead", has_session: true, session_dead_at: "x" }, { id: "2", nickname: "jade", has_session: true }];
     localStorage.setItem("chatterly:scope", "all");
-    /** What OfMirrorFrame reads: the stand-in its Settings writes, stream copy and "Showing <model>" hint go by. */
     function Frame() {
       return <p data-testid="stand-in">{useStandIn("/of-mirror/pages/settings/account.html") ?? "none"}</p>;
     }
     renderWithProviders(<ScopeProvider><OfManagerChrome><Frame /></OfManagerChrome></ScopeProvider>);
-    expect(screen.getByTestId("stand-in")).toHaveTextContent("2");     // the same Creator the column shows picked
+    expect(screen.getByTestId("stand-in")).toHaveTextContent("2");
     fireEvent.click(screen.getByTitle("jade"));
-    expect(screen.getByTestId("stand-in")).toHaveTextContent("none");  // an explicit pick: writes act for it
+    expect(screen.getByTestId("stand-in")).toHaveTextContent("none");
     expect(localStorage.getItem("chatterly:scope")).toBe("model:2");
   });
 
@@ -252,13 +242,10 @@ describe("OfManagerChrome", () => {
     expect(row).toHaveAttribute("aria-current", "true");
     expect(localStorage.getItem("chatterly:scope")).toBe("model:1");
     expect(localStorage.getItem("chatterly:ofm-watcher")).toBe(JSON.stringify({ id: "9", over: "model:1" }));
-    // One account picked: the view tools are on, as for a Creator.
     expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
-    // A Creator pick clears it and is the app's scope again.
     fireEvent.click(screen.getByTitle("jade"));
     expect(localStorage.getItem("chatterly:scope")).toBe("model:2");
     expect(localStorage.getItem("chatterly:ofm-watcher")).toBeNull();
-    // A Tag group hides it, as an untagged creator.
     fireEvent.click(await screen.findByRole("button", { name: "All tags" }));
     fireEvent.click(await screen.findByRole("button", { name: "VIP" }));
     expect(screen.getAllByTestId("of-creator-row")).toHaveLength(1);
@@ -389,7 +376,6 @@ describe("OfManagerChrome", () => {
   it("a creator with session_dead_at shows the expired state, not the mirror", () => {
     accounts = [{ id: "1", nickname: "asdf", has_session: true, session_dead_at: "2026-10-19T00:00:00Z" }];
     ui();
-    // Its only creator, picked: the expired state.
     expect(screen.queryByText("OF view")).not.toBeInTheDocument();
     expect(screen.getByTestId("of-session-gone")).toHaveTextContent("This creator's OnlyFans connection has expired.");
     expect(screen.getByRole("link", { name: "Go To Creators Management" })).toHaveAttribute("href", "/creators");
@@ -485,7 +471,6 @@ describe("OfManagerChrome Fan insights", () => {
     expect(aside).toHaveAttribute("data-account", "1");
     expect(aside).toHaveAttribute("data-fan", "42");
     expect(aside).toHaveTextContent("bare");
-    // Messages Pro's Infloww palette: the wrapper re-declares --inf-insights for the drawer.
     expect((aside.closest(".absolute") as HTMLElement).style.getPropertyValue("--inf-insights")).toBe("#0d0d0d");
     expect(screen.getByText("OF view")).toBeInTheDocument();
     act(() => queryClient.setQueryData(["chats", "model", "1", null, null, null, 20], {

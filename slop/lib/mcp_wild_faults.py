@@ -1,7 +1,3 @@
-"""MCP wild's break-it-once fault (scenarios/2026-11-14-mcp-wild.py): lib/faults.py merges `register(Fault)` into
-FAULTS. The check names live here and the scenario imports them, so a target can never name a check that does not
-exist.
-"""
 from __future__ import annotations
 
 C_5XX = "no_5xx"
@@ -24,10 +20,6 @@ CHECKS = (C_5XX, C_WELLFORMED, C_NO_SEND, C_CROSS, C_SEND_LISTED, C_ANON3, C_REV
 
 
 def _anon_sees_token_builtins() -> None:
-    """The no-credential surface lists every builtin (bug class: the `token` filter on BUILTINS dropped), so an
-    anonymous tools/list shows propose_plan and plan_status; their calls then answer 401/404 with no connect link.
-    `mcp_api._dispatch` / `_call` look `_builtins` (calls) and `_listed` (tools/list) up at call time; `_listed`
-    is widened for the no-credential caller only. Only anonymous_only_three_tools goes red."""
     import mcp_api
 
     listed = mcp_api._listed
@@ -37,6 +29,5 @@ def _anon_sees_token_builtins() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run 2026-11-14-mcp-wild --break (the scenario's FAULT)
         "mcp-anon-sees-token-builtins": Fault(_anon_sees_token_builtins, (C_ANON3,)),
     }

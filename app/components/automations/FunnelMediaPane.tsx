@@ -1,19 +1,5 @@
 "use client";
 
-/**
- * FunnelMediaPane — map ONE model's vault media to a (global) funnel.
- *
- * A funnel's TEXT (opener + step copy/prompts/price) is shared across all of an
- * owner's models. Its MEDIA is NOT: an OnlyFans vault id is per-account, so an
- * id picked on model A is meaningless in model B's vault. This pane edits the
- * per-account binding (funnel_account_media) for the CURRENTLY selected model —
- * the funnel's opener media + each PPV step's media — and saves it via
- * useSaveFunnelMedia. To map another model, switch the model chip (one row per
- * account).
- *
- * It reads the funnel's SAVED steps (useFunnel) to know which steps are PPV; add
- * a step + save the funnel text first, then attach its media here.
- */
 
 import { useEffect, useMemo, useReducer } from "react";
 import { ChevronLeft, ChevronRight, Copy, Image as ImageIcon, Lock, LockOpen, X } from "lucide-react";
@@ -37,12 +23,12 @@ import {
   pickerIds as pickerIdsOf,
 } from "@/components/automations/funnelMediaReducer";
 
-/** A PPV step that needs media: `stepNo` is its wire `step` id (the media key); `label` names it by position. */
 interface PpvSlot {
   stepNo: number;
   label: string;
 }
 
+// An OnlyFans vault id is per-account, so media is bound per model while funnel text is shared.
 export function FunnelMediaPane({
   funnel,
   accountId,
@@ -63,7 +49,6 @@ export function FunnelMediaPane({
   const [state, dispatch] = useReducer(funnelMediaReducer, initialFunnelMedia);
   const { openerIds, steps, done } = state;
 
-  // The funnel's PPV steps (the only ones that carry media), in order.
   const ppvSlots = useMemo<PpvSlot[]>(() => {
     const out: PpvSlot[] = [];
     (fullQ.data?.steps ?? []).forEach((s, i) => {
@@ -76,17 +61,11 @@ export function FunnelMediaPane({
   }, [fullQ.data]);
   const stepNos = useMemo(() => ppvSlots.map((s) => s.stepNo), [ppvSlots]);
 
-  // Seed once from the saved binding + the funnel's steps (the reducer ignores
-  // later refetches, so edits survive the save's own invalidate).
   useEffect(() => {
     if (state.seeded || !fullQ.data || !mediaQ.data) return;
     dispatch({ type: "hydrate", media: mediaQ.data, stepNos });
   }, [state.seeded, fullQ.data, mediaQ.data, stepNos]);
 
-  // Resolve every picked id (opener + all steps) → full VaultMedia for thumbnails.
-  // Bare ids carry no image URL, so we fan out a by-id vault read (cached,
-  // 404-tolerant); an unresolved id falls back to a "#id" badge. One hook for the
-  // whole pane keeps the queries shared/deduped.
   const allIds = useMemo(
     () => [...openerIds, ...Object.values(steps).flatMap((d) => d.ids)],
     [openerIds, steps],
@@ -110,7 +89,6 @@ export function FunnelMediaPane({
     dispatch({ type: "saveOk", rev });
   }
 
-  // What the open picker is currently editing → its selected ids.
   const pickerIds = pickerIdsOf(state);
 
   if (!accountId) {
@@ -139,7 +117,6 @@ export function FunnelMediaPane({
         <div className="text-[14px] text-muted">Loading media…</div>
       ) : (
         <div className="space-y-3">
-          {/* Opener media */}
           <div className="space-y-2">
             <MediaRow
               title="Opening message media"
@@ -158,13 +135,12 @@ export function FunnelMediaPane({
             )}
           </div>
 
-          {/* PPV step media */}
           {ppvSlots.length === 0 ? (
             <IfHelp>No PPV steps yet: add one in the funnel editor and save, then attach its media here.</IfHelp>
           ) : (
             ppvSlots.map((slot) => {
               const d = steps[String(slot.stepNo)] ?? { ids: [], previewCount: 0 };
-              const free = d.previewCount; // reducer keeps it ≤ ids.length
+              const free = d.previewCount;
               const freeId = `funnel-${funnel.id}-step-${slot.stepNo}-free`;
               return (
                 <div key={slot.stepNo} className="space-y-2">
@@ -173,8 +149,6 @@ export function FunnelMediaPane({
                     hint="The paywalled vault media for this PPV step."
                     ids={d.ids}
                     onPick={() => dispatch({ type: "openPicker", target: slot.stepNo })}
-                    // Split clear: this wipes the MEDIA (and its teaser); "Clear teaser"
-                    // below resets only the free-preview count.
                     onClear={() => dispatch({ type: "setStep", stepNo: slot.stepNo, patch: { ids: [], previewCount: 0 } })}
                     clearLabel="Clear media"
                   />
@@ -190,7 +164,6 @@ export function FunnelMediaPane({
                             min={0}
                             max={d.ids.length}
                             value={String(d.previewCount)}
-                            // Raw count; the reducer clamps it to 0..ids.length.
                             onChange={(e) =>
                               dispatch({ type: "setStep", stepNo: slot.stepNo, patch: { previewCount: Number(e.target.value) || 0 } })
                             }
@@ -210,9 +183,6 @@ export function FunnelMediaPane({
                         </IfHelp>
                       </div>
 
-                      {/* Thumbnail strip: the leading `free` images go out UNLOCKED,
-                          the rest stay paywalled. Reorder to pick which ones are the
-                          free teaser (it's always the FIRST N). */}
                       <MediaStrip
                         ids={d.ids}
                         free={free}
@@ -221,8 +191,6 @@ export function FunnelMediaPane({
                         onRemove={(i) => dispatch({ type: "remove", target: slot.stepNo, i })}
                       />
 
-                      {/* Same set across steps is common: copy media + teaser to
-                          every OTHER PPV step (teaser re-clamped per target). */}
                       {ppvSlots.length > 1 && (
                         <IfButton icon={Copy} onClick={() => dispatch({ type: "copyToAll", fromStepNo: slot.stepNo, stepNos })}>
                           Copy media to all PPV steps
@@ -267,7 +235,6 @@ export function FunnelMediaPane({
   );
 }
 
-/** One media slot: a labelled pick/clear button + the current count. */
 function MediaRow({
   title,
   hint,
@@ -281,7 +248,6 @@ function MediaRow({
   ids: number[];
   onPick: () => void;
   onClear: () => void;
-  /** Text for the clear link — e.g. "Clear media" when a teaser clear sits beside it. */
   clearLabel?: string;
 }) {
   return (
@@ -302,10 +268,6 @@ function MediaRow({
   );
 }
 
-/** A horizontal strip of media thumbnails for one slot, in SEND order. Each tile
- *  shows the image (or a "#id" badge until it resolves), an open / closed lock
- *  when `free` is given (leading `free` = the teaser), and left / right to reorder + × to
- *  drop it. Reordering matters: the first `free` images are the ones sent free. */
 function MediaStrip({
   ids,
   free,
@@ -314,7 +276,6 @@ function MediaStrip({
   onRemove,
 }: {
   ids: number[];
-  /** How many LEADING tiles are the free teaser (unlocked); omit for opener media. */
   free?: number;
   thumbFor: (id: number) => string;
   onMove: (index: number, dir: -1 | 1) => void;
@@ -366,8 +327,6 @@ function MediaStrip({
                 <X aria-hidden className="h-3 w-3" />
               </button>
             </div>
-            {/* Reorder controls — hover-revealed on desktop, always visible (and
-             *  thumb-sized) on touch, where hover never fires. */}
             <div className="flex items-stretch justify-between bg-black/40 py-2 md:py-0 opacity-100 md:opacity-0 md:group-hover:opacity-100">
               <button
                 type="button"

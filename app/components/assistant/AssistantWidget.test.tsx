@@ -1,19 +1,7 @@
-/**
- * AssistantWidget — the boundaries this component actually owns.
- *
- * The answers themselves are the server's job (service/tests/test_assistant_api.py
- * covers those). What can only go wrong HERE is the request shape — a `role`
- * field the server must never be handed, an account_id with no account behind it — and
- * the 200-always contract: a used-up cap comes back as `{answer, error:"cap"}`
- * and has to READ as an answer, because a bot that looks broken exactly when
- * someone needs config help is the failure mode the endpoint exists to avoid.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-// Hoisted with the vi.mock factories below — anything they close over has to
-// be, or it is still in its TDZ when the mocked module is first imported.
 const { relayPost, relayGet, relayPut, relayFile, saveBlob, nav, scope, employee, roster, signedIn } = vi.hoisted(() => ({
   relayPost: vi.fn(),
   relayPut: vi.fn(),
@@ -23,13 +11,10 @@ const { relayPost, relayGet, relayPut, relayFile, saveBlob, nav, scope, employee
   nav: { pathname: "/", pushed: [] as string[] },
   scope: { accountId: "1001" as string | null },
   employee: { current: { id: 7 } as { id: number } | null },
-  // The OWNED accounts (useAccounts); `loaded` false = the query still loading,
-  // in the hook's real chatter shape: `accounts: []`, isSuccess false, dataUpdatedAt 0.
   roster: {
     list: [] as Array<{ id: string; nickname?: string | null; has_session?: boolean; is_active?: boolean }>,
     loaded: true,
   },
-  // A signed-in user (an owner) can ask about General; a chatter session can't.
   signedIn: { user: { username: "vaerunner" } as { username: string; user_id?: string } | null },
 }));
 
@@ -54,12 +39,9 @@ vi.mock("@/lib/relay", () => {
 vi.mock("@/lib/csv", async (orig) => ({ ...(await orig<object>()), saveBlob: (...a: unknown[]) => saveBlob(...a) }));
 
 vi.mock("next/navigation", () => {
-  // The Do-it-for-me runner navigates with router.push: recorded like a link click.
   const router = { push: (href: string) => { nav.pushed.push(href); } };
   return { usePathname: () => nav.pathname, useRouter: () => router };
 });
-// The router is the boundary: a link click records where it went and runs the
-// caller's onClick, as next/link's does before its client-side push.
 vi.mock("next/link", () => ({
   default: ({ href, onClick, children, ...rest }: { href: string; onClick?: (e: unknown) => void; children: React.ReactNode }) => (
     <a {...rest} href={href} onClick={(e) => { e.preventDefault(); nav.pushed.push(href); onClick?.(e); }}>{children}</a>
@@ -80,7 +62,6 @@ import { AssistantProvider, AssistantWidget, LAUNCHER_KEY } from "./AssistantWid
 import { PageCreatorProvider, usePageCreator } from "@/contexts/PageCreatorContext";
 import { POPOUT_MODE_ROUTES } from "@/lib/chatSlots";
 
-/** A scope-driven page on screen (Messages Pro, OF Manager) reports the scope as its pick. */
 function ScopedPage() {
   usePageCreator(scope.accountId);
   return null;
@@ -88,7 +69,6 @@ function ScopedPage() {
 const tree = () => <PageCreatorProvider><AssistantProvider><AssistantWidget /><ScopedPage /></AssistantProvider></PageCreatorProvider>;
 let view: ReturnType<typeof renderWithProviders>;
 
-/** The widget starts collapsed; every case here works in the open panel. */
 async function openPanel() {
   view = renderWithProviders(tree());
   const bubble = await screen.findByRole("button", { name: "Help assistant" });
@@ -96,7 +76,6 @@ async function openPanel() {
   return bubble;
 }
 
-/** The scope switcher moves on a scope-driven page. */
 function switchApp(accountId: string | null) {
   scope.accountId = accountId;
   view.rerender(tree());
@@ -115,7 +94,6 @@ beforeEach(() => {
   relayPut.mockReset();
   relayFile.mockReset();
   saveBlob.mockReset();
-  // GET /admin/errors?since_hours=24 — the Status card's source.
   relayGet.mockResolvedValue({ count: 0, since_hours: 24, list: [] });
   nav.pathname = "/";
   nav.pushed = [];
@@ -162,8 +140,6 @@ describe("AssistantWidget", () => {
     const [path, body, ctx] = relayPost.mock.calls[0];
     expect(path).toBe("/admin/assistant/ask");
     expect(body).toEqual({ question: "how do I set up auto posts?", account_id: "1001", thread_id: expect.any(String) });
-    // The server derives who is asking from the session — a role in the body
-    // would be client-supplied theater, so it must not be there at all.
     expect(Object.keys(body as object)).not.toContain("role");
     expect(ctx).toMatchObject({ accountId: "1001", employeeId: 7 });
     // The model in play is on screen, not inferred.
@@ -196,8 +172,6 @@ describe("AssistantWidget", () => {
   });
 
   it("keeps the composer live while an answer is in flight", async () => {
-    // v2: an in-flight answer must not lock the textarea — a second question
-    // can be typed and sent, and answers settle to their own turns by id.
     const settles: Array<(v: unknown) => void> = [];
     relayPost.mockImplementation(() => new Promise((res) => settles.push(res)));
     await openPanel();
@@ -208,7 +182,6 @@ describe("AssistantWidget", () => {
     await ask("second question");
     await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(2));
 
-    // Settle out of order — each answer lands on its own turn.
     settles[1]({ answer: "second answer", error: null });
     settles[0]({ answer: "first answer", error: null });
     expect(await screen.findByText("second answer")).toBeTruthy();
@@ -238,7 +211,6 @@ describe("AssistantWidget", () => {
     expect(body1.account_id).toBe("1002");
     expect(body1.thread_id).not.toBe((body0 as { thread_id: string }).thread_id);
 
-    // The pick lives in the provider: a close/reopen keeps it and the chat.
     await userEvent.click(bubble);
     await userEvent.click(bubble);
     await ask("and the follow-up?");
@@ -276,7 +248,7 @@ describe("AssistantWidget", () => {
     view.rerender(withPage(null));          // its "All" row
     expect(focusButton().textContent).toBe("General");
     view.rerender(withPage("1002"));
-    view.rerender(withPage(undefined));     // leaving for a page with no picker: all models
+    view.rerender(withPage(undefined));
     expect(focusButton().textContent).toBe("General");
   });
 
@@ -360,7 +332,6 @@ describe("AssistantWidget", () => {
     expect(screen.getByText(/No creator assigned to you yet/)).toBeTruthy();
     expect(screen.queryByText(/No account connected yet/)).toBeNull();
     expect(screen.queryByRole("link", { name: /Creators → Manage creators/ })).toBeNull();
-    // The server 401s a chatter's account-less ask: nothing to send.
     await userEvent.type(screen.getByRole("textbox"), "anything");
     expect((screen.getByRole("button", { name: "Ask" }) as HTMLButtonElement).disabled).toBe(true);
     expect(relayPost).not.toHaveBeenCalled();
@@ -423,7 +394,6 @@ describe("AssistantWidget", () => {
     settle({ answer: "an answer", error: null });
     expect(await screen.findByLabelText("New reply")).toBeTruthy();
 
-    // Opening the panel reads it.
     await userEvent.click(bubble);
     expect(screen.queryByLabelText("New reply")).toBeNull();
     expect(await screen.findByText("an answer")).toBeTruthy();
@@ -438,7 +408,6 @@ describe("AssistantWidget", () => {
     });
     await openPanel();
 
-    // The hint above the composer is itself a link to the connect page.
     const hint = screen.getByRole("link", { name: /Creators → Manage creators/ });
     expect(hint.getAttribute("href")).toBe("/creators#go=Add+creator");
     expect(screen.queryByRole("button", { name: /^Help bot focus:/ })).toBeNull();
@@ -446,7 +415,6 @@ describe("AssistantWidget", () => {
     await ask("how do I connect my OnlyFans account?");
     await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
     const [, body, ctx] = relayPost.mock.calls[0];
-    // Omitted, not null or "": the server reads a missing id as "no account yet".
     expect(body).toEqual({ question: "how do I connect my OnlyFans account?", thread_id: expect.any(String) });
     expect(ctx).toMatchObject({ accountId: null, employeeId: 7 });
     await waitFor(() =>
@@ -461,7 +429,6 @@ describe("AssistantWidget", () => {
     window.localStorage.setItem("chatterly:assistant_open", "1");
     nav.pathname = "/help-center";
     renderWithProviders(<PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>);
-    // render() flushes the hydration effect, so "open" has been read by now.
     expect(screen.queryByRole("button", { name: "Help assistant" })).toBeNull();
     expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
   });
@@ -487,7 +454,6 @@ describe("AssistantWidget", () => {
     const rows = [
       { id: 12, ts: new Date().toISOString(), question: "where are auto posts?", answer: "Growth → Auto Posts. Want the steps?", error: null, account_id: "1002", thread_id: "th-a" },
       { id: 11, ts: new Date(Date.now() - 3 * 86_400_000).toISOString(), question: "old q", answer: "old a", error: null, account_id: null, thread_id: "th-b" },
-      // From before threads: grouped client-side.
       { id: 10, ts: new Date(Date.now() - 4 * 86_400_000).toISOString(), question: "capped", answer: "Cap used up.", error: "cap", account_id: "1001", thread_id: null },
     ];
     const earlierCard = () => screen.findByRole("button", { name: /^Earlier conversations\s*3 conversations/ });
@@ -510,8 +476,8 @@ describe("AssistantWidget", () => {
       expect(historyCalls()).toHaveLength(1);
       expect(historyCalls()[0][0]).toBe("/admin/assistant/history?limit=500");
 
-      await userEvent.click(bubble); // close
-      await userEvent.click(bubble); // reopen: no second read
+      await userEvent.click(bubble);
+      await userEvent.click(bubble);
       await earlierCard();
       expect(historyCalls()).toHaveLength(1);
     });
@@ -529,7 +495,6 @@ describe("AssistantWidget", () => {
       await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
       // No history in the body: the server reads the thread's turns.
       expect(relayPost.mock.calls[0][1]).toEqual({ question: "yes", account_id: "1002", thread_id: "th-a" });
-      // The read is the asker's own across accounts: no account/employee header.
       expect(historyCalls()[0]).toHaveLength(1);
       // Back is a new chat, with the switcher's model again.
       await userEvent.click(screen.getByRole("button", { name: "New chat" }));
@@ -542,7 +507,6 @@ describe("AssistantWidget", () => {
       relayGet.mockImplementation((path: string) => {
         if (!path.startsWith("/admin/assistant/history")) return Promise.resolve({ count: 0, since_hours: 24, list: [] });
         if (fail) return Promise.reject(new Error("relay 502"));
-        // The retry already holds the row the ask wrote (id 20).
         return Promise.resolve({ turns: [{ id: 20, ts: new Date().toISOString(), question: "fresh q", answer: "fresh a", error: null, account_id: "1001", thread_id: "th-x" }, ...rows] });
       });
       relayPost.mockResolvedValue({ answer: "fresh a", error: null, id: 20 });
@@ -573,8 +537,6 @@ describe("AssistantWidget", () => {
   });
 });
 
-/** "Do it for me" (docs/spec/assistant-do-mode.md): the home card, the do-mode composer and plan card, the flow:null
- *  swap back to Q&A, and the Q&A answer's chip for a flow's page. The runner itself is doFlows / doRunReducer's. */
 describe("AssistantWidget: Do it for me", () => {
   const SLOTS = {
     name: "Hourly tease", interval: { value: 1, unit: "hours" }, captions: ["a", "b", "c"], captions_ai: 2,
@@ -589,7 +551,6 @@ describe("AssistantWidget: Do it for me", () => {
   const doCard = () => screen.queryByRole("button", { name: /Do it for me\s*Opens the page and fills it in/ });
 
   it("the home card shows for a signed-in user, not for a chatter or where the server says no", async () => {
-    // No do-caps answer (the default mock): doOfferOf's fallback.
     await openPanel();
     expect(doCard()).toBeTruthy();
     cleanup();
@@ -606,11 +567,9 @@ describe("AssistantWidget: Do it for me", () => {
       path.startsWith("/admin/assistant/do-caps") ? { account_id: "1001", can_do: false } : { turns: [] }));
     await openPanel();
     await waitFor(() => expect(doCard()).toBeNull());
-    // Asked per focused model, with its headers.
     expect(relayGet).toHaveBeenCalledWith("/admin/assistant/do-caps?account_id=1001", { accountId: "1001", employeeId: 7 });
   });
 
-  // rwl W30 S2: the caps were cleared on a new identity but never asked again on the same model → the fallback offered it.
   it("a new identity on the same model asks do-caps again and goes by its answer", async () => {
     signedIn.user = { username: "owner", user_id: "u1" };
     const caps = { u1: { can_do: true }, u2: { can_do: false, reason: "not_allowed" } } as Record<string, object>;
@@ -668,12 +627,10 @@ describe("AssistantWidget: Do it for me", () => {
     expect(within(plan).getByText("Photos added to this folder later are included too.")).toBeTruthy();
     for (const name of ["Do it", "Skip animation", "Cancel"]) expect(within(plan).getByRole("button", { name })).toBeTruthy();
 
-    // A reply while planned re-drafts with the plan as context.
     await userEvent.type(screen.getByPlaceholderText("What should I set up?"), "make it 2 hours");
     await userEvent.click(screen.getByRole("button", { name: "Ask" }));
     expect(posts("/admin/assistant/draft")[1][1]).toEqual({ request: "make it 2 hours", account_id: "1001", thread_id: thread, previous: SLOTS });
 
-    // Start over: a new request, its own thread.
     await within(await screen.findByTestId("do-plan")).findByRole("button", { name: "Cancel" }).then((b) => userEvent.click(b));
     await userEvent.type(screen.getByPlaceholderText("What should I set up?"), "another one");
     await userEvent.click(screen.getByRole("button", { name: "Ask" }));
@@ -710,7 +667,6 @@ describe("AssistantWidget: Do it for me", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Ask as a question" }));
     await screen.findByRole("link", { name: "My Automations → Auto Mass" });
     expect(screen.queryByRole("button", { name: "Do it for me" })).toBeNull();
-    // The same answer asked straight in Q&A still offers it.
     await ask("auto mass?");
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Do it for me" })).toHaveLength(1));
   });
@@ -730,7 +686,6 @@ describe("AssistantWidget: Do it for me", () => {
 
     await userEvent.click(chip);
     expect(posts("/admin/assistant/draft")[0][1]).toEqual({ request: "auto mass?", account_id: "1001", thread_id: expect.any(String) });
-    // Its own thread, never the Q&A conversation's.
     expect(posts("/admin/assistant/draft")[0][1].thread_id).not.toBe(posts("/admin/assistant/ask")[0][1].thread_id);
     expect(await screen.findByTestId("do-plan")).toBeTruthy();
     expect(screen.getByPlaceholderText("What should I set up?")).toBeTruthy();
@@ -758,7 +713,7 @@ describe("AssistantWidget: Do it for me", () => {
     expect(within(plan).getByText("Ava")).toBeTruthy();
     expect(within(plan).getAllByText("Unsend after 8h → never")).toHaveLength(2);
     expect(within(plan).getByText("1 rule already set — left alone")).toBeTruthy();
-    expect(within(plan).queryByText("LIVE")).toBeNull();                  // unsend off sends no more
+    expect(within(plan).queryByText("LIVE")).toBeNull();
     expect(within(plan).queryByRole("button", { name: "Skip animation" })).toBeNull();
 
     await userEvent.click(within(plan).getByRole("button", { name: "Do it" }));
@@ -787,7 +742,7 @@ describe("AssistantWidget: Do it for me", () => {
     const plan = await screen.findByTestId("do-config-plan");
     expect(within(plan).getByText("Change Ava's Full AI draft")).toBeTruthy();
     expect(within(plan).getByText("Reply speed: 0-2m → 0-15-60")).toBeTruthy();
-    expect(relayPut).not.toHaveBeenCalled();                               // proposing writes nothing
+    expect(relayPut).not.toHaveBeenCalled();
 
     await userEvent.click(within(plan).getByRole("button", { name: "Apply to draft" }));
     const res = await screen.findByTestId("do-config-result");
@@ -885,12 +840,10 @@ describe("AssistantWidget: Do it for me", () => {
     expect(relayFile).not.toHaveBeenCalled();
   });
 
-  // Spec D12: deterministic commands and live figure cards.
   it("a command runs before any LLM call: 'open settings' navigates and confirms, a question still asks", async () => {
     relayPost.mockResolvedValue({ answer: "Settings is at the bottom of the sidebar.", error: null, id: 1 });
     await openPanel();
     await ask("open settings");
-    // The confirmation is an answer like any other: "Settings" in it links.
     expect(await screen.findByText((_, el) => el?.tagName === "P" && el.textContent === "Opened Settings.")).toBeTruthy();
     expect(nav.pushed).toEqual(["/settings"]);
     expect(relayPost).not.toHaveBeenCalled();
@@ -920,9 +873,6 @@ describe("AssistantWidget: Do it for me", () => {
   });
 });
 
-/** Phone width: matchMedia says "below the corner launcher's breakpoint", the
- *  viewport is 390×844, and a button's rect is where its inline style put it
- *  (jsdom has no layout). */
 describe("AssistantWidget on a phone", () => {
   const real = { w: window.innerWidth, h: window.innerHeight, mm: window.matchMedia };
   beforeEach(() => {
@@ -947,7 +897,6 @@ describe("AssistantWidget on a phone", () => {
 
   const render = () => renderWithProviders(<PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>);
   const stored = () => JSON.parse(window.localStorage.getItem(LAUNCHER_KEY) || "null");
-  /** Press the launcher, move by (dx, dy) in two steps, release. */
   async function drag(el: HTMLElement, dx: number, dy: number) {
     const r = el.getBoundingClientRect();
     const x = r.left + 24, y = r.top + 24;
@@ -959,7 +908,6 @@ describe("AssistantWidget on a phone", () => {
     ]);
   }
 
-  /** The default is tucked: tap its tab to get the icon out. */
   async function pullOut() {
     await userEvent.click(await screen.findByRole("button", { name: "Show help assistant" }));
     return screen.getByRole("button", { name: "Help assistant" });
@@ -992,7 +940,6 @@ describe("AssistantWidget on a phone", () => {
     const sheet = box.closest("[data-look='messenger']") as HTMLElement;
     expect(sheet.className).toContain("inset-x-0");
     expect(sheet.className).not.toContain("w-[400px]");
-    // The sheet covers the launcher; its X is the way out, and brings it back.
     expect(screen.queryByRole("button", { name: "Help assistant" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Close help" }));
     expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
@@ -1001,19 +948,17 @@ describe("AssistantWidget on a phone", () => {
 
   it("the sheet locks the page under it and unlocks it on close, leaving other locks alone", async () => {
     window.localStorage.setItem("chatterly:assistant_open", "1");
-    document.body.style.paddingRight = "15px";       // another lock, from before
+    document.body.style.paddingRight = "15px";
     render();
     const box = await screen.findByPlaceholderText("Ask a question…");
     expect(document.body.style.position).toBe("fixed");
     expect(document.body.style.overflow).toBe("hidden");
     expect(document.documentElement.style.overflow).toBe("hidden");
-    // Pinned to the visual viewport through the boot script's vars, not inline styles.
     const sheet = box.closest("[data-look='messenger']") as HTMLElement;
     expect(sheet.className).toContain("top-[var(--vvt,0px)]");
     expect(sheet.getAttribute("style")).toBeNull();
-    // 16px: iOS zooms into a smaller input on focus.
     expect(box.className).toContain("text-[16px]");
-    document.body.style.touchAction = "none";        // another lock, taken meanwhile
+    document.body.style.touchAction = "none";
     await userEvent.click(screen.getByRole("button", { name: "Close help" }));
     for (const p of ["position", "top", "left", "right", "width", "overflow"] as const) {
       expect(document.body.style[p]).toBe("");
@@ -1054,13 +999,11 @@ describe("AssistantWidget on a phone", () => {
     const bubble = await pullOut();
     await drag(bubble, -280, -300);
 
-    // Dropped near the left side: snapped flush to it, panel NOT opened.
     expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
     const moved = screen.getByRole("button", { name: "Help assistant" });
     expect(moved.style.left).toBe("12px");
     expect(stored()).toEqual({ edge: "left", along: 480, tucked: false });
 
-    // The next real tap still opens it (the swallow is one-shot).
     await userEvent.click(moved);
     expect(screen.getByPlaceholderText("Ask a question…")).toBeTruthy();
   });
@@ -1088,7 +1031,6 @@ describe("AssistantWidget on a phone", () => {
     expect(tab.className).toContain("right-0");
     expect(stored()).toEqual({ edge: "right", along: 180, tucked: true });
 
-    // Out again, over to the left side, tucked there.
     await userEvent.click(tab);
     await drag(screen.getByRole("button", { name: "Help assistant" }), -390, 0);
     tab = screen.getByRole("button", { name: "Show help assistant" });
@@ -1122,7 +1064,6 @@ describe("AssistantWidget on a phone", () => {
     const tab = await screen.findByRole("button", { name: "Show help assistant" });
     expect(tab.className).toContain("left-0");
 
-    // Ask from the sheet, close it, and let the answer land while tucked.
     fireEvent.click(tab);
     await userEvent.click(screen.getByRole("button", { name: "Help assistant" }));
     await ask("anything");

@@ -1,0 +1,308 @@
+{
+ "source": "synthetic, shaped from fansly/capture/RECIPES.md; no captured id, token, text, session or device",
+ "responses": {
+  "/api/v1/messaging/groups": {
+   "data": [
+    {
+     "groupId": "900000000000000101",
+     "partnerAccountId": "900000000000000002",
+     "partnerUsername": "synthfan",
+     "unreadCount": 1,
+     "lastMessageId": "900000000000000304",
+     "lastUnreadMessageId": "900000000000000304",
+     "flags": 0
+    },
+    {
+     "groupId": "900000000000000103",
+     "partnerAccountId": "900000000000000003",
+     "partnerUsername": "synthfan2",
+     "unreadCount": 3,
+     "lastMessageId": "900000000000000713",
+     "lastUnreadMessageId": "900000000000000713",
+     "flags": 0
+    }
+   ],
+   "aggregationData": {
+    "accounts": [
+     {
+      "id": "900000000000000002",
+      "username": "synthfan",
+      "displayName": "Synth Fan",
+      "statusId": 1
+     },
+     {
+      "id": "900000000000000003",
+      "username": "synthfan2",
+      "displayName": "Synth Fan Two",
+      "statusId": 2
+     }
+    ],
+    "messages": [
+     {
+      "id": "900000000000000304",
+      "type": 1,
+      "groupId": "900000000000000101",
+      "senderId": "900000000000000002",
+      "content": "synthetic tip note",
+      "attachments": [],
+      "totalTipAmount": 5000,
+      "createdAt": 1767225640,
+      "inReplyTo": null,
+      "interactions": [
+       {
+        "userId": "900000000000000001",
+        "readAt": 0,
+        "deliveredAt": 1767225600500
+       }
+      ]
+     },
+     {
+      "id": "900000000000000713",
+      "type": 1,
+      "groupId": "900000000000000103",
+      "senderId": "900000000000000003",
+      "content": "synthetic unread 3",
+      "attachments": [],
+      "createdAt": 1767225703,
+      "interactions": [
+       {
+        "userId": "900000000000000001",
+        "readAt": 0,
+        "deliveredAt": 1767225600500
+       }
+      ]
+     }
+    ]
+   }
+  },
+  "/api/v1/message": {
+   "messages": [
+    {
+     "id": "900000000000000304",
+     "type": 1,
+     "groupId": "900000000000000101",
+     "senderId": "900000000000000002",
+     "content": "synthetic tip note",
+     "attachments": [],
+     "totalTipAmount": 5000,
+     "createdAt": 1767225640,
+     "inReplyTo": null,
+     "interactions": [
+      {
+       "userId": "900000000000000001",
+       "readAt": 0,
+       "deliveredAt": 1767225600500
+      }
+     ]
+    },
+    {
+     "id": "900000000000000303",
+     "type": 1,
+     "groupId": "900000000000000101",
+     "senderId": "900000000000000001",
+     "content": "synthetic locked set",
+     "attachments": [
+      {
+       "messageId": "900000000000000303",
+       "pos": 0,
+       "contentId": "900000000000000501",
+       "contentType": 1
+      }
+     ],
+     "createdAt": 1767225630,
+     "inReplyTo": null,
+     "interactions": [
+      {
+       "userId": "900000000000000002",
+       "readAt": 1767225635,
+       "deliveredAt": 1767225600500
+      }
+     ]
+    },
+    {
+     "id": "900000000000000302",
+     "type": 1,
+     "groupId": "900000000000000101",
+     "senderId": "900000000000000001",
+     "content": "synthetic reply",
+     "attachments": [],
+     "createdAt": 1767225620,
+     "inReplyTo": "900000000000000301",
+     "interactions": [
+      {
+       "userId": "900000000000000002",
+       "readAt": 1767225625,
+       "deliveredAt": 1767225600500
+      }
+     ]
+    },
+    {
+     "id": "900000000000000301",
+     "type": 1,
+     "groupId": "900000000000000101",
+     "senderId": "900000000000000002",
+     "content": "synthetic hello",
+     "attachments": [],
+     "createdAt": 1767225610,
+     "inReplyTo": null,
+     "interactions": [
+      {
+       "userId": "900000000000000001",
+       "readAt": 1767225615,
+       "deliveredAt": 1767225600500
+      }
+     ]
+    }
+   ],
+   "accountMedia": [
+    {
+     "id": "900000000000000501",
+     "accountId": "900000000000000001",
+     "mediaId": "900000000000000601",
+     "access": true,
+     "media": {
+      "id": "900000000000000601",
+      "type": 1,
+      "mimetype": "image/jpeg",
+      "width": 640,
+      "height": 480,
+      "locations": [],
+      "variants": []
+     },
+     "permissions": {
+      "permissionFlags": [
+       {
+        "type": 0,
+        "flags": 3,
+        "price": 3000,
+        "metadata": ""
+       }
+      ]
+     }
+    }
+   ],
+   "accountMediaBundles": []
+  },
+  "/api/v1/notifications": {
+   "notifications": [
+    {
+     "id": "900000000000000801",
+     "accountId": "900000000000000001",
+     "type": 2008,
+     "correlationId": "900000000000000501",
+     "correlationGroupId": "900000000000000002",
+     "acknowledgedAt": 0,
+     "createdAt": 1767225650,
+     "metadata": "{\"price\":3000}"
+    }
+   ]
+  },
+  "/api/v1/subscribers": {
+   "stats": {
+    "totalActive": 1,
+    "totalExpired": 0,
+    "total": 1
+   },
+   "subscriptions": [
+    {
+     "id": "900000000000001001",
+     "historyId": "900000000000001002",
+     "subscriberId": "900000000000000002",
+     "subscriptionTierId": "900000000000001003",
+     "subscriptionTierName": "Synthetic tier",
+     "subscriptionTierColor": "#2699f7",
+     "planId": "900000000000001004",
+     "promoId": null,
+     "giftCodeId": "900000000000001005",
+     "paymentMethodId": null,
+     "status": 3,
+     "price": 0,
+     "renewPrice": 5000,
+     "renewCorrelationId": null,
+     "autoRenew": 1,
+     "billingCycle": 30,
+     "duration": 7,
+     "renewDate": 1767830400000,
+     "version": 1,
+     "createdAt": 1767225600000,
+     "updatedAt": 1767225600000,
+     "endsAt": 1767830400000,
+     "promoPrice": null,
+     "promoDuration": null,
+     "promoStatus": null,
+     "promoStartsAt": null,
+     "promoEndsAt": null
+    }
+   ]
+  },
+  "/api/v1/account": [
+   {
+    "id": "900000000000000002",
+    "username": "synthfan",
+    "displayName": "Synth Fan",
+    "flags": 0,
+    "statusId": 1
+   }
+  ]
+ },
+ "unread_thread": {
+  "groups_before": [
+   {
+    "groupId": "900000000000000103",
+    "unreadCount": 3,
+    "lastMessageId": "900000000000000713",
+    "lastUnreadMessageId": "900000000000000713"
+   }
+  ],
+  "messages": [
+   {
+    "id": "900000000000000713",
+    "type": 1,
+    "groupId": "900000000000000103",
+    "senderId": "900000000000000003",
+    "content": "synthetic unread 3",
+    "attachments": [],
+    "createdAt": 1767225703,
+    "interactions": [
+     {
+      "userId": "900000000000000001",
+      "readAt": 0,
+      "deliveredAt": 1767225600500
+     }
+    ]
+   },
+   {
+    "id": "900000000000000712",
+    "type": 1,
+    "groupId": "900000000000000103",
+    "senderId": "900000000000000003",
+    "content": "synthetic unread 2",
+    "attachments": [],
+    "createdAt": 1767225702,
+    "interactions": [
+     {
+      "userId": "900000000000000001",
+      "readAt": 0,
+      "deliveredAt": 1767225600500
+     }
+    ]
+   },
+   {
+    "id": "900000000000000711",
+    "type": 1,
+    "groupId": "900000000000000103",
+    "senderId": "900000000000000003",
+    "content": "synthetic unread 1",
+    "attachments": [],
+    "createdAt": 1767225701,
+    "interactions": [
+     {
+      "userId": "900000000000000001",
+      "readAt": 0,
+      "deliveredAt": 1767225600500
+     }
+    ]
+   }
+  ]
+ }
+}

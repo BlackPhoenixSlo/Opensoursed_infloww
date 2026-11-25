@@ -1,12 +1,3 @@
-/**
- * storageSync — the shared localStorage read and the persisted on/off flag.
- *
- * The flag replaced four hand-rolled useState + two-listener hooks; these
- * rows pin what each of them did: the default when nothing is stored, the
- * stored encoding (only the non-default value is written), and that every
- * reader follows a flip from this tab (custom event) and from another tab
- * (`storage`).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { createElement } from "react";
@@ -43,7 +34,6 @@ describe("readStorage", () => {
 
 describe("createStoredFlag", () => {
   it.each([
-    // def, nothing stored, raw that flips it, written when set to !def
     [true, "0"],
     [false, "1"],
   ] as const)("default %s: missing key reads as default; only %j flips it", (def, raw) => {
@@ -51,7 +41,6 @@ describe("createStoredFlag", () => {
     expect(flag.read()).toBe(def);
     localStorage.setItem(KEY, raw);
     expect(flag.read()).toBe(!def);
-    // Any other stored value is not the non-default marker.
     localStorage.setItem(KEY, "garbage");
     expect(flag.read()).toBe(def);
   });
@@ -118,7 +107,6 @@ describe("createStoredFlag", () => {
     expect(b.result.current[0]).toBe(true);
     expect(flag.read()).toBe(true);
 
-    // Another tab writes: the stored value changed under the unsaved choice.
     setItem.mockRestore();
     localStorage.setItem(KEY, "x");
     act(() => { window.dispatchEvent(new StorageEvent("storage", { key: KEY })); });
@@ -155,7 +143,6 @@ describe("useChatSortMode (createStoredValue)", () => {
     act(() => h.result.current[1]("spend-unread"));
     expect(localStorage.getItem(SORT_KEY)).toBeNull();
     expect(h.result.current[0]).toBe("spend-unread");
-    // Drop the module-level in-memory hold so it cannot leak into other rows.
     setItem.mockRestore();
     act(() => h.result.current[1]("recent"));
   });

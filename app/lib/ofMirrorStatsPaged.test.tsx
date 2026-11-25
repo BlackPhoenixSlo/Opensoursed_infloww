@@ -1,7 +1,3 @@
-/**
- * usePaged: a next page that keeps failing after its retries stops the automatic read-ahead and the scroll paging
- * (no unbounded re-asks); the notice's Retry asks that page again.
- */
 import type { ReactNode } from "react";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
@@ -14,7 +10,6 @@ import { relay, RelayError } from "./relay";
 let client: QueryClient;
 let get: MockInstance;
 const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-// Every row read is newer than the period: the read-ahead asks for the next page.
 const p = { start: new Date("2026-01-01T00:00:00Z"), end: new Date("2026-01-31T00:00:00Z") } as Period;
 const route = (param: { offset: number }) => `/api/of/v2/payouts/transactions?offset=${param.offset}`;
 const next = (_last: unknown, pages: unknown[]) => ({ offset: pages.length * 10 });
@@ -44,11 +39,11 @@ describe("usePaged", () => {
     await flush(30_000);
     expect(pageTwo()).toBe(3);
     expect(result.current.error).toBe(true);
-    expect(result.current.body?.more).toBeNull(); // no scroll paging onto the failed page
-    expect(result.current.body?.stalled).toBe(true); // proves nothing about the period
+    expect(result.current.body?.more).toBeNull();
+    expect(result.current.body?.stalled).toBe(true);
     await act(async () => void result.current.refetch());
     await flush(30_000);
-    expect(pageTwo()).toBe(6); // Retry: that page again, bounded again
-    expect(get.mock.calls.filter((c) => String(c[0]).endsWith("offset=0")).length).toBe(1); // not page one again
+    expect(pageTwo()).toBe(6);
+    expect(get.mock.calls.filter((c) => String(c[0]).endsWith("offset=0")).length).toBe(1);
   });
 });

@@ -1,39 +1,16 @@
-/**
- * Growth > Vault Pro, the page component (docs/spec/infloww-parity-round-2/phase-02-growth-pages.md, Testing
- * Decisions, Seam 1; ticket 36). Rendered with `@/lib/relay` mocked and a fresh QueryClient over two placeholder
- * Creators. What is pinned:
- *
- *  - the header ("Vault Pro", the creator chip, "Learn", "Add media") and the folder rail's labels appear in the
- *    Layout capture's order, and every label transcribed here is read back from the capture on disk next to its
- *    Item ID, so a label the capture does not have fails here rather than in review;
- *  - "Add media" reveals the existing import card (its contents are Phase 5's and are not looked at here);
- *  - every Inflowwww extra the ticket names sits inside the one Extras drawer, which the header's overflow button
- *    (`EXTRAS_OVERFLOW_LABEL`, left of Add media) opens (page-parity ticket 10);
- *  - (ticket 10) with no Creator, the page is the clone's empty frame: the rail's sort row, the toolbar disabled and
- *    an empty state, with the Creator select off and reading "No creators";
- *  - (ticket 57) the header is a bar with a bottom rule over the flush rail and grid; the Creator selector is a
- *    select; the row menu's trigger is the 20px icon; the move opens the "Add to category" modal; per-folder
- *    statistics show as Not wired, All media carries OF's vault-wide totals; the loading spinner, our no-Creator line
- *    and Back;
- *  - switching the Creator selector remounts the grid and the import card, and the next Vault read
- *    carries the new Creator's `account_id`; a dropped session is said and nothing is written;
- *  - folder create, rename, delete and reorder reach the same Vault routes as before;
- *  - (ticket 37) the toolbar's search, sort box and popover, media tabs and tools appear in the capture's order with
- *    its labels; each type chip, the search, the sort directions, Refresh and Select all reach the read or write the
- *    grid used before; every Not wired control is disabled, titled "not wired" and calls nothing; the toolbar's and
- *    the selection bar's own extras carry `EXTRA_LABEL`;
- *  - (the owner's 2026-10-18 ruling on #12) the Add media tour and the upload guide (#118, #119) show once, from
- *    the bundle's `localStorage["vaultProOnboarding"]`, with its text and its Got it / Next / Start upload.
- */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+const platform = vi.hoisted(() => ({ current: "onlyfans" as "onlyfans" | "fansly" }));
+vi.mock("@/hooks/useCan", async () => {
+  const { can } = await import("@/lib/platform");
+  return { useCan: (_: unknown, cap: Parameters<typeof can>[1]) => can(platform.current, cap) };
+});
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();
-  // Unstubbed verbs stay the REAL ones, so a new call fails loudly instead of reaching a live relay.
   return {
     ...mod,
     relay: {
@@ -43,14 +20,12 @@ vi.mock("@/lib/relay", async (importOriginal) => {
     },
   };
 });
-// An owner session, so `useAccounts` reads `/admin/accounts` through the mocked relay.
 vi.mock("@/contexts/UserContext", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/contexts/UserContext")>()),
   useUser: () => ({ user: { user_id: "owner-1" } }),
 }));
-// The download runner, held open: a switch of Creator must not abort it (the panel used to own it, and remount).
 const dlRun = vi.hoisted(() => ({
-  sink: undefined as "folder" | undefined,   // undefined: the browser's real answer (jsdom: none unless a test stubs it)
+  sink: undefined as "folder" | undefined,
   calls: [] as Array<{ a: { accountId: string; creator: string; label: string }; signal: AbortSignal }>,
 }));
 vi.mock("@/components/vault/vaultDownload", async (importOriginal) => {
@@ -80,7 +55,6 @@ import { EXTRA_LABEL, EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
 import { renderWithProviders } from "@/test-utils";
 import { DOWNLOAD_OFF, SHARE_MODE_OFF } from "@/components/vault/vaultDownloadReducer";
 
-/** The page under the app's download provider (the root layout mounts it above every route). */
 const Page = () => <VaultDownloadProvider><VaultProPage /></VaultDownloadProvider>;
 
 const relayGet = relay.get as unknown as Mock;
@@ -89,26 +63,22 @@ const relayPut = relay.put as unknown as Mock;
 const relayPatch = relay.patch as unknown as Mock;
 const relayDelete = relay.delete as unknown as Mock;
 
-/* ── the Layout capture, read from disk ─────────────────────────────────── */
 
 const CAPTURE = readFileSync(
   resolve(__dirname, "../../../docs/infloww-layouts/growth-vault-pro.md"),
   "utf8",
 );
 
-/** The capture's Items row for `id`, which must exist and must hold `label`. */
 function expectInCapture(id: string, label: string) {
   const row = CAPTURE.split("\n").find((l) => l.startsWith(`| ${id} |`));
   expect(row, `capture row ${id}`).toBeTruthy();
   expect(row, `capture row ${id} holds "${label}"`).toContain(label);
 }
 
-/** a precedes b in document order. */
 function expectBefore(a: Element, b: Element) {
   expect(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 }
 
-/* ── fixtures: two placeholder Creators, two folders ────────────────────── */
 
 const A = { id: "1000001", nickname: "Creator A", has_session: true };
 const B = { id: "1000002", nickname: "Creator B", has_session: true };
@@ -116,9 +86,7 @@ const FOLDERS = [
   { id: 11, name: "Folder one", type: "custom", hasMedia: true, photosCount: 3, videosCount: 1, gifsCount: 0, audiosCount: 0 },
   { id: 12, name: "Folder two", type: "custom", hasMedia: false, photosCount: 0, videosCount: 0, gifsCount: 0, audiosCount: 0 },
 ];
-/** OF's whole-vault counts on the folder list (`all`), every type present; its `medias` must not be kept. */
 const ALL = { photosCount: 7, videosCount: 5, gifsCount: 2, audiosCount: 1, medias: [{ id: 1, type: "photo", url: "https://cdn/signed" }] };
-/** A vault with no video and no audio, unlike Folder one (no GIF, no audio). */
 const ALL_NO_VIDEO = { ...ALL, videosCount: 0, audiosCount: 0 };
 let listsAll: typeof ALL | undefined = ALL;
 
@@ -129,8 +97,6 @@ beforeEach(() => {
   roster = [A, B];
   listsAll = ALL;
   window.localStorage.clear();
-  // The guided tours show once per browser (the bundle's "vaultProOnboarding" store); every test but the tours'
-  // own starts with both seen, so no tour overlays the page under test.
   window.localStorage.setItem("vaultProOnboarding", JSON.stringify({ batchUploadEntry: "1", uploadPageStep: "1" }));
   for (const m of [relayGet, relayPost, relayPut, relayPatch, relayDelete]) m.mockReset();
   relayGet.mockImplementation((path: string) => {
@@ -148,6 +114,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  platform.current = "onlyfans";
 });
 
 /** Mount the page and wait for the rail's folders, which only render once a Creator is adopted. */
@@ -156,12 +123,10 @@ async function mount() {
   await waitFor(() => expect(within(rail()).getByText("Folder one")).toBeTruthy());
 }
 
-/** The header's one Extras overflow button. */
 function extrasButton(): HTMLElement {
   return screen.getByRole("button", { name: EXTRAS_OVERFLOW_LABEL });
 }
 
-/** The Extras drawer, opened from the header's overflow button if it is not open yet. */
 function overflow(): HTMLElement {
   const open = screen.queryByRole("dialog", { name: EXTRAS_OVERFLOW_LABEL });
   if (open) return open;
@@ -169,19 +134,15 @@ function overflow(): HTMLElement {
   return screen.getByRole("dialog", { name: EXTRAS_OVERFLOW_LABEL });
 }
 
-/** Open a listbox select (`IfSelect`, `IfCreatorSelect`) and return its options. */
 function openOptions(combobox: HTMLElement): HTMLElement[] {
   if (combobox.getAttribute("aria-expanded") !== "true") fireEvent.click(combobox);
   const list = document.getElementById(combobox.getAttribute("aria-controls") ?? "") as HTMLElement;
   return within(list).getAllByRole("option");
 }
 
-/** The creator column left of the page (`CreatorRail`, Smart lists'), and its row for a Creator. */
 const column = () => screen.getByTestId("of-creator-column");
 const creatorRow = (name: string) => within(column()).getByRole("button", { name: new RegExp(name) });
 
-/** The rail: the element holding the sort label and the "All media" row (md and up; the phone's folder select is
- *  its sibling, see "on a phone"). */
 function rail(): HTMLElement {
   const els = screen.getAllByText("All media");
   return (els.map((el) => el.closest("[data-rail-desk]")).find(Boolean)
@@ -198,8 +159,6 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     ];
     for (const h of header) expectInCapture(h.id, h.label);
     for (let i = 1; i < header.length; i++) expectBefore(header[i - 1].el, header[i].el);
-    // The capture's creator selector (#6) is the creator column now: not in the header, under it, left of the
-    // folder rail and grid.
     expectInCapture("growth-vault-pro#6", "creator selector");
     const bar = screen.getByRole("heading", { level: 1, name: "Vault Pro" }).closest("header") as HTMLElement;
     expect(within(bar).queryByRole("combobox", { name: "Creator" })).toBeNull();
@@ -212,12 +171,9 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     await mount();
     const header = screen.getByRole("heading", { level: 1, name: "Vault Pro" }).closest("header") as HTMLElement;
     expect(header.className).toContain("border-b");
-    // The two-pane row is the rail's parent: no box of its own around the rail and the grid.
     const pane = rail().closest("aside")!.parentElement as HTMLElement;
     expect(pane.className).not.toMatch(/\brounded|\bborder\b/);
     expectBefore(header, pane);
-    // No Extras strip between them any more: the rail starts under the header rule, and the one overflow is a
-    // header button, left of Add media.
     expect(document.querySelector("details")).toBeNull();
     expect(header.contains(extrasButton())).toBe(true);
     expectBefore(extrasButton(), screen.getByRole("button", { name: "Add media" }));
@@ -239,7 +195,6 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     await mount();
     const r = rail();
     const sort = within(r).getByRole("button", { name: "Default" });
-    // "Default" at first, as the capture has it; OF's stored sort is not read back, and the title says so.
     expect(sort.getAttribute("title")).toMatch(/not read back\)$/);
     const all = within(r).getByText("All media");
     const one = within(r).getByText("Folder one");
@@ -253,7 +208,6 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     expectBefore(within(r).getByRole("button", { name: "New category" }), all);
     expectInCapture("growth-vault-pro#23", "Search");
     expectInCapture("growth-vault-pro#36", "New category");
-    // The grid's toolbar sits after the rail.
     expectBefore(r, document.querySelector("section input[placeholder^='Search']") as HTMLElement);
   });
 
@@ -286,7 +240,7 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     expect(within(all()).getByTitle("gif").textContent).toBe("2");
     expect(within(all()).queryByTitle("video")).toBeNull();
     cleanup();
-    listsAll = undefined; // a folder-limited chatter: the relay drops `all`
+    listsAll = undefined;
     await mount();
     expect(all().textContent).toBe("All media");
   });
@@ -305,14 +259,11 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     await mount();
     const one = within(rail()).getByText("Folder one").closest("[role=button]") as HTMLElement;
     const more = within(one).getByRole("button", { name: "More" });
-    // The trigger is the bundle's 20px icon (`STpMessageMore,{size:20`, index.9f50f370.js @6802706), not a glyph.
     expect(more.textContent).toBe("");
     expect(more.querySelector("svg")).toHaveAttribute("width", "20");
     fireEvent.click(more);
     const items =within(screen.getByRole("menu")).getAllByRole("menuitem").map((el) => el.textContent);
     expectInCapture("growth-vault-pro#34", "Rename / Delete");
-    // Plus ours: Set price (Full AI Chat's folder price; listed once the folder-prices read answers, so not for a
-    // chatter it refuses), and last Download folder, always listed; off (titled why) where this browser can't save (#20).
     expect(items).toEqual(["Rename", "Set price", "Delete", "Download folder"]);
     const dl = within(screen.getByRole("menu")).getByRole("menuitem", { name: "Download folder" });
     expect(dl).toBeDisabled();
@@ -334,8 +285,6 @@ describe("Vault Pro header and rail, in the capture's order", () => {
 });
 
 describe("the Extras drawer's full download", () => {
-  // Ours, the drawer's first action (not in the header): the manage panel passes it in, so it follows the rail's
-  // selection.
   const dl = () => within(overflow()).getByTestId("vault-extras-download");
   afterEach(() => {
     delete (window as { showDirectoryPicker?: unknown }).showDirectoryPicker;
@@ -394,7 +343,6 @@ describe("Add media", () => {
     expect(card).not.toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Add media" }));
     expect(card).toBeVisible();
-    // Back keeps the picked files (the card stays mounted), so it never asks: ours, labelled.
     expect(screen.getByRole("button", { name: "Back" }).getAttribute("title")).toMatch(new RegExp(`^${EXTRA_LABEL}\\n`));
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(card).not.toBeVisible();
@@ -411,9 +359,7 @@ describe("the guided tours (#12, #118, #119)", () => {
     const t = await screen.findByRole("dialog", { name: "Guided tour" });
     expectInCapture("growth-vault-pro#12", "Click “+ Add media” to upload one or more media files to the vault");
     expect(within(t).getByText("Click “+ Add media” to upload one or more media files to the vault")).toBeTruthy();
-    // The bundle marks a tour seen the moment it shows (`setVaultProOnboardingItemShow`), so a reload never repeats it.
     expect(seen()).toEqual({ batchUploadEntry: "1" });
-    // One step: no Next and no Skip, only the bundle's "Got it".
     expect(within(t).queryByRole("button", { name: "Next" })).toBeNull();
     expect(within(t).queryByRole("button", { name: "Skip" })).toBeNull();
     fireEvent.click(within(t).getByRole("button", { name: "Got it" }));
@@ -439,7 +385,6 @@ describe("the guided tours (#12, #118, #119)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add media" }));
     const t = await screen.findByRole("dialog", { name: "Guided tour" });
     expect(seen()).toEqual({ batchUploadEntry: "1", uploadPageStep: "1" });
-    // Titles from the capture (#118), step 2's text from the capture (#119), steps 1 and 3's text from the bundle.
     expectInCapture("growth-vault-pro#118", "First, you’ll need to link a fan account");
     expect(within(t).getByText("First, you’ll need to link a fan account")).toBeTruthy();
     expect(within(t).getByText(/^Easily start uploading content by linking your fan account\./)).toBeTruthy();
@@ -455,7 +400,6 @@ describe("the guided tours (#12, #118, #119)", () => {
     expect(within(t).queryByRole("button", { name: "Next" })).toBeNull();
     fireEvent.click(within(t).getByRole("button", { name: "Start upload" }));
     expect(tour()).toBeNull();
-    // Shown once: closing and reopening the card does not bring it back.
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     fireEvent.click(screen.getByRole("button", { name: "Add media" }));
     expect(tour()).toBeNull();
@@ -482,12 +426,10 @@ describe("the guided tours (#12, #118, #119)", () => {
 describe("the Extras overflow", () => {
   it("is a header button that opens a drawer holding every named extra, none of which renders outside it", async () => {
     await mount();
-    // Closed by default: one click away, never in the page's way.
     expect(screen.queryByRole("button", { name: "Collect all" })).toBeNull();
     expect(extrasButton()).toHaveAttribute("title", EXTRAS_OVERFLOW_LABEL);
     const box = overflow();
     expect(within(box).getByRole("heading", { name: EXTRAS_OVERFLOW_LABEL })).toHaveAttribute("title", EXTRA_LABEL);
-    // Collect, AI describe, harvest, duplicates, the pack picker and AI folders.
     const tools = [
       screen.getByRole("button", { name: "Collect all" }),
       screen.getByRole("button", { name: /^Describe all/ }),
@@ -497,9 +439,7 @@ describe("the Extras overflow", () => {
       screen.getByRole("button", { name: "Build AI folders" }),
     ];
     for (const t of tools) expect(box.contains(t)).toBe(true);
-    // Every tool is offered on a phone too: none sits in a hidden (desk-only) group.
     for (const t of tools) expect(t.closest(".hidden")).toBeNull();
-    // The drawer's × closes it; so does Escape, and the button again.
     fireEvent.click(within(box).getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog", { name: EXTRAS_OVERFLOW_LABEL })).toBeNull();
     overflow();
@@ -520,7 +460,6 @@ describe("the Creator selector", () => {
     expect(rows[0]).toHaveAttribute("aria-current", "true");
     expect(rows[1]).toBe(creatorRow("Creator B"));
     expect(rows[1]).not.toHaveAttribute("aria-current");
-    // Below md the column hides and the same pick shows as a select.
     const select = screen.getByRole("combobox", { name: "Creator" });
     expect(select).toHaveTextContent(/Creator A$/);
     const options = openOptions(select);
@@ -534,7 +473,6 @@ describe("the Creator selector", () => {
 
   it("remounts the grid and the import card, and the next read carries the new account_id", async () => {
     await mount();
-    // State in each of the two, so a re-render that kept it would show.
     fireEvent.click(within(rail()).getByRole("button", { name: "Search" }));
     expect(within(rail()).getByPlaceholderText("Search")).toBeTruthy();
     const gridBefore = rail();
@@ -563,7 +501,6 @@ describe("the Creator selector", () => {
     dlRun.sink = "folder";
     await mount();
     fireEvent.click(within(overflow()).getByTestId("vault-extras-download"));
-    // The click closes the drawer, so the download card is in view.
     expect(screen.queryByRole("dialog", { name: EXTRAS_OVERFLOW_LABEL })).toBeNull();
     await waitFor(() => expect(dlRun.calls).toHaveLength(1));
     expect(dlRun.calls[0].a.accountId).toBe(A.id);
@@ -575,8 +512,6 @@ describe("the Creator selector", () => {
 
     expect(dlRun.calls[0].signal.aborted).toBe(false);
     expect(screen.getByRole("region", { name: "Vault download" })).toHaveTextContent("Creator A: whole vault");
-    // One run at a time: B's download joins the queue behind A's (named for B, started later by the provider); the
-    // Extras drawer's item (the one gate) says so, and its click closes the drawer.
     const add = within(overflow()).getByTestId("vault-extras-download");
     expect(add).toHaveTextContent("Add full vault to queue");
     expect(add).toBeEnabled();
@@ -586,19 +521,16 @@ describe("the Creator selector", () => {
     await waitFor(() => expect(card).toHaveAttribute("data-queued", "1"));
     expect(card).toHaveTextContent("Creator B: whole vault");
     expect(dlRun.calls).toHaveLength(1);
-    // asked twice: still one queued
     fireEvent.click(within(overflow()).getByTestId("vault-extras-download"));
     expect(card).toHaveAttribute("data-queued", "1");
   });
 
   it("says a dropped session and writes nothing", async () => {
-    // A is selected and live; then its session drops and the account list is read again.
     const { queryClient } = renderWithProviders(<Page />);
     await waitFor(() => expect(within(rail()).getByText("Folder one")).toBeTruthy());
     roster = [{ ...A, has_session: false }, B];
     await act(async () => { await queryClient.invalidateQueries({ queryKey: ["accounts"] }); });
     expect(await screen.findByText(/session has dropped/)).toBeTruthy();
-    // Said, not acted on: the page stays on A, and the column and the select still show A.
     expect(creatorRow("Creator A")).toHaveAttribute("aria-current", "true");
     expect(screen.getByRole("combobox", { name: "Creator" })).toHaveTextContent(/Creator A$/);
     expect(within(rail()).getByText("Folder one")).toBeTruthy();
@@ -610,10 +542,8 @@ describe("the Creator selector", () => {
     roster = [];
     renderWithProviders(<Page />);
     const line = await screen.findByText("No model accounts with a live session.");
-    // Ours, in place of the capture's not-a-creator text (#13), in the grid's empty state.
     expect(line).toHaveAttribute("title", EXTRA_LABEL);
     expect(line.closest("div")?.querySelector("[data-empty-art='creator']")).toBeTruthy();
-    // The frame: the rail's sort row and an empty All media row, then the toolbar, every control off.
     const r = rail();
     expect(within(r).getByText("Default")).toBeTruthy();
     expect(within(r).getByText("empty")).toBeTruthy();
@@ -626,7 +556,6 @@ describe("the Creator selector", () => {
     for (const l of ["Recent", "All", "Photo", "Refresh", "Grid view", "Select"]) {
       expect(screen.getByRole("button", { name: l })).toBeDisabled();
     }
-    // The creator column is always shown, here with no Creator to pick; no creator select shows.
     expect(within(column()).queryAllByTestId("of-creator-row")).toEqual([]);
     expect(screen.queryByRole("combobox", { name: "Creator" })).toBeNull();
     expect(extrasButton()).toBeDisabled();
@@ -706,7 +635,6 @@ describe("folder writes reach the same Vault routes as before", () => {
     const dlg = screen.getByRole("dialog", { name: "Delete category" });
     expectInCapture("growth-vault-pro#37", "This will permanently remove the category from the vault.");
     expect(within(dlg).getByText(/This will permanently remove the category from the vault/)).toBeTruthy();
-    // The bundle's media wipe is shown, Not wired (house marker).
     expectInCapture("growth-vault-pro#37", "Permanently remove all media from the vault");
     const purge = within(dlg).getByRole("checkbox", { name: "Permanently remove all media from the vault" });
     expect(purge).toBeDisabled();
@@ -738,7 +666,6 @@ describe("folder writes reach the same Vault routes as before", () => {
     fireEvent.dragStart(two);
     fireEvent.dragOver(one);
     fireEvent.drop(one);
-    // As the bundle: the drop moves the row, and nothing is written until the check.
     expectBefore(within(rail()).getByText("Folder two"), within(rail()).getByText("Folder one"));
     expect(relayPost).not.toHaveBeenCalled();
     fireEvent.click(within(rail()).getByRole("button", { name: "Done" }));
@@ -747,7 +674,6 @@ describe("folder writes reach the same Vault routes as before", () => {
       { account_id: A.id, sort: undefined, order: undefined, custom_order: [12, 11] },
       { accountId: A.id },
     ));
-    // A saved custom order is OF's "Custom" sort, so the label says so.
     expect(await within(rail()).findByRole("button", { name: "Custom" })).toBeTruthy();
   });
 
@@ -805,7 +731,6 @@ describe("the flags review banner", () => {
     ));
     await within(overflow()).findByRole("button", { name: /^Describing/ });
 
-    // The sweep ends with two items flagged for a human.
     sweep = { running: false, progress: { done: 5, total: 5, needs_review: 2 } };
     await act(async () => {
       await queryClient.refetchQueries({ queryKey: ["vault-sweep", "describe-all", A.id] });
@@ -815,14 +740,11 @@ describe("the flags review banner", () => {
   });
 });
 
-/* ── ticket 37: the toolbar (#38 to #77) ────────────────────────────────── */
 
-/** The grid's section: the element holding the toolbar's search. */
 function grid(): HTMLElement {
   return screen.getByPlaceholderText(/^Search media by/).closest("section") as HTMLElement;
 }
 
-/** The `/api/of/v2/vault/media` reads made so far, their query strings parsed. */
 function mediaReads(): URLSearchParams[] {
   return relayGet.mock.calls
     .map(([p]) => String(p))
@@ -830,13 +752,11 @@ function mediaReads(): URLSearchParams[] {
     .map((p) => new URLSearchParams(p.split("?")[1]));
 }
 
-/** Two audio files (no still, so no image request), for the tools that need something loaded. */
 const MEDIA = [
   { id: 501, type: "audio", files: {} },
   { id: 502, type: "audio", files: {} },
 ];
 function withMedia() {
-  // jsdom has no IntersectionObserver; the grid's infinite-load sentinel needs one once files render.
   vi.stubGlobal("IntersectionObserver", class { observe() {} unobserve() {} disconnect() {} });
   const base = relayGet.getMockImplementation()!;
   relayGet.mockImplementation((path: string, ctx?: unknown) =>
@@ -844,7 +764,6 @@ function withMedia() {
       ? Promise.resolve({ list: MEDIA, hasMore: false })
       : base(path, ctx));
 }
-/** Mount with MEDIA loaded in the grid. */
 async function mountWithMedia() {
   withMedia();
   await mount();
@@ -909,7 +828,6 @@ describe("the toolbar, in the capture's order", () => {
     for (const [id, l] of labels) expectInCapture(id, l);
     const items = Array.from(menu.querySelectorAll("[role^=menuitem]")).map((el) => el.textContent);
     expect(items).toEqual(labels.map(([, l]) => l));
-    // What the page opens on: all time, Recent, Descending.
     for (const l of ["All time", "Recent", "Descending"]) {
       expect(within(menu).getByRole("menuitemradio", { name: l })).toHaveAttribute("aria-checked", "true");
     }
@@ -948,12 +866,10 @@ describe("the wired toolbar controls call the reads they used before", () => {
   it("Ascending and Descending call the media read with the direction; Recent is the read's own order", async () => {
     await mount();
     await waitFor(() => expect(mediaReads().length).toBeGreaterThan(0));
-    // Recent, Descending: newest first, the read's default.
     expect(mediaReads()[0].get("sort")).toBe("desc");
     fireEvent.click(within(grid()).getByRole("button", { name: "Recent" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Ascending" }));
     await waitFor(() => expect(mediaReads().at(-1)?.get("sort")).toBe("asc"));
-    // The box keeps the field's name; the direction is in its title.
     const box = within(grid()).getByRole("button", { name: "Recent" });
     expect(box).toHaveAttribute("title", "Ascending");
     fireEvent.click(within(grid()).getByRole("button", { name: "Photo" }));
@@ -975,18 +891,15 @@ describe("the wired toolbar controls call the reads they used before", () => {
     listsAll = ALL_NO_VIDEO;
     await mount();
     expectInCapture("growth-vault-pro#58", "a type with no files is disabled");
-    // All media: the whole vault's counts (OF's `all`): no video, no audio.
     await waitFor(() => expect(within(grid()).getByRole("button", { name: "Video" })).toBeDisabled());
     expect(within(grid()).getByRole("button", { name: "Audio" })).toBeDisabled();
     expect(within(grid()).getByRole("button", { name: "Photo" })).toBeEnabled();
     expect(within(grid()).getByRole("button", { name: "GIF" })).toBeEnabled();
-    // Folder one: 3 photos, 1 video, no GIF, no audio.
     fireEvent.click(within(rail()).getByText("Folder one"));
     await waitFor(() => expect(within(grid()).getByRole("button", { name: "GIF" })).toBeDisabled());
     expect(within(grid()).getByRole("button", { name: "Audio" })).toBeDisabled();
     expect(within(grid()).getByRole("button", { name: "Photo" })).toBeEnabled();
     expect(within(grid()).getByRole("button", { name: "Video" })).toBeEnabled();
-    // Back to All media: its own counts again.
     fireEvent.click(within(rail()).getByText("All media"));
     await waitFor(() => expect(within(grid()).getByRole("button", { name: "Video" })).toBeDisabled());
     expect(within(grid()).getByRole("button", { name: "GIF" })).toBeEnabled();
@@ -999,12 +912,10 @@ describe("the wired toolbar controls call the reads they used before", () => {
     expectInCapture("growth-vault-pro#77", "Add to category");
     const move = within(grid()).getByRole("button", { name: "Add to category" });
     const bar = move.parentElement as HTMLElement;
-    // "Selected", the count, then move and delete.
     const selected = within(bar).getByText("Selected");
     expect(selected.nextElementSibling?.textContent).toBe("2");
     expectBefore(selected, move);
     expectBefore(move, within(bar).getByRole("button", { name: "Delete" }));
-    // The move icon opens the capture's "Add to category" modal, 480px, one row per folder.
     fireEvent.click(move);
     const modal = screen.getByRole("dialog", { name: "Add to category" });
     const rows = within(modal).getAllByRole("button", { name: /^Folder/ }).map((b) => b.textContent);
@@ -1023,23 +934,19 @@ describe("Not wired toolbar controls", () => {
     await mountWithMedia();
     const g = grid();
     const notWired: HTMLElement[] = [];
-    // Listbox options with no read: the search type's Note and Hashtag, then (below) the video lengths.
     const offOptions: HTMLElement[] = [];
     const searchType = within(g).getByRole("combobox", { name: "Search type" });
     offOptions.push(...openOptions(searchType).slice(1));
-    // The sort popover's unread options and the hide switch.
     fireEvent.click(within(g).getByRole("button", { name: "Recent" }));
     for (const l of ["Go to date", "Most liked", "Highest tips", "Send count", "Unlock count", "Revenue"]) {
       notWired.push(within(g).getByRole("menuitemradio", { name: l }));
     }
     notWired.push(within(g).getByRole("menuitemcheckbox", { name: SWITCH }));
-    // The table view; the video length picker on the Video tab.
     notWired.push(within(g).getByRole("button", { name: "Table view" }));
     fireEvent.click(within(g).getByRole("button", { name: "Video" }));
     expectInCapture("growth-vault-pro#62", "\"Video length:\"");
     expect(within(g).getByText("Video length:")).toBeTruthy();
     offOptions.push(...openOptions(within(g).getByRole("combobox", { name: "Video length" })).slice(1));
-    // The selection bar's delete.
     fireEvent.click(within(g).getByRole("button", { name: "All" }));
     await waitFor(() => expect(within(grid()).getAllByTitle(/^#50[12] /)).toHaveLength(2));
     fireEvent.click(within(g).getByRole("button", { name: "Select all" }));
@@ -1090,10 +997,29 @@ describe("the toolbar's Inflowwww extras", () => {
     for (const name of ["New OF folder with these", "Describe selected", "Clear"]) {
       expect(within(g).getByRole("button", { name }).getAttribute("title")).toMatch(new RegExp(`^${EXTRA_LABEL}`));
     }
-    // In a folder, each tile's "#" order box (ours: the folder's manual order).
     fireEvent.click(within(rail()).getByText("Folder one"));
     const boxes = await within(grid()).findAllByPlaceholderText("#");
     expect(boxes).toHaveLength(2);
     for (const b of boxes) expect(b.getAttribute("title")).toMatch(new RegExp(`^${EXTRA_LABEL}\\n`));
   });
+});
+
+describe("Vault pro on a Fansly Creator", () => {
+  it.each([["onlyfans", true], ["fansly", false]] as const)(
+    "%s: Delete in the selection bar, Duplicates in Extras and Remove from vault in the viewer shown: %s",
+    async (p, shown) => {
+      platform.current = p;
+      await mountWithMedia();
+      const tile = within(grid()).getAllByTitle(/^#501 /)[0];
+      fireEvent.click(tile);
+      const viewer = await screen.findByRole("dialog", { name: /#501|Media/ });
+      expect(!!within(viewer).queryByRole("button", { name: "Remove from vault" })).toBe(shown);
+      fireEvent.keyDown(document, { key: "Escape" });
+
+      fireEvent.click(within(grid()).getByRole("button", { name: "Select all" }));
+      const bar = within(grid()).getByRole("button", { name: "Add to category" }).parentElement as HTMLElement;
+      expect(!!within(bar).queryByRole("button", { name: "Delete" })).toBe(shown);
+      expect(!!within(overflow()).queryByRole("button", { name: "Duplicates" })).toBe(shown);
+    },
+  );
 });

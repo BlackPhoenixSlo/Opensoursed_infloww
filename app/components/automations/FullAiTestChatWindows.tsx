@@ -1,26 +1,5 @@
 "use client";
 
-/**
- * Full AI Chat's Test chat: two windows, Live settings (left, the checkpoint: what fans get) and Draft (right), and one composer that
- * sends his Fan line to both. Each window keeps its own thread, shows typing dots while its reply is pending or
- * waiting out `wait_s`, then her bubbles and the line under them (Route, Heat, row, the Writer and how many fell).
- * On a phone held upright the windows are Live settings / Draft tabs. State: `fullAiTestChat.ts` (pure reducer) through
- * `useFullAiTestChat` (requests, timers), held by the page; this file only renders and dispatches. Send waits with
- * "Saving draft…" or "Draft not saved: fix it or Reload" (`sendBlock`). Each window header names its side's config
- * (`configLine`) and Writer chain (`writersLine`): the checkpoint's, or the draft as shown, so an applied draft shows there
- * at once (ticket 57).
- * A reply with an Offer (ticket 49) shows its PPV bubble on the text part carrying `ppv`: from the Offer, the Pick's
- * thumbnails from the Creator's local vault mirror (`mirrorThumbSrc`) and `ppvLine` — the price with Buy / Decline under
- * it while `canSettle`, "$N · paid" / "$N · not paid" once settled (`PpvStatusLine`), or "Free".
- * His photo: the paperclip next to the composer attaches one JPG / PNG / GIF / WebP (up to 20 MB, the server's limit; the
- * server shrinks it as a downloaded frame is); his bubble shows the thumbnail and, once recorded, what that side read
- * (`photoCaption`: the description, or `[sent a photo or video]` with its `describe_fan_photos` off).
- * Reply mark (offer-details B): each of her answered bubbles has a Reply action (`replyTo` its Turn); the composer then
- * shows "Replying to turn n" with a clear button, and Send carries the mark to both sides.
- * ASSUMPTION: named FullAiTestChatWindows, not the spec's FullAiTestChat.tsx: on a case-insensitive disk (macOS) the
- * import path `@/components/automations/FullAiTestChat` resolves to the reducer `fullAiTestChat.ts` (TS1149, observed),
- * because `.ts` is tried before `.tsx` (rung 1 for the clash, rung 5 for the name). Overturned by a reducer rename.
- */
 
 import { CornerUpLeft, Paperclip, X } from "lucide-react";
 import { useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
@@ -43,13 +22,12 @@ import { cn } from "@/lib/utils";
 
 /** Tailwind's `sm` breakpoint: below it (a phone held upright) the two windows become tabs. */
 export const PHONE_QUERY = "(max-width: 639px)";
-/** The test-turn route's `text` cap (service/full_ai_api.py); a longer line is a 422 that Retry cannot fix. */
+// service/full_ai_api.py test-turn text cap: a longer line is a 422 Retry cannot fix.
 const FAN_TEXT_MAX = 2000;
-/** The photo route's limits (service/automations/full_ai_photo.py, bio pages' upload rule). */
+// service/automations/full_ai_photo.py photo route limits.
 const PHOTO_TYPES = "image/jpeg,image/png,image/gif,image/webp";
 const PHOTO_MAX = 20 * 1024 * 1024;
 
-/** The picked file as a data URL, or the refusal in the server's words. */
 function readPhoto(file: File): Promise<string> {
   if (!PHOTO_TYPES.split(",").includes(file.type)) return Promise.reject(new Error("Pick a JPG, PNG, GIF or WebP image."));
   if (file.size > PHOTO_MAX) return Promise.reject(new Error("The image is larger than 20 MB."));
@@ -66,13 +44,11 @@ const SUB: Record<UiSide, string> = { L: "what fans get", R: "test only" };
 type OnSettle = (rowId: number, outcome: Outcome) => void;
 type OnReply = (n: number) => void;
 
-/** `chat` = the page's `useFullAiTestChat` (the settings column shares its state); `accountId` = the Creator whose
- *  vault mirror serves the PPV thumbnails. */
+// File is not FullAiTestChat.tsx: on case-insensitive disks the import resolves to the reducer fullAiTestChat.ts (TS1149).
 export function FullAiTestChat({ chat, accountId }: { chat: FullAiTestChatApi; accountId: string }) {
   const { state, edit, attach, detach, replyTo, clearReply, send, retry, toggleSkip, newChat, settle } = chat;
   const blocked = sendBlock(state);
   const fileRef = useRef<HTMLInputElement>(null);
-  // A file the browser could not read or the limits refuse: one message, cleared by the next pick.
   const [pickError, setPickError] = useState<string | null>(null);
   const onPick = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -80,7 +56,6 @@ export function FullAiTestChat({ chat, accountId }: { chat: FullAiTestChatApi; a
     if (!file) return;
     readPhoto(file).then((url) => { setPickError(null); attach(url); }, (err: Error) => setPickError(err.message));
   };
-  // Which window a phone shows; one value, nothing else depends on it.
   const [tab, setTab] = useState<UiSide>("L");
   const phone = useMediaQuery(PHONE_QUERY);
 
@@ -142,7 +117,6 @@ function Window({ ui, side, cfg, limits, accountId, describing, onRetry, onSettl
   ui: UiSide; side: SideState; cfg: FullAiConfig | null; limits: ConfigLimits | null; accountId: string; describing: Describing | null;
   onRetry: () => void; onSettle: OnSettle; onReply: OnReply;
 }) {
-  // The newest reply stays hidden until its wait is over.
   const hidden = side.revealAt !== null;
   const shownTurns = hidden ? side.turns.slice(0, -1) : side.turns;
   const last = shownTurns[shownTurns.length - 1];
@@ -187,8 +161,6 @@ function Exchange({ turn, accountId, onSettle, onReply }: {
   );
 }
 
-/** His line; with a photo, its thumbnail (`image` before the photo route answered) and, once recorded (`read` set),
- *  what this side read in small type. */
 function His({ text, photo, image }: { text: string; photo?: FanPhoto | null; image?: string }) {
   const src = photo?.thumb ?? image;
   return (
@@ -218,7 +190,6 @@ function CreatorReply({ turn, accountId, onSettle, onReply }: {
       {none ? (
         <p className={cn(MP.ours.FullAiTestChatWindows.noReply, "text-fg-dim")}>{none}</p>
       ) : (
-        // `ppv` marks the bubble; the server sends it exactly when the row has an Offer, which holds what it shows.
         result.parts.map((part, i) => ("text" in part && part.ppv && result.offer && result.row_id !== null
           ? <PpvBubble key={i} text={part.text} offer={result.offer} turn={turn} rowId={result.row_id} accountId={accountId}
             onSettle={onSettle} />
@@ -250,9 +221,6 @@ function HerPart({ part }: { part: Part }) {
   );
 }
 
-/** Her PPV message: caption, the Pick's thumbnails (locked media, then previews), their kinds and length (`mediaLine`)
- *  and `ppvLine` — the price with Buy / Decline under it while `canSettle`, a settled outcome, or "Free". Everything
- *  comes from the row's Offer. */
 function PpvBubble({ text, offer, turn, rowId, accountId, onSettle }: {
   text: string; offer: Offer; turn: Turn; rowId: number; accountId: string; onSettle: OnSettle;
 }) {

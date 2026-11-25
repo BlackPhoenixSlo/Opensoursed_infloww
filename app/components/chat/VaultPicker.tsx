@@ -1,18 +1,5 @@
 "use client";
 
-/**
- * VaultPicker — modal dialog over the chat surface for picking vault
- * media to attach to an outgoing message.
- *
- * Multi-select. Tap a tile to toggle; the selected count + Attach button
- * live in the footer. Type filter chips (all / photo / video / gif)
- * reset pagination. Infinite scroll via IntersectionObserver on the
- * sentinel at the bottom.
- *
- * Returns the chosen media as VaultMedia[] so the caller can render
- * preview chips immediately without re-fetching. The Composer keeps
- * only their ids in send-payload form.
- */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ComponentProps, type RefObject } from "react";
 import { createPortal } from "react-dom";
@@ -53,9 +40,7 @@ import { bumpAccountCount, loadAccountCounts, loadFanMru, loadFanState, MRU_CAP,
 import { fetchSort, initialFilters, vaultFiltersReducer, type MediaType, type Sort } from "./vaultPickerFilters";
 import { mediaReady, revalidateDue, revalidateInit, revalidateReducer } from "./vaultPickerRevalidate";
 
-// Moved out of this file; re-exported so every existing importer keeps working.
 export { progressiveVideoSrc, gifClipSrc, videoPosterFrames, isDrmVideo, isDrmOnlyVideo, VaultVideoPreview } from "./VaultVideoPreview";
-// Kept only for VaultTile + the drm test importers (review O1); delete when VaultTile moves to tilePreview.
 export { evenFrameIndex } from "./vaultTilePreview";
 export { aiCaptionFor, VaultAiCaptionOverlay, useCaptionOverlay, type CaptionSurface } from "./vaultAiCaption";
 
@@ -66,10 +51,6 @@ const TYPE_CHIPS: Array<{ value: MediaType; label: string }> = [
   { value: "gif",   label: "GIFs"   },
 ];
 
-/** The Messages Pro sheet's Geometry, from its one caller (the Composer,
- *  which passes `MP.sheet`): the panel, and from md up the head row, the
- *  title, the grid and a tile, so below md the picker keeps its full-screen
- *  pane. Colours, layout and the picker's own numbers stay here. */
 export interface VaultPickerSheetClassNames {
   panel: string;
   pickerHead: string;
@@ -82,27 +63,16 @@ interface VaultPickerBaseProps {
   open: boolean;
   onClose: () => void;
   accountId: string | null;
-  /** When provided, we fetch per-fan send/purchase history and show a
-   *  status badge on each tile + enable the fan-aware filter chips.
-   *  Leave null for mass-message or post-builder usages where there's
-   *  no single fan in scope. */
   fanId?: FanId | null;
-  /** Already-attached ids from the Composer so we can pre-select them. */
   initialSelectedIds: number[];
-  /** Caller receives the full media objects so it can render previews. */
   onConfirm: (picked: VaultMedia[]) => void;
 }
 
-/** Everywhere else, the right-hand slide-over; in Messages Pro, the Clone's
- *  centred sheet and grid, which always come with their Geometry. Only the
- *  Composer passes `messagesPro`. */
 export type VaultPickerProps = VaultPickerBaseProps & (
   | { messagesPro?: false }
   | { messagesPro: true; sheet: VaultPickerSheetClassNames }
 );
 
-/** The open picker's dialog root, a modal layer like IfModal (the shared `useModalFocus`): focus moves in, Tab stays
- *  inside, Escape is `onEscape` (preview first), and focus goes back to the opener on close. */
 function PickerDialog({ rootRef, onEscape, className, ...rest }: ComponentProps<"div"> & {
   rootRef: RefObject<HTMLDivElement | null>; onEscape: () => void;
 }) {
@@ -112,54 +82,28 @@ function PickerDialog({ rootRef, onEscape, className, ...rest }: ComponentProps<
 
 export function VaultPicker(props: VaultPickerProps) {
   const { open, onClose, accountId, fanId = null, initialSelectedIds, onConfirm } = props;
-  // The open picker's root (PickerDialog): a modal layer, so its Escape yields to a layer over it (the idle overlay).
   const rootRef = useRef<HTMLDivElement>(null);
-  /** The Messages Pro sheet's Geometry, or null for the slide-over. */
   const sheet = props.messagesPro ? props.sheet : null;
   const messagesPro = sheet !== null;
-  // The Infloww palette when opened from Messages Pro; nothing anywhere else.
   const palette = useInflowwPalette();
-  // Filter bar: type, folder, sort, hide-seen, length, search (vaultPickerFilters).
   const [filters, dispatch] = useReducer(vaultFiltersReducer, initialFilters);
   const { type, listId, sort, hideSeen, lengthRange, queryInput, query } = filters;
-  // The stats sorts reorder the newest-first pages OF serves.
   const ofSort = fetchSort(sort);
-  // Vault search — OF-native (verified live: wire param `query`). Debounced
-  // so we fire one OF fetch after the user pauses typing, not per keystroke.
   useEffect(() => {
     const t = setTimeout(() => dispatch({ type: "commitQuery", value: queryInput }), 300);
     return () => clearTimeout(t);
   }, [queryInput]);
-  // Per-fan folder MRU (last 3 used). Lives in localStorage so it
-  // survives reloads + transfers between tabs.
   const [folderMru, setFolderMru] = useState<FanId[]>([]);
-  // The picked ids, plus the media seen for them across filter switches (vaultPickerPicked.ts).
   const [picked, pick] = useReducer(pickedReducer, initialSelectedIds, pickedInit);
   const selectedIds = picked.ids;
-  // This open's revalidate reads (vaultPickerRevalidate.ts), armed with the filters' hydrate.
   const [revalidation, revalidate] = useReducer(revalidateReducer, revalidateInit);
 
   const listsQ = useVaultLists(accountId, open);
-  // Chatter Access (folders): for a RESTRICTED chatter session this is the
-  // authoritative folder menu (DA-3). Owners: the hook disables itself
-  // off-session (`data` undefined → `restricted` false), so all of the gating
-  // below is inert for them. The backend soft-denies disallowed/None list_id regardless —
-  // this only shapes the picker's folder UI so it opens to a usable folder.
   const folderAccessQ = useChatterFolderAccess(accountId, open);
   const restricted = !!folderAccessQ.data?.restricted;
 
-  // ── Cache-first vault source (ADDITION — normal live search is preserved) ──
-  // Once this account's vault is FULLY in the local mirror (`vaultWholeSource`:
-  // what can be sent is the whole vault), serve the grid + search straight from it: instant
-  // open, infinite-scroll FROM CACHE, and local (of_terms-aware) search. A
-  // partial mirror stays on the live-OF path. A restricted chatter takes the
-  // mirror too: the server applies their folder limits on the mirror routes.
-  // Both hooks always mount; only the enabled one fetches, and neither before the summary's first answer
-  // (`vaultPickerSource` "pending": the grid shows loading, never a false "No media in this filter"). A live
-  // listing fired alongside painted OF CDN tiles over a collected vault whenever the summary lost the race (U4).
   const qc = useQueryClient();
   const cacheSummary = useVaultCacheSummary(open ? accountId : null);
-  // A summary still pending after SUMMARY_WAIT_MS lists live rather than hold the grid on Loading (#15).
   const summaryPending = open && vaultPickerSource(cacheSummary) === "pending";
   const [stalledFor, setStalledFor] = useState<string | null>(null);
   useEffect(() => {
@@ -180,21 +124,10 @@ export function VaultPicker(props: VaultPickerProps) {
   const vaultShown = useLocalVault ? vaultMirror : vaultLive;
   const vault = pickerSource === "pending" ? { ...vaultShown, isLoading: true } : vaultShown;
 
-  // A broken thumbnail (an expired signed url) reloads the grid once per Creator per cooldown (reloadBrokenThumbs:
-  // the mirror's items, or the live listing past the relay's cache); reopening the picker resets the tiles only.
   const thumbs = useThumbAutoRefresh(open ? accountId : null, source);
 
-  // Refresh (↻) = what OF holds NOW on either source, as Vault Pro's and the manager's ↻: the mirror's urls carry
-  // the signature (and the proxy IP) of the Collect that wrote them, so re-reading the mirror alone changed nothing
-  // after a proxy move. Disabled and spinning until the reloaded grid is in; says so when OF could not be reached
-  // or the sync failed. Settled, the broken thumbs are drawn again. The picker stays mounted: pending is per
-  // Creator (a reopen or a switch back mid-sync stays disabled; a sync for A never disables B's button); closing
-  // it or switching Creator drops only the note.
   const ofRefresh = useOfRefresh(open ? accountId : null, thumbs);
 
-  // Harvest OF's own vault search for the current query and fold it into the
-  // mirror index (of_terms) so cache search ⊇ OF search — same as the manager.
-  // While it runs, an empty grid says "Searching OnlyFans…", not "No media".
   const ofSearch = useOfSearch(accountId, query, useLocalVault);
   const searchingOf = ofSearch.searching;
 
@@ -206,16 +139,11 @@ export function VaultPicker(props: VaultPickerProps) {
     () => new Set(allowedFolders.map((f) => f.folder_id)),
     [allowedFolders],
   );
-  // Folder dropdown source (vaultPickerFolders): OF's full list, or a
-  // restricted chatter's authoritative allowlist (DA-3).
   const folderItems = useMemo(
     () => folderSelectItems(restricted, allowedFolders, listsQ.data?.list ?? []),
     [restricted, allowedFolders, listsQ.data],
   );
 
-  // Log vault.open `delivered` the first time the initial fetch lands this
-  // open-session. Subsequent loads (filter switch, infinite scroll) are
-  // tracked independently by useVaultMedia / useVaultLists.
   const deliveredRef = useRef(false);
   useEffect(() => {
     if (!open) {
@@ -232,17 +160,6 @@ export function VaultPicker(props: VaultPickerProps) {
       hadError: !!vault.error,
     });
   }, [open, vault.isLoading, vault.items.length, vault.error]);
-  // `cosmeticReady` flips true once the initial vault.media has landed
-  // for this open. It gates both the wall-media post-walk AND the per-fan
-  // history fetch — both are pure decoration (status ring color, corner
-  // price pill) and must NOT compete with the user-blocking vault page
-  // load. Once we flip to ready, we stay ready for the rest of this open
-  // so the cosmetics fill in naturally as filters change. (Tearing down
-  // a half-finished wall-media on every folder switch / background
-  // refetch was the original bug — the walk never got to finish before
-  // being cancelled again, so the rings would never appear.)
-  // Closing the picker resets so the next open re-gates on its own
-  // initial vault load.
   const [cosmeticReady, setCosmeticReady] = useState(false);
   useEffect(() => {
     if (!open) {
@@ -253,47 +170,20 @@ export function VaultPicker(props: VaultPickerProps) {
     if (vault.isLoading) return;
     setCosmeticReady(true);
   }, [open, vault.isLoading, cosmeticReady]);
-  // Per-fan history paints the status ring + corner pill — defer until
-  // cosmeticReady so it doesn't queue alongside the initial vault page.
   const historyQ = useFanVaultHistory(accountId, fanId ?? null, open && cosmeticReady);
   const historyMap = historyQ.data?.by_media ?? {};
-  // Account-wide Sent / Unlock / rate per media: decoration too, unless a
-  // stats sort needs it now.
   const statsQ = useVaultMediaStats(accountId, open && (cosmeticReady || isStatsSort(sort)));
   const statsMap = statsQ.data?.by_media;
   const wall = useWallMedia(accountId, open && cosmeticReady);
   const [blurMode] = useBlurMode();
   const blurCls = blurImageClass(blurMode);
-  // AI caption overlay — default OFF in the picker so it doesn't crowd the
-  // send flow; the chatter can flip it on from the toolbar toggle.
   const [captionOn, setCaptionOn] = useCaptionOverlay("picker");
-  // Hover-to-preview is a 12-frame slideshow served by the relay's
-  // /img/scrub endpoint. The previous implementation streamed the actual
-  // mp4 through two <video> elements + a canvas scrub pipeline, which
-  // pinned uvicorn threadpool slots and deadlocked the relay when users
-  // browsed a lot of video tiles. The storyboard approach replaces all
-  // that with 12 small JPGs (~20KB each, served from a disk cache the
-  // relay populates on first hit), so a hover is at most 12 lightweight
-  // image GETs — no streams to stop on switch because there are no
-  // streams at all. Dwell, session id, slideshow cursor, countdowns and
-  // the cancel POST live in useHoverPreview; what a tile shows is
-  // tilePreview's read of it.
   const hover = useHoverPreview(HOVER_DELAY_MS);
-  // Click-to-open full preview. Storing the whole VaultMedia so the modal
-  // has access to videoSources + thumb without re-finding it in the list.
   const [previewMedia, setPreviewMedia] = useState<VaultMedia | null>(null);
-  // Photo hover-enlarge: same dwell as the video preview, in a floating panel.
   const photoHover = usePhotoHover();
   const { shown: hoverPhoto, close: closePhoto } = photoHover;
-  // "Media details" (ⓘ, or the price pill at the price history). Opening and
-  // closing it never touches the selection.
   const [details, setDetails] = useState<{ media: VaultMedia; atHistory: boolean } | null>(null);
 
-  // Perf instrumentation. We mint a fresh open-op id every time the picker
-  // transitions closed→open and stamp it onto the vault-media + vault-lists
-  // hooks so their requested/delivered phases share the same id as the
-  // user-visible "vault open" event. The first-tile painted milestone is
-  // logged from the first tile <button> below via a render-once ref.
   const openOpIdRef = useRef<string | null>(null);
   const paintedRef = useRef(false);
   const markFirstTilePainted = (el: HTMLButtonElement | null, firstTileId: number) => {
@@ -301,16 +191,9 @@ export function VaultPicker(props: VaultPickerProps) {
     const id = openOpIdRef.current;
     if (!id) return;
     paintedRef.current = true;
-    // Fires the moment the first tile <button> is mounted —
-    // this is "first tab open" in the user's terms: the
-    // picker has data on screen and is clickable.
     perfPainted(id, "vault.open", { firstTileId });
   };
 
-  // Reset selection state when the picker transitions from closed → open.
-  // Parent passes a fresh `initialSelectedIds` array on every render, so
-  // depending on its identity would clobber in-picker selections on every
-  // upstream re-render.
   const wasOpenRef = useRef(false);
   useEffect(() => {
     if (open && !wasOpenRef.current) {
@@ -319,15 +202,7 @@ export function VaultPicker(props: VaultPickerProps) {
       paintedRef.current = false;
       perfLog(id, "vault.open", "requested", { accountId, fanId });
       pick({ type: "reset", ids: initialSelectedIds });
-      // One revalidate read of the folder list and the open view's first page, due from the render the
-      // hydrate below lands in (vaultPickerRevalidate).
       revalidate({ type: "open" });
-      // Restore the whole picker position for this fan: folder, sort,
-      // type. If the chatter has never opened the picker for this fan,
-      // fall back to All / Newest / All-types. Crucially we DON'T force
-      // listId to the MRU head — that would override the user's last
-      // explicit "All folders" choice every time.
-      // Search is transient — start each open clean.
       dispatch({ type: "hydrate", saved: loadFanState(accountId, fanId) });
       setFolderMru(loadFanMru(accountId, fanId));
     }
@@ -335,13 +210,6 @@ export function VaultPicker(props: VaultPickerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Chatter Access (folders): a restricted chatter has NO "All folders"
-  // view (the backend soft-denies list_id=None to an empty payload). Once
-  // the authoritative menu lands, force the selection onto an allowed
-  // folder if the restored/empty selection isn't one. We pick the first
-  // allowed folder that OF still reports as having media (listsQ is
-  // backend-filtered to the allowed set), which transparently falls
-  // through past a folder that was deleted/emptied on OF (per DA-3).
   const firstUsable = useMemo<FanId | null>(
     () => firstUsableFolderId(allowedFolders, listsQ.data?.list ?? []),
     [allowedFolders, listsQ.data],
@@ -353,9 +221,6 @@ export function VaultPicker(props: VaultPickerProps) {
     if (firstUsable != null) dispatch({ type: "setListId", value: firstUsable });
   }, [open, restricted, listId, allowedFolderIds, firstUsable]);
 
-  // Revalidate on open (vaultPickerRevalidate): once the painted copy is on screen, each of the folder list and the
-  // open view's first page is read once more with `revalidate=1` (the relay asks OF only when its shared copy is
-  // older than VAULT_PICKER_REVALIDATE_S) and swapped into its query key. A failed read keeps the painted copy.
   const listsPainted = listsQ.data !== undefined && !listsQ.isFetching;
   const mediaPainted = mediaReady({
     source,
@@ -374,18 +239,11 @@ export function VaultPicker(props: VaultPickerProps) {
     }
   }, [open, accountId, revalidation, listsPainted, mediaPainted, qc, type, listId, ofSort, query]);
 
-  // Persist the full picker state on every change so reopening the
-  // picker (same tab, popout, or restart) lands on the exact same view.
   useEffect(() => {
     if (!open) return;
     saveFanState(accountId, fanId, { listId, sort, type });
   }, [open, listId, sort, type, accountId, fanId]);
 
-  // Whenever the user picks a real folder (not "All"), bump it to the
-  // head of the per-fan MRU AND the account-wide counter. We do this on
-  // listId change (not on confirm) so even a browse counts. The
-  // account-wide counter is what the account-wide fallback below ranks
-  // by when the current fan has no MRU yet.
   useEffect(() => {
     if (!open || listId == null) return;
     bumpAccountCount(accountId, listId);
@@ -396,16 +254,11 @@ export function VaultPicker(props: VaultPickerProps) {
     });
   }, [open, listId, accountId, fanId]);
 
-  // Snapshot the account-wide counter once per open so the chip row's
-  // tie-break stays stable while the user clicks around (otherwise the
-  // act of clicking a chip would re-rank it mid-render).
   const accountCounts = useMemo(
     () => (open ? loadAccountCounts(accountId) : {}),
     [open, accountId],
   );
 
-  // Esc closes (PickerDialog's, only while it is the top layer). When the preview modal is open, swallow Esc to close
-  // just the preview — the second press then closes the whole picker.
   const onEscape = () => {
     if (hoverPhoto) {
       closePhoto();
@@ -422,13 +275,7 @@ export function VaultPicker(props: VaultPickerProps) {
     onClose();
   };
 
-  // Infinite scroll sentinel.
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  // `loadMore` is recreated on every useVaultMedia render, so we read the
-  // latest via a ref inside the observer callback. Depending on it directly
-  // (or on the whole `vault` object) would tear down and rebuild the
-  // IntersectionObserver on every render; the ref lets us create it once
-  // per open while still invoking the freshest loadMore.
   const loadMoreRef = useRef(vault.loadMore);
   loadMoreRef.current = vault.loadMore;
   useEffect(() => {
@@ -441,9 +288,6 @@ export function VaultPicker(props: VaultPickerProps) {
           loadMoreRef.current();
         }
       },
-      // 800px ≈ 1.5 viewport heights at typical picker sizing — gives a
-      // fast scroll a head start, so the next page is in-flight well
-      // before the user reaches the spinner.
       { root: null, rootMargin: "800px" },
     );
     io.observe(el);
@@ -453,7 +297,6 @@ export function VaultPicker(props: VaultPickerProps) {
   const addMany = (ms: VaultMedia[]) => pick({ type: "addMany", media: ms });
   const toggle = (m: VaultMedia) => pick({ type: "toggle", media: m });
 
-  // `extra`: the double-clicked tile, always in (see buildPicked).
   const confirmWith = useCallback(
     (extra?: VaultMedia) => {
       onConfirm(buildPicked(picked, vault.items, extra));
@@ -463,22 +306,10 @@ export function VaultPicker(props: VaultPickerProps) {
   );
   const confirm = useCallback(() => confirmWith(), [confirmWith]);
 
-  // Ordering is now server-side (`sort=asc|desc` — OF honors both, verified
-  // live), so we render `vault.items` in the exact order OF paginated them.
-  // A client reverse would be WRONG under infinite scroll: newly loaded
-  // pages would land at the top instead of the bottom.
-  //
-  // Still dedup by id — OF's vault pagination occasionally returns the same
-  // item across adjacent pages (race between a vault edit and our offset-
-  // based reads), and React would warn about duplicate keys on the tile
-  // <button>s. Keep the FIRST occurrence so the position the user already
-  // sees stays stable when a re-fetch overlaps.
-  //
-  // A stats sort (Send count, Unlock count, Unlock rate, Recently used) is the
-  // one client reorder: it ranks what has loaded, unsent media last in OF's
-  // order. Hide-seen drops what the Fan already has or saw on the feed.
   const historyByMedia = historyQ.data?.by_media;
+  // Order is server-side (OF honors sort=asc|desc); a client reverse would put new pages at the top under infinite scroll.
   const visibleItems = useMemo(() => {
+    // OF repeats items across adjacent pages; keep the first occurrence.
     const seen = new Set<number>();
     const out: VaultMedia[] = [];
     for (const m of vault.items) {
@@ -491,22 +322,16 @@ export function VaultPicker(props: VaultPickerProps) {
     }
     return isStatsSort(sort) && statsMap ? sortByStats(out, statsMap, sort) : out;
   }, [vault.items, lengthRange, hideSeen, fanId, historyByMedia, wall.set, sort, statsMap]);
-  // End the hover when no mouseleave will: the picker closes (Esc, attach;
-  // it stays mounted) or the hovered card drops out of the grid (a late
-  // hide-seen). Stops the slideshow, sends the cancel, and disarms the dwell.
   const { stop: stopHover } = hover;
   const hoveredId = hover.state.id;
   useEffect(() => {
     if (!open || (hoveredId != null && !visibleItems.some((m) => m.id === hoveredId))) stopHover();
   }, [open, hoveredId, visibleItems, stopHover]);
-  // Shift-click ranges and the grid keyboard run over the cards as displayed.
   const grid = useGridSelection({
     items: visibleItems, toggle, addMany,
     attach: (focused) => (selectedIds.size > 0 ? confirm() : focused && confirmWith(focused)),
   });
 
-  // Folder quick-chips: per-fan MRU ★, then account-wide most-used •, then
-  // OF's first folders; capped at MRU_CAP (vaultPickerFolders).
   const quickChips = useMemo(
     () => folderChips(listsQ.data?.list ?? [], folderMru, accountCounts, MRU_CAP),
     [listsQ.data, folderMru, accountCounts],
@@ -515,26 +340,15 @@ export function VaultPicker(props: VaultPickerProps) {
   if (!open) return null;
   if (typeof document === "undefined") return null;
 
-  // Portal to document.body so the picker is never trapped by an ancestor
-  // that creates a containing block (transform / filter / contain) or by a
-  // modal's overflow / z-index ceiling. The chat composer always rendered
-  // fine because its ancestor chain was clean; the post and mass-message
-  // composers wrap the picker in a `fixed inset-0 grid place-items-center`
-  // modal where the picker was being squashed into the modal's grid cell
-  // instead of covering the viewport. Portal+`fixed` sidesteps both.
+  // Portal to body: ancestor containing blocks / modal grid cells squash a fixed picker.
   return createPortal(
-    // stopPropagation on every pointer event: even though the picker is
-    // portaled into <body>, React still bubbles its events up through the
-    // React parent tree — so a tile click inside the picker would hit the
-    // PostComposer / MassMessageComposer outer `onClick` that closes them.
-    // Containing the events here keeps single-chat behavior identical and
-    // fixes the "click a tile and the whole composer disappears" bug.
     <PickerDialog
       rootRef={rootRef}
       onEscape={onEscape}
       aria-label="Vault picker"
       className={cn("fixed inset-0 z-[60] flex items-stretch", messagesPro && VAULT_SHEET.backdrop)}
       style={palette}
+      // React bubbles portal events to the parent composer, whose onClick closes it.
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
     >
@@ -561,8 +375,6 @@ export function VaultPicker(props: VaultPickerProps) {
               )}
             </h2>
             <p className="text-[12px] text-muted">
-              {/* Double-click has no touch equivalent; the phone copy points
-               *  at the Attach button in the footer instead. */}
               <span className="hidden md:inline">{TILE_HINT} · {KEYBOARD_HINT}.</span>
               <span className="md:hidden">Tap to select, then Attach.</span>
             </p>
@@ -570,9 +382,6 @@ export function VaultPicker(props: VaultPickerProps) {
           <button
             type="button"
             onClick={onClose}
-            // At phone width the pane covers the whole backdrop, so this ✕ is
-            // the only exit — it needs a real 44px box. inline-grid (not grid)
-            // keeps the desktop header flex row measuring exactly as before.
             className="text-muted hover:text-fg w-11 h-11 md:w-6 md:h-6 inline-grid place-items-center rounded"
             title="Close (Esc)"
             aria-label="Close"
@@ -581,8 +390,6 @@ export function VaultPicker(props: VaultPickerProps) {
           </button>
         </header>
 
-        {/* Phone: one horizontally-scrollable row instead of a 4-line wrapped
-         *  tower. md: restores the original wrap + visible overflow exactly. */}
         <div className="flex items-center gap-1 px-6 py-2 border-b border-border bg-bg/40 flex-nowrap overflow-x-auto md:flex-wrap md:overflow-visible">
           <IfSegmented
             aria-label="Media type"
@@ -599,8 +406,6 @@ export function VaultPicker(props: VaultPickerProps) {
               className="shrink-0 ml-2 max-w-[9rem] md:max-w-none"
               title="Filter by folder"
             >
-              {/* Restricted chatters have no "All folders" view — the
-               *  backend soft-denies list_id=None for them (DA-2). */}
               {!restricted && <option value="">All folders</option>}
               {folderItems.map((f) => (
                 <option key={f.id} value={f.id}>
@@ -668,8 +473,6 @@ export function VaultPicker(props: VaultPickerProps) {
           </div>
 
           <div className="shrink-0 ml-auto flex items-center gap-3">
-            {/* AI caption toggle — shows the mirror description + tags as a
-             *  blurred bottom-half overlay on each thumb. Off by default here. */}
             <IfButton
               icon={Captions}
               onClick={() => setCaptionOn(!captionOn)}
@@ -682,15 +485,8 @@ export function VaultPicker(props: VaultPickerProps) {
             >
               captions
             </IfButton>
-            {/* Wall-scan indicator: only render while coverage is
-             *  incomplete so the user understands the blue "posted on
-             *  wall" ring is still filling in. Once `fullyBackfilled`
-             *  flips, we stay silent — no point shouting a steady
-             *  state. */}
             {wall.hasMore && (
               <span
-                // Desk-only diagnostic prose; it costs the phone a whole
-                // scroll-row of the filter bar. md:inline restores it.
                 className="hidden md:inline text-[12px] text-muted"
                 title="The 'posted on wall' ring is being filled in across vault opens. Older posts will get marked on subsequent picker opens."
               >
@@ -702,6 +498,7 @@ export function VaultPicker(props: VaultPickerProps) {
               variant="link"
               disabled={!accountId || ofRefresh.isPending}
               aria-busy={ofRefresh.isPending}
+              // Reads what OF holds now: mirror urls carry the old Collect's signature and proxy IP.
               onClick={() => { ofRefresh.mutate(listId); wall.refresh(); }}
               className="gap-1.5"
             >
@@ -714,7 +511,6 @@ export function VaultPicker(props: VaultPickerProps) {
         {quickChips.length > 0 && (
           <div className="flex items-center gap-1 px-6 py-1.5 border-b border-border bg-bg/30 flex-wrap text-[12px]">
             <span className="text-muted mr-1">Folders</span>
-            {/* Restricted chatters have no "All" — soft-denied by the backend. */}
             {!restricted && <button
               type="button"
               onClick={() => dispatch({ type: "setListId", value: null })}
@@ -759,11 +555,6 @@ export function VaultPicker(props: VaultPickerProps) {
           {vault.isLoading && vault.items.length === 0 && (
             <div className="text-sm text-fg-dim text-center py-12">Loading vault…</div>
           )}
-          {/* Only surface an error when (a) we're not actively retrying
-           *  and (b) we have nothing cached to show. Otherwise React Query
-           *  will keep `vault.error` set from a stale attempt during the
-           *  retry backoff window, which used to flash a "Failed: …" line
-           *  for ~1s on first open before the retry succeeded. */}
           {vault.error && !vault.isFetching && vault.items.length === 0 && (
             <div className="text-sm text-err text-center py-6">
               Failed: {(vault.error as Error).message || "unknown"}
@@ -830,9 +621,6 @@ export function VaultPicker(props: VaultPickerProps) {
           </div>
         </div>
 
-        {/* pb safe-area: Attach/Cancel sit under the iOS home indicator on this
-         *  `fixed inset-0` pane (viewportFit: cover). max() keeps the desktop
-         *  0.75rem, since env() resolves to 0 there. Composer.tsx:469 precedent. */}
         <footer className="border-t border-border px-6 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] flex items-center gap-3 bg-panel">
           <span className="text-[12px] text-fg-dim">
             {selectedIds.size === 0

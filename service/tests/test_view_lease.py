@@ -1,36 +1,7 @@
 #!/usr/bin/env python3
-"""
-view_lease — the View lease registry's public functions (ADR-0031, phase-01 1a). No DB, no loop;
-`now` is passed.
-
-  case_renew_and_expiry:        a renewal leases its ids; they lapse TTL_S (60) after the last
-                                renewal, and a renewal inside the TTL keeps them.
-  case_union_across_holders:    two tabs of one principal and another principal: the union;
-                                one holder lapsing keeps the others'.
-  case_replace_per_holder:      a renewal replaces that holder's whole set; an empty list
-                                releases it.
-  case_newly_leased_only:       renew returns only Creators no live holder leased before (not a
-                                re-renewal, not one another holder leases), and again after it
-                                lapsed.
-  case_selected_change:         a changed `selected` is returned even when already leased; the
-                                same `selected` again is not; `selected` with no ids still leases it.
-  case_selected_is_leased:      `selected` is leased with the ids (it is on screen).
-  case_refresh_plan:            renew's answer split into (read now, paced): the selection now unless just
-                                polled; other gains paced unless current or the post is `opened`; a table.
-  case_legacy_stream_ids:       a stream leases its clamp minus watchers only when unmarked, from a
-                                browser page (Referer) and clamped; a table.
-  case_legacy_stream_hold:      an open legacy stream's ids are in leased_ids and count as leased
-                                for renew's gains; dropped at its end; lapse TTL_S after the last
-                                frame when no end is seen.
-  case_legacy_held_lifecycle:   legacy_held holds while frames flow, drops and closes the inner
-                                stream when it ends, when it raises, and when the response stops
-                                reading it early.
-
-Run: ./venv/bin/python service/tests/test_view_lease.py   (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness  # MUST be first: binds temp DB
 
 import view_lease as vl  # noqa: E402
 
@@ -81,7 +52,6 @@ def case_newly_leased_only():
     assert vl.renew(O1, ["a", "b"], None, now=10) == []
     assert vl.renew(C1, ["b", "c"], None, now=11) == ["c"], "b is O1's already"
     assert vl.renew(O2, ["a", "d"], None, now=12) == ["d"]
-    # every holder lapsed: a is newly leased again
     assert vl.renew(O1, ["a"], None, now=200) == ["a"]
 
 
@@ -105,15 +75,15 @@ def case_selected_is_leased():
 
 
 def case_refresh_plan():
-    cur = {"c"}                        # current: a poll started within FAST_S, or warmed
-    fresh = {"f"}                      # a poll started within SELECT_MIN_AGE_S
+    cur = {"c"}
+    fresh = {"f"}
     for gains, selected, opened, want in [
-        (["a", "b"], None, False, ([], ["a", "b"])),          # gains are paced, never one read each at once
-        (["a", "b"], "a", False, (["a"], ["b"])),             # the selection at once, the rest paced
-        (["a", "c"], None, False, ([], ["a"])),               # a current gain reads nothing
-        (["c"], "c", False, (["c"], [])),                     # a current selection still reads ...
-        (["f"], "f", False, ([], [])),                        # ... unless it was just polled
-        (["a", "b"], "a", True, (["a"], [])),                 # an opening post: the warm reads the rest
+        (["a", "b"], None, False, ([], ["a", "b"])),
+        (["a", "b"], "a", False, (["a"], ["b"])),
+        (["a", "c"], None, False, ([], ["a"])),
+        (["c"], "c", False, (["c"], [])),
+        (["f"], "f", False, ([], [])),
+        (["a", "b"], "a", True, (["a"], [])),
         (["f", "b"], "f", True, ([], [])),
         ([], None, False, ([], [])),
     ]:
@@ -126,14 +96,14 @@ def case_legacy_stream_ids():
     watcher = lambda a: a == "w"  # noqa: E731
     page = "https://app.example/messages-pro"
     for lease, referer, accounts, want in [
-        (None, page, acc, {"a", "b"}),           # a pre-1a tab: its clamp, watchers dropped
-        ("1", page, acc, set()),                 # the app since 1a renews its own
-        ("0", page, acc, set()),                 # any mark at all
+        (None, page, acc, {"a", "b"}),
+        ("1", page, acc, set()),
+        ("0", page, acc, set()),
         ("", page, acc, set()),
-        (None, None, acc, set()),                # no Referer: desktop main-process notifier, scripts
+        (None, None, acc, set()),
         (None, "", acc, set()),
-        (None, page, None, set()),               # unclamped (anonymous escape hatch): no wildcard
-        (None, page, frozenset(), set()),        # no Creators
+        (None, page, None, set()),
+        (None, page, frozenset(), set()),
     ]:
         got = vl.legacy_stream_ids(lease, referer, accounts, watcher)
         assert got == want, (lease, referer, accounts, got)
@@ -149,10 +119,10 @@ def case_legacy_stream_hold():
     vl.drop_stream(k1)
     assert vl.leased_ids(4) == {"a", "b", "c"}, "O1 still leases a, k2 b"
     vl.drop_stream(k2)
-    vl.drop_stream(k2)                            # twice: a no-op
+    vl.drop_stream(k2)
     assert vl.leased_ids(5) == {"a", "c"}
     vl.hold_stream(k1, frozenset({"d"}), now=10)
-    vl.hold_stream(k1, frozenset({"d"}), now=50)  # a frame re-holds
+    vl.hold_stream(k1, frozenset({"d"}), now=50)
     assert vl.is_leased("d", 109.9)
     assert not vl.is_leased("d", 110) and k1 not in vl._streams, "no end seen: lapses TTL_S after the last frame"
 
@@ -195,7 +165,7 @@ def case_legacy_held_lifecycle():
         closed.clear()
         gen = vl.legacy_held(inner(5), frozenset({"a"}))
         assert await gen.__anext__() == b"f0" and vl.is_leased("a")
-        await gen.aclose()                        # the response stopped reading (client gone)
+        await gen.aclose()
         assert vl._streams == {} and closed == ["inner"], (vl._streams, closed)
 
     asyncio.run(main())

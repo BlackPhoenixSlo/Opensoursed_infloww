@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * useSavedReplies — CRUD for local-DB saved replies.
- *
- * OF's /messages/templates rejects creates for everything except the
- * welcome slot, so saved replies live in our SQLite (via relay's
- * /admin/saved-replies/* routes). The welcome message stays on OF —
- * see useTemplates for that path.
- *
- * Per-account list. UI merges these with the OF welcome at render time.
- */
 
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -24,8 +14,6 @@ interface ListResp {
   list: SavedReply[];
 }
 
-/** Each sequence's own fields (position, Created by, dates), where it has them. Under the list's key, so every
- *  write that refetches the list refetches these too. */
 export function useSavedReplySequences(accountId: string | null) {
   return useQuery<SavedReplySequenceMeta[]>({
     queryKey: [KEY, accountId, "sequences"],
@@ -39,7 +27,6 @@ export function useSavedReplySequences(accountId: string | null) {
   });
 }
 
-/** Delete a selection in one request (`POST /admin/saved-replies/delete`), one refetch after. */
 export function useDeleteSavedReplies(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<{ deleted: number }, Error, number[]>({
@@ -52,14 +39,10 @@ export function useDeleteSavedReplies(accountId: string | null) {
   });
 }
 
-/** A chat send that rode script `id` went out: its send count + 1 (Growth > Scripts' orange box). Best effort,
- *  never refetches the list (a scripted send would reload every script). */
 export function markScriptSent(id: number): Promise<unknown> {
   return relay.post("/admin/saved-replies/sent", { id }).catch(() => undefined);
 }
 
-/** One Creator's list query, for `useSavedReplies` and a one-off `queryClient.fetchQuery` (the All models
- *  share reads its source's list through the same cache). */
 export function savedRepliesQuery(accountId: string | null) {
   return {
     queryKey: [KEY, accountId],
@@ -89,17 +72,10 @@ export interface SavedReplyDraft {
   media?: SavedReply["media"];
   taggedUsers?: number[];
   previews?: number[];
-  /** Optional Giphy id stored on the template; null clears it. */
   gifId?: string | null;
-  /** Cached animated preview URL so the picker chip can render without
-   *  re-querying Giphy on every list refresh. */
   gifUrl?: string | null;
-  /** Optional script grouping. Templates that share a `scriptId` form a
-   *  sequence ordered by `scriptStep`; sending one advances a per-chat
-   *  cursor so the composer can suggest the next step. */
   scriptId?: string | null;
   scriptStep?: number | null;
-  /** Growth > Scripts' tags and internal notes. */
   tags?: string[];
   notes?: string | null;
 }
@@ -151,9 +127,6 @@ export function useDeleteSavedReply(accountId: string | null) {
   });
 }
 
-/** One tag or sequence edit across a Creator's scripts (`POST /admin/saved-replies/relabel`):
- *  tag from X to Y renames (to null deletes); tag to Y with `ids` adds it to those scripts; sequence from X to Y
- *  renames (409 on a clash), to null ungroups. `ids` limits any edit to those scripts. */
 export interface SavedReplyRelabel {
   kind: "tag" | "sequence";
   from?: string | null;
@@ -173,7 +146,6 @@ export function useRelabelSavedReplies(accountId: string | null) {
   });
 }
 
-/** The Excel import's answer (`POST /admin/saved-replies/import`): each failed row with its sheet, row and reason. */
 export interface SavedReplyImportResult {
   total: number;
   success_count: number;
@@ -181,7 +153,6 @@ export interface SavedReplyImportResult {
   failed: Array<{ sheet: string; row: number; name: string; reason: string }>;
 }
 
-/** Growth > Scripts' Import from Excel: every sheet is a tag; row 1 names the name, text and note columns. */
 export function useImportSavedReplies(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<SavedReplyImportResult, Error, File>({
@@ -194,15 +165,9 @@ export function useImportSavedReplies(accountId: string | null) {
   });
 }
 
-/** Share and Import from other creators (`POST /admin/saved-replies/copy`): copies scripts without their media,
- *  skipping a name the target already has; a sequence is copied whole (any of its scripts in `ids` brings all its
- *  steps), and skipped whole where the target already has one of that name. `ids` omitted copies every script of
- *  the sources. */
 export interface SavedReplyCopy {
   fromAccountIds: string[];
   toAccountIds: string[];
-  /** Share to the principal's full owned Creator roster (resolved server-side); `toAccountIds` must then be
-   *  empty (both given is refused, 422). */
   allCreators: boolean;
   ids?: number[];
 }
@@ -213,8 +178,6 @@ export interface SavedReplyCopyResult {
   media_dropped: number;
 }
 
-/** All-models view (`GET /admin/saved-replies/overview`): a lean coverage matrix — per owned Creator, each
- *  sequence's step count and each tag's script count (no script bodies). */
 export interface ScriptsOverview {
   accounts: Array<{ id: string; nickname?: string | null }>;
   sequences: Array<{ name: string; per_account: Record<string, number> }>;
@@ -244,28 +207,23 @@ export function useCopySavedReplies() {
   });
 }
 
-/* ── Fill with content (`service/script_fill_api.py`; docs/spec/phase-02-button-and-popup.md) ── */
 
 const fillUrl = (route: "plan" | "apply" | "undo", accountId: string | null) =>
   `/admin/saved-replies/fill/${route}?account_id=${encodeURIComponent(accountId ?? "")}`;
 
-/** One Sequence's Fill plan, under the list's key: every saved-replies invalidation refetches it. */
 export function fillPlanKey(accountId: string | null, sequence: string | null) {
   return [KEY, accountId, "fill-plan", sequence] as const;
 }
 
-/** A Fill plan is never persisted (the `saved-replies` prefix is): a reload's restored "Ready to fill" would be
- *  a stale verdict. Every way a plan enters the cache carries this meta. */
+// Never persisted: a reload's restored "Ready to fill" would be a stale verdict.
 const FILL_PLAN_META = { persist: false } as const;
 
-/** Put `plan` in the cache as the Sequence's Fill plan, created with `FILL_PLAN_META` when no dialog holds it. */
 function seedFillPlan(qc: QueryClient, account: string, sequence: string, plan: FillPlan) {
   const queryKey = fillPlanKey(account, sequence);
   qc.getQueryCache().build(qc, { queryKey, meta: FILL_PLAN_META });
   qc.setQueryData(queryKey, plan);
 }
 
-/** The read-only Fill plan of one Sequence (`POST …/fill/plan`), read fresh on every mount (`staleTime` 0). */
 export function useFillPlan(accountId: string | null, sequence: string | null) {
   return useQuery<FillPlan>({
     queryKey: fillPlanKey(accountId, sequence),
@@ -277,19 +235,12 @@ export function useFillPlan(accountId: string | null, sequence: string | null) {
   });
 }
 
-/** A 409 `stale` from `fill/apply` carries the fresh plan: shown and asked again, never applied silently. */
 export function stalePlan(err: unknown): FillPlan | null {
   if (!(err instanceof RelayError) || err.status !== 409) return null;
   const detail = (err.body as { detail?: { error?: unknown; plan?: FillPlan } } | null)?.detail;
   return detail?.error === "stale" && detail.plan ? detail.plan : null;
 }
 
-/** One press's Fill (`POST …/fill/apply {sequence}`, no fingerprint). A non-`ok` answer, and a 409 `stale`
- *  (`stalePlan`, still thrown), seed the Sequence's Fill plan with their plan, so the dialog opens on it. The
- *  list is refetched on success AND on error: a committed write whose answer was lost still reaches the cards.
- *  The answer waits for that refetch, so the page's Fill lock (`fill.inflight`) holds until it ends; one that
- *  failed leaves the list query in error, which keeps the page's lock until a reload succeeds.
- *  `account`: the Creator the press went out on, passed with it (the hook's render may already show another). */
 export function useFillApply() {
   const qc = useQueryClient();
   return useMutation<FillApplyResult, Error, { account: string; sequence: string }>({
@@ -309,8 +260,6 @@ export function useFillApply() {
   });
 }
 
-/** A Fill notice's Undo (`POST …/fill/undo {sequence, undo}`), the Undo list passed verbatim; the list is
- *  refetched on success and on error, before the answer (as `useFillApply`). `account`: the Creator the notice was written on (not always the one shown). */
 export function useFillUndo() {
   const qc = useQueryClient();
   return useMutation<FillUndoResult, Error, { account: string; sequence: string; undo: FillUndoEntry[] }>({

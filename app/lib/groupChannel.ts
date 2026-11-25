@@ -2,104 +2,37 @@
 
 import { fanIdFromParam, isValidFanId, sameUserId, type FanId } from "@/lib/fanId";
 
-/**
- * groupChannel — coordination layer for the /group tab.
- *
- * The "👥 group" button in chat headers needs to:
- *   • Push a slot into a live /group tab without navigating it.
- *   • Detect if the fan is already in ANY live group tab and just
- *     focus that specific one (no duplicate adds across tabs).
- *   • Pick a tab with room when more than one is alive.
- *   • Spawn a fresh tab only when no live tab has room.
- *
- * Mechanism:
- *   • Each /group tab gets a unique tabId (sessionStorage-persisted) and
- *     writes its own localStorage entry under `chatterly:group-tab:<tabId>`
- *     with {createdAt, heartbeat, slots}. Cleared on unmount/pagehide.
- *   • A source tab scans all live entries with a fresh heartbeat to find
- *     which (if any) already has this fan; if not, picks the most
- *     recently active tab that still has room.
- *   • BroadcastChannel messages carry the target tabId — only the
- *     addressed tab acts on them. Other group tabs ignore.
- *
- * Race handling:
- *   • Cold-start race (two source tabs simultaneously see live=∅):
- *     pre-spawn defer-and-recheck (50ms) gives a competing spawner time
- *     to register so we route to it instead. /group reconciles on mount
- *     by createdAt as a secondary safety net.
- *   • Overflow drop (target tab fills between snapshot and broadcast):
- *     adds carry a reqId; the target acks {ok:true} when the fan is in
- *     its list afterwards (added, or already held) and {ok:false} when it
- *     is not (full, or a malformed slot). Source awaits ACK with a short
- *     timeout and spawns an overflow tab on nack/timeout.
- *   • Frozen-tab unfreeze: when a /group tab's own heartbeat went stale
- *     (next beat or visibilitychange, whichever first), it is reborn the
- *     youngest tab and drops slots any other live tab also holds (that tab
- *     is canonical).
- *   • Cross-target focus: source tracks groupRef.tabId via a `claim`
- *     message from the spawned /group tab. Focus only uses the held
- *     Window ref when its tabId matches the routing target; otherwise
- *     falls back to a broadcast-focus.
- */
 
 export const GROUP_CHANNEL_NAME = "chatterly-group";
-/** Set on the /group page's `window.name`. Used to identify when a
- *  caller of openGroupTab is itself a group tab (defensive: never
- *  re-enter via window.open from inside the group). */
 export const GROUP_WINDOW_NAME = "chatterly-group-tab";
 export const GROUP_HEARTBEAT_MS = 2000;
 export const GROUP_HEARTBEAT_TTL_MS = 6000;
-/** Per-tab registry key prefix. Each /group tab writes
- *  `chatterly:group-tab:<tabId>` with its current state. */
 export const GROUP_TAB_KEY_PREFIX = "chatterly:group-tab:";
-/** Most panes one /group tab holds. /group enforces it (slotsReducer);
- *  source tabs read it too so they can overflow into a fresh tab when all
- *  alive tabs are at cap. */
 export const GROUP_SLOT_CAP = 8;
-/** How long to wait for another spawner to register before we spawn
- *  ourselves. Long enough to absorb a near-simultaneous cold-start
- *  race; short enough to not feel laggy. */
+// Absorbs a near-simultaneous cold-start spawn from another source tab.
 const SPAWN_DEFER_MS = 60;
-/** How long to wait for an add-ack from the target tab before treating
- *  the add as failed and spawning an overflow tab. Generous enough to
- *  cover BroadcastChannel + a state-set round trip on a busy renderer. */
 const ADD_ACK_TIMEOUT_MS = 400;
 
 export interface GroupSlot { accountId: string; fanId: FanId }
 
-/** The one "same fan" test for slots: same Creator account, and the fan
- *  id compared through `sameUserId` (OF sends numbers, Fansly strings, and
- *  the same fan can arrive in either shape). Every dup / remove / owner
- *  check on slots goes through here. */
 export function sameSlot(a: GroupSlot, b: GroupSlot): boolean {
   return a.accountId === b.accountId && sameUserId(a.fanId, b.fanId);
 }
 
-/** Is `x` a usable slot, from any untrusted source (sessionStorage, the
- *  localStorage registry, a BroadcastChannel message, a DOM event)? A
- *  non-empty account id and a valid fan id in either wire shape. */
 export function isGroupSlot(x: unknown): x is GroupSlot {
   if (!x || typeof x !== "object") return false;
   const { accountId, fanId } = x as { accountId?: unknown; fanId?: unknown };
   return typeof accountId === "string" && accountId !== "" && isValidFanId(fanId);
 }
 
-/** An untrusted value as a list: itself when it is an array, else empty. */
 export const listOf = (x: unknown): readonly unknown[] => (Array.isArray(x) ? x : []);
 
-/** The valid slots of an untrusted list, `accountId` + `fanId` only, in order
- *  (no dedupe or cap: slotsReducer does that). Not an array: none. The fan id
- *  keeps its wire shape: a Fansly snowflake stays a string. The one slot
- *  cleaner for storage (sessionStorage, the localStorage registry); channel
- *  and DOM-event slots go to slotsReducer as they came, which drops the same. */
 export function cleanSlots(x: unknown): GroupSlot[] {
   return listOf(x).filter(isGroupSlot).map((s) => ({ accountId: s.accountId, fanId: s.fanId }));
 }
 
 export interface GroupTabRegistry {
   tabId: string;
-  /** When this tab first registered. Used as a deterministic tiebreaker
-   *  when two tabs end up holding the same fan — the younger one yields. */
   createdAt: number;
   heartbeat: number;
   slots: GroupSlot[];
@@ -108,17 +41,10 @@ export interface GroupTabRegistry {
 export type GroupChannelMessage =
   | { type: "add"; tabId: string; reqId: string; accountId: string; fanId: FanId }
   | { type: "add-ack"; tabId: string; reqId: string; ok: boolean }
-  /** Replace the target tab's ENTIRE slot list (money rail's "open last 8
-   *  buyers"). Unlike `add`, this is destructive by design: clicking the
-   *  rail button again re-seeds the same tab with the newest 8 rather than
-   *  appending or spawning a second tab. Acked with `add-ack`. */
   | { type: "replace"; tabId: string; reqId: string; slots: GroupSlot[] }
   | { type: "focus"; tabId: string }
   | { type: "claim"; tabId: string; spawnToken: string };
 
-/** What `cleanGroupMessage` hands a receiver: the envelope checked, an add's
- *  account / fan id and a replace's entries still untrusted — slotsReducer
- *  decides them (and the ack). */
 export type ReceivedGroupMessage =
   | Exclude<GroupChannelMessage, { type: "add" } | { type: "replace" }>
   | { type: "add"; tabId: string; reqId: string; accountId: unknown; fanId: unknown }
@@ -126,11 +52,6 @@ export type ReceivedGroupMessage =
 
 const str = (v: unknown): v is string => typeof v === "string";
 
-/** A BroadcastChannel message, which any same-origin page can post: the
- *  envelope checked (known type, string tabId / reqId / spawnToken), or null
- *  (ignored). The payload is not judged here: an addressed add or replace
- *  with a malformed slot still reaches slotsReducer, which refuses it and so
- *  still owes (and sends) its ack. A replace's non-list slots read as none. */
 export function cleanGroupMessage(x: unknown): ReceivedGroupMessage | null {
   if (!x || typeof x !== "object") return null;
   const m = x as Record<string, unknown>;
@@ -152,31 +73,20 @@ export function cleanGroupMessage(x: unknown): ReceivedGroupMessage | null {
   }
 }
 
-/** One localStorage registry entry (untrusted: another build, a torn write),
- *  live at `now`, or null (malformed or stale). A missing / non-positive
- *  `createdAt` falls back to the heartbeat. */
 export function cleanGroupTab(x: unknown, now: number): GroupTabRegistry | null {
   if (!x || typeof x !== "object") return null;
   const r = x as Record<string, unknown>;
   const { tabId, heartbeat, createdAt } = r;
   if (!str(tabId) || typeof heartbeat !== "number" || !Array.isArray(r.slots)) return null;
   if (now - heartbeat > GROUP_HEARTBEAT_TTL_MS) return null;
-  // Both id shapes: a `=== "number"` filter here once dropped every Fansly
-  // (string snowflake) slot as malformed.
   return {
     tabId, heartbeat, slots: cleanSlots(r.slots),
     createdAt: typeof createdAt === "number" && createdAt > 0 ? createdAt : heartbeat,
   };
 }
 
-/** Same-tab replace. BroadcastChannel does NOT deliver to the posting
- *  context, so when the money rail is clicked from inside the /group tab
- *  itself (the rail is in the root layout, so it renders there too) we hand
- *  the slots over via a DOM event instead. */
 export const GROUP_REPLACE_EVENT = "chatterly:group-replace";
 
-/** Scan localStorage for all live /group tab registry entries (heartbeat
- *  within TTL). Stale or malformed entries are skipped. */
 export function readAllLiveGroupTabs(): GroupTabRegistry[] {
   if (typeof window === "undefined") return [];
   const out: GroupTabRegistry[] = [];
@@ -190,9 +100,9 @@ export function readAllLiveGroupTabs(): GroupTabRegistry[] {
       try {
         const tab = cleanGroupTab(JSON.parse(raw) as unknown, now);
         if (tab) out.push(tab);
-      } catch { /* skip malformed entry */ }
+      } catch { }
     }
-  } catch { /* localStorage unavailable */ }
+  } catch { }
   return out;
 }
 
@@ -201,7 +111,7 @@ export function writeGroupTabRegistry(tabId: string, createdAt: number, slots: G
   try {
     const r: GroupTabRegistry = { tabId, createdAt, heartbeat: Date.now(), slots };
     window.localStorage.setItem(GROUP_TAB_KEY_PREFIX + tabId, JSON.stringify(r));
-  } catch { /* quota / private mode */ }
+  } catch { }
 }
 
 export function removeGroupTabRegistry(tabId: string): void {
@@ -209,15 +119,8 @@ export function removeGroupTabRegistry(tabId: string): void {
   try { window.localStorage.removeItem(GROUP_TAB_KEY_PREFIX + tabId); } catch {}
 }
 
-/** Module-level Window ref to the /group tab we opened FROM this
- *  source tab. tabId is resolved once the spawned tab broadcasts its
- *  `claim` matching our spawnToken — only after that pairing is known
- *  do we use the ref for focus, otherwise we fall back to broadcast. */
 let groupRef: { tabId: string | null; spawnToken: string | null; win: Window } | null = null;
 
-/** Long-lived BroadcastChannel for the SOURCE side. Receives add-ack
- *  responses and claim announcements. Kept open so per-click handlers
- *  don't have to race against channel construction. */
 let sourceChannel: BroadcastChannel | null = null;
 const pendingAcks = new Map<string, (ok: boolean) => void>();
 
@@ -238,10 +141,6 @@ function ensureSourceChannel(): BroadcastChannel | null {
         return;
       }
       if (msg.type === "claim") {
-        // Bind the held window ref to its tabId once the spawned tab
-        // identifies itself. Only the source tab whose spawnToken matches
-        // accepts the claim — multiple source tabs can be claiming
-        // different spawns at once.
         if (groupRef && groupRef.spawnToken && groupRef.spawnToken === msg.spawnToken) {
           groupRef.tabId = msg.tabId;
         }
@@ -257,30 +156,23 @@ function ensureSourceChannel(): BroadcastChannel | null {
 function broadcast(msg: GroupChannelMessage): void {
   const ch = ensureSourceChannel();
   if (!ch) return;
-  try { ch.postMessage(msg); } catch { /* ignore */ }
+  try { ch.postMessage(msg); } catch { }
 }
 
 export type OpenGroupResult =
-  | { kind: "broadcast" }   // pushed a fresh slot into a live tab
-  | { kind: "focused" }     // fan was already in some live tab — focused it
-  | { kind: "opened" }      // spawned a fresh tab (cold or all-full overflow)
-  | { kind: "self" };       // caller was already inside /group
+  | { kind: "broadcast" }
+  | { kind: "focused" }
+  | { kind: "opened" }
+  | { kind: "self" };
 
 function tryFocusGroupTab(tabId: string): void {
-  // Same-BCG Window ref is the reliable focus path, but only safe when
-  // we KNOW the ref belongs to the requested target tab. Otherwise we'd
-  // focus the wrong group tab. Falls back to broadcast `focus` — the
-  // target tab calls window.focus() on itself (may be denied by browser
-  // policy when not driven by a recent user gesture; in that case the
-  // user alt-tabs manually).
+  // Held window ref is only safe when known to belong to the target tab; else broadcast focus.
   if (groupRef && !groupRef.win.closed && groupRef.tabId === tabId) {
-    try { groupRef.win.focus(); } catch { /* policy denial */ }
+    try { groupRef.win.focus(); } catch { }
   }
   broadcast({ type: "focus", tabId });
 }
 
-/** Wait for `add-ack` matching reqId, or timeout. Returns true if the
- *  target accepted the add, false otherwise (rejected or timed out). */
 function waitForAddAck(reqId: string): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     pendingAcks.set(reqId, resolve);
@@ -295,17 +187,10 @@ function genReqId(): string {
 }
 
 function spawnGroupTab(accountId: string, fanId: FanId, overflow: boolean): void {
-  // spawnToken lets us pair the held Window ref with its eventual tabId
-  // when the spawned tab broadcasts a `claim`. Without this we'd focus
-  // the wrong tab on overflow.
   const spawnToken = genReqId();
   const url = `/group?add=${encodeURIComponent(accountId)}:${fanId}&spawn=${encodeURIComponent(spawnToken)}`;
-  // Ensure source channel exists BEFORE the spawned tab boots — otherwise
-  // its `claim` broadcast may land before we're listening.
   ensureSourceChannel();
   if (overflow) {
-    // Existing groupRef points at a different (full) tab — keep it for
-    // now but allow the new tab to take over once it claims.
     const win = window.open(url, "_blank");
     if (win) groupRef = { tabId: null, spawnToken, win };
   } else {
@@ -318,18 +203,13 @@ function encodeSlots(slots: GroupSlot[]): string {
   return slots.map((s) => `${encodeURIComponent(s.accountId)}:${s.fanId}`).join(",");
 }
 
-/** Parse the `?slots=acct:fan,acct:fan` seed. Exported so /group and its
- *  tests share one parser with the writer above. */
+// Parse ids as text: Number() truncates Fansly snowflakes to a ghost id.
 export function parseSlotsParam(raw: string): GroupSlot[] {
   const out: GroupSlot[] = [];
   for (const part of raw.split(",")) {
     const idx = part.lastIndexOf(":");
     if (idx <= 0) continue;
     const accountId = decodeURIComponent(part.slice(0, idx));
-    // `Number(...)` here truncated every Fansly slot to a ghost id (the
-    // encoder writes the id as text; this read it back as float64). Parse with
-    // the canonical helper, which also subsumes the old `> 0` check — it
-    // rejects anything that is not a positive integer id.
     const fanId = fanIdFromParam(part.slice(idx + 1));
     if (!accountId || fanId == null) continue;
     const slot = { accountId, fanId };
@@ -339,20 +219,6 @@ export function parseSlotsParam(raw: string): GroupSlot[] {
   return out.slice(0, GROUP_SLOT_CAP);
 }
 
-/**
- * Open the group tab seeded with an exact slot list, replacing whatever
- * it currently holds. Used by the money rail's "open the last 8 buyers"
- * button, where the point is a snapshot of who just paid — so a second
- * click must REFRESH the existing tab, not append to it or spawn another.
- *
- *   • A live group tab exists  → broadcast `replace` to the freshest one
- *                                and focus it. On nack/timeout, spawn.
- *   • We ARE the group tab     → hand the slots over via a DOM event
- *                                (BroadcastChannel skips the sender).
- *   • No live tab              → spawn one seeded with `?slots=`.
- *
- * Never navigates the calling tab.
- */
 export async function openGroupTabWithSlots(slots: GroupSlot[]): Promise<OpenGroupResult> {
   if (typeof window === "undefined") return { kind: "opened" };
   const wanted = slots.slice(0, GROUP_SLOT_CAP);
@@ -371,7 +237,6 @@ export async function openGroupTabWithSlots(slots: GroupSlot[]): Promise<OpenGro
     broadcast({ type: "replace", tabId: target.tabId, reqId, slots: wanted });
     tryFocusGroupTab(target.tabId);
     if (await ackPromise) return { kind: "broadcast" };
-    // Tab died between the heartbeat scan and the broadcast.
   }
 
   const spawnToken = genReqId();
@@ -382,28 +247,9 @@ export async function openGroupTabWithSlots(slots: GroupSlot[]): Promise<OpenGro
   return { kind: "opened" };
 }
 
-/**
- * Add a fan to a live /group tab, focus the one that already has it,
- * or open a fresh group tab if none can accept. Never navigates the
- * source tab.
- *
- * Routing across multiple live group tabs:
- *   1. If the fan is already in ANY live tab → focus that tab.
- *   2. Else pick the live tab with the freshest heartbeat that still
- *      has room → broadcast an add, await ack, spawn overflow on
- *      rejection/timeout.
- *   3. Else (no live tab, or all alive ones are full) → spawn a new
- *      tab seeded with just this fan. On cold-start, defer briefly so
- *      a competing source tab's spawn has time to register.
- */
 export async function openGroupTab(accountId: string, fanId: FanId): Promise<OpenGroupResult> {
   if (typeof window === "undefined") return { kind: "opened" };
 
-  // Defensive re-entry guard: if the caller is itself inside /group.
-  // Keyed off pathname only — window.name persists across page reloads
-  // in the same tab, so a tab that ever loaded /group keeps the
-  // GROUP_WINDOW_NAME stamp forever and would false-positive here even
-  // after navigating to /inbox.
   if (typeof window.location !== "undefined" &&
       window.location.pathname === "/group") {
     return { kind: "self" };
@@ -411,14 +257,12 @@ export async function openGroupTab(accountId: string, fanId: FanId): Promise<Ope
 
   const live = readAllLiveGroupTabs();
 
-  // 1. Already in some live tab? Focus that specific one.
   const owner = live.find((t) => t.slots.some((s) => sameSlot(s, { accountId, fanId })));
   if (owner) {
     tryFocusGroupTab(owner.tabId);
     return { kind: "focused" };
   }
 
-  // 2. Find a tab with room — prefer the most recently active.
   const withRoom = live
     .filter((t) => t.slots.length < GROUP_SLOT_CAP)
     .sort((a, b) => b.heartbeat - a.heartbeat);
@@ -430,22 +274,18 @@ export async function openGroupTab(accountId: string, fanId: FanId): Promise<Ope
     tryFocusGroupTab(target.tabId);
     const accepted = await ackPromise;
     if (accepted) return { kind: "broadcast" };
-    // Target filled / dead / unreachable since the snapshot — overflow.
-    spawnGroupTab(accountId, fanId, /*overflow*/ true);
+    spawnGroupTab(accountId, fanId, true);
     return { kind: "opened" };
   }
 
-  // 3. Cold-start path. Defer briefly to absorb a concurrent spawn from
-  //    another source tab; if one shows up during the wait, route to it.
   if (live.length === 0) {
     await new Promise<void>((r) => window.setTimeout(r, SPAWN_DEFER_MS));
     const recheck = readAllLiveGroupTabs();
     if (recheck.length > 0) {
-      // Another source beat us. Re-enter normal routing.
       return openGroupTab(accountId, fanId);
     }
   }
 
-  spawnGroupTab(accountId, fanId, /*overflow*/ live.length > 0);
+  spawnGroupTab(accountId, fanId, live.length > 0);
   return { kind: "opened" };
 }

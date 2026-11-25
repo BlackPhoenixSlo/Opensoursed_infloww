@@ -33,7 +33,7 @@ from collections.abc import Set as AbstractSet
 import logging
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TypedDict
 
 import requests
 
@@ -171,19 +171,18 @@ def fansly_blocked(reason: str, returns: Any = _RAISE):
 # this to 100 without re-reading that products response.
 FANSLY_PRICE_UNIT = 1000
 
-# Notification codes that mean "a fan paid for media" — the only creator-visible
-# purchase signal Fansly exposes (every sales endpoint 404s). 2007/2008 are the
-# client's own "Media Purchases" labels; 32007 is locked TEXT, which unlocks the
-# same message, so it counts too. See _purchases_by_fan.
-_PURCHASE_NOTIF_TYPES = {2007, 2008, 32007}
+# The Unlock set: codes that mark a chat purchase for unlock chips and the Buys
+# & tips rail. 2007/2008 are the client's own "Media Purchases" labels; 32007 is
+# locked TEXT, which unlocks the same message. Being in it banks nothing.
+_UNLOCK_NOTIF_TYPES = {2007, 2008, 32007}
+# The Banking set (ADR-0055): code -> the one price key a Proof purchase showed.
+_BANKING_SET = {2007: "accountMediaPrice"}
+_UNBANKED_WATCHED = {7001, 15006, 15016, 45012} | (_UNLOCK_NOTIF_TYPES - _BANKING_SET.keys())
 # How long a fan's purchase set is reused before re-reading the feed. Short: a
 # purchase should appear on the next ↻, not after a restart.
 _PURCHASE_TTL_S = 60
-# Where a purchase notification carries its price, in precedence order.
-# `accountMediaPrice` is the one OBSERVED live (2026-09-02); the others are
-# defensive. Shared with service/fansly_revenue so the dollar figure this shim
-# renders into the row text and the amount that lane banks in the ledger can
-# never be read from different fields.
+# Where an Unlock-set row carries its price for chip and rail TEXT only, in
+# precedence order; banking reads `_BANKING_SET`'s key alone.
 _PRICE_METADATA_KEYS = ("accountMediaPrice", "price", "amount")
 
 
@@ -667,9 +666,10 @@ def of_message(msg: dict, *, account_id: str,
     `fromUser.id == me` to render a bubble as sent-by-us. Fansly's `senderId`
     carries the same fact, so the mapping is direct.
 
-    Tips: Fansly rides the tip value in `totalTipAmount` (per-message), OF in
-    `tipAmount` with `isTip`. Media: Fansly `attachments[]` -> OF `mediaCount`
-    (the actual media objects are a separate resolve, out of inbox scope)."""
+    Tips: `totalTipAmount` sets `isTip` but never `tipAmount` — its unit is
+    unproven and the notification poll is the only money writer (ADR-0055).
+    Media: Fansly `attachments[]` -> OF `mediaCount` (the actual media objects
+    are a separate resolve, out of inbox scope)."""
     sender = str(msg.get("senderId") or "")
     tip = msg.get("totalTipAmount") or 0
     attachments = msg.get("attachments") or []
@@ -683,7 +683,6 @@ def of_message(msg: dict, *, account_id: str,
         "fromUser": {"id": sender},
         "createdAt": _iso(msg.get("createdAt")),
         "isTip": bool(tip),
-        "tipAmount": tip,
         # Recovered from the attachments' grants, NOT from the message (Fansly
         # always reports the message at 0) — see _attachment_price_usd.
         "price": price,
@@ -848,6 +847,14 @@ def _price_metadata(row: dict) -> dict:
     return meta if isinstance(meta, dict) else {}
 
 
+def _meta_units(meta: dict, key: str) -> int | None:
+    """`meta[key]` as Fansly price units: None when absent or unparseable."""
+    try:
+        return int(meta[key])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _notif_price_usd(row: dict) -> float:
     """The dollar amount a purchase notification row reports, or 0.0.
 
@@ -866,10 +873,8 @@ def _notif_price_usd(row: dict) -> float:
     for key in _PRICE_METADATA_KEYS:
         if key not in meta:
             continue
-        try:
-            return int(meta[key]) / FANSLY_PRICE_UNIT
-        except (TypeError, ValueError):
-            return 0.0
+        units = _meta_units(meta, key)
+        return 0.0 if units is None else units / FANSLY_PRICE_UNIT
     return 0.0
 
 
@@ -1125,6 +1130,11 @@ def _klipy_to_giphy(items: Any, *, offset: int = 0) -> dict:
 # ---------------------------------------------------------------------------
 # The client
 # ---------------------------------------------------------------------------
+
+class PurchaseFeed(TypedDict):
+    sales: list[dict]
+    unbanked_seen: dict[str, int]
+
 
 class FanslyShimClient(VaultMixin, FanslyClient):
     """A FanslyClient that also answers OF's inbox read methods in OF's shape.
@@ -1977,7 +1987,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         # has to SAY its price or the rail renders a sale with no figure —
         # which is what shipped until the live $3 capture. Appended only when
         # the row actually reports one; an unpriced row keeps its bare label.
-        price = _notif_price_usd(row) if code in _PURCHASE_NOTIF_TYPES else 0.0
+        price = _notif_price_usd(row) if code in _UNLOCK_NOTIF_TYPES else 0.0
         if price:
             label = f"{label} for ${price:.2f}"
         return {
@@ -2003,35 +2013,25 @@ class FanslyShimClient(VaultMixin, FanslyClient):
             "fanslyPriceUsd": price,
         }
 
-    def purchases(self) -> list[dict]:
-        """Every sale currently visible on this account's notification feed.
+    def purchases(self) -> PurchaseFeed:
+        """Every bankable sale on this account's notification feed, plus the
+        Seen-code counter for the same page.
 
-        THE public "what did fans pay for" read. Fansly gives creators no sales
-        API — every such endpoint 404s — so a purchase notification is the only
-        evidence a fan paid, and this method is where that fact lives. Callers
-        get platform-neutral rows and need to know nothing about Fansly's
-        notification codes, its 1/1000-dollar price unit or where in `metadata`
-        the figure hides:
+            {"sales": [{"id": str,          # stable -> an idempotency key
+                        "fan_id": str,      # the BUYER's accountId
+                        "grant_id": str,    # the accountMedia bought ("" if absent)
+                        "price_usd": float, # dollars, already converted
+                        "created_at": int,  # epoch SECONDS
+                        "code": int}],
+             "unbanked_seen": {"<code>" | "2007_unpriced": n}}
 
-            [{"id": str,          # stable -> an idempotency key
-              "fan_id": str,      # the BUYER's accountId
-              "grant_id": str,    # the accountMedia bought ("" if absent)
-              "price_usd": float, # dollars, already converted
-              "created_at": int,  # epoch SECONDS
-              "code": int}]       # the raw notification type, for logging
-
-        It exists so service/fansly_revenue (which banks these into the money
-        ledger) does not have to reach through four private names to do it.
-        That coupling was real: the ledger and the notification bell read the
-        same feed, and when they disagreed about which `metadata` key held the
-        price, one surface rendered "$X" while the other banked nothing.
-
-        Only codes PROVEN to mean a payment are returned (`_PURCHASE_NOTIF_TYPES`).
-        A row whose price cannot be read is omitted rather than reported at
-        0.0 — a free unlock and an unreadable price must not look alike to a
-        caller that writes money.
+        `sales` holds Banking-set rows priced from their one observed key; a
+        free unlock (price 0) is neither a sale nor counted. `unbanked_seen`
+        counts every watched code on the page before any filtering, and a
+        Banking-set row with no usable price as `<code>_unpriced`.
         """
-        out = []
+        sales: list[dict] = []
+        seen: dict[str, int] = {}
         for row in self._notification_rows():
             if not isinstance(row, dict):
                 continue
@@ -2039,50 +2039,34 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                 code = int(row.get("type") or 0)
             except (TypeError, ValueError):
                 continue
-            if code not in _PURCHASE_NOTIF_TYPES:
+            if code in _UNBANKED_WATCHED:
+                seen[str(code)] = seen.get(str(code), 0) + 1
+            key = _BANKING_SET.get(code)
+            if key is None:
                 continue
-            price = _notif_price_usd(row)
-            if not price:
-                # Dropping is right either way — fail-closed, so this can
-                # understate but never fabricate. But WHY it dropped matters,
-                # and only one of the two reasons is benign:
-                #
-                #   * a genuine free unlock reports its price as 0. Expected;
-                #     stays quiet.
-                #   * a row carrying NO price key at all is a metadata SHAPE
-                #     CHANGE, i.e. real sales now being dropped. The feed is
-                #     one page with no cursor, so those scroll off and are
-                #     gone for good — this must raise its hand rather than
-                #     quietly bleed revenue.
-                if not any(k in _price_metadata(row) for k in _PRICE_METADATA_KEYS):
+            meta = _price_metadata(row)
+            units = _meta_units(meta, key)
+            if units == 0:
+                continue
+            if units is None or units < 0:
+                seen[f"{code}_unpriced"] = seen.get(f"{code}_unpriced", 0) + 1
+                if key not in meta:
                     log.warning(
                         "purchase_row_unpriced account=%s notif=%s code=%s "
-                        "meta=%.200r — no known price key; metadata shape may "
-                        "have changed and SALES ARE BEING DROPPED",
+                        "meta=%.200r — no %s; metadata shape may have changed "
+                        "and SALES ARE BEING DROPPED",
                         getattr(getattr(self, "session", None), "account_id", "?"),
-                        row.get("id"), code, row.get("metadata"))
+                        row.get("id"), code, row.get("metadata"), key)
                 continue
-            out.append({
+            sales.append({
                 "id": str(row.get("id") or ""),
                 "fan_id": str(row.get("correlationGroupId") or ""),
                 "grant_id": str(row.get("correlationId") or ""),
-                "price_usd": price,
+                "price_usd": units / FANSLY_PRICE_UNIT,
                 "created_at": row.get("createdAt"),
                 "code": code,
             })
-        return out
-
-    def unbanked_purchase_codes(self) -> set[int]:
-        """Codes this shim LABELS as purchases but has never proven.
-
-        `45012` (stream ticket) is mapped for the notification bell, yet no
-        live capture exists, so `purchases()` does not report it and no money
-        is banked for it. Exposed so the revenue lane can LOG that gap instead
-        of it sitting silent — money we knowingly do not count should be
-        visible, and inventing a `kind` for an unverified code is worse.
-        """
-        return {code for code, of_type in self._NOTIF_TYPE_MAP.items()
-                if of_type == "purchases" and code not in _PURCHASE_NOTIF_TYPES}
+        return PurchaseFeed(sales=sales, unbanked_seen=seen)
 
     def notifications(self, *, limit: int = 10, offset: int = 0,
                       type: str | None = None, **_ignored: Any) -> dict:
@@ -2689,7 +2673,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                     rtype = int(row.get("type") or 0)
                 except (TypeError, ValueError):
                     continue
-                if rtype not in _PURCHASE_NOTIF_TYPES:
+                if rtype not in _UNLOCK_NOTIF_TYPES:
                     continue
                 buyer = str(row.get("correlationGroupId") or "")
                 bought = str(row.get("correlationId") or "")

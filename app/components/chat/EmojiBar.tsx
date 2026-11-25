@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * EmojiBar — quick-row + picker popover with search + recents.
- *
- * Insertion preserves the textarea's cursor so the user can type, drop
- * an emoji, keep typing. The full emoji set lives in emojiData.ts;
- * the picker shows them tabbed by category with a search box that
- * matches by keyword.
- *
- * Recents persist in localStorage so the picker remembers what you used
- * across reloads.
- */
 
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -26,7 +15,6 @@ import { useInflowwPalette } from "./InflowwPalette";
 
 export { EMOJI_LIST, QUICK_EMOJIS };
 
-/** Insert text at the current cursor of a textarea + restore focus. */
 export function insertAtCursor(
   textarea: HTMLTextAreaElement,
   current: string,
@@ -43,7 +31,6 @@ export function insertAtCursor(
   }, 0);
 }
 
-/** One emoji-picker tab button (Favourites, Recent, each category). */
 function tabClass(active: boolean) {
   return cn(
     "px-3 py-2 md:px-2 md:py-1 rounded-md text-xl md:text-base shrink-0",
@@ -56,8 +43,6 @@ export function EmojiQuickRow({
 }: { onInsert: (e: string) => void; disabled?: boolean; slots?: number }) {
   const [recents, setRecents] = useState<string[]>([]);
 
-  // Initial hydrate + follow recents changes (same tab and cross-tab) so a
-  // pick in the popover re-shuffles every visible row.
   useEffect(() => {
     setRecents(loadRecents());
     return subscribeRecents(() => setRecents(loadRecents()));
@@ -65,7 +50,6 @@ export function EmojiQuickRow({
 
   const row = useMemo(() => buildQuickRow(recents, slots), [recents, slots]);
 
-  /** One quick-row button; `size` is the only difference between the rows. */
   const quickBtn = (size: string) => function QuickBtn(e: string) {
     return (
       <button
@@ -83,12 +67,8 @@ export function EmojiQuickRow({
 
   return (
     <>
-      {/* Desktop row — unchanged: all 8 slots, 28px buttons. `hidden md:flex`
-       *  (no bare `flex`) so it computes to display:flex at >=768px exactly
-       *  as the original single div did. */}
+      {/* `hidden md:flex` (no bare `flex`) keeps the desktop row display:flex at >=768px; the phone row generates no box there. */}
       <div className="hidden md:flex gap-1">{row.map(quickBtn("w-7 h-7"))}</div>
-      {/* Phone row — 5 slots at 40px. display:none at >=768px, so it
-       *  generates no box and cannot affect the desktop flex line. */}
       <div className="md:hidden flex gap-1">{row.slice(0, 5).map(quickBtn("w-10 h-10"))}</div>
     </>
   );
@@ -100,13 +80,9 @@ export function EmojiPickerButton({
   onInsert: (e: string) => void;
   disabled?: boolean;
   align?: "left" | "right";
-  /** Overrides the trigger's size and shape (the Messages Pro button row). */
   triggerClassName?: string;
-  /** Messages Pro mode (only the Composer): a "Favourites" tab, first and
-   *  selected on open whenever favourites exist. */
   messagesPro?: boolean;
 }) {
-  // The Infloww palette when opened from Messages Pro; nothing anywhere else.
   const palette = useInflowwPalette();
   const [state, dispatch] = useReducer(emojiPickerReducer, initialPickerState);
   const { open, tab, search, recents, favourites } = state;
@@ -116,10 +92,6 @@ export function EmojiPickerButton({
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [coords, setCoords] = useState<PopoverCoords | null>(null);
 
-  // Re-load recents whenever the picker opens so we pick up clicks from
-  // other components (quick-row) that also write to the store. While open,
-  // also follow recents changes so the recents tab stays live as picks
-  // land elsewhere.
   useEffect(() => {
     if (!open) return;
     dispatch({ type: "opened", recents: loadRecents(), favourites: messagesPro ? loadFavourites() : [] });
@@ -180,7 +152,6 @@ export function EmojiPickerButton({
         aria-label="Emoji picker"
         title="Emoji picker"
       >
-        {/* Messages Pro draws Infloww's outline smiley, its row's 20px glyph. */}
         {messagesPro ? <Smile size={20} strokeWidth={1.6} aria-hidden /> : "😊"}
       </button>
       {open && coords && typeof document !== "undefined" && createPortal(

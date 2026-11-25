@@ -1,32 +1,4 @@
 #!/usr/bin/env python3
-"""smart_list_sync — ACTIVE Smart Lists mirrored into OnlyFans user lists.
-
-  case_first_sync_creates_and_adds       no OF list yet → create (id persisted),
-                                         bulk-add the target, state ok, paced as
-                                         not_fan_dm.
-  case_diff_removes_after_full_crawl     extras on the OF list are removed, kept
-                                         members untouched.
-  case_truncated_crawl_writes_nothing    a crawl that hits the 20k backstop is a
-                                         failed sync: no adds, no removals.
-  case_write_budget_leaves_pending       the per-run write quota stops mid-diff
-                                         (state pending); the next run finishes.
-  case_unconfirmed_adds_are_reported     ids OF does not echo back are counted,
-                                         not claimed as members.
-  case_rename_is_reconciled              of_list_name != name → rename_list.
-  case_inactive_and_locked_rows_skipped  only active lists sync; a crash-left
-                                         `syncing` lock is released at run start.
-  case_stale_roster_blocks_sub_lists     a list reading subscription facts syncs
-                                         nothing when the roster crawl is unusable.
-  case_empty_fan_table_holds_removals    no stored fans → no removals.
-  case_of_list_gone_is_forgotten         404 on the crawl clears of_list_id.
-  case_rename_waits_for_the_crawl        a list deleted on OF is forgotten, never
-                                         renamed first.
-  case_delete_of_list                    a `deleting` tombstone's OF list is
-                                         deleted, then the row; a failed delete
-                                         keeps it; payload ids are ignored.
-
-Run: ./venv/bin/python service/tests/test_smart_list_sync.py
-"""
 from __future__ import annotations
 
 import _harness  # MUST be first
@@ -257,7 +229,6 @@ async def case_inactive_and_locked_rows_skipped():
         out = await _sync(aid)
     finally:
         _restore()
-    # The crash-left lock is released and the list syncs in the same run.
     assert out["ok"] == 1, out
     assert (await _row(lid)).sync_state == "ok"
 
@@ -266,7 +237,7 @@ async def case_stale_roster_blocks_sub_lists():
     aid = "sls_roster"
     rules = {"rules": [{"field": "status", "op": "==", "value": "active"}]}
     lid = await _seed(aid, rules=rules, of_list_id=807)
-    fake = _use(FakeOF(lists={807: {1, 2}}, roster=[]))   # empty roster crawl
+    fake = _use(FakeOF(lists={807: {1, 2}}, roster=[]))
     try:
         await _sync(aid)
     finally:
@@ -275,7 +246,6 @@ async def case_stale_roster_blocks_sub_lists():
     row = await _row(lid)
     assert row.sync_state == "error" and "roster unavailable" in row.sync_error, row.sync_error
 
-    # A usable crawl: the active roster drives the list.
     now = datetime.utcnow()
     fake = _use(FakeOF(lists={807: {1, 2}}, roster=[
         {"id": 2, "subscribedOnData": {"subscribeAt": (now - timedelta(days=9)).isoformat() + "Z",
@@ -311,7 +281,7 @@ async def case_empty_fan_table_holds_removals():
 async def case_of_list_gone_is_forgotten():
     aid = "sls_gone"
     lid = await _seed(aid, of_list_id=809)
-    _use(FakeOF())                                          # 809 does not exist
+    _use(FakeOF())
     try:
         await _sync(aid)
     finally:
@@ -329,7 +299,7 @@ async def case_of_list_gone_is_forgotten():
 async def case_rename_waits_for_the_crawl():
     aid = "sls_rename_gone"
     lid = await _seed(aid, of_list_id=812, of_list_name="Old name")
-    fake = _use(FakeOF())                                   # 812 was deleted on OF
+    fake = _use(FakeOF())
     try:
         await _sync(aid)
     finally:
@@ -353,11 +323,10 @@ class FlakyDeleteOF(FakeOF):
 async def case_delete_of_list():
     aid = "sls_delete"
     lid = await _seed(aid, active=False, of_list_id=810, state="deleting")
-    other = "sls_delete_other"                     # another account's tombstone
+    other = "sls_delete_other"
     await _seed(other, active=False, of_list_id=813, state="deleting")
     fake = _use(FlakyDeleteOF(lists={810: {1}, 811: {2}, 813: {3}}))
     try:
-        # A payload naming an OF list (811 — made by hand) is ignored outright.
         await sls.run(aid, {"delete_of_list_id": 811}, run_id=1)
         assert (await _row(lid)) is not None, "a failed delete keeps the tombstone"
         fake.fail = False

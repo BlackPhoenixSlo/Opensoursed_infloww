@@ -1,15 +1,9 @@
-/**
- * Fan insights (`FanDrawer`) — the edits an Employee can make today, pinned
- * before the Phase 5 restyle moves them. Each check asserts at the mocked
- * module boundary (`update.mutate` for our mirror, `relay.put` for the
- * OnlyFans write-through), so a later ticket may change how a test reaches a
- * control without changing what it asserts.
- *
- * Rendered the same way as `fanDrawerEditFreshness.test.tsx`: a query client,
- * the data hooks mocked at their module boundary, the cached OnlyFans profile
- * seeded.
- */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+const platform = vi.hoisted(() => ({ current: "onlyfans" as "onlyfans" | "fansly" }));
+vi.mock("@/hooks/useCan", async () => {
+  const { can } = await import("@/lib/platform");
+  return { useCan: (_: unknown, cap: Parameters<typeof can>[1]) => can(platform.current, cap) };
+});
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -47,11 +41,6 @@ vi.mock("@/hooks/useMassExclude", () => ({
 vi.mock("@/hooks/useLastPurchases", () => ({
   useFanActivity: () => ({ lastPurchase: new Map(), recentSpend: new Map() }),
 }));
-// One purchased PPV with one photo when `sales.seeded`; none otherwise.
-// `sales.items`, when set, replaces the ledger items outright, and
-// `sales.summary`, when set, replaces the relay's max and average, and
-// `sales.placeholder` marks the page as the previous query's placeholder.
-// One unsold PPV in the unsold gallery read when `sales.unsold`.
 const { sales } = vi.hoisted(() => ({
   sales: {
     seeded: false, unsold: false, items: null as unknown[] | null,
@@ -74,7 +63,6 @@ const UNSOLD_MEDIA = {
   createdAt: "2026-01-05T03:04:05Z",
   media: [{ id: 12, type: "photo", files: { full: { url: "https://cdn.test/u-full.jpg" }, thumb: { url: "https://cdn.test/u-thumb.jpg" } } }],
 };
-// Records each `useFanPpvHistory(accountId, fanId, limit)` call.
 const { historyArgs } = vi.hoisted(() => ({ historyArgs: vi.fn() }));
 vi.mock("@/hooks/useFanPpvHistory", () => ({
   useFanPpvHistory: (...args: unknown[]) => (historyArgs(...args), {
@@ -93,7 +81,6 @@ vi.mock("@/hooks/useFanChatMedia", () => ({
     isLoading: false, fetchNextPage: vi.fn(), hasNextPage: false,
   }),
 }));
-// `useFanInsights`' figures when `insights.current` is set; none (a sparse Fan) otherwise.
 const { insights } = vi.hoisted(() => ({ insights: { current: undefined as unknown } }));
 vi.mock("@/hooks/useFanInsights", () => ({
   useFanInsights: () => ({ data: insights.current }),
@@ -108,8 +95,6 @@ const CHAT = {
 
 let qc: QueryClient;
 
-/** The viewport the `matchMedia` stub answers for. Installed once for the
- *  whole suite (restored in `afterAll`); a case only flips `viewport.wide`. */
 const viewport = { wide: false };
 const realMatchMedia = window.matchMedia;
 beforeAll(() => {
@@ -122,22 +107,14 @@ beforeAll(() => {
 });
 afterAll(() => { window.matchMedia = realMatchMedia; });
 
-/** Renders Fan insights for fan 7 on acct-a with the OF profile cached.
- *  `layout` picks the render site: the slide-over, the pinned column, or
- *  both together the way the Thread mounts them, sharing one `onClose`. */
 function renderInsights({
   layout = "slide-over", onClose = vi.fn(), sub, lists, location, lastSeen, onComposeWith,
 }: {
   layout?: "slide-over" | "pinned" | "both"; onClose?: () => void;
-  /** OF's `lastSeen` on the cached profile; absent on a sparse Fan. */
   lastSeen?: string;
-  /** The Composer's compose callback; absent leaves Fan insights read-only. */
   onComposeWith?: (t: unknown) => void;
-  /** OF's `subscribedOnData` on the cached profile; absent on a sparse Fan. */
   sub?: Record<string, unknown>;
-  /** OF's `listsStates` on the cached profile; absent on a sparse Fan. */
   lists?: { id: number; type: string; name: string; hasUser: boolean }[];
-  /** `home_city` / `home_country` on our Fan record; absent on a sparse Fan. */
   location?: { home_city?: string; home_country?: string; local_timezone?: string };
 } = {}) {
   qc.setQueryData(["of-user", "acct-a", 7, "full"], {
@@ -179,7 +156,6 @@ beforeEach(() => {
   fan.current = { id: 7, tags: ["vip"], custom_nickname: null, notes: null, language: null, language_source: null };
   update.mutate.mockReset();
   relayGet.mockReset();
-  // The pre-edit re-read hands back the same profile that was cached.
   relayGet.mockImplementation((path: string) =>
     Promise.resolve(String(path).includes("/users/")
       ? { id: 7, displayName: "Old Nick", notice: "old note" }
@@ -188,7 +164,7 @@ beforeEach(() => {
   relayPut.mockReset();
   relayPut.mockResolvedValue({});
 });
-afterEach(() => { cleanup(); qc.clear(); window.localStorage.clear(); });
+afterEach(() => { cleanup(); qc.clear(); window.localStorage.clear(); platform.current = "onlyfans"; });
 
 const nick = () => screen.getByPlaceholderText("Fan Seven") as HTMLInputElement;
 const notes = () => screen.getByPlaceholderText(/loves bondage/) as HTMLTextAreaElement;
@@ -339,8 +315,6 @@ describe("Fan insights closing", () => {
     await user.click(within(dialog).getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalledTimes(1);
 
-    // An open lightbox owns Esc: the first press closes it, the next the sheet.
-    // The purchased media sit on the Sales tab.
     await user.click(within(dialog).getByRole("tab", { name: "Sales" }));
     await user.click(within(dialog).getByRole("button", { name: "Click to preview" }));
     await user.keyboard("{Escape}");
@@ -352,7 +326,6 @@ describe("Fan insights closing", () => {
   });
 
   it("a swipe right on the slide-over or its backdrop closes it; a swipe left, the pinned column and 1024px+ do not", async () => {
-    // A 160px sheet (the test DOM has no layout): each 150px+ drag carries it past 75%.
     const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(160);
     const onClose = vi.fn();
     const swipe = (el: Element, x0: number, x1: number) => {
@@ -362,14 +335,13 @@ describe("Fan insights closing", () => {
     };
     const { unmount } = renderInsights({ layout: "slide-over", onClose });
     const dialog = screen.getByRole("dialog", { name: "Fan insights" });
-    // Each swipe settles before the next: one made while the last still slides off is not taken.
     swipe(dialog, 300, 150);
     await settled();
     expect(onClose).not.toHaveBeenCalled();
     swipe(dialog, 150, 300);
     await settled();
     expect(onClose).toHaveBeenCalledTimes(1);
-    swipe(dialog.previousElementSibling!, 20, 200);            // the backdrop
+    swipe(dialog.previousElementSibling!, 20, 200);
     await settled();
     expect(onClose).toHaveBeenCalledTimes(2);
     unmount();
@@ -442,7 +414,6 @@ describe("Fan insights head, tabs and Extras overflow", () => {
     await user.click(within(pane).getByRole("tab", { name: "Notes" }));
     expect(within(pane).getByRole("heading", { name: "Notes" })).toBeTruthy();
 
-    // × sits in the head and still closes the pane (no render site hides it since ticket 07).
     await user.click(within(pane).getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -456,7 +427,6 @@ describe("Fan insights head, tabs and Extras overflow", () => {
     await user.type(notes(), "draft note");
     await user.click(screen.getByRole("tab", { name: "Sales" }));
 
-    // Leaving the field saved it on the way to the tab, and only the Sales tab renders.
     expect(update.mutate).toHaveBeenCalledWith({ notes: "draft note" });
     expect(screen.queryByPlaceholderText(/loves bondage/)).toBeNull();
 
@@ -476,7 +446,6 @@ describe("Fan insights head, tabs and Extras overflow", () => {
     for (const gone of ["Last message in", "Last seen", "Subscribed at", "Renewed at", "Expires", "Expired", "Posts"]) {
       expect(within(pane).queryByText(gone)).toBeNull();
     }
-    // The head's "+" is no Extras overflow any more.
     expect(screen.queryByRole("button", { name: "Inflowwww extras" })).toBeNull();
   });
 
@@ -514,9 +483,6 @@ describe("Fan insights head, tabs and Extras overflow", () => {
   });
 });
 
-/** A block's rows as [term, value] pairs, in page order. */
-/** The saved block layout's key, and a saved layout with every block shown
- *  (Organization metrics is removed by default). */
 const LAYOUT_KEY = "chatterly:fan-insights-blocks:v2";
 const showEveryBlock = () => window.localStorage.setItem(LAYOUT_KEY, JSON.stringify({ order: [], hidden: [] }));
 
@@ -541,7 +507,6 @@ describe("Fan insights blocks", () => {
     expect(expand.getAttribute("aria-expanded")).toBe("false");
     expect(within(block).queryAllByRole("term")).toHaveLength(0);
     expect(within(block).queryByText("Auto-renewal")).toBeNull();
-    // Only this block collapsed.
     expect(rowsOf(screen.getByRole("region", { name: "Spending behavior" }))).toHaveLength(5);
 
     await user.click(expand);
@@ -561,7 +526,6 @@ describe("Fan insights blocks", () => {
     expect(within(pane).queryByRole("region", { name: "Organization metrics" })).toBeNull();
     expect(rowsOf(within(pane).getByRole("region", { name: "Subscription" })).map(([k]) => k))
       .toEqual(["Status", "Cost", "Duration", "Auto-renewal"]);
-    // The stats grid no longer repeats them.
     expect(within(pane).queryByText("Sub status")).toBeNull();
     expect(within(pane).queryByText("Sub price")).toBeNull();
     cleanup();
@@ -618,9 +582,7 @@ describe("Fan insights Spending behavior", () => {
     expect(rows[0]).toEqual(["Total spend", "$123"]);
     expect(rows[2][1]).toMatch(/^\$40 Total/);
     expect(rows[3][1]).toMatch(/^\$12 Total/);
-    // A 1px rule splits Total spend from Last spend (page-parity 07 FI1).
     expect(within(pane).getByText("Last spend", { selector: "dt" }).parentElement).toHaveClass("border-l", "border-border");
-    // The stats grid and the strip no longer repeat them.
     for (const gone of ["Lifetime spend", "Tips", "Messages", "Last purchase"]) {
       expect(within(pane).queryByText(gone)).toBeNull();
     }
@@ -648,19 +610,16 @@ describe("Fan insights Spending behavior", () => {
   });
 
   it("with a part-filled page, Highest spend and PPV Avg show the page's highest and average price; with a full page, both read —", () => {
-    // Two purchases, $12.50 and $5.00: highest $12.50, average $8.75.
     sales.items = [purchase(1, 1250, "2026-03-04T12:00:00Z"), purchase(2, 500, "2026-03-01T12:00:00Z")];
     sales.summary = { max_cents: 1250, avg_cents: 875 };
     renderInsights();
     let block = screen.getByRole("region", { name: "Spending behavior" });
     expect(rowsOf(block)[4]).toEqual(["Highest spend", "$12.50"]);
     expect(within(within(block).getAllByRole("definition")[2]).getByText(/Avg$/).textContent).toBe("$8.75 Avg");
-    // Today's Max and Avg have left the Purchases over time label.
     expect(within(block).queryByText(/^(Max|Avg)$/)).toBeNull();
     cleanup();
     qc.clear();
 
-    // A full page (12 of the default 12) may hide older purchases, so neither figure is shown.
     sales.items = Array.from({ length: 12 }, (_, i) => purchase(i + 1, 100 * (i + 1), "2026-02-01T12:00:00Z"));
     sales.summary = { max_cents: 1200, avg_cents: 650 };
     renderInsights();
@@ -681,12 +640,10 @@ describe("Fan insights Spending behavior", () => {
   });
 });
 
-/** A ledger item bought for `cents` at `at` (null: no purchase time). */
 function purchase(id: number, cents: number, at: string | null) {
   return { ...SALE, transaction_id: id, message_id: null, price_cents: cents, purchased_at: at };
 }
 
-/** The chart's bars, each titled "<range>: <gross>", as their gross amounts. */
 function bucketsOf(chart: HTMLElement): string[] {
   return within(chart).getAllByTitle(/: \$/).map((b) => b.getAttribute("title")!.split(": ").pop()!);
 }
@@ -695,15 +652,14 @@ describe("Fan insights Purchases over time", () => {
   it("seeded purchases draw 12 gross buckets from the first purchase to now, and with no purchases the empty text shows", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      // First purchase to now is 12 days, so each bucket is one day.
       vi.setSystemTime(new Date("2026-01-13T00:00:00Z"));
       sales.items = [
-        purchase(1, 1000, "2026-01-01T00:00:00Z"), // the first purchase: bucket 0
-        purchase(2, 500, "2026-01-01T12:00:00Z"),  // bucket 0
-        purchase(3, 2500, "2026-01-06T00:30:00"),  // a tz-naive UTC stamp: bucket 5
-        purchase(4, 700, "2026-01-12T23:00:00Z"),  // bucket 11
-        purchase(5, 300, "2026-01-13T00:00:00Z"),  // exactly now: clamped into bucket 11
-        purchase(6, 900, null),                    // no purchase time: skipped
+        purchase(1, 1000, "2026-01-01T00:00:00Z"),
+        purchase(2, 500, "2026-01-01T12:00:00Z"),
+        purchase(3, 2500, "2026-01-06T00:30:00"),
+        purchase(4, 700, "2026-01-12T23:00:00Z"),
+        purchase(5, 300, "2026-01-13T00:00:00Z"),
+        purchase(6, 900, null),
       ];
       renderInsights();
       const block = screen.getByRole("region", { name: "Spending behavior" });
@@ -821,7 +777,6 @@ describe("Fan insights Profile, Lists and Notes", () => {
     renderInsights();
     const pane = screen.getByRole("dialog", { name: "Fan insights" });
 
-    // The six-heading order is pinned by the Insights-blocks test above.
     const profile = within(pane).getByRole("region", { name: "Profile" });
     const rows = rowsOf(profile);
     expect(rows.map(([k]) => k)).toEqual([
@@ -829,14 +784,11 @@ describe("Fan insights Profile, Lists and Notes", () => {
     ]);
     expect(rows[4]).toEqual(["Source", "—"]);
     expect(rows[5]).toEqual(["Local time", "—"]);
-    // Birthday is ours (OF has none): an empty MM-DD field for a sparse Fan.
     const birthday = within(profile).getByRole("textbox", { name: "Birthday" }) as HTMLInputElement;
     expect(birthday.value).toBe("");
     expect(birthday.placeholder).toBe("MM-DD");
-    // The Nickname input keeps its name, and its sync hint is the ⓘ's tooltip.
     expect(within(profile).getByRole("textbox", { name: "Nickname" })).toBe(nick());
     expect(within(profile).getByRole("img", { name: /^Synced with OnlyFans/ })).toBeTruthy();
-    // Fan notes moved into its own block; the uppercase form labels are gone.
     expect(within(within(pane).getByRole("region", { name: "Notes" })).getByRole("textbox", { name: "Fan notes" }))
       .toBe(notes());
     expect(within(pane).queryByText("Custom nickname")).toBeNull();
@@ -891,7 +843,6 @@ describe("Fan insights Notes tab", () => {
   it("AI profile then Persona claims follow Creator notes, each titled Inflowwww extra; no AI seller chip", async () => {
     const user = userEvent.setup();
     renderInsights();
-    // The AI seller chip went with the legacy selling engine.
     expect(cancelChip()).toBeNull();
     await user.click(screen.getByRole("tab", { name: "Notes" }));
     const creator = screen.getByRole("region", { name: "Creator notes" });
@@ -905,8 +856,6 @@ describe("Fan insights Notes tab", () => {
   });
 });
 
-/** The Insights blocks' headings in their default order (Organization metrics
- *  is removed by default, so last and absent). */
 const BLOCK_ORDER = [
   "Fan", "Spending behavior", "Unsold PPVs sent", "Notes", "Mass exclude",
   "Subscription", "Profile", "Lists",
@@ -959,14 +908,12 @@ describe("Fan insights block layout", () => {
     await user.keyboard("{ArrowDown}");
     expect(headings(pane).slice(0, 3)).toEqual(["Fan", "Unsold PPVs sent", "Spending behavior"]);
 
-    // Drag the Mass exclude block onto the first block.
     const grip = within(pane).getByRole("button", { name: "Move Mass exclude" });
     const first = within(pane).getByRole("region", { name: "Fan" });
     fireEvent.dragStart(grip, { dataTransfer: { setData: () => {}, setDragImage: () => {} } });
     fireEvent.dragOver(first, { dataTransfer: {} });
     fireEvent.drop(first, { dataTransfer: {} });
     expect(headings(pane).slice(0, 4)).toEqual(["Mass exclude", "Fan", "Unsold PPVs sent", "Spending behavior"]);
-    // The removed Organization metrics keeps its slot, so it stays removed.
     expect(headings(pane)).not.toContain("Organization metrics");
   });
 
@@ -1001,5 +948,48 @@ describe("Fan insights block layout", () => {
     }));
     renderInsights();
     expect(headings(screen.getByRole("dialog", { name: "Fan insights" }))).toEqual(BLOCK_ORDER);
+  });
+});
+
+describe("Fan insights on a Fansly Creator", () => {
+  it("shows no Unsold PPVs block, and a grip move keeps its slot for OnlyFans", async () => {
+    platform.current = "fansly";
+    sales.unsold = true;
+    const user = userEvent.setup();
+    renderInsights();
+    let pane = screen.getByRole("dialog", { name: "Fan insights" });
+    expect(headings(pane)).toEqual(BLOCK_ORDER.filter((h) => h !== "Unsold PPVs sent"));
+
+    within(pane).getByRole("button", { name: "Move Spending behavior" }).focus();
+    await user.keyboard("{ArrowDown}");
+    expect(headings(pane).slice(0, 3)).toEqual(["Fan", "Notes", "Spending behavior"]);
+
+    cleanup();
+    platform.current = "onlyfans";
+    renderInsights();
+    pane = screen.getByRole("dialog", { name: "Fan insights" });
+    expect(headings(pane)).toEqual(["Fan", "Notes", "Unsold PPVs sent", "Spending behavior", "Mass exclude", "Subscription", "Profile", "Lists"]);
+  });
+
+  it("the head's + does not offer a removed Unsold PPVs block back", async () => {
+    platform.current = "fansly";
+    window.localStorage.setItem(LAYOUT_KEY, JSON.stringify({ order: [], hidden: ["org", "unsoldPpvs"] }));
+    const user = userEvent.setup();
+    renderInsights();
+    const pane = screen.getByRole("dialog", { name: "Fan insights" });
+    await user.click(within(pane).getByRole("button", { name: "Add block" }));
+    const menu = within(pane).getByRole("menu", { name: "Add block" });
+    expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Organization metrics"]);
+  });
+
+  it("the Sales tab keeps the Sales table and drops the purchased-media rows", async () => {
+    platform.current = "fansly";
+    sales.seeded = true;
+    const user = userEvent.setup();
+    renderInsights();
+    await user.click(screen.getByRole("tab", { name: "Sales" }));
+    const block = screen.getByRole("region", { name: "Sales" });
+    expect(within(block).getByRole("table")).toBeTruthy();
+    expect(within(block).queryByRole("button", { name: "Refresh gallery" })).toBeNull();
   });
 });

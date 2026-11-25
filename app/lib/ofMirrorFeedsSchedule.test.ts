@@ -31,28 +31,20 @@ describe("queueTypes and queueDay", () => {
   });
 });
 
-// The `agenda` template as useOfData borrows it: the list view's capture, parsed inertly.
 const AGENDA_TPL = TEMPLATES.agenda!.pick(new DOMParser().parseFromString(capture(TEMPLATES.agenda!.page), "text/html"))!;
-// OF's own /schedules item (app/lib/__fixtures__/of, captured through the Relay and scrubbed): the others take its shape.
 const REAL = (JSON.parse(readFileSync(resolve(__dirname, "__fixtures__/of/queue-schedules-2026-11.json"), "utf8")) as { list: QueueItem[] }).list[0];
-/**
- * OF's item with another type, time (local, no offset: the days and times read the same in every time zone) and entity.
- * A scheduled message's entity has its send time (`scheduledAt`; one without is saved for later, OF's isSFLMessage).
- */
 const scheduled = (type: string, publishDateTime: string, entity: QueueItem["entity"]): QueueItem => ({
   ...REAL,
   type,
   publishDateTime,
   entity: { ...REAL.entity, text: null, ...(type === "chat" ? { scheduledAt: publishDateTime } : {}), ...entity },
 });
-// Not in order, as no order is promised.
 const SCHEDULES: QueueItem[] = [
   scheduled("chat", "2026-10-14T18:30:00", { text: "<p>Alpha One chat</p>" }),
   scheduled("post", "2026-10-12T09:05:00", { text: "Alpha Two <b>post</b>" }),
   scheduled("post", "2026-10-14T08:00:00", { text: "", mediaCount: 2 }),
   scheduled("chat", "2026-10-12T21:00:00", {}),
 ];
-// [day label, [[indicator, time, text] per item]] per section, soonest first.
 const WANT_SCHEDULES = [
   ["Oct 12", [["post-indicator", "9:05 am", "Alpha Two post"], ["chat-indicator", "9:00 pm", ""]]],
   ["Oct 14", [["post-indicator", "8:00 am", "Media"], ["chat-indicator", "6:30 pm", "Alpha One chat"]]],
@@ -67,7 +59,6 @@ const sections = (doc: Document) =>
       a.querySelector(".b-agenda__area-events__item-inward")!.textContent,
     ]),
   ]);
-// [day, type, text] per event bar on the calendar's days.
 const bars = (doc: Document) =>
   [...doc.querySelectorAll<HTMLElement>(".v-calendar-monthly .v-event[data-oi-data]")].map((b) => [b.dataset.date, [...b.classList].find((c) => ["post", "chat", "stream"].includes(c)), b.textContent]);
 const WANT_BARS = [
@@ -92,15 +83,12 @@ describe("queue: the Creator's scheduled and saved-for-later items", () => {
     applyData(doc, "queue/state-list-view", { queue: SCHEDULES });
     expect(sections(doc)).toEqual(WANT_SCHEDULES);
     expect(texts(doc, `${AGENDA} > .empty-message`)).toEqual([]);
-    // One outside the right column (whose day's list is its own block).
     expect([...doc.querySelectorAll(".b-agenda")].filter((a) => !a.closest(".l-wrapper__sidebar"))).toHaveLength(1);
     const agenda = doc.querySelector(".b-agenda")!;
-    // The More buttons' icons are SVG, outside the scope.
     const built = [...agenda.querySelectorAll(".b-agenda__section, .b-agenda__section *")].filter((el) => !el.closest("svg"));
     expect(built.every((el) => scopeOf(el).join() === scopeOf(agenda).join())).toBe(true);
     expect(scopeOf(agenda)).toEqual(["data-v-13609a39", "data-v-f602563e"]);
     expect(doc.querySelector(".b-queue-scroll-wrapper")!.classList.contains("m-empty-content")).toBe(false);
-    // OF's items carry their ids: each row its More menu.
     expect(agenda.querySelectorAll(".b-post__tools__more [aria-label='More']")).toHaveLength(4);
   });
 
@@ -112,10 +100,8 @@ describe("queue: the Creator's scheduled and saved-for-later items", () => {
     const items: QueueItem[] = p === "queue/index" ? SCHEDULES : [scheduled("chat", "2026-10-20T07:15:00", { text: "Queued hello" }), scheduled("chat", "2026-10-20T09:15:00", { text: "Queued again" })];
     applyData(doc, p, { queue: items, templates: { agenda: AGENDA_TPL } });
     expect(bars(doc)).toEqual(p === "queue/index" ? WANT_BARS : [["2026-10-20", "chat", "2"]]);
-    // OF's month view lists nothing under its calendar.
     expect(doc.querySelector(".v-calendar")!.nextElementSibling).toBeNull();
     expect(doc.querySelector(".b-queue-scroll-wrapper")).toBeNull();
-    // The bars sit in their day's cell, after its label, in OF's calendar scope.
     const bar = doc.querySelector(".v-event[data-oi-data]")!;
     expect(bar.previousElementSibling!.matches(".v-calendar-weekly__day-label")).toBe(true);
     expect(bar.closest(".v-calendar[data-v-13609a39]")).not.toBeNull();
@@ -156,7 +142,6 @@ describe("queue: the Creator's scheduled and saved-for-later items", () => {
     expect(texts(doc, ".saved-for-later > .empty-message")).toEqual([empty]);
     expect(shown(doc, ".b-post.m-queue-post")).toEqual([]);
     applyData(doc, p, { queue: [{ text: "<p>Saved Alpha</p>" }, { text: null, mediaCount: 3 }, { text: "" }], templates: { agenda: AGENDA_TPL } });
-    // OF's card classes per kind (sfl-post / sfl-message), the item's text, "Media", or nothing.
     const kind = mark === "sfl-post-indicator" ? "sfl-post" : "sfl-message";
     expect(shown(doc, ".saved-for-later > .b-post.m-queue-post").map((c) => [c.classList.contains(kind), c.querySelector(".b-post__text")!.textContent])).toEqual([
       [true, "Saved Alpha"],
@@ -177,7 +162,6 @@ describe("queue: the Creator's scheduled and saved-for-later items", () => {
       ],
     });
     expect(sections(doc)).toEqual([["Oct 3", [["stream-indicator", "10:00 am", "Live"], ["", "11:00 am", "Other"]]]]);
-    // No stream edit or delete in the Relay: no More menu.
     expect(doc.querySelectorAll(".b-agenda [aria-label='More']")).toHaveLength(0);
   });
 
@@ -207,7 +191,6 @@ describe("queue: the Creator's scheduled and saved-for-later items", () => {
   it.each(QUEUE_PAGES)("%s: Creator A's items then Creator B's leave only B's; no data restores the capture byte for byte", (p) => {
     const doc = load(p);
     const html = doc.documentElement.innerHTML;
-    // The calendar pages: on the right column's day (Oct 12), so their rows show there; the list view another.
     const at = p.includes("saved-for-later") ? {} : { type: p.includes("state-tab") ? "chat" : "post", publishDateTime: p.includes("list-view") ? "2026-10-05T10:00:00" : "2026-10-12T10:00:00" };
     const item = (text: string): QueueItem => ({ ...at, text, entity: { text } });
     applyData(doc, p, { queue: [item("Alpha item"), item("Alpha other")], templates: { agenda: AGENDA_TPL } });
@@ -227,7 +210,6 @@ describe("queue: the Creator's scheduled and saved-for-later items", () => {
       ["2026-10-14", "chat", "1"],
       ["2026-10-20", "stream", "1"],
     ]);
-    // The right column: Oct 12's message only.
     expect(shown(doc, ".l-wrapper__sidebar .b-agenda__area-events__item").map((a) => a.className.includes("chat-indicator"))).toEqual([true]);
   });
 });

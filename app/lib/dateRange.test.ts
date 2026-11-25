@@ -1,9 +1,3 @@
-/**
- * lib/dateRange — the reports' hour-precision ranges (roadmap W5 5.4): `toLocalIso` reads YYYY-MM-DDTHH:00 as that
- * wall-clock hour in the report time zone, and `priorRange` gives the window of equal length before, on the wall
- * clock, for the change against the previous period; `presetRange` gives exactly N calendar days through today, and
- * `dateBounds` a real day on Feb 29.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { datePresets } from "@/components/home/reportsMath";
@@ -63,13 +57,11 @@ describe("dateBounds", () => {
 
 describe("toLocalIso at hour precision", () => {
   it("places the hour in a zone half an hour off UTC", () => {
-    // Asia/Kolkata is UTC+5:30: 3 PM is 09:30Z; the 9 AM hour ends 1 ms before 10 AM, 04:30Z.
     expect(toLocalIso("2026-10-01T15:00", false, "Asia/Kolkata")).toBe("2026-10-01T09:30:00.000Z");
     expect(toLocalIso("2026-10-01T09:00", true, "Asia/Kolkata")).toBe("2026-10-01T04:29:59.999Z");
   });
 
   it("starts the hour a daylight-saving end repeats at its first run and ends it after its second", () => {
-    // New York, Sun 1 Nov 2026: 2 AM EDT (06:00Z) goes back to 1 AM EST, so 1 AM runs 05:00Z to 07:00Z.
     expect(toLocalIso("2026-11-01T01:00", false, "America/New_York")).toBe("2026-11-01T05:00:00.000Z");
     expect(toLocalIso("2026-11-01T01:00", true, "America/New_York")).toBe("2026-11-01T06:59:59.999Z");
     expect(toLocalIso("2026-11-01T02:00", false, "America/New_York")).toBe("2026-11-01T07:00:00.000Z");
@@ -85,15 +77,12 @@ describe("priorRange", () => {
     expect(priorRange("2026-10-08", "2026-10-14")).toEqual(["2026-10-01", "2026-10-07"]);
     const [f, t] = priorRange("2026-11-01", "2026-11-07")!;
     expect([f, t]).toEqual(["2026-10-25", "2026-10-31"]);
-    // Sun 25 Oct 00:00 EDT through Sat 31 Oct 23:59:59.999 EDT.
     expect([toLocalIso(f, false, "America/New_York"), toLocalIso(t, true, "America/New_York")])
       .toEqual(["2026-10-25T04:00:00.000Z", "2026-11-01T03:59:59.999Z"]);
   });
 
   it("keeps the wall-clock hours of an hour-precision range", () => {
-    // Tue 13 Oct 3 PM through Wed 14 Oct 9 AM is 19 hours: the 19 before run Mon 12 Oct 8 PM through 13 Oct 2 PM.
     expect(priorRange("2026-10-13T15:00", "2026-10-14T09:00")).toEqual(["2026-10-12T20:00", "2026-10-13T14:00"]);
-    // One side at an hour, the other a whole day: 6 AM on the 13th through the 14th is 42 hours.
     expect(priorRange("2026-10-13T06:00", "2026-10-14")).toEqual(["2026-10-11T12:00", "2026-10-13T05:00"]);
   });
 
@@ -104,7 +93,6 @@ describe("priorRange", () => {
 });
 
 describe("addDayStr (FanReportsCard's and frameDates' `addDays`, moved)", () => {
-  /** frameDates' copy before the move, verbatim. */
   function legacyFrameDates(day: string, n: number): string {
     const d = new Date(`${day}T00:00:00Z`);
     d.setUTCDate(d.getUTCDate() + n);

@@ -1,8 +1,3 @@
-/**
- * The Auto-follow list (Infloww parity, page-parity 13): one row per creator with its counts
- * and switch, the "Creator:" / "Auto-follow:" filters with Reset, the empty table, and the
- * details view a row click opens.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -67,7 +62,6 @@ function mount(accounts: AccountMeta[] = ACCOUNTS) {
   render(<QueryClientProvider client={client}><AutoFollowList accounts={accounts} /></QueryClientProvider>);
 }
 
-/** Click `combobox`, then its option. */
 function choose(combobox: HTMLElement, option: string) {
   fireEvent.click(combobox);
   fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: option }));
@@ -83,7 +77,6 @@ describe("AutoFollowList", () => {
     }
     const row = within(screen.getByTestId("af-row-a1"));
     for (const v of ["3", "5", "11", "30"]) expect(row.getByText(v)).toBeTruthy();
-    // Last followed: relative ("N d ago"), the full Infloww stamp as its title.
     expect(row.getByTitle(formatFollowedAt("2026-10-18T09:05:00")).textContent).toMatch(/ ago$/);
     expect(screen.getByText("Automatically follow fans whose subscriptions have expired")).toBeTruthy();
   });
@@ -137,7 +130,6 @@ describe("AutoFollowList", () => {
     mount([]);
     expect(screen.getByText("Automatically follow fans whose subscriptions have expired")).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Creator name" })).toBeTruthy();
-    // Placeholder rows while the stats read runs, then the empty state once it answers.
     expect(screen.queryByText("No data")).toBeNull();
     expect(await screen.findByText("No data")).toBeTruthy();
   });

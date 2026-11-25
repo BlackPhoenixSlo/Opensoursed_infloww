@@ -1,52 +1,3 @@
-"""The welcome chatter (`automations.welcome_chatter_for_info`, the reply loop) after its
-per-fan gates became one pure `decide()` (service/automations/wcfi_decide.py): fans DM
-their Creators and each DM is answered in real time, by the product's own path.
-
-World: `agency_inbox` (one Agency, its Creators, their fans, threads for a share of them),
-plus seed/welcome_chatter.py: per Creator the persona, Reply Instant on (W7, no delay) and
-an enabled welcome_chatter_for_info rule whose daily sweep last fired 30 min ago; then
-`--users` fans without a seeded thread, spread over the Creators, one case each: open
-(we spoke last), double (his line still unanswered), blacklisted, skip-listed, muted
-creator we follow, promo blaster. Echo fans: `--set echo=N` (default one in ECHO_EVERY) of
-the open / double fans, drawn from `w.rng("wcfi_echo")`, whose opening line is
-lib/wcfi_relay.py's ECHO_LINE (an SQL update of that seeded row), so the fake DeepSeek
-answers them the small-model echo: his DM verbatim, then a question.
-
-Load: `rounds` rounds (default 2, `--set rounds=`): every case fan sends one DM, each a WS
-frame through `POST /__slop/of-ws-frame` in the pump's shape (`fan_dm.serial`: one frame
-in flight per Creator, open loop at `rate` DMs/s per Creator, default RATE, `--set rate=`:
-fans trickle in as in production, so each DM's W7 wake finds the Creator's previous run
-done; a burst waits ~30 s per DM, see RATE); the real path does the rest: the transcoder's
-`webhook_dispatch.on_inbound_message` queues a fan-scoped job and wakes the real automation
-supervisor (RELAY_ENV SLOP_SUPERVISOR=1), whose `run_once` runs the lane under its run
-slots, decides per fan, calls the LLM and sends each bubble to OF. A round ends when every
-open fan's answer reached OF and no job of the lane is pending or running (a DM inside the
-fan's 10 s reply cooldown is deferred to its end: the product's rule).
-
-Invariants (lib/wcfi_faults.py names them): TURNS (one turn per DM of an open fan, nothing
-dropped), SKIPLISTED (zero sends to a blacklisted / skip-listed / muted / promo fan),
-DOUBLE (no bubble reached OF twice), COUNTS (OF's sends = the new outbound rows, none to a
-fan who did not DM, no run errors), LANDED (every DM is its row), ECHO (no bubble that
-repeats a fan's DM reached OF; per echo turn one echo reply served and exactly its other
-bubble sent). Budget: e2e p95, a DM's
-frame handed to the relay -> his turn's first bubble at OF, vs E2E_P95_MS and the last green run.
-
-Faked or bypassed, declared: DeepSeek at its HTTP boundary (lib/wcfi_relay.py through
-lib/automation_relay.py's loopback fake: `{}` for the fact extract, two unique lines for a reply,
-his DM + one unique line for an echo fan's, 0.4 s each); OF's send (lib/relay.py `_OfflineOF.send_message`, journalled by
-lib/wcfi_relay.py); the agency's (fake) DeepSeek key through the real `PUT /admin/my-llm-keys`;
-the account DM rate raised to DM_PER_MIN through the real Concurrency panel route. Typing holds
-are 0 under CHATTERLY_TEST_MODE (no pacing bypass of our own). SLOP_LIVE=1 is refused (it would
-spend on the real DeepSeek): every check SKIPs.
-
-Break-it-once: wcfi-skiplist-ignored (decide's `listed` skip re-decided as unlisted): only
-SKIPLISTED goes red, through the BLACKLISTED fans alone (W7 wakes the lane for them; it skips
-them as `listed`, the fault answers them). The skip-listed fans never reach run() (W7 wakes no
-lane for them), so the fault does not touch them; nor the muted / promo fans (their own gates).
-`--fault=wcfi-turn-sent-twice` (each text bubble sent and persisted twice): only DOUBLE.
-`--fault=reply-shape-echo-kept` (the shaping's echo predicate answers False, so the parroting
-bubble goes to OF): only ECHO, through the echo fans alone.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -66,28 +17,17 @@ PROFILE = "agency_inbox"
 UI = False
 FAULT = "wcfi-skiplist-ignored"
 RELAY_ENV = {"SLOP_SUPERVISOR": "1"}
-# frame -> first bubble at OF. Per Creator the lane runs one fan-scoped job at a time
-# (one run per (account, kind)), ~1 s each (two 0.4 s fake LLM calls + reads + the send).
-# RATE: a job queued while its Creator's run is in flight is not re-drained when that run
-# ends (W7's wake was spent on the in-flight pair): it waits for the next wake or the 30 s
-# tick, so a burst of N DMs to one Creator takes ~N x 30 s (measured: 20261030T212146Z-...-feb9). At one DM
-# per 4 s per Creator the previous run is done by the next wake: p95 0.96 s small, 1.99 s
-# medium/200 (measured: 20261030T213248Z-...-901c, 20261030T213354Z-...-06c0); a DM that
-# misses its wake waits up to the 30 s tick.
-# Budgets: E2E_P95_MS ~2.5x the medium p95 (headroom for a slower host, still far under the
-# 30 s tick a missed wake costs, so p95 > 5 s means wakes are being missed); P95_VS_LAST's
-# +1 s abs slack ~ one LLM round trip's jitter at medium (+50 %).
 E2E_P95_MS = 5_000
+# a burst to one Creator waits ~30 s per DM (a queued job is not re-drained when the in-flight run ends); one DM per 4 s per Creator keeps wakes met (measured)
 RATE = 0.25
 P95_VS_LAST = (1.5, 1000)
 DM_PER_MIN = 600
 ROUNDS = 2
 SETTLE_S = 300
-ECHO_EVERY = 6   # default echo fans: one in this many open / double fans (at least one)
-OF_SEND_ID_BASE = 9_700_000_000_000   # lib/relay.py: the fake OF's message ids (this run's sends)
+ECHO_EVERY = 6
+OF_SEND_ID_BASE = 9_700_000_000_000
 KIND = wc.KIND
-# wcfi's best-effort OF calls after a send (nickname push, mark read): the offline OF answers
-# only me() and send_message, so each logs its warning + traceback; the turn is unaffected.
+# the offline OF answers only me() and send_message: wcfi's best-effort nickname push / mark read log a traceback, the turn is unaffected
 EXPECTED_TRACEBACKS = (("push_nick_failed", "slop: OF is offline"),
                        ("mark_chat_read failed", "slop: OF is offline"))
 
@@ -126,9 +66,8 @@ async def run(ctx) -> None:
     open_fans = {k for k, c in cases.items() if c in wc.ELIGIBLE}
     rounds = int(ctx.param("rounds", ROUNDS))
     rate = float(ctx.param("rate", RATE))
-    ids = itertools.count(fan_dm.INJECT_ID_BASE)   # one id space over the rounds (no upsert of round 1)
+    ids = itertools.count(fan_dm.INJECT_ID_BASE)
     con = w.sql()
-    # Echo fans: his seeded opening line becomes ECHO_LINE (the fake echoes his DM back).
     n_echo = int(ctx.param("echo", max(1, len(open_fans) // ECHO_EVERY)))
     echo_fans = set(w.rng("wcfi_echo").sample(sorted(open_fans), min(n_echo, len(open_fans))))
     with con:
@@ -166,7 +105,7 @@ async def run(ctx) -> None:
             if not waiting and jobs == 0 and st["processed"] >= st["received"]:
                 break
             await asyncio.sleep(0.5)
-        await asyncio.sleep(1.0)   # a send already past its decision lands now, not after the checks
+        await asyncio.sleep(1.0)
         ctx.rec.stage = None
         settle.append({"round": rnd, "s": round(time.time() - t_round, 1), "unanswered": len(waiting),
                        "jobs_left": jobs})
@@ -196,13 +135,11 @@ async def run(ctx) -> None:
     for x in sorted(dms, key=lambda x: x["t0"]):
         dm_by[(x["account_id"], x["fan_id"])].append(x["t0"] / 1000)
 
-    # LANDED: every DM accepted and in its thread.
     bad_dm = [x for x in dms if x.get("status", 599) >= 300
               or (x["account_id"], int(x["fan_id"]), int(x["message_id"])) not in landed]
     ctx.check(LANDED, bool(dms) and not bad_dm, dms=len(dms), missing=len(bad_dm),
               e_g=[f"{x['account_id']}/{x['fan_id']}/{x['message_id']}" for x in bad_dm[:3]])
 
-    # TURNS: >= 1 bubble in every DM's window, turn_counter + rounds, runs' replies_sent = turns.
     e2e: list[float] = []
     wrong: dict[str, str] = {}
     for k in sorted(open_fans):
@@ -223,7 +160,6 @@ async def run(ctx) -> None:
               open_fans=len(open_fans), dms_each=rounds, wrong=len(wrong), e_g=dict(list(wrong.items())[:3]),
               turns_taken=turns, runs_replies_sent=replies)
 
-    # SKIPLISTED: nothing to a fan the lane must never answer.
     skipped = {k: c for k, c in cases.items() if c in wc.SKIPPED}
     hit = {f"{k[0]}/{k[1]}": {"case": c, "of_sends": len(by_fan.get(k, [])), "rows": len(rows.get(k, []))}
            for k, c in skipped.items() if by_fan.get(k) or rows.get(k)}
@@ -231,14 +167,12 @@ async def run(ctx) -> None:
     ctx.check(SKIPLISTED, all(present[c] for c in wc.SKIPPED) and not hit,
               fans=dict(present), sent_to=len(hit), e_g=dict(list(hit.items())[:3]))
 
-    # DOUBLE: no (Creator, fan, text) twice at OF, no repeated body in a fan's rows.
     of_dup = [f"{a}/{f}: {t[:40]}" for (a, f, t), n in Counter(
         (s["account_id"], s["fan_id"], s["text"]) for s in sends).items() if n > 1]
     row_dup = [f"{k[0]}/{k[1]}" for k, rs in rows.items() if len({r["body"] for r in rs}) != len(rs)]
     ctx.check(DOUBLE, bool(sends) and not of_dup and not row_dup, of_sends=len(sends),
               twice_at_of=len(of_dup), fans_with_repeated_rows=len(row_dup), e_g=of_dup[:3] or row_dup[:3])
 
-    # COUNTS: OF's sends = new rows (same ids, the lane's), none to a fan who did not DM, no errors.
     row_ids = {r["id"] for rs in rows.values() for r in rs}
     send_ids = {s["id"] for s in sends}
     foreign = [r for rs in rows.values() for r in rs if r["kind"] != KIND]
@@ -246,15 +180,13 @@ async def run(ctx) -> None:
     of_sends_n = stats1["of_sends"] - stats0["of_sends"]
     errs = [{k: x.get(k) for k in ("errors", "cap_hit", "key_error", "no_llm_key", "llm_capped", "_status")}
             for x in runs if x.get("errors") or x.get("cap_hit") or x.get("key_error") or x.get("no_llm_key")
-            or x.get("llm_capped") or x["_status"] != "ok"]   # run_decide.outcome: a clean run is 'ok'
+            or x.get("llm_capped") or x["_status"] != "ok"]
     ctx.check(COUNTS, bool(sends) and send_ids == row_ids and of_sends_n == len(sends) and not foreign
               and not stray and not errs,
               of_sends=len(sends), of_sends_stat=of_sends_n, new_rows=len(row_ids),
               only_at_of=len(send_ids - row_ids), only_in_db=len(row_ids - send_ids),
               other_kind_rows=len(foreign), stray_fans=stray[:5], runs=len(runs), run_errors=errs[:3])
 
-    # ECHO: no bubble repeating a DM at OF; each echo turn = one echo reply served = one distinct
-    # bubble at OF (distinct texts: a bubble sent twice is DOUBLE's, not this check's).
     dm_words = {_words(f"slop wcfi round {r} 1/1") for r in range(1, rounds + 1)}
     echoed = [f"{s['account_id']}/{s['fan_id']}: {s['text'][:40]}" for s in sends if _words(s["text"]) in dm_words]
     served = int(calls.get("deepseek:wcfi_echo", 0))

@@ -1,10 +1,3 @@
-"""Machine-wide macOS packet-loss shaping for slop wire profiles.
-
-The caller holds wire_lock through stack teardown; the root helper serializes its own
-on/off operations in case sudo outlives a timed-out Python caller.
-Install the NOPASSWD root helper once with slop/install-netloss. It shapes real TCP on
-the loopback edge port, including handshake, retransmission, and open streams.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -19,25 +12,23 @@ from pathlib import Path
 
 from slop.lib.net import PROFILES, is_wire
 
-HELPER = Path("/usr/local/libexec/slop-netloss")       # root:wheel 0755, a copy of HELPER_SRC
+HELPER = Path("/usr/local/libexec/slop-netloss")
 HELPER_SRC = Path(__file__).with_name("netloss_helper.sh")
-WIRE_STATE = Path("/var/run/slop-netloss.state")       # the helper's: exists while shaping may be on
+WIRE_STATE = Path("/var/run/slop-netloss.state")
 INSTALL = "sudo slop/install-netloss"
-# The dummynet pipes and anchor are machine-wide while the machine gate lets several runs go at once: a wire run holds
-# this flock from before its stack until after teardown (`wire_lock`), so two never overlap, and `wire_off_stale`
-# touches the state only when it can take the lock (no live wire run owns it). A killed holder's flock dies with it.
+# Dummynet pipes are machine-wide: a wire run holds this flock from before its stack until after teardown; a killed holder's flock dies with it.
 WIRE_LOCK = Path("/tmp/slop-netloss.lock")
 WIRE_LOCK_POLL_S = 5
 _lock_held = False
 
 
 class WireError(RuntimeError):
-    """The root helper could not complete a wire operation."""
+    pass
 
 
 def _checked(*args: str) -> str:
     try:
-        # Allow more than the helper's 120 s operation-lock wait before timing out sudo.
+        # more than the helper's 120 s operation-lock wait
         r = subprocess.run(["sudo", "-n", str(HELPER), *args], capture_output=True, text=True, timeout=180)
     except subprocess.TimeoutExpired as e:
         raise WireError(f"slop-netloss {args[0]} timed out; helper may still be running") from e
@@ -51,7 +42,6 @@ def _open_lock() -> int:
 
 
 def wire_problem() -> str | None:
-    """None when wire mode can run; else one line naming what to do."""
     if not HELPER.exists():
         return f"wire profiles need the packet-loss helper (not installed); run once: {INSTALL}"
     if HELPER.read_bytes() != HELPER_SRC.read_bytes():
@@ -67,8 +57,8 @@ def wire_problem() -> str | None:
 
 
 def _off_preserving_termination() -> None:
-    exc = sys.exc_info()[1]  # unwinding a termination (KeyboardInterrupt, CancelledError, cli's RunTerminated):
-    terminating = exc is not None and not isinstance(exc, Exception)  # log a failing off, never mask it
+    exc = sys.exc_info()[1]
+    terminating = exc is not None and not isinstance(exc, Exception)
     try:
         _checked("off")
     except WireError as e:
@@ -79,7 +69,7 @@ def _off_preserving_termination() -> None:
 
 
 class WireBusy(RuntimeError):
-    """The wire lock stayed held past the wait budget: the run is INFRA."""
+    pass
 
 
 def _try_lock(fd: int) -> bool:
@@ -92,8 +82,6 @@ def _try_lock(fd: int) -> bool:
 
 @contextlib.contextmanager
 def wire_lock(profile: str, *, wait: bool = True):
-    """Hold the machine-wide wire lock through teardown. Poll up to SLOP_WIRE_LOCK_WAIT_S (default 900 s);
-    --no-wait attempts once. slop/run takes its machine-gate slot first, so a waiting wire run holds one slot."""
     global _lock_held
     fd = _open_lock()
     t0, budget, said = time.monotonic(), float(os.environ.get("SLOP_WIRE_LOCK_WAIT_S") or 900) if wait else 0, False
@@ -117,7 +105,8 @@ def wire_lock(profile: str, *, wait: bool = True):
             finally:
                 _lock_held = False
     finally:
-        os.close(fd)  # releases the flock only after teardown
+        # releases the flock only after teardown
+        os.close(fd)
 
 
 def _stale_off() -> str:
@@ -125,7 +114,6 @@ def _stale_off() -> str:
 
 
 def wire_off_stale() -> str | None:
-    """A killed run's shaping left on: off while holding the wire lock."""
     if not WIRE_STATE.exists():
         return None
     if not HELPER.exists():
@@ -141,7 +129,6 @@ def wire_off_stale() -> str | None:
 
 @contextlib.contextmanager
 def guard(profile: str | None, *, wait: bool = True):
-    """Own wire cleanup around the run's gate slot; report lock wait and stale cleanup."""
     if is_wire(profile):
         with wire_lock(profile, wait=wait) as waited:
             facts = {"wire_lock_wait_s": waited}
@@ -155,7 +142,6 @@ def guard(profile: str | None, *, wait: bool = True):
 
 @contextlib.contextmanager
 def wired(profile: str, ports: list[int]):
-    """Dummynet on `ports` (the edge the browser talks to) for `profile`; yields the helper's status text."""
     p = PROFILES[profile]
     if not _lock_held:
         raise WireError("wired requires the wire lock")
@@ -169,8 +155,6 @@ def wired(profile: str, ports: list[int]):
 
 
 async def calibrate(port: int, n: int = 10, timeout_s: float = 10) -> dict:
-    """TCP connects to 127.0.0.1:`port` (SYN up, SYN-ACK down: one shaped RTT each, loss included): ms each, the
-    median, and how many timed out."""
     def one() -> float | None:
         t0 = time.perf_counter()
         try:

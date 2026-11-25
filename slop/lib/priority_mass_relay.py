@@ -1,32 +1,3 @@
-"""Priority mass message's part of the slop relay (lib/relay.py loads it: `wire` runs at the end
-of its `_wire`). The legs (`automations.priority_mass`) run on demand through relay.py's
-`POST /__slop/run-automation {kind: "priority_mass", claim: true}` (and the real supervisor's
-ticks, a scenario's SLOP_SUPERVISOR=1).
-
-Inert unless a scenario writes its files under `$DEMO_SHOTS_TMP`:
-  `of-rosters.json` {account: [{"id": OF list id, "name": str, "members": [fan ids]}]}
-       OF's custom lists. The leg's freeze reads them through `audiences.roster_audience_blocking`
-       -> `of_paging.list_member_ids` -> `client.list_users_in`. The automation client is
-       lib/automation_relay.py's offline walker (`ax._make_client`, no `OF_API_ORIGIN`), whose
-       `list_users_in` serves its in-process lists (`_of_lists` / `_of_members`, its call
-       latency `list_s` from its own `of-mass.json`, which the scenario writes). This module only
-       FEEDS those lists from the file (`add_lists`): at wire (so a restarted relay has them again) and on
-       `POST /__slop/priority-mass/rosters`. No OF method is redefined here.
-  `of-pm.json` {"write_gap_s": s, "hang": {"<account>:<fan>": hang_s}}, read on every call (the
-       scenario replaces it whole). While it exists:
-    OF's record of every send (`_OfflineOF.send_message`, wrapped as send_once_relay does):
-       `$DEMO_SHOTS_TMP/of-pm-sends.jsonl`, one line per message OF took ({account_id, fan_id, id,
-       price, t}), each one write(2) on an O_APPEND fd, so it outlives a SIGKILLed relay; in send
-       order. relay.py keeps only a counter (and PPV prices per fan in-process, lost with a kill),
-       hence this file.
-    A hung send, for the crash leg (`hang`): OF takes that fan's message (its line is written),
-       then the call blocks `hang_s` in its worker thread, as a curl whose answer never comes. The
-       scenario SIGKILLs the relay meanwhile.
-    The per-Creator OF write gap, compressed (declared bypass): `of_write._OF_WRITE_GAP_S` (11 s) is
-       bound as `of_write_paced`'s `min_gap_s` default, so `ax.of_write_paced` is wrapped to pass
-       `write_gap_s` when the caller names no gap. The gate, its order and the operator tier stay
-       the product's (write_gate.WriteGate).
-"""
 from __future__ import annotations
 
 import json
@@ -34,7 +5,8 @@ import os
 import time
 from pathlib import Path
 
-from fastapi import Request   # module level: the route's annotation is a string here
+# module level: the route's annotation is a string here
+from fastapi import Request
 
 
 def _tmp() -> Path:
@@ -42,13 +14,11 @@ def _tmp() -> Path:
 
 
 def _cfg() -> dict | None:
-    """`of-pm.json`; None = inert."""
     f = _tmp() / "of-pm.json"
     return json.loads(f.read_text()) if f.is_file() else None
 
 
 def read_sends(tmp: Path) -> list[dict]:
-    """OnlyFans' record under `tmp` (the run's DEMO_SHOTS_TMP), in order; the scenario reads it."""
     f = tmp / "of-pm-sends.jsonl"
     if not f.is_file():
         return []
@@ -64,7 +34,6 @@ def _line(row: dict) -> None:
 
 
 def _feed_lists() -> int:
-    """automation_relay's in-process OF lists from `of-rosters.json`; answers the lists fed."""
     import automation_relay as ar
     f = _tmp() / "of-rosters.json"
     if not f.is_file():
@@ -86,7 +55,7 @@ def wire(app, loopback, relay) -> None:
             return msg
         aid, fid = str(self.account_id), int(chat_id)
         _line({"account_id": aid, "fan_id": fid, "id": int(msg["id"]), "price": kw.get("price") or 0,
-               "t": time.time()})          # OnlyFans has it from here on
+               "t": time.time()})
         hang = float(cfg["hang"].get(f"{aid}:{fid}", 0.0))
         if hang:
             time.sleep(hang)
@@ -103,7 +72,7 @@ def wire(app, loopback, relay) -> None:
         return await real_paced(account_id, fn, **kw)
 
     ax.of_write_paced = of_write_paced
-    _feed_lists()     # a restarted relay: OF still has the lists
+    _feed_lists()
 
     async def rosters(request: Request) -> dict:
         loopback(request)

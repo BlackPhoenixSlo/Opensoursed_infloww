@@ -1,9 +1,3 @@
-"""service/automation_catalog.py — the automation kind catalog: static metadata
-layered over the live registry, which the Automations editor renders and
-`automation_rules_api` validates payloads against. Data, `_decorate_knob` (pure)
-and `_kind_catalog` (loads the automation plugins, then reads the registry).
-`automation_rules_api` re-exports every name here.
-"""
 from __future__ import annotations
 
 from typing import Any
@@ -11,20 +5,6 @@ from typing import Any
 from automation_registry import load_automation_plugins, registered_kinds
 from automations import _customs
 
-# ── Kind catalog ──────────────────────────────────────────────────────
-#
-# Static metadata layered over the live registry. Drives the editor: each
-# `knob` is a typed field spec — `type` picks the input widget (int→number,
-# bool→switch, str→text/dropdown, ids→id-list, json→sub-editor) and optional
-# `min`/`max`/`default`/`enum` constrain it (enforced both client-side and by
-# `_validate_payload_for_kind`). `recurring` flags loops vs. action-style kinds
-# so the UI can warn that an action kind does nothing on a bare timer without a
-# payload. An optional kind-level `composer` ("mass_message" | "premade") tells
-# the editor to build that kind's whole payload with the matching rich composer
-# (MassMessageComposer / PremadeForm) instead of the per-knob fields — the knobs
-# remain as the raw-JSON fallback. Unknown/future kinds still appear (from the
-# registry) with no knobs
-# (so their payload falls back to the raw-JSON escape hatch).
 _CATALOG: dict[str, dict[str, Any]] = {
     "welcome_chatter_for_info": {
         "label": "Get to know fans (AI info-gather)", "recurring": True, "surface": "rules",
@@ -47,10 +27,6 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "only_fan_ids", "type": "ids", "hint": "[fan_id,…] scope the sweep to these fans (gates still apply)"},
             {"key": "max_fan_messages", "type": "int", "min": 3, "max": 100, "default": 10,
              "hint": "Message cutoff: stop after this many fan messages if his info is still not gathered"},
-            # The closing PPV — off until media is picked. Sent once per fan, as
-            # written, when this lane is finished with him. `prefill`: the editor
-            # seeds the field with `default` so the operator only picks media;
-            # the engine reads the same default when the key is absent.
             {"key": "closing_ppv_media_ids", "type": "ids", "widget": "vault_media",
              "hint": "Closing PPV media from the vault. Leave media empty to just stop when the chat ends."},
             {"key": "closing_ppv_text", "type": "str", "prefill": True,
@@ -74,22 +50,15 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "only_fan_ids", "type": "ids", "hint": "[fan_id,…] scope the sweep to these fans (gates still apply)"},
         ],
     },
+    # surface internal on purpose (raw-JSON only), but catalogued so knobs are TYPED at save: untyped, money_gate "false" saved as a truthy string and left the gate on.
     "auto_follow": {
-        # `surface: internal` on purpose — this kind is raw-JSON-only today and
-        # has no typed editor. The entry exists so `_validate_payload_for_kind`
-        # TYPES the knobs at save: without it `money_gate: "false"` (the string)
-        # saved fine and evaluated truthy, leaving the money gate ON when the
-        # operator had meant to switch it off. Give it a UI surface the day
-        # someone builds the editor.
         "label": "Auto-follow", "recurring": True, "surface": "internal",
         "cadence_default_s": 14400,
         "summary": "Notification-only nudge: follow / re-follow fans so OF pushes "
                    "a 'started following you'. Never sends a DM.",
         "example": "every 4h · action follow · daily_cap 30 · dry_run off",
         "knobs": [
-            # The only action. The engine SKIPS a rule whose action is missing or
-            # anything else (`{"skipped": "bad_action"}`); it never defaults to
-            # follow, which can buy a priced profile.
+            # The only action; the engine skips any other and never defaults to follow, which can buy a priced profile.
             {"key": "action", "type": "str", "default": "follow", "enum": ["follow"],
              "hint": "the nudge to fire (follow is the only one)"},
             {"key": "daily_cap", "type": "int", "min": 0, "max": 1000, "default": 50,
@@ -183,11 +152,7 @@ _CATALOG: dict[str, dict[str, Any]] = {
                     "stop the AI selling to them until it ships."),
         "example": f"every 15 min · min_cents {_customs.MIN_CENTS} · lookback 72h",
         "knobs": [
-            # THE knob. What a big DM tip MEANS is per-account: on the male
-            # accounts it is an order, on the female ones it was generosity five
-            # times last month. Set it too low and the bot stops selling to a
-            # generous fan until a human notices. The default is the engine's
-            # own fallback floor, imported so the two cannot be edited apart.
+            # What a big DM tip means is per-account; default is the engine's own fallback floor, imported so they can't drift apart.
             {"key": "min_cents", "type": "int", "min": 1, "default": _customs.MIN_CENTS,
              "hint": ("cents — a tip BURST totalling at least this counts as a custom "
                       f"order (${_customs.MIN_CENTS // 100} = {_customs.MIN_CENTS}). "
@@ -246,10 +211,6 @@ _CATALOG: dict[str, dict[str, Any]] = {
         "label": "Mass message", "recurring": False, "surface": "ready_made",
         "summary": "Send one message to an audience. Usually driven from the composer.",
         "example": "one-shot · text + media · price 0 (free) · → list ids",
-        # The full payload (text/audience/media/price/online-targeting) is built
-        # by the rich MassMessageComposer in the editor — `composer` tells the UI
-        # which one to launch instead of the per-knob JSON box. The knobs below
-        # stay as the raw-JSON fallback for power users.
         "composer": "mass_message",
         "knobs": [
             {"key": "text", "type": "str", "hint": "message body"},
@@ -257,12 +218,8 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "list_ids", "type": "json", "hint": "audience OF list ids"},
         ],
     },
+    # The reply-walker: funnel steps advance only while an enabled rule of this kind polls; blank mass_run_id walks every active funnel broadcast.
     "reply_mass_funnel": {
-        # The reply-WALKER. Funnels send the opener (send_mass_message), but the
-        # reply/PPV steps only advance while an ENABLED rule of this kind polls for
-        # fans who replied. With a blank `mass_run_id` it walks EVERY active funnel
-        # broadcast — so ONE recurring rule per account makes all funnels work. The
-        # Mass-funnels tab surfaces/toggles this rule; it's also creatable here.
         "label": "Walk mass-funnel replies", "recurring": True, "surface": "rules",
         "cadence_default_s": 120, "group": "advanced",
         "summary": "Poll fans who replied to a funnel broadcast and advance them "
@@ -290,7 +247,6 @@ _CATALOG: dict[str, dict[str, Any]] = {
         "label": "Auto posts (self-cleaning feed)", "recurring": False, "surface": "ready_made",
         "summary": "Post a list of ready posts one by one; each optionally auto-deletes after N hours.",
         "example": "one-shot · posts [..] · hours_to_live 24 · resend_count 0",
-        # `posts:[…]` is built by the PremadeForm composer in the editor.
         "composer": "premade",
         "knobs": [
             {"key": "posts", "type": "json",
@@ -329,11 +285,8 @@ _CATALOG: dict[str, dict[str, Any]] = {
             {"key": "fan_id", "type": "int", "min": 1, "hint": "the fan to nudge (set by the detector)"},
         ],
     },
+    # Driven from the Full AI page; jobs come from the inbound-DM hook, the rule is the on/off switch. The bare interval job does nothing, so the longest cadence writes the fewest no-op runs.
     "full_ai_chat": {
-        # Driven from its own page (Full AI Chatter), never the rules editor.
-        # Its jobs come from W7's full_ai hook, one per inbound DM; the rule is
-        # the on/off switch. ASSUMPTION: the bare interval job does nothing, so
-        # the longest cadence writes the fewest no-op runs (spec, rung 4).
         "label": "Full AI Chat", "recurring": False, "surface": "internal",
         "cadence_default_s": 86400,
         "summary": "Set Off or Live on the Full AI Chat page. Live: replies to the Fans on its Fans "
@@ -346,7 +299,6 @@ _CATALOG: dict[str, dict[str, Any]] = {
         "label": "Premade mass (send / resend / unsend)", "recurring": False, "surface": "ready_made",
         "summary": "Send ready-made broadcasts on a timer — resend later and/or auto-unsend.",
         "example": "one-shot · messages [..] · resend_after_hours 24 · unsend_after_hours 6",
-        # `messages:[…]` is built by the PremadeForm composer in the editor.
         "composer": "premade",
         "knobs": [
             {"key": "messages", "type": "json",
@@ -356,8 +308,6 @@ _CATALOG: dict[str, dict[str, Any]] = {
     },
 }
 
-# Maps a knob `type` to the UI input widget the editor renders. A knob may set
-# `widget` explicitly to override (e.g. a future `str` enum → "select").
 _WIDGET_FOR_TYPE: dict[str, str] = {
     "int": "number",
     "bool": "switch",
@@ -368,38 +318,23 @@ _WIDGET_FOR_TYPE: dict[str, str] = {
 
 
 def _decorate_knob(kn: dict[str, Any]) -> dict[str, Any]:
-    """Inject the derived `widget` (unless explicit) so the editor can render a
-    typed field per knob instead of one raw-JSON box for the whole payload."""
     widget = kn.get("widget") or _WIDGET_FOR_TYPE.get(kn["type"], "text")
     return {**kn, "widget": widget}
 
 
-# What a rule CREATED for a kind starts with, when its caller sends no payload.
-# Writing the nickname and note onto OnlyFans is what "apply profiles" means to
-# an operator, and what that kind's catalog example already advertises.
-#
-# It lives out here, and is not a knob `default`, for one reason: both `_CATALOG`
-# (spread onto the wire) and a knob default are DISPLAY, and the editor applies
-# defaults when it OPENS a rule as well as when it makes one. Either would let a
-# row created without the key acquire it on the next unrelated save — turning an
-# account's silence into a decision it never made. Only a create reads this.
+# Create-only, not a knob default: the editor applies defaults when it opens a rule, so a row created without the key would acquire it on the next unrelated save.
 _CREATE_PAYLOAD: dict[str, dict[str, Any]] = {
     "apply_profiles": {"push_to_of": True},
-    # The Auto-follow list's switch (Infloww: "Automatically follow fans whose
-    # subscriptions have expired"): OF's recently-expired list, live, money gate
-    # on by default. An account that already has a rule keeps its own payload.
     "auto_follow": {"action": "follow", "targets": {"source": "expired"}, "dry_run": False},
 }
 
 
 def _kind_catalog() -> list[dict[str, Any]]:
-    load_automation_plugins()  # ensure every @register has run
+    load_automation_plugins()
     out: list[dict[str, Any]] = []
     for kind in registered_kinds():
         meta = _CATALOG.get(kind)
         if meta is None:
-            # Unknown/future kind (registered but not catalogued): default it to
-            # the internal surface so it never leaks into the rules dropdown.
             out.append({"kind": kind, "label": kind, "recurring": True,
                         "summary": "", "surface": "internal", "knobs": []})
         else:

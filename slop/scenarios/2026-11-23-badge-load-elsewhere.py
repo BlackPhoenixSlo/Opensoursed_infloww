@@ -1,44 +1,3 @@
-"""Creator badges scenario 2a (docs/spec/creator-badges/phase-0E-slop-and-fake-of-realism.md row 2a; Phase C:
-phase-0C-elsewhere-read-attribution.md): reads, replies and mark-unreads done on OF's own site reach the fan's dot
-through Attribution reads within 8 s, under the per-Creator gate, and a read answered after a fan's DM never clears it.
-
-World: `flat_agency` with the tier's Creators, each a captured session on lib/badge_wire.py. Each Creator's chat list
-(CHATS, inside roster-counts' 25-row window): ONLY_FRIENDS unread `only_friends` chats and RESTRICTED unread
-registry-restricted ones (OF counts them, the Red circle does not), one Muted unread, PLAIN plain chats, PLAIN_UNREAD
-of them unread (lib/badge_load.py `plan`). One headless tab per Creator (lib/badge_load.py DotTab:
-actors/badge_tab.py plus every `chat_read_changed` and fan DM its stream carried).
-
-Legs, the Relay restarted between them with `BADGE_READS` in the stack's relay env (read once at import):
-- full: per Creator a driver on SLOT_S slots, PATTERN: per Creator-min 10 silent reads, 10 replies elsewhere
-  (`echo=False`, a counter frame only), 5 mark-unreads and 15 fan DMs that refill the unread pool. A DM explains its
-  own frame only: no elsewhere frame lands within the DM window of one. Reads and replies take the least recently
-  moved unread plain chat; mark-unreads and DMs the least recently moved read one while fewer than PLAIN_HIGH are
-  unread (the Unread list stays one page: two pages sit >= 1 s apart behind the per-Creator pacer, so under this churn
-  Phase C's completeness rule leaves them incomplete by design; scenario 5 owns two pages); a slot without a target
-  is skipped (metric `driver`).
-- race (full): unread plain chats trimmed to RACE_UNREAD, RACE_QUIET_S quiet, then per Creator `read_elsewhere(Y)`
-  with the Unread list snapshot held (no X, no Y), every `GET /api2/v2/chats` RACE_SLOW_S slower, and a DM from read
-  fan X at RACE_DM_AT_S, inside the Attribution read Y's frame started; its counter frame RACE_DM_COUNTER_S late, so
-  that read stays Complete. Snapshot released at RACE_RELEASE_S.
-- deep (full, report-only): plain unread filled to DEEP_FILL (the list on 2 pages), the driver capped at DEEP_HIGH
-  for deep_s, then trimmed back to PLAIN_UNREAD. Its dot lag is measured (`two_page_report`, metric `two_page_leg`
-  and a summary line), never gated: a 2-page list under churn is incomplete by design.
-- lean, then off: the full leg's driver for lean_s / off_s.
-Each leg ends with its SETTLE_S of nothing moving (lean: past its 15 s gap) and a truth snapshot; race_s itself
-runs on past the release.
-
-Checks (`judge`, over the driver's truth log, the tabs' dots and Red circles, and the fake's calls):
-DOT_FLIP_P95_UNDER_8S / DOT_FLIP_MAX_UNDER_30S (lib/badge_metrics `lag` per fan on the full leg's elsewhere changes;
-DMs are truth, never judged); FINAL_EQUALS_TRUTH (after the full and lean settles: every plain fan's dot = truth,
-every Red circle = `truth_red`, never `raw_counter`); READS_GAP_5S (full + race starts, GAP_SLACK_S of request
-jitter), READS_SINGLE_FLIGHT, READS_MAX_2_PAGES (`group_reads` starts and spans; raw attempts a metric);
-STALE_READ_NEVER_CLEARS (no `chat_read_changed {X, 0}` arriving after X's DM and X's dot unread at the race end, on
-Creators where an Attribution read spans the DM; the `badge-ordering-fence-off` fault's target);
-LEAN_GAP_15S; LEAN_READS_HALVE (lean reads/Creator-min <= LEAN_RATIO x full's); OFF_ZERO_READS (no `filter=unread`
-call in the off leg, Red circle = `truth_red` at its end). Every check `ctx.skip`s while Phase B's slot is absent.
-
-Bypasses (declared): OF at its wire (lib/badge_wire.py on lib/of_wire.py); tabs are API tabs.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -97,10 +56,6 @@ SETTLE_S = {"full": 10.0, "deep": 10.0, "lean": 20.0, "off": 5.0}
 
 def judge(truth: list, seen: dict, init: dict, reds: dict, ends: dict, legs: dict, calls: list,
           race: dict) -> dict[str, tuple[bool | None, dict]]:
-    """Every check's (ok | None, detail). `truth` (t, aid, fan, unread, cause); `seen[(aid, fan)]` the dot's
-    (arrival t, unread), time order; `init[aid][fan]` a plain fan's seeded unread; `reds[aid]` the Red circle (t, n);
-    `ends[leg]` {t, unread: {aid: plain fans}, red: {aid: truth_red}} at its settle; `legs[leg]` (t0, t1, settled);
-    `race[aid]` {fan, dm_t}."""
     out: dict[str, tuple[bool | None, dict]] = {}
     seen = {k: sorted(v) for k, v in seen.items()}
     reds = {k: sorted(v, key=lambda x: x[0]) for k, v in reds.items()}
@@ -213,7 +168,6 @@ def judge(truth: list, seen: dict, init: dict, reds: dict, ends: dict, legs: dic
 
 
 def _leg_lags(truth: list, seen: dict, leg: tuple | None, creators=None) -> tuple[list[float], list[dict]]:
-    """`lag` per elsewhere change inside `leg` (t0, t1, settled), on `creators` (None: all); worst first."""
     lags, worst = [], []
     if leg is None:
         return lags, worst
@@ -234,7 +188,6 @@ def _leg_lags(truth: list, seen: dict, leg: tuple | None, creators=None) -> tupl
 
 
 def two_page_report(truth: list, seen: dict, legs: dict, calls: list) -> dict | None:
-    """Report-only (no check): the deep leg's dot lag on Creators whose Attribution reads there took 2 pages."""
     if "deep" not in legs:
         return None
     t0, _t1, te = legs["deep"]

@@ -9,7 +9,6 @@ const GOOD = "curl 'https://onlyfans.com/api2/v2/users/me' -H 'user-agent: Mozil
 const form = (over: Partial<PasteCurlForm> = {}): PasteCurlForm => ({ ...initialPasteCurl(), curl: GOOD, ...over });
 
 describe("validateCurl", () => {
-  // Prefix, bash copy, cookies and user-agent are checked here; the signed headers stay the relay's (its 422 says which).
   const U = "curl 'https://onlyfans.com/api2/v2/users/me'";
   const HOW = "Open the extension, click Copy cURL again and paste the whole copy.";
   const NO_COOKIES = `No cookies (-b '…') in this curl. ${HOW}`;
@@ -32,7 +31,6 @@ describe("validateCurl", () => {
     ["neither", `${U} -H 'x-bc: x'`, NO_BOTH],
     ["'cookie' only inside a value", `${U} -H 'user-agent: UA' -H 'x-note: cookie: no'`, NO_COOKIES],
     ["-B is not -b", `${U} -H 'user-agent: UA' -B 'sess=s'`, NO_COOKIES],
-    // Copy as cURL (cmd): ^-escaped quotes the relay's shlex can't read, so it is refused with the bash hint.
     ["Windows cmd copy", `curl ^"https://onlyfans.com/api2/v2/users/me^" ^\n  -H ^"user-agent: UA^" ^\n  -b ^"sess=s^"`,
       `That is a Windows (cmd) copy. ${HOW}`],
     ["empty", "", PREFIX],
@@ -62,7 +60,6 @@ describe("continueText", () => {
 });
 
 describe("buildBootstrapBody", () => {
-  // JSON.stringify pins the key order the relay receives.
   it.each<[string, PasteCurlForm, string, string]>([
     ["defaults", form(), "", `{"mode":"paste-curl","curl":${JSON.stringify(GOOD)},"make_active":true}`],
     ["the curl as pasted, untrimmed", form({ curl: `  ${GOOD}\n` }), "", `{"mode":"paste-curl","curl":${JSON.stringify(`  ${GOOD}\n`)},"make_active":true}`],

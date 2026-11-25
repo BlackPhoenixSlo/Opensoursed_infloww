@@ -15,6 +15,6 @@ describe("claimSendGap", () => {
   it("keeps no shared clock for a composer with no model", () => {
     expect(claimSendGap(null, 10_000)).toBe(true);
     expect(claimSendGap(null, 10_001)).toBe(true);
-    expect(claimSendGap("", 10_002)).toBe(true);   // "" is not where null's sends were recorded
+    expect(claimSendGap("", 10_002)).toBe(true);
   });
 });

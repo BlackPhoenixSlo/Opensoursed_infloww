@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { undoList, type UndoOptions } from "./ofMirrorUndo";
 
-// The three lists in use: ofMirrorData's, ofMirrorMoney's, ofMirrorStatsDom's.
 const DATA: UndoOptions = { attrMode: "single", classUndo: "snapshot", skipEqualText: false };
 const MONEY: UndoOptions = { attrMode: "all-in-order", classUndo: "snapshot", skipEqualText: true };
 const STATS: UndoOptions = { attrMode: "single", classUndo: "toggle", skipEqualText: true };
@@ -24,7 +23,7 @@ describe("undoList", () => {
     l.setText(document, span, "7");
     l.setText(document, span, "8");
     l.setClass(document, span, "hot", true);
-    l.setClass(document, root, "lit", true); // turned on: every classUndo restores it (off: "toggle" reorders, below)
+    l.setClass(document, root, "lit", true);
     l.setAttr(document, root, "title", "u");
     l.setAttr(document, root, "data-new", "y");
     l.setAttr(document, root.querySelector("b"), "hidden", "");
@@ -35,7 +34,6 @@ describe("undoList", () => {
     expect(root.outerHTML).toBe(MARKUP);
   });
 
-  // Removing an attribute that is not last, then restoring: "single" re-adds it last, "all-in-order" in its place.
   it.each([
     ["single", DATA, `<div id="a" class="box on" title="t" data-x="1"><span class="n">5</span><b>x</b></div>`],
     ["all-in-order", MONEY, MARKUP],
@@ -48,7 +46,6 @@ describe("undoList", () => {
     expect(root.outerHTML).toBe(want);
   });
 
-  // A class turned off and back: "toggle" appends it, "snapshot" puts the class attribute back as it was.
   it.each([
     ["toggle", STATS, `<p class="on box"></p>`, `<p></p>`, `<p class=""></p>`],
     ["snapshot", DATA, `<p class="box on"></p>`, `<p></p>`, `<p></p>`],
@@ -112,7 +109,7 @@ describe("undoList", () => {
     const outer = l.own(() => {
       l.setText(document, span, "outer");
       inner = l.own(() => l.setAttr(document, root, "title", "inner"));
-      l.setClass(document, span, "after", true); // back on outer's list once inner ends
+      l.setClass(document, span, "after", true);
     });
     l.restore(document);
     expect(root.outerHTML).toBe(`<div id="a" class="box on" data-x="1" title="inner"><span class="n after">outer</span><b>x</b></div>`);

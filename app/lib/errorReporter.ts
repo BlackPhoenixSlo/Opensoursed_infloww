@@ -1,23 +1,5 @@
 "use client";
 
-/**
- * errorReporter — central client → server error pipeline.
- *
- * `reportError(err, kind, extra?)` POSTs a row to /admin/errors. Called
- * from:
- *   • the global handlers installed by `installGlobalErrorHandlers()`
- *     (mounted once at the app root via useErrorReporter)
- *   • our React ErrorBoundary's componentDidCatch
- *   • any ad-hoc catch block that wants to record a non-fatal warn
- *
- * Two safety nets so the reporter can never make things worse:
- *   1. Dedupe — identical (kind, message, stack-head) within 30s only
- *      sends once. A render loop that throws on every paint would
- *      otherwise hammer /admin/errors.
- *   2. POST failures are swallowed. We do NOT log them through the
- *      same path (would loop) or even console.error (already too noisy);
- *      a single console.warn keeps the dev tab informed.
- */
 
 import { relay } from "./relay";
 
@@ -53,7 +35,7 @@ export function reportError(
   } else if (typeof err === "string") {
     message = err;
   } else if (err && typeof err === "object") {
-    try { message = JSON.stringify(err).slice(0, 2000); } catch { /* keep default */ }
+    try { message = JSON.stringify(err).slice(0, 2000); } catch { }
   }
 
   const payload: ReportPayload = {
@@ -66,8 +48,6 @@ export function reportError(
     context: extra,
   };
 
-  // Last-line defense against feedback loops: never report network-layer
-  // failures, since the POST itself goes over the network.
   if (shouldSkip(payload.message) || shouldSkip(payload.stack || "")) return;
 
   const key = dedupeKey(payload);
@@ -76,21 +56,12 @@ export function reportError(
   if (prev && now - prev < DEDUPE_WINDOW_MS) return;
   _recent.set(key, now);
 
-  // Fire-and-forget. Don't await — we don't want to slow the page down
-  // on unrelated work, and we never want to surface the report's own
-  // failure to the user.
   relay.post("/admin/errors", payload).catch((postErr: unknown) => {
-    // Single console.warn so the dev tab notices, but DON'T route this
-    // through reportError again (would loop on relay outages).
     console.warn("[errorReporter] failed to POST", postErr);
   });
 }
 
-// Skip-list of message substrings that should NEVER be reported.
-// These are network-layer failures (relay restart, transient fetch
-// errors, our own /admin/errors POST failing) where reporting them
-// just creates a feedback loop: relay slow → fetch fails → report →
-// relay slower → more fails → ...
+// Network-layer failures (incl. our own POST) must never be reported: relay slow -> fetch fails -> report -> relay slower.
 const _SKIP_PATTERNS = [
   "ECONNRESET",
   "socket hang up",
@@ -98,7 +69,7 @@ const _SKIP_PATTERNS = [
   "Failed to proxy",
   "NetworkError",
   "Load failed",
-  "/admin/errors",      // our own endpoint failing → must not loop
+  "/admin/errors",
 ];
 
 function shouldSkip(message: string): boolean {
@@ -107,15 +78,7 @@ function shouldSkip(message: string): boolean {
 
 let _installed = false;
 
-/** Idempotent: mounts window-level error + unhandledrejection forwarders
- *  exactly once per page load. Safe to call from multiple components.
- *
- *  Deliberately does NOT patch console.error — that was tried briefly
- *  and created a feedback loop when the relay was under load (every
- *  failed fetch logged via console.error → POST to /admin/errors →
- *  added load → more failed fetches). Window-level errors + unhandled
- *  rejections cover real bugs; transient network errors should stay
- *  in the console and the Network tab where they belong. */
+// Deliberately does not patch console.error: that looped POSTs to /admin/errors when the relay was under load.
 export function installGlobalErrorHandlers(): void {
   if (typeof window === "undefined" || _installed) return;
   _installed = true;

@@ -1,14 +1,9 @@
-/**
- * ChatHeader — the Avatar menu and the name, badge and presence line that
- * open it (ticket 95; look-and-feel ticket 141, which drew no avatar and added
- * the verified badge).
- *
- * Moved out of `ChatHeader.test.tsx` unchanged (ticket 141, to keep that file
- * under 1000 lines); the same seam, the `ChatHeader` render test. The relay
- * client is mocked at its module boundary and the session contexts are
- * stubbed, as that file does. Fixture identifiers are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+const platform = vi.hoisted(() => ({ current: "onlyfans" as "onlyfans" | "fansly" }));
+vi.mock("@/hooks/useCan", async () => {
+  const { can } = await import("@/lib/platform");
+  return { useCan: (_: unknown, cap: Parameters<typeof can>[1]) => can(platform.current, cap) };
+});
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -27,10 +22,8 @@ vi.mock("@/lib/relay", async (importOriginal) => ({
   proxyImage: () => "",
 }));
 
-// The Kebab menu reads the role's Function permissions; this suite's role denies none.
 vi.mock("@/components/shell/useGrantedPages", () => ({ useActionAllowed: () => true }));
 
-// An owner signed in, no chatter, no employee (as ChatHeader.test.tsx stubs them).
 vi.mock("@/contexts/UserContext", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/contexts/UserContext")>();
   const value = { user: { user_id: "u-owner", username: "owner" }, loading: false, logout: vi.fn() };
@@ -87,7 +80,6 @@ function renderHeader(over: Partial<Props> = {}, client?: QueryClient) {
   return { props };
 }
 
-/** The relay serves `routes` by exact path, `{}` elsewhere. */
 const serve = (routes: Record<string, unknown> = {}) =>
   relayGet.mockImplementation(async (path: string) => {
     if (path === "/admin/accounts") return { accounts: [] };
@@ -110,13 +102,10 @@ describe("ChatHeader", () => {
   describe("Avatar menu (ticket 95)", () => {
     const USER = `/api/of/v2/users/${FAN_ID}`;
     const FOLDERS = "/api/of/v2/chats/folders?limit=50";
-    /** The OF user and the lists the relay serves for this Fan. */
     const relayWith = (ofUser: Record<string, unknown>, lists: Record<string, unknown>[] = []) =>
       serve({ [USER]: ofUser, [FOLDERS]: { list: lists, hasMore: false } });
-    /** The Avatar menu, a plain box as the Kebab menu is: found through its first row. */
     const avatarMenu = async () => (await screen.findByText("Subscription status")).closest<HTMLElement>("[id]")!;
     const row = (menu: HTMLElement, label: string) => within(menu).getByText(label).parentElement!;
-    // Pressed on the Fan's name, which sits in the "Avatar menu" button (no avatar is drawn, ticket 141).
     const openAvatarMenu = async (user: ReturnType<typeof userEvent.setup>) => {
       await user.click(screen.getByText("Fixture Fan One"));
       return avatarMenu();
@@ -147,7 +136,6 @@ describe("ChatHeader", () => {
       expect(trigger).toHaveAttribute("aria-expanded", "false");
       let menu = await openAvatarMenu(user);
       expect(trigger).toHaveAttribute("aria-expanded", "true");
-      // A menu (`role="menu"`): a page-level Esc handler leaves the Esc that closes it alone.
       expect(menu).toHaveAttribute("role", "menu");
       expect(props.onToggleInsights).not.toHaveBeenCalled();
       const labels = ["Subscription status", "Earnings", "Special offers ▸", "Add to lists ▸"];
@@ -158,7 +146,6 @@ describe("ChatHeader", () => {
       await waitFor(() => expect(row(menu, "Subscription status")).toHaveTextContent("Subscription statusSet to Expire"));
       expect(row(menu, "Earnings")).toHaveTextContent(/^Earnings\$43$/);
 
-      // Escape closes it, and so does a pointer-down outside it.
       await user.keyboard("{Escape}");
       await waitFor(() => expect(screen.queryByText("Subscription status")).toBeNull());
       menu = await openAvatarMenu(user);
@@ -185,7 +172,6 @@ describe("ChatHeader", () => {
     describe('"Special offers ▸" (roadmap 4.5, the discount only)', () => {
       const ME = "/api/of/v2/users/me";
       const DISCOUNT = `/api/of/v2/subscriptions/${FAN_ID}/discount`;
-      /** A Creator at `price` dollars a month and this Fan. */
       const offersWith = (ofUser: Record<string, unknown>, price = 10) =>
         serve({ [USER]: { id: FAN_ID, ...ofUser }, [ME]: { id: Number(ACCOUNT_ID), subscribePrice: price } });
       const offersRow = (menu: HTMLElement) => within(menu).getByRole("button", { name: "Special offers ▸" });
@@ -274,7 +260,6 @@ describe("ChatHeader", () => {
       await waitFor(() => expect(relayPost).toHaveBeenCalledWith(
         `/api/of/v2/lists/31/users/${FAN_ID}`, undefined, { accountId: ACCOUNT_ID }));
       await waitFor(() => expect(listA).toHaveAttribute("aria-pressed", "true"));
-      // The mass composer's list counts (the shared fan-lists cache) go stale too.
       expect(invalidate.mock.calls.map(([f]) => f?.queryKey)).toContainEqual(["fan-lists", ACCOUNT_ID]);
       await user.click(listB);
       await waitFor(() => expect(relayDelete).toHaveBeenCalledWith(

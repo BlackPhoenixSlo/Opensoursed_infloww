@@ -1,8 +1,3 @@
-/**
- * VaultInternalFoldersModal: the list (sections, counts, the OF mark, the price), an open folder's rule note and
- * controls per kind, and each write's request (remove, move, reorder, create, delete). The data hooks, the tile and
- * the viewer are faked at the module; every name is fake.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -148,7 +143,6 @@ describe("VaultInternalFoldersModal", () => {
     await waitFor(() => expect(calls.add).toHaveBeenCalledWith(3, { account_id: "acc-1", media_ids: [12], move_from: 2 }));
     expect(await screen.findByText("Moved 1 to beach")).toBeInTheDocument();
 
-    // Select mode stays on after a write.
     fireEvent.click(screen.getByRole("button", { name: "tile 11" }));
     fireEvent.click(bar().getByRole("button", { name: "Copy to…" }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Copy to folder" })).getByText("feet-nude"));
@@ -213,7 +207,6 @@ describe("VaultInternalFoldersModal", () => {
     tick(13);
     fireEvent.click(bar().getByRole("button", { name: "Copy to…" }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Copy to folder" })).getByText("feet-nude"));
-    // Said in the dialog (which stays for another pick) and on the editor's notice line under it.
     expect(await within(screen.getByRole("dialog", { name: "Copy to folder" })).findByRole("alert")).toHaveTextContent(
       "A feet pack is photos only: 1 of these are not photos.");
     expect(screen.getByTestId("if-notice")).toHaveClass("text-err");

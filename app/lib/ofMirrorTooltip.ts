@@ -1,62 +1,39 @@
 "use client";
 
-/**
- * OF's hover text on the OF mirror's Statistics and Statements pages. OF marks an element with a tooltip `has-tooltip`
- * and keeps its text in `aria-label` (v-tooltip): the "i" icons (Pending balance, Chargeback ratio, Unsend), an
- * earnings row's status tip ("Complete", "Earning will become available in N days"), the header's Support. Hovering or
- * focusing one shows that text in OF's own tooltip markup (app.css `.tooltip`, `.tooltip-arrow`, `.tooltip-inner`)
- * above it, below when there is no room above, as live OF does; leaving or blurring it hides it. A disabled control
- * (its own `title` says "Not available in Inflowwww yet") or one with no text shows none.
- */
 
 import { useEffect, type RefObject } from "react";
 import { BRAND_NAME } from "@/lib/brand";
 
-/** The house tooltip of a control Inflowwww never writes (the generator's NOT_YET_TITLE). Defined here, the one place:
- * this module imports no other mirror module, so ofMirrorWrites, ofMirrorHandoffs and ofMirrorSettingsPages share it. */
 export const NOT_YET = `Not available in ${BRAND_NAME} yet`;
 
-/** A control its binder owns: enabled and data-oi-wired (ofMirrorWrites' read-only fallback skips it); `live`: its Live
- *  proof passed (D1), the Not-yet title dropped. */
 export function markWired(el: Element, live: boolean): void {
   if ("disabled" in el) el.disabled = false;
   if (live) el.removeAttribute("title");
   el.setAttribute("data-oi-wired", "");
 }
 
-/** A control no binder owns (its switch off, or its binder unbound): disabled, the Not-yet title, not data-oi-wired. */
 export function markNotYet(el: Element): void {
   if ("disabled" in el) el.disabled = true;
   el.setAttribute("title", NOT_YET);
   el.removeAttribute("data-oi-wired");
 }
 
-/**
- * A disabled control's tooltip, in place of "Not available in Inflowwww yet", where another Inflowwww page does its job
- * (read-only → redirect): where to go instead. Plain text: the mirror's tooltips are `title`s, which carry no link.
- */
 export const ELSEWHERE = {
-  /** OF's welcome message (Settings › Chats): its Edit and Delete. */
   welcome: "Use Smart Messages → Automated Messages → Delayed welcome",
-  /** A mass message's Unsend (Statistics' Top Message). */
   unsendMass: "Use Smart Messages → Mass Messages → OF mass messages to unsend it",
-  /** A chat's Purchases (the chat header's menu). */
   fanPurchases: "Use Messages Pro → the fan's Sales tab",
 } as const;
 
-/** The pages whose `has-tooltip` elements show their text. */
 export const tooltipPage = (page: string) => /^(statistics|statements)\//.test(page);
 
 const TIP = "data-oi-tooltip";
 
-/** The element whose text a hover on `target` shows (none: no tooltip). */
 export function tipTarget(target: EventTarget | null): HTMLElement | null {
   const el = (target as Element | null)?.closest?.<HTMLElement>(".has-tooltip[aria-label]");
   if (!el || el.hasAttribute("title") || el.hasAttribute("disabled") || el.closest("[disabled]")) return null;
   return el.getAttribute("aria-label")?.trim() ? el : null;
 }
 
-/** OF's tooltip for `el` (its aria-label) in `doc`, above it (no room: below), centred on it. */
 export function showTip(doc: Document, el: HTMLElement): HTMLElement {
   hideTip(doc);
   const tip = doc.createElement("div");
@@ -84,7 +61,6 @@ export function showTip(doc: Document, el: HTMLElement): HTMLElement {
   const left = Math.max(4, Math.min(r.left + r.width / 2 - t.width / 2, width - t.width - 4));
   tip.style.left = `${left + sx}px`;
   tip.style.top = `${(below ? r.bottom + 8 : r.top - t.height - 8) + sy}px`;
-  // The arrow under (over) the element's centre.
   arrow.style.left = `${Math.max(4, r.left + r.width / 2 - left - 5)}px`;
   if (below) arrow.style.top = "-5px";
   else arrow.style.bottom = "-5px";
@@ -96,7 +72,6 @@ export function hideTip(doc: Document): void {
 }
 
 const bound = new WeakSet<Document>();
-/** Hover and focus show an element's tooltip; leaving it, blurring it, scrolling or Escape hide it. Bound once per page. */
 export function bindTooltips(doc: Document): void {
   if (bound.has(doc)) return;
   bound.add(doc);
@@ -128,7 +103,6 @@ export function bindTooltips(doc: Document): void {
   });
 }
 
-/** On a Statistics or Statements page, OF's hover text for its `has-tooltip` elements on every frame load. */
 export function useOfTooltips(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const page = /^\/of-mirror\/pages\/(.+)\.html$/.exec(src)?.[1] ?? "";
   const on = tooltipPage(page);

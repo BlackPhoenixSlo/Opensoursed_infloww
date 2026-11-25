@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""vault_harvest_terms: the OF-search harvest's term list (pure, plain-assert).
-
-Run: cd service/tests && PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_harvest_terms.py
-"""
 from __future__ import annotations
 
 import sys
@@ -30,7 +26,6 @@ def case_account_terms_rank_and_filter() -> None:
         None, "junk", {"tags": "not a list but fine"},
     ]
     got = h.account_terms(rows, min_count=3)
-    # one vote per item: "red lingerie" twice on row 0 still counts once there
     assert got[0] == "red lingerie" and set(got) == {"red lingerie", "bedroom", "pink wand"}, got
     assert h.account_terms(rows, min_count=1, top=1) == ["red lingerie"]
     terms = h.harvest_terms(rows)

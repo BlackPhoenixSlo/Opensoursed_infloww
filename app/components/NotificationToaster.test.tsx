@@ -1,56 +1,23 @@
-/**
- * NotificationToaster — inbound-message bubble (the NEW `api2_chat_message`
- * listener inside NotificationDeltaPoller).
- *
- * Confirms end-to-end that a fan's inbound DM, delivered over the SSE bus as
- * an `api2_chat_message` envelope, produces a top-right toast card — and that
- * `settings.bubble.message` controls the accent-ring "bubble" styling, while
- * `settings.toast.message` gates whether the toast appears at all. Outbound
- * echoes and out-of-scope accounts must NOT ping; history is always mirrored.
- *
- * Strategy: NotificationToaster carries MODULE-LEVEL state (currentToasts,
- * seenIdsByAccount, toastListeners). We isolate every case with
- * vi.resetModules() + a fresh vi.doMock of every dependency + a dynamic
- * import() of the component. The events module is mocked so eventBus.on
- * records the handler in a registry the test fires synchronously.
- *
- * The clock-in reminder lane (docs/spec/phase-02-shifts-time-tracking.md,
- * Clock-in reminder) reads `GET /admin/shifts/me` through the mocked relay for
- * a Chatter session only; every other case has no session, so it never reads.
- * Rewritten for w4-a: its "Clock in" action clocks in at once on the
- * agency-wide clock (`GET /admin/shifts/clock-status` decides; a chatter in
- * two Agencies still gets the clock dialog), and the result is a notice card.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 
-// notifSettings is a REAL dependency (we assert on the history it writes and
-// reuse its types/defaults); only its consumers are mocked.
 import {
   DEFAULT_NOTIF_SETTINGS,
   readNotifHistory,
   type NotifSettings,
 } from "@/lib/notifSettings";
 
-// ── per-test mutable mock state ───────────────────────────────────────────
-// Set by each test BEFORE the dynamic import; read by the doMock factories.
 let mockSettings: NotifSettings;
 let mockAccountId: string | null;
-// What useActiveAccounts returns: the accounts' platforms, for the per-platform switches.
 let mockActive: { id: string; platform?: "onlyfans" | "fansly" | null; has_session: boolean }[];
 type Handler = (env: unknown, rawType?: string) => void;
-// eventType -> handlers registered via eventBus.on in this isolated module graph.
 let handlers: Map<string, Set<Handler>>;
-// The session the reminder lane sees (null = none, as in every non-reminder case).
 let mockSession: { user: object | null; chatter: object | null };
-// The relay's GET, by path; the reminder lane is its only caller here.
 let mockRelayGet: ReturnType<typeof vi.fn>;
 let mockRelayPost: ReturnType<typeof vi.fn> = vi.fn();
-// Web Push live for this device (the relay pushes, so the page doesn't ping).
 let mockPushLive = false;
-// The page's push-notice handler (lib/webPush listenPushNotices), as the service worker reaches it.
 let pushNotice: ((raw: unknown) => boolean) | null = null;
 const mockPlayAlertOnce = vi.fn();
 const mockOsNotify = vi.fn(async () => {});
@@ -63,14 +30,11 @@ function settingsWith(over: {
     ...DEFAULT_NOTIF_SETTINGS,
     enabled: true,
     osPing: false,
-    // Pin the types these tests render so they don't track shipped defaults.
     toast: { ...DEFAULT_NOTIF_SETTINGS.toast, subscribed: true, message: over.toastMessage },
     bubble: { ...DEFAULT_NOTIF_SETTINGS.bubble, message: over.bubbleMessage },
   };
 }
 
-/** Re-apply every mock against the freshly-reset module graph, then import
- *  the component. Must be called AFTER mockSettings/mockAccountId are set. */
 async function loadComponent(
   { realAccounts = false }: { realAccounts?: boolean } = {},
 ): Promise<() => ReactElement> {
@@ -103,8 +67,6 @@ async function loadComponent(
     useScope: () => ({ accountId: mockAccountId }),
   }));
 
-  // realAccounts: run the real account hooks over a mocked /admin/accounts
-  // read, so the platform split is exercised end to end.
   if (realAccounts) vi.doUnmock("@/hooks/useAccounts");
   else {
     vi.doMock("@/hooks/useAccounts", () => ({
@@ -148,7 +110,6 @@ async function loadComponent(
   return Toaster;
 }
 
-/** Fire a synthetic envelope to every registered handler of `type`. */
 function fire(type: string, env: unknown) {
   const set = handlers.get(type);
   if (!set || set.size === 0) {
@@ -166,7 +127,6 @@ function renderToaster(Comp: () => ReactElement) {
   return { ...render(<QueryClientProvider client={qc}><Comp /></QueryClientProvider>), qc };
 }
 
-/** The toast card div carries the message text + the ring class. */
 function findToastByText(container: HTMLElement, text: string): HTMLElement | null {
   const cards = Array.from(
     container.querySelectorAll<HTMLElement>("div.bg-panel"),
@@ -194,8 +154,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-// Each case uses a UNIQUE account id + message id so even if module state
-// leaked, assertions stay independent. We additionally reset modules per case.
 describe("NotificationToaster — inbound api2_chat_message bubble", () => {
   it("case 1: inbound + toast.message + bubble.message → toast with accent-ring bubble", async () => {
     mockAccountId = "100";
@@ -210,10 +168,8 @@ describe("NotificationToaster — inbound api2_chat_message bubble", () => {
 
     const card = findToastByText(container, "hey from case1");
     expect(card).not.toBeNull();
-    // The headline assertion: bubble styling is the accent ring.
     expect(card!.className).toContain("ring-accent");
     expect(card!.className).not.toContain("ring-border");
-    // Actor name renders.
     expect(card!.textContent).toContain("Flinty");
   });
 
@@ -248,7 +204,6 @@ describe("NotificationToaster — inbound api2_chat_message bubble", () => {
     });
 
     expect(findToastByText(container, "outbound case3")).toBeNull();
-    // ToastStack renders nothing at all.
     expect(container.querySelector("div.bg-panel")).toBeNull();
   });
 
@@ -263,18 +218,15 @@ describe("NotificationToaster — inbound api2_chat_message bubble", () => {
       api2_chat_message: { id: 1004, text: "history case4", fromUser: { id: 780, name: "Histy" } },
     });
 
-    // No visible toast.
     expect(findToastByText(container, "history case4")).toBeNull();
     expect(container.querySelector("div.bg-panel")).toBeNull();
 
-    // History IS mirrored regardless of the toggle.
     const hist = readNotifHistory();
     const entries = hist["103"] ?? [];
     const entry = entries.find((e) => e.id === "m1004");
     expect(entry).toBeTruthy();
     expect(entry!.text).toContain("history case4");
     expect(entry!.typeKey).toBe("message");
-    // Sanity: the raw localStorage key the bell reads from is populated.
     expect(window.localStorage.getItem("chatterly:notif-history:v1")).toContain("m1004");
   });
 
@@ -298,7 +250,6 @@ describe("NotificationToaster — inbound api2_chat_message bubble", () => {
   });
 
   it("case 5: out-of-scope account (__account_id not in targetIds) → NO toast", async () => {
-    // Scope pins account "104"; the envelope is for "999" → must be ignored.
     mockAccountId = "104";
     mockSettings = settingsWith({ toastMessage: true, bubbleMessage: true });
     const Comp = await loadComponent();
@@ -311,7 +262,6 @@ describe("NotificationToaster — inbound api2_chat_message bubble", () => {
 
     expect(findToastByText(container, "scope case5")).toBeNull();
     expect(container.querySelector("div.bg-panel")).toBeNull();
-    // And nothing leaked into history for the in-scope account.
     const hist = readNotifHistory();
     expect(hist["104"]).toBeUndefined();
   });
@@ -333,11 +283,6 @@ describe("NotificationToaster — inbound api2_chat_message bubble", () => {
   });
 });
 
-// The `toasts` SSE path (OF notification toasts). Tip/purchase toasts must
-// deep-link with the one-shot ?refresh=media flag — the popout chat page
-// reads it on mount and refetches the FanDrawer's manual-↻ cache set so the
-// just-received transaction shows instead of the rehydrated stale copy.
-// Non-money types must link plain.
 describe("NotificationToaster — tip/purchase toast href carries ?refresh=media", () => {
   function fireOfToast(aid: string, toast: Record<string, unknown>) {
     fire("toasts", { __account_id: aid, toasts: [toast] });
@@ -363,8 +308,6 @@ describe("NotificationToaster — tip/purchase toast href carries ?refresh=media
     const a = findChatAnchor(container, 555);
     expect(a).not.toBeNull();
     expect(a!.getAttribute("href")).toBe("/messages-pro/300/555?refresh=media&fanTab=Tipper");
-    // No target: a click opens the Fan as a Fan tab in Messages Pro
-    // (lib/notificationLink), never a browser tab of its own.
     expect(a!.getAttribute("target")).toBeNull();
   });
 
@@ -381,7 +324,7 @@ describe("NotificationToaster — tip/purchase toast href carries ?refresh=media
       fireEvent.click(findChatAnchor(container, 558)!);
       expect(inPage).toHaveBeenCalledWith({ accountId: "303", fanId: 558, name: "Ann" }, { refresh: false });
       expect(open).not.toHaveBeenCalled();
-      expect(container.querySelector('a[href*="/558"]')).toBeNull(); // dismissed
+      expect(container.querySelector('a[href*="/558"]')).toBeNull();
 
       unregister();
       fireOfToast("303", { id: 9005, type: "subscribed", text: "subscribed", data: { relatedUser: { id: 559, name: "Bo" } } });
@@ -428,27 +371,9 @@ describe("NotificationToaster — tip/purchase toast href carries ?refresh=media
   });
 });
 
-// No lane refetches OF's notif-list, muted or not. Each arrival used to, which
-// cost the Money rail 2 OF calls per Creator per DM — at 20 Creators the bulk
-// of its OF traffic. Now a money arrival (tip toast, PPV unlock) is SEEDED into
-// the rail's cached list from its own payload, and everything else reaches the
-// bell through the history mirror. Pinned here because it is invisible: a
-// stray invalidate brings the per-message OF fan-out straight back.
-//
-// ⚠️ NEVER PIN A DATE IN A PURCHASE FIXTURE.
-// `appendNotifHistory` prunes rows older than HISTORY_TTL_MS (7 days), so a
-// hardcoded `created_at` writes a row that the store drops on the way in — and
-// it does so SILENTLY, one week after the test was written. That is exactly what
-// happened here: pinned at 2026-07-23, green until 07-30, red from 07-31 on, and
-// red in a shape that reads like a broken feature. The toast case kept passing
-// (toasts aren't pruned) while every history assertion failed, so the suite
-// looked like it had caught a regression in history mirroring. It hadn't.
-//
-// Keep the ZONED "+00:00" shape — several cases below exist to prove `toUtcIso`
-// passes an explicit offset through untouched, which is a real past bug.
 const RECENT_OF_TS = new Date(Date.now() - 60_000).toISOString()
   .replace("Z", "+00:00");
-/** What that timestamp must look like once stored (normalised to UTC "Z"). */
+// Never pin a date in a purchase fixture: appendNotifHistory prunes rows older than 7 days, silently.
 const RECENT_OF_TS_UTC = new Date(Date.parse(RECENT_OF_TS)).toISOString();
 
 describe("NotificationToaster — arrivals seed the money lists, never refetch them", () => {
@@ -478,8 +403,8 @@ describe("NotificationToaster — arrivals seed the money lists, never refetch t
         }],
       });
 
-      expect(container.querySelector("div.bg-panel")).toBeNull();  // silenced
-      expect(readNotifHistory()["700"]?.length).toBe(1);           // but recorded
+      expect(container.querySelector("div.bg-panel")).toBeNull();
+      expect(readNotifHistory()["700"]?.length).toBe(1);
       const list = qc.getQueryData<{ id: unknown; user?: { id?: unknown } }[]>(["notif-list", "700", "tip"]);
       expect(list?.map((r) => String(r.id))).toEqual(["7001", "1"]);
       expect(list?.[0]?.user?.id).toBe(771);
@@ -533,7 +458,6 @@ describe("NotificationToaster — arrivals seed the money lists, never refetch t
         api2_chat_message: { id: 7004, text: "hi", fromUser: { id: 773, name: "Dm" } },
       });
 
-      // Seeding a list nobody fetched would pass a 1-row list off as OF's.
       expect(qc.getQueryData(["notif-list", "702", "tip"])).toBeUndefined();
       expect(readNotifHistory()["702"]?.length).toBe(2);
       expect(refetchedNotifList(spy)).toBe(false);
@@ -544,8 +468,6 @@ describe("NotificationToaster — arrivals seed the money lists, never refetch t
 });
 
 describe("NotificationToaster — another accessible Creator's money, in a tab scoped to one", () => {
-  // The relay routes a money event for any Creator the principal can access to every tab (events_decide
-  // ANY_SCOPE_TYPES): a tab scoped to one Creator records and seeds it for the rail, and pings nothing.
   const OLD_ROW = { id: 1, type: "tip", text: "older", createdAt: "2026-01-01T00:00:00.000Z" };
   const active = (...ids: string[]) => ids.map((id) => ({ id, platform: "onlyfans" as const, has_session: true }));
 
@@ -580,7 +502,7 @@ describe("NotificationToaster — another accessible Creator's money, in a tab s
 
     expect(container.querySelector("div.bg-panel")).toBeNull();
     expect(readNotifHistory()["713"]?.map((e) => e.id)).toEqual(["7132"]);
-    expect(mockRelayGet).not.toHaveBeenCalled();  // no username lookup: an OF read for a Creator not on screen
+    expect(mockRelayGet).not.toHaveBeenCalled();
   });
 
   it("purchase lane: a PPV unlock → no toast, recorded, seeded into the cached purchases list", async () => {
@@ -613,7 +535,7 @@ describe("NotificationToaster — per-platform switches", () => {
     mockAccountId = null;
     mockActive = [
       { id: "710", platform: "fansly", has_session: true },
-      { id: "711", platform: null, has_session: true }, // no platform = OnlyFans
+      { id: "711", platform: null, has_session: true },
     ];
     mockSettings = { ...DEFAULT_NOTIF_SETTINGS, osPing: false, platforms: { onlyfans: true, fansly: false } };
     const Comp = await loadComponent();
@@ -652,16 +574,7 @@ describe("NotificationToaster — per-platform switches", () => {
   });
 });
 
-// The `purchase_notified` SSE path — a PPV unlock, announced by the relay off
-// OF's purchases-notification feed. OF pushes NO purchase frame and no
-// purchase toast, so this is the only thing that can tell a chatter a sale
-// landed; before it, a buy produced no toast, no bell entry, and no rail row
-// until someone reloaded the page.
-//
-// The load-bearing detail is the ID. The rail and bell list that same OF feed
-// and dedupe on the notification id, so this ping must carry OF's REAL id
-// verbatim — prefix it, synthesise it, or key it on anything else, and every
-// sale shows up twice. The id cases below exist to catch exactly that.
+// The ping must carry OF's real notif id verbatim: the rail/bell dedupe on it, so a prefixed id double-lists the sale.
 describe("NotificationToaster — purchase_notified PPV unlock", () => {
   function settingsForPurchases(on: boolean): NotifSettings {
     return {
@@ -677,8 +590,6 @@ describe("NotificationToaster — purchase_notified PPV unlock", () => {
     fire("purchase_notified", { __account_id: aid, purchase_notified: p });
   }
 
-  // Shaped like the real payload in service/purchase_notifications.py — OF's
-  // notification id, and OF's zoned createdAt.
   const unlock = (over: Record<string, unknown> = {}) => ({
     notif_id: "117301756206",
     fan_id: 4242,
@@ -702,8 +613,6 @@ describe("NotificationToaster — purchase_notified PPV unlock", () => {
     expect(a!.getAttribute("href")).toBe("/messages-pro/400/4242?refresh=media&fanTab=Daniel");
   });
 
-  // THE contract: same id as the feed row ⇒ the rail/bell merge collapses the
-  // two into one. A prefixed or synthesised id silently double-lists the sale.
   it("history id is OF's notification id verbatim, so the feed row dedupes", async () => {
     mockAccountId = "401";
     mockSettings = settingsForPurchases(true);
@@ -788,7 +697,6 @@ describe("NotificationToaster — the clock-in reminder", () => {
   };
   const TEXT = "Your shift on creator_one has started.";
   let reminder: typeof REMINDER | null;
-  /** ClockStatus' `reason` while the chatter may clock in. */
   let clockReason: string | null;
 
   beforeEach(() => {
@@ -814,7 +722,6 @@ describe("NotificationToaster — the clock-in reminder", () => {
     });
   });
 
-  /** Render under a client the case keeps, so it can stand in for the next poll. */
   async function renderReminder() {
     const Comp = await loadComponent();
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 0 } } });
@@ -831,9 +738,6 @@ describe("NotificationToaster — the clock-in reminder", () => {
     expect(screen.getAllByText(TEXT)).toHaveLength(1);
     expect(mockRelayGet.mock.calls.filter(([p]) => p === "/admin/shifts/me").length).toBeGreaterThanOrEqual(3);
 
-    // A reload (fresh module state) does not repeat it: the key is in localStorage.
-    // Settle until the reload's read has been answered and rendered, so the
-    // absence below is not just a toast that has not painted yet.
     unmount();
     const before = mockRelayGet.mock.calls.length;
     const again = await renderReminder();
@@ -842,7 +746,6 @@ describe("NotificationToaster — the clock-in reminder", () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     expect(screen.queryByText(TEXT)).toBeNull();
 
-    // The next occurrence of the same Shift is a new reminder.
     reminder = { ...REMINDER, occurrence_start: "2026-10-15T15:00:00Z", occurrence_end: "2026-10-15T19:00:00Z" };
     await again.poll();
     expect(await screen.findByText(TEXT)).toBeInTheDocument();
@@ -874,7 +777,6 @@ describe("NotificationToaster — the clock-in reminder", () => {
     await renderReminder();
     await screen.findByText(TEXT);
     await waitFor(() => expect(mockRelayGet).toHaveBeenCalledWith("/admin/shifts/clock-status"));
-    // The status answer has rendered once the hook has it; give it a tick.
     await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     fireEvent.click(screen.getByRole("button", { name: "Clock in" }));
     expect(await screen.findByRole("dialog", { name: "Clock in and out" })).toBeInTheDocument();
@@ -898,9 +800,6 @@ describe("NotificationToaster — the clock-in reminder", () => {
   });
 });
 
-// Regression: the platform switcher must only narrow the platform surfaces.
-// In Fansly mode an OnlyFans model's inbound DM still toasts, because the
-// toaster reads the platform-neutral useActiveAccounts.
 describe("NotificationToaster — platform switcher", () => {
   it("an OnlyFans DM still toasts while the shell is in Fansly mode", async () => {
     mockAccountId = null;
@@ -959,14 +858,13 @@ describe("NotificationToaster — Web Push", () => {
       const Comp = await loadComponent();
       const { container } = renderToaster(Comp);
       fire("api2_chat_message", dm(9001, "ping me"));
-      expect(count(container, "ping me")).toBe(1); // the toast shows either way
+      expect(count(container, "ping me")).toBe(1);
       expect(mockOsNotify).toHaveBeenCalledTimes(pings);
     } finally {
       focus.mockRestore();
     }
   });
 
-  /** The service worker offering this page a push: the page's ack. */
   function offer(raw: unknown): boolean {
     if (!pushNotice) throw new Error("no push-notice listener");
     let took = false;
@@ -991,7 +889,7 @@ describe("NotificationToaster — Web Push", () => {
     expect(mockPlayAlertOnce).not.toHaveBeenCalled();
     const buy = { __account_id: "900", purchase_notified: { notif_id: "9060", fan_id: 778, amount_cents: 500, name: "Buyer" } };
     fire("purchase_notified", buy);
-    fire("purchase_notified", buy); // a second replay
+    fire("purchase_notified", buy);
     expect(count(container, "Unlocked your PPV")).toBe(1);
     expect(mockPlayAlertOnce.mock.calls).toEqual([["900:9060", "s12"]]);
   });
@@ -1032,7 +930,7 @@ describe("NotificationToaster — Web Push", () => {
     const Comp = await loadComponent();
     renderToaster(Comp);
     expect(offer(notice(9005, "rich row"))).toBe(true);
-    expect(readNotifHistory()["900"] ?? []).toEqual([]); // the push path never mirrors
+    expect(readNotifHistory()["900"] ?? []).toEqual([]);
     fire("api2_chat_message", {
       __account_id: "900",
       api2_chat_message: {

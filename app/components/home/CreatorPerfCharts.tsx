@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * Creator reports › Creator performance's lower blocks, outside CompetitorReports.tsx so its diff stays small
- * (docs/infloww-layouts/analytics-creator-reports.md):
- *   • Chargebacks (#170, #171): a smooth 5px #3467FF line of the reversed money over a #EFF4FF area, 350px high,
- *     from the revenue read's `status=reversed` days.
- *   • Earnings heatmap (#168, #169): the window's sales by weekday and hour in the report zone, the revenue read's
- *     `group_by=hour_of_week`, 500px high, #EFF4FF to #3467FF, hours "12 AM" to "11 PM", each cell's tooltip
- *     "Total sales". The bundle charts each date by hour; we fold the window into one week, rows from the Agency's
- *     week start.
- */
 
 import { useId } from "react";
 
@@ -17,13 +7,11 @@ import { BlankChart, ChartAxes, ChartMessage, fmtUsd, niceMax, plotFrame, useCha
 import { useWeekStart } from "@/lib/appliedSettings";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 
-/** A bucket's label and its money in cents. */
 export interface ChartPoint { label: string; value: number }
 
 const BLUE = "#3467FF";
 const PALE = "#EFF4FF";
 
-/** A smooth path through the points (Catmull-Rom as cubic Béziers), the bundle's `smooth:true`. */
 function smoothPath(pts: [number, number][]): string {
   if (!pts.length) return "";
   let d = `M${pts[0][0].toFixed(2)},${pts[0][1].toFixed(2)}`;
@@ -36,20 +24,16 @@ function smoothPath(pts: [number, number][]): string {
   return d;
 }
 
-/** A slot of the week: ISO weekday (1 = Monday), hour 0-23, its money in cents. */
 export interface HeatCell { weekday: number; hour: number; value: number }
 
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-/** The bundle's `hours`: "12 AM", "1 AM" … "11 PM". */
 const HOURS = Array.from({ length: 24 }, (_, h) => `${h % 12 || 12} ${h < 12 ? "AM" : "PM"}`);
 
-/** #169: the share `t` (0-1) of the way from #EFF4FF to #3467FF. */
 function heatColor(t: number): string {
   const [a, b] = [[0xef, 0xf4, 0xff], [0x34, 0x67, 0xff]];
   return `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(",")})`;
 }
 
-/** #168, #169: Earnings heatmap. `null` cells draw the empty grid with `message`. */
 export function EarningsHeatmap({ cells, message }: { cells: HeatCell[] | null; message: string }) {
   const [ref, W] = useChartWidth();
   const weekStart = useWeekStart();
@@ -77,7 +61,6 @@ export function EarningsHeatmap({ cells, message }: { cells: HeatCell[] | null; 
           const v = at.get(`${d} ${i}`) ?? 0;
           const name = `${DAY_NAMES[d - 1]} ${h}`;
           const box = { x: L + i * cw + 1, y: T + row * ch + 1, width: Math.max(0, cw - 2), height: Math.max(0, ch - 2) };
-          // With no read yet (or no Creator) the bare grid, no figures.
           if (!cells) return <rect key={name} {...box} fill={PALE} />;
           return (
             <rect key={name} {...box} fill={heatColor(max ? v / max : 0)} role="img" aria-label={`${name}: ${fmtUsd(v)}`}>
@@ -85,7 +68,6 @@ export function EarningsHeatmap({ cells, message }: { cells: HeatCell[] | null; 
             </rect>
           );
         }))}
-        {/* The visual map: the scale's two ends under the grid. */}
         {cells && (
           <>
             <defs>
@@ -106,7 +88,6 @@ export function EarningsHeatmap({ cells, message }: { cells: HeatCell[] | null; 
   );
 }
 
-/** #170, #171: Chargebacks, on the reports' axes. `null` points draw the blank chart with `message`. */
 export function ChargebacksChart({ points, message }: { points: ChartPoint[] | null; message: string }) {
   const [ref, W] = useChartWidth();
   const H = 350;

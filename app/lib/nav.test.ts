@@ -164,7 +164,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       .toBeNull();
   });
 
-  it("builds every Share for Share page (no placeholder), all four hidden from a chatter", () => {
+  it("builds every Share for Share page, all four hidden from a chatter", () => {
     const g = SIDEBAR.find((n) => isGroup(n) && n.label === "Share for Share");
     const items = g && isGroup(g) ? g.children : [];
     expect(items.map((c) => c.href)).toEqual([
@@ -173,21 +173,18 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       "/share-for-share/schedule",
       "/share-for-share/settings",
     ]);
-    expect(items.filter((c) => c.notBuilt)).toEqual([]);
     expect(items.filter((c) => !c.chatterHidden)).toEqual([]);
     const labels = outline(visibleSidebar(SIDEBAR, { chatterOnly: true, grantedPages: null }));
     expect(labels.some((l) => l.startsWith("Share for Share"))).toBe(false);
   });
 
-  it("builds every OF Manager page (the OF mirror, no placeholder)", () => {
+  it("builds every OF Manager page (the OF mirror)", () => {
     const g = SIDEBAR.find((n) => isGroup(n) && n.label === "OF Manager");
     const items = g && isGroup(g) ? g.children : [];
-    expect(items.filter((c) => c.notBuilt)).toEqual([]);
     expect(items.map((c) => c.href).filter((h) => !mirrorPageOfHref(h))).toEqual([]);
   });
 
-  it("builds every Settings tab (no placeholder), the six Blob tabs, Security (organization), Co-creator tag, OnlyFans consent, OF Manager writes, AI keys and the Audit log hidden from a Chatter", () => {
-    expect(SETTINGS_TABS.filter((t) => t.notBuilt)).toEqual([]);
+  it("builds every Settings tab, the six Blob tabs, Security (organization), Co-creator tag, OnlyFans consent, OF Manager writes, AI keys and the Audit log hidden from a Chatter", () => {
     expect(SETTINGS_TABS.filter((t) => t.chatterHidden).map((t) => t.href)).toEqual([
       "/settings/account",
       "/settings/preferences",
@@ -297,9 +294,8 @@ describe("platform nav map (Infloww's fanslyMenu, index.9f50f370.js @10699639)",
     expect(sidebarFor("onlyfans")).toBe(SIDEBAR);
   });
 
-  it("Fansly mode: Fansly Manager, Scripts, Message pro, Vault pro, the divider, Creators and Employees", () => {
+  it("Fansly mode with fansly_manager off: no Fansly Manager group; Scripts, Message pro, Vault pro, the divider, Creators and Employees", () => {
     expect(outline(visibleSidebar(sidebarFor("fansly"), OWNER))).toEqual([
-      "Fansly Manager: Homepage / Profile / Subscriptions / Media Vault / Media Collection / Bookmarks / Messages / Creator Dashboard / Profile Statistics / Tracking Links / Referrals / Settings",
       "Scripts",
       "Message pro",
       "Vault pro",
@@ -309,9 +305,9 @@ describe("platform nav map (Infloww's fanslyMenu, index.9f50f370.js @10699639)",
     ]);
   });
 
-  it("with fansly_manager on, the Fansly Manager also shows its four built pages, in Infloww's order", () => {
+  it("with fansly_manager on, the Fansly Manager group is its four built pages, in Infloww's order", () => {
     expect(outline(visibleSidebar(sidebarFor("fansly"), { ...OWNER, flags: { fansly_manager: true } }))[0]).toBe(
-      "Fansly Manager: Homepage / Profile / Subscriptions / Media Vault / Media Collection / Scheduled Posts / Lists / Bookmarks / Messages / Notifications / Creator Dashboard / Earning Statistics / Profile Statistics / Tracking Links / Referrals / Settings",
+      "Fansly Manager: Scheduled Posts / Lists / Notifications / Earning Statistics",
     );
   });
 
@@ -345,22 +341,19 @@ describe("platform nav map (Infloww's fanslyMenu, index.9f50f370.js @10699639)",
     expect(outline(visibleSidebar(sidebarFor("fansly"), mp))[0]).not.toMatch(/Scheduled Posts|Lists|Notifications|Earning Statistics/);
   });
 
-  it("Fansly's built pages are OnlyFans' own routes or flagged Fansly Manager pages; the rest are placeholders", () => {
+  it("Fansly's links are exactly the four flagged Fansly Manager pages plus OnlyFans' Scripts, Message pro and Vault pro", () => {
     const links = FANSLY_NAV.flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? n.children : [n]));
-    expect(links.filter((l) => l.flag).map((l) => [l.href, l.flag, !!l.notBuilt])).toEqual([
-      ["/fansly-manager/scheduled", "fansly_manager", false],
-      ["/fansly-manager/lists", "fansly_manager", false],
-      ["/fansly-manager/notifications", "fansly_manager", false],
-      ["/fansly-manager/earning-statistics", "fansly_manager", false],
+    expect(links.map((l) => [l.href, l.flag])).toEqual([
+      ["/fansly-manager/scheduled", "fansly_manager"],
+      ["/fansly-manager/lists", "fansly_manager"],
+      ["/fansly-manager/notifications", "fansly_manager"],
+      ["/fansly-manager/earning-statistics", "fansly_manager"],
+      ["/growth/scripts", undefined],
+      ["/messages-pro", undefined],
+      ["/growth/vault-pro", undefined],
     ]);
-    const built = links.filter((l) => !l.notBuilt && !l.flag).map((l) => l.href);
-    expect(built).toEqual(["/growth/scripts", "/messages-pro", "/growth/vault-pro"]);
     const onlyfans = new Set(SIDEBAR.flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? n.children : [n])).map((l) => l.href));
-    for (const href of built) expect(onlyfans.has(href)).toBe(true);
-    for (const l of links.filter((x) => x.notBuilt)) {
-      expect(l.href.startsWith("/fansly-manager/")).toBe(true);
-      expect(findNavLink(l.href)?.notBuilt).toBe(true);
-    }
+    for (const l of links.filter((x) => !x.flag)) expect(onlyfans.has(l.href)).toBe(true);
   });
 
   it("a chatter's Fansly rail hides Vault pro, as its OnlyFans one does", () => {
@@ -372,7 +365,8 @@ describe("platform nav map (Infloww's fanslyMenu, index.9f50f370.js @10699639)",
     expect(platformOfPath("/")).toBe("onlyfans");
     expect(platformOfPath("/analytics/fan-reports")).toBe("onlyfans");
     expect(platformOfPath("/of-manager/home")).toBe("onlyfans");
-    expect(platformOfPath("/fansly-manager/home")).toBe("fansly");
+    expect(platformOfPath("/fansly-manager/lists")).toBe("fansly");
+    expect(platformOfPath("/fansly-manager/home")).toBeNull();
     // Shared by both platforms, or common.
     expect(platformOfPath("/growth/scripts")).toBeNull();
     expect(platformOfPath("/growth/vault-pro")).toBeNull();

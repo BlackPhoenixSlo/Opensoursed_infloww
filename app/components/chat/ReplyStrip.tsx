@@ -1,9 +1,3 @@
-/**
- * The reply strip in the Composer, `.reply-strip` (m.html:525-530, spec gap
- * row L10, F26): ↩, "Replying to: <quote>" on one line, ✕ "Cancel reply".
- * With it, the quote builder the Thread's ↩ uses, moved out of `ChatSurface`
- * unchanged (ticket 100). `ChatSurface` re-exports `QuotedReply`.
- */
 import { Undo2 } from "lucide-react";
 
 import type { OFMessage } from "@/lib/relay";
@@ -12,12 +6,8 @@ import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 
 export interface QuotedReply {
-  /** OF message id we're quoting from. */
   messageId: number | string;
-  /** Plain-text preview shown in the composer + prepended on send. */
   preview: string;
-  /** Author name for the quoted card the send attaches to the reply
-   *  (ChatSurface's reply snapshot) — defaults to "fan" if absent. */
   authorName: string;
 }
 
@@ -30,7 +20,6 @@ export function quoteFromMessage(msg: OFMessage): QuotedReply {
   };
 }
 
-/** ✕ clears the quote, so the next send is not a reply. */
 export function ReplyStrip({ quoted, onCancel }: { quoted: QuotedReply; onCancel: () => void }) {
   return (
     <div className={cn(MP.composer.replyStrip, "flex items-center bg-bg-elev-1 border-accent text-fg")}>

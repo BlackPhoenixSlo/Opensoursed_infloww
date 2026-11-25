@@ -1,25 +1,5 @@
 "use client";
 
-/**
- * VaultDuplicatesModal — review + confirm removal of re-uploaded vault media.
- *
- * A mature vault is ~30% re-uploads (measured on one account: 706 of 2,309). Each copy
- * costs a describe call, clutters the picker, and splits folder ordering.
- *
- * The relay groups them into sets where `original` is the EARLIEST-uploaded copy
- * and is always kept; everything else is a removal candidate, pre-selected. The
- * operator sees both sides as real thumbnails before anything happens.
- *
- * Removing calls OF's own "Remove selected items from vault"
- * (PUT /vault/media/hidden — the exact call OF's web app makes). The copies
- * leave her real vault but are NOT destroyed, so anything already attached to a
- * sent PPV or a live post keeps working. OF exposes no unhide, so this is
- * one-way — hence the explicit confirm step.
- *
- * The relay re-clusters server-side on submit and refuses any id that is an
- * original, is not currently a duplicate, or has been sent (unless allowed), so
- * a stale selection in this UI can never remove the keeper.
- */
 
 import { useMemo, useReducer } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -156,15 +136,12 @@ export default function VaultDuplicatesModal({
     [scan.data],
   );
 
-  // Everything is a candidate unless the operator explicitly unticked it, so
-  // the default action is the safe-by-measurement one and un-checking is the
-  // deliberate act.
   const selectedIds = useMemo(
     () => selectedIdsOf(clusters, deselected),
     [clusters, deselected],
   );
 
-  // Sends the ids + threshold frozen at confirm — never the live selection.
+  // One-way: OF exposes no unhide; ids are frozen at confirm and the relay re-clusters and refuses originals.
   async function doHide() {
     const payload = hidePayload(state);
     if (!payload) return;
@@ -180,8 +157,6 @@ export default function VaultDuplicatesModal({
       // eslint-disable-next-line no-console
       console.error("hide duplicates failed", e);
     } finally {
-      // Refresh the grid, the counts and the scan — also after a failed later
-      // batch, since the earlier batches ARE gone from OF.
       qc.invalidateQueries({ queryKey: ["vault-duplicates"] });
       qc.invalidateQueries({ queryKey: ["vault-mirror-items"] });
       qc.invalidateQueries({ queryKey: ["vault-cache-summary"] });
@@ -194,13 +169,11 @@ export default function VaultDuplicatesModal({
     <IfModal
       title="Duplicate media"
       width={820}
-      // No ×, no Escape while the removal is out (it cannot be stopped half way).
       closable={!busy}
       onClose={onClose}
       footer={
         !confirming ? (
           <>
-            {/* "Done", not "Close": the kit's × already owns that name. */}
             <IfButton onClick={onClose}>Done</IfButton>
             <IfButton
               variant="primary"

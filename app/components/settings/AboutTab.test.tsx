@@ -1,8 +1,3 @@
-/**
- * AboutTab — the About Inflowwww Panel (docs/spec/settings-tabs/phase-05-billing-balance-about.md,
- * Testing Decisions). `globalThis.fetch` is a spy set before every render, so "makes no request" is an
- * assertion about the wire.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen } from "@testing-library/react";
 

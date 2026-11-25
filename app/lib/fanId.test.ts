@@ -1,14 +1,3 @@
-/**
- * Identity compares across the two platforms.
- *
- * OnlyFans sends numeric user ids; the Fansly shim sends STRING snowflakes
- * (`of_message` → `"fromUser": {"id": str(senderId)}`). Every "who spoke last"
- * check used to be `lastMessage.fromUser.id !== Number(accountId)`, which is a
- * cross-type `!==` on Fansly and therefore ALWAYS true: the yellow
- * "read · awaiting your reply" dot and the "Owe reply" chip fired on every
- * Fansly thread we had already answered. These cases pin the fix with the real
- * ids from the live account (700237824869654528 / its fan 500365665494917120).
- */
 import { describe, expect, it } from "vitest";
 
 import { compareFanIds, fanIdFromParam, isValidFanId, lastMessageFromFan, sameUserId, type FanId } from "@/lib/fanId";
@@ -39,7 +28,6 @@ describe("sameUserId", () => {
 describe("lastMessageFromFan", () => {
   it("is FALSE once we replied on Fansly — the bug that pinned the yellow dot", () => {
     expect(lastMessageFromFan(chat(FANSLY_ME), FANSLY_ME)).toBe(false);
-    // The old rule, for the record: a string id can never === Number(accountId).
     expect(chat(FANSLY_ME).lastMessage!.fromUser.id !== Number(FANSLY_ME)).toBe(true);
   });
 
@@ -53,23 +41,12 @@ describe("lastMessageFromFan", () => {
   });
 
   it("says nothing is owed when there is no last message to judge", () => {
-    // The local-DB inbox seed (/admin/chats/recent) ships lastMessage without a
-    // fromUser — an unknown author must not paint a dot.
     expect(lastMessageFromFan(chat(null), FANSLY_ME)).toBe(false);
     expect(lastMessageFromFan({ lastMessage: { fromUser: {} } }, FANSLY_ME)).toBe(false);
     expect(lastMessageFromFan(null, FANSLY_ME)).toBe(false);
   });
 });
 
-/**
- * Snowflake precision — the popout's "wrong fan" bug.
- *
- * A Fansly id is bigger than Number.MAX_SAFE_INTEGER, so the old
- * `Number(param)` in /chat/[accountId]/[fanId] rounded 900604711209099264 to
- * 900604711209099300 and the page requested a fan that does not exist ("↗ pop
- * out" → an empty thread + "Couldn't refresh: observe-only"). These pin the
- * identity-preserving parse with the real id from the screenshot.
- */
 describe("fanIdFromParam", () => {
   it("keeps a Fansly snowflake EXACT, as a string", () => {
     const raw = "900604711209099264";
@@ -97,11 +74,6 @@ describe("fanIdFromParam", () => {
   });
 });
 
-/**
- * Ordering. `b - a` is the obvious comparator and it is NaN on a snowflake —
- * a comparator that calls everything equal, so the sort silently stops
- * sorting. useFanSpend depends on this for a STABLE cache key.
- */
 describe("compareFanIds", () => {
   it("orders numerically for same-width ids", () => {
     expect(compareFanIds(100, 200)).toBeLessThan(0);
@@ -126,16 +98,10 @@ describe("compareFanIds", () => {
     const ids = [FANSLY_FAN, OF_FAN, FANSLY_ME, 100, "100"];
     const once = [...ids].sort(compareFanIds);
     expect([...once].sort(compareFanIds)).toEqual(once);
-    // A real comparator, not the NaN one: something actually moved.
     expect(once.map(String)).not.toEqual(ids.map(String));
   });
 
   it("agrees with sameUserId on every id shape the wire actually sends", () => {
-    // The total-order requirement: compareFanIds' "equal" must mean the same
-    // thing as sameUserId's "same account", or useFanSpend's sorted cache key
-    // silently splits for one fan. Holds for the real shapes (a number and its
-    // own string form); leading zeros are excluded by precondition — neither
-    // platform mints them.
     const pairs: Array<[FanId, FanId]> = [[7, "7"], [OF_FAN, String(OF_FAN)], [FANSLY_FAN, FANSLY_FAN]];
     for (const [a, b] of pairs) {
       expect(sameUserId(a, b)).toBe(true);
@@ -150,12 +116,6 @@ describe("compareFanIds", () => {
   });
 });
 
-/**
- * Validity. `Number.isFinite` was doing this job and is wrong twice: it
- * rejects a good string snowflake unless truncated first, and it accepts
- * `1e21` and `-5`. Zero matters too — parseSlotsParam carried its own
- * `fanId <= 0` guard, and dropping it let "acc:0" through as a real slot.
- */
 describe("isValidFanId", () => {
   it("accepts the shapes both platforms actually send", () => {
     expect(isValidFanId(FANSLY_FAN)).toBe(true);
@@ -178,7 +138,6 @@ describe("isValidFanId", () => {
   it("rejects a NUMBER that is not a safe integer — its digits are already rounded", () => {
     for (const bad of [2 ** 53, 1.5, NaN, Infinity]) expect(isValidFanId(bad)).toBe(false);
     expect(isValidFanId(7)).toBe(true);
-    // The string form of the same digits is fine: strings carry the wire's exact id.
     expect(isValidFanId(String(2 ** 53))).toBe(true);
   });
 });

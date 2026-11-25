@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * TemplateDraftEditor — the one draft editor behind both template kinds:
- *   • `welcome` → the OF welcome slot (`reply_on_subscribe`).
- *   • `reply`   → a local saved reply (/admin/saved-replies/*), saved through
- *     `useSavedReplyEditor` (Growth > Scripts).
- *
- * The editor is identical for both kinds; `draft.kind` hides the reply-only
- * controls (title, GIF, tags, FREE/PPV tiles, script). The host owns the draft
- * and the save; this file owns the form, its pickers and the helpers both
- * hosts share.
- */
 
 import { useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Library } from "lucide-react";
@@ -34,7 +23,6 @@ import { isOfHtml, ofPlainText } from "@/lib/ofRichText";
 import { plainLength } from "@/lib/ofRichTextEditor";
 import { useOfRichAllowed } from "@/hooks/useOfRichAllowed";
 
-// Moved out; re-exported only for growth/ScriptsPage (off-limits to this change), which imports all three from here.
 export { extractError } from "@/components/settings/extractError";
 export { MediaStrip } from "@/components/settings/MediaStrip";
 export { SCRIPT_TAG_MAX } from "@/components/settings/ScriptTagsField";
@@ -43,28 +31,17 @@ type DraftKind = "welcome" | "reply";
 
 export interface TemplateDraft {
   kind: DraftKind;
-  /** Welcome IDs are OF strings; reply IDs are local-DB numeric. */
   id: string | number | null;
   title: string;
   text: string;
   price: string;
   lockedText: boolean;
   attached: VaultMedia[];
-  /** Vault ids inside `attached` that ride along UNLOCKED when price > 0. */
   previews: number[];
-  /** Creators to @-tag on send. Reply-only — OF welcome templates can't
-   *  carry userTags, so the welcome editor keeps this empty. */
   taggedCreators: TaggedCreatorChoice[];
-  /** Optional GIF on this template. Reply-only — OF welcome templates
-   *  don't carry GIFs through the welcome slot. */
   gif: PickedGif | null;
-  /** Script grouping (reply-only). When both `scriptId` and `scriptStep`
-   *  are set, the chat composer surfaces this template's successor (same
-   *  `scriptId`, `scriptStep + 1`) as a one-tap suggestion after this
-   *  template fires. Empty `scriptId` opts out of the script flow. */
   scriptId: string;
   scriptStep: string;
-  /** Growth > Scripts' tags and internal notes (reply-only). */
   tags: string[];
   notes: string;
 }
@@ -86,9 +63,6 @@ export const EMPTY_REPLY: TemplateDraft = {
   notes: "",
 };
 
-/** Phone-only: the draft editor mounts at the TOP of the card, so tapping
- *  Edit on a row far down the list looks like nothing happened. Bail out
- *  at >=768px so desktop scroll behaviour is exactly what it is today. */
 export function revealDraft() {
   if (typeof window === "undefined") return;
   if (window.matchMedia("(min-width: 768px)").matches) return;
@@ -97,11 +71,8 @@ export function revealDraft() {
   });
 }
 
-/** Growth > Scripts' editor fields (`docs/infloww-layouts/growth-scripts.md` #73 to #79): Name required at 64
- *  characters, Text at 6500, a priced script at least $3. */
 export const SCRIPT_NAME_MAX = 64;
 export const SCRIPT_TEXT_MAX = 6500;
-/** The notes field's limit (#79); the tag limit (#81) lives in ScriptTagsField. */
 export const SCRIPT_NOTES_MAX = 256;
 
 const FIELD_LABEL = "block text-sm mb-1";
@@ -115,37 +86,22 @@ export function TemplateDraftEditor({
   saving: boolean;
   saveErr: string | null;
   onSave: () => void;
-  /** Growth > Scripts lays the reply editor out as the bundle's script editor (`ScriptEditModal`, index.9f50f370.js
-   *  @9318571), inside its own modal: no frame and no title row of its own, the capture's field labels and limits,
-   *  Tags and Internal notes (stored on the saved reply), and Cancel and OK in a footer. The editor's own
-   *  controls follow the bundle: the emoji row stays (the Text field's `Emojis$2`), the media tiles take the
-   *  bundle's "Paid" checks and PPV count, Tag other Creators moves after Media (#78), and GIF and "Lock text
-   *  behind price", which the bundle's script lacks, carry the Inflowwww extra label. Sequence and Step place the
-   *  script in a sequence: the bundle builds sequences in a separate editor (`AddSequence`); here a sequence is
-   *  the scripts sharing a name, ordered by step, so the fields carry the Inflowwww extra label. */
   script?: boolean;
-  /** Scripts: the Creator's existing tags and sequences, offered in the Tags and Sequence fields. */
   tagOptions?: string[];
   sequenceOptions?: string[];
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [gifPickerOpen, setGifPickerOpen] = useState(false);
-  /** Scripts' Text is OF's rich text editor (bold, italic, colour, size); its value is markup only when formatted. */
   const richRef = useRef<OfRichTextEditorHandle>(null);
-  // OF rich text only for an OnlyFans scope: a Fansly script is plain (a stored formatted one shows, and saves on
-  // its first edit, as its plain text).
   const rich = useOfRichAllowed(accountId) && script;
   const priceNum = Number(draft.price);
   const belowMin = script && priceNote(priceNum) !== null;
-  // Growth > Sensitive words: Infloww's script editor shows the hits under the
-  // text and disables Save until it is clean.
   const sensitiveHits = useSensitiveHits(isOfHtml(draft.text) ? ofPlainText(draft.text) : draft.text, accountId);
   const saveDisabled =
     !draft.text.trim() || saving || sensitiveHits.length > 0 || (script && plainLength(draft.text) > SCRIPT_TEXT_MAX) ||
     (script && (!draft.title.trim() || belowMin || (!!draft.scriptId.trim() && !/^\d+$/.test(draft.scriptStep.trim()))));
   const saveButton = (
     <IfButton variant="primary" onClick={onSave} disabled={saveDisabled}>
-      {/* The bundle's footer is antd Modal's Cancel / OK (`onOk`, @9318571). */}
       {script ? "OK" : saving ? "Saving…" : "Save"}
     </IfButton>
   );
@@ -188,8 +144,6 @@ export function TemplateDraftEditor({
           placeholder="0.00"
         />
       </label>
-      {/* The bundle's Media line (`Media$2`, index.9f50f370.js @9257668, @9257783): "N of M selected as PPV", then
-       *  "All", which marks every tile Paid or none. Shown, as the tiles' checks are, once the script is priced. */}
       {script && Number(draft.price) > 0 && draft.attached.length > 0 && (
         <span className="text-xs text-fg-dim flex items-center gap-2">
           <span><span className="text-accent">{paidCount}</span> of {draft.attached.length} selected as PPV</span>
@@ -356,9 +310,6 @@ export function TemplateDraftEditor({
             />
           )}
           <SensitiveWordWarning hits={sensitiveHits} />
-          {/* Editor toolbar — emoji is universal; tag-creators only for
-           *  local replies since OF welcome templates don't carry
-           *  userTags on the template object itself. */}
           <div className="flex items-center gap-1.5 flex-wrap">
             <EmojiQuickRow
               onInsert={(em) => {
@@ -392,7 +343,6 @@ export function TemplateDraftEditor({
               }}
             />
             {draft.kind === "reply" && (
-              // The bundle's script carries no GIF, so on Scripts it is labelled.
               <span title={script ? EXTRA_LABEL : undefined} className="contents">
                 <GifPickerButton
                   open={gifPickerOpen}
@@ -458,12 +408,6 @@ export function TemplateDraftEditor({
                     {m.type}
                   </div>
                 )}
-                {/* FREE/PPV toggle — click to flip whether this tile is
-                 *  unlocked when the template fires at price > 0. The
-                 *  reply editor only; OF welcome templates ignore
-                 *  per-media preview flags. */}
-                {/* Scripts: the bundle's tile check (`MediaItem$4`, index.9f50f370.js @9174157, "Paid" @9175174),
-                 *  checked while the tile is locked behind the price. */}
                 {isPpv && script && (
                   <label className="absolute bottom-0 left-0 right-0 flex items-center justify-center gap-1 bg-black/60 py-0.5 text-[9px] font-bold text-white cursor-pointer">
                     <input
@@ -526,7 +470,6 @@ export function TemplateDraftEditor({
           </div>
         )}
 
-        {/* Script / step groups replies into a sequence; the script modal shows it as Sequence and Step above. */}
         {draft.kind === "reply" && !script && (
           <div className="flex items-center gap-2 flex-wrap text-xs text-fg-dim">
             <span title="Group templates into an ordered sequence. The chat composer suggests the next step after this one fires.">
@@ -562,7 +505,6 @@ export function TemplateDraftEditor({
         {!script && priceRow}
         {belowMin && <div className="text-xs text-err -mt-2">Minimum $3 USD</div>}
 
-        {/* #78: the bundle's "Tag other Creator(s)" is its own field after Media. */}
         {script && <div className="flex items-center gap-1.5 flex-wrap">{tagCreators}</div>}
 
         {script && (
@@ -592,17 +534,13 @@ export function TemplateDraftEditor({
         )}
       </div>
 
-      {/* Portalled modal: renders nothing until opened, so where it sits in
-       *  the tree changes no layout. */}
       <VaultPicker
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         accountId={accountId}
         initialSelectedIds={draft.attached.map((m) => m.id)}
         onConfirm={(picked) => {
-          // Fresh-claim dicts (negative ids) are ephemeral and useless for
-          // persistence — drop them. The numeric vault ids work for both
-          // OF welcome msg and local saved replies.
+          // Fresh-claim dicts (negative ids) are ephemeral: drop them; vault ids work for both welcome and saved replies.
           const vaultOnly = picked.filter((m) => m.id > 0);
           const stillAttached = new Set(vaultOnly.map((m) => m.id));
           setDraft((d) =>

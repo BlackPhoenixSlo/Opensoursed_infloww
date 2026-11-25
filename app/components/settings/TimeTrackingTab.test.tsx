@@ -1,16 +1,3 @@
-/**
- * TimeTrackingTab — the Time tracking Panel (docs/spec/settings-tabs/phase-04-time-tracking-messaging.md).
- *
- * Rendered with the relay mocked at `fetch` by URL: the stub serves the `time-tracking` Settings blob and the
- * `roles` blob (the role list's custom roles), so every save assertion is an assertion about the wire.
- *
- * Rewritten for w4-a: the Auto clock out copy is Infloww's ("Users will be automatically clocked out after …"), a
- * never-saved blob defaults to 10 minutes, and every save carries `role_ids`, the new "Enable clock in and clock
- * out for" list.
- *
- * w5-a, as live Infloww: the built-in roles are Owner, Admin, Team Leader, Chatter and Creator, a never-saved list is
- * all unticked, and the minutes cap at 999.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
@@ -21,18 +8,13 @@ type Call = { method: string; url: string; body: unknown };
 
 const URL = "/admin/settings/time-tracking";
 const ROLES_URL = "/admin/settings/roles";
-/** The stored blob: enabled on, reminder off, so a swapped key cannot pass; Night shift ticked, Admin not. */
 const STORED = { enabled: true, auto_clock_out_minutes: 45, clock_in_reminder: false, role_ids: ["role-chat"] };
-/** One custom role after the built-in Owner and Admin. */
 const ROLES = { roles: [{ id: "role-chat", name: "Night shift" }], assignments: {} };
 const ERROR = "Enter 1 to 999 minutes.";
 
 let fetchMock: ReturnType<typeof vi.fn>;
-/** What GET answers. */
 let getReply: () => Response;
-/** What PUT answers, given the body it was sent. */
 let putReply: (body: unknown) => Response;
-/** What the roles GET answers. */
 let rolesReply: () => Response | Promise<Response>;
 
 function calls(): Call[] {
@@ -69,12 +51,9 @@ const minutes = () => screen.getByRole("spinbutton", { name: "Auto clock out tim
 const enabled = () => screen.getByRole("switch", { name: "Enable time tracking" });
 const reminder = () => screen.getByRole("switch", { name: "Clock-in reminder" });
 const roleBox = (name: string) => screen.getByRole("checkbox", { name }) as HTMLInputElement;
-/** The role list's ticks, Select all first: [Select all, the five built-ins, Night shift]. */
 const LIST = ["Select all", "Owner", "Admin", "Team Leader", "Chatter", "Creator", "Night shift"];
 const ticks = () => LIST.map((n) => roleBox(n).checked);
-/** The read view's values: [minutes text, enabled, reminder]. */
 const shown = () => [minutes().value, enabled().getAttribute("aria-checked"), reminder().getAttribute("aria-checked")];
-/** Enable off: Auto clock out is hidden, as Infloww's `ClockSetting` (live, w5-a). */
 const noMinutes = () => screen.queryByRole("spinbutton", { name: "Auto clock out time" }) === null;
 
 async function mountLoaded() {
@@ -88,7 +67,6 @@ describe("TimeTrackingTab", () => {
     expect(screen.getByRole("heading", { name: "Time tracking" })).toBeInTheDocument();
     expect(screen.queryByText(/not applied yet/)).toBeNull();
     expect(screen.getByText("Track your team’s work hours with a clock in and clock out function")).toBeInTheDocument();
-    // The field sits inline in the sentence, between its two halves.
     expect([minutes().previousSibling?.textContent, minutes().nextSibling?.textContent])
       .toEqual(["Users will be automatically clocked out after", "minute(s) of inactivity"]);
     expect(shown()).toEqual(["45", "true", "false"]);

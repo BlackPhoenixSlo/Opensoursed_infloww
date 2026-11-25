@@ -1,19 +1,8 @@
-/**
- * The vault import's upload protocol, as a plain function so the card's
- * `useMutation` only keeps the UI state.
- *
- * The first file opens the run (with the Drive links, the folder and the fan);
- * every other file follows in its own request, so the relay starts uploading
- * the first to OnlyFans while the rest are still on their way.
- */
-
 import { relay, type RelayContext } from "@/lib/relay";
 
 const BATCH = "/api/of/v2/vault/upload/batch";
 const APPEND = `${BATCH}/append`;
 
-/** The fan a linked-fan import sends to, as `GET …/vault/upload/fan` resolved
- *  it. The batch route resolves the username again and refuses a different id. */
 export interface ResolvedFan {
   id: number;
   username: string;
@@ -21,20 +10,12 @@ export interface ResolvedFan {
 }
 
 export interface VaultBatch {
-  /** One file's details for the route's `meta`, or null for none. */
   metaOf: (f: File) => object | null;
   driveLinks?: string;
   folder?: string;
   fan?: ResolvedFan | null;
 }
 
-/** Send `files` (and any Drive links) as one run. `onTaken` fires each time the
- *  relay has accepted a request — with the file it took, or null for a
- *  links-only start — and gets the run id from the first. Returns the run id.
- *
- *  An append that fails tells the run nothing else is coming, so it finishes
- *  now instead of waiting out its idle limit, and rethrows: the files it never
- *  took are the caller's still. */
 export async function sendVaultBatch(
   files: readonly File[],
   batch: VaultBatch,

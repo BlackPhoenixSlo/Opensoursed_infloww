@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * Settings > QR code (settings/qrcode), as OF's own page draws it (build 202610091632: SettingsQRCode, chunk 29771
- * module 739988, and its download, module 393097):
- * - The code: qrcode-svg (OF's library, vendored) on `https://onlyfans.com/<username>?qr=1`, error correction H, 6px
- *   dots, a 4-dot white margin (the size grows to (modules + 8) x 6), joined into one path; a white 66px square in the
- *   middle holds OF's logo (54px) or, with "Show avatar", the avatar in a 54px circle (cropped square, at most 162px);
- *   "Show profile URL" writes `onlyfans.com/<username>` under it (Roboto, 16px at size 246, shrunk to fit 48px less than
- *   the width), the image growing by the text's height. Shown as OF does, a base64 SVG <img alt="<username>">.
- * - The two switches are OF's browser-only preferences (OF: local storage QR_CODE_URL / QR_CODE_AVATAR, off by default;
- *   here the app's local storage). "Show avatar" is disabled with no avatar or when it fails to load (and turns off).
- * - Download QR Code: disabled until the code is drawn; saves the code as `<username>.png`, 738px wide (OF's canvas
- *   export; OF's telemetry POST /log is not sent).
- * - The scan count: OF reads GET /users/me/profile/views/qr ({count}) and, when the count is not 0, shows
- *   `<p class="text-center"> QR Scans: <count> </p>` above the code (message.qrcode_scans, OF's texts_en.json).
- * No model (All models with no stand-in): nothing is drawn and Download stays disabled, as OF without a username.
- */
 
 import { useEffect, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -27,13 +11,12 @@ import QRCode from "@/lib/vendor/qrcode-svg";
 
 export const QR_PAGE = "settings/qrcode";
 const HOST = "onlyfans.com";
-const BOX = 66; // the white square in the middle
-const MARK = 54; // the logo or avatar in it
+const BOX = 66;
+const MARK = 54;
 const DOT = 6;
-const START = 246; // OF's first size; its font size is relative to it
+const START = 246;
 const EXPORT_WIDTH = 738;
 
-/** OF's logo, as its page inlines it (54px, viewBox 400). */
 const logo = (x: number) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${MARK}" height="${MARK}" viewBox="0 0 400 400" x="${x}" y="${x}">` +
   '<path fill="#00aeef" d="M137.5 75a125 125 0 10125 125 125 125 0 00-125-125zm0 162.5A37.5 37.5 0 11175 200a37.45 37.45 0 01-37.5 37.5z"/>' +
@@ -44,10 +27,8 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 
 export interface QrInput {
   username: string;
-  /** The avatar as a data URL (cropped), or null for OF's logo. */
   avatar: string | null;
   showUrl: boolean;
-  /** A text's width at a font size (the browser's; Roboto). Without one, the text is not shrunk. */
   measure?: (text: string, size: number) => number;
 }
 export interface Qr {
@@ -56,7 +37,6 @@ export interface Qr {
   height: number;
 }
 
-/** The QR code's module count and OF's size for it: (modules + 8) dots of 6px. */
 export function qrSize(username: string): { size: number; code: QRCode } {
   const content = `https://${HOST}/${username}?qr=1`;
   let size = START;
@@ -68,7 +48,6 @@ export function qrSize(username: string): { size: number; code: QRCode } {
   }
 }
 
-/** OF's QR code image for `username`: the SVG and its size. */
 export function drawQr({ username, avatar, showUrl, measure }: QrInput): Qr {
   const { size: t, code } = qrSize(username);
   const qr = code.svg().replace(/^<\?xml[^>]*>\s*/, "");
@@ -82,7 +61,6 @@ export function drawQr({ username, avatar, showUrl, measure }: QrInput): Qr {
     let font = (16 * t) / START;
     const w = measure?.(label, font);
     if (w && w > t - 48) font = (font * (t - 48)) / w;
-    // svg.js's text box (Roboto): its line height and ascent.
     const h = Math.round(font * 1.172 * 100) / 100;
     const y = Math.round((t - 12 + font * 0.928) * 100) / 100;
     text = `<text font-family="Roboto, sans-serif" font-size="${font}" fill="#000000" text-anchor="middle" x="${t / 2}" y="${y}">${esc(label)}</text>`;
@@ -106,13 +84,10 @@ export function drawQr({ username, avatar, showUrl, measure }: QrInput): Qr {
   return { svg, width: t, height };
 }
 
-/** The <img> src OF uses: base64 SVG. */
 export const qrSrc = (svg: string) => `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
 
-/** OF's PNG export size for a code of `qr`'s size. */
 export const exportSize = (qr: { width: number; height: number }) => ({ width: EXPORT_WIDTH, height: (EXPORT_WIDTH * qr.height) / qr.width });
 
-/** The app's copy of OF's two browser-only QR preferences. */
 const PREF = { url: "of-mirror:QR_CODE_URL", avatar: "of-mirror:QR_CODE_AVATAR" } as const;
 const getPref = (k: keyof typeof PREF) => {
   try {
@@ -125,11 +100,9 @@ const setPref = (k: keyof typeof PREF, v: boolean) => {
   try {
     localStorage.setItem(PREF[k], String(v));
   } catch {
-    /* private mode: the switch still works for this page */
   }
 };
 
-/** OF's avatar crop: a centered square, at most 162px, as a PNG data URL (rejects when it cannot load or export). */
 function cropAvatar(doc: Document, url: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = doc.createElement("img");
@@ -152,7 +125,6 @@ function cropAvatar(doc: Document, url: string): Promise<string> {
   });
 }
 
-/** OF's download: the code drawn on a 738px canvas, saved as `<username>.png`. */
 export function downloadQr(doc: Document, qr: Qr & { src: string }, username: string): void {
   const img = doc.createElement("img");
   img.onload = () => {
@@ -171,30 +143,22 @@ export function downloadQr(doc: Document, qr: Qr & { src: string }, username: st
 
 interface QrModel {
   username?: string | null;
-  /** The avatar's URL, already same-origin (the app's image proxy). */
   avatar?: string | null;
-  /** OF's QR scan count (GET /users/me/profile/views/qr); shown when not 0. */
   scans?: number | null;
 }
 
 const SCANS = "oi-qr-scans";
-/** OF's scan count line above the code (`message.qrcode_scans`), only for a count that is not 0. */
 function showScans(doc: Document, box: HTMLElement, scans: number | null | undefined): void {
   doc.getElementById(SCANS)?.remove();
   if (!scans) return;
   const p = doc.createElement("p");
   p.id = SCANS;
-  // The same scoped-style attributes as its sibling .b-qrcode (OF's SettingsQRCode).
   for (const a of box.getAttributeNames()) if (a.startsWith("data-v-")) p.setAttribute(a, "");
   p.className = "text-center";
   p.textContent = ` QR Scans: ${scans} `;
   box.before(p);
 }
 
-/**
- * Bind the QR code page in `doc` for `model` (null: no model). Draws the code, keeps the switches, enables Download.
- * Returns an unbind. `crop` is the avatar loader (tests pass their own).
- */
 export function bindQr(doc: Document, model: QrModel | null, crop: (url: string) => Promise<string> = (u) => cropAvatar(doc, u)): () => void {
   const box = doc.querySelector<HTMLElement>(".b-qrcode");
   const url = doc.getElementById("add_url_to_qrcode") as HTMLInputElement | null;
@@ -225,7 +189,6 @@ export function bindQr(doc: Document, model: QrModel | null, crop: (url: string)
       if (avatar) avatar.disabled = true;
       return;
     }
-    // OF disables both switches while it draws.
     if (url) url.disabled = true;
     if (avatar) avatar.disabled = true;
     if (download) download.disabled = true;
@@ -276,7 +239,6 @@ export function bindQr(doc: Document, model: QrModel | null, crop: (url: string)
   };
 }
 
-/** On the QR code page: bind it for the model the page shows, on every frame load. */
 export function useOfQr(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const page = /^\/of-mirror\/pages\/(.+)\.html$/.exec(src)?.[1] ?? "";

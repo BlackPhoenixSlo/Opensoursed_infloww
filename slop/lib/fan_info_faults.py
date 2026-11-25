@@ -1,11 +1,3 @@
-"""The fan-info sweep's break-it-once faults (scenarios/2026-11-02-fan-info-sweep.py): lib/faults.py merges
-`register(Fault)` into FAULTS. The check names live here and the scenario imports them, so a target can never name
-a check that does not exist.
-
-Both patch a module attribute of `automations.gen_info_plan` in the relay (gen_info reads them at call time), never
-the repo files, and refuse to arm (SystemExit) when the attribute they break is gone, so a product rename fails
-loudly instead of patching nothing.
-"""
 from __future__ import annotations
 
 PIN = ("fan-info sweep: a language an operator pinned (language_source='manual') is never overwritten, though "
@@ -24,8 +16,6 @@ def _plan():
 
 
 def _manual_overwritten() -> None:
-    """The SQL pin's manual sources emptied: `Fan.language_source.in_(())` is never true, so a detected language
-    overwrites an operator's pin. Only PIN can see it."""
     p = _plan()
     if not hasattr(p, "MANUAL_LANGUAGE_SOURCES"):
         raise SystemExit("slop: gen-info-manual-language-overwritten: gen_info_plan.MANUAL_LANGUAGE_SOURCES is gone")
@@ -33,8 +23,6 @@ def _manual_overwritten() -> None:
 
 
 def _facts_cross_fan() -> None:
-    """plan_persist hands each fan the PREVIOUS fan's extracted `facts` (the plan of the call before, process-wide):
-    a fact lands on the wrong fan. Only OWN can see it."""
     import dataclasses
 
     p = _plan()
@@ -47,7 +35,8 @@ def _facts_cross_fan() -> None:
         plan = real(*a, **kw)
         if not dataclasses.is_dataclass(plan) or not hasattr(plan, "facts"):
             raise SystemExit("slop: gen-info-facts-cross-fan: PersistPlan is no dataclass with `facts`")
-        last, prev["facts"] = prev.get("facts"), plan.facts   # one event loop: no lock needed
+        # one event loop: no lock needed
+        last, prev["facts"] = prev.get("facts"), plan.facts
         return plan if last is None else dataclasses.replace(plan, facts=last)
 
     p.plan_persist = broken
@@ -55,8 +44,6 @@ def _facts_cross_fan() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run fan-info-sweep --break (the scenario's FAULT)
         "gen-info-manual-language-overwritten": Fault(_manual_overwritten, (PIN,)),
-        # slop/run fan-info-sweep --break --fault=gen-info-facts-cross-fan
         "gen-info-facts-cross-fan": Fault(_facts_cross_fan, (OWN,)),
     }

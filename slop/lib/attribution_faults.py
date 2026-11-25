@@ -1,10 +1,3 @@
-"""Sales attribution's break-it-once faults: lib/faults.py merges `register(Fault)` into FAULTS.
-
-Each patches a real product function inside the throwaway relay (lib/relay.py applies it in
-`_wire`, before the app's startup installs the credit triggers). The check names are defined
-here and imported by scenarios/2026-10-27-sales-attribution-tips-ppv.py, so a target can never
-name a check that does not exist.
-"""
 from __future__ import annotations
 
 TIP_LEDGER = ("every standalone chat tip (ledger only, no message) credited to the last human chatter within "
@@ -39,18 +32,11 @@ def _patch_triggers(name: str, old: str, new: str) -> None:
 
 
 def _converters_first_chatter() -> None:
-    """The Converters lookback picks the FIRST human chatter's send of its span instead of the
-    last (bug class: a flipped ORDER BY). Only `tx_rollup.converter_lookback`'s text in the
-    credit triggers changes (installed at startup by `tx_rollup.ensure`, which replaces a
-    trigger whose text changed); the linked sender and the rollups are the product's own."""
     _patch_triggers("converters-first-chatter", "ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1",
                     "ORDER BY m.created_at ASC, m.message_id ASC LIMIT 1")
 
 
 def _converters_counts_automation() -> None:
-    """Every outbound send with an Employee is a touch (bug class: the human-chatter filter
-    dropped): Automation's sends and mass sends can be the last touch. Only the lookback's
-    `tx_rollup.human_send` text in the credit triggers changes."""
     import tx_rollup as tr
 
     full = tr.human_send("m", planner_hint=True)
@@ -60,9 +46,6 @@ def _converters_counts_automation() -> None:
 
 
 def _converters_window_ignored() -> None:
-    """The read path ignores the Agency's Converters window and keeps the default 1 h (bug
-    class: the saved setting never reaches the per-sale test): `tx_rollup.within_window`
-    answers for CONVERTERS_WINDOW_DEFAULT_S whatever window it is given."""
     import tx_rollup as tr
 
     real = tr.within_window
@@ -71,11 +54,6 @@ def _converters_window_ignored() -> None:
 
 
 def _chatter_send_unstamped() -> None:
-    """A chatter's send loses its Employee (bug class: the X-Employee-Id / chatter-mirror
-    resolution dropped): `employees.resolve_outbound_employee_id` answers None for a
-    chatter session, so `attribution.write_outbound_attribution` writes the row with
-    `sent_by_employee_id` NULL (its chatter branch). Owner and automation sends are the
-    product's own."""
     import employees
 
     real = employees.resolve_outbound_employee_id
@@ -91,9 +69,7 @@ def _chatter_send_unstamped() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run sales-attribution --break (the scenario's FAULT)
         "converters-first-chatter": Fault(_converters_first_chatter, (TIP_LEDGER, TIP_WS, PPV, TOTALS, WINDOW330)),
-        # slop/run sales-attribution --break --fault=<name>
         "converters-counts-automation": Fault(_converters_counts_automation, (AUTO, TOTALS, WINDOW330)),
         "converters-window-ignored": Fault(_converters_window_ignored, (WINDOW330,)),
         "chatter-send-unstamped": Fault(_chatter_send_unstamped,

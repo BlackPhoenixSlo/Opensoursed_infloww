@@ -74,7 +74,7 @@ const DASH_BODY = {
     ok("2", "profile", { id: 2 }), err("2", "subscriberCounts", LATE), err("2", "newFans", LATE),
     err("3", "profile", { status: 403, detail: "not yours" }),
     err("3", "subscriberCounts", { status: 502, detail: { upstream_status: 500 } }), ok("3", "newFans", null),
-    ok("4", "profile", { id: 4 }),   // a hidden Per-model card: profile only
+    ok("4", "profile", { id: 4 }),
   ],
   asOf: 1,
 };
@@ -124,7 +124,7 @@ describe("screenJoin", () => {
     const p3 = screenJoin(screenRead("/api/of/v2/subscriptions/count/all", "2")!, get);
     expect(await p1).toEqual({ kind: "body", body: { id: 1 } });
     expect(await p2).toEqual({ kind: "body", body: { subscribers: { all: 5 } } });
-    expect(await p3).toEqual({ kind: "miss" });   // late, and late again in its follow-up
+    expect(await p3).toEqual({ kind: "miss" });
     expect(get.mock.calls).toEqual([[bundlePath(DASH), BUNDLE_TIMEOUT_MS], [followPath(DASH, ["2"]), FOLLOW_TIMEOUT_MS]]);
   });
 
@@ -145,8 +145,8 @@ describe("screenJoin", () => {
     land(DASH_BODY);
     await s;
     await new Promise((r) => setTimeout(r, FOLLOW_MS + 20));
-    expect(get).toHaveBeenCalledTimes(2);            // the follow-up for Creator 2 still in flight
-    await screenSettled();                           // ...and it does not hold background reads
+    expect(get).toHaveBeenCalledTimes(2);
+    await screenSettled();
     void late;
   });
 
@@ -198,7 +198,7 @@ describe("screenJoin", () => {
     const [page, bell] = await Promise.all([screenJoin(screenRead(PAGE0, "1")!, get), screenJoin(screenRead(BELL, "1")!, get)]);
     expect([page, bell]).toEqual([{ kind: "miss" }, { kind: "miss" }]);
     expect(get.mock.calls).toEqual([[bundlePath(INBOX), BUNDLE_TIMEOUT_MS]]);
-    await screenSettled();                           // and it holds no background read
+    await screenSettled();
   });
 
   it("an aborted joiner rejects; the bundle still serves the others", async () => {
@@ -227,7 +227,7 @@ describe("screenJoin", () => {
     expect(one).toEqual({ kind: "body", body: { list: [], hasMore: false } });
     expect(two).toEqual({ kind: "body", body: { list: [{ id: 2 }] } });
     expect(four).toEqual({ kind: "body", body: { list: [] } });
-    expect(bell4).toEqual({ kind: "miss" });   // still late after the follow-up: per Creator
+    expect(bell4).toEqual({ kind: "miss" });
     expect(get.mock.calls.map((c) => c[0])).toEqual([bundlePath(INBOX), followPath(INBOX, ["2", "4"])]);
   });
 
@@ -242,7 +242,7 @@ describe("screenJoin", () => {
     const counts = screenRead("/api/of/v2/subscriptions/count/all", "1")!;
     expect(await screenJoin(counts, get)).toEqual({ kind: "body", body: { subscribers: { all: 5 } }, refreshing: true });
     expect(await screenJoin(screenRead("/api/of/v2/users/me", "1")!, get)).toEqual({ kind: "body", body: { id: 1 }, refreshing: true });
-    await vi.waitFor(() => expect(keys).toEqual([["of-sub-counts", "1"]]));   // the profile came back the same
+    await vi.waitFor(() => expect(keys).toEqual([["of-sub-counts", "1"]]));
     expect(await screenJoin(counts, get)).toEqual({ kind: "body", body: { subscribers: { all: 6 } } });
     expect(get.mock.calls.map((c) => c[0])).toEqual([bundlePath(DASH), followPath(DASH, ["1"])]);
   });
@@ -257,9 +257,9 @@ describe("screenJoin", () => {
     expect(await screenJoin(counts, get)).toEqual({ kind: "body", body: { subscribers: { all: 5 } }, refreshing: true });
     await vi.waitFor(() => expect(keys).toEqual([["of-sub-counts", "1"]]));
     expect(screenBundleKeys()).toEqual([]);
-    expect(await screenJoin(counts, get)).toEqual({ kind: "miss" });   // the invalidated refetch: per Creator
+    expect(await screenJoin(counts, get)).toEqual({ kind: "miss" });
     expect(get).toHaveBeenCalledTimes(2);
-    await screenJoin(counts, get);                                      // once: the next burst bundles again
+    await screenJoin(counts, get);
     expect(get.mock.calls[2][0]).toBe(bundlePath(DASH));
   });
 
@@ -287,16 +287,16 @@ describe("screenJoin", () => {
     const before = screenJoin(counts, get);
     await Promise.resolve();
     forgetScreenBundles();
-    const profile = screenJoin(screenRead("/api/of/v2/users/me", "1")!, get);   // a joiner: B's flight is gone
-    const after = screenJoin(counts, get);                                       // a starter: a new bundle
+    const profile = screenJoin(screenRead("/api/of/v2/users/me", "1")!, get);
+    const after = screenJoin(counts, get);
     expect(get).toHaveBeenCalledTimes(2);
     lands[0]({ answers: [ok("1", "subscriberCounts", "B's"), ok("1", "profile", "B's")] });
     lands[1]({ answers: [ok("1", "subscriberCounts", "A's"), ok("1", "profile", "A's")] });
-    expect(await before).toEqual({ kind: "body", body: "B's" });   // its own caller, already asked
+    expect(await before).toEqual({ kind: "body", body: "B's" });
     expect(await after).toEqual({ kind: "body", body: "A's" });
     expect(await profile).toEqual({ kind: "body", body: "A's" });
     forgetScreenBundles();
-    expect(await screenJoin(screenRead("/api/of/v2/users/me", "1")!, get)).toEqual({ kind: "miss" });   // landed: gone too
+    expect(await screenJoin(screenRead("/api/of/v2/users/me", "1")!, get)).toEqual({ kind: "miss" });
   });
 
   it("prefetchScreen: started before the screen opens, its reads (shared ones too) join it; another key: its own", async () => {
@@ -304,8 +304,8 @@ describe("screenJoin", () => {
     const get = vi.fn((p: string) => new Promise((r) => { lands.set(p, r); }));
     const OTHER: Screen = { kind: "dashboard", from: "2026-01-01", to: null };
     prefetchScreen(DASH, get);
-    prefetchScreen(DASH, get);                       // live: not twice
-    prefetchScreen(OTHER, get);                      // a wrong guess: a flight nobody on DASH joins
+    prefetchScreen(DASH, get);
+    prefetchScreen(OTHER, get);
     expect(get.mock.calls.map((c) => c[0])).toEqual([bundlePath(DASH), "/admin/screens/dashboard?from=2026-01-01"]);
     openScreen(DASH);
     const accounts = screenJoin(screenRead("/admin/accounts", null)!, get);
@@ -315,7 +315,7 @@ describe("screenJoin", () => {
     expect(await profile).toEqual({ kind: "body", body: { id: 1 } });
     expect(await counts).toEqual({ kind: "body", body: { subscribers: { all: 5 } } });
     expect(await accounts).toEqual({ kind: "body", body: { accounts: [{ id: "1" }] } });
-    expect(get).toHaveBeenCalledTimes(2);           // they joined the prefetch: no bundle of their own
+    expect(get).toHaveBeenCalledTimes(2);
   });
 
   it("no open screen: nothing is a bundle read; an unmounted screen closes", () => {

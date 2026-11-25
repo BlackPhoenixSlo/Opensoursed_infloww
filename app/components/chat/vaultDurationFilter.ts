@@ -1,9 +1,3 @@
-/**
- * The Vault picker's length filter, shown when a Fan is in scope
- * (docs/spec/phase-04-composer-ppv-vault.md, Vault picker, story 52). It
- * narrows the items already loaded, on the client: the relay has no duration
- * parameter. Choosing a range hides everything that is not a video.
- */
 import { type VaultMedia } from "@/lib/relay";
 
 export const DURATION_RANGES = [
@@ -15,8 +9,6 @@ export const DURATION_RANGES = [
 
 export type DurationRange = (typeof DURATION_RANGES)[number]["value"];
 
-/** Whether `m` passes the range. "1–5 min" includes both ends (60 s and
- *  300 s); a video with no known duration passes only "Any length". */
 export function inDurationRange(m: VaultMedia, range: DurationRange): boolean {
   if (range === "any") return true;
   if (m.type !== "video" || m.duration == null) return false;

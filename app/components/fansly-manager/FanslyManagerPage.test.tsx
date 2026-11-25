@@ -1,14 +1,9 @@
-/**
- * Fansly Manager v1 (roadmap 8.1) behind the `fansly_manager` flag: off, a direct visit is "not available" and reads
- * nothing; on, each page reads its Relay route for the picked Fansly creator (never an OnlyFans one), with the relay
- * mocked at `fetch` by URL. Fixture names and ids are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { jsonRes, renderWithProviders } from "@/test-utils";
-import { FanslyManagerPage } from "@/components/fansly-manager/FanslyManagerPage";
-import { findNavLink } from "@/lib/nav";
+import { BODIES, FanslyManagerPage } from "@/components/fansly-manager/FanslyManagerPage";
+import { FANSLY_NAV, findNavLink, isDivider, isGroup } from "@/lib/nav";
 import type { FeatureFlags } from "@/lib/appliedSettings";
 
 let flags: FeatureFlags | undefined;
@@ -53,6 +48,14 @@ afterEach(() => {
 const header = (call: unknown[], name: string) => new Headers((call[1] as RequestInit | undefined)?.headers).get(name);
 
 describe("FanslyManagerPage", () => {
+  it("has a body for every /fansly-manager/* nav href", () => {
+    const hrefs = FANSLY_NAV.flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? n.children : [n]))
+      .map((l) => l.href)
+      .filter((h) => h.startsWith("/fansly-manager/"));
+    expect(hrefs.length).toBeGreaterThan(0);
+    expect(hrefs.filter((h) => !(h in BODIES))).toEqual([]);
+  });
+
   it("with the flag off a direct visit is not available and reads nothing", () => {
     flags = { fansly_manager: false };
     renderWithProviders(<FanslyManagerPage link={findNavLink("/fansly-manager/notifications")!} />);
@@ -84,8 +87,8 @@ describe("FanslyManagerPage", () => {
     expect(header(reads()[0], "X-Account-Id")).toBe("fy-1");
     const feedAt = fetchMock.mock.calls.findIndex(([u]) => String(u).startsWith("/api/of/v2/users/notifications?"));
     expect(feedAt).toBeLessThan(fetchMock.mock.calls.indexOf(reads()[0]));
-    await waitFor(() => expect(counts()).toHaveLength(2)); // the tab counts, re-read after the write
-    expect(screen.getByLabelText("Unread")).toBeInTheDocument(); // this open still draws what was unread
+    await waitFor(() => expect(counts()).toHaveLength(2));
+    expect(screen.getByLabelText("Unread")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: /Tips/ }));
     fireEvent.click(screen.getByRole("tab", { name: /All/ }));

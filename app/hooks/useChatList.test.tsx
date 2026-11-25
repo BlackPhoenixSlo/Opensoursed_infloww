@@ -1,22 +1,3 @@
-/**
- * useChatList — the periodic refresh is HEAD-PAGE-ONLY.
- *
- * React Query's `refetchInterval` on an infinite query re-walks EVERY loaded
- * page sequentially, and each page is itself the multi-account fan-out gated
- * by the slowest account. A user scrolled to page 3 therefore paid three full
- * fan-outs every 90 s to re-read rows that had not changed — ~27% of all inbox
- * list traffic was that redundant re-read.
- *
- * These tests pin the contract the fix has to keep:
- *   • the 90 s poll re-reads offset 0 and nothing else,
- *   • the Refresh button still re-walks every loaded page (it is the user's
- *     only recovery path after missed SSE events),
- *   • a row promoted into the fresh head page renders ONCE, from the head,
- *   • page COUNT stays the cursor — `fetchNextPage` offsets never drift,
- *   • unified scope re-reads offset 0 per account (not "the first N of the
- *     merged list", which is not a stable per-account cursor),
- *   • an active filter rides along on the poll.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -32,8 +13,6 @@ vi.mock("@/lib/perfLog", () => ({
   perfPaintOnce: vi.fn(),
 }));
 
-// Scope + account set are module-level so a test can flip between a single
-// model and the unified fan-out without a provider tree.
 let mockScope: { kind: "model"; accountId: string } | { kind: "all" } =
   { kind: "model", accountId: "acct-a" };
 let mockAccounts: { id: string }[] = [{ id: "acct-a" }];
@@ -50,7 +29,6 @@ vi.mock("@/hooks/useAccounts", () => ({
   useActiveAccounts: () => mockAccounts,
   usePlatformAccounts: () => mockAccounts,
 }));
-// useInboxRealtime's dependencies — it shares this file's relay/account mocks.
 type SseHandler = (env: unknown, rawType?: string) => void;
 const sseHandlers = new Map<string, Set<SseHandler>>();
 let ssePaused = false;
@@ -81,7 +59,6 @@ const relayGet = relay.get as unknown as Mock;
 
 const POLL_MS = 90_000;
 
-/** A chat row as OF hands it to us: fan id + a sortable lastMessage. */
 function row(id: number, createdAt: string): OFChatItem {
   return {
     withUser: { id },
@@ -90,13 +67,10 @@ function row(id: number, createdAt: string): OFChatItem {
   } as OFChatItem;
 }
 
-/** Per-test page server, keyed by (accountId, offset). Reassigned mid-test to
- *  simulate the inbox moving underneath a poll. */
 let serve: (accountId: string, offset: number) => { list: OFChatItem[]; hasMore: boolean };
 
 interface ChatCall { offset: number; filter: string | null; accountId?: string; refresh?: boolean }
 
-/** Only the /chats list calls — enrichment is noise here. */
 function chatCalls(): ChatCall[] {
   return relayGet.mock.calls
     .filter((c) => String(c[0]).startsWith("/api/of/v2/chats"))
@@ -111,13 +85,8 @@ function chatCalls(): ChatCall[] {
     });
 }
 
-/** The default single-model key: ["chats", kind, accountKey, filter, listId, query, limit]. */
 const MODEL_KEY = ["chats", "model", "acct-a", null, null, null, 25] as const;
 
-/** Watch whether the chats query ever enters `fetching` — the flag ChatList
- *  drives the Refresh button's spinner + disabled state off. Reads the query
- *  STATE, not the rendered result: the rendered value lags a render behind and
- *  would miss the window entirely. */
 function watchFetching() {
   let saw = false;
   const stop = client.getQueryCache().subscribe(() => {
@@ -131,16 +100,10 @@ function wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
-/** Advance fake timers AND drain the promise jobs they release.
- *  Default 1ms, not 0: React Query's notifyManager re-renders observers from a
- *  `setTimeout(cb, 0)`, and vitest's fake clock does not fire that on a 0ms
- *  advance — a cache write would look invisible when it is merely unflushed. */
 async function settle(ms = 1) {
   await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 }
 
-/** RTL's waitFor only understands JEST fake timers, so under vitest's it hangs.
- *  Drain microtasks a bounded number of times instead. */
 async function until(label: string, cond: () => boolean, tries = 30) {
   for (let i = 0; i < tries; i++) {
     if (cond()) return;
@@ -159,8 +122,6 @@ beforeEach(() => {
   serve = () => ({ list: [], hasMore: false });
   relayGet.mockReset();
   relayGet.mockImplementation(async (path: string, ctx?: { accountId?: string }) => {
-    // Enrichment pass 1 (local SQLite). Answering for every requested id keeps
-    // pass 2 (the live OF /users/list) from firing at all.
     if (path.startsWith("/admin/fans/")) {
       const ids = (new URLSearchParams(path.split("?")[1] ?? "").get("ids") ?? "")
         .split(",").filter(Boolean);
@@ -187,7 +148,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** Three loaded pages of a single model's inbox, freshly fetched. */
 async function renderThreePages(params: Parameters<typeof useChatList>[0] = {}) {
   serve = (_aid, offset) => {
     if (offset === 0) return { list: [row(10, "2026-08-25T10:00:00Z"), row(9, "2026-08-25T09:00:00Z")], hasMore: true };
@@ -212,13 +172,9 @@ describe("useChatList periodic refresh", () => {
     await settle(POLL_MS);
     poll.stop();
 
-    // Pre-fix this was [0, 25, 50] — three fan-outs to re-read four rows
-    // nothing had touched.
     expect(chatCalls()).toEqual([
       expect.objectContaining({ offset: 0, accountId: "acct-a" }),
     ]);
-    // ...and it never flipped `isFetching`, so the Refresh button stopped
-    // spinning + going disabled every 90s. (Probe proven live below.)
     expect(poll.saw()).toBe(false);
   });
 
@@ -227,8 +183,6 @@ describe("useChatList periodic refresh", () => {
 
     await act(async () => { await h.result.current.refresh(); });
 
-    // The Refresh button is the only recovery path after a missed SSE event:
-    // it must reach every loaded page, and force page 0 past the relay cache.
     expect(chatCalls().map((c) => c.offset)).toEqual([0, 25, 50]);
     expect(chatCalls()[0].refresh).toBe(true);
   });
@@ -311,8 +265,6 @@ describe("useChatList periodic refresh", () => {
   it("does not leave a poll interval that also walks the deep pages", async () => {
     const h = await renderThreePages();
 
-    // Two polls back to back — a second interval left running elsewhere would
-    // show up here as extra offsets.
     await settle(POLL_MS);
     await settle(POLL_MS);
 
@@ -323,7 +275,6 @@ describe("useChatList periodic refresh", () => {
   it("renders a row promoted into the fresh head page exactly once, from the head", async () => {
     const h = await renderThreePages();
 
-    // Fan 6 (page 2) gets a new message and jumps to the top of page 0.
     serve = (_aid, offset) => {
       if (offset === 0) {
         return {
@@ -340,18 +291,11 @@ describe("useChatList periodic refresh", () => {
     const ids = h.result.current.data.map((c) => c.withUser.id);
     expect(ids.filter((id) => id === 6)).toHaveLength(1);
     expect(ids[0]).toBe(6);
-    // The head copy wins, so the row carries the NEW preview, not page 2's.
     expect(h.result.current.data[0].lastMessage?.createdAt).toBe("2026-08-25T11:00:00Z");
-    // ...and the stale deep copy is left in place, so nothing below it shifts.
-    // Leaving it there is deliberate: page COUNT is the `fetchNextPage` cursor,
-    // so punching a hole in page 2 would make the next fetch skip a server row.
     expect(ids).toEqual([6, 10, 8, 7]);
   });
 
   it("recovers a row the fresh head page displaced, on manual refresh", async () => {
-    // The documented cost of a head-only poll: fan 9 was the tail of page 0, a
-    // promotion pushes it to server offset 2 — an offset the STALE page 1
-    // predates — so it drops out of the flattened list until a full re-walk.
     const h = await renderThreePages();
     let promoted = false;
     serve = (_aid, offset) => {
@@ -373,8 +317,6 @@ describe("useChatList periodic refresh", () => {
     await until("head spliced", () => h.result.current.data[0]?.withUser.id === 6);
     expect(h.result.current.data.map((c) => c.withUser.id)).not.toContain(9);
 
-    // Refresh re-walks every page — which is exactly why it stays a full
-    // refetch. This is the user's recovery path, not a nice-to-have.
     await act(async () => { await h.result.current.refresh(); });
     await until("fan 9 back", () => h.result.current.data.some((c) => c.withUser.id === 9));
     expect(h.result.current.data.map((c) => c.withUser.id)).toEqual([6, 10, 9, 8, 7]);
@@ -396,8 +338,6 @@ describe("useChatList periodic refresh", () => {
     await act(async () => { await h.result.current.loadMore(); });
     await until("page 3", () => h.result.current.data.some((c) => c.withUser.id === 5));
 
-    // Page COUNT is the cursor (`allPages.length * limit`). The poll must not
-    // add or drop a page, or the next fetch skips/repeats a server row.
     expect(chatCalls().map((c) => c.offset)).toEqual([75]);
     expect(h.result.current.data.map((c) => c.withUser.id)).toContain(5);
   });
@@ -444,13 +384,8 @@ describe("useChatList periodic refresh", () => {
     poll.stop();
 
     expect(chatCalls().map((c) => c.offset)).toEqual([0]);
-    // ChatList drives the Refresh button's spinner + disabled state off
-    // `isFetching`. A background poll must never touch it, at ANY page depth —
-    // the button used to spin and go dead every 90s.
     expect(poll.saw()).toBe(false);
 
-    // ...and the probe is live, not trivially false: the USER's refresh does
-    // flip the very flag the poll left alone.
     const manual = watchFetching();
     await act(async () => { await h.result.current.refresh(); });
     manual.stop();
@@ -458,8 +393,6 @@ describe("useChatList periodic refresh", () => {
   });
 
   it("keeps polling a list whose initial fetch errored", async () => {
-    // No pages to splice into: the tick hands over to refetch(), which owns the
-    // retry AND the error state — the right thing to show on an empty list.
     serve = () => { throw new Error("relay down"); };
     const h = renderHook(() => useChatList(), { wrapper });
     await until("errored", () => h.result.current.isError);
@@ -488,7 +421,6 @@ describe("useChatList periodic refresh", () => {
   });
 });
 
-/** Fire an OF preview event at the handlers useInboxRealtime registered. */
 function fireInbound(fanId: number, text: string, createdAt: string) {
   act(() => {
     sseHandlers.get("api2_chat_message")?.forEach((h) => h({
@@ -518,13 +450,10 @@ describe("useChatList head poll x useInboxRealtime", () => {
     const h = await renderThreePages();
     renderHook(() => useInboxRealtime(), { wrapper });
 
-    // Fan 6 lives on PAGE 2 — the page the poll no longer re-reads. The SSE
-    // handler rewrites ALL pages, so this is what keeps deep rows moving.
     fireInbound(6, "hey", "2026-08-25T11:00:00Z");
     await until("sse bump", () => h.result.current.data[0]?.withUser.id === 6);
     expect(h.result.current.data[0].lastMessage?.text).toBe("hey");
 
-    // Now the poll runs. The server has caught up, so its head page agrees.
     serve = (_aid, offset) => {
       if (offset === 0) {
         return {
@@ -540,7 +469,6 @@ describe("useChatList head poll x useInboxRealtime", () => {
     expect(chatCalls().map((c) => c.offset)).toEqual([0]);
     expect(h.result.current.data[0].withUser.id).toBe(6);
 
-    // Page count — the fetchNextPage cursor — survived both rewrites.
     serve = (_aid, offset) => {
       if (offset === 75) return { list: [row(4, "2026-08-25T04:00:00Z")], hasMore: false };
       throw new Error(`unexpected offset ${offset}`);
@@ -664,9 +592,7 @@ describe("useChatList OF params: order, OF's own filters, enabled (the OF mirror
 });
 
 describe("useChatList fetchedLive: rows read from OF in this page load", () => {
-  /** An unread chat. */
   const unread = (id: number) => ({ ...row(id, `2026-08-25T${String(20 - id).padStart(2, "0")}:00:00Z`), unreadMessagesCount: 1 }) as OFChatItem;
-  /** A list restored from disk: its rows as an earlier page load cached them. */
   function restore(pages: OFChatItem[][], updatedAt = Date.now()) {
     const rows = pages.map((list, i) => {
       const hasMore = i < pages.length - 1;
@@ -686,7 +612,6 @@ describe("useChatList fetchedLive: rows read from OF in this page load", () => {
   });
 
   it("is false for a list restored from disk until a read of OF (the head poll) lands", async () => {
-    // Fresh enough that the mount does not fetch.
     restore([[unread(1), unread(2)]]);
     serve = () => ({ list: [unread(1), unread(2)], hasMore: false });
     const h = renderHook(() => useChatList(), { wrapper });
@@ -700,7 +625,6 @@ describe("useChatList fetchedLive: rows read from OF in this page load", () => {
   });
 
   it("a live event before the mount fetch lands does not make a restored list live", async () => {
-    // Old enough that the mount fetches; that fetch hangs.
     restore([[unread(1), unread(2)]], Date.now() - 60_000);
     let land!: () => void;
     serve = () => new Promise((r) => { land = () => r({ list: [unread(1), unread(2)], hasMore: false }); }) as unknown as ReturnType<typeof serve>;
@@ -733,7 +657,6 @@ describe("useChatList fetchedLive: rows read from OF in this page load", () => {
     first.unmount();
     relayGet.mockClear();
 
-    // Still fresh: the remount reads the cache and fetches nothing.
     const second = renderHook(() => useChatList(), { wrapper });
     expect(second.result.current.fetchedLive).toBe(true);
     await settle(1_000);
@@ -741,7 +664,6 @@ describe("useChatList fetchedLive: rows read from OF in this page load", () => {
   });
 
   it("stays false when the refetch over a restored list fails past page 0", async () => {
-    // Two restored pages, old enough to refetch; page 0 reads, page 1 fails.
     restore([[unread(1)], [unread(2)]], Date.now() - 60_000);
     serve = (_aid, offset) => {
       if (offset > 0) throw new Error("page 1 down");
@@ -776,7 +698,6 @@ describe("useChatList placeholderData: which previous rows stand in", () => {
     const h = renderHook(() => useChatList(), { wrapper });
     await until("both accounts' rows", () => h.result.current.data.length === 2);
 
-    // acct-b's session drops: a new key, whose fetch hangs.
     serve = () => new Promise(() => {}) as unknown as ReturnType<typeof serve>;
     mockAccounts = [{ id: "acct-a" }];
     h.rerender();
@@ -858,10 +779,8 @@ describe("useChatList head poll x a write during its read", () => {
     await settle(POLL_MS);
     expect(chatCalls().map((c) => c.offset)).toEqual([0]);
 
-    // The chatter opens fan 10 meanwhile: its row goes read in the cache.
     flipCachedReadState(client, "acct-a", { fanId: 10, unread: false, at: null });
     await settle();
-    // OF's head, read before the mark, still shows it unread; fan 9 has news.
     answer({ list: [{ ...row(10, "2026-08-25T10:00:00Z"), hasUnread: true, unreadMessagesCount: 1 },
       { ...row(9, "2026-08-25T09:30:00Z"), lastMessage: { id: 901, text: "news", createdAt: "2026-08-25T09:30:00Z" } }],
     hasMore: true });
@@ -872,7 +791,6 @@ describe("useChatList head poll x a write during its read", () => {
     expect(byId(10).hasUnread).toBe(false);
     expect(byId(10).unreadMessagesCount).toBe(0);
     expect(byId(9).lastMessage?.text).toBe("news");
-    // Landed, not dropped: no quick re-read.
     await settle(15_000);
     expect(chatCalls().map((c) => c.offset)).toEqual([0]);
   });
@@ -885,7 +803,7 @@ describe("useChatList head poll x a newer manual Refresh (W30-mu #43)", () => {
     serve = (_aid, offset) => new Promise((r) => { open.push({ offset, r }); }) as unknown as
       { list: OFChatItem[]; hasMore: boolean };
     await settle(POLL_MS);
-    expect(open.map((o) => o.offset)).toEqual([0]);            // the poll's head read, out
+    expect(open.map((o) => o.offset)).toEqual([0]);
     let done = false;
     void h.result.current.refresh().finally(() => { done = true; });
     await until("refresh page 0 asked", () => open.length === 2);
@@ -894,7 +812,6 @@ describe("useChatList head poll x a newer manual Refresh (W30-mu #43)", () => {
     open[2].r({ list: [row(8, "2026-08-25T08:00:00Z")], hasMore: false });
     await until("refresh settled", () => done);
     expect(h.result.current.data[0].withUser.id).toBe(11);
-    // The poll's head, asked before the Refresh, lands last.
     open[0].r({ list: [unreadRow(10, "2026-08-25T10:00:00Z"), row(9, "2026-08-25T09:00:00Z")], hasMore: true });
     await settle();
     await settle();
@@ -903,8 +820,6 @@ describe("useChatList head poll x a newer manual Refresh (W30-mu #43)", () => {
   });
 });
 
-/** The relay's chats pages, each answered by hand: `answer(offset, list, hasMore)` resolves the oldest open read of
- *  that offset. */
 function manualServe() {
   const open = new Map<number, Array<(p: { list: OFChatItem[]; hasMore: boolean }) => void>>();
   serve = (_aid, offset) => new Promise((r) => {
@@ -923,7 +838,6 @@ function manualServe() {
 
 const unreadRow = (id: number, createdAt: string): OFChatItem => ({ ...row(id, createdAt), hasUnread: true, unreadMessagesCount: 1 });
 
-/** Two loaded pages: fan 10 (unread) and 9 on page 0, fans 8 and 7 on page 1. */
 async function renderTwoPages() {
   serve = (_aid, offset) => offset === 0
     ? { list: [unreadRow(10, "2026-08-25T10:00:00Z"), row(9, "2026-08-25T09:00:00Z")], hasMore: true }
@@ -947,7 +861,6 @@ describe("useChatList commit: a read started before a live write never undoes it
     await until("page 0 asked", () => srv.asked(0));
     srv.answer(0, [unreadRow(10, "2026-08-25T10:00:00Z"), row(9, "2026-08-25T09:00:00Z")]);
     await until("page 1 asked", () => srv.asked(25));
-    // The SSE flip lands between the two pages of the refetch.
     act(() => flipCachedReadState(client, "acct-a", { fanId: 10, unread: false, at: null }));
     await settle();
     expect(byId(h, 10).hasUnread).toBe(false);
@@ -1006,7 +919,6 @@ describe("useChatList commit: a read started before a live write never undoes it
     fireInbound(9, "after the mark", "2026-08-25T10:20:00Z");
     srv.answer(0, [unreadRow(10, "2026-08-25T10:00:00Z"), row(9, "2026-08-25T09:00:00Z")]);
     await until("page 1 asked", () => srv.asked(25));
-    // Page 1 was asked after the mark-all: OF's answer holds it.
     srv.answer(25, [row(8, "2026-08-25T08:00:00Z"), row(7, "2026-08-25T07:00:00Z")], false);
     await until("refresh settled", () => done);
     expect(byId(h, 10).hasUnread).toBe(false);
@@ -1021,18 +933,17 @@ describe("useChatList askedAt on the Relay's clock (W30-mu #14)", () => {
   afterEach(() => setRelayOffset(0));
 
   it("a tab clock 60 s ahead: a flip the Relay made after the page was asked still applies", async () => {
-    setRelayOffset(60_000);   // tab minus Relay
+    setRelayOffset(60_000);
     serve = () => ({ list: [unreadRow(10, "2026-08-25T10:00:00Z")], hasMore: false });
     const h = renderHook(() => useChatList(), { wrapper });
     await until("page 0", () => h.result.current.data.length === 1);
-    // 5 s after the ask, on the Relay's clock (55 s before the tab's).
     act(() => flipCachedReadState(client, "acct-a", { fanId: 10, unread: false, at: Date.now() - 60_000 + 5_000 }));
     await settle();
     expect(h.result.current.data[0].hasUnread).toBe(false);
   });
 
   it("a tab clock 30 s ahead: a send replayed over a page holding a newer fan DM leaves the DM's preview and unread (W30-mu #30)", async () => {
-    setRelayOffset(30_000);   // tab minus Relay
+    setRelayOffset(30_000);
     const h = await renderTwoPages();
     const srv = manualServe();
     let done = false;
@@ -1040,7 +951,6 @@ describe("useChatList askedAt on the Relay's clock (W30-mu #14)", () => {
     await until("page 0 asked", () => srv.asked(0));
     act(() => patchChatListAfterSend(client, "acct-a", 10,
       { fromUserId: "acct-a", fromUserName: "me", text: "our send", mediaCount: 0, price: 0 }));
-    // The fan wrote 5 s after the send (OF's clock = the Relay's); the page read before the send answers with it.
     const dmAt = new Date(Date.now() - 30_000 + 5_000).toISOString();
     srv.answer(0, [{ ...unreadRow(10, dmAt), lastMessage: { id: 7777, text: "fan DM", createdAt: dmAt } } as OFChatItem,
       row(9, "2026-08-25T09:00:00Z")]);

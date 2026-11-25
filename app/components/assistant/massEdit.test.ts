@@ -24,7 +24,6 @@ describe("diffLine (rwl W30 F12: the server's text, never re-formatted)", () => 
   });
 });
 
-// rwl W30 S1: the server judges LIVE over every message's prior value; the card only shows it.
 describe("isLive", () => {
   it.each<[string, EditRule, boolean]>([
     ["a diff the server marked live", rule(1, "A", [d("online_only", "Online only on (1), off (1) → off", true)]), true],

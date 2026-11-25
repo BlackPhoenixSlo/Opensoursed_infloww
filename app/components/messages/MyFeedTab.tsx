@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * MyFeedTab — the model's OWN profile wall (only their posts), as opposed
- * to the Posts tab which shows OF's home timeline (mixed creators).
- *
- * Owns a single-model picker (defaults to first active account) plus a
- * media-type filter. Pages via OF's tailMarker cursor through useMyFeed.
- * Per-post actions (delete / edit / pin) act on the live OnlyFans post and
- * patch the react-query cache optimistically so the list updates without a
- * full refetch.
- */
 
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient, type InfiniteData } from "@tanstack/react-query";
@@ -25,7 +15,6 @@ import { useMyFeed, type FeedMediaType, type OFPost } from "@/hooks/usePosts";
 import { relay } from "@/lib/relay";
 import { TableSkeleton } from "@/components/ui/Skeleton";
 
-// Mirror of useMyFeed's page shape, for typing the optimistic cache edits.
 interface FeedPage {
   posts: OFPost[];
   hasMore: boolean;
@@ -54,7 +43,6 @@ export default function MyFeedTab() {
   const queryKey = useMemo(() => ["my-feed", accountId, type], [accountId, type]);
   const ctx = { accountId: accountId ?? undefined };
 
-  // Helper: rewrite the matching post across every cached page.
   const patchCache = (postId: number, fn: (p: OFPost) => OFPost) =>
     qc.setQueryData<InfiniteData<FeedPage>>(queryKey, (old) => {
       if (!old) return old;
@@ -69,7 +57,6 @@ export default function MyFeedTab() {
 
   const del = useMutation({
     mutationFn: (postId: number) => relay.delete(`/api/of/v2/posts/${postId}`, ctx),
-    // Optimistically drop the row from every cached page; no refetch needed.
     onSuccess: (_data, postId) => {
       qc.setQueryData<InfiniteData<FeedPage>>(queryKey, (old) => {
         if (!old) return old;

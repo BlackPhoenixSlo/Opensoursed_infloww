@@ -40,7 +40,6 @@ describe("groupOccurrences", () => {
       ],
     },
     {
-      // US DST ends Sun 1 Nov 2026 02:00 EDT: 22:00 EDT to 06:00 EST is 9 hours; offsets in the text differ.
       name: "across a DST change, slots compare and sort as instants, not as text",
       in: [occ(7, "2026-10-31T22:00:00-04:00", "2026-11-01T06:00:00-05:00", [1], "America/New_York"),
         occ(8, "2026-11-01T02:00:00Z", "2026-11-01T11:00:00Z", [2], "America/New_York"),

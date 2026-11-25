@@ -9,14 +9,11 @@ import { CAMERA_BLOCKED, MIC_BLOCKED } from "./ofMirrorComposer";
 import { applyData } from "./ofMirrorData";
 import { RelayError, type TaggedFriendUser, type VaultList, type VaultMedia, type VaultUploadResp } from "./relay";
 
-/** A scrubbed OF response (app/lib/__fixtures__/of/<name>.json). */
 const fixture = (name: string): unknown => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/${name}.json`), "utf8"));
-/** A committed new-post capture (path under of-mirror/pages/new-post). */
 const loadPage = (page: string) => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/new-post/${page}.html`), "utf8");
   return document;
 };
-/** An in-memory Storage, so a test never touches the real sessionStorage. */
 const memoryStorage = (): Storage => {
   const m = new Map<string, string>();
   return {
@@ -31,7 +28,6 @@ const memoryStorage = (): Storage => {
   };
 };
 const empty = (): PostDraft => ({ text: "", tagged_users: [], media_files: [], thumbs: [] });
-/** What bindPost marks on New post's index: Post, Add media and its picker, Record video and voice, the right column's search. */
 const composerWired = (d: Document) => [
   d.querySelector("button[at-attr='submit_post']"),
   d.querySelector("button[aria-label='Add media']"),
@@ -47,7 +43,6 @@ const EDITOR = "[contenteditable][aria-label='Textbox field']";
 const POST = "button[at-attr='submit_post']";
 const editor = (d: Document) => d.querySelector<HTMLElement>(EDITOR)!;
 const post = (d: Document) => d.querySelector<HTMLButtonElement>(POST)!;
-/** Type `text` into OF's editor as the browser would: one paragraph per line, then an input event. */
 const type = (d: Document, text: string) => {
   editor(d).innerHTML = text.split("\n").map((l) => `<p>${l || "<br>"}</p>`).join("");
   editor(d).dispatchEvent(new Event("input", { bubbles: true }));
@@ -60,7 +55,6 @@ const handlers = (createPost = vi.fn((_body: unknown) => Promise.resolve({ id: 1
   navigate: vi.fn(),
   posted: vi.fn(),
 });
-/** OF's toast text, if one shows. */
 const toastText = (d: Document) => d.querySelector(".toasts-host .v-snack.m-alert .toast__text")?.textContent;
 
 describe("collectPost", () => {
@@ -296,7 +290,6 @@ describe("bindPost on the new-post capture", () => {
     const ctx = { newWrites: false, handlers: null, storage: memoryStorage(), accountId: null };
     let d = loadPage("index");
     let unbind = bindPost(d, "new-post/index", ctx);
-    // (The Scheduled events widget's "+" is the generator's Wired control, ofMirrorQueue's Add to queue.)
     expect(new Set(d.querySelectorAll("[data-oi-wired]:not([at-attr='add_event_widget'])"))).toEqual(new Set(composerWired(d)));
     unbind();
     d = loadPage("state-schedule");
@@ -312,7 +305,7 @@ describe("bindPost on the new-post capture", () => {
   it("marks Post, Add media and its picker, Record video and voice, and the search box, and only those, as wired; a pick gets no Read-only note", () => {
     const d = loadPage("index");
     const unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: memoryStorage(), accountId: "1" });
-    const unbindWrites = bindWrites(d, "new-post/index", null, true); // its change path, as OfMirrorFrame binds it
+    const unbindWrites = bindWrites(d, "new-post/index", null, true);
     const picker = d.querySelector("input[type=file]")!;
     expect(new Set(d.querySelectorAll("[data-oi-wired]:not([at-attr='add_event_widget'])"))).toEqual(new Set(composerWired(d)));
     picker.dispatchEvent(new Event("change", { bubbles: true }));
@@ -347,7 +340,6 @@ describe("bindPost on the new-post capture", () => {
       expect(opened).toHaveBeenCalledTimes(1);
       expect(pickers()).toHaveLength(0);
 
-      // useOfPost rebinds the same frame document when the Creator changes: one picker, one open per click.
       unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: memoryStorage(), accountId: "1" });
       unbind();
       unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: handlers(), storage: memoryStorage(), accountId: "2" });
@@ -363,7 +355,6 @@ describe("bindPost on the new-post capture", () => {
 });
 
 describe("schedule dialog (state-schedule capture)", () => {
-  // Monday 12 October 2026, 10:00 local: 1 October is a Thursday, 1 November a Sunday.
   const NOW = new Date(2026, 9, 12, 10, 0);
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -385,7 +376,7 @@ describe("schedule dialog (state-schedule capture)", () => {
   const bindSchedule = (s = memoryStorage(), h: ReturnType<typeof handlers> | null = handlers()) => {
     const d = loadPage("state-schedule");
     const unbindPost = bindPost(d, "new-post/state-schedule", { newWrites: false, handlers: h, storage: s, accountId: h ? "1" : null });
-    const unbindWrites = bindWrites(d, "new-post/state-schedule", null, true); // the click fallback and change path, as OfMirrorFrame binds it
+    const unbindWrites = bindWrites(d, "new-post/state-schedule", null, true);
     const unbind = () => {
       unbindPost();
       unbindWrites();
@@ -404,7 +395,6 @@ describe("schedule dialog (state-schedule capture)", () => {
     for (let n = 12; n <= 31; n++) expect(cell(d, n).classList.contains("vdatetime-calendar__month__day--disabled")).toBe(false);
     expect(d.querySelectorAll(".vdatetime-calendar__month__day--selected")).toHaveLength(1);
     expect(cell(d, 20).classList.contains("vdatetime-calendar__month__day--selected")).toBe(true);
-    // the cells are clones of OF's own: its span nesting is kept
     expect(cell(d, 20).querySelector("span > span")?.textContent).toBe("20");
 
     renderCalendar(d, new Date(2026, 10, 1), new Date(2026, 9, 20), NOW);
@@ -615,7 +605,6 @@ describe("a scheduled draft on the composer", () => {
   });
 });
 
-/** Taggable creators: OF's own GET /posts/tagged-friend-users response, scrubbed (the first two). */
 const TAGS: TaggedFriendUser[] = (fixture("new-post-tags") as { items: TaggedFriendUser[] }).items.slice(0, 2);
 
 describe("tag dialog (state-tag-people capture)", () => {
@@ -624,7 +613,6 @@ describe("tag dialog (state-tag-people capture)", () => {
   const examples = (d: Document) => [...d.querySelectorAll<HTMLElement>(`${ROW}:not([data-oi-user])`)];
   const row = (d: Document, id: number) => d.querySelector<HTMLElement>(`${ROW}[data-oi-user='${id}']`)!;
   const box = (r: Element) => r.querySelector<HTMLInputElement>("input[type='checkbox']")!;
-  /** bindPost and bindWrites (its change path), both on the tag dialog in `h`'s scope, as OfMirrorFrame binds them. */
   const bindTags = (s: Storage, h: ReturnType<typeof handlers> | null, tagItems?: TaggedFriendUser[]) => {
     const d = loadPage("state-tag-people");
     const unbindPost = bindPost(d, "new-post/state-tag-people", { newWrites: false, handlers: h, storage: s, accountId: h ? "1" : null, tagItems });
@@ -672,7 +660,7 @@ describe("tag dialog (state-tag-people capture)", () => {
     expect(row(d, 961).querySelectorAll(".b-rows-lists__item__icon .g-avatar")).toHaveLength(1);
     expect(row(d, 962).querySelector(".b-rows-lists__item__name")!.textContent!.trim()).toBe("Beta <3");
     const ph = row(d, 962).querySelector(".b-rows-lists__item__icon .g-avatar__placeholder.m-text-avatar")!;
-    expect(ph.textContent!.trim()).toBe("B<"); // OF's initials: two words, their first letters
+    expect(ph.textContent!.trim()).toBe("B<");
     expect(row(d, 962).querySelector(".b-rows-lists__item__icon img")).toBeNull();
   });
 
@@ -717,7 +705,7 @@ describe("tag dialog (state-tag-people capture)", () => {
     expect(shownRows(d)).toHaveLength(0);
     expect(s.getItem("oi:new-post:1")).toBeNull();
     unbind();
-    expect(shownRows(d)).toHaveLength(50); // unbind puts the capture back
+    expect(shownRows(d)).toHaveLength(50);
   });
 
   it("unbind puts the examples back (a scope change rebinds without the Relay rows)", () => {
@@ -730,7 +718,6 @@ describe("tag dialog (state-tag-people capture)", () => {
 
 describe("vault dialog (state-vault capture)", () => {
   const PAGE = "new-post/state-vault";
-  // Noon UTC keeps the local day; 62 carries the Relay's AI overlay (mirror path), the others none.
   const MEDIA = [61, 62, 63].map((id) => ({
     id,
     type: "photo",
@@ -742,7 +729,6 @@ describe("vault dialog (state-vault capture)", () => {
   const tile = (d: Document, id: number) => d.querySelector<HTMLElement>(`[data-oi-media='${id}']`)!;
   const exampleTile = (d: Document) => d.querySelector<HTMLElement>(".b-photos__item.m-checkbox-control:not([data-oi-media])")!;
   const marked = (d: Document) => [...d.querySelectorAll(".b-photos__item.selected")].map((t) => t.getAttribute("data-oi-media"));
-  /** The dialog with the Creator's 3 media applied (as useOfData does), then bound. */
   const bindVault = (s: Storage, h: ReturnType<typeof handlers> | null) => {
     const d = loadPage("state-vault");
     if (h) applyData(d, PAGE, { vaultMedia: MEDIA, picked: [] }, (u) => `/img?u=${u}&account_id=1`);
@@ -771,7 +757,7 @@ describe("vault dialog (state-vault capture)", () => {
     const d = loadPage("state-vault");
     const folders = () => [...d.querySelectorAll<HTMLElement>(".b-rows-lists__item")].filter((r) => r.style.display !== "none");
     const names = () => folders().map((r) => r.querySelector(".b-rows-lists__item__name")!.textContent!.trim());
-    expect(names()).toContain("List 36"); // the capture
+    expect(names()).toContain("List 36");
     applyData(d, PAGE, { vaultLists: [{ id: 7, name: "Beach set", photosCount: 2 } as never], vaultAll: { photosCount: 5 } as never, vaultMedia: [], list: "7" });
     expect(names()).toEqual(["All media", "Beach set"]);
     const links = folders().map((r) => r.querySelector("a")!);
@@ -793,7 +779,7 @@ describe("vault dialog (state-vault capture)", () => {
     expect(tabs().map((t) => t.classList.contains("m-current"))).toEqual([false, false, false, true, false]);
     tabs()[1].click();
     expect(h.navigate).toHaveBeenCalledWith(`/of-manager/${PAGE}?list=7&type=photo`);
-    tabs()[3].click(); // the current one
+    tabs()[3].click();
     tabs()[0].click();
     expect(h.navigate.mock.calls).toEqual([[`/of-manager/${PAGE}?list=7&type=photo`], [`/of-manager/${PAGE}?list=7`]]);
     unbind();
@@ -806,7 +792,7 @@ describe("vault dialog (state-vault capture)", () => {
   it("a click decides from the draft: a tile marked but not in the draft is picked and stays marked", () => {
     const s = memoryStorage();
     const { d, unbind } = bindVault(s, handlers());
-    tile(d, 61).classList.add("selected"); // the mark disagrees with the (empty) draft
+    tile(d, 61).classList.add("selected");
     tile(d, 61).click();
     expect(loadDraft(s, "1").media_files).toEqual([61]);
     expect(marked(d)).toEqual(["61"]);
@@ -1086,7 +1072,6 @@ describe("Co-tags on the composer", () => {
   });
 });
 
-/** Bind `page` (under new-post) with bindPost and bindWrites, as OfMirrorFrame binds them. */
 const bindBoth = (page: string, s = memoryStorage(), h: ReturnType<typeof handlers> | null = handlers(), extra: Partial<Parameters<typeof bindPost>[2]> = {}) => {
   const d = loadPage(page);
   const unbindPost = bindPost(d, `new-post/${page}`, { newWrites: false, handlers: h, storage: s, accountId: h ? "1" : null, ...extra });
@@ -1101,7 +1086,6 @@ const bindBoth = (page: string, s = memoryStorage(), h: ReturnType<typeof handle
     },
   };
 };
-/** Type `value` into `input` as the browser would (input, then change on leaving it). */
 const typeInto = (input: HTMLInputElement, value: string) => {
   input.value = value;
   input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1133,7 +1117,7 @@ describe("poll and quiz panels (state-poll, state-quiz captures)", () => {
     expect(d.getElementById("oi-note")).toBeNull();
     expect(options(d)).toHaveLength(3);
     expect(options(d)[2].value).toBe("");
-    expect(d.activeElement).toBe(options(d)[2]); // the new row takes the cursor, as OF's does
+    expect(d.activeElement).toBe(options(d)[2]);
     typeInto(options(d)[0], "A");
     typeInto(options(d)[2], "C");
     expect(loadDraft(s, "1").voting).toEqual({ type: 1, options: ["A", "", "C"] });
@@ -1153,7 +1137,6 @@ describe("poll and quiz panels (state-poll, state-quiz captures)", () => {
     typeInto(options(d)[0], "A");
     typeInto(options(d)[1], "B");
     const switches = () => [...d.querySelectorAll<HTMLElement>(".b-make-post__voting .vote-input .m-quiz-swithcer")];
-    // The switch itself (OF's round button), as a click lands on it: its mark and its radio's attribute show the pick.
     switches()[1].click();
     expect(radios(d).map((r) => r.checked)).toEqual([false, true]);
     expect(radios(d).map((r) => r.hasAttribute("checked"))).toEqual([false, true]);
@@ -1172,7 +1155,7 @@ describe("poll and quiz panels (state-poll, state-quiz captures)", () => {
     saveDraft(s, "1", { ...empty(), text: "Synthetic post", voting: { type: 1, options: ["A", "B"] }, voting_due: 3 });
     const { d, unbind } = bindBoth("state-poll", s);
     const drop = d.querySelector<HTMLAnchorElement>(".b-make-post__voting .b-post-piece .b-dropzone__preview__delete")!;
-    drop.addEventListener("click", (e) => e.preventDefault()); // no navigation in jsdom
+    drop.addEventListener("click", (e) => e.preventDefault());
     drop.click();
     expect(loadDraft(s, "1")).toEqual({ ...empty(), text: "Synthetic post" });
     unbind();
@@ -1276,7 +1259,6 @@ describe("expiration and fundraising target dialogs (state-expiration, state-tar
     const row = document.querySelector(".modal.show .b-tabs__nav__list")!;
     expect([...row.querySelectorAll(".b-tabs__nav__link")].map((b) => b.textContent?.trim())).toContain("30 days");
     expect(getComputedStyle(row).flexWrap).toBe("wrap");
-    // Tag people's tabs (another small dialog) stay OF's one scrolled row.
     document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/${page.replace("expiration", "tag-people")}.html`), "utf8");
     expect(getComputedStyle(document.querySelector(".modal.show .b-tabs__nav__list")!).flexWrap).not.toBe("wrap");
   });
@@ -1384,7 +1366,6 @@ describe("expiration and fundraising target dialogs (state-expiration, state-tar
 });
 
 describe("labels dialog (state-labels capture)", () => {
-  /** The Creator's own post labels from OF's GET /labels response (profile-labels.json, scrubbed): Archive and Private Archive are not offered. */
   const LABELS = postLabelsOf(fixture("profile-labels") as PostLabelsResp);
   const row = (d: Document, id: number) => d.querySelector<HTMLElement>(`label.b-rows-lists__item[data-oi-label='${id}']`)!;
   const newLabel = (d: Document) => d.querySelector<HTMLButtonElement>(".b-rows-lists__modal__add-list-btn")!;
@@ -1557,13 +1538,12 @@ describe("post extras on the composer (index capture)", () => {
 });
 
 describe("read-only controls (no Known body)", () => {
-  /** Bind `page` in Single-Creator scope; nothing may reach a handler. */
   const bindPage = (page: string) => {
     const d = loadPage(page);
     const s = memoryStorage();
     const h = handlers();
     const unbindPost = bindPost(d, `new-post/${page}`, { newWrites: false, handlers: h, storage: s, accountId: "1" });
-    const unbindWrites = bindWrites(d, `new-post/${page}`, null, true); // the click fallback and change path, as OfMirrorFrame binds it
+    const unbindWrites = bindWrites(d, `new-post/${page}`, null, true);
     const unbind = () => {
       unbindPost();
       unbindWrites();
@@ -1629,11 +1609,6 @@ describe("read-only controls (no Known body)", () => {
   );
 });
 
-/**
- * New post from OF's own responses (app/lib/__fixtures__/of/new-post-*.json and profile-labels.json, read through the Relay
- * and scrubbed). new-post-create-body.json pairs each draft with the Relay body New post sends and the body the Relay's
- * of_client sends OF for it (OF's own keys, MakeFeedPost getDataObject).
- */
 describe("New post with the captured shapes", () => {
   const ME = fixture("new-post-me") as OfMe;
   const LIMITS = { min: 3, max: 100 };
@@ -1645,7 +1620,6 @@ describe("New post with the captured shapes", () => {
 
   it.each(CREATE.cases.map((c) => [c.name, c] as const))("the request body: %s", (_name, c) => {
     expect(collectPost(c.text, { ...empty(), ...c.draft }, new Date(CREATE.now))).toEqual(c.body);
-    // The Relay's OF body uses OF's own keys; its one extra is `userTags` beside OF's `rfTag` for a tagged creator.
     expect(Object.keys(c.of).filter((k) => !CREATE.ofKeys.includes(k))).toEqual(c.draft.tagged_users ? ["userTags"] : []);
   });
 
@@ -1705,7 +1679,7 @@ describe("New post with the captured shapes", () => {
       field.value = v;
       field.dispatchEvent(new Event("input", { bubbles: true }));
     };
-    expect(save.disabled).toBe(true); // empty, no saved price: OF's isPriceInvalid
+    expect(save.disabled).toBe(true);
     typeIn("2");
     expect(save.disabled).toBe(true);
     typeIn("9.99");
@@ -1785,15 +1759,12 @@ describe("Edit post (the Queue's row menu): New post saves the queued post in pl
 
   it("an edit that changes only the date: Post sends PUT /posts/{id} (the captured shape), not a new post, and goes back to the Queue", async () => {
     const s = memoryStorage();
-    // The captured post's draft (postEditDraft), rescheduled a day later in the schedule dialog.
     const want = requests.reschedulePost.relay!;
-    // OF's own Save sends the same moment as isScheduled + scheduledDate (captured live): the Relay maps posted_at to them.
     expect(Object.keys(requests.reschedulePost.of.body)).toEqual(expect.arrayContaining(["isScheduled", "scheduledDate", "text"]));
     saveDraft(s, "1", { ...empty(), text: "Synthetic scheduled post 1", posted_at: want.body.posted_at as string, edit_id: "2433845504" });
     const h = edited();
     const { d, unbind } = bindBoth("index", s, h, { zone: "Europe/Ljubljana" });
     expect(d.getElementById("oi-post-summary")!.textContent).toMatch(/^Editing a scheduled post · Scheduled for Fri, Nov 27, 3:14 AM · Clear · Discard$/);
-    // OF's "Scheduled for" piece above the editor (PostScheduleForItem): its × greyed, a click opens the schedule.
     const pill = d.querySelector<HTMLElement>("#oi-schedule-pill > .b-post-piece.m-schedule")!;
     expect(pill.textContent!.replace(/\s+/g, " ").trim()).toBe("Scheduled for Fri, Nov 27, 3:14 AM");
     expect(pill.parentElement!.nextElementSibling!.contains(d.querySelector("[contenteditable]"))).toBe(true);
@@ -1817,7 +1788,6 @@ describe("Edit post (the Queue's row menu): New post saves the queued post in pl
     const s = memoryStorage();
     saveDraft(s, "1", { ...empty(), text: "x", posted_at: "2026-11-26T02:14:00+00:00", edit_id: "2433845504" });
     const { d, unbind } = bindBoth("state-schedule", s, edited(), { zone: "America/Los_Angeles" });
-    // 02:14 UTC on Nov 26 is 6:14 PM on Nov 25 in Los Angeles.
     expect(d.querySelector(".vdatetime-popup__tab.time")!.textContent).toBe("6:14 PM");
     expect(d.querySelector(".vdatetime-calendar__month__day--selected")!.textContent!.trim()).toBe("25");
     expect(collectSchedule(d, new Date("2026-11-01T00:00:00Z"), "America/Los_Angeles")).toBe(localIso(new Date("2026-11-26T02:14:00Z")));
@@ -1845,7 +1815,6 @@ describe("Edit post (the Queue's row menu): New post saves the queued post in pl
 
   it("a Relay without the edit route (404, as one on main answers): the composer says the save failed, makes no new post and stays", async () => {
     const s = memoryStorage();
-    // Pin the clock before posted_at: collectPost refuses a past date (TOO_SOON) and never calls editPost.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-20T12:00:00+02:00"));
     onTestFinished(() => { vi.useRealTimers(); });
@@ -1875,16 +1844,10 @@ describe("Edit post (the Queue's row menu): New post saves the queued post in pl
   });
 });
 
-/**
- * Record video and Record voice on Home (its index and 11 State pages) and New post (index and State pages): the chat
- * composer's recorders (ofMirrorComposer), the File through Add media's upload, the Post carrying its send_with.
- * getUserMedia and MediaRecorder are stubbed (a synthetic stream; stop() hands over one chunk).
- */
 describe("Record video and Record voice on Home and New post", () => {
   const PAGES = (dir: string) => readdirSync(resolve(__dirname, `../public/of-mirror/pages/${dir}`)).filter((f) => f.endsWith(".html")).map((f) => `${dir}/${f.slice(0, -5)}`);
   const HOME_PAGES = PAGES("home");
   const NEW_POST_PAGES = PAGES("new-post");
-  /** post_upload.py's CLAIM: a fresh convert claim as OF's JS builds it. */
   const CLAIM = { processId: "p1", host: "h", name: "n" };
   const NEW_POST_HTML = readFileSync(resolve(__dirname, "../public/of-mirror/pages/new-post/index.html"), "utf8");
   const open = (page: string) => {
@@ -1914,7 +1877,6 @@ describe("Record video and Record voice on Home and New post", () => {
         this.onstop?.();
       }
     }
-    // The upload re-encodes a webm recording to WAV (ofMirrorComposer voiceFile): a decoder handing back 2 samples.
     class Ctx {
       decodeAudioData = async (_b: ArrayBuffer) => ({ numberOfChannels: 1, sampleRate: 16000, length: 2, getChannelData: () => Float32Array.from([0, 0.5]) });
     }
@@ -1936,7 +1898,6 @@ describe("Record video and Record voice on Home and New post", () => {
     return { d, s, h, unbind, id: draftId ?? "1" };
   };
   const button = (d: Document, label: string) => d.querySelector<HTMLButtonElement>(`button[aria-label='${label}']`)!;
-  /** Record, then stop: the panel's (voice) or the video-js recorder's (video) record button, twice. */
   const record = async (d: Document, label: "Record voice" | "Record video") => {
     button(d, label).click();
     for (let i = 0; i < 5; i++) await flush();
@@ -2089,7 +2050,6 @@ describe("Record video and Record voice on Home and New post", () => {
     post(d).click();
     expect(confirm).toHaveBeenCalledWith(uploadFailed({ voice: "Invalid file type" }));
     expect(h.createPost).not.toHaveBeenCalled();
-    // Record voice again, accepted this time: nothing failed is left, Post posts both without asking.
     await record(d, "Record voice");
     expect(loadDraft(s, "1").upload_failed).toBeUndefined();
     post(d).click();
@@ -2112,7 +2072,6 @@ describe("Record video and Record voice on Home and New post", () => {
     expect(confirm).not.toHaveBeenCalled();
     expect(h.createPost).toHaveBeenCalledWith(expect.objectContaining({ text: "x", media_files: [] }));
     unbind();
-    // Editing a queued post: Discard drops the whole draft, its failed upload with it.
     saveDraft(s, "1", { ...empty(), text: "x", edit_id: "q1", upload_failed: failed });
     d = open("new-post/index");
     unbind = bindPost(d, "new-post/index", { newWrites: false, handlers: h, storage: s, accountId: "1" });
@@ -2136,7 +2095,6 @@ describe("Record video and Record voice on Home and New post", () => {
   it("Home borrows OF's recorder markup from New post's capture once; Back on the voice panel keeps nothing", async () => {
     const m = media();
     const { d, h, unbind } = bind("home/index");
-    // Fetched at bind (no round trip after the click), drawn only on the click.
     expect(m.fetched).toHaveBeenCalledWith("/of-mirror/pages/new-post/index.html");
     for (let i = 0; i < 3; i++) await flush();
     expect(d.querySelector(".js-chat__audiorecord-panel")).toBeNull();
@@ -2177,7 +2135,6 @@ describe("Record video and Record voice on Home and New post", () => {
     const rec = () => d.querySelector<HTMLElement>(".js-chat__audiorecord-panel .b-float-panel__btn-record")!;
     rec().click();
     for (let i = 0; i < 3; i++) await flush();
-    // useOfPost rebinds when the model's details load: unbind, then a bind of the same draft in the same task.
     unbind();
     const h2 = { ...handlers(), upload: vi.fn((_f: File) => Promise.resolve({ ready: true, deduped: false, vault_id: null, send_with: [CLAIM] })) };
     const unbind2 = bindPost(d, page, { handlers: h2, storage: s, accountId: "1", draftId: page.startsWith("home/") ? "home:1" : undefined, newWrites: true });

@@ -1,49 +1,12 @@
-// MAIN-world interceptor — runs at document_start on onlyfans.com.
-//
-// Captures two classes of data the relay needs:
-//
-//   1. Header values from outgoing XHR/fetch on /api2/v2/*:
-//        user-id, x-bc, x-of-rev, sign, time, user-agent
-//      These are what the curl-from-DevTools already carries; we just
-//      keep the latest set so the popup can emit a curl any time.
-//
-//   2. Runtime-only signing fields that the curl from DevTools does NOT
-//      carry, but the relay needs to verify+resign requests at a fresh
-//      OF revision:
-//        static_param  — first line of the sha1 input inside chunk 2313.js
-//        start, end    — the literal prefix/suffix in the produced sign
-//      OF's `static_param` rotates per frontend deploy and is imported
-//      from another module at runtime. The relay can't see it from the
-//      wire alone, which is why a brand-new x-of-rev fails the
-//      paste-curl flow with "no static_param available". Hooking the
-//      js-sha1 module (webpack id 89668) lets us read it the moment the
-//      page calls sign() for the first time.
-//
-// Strategy mirrors theOFchrackedextension/interceptor.js — that one is
-// proven to work and we keep both in sync.
-
 (function () {
   "use strict";
 
   const REQUIRED_HDRS = ["user-id", "x-bc", "x-of-rev", "sign", "time"];
   const lastSeen = {};
-  const lastRules = {};  // static_param, start, end
-  const lastIdent = {};  // username, name — read off /users/me responses
+  const lastRules = {};
+  const lastIdent = {};
 
-  // Pull the signed-in creator's handle out of an API response so the popup can
-  // label a saved login "@handle" instead of a bare numeric user-id.
-  // Response-sniffing (not a request of our own) because every OF call must be
-  // signed, and we cannot mint a signature here.
-  //
-  // /users/me is the obvious source but not a reliable one: the SPA fetches it
-  // once on boot, so a tab that was already open when the extension loaded —
-  // or a cached reply — never shows it to us, and the row stays a bare id.
-  // So scan EVERY /api2/v2/ reply for an account object whose id equals the
-  // user-id we captured headers for. That id match is what keeps this honest:
-  // these payloads are full of other people's accounts (fans, chat lists), and
-  // only the one that IS us can ever set the label.
-  // Flip to true in the console (window.__chatterlyDebug = true) to see why a
-  // login is still showing a bare id.
+  // Sniff replies, not our own requests: every OF call must be signed and we cannot mint a signature.
   function dbg() {
     try {
       if (window.__chatterlyDebug) console.log("[Chatterly]", ...arguments);
@@ -52,32 +15,21 @@
 
   function noteIdentity(url, text) {
     try {
-      if (!text || lastIdent.username) return;          // already labelled
+      if (!text || lastIdent.username) return;
       const c = text.charAt(0);
       if (c !== "{" && c !== "[") return;
-      if (text.indexOf('"username"') === -1) return;    // cheap reject
+      if (text.indexOf('"username"') === -1) return;
       const body = JSON.parse(text);
 
-      // Preferred, header-independent path — the one that makes OF as reliable
-      // as Fansly. /users/me (and the boot payload) return the signed-in user
-      // as an account object flagged isAuth:true. That flag says "this is us"
-      // without any header, so identity no longer waits on the user-id race
-      // that left OF rows showing a bare id. It also backfills user-id so the
-      // curl stays correct even if a signed request has not been seen yet.
       if (takeSelfMarked(body, 0)) {
         dbg("labelled from self-marker in", url);
         publish();
         return;
       }
 
-      // Id-match path — for endpoints whose self object is NOT flagged (chat
-      // lists, fan lists) but that still contain us somewhere. Needs to know
-      // who we are first.
+      // Id match keeps this honest: payloads hold other people's accounts; only ours may set the label.
       const selfId = lastSeen["user-id"];
       if (!selfId) {
-        // Body arrived before any signed request revealed who we are. Keep the
-        // candidates; resolveIdentity() below settles them once user-id lands,
-        // so an early payload is not lost for the rest of the session.
         stashCandidates(text);
         dbg("no user-id yet, stashed candidates", url);
         return;
@@ -90,10 +42,6 @@
     }
   }
 
-  // Find the account object OF marks as the signed-in user. isAuth is the
-  // canonical self flag on /users/me; a couple of boot endpoints use the same
-  // shape. Bounded recursion, first hit wins, and it must still carry a
-  // username so we never label from a bare {isAuth:true} stub.
   function takeSelfMarked(node, depth) {
     if (!node || typeof node !== "object" || depth > 4) return false;
     if (Array.isArray(node)) {
@@ -113,7 +61,6 @@
     return false;
   }
 
-  // Accounts seen before we knew our own id: {id: {username, name}}.
   const pending = {};
 
   function stashCandidates(text) {
@@ -138,8 +85,6 @@
     }
   }
 
-  // Called once a signed request reveals user-id: if we already saw ourselves
-  // in an earlier body, use it now.
   function resolveIdentity() {
     if (lastIdent.username) return;
     const selfId = lastSeen["user-id"];
@@ -152,10 +97,6 @@
     publish();
   }
 
-  // Walk a decoded body looking for the account object that is us. OF nests
-  // accounts differently per endpoint (bare, under .user, in a .list array),
-  // so recurse rather than enumerate shapes — bounded in depth, and it stops
-  // at the first id match.
   function takeIdentity(node, selfId, depth) {
     if (!node || typeof node !== "object" || depth > 4) return false;
     if (Array.isArray(node)) {
@@ -175,7 +116,6 @@
   }
 
   function publish() {
-    // Only emit when we have the bare minimum to build a curl.
     for (const k of REQUIRED_HDRS) if (!lastSeen[k]) return;
     try {
       window.postMessage(
@@ -191,15 +131,11 @@
               "time":       lastSeen["time"],
               "user-agent": lastSeen["user-agent"] || navigator.userAgent,
             },
-            // Runtime-captured signing fields (may be partial if the page
-            // hasn't called sign() yet — the popup will warn if missing).
             rules: {
               static_param: lastRules.static_param || null,
               start:        lastRules.start || null,
               end:          lastRules.end || null,
             },
-            // Human label for the popup's saved-logins list (may be absent
-            // until the page fetches /users/me — the id still works alone).
             username: lastIdent.username || null,
             displayName: lastIdent.name || null,
             capturedAt: new Date().toISOString(),
@@ -225,7 +161,6 @@
     else if (lc === "user-agent") lastSeen["user-agent"] = String(value);
   }
 
-  // ── XHR ───────────────────────────────────────────────────────
   const _xhrOpen = XMLHttpRequest.prototype.open;
   const _xhrSetHeader = XMLHttpRequest.prototype.setRequestHeader;
   const _xhrSend = XMLHttpRequest.prototype.send;
@@ -243,7 +178,6 @@
     if (url && url.includes("/api2/v2/")) {
       lastSeen.__url = url;
       publish();
-      // Read the reply too — that is where the handle lives.
       try {
         this.addEventListener("load", () => {
           try {
@@ -257,7 +191,6 @@
     return _xhrSend.apply(this, args);
   };
 
-  // ── fetch() ───────────────────────────────────────────────────
   const _fetch = window.fetch;
   window.fetch = function (input, init) {
     try {
@@ -291,20 +224,6 @@
     return p;
   };
 
-  // ── Webpack module hooks (capture static_param + start + end) ──
-  //
-  // OF's signing pipeline (chunk 2313.js, exports.A):
-  //   1. sha1(static_param + "\n" + time + "\n" + path + "\n" + userId)
-  //   2. <obfuscated checksum derivation>
-  //   3. return start + ":" + sha1Hex + ":" + abs(checksum).toString(16) + ":" + end
-  //
-  // We hook two webpack modules:
-  //   • 89668 — js-sha1, to wrap the hash fn and read its 4-line input
-  //   • 802313 — sign builder, to read start/end out of the returned sign
-  //
-  // Webpack stores chunks on `self.webpackChunkof_vue`; pushing into that
-  // array is how OF loads modules. We override .push so every loaded
-  // module passes through our wrappers.
 
   const wpChunks = (self.webpackChunkof_vue = self.webpackChunkof_vue || []);
   const origPush = wpChunks.push.bind(wpChunks);
@@ -313,7 +232,7 @@
     const modules = chunk[1];
     if (!modules) return origPush(chunk);
 
-    // js-sha1 — module 89668
+    // static_param rotates per frontend deploy and is imported at runtime; hooking js-sha1 reads it on the first sign().
     if (modules[89668]) {
       const origMod = modules[89668];
       modules[89668] = function (module, exports, require) {
@@ -340,7 +259,6 @@
       };
     }
 
-    // Sign builder — module 802313 (exports.A is the sign function)
     if (modules[802313]) {
       const origMod = modules[802313];
       modules[802313] = function (module, exports, require) {

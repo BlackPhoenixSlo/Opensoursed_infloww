@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * useVaultMediaStats — per-media Sent / Unlock / Unlock rate and last use,
- * account-wide, for the Vault picker (GET /admin/vault/media-stats). Keyed by
- * media id, so it overlays both picker sources (live OF and the mirror).
- */
 
 import { useQuery } from "@tanstack/react-query";
 

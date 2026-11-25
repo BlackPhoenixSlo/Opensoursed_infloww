@@ -1,53 +1,5 @@
 "use client";
 
-/**
- * VaultPackPickerModal — one button, every candidate, one Save.
- *
- * The operator opens it, sees the photos Jev is confident are feet photos
- * (then the possible ones, unticked),
- * files each one on a rung (or rejects it), and presses Save. That writes the
- * rung folders and their membership. Publishing them to her real OnlyFans
- * vault is a separate, explicit button per rung.
- *
- * WHY A HUMAN IS IN THIS LOOP AT ALL. The vault's own taxonomy cannot find this
- * content (measured on prod 2026-08-10: `primary_folder='feet'` on zero of the
- * 68 items the operator hand-picked; `body_focus` says "feet" whenever feet are
- * merely VISIBLE). Jev v8 can, but not perfectly, so the operator confirms.
- *
- * CONFIDENT FIRST (vault_pack_picker.confident / jev_pick). The grid holds
- * Jev-classified photos with feet score >= .6 (measured precision 1.0), most
- * likely first, then the POSSIBLE ones (Jev sees feet, scores them .3-.6:
- * `possible`, labelled "possible", never ticked, `rung?` from the same tier +
- * covering rule; check them first). With no unfiled confident photo left the
- * "undecided" view says so (`pack-fallback-notice`, packPickerState.possibleOnly). No word-search candidates (a photo
- * Jev has not classified yet waits for it), no videos (photos only: a clip
- * filed before the rule shows on its rung and can only be unfiled; the server
- * refuses one on any rung, `feet_photos_only`; a rung's publish skips one,
- * `skipped_videos`). None yet: an empty state says
- * Jev checks new photos automatically. Each tile shows a dashed `rung?` from
- * Jev's tier + covering answer. A prefill is never a verdict: Enter (or a tap
- * on that rung) confirms it, 1/2/3 pick a rung, x rejects, arrows / j k move.
- * State lives in packPickerState.ts. On a phone: 2 columns, 44px taps. When
- * Jev says her body may be on show the free rung (tease) is disabled, and the
- * server refuses it there anyway (`not_free_safe`). One already filed there
- * (before the guard) shows "not free-safe", keeps tease pressable to unfile it,
- * and publishing tease skips it (`skipped_unsafe`).
- *
- * PRESELECTED. A tile whose rung is known and safe (`preselect`) arrives TICKED
- * on it; an unsure body arrives unticked with no suggestion, a possible one
- * unticked on its suggestion (tick it to file it). "File N
- * preselected" files every ticked tile on its rung (plus any unsaved verdict)
- * in one triage, so the operator only unticks what is wrong.
- *
- * ⚠️ IMAGES ARE RATE-GATED ON PURPOSE. Tiles use /image (full frame), never
- * /thumb: the thumb is a 300x300 centre-crop of a 3:4 portrait and feet sit at
- * exactly the edge it discards — judging from the square means judging from less
- * of the picture than the vision model saw. But /image is a relay-side fetch,
- * the relay refetches at VAULT_STILL_CONCURRENCY=12, and a cold pane asking for
- * 280 at once is the documented route to fd exhaustion, which takes the DB and
- * the send lane down with it. So `useImageSlot` below holds a hard in-flight cap
- * and tiles queue for a turn.
- */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -85,13 +37,9 @@ import { useIfConfirm } from "@/hooks/useIfConfirm";
 import { errText } from "@/lib/errText";
 import { cn } from "@/lib/utils";
 
-/** Strictly below the relay's own VAULT_STILL_CONCURRENCY (12) so the pane can
- *  never be the thing that exhausts it, with headroom for the rest of the app. */
+// Below the relay's VAULT_STILL_CONCURRENCY (12): a cold pane fetching every /image at once exhausts fds and takes the DB and send lane down.
 const MAX_INFLIGHT_IMAGES = 4;
 
-/** Fan-facing meaning of each rung, so the operator is filing against what the
- *  caption will claim rather than against a folder name. These mirror SPEC 5.2's
- *  authored rung phrases. */
 const RUNG_HELP: Record<string, string> = {
   tease: "covered — socks, stockings, heels, boots. Rides free as the preview.",
   nude: "bare feet, body NOT nude. This is the product.",
@@ -106,19 +54,11 @@ const RUNG_STYLE: Record<string, string> = {
 
 const imageGate = makeSlotGate(MAX_INFLIGHT_IMAGES);
 
-/**
- * A src, once this tile is both on screen and holding a slot — plus the
- * `settle` the <img> MUST call when it loads or errors.
- *
- * ⚠️ Settling is not optional. A tile that renders its image and keeps the slot
- * starves every tile behind it: with a cap of 4 the pane would show four photos
- * and then stop forever. The slot is released on load, on error, and on unmount,
- * and the token is nulled so none of those can double-release and inflate the cap.
- */
 function useImageSlot(src: string, visible: boolean): { src: string | null; settle: () => void } {
   const [granted, setGranted] = useState(false);
   const tokenRef = useRef<(() => void) | null>(null);
 
+  // settle must run on load, error and unmount, or a held slot starves every tile behind it; the token is nulled so it never double-releases.
   const settle = useCallback(() => {
     const token = tokenRef.current;
     if (!token) return;
@@ -131,7 +71,7 @@ function useImageSlot(src: string, visible: boolean): { src: string | null; sett
     const grant = () => setGranted(true);
     tokenRef.current = grant;
     imageGate.acquire(grant);
-    return settle; // unmounting (or re-keying) hands the slot back
+    return settle;
   }, [visible, src, settle]);
 
   return { src: granted ? src : null, settle };
@@ -152,15 +92,11 @@ function Tile({
 }: {
   accountId: string;
   item: PackCandidate;
-  /** What it shows: its verdict / saved rung, or (`suggested`) the prefill still to confirm. */
   rung: string | null;
   suggested: boolean;
-  /** The tile the keys act on: the focus ring. */
   focused: boolean;
   rungs: string[];
-  /** The preselect tick: null = not tickable (decided, or nothing safe suggested). */
   ticked: boolean | null;
-  /** Per rung: may its button be pressed (`canPress`). */
   pressable: (rung: string) => boolean;
   onRule: (mediaId: number, rung: string | null) => void;
   onFocus: (mediaId: number) => void;
@@ -173,8 +109,6 @@ function Tile({
   useEffect(() => {
     const el = ref.current;
     if (!el || visible) return;
-    // rootMargin gives the gate a head start so scrolling doesn't stall on a
-    // cold tile, without ever asking for the whole set at once.
     const io = new IntersectionObserver(
       (entries) => entries.forEach((e) => e.isIntersecting && setVisible(true)),
       { rootMargin: "400px" },
@@ -187,11 +121,6 @@ function Tile({
   const { src, settle } = useImageSlot(mirrorFullSrc(accountId, item.media_id), visible);
   const isVideo = item.kind !== "photo";
 
-  // Load AND error both settle: either way this tile is done with the network
-  // and the next one in the queue must be let through. A still that 404s is
-  // ordinary (the cache is built lazily), so it gets a placeholder rather than
-  // the browser's broken-image glyph — one cold item should not read as a
-  // broken page, and the description is still enough to rule on.
   const onLoad = () => {
     setLoaded(true);
     settle();
@@ -213,7 +142,6 @@ function Tile({
       className={cn(
         "flex flex-col rounded-md border overflow-hidden bg-bg-subtle outline-none",
         rung ? RUNG_STYLE[rung] ?? "border-fg-dim" : "border-border",
-        // A suggestion is dashed until a press makes it a verdict.
         suggested && "border-dashed",
         focused && "ring-2 ring-accent ring-offset-2 ring-offset-bg",
       )}
@@ -266,7 +194,6 @@ function Tile({
               not free-safe
             </span>
           )}
-          {/* Her body's price tier from the flags: why a tile is prefilled on the top rung. */}
           {!!item.tier && (
             <span className="rounded bg-black/70 px-1" title="Body price tier from Jev">
               ${item.tier}
@@ -278,7 +205,6 @@ function Tile({
             {suggested ? `${rung}?` : rung}
           </span>
         )}
-        {/* The preselect tick: "File N preselected" files every ticked tile on its suggested rung. */}
         {ticked !== null && rung && (
           <label
             className="absolute bottom-1 left-1 flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded bg-black/70 sm:min-h-0 sm:min-w-0 sm:px-1 sm:py-0.5"
@@ -302,15 +228,10 @@ function Tile({
         )}
       </div>
 
-      {/* Pass A: reject on text alone, no pixels needed. */}
       <p className="line-clamp-3 px-2 py-1 text-[12px] leading-snug text-fg-dim">
         {item.description || "—"}
       </p>
 
-      {/* The reject takes only its glyph's width so the three rung labels get
-          the rest — at 8 columns they truncate to nonsense otherwise. On a
-          phone each is a 44px tap target. Tapping the suggested rung confirms
-          it; tapping a decided rung again rejects (as before). */}
       <div className="mt-auto grid grid-cols-[1fr_1fr_1fr_auto] gap-px bg-border p-px text-[13px] sm:text-[12px]">
         {rungs.map((r, i) => (
           <button
@@ -332,9 +253,6 @@ function Tile({
               rung !== r && "bg-bg hover:bg-bg-hover",
             )}
           >
-            {/* "body" not "nude-body": at this width the full name truncates to
-                nonsense, and tease / nude / body reads as the ladder it is. The
-                title carries the precise meaning. */}
             {r === "nude-body" ? "body" : r}
           </button>
         ))}
@@ -367,20 +285,15 @@ export default function VaultPackPickerModal({
   const qc = useQueryClient();
   const { data, isLoading, error } = usePackCandidates(accountId, category);
 
-  /** Verdicts, view and keyboard focus (packPickerState.ts): the component only dispatches. */
   const [pick, dispatch] = useReducer(pickerReducer, initialPickerState);
   const { draft, filter } = pick;
-  /** The status bar: `busy` non-empty while any request is in flight, else the last result (packStatus.ts). */
   const [status, dispatchStatus] = useReducer(packStatusReducer, initialPackStatus);
   const { busy } = status;
   const confirm = useIfConfirm();
   const gridRef = useRef<HTMLDivElement | null>(null);
-  /** A key moved focus: bring the tile into view (a tap never scrolls the page under the finger). */
   const scrollToFocus = useRef(false);
 
   const rungs = useMemo(() => data?.rungs ?? [], [data]);
-  // The shelf comes from the QUERY, not from the last save's response, so the
-  // rungs and their publish buttons are there the moment the modal opens.
   const shelf = data?.folders ?? [];
 
   const shown = useMemo(() => visibleCandidates(data?.candidates ?? [], pick), [data, pick]);
@@ -390,12 +303,10 @@ export default function VaultPackPickerModal({
 
   const dirty = Object.keys(draft).length;
   const candidates = useMemo(() => data?.candidates ?? [], [data]);
-  /** Ticked tiles (packPickerState.isTicked): what "File N preselected" files on their suggested rungs. */
   const tickedN = useMemo(() => tickedVerdicts(candidates, pick, rungs).length, [candidates, pick, rungs]);
   const anyPreselect = useMemo(() => candidates.some((c) => c.preselect), [candidates]);
   const anyPossible = useMemo(() => candidates.some((c) => c.possible), [candidates]);
   const onlyPossible = useMemo(() => possibleOnly(candidates), [candidates]);
-  /** Rungs that exist and have something in them — the only ones publishable. */
   const stocked = shelf.filter((f) => f.folder_id && f.count);
   const allPublished = stocked.length > 0 && stocked.every((f) => f.of_list_id);
 
@@ -403,15 +314,12 @@ export default function VaultPackPickerModal({
     dispatch({ type: "rule", mediaId, rung, order });
   }
 
-  // The keys: 1/2/3, x, Enter, arrows / j k (packPickerState.keyAction). Only while this dialog is the one in front
-  // (a confirm above it owns its own keys) and never from a field or a button's own Enter / Space.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
       const grid = gridRef.current;
       const box = grid?.closest('[role="dialog"]');
       const at = e.target instanceof HTMLElement ? e.target : null;
-      // The nearest dialog must be ours: the Publish confirm renders inside this one.
       if (!grid || !box || !at || at.closest('[role="dialog"]') !== box) return;
       if (at.closest('input,textarea,select,[contenteditable="true"],[role="radiogroup"]')) return;
       if ((e.key === "Enter" || e.key === " ") && at.closest("button")) return;
@@ -427,7 +335,6 @@ export default function VaultPackPickerModal({
     return () => document.removeEventListener("keydown", onKey);
   }, [shown, order, focusId, rungs]);
 
-  // Keep the DOM focus on the focused tile once a key or a verdict moved it, so the next key lands here.
   useEffect(() => {
     if (pick.focus === null) return;
     const el = gridRef.current?.querySelector<HTMLElement>(`[data-pack-tile="${pick.focus}"]`);
@@ -444,18 +351,14 @@ export default function VaultPackPickerModal({
       const verdicts = buildPayload(pick);
       const res = await savePackTriage(accountId, category, verdicts);
       await qc.invalidateQueries({ queryKey: ["vault-pack-candidates", accountId, category] });
-      // After the re-read, so a filed tile never flashes back into "undecided" between the two.
       dispatch({ type: "saved", verdicts });
       await qc.invalidateQueries({ queryKey: ["vault-internal-folders", accountId] });
       dispatchStatus({ type: "ok", note: `saved ${res.saved} (${res.rejected} rejected)` });
     } catch (e) {
-      // The verdicts stay in the draft: Save again retries them.
       dispatchStatus({ type: "fail", note: `save failed: ${errText(e)}` });
     }
   }
 
-  /** "File N preselected": every ticked tile on its suggested rung plus the unsaved draft, one triage. The server
-   *  still refuses the free rung for a body Jev says is not free-safe (nothing written). */
   async function fileTicked() {
     if (!canFileTicked(candidates, pick, rungs, !!busy)) return;
     dispatchStatus({ type: "start", busy: "filing…" });
@@ -495,14 +398,6 @@ export default function VaultPackPickerModal({
     }
   }
 
-  /** Every stocked rung, one after another.
-   *
-   * Sequential on purpose: each rung is 1 create + 1 add + a read-back against
-   * her real OnlyFans account, and firing three at once is how you get rate
-   * limited mid-way and have to reason about which rungs landed. A rung that
-   * fails stops the run and says which one — the ones before it are already
-   * real on OF and a re-run tops them up rather than duplicating.
-   */
   async function publishAll() {
     if (!stocked.length) return;
     const done: string[] = [];
@@ -539,22 +434,15 @@ export default function VaultPackPickerModal({
   return (
     <IfModal
       title={`Pack picker — ${category}`}
-      // A work surface, not a form: an 8-column tile grid wants the screen.
       width={1280}
       className="h-[calc(100vh-32px)]"
       onClose={onClose}
-      // Escape and Done would drop unsaved verdicts, so both are off while dirty; the × still closes (a discard).
       keyboard={!dirty}
       footer={
         <>
           <span className="mr-auto min-w-0 flex-1 basis-60 text-[12px] text-muted">
             Nothing is written until Save, and nothing reaches OnlyFans until Publish.
           </span>
-          {/* The only control here that leaves the app. Amber, not green:
-              Save writes a row, THIS writes to her real OnlyFans vault.
-              Disabled while there are unsaved verdicts — publish reads the
-              SAVED shelf, so publishing dirty would silently ship the old
-              membership and look like it had shipped the new. */}
           <IfButton
             onClick={async () => {
               const yes = await confirm.ask(
@@ -595,9 +483,6 @@ export default function VaultPackPickerModal({
       }
     >
       <div className="flex flex-wrap items-center gap-3">
-        {/* Live tally — INCLUDES unsaved draft, which is why it is labelled.
-            The shelf below shows the SAVED counts, and the two legitimately
-            disagree until Save. */}
         <span className="text-[12px] text-muted">
           {data ? `${data.candidates.length} candidates · decided` : "…"}
           {rungs.map((r) => ` ${r} ${tally[r] ?? 0}`).join(" ·")}
@@ -610,7 +495,6 @@ export default function VaultPackPickerModal({
           options={["undecided", ...rungs, "all"].map((f) => ({ value: f, label: f }))}
         />
       </div>
-      {/* Most likely first; a dashed tile with "?" is the rung Jev suggests, not yet a verdict. */}
       <p className="mt-2 hidden text-[12px] text-muted sm:block">
         Keys: {rungs.map((r, i) => `${i + 1} ${r === "nude-body" ? "body" : r}`).join(" · ")} · x reject · Enter
         confirm the suggestion · ←→ / j k move
@@ -624,8 +508,6 @@ export default function VaultPackPickerModal({
         </p>
       )}
 
-      {/* The shelf, always — publishing must not be reachable only in the
-          moment after a save. */}
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md bg-bg-elev-1 px-3 py-2 text-[12px]">
         {shelf.map((f) => (
           <span key={f.name} className="flex items-center gap-1">

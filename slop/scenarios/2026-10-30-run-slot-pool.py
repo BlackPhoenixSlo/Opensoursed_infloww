@@ -1,26 +1,3 @@
-"""The run slot pool (service/run_slot_decide.py, lib/run_slot_faults.py names the checks) under
-every Creator's follow-up run asking at once.
-
-World: `agency_pool` (`agency_inbox`'s shape with at least 7 Creators, so more runs ask than
-the pool's 4 slots at every scale) + seed/followup_drip.py (lib/followup.py `setup`, as
-2026-10-30-followup-drip). Load: two follow-up ticks, each `POST /__slop/run-automation` (kind
-`send_followup`) for every Creator at once (every first ask is a fresh run; a run frees its slot
-around its model call and takes it back ahead of fresh runs, run_slot.freed; the first tick
-nudges, the second finds every due fan held by the gap).
-
-Invariants, from the hook's ask / got / done stamps and the pool's own peak of permits out
-(`in_use`): never more slots out than the pool's size, and it fills when more ask (CAP); queued runs are granted in the order they asked,
-every one (FIFO). Small (7 Creators, 4 slots) queues 3 per tick, medium (10) 6; a run where
-nobody queued SKIPs both with that reason. Budget: the hook's round trip per run (slot wait included), p95,
-vs the last green run.
-
-Faked or bypassed, declared: as lib/followup.py (DeepSeek at its HTTP boundary, OF's send, the
-supervisor's cadence, the DM rate via the real route). No `--users` streams: this flow is the
-pool, not the fan-out (2026-10-30-followup-drip watches that). SLOP_LIVE=1: every check SKIPs.
-
-Break-it-once, at any scale: run-slot-fresh-runs-served-last-first (FIFO, the scenario's FAULT)
-and --fault=run-slot-automation-ignores-the-cap (CAP) patch the pool's decide().
-"""
 from __future__ import annotations
 
 import asyncio
@@ -28,18 +5,13 @@ import asyncio
 from slop.lib import followup
 from slop.lib import run_slot_faults as slots
 
-PROFILE = "agency_pool"   # docstring: more Creators than run slots at every scale
+PROFILE = "agency_pool"
 UI = False
 FAULT = "run-slot-fresh-runs-served-last-first"
 P95_VS_LAST = (1.5, 300)
 
 
 def _slot_checks(ctx, ticks: list[dict]) -> None:
-    """The run slot pool from outside (service/run_slot_decide.py): every run's ask / got /
-    done on the hook's one counter (lib/relay.py `/__slop/run-automation`). A run that went
-    straight in got the very next stamp after its ask (no await between them), so one that
-    waited is exact. Only these runs use the pool here (no supervisor, no take-backs:
-    send_followup has no typing hold), so they are all fresh runs and FIFO is the rule."""
     got = [t["slot"] for t in ticks if (t["slot"] or {}).get("done") is not None]
     lost = [t["aid"] for t in ticks if (t["slot"] or {}).get("done") is None]
     n = max((s["n"] for s in got), default=0)
@@ -51,8 +23,7 @@ def _slot_checks(ctx, ticks: list[dict]) -> None:
             top = max(top, cur)
         return top
 
-    # held: the pool's own peak of permits out (lib/relay.py `in_use`), not the got..done overlap:
-    # a run frees its permit around its model call (run_slot.freed, 90e5e97b4) and takes it back.
+    # the pool's own peak of permits out, not got..done overlap: a run frees its permit around its model call and takes it back
     held, asking = max((s.get("in_use", 0) for s in got), default=0), peak("ask")
     waited = sorted((s for s in got if s["got"] != s["ask"] + 1), key=lambda s: s["ask"])
     by_ask = [s["got"] for s in sorted(got, key=lambda s: s["ask"])]

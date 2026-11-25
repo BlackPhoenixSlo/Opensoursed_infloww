@@ -1,19 +1,5 @@
 "use client";
 
-/**
- * ViewLeaseHeartbeat — this tab's View lease (ADR-0031, phase-01), mounted once in the root layout inside the auth
- * gate, so it runs in every signed-in tab on any page. It posts the lease (`lib/viewLease.ts`) every
- * VIEW_LEASE_RENEW_MS and at once when `shouldPostNow` says so (`lib/viewLeaseState.ts`). The first post of a mount
- * carries `opened: true`, sent once the event stream is open or after OPENED_WAIT_MS: the Relay's App-open warm of
- * every Creator this Employee can access. A soft navigation keeps the mount, so it is not an open. The scope
- * provider's selected Creator is the first lease source: selecting a Creator posts at once (its Select refresh). The
- * on-screen holds (`holdLease` / `useViewLease` / `useOnScreenLease`: the open chat, the rail's, the strip's and OF
- * Manager's column's visible rows) arrive through `onLeaseHolds`. A hidden tab, or one in Idle mode (useIdleMode),
- * renews nothing, so its lease lapses within the Relay's TTL; shown again or back from Idle, it posts at once. A load
- * opened hidden or idle still sends its opening post (the App-open warm), leasing nothing. Hidden and Idle come from
- * react-query's focusManager, which useIdleMode turns off for Idle mode: not focused while the page is visible is Idle.
- * Renders nothing; only dispatches and posts.
- */
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { focusManager } from "@tanstack/react-query";
@@ -31,8 +17,6 @@ export function ViewLeaseHeartbeat() {
   const stateRef = useRef(state);
   const prevRef = useRef(INITIAL_LEASE);
 
-  // Held in the registry (not dispatched directly), so the count and money-list readers see it (lib/viewLease
-  // `tabLease`); it comes back below as a Hold / Release.
   const selected = scope.kind === "model" ? scope.accountId : null;
   useEffect(() => (selected ? holdLease(SELECTED_SOURCE, [selected]) : undefined), [selected]);
 
@@ -59,7 +43,7 @@ export function ViewLeaseHeartbeat() {
     const s = stateRef.current;
     if (!canPost(s)) return;
     const body = leaseBody(s, tabId());
-    postLease(body).then(() => dispatch({ type: "Posted", opened: body.opened }), () => { /* the next tick retries */ });
+    postLease(body).then(() => dispatch({ type: "Posted", opened: body.opened }), () => { });
   }, []);
 
   useEffect(() => {

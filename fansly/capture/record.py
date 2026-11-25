@@ -1,37 +1,4 @@
 #!/usr/bin/env python3
-"""
-CDP recorder — attaches to a running Chrome and writes down EVERYTHING.
-
-Run:  ../../venv/bin/python record.py --name sales-view
-Stop: touch out/<name>/STOP     (or Ctrl-C)
-
-WHY THIS EXISTS AND A HAR DOES NOT DO IT
-----------------------------------------
-A .har file records the WebSocket HANDSHAKE and then nothing — the frames
-themselves are not part of the HAR spec, and DevTools' "Save all as HAR" drops
-them silently. Fansly's notification/typing channel IS a WebSocket, so the
-capture we need for `PARITY_SPEC §5` is not expressible as a HAR at all. CDP's
-`Network.webSocketFrame{Sent,Received}` is the only way to see those payloads.
-
-So this records three streams side by side:
-  ws.jsonl     every frame in both directions, with the handshake + headers
-  http.jsonl   request+response pairs, bodies included, for the API hosts
-  events.jsonl the raw CDP event log, as a backstop for anything we didn't
-               think to parse at capture time
-
-WHY BROWSER-LEVEL AUTO-ATTACH, NOT A PER-PAGE SESSION
------------------------------------------------------
-`Target.setAutoAttach(flatten=True)` from the BROWSER target catches pages,
-iframes, dedicated workers AND service workers, and re-arms itself on each new
-target. A per-page CDP session (what playwright's new_cdp_session gives you)
-sees only that page — and a WS opened from a service worker, which is exactly
-where a push channel likes to live, would be invisible. `waitForDebuggerOnStart`
-is on so a worker cannot run a single line before Network is enabled; that is
-the difference between catching the socket's opening frames and joining midway.
-
-The output contains a LIVE SESSION TOKEN. out/ is gitignored. Do not paste
-these files anywhere.
-"""
 from __future__ import annotations
 
 import argparse
@@ -47,17 +14,12 @@ import websockets
 
 HERE = Path(__file__).resolve().parent
 
-# Bodies are fetched only for these hosts. Everything else still gets its
-# request/response METADATA recorded — we just don't pull megabytes of image
-# bytes back over the debugger socket.
 BODY_HOSTS = ("apiv3.fansly.com", "fansly.com", "api.klipy.com")
 
-# Never fetch a body for these — big, binary, and we have the URL anyway.
 SKIP_BODY_TYPES = {"Image", "Media", "Font", "Stylesheet", "Manifest"}
 
 
 class CDP:
-    """Minimal flat-protocol CDP client. One socket, many sessions."""
 
     def __init__(self, ws):
         self.ws = ws
@@ -81,7 +43,6 @@ class CDP:
             raise
 
     def resolve(self, msg: dict) -> bool:
-        """True if `msg` was a command reply (not an event)."""
         mid = msg.get("id")
         if mid is None:
             return False
@@ -106,8 +67,8 @@ class Recorder:
         self.f_ws = (outdir / "ws.jsonl").open("a", buffering=1)
         self.f_http = (outdir / "http.jsonl").open("a", buffering=1)
         self.f_ev = (outdir / "events.jsonl").open("a", buffering=1)
-        self.reqs: dict[str, dict] = {}          # (session,requestId) -> request meta
-        self.sockets: dict[str, dict] = {}       # (session,requestId) -> ws meta
+        self.reqs: dict[str, dict] = {}
+        self.sockets: dict[str, dict] = {}
         self.n_ws = self.n_http = self.n_ev = 0
 
     def write(self, fh, obj) -> None:
@@ -122,20 +83,17 @@ class Recorder:
 
 
 async def enable_session(cdp: CDP, sid: str, ttype: str) -> None:
-    """Turn on the domains we record, then release the target."""
     async def try_(method, params=None):
         try:
             await cdp.send(method, params, session_id=sid, timeout=5)
         except Exception:
-            pass  # not every domain exists on every target type
+            pass
 
-    # 100MB of buffered bodies; the default (~10MB) evicts a busy page's
-    # responses before loadingFinished fires and getResponseBody 404s.
+    # default ~10MB buffer evicts a busy page's responses before loadingFinished, then getResponseBody 404s
     await try_("Network.enable", {"maxTotalBufferSize": 100_000_000,
                                   "maxResourceBufferSize": 20_000_000})
     if ttype in ("page", "iframe"):
         await try_("Page.enable")
-    # Re-arm auto-attach on THIS target so nested workers/iframes are caught too.
     await try_("Target.setAutoAttach",
                {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True})
     await try_("Runtime.runIfWaitingForDebugger")
@@ -170,10 +128,6 @@ async def main() -> int:
         closed = asyncio.Event()
 
         async def reader() -> None:
-            """Sole owner of ws.recv(). Command replies go to their futures;
-            everything else is an event and goes on the queue. This has to run
-            as its own task: `await cdp.send(...)` cannot both block on a reply
-            and be the thing that reads it."""
             try:
                 while True:
                     msg = json.loads(await ws.recv())
@@ -218,16 +172,7 @@ async def main() -> int:
 async def handle(cdp: CDP, rec: Recorder, method: str, params: dict, sid: str) -> None:
     key = f"{sid}:{params.get('requestId', '')}"
 
-    # A native JS dialog BLOCKS the page until it is answered — Page.navigate
-    # just hangs, which looks exactly like a slow load. Fansly raises
-    # `beforeunload` ("do you really want to leave?") whenever you navigate away
-    # from a composer holding unsent text, so this is reachable on any run.
-    #
-    # Type-aware on purpose. beforeunload/alert are safe to accept. A confirm()
-    # or prompt() is NOT: auto-accepting an unknown native confirm could commit
-    # a destructive action nobody reviewed. Fansly's own "Are you sure?" dialogs
-    # are Angular DOM modals, not native, so a native confirm here would be
-    # something unexpected — dismiss it and make noise.
+    # a native JS dialog blocks the page (Page.navigate hangs like a slow load). beforeunload/alert are safe to accept; an unknown native confirm could commit a destructive action, so dismiss it
     if method == "Page.javascriptDialogOpening":
         dtype = params.get("type", "")
         accept = dtype in ("beforeunload", "alert")
@@ -255,7 +200,6 @@ async def handle(cdp: CDP, rec: Recorder, method: str, params: dict, sid: str) -
                 print(f"  +target {ti.get('type')} {str(ti.get('url'))[:80]}")
         return
 
-    # ---- WebSocket: the whole point of this tool -------------------------
     if method.startswith("Network.webSocket"):
         rec.n_ws += 1
         row = {"t": time.time(), "ev": method, "key": key}
@@ -278,7 +222,6 @@ async def handle(cdp: CDP, rec: Recorder, method: str, params: dict, sid: str) -
         rec.write(rec.f_ws, row)
         return
 
-    # ---- HTTP ------------------------------------------------------------
     if method == "Network.requestWillBeSent":
         req = params.get("request", {})
         rec.reqs[key] = {"url": req.get("url"), "method": req.get("method"),
@@ -327,7 +270,6 @@ async def handle(cdp: CDP, rec: Recorder, method: str, params: dict, sid: str) -
 
 
 def summarize(outdir: Path) -> None:
-    """Print what we caught, so the value of a run is visible immediately."""
     lines = []
     ws_path, http_path = outdir / "ws.jsonl", outdir / "http.jsonl"
 

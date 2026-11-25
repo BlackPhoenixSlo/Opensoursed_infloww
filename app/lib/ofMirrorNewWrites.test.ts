@@ -15,13 +15,11 @@ import { bindPost } from "./ofMirrorPost";
 import { applyData } from "./ofMirrorData";
 import { bindMessageMenu, type MenuMessage } from "./ofMirrorMessageMenu";
 
-/** OFM_NEW_WRITES_ENABLED's app side: off, each new write's control stays Not yet (disabled, Not-yet title, not Wired). */
 
 const load = (page: string) => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/${page}.html`), "utf8");
   return document;
 };
-/** [disabled, Wired, title] of `el`. */
 const state = (el: HTMLElement | null | undefined) => [
   el && "disabled" in el ? (el as HTMLButtonElement).disabled : el?.getAttribute("aria-disabled") === "true",
   !!el?.hasAttribute("data-oi-wired"),
@@ -29,7 +27,6 @@ const state = (el: HTMLElement | null | undefined) => [
 ];
 const OFF = [true, false, NOT_YET];
 const ON = [false, true, NOT_YET];
-/** On, a write whose Live proof passed (D1): its title dropped. */
 const LIVE = [false, true, ""];
 const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>("#content button")].find((b) => b.textContent?.trim() === text);
 const noop = { send: () => Promise.resolve({ success: true }), confirm: () => true, standIn: false };
@@ -40,7 +37,6 @@ afterEach(() => {
   unbinds = [];
 });
 
-/** Settings/<page> as useOfSettings draws it (`read`) plus both write layers, a model selected; `newWrites` the switch. */
 function bindSettings(page: string, newWrites: boolean, read: object = {}, handlers: typeof noop = noop) {
   const doc = load(`settings/${page}`);
   if (page === "notifications/email") (doc.getElementById(DIGEST_TOGGLE) as HTMLInputElement).checked = true;
@@ -143,7 +139,6 @@ describe("settings controls follow the switch", () => {
 });
 
 describe("the switch flips off while a page is open", () => {
-  /** Re-apply `page` on the open `doc` with the switch off, as both hooks do when the probe flips (no reload). */
   const reapplyOff = (doc: Document, page: string, read: object) => {
     rebind();
     applyPageExtras(doc, page, read as never, false);
@@ -168,7 +163,7 @@ describe("the switch flips off while a page is open", () => {
 
   it.each([
     ["home/index", OFF],
-    ["new-post/index", [false, true, ""]], // main's: enabled, opening the "not supported here" popup
+    ["new-post/index", [false, true, ""]],
   ])("%s: Record video and Record voice drawn Wired, then as main %j", (page, off) => {
     const d = load(page);
     const ctx = { handlers: null, storage: null, accountId: null, draftId: page.startsWith("home/") ? "home:1" : undefined };
@@ -220,7 +215,7 @@ describe("Edit profile's cover and avatar follow the switch", () => {
 
   it.each([
     [false, [OFF, OFF, OFF]],
-    [true, [LIVE, ON, ON]], // the cover's camera passed Live (D1); the avatar's camera and the remove keep the title
+    [true, [LIVE, ON, ON]],
   ])("newWrites %s: cover camera, avatar camera, cover's remove %j", (newWrites, want) => {
     const d = load("settings/profile");
     unbinds.push(bindWrites(d, "settings/profile", handlers() as never, newWrites));

@@ -27,13 +27,11 @@ const handlers = () => ({
   submit: vi.fn((_path: string, _body: unknown) => Promise.resolve({ id: 1 })),
   navigate: vi.fn(),
 });
-/** The real generated schedule form (streaming/dashboard/create). */
 const CREATE = "streaming/dashboard/create";
 const loadPage = (page: string) => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/${page}.html`), "utf8");
   return document;
 };
-/** Fill the schedule form: date, time and the description editor's text. */
 const fillStream = (d: Document, date: string, time: string, text = "") => {
   (d.querySelector("input[name='date']") as HTMLInputElement).value = date;
   (d.querySelector("input[name='time']") as HTMLInputElement).value = time;
@@ -44,27 +42,22 @@ const clickSubmit = (d: Document, page = CREATE) => {
   d.querySelector(SUBMITS[page].button)!.dispatchEvent(ev);
   return ev;
 };
-/** The real "Create new tracking link" modal (settings/subscription/tracking-links/modal-1). */
 const TRACKING = "settings/subscription/tracking-links/modal-1";
 const trackingName = (d: Document) => d.querySelector("input[name='name']") as HTMLInputElement;
 const trackingButton = (d: Document) => d.querySelector(SUBMITS[TRACKING].button) as HTMLButtonElement;
-/** Type `text` into the tracking link name, as an input event. */
 const typeName = (d: Document, text: string) => {
   trackingName(d).value = text;
   fire(trackingName(d), "input");
 };
-/** A local day `days` ahead, as yyyy-mm-dd. */
 const ahead = (days: number) => localIso(new Date(Date.now() + days * 86_400_000)).slice(0, 10);
 const flush = () => new Promise((r) => setTimeout(r, 0));
 const fire = (el: Element, type: string) => el.dispatchEvent(new Event(type, { bubbles: true }));
-/** The real promotion ("Start campaign"), bundle ("Save") and free trial link ("Create link") modals: no Known body. */
 const PROMOTION = "settings/subscription/promotion-campaign/modal-1";
 const BUNDLE = "settings/subscription/promotion-campaign/modal-2";
 const TRIAL = "settings/subscription/trial-links/modal-1";
 const UNSENT: Record<string, string> = { [PROMOTION]: "Start campaign", [BUNDLE]: "Save", [TRIAL]: "Create link" };
 const footerButton = (d: Document, page: string) =>
   [...d.querySelectorAll<HTMLButtonElement>(".modal-footer button")].find((b) => b.textContent?.trim() === UNSENT[page])!;
-/** No handler was called. */
 const untouched = (h: ReturnType<typeof handlers>) => Object.values(h).forEach((fn) => expect(fn).not.toHaveBeenCalled());
 
 describe("collectProfilePatch", () => {
@@ -127,10 +120,9 @@ describe("bindWrites", () => {
     expect([link.href, link.target, link.hasAttribute("data-oi-wired")]).toEqual([BANK_URL, "_blank", true]);
     link.addEventListener("click", (ev) => ev.preventDefault());
     link.click();
-    expect(d.getElementById("oi-note")).toBeNull(); // not the Read-only note
+    expect(d.getElementById("oi-note")).toBeNull();
     unbind();
     expect(d.getElementById("oi-bank-note")).toBeNull();
-    // Only the Bank pages have it.
     const other = loadPage("statements/earnings");
     bindWrites(other, "statements/earnings", null, true)();
     expect(other.getElementById("oi-bank-note")).toBeNull();
@@ -187,7 +179,7 @@ describe("bindWrites", () => {
     const n = d.getElementById("oi-note");
     expect(n?.textContent).toBe("Read-only in Inflowwww for now");
     expect(n?.previousElementSibling?.classList.contains("g-input__wrapper")).toBe(true);
-    expect(toggle.checked).toBe(false); // flipped back
+    expect(toggle.checked).toBe(false);
     unbind();
   });
 
@@ -196,13 +188,13 @@ describe("bindWrites", () => {
     const h = handlers();
     const unbind = bindWrites(d, CREATE, h, true);
     const day = ahead(2);
-    fillStream(d, day, "18:30", "Synthetic stream"); // the browser's time input gives 24h
+    fillStream(d, day, "18:30", "Synthetic stream");
     const editor = d.querySelector(".create-scheduled__description [contenteditable]")!;
     fire(editor, "input");
-    expect(editor.getAttribute("data-is-empty")).toBe("false"); // the label moves up, as OF's script does
+    expect(editor.getAttribute("data-is-empty")).toBe("false");
     expect(d.querySelector(".create-scheduled__description .count-block")?.textContent?.trim()).toBe("16/500");
     fire(d.querySelector("input[name='date']")!, "change");
-    expect(d.getElementById("oi-note")).toBeNull(); // the form's own fields are not read-only
+    expect(d.getElementById("oi-note")).toBeNull();
     expect(clickSubmit(d).defaultPrevented).toBe(true);
     const [y, m, dd] = day.split("-").map(Number);
     const want = localIso(new Date(y, m - 1, dd, 18, 30));
@@ -226,7 +218,7 @@ describe("bindWrites", () => {
     expect(n?.nextElementSibling).toBe(submit);
     fillStream(d, ahead(-1), "10:00");
     fire(d.querySelector("input[name='time']")!, "input");
-    expect(d.getElementById("oi-note")).toBeNull(); // typing clears the stale note
+    expect(d.getElementById("oi-note")).toBeNull();
     clickSubmit(d);
     n = d.getElementById("oi-note");
     expect(n?.textContent).toBe("Pick a time at least a minute from now");
@@ -252,13 +244,13 @@ describe("bindWrites", () => {
     const d = loadPage(CREATE);
     const h = handlers();
     const unbind = bindWrites(d, CREATE, h, true);
-    fillStream(d, ahead(2), "18:30", "Synthetic stream"); // a valid form: a stray send would go through
+    fillStream(d, ahead(2), "18:30", "Synthetic stream");
     const submit = (form: Element) => {
       const ev = new Event("submit", { bubbles: true, cancelable: true });
       form.dispatchEvent(ev);
       return ev.defaultPrevented;
     };
-    expect(submit(d.querySelector("form.b-search-form")!)).toBe(true); // cancelled, never reloads the frame
+    expect(submit(d.querySelector("form.b-search-form")!)).toBe(true);
     expect(h.submit).not.toHaveBeenCalled();
     expect(d.getElementById("oi-note")).toBeNull();
     expect(submit(d.querySelector("form[data-vv-scope='schedule-stream']")!)).toBe(true);
@@ -272,15 +264,14 @@ describe("bindWrites", () => {
     const d = loadPage(TRACKING);
     const h = handlers();
     const unbind = bindWrites(d, TRACKING, h, true);
-    expect(trackingButton(d).disabled).toBe(true); // as captured: no name yet
+    expect(trackingButton(d).disabled).toBe(true);
     typeName(d, "  Synthetic link ");
     expect(trackingButton(d).disabled).toBe(false);
-    // The label floats clear of the value and the counter counts, as OF's script does.
     expect(trackingName(d).closest(".v-input")?.classList.contains("v-input--is-label-active")).toBe(true);
-    expect(d.querySelector(".v-counter")?.textContent).toBe("17 / 100"); // "  Synthetic link " as typed;
+    expect(d.querySelector(".v-counter")?.textContent).toBe("17 / 100");
     expect(collectTrackingLink(d)).toEqual({ name: "Synthetic link" });
     fire(trackingName(d), "change");
-    expect(d.getElementById("oi-note")).toBeNull(); // the modal's own field is not read-only
+    expect(d.getElementById("oi-note")).toBeNull();
     expect(clickSubmit(d, TRACKING).defaultPrevented).toBe(true);
     expect(h.submit).toHaveBeenCalledTimes(1);
     expect(h.submit).toHaveBeenCalledWith("/api/of/v2/campaigns", { name: "Synthetic link" });
@@ -300,7 +291,7 @@ describe("bindWrites", () => {
     typeName(d, "Synthetic link");
     expect(trackingButton(d).disabled).toBe(false);
     typeName(d, "");
-    expect(trackingButton(d).disabled).toBe(true); // off again once cleared
+    expect(trackingButton(d).disabled).toBe(true);
     clickSubmit(d, TRACKING);
     expect(h.submit).not.toHaveBeenCalled();
     expect(h.navigate).not.toHaveBeenCalled();
@@ -316,7 +307,7 @@ describe("bindWrites", () => {
     const seen = (e: Event) => (prevented = e.defaultPrevented);
     window.addEventListener("submit", seen);
     const href = window.location.href;
-    trackingName(d).form!.requestSubmit(); // what Enter in a one-field form does
+    trackingName(d).form!.requestSubmit();
     window.removeEventListener("submit", seen);
     expect(prevented).toBe(true);
     expect(window.location.href).toBe(href);
@@ -373,7 +364,6 @@ describe("bindWrites", () => {
     };
     for (const page of [PROMOTION, BUNDLE, TRIAL]) {
       const d = loadPage(page);
-      // The state ofMirrorOffers keeps on the dialog's form.
       const state = page === BUNDLE ? { discount: 10, duration: 3 } : page === TRIAL ? { name: "Synthetic link", limit: 10, expiration: 7, duration: 7 } : { audience: "new", kind: "trial", limit: 10, expiration: 7, duration: 7, percent: 5, message: "" };
       (d.querySelector(".modal.show form") ?? d.querySelector(".modal.show .modal-body"))!.setAttribute("data-oi-offer", JSON.stringify(state));
       if (page === TRIAL) d.querySelector<HTMLInputElement>(".modal.show input[at-attr='input']")!.value = "Synthetic link";
@@ -425,7 +415,7 @@ describe("bindWrites", () => {
       const h = handlers();
       const unbind = bindWrites(d, page, h, true);
       const forms = [...d.querySelectorAll("form")];
-      expect(forms.length, page).toBe(page === PROMOTION ? 2 : 1); // the modal's own form (promotion only) and the price form behind it
+      expect(forms.length, page).toBe(page === PROMOTION ? 2 : 1);
       for (const form of forms) {
         const ev = new Event("submit", { bubbles: true, cancelable: true });
         form.dispatchEvent(ev);
@@ -460,7 +450,7 @@ describe("bindWrites", () => {
       expect(ev.defaultPrevented).toBe(true);
       const n = d.getElementById("oi-note");
       expect(n?.textContent).toBe("Select a model to save changes");
-      expect(n?.style.color).toBe("rgb(138, 150, 163)"); // the read-only note's grey
+      expect(n?.style.color).toBe("rgb(138, 150, 163)");
       expect(n?.nextElementSibling).toBe(save);
       unbind();
     });
@@ -480,7 +470,7 @@ describe("bindWrites", () => {
       const unbind = bindWrites(d, "settings/fans", null, true);
       const toggle = d.getElementById("setting_isAutoFollowBack") as HTMLInputElement;
       toggle.click();
-      expect(toggle.checked).toBe(false); // flipped back
+      expect(toggle.checked).toBe(false);
       expect(d.getElementById("oi-note")?.textContent).toBe(READ_ONLY);
       unbind();
     });
@@ -526,7 +516,6 @@ describe("bindWrites", () => {
 });
 
 describe("bindWrites marks its Wired controls data-oi-wired", () => {
-  // bindWrites' Wired controls (the Scheduled events widget's "+" is the generator's, for ofMirrorQueue's Add to queue).
   const wired = (d: Document) => [...d.querySelectorAll("[data-oi-wired]:not([at-attr='add_event_widget'])")];
   const scopes = [["Single-Creator", handlers()], ["All-Creators", null]] as const;
 
@@ -538,7 +527,6 @@ describe("bindWrites marks its Wired controls data-oi-wired", () => {
       ".b-profile__user .g-avatar .b-profile__header__cover__btns button.dropdown-toggle",
       "input[data-oi-profile-file='header']", "input[data-oi-profile-file='avatar']",
       ".b-input-contenteditable .b-icon-text-container > button"];
-    // The toolbar's tools are New post's Format text panel's (ofMirrorPost bindFormatPanel marks each).
     const tools = [...d.querySelectorAll("[data-oi-about-format] [data-oi-wired]")];
     expect(tools.length).toBeGreaterThan(0);
     expect(new Set(wired(d))).toEqual(new Set([...want.map((sel) => d.querySelector(sel)), ...tools]));
@@ -571,7 +559,6 @@ describe("bindWrites marks its Wired controls data-oi-wired", () => {
       const unbind = bindWrites(d, page, handlers(), true);
       const fields = [...d.querySelectorAll(SUBMITS[page].fields)];
       expect(fields.length, page).toBeGreaterThan(0);
-      // (the free trial links page behind its dialog: its rows' share, ofMirrorOffers')
       expect(new Set(wired(d).filter((el) => !el.matches("[data-oi-share]"))), page).toEqual(new Set([d.querySelector(SUBMITS[page].button), ...fields]));
       unbind();
     }
@@ -592,7 +579,7 @@ describe("bindWrites marks its Wired controls data-oi-wired", () => {
     unbind();
     const p = doc(PROFILE);
     const unbindP = bindWrites(p, "settings/profile", h, true);
-    expect(wired(p)).toHaveLength(6); // contrast: the same fixture as a settings page marks its five fields and Save
+    expect(wired(p)).toHaveLength(6);
     unbindP();
   });
 });
@@ -609,25 +596,23 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
   it.each(scopes)("queue/index and settings/security/watermarks (%s scope): a <button> and a [role=button] get a fresh note beside them, sending nothing", (_scope, h) => {
     const q = loadPage("queue/index");
     const unbindQ = bindWrites(q, "queue/index", h, true);
-    // OF's sidebar close button: not wired ("Add to queue" is, by ofMirrorQueue).
     const add = q.querySelector("button[at-attr='close_btn']")!;
     expect(noteOf(q)?.textContent ?? null).toBeNull();
-    expect(click(add.querySelector("svg") ?? add).defaultPrevented).toBe(false); // a click on its icon; no preventDefault
+    expect(click(add.querySelector("svg") ?? add).defaultPrevented).toBe(false);
     expect(noteOf(q)?.textContent).toBe("Read-only in Inflowwww for now");
-    expect(noteOf(q)?.nextElementSibling).toBe(add); // before a <button>
+    expect(noteOf(q)?.nextElementSibling).toBe(add);
     unbindQ();
     noteOf(q)!.remove();
     click(add);
-    expect(noteOf(q)).toBeNull(); // the unbind stops it
+    expect(noteOf(q)).toBeNull();
 
-    // Collections disables its chips and Statements its period select; Watermarks' position select is a [role=button] <div>.
     const c = loadPage("settings/security/watermarks");
     const unbindC = bindWrites(c, "settings/security/watermarks", h, true);
     const chip = c.querySelector("div[role='button']")!;
     expect(noteOf(c)).toBeNull();
     click(chip.firstElementChild ?? chip);
     expect(noteOf(c)?.textContent).toBe("Read-only in Inflowwww for now");
-    expect(noteOf(c)?.previousElementSibling).toBe(chip); // after the control (no field row around it)
+    expect(noteOf(c)?.previousElementSibling).toBe(chip);
     if (h) untouched(h);
     unbindC();
   });
@@ -649,7 +634,7 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
       expect(noteOf(d), id).toBeNull();
     }
     click(d.getElementById("other")!);
-    expect(noteOf(d)?.textContent).toBe(READ_ONLY); // contrast: the same doc's unwired button
+    expect(noteOf(d)?.textContent).toBe(READ_ONLY);
     unbind();
   });
 
@@ -665,28 +650,26 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
       expect(noteOf(d), id).toBeNull();
     }
     click(d.getElementById("other")!);
-    expect(noteOf(d)?.textContent).toBe(READ_ONLY); // contrast: the page's own unwired button
+    expect(noteOf(d)?.textContent).toBe(READ_ONLY);
     unbind();
   });
 
   it.each(scopes)("covers a dropdown's read-only input and a button nested in a Wired row or a label (%s scope)", (_scope, h) => {
-    // settings/security/watermarks: OF's position dropdown is a [role=button] whose middle is a readonly <input>
     const s = loadPage("settings/security/watermarks");
     const unbindS = bindWrites(s, "settings/security/watermarks", h, true);
     const slot = s.querySelector(".v-input__slot[role='button']")!;
     click(slot.querySelector("input[readonly]")!);
     expect(noteOf(s)?.textContent).toBe(READ_ONLY);
     unbindS();
-    // a row kebab inside a marked Co-tag row, and inside a plain label: neither is the row's toggle
     const d = doc(`
       <label class="b-rows-lists__item" data-oi-wired><input type="checkbox"><button id="in-wired-row"><span>More</span></button></label>
       <label class="b-rows-lists__item"><input type="checkbox"><button id="in-label"><span>More</span></button></label>`);
     const unbind = bindWrites(d, "new-post/state-tag-people", h, true);
     for (const id of ["in-wired-row", "in-label"]) {
       noteOf(d)?.remove();
-      click(d.getElementById(id)!.firstElementChild!); // its icon, as OF's kebab
+      click(d.getElementById(id)!.firstElementChild!);
       expect(noteOf(d)?.textContent, id).toBe(READ_ONLY);
-      expect(noteOf(d)?.nextElementSibling, id).toBe(d.getElementById(id)); // before the button
+      expect(noteOf(d)?.nextElementSibling, id).toBe(d.getElementById(id));
     }
     if (h) untouched(h);
     unbind();
@@ -725,7 +708,6 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
     unbindPost();
   });
 
-  /** Click `el` and return the native submit events it raised (as seen after bindWrites' own listener). */
   const submitsOf = (d: Document, el: Element) => {
     const submits: Event[] = [];
     const record = (e: Event) => submits.push(e);
@@ -797,7 +779,7 @@ describe("bindWrites change path: an unwired checkbox on any Mirror page shows t
       expect(d.getElementById("oi-note"), id).toBeNull();
     }
     (d.getElementById("other") as HTMLInputElement).click();
-    expect(notes(d)).toEqual([READ_ONLY]); // contrast: the same doc's unmarked checkbox
+    expect(notes(d)).toEqual([READ_ONLY]);
     unbind();
   });
 
@@ -843,8 +825,8 @@ describe("WRITABLE", () => {
     const unbindM = bindWrites(m, "messaging", h, true);
     (m.getElementById("autoMessage") as HTMLInputElement).click();
     expect(h.setReplyOnSubscribe).not.toHaveBeenCalled();
-    expect(m.getElementById("oi-note")?.textContent).toBe(READ_ONLY); // the change path's read-only note, as on any page
-    expect((m.getElementById("autoMessage") as HTMLInputElement).checked).toBe(false); // flipped back
+    expect(m.getElementById("oi-note")?.textContent).toBe(READ_ONLY);
+    expect((m.getElementById("autoMessage") as HTMLInputElement).checked).toBe(false);
     unbindM();
   });
 });
@@ -913,7 +895,6 @@ describe("schedule form parsing", () => {
     const value = (n: string) => d.querySelector<HTMLInputElement>(`input[name='${n}']`)!.value;
     expect([value("date"), value("time")]).toEqual(["Oct 21, 2026", "13:15"]);
     expect(collectStream(d, new Date(2026, 9, 17, 12))).toEqual({ description: "", scheduledDate: localIso(new Date(2026, 9, 21, 13, 15)), isShowTips: true });
-    // A typed value stays; a value that does not parse fills nothing.
     fillStream(d, "2026-10-22", "9:00");
     prefillStream(d, "2026-10-21", "1:15 pm");
     expect([value("date"), value("time")]).toEqual(["2026-10-22", "9:00"]);
@@ -934,7 +915,7 @@ describe("schedule form parsing", () => {
     const now = new Date();
     expect(date.value).toBe(now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }));
     expect(d.querySelector("[data-oi-picker]")).toBeNull();
-    expect(d.getElementById("oi-note")).toBeNull(); // not the Read-only note
+    expect(d.getElementById("oi-note")).toBeNull();
     unbind();
     date.click();
     expect(d.querySelector("[data-oi-picker]")).toBeNull();

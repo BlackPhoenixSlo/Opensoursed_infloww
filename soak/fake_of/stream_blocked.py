@@ -1,17 +1,3 @@
-"""Streaming > Blocked users surface of the fake OnlyFans (Phase 3 ticket 73: Block a username's fake-mode proof), one
-state for its read and both writes.
-
-Mounted from app.py beside the settings surface (after automations' gate rows, so its fault knobs still apply):
-  GET    /streams/users/blocked              {list, hasMore}; `limit`/`offset`/`query` honoured (service/of_reads.py
-                                             `stream_blocked_users`)
-  POST   /streams/users/{username}/block     no body (of_sends `block_stream_viewer`): a world fan by its username, or
-                                             by OF's default handle `u<id>`; an unknown name 404s
-  DELETE /streams/users/{id}/block           removes the row (of_sends `unblock_stream_viewer`)
-
-The shapes are the capture record's (.scratch/ofm-not-yet/captures/settings--streaming-block-username.json): the read
-`{list: user[], hasMore}`, each write `{success: true}`. The list starts empty; every write is logged and applied before
-the response, so the next read reflects it. Rows are world fans (synthetic, soak/world.py), never a real one.
-"""
 from __future__ import annotations
 
 import re
@@ -28,7 +14,6 @@ def blocked(fake) -> list[dict[str, Any]]:
 
 
 def _fan(fake, name: str):
-    """The world fan `name` names: its username, or OF's default `u<id>` handle."""
     for f in fake.world.fans:
         if name == f.username or name == f"u{f.id}":
             return f

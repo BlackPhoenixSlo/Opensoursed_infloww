@@ -1,8 +1,3 @@
-/**
- * Seam 2 of docs/spec/phase-04-composer-ppv-vault.md: `VaultPicker` rendered
- * directly with a Fan in scope. `@/lib/relay` is mocked by URL through the
- * Composer harness's relay mock, so the picker's real hooks run.
- */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -18,8 +13,6 @@ import { SUMMARY_WAIT_MS } from "@/hooks/vaultRefresh";
 
 vi.mock("@/lib/relay", async (orig) =>
   (await import("./composerTestHarness")).mockRelayModule(await orig()));
-// An owner session by default, as the Thread runs it: the chatter folder gate
-// stays off. A test swaps in a chatter-only session (user null, chatter set).
 const session = vi.hoisted(() => ({
   user: { username: "owner" } as { username: string } | null,
   chatter: null as { id: number } | null,
@@ -27,7 +20,6 @@ const session = vi.hoisted(() => ({
 vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: session.user }) }));
 vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: session.chatter }) }));
 
-/* ── the spec's fixtures (synthetic) ────────────────────────────────────── */
 
 const MEDIA: VaultMedia[] = [
   { id: 7001, type: "photo", isReady: true, canView: true },
@@ -38,17 +30,14 @@ const MEDIA: VaultMedia[] = [
 
 const FAN_HISTORY: FanVaultHistoryResp = {
   by_media: {
-    // purchased
     "7001": {
       send_count: 1, last_sent_at: "2026-10-01T10:00:00Z", last_price_cents: 1500,
       was_purchased: true, last_purchase_at: "2026-10-01T11:00:00Z", total_paid_cents: 2500,
     },
-    // sent free
     "7002": {
       send_count: 1, last_sent_at: "2026-10-02T10:00:00Z", last_price_cents: 0,
       was_purchased: false, last_purchase_at: null, total_paid_cents: 0,
     },
-    // sent locked
     "7003": {
       send_count: 1, last_sent_at: "2026-10-03T10:00:00Z", last_price_cents: 2000,
       was_purchased: false, last_purchase_at: null, total_paid_cents: 0,
@@ -56,10 +45,6 @@ const FAN_HISTORY: FanVaultHistoryResp = {
   },
 };
 
-/** Every relay path the picker requests today (VaultPicker.tsx's hooks:
- *  useVaultCacheSummary, useVaultLists, useChatterFolderAccess,
- *  useVaultMedia, useMirrorItems + searchOf, useFanVaultHistory,
- *  useWallMedia, useVaultMediaStats). Anything else is a new endpoint. */
 const ALLOWED_PATHS = new Set([
   "/admin/vault-ai/cache/summary",
   "/api/of/v2/vault/lists",
@@ -75,28 +60,18 @@ const ALLOWED_PATHS = new Set([
 const NEW_PLACEHOLDER = "Search hashtag, note or caption";
 const TILE_HINT = "Click to select · double-click to attach";
 
-/** The vault mirror's copy of the purchased photo, with its AI overlay:
- *  four tags (the card shows three) and a description (never the note). */
 const MIRROR_PHOTO = {
   ...MEDIA[0],
   _ai: { description: "Sunset walk on the beach", tags: ["beach", "sunset", "bikini", "golden hour"] },
 };
 
-/** fan-history's reply; a test swaps it to hold the request pending. */
 let fanHistoryReply: () => unknown;
-/** The mirror's item count: above 0, the picker serves the grid from the
- *  mirror (`/admin/vault-ai/items`) instead of the live OnlyFans path. */
 let mirrorCount: number;
-/** The summary's `complete`: only a FULL mirror switches the picker to it. */
 let mirrorComplete: boolean | undefined;
-/** The live vault page; a test swaps it for media with files. */
 let mediaReply: VaultMedia[];
-/** The mirror's page; a test swaps it to fail. */
 let itemsReply: () => unknown;
-/** The relay's answers to the picker's open revalidate (`revalidate=1`); null = the cached answer. */
 let revalidateMedia: (() => unknown) | null;
 let revalidateLists: (() => unknown) | null;
-/** The whole live media route, by path (offset-aware); null = the replies above. */
 let mediaRoute: ((path: string) => unknown) | null;
 
 beforeEach(() => {
@@ -141,21 +116,16 @@ function renderPicker(fanId: number | null, onConfirm: (picked: VaultMedia[]) =>
   );
 }
 
-/** A card, by the media id its tooltip names ("photo · 7001 · …"). */
 const card = (id: number) => screen.getByTitle(new RegExp(`· ${id} ·`));
 
-/** The tooltips of every card on screen, in grid order. */
 const cardTitles = () =>
   screen.getAllByRole("button").map((b) => b.title).filter((t) => t.endsWith(TILE_HINT));
 
-/** The tooltips of the greyed cards. */
 const greyedTitles = () =>
   screen.queryAllByTestId("vault-card-greyed").map((o) => o.closest("button")!.title);
 
-/** The open "Media details" panel, and the four price history labels. */
 const detailsPanel = () => screen.getByRole("dialog", { name: "Media details" });
 const HISTORY_LABELS = ["Purchased", "Sent (free or paid)", "Unsent (free or paid)", "Posted in feed"];
-/** The value written next to a label in "Media details". */
 const detailsValue = (label: string) => within(detailsPanel()).getByText(label).nextElementSibling;
 
 const requestedPaths = () =>
@@ -164,8 +134,6 @@ const requestedPaths = () =>
 describe("VaultPicker with a Fan in scope", () => {
   it("requests only the relay paths it requests today", async () => {
     renderPicker(42);
-    // fan-history is the last request the picker makes (gated on the first
-    // vault page landing), so once it is out every request is in.
     await waitFor(() =>
       expect(requestedPaths().some((p) => p.startsWith("/admin/vault/fan-history?"))).toBe(true));
 
@@ -183,7 +151,6 @@ describe("VaultPicker with a Fan in scope", () => {
       requestedPaths().filter((p) => p.startsWith("/api/of/v2/vault/media?") && p.includes("query="));
 
     await user.type(search, "beach");
-    // Debounced: no request per keystroke, then one for the whole term.
     expect(searches()).toEqual([]);
     await waitFor(() => expect(searches()).toEqual([expect.stringContaining("query=beach")]));
   });
@@ -204,7 +171,6 @@ describe("VaultPicker source: mirror only once it is complete", () => {
     expect(paths()).not.toContain("/admin/vault-ai/items");
   });
 
-  // U4: a live listing fired before the summary landed painted OF CDN tiles over a collected vault.
   it("waits for the summary (loading, no grid read), then serves a complete mirror with no live read", async () => {
     mirrorCount = 5;
     let answer!: () => void;
@@ -223,10 +189,8 @@ describe("VaultPicker source: mirror only once it is complete", () => {
     expect(paths()).not.toContain("/api/of/v2/vault/media");
   });
 
-  // #15: the summary read has no timeout; one that never answers must not hold the grid on Loading for good.
   it("lists live once the summary has been pending SUMMARY_WAIT_MS", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    // routeRelay's first match wins, so the stall goes in front of beforeEach's summary route.
     const orig = relayGet.getMockImplementation()!;
     relayGet.mockImplementation((p, ...rest) =>
       p.includes("/admin/vault-ai/cache/summary") ? new Promise(() => {}) : orig(p, ...rest));
@@ -249,14 +213,11 @@ describe("VaultPicker source: mirror only once it is complete", () => {
     }));
     mirrorCount = 5;
     renderPicker(42);
-    // Only the mirror's copy carries AI tags; the live grid never does.
     await waitFor(() => expect(within(card(7001)).getByRole("list", { name: "Tags" })).toBeInTheDocument());
     expect(paths()).toContain("/admin/vault-ai/items");
   });
 });
 
-// F4: a restricted chatter reads the mirror routes behind #329's folder gates; their refusal is an error, not an
-// empty vault.
 describe("VaultPicker mirror errors", () => {
   it("a failed mirror read says so, not \"No media in this filter.\"", async () => {
     mirrorCount = 5;
@@ -267,7 +228,6 @@ describe("VaultPicker mirror errors", () => {
   });
 });
 
-// F3: Refresh is one OF sync until it settled (disabled meanwhile), and says when it fell short.
 describe("VaultPicker Refresh", () => {
   const syncs = () => relayPost.mock.calls.filter(([p]) => p.startsWith("/admin/vault-ai/sync"));
   it.each<[string, unknown, string]>([
@@ -366,14 +326,12 @@ describe("VaultPicker cards with a Fan in scope", () => {
 
   it("opens \"Media details\" at the price history from the price pill", async () => {
     const scrollIntoView = vi.fn();
-    // jsdom has no scrollIntoView; the spy records which element was scrolled to.
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { value: scrollIntoView, configurable: true });
     onTestFinished(() => { delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView; });
     const user = userEvent.setup();
     renderPicker(42);
     await waitFor(() => expect(greyedTitles()).toHaveLength(2));
 
-    // ⓘ opens at the top: nothing is scrolled to.
     await user.click(within(card(7001)).getByRole("button", { name: "Media details" }));
     expect(scrollIntoView).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Close media details" }));
@@ -414,7 +372,6 @@ describe("VaultPicker cards with a Fan in scope", () => {
     expect(cardTitles()).toEqual([expect.stringMatching(/^video · 7003 · /)]);
     await user.selectOptions(length, "Under 1 min");
     expect(cardTitles()).toEqual([expect.stringMatching(/^video · 7002 · /)]);
-    // 7004 was never sent to this Fan, so its tooltip is the bare hint.
     await user.selectOptions(length, "Over 5 min");
     expect(cardTitles()).toEqual([TILE_HINT]);
     await user.selectOptions(length, "Any length");
@@ -457,7 +414,6 @@ describe("VaultPicker with no Fan", () => {
   });
 });
 
-/* ── hover enlarge, range select and keyboard (no Fan: every title is the hint) ── */
 
 const HOVER_MEDIA: VaultMedia[] = [
   {
@@ -479,14 +435,12 @@ const HOVER_MEDIA: VaultMedia[] = [
   },
 ];
 
-/** The cards in grid order (with no Fan, every card's title is the hint). */
 const tiles = () => screen.getAllByTitle(TILE_HINT);
 const photoPreview = () => screen.queryByAltText("Photo preview");
 const selectedText = () => screen.getByText(/items? selected$/).textContent;
 const confirmedIds = (onConfirm: ReturnType<typeof vi.fn>) =>
   onConfirm.mock.calls[0][0].map((m: VaultMedia) => m.id);
 
-/** The tiles preview on mouse/pen pointers, never touch (a touch tap is not a hover). */
 const hoverIn = (el: Element, pointerType = "mouse") => fireEvent.pointerEnter(el, { pointerType });
 const hoverOut = (el: Element) => fireEvent.pointerLeave(el, { pointerType: "mouse" });
 const scrubFrames = () => document.querySelectorAll('img[src^="/img/scrub?"]');
@@ -557,9 +511,6 @@ describe("VaultPicker hover preview", () => {
     expect(scrubFrames()).toHaveLength(0);
   });
 
-  // The old frame-0 onError only cleared `hoverLoading`, which nothing read:
-  // a video with no OF posters kept the shimmer + countdown over its thumb
-  // for as long as the pointer stayed.
   it("drops the build shimmer and falls back to the thumb when the storyboard's frame 0 fails", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(null))));
     mediaReply = HOVER_MEDIA;
@@ -578,8 +529,6 @@ describe("VaultPicker hover preview", () => {
     expect(within(tiles()[1]).queryByText(/^\d+s$|^…$/)).toBeNull();
   });
 
-  // The picker stays mounted while closed, so no mouseleave ever ended the
-  // hover: no cancel, the slideshow kept beating, and a reopen replayed it.
   it("closing the picker mid-hover cancels the build and a reopen starts clean", async () => {
     const fetchMock = vi.fn((..._args: unknown[]) => Promise.resolve(new Response(null)));
     vi.stubGlobal("fetch", fetchMock);
@@ -632,8 +581,6 @@ describe("VaultPicker hover preview", () => {
     expect(cancelSids(fetchMock)).toEqual([]);
   });
 
-  // Touch synthesises mouseenter on tap and no leave until the next tap
-  // elsewhere, so a tap used to commit a preview and a cold build.
   it("a touch tap neither previews a video nor enlarges a photo", async () => {
     mediaReply = HOVER_MEDIA;
     await renderLoaded();
@@ -646,8 +593,6 @@ describe("VaultPicker hover preview", () => {
     expect(photoPreview()).toBeNull();
   });
 
-  // A DRM tile has no storyboard url: the poster decimal countdown must still
-  // tick (review N1) and stop once the first poster paints.
   it("a DRM tile counts its poster ETA down until the first poster lands", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(null))));
     mediaReply = [{
@@ -869,11 +814,9 @@ describe("VaultPicker revalidates on open (fetch-diet 17)", () => {
       release = () => resolve({ list: [FRESH, ...MEDIA], hasMore: false });
     });
     revalidateLists = () => ({ list: [NEW_FOLDER], hasMore: false });
-    // A history row, so its card's tooltip names its id (as 7001-7003's do).
     fanHistoryReply = () => ({ by_media: { ...FAN_HISTORY.by_media, "7101": FAN_HISTORY.by_media["7002"] } });
     renderPicker(42);
 
-    // The paint: the cached page, no fresh media, from the plain read.
     await waitFor(() => expect(card(7001)).toBeInTheDocument());
     await waitFor(() => expect(revalidated("/api/of/v2/vault/media")).toHaveLength(1));
     expect(screen.queryByTitle(/· 7101 ·/)).toBeNull();
@@ -882,21 +825,16 @@ describe("VaultPicker revalidates on open (fetch-diet 17)", () => {
     expect(media[media.length - 1]).toContain("revalidate=1");
     expect(revalidated("/api/of/v2/vault/media")[0]).toContain("offset=0");
 
-    // Then the fresh page is swapped in, first in the grid; the folder list too.
     await act(async () => release!());
     await waitFor(() => expect(cardTitles()[0]).toMatch(/· 7101 ·/));
     expect(cardTitles()).toHaveLength(MEDIA.length + 1);
     expect(screen.getByRole("option", { name: /Made on OF/ })).toBeInTheDocument();
-    // One of each per open, no Refresh.
     expect(revalidated("/api/of/v2/vault/media")).toHaveLength(1);
     expect(revalidated("/api/of/v2/vault/lists")).toHaveLength(1);
     expect(relayPost.mock.calls.map(([p]) => p)).not.toContainEqual(expect.stringContaining("/admin/vault"));
   });
 
   it("a changed page 1 restarts the view: page 2 re-read at the new offsets, nothing dropped or repeated", async () => {
-    // 40 media cached in two pages (24 + 16), then 5 made on OF: the listing is 45, every offset shifted by 5. The
-    // relay serves its cached (old) pages until the revalidate sees page 1's new ids and drops the view's other
-    // offsets (server._vault_read): from then on a plain read is OF's listing.
     const m = (id: number): VaultMedia => ({ id, type: "photo", isReady: true, canView: true });
     const old = Array.from({ length: 40 }, (_, i) => m(8040 - i));
     const now = [...[8045, 8044, 8043, 8042, 8041].map(m), ...old];
@@ -914,7 +852,6 @@ describe("VaultPicker revalidates on open (fetch-diet 17)", () => {
     fanHistoryReply = () => ({ by_media: Object.fromEntries(now.map((x) => [String(x.id), sentFree])) });
     renderPicker(42);
 
-    // Page 2 (old offsets) lands before the revalidate answers: 40 tiles.
     await waitFor(() => expect(cardTitles()).toHaveLength(40));
     await waitFor(() => expect(release).not.toBeNull());
     await act(async () => release!());
@@ -923,7 +860,6 @@ describe("VaultPicker revalidates on open (fetch-diet 17)", () => {
     const ids = cardTitles().map((t) => Number(/· (\d+) ·/.exec(t)![1]));
     expect(ids).toEqual(now.map((x) => x.id));
     expect(new Set(ids).size).toBe(45);
-    // One revalidate (page 1); page 2 was read again, plain, after the restart.
     expect(revalidated("/api/of/v2/vault/media").map((p) => /offset=(\d+)/.exec(p)![1])).toEqual(["0"]);
     expect(reads("/api/of/v2/vault/media").filter((p) => p.includes("offset=24"))).toHaveLength(2);
   });
@@ -942,7 +878,7 @@ describe("VaultPicker revalidates on open (fetch-diet 17)", () => {
     renderPicker(42);
     await waitFor(() => expect(revalidated("/api/of/v2/vault/media")).toHaveLength(1));
     await settled();
-    await waitFor(() => expect(card(7001)).toBeInTheDocument());   // under load the grid can land a tick later
+    await waitFor(() => expect(card(7001)).toBeInTheDocument());
     expect(cardTitles()).toHaveLength(MEDIA.length);
   });
 

@@ -1,42 +1,7 @@
 #!/usr/bin/env python3
-"""Smart Lists tests — saved dynamic fan segments (Growth feature #1).
-
-  case_resolve_empty_matches_all   blank rules → everyone matches.
-  case_resolve_lifetime_spend      lifetime_spend threshold filters.
-  case_resolve_recent_spend        recent_spend(days) reads the right window.
-  case_resolve_last_active         last_active_days recency filter.
-  case_resolve_never_active_fails  a never-active fan fails any recency rule.
-  case_resolve_status_and_tag      status ==/!= and tag has/not_has.
-  case_resolve_match_any_vs_all    OR vs AND across rules.
-  case_preview_counts_real         POST /preview returns the true count+sample.
-  case_crud_and_resolve            create → list → resolve saved list to ids.
-  case_rename_collision_is_409...  renaming onto a taken name 409s, not 500s.
-  case_resolve_v2_facts            ledger money (+between), date ops, enums.
-  case_validate_v2                 scope/timeframe defaults, bad values 422.
-  case_org_scope_and_timeframes    org sums the agency's creators; timeframe,
-                                   highest, last amount, refunds excluded.
-  case_snapshot_drives_status      roster snapshot: active/expired, renew, dates.
-  case_activate_quota_and_queue    activate → rule + one coalesced job; quota 409.
-  case_syncing_lock_409            PATCH / DELETE / deactivate refused while syncing.
-  case_delete_queues_of_list_delete  delete_of_list=1 leaves a hidden tombstone
-                                   + a plain sync job; the name is free again.
-  case_tombstone_reads_as_missing...  a `deleting` row: routes 404, auto_follow
-                                   resolves nothing.
-  case_org_scope_stays_in_one_agency  a master's oversight link never joins
-                                   another agency's creator to the org.
-  case_stale_snapshot_falls_back...  an old roster crawl no longer decides status.
-  case_projection_matches_orm_load  the 12-column loader == the old select(Fan)
-                                   loader, dict for dict and resolve ids per rule.
-
-The DB-backed cases call the Relay as a signed-in owner (the shared two-Agency
-fixture) and link each case's Creator to that owner's Agency, so they pass with
-or without ALLOW_ANONYMOUS_ADMIN=1.
-
-Run: ./venv/bin/python service/tests/test_smart_lists.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first
+import _harness  # MUST be first: binds temp DB
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
@@ -61,7 +26,6 @@ _OWNER = "agency_a_owner"
 _client = fx.login_owner(_OWNER)
 
 
-# ── pure resolve() — no DB needed ─────────────────────────────────────
 
 def _fan(fid, spend=0, last=None, status=None, tags=None, recent=None):
     return {
@@ -85,7 +49,6 @@ def case_resolve_lifetime_spend():
 def case_resolve_recent_spend():
     fans = [_fan(1, recent={30: 6000}), _fan(2, recent={30: 100}), _fan(3, recent={7: 9999})]
     rules = {"rules": [{"field": "recent_spend", "op": ">=", "value": 5000, "days": 30}]}
-    # only fan 1 has ≥$50 in the 30-day window; fan 3's spend is in a 7d bucket.
     assert resolve(rules, fans) == [1], resolve(rules, fans)
 
 
@@ -123,28 +86,23 @@ def case_resolve_match_any_vs_all():
         {"field": "lifetime_spend", "op": ">=", "value": 10000},
         {"field": "status", "op": "==", "value": "active"},
     ]
-    assert resolve({"match": "all", "rules": rules}, fans) == []          # neither fan is both
-    assert resolve({"match": "any", "rules": rules}, fans) == [1, 2]      # spend OR active
+    assert resolve({"match": "all", "rules": rules}, fans) == []
+    assert resolve({"match": "any", "rules": rules}, fans) == [1, 2]
 
 
-# ── DB-backed: preview + CRUD via the API ─────────────────────────────
 
 async def _seed(aid):
     now = datetime.utcnow()
     async with get_session() as s:
         s.add(Account(id=aid))
     async with get_session() as s:
-        # the signed-in owner's Agency holds this Creator
         s.add(UserAccount(user_id=_IDS[_OWNER], account_id=aid))
-        # fan 1: whale, active, active recently
         s.add(Fan(account_id=aid, fan_id=1, of_display_name="Whale",
                   lifetime_spend_cents=25000, subscription_status="active",
                   last_message_received_at=now - timedelta(days=1)))
-        # fan 2: small spender, active
         s.add(Fan(account_id=aid, fan_id=2, of_display_name="Small",
                   lifetime_spend_cents=500, subscription_status="active",
                   last_message_received_at=now - timedelta(days=20)))
-        # fan 3: mid spender via a recent tx, expired
         s.add(Fan(account_id=aid, fan_id=3, of_display_name="Mid",
                   lifetime_spend_cents=12000, subscription_status="expired",
                   last_message_received_at=now - timedelta(days=2)))
@@ -155,7 +113,6 @@ async def _seed(aid):
 def case_preview_counts_real():
     aid = "sl_prev"
     asyncio.run(_seed(aid))
-    # ≥ $100 lifetime → fans 1 and 3 (2 is $5)
     r = _client.post("/admin/smart-lists/preview", json={
         "account_id": aid,
         "rules": {"match": "all", "rules": [{"field": "lifetime_spend", "op": ">=", "value": 10000}]},
@@ -165,7 +122,6 @@ def case_preview_counts_real():
     assert body["count"] == 2, body
     assert body["total_fans"] == 3, body
     assert {s["fan_id"] for s in body["sample"]} == {1, 3}, body
-    # recent_spend in 7d ≥ $50 → only fan 3 (has an $80 tx 3 days ago)
     r2 = _client.post("/admin/smart-lists/preview", json={
         "account_id": aid,
         "rules": {"rules": [{"field": "recent_spend", "op": ">=", "value": 5000, "days": 7}]},
@@ -176,37 +132,28 @@ def case_preview_counts_real():
 def case_crud_and_resolve():
     aid = "sl_crud"
     asyncio.run(_seed(aid))
-    # create
     r = _client.post("/admin/smart-lists", json={
         "account_id": aid, "name": "Whales",
         "rules": {"rules": [{"field": "lifetime_spend", "op": ">=", "value": 10000}]},
     })
     assert r.status_code == 200, r.text
     lid = r.json()["id"]
-    # list
     lst = _client.get(f"/admin/smart-lists?account_id={aid}").json()["lists"]
     assert any(x["id"] == lid and x["name"] == "Whales" for x in lst), lst
-    # duplicate name → 409
     dup = _client.post("/admin/smart-lists", json={"account_id": aid, "name": "Whales"})
     assert dup.status_code == 409, dup.text
-    # resolve → fan ids 1 and 3
     res = _client.get(f"/admin/smart-lists/{lid}/resolve").json()
     assert res["fan_ids"] == [1, 3], res
-    # bad rule rejected
     bad = _client.post("/admin/smart-lists", json={
         "account_id": aid, "name": "Bad",
         "rules": {"rules": [{"field": "nope", "op": ">=", "value": 1}]},
     })
     assert bad.status_code == 422, bad.text
-    # delete
     d = _client.delete(f"/admin/smart-lists/{lid}")
     assert d.status_code == 200 and d.json()["deleted"] == lid
 
 
 def case_rename_collision_is_409_not_500():
-    """Renaming a segment onto an existing name must 409. UNIQUE(account_id,
-    name) raises IntegrityError on flush; before the pre-check that escaped the
-    handler as a raw 500."""
     aid = "sl_rename"
     asyncio.run(_seed(aid))
     a = _client.post("/admin/smart-lists", json={"account_id": aid, "name": "Alpha"})
@@ -216,15 +163,12 @@ def case_rename_collision_is_409_not_500():
     clash = _client.patch(f"/admin/smart-lists/{b.json()['id']}", json={"name": "Alpha"})
     assert clash.status_code == 409, f"expected 409, got {clash.status_code}: {clash.text}"
 
-    # The failed rename must not have stuck.
     names = {x["name"] for x in _client.get(f"/admin/smart-lists?account_id={aid}").json()["lists"]}
     assert names == {"Alpha", "Beta"}, names
-    # Renaming to its OWN name is a no-op, not a self-collision.
     same = _client.patch(f"/admin/smart-lists/{b.json()['id']}", json={"name": "Beta"})
     assert same.status_code == 200, same.text
 
 
-# ── v2 conditions ─────────────────────────────────────────────────────
 
 def _fan2(fid, *, status=None, renew=None, **facts):
     f = _fan(fid, status=status)
@@ -253,7 +197,6 @@ def case_resolve_v2_facts():
     assert resolve({"rules": [old]}, fans) == [3]
     renew_off = {"field": "renew", "op": "==", "value": "off"}
     assert resolve({"rules": [renew_off]}, fans) == [1]
-    # a missing date never matches; a missing spend is $0
     assert resolve({"rules": [{"field": "sub_start", "op": "more_than", "value": 0}]}, fans) == []
     assert resolve({"rules": [{**spend, "op": "<=", "value": 0}]}, fans) == [3]
 
@@ -266,7 +209,7 @@ def case_validate_v2():
     ]})["rules"]
     assert out[0] == {"field": "tips_spend", "op": ">=", "value": 500.0,
                       "scope": "creator", "timeframe": "all"}, out[0]
-    assert "timeframe" not in out[1], out[1]                # last amount has none
+    assert "timeframe" not in out[1], out[1]
     assert out[2]["value"] == [30.0, 90.0], out[2]
     bad = [
         {"field": "total_spend", "op": ">=", "value": 1, "scope": "galaxy"},
@@ -278,7 +221,7 @@ def case_validate_v2():
     for rule in bad:
         try:
             _validate_rules({"rules": [rule]})
-        except Exception as e:  # HTTPException 422
+        except Exception as e:
             assert getattr(e, "status_code", None) == 422, (rule, e)
         else:
             raise AssertionError(f"accepted {rule}")
@@ -320,17 +263,16 @@ def case_org_scope_and_timeframes():
     asyncio.run(seed())
 
     tot = {"field": "total_spend", "op": ">=", "value": 3000}
-    assert _preview_ids(a, tot) == {5}                                       # 1000 + 2500
-    assert _preview_ids(a, {**tot, "value": 5000}) == set()                  # creator scope only
-    assert _preview_ids(a, {**tot, "value": 10000, "scope": "org"}) == {5}   # + 7000 on creator b
-    assert _preview_ids(a, {**tot, "timeframe": "30d"}) == set()             # only 2500 in 30d
+    assert _preview_ids(a, tot) == {5}
+    assert _preview_ids(a, {**tot, "value": 5000}) == set()
+    assert _preview_ids(a, {**tot, "value": 10000, "scope": "org"}) == {5}
+    assert _preview_ids(a, {**tot, "timeframe": "30d"}) == set()
     assert _preview_ids(a, {"field": "tips_spend", "op": ">=", "value": 1000,
                             "scope": "org", "timeframe": "7d"}) == {5}
     assert _preview_ids(a, {"field": "highest_spend", "op": "==", "value": 7000,
                             "scope": "org"}) == {5}
     assert _preview_ids(a, {"field": "last_spend_amount", "op": "==", "value": 2500}) == {5}
     assert _preview_ids(a, {"field": "last_purchase_at", "op": "within_last", "value": 3}) == {5}
-    # the refunded $99 tip never counts
     assert _preview_ids(a, {"field": "tips_spend", "op": ">", "value": 0}) == {5}
 
 
@@ -358,7 +300,7 @@ def case_snapshot_drives_status():
     assert ids({"field": "status", "op": "==", "value": "active"}) == {7}
     assert ids({"field": "status", "op": "==", "value": "expired"}) == {8}
     assert ids({"field": "renew", "op": "==", "value": "off"}) == {7}
-    assert ids({"field": "renew", "op": "==", "value": "on"}) == set()   # 8 is not active
+    assert ids({"field": "renew", "op": "==", "value": "on"}) == set()
     assert ids({"field": "sub_start", "op": "within_last", "value": 7}) == {7}
     assert ids({"field": "expires_at", "op": "within_next", "value": 3}) == {7}
     assert ids({"field": "resubscribed_at", "op": "more_than", "value": 30}) == {8}
@@ -378,12 +320,12 @@ def case_activate_quota_and_queue():
     b = _client.post("/admin/smart-lists", json={"account_id": aid, "name": "B"}).json()
     assert a["is_active"] is False and a["sync_state"] is None, a
     real = os.environ.get("SMART_LIST_MAX_ACTIVE")
-    os.environ["SMART_LIST_MAX_ACTIVE"] = "1"   # read at use (runtime_switches)
+    os.environ["SMART_LIST_MAX_ACTIVE"] = "1"
     try:
         r = _client.post(f"/admin/smart-lists/{a['id']}/activate")
         assert r.status_code == 200 and r.json()["is_active"] is True, r.text
         again = _client.post(f"/admin/smart-lists/{a['id']}/activate")
-        assert again.status_code == 200, again.text                  # idempotent
+        assert again.status_code == 200, again.text
         over = _client.post(f"/admin/smart-lists/{b['id']}/activate")
         assert over.status_code == 409 and "maximum of 1" in over.text, over.text
     finally:
@@ -401,7 +343,7 @@ def case_activate_quota_and_queue():
     rs = asyncio.run(rules())
     assert len(rs) == 1 and rs[0].is_enabled, rs
     lst = _client.get(f"/admin/smart-lists?account_id={aid}").json()
-    assert lst["max_active"] == (int(real) if real else 10), lst  # env, else the default
+    assert lst["max_active"] == (int(real) if real else 10), lst
     off = _client.post(f"/admin/smart-lists/{a['id']}/deactivate")
     assert off.status_code == 200 and off.json()["is_active"] is False, off.text
 
@@ -435,14 +377,13 @@ def case_delete_queues_of_list_delete():
     asyncio.run(_set_state(lid, "ok", of_list_id=4242))
     r = _client.delete(f"/admin/smart-lists/{lid}?delete_of_list=true")
     assert r.status_code == 200 and r.json()["of_list_delete_queued"] is True, r.text
-    # A tombstone the worker finishes — the job carries no OF list id at all.
     assert asyncio.run(_jobs(aid)) == [{}]
     row = asyncio.run(_get(lid))
     assert row.sync_state == "deleting" and row.of_list_id == 4242 and not row.is_active
     assert _client.get(f"/admin/smart-lists?account_id={aid}").json()["lists"] == []
     assert _client.get(f"/admin/smart-lists/{lid}/resolve").status_code == 404
     again = _client.post("/admin/smart-lists", json={"account_id": aid, "name": "D"})
-    assert again.status_code == 200, again.text                    # the name is free
+    assert again.status_code == 200, again.text
 
 
 def case_tombstone_reads_as_missing_everywhere():
@@ -464,7 +405,7 @@ def case_tombstone_reads_as_missing_everywhere():
     assert _client.post(f"/admin/smart-lists/{lid}/activate").status_code == 404
     assert _client.patch(f"/admin/smart-lists/{lid}", json={"name": "U"}).status_code == 404
     asyncio.run(_set_state(lid, "ok"))
-    assert asyncio.run(_resolve_smart_list(lid, aid)) == [21]       # a live row still resolves
+    assert asyncio.run(_resolve_smart_list(lid, aid)) == [21]
 
 
 async def _get(lid):
@@ -483,8 +424,8 @@ def case_org_scope_stays_in_one_agency():
         async with get_session() as s:
             s.add(UserAccount(user_id=master, account_id=x))
             s.add(UserAccount(user_id=master, account_id=z))
-            s.add(UserAccount(user_id=master, account_id=y))   # oversight link
-            s.add(UserAccount(user_id=b_owner, account_id=y))  # y is agency B's
+            s.add(UserAccount(user_id=master, account_id=y))
+            s.add(UserAccount(user_id=b_owner, account_id=y))
         async with get_session() as s:
             return await smart_lists_api.org_account_ids(s, x)
     assert asyncio.run(go()) == [x, z]
@@ -503,15 +444,11 @@ def case_stale_snapshot_falls_back_to_fan_row():
             s.add(SubscriberSnapshot(account_id=aid, fan_id=11, seen_at=old - timedelta(days=9),
                                      resubscribed_at=old - timedelta(days=1)))
     asyncio.run(seed())
-    # The stale crawl would call 11 expired; the fan row (newer) says active.
     assert _preview_ids(aid, {"field": "status", "op": "==", "value": "active"}) == {10, 11}
-    # A recorded return is history — still usable off a stale snapshot.
     assert _preview_ids(aid, {"field": "resubscribed_at", "op": "within_last", "value": 30}) == {11}
 
 
 def case_ghost_audience_idle_days():
-    """Active fans with no purchase (rebills don't count), no inbound message
-    and no (re)subscription in 30+ days. No date at all never matches."""
     aid = "sl_ghost"
     now = datetime.utcnow()
     old = now - timedelta(days=60)
@@ -520,7 +457,7 @@ def case_ghost_audience_idle_days():
         await _link(aid)
         async with get_session() as s:
             s.add(Fan(account_id=aid, fan_id=23, last_message_received_at=now - timedelta(days=3)))
-            s.add(Fan(account_id=aid, fan_id=26))  # never seen anywhere: no date
+            s.add(Fan(account_id=aid, fan_id=26))
             for f in (20, 21, 22, 24, 25, 27):
                 s.add(Fan(account_id=aid, fan_id=f))
             for f in (20, 21, 22, 23, 27):
@@ -528,7 +465,7 @@ def case_ghost_audience_idle_days():
             s.add(SubscriberSnapshot(account_id=aid, fan_id=24, seen_at=now,
                                      subscribe_at=now - timedelta(days=10)))
             s.add(SubscriberSnapshot(account_id=aid, fan_id=25, seen_at=now - timedelta(days=5),
-                                     subscribe_at=old))  # expired
+                                     subscribe_at=old))
             s.add(Transaction(account_id=aid, fan_id=21, kind="rebill", amount_cents=999,
                               occurred_at=now - timedelta(days=5)))
             s.add(Transaction(account_id=aid, fan_id=22, kind="tip", amount_cents=500,
@@ -544,7 +481,6 @@ def case_ghost_audience_idle_days():
     assert r.status_code == 200, r.text
     assert {x["fan_id"] for x in r.json()["sample"]} == {20, 21, 27}
     assert _preview_ids(aid, {"field": "idle_days", "op": "within_last", "value": 7}) == {22, 23}
-    # it reads the roster's sub date, so the sync worker refreshes the roster
     assert smart_lists_api.uses_subscription_facts({"rules": [ghost]})
     _validate_rules({"rules": [ghost]})
     try:
@@ -556,8 +492,6 @@ def case_ghost_audience_idle_days():
 
 
 async def _orm_load(account_id, rules_obj, now, *, roster_fresh=False):
-    """The loader before the projection (full `select(Fan)` entities), kept as
-    the oracle for case_projection_matches_orm_load."""
     m = smart_lists_api
     rules = rules_obj.get("rules") or []
     windows = m._windows_in_rules(rules_obj)
@@ -592,9 +526,6 @@ async def _orm_load(account_id, rules_obj, now, *, roster_fresh=False):
 
 
 def case_projection_matches_orm_load():
-    """Every column the loader reads, through each fallback: tags JSON /
-    garbage / non-list / empty, null dates, fresh vs stale snapshot, each
-    display-name fallback. Same dicts, same order, same resolve ids."""
     now = datetime.utcnow()
     d = lambda days: now - timedelta(days=days)  # noqa: E731
     fresh, stale = "sl_proj_fresh", "sl_proj_stale"
@@ -625,7 +556,7 @@ def case_projection_matches_orm_load():
                 for fid, kind, cents, ago in txs:
                     s.add(Transaction(account_id=aid, fan_id=fid, kind=kind, amount_cents=cents,
                                       occurred_at=d(ago)))
-        async with get_session() as s:   # fresh: 1 active (renew on, roster dates), 2 expired
+        async with get_session() as s:
             s.add(SubscriberSnapshot(account_id=fresh, fan_id=1, seen_at=d(0), renew_on=True,
                                      subscribe_at=d(35), expired_at=d(-4)))
             s.add(SubscriberSnapshot(account_id=fresh, fan_id=2, seen_at=d(1), renew_on=False,
@@ -674,7 +605,6 @@ def case_projection_matches_orm_load():
                 old = asyncio.run(_orm_load(aid, obj, now))
                 assert new == old, (aid, rules, new, old)
                 assert resolve(obj, new) == resolve(obj, old), (aid, rules)
-        # the fixtures exercise what they claim: names fall back, sent dates are read
         sent = _validate_rules(
             {"match": "all", "rules": [{"field": "last_message_sent_at", "op": "more_than", "value": 9}]})
         got = asyncio.run(smart_lists_api._load_normalised_fans(stale, sent))

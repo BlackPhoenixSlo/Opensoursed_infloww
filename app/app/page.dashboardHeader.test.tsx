@@ -1,10 +1,3 @@
-/**
- * The Home page (`/`) header's gaps, split from page.render.test.tsx (its harness, trimmed): Referrals that could
- * not be read (Total marked partial, never $0), Employee sales' answer without a daily series (the retry box), and
- * the browser's zone sent as `tz` when no report time zone is saved. `fetch` is mocked by URL.
- *
- * The fixture zone is Pacific/Honolulu (UTC-10:00, no daylight saving). Fixture names and ids are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, waitFor, within } from "@testing-library/react";
 
@@ -26,7 +19,6 @@ import { REFERRALS_FAILED, TOTAL_PARTIAL } from "@/components/home/netMissingNot
 
 const HONOLULU = "Pacific/Honolulu";
 const WEDNESDAY = "2026-10-14T12:00:00Z";
-/** One tip: $12.50 gross, $10 net. */
 const TIP = { day: null, kind: "tip", total_cents: 1250, count: 1 };
 const PER_EMPLOYEE_ROWS = [
   { employee_id: 7, display_name: "Fixture Chatter One", messages_sent: 9, ppv_conversions: 2, revenue_cents: 4200,
@@ -35,9 +27,7 @@ const PER_EMPLOYEE_ROWS = [
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let applied: () => Promise<Response>;
-/** The answer to `GET /admin/stats/referrals`. */
 let referrals: () => Promise<Response>;
-/** The answer to `GET /admin/stats/per-employee`. */
 let perEmployee: () => Promise<Response>;
 
 const appliedRes = (reportTz: string | null) => jsonRes({
@@ -127,8 +117,6 @@ describe("Employee sales' read", () => {
   const card = () => tile("employeeSales");
   const ranking = () => Array.from(card().querySelectorAll('[data-testid="sales-point"]'));
 
-  // Ticket 28: an answer without a `series` array (the Route walk's `[]`) is never a crash, and never reads as a
-  // window with no sales: it is the retry box.
   it.each([["[]", []], ["{}", {}], ["rows only", { employees: PER_EMPLOYEE_ROWS, attribution_fallback: null }]])(
     "an answer of %s with no series array shows the retry box, not empty axes", async (_name, body) => {
       perEmployee = async () => jsonRes(body);

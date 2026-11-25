@@ -1,29 +1,3 @@
-/**
- * FanDrawer — the drawer's nickname/note pair is the ONLY place an `of-user`
- * value is read back out and written over, which makes it the only place
- * staleness can destroy data rather than merely look old.
- *
- * `useOFUser` no longer refetches on mount (a live OF /users/{id} on the user
- * lane, paid on every drawer open, for data that barely moves). That leaves a
- * window: a nickname/note changed elsewhere inside the 5-minute staleTime
- * would prefill stale, get typed over, and save — silently reverting the
- * other change. Window focus only covers tab switches, not a same-tab reopen.
- *
- * These tests pin the contract that closes it:
- *   • merely OPENING the drawer still costs no OF read,
- *   • ENGAGING an edit affordance re-reads, exactly once per open,
- *   • a fresh value that lands before typing replaces the prefill,
- *   • a fresh value that lands AFTER typing began does not clobber the input,
- *   • a PINNED drawer (open all day) re-reads again once the stale window
- *     passes — the guard is time-based, not once-per-open.
- *
- * And the Chat header's "Notes" ask (Phase 3 ticket 87, spec F23): a higher
- * `focusNotesRequest` switches to the Insights tab, expands the Notes block and
- * focuses the Fan notes field. Its twin, the header's "Edit name" pencil
- * (messages-pro-look-and-feel ticket 142): a higher `focusNicknameRequest`
- * does the same for the Profile block's Nickname field, whose focus is the
- * edit affordance that re-reads OF before a save.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -69,8 +43,6 @@ const CHAT = {
   withUser: { id: 7, name: "Fan Seven", username: "fan7", avatar: null, displayName: "", notice: "" },
 } as never;
 
-/** of-user responses, one per relay call, so a test can hand the SECOND read
- *  a value someone else changed while the drawer sat open. */
 function queueOFUser(...bodies: Record<string, unknown>[]) {
   relayGet.mockReset();
   let i = 0;
@@ -112,12 +84,9 @@ const note = () =>
 
 describe("FanDrawer edit-freshness", () => {
   it("opening the drawer on a cached fan costs no OF read", async () => {
-    // Seed the cache the way a drawer opened minutes ago would have left it.
     qc.setQueryData(["of-user", "acct-a", 7, "full"], { id: 7, displayName: "cached", notice: "" });
     renderDrawer();
     await waitFor(() => expect(nick().value).toBe("cached"));
-    // The whole point of `refetchOnMount: false` — a mount must not spend the
-    // user lane. Give any stray fetch a chance to land before asserting.
     await new Promise((r) => setTimeout(r, 20));
     expect(ofReads()).toBe(0);
   });
@@ -142,16 +111,13 @@ describe("FanDrawer edit-freshness", () => {
 
     await user.click(nick());
     await waitFor(() => expect(ofReads()).toBe(1));
-    await user.click(note());   // second affordance, same open
-    await user.click(nick());   // back again
+    await user.click(note());
+    await user.click(nick());
     await new Promise((r) => setTimeout(r, 20));
     expect(ofReads()).toBe(1);
   });
 
   it("re-reads again once the stale window passes (pinned drawer, open all day)", async () => {
-    // Pinned/popout mode never closes, so a once-per-open guard would let a
-    // value renamed at minute 50 prefill stale forever. The guard must be
-    // the query's own stale window, not the drawer's open lifecycle.
     const user = userEvent.setup();
     qc.setQueryData(["of-user", "acct-a", 7, "full"], { id: 7, displayName: "stale", notice: "" });
     queueOFUser(
@@ -163,10 +129,9 @@ describe("FanDrawer edit-freshness", () => {
 
     await user.click(nick());
     await waitFor(() => expect(nick().value).toBe("read one"));
-    await user.click(note()); // same window: still one read
+    await user.click(note());
     expect(ofReads()).toBe(1);
 
-    // The drawer sits open past the stale window; the fan is renamed elsewhere.
     const realNow = Date.now();
     const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow + 6 * 60_000);
     try {
@@ -181,7 +146,6 @@ describe("FanDrawer edit-freshness", () => {
   it("does not clobber what the operator has already typed", async () => {
     const user = userEvent.setup();
     qc.setQueryData(["of-user", "acct-a", 7, "full"], { id: 7, displayName: "stale", notice: "" });
-    // Deliberately slow read: the operator gets to type before it lands.
     let release!: (v: unknown) => void;
     relayGet.mockReset();
     relayGet.mockImplementation((path: string) =>
@@ -212,21 +176,18 @@ describe("FanDrawer edit-freshness", () => {
     );
     const fanNotes = () => screen.getByRole("textbox", { name: "Fan notes" });
 
-    // Request 1 from another tab: back to Insights, Fan notes focused.
     await user.click(screen.getByRole("tab", { name: "Sales" }));
     expect(screen.queryByRole("textbox", { name: "Fan notes" })).not.toBeInTheDocument();
     ask(1);
     expect(screen.getByRole("tab", { name: "Insights" })).toHaveAttribute("aria-selected", "true");
     await waitFor(() => expect(fanNotes()).toHaveFocus());
 
-    // Request 2 with the Notes block collapsed on Insights: expanded, focused again.
     await user.click(screen.getByRole("button", { name: "Collapse Notes" }));
     expect(screen.queryByRole("textbox", { name: "Fan notes" })).not.toBeInTheDocument();
     ask(2);
     expect(screen.getByRole("button", { name: "Collapse Notes" })).toHaveAttribute("aria-expanded", "true");
     await waitFor(() => expect(fanNotes()).toHaveFocus());
 
-    // Request 3 with the Notes block removed: added back, focused again.
     await user.click(screen.getByRole("button", { name: "Remove Notes" }));
     expect(screen.queryByRole("textbox", { name: "Fan notes" })).not.toBeInTheDocument();
     ask(3);
@@ -243,7 +204,6 @@ describe("FanDrawer edit-freshness", () => {
         focusNotesRequest={0} focusNicknameRequest={focusNicknameRequest} />,
     );
 
-    // Request 1 from another tab: back to Insights, Nickname focused, OF re-read before any edit.
     await user.click(screen.getByRole("tab", { name: "Sales" }));
     expect(screen.queryByPlaceholderText("Fan Seven")).not.toBeInTheDocument();
     ask(1);
@@ -251,7 +211,6 @@ describe("FanDrawer edit-freshness", () => {
     await waitFor(() => expect(nick()).toHaveFocus());
     await waitFor(() => expect(ofReads()).toBe(1));
 
-    // Request 2 with the Profile block collapsed on Insights: expanded, focused again.
     await user.click(screen.getByRole("button", { name: "Collapse Profile" }));
     expect(screen.queryByPlaceholderText("Fan Seven")).not.toBeInTheDocument();
     ask(2);

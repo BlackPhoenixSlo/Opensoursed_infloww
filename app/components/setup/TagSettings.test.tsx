@@ -1,8 +1,3 @@
-/**
- * TagSettings — the Tag column's gear and its Tag manager: each Tag with "used by N", Rename and Delete rewrite every
- * profile holding the Tag in one PUT of the `account` blob, other keys riding along; a refused blob (a chatter) leaves
- * the gear Not wired.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -77,7 +72,6 @@ describe("TagSettings", () => {
     await open();
     fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]);
     expect(screen.getByText("Remove this tag from 1 creator?")).toBeInTheDocument();
-    // The asking row's own Delete (New sorts first).
     fireEvent.click(screen.getAllByRole("button", { name: "Delete" })[0]);
     await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(1));
     expect(relayPut.mock.calls[0][1].creators.profiles.a3).toEqual({});

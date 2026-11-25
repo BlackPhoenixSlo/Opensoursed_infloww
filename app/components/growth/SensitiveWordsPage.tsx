@@ -1,32 +1,5 @@
 "use client";
 
-/**
- * Growth > Sensitive words (`/growth/sensitive-words`), Infloww's page of the same
- * name (remote web bundle, menu 87; help center H262068), on
- * service/sensitive_words_api.py. The layout is Infloww's `SensitiveWords` chunk
- * CSS (`index.f52ea2fc.css`, `_1hxt5`; page-parity ticket 14): a full-height box,
- * the 16 / 500 title, a 50px toolbar, the 30px letter tabs, the list's own scroll
- * box of 182x70 word cards, and a "Total" row.
- *
- * One list per Agency. The toolbar has a search box (it filters the open letter
- * tab), "Import from Excel", "Export Excel" and "+ Add Sensitive Word" (Infloww's
- * `top:55px; right:28px`: the title's 48px plus the toolbar's 7px puts it at the
- * toolbar's right end, and the letter row, spread across the full width, has no
- * room for it). Each letter tab shows how many words it holds (of those the
- * search matches); a letter with none is dimmed, and the page opens on the first
- * letter that has words. Each word card shows "Edit"
- * and "Delete" over itself on hover or focus. The add dialog takes up to 20 words
- * of at most 32 characters ("+ Add the next column"); edit reuses it with one
- * row. Delete is immediate, as in Infloww. Excel import reads column A under a
- * header row, like Infloww's template, and reports how many words were added and
- * failed. "Total" counts every listed word, not just the open tab's.
- *
- * Every composer (Messages Pro, the mass message composer, Scripts) warns while
- * its text holds a listed word; see lib/sensitiveWords.ts.
- *
- * ASSUMPTION: the import result lists the failed words in the dialog, where
- * Infloww offers them as a download. Rung 4; the owner chose to keep it.
- */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Download, Plus, Trash2, Upload, X } from "lucide-react";
@@ -49,15 +22,9 @@ interface ImportResult {
 }
 
 const ROUTE = "/admin/sensitive-words";
-/** `--tc-Home-B-th`, the list's scroll box: B-th #1a1a1a dark (Home-B-th has no dark entry), #fff light. */
 const HOME_B_TH = "bg-[#1a1a1a] [html[data-theme=light]_&]:bg-white";
-/** `--tc-M-B1`: #2f2f2f dark, #fff light (the import dialog's template button and drop box). */
 const M_B1 = "bg-[#2f2f2f] [html[data-theme=light]_&]:bg-white";
-/** Infloww centres "No data" in `100vh - 260px`; ours fills the scroll box instead (the viewport less the shell's
- *  top bar and the 323px of header, toolbar, letters, list title, padding and Total above and below it), so an
- *  empty letter never scrolls. */
 const EMPTY_BOX = "min-h-[240px] sm:min-h-[calc(100dvh-var(--chrome-top)-323px)]";
-/** IfButton `default`'s look, for Export: an `<a download>` standing in for a button. */
 const LINK_BUTTON = cn(
   "inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-md border border-border bg-transparent",
   "px-[15px] text-[14px] text-fg transition-colors hover:border-accent hover:text-accent",
@@ -67,7 +34,6 @@ const LINK_BUTTON = cn(
 export default function SensitiveWordsPage() {
   const qc = useQueryClient();
   const listQ = useSensitiveWords();
-  // The letter the user opened; until then, the first letter with a word (`tab`).
   const [picked, setTab] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [editor, setEditor] = useState<{ mode: "add" } | { mode: "edit"; word: string } | null>(null);
@@ -86,7 +52,6 @@ export default function SensitiveWordsPage() {
   });
 
   const words = listQ.data?.words;
-  // Each letter's words the search matches: the tab counts, and the open tab's cards.
   const byTab = useMemo(() => {
     const q = search.trim().toLowerCase();
     const m = new Map<string, string[]>();
@@ -100,7 +65,6 @@ export default function SensitiveWordsPage() {
   const tab = picked ?? LETTER_TABS.find((t) => byTab.has(t)) ?? LETTER_TABS[0];
   const shown = byTab.get(tab) ?? [];
 
-  // The letter tabs are one Tab stop; the arrows (and Home / End) open the next tab and move focus to it.
   const onTabKey = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
     const n = LETTER_TABS.length;
     const to = e.key === "ArrowRight" ? (i + 1) % n
@@ -181,7 +145,6 @@ export default function SensitiveWordsPage() {
               )}
             >
               {t}
-              {/* aria-hidden: the tab's name stays the letter; the count is its title. */}
               {n > 0 && <span aria-hidden className="text-[11px] leading-none opacity-70">{n}</span>}
             </button>
             );
@@ -236,8 +199,6 @@ export default function SensitiveWordsPage() {
   );
 }
 
-/** Infloww's 182x70 word card. Edit and Delete cover it while the pointer is over it or focus is inside it; a tap
- *  focuses it first, so a phone never deletes on the first touch. */
 function WordCard({ word, busy, onEdit, onDelete }: {
   word: string;
   busy: boolean;

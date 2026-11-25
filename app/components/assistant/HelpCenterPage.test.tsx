@@ -1,7 +1,3 @@
-/**
- * HelpCenterPage — /help-center is the help bot in Infloww's bare frame: no
- * page title, no "not built" card, and the same conversation as the dock.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -44,7 +40,6 @@ describe("HelpCenterPage", () => {
     expect(screen.getByPlaceholderText("Ask a question…")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Help center" })).toBeNull();
     expect(screen.queryByText(/not built yet/)).toBeNull();
-    // Nothing to close on a page.
     expect(screen.queryByRole("button", { name: "Close help" })).toBeNull();
   });
 
@@ -57,7 +52,6 @@ describe("HelpCenterPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Ask" }));
     await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
 
-    // Leave the page: the dock's launcher returns, and its panel holds the same turn.
     nav.pathname = "/";
     rerender(<PageCreatorProvider><AssistantProvider><AssistantWidget /></AssistantProvider></PageCreatorProvider>);
     await userEvent.click(await screen.findByRole("button", { name: "Help assistant" }));

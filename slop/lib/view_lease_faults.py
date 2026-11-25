@@ -1,12 +1,3 @@
-"""The View lease / purchases poll tiers' break-it-once faults (phase-01 1a; service/view_lease.py,
-service/transaction_ingest.py `_seller_account_ids` / `_SELLING_KINDS` / `live_account_ids`,
-service/purchase_poll_decide.py `after` / `held` / `catch_up`, service/app_open_warm.py,
-service/event_transcode_decide.py `money_bust`, service/events_decide.py `ANY_SCOPE_TYPES`, all looked
-up in their modules at call time; the warm's page fault and the strip's lease fault in the browser): lib/faults.py
-merges `register(Fault)`
-into FAULTS. The check names live here and
-scenarios/2026-11-09-view-lease-purchases-tiers.py imports them (a leg's own faults: lib/view_lease_<leg>_faults.py).
-"""
 from __future__ import annotations
 
 LEASED_FAST = "LEASED_FAST: a Creator an owner, chatter or All-view tab leases is polled every PURCHASES_POLL_FAST_S"
@@ -57,8 +48,6 @@ _OLD_SELLING_KINDS = ("welcome_chatter_for_info", "ppv_send", "reengage_buyers")
 
 
 def _admin_online_all_fast() -> None:
-    """The pre-1a gate's admin branch: any admin seen in the last 10 min makes every Creator fast
-    (transaction_ingest._online_account_ids before phase-01), unioned into the Seller set (so every Creator polls fast)."""
     from datetime import datetime, timedelta
 
     from sqlalchemy import select
@@ -83,15 +72,12 @@ def _admin_online_all_fast() -> None:
 
 
 def _seller_kinds_old() -> None:
-    """The pre-1a Seller list: two kinds with no runner and one that never sells."""
     import transaction_ingest as ti
 
     ti._SELLING_KINDS = _OLD_SELLING_KINDS
 
 
 def _all_view_leases_every_creator() -> None:
-    """An All-view renewal (no `selected`) leases every Creator its principal can access, not
-    the ids it named (the "All" scope as a lease, ADR-0031's rejected option)."""
     import accounts as account_registry
     import view_lease
     from chatters import get_request_chatter
@@ -109,8 +95,6 @@ def _all_view_leases_every_creator() -> None:
 
 
 def _select_refresh_on_gain_only() -> None:
-    """The Select refresh only for a Creator nobody leased before: a tab selecting a Creator
-    another holder already leases gets no immediate read."""
     import view_lease
 
     real = view_lease.renew
@@ -122,8 +106,6 @@ def _select_refresh_on_gain_only() -> None:
     view_lease.renew = renew
 
 
-# The heartbeat as if it lived in Messages Pro only (the warm the owner did not want): a page's view-lease post
-# carries `opened: true` only on /messages-pro. Wraps fetch in the page, before the app's code.
 _WARM_MESSAGES_PRO_ONLY_JS = r"""
 (() => {
   const real = window.fetch;
@@ -143,7 +125,6 @@ _WARM_MESSAGES_PRO_ONLY_JS = r"""
 
 
 def _warm_unstaggered() -> None:
-    """Every Creator its own group and no gap: an open reads every Creator at once, whatever proxy it shares."""
     import app_open_warm
 
     app_open_warm._egress = lambda aid: (f"each:{aid}", f"each-{aid}")
@@ -151,7 +132,6 @@ def _warm_unstaggered() -> None:
 
 
 def _feed_429_ignored() -> None:
-    """The pre-ladder feed: a 429 changes nothing, the Creator is polled again on its next cycle."""
     import purchase_poll_decide as d
 
     real = d.after
@@ -165,8 +145,6 @@ def _feed_429_ignored() -> None:
 
 
 def _dead_still_polled() -> None:
-    """The live set without the dead-session filter: a flagged Creator keeps being polled (every caller looks
-    `transaction_ingest.live_account_ids` up at call time: the loop, poll_now, the supervisor, the warm)."""
     import accounts as account_registry
     import account_health
     import transaction_ingest as ti
@@ -179,7 +157,6 @@ def _dead_still_polled() -> None:
 
 
 def _dead_held_in_poll_state() -> None:
-    """`dead` remembered in the poll's own memory (a hold nothing clears): a cleared flag never resumes."""
     import dataclasses
 
     import purchase_poll_decide as d
@@ -198,29 +175,22 @@ def _dead_held_in_poll_state() -> None:
 
 
 def _feed_no_catchup() -> None:
-    """No paging back after a gap: the poll reads its newest page only."""
     import purchase_poll_decide as d
 
     d.catch_up = lambda state, now: False
 
 
-# The strip leasing every open tab, not the ones on screen (CreatorTabs' `useOnScreenLease("strip")` joined by a
-# `useViewLease` of every open tab). `next dev` (webpack) serves the module inside an eval string, its quotes escaped
-# (\"): the group keeps them.
 _STRIP_LEASES_ALL_TABS = ((r'\(0,\s*([\w$]+)\.useOnScreenLease\)\((\\?)"strip\2"\)',
                            r'((0, \1.useViewLease)(open.map((a) => a.id)), (0, \1.useOnScreenLease)(\2"strip\2"))'),)
 
 
 def _dm_busts_money_feeds() -> None:
-    """The pre-1b transcoder: every inbound DM clears the money feeds' cache (event_transcoder looks
-    `event_transcode_decide.money_bust` up at call time)."""
     import event_transcode_decide as td
 
     td.money_bust = lambda m: True
 
 
 def _money_events_scope_only() -> None:
-    """The pre-1b routing: `creator_warmed` and the money events reach a tab only for the Creator its scope names."""
     import events_decide
 
     events_decide.ANY_SCOPE_TYPES = frozenset()
@@ -228,9 +198,7 @@ def _money_events_scope_only() -> None:
 
 def register(Fault) -> dict:
     return {
-        # slop/run 2026-11-09-view-lease-purchases-tiers --break (the scenario's FAULT)
         "admin-online-all-fast": Fault(_admin_online_all_fast, (IDLE_SLOW,)),
-        # ... --break --fault=<name>
         "seller-kinds-old": Fault(_seller_kinds_old, (SELLER_FAST,)),
         "all-view-leases-every-creator": Fault(_all_view_leases_every_creator, (ALL_VIEW_NO_LEASE,)),
         "select-refresh-on-gain-only": Fault(_select_refresh_on_gain_only, (SELECT_REFRESH,)),

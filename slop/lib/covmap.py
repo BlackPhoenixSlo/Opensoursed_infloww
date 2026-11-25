@@ -1,7 +1,3 @@
-"""slop/map.json: what each scenario reaches (README "Which scenarios to run"). `slop/run ... --map`
-builds a scenario's entry from its run's coverage data (the relay under coverage.py, the harness
-too) and the pages its browsers navigated to; `slop/run --changed` diffs the tree against each
-entry's sha and lib/selection.py picks. This module does the git, file and coverage I/O."""
 from __future__ import annotations
 
 import ast
@@ -20,7 +16,7 @@ from slop.lib.report import write_atomic
 ROOT = Path(__file__).resolve().parents[2]
 MAP = ROOT / "slop" / "map.json"
 DIFF_ROOTS = tuple(r.rstrip("/") for r in selection.ROOTS)
-MAP_LOCK = MAP.parent / "evidence/.map.lock"  # ignored, shared by every writer of this checkout's map
+MAP_LOCK = MAP.parent / "evidence/.map.lock"
 DIFF = ("--no-color", "--no-ext-diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/")
 APP_SRC = (".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs")
 MAP_STALE = 200
@@ -29,7 +25,7 @@ DYNAMIC_LOAD = ("service/automations/", "service/db/migrations/versions/")
 
 
 class MapInvalid(RuntimeError):
-    """The existing map cannot be parsed safely for a read or update."""
+    pass
 
 
 def map_invalid_reason(error: MapInvalid) -> str:
@@ -38,7 +34,6 @@ def map_invalid_reason(error: MapInvalid) -> str:
 
 
 def is_volume(path: Path) -> bool:
-    """Whether the scenario declares a top-level volume gate, before any map run."""
     try:
         tree = ast.parse(path.read_text())
     except (OSError, SyntaxError):
@@ -51,7 +46,6 @@ def is_volume(path: Path) -> bool:
 
 
 def map_stale(ages: dict[str, int | None]) -> tuple[bool, str]:
-    """Oldest map age, with a divergent sha treated as stale."""
     odd = sorted(sha[:7] for sha, n in ages.items() if n is None)
     if odd:
         return True, "map sha(s) not ancestors of HEAD: " + ", ".join(odd)
@@ -70,7 +64,6 @@ def git(*a: str, check: bool = True) -> str:
 
 
 def dirty_for_map() -> str:
-    """`git status --porcelain` of what a map entry describes (the map file itself aside)."""
     return git("status", "--porcelain", "--", *DIFF_ROOTS,
                ":!slop/map.json").strip()
 
@@ -110,7 +103,6 @@ def dump(doc: dict) -> str:
 
 @contextmanager
 def locked_map():
-    """Read, edit and atomically write the map while holding its writer lock."""
     MAP_LOCK.parent.mkdir(parents=True, exist_ok=True)
     with open(MAP_LOCK, "a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -120,8 +112,6 @@ def locked_map():
 
 
 def py_reach(cov_dir: Path) -> dict[str, list[str]]:
-    """{repo-relative .py: [functions whose body ran]} from every coverage data file in `cov_dir`
-    (the relays' and the harness'). A file is listed when any of its lines ran."""
     from coverage import CoverageData
     lines: dict[str, set[int]] = {}
     for f in sorted(cov_dir.glob(".coverage*")):
@@ -146,11 +136,6 @@ def py_reach(cov_dir: Path) -> dict[str, list[str]]:
 
 def update(name: str, cov_dir: Path, *, sha: str, seconds: float, scale: str, ui: bool, pages: list[str],
            names: set[str], http_pages=(), modules=(), no_ui_run: bool = False) -> dict:
-    """Replace `name`'s entry, drop entries of scenarios that no longer exist, write the map.
-    `http_pages`: app paths actors reached over plain HTTP (in `pages` too). `modules`: repo-relative
-    files of the slop modules loaded by then (an earlier scenario in this process may have imported
-    them, so their module level ran outside this run's coverage): listed, with no functions, when
-    coverage has not. `no_ui_run`: preserve the old browser pages and Python reach."""
     py = py_reach(cov_dir)
     for f in modules:
         py.setdefault(f, [])
@@ -171,23 +156,19 @@ def update(name: str, cov_dir: Path, *, sha: str, seconds: float, scale: str, ui
     return entry
 
 
-# ---------- --changed inputs ----------
 
 _BLOCK = re.compile(r"^[ \t]*\{?/\*[^*]*\*+(?:[^/*][^*]*\*+)*/\}?[ \t]*$", re.M)
 _LINE = re.compile(r"(?<![:\w])//.*$", re.M)
 _SPECS = (re.compile(r"""from\s+["']([^"']+)["']"""), re.compile(r"""import\(\s*["']([^"']+)["']\s*\)"""),
           re.compile(r"""require\(\s*["']([^"']+)["']\s*\)"""),
-          re.compile(r"""(?<![\w.$])import\s+["']([^"']+)["']"""))  # the last: a side-effect `import "./x.css"`
+          re.compile(r"""(?<![\w.$])import\s+["']([^"']+)["']"""))
 
 
 def _strip(src: str) -> str:
-    """app/test-import-graph.ts stripComments: block comments that open a line, trailing //."""
     return _LINE.sub("", _BLOCK.sub(lambda m: re.sub(r"[^\n]", "", m.group(0)), src))
 
 
 def _resolve(spec: str, from_rel: str, app: Path) -> str | None:
-    """test-import-graph.ts resolveSpec, repo-relative; None for a package or a name no file has.
-    A `.js`/`.jsx`/`.mjs` specifier also names its TypeScript source (ESM style)."""
     if spec.startswith("@/"):
         base = spec[2:]
     elif spec.startswith(("./", "../")):
@@ -204,7 +185,6 @@ def _resolve(spec: str, from_rel: str, app: Path) -> str | None:
 
 
 def app_edges(app: Path = ROOT / "app") -> dict[str, list[str]]:
-    """{app file: [app files it imports]} over app/ now (node_modules, .next, public aside)."""
     edges: dict[str, list[str]] = {}
     for dirpath, dirnames, filenames in os.walk(app):
         dirnames[:] = [d for d in dirnames if d not in ("node_modules", "public") and not d.startswith(".")]
@@ -228,8 +208,6 @@ def _rev(ref: str) -> str | None:
 
 
 def base_of(since: str | None) -> tuple[str | None, str]:
-    """(base sha, how it was chosen) for --changed: `git merge-base HEAD origin/main` (else `main`) by
-    default, `--since=<ref>` when given; (None, "--since=map") diffs each entry against its own sha."""
     if since == "map":
         return None, "--since=map"
     if since:
@@ -246,9 +224,6 @@ def base_of(since: str | None) -> tuple[str | None, str]:
 
 
 def _diff(base: str) -> tuple[list[str], dict]:
-    """(changed files, {file.py: {"hunks", "old" at base, "new" now}}): the tree now (uncommitted and
-    staged edits too) against `base`. --no-renames: a rename is its old path deleted (every line
-    touched) and its new path added."""
     changed = [f for f in git("diff", "--name-only", "-z", *DIFF, base, "--", *DIFF_ROOTS).split("\0") if f]
     out = {}
     for f, hs in selection.parse_hunks(git("diff", "-U0", *DIFF, base, "--", *DIFF_ROOTS)).items():
@@ -265,7 +240,6 @@ def _show(sha: str, f: str) -> str | None:
 
 
 def _names(src: str | None) -> set[str] | None:
-    """Qualified function names of `src` (None: no file, or it does not parse)."""
     try:
         return {q for q, *_ in selection.defs(src)} if src is not None else None
     except SyntaxError:
@@ -273,7 +247,6 @@ def _names(src: str | None) -> set[str] | None:
 
 
 def _unjudgeable(sha: str, base: str | None, f: str) -> bool:
-    """A Python change the map's tree could not have seen, but the current tree can load."""
     return (f.endswith(".py") and f.startswith(selection.PY_ROOTS)
             and not f.startswith(selection.SCEN)
             and ((base is not None and _show(base, f) is not None) or f.startswith(DYNAMIC_LOAD))
@@ -281,7 +254,6 @@ def _unjudgeable(sha: str, base: str | None, f: str) -> bool:
 
 
 def map_ages(doc: dict) -> dict[str, int | None]:
-    """Commits behind HEAD per map sha; None means the sha diverged or is unavailable."""
     ages = {}
     for sha in {e.get("sha") for e in doc.get("scenarios", {}).values() if e.get("sha")}:
         ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", sha, "HEAD"], cwd=ROOT,
@@ -291,9 +263,6 @@ def map_ages(doc: dict) -> dict[str, int | None]:
 
 
 def gather(doc: dict, since: str | None = None) -> dict:
-    """Everything selection.pick needs, keyed by map sha: the diff of the tree now against the base
-    (base_of), and per entry sha the function names its files had then ("map_known": a function the
-    sweep could not have seen is module level). --since=map: each sha is its own base."""
     shas = sorted({e.get("sha") for e in doc.get("scenarios", {}).values() if e.get("sha")})
     base, how = base_of(since)
     hunks, changed, map_missing = {}, {}, {}
@@ -316,8 +285,6 @@ def gather(doc: dict, since: str | None = None) -> dict:
 
 
 def pick_changed(doc: dict, since: str | None = None) -> tuple[dict, dict, list[str]]:
-    """selection.pick over gather(doc, since): what --changed and the nightly's `all` phase pick.
-    -> (gather's dict, {scenario: [(tier, reason)]}, [warnings])."""
     g = gather(doc, since)
     picks, warns = selection.pick(doc, g["hunks"], g["app_edges"], g["changed"], g["untracked"], g["deleted"],
                                   g["map_missing"])

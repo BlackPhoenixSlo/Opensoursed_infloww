@@ -1,6 +1,5 @@
 "use client";
 
-/** /growth/bio-pages/[profileId]: one bio page's editor (Growth → Bio pages → a row). */
 import { use } from "react";
 
 import { BioEditor } from "@/components/growth/bio/BioEditor";

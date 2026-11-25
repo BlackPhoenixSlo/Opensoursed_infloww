@@ -1,21 +1,3 @@
-"""service/vault_ai_vision_decide.py — the pure decisions of the vision passes.
-
-No DB, no IO, no LLM: what `vault_ai_vision` hands a model answer / a row to and
-gets a verdict back. Table-tested in tests/test_vault_ai_vision_decide.py.
-
-  describe          _frames_for_duration, _parse_describe, next_attempt,
-                    describe_answer, prompt_variant, build_describe_update,
-                    with_jev
-  selection         live_describable (the base every vision sweep walks) and
-                    describe_selection — the ONE predicate both the describe-all
-                    sweep and its plan count read, so the two cannot drift.
-  coverage          DESCRIBE_TARGET, is_terminal, coverage — how far a Creator
-                    is from its Describe target.
-  order             priority_order — the ONE walk order of both sweeps;
-                    rail_folder_ids — its folder rank from the cached OF rail.
-  reuse             reuse_plan, build_copy_update, build_flags_copy — one
-                    vision answer shared across a duplicate set.
-"""
 from __future__ import annotations
 
 import json
@@ -37,43 +19,15 @@ from db.models import VaultItem
 from vault_of_folders_decide import parse_folder_ids
 
 
-# Frames per clip. V1 shipped a hardcoded 3 for a clip of ANY length (a 17-minute
-# video was summarised from 3 stills); the bake-off's other real lever was
-# raising this to 9 (`vault_frames.DESCRIBE_FRAMES`). Photos always send 1.
-#
-# …but a flat count is wrong in both directions: 12 stills of a 3-second clip is
-# 4× the tokens for the same one moment, and 9 stills of a 17-minute session
-# still misses most of it. Measured 2026-07-21 (`_probe_frames_vs_duration.py`,
-# 6 long clips × 4 counts × 3 repeats, scored as coverage of the pooled union of
-# every finding across all runs — NOT against one reference run, which is
-# noise):
-#
-#     frames    coverage    mean beats
-#          3         38%           1.9
-#          6         49%           2.7
-#          9         47%           2.9
-#         12         55%           3.7
-#
-# 3→6 is a real jump; 6→9 is flat (inside run-to-run variance); 9→12 gains ~8pp
-# and 27% more `beats`, which IS the progression a long clip needs. `beats` is
-# the cleanest signal because it rises monotonically with frame count.
-#
-# 12 is the ceiling: `server._STORYBOARD_FRAMES = 12`, already extracted and
-# cached, so using all of them costs nothing but vision tokens.
-#
-# CAVEAT worth remembering: no frame count exceeds ~55% coverage, and two
-# IDENTICAL 12-frame runs agree only ~75% with each other. A single describe
-# pass on a long clip is inherently lossy — for `epic` clips, two passes unioned
-# would gain more than any frame-count change.
+# Measured: 3->6 frames is a real jump, 6->9 flat, 9->12 adds ~8pp coverage; 12 = server._STORYBOARD_FRAMES ceiling (already extracted).
 _FRAME_LADDER: tuple[tuple[int, int], ...] = (
-    (30, 6),      # < 30s   — one moment; more stills just re-see it
-    (180, 9),     # < 3min
+    (30, 6),
+    (180, 9),
 )
-_FRAME_LADDER_MAX = 12  # >= 3min, and the storyboard ceiling
+_FRAME_LADDER_MAX = 12
 
 
 def _frames_for_duration(seconds: int | None) -> int:
-    """How many stills a clip of this length gets (see `_FRAME_LADDER`)."""
     s = int(seconds or 0)
     for limit, n in _FRAME_LADDER:
         if s < limit:
@@ -91,7 +45,6 @@ def _parse_describe(text: str) -> dict[str, Any]:
         return {}
 
 
-# The model a refused/blank describe escalates to — once.
 ESCALATION_MODEL = "qwen3-vl-235b"
 
 
@@ -106,21 +59,13 @@ def next_attempt(model: str, refused_or_blank: bool) -> str | None:
     return ESCALATION_MODEL
 
 
-# What a vision model can be shown. An audio file has no frame, so sweeping it is
-# not thoroughness — it is a row of guaranteed failure per pass (591 of them on
-# two accounts), and the 45 whose signatures were still valid had their MP3 bytes
-# posted to a vision endpoint as an image, which is what `describe_status =
-# 'failed'` recorded. The flags sweep has always filtered this way; the describe
-# sweep and its cost estimate never did, so the estimate quoted a total the sweep
-# could not meet.
-_DESCRIBABLE_KINDS = vault_jev_rules.JEV_KINDS   # one definition: every describable kind is a Jev kind (W30 F17)
+# An audio file has no frame: sweeping it failed every pass, and its MP3 bytes were posted to a vision endpoint as an image.
+_DESCRIBABLE_KINDS = vault_jev_rules.JEV_KINDS
 
 DescribeMode = Literal["force", "restage", "undescribed"]
 
 
 def live_describable(account_id: str) -> ColumnElement[bool]:
-    """The rows of `account_id` any vision sweep (describe AND flags) may visit:
-    still on OF and a kind a vision model can be shown."""
     return and_(VaultItem.account_id == account_id,
                 VaultItem.removed_at.is_(None),
                 VaultItem.kind.in_(_DESCRIBABLE_KINDS))
@@ -162,30 +107,18 @@ def describe_selection(account_id: str, mode: DescribeMode,
                     | (key("$._prompt_version") != pv)
                     | (VaultItem.kind.in_(JEV_KINDS) & ~jev_fed))
     if mode == "undescribed":
-        # Everything not already described — INCLUDING blocked_drm, with
-        # no cool-off. This is a button a person pressed, having just read the
-        # count on it, and the one thing it must do is attempt what that
-        # count promised. Honouring the cooldown made it silently skip
-        # 1,777 of the 1,777 items it offered to describe — the operator
-        # clicks, watches nothing happen, and has no way to find out why.
-        # A wasted fetch is cheaper than a control nobody can trust.
+        # Includes blocked_drm with no cool-off: a button pressed on a shown count must attempt what that count promised.
         return and_(base, VaultItem.describe_status.isnot("described"))
     raise ValueError(f"unknown describe mode: {mode!r}")
 
 
-# ── Describe coverage (describe-all `target`, its plan route, the Fill plan) ──
 
-# The Describe target every caller sends (Fill plan, the button, the Rollout driver).
 DESCRIBE_TARGET = 1000
 
-# A last attempt no retry fixes. `failed` / `fetch_failed` are retryable, so not here.
 TERMINAL_STATUSES = frozenset({"refused", "blocked_drm", "gone"})
 
 
 def is_terminal(describe_status: str | None, fields: Mapping[str, Any] | None) -> bool:
-    """A Terminal failure: a not-described Describable item whose status is `refused`, `blocked_drm` or
-    `gone`, or whose `_jev` the Jev pass gave up on (`vault_jev_rules.retries_spent`: the sweeps stop fetching it).
-    The non-terminal hold has status `fetch_failed`: retried."""
     if describe_status == "described":
         return False
     if describe_status in TERMINAL_STATUSES:
@@ -194,10 +127,6 @@ def is_terminal(describe_status: str | None, fields: Mapping[str, Any] | None) -
 
 
 def coverage(rows: Iterable[tuple[str | None, Mapping[str, Any] | None]], target: int) -> dict[str, int]:
-    """How far a Creator is from `target`, over (describe_status, ai_fields) of every Describable item
-    (`live_describable`): goal = min(target, describable) − terminal (a skipped item fills its slot, owner
-    2026-11-23), remaining = max(0, goal − described).
-    The ONE predicate describe-all, its plan route and the Fill plan read."""
     describable = described = terminal = 0
     for status, fields in rows:
         describable += 1
@@ -205,14 +134,14 @@ def coverage(rows: Iterable[tuple[str | None, Mapping[str, Any] | None]], target
             described += 1
         elif is_terminal(status, fields):
             terminal += 1
+    # A terminal (skipped) item fills its slot, owner decision.
     goal = max(0, min(int(target), describable) - terminal)
     return {"target": int(target), "describable": describable, "described": described,
             "terminal": terminal, "goal": goal, "remaining": max(0, goal - described)}
 
 
 def describe_answer(data: Mapping[str, Any]) -> dict[str, Any]:
-    """The headline fields of one describe answer, as stored and as returned."""
-    tier = data.get("explicitness")  # sfw|suggestive|explicit|hardcore
+    tier = data.get("explicitness")
     return {
         "description": str(data.get("description") or ""),
         "tags": [str(t).lower().strip() for t in (data.get("tags") or [])
@@ -224,10 +153,6 @@ def describe_answer(data: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def with_jev(res: Mapping[str, Any], jev_res: Mapping[str, Any] | None) -> dict[str, Any]:
-    """`res` (a describe / flags result) with the Jev pass that ran before it
-    folded in: its spend added to `cost_millicents` (the sweep sums it) and its
-    outcome as `jev_status` / `jev_lane5` / `jev_cost_millicents`. No Jev
-    result (another kind, or its `_jev` already current): `res` unchanged."""
     out = dict(res)
     if not jev_res:
         return out
@@ -237,13 +162,12 @@ def with_jev(res: Mapping[str, Any], jev_res: Mapping[str, Any] | None) -> dict[
     out["jev_cost_millicents"] = jc
     if jev_res.get("lane5"):
         out["jev_lane5"] = jev_res["lane5"]
-    if jev_res.get("notice"):   # a sweep-wide line (the Jev cap), read by `vault_sweep.run`
+    if jev_res.get("notice"):
         out["notice"] = jev_res["notice"]
     return out
 
 
 def prompt_variant(prompt_version: Any) -> str:
-    """The describe prompt variant: "v1" only when asked for exactly, else "v2"."""
     return "v1" if str(prompt_version) == "v1" else "v2"
 
 
@@ -252,16 +176,8 @@ def build_describe_update(is_video: bool, data: Mapping[str, Any], *,
                           overrides: Mapping[str, Any], used_model: str,
                           n_frames: int, pv: str, fixable: Collection[str],
                           call_id: int | None, now: datetime) -> dict[str, Any]:
-    """The `VaultItem` column values a successful describe writes.
-
-    `prev_ai` / `overrides` are the row's current `ai_fields_json` /
-    `operator_overrides_json`; `fixable` is `vault_ai_fix.FIXABLE`."""
     ans = describe_answer(data)
     desc, tags, sellable = ans["description"], ans["tags"], ans["sellable"]
-    # Fold the V2 taxonomy into the local search blob too, so a search for
-    # "pulled_aside" or "solo_toy" hits even though those never appear in the
-    # prose. `beats` carries the clip's progression, which is often the only
-    # place a mid-clip act is named at all.
     v2_terms: list[str] = []
     for key in ("acts", "body_focus", "toys", "clothing_items", "beats"):
         v2_terms += [str(x) for x in (data.get(key) or []) if str(x).strip()]
@@ -271,33 +187,12 @@ def build_describe_update(is_video: bool, data: Mapping[str, Any], *,
             v2_terms.append(str(data[key]))
     search_text = " ".join([desc, *tags, *v2_terms]).lower()
 
-    # Stamp WHICH variant produced this row: a v1 row is a candidate for a later
-    # v2 re-scan, and without the stamp "already described" is ambiguous.
     out = {**data, "_prompt_version": prompt_variant(pv),
            "_frames": n_frames}
 
-    # `ai_fields_json` is written whole from `data`, which holds ONLY what the
-    # describe prompt answers — so re-describing an item used to silently drop
-    # everything the OTHER passes had put in the same column:
-    #
-    #   * the exposure flags. A described item came back with no `_flags_v` at
-    #     all, the gated lanes emptied, and the flags pass had to be run again.
-    #   * the dispute corrections. There are TWO override mechanisms and they
-    #     differ: `edit_item` leaves this blob as the model's raw answer and
-    #     wins at READ time through `effective_value` (which is why the fresh
-    #     description below is expected to land here), while `vault_ai_fix`
-    #     writes INTO the blob — its readers, the lanes and `contradictions`,
-    #     go straight to `ai_fields_json` and never call `effective_value`. So
-    #     only the `FIXABLE` half is restored here; carrying the rest would
-    #     overwrite the model's answer with the operator's and erase the
-    #     evidence that a re-run happened at all.
-    #
-    # The flags are a different reading of the SAME image, so they stay valid
-    # across a re-describe. A locked dispute fix outranks model and carried alike.
-    # `data` is fresh, so a `_copied_from` marker is gone with it: the
-    # description is this row's own now.
     carry_flags(out, prev_ai, exact=False)
-    _put_jev(out, prev_ai.get(JEV_KEY))  # Jev read the same image too
+    # ai_fields_json is written whole from `data` (describe answers only): re-describe must carry the flags, _jev and FIXABLE dispute fixes or they vanish; edit_item overrides win at read time instead.
+    _put_jev(out, prev_ai.get(JEV_KEY))
     _apply_locked_fixes(out, overrides, locked, fixable)
     vals: dict[str, Any] = {
         "describe_status": "described",
@@ -309,45 +204,30 @@ def build_describe_update(is_video: bool, data: Mapping[str, Any], *,
     }
     _put_unlocked(vals, locked, {
         "tip_vault_flag": sellable, "tags": json.dumps(tags),
-        # Beside a Jev reading the column follows the blob's (operator-fixed)
-        # `explicitness` exactly as the Jev pass writes it, or the two flip it.
         vault_jev_flags.TIER_COLUMN: vault_jev_flags.column_tier(out, ans["explicitness_tier"], locked),
         ("video_description" if is_video else "description"): desc,
         "search_text": search_text})
     return vals
 
 
-# ── The flags blob + locked columns (describe, flags, copies) ───────
 
-COPY_MARK = "_copied_from"          # describe + flags copied from that media
-FLAGS_COPY_MARK = "_flags_copied_from"  # flags only copied from that media
+COPY_MARK = "_copied_from"
+FLAGS_COPY_MARK = "_flags_copied_from"
 
-# Everything in `ai_fields_json` that belongs to the FLAGS pass rather than to
-# describe: the answers, the garments, its stamps, its failure record and the
-# provenance of a copied blob. One list, so a describe re-run, a flags copy and
-# a describe copy carry exactly the same thing — `_flags_status` means the same
-# on every row however the row got its flags.
 FLAGS_BLOB_KEYS: tuple[str, ...] = (
     *vault_ai_brief.FLAG_KEYS, *vault_ai_brief.OVER_KEYS.values(),
     "_flags_v", "_flags_model", "_flags_frames", "_flags_arc",
     "_flags_status", "_flags_failed_at", "_flags_error", FLAGS_COPY_MARK)
 
-# The Jev v8 answer (`vault_jev`): its own pass, carried by hand rather than
-# through `FLAGS_BLOB_KEYS` — an exact flags copy from a source that has no
-# `_jev` must not wipe the copy's own paid answer. Defined in `vault_jev_rules`.
 JEV_KEY = vault_jev_rules.JEV_KEY
 JEV_KINDS = vault_jev_rules.JEV_KINDS
 
 
+# An exact flags copy from a source with no `_jev` must not wipe the copy's own paid answer.
 def jev_for_copy(src_ai: Mapping[str, Any], own_ai: Mapping[str, Any],
                  picks: Mapping[str, Any] | None = None) -> Any:
-    """The `_jev` a duplicate should carry: the source's when it is a good
-    answer (`status == "ok"`, not a clip the Jev pass gave up on: `vault_jev_rules.retries_spent`), under the copy's own
-    operator picks (`vault_jev_manual`; the source's `at` kept, so a copied describe still
-    matches it), else the copy's own (or None: none at all)."""
     src = src_ai.get(JEV_KEY)
     if isinstance(src, dict) and src.get("status") == "ok" and not vault_jev_rules.retries_spent({JEV_KEY: src}):
-        # the source's own picks are not the copy's: a copy with none holds the source's AI reading
         return vault_jev_manual.overlay(src, picks or {}, vault_jev_manual.kind_of(src))
     return own_ai.get(JEV_KEY)
 
@@ -359,19 +239,11 @@ def _put_jev(out: dict[str, Any], jev: Any) -> None:
         out[JEV_KEY] = jev
 
 
-# Keys in `ai_fields_json` that are about the ROW, not the picture — an
-# operator's grading verdict (`vault_ai_fix.GRADE_KEY`) was given on this item.
 ROW_OWN_KEYS: tuple[str, ...] = ("_graded",)
 
 
 def carry_flags(dst: dict[str, Any], src: Mapping[str, Any], *,
                 locked: Collection[str] = (), exact: bool) -> dict[str, Any]:
-    """Put `src`'s flags blob (`FLAGS_BLOB_KEYS`) on `dst`, in place.
-
-    `exact`: `dst`'s flags become exactly `src`'s (a key `src` lacks is
-    dropped) — a copy. Not exact: only keys `src` has are written — a
-    describe re-run keeping the row's own earlier flags. A `locked` key (an
-    operator fix) keeps `dst`'s value either way."""
     for key in FLAGS_BLOB_KEYS:
         if key in locked:
             continue
@@ -384,8 +256,6 @@ def carry_flags(dst: dict[str, Any], src: Mapping[str, Any], *,
 
 def _apply_locked_fixes(out: dict[str, Any], overrides: Mapping[str, Any],
                         locked: Collection[str], fixable: Collection[str]) -> None:
-    """Restore the row's locked dispute fixes (`vault_ai_fix` writes INTO the
-    blob, see `build_describe_update`) onto a freshly-written blob."""
     for key, val in overrides.items():
         if key not in locked or key not in fixable:
             continue
@@ -395,7 +265,6 @@ def _apply_locked_fixes(out: dict[str, Any], overrides: Mapping[str, Any],
             out[key] = val
 
 
-# Column → the lock that guards it (`locked_fields_json` names effective fields).
 _COLUMN_LOCK = {"tip_vault_flag": "tip_vault_flag", "tags": "tags",
                 "explicitness_tier": "explicitness_tier", "description": "description",
                 "video_description": "description", "search_text": "search_text"}
@@ -403,24 +272,19 @@ _COLUMN_LOCK = {"tip_vault_flag": "tip_vault_flag", "tags": "tags",
 
 def _put_unlocked(vals: dict[str, Any], locked: Collection[str],
                   cols: Mapping[str, Any]) -> None:
-    """Human edits win: write each of `cols` unless the operator locked it."""
     for col, v in cols.items():
         if _COLUMN_LOCK[col] not in locked:
             vals[col] = v
 
 
-# ── Walk order ──────────────────────────────────────────────────────
 
-# Collect's round (`vault_collect_plan`), in items: one source, so Describe's order cannot drift from it (W30 F16).
-PRIORITY_FOLD = vault_collect_plan.FOLD                                   # each round: the next `fold` folders,
-PRIORITY_TOP = vault_collect_plan.TOP_PAGES * vault_collect_plan.PAGE     # then the next `top` newest,
-PRIORITY_BOTTOM = vault_collect_plan.BOTTOM_PAGES * vault_collect_plan.PAGE  # then the next `bottom` oldest
+# Collect's round, in items: one source so Describe's order cannot drift from it.
+PRIORITY_FOLD = vault_collect_plan.FOLD
+PRIORITY_TOP = vault_collect_plan.TOP_PAGES * vault_collect_plan.PAGE
+PRIORITY_BOTTOM = vault_collect_plan.BOTTOM_PAGES * vault_collect_plan.PAGE
 
 
 def rail_folder_ids(pages: Iterable[Mapping[str, Any] | None]) -> list[int]:
-    """The OF folder rail's order, from cached /vault/lists pages (in offset
-    order): custom folders that have media — the ones `vault_collect.hot_folders`
-    pages. Bad / missing pages and ids are skipped; each id once."""
     out: list[int] = []
     for page in pages:
         for f in (page or {}).get("list") or []:
@@ -439,33 +303,17 @@ def priority_order(rows: Iterable[tuple[int, datetime | None, str | None]],
                    folder_rank: Sequence[int] = (), *,
                    fold: int = PRIORITY_FOLD, top: int = PRIORITY_TOP,
                    bottom: int = PRIORITY_BOTTOM) -> list[int]:
-    """The order every vision sweep walks a vault, over (media_id, created_at,
-    of_folder_ids) rows — the account's WHOLE live describable set, so a rank is
-    a property of the item, not of what one sweep still has to do (a capped run
-    must not promote the next newest over the folders on the next press).
-
-    One fixed round, repeated until every item is taken:
-      a. the next `fold` folders by rank, each one's items newest first
-      b. the next `top` newest not yet taken
-      c. the next `bottom` oldest not yet taken
-
-    Folder rank: `folder_rank` (the OF rail's order, `rail_folder_ids`) first,
-    then folders seen on items but not in it, by their newest item desc; folders
-    with no item here are dropped. Newest = created_at desc, media_id desc.
-
-    Order decides what a cap or a restart cuts off, so the tail is what nobody
-    is sending. Each id appears once, at its first rank."""
     newest = sorted(list(rows), key=lambda r: (r[1] is not None, r[1] or datetime.min,
                                                int(r[0])), reverse=True)
     by_folder: dict[int, list[int]] = {}
-    for r in newest:   # newest first, so each folder's list is too
+    for r in newest:
         for fid in parse_folder_ids(r[2]):
             items = by_folder.setdefault(fid, [])
             if not items or items[-1] != int(r[0]):
                 items.append(int(r[0]))
     ranked = [f for f in dict.fromkeys(int(f) for f in folder_rank) if f in by_folder]
     cached = set(ranked)
-    ranked += [f for f in by_folder if f not in cached]   # dict order = newest item desc
+    ranked += [f for f in by_folder if f not in cached]
     ids = [int(r[0]) for r in newest]
     out: list[int] = []
     seen: set[int] = set()
@@ -477,7 +325,7 @@ def priority_order(rows: Iterable[tuple[int, datetime | None, str | None]],
         out.append(mid)
         return True
 
-    lo, hi = 0, len(ids) - 1   # next newest / next oldest candidate
+    lo, hi = 0, len(ids) - 1
     k = 1
     while len(out) < len(ids):
         if fold > 0:
@@ -501,16 +349,9 @@ def priority_order(rows: Iterable[tuple[int, datetime | None, str | None]],
     return out
 
 
-# ── Answer reuse across a duplicate set ─────────────────────────────
 
+# Followers are copied right after the leader's own call succeeds (never at the end), so a cap mid-sweep keeps every copy whose leader made it.
 class ReusePlan(NamedTuple):
-    """How one sweep spends calls on duplicate sets (`vault_dupes.reuse_groups`).
-
-    copy_now   target -> a member already done before this sweep: copied at
-               the start, no call.
-    followers  leader -> the walked members copied right after the leader's
-               own call succeeds (never at the end, so a cap mid-sweep keeps
-               every copy whose leader made it)."""
 
     copy_now: dict[int, int]
     followers: dict[int, list[int]]
@@ -521,18 +362,6 @@ class ReusePlan(NamedTuple):
 
 def reuse_plan(groups: Iterable[Sequence[int]], order: Sequence[int],
                done: Collection[int], bad: Collection[int] = ()) -> ReusePlan:
-    """`order` is the sweep's walk (priority order); `done` the members whose
-    answer is already current and may be copied from; `bad` members whose last
-    attempt failed (picked as leader last, so one broken media does not starve
-    its whole set on every press).
-
-    A set with a done member outside the walk copies from it. Otherwise the
-    walked member ranked best in `order` (done before not, good before bad) is
-    the ONE call and the rest follow it — a done member walked anyway (a forced
-    flags sweep walks everything) leads, so a photo whose `_jev` is current
-    costs nothing and its set copies it instead of paying Jev again. Not the
-    oldest — which member is the cluster's seed shifts with collect order, the
-    priority does not."""
     rank = {int(m): i for i, m in enumerate(order)}
     copy_now: dict[int, int] = {}
     followers: dict[int, list[int]] = {}
@@ -551,11 +380,6 @@ def reuse_plan(groups: Iterable[Sequence[int]], order: Sequence[int],
 
 
 def lead_plan(groups: Iterable[Sequence[int]], leads: Sequence[int]) -> ReusePlan:
-    """The `ReusePlan` of a NAMED run (the single describe, flags-all `media_ids`):
-    every lead gets its own call, even one whose set already has an answer (the
-    operator asked for that item), and every other member of its set follows
-    its first lead — answered or not, as a forced sweep's riders do — so the set
-    keeps one answer (each copy under its own locks / picks). No `copy_now`."""
     want = list(dict.fromkeys(int(m) for m in leads))
     named = set(want)
     followers: dict[int, list[int]] = {}
@@ -571,14 +395,9 @@ def lead_plan(groups: Iterable[Sequence[int]], leads: Sequence[int]) -> ReusePla
 def build_flags_copy(prev: Mapping[str, Any], src_ai: Mapping[str, Any], *,
                      locked: Collection[str], src_id: int,
                      picks: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """`prev` (the copy's ai_fields) with its flags blob replaced by the
-    source's, stamped `FLAGS_COPY_MARK`. Enrichment only, like a flags run;
-    an operator-locked flag or garment stays the copy's own. A carried `_jev`
-    that reads re-maps the copy (`vault_jev_flags.apply`: its lane fields and
-    garment names too, from its own `clothing_items`), as the Jev pass would."""
     fields = carry_flags(dict(prev), src_ai, locked=locked, exact=True)
     for dead in ("genitals_covered", "pussy_covered", "breasts_covered"):
-        fields.pop(dead, None)  # superseded flag shapes
+        fields.pop(dead, None)
     _put_jev(fields, jev_for_copy(src_ai, prev, picks))
     fields = vault_jev_flags.apply(fields, fields.get(JEV_KEY), locked)
     fields[FLAGS_COPY_MARK] = int(src_id)
@@ -593,26 +412,16 @@ def build_copy_update(src: Mapping[str, Any], *, prev_ai: Mapping[str, Any],
                       locked: Collection[str], overrides: Mapping[str, Any],
                       fixable: Collection[str], src_id: int,
                       now: datetime) -> dict[str, Any]:
-    """The `VaultItem` column values that make a duplicate carry its source's
-    describe + flags answer without a call: the columns `build_describe_update`
-    writes, taken from `src` (the source row's columns), under the copy's OWN
-    locks and locked dispute fixes. The source's row-own keys (`ROW_OWN_KEYS`)
-    are not the copy's; the copy keeps its own. A source never flagged leaves
-    the copy's own flags. Stamped `COPY_MARK` — how a later re-describe of the
-    source finds its copies."""
     src_ai = json.loads(src.get("ai_fields_json") or "{}") or {}
     skip = {*FLAGS_BLOB_KEYS, *ROW_OWN_KEYS, COPY_MARK, JEV_KEY}
     out = {k: v for k, v in src_ai.items() if k not in skip}
     out.update({k: prev_ai[k] for k in ROW_OWN_KEYS if k in prev_ai})
     carry_flags(out, prev_ai, exact=False)
     _put_jev(out, jev_for_copy(src_ai, prev_ai, vault_jev_manual.stored(overrides)))
+    # The source's own flags marker names some other item: reuse is never transitive, so it must not ride along.
     if "_flags_v" in src_ai:
         carry_flags(out, src_ai, locked=locked, exact=True)
-        # The flags came from `src_id` itself, which COPY_MARK names. The
-        # source's own flags marker names some other item, so it must not
-        # ride along (reuse is never transitive).
         out.pop(FLAGS_COPY_MARK, None)
-    # the copy's `_jev` (its own picks laid over the source's reading) decides its flags, as `build_flags_copy`
     out = vault_jev_flags.apply(out, out.get(JEV_KEY), locked)
     out[COPY_MARK] = int(src_id)
     _apply_locked_fixes(out, overrides, locked, fixable)
@@ -632,7 +441,6 @@ def build_copy_update(src: Mapping[str, Any], *, prev_ai: Mapping[str, Any],
 
 
 def flags_current(fields: Mapping[str, Any], version: int) -> bool:
-    """Flags on this blob answer prompt `version` — nothing for a sweep to do."""
     return (int(fields.get("_flags_v") or 0) >= version
             and vault_ai_brief.flags_known(dict(fields)))
 

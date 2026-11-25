@@ -1,10 +1,3 @@
-/**
- * PreferencesTab — the Your Preferences Panel (docs/spec/settings-tabs/phase-01-account-preferences.md).
- *
- * Rendered with the relay mocked at `fetch` by URL: the stub serves the
- * `preferences` Settings blob, so every save assertion is an assertion about
- * the wire.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -14,7 +7,6 @@ import PreferencesTab from "@/components/settings/PreferencesTab";
 type Call = { method: string; url: string; body: unknown };
 
 let fetchMock: ReturnType<typeof vi.fn>;
-/** What GET /admin/settings/preferences answers. */
 let getReply: () => Response;
 
 function calls(): Call[] {
@@ -46,7 +38,6 @@ afterEach(() => {
 });
 
 const save = () => screen.getByRole("button", { name: /save/i });
-/** The labelled select's option texts: open its listbox with Enter, read it, close it with Escape. */
 const optionTexts = (label: string) => {
   const select = screen.getByLabelText(label);
   fireEvent.keyDown(select, { key: "Enter" });
@@ -54,7 +45,6 @@ const optionTexts = (label: string) => {
   fireEvent.keyDown(screen.queryByRole("textbox", { name: "Search" }) ?? select, { key: "Escape" });
   return texts;
 };
-/** Open the labelled select with Enter and pick the option named `name`. */
 const pick = (label: string, name: string) => {
   fireEvent.keyDown(screen.getByLabelText(label), { key: "Enter" });
   fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name }));

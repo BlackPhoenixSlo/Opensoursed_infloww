@@ -4,6 +4,7 @@
 *.jpeg
 *.har
 *.json
+!fixtures/*.json
 sessions/
 secrets*
 

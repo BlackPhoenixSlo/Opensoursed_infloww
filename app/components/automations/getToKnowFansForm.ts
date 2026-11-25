@@ -1,35 +1,16 @@
-/**
- * Get to know fans' rule settings as a pure reducer: the draft of the rule payload the page edits (its Human style
- * boxes: HumanStyleBlock.tsx) and the draft the last Save sent.
- *
- *   • The draft is seeded once per creator from the rule's payload, else (no rule yet) the catalog defaults
- *     (`initState`); a refetch, or the switch creating the rule, never re-seeds it.
- *   • Numbers stay as typed (a min of 3 would fight every keystroke); `invalidReason` checks them before Save.
- *   • The state is the draft plus the draft the last Save sent (sentDraft.ts: `unsaved` holds "Saved" off over an
- *     edit made while that save was in flight).
- *   • `buildPayload` sends the rule's payload back with only this page's fields changed (the PATCH replaces it).
- *   • `ruleSave`: a PATCH of the rule, or with none yet a create PARKED (`is_enabled: false`), so a Save never turns
- *     the automation on; only the switch does.
- */
-
 import { sentState, withSent, type Saved, type SentState } from "@/components/automations/sentDraft";
 import type { AutomationKind, AutomationRule, RuleDraft, RulePatch } from "@/hooks/useAutomations";
 import type { VaultMedia } from "@/lib/relay";
 
 export interface GtkfDraft {
-  /** `max_fan_messages`, as typed. */
   cutoff: string;
-  /** `closing_ppv_media_ids`: saved ids render as plain tiles; tiles picked this session keep their thumbnails. */
   media: VaultMedia[];
-  /** `closing_ppv_text`. */
   caption: string;
-  /** `closing_ppv_price_cents`, in dollars as typed. */
   price: string;
 }
 
 export type GtkfState = SentState<GtkfDraft>;
 
-/** An edit of one field. */
 export type GtkfEdit = { [K in keyof GtkfDraft]: { type: "field"; k: K; v: GtkfDraft[K] } }[keyof GtkfDraft];
 
 export type GtkfAction = GtkfEdit | Saved;
@@ -39,10 +20,8 @@ export interface RuleLimits { cutMin: number; cutMax: number; priceMin: number; 
 const toCents = (dollars: number) => Math.round(dollars * 100);
 const toDollars = (cents: number) => Math.round(cents) / 100;
 
-/** A knob's catalog default (automation_rules_api._CATALOG, the value the engine reads when the key is absent). */
 const knobOf = (meta: AutomationKind, key: string) => meta.knobs.find((k) => k.key === key);
 
-/** The bounds of the cutoff and the price (dollars), from the catalog. */
 export function limitsOf(meta: AutomationKind): RuleLimits {
   const cut = knobOf(meta, "max_fan_messages");
   const price = knobOf(meta, "closing_ppv_price_cents");
@@ -63,7 +42,6 @@ export function initState(stored: Record<string, unknown> | undefined, meta: Aut
   });
 }
 
-/** Why Save is refused, or null. */
 export function invalidReason(d: GtkfDraft, l: RuleLimits): string | null {
   const cutoffN = Number(d.cutoff);
   const priceN = Number(d.price);
@@ -74,7 +52,7 @@ export function invalidReason(d: GtkfDraft, l: RuleLimits): string | null {
   return null;
 }
 
-/** The PATCH payload: the rule's payload with this page's fields set from the draft. */
+// The PATCH replaces the payload, so send the stored one back with only this page's fields changed.
 export function buildPayload(d: GtkfDraft, payload: Record<string, unknown>): Record<string, unknown> {
   return {
     ...payload,
@@ -85,10 +63,9 @@ export function buildPayload(d: GtkfDraft, payload: Record<string, unknown>): Re
   };
 }
 
-/** What Save sends: the rule's PATCH, or (no rule yet) a parked create with the name and cadence the switch's create
- *  would give it (automation_rules_api.ensure_kind_rule `_new_row`), so switching it on later just wakes it. */
 export type RuleSave = { id: number; patch: RulePatch } | { create: RuleDraft };
 
+// A Save with no rule yet creates it parked, so Save never turns the automation on.
 export function ruleSave(d: GtkfDraft, rule: AutomationRule | null, meta: AutomationKind, accountId: string): RuleSave {
   if (rule) return { id: rule.id, patch: { payload: buildPayload(d, rule.payload ?? {}) } };
   return { create: {

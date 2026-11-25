@@ -1,10 +1,3 @@
-/**
- * NudgeOnlineTab's kept draft (lib/pendingDraft): a tab closed mid-save gets
- * its edits back on reopen until a PUT acks them; the ack drops the stash even
- * after the tab unmounted, unless an edit typed during the PUT replaced it.
- * Drives the real component + react-query; only the relay wire and the account
- * list are faked (as in NudgeOnlineTab.refetch.test.tsx).
- */
 import { afterEach, beforeAll, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider, notifyManager } from "@tanstack/react-query";
@@ -46,7 +39,6 @@ function serve() {
   });
 }
 
-/** The next PUT waits for `settle()`; `ok` false = it fails (nothing stored). */
 function holdPut(ok = true) {
   let release!: () => void;
   const gate = new Promise<void>((r) => { release = r; });
@@ -98,7 +90,6 @@ describe("NudgeOnlineTab's kept draft", () => {
 
     await release();
     await waitFor(() => expect(kept()).toBeNull());
-    // The cache holds the PUT's echo, never the pre-PUT config, once acked.
     expect(qc.getQueryData<{ config: Cfg }>(["nudge-config", A])?.config.delay_minutes).toBe(9);
   });
 
@@ -128,7 +119,7 @@ describe("NudgeOnlineTab's kept draft", () => {
     fireEvent.click(saveButton());
     await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(1));
     fireEvent.change(jitter(), { target: { value: "1" } });
-    unmount(); // flushes the edit, on the pre-save base
+    unmount();
     expect(kept()?.base).toMatchObject({ delay_minutes: 4 });
     await release();
     await waitFor(() => expect(kept()?.base).toMatchObject({ delay_minutes: 9 }));

@@ -1,33 +1,3 @@
-"""Smart-list facts: the per-fan facts service/smart_list_rules reads that no other seeder writes.
-
-What the rules read (smart_lists_api `_load_normalised_fans` / `_ledger_facts` / `_snapshot`):
-  fans          lifetime_spend_cents, last_message_received_at, last_message_sent_at, subscribed_at,
-                subscription_expires_at, subscription_status, tags
-  transactions  account_id, fan_id, kind, amount_cents, status, occurred_at (spend, last purchase, idle)
-  subscriber_snapshot (status / renew / sub dates; none seeded: every fan falls back to its fan row)
-seed/fans.py writes lifetime_spend_cents, subscribed_at (whole days ago), subscription_expires_at,
-subscription_status ('active') and tags '[]'; seed/earnings.py the ledger rows. This seeder adds:
-
-  last message  fans.last_message_received_at / last_message_sent_at = the newest inbound / outbound
-                `messages` row of the fan's thread (seed/threads.py), as the transcoder keeps them
-  bound fans    per Creator in `creators` with 4+ fans without a ledger row, 4 of them get one
-                cleared tip (source 'ledger') of exactly LO, HI, LO - 1 and HI + 1 cents, so
-                `between [LO, HI]` and every threshold on LO / HI has a fan exactly on it and one just
-                past (the big Creators always qualify; a small one whose every fan has ledger rows gets none)
-  tags          `n` fans per Creator in `creators` tagged '["whale"]' (the fan panel's tag write)
-  expired       `n` fans per Creator in `creators` with subscription_status 'expired' and
-                subscription_expires_at 1..60 days ago (the roster crawl's write for a lapsed fan)
-  shared fans   one OF user subscribed to two of `creators` (fans' PK is (account_id, fan_id)): for each
-                creators[k] (k >= 1) with SHARED more ledger-free fans, SHARED of them get a cleared tip
-                of SHARED_TIP cents and the whale tag there, and a fans row (same fan_id) on creators[k - 1]:
-                identity and subscription columns copied, its own lifetime (copy_lifetime: inside
-                [V1_LO, V1_HI] iff the original's is not), the rest as seed/fans.py writes a new fan (no
-                ledger, tags, messages or AI facts). Rules on k - 1 must read k - 1's facts only.
-
-Randomness only from w.rng("smart_list_facts"); output in w.data["smart_list_facts"]
-({"creators": {id: {bounds, tagged, expired}}, "shared": [{fan_id, a, b}]}); the shared rows are
-appended to w.data["fans"][a]. SystemExit (INFRA) when no Creator got bound fans or no shared fan was
-seeded: the scenario's rows would test nothing there."""
 from __future__ import annotations
 
 import json
@@ -35,14 +5,13 @@ from datetime import timedelta
 
 from . import World, ts
 
-LO, HI = 12_345, 54_321          # cents
+LO, HI = 12_345, 54_321
 TAG = "whale"
-TX_ID_BASE = 8_900_000_000       # above seed/earnings.py's TX_ID_BASE band
-SHARED = 4                       # shared fans per Creator pair
-SHARED_TIP = 77_777              # cents, on the shared fan's original Creator only
-V1_LO, V1_HI = 999, 12_000      # the scenario's v1 lifetime `between` row
-# a shared fan's row on the second Creator: identity + subscription copied from the original's row, its own
-# lifetime (?), the rest seed/fans.py's new-fan values
+# above seed/earnings.py's TX_ID_BASE band
+TX_ID_BASE = 8_900_000_000
+SHARED = 4
+SHARED_TIP = 77_777
+V1_LO, V1_HI = 999, 12_000
 _COPIED = ("fan_id", "of_username", "of_display_name", "avatar_url", "is_name_real", "subscribed_at",
            "subscription_expires_at", "subscription_status", "is_followed", "source",
            "created_at", "updated_at")
@@ -56,7 +25,6 @@ _COPY = (f"INSERT INTO fans({', '.join((*_FRESH, *_COPIED))}) SELECT {', '.join(
 
 
 def copy_lifetime(orig: int) -> int:
-    """The copy's lifetime cents (a seed/fans.py value): on the other side of [V1_LO, V1_HI] from `orig`."""
     return 50_000 if V1_LO <= orig <= V1_HI else 2_500
 
 
@@ -84,7 +52,6 @@ def seed(w: World, creators: list[dict], *, n: int) -> dict:
         spent = {r[0] for r in con.execute(
             "SELECT DISTINCT fan_id FROM transactions WHERE account_id=? AND fan_id IS NOT NULL", (aid,))}
         free = [f for f in ids if f not in spent]
-        # a Creator whose every fan already has ledger rows (a small one) gets none
         bounds = dict(zip(rng.sample(free, 4), (LO, HI, LO - 1, HI + 1))) if len(free) >= 4 else {}
         for fid, cents in bounds.items():
             tip(aid, fid, cents)

@@ -20,8 +20,6 @@ class Read:
 
 
 def lag(truth: list[tuple[float, object]], observed: list[tuple[float, object]], end: float) -> list[float]:
-    """Per truth change: first time >= its t at which the tab shows that value or a later truth value
-    (a later value counts only once it is truth), else `end - t`."""
     truth, observed = sorted(truth, key=lambda x: x[0]), sorted(observed, key=lambda x: x[0])
     okeys = [o[0] for o in observed]
     out = []
@@ -43,7 +41,6 @@ def lag(truth: list[tuple[float, object]], observed: list[tuple[float, object]],
 
 
 def p95(xs: list[float]) -> float | None:
-    """Nearest-rank 95th percentile, unrounded; None when empty."""
     if not xs:
         return None
     return sorted(xs)[math.ceil(0.95 * len(xs)) - 1]
@@ -77,7 +74,6 @@ def group_reads(calls: list[dict]) -> list[Read]:
 
 
 def window_reads(calls: list[dict]) -> list[tuple[float, float, str]]:
-    """(start, end, Creator) of each page-0 chats window call (no `filter`, offset 0): one per window read."""
     out = []
     for c in calls:
         q = parse_qs(c.get("query") or "")
@@ -88,8 +84,6 @@ def window_reads(calls: list[dict]) -> list[tuple[float, float, str]]:
 
 def stale_answers(answers: list[tuple[float, float, str, float]],
                   reads: list[tuple[float, float, str]]) -> tuple[int, list[tuple[float, float, str, float]]]:
-    """`answers` (sent, answered, Creator, its fold's `as_of` in s): each judged against the newest window read of
-    its Creator that started at or before it was sent; stale when its fold predates that read. -> (judged, stale)."""
     starts: dict[str, list[float]] = {}
     for t0, _t, aid in sorted(reads):
         starts.setdefault(aid, []).append(t0)
@@ -106,8 +100,6 @@ def stale_answers(answers: list[tuple[float, float, str, float]],
 
 
 def dots(rows: dict[int, tuple[bool, bool]], events: list[tuple[float, int | None, bool]]) -> dict[int, bool]:
-    """Per-fan unread dot over `rows` {fan: (unread, muted)} after `events` (t, fan or None for every fan, unread)
-    in time order: unread and not Muted (FanRow's EdgeMarker)."""
     state = {f: u for f, (u, _m) in rows.items()}
     for _t, fan, u in sorted(events, key=lambda e: e[0]):
         for f in (list(state) if fan is None else [fan]):
@@ -136,7 +128,6 @@ def single_flight_ok(spans: list[tuple[float, float]]) -> tuple[bool, list[tuple
 
 
 def held_at(series: list[tuple[float, object]], t: float, default=None):
-    """The value a time-sorted `(t, value)` series holds at `t` (its last at or before), else `default`."""
     i = bisect.bisect_right(series, t, key=lambda x: x[0])
     return series[i - 1][1] if i else default
 
@@ -147,8 +138,6 @@ def both_circles(red_fans, amber_fans) -> set:
 
 def raw_leak(served: list[tuple[float, str, int]], raw: list[tuple[float, str, int]],
              red: list[tuple[float, str, int]]) -> list[tuple[float, str, int]]:
-    """Served numbers equal to OF's raw counter at an instant where raw != Red truth; unjudged where either is
-    still unknown."""
     def by_aid(rows):
         out: dict[str, tuple[list, list]] = {}
         for t, aid, v in sorted(rows, key=lambda r: r[0]):
@@ -170,27 +159,19 @@ def raw_leak(served: list[tuple[float, str, int]], raw: list[tuple[float, str, i
 
 
 def relay_marks(reads: list[dict]) -> list[dict]:
-    """Read-log entries a relay thread GET caused (badge_wire `via="relay_get"`: a first page without the Peek
-    cursor, or `order=asc&offset=0`)."""
     return [r for r in reads if r.get("via") == "relay_get"]
 
 
 def counter_moves(frames: list[dict], before: dict[str, int]) -> list[dict]:
-    """Counter frames whose value differs from the Creator's raw counter before the window."""
     return [f for f in frames if f.get("kind") == "counter" and f.get("value") != before.get(f.get("account"))]
 
 
 def queue_reads(text: str) -> list[tuple[float, str]]:
-    """(epoch s, Creator) of every mass re-read relay.log logged (`badge_read ... kind=queue`, Phase F's window
-    re-read after a finished mass; logged when it lands)."""
     return [(time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) + int(m.group(2)) / 1000, m.group(3))
             for m in _QUEUE_READ.finditer(text)]
 
 
 def amber_gate(present: bool, require: bool, ok: bool | None = None) -> tuple[bool | None, str | None]:
-    """A Phase F check's verdict (None = SKIP): F's amber field absent from the accounts answer -> SKIP, FAIL under
-    `require_amber=1`; present -> `ok`, where an unjudged check FAILs under `require_amber=1` too (the runner counts
-    SKIP as no failure, so a green F run must not hide one)."""
     if not present:
         why = "Phase F's amber field is absent from the accounts answer"
         return (False, why + " but require_amber=1") if require else (None, why)

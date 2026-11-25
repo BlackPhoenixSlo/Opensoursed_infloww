@@ -1,45 +1,5 @@
 "use client";
 
-/**
- * Real money figures on the OF mirror's Statements and Statistics pages (reads only). With a single model selected:
- * - the balance boxes (Statements' collapsible box, Statistics' sidebar) show `/payouts/balances`: Current balance
- *   `payoutAvailable`, Pending balance `payoutPending`, the payout frequency's name (`withdrawalPeriod` among
- *   `withdrawalPeriodOptions`, which are its menu's options) and the minimum withdrawal amount `minPayoutSumm` in its
- *   captured sentence (fixture app/lib/__fixtures__/of/statements-balances.json);
- * - Statements' Earning Statistics shows `/payouts/stats` (OF reads its `list`): the all-time net, gross and net per
- *   category and in total, the date range, and one row per month (newest first) with its net. As OF's
- *   StatementsEarningStatisticsList, one row is expanded (All time first; a row's head expands it): its chart (each
- *   category's gross summed up over the period, the picked category's line bright), its date range and its category
- *   rows (a month's: its items summed); a category row picks its line;
- * - Referrals' "Current referral earnings" shows `/payments/referrals/balance`'s `referralEarnings`;
- * - Earning Statistics' "From … To …" button (ticket 20; Not-yet title kept until its Live proof, D1) opens OF's Custom
- *   period picker (ofMirrorDatepicker) on today (once a range is picked: on it), from the Creator's start
- *   (`/users/me/start-date-model`) to today, in the owner's time zone (`preferences.tz`); no Relay read. Its Apply re-reads
- *   `/payouts/stats` for the picked days as OF's applyDatePicker does (ticket 24: OF's startDate/endDate, YYYY-MM-DD,
- *   statementsRange), and once that answers All time shows the range: the button's dates, the totals, the category rows,
- *   All time's net and the chart (OF's updateExpand "custom"); the month rows stay all time's, a month's head shows that
- *   month as read for all time, and All time's head drops the range (OF's updateExpand "all"). No ledger re-read: OF's
- *   Apply reads only `/payouts/stats` (capture record statements--custom-period-apply). All models: the Select-model
- *   note, no Relay call;
- * Field names and selectors are OF's own (build 202610091632: statements.js, statistics-statements.js,
- * statements-earning-stats.js, app.js module 874727). All models (but on Statements' Earnings, which shows the first
- * model: standInModel), no data yet or a relay error: each figure a dash, as the generator draws Statements (no example
- * figure). Also on Statements: the balance box's header collapses and expands it (OF's v-show, arrow and m-roll-state),
- * and Referrals' "Copy link" copies the Creator's referral link, OF's `https://onlyfans.com?ref=<OF user id>` (from
- * `/users/me`; All models: a note asks for a model).
- *
- * Statements' balance box writes as OF's Balances, useBalances (67411.js module 327189) and ModalPayouts (808072) do,
- * for the model shown (the stand-in in All models):
- * - the payout frequency select opens its menu of `withdrawalPeriodOptions`; picking another sends OF's
- *   `PATCH /payouts/requests {withdrawalPeriod}`, the select disabled while it saves, the old one back if it fails (OF
- *   shows no message); the line under it is OF's minSumMessage for the frequency;
- * - "Request withdrawal" (Statements' box and Statistics' sidebar) shows only for manual payouts and is enabled by OF's own rule (disabledManualWithdraw: a balance
- *   at least the minimum, and the account able to receive a manual payout or with a payouts issue, which opens Billing
- *   Support instead); it opens OF's "Manual payouts" dialog (amount between the minimum and OF's max, its Max button and
- *   messages), whose Request withdrawal sends `POST /payouts/requests {withdrawal_amount}`; OF's answer shows in its
- *   alert dialog (the request's state, or OF's error message), and the balances are read again.
- * Copy is OF's (texts.onlyfans.com/texts_en.json, same build: TEXTS).
- */
 
 import { useEffect, useState, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -59,14 +19,12 @@ import { pickerDays, startOf, statementsRange } from "@/lib/ofMirrorStatsPeriod"
 
 export type MoneyPart = "balances" | "earningStats" | "referralBalance";
 
-/** Relay route per part (`X-Account-Id` from the scope). */
 export const MONEY_ROUTES: Record<MoneyPart, string> = {
   balances: "/api/of/v2/payouts/balances",
   earningStats: "/api/of/v2/payouts/stats",
   referralBalance: "/api/of/v2/payments/referrals/balance",
 };
 
-/** The money parts `page` (a state page: its page's) shows. Balances: every Statements page but Support, and Statistics' Overview and Statements tabs. */
 export function moneyParts(page: string): MoneyPart[] {
   const p = basePage(page);
   const parts: MoneyPart[] = [];
@@ -82,52 +40,39 @@ export interface Balances {
   currency?: string | null;
   minPayoutSumm?: number | null;
   maxPayoutSumm?: number | null;
-  /** Read by OF's minSumMessage (absent from OF's /payouts/balances, so OF shows its "Once your balance is over" line). */
   availableAmount?: number | null;
   withdrawalPeriod?: string | null;
   withdrawalPeriodOptions?: { code?: string; name?: string }[] | null;
 }
 
-/** OF's authUser fields the withdrawal rules read (`/users/me`, `canReceiveManualPayout` updated by `/payouts/check-receive`). */
 export interface PayoutUser {
   canReceiveManualPayout?: boolean | null;
   hasPayoutsIssue?: unknown;
 }
 
-/** The balance box's writes, for the model shown. */
 export interface MoneyActions {
-  /** OF's sendPayoutRequest: resolves with OF's answer, rejects with the relay's error. */
   withdraw: (amount: number) => Promise<unknown>;
-  /** OF's changeWithdrawalPeriod. */
   setPeriod: (code: string) => Promise<unknown>;
 }
 
 type Sums = { total_gross?: number | null; total_net?: number | null };
-/** One earning in a month's category list (OF's `time` in unix seconds). */
 type EarningItem = { gross?: number | null; net?: number | null; time?: number | null };
-/** `/payouts/stats`'s `list`: totals per category (`all` the sum) and per month (key: the month's start, unix seconds:
- * its sums and, per category, its earnings). */
 export interface EarningStats {
   total?: Record<string, Sums | undefined> | null;
   months?: Record<string, (Sums & Record<string, unknown>) | undefined> | null;
 }
 
 export interface MoneyData {
-  /** The Creator's OF user id: Referrals' link. */
   meId?: string | number | null;
   balances?: Balances;
   earningStats?: EarningStats;
   referralEarnings?: number | null;
   payoutUser?: PayoutUser;
-  /** A frequency change is being saved (OF's disabledWithdrawalPeriod). */
   periodSaving?: boolean;
   actions?: MoneyActions;
-  /** Earning Statistics' From … To picker (none: no single model, the Select-model note). */
   range?: EarningRange | null;
 }
 
-/** Earning Statistics' From … To: the owner's time zone and the Creator's start (the picker's bounds), the range picked
- * (its read's answer once in), what Apply does with the picked days and how All time's head drops the range. */
 export interface EarningRange {
   tz: string | null;
   userStart: Date | null;
@@ -136,36 +81,28 @@ export interface EarningRange {
   clear: () => void;
 }
 
-/** The Relay's route for the earning statistics of a range (statementsRange's params, OF's own startDate/endDate, which
- * the Relay sends on as they are; OF ignores start/end, service/of_reads.py earning_stats). */
 export function earningStatsRoute(p: { startDate: string; endDate: string }): string {
   return `${MONEY_ROUTES.earningStats}?${new URLSearchParams(p)}`;
 }
 
-/** The relay's body for a part as MoneyData (anything unusable: nothing). */
 export function moneyOf(part: MoneyPart, body: unknown): MoneyData {
   const o = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
   if (!o) return {};
   if (part === "balances") return { balances: o as Balances };
   if (part === "earningStats") {
-    const l = o.list && typeof o.list === "object" ? o.list : o; // OF reads `.list`
+    const l = o.list && typeof o.list === "object" ? o.list : o;
     return { earningStats: l as EarningStats };
   }
   return { referralEarnings: o.referralEarnings as number | null };
 }
 
-// This module's own undo list per page (ofMirrorData's restore must not undo these, nor these its rows); an attribute's
-// undo puts every attribute back in its order (the markup byte for byte).
 const { track, restore: restoreMoney, setText, setClass, setAttr, swapIn } = undoList({ attrMode: "all-in-order", classUndo: "snapshot", skipEqualText: true });
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
-/** "$1,234.00": OF's UtilsMoney. */
 export const usd = (v: number) => v.toLocaleString("en-US", { style: "currency", currency: "USD" });
 
-/** A figure with no value: the generator's dash. */
 export const DASH = " — ";
 
-/** A money span: ` $1,234.00 ` (not a number: a dash), with OF's `m-zero-value` mark on zero. */
 function setMoney(doc: Document, el: Element | null | undefined, v: unknown) {
   if (!el) return;
   const n = num(v);
@@ -174,18 +111,13 @@ function setMoney(doc: Document, el: Element | null | undefined, v: unknown) {
 }
 
 const MIN_AMOUNT = /\$\d[\d,]*(?:\.\d+)?/;
-/** "$20": the minimum withdrawal in OF's sentences. */
 const minAmount = (v: number) => `$${v.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 
-// ---------------------------------------------------------------- withdrawals and the payout frequency
 
-/** The relay's routes for OF's payout writes and the account's payout eligibility. */
 export const PAYOUT_REQUESTS = "/api/of/v2/payouts/requests";
 export const CHECK_RECEIVE = "/api/of/v2/payouts/check-receive";
-/** The Creator's start (Statistics' `startDate` source): the lower bound of Earning Statistics' picker. */
 const START_DATE = "/api/of/v2/users/me/start-date-model";
 
-/** OF's copy (texts_en.json, build 202610091632), by OF's key. */
 export const TEXTS = {
   payout_min_amount_message: "Minimum withdrawal amount is {AMOUNT}",
   payout_next_date_success_message: "Next payout scheduled on: {DATE}",
@@ -204,48 +136,38 @@ export const TEXTS = {
 } as const;
 const fill = (text: string, vars: Record<string, string>) => text.replace(/\{(\w+)\}/g, (all, k: string) => vars[k] ?? all);
 
-/** OF's comparisons on raw values (JavaScript's: an absent figure compares false, null as 0). */
 const lt = (a: unknown, b: unknown) => (a as number) < (b as number);
 const hasBalances = (b: Balances | null | undefined): b is Balances => !!b && typeof b === "object" && Object.keys(b).length > 0;
 
-/** OF's disabledManualPayouts: no withdrawal dialog below the minimum, or when the account cannot receive a manual payout. */
 export function payoutsDisabled(b: Balances | null | undefined, u: PayoutUser | null | undefined): boolean {
   return !(hasBalances(b) && u) || lt(b.payoutAvailable, b.minPayoutSumm) || !u.canReceiveManualPayout;
 }
 
-/** OF's disabledManualWithdraw: Request withdrawal's disabled state. */
 export function withdrawDisabled(b: Balances | null | undefined, u: PayoutUser | null | undefined): boolean {
   return !(hasBalances(b) && u) || lt(b.payoutAvailable, b.minPayoutSumm) || (!u.hasPayoutsIssue && payoutsDisabled(b, u));
 }
 
-/** OF's isManualWithdrawal: Request withdrawal shows for manual payouts only (the primary box is never Stripe's here). */
 export const isManualWithdrawal = (b: Balances | null | undefined) => b?.withdrawalPeriod === "manual";
 
-/** ModalPayouts' maxPayoutAvailable: the balance, at most OF's maxPayoutSumm, rounded down. */
 export const maxPayout = (b: Balances) => Math.floor((lt(b.maxPayoutSumm, b.payoutAvailable) ? b.maxPayoutSumm : b.payoutAvailable) as number);
 
 const SYMBOLS: Record<string, string> = { usd: "$", eur: "€", gbp: "£" };
-/** OF's currency helper (module 277832): its symbol, `$` for any other. */
 const symbolOf = (currency: unknown) => SYMBOLS[typeof currency === "string" ? currency.toLowerCase() : ""] ?? "$";
-/** OF's currencyFormat: the symbol and the figure as given ("$20"). */
 const currencyFormat = (v: unknown, currency: unknown) => `${symbolOf(currency)}${v}`;
-/** OF's UtilsMoney text: the symbol and the figure to `places` decimals, thousands separated. */
 const utilsMoney = (v: number, currency: unknown, places: number) =>
   `${symbolOf(currency)}${v.toLocaleString("en-US", { minimumFractionDigits: places, maximumFractionDigits: places })}`;
 
-/** OF's payoutDate for a frequency: the next payout's day ("Oct 19, 2026"); none for manual payouts. */
 export function payoutDate(period: string | null | undefined, now: Date): string {
   const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   if (period === "daily") d.setDate(d.getDate() + 2);
   else if (period === "monthly") d.setMonth(d.getMonth() + 1, 1);
   else if (period === "weekly") {
     d.setDate(d.getDate() + 7);
-    d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // its ISO week's Monday
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
   } else return "";
   return longDay(d);
 }
 
-/** OF's minSumMessage, the line under the frequency select. */
 export function minSumMessage(b: Balances, now: Date): string {
   const amount = currencyFormat(b.minPayoutSumm, b.currency);
   if (isManualWithdrawal(b)) return fill(TEXTS.payout_min_amount_message, { AMOUNT: amount });
@@ -255,11 +177,9 @@ export function minSumMessage(b: Balances, now: Date): string {
     : fill(TEXTS.payout_next_date_warning_message, { BALANCE: amount, DATE: date });
 }
 
-/** InputTips' line under the amount: OF's minimum (shown while the amount is in range). */
 export const amountHint = (min: unknown, currency: unknown) =>
   fill(TEXTS.min_price_label_without_currency, { MIN: `${symbolOf(currency)}${min} ${String(currency || "usd").toUpperCase()}` });
 
-/** InputTips' messagePriceError: an amount under the minimum or over the max (none while empty). */
 export function amountError(value: string | number, min: unknown, max: unknown, currency: unknown): string {
   if (!value) return "";
   const cur = String(currency || "usd").toUpperCase();
@@ -268,13 +188,11 @@ export function amountError(value: string | number, min: unknown, max: unknown, 
   return "";
 }
 
-/** ModalPayouts' submitDisabled. */
 export const submitDisabled = (value: string | number, min: unknown, max: unknown) => lt(value, min) || lt(max, value);
 
 const escapeHtml = (v: unknown) =>
   String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
-/** OF's getResultDescription: a line per payout request in OF's answer (HTML, `<br/>` between them). */
 export function resultDescription(body: unknown): string {
   const list = (body as { list?: unknown } | null)?.list;
   if (!Array.isArray(list) || !list.length) return "";
@@ -295,12 +213,10 @@ export function resultDescription(body: unknown): string {
     .join("<br/>");
 }
 
-/** OF's error alert (module 758987): OF's own message, else its generic one. */
 export function withdrawError(err: unknown): string {
   return parseSendFailure((err as { body?: unknown } | null)?.body).reason || TEXTS.debug_alert_message;
 }
 
-/** Request withdrawal (the generator marks it data-oi-wired): Statements' box's (g-btn__wrapper) and Statistics' sidebar's (g-btn__row). */
 const WITHDRAW = ".balance-block .g-btn__wrapper > button[data-oi-wired], .balance-block .g-btn__row > button[data-oi-wired]";
 
 function applyBalances(doc: Document, data: MoneyData, now: Date) {
@@ -317,7 +233,6 @@ function applyBalances(doc: Document, data: MoneyData, now: Date) {
   }
   if (!hasBalances(b)) return;
   for (const el of doc.querySelectorAll(".b-statements__min-payout-summ")) setText(doc, el, ` ${minSumMessage(b, now)} `);
-  // Statements' select (the generator marks its slot data-oi-wired): enabled once OF's options are here, not while a change saves.
   const open = !!(b.withdrawalPeriodOptions ?? []).some((o) => o?.name) && !data.periodSaving;
   for (const slot of doc.querySelectorAll(".balance-block .v-select .v-input__slot[data-oi-wired]")) {
     setClass(doc, slot.closest(".v-input")!, "v-input--is-disabled", !open);
@@ -326,7 +241,6 @@ function applyBalances(doc: Document, data: MoneyData, now: Date) {
     setAttr(doc, slot, "aria-expanded", open ? "false" : null);
     setAttr(doc, slot.querySelector("input[at-attr='dropdown']"), "disabled", open ? null : "disabled");
   }
-  // Request withdrawal: manual payouts only (OF's v-if), enabled by OF's rule.
   for (const btn of doc.querySelectorAll(WITHDRAW)) {
     const wrap = btn.parentElement!;
     setAttr(doc, wrap, "style", isManualWithdrawal(b) ? wrap.getAttribute("style") : "display:none");
@@ -334,11 +248,6 @@ function applyBalances(doc: Document, data: MoneyData, now: Date) {
   }
 }
 
-/**
- * The payout frequency menu's options (Statements' select; disabled by the generator, so shown only as its selection):
- * one captured item per `withdrawalPeriodOptions` entry, OF's `name`, the current `withdrawalPeriod` active (OF's
- * VSelect item-text "name", item-value "code"). More options than captured items: the last one copied; fewer: the rest hidden.
- */
 function periodOptions(doc: Document, b: Balances) {
   const options = (b.withdrawalPeriodOptions ?? []).filter((o) => o?.name);
   if (!options.length) return;
@@ -384,14 +293,12 @@ const CATEGORIES: [string, string][] = [
 const longDay = (d: Date) => d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 const monthTitle = (d: Date) => ` ${d.toLocaleDateString("en-US", { month: "long" })}, ${d.getFullYear()} `;
 
-/** A stats row's sums: its gross and net value spans (OF's narrow layout shows the net only). */
 function setSums(doc: Document, row: Element, s: Sums | undefined) {
   const vals = [...row.querySelectorAll(":scope > .b-stats-row__val")];
   if (vals.length > 1) setMoney(doc, vals[0], s?.total_gross ?? 0);
   setMoney(doc, vals.at(-1), s?.total_net ?? 0);
 }
 
-/** OF's earnings chart lines (StatementsEarningStatisticsList's chartDataMap, in its order): category, title, colour. */
 const LINES: [string, string, string][] = [
   ["subscribes", "Subscriptions", "#2196f3"],
   ["tips", "Tips", "#00bcd4"],
@@ -402,23 +309,15 @@ const LINES: [string, string, string][] = [
 ];
 type Month = NonNullable<NonNullable<EarningStats["months"]>[string]>;
 const itemsOf = (m: Month | undefined, key: string): EarningItem[] => (Array.isArray(m?.[key]) ? (m[key] as EarningItem[]) : []);
-/** A month's category: its earnings summed (OF's getNormalizedStats). */
 const sumsOf = (m: Month | undefined, key: string): Sums =>
   itemsOf(m, key).reduce<{ total_gross: number; total_net: number }>((s, it) => ({ total_gross: s.total_gross + (num(it?.gross) ?? 0), total_net: s.total_net + (num(it?.net) ?? 0) }), { total_gross: 0, total_net: 0 });
-/** OF's dim line: the colour at 40%. */
 const fade = (hex: string) => `rgba(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(",")},0.4)`;
 const pad2 = (n: number) => String(n).padStart(2, "0");
-/** OF's "DD MMM YY". */
 const dayLabel = (ms: number) => {
   const d = new Date(ms);
   return `${pad2(d.getDate())} ${d.toLocaleDateString("en-US", { month: "short" })} ${String(d.getFullYear()).slice(2)}`;
 };
 
-/**
- * OF's earnings chart over `start`..`end` (ms) from `months`' earnings (buildChart, prepareData): 15 slots (fewer under
- * 15 seconds), the last at `end`; each earning's gross added to the slot nearest its time, then summed up slot by slot;
- * `current`'s line in its colour, the others dimmed.
- */
 export function earningsChart(months: (Month | undefined)[], start: number, end: number, current: string): LinesSpec {
   const secs = (end - start) / 1000;
   const n = secs < 15 ? Math.max(1, Math.floor(secs)) : 15;
@@ -441,7 +340,6 @@ export function earningsChart(months: (Month | undefined)[], start: number, end:
   return { labels: dates.map(dayLabel), lines };
 }
 
-/** Earning Statistics on a page: its data, its rows (All time: "all", a month: its start in ms) and OF's state. */
 interface EarningView {
   stats: EarningStats;
   now: Date;
@@ -449,14 +347,12 @@ interface EarningView {
   months: Map<number, Month | undefined>;
   expanded: "all" | number;
   current: string;
-  /** The From … To range All time shows (its read answered), its days as the key; All time's head drops it. */
   custom?: { key: string; stats: EarningStats; from: Day; to: Day; start: number; end: number };
   clear?: () => void;
 }
 const earningViews = new WeakMap<Document, EarningView>();
 const earningBound = new WeakSet<Document>();
 
-/** Draw `spec` on `canvas`; restoreMoney blanks it and puts its captured size back. */
 function drawEarnings(doc: Document, canvas: HTMLCanvasElement, spec: LinesSpec) {
   const was = ["style", "width", "height"].map((a) => [a, canvas.getAttribute(a)] as const);
   track(doc, () => {
@@ -467,7 +363,6 @@ function drawEarnings(doc: Document, canvas: HTMLCanvasElement, spec: LinesSpec)
   drawLines(canvas, spec);
 }
 
-/** Show the expanded row (OF's updateExpand): only it has a body, with its chart, date range and sums. */
 function showEarning(doc: Document) {
   const v = earningViews.get(doc);
   if (!v) return;
@@ -480,10 +375,8 @@ function showEarning(doc: Document) {
   const allBody = all?.querySelector<HTMLElement>(":scope > .b-stats-row__body");
   if (!all || !allBody) return;
   setAttr(doc, allBody, "style", v.expanded === "all" ? null : "display:none");
-  // OF's allItems: the range's answer while All time shows it, else all time's (a month open: all time's).
   const custom = v.expanded === "all" ? v.custom : undefined;
   const total = (custom ? custom.stats.total : v.stats.total) ?? {};
-  // OF shows 0 for an absent sum.
   setMoney(doc, all.querySelector(".b-stats-row__total-net > span"), total.all?.total_net ?? 0);
   const month = v.expanded === "all" ? undefined : v.months.get(v.expanded);
   let body = allBody;
@@ -492,11 +385,9 @@ function showEarning(doc: Document) {
   let from: string;
   let to: string;
   if (custom) {
-    // OF's mergeData with the picked startDate/endDate: the range's days (the owner's zone), its earnings.
     [start, end] = [custom.start, custom.end];
     [from, to] = [tabDate(custom.from), tabDate(custom.to)];
   } else if (v.expanded === "all") {
-    // OF's mergeData: from the earliest month (none: today), to now.
     const first = Math.min(...v.months.keys());
     start = Number.isFinite(first) ? first : new Date(v.now.getFullYear(), v.now.getMonth(), v.now.getDate()).getTime();
     end = v.now.getTime();
@@ -531,7 +422,6 @@ function showEarning(doc: Document) {
   if (canvas) drawEarnings(doc, canvas, earningsChart(chartMonths, start, end, v.current));
 }
 
-/** A row's head expands that row; a category row in the open body picks its line (one listener per page). */
 function bindEarning(doc: Document) {
   if (earningBound.has(doc)) return;
   earningBound.add(doc);
@@ -543,7 +433,6 @@ function bindEarning(doc: Document) {
     const key = head && v.rows.get(head.parentElement as HTMLElement);
     if (key !== undefined && key !== null) {
       v.expanded = key;
-      // OF's updateExpand("all", "all"): All time's head resets the picked range to all time.
       if (key === "all" && v.custom) {
         v.custom = undefined;
         v.clear?.();
@@ -575,14 +464,13 @@ function applyEarningStats(doc: Document, stats: EarningStats, now: Date, prev: 
     const r = statementsRange(picked.from, picked.to, now, range.tz);
     const key = `${r.params.startDate}..${r.params.endDate}`;
     view.custom = { key, stats: picked.stats, from: picked.from, to: picked.to, start: r.start.getTime(), end: r.end.getTime() };
-    // OF's loadFilteredStatistics → updateExpand("all", "custom"): a new range opens All time on it.
     if (prev?.custom?.key !== key) view.expanded = "all";
   }
   view.clear = range?.clear;
   earningViews.set(doc, view);
   bindEarning(doc);
   if (monthTpl) {
-    const tpl = make(monthTpl); // the generator's hidden template
+    const tpl = make(monthTpl);
     tpl.style.removeProperty("display");
     if (!tpl.getAttribute("style")) tpl.removeAttribute("style");
     tpl.classList.remove("m-expanded");
@@ -612,7 +500,6 @@ function applyEarningStats(doc: Document, stats: EarningStats, now: Date, prev: 
   showEarning(doc);
 }
 
-/** Show `data` on `doc` (the capture again for what it lacks; idempotent). */
 export function applyMoney(doc: Document, page: string, data: MoneyData, now: Date = new Date()): void {
   restoreMoney(doc);
   const parts = moneyParts(page);
@@ -621,9 +508,6 @@ export function applyMoney(doc: Document, page: string, data: MoneyData, now: Da
   const view = earningViews.get(doc);
   earningViews.delete(doc);
   if (parts.includes("earningStats")) {
-    // Marked and enabled before applyEarningStats clones the All time body into a month row, so each copy is; its Not-yet
-    // title gone (D1: Live proof p1.statements.range.apply passed, docs/of-manager/captures/statements--range.json).
-    // With no model its click shows RANGE_NO_MODEL (bindRange).
     for (const b of doc.querySelectorAll(RANGE)) {
       setAttr(doc, b, "data-oi-wired", "");
       setAttr(doc, b, "disabled", null);
@@ -638,19 +522,14 @@ export function applyMoney(doc: Document, page: string, data: MoneyData, now: Da
   if (parts.includes("referralBalance")) {
     const url = data.meId == null || data.meId === "" ? null : `https://onlyfans.com?ref=${encodeURIComponent(String(data.meId))}`;
     links.set(doc, url);
-    // Statements' and Statistics' referral link, as OF prints it.
     if (url) for (const el of doc.querySelectorAll(".b-referrals__copy-description, .b-referrals-state__copy-url__link")) setText(doc, el, ` ${url} `);
   }
   bindStatements(doc);
 }
 
-/** Earning Statistics' "From … To …" button (the All time body's, and its copy in an expanded month's). */
 const RANGE = ".b-stats-row__body button.m-time-period";
 export const RANGE_NO_MODEL = "Select a model to pick a period";
-// The picker's context per page (null: no model), read at click time.
 const ranges = new WeakMap<Document, EarningRange | null>();
-/** The From … To button opens OF's Custom period picker (no Relay read) on today, or on the range picked; its Apply hands
- * the picked days to `pick` (the hook re-reads /payouts/stats for them). */
 function bindRange(doc: Document, range: EarningRange | null) {
   const bound = ranges.has(doc);
   ranges.set(doc, range);
@@ -668,13 +547,10 @@ function bindRange(doc: Document, range: EarningRange | null) {
   });
 }
 
-// Referrals' link per page (null: no model), read by its Copy link at click time.
 const links = new WeakMap<Document, string | null>();
-// The balance box's figures, OF's authUser fields and the writes per page, as the last apply saw them (read at click time).
 const payouts = new WeakMap<Document, { balances?: Balances; user?: PayoutUser; actions?: MoneyActions }>();
 const bound = new WeakSet<Element>();
 
-/** The balance box's collapse, frequency select and Request withdrawal, and Referrals' Copy link (the generator marks them data-oi-wired), bound once each. */
 function bindStatements(doc: Document) {
   for (const head of doc.querySelectorAll<HTMLElement>(".balance-block > button.g-box__header.m-title[data-oi-wired]")) {
     if (bound.has(head)) continue;
@@ -684,7 +560,6 @@ function bindStatements(doc: Document) {
       if (!content) return;
       const collapse = content.style.display !== "none";
       content.style.display = collapse ? "none" : "";
-      // OF's GBoxWrapper's m-roll-state and its icon-arrow-down/up.
       head.closest(".g-box")?.classList.toggle("m-roll-state", collapse);
       const icon = head.querySelector(".g-box__collapse-icon svg");
       icon?.setAttribute("data-icon-name", collapse ? "icon-arrow-down" : "icon-arrow-up");
@@ -704,7 +579,6 @@ function bindStatements(doc: Document) {
     bound.add(btn);
     btn.addEventListener("click", () => {
       const { balances: b, user: u, actions } = payouts.get(doc) ?? {};
-      // OF's onManualWithdrawalClick: nothing while disabled; a payouts issue opens Billing Support (subject payouts).
       if (btn.disabled || withdrawDisabled(b, u)) return;
       if (u?.hasPayoutsIssue) {
         (doc.defaultView?.top ?? doc.defaultView)?.location.assign("/of-manager/statements/support");
@@ -713,7 +587,6 @@ function bindStatements(doc: Document) {
       if (!payoutsDisabled(b, u) && actions) openPayoutsModal(doc, b!, actions);
     });
   }
-  // Statements › Referrals' Copy link sits in the link's box; Statistics › Referrals' beside it (OF's StatisticsReferrals).
   const copy = doc.querySelector<HTMLElement>("[at-attr='referrals_url'] button[data-oi-wired], .b-referrals-state__content > .g-btn__row > button[data-oi-wired]");
   if (copy && !bound.has(copy)) {
     bound.add(copy);
@@ -730,12 +603,11 @@ function bindStatements(doc: Document) {
   }
 }
 
-/** The frequency select: its slot opens the attached menu (OF's VSelect); an item picks its code; a click elsewhere or Escape closes it. */
 function bindPeriodSelect(doc: Document, slot: HTMLElement) {
   const input = slot.closest<HTMLElement>(".v-input")!;
   const menu = () => input.parentElement?.querySelector<HTMLElement>(":scope > .v-menu__content");
   const isOpen = () => menu()?.style.display === "block";
-  let was: [string | null, string | null] | null = null; // the menu's own style and class while it is open
+  let was: [string | null, string | null] | null = null;
   const close = () => {
     const m = menu();
     if (!m || !isOpen()) return;
@@ -774,7 +646,6 @@ function bindPeriodSelect(doc: Document, slot: HTMLElement) {
     close();
     const { balances: b, actions } = payouts.get(doc) ?? {};
     const code = (b?.withdrawalPeriodOptions ?? []).filter((o) => o?.name)[i]?.code;
-    // OF's VSelect emits change only for another value.
     if (code && code !== b?.withdrawalPeriod) void actions?.setPeriod(code).catch(() => {});
   });
   doc.addEventListener("click", close);
@@ -783,18 +654,15 @@ function bindPeriodSelect(doc: Document, slot: HTMLElement) {
   });
 }
 
-/** OF's b-modal markup around a dialog (the captured ModalAlert's and ModalPostPrice's). */
 const modalShell = (cls: string, header: string, body: string, footer = "") =>
   `<div style="position: absolute; z-index: 1040;" data-oi-dialog="" data-oi-wired=""><div role="dialog" aria-modal="true" class="modal fade show ${cls}" style="display: block;"><div class="modal-dialog modal-sm modal-dialog-centered"><div tabindex="-1" class="modal-content">${header}${body}${footer}</div></div></div><div class="modal-backdrop show"></div></div>`;
 
-/** OF's ModalPayouts ("Manual payouts"): InputTips for the amount (its prefix, hint and error), Max, Cancel and Request withdrawal. */
 const PAYOUTS_HTML = modalShell(
   "tip-modal payouts-modal",
   `<header class="modal-header"><h4 class="modal-title"> ${TEXTS.payout_request_manual} </h4></header>`,
   `<div class="modal-body m-reset-body-padding-bottom"><form><div class="b-inline-form d-flex align-items-start"><div class="g-input__wrapper m-reset-bottom-gap mr-2 flex-fill-1"><div class="g-input__wrapper input-text-field m-reset-bottom-gap m-empty"><div class=""><div class="v-input form-control g-input mb-0 theme--light v-text-field v-text-field--is-booted v-text-field--enclosed v-text-field--outlined v-text-field--placeholder m-reset-bottom-gap m-placeholder-gap"><div class="v-input__control"><div class="v-input__slot"><fieldset aria-hidden="true"><legend style="width: 0px;"><span class="notranslate">\u200b</span></legend></fieldset><div class="v-text-field__slot"><div class="v-text-field__prefix" style="display:none"></div><input id="tipInput" at-attr="input" inputmode="decimal" autocomplete="tip-input" required="required" placeholder="${TEXTS.withdrawal_amount_placeholder}" type="text"></div></div><div class="v-text-field__details"><div class="v-messages theme--light"><div class="v-messages__wrapper"></div></div></div></div><div class="v-input__append-outer"><div class="g-input__help"><div></div></div></div></div></div></div></div><button type="button" class="g-btn m-lg m-rounded" data-oi-max=""><span class="g-spacer-r">${TEXTS.max_button}</span><span class=""></span></button></div><div class="modal-footer"><button type="button" class="g-btn m-flat m-btn-gaps m-reset-width"> ${TEXTS.button_label_cancel} </button><button type="submit" disabled="disabled" class="g-btn m-flat m-btn-gaps m-reset-width"> ${TEXTS.request_withdrawal_button_label} </button></div></form></div>`,
 );
 
-/** A dialog's root from markup, appended to the page; Escape and a click on its backdrop call `close`. */
 function mountDialog(doc: Document, html: string, close: () => void): HTMLElement {
   const holder = doc.createElement("div");
   holder.innerHTML = html;
@@ -816,9 +684,8 @@ const unmount = (root: HTMLElement) => {
   root.remove();
 };
 
-/** OF's alert dialog (ModalAlert, as captured): `html` (OF's message; its own lines) and Close. */
 export function showAlert(doc: Document, html: string): HTMLElement {
-  doc.querySelector("[data-oi-dialog][data-oi-alert]")?.remove(); // OF hides the open alert first
+  doc.querySelector("[data-oi-dialog][data-oi-alert]")?.remove();
   const body = `<div class="modal-body">${html ? `<div class="dialog_message m-break-word-default">${html}</div>` : ""}</div>`;
   const footer = `<footer class="modal-footer"><button type="button" class="g-btn m-flat m-btn-gaps m-reset-width"> ${TEXTS.dialog_close_button} </button></footer>`;
   const root: HTMLElement = mountDialog(doc, modalShell("modal-alert", "", body, footer), () => unmount(root));
@@ -827,7 +694,6 @@ export function showAlert(doc: Document, html: string): HTMLElement {
   return root;
 }
 
-/** Open OF's withdrawal dialog for `b`; its Request withdrawal sends the amount (`actions.withdraw`) and shows OF's answer. */
 export function openPayoutsModal(doc: Document, b: Balances, actions: MoneyActions): HTMLElement {
   doc.querySelector("[data-oi-dialog][data-oi-payouts]")?.remove();
   const min = b.minPayoutSumm;
@@ -861,7 +727,6 @@ export function openPayoutsModal(doc: Document, b: Balances, actions: MoneyActio
     const messages = q(".v-messages");
     messages.classList.toggle("error--text", !!err);
     q(".v-messages__wrapper").innerHTML = err ? `<div class="v-messages__message">${escapeHtml(err)}</div>` : "";
-    // InputTips' hint shows unless the amount is out of range (show-error-on-over-max).
     const outOfRange = !!value && submitDisabled(value, min, max);
     q(".v-input__append-outer").style.display = outOfRange ? "none" : "";
     q(".g-input__help > div").textContent = amountHint(min, currency);
@@ -869,7 +734,6 @@ export function openPayoutsModal(doc: Document, b: Balances, actions: MoneyActio
     submit.disabled = busy || submitDisabled(value, min, max);
   };
   input.addEventListener("input", () => {
-    // InputTextField's number-only: digits and one decimal point.
     const clean = input.value.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1");
     value = clean;
     render();
@@ -898,7 +762,6 @@ export function openPayoutsModal(doc: Document, b: Balances, actions: MoneyActio
   return root;
 }
 
-/** On a Statements or Statistics page with a single model selected, show its money figures on every frame load and data change. */
 export function useOfMoney(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const qc = useQueryClient();
@@ -913,12 +776,9 @@ export function useOfMoney(frameRef: RefObject<HTMLIFrameElement | null>, src: s
   });
   const balances = useQuery(q("balances")).data;
   const stats = useQuery(q("earningStats")).data;
-  // Earning Statistics' picker: the Creator's start as Statistics reads it (the same query and cache), in the owner's zone.
   const tz = useAppliedSettings().data?.preferences?.tz ?? null;
   const startBody = useQuery(mirrorQuery(accountId, START_DATE, parts.includes("earningStats"))).data;
-  // The From … To range Apply picked (this model and page only) and its earning statistics (OF's startDate/endDate).
   const [picked, setPicked] = useState<{ accountId: string; src: string; from: Day; to: Day } | null>(null);
-  // Another model or page drops it (OF reloads on All time): reset during render, so a return finds no range.
   const stale = !!picked && (picked.accountId !== accountId || picked.src !== src);
   if (stale) setPicked(null);
   const pick = stale ? null : picked;
@@ -927,7 +787,6 @@ export function useOfMoney(frameRef: RefObject<HTMLIFrameElement | null>, src: s
   const referral = useQuery(q("referralBalance")).data;
   const me = useQuery({ ...ofMeQuery(accountId), enabled: !!accountId && (parts.includes("referralBalance") || parts.includes("balances")) }).data;
   const meId = me?.id;
-  // OF's fetchPayoutsReceive: canReceiveManualPayout as /payouts/check-receive has it now.
   const receive = useQuery({
     queryKey: ["of-mirror-data", accountId, CHECK_RECEIVE],
     queryFn: () => relay.get<{ canReceiveManualPayout?: boolean }>(CHECK_RECEIVE, { accountId }),
@@ -946,14 +805,12 @@ export function useOfMoney(frameRef: RefObject<HTMLIFrameElement | null>, src: s
       ? { canReceiveManualPayout: receive?.canReceiveManualPayout ?? meFlags.canReceiveManualPayout, hasPayoutsIssue: meFlags.hasPayoutsIssue }
       : undefined;
     const actions: MoneyActions = {
-      // OF's sendPayoutRequest, then fetchBalances (and the Payout requests list: OF's WITHDRAWAL_REQUESTED).
       withdraw: async (amount) => {
         const answer = await relay.post<unknown>(PAYOUT_REQUESTS, { withdrawal_amount: amount }, { accountId });
         void qc.invalidateQueries({ queryKey: balancesKey });
         void qc.invalidateQueries({ predicate: (x) => x.queryKey[0] === "of-mirror-data" && x.queryKey[1] === accountId && String(x.queryKey[2]).startsWith(PAYOUT_REQUESTS) });
         return answer;
       },
-      // OF's changeWithdrawalPeriod: the new one shown while it saves (select disabled), kept on {success}, else the old one back.
       setPeriod: async (code) => {
         const was = qc.getQueryData<Balances>(balancesKey);
         if (!was) return;

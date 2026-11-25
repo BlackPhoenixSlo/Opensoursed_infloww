@@ -1,26 +1,6 @@
 "use client";
 
-/**
- * /admin/manage — founder-only user management UI.
- *
- * Lives at /admin/manage (NOT /admin/users) on purpose: Next file-system
- * routes win over rewrites, so a page at /admin/users would shadow the
- * relay's /admin/users endpoint and the page's own fetch would resolve
- * to its own HTML. /admin/manage sidesteps the collision.
- *
- * Lets the founder:
- *   • View as another user (1h read-only impersonation overlay).
- *   • Grant / revoke individual OF accounts (no SQL-poking required).
- *   • Set an agency's AI keys.
- *   • Hard-delete a user with a two-step confirm (type "delete" + admin
- *     password).
- *
- * All four flows require the relay's ADMIN_PASSWORD env var value.
- *
- * Master only: both reads are `require_master` on the relay. Anyone else who
- * opens it by URL gets one "master account required" line and no request
- * (as ManagedAgencyKeysCard draws nothing for them).
- */
+// Not /admin/users: a Next page there would shadow the relay's /admin/users endpoint.
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -58,8 +38,6 @@ const fmtDate = (iso: string) => new Date(iso).toLocaleString();
 
 export default function AdminUsersPage() {
   const { user: me, loading } = useUser();
-  // Nothing until the session is known (the master never sees the line flash); then anyone but the master (an
-  // owner, or a chatter: no `me`) gets one line and no request, as both reads would 403.
   if (loading) return null;
   if (me?.is_admin !== true) {
     return (
@@ -80,13 +58,7 @@ function ManageUsers({ meId }: { meId: string }) {
   const refresh = useCallback(async () => {
     const seq = ++seqRef.current;
     dispatch({ type: "refreshStart", seq });
-    // Two calls, and they must fail INDEPENDENTLY. Both are master-only (a
-    // list of every tenant; the roster adds their credential state), but they
-    // are separate endpoints. Under Promise.all a roster failure
-    // rejected the pair and left `rows` null — the page then rendered
-    // "Loading…" forever and grant, revoke, delete and impersonate went with
-    // it, because a badge could not be drawn. (What each outcome does:
-    // manageReducer `refreshSettled`.)
+    // Must fail independently: Promise.all left rows null and the page on "Loading…" forever.
     const [users, roster] = await Promise.allSettled([
       relay.get<AdminUserRow[]>("/admin/users"),
       relay.get<{ agencies: AgencyKeyStatus[] }>("/admin/users/llm-key-status"),
@@ -120,17 +92,11 @@ function ManageUsers({ meId }: { meId: string }) {
       )}
 
       {rows === null ? (
-        // Loading, or the first load failed: the alert above says why and
-        // Refresh retries. Never "No users registered yet." — that is a
-        // user list that LOADED empty.
         refreshing ? <TableSkeleton rows={5} /> : null
       ) : rows.length === 0 ? (
         <div className="text-sm text-fg-dim">No users registered yet.</div>
       ) : (
         <>
-        {/* A dead session sends nothing, so a key pasted under its owner buys
-            nothing until the session is re-captured — worth filtering FOR, but
-            off by default here: see the note on `initialManageState`. */}
         <label className="flex items-center gap-2 text-xs text-fg-dim">
           <input
             type="checkbox"
@@ -382,9 +348,6 @@ function ImpersonateForm({ user, onStarted }: { user: AdminUserRow; onStarted: (
     try {
       await startImpersonating(user.id, adminPassword);
       onStarted();
-      // Land on the home page so the founder sees the impersonated user's
-      // dashboard from a clean route — staying on /admin/users would just
-      // re-render the same list with the banner above it.
       router.push("/");
     } catch (err) {
       setError(errText(err));

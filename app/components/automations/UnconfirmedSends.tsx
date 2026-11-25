@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * UnconfirmedSends — on Auto Funnel, one Creator's funnel / follow-up steps
- * whose send was interrupted. They are never auto-resent (a PPV must not go
- * out twice); the user retries each one, or says it went through (saved as sent,
- * never resent). A hint line shows a send to that fan the relay saw since.
- * State rules: ./unconfirmedSendsReducer.ts.
- * Renders nothing when there are none.
- */
 
 import { Badge, Button } from "@/components/ui/primitives";
 import { canAct, hintLine } from "@/components/automations/unconfirmedSendsReducer";
@@ -16,6 +8,7 @@ import { useUnconfirmedSends } from "@/hooks/useUnconfirmedSends";
 const KIND_LABEL = { funnel: "Funnel", followup: "Follow-up" } as const;
 const shortTime = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+// Interrupted sends are never auto-resent: a PPV must not go out twice; the user retries or marks it sent.
 export function UnconfirmedSends({ accountId }: { accountId: string }) {
   const { rows, retry, dismiss } = useUnconfirmedSends(accountId);
   if (rows.length === 0) return null;

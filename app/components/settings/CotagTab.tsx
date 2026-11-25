@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * Co-creator tag (ticket 85): which co-creator one creator's sends @-tag, or no one. The setting is
- * account-wide (`account_ai_config.cotag_*`, the account-config PUT): of_client tags every mass message,
- * mass post, scheduled send and automation that attaches media that isn't provably solo, and a story gets
- * the @handle overlay (service/media_cotag.py). Blank is off, the default: nothing is tagged.
- *
- * The Creator is picked in the panel header, beside Save: the one in scope when it opens, else the first
- * session-backed Creator. The form remounts per Creator so unsaved edits never carry over.
- */
 
 import { useState, type ReactNode } from "react";
 
@@ -22,7 +13,6 @@ import { Skeleton } from "@/components/ui/Skeleton";
 
 const CAPTION = "mb-4 text-[length:var(--if-fs-sm)] leading-5 text-[var(--if-fg-2)]";
 
-/** The tab's one help line. */
 function Caption() {
   return (
     <p className={CAPTION}>
@@ -57,7 +47,6 @@ export default function CotagTab() {
   return panel(
     picker,
     accountsLoading ? (
-      // No Creator yet because the Creators are still loading: the form as placeholder bars.
       <div className="max-w-xl space-y-3" aria-busy="true"><Skeleton className="h-4 w-40" /><Skeleton className="h-10 w-full" /></div>
     ) : (
       <EmptyState kind="data" text="Select a creator to set its co-creator tag" className="h-[260px]" />

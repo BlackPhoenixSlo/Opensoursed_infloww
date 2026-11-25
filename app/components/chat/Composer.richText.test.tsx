@@ -1,10 +1,10 @@
-/**
- * Composer and OF rich text: a picked formatted script opens in the rich editor (no second preview) and Enter sends
- * its markup; it survives a chat switch and back (lib/chatDrafts keeps it beside the draft text); "Aa" toggles the
- * formatting toolbar; plain text stays in the textarea, byte-identical; a Fansly account never gets markup. The "Next in" bubble shows a formatted step as text, never its tags.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+const platform = vi.hoisted(() => ({ current: "onlyfans" as "onlyfans" | "fansly" | null }));
+vi.mock("@/contexts/UserContext", async (orig) => ({
+  ...(await orig<typeof import("@/contexts/UserContext")>()),
+  useOptionalUser: () => ({ user: { user_id: "owner-A" }, loading: false }),
+}));
 
 vi.mock("@/lib/relay", async (orig) =>
   (await import("./composerTestHarness")).mockRelayModule(await orig()));
@@ -15,7 +15,13 @@ import { resetComposerHarness, routeRelay } from "./composerTestHarness";
 import type { SavedReply } from "@/lib/relay";
 import { resetSendGapForTests } from "@/lib/sendGuards";
 import { renderWithProviders } from "@/test-utils";
-import { PLATFORM_KEY, resetPlatformForTests, setPlatform } from "@/lib/platform";
+import { QueryClient } from "@tanstack/react-query";
+
+const seeded = () => {
+  const c = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  if (platform.current) c.setQueryData(["accounts", "owner-A"], { accounts: [{ id: "acc", platform: platform.current }], active_account_id: null });
+  return c;
+};
 
 const HTML = '<p><span class="m-editor-fc__blue-1"><strong>Hey</strong></span> babe</p><p>line two</p>';
 const row = (id: number, text: string, over: Partial<SavedReply> = {}): SavedReply => ({
@@ -36,7 +42,7 @@ afterEach(() => { cleanup(); onSend.mockClear(); });
 async function mount(fanId: number) {
   const { Composer } = await import("./Composer");
   return renderWithProviders(<Composer accountId="acc" fanId={fanId} onSend={onSend}
-    placeholder="Message fan…" />);
+    placeholder="Message fan…" />, seeded());
 }
 const box = () => screen.getByPlaceholderText("Message fan…") as HTMLElement;
 const boxText = () => { const b = box(); return b instanceof HTMLTextAreaElement ? b.value : b.innerText ?? b.textContent; };
@@ -54,7 +60,7 @@ const aa = () => screen.queryByRole("button", { name: "Aa" });
 const fmtBar = () => screen.queryByRole("toolbar", { name: "Text formatting" });
 
 describe("a formatted script in the chat composer", () => {
-  afterEach(() => { window.localStorage.removeItem(PLATFORM_KEY); resetPlatformForTests(); });
+  afterEach(() => { platform.current = "onlyfans"; });
 
   it("picked: the box is the rich editor showing it formatted, no duplicate preview, and Enter sends its markup", async () => {
     await mount(7);
@@ -62,7 +68,7 @@ describe("a formatted script in the chat composer", () => {
     await waitFor(() => expect(formatted()?.textContent).toBe("Hey"));
     expect(box().isContentEditable || box().getAttribute("contenteditable")).toBeTruthy();
     expect(document.querySelector("[data-rich-preview]")).toBeNull();
-    expect(fmtBar()).toBeNull(); // "Aa" still off: formatted text, toolbar hidden (OF)
+    expect(fmtBar()).toBeNull();
     await enter();
     expect(onSend.mock.calls[0][0].text).toBe(HTML);
   });
@@ -72,7 +78,7 @@ describe("a formatted script in the chat composer", () => {
     await pick();
     await waitFor(() => expect(formatted()).not.toBeNull());
     a.unmount();
-    const b = await mount(8); // another chat: no markup there
+    const b = await mount(8);
     expect(box()).toBeInstanceOf(HTMLTextAreaElement);
     b.unmount();
     await mount(7);
@@ -86,11 +92,11 @@ describe("a formatted script in the chat composer", () => {
     await pick();
     await waitFor(() => expect(formatted()).not.toBeNull());
     a.unmount();
-    setPlatform("fansly");
+    platform.current = "fansly";
     const b = await mount(7);
     expect(box()).toBeInstanceOf(HTMLTextAreaElement);
     b.unmount();
-    setPlatform("onlyfans");
+    platform.current = "onlyfans";
     await mount(7);
     await waitFor(() => expect(formatted()?.textContent).toBe("Hey"));
   });
@@ -100,13 +106,13 @@ describe("a formatted script in the chat composer", () => {
     await pick();
     await waitFor(() => expect(formatted()).not.toBeNull());
     a.unmount();
-    setPlatform("fansly");
+    platform.current = "fansly";
     const b = await mount(7);
     const words = boxText();
     await enter();
     fireEvent.change(box(), { target: { value: words } });
     b.unmount();
-    setPlatform("onlyfans");
+    platform.current = "onlyfans";
     await mount(7);
     expect(box()).toBeInstanceOf(HTMLTextAreaElement);
     expect(formatted()).toBeNull();
@@ -144,8 +150,14 @@ describe("a formatted script in the chat composer", () => {
     expect(onSend.mock.calls[0][0].text).toBe("hi <3 & co");
   });
 
+  it("a cold accounts cache on the OnlyFans sidebar keeps Aa", async () => {
+    platform.current = null;
+    await mount(7);
+    expect(aa()).toHaveAttribute("aria-pressed", "false");
+  });
+
   it("Fansly: no Aa, no toolbar, and a picked formatted script goes in as its plain text", async () => {
-    setPlatform("fansly");
+    platform.current = "fansly";
     await mount(7);
     expect(aa()).toBeNull();
     await pick();

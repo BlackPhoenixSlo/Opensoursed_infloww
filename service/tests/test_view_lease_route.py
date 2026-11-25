@@ -1,36 +1,5 @@
 #!/usr/bin/env python3
-"""POST /admin/view-lease (ADR-0031, phase-01 1a) over HTTP with real session cookies
-(the two-Agency bench, service/tests/_agency_fixtures.py).
-
-  • case_owner_renews: the owner's own Creator is leased; the answer is {leased, ttl_s, warm:"none"};
-    a newly leased Creator gets one poll_now under Caller kind `select_refresh`; a re-renewal
-    polls nothing; a changed `selected` polls it.
-  • case_chatter_renews: a chatter session renews too (no X-Account-Id); chatter_ab leases
-    both Agencies' Creators, chatter_a only its own.
-  • case_other_agency_dropped: another Agency's id, a watcher and an unknown id are dropped
-    silently (200), and a `selected` outside the set is ignored.
-  • case_empty_releases: `selected` alone is leased; no ids and no `selected` releases the tab.
-  • case_no_session_401: no session -> 401, nothing leased.
-  • case_over_200_refused: 201 ids -> 422; a 1-64 char tab only.
-  • case_not_audited: the path is on audit_log's skip list and writes no actions row.
-  • case_gain_skips_current: a lease gain refreshes no Creator the Relay holds current (its last
-    poll, ok or not, started under PURCHASES_POLL_FAST_S ago, or an App-open warm read it within APP_OPEN_WARM_REUSE_S);
-    a changed `selected` still refreshes.
-  • case_selected_min_age: a selection reads nothing when the Creator's last poll (ok or not) started under
-    SELECT_MIN_AGE_S ago; past it, it reads.
-  • case_gains_paced: other gains go to app_open_warm.pace (the one per-exit gate), the selection reading now
-    is `note_read` (its exit's next gated read waits GAP_S), not one background poll each; an opening post's gains are the warm's.
-  • case_opened_starts_warm: `opened` starts the App-open warm (app_open_warm.start, faked) with the
-    principal's own Creators, the live leases first and the renewal's Select-refreshed ids;
-    `warm` answers its summary; without `opened` no warm and "none".
-  • case_legacy_stream_leases: GET /events from a browser page (Referer) without `lease` (a tab loaded
-    before 1a) leases the session's own Creators while the stream runs (owner: its Agency's only;
-    chatter_ab both; a watcher never) and nothing after it ends; `lease=1`, no Referer, or signed out
-    lease nothing.
-
-Run: ./venv/bin/python service/tests/test_view_lease_route.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -57,7 +26,7 @@ POLLS: list[tuple[str, str]] = []
 
 
 def _fake_poll_now(aid):
-    POLLS.append((aid, of_call_counter.caller_kind()))   # the Caller kind at the call site
+    POLLS.append((aid, of_call_counter.caller_kind()))
 
     async def _noop():
         return None
@@ -68,9 +37,6 @@ purchase_poll.poll_now = _fake_poll_now
 
 
 def _spawn_inline(coro, name):
-    """server._spawn_bg's label (`loop:<name>`) around the task, but run to completion before the
-    response returns: the request-only TestClient tears its loop down after each request, so a real
-    background task could be cancelled before it ran and POLLS would race the assertion."""
     with of_call_counter.caller(f"loop:{name}"):
         try:
             coro.send(None)
@@ -80,8 +46,8 @@ def _spawn_inline(coro, name):
 
 
 accounts_admin_api._spawn_bg = _spawn_inline
-PACED: list[list[str]] = []      # ids per app_open_warm.pace call
-NOTED: list[str] = []            # app_open_warm.note_read calls (a Select refresh reading on its exit now)
+PACED: list[list[str]] = []
+NOTED: list[str] = []
 app_open_warm.pace = lambda ids, poll: PACED.append(list(ids))
 app_open_warm.note_read = NOTED.append
 
@@ -189,7 +155,7 @@ def case_gain_skips_current():
     purchase_poll.last_poll_age_s = lambda a: age.get(a)
     try:
         owner = fx.login_owner("agency_a_owner")
-        age[A] = decide.SELECT_MIN_AGE_S + 1.0     # current (under FAST_S), not just polled
+        age[A] = decide.SELECT_MIN_AGE_S + 1.0
         assert _renew(owner, [A], None).status_code == 200 and POLLS == [], f"polled a few s ago: {POLLS}"
         assert _renew(owner, [A], A).status_code == 200 and POLLS == [(A, "select_refresh")], "a selection refreshes"
         _reset()
@@ -206,8 +172,6 @@ def case_gain_skips_current():
 
 
 def case_selected_min_age():
-    """A selection reads at once unless the Creator's last poll (ok or not) started under SELECT_MIN_AGE_S ago: alternating
-    selections (or new tab ids) read each Creator at most once per SELECT_MIN_AGE_S."""
     _reset()
     saved_age = purchase_poll.last_poll_age_s
     age: dict[str, float] = {A: decide.SELECT_MIN_AGE_S - 1.0}
@@ -223,13 +187,11 @@ def case_selected_min_age():
 
 
 def case_gains_paced():
-    """A renewal's other gains go to the gate (app_open_warm.pace: one queue per exit, GAP_S apart), never one
-    background read each; the selection reads at once and is noted as reading now (`note_read`)."""
     _reset()
     saved_at = dict(app_open_warm._warmed_at)
     app_open_warm._warmed_at.clear()
     try:
-        cab = fx.login_chatter("chatter_ab")   # A and B
+        cab = fx.login_chatter("chatter_ab")
         assert _renew(cab, [A, B], None).status_code == 200
         assert POLLS == [] and PACED == [[A, B]], (POLLS, PACED)
         _reset()
@@ -278,7 +240,6 @@ def case_opened_starts_warm():
 
 
 def case_opened_gains_go_to_warm():
-    """An opening post's other gains are the warm's (leased first, paced per proxy), not N refreshes at once."""
     _reset()
     calls: list[tuple] = []
 
@@ -290,7 +251,7 @@ def case_opened_gains_go_to_warm():
     app_open_warm.start = _start
     app_open_warm._warmed_at.clear()
     try:
-        owner = fx.login_chatter("chatter_ab")   # A and B
+        owner = fx.login_chatter("chatter_ab")
         assert _renew(owner, [A, B], A, opened=True).status_code == 200
         assert POLLS == [(A, "select_refresh")] and calls[0][1] == [A], (POLLS, calls)
         assert {A, B} <= calls[0][0], calls
@@ -305,8 +266,6 @@ def case_opened_gains_go_to_warm():
 
 
 def _stream_leased(client, qs="", referer="https://app.example/messages-pro"):
-    """GET /events{qs} with the stream stubbed to two frames: the Creators leased between them,
-    and the status. None when the stream never ran."""
     seen: list[set] = []
     original = server.sse_stream
 

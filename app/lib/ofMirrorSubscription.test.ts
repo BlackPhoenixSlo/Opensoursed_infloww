@@ -74,7 +74,7 @@ describe("the generated pages carry no example row", () => {
     const d = load(page);
     for (const t of d.querySelectorAll<HTMLElement>("[data-oi-template]")) expect(t.style.display).toBe("none");
     expect(d.querySelectorAll(".b-offer-join:not([data-oi-template]):not([data-oi-template] *):not(.m-only-start-btn)").length).toBe(0);
-    if (page !== PROMOTIONS) expect(prompts()).toEqual([false, true, false, false]); // "No results :("
+    if (page !== PROMOTIONS) expect(prompts()).toEqual([false, true, false, false]);
   });
 });
 
@@ -93,16 +93,15 @@ describe("promotions and bundles", () => {
     expect(textOf(p1.querySelector(".b-offer-join__bubble__text"))).toBe("Synthetic welcome");
     expect(textOf(p1.querySelector(".b-fans__item__list"))).toBe("Started Mar 2, 2026 Claims count 4");
     expect(buttons(p1)).toEqual([["4", true], ["Stop promotion", false], ["Copy link to profile", false]]);
-    expect(p1.querySelector("button[data-oi-finish]")?.getAttribute("data-oi-finish")).toBe(String(live.id)); // ofMirrorOffers stops it
+    expect(p1.querySelector("button[data-oi-finish]")?.getAttribute("data-oi-finish")).toBe(String(live.id));
     expect(textOf(p2.querySelector(".b-offer-join__details"))).toBe("Limited offer - 50% off for 31 days");
     expect(p2.querySelector(".b-offer-join__details")!.classList.contains("g-gray-text")).toBe(true);
     expect(textOf(p2.querySelector(".b-offer-join__left-time"))).toBe("For expired subscribers ended Oct 7 left 3");
-    expect(p2.querySelector(".b-offer-join__bubble")).toBeNull(); // no message: no bubble
+    expect(p2.querySelector(".b-offer-join__bubble")).toBeNull();
     expect(buttons(p2)).toEqual([["1", true], ["Remove", false]]);
     expect(textOf(b1)).toBe("$20.35 USD total for 3 months -30%");
     expect(textOf(b2)).toBe("$60 USD total for 6 months");
     expect(buttons(b1)).toEqual([["Delete", false]]);
-    // Drawn again: the same rows, not twice.
     applySubscription(d, PROMOTIONS, data, ME, true);
     expect(rows()).toHaveLength(4);
     applySubscription(d, PROMOTIONS, {}, ME, true);
@@ -190,10 +189,8 @@ describe("promotions and bundles", () => {
     expect(box.hasAttribute("data-oi-scroll")).toBe(true);
     expect(box.style.overflowY).toBe("auto");
     expect(box.style.maxHeight).toBe(LIST_MAX_HEIGHT);
-    // OF's wrapper is a wrapping flex column: capped, it must not flow the cards sideways.
     expect(box.style.flexWrap).toBe("nowrap");
     expect(box.querySelectorAll(":scope > [data-oi-row]")).toHaveLength(12);
-    // The bundles are outside the box, not scrolled away with it.
     const bundle = d.querySelector("[data-oi-template='bundle-row']")!;
     expect(box.contains(bundle)).toBe(false);
   });
@@ -264,7 +261,6 @@ describe("tracking links", () => {
   });
 });
 
-// ticket 61
 describe("tracking links Sort (the Relay sorts; `inferred` field names)", () => {
   const view = (q: string) => trackingViewOf(new URLSearchParams(q));
   const click = (el: Element | null) => el!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -328,7 +324,6 @@ describe("tracking links Sort (the Relay sorts; `inferred` field names)", () => 
   });
 });
 
-// ticket 74 (record settings--tracking-shared-with-you, measured-in-js)
 describe("tracking links Shared with you and the share hint", () => {
   const view = (q: string) => trackingViewOf(new URLSearchParams(q));
   const click = (el: Element | null) => el!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -519,7 +514,6 @@ describe("free trial links", () => {
     expect(hint().classList.contains("g-gray-text")).toBe(true);
     const [a] = rows();
     expect(a.querySelector(".b-offer-join__content")!.classList.contains("g-gray-text")).toBe(true);
-    // Created, Offer limit and Clicks count (Claims count is its link, as OF's).
     expect(a.querySelectorAll(".b-fans__item__list__item > .g-gray-text").length).toBe(3);
     applySubscription(d, TRIALS, { trials: { rows: [] } }, { ...ME, canCreateTrial: true }, true);
     expect(textOf(hint())).toBe("Create and share separate links with free trial subscription.");
@@ -544,11 +538,10 @@ describe("OF's create gates", () => {
     const a = link("Create new free trial link");
     expect(a.hasAttribute("href")).toBe(false);
     expect(a.getAttribute("aria-disabled")).toBe("true");
-    expect(a.title).toBe(OF_DISALLOWS); // the account's state, not a missing feature
+    expect(a.title).toBe(OF_DISALLOWS);
     applySubscription(d, TRIALS, { trials: { rows: [trial] } }, { ...ME, subscribePrice: 0, canCreateTrial: false }, true);
     expect(link("Create new free trial link").title).toBe(PRICE_FIRST);
     expect(buttons(rows()[0])).toEqual([["Delete", false], ["Copy link", true]]);
-    // A link shared with the model keeps its Copy link.
     applySubscription(d, TRIALS, { trials: { rows: [trial] } }, { ...ME, canCreateTrial: false }, true, undefined, true);
     expect(buttons(rows()[0])).toEqual([["Copy link", false]]);
     applySubscription(d, TRIALS, { trials: { rows: [trial] } }, ME, true);
@@ -583,7 +576,6 @@ describe("OF's create gates", () => {
   });
 });
 
-// ticket 62: the base page's openers, rebuilt behind the link and promotion modals and kebab State pages.
 describe("openers behind the modals (ticket 62)", () => {
   const OK = { ...ME, isPerformer: true, canCreatePromotion: true, canEarn: true };
   const SETTINGS = { canAddSubscriberByBundle: { discounts: { "10": "10%" }, durations: { "3": "3 months" } } };
@@ -597,13 +589,11 @@ describe("openers behind the modals (ticket 62)", () => {
       [`${PROMOTIONS}/${p}`, "Add bundle", `${PROMOTIONS}/modal-2`],
     ]),
   ];
-  // D1: every opener but Add bundle passed its Live proof (docs/of-manager/captures/settings--{tracking-links-create-new,
-  // trial-links-create-new,promotion-start}.json): its title drops.
   const titleOf = (label: string) => (label === "Add bundle" ? NOT_YET : "");
   it.each(cases)("%s: %s opens %s, Wired, with its Not-yet title until its Live pass (D1)", (page, label, dialog) => {
     const d = load(page);
-    expect(opener(label).map((e) => e.tagName)).toEqual(["BUTTON"]); // the generated page: a dead button
-    for (let i = 0; i < 2; i++) applySubscription(d, page, {}, OK, true, undefined, false, SETTINGS); // drawn again: the same link
+    expect(opener(label).map((e) => e.tagName)).toEqual(["BUTTON"]);
+    for (let i = 0; i < 2; i++) applySubscription(d, page, {}, OK, true, undefined, false, SETTINGS);
     const [a, ...more] = opener(label);
     expect(more).toEqual([]);
     expect([a.tagName, a.getAttribute("href"), a.getAttribute("target"), a.hasAttribute("disabled"), a.title, a.hasAttribute("data-oi-wired")])

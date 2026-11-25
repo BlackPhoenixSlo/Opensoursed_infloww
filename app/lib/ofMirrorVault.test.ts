@@ -14,7 +14,6 @@ const load = (p: string) => {
 const visible = (el: Element) => !el.closest("[style*='display:none']");
 const flush = () => new Promise((r) => setTimeout(r, 0));
 const noteText = (doc: Document) => doc.getElementById("oi-note")?.textContent;
-// One document for every test: each one's listeners go before the next.
 const bound: (() => void)[] = [];
 const bind = (...args: Parameters<typeof bindVault>) => {
   const unbind = bindVault(...args);
@@ -25,11 +24,9 @@ afterEach(() => {
   for (const u of bound.splice(0)) u();
 });
 
-/** OF's own vault responses, captured through the Relay and scrubbed (app/lib/__fixtures__/of/vault-*.json). */
 const fixture = <T,>(name: string): T => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/vault-${name}.json`), "utf8")) as T;
 const LISTS = fixture<VaultLists>("lists");
 const CUSTOM = LISTS.list!.filter((l) => l.type === "custom");
-/** A custom folder with media (the open one) and one without (the target). */
 const [A, B] = [CUSTOM.find((l) => l.hasMedia)!, CUSTOM.find((l) => !l.hasMedia)!];
 const [AID, BID] = [String(A.id), String(B.id)];
 const MEDIA = fixture<{ list: VaultMedia[] }>("media-all").list.slice(0, 3);
@@ -57,7 +54,6 @@ const ctxOf = (params: string, over: Partial<VaultContext> = {}): VaultContext =
   return { view: viewOf(sp), edit: sp.get("edit") === "1", lists: LISTS, navigate: vi.fn(), handlers: handlers(), newWrites: false, ...over };
 };
 const click = (el: Element) => el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-/** A tile's own checkbox (OF's: it selects the tile). */
 const check = (tile: Element) => click(tile.querySelector(".checkbox-item")!);
 
 describe("the view", () => {
@@ -67,10 +63,8 @@ describe("the view", () => {
     expect(viewOf(new URLSearchParams("type=pdf&field=recent&sort=desc&date=9/8/2026&q=%20&slist=%20"))).toEqual({ list: null, type: null, field: null, sort: null, date: null, q: null, slist: null });
     expect(vaultHref(view)).toBe("/of-manager/vault?list=7&type=video&field=buyers&sort=asc&date=2026-09-08&q=beach&slist=fold");
     expect(vaultHref({})).toBe("/of-manager/vault");
-    // Go to date: OF's beforePublishDate (the Relay's before_publish_date); the folder search is not the media's.
     expect(vaultMediaPath(view)).toBe("/api/of/v2/vault/media?limit=24&list_id=7&type=video&field=buyers&sort=asc&query=beach&before_publish_date=2026-09-08");
     expect(vaultMediaPath(viewOf(new URLSearchParams()))).toBe("/api/of/v2/vault/media?limit=24");
-    // The folder search: GET /vault/lists `query`; none without one.
     expect(vaultListsPath(view)).toBe("/api/of/v2/vault/lists?view=main&limit=50&query=fold");
     expect(vaultListsPath(viewOf(new URLSearchParams()))).toBe("/api/of/v2/vault/lists?view=main&limit=50");
   });
@@ -114,7 +108,6 @@ describe("the view", () => {
     expect([back.getAttribute("href"), back.getAttribute("aria-label"), back.nextElementSibling?.tagName]).toEqual(["/of-manager/vault", "Back", "H1"]);
     expect(back.closest(".l-main-content.m-r-side .g-page__header")).not.toBeNull();
     const css = doc.head.querySelector("style:last-of-type")!.textContent!;
-    // Shown only on a phone with a view open (the folder column, with its own Back, is hidden there).
     expect(css).toContain(`#${PHONE_BACK}{display:none!important}`);
     expect(css).toContain(`html[${VIEW_OPEN}] #${PHONE_BACK}{display:inline-flex!important`);
     unbind();
@@ -125,9 +118,9 @@ describe("the view", () => {
     for (const page of ["vault/index", "new-post/state-vault", "home/state-vault", "messages/chat/state-vault"]) {
       const doc = load(page);
       const title = () => doc.querySelector(".l-sidebar-column .b-content-filter__title")!.textContent!.trim();
-      expect(title(), page).toBe("custom"); // the capture's
+      expect(title(), page).toBe("custom");
       applyData(doc, page, { vaultLists: LISTS.list, vaultAll: LISTS.all, vaultSort: LISTS.sort, chat: "1" });
-      expect(title(), page).toBe("Recent"); // vault-lists.json: OF's sort "recent"
+      expect(title(), page).toBe("Recent");
       for (const [sort, label] of Object.entries(LIST_SORTS)) {
         applyData(doc, page, { vaultLists: LISTS.list, vaultAll: LISTS.all, vaultSort: sort, chat: "1" });
         expect(title(), page).toBe(label);
@@ -153,7 +146,6 @@ describe("the view", () => {
     expect(ctx.navigate).toHaveBeenLastCalledWith(`/of-manager/vault?list=${AID}&slist=fold`);
     unbind();
     expect(doc.getElementById(LISTS_SEARCH)).toBeNull();
-    // An open search: the form open with it, its Back to the view without it; a phone still shows the folders.
     bind(doc, "vault/index", ctxOf("slist=fold"));
     expect(header.classList.contains("m-search-form-visible")).toBe(true);
     expect((doc.getElementById(LISTS_SEARCH)!.querySelector("input") as HTMLInputElement).value).toBe("fold");
@@ -167,7 +159,7 @@ describe("the view", () => {
     let unbind = bind(doc, "vault/index", ctxOf(`list=${AID}`));
     expect(doc.documentElement.hasAttribute(VIEW_OPEN)).toBe(true);
     expect(css()).toContain("@media (max-width: 1003.98px)");
-    expect(css()).toContain(`html[${VIEW_OPEN}] .l-sidebar-column.m-l-side{display:none!important}`); // over OF's d-flex
+    expect(css()).toContain(`html[${VIEW_OPEN}] .l-sidebar-column.m-l-side{display:none!important}`);
     expect(css()).toContain(".l-sidebar-column.m-l-side.m-sticky-column{position:static!important}");
     unbind();
     expect(doc.documentElement.hasAttribute(VIEW_OPEN)).toBe(false);
@@ -176,7 +168,6 @@ describe("the view", () => {
     unbind();
     bind(doc, "vault/index", ctxOf(""));
     expect(doc.documentElement.hasAttribute(VIEW_OPEN)).toBe(false);
-    // Every Vault page: its State pages' Search opens the form too.
     const state = load("vault/state-lists-sort-dropdown");
     bind(state, "vault/state-lists-sort-dropdown", ctxOf(""));
     click(state.querySelector(".l-sidebar-column .g-page__header button[type='button'][aria-label='Search']")!);
@@ -226,7 +217,7 @@ describe("the sort dropdowns", () => {
     const ctx = ctxOf(`list=${AID}`);
     bind(doc, "vault/state-lists-sort-dropdown", ctx);
     const radio = (v: string) => [...doc.querySelectorAll<HTMLInputElement>(".of-state-menu input[type='radio']")].find((r) => r.value === v)!;
-    expect([LISTS.sort, LISTS.order]).toEqual(["recent", "desc"]); // as OF sent them
+    expect([LISTS.sort, LISTS.order]).toEqual(["recent", "desc"]);
     expect(["recent", "name", "asc", "desc"].map((v) => radio(v).checked)).toEqual([true, false, false, true]);
     expect(radio("asc").closest(".v-list-item")!.classList.contains("v-list-item--disabled")).toBe(false);
     expect(["default", "name", "recent", "media", "custom", "asc", "desc"].every((v) => radio(v).closest(".v-list-item")!.hasAttribute("data-oi-wired"))).toBe(true);
@@ -272,7 +263,6 @@ describe("the sort dropdowns", () => {
     const go = item("");
     expect([all.querySelector("a")!.getAttribute("href"), all.querySelector<HTMLInputElement>("input")!.checked]).toEqual(["/of-manager/vault?list=7", false]);
     expect([go.querySelector("label")!.textContent, go.querySelector<HTMLInputElement>("input[type='radio']")!.checked, go.hasAttribute("data-oi-wired"), go.querySelector("a")]).toEqual(["2026-09-08", true, true, null]);
-    // OF's day popup, on the view's day; the model's first day is the earliest, today the last.
     click(go);
     const popup = doc.querySelector<HTMLElement>("[data-oi-picker] .vdatetime-popup")!;
     expect(popup.querySelector(".vdatetime-popup__title")!.textContent!.trim()).toBe("Sep 8, 2026");
@@ -281,7 +271,6 @@ describe("the sort dropdowns", () => {
     doc.querySelector<HTMLButtonElement>("[data-oi-picker] [data-oi-picker-apply]")!.click();
     expect(ctx.navigate).toHaveBeenLastCalledWith("/of-manager/vault?list=7&date=2026-09-01");
     expect(doc.querySelector("[data-oi-picker]")).toBeNull();
-    // No first day known: no lower bound; no date: "Go to date" and All time checked.
     const bare = load("vault/state-sort-dropdown");
     bind(bare, "vault/state-sort-dropdown", ctxOf(""));
     const g = bare.querySelector(".of-state-menu input[name='vault-go-date-field'][value='']")!.closest(".v-list-item")!;
@@ -344,14 +333,14 @@ describe("Customize order", () => {
     expect(first.hasAttribute("data-oi-order")).toBe(false);
     expect(first.textContent).toContain("All media");
     expect(first.querySelector("[data-oi-drag]")).toBeNull();
-    expect(box.querySelectorAll("a[href]")).toHaveLength(0); // no row navigates while ordering
+    expect(box.querySelectorAll("a[href]")).toHaveLength(0);
     expect(box.querySelectorAll("[data-oi-order] [data-oi-drag] path")).toHaveLength(LISTS.list!.length);
   });
 
   it("the check sends the new order (OF's customOrder) and goes back; X goes back without it", async () => {
     const { doc, ctx, box, order, filter, h } = setup();
     const rows = [...box.querySelectorAll<HTMLElement>("[data-oi-order]")];
-    box.insertBefore(rows[2], rows[0]); // as a drag leaves them
+    box.insertBefore(rows[2], rows[0]);
     const want = order();
     click(filter.querySelector("[aria-label='Save order']")!);
     await flush();
@@ -368,7 +357,6 @@ describe("Customize order", () => {
     const { doc, box, order } = setup();
     const rows = [...box.querySelectorAll<HTMLElement>("[data-oi-order]")];
     const [a, , c] = rows;
-    // jsdom has no layout: the third row lies under the pointer, its top half below it.
     doc.elementFromPoint = () => c;
     c.getBoundingClientRect = () => ({ top: 0, height: 10 }) as DOMRect;
     const handle = a.querySelector("[data-oi-drag]")!;
@@ -460,11 +448,10 @@ describe("the action row", () => {
     const { bar, tiles, btn, h } = setup("");
     expect([...bar.querySelectorAll("[data-oi-act]")].map((b) => (b as HTMLElement).dataset.oiAct)).toEqual(["upload"]);
     check(tiles[0]);
-    click(tiles[2]); // while one is selected, a click anywhere on a tile selects it (OF's selection mode)
+    click(tiles[2]);
     expect(bar.textContent).toContain("2 selected");
     expect(btn("remove")).toBeNull();
     const pick = bar.querySelector<HTMLSelectElement>("select[data-oi-act='add']")!;
-    // OF's custom folders only (no built-in one takes media).
     expect([...pick.options].map((o) => o.text)).toEqual(["Add to folder…", ...CUSTOM.map((l) => l.name)]);
     pick.value = BID;
     pick.dispatchEvent(new Event("change", { bubbles: true }));
@@ -518,7 +505,7 @@ describe("the action row", () => {
     const { bar, tiles, btn, h } = setup("");
     check(tiles[0]);
     check(tiles[1]);
-    expect(btn("tags")).toBeNull(); // one media at a time
+    expect(btn("tags")).toBeNull();
     check(tiles[0]);
     click(btn("tags")!);
     const input = bar.querySelector<HTMLInputElement>("input[name='oi-vault-tags']")!;
@@ -567,9 +554,9 @@ describe("the action row", () => {
     doc.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(doc.getElementById(VIEWER)).toBeNull();
     expect(open(2)).toEqual(["VIDEO", img(media[2].files!.full!.url!), false, true]);
-    click(doc.getElementById(VIEWER)!); // its backdrop
+    click(doc.getElementById(VIEWER)!);
     expect(open(3)).toEqual(["AUDIO", img(media[3].files!.full!.url!), true, false]);
-    expect(tiles.some((t) => t.classList.contains("selected"))).toBe(false); // a view selects nothing
+    expect(tiles.some((t) => t.classList.contains("selected"))).toBe(false);
     expect(doc.querySelectorAll(`#${VIEWER}`)).toHaveLength(1);
   });
 
@@ -589,7 +576,7 @@ describe("the action row", () => {
     key("ArrowRight");
     expect(shown()).toBe(img(media[2].files!.full!.url!));
     expect(btn("Next").disabled).toBe(true);
-    key("ArrowRight"); // the last: stays
+    key("ArrowRight");
     expect(shown()).toBe(img(media[2].files!.full!.url!));
     key("ArrowLeft");
     key("ArrowLeft");
@@ -600,7 +587,7 @@ describe("the action row", () => {
     expect(doc.querySelectorAll(`#${VIEWER} img, #${VIEWER} video`)).toHaveLength(1);
     key("Escape");
     expect(doc.getElementById(VIEWER)).toBeNull();
-    key("ArrowLeft"); // no viewer: nothing
+    key("ArrowLeft");
     expect(doc.getElementById(VIEWER)).toBeNull();
   });
 

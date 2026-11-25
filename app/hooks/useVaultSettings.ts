@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * useVaultSettings — a Creator's three vault switches (GET / PUT /admin/vault-ai/settings):
- * `folder_price_final` (Full AI Chat sells folder-priced media at exactly the saved price) and `standard_folders`
- * (the fixed category list, with its Needs Review folder), both off by default, and `solo_sequences` (Script Fill
- * puts only solo media into Sequences), on by default. Owner scope: a folder-limited chatter's read 403s, so
- * `data` stays undefined.
- */
 
 import { useQuery, type QueryClient } from "@tanstack/react-query";
 
@@ -16,6 +9,7 @@ import { syncStandardFolders } from "@/hooks/useStandardFolders";
 export interface VaultSettings { folder_price_final: boolean; standard_folders: boolean; solo_sequences: boolean }
 export const vaultSettingsKey = (accountId: string) => ["vault-settings", accountId] as const;
 
+// Owner scope: a folder-limited chatter's read 403s, so `data` stays undefined.
 export function useVaultSettings(accountId: string, enabled = true) {
   return useQuery<VaultSettings>({
     queryKey: vaultSettingsKey(accountId),

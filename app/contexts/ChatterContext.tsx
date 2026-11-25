@@ -80,6 +80,7 @@ export interface ChatterFlatAccountDTO {
   is_active: boolean;
   /** "watcher" on a watcher account: useAccounts lists it under `watchers` (OF Manager only), never as a Creator. */
   role?: "watcher" | null;
+  platform?: string | null;
   /** The Shared refresher's snapshot of this Creator (lib/creatorFreshness), with its Knob on; absent off or on a
    *  watcher. useAccounts keeps it on the normalized row. */
   freshness?: Freshness;

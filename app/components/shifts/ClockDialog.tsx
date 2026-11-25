@@ -1,28 +1,5 @@
 "use client";
 
-/**
- * "Clock in and out" (docs/spec/phase-02-shifts-time-tracking.md, App;
- * user stories 19-26): a chatter picks one of the Creators it can access and
- * clocks in; the dialog then shows the open Clock event and Clock out.
- *
- * Since w4-a everyone else clocks in one click on the agency-wide clock
- * (`useClock`); this dialog opens only for a chatter linked to two Agencies
- * (ClockStatus `reason: "pick_creator"`), from the top bar's Clock button,
- * the "My shifts" card or the clock-in reminder, so the Creator names the
- * Agency. Its writes are `useClock`'s, so they toast as everywhere else.
- *
- * Everything comes from `GET /admin/shifts/me`: the Creators, each with its
- * own Agency's time-tracking flag, and the chatter's open Clock events. The
- * Relay decides the Agency (the one that owns the Creator) and the Shift an
- * event attaches to, so the dialog sends only the Creator or the event id.
- *
- * ASSUMPTION: while any Clock event is open the dialog shows only the open
- * events and their Clock out, not the Creator picker. Rung 5: the ticket's
- * "the dialog then shows the open Clock event and a Clock out button". A
- * chatter linked to two Agencies clocks in on the second one after clocking
- * out of the first. Overturned if such a chatter must hold an open event in
- * each Agency from this dialog at once (the Relay already allows it).
- */
 
 import * as Dialog from "@radix-ui/react-dialog";
 import { useState } from "react";
@@ -47,7 +24,6 @@ export default function ClockDialog({ onClose }: { onClose: () => void }) {
   const creatorName = (id: string | null) => accounts.find((a) => a.account_id === id)?.display_name ?? id ?? "a Creator";
 
   let body;
-  /** The pick-a-Creator case's primary, in the footer after Close (R7). */
   let action = null;
   if (me.isPending) {
     body = <p className="text-sm text-fg-dim">Loading…</p>;
@@ -103,7 +79,6 @@ export default function ClockDialog({ onClose }: { onClose: () => void }) {
   return (
     <Dialog.Root open onOpenChange={(o) => { if (!o) onClose(); }}>
       <Dialog.Portal>
-        {/* IfModal's look on Radix: the 70% mask, the kit box, title 22px 24px, body 24px, footer right. */}
         <Dialog.Overlay className={`fixed inset-0 z-40 ${IF_MODAL_MASK}`} />
         <Dialog.Content
           aria-describedby={undefined}

@@ -1,4 +1,3 @@
-"""lib/nightly.py tables. venv/bin/python -m pytest slop/lib/test_nightly.py"""
 from __future__ import annotations
 
 import argparse
@@ -35,8 +34,8 @@ def test_volume_runs_medium_120_without_ui(tmp_path):
     ({}, 0, 0, "no map entry: 0 of 0 unmapped + stale entries (cap 10"),
     ({"a" * 40: 201}, 10, 37, "201 commits behind HEAD (> 200): 10 of 37 unmapped + stale entries (cap 10, most "
                               "behind first); 27 wait for later nights"),
-    ({"a" * 40: 500, "b" * 40: 1}, 3, 3, "500 commits"),  # the oldest sha counts
-    ({"a" * 40: 3, "b" * 40: None}, 1, 1, "not ancestors of HEAD: bbbbbbb"),  # divergent/newer: stale
+    ({"a" * 40: 500, "b" * 40: 1}, 3, 3, "500 commits"),
+    ({"a" * 40: 3, "b" * 40: None}, 1, 1, "not ancestors of HEAD: bbbbbbb"),
     ({"a" * 40: 5}, 1, 1, "(<= 200): 1 of 1 unmapped"),
 ])
 def test_map_rule(ages, picked, due, word):
@@ -48,20 +47,20 @@ MAP_ALL_STALE = ["d-new", "2026-11-01-notifications-feed-volume", "2026-11-03-os
 
 
 @pytest.mark.parametrize("smoke,phases,ages,want", [
-    (False, ["all", "volume", "map"], {"x": 3},  # volume first; day 0: the first 3 sorted volume names
+    (False, ["all", "volume", "map"], {"x": 3},
      {"volume": ["2026-11-01-notifications-feed-volume", "2026-11-03-os-ping-push", "b-vol"], "all": NAMES,
       "map": ["d-new"]}),
-    (False, ["map", "all"], {"x": 300}, {"all": NAMES, "map": MAP_ALL_STALE}),  # PHASES order; unmapped first
-    (False, ["map"], {"x": 3, "y": 201}, {"map": ["d-new", "2026-11-03-os-ping-push", "b-vol"]}),  # stale entries
-    (False, ["map"], {"x": 3, "y": None}, {"map": ["d-new", "2026-11-03-os-ping-push", "b-vol"]}),  # divergent
-    (False, ["map"], {"x": 3}, {"map": ["d-new", "2026-11-03-os-ping-push", "b-vol"]}),  # sha y unknown: stale
-    (True, ["all", "volume", "map"], {"x": 300},  # smoke: unmapped only; a missing smoke name dropped
+    (False, ["map", "all"], {"x": 300}, {"all": NAMES, "map": MAP_ALL_STALE}),
+    (False, ["map"], {"x": 3, "y": 201}, {"map": ["d-new", "2026-11-03-os-ping-push", "b-vol"]}),
+    (False, ["map"], {"x": 3, "y": None}, {"map": ["d-new", "2026-11-03-os-ping-push", "b-vol"]}),
+    (False, ["map"], {"x": 3}, {"map": ["d-new", "2026-11-03-os-ping-push", "b-vol"]}),
+    (True, ["all", "volume", "map"], {"x": 300},
      {"volume": ["2026-11-01-notifications-feed-volume"], "all": ["2026-11-03-os-ping-push"], "map": ["d-new"]}),
 ])
 def test_build_plan(smoke, phases, ages, want, monkeypatch):
     monkeypatch.setattr(nt.covmap, "is_volume", lambda p: p.stem in
                         {"b-vol", "c-vol", "2026-11-03-os-ping-push", "2026-11-01-notifications-feed-volume"})
-    doc = MIXED if phases == ["map"] else DOC  # the map-only rows: two entries on sha y
+    doc = MIXED if phases == ["map"] else DOC
     plan, why, notes = nt.build_plan({n: nt.SLOP / "scenarios" / f"{n}.py" for n in NAMES}, doc, phases, smoke, ages)
     assert plan == want and list(plan) == list(want)
     assert why.startswith("smoke") == smoke
@@ -69,8 +68,7 @@ def test_build_plan(smoke, phases, ages, want, monkeypatch):
 
 
 @pytest.mark.parametrize("n_unmapped,ages_of,want,due", [
-    # unmapped first, then no/unknown/divergent sha (by name), then most behind; fresh entries never; cap MAP_PER_NIGHT
-    (12, {}, [f"u{i:02d}" for i in range(10)], 24),  # every sha unknown: all 12 entries stale too
+    (12, {}, [f"u{i:02d}" for i in range(10)], 24),
     (2, {"old": 900, "mid": 400, "new": 3},
      ["u00", "u01", "div", "nosha", "unknown", "old0", "old1", "old2", "mid0", "mid1"], 11),
     (0, {"old": 900, "mid": 400, "new": 3}, ["div", "nosha", "unknown", "old0", "old1", "old2", "mid0", "mid1", "mid2"], 9),
@@ -85,23 +83,20 @@ def test_map_pick_cap_and_order(n_unmapped, ages_of, want, due):
 
 
 def test_map_pick_rotates_over_nights():
-    """The map phase restores slop/map.json: entries stay stale, so the rotation comes from `tried` alone. 25
-    stale entries (one fails every night) are all tried within 3 nights; consecutive nights differ."""
-    mapped = {f"s{i:02d}": {"sha": "old" if i else "older"} for i in range(25)}  # s00 the most behind
+    mapped = {f"s{i:02d}": {"sha": "old" if i else "older"} for i in range(25)}
     ages = {"old": 500, "older": 900}
     nights, done = [], set()
     for _night in range(3):
-        tried = {n: i for i, got in reversed(list(enumerate(reversed(nights)))) for n in got}  # newest try wins
+        tried = {n: i for i, got in reversed(list(enumerate(reversed(nights)))) for n in got}
         got, due = nt.map_pick(sorted(mapped), mapped, ages, tried=tried)
         assert due == 25 and len(got) == nt.MAP_PER_NIGHT
         nights.append(got)
         done |= set(got)
     assert done == set(mapped) and set(nights[0]).isdisjoint(nights[1]) and "s00" in nights[0]
-    # night 3 = 5 untried + the 5 oldest tries (s00-s04, the most behind first); then s05.. (tried 2 nights ago)
     assert nights[2] == [f"s{i:02d}" for i in (20, 21, 22, 23, 24, 0, 1, 2, 3, 4)]
     tried = {n: i for i, got in reversed(list(enumerate(reversed(nights)))) for n in got}
     assert nt.map_pick(sorted(mapped), mapped, ages, tried=tried)[0] == [f"s{i:02d}" for i in range(5, 15)]
-    assert nt.map_pick(sorted(mapped), mapped, ages)[0] == nights[0]  # no history: as before
+    assert nt.map_pick(sorted(mapped), mapped, ages)[0] == nights[0]
 
 
 def test_map_attempts(tmp_path, monkeypatch):
@@ -114,9 +109,9 @@ def test_map_attempts(tmp_path, monkeypatch):
         if done:
             (d / "done").write_text("")
     night("20261101T000000Z-nightly-aaaa", [_row("map", "a", "OK"), _row("map", "b", "FAIL")])
-    night("20261102T000000Z-nightly-bbbb", [_row("all", "z", "OK")])  # no map rows: not counted
+    night("20261102T000000Z-nightly-bbbb", [_row("all", "z", "OK")])
     night("20261103T000000Z-nightly-cccc", [_row("map", "b", "INFRA"), _row("map", "c", "SKIP", cut=nt.CUT_NOT_RUN)])
-    night("20261104T000000Z-nightly-dddd", [_row("map", "d", "OK")], done=False)  # unfinished: never
+    night("20261104T000000Z-nightly-dddd", [_row("map", "d", "OK")], done=False)
     assert nt.map_attempts("20261105T000000Z-nightly-ffff") == {"b": 0, "a": 1}
     assert nt.map_attempts("20261105T000000Z-nightly-ffff", lookback=1) == {"b": 0}
     assert nt.map_attempts("20261101T000000Z-nightly-aaaa") == {}
@@ -142,29 +137,26 @@ LAYOUT = [("layout", "app: every page <- app/app/layout.tsx")]
 
 
 @pytest.mark.parametrize("prev,picked,fallback,want_run,want_why,wide", [
-    # each source: canary always, carry-over = prev `all` not OK (volume rows: volume_carry; map rows and removed
-    # scenarios not), changed = own/flow picks only, unmapped; c-vol / e-ok / f-gone-ok unaffected: left out
     (PREV, {"e-ok": [("flow", "service/x.py::f (hunk @ L3; run by 1/8)")]}, None,
      ["2026-10-23-inbox-unread-fan-burst", "2026-11-03-os-ping-push", "a-ui", "b-vol", "d-new", "e-ok"],
      {"a-ui": ["carry-over (all FAIL)"], "b-vol": [f"carry-over (all SKIP: {nt.CUT_NOT_RUN})"],
       "d-new": ["unmapped"],
       "e-ok": ["changed (flow: service/x.py::f (hunk @ L3; run by 1/8))"],
       "2026-11-03-os-ping-push": ["canary"], "2026-10-23-inbox-unread-fan-burst": ["canary"]}, 0),
-    # shared/layout picks (owner 2026-11-21): left out, counted; one that is also canary/carry-over still runs
     ({**PREV, "rows": [_row("all", "a-ui", "FAIL")]},
      {"e-ok": SHARED, "f-gone-ok": LAYOUT, "a-ui": SHARED, "2026-11-03-os-ping-push": LAYOUT}, None,
      ["2026-10-23-inbox-unread-fan-burst", "2026-11-03-os-ping-push", "a-ui", "d-new"],
      {"a-ui": ["carry-over (all FAIL)"], "d-new": ["unmapped"], "2026-11-03-os-ping-push": ["canary"],
       "2026-10-23-inbox-unread-fan-burst": ["canary"]}, 2),
-    ({**PREV, "rows": []}, {}, None,  # nothing changed, nothing red: canaries + unmapped
+    ({**PREV, "rows": []}, {}, None,
      ["2026-10-23-inbox-unread-fan-burst", "2026-11-03-os-ping-push", "d-new"],
      {"d-new": ["unmapped"], "2026-11-03-os-ping-push": ["canary"], "2026-10-23-inbox-unread-fan-burst": ["canary"]}, 0),
-    ({**PREV, "rows": []}, {"2026-11-03-os-ping-push": [("own", "scenario file changed")]}, None,  # sources stack
+    ({**PREV, "rows": []}, {"2026-11-03-os-ping-push": [("own", "scenario file changed")]}, None,
      ["2026-10-23-inbox-unread-fan-burst", "2026-11-03-os-ping-push", "d-new"],
      {"d-new": ["unmapped"], "2026-11-03-os-ping-push": ["canary", "changed (own: scenario file changed)"],
       "2026-10-23-inbox-unread-fan-burst": ["canary"]}, 0),
-    (None, None, None, ALL, {}, None),  # no previous nightly: every scenario
-    (PREV, None, "pick since 3ab64de failed: SystemExit: not a commit", ALL, {}, None),  # pick error: every scenario
+    (None, None, None, ALL, {}, None),
+    (PREV, None, "pick since 3ab64de failed: SystemExit: not a commit", ALL, {}, None),
     (None, None, "no map", ALL, {}, None),
 ])
 def test_all_plan_sources_and_fallback(prev, picked, fallback, want_run, want_why, wide):
@@ -195,11 +187,11 @@ def test_last_nightly_and_relevance(tmp_path, monkeypatch):
         if done:
             (d / "done").write_text("")
     night("20261101T000000Z-nightly-aaaa", sha="old")
-    night("20261102T000000Z-nightly-bbbb", smoke=True)  # smoke: never the base
-    night("20261103T000000Z-nightly-cccc", phase_names=["map"])  # no all phase
-    night("20261104T000000Z-nightly-dddd")  # no summary.json (crashed)
-    night("20261104T120000Z-nightly-dddd", done=False, sha="unfinished")  # no `done`: never the base
-    night("20261109T000000Z-nightly-eeee", sha="later")  # this night or later: never
+    night("20261102T000000Z-nightly-bbbb", smoke=True)
+    night("20261103T000000Z-nightly-cccc", phase_names=["map"])
+    night("20261104T000000Z-nightly-dddd")
+    night("20261104T120000Z-nightly-dddd", done=False, sha="unfinished")
+    night("20261109T000000Z-nightly-eeee", sha="later")
     got = nt.last_nightly("20261105T000000Z-nightly-ffff")
     assert (got["name"], got["sha"]) == ("20261101T000000Z-nightly-aaaa", "old")
     assert nt.last_nightly(None)["sha"] == "later"
@@ -217,8 +209,6 @@ def test_last_nightly_and_relevance(tmp_path, monkeypatch):
     g0 = {"changed": {"x": ["service/a.py"]}, "untracked": [], "map_missing": {}}
     monkeypatch.setattr(nt.covmap, "pick_changed", lambda _d, since: (g0, {"a": [("own", since)]}, []))
     assert nt.relevance(doc, later) == ({"a": [("own", "later")]}, None)
-    # a changed file the map cannot judge (selection.unjudged: absent at an entry's sha; picked `shared`, left
-    # out by the nightly): every scenario, named. Judged from the gather dict, never from warning text.
     blind = [f"service/f{i}.py" for i in range(5)]
     g = {"changed": {"x": blind + ["service/a.py"]}, "untracked": [], "map_missing": {"x": set(blind)}}
     monkeypatch.setattr(nt.covmap, "pick_changed", lambda _d, since: (g, {"a": [("shared", "x")]}, ["WARN x"]))
@@ -230,8 +220,6 @@ def test_last_nightly_and_relevance(tmp_path, monkeypatch):
 
 
 def test_plan_no_map_still_carries_volume_reds(monkeypatch):
-    """No map (relevance falls back): `all` runs everything, and last night's non-OK volume rows still run
-    again in the volume phase (prev is fetched once, not through relevance)."""
     vol = {"b-vol", "c-vol", "2026-11-03-os-ping-push", "2026-11-01-notifications-feed-volume"}
     monkeypatch.setattr(nt.covmap, "is_volume", lambda p: p.stem in vol)
     monkeypatch.setattr(nt.covmap, "load_map", lambda: {})
@@ -240,7 +228,7 @@ def test_plan_no_map_still_carries_volume_reds(monkeypatch):
     monkeypatch.setattr(nt, "last_nightly", lambda before, phase="all": {"name": "N", "sha": "s",
                                                                          "rows": [_row("volume", "c-vol", "FAIL")]})
     monkeypatch.setattr(nt, "map_attempts", lambda before: {})
-    day0 = SimpleNamespace(toordinal=lambda: 0)  # day 0's slice: the first 3 sorted, c-vol is not in it
+    day0 = SimpleNamespace(toordinal=lambda: 0)
     monkeypatch.setattr(nt, "datetime", SimpleNamespace(date=SimpleNamespace(today=lambda: day0)))
     paths = {n: nt.SLOP / "scenarios" / f"{n}.py" for n in NAMES}
     plan, _why, _sha, notes = nt._plan(argparse.Namespace(smoke=False), ["volume", "all"], paths)
@@ -249,9 +237,7 @@ def test_plan_no_map_still_carries_volume_reds(monkeypatch):
 
 
 @pytest.mark.parametrize("history", [
-    # a failed volume-only run after the last `all` night: its reds carry
     [(["volume", "all"], [_row("volume", "c-vol", "OK")]), (["volume"], [_row("volume", "c-vol", "FAIL")])],
-    # an all-only night after a volume red: it does not erase the carry
     [(["volume", "all"], [_row("volume", "c-vol", "FAIL")]), (["all"], [_row("all", "a-ui", "OK")])],
 ])
 def test_volume_carry_reads_the_newest_volume_night(history, tmp_path, monkeypatch):
@@ -259,7 +245,7 @@ def test_volume_carry_reads_the_newest_volume_night(history, tmp_path, monkeypat
     for i, (phases, rows) in enumerate(history + [(["volume"], [_row("volume", "c-vol", "OK")])]):
         d = tmp_path / f"2026110{i + 1}T000000Z-nightly-aaaa"
         d.mkdir()
-        smoke = i == len(history)  # the newest: a smoke volume night, never the carry source
+        smoke = i == len(history)
         (d / "summary.json").write_text(json.dumps({"sha": "s", "rows": rows, "phase_names": phases,
                                                     "smoke": smoke}))
         (d / "done").write_text("")
@@ -268,7 +254,7 @@ def test_volume_carry_reads_the_newest_volume_night(history, tmp_path, monkeypat
     monkeypatch.setattr(nt.covmap, "load_map", lambda: {})
     monkeypatch.setattr(nt.covmap, "map_ages", lambda doc: {})
     monkeypatch.setattr(nt.covmap, "git", lambda *a: "abc\n")
-    day0 = SimpleNamespace(toordinal=lambda: 0)  # day 0's slice: the first 3 sorted, c-vol is not in it
+    day0 = SimpleNamespace(toordinal=lambda: 0)
     monkeypatch.setattr(nt, "datetime", SimpleNamespace(date=SimpleNamespace(today=lambda: day0)))
     paths = {n: nt.SLOP / "scenarios" / f"{n}.py" for n in NAMES}
     _plan, _why, _sha, notes = nt._plan(argparse.Namespace(smoke=False), ["volume", "all"], paths,
@@ -277,8 +263,6 @@ def test_volume_carry_reads_the_newest_volume_night(history, tmp_path, monkeypat
 
 
 def test_volume_carry_runs_at_volume(monkeypatch):
-    """A volume row not OK last night runs again in tonight's volume phase (after the rotation slice), not in
-    `all` at small scale."""
     vol = {"b-vol", "c-vol", "2026-11-03-os-ping-push", "2026-11-01-notifications-feed-volume"}
     monkeypatch.setattr(nt.covmap, "is_volume", lambda p: p.stem in vol)
     prev = {"name": "N", "sha": "s", "rows": [_row("volume", "c-vol", "INFRA"), _row("volume", "b-vol", "FAIL"),
@@ -287,7 +271,6 @@ def test_volume_carry_runs_at_volume(monkeypatch):
     paths = {n: nt.SLOP / "scenarios" / f"{n}.py" for n in NAMES}
     plan, _why, notes = nt.build_plan(paths, DOC, ["all", "volume"], False, {"x": 3}, prev=prev, picked={},
                                       vol_prev=prev)
-    # day 0 slice: notifications, os-ping, b-vol; b-vol already in it; a-ui no longer volume, gone removed
     assert plan["volume"] == ["2026-11-01-notifications-feed-volume", "2026-11-03-os-ping-push", "b-vol", "c-vol"]
     assert notes["volume_carry"] == ["c-vol"] and "c-vol" not in plan["all"]
     txt = nt._plan_text("S", "abc", False, plan, "r", notes)
@@ -309,9 +292,9 @@ def test_plan_text_and_digest_record_why():
 
 @pytest.mark.parametrize("names,day,want", [
     (["d", "b", "a", "c", "e"], 0, ["a", "b", "c"]),
-    (["d", "b", "a", "c", "e"], 1, ["d", "e", "a"]),  # wraps
+    (["d", "b", "a", "c", "e"], 1, ["d", "e", "a"]),
     (["d", "b", "a", "c", "e"], 2, ["b", "c", "d"]),
-    (["b", "a"], 9, ["a", "b"]),  # fewer than k: all
+    (["b", "a"], 9, ["a", "b"]),
     ([], 5, []),
 ])
 def test_volume_slice(names, day, want):
@@ -330,7 +313,7 @@ def C(status, budget=False, name=None):
 
 @pytest.mark.parametrize("code,checks,meta,map_run,tail,want", [
     (0, [C("pass")], {}, False, "", ("OK", [], None)),
-    (0, None, None, False, "", ("OK", [], None)),  # the exit code decides, not the files
+    (0, None, None, False, "", ("OK", [], None)),
     (1, [C("pass"), C("fail")], {}, False, "", ("FAIL", ["c-fail"], None)),
     (1, [C("pass"), C("fail", budget=True)], {}, False, "", ("FAIL", ["c-fail"], None)),
     (1, [C("pass"), C("fail", budget=True)], {}, True, "", ("RED (coverage)", ["c-fail"], None)),
@@ -343,7 +326,7 @@ def C(status, budget=False, name=None):
     (2, None, None, True, "slop: --map needs a clean tree", ("INFRA", [], "exit 2: slop: --map needs a clean tree")),
     (-9, None, None, False, "", ("INFRA", [], "slop/run exit -9")),
     (75, None, None, False, "INFRA: machine lock x still held after 7201s by pid 9 | gate: y",
-     ("INFRA", [], "machine gate: exit 75: INFRA: machine lock")),  # no INFRA line seen: the tail
+     ("INFRA", [], "machine gate: exit 75: INFRA: machine lock")),
 ])
 def test_verdict(code, checks, meta, map_run, tail, want):
     v, failed, infra = nt.verdict(code, checks, meta, map_run=map_run, tail=tail)
@@ -373,7 +356,7 @@ def test_settle(first, rerun, want):
     (dict(verdict="OK", folder="F2", failed=[], infra=None, p95={"k": 2}), "FLAKY", "F2", ["x"], None),
     (dict(verdict="FAIL", folder="F2", failed=["y"], infra=None, p95={}), "FAIL", "F2", ["y"], None),
     (dict(verdict="INFRA", folder=None, failed=[], infra="slop/run exit -9", p95={}), "INFRA", None, ["x"],
-     "slop/run exit -9"),  # died before a folder: '-' in the digest
+     "slop/run exit -9"),
 ])
 def test_merge_rerun(again, verdict, folder, failed, infra):
     first = {"phase": "all", "scenario": "s", "verdict": "FAIL", "seconds": 10.0, "folder": "F1", "failed": ["x"],
@@ -386,8 +369,8 @@ def test_merge_rerun(again, verdict, folder, failed, infra):
 
 @pytest.mark.parametrize("vs,code,word", [
     (["OK", "OK"], 0, "OK"), (["OK", "FLAKY", "SKIP"], 0, "OK"), (["OK", "FAIL", "FLAKY"], 1, "RED"),
-    (["FAIL", "INFRA"], 3, "INFRA"), ([], 3, "SKIPPED"), (["OK", "RED (coverage)"], 0, "OK"),  # nothing ran: no work
-    (["SKIP", "SKIP"], 3, "SKIPPED"),  # every check skipped everywhere: nothing proved, never OK
+    (["FAIL", "INFRA"], 3, "INFRA"), ([], 3, "SKIPPED"), (["OK", "RED (coverage)"], 0, "OK"),
+    (["SKIP", "SKIP"], 3, "SKIPPED"),
 ])
 def test_exit_and_headline(vs, code, word):
     assert nt.exit_code(vs) == code
@@ -401,7 +384,7 @@ def test_exit_and_headline(vs, code, word):
 
 @pytest.mark.parametrize("cur,names,replaced,added,missing,keep", [
     ({"a": {"sha": "old"}, "z": {"sha": "z"}}, ["a", "b"], ["a"], ["b"], [], "z"),
-    ({"z": {"sha": "z"}}, ["c"], [], [], ["c"], "z"),  # not in the folder's map.json: reported, nothing done
+    ({"z": {"sha": "z"}}, ["c"], [], [], ["c"], "z"),
     ({}, [], [], [], [], None),
 ])
 def test_merge_map(cur, names, replaced, added, missing, keep):
@@ -410,7 +393,7 @@ def test_merge_map(cur, names, replaced, added, missing, keep):
     assert (r, a, m) == (replaced, added, missing)
     assert all(doc["scenarios"][n] == {"sha": "new"} for n in r + a)
     if keep:
-        assert doc["scenarios"][keep] == {"sha": "z"}  # entries not named stay as they were
+        assert doc["scenarios"][keep] == {"sha": "z"}
 
 
 def test_folder_line_round_trip(tmp_path):
@@ -430,8 +413,6 @@ def test_child_env_leaves_the_gate():
 
 
 def test_child_env_drops_every_gate_var():
-    """R5-9: every SLOP_GATE*, not 4 names: an exclusive or ungated parent's flag never reaches the children
-    (red before: SLOP_GATE_EXCLUSIVE made every child gate exclusive)."""
     env = {"PATH": "/bin", "SLOP_GATE": "off", "SLOP_GATE_EXCLUSIVE": "1", "SLOP_GATE_LATER": "x", "SLOP_GATED": "1"}
     assert nt.child_env(env) == {"PATH": "/bin", "SLOP_LOCK_WAIT_S": "7200", "SLOP_NIGHTLY": "1"}
     assert nt.scrub_gate_env(env) and env == {"PATH": "/bin"}
@@ -439,8 +420,8 @@ def test_child_env_drops_every_gate_var():
 
 @pytest.mark.parametrize("env,had,left", [
     ({"PATH": "/bin"}, False, {"PATH": "/bin"}),
-    ({"PATH": "/bin", "SLOP_GATED": "1", "SLOP_GATE_PID": "1"}, True, {"PATH": "/bin"}),  # pid 1: live, reused
-    ({"SLOP_GATED": "1", "SLOP_GATE_PID": "abc"}, True, {}),  # non-numeric pid
+    ({"PATH": "/bin", "SLOP_GATED": "1", "SLOP_GATE_PID": "1"}, True, {"PATH": "/bin"}),
+    ({"SLOP_GATED": "1", "SLOP_GATE_PID": "abc"}, True, {}),
     ({"SLOP_GATE_PID": "9", "SLOP_GATE_WAIT_S": "3", "SLOP_GATE_LOAD": "2"}, True, {}),
 ])
 def test_scrub_gate_env(env, had, left):
@@ -464,7 +445,6 @@ def test_no_abbreviations(argv, capsys):
 
 
 def test_stream_timeout_kills_a_child_in_its_own_session(tmp_path):
-    """As gate.py run: the workload sits in a session of its own, holding the pipe; the timeout reaps it too."""
     inner = "import subprocess, time; subprocess.Popen(['sh', '-c', 'echo $$; exec sleep 60'], start_new_session=True); time.sleep(60)"
     n = nt.Night(tmp_path, tee=True)
     t0 = nt.time.time()
@@ -476,7 +456,7 @@ def test_stream_timeout_kills_a_child_in_its_own_session(tmp_path):
 def R(phase, name, v, p95=None, **kw):
     r = {"phase": phase, "scenario": name, "verdict": v, "p95": p95 or {}, "seconds": 1.0, "folder": f"F-{name}",
          "failed": [], "infra": None, "run_phases": None, **kw}
-    return {"untimed": [] if r["run_phases"] else [r["seconds"]], **r}  # as row_of: no run phases = untimed
+    return {"untimed": [] if r["run_phases"] else [r["seconds"]], **r}
 
 
 def test_changes():
@@ -486,7 +466,7 @@ def test_changes():
     c = nt.changes(now, prev)
     assert c["newly_red"] == ["all a", "volume new"] and c["newly_green"] == ["all b"]
     assert c["newly_infra"] == ["all infra-new"]
-    assert c["p95"] == ["all a GET /x: 100 -> 125 ms (+25%)"]  # c: +10% stays out
+    assert c["p95"] == ["all a GET /x: 100 -> 125 ms (+25%)"]
     assert nt.changes(now, None)["first"] is True
 
 
@@ -568,10 +548,10 @@ def test_prev_same_phases_and_smoke_earlier_only(tmp_path, monkeypatch):
             (d / "done").write_text("0\n")
         (d / "summary.json").write_text(json.dumps({"rows": [], "smoke": smoke, "phase_names": phases}))
     night("20261101T000000Z-nightly-aaaa", False, ["all", "volume", "map"])
-    night("20261102T000000Z-nightly-bbbb", True, ["all", "volume", "map"])  # smoke: not a full night's prev
-    night("20261103T000000Z-nightly-cccc", False, ["all"])  # other phases
-    night("20261109T000000Z-nightly-dddd", False, ["all", "volume", "map"])  # later: never a prev
-    night("20261104T000000Z-nightly-ffff", False, ["all", "volume", "map"], done=False)  # unfinished: never
+    night("20261102T000000Z-nightly-bbbb", True, ["all", "volume", "map"])
+    night("20261103T000000Z-nightly-cccc", False, ["all"])
+    night("20261109T000000Z-nightly-dddd", False, ["all", "volume", "map"])
+    night("20261104T000000Z-nightly-ffff", False, ["all", "volume", "map"], done=False)
     out = tmp_path / "20261105T000000Z-nightly-eeee"
     assert nt._prev(out, False, ["all", "volume", "map"])[0] == "20261101T000000Z-nightly-aaaa"
     assert nt._prev(out, True, ["all", "volume", "map"])[0] == "20261102T000000Z-nightly-bbbb"
@@ -586,7 +566,6 @@ def test_stream_timeout_kills_and_logs(tmp_path):
 
 
 def test_app_deps_install_runs_in_the_gate(tmp_path, monkeypatch):
-    """pnpm install goes through `gate.py run --`, env without SLOP_GATE*; gate exit 75 = INFRA preflight."""
     gate = tmp_path / "gate.py"
     gate.write_text('import os, sys\nprint("argv", *sys.argv[1:], "gated", os.environ.get("SLOP_GATED"), '
                     '"wait", os.environ.get("SLOP_LOCK_WAIT_S"))\nprint("INFRA: no slot free after 7200s", '
@@ -664,8 +643,6 @@ def test_invalid_map_phase_keeps_rows_and_reports_infra(tmp_path, monkeypatch):
 
 def test_changed_load_not_reported_as_improvement():
     name='2026-11-05-relay-admission'
-    # an earlier run at another load (main's standard volume is 120 since 9fdbb71d1; rows without
-    # `knobs` read as today's default, so this one names its 200 explicitly)
     old=R('volume',name,'FAIL',{'flood':900},knobs=['--scale=medium','--users=200','--no-ui'])
     new=R('volume',name,'OK',{'flood':600},knobs=nt.effective_knobs('volume',name))
     result=nt.changes([new],[old])
@@ -683,7 +660,6 @@ def _ph(startup, seeding, execution, teardown, calls=1, failed=0, waits=()):
 
 
 def test_merge_rerun_sums_both_attempts_gate_wait_and_run_phases():
-    """Red on the first-attempt-only merge: a FAIL's re-run gate wait and phases were dropped (2 + 3 -> 2)."""
     first = {"phase": "all", "scenario": "s", "verdict": "FAIL", "seconds": 10.0, "folder": "F1", "failed": ["x"],
              "infra": None, "p95": {}, "exit": 1, "gate_wait_s": 2.0, "untimed": [],
              "run_phases": _ph(1.0, 2.0, 3.0, 4.0, waits=[{"name": "relay", "seconds": 1.0, "polls": 2}])}
@@ -698,12 +674,11 @@ def test_merge_rerun_sums_both_attempts_gate_wait_and_run_phases():
 
 
 @pytest.mark.parametrize("a,b,want,untimed", [
-    (None, None, None, [1.0, 2.0]),  # neither attempt reached a folder with phases
-    (_ph(1.0, None, None, 0.5, calls=0), None, _ph(1.0, None, None, 0.5, calls=0), [2.0]),  # re-run died early
-    (_ph(1.0, None, None, 0.5, calls=0), _ph(2.0, 3.0, 4.0, 5.0), _ph(3.0, 3.0, 4.0, 5.5), []),  # null + n = n
+    (None, None, None, [1.0, 2.0]),
+    (_ph(1.0, None, None, 0.5, calls=0), None, _ph(1.0, None, None, 0.5, calls=0), [2.0]),
+    (_ph(1.0, None, None, 0.5, calls=0), _ph(2.0, 3.0, 4.0, 5.0), _ph(3.0, 3.0, 4.0, 5.5), []),
 ])
 def test_merge_rerun_phases_with_missing_attempts(a, b, want, untimed):
-    """A partial merge (one attempt untimed) keeps that attempt's wall seconds apart, not inside the phases."""
     first = {"verdict": "FAIL", "seconds": 1.0, "folder": "F1", "failed": ["x"], "infra": None, "p95": {},
              "gate_wait_s": None, "run_phases": a, "untimed": [] if a else [1.0]}
     m = nt.merge_rerun(first, {**first, "verdict": "INFRA", "folder": None, "seconds": 2.0, "gate_wait_s": 4.0,
@@ -716,15 +691,13 @@ def test_row_of_copies_run_phases_and_gate_wait(tmp_path):
     d = _folder(tmp_path, "T-a", {"params": {"lock_wait_s": 4.5}, "run_phases": ph}, [C("pass")])
     r = nt.row_of("all", "a", d, 9.0, 0)
     assert r["run_phases"] == ph and r["gate_wait_s"] == 4.5 and r["untimed"] == []
-    none = nt.row_of("all", "a", None, 61.0, 75)  # e.g. a gate exit 75 after a long slot wait: no folder
+    none = nt.row_of("all", "a", None, 61.0, 75)
     assert none["run_phases"] is None and none["untimed"] == [61.0]
     nulls = _folder(tmp_path, "T-b", {"run_phases": _ph(None, None, None, None, calls=0)}, [C("pass")])
-    assert nt.row_of("all", "b", nulls, 3.0, 3)["untimed"] == [3.0]  # never reached a stack: phases cover nothing
+    assert nt.row_of("all", "b", nulls, 3.0, 3)["untimed"] == [3.0]
 
 
 def test_digest_totals_timed_attempts_and_lists_untimed_apart(tmp_path):
-    """A timed FAIL whose re-run died untimed, a timed OK, an untimed INFRA with seconds: the share's denominator is
-    the timed attempts' measured run seconds; untimed attempts and gate wait are shown apart."""
     first = {**R("all", "f", "FAIL"), "seconds": 40.0, "gate_wait_s": 2.0, "run_phases": _ph(10.0, 2.0, 20.0, 5.0),
              "untimed": []}
     again = {**R("all", "f", "INFRA", seconds=30.0), "folder": None, "gate_wait_s": None}
@@ -735,15 +708,12 @@ def test_digest_totals_timed_attempts_and_lists_untimed_apart(tmp_path):
          "load_end": 0.0, "cores": 1, "rows": rows, "phases": {"all": {"wall_s": 1}, "volume": {"wall_s": 1}},
          "changes": nt.changes(rows, None), "prev": None}
     md = nt.digest(s)
-    # 4 attempts (f, its re-run, o, i), 2 timed; startup 10+30, seeding 2+4, execution 20+50, teardown 5+10;
-    # share 6 / 131 s = 4.6 %; untimed f's re-run 30 s + i 25 s; gate 2 + 3
     assert ("run phases (2 of 4 attempts timed): startup 40s · seeding 6s · execution 70s · teardown 15s; seeding "
             "4.6% of 131s measured run seconds; untimed 2 attempts, 55s wall (no run phases); gate wait 5s"
             ) in md.splitlines(), md
 
 
 def test_prev_rotated_volume_rows(tmp_path, monkeypatch):
-    """Each rotated volume scenario's baseline is its own last nightly, not just the newest one."""
     monkeypatch.setattr(nt, "EVIDENCE", tmp_path)
 
     def night(stamp, rows, phases=("volume", "all", "map")):
@@ -757,15 +727,13 @@ def test_prev_rotated_volume_rows(tmp_path, monkeypatch):
     name, rows = nt._prev(tmp_path / "20261112T0100Z-nightly-ab", False, ["volume", "all", "map"])
     assert name == "20261111T0100Z-nightly-ab"
     assert {(r["phase"], r["scenario"], r["verdict"]) for r in rows} == {
-        ("volume", "v2", "OK"), ("all", "a", "OK"), ("volume", "v1", "FAIL")}  # old `all` row not merged
+        ("volume", "v2", "OK"), ("all", "a", "OK"), ("volume", "v1", "FAIL")}
     c = nt.changes([R("volume", "v1", "FAIL"), R("volume", "v2", "OK")], rows)
-    assert c["newly_red"] == []  # v1 was already red on its last night
+    assert c["newly_red"] == []
     assert nt._prev(tmp_path / "20261110T0000Z-nightly-ab", False, ["volume", "all", "map"]) == (None, None)
 
 
 def test_wall_cuts_unstarted_and_stopped_runs(tmp_path, monkeypatch):
-    """8 h limit (owner 2026-11-16): nothing starts in the last LAST_START_S; a run the wall stopped is
-    SKIP (stopped), not INFRA; the digest names the cut rows."""
     night = nt.Night(tmp_path, tee=False)
     assert night.may_start()
     night.t0 -= nt.WALL_S - nt.LAST_START_S + 1

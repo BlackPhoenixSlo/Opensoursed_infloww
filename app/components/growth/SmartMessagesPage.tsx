@@ -1,32 +1,5 @@
 "use client";
 
-/**
- * Growth > Smart Messages: the page frame, laid out from the Layout capture
- * (`docs/infloww-layouts/growth-smart-messages.md`; labels and sources in
- * `smartMessagesControls`). Phase 2b of
- * docs/spec/infloww-parity-round-2/phase-02b-auto-mass-messages.md builds it,
- * and Phase 2 (phase-02-growth-pages.md) fills its Automated Messages tab.
- * Page-parity ticket 08 puts it on Infloww's legacy primitives
- * (`@/components/ui/infloww`): full bleed, the 48px header, `IfTabs`.
- *
- * - The header row (`InflowwPageHeader`): the page title, and at the row's
- *   right the bundle's right box (#18). On Automated Messages the creator
- *   column (`CreatorRail`, as Smart lists') sits left of the tab's body and
- *   picks the Creator every read and write of that tab uses, Mass Auto Unsend's column the same pick; Mass Messages has
- *   none, as the panels there list every active Creator and take no Creator. The right box holds "Learn" (Not
- *   wired: the bundle opens Infloww's own blog) and "New Message", which opens the one
- *   "Create message" pop-up (`CreateMessagePopUp`), whose Automated messages
- *   section holds the Triggers' cards (`AutomatedMessageCards`): "Nudge" and
- *   "Subscriber welcome" open the Nudge and Delayed welcome rows' editors on
- *   the select's Creator, every other is Not wired.
- * - "Automated Messages" (`AutomatedMessagesTab`) before "Mass Messages", and
- *   the default, as the bundle opens Automated Messages first when it is shown
- *   (#7). Then our extras: "Mass Auto Unsend Messages" and "Scheduled" (direct
- *   and mass sends together), both from `MassMessagesSection`.
- *
- * `?tab=<key>` opens a tab; the old `/settings?tab=mass` and
- * `/settings?tab=scheduled` redirects pass their query through (next.config.ts).
- */
 
 import { useState, type ReactNode } from "react";
 import { Plus } from "lucide-react";
@@ -42,7 +15,6 @@ import CreateMessage from "./CreateMessagePopUp";
 import MassMessagesSection, { MassAutoUnsendSection, ScheduledSection } from "./MassMessagesSection";
 import { SM } from "./smartMessagesControls";
 
-// `?tab=` values: each tab's key.
 const LOOKUP: Record<string, TabKey> = Object.fromEntries(SMART_MESSAGES_TABS.map((t): [string, TabKey] => [t.key, t.key]));
 
 const LEARN_TIP = <>Automated messages go out on a trigger: a fan coming online, subscribing, buying, a sub nearing
@@ -52,14 +24,11 @@ const LEARN_TIP = <>Automated messages go out on a trigger: a fan coming online,
 export default function SmartMessagesPage({
   automatedMessageCards,
 }: {
-  /** The Create message pop-up's "Automated messages" section, placed after
-   *  "Mass messages"; by default the Triggers' cards (`AutomatedMessageCards`). */
   automatedMessageCards?: ReactNode;
 }) {
   const accounts = useActiveAccounts();
-  // The column's pick while active, else the first active Creator. One pick for every creator column
-  // (Automated, Mass Auto Unsend) and New Message, so a composer never opens on a Creator the page isn't showing.
   const [picked, setPicked] = useState<string | null>(null);
+  // One pick for every creator column and New Message, so a composer never opens on a Creator the page isn't showing.
   const accountId = accounts.some((a) => a.id === picked) ? picked : accounts[0]?.id ?? null;
 
   const bodies: Record<TabKey, ReactNode> = {
@@ -74,7 +43,6 @@ export default function SmartMessagesPage({
   };
   const [tab, setTab] = useState<TabKey>("automated");
   const [creating, setCreating] = useState(false);
-  // The pop-up's wired cards open their row's editor, on the column's Creator.
   const [opened, setOpened] = useState<WiredTrigger | null>(null);
 
   useTabParam("tab", (v): v is string => Object.hasOwn(LOOKUP, v), (v) => setTab(LOOKUP[v]));
@@ -85,9 +53,7 @@ export default function SmartMessagesPage({
         title={SM.title.label}
         actions={(
           <>
-            {/* Learn (#11, #12-#14): the book and 14px M1 text; its tip says what each tab holds. */}
             <IfLearn tip={LEARN_TIP}><span className="max-sm:sr-only">{SM.learn.label}</span></IfLearn>
-            {/* New Message (#15), 16px from Learn (#16); its icon alone below `sm`. */}
             <IfButton variant="primary" icon={Plus} onClick={() => setCreating(true)} className="max-sm:px-2.5">
               <span className="max-sm:sr-only">{SM.newMessage.label}</span>
             </IfButton>

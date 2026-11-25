@@ -1,9 +1,3 @@
-/**
- * The `/share-for-share/[section]` route module (docs/spec/phase-03-share-for-share.md, UI; page-parity 15): each of
- * the four sections renders its legacy header (the UTC line on Requests and S4S schedule) and the S4S creator rail
- * (the S4S tag, the count of new requests) beside its body for the rail's creator; an unknown section is a 404, and
- * a chatter gets the owner-only sentence and no S4S call. Fixture names and ids are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 

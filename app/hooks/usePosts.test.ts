@@ -1,4 +1,3 @@
-/** usePosts' pure helpers: a post media's thumbnail and a post's plain text. */
 import { describe, expect, it } from "vitest";
 
 import { postPlainText, postThumbUrl, type OFPostMedia } from "./usePosts";
@@ -15,10 +14,9 @@ describe("postThumbUrl", () => {
   };
 
   it.each<[Partial<OFPostMedia>, string | null]>([
-    // [fields cleared, want] — each row clears the winner of the row before
     [{}, "sq"],
     [{ squarePreview: null }, "pv"],
-    [{ squarePreview: null, preview: "" }, "th"], // "" falls through too
+    [{ squarePreview: null, preview: "" }, "th"],
     [{ squarePreview: null, preview: null, thumb: null }, "fpv"],
     [{ squarePreview: null, preview: null, thumb: null, files: { preview: null, thumb: { url: "fth" } } }, "fth"],
     [{ squarePreview: null, preview: null, thumb: null, files: null }, "full"],
@@ -35,7 +33,6 @@ describe("postThumbUrl", () => {
 
 describe("postPlainText", () => {
   it.each([
-    // [post, want]
     [{}, ""],
     [{ text: "" }, ""],
     [{ text: "<p>Hello<br/>world</p>" }, "Hello world"],
@@ -43,10 +40,10 @@ describe("postPlainText", () => {
     [{ text: "<p><b>bold</b> <a href=\"x\">link</a></p>" }, "bold link"],
     [{ text: "  a \n\n\t b  " }, "a b"],
     [{ text: "a &amp; b &lt;3 &gt; &quot;q&quot; &#39;s" }, "a & b <3 > \"q\" 's"],
-    [{ text: "a&nbsp;b" }, "a&nbsp;b"], // as coded: only five entities decode
-    [{ text: "&amp;lt;" }, "<"], // BUG: see PR — &amp; decodes first, so an escaped entity decodes twice
-    [{ rawText: "raw", text: "<p>html</p>" }, "raw"], // rawText wins
-    [{ rawText: "", text: "<p>html</p>" }, ""], // as coded: `??` keeps an empty rawText
+    [{ text: "a&nbsp;b" }, "a&nbsp;b"],
+    [{ text: "&amp;lt;" }, "<"],
+    [{ rawText: "raw", text: "<p>html</p>" }, "raw"],
+    [{ rawText: "", text: "<p>html</p>" }, ""],
   ])("%j -> %j", (p, want) => {
     expect(postPlainText({ id: 1, ...p })).toBe(want);
   });

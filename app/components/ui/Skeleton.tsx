@@ -1,10 +1,5 @@
 import { cn } from "@/lib/utils";
 
-/**
- * A placeholder bar where a value or a line will be: the elevated surface, pulsing, no text (a placeholder must
- * never read as a figure, so no "$0.00"). `className` sets its size. `data-loading` marks the page as not settled
- * (slop's dashboard-load probe counts it). Decorative: the frame around it carries the `role="status"`.
- */
 export function Skeleton({ className }: { className?: string }) {
   return (
     <span aria-hidden data-loading
@@ -12,8 +7,6 @@ export function Skeleton({ className }: { className?: string }) {
   );
 }
 
-/** A table that has not loaded: a header bar, then `rows` rows of an avatar and four bars (the last two only from
- *  `sm` up). Pages draw it where their rows will be, in place of a blank area or a "Loading…" line. */
 export function TableSkeleton({ rows = 8, className }: { rows?: number; className?: string }) {
   return (
     <div className={cn("overflow-hidden rounded-[8px] border border-border", className)}>
@@ -36,8 +29,6 @@ export function TableSkeleton({ rows = 8, className }: { rows?: number; classNam
   );
 }
 
-/** A table body that has not loaded: `rows` rows of `cols` cells, a bar in each (the first wider), for a page's own
- *  `<tbody>` so its header stays. `cellClassName` takes the table's cell class (its padding and height). */
 export function SkeletonRows({ rows = 6, cols, cellClassName }: { rows?: number; cols: number; cellClassName?: string }) {
   return (
     <>

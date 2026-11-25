@@ -3,14 +3,10 @@ import { describe, it, expect } from "vitest";
 import type { OFMessage } from "@/lib/relay";
 import { insertByCreatedAt, resolveChatTarget, toUtcIso } from "./useInboxRealtime";
 
-// Minimal row factory — insertByCreatedAt only reads id + createdAt.
 const row = (id: number, createdAt: string): OFMessage =>
   ({ id, createdAt }) as unknown as OFMessage;
 const ids = (list: OFMessage[]) => list.map((m) => m.id);
 
-// The WORKER→SSE bridge inverts the legacy "skip outbound" rule: worker-emitted
-// outbound events now carry the recipient (__fan_id), so they CAN be routed.
-// resolveChatTarget is where that decision lives — pin every branch.
 describe("resolveChatTarget", () => {
   it("inbound → targets the sender's chat", () => {
     const t = resolveChatTarget({
@@ -77,9 +73,6 @@ describe("resolveChatTarget", () => {
   });
 });
 
-// The relay's emit_live rows carry a tz-NAIVE UTC wall clock; REST rows carry a
-// zone. toUtcIso reconciles them so live bubbles show the right time and sort
-// against REST rows consistently.
 describe("toUtcIso", () => {
   it("tags a zone-less wall clock as UTC", () => {
     expect(toUtcIso("2026-06-14 09:36:17")).toBe("2026-06-14T09:36:17.000Z");
@@ -104,8 +97,6 @@ describe("toUtcIso", () => {
   });
 });
 
-// The append-vs-insert fix: a live message must land where its created_at
-// belongs, NOT pinned to the bottom when it arrives after newer rows.
 describe("insertByCreatedAt", () => {
   it("a genuinely-newest message appends at the tail (the common path)", () => {
     const prev = [row(1, "2026-06-14T08:00:00Z"), row(2, "2026-06-14T09:00:00Z")];
@@ -113,8 +104,6 @@ describe("insertByCreatedAt", () => {
   });
 
   it("the bug case: an OLDER live row drops into the middle, not the bottom", () => {
-    // Cache already holds the evening rows; a re-run funnel re-emits a morning
-    // PPV. Old code would have appended it last; it must slot before the evening.
     const prev = [
       row(10, "2026-06-14T17:23:00Z"),
       row(11, "2026-06-14T19:23:00Z"),
@@ -138,8 +127,6 @@ describe("insertByCreatedAt", () => {
   });
 
   it("sorts a zone-less live row consistently against zoned REST rows", () => {
-    // Same instant expressed both ways: the live (naive) 09:30 belongs BETWEEN
-    // the zoned 09:00 and 10:00 — the exact mismatch that caused the misorder.
     const prev = [
       row(1, "2026-06-14T09:00:00Z"),
       row(3, "2026-06-14T10:00:00Z"),

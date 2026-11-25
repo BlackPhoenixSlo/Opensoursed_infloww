@@ -1,11 +1,3 @@
-"""Chatters (employee logins): each one through the real endpoints, as an owner
-invites and an employee signs up: POST /admin/chatters/invite (the owner's
-session) -> token, then POST /chatter/register?token=... (a fresh client; the
-relay links the chatter to the inviting owner and sets its session cookie,
-which this seeder drops). `w.data["chatters"]`: [{username, password, owner}].
-`account_ids`: the invite's Employee setup (the Creators the chatter may work,
-applied on accept), one list per username; each record then also carries
-`account_ids` and the relay's `chatter_id`."""
 from __future__ import annotations
 
 from . import World
@@ -15,7 +7,7 @@ PASSWORD = "slop-chatter-password"
 
 async def seed(w: World, owner_http, owner_id: str, usernames: list[str], *, password: str = PASSWORD,
                account_ids: list[list[str]] | None = None) -> list[dict]:
-    from slop.lib.client import Http  # lazy: seeders stay importable without httpx
+    from slop.lib.client import Http
 
     out = []
     fresh = Http(str(owner_http.c.base_url), owner_http.rec)

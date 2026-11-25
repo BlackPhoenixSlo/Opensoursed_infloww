@@ -1,43 +1,5 @@
 "use client";
 
-/**
- * useCreatorTabs — the Creator tabs store (docs/spec/phase-01-window-chrome-tabs.md,
- * Interfaces). It joins the store's ids to the session-bearing Creators, so
- * callers get Creators, not ids:
- * - `open`: the open tabs' Creators in strip order.
- * - `closed`: the closed tabs' Creators, in the same order.
- * - `ready`: the accounts read has settled (answered or failed) and the
- *   Employee key has resolved, so an empty `open` and `closed` means the
- *   relay has no Creators rather than "still loading". Read from the query's
- *   status, not its data: a chatter session's `data` is defined even while
- *   its read is pending.
- * - `close(id)` / `reopen(id)`.
- * - `reorder(ids)`: `ids` are the open tabs' ids in their new order. They
- *   take the open tabs' slots in the full stored order, so a closed tab (and
- *   a saved Creator that has left the relay) keeps its slot. A reorder is a
- *   custom order, so it also sets `sort` back to "custom".
- * - `sort` / `setSort(sort)`: how the strip orders the open tabs (MP2's chat
- *   sorting, 04-messages-pro P9): "custom" (the saved order, the default),
- *   "unread" (most unread first), "az" or "za" (by name). The strip applies
- *   it (`sortTabs`), since "unread" reads the tabs' Red circles (`redCircle`:
- *   the Freshness store's slot, else the roster counts; grey as 0);
- *   `useShownCreatorTabs` is that order, for the strip and anyone who must
- *   follow it.
- *
- * Strip order is the saved order filtered to live Creators, then every live
- * Creator the saved order lacks, in the relay's account order (the Clone's
- * `tabOrder`, messages.js:242-255). With nothing saved that is the relay's
- * order, with no reshuffling by activity. A closed tab keeps its place, so a
- * reopened tab returns to it.
- *
- * The order and the closed ids are remembered per Employee under the spec's
- * Creator tabs key (Contracts), `{ order, closed }`, and re-read on this
- * window's change event and on `storage` from another window. Until the
- * Employee key resolves (`useEmployeeKey`) the store is still loading: no
- * tabs, and nothing read or written. A stored value that is not JSON, or not that shape, reads as the
- * default and is overwritten on the next change. Call it once and hand the
- * result down, so the strip and the picker share it.
- */
 
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
@@ -66,7 +28,6 @@ export type CreatorSort = "custom" | "unread" | "az" | "za";
 
 const SORTS: readonly CreatorSort[] = ["custom", "unread", "az", "za"];
 
-/** `open` in `sort`'s order; ties (and "custom") keep the store's order. */
 export function sortTabs(open: AccountMeta[], sort: CreatorSort, unreadOf: (id: string) => number): AccountMeta[] {
   if (sort === "custom") return open;
   const name = (a: AccountMeta) => a.nickname || a.id;
@@ -76,17 +37,12 @@ export function sortTabs(open: AccountMeta[], sort: CreatorSort, unreadOf: (id: 
   return out;
 }
 
-/** The Relay's event stream is up (`eventBus.onStateChange`). */
 function useRelayReachable(): boolean {
   const [up, setUp] = useState(true);
   useEffect(() => eventBus.onStateChange(setUp), []);
   return up;
 }
 
-/** The open tabs as the strip shows them: `store.open` in `store.sort`
- *  ("unread" by each tab's Red circle, also handed back for the tabs, with
- *  each tab's Amber circle). `known`: that order is settled — the store is
- *  ready and, sorted by unread, the counts' first read is over. */
 export function useShownCreatorTabs(store: CreatorTabsStore): {
   open: AccountMeta[]; circles: Record<string, RedCircle>; ambers: Record<string, AmberCircle>; known: boolean;
 } {
@@ -104,8 +60,6 @@ export function useShownCreatorTabs(store: CreatorTabsStore): {
   return { open: shown, circles, ambers, known: ready && (sort !== "unread" || settled) };
 }
 
-/** The stored value (Contracts). An empty `order` means the relay's order;
- *  no `sort` means "custom". */
 type SavedTabs = { order: string[]; closed: string[]; sort?: CreatorSort };
 
 const KEY_PREFIX = "chatterly:creator-tabs:v1:";
@@ -123,8 +77,6 @@ function isSavedTabs(v: unknown): v is SavedTabs {
   return isIdList(order) && isIdList(closed) && (sort === undefined || SORTS.includes(sort as CreatorSort));
 }
 
-/** The malformed rule: a value that is not JSON, or not `SavedTabs`, reads
- *  as the default. */
 function parseSavedTabs(raw: string | null): SavedTabs {
   if (raw === null) return DEFAULT_TABS;
   let parsed: unknown;
@@ -136,8 +88,6 @@ function parseSavedTabs(raw: string | null): SavedTabs {
   return isSavedTabs(parsed) ? parsed : DEFAULT_TABS;
 }
 
-/** `creators` in the saved order: saved ids filtered to live Creators, then
- *  the live Creators the saved order lacks, in the relay's order. */
 function inSavedOrder(creators: AccountMeta[], order: string[]): AccountMeta[] {
   const live = new Map(creators.map((a) => [a.id, a]));
   const placed = new Set<string>();
@@ -157,15 +107,13 @@ export function useCreatorTabs(): CreatorTabsStore {
   const employeeKey = useEmployeeKey();
   const storageKey = employeeKey === null ? null : `${KEY_PREFIX}${employeeKey}`;
 
+  // Read from query status, not data: a chatter session has data while still pending.
   const ready = accountsSettled && storageKey !== null;
 
   const raw = useSyncExternalStore(subscribe, () => readStorage(storageKey), () => null);
   const saved = useMemo(() => parseSavedTabs(raw), [raw]);
 
   const update = useCallback((change: (prev: SavedTabs) => SavedTabs) => {
-    // Unreachable: while the key is null the store hands out no tabs, so
-    // nothing renders a ✕ or a picker row to click. The guard only narrows
-    // `storageKey` for setItem; the invariant is stated here, not asserted away.
     if (storageKey === null) return;
     const next = change(parseSavedTabs(readStorage(storageKey)));
     window.localStorage.setItem(storageKey, JSON.stringify(next));
@@ -182,10 +130,8 @@ export function useCreatorTabs(): CreatorTabsStore {
   const reorder = useCallback((ids: string[]) => {
     const moved = new Set(ids);
     update((prev) => {
-      // The full order: the saved ids, then the live Creators it lacks.
       const full = [...new Set([...prev.order, ...creators.map((a) => a.id)])];
       let next = 0;
-      // No `sort`: a hand-made order is the custom one.
       return { order: full.map((id) => (moved.has(id) ? ids[next++] : id)), closed: prev.closed };
     });
   }, [update, creators]);

@@ -1,10 +1,3 @@
-/**
- * The S4S schedule (docs/spec/phase-03-share-for-share.md, Testing Decisions, seam 2; page-parity 15), for the
- * creator picked on the rail, rendered with the relay mocked at `fetch` by URL. Infloww's S4S pages are in UTC, so
- * the browser's time zone is pinned to America/New_York to prove the page ignores it, and the clock to 10 May 2030
- * 12:00Z: the month query is the UTC month, and a slot at 20 May 02:00Z (19 May 22:00 in New York) sits on 20 May.
- * Fixture names and ids are invented.
- */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 

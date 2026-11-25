@@ -1,8 +1,3 @@
-/**
- * The Statistics tabs with the phase-2 Relay reads (omf-statistics-relay), from synthetic fixtures in OF's shapes
- * (app/lib/__fixtures__/of/statistics-*.json), each group with an all-zero period; and today's Relay (the reads 404 or
- * answer `[]`): the generator's honest state stays.
- */
 import { readFileSync } from "node:fs";
 import type { OfMe } from "./ofMirrorIdentity";
 import { promotionText } from "./ofMirrorStatsReach";
@@ -32,7 +27,6 @@ const BASE: StatsData = { ...fixture<Record<string, unknown>>("overview"), stats
 const START = startOf(BASE.startDate, TZ);
 const D30 = periodOf("d30", NOW, TZ, START);
 const ALL = periodOf("all", NOW, TZ, START);
-/** A paged source's body as usePaged hands it over. */
 const paged = (body: unknown): PagedBody => ({ list: (body as { list?: unknown[]; items?: unknown[]; users?: unknown[] }).list ?? (body as { items: unknown[] }).items ?? (body as { users: unknown[] }).users, hasMore: !!(body as { hasMore?: boolean }).hasMore, loading: false, more: null });
 const picks = (p: Partial<Picks> = {}): Picks => ({ ...PICK_DEFAULTS, ...p });
 const spec = (doc: Document, sel: string) => chartSpecOf(doc.querySelector<HTMLCanvasElement>(sel)!);
@@ -46,9 +40,7 @@ describe("routes with the phase-2 Relay", () => {
     expect(statsRoute("earningsChart", D30, { sub: "overview/earnings" })).toMatch(
       /filter=total_amount%2Csubscribes_amount%2Ctips_amount%2Ctips_stream_amount%2Cpost_amount%2Cmessages_amount%2Cref_amount%2Cstream_amount&/,
     );
-    // OF's marker: the end in unix seconds (today: as is).
     expect(firstMarker(D30)).toBe(Math.floor(NOW.getTime() / 1000));
-    // A past end (September): moved by its UTC offset (+02:00 in Ljubljana), as OF's `c.unix() + 60 * c.utcOffset()`.
     const sep = periodOf("m1", NOW, TZ, START);
     expect(firstMarker(sep)).toBe(Math.floor(sep.end.getTime() / 1000) + 7200);
     expect(listRoute("transactions", D30, { offset: 0 }, { v2: true, picks: picks({ type: "tips", tips: "chat" }) })).toBe(
@@ -66,17 +58,13 @@ describe("routes with the phase-2 Relay", () => {
     const range = "start=2026-09-17+00%3A00%3A00&end=2026-10-17+10%3A00%3A00";
     expect(listRoute("payoutRequests", D30, { offset: 0 }, { v2: true, v3: true })).toBe(`/api/of/v2/payouts/requests?limit=10&offset=0&${range}`);
     expect(listRoute("referralRequests", D30, { offset: 10, marker: 1792238001 }, { v2: true, v3: true })).toBe(`/api/of/v2/payouts/requests/referral?limit=10&offset=10&marker=1792238001&${range}`);
-    // Older relays drop the period and marker: the whole history by offset, 50 a page (read ahead to the period).
     expect(listRoute("payoutRequests", D30, { offset: 50 }, { v2: true })).toBe("/api/of/v2/payouts/requests?limit=50&offset=50");
     expect(listRoute("referralRequests", D30, { offset: 0 }, {})).toBe("/api/of/v2/payouts/requests/referral?limit=50&offset=0");
-    // OF's reply has no hasMore (setStatementsPayoutRequests: a full page has more): the next page carries its marker.
     const real = fixture("payout-requests") as { list: Record<string, unknown>[]; marker: number };
     const full = { list: Array.from({ length: 10 }, (_, i) => ({ ...real.list[0], invoiceId: String(60000100 + i) })), marker: real.marker };
     expect(nextParam("payoutRequests", full, [full], { v2: true, v3: true })).toEqual({ offset: 10, marker: real.marker });
     expect(nextParam("referralRequests", real, [full, real], { v2: true, v3: true })).toBeUndefined();
-    // An all-zero period: no rows, no next page.
     expect(nextParam("payoutRequests", { list: [], marker: real.marker }, [{ list: [] }], { v2: true, v3: true })).toBeUndefined();
-    // Older relays: a 10-row page is short of their 50, so it ends there.
     expect(nextParam("payoutRequests", full, [full], { v2: true })).toBeUndefined();
   });
 });
@@ -112,7 +100,6 @@ describe("Statements", () => {
     const doc = earnings({ transactions: { list: [{ id: 1, createdAt: "2026-10-16T10:00:00+00:00", status: "done" }], hasMore: false, loading: false, more: null, stalled: true } }, "total");
     applyStats(doc, "statistics/statements/earnings", { ...BASE, transactions: { list: [{ id: 1, createdAt: "2026-10-16T10:00:00+00:00", status: "done" }], hasMore: false, loading: false, more: null, stalled: true } }, periodOf("m2", NOW, TZ, START));
     expect(texts(doc, ".b-statements-table .empty-message")).toEqual([NOT_YET]);
-    // Paging stops when a page repeats the last (the Relay ignored the page asked), with OF's marker or end date too.
     const page = { list: [{ id: 1, date: "2026-10-09T15:00:00+00:00" }], items: [{ id: 1, date: "2026-10-09T15:00:00+00:00" }], hasMore: true, nextMarker: 1791000001 };
     expect(nextParam("transactions", page, [page, page], { v2: true })).toBeUndefined();
     expect(nextParam("massMessages", page, [page, page], { v2: true })).toBeUndefined();
@@ -131,11 +118,9 @@ describe("Statements", () => {
     expect(texts(doc, "[data-oi-chartbox='disputes'] .b-elements-determinant__value")).toEqual(["$5.00 -50%"]);
     expect(spec(doc, "[data-oi-chartbox='disputes'] canvas.b-chart__double-line__main")!.series.title).toBe("Charged back");
     expect(spec(doc, "[data-oi-chartbox='disputes'] canvas.b-chart__double-line__aside")!.series.title).toBe("Disputes");
-    // An all-zero period: no dispute.
     applyStats(doc, "statistics/statements/disputes", { ...data, chargebacks: { chargebacksRatio: 0 }, chargebacksList: paged(fixture("chargebacks-empty")) }, D30);
     expect(texts(doc, ".b-statistics-page-content__wrapper .empty-message")).toEqual(["No data during selected period"]);
     expect(texts(doc, "[data-oi-chartbox='disputes']")).toEqual([]);
-    // Today's Relay: no list, no chart (404), a ratio of 1.5%: the generator's text stays.
     applyStats(doc, "statistics/statements/disputes", { ...BASE, chargebacks: { chargebacksRatio: 1.5 } }, D30);
     expect(texts(doc, ".b-statistics-page-content__wrapper .empty-message")).toEqual([NOT_YET]);
   });
@@ -143,7 +128,7 @@ describe("Statements", () => {
     const doc = load("statistics/statements/payout-request");
     const data = { ...BASE, payoutRequests: fixture("payout-requests"), payoutsChart: fixture("payouts-chart") };
     applyStats(doc, "statistics/statements/payout-request", data, D30);
-    expect(texts(doc, "[data-oi-chartbox='payouts']")).toEqual([]); // no request in the last 30 days
+    expect(texts(doc, "[data-oi-chartbox='payouts']")).toEqual([]);
     applyStats(doc, "statistics/statements/payout-request", data, ALL, { v2: true });
     expect(texts(doc, "[data-oi-chartbox='payouts'] .b-elements-determinant__value")).toEqual(["$85.23"]);
     expect(spec(doc, "[data-oi-chartbox='payouts'] canvas.b-chart__double-line__main")!.series.title).toBe("Paid out");
@@ -169,7 +154,7 @@ describe("Statements", () => {
       ["SC Synthetic Creator F @u_synthetic_f", "Sep 1, 2026", "$12.40"],
       ["u900010 @u900010", "Aug 15, 2026", "$0.00"],
     ]);
-    expect(texts(doc, ".b-section-title.m-size-sm")).toEqual([]); // the referral payouts' notice is the Earnings tab's
+    expect(texts(doc, ".b-section-title.m-size-sm")).toEqual([]);
     applyStats(doc, "statistics/statements/referrals/earnings", data, D30, { picks: picks({ ref: "users" }) });
     expect(rows(doc, "[data-oi-table='referred']")).toEqual([]);
     expect(texts(doc, ".empty-message")).toContain("No data during selected period");
@@ -227,27 +212,23 @@ describe("Overview", () => {
     applyStats(doc, "statistics/overview/top-highlights", data, D30, { picks: picks({ fan: "messages" }) });
     const card = (t: string) => doc.querySelector(`[data-oi-top='${t}']`)!;
     expect(texts(card("Top Message"), ".b-top-statistic__header__date, .b-top-statistic__text, .b-summary-list__item")).toEqual(["Oct 4, 2026, 02:00 pm", "Synthetic top message", "$15.00 purchases", "14 views"]);
-    expect(card("Top Message").querySelector<HTMLButtonElement>(".b-top-statistic__btns button")!.disabled).toBe(true); // UNSEND: phase 5
+    expect(card("Top Message").querySelector<HTMLButtonElement>(".b-top-statistic__btns button")!.disabled).toBe(true);
     const tabs = (t: string) => [...card(t).querySelectorAll<HTMLButtonElement>(".b-tabs__nav__link")].map((b) => `${b.textContent!.trim()}${b.disabled ? " (off)" : ""}${b.classList.contains("m-current") ? " *" : ""}`);
     expect(tabs("Top Stream")).toEqual(["Purchases *", "Tips", "Viewers (off)", "Likes (off)", "Comments (off)"]);
     expect(texts(card("Top Stream"), "table tr")).toEqual(["Viewers 12 ($0.00)", "Likes 4", "Comments 2", "Tips 1 ($5.00)"]);
     expect(tabs("Top Fan")).toEqual(["Total", "Subscriptions", "Tips (off)", "Messages *"]);
     expect(texts(card("Top Fan"), "tbody td, tfoot td")).toEqual(["SF Synthetic Fan B @u_synthetic_b", "$9.99 3 months", "Total", "$5.00"]);
-    // An all-zero period: no item for any tab.
     const empty = fixture("top-empty");
     applyStats(doc, "statistics/overview/top-highlights", { ...data, topMessage: empty, topStream: empty, topFan: empty }, D30);
     expect(doc.querySelector("[data-oi-top]")).toBeNull();
     expect(texts(doc, ".b-statistics-page-content .b-clean-state .empty-message")).toEqual(["No Post activity during selected period", "No Message activity during selected period", "No Streaming activity during selected period", "No Fans yet"]);
-    // Today's Relay: the reads 404 (absent): the generator's clean states.
     applyStats(doc, "statistics/overview/top-highlights", BASE, D30);
     expect(texts(doc, ".b-statistics-page-content .b-clean-state__title")).toEqual(["Top Post", "Top Message", "Top Stream", "Top Fan"]);
   });
   it("Activity Streak reads this month up to now, whatever period the other tabs picked", () => {
     expect(statsRoute("streaks", periodOf("y2025", NOW, TZ, null), { tz: TZ })).toBe("/api/of/v2/streaks?start=2026-10-01+00%3A00%3A00&end=2026-10-17+12%3A00%3A00");
-    // The month switch: an earlier month to its last second; across a year.
     expect(statsRoute("streaks", D30, { tz: TZ, picks: picks({ smonth: "1" }) })).toBe("/api/of/v2/streaks?start=2026-09-01+00%3A00%3A00&end=2026-09-30+23%3A59%3A59");
     expect(statsRoute("streaks", D30, { tz: TZ, picks: picks({ smonth: "10" }) })).toBe("/api/of/v2/streaks?start=2025-12-01+00%3A00%3A00&end=2025-12-31+23%3A59%3A59");
-    // Longest streak's earnings: the overview's for the top streak's dates; no top streak: not read.
     expect(statsRoute("streakSummary", D30, { top: fixture("streaks-top") })).toBe("/api/of/v2/users/me/stats/overview?by=earnings&start=2026-07-01+08%3A00%3A00&end=2026-07-12+20%3A00%3A00");
     expect(statsRoute("streakSummary", D30, { top: {} })).toBe("");
   });
@@ -262,10 +243,8 @@ describe("Overview", () => {
     expect([prev.getAttribute("data-oi-pick"), next.disabled, next.getAttribute("data-oi-pick")]).toEqual(["smonth:2", false, "smonth:0"]);
     const days = [...doc.querySelectorAll(".v-calendar-weekly__day:not(.v-outside) .v-calendar-weekly__day-label span")].filter(visible);
     expect([days.length, days[0].textContent]).toEqual([30, "1"]);
-    // The Creator's first month: no going back.
     applyStats(doc, "statistics/overview/streaks", data, D30, { v2: true, picks: picks({ smonth: "61" }) });
     expect([texts(doc, ".b-streaks-swither__time")[0], prev.disabled]).toEqual(["September 2021", true]);
-    // Longest streak.
     const tabs = [...doc.querySelectorAll<HTMLButtonElement>("[data-oi-pick^='stab:']")];
     expect(tabs.map((b) => [b.disabled, b.title])).toEqual([[false, ""], [false, ""]]);
     applyStats(doc, "statistics/overview/streaks", data, D30, { v2: true, picks: picks({ stab: "top" }) });
@@ -275,7 +254,6 @@ describe("Overview", () => {
     expect(rows(doc, "[data-oi-streak-top]")).toEqual([["Created posts", "3"], ["Published stories", "5"], ["Replies to followers", "8"], ["Time in live streaming", "0min 0sec"]]);
     expect(texts(doc, "[data-oi-streak-top] tfoot tr")).toEqual(["Total earnings $24.50 12.5%"]);
     expect(doc.querySelector("[data-oi-streak-top] tfoot .b-statistics-level.m-level-down")).not.toBeNull();
-    // No top streak: Longest disabled as OF's (no tooltip), Current shown.
     applyStats(doc, "statistics/overview/streaks", { ...data, streaksTop: fixture("streaks-top-empty") }, D30, { v2: true, picks: picks({ stab: "top" }) });
     expect([tabs[1].disabled, tabs[1].title, tabs[0].classList.contains("m-current")]).toEqual([true, "", true]);
     expect(doc.querySelector("[data-oi-streak-top]")).toBeNull();
@@ -284,7 +262,7 @@ describe("Overview", () => {
   it("Activity Streak: OF's counts and this month's calendar with the streak days; none: zeros; today's Relay: the clean state", () => {
     const doc = load("statistics/overview/streaks");
     applyStats(doc, "statistics/overview/streaks", { ...BASE, streaks: fixture("streaks"), streaksTop: fixture("streaks-top"), todayActivity: fixture("today-activity") }, D30);
-    expect(texts(doc, "[data-oi-streaks] .b-streak-tab__count")).toEqual(["6", "12"]); // 5 days + today; the top one's 11 + a rest day
+    expect(texts(doc, "[data-oi-streaks] .b-streak-tab__count")).toEqual(["6", "12"]);
     expect(texts(doc, ".b-streaks-swither__time")).toEqual(["October 2026"]);
     const marked = [...doc.querySelectorAll(".v-calendar-weekly__day-label span[class*='vc-marked']")].filter(visible).map((s) => `${s.textContent} ${s.className}`);
     expect(marked).toEqual([
@@ -340,10 +318,10 @@ describe("Engagement", () => {
     const q = { v2: true, picks: picks({ q: "synth" }) };
     expect(listRoute("massMessages", D30, { offset: 10 }, { ...q })).toMatch(/\/messages\/group\?.*&limit=10&offset=10&query=synth$/);
     expect(nextParam("massMessages", { hasMore: true, items: Array(10).fill(0).map((_, i) => ({ id: i, date: "2026-10-09T15:00:00+00:00" })) }, [{ items: Array(10).fill(0) }], q)).toEqual({ offset: 10 });
-    expect(listRoute("massMessages", D30, { offset: 0 }, { v2: true, picks: picks({ q: "ab" }) })).not.toMatch(/query=/); // OF searches from 3 characters
-    expect(listRoute("massMessages", D30, { offset: 50 })).toMatch(/\/messages\/group\?.*&limit=50&offset=50$/); // today's Relay
+    expect(listRoute("massMessages", D30, { offset: 0 }, { v2: true, picks: picks({ q: "ab" }) })).not.toMatch(/query=/);
+    expect(listRoute("massMessages", D30, { offset: 50 })).toMatch(/\/messages\/group\?.*&limit=50&offset=50$/);
     expect(listRoute("postsTop", D30, { offset: 10 }, { v2: true, picks: { by: "views" } })).toMatch(/^\/api\/of\/v2\/posts\/top\?by=views&limit=10&offset=10&start=/);
-    expect(nextParam("postsTop", { items: [{ id: 1 }], hasMore: true }, [{}], {})).toBeUndefined(); // today's Relay: its 50 at once
+    expect(nextParam("postsTop", { items: [{ id: 1 }], hasMore: true }, [{}], {})).toBeUndefined();
     expect(statsRoute("postsChart", D30, { v2: true, picks: { by: "likes" } })).toMatch(/^\/api\/of\/v2\/posts\/chart\?by=likes&start=/);
     expect(statsRoute("streamsChart", D30, { picks: picks({ streams: "tips" }) })).toMatch(/^\/api\/of\/v2\/streams\/chart\?by=tips&start=/);
     expect(listRoute("storiesTop", D30, { offset: 4 }, { picks: picks({ stories: "views" }) })).toMatch(/^\/api\/of\/v2\/stories\/top\?by=views&limit=4&offset=4&start=/);
@@ -360,11 +338,10 @@ describe("Engagement", () => {
     expect(spec(doc, ".b-statistics-page-content__wrapper > .b-chart canvas.b-chart__double-line__aside")!.series.title).toBe("Messages");
     const buyers = doc.querySelector<HTMLElement>("[data-oi-users]")!;
     expect([buyers.getAttribute("data-oi-users"), buyers.textContent!.trim()]).toEqual(["buyers:55001:0", "2"]);
-    expect(doc.querySelectorAll("[data-oi-users]").length).toBe(1); // the free message has none
+    expect(doc.querySelectorAll("[data-oi-users]").length).toBe(1);
     buyers.click();
     expect(texts(doc, "#oi-users .modal-title")).toEqual(["Message buyers"]);
     doc.getElementById("oi-users")!.remove();
-    // An all-zero period.
     applyStats(doc, "statistics/engagement/messages", { ...data, massMessages: paged({ items: [], hasMore: false }), messagesChart: fixture("messages-chart-zero") }, D30, { v2: true });
     expect(texts(doc, ".b-statistics-page-content__wrapper > .b-elements-determinant__value")).toEqual(["0 messages $0.00"]);
     expect(texts(doc, ".b-statistics-page-content__wrapper .empty-message")).toEqual(["No data during selected period"]);
@@ -386,7 +363,7 @@ describe("Engagement", () => {
     expect(spec(doc, "[data-oi-posts-chart] canvas.b-chart__double-line__aside")!.series.title).toBe("Posts");
     applyStats(doc, "statistics/engagement/posts", { ...data, postsChart: fixture("posts-chart-views-zero") }, D30, { v2: true, picks: { by: "views" } });
     expect(texts(doc, "[data-oi-posts-summary]")).toEqual(["0 posts 0 views"]);
-    applyStats(doc, "statistics/engagement/posts", { ...data, postsChart: fixture("posts-chart") }, D30, { picks: { by: "views" } }); // today's Relay
+    applyStats(doc, "statistics/engagement/posts", { ...data, postsChart: fixture("posts-chart") }, D30, { picks: { by: "views" } });
     expect(texts(doc, "[data-oi-posts-summary]")).toEqual([]);
   });
   it("Posts: no post in the period (read through usePaged): OF's \"No Post activity\"; more to read: no claim", () => {
@@ -429,7 +406,7 @@ describe("Reach", () => {
   const OV = fixture<Record<string, unknown>>("overview");
   it("routes: the visitors chip and OF's limit 0 with the phase-2 Relay; Tracking links' sort", () => {
     expect(statsRoute("profileStats", D30, { v2: true, picks: picks({ visitors: "guests", countries: "all" }) })).toMatch(/^\/api\/of\/v2\/users\/me\/profile\/stats\?by=guests&limit=0&start=/);
-    expect(statsRoute("profileStats", D30, { picks: { countries: "all" } })).toMatch(/^\/api\/of\/v2\/users\/me\/profile\/stats\?limit=50&start=/); // today's Relay
+    expect(statsRoute("profileStats", D30, { picks: { countries: "all" } })).toMatch(/^\/api\/of\/v2\/users\/me\/profile\/stats\?limit=50&start=/);
     expect(listRoute("campaignsList", D30, { offset: 10 }, { picks: picks({ csort: "subscribers_counts:asc" }) })).toBe(
       "/api/of/v2/campaigns/stats?limit=10&offset=10&field=subscribers_counts&sort=asc&start=2026-09-17+00%3A00%3A00&end=2026-10-17+10%3A00%3A00",
     );
@@ -451,7 +428,7 @@ describe("Reach", () => {
       ["Limited offer - 70% off for 30 days! Limit ended", "Sep 20, 2026", "Oct 5, 2026", "0", "5"],
       ["Limited offer - 51% off for 31 days! Expired", "Sep 12, 2026", "Sep 12, 2026", "–", "0"],
     ]);
-    expect(doc.querySelector("[data-oi-table='promotions'] [data-oi-users]")).toBeNull(); // the claim lists' Relay is not there
+    expect(doc.querySelector("[data-oi-table='promotions'] [data-oi-users]")).toBeNull();
     expect(doc.querySelector("[data-oi-table='promotions'] tbody a.g-page__link")!.getAttribute("href")).toBe("/of-manager/settings/subscription/promotion-campaign");
     expect(texts(doc, "[data-oi-summary='promotions']")).toEqual(["0 claims 4 offers 100%"]);
     expect(spec(doc, "[data-oi-chart='promotions'] canvas.b-chart__double-line__main")!.series.title).toBe("Claims");
@@ -472,7 +449,7 @@ describe("Reach", () => {
     applyStats(doc, "statistics/reach/tracking-links", { ...BASE, ...OV, campaignsList: paged(fixture("campaigns-list")), campaignsChart: fixture("campaigns-chart") }, D30, { picks: picks({ csort: "created_date:desc" }) });
     expect(rows(doc, "[data-oi-table='campaigns']")).toEqual([["Synthetic link", "Oct 1, 2026", "-", "9", "1"], ["Synthetic ended link", "Sep 21, 2026", "Sep 21, 2026", "2", "0"]]);
     expect([...doc.querySelectorAll("[data-oi-table='campaigns'] tbody tr.g-gray-text")].map((r) => r.querySelector("td")!.textContent!.trim())).toEqual(["Synthetic ended link"]);
-    expect(doc.querySelector("[data-oi-copy]")).toBeNull(); // no username yet
+    expect(doc.querySelector("[data-oi-copy]")).toBeNull();
     expect(texts(doc, "[data-oi-summary='campaigns']")).toEqual(["1 Subscribers 50%"]);
     expect(spec(doc, "[data-oi-chart='campaigns'] canvas.b-chart__double-line__aside")!.series.title).toBe("Clicks");
     const th = doc.querySelector<HTMLElement>("th[data-oi-sort='created_date']")!;
@@ -483,9 +460,7 @@ describe("Reach", () => {
     const list = paged({ list: [{ id: 1, countSubscribers: 1234, countTransitions: 8263, campaignName: "Synthetic big link", createdAt: "2026-10-01T00:00:00+00:00", endDate: null }] });
     applyStats(doc, "statistics/reach/tracking-links", { ...BASE, ...OV, campaignsList: list, campaignsChart: { ...fixture<object>("campaigns-chart"), total: 1101, delta: -33 } }, D30);
     expect(rows(doc, "[data-oi-table='campaigns']")[0].slice(3)).toEqual(["8,263", "1,234"]);
-    // OF's CSS puts "," after every summary item but the last of its type: a hidden second one would keep it.
     expect([...doc.querySelectorAll("[data-oi-summary='campaigns'] .b-engagements-summary__item")].map((e) => e.textContent!.trim())).toEqual(["1,101 Subscribers"]);
-    // OF's ChartSummary prints the change unsigned, its icon the direction (the sidebar's SummaryBlock signs it).
     const chip = doc.querySelector("[data-oi-summary='campaigns'] .b-statistics-level")!;
     expect([chip.textContent!.trim(), chip.classList.contains("m-level-down")]).toEqual(["33%", true]);
     doc = load("statistics/reach/profile-visitors");
@@ -494,7 +469,6 @@ describe("Reach", () => {
     const stat = rows(doc, "table:has(tr[data-oi-template='stat-visitors'])");
     expect(stat[0]).toEqual(["Profile visitors", "25,389", "67,216", "92,605"]);
     expect(rows(doc, "table:has(tr[data-oi-template='country'])")[0]).toEqual(["Slovenia", "1,200", "34", "1,234"]);
-    // A long view duration kept on one line (OF's `g-nowrap`).
     const dur = [...doc.querySelectorAll("tbody > tr")].filter(visible).find((r) => r.querySelector("td")?.textContent?.trim() === "View duration")!;
     expect([...dur.querySelectorAll("td")].map((td) => [td.textContent!.trim(), td.classList.contains("g-nowrap")]).at(-1)).toEqual(["10d 02h:56m", true]);
   });
@@ -508,9 +482,9 @@ describe("Reach", () => {
     expect([...doc.querySelectorAll("[data-oi-users]")].map((l) => l.getAttribute("data-oi-users")!.split(":")[0])).toEqual(["trial-claims"]);
     doc = load("statistics/reach/tracking-links");
     applyStats(doc, "statistics/reach/tracking-links", { ...BASE, ...OV, campaignsList: paged(fixture("campaigns-list")), campaignsChart: fixture("campaigns-chart") }, D30, { v2: true, v3: true, me });
-    expect([...doc.querySelectorAll("[data-oi-users]")].map((l) => l.getAttribute("data-oi-users"))).toEqual(["campaign:61001:0"]); // 0 subscribers: plain
+    expect([...doc.querySelectorAll("[data-oi-users]")].map((l) => l.getAttribute("data-oi-users"))).toEqual(["campaign:61001:0"]);
     const copy = [...doc.querySelectorAll<HTMLElement>("[data-oi-copy]")];
-    expect(copy.map((c) => c.getAttribute("data-oi-copy"))).toEqual(["https://onlyfans.com/u_creator/c7"]); // the ended link has none
+    expect(copy.map((c) => c.getAttribute("data-oi-copy"))).toEqual(["https://onlyfans.com/u_creator/c7"]);
     const writeText = vi.fn(() => Promise.resolve());
     Object.defineProperty(window.navigator, "clipboard", { value: { writeText }, configurable: true });
     copy[0].click();
@@ -523,7 +497,7 @@ describe("Reach", () => {
     const now = new Date("2026-02-10T12:00:00Z");
     expect(promotionText({ price: 0, subscribeDays: 0 }, 10, now)).toBe("Limited offer - Free trial for 30 days!");
     expect(promotionText({ price: 0, subscribeDays: 1 }, 10, now)).toBe("Limited offer - Free trial for 1 day!");
-    expect(promotionText({ price: 2.5, subscribeDays: 0 }, 10, now)).toBe("Limited offer - 75% off for 28 days!"); // February
+    expect(promotionText({ price: 2.5, subscribeDays: 0 }, 10, now)).toBe("Limited offer - 75% off for 28 days!");
     expect(promotionText({ price: 2.5, discount: 60, subscribeDays: 7 }, 10, now)).toBe("Limited offer - 60% off for 7 days!");
     expect(promotionText({ price: 12, subscribeDays: 7 }, 10, now)).toBe("Limited offer - 0% off for 7 days!");
   });
@@ -549,7 +523,7 @@ describe("Fans", () => {
       ["SF Synthetic Fan D @u_synthetic_d", "free", ""],
       ["u900011 @u900011", "$9.99", "Oct 10, 2026"],
     ]);
-    expect(doc.querySelectorAll("[data-oi-table='subs'] tbody tr.g-gray-text").length).toBe(1); // expired Oct 12
+    expect(doc.querySelectorAll("[data-oi-table='subs'] tbody tr.g-gray-text").length).toBe(1);
     applyStats(doc, "statistics/fans/subscriptions", { ...data, subsLatest: paged(fixture("users-empty")) }, D30, { v2: true });
     expect(texts(doc, "[data-oi-table='subs'] .empty-message")).toEqual(["Nothing found"]);
     applyStats(doc, "statistics/fans/subscriptions", { ...BASE, ...OV, subsChart: fixture("subscribers-chart") }, D30);
@@ -568,7 +542,7 @@ describe("Fans", () => {
   it("Fans activity: OF's sectors chart and hours bars, their colours and tooltips; an all-zero period: blank boxes and zero bars", () => {
     const doc = load("statistics/fans/activity");
     const before = texts(doc, ".b-statistics-page-content__wrapper .empty-message");
-    expect(before).toEqual([NOT_YET, NOT_YET]); // today's Relay: no source
+    expect(before).toEqual([NOT_YET, NOT_YET]);
     applyStats(doc, "statistics/fans/activity", { ...BASE, ...OV, fansActivity: fixture("fans-activity"), fansHours: fixture("fans-hours") }, D30);
     expect(doc.querySelector<HTMLElement>("[data-oi-activity='sectors']")!.style.display).toBe("");
     expect(doc.querySelector<HTMLElement>("[data-oi-activity='hours']")!.style.display).toBe("");
@@ -592,7 +566,6 @@ describe("Fans", () => {
     expect(texts(fansTooltip(doc, hours, 9)!, ".b-chart__tooltip__title, .b-chart__tooltip__text")).toEqual(["9am - 10am", "Fans online 5%"]);
     expect(texts(fansTooltip(doc, hours, 23)!, ".b-chart__tooltip__title, .b-chart__tooltip__text")).toEqual(["11pm - 12am", "Fans online 0%"]);
     expect(barColor(0, h.spec.values)).toBe("rgba(0, 175, 240, 0)");
-    // An all-zero period: OF still draws both charts (zero boxes at 1%, zero bars), no empty text.
     applyStats(doc, "statistics/fans/activity", { ...BASE, ...OV, fansActivity: fixture("fans-activity-zero"), fansHours: fixture("fans-hours-zero") }, D30);
     const z = fansChartOf(sectors)!;
     if (z.kind !== "sectors") throw new Error("sectors");
@@ -600,7 +573,6 @@ describe("Fans", () => {
     expect(sectorColors(z.spec.cells[0], 0)).toEqual({ fill: "rgba(0, 175, 240, 0.01)", border: "rgba(108, 162, 183, 0.3)" });
     expect(fansChartOf(hours)!.spec).toMatchObject({ values: Array(24).fill(0) });
     expect(texts(doc, ".b-statistics-page-content__wrapper .empty-message")).toEqual([]);
-    // No hours at all: OF's text.
     applyStats(doc, "statistics/fans/activity", { ...BASE, ...OV, fansHours: { data: [] } }, D30);
     expect(texts(doc, ".b-statistics-page-content__wrapper .empty-message")).toEqual([NOT_YET, "No Profile activity during selected period"]);
   });
@@ -626,7 +598,6 @@ describe("Fans", () => {
     ]);
     applyStats(doc, "statistics/fans/top-fans", data, D30, { v2: true, picks: picks({ fantab: "earnings", fan: "messages" }) });
     expect(texts(card, ".b-fans__item__list__item")).toEqual(["Total $42.50", "Subscriptions $29.97", "Tips $7.53", "Messages $5.00", "Streams $0.00"]);
-    // An all-zero period: no top fan.
     applyStats(doc, "statistics/fans/top-fans", { ...data, topFan: fixture("top-empty") }, D30, { v2: true });
     expect(card.style.display).toBe("none");
     expect(texts(doc, ".l-wrapper__sidebar .b-clean-state .empty-message")).toEqual(["No Fans yet"]);
@@ -645,7 +616,6 @@ describe("All pages", () => {
     expect(chartSpecOf(a)!.labels).toEqual(["0:00, Oct 01", "0:00, Oct 02", "0:00, Oct 03"]);
     expect(texts(chartTooltip(document, a, 1)!, ".b-chart__tooltip__title, .b-chart__tooltip__text")).toEqual(["0:00, Oct 02", "Claims 2", "Offers 6"]);
     expect(texts(chartTooltip(document, m, 2)!, ".b-chart__tooltip__title, .b-chart__tooltip__text")).toEqual(["0:00, Oct 03", "Claims 3"]);
-    // OF's single point is drawn from the period's start (ChartJs.js 293791 `J`).
     drawPair(document, root, [[main[0]], "Claims", "count"], null, "UTC");
     expect(chartSpecOf(m)!.series.values).toEqual([0, 1]);
   });
@@ -681,7 +651,7 @@ describe("All pages", () => {
     seen.at(-1)!([{ isIntersecting: true }]);
     await vi.waitFor(() => expect(document.querySelectorAll("#oi-users tbody tr").length).toBe(11));
     expect(get.mock.calls.map((c) => c[0])).toEqual(["/api/of/v2/posts/buyers?post_id=7001&limit=10&offset=0", "/api/of/v2/posts/buyers?post_id=7001&limit=10&offset=10"]);
-    expect(seen).toHaveLength(1); // hasMore false: no third page
+    expect(seen).toHaveLength(1);
     document.getElementById("oi-users")!.remove();
     get.mockImplementation(() => Promise.resolve({ list: [], hasMore: false } as never));
     document.querySelector<HTMLElement>("[data-oi-users]")!.click();
@@ -708,8 +678,8 @@ describe("Card More menus and Post statistics", () => {
     expect(get.mock.calls[0][0]).toBe("/api/of/v2/messages/queue/buyers?queue_id=52001&limit=10&offset=0");
     doc.getElementById("oi-users")!.remove();
     more(card("Top Stream")).click();
-    expect(menuRows()).toEqual([`View detailed statistics (${NOT_YET})`]); // no media: OF's composer rows are not shown
-    doc.querySelector<HTMLElement>("#oi-menu [role='menuitem']")!.click(); // disabled: nothing, the menu stays
+    expect(menuRows()).toEqual([`View detailed statistics (${NOT_YET})`]);
+    doc.querySelector<HTMLElement>("#oi-menu [role='menuitem']")!.click();
     expect(doc.getElementById("oi-menu")).not.toBeNull();
     close();
     get.mockRestore();
@@ -721,7 +691,6 @@ describe("Card More menus and Post statistics", () => {
     const card = doc.querySelector("[data-oi-top='Top Post']")!;
     const full = card.querySelector<HTMLButtonElement>(".b-top-statistic__btns button")!;
     expect([full.textContent!.trim(), full.disabled, full.title]).toEqual(["Full stat", true, NOT_YET]);
-    // OF's media-count icons (QueuePostItem): two photos.
     expect([...card.querySelectorAll(".b-top-statistic__btns-row .b-content-inside-thumbs__item")].map((i) => [i.querySelector("svg")!.getAttribute("data-icon-name"), i.textContent])).toEqual([["icon-media", "2"]]);
     more(card).click();
     expect(menuRows()).toEqual([
@@ -734,12 +703,11 @@ describe("Card More menus and Post statistics", () => {
     doc.querySelector<HTMLElement>("#oi-menu [role='menuitem']")!.click();
     await vi.waitFor(() => expect(texts(doc, "#oi-toast .toast__text")).toEqual(["Link to post has been copied to clipboard!"]));
     expect(writeText).toHaveBeenCalledWith("https://onlyfans.com/7001/u_creator");
-    // The phase-1 Relay: Full stat and the menu's last row open OF's Post statistics.
     applyStats(doc, "statistics/overview/top-highlights", data, D30, { v2: true, v3: true, picks: picks({ tpost: "views" }) });
     const get = vi.spyOn(relay, "get").mockResolvedValue(fixture("post-stats") as never);
     more(doc.querySelector("[data-oi-top='Top Post']")!).click();
     expect(menuRows().at(-1)).toBe("View detailed statistics");
-    expect(menuRows()[0]).toBe(`Copy link to post (${NOT_YET})`); // no username known yet
+    expect(menuRows()[0]).toBe(`Copy link to post (${NOT_YET})`);
     [...doc.querySelectorAll<HTMLElement>("#oi-menu [role='menuitem']")].at(-1)!.click();
     await vi.waitFor(() => expect(doc.querySelector("#oi-post-stats .b-stats-row__content")).not.toBeNull());
     expect(get.mock.calls[0][0]).toBe("/api/of/v2/posts/stats?post_id=7001");
@@ -768,19 +736,16 @@ describe("Card More menus and Post statistics", () => {
     document.querySelector<HTMLElement>("#oi-post-stats [data-oi-stat-row='views']")!.click();
     expect(linesOf(canvas)!.lines.map((l) => l.title)).toEqual(["Purchases", "Likes", "Comments", "Tips"]);
     expect(document.querySelector("#oi-post-stats [data-oi-stat-row='views']")!.classList.contains("m-current")).toBe(false);
-    // A count link opens its list, not the toggle.
     document.querySelector<HTMLElement>("#oi-post-stats [data-oi-users]")!.click();
     await vi.waitFor(() => expect(texts(document, "#oi-users .modal-title")).toEqual(["Post Buyers"]));
     expect(document.querySelector("#oi-post-stats [data-oi-stat-row='purchases']")!.classList.contains("m-current")).toBe(true);
     document.getElementById("oi-users")!.remove();
-    // Likes opens the post's likers (OF's PostLikes list), read 10 at a time as the others.
     get.mockClear();
     document.querySelector<HTMLElement>("#oi-post-stats [data-oi-users^='post-likes']")!.click();
     await vi.waitFor(() => expect(texts(document, "#oi-users .modal-title")).toEqual(["Post likes"]));
     expect(get.mock.calls[0][0]).toBe("/api/of/v2/posts/likes?post_id=7001&limit=10&offset=0");
     document.getElementById("oi-users")!.remove();
     document.getElementById("oi-post-stats")!.remove();
-    // An all-zero post: zeros, no links, no Duration row, flat lines.
     get.mockResolvedValue(fixture("post-stats-zero") as never);
     openPostStats(document, 7001, TZ);
     await vi.waitFor(() => expect(document.querySelector("#oi-post-stats .b-stats-row__content")).not.toBeNull());
@@ -788,7 +753,6 @@ describe("Card More menus and Post statistics", () => {
     expect(document.querySelector("#oi-post-stats [data-oi-users]")).toBeNull();
     expect(linesOf(document.querySelector<HTMLCanvasElement>("#oi-post-stats canvas")!)!.lines.every((l) => l.values.every((v) => v === 0))).toBe(true);
     document.getElementById("oi-post-stats")!.remove();
-    // The Relay's error: its text.
     get.mockRejectedValue(new Error("Not Found"));
     openPostStats(document, 7001, TZ);
     await vi.waitFor(() => expect(texts(document, "#oi-post-stats .empty-message")).toEqual(["Couldn't load the statistics: Not Found"]));
@@ -853,7 +817,7 @@ describe("a read that failed", () => {
     const notes = [...doc.querySelectorAll("[data-oi-failed]")];
     expect(notes.map((n) => [n.querySelector("span")!.textContent, n.querySelector("button")!.textContent])).toEqual([["Some figures couldn't be loaded.", "Retry"]]);
     expect(notes[0].nextElementSibling!.classList.contains("b-statistics-page-content")).toBe(true);
-    applyStats(doc, page, { ...BASE }, D30, { retry }); // idempotent: one notice
+    applyStats(doc, page, { ...BASE }, D30, { retry });
     expect(doc.querySelectorAll("[data-oi-failed]")).toHaveLength(1);
     doc.querySelector<HTMLButtonElement>("[data-oi-failed] button")!.click();
     expect(retry).toHaveBeenCalledTimes(1);

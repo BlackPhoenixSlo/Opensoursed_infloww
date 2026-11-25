@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""W30 Vault Jev/Describe review fixes (rwl W30-vault-jev-describe, J ids = REVIEW-FINDINGS F ids).
-Plain-assert, no pytest (repo convention). Temp DB bound by _harness; no OF, TypeSafe, NudeNet or LLM network
-(every external call is a stub).
-
-Run: ./venv/bin/python service/tests/test_w30_vault_jev_fixes.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -58,7 +52,6 @@ def _jpeg():
 
 @contextlib.contextmanager
 def _patched(*triples):
-    """`patch.object` for each (obj, name, value), undone together."""
     with contextlib.ExitStack() as stack:
         for obj, name, value in triples:
             stack.enter_context(patch.object(obj, name, value))
@@ -77,13 +70,11 @@ def _photo(record, derived, scores):
 
 def case_F1a_free_photo_flags_keep_bare_regions():
     rec = _record("set2/orig/2.jpg")
-    # The lower crop sends a topless reading to review, then low NudeNet scores settle it free.
     for key in ("vulva_visible_a", "vulva_visible_b"):
         rec["respL"]["answers"][key]["noul"] = 0.4
     derived = rules.final(rec, {})
     assert (derived["lane5"], derived["settled"], derived["breasts_bare"]) == ("free", "nn.10", "y")
     topless = _photo(rec, derived, {})
-    # Exercise the mapper's independent crotch answer using the same stored shape.
     bare_crotch = {**topless, "breasts_bare": "n", "crotch_bare": "y"}
     observed = []
     for blob, region in ((topless, "breasts_vis"), (bare_crotch, "vulva_vis")):
@@ -95,7 +86,6 @@ def case_F1a_free_photo_flags_keep_bare_regions():
 def case_F1b_uncertain_frame_excludes_new_and_stored_clips_from_free():
     clean = _record("set2/orig/46.jpg")
     uncertain = _record("set2/orig/118.jpg")
-    # The clean frame still answers "n" but ranks higher on severity.
     for key in ("penetration", "penetration_b"):
         clean["resp"]["answers"][key]["noul"] = 0.55
     recs = [clean, uncertain]
@@ -115,7 +105,6 @@ def case_F1b_uncertain_frame_excludes_new_and_stored_clips_from_free():
     fresh = rules.video_blob(frames, top, recs, scores, frames=packed, passes=["1", "2"],
                              tok=1, px=[px, px], at="2026-11-12T00:00:00", src="720",
                              review=None, nbytes=1)
-    # Old jv1 blobs contain the winning frame's body answers and all packed frame answers.
     stored = dict(_photo(clean, clean_read, {}), kind="video", vv="jv1", frame=0,
                   frames=packed, src="720", review=None, bytes=1)
     assert rules.current({"_jev": stored})
@@ -160,12 +149,10 @@ def case_F22_empty_scrub_fails_and_preserves_previous_description():
     chat.assert_awaited()
     observed = (result["ok"], result["status"], item.describe_status == "described",
                 item.description, json.loads(item.ai_fields_json)["description"])
-    assert observed == (False, "refused", False, prior, prior)   # R3: a Terminal failure, not a retried error
+    assert observed == (False, "refused", False, prior, prior)
 
 
 def case_R3_scrub_empty_item_is_not_repaid_every_sweep():
-    """A scrub-emptied describe (F22) is a terminal failure: the Describe target sweep skips it, so its DeepInfra
-    call is not re-bought every sweep; the prior description stays."""
     aid, mid = "w30-r3", 1
     prior = "She poses by the window."
     blob = photo_jev()
@@ -231,16 +218,13 @@ def case_F3_offset_shift_cannot_mark_incomplete_coverage_walked():
         seen.update(page)
         plan.feed(step, page, end < len(live))
         if plan.all_pages == 1:
-            live.remove(1200)  # A consumed item disappears, shifting the next descending offset.
+            live.remove(1200)
 
     missing = set(live) - seen
     assert not (plan.walked and missing), f"walked=True with live IDs unseen: {sorted(missing)}"
 
 
 def case_R2_gap_walk_is_not_a_walk():
-    """A Collect that ended with OF's list shifted under it (a `vault_collect_plan` gap) may have missed items: it
-    satisfies neither the collector's weekly schedule (`walked_since`) nor Full AI's `harvested`, and says so — also
-    when it then hit the page cap (the gap wins: W30 C4)."""
     for n, max_pages in ((250, api._MAX_PAGES), (1000, 3)):
         _gap_walk(n, max_pages)
     assert "not counted as a walk" in vault_runs.GAP_ERROR, vault_runs.GAP_ERROR
@@ -255,7 +239,7 @@ def _gap_walk(n: int, max_pages: int) -> None:
         order = live[::-1] if kw["sort"] == "desc" else live
         page = order[kw["offset"]:kw["offset"] + kw["limit"]]
         if len(calls) == 1:
-            del live[-2:]   # two newest removed after page 1: the desc cursor's next page skips past one
+            del live[-2:]
         return {"list": [{"id": i, "type": "photo"} for i in page],
                 "hasMore": kw["offset"] + kw["limit"] < len(order)}
     client = SimpleNamespace(vault_lists=lambda **kw: {"list": [], "hasMore": False}, vault_media=vault_media)
@@ -307,7 +291,6 @@ def case_F8_detector_failure_settles_completed_provider_usage():
                   (jev, "_ask", ask)):
         result, calls, daily = asyncio.run(run())
     assert not result["ok"] and "stub detector inference failed" in result["detail"], result
-    # Detector-first may skip TypeSafe. If TypeSafe answered, the failed run still owes its usage.
     tokens = sum(completed)
     cost = jev.cost_millicents(tokens)
     observed = (sum(call.tokens_in or 0 for call in calls), sum(call.cost_cents or 0 for call in calls),
@@ -315,8 +298,6 @@ def case_F8_detector_failure_settles_completed_provider_usage():
     assert observed == (tokens, cost, cost)
 
 def case_F4_resign_failure_counts_and_gave_up_clip_is_neutral():
-    """A failed re-sign (OF did not answer) is a brief failure the retry cap counts; a deleted one is not. A clip
-    the Jev pass gave up on: its own status (not current), the flags visit is no success, Describe's skip says so."""
     item = SimpleNamespace(media_id=1, duration_seconds=10)
 
     async def fetch(reason):
@@ -345,9 +326,6 @@ def case_F4_resign_failure_counts_and_gave_up_clip_is_neutral():
     assert flag["status"] in vault_sweep.NEUTRAL and mid not in todo
 
 def case_F5_scrub_failure_leaves_no_part_and_generic_failure_counts():
-    """A store that cannot take the 400px scrub (ENOSPC): no `.part` left, the error raised for
-    `_jev_frames_sync` to log (best-effort). Anything raising inside a clip's collect is a brief failure the
-    retry cap counts (`transient`), never an uncounted re-download every sweep."""
     import errno
     import shutil
     import tempfile
@@ -355,7 +333,7 @@ def case_F5_scrub_failure_leaves_no_part_and_generic_failure_counts():
     import storyboard
 
     def full(a, b):
-        Path(b).write_bytes(b"x")   # a partial copy landed
+        Path(b).write_bytes(b"x")
         raise OSError(errno.ENOSPC, "No space left on device")
 
     with tempfile.TemporaryDirectory() as td:
@@ -378,9 +356,6 @@ def case_F5_scrub_failure_leaves_no_part_and_generic_failure_counts():
     assert got.transient and not got.frames and "EACCES" in got.detail, got
 
 def case_F6_jev_cap_skips_do_not_trip_the_breaker():
-    """A sweep whose Jev cap tripped: every later unread item is `jev_capped` (no fetch, no call). More than
-    BREAK_AFTER of them in a row is no "items in a row failed" stop; the sweep walks on (items Jev already read
-    still describe) and names the cap as its first error."""
     n = vault_sweep.BREAK_AFTER + 5
 
     async def visit(mid):
@@ -396,7 +371,6 @@ def case_F6_jev_cap_skips_do_not_trip_the_breaker():
 
 
 def case_R5_cap_notice_survives_an_earlier_failure():
-    """The Jev cap is named on its own line (`notice`) even when another failure came first (`error`). W30 R5."""
     async def visit(mid):
         if mid == 0:
             return {"ok": False, "status": "error", "detail": "frame decode failed"}
@@ -412,8 +386,6 @@ def case_R5_cap_notice_survives_an_earlier_failure():
     prog = asyncio.run(run())
     assert prog["error"] == "frame decode failed" and prog["notice"] == vault_jev_pass.CAP_SKIP, prog
 
-# W30 C1 — every free entry point over one fixture table. Script lanes: every PURPOSE_LANES slug that sends free
-# (its purpose says mass or public), not hand-named.
 _FREE_SLUGS = {slug for slug, _, purpose, _ in vault_scripts.PURPOSE_LANES if "mass" in purpose or "public" in purpose}
 _STALE = {"description": "lace set", "explicitness": "suggestive", "clothing_state": "lingerie_on",
           "genitals_covered": True, "clothing_items": ["black lace bra", "black thong"], "underwear_visible": True,
@@ -422,15 +394,12 @@ _STALE = {"description": "lace set", "explicitness": "suggestive", "clothing_sta
 
 
 def _restamp(j: dict) -> dict:
-    """`_STALE` re-stamped from `j` (the Jev pass's `vault_jev_flags.apply`)."""
     return flags.apply({**_STALE, "_jev": j}, j)
 
 
 def _c1_rows() -> dict[str, tuple[str, dict]]:
-    """name → (kind, ai_fields). `_STALE` flags are a pre-F1a / pre-Jev covered stamp; `_restamp` re-stamps."""
     y_photo = {**photo_jev("free"), "breasts_bare": "y"}
     unsure_photo = {**photo_jev("free"), "breasts_bare": "unsure"}
-    # Stored clips without the `body` stamp (pre-F1b): the winning frame's answers, every frame packed.
     px = [1280, 720]
 
     def packed(rec):
@@ -478,8 +447,6 @@ def _c1_rows() -> dict[str, tuple[str, dict]]:
 
 
 def _c1_outcomes(rows: dict[str, tuple[str, dict]]) -> dict[str, tuple]:
-    """name → (free script slugs admitting, topic free split, pack free rung, not-nude listing, Full AI sell free,
-    Fill free)."""
     ids = {name: 9100 + i for i, name in enumerate(rows)}
 
     async def listing():
@@ -512,12 +479,6 @@ def _c1_outcomes(rows: dict[str, tuple[str, dict]]) -> dict[str, tuple]:
 
 
 def case_C1_free_entry_points_table():
-    """A firm Jev bare reading behind stale covered flags, or a clip whose stored frames do not decode, is refused by
-    every free entry point (a `jev_bare_unflagged` dispute: Stories / Mass via `is_disputed`; topic / rung /
-    not-nude via `free_vetoed`; Full AI sell and Fill via `free_ok`). Owner D42: an "unsure" clip frame or photo
-    answer may ride the script lanes (Mass); `free_ok` refuses it. An operator lane pick on a y photo keeps the
-    script lanes (the pick wins in the mapper); `body_free` still reads its own "y" (not free elsewhere). W30 C1.
-    D1: a paid Jev lane beside a stale sfw / suggestive stamp (no paid-lane exemption) is refused everywhere too."""
     assert {"stories", "mass"} <= _FREE_SLUGS and "tease_10" not in _FREE_SLUGS, _FREE_SLUGS
     rows = _c1_rows()
     got = _c1_outcomes(rows)
@@ -548,8 +509,6 @@ def case_C1_free_entry_points_table():
 
 
 def case_D4_contradictions_derive_body_once():
-    """A stored free clip's `body` re-derives every packed frame: `_contradictions` derives it once per call, for the
-    bare regions and the undecodable check alike. W30 D4."""
     rows = _c1_rows()
     real, calls = rules.body, []
 
@@ -565,8 +524,6 @@ def case_D4_contradictions_derive_body_once():
 
 
 def case_D3_settled_note_names_the_fix_per_cause():
-    """The `jev_bare_unflagged` note says what clears it: frames that do not decode wait on a Jev re-read (a flags
-    re-stamp off the same frames changes nothing); stale flags / tier on the sweep's re-stamp. W30 D3."""
     rows = _c1_rows()
     for name, how in (("clip undecodable frame", "never free until Jev re-reads it"),
                       ("clip undecodable frame, stale flags", "never free until Jev re-reads it"),
@@ -577,10 +534,6 @@ def case_D3_settled_note_names_the_fix_per_cause():
 
 
 def case_C2_retry_state_survives_picks_and_failed_rereads():
-    """A clip's retry state (`retries` + `failed_at`, a gave-up mark) outlives an operator pick and a failed
-    re-read: a lane pick on a hold in backoff keeps the backoff; a lane pick on a gave-up clip builds a manual blob
-    (priced, never `ai_read`), still given up — the flags visit says so, not `flagged`; a failed single-item re-read
-    of a gave-up clip leaves it given up; a poster-only fetch that failed briefly counts toward the cap. W30 C2."""
     now = datetime.utcnow()
     soon = vault_jev_pass.held_blob(None, 1, "stub", now.isoformat(), terminal=False)
     picked = vault_jev_manual.overlay(soon, {"lane": "free"}, "video")
@@ -621,9 +574,6 @@ def case_C2_retry_state_survives_picks_and_failed_rereads():
 
 
 def case_C5_item_tombstoned_after_selection_is_not_paid():
-    """An item OF deleted after a sweep selected it (#948 tombstone, `removed_at`) is not read at visit time: the
-    Jev pass is `gone` (neutral) with no fetch or call, Describe returns `gone` before any cached frame or paid call, the description stays.
-    W30 C5."""
     aid = "w30-c5"
     prior = "She poses by the window."
     chat = AsyncMock(return_value=SimpleNamespace(content=json.dumps({"description": "new"}), cost_cents=5, call_id=1))

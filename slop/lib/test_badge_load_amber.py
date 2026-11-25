@@ -1,5 +1,3 @@
-"""Scenario 2b badge-load-amber's checks over synthetic traces: each passes on the right behaviour and fails on the
-broken one it guards, and every one goes through the require_amber gate."""
 import asyncio
 import copy
 import importlib
@@ -19,8 +17,6 @@ LEGS = (0.0, 180.0, 195.0)
 
 
 def _trace():
-    # A: Fans 1, 2 awaiting; 4 read elsewhere at 10; 1 replied elsewhere at 40 (echo at 40.7); 2 DMs at 70;
-    # 4 in a mass at 100 (window re-read at 103). B: 5 awaiting; 6 read elsewhere at 20; 5 chat-replied at 60.
     return {
         "truth": {A: [(-5.0, 2), (10.0, 3), (40.0, 2), (70.0, 1), (100.0, 0)],
                   B: [(-5.0, 1), (20.0, 2), (60.0, 1)]},
@@ -66,11 +62,11 @@ def _break(name):
 
 
 @pytest.mark.parametrize("broken, check", [
-    ("p95", m.AMBER_P95_UNDER_8S),          # every Amber change 9 s late
-    ("max", m.AMBER_MAX_UNDER_30S),         # a reply elsewhere never leaves amber until the next DM 30 s on
-    ("both", m.NO_FAN_IN_BOTH),             # Fan 2's DM lights his dot but amber still counts him
-    ("both_mass", m.NO_FAN_IN_BOTH),        # Fan 4 marked unread (dot red) while amber keeps him
-    ("final", m.FINAL_EQUALS_TRUTH),        # B's Amber circle off truth when settled
+    ("p95", m.AMBER_P95_UNDER_8S),
+    ("max", m.AMBER_MAX_UNDER_30S),
+    ("both", m.NO_FAN_IN_BOTH),
+    ("both_mass", m.NO_FAN_IN_BOTH),
+    ("final", m.FINAL_EQUALS_TRUTH),
 ])
 def test_each_check_fails_on_its_broken_trace(broken, check):
     ok, detail = _judge(_break(broken))[check]

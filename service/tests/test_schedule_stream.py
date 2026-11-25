@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""POST /api/of/v2/streams — schedule a stream (OF Manager's schedule form).
-
-The body passes through to OF's POST /api2/v2/streams exactly as OF's own
-create form sends it ({description, scheduledDate, isShowTips}); an OF
-rejection surfaces as the usual structured 502. Plain-assert, OF faked.
-
-  case_route_is_registered
-  case_body_passes_through
-  case_client_posts_to_streams
-  case_of_error_is_502
-
-Run: ./venv/bin/python service/tests/test_schedule_stream.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()

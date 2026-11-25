@@ -1,7 +1,5 @@
 "use client";
 
-/** The bio editor's Links card: the page's links in their public order, each with ↑ / ↓ (a reorder write), Edit (the
- *  link dialog) and Delete; "Add link" opens the dialog on a new one. */
 import { ArrowDown, ArrowUp, Link2, Lock, Plus } from "lucide-react";
 
 import { IfButton, IfCard } from "@/components/ui/infloww";
@@ -68,7 +66,6 @@ export function BioLinksCard({ page, onAdd, onEdit }: {
   );
 }
 
-/** The link's background (a 2.5:1 thumb), else its icon, else a plain link glyph. */
 function Thumb({ link: l }: { link: BioLink }) {
   const url = l.background_url || l.icon_url;
   if (!url) {

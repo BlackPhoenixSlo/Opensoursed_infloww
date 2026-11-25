@@ -1,49 +1,3 @@
-"""Shift schedule + Clock under a crowd (service/shifts_api.py, service/clock_api.py, service/shift_time.py,
-service/shifts_timesheet.py): one Agency (`agency_inbox`: 3 Creators small, 10 medium), `employees` chatter
-logins (50 small, 200 medium; `seed/chatters`: the real invite + register, each allowed one Creator,
-round-robin), 30 days of Shift history and Clock events (`seed/shift_history`: weekly series, "This shift"
-deletes, a DST night inside the anchored window [2026-10-02, 2026-11-01) UTC, a few chatters still clocked
-in across its end). Time tracking on through the real `PUT /admin/settings/time-tracking` (roles chatter +
-owner, auto clock-out 999 min so no live event is swept mid-run).
-
-Phase A, at once: `race_rounds` rounds of `race_n` concurrent `POST /admin/shifts` on one Creator's free
-slot (Sunday 20:00-24:00 local, a future week; a different Employee each), and the clock-in storm: every
-actor chatter (`--users`, those not clocked in by the seed) signs in (`POST /chatter/login`, own cookie) and
-fires `storm` concurrent `POST /admin/shifts/clock-in` (actors/clock.py).
-Phase B, at once: the chatters' day (clock-status, heartbeats, clock-out, clock-in, heartbeats, clock-out;
-human-paced), `readers` owner pools reading the Timesheet (group=employee and account, the 30-day window),
-the week list (30 days and this week) and `GET /admin/stats/chatting-stats`, and the owner's writes: PATCH
-scope=all on a Shift it creates on a slot no race touched (one per Creator), and on seeded series PATCH scope=this / following and
-`/cancel` scope=this / following, each on a future occurrence the seed's own expansion names.
-Phase C, owners still reading: the cancel burst: on `cancel_series` other seeded series, `/cancel` scope=this on
-every occurrence of each in [now + 1 d, now + `cancel_days`), all fired at once (each rewrites its series'
-`cancelled_dates`).
-
-Checks: the race (exactly one 2xx per round, the rest 409, one Shift row on the slot); one open clock event
-per storm chatter (one 2xx clock-in each); the Timesheet per Employee and per Creator over the window ==
-the oracle (`seed/shift_history.occurrences`: the Occurrence rule written from the spec with zoneinfo,
-wall-clock length kept across the Berlin fall-back, and the Agency-wide clock's per-Creator spans), the week
-list over the window == the oracle's occurrences, the fall-back night's 5 h long; every owner write 2xx and the
-week list shows it (each Creator's solo create in its first race-free week: `race_rounds` is capped at
-SOLO_WEEKS per Creator so that week is inside the list's read); every burst cancel 2xx, its date in the
-series' `cancelled_dates` and off the week list (read in 41-day pieces); one
-`actions` row (shift.create|edit|cancel, clock.in|out) per 2xx write and none for a refused one; budgets
-p95 Timesheet <= 1 s and heartbeat <= 200 ms; p95 vs the last green run. With UI: /employees/shifts and
-/analytics/employee-reports (trigger + settled screenshots), each settled page naming an Employee the API
-lists for it.
-
-Bypasses (declared): history (Shifts, assignments, Clock events and their `actions` rows) is SQL-seeded,
-written as the routes would; the live writes all go through the real routes. The window is fixed in the
-past, so the history's numbers never depend on the run's date. The seed's still-open events keep a
-heartbeat of "when seeded" (auto clock-out 999 min keeps them open). Chatters reach the relay directly
-(no Next proxy). The clock-in storm is k identical requests per chatter at once (a double-click / two
-tabs). Owners' reads run in closed loops with 0.3-1 s think time.
-
-Faults (lib/shifts_faults.py): `shift-overlap-check-skipped` (the scenario's) turns only the race red;
-`timesheet-drops-open-shift` only the two Timesheet oracle checks; `clock-in-twice-opens-two` (the schema
-without `uq_clock_events_open_employee`) only the one-open check; `shift-cancel-unlocked` (cancel_shift on
-the pre-fix unlocked session) only the burst's cancel-dates check.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -67,9 +21,10 @@ P95_VS_LAST = (2.0, 50)
 TS_BUDGET = f"p95 GET /admin/shifts/timesheet <= {TIMESHEET_P95_MS} ms"
 HB_BUDGET = f"p95 POST /admin/shifts/clock-heartbeat <= {HEARTBEAT_P95_MS} ms"
 WAIT_MS = 120_000
-LIST_DAYS = 41      # the week list's read after the writes: [now, now + 41 d) (the route's 42-day cap)
-SOLO_WEEKS = 3      # a Creator's solo create lies at most this many race weeks out, inside LIST_DAYS
-CANCEL_DAYS = 84    # the cancel burst's reach: weekly series with 1-2 days give 12-24 dates each
+# the week-list route caps a read at 42 days
+LIST_DAYS = 41
+SOLO_WEEKS = 3
+CANCEL_DAYS = 84
 
 
 def _z(dt: datetime) -> str:
@@ -96,18 +51,16 @@ def _clip_s(a, b, lo, hi) -> float:
 
 def oracle(series: list[dict], events: list[dict], lo: datetime, hi: datetime, now: datetime,
            by_employee: bool) -> dict[str, tuple]:
-    """The Timesheet for [lo, hi) from the spec, over the seed's series and every clock event (an open one
-    runs to `now`): {key: (scheduled_shifts, shifts_worked, scheduled_minutes, worked_minutes, open_now)}."""
-    mine = defaultdict(list)  # employee -> its series
+    mine = defaultdict(list)
     for sr in series:
         mine[sr["employee_id"]].append(sr)
-    spans = []  # (employee, account, lo, hi, open): each event's time per Creator
+    spans = []
     for ev in events:
         stop = ev["out_utc"] or now
         if ev["account_id"] is not None:
             spans.append((ev["employee_id"], ev["account_id"], ev["in_utc"], stop, ev["out_utc"] is None))
             continue
-        pieces = defaultdict(list)  # agency-wide: only inside the occurrences its Employee holds per Creator
+        pieces = defaultdict(list)
         for sr in mine[ev["employee_id"]]:
             pieces[sr["account_id"]] += [(max(a, ev["in_utc"]), min(b, stop))
                                          for a, b in occurrences(sr, ev["in_utc"], stop)]
@@ -159,7 +112,6 @@ async def _settings(ctx) -> None:
 
 
 async def _roles(ctx, emp_ids: list[int]) -> None:
-    """Every login holds a role: the Roles save gives any login without one Chatter (settings_api)."""
     r = await ctx.owner.get("/admin/settings/roles")
     r.raise_for_status()
     cfg = r.json().get("config") or {}
@@ -170,8 +122,6 @@ async def _roles(ctx, emp_ids: list[int]) -> None:
 
 
 def _slot(hist: dict, creator: dict, week: int, today: date) -> dict:
-    """The reserved slot (Sunday 20:00-24:00 local) of `creator`, `week` weeks after the first Sunday at
-    least a week ahead."""
     wd, block = RESERVED
     tz = hist["tz_by_creator"][creator["id"]]
     day = today + timedelta(days=7 + (wd - today.isoweekday()) % 7, weeks=week)
@@ -196,9 +146,6 @@ async def _race(ctx, slot: dict, emps: list[int], n: int) -> dict:
 
 
 def _edit_plan(hist: dict, now: datetime, n: int) -> list[dict]:
-    """Owner writes on seeded series, each on a future occurrence (>= now + 1 day) the seed's expansion
-    names; kinds in turn: PATCH this, PATCH following, cancel this, cancel following. A "following" one
-    needs an earlier occurrence left in its series, else the product takes it as "all"."""
     kinds = ("patch-this", "patch-following", "cancel-this", "cancel-following")
     out = []
     for sr in hist["series"]:
@@ -215,9 +162,6 @@ def _edit_plan(hist: dict, now: datetime, n: int) -> list[dict]:
 
 
 async def _edit(http, e: dict) -> dict:
-    """One planned write, answered, with what it must leave: `actions` (its audit rows), `shown` (week list
-    occurrences: shift id, start, end) and `gone` (series id, occurrence start, following: no occurrence of
-    the series starts there, or from there on)."""
     sr, (a, b) = e["series"], e["occ"]
     verb, scope = e["kind"].split("-")
     sid = sr["id"]
@@ -240,8 +184,6 @@ async def _edit(http, e: dict) -> dict:
 
 
 def _cancel_plan(hist: dict, now: datetime, n: int, plan: list[dict], days: int) -> list[dict]:
-    """The burst: the `n` seeded series no planned edit touches with the most occurrences in
-    [now + 1 d, now + days), each with all of them."""
     used = {e["series"]["id"] for e in plan}
     cand = [{"series": sr, "occ": occ} for sr in hist["series"] if sr["id"] not in used
             and len(occ := occurrences(sr, now + timedelta(days=1), now + timedelta(days=days))) >= 2]
@@ -249,7 +191,6 @@ def _cancel_plan(hist: dict, now: datetime, n: int, plan: list[dict], days: int)
 
 
 async def _cancel_burst(http, burst: list[dict]) -> list[dict]:
-    """Every planned cancel scope=this fired at once; [{id, start, day, status, actions}]."""
     async def one(sr, a):
         try:
             r = await http.post(f"/admin/shifts/{sr['id']}/cancel", json={"scope": "this", "occurrence_start": _z(a)})
@@ -263,7 +204,6 @@ async def _cancel_burst(http, burst: list[dict]) -> list[dict]:
 
 
 async def _create_patch_all(http, slot: dict, emp: int) -> list[dict]:
-    """One create on a free slot (no race), then PATCH scope=all on it: 30 min shorter."""
     body = {"start_utc": _z(slot["start"]), "end_utc": _z(slot["end"]), "tz": slot["tz"],
             "employee_ids": [emp], "account_ids": [slot["account_id"]]}
     r = await http.post("/admin/shifts", json=body)
@@ -303,9 +243,6 @@ def _p95(ctx, route: str) -> tuple[float | None, int]:
 
 
 def _p95_outside_burst(ctx, route: str) -> float | None:
-    """p95 over the calls outside Phase C: reads overlapping the cancel burst wait behind its serialized
-    writes (a load the runs before it never had), so run-vs-run compares the same load. The absolute
-    budgets still read every call."""
     lat = sorted((Counter(ms for _, ms in ctx.rec.calls.get(route, []))
                   - Counter(ms for _, ms in ctx.rec.by_stage.get("C", {}).get(route, []))).elements())
     return round(lat[min(len(lat) - 1, int(len(lat) * 0.95))], 1) if lat else None
@@ -318,7 +255,6 @@ async def _listed(ctx, lo: datetime, hi: datetime) -> tuple[int, set]:
 
 
 def _check_race(ctx, w, race_out: list[dict], race_n: int) -> None:
-    """Exactly one 2xx per round, the rest 409, and one Shift row on the slot."""
     con = w.sql()
     rounds = [{"account_id": x["account_id"], "start": _z(x["start"]),
                "2xx": sum(200 <= s < 300 for s in x["statuses"]), "409": sum(s == 409 for s in x["statuses"]),
@@ -334,8 +270,6 @@ def _check_race(ctx, w, race_out: list[dict], race_n: int) -> None:
 
 
 def _check_one_open(ctx, w, clock, members: list, emp_of_user: dict, storm: int) -> None:
-    """After the storm, every storm chatter holds one open clock event, got one 2xx clock-in and a 409
-    for each other one (clock_api.clock_in: a clock-in while one is open is 409)."""
     con = w.sql()
     open_by_emp = dict(con.execute("SELECT employee_id, COUNT(*) FROM clock_events WHERE out_utc IS NULL "
                                    "GROUP BY employee_id").fetchall())
@@ -353,7 +287,6 @@ def _check_one_open(ctx, w, clock, members: list, emp_of_user: dict, storm: int)
 
 
 async def _check_owner_writes(ctx, edits: list[dict]) -> None:
-    """Every owner write 2xx, its `shown` occurrences listed and its `gone` ones not."""
     now = _utcnow()
     status, listed = await _listed(ctx, now, now + timedelta(days=LIST_DAYS))
     shown = []
@@ -367,8 +300,6 @@ async def _check_owner_writes(ctx, edits: list[dict]) -> None:
 
 
 async def _check_cancel_dates(ctx, w, cancels: list[dict], days: int) -> None:
-    """Every burst cancel 2xx, its local date in its series' stored `cancelled_dates`, and its occurrence
-    off the week list (read in LIST_DAYS chunks over the burst's reach)."""
     ids = sorted({c["id"] for c in cancels})
     con = w.sql()
     stored = {i: set(json.loads(raw or "[]")) for i, raw in con.execute(
@@ -387,7 +318,6 @@ async def _check_cancel_dates(ctx, w, cancels: list[dict], days: int) -> None:
 
 
 def _check_audit(ctx, w, base_action: int, race_out: list[dict], edits: list[dict], clock) -> None:
-    """One `actions` row per 2xx write (the burst's cancels too, in `edits`' actions), none for a refused one."""
     want = Counter(a for x in race_out for a in x["actions"])
     want.update(a for e in edits if 200 <= e["status"] < 300 for a in e["actions"])
     want.update(("clock." + kind, str(eid)) for kind, _, st, eid in clock.writes if 200 <= st < 300)
@@ -402,7 +332,6 @@ def _check_audit(ctx, w, base_action: int, race_out: list[dict], edits: list[dic
 
 
 async def _check_timesheet(ctx, w, hist: dict, base_event: int) -> None:
-    """The Timesheet per Employee and per Creator over the DST window == the oracle, live events too."""
     con = w.sql()
     live = [{"id": i, "employee_id": e, "account_id": a, "in_utc": datetime.fromisoformat(t_in),
              "out_utc": datetime.fromisoformat(t_out) if t_out else None}
@@ -421,8 +350,6 @@ async def _check_timesheet(ctx, w, hist: dict, base_event: int) -> None:
 
 
 async def _check_list(ctx, hist: dict) -> None:
-    """The week list over the DST window == the oracle's occurrences, and the Berlin fall-back night's
-    occurrence of the DST series (series[0]: Sunday 00:00-04:00 Berlin) is 5 h long."""
     lo, hi = WINDOW
     status, got = await _listed(ctx, lo, hi)
     want = {(sr["id"], _z(a), _z(b)) for sr in hist["series"] for a, b in occurrences(sr, lo, hi)}
@@ -453,14 +380,10 @@ async def _ui(ctx) -> None:
     now = _utcnow()
     r = await ctx.owner.get(f"/admin/shifts?from={_z(now - timedelta(days=7))}&to={_z(now + timedelta(days=7))}")
     listed = {e["display_name"] for o in r.json().get("occurrences", []) for e in o["employees"]}
-    # the report's default range (the last 30 days) and the card's own read; chatting-stats lists only
-    # Employees with sends or sales, which this world does not seed
     rs = await ctx.owner.get(f"/admin/shifts/timesheet?from={_z(now - timedelta(days=30))}&to={_z(now)}"
                              "&group=employee")
     stat_names = {x.get("display_name") for x in (rs.json().get("rows") or [])} - {None}
     async with ui.owner_browser(ctx) as page:
-        # (path, shot tag, names the API lists, check, its API status, scroll: the Clocked hours card sits
-        # below the charts)
         for path, tag, names, check, api_status, scroll in (
                 ("/employees/shifts", "shifts", listed, UI_SHIFTS, r.status_code, False),
                 ("/analytics/employee-reports", "employee-reports", stat_names, UI_REPORTS, rs.status_code, True)):
@@ -494,7 +417,6 @@ async def run(ctx) -> None:
     cancel_days = int(ctx.param("cancel_days", CANCEL_DAYS))
     w = await ctx.build(PROFILE)
     creators = w.data["creators"]
-    # Each Creator's solo create goes in its first week no race round takes, so it stays inside LIST_DAYS.
     sizes["race_rounds"] = min(sizes["race_rounds"], SOLO_WEEKS * len(creators))
     ctx.metric("sizes", sizes)
     await _settings(ctx)
@@ -516,7 +438,6 @@ async def run(ctx) -> None:
     base_event = con.execute("SELECT COALESCE(MAX(id), 0) FROM clock_events").fetchone()[0]
     con.close()
 
-    # ── Phase A: the create race and the clock-in storm, at once ──
     rng = w.rng("shifts_clock_crowd")
     now0 = _utcnow()
     emps_of = defaultdict(list)
@@ -542,7 +463,6 @@ async def run(ctx) -> None:
     _check_race(ctx, w, race_out, sizes["race_n"])
     _check_one_open(ctx, w, clock, members, emp_of_user, sizes["storm"])
 
-    # ── Phase B: the chatters' day, owners reading, owner writes ──
     ctx.rec.stage = "B"
     stop = asyncio.Event()
     week = (_z(now0 - timedelta(days=3)), _z(now0 + timedelta(days=4)))
@@ -556,15 +476,13 @@ async def run(ctx) -> None:
     edits: list[dict] = []
 
     async def owner_writes():
-        for slot in solo:  # a create on a slot no race touched, then PATCH all on it
+        for slot in solo:
             edits.extend(await _create_patch_all(writer, slot, emps_of[slot["account_id"]][0]))
         for e in plan:
             edits.append(await _edit(writer, e))
             await asyncio.sleep(rng.uniform(0.2, 0.8))
 
     await asyncio.gather(owner_writes(), *(clock.work(m) for m in members))
-    # ── Phase C: the cancel burst, owners still reading (after the chatters' day: its serialized writes
-    # would sit in the heartbeat budget) ──
     ctx.rec.stage = "C"
     burster = ctx.owner.share()
     cancels = await _cancel_burst(burster, burst)

@@ -14,7 +14,6 @@ const media = (id: number, dollars: number, at: string, extra: Partial<FanChatMe
   id, text: `m${id}`, price: dollars, isFree: dollars === 0, isOpened: true, isFromQueue: false,
   mediaCount: 1, createdAt: at, media: [{ id, type: "photo", files: { thumb: { url: `t${id}` } } }], ...extra,
 });
-/** Each ledger row's matched gallery id (null: ledger-only, so no thumbs), in row order. */
 const matched = (m: FanChatMediaItem[], l: PpvHistoryItem[]) =>
   buildSaleRows(m, l).map((r) => [r.key, r.thumbs.length ? r.ofMessageId : null]);
 

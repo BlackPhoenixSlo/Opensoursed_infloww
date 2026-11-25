@@ -1,7 +1,6 @@
 /**
  * The app's navigation, as data. One tree drives the sidebar, the settings tab
- * list, the "not built yet" placeholder pages and the tests, so the labels and
- * routes live in exactly one place.
+ * list and the tests, so the labels and routes live in exactly one place.
  *
  * Labels are VERBATIM from docs/infloww-screens.md §1.1 (sidebar) and §3.10
  * (settings tabs); routes follow §2. The one deliberate deviation from Infloww
@@ -21,7 +20,6 @@
  *                   (service/permissions.py OPT_IN_PAGES, OPT_IN_KINDS).
  *   notOptIn      — a link of a `chatterOptIn` group its role grants like any
  *                   other page (My AI Chatter › Get to know fans).
- *   notBuilt      — the route renders the Fansly welcome placeholder.
  *   popout        — a window of its own, never a page in the app: the sidebar
  *                   opens it with `openPopout` (Messages Pro, ADR-0002).
  *   masterOnly    — shown only to the deployment master (users.is_admin); the
@@ -98,7 +96,6 @@ export interface NavLink {
   href: string;
   icon?: LucideIcon;
   chatterHidden?: boolean;
-  notBuilt?: boolean;
   popout?: boolean;
   masterOnly?: boolean;
   flag?: FeatureFlag;
@@ -273,32 +270,20 @@ const COMMON_NAV: NavNode[] = [
  * Scripts, Message pro, Vault pro). Scripts, Message pro and Vault pro are
  * our built pages, which serve a Fansly account through the relay's Fansly
  * shim (they read the platform-scoped account list). Of the Fansly Manager
- * pages (Infloww's embedded fansly.com), Scheduled Posts, Lists, Notifications
- * and Earning Statistics are ours over the shim, behind the `fansly_manager`
- * flag (roadmap 8.1), each answering to its OnlyFans counterpart's Permission
- * page (`permission`); the rest are not built.
+ * pages (Infloww's embedded fansly.com), only Scheduled Posts, Lists,
+ * Notifications and Earning Statistics are ours over the shim, behind the
+ * `fansly_manager` flag (roadmap 8.1), each answering to its OnlyFans
+ * counterpart's Permission page (`permission`).
  */
 export const FANSLY_NAV: NavNode[] = [
   {
     label: "Fansly Manager",
     icon: Heart,
     children: [
-      { label: "Homepage", href: "/fansly-manager/home", notBuilt: true },
-      { label: "Profile", href: "/fansly-manager/profile", notBuilt: true },
-      { label: "Subscriptions", href: "/fansly-manager/subscriptions", notBuilt: true },
-      { label: "Media Vault", href: "/fansly-manager/media-vault", notBuilt: true },
-      { label: "Media Collection", href: "/fansly-manager/media-collection", notBuilt: true },
       { label: "Scheduled Posts", href: "/fansly-manager/scheduled", flag: "fansly_manager", permission: "/of-manager/queue" },
       { label: "Lists", href: "/fansly-manager/lists", flag: "fansly_manager", permission: "/of-manager/collections" },
-      { label: "Bookmarks", href: "/fansly-manager/bookmarks", notBuilt: true },
-      { label: "Messages", href: "/fansly-manager/messages", notBuilt: true },
       { label: "Notifications", href: "/fansly-manager/notifications", flag: "fansly_manager", permission: "/of-manager/notifications" },
-      { label: "Creator Dashboard", href: "/fansly-manager/creator", notBuilt: true },
       { label: "Earning Statistics", href: "/fansly-manager/earning-statistics", flag: "fansly_manager", permission: "/analytics/creator-reports" },
-      { label: "Profile Statistics", href: "/fansly-manager/profile-statistics", notBuilt: true },
-      { label: "Tracking Links", href: "/fansly-manager/tracking-links", notBuilt: true },
-      { label: "Referrals", href: "/fansly-manager/referrals", notBuilt: true },
-      { label: "Settings", href: "/fansly-manager/settings", notBuilt: true },
     ],
   },
   { label: "Scripts", href: "/growth/scripts", icon: ScrollText }, // Infloww: /fansly/scripts
@@ -341,14 +326,13 @@ export function platformOfPath(pathname: string): Platform | null {
 
 /**
  * Where switching to `platform` lands: its first page, as Infloww's
- * `getFirstMenu` (@10736265), skipping a placeholder, a popout and a flagged
- * page so a switch never lands on "not built yet", "not available" or opens
- * a window (ours; Infloww's first Fansly page is the embedded fansly.com
- * Homepage).
+ * `getFirstMenu` (@10736265), skipping a popout and a flagged page so a
+ * switch never lands on "not available" or opens a window (ours; Infloww's
+ * first Fansly page is the embedded fansly.com Homepage).
  */
 export function firstPage(platform: Platform): string {
   const links = PLATFORM_NAV[platform].flatMap((n) => (isDivider(n) ? [] : isGroup(n) ? n.children : [n]));
-  return (links.find((l) => !l.notBuilt && !l.popout && !l.flag) ?? links[0]).href;
+  return (links.find((l) => !l.popout && !l.flag) ?? links[0]).href;
 }
 
 /** Pinned under the scrolling sidebar list, above the version line. */

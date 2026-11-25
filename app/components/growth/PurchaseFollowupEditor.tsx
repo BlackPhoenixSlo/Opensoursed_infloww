@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * The "Purchased" Trigger's editor (ticket 44, owner ruling N2 position B): the
- * purchase_followup automation's on/off, its one message text and its Smart
- * Message settings (`SmartMessageFields`: media and price, Infloww's random
- * "after delay", Frequency, Effective / Expiry, Auto-unsend), saved through
- * `/admin/purchase-followup-config`.
- * Our editor, not Infloww's seven-step wizard; the dialog around it carries
- * the "Inflowwww extra" tag. Off by default; with no text saved, the message
- * starts as Infloww's own default script for the Trigger.
- */
 
 import { useId, useReducer } from "react";
 
@@ -22,13 +12,10 @@ import {
 import { buildPayload, initPurchase, purchaseIssues, purchaseReducer, type PurchaseAction } from "./purchaseFollowupForm";
 import { SmartMessageFields } from "./SmartMessageFields";
 
-/** The first of Infloww's default scripts for "Fan purchases PPV"
- *  (`resetTemplateDefaultData`, index.9f50f370.js @14445308), verbatim. */
 export const PURCHASE_TEMPLATE = "Thanks for your purchase, {name}! You're in for a treat!";
 
 export default function PurchaseFollowupEditor({ accountId, onTouched }: {
   accountId: string | null;
-  /** Called on each user edit (the dialog's Escape gate). */
   onTouched: () => void;
 }) {
   const q = usePurchaseFollowupConfig(accountId);
@@ -41,11 +28,9 @@ export default function PurchaseFollowupEditor({ accountId, onTouched }: {
 function Form({ accountId, initial, onTouched }: {
   accountId: string; initial: PurchaseFollowupConfig; onTouched: () => void;
 }) {
-  // One per mounted editor: the footer's Save (outside the form) submits this one.
   const formId = useId();
   const save = useSavePurchaseFollowupConfig(accountId);
   const [draft, rawDispatch] = useReducer(purchaseReducer, undefined, () => initPurchase(initial, PURCHASE_TEMPLATE));
-  // Every action is the user's: each one tells the dialog (its Escape gate).
   const dispatch = (a: PurchaseAction) => { onTouched(); rawDispatch(a); };
   const { enabled, text, extras } = draft;
   const { problem, missingText } = purchaseIssues(draft);

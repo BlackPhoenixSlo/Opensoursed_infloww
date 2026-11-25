@@ -1,20 +1,5 @@
 "use client";
 
-/**
- * Statistics › Fans with the phase-2 Relay reads (omf-statistics-relay), read only once useOfStats' probe finds that
- * Relay; until then the page keeps the generator's honest state:
- * - Subscriptions: OF's All / Renews / New subscribers tabs, the tab's chart and summary (`/subscriptions/subscribers/chart
- *   ?by=`: "<n> Subscribers", the earnings and their change) and table (`/subscriptions/subscribers/latest?by=`: the fan,
- *   price or "free", total duration / renew date / subscription date; an expired one grey);
- * - Top fans: OF's Total / Subscriptions / Tips / Messages / Posts / Streams tabs and table
- *   (`/subscriptions/subscribers/top?by=`: the fan, the tab's sum, the total);
- * - Fans activity: OF's "Subscribers activity" sectors chart (`/fans-activity/list?format=table`) and "Most active hours"
- *   bars (`format=hours`), each hour's share, with OF's tooltips (ofMirrorChart). OF's "Data available starting from"
- *   alert reads `/init`'s fansActivityDate, which the Relay grants Home only: not shown;
- * - every Fans tab's sidebar Top Fan card (`/users/me/stats/top/fan`): the fan, the category tabs, OF's Subscription and
- *   Earnings details. The fan's actions (Lists, Discount, Restrict, Add notes, More) stay disabled: Inflowwww has no
- *   write for them (app/lib/ofMirrorWrites.ts).
- */
 
 import { clearFans, drawBars, drawSectors, sectorsOf } from "@/lib/ofMirrorChart";
 import { plain } from "@/lib/ofMirrorData";
@@ -32,9 +17,7 @@ export interface FansCtx {
   img?: (u: string) => string;
 }
 
-/** Fans › Subscriptions' third column per tab (OF's durationText). */
 const SUBS_COLUMN: Record<string, string> = { total: "Total duration", renew: "Renew date", new: "Subscription date" };
-/** Top fans' tabs: their title and sum (statistics-fans-top.js). */
 const TOP_TABS: Record<string, [title: string, field: string]> = {
   total: ["Total", "totalSumm"], subscribes: ["Subscriptions", "subscribesSumm"], tips: ["Tips", "tipsSumm"],
   messages: ["Messages", "messagesSumm"], post: ["Posts", "postsSumm"], streams: ["Streams", "streamsSumm"],
@@ -42,7 +25,6 @@ const TOP_TABS: Record<string, [title: string, field: string]> = {
 
 type Subscriber = Fan & { subscribedOnDuration?: string | null; subscribedOnData?: Record<string, unknown> | null };
 
-/** Fans › Subscriptions' summary from OF's chart for the tab (`subscribers`, `total`, `delta`), else the overview's. */
 export const subsRekey = (chart: unknown, v2: boolean) => (_el: Element, key: string) => {
   if (!v2 || !isObj(chart)) return key;
   if (key === "fans:fans.subscribers.total" && num(chart.subscribers) !== null) return "subsChart:subscribers";
@@ -78,7 +60,6 @@ function subscriptionsPage(doc: Document, data: StatsData, p: Period, x: FansCtx
     for (const b of doc.querySelectorAll("[data-oi-pick^='subs:'][data-oi-enable]")) enable(doc, b);
     pickTabs(doc, "subs", tab);
   }
-  // OF's fansSummary (a ChartSummary: unsigned, its icon the direction): the chart's change for the tab (none for All time).
   const delta = x.v2 && isObj(data.subsChart) ? num(data.subsChart.delta) : null;
   const holder = doc.querySelector(".b-statistics-page-content__wrapper > .b-elements-determinant__value");
   if (holder && delta && p.key !== "all" && !holder.querySelector(".b-statistics-level")) add(doc, level(doc, delta, false), holder);
@@ -127,11 +108,6 @@ function topFansPage(doc: Document, data: StatsData, x: FansCtx) {
   });
 }
 
-/**
- * Fans activity's two charts, as OF's page (statistics-fans-activity.js 159239): the sectors chart from `format=table`
- * (always drawn, even empty), the hours bars from `format=hours` (`ratio * 100` each; OF's "No Profile activity during
- * selected period" only for no hours at all). Drawn by ofMirrorChart's drawSectors / drawBars.
- */
 function activityPage(doc: Document, data: StatsData) {
   const show = (which: string, raw: unknown, draw: (c: HTMLCanvasElement) => void) => {
     const box = doc.querySelector<HTMLElement>(`[data-oi-activity='${which}']`);
@@ -149,7 +125,6 @@ function activityPage(doc: Document, data: StatsData) {
   if (isObj(data.fansActivity)) show("sectors", data.fansActivity, (c) => drawSectors(c, sectorsOf(at(data.fansActivity, "data"))));
   const raw = at(data.fansHours, "data");
   if (!Array.isArray(raw)) return;
-  // OF's hoursData: `(ratio || 0) * 100`.
   const values = raw.map((h) => 100 * (num(at(h, "ratio")) || 0));
   if (values.length) show("hours", raw, (c) => drawBars(c, values));
   else {
@@ -158,7 +133,6 @@ function activityPage(doc: Document, data: StatsData) {
   }
 }
 
-/** OF's Top Fan card on the Fans tabs: the fan, the category tabs, Subscription or Earnings. */
 function fanCard(doc: Document, data: StatsData, p: Period, x: FansCtx) {
   const card = doc.querySelector<HTMLElement>("[data-oi-fan-card]");
   const items = topItems(data.topFan, FANS_FAN_TABS.map(([k]) => k));
@@ -207,7 +181,6 @@ function fanCard(doc: Document, data: StatsData, p: Period, x: FansCtx) {
   }
 }
 
-/** The Fans tabs' phase-2 parts for page `sub`. */
 export function applyFans(doc: Document, sub: string, data: StatsData, p: Period, x: FansCtx) {
   if (sub === "fans/subscriptions") subscriptionsPage(doc, data, p, x);
   if (sub === "fans/top-fans") topFansPage(doc, data, x);

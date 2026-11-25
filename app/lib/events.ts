@@ -1,38 +1,3 @@
-/**
- * events.ts — EventSource client + a typed dispatcher.
- *
- * The browser opens one EventSource per session (per scope). The relay's
- * `/events?scope=...` endpoint feeds it. When an event arrives, dispatch
- * fires per-event-type listeners *and* a wildcard catch-all.
- *
- * Reconnect: EventSource auto-reconnects on socket close and resends the
- * last `id:` it saw; the relay replays what it still holds after it, or
- * sends `resync` when it no longer reaches back that far. When the browser
- * gives up (non-200, e.g. a relay restart behind the proxy) we reopen
- * ourselves and pass that id as `?last_event_id=`.
- *
- * Batches: while a stream runs hot the relay groups its events into one
- * `event: batch` frame (`[{id, type, data}, ...]`, oldest first, the frame's
- * id = its last member's; service/events.py "Load-adaptive batching"). Each
- * member is dispatched exactly as if it had come as its own frame, all inside
- * one React Query notify batch, so a 50-event frame is one render pass.
- *
- * Ping: every one keeps the stream fresh. One carrying `fresh` (the Shared
- * refresher's Knob on: `{aid: at}`, service/events.py `_fresh`) is also
- * dispatched to `ping` listeners (useAccountStateEvents' `confirmed`); today's
- * (no `fresh`) dispatches nothing. Every ping's `ts` also sets the tab's
- * Relay-clock offset (lib/ageClock, the data ages' clock): a ping is never
- * replayed, while an event's `now` (`creator_refreshed`, `creator_warmed`) is
- * as old as its send when replayed, so no event moves it.
- *
- * Backoff, idle mode, freshness and adaptive apply are eventBusReducer.ts's
- * rules (its header); this file is their I/O.
- *
- * Concurrency: a single EventSource per scope; multiple components
- * subscribe to the same one via `on(eventType, fn)`. Clean up by calling
- * the returned unsubscriber on unmount.
- */
-
 import { notifyManager } from "@tanstack/react-query";
 
 import {
@@ -46,56 +11,37 @@ export type { EventEnvelope, Scope } from "./eventBusReducer";
 
 type Listener = (e: EventEnvelope, rawType: string) => void;
 
-// Cheap tick so the stale->fresh transition fires for `onStateChange`
-// listeners without busy-polling. STALE_MS / STALE_CHECK_MS ≈ 9 ticks
-// inside the freshness window — plenty to debounce.
 const STALE_CHECK_MS = 5_000;
 
-/** refetchInterval for a query that SSE keeps fresh: a slow safety poll
- *  while the stream is live, the old fast poll while it is not. */
 export function ssePoll(liveMs: number, offlineMs: number): () => number {
   return () => (eventBus.isConnected() ? liveMs : offlineMs);
 }
 
-/** The I/O shell around eventBusReducer's `decide` / `follow`: EventSource
- *  callbacks, idle mode and timers become inputs; the effects returned are
- *  performed here, in order. The listener registry and JSON parsing are the
- *  shell's. */
 class EventBus {
   private state: BusState = initialBusState;
   private es: EventSource | null = null;
-  // Listeners keyed by event_type. The wildcard "*" key catches everything.
   private byType = new Map<string, Set<Listener>>();
   private staleCheckTimer: ReturnType<typeof setInterval> | null = null;
   private stateListeners = new Set<(connected: boolean) => void>();
 
-  /** True iff the SSE socket is OPEN *and* an event has arrived within
-   *  STALE_MS. A half-dead pipe (socket open, upstream stalled) reads false. */
   isConnected(): boolean {
     return isConnected(this.state, this.ready(), Date.now());
   }
 
-  /** Subscribe to connection state transitions. Fires immediately with
-   *  the current state, then again on every open/close. Returns an
-   *  unsubscriber the caller MUST call on unmount. */
   onStateChange(fn: (connected: boolean) => void): () => void {
     this.stateListeners.add(fn);
-    try { fn(this.isConnected()); } catch { /* ignore listener errors */ }
+    try { fn(this.isConnected()); } catch { }
     return () => { this.stateListeners.delete(fn); };
   }
 
-  /** Switch the live scope. Idempotent — calling with the same scope is a no-op. */
   setScope(scope: Scope) {
     this.send({ type: "SetScope", scope });
   }
 
-  /** Idle mode: close the stream until `resume`. */
   pause() {
     this.send({ type: "Pause" });
   }
 
-  /** Leave idle mode: reopen from the last event id, so the relay replays
-   *  what the tab missed (or sends `resync` when it can no longer). */
   resume() {
     this.send({ type: "Resume" });
   }
@@ -104,13 +50,10 @@ class EventBus {
     return this.state.paused;
   }
 
-  /** The current socket's readyState (null = none; also where there is no EventSource, e.g. jsdom). */
   private ready(): number | null {
     return this.es ? this.es.readyState : null;
   }
 
-  /** Decide and perform. A listener that calls back into the bus (pause,
-   *  setScope) is decided at once, nested (eventBusReducer's header). */
   private send(ev: BusInput) {
     this.run(decide(this.state, ev));
   }
@@ -130,7 +73,6 @@ class EventBus {
         this.es = null;
         return;
       case "After": {
-        // The first of the two to fire cancels the other (a hidden tab piles up no frame callbacks).
         let frame: number | null = null;
         const fire = () => {
           clearTimeout(timer);
@@ -163,23 +105,13 @@ class EventBus {
         () => this.send({ type: "StaleTick", now: Date.now(), ready: this.ready() }), STALE_CHECK_MS);
     }
 
-    // Relay sets the SSE `event:` line to the OF event type. We listen
-    // on a wildcard via `onmessage`, and ALSO add specific listeners
-    // when callers ask for them — those use addEventListener on the
-    // event-type name directly (DOM API, not our dispatcher).
     es.onopen = () => this.send({ type: "Opened", now: Date.now(), ready: this.ready() });
     es.onmessage = (msg) => this.frame(msg, [["message", parse(msg.data)]]);
-    // SSE silently reconnects; listeners get an `__error` event so they can
-    // show a "reconnecting…" pill if they care.
     es.onerror = () => this.send({ type: "Errored", now: Date.now(), ready: this.ready(), gen });
 
-    // Backend heartbeat: freshness, plus its `fresh` when it carries one.
-    // Without this, an idle relay (no real events) would degrade to
-    // "disconnected" every 45 s.
     es.addEventListener("ping", (msg) => this.frame(msg as MessageEvent, this.pingEvents((msg as MessageEvent).data)));
     es.addEventListener("batch", (msg) => this.frame(msg as MessageEvent, this.batchMembers((msg as MessageEvent).data)));
 
-    // Re-register every known type-listener against the new EventSource.
     for (const type of this.byType.keys()) {
       if (NOT_NATIVE.has(type)) continue;
       this.attachNativeListener(es, type);
@@ -194,8 +126,7 @@ class EventBus {
     this.send({ type: "Frame", now: Date.now(), ready: this.ready(), id: msg.lastEventId, events });
   }
 
-  /** A ping as an event: only one carrying a `fresh` object, and only when someone listens for `ping`. Every ping
-   *  with a `ts` (epoch seconds, the Relay's clock) first sets the Relay-clock offset. */
+  // Every ping's ts sets the Relay-clock offset: a ping is never replayed, an event's `now` is as old as its send.
   private pingEvents(raw: string): Queued[] {
     const p = parse(raw);
     if (typeof p.ts === "number" && Number.isFinite(p.ts)) setRelayOffset(serverOffset(p.ts * 1000, Date.now()));
@@ -204,7 +135,6 @@ class EventBus {
     return fresh && typeof fresh === "object" && !Array.isArray(fresh) ? [["ping", p]] : [];
   }
 
-  /** One notify batch, so the cache writes they make render once. */
   private applyAll(events: Queued[]) {
     if (!events.length) return;
     if (events.length === 1) {
@@ -216,8 +146,6 @@ class EventBus {
     });
   }
 
-  /** A `batch` frame's members, each as if it had come on its own. Only types
-   *  someone listens for, as a single frame only reaches a named listener. */
   private batchMembers(raw: string): Queued[] {
     let members: { type?: unknown; data?: unknown }[];
     try {
@@ -241,16 +169,9 @@ class EventBus {
     if (wild) for (const fn of wild) safe(fn, parsed, type);
   }
 
-  /**
-   * Subscribe to an event type. `"*"` catches every event.
-   * Returns an unsubscriber the caller MUST call on unmount.
-   */
   on(type: string, fn: Listener): () => void {
     if (!this.byType.has(type)) {
       this.byType.set(type, new Set());
-      // If we already have a live EventSource, register the named-event
-      // listener on it now so new subscribers don't miss types they care
-      // about that the wildcard onmessage doesn't see.
       if (this.es && !NOT_NATIVE.has(type)) {
         this.attachNativeListener(this.es, type);
       }
@@ -262,7 +183,6 @@ class EventBus {
   }
 }
 
-/** Listener keys with no native listener of their own: the wildcard, the bus's error, the ping (its own, above). */
 const NOT_NATIVE = new Set(["*", "__error", "ping"]);
 
 function parse(raw: string): EventEnvelope {
@@ -281,6 +201,4 @@ function safe(fn: Listener, e: EventEnvelope, type: string) {
   }
 }
 
-// Module-level singleton — only one EventSource regardless of how many
-// components subscribe.
 export const eventBus = new EventBus();

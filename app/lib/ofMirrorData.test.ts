@@ -89,7 +89,7 @@ describe("applyData", () => {
     expect(shown(doc, ".b-chats__item").map((r) => r.classList.contains("m-unread"))).toEqual([true, false, false]);
     expect(shown(doc, ".b-chats__item .g-avatar img")[0].getAttribute("src")).toBe("/img?u=https://cdn.example/alpha.jpg");
     for (const r of shown(doc, ".b-chats__item")) expect(r.textContent).not.toMatch(PLACEHOLDER);
-    applyData(doc, "messages/index", { chats: CHATS }); // idempotent
+    applyData(doc, "messages/index", { chats: CHATS });
     expect(shown(doc, ".b-chats__item")).toHaveLength(3);
     applyData(doc, "messages/index", {});
     expect(doc.documentElement.innerHTML).toBe(html);
@@ -104,7 +104,7 @@ describe("applyData", () => {
     expect(bubbles.map((b) => b.querySelector(".b-chat__message__text-holder")?.textContent)).toEqual(["first from fan", "second from me", "third from fan", "fourth from me"]);
     expect(bubbles.map((b) => b.classList.contains("m-from-me"))).toEqual([false, true, false, true]);
     expect(bubbles.map((b) => !!b.querySelector(".g-avatar"))).toEqual([true, false, true, false]);
-    expect(shown(doc, ".b-chat__messages-wrapper .b-chat__item-message")).toHaveLength(2); // two days
+    expect(shown(doc, ".b-chat__messages-wrapper .b-chat__item-message")).toHaveLength(2);
     for (const b of bubbles) expect(b.textContent).not.toMatch(PLACEHOLDER);
     expect(texts(doc, ".b-chats__item.current .g-user-name")).toEqual(["Beta Two"]);
     const hrefs = [...doc.querySelectorAll("a[href^='/of-manager/messages/chat/state-price'], a[href='/of-manager/messages/chat?chat=102']")].map((a) => a.getAttribute("href"));
@@ -323,17 +323,15 @@ describe("applyData", () => {
     const cards = shown(doc, ".b-users__item");
     expect(cards.map((c) => c.querySelector(".g-user-name")!.textContent)).toEqual(["Delta Four", "Echo Five"]);
     expect(cards.map((c) => c.querySelector(".g-user-username")!.textContent)).toEqual(["@delta", "@echo"]);
-    expect(cards[1].querySelector(".g-avatar__placeholder")!.textContent).toBe(" EF "); // OF's initials: two words, their first letters
+    expect(cards[1].querySelector(".g-avatar__placeholder")!.textContent).toBe(" EF ");
     expect(cards[0].querySelector(".g-avatar .g-avatar__placeholder")).toBeNull();
     expect(cards[0].querySelector(".g-avatar .g-avatar__img-wrapper > img")!.getAttribute("src")).toBe("https://cdn.example/delta.jpg");
     for (const c of cards) expect(c.textContent).not.toMatch(PLACEHOLDER);
     expect(cards.map((c) => c.querySelector(".b-list-titles a")?.getAttribute("href"))).toEqual(Array(2).fill("/of-manager/collections/user-lists/list?list=31"));
-    // OF's profile links (avatar, name, handle): the user's OF profile, in a new tab.
     expect(cards.map((c) => [...c.querySelectorAll(".b-fans__item__header > a.g-avatar, a.b-username, a.g-user-realname__wrapper")].map((a) => `${a.getAttribute("href")} ${a.getAttribute("target")} ${a.getAttribute("rel")}`))).toEqual(
       ["delta", "echo"].map((h) => Array(3).fill(`https://onlyfans.com/${h} _blank noopener noreferrer`)),
     );
     expect(cards.flatMap((c) => [...c.querySelectorAll("a[href='#']")])).toEqual([]);
-    // The header's Send message: New message with this list ticked.
     expect(doc.querySelector('a[aria-label="Send message"]')!.getAttribute("href")).toBe("/of-manager/messages/send?to=31");
   });
 
@@ -366,9 +364,7 @@ describe("applyData", () => {
       [" empty "],
       [" 1 user ", " 1 post "],
     ]);
-    // At zero posts: Purchased says so, any other list shows its users alone.
     expect([{ id: "purchased", usersCount: 2, postsCount: 0 }, { id: 33, usersCount: 2, postsCount: 0 }].map(listSubline)).toEqual([["2 users", "No purchase"], ["2 users"]]);
-    // The stack: between the name and the subline, one 50px avatar per member: picture, else initials, else OF's profile icon.
     const sets = rows.map((r) => r.querySelector(".b-media-set.m-avatars-media-set.ml-2"));
     expect(sets.map((s) => s?.querySelectorAll(":scope > span.g-avatar.m-border-line-theme.m-w50").length ?? 0)).toEqual([3, 1, 0, 0, 0]);
     expect(sets[0]!.previousElementSibling!.classList.contains("b-rows-lists__item__name")).toBe(true);
@@ -446,7 +442,6 @@ describe("applyData", () => {
     expect(cards[0].querySelector("a[href^='/of-manager/messages/chat']")!.getAttribute("href")).toBe("/of-manager/messages/chat?chat=201");
   });
 
-  // ticket 18: Fans' Expired tab is the page's ?type=expired; any other (or none) is OF's active subscribers.
   it.each([
     [null, "/api/of/v2/subscribers?type=active&limit=50"],
     ["expired", "/api/of/v2/subscribers?type=expired&limit=50"],
@@ -489,7 +484,6 @@ describe("a wall post's OF rich text (New post's Format text)", () => {
   });
 });
 
-// Local times (no Z), so the dates read the same in every time zone.
 const POSTS: MirrorPost[] = [
   {
     id: 901,
@@ -511,13 +505,12 @@ describe.each(["profile/index", "profile/state-more-menu"])("%s: the Creator's w
     atFixtureNow(() => applyData(doc, p, { posts: POSTS }, (u) => `/img?u=${u}`));
     const rows = posts(doc);
     expect(rows).toHaveLength(2);
-    // OF's feed time: today's relative, then "Yesterday".
     expect(rows.map((r) => r.querySelector(".b-post__date > span")!.textContent)).toEqual([" 4 hours ago ", " Yesterday "]);
     expect(rows.map((r) => r.querySelector(".b-post__date > span")!.getAttribute("title"))).toEqual(["Oct 10, 10:05 am", "Oct 9, 9:30 pm"]);
     expect(rows.map((r) => r.querySelector("div.b-post")!.classList.contains("m-pinned"))).toEqual([true, false]);
     expect(rows.map((r) => !!r.querySelector(".b-post__pinned"))).toEqual([true, false]);
     expect(rows.map((r) => r.querySelector(".b-post__text .g-truncated-text > div")!.innerHTML.replace(/ data-v-[\w-]+=""/g, ""))).toEqual([
-      "<p>Alpha <strong>One</strong> wall post</p>", // OF draws the post's markup (b as OF's strong)
+      "<p>Alpha <strong>One</strong> wall post</p>",
       "<p>Second synthetic post</p>",
     ]);
     const first = rows[0];
@@ -565,7 +558,7 @@ describe.each(["profile/index", "profile/state-more-menu"])("%s: the Creator's w
   it("a post's More click notes Read-only, calls nothing and is not marked wired", () => {
     const doc = load(p);
     applyData(doc, p, { posts: POSTS });
-    const unbind = bindWrites(doc, p, null, true); // its click fallback, in either scope
+    const unbind = bindWrites(doc, p, null, true);
     const fetch = vi.spyOn(globalThis, "fetch");
     const more = posts(doc)[1].querySelector<HTMLButtonElement>(".b-post__tools__more button[aria-label='More']")!;
     more.click();
@@ -582,7 +575,6 @@ describe.each(["profile/index", "profile/state-more-menu"])("%s: the Creator's w
 });
 
 const still = (name: string) => ({ id: 1, type: "photo", files: { preview: { url: `https://cdn.example/${name}.jpg` } } });
-// Photos then videos, as useOfData concatenates the two lists; post 33 is in both.
 const MEDIA_POSTS: MirrorPost[] = [
   { id: 31, postedAt: "2026-10-08T10:00:00", mediaCount: 2, media: [still("p31")] },
   { id: 33, postedAt: "2026-10-10T10:00:00", media: [still("p33"), still("p33b")] },
@@ -611,7 +603,6 @@ describe("profile/media: the Creator's media grid", () => {
     expect(tiles.every((t) => t.matches("a.b-photos__item[at-attr='photo_item']"))).toBe(true);
     expect(texts(doc, ".b-tabs__nav__text")).toEqual(tabs);
     expect(texts(doc, ".user_posts [data-oi-empty]")).toEqual([]);
-    // The Recent strip: the three newest posts with a picture (34 has none).
     expect(shown(doc, `${STRIP} .b-photos__item img`).map((i) => i.getAttribute("src"))).toEqual([
       "/img?u=https://cdn.example/p33.jpg",
       "/img?u=https://cdn.example/p31.jpg",
@@ -640,7 +631,7 @@ describe("profile/media: the Creator's media grid", () => {
   it("an empty merge hides the example tiles; Creator A's tiles then Creator B's leave only B's; no data restores the capture", () => {
     const doc = load("profile/media");
     const html = doc.documentElement.innerHTML;
-    expect(shown(doc, `${GRID} .b-photos__item`)).toEqual([]); // the generator's hidden template only
+    expect(shown(doc, `${GRID} .b-photos__item`)).toEqual([]);
     expect(shown(doc, `${STRIP} .b-photos__item`)).toEqual([]);
     expect(texts(doc, ".user_posts [data-oi-empty]")).toEqual(["No posts yet"]);
     applyData(doc, "profile/media", { profileMedia: [] });
@@ -685,7 +676,6 @@ describe("collections/bookmarks/all: the Creator's bookmarked posts", () => {
     expect(rows.map((r) => r.querySelector(".g-user-username")!.textContent)).toEqual(["@alphaone", "@betatwo", ""]);
     expect(rows.map((r) => [...r.querySelectorAll(".b-post__avatar img")].map((i) => i.getAttribute("src")))).toEqual([["/img?u=https://cdn.example/a51.jpg"], [], []]);
     expect(rows.map((r) => r.querySelector(".b-post__avatar .g-avatar__placeholder")?.textContent ?? null)).toEqual([null, " BT ", "  "]);
-    // OF's profile links: the author's OF profile in a new tab (no author: inert); the date the post on onlyfans.com.
     const profile = (h: string) => [`https://onlyfans.com/${h}`, "_blank", "noopener noreferrer"];
     expect(rows.map((r) => [...r.querySelectorAll(".b-post__avatar a, a.b-username")].map((a) => [a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")]))).toEqual([
       [profile("alphaone"), profile("alphaone")],
@@ -771,7 +761,6 @@ describe("collections/bookmarks/all: the Creator's bookmarked posts", () => {
 
   it("a bookmark's More click notes Read-only, calls nothing and is not marked wired", () => {
     const doc = load(BOOKMARKS_PAGE);
-    // The Creator's own bookmarked post (its More is OF's own-post menu; another's, or an unproven one's, is disabled).
     applyData(doc, BOOKMARKS_PAGE, { bookmarks: BOOKMARKS, templates: { post: POST_TPL }, me: { id: 51 } });
     const unbind = bindWrites(doc, BOOKMARKS_PAGE, null, true);
     const fetch = vi.spyOn(globalThis, "fetch");
@@ -871,7 +860,6 @@ describe("collections/user-lists/list/posts: a list's Posts tab", () => {
   it("OF's pages of 10: its nextOffset when sent; the loading row trails the rows and asks for the next page in view", () => {
     expect(nextOffset({ list: [{}], hasMore: true, nextOffset: 10 }, [{ list: [{}] }])).toBe(10);
     expect(nextOffset({ list: [{}], hasMore: false, nextOffset: 20 }, [])).toBeUndefined();
-    // Overlapping pages: each post once, where it first came; id-less rows all stay.
     expect(uniqueRows(pageRows<{ id?: number }>([{ list: [{ id: 1 }, { id: 2 }] }, { list: [{ id: 2 }, { id: 3 }, {}, {}] }]))).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }, {}, {}]);
     expect(uniqueRows(undefined)).toBeUndefined();
     const doc = load(LIST_POSTS);

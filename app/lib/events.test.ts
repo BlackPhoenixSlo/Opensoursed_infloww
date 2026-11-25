@@ -1,16 +1,3 @@
-/**
- * eventBus Idle mode: `pause` closes the stream and holds it closed through a
- * scope change; `resume` reopens it from the last event id it saw, so the
- * relay replays what the tab missed.
- *
- * Batches: an `event: batch` frame reaches listeners as the same individual
- * events, in order, with one notify flush, and its id is the resume point.
- *
- * Ping: one carrying `fresh` (the Shared refresher's Knob on) reaches `ping`
- * listeners; today's (no `fresh`) dispatches nothing. Either keeps the stream fresh.
- * Every ping sets the tab's Relay-clock offset (lib/ageClock); an event's `now`,
- * replayed or live, never does.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RETRY_MAX_MS, RETRY_MIN_MS } from "./eventBusReducer";
 
@@ -89,7 +76,7 @@ describe("eventBus give-up (the shell hands `follow` the socket's readyState as 
     expect(errs).toEqual([{ readyState: FakeEventSource.CLOSED }]);
     vi.advanceTimersByTime(RETRY_MIN_MS - 1);
     expect(FakeEventSource.all).toHaveLength(1);
-    vi.advanceTimersByTime(1);   // RETRY_MIN_MS
+    vi.advanceTimersByTime(1);
     expect(FakeEventSource.all.map((e) => e.url)).toEqual(["/events?scope=all&lease=1", "/events?scope=all&lease=1&last_event_id=e1.41"]);
   });
 
@@ -104,7 +91,7 @@ describe("eventBus give-up (the shell hands `follow` the socket's readyState as 
     es.onerror!();
     expect(errs).toEqual([{}]);
     expect(bus.isPaused()).toBe(true);
-    vi.advanceTimersByTime(2 * RETRY_MAX_MS);   // past any retry
+    vi.advanceTimersByTime(2 * RETRY_MAX_MS);
     expect(FakeEventSource.all).toHaveLength(1);
   });
 });
@@ -115,27 +102,24 @@ const batchOf = (members: Member[]) => JSON.stringify(members);
 
 describe("eventBus re-entrancy", () => {
   it("a listener that pauses while queued events apply leaves the bus paused, with no socket", async () => {
-    // No animation frames (a hidden tab): the queue waits for the 250 ms window, so the
-    // scope change's 50 ms restart is what applies it, ahead of its reopen.
     vi.stubGlobal("requestAnimationFrame", () => 1);
     const { eventBus } = await import("./events");
-    // DMs 1-2 apply at once (quiet rate), 3-5 queue; the pause comes from DM 4, inside the queue's flush.
     let pausedInside: boolean | null = null;
     eventBus.on("api2_chat_message", (e) => {
       if ((e as ReturnType<typeof dm>).api2_chat_message.id === 4) {
         eventBus.pause();
-        pausedInside = eventBus.isPaused(); // takes effect at once, even mid-flush
+        pausedInside = eventBus.isPaused();
       }
     });
     eventBus.setScope("all");
     vi.advanceTimersByTime(50);
     for (let n = 1; n <= 5; n++) FakeEventSource.all[0].emit("api2_chat_message", `e1.${n}`, JSON.stringify(dm(n)));
-    eventBus.setScope("model:7"); // its restart applies the queue first, then reopens
+    eventBus.setScope("model:7");
     vi.advanceTimersByTime(50);
     expect(pausedInside).toBe(true);
     expect(eventBus.isPaused()).toBe(true);
     expect(live()).toHaveLength(0);
-    expect(FakeEventSource.all).toHaveLength(1); // the restart's reopen never ran
+    expect(FakeEventSource.all).toHaveLength(1);
     eventBus.resume();
     expect(live().map((e) => e.url)).toEqual(["/events?scope=model%3A7&lease=1&last_event_id=e1.5"]);
   });
@@ -153,17 +137,16 @@ describe("eventBus batch frames", () => {
     const members: Member[] = [
       { id: "e1.1", type: "api2_chat_message", data: dm(1) },
       { id: "e1.2", type: "chat_typing", data: typing },
-      { id: "e1.3", type: "chat_queue_update", data: { chat_queue_update: { id: 9 } } }, // nobody listens
+      { id: "e1.3", type: "chat_queue_update", data: { chat_queue_update: { id: 9 } } },
       { id: "e1.4", type: "api2_chat_message", data: dm(2) },
     ];
     FakeEventSource.all[0].emit("batch", "e1.4", batchOf(members));
-    vi.advanceTimersByTime(1_000); // 3 events: past the quiet rate, so one window
+    vi.advanceTimersByTime(1_000);
     expect(seen).toEqual([
       ["api2_chat_message", dm(1)],
       ["chat_typing", typing],
       ["api2_chat_message", dm(2)],
     ]);
-    // Exactly what the same events sent one frame each deliver.
     const single: [string, unknown][] = [];
     seen.length = 0;
     for (const m of members) FakeEventSource.all[0].emit(m.type, m.id, JSON.stringify(m.data));
@@ -198,7 +181,6 @@ describe("eventBus batch frames", () => {
     qc.setQueryData(["n"], 0);
     let renders = 0;
     const obs = new QueryObserver<number>(qc, { queryKey: ["n"], enabled: false });
-    // As useQuery subscribes: each notification is scheduled through notifyManager.
     const off = obs.subscribe(notifyManager.batchCalls(() => { renders += 1; }));
     eventBus.on("api2_chat_message", () => qc.setQueryData<number>(["n"], (n) => (n ?? 0) + 1));
     eventBus.setScope("all");
@@ -235,14 +217,11 @@ describe("eventBus batch frames", () => {
 });
 
 describe("eventBus adaptive apply", () => {
-  // Vitest's fake timers run requestAnimationFrame every 16 ms.
   const FRAME_MS = 16;
-  /** A list cache like the inbox's: every DM moves its fan to the top. */
   async function inbox() {
     const { eventBus } = await import("./events");
     const { APPLY_WINDOW_MS, HOT_EVENTS_PER_S } = await import("./eventBusReducer");
     const { QueryClient, QueryObserver, notifyManager } = await import("@tanstack/react-query");
-    // One scheduler call = one notify flush = one React render pass.
     let renders = 0;
     notifyManager.setScheduler((cb) => { renders += 1; cb(); });
     const qc = new QueryClient();
@@ -264,7 +243,6 @@ describe("eventBus adaptive apply", () => {
     return { qc, es, send, order, renders: () => renders, done, APPLY_WINDOW_MS, HOT_EVENTS_PER_S };
   }
 
-  /** The same 100 DMs applied one by one, no bus. */
   function oneByOne() {
     let l: number[] = [];
     for (let n = 1; n <= 100; n++) { const fan = (n * 7) % 37; l = [fan, ...l.filter((f) => f !== fan)]; }
@@ -284,7 +262,7 @@ describe("eventBus adaptive apply", () => {
 
   it("a burst of 100 DMs renders at most once per frame, same final list, same order", async () => {
     const t = await inbox();
-    const spanMs = 100; // one DM per ms: ~16 per animation frame
+    const spanMs = 100;
     for (let n = 1; n <= 100; n++) {
       t.send(n);
       vi.advanceTimersByTime(spanMs / 100);
@@ -329,14 +307,12 @@ describe("eventBus adaptive apply", () => {
     vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => { frames.set(++nextFrame, cb); return nextFrame; });
     vi.stubGlobal("cancelAnimationFrame", (h: number) => { frames.delete(h); });
     const t = await inbox();
-    // Hidden tab: the window timer wins, three floods in a row leave no frame callback behind.
     for (let round = 1; round <= 3; round++) {
       for (let n = 1; n <= 10; n++) t.send(round * 100 + n);
       vi.advanceTimersByTime(t.APPLY_WINDOW_MS);
     }
     expect(t.order).toHaveLength(30);
     expect(frames.size).toBe(0);
-    // Visible tab: the frame wins, its window timer is cleared.
     const idle = vi.getTimerCount();
     for (let n = 1; n <= 10; n++) t.send(400 + n);
     expect(vi.getTimerCount()).toBe(idle + 1);
@@ -367,7 +343,7 @@ describe("eventBus ping", () => {
     eventBus.setScope("all");
     vi.advanceTimersByTime(50);
     const seen: [string, unknown][] = [];
-    eventBus.on("ping", (e, t) => seen.push([t, e]));  // after open: no second native listener
+    eventBus.on("ping", (e, t) => seen.push([t, e]));
     const es = FakeEventSource.all[0];
     es.onopen?.();
     vi.advanceTimersByTime(40_000);
@@ -380,7 +356,7 @@ describe("eventBus ping", () => {
   it("today's ping (Knob off, no `fresh`) dispatches nothing and still keeps the stream fresh", async () => {
     const { eventBus } = await import("./events");
     const seen: unknown[] = [];
-    eventBus.on("ping", (e) => seen.push(e));  // before open
+    eventBus.on("ping", (e) => seen.push(e));
     eventBus.on("*", (e) => seen.push(e));
     eventBus.setScope("all");
     vi.advanceTimersByTime(50);

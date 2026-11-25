@@ -21,14 +21,11 @@ import { metaToWire } from "./VaultImportDetails";
 import { relay } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 
-// The selection bar's tour shows once per browser (the bundle's "vaultProOnboarding" store); every test but the
-// tour's own starts with it seen, so no tour overlays the card under test.
 beforeEach(() => {
   window.localStorage.clear();
   window.localStorage.setItem("vaultProOnboarding", JSON.stringify({ batchEdit: "1", uploadBtn: "1" }));
 });
 
-/** Wait until the card's status read has been made and its (mocked, instant) answer has rendered. */
 async function statusAnswered() {
   await waitFor(() => expect(relay.get).toHaveBeenCalledWith("/api/of/v2/vault/upload/status", expect.anything()));
   await act(async () => {
@@ -36,13 +33,6 @@ async function statusAnswered() {
   });
 }
 
-/**
- * The two pure formatters, kept separate from the polling component so the
- * wording can be tested without a query client. What matters here is that the
- * panel never overstates what happened: a deduped file is not an upload, an
- * interrupted run is not a finished one, and a failure shows the server's own
- * reason rather than a generic "error".
- */
 
 const base = {
   name: "clip.mov",
@@ -66,8 +56,6 @@ describe("itemLabel", () => {
   });
 
   it("says a still-encoding upload is not yet playable, rather than plain done", () => {
-    // The vault id is real and permanent — OnlyFans finishes the encode on its
-    // own — but a chatter who sends it right now gets a broken attachment.
     expect(itemLabel({ ...base, status: "done", deduped: false, vault_id: 42,
                        still_transcoding: true }))
       .toBe("in vault · 42 · still processing");
@@ -127,8 +115,6 @@ describe("metaToWire", () => {
   });
 
   it("splits tags on commas only, strips their marks and reads the price in dollars", () => {
-    // Commas only, as the relay reads them: "red set" is one hashtag, as a
-    // Drive folder of that name is.
     expect(
       metaToWire({ category: "12", tag: "@alice, bob", hashtags: "#red set,#beach, #beach", notes: " red set ", price: "$12.50" }),
     ).toEqual({
@@ -185,22 +171,11 @@ describe("showsError", () => {
   });
 });
 
-/**
- * The Drive slot (docs/spec/infloww-parity-round-2/phase-05-drive-import.md,
- * Seam 1; ticket 46). The status read the card already polls says whether the
- * server's GOOGLE_DRIVE_API_KEY is set: only `true` shows a closed, labelled
- * "Import from Google Drive" section, after the three steps and right above
- * Start (page-parity ticket 10, the owner's "move it lower"); false, absent or
- * no answer yet is nothing at all. The relay is mocked by path, so nothing
- * reaches `fetch`.
- */
 describe("VaultImportCard Drive slot", () => {
   const relayGet = relay.get as unknown as Mock;
   const relayUpload = relay.uploadForm as unknown as Mock;
   const STATUS = "/api/of/v2/vault/upload/status";
 
-  /** Answer the status read with `status` (or never, for `"pending"`), and the
-   *  folder list with no folders. */
   function serve(status: Record<string, unknown> | "pending") {
     relayGet.mockImplementation((path: string) => {
       if (path.startsWith(STATUS)) {
@@ -318,7 +293,6 @@ describe("VaultImportCard Drive slot", () => {
     await user.type(container.querySelector("textarea")!, "https://drive.google.com/drive/folders/x");
     await user.click(screen.getByRole("button", { name: "List files" }));
     expect(await screen.findByText("3 to import (first 2 this run)")).toBeInTheDocument();
-    // Edited links are not the links that were listed.
     await user.type(container.querySelector("textarea")!, "y");
     expect(screen.queryByText(/to import/)).toBeNull();
   });
@@ -351,15 +325,6 @@ describe("VaultImportCard Drive slot", () => {
   });
 });
 
-/**
- * The file drop and the card's kept elements (phase-05 spec, Seam 1, cases 2c,
- * 3 and 4; ticket 47). The file drop leads the card in the capture's words
- * (docs/infloww-layouts/growth-vault-pro.md: "Select media" #90, "Add media"
- * #95, the tip #97), takes dragged files into the same picked list as the
- * picker, and refuses them while a run is live. The header no longer mentions
- * Google Drive. The card's own elements with no capture item carry the shared
- * "Inflowwww extra" tooltip.
- */
 describe("VaultImportCard file drop", () => {
   const relayGet = relay.get as unknown as Mock;
   const STATUS = "/api/of/v2/vault/upload/status";
@@ -437,7 +402,6 @@ describe("VaultImportCard file drop", () => {
   });
 
   it("every kept element with no capture item carries the shared extra label as its tooltip", async () => {
-    // A live run with a filing warning, so the progress and warnings render.
     serve({
       running: true, run_id: "r1", status: "running", phase: "uploading", done: 1, total: 2,
       filing_error: "Placeholder folder is gone",
@@ -447,13 +411,9 @@ describe("VaultImportCard file drop", () => {
     await screen.findByText("uploading — 1 of 2 done");
 
     const tooltip = (el: HTMLElement) => el.closest("[title]")?.getAttribute("title");
-    // The target Creator in the title.
     expect(tooltip(screen.getByRole("heading", { name: /Import to Placeholder Creator/ }))).toBe(EXTRA_LABEL);
-    // The re-encode and "nothing is posted" sentences.
     expect(tooltip(screen.getByText(/Large video is re-encoded/))).toBe(EXTRA_LABEL);
-    // "Put into folder".
     expect(tooltip(screen.getByText("Put into folder"))).toBe(EXTRA_LABEL);
-    // The Start import row and the run's progress and warnings.
     expect(tooltip(screen.getByRole("button", { name: /Importing/ }))).toBe(EXTRA_LABEL);
     expect(tooltip(screen.getByText("uploading — 1 of 2 done"))).toBe(EXTRA_LABEL);
     expect(tooltip(screen.getByText(/Each new file costs two paced writes/))).toBe(EXTRA_LABEL);
@@ -479,15 +439,6 @@ describe("VaultImportCard file drop", () => {
   });
 });
 
-/**
- * The capture's steps around the file drop (ticket 58; docs/infloww-layouts/growth-vault-pro.md #81 to #119). Step 1,
- * "Link a fan account", is optional here: a username sends each file to that fan (Infloww's way, #86); empty files it
- * through a scheduled post the relay deletes again. The rules row gives this server's own limits from the status read, never
- * Infloww's 4 GB / 100 MB / pixel rules (#99 to #105), and names the narrower set of kinds the drop takes (#93).
- * Step 3, "Edit media", lists the picked files under the capture's columns; every field goes up with its file as
- * `meta`. Several files start one run and append the rest. The selection bar and Batch edit follow the capture
- * (#112 to #117).
- */
 describe("VaultImportCard steps", () => {
   const relayGet = relay.get as unknown as Mock;
   const relayUpload = relay.uploadForm as unknown as Mock;
@@ -500,7 +451,6 @@ describe("VaultImportCard steps", () => {
     );
   }
 
-  /** Render the card on `status` and wait for the status answer. */
 
   async function ready(status: Record<string, unknown> = { running: false, run: null, upload_limits: LIMITS }) {
     serve(status);
@@ -564,7 +514,6 @@ describe("VaultImportCard steps", () => {
 
     drop(file("clip.mp4", "video/mp4"));
     const account = screen.getByLabelText("OnlyFans account");
-    // Unknown: said as such, and Start stays off.
     await user.type(account, "nobody");
     await user.click(screen.getByRole("button", { name: "Check" }));
     expect(await screen.findByText(/No OnlyFans account @nobody/)).toBeInTheDocument();
@@ -581,7 +530,6 @@ describe("VaultImportCard steps", () => {
     expect(form.get("fan_username")).toBe("placeholderfan");
     expect(form.get("fan_id")).toBe("4242");
 
-    // An edit after the check is a different name: checked again before any send.
     await user.type(account, "x");
     expect(screen.queryByText(/Will send to/)).toBeNull();
     expect(screen.getByRole("button", { name: "Check" })).toBeInTheDocument();
@@ -737,7 +685,6 @@ describe("VaultImportCard steps", () => {
     await waitFor(() => expect(relayUpload).toHaveBeenCalledTimes(1));
     const form = relayUpload.mock.calls[0][1] as FormData;
     expect((form.getAll("files") as File[]).map((f) => f.name)).toEqual(["still.jpg"]);
-    // The sent file leaves the list; the one left unselected stays for later.
     await waitFor(() => expect(screen.queryByText("still.jpg")).toBeNull());
     expect(screen.getByText("clip.mp4")).toBeInTheDocument();
   });
@@ -773,7 +720,6 @@ describe("VaultImportCard steps", () => {
     const dialog = screen.getByRole("dialog", { name: "Batch edit media" });
     expect(within(dialog).getByText("Select criteria")).toBeInTheDocument();
     const chip = (name: string) => within(dialog).getByRole("button", { name });
-    // Hashtags and Notes start ticked (`defaultSelectTags`, #115).
     expect(chip("Hashtags").getAttribute("aria-pressed")).toBe("true");
     expect(chip("Notes").getAttribute("aria-pressed")).toBe("true");
     expect(chip("Price").getAttribute("aria-pressed")).toBe("false");
@@ -811,13 +757,10 @@ describe("VaultImportCard steps", () => {
 
     expect(screen.getByLabelText("Hashtags for still.jpg")).toHaveValue("beach");
     expect(screen.getByLabelText("Notes for still.jpg")).toHaveValue("red set");
-    // A field the modal did not show is left as it was.
     expect(screen.getByLabelText("Suggested price for still.jpg")).toHaveValue("5");
     expect(screen.getByLabelText("Hashtags for clip.mp4")).toHaveValue("");
   });
 
-  /* The selection bar's tour (the bundle's `useMultipleSelectionOperationOnboarding`, index.9f50f370.js @12947586):
-     the first time the bar shows, "Got it" walks Batch edit, then Bulk upload. */
   const seen = () => JSON.parse(window.localStorage.getItem("vaultProOnboarding") || "{}");
   const STEP1 = "With your media selected, click here to batch-edit their details";
   const STEP2 = "Once you’re ready, click here to upload your selected media file(s)";
@@ -831,7 +774,6 @@ describe("VaultImportCard steps", () => {
 
     const tour = await screen.findByRole("dialog", { name: "Guided tour" });
     expect(within(tour).getByText(STEP1)).toBeInTheDocument();
-    // Marked on show, as the bundle does; the second step's key is marked only when that step opens a tour itself.
     expect(seen()).toEqual({ batchEdit: "1" });
     await user.click(within(tour).getByRole("button", { name: "Got it" }));
     expect(within(tour).getByText(STEP2)).toBeInTheDocument();

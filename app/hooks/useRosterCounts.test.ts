@@ -1,4 +1,3 @@
-/** useRosterCounts: the Relay's answer cached as is, the `?bust=` rewarm, and the Knob-off fallback poll. */
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";

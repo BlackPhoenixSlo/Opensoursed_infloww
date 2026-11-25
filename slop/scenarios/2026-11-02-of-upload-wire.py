@@ -1,71 +1,3 @@
-"""Media upload on OnlyFans' wire (service/of_upload.py through the REAL `OFClient`): hash dedupe, signed S3
-(single PUT, or multipart past 5 MiB: parts concurrently, then signed/finish), the convert claim, and the vault
-id minted once something references the claim (a fan send, an import's carrier post).
-
-World: `agency_inbox` (small 3 Creators, medium 10), each Creator with a captured session (seed/of_sessions), so
-the relay builds its real OFClient against lib/of_wire.py (`OF_WIRE`). Files are made harness-side, deterministic
-from `--seed` (a JPEG's first and last markers around random bytes, each file distinct): `--files=`
-(FLOW_SIZES `of_upload_files`) Composer files spread over the Creators, `--big_files=` of them 2-3 parts (> 5 MiB),
-the rest 20-200 KB; per Creator `--import_files=` fresh import files (Creator 0's first one multipart) and
-`--import_dupes=` of its landed single-part Composer files sent again through the import (single-part only: the
-multipart dedupe is REUPLOAD_MULTI's, in D, so the md5 fault's red stays off IMPORT).
-
-Flow, `--users` at once:
-  A  the Composer upload, `POST /api/of/v2/upload` (owner session, X-Account-Id, multipart `file`);
-  B  right after, that claim sent to a fan of the Creator: `POST /api/of/v2/chats/{fan}/messages`,
-     `media_files=[send_with]` (OF mints the vault media off the send);
-  C  per Creator (all at once; one run per Creator, the route's own rule) a vault import: `POST
-     .../vault/upload/batch` (first file, keep_open) + one `.../batch/append` per further file (`last` on the
-     final one), its fresh files and its dupes; `GET .../upload/status?run_id=` until the run finished;
-  D  every Composer file and every fresh import file uploaded again through the Composer (the same bytes).
-
-Checks (names in lib/upload_faults.py), the fake's records split by phase (A-C vs D):
-  UPLOAD_SHAPE   per new file (A, C fresh) exactly 1 signed/create asking ceil(size / 5 MiB) parts, that many ok
-                 S3 PUTs (one per part), per Creator signed/finish calls == its multipart uploads.
-  ONE_CLAIM      per new file exactly 1 convert claim.
-  S3_BYTES       the fake S3 object under that key: the file's size and sha256.
-  DEDUPE_KEY     the product hashed under the harness's own S3 ETag of the file (md5, or md5 of the part md5s +
-                 `-N`): a `vault/media/hash` read with that `h` + size; the Composer upload answered it as
-                 `dedupe_key` (an import's is not surfaced).
-  CLAIM_ETAG     that ETag == the fake S3 object's ETag == the claim's `file[ETag]` (no fault proves it).
-  CLAIM_TARGET   the claim names OF's key (Creator spliced in) with its uploadToken, `file[Location]` = the
-                 putUrl without its query (part 1's), `file[Bucket]` its first host label, `file[name]` the file.
-  REUPLOAD_ONE / REUPLOAD_MULTI   D: answered `deduped` with the vault id the fake minted for those bytes, and
-                 not one signed/create, PUT or claim for that file in D (single-part / multipart files apart).
-  SEND           B: 200, OF got exactly one message naming that processId, to that fan, its `mediaFiles` entry ==
-                 the upload's `send_with`, a processId the fake's convert issued for that file.
-  IMPORT         C: run `done`, every item `done` with a vault id: a fresh file the id minted for its bytes, a
-                 dupe its earlier (B's) id, `deduped`; one id per file; no carrier left (every post OF got is
-                 deleted), status carriers_undeletable / carriers_unrecorded 0.
-  OFFHOST        no curl_cffi request off loopback (server-offhost.jsonl empty), and convert claims reached the
-                 fake (lib/upload_relay.py's rewrite is live).
-  AUDIT_ROWS     SQL: per Creator one `actions` row per 2xx upload (A + D) and per 2xx send (per fan), and one
-                 outbound `messages` row (the send's attribution) per message OF accepted.
-Budgets: p95 of A and B (route latency at --users), both vs the last green run; stock no 5xx / Traceback.
-
-The loop finding (#171), closed: `POST /api/of/v2/upload` is `async def` and ran the blocking
-`_proxy(... upload_media ...)` on the event loop, so uploads went one at a time and stalled every other request; a
-coroutine holding a SQLite write transaction could not commit and other writers hit busy_timeout ("database is
-locked", audit and attribution rows lost). Pre-fix, medium --users=200 (run
-20261103T152551Z-2026-11-02-of-upload-wire-73b3): upload p95 86,817.5 ms, send p95 48,422.8 ms, 80 of 1250 actions
-and 36 of 400 outbound messages lost, 232 'database is locked' log lines. The route now runs the spool and the
-upload in one `asyncio.to_thread` worker; measured at medium --users=200 (runs
-20261103T184145Z-2026-11-02-of-upload-wire-28e8, 20261103T184210Z-2026-11-02-of-upload-wire-99d2): upload p95
-1,814.6 / 1,783.0 ms, send p95 1,516.7 / 1,570.0 ms, 1250 / 1250 actions, 0 messages lost, 0 'database is locked'.
-
-Bypasses (declared): lib/of_wire.py is OnlyFans, S3 and convert (its docstring: 50 ms a call, a guess; the convert
-answer's `host` / `extra` are guesses; the vault media is minted at reference, as the product's live notes say OF
-does); lib/upload_relay.py rewrites the hard-coded convert host to the fake in curl_cffi. `/users/me` carries no
-`upload.geoUploadArgs`, so the claim's preset fields are the product's own fallback. The owner tabs are httpx
-pools, not browsers; their upload / send / import calls wait up to 300 s (a browser's fetch has no timeout).
-
-Break-it-once: upload-dedupe-uses-md5 (the scenario's FAULT: `s3_etag_and_md5` returns the plain md5 as the
-dedupe key) turns REUPLOAD_MULTI and DEDUPE_KEY red; `--fault=upload-convert-claimed-twice` (`convert_register` POSTs
-twice) turns ONE_CLAIM red; `--scale=medium --users=200 --fault=upload-on-loop` (the Composer's `upload_media`
-handed back to the event loop, the #171 shape) turns both budgets and AUDIT_ROWS red (run
-20261103T184340Z-2026-11-02-of-upload-wire-break-3c7b: upload p95 101,805.3 ms, send p95 49,684.0 ms, 79 actions
-and 32 messages lost, 222 'database is locked'; the lock Tracebacks are its noise). At small / 20 it has nothing to catch.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -85,19 +17,19 @@ PROFILE = "agency_inbox"
 UI = False
 OF_WIRE = True
 FAULT = "upload-dedupe-uses-md5"
-PART = 5 * 1024 * 1024            # S3's minimum part, what OF's web client (and of_upload) splits at
-SMALL = (20_000, 200_000)         # bytes of a small image
-BIG = (PART + 1, 2 * PART + PART // 2)   # 2-3 parts
+# S3's minimum part, what OF's web client (and of_upload) splits at
+PART = 5 * 1024 * 1024
+SMALL = (20_000, 200_000)
+BIG = (PART + 1, 2 * PART + PART // 2)
 CALL_TIMEOUT_S = 300
 IMPORT_TIMEOUT_S = 900
 BATCH, APPEND, STATUS = ("/api/of/v2/vault/upload/batch", "/api/of/v2/vault/upload/batch/append",
                          "/api/of/v2/vault/upload/status")
-P95_MS = {UPLOAD: 15_000, SEND_ROUTE: 5_000}   # BUDGET (lib/upload_faults.py) names the checks
+P95_MS = {UPLOAD: 15_000, SEND_ROUTE: 5_000}
 P95_VS_LAST = (2.0, 2000)
 
 
 def s3_etag(data: bytes) -> str:
-    """S3's ETag for these bytes uploaded at PART: md5, or md5 of the parts' md5 digests + `-N`."""
     if len(data) <= PART:
         return hashlib.md5(data).hexdigest()
     parts = [hashlib.md5(data[i:i + PART]).digest() for i in range(0, len(data), PART)]
@@ -136,7 +68,6 @@ async def run(ctx) -> None:
     d = ctx.stack.tmp / "upload-files"
     d.mkdir(exist_ok=True)
 
-    # ── the files ──────────────────────────────────────────────────────────
     big = set(rng.sample(range(n_files), n_big))
     compose = []
     for i in range(n_files):
@@ -154,8 +85,7 @@ async def run(ctx) -> None:
     http = ctx.owner.share(limits=ctx.users + len(aids) + 8)
     fake = ctx.of_wire
 
-    # ── A + B: Composer upload, then the send ─────────────────────────────
-    ups: dict[str, dict] = {}    # file name -> {status, body}
+    ups: dict[str, dict] = {}
     sends: dict[str, dict] = {}
 
     async def compose_one(f: dict) -> None:
@@ -177,7 +107,6 @@ async def run(ctx) -> None:
     await _pool(compose, compose_one, ctx.users)
     compose_s = time.time() - t0
 
-    # ── C: one vault import per Creator, fresh files + already-sent ones ──
     landed = {f["name"] for f in compose if ups.get(f["name"], {}).get("status") == 200
               and sends.get(f["name"], {}).get("status") == 200}
     dupes = {aid: [f for f in compose if f["aid"] == aid and f["name"] in landed and f["parts"] == 1][:n_dup]
@@ -220,7 +149,6 @@ async def run(ctx) -> None:
     await asyncio.gather(*(import_one(a) for a in aids))
     import_s = time.time() - t1
 
-    # ── D: the same bytes again, through the Composer ─────────────────────
     again_files = [f for f in compose if f["name"] in landed] + \
         [f for aid in aids for f in fresh[aid]]
     again: dict[str, dict] = {}
@@ -237,7 +165,6 @@ async def run(ctx) -> None:
     ctx.rec.stage = None
     await http.aclose()
 
-    # ── the fake's records, by file and phase ─────────────────────────────
     up = fake.upload.snapshot()
     uploads, puts, claims, carriers, lookups, minted, s3 = (
         up[k] for k in ("uploads", "s3_puts", "claims", "carriers", "lookups", "minted", "s3"))
@@ -249,7 +176,6 @@ async def run(ctx) -> None:
         unsigned = fake.unsigned
 
     def by_name(rows: dict, name_of) -> tuple[dict, dict]:
-        """Per file name, the rows of phases A-C and of D."""
         ac: dict = defaultdict(list)
         dd: dict = defaultdict(list)
         for a, v in rows.items():
@@ -269,7 +195,6 @@ async def run(ctx) -> None:
     (ctx.out / "of-upload-fake.json").write_text(json.dumps(
         {**up, "unmodelled": unmodelled, "unsigned": unsigned}, indent=1, default=str))
 
-    # UPLOAD_SHAPE / ONE_CLAIM / S3_BYTES / DEDUPE_KEY / CLAIM_ETAG / CLAIM_TARGET, per new file
     bad: dict[str, list] = defaultdict(list)
     finishes = Counter(c["account"] for c in calls
                        if c["route"] == "POST /api2/v2/upload/signed/finish" and c["t"] < t3)
@@ -292,7 +217,6 @@ async def run(ctx) -> None:
         if obj.get("sha256") != f["sha256"] or obj.get("size") != f["size"]:
             bad["bytes"].append((n, obj.get("size"), f["size"]))
         hashed = any(lk["h"] == f["etag"] and lk["size"] == f["size"] and lk["t"] < t3 for lk in lookups.get(a, ()))
-        # an import's dedupe key is not surfaced
         dk = (ups.get(n, {}).get("body") or {}).get("dedupe_key") if n in compose_names else f["etag"]
         if not hashed or dk != f["etag"]:
             bad["dedupe"].append({"file": n, "want": f["etag"], "hashed": hashed, "dedupe_key": dk})
@@ -321,7 +245,6 @@ async def run(ctx) -> None:
     ctx.check(CLAIM_TARGET, news > 0 and not bad["target"], claims=sum(len(v) for v in cl_ac.values()),
               bad=len(bad["target"]), sample=bad["target"][:3])
 
-    # REUPLOAD_ONE / REUPLOAD_MULTI (D)
     re_bad: dict[bool, list] = {False: [], True: []}
     re_n = Counter()
     for f in again_files:
@@ -341,7 +264,6 @@ async def run(ctx) -> None:
             continue
         ctx.check(name, not re_bad[multi], files=re_n[multi], bad=len(re_bad[multi]), sample=re_bad[multi][:5])
 
-    # SEND (B)
     pid_name = {c["processId"]: c["name"] for v in claims.values() for c in v if c.get("processId")}
     s_bad = []
     for f in compose:
@@ -360,7 +282,6 @@ async def run(ctx) -> None:
                           "send_with": s["send_with"], "claim_of": pid_name.get(pid)})
     ctx.check(SEND, bool(sends) and not s_bad, sends=len(sends), bad=len(s_bad), sample=s_bad[:5])
 
-    # IMPORT (C)
     i_bad = []
     for aid in aids:
         rec = runs.get(aid, {})
@@ -390,19 +311,16 @@ async def run(ctx) -> None:
     left = {a: [p["id"] for p in v if p["id"] not in {c["id"] for c in carriers.get(a, ())}]
             for a, v in posts.items()}
     left = {a: v for a, v in left.items() if v}
-    n_carriers = sum(1 for v in posts.values() for p in v if p.get("mediaFiles"))  # the only posts here: carriers
+    n_carriers = sum(1 for v in posts.values() for p in v if p.get("mediaFiles"))
     ctx.check(IMPORT, bool(runs) and not i_bad and not left and n_carriers > 0, runs=len(runs), bad=i_bad[:5],
               carriers=n_carriers, posts_left_on_of=left)
     (ctx.out / "import-runs.json").write_text(json.dumps(runs, indent=1, default=str))
 
-    # OFFHOST
     off = [line for t in ctx.stack.offhost_dirs if (p := Path(t) / "server-offhost.jsonl").exists()
            for line in p.read_text().splitlines() if line.strip()]
     n_claims = sum(len(v) for v in claims.values())
     ctx.check(OFFHOST, not off and n_claims > 0, offhost=off[:5], convert_claims=n_claims)
 
-    # AUDIT_ROWS: what the audit / attribution writers committed (SQL), against the 2xx answers and OF's sends
-    # actions.action is "METHOD path" (service/audit_log.py), so the upload's is UPLOAD
     want_act = Counter((f["aid"], UPLOAD) for f in compose if ups.get(f["name"], {}).get("status") == 200)
     want_act += Counter((f["aid"], UPLOAD) for f in again_files if again.get(f["name"], {}).get("status") == 200)
     want_act += Counter((f["aid"], f"POST /api/of/v2/chats/{f['fan']}/messages") for f in compose
@@ -425,7 +343,6 @@ async def run(ctx) -> None:
         sample_off=dict(list(act_off.items())[:5]), messages_want=len(want_msg), messages_lost=len(lost_msg),
         sample_lost=lost_msg[:5])
 
-    # budgets
     routes = ctx.rec.summary("compose")
     for route, budget in P95_MS.items():
         if route not in routes:

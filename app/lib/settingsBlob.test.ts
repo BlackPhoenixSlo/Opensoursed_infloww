@@ -1,12 +1,3 @@
-/**
- * useSettingsBlob — a Blob tab's Settings blob, loaded and saved whole through
- * the Relay (`GET/PUT /admin/settings/{tab}`, ADR-0007), behind the Load gate.
- *
- * The relay is mocked at `fetch` by URL, so every assertion about a save is an
- * assertion about the WIRE: a disabled-looking Save that still sends a PUT is
- * exactly the failure the Load gate exists to stop (a whole-blob replace over
- * a blob that never loaded wipes the stored settings).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
@@ -28,7 +19,6 @@ function jsonRes(body: unknown, status = 200): Response {
 type Call = { method: string; url: string; body: unknown };
 
 let fetchMock: ReturnType<typeof vi.fn>;
-/** What GET /admin/settings/account answers next. */
 let getReply: () => Response;
 
 function calls(): Call[] {
@@ -64,7 +54,6 @@ function mount(client: QueryClient = makeTestQueryClient()) {
   return { ...hook, client };
 }
 
-/** The Save button `SaveRow` renders from the hook's current `save`. */
 function renderSave(save: Parameters<typeof SaveRow>[0]) {
   cleanup();
   renderWithProviders(createElement(SaveRow, save));
@@ -90,7 +79,6 @@ describe("useSettingsBlob", () => {
     await waitFor(() => expect(result.current.save.saved).toBe(true));
     expect(result.current.value).toEqual({ a: 1, b: 3, c: "Alpha One" });
 
-    // `saved` lasts until the next edit.
     act(() => result.current.set({ a: 5 }));
     expect(result.current.save.saved).toBeFalsy();
   });

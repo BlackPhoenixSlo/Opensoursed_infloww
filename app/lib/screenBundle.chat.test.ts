@@ -56,7 +56,7 @@ describe("chat outcome", () => {
   it("each field is its route's body", () => {
     expect(outcome(BODY, read("seed"))).toEqual({ kind: "body", body: FIELDS.seed });
     expect(outcome(BODY, read("scheduledSends", { accountId: "A1" }))).toEqual({ kind: "body", body: FIELDS.scheduledSends });
-    expect(outcome(BODY, read("scheduledSends"))).toEqual({ kind: "miss" });   // the X-Account-Id must match
+    expect(outcome(BODY, read("scheduledSends"))).toEqual({ kind: "miss" });
     expect(outcome(BODY, read("sensitiveWords"))).toEqual({ kind: "miss" });
   });
   it("attribution since: derived from the bare rows", () => {

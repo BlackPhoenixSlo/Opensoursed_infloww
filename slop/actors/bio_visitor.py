@@ -1,14 +1,3 @@
-"""Bio page visitors (service/bio_pages on BIO_PORT): anonymous fans, each visit the page, the Profile JSON, the ping
-and maybe one Reveal, as v2's script.js does; abusers who hammer one Profile inside one guard minute. Lifted from
-scenarios/2026-11-11-bio-pages-public.py so the public and the editor scenarios share one visitor.
-
-`plan(rng, profiles, n, reveal_share)` picks the visits from the seed (seed/bio_pages.py's oracle profiles).
-`Visitors(rec, base, users)` holds `users` httpx clients (no cookie, redirects not followed) and the bookkeeping:
-`leaks` (answers holding a `slopdest-` token), `page_bad`/`json_bad`/`reveal_bad`, `visitor_refused` (429s to a
-visitor), `views_ok`/`clicks_ok` ((profile, [link,] sent day, answered day) per ping 204 / Reveal 200), `status`
-(every answer's code, 599 for a transport error), `abuse` (one record per abuser). `on_json(p, r)`, when set,
-replaces the Profile JSON == oracle bytes compare (the editor scenario's Profiles change under the visitors).
-"""
 from __future__ import annotations
 
 import json
@@ -37,7 +26,6 @@ BIO_HOST = "bio.slop.test"
 
 def page_target(username: str, code: str | None, custom: str | None,
                 base_host: str) -> tuple[str, str, str]:
-    """Host, request path and bootstrap profilePath for a bio page or tracking URL."""
     if custom:
         return custom, f"/{code}" if code else "/", "/"
     return base_host, f"/{username}/{code}" if code else f"/{username}", f"/{username}"
@@ -48,7 +36,6 @@ def day() -> str:
 
 
 def want_url(link: dict, tid: str | None, country: str, region: str) -> str:
-    """destination.js, for the rule shapes the seeder writes."""
     code = None
     if tid == "geo":
         geo = link["geo"] or {}
@@ -66,7 +53,6 @@ def want_url(link: dict, tid: str | None, country: str, region: str) -> str:
 
 
 def tid_for(link: dict, path_code: str | None) -> str | None:
-    """script.js revealUrl: a tracking Link sends the stored (path) code, else its default; others send none."""
     if not link["tracking"]:
         return None
     return path_code or link["default"] or None
@@ -84,8 +70,6 @@ def block(text: str):
 
 
 def count_bounds(past_rows, views_ok, clicks_ok, got):
-    """Per (profile, link, day) key whose stored (views, clicks) fall outside seeded + answered (a call that crossed
-    UTC midnight may count on either day): {key: {db, lo, hi}}."""
     sure: dict[tuple, list[int]] = defaultdict(lambda: [0, 0])
     astride: dict[tuple, list[int]] = defaultdict(lambda: [0, 0])
     for pid, s, a in views_ok:
@@ -144,7 +128,6 @@ class Visitors:
         return Http(self.base, self.rec, limits=4)
 
     async def reopen(self) -> None:
-        """Fresh clients (a restarted bio process: no keep-alive connection to the old one is reused)."""
         old, self.clients = self.clients, [self._client() for _ in self.clients]
         for cl in old:
             await cl.aclose()
@@ -230,8 +213,6 @@ class Visitors:
                                         "status": r.status_code, "got": got, "want": want})
 
     async def abuser(self, i: int, profiles: list[dict], limit: int) -> None:
-        """One wall-clock minute (the guard's window): 5 cross-origin Reveals, then 2 x limit Reveals and 2 x limit
-        pings on one Profile."""
         cl = self.clients[i % len(self.clients)]
         p = profiles[i % len(profiles)]
         link = p["links"][0]

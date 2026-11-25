@@ -1,17 +1,5 @@
 "use client";
 
-/**
- * Statistics › Statements with the phase-2 Relay reads (omf-statistics-relay), read only once useOfStats' probe finds
- * that Relay; until then the page keeps the generator's honest state:
- * - Earnings: OF's chart for the type tab (`/earnings/chart`, `filter=<c>_count,<c>_amount`: the amount over the
- *   transactions, statistics-earnings.js) and the Tips sub-tabs (OF's `tipsSource`, read by the transactions' marker paging);
- * - Chargebacks: OF's disputes table (`/payouts/chargebacks`, by marker) and, with rows, its summary and chart
- *   ("Charged back" over "Disputes", `/payouts/chargebacks/chart`);
- * - Payout Requests: with rows, the summary and chart ("Paid out" over "Invoices", `/payouts/chart`), and "Download
- *   invoice" (`/payouts/download-approved-invoice`, OF's file, saved as the browser saves a download);
- * - Referrals: the summary and chart ("Earnings" over "Referrals", `/payouts/referrals/chart`) and the Referred creators /
- *   Referred users tabs (`/users/me/referrals?onlyPerformers=1|0`: Name, Joined, Earnings).
- */
 
 import { relayFile } from "@/lib/relay";
 import { plain } from "@/lib/ofMirrorData";
@@ -25,10 +13,8 @@ import { drawLine, drawPair, earningsSeries, fanCell, fillChartBox, intoRows, ro
 import type { Fan } from "@/lib/ofMirrorAvatar";
 import { usd } from "@/lib/ofMirrorMoney";
 
-/** OF's key for the tab's chart in the reply (statistics-earnings.js `currentTab.key`). */
 const chartTab = (type: EarningsType, tips = "all") => (type === "tips" && tips !== "all" ? `tips_${tips}` : type);
 
-/** Each type's figures in `/users/me/stats/overview` (the Statements sidebar's): its summary on Statements › Earnings. */
 const TYPE_FIGURES: Record<EarningsType, string> = {
   total: "earnings:earning",
   subscribes: "fans:fans.earnings",
@@ -39,15 +25,12 @@ const TYPE_FIGURES: Record<EarningsType, string> = {
 };
 
 
-/** Statements › Earnings' summary follows its type tab: the overview's figures for that type. */
 export const rekeyFor = (type: EarningsType, chart = false) => (el: Element, key: string) =>
   !key.startsWith("earnings:earning.") || !el.closest(".b-statistics-page-content__wrapper") ? key
-  : chart ? `series:${key.slice("earnings:earning.".length)}` // OF's own: the tab's chart
+  : chart ? `series:${key.slice("earnings:earning.".length)}`
   : type !== "total" ? TYPE_FIGURES[type] + key.slice("earnings:earning".length) : key;
-/** Referrals' summary: its chart's total and change once the Relay reads it (OF's), else the derived $0.00. */
 export const rekeyReferrals = (chart: boolean) => (_el: Element, key: string) => (chart && key.startsWith("derived:ref.") ? `referralsChart:${key.slice("derived:ref.".length)}` : key);
 
-/** The Statements sidebar's Earnings: OF's categories with earnings in the period (StatementsStatistics). */
 const CATEGORIES: [string, string, EarningsType][] = [
   ["Total", "earnings:earning", "total"],
   ["Subscriptions", "fans:fans.earnings", "subscribes"],
@@ -56,20 +39,12 @@ const CATEGORIES: [string, string, EarningsType][] = [
   ["Posts", "posts:posts.earnings", "post"],
   ["Streams", "streams:streams.earnings", "stream"],
 ];
-/** OF's sidebar rows from its own charts (StatementsStatistics' chartsSettings: key, title, line colour). */
 const SIDE: [key: string, title: string, color: string][] = [
   ["total", "Total", "#8A96A3"], ["subscribes", "Subscriptions", "#7CB342"], ["tips", "Tips", "#9575CD"],
   ["chat_messages", "Messages", "#00AFF0"], ["post", "Posts", "#FFA000"], ["stream", "Streams", "#EC407A"],
 ];
 const hasCounts = (v: unknown) => Array.isArray(v) && v.some((x) => num(at(x, "count")));
 
-/**
- * The Statements sidebar's Earnings. With the phase-2 Relay, OF's own (statistics-statements.js StatementsStatistics and
- * StatementsStatisticsItem): a row per category whose chart has a non-zero point (its total, its change except for All
- * time, and its DetailLineChart: the amounts as a line in the category's colour; OF's sparkline has no tooltip, its
- * points' hit radius is 0, app.js 985738 `$r`); no category total: OF's "No earnings for this period". Else the
- * overview's figures per category, no line.
- */
 export function applyEarningsAside(doc: Document, data: StatsData, p: Period) {
   const tpl = doc.querySelector<HTMLElement>("[data-oi-template='earning']");
   if (!tpl) return;
@@ -95,19 +70,18 @@ export function applyEarningsAside(doc: Document, data: StatsData, p: Period) {
   for (const { label, v, d, type, chart, color } of rows) {
     const el = make(tpl);
     el.style.removeProperty("display");
-    // OF's row opens Statements › Earnings on its type tab (StatementsStatisticsItem's changeTab).
     el.setAttribute("data-oi-pick", `type:${type}`);
     el.setAttribute("data-oi-href", "/of-manager/statistics/statements/earnings");
     el.classList.add("g-pointer-cursor");
     const name = el.querySelector(".b-elements-determinant__label");
     if (name) name.textContent = ` ${label} `;
     const value = el.querySelector(".b-elements-determinant__value");
-    const span = value?.querySelector(":scope > span"); // the template's money slot (make drops its data-oi-money)
+    const span = value?.querySelector(":scope > span");
     if (span) {
       span.textContent = ` ${usd(v)} `;
       span.classList.toggle("m-zero-value", Math.round(v) === 0);
     }
-    if (value && d && p.key !== "all") value.append(level(doc, d, true)); // OF prints this change as it is
+    if (value && d && p.key !== "all") value.append(level(doc, d, true));
     const box = el.querySelector<HTMLElement>(".b-elements-determinant__unit.m-chart");
     add(doc, el, after, "after");
     after = el;
@@ -116,17 +90,15 @@ export function applyEarningsAside(doc: Document, data: StatsData, p: Period) {
   }
 }
 
-/** OF's money cell text (" $1.00 "); none: empty. */
 const dollars = (v: unknown) => (money(v) ? ` ${money(v)} ` : "");
 
-/** Statements › Earnings: OF's rows for the period (a captured row per status as the template), read by pages. */
 export function applyTransactions(doc: Document, items: Transaction[], p: Period, paged?: Partial<PagedBody>) {
   const rows = items.filter((t) => inPeriod(t.createdAt, p));
   const tpl = (k: string) => doc.querySelector<HTMLElement>(`.b-statements-table tbody > tr[data-oi-template='${k}']`);
   intoRows(doc, (tpl("done") ?? tpl("loading"))?.parentElement, rows, (t) => (t.status === "loading" ? tpl("loading") : tpl("done")) ?? tpl("done") ?? tpl("loading"), (el, t) => {
     const when = valid(t.createdAt)!;
     const [day, time] = el.querySelectorAll(".m-width-statements strong > span");
-    if (day) day.textContent = `${dayText(when, p.tz)},`; // OF's "Oct 06, 2026,"
+    if (day) day.textContent = `${dayText(when, p.tz)},`;
     if (time) time.textContent = timeText(when, p.tz);
     for (const [i, v] of [
       [1, t.amount],
@@ -148,14 +120,11 @@ export function applyTransactions(doc: Document, items: Transaction[], p: Period
   const body = (tpl("done") ?? tpl("loading"))?.parentElement;
   const last = [...(body?.querySelectorAll(":scope > tr[data-oi-data]") ?? [])].at(-1);
   if (paged?.more && last) moreAt(doc, last, paged.more);
-  // Still reading toward the period: "Loading…"; reading stopped short of it: the generator's text, no claim.
   if (!rows.length && paged && !paged.stalled && !pagedDone(paged, p)) loadingRow(doc, body);
 }
 
 
-/** OF's "MMM DD, YYYY, hh:mm a" in `tz`. */
 const payoutDate = (d: Date, tz: string | null) => `${dayText(d, tz)}, ${timeText(d, tz)}`;
-/** OF's status copy (texts_en.json) and icon per payout state (getStatusIcon). */
 const PAYOUT_STATES: Record<string, [cls: string, text: string, icon: string]> = {
   new: ["pending", "Payout request is being processed", "loading"],
   pending: ["pending", "Payout request is being processed", "loading"],
@@ -163,12 +132,6 @@ const PAYOUT_STATES: Record<string, [cls: string, text: string, icon: string]> =
   approved: ["approved", "Payout has been processed", "done"],
 };
 
-/**
- * Payout Requests (`kind` payouts) and Referrals (referrals): OF's table rows for the period's payouts
- * (StatisticsStatementsPayoutRequests, StatementsReferralsEarnings): the date in the owner's time zone, the invoice,
- * the amount and OF's status (its text, a rejection's "Reason: …", its icon); "Download invoice" (OF's link to its own
- * invoice file, no Relay route) is disabled with the tooltip. The next page is read when the last row scrolls into view.
- */
 export function applyPayouts(doc: Document, kind: "payouts" | "referrals", body: unknown, p: Period) {
   const wrap = doc.querySelector<HTMLElement>(`[data-oi-table='${kind}']`);
   const tbody = wrap?.querySelector("tbody");
@@ -200,7 +163,6 @@ export function applyPayouts(doc: Document, kind: "payouts" | "referrals", body:
       const reason = plain(r.rejectReason);
       if (r.state === "rejected" && reason) span.append(el("br"), doc.createTextNode(`Reason: ${reason}`));
       if (kind === "referrals") {
-        // OF's referrals description: the icon inside the status text.
         const holder = el("span", "b-state-icon");
         holder.append(icon(name));
         span.append(holder);
@@ -216,7 +178,6 @@ export function applyPayouts(doc: Document, kind: "payouts" | "referrals", body:
         dl.type = "button";
         dl.disabled = true;
         dl.title = NOT_YET;
-        // OF's link to the invoice file (887384): with the phase-2 Relay, ofMirrorStatsStatements enables it.
         if (/^\d+$/.test(String(r.invoiceId ?? ""))) {
           dl.setAttribute("data-oi-invoice", String(r.invoiceId));
           dl.setAttribute("data-oi-refbonus", kind === "referrals" ? "1" : "0");
@@ -234,7 +195,6 @@ export function applyPayouts(doc: Document, kind: "payouts" | "referrals", body:
 }
 
 
-/** Statements › Earnings' type tabs: OF's current tab, Tips' sub-tabs under it while Tips is picked. */
 export function applyEarningsTabs(doc: Document, type: EarningsType) {
   pickTabs(doc, "type", type);
   const tips = type === "tips";
@@ -246,7 +206,6 @@ export function applyEarningsTabs(doc: Document, type: EarningsType) {
   }
 }
 
-/** Chargebacks: "Chargeback ratio N%" for the period (OF rounds to two places; none: 0%). */
 export function applyRatio(doc: Document, body: unknown) {
   const ratio = num(at(body, "chargebacksRatio"));
   if (ratio === null) return;
@@ -262,7 +221,6 @@ export interface StatementsCtx {
   img?: (u: string) => string;
 }
 
-/** Statements › Earnings' figures from its chart (OF's summary: the chart's total, gross and change), else null. */
 export function statementsSeries(data: StatsData, type: EarningsType, tips: string) {
   const s = earningsSeries(data.earningsChart, chartTab(type, tips));
   return s && s.total !== null ? { total: s.total, gross: s.gross, delta: s.delta } : null;
@@ -281,7 +239,6 @@ function earningsPage(doc: Document, data: StatsData, p: Period, x: StatementsCt
   drawPair(doc, doc.querySelector(".b-statistics-page-content__wrapper > .b-chart"), [s.amount, title, "money"], s.count ? [s.count, "Transactions", "count"] : null, tz);
 }
 
-/** A money cell's value (OF's utils-money: a span, `m-zero-value` when it rounds to $0). */
 function moneySpan(doc: Document, v: unknown) {
   const n = num(v);
   const span = elOf(doc)("span", n !== null && Math.round(n) === 0 ? "m-zero-value" : "", n === null ? "" : ` ${usd(n)} `);
@@ -294,7 +251,6 @@ interface Dispute {
   payment?: { createdAt?: string; amount?: unknown; fee?: unknown; net?: unknown; description?: string | null } | null;
 }
 
-/** Chargebacks: OF's StatisticsStatementsDisputes table, its summary and chart while it has rows. */
 function disputesPage(doc: Document, data: StatsData, p: Period) {
   const body = data.chargebacksList as Partial<PagedBody> | undefined;
   const list = (body?.list ?? null) as Dispute[] | null;
@@ -337,7 +293,6 @@ function disputesPage(doc: Document, data: StatsData, p: Period) {
     fillChartBox(doc, "disputes", num(c.total), num(c.delta), true, [c.chartAmount, "Charged back", "money"], [c.chartCount, "Disputes", "count"], p.key === "24h" ? "UTC" : p.tz, p.key !== "all");
 }
 
-/** Payout Requests: with the period's rows shown, OF's summary and chart. */
 function payoutsPage(doc: Document, data: StatsData, p: Period) {
   const shown = doc.querySelector<HTMLElement>("[data-oi-table='payouts']");
   const c = data.payoutsChart;
@@ -345,7 +300,6 @@ function payoutsPage(doc: Document, data: StatsData, p: Period) {
   fillChartBox(doc, "payouts", num(c.total), num(c.delta), true, [c.chartAmount, "Paid out", "money"], [c.chartCount, "Invoices", "count"], p.key === "24h" ? "UTC" : p.tz, p.key !== "all");
 }
 
-/** Referrals: the chart and its summary (OF's for every tab), the Referred creators / users tabs. */
 function referralsPage(doc: Document, data: StatsData, p: Period, x: StatementsCtx) {
   const c = data.referralsChart;
   const wrapper = doc.querySelector(".b-statistics-page-content__wrapper");
@@ -364,7 +318,6 @@ function referralsPage(doc: Document, data: StatsData, p: Period, x: StatementsC
   const tab = x.picks.ref;
   pickTabs(doc, "ref", tab);
   if (tab === "earnings") return;
-  // Referred creators / users: OF's child page instead of the referral payouts (its notice, table and empty row).
   for (const el of doc.querySelectorAll<HTMLElement>("[data-oi-ref-earnings]")) display(doc, el, false);
   const body = data[tab === "creators" ? "referredCreators" : "referredUsers"] as Partial<PagedBody> | undefined;
   const table = doc.querySelector<HTMLElement>("[data-oi-table='referred']");
@@ -387,7 +340,6 @@ function referralsPage(doc: Document, data: StatsData, p: Period, x: StatementsC
   moreAt(doc, tbody.lastElementChild, body.more);
 }
 
-/** The Statements tabs' phase-2 parts for page `sub`. */
 export function applyStatements(doc: Document, sub: string, data: StatsData, p: Period, x: StatementsCtx) {
   if (sub === "statements/earnings") earningsPage(doc, data, p, x);
   if (sub === "statements/disputes") disputesPage(doc, data, p);
@@ -398,7 +350,6 @@ export function applyStatements(doc: Document, sub: string, data: StatsData, p: 
 }
 
 const invoiceCtx = new WeakMap<Document, StatementsCtx>();
-/** "Download invoice": OF's invoice file through the Relay, saved by the browser; no file: a note. Bound once per page. */
 function bindInvoices(doc: Document, x: StatementsCtx) {
   const bound = invoiceCtx.has(doc);
   invoiceCtx.set(doc, x);

@@ -1,30 +1,3 @@
-"""A promotions history past the page cap (service/of_promos.py's capped-history memo), a stage of
-scenarios/2026-11-05-sweep-pacing.py after its own checks and before the watermark stage (whose
-relay restart empties the in-process memo).
-
-CAP, one more Creator (an empty ledger, no promotion List: no promo_list_settings row), answers OF's
-promotions empty until this stage (every prewarm pass before it reads one short page: no memo). At
-its start OF holds CAP_PROMOS promotions, newest first, past the cap of CAP_PAGES pages of PAGE, all
-finished but the one at LIVE_AT (on page LIVE_AT // PAGE + 1), and CAP gains one mirror (SQL, the
-row create_promotion writes) of the finished promotion at DEEP_MIRROR_AT, past the cap: an app-made
-campaign long over (a mirror lives until deleted in the app). Then CAP's owner opens its Promotions
-page three times (`GET /admin/promotions`, one fetch_of_promos each; its claimer refresh reads no
-promotions page: every claim count is 0).
-
-promo_cap_once: read 1 the whole cap (CAP_PAGES promotions pages answered 200), reads 2 and 3 each
-fewer than the cap and at least one (they stop on the live promo's page, not chasing the old
-mirror); every read answers 200, of_available, CAP_PAGES * PAGE + 1 campaigns (the cap's + the deep
-mirror) with distinct OF ids, nothing dropped, the live promo `active`. Fault
-promo-memo-cleared-on-need-ids (lib/sweep_pacing_faults.py): read 2 answers its pages alone, read 3
-rereads the cap.
-
-Bypasses (declared): the mirror is seeded by SQL (a real create puts its promotion on top, not past
-the cap); CAP's bucket in the guessed OF limit (lib/sweep_pacing_wire.py) is CAP_PAGES + 1 deep, not
-BURST (10): the page's reads are back to back and unpaced, so a 12-page read would 429 on the guess
-(measured, a first run), which is not what this check is about; reads are CAP_PAGES / REFILL_PER_S
-+ 0.5 s apart (the bucket refilled), the hours between them are not waited (the memo's 24 h window,
-PROMO_HISTORY_REREAD_S, is the product's default).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -34,16 +7,15 @@ from datetime import timedelta
 from slop.lib.sweep_pacing_faults import PROMO_CAP
 from slop.seed import ts
 
-PAGE, CAP_PAGES = 100, 12          # of_promos._PAGE, of_promos._MAX_PAGES
-CAP_PROMOS = 1_300                 # 13 pages: capped at every scale
-LIVE_AT = 250                      # the one promo on offer: page 3
-DEEP_MIRROR_AT = 1_250             # a finished app-made promo past the cap, still mirrored
+PAGE, CAP_PAGES = 100, 12
+CAP_PROMOS = 1_300
+LIVE_AT = 250
+DEEP_MIRROR_AT = 1_250
 READS = 3
 _BASE = 50_000_000_000
 
 
 def _seed(w, sw, cap: str) -> None:
-    """CAP's promotions on OF (lib/sweep_pacing_wire.py `promos`) and its deep mirror (SQL)."""
     sw.promos[cap] = [{"id": _BASE + k, "message": f"slop capped promo {k}", "price": 4.99, "type": "all",
                        "claimsCount": 0, "subscribeCounts": 10, "subscribeDays": 0,
                        "createdAt": (w.now - timedelta(hours=k + 1)).strftime("%Y-%m-%dT%H:%M:%S+00:00"),
@@ -62,7 +34,7 @@ def _seed(w, sw, cap: str) -> None:
 async def run(ctx, w, sw, cap: str) -> None:
     _seed(w, sw, cap)
     sw.depth[sw.share.get(cap, cap)] = CAP_PAGES + 1
-    gap = CAP_PAGES / sw.refill_per_s + 0.5      # the bucket full again
+    gap = CAP_PAGES / sw.refill_per_s + 0.5
     reads = []
     for i in range(READS):
         if i:

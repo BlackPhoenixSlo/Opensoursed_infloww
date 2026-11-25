@@ -10,24 +10,6 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { errText } from "@/lib/errText";
 import { ifConfirm } from "@/components/ui/ifConfirm";
 
-/**
- * AgencyKeysForm — set an agency's LLM keys FOR them.
- *
- * The managed flow: they connect the model, the founder does the rest. The
- * self-serve card at Settings → AI keys only ever writes the SIGNED-IN
- * owner's row, and impersonation is read-only, so this is the only way to fix
- * an agency that never pasted one — and the way to do the whole post-upgrade
- * pass from a single screen instead of logging in as each owner.
- *
- * The edit rules are NOT restated here. A secret field is safe to edit exactly
- * one way — placeholder never holds the value, blank means unchanged even after
- * a typed-then-backspaced field, only the clear link sends "" — and useKeyDraft
- * is where that lives, shared with both Setup cards. A third hand-rolled copy
- * would be a third place for the next fix to miss.
- *
- * The founder password is the one thing that is local: it gates the write and
- * is not a key, so it never enters the draft.
- */
 export function AgencyKeysForm(
   { user, onSaved }: { user: AgencyRef; onSaved?: () => void },
 ) {
@@ -50,8 +32,6 @@ export function AgencyKeysForm(
 
   useEffect(() => { void load(); }, [load]);
 
-  // Thrown, not swallowed: useKeyDraft surfaces a rejected submit as a sticky
-  // note and keeps the draft, which is what a missing password should do.
   async function submit(values: Record<string, string>) {
     if (!adminPassword) throw new Error("Admin password required.");
     setBusy(true);
@@ -61,8 +41,6 @@ export function AgencyKeysForm(
         providers: values,
       });
       await load();
-      // The caller may be showing derived state about this agency (a "needs a
-      // key" badge), and it is now stale.
       onSaved?.();
     } finally {
       setBusy(false);
@@ -99,9 +77,7 @@ export function AgencyKeysForm(
                 disabled={busy}
                 className="text-[11px] text-err hover:text-err disabled:opacity-40"
                 onClick={async () => {
-                  // Someone ELSE's credential: their automations can fail closed the
-                  // moment this lands, and they get no notification. Same beat (and
-                  // words, clearConfirm) the owner's own card takes.
+                  // Someone else's credential: their automations can fail closed at once and they get no notification.
                   if (await ifConfirm(clearConfirm(name, user.username), { danger: true })) {
                     void clear(name);
                   }
@@ -139,16 +115,11 @@ export function AgencyKeysForm(
 }
 
 
-/** The two fields this form needs from whatever listed the agency. Deliberately
- *  NOT AdminUserRow: the Setup card lists agencies from the key roster while the
- *  Manage screen lists them from the user table, and neither should grow the
- *  other's shape just to reuse one form. */
 export interface AgencyRef {
   id: string;
   username: string;
 }
 
-/** Masked per-provider state. The raw value never reaches the browser. */
 export interface KeyStatus {
   set: boolean;
   hint: string;

@@ -1,38 +1,8 @@
 #!/usr/bin/env python3
-"""An unsend the operator clicks must be mirrored onto our own `messages` row.
-
-The bug (seen live 2026-08-27, Ava ↔ fan 119473): the ⋯ → unsend flow dropped
-the bubble from the react-query cache and called OF — but the relay never
-touched the local mirror, so the chat pane's DB seed (GET /admin/messages,
-useChatMessagesLocal) served the row again on the next reload. Seed rows carry
-`media: []` and a PPV's body is blank, so the bubble came back as an EMPTY
-locked shell that no refresh could clear.
-
-Cases:
-  case_unsend_flips_the_mirror_row         — route flips is_unsent + reason,
-                                              and the seed stops serving it
-  case_unsend_without_withuserid_flips     — no body → flip by (account, msg id)
-  case_failed_of_unsend_leaves_the_row     — OF refused (past the ~24h window)
-                                              → mirror untouched, bubble honest
-  case_mirror_failure_does_not_fail_unsend — the flip is best-effort: OF already
-                                              took it down, never 500 the caller
-  case_queue_cancel_flips_broadcast_rows   — "also unsend from everyone" flips
-                                              recipients but spares purchasers
-                                              and funnel follow-ups
-  case_queue_cancel_without_a_run_is_a_noop — a queue we never recorded flips
-                                              nothing and touches no neighbour
-
-Run:  ./venv/bin/python service/tests/test_unsend_mirror_flip.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
 
-# These cases test feature logic, not the account gate (that is
-# test_account_isolation_gate's job). They reach `/admin` routes or
-# `assert_account_owned` with no session, which fails closed (401) since
-# 3b30b486. This is the documented escape hatch (read per call), scoped to this
-# test process.
 import os  # noqa: E402
 
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
@@ -48,11 +18,10 @@ from db.models import Account, MassRun, Message  # noqa: E402
 
 AID = "acct-unsend"
 FAN = 5150
-MID = 10977996348669  # the real id from the live report
+MID = 10977996348669
 
 
 class _FakeClient:
-    """Records what reached OF. `fails=True` = past the edit window."""
 
     def __init__(self, *, fails: bool = False):
         self.unsends: list[tuple[int, int | None]] = []
@@ -71,7 +40,6 @@ class _FakeClient:
 
 
 class _Req:
-    """Only what the route reads off the request: the raw JSON body."""
 
     def __init__(self, payload: dict | None = None):
         self._raw = b"" if payload is None else json.dumps(payload).encode()
@@ -81,7 +49,6 @@ class _Req:
 
 
 class _Ctx:
-    """Patch the route's account resolution + OF client for the call."""
 
     def __init__(self, *, fails: bool = False):
         self.client = _FakeClient(fails=fails)
@@ -109,9 +76,6 @@ async def _seed_account() -> None:
 
 
 async def _seed_ppv(fan_id: int, message_id: int, **kw) -> None:
-    """A sent PPV exactly as the mirror holds it: priced, blank body (the
-    caption lives on OF's media), media_count 0 — the shape that renders as
-    an empty locked bubble when it wrongly survives an unsend."""
     async with get_session() as s:
         s.add(Message(
             account_id=AID, fan_id=fan_id, message_id=message_id,
@@ -126,7 +90,6 @@ async def _row(fan_id: int, message_id: int) -> Message | None:
         return await s.get(Message, (AID, fan_id, message_id))
 
 
-# ── case 1: the flip happens, and the seed stops serving the bubble ───
 async def case_unsend_flips_the_mirror_row():
     await _seed_account()
     await _seed_ppv(FAN, MID)
@@ -147,7 +110,6 @@ async def case_unsend_flips_the_mirror_row():
     assert MID not in got, "unsent bubble still seeds the chat pane"
 
 
-# ── case 2: no body → still flip, by (account, message_id) ───────────
 async def case_unsend_without_withuserid_flips():
     await _seed_account()
     await _seed_ppv(6001, MID + 1)
@@ -161,7 +123,6 @@ async def case_unsend_without_withuserid_flips():
         "a bodyless unsend must still flip — OF message ids are global"
 
 
-# ── case 3: OF refused → the bubble is still live, keep the mirror ────
 async def case_failed_of_unsend_leaves_the_row():
     await _seed_account()
     await _seed_ppv(FAN, MID + 2)
@@ -179,7 +140,6 @@ async def case_failed_of_unsend_leaves_the_row():
         "flipped a row OF still shows — the fan sees a bubble we hid locally"
 
 
-# ── case 4: the flip is best-effort, never a 500 ─────────────────────
 async def case_mirror_failure_does_not_fail_unsend():
     await _seed_account()
     await _seed_ppv(FAN, MID + 3)
@@ -200,11 +160,7 @@ async def case_mirror_failure_does_not_fail_unsend():
         "OF already unsent it — a mirror failure must not fail the request"
 
 
-# ── case 5: "also unsend from everyone" — recipients only ────────────
 async def case_queue_cancel_flips_broadcast_rows():
-    """OF's queue cancel pulls the broadcast from fans who did NOT buy it. A
-    purchaser keeps their paid copy, and reply_mass_funnel follow-ups share the
-    mass_run_id but are separate live messages — both must stay unflipped."""
     await _seed_account()
     qid, base = 8123, datetime.utcnow() - timedelta(hours=2)
     async with get_session() as s:
@@ -234,13 +190,9 @@ async def case_queue_cancel_flips_broadcast_rows():
         "funnel follow-up must stay live — a queue cancel doesn't touch it"
 
 
-# ── case 6: a queue that was never ours flips nothing, quietly ────────
 async def case_queue_cancel_without_a_run_is_a_noop():
-    """A scheduled message canceled before it ever sent has no MassRun and no
-    mirror rows. The subquery finds nothing, the route still returns OF's
-    answer, and the unrelated row next door is untouched."""
     await _seed_account()
-    await _seed_ppv(704, 90004)  # no mass_run_id at all
+    await _seed_ppv(704, 90004)
 
     with _Ctx() as ctx:
         resp = await mass_queue_api.of_cancel_scheduled(_Req(None), 9999)
@@ -252,16 +204,7 @@ async def case_queue_cancel_without_a_run_is_a_noop():
         "an unknown queue id flipped an unrelated row"
 
 
-# ── case 7: "unsend from everyone" also retires the UNTAGGED copies ───
 async def case_unsend_from_everyone_route_flips_copies():
-    """A LIST-audience blast writes no per-fan row at all, so `mark_mass_runs_unsent`
-    (which needs a `mass_run_id`) reached nothing for it: the copies our inbox poll
-    wrote later stayed `is_unsent = 0` forever and the pane's DB seed repainted a
-    retired blast on every open. The route now also runs the untagged matcher —
-    body-and-window, or OF's own `queueId` off a scraped frame.
-
-    The count the route returns is the TOTAL of both halves: the caller asked how
-    many bubbles this retired, not where each row came from."""
     await _seed_account()
     qid = 8124
     sent_at = datetime.utcnow() - timedelta(hours=2)
@@ -273,8 +216,6 @@ async def case_unsend_from_everyone_route_flips_copies():
         s.add(mr)
         await s.flush()
         run_id = int(mr.id)
-    # One TAGGED recipient (an explicit id in the same send) and two untagged
-    # copies — OF's <br /> echo from the poll, and a scraped row with the queue id.
     await _seed_ppv(710, 90010, mass_run_id=run_id)
     async with get_session() as s:
         s.add(Message(account_id=AID, fan_id=711, message_id=90011, direction="out",
@@ -286,7 +227,6 @@ async def case_unsend_from_everyone_route_flips_copies():
                       media_count=0, is_unsent=False,
                       created_at=sent_at + timedelta(minutes=50),
                       raw_json=json.dumps({"id": 90012, "queueId": qid})))
-        # …and a chatter typing the same words three hours later. Not the blast.
         s.add(Message(account_id=AID, fan_id=713, message_id=90013, direction="out",
                       body=body, media_count=0, is_unsent=False,
                       created_at=sent_at + timedelta(hours=3)))
@@ -309,6 +249,4 @@ async def case_unsend_from_everyone_route_flips_copies():
     assert [m["message_id"] for m in seed["messages"]] == [], seed["messages"]
 
 
-# Collected automatically — a case defined here and forgotten is a hard error,
-# not a silent skip (see _harness.run's docstring).
 _harness.run()

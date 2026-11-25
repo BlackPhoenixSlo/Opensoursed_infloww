@@ -1,7 +1,3 @@
-/**
- * useFanListMarkRead — "Mark all as read" and its per-chat loop, against a
- * mocked relay. Fixture identifiers are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
@@ -23,9 +19,7 @@ const unread = (accountId: string, fanId: number) => ({
   hasUnread: true,
   unreadMessagesCount: 1,
 }) as unknown as OFChatItem;
-// All Models: two Creators, two unread chats on A and one on B.
 const ROWS = [unread(A, 200000001), unread(B, 200000002), unread(A, 200000003)];
-// One Creator's (A's) unread chats.
 const ROWS_A = [ROWS[0], ROWS[2]];
 const LIST_KEY = ["chats", "all", `${A},${B}`, null, null, null, 25];
 
@@ -37,7 +31,6 @@ function setup(opts: { wholeCreator?: string | null; rows?: OFChatItem[] } = {})
   const hook = renderHook(() => useFanListMarkRead({
     markable: rows, wholeCreator: opts.wholeCreator ?? null,
   }), { wrapper });
-  /** The cached rows still unread, as "accountId:fanId". */
   const stillUnread = () => (qc.getQueryData(LIST_KEY) as { pages: { rows: OFChatItem[] }[] }).pages[0].rows
     .filter(isUnreadChat).map((c) => `${c.__accountId ?? ""}:${c.withUser.id}`);
   return { ...hook, qc, stillUnread };
@@ -123,6 +116,7 @@ describe("useFanListMarkRead", () => {
   });
 
   it("Fansly snowflakes past 2^53: the relay's string acked ids match their rows exactly (W30-mu #41)", async () => {
+    // Ids this big would round if parsed as JSON numbers, so the wire body is parsed from text.
     const snow = (id: string) => ({ ...unread(A, 0), withUser: { id, name: id } }) as unknown as OFChatItem;
     const rows = [snow("900604711209099264"), snow("900604711209099265")];
     // The relay's 502 body as it is on the wire: a JSON number this big would parse rounded to …9300.

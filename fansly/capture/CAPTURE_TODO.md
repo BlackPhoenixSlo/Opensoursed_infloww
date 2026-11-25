@@ -71,6 +71,34 @@ body + response, write the recipe into `RECIPES.md`. Group by what they unblock.
 | 5.1 | `GET /api/v1/message/automated` | ✅ | ✅ **FULL CRUD CAPTURED + VERIFIED LIVE** (run-20260901-2049). Fansly's native welcome-bot; the client calls it `chatBotApiService_`. `GET /api/v1/message/automated` (list), `POST /message/automated` (create), `/message/automated/edit`, `POST /message/automated/{id}/delete` with body `{}`. Create body: `{id:null,accountId:null,delay:0,triggerType:3,messageTemplate:{content,attachments:[]}}`. **triggerType 3 = on follow** — matches §1.3, where following a creator instantly delivered her welcome DM. Create/delete return a bare STRING not the object, so re-GET the list for the new id. Round trip verified: create 200 → listed → delete 200 → list empty. `messageTemplate.attachments` accepts media, so a welcome DM can carry a vault mediaId (§3.11). |
 | 5.2 | notification type-code map | ✅ | ✅ **Full type→label map recovered** from the client's own `this.filters=[…]` table in `main.<hash>.js`, and `15011` CONFIRMED against live data (the row's stated done-condition). 24001/24002=Fansly Alerts, 1002/2002/5003=Likes, 1004=Post Replies, 1005=Post Quotes, **7001=Tips**, 3002/3003=Followers, **2007/2008=Media Purchases**, 15006/15016=Subscribers, 15007=Expired Subscriptions, 15011=Promotions, 32007=Locked Text Purchases, 45012=Stream Ticket Purchases. 🔑 **7001 and 2007/2008 route around two blockers the parity doc calls dead ends** — tips and the PPV 'fan actually paid' signal, both of which it reports as unavailable because every sales endpoint 404s. `metadata` shape for those codes is UNVERIFIED (null on every 15011 seen). |
 
+## 6. Phase 1b: the one Capture session and the three Proof purchases
+
+Owner-run, not the loop: the session takes free actions only, and the three
+purchases are the only spend. Each Blocked method's capture is named in
+`FANSLY_PARITY_STATUS.md` → "Phase 1b verdicts"; these close the ones the
+Relay and automations reach first.
+
+**Capture session** — creator and fan accounts in two Chrome profiles, every
+request and frame recorded into `RECIPES.md`:
+
+| # | action | closes | status |
+|---|---|---|---|
+| 6.1 | open a list's members | `list_users_in` (Smart list sync stays off until it is built) | ⬜ |
+| 6.2 | rename a list | `rename_list` | ⬜ |
+| 6.3 | delete a list (a trusted click on the row `···` menu, §3.1's gap) | `delete_list` | ⬜ |
+| 6.4 | block, then unblock, the fan account | `block_user`, `unblock_user` | ⬜ |
+| 6.5 | search for the fan by username | `search_users` | ⬜ |
+| 6.6 | schedule one broadcast to a list holding only the fan account, read the queue and broadcast history, then cancel it | `schedule_mass_message`, `scheduled_messages`, `queued_message`, `edit_queued_message`, `mass_message_history`, `engagement_messages`, and the unconfirmed `send_mass_message` path; also the broadcast cancel shape `cancel_scheduled` lacks (its post-endpoint hazard) | ⬜ |
+
+**Proof purchases** — fan account to creator account, creator side recorded
+before and after (notification row, socket frames, wallet frame):
+
+| # | purchase | proves | status |
+|---|---|---|---|
+| 6.7 | chat PPV | 2007 still carries `accountMediaPrice` (the Banking set); net and fee from the wallet frame | ⬜ |
+| 6.8 | paid subscription, not a gift code | the paid-sub code (15006 or 15016) and its price key; once it lapses, `recent_expired_subscribers` and `resubscribe_user` | ⬜ |
+| 6.9 | chat tip | 7001's price key, and the unit of a message's `totalTipAmount` | ⬜ |
+
 ## Done condition
 Every row ✅ or ⛔. §1.10 and §4.2 may end ⛔ ("needs a real money event, not
 forceable on a test account") — that is an acceptable terminal state, but only

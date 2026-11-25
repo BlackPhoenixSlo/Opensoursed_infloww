@@ -21,7 +21,6 @@ const hovering = (patch: Partial<HoverPreviewState> = {}): HoverPreviewState =>
   ({ ...hoverPreviewReducer(IDLE_HOVER, enter()), ...patch });
 
 describe("etaFor", () => {
-  // VaultPicker's ×1.3-padded formula; FanDrawer's copy had dropped the ×1.3.
   it.each([
     [0, 7], [Number.NaN, 7], [-5, 7], [1, 7], [15, 7], [30, 7], [34, 8],
     [60, 8], [61, 9], [120, 18], [600, 90],
@@ -151,8 +150,6 @@ describe("useHoverPreview", () => {
     act(() => result.current.start(1, 30, "https://cdn/a.mp4"));
     act(() => { vi.advanceTimersByTime(200); });
     unmount();
-    // A dwell timer left armed would fire into the unmounted hook; its state and
-    // fetches can't show that (both stay frozen), the pending timer does.
     expect(vi.getTimerCount()).toBe(0);
     act(() => { vi.advanceTimersByTime(1000); });
     expect(result.current.state.id).toBeNull();

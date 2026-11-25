@@ -1,18 +1,3 @@
-/**
- * Seam 1 of docs/spec/infloww-parity-round-2/phase-01-dashboard.md: the Home
- * page (`/`), rendered with `fetch` mocked by URL, so every assertion is about
- * the rendered text or the requests sent. Ticket 24 starts it with the KPI
- * header (its control catalogue against the Layout capture on disk, the period
- * tabs and `?window=`, Total earnings) and the period-window table cases;
- * ticket 25 adds the Net / Gross switch and the channel tiles; ticket 26 wires
- * Employee sales to the per-employee read. Page-parity ticket 01 moves it onto
- * ticket 00's primitives (the `IfSelect` earnings select, the `IfSegmented`
- * period strip, `EmptyState`) and wires Worked hours to the Timesheet.
- *
- * The fixture zone is Pacific/Honolulu: west of UTC (UTC-10:00, the Inventory's
- * example label) and without daylight saving, so every instant below is fixed.
- * Fixture names and ids are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -21,13 +6,10 @@ import { QueryClient } from "@tanstack/react-query";
 
 import { jsonRes, renderWithProviders } from "@/test-utils";
 
-// An owner session. The scope (ScopeContext): all Creators unless a case
-// picks one.
 let scope: { kind: "all" } | { kind: "model"; accountId: string } = { kind: "all" };
 vi.mock("@/contexts/ScopeContext", () => ({
   useScope: () => ({ scope, accountId: scope.kind === "model" ? scope.accountId : null }),
 }));
-// An owner session unless a case signs in a chatter.
 let session: { user: { user_id: string; username: string } | null; chatter: { username: string } | null };
 vi.mock("@/contexts/UserContext", async (orig) => {
   const value = () => ({ user: session.user, loading: false, logout: vi.fn() });
@@ -53,17 +35,14 @@ import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { shouldPersistKey } from "@/components/providers";
 
 const HONOLULU = "Pacific/Honolulu";
-// Wednesday 2026-10-14 02:00 in Honolulu (12:00Z).
 const WEDNESDAY = "2026-10-14T12:00:00Z";
 
-/** The revenue-by-kind answer in Gross: a tip and a sale ingest could not classify. */
 const BY_KIND = {
   rows: [
     { day: null, kind: "tip", total_cents: 1250, count: 1 },
     { day: null, kind: "unknown", total_cents: 500, count: 1 },
   ],
 };
-/** The same answer with `include_net=true`: the Relay adds `net_cents` and `net_missing_count` to each row. */
 const BY_KIND_NET = {
   rows: [
     { day: null, kind: "tip", total_cents: 1250, count: 1, net_cents: 1000, net_missing_count: 0 },
@@ -73,19 +52,12 @@ const BY_KIND_NET = {
 const TOTAL_NET = "$14";
 
 let fetchMock: ReturnType<typeof vi.fn>;
-/** Each answer to `GET /admin/stats/revenue?group_by=kind`, in turn, told whether the read asked for Net; the last
- *  repeats. */
 let revenue: Array<(net: boolean) => Promise<Response>>;
-/** The answer to the Chargebacks tile's `GET /admin/stats/revenue?group_by=kind&status=reversed`: none unless a case
- *  says so. */
 let reversed: (net: boolean) => Promise<Response>;
 const byBasis = (gross: unknown, net: unknown) => async (isNet: boolean) => jsonRes(isNet ? net : gross);
 let applied: () => Promise<Response>;
-/** Each answer to `GET /admin/stats/per-employee`, in turn; the last repeats. */
 let perEmployee: Array<() => Promise<Response>>;
-/** The answer to `GET /admin/shifts/timesheet`. */
 let timesheet: () => Promise<Response>;
-/** The answer to `GET /admin/stats/referrals`: none unless a case says so, so Total earnings is the sales alone. */
 let referrals: () => Promise<Response>;
 
 const appliedRes = () => jsonRes({
@@ -139,14 +111,11 @@ afterEach(() => {
 
 const calls = () => fetchMock.mock.calls
   .map(([url, init]) => ({ url: new URL(String(url), "http://localhost"), init: init as RequestInit }));
-/** The header's revenue reads (the earnings; not Chargebacks' reversed read), as URLs, with the init each was sent with. */
 const revenueReads = () => calls().filter(({ url }) => url.pathname === "/admin/stats/revenue"
   && url.searchParams.get("group_by") === "kind" && !url.searchParams.has("status"));
-/** Chargebacks' reversed reads. */
 const reversedReads = () => calls().filter(({ url }) => url.pathname === "/admin/stats/revenue"
   && url.searchParams.get("status") === "reversed");
 
-/** The header's per-employee reads, as URLs, with the init each was sent with. */
 const perEmployeeReads = () => fetchMock.mock.calls
   .map(([url, init]) => ({ url: new URL(String(url), "http://localhost"), init: init as RequestInit }))
   .filter(({ url }) => url.pathname === "/admin/stats/per-employee");
@@ -157,27 +126,20 @@ const lastWindow = () => {
   return [q.get("from"), q.get("to")];
 };
 
-/** A period tab: a radio of the `IfSegmented` strip; `aria-checked` marks the active one. */
 const tab = (name: string) => screen.getByRole("radio", { name });
 const totalTile = () => document.querySelector<HTMLElement>('[data-control="total"]')!;
-/** Total earnings' figure as read ("$18"; the sign is its own 25px span), or null while none shows. */
 const figure = () => totalTile().querySelector("[data-figure]")?.textContent ?? null;
 const shows = (text: string) => waitFor(() => expect(figure()).toBe(text));
 const tile = (key: string) => document.querySelector<HTMLElement>(`[data-control="${key}"]`)!;
-/** A channel tile's figure as read ("$30"), or null while none shows. */
 const channelFigure = (key: string) => tile(key).querySelector("[data-figure]")?.textContent ?? null;
-/** The wired channel tiles, in catalogue order. */
 const CHANNELS = ["subscriptions", "tips", "posts", "messages", "chargebacks"] as const;
 const channelFigures = () => Object.fromEntries(CHANNELS.map((k) => [k, channelFigure(k)]));
-/** The Net / Gross select: the `IfSelect` combobox inside its catalogue slot. */
 const basis = () => within(tile("basis")).getByRole("combobox", { name: "Earnings" });
-/** Opens the select and picks an option by its label. */
 const pickBasis = (value: "Gross" | "Net") => {
   fireEvent.click(basis());
   fireEvent.click(screen.getByRole("option", { name: `${value} earnings` }));
 };
 const netNote = () => document.querySelector<HTMLElement>("[data-net-missing]");
-/** A card's grid cell. */
 const cell = (id: string) => document.querySelector<HTMLElement>(`[data-testid="dashboard-grid"] > [data-card="${id}"]`)!;
 const follows = (a: Node, b: Node) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
@@ -233,7 +195,6 @@ describe("the Dashboard opens on the KPI header (ticket 24)", () => {
         expect(el.textContent).toContain(c.labels[0]);
       }
     }
-    // The header is the first card on the page: My shifts follows it.
     const title = rendered.find((el) => el.dataset.control === "title")!;
     expect(follows(title, cell("my-shifts"))).toBe(true);
   });
@@ -250,7 +211,6 @@ describe("the Dashboard opens on the KPI header (ticket 24)", () => {
     expect(tile("referrals")).not.toHaveAttribute("title");
     const read = fetchMock.mock.calls.map(([url]) => new URL(String(url), "http://localhost"))
       .find((u) => u.pathname === "/admin/stats/referrals")!;
-    // This week in Honolulu, Sunday 11 through Saturday 17, with no account_id: the header is Agency-wide.
     expect(Object.fromEntries(read.searchParams)).toEqual({ from: "2026-10-11", to: "2026-10-17" });
   });
 
@@ -295,7 +255,6 @@ describe("the Dashboard opens on the KPI header (ticket 24)", () => {
     expect(tab("This week")).toHaveAttribute("aria-checked", "true");
     expect(basis()).toBeEnabled();
     expect(basis()).toHaveTextContent("Net earnings");
-    // Wide enough for "Gross earnings" unclipped (the capture's 140px ellipsised it in our font).
     expect(basis().parentElement).toHaveClass("w-[160px]");
     expect(lastWindow()).toEqual(["2026-10-11T10:00:00.000Z", "2026-10-18T09:59:59.999Z"]);
     expect(revenueReads()[0].url.searchParams.get("include_net")).toBe("true");
@@ -323,7 +282,6 @@ describe("the Dashboard opens on the KPI header (ticket 24)", () => {
     window.history.replaceState(null, "", "/?window=yesterday");
     await mountHome();
     expect(tab("Yesterday")).toHaveAttribute("aria-checked", "true");
-    // The exact query string service/tests/test_dashboard_reads.py calls for Yesterday.
     expect(revenueReads().map(({ url }) => url.search)).toEqual([
       "?from=2026-10-13T10%3A00%3A00.000Z&to=2026-10-14T09%3A59%3A59.999Z&group_by=kind&include_net=true",
     ]);
@@ -371,7 +329,6 @@ describe("the Dashboard opens on the KPI header (ticket 24)", () => {
     await shows(TOTAL_NET);
     fireEvent.click(tab("Today"));
     await waitFor(() => expect(revenueReads()).toHaveLength(2));
-    // The bundle prints "$0.00" while loading (#37); a shimmer bar with no text stands in.
     expect(within(totalTile()).getByRole("status", { name: "Loading Total earnings" })).toHaveTextContent(/^$/);
     expect(figure()).toBeNull();
     answer();
@@ -390,7 +347,6 @@ describe("the Dashboard opens on the KPI header (ticket 24)", () => {
   });
 });
 
-/** Every sales kind the Relay records (`transaction_ingest.KIND_CATALOG`) plus `unknown`, one row each. */
 const ALL_KINDS = {
   rows: [
     { day: null, kind: "subscription", total_cents: 2000, count: 1 },
@@ -405,7 +361,6 @@ const ALL_KINDS = {
     { day: null, kind: "tip_stream", total_cents: 150, count: 1 },
   ],
 };
-/** The same sales with their net figures; the stream tip has none yet. */
 const ALL_KINDS_NET = {
   rows: [
     { day: null, kind: "subscription", total_cents: 2000, count: 1, net_cents: 1600, net_missing_count: 0 },
@@ -420,7 +375,6 @@ const ALL_KINDS_NET = {
     { day: null, kind: "tip_stream", total_cents: 150, count: 1, net_cents: 0, net_missing_count: 1 },
   ],
 };
-/** Hand sums of ALL_KINDS by the spec's channel mapping. */
 const ALL_GROSS = {
   total: "$72",
   channels: { subscriptions: "$30", tips: "$15", posts: "$4", messages: "$10", chargebacks: "$0" },
@@ -462,7 +416,6 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     expect(channelFigures()).toEqual(
       { subscriptions: "$0", tips: "$0", posts: "$0", messages: "$7", chargebacks: "$0" },
     );
-    // Nothing on the card says the tiles add up to Total earnings.
     const card = totalTile().closest("section")!;
     expect(card.textContent).not.toMatch(/\b(sum|add up|of total|breakdown)\b/i);
   });
@@ -482,7 +435,6 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     pickBasis("Gross");
     await shows(ALL_GROSS.total);
     await waitFor(() => expect(channelFigure("chargebacks")).toBe("-$29"));
-    // Gross comes from the same answer: the switch reads nothing more.
     expect(reversedReads().map(({ url }) => [url.searchParams.get("group_by"), url.searchParams.get("include_net")]))
       .toEqual([["kind", "true"]]);
   });
@@ -532,7 +484,6 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
       await shows(mode === "Net" ? "$61" : "$77");
       expect(tile("referrals")).toHaveAttribute("title", REFERRALS_UNAVAILABLE);
       expect(tile("referrals").textContent).toBe("$5Referrals");
-      // Total holds the sales and the referrals that did answer: marked partial.
       expect(totalTile().querySelector("[data-partial]")).toHaveAttribute("aria-label", TOTAL_PARTIAL);
     }
   });
@@ -543,7 +494,6 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     await shows(ALL_NET.total);
     pickBasis("Gross");
     expect(basis()).toHaveTextContent("Gross earnings");
-    // No placeholder in between: the Gross figure is already there.
     expect(figure()).toBe(ALL_GROSS.total);
     expect(revenueReads().map(({ url }) => url.search)).toEqual([
       "?from=2026-10-11T10%3A00%3A00.000Z&to=2026-10-18T09%3A59%3A59.999Z&group_by=kind&include_net=true",
@@ -590,7 +540,6 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     await mountHome();
     for (const k of CHANNELS) {
       expect(channelFigure(k), k).toBeNull();
-      // The bundle prints "$0.00" while loading (#50); a shimmer bar with no text stands in.
       expect(within(tile(k)).getByRole("status"), k).toHaveTextContent(/^$/);
     }
     answer();
@@ -619,8 +568,6 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     expect(netNote()).toBeNull();
   });
 
-  // Ticket 28's recheck: the bundle formats every header figure with two decimals and a thousands separator
-  // (`getHomePageMoneyFormat`, `precision:2`, index.9f50f370.js @11227188), so $1,000 and up keep their cents.
   it("figures of $1,000 and up keep two decimals and the thousands separator, as the bundle's", async () => {
     const big = { rows: [
       { day: null, kind: "tip", total_cents: 125000, count: 1 },
@@ -634,8 +581,6 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     expect(channelFigure("messages")).toBe("$9,801");
   });
 
-  // Ticket 28: the Route walk's mock answers an unlisted read with `[]`; an answer without a `rows` array must read
-  // as a window with no sales, never crash the header (or send the crash report).
   it.each([["[]", []], ["{}", {}]])("an answer of %s with no rows array shows $0, not a crash", async (_name, body) => {
     revenue = [byBasis(body, body)];
     await mountHome();
@@ -646,8 +591,6 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     expect(netNote()).toBeNull();
   });
 
-  // Ticket 11's Settings walk: its generic mock answers the Applied settings without `preferences`. The header must
-  // fall back to the browser's zone and a Monday week start, never crash.
   it("an Applied settings answer with no preferences still shows the header, not a crash", async () => {
     applied = async () => jsonRes({ messaging: { ai_translation: true } });
     await mountHome();
@@ -657,10 +600,8 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
 
 describe("the saved Total: Total earnings' read and the Applied settings ride the React Query snapshot", () => {
   const WEEK = ["2026-10-11T10:00:00.000Z", "2026-10-18T09:59:59.999Z"];
-  /** A cache that keeps unobserved entries, as the restored snapshot does. */
   const restored = () => new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: 0 } } });
   const never = () => new Promise<Response>(() => {});
-  /** Saved on the last visit, an hour ago: past both reads' staleTime. */
   const lastVisit = { updatedAt: new Date(WEDNESDAY).getTime() - 60 * 60_000 };
 
   it("saves those reads (Total, Chargebacks, Applied settings) under the signed-in principal, and nothing else the page reads", async () => {
@@ -675,7 +616,6 @@ describe("the saved Total: Total earnings' read and the Applied settings ride th
     ]));
     const persisted = ["revenue-by-kind", "revenue-reversed-by-kind"];
     expect(saved.every((k) => k[0] === "applied-settings" || persisted.includes(k[1] as string))).toBe(true);
-    // The page's other reads (per-employee, referrals: OnlyFans' figure, the timesheet) stay in memory.
     expect(keys.some((k) => k[0] === "dashboard" && k[1] === "per-employee")).toBe(true);
     expect(keys.filter((k) => k[0] === "stats" || (k[0] === "dashboard" && !persisted.includes(k[1] as string)))
       .some((k) => shouldPersistKey(k))).toBe(false);
@@ -690,10 +630,8 @@ describe("the saved Total: Total earnings' read and the Applied settings ride th
     renderWithProviders(<HomePage />, qc);
     const savedFigure = figure();
     expect(savedFigure).not.toBeNull();
-    // The refresh goes out at once, not after the Applied settings answer.
     await waitFor(() => expect(revenueReads()).toHaveLength(1));
     expect(lastWindow()).toEqual(WEEK);
-    // The saved figure is dimmed as refreshing until the fresh one lands.
     const fig = () => totalTile().querySelector("[data-figure]");
     expect(fig()).toHaveAttribute("aria-busy", "true");
     answer();
@@ -714,7 +652,6 @@ describe("the saved Total: Total earnings' read and the Applied settings ride th
     await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith("/admin/settings/applied")))
       .toBe(true));
     expect(figure()).toBeNull();
-    // The page reads (and the snapshot saves) the Applied settings under this login alone, never the previous one's.
     const read = qc.getQueryCache().findAll({ queryKey: ["applied-settings"] }).filter((q) => q.getObserversCount() > 0);
     expect(read.length).toBeGreaterThan(0);
     expect(read.every((q) => q.queryKey[1] === "owner-2")).toBe(true);
@@ -729,8 +666,6 @@ describe("the Dashboard body: the capture's blocks, then one labelled extra (tic
     expect(follows(screen.getByRole("region", { name: "Creator earnings overview" }), left)).toBe(true);
     expect(cell("earnings")).toHaveClass("md:col-span-2");
     expect(within(left).getByRole("region", { name: "Scheduled shifts" })).toBeInTheDocument();
-    // #67: from `md` the card is `position:absolute` at full height in a cell spanning the right column's two rows,
-    // so it takes their height (jsdom does no layout; the shot checks it).
     expect(left).toHaveClass("md:relative", "md:row-span-2", "md:col-start-1");
     expect(within(left).getByRole("region", { name: "Scheduled shifts" })).toHaveClass("md:absolute", "md:inset-0");
     const right = cell("employee-sales");
@@ -774,7 +709,6 @@ describe("the Dashboard body: the capture's blocks, then one labelled extra (tic
     expect(bars).toEqual([
       { name: "Fixture Chatter One", hours: "5h", width: "100%" },
       { name: "Fixture Chatter Two", hours: "1.3h", width: "25%" },
-      // #12: two minutes beside a visible bar read "<0.1h", not "0h".
       { name: "Fixture Chatter Four", hours: "<0.1h", width: `${(2 / 300) * 100}%` },
     ]);
     const read = fetchMock.mock.calls.map(([u]) => new URL(String(u), "http://localhost"))
@@ -826,7 +760,6 @@ describe("the Dashboard body: the capture's blocks, then one labelled extra (tic
 });
 
 describe("periodWindow: a capture tab, the report time zone and the week start give [from, to]", () => {
-  // Saturday 2026-10-31 19:00 in Honolulu: already Sunday 2026-11-01 in UTC.
   const MONTH_END = "2026-11-01T05:00:00Z";
 
   it.each<[string, string, Period, "monday" | "sunday", [string, string]]>([
@@ -867,7 +800,6 @@ describe("periodWindow: a capture tab, the report time zone and the week start g
   });
 });
 
-/** The per-employee answer, ranked by the Relay (revenue, highest first), the "Unattributed" bucket among them. */
 const PER_EMPLOYEE = {
   series: [
     { start: "2026-10-13", revenue_cents: 4200, messages_cents: 3000, tips_cents: 1200 },
@@ -889,7 +821,6 @@ describe("Employee sales reads the per-employee figures for the selected window 
   const card = () => tile("employeeSales");
   const ranking = () => Array.from(card().querySelectorAll('[data-testid="sales-point"]'), (p) => p.getAttribute("aria-label")?.split("\n")[0]);
   const ranked = (want: string[]) => waitFor(() => expect(ranking()).toEqual(want));
-  // Oct 15 is tomorrow in Honolulu (the clock is Oct 14, 02:00 there): it keeps its axis slot but has no point.
   const WANT = ["Oct 13", "Oct 14"];
 
   it("draws a daily curved earnings line with markers and the sales breakdown", async () => {
@@ -907,7 +838,6 @@ describe("Employee sales reads the per-employee figures for the selected window 
     await ranked(WANT);
     const axis = Array.from(card().querySelectorAll("[data-chart] svg > text"), (t) => t.textContent);
     expect(axis).toEqual(["Oct 13", "Oct 14", "Oct 15"]);
-    // The line ends at today's point: one curve segment (Oct 13 → Oct 14), none down to tomorrow's zero.
     expect(within(card()).getByRole("img", { name: "Earnings" }).getAttribute("d")?.match(/C/g)).toHaveLength(1);
   });
 
@@ -915,7 +845,6 @@ describe("Employee sales reads the per-employee figures for the selected window 
     window.history.replaceState(null, "", "/?window=yesterday");
     await mountHome();
     await ranked(WANT);
-    // The exact query string service/tests/test_dashboard_reads.py calls for Yesterday.
     expect(perEmployeeReads().map(({ url }) => url.search)).toEqual([
       "?from=2026-10-13T10%3A00%3A00.000Z&to=2026-10-14T09%3A59%3A59.999Z&include_series=true&tz=Pacific%2FHonolulu",
     ]);
@@ -923,7 +852,6 @@ describe("Employee sales reads the per-employee figures for the selected window 
     await waitFor(() => expect(perEmployeeReads()).toHaveLength(2));
     expect(perEmployeeReads()[1].url.search).toBe(
       "?from=2026-10-01T10%3A00%3A00.000Z&to=2026-11-01T09%3A59%3A59.999Z&include_series=true&tz=Pacific%2FHonolulu");
-    // The switch does not drive Employee sales: the bundle's read takes no basis.
     pickBasis("Gross");
     await shows("$18");
     expect(perEmployeeReads()).toHaveLength(2);
@@ -941,7 +869,6 @@ describe("Employee sales reads the per-employee figures for the selected window 
     await ranked(WANT);
     fireEvent.click(tab("Today"));
     await waitFor(() => expect(perEmployeeReads()).toHaveLength(2));
-    // The bundle's `Spin` (#85): a spinner in the 350px box, no line.
     expect(within(card()).getByRole("status", { name: "Loading Employee sales" })).toHaveClass("h-[350px]");
     expect(within(card()).getByRole("status")).toHaveTextContent(/^$/);
     expect(ranking()).toEqual([]);
@@ -966,7 +893,6 @@ describe("Employee sales reads the per-employee figures for the selected window 
     expect(cell("employee-sales")).toHaveClass("md:col-start-2");
     expect(follows(cell("my-shifts"), card())).toBe(true);
     expect(follows(card(), screen.getByRole("region", { name: "Worked hours" }))).toBe(true);
-    // The earnings card keeps the capture's 16px to the cards under it (#11): the grid's gap.
     expect(screen.getByTestId("dashboard-grid")).toHaveClass("gap-4");
   });
 
@@ -995,9 +921,7 @@ describe("Home: the static card set and per-card permissions", () => {
     applied = async () => jsonRes({ ...(await appliedRes().json()), permissions: {
       enforced: true, pages: ["/"], scope: "self", denied_cards: ["/#card-earnings", "/#card-employee-sales"] } });
     renderWithProviders(<HomePage />);
-    // The owner-only cards (Current clocked-in employees, Worked hours) take no cell for a chatter either.
     await waitFor(() => expect(shownCards()).toEqual(["my-shifts", "per-model"]));
-    // #20: the sole card takes the full width, not the 240px left column.
     const cell = document.querySelector<HTMLElement>('[data-card="my-shifts"]')!;
     expect(cell).toHaveClass("md:col-span-2");
     expect(cell).not.toHaveClass("md:row-span-2");

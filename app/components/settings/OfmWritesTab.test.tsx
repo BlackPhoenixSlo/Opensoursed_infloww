@@ -1,8 +1,3 @@
-/**
- * OfmWritesCard — one Creator's OF Manager new writes force-off: the status line follows the server's value and the
- * force-off; one click PUTs `{forced_off}` and re-asks the Mirror's `ofm-writes` probe; the line under it names who
- * turned it off and when. Plus the Mirror's probe query: per Creator (X-Account-Id, its own cache entry).
- */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -87,7 +82,7 @@ describe("relaySwitchQuery (the Mirror's probes)", () => {
     expect(q.queryKey).toEqual([OFM_WRITES_KEY, "42"]);
     expect(await q.queryFn()).toBe(true);
     expect(relayGet).toHaveBeenCalledWith(OFM_WRITES_PATH, { accountId: "42" });
-    expect(q.refetchInterval).toBe(60_000);   // an open tab follows a force-off within a minute
+    expect(q.refetchInterval).toBe(60_000);
   });
 
   it("a box-wide probe (Go live) keeps its one key and sends no Creator", async () => {

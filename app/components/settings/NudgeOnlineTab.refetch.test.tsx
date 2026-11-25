@@ -1,11 +1,3 @@
-/**
- * NudgeOnlineTab over a config REFETCH (save / roll-out invalidation, remount)
- * and over its own save: the draft an operator is editing must survive a
- * refetch; an untouched form takes the server's new values; a save that lands
- * after an account switch refreshes the account it wrote. Drives the real
- * component + react-query; only the relay wire and the account list are faked
- * (as in NudgeOnlineTab.saveGate.test.tsx).
- */
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider, notifyManager } from "@tanstack/react-query";
@@ -34,10 +26,6 @@ const relayPut = vi.mocked(relay.put);
 
 type Server = Record<string, { delay_minutes: number; jitter_minutes?: number }>;
 
-/** Serves `/admin/nudge-config` with whatever `server[account]` holds now;
- *  returns the handler, for a test that wraps it. Answers on a later task, as
- *  a real read does: a refetch a save's onSettled starts cannot land in the
- *  microtasks before save() dispatches `saveOk` (the reducer relies on it). */
 function serve(server: Server) {
   const get = async (path: string) => {
     await new Promise((r) => setTimeout(r, 0));
@@ -52,7 +40,6 @@ function serve(server: Server) {
   return get;
 }
 
-/** The next PUT waits for `release()`, then stores its config. */
 function holdPut(server: Server) {
   let release!: () => void;
   const gate = new Promise<void>((r) => { release = r; });
@@ -79,18 +66,11 @@ const field = (label: string) => screen.getByLabelText(label) as HTMLInputElemen
 const delay = () => field("Delay (min)");
 const jitter = () => field("Jitter (min)");
 const saveButton = () => screen.getAllByRole("button", { name: "Create automation" })[0];
-/** The footer's status column beside the Save (the gate note, the save's verdict, Run now's line). */
 const footerStatus = () => screen.getByRole("status");
 const cfgState = (qc: QueryClient, id: string) => qc.getQueryState(["nudge-config", id]);
-/** First load (config + rule list); slow under the full suite's load. */
 const ready = () => waitFor(() => expect(saveButton()).not.toBeDisabled(), { timeout: 5_000 });
 
-// react-query notifies on a setTimeout by default; synchronous here, so an
-// awaited `act` has also run the hydrate effect (no fixed waits).
 beforeAll(() => { notifyManager.setScheduler((cb) => cb()); });
-// reset, not clear: a test that fails before its PUT must not leave its
-// `mockImplementationOnce` queued for the next test's PUT. The unmount flushes a
-// dirty draft to localStorage (lib/pendingDraft): cleared after it.
 afterEach(() => { cleanup(); vi.resetAllMocks(); localStorage.clear(); });
 
 describe("NudgeOnlineTab over a config refetch", () => {
@@ -135,7 +115,6 @@ describe("NudgeOnlineTab over its own save", () => {
     fireEvent.change(jitter(), { target: { value: "1" } });
 
     await release();
-    // 2 = the PUT's echo (setQueryData), 3 = the refetch.
     await waitFor(() => expect(cfgState(qc, A)?.dataUpdateCount).toBe(3));
     await act(async () => {});
     expect([delay().value, jitter().value]).toEqual(["9", "1"]);
@@ -192,7 +171,6 @@ describe("NudgeOnlineTab over its own save", () => {
     fireEvent.change(picker, { target: { value: B } });
     await waitFor(() => expect(delay().value).toBe("1"));
     fireEvent.change(picker, { target: { value: A } });
-    // A's form waits for a config from after the save (the cache holds the pre-PUT one).
     const saving = () => screen.getAllByRole("button", { name: /Saving/ });
     await waitFor(() => expect(saving().length).toBeGreaterThan(0));
     expect(screen.queryByLabelText("Delay (min)")).toBeNull();
@@ -223,7 +201,6 @@ describe("NudgeOnlineTab over its own save", () => {
     await waitFor(() => expect(screen.getAllByRole("button", { name: /Saving/ }).length).toBeGreaterThan(0));
     await act(async () => { reject(new Error("PUT boom")); });
     await waitFor(() => expect(screen.getAllByText("PUT boom").length).toBeGreaterThan(0));
-    // The failed save refreshes A too (onSettled), so the form is seeded again.
     await waitFor(() => expect(delay().value).toBe("4"));
     await waitFor(() => expect(saveButton()).not.toBeDisabled());
   });
@@ -241,7 +218,6 @@ describe("NudgeOnlineTab over its own save", () => {
     const picker = screen.getByDisplayValue(`acct-${A}`);
     fireEvent.change(picker, { target: { value: B } });
     await waitFor(() => expect(delay().value).toBe("1"));
-    // A's refetch after the PUT is held, so the window between the PUT settling and it landing is visible.
     let landGet!: () => void;
     const getGate = new Promise<void>((r) => { landGet = r; });
     const aGets: string[] = [];
@@ -251,7 +227,6 @@ describe("NudgeOnlineTab over its own save", () => {
     });
     fireEvent.change(picker, { target: { value: A } });
     await act(async () => {});
-    // Pre-fix: Delay showed A's pre-PUT 6 here, and stayed 6 under any edit made before the refetch.
     expect(screen.queryByLabelText("Delay (min)")).toBeNull();
 
     await release();
@@ -284,7 +259,6 @@ describe("NudgeOnlineTab over its own save", () => {
     fireEvent.click(saveButton());
     await waitFor(() => expect(within(footerStatus()).getByText("Saved.")).toBeTruthy());
     fireEvent.change(screen.getByDisplayValue(`acct-${A}`), { target: { value: B } });
-    // Said where the form would be (not "Loading…" forever) and in the footer.
     await waitFor(() => expect(screen.getAllByText(/Couldn't load this account's nudge settings/)).toHaveLength(2));
     expect(screen.queryByText("Loading…")).toBeNull();
     expect(screen.queryByText("Saved.")).toBeNull();
@@ -300,7 +274,6 @@ describe("NudgeOnlineTab's footer status", () => {
   };
 
   it("Run now's line shows beside the Save even while the form is not drawn", async () => {
-    // The config never lands, so the body is "Loading…"; the rule is known, so Run now is in the footer.
     relayGet.mockImplementation((path: string) => {
       if (path.startsWith("/admin/nudge-config")) return new Promise(() => {});
       if (path.startsWith("/admin/automation-rules")) return Promise.resolve({ rules: [RULE] });

@@ -26,7 +26,6 @@ describe("reconcileMsg", () => {
   const media = [{ id: 7, files: { thumb: { url: "blob:t" } } }] as unknown as OFMessage["media"];
   const bare = [{ id: 7, files: {} }] as unknown as OFMessage["media"];
   it.each([
-    // name, prev, tempId, server, want ids
     ["optimistic row takes the server id", [msg(1), opt(-5)], -5, msg(9), [1, 9]],
     ["SSE echo first: optimistic dropped, echo kept once", [msg(1), msg(9), opt(-5)], -5, msg(9), [1, 9]],
     ["unknown tempId: nothing replaced", [msg(1)], -5, msg(9), [1]],

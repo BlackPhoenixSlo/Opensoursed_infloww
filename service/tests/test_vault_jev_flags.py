@@ -1,26 +1,7 @@
 #!/usr/bin/env python3
-"""
-`vault_jev_flags`: a photo's flags (and the describe lane fields) read off its `_jev`, in the shape every consumer
-reads. Plain-assert suite (repo convention), pure: no DB writes, no network.
-
-Cases:
-  reading table      lane5 (+ breasts_bare / crotch_bare / outfit / state) -> flags + clothing / underwear /
-                     genitals_covered / explicitness; None for anything not a current, settled reading
-  version            FLAGS_V == vault_ai_vision._FLAGS_VERSION (the version consumers require)
-  apply / in_sync    flags replaced, qwen garment names + clip stamps + failure record cleared, operator locks
-                     kept, `_flags_model` "jev"; a non-reading leaves the row alone; in_sync ignores a copy mark
-  tier column       `column_tier` = the mapped explicitness unless the column is locked / no reading; row_in_sync
-                     counts a disagreeing `explicitness_tier` column as drift
-  consumers          a Jev-mapped photo row (every golden describe blob + a lane x outfit x state grid) passes
-                     flags_current / flags_known, has no contradictions (settled_reading is the row, never
-                     disputed), and vault_scripts prices it at Jev's lane: shelf_price $100/$50 -> 50, $10 -> 10,
-                     free -> 0 (mass lane), the two price lanes never both
-
-Run: cd service/tests && PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_jev_flags.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -39,13 +20,12 @@ import vault_scripts  # noqa: E402
 from _jev_fixtures import video_jev  # noqa: E402
 
 GOLD = json.load(gzip.open(Path(__file__).parent / "fixtures" / "vault_describe_jev" / "golden.json.gz", "rt"))
-for _c in GOLD["cases"]:   # bench blobs predate the stored region states: empty = every hidden region covered
+for _c in GOLD["cases"]:
     _c["jev"].setdefault("state", {})
 SHELF = {"$100": 50, "$50": 50, "$10": 10, "free": 0}
 
 
 def _jev(lane5, bb="n", cb="n", outfit="lingerie_or_bodysuit", state=None, **kw) -> dict:
-    """state None: a v8 blob whose region states name nothing (every hidden region reads covered)."""
     return {"v": rules.VERSION, "status": "ok", "lane5": lane5, "lane": lane5, "settled": False,
             "breasts_bare": bb, "crotch_bare": cb, "penetration": "y" if lane5 == "$100" else "n",
             "tags": {"outfit": outfit}, "state": state or {}, **kw}
@@ -110,7 +90,6 @@ def case_apply_and_in_sync():
                 "_flags_copied_from"} & set(got), got
     r = jf.reading(j)
     assert got["description"] == "d", "describe prose untouched"
-    # the lane fields are the reading's too (a qwen-described photo's tier never sits beside Jev's flags)
     assert all(got[k] == r[k] for k in ("clothing_state", "genitals_covered", "explicitness")), got
     assert got["clothing_state"] != "lingerie_on" and got["explicitness"] == "explicit", got
     assert prev["over_breasts"] == "red bra", "apply mutated its input"
@@ -118,24 +97,19 @@ def case_apply_and_in_sync():
     assert jf.in_sync({**got, "_flags_copied_from": 7}, ()), "a dupe copy mark is not drift"
     assert not jf.in_sync({**got, "breasts_vis": "covered"}, ())
     assert not jf.in_sync({**got, "over_breasts": "bra"}, ())
-    # an operator-locked flag keeps its value, and in_sync honours the lock
     locked = jf.apply(prev, j, locked={"breasts_vis", "over_breasts"})
     assert locked["breasts_vis"] == "covered" and locked["over_breasts"] == "red bra", locked
     assert jf.in_sync(locked, {"breasts_vis", "over_breasts"}) and not jf.in_sync(locked, ())
-    # a lane field is drift like a flag (in_sync requires it), and a locked one stays the operator's
     assert not jf.in_sync({**got, "explicitness": "suggestive"}, ())
     lk = jf.apply({**prev, "explicitness": "softcore"}, j, locked={"explicitness"})
     assert lk["explicitness"] == "softcore" and jf.in_sync(lk, {"explicitness"}), lk
-    # row_in_sync reads the locks off the row's own column (text or parsed), so no caller can drop them
     tier = locked["explicitness"]
     assert jf.row_in_sync(json.dumps(locked), json.dumps(["breasts_vis", "over_breasts"]), tier=tier)
     assert jf.row_in_sync(locked, ["breasts_vis", "over_breasts"], tier=tier)
     assert not jf.row_in_sync(json.dumps(locked), None, tier=tier)
-    # a v8 blob without `state` (stored before the region states) is not current: no reading, the photo re-runs
     nostate = {k: v for k, v in j.items() if k != "state"}
     assert not rules.current({"_jev": nostate}) and jf.reading(nostate) is None
     assert not jf.in_sync({**jf.apply(prev, j), "_jev": nostate}, ())
-    # not a reading: the row is left exactly as it was
     for bad in (None, {**j, "status": "error"}):
         assert jf.apply(prev, bad) == prev and jf.apply(prev, bad) is not prev
         assert not jf.in_sync({**prev, "_jev": bad}, ())
@@ -146,9 +120,6 @@ def _applied(j: dict) -> dict:
 
 
 def case_tier_column():
-    """The `explicitness_tier` column follows Jev's reading (folder picks and the admin read it): `column_tier`
-    gives the mapped explicitness unless the column is operator-locked or there is no reading, and `row_in_sync`
-    counts a row whose column disagrees (a pre-Jev describe's qwen tier) as drift."""
     j = _jev("$100", "y")
     got = jf.apply({"description": "d", "explicitness": "suggestive", "_jev": j}, j)
     assert got["explicitness"] == "hardcore", got
@@ -172,8 +143,6 @@ def case_tier_column():
 
 
 def case_garments_from_clothing_items():
-    """Garment names (`over_`) come from the describe's clothing_items, only over a region the reading calls covered,
-    only an item that can cover it; none for a nude reading or an undescribed photo."""
     dressed = jf.reading(_jev("free", outfit="everyday_clothes"))
     items = ["gold necklace", "white tank top", "blue jeans"]
     assert jf.garments(dressed, items) == {"over_breasts": "white tank top", "over_vulva": "blue jeans",
@@ -181,21 +150,18 @@ def case_garments_from_clothing_items():
     assert jf.garments(dressed, None) == {} and jf.garments(dressed, []) == {}
     topless = jf.reading(_jev("$10", "y", outfit="topless_with_bottoms"))
     got = jf.garments(topless, ["black lace bra", "bikini top", "black thong"])
-    assert got == {"over_vulva": "black thong", "over_anus": "black thong"}, got   # breasts bare: unnamed
+    assert got == {"over_vulva": "black thong", "over_anus": "black thong"}, got
     assert jf.garments(dressed, ["red bodysuit"])["over_breasts"] == "red bodysuit"
-    assert jf.garments(dressed, ["pink string bra"]) == {"over_breasts": "pink string bra"}   # never over the vulva
+    assert jf.garments(dressed, ["pink string bra"]) == {"over_breasts": "pink string bra"}
     nude = jf.reading(_jev("free", outfit="nude"))
     assert jf.garments(nude, ["white tank top"]) == {}
-    # apply names them; the row then reads as wearing something (vault_scripts._is_nude: a dressed photo is not nude)
     row = jf.apply({"clothing_items": items, "_jev": _jev("free", outfit="everyday_clothes")},
                    _jev("free", outfit="everyday_clothes"))
     assert row["over_breasts"] == "white tank top" and jf.in_sync(row, ()), row
     assert vault_ai_brief.wearing_something(row) and not vault_scripts._is_nude(row)
     assert not jf.in_sync({**row, "over_breasts": None}, ()), "a described photo missing its garment names is drift"
-    # a locked garment name keeps its value
     lk = jf.apply({**row, "over_breasts": "green hoodie"}, row["_jev"], locked={"over_breasts"})
     assert lk["over_breasts"] == "green hoodie"
-    # two-piece: each half covers its own region only, whatever the order; a bare "bikini" is the bottom half
     low = {"over_vulva": "black bikini bottom", "over_anus": "black bikini bottom"}
     for two in (["black bikini bottom", "black bikini top"], ["black bikini top", "black bikini bottom"]):
         assert jf.garments(dressed, two) == {"over_breasts": "black bikini top", **low}, two
@@ -208,9 +174,6 @@ def case_garments_from_clothing_items():
 
 
 def case_stale_qwen_tiers_replaced():
-    """A photo qwen described before Jev (describe-all `undescribed` never re-describes it): the Jev flags sync
-    replaces its tier / clothing too, so a Jev $50 row never keeps qwen's `suggestive` (the mass lane) beside Jev's
-    bare vulva."""
     old = {"description": "lace set", "explicitness": "suggestive", "clothing_state": "lingerie_on",
            "genitals_covered": True, "clothing_items": ["black lace bra", "black thong"], "underwear_visible": True,
            "_flags_v": 3, "_flags_model": "qwen3-vl-30b", **{k: "covered" for k in vault_ai_brief.VIS_REGIONS}}
@@ -238,7 +201,6 @@ def _consumers_ok(row: dict, lane5: str, rid) -> None:
 
 
 def case_consumers_golden_describes():
-    """Every golden describe blob (both paths), stamped by the Jev pass: the row the sweep leaves behind."""
     seen = set()
     for c in GOLD["cases"]:
         j = c["jev"]
@@ -250,7 +212,6 @@ def case_consumers_golden_describes():
 
 
 def case_consumers_grid():
-    """Every lane x bare answer x outfit x state, with the lane fields + acts describe would write."""
     states = (None, {"breasts": "not_visible", "crotch": "not_visible", "butt": "not_visible"},
               {"breasts": "sexy_covered", "crotch": "normal_covered", "butt": "bare"})
     outfits = ("nude", "lingerie_or_bodysuit", "topless_with_bottoms", "everyday_clothes", "swimwear",
@@ -260,13 +221,12 @@ def case_consumers_grid():
     for lane5, bb, cb, outfit, st, worn in itertools.product(SHELF, "yn", ("y", "n", "unsure"), outfits, states,
                                                              wardrobes):
         if lane5 == "$100" and cb == "n" and st and st.get("crotch") == "normal_covered":
-            continue   # an insertion under a garment over the vulva is no shelf reveal (covered: tested above)
+            continue
         j = _jev(lane5, bb, cb, outfit, st)
         r = jf.reading(j)
         describe = {**{k: r[k] for k in vdj.LANE_FIELDS}, "description": "x", "tags": [], "clothing_items": worn,
                     "acts": ["toy_insertion"] if lane5 == "$100" else ["posing"],
                     "penetration": "toy" if lane5 == "$100" else "none", "people_count": 1}
-        # a firm "y" is bare in any lane (F1a): a free / $10 reading raises to what its bare regions price
         shelf = "$50" if cb == "y" and lane5 in ("free", "$10") else "$10" if bb == "y" and lane5 == "free" else lane5
         _consumers_ok(jf.apply({**describe, "_jev": j}, j), shelf, (lane5, bb, cb, outfit, st, worn))
         n += 1

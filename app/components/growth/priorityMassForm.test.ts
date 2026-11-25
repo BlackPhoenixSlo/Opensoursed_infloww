@@ -23,7 +23,6 @@ describe("priorityMassReducer", () => {
   });
 });
 
-// The body the old inline mutationFn built (dd6c17d0e / HEAD PriorityMass.tsx), per input.
 describe("buildPayload pins the old inline body", () => {
   it.each<[string, PriorityMassAction[], unknown]>([
     ["free text, default audience", [{ type: "setText", text: "  Hey {name}  " }], {

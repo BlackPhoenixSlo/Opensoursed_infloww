@@ -11,7 +11,6 @@ type View = Parameters<typeof pagingView>[0];
 const base: View = { scopeKind: "model", accountKey: "1", active: ALL, query: "" };
 const V0 = pagingView(base);
 const run = (actions: PagingAction[], from = initialPaging(V0)): PagingState => actions.reduce(pagingReducer, from);
-/** A list the user has paged through: scrolled, cap and render cap extended, autofill spent. */
 const used = run([
   { type: "scrolled" }, { type: "extendCap", loaded: 200 }, { type: "showMore" },
   ...Array.from({ length: AUTOFILL_MAX_BURSTS }, () => ({ type: "autofilled" }) as const),

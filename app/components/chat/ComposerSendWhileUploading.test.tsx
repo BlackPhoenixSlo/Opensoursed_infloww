@@ -1,19 +1,3 @@
-/**
- * Send while a file still uploads (2026-10-16; sibling of
- * `ComposerUpload.test.tsx`). Send never waits on an upload: the Composer
- * clears at once, the message shows as a pending bubble with the file's blob
- * preview, and it goes out when its uploads land — from module state, so it
- * keeps going after the chat closes (MessagesPro keys ChatSurface by Fan, so a
- * chat switch unmounts the Composer and the send hook). An upload that fails
- * fails the bubble instead: nothing is sent without its file, and the bubble
- * offers Retry (upload again, then send) and discard.
- *
- * The chat is wired as ChatSurface wires it: the real `useChatMessages` (its
- * fetch disabled; the optimistic writers are what matter), the real
- * `useSendMessage`, `MessageList` and `Composer`. `relay.uploadFile` is the
- * harness mock, driven by hand; the Vault picker is the harness stub, whose
- * Confirm attaches FIXTURE_MEDIA (9102, 9101).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -24,12 +8,10 @@ vi.mock("@/lib/relay", async (orig) =>
 vi.mock("./VaultPicker", async () =>
   (await import("./composerTestHarness")).vaultPickerStubModule);
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: null }) }));
-// useChatMessages watches the SSE bus; jsdom has no EventSource.
 vi.mock("@/lib/events", () => ({
   eventBus: { isConnected: () => false, onStateChange: () => () => {}, on: () => () => {} },
 }));
 
-// The harness first (see ComposerUpload.test.tsx).
 import { observerStub, relayPost, resetComposerHarness, routeRelay } from "./composerTestHarness";
 import { relay, type OFMessage, type VaultUploadResp } from "@/lib/relay";
 import { renderWithProviders } from "@/test-utils";
@@ -58,12 +40,8 @@ function deferred<T>() {
 const ok = (id: number): VaultUploadResp => ({ ready: true, deduped: false, vault_id: id, send_with: [id] });
 const png = (name: string) => new File(["x"], name, { type: "image/png" });
 
-// Uploads queue per Creator at module level, so one left hanging would hold
-// every later case's; afterEach settles whatever a case left open.
 const outstanding: Array<(e: unknown) => void> = [];
 
-/** Each call to the upload gets its own deferred, in call order, with the
- *  AbortSignal the request was given. */
 function queueUploads() {
   const pending: Array<ReturnType<typeof deferred<VaultUploadResp>> & { signal?: AbortSignal }> = [];
   uploadFile.mockImplementation((...args: unknown[]) => {
@@ -92,8 +70,6 @@ function Chat() {
 }
 
 let client: QueryClient;
-// gcTime Infinity: the chat's cache must outlive the unmounted chat, as the
-// app's does (its default gcTime is minutes, the test default is 0).
 const renderChat = () => renderWithProviders(<Chat />, client);
 const messages = () => client.getQueryData<OFMessage[]>(["messages", ACCT, FAN]) ?? [];
 const sends = () => relayPost.mock.calls.filter((c) => String(c[0]) === `/api/of/v2/chats/${FAN}/messages`);
@@ -101,8 +77,6 @@ const fileInput = () => screen.getByLabelText("Upload from computer") as HTMLInp
 const sendButton = () => screen.getByRole("button", { name: "Send" });
 const textbox = () => screen.getByPlaceholderText('Press "/" + keyword to quickly search scripts');
 const flush = () => new Promise((r) => setTimeout(r, 0));
-/** Moves the clock past the Composer's send-rate guard (only Date is faked;
- *  `afterEach` restores it), so a case can send its next message. */
 const pastSendGap = () => {
   vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
   vi.setSystemTime(Date.now() + SEND_GAP_MS);
@@ -120,7 +94,6 @@ const revokeObjectURL = vi.fn();
 
 beforeEach(() => {
   resetComposerHarness();
-  // A bubble's media tiles lazy-load through an IntersectionObserver.
   vi.stubGlobal("IntersectionObserver", observerStub);
   uploadFile.mockReset();
   serverId = 9000;
@@ -361,7 +334,6 @@ describe("Send while a file uploads", () => {
     pending[0].resolve(ok(5));
     await waitFor(() => expect(sends()).toHaveLength(2));
     expect(sends()[1][1]).toMatchObject({ media_files: [5] });
-    // It went out second, so it moves below the message sent meanwhile.
     await waitFor(() => expect(messages().map((m) => m.id)).toEqual([9001, 9002]));
     expect(texts()).toEqual(["and this", ""]);
   });
@@ -409,7 +381,6 @@ describe("Send while a file uploads", () => {
     await waitFor(() => expect(cursor()).toEqual({ scriptId: "s2", step: 4 }));
   });
 
-  /** Upload a.png, pick two GIFs and Send; the upload is left running. */
   async function sendFileWithTwoGifs() {
     routeRelay("/giphy/proxy/gifs/trending", () => ({
       data: [1, 2].map((n) => ({
@@ -452,7 +423,6 @@ describe("Send while a file uploads", () => {
   it("the extra GIFs of a send waiting on its files follow it, in pick order", async () => {
     const { pending } = await sendFileWithTwoGifs();
 
-    // The Composer is free at once, but nothing goes out ahead of the file.
     expect(textbox()).toHaveValue("");
     await flush();
     expect(sends()).toHaveLength(0);

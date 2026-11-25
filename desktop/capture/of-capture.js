@@ -1,50 +1,22 @@
 "use strict";
 
-// ───────────────────────────────────────────────────────────────────────────
-// Native OnlyFans session capture — the Electron replacement for the Chrome
-// login-capture extension (Phase 2).
-//
-// Open an OF login window, run the MAIN-world interceptor as a PRELOAD (the
-// window sets contextIsolation:false, so the preload can patch XHR/fetch/webpack
-// at document-start), let the creator log in, accumulate the signed headers +
-// webpack signing rules + session cookies, then POST a paste-curl to the relay's
-// existing /admin/session/bootstrap.
-//
-// IMPORTANT (why no CDP): onlyfans.com is fronted by Cloudflare, which detects
-// Chrome DevTools Protocol (debugger.attach / Runtime.enable) and hard-blocks it
-// — that produced a blank challenge window. A plain preload trips none of that,
-// so the Cloudflare "verify you're human" challenge can render and be solved.
-//
-// DETECTION NOTE (from the fusion review): logging into OF from Electron is still
-// riskier than the real Chrome extension — Cloudflare fingerprints deeply (TLS,
-// canvas) and may still challenge or block. We present a real Chrome UA + matching
-// client-hint headers to reduce the gap, but this is NOT a guarantee. Residual
-// risk is documented in README; for a valuable account the extension is safer.
-// ───────────────────────────────────────────────────────────────────────────
 
 const { BrowserWindow, session, ipcMain } = require("electron");
 const ofUa = require("../lib/of-ua");
 const { chromeMajor } = ofUa;
 
 const OF_URL = "https://onlyfans.com/";
-const CAPTURE_PARTITION = "of-capture"; // NON-persistent → OF creds never touch disk.
+const CAPTURE_PARTITION = "of-capture";
 const APP_TOKEN = "33d57ade8c02dbc5a333db99ff9ae26a";
 const REQUIRED_HDRS = ["user-id", "x-bc", "x-of-rev", "sign", "time"];
 const POLL_MS = 1500;
 const SAVE_TIMEOUT_MS = 30000;
 const SIGNIN_CHECK_TIMEOUT_MS = 5000;
 
-// The UA we present to OnlyFans must match the engine actually rendering the
-// page. A literal rots into the exact tell it was added to prevent: this was
-// pinned at "131" (Nov 2024) and by Aug 2026 real stable Chrome was 151 — a
-// browser two years out of date is more conspicuous than plain Electron.
-// process.versions.chrome is the one value that cannot drift from the binary.
-// Chrome freezes the minor/build/patch at 0.0.0 in its reduced UA, so the
-// major alone is the whole story.
+// UA must match the engine rendering the page: a pinned literal rots into the tell it prevents; process.versions.chrome cannot drift
 const CHROME_MAJOR = chromeMajor(process.versions);
 
-// A malformed UA ("Chrome/.0.0.0") is worse than no capture at all — it is a
-// unique fingerprint. Fail loudly instead of quietly signing requests with it.
+// a malformed UA ("Chrome/.0.0.0") is a unique fingerprint: fail loudly instead of signing requests with it
 if (!/^\d+$/.test(CHROME_MAJOR)) {
   throw new Error(
     "of-capture: cannot derive Chrome major from process.versions.chrome=" +
@@ -53,37 +25,30 @@ if (!/^\d+$/.test(CHROME_MAJOR)) {
 }
 const UA = ofUa.uaProfile(process.platform, CHROME_MAJOR);
 
-let flow = null; // single active capture flow
+let flow = null;
 
 function freshState() {
   return {
     headers: {},
     rules: {},
     cookies: { auth_id: false, sess: false },
-    authId: null, // value of OF's auth_id cookie (the signed-in OF user id)
-    status: "waiting", // waiting | ready | sending | done | error
+    authId: null,
+    status: "waiting",
     error: null,
     savedAs: null,
-    // Is the main window signed in to Inflowwww? null = not checked yet,
-    // true / false, or "unreachable". The relay links the account to that user.
     appSignedIn: null,
     detection: `Chrome ${CHROME_MAJOR} UA + client-hints (no CDP — Cloudflare-safe)`,
-    // Shown under "Technical details" only. OF's own console noise is logged to
-    // stdout, never shown: it is not ours and it alarms people.
     diag: { url: "", httpStatus: null, lastRelayError: "" },
   };
 }
 
 function hasHeaders(s) {
   if (!REQUIRED_HDRS.every((k) => s.headers[k])) return false;
-  // Saving is automatic, so make sure the headers are from the signed-in user
-  // and not from a request the page made before login (user-id 0).
   const uid = String(s.headers["user-id"]);
   if (!/^[1-9]\d*$/.test(uid)) return false;
   return !(s.authId && /^\d+$/.test(s.authId) && s.authId !== uid);
 }
 function hasRules(s) {
-  // Relay only REQUIRES static_param; it derives start/end from the wire `sign`.
   return !!s.rules.static_param;
 }
 function hasCookies(s) {
@@ -188,7 +153,6 @@ async function pollOnce() {
     const auth = cookies.find((c) => c.name === "auth_id");
     s.authId = auth ? String(auth.value) : null;
   } catch {
-    /* ignore */
   }
   if (s.appSignedIn !== true) await checkAppSignIn();
   if (s.status === "waiting" && isReady(s)) s.status = "ready";
@@ -196,8 +160,6 @@ async function pollOnce() {
   maybeAutoSave();
 }
 
-// Ask the app (with the main window's cookies) who is signed in. Only an owner
-// can be given the new account, so /auth/me is the check that matters.
 async function checkAppSignIn() {
   if (!flow || flow.checkingSignIn) return;
   const { base } = flow.getConfig();
@@ -217,9 +179,6 @@ async function checkAppSignIn() {
   }
 }
 
-// Save on its own once everything is captured and the app is signed in: there
-// is nothing left for the user to decide. Tried once per ready state; a failed
-// save waits for the Retry button (a sign-in failure re-arms it, see below).
 function maybeAutoSave() {
   if (!flow || flow.autoSaveTried) return;
   const s = flow.state;
@@ -228,14 +187,12 @@ function maybeAutoSave() {
   submitToRelay().catch(() => {});
 }
 
-// Plain-language reasons for a failed save; the raw reply goes to diag.
 function saveErrorMessage(status, text) {
   let detail = "";
   try {
     const d = JSON.parse(text).detail;
     detail = typeof d === "string" ? d : (d && d.message) || "";
   } catch {
-    /* not JSON */
   }
   if (status === 403) return "Inflowwww refused to save this account to you. It may belong to another agency.";
   if (status === 400 || status === 422) {
@@ -270,7 +227,6 @@ async function submitToRelay() {
       return;
     }
   } catch {
-    /* validated */
   }
 
   s.status = "sending";
@@ -281,9 +237,7 @@ async function submitToRelay() {
   const curl = buildCurl(s, flow.cookieList || []);
   const url = `${base}/admin/session/bootstrap${token ? `?t=${encodeURIComponent(token)}` : ""}`;
   try {
-    // The relay saves the account to whoever is signed in, so the request must
-    // carry the main window's app session cookie. Node's fetch sends no cookies
-    // (that was "Relay 401: sign in required"); the app partition's fetch does.
+    // Node's fetch sends no cookies ("Relay 401: sign in required"): the app partition's fetch carries the session
     const resp = await session.fromPartition(registerCaptureIpc._paths.appPartition).fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -294,8 +248,6 @@ async function submitToRelay() {
     if (!resp.ok) {
       s.diag.lastRelayError = `HTTP ${resp.status}: ${text.slice(0, 300)}`;
       if (resp.status === 401) {
-        // Signed out (or never signed in): keep everything, wait for sign-in,
-        // and save on its own again once the main window is signed in.
         s.status = "ready";
         s.appSignedIn = false;
         if (flow) flow.autoSaveTried = false;
@@ -310,25 +262,20 @@ async function submitToRelay() {
     try {
       parsed = JSON.parse(text);
     } catch {
-      /* ok */
     }
     s.status = "done";
     s.savedAs = (parsed && (parsed.user_id || parsed.account_id || parsed.userId)) || s.headers["user-id"] || "saved";
     pushState();
-    // Refresh the hosted UI so the new account appears without a manual Cmd+R.
     if (flow && typeof flow.onSaved === "function") {
       try {
         flow.onSaved();
       } catch (_) {
-        /* non-fatal */
       }
     }
     closeOfWindow();
     if (flow) {
       clearInterval(flow.pollTimer);
       flow.pollTimer = null;
-      // Show the "saved" confirmation briefly, then auto-close the popup
-      // (its 'closed' handler tears the flow down).
       const sw = flow.statusWindow;
       setTimeout(() => {
         if (sw && !sw.isDestroyed()) sw.close();
@@ -375,9 +322,10 @@ async function createOfWindow() {
     webPreferences: {
       partition: CAPTURE_PARTITION,
       preload: flow.interceptorPreload,
-      contextIsolation: false, // preload runs in the page main world (capture needs it; no CDP)
-      nodeIntegration: false, //  the PAGE still gets no Node — only the preload does
-      sandbox: false, //          preload needs Node (ipcRenderer + monkeypatch)
+      // preload runs in the page main world to patch XHR/fetch; no CDP (Cloudflare hard-blocks it); the page still gets no Node
+      contextIsolation: false,
+      nodeIntegration: false,
+      sandbox: false,
       devTools: true,
       backgroundThrottling: false,
     },
@@ -398,8 +346,6 @@ async function createOfWindow() {
       pushState();
     }
   });
-  // OF and Cloudflare log plenty of harmless warnings; keep them in the
-  // terminal log for debugging, out of the dialog.
   wc.on("console-message", (d) => {
     if (d && (d.level === "warning" || d.level === "error") && d.message) {
       console.log(`[capture] OF page ${d.level}:`, String(d.message).slice(0, 200));
@@ -456,8 +402,6 @@ function isTrustedLocalSender(event) {
 function registerCaptureIpc(paths) {
   registerCaptureIpc._paths = paths;
 
-  // Capture data pushed from the OF window's interceptor preload. Accept ONLY
-  // from the live capture window's web contents.
   ipcMain.on("of-capture:data", (event, payload) => {
     if (!flow || !flow.ofWindow || flow.ofWindow.isDestroyed()) return;
     if (event.sender.id !== flow.ofWindow.webContents.id) return;
@@ -468,7 +412,6 @@ function registerCaptureIpc(paths) {
     maybeAutoSave();
   });
 
-  // Status-window (local file://) controls.
   ipcMain.handle("capture:get-state", (event) => {
     if (!isTrustedLocalSender(event)) return null;
     return flow ? stateSummary(flow.state) : null;
@@ -521,7 +464,6 @@ async function openOfCaptureFlow(getConfig, onSaved) {
   };
 
   createStatusWindow(paths.statusPreload, paths.statusHtml);
-  // Say up front if the app isn't signed in, before the OF login is done.
   checkAppSignIn().then(pushState, () => {});
   try {
     await createOfWindow();

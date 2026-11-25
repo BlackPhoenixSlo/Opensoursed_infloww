@@ -1,25 +1,3 @@
-"""
-Step 4: HTTP relay over the signed OF client.
-
-A thin FastAPI wrapper around OFClient. Endpoints mirror OF's URL structure so
-the frontend can speak OF's shape directly — we just sign + forward + return.
-
-  GET  /health                           — does the captured session still work?
-  GET  /api/of/v2/users/me
-  GET  /api/of/v2/chats?limit=10&offset=0&order=recent
-  GET  /api/of/v2/chats/{chat_id}/messages?limit=10&before_id=...
-
-Run from the repo root with whichever venv has curl_cffi + fastapi + uvicorn:
-  ./venv/bin/uvicorn service.server:app --reload --port 8787
-
-Env knobs (read at call time):
-  PINS_CACHE_TTL_S=300   a chat's pins cached in the Relay, shared by every tab
-                         and Employee; our message writes clear it (0 = today's uncached read)
-  VAULT_PICKER_REVALIDATE_S=300
-                         the vault picker's open (`revalidate=1` on /vault/lists and
-                         /vault/media) serves the shared cache only when younger, else
-                         reads OF once for every opener (0 = every open reads OF)
-"""
 from __future__ import annotations
 
 import hashlib
@@ -77,13 +55,12 @@ import client_pool  # noqa: E402 — the relay's one OFClient pool
 import platforms  # noqa: E402
 from curl_cffi import requests as curl_requests  # noqa: E402  # proxy/network error types
 
-# Phase A — SQL persistence + SSE broadcaster: every pump event fans into
-# `events.handle_event` (see `_broadcast_event`).
 from db import init_db as db_init  # noqa: E402
 from db.repo import ensure_user_account_link, sync_from_disk as _sync_db_from_disk  # noqa: E402
 from events import (  # noqa: E402
     handle_event as _sse_handle_event,
     is_app_tab,
+    js_safe_id,
     owner_audience,
     publish_chat_responded,
     ring_seq as _sse_ring_seq,
@@ -152,7 +129,6 @@ from report_recipe_api import router as _report_recipe_router  # noqa: E402
 import report_recipe as _report_recipe  # noqa: E402
 import report_recipe_api as _report_recipe_api  # noqa: E402
 from copilot_api import router as _copilot_router  # noqa: E402
-# Growth surfaces (gaps-lane: Infloww-gap features) — all self-contained routers.
 from smart_lists_api import router as _smart_lists_router  # noqa: E402
 from trial_links_api import router as _trial_links_router  # noqa: E402
 from tracking_links_api import router as _tracking_links_router  # noqa: E402
@@ -222,35 +198,18 @@ import unread_total  # noqa: E402  # registers `values.unread_total` with the Sh
 
 
 def _kick_db_sync(reason: str) -> None:
-    """Fire-and-forget re-import of JSON files into SQL. Called after every
-    mutating admin endpoint so the SQL mirror catches up within a few hundred
-    ms of any change to accounts.py / proxies.py / session_bootstrap state.
-
-    Fire-and-forget task, so a sync failure never bubbles out of an admin
-    response — the user's actual mutation already succeeded against the JSON
-    write path."""
-    # Lambda, not the bare function: `_sync_db_from_disk` stays read when the task starts.
     _on_main_loop(lambda: _sync_db_from_disk(), f"db-sync-{reason}")
 
 
 def _redact(s: str) -> str:
-    """Mask user:password in a connection URL before logging.
-    Turns 'postgresql://user:pass@host/db' into 'postgresql://***@host/db'.
-    No-op for SQLite paths and any URL without credentials."""
     return re.sub(r"://[^/@]+@", "://***@", s)
 
 log = logging.getLogger("of-relay")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-# Run the one-shot legacy-layout migration before any client load — moves
-# pre-multi-account sessions into accounts/<user_id>/. Idempotent.
 account_registry.migrate_legacy()
 
-# Promote any pre-existing proxy → session-file bindings to proxy → account_id
-# bindings, so the new UI sees them and so re-captures don't silently lose
-# the proxy. Idempotent — only fires for proxies that haven't been upgraded.
 def _migrate_proxy_bindings_to_accounts() -> None:
-    # Build a filename → account_id map by scanning each account dir.
     mapping: dict[str, str] = {}
     base = HERE / "sessions" / "accounts"
     if base.is_dir():
@@ -269,8 +228,6 @@ _migrate_proxy_bindings_to_accounts()
 
 
 def _sync_proxy_pool() -> None:
-    """Seed the Inflowwww proxy pool from the env (proxies.sync_pool). Called
-    first thing in the startup hook, not at import."""
     r = proxy_registry.sync_pool(os.environ.get(proxy_registry.POOL_ENV))
     for err in r["errors"]:
         log.warning("%s: bad line %s", proxy_registry.POOL_ENV, err)
@@ -281,19 +238,7 @@ def _sync_proxy_pool() -> None:
 
 app = FastAPI(title="OF Relay", version="0.1.0")
 
-# ── Response compression ───────────────────────────────────────
-# JSON shrinks 5-8x (measured: /admin/fans 63,870 → 7,604 B; a 30-message
-# thread 19,392 → 3,343 B). Registered FIRST so it is the innermost layer: the
-# hook chain below re-streams every body in chunks, and behind it GZip could
-# no longer see a small body whole, so `minimum_size` would stop applying. Starlette's default exclusion list already skips
-# `text/event-stream` (SSE must flush frame by frame), audio/* and video/*, five
-# named image types and every 206 range reply. Added: all of image/* and both
-# octet-streams, because /img streams the CDN's Content-Type through verbatim
-# (heic, svg, an S3 `binary/octet-stream`, or our octet-stream default when it
-# sends none) and a media stream must never be buffered through the
-# compressor. Level 6, not Starlette's 9: about the same ratio on JSON for much
-# less CPU on a single-worker relay. `exclude_content_types` and its `type/*`
-# matching are recent Starlette, hence the starlette pin in requirements.txt.
+# Registered FIRST (innermost): the hook chain re-streams bodies in chunks, so GZip behind it could not see a small body whole and `minimum_size` would stop applying.
 app.add_middleware(
     GZipMiddleware,
     minimum_size=1024,
@@ -302,26 +247,14 @@ app.add_middleware(
                            "binary/octet-stream"),
 )
 
-# ── HTTP hooks ─────────────────────────────────────────────────
-# Every `(request, call_next)` hook below is added to this chain rather than
-# with `@app.middleware("http")`, so all of them run inside ONE middleware
-# layer instead of one each (see http_hooks: a layer costs a task group and a
-# body re-stream, which made a trivial request 8x slower). `_http_hooks.add`
-# keeps Starlette's ordering rule, which the comments at each site rely on:
-# the hook added LAST runs OUTERMOST. Registered after GZip so it is outside
-# it, as each hook's own layer was.
+# A hook added LAST runs OUTERMOST (Starlette ordering); the comments at each site rely on it.
 _http_hooks = HookChain()
 app.add_middleware(BaseHTTPMiddleware, dispatch=_http_hooks.dispatch)
-# Outside the hook chain, so before any hook builds a Request: an owner access token's
-# request (`Bearer ifw_…`) loses its Cookie and X-Employee-Id headers here, and no hook
-# (share gate, chatter session, audit) ever sees a cookie identity beside a token.
+# Outside the hook chain: a `Bearer ifw_` request loses Cookie and X-Employee-Id before any hook sees a cookie identity beside a token.
 app.add_middleware(_token_auth.StripCookieIdentities)
 
 
 class _DbBusy503:
-    """Outside the hook chain (a hook's own DB read raises past call_next): a
-    request whose DB checkout timed out at the pool's spill cap (db/engine.py
-    MAX_SPILL, WAIT_MAX_S) answers 503 + Retry-After, not a 500. Pure ASGI."""
 
     def __init__(self, app):
         self.app = app
@@ -348,19 +281,15 @@ class _DbBusy503:
 
 from sqlalchemy import exc as _sqla_exc  # noqa: E402
 app.add_middleware(_DbBusy503)
-# Added first, so innermost: labels the request's SQLite writes for
-# db/write_telemetry (outer hooks' writes after call_next see the label too).
 from db import write_telemetry as _write_telemetry  # noqa: E402
 _http_hooks.add(_write_telemetry.label_request_writes)
-# Labels the request's OF calls `route:<METHOD> <folded path>` (of_call_counter).
 _http_hooks.add(of_call_counter.label_request_calls)
 
 import llm_client as _llm_client  # noqa: E402  (the key-error handler below)
 import vault_sweep as _vault_sweep  # noqa: E402  (the sweep-stop handler below)
 
 
-# _proxy() maps only OFAPIError, so a Backend module's API error would surface as a
-# generic 500 and its message never reach the UI.
+# _proxy() maps only OFAPIError: a Backend's API error would otherwise be a generic 500 with its message lost.
 def _backend_api_error_handler(key: str):
     async def handle(request, exc):  # noqa: ANN001
         return JSONResponse(status_code=getattr(exc, "status_code", 502),
@@ -373,10 +302,6 @@ for _p in platforms.ALL:
         app.add_exception_handler(_p.backend.APIError, _backend_api_error_handler(_p.key))
 
 
-# An AI feature whose API key is missing, empty or rejected (401/403/402): one
-# typed answer for every route, so the app shows one notification with the fix
-# instead of each feature failing its own way. 424 Failed Dependency — unused
-# elsewhere, and apart from 409 (free page) and 429 (daily cap).
 @app.exception_handler(_llm_client.LLMKeyError)
 async def _llm_key_error_handler(request, exc):  # noqa: ANN001
     log.warning("llm key error path=%s kind=%s provider=%s purpose=%s",
@@ -384,18 +309,13 @@ async def _llm_key_error_handler(request, exc):  # noqa: ANN001
     return JSONResponse(status_code=424,
                         content={"detail": _llm_client.key_error_payload(exc)})
 
-# A sweep's stop (vault_sweep.SweepStop) that escaped its sweep: the same 424 and {message, fix} shape.
 @app.exception_handler(_vault_sweep.SweepStop)
 async def _sweep_stop_handler(request, exc):  # noqa: ANN001
     log.warning("sweep stop path=%s: %s", request.url.path, exc.message)
     return JSONResponse(status_code=424, content={"detail": {"error": "stopped", **exc.payload()}})
 
-# A refused report recipe (field errors, another run of the Agency in flight, a file over the cap): 400/429/413
-# {detail, errors} from every report route (report_recipe_api).
 app.add_exception_handler(_report_recipe.RecipeError, _report_recipe_api.refused)
 
-# Phase A: employees CRUD + audit log routes (read-only browse + admin).
-# Middleware registered below so every mutating call gets logged.
 app.include_router(_employees_router)
 app.include_router(_fans_router)
 app.include_router(_fan_insights_router)
@@ -421,53 +341,31 @@ app.include_router(_vault_ai_router)
 app.include_router(_vault_download_router)
 app.include_router(_style_config_router)
 app.include_router(_account_config_router)
-# A Creator's "Auto-accept OnlyFans consent" switch (/admin/of-consent/{id}); its PUT is owner-only.
 app.include_router(_of_consent_router)
 app.include_router(_ofm_writes_router)
 app.include_router(_of_live_window_router)
-# In-product help bot (POST /admin/assistant/ask). Under /admin/* so it
-# inherits the share-token gate + account-isolation middleware; chatters
-# may ask (deliberately not in _CHATTER_BLOCKED_ADMIN_PREFIXES) and the
-# handler derives their role server-side.
 app.include_router(_assistant_router)
 app.include_router(_assistant_draft_router)
 app.include_router(_report_recipe_router)
-# Messages Pro's AI Copilot (POST /admin/copilot/{a}/{f}/suggest): reply
-# suggestions only, never a send. Chatters reach it through Messages Pro.
 app.include_router(_copilot_router)
-# Per-agency LLM keys. Placed before the auth routers because it is
-# session-gated by them: the signed-in owner is the only row it can touch.
 app.include_router(_tenant_keys_router)
 app.include_router(_tenant_keys_admin_router)
 app.include_router(_owner_tokens_router)
 app.include_router(mcp_api.router)
 app.include_router(mcp_oauth.router)
-# Ultra plan page (/admin/ultra/plans/*): owner cookie only, chatter-blocked by prefix, audit-ineligible.
 app.include_router(ultra_api.router)
 app.include_router(_ai_key_status_router)
-# Settings → System (/admin/system/*): the master's read-only automation status
-# + run log. Master-only by a router dependency; chatter-blocked by prefix.
 app.include_router(_system_admin_router)
-# Settings blobs (GET/PUT /admin/settings/{tab}); session-gated the same way.
 app.include_router(_settings_router)
-# The owner's agency notifications (/admin/agency-notifications); owner-only, chatter-blocked by prefix.
 app.include_router(notifications_api.router)
-# The session's Web Push subscriptions (/push/*, push_api); the sender is push_send (startup below).
 app.include_router(push_api.router)
-# Employee groups (/admin/employee-groups), the Organization Chart's tree; owner-only, session-gated the same way.
 app.include_router(_employee_groups_router)
 app.include_router(_sensitive_words_router)
 app.include_router(_scripts_import_router)
-# Fill a Sequence with the Creator's vault media (/admin/saved-replies/fill/*, script_fill_api).
 app.include_router(_script_fill_router)
-# Both /admin/shifts routers run the lazy Auto clock-out first (clock_api).
 app.include_router(_shifts_router, dependencies=[Depends(_sweep_callers_agencies)])
 app.include_router(_clock_router, dependencies=[Depends(_sweep_callers_agencies)])
-# Reassign sales, one or a batch (Sales records, Shift records, the orphan lists); owner-only.
 app.include_router(_sales_amend_router)
-# Share for Share (/admin/s4s/profiles…, /admin/s4s/requests…, /admin/s4s/schedule, /admin/s4s/slots…,
-# /admin/s4s/media…); owner-only, session-gated the same way. All four S4S routers expire the caller's past-due requests
-# first (s4s_requests_api), as the /admin/shifts routers run the Auto clock-out.
 app.include_router(_s4s_router, dependencies=[Depends(_expire_s4s_requests)])
 app.include_router(_s4s_requests_router, dependencies=[Depends(_expire_s4s_requests)])
 app.include_router(_s4s_schedule_router, dependencies=[Depends(_expire_s4s_requests)])
@@ -478,17 +376,10 @@ app.include_router(_account_security_router)
 app.include_router(_remote_login_router)
 app.include_router(_auth_admin_router)
 app.include_router(_auth_impersonate_router)
-if fleet_api.enabled():  # /auth/fleet/whois only with a FLEET_SECRET, else 404 (fleet_api.py)
+if fleet_api.enabled():
     app.include_router(fleet_api.router)
-# Chatter principal — separate from User. /chatter/* is the chatter-facing
-# auth surface; /admin/chatters/* is the owner-side link/unlink/invite UI.
-# Order doesn't matter for routers; placed next to the auth pair so the
-# two principals' surfaces sit together.
 app.include_router(_chatters_router)
 app.include_router(_chatters_admin_router)
-# Growth surfaces: Smart Lists, Trial Links, Tracking Links (+ public /t/{slug}),
-# Profile Promotion. Their /admin/* routes ride the existing admin rewrite +
-# share-token gate; the public /t/{slug} redirect is exempted below.
 app.include_router(_smart_lists_router)
 app.include_router(_trial_links_router)
 app.include_router(_tracking_links_router)
@@ -496,11 +387,8 @@ app.include_router(tracking_stats.router)
 app.include_router(_of_tracking_router)
 app.include_router(_link_metrics_router)
 app.include_router(_promotions_router)
-# Share links: owner routes under /admin/*, and the public report /share/{key}/data (exempted below).
 app.include_router(_link_share_router)
-# Bio pages owner editor API (the public bio app is its own process, bio_pages/app.py).
 app.include_router(_bio_admin_router)
-# The Full AI Chatter page's read of today's Shadow Decision rows.
 app.include_router(_full_ai_router)
 
 # ── The one no-auth allowlist ───────────────────────────────────────
@@ -544,50 +432,15 @@ _UNAUTHENTICATED_PATHS = frozenset({
 })
 
 
-# Tenant isolation. Every per-account request passes here: no principal at all is
-# 401, and a principal naming an account it doesn't own is 403.
-#
-# ⚠️ ITS REGISTRATION SLOT IS LOAD-BEARING — see below. Until 2026-08-10 this was
-# registered AFTER the two session middlewares, which in Starlette makes it the
-# OUTERMOST, so it ran BEFORE either cookie had been resolved and `allowed_ids`
-# was None on every real request. It abstained on None, so it had never once
-# fired in production, and its suite stayed green only because the tests set
-# `auth._request_user` by hand. Moving the registration is what makes the 403
-# below real; do not move it back.
-#
-# It scans the URL for any OF account_id the principal doesn't own (as
-# `?account_id=…` or as a numeric path segment), which catches per-account
-# endpoints nobody wrapped with assert_account_owned(). False-positive domain:
-# fan_ids and other numeric segments — only ids matching a real OF account row
-# trigger the gate, so fan_ids that merely share the shape do not.
 async def _account_isolation_middleware(request: Request, call_next):
-    # Cheap pre-filter — only /admin/* and /api/of/* paths can possibly
-    # reference per-account data. /auth/*, /events, /img, /ws/* never do.
     path = request.url.path
     if not (path.startswith("/admin/") or path.startswith("/api/of/")):
         return await call_next(request)
 
-    # The Concurrency panel, deliberately open. None of these routes carry an
-    # account_id — not in the path, not in the query, not in the response — so
-    # exempting them takes nothing away from the tenant isolation this
-    # middleware exists for. That holds for the restart route too: it names no
-    # account, though it does stop every account's work at once, which is why
-    # its own bounds live on the handler rather than here.
-    #
-    # ⚠️ Since they moved under `/lanes-panel`, the pre-filter above already
-    # returns before this line is reached. The check is kept because it costs a
-    # set lookup and it is what makes the exemption survive a future change to
-    # either the prefix or the pre-filter.
-    #
-    # There is deliberately no `/admin/` twin of these: `/admin/:path*` is
-    # rewritten from the public host, so an ungated one would be a public door.
+    # No /admin/ twin of these: /admin/:path* is rewritten from the public host, so an ungated one would be a public door.
     if path in _UNAUTHENTICATED_PATHS:
         return await call_next(request)
 
-    # Pick the active principal's account_ids set. User wins precedence;
-    # falls back to chatter's set-union if no user is signed in. Both
-    # paths must be checked because the same account_id can be reached
-    # via either cookie family.
     user = _get_request_user()
     if user is not None:
         allowed_ids: frozenset[str] | None = user.account_ids
@@ -595,16 +448,9 @@ async def _account_isolation_middleware(request: Request, call_next):
         chatter = _get_request_chatter()
         allowed_ids = chatter.account_ids if chatter is not None else None
     if allowed_ids is None:
-        # Nobody is signed in. This used to `return await call_next(request)` —
-        # the same abstain-on-anonymous bug as `assert_account_owned`, and the
-        # reason `GET /admin/accounts` answered 200 with no cookie in prod on
-        # 2026-08-10. `assert_account_owned` alone is not enough: it guards only
-        # routes someone remembered to wrap, and /admin/accounts is one of the
-        # ~50 nobody did.
+        # Nobody signed in: 401, never abstain (abstaining left /admin/accounts open without a cookie).
         if _allow_anonymous_account_access():
             return await call_next(request)
-        # The MCP endpoint's no-credential surface (mcp_api.anonymous_surface): it names no
-        # account and every data tool there answers the connect link. Only with no principal.
         if mcp_api.anonymous_surface(request.method, path):
             return await call_next(request)
         return Response("sign in required", status_code=401)
@@ -613,23 +459,18 @@ async def _account_isolation_middleware(request: Request, call_next):
     qaid = request.query_params.get("account_id")
     if qaid:
         candidates.add(qaid)
-    # Any numeric path segment in the OF account-id shape (5-12 digits).
     for seg in path.split("/"):
         if seg.isdigit() and 5 <= len(seg) <= 12:
             candidates.add(seg)
     if not candidates:
         return await call_next(request)
 
-    # Own ids are subtracted first — a free set hit, so the common case never
-    # touches the filesystem. `is_account` raises rather than guessing if it
-    # can't read the tree: a gate that can't answer must not answer "allow".
+    # `is_account` raises rather than guess if it can't read the tree: a gate that can't answer must not allow.
     if any(account_registry.is_account(c) for c in candidates - allowed_ids):
         return Response("not your account", status_code=403)
     return await call_next(request)
 
 
-# The one answer to an OF write for a deactivated Creator: the hook below, and
-# `_proxy` when OFClient's own gate refuses it (OFDeactivatedError).
 _DEACTIVATED_DETAIL = {
     "error": "account_deactivated",
     "message": "This Creator is deactivated. Activate it on Creators to use it again.",
@@ -637,18 +478,6 @@ _DEACTIVATED_DETAIL = {
 
 
 async def _deactivated_write_guard(request: Request, call_next):
-    """409 for an OF-proxy WRITE (`/api/of/*`, any method but a read) aimed at
-    a deactivated Creator (`account_health.deactivate`). Reads stay open: the
-    Creator's history is still the owner's to look at, and the app already
-    drops it from the switcher and inbox, so a write here is a stale tab or a
-    script. A hook rather than a check in `_resolve_account_id` because that
-    is sync and the flag lives in the database, and because only writes are
-    refused. The id checked is the one the route will use: the explicit one
-    (header or ?account_id=), else the default-account fallback only when
-    the caller owns that default (its file is shared across agencies).
-    Every other OF write (the /admin/*
-    routes, background jobs) is refused one layer down, in OFClient
-    (`account_health.refuses_writes`); this hook only makes /api/of/'s a 409."""
     if request.method in ("GET", "HEAD", "OPTIONS") or not request.url.path.startswith("/api/of/"):
         return await call_next(request)
     aid = request.headers.get("x-account-id") or request.query_params.get("account_id")
@@ -661,18 +490,7 @@ async def _deactivated_write_guard(request: Request, call_next):
     return await call_next(request)
 
 
-# Audit middleware. Registered AFTER the share-token gate (below) on purpose
-# — middlewares run in *reverse* registration order in starlette, so the
-# share-token gate fires first, blocks unauthed requests, and only authed
-# ones reach the audit writer. The decorator-registered middlewares below
-# are added before this line, so we add this one via the imperative API to
-# control ordering explicitly.
-# Background admission (`_bg_admission`, beside the lanes) runs after the
-# signed-in principal and account isolation are known, but before role reads.
-# A queued background request therefore holds neither a worker nor a DB
-# checkout. Role permissions are still read when it enters, not when it queues.
 async def _bg_admission_route(request: Request, call_next):
-    """Admit a background OF read on the loop before its DB and OF work."""
     if ((request.headers.get("x-priority") or "").lower() == "background"
             and request.method in ("GET", "HEAD")
             and request.url.path.startswith("/api/of/")):
@@ -681,78 +499,47 @@ async def _bg_admission_route(request: Request, call_next):
     return await call_next(request)
 
 
+# Registered AFTER the share-token gate: the gate runs first, so only authed requests reach the audit writer.
 _http_hooks.add(_audit_middleware)
 
-# Between audit and role: it runs after every gate has admitted the request
-# (signed in, own account, role), so it never tells a stranger a Creator is
-# off, and before the audit writer, so a refused write writes no `actions` row.
+# After every gate has admitted the request (never tells a stranger a Creator is off), before audit: a refused write writes no `actions` row.
 _http_hooks.add(_deactivated_write_guard)
 
-# Role enforcement (permissions.py). Registered after audit, so it runs before
-# it: a refused request reaches no handler and writes no `actions` row. It runs
-# inside both session middlewares, so it sees the chatter they resolved.
+# Registered after audit so it runs before it: a refused request reaches no handler and writes no `actions` row.
 _http_hooks.add(role_enforcement_middleware)
 
 # Admission is inside tenant isolation and outside role enforcement. The
 # queued request's role is checked only after it receives a background slot.
 _http_hooks.add(_bg_admission_route)
 
-# Tenant isolation. Registered here — BEFORE both session middlewares — so that
-# it RUNS AFTER them (Starlette: last registered = outermost) and can see the
-# principal they set. Registered below them, as it was until 2026-08-10, it runs
-# before either cookie is read, sees no principal, and silently does nothing.
+# LOAD-BEARING slot: registered BEFORE both session middlewares so it RUNS AFTER them and sees the principal; registered below them it sees none and silently does nothing. Do not move.
 _http_hooks.add(_account_isolation_middleware)
 
-# Chatter session middleware — registered BEFORE the User session
-# middleware so on the inbound path it runs AFTER auth (Starlette runs
-# user-added middlewares in reverse registration order). That ordering
-# lets the chatter middleware's admin-gate read `get_request_user()` and
-# only fire when no User cookie is present, while still landing both
-# contextvars before the audit middleware's post-block resolves them.
+# Registered BEFORE the User session middleware so it runs AFTER it: the admin-gate reads get_request_user() and fires only with no User cookie.
 _http_hooks.add(_chatter_session_middleware)
 
-# Friend-auth session middleware. Same ordering trick: registered here so
-# it runs *inside* the share-token gate (gate fires first, rejects unauthed
-# requests; only then does this middleware read the session cookie and
-# populate _request_user for _resolve_account_id).
 _http_hooks.add(_auth_session_middleware)
 
 
-# ── Share-link gate ────────────────────────────────────────────
-# Optional extra gate in front of everything: when a token is set, only
-# requests carrying it via ?t=... or the share_token cookie get through. Off
-# by default (empty) — access is via friend-auth / chatter sign-in sessions.
-# Turn it on with the SHARE_TOKEN env var or Setup → Keys (the stored secret
-# wins, see _effective_share_token). /health is always open so load balancers
-# can probe it.
 SHARE_TOKEN = os.environ.get("SHARE_TOKEN", "").strip()
 _SHARE_COOKIE = "share_token"
 
 
 def _effective_share_token() -> str:
-    """The live access token: a value set via Setup → Keys (secrets.json) wins,
-    else the env/module default. Read per-request so the UI can set/clear the
-    gate without a relay restart."""
     try:
         s = secrets_store.stored("SHARE_TOKEN")
         if s:
             return s
-    except Exception:  # never let the gate crash on a bad store
+    except Exception:
         pass
     return SHARE_TOKEN
 
 
-# Stash the current Request so deep helpers (_get_client) can pick up the
-# X-Account-Id header without us having to add `request: Request` to every
-# one of the ~60 endpoint signatures. Set by the middleware below.
 _request_ctx: ContextVar[Request | None] = ContextVar("of_relay_request", default=None)
 
 
 @_http_hooks.add
 async def _account_context(request: Request, call_next):
-    """Make the current Request available to non-endpoint code paths
-    (notably _get_client → _resolve_account_id) via a ContextVar. The token
-    is reset in `finally` so the contextvar doesn't leak between requests."""
     token = _request_ctx.set(request)
     try:
         return await call_next(request)
@@ -760,21 +547,7 @@ async def _account_context(request: Request, call_next):
         _request_ctx.reset(token)
 
 
-# Path prefixes reachable WITHOUT the share token. Keep this an explicit,
-# annotated allowlist rather than a chain of `if startswith(...)` — every entry
-# is a deliberate hole in the gate and they belong where they can be read
-# together:
-#   /auth/     a brand-new friend registers / signs in from the landing page,
-#              so they cannot yet hold any cookie.
-#   /chatter/  a chatter following an owner-issued invite link arrives cold.
-#   /t/        the public tracking-link redirect (Growth → Tracking Links) — a
-#              FAN clicks this from the creator's bio; it records the click and
-#              302s.
-#   /share/    a Share link's report (Growth → Free trial links / Tracking
-#              links → Share links), for someone outside the agency. Its one
-#              route answers only to an unguessable per-share secret, reads one
-#              row and calls nothing (link_share_api). EVERY route under /share/
-#              is public: put nothing else there.
+# EVERY route under /share/ is public (unguessable per-share secret, one row, no calls): put nothing else there.
 _PUBLIC_PREFIXES = ("/auth/", "/chatter/", "/t/", "/share/")
 
 
@@ -789,62 +562,31 @@ async def _share_token_gate(request: Request, call_next):
         return await call_next(request)
     if request.url.path in _UNAUTHENTICATED_PATHS:
         return await call_next(request)
-    # The MCP endpoint (mcp_api.anonymous_surface): an MCP client holds no share token. mcp_api
-    # still refuses an Origin or a cookie, and a token still meets the session middleware.
     if mcp_api.anonymous_surface(request.method, request.url.path):
         return await call_next(request)
-    # The MCP sign-in's metadata (mcp_oauth): public JSON naming this host's /auth/oauth/* endpoints.
     if request.url.path in mcp_oauth.PUBLIC_PATHS:
         return await call_next(request)
     if request.cookies.get(_SHARE_COOKIE) == share_token:
         return await call_next(request)
-    # Anyone carrying a friend-auth OR chatter session cookie has already
-    # cleared username+password — the legacy share-token gate is
-    # redundant for them. (The session middlewares validate the HMAC +
-    # DB row downstream.)
     if request.cookies.get(_AUTH_COOKIE_NAME) or request.cookies.get(_CHATTER_COOKIE_NAME):
         return await call_next(request)
-    # An owner access token (`Bearer ifw_…`) is checked by the session
-    # middleware downstream, which 401s a bad one and never falls back.
     if _owner_tokens.bearer(request.headers.get("authorization")):
         return await call_next(request)
     if request.query_params.get("t") == share_token:
         resp = await call_next(request)
-        # Persist the token so subsequent fetch() calls (which won't carry ?t=)
-        # still authenticate. 7-day TTL is plenty for an ad-hoc share session.
         resp.set_cookie(
             _SHARE_COOKIE, share_token,
             max_age=7 * 24 * 3600, httponly=True, samesite="lax",
         )
         return resp
-    # `no-store` on the REFUSAL, for every path the gate guards — not just the
-    # two static prefixes a retired middleware happened to stamp. An
-    # unauthorized answer is per-request by nature and must never be held by a
-    # browser or a shared proxy; a cached 401 would outlive the token that
-    # fixes it. (401 is not heuristically cacheable, so this is belt-and-
-    # suspenders — but it is the belt the /ui prefix used to get by accident.)
+    # `no-store` on the refusal: a cached 401 would outlive the token that fixes it.
     return Response("unauthorized — link missing or expired", status_code=401,
                     headers={"Cache-Control": "no-store"})
 
 
-# ── Setup → Keys: UI-writable secret/key store ─────────────────────
-# Lets the FOUNDER paste the deployment's DeepSeek key, Drive API key,
-# access password, etc. instead of editing the VPS .env. Values land in
-# service/secrets.json and every consumer checks the store before the env, so
-# they take effect on the next call with no restart. GET never returns raw
-# secrets — only a masked status.
-#
-# MASTER ONLY, both verbs. These are the SERVER's house keys, not a tenant's —
-# distinct from /admin/my-llm-keys, which is one agency's own. A comment here
-# used to claim "both sit under /admin/* (already gated)"; that was FALSE and
-# had been since the routes were written. Nothing gated them: the account-
-# isolation middleware returns early on a path with no account id, the
-# share-token gate waves through any auth cookie, and /auth/register is open —
-# so any signed-in agency could read the masked house-key status AND overwrite
-# the deployment's credentials. The read is gated too, because the masked hint
-# still leaks the last four characters of every house key.
 
 
+# MASTER ONLY, both verbs: house keys, not a tenant's; nothing else gates them (any auth cookie passes the share gate) and the masked hint leaks the last four chars.
 @app.get("/admin/secrets")
 def admin_secrets_status() -> dict[str, Any]:
     """Masked status of every UI-settable key (set?/source/hint — never the
@@ -872,21 +614,7 @@ async def admin_secrets_set(request: Request) -> dict[str, Any]:
     return {"keys": secrets_store.status()}
 
 
-# ── /tmp/of-api.log — dedicated single-file access log ─────────────
-# Every HTTP request that makes it past the share-token gate gets one
-# line here. Pure text (no binary bytes from upstream stream bodies
-# the way uvicorn's mixed log can have), append-only, so the user can
-# `tail -f /tmp/of-api.log` and see live API traffic without needing
-# grep -a flags. The access timing is measured around `call_next` so
-# it includes all our middleware + the handler + StreamingResponse
-# generator startup.
-#
-# Written OFF the event loop: the hook only queues the line, and one daemon
-# thread appends whatever has queued, one open+write+close per burst. It used
-# to `open()` the file on the loop for every request — a syscall triple each,
-# and a stall for every request in flight whenever the disk was slow. The
-# file is still reopened per burst, so deleting or rotating it just works. A
-# full queue (the disk gone for a long while) drops lines, never blocks.
+# Written off the event loop (an open() per request stalled everything on a slow disk); a full queue drops lines, never blocks.
 _API_LOG_PATH = os.environ.get("OF_API_LOG_PATH") or "/tmp/of-api.log"
 _API_LOG_QUEUE_MAX = 10_000
 import queue as _queue_mod
@@ -895,11 +623,10 @@ import time as _time_mod
 _api_log_queue: "_queue_mod.Queue[str]" = _queue_mod.Queue(maxsize=_API_LOG_QUEUE_MAX)
 
 
-_api_log_write_lock = threading.Lock()   # one appender at a time: writer vs exit flush
+_api_log_write_lock = threading.Lock()
 
 
 def _api_log_write(lines: list[str]) -> None:
-    """Append `lines` plus everything queued behind them, in queue order."""
     with _api_log_write_lock:
         while True:
             try:
@@ -921,11 +648,10 @@ def _api_log_writer() -> None:
 
 
 threading.Thread(target=_api_log_writer, name="api-access-log", daemon=True).start()
-# The writer is a daemon thread, killed at exit: write out what is still queued
-# first, so the last requests before a shutdown are in the log.
+# Daemon writer dies at exit: flush what is queued so the last requests are logged.
 atexit.register(lambda: _api_log_write([]))
 
-# A share link's URL carries its secret (/share/<id>.<secret>/data): no log keeps it.
+# A share link's URL carries its secret: no log keeps it.
 _SHARE_SECRET = re.compile(r"(/share/[^./?\s]*)\.[^/?\s]*")
 
 
@@ -934,7 +660,6 @@ def redact_share_secret(text: str) -> str:
 
 
 class _RedactShareSecret(logging.Filter):
-    """uvicorn's access line ("GET /share/7.<secret>/data") without the secret."""
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.args, tuple):
             record.args = tuple(redact_share_secret(a) if isinstance(a, str) else a for a in record.args)
@@ -943,20 +668,11 @@ class _RedactShareSecret(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_RedactShareSecret())
 
-# Outer layer, just inside _CutShortStreams (added after the hook chain; Starlette: last added = outermost):
-# one `req id=… ms=…` line per request and X-Request-Id echoed. Pure ASGI, not a
-# BaseHTTPMiddleware (see http_hooks). An unmatched path is logged redacted.
 from request_log import RequestLog as _RequestLog  # noqa: E402
 app.add_middleware(_RequestLog, redact=redact_share_secret)
 
 
 class _CutShortStreams:
-    """Outermost, pure ASGI: a body that ends short of the Content-Length it announced (vault_download_api's relay
-    after its upstream died mid-body, /img's 60 s stream cap) is cut, not completed. Its final empty message is
-    dropped, so uvicorn closes the connection (one "returned without completing response" line) and the client
-    sees a short read, instead of uvicorn raising "Response content shorter than Content-Length" (a Traceback).
-    A body with no Content-Length (chunked) is cut the same way when its handler marked it (vault_download_api
-    CUT_SHORT): no terminating chunk, so the client's read fails instead of taking the part as the whole."""
 
     def __init__(self, app):
         self.app = app
@@ -966,7 +682,7 @@ class _CutShortStreams:
             return await self.app(scope, receive, send)
         want, sent = None, 0
         mark: dict = {}
-        _vault_cut_short.set(mark)   # this request's task; the handler's and the body's tasks inherit the same dict
+        _vault_cut_short.set(mark)
 
         async def guard(msg):
             nonlocal want, sent
@@ -1003,8 +719,6 @@ async def _api_access_log(request: Request, call_next):
         raise
     finally:
         ms = int((_time_mod.monotonic() - started) * 1000)
-        # Strip the share token from the logged URL — even though the file
-        # is local-only, no need to mirror it on every line.
         url = str(request.url)
         if "?t=" in url:
             url = url.split("?t=", 1)[0] + (
@@ -1026,12 +740,6 @@ async def _api_access_log(request: Request, call_next):
 
 @_http_hooks.add
 async def _no_store_by_default(request: Request, call_next):
-    """A reply that names no Cache-Control is `no-store`: the relay's answers are
-    per signed-in user, so a CDN in front (deploy/ae/EDGE-CDN.md) must never keep
-    one, even under a site-wide "cache everything" rule. Routes that set their
-    own (/img, /events, the stills) keep it. Browsers see no change: only a
-    reply with Last-Modified (a FileResponse) is heuristically cached, and the
-    file routes set their own Cache-Control."""
     response = await call_next(request)
     response.headers.setdefault("cache-control", "no-store")
     return response
@@ -1039,25 +747,18 @@ async def _no_store_by_default(request: Request, call_next):
 
 @_http_hooks.add
 async def _persist_unhandled_errors(request: Request, call_next):
-    """Catch unhandled server-side exceptions, persist a row in app_errors
-    (so /admin/errors surfaces them), then re-raise so FastAPI's default
-    500 response still fires. HTTPException is intentionally NOT caught —
-    those are deliberate, structured replies, not bugs."""
     try:
         return await call_next(request)
     except (HTTPException, _sqla_exc.TimeoutError):
-        # A pool timeout is backpressure (_DbBusy503), not a bug: writing its
-        # row would take one more connection from the pool that just ran out.
+        # A pool timeout is backpressure (_DbBusy503): writing its row would take another connection from the exhausted pool.
         raise
     except Exception as exc:
         import traceback as _tb
         try:
             from db.engine import get_session
             from db.models import AppError as _AE
-            _scrub = proxy_registry.scrub_pool_secrets   # the Master reads every /admin/errors row
+            _scrub = proxy_registry.scrub_pool_secrets
             stack = _scrub("".join(_tb.format_exception(type(exc), exc, exc.__traceback__)))[:16384]
-            # The request's headers, kept only where the principal owns them; an owner
-            # naming no Employee is credited (its own); no principal: the Master's row.
             account_id, employee_id = await diag_api.owned_attribution(
                 *diag_api.header_attribution(request))
             async with get_session() as s:
@@ -1074,13 +775,8 @@ async def _persist_unhandled_errors(request: Request, call_next):
                 ))
                 await s.commit()
         except Exception:
-            # Don't let the logger crash the response path on top of the
-            # original error — just log and move on.
             log.exception("failed to persist server-side error to app_errors")
-        # OF's definite session-death signature ("Wrong user." — the creator
-        # got unlinked) pauses the account's automations right away and drops
-        # the pooled client, so a session re-captured on disk is picked up on
-        # the next request without a restart. See service/account_health.py.
+        # OF's 'Wrong user.' (creator unlinked) pauses the account and drops the pooled client so a re-captured session loads on the next request.
         try:
             dead_reason = account_health.is_session_dead_error(exc)
             aid = (request.headers.get("x-account-id")
@@ -1098,13 +794,7 @@ async def _persist_unhandled_errors(request: Request, call_next):
         raise
 
 
-# The OFClient pool lives in client_pool (shared with the automation lane).
-# Hot-reload via /admin/reload-session?account_id=... or by re-bootstrapping.
 
-# ── Realtime event bus ─────────────────────────────────────────
-# We connect ONCE to OF's WebSocket (wss://ws2.onlyfans.com/ws3/N) at startup
-# and fan every event out to browser clients on /events (SSE), via the events
-# module (which also persists to event_inbox).
 
 _event_stats: dict[str, Any] = {
     "received": 0,
@@ -1115,39 +805,28 @@ _event_stats: dict[str, Any] = {
 }
 
 async def _broadcast_event(event: dict) -> None:
-    """Tally an event in `_event_stats` and hand it to the SSE module."""
     _event_stats["received"] += 1
     _event_stats["last_event_ts"] = _time_mod.time()
     if isinstance(event, dict):
         for k in event:
-            if k.startswith("__"):  # don't tally our own meta-keys
+            if k.startswith("__"):
                 continue
             _event_stats["by_type"][k] = _event_stats["by_type"].get(k, 0) + 1
         aid = event.get("__account_id")
         if aid:
             _event_stats["by_account"][aid] = _event_stats["by_account"].get(aid, 0) + 1
 
-    # Fan into the SSE module + persist to event_inbox. Wrapped in try/except
-    # so a SQL hiccup never propagates into the OF pump that called us.
     try:
         await _sse_handle_event(event)
     except Exception:
         log.exception("SSE handle_event failed")
 
 
-# One WebSocket pump per account. Events are tagged with `__account_id` +
-# `__account_name` before broadcast so subscribers (the UI) can route
-# or filter by account. The pumps dict is mutated only by the helpers below.
 _account_pumps: dict[str, asyncio.Task] = {}
 
 
 @dataclass
 class _PumpRun:
-    """One account's pump bookkeeping for the supervisor's Restart backoff
-    (pump_reconcile.restart_due): when its current pump started (monotonic), its
-    restarts since its last healthy run or park, and, once that pump exited, when
-    a Restart may run (None while it runs). Kept while the account has a pump
-    entry: `_do_stop_account_pump` drops both."""
     started: float
     restarts: int = 0
     due: float | None = None
@@ -1157,44 +836,11 @@ _pump_runs: dict[str, _PumpRun] = {}
 _supervisor_task: asyncio.Task | None = None
 _tx_ingest_task: asyncio.Task | None = None
 _tx_fast_task: asyncio.Task | None = None
-# Automation executor supervisor (service/automation_executor.py) — consumes
-# scheduled_jobs / automation_rules and runs the 12 automations. Cancelled in
-# _stop_event_pumps alongside _tx_ingest_task.
 _automation_exec_task: asyncio.Task | None = None
-# The asyncio loop the app is running on. Captured at startup so sync FastAPI
-# endpoints (which run in the threadpool, with NO running loop in the worker
-# thread) can schedule pump start/stop via `call_soon_threadsafe`.
 _main_loop: asyncio.AbstractEventLoop | None = None
 
 
-# ── The one periodic-task loop ────────────────────────────────────────
-#
-# Six background sweepers (img cache, storyboard locks, perflog, raw_json,
-# audit retention, payload size cap) were six hand-copied transcriptions of the
-# same eight lines: loop, sleep, work, swallow-and-log, return on cancel. Copies
-# do not stay identical, and the way this one drifted was expensive.
-#
-# Every copy slept BEFORE its first pass. For the hourly sweepers that is
-# invisible. For the two DAILY ones it meant the sweep only ever ran on a
-# process that stayed up longer than a day — and this relay is redeployed,
-# autohealed and restarted far more often than that. So the result was not a
-# late prune, it was NO prune, ever, silently, on precisely the tables whose
-# only job is to stay bounded. Measured on the live DB 2026-08-25, every window
-# long blown:
-#
-#     scheduled_jobs     retain  7d  → rows back to 45d  (263,790)
-#     automation_runs    retain 14d  → rows back to 20d  (409,479)
-#     messages.raw_json  retain 60d  → 3,668 rows still holding payloads
-#
-# That unbounded job table is what turned an unindexed lookup into the
-# 6.7s-per-supervisor-tick scan the indexes in db/models.py now fix; this loop
-# is what stops it growing back.
-#
-# Hence one implementation, with `first_after_s` as a NAMED ARGUMENT rather than
-# a mutable each caller re-derives. The point is not that eight lines are saved
-# six times over — it is that "when does the first pass happen" is now a
-# decision each sweeper states out loud at its call site, instead of an
-# emergent property of a loop nobody re-reads.
+# Every sweeper used to sleep BEFORE its first pass, so the daily ones never ran on a relay restarted more often than daily (tables grew unbounded); `first_after_s` makes each caller state it.
 async def _periodic(
     label: str,
     interval_s: float,
@@ -1202,18 +848,6 @@ async def _periodic(
     *,
     first_after_s: float | None = None,
 ) -> None:
-    """Run `work()` every `interval_s` seconds, forever.
-
-    The first pass happens `first_after_s` from now — defaulting to a full
-    interval, which is what every caller used to hardcode. Sweepers whose
-    interval outruns the process's own uptime pass a short boot grace instead,
-    so they run soon after startup and then settle onto their cadence.
-
-    `work` owns its own logging of what it did; this owns only the failure path.
-    A raised exception is logged and the cadence continues — one bad cycle must
-    never take a sweeper down for the life of the process. Cancellation returns
-    cleanly so `_stop_event_pumps` can tear these down at shutdown.
-    """
     delay = interval_s if first_after_s is None else first_after_s
     while True:
         try:
@@ -1227,17 +861,8 @@ async def _periodic(
 
 
 async def _ws_pump_for_account(account_id: str) -> bool:
-    """Run the realtime WS pump for one account until cancelled. Both the OF
-    and Fansly sockets carry their own reconnect-with-backoff loop, so this
-    task is only torn down when the account is removed or the server is
-    shutting down. Returns True when it parked on a dead session (the
-    supervisor's backoff reads it, `_on_pump_exit`)."""
     from of_ws import OFWebSocket, SessionDead, register_pump, unregister_pump
-    # A deactivated Creator gets no socket, whichever path spawned this
-    # (`_restart_account_pump` after a re-capture, the startup spawn, or a
-    # supervisor pass that read the roster just before the deactivate). A
-    # pump already connected when the flag lands is cancelled by the
-    # deactivate endpoint itself; the supervisor reaps any stragglers.
+    # A deactivated Creator gets no socket, whichever path spawned this.
     if await account_health.is_deactivated(account_id):
         log.info("ws-pump[%s]: not started, the Creator is deactivated", account_id)
         return False
@@ -1254,16 +879,10 @@ async def _ws_pump_for_account(account_id: str) -> bool:
                                  session_dead=account_health.is_session_dead_error,
                                  account_id=account_id,
                                  on_reconnect=lambda: relay_hooks.fire_socket_reconnected(account_id))
-            # Publish this live pump so the automation layer can push outbound
-            # frames (e.g. the typing indicator) on the same socket. Both
-            # platforms share this registry, so `of_ws.emit_typing` finds a
-            # Fansly pump the same way (it routes typing over REST).
             register_pump(account_id, ws)
             log.info("ws-pump[%s]: connecting to %s", nickname, platform.label)
             try:
                 async for event in ws.events():
-                    # Tag every event so multi-account subscribers can route.
-                    # Use sentinel `__` keys so we never collide with real OF event names.
                     if isinstance(event, dict):
                         event = {
                             "__account_id": account_id,
@@ -1275,11 +894,7 @@ async def _ws_pump_for_account(account_id: str) -> bool:
             finally:
                 unregister_pump(account_id, ws)
         except SessionDead as e:
-            # OF rejected the session (e.g. it wants a 2FA code): pause the
-            # account like any other caller that hit it, and stop. The
-            # supervisor starts no pump while it is flagged; a re-login
-            # (post_bootstrap_hooks) or the recovery probe clears the flag and
-            # the next start loads the fresh session.
+            # OF rejected the session (e.g. 2FA): pause the account; the supervisor starts no pump while flagged, until a re-login or the recovery probe clears it.
             _invalidate_client(account_id)
             if await account_health.mark_session_dead(account_id, e.reason):
                 log.warning("account_session_dead account=%s via=ws-pump reason=%s — automations "
@@ -1297,30 +912,20 @@ async def _ws_pump_for_account(account_id: str) -> bool:
 
 
 def _start_account_pump(account_id: str) -> None:
-    """Spawn a pump for an account if one isn't already running.
-
-    Safe to call from BOTH the event loop and from a worker thread (FastAPI
-    sync endpoints run in the threadpool, where `asyncio.create_task` raises
-    `RuntimeError: no running event loop`). From a thread we trampoline back
-    to the main loop via `call_soon_threadsafe`.
-    """
     try:
         asyncio.get_running_loop()
         _do_start_account_pump(account_id)
     except RuntimeError:
         if _main_loop is None:
-            # Startup hasn't run yet; the supervisor / startup hook will
-            # eventually spawn this pump. Drop silently rather than crash.
             return
         _main_loop.call_soon_threadsafe(_do_start_account_pump, account_id)
 
 
 def _do_start_account_pump(account_id: str) -> None:
-    """Inner: must be called from inside the event loop."""
     task = _account_pumps.get(account_id)
     if task and not task.done():
         return
-    with of_call_counter.caller("loop:ws-pump"):   # its OF calls, the Creator id left out
+    with of_call_counter.caller("loop:ws-pump"):
         task = _account_pumps[account_id] = asyncio.create_task(
             _ws_pump_for_account(account_id), name=f"ws-pump-{account_id}",
         )
@@ -1330,13 +935,11 @@ def _do_start_account_pump(account_id: str) -> None:
 
 
 def _on_pump_exit(account_id: str, task: asyncio.Task) -> None:
-    """When the account's current pump ended (a replaced or stopped one is not
-    it): when its Restart is due, logged once if that is not at once."""
     if _account_pumps.get(account_id) is not task:
         return
     run = _pump_runs[account_id]
     exc = None if task.cancelled() else task.exception()
-    if exc is not None:   # retrieved here, so asyncio no longer logs it
+    if exc is not None:
         log.error("ws-pump[%s] crashed", account_id, exc_info=exc)
     parked = not task.cancelled() and exc is None and task.result() is True
     now = _time_mod.monotonic()
@@ -1347,9 +950,6 @@ def _on_pump_exit(account_id: str, task: asyncio.Task) -> None:
 
 
 def _stop_account_pump(account_id: str) -> None:
-    """Cancel an account's pump. `.cancel()` is documented to be safe from
-    any thread, but the dict pop and the task reference both want the loop;
-    we trampoline for symmetry with _start_account_pump."""
     try:
         asyncio.get_running_loop()
         _do_stop_account_pump(account_id)
@@ -1360,8 +960,6 @@ def _stop_account_pump(account_id: str) -> None:
 
 
 def _do_stop_account_pump(account_id: str) -> None:
-    """Every stop (the supervisor's, remove, deactivate, a restart) ends here: the
-    backoff record goes with the pump, so a re-added Creator starts from 0."""
     _pump_runs.pop(account_id, None)
     task = _account_pumps.pop(account_id, None)
     if task and not task.done():
@@ -1374,9 +972,6 @@ def _restart_account_pump(account_id: str) -> None:
 
 
 def _reroute_account_pump(account_id: str) -> None:
-    """Restart an account's pump if one is running, so its socket reconnects
-    on the account's current proxy. No pump → nothing to do: the supervisor's
-    start reads the new route. Thread-safe like _start_account_pump."""
     try:
         asyncio.get_running_loop()
         _do_reroute_account_pump(account_id)
@@ -1396,15 +991,6 @@ def _do_reroute_account_pump(account_id: str) -> None:
 
 
 def _on_proxy_switched(account_ids: list[str]) -> None:
-    """proxies.save's hook, for every write that changes an account's egress
-    (Change proxy, Inflowwww proxy, No proxy, a proxy edit, the pool sync):
-    the pooled client goes and a live chat socket reconnects, so REST and the
-    WS leave from the same IP from now on, not after the next relay restart.
-    OF's signed vault urls are bound to the egress IP too, so the account's
-    cached vault pages read as misses from now on (vault_cache.mark_stale),
-    the background vault walk on the old client stops (cursor kept), the
-    rows are deleted, so a restart cannot serve them either, and the collector
-    re-warms the account's hot set at its next pick (vault_collect.request_rewarm)."""
     for aid in account_ids:
         _invalidate_client(aid)
         _reroute_account_pump(aid)
@@ -1416,15 +1002,13 @@ async def _vault_after_proxy_switch(account_id: str) -> None:
     import vault_collect
     await vault_collect.preempt(account_id)
     await vault_cache.invalidate(account_id)
-    vault_collect.request_rewarm(account_id)   # the hot set back on cache within a pass, not after STALE_S
+    vault_collect.request_rewarm(account_id)
 
 
 proxy_registry.on_switch(_on_proxy_switched)
 
 
 async def _pump_supervisor() -> None:
-    """Reconcile the set of running pumps against the set of accounts every
-    15s (`_reconcile_pumps`)."""
     while True:
         try:
             await _reconcile_pumps()
@@ -1436,10 +1020,6 @@ async def _pump_supervisor() -> None:
 
 
 async def _reconcile_pumps() -> None:
-    """One supervisor pass: gather the roster, the deactivated and dead-session
-    sets and whether each pump is done, then perform `pump_reconcile.reconcile`'s
-    actions in its order (the rules live there). A parked pump exits on the dead
-    session, see _ws_pump_for_account."""
     off = await account_health.deactivated_ids()
     with_session = [a["id"] for a in account_registry.list_accounts() if a.get("has_session")]
     parked = set(await account_health.dead_session_map())
@@ -1454,26 +1034,21 @@ async def _reconcile_pumps() -> None:
         elif isinstance(act, pump_reconcile.Restart):
             run = _pump_runs[aid]
             if run.due is None or now < run.due:
-                continue   # backoff (or its exit callback not run yet)
+                continue
             log.info("ws-pump[%s] not running (exited, or resumed after park) — restarting (attempt %d)",
                      aid, run.restarts)
             run.restarts += 1
-            _start_account_pump(aid)   # replaces the done task, keeps the count
+            _start_account_pump(aid)
         else:
             raise TypeError(f"unknown pump action {act!r}")
 
 
-# Background tasks the relay owns for its own lifetime. CPython keeps only a
-# WEAK reference to a task returned by create_task, so a fire-and-forget task
-# can be garbage-collected mid-flight — for a vault import that means the run
-# vanishes silently with its carriers still live, which is the one failure the
-# whole crash-safety design exists to prevent. Hold the reference until it is
-# actually done.
+# CPython keeps only a WEAK ref to a create_task task: a vault import could be collected mid-flight with its carriers still live. Hold until done.
 _bg_tasks: set[asyncio.Task] = set()
 
 
 def _spawn_bg(coro, name: str) -> asyncio.Task:
-    with of_call_counter.caller(f"loop:{name}"):   # its OF calls (ids in `name` fold)
+    with of_call_counter.caller(f"loop:{name}"):
         task = asyncio.create_task(coro, name=name)
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
@@ -1482,16 +1057,6 @@ def _spawn_bg(coro, name: str) -> asyncio.Task:
 
 @app.on_event("startup")
 async def _close_streams_on_term() -> None:
-    """SIGTERM ends every open SSE stream before uvicorn's graceful wait, and
-    no automation run or mass send starts after it.
-
-    uvicorn installs its exit handler before startup hooks run, so this wraps
-    it: streams close first (events.close_streams) and the automation lane
-    stops claiming (automation_executor.stop_claiming; the shutdown drain waits
-    for what it already claimed), then uvicorn stops as before. Without it each
-    open stream holds the wait to its timeout and is cancelled, and new sends
-    start during that wait. Not behind the test-mode guard: slop stops the relay
-    with it."""
     import signal
     import events
     import automation_executor
@@ -1530,26 +1095,15 @@ async def _start_event_pumps() -> None:
     global _supervisor_task, _tx_ingest_task, _tx_fast_task, _automation_exec_task, _main_loop
     _main_loop = asyncio.get_running_loop()
     from of_session_registry import Registry
-    Registry.instance()  # start exactly one idle sweeper before any OFClient
+    Registry.instance()
     _event_stats["started_at"] = _time_mod.time()
 
-    # Inflowwww proxy pool, before anything below (vault sweep, pumps, the
-    # automation lane) can load an OFClient, so every client is built with the
-    # synced binding. Registry-file only (no network). Not behind the test-mode
-    # guard (the local stack runs with CHATTERLY_TEST_MODE=1); with the env
-    # unset and no pool it writes nothing, and the test harness unsets it.
     try:
         _sync_proxy_pool()
     except Exception:
         log.exception("Inflowwww proxy pool sync failed — pool unchanged")
 
-    # Vault-import crash recovery at boot and hourly, off the loop. A batch
-    # that died mid-flight can have left a scheduled carrier post on a real
-    # creator's feed; left alone it publishes on its postedAt date. Boot alone
-    # is not a schedule — this container runs for weeks and a carrier is 30 days
-    # out, so a session that went stale mid-run would otherwise be retried once,
-    # never, at a restart that never comes. Best-effort by design: a sweep
-    # failure must never stop the relay from booting.
+    # Boot alone is not a schedule (carriers are 30 days out, the container runs for weeks): also hourly. Best-effort: a sweep failure must never stop boot.
     async def _vault_sweep_once() -> None:
         try:
             res = await asyncio.to_thread(vault_upload.sweep, _load_client)
@@ -1566,14 +1120,7 @@ async def _start_event_pumps() -> None:
             await _vault_sweep_once()
             await asyncio.sleep(3600)
 
-    # Bump the anyio thread pool. `/img` is a sync streaming endpoint —
-    # each in-flight video / avatar fetch holds one thread for as long as
-    # the browser keeps the stream open. With hover-preview, scrub seeks,
-    # the chat-list avatars, vault thumbnails and notification polls all
-    # sharing the default ~40-thread pool, the relay would exhaust threads
-    # and start dropping requests (ECONNRESET storms on the Next side).
-    # 200 gives plenty of headroom; each thread is cheap and idle when no
-    # stream is active.
+    # /img holds one thread per open stream; the default ~40-thread pool exhausted into ECONNRESET storms.
     try:
         import anyio
         anyio.to_thread.current_default_thread_limiter().total_tokens = 200
@@ -1581,14 +1128,7 @@ async def _start_event_pumps() -> None:
     except Exception:
         log.exception("could not bump anyio thread pool — sticking with default")
 
-    # Bump the ASYNCIO default executor too — a SEPARATE pool from anyio's.
-    # Every `asyncio.to_thread` in this codebase (all `_proxy` OF calls, the
-    # automation executor's OF roundtrips, media pulls) shares the loop's
-    # default ThreadPoolExecutor, which sizes at min(32, cpus+4) — just 6
-    # threads on the 2-CPU VPS. A couple of long automation sweeps pinned
-    # all 6 and every user-initiated send queued invisibly until the Next
-    # proxy gave up (2026-07-04 "socket hang up" / HTTP 500 incident). The
-    # threads only block on network I/O; see `_EXECUTOR_THREADS` for the size.
+    # Separate pool from anyio's: the asyncio default executor is min(32, cpus+4) = 6 threads on the 2-CPU VPS, and long sweeps pinned it so sends queued invisibly.
     try:
         from concurrent.futures import ThreadPoolExecutor
         _main_loop.set_default_executor(
@@ -1599,9 +1139,7 @@ async def _start_event_pumps() -> None:
     except Exception:
         log.exception("could not resize asyncio default executor — default is min(32, cpus+4)")
 
-    # Phase A — bring up SQLite. Idempotent: creates tables on first boot,
-    # no-ops on subsequent. Must precede pump spawn because the SSE writer
-    # below tries to insert event_inbox rows from the first event onward.
+    # Must precede pump spawn: the SSE writer inserts event_inbox rows from the first event.
     try:
         await db_init()
         log.info("db ready (DATABASE_URL=%s)", _redact(os.environ.get("DATABASE_URL", "(default)")))
@@ -1609,8 +1147,6 @@ async def _start_event_pumps() -> None:
     except Exception:
         log.exception("db_init failed — relay will run but SSE/inbox writes will error")
 
-    # Settings → System's runtime switch overrides (runtime_switches), into the
-    # in-process cache every consumer reads; none loaded = env / defaults.
     import runtime_switches
     try:
         await runtime_switches.load()
@@ -1627,8 +1163,6 @@ async def _start_event_pumps() -> None:
         gate_loaded = True
     _spawn_bg(_vault_sweep_loop(gate_loaded), "vault-sweep")
 
-    # Pre-add the default "strokes" funnel (once per box, insert-if-missing by
-    # name — never overwrites an edited one, never resurrects a deleted one).
     try:
         from seeds.funnels import seed_defaults_once
         added = await seed_defaults_once()
@@ -1652,7 +1186,6 @@ async def _start_event_pumps() -> None:
         log.critical("BOOKMARKS PAGE MIGRATION FAILED: stored roles granting Collections are refused "
                      "Bookmarks; it retries on the next start", exc_info=True)
 
-    # Ultra plans a restart cut short: running → interrupted, started steps → uncertain (no resume).
     try:
         import ultra_run
         n = await ultra_run.recover()
@@ -1661,25 +1194,15 @@ async def _start_event_pumps() -> None:
     except Exception:
         log.exception("ultra plan recovery failed: running plans stay running until the next start")
 
-    # TEST-MODE GUARD — db init above already ran (prod-critical at startup);
-    # everything BELOW is the spawn/network section (persist worker, WS pumps,
-    # pump-supervisor, live_rev network refresh, evictors, tx-ingest,
-    # automation-exec). Tests neither exercise the WS path nor want OF/network
-    # round-trips, so skip the whole section. MUST stay AFTER db_init — moving
-    # it above would leave the schema uninitialized. (Belt-and-suspenders: the
-    # harness also no-ops this function and live_rev.refresh post-import.)
+    # MUST stay AFTER db_init: everything below is spawn/network work tests skip, and moving this above leaves the schema uninitialized.
     from automations._common import test_mode
     if test_mode():
         log.info("CHATTERLY_TEST_MODE=1 — skipping pump/supervisor/network spawns")
         return
 
-    # Start the bounded persist worker BEFORE pumps spawn. Otherwise the
-    # first burst of events takes the pre-startup fallback path in
-    # events.handle_event (unbounded create_task), which is exactly what
-    # this worker exists to avoid.
+    # Before pumps spawn, else the first event burst takes the unbounded create_task fallback in events.handle_event.
     _start_persist_worker()
 
-    # Spawn pumps for every existing account with a session (not deactivated)
     off = await account_health.deactivated_ids()
     for meta in account_registry.list_accounts():
         if meta.get("has_session") and meta["id"] not in off:
@@ -1687,102 +1210,57 @@ async def _start_event_pumps() -> None:
     _supervisor_task = asyncio.create_task(_pump_supervisor(), name="pump-supervisor")
     log.info("event pumps started for %d account(s)", len(_account_pumps))
 
-    # Shared refresher (SHARED_REFRESHER, off by default: then this starts nothing): one /users/me per
-    # Open-tab Creator per Cycle through the App-open warm's per-exit gate. Stopped in _stop_event_pumps.
     import shared_refresher
     shared_refresher.start()
 
-    # Seed the live OF build hash from the session files so sign_rules and
-    # /admin/rev/live have a value before the first OF response lands. Off-thread
-    # so reading every session file doesn't block FastAPI startup.
     asyncio.get_running_loop().run_in_executor(None, live_rev.refresh)
 
-    # Periodic GC of `_storyboard_locks` — the prune cron clears the on-disk
-    # storyboard dirs but the in-memory lock entries would otherwise leak
-    # ~200 bytes per unique video ever hovered. Eviction is conservative:
-    # only drops locks whose dir is gone AND whose `acquire(blocking=False)`
-    # succeeds, so it never races with an active build.
     from storyboard import _storyboard_evictor_loop
     asyncio.create_task(_storyboard_evictor_loop(), name="storyboard-evictor")
 
-    # Periodic TTL sweep of the on-disk /img cache. Keys are host+path
-    # so entries are shared across all accounts/users — the sweep just
-    # drops anything older than _IMG_CACHE_TTL_S by mtime.
     from img_api import _img_cache_evictor_loop
     asyncio.create_task(_img_cache_evictor_loop(), name="img-cache-evictor")
 
-    # Prune of `perf_events` so the client-side perflog ingest table
-    # stays bounded. Retain window via PERFLOG_RETAIN_S (default 7d).
     asyncio.create_task(_perflog_evictor_loop(), name="perflog-evictor")
 
-    # DB retention loops (raw_json age, payload size cap, audit/log tables,
-    # sqlite optimize) — see service/db_retention.py section headers.
     asyncio.create_task(db_retention._raw_json_evictor_loop(), name="raw-json-evictor")
     asyncio.create_task(db_retention._payload_size_cap_loop(), name="payload-size-cap")
     asyncio.create_task(db_retention._audit_retention_evictor_loop(), name="audit-retention-evictor")
     asyncio.create_task(db_retention._db_optimize_loop(), name="sqlite-optimize")
 
-    # Opt-in periodic proxy probe (PROXY_HEALTH_INTERVAL_S; off by default).
-    # Returns at once when unset.
     asyncio.create_task(proxy_health.probe_loop(), name="proxy-health-probe")
 
-    # A new OF build seen in a response, or a capture's first 2xx, spreads its
-    # sign rules to every account on an older build (sign_rules, 2.17).
     sign_rules.enable_background()
 
-    # Missed clock-ins become agency notifications, and old ones are pruned (notifications_api.tick).
     _spawn_bg(_periodic("clock-in missed", notifications_api.TICK_S, notifications_api.tick,
                         first_after_s=60), "clock-in-missed")
 
-    # Tracking / free trial / promotion link figures, read hourly per live
-    # account for List sync (link_prewarm.prewarm_all; LINK_PREWARM_SCOPE=all: every
-    # link, so Growth pages open from cache). First pass 10 min in, clear of the boot herd.
     import link_prewarm
     _spawn_bg(_periodic(
         "link figures prewarm", link_prewarm.PREWARM_PAUSE_S, link_prewarm.prewarm_all,
         first_after_s=600), "link-figures-prewarm")
 
-    # Vault week cache: one Creator at a time, paced ≥5 s between OF calls on the
-    # background lane — folder list, each dropdown folder's first page, All's
-    # first two pages, one full walk, top-100 thumbs (vault_collect docstring).
     import vault_collect
     if vault_collect.ENABLED:
         _spawn_bg(_periodic("vault collect", vault_collect.TICK_S, vault_collect.tick,
                             first_after_s=vault_collect.FIRST_AFTER_S), "vault-collect")
 
-    # Loops the *_wiring.py modules registered (relay_hooks.background_loops).
     relay_hooks.start_background_loops()
 
-    # Phase F: poll OF's /api2/v2/payouts/transactions ledger so per-model
-    # stats include subs / tips / PPV unlocks / paid posts. 15-min ticks
-    # (INGEST_TICK_INTERVAL_S), refresh + backfill 4 Creators at a time. See
-    # service/transaction_ingest.py docstring.
     from transaction_ingest import start_supervisor as _start_tx_ingest
     from purchase_poll import start_fast_poll as _start_tx_fast
     _tx_ingest_task = asyncio.create_task(_start_tx_ingest(), name="tx-ingest-supervisor")
-    # 30s freshness poll layered on the 15-min supervisor: reads OF's purchases
-    # notification feed (no ledger read) per due account (leased/Seller 30s, Idle 5min) so a PPV
-    # unlock flips messages.is_paid within ~30s and the automations see it the
-    # next tick. Shares the per-account lock with the supervisor. Cancelled in _stop_event_pumps.
+    # 30 s purchases-feed poll flips messages.is_paid; shares the per-account lock with the supervisor.
     _tx_fast_task = _spawn_bg(_start_tx_fast(), "tx-ingest-fast-poll")
 
-    # OnlyFans Statistics figures per Creator per UTC day (visitors, new subs,
-    # renewals) for Creator reports' windows: three reads per Creator once a
-    # day, hourly checks. See service/of_stats_daily.py.
     import of_stats_daily
     _spawn_bg(of_stats_daily.run_loop(), "of-stats-daily")
 
-    # P3 — automation executor: consumes scheduled_jobs / automation_rules and
-    # runs the 12 automations (scrape_chats ships as the reference). Mirrors the
-    # supervisor pattern above; cancelled in _stop_event_pumps next to tx-ingest.
     from automation_executor import automation_supervisor as _automation_supervisor
     _automation_exec_task = asyncio.create_task(
         _automation_supervisor(), name="automation-exec",
     )
 
-    # Full chat sweeps (scrape_chats `{}`) on a cadence anchored on each account's last
-    # finished sweep, at most one open per account; duplicates collapse. Replaces the
-    # once-per-boot seed that stacked a sweep per account on every restart.
     import sweep_cadence
     _spawn_bg(_periodic("chat sweep cadence", sweep_cadence.TICK_S, sweep_cadence.tick,
                         first_after_s=sweep_cadence.FIRST_AFTER_S), "chat-sweep-cadence")
@@ -1790,8 +1268,6 @@ async def _start_event_pumps() -> None:
 
 @app.on_event("startup")
 async def _start_push() -> None:
-    """Web Push sender (push_send): loads the subscriptions, starts its tasks; off (logged) without
-    a usable VAPID subject. Not behind the test-mode guard: slop drives it."""
     import push_send
     try:
         await push_send.start()
@@ -1801,10 +1277,6 @@ async def _start_push() -> None:
 
 @app.on_event("startup")
 async def _promo_fence_notices() -> None:
-    """Kept campaigns this box will not re-create (Host fence, ADR-0041): one owner notice
-    each, so a deploy with PROMO_CREATE_HOST_ID unset or changed is seen; and the duplicate
-    Kept campaigns the one-Kept migration unticked. Not behind the test-mode guard: the
-    proof relay checks it."""
     try:
         await promo_create_guard.fence_notices()
         await promo_create_guard.duplicate_notices()
@@ -1819,32 +1291,24 @@ async def _stop_push() -> None:
         await push_send.stop()
 
 
-_REGISTRY_DRAIN_S = 15.0   # shutdown's transport drain deadline (_stop_event_pumps)
+_REGISTRY_DRAIN_S = 15.0
 
 
 @app.on_event("shutdown")
 async def _stop_event_pumps() -> None:
     from of_session_registry import Registry
     registry = Registry.instance()
-    # Save the lane counters before anything else can raise — a clean stop is
-    # the one restart where we can avoid losing the last flush interval.
+    # Before anything can raise: a clean stop is the one restart that can save the last flush interval.
     _lane_stats_flush(force=True)
     of_call_counter.flush()
-    # No new Shared refresher job from here (its loop; a running read ends with the drain below).
     import shared_refresher
     await shared_refresher.stop()
-    # Finish every automation run that has claimed a send (a mass on its
-    # way to OF) before anything below stops, and start no new one: a restart
-    # never leaves a send half done (automation_executor.drain, bounded).
+    # Finish every run that claimed a send (a mass on its way to OF) first and start none: a restart never leaves a send half done.
     from automation_executor import drain as _drain_automations
     with contextlib.suppress(Exception):
         await _drain_automations()
-    # Claimed writes retain their business grace (including delete -> send).
-    # Only after that bounded drain do we deny new transport leases.
     registry.stop_admission()
-    # CancelledError is not an "Exception" in 3.8+ (it's BaseException) so we
-    # have to suppress it explicitly — otherwise FastAPI logs a noisy traceback
-    # at every clean shutdown.
+    # CancelledError is a BaseException: suppress it explicitly or every clean shutdown logs a traceback.
     for task in (_supervisor_task, _tx_ingest_task, _tx_fast_task, _automation_exec_task):
         if task and not task.done():
             task.cancel()
@@ -1859,22 +1323,17 @@ async def _stop_event_pumps() -> None:
     _account_pumps.clear()
     _pump_runs.clear()
 
-    # Stop remaining producers. Cancellation of to_thread waiters does not mean
-    # their native workers finished; registry.drain below waits on real owners.
     background = list(_bg_tasks)
     for task in background:
         task.cancel()
     if background:
         await asyncio.gather(*background, return_exceptions=True)
-    # Bounded: compose's stop_grace_period (75 s) minus streams (5 s) and the automation
-    # drain (RELAY_DRAIN_S 45 s) leaves ~25 s; a stuck native worker must not eat the
-    # persist flush below. The caller's wait is bounded too: drain closes every session before its
-    # deadline loop, and a close stuck in native code would hold this past it (the thread is left).
+    # Bounded: stop_grace_period 75 s minus streams 5 s and the automation drain 45 s leaves ~25 s; a stuck native worker must not eat the persist flush.
     try:
         drained = await asyncio.wait_for(asyncio.to_thread(registry.drain, _REGISTRY_DRAIN_S),
                                          _REGISTRY_DRAIN_S + 1.0)
     except asyncio.TimeoutError:
-        registry.stop_event.set()   # drain's own timeout branch never ran: stop the idle sweeper
+        registry.stop_event.set()
         drained = False
     if not drained:
         left = [s for s in registry.snapshot() if s.active or s.pins or s.retiring]
@@ -1882,17 +1341,12 @@ async def _stop_event_pumps() -> None:
                     _REGISTRY_DRAIN_S, len(left), sum(s.active for s in left),
                     sum(s.pins for s in left), sum(s.retiring for s in left))
 
-    # Drain the persist worker last — pumps are already cancelled above, so
-    # no new events are arriving. Anything still in the queue is dropped.
+    # Last: pumps are already cancelled; anything still queued is dropped.
     with contextlib.suppress(asyncio.CancelledError, Exception):
         await _stop_persist_worker()
 
-    # Drop the pooled clients: registry.drain closed their sessions to new calls (on a timeout the
-    # stuck owners keep theirs until they finish).
     client_pool.evict()
 
-    # Close the pooled SQLite connections (db/engine.py), so the last one out
-    # checkpoints the WAL as a closed NullPool connection used to.
     from db.engine import engine as _db_engine
     with contextlib.suppress(Exception):
         await _db_engine.dispose()
@@ -1900,19 +1354,10 @@ async def _stop_event_pumps() -> None:
     of_call_counter.flush()
 
 
-# The pooled OFClients a `_proxy` call's closure loaded, in order (the last is the
-# one a failure came from); None outside `_proxy`.
 _proxy_clients: ContextVar[list[OFClient] | None] = ContextVar("proxy_clients", default=None)
 
 
 def _load_client(account_id: str) -> OFClient:
-    """Return the OFClient for `account_id`, loading it the first time.
-    Raises a structured 503 if the account has no usable session yet.
-
-    Pooling lives in client_pool; this is only the HTTP translation of the
-    ways a build can fail (no file, incomplete signing rules, a missing field).
-    Routes and automations share the one pool, so an account has one client
-    (and one cookie jar), not one per lane."""
     try:
         backend = platforms.for_account(account_id).backend
         if backend is not None:
@@ -1923,11 +1368,9 @@ def _load_client(account_id: str) -> OFClient:
             seen.append(c)
         return c
     except (FileNotFoundError, ValueError, KeyError) as e:
-        # (error, message) per failure.
         error, message = next(v for t, v in (
             (FileNotFoundError, ("no_session", str(e))),
             (ValueError, ("incomplete_signing_rules", str(e))),
-            # A session file without a field the client needs (`headers`, `signing`).
             (KeyError, ("bad_session", f"session file is missing {e}")),
         ) if isinstance(e, t))
         raise HTTPException(
@@ -1943,7 +1386,6 @@ def _load_client(account_id: str) -> OFClient:
 
 @dataclass(frozen=True)
 class Refuse:
-    """`resolve_account`'s no: the HTTP status and detail to raise."""
     status: int
     detail: dict[str, Any]
 
@@ -1951,16 +1393,6 @@ class Refuse:
 def resolve_account(explicit: str | None, active: Callable[[], str | None],
                     method: Callable[[], str] | None,
                     n_accounts: int) -> str | None | Refuse:
-    """The account a request names: `explicit` wins, else `active()` (None if none).
-    A write (not GET/HEAD) with no explicit id from a caller that can reach
-    more than one Creator is refused — the active-account fallback would send
-    it as whichever Creator happens to be active. `method` is None for a
-    background caller (no request): never refused.
-
-    `active` is a thunk because it is a file read, needed only for the fallback.
-    `method` is a thunk read only after the count check, so a ≤1-Creator caller
-    never reads it: the test stand-in in service/tests/test_proxy_retry_interactive.py:188
-    is a SimpleNamespace with no `.method`, and reading it first would raise there."""
     if explicit:
         return explicit
     if method is not None and n_accounts > 1 and method() not in ("GET", "HEAD"):
@@ -1973,9 +1405,6 @@ def resolve_account(explicit: str | None, active: Callable[[], str | None],
 
 
 def _active_for(request: Request | None) -> Callable[[], str | None]:
-    """The active-account read, once per request (kept on `request.scope`): a headerless
-    read keys its cache by `_current_aid()` and fetches via `_get_client()`, each resolving;
-    a default flip between the two cached one Creator's body under another's key."""
     scope = getattr(request, "scope", None)
     if not isinstance(scope, dict):
         return account_registry.get_active_account_id
@@ -1988,29 +1417,12 @@ def _active_for(request: Request | None) -> Callable[[], str | None]:
 
 
 def _resolve_account_id(request: Request | None) -> str:
-    """Pick the account_id for this request, in priority order:
-       1. `X-Account-Id` request header (UI sends this)
-       2. `?account_id=...` query param (curl-friendly)
-       3. the currently active account (fallback for un-aware callers) —
-          for a write, only while the caller reaches ≤1 Creator (`resolve_account`)
-    Raises 404 if the explicit id doesn't exist, 400 for a write with no
-    explicit id from a multi-Creator caller, 503 if no active account,
-    403 if the signed-in user doesn't own the resolved account.
-
-    Ownership gate: if a session cookie identifies a signed-in friend (see
-    auth.session_middleware), the resolved account_id MUST appear in their
-    `user_accounts` set. Background paths with no request user (cron, WS
-    pump callbacks) bypass the check — they're trusted system code. This
-    is the single choke point for cross-user data isolation.
-    """
     explicit: str | None = None
     if request is not None:
         explicit = request.headers.get("x-account-id") or request.query_params.get("account_id")
     if explicit and account_registry.get_account(explicit) is None:
         raise HTTPException(status_code=404, detail=f"Unknown account_id {explicit!r}")
-    # The signed-in principal's Creators (a user wins over a chatter, whose set is
-    # the UNION across every owner that linked them — service/chatters.py);
-    # None = nobody signed in, so the registry is the reach and nothing is gated.
+    # A chatter's set is the UNION across every owner that linked them; None = nobody signed in, so nothing is gated.
     user = _get_request_user()
     chatter = _get_request_chatter() if user is None else None
     principal_ids = (user.account_ids if user is not None
@@ -2037,33 +1449,20 @@ def _resolve_account_id(request: Request | None) -> str:
 
 
 def _current_aid() -> str:
-    """`_resolve_account_id` for the request in flight (`_request_ctx`)."""
     return _resolve_account_id(_request_ctx.get())
 
 
 def _get_client(request: Request | None = None) -> OFClient:
-    """Resolve the account for `request` (or — if not passed — the request
-    captured by the middleware contextvar, falling back to the active
-    account) and return its OFClient."""
     if request is None:
         request = _request_ctx.get()
     return _load_client(_resolve_account_id(request))
 
 
 def _invalidate_client(account_id: str | None = None, only: OFClient | None = None) -> bool:
-    """Drop pooled OFClient(s) so the next request reloads from disk.
-    Used after re-bootstrap or proxy reassignment. None = every account (a
-    proxy edit can affect any of them). `only`: just while the pool still
-    holds that client (client_pool.evict); False when a replacement holds it."""
     return client_pool.evict(account_id, only=only)
 
 
 def _kick_clear_session_dead(account_id: str) -> None:
-    """Fire-and-forget clear of the account's dead-session pause (see
-    service/account_health.py) — a fresh capture proves the session works, so
-    automations resume immediately instead of waiting for the next probe.
-    Trampolines to the main loop because sync handlers run in the threadpool
-    (same pattern as _kick_db_sync)."""
     async def _clear() -> None:
         try:
             if await account_health.clear_session_dead(account_id):
@@ -2076,9 +1475,6 @@ def _kick_clear_session_dead(account_id: str) -> None:
 
 
 def _kick_mark_session_dead(account_id: str, reason: str, via: str) -> None:
-    """Fire-and-forget account_health.mark_session_dead from a sync caller (a
-    `_proxy` read in the threadpool): OF rejected the session, so automations
-    pause and the owner is told once, as for an automation that hit it."""
     async def _mark() -> None:
         try:
             if await account_health.mark_session_dead(account_id, reason):
@@ -2091,13 +1487,6 @@ def _kick_mark_session_dead(account_id: str, reason: str, via: str) -> None:
 
 
 async def flag_dead_session(account_id: str, exc: BaseException, via: str, client: OFClient | None) -> bool:
-    """A requestless read's failure (`exc`, or the OF error under `_proxy`'s 502) that says OF rejected the session
-    (account_health.is_session_dead_error): evict `client`, the one the read started on (`client_pool.peek` before
-    it; None: unknown, whichever is pooled), only while the pool still holds it, and only then mark the Creator dead
-    (automations pause, the owner is told once). A replacement already pooled is a fresh session: kept, not flagged
-    (it re-flags itself if truly dead), as `_proxy` does. `via` names the caller in the log. The client `_proxy`
-    names on the OF error (`of_client`: the one that issued the read) wins over `client`, which a cold pool leaves
-    None. True when flagged; never raises (the read's own error is what its caller handles)."""
     reason = account_health.is_session_dead_error(exc)
     if not reason and exc.__cause__ is not None:
         reason = account_health.is_session_dead_error(exc.__cause__)
@@ -2114,8 +1503,6 @@ async def flag_dead_session(account_id: str, exc: BaseException, via: str, clien
 
 
 def _on_main_loop(make_coro, name: str) -> None:
-    """Run `make_coro()` as a task on the relay's loop, from the loop itself or
-    from a threadpool thread (sync handlers); dropped before startup."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -2127,18 +1514,6 @@ def _on_main_loop(make_coro, name: str) -> None:
 
 
 def _sync_and_link_after_bootstrap(account_id: str) -> None:
-    """Mirror the new on-disk account into SQL, then give it its owner.
-
-    These two used to be separate fire-and-forget tasks, and the link lost
-    the race often enough that every recently captured account was owned by
-    nobody. They are ordered inside ONE coroutine now, so the `accounts`
-    parent is always committed before the link is attempted — the FK can no
-    longer fire, and the `except IntegrityError` that hid it is gone.
-
-    The link half is skipped for an unauthed request (founder pre-auth curl,
-    internal cron); the sync half always runs. Failures are logged, never
-    swallowed.
-    """
     user = _get_request_user()
 
     async def _run() -> None:
@@ -2146,9 +1521,6 @@ def _sync_and_link_after_bootstrap(account_id: str) -> None:
         if user is None:
             return
         await ensure_user_account_link(user.id, account_id)
-        # Refresh the in-process snapshot so the SAME request (sync handler
-        # called us, then returns to the user) sees the new account_id in
-        # its set on any follow-up _resolve_account_id call.
         user.account_ids = frozenset(user.account_ids | {account_id})  # type: ignore[misc]
 
     loop = _main_loop
@@ -2156,23 +1528,13 @@ def _sync_and_link_after_bootstrap(account_id: str) -> None:
         return
     fut = asyncio.run_coroutine_threadsafe(_run(), loop)
     try:
-        # Wait so the row is visible by the time we answer, capped so a slow
-        # import can't hang the response. On timeout the coroutine keeps
-        # running and still lands the link — ordering, not this wait, is what
-        # makes it correct.
+        # Capped so a slow import can't hang the response; on timeout the coroutine still lands the link: ordering, not this wait, makes it correct.
         fut.result(timeout=10)
     except Exception:
         log.exception("bootstrap sync+link failed for account %s", account_id)
 
 
 def post_bootstrap_hooks(account_id: str):
-    """What every session registration runs once the session is on disk, in
-    order: drop the pooled client, clear the dead-session pause, load the
-    client, restart the WS pump so the new cookies are used immediately, then
-    mirror into SQL and link the account to the signed-in user (ordered, not
-    raced — see _sync_and_link_after_bootstrap; unauthed callers still get the
-    sync). Shared by POST /admin/session/bootstrap and the served Browserbase
-    login (remote_login.py). Returns the loaded OFClient."""
     _invalidate_client(account_id)
     _kick_clear_session_dead(account_id)
     c = _load_client(account_id)
@@ -2181,103 +1543,22 @@ def post_bootstrap_hooks(account_id: str):
     return c
 
 
-# ── Per-account OF call priority lanes ────────────────────────────────
-#
-# All OF API calls for one account share a single curl_cffi.requests.Session
-# routed through one proxy IP. curl_cffi Sessions are NOT thread-safe and
-# OF + the proxy provider cap concurrent connections per source IP — so
-# firing 8 parallel /users/list batches behind a 11s /chats/messages call
-# starves anything else (like a vault picker open) that tries to land
-# during that window.
-#
-# We solve this with two semaphores per account:
-#   * `total`      — hard concurrency cap so we never exceed what the
-#                    proxy/OF can serve cleanly
-#   * `background` — sub-cap so bulk enrichment can't fill every slot
-#
-# Background calls acquire BOTH; user calls only the total cap. Result:
-# user-initiated work always has at least (total - background) reserved
-# slots and jumps the queue ahead of any waiting background call.
-#
-# Priority is signalled by the `X-Priority: background` request header.
-# Anything else (including missing) is treated as user.
-# Tunable, like every admission lane — this was the one concurrency ceiling in
-# the process that could only be changed by editing source, which is why it had
-# never been retuned.
-#
-# WHAT ACTUALLY BOUNDS THIS, measured 2026-08-26. The comment below says the cap
-# exists because OF and the proxy cap connections per source IP. That is not
-# what the numbers show: 100 concurrent `users/me` from ONE egress IP returned
-# 100x 200 with p50 flat at 0.55s, no 429 and no rate limiting — no knee at all
-# up to 100. Five accounts sharing one IP ran 25 concurrent with zero queuing
-# (p50 0.88s, against 0.61s for three accounts at 15).
-#
-# The real ceiling is THREADS. Every OF call is sync and runs via
-# `asyncio.to_thread`, so the fleet shares the one executor set at startup
-# (`_EXECUTOR_THREADS`) — with automation runs, vault stills and storyboard
-# builds. The budget is therefore:
-#
-#     accounts x _ACCOUNT_LANE_TOTAL  <=  _EXECUTOR_THREADS - headroom
-#
-# At 7 accounts the default 5 spent 35 of the old 64 (55%). At 20 accounts it
-# would have wanted 100 of 64 — every lane saturated at once queues inside the
-# pool, starving the automation lane and /health behind it (the 2026-07-04
-# thread-starvation shape). So the executor below is now DERIVED from this
-# number, not the other way round. Raise this only with evidence that the cap
-# is costing anything at all (`admin_priority_lane_stats()`'s `blocked_rate`).
-# It has been 0.0% across every measurement so far.
+# curl_cffi Sessions aren't thread-safe and OF/the proxy cap connections per IP; background calls take BOTH semaphores so user calls keep (total - background) reserved slots. Measured: 100 concurrent users/me from one IP, no knee; the real ceiling is executor threads: accounts x _ACCOUNT_LANE_TOTAL <= _EXECUTOR_THREADS - headroom.
 _ACCOUNT_LANE_TOTAL = lane_config.resolve("ACCOUNT_LANE_TOTAL", 5)
-# Still clamped below total: the sub-cap exists to RESERVE slots for user
-# work, so a saved value of background >= total would silently delete the
-# reservation and turn the two semaphores into one.
+# Clamped below total: background >= total would delete the user-slot reservation.
 _ACCOUNT_LANE_BACKGROUND = max(1, min(
     _ACCOUNT_LANE_TOTAL - 1 if _ACCOUNT_LANE_TOTAL > 1 else 1,
     lane_config.resolve("ACCOUNT_LANE_BACKGROUND", 2),
 ))
-# The clamp above means the number ENFORCED can differ from the number resolved,
-# and this is the only knob where that is true. Told to the store explicitly, or
-# the panel would report a pending change that no restart will ever deliver.
+# Enforced can differ from resolved: told to the store or the panel reports a pending change no restart delivers.
 lane_config.record_live("ACCOUNT_LANE_BACKGROUND", _ACCOUNT_LANE_BACKGROUND)
 
-# The asyncio default executor's size. Every `asyncio.to_thread` in this
-# codebase shares this one pool — all `_proxy` OF calls, the automation
-# executor's roundtrips, media pulls — so it is the budget the per-account
-# lane spends from. Settable from the Concurrency panel (env > panel > this
-# default). A `ThreadPoolExecutor` cannot be resized, so it is read once, here.
-#
-# THE DEFAULT IS DERIVED, sized 2026-10-25 for one agency of 50 accounts on
-# one relay (the 8 vCPU box; it was 20 accounts on 4 vCPU, 20 x 5 + 92 = 192):
-#
-#     accounts x _ACCOUNT_LANE_TOTAL  +  _EXECUTOR_HEADROOM
-#     50       x 5                    +  128                 =  378
-#
-# The headroom is what draws on the pool OUTSIDE `_proxy`'s lanes, counted at
-# 50 Creators: automation runs call the OF client directly (run slots —
-# run_slot.auto_runs(50) = 6, plus 2 operator-reserved — x up to 6 paced
-# welcome workers, + 2 bulk = 50); transaction ingest's own fan-outs (the
-# fast poll 5, backfill 4, the supervisor 1 = 10; counted again on purpose,
-# though the fast poll's call also sits in its account's lane); and the
-# admission lanes that dispatch to threads (vault media 10, stills 6,
-# storyboard 3, health 24, referrals 16 = 59) — 119, rounded up. `accounts` is the larger of the fleet this box is sized
-# for and the account directories on disk at boot, so a relay that grows past
-# 50 grows its pool at the next restart instead of silently re-running the
-# 7-on-64 maths with 80.
-#
-# What it costs: threads only block on network I/O, and `ThreadPoolExecutor`
-# starts one only when work arrives with none idle, so a 5-account relay never
-# reaches this number — it is a ceiling, like the lanes. Descriptors are the
-# scarce thing on 2026-08-08's evidence, and 378 threads x a few sockets each
-# sits far under the container's 65536 `nofile` (docker-compose.yml) — the
-# 08-08 exhaustion was uncapped /img misses at the 1024 default, fixed by
-# `admission.IMG_FETCH` and that ulimit.
+# Default is derived (50 accounts x 5 + 128 headroom = 378): a ThreadPoolExecutor can't be resized so it is read once; threads start only on demand, so it is a ceiling.
 _FLEET_ACCOUNTS = 50
 _EXECUTOR_HEADROOM = 128
 
 
 def _accounts_on_disk() -> int:
-    """Account directories present at boot. A plain directory count — not
-    `list_accounts()`, which materialises meta as a side effect — and never
-    raises: a sizing hint must not stop the relay from importing."""
     try:
         return sum(1 for p in account_registry.ACCOUNTS_DIR.iterdir() if p.is_dir())
     except Exception:
@@ -2290,37 +1571,24 @@ _EXECUTOR_THREADS = lane_config.resolve(
 )
 _account_lanes_lock = threading.Lock()
 _account_lanes: dict[str, tuple[threading.BoundedSemaphore, BgLane]] = {}
-#
-# ── Lane accounting ────────────────────────────────────────────────────
-# The previous two counters (`_priority_total_waits`,
-# `_priority_background_waits`) incremented before EVERY acquire, not only
-# blocked ones, and nothing ever read them — so they could not answer the
-# only question that matters here: is this lane actually a queue, and for
-# how long? These replace them with per-account + fleet-wide accounting of
-# *blocked* acquires and the time spent blocked, exposed at
-# /admin/priority-lanes/stats. Observation only: no acquire is bounded and
-# nothing is rejected.
 _lane_stats_lock = threading.Lock()
 _lane_stats_since = _time_mod.monotonic()
 
 
 def _new_lane_stat() -> dict:
     return {
-        "calls": 0,                 # lane entries
+        "calls": 0,
         "calls_user": 0,
         "calls_background": 0,
-        "blocked_total": 0,         # entries that waited for a `total` slot
-        "blocked_background": 0,    # background entries that waited on the sub-cap
-        "wait_s_total": 0.0,        # cumulative seconds blocked on `total`
-        "wait_s_background": 0.0,   # cumulative seconds blocked on `background`
-        "wait_s_max": 0.0,          # worst single entry's total wait
+        "blocked_total": 0,
+        "blocked_background": 0,
+        "wait_s_total": 0.0,
+        "wait_s_background": 0.0,
+        "wait_s_max": 0.0,
         "in_flight": 0,
         "in_flight_peak": 0,
         "bg_in_flight": 0,
         "bg_in_flight_peak": 0,
-        # Background entries waiting for their slot: on the loop (no thread
-        # held, `_bg_admission`) vs a worker thread blocked in the acquire
-        # (a server-side caller already in a thread). Gauges + peaks.
         "loop_waiting_background": 0,
         "loop_waiting_background_peak": 0,
         "threads_waiting_background": 0,
@@ -2331,22 +1599,7 @@ def _new_lane_stat() -> dict:
 _lane_stats_all: dict = _new_lane_stat()
 _lane_stats: dict[str, dict] = {}
 
-# ── Persistence ────────────────────────────────────────────────────────
-# The counters above answer "is this lane actually a queue?", and that is a
-# question answered over DAYS, not over one process lifetime. Held only in
-# memory they reset on every relay restart — so an observation window that
-# spanned a container recreate would silently start from zero and read as
-# "no queueing", which is the one wrong answer that looks like a result.
-#
-# So the CUMULATIVE fields persist to a small JSON file and fold back in on
-# boot. Live gauges (`in_flight`, `bg_in_flight`) deliberately do NOT
-# restore: nothing is in flight in a process that just started, and a
-# restored gauge would be wrong forever. Peaks and `wait_s_max` merge by max.
-#
-# The default path is the directory the SQLite DB lives in — in this
-# deployment that is the one path that is a real volume and therefore
-# survives `docker rm`. `PRIORITY_LANE_STATS_PATH=/some/file.json` moves it;
-# `PRIORITY_LANE_STATS_PATH=` (empty) turns persistence off entirely.
+# Cumulative counters persist so a window spanning a restart doesn't read as 'no queueing'; live gauges deliberately don't restore.
 _LANE_STATS_SCHEMA = 1
 _LANE_STATS_FLUSH_S = 30.0
 _LANE_CUMULATIVE = ("calls", "calls_user", "calls_background",
@@ -2358,24 +1611,20 @@ _LANE_GAUGES = ("in_flight", "bg_in_flight", "loop_waiting_background", "threads
 
 
 def _lane_stats_file() -> Path | None:
-    """Where the cumulative counters live between restarts, or None to keep
-    them in memory only."""
     return stats_file.beside_db("PRIORITY_LANE_STATS_PATH", "priority_lane_stats.json")
 
 
 _LANE_STATS_PATH: Path | None = _lane_stats_file()
-_lane_stats_base: dict = _new_lane_stat()               # fleet-wide, from disk
+_lane_stats_base: dict = _new_lane_stat()
 _lane_stats_base_by_account: dict[str, dict] = {}
-_lane_stats_started_at: float = _time_mod.time()        # wall clock, window start
-_lane_stats_boots: int = 1                              # restarts this window spans
-_lane_stats_last_flush: float = 0.0                     # monotonic
+_lane_stats_started_at: float = _time_mod.time()
+_lane_stats_boots: int = 1
+_lane_stats_last_flush: float = 0.0
 _lane_stats_load_error: str | None = None
 _lane_stats_write_error: str | None = None
 
 
 def _merge_lane_row(dst: dict, src: dict) -> None:
-    """Fold a persisted row into `dst`: cumulative fields add, peaks take the
-    max, live gauges are ignored on purpose."""
     for k in _LANE_CUMULATIVE:
         v = src.get(k)
         if isinstance(v, (int, float)) and v >= 0:
@@ -2387,8 +1636,6 @@ def _merge_lane_row(dst: dict, src: dict) -> None:
 
 
 def _lane_row_combined(base: dict, live: dict) -> dict:
-    """One row as a reader should see it: what survived restarts plus what
-    this process has seen. Gauges come from the live row only."""
     out = _new_lane_stat()
     for k in _LANE_CUMULATIVE:
         out[k] = base[k] + live[k]
@@ -2400,9 +1647,6 @@ def _lane_row_combined(base: dict, live: dict) -> dict:
 
 
 def _lane_stats_load() -> None:
-    """Best-effort restore at import. A missing, unreadable or older-schema
-    file is not an error worth failing a boot over — it just means this
-    window starts now, and the endpoint says so."""
     global _lane_stats_started_at, _lane_stats_boots, _lane_stats_load_error
     p = _LANE_STATS_PATH
     if p is None:
@@ -2432,7 +1676,6 @@ def _lane_stats_load() -> None:
 
 
 def _lane_stats_snapshot() -> dict:
-    """Everything a reader (or the file) needs, base folded into live."""
     with _lane_stats_lock:
         overall = _lane_row_combined(_lane_stats_base, _lane_stats_all)
         accounts = {}
@@ -2450,9 +1693,6 @@ def _lane_stats_snapshot() -> dict:
 
 
 def _lane_stats_flush(force: bool = False) -> None:
-    """Persist the cumulative counters. Throttled, because this is called from
-    every lane exit and must never become a write per OF call. Never raises —
-    a lane that cannot save its stats still has to serve traffic."""
     global _lane_stats_last_flush, _lane_stats_write_error
     p = _LANE_STATS_PATH
     if p is None:
@@ -2469,18 +1709,11 @@ def _lane_stats_flush(force: bool = False) -> None:
 
 
 _lane_stats_load()
-# The OF call counter's file beside the DB (OF_CALL_STATS_PATH): loaded, written at once,
-# then flushed every OF_CALL_STATS_FLUSH_S by its own thread; again at shutdown.
 of_call_counter.start(of_call_counter.stats_path())
-# Persist immediately rather than waiting for the first lane exit. Two reasons:
-# the bumped `boots` should be durable even on a relay that then serves no OF
-# traffic at all, and a path we cannot write to should surface as
-# `persist_error` at boot rather than silently at the end of the first window.
 _lane_stats_flush(force=True)
 
 
 def _lane_stat_rows(account_id: str) -> tuple[dict, dict]:
-    """Fleet-wide + per-account stat dicts. Caller holds `_lane_stats_lock`."""
     st = _lane_stats.get(account_id)
     if st is None:
         st = _new_lane_stat()
@@ -2489,7 +1722,6 @@ def _lane_stat_rows(account_id: str) -> tuple[dict, dict]:
 
 
 def _lane_gauge(account_id: str, key: str, d: int) -> None:
-    """Move a waiting gauge (`_new_lane_stat`) and its peak."""
     with _lane_stats_lock:
         for st in _lane_stat_rows(account_id):
             st[key] += d
@@ -2498,12 +1730,6 @@ def _lane_gauge(account_id: str, key: str, d: int) -> None:
 
 
 def _lane_acquire(sem, account_id: str, which: str) -> float:
-    """Acquire `sem`, recording whether we had to wait and for how long.
-
-    Behaviourally identical to a bare `sem.acquire()` — the non-blocking
-    probe exists ONLY so "took a free slot" can be told apart from "queued
-    behind someone". Still unbounded: this never gives up, never rejects.
-    Returns the seconds spent blocked (0.0 when a slot was free)."""
     if sem.acquire(blocking=False):
         return 0.0
     t0 = _time_mod.monotonic()
@@ -2521,7 +1747,6 @@ def _lane_acquire(sem, account_id: str, which: str) -> float:
 
 
 def _lane_record_wait(account_id: str, which: str, waited: float) -> None:
-    """Count one blocked acquire of the `which` ("background" | "total") lane and its wait."""
     ckey = "blocked_background" if which == "background" else "blocked_total"
     wkey = "wait_s_background" if which == "background" else "wait_s_total"
     with _lane_stats_lock:
@@ -2531,10 +1756,7 @@ def _lane_record_wait(account_id: str, which: str, waited: float) -> None:
 
 
 def _lane_entered(account_id: str, priority: str, waited: float, bg_held: bool) -> None:
-    # A user-priority (not background) lane entry made from a real request: the relay's one
-    # "a person is on this Creator" signal (of_pacing.note_user). The vault collector stays off
-    # such an account; the hourly link prewarm skips it this pass. Server-side jobs without a
-    # request (and without priority="background") are not a user. RAM-only: a restart reads as "quiet".
+    # The relay's one 'a person is on this Creator' signal (of_pacing.note_user): vault collector and link prewarm stay off. Requestless/background entries are not a user. RAM-only.
     if priority != "background" and _request_ctx.get() is not None:
         of_pacing.note_user(account_id)
     with _lane_stats_lock:
@@ -2558,8 +1780,7 @@ def _lane_exited(account_id: str, bg_held: bool) -> None:
             st["in_flight"] -= 1
             if bg_held:
                 st["bg_in_flight"] -= 1
-    # Outside the lock on purpose — the flush serialises its own snapshot and
-    # must not hold every other lane user behind a disk write.
+    # Outside the lock on purpose: the flush must not hold other lane users behind a disk write.
     _lane_stats_flush()
 
 
@@ -2568,9 +1789,6 @@ _BG_LANE_LONG_WAIT_S = 30.0
 
 
 def _bg_long_wait(aid: str, waited: float, where: str, outcome: str) -> None:
-    """One WARNING per background slot wait of 30 s or more (logging only; the sweep's
-    `bg_lane_long_wait` check reads it): a slow OF or a slot nobody frees.
-    where: loop (_bg_admission) | lease (a sibling child) | thread (blocked acquire)."""
     if waited >= _BG_LANE_LONG_WAIT_S:
         log.warning("bg_lane_long_wait account=%s where=%s outcome=%s waited_ms=%d",
                     aid, where, outcome, int(waited * 1000))
@@ -2578,18 +1796,6 @@ def _bg_long_wait(aid: str, waited: float, where: str, outcome: str) -> None:
 
 @contextlib.asynccontextmanager
 async def _bg_admission(request: Request | None = None, *, own: bool = False):
-    """Wait, on the event loop, for the Creator's background lane slot before a
-    background request's OF read takes a worker thread; a no-op for user priority,
-    for a request whose account does not resolve (it fails in the route as before)
-    and inside an admission for the same Creator. Entered by the coalesce leader and
-    relay_cache's sync fetch (relay_coalesce.admission), `_bg_admission_route`
-    and the direct `to_thread(_proxy, ...)` background reads. With no request, the
-    `_background_reads` Creator's lane: a requestless walk enters it once, before it leads
-    any relay_cache lock or coalesce flight (permit before flight, as a request's
-    `_bg_admission_route`), else a slot holder joining its flight while it waits for a slot
-    deadlocks the lane (app_open_warm_reads, shared_refresher_reads). `own`: never reuse the
-    held lease (relay_cache's detached SWR refresh: it outlives the request whose lease it
-    inherited, so it takes its own slot before its key lock)."""
     req = request if request is not None else _request_ctx.get()
     aid = _bg_reads_aid.get() if req is None else None
     if req is not None and (req.headers.get("x-priority") or "").lower() == "background":
@@ -2628,8 +1834,6 @@ relay_coalesce.admission = lambda own=False: _bg_admission(own=own)
 
 
 def _lanes_for(account_id: str) -> tuple[threading.BoundedSemaphore, BgLane]:
-    """Return (total, background) semaphores for `account_id`, creating
-    them on first access."""
     with _account_lanes_lock:
         pair = _account_lanes.get(account_id)
         if pair is None:
@@ -2642,28 +1846,17 @@ def _lanes_for(account_id: str) -> tuple[threading.BoundedSemaphore, BgLane]:
 
 
 def _current_priority() -> str:
-    """Read X-Priority off the current request. Defaults to 'user' when
-    the header is missing or the call originates outside a request (e.g.
-    background tasks), except inside `_background_reads`. The only value
-    that changes behaviour is the exact string 'background'."""
     req = _request_ctx.get()
     if req is None:
         return "background" if _bg_reads_aid.get() is not None else "user"
     return (req.headers.get("x-priority") or "user").lower()
 
 
-# The Creator whose requestless reads run at background priority (`_background_reads`).
 _bg_reads_aid: ContextVar[str | None] = ContextVar("bg_reads_aid", default=None)
 
 
 @contextlib.contextmanager
 def _background_reads(account_id: str):
-    """Requestless reads for `account_id` inside this block are background-class, as an
-    `X-Priority: background` request's: `_current_priority`, the coalesce/relay_cache class,
-    `_bg_admission` on the Creator's background lane, and the chats window read
-    (`_assemble_chats_page`) on its lane too. A request's own header still wins. Tasks and
-    `to_thread` workers started inside inherit it (contextvars). The Shared refresher's and the
-    App-open warm's reads."""
     token = _bg_reads_aid.set(str(account_id))
     try:
         yield
@@ -2673,17 +1866,6 @@ def _background_reads(account_id: str):
 
 @contextlib.contextmanager
 def _priority_lane(account_id: str | None, priority: str | None = None):
-    """Acquire the right semaphore(s) for the current request's priority.
-    Background callers also hold the background sub-semaphore, so user
-    callers always have at least (total - background) reserved slots.
-
-    `priority` overrides the X-Priority header — used by server-side
-    callers that have no request context (see `_priority_lane_background`).
-
-    Neither acquire is bounded. If the second acquire raises, the first is
-    released before the exception propagates: without that, a background
-    caller interrupted between the two acquires would permanently shrink
-    the background cap (2 → 1 → 0) for that account."""
     if not account_id:
         yield
         return
@@ -2710,13 +1892,6 @@ def _priority_lane(account_id: str | None, priority: str | None = None):
 
 
 def _take_bg(account_id: str, background: BgLane) -> tuple[Callable[[], None], float]:
-    """A background caller's slot: the one the loop admitted this request for
-    (_bg_admission's lease, borrowed), else one acquired here. (its release, seconds waited).
-
-    A parallel child of a request whose lease a sibling holds (of_notifications_money's
-    gather) never queues on the lane: it takes a free slot, else waits for its own lease.
-    Queued on the lane, two such requests held both slots (cap 2) and each waited for a
-    third: the Creator's background reads hung until restart."""
     lease = _bg_lease.get()
     if lease is not None and lease.borrow(account_id):
         return lease.give_back, lease.take_wait()
@@ -2747,10 +1922,6 @@ POOL_PROXY_ERROR = f"{BRAND_NAME} proxy unreachable"
 
 
 def _pool_safe_error(aid: str | None, text: str, label: str | None = None) -> str:
-    """curl error text names the proxy host. When the client is on an
-    Inflowwww proxy (by `label`, else by the account's binding), return a fixed
-    message and log the real one here; other text only has pool secrets
-    scrubbed (scrub_pool_secrets), so custom/no-proxy text reads as before."""
     p = (proxy_registry.get_by_label(label) if label
          else proxy_registry.get_for_account(aid) if aid else None)
     if not proxy_registry.is_pool(p):
@@ -2764,26 +1935,6 @@ class _SendRetryExpired(of_pacing.SendDispatchExpired, OFDispatchRefused):
 
 
 def _proxy(call, *, client: OFClient | None = None, send: bool = False, started: float | None = None):
-    """Translate OFAPIError + curl_cffi proxy/network errors into a structured
-    502 so the frontend can react, and log a one-liner instead of a 200-line
-    traceback for transient proxy failures (cf-tunnel 403s, timeouts, DNS).
-
-    Also serializes the upstream call through the per-account priority
-    lane, so a bulk background enrichment can't starve a user-initiated
-    fetch (vault open, chat click). A request that is not `X-Priority:
-    background` marks its reads interactive (of_client.INTERACTIVE_READ):
-    a dead proxy fails them after 2 tries, not 5; writes keep the 5.
-
-    A call whose client was evicted under it (OFSessionRetired) runs once more
-    on the account's current client when it is a GET; anything else, and a
-    busy signed pool (OFSignedPoolBusy: nothing evicted), answers 503 +
-    Retry-After (a write retried from the top could repeat what it sent).
-    `client`: the one `call` runs on when it was loaded before `_proxy` (a bound
-    method), so a dead-session answer evicts only that client.
-
-    OF's 429 on a GET request (or `send`: a write OF refuses whole on a 429) closes the
-    Creator's 429 gate: it and the Creator's later ones queue, off the lane, and are sent again
-    (of_pacing.absorb_429; sends have their own cutoff, from `started`: the send request's arrival)."""
     send_deadline = (started or _time_mod.monotonic()) + of_pacing.SEND_BUDGET_S if send else None
     aid: str | None = None
     token = None
@@ -2796,7 +1947,6 @@ def _proxy(call, *, client: OFClient | None = None, send: bool = False, started:
                 aid = _resolve_account_id(req)
             except HTTPException:
                 aid = None
-            # Someone is waiting on this request: its reads fail fast on a dead proxy.
             if _current_priority() != "background":
                 token = INTERACTIVE_READ.set(True)
         def _attempt():
@@ -2832,44 +1982,33 @@ def _proxy(call, *, client: OFClient | None = None, send: bool = False, started:
         raise HTTPException(status_code=504, detail="Send window expired before dispatch.") from e
     except OFDeactivatedError as e:
         raise HTTPException(status_code=409, detail=_DEACTIVATED_DETAIL) from e
-    except OFSessionRetired as e:  # before OFDeniedError (its base)
-        # This request never left (a multi-request write's earlier ones may have); the
-        # account's current client takes the caller's next try.
-        busy = isinstance(e, OFSignedPoolBusy)   # nothing evicted: its handles stay leased a while
+    except OFSessionRetired as e:
+        busy = isinstance(e, OFSignedPoolBusy)
         reason = "signed_pool_busy" if busy else "session_retired"
-        # watch:signed_pool_503 counts these per account (scripts/proxy-health/watch.py).
         log.warning("signed_pool_503 account=%s reason=%s method=%s", aid, reason,
                     req.method if req is not None else None)
         raise HTTPException(status_code=503, headers={"Retry-After": "5" if busy else "1"},
                             detail={"upstream_status": reason, "upstream_body": str(e)}) from e
     except OFDeniedError as e:
-        # The Relay's own deny-list (of_client._denied), never sent: not an upstream failure.
         raise HTTPException(status_code=403,
                             detail={"upstream_status": "refused_by_relay", "upstream_body": str(e)}) from e
     except OFAPIError as e:
-        issued = e.of_client = loaded[-1] if loaded else client   # the client that issued it (flag_dead_session)
+        issued = e.of_client = loaded[-1] if loaded else client
         r = e.response
         status = r.status_code if r is not None else 500
         body = r.text[:2000] if r is not None else str(e)
         log.warning("upstream error: %s %s", status, body[:200])
-        # OF rejected the session itself (logged out, wants a 2FA code): pause the
-        # account and tell its owner, as an automation hitting it does. The read
-        # still answers 502; the error middleware never sees an OFAPIError here.
+        # OF rejected the session itself: pause the account and tell its owner; the read still answers 502.
         dead_reason = account_health.is_session_dead_error(e)
         if dead_reason and aid:
-            # Only the client that met it: a concurrent read already replaced it, keep the fresh one,
-            # and leave the Creator unflagged (the fresh client re-flags it if truly dead).
-            # Neither known (a Fansly shim, a stubbed loader): evict as before.
+            # Only the client that met it: a concurrent read already replaced it, so keep the fresh one.
             if _invalidate_client(aid, only=issued):
                 _kick_mark_session_dead(aid, dead_reason, via="proxy")
-        # 502 = bad gateway: we tried, OF didn't like it.
         raise HTTPException(
             status_code=502,
             detail={"upstream_status": status, "upstream_body": body},
         ) from e
     except curl_requests.exceptions.ProxyError as e:
-        # of_client._http_call already logged the structured details
-        # (account, proxy label, endpoint). Surface a clean 502 to the UI.
         log.warning("proxy_unreachable: %s", str(e)[:200])
         raise HTTPException(
             status_code=502,
@@ -2896,21 +2035,6 @@ def _proxy(call, *, client: OFClient | None = None, send: bool = False, started:
 
 @contextlib.contextmanager
 def _of_read_timing(route: str, aid: str | None, chat_id: int | None = None):
-    """One `of_read_timing` INFO line per timed OF passthrough read (logging only):
-
-        of_read_timing route=<messages|chats|users_list|chat> account=<aid> chat=<id|->
-          prio=<user|background> status=<http status> of_calls=<n> lane_wait_ms=<n>
-          signed_wait_ms=<n> of_ms=<n> post_ms=<n> total_ms=<n>
-
-    lane_wait_ms: `_priority_lane`'s `waited`; background: incl. the loop admission
-    `_bg_admission_route` already paid before the route ran (peeked off the lease, not
-    consumed: the lane stats keep their own), which total_ms then also starts from;
-    signed_wait_ms: `OFClient._signed_slot`'s wait; of_ms: time in `_proxy`'s call minus
-    the signed wait (OF upstream, x-hash warm-up and proxy retries); post_ms: local work
-    after OF answered (`_timing_post_start` to the end: media dims stamp, the users/list
-    overlay, the /chats row stamps). of_calls=0: served from the relay cache or a
-    coalesced flight another request led (its numbers are on the leader's line).
-    The counters ride `of_client.READ_TIMING`; nothing here raises."""
     t: dict[str, Any] = {"_t0": _time_mod.monotonic(), "_task": None, "_admit_s": 0.0}
     try:
         t["_task"] = asyncio.current_task()
@@ -2940,7 +2064,6 @@ def _of_read_timing(route: str, aid: str | None, chat_id: int | None = None):
                 "of_read_timing route=%s account=%s chat=%s prio=%s status=%s of_calls=%d "
                 "lane_wait_ms=%d signed_wait_ms=%d of_ms=%d post_ms=%d total_ms=%d",
                 route, aid or "-", chat_id if chat_id is not None else "-", _current_priority(),
-                # Borrowed, the lease's wait is in lane_wait_s already; unborrowed, only here.
                 status, int(t.get("of_calls", 0)), ms(max(t.get("lane_wait_s", 0.0), t["_admit_s"])),
                 ms(t.get("signed_wait_s", 0.0)),
                 ms(max(0.0, t.get("call_s", 0.0) - t.get("signed_wait_s", 0.0))),
@@ -2951,16 +2074,12 @@ def _of_read_timing(route: str, aid: str | None, chat_id: int | None = None):
 
 
 def _timing_post_start() -> None:
-    """Mark where the timed read's local post-OF work starts (see `_of_read_timing`)."""
     t = READ_TIMING.get()
     if t is not None:
         t["_post_t0"] = _time_mod.monotonic()
 
 
 def _timing_detach_foreign() -> None:
-    """In a fetcher a stale-while-revalidate refresh may run: when this task is not
-    the timed request's own, stop timing here, so the background refresh's OF
-    call is not booked on a request that was already answered from cache."""
     t = READ_TIMING.get()
     if t is None:
         return
@@ -2972,22 +2091,8 @@ def _timing_detach_foreign() -> None:
 
 
 def _account_ttl(namespace: str, ttl_seconds: float):
-    """Cache a sync, read-only OF proxy route per account for `ttl_seconds`.
-
-    Put it under the `@app.get(...)`. The key is (namespace, account, route name,
-    every query/path parameter). The account comes from `_resolve_account_id`,
-    which also enforces ownership (403/404), so it runs BEFORE any cache read: a
-    caller is only ever answered from its own account's entry. Concurrent
-    misses on one key share ONE upstream call (relay_cache's per-key lock).
-    Errors are never cached. A request whose account does not resolve skips
-    the cache and runs the route as before, which answers the same 403/404/503
-    through `_get_client`.
-
-    Writes clear these entries in `of_client` (`_WRITE_INVALIDATES`), whoever
-    makes them; anything else waits out the TTL. The undecorated route stays
-    callable as `route.__wrapped__`."""
     def wrap(fn):
-        @functools.wraps(fn)   # FastAPI reads the route's parameters through __wrapped__
+        @functools.wraps(fn)
         async def cached(**params):
             try:
                 aid = _current_aid()
@@ -3000,7 +2105,6 @@ def _account_ttl(namespace: str, ttl_seconds: float):
     return wrap
 
 
-# ── Endpoints ──────────────────────────────────────────────────
 
 @app.get("/livez")
 def livez():
@@ -3017,43 +2121,14 @@ def livez():
     return {"ok": True}
 
 
-# ── /health?all_accounts=1 — one live OF probe per account ──────────────
-#
-# The loop that makes them used to be serial: 7 accounts measured 4.11s then
-# 3.06s against 0.60s for a single account. Concurrency is the fix, and the
-# ceiling that keeps it from being a downgrade is `admission.HEALTH_PROBE` —
-# see that lane for why an unbounded fan-out here is a process-wide problem.
-#
-# What is local to this handler is the BUDGET, and the budget is not a cancel.
-# `c.me()` blocks in a worker thread and outlives any cancellation of the task
-# awaiting it, so `asyncio.wait(timeout=)` stops WAITING and nothing more: each
-# probe still runs to completion and still releases its own slot when it
-# actually finishes. Releasing on timeout instead would let the next probe start
-# while the abandoned OF call was still in flight — a ceiling reported but not
-# held. Timed-out probes are parked in `_health_probes_running` so the loop
-# cannot collect a live task, and their row says `timeout`, which is an honest
-# "still running" rather than a verdict on the session.
-#
-# 20s, and deliberately nowhere near the 0.60s a healthy probe takes: that is
-# what healthy looks like, not a safe deadline. `OFClient.timeout_s` is 30s and
-# `_proxy_retry` can spend several attempts inside it, so a budget sized off the
-# observed number would fail slow-but-fine accounts and flag their sessions in
-# the switcher — manufacturing the exact fault this route exists to report.
+# The budget is not a cancel: c.me() blocks in a worker thread and outlives task cancellation, so asyncio.wait(timeout=) only stops WAITING; each probe frees its slot when it really finishes. Deliberately not near a healthy probe's 0.60s: OFClient.timeout_s is 30s with retries, and a tight budget would flag slow-but-fine sessions.
 _HEALTH_PROBE_BUDGET_S = max(1.0, float(os.environ.get("HEALTH_ALL_BUDGET_S", "20")))
 
-# Strong references to probes still running past the budget. Their only other
-# reference is a local in a frame we are about to return from, and the loop is
-# free to collect a task nobody holds — mid-OF-call.
+# Strong refs: the loop may collect a task nobody holds, mid-OF-call.
 _health_probes_running: set[asyncio.Task] = set()
 
 
 def _probe_account_blocking(aid: str) -> dict[str, Any]:
-    """One account's live probe. NEVER raises — returns that row's fields.
-
-    Every branch of the old serial loop's try/except lives here unchanged. The
-    endpoint's "never raises 500" contract is what makes that mandatory: once
-    this runs in a worker thread, an escaping exception is no longer inside the
-    loop that used to wrap it."""
     try:
         c = _load_client(aid)
         me = c.me()
@@ -3061,9 +2136,6 @@ def _probe_account_blocking(aid: str) -> dict[str, Any]:
         pool = proxy_registry.is_pool(proxy_registry.get_by_label(c.proxy_label or ""))
         row = {"ok": True, "user_id": me.get("id"), "name": me.get("name"),
                "proxy": {"pool": True} if pool else {"label": c.proxy_label, "url": c.proxy_url}}
-        # Reuse this live identity for the table's avatar, without another me()
-        # per row. A mismatched identity never supplies a picture; the health
-        # verdict itself stays unchanged. Do not expose the full OF profile.
         if me.get("id") is not None and str(me["id"]) == aid:
             row["profile"] = {key: me.get(key) for key in ("id", "avatar", "avatarThumbs")}
         return row
@@ -3081,16 +2153,12 @@ def _probe_account_blocking(aid: str) -> dict[str, Any]:
 
 
 async def _probe_account(aid: str) -> dict[str, Any]:
-    """Hold a slot for the WHOLE life of the blocking call, then release it."""
     async with admission.HEALTH_PROBE:
         return await asyncio.to_thread(_probe_account_blocking, aid)
 
 
 async def _health_all_accounts() -> dict[str, Any]:
-    """The `?all_accounts=1` snapshot: one bounded, budgeted probe per account."""
     rows: list[dict[str, Any]] = []
-    # Task → the row it answers, so association is by identity and no ordering
-    # or id-uniqueness assumption stands between a probe and its account.
     probes: dict[asyncio.Task, dict[str, Any]] = {}
     off = await account_health.deactivated_ids()
     for meta in account_registry.list_accounts():
@@ -3102,12 +2170,9 @@ async def _health_all_accounts() -> dict[str, Any]:
         }
         rows.append(row)
         if not meta.get("has_session"):
-            # No session means no client to load: answered off the registry
-            # alone, without spending a slot or an OF call to say so.
             row.update({"ok": False, "error": "no_session"})
             continue
         if aid in off:
-            # A deactivated Creator gets no OF call, this probe included.
             row.update({"ok": False, "error": "deactivated"})
             continue
         probes[asyncio.create_task(_probe_account(aid))] = row
@@ -3118,11 +2183,9 @@ async def _health_all_accounts() -> dict[str, Any]:
             try:
                 probes[t].update(t.result())
             except Exception as e:  # noqa: BLE001 — never raises 500
-                # `_probe_account_blocking` swallows everything, so reaching
-                # here means the dispatch itself failed (executor shut down).
                 probes[t].update({"ok": False, "error": f"{type(e).__name__}: {e}"})
         for t in pending:
-            _health_probes_running.add(t)          # deliberately NOT cancelled
+            _health_probes_running.add(t)
             t.add_done_callback(_health_probes_running.discard)
             probes[t].update({
                 "ok": False, "error": "timeout", "timed_out": True,
@@ -3134,9 +2197,6 @@ async def _health_all_accounts() -> dict[str, Any]:
 
 
 def _health_one(request: Request):
-    """The single-account branch, unchanged — and still blocking (`me()` and
-    `egress_ip()` are both OF round-trips), which is why the handler hands it
-    to a thread rather than running it on the loop."""
     try:
         client = _get_client(request)
     except HTTPException as e:
@@ -3175,16 +2235,7 @@ async def health(request: Request, all_accounts: bool = Query(False, description
     the full per-account snapshot, which the UI uses to flag any expired
     sessions in the switcher dropdown."""
     if all_accounts:
-        # AccountsTable's query inherits `retry: 1` (app/components/providers.tsx),
-        # so a slow answer can launch a SECOND fan-out on top of the first.
-        # Coalescing makes the retry JOIN the in-flight probe instead of doubling
-        # it. Legal per relay_coalesce's own rules — a GET, no `X-Employee-Id`,
-        # no attribution — and the key carries no account because the fan-out
-        # covers every account and is identical for every caller; the clamp to
-        # the caller's own Creators runs after it (_clamp_health_all).
-        # ASSUMPTION: the ALLOW_ANONYMOUS_ADMIN escape hatch (allowed None)
-        # passes unclamped, as it does for /admin/* (rung 3); rows still lose
-        # proxy.url. Overturned if the hatch must not cover /health.
+        # Coalesced: AccountsTable's retry:1 would launch a second fan-out; the retry joins the in-flight probe. The key has no account (identical for every caller); the clamp to the caller's Creators runs after.
         allowed = _require_actor_account_ids()
         snapshot = await relay_coalesce.coalesce(("health_all",), _health_all_accounts)
         return _clamp_health_all(snapshot, allowed)
@@ -3192,9 +2243,6 @@ async def health(request: Request, all_accounts: bool = Query(False, description
 
 
 def _clamp_health_all(snapshot: dict[str, Any], allowed: frozenset[str] | None) -> dict[str, Any]:
-    """Keep only the caller's rows and drop `proxy.url` (it carries the proxy's
-    username and password, and no UI reads it). Builds new rows, so the
-    coalesced snapshot is never mutated."""
     rows = []
     for row in snapshot["accounts"]:
         if allowed is not None and row.get("account_id") not in allowed:
@@ -3203,22 +2251,17 @@ def _clamp_health_all(snapshot: dict[str, Any], allowed: frozenset[str] | None) 
         if isinstance(row.get("proxy"), dict):
             row["proxy"] = {k: v for k, v in row["proxy"].items() if k != "url"}
         rows.append(row)
-    # ASSUMPTION: the top-level `ok` is recomputed over the caller's rows, with
-    # `_health_all_accounts`' own rule (rung 5: another Agency's dead session
-    # must not turn this caller's answer false). Overturned if a caller needs
-    # the fleet-wide verdict.
+    # `ok` recomputed over the caller's rows: another Agency's dead session must not turn this answer false.
     return {**snapshot, "ok": all(r.get("ok") for r in rows) if rows else False,
             "accounts": rows}
 
 
-_ME_TTL_S = 60.0           # users/me as is (the mirror's counters: chatMessagesCount and the like)
-_ME_MAX_AGE_MAX_S = 1800   # the app's ["of-profile"] staleTime (hooks/useStats useAccountProfile, 30 min)
+_ME_TTL_S = 60.0
+_ME_MAX_AGE_MAX_S = 1800
 
 
 def _users_me_read() -> dict[str, Any]:
     me = _proxy(lambda: _get_client().me())
-    # Free-vs-paid page rides on `subscribePrice` here; hand it to account_page
-    # so the feed-post gate gets its answer without a second OF round-trip.
     account_page.prime(_current_aid(), me)
     return me
 
@@ -3233,7 +2276,7 @@ async def users_me(max_age: int | None = None) -> dict[str, Any]:
     try:
         aid = _current_aid()
     except HTTPException:
-        return await asyncio.to_thread(_users_me_read)   # as _account_ttl: the route answers its 403/404/503
+        return await asyncio.to_thread(_users_me_read)
     key = ("users_me",)
     age = _ME_TTL_S
     held = relay_cache.peek_fresh("users_me", aid, key) if max_age else None
@@ -3247,21 +2290,11 @@ async def users_me(max_age: int | None = None) -> dict[str, Any]:
     return held
 
 
-# ── Image proxy ────────────────────────────────────────────────
-# /img, its on-disk cache and pinned outbound media live in img_api.py. First
-# loaded earlier via vault_ai_api→vault_ai_vision→vault_frames→storyboard; only the
-# include_router positions below (handlers' old spots) matter for route order.
 import img_api  # noqa: E402
 
 
 @contextlib.contextmanager
 def _priority_lane_background(account_id: str):
-    """Acquire the per-account total + background semaphores (background
-    priority) for a server-side fetch with no request context.
-
-    Delegates to `_priority_lane` with the priority forced, so this path
-    gets the same accounting and the same enter/exit pairing rather than a
-    second copy of the branch that drifts from it."""
     with _priority_lane(account_id, priority="background"):
         yield
 
@@ -3269,20 +2302,11 @@ def _priority_lane_background(account_id: str):
 app.include_router(img_api.streams_router)
 
 
-# ── /admin/errors + /admin/perflog ──────────────────────────────
-# Live in diag_api.py; included HERE (not top-of-file) to keep route order.
 import diag_api  # noqa: E402
 from diag_api import _perflog_evictor_loop  # noqa: E402
 app.include_router(diag_api.router)
 
 
-# ── /admin/chats/recent — instant-load seed for the inbox ──────────
-# Returns the most recent rows from the LOCAL `chats` table (populated
-# by the WS transcoder) joined to `fans` for display names + avatars.
-# Sub-50ms because everything is indexed in SQLite — no OF call.
-# Used by the frontend to render an instant 10-25 row chat list while
-# the live OF `/chats` fetch is still in flight, so users can click a
-# conversation immediately instead of waiting for the cold OF round-trip.
 
 @app.get("/admin/chats/recent")
 async def admin_chats_recent(
@@ -3311,13 +2335,13 @@ async def admin_chats_recent(
             out.append({
                 "__accountId": chat.account_id,
                 "withUser": {
-                    "id": chat.fan_id,
+                    "id": js_safe_id(chat.fan_id),
                     "name": fan.of_display_name if fan else None,
                     "username": fan.of_username if fan else None,
                     "avatar": fan.avatar_url if fan else None,
                 },
                 "lastMessage": {
-                    "id": chat.last_message_id,
+                    "id": js_safe_id(chat.last_message_id),
                     "text": chat.last_message_preview or "",
                     "createdAt": chat.last_message_at.isoformat() + "Z" if chat.last_message_at else None,
                 } if chat.last_message_id else None,
@@ -3382,8 +2406,6 @@ def admin_priority_lane_stats() -> dict:
     snap = _lane_stats_snapshot()
     overall = _view(snap["overall"])
     rows = {aid: _view(st) for aid, st in snap["accounts"].items()}
-    # The fleet-wide row's `saturated`/peaks are sums across accounts, not a
-    # cap breach — the cap is per account, so drop the flag there.
     overall.pop("saturated", None)
     return {
         "cap_total": _ACCOUNT_LANE_TOTAL,
@@ -3420,8 +2442,6 @@ def admin_relay_cache_stats() -> dict[str, Any]:
     return relay_cache.stats()
 
 
-# ── Video scrub storyboard ────────────────────────────────────────────
-# Lives in storyboard.py; included HERE (not top-of-file) to keep route order.
 import storyboard  # noqa: E402
 app.include_router(storyboard.router)
 
@@ -3441,24 +2461,10 @@ def admin_coalesce_stats() -> dict:
 app.include_router(storyboard.stats_router)
 
 
-# One TTL for every reader of the "list_chats" namespace (the inbox list AND
-# the roster badge, which derives its counts from the same cached window —
-# see _compute_roster_count_of). WS patching keeps it live; the TTL is the
-# no-WS fallback.
 _LIST_CHATS_TTL = 600.0
-# How long past that TTL the inbox list still answers from RAM while ONE
-# background read refreshes it — an expired window used to cost the opener a
-# 3-call OF read (p50 ~2 s). The badge fold does not use it: it keeps its own
-# window-age rule (_ROSTER_WINDOW_MAX_AGE_S, see _compute_roster_count_of).
 _LIST_CHATS_SWR = 600.0
 
-# When the badge's page-0 window was last fetched LIVE from OF, per account.
-# The badge fold escalates to a live re-read when the window is older than
-# _ROSTER_WINDOW_MAX_AGE_S — without this, counts folded from a near-expiry
-# window and then cached for the roster TTL could serve ~900s-old state on a
-# WS-dead account (the pre-unification badge re-read OF at least every 300s).
-# Stamped by BOTH fetch sites (the inbox endpoint and the badge compute), so
-# either one refreshing the window resets the clock for both.
+# Stamped by both fetch sites; past _ROSTER_WINDOW_MAX_AGE_S the badge fold re-reads live, else counts from a near-expiry window could serve ~900s-old state on a WS-dead account.
 _ROSTER_WINDOW_MAX_AGE_S = 300.0
 _chats_window_fetched_at: dict[str, float] = {}
 
@@ -3473,12 +2479,6 @@ def _assemble_chats_page(
     list_id: str | None = None,
     q: str | None = None,
 ) -> dict[str, Any]:
-    """Blocking: the inbox's (and the roster badge's) page of chats — see
-    chats_page.assemble_chats_page. A page OF's 429 cut short raises that 429
-    (a short page cached as the whole window would hide the rest for the TTL);
-    a dup-only read keeps OF's hasMore. Inside `_background_reads` with no request (the
-    window rewarm, which has no `_proxy` lane) it holds that Creator's background lane. `asked_at`: when it was asked
-    (epoch ms, the Relay clock); the Amber fold overlays what arrived after it."""
     asked_at = unread_total._clock()
     bg_aid = _bg_reads_aid.get() if _request_ctx.get() is None else None
     with _priority_lane(bg_aid, priority="background"):
@@ -3494,8 +2494,6 @@ _CHATS_429_HOLD = chats_page.ThrottleHold()
 
 
 async def _cached_or_held_on_429(namespace: str, aid: str, extras: tuple, **kw: Any) -> tuple[Any, bool]:
-    """relay_cache.get_or_fetch; when OF still 429s (or its hold answers), the copy held for
-    the key at any age instead, if there is one."""
     try:
         return await relay_cache.get_or_fetch(namespace, aid, extras, **kw), False
     except HTTPException as e:
@@ -3514,34 +2512,23 @@ async def list_chats(
     filter: str | None = Query(None, description="OF chat filter: 'unread'|'pinned'|'priority'"),
     list_id: str | None = Query(None, description="Show only chats whose fan is in this custom list (folder)"),
     query: str | None = Query(None, description="Free-text search by fan name/username (OF param: ?query=)"),
-    # Legacy alias from the first cut of the chat-search UI — the real OF param
-    # is `query=`. We accept both so any deep-linked URLs from earlier builds
-    # don't silently 400.
+    # Legacy alias of `query=` from the first search UI: accepted so deep links don't 400.
     search: str | None = Query(None, description="Alias for `query` (back-compat)"),
     refresh: bool = Query(False, alias="refresh"),
 ) -> dict[str, Any]:
-    # BC1: 10min TTL relay_cache, patched in place by an inbound
-    # api2_chat_message (event_transcoder._inbox_patcher); an expired window is
-    # served stale while one background read refreshes it (_LIST_CHATS_SWR).
-    # ?refresh=1 bypasses the cache but still warms it for the next caller.
     aid = _current_aid()
     q = query or search
     coalesce_key = ("list_chats", aid, limit, offset, order, filter, list_id, q)
     plain_view = is_plain_chat_view(filter, list_id, q)
-    # The badge folds its counts from the plain recent page-0 window — when
-    # THIS request happens to be that exact view, a live read here also resets
-    # the badge's staleness clock (see _chats_window_fetched_at).
     is_badge_window = (
         limit == _ROSTER_SCAN_MAX and offset == 0 and order == "recent"
         and plain_view
     )
     async def _fetch():
-        _timing_detach_foreign()  # the SWR refresh runs this off the request's task
-        # The 429 hold gates the upstream read only (misses and the SWR refresh): a cached
-        # window is still served while it runs.
+        _timing_detach_foreign()
+        # The 429 hold gates the upstream read only: a cached window is still served.
         held = _CHATS_429_HOLD.check(coalesce_key)
         if held is not None:
-            # OF 429'd this exact page moments ago: answer that, don't ask OF again (chats_page.HOLD_*).
             raise HTTPException(status_code=held.status_code, detail=held.detail, headers=held.headers)
         def _read():
             value = _assemble_chats_page(
@@ -3553,7 +2540,6 @@ async def list_chats(
                 return {**value, "fetched_at": int(_time_mod.time() * 1000)}
             return value
         async def _upstream():
-            # Inside the detached flight: a waiter cancelled meanwhile doesn't lose OF's 429.
             try:
                 return await asyncio.to_thread(_proxy, _read)
             except HTTPException as e:
@@ -3563,13 +2549,7 @@ async def list_chats(
                     log.info("list_chats 429 hold account=%s offset=%s for %.1fs", aid, offset, secs)
                 raise
         value = await relay_coalesce.coalesce(coalesce_key, _upstream)
-        # Reconcile OF's authoritative read state + last-message direction into
-        # the local `chats` mirror the roster badge aggregates — from a FRESH OF
-        # read only (a miss, ?refresh=1, or the background stale-while-revalidate
-        # refresh). A cached value is either a stale SWR window or one patched
-        # from WS frames, so it is not OF's read state and must not overwrite the
-        # mirror. Only the unfiltered/no-search/no-folder view (unbiased
-        # snapshot); fire-and-forget so it never adds latency.
+        # Reconcile the local `chats` mirror from a FRESH OF read only: a cached value is a stale SWR window or WS-patched, not OF's read state.
         if value and plain_view:
             chats = value.get("list") or value.get("chats") or []
             if chats:
@@ -3587,12 +2567,7 @@ async def list_chats(
             stale_while_revalidate=_LIST_CHATS_SWR,
         )
         _timing_post_start()
-        # Manual Refresh (?refresh=1) on the plain recent view just re-read the very
-        # window the roster badge folds its counts from — drop the cached fold so
-        # the next badge poll re-folds from these fresh rows (pure RAM, no OF read).
-        # Without this, the one button users press when badge≠list leaves the badge
-        # serving pre-refresh counts for up to its own TTL: the symptom survives its
-        # own remedy.
+        # Refresh on the plain view drops the cached badge fold, else the badge serves pre-refresh counts for its TTL.
         if refresh and offset == 0 and plain_view:
             relay_cache.invalidate("roster_count", aid)
         held = accounts_admin_api.held_window(aid) if is_badge_window else None
@@ -3609,27 +2584,6 @@ async def list_chats(
 
 
 async def _annotate_chat_rows(aid: str, resp: dict[str, Any]) -> dict[str, Any]:
-    """Stamp what we already store about each fan onto the /chats rows, so the
-    Fan List paints it with no extra call (Infloww's chat-list smart signals):
-
-      withUser.isRestricted  restricted on OF via our UI (the durable skip_list
-                             registry). The inbox list runs skip_users=all, whose
-                             thin withUser is just {id, _view}, so OF never sends
-                             the flag here; the Restricted label and the Restrict
-                             toggle read the stamp.
-      withUser.badgeExcluded `unread_total_decide.excluded_from_badges`: the one
-                             rule the badge fold applies server-side; the app's
-                             unread counts and chips read this stamp only.
-      withUser.needsHuman    a custom is owed (`fans.customs_owed_at`): the bot
-                             stopped selling and a human has to record and send it
-      withUser.autoRenewOff  listed active at the last roster crawl
-                             (`subscriber_snapshot`) with renew off and an expiry
-                             still ahead; no crawl, a stale one, or a fan it
-                             did not list stamps nothing
-
-    Absent means unknown or no, never false. Serve-time and on a COPY: the
-    cached window is shared with the badge fold and other requests, so a stale
-    stamp must never be baked into it. Nothing to stamp returns `resp` itself."""
     if not resp:
         return resp
     rows_key = "list" if "list" in resp else ("chats" if "chats" in resp else None)
@@ -3640,7 +2594,7 @@ async def _annotate_chat_rows(aid: str, resp: dict[str, Any]) -> dict[str, Any]:
         try:
             ids.add(int((ch.get("withUser") or {}).get("id")))
         except (TypeError, ValueError):
-            continue  # a Fansly snowflake or a malformed row: nothing stored for it
+            continue
     import unread_total_decide
     registry: set[int] = set()
     owed: set[int] = set()
@@ -3676,18 +2630,10 @@ async def _annotate_chat_rows(aid: str, resp: dict[str, Any]) -> dict[str, Any]:
     return {**resp, rows_key: out_rows}
 
 
-# Each optional *_wiring.py is imported and gets wire(app) mid-import here,
-# after the helpers above exist. Binding routes here retains their precedence;
-# private modules may be absent from a public checkout (relay_hooks' doc).
 for _wiring in relay_hooks.import_wirings():
     _wiring.wire(app)
 
 
-# Short on purpose. Folder edits are rare but they are OPERATOR edits — a
-# rename or a pin that stays invisible for minutes reads as a failed write. 60s
-# is long enough to collapse the inbox-open burst (chip strip + picker + the
-# automation audience selector all mount together) and short enough that a
-# missed invalidation self-heals before anyone reaches for the mouse again.
 _CHAT_FOLDERS_TTL = 60.0
 
 
@@ -3724,11 +2670,6 @@ async def chat_folders(
 
 
 def _invalidate_chat_folders() -> None:
-    """Drop this account's cached folder list after a write that changed it.
-
-    Sync (relay_cache.invalidate does no I/O) so the sync list-write routes can
-    call it inline. Never raises: an invalidation miss costs one stale minute,
-    but a raise here would fail a write that already succeeded upstream."""
     try:
         relay_cache.invalidate("chat_folders", _current_aid())
     except Exception:  # noqa: BLE001
@@ -3744,8 +2685,7 @@ def pin_list_to_chat(list_id: int, body: _PinChatBody = Body(...)) -> dict[str, 
     """Pin or unpin a fan list as a chat-sidebar folder.
     Maps to PATCH /lists/{id} with `{"isPinnedToChat": <bool>}`."""
     out = _proxy(lambda: _get_client().set_list_pinned_to_chat(list_id, body.pinned))
-    # `isPinnedToChat` IS the field the chip strip filters on — without this the
-    # pin the operator just clicked would not appear for up to a full TTL.
+    # `isPinnedToChat` is what the chip strip filters on: without this a fresh pin wouldn't show for a full TTL.
     _invalidate_chat_folders()
     return out
 
@@ -3761,11 +2701,7 @@ async def get_messages(
 ) -> dict[str, Any]:
     if peek and order != "desc":
         raise HTTPException(400, "peek requires descending order")
-    # BC2: cache ONLY paginated history (before_id non-None). Head page
-    # (before_id=None) is where new messages land — we have no
-    # per-message WS invalidator, so head MUST go through to OF every
-    # time. Coalescing still applies on both paths.
-    # `peek=1`: the app's Background reads (prefetch, Focus); a plain head read is a click.
+    # Cache ONLY paginated history: no per-message WS invalidator, so the head page (where new messages land) always goes to OF.
     aid = _current_aid()
     with _of_read_timing("messages", aid, chat_id):
         coalesce_key = ("get_messages", aid, chat_id, before_id, limit, order, peek)
@@ -3778,8 +2714,6 @@ async def get_messages(
 
         held = False
         if before_id is None:
-            # Head page: skip cache entirely. New inbound DMs arrive via the
-            # WS pump + SSE; caching the head would mask them for ~TTL.
             async def _fetch_head():
                 click_at = read_flip.now_ms() if not peek else None
                 return click_at, await _fetch()
@@ -3792,31 +2726,14 @@ async def get_messages(
                 if click_at is not None:
                     relay_hooks.fire_thread_click_read(aid, chat_id, click_at)
         else:
-            # Paginated tail: mostly immutable, but PPV lock/unlock state can flip
-            # on an old message when a fan pays — so cap the cache at 5min (not
-            # 10) to bound how long a just-paid PPV lingers as "locked". Still
-            # plenty to coalesce a scroll-burst; `bypass=refresh` forces fresh.
+            # A fan's payment can flip a PPV old message to unlocked: cap at 5min to bound how long it lingers as locked.
             payload, held = await _cached_or_held_on_429(
                 "get_messages_tail", aid, (chat_id, before_id, limit),
                 ttl_seconds=300.0, fetcher=functools.partial(relay_coalesce.coalesce, coalesce_key, _fetch),
                 bypass=refresh,
             )
             _timing_post_start()
-        # Media render-stability (18_chat_render_stability §1.1): surface
-        # width/height at each media item's top level so the client sizes the
-        # skeleton without parsing OF's nested files, and persist those dims into
-        # message_media (the primary dims source). Best-effort — a media hiccup
-        # must never break loading the chat. Idempotent, so a cache hit re-running
-        # it is harmless.
-        #
-        # The two halves are deliberately split. Stamping is what the RESPONSE
-        # needs, so it stays awaited. Persisting is a write transaction on the one
-        # shared SQLite writer, and nothing in this response reads it back — it
-        # only feeds a LATER request — so it rides a fire-and-forget task, the same
-        # shape `reconcile_chats_from_of` uses in `list_chats` above. Paying for it
-        # inline meant every chat open and every 30s/2min poll queued behind the
-        # writer. Both halves are handed the SAME list object: stamp mutates it,
-        # persist reads it.
+        # Stamp stays awaited (the response needs it); persist is a write on the shared SQLite writer nothing here reads back, so fire-and-forget. Same list object: stamp mutates, persist reads.
         if isinstance(payload, dict) and aid:
             of_rows = payload.get("list") or []
             try:
@@ -3835,9 +2752,7 @@ async def get_messages(
                     name=f"thread-page-{aid}-{chat_id}",
                 )
             if of_rows and not held:
-                # `persist_rest_media_dims` swallows its own exceptions — in a bare
-                # create_task an escaping error would only ever surface as an
-                # unretrieved-task warning.
+                # persist swallows its own exceptions: in a bare create_task an escaping error would only be an unretrieved-task warning.
                 asyncio.create_task(
                     persist_rest_media_dims(str(aid), int(chat_id), of_rows),
                     name=f"media-dims-{aid}-{chat_id}",
@@ -3881,7 +2796,6 @@ async def get_pinned(chat_id: int) -> dict[str, Any]:
 
 
 def _pins_cache_ttl_s() -> float:
-    """Knob PINS_CACHE_TTL_S, read at call time (default 300; 0 = uncached)."""
     try:
         return max(0.0, float(os.environ.get("PINS_CACHE_TTL_S", "300")))
     except ValueError:
@@ -3889,11 +2803,6 @@ def _pins_cache_ttl_s() -> float:
 
 
 def _proxy_message_write(fn: Callable[[], Any]) -> Any:
-    """`_proxy(fn)` for a message write (pin, unpin, unpin-all, unsend, hide,
-    like, bookmark), then drop the account's cached pins (every chat: a message
-    write names no chat), OF's answer or error alike, before returning. The
-    drop never raises: a miss costs one stale TTL, a raise would fail a write
-    OF already took. Sync: async routes call it via `asyncio.to_thread`."""
     try:
         return _proxy(fn)
     finally:
@@ -3904,8 +2813,6 @@ def _proxy_message_write(fn: Callable[[], Any]) -> Any:
 
 
 def _platform_call(name: str, what: str) -> Callable[..., Any]:
-    """The current client's `name`, or 501 when the platform lacks it
-    (`side_effect_gate.refusal`: missing, Unsupported or Blocked)."""
     client = _get_client()
     if side_effect_gate.refusal(client, name) is not None:
         raise HTTPException(status_code=501, detail=f"{what}: not on this platform")
@@ -3913,18 +2820,12 @@ def _platform_call(name: str, what: str) -> Callable[..., Any]:
 
 
 def _refuse_if_platform_lacks(aid: str, name: str, what: str) -> None:
-    """`_platform_call`'s 501 from the account's Backend `Shim` class, so a route
-    can refuse before its first side effect without loading an OnlyFans client early."""
-    backend = platforms.for_account(aid).backend
-    if backend is not None and side_effect_gate.refusal(backend.Shim, name) is not None:
+    if platforms.refusal_for_account(aid, name) is not None:
         raise HTTPException(status_code=501, detail=f"{what}: not on this platform")
 
 
-# ── Users ──────────────────────────────────────────────────────
-# Order matters: the static /users/list route must be declared BEFORE the
-# dynamic /users/{...} route, otherwise FastAPI would match "list" as a
-# username and never reach the batch endpoint.
 
+# Static /users/list before the dynamic /users/{...}, else FastAPI matches 'list' as a username.
 @app.get("/api/of/v2/users/list")
 async def list_users(
     ids: list[int] = Query(..., description="One or more user ids: ?ids=1&ids=2"),
@@ -3948,21 +2849,15 @@ async def list_users(
     Direct `_proxy(...)` from this `async def` would freeze SSE, webhooks,
     and concurrent requests for the duration of the upstream call."""
     aid = _current_aid()
-    # IDs must be sorted in the key — two requests with [1,2,3] vs [3,2,1]
-    # should coalesce. The OF response is keyed by user-id string anyway,
-    # so per-waiter slicing is order-insensitive.
-    # No priority in the key: relay_coalesce adds the class (a person's read never joins a
-    # background flight; a background one may join a person's).
+    # Ids sorted in the key so [1,2,3] and [3,2,1] coalesce.
     key = ("list_users", aid, view, tuple(sorted(ids)))
 
     async def _fetch():
         resp = await asyncio.to_thread(_proxy, lambda: _get_client().list_users(ids, view=view))
-        _timing_post_start()  # the leader's line: its context rode into this task
+        _timing_post_start()
         if isinstance(resp, list):
             resp = {}
-        # Overlay runs INSIDE the fetcher so coalesced waiters see the
-        # same already-stitched dict (Stage B-2 bug guard #3 — moves
-        # mutation inside the one shared execution).
+        # Overlay inside the fetcher so coalesced waiters see the same stitched dict.
         try:
             await _sync_of_user_overlay(aid, resp)
         except Exception:
@@ -4070,60 +2965,35 @@ async def _sync_of_user_overlay(
                 entry["customNickname"] = local.nick
 
 
-# NOTE: /users/{user_id_or_username} is declared at the very end of the user-family
-# routes (see "Catch-all single user lookup" further down) so static routes like
-# /users/list, /users/search, /users/{id}/posts can match first.
 
 
-# ── Send a message ─────────────────────────────────────────────
 
 class SendMessageBody(BaseModel):
     text: str = Field(..., max_length=MARKUP_MAX, description="Message body. Plain text or HTML. At most of_rich_text.MARKUP_MAX (422).")
     locked_text: bool = Field(False, description="Lock the text behind the PPV price.")
     price: float = Field(0, ge=0, description="PPV price; 0 = free message.")
-    # Either: ints (existing vault ids) or dicts (fresh-upload claim objects
-    # like {processId, host, name, extra}). OF accepts both in mediaFiles.
     media_files: list[int | dict] = Field(default_factory=list, description="Vault media ids OR fresh-upload claim objects {processId,host,name,extra}")
-    # Vault media ids that ride along UNLOCKED (free preview) when `price > 0`.
-    # Must be a subset of `media_files`'s numeric ids; fresh-claim dicts can't
-    # appear here because they have no id until OF resolves them.
+    # Subset of media_files' numeric ids: a fresh claim has no id until OF resolves it.
     previews: list[int] = Field(default_factory=list, description="Subset of media_files (by vault id) sent unlocked when price > 0")
     is_forward: bool = False
     reply_to_message_id: int | None = Field(
         None,
         description="OF native quote-reply target id — receiver renders the quoted message above this one.",
     )
-    # Numeric OF user ids of creators to tag in this message. Picker UI
-    # populates these from GET /api/of/v2/self/tagged-friend-users; OF
-    # rejects ids that aren't on the caller's tagged-friend list with 400.
+    # OF rejects ids not on the caller's tagged-friend list with 400.
     tagged_users: list[int] = Field(
         default_factory=list,
         description="OF user ids of creators to tag (sent as `userTags`).",
     )
-    # Giphy GIF id (e.g. "0ndspgUFbm9iQtyX2Q"). Forwarded as top-level
-    # `giphyId` in the OF body — sibling of `mediaFiles`, not nested in it.
-    # OF accepts one GIF per send and echoes it back on the response.
     giphy_id: str | None = Field(
         None,
         description="Giphy GIF id (string). Sent as top-level `giphyId`; one per message.",
     )
-    # OF's other two release-form tag fields on a chat message (OF web's
-    # mapper: a guest is `rfGuest`, a release form's link or document is
-    # `rfPartner`; a creator is `rfTag`, which `tagged_users` fills).
     rf_guest: list[int] = Field(default_factory=list, description="Release-form guest ids (sent as `rfGuest`).")
     rf_partner: list[int] = Field(default_factory=list, description="Release-form link / document ids (sent as `rfPartner`).")
 
 
-# ── re-sale guard ─────────────────────────────────────────────────────
-# ppv_send checks ownership before it sells; the extension/UI
-# chat send did not, and it is where the real damage happened: 8 separately-paid
-# messages across 4 fans re-charged $456 for content already owned, one whale
-# paying 4× for the same two clips at a climbing price. Charging twice for one
-# file is a refund + chargeback, and chargebacks are what kill an OF account.
-#
-# The rules live in `ownership.resale_verdict` (the one home for owned-media
-# semantics); only the operator-facing wording lives here. Keyed by reason so a
-# third rule is a new entry, not a new branch.
+# Re-sale guard: charging twice for one file is a refund + chargeback, which kills OF accounts (8 paid messages re-charged $456 for owned content). Rules live in ownership.resale_verdict.
 _RESALE_MESSAGES = {
     ownership.RESALE_OWNED_VIDEO: (
         "This fan already paid for video in this message. "
@@ -4138,12 +3008,6 @@ _RESALE_MESSAGES = {
 
 
 async def _reject_if_resale(account_id: str, fan_id: int, body: SendMessageBody) -> None:
-    """Raise 409 if this PRICED send re-charges the fan for content he holds.
-
-    Runs BEFORE the OF call — the sibling `/admin/vault/sends` recorder fires
-    only AFTER a send lands, so a guard there would log the mistake, not prevent
-    it. Priced sends only: a FREE re-send (a fan who lost the file) is not a
-    re-sale and is never touched."""
     if body.price <= 0:
         return
     vault_ids = [m for m in body.media_files if isinstance(m, int) and m > 0]
@@ -4153,7 +3017,7 @@ async def _reject_if_resale(account_id: str, fan_id: int, body: SendMessageBody)
         verdict = await ownership.resale_verdict(
             account_id, fan_id, vault_ids, body.previews)
     except Exception:
-        # A broken guard read must not take the chat offline. Logged, allowed.
+        # A broken guard read must not take the chat offline: log, allow.
         log.exception("re-sale guard lookup failed (fan=%s) — allowing send", fan_id)
         return
     if not verdict.blocked:
@@ -4187,13 +3051,8 @@ async def send_message(
     outbound chat_message events on purpose; this is the single producer
     of outbound rows."""
     started = _time_mod.monotonic()
-    # Extract context BEFORE _proxy — its lambda has no request scope.
     account_id = _resolve_account_id(request)
-    # Same chatter-aware resolution as the mass-message path above. For
-    # owner sessions this reads X-Employee-Id; for chatter sessions it
-    # looks up (chatter, account_owner) → Employee, materialising the
-    # mirror row on first hit so the message bubble's "Sent by" label
-    # reads the chatter's display name instead of "Automation."
+    # Read BEFORE _proxy: its lambda has no request scope.
     from employees import resolve_outbound_employee_id
     employee_id = await resolve_outbound_employee_id(request, account_id)
 
@@ -4214,10 +3073,7 @@ async def send_message(
             giphy_id=body.giphy_id,
             rf_guest=body.rf_guest,
             rf_partner=body.rf_partner,
-            # A human is composing this one and has the tag picker right there,
-            # so their choice stands as made — the co-performer auto-tag
-            # (media_cotag) covers the automated senders, which have no operator
-            # to make it. Flip to True to auto-tag the composer too.
+            # A human composing has the tag picker, so their choice stands; media_cotag auto-tags the automated senders.
             auto_tag=False,
         )
         # Fansly shim, demo FakeOF and slop's offline client answer send_message only.
@@ -4241,19 +3097,9 @@ async def send_message(
 
 async def _record_fan_send(account_id: str, fan_id: int, result: Any, *,
                            employee_id: int | None, price: float, before_send_at: int) -> None:
-    """Everything a fan DM owes the relay once OnlyFans has said 200: the
-    outbound `messages` row, the `chat_responded` announcement, the media pin,
-    the chat-list cache bust.
-
-    The transcoder skips outbound chat_message events on purpose, so the
-    sender is the single producer of outbound rows — every send that reaches a
-    fan has to come through here (the chat route, and the vault import's send
-    to its linked fan). Never raises: the send already happened."""
-    # The Unread total: a reply reads an unread chat (prior peeked from our record / the held
-    # window, so before the bust below and before an awaited write lets the WS echo drop it).
+    # A reply reads an unread chat: prior state peeked before the bust below, before an awaited write lets the WS echo drop it.
     read_flip.after_reply(account_id, fan_id, before_send_at)
-    # Best-effort attribution write. Never raise — the OF send already
-    # succeeded and the frontend reconcile depends on the response.
+    # Best-effort: the OF send already succeeded; never raise.
     try:
         from attribution import write_outbound_attribution
         from event_transcoder import _to_cents
@@ -4271,18 +3117,11 @@ async def _record_fan_send(account_id: str, fan_id: int, result: Any, *,
     except Exception:
         log.exception("attribution write failed (chat_id=%s)", fan_id)
 
-    # The reply moved the chat window (lastMessage direction → owe-reply/unread
-    # drop, preview text). Busted before the announcement: a list read served
-    # after `chat_responded` (which tabs patch their cached lists from, and
-    # whose `at` marks a later page as already holding the reply) is fresh.
-    # The WS echo of our own send also busts, but can lag or be missed (pump down).
+    # Busted before the announcement: a list read after `chat_responded` must be fresh; the WS echo of our send can lag or be missed.
     _bust_chat_list_and_badges(account_id, fan_id)
     await publish_chat_responded(account_id=account_id, fan_id=int(fan_id), employee_id=employee_id,
                                  message=result)
 
-    # Wave 2.1 — pin the just-sent image bytes in the on-disk /img cache so
-    # the bubble keeps serving a local copy after OF reconciles, instead of
-    # racing OF's cold CDN edge. Fire-and-forget; never blocks this response.
     try:
         from img_api import _pin_sent_media
         _pin_sent_media(account_id, result)
@@ -4290,7 +3129,6 @@ async def _record_fan_send(account_id: str, fan_id: int, result: Any, *,
         log.debug("pin sent media dispatch failed (chat_id=%s)", fan_id, exc_info=True)
 
 
-# ── Dashboard / init ───────────────────────────────────────────
 
 
 @app.get("/api/of/v2/labels")
@@ -4333,9 +3171,7 @@ async def of_notifications(
 
 async def _notifications_read(aid: str, limit: int, offset: int, type: str | None, related_user: int | None,
                               refresh: bool) -> Any:
-    """`of_notifications`' read for `aid`: its relay_cache entry, coalesce key and `_proxy` (lane, Fansly shim)."""
-    # `type or ""` collapses absent and empty to ONE entry, matching
-    # of_client.notifications, which forwards `type` only when truthy.
+    # `type or ""` collapses absent and empty to one entry, matching of_client.notifications.
     extras = (limit, offset, type or "") + ((related_user,) if related_user is not None else ())
     coalesce_key = ("notifications", aid) + extras
     async def _fetch():
@@ -4380,7 +3216,7 @@ async def of_notifications_mark_read():
 
     def call():
         mark = getattr(_get_client(), "notifications_read", None)
-        if mark is None:   # a client without a read flip
+        if mark is None:
             raise HTTPException(status_code=501, detail="mark notifications read: not on this platform")
         return mark()
     result = await asyncio.to_thread(_proxy, call)
@@ -4389,7 +3225,6 @@ async def of_notifications_mark_read():
     return result
 
 
-# The Money Rail's and the bell's money-list read (app/lib/notifText.ts notifPath: NOTIF_PAGE_SIZE, offset 0, MONEY_TYPES).
 _RAIL_PAGE_SIZE = 20
 _RAIL_MONEY_TYPES = ("tip", "purchases")
 
@@ -4428,8 +3263,6 @@ async def of_notifications_money(
 
 
 def _warm_fetch(coalesce_key: tuple, aid: str, read: Callable[[OFClient], Any]):
-    """A pass-through route's fetcher for `aid` outside a request: same coalesce key, `_proxy`'s error shapes,
-    the Creator's background lane."""
     def run():
         with _priority_lane_background(aid):
             return _proxy(lambda: read(_load_client(aid)))
@@ -4440,25 +3273,15 @@ def _warm_fetch(coalesce_key: tuple, aid: str, read: Callable[[OFClient], Any]):
 
 
 async def app_open_warm_reads(account_id: str) -> None:
-    """The App-open warm's steps 2-4 for one Creator (app_open_warm, inside its walk; looked up at call time):
-    2. the chats window, through roster-counts' recompute with bypass (it rewarms the Fan List's page-0
-       `list_chats` entry and the `roster_count` one; with the Shared refresher on, only through its window-read hook
-       `shared_refresher.window_read`); 3. the rail's two money lists (`_RAIL_MONEY_TYPES`, page 0
-    at `_RAIL_PAGE_SIZE`) and 4. the notifications count, into the relay_cache entries (through the coalesce keys)
-    `of_notifications` / `of_notifications_count` serve; one still fresh is served, not read again. Raises what a
-    read raised: the warm stops that Creator there. With the Shared refresher on (Netting, ADR-0044), first
-    `/users/me` bypassing the cache (`_users_me_bypass`), so a warm is a full Last refresh: when its write-back was
-    kept and every read landed, `shared_refresher.note_refresh` at its ask time."""
     aid = str(account_id)
     import shared_refresher
     kept, asked = False, None
-    # Background class, slot before any flight (see _bg_admission); the gate runs it requestless.
     with _background_reads(aid):
         async with _bg_admission():
             if shared_refresher.ENABLED:
                 asked = shared_refresher.ask_time()
                 kept = await _users_me_bypass(aid)
-                await shared_refresher.window_read(aid)  # on: only through the window-read hook (P1 Contract 9)
+                await shared_refresher.window_read(aid)
             else:
                 await accounts_admin_api.rewarm_roster_count(aid)
             for typ in _RAIL_MONEY_TYPES:
@@ -4475,10 +3298,6 @@ async def app_open_warm_reads(account_id: str) -> None:
 
 
 async def _users_me_bypass(aid: str) -> bool:
-    """`/users/me` through the OF client into the `users_me` entry the route serves, bypassing the cache (a hit has no
-    read time, so it confirms nothing), on the Creator's background lane (`_warm_fetch`). True when its write-back was
-    kept (`peek_fresh` finds the value read); False when discarded (an invalidation landed meanwhile, relay_cache
-    latest-wins). Raises what the read raised."""
     def read(c: OFClient) -> dict[str, Any]:
         me = c.me()
         account_page.prime(aid, me)
@@ -4490,22 +3309,11 @@ async def _users_me_bypass(aid: str) -> bool:
 
 async def shared_refresher_reads(account_id: str,
                                  window: Callable[[], Awaitable[Any]] | None = None) -> bool:
-    """The Shared refresher's Cycle reads for one Creator (shared_refresher, inside its walk; looked up at call
-    time): `/users/me` through the OF client into the `users_me` entry the route serves, bypassing the cache (a hit
-    has no read time, so it confirms nothing), at background priority on the Creator's background lane
-    (`_background_reads`, `_warm_fetch`); then, only when that write-back was kept, `window()` (the refresher's
-    window step: it asks `window_due` now, after read 1, and reads the chats window through its hook) in the same
-    background scope, so the window holds the Creator's background lane too. True when the `/users/me` write-back
-    was kept (`peek_fresh` finds the value read); False when discarded (an invalidation landed meanwhile,
-    relay_cache latest-wins): it confirms nothing. Raises what a read raised. A dead-session answer from either
-    flags the Creator here (`flag_dead_session`, on the client that issued the read, else the one pooled when the
-    reads started), as roster-counts does: no request is in flight, so `_proxy` cannot, and the next tick reads it
-    in the Dead-session map ("dead", never read again)."""
     aid = str(account_id)
     client = client_pool.peek(aid)
     try:
         with _background_reads(aid):
-            async with _bg_admission():          # slot before any flight (see _bg_admission)
+            async with _bg_admission():
                 kept = await _users_me_bypass(aid)
                 if kept and window is not None:
                     await window()
@@ -4516,10 +3324,6 @@ async def shared_refresher_reads(account_id: str,
 
 
 def app_open_warm_values(account_id: str) -> dict[str, Any]:
-    """What `creator_warmed` carries, so a tab writes it instead of re-reading (app hooks/useAccountStateEvents.ts):
-    `roster`, the count roster-counts serves (with its `as_of`), and `notif_count`, the count route's `all`; each only
-    while its entry is held unexpired (one dropped since, by a WS patch or a money event, is left out: the tab
-    re-reads it)."""
     aid = str(account_id)
     out: dict[str, Any] = {}
     roster = relay_cache.peek_fresh("roster_count", aid, ())
@@ -4625,7 +3429,6 @@ def of_subscribers_chart(start: str | None = Query(None), end: str | None = Quer
     return _proxy(lambda: _get_client().subscribers_chart(start=start, end=end, by=by))
 
 
-# ── Users / search ─────────────────────────────────────────────
 
 @app.get("/api/of/v2/users/search")
 def of_search_users(q: str = Query(..., min_length=1, max_length=100), limit: int = Query(10, ge=1, le=50),
@@ -4721,8 +3524,6 @@ def of_user_posts(user_id: str, limit: int = Query(10, ge=1, le=50),
         user_id, limit=limit, type=type,
         before_publish_time=before_publish_time, format=format))
 
-# /posts/bookmarks declared earlier above (before /posts/{post_id}) so static
-# path wins over the dynamic one.
 
 @app.get("/api/of/v2/users/{user_id}/stories")
 def of_user_stories(user_id: str):
@@ -4751,7 +3552,6 @@ def of_user_videos(user_id: str, limit: int = Query(10, ge=1, le=50), offset: in
     return _proxy(lambda: _get_client().user_videos(user_id, limit=limit, offset=offset))
 
 
-# ── Subscribers / counts ───────────────────────────────────────
 
 @app.get("/api/of/v2/subscribers")
 def of_subscribers(
@@ -4768,7 +3568,6 @@ def of_subscribers(
     ))
 
 
-# ── Posts ──────────────────────────────────────────────────────
 
 @app.get("/api/of/v2/posts")
 def of_list_posts(limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0)):
@@ -4776,8 +3575,6 @@ def of_list_posts(limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge
     return _proxy(lambda: _get_client().list_posts(limit=limit, offset=offset))
 
 
-# Posts shortcuts — declared BEFORE /posts/{post_id: int} to avoid the int-validation
-# trap on static second segments like "chart" / "top".
 @app.get("/api/of/v2/posts/chart")
 def of_posts_chart(start: str | None = Query(None), end: str | None = Query(None),
                    by: str | None = Query(None, pattern="^(purchases|tips|views|likes|comments)$")):
@@ -4797,10 +3594,6 @@ def of_posts_top(
     return _proxy(lambda: _get_client().posts_top(start=start, end=end, by=by, limit=limit,
                                                   offset=offset))
 
-# Statistics' per-post reads. The post id rides in the query (as on
-# /messages/queue/buyers) so the permission map can give them to Statistics:
-# `/posts/{id}/...` could only be mapped through `/posts`, which carries the
-# post writes of Home, New post and My profile.
 @app.get("/api/of/v2/posts/stats")
 def of_post_stats(post_id: int | None = Query(None, ge=1)):
     """Full stat / the post stats popup header: OF's /posts/{post_id}/stats?withChart=true.
@@ -4840,11 +3633,8 @@ def of_post_comments(post_id: int, limit: int = Query(20, ge=1, le=50), offset: 
     return _proxy(lambda: _get_client().post_comments(post_id, limit=limit, offset=offset))
 
 
-# ── Vault ──────────────────────────────────────────────────────
 
 def _vault_picker_revalidate_s() -> float:
-    """Knob VAULT_PICKER_REVALIDATE_S, read at call time (default 300): the age past
-    which the picker's open (`revalidate=1`) reads OF instead of the shared cache."""
     try:
         return max(0.0, float(os.environ.get("VAULT_PICKER_REVALIDATE_S", "300")))
     except ValueError:
@@ -4852,19 +3642,12 @@ def _vault_picker_revalidate_s() -> float:
 
 
 def _listing_ids(payload: Any) -> list[Any] | None:
-    """The media ids of a vault page, in order (None: not a listing)."""
     rows = payload.get("list") if isinstance(payload, dict) else None
     return [m.get("id") if isinstance(m, dict) else m for m in rows] if isinstance(rows, list) else None
 
 
 async def _vault_read(aid: str, key: str, *, refresh: bool, revalidate: bool,
                       fetch: Callable[[], Awaitable[Any]], first_page: bool = False) -> Any:
-    """The vault routes' read: the shared cache unless `refresh`; the picker's open
-    (`revalidate`) takes only an entry younger than VAULT_PICKER_REVALIDATE_S, and its
-    misses share one OF read (many chatters opening one Creator's picker at once).
-    `fetch` reads OF; the answer is put here. A revalidate of a view's first media page
-    (`first_page`) whose ids differ from the cached copy drops that view's other offsets
-    first: they were cut from the old listing (new media shift every offset)."""
 
     async def _fetch_put(compare: Any) -> Any:
         t0 = datetime.utcnow()
@@ -4887,9 +3670,6 @@ async def _vault_read(aid: str, key: str, *, refresh: bool, revalidate: bool,
     return await _fetch_put(None)
 
 
-# THE cache keys for /vault/media and /vault/lists live in vault_cache, shared
-# with the background collector (vault_collect) so the pages it warms are the
-# pages these routes read.
 
 
 @app.get("/api/of/v2/vault/media")
@@ -4918,18 +3698,13 @@ async def of_vault_media(
     on uploads/deletes and ages out by TTL for external edits.
     """
     aid = _current_aid()
-    # Chatter Access (step 4): folder-visibility gate. Evaluate the deny
-    # BEFORE touching vault_cache — a cached list_id=None "All" entry must
-    # never reach a restricted chatter. SOFT deny (empty payload matching
-    # OF's exact shape, {"list": [], "hasMore": False}) so the frontend's
-    # .map() never throws; never raise.
+    # Folder gate BEFORE vault_cache: a cached 'All' entry must never reach a restricted chatter. Soft deny (empty payload in OF's shape), never raise.
     allowed_folders = await _allowed_folder_ids_for_chatter(aid)
     if allowed_folders is not None and (
         list_id is None or list_id not in allowed_folders
     ):
         return {"list": [], "hasMore": False}
-    # `query` is part of the cache key so a search result can never be served
-    # for a different (or empty) query.
+    # `query` is in the cache key so a search result is never served for another query.
     q_norm = (query or "").strip()
     key = vault_cache.vault_media_cache_key(type=type, list_id=list_id, offset=offset,
                                             limit=limit, sort=sort, field=field, q_norm=q_norm,
@@ -4970,9 +3745,7 @@ async def of_vault_media_by_id(media_id: int) -> dict[str, Any]:
         return cached
 
     async def _fetch() -> dict[str, Any]:
-        # The slot is INSIDE the coalescer on purpose (see relay_coalesce's
-        # module docstring): waiters that joined an in-flight fetch hold no
-        # slot, so only the one caller actually going to OF occupies one.
+        # The slot is INSIDE the coalescer: waiters on an in-flight fetch hold none.
         t0 = datetime.utcnow()
         async with admission.VAULT_MEDIA_READ:
             fetched = await asyncio.to_thread(
@@ -4981,24 +3754,19 @@ async def of_vault_media_by_id(media_id: int) -> dict[str, Any]:
         await vault_cache.put(aid, key, fetched, started_at=t0)
         return fetched
 
-    # A remount, a second tab, or two panes resolving the same slot image all
-    # ask for the SAME id at once; without this each paid its own OF round-trip
-    # for bytes the others were already fetching. Keyed on the account too — a
-    # bare media id would let two accounts share a response.
+    # Keyed on the account too: a bare media id would share a response across accounts.
     return await relay_coalesce.coalesce(
         ("vault_media_by_id", aid, media_id), _fetch,
     )
 
 
-# ── Fan lists ──────────────────────────────────────────────────
 
 @app.get("/api/of/v2/lists")
 def of_get_lists(limit: int = Query(20, ge=1, le=50), offset: int = Query(0, ge=0)):
     """My custom fan lists + built-in ones like 'fans', 'recent'."""
     return _proxy(lambda: _get_client().get_lists(limit=limit, offset=offset))
 
-# A list's id in OF's URL path: a number, or a built-in list's name ("fans", "tagged", …); nothing else reaches OF
-# (a decoded "7?x=" or "7/../8" would otherwise become another OF path). Every /lists/{list_id} route takes it.
+# Nothing else reaches OF: a decoded '7?x=' or '7/../8' would become another OF path.
 ListId = Annotated[str, PathParam(pattern=r"^[A-Za-z0-9_-]+$")]
 
 
@@ -5021,7 +3789,6 @@ def of_list_posts_in(list_id: ListId, limit: int = Query(10, ge=1, le=50), offse
     return _proxy(lambda: _get_client().list_posts_in(list_id, limit=limit, offset=offset, type=type))
 
 
-# ── Money ──────────────────────────────────────────────────────
 
 @app.post("/admin/vault/cache/invalidate")
 async def admin_vault_cache_invalidate() -> dict[str, Any]:
@@ -5044,16 +3811,12 @@ async def of_vault_lists(view: str = Query("main"), limit: int = Query(10, ge=1,
     Cached server-side via vault_cache (same invalidation semantics as
     /api/of/v2/vault/media)."""
     aid = _current_aid()
-    # Chatter Access (step 4): compute the folder gate BEFORE the cache read
-    # so a cached unfiltered payload is never handed straight to a restricted
-    # chatter. None ⇒ no restriction (owner, or unrestricted chatter).
+    # Gate computed BEFORE the cache read: the cached payload is unfiltered and shared with other chatters.
     allowed_folders = await _allowed_folder_ids_for_chatter(aid)
     q_norm = (query or "").strip()
     key = vault_cache.vault_lists_cache_key(view=view, limit=limit, offset=offset, q_norm=q_norm)
 
     async def _fetch() -> Any:
-        # The UNFILTERED payload is cached (by _vault_read) — owners + other chatters
-        # share this entry. Filtering happens per-response below, never written back.
         return await asyncio.to_thread(
             _proxy,
             lambda: _get_client().vault_lists(view=view, limit=limit, offset=offset,
@@ -5062,9 +3825,7 @@ async def of_vault_lists(view: str = Query("main"), limit: int = Query(10, ge=1,
 
     result = await _vault_read(aid, key, refresh=refresh, revalidate=revalidate, fetch=_fetch)
     if allowed_folders is not None and isinstance(result, dict):
-        # Filter on READ only, into a new dict of just the allowed folders and
-        # `hasMore`: OF's other keys (`all`: whole-vault counts + cover urls)
-        # describe folders the chatter may not see.
+        # Filter on read only, never written back: OF's `all` key counts folders the chatter may not see.
         return {
             "list": [f for f in (result.get("list") or [])
                      if isinstance(f, dict) and f.get("id") in allowed_folders],
@@ -5090,8 +3851,6 @@ def of_settings_story():
     """Story settings (who may reply to stories)."""
     return _proxy(lambda: _get_client().settings_story())
 
-# ticket 70: Settings > Things I Like's list. Here, not in of_stats_api.py: one segment under /users/, so ahead of the
-# /users/{user_id_or_username} catch-all below.
 @app.get("/api/of/v2/users/links")
 def of_users_links():
     """Things I Like's links: OF's GET /users/links (a list of {id, sort, url, title, description, image}:
@@ -5128,9 +3887,7 @@ def of_publish_schedule(schedule_id: int):
     """Publish a queue item now (OF Manager's queue "Post now" / "Message now")."""
     return _proxy(lambda: _get_client().publish_schedule(schedule_id))
 
-# OF's ledger lands hours late (rows measured 209/560/628 min after occurred_at: transaction_ingest's cadence note),
-# so a 60 s entry bought no freshness: this is transaction_ingest's own re-read cadence (_DEFAULT_TICK_INTERVAL_S).
-# Fresh payments reach the app by the WS / purchases feed, not this read.
+# OF's ledger lands hours late (measured 209/560/628 min after occurred_at), so a 60 s entry bought no freshness; fresh payments arrive via the WS / purchases feed.
 _LEDGER_TTL_S = 900
 
 
@@ -5157,8 +3914,7 @@ def of_transactions(
         start_date=startDate, marker=marker, tips_source=tipsSource,
     ))
 
-# A day, or a day and time (both honoured by OF, measured 2026-11-21); never an ISO `T…Z` (the payouts ledger answers
-# one empty: of_reads.transactions).
+# A day, or a day and time (both honoured by OF); never an ISO `T...Z`: the payouts ledger answers empty.
 _STATS_DAY = r"^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?$"
 
 @app.get("/api/of/v2/payouts/stats")
@@ -5175,12 +3931,10 @@ def of_earning_stats(
     return _proxy(lambda: _get_client().earning_stats(by=by, start_date=startDate, end_date=endDate))
 
 
-# ── Stories ────────────────────────────────────────────────────
 
 
-# ── Catch-all single user lookup ───────────────────────────────
+
 # Declared AFTER every static /users/... route so it doesn't shadow them.
-
 @app.get("/api/of/v2/users/{user_id_or_username}")
 async def get_user(user_id_or_username: str) -> dict[str, Any]:
     """Fetch a single user profile by numeric id or username.
@@ -5200,7 +3954,6 @@ async def get_user(user_id_or_username: str) -> dict[str, Any]:
         )
         if not isinstance(resp, dict):
             return resp
-        # Overlay inside the fetcher — see /users/list rationale.
         fid = resp.get("id")
         if isinstance(fid, int):
             try:
@@ -5212,7 +3965,6 @@ async def get_user(user_id_or_username: str) -> dict[str, Any]:
     return await relay_coalesce.coalesce(key, _fetch)
 
 
-# ── Promotions / Trials ────────────────────────────────────────
 
 @app.get("/api/of/v2/promotions")
 def of_promotions():
@@ -5220,17 +3972,8 @@ def of_promotions():
     return _proxy(lambda: _get_client().promotions())
 
 
-# ── Chat extras ────────────────────────────────────────────────
 
-# Chat detail's readers: the money rail (useMoneyRailFeed: up to 12 fans per account,
-# background, react-query staleTime 60 s, per tab and per Employee) for lastMessage +
-# lastReadMessageId, and the OF mirror's chat header (mute state). 30 s: half the
-# rail's own staleTime, so a cached body adds at most 30 s to a read receipt the rail
-# already shows up to 60 s late, and the rail takes a NEWER lastMessage from the inbox
-# row anyway (replyStateOf). Long enough to share one OF read across tabs, Employees
-# and remounts. Our own changes drop the entry: a send, mark read/unread, delete,
-# restrict (`_bust_chat_list_and_badges`), mute/unmute, and an inbound DM (the WS
-# pump, event_transcoder).
+# 30 s: half the rail's staleTime; our own changes drop the entry (send, mark read/unread, delete, restrict, mute, inbound DM).
 _GET_CHAT_TTL = 30.0
 
 
@@ -5252,9 +3995,6 @@ async def of_get_chat(chat_id: int):
 
 
 def _bust_chat_detail(aid: str | None, chat_id: int | None = None) -> None:
-    """Drop cached chat detail (`of_get_chat`): one chat, or every chat of the
-    account (`aid` None: the request's). Never raises: a miss costs one stale
-    TTL, a raise would fail a write OF already took."""
     try:
         aid = aid or _current_aid()
         match = None if chat_id is None else (lambda ex, c=int(chat_id): ex == (c,))
@@ -5263,8 +4003,6 @@ def _bust_chat_detail(aid: str | None, chat_id: int | None = None) -> None:
         log.debug("get_chat invalidation skipped", exc_info=True)
 
 def _bust_chat_list() -> None:
-    """Drop the request account's cached `/chats` windows (a row field changed
-    that no WS frame patches, e.g. mute). Never raises, as `_bust_chat_detail`."""
     try:
         relay_cache.invalidate("list_chats", _current_aid())
     except Exception:  # noqa: BLE001
@@ -5297,8 +4035,6 @@ async def of_mass_message_history(
         resp = await asyncio.to_thread(_proxy, lambda: _platform_call("engagement_messages", "mass message history")(
             "group", start_date=startDate, end_date=endDate, limit=limit, offset=offset, query=query,
         ))
-    # Best-effort write-through. Don't let a cache miss surface as a 502
-    # — the upstream succeeded, the operator should still see the data.
     if isinstance(resp, dict):
         items = resp.get("items") or []
         try:
@@ -5336,9 +4072,7 @@ async def admin_mass_messages_list(
             client = _load_client(aid)
 
             def _fetch():
-                # Run the blocking OF round-trip (and the per-account lane
-                # acquire) OFF the event loop so a stale-cache safety-net
-                # refresh can't freeze vault-open / chat-click for everyone.
+                # Blocking OF round-trip off the event loop so a stale-cache refresh can't freeze vault-open / chat-click for everyone.
                 with _priority_lane(aid):
                     return client.mass_message_history(
                         start_date=start.strftime(fmt),
@@ -5349,8 +4083,6 @@ async def admin_mass_messages_list(
             items = (resp.get("items") if isinstance(resp, dict) else None) or []
             await cache.upsert_many(aid, items)
         except Exception as e:
-            # Don't fail the read just because the safety-net refresh failed;
-            # serve whatever we have and let the user hit Refresh manually.
             log.warning("mass_broadcast_cache safety-net refresh failed for %s: %s", aid, e)
     since = datetime.utcnow() - timedelta(days=days_back)
     items = await cache.list_for_account(aid, since=since, limit=limit)
@@ -5375,14 +4107,9 @@ async def admin_mass_messages_refresh(
     end = datetime.utcnow()
     start = end - timedelta(days=days_back)
     fmt = "%Y-%m-%d %H:%M:%S"
-    # Resolve the right client by hand — _proxy() relies on the request
-    # context's X-Account-Id, but for this endpoint we accept it as a
-    # query param too. _load_client() bypasses the context resolver.
     client = _load_client(aid)
     try:
         def _fetch():
-            # Blocking OF round-trip + lane acquire run OFF the event loop;
-            # this manual Refresh must not freeze every other request.
             with _priority_lane(aid):
                 return client.mass_message_history(
                     start_date=start.strftime(fmt),
@@ -5405,12 +4132,7 @@ async def admin_mass_messages_refresh(
     return {"account_id": aid, "days_back": days_back, "written": written, "items": rows}
 
 
-# ── Writes (UNVERIFIED — code-only, no live test from auto run) ───
-# Every endpoint below maps to a known OF API path inferred from the cracked
-# extension + OnlyFansAPI/OFAuth docs. Shapes are likely correct but each one
-# needs a single careful live test before you trust it in a UI.
 
-# Pydantic bodies for FastAPI's auto-validation + Swagger forms.
 class _TextBody(BaseModel):
     text: str = Field(..., min_length=1)
 
@@ -5422,8 +4144,6 @@ class _ScheduleMessageBody(BaseModel):
     scheduled_date: str = Field(..., description="ISO 8601, e.g. 2026-06-01T18:00:00+00:00")
     price: float = Field(0, ge=0)
     locked_text: bool = False
-    # Same shape as immediate-send: numeric vault ids OR fresh-upload claim
-    # dicts. OF accepts both in mediaFiles on the queue endpoint too.
     media_files: list[int | dict] = Field(default_factory=list)
     previews: list[int] = Field(default_factory=list)
     tagged_users: list[int] = Field(default_factory=list)
@@ -5445,28 +4165,20 @@ class _ScheduledSendBody(BaseModel):
 
 class _CreatePostBody(BaseModel):
     text: str
-    # int = existing vault id; dict = fresh-upload claim payload from
-    # the /upload endpoint's `send_with`. OF accepts mixed.
     media_files: list[int | dict] = Field(default_factory=list)
     price: float = Field(0, ge=0)
-    # Media ids (⊆ media_files) shown FREE as the teaser on a PAID post.
     previews: list[int] = Field(default_factory=list)
-    # Our names for OF's post extras; of_client.create_post maps each to OF's
-    # own keys (posted_at -> isScheduled + scheduledDate, and so on).
     posted_at: str | None = None
     save_for_later: bool = False
     expire_days: int | None = Field(None, ge=1)
     fund_raising_target: float | None = Field(None, gt=0)
     fund_raising_presets: list[float] = Field(default_factory=list)
-    voting_type: int | None = Field(None, ge=1, le=2)  # 1 poll, 2 quiz
+    voting_type: int | None = Field(None, ge=1, le=2)
     voting_options: list[str] = Field(default_factory=list)
-    voting_due: int | None = Field(None, ge=1)  # days
-    voting_correct_index: int | None = Field(None, ge=0)  # quiz only
+    voting_due: int | None = Field(None, ge=1)
+    voting_correct_index: int | None = Field(None, ge=0)
     label_ids: list[int] = Field(default_factory=list)
-    # OF user ids of creators to @-tag in the post (sent as `userTags`).
     tagged_users: list[int] = Field(default_factory=list)
-    # Giphy id (e.g. "0ndspgUFbm9iQtyX2Q") — forwarded as top-level
-    # `giphyId` to OF. Same wire shape as chat sends.
     giphy_id: str | None = Field(
         None,
         description="Giphy GIF id forwarded to OF as top-level `giphyId`.",
@@ -5478,9 +4190,6 @@ class _EditPostBody(BaseModel):
     media_files: list[int | dict] | None = None
 
 
-# Chat-message writes ---------------------------------------------
-# These hit /messages/{id}/... directly on OF (no /chats/{cid} prefix). All
-# four like/unlike/pin/unpin VERIFIED LIVE; unsend works but is DESTRUCTIVE.
 
 class _UnsendMessageBody(BaseModel):
     """OF web sends `{withUserId: <fanId>}` on every message unsend. Forwarding
@@ -5505,17 +4214,9 @@ async def of_unsend_message(request: Request, message_id: int):
                 with_user_id = int(parsed["withUserId"])
     except Exception:
         with_user_id = None
-    resp = await asyncio.to_thread(  # an unsent pin leaves the pinned page
+    resp = await asyncio.to_thread(
         _proxy_message_write, lambda: _get_client().unsend_message(message_id, with_user_id=with_user_id))
-    # OF took the bubble down — mirror that onto our `messages` row, or the
-    # chat pane's DB seed (GET /admin/messages) paints it again on the next
-    # reload as an EMPTY locked shell (the seed carries no media, and a PPV
-    # row's body is blank). Best-effort: the upstream unsend already happened,
-    # so a mirror failure must not surface as a 500. Only on OF's `success: true`
-    # (unsend_message's answer): a 2xx refusal (`success: false`, `{}`) leaves
-    # the row live, as the app (useUnsendMessage) keeps the bubble. The cached
-    # chat detail drops either way (a re-read is harmless; lastMessage may be
-    # the unsent one; no fan -> whole account).
+    # Mirror OF's take-down onto our row, else the DB seed repaints it as an empty locked shell; best-effort, and only on `success: true` (a 2xx refusal leaves the row live).
     _bust_chat_detail(None, with_user_id)
     if not (isinstance(resp, dict) and resp.get("success") is True):
         log.warning("unsend not confirmed by OF message_id=%s: %r", message_id, resp)
@@ -5551,8 +4252,8 @@ def of_unbookmark_message(message_id: int, body: _BookmarkBody | None = Body(Non
 def of_unpin_all_messages(chat_id: int):
     """OF web's pinned page "Unpin all messages": DELETE /chats/{id}/messages/pin."""
     result = _proxy_message_write(lambda: _get_client().unpin_all_messages(chat_id))
-    _bust_chat_list_cache()  # the chat drops off the list's Pinned tab
-    _bust_chat_detail(None, chat_id)  # countPinnedMessages rides the detail
+    _bust_chat_list_cache()
+    _bust_chat_detail(None, chat_id)
     return result
 
 @app.post("/api/of/v2/messages/{message_id}/like")
@@ -5570,7 +4271,7 @@ def of_pin_message(message_id: int, user_id: int):
     (`/messages/{msg}/pin/user/{chat_partner}`) — the shorter `/pin` form
     didn't reliably pin to the chat's visible pinned list."""
     result = _proxy_message_write(lambda: _platform_call("pin_message", "pin message")(message_id, user_id))
-    _bust_chat_detail(None, user_id)  # countPinnedMessages rides the detail
+    _bust_chat_detail(None, user_id)
     return result
 
 @app.delete("/api/of/v2/messages/{message_id}/pin/user/{user_id}")
@@ -5579,23 +4280,16 @@ def of_unpin_message(message_id: int, user_id: int):
     _bust_chat_detail(None, user_id)
     return result
 
-# Chat-level actions (VERIFIED LIVE) — mark read/unread, mute, hide.
-# Static path BEFORE dynamic /chats/{chat_id}/... to avoid `chat_id="mark-as-read"`
-# int-validation 422.
 
 def _bust_chat_list_and_badges(aid: str, chat_id: int | None = None) -> None:
-    """Drop the account's cached chat window, roster badge counts and chat detail
-    after an OF write that changes them (read_flip.bust_chat_list_and_badges)."""
     read_flip.bust_chat_list_and_badges(aid, chat_id)
 
 def _read_not_landed(result: Any) -> HTTPException:
-    """The 502 a read flip answers when the platform did not take all of it (read_flip.after_write False): the
-    Fansly shim's 200-style refusal (`ack_rejected`, `scan_failed`, `partial`) or a partial mark-all, so the app's
-    error path shows the failure instead of a read the next list read takes back."""
     reason = result.get("reason") if isinstance(result, dict) else None
     return HTTPException(status_code=502, detail={"upstream_status": reason or "partial", "upstream_body": result})
 
 
+# Static path BEFORE dynamic /chats/{chat_id}/...: else chat_id='mark-as-read' 422s.
 @app.post("/api/of/v2/chats/mark-as-read")
 async def of_mark_all_chats_read():
     """Mark EVERY chat as read (bulk no-arg endpoint). The local unread clears only for what the platform took
@@ -5609,12 +4303,6 @@ async def of_mark_all_chats_read():
     return result
 
 async def _paced_of_write(aid: str, call):
-    """One OF write that reaches no fan, spaced through the account's write
-    pacer and translated like any `_proxy` call. Not every OF write is paced:
-    the pacer's gap is for what a fan sees (messages, posts), so a write a fan
-    never sees (mark read/unread, hide, list membership) goes out unpaced by
-    default. This is for the one still spaced: the chat delete — an
-    operator's, so it goes ahead of automation's waiting writes (ADR 0025)."""
     from automation_executor import of_write_paced
     return await of_write_paced(aid, lambda: _proxy(call), send_purpose="not_fan_dm", operator=True)
 
@@ -5630,7 +4318,6 @@ async def of_mark_chat_read(chat_id: int):
     result, at = await read_flip.write(aid, chat_id, lambda: _proxy(lambda: _get_client().mark_chat_read(chat_id)))
     if not await read_flip.after_write(aid, chat_id, 0, result, at=at):
         raise _read_not_landed(result)
-    # An open served from a peeked warm page sends no plain head read: this is its Click read.
     # After after_write, so the backfill's scrape finds the local marker already zeroed.
     relay_hooks.fire_thread_click_read(aid, chat_id, at)
     return result
@@ -5654,8 +4341,8 @@ async def of_mute_chat(chat_id: int):
     r, _at = await read_flip.write(aid, chat_id, lambda: _proxy(lambda: _get_client().mute_chat(chat_id)))
     if read_flip.landed(r):
         relay_hooks.fire_mute(chat_id, True, account_id=aid)
-    _bust_chat_detail(None, chat_id)  # isMutedNotifications rides the detail
-    _bust_chat_list()                 # ...and the cached /chats row the head poll reads
+    _bust_chat_detail(None, chat_id)
+    _bust_chat_list()
     return r
 
 @app.delete("/api/of/v2/chats/{chat_id}/mute")
@@ -5664,25 +4351,22 @@ async def of_unmute_chat(chat_id: int):
     r, _at = await read_flip.write(aid, chat_id, lambda: _proxy(lambda: _get_client().unmute_chat(chat_id)))
     if read_flip.landed(r):
         relay_hooks.fire_mute(chat_id, False, account_id=aid)
-    _bust_chat_detail(None, chat_id)  # isMutedNotifications rides the detail
-    _bust_chat_list()                 # ...and the cached /chats row the head poll reads
+    _bust_chat_detail(None, chat_id)
+    _bust_chat_list()
     return r
 
 @app.post("/api/of/v2/chats/{chat_id}/hide")
 def of_hide_chat(chat_id: int):
     """Hide chat from inbox (chat still exists; fan can still message)."""
     r = _proxy(lambda: _get_client().hide_chat(chat_id))
-    # OF already drops the chat from its `/chats` feed server-side, but our
-    # relay caches that feed for 10 min — without busting it the hidden row
-    # lingers in the inbox until the TTL expires. Drop it so the row vanishes
-    # on the very next refetch the hide mutation already fires.
+    # Our relay caches the /chats feed 10 min: bust it or the hidden row lingers until the TTL.
     _bust_chat_list_cache()
     return r
 
 @app.delete("/api/of/v2/chats/{chat_id}/hide")
 def of_unhide_chat(chat_id: int):
     r = _proxy(lambda: _get_client().unhide_chat(chat_id))
-    _bust_chat_list_cache()  # symmetric: surface the un-hidden chat immediately
+    _bust_chat_list_cache()
     return r
 
 @app.delete("/api/of/v2/chats/{chat_id}")
@@ -5698,12 +4382,8 @@ async def of_delete_chat(chat_id: int):
     return r
 
 
-# ── Per-fan "Restrict from automations" (durable skip_list, NOT an OF call) ──
-# A human can durably opt a fan out of EVERY automation from the chat ⋯ menu /
-# Settings. It writes skip_list(reason='manual_restrict') in OUR DB — honoured by
-# every sender (see automations/_common HARD_SKIP_REASONS). Distinct from the
-# auto 'muted_creator' skip the scrape manages off the OF mute state.
 
+# Durable opt-out of every automation: skip_list(reason='manual_restrict') in OUR DB, not an OF call; distinct from the auto 'muted_creator' skip.
 @app.get("/api/of/v2/automation-restrict/{fan_id}")
 async def of_automation_restrict_status(fan_id: int, request: Request) -> dict:
     """Is this fan restricted from automations? {restricted, reason}."""
@@ -5787,9 +4467,6 @@ def of_unblock_user(user_id: int):
     return _proxy(lambda: _platform_call("unblock_user", "unblock user")(user_id))
 
 def _publish_restrict_changed(aid: str, user_id: int, restricted: bool) -> None:
-    """`chat_restrict_changed {fan_id, restricted}` once OF took a restrict or lift: every tab of the Creator
-    (any-scope) patches the row's restrict flags in its cached chat lists without a read (app
-    hooks/useAccountStateEvents.ts). Best-effort: the write already landed."""
     try:
         import events  # noqa: PLC0415
         events.publish({"chat_restrict_changed": {"fan_id": events.js_safe_id(int(user_id)), "restricted": restricted},
@@ -5798,8 +4475,6 @@ def _publish_restrict_changed(aid: str, user_id: int, restricted: bool) -> None:
         log.warning("chat_restrict_changed publish failed (account=%s fan=%s)", aid, user_id, exc_info=True)
 
 def _restricted_row(row: dict, restricted: bool) -> dict:
-    """A chat row after a restrict or lift, as OF's next read shows it (app lib/chatsCache `restrictedRow`): a
-    restrict blocks the send with reason "muted"; a lift clears only that reason, keeping a block for another."""
     if restricted and row.get("canSendMessage") is not False:
         row = {**row, "canSendMessage": False, "canNotSendReason": "muted"}
     elif not restricted and row.get("canNotSendReason") == "muted":
@@ -5926,7 +4601,6 @@ def of_gif_search(q: str = Query(..., min_length=1),
     """Search Giphy via OF's proxy."""
     return _proxy(lambda: _get_client().gif_search(q, limit=limit, offset=offset))
 
-# ── Message templates (welcome + saved replies) ───────────────
 
 
 @app.get("/api/of/v2/messages/templates")
@@ -5935,17 +4609,9 @@ def of_message_templates(template: str | None = Query(None, description="filter,
     return _proxy(lambda: _get_client().message_templates(template=template))
 
 
-# ── Welcome message slot (reply_on_subscribe) ──────────────────
-# Slot-specific upsert + delete + the `replyOnSubscribe` master toggle.
-# OF's web client doesn't go through the generic /messages/templates
-# create/PUT for the welcome — it POSTs/DELETEs the slot URL directly
-# and uses the extended body shape, so we mirror that here.
-#
-# IMPORTANT: declared BEFORE the generic /messages/templates/{id} routes
-# so FastAPI's first-match-wins ordering routes /reply_on_subscribe here
-# rather than treating it as a numeric template id.
 
 
+# Declared BEFORE the generic /messages/templates/{id}: first match wins, else /reply_on_subscribe is read as a template id. OF web POSTs/DELETEs the slot URL directly.
 class _ReplyOnSubscribeBody(BaseModel):
     enabled: bool
 
@@ -5954,17 +4620,14 @@ class _ReplyOnSubscribeBody(BaseModel):
 def of_set_reply_on_subscribe(body: _ReplyOnSubscribeBody = Body(...)):
     """Toggle the master `replyOnSubscribe` flag on /users/me."""
     result = _proxy(lambda: _get_client().set_reply_on_subscribe(body.enabled))
-    # BC5 invalidation: this write changes /users/me/settings.replyOnSubscribe.
     aid = _current_aid()
     relay_cache.invalidate("my_settings", aid)
     return result
 
 
-# ── Subscription bundles ──────────────────────────────────────
 
 class _BundleBody(BaseModel):
-    # OF's own ADD SUBSCRIPTION BUNDLE dialog sends {discount, duration} (months)
-    # and OF prices the bundle; the legacy {months, price[, discount]} stays.
+    # OF's dialog sends {discount, duration} and OF prices the bundle; legacy {months, price} stays.
     months: int | None = Field(None, ge=1, le=24)
     price: float | None = Field(None, ge=0)
     discount: int | None = Field(None, ge=0, le=100)
@@ -5999,21 +4662,15 @@ def of_edit_bundle(bundle_id: int, body: _BundleEditBody = Body(...)):
         bundle_id, discount=body.discount, duration=body.duration,
     ))
 
-# ── Promotion campaigns: write side ───────────────────────────
 
 class _PromoBody(BaseModel):
-    # OF promos are a % discount off the sub (verified live) — NOT an abs price.
-    # A free trial is discount 100 (OF's own Start campaign, ModalPromotion).
+    # OF promos are a % discount off the sub (a free trial is 100), not an absolute price.
     discount: int = Field(..., ge=1, le=100)
-    # 0 = no limit (OF's "No limits" option).
     subscribe_counts: int = Field(..., ge=0)
     subscribe_days: int = Field(30, ge=0)
     message: str = Field("", max_length=500)
-    # OF's composer sends a list: ["all"], ["expired"] or both.
     type: str | list[str] = "all"
-    # The offer's expiration in days (0 = no limit); OF's composer sends it.
     finish_days: int | None = Field(None, ge=0, le=30)
-    # "It did not go through — create anyway": the create_unresolved row's id to clear.
     resolve_open: int | None = None
 
 @app.post("/api/of/v2/promotions")
@@ -6045,19 +4702,15 @@ async def of_delete_promo(promo_id: int):
     await _untick_kept_promo(_current_aid(), promo_id)
     return await asyncio.to_thread(_proxy, lambda: _get_client().delete_promo(promo_id))
 
-# ── Tracking links (/campaigns) ──────────────────────────────
 
 class _TrackingLinkBody(BaseModel):
     name: str
     code: int | None = None
 
-# ticket 61: the tracking links Sort menu's fields (its committed State page radios, campaign-field; the Reach read's
-# `field`). `inferred` (D29): no capture of the settings page's own sorted read.
 _CAMPAIGN_SORT_FIELDS = {"created_date", "name", "subscribers_counts", "clicks_count", "shared"}
 
 
 def _campaign_sort_check(field: str | None, sort: str | None) -> None:
-    """422 unless `field` is a _CAMPAIGN_SORT_FIELDS one with a `sort`; neither given is OF's default order."""
     if (field or sort) and (field not in _CAMPAIGN_SORT_FIELDS or not sort):
         raise HTTPException(status_code=422, detail=f"field: one of {sorted(_CAMPAIGN_SORT_FIELDS)}, with sort asc|desc")
 
@@ -6076,8 +4729,6 @@ def of_create_tracking_link(body: _TrackingLinkBody = Body(...)):
         name=body.name, code=body.code,
     ))
 
-# ticket 74: the "Shared with you" tab and the share hint (record settings--tracking-shared-with-you, measured-in-js).
-# OF's own body keys, so the share's undo sends back exactly what OF sent. Declared before /campaigns/{campaign_id}.
 @app.get("/api/of/v2/campaigns/share-access")
 def of_tracking_links_shared_with_me(field: str | None = Query(None, description="OF's sort field (campaign-field)"),
                                      sort: str | None = Query(None, pattern="^(asc|desc)$"),
@@ -6086,11 +4737,7 @@ def of_tracking_links_shared_with_me(field: str | None = Query(None, description
     _campaign_sort_check(field, sort)
     return _proxy(lambda: _get_client().tracking_links_shared_with_me(limit=limit, offset=offset, field=field, sort=sort))
 
-# ofm-not-yet's new OF write routes (ticket 63 onwards) are inert until the owner turns on OFM_NEW_WRITES_ENABLED
-# (runtime_switches, default off) for the request's Creator: the env turns it on box-wide; Settings › System can force
-# it off box-wide and the Creator's owner for one Creator (PUT /admin/ofm-writes/{id}, ofm_writes_api). Off, each
-# answers 404 before any OF call, as of_live_window's. The Mirror reads GET /api/of/ofm-writes for its Creator
-# (app/lib/ofMirrorNewWrites.ts) and leaves those controls Not available while it is 404.
+# ofm-not-yet writes are inert until OFM_NEW_WRITES_ENABLED: off, each answers 404 before any OF call.
 _ofm_new_writes_on = runtime_switches.require_switch(OFM_NEW_WRITES, account=_current_aid)
 _OFM_WRITES = [Depends(_ofm_new_writes_on)]
 
@@ -6120,16 +4767,12 @@ def of_unshare_campaign_stats(body: _ShareCampaignBody = Body(...)):
 def of_delete_tracking_link(campaign_id: int):
     return _proxy(lambda: _get_client().delete_tracking_link(campaign_id))
 
-# ── Free-trial links (/trials) ───────────────────────────────
 
 class _TrialLinkBody(BaseModel):
-    # OF's "Create link" sends the name trimmed of leading spaces; it may be empty.
     name: str = Field("", max_length=64)
     subscribe_days: int = Field(7, ge=1, le=365)
-    # 0 = no limit (OF's "No limits").
     subscribe_counts: int = Field(1, ge=0)
     expired_at: str | None = None
-    # OF's own field: the link's validity in days (0 = no expiration).
     expire_days: int | None = Field(None, ge=0, le=30)
 
 _TRIAL_SORT_FIELDS = {"create_date", "expire_date", "subscribe_counts", "subscribe_days",
@@ -6171,33 +4814,23 @@ def of_create_trial_link(body: _TrialLinkBody = Body(...)):
 def of_delete_trial_link(trial_id: int):
     return _proxy(lambda: _get_client().delete_trial_link(trial_id))
 
-# ── Profile writes (bio, display name, etc.) ─────────────────
 
-# The keys the OF Manager mirror sends to each users/me write (app/lib/ofMirrorWrites.ts
-# ProfilePatch; ofMirrorSettingsWrites.ts settingWrite, SECURITY_KEYS, collectWatermarks).
-# Any other key is refused, so a crafted body cannot reach the rest of the Creator's account.
+# Any other key is refused, so a crafted body can't reach the rest of the Creator's account.
 _PROFILE_KEYS = frozenset({
-    # settings/profile
     "name", "about", "location", "website", "wishlist",
-    # settings/subscription's price Save
     "subscribePrice",
-    # the settings/fans, settings/security and notifications/mentions toggles outside the security section
     "recommenderReward", "sendAwardsTop1", "sendAwardsTop5",
     "isVisibleOnline", "isOldLoginRedirect", "commentsOnlyForPayers", "creatorsCommentsOnlyForFriends",
     "notifyOnAllMentions", "muteTagsInChats", "muteTagsInPosts", "muteTagsInStories",
-    # ticket 60: settings/messaging's Tip-from-free-followers switch (ofMirrorSettingsWrites DRAWN_TOGGLES)
     "canAcceptMessageOnlyFromFriends",
-    # ticket 67: Edit profile's cover and avatar (ofMirrorWrites ProfileImagePatch): an upload item or "" (removed)
     "avatar", "header",
 })
-# The keys new to this write (tickets 60, 67): refused while OFM_NEW_WRITES_ENABLED is off.
+# New keys: refused while OFM_NEW_WRITES_ENABLED is off.
 _PROFILE_NEW_KEYS = frozenset({"canAcceptMessageOnlyFromFriends", "avatar", "header"})
-# ticket 67: an uploaded image's keys (of_upload `_send_with`, the capture's uploadedFilesUrl item).
 _PROFILE_IMAGE_ITEM_KEYS = frozenset({"processId", "host", "name", "extra", "thumbId"})
 
 
 def _check_profile_images(body: dict) -> None:
-    """ticket 67: `avatar`/`header` are "" (removed) or an upload item of `_PROFILE_IMAGE_ITEM_KEYS` with a processId; else 422."""
     for key in ("avatar", "header"):
         if key not in body or body[key] == "":
             continue
@@ -6212,13 +4845,11 @@ _SECURITY_PATCH_KEYS = frozenset({
     "unfollowAutoFollowBack", "coStreamingRequestFrom", "showMediaCount", "isDrmEnabled",
     "requireFaceIdForPayoutUpdate",
 })
-# Fully private is new to the mirror's writes: refused while OFM_NEW_WRITES_ENABLED is off.
 _SECURITY_NEW_KEYS = frozenset({"isPrivate"})
 _WATERMARK_KEYS = frozenset({"hasWatermarkPhoto", "hasWatermarkVideo", "watermarkText", "watermarkPosition"})
 
 
 def _allowed_body(body: dict, allowed: frozenset[str]) -> dict:
-    """`body` when it is non-empty and every key is in `allowed`, else 422."""
     if not body:
         raise HTTPException(status_code=422, detail="empty body")
     if extra := sorted(set(body) - allowed):
@@ -6227,8 +4858,6 @@ def _allowed_body(body: dict, allowed: frozenset[str]) -> dict:
 
 
 def _new_writes_for(body: dict, new_keys: frozenset[str], ask: bool = False) -> bool:
-    """OFM_NEW_WRITES_ENABLED on for the request's Creator; the Creator is asked only when the answer matters (`body`
-    carries one of `new_keys`, or `ask`), else False."""
     return (ask or not new_keys.isdisjoint(body)) and runtime_switches.on_for(OFM_NEW_WRITES, _current_aid)
 
 
@@ -6238,27 +4867,22 @@ def of_update_profile(body: dict = Body(...)):
     only the `_PROFILE_KEYS` the mirror sends (422 on any other). While OFM_NEW_WRITES_ENABLED is off for the
     request's Creator the `_PROFILE_NEW_KEYS` are refused too (422) and `about` goes as typed, as on main."""
     formatted = isinstance(body.get("about"), str) and is_of_html(body["about"])
-    new_writes = _new_writes_for(body, _PROFILE_NEW_KEYS, ask=formatted)   # a formatted Bio asks too
+    new_writes = _new_writes_for(body, _PROFILE_NEW_KEYS, ask=formatted)
     body = _allowed_body(body, _PROFILE_KEYS if new_writes else _PROFILE_KEYS - _PROFILE_NEW_KEYS)
-    _check_profile_images(body)   # ticket 67
+    _check_profile_images(body)
     if new_writes and formatted:
-        body = {**body, "about": sanitize_of_html(body["about"])}   # ticket 68: a formatted bio, OF's tags only
+        body = {**body, "about": sanitize_of_html(body["about"])}
     result = _proxy(lambda: _get_client().update_profile(**body))
-    # BC5 invalidation: many /users/me fields are mirrored under
-    # /users/me/settings, so any profile patch may change the cached blob.
     aid = _current_aid()
     relay_cache.invalidate("my_settings", aid)
-    # A profile PATCH can move `subscribePrice` — re-read the page tier next ask.
     account_page.invalidate(aid)
     return result
 
-# ── Settings writes (OF settings pages in the OF Manager mirror) ──
 
 class _StorySettingsBody(BaseModel):
     allowReplyFrom: str = Field(..., pattern="^(subscribers|nobody)$")
 
 def _settings_write(call: Callable[[], Any]) -> Any:
-    """Proxy a settings write, then drop the cached /users/me/settings blob."""
     result = _proxy(call)
     relay_cache.invalidate("my_settings", _current_aid())
     return result
@@ -6289,18 +4913,14 @@ def of_patch_story_settings(body: _StorySettingsBody = Body(...)):
     """Story replies switch: `{allowReplyFrom: "subscribers" | "nobody"}`."""
     return _settings_write(lambda: _get_client().patch_story_settings(body.allowReplyFrom))
 
-# ticket 63
 @app.delete("/api/of/v2/sessions", dependencies=_OFM_WRITES)
 def of_close_all_sessions():
     """Login sessions' Close all sessions: OF's DELETE /sessions, no body (`account-lockout`). The client's
     `_denied` backstop still refuses it (403 refused_by_relay, nothing sent) until the owner's go (ticket 81)."""
     return _settings_write(lambda: _get_client().close_all_sessions())
 
-# ticket 66: Block by country and Block by IP (records settings--block-by-country, settings--block-by-ip,
-# measured-in-js): OF's own security PUT with only that control's keys, each on its own route under
-# `account-lockout`, never the general security PUT above (watermarks only). The body is the whole list.
+# OF's own security PUT with only that control's keys, each on its own route; never the general security PUT.
 def _list_body(body: dict, kinds: dict[str, type]) -> dict:
-    """`body` when its keys are exactly `kinds`' and each is a list of that type, else 422."""
     body = _allowed_body(body, frozenset(kinds))
     for key, kind in kinds.items():
         value = body.get(key)
@@ -6326,11 +4946,9 @@ def of_block_ips(body: dict = Body(...)):
     return _settings_write(lambda: _get_client().put_security_settings(body))
 
 def _is_http_link(v: str) -> bool:
-    """An http(s) URL with a dotted host: the social buttons' and Things I Like links' check."""
     return re.fullmatch(r"https?://[^\s/]+\.[^\s]+", v) is not None
 
 
-# ticket 69: Settings > Social media's Add button and a button's remove (capture record settings--social-media-buttons).
 _SOCIAL_BUTTON_KEYS = frozenset({"socialMedia", "label", "link", "username"})
 
 @app.put("/api/of/v2/users/social/buttons", dependencies=_OFM_WRITES)
@@ -6354,7 +4972,6 @@ def of_delete_social_button(button_id: int):
     """One social media button's remove: OF's DELETE /users/social/buttons/{id}, no body."""
     return _settings_write(lambda: _get_client().delete_social_button(button_id))
 
-# ticket 70: Settings > Things I Like's Create link and a link's delete (capture record settings--things-i-like-links).
 _USERS_LINK_KEYS = frozenset({"link"})
 
 @app.put("/api/of/v2/users/links", dependencies=_OFM_WRITES)
@@ -6371,7 +4988,6 @@ def of_delete_users_link(link_id: int):
     """One Things I Like link's delete: OF's DELETE /users/links/{id}, no body."""
     return _settings_write(lambda: _get_client().delete_users_link(link_id))
 
-# ticket 76
 @app.delete("/api/of/v2/streams/obs/key", dependencies=_OFM_WRITES)
 def of_reset_stream_key(server: Literal["obs_agora", "mux_direct"] = Query(..., alias="type"), body: dict | None = Body(None)):
     """Settings > Streaming's Reset stream key: OF's DELETE /streams/obs/key?type=<shown OBS server>, no body
@@ -6381,7 +4997,6 @@ def of_reset_stream_key(server: Literal["obs_agora", "mux_direct"] = Query(..., 
         raise HTTPException(status_code=422, detail="no body allowed")
     return _settings_write(lambda: _get_client().reset_stream_key(server))
 
-# ticket 73
 @app.post("/api/of/v2/streams/users/{username}/block", dependencies=_OFM_WRITES)
 def of_block_stream_viewer(username: str = PathParam(..., pattern=r"^[A-Za-z0-9._-]{1,24}$"), body: dict | None = Body(None)):
     """Settings > Streaming > Blocked users' Block a username: OF's POST /streams/users/{username}/block, no body
@@ -6395,13 +5010,10 @@ def of_unblock_stream_viewer(user_id: int):
     """A Blocked users row's remove: OF's DELETE /streams/users/{user_id}/block (the row's id; `block-fan`)."""
     return _proxy(lambda: _get_client().unblock_stream_viewer(user_id))
 
-# ── Statistics + Settings reads (Earnings/Engagement/Reach, Statements, referrals, bookmarks) ──
-# Live in of_stats_api.py; included HERE (not top-of-file) to keep route order.
 import of_stats_api  # noqa: E402
 app.include_router(of_stats_api.router)
 
 
-# Scheduled / mass --------------------------------------------------
 
 @app.post("/api/of/v2/chats/{chat_id}/messages/scheduled")
 async def of_schedule_message(chat_id: int, request: Request,
@@ -6419,16 +5031,7 @@ async def of_schedule_message(chat_id: int, request: Request,
     account_id = _resolve_account_id(request)
     platform = platforms.for_account(account_id)
     if platforms.Lack.SERVER_SCHEDULE in platform.lacks:
-        # Apply the shim's OWN send rules AT SCHEDULE TIME. The executor
-        # forwards these kwargs verbatim, so anything send_message refuses
-        # would otherwise be accepted here and fail silently at fire time —
-        # hours later, with no operator feedback.
-        #
-        # Delegated, never re-implemented: these rules were briefly hand-copied
-        # into this branch and drifted within a day (the all-previews money
-        # check was added to the shim and not here, re-opening the exact
-        # deferred-failure hole this block exists to close). check_sendable is
-        # stateless precisely so this route can ask without a session.
+        # Delegated to check_sendable, never re-implemented: hand copies drifted and re-opened the hole where a send fails silently at fire time.
         try:
             platform.backend.check_sendable(media_files=body.media_files, price=body.price,
                                             previews=body.previews, locked_text=body.locked_text)
@@ -6441,26 +5044,12 @@ async def of_schedule_message(chat_id: int, request: Request,
         price=body.price, locked_text=body.locked_text, media_files=body.media_files,
         previews=body.previews,
         tagged_users=body.tagged_users,
-        auto_tag=False,   # same composer, same operator — see of_send_message
+        auto_tag=False,
     ))
 
 
-# ── Near-term scheduled sends (executor-fired, survive reload, cross-chatter) ──
-#
-# These replace the old in-browser local-wait timer. A row in `scheduled_jobs`
-# (kind="scheduled_send") is enqueued here; the executor's `scheduled_send`
-# automation fires it at `run_at`. Distinct from the OF-queue path above
-# (`/messages/scheduled`), which is for longer delays and lives on OF's servers.
 
 def _run_at_naive_utc(iso: str) -> datetime:
-    """Parse an ISO fire-time to a NAIVE-UTC datetime — the form the rest of the
-    schema uses (everything compares against `datetime.utcnow()`).
-
-    NB: we parse with `fromisoformat`, NOT event_transcoder._parse_iso — the
-    latter *strips* the offset (treats the wall-clock as-is) rather than
-    converting it, so a `+02:00` time would fire 2h late. The UI only sends `Z`
-    strings, but normalizing correctly costs nothing and is robust to other
-    callers."""
     from datetime import timezone
     try:
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
@@ -6474,8 +5063,6 @@ def _run_at_naive_utc(iso: str) -> datetime:
 async def _enqueue_scheduled(request: Request, account_id: str,
                              body: "_ScheduleMessageBody | _ScheduledSendBody", *,
                              fan_id: int, run_at_iso: str, giphy_id: str | None) -> dict[str, Any]:
-    """Insert the `scheduled_jobs` row the executor fires at `run_at`, attributed
-    to the scheduling chatter's employee id; the reply both schedule routes give."""
     from employees import resolve_outbound_employee_id
     from automation_executor import enqueue_job
 
@@ -6491,9 +5078,7 @@ async def _enqueue_scheduled(request: Request, account_id: str,
         "tagged_users": body.tagged_users,
         "giphy_id": giphy_id,
         "sent_by_employee_id": employee_id,
-        # Typed stamp: a HUMAN scheduled this. The audience at-fire recheck
-        # bypasses manual sends; automation-enqueued scheduled_send jobs don't
-        # carry it and get re-checked against the fence at fire time.
+        # Typed stamp: a HUMAN scheduled this; the at-fire audience recheck bypasses manual sends.
         "send_purpose": "manual",
     }
     job_id = await enqueue_job(
@@ -6509,10 +5094,7 @@ async def create_scheduled_send(request: Request, body: _ScheduledSendBody = Bod
     employee id so the eventual bubble is attributed to them, then inserts a
     `scheduled_jobs` row the executor will fire at `run_at`."""
     account_id = _resolve_account_id(request)
-    # Same at-schedule-time rejection the >15-min Fansly path makes: the shim's
-    # send_message refuses PPV price and media attachments, and it does so at
-    # FIRE time — minutes later, into a retry loop the chatter never sees. Fail
-    # here, while they are still looking at the composer.
+    # Fail here while the chatter still sees the composer: the shim refuses PPV price and media at FIRE time, into a retry loop nobody sees.
     p = platforms.for_account(account_id)
     if platforms.Lack.NEAR_SCHEDULE_MEDIA in p.lacks and (body.media_files or body.price > 0):
         raise HTTPException(
@@ -6593,7 +5175,6 @@ async def cancel_scheduled_send(request: Request, job_id: int):
             .values(status="cancelled")
         )
         if res.rowcount:
-            # The other tabs on this Creator drop the ghost bubble now.
             events.on_commit(s, "scheduled_send_changed", account_id=account_id, job_id=job_id)
     cancelled = bool(res.rowcount)
     if not cancelled:
@@ -6601,18 +5182,11 @@ async def cancel_scheduled_send(request: Request, job_id: int):
     return {"cancelled": True, "job_id": job_id}
 
 
-# ── Mass message queue: send now / schedule / save for later, edit, cancel ──
-# Live in mass_queue_api.py; included HERE (not top-of-file) to keep route order.
 import mass_queue_api  # noqa: E402
 app.include_router(mass_queue_api.router)
 
-# Posts writes ------------------------------------------------------
 
 async def _refuse_paid_post_on_paid_page(request: Request, price: float | int | None) -> None:
-    """A priced feed post needs a FREE page — a subscription page has no
-    paid-post lane on OF (service/account_page.py). Refused here, at the one
-    route the composer and its all-models fan-out both go through, so the
-    operator gets the reason instead of an opaque OF rejection."""
     if not price or float(price) <= 0:
         return
     if await account_page.is_paid_page(_resolve_account_id(request)):
@@ -6695,7 +5269,6 @@ def of_archive_post(post_id: int):
     """Archive one of my posts (OF's post menu "Archive post")."""
     return _proxy(lambda: _get_client().archive_post(post_id))
 
-# List writes -------------------------------------------------------
 
 @app.post("/api/of/v2/lists")
 def of_create_list(body: _NameBody = Body(...)):
@@ -6703,9 +5276,8 @@ def of_create_list(body: _NameBody = Body(...)):
     _invalidate_chat_folders()
     return out
 
-# list_id is typed `str` (not `int`) so built-in lists like 'fans', 'recent',
-# 'bookmarks' work alongside custom numeric ids. OF's API accepts both.
 
+# list_id is `str` so built-in lists ('fans', 'recent', 'bookmarks') work beside numeric ids.
 @app.patch("/api/of/v2/lists/{list_id}")
 def of_rename_list(list_id: ListId, body: _NameBody = Body(...)):
     """Rename a list. OF uses PATCH (not PUT) — verified live."""
@@ -6722,13 +5294,13 @@ def of_delete_list(list_id: ListId):
 @app.post("/api/of/v2/lists/{list_id}/users/{user_id}")
 def of_add_user_to_list(list_id: ListId, user_id: int):
     out = _proxy(lambda: _get_client().add_user_to_list(list_id, user_id))
-    _invalidate_chat_folders()  # usersCount rides in the folders payload
+    _invalidate_chat_folders()
     return out
 
 @app.delete("/api/of/v2/lists/{list_id}/users/{user_id}")
 def of_remove_user_from_list(list_id: ListId, user_id: int):
     out = _proxy(lambda: _get_client().remove_user_from_list(list_id, user_id))
-    _invalidate_chat_folders()  # usersCount rides in the folders payload
+    _invalidate_chat_folders()
     return out
 
 @app.post("/api/of/v2/lists/users")
@@ -6737,17 +5309,16 @@ def of_add_users_to_lists(body: dict[str, list[int]] = Body(...)):
     if not body or not all(body.values()):
         raise HTTPException(status_code=422, detail="each list needs at least one user id")
     out = _proxy(lambda: _get_client().add_users_to_lists(body))
-    _invalidate_chat_folders()  # usersCount rides in the folders payload
+    _invalidate_chat_folders()
     return out
 
 @app.delete("/api/of/v2/lists/{list_id}/users")
 def of_clear_list(list_id: ListId):
     """OF's "Clear list": every user leaves the list (the list stays)."""
     out = _proxy(lambda: _get_client().clear_list(list_id))
-    _invalidate_chat_folders()  # usersCount rides in the folders payload
+    _invalidate_chat_folders()
     return out
 
-# Labels writes -----------------------------------------------------
 
 @app.post("/api/of/v2/labels")
 def of_create_label(body: _NameBody = Body(...)):
@@ -6764,9 +5335,6 @@ def of_sort_labels(body: _LabelSortBody = Body(...)):
     return _proxy(lambda: _get_client().sort_labels(sort=body.sort, order=body.order))
 
 
-# Subscriber tools — FOUND via Playwright UI capture.
-# OF uses ONE endpoint PUT /subscriptions/{id} with body containing either
-# `notice` (fan note) or `displayName` (custom nickname) — or both.
 
 class _NoteBody(BaseModel):
     note: str
@@ -6779,11 +5347,6 @@ class _SubscriptionPatchBody(BaseModel):
     displayName: str | None = None
 
 def _bust_chat_list_cache() -> None:
-    """Drop the account's cached `list_chats` so a nickname/note change shows on the
-    inbox rail immediately instead of after the 10-min TTL. The chat list's per-fan
-    `displayName` is overlaid from the local mirror / OF, so a stale cached page keeps
-    rendering the old name (the "<name>/Whale" drawers stayed stale after a gen_info
-    rewrite). The drawer's own read (get_user) is live + coalesced, so it needs no bust."""
     try:
         aid = _current_aid()
         relay_cache.invalidate("list_chats", aid)
@@ -6811,7 +5374,6 @@ class _DiscountBody(BaseModel):
     @field_validator("discount")
     @classmethod
     def _of_steps(cls, v: int) -> int:
-        # OF's PERSONAL_OFFER select (40681): 5..60 by 5; 0 is its Clear.
         if v != 0 and (v < 5 or v % 5):
             raise ValueError("discount must be 0 or 5..60 in steps of 5")
         return v
@@ -6832,23 +5394,11 @@ def of_update_subscription(user_id: int, body: _SubscriptionPatchBody = Body(...
     _bust_chat_list_cache()
     return result
 
-# Media upload -----------------------------------------------------
-# Three-step flow: dedupe-hash check → POST /upload/signed/create →
-# PUT bytes to presigned S3 URL → returns vault media id we can send in
-# subsequent /chats/{id}/messages or /posts with mediaFiles=[id].
 
 from fastapi import UploadFile, File, Form
 
 
 def _upload_basename(raw: str | None) -> str:
-    """The browser's file name, safe as one path segment and as part of an S3
-    key: the base name of a POSIX or Windows path, every run of characters
-    outside `[A-Za-z0-9._-]` replaced by `_`, no leading or trailing `.`/`_`/`-`
-    on the stem, at most 200 characters (ASCII, so 200 bytes; filesystems cap
-    a name at 255 bytes). A plain ASCII extension of up to 15 characters is
-    kept; a name with no stem left is `upload` plus that extension, else
-    `upload.bin`. ASCII only, because the key goes into URLs we build without
-    encoding (`of_client`: `s3_location`) and keys used to be plain temp names."""
     name = (raw or "").replace("\\", "/").rsplit("/", 1)[-1]
     stem, ext = os.path.splitext(name)
     if not re.fullmatch(r"\.[A-Za-z0-9]{1,15}", ext):
@@ -6866,10 +5416,7 @@ async def of_upload_media(file: UploadFile = File(...)):
     The returned `media_id` is usable as mediaFiles=[id] in send/post calls
     after OF's transcoder finishes (typically 5-30s for images)."""
     import tempfile, shutil
-    # Spool to `<tempdir>/<the name, as safe ASCII>`: both clients name the
-    # upload after `path.name` (S3 key, convert claim `name`, Fansly
-    # `fileName`), so a bare NamedTemporaryFile landed every Composer upload in
-    # the vault as `tmpXXXX`.
+    # Named after the upload: both clients use path.name (S3 key, convert claim, Fansly fileName); a bare temp file landed in the vault as tmpXXXX.
     def _upload():
         tmp_dir = tempfile.mkdtemp(prefix="of-upload-")
         try:
@@ -6881,19 +5428,11 @@ async def of_upload_media(file: UploadFile = File(...)):
                 content_type=file.content_type,
             ))
         finally:
-            # In the worker, so a cancelled request cannot unlink the spool
-            # under an upload that is still running.
+            # In the worker, so a cancelled request can't unlink the spool under a running upload.
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    # Off the loop (#171): the spool is up to a 15 MB copy, and upload_media
-    # is blocking curl for seconds (hash, S3 PUTs, convert claim). On the loop
-    # it ran uploads one at a time and stalled every other request, so writers
-    # holding a SQLite transaction could not commit: "database is locked",
-    # audit/attribution rows lost. to_thread copies the request's contextvars,
-    # which `_proxy` and `_get_client` read.
+    # Off the loop: blocking curl for seconds stalled every other request and caused 'database is locked'. to_thread copies the contextvars `_proxy` and `_get_client` read.
     result = await asyncio.to_thread(_upload)
-    # New vault item — every cached page is now potentially stale.
-    # Drop the whole account's cache so the next picker open re-fetches.
     try:
         aid = _current_aid()
         await vault_cache.invalidate(aid)
@@ -6902,12 +5441,7 @@ async def of_upload_media(file: UploadFile = File(...)):
     return result
 
 
-# ticket 67: Edit profile's cover and avatar upload (capture record settings--profile-cover-avatar): OF's upload steps
-# (signed/create, the S3 PUT, the convert claim with `additional[customThumbSize]`, `inferred`; no hash dedupe, OF's
-# `isAvoidHash`), answering the upload item the profile Save then PATCHes /users/me with. Multipart form: `file` and
-# `kind` ("avatar" | "header"), nothing else (422). Only JPEG, PNG, GIF or WebP up to one upload part (5 MiB, so the
-# upload is a single PUT, as the record's sequence without signed/finish) is taken; anything else is refused before
-# any OF request (413/415). Nothing is cached for it: the Save's PATCH drops the settings blob.
+# Only JPEG, PNG, GIF or WebP up to one 5 MiB upload part (a single PUT); anything else is refused before any OF request.
 from starlette.datastructures import UploadFile as StarletteUploadFile  # noqa: E402  (request.form()'s parts)
 
 PROFILE_IMAGE_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
@@ -6945,7 +5479,7 @@ async def of_upload_profile_image(request: Request):
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    result = await asyncio.to_thread(_upload)   # off the loop, as of_upload_media
+    result = await asyncio.to_thread(_upload)
     if not isinstance(result, dict) or not result.get("ready"):
         note = result.get("note") if isinstance(result, dict) else None
         raise HTTPException(status_code=502, detail=f"upload failed: {note or 'no upload item'}")
@@ -6955,28 +5489,19 @@ async def of_upload_profile_image(request: Request):
     return items[0]
 
 
-# ── Vault import (fan check, batch, append, Drive list, status) ─────────
-# Live in vault_import_api.py; included HERE (not top-of-file) to keep route
-# order, and its body cap joins the hook chain at its old spot (hook order).
 import vault_import_api  # noqa: E402
 _http_hooks.add(vault_import_api._cap_vault_batch_body)
 app.include_router(vault_import_api.router)
 
 
-# Stories writes ----------------------------------------------------
-# /stories does NOT accept a vault media id — even "pick from vault" in the
-# UI re-uploads bytes through the convert pipeline. So we fetch the image
-# (a vault item's files.full.url, or any CDN/image url), re-upload via
-# upload_media(), then POST the convert claim to /stories. See
-# of_client.post_story_from_url for the captured flow.
 
+# /stories doesn't accept a vault media id: bytes are re-uploaded through the convert pipeline.
 class _CreateStoryBody(BaseModel):
     media_url: str | None = Field(
         None, description="Image URL to download + repost (vault files.full.url / any CDN url)")
     media_files: list | None = Field(
         None, description="Already-prepared mediaFiles (send_with from POST /upload)")
     watermark_text: str | None = None
-    # Optional overlays — replayed at the captured editor coordinates.
     caption: str | None = Field(None, description="Text overlay")
     mention: str | None = Field(None, description="@username tag (with or without @)")
     question: str | None = Field(None, description="Question sticker prompt")
@@ -7021,8 +5546,6 @@ async def of_create_story_upload(file: UploadFile = File(...)):
         except OSError: pass
 
 
-# ── Admin session + multi-account admin + proxy registry admin ──
-# Live in accounts_admin_api.py / proxies_admin_api.py; included HERE (not top-of-file) to keep route order.
 import accounts_admin_api  # noqa: E402
 import proxies_admin_api  # noqa: E402
 from accounts_admin_api import _ROSTER_SCAN_MAX  # noqa: E402  # list_chats' page-0 window = the badge's
@@ -7034,17 +5557,11 @@ import chat_screen_api  # noqa: E402  # /admin/screens/chat: a thread open's loc
 app.include_router(chat_screen_api.router)
 
 
-# ── Realtime: WS fan-out, stats ────────────────
 
-_CHAT_HISTORY = "/api/of/v2/chats/0/messages"  # a chat's history: what a role must grant to read reply text
+_CHAT_HISTORY = "/api/of/v2/chats/0/messages"
 
 
 async def _chats_readable(accounts: frozenset[str] | None) -> frozenset[str] | None:
-    """The Creators among `accounts` whose chat history this chatter session's role grants (the role middleware's
-    own decision, `permissions.route_refusal` on a chat's messages read); None when it grants every one (enforcement
-    off, every linked Agency granting). `/events` strips `chat_responded`'s reply text for the rest. A refusal of
-    any kind (403, an Agency context's 503) reads as not granted: the stream still opens, without the text. Fails
-    closed: no page serving that read (`route_refusal` passes an unmapped route) grants none."""
     import permissions
     pages = permissions.route_pages(_CHAT_HISTORY, "GET")
     if not pages:
@@ -7079,7 +5596,7 @@ async def sse_events(
     `?lease=1`: the app renews its own View lease; an unmarked browser stream is a tab loaded
     before that and leases the session's Creators while open (view_lease "Legacy tabs").
     """
-    granted_at = _sse_ring_seq()  # a stream-ending frame after this ends the stream: these grants may predate it
+    granted_at = _sse_ring_seq()
     accounts = _require_actor_account_ids()
     if scope.startswith("model:") and accounts is not None and scope[len("model:"):] not in accounts:
         raise HTTPException(status_code=403, detail="not your account")
@@ -7106,7 +5623,7 @@ async def sse_events(
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
-            "X-Accel-Buffering": "no",  # tell nginx/cloudflare to flush, not buffer
+            "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
         },
     )
@@ -7125,27 +5642,20 @@ def event_stats() -> dict[str, Any]:
         "pumps": pumps,
         "pumps_running": sum(1 for p in pumps.values() if p["running"]),
         "supervisor_running": (_supervisor_task is not None and not _supervisor_task.done()),
-        # Each open SSE stream's mode (immediate / batch), rate and queue depth.
         "sse": _sse_stats(),
     }
 
 
-# ── Saved replies + vault sends ───────────────────────────────────────
-# Live in saved_replies_api.py / vault_sends_api.py; included HERE (not top-of-file) to keep route order.
 import saved_replies_api  # noqa: E402
 import vault_sends_api  # noqa: E402
 app.include_router(saved_replies_api.router)
 app.include_router(vault_sends_api.router)
 
 
-# ── /admin/ingest/transactions/* — Phase F supervisor admin surface ─
-# Lives in tx_ingest_admin_api.py; included HERE (not top-of-file) to keep route order.
 import tx_ingest_admin_api  # noqa: E402
 app.include_router(tx_ingest_admin_api.router)
 
 
-# ── Relay root ─────────────────────────────────────────────────
-# The product UI is the Next app (app/); the relay root just identifies itself.
 
 @app.get("/", include_in_schema=False)
 def root():

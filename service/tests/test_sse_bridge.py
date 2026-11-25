@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""WORKER→SSE bridge — a worker that writes an outbound `messages` row must emit
-a synthetic `api2_chat_message` SSE event so an open chat updates live (the OF-WS
-pump skips outbound, so there's no live path otherwise).
-
-Covers the guardrail's named requirement ("assert an SSE event fires after a
-worker write") plus the gating that keeps the HUMAN send path silent (it relies
-on optimistic UI; a second live row would duplicate on the sender's screen).
-
-Run: ./venv/bin/python service/tests/test_sse_bridge.py   (exit 0 = green)
-"""
 import _harness  # MUST be first — binds a throwaway temp DB
 
 _harness.bootstrap()
@@ -38,8 +28,6 @@ async def _drain(q) -> list:
 
 
 async def case_publish_db_message_outbound_shape():
-    """The synthetic event carries the recipient (__fan_id) and marks the bubble
-    outbound (fromUser.id == account_id) — the shape useInboxRealtime consumes."""
     q = await events.subscribe("all")
     try:
         await events.publish_db_message(
@@ -61,8 +49,6 @@ async def case_publish_db_message_outbound_shape():
 
 
 async def case_worker_write_emits_live():
-    """write_outbound_attribution(emit_live=True) → exactly one SSE event,
-    routed to the per-account scope."""
     q = await events.subscribe("model:606")
     try:
         await write_outbound_attribution(
@@ -79,8 +65,6 @@ async def case_worker_write_emits_live():
 
 
 async def case_human_path_is_silent_by_default():
-    """Default (emit_live omitted) MUST NOT emit — the human send path relies on
-    optimistic UI; a live row would duplicate on the sender's screen."""
     q = await events.subscribe("model:607")
     try:
         await write_outbound_attribution(
@@ -96,9 +80,6 @@ async def case_human_path_is_silent_by_default():
 
 
 async def case_mass_optimistic_emits_per_recipient():
-    """One SSE event per UNIQUE known recipient of a broadcast."""
-    # messages.mass_run_id FKs mass_runs.id, and mass_runs.account_id FKs
-    # accounts.id — mint both parents first (A10 does the same chain).
     async with get_session() as s:
         if await s.get(Account, "608") is None:
             s.add(Account(id="608"))
@@ -124,15 +105,10 @@ async def case_mass_optimistic_emits_per_recipient():
 
 
 async def case_outbound_send_advances_chat_preview():
-    """An automation/human outbound send advances the local `chats` preview so
-    the inbox seed (/admin/chats/recent) shows the just-sent text instead of
-    lagging on the fan's last inbound. Forward-only: an OLDER send can't clobber
-    the newer preview."""
     async with get_session() as s:
         if await s.get(Account, "609") is None:
             s.add(Account(id="609"))
 
-    # First send lands as the preview.
     await write_outbound_attribution(
         account_id="609", fan_id=900, message_id=9300,
         sent_by_employee_id=None, body="<p>newest reply</p>", price_cents=0,
@@ -144,7 +120,6 @@ async def case_outbound_send_advances_chat_preview():
     assert chat.last_message_preview == "newest reply", chat.last_message_preview
     assert chat.last_message_id == 9300, chat.last_message_id
 
-    # An OLDER send (earlier created_at) must NOT overwrite the newer preview.
     older = datetime(2026, 6, 4, 11, 0, 0)
     await write_outbound_attribution(
         account_id="609", fan_id=900, message_id=9250,
@@ -158,9 +133,6 @@ async def case_outbound_send_advances_chat_preview():
 
 
 async def case_human_send_announces_chat_responded():
-    """A person's DM is announced as `chat_responded` (who answered which fan, when, and OF's
-    answer cut to the row's preview), to the sessions that can see that Creator — never as a
-    second chat message. Any-scope: a tab scoped to another Creator of the same clamp gets it."""
     async with get_session() as s:
         e = Employee(display_name="Kingsley", user_id="owner-1")
         s.add(e)
@@ -193,8 +165,6 @@ async def case_human_send_announces_chat_responded():
 
 
 async def case_recent_seed_carries_muted_flag():
-    """The inbox seed (/admin/chats/recent) carries OF's `isMutedNotifications` from `Fan.is_muted`, so a Muted
-    unread chat's placeholder row draws no blue dot; a chat with no fans row is not Muted."""
     import server
     async with get_session() as s:
         s.add(Account(id="612"))

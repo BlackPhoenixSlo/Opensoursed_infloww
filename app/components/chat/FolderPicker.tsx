@@ -7,9 +7,6 @@ import { MP } from "@/lib/messagesPro";
 import { describeLoadError } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
-/** Modal-ish popover listing every pinnable list (pinned + unpinned)
- *  with a checkbox toggle. Mirrors /ui/'s folder picker. Closes on outside
- *  click or Esc. */
 export function FolderPicker({
   accountId, onClose,
 }: { accountId: string; onClose: () => void }) {
@@ -17,7 +14,6 @@ export function FolderPicker({
   const pin = usePinChatFolder(accountId);
   const rows = all.data ?? [];
 
-  // Close on Esc
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", onKey);

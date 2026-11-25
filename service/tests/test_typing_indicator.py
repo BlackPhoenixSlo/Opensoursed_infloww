@@ -1,14 +1,6 @@
-"""Regression tests for the live "...is typing" indicator wiring.
-
-Covers the automation-side seam (_common.hold_with_typing) + the of_ws pump
-registry (register_pump / emit_typing / send_typing) WITHOUT any network:
-a fake pump records the frames hold_with_typing pushes.
-
-Run: ./venv/bin/python service/tests/test_typing_indicator.py
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB + TEST_MODE
+import _harness  # MUST be first: binds temp DB
 import asyncio
 
 import of_ws
@@ -21,7 +13,6 @@ FAN = 80000112
 
 
 class FakePump:
-    """Stands in for a live OFWebSocket: records every typing frame."""
     def __init__(self):
         self.sent: list[int] = []
 
@@ -31,7 +22,6 @@ class FakePump:
 
 
 def _fast_reemit():
-    """Shrink the re-emit gap so the test doesn't actually wait seconds."""
     _typing_hold._TYPING_REEMIT_S = 0.01
 
 
@@ -43,7 +33,6 @@ async def case_emits_through_registered_pump():
         await _common.hold_with_typing(AVA, FAN, 0.05, typing_indicator=True)
     finally:
         of_ws.unregister_pump(AVA, pump)
-    # 0.05s / 0.01s re-emit → several frames, all to the right fan.
     assert len(pump.sent) >= 2, ("expected re-emitted typing frames", pump.sent)
     assert set(pump.sent) == {FAN}, pump.sent
 
@@ -61,8 +50,7 @@ async def case_indicator_off_emits_nothing():
 
 async def case_no_pump_degrades_to_sleep():
     _fast_reemit()
-    of_ws.unregister_pump(AVA)  # ensure none registered
-    # Must complete cleanly even though emit_typing finds no socket.
+    of_ws.unregister_pump(AVA)
     await _common.hold_with_typing(AVA, FAN, 0.03, typing_indicator=True)
     assert await of_ws.emit_typing(AVA, FAN) is False
 
@@ -78,7 +66,6 @@ async def case_zero_seconds_is_noop():
 
 
 async def case_send_typing_no_socket_returns_false():
-    # OFWebSocket with no live connection must no-op, not raise.
     ws = of_ws.OFWebSocket.__new__(of_ws.OFWebSocket)
     ws._live_ws = None
     assert await ws.send_typing(FAN) is False

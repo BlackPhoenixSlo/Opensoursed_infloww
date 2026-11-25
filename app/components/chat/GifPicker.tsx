@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * GifPicker — inline strip rendered above the composer toolbar (mirrors OF
- * desktop). The Composer owns the open/close state and the 🎬 toggle
- * button; this file exports the strip + a `toPicked` adapter.
- *
- * Wire-format: send via top-level `giphyId` on /chats/{id}/messages.
- * Verified live 2026-05-23.
- */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
@@ -22,9 +14,7 @@ import { INITIAL_GIFS, PAGE_SIZE, gifReducer } from "./gifPickerState";
 
 export interface PickedGif {
   id: string;
-  /** Animated preview URL the chip + grid render. */
   thumbUrl: string;
-  /** Full-size URL — useful for the optimistic message bubble later. */
   fullUrl: string;
   width?: number;
   height?: number;
@@ -44,11 +34,6 @@ function toPicked(g: GiphyItem): PickedGif {
   };
 }
 
-/**
- * Inline strip — rendered above the composer textarea when the user
- * clicks 🎬. Search input runs the row across the top; below is a
- * horizontally-scrolling row of trending / search results.
- */
 export function GifPickerStrip({
   accountId, onPick, onClose,
 }: {
@@ -62,7 +47,6 @@ export function GifPickerStrip({
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Debounce the search box so we don't fire a request per keystroke.
   useEffect(() => {
     const id = setTimeout(() => setDebouncedSearch(search.trim()), 250);
     return () => clearTimeout(id);
@@ -73,9 +57,7 @@ export function GifPickerStrip({
     return () => abortRef.current?.abort();
   }, []);
 
-  // One page fetch, through one abortRef: a new fetch (a query change, or "more") aborts the one in flight, so a
-  // fast typer never sees stale results paint over fresh ones, and a stale "more" never appends the OLD query's
-  // page onto the NEW query's first page. Aborted fetches never dispatch.
+  // One abortRef: a new fetch aborts the one in flight so stale pages never paint over or append to the new query's.
   const fetchPage = useCallback((offset: number) => {
     abortRef.current?.abort();
     const ctrl = new AbortController();
@@ -93,7 +75,6 @@ export function GifPickerStrip({
     return ctrl;
   }, [debouncedSearch, accountId]);
 
-  // Fetch the first page on mount + whenever the (debounced) query changes.
   useEffect(() => {
     const ctrl = fetchPage(0);
     return () => ctrl.abort();
@@ -183,12 +164,6 @@ export function GifPickerStrip({
   );
 }
 
-/**
- * Toolbar toggle. Stateless — parent passes `open` + `onToggle`; the
- * actual GIF strip mounts elsewhere in the composer's layout.
- * `messagesPro` (only the Composer passes it) makes it the 34px borderless
- * "GIF" toolbar icon (Clone `#cbGif`, messages.html:756).
- */
 export function GifPickerButton({
   open, onToggle, disabled, messagesPro,
 }: {

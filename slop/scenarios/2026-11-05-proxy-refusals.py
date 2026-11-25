@@ -1,109 +1,3 @@
-"""A flapping pool proxy: alive, but the provider refuses a share of its CONNECTs (docs/adr/0030
-Consequences, docs/proxies.md "Refusals", service/proxy_health.py refusal window + flap knob).
-
-Prod 2026-11 (slop/evidence/20261105T150727Z-ae-proxy-refusals-296e9299c, local only): the
-provider refuses CONNECT about a third of the time on half the pool, in bursts, not from load;
-each refusal is back within 1-20 s, so no DOWN_AFTER streak forms and the outage path never
-fires. Built: every `_proxy_retry` attempt (and probe) feeds a per-proxy window shown on
-`GET /admin/proxies` (`health.refusals`; `inflight`/`inflight_peak` to the site owner only), the
-Proxies table adds "refusing N% (M min)", the Accounts badge reads "proxy refusing", and the flap
-knob (`PROXY_FLAP_BAD_PCT` = X, default 20 since the owner accepted the IP change on 2026-11-05;
-0 = off) marks a proxy bad (FlapBad) on a refusal with >= 20 attempts in the window, >= X %
-refused, refusals in >= 3 of the window's tenths, not already down; it stays bad (hysteresis)
-while >= X/2 % of >= 20 attempts in the window, however old (no recency rule since 2026-11-08: it
-comes back only once its window drains), then the next answer or recheck brings it back as standby;
-nobody is moved (or newly bound) onto a flapping proxy.
-
-At the defaults, on purpose: RELAY_ENV sets no knob (the relay's own PROXY_FLAP_BAD_PCT 20 and
-PROXY_FLAP_WINDOW_S 600, so the table reads "(10 min)" as on prod); only PROXY_RECHECK_S=2
-compresses the recheck cadence, as 2026-10-28-proxy-failover does (same defaults: a dead proxy's
-failures are no refusals, its confirm -> recheck -> move timeline unchanged). The off switch is the
-unit test `case_flap_knob_on_by_default_zero_turns_it_off` (service/tests/test_proxy_health.py:
-PROXY_FLAP_BAD_PCT=0, 50 refusals at 100 %, not down).
-
-The world: `one_agency` (one Agency, 50 Creators, medium = 5,000 fans by SQL), each Creator with a
-captured session (seed/of_sessions.py) so the relay builds its REAL OFClient; OnlyFans is
-lib/of_wire.py (`OF_WIRE`). A pool of POOL (3) lib/proxy_wire.py proxies synced through
-`POST /__slop/proxy-pool`, PER_PROXY (2, as prod) Creators each bound least-used through
-`POST /admin/proxy-pool/assign`; plus the owner's custom proxy (`POST /admin/proxies` + `/assign`)
-with CUSTOM (4) Creators: custom Creators never move, so traffic stays on it and its stay and clear
-rules are exercised under load; pool proxies are never listed in the Proxies table, so the UI is
-read on it. Phase A (LOAD_S 180 s, past the move budget): the first Creator's pool proxy and the
-custom one refuse REFUSE_SHARE (0.3, `--set refuse_share=`) of CONNECTs (seeded); `--users` people
-(seeded picks among the 10 Creators) refresh the Fan List once a second
-(`GET /api/of/v2/chats?refresh=1`, interactive: 2 tries) and send a unique DM every third second
-(5 tries); the harness polls the registry and `GET /admin/proxies` twice a second (a registry read
-that is empty or lacks a bound Creator, i.e. mid-write, is skipped). Then the pool proxy's share
-goes to 0 and two clocks run side by side: the moved-away pool proxy's standby is polled (only
-probes reach it now), while on the custom proxy phase B (HOLD_S 60 s) has it
-refuse HOLD_SHARE (0.16) with every person reading its 4 Creators (paced users/HOLD_RPS, 0.25-1 s;
-the UI shot taken meanwhile), then phase C: its share goes to 0 and the reads go on until it
-clears. Attempts per proxy track its Creators, not the read rate (2 Creators gave 746 / 777 per
-minute at 20 / 30 reads/s, ...-d789, ...-e726; inferred: a Creator's reads coalesce), hence CUSTOM 4.
-
-Checks (each with its why): C_RATE_SHOWN (the owner can see a flapping proxy; an Agency's owner sees the
-share alone, `refusals` {window_s, pct}: the counts are every Agency's traffic, the site owner's since
-2026-11-08; so n is the fake's own CONNECTs since phase A began, WS dials excluded (they skip
-`_proxy_retry`), >= 20 of them, pct within the share +- PCT_Z (3.5) binomial sd of n (two-sided
-P 0.05 %; a fixed [20, 40] failed at n 69, 15.9 %, ...-d789: the pool row is read at its last moment
-before the move, which the hysteresis lets fall under X); the band only, not the fake's own share: the
-relay counts attempts over its 600 s window (warm-up and probes included), the fake CONNECTs (custom
-28.8 % vs the fake's 460/1536 = 29.9 %, ...-b755; a "5 refusals' worth" tolerance was 0.33 points there;
-a keep-alive tunnel dialed before phase A carried ~325 attempts on one CONNECT once the relay shared
-curl handles across workers, 24.0 % vs 30.3 %, ...-022c, so lib/proxy_wire.py closes it too); pool row from the owner's last read before the move (after
-it the row leaves the owner's list), the custom row after a 1 s quiet; clean pool proxies pct 0); C_UI_TEXT (the operator sees it without
-the API: the custom row reads "refusing N% (10 min)" while refusing; knob-independent; skipped under
---no-ui); C_FLAP_MOVES (the knob does what the ADR says, through the existing machinery, without
-losing a DM: bad + both Creators on answering pool proxies within FLAP_MOVE_MS of the refusals
-starting, their calls after the move all 200, the clean pool Creators all 200, every non-200 a 502
-proxy_unreachable, no send lost / duplicated / ghosted, interactive read p95 <= INTERACTIVE_P95_MS);
-C_STANDBY_NO_FAILBACK (a recovered proxy is usable again but nobody moves back: FAILS without the move,
-then `pool.bad` 0 within STANDBY_MS of its share going to 0, bindings identical from the move to the
-end); C_HYSTERESIS (a flap-bad proxy does not flip bad/up while it keeps refusing: the custom proxy
-was flap-bad at the end of phase A and, through phase B, never up in any poll, still bad with
-bad_reason flapping at its end, pct >= STAY_PCT (X/2), `/admin/accounts` proxy_bad_reason flapping for its
-Creators, with UI the badge "proxy refusing" on all CUSTOM; at the 600 s window B's attempts blend
-with A's, so the shown pct stays >= X: that a rate inside [X/2, X) alone holds it is the unit test
-`case_flap_hysteresis_probe_class_and_bad_reason` and ...-20261105T170854Z-...-a337, this scenario
-at a 60 s window with B = window + 20 s); C_CLEARS (it comes back: steadily bad (the last 5 polls of
-B and the read at the stop) when its refusals stop, not bad within CLEAR_MS, accounts proxy_down
-false, with UI the badge gone).
-Evidence only: the share of people's reads that surfaced proxy_unreachable with today's 2 tries,
-inflight_peak per proxy when the owner may see it (metric `proxy_refusals`), flap toggles.
-
-Budgets, from the rule at the defaults. FLAP_MOVE_MS 160 s: refusals in 3 tenths of the window are
-3 different absolute minutes, so bad comes with the first refusal of the third minute, 61-121 s
-after the first (>= 20 attempts and >= 20 % arrive within seconds: 4 attempts/s on small's pool
-proxy, 13/s medium); + the 2 failed rechecks at bad +2 and +6 s (FAILOVER_AFTER_RECHECKS 2; a
-passing probe while still flapping counts as failed) + 2 probes 0.7 s + poll 0.5 s: ~130 s; the
-30 s over it are for a loaded host (the move's threads, not the clock, slow down). STANDBY_MS 1000 s
-(inferred from the rule, not yet measured): after the move (bad + ~6 s) only probes reach it
-(rechecks at bad +2, +6, +14, +30, +62, +126, +254, +510, +1022 s: doubling, capped at RECHECK_MAX_S
-600 s, which PROXY_RECHECK_S does not scale), fewer than 20 attempts, so its window holds phase A's
-30 % >= X/2 until phase A's attempts age out, ~bad + 606 s; the first recheck after that, bad + 1022 s,
-brings it back (bad is 57-120 s before share-0): share-0 + 902-965 s, + probe and poll. CLEAR_MS
-630 s (inferred from the rule): the custom proxy's reads keep answering in phase C, diluting its window
-(at ~13 attempts/s under X/2 around C + ~375 s, as phase A's attempts age out), and at the latest every
-refused attempt is out of the window WINDOW_S after the share went to 0, then the next answer (people
-read ~HOLD_RPS/s) brings it back, + poll. HOLD_S 60 s: 1/10 of the window; under the fault a refusal every ~0.5 s (16 % of 13/s) marks it bad and the next answer
-(~0.1 s) brings it up, so 120 polls at 0.5 s see "up" with certainty and C_CLEARS' 5 + 1 steady-bad
-reads pass by luck with P ~0.2^6. INTERACTIVE_P95_MS 4.5 s (phase A reads): this relay at 200
-people with no refusals reads p95 1.6 s on the dev host (`--set refuse_share=0`, ...-3222); refusals
-slow every Creator's reads (inferred: refused tries hold relay threads): with 6 of 10 Creators behind
-a refusing proxy the clean pool Creators read p95 3.06 s (host load 12-17, ...-604a), and a read's
-worst refusal path adds ~0.9 s (0.33 + 0.2 + 0.33): 4.0 s + margin; P95_VS_LAST guards it run to run.
-
-Bypasses, declared: as 2026-10-28-proxy-failover (pool synced by the hook; PROXY_RECHECK_S=2;
-SOCKS5 on loopback, a refusal = reply 0x02 after 0.33 s, curl 97 not prod's 56, both ProxyError;
-the probe's trace is lib/of_wire.py's; people are httpx pools on their own recorder, their 502s
-being expected answers this scenario checks); while refusing, the fake closes a tunnel after one
-exchange so each attempt draws its own CONNECT (lib/proxy_wire.py).
-
-Break-it-once (FAULT = flap-knob-ignored, lib/proxy_refusals_faults.py: `still_flapping()` + `herd_guarded()` False):
-C_FLAP_MOVES, C_STANDBY_NO_FAILBACK, C_HYSTERESIS, C_CLEARS red; C_RATE_SHOWN and C_UI_TEXT (the
-window and its text, knob-independent) stay green. `--fault=refusal-window-blind` (the window
-records nothing) turns all six red.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -128,22 +22,23 @@ OF_WIRE = True
 FAULT = "flap-knob-ignored"
 P95_VS_LAST = (1.5, 100)
 P95_VS_LAST_MIN_N = 50
-RELAY_ENV = {"PROXY_RECHECK_S": "2"}   # the flap knob at the relay's defaults (20 %, 600 s): only the cadence compressed
-WINDOW_S = 600              # service/proxy_health.WINDOW_S, the default this scenario runs at
+RELAY_ENV = {"PROXY_RECHECK_S": "2"}
+WINDOW_S = 600
 POOL = 3
 PER_PROXY = 2
-CUSTOM = 4                 # 2 gave ~13 attempts/s whatever the read rate (746-777 per window, ...-d789/-e726)
+# 2 gave ~13 attempts/s whatever the read rate (measured)
+CUSTOM = 4
 CUSTOM_LABEL = "slop-flappy"
 REFUSE_SHARE = 0.3
 HOLD_SHARE = 0.16
-LOAD_S = 180.0              # past FLAP_MOVE_MS: the move lands inside phase A, reads follow it
-HOLD_S = 60.0               # phase B: 1/10 of the window, ~120 polls (the fault's flicker shows with certainty)
+LOAD_S = 180.0
+HOLD_S = 60.0
 FLAP_MOVE_MS = 160_000
-STANDBY_MS = 1_000_000     # inferred (docstring "Budgets"): the first recheck after the window drains
-CLEAR_MS = 630_000         # inferred: WINDOW_S after the share went to 0 at the latest, + an answer and a poll
+STANDBY_MS = 1_000_000
+CLEAR_MS = 630_000
 INTERACTIVE_P95_MS = 4500
-PCT_Z = 3.5                # the shown pct within share +- 3.5 binomial sd of its calls (two-sided P 0.05 %)
-HOLD_RPS = 30.0            # phase-B reads per second wanted (each person paced users/HOLD_RPS, 0.25-1 s)
+PCT_Z = 3.5
+HOLD_RPS = 30.0
 STAY_PCT = service_number("proxy_health", "FLAP_PCT_DEFAULT", as_float=True) / 2
 MIN_CALLS = 20
 UI_WAIT_MS = 20_000
@@ -161,15 +56,12 @@ def _plain(html: str) -> str:
 
 
 def _connects(wire: ProxyWire, ws_port: int, since: float) -> list[int]:
-    """[CONNECTs, refused] the fake proxy saw since epoch `since`, the chat WebSocket's dials left out."""
     with wire.lock:
         cs = [c for c in wire.connects if c["t"] >= since and not c["dest"].endswith(f":{ws_port}")]
     return [len(cs), sum(1 for c in cs if not c["alive"])]
 
 
 async def _proxies(owner) -> tuple[dict[int, dict], dict, int | None]:
-    """Pool rows by slot (only those the owner has a Creator on), the custom proxy's health and
-    `pool.bad`, from the owner's GET /admin/proxies."""
     r = await owner.get("/admin/proxies")
     if r.status_code != 200:
         return {}, {}, None
@@ -180,7 +72,6 @@ async def _proxies(owner) -> tuple[dict[int, dict], dict, int | None]:
 
 
 async def _ui_row(ctx, page, name: str, want: re.Pattern | None) -> str:
-    """Open the Proxies page, wait for the custom row (and `want` in it), screenshot; the row's text."""
     await page.goto(f"{ctx.app}/creators/proxy", wait_until="domcontentloaded")
     row = page.locator("tr", has_text=CUSTOM_LABEL).first
     text = ""
@@ -198,16 +89,12 @@ async def _ui_row(ctx, page, name: str, want: re.Pattern | None) -> str:
 
 
 async def _accounts(owner, aids) -> dict[str, tuple]:
-    """(proxy_down, proxy_bad_reason) per Creator from the owner's GET /admin/accounts (the badge's data)."""
     r = await owner.get("/admin/accounts")
     rows = r.json().get("accounts", []) if r.status_code == 200 else []
     return {a["id"]: (a.get("proxy_down"), a.get("proxy_bad_reason")) for a in rows if a.get("id") in aids}
 
 
 async def _ui_badges(ctx, page, name: str, ready: str, want: int) -> int:
-    """Open the Accounts page (/creators), Per page 50 (all of the agency's Creators on one page), wait for
-    `ready` (a custom Creator's name) and `want` "proxy refusing" badges, screenshot (the first badge in view);
-    the count (-1: the page never showed `ready` at 50 per page)."""
     await page.goto(f"{ctx.app}/creators", wait_until="domcontentloaded")
     badge = page.get_by_text("proxy refusing", exact=True)
     n, sized = -1, False
@@ -244,7 +131,7 @@ async def run(ctx) -> None:
     reg = ctx.stack.sessions.parent / "proxies.json"
     n_pool = POOL * PER_PROXY
     on_pool, on_custom = aids[:n_pool], aids[n_pool:n_pool + CUSTOM]
-    window_min = round(WINDOW_S / 60)   # the table's "(M min)"
+    window_min = round(WINDOW_S / 60)
     ui_re = re.compile(rf"refusing (\d+)% \({window_min} min\)")
     n0 = len(fake.calls)
 
@@ -252,7 +139,6 @@ async def run(ctx) -> None:
         wires = [stack.enter_context(ProxyWire(seed=ctx.seed * 100 + i)) for i in range(POOL)]
         custom = stack.enter_context(ProxyWire(seed=ctx.seed * 100 + POOL))
 
-        # ── pool + custom proxy, Creators bound, each warmed through its proxy (clean) ──
         text = ",".join(f"socks5://127.0.0.1:{p.port}" for p in wires)
         synced = (await owner.post("/__slop/proxy-pool", json={"text": text})).status_code
         by_port = {p.port: p for p in wires}
@@ -262,7 +148,7 @@ async def run(ctx) -> None:
         bound = [(await owner.post("/admin/proxy-pool/assign", json={"account_id": a})).status_code for a in on_pool]
         made = (await owner.post("/admin/proxies", json={"label": CUSTOM_LABEL, "scheme": "socks5",
                                                          "host": "127.0.0.1", "port": custom.port})).status_code
-        await asyncio.sleep(1.0)   # the add's SQL mirror sync before the binds (dead-proxy scenario: THINK_S)
+        await asyncio.sleep(1.0)
         bound += [(await owner.post("/admin/proxies/assign", json={"label": CUSTOM_LABEL, "account_id": a}))
                   .status_code for a in on_custom]
         b0 = registry_bindings(reg)
@@ -294,7 +180,7 @@ async def run(ctx) -> None:
             hold_share = float(ctx.param("hold_share", HOLD_SHARE))
             hold_s = float(ctx.param("hold_s", HOLD_S))
             clear_ms = float(ctx.param("clear_ms", CLEAR_MS))
-            people_rec = Recorder()   # declared: reads of a refusing proxy's Creators 502 on purpose
+            people_rec = Recorder()
             http = owner.share(rec=people_rec, limits=4 * ctx.users + 16)
             seen: list[dict] = []
             polls: list[dict] = []
@@ -320,7 +206,7 @@ async def run(ctx) -> None:
                 while time.perf_counter() < until:
                     t_b = time.perf_counter()
                     b = registry_bindings(reg)
-                    if not bound_aids <= b.keys():   # empty / mid-write registry read: no false move
+                    if not bound_aids <= b.keys():
                         await asyncio.sleep(0.1)
                         continue
                     t_get = time.time()
@@ -334,7 +220,6 @@ async def run(ctx) -> None:
                         moved_at.append(t_b)
                     await asyncio.sleep(0.5)
 
-            # ── phase A: the flappy pool proxy and the custom one refuse `share` of CONNECTs, people read and send ──
             ctx.rec.stage = "refusing"
             t0, t_wall0 = time.perf_counter(), time.time()
             flap_wire.set_refuse_share(share)
@@ -344,10 +229,8 @@ async def run(ctx) -> None:
             ctx.rec.stage = None
             flap_wire.set_refuse_share(0)
             t_zero = time.perf_counter()
-            await asyncio.sleep(1.0)   # the last in-flight attempts land in the window
+            await asyncio.sleep(1.0)
 
-            # C_RATE_SHOWN: the pool row from the owner's last read before the move (then the owner is on it no more
-            # and the row leaves the list) vs the fake's count at that read; the custom row after the quiet second.
             seen_rows = [p for p in polls if p["row"] is not None and (not moved_at or p["t"] < moved_at[0])]
             at = seen_rows[-1] if seen_rows else {"row": {}, "wire_connects": [0, 0]}
             ref = at["row"].get("refusals") or {}
@@ -357,11 +240,12 @@ async def run(ctx) -> None:
             c_ref = chealth.get("refusals") or {}
             custom_a = {"state": chealth.get("state"), "bad_reason": chealth.get("bad_reason")}
 
-            def band(n):   # share +- PCT_Z binomial sd over n attempts (a fixed [20, 40] flakes at n ~70)
+            # a fixed [20, 40] flakes at n ~70
+            def band(n):
                 sd = 100 * math.sqrt(share * (1 - share) / n) if n else 0
                 return [round(100 * share - PCT_Z * sd, 1), round(100 * share + PCT_Z * sd, 1)]
 
-            def rate_ok(r, n: int):   # the share alone is shown (an Agency's owner): n from the fake's own CONNECTs
+            def rate_ok(r, n: int):
                 if n < MIN_CALLS:
                     return False
                 lo, hi = band(n)
@@ -377,7 +261,6 @@ async def run(ctx) -> None:
                       why="the Agency owner sees the share alone; pct within the binomial band of the share over the "
                           "fake's CONNECTs")
 
-            # C_FLAP_MOVES (phase A's calls)
             t_moved = (moved_at[0] - t0) * 1000 if moved_at else None
             went_bad = [p for p in polls if p["state"] in BAD or (p["bad"] or 0) >= 1]
             after_move = registry_bindings(reg)
@@ -387,7 +270,7 @@ async def run(ctx) -> None:
             clean_calls = [x for x in seen if x["aid"] in clean]
             clean_bad = Counter(f"{x['kind']} {x['status']}" for x in clean_calls if x["status"] != 200)
             odd = Counter(f"{x['kind']} {x['status']}" for x in seen if x["status"] != 200 and not x["unreachable"])
-            with fake.lock:   # the relay sends OF web's `<p>text</p>`: compared on the text inside
+            with fake.lock:
                 got = Counter(_plain(m["text"]) for ms in fake.sends.values() for m in ms)
             sends = [x for x in seen if x["kind"] == "send"]
             dup = {t: n for t, n in got.items() if n > 1 and t.startswith("slop refusals")}
@@ -407,9 +290,6 @@ async def run(ctx) -> None:
                       sends=dict(Counter(x["status"] for x in sends)), duplicated=dup, lost=len(lost), ghost=len(ghost),
                       read_p95_ms=p95, read_p95_budget_ms=INTERACTIVE_P95_MS)
 
-            # ── after the move, two clocks side by side: the moved-away pool proxy's standby (only probes reach it) and,
-            # on the custom proxy, phase B (refusing hold_share, every person reading its Creators, the UI shot) then
-            # phase C (its refusals stop, the reads go on until it clears) ──
             ctx.rec.stage = "hold"
             custom.set_refuse_share(hold_share)
             t_b = time.perf_counter()
@@ -448,7 +328,7 @@ async def run(ctx) -> None:
 
             async def custom_clock() -> None:
                 await asyncio.gather(hold_poll(t_b + hold_s), ui_hold())
-                end_b["health"] = (await _proxies(owner))[1]   # end of B, read before the share goes to 0
+                end_b["health"] = (await _proxies(owner))[1]
                 end_b["accounts"] = await _accounts(owner, on_custom)
                 ctx.rec.stage = "clear"
                 clear["bad_at"] = (await _proxies(owner))[1].get("state")
@@ -465,7 +345,6 @@ async def run(ctx) -> None:
             await asyncio.gather(*hold_people)
             ctx.rec.stage = None
 
-            # C_STANDBY_NO_FAILBACK: bindings from the move to the end
             end_bind = registry_bindings(reg)
             ctx.check(C_STANDBY_NO_FAILBACK, bool(moved_at) and standby["at"] is not None and end_bind == after_move
                       and not standby["drift"], budget=True, moved=bool(moved_at),
@@ -473,7 +352,6 @@ async def run(ctx) -> None:
                       budget_ms=standby_ms, pool_bad_last=standby["states"][-1] if standby["states"] else None,
                       bindings_unchanged=end_bind == after_move, drift=standby["drift"][:3])
 
-            # C_HYSTERESIS: never up through phase B (still refusing), bad at its end
             ch_b = end_b.get("health") or {}
             r_b = ch_b.get("refusals") or {}
             acc_b = end_b.get("accounts") or {}
@@ -490,7 +368,6 @@ async def run(ctx) -> None:
                       why="the stay rule (>= X/2 of >= 20 attempts, no recency) holds it; at the 600 s window B's "
                           "attempts blend with A's (pct >= X): the [X/2, X) band alone is the unit test + ...-a337 (60 s window)")
 
-            # C_CLEARS: steadily bad when its refusals stopped (the fault's flicker reads bad ~20 % of the time), then up
             bad_at_c, t_c, cleared_at = clear["bad_at"], clear["t"], clear["at"]
             steady = [st for _t, st in hold_states[-5:]] + [bad_at_c]
             acc_c = await _accounts(owner, on_custom)
@@ -514,7 +391,6 @@ async def run(ctx) -> None:
                 ctx.skip(C_UI_TEXT, "--no-ui")
             await http.aclose()
 
-            # evidence only: proxy_unreachable share with today's 2 tries, inflight_peak per proxy (site owner only)
             rows, chealth, _bad = await _proxies(owner)
             flap_reads = [x for x in seen if x["kind"] == "read" and x["aid"] in flappy
                           and (not moved_at or x["t0"] < moved_at[0])]

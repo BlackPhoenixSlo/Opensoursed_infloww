@@ -1,31 +1,5 @@
 "use client";
 
-/**
- * Post actions on the OF mirror's real post rows (Home's feed, My profile's wall, All bookmarks): ofMirrorFeedsPosts marks
- * each with data-oi-post (the post's id) and, when known, data-oi-author. With a single model selected:
- * - Like (OF's heart): POST /api/of/v2/posts/{id}/like, with ?author_id= on another creator's post (OF likes with
- *   /posts/{id}/favorites/{authorId}); the same POST again unlikes, as on OF. The button shows m-active and the row's
- *   Likes count follows. A disabled heart (the Creator's own post) does nothing.
- * - Comments (OF's speech bubble, and the row's "N Comments", OF's "Show post comments"): a box under the post's tools
- *   with its comments (GET /posts/{id}/comments) and a field; Send (or Enter) posts {text} to /posts/{id}/comments, then
- *   reloads the list. A second click closes the box.
- * - On the Creator's own post: the row's "N Likes" (OF's "Show who liked this post") opens OF's user list of its likers
- *   (GET /posts/likes?post_id, ofMirrorStatsKit's "post-likes"). Its Post statistics (disabled by the generator: the
- *   popup shows the post's earnings) is enabled and opens OF's Post statistics popup (GET /posts/stats?post_id,
- *   ofMirrorStatsPostStat) only for a role with Statistics on a Relay that has the route (postStatsProbe).
- * - More, on the Creator's own post (no author, or the Creator's id): OF's dropdown with Pin to / Unpin from your
- *   profile page (POST /posts/{id}/pin, OF's toggle), Edit post (its text in place: PUT /posts/{id} {text}, the
- *   relay's sparse edit, so media and price stay), Archive post (POST /posts/{id}/archive) and Delete post (DELETE
- *   /posts/{id}, only on a second click, which the item asks for). Each success refetches the page's rows.
- *   Another creator's post's More has OF's "Copy link to post" (https://onlyfans.com/<post id>/<author's handle>,
- *   to the clipboard; hide has no Relay route) and Report (ticket 42, D22: that post's onlyfans.com page in a new tab,
- *   ofMirrorHandoffs reportHandoffUrl, `inferred`, titled "opens onlyfans.com", nothing through the Relay), disabled with
- *   the tooltip without the handle (ofMirrorFeedsPosts).
- * - A post's picture, and a My profile Media tab tile: its files (ofMirrorPostCard's stamp) in the Vault's viewer, the
- *   first one first, previous and next through the rest (OF's media viewer); a locked file is not among them.
- * A failure shows the status note in red. The clicks it owns never reach bindWrites' click fallback, and the boxes it
- * adds are data-oi-wired (their fields are not the read-only change path's).
- */
 
 import { useEffect, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -45,15 +19,11 @@ import { openViewer } from "@/lib/ofMirrorVault";
 import { useGrantedPages } from "@/components/shell/useGrantedPages";
 
 export interface PostHandlers {
-  /** The Creator's OnlyFans id: a row by another author is not the Creator's own. */
   me: string | null;
   write(method: "POST" | "PUT" | "DELETE", path: string, body?: object): Promise<unknown>;
   read(path: string): Promise<unknown>;
-  /** Refetch the page's rows (a pin, edit, archive or delete changed them). */
   refresh(): void;
-  /** Open the list of who liked the Creator's own post `id` (OF's UserList PostLikes). */
   likes(id: string, opener: Element): void;
-  /** Open OF's Post statistics popup for the Creator's own post `id`; null: Post statistics stays disabled. */
   stats: ((id: string, opener: Element) => void) | null;
 }
 
@@ -68,13 +38,10 @@ export const ARM = "Click again to delete";
 const LIKES = "post-stat-likes";
 const COMMENTS = "post-stat-comments";
 const STAT = ".b-summary-list a[data-testid]";
-/** The own-post text button: Post statistics (another creator's row has Send Tip there, ofMirrorFeedsPosts' sendTip). */
 const POST_STATS = ".b-post__tools__item.m-with-text-button button:not([at-attr='post_tip'])";
 
 export const postPath = (id: string) => `/api/of/v2/posts/${encodeURIComponent(id)}`;
 
-/** The More menu's items: action, label (pin's by the row's state), OF's danger mark, a hand-off's URL; another creator's
- *  post: its link and, with `report` (ticket 42: its onlyfans.com page), Report as a hand-off. */
 type Item = [action: string, label: string, danger: boolean, href?: string];
 const items = (pinned: boolean, own = true, report: string | null = null): Item[] => own ? [
   ["pin", pinned ? "Unpin from your profile page" : "Pin to your profile page", false],
@@ -83,7 +50,6 @@ const items = (pinned: boolean, own = true, report: string | null = null): Item[
   ["delete", "Delete post", true],
 ] : [["copy", "Copy link to post", false], ...(report ? [["report", "Report", true, report] as Item] : [])];
 
-/** The row's Likes or Comments count (OF's test id `id`), plus `delta`; its word follows (a row with no such count is left alone). */
 function bump(row: Element, id: string, word: string, delta: number) {
   const span = row.querySelector(`.b-summary-list a[data-testid='${id}'] > span`);
   if (!span) return;
@@ -101,7 +67,6 @@ const button = (doc: Document, text: string, mark: string) => {
   return b;
 };
 
-/** Close every open More menu. */
 function closeMenus(doc: Document) {
   for (const m of doc.querySelectorAll(MENU)) {
     const wrapper = m.closest(".b-dropdown-wrapper");
@@ -111,7 +76,6 @@ function closeMenus(doc: Document) {
   }
 }
 
-/** OF's dropdown markup (as the captured profile menu) under the post's More button. */
 function openMenu(doc: Document, row: Element, more: Element, own = true) {
   const wrapper = more.closest(".b-dropdown-wrapper") ?? more.parentElement!;
   const scope = [...wrapper.attributes].filter((a) => a.name.startsWith("data-v-"));
@@ -126,7 +90,7 @@ function openMenu(doc: Document, row: Element, more: Element, own = true) {
   const [postId, username] = [row.getAttribute("data-oi-post"), row.getAttribute("data-oi-username")];
   const report = postId && username ? reportHandoffUrl("post", { postId, username }) : null;
   for (const [action, label, danger, href] of items(!!row.querySelector("div.b-post.m-pinned"), own, report)) {
-    const item = href ? asHandoff(doc.createElement("a"), href) : doc.createElement("div");  // ticket 42: a hand-off is OF's link
+    const item = href ? asHandoff(doc.createElement("a"), href) : doc.createElement("div");
     if (href) item.title = HANDOFF_TITLE;
     item.setAttribute("role", "menuitem");
     item.tabIndex = 0;
@@ -141,7 +105,6 @@ function openMenu(doc: Document, row: Element, more: Element, own = true) {
   more.setAttribute("aria-expanded", "true");
 }
 
-/** A comments list's rows: each comment's author name and plain text; or why there are none. */
 function showComments(doc: Document, list: Element, r: unknown) {
   const o = r as { list?: unknown } | null | undefined;
   const rows = (Array.isArray(r) ? r : Array.isArray(o?.list) ? o.list : []) as { text?: string | null; author?: OFUserMini }[];
@@ -174,7 +137,6 @@ function loadComments(doc: Document, list: Element, id: string, h: PostHandlers)
   );
 }
 
-/** The comments box under the post's tools: its list, a field and Send. */
 function openComments(doc: Document, row: Element, id: string, h: PostHandlers) {
   const box = doc.createElement("div");
   box.setAttribute("data-oi-comments", "");
@@ -220,7 +182,6 @@ function sendComment(doc: Document, row: Element, box: Element, id: string, h: P
   );
 }
 
-/** Edit post: the post's text in a field at the top of its content, with Save and Cancel. */
 function openEdit(doc: Document, row: Element) {
   if (row.querySelector(EDIT)) return;
   const text = row.querySelector<HTMLElement>(".b-post__text");
@@ -281,10 +242,6 @@ const WRITES: Record<string, { method: "POST" | "DELETE"; path: (id: string) => 
 const isOwn = (row: HTMLElement, me: string | null) => !row.dataset.oiAuthor || row.dataset.oiAuthor === me;
 const STATS_ON = "data-oi-post-stats";
 
-/**
- * With `h.stats`, the Creator's own rows' Post statistics enabled (the generator disables it), as rows come and go (the
- * page's data re-applies them). Returns its undo, which disables them again.
- */
 function enablePostStats(doc: Document, h: PostHandlers): () => void {
   if (!h.stats) return () => {};
   const sweep = () => {
@@ -309,14 +266,12 @@ function enablePostStats(doc: Document, h: PostHandlers): () => void {
   };
 }
 
-/** Bind the post actions on `doc`'s real post rows. Returns an unbind. */
 export function bindPostActions(doc: Document, h: PostHandlers): () => void {
   const undoStats = enablePostStats(doc, h);
   const onClick = (ev: MouseEvent) => {
     const t = ev.target as Element | null;
     if (!t?.closest) return;
-    if (!t.closest(MENU) && !t.closest(MORE)) closeMenus(doc); // a click anywhere else closes an open menu
-    // A post's picture (or a Media tab tile): its files in the viewer, from the one shown.
+    if (!t.closest(MENU) && !t.closest(MORE)) closeMenus(doc);
     const media = t.closest(`[${MEDIA}]`);
     if (media) {
       ev.preventDefault();
@@ -357,7 +312,6 @@ export function bindPostActions(doc: Document, h: PostHandlers): () => void {
 
     const stat = t.closest<HTMLElement>(STAT);
     if (stat?.dataset.testid === LIKES) {
-      // Another creator's likers are not listed (OF's count there opens nothing).
       owned();
       if (own) h.likes(id, stat);
       return;
@@ -368,7 +322,6 @@ export function bindPostActions(doc: Document, h: PostHandlers): () => void {
       if (!stats.disabled) h.stats(id, stats);
       return;
     }
-    // The row's "N Comments" is the speech bubble's.
     const comment = stat?.dataset.testid === COMMENTS ? row.querySelector<HTMLButtonElement>(COMMENT) : t.closest<HTMLButtonElement>(COMMENT);
     if (comment) {
       owned();
@@ -405,7 +358,6 @@ export function bindPostActions(doc: Document, h: PostHandlers): () => void {
     }
 
     const item = t.closest<HTMLElement>(`${MENU} [data-oi-action]`);
-    // ticket 42: Report's click is the browser's (a new tab to onlyfans.com); the menu closes after it.
     if (item?.matches("a[href]")) return void doc.defaultView?.setTimeout(() => closeMenus(doc), 0);
     if (!item) return;
     owned();
@@ -445,7 +397,6 @@ export function bindPostActions(doc: Document, h: PostHandlers): () => void {
     );
   };
 
-  /** Enter in a comment field sends it. */
   const onKey = (ev: KeyboardEvent) => {
     const t = ev.target as Element | null;
     if (ev.key !== "Enter" || !t?.closest) return;
@@ -465,14 +416,12 @@ export function bindPostActions(doc: Document, h: PostHandlers): () => void {
   };
 }
 
-/** Every Mirror page, with a single model selected: bind the post actions on every frame load. */
 export function useOfPostActions(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
   const qc = useQueryClient();
   const meId = useQuery(ofMeQuery(accountId)).data?.id;
   const me = meId != null ? String(meId) : null;
   const tz = useAppliedSettings().data?.preferences?.tz ?? null;
-  // Post statistics shows the post's earnings: a role with Statistics only, on a Relay with the route.
   const granted = useGrantedPages();
   const statsPage = !granted || granted.has("/of-manager/statistics");
   const statsOn = useQuery({ ...postStatsProbe(accountId), enabled: !!accountId && statsPage, staleTime: Infinity, retry: false }).data === true && statsPage;
@@ -486,7 +435,6 @@ export function useOfPostActions(frameRef: RefObject<HTMLIFrameElement | null>, 
       unbind?.();
       const doc = frame.contentDocument;
       if (!doc?.body) return void (unbind = undefined);
-      // The likers' list and the stats popup read with the model's account (ofMirrorStatsKit's readsCtx).
       bindUserLists(doc, { accountId, img: (u) => proxyImage(u, accountId) });
       unbind = bindPostActions(doc, {
         me,

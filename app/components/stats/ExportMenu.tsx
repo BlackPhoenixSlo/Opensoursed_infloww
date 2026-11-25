@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * ExportMenu — the reports' Export pop-up (roadmap W5 5.9), Creator reports' and Employee reports' alike. Infloww's
- * Creator export asks All data fields or Selected fields ("As selected in custom metrics"), Gross or Net, and Display
- * total, by day or both; its Employee export total, daily per employee and by creator (05-analytics M22, W8). The
- * page passes the choices it has and `build`, which shapes the sections from its reads; this downloads them as CSV
- * or Excel (lib/reportExport.ts). Hidden where the role denies Export CSV, as the Relay refuses the Excel form.
- */
 
 import { Upload } from "lucide-react";
 import { useState } from "react";
@@ -20,11 +13,8 @@ import { cn } from "@/lib/utils";
 export type ExportDisplay = "total" | "day" | "creator";
 
 export interface ExportChoice {
-  /** The displays ticked, in the order offered; at least one. */
   displays: ExportDisplay[];
-  /** All data fields, else the fields on screen. */
   allFields: boolean;
-  /** OnlyFans' own net, else gross. */
   net: boolean;
   format: ExportFormat;
 }
@@ -36,18 +26,12 @@ const LEGEND = "text-[11px] uppercase tracking-wide text-fg-dim mb-1";
 const OPTION = "flex items-center gap-2 py-0.5 text-xs text-fg";
 
 export default function ExportMenu({ fileName, sheet, displays, fields = false, net, build, className }: {
-  /** The download's name, no extension. */
   fileName: string;
-  /** The Excel sheet's name. */
   sheet: string;
-  /** The displays offered, the first ticked to start. */
   displays: readonly ExportDisplay[];
-  /** Offer All data fields / Selected fields. */
   fields?: boolean;
-  /** Offer Gross / Net, starting at this basis; no choice without it. */
   net?: boolean;
   build: (choice: ExportChoice) => Section[] | Promise<Section[]>;
-  /** The trigger's classes. */
   className?: string;
 }) {
   const allowed = useActionAllowed("export");

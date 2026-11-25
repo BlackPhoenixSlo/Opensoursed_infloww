@@ -1,11 +1,3 @@
-/**
- * Outbound translation in the Messages Pro composer (04 M15/M16): Alt+T opens
- * the strip, the Fan's language is kept per Fan, and the draft's translation
- * can replace the draft or be sent as it is.
- *
- * The relay is mocked by URL (the Composer's Seam 1 harness).
- * Fixture identifiers are invented (this repo mirrors to a public one).
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -22,7 +14,6 @@ import { relayPost, renderComposer, resetComposerHarness } from "./composerTestH
 const FAN = 200000001;
 const textbox = () => screen.getByPlaceholderText('Press "/" + keyword to quickly search scripts') as HTMLTextAreaElement;
 const strip = () => screen.queryByRole("region", { name: "Translate my message" });
-/** Past the draft's 400 ms debounce, on a busy machine too. */
 const SETTLE = { timeout: 5_000 };
 const translateCalls = () => relayPost.mock.calls.filter(([path]) => path === "/admin/translate");
 
@@ -59,7 +50,6 @@ describe("OutboundTranslation", () => {
     await user.click(screen.getByRole("button", { name: "Use translation" }));
     expect(textbox().value).toBe("[es] see you soon");
 
-    // The Fan's language opens the strip by itself next time.
     cleanup();
     await renderComposer({ fanId: FAN });
     expect(strip()).not.toBeNull();
@@ -77,8 +67,6 @@ describe("OutboundTranslation", () => {
     expect(onSend.mock.calls[0][0]).toEqual({ text: "[es] hello" });
     expect(textbox().value).toBe("");
 
-    // A fresh composer, and no send behind it: the 3 s send-rate guard is
-    // one clock for every composer and would hold a second send here.
     cleanup();
     resetSendGapForTests();
     const again = await renderComposer({ fanId: FAN });
@@ -91,7 +79,6 @@ describe("OutboundTranslation", () => {
 
   it("while the strip is open, Ctrl+Enter with no translation ready sends nothing (never the untranslated draft)", async () => {
     localStorage.setItem(fanLanguageKey("acct-1", FAN), "es");
-    // The translation never arrives.
     relayPost.mockImplementation((path: string) => (path === "/admin/translate" ? new Promise(() => {}) : Promise.resolve({})));
     const user = userEvent.setup();
     const { onSend } = await renderComposer({ fanId: FAN });

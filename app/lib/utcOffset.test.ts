@@ -1,12 +1,7 @@
-/**
- * lib/utcOffset — `utcOffsetFromMinutes` (TopBar's copy, moved) and `utcOffsetLabel`, now built on it. The zone rows
- * prove the label prints what the Intl-string version did.
- */
 import { describe, expect, it } from "vitest";
 
 import { utcOffsetFromMinutes, utcOffsetLabel } from "@/lib/utcOffset";
 
-/** `utcOffsetLabel` before it parsed into minutes, verbatim. */
 function legacyUtcOffsetLabel(timeZone: string | null): string {
   const name = new Intl.DateTimeFormat("en-US", { timeZone: timeZone ?? undefined, timeZoneName: "longOffset" })
     .formatToParts(new Date())

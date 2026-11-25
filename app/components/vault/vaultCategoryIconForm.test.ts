@@ -22,7 +22,6 @@ describe("iconFormReducer", () => {
     ["move sets one axis", [choose(SMALL), move("x", 20), move("y", 80)], { x: 20, y: 80 }],
     ["new file resets the crop and ready", [choose(SMALL), { type: "loaded" }, move("x", 20), choose(img(5))],
       { x: 50, y: 50, ready: false }],
-    // Bug: the over-8 MB branch returned before the crop reset, keeping the previous file's x / y.
     ["over 8 MB: no file, no preview, crop reset, error", [choose(SMALL), { type: "loaded" }, move("x", 20), choose(BIG)],
       { file: undefined, preview: "", x: 50, y: 50, ready: false, error: TOO_BIG }],
     ["cleared input: nothing chosen", [choose(SMALL), choose()], { file: undefined, preview: "", error: "" }],

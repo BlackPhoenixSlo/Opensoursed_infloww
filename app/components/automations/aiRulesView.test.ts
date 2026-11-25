@@ -1,5 +1,3 @@
-/** AI rules view reducer + layout: zoom keeps the pointer's point, clamps, Fit centres, select/close, loads;
- *  layout places every node once, without overlap, in payload order. */
 import { describe, expect, it } from "vitest";
 import { CARD_W, layout, ranks, type Box, type LayoutEdge } from "./aiRulesLayout";
 import {
@@ -107,7 +105,6 @@ describe("layout", () => {
         expect(b.x + b.w).toBeLessThanOrEqual(l.width);
         expect(b.y + b.h).toBeLessThanOrEqual(l.height);
       }
-      // Same rank: payload order runs along the cross axis.
       const r = ranks(nodes, edges);
       for (let i = 0; i < bs.length; i++) for (let j = i + 1; j < bs.length; j++) {
         if (r[nodes[i].id] !== r[nodes[j].id]) continue;

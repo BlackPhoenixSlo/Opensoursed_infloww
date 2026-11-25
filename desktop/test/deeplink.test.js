@@ -19,22 +19,22 @@ test("rejects everything that is not exactly chat/<aid>/<fan>", () => {
     "inflowwww://chat/123",
     "inflowwww://chat/123/",
     "inflowwww://chat//456",
-    "inflowwww://chat/123/456/789", // extra segment
+    "inflowwww://chat/123/456/789",
     "inflowwww://chat/123/456/settings",
-    "inflowwww://chat/../456", // traversal
+    "inflowwww://chat/../456",
     "inflowwww://chat/123/..",
     "inflowwww://chat/123/../../settings",
-    "inflowwww://chat/..%2F..%2Fsettings/1", // encoded slashes
+    "inflowwww://chat/..%2F..%2Fsettings/1",
     "inflowwww://chat/123%2F456/789",
     "inflowwww://chat/123/456%2f",
-    "inflowwww://chat/123/456?t=secret", // query
-    "inflowwww://chat/123/456#x", // fragment
-    "inflowwww://settings/123/456", // other host
+    "inflowwww://chat/123/456?t=secret",
+    "inflowwww://chat/123/456#x",
+    "inflowwww://settings/123/456",
     "inflowwww://evil.com/chat/123/456",
     "inflowwww://chat.evil.com/123/456",
     "inflowwww://user@chat/123/456",
     "inflowwww:chat/123/456",
-    "https://chat/123/456", // other scheme
+    "https://chat/123/456",
     "infloww://chat/123/456",
     "javascript://chat/123/456",
     "inflowwww://chat/123/456\n/x",

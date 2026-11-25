@@ -1,9 +1,5 @@
 "use strict";
 
-// Settings page logic. Talks to the main process only through the bridged
-// `window.fasttNative` surface (see config-preload.js). No network, no Node.
-// Also the load-failure screen: main.js opens it with ?desc=&url= when the app
-// failed to load; we render that read-only (textContent, never innerHTML).
 
 const DEFAULT_SERVER_URL = "https://app.inflowwww.com";
 
@@ -25,7 +21,7 @@ const problem = [params.get("desc"), params.get("url")].filter(Boolean).join("  
 if (problem) {
   document.getElementById("problemDetail").textContent = problem;
   document.getElementById("problem").hidden = false;
-  document.getElementById("intro").hidden = true; // keep the form in view
+  document.getElementById("intro").hidden = true;
 }
 
 async function hydrate() {
@@ -46,7 +42,6 @@ async function hydrate() {
       }
     }
   } catch {
-    /* keep the default */
   }
   urlEl.focus();
 }
@@ -65,7 +60,6 @@ async function save() {
       errEl.textContent = (res && res.error) || "Could not save settings.";
       saveBtn.disabled = false;
     }
-    // On success the main process closes this window and loads the app.
   } catch (e) {
     errEl.textContent = "Unexpected error saving settings.";
     saveBtn.disabled = false;

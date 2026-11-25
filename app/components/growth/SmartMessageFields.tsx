@@ -1,19 +1,5 @@
 "use client";
 
-/**
- * The Smart Message settings our Trigger editors share (Purchased, the four
- * lifecycle Triggers, Delayed welcome), as Infloww's editor lays them out:
- * media with an optional price, "Frequency & scheduling" (Frequency, Effective,
- * Expiry), the Purchased / welcome "after delay" row and Auto-unsend. Labels
- * from `SM_EDITOR`; the Relay keeps the values as `service/smart_message_extras`
- * describes. Dates are entered in the Agency's report time zone (the browser's
- * when none is saved) and stored in UTC.
- *
- * Only the house differs where it says so: a paid message is never auto-unsent
- * (its late buyers are real money, and OnlyFans' per-chat unsend window is
- * about a day, so Auto-unsend stops at 23 hours), a price needs media and
- * stops at OnlyFans' $200 PPV ceiling.
- */
 
 import { useState } from "react";
 
@@ -31,7 +17,6 @@ import { SM_EDITOR as E } from "./smartMessagesControls";
 
 export type Frequency = "once" | "every";
 
-/** The settings as the config routes read and write them. */
 export interface SmartExtras {
   media_ids: number[];
   price_cents: number;
@@ -39,13 +24,9 @@ export interface SmartExtras {
   ends_at: string | null;
   unsend_minutes: number;
   frequency?: Frequency;
-  /** Purchased / welcome only: [a, b] minutes, null = "immediately". */
   delay_range?: [number, number] | null;
 }
 
-/** The settings as a rule's stored payload holds them (the welcome rule, and
- *  every rule the Automated Messages list reads), read without trusting it.
- *  `delay_range` is left out when the payload has none. */
 export function extrasOfPayload(p: Record<string, unknown> | null | undefined): Partial<SmartExtras> {
   const int = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v > 0 ? v : 0);
   const stamp = (v: unknown) => (typeof v === "string" && !Number.isNaN(Date.parse(v)) ? v : null);
@@ -65,7 +46,6 @@ export function extrasOfPayload(p: Record<string, unknown> | null | undefined): 
   return out;
 }
 
-/** The form's state: media as tiles, dates as ISO (UTC), numbers as typed. */
 export type ExtrasDraft = {
   media: VaultMedia[];
   price: string;
@@ -84,15 +64,12 @@ export type ExtrasDraft = {
 
 const DELAY_MIN = 1;
 const DELAY_MAX = 60;
-// Inside OnlyFans' ~24h per-chat delete window (smart_message_extras.UNSEND_MAX_MINUTES).
+// Inside OnlyFans' ~24h per-chat delete window.
 const UNSEND_MAX_H = 23;
-/** OnlyFans' PPV ceiling, the Relay's `PRICE_MAX_CENTS`. */
+// OnlyFans' PPV ceiling, the Relay's PRICE_MAX_CENTS.
 export const MAX_PRICE = 200;
 export const MAX_PRICE_NOTE = "Maximum $200 USD";
 
-/** Infloww's `handleRuleDelayValues` (index.9f50f370.js @14775733): each end
- *  inside 1..60, in order, never equal (an equal pair widens by a minute; 60
- *  becomes 59～60). The Relay clamps the same way. */
 export function clampDelay(a: number, b: number): [number, number] {
   let lo = Math.max(DELAY_MIN, Math.min(a, DELAY_MAX));
   let hi = Math.max(DELAY_MIN, Math.min(b, DELAY_MAX));
@@ -101,8 +78,6 @@ export function clampDelay(a: number, b: number): [number, number] {
   return [lo, hi];
 }
 
-/** The draft for a saved config. `delayDefault`: the range "after delay"
- *  offers when the config is on "immediately". */
 export function extrasDraft(c: Partial<SmartExtras>, delayDefault: [number, number] = [1, 3]): ExtrasDraft {
   const unsend = c.unsend_minutes ?? 0;
   const delay = c.delay_range ?? null;
@@ -125,11 +100,6 @@ export function extrasDraft(c: Partial<SmartExtras>, delayDefault: [number, numb
 
 const whole = (s: string) => (/^\d+$/.test(s.trim()) ? Number(s.trim()) : null);
 
-/** The settings to save, or the line that says why they cannot be. `delay`:
- *  the Trigger has the "after delay" row; `frequency`: it has Frequency.
- *  `initial`: the draft the form opened on — an "after delay" row left as it
- *  was is not sent, so the Relay keeps what it stored (a Purchased rule's old
- *  fixed delay stays exactly as it was until a new range is picked). */
 export function collectExtras(
   d: ExtrasDraft, opts: { delay?: boolean; frequency?: boolean; initial?: ExtrasDraft } = {},
 ): SmartExtras | string {
@@ -182,7 +152,6 @@ export function SmartMessageFields({
   accountId, id, draft, onChange, delay = false, frequency = false,
 }: {
   accountId: string;
-  /** The editor's id prefix, for the fields' labels. */
   id: string;
   draft: ExtrasDraft;
   onChange: (patch: Partial<ExtrasDraft>) => void;
@@ -229,7 +198,6 @@ export function SmartMessageFields({
       </div>
 
       {delay && (
-        // Two groups: the range keeps "minutes automatically" beside its fields, wrapping only as a whole.
         <div className="flex flex-wrap items-center gap-2">
           <label htmlFor={`${id}-delay`}>{E.sendToFans.label}</label>
           <IfNativeSelect
@@ -280,7 +248,6 @@ export function SmartMessageFields({
 
       <fieldset className="space-y-2">
         <legend className="mb-2 font-medium">{E.autoUnsend.label}</legend>
-        {/* A native checkbox: the editors' tests find it by role "checkbox". */}
         <label className="flex items-center gap-2">
           <input type="checkbox" checked={draft.unsendOn} onChange={(e) => onChange({ unsendOn: e.target.checked })}
             className="accent-accent" />
@@ -306,8 +273,6 @@ export function SmartMessageFields({
   );
 }
 
-/** Effective / Expiry: the bundle's two radios, "Immediately" / "Never" or
- *  "Scheduled date" with its date and time. */
 function DateChoice({ id, title, offLabel, tz, on, iso, onChange }: {
   id: string; title: string; offLabel: string; tz: string;
   on: boolean; iso: string | null; onChange: (on: boolean, iso: string | null) => void;

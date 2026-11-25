@@ -1,9 +1,3 @@
-/**
- * useComposerUploads' pure halves: which files it takes, and how an upload
- * response becomes Composer attachments. The hook's chips, Retry and per-Fan
- * keeping are pinned through the Composer in
- * `components/chat/ComposerUpload.test.tsx`.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { relay } from "@/lib/relay";
@@ -74,7 +68,6 @@ describe("uploadToVault", () => {
   it("gives a hung upload a deadline from its turn: it aborts, fails as timed out, and the Creator's queue moves on", async () => {
     vi.useFakeTimers();
     const signals: Array<AbortSignal | undefined> = [];
-    // Never settles, signal or not: the deadline alone must free the queue.
     const upload = vi.spyOn(relay, "uploadFile").mockImplementation((...args: unknown[]) => {
       signals.push(args[4] as AbortSignal | undefined);
       return new Promise(() => {});

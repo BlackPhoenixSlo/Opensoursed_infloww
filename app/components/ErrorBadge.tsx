@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * ErrorBadge — our error triage badge in the top bar, beside Infloww's static
- * "Operational" pill (TopBar's `StatusPill`): a 🐞 with how many errors have
- * landed in /admin/errors in the last 24h. Click opens a popover with the
- * recent rows so we can triage without leaving the page. At zero it stays,
- * dim and without a count, so the two header items always read as two.
- * Polls every 5 minutes (cheap — one indexed query against a small table).
- *
- * Messages Pro hides the top bar, and its Window header has no badge, as
- * Infloww's.
- */
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -40,25 +29,19 @@ interface ErrorListResp {
   list: ErrorRow[];
 }
 
-/** The last 24h of /admin/errors and its count (0 until the first read
- *  lands; `q.data` tells the two apart). `enabled` gates the read: the Top
- *  bar badge defers it (see `ErrorBadge`); an opened menu row or panel reads
- *  at once. */
 export function useRecentErrors(enabled = true) {
+  // The Top bar defers the first read ~1s so it doesn't compete with the chat-list fetch for relay threads on cold load.
   const q = useQuery<ErrorListResp>({
     queryKey: ["app-errors", "recent"],
     queryFn: () => relay.get<ErrorListResp>("/admin/errors?since_hours=24&limit=50"),
     enabled,
-    refetchInterval: ssePoll(15 * 60_000, 5 * 60_000), // SSE: session_dead / failed runs invalidate
+    refetchInterval: ssePoll(15 * 60_000, 5 * 60_000),
     refetchOnWindowFocus: false,
     staleTime: 30_000,
   });
   return { q, count: q.data?.count ?? 0 };
 }
 
-/** The error popover's panel: header with the count and Clear (owners only:
- *  the Relay refuses a chatter session's Clear), then the recent rows.
- *  `className` places and sizes it; `onCleared` runs after a successful Clear. */
 export function ErrorPanel({ className, onCleared }: { className?: string; onCleared?: () => void }) {
   const qc = useQueryClient();
   const { q, count } = useRecentErrors();
@@ -111,10 +94,6 @@ export function ErrorPanel({ className, onCleared }: { className?: string; onCle
 export function ErrorBadge() {
   const [open, setOpen] = useState(false);
   const popRef = useRef<HTMLDivElement | null>(null);
-  // The first read waits ~1s so it doesn't compete with the chat-list fetch
-  // for relay threads on cold load; the badge only matters as a "did
-  // something break in the last 24h" indicator, and a one-second delay is
-  // invisible to anyone not staring at the icon.
   const ready = useDeferredMount(1000);
   const { count } = useRecentErrors(ready);
 
@@ -138,7 +117,6 @@ export function ErrorBadge() {
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          // The header's borderless filled tile (`HEADER_TILE`), tinted red with a count.
           HEADER_TILE,
           "px-2 gap-1 text-sm",
           count > 0 ? "bg-err/15 text-err hover:bg-err/25 hover:text-err" : "text-fg-dim hover:text-fg",

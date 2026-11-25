@@ -1,22 +1,5 @@
 "use client";
 
-/**
- * EmployeeReportCharts — Employee reports' charts (roadmap W5 5.10; Infloww's Overview and Employee performance tabs,
- * 05-analytics M3, M4), from ONE read of `GET /admin/stats/chatting-stats?bucket=` over the report's range: the summed
- * series and each Employee's. The page's tab bar (EmployeeReport, page-parity ticket 27) owns the tabs and the
- * "Shown by" select; this module draws each tab's body from `useEmployeeCharts`.
- *
- *   Overview              "Employee sales" (every Employee in scope summed), "Employee comparison" (up to three
- *                         Employees' sales lines) and "Sales ranking" (Chatting statistics' Sales, top 10, then
- *                         "MORE>>"; Descending / Ascending).
- *   Employee performance  one Employee: "Sales" and "Message statistics" (direct messages and PPVs sent, PPVs
- *                         unlocked, fans chatted).
- *
- * "Shown by" offers the granularities the range's calendar days allow (`granAllowed`). Sales follow the Sales
- * Settings rules and count pending sales; the Employees offered are those with a Chatting statistics row in the range
- * (a "self" Data scope gets only its own). An answer without `series` or `by_employee` draws empty charts rather than
- * throwing (the route walk's catch-all `{}`).
- */
 
 
 import { useMemo, useState } from "react";
@@ -30,7 +13,6 @@ import { fmtCents, fmtInt } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { InfoTip } from "@/components/ui/InfoTip";
 
-// Infloww's comparison colours; the fourth for Message statistics' fourth line.
 const COLORS = ["#3467FF", "#2AD4AC", "#FFA15F", "#ac72d2"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const GRANS: { value: Gran; label: string }[] = [
@@ -47,7 +29,6 @@ const ZERO: ChattingSeriesFigures = {
   sales_cents: 0, direct_messages_sent: 0, direct_ppvs_sent: 0, ppvs_unlocked: 0, fans_chatted: 0,
 };
 
-/** A point's x label from its "YYYY-MM-DDTHH:MM" start (report-zone wall time, so no Date parsing). */
 export function bucketLabel(start: string, bucket: Gran): string {
   const [y, m, d, h] = [start.slice(0, 4), Number(start.slice(5, 7)), Number(start.slice(8, 10)), Number(start.slice(11, 13))];
   if (bucket === "month") return `${MONTHS[m - 1]} ${y}`;
@@ -57,12 +38,10 @@ export function bucketLabel(start: string, bucket: Gran): string {
 
 const name = (r: ChattingStatsRow) => r.display_name ?? `Employee #${r.employee_id}`;
 
-/** One Employee's points, zeros when the read has none for it (no sales or sends in the range). */
 function pointsOf(data: ChattingSeriesResp, id: number): ChattingSeriesFigures[] {
   return data.by_employee?.[String(id)] ?? (data.series ?? []).map(() => ZERO);
 }
 
-/** The tab bar's "Shown by" select: the granularities the range's `days` allow, the rest disabled. */
 export function ShownBySelect({ days, value, onChange }: { days: number; value: Gran; onChange: (g: Gran) => void }) {
   return (
     <IfSelect<Gran> aria-label="Shown by" className="w-[140px]" value={value} onChange={onChange}
@@ -70,17 +49,12 @@ export function ShownBySelect({ days, value, onChange }: { days: number; value: 
   );
 }
 
-/** What both tabs draw from: the Chatting statistics rows (the Employees offered) and the series read. `error` is
- *  either read failing; `rowsPending` the rows still in flight, so no "No chatting" or empty ranking shows while they
- *  load (#21). */
 export type ChartProps = {
   data: ChattingSeriesResp | null; error: boolean; bucket: Gran; rows: ChattingStatsRow[];
   rowsPending: boolean;
-  /** Reads the failed reads again (the error state's Retry). */
   onRetry?: () => void;
 };
 
-/** The two reads behind the charts, shared by both tabs (react-query keys them, so a tab switch reads nothing). */
 export function useEmployeeCharts(from: string | null, to: string | null, bucket: Gran, chatterOnly = false): ChartProps {
   const stats = useChattingStats(from, to, chatterOnly);
   const rows = useMemo(() => stats.data?.employees ?? [], [stats.data]);
@@ -89,9 +63,8 @@ export function useEmployeeCharts(from: string | null, to: string | null, bucket
     if (series.isError) void series.refetch();
     if (stats.isError) void stats.refetch();
   };
-  // A new range, bucket or chatter filter reads anew: the last answer (placeholder data) is another window's bars,
-  // so the charts show "Loading…" until it lands rather than the old points under the new labels.
   return {
+    // placeholder data is another window's bars: show Loading until the new range lands
     data: series.isPlaceholderData ? null : series.data ?? null, error: series.isError || stats.isError, bucket, rows,
     rowsPending: stats.isPending, onRetry,
   };
@@ -99,7 +72,6 @@ export function useEmployeeCharts(from: string | null, to: string | null, bucket
 
 const LOADING = "Loading…";
 const COMPARE_H = 210;
-/** Employee comparison's plot area inside its chart box (`plotFrame`; its right inset does not depend on the width). */
 const COMPARE_PLOT = (() => {
   const f = plotFrame(0, COMPARE_H);
   return { left: f.L, right: -f.R, top: f.T, bottom: COMPARE_H - f.B };
@@ -107,12 +79,10 @@ const COMPARE_PLOT = (() => {
 const labelsOf = (data: ChattingSeriesResp | null, bucket: Gran) =>
   (data?.series ?? []).map((p) => bucketLabel(p.start, bucket));
 
-/** Infloww's `Empty$1` with Retry in place of a tab's charts when a read fails. */
 function ChartsError({ onRetry }: { onRetry?: () => void }) {
   return <EmptyState kind="error" text="Failed to load" onRetry={onRetry} className="py-16" />;
 }
 
-/** The Overview tab's charts: Employee sales, then Employee comparison beside Sales ranking. */
 export function EmployeeOverviewCharts({ data, error, bucket, rows, rowsPending, onRetry }: ChartProps) {
   const [slots, setSlots] = useState<(number | null)[]>([null, null, null]);
   if (error) return <ChartsError onRetry={onRetry} />;
@@ -145,7 +115,6 @@ export function EmployeeOverviewCharts({ data, error, bucket, rows, rowsPending,
           </div>
           <LineChart height={COMPARE_H} labels={labels} message={LOADING} valueFmt={fmtCents} lines={compared}
             empty={(
-              // Over the plot area only, not the y-axis ticks (a phone's narrow plot wrapped it onto "$2").
               <p style={COMPARE_PLOT}
                 className="absolute flex items-center justify-center px-2 text-center text-sm text-fg-dim">
                 <span className="bg-bg px-1">Select up to three employees to compare</span>
@@ -158,7 +127,6 @@ export function EmployeeOverviewCharts({ data, error, bucket, rows, rowsPending,
   );
 }
 
-/** One bar per report bucket; zero buckets retain their tooltip and date. */
 function EmployeeSalesBars({ labels, values }: { labels: string[]; values: number[] | null }) {
   const [ref, width] = useChartWidth();
   const height = 270;
@@ -190,7 +158,6 @@ function EmployeeSalesBars({ labels, values }: { labels: string[]; values: numbe
 
 const axisCount = (n: number) => String(Math.round(n));
 
-/** The Employees' read in flight: a loading line where the ranking or the picked Employee goes. */
 function RowsLoading({ className }: { className?: string }) {
   return <p role="status" aria-label="Loading employees" className={cn("text-sm text-fg-dim", className)}>{LOADING}</p>;
 }
@@ -226,8 +193,6 @@ function SalesRanking({ rows, pending }: { rows: ChattingStatsRow[]; pending: bo
   );
 }
 
-/** The Employee performance tab: the picked Employee (the top seller until one is picked), its Sales and Message
- *  statistics. The Employee select sits at the body's right, as Infloww's does, with the name as a tag at the left. */
 export function EmployeePerformance({ data, error, bucket, rows, rowsPending, onRetry }: ChartProps) {
   const [picked, setPicked] = useState<number | null>(null);
   if (error) return <ChartsError onRetry={onRetry} />;
@@ -261,8 +226,6 @@ export function EmployeePerformance({ data, error, bucket, rows, rowsPending, on
   );
 }
 
-/** A chart section on the page colour, as Infloww's: the title 16px / 500 in element-emphasis-00 (#ffffff dark, the
- *  live capture) with its (i) tip 8px after it. */
 function Section({ title, tip, children }: { title: string; tip: string; children: React.ReactNode }) {
   return (
     <section aria-label={title}>

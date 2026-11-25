@@ -1,9 +1,3 @@
-/**
- * Creator reports' pure parts: the revenue reads' shapes and sums, the range presets, the day axis and its buckets,
- * the sections' state, the Creator statistics columns, their cells and export rows, and the notes' wording. No React;
- * CompetitorReports.tsx and its parts read them.
- */
-
 import { type Gran, fmtDollars } from "@/components/stats/chart";
 import { referralsGap, type ReferralsResp } from "@/hooks/useReferrals";
 import type { PerModelRow } from "@/hooks/useStats";
@@ -11,63 +5,46 @@ import { presetRange, todayISO } from "@/lib/dateRange";
 import { fmtPrice, fmtReplyTime } from "@/lib/format";
 import { type Cell, mapLimit, usd } from "@/lib/reportExport";
 
-/** `net_cents` (OnlyFans' own post-fee figure, VAT not deducted), `net_missing_count` (the rows with no net yet,
- *  which `net_cents` leaves out) and OnlyFans' own `fee_cents` and `vat_cents` are there when the read asks for them
- *  (`include_net=true`). */
 export interface RevKindRow {
   kind: string | null; total_cents: number; count: number; net_cents?: number; net_missing_count?: number;
   fee_cents?: number; vat_cents?: number;
 }
-/** `by_kind` is there when the day read asks for it (`by_kind=true`): that day's kinds. */
 interface RevRow extends RevKindRow {
   day: string | null; by_kind?: RevKindRow[];
-  /** `group_by=hour_of_week`'s slot: ISO weekday (1 = Monday) and hour in the report zone. */
   weekday?: number; hour?: number;
 }
-/** `history_missing_days`: Creator-days before a Creator was added with no OnlyFans figure (service/stats.py revenue),
- *  so the window's sum is not its earnings and a growth against it is "-". */
+// Creator-days before a Creator was added have no OnlyFans figure: the window sum is not its earnings.
 export interface RevResp { rows: RevRow[]; history_missing_days?: number }
-/** Whether a window's reads answered and each one's history is whole: else a growth against it is "-". */
 export const wholeHistory = (qs: readonly { isSuccess: boolean; data?: RevResp }[]) =>
   qs.length > 0 && qs.every((q) => q.isSuccess && !(q.data?.history_missing_days ?? 0));
-/** A revenue row's money: gross, or with "Show net earnings" on OnlyFans' own net. Never a ratio of gross. */
 export type Money = (r: RevKindRow) => number;
 export const grossOf: Money = (r) => r.total_cents;
 export const netOf: Money = (r) => r.net_cents ?? 0;
 
-/** #65: the granularity tabs. Hour reads the relay's local hours (`group_by=hour`). */
 export const GRANS: readonly { key: Gran; label: string }[] = [
   { key: "hour", label: "Hour" }, { key: "day", label: "Day" }, { key: "week", label: "Week" }, { key: "month", label: "Month" },
 ];
-/** #28: a disabled choice's tooltip. */
 export const GRAN_LIMIT: Record<Gran, string> = {
   hour: "Date range must be 2 days or less for this option",
   day: "Date range must be 31 days or less for this option",
   week: "Date range must be between 14 to 365 days for this option",
   month: "Date range must be more than 62 days for this option",
 };
-/** The range's local hours, `YYYY-MM-DDTHH:00` as the relay's `group_by=hour` keys them; none past Hour's 2 days. */
 export function hoursOf(days: string[]): string[] {
   if (days.length > 2) return [];
   return days.flatMap((d) => Array.from({ length: 24 }, (_, h) => `${d}T${String(h).padStart(2, "0")}:00`));
 }
 
-/** The sections' state: the reads answered with at least one Creator in the selection, or not. */
 export type View = "ready" | "loading" | "error" | "empty";
-/** A section's state from its reads: any failed first, then any pending, then whether it has a row to show. */
 export function viewOf(reads: readonly { isError: boolean; isPending: boolean }[], hasRows: boolean): View {
   return reads.some((q) => q.isError) ? "error" : reads.some((q) => q.isPending) ? "loading" : hasRows ? "ready" : "empty";
 }
-/* The wording of a section still loading or failed. The capture shows a pulser there, so these are ours, labelled
- * (ticket 60). With no Creator the bundle prints its zeros and blank charts, and so do we, with no wording. */
 export type Wait = "loading" | "error";
 export const isWait = (v: View): v is Wait => v === "loading" || v === "error";
 export const SUMMARY_TEXT: Record<Wait, string> = { loading: "Loading…", error: "Earnings data unavailable" };
 export const TREND_TEXT: Record<Wait, string> = { loading: "Loading earnings trend…", error: "Earnings trend unavailable" };
 export const CHANNEL_TEXT: Record<Wait, string> = { loading: "", error: "Earnings by channel unavailable" };
-/** Ours: the Creator performance list's wording with no Creator in the Creator filter's pick. */
 export const NO_CREATORS = "No creators in this selection";
-/** The bundle's own tab keys (index.9f50f370.js @13634517, `E==="performance"`), which `?tab=` carries. */
 export type Tab = "overview" | "performance";
 export const TABS: readonly { key: Tab; label: string }[] = [
   { key: "overview", label: "Overview" },
@@ -75,18 +52,13 @@ export const TABS: readonly { key: Tab; label: string }[] = [
 ];
 export const isTab = (v: string): v is Tab => TABS.some((t) => t.key === v);
 
-/** OnlyFans' referrals read failed for `n` Creators (no session, OnlyFans down), or the whole read did (`null`). */
 export function referralsUnavailableNote(n: number | null): string {
   const who = n === null ? "these creators" : n === 1 ? "1 creator" : `${n} creators`;
   return `Referrals from OnlyFans are unavailable for ${who}, left out of Total earnings.`;
 }
 
-/** A window's sums, by channel and `total`, as a growth reads them. */
 export type GrowthSums = Partial<Record<Bucket | "total", number>>;
 
-/** How growth reads referrals over both windows (#22, #35): `whole` when both reads answered whole; `exclReferrals`
- *  when either missed a Creator or failed (Total compares earnings without referrals, said in its title); else
- *  `pending`, a read still in flight (Total's growth waits, "-"). */
 export type TotalGrowth = "whole" | "pending" | "exclReferrals";
 type ReferralsRead = { isSuccess: boolean; isError: boolean; data?: ReferralsResp };
 export function totalGrowthOf(refs: ReferralsRead, refsPrior: ReferralsRead): TotalGrowth {
@@ -94,50 +66,31 @@ export function totalGrowthOf(refs: ReferralsRead, refsPrior: ReferralsRead): To
   return refs.isSuccess && refsPrior.isSuccess ? "whole" : "pending";
 }
 
-/** A window's sums as a growth reads them, the same rule for both windows so Total compares like for like (#22):
- *  every sum when `whole`; otherwise no Referrals (its growth is "-", never a change against or of a $0.00 OnlyFans
- *  could not give), and Total without referrals (`exclReferrals`) or none yet (`pending`). */
 export function forGrowth(sums: GrowthSums, mode: TotalGrowth): GrowthSums {
   if (mode === "whole") return sums;
   const { referrals = 0, total, ...rest } = sums;
   return total === undefined || mode === "pending" ? rest : { ...rest, total: total - referrals };
 }
 
-/** A Creator's name as the reports show it: its display name, else its account id. */
 export const creatorName = (m: PerModelRow): string => m.display_name || m.account_id;
 
-/* ── Creator statistics columns ── */
 
-/** What a cell reads besides its row: the window's hours (#121), the Agency's total earnings (#123), and whether
- *  "Show net earnings" is on. */
 export interface ColCtx { hours: number; agencyCents: number; net: boolean }
 export interface StatCol {
   key: string;
   title: string;
-  /** The capture's column width, kept as the header's minimum. */
   width: number;
-  /** Shown by default (`ColumnFieldsDefault`). */
   show: boolean;
-  /** The header carries the "UTC+00:00" chip (#98). */
   utc?: boolean;
-  /** A "usd" average (per hour, per spender, LTV, ARPU): it keeps its cents, as Infloww prints it. */
   avg?: true;
-  /** Ours, not the capture's: a column the old table had, kept behind Custom metrics (ADR-0003). */
   extra?: boolean;
-  /** `dur`: seconds, shown as "3m 05s". */
   fmt?: "usd" | "int" | "pct" | "dur";
-  /** The figure, `null` for "-" (#147). A column with no `v` has no relay field: Not wired. */
   v?: (m: PerModelRow, c: ColCtx) => number | null;
-  /** The figure while "Show net earnings" is on. A money column without one has no net read (the per-model read
-   *  gives net only as a per-Creator total), so it is Not wired then; any other column keeps `v`. */
   netV?: (m: PerModelRow, c: ColCtx) => number | null;
 }
 type Kind = keyof PerModelRow["revenue_by_kind"];
-/** A bucket's gross, or its OnlyFans net; net is null (a "-") from an older relay with no net by kind. */
 const kindOf = (k: Kind) => (m: PerModelRow) => m.revenue_by_kind?.[k] ?? 0;
 const netKindOf = (k: Kind) => (m: PerModelRow) => (m.net_revenue_by_kind ? m.net_revenue_by_kind[k] ?? 0 : null);
-/** A bucket less what the Earnings summary's channels leave out (`other_by_kind`: stream sales, unknown kinds, Total
- *  earnings only, as `bucketOf`), so Tips and Message match its tiles. */
 const chanOf = (k: Kind) => (m: PerModelRow) => kindOf(k)(m) - (m.other_by_kind?.[k] ?? 0);
 const netChanOf = (k: Kind) => (m: PerModelRow) => {
   const n = netKindOf(k)(m);
@@ -148,25 +101,16 @@ const netSubsOf = (m: PerModelRow) => {
   const n = m.net_revenue_by_kind;
   return n ? (n.subscription ?? 0) + (n.rebill ?? 0) : null;
 };
-/** Message earnings: PPVs and paid customs (sold in chat: Messages, as `bucketOf` and the Earnings summary's
- *  Messages tile count them; the per-model read files customs under their own `custom` bucket), stream PPVs out.
- *  Creator statistics' Message column and card. */
 export const msgOf = (m: PerModelRow) => chanOf("ppv")(m) + chanOf("custom")(m);
 export const netMsgOf = (m: PerModelRow) => {
   const p = netChanOf("ppv")(m);
   return p === null ? null : p + (netChanOf("custom")(m) ?? 0);
 };
-/** Messages and tips, the numerator of #117 and #133 (the bundle's column descriptions, index.9f50f370.js near
- *  @13245838), as the Tips and Message columns read them. */
 const engagedOf = (m: PerModelRow) => msgOf(m) + chanOf("tip")(m);
 const netEngagedOf = (m: PerModelRow) => {
   const n = netMsgOf(m);
   return n == null ? null : n + (netChanOf("tip")(m) ?? 0);
 };
-/** #112 to #146: every column after "Creator" (#111, always shown), in the capture's order, then ours (the capture's
- *  Streams left out: stream sales have no channel here). The ones without `v` need OF
- *  statistics (ranking, following, guest / user visitors, total and expired fans, subscription length) or
- *  earnings per fan no relay read carries. */
 export const STAT_COLS: readonly StatCol[] = [
   { key: "totalSubscriptionsEarnings", title: "Total subscription earnings", width: 270, show: true, fmt: "usd", v: subsOf, netV: netSubsOf },
   { key: "subscriptionsEarnings", title: "Subscription earnings", width: 240, show: false, fmt: "usd", v: kindOf("subscription"), netV: netKindOf("subscription") },
@@ -179,7 +123,6 @@ export const STAT_COLS: readonly StatCol[] = [
   { key: "totalEarnings", title: "Total earnings", width: 240, show: true, fmt: "usd", v: (m) => m.total_revenue_cents, netV: (m) => m.total_net_revenue_cents },
   { key: "avgHourlyEarnings", title: "Avg hourly earnings", width: 220, show: false, fmt: "usd", avg: true, v: (m, c) => (c.hours > 0 ? m.total_revenue_cents / c.hours : null),
     netV: (m, c) => (c.hours > 0 ? m.total_net_revenue_cents / c.hours : null) },
-  // The window's chargebacks and refunds, dated by their sale (the bundle dates a refund by its credit date).
   { key: "refunds", title: "Refunds", width: 132, show: false, fmt: "usd", v: (m) => m.refunded_cents ?? 0,
     netV: (m) => m.refunded_net_cents ?? 0 },
   { key: "contributionPercent", title: "Contribution %", width: 190, show: true, fmt: "pct", v: (m, c) => (c.agencyCents > 0 ? (100 * m.total_revenue_cents) / c.agencyCents : null),
@@ -204,44 +147,36 @@ export const STAT_COLS: readonly StatCol[] = [
   { key: "totalNumberOfFans", title: "Total number of fans", width: 300, show: false, utc: true },
   { key: "avgEarningsPerFan", title: "Avg earnings per fan", width: 225, show: true },
   { key: "avgSubscriptionLength", title: "Avg subscription length", width: 315, show: false, utc: true },
-  // #143 to #146: the Employees' own sends, no mass or automated message (service/msg_stats.py).
   { key: "replyTime", title: "Reply time", width: 190, show: true, fmt: "dur", v: (m) => m.avg_reply_seconds ?? null },
   { key: "fansChatted", title: "Fans chatted", width: 185, show: true, fmt: "int", v: (m) => m.fans_chatted ?? 0 },
   { key: "messagesSent", title: "Messages sent", width: 190, show: true, fmt: "int", v: (m) => m.messages_sent },
   { key: "ppvsSent", title: "PPVs sent", width: 170, show: true, fmt: "int", v: (m) => m.ppvs_sent ?? 0 },
-  // Ours: the old table's columns the capture lacks.
   { key: "pending", title: "Pending revenue", width: 200, show: false, extra: true, fmt: "usd", v: (m) => m.pending_revenue_cents ?? 0 },
   { key: "ppvConversions", title: "PPV conversions", width: 200, show: false, extra: true, fmt: "int", v: (m) => m.ppv_conversions },
   { key: "ltv", title: "LTV", width: 140, show: false, extra: true, fmt: "usd", avg: true, v: (m) => m.ltv_cents },
   { key: "arpu", title: "ARPU", width: 140, show: false, extra: true, fmt: "usd", avg: true, v: (m) => m.arpu_cents },
 ];
-/** The column's read in the current basis; none when it has no relay field, or no net read while net is on. */
 export function readOf(col: StatCol, ctx: ColCtx): StatCol["v"] {
   if (!ctx.net) return col.v;
   return col.netV ?? (col.fmt === "usd" ? undefined : col.v);
 }
-/** The column `key`, which must exist in STAT_COLS (a constant key at the call site: a typo throws at load, not a crash mid-render). */
 export function statCol(key: string): StatCol {
   const c = STAT_COLS.find((x) => x.key === key);
   if (!c) throw new Error(`no stat column ${key}`);
   return c;
 }
-/** The column's figures summed over `rows` in the current basis (Creator statistics' cards); 0 for a "-". */
 export function colTotal(col: StatCol, rows: readonly PerModelRow[], ctx: ColCtx): number {
   const read = readOf(col, ctx);
   return rows.reduce((a, m) => a + (read?.(m, ctx) ?? 0), 0);
 }
-/** A cell as shown: "-" when the read has nothing (#147). */
 export function cellText(col: StatCol, m: PerModelRow, ctx: ColCtx): string {
   const n = readOf(col, ctx)?.(m, ctx) ?? null;
   if (n === null) return "-";
-  // A total in whole dollars, as on the dashboard; an average keeps its cents, as Infloww prints it.
   if (col.fmt === "usd") return col.avg ? fmtPrice(n) : fmtDollars(n);
   if (col.fmt === "pct") return `${n.toFixed(2)}%`;
   if (col.fmt === "dur") return fmtReplyTime(n);
   return n.toLocaleString("en-US");
 }
-/** A cell as exported: dollars and percentages to two decimals, as numbers; empty when the read has nothing. */
 export function cellCsv(col: StatCol, m: PerModelRow, ctx: ColCtx): Cell {
   const n = readOf(col, ctx)?.(m, ctx) ?? null;
   if (n === null) return "";
@@ -251,29 +186,19 @@ export function cellCsv(col: StatCol, m: PerModelRow, ctx: ColCtx): Cell {
   return n;
 }
 
-/* Days are the report range's YYYY-MM-DD strings, already in the report time zone, which is also the zone the
- * relay's `group_by=day` buckets in; they are handled as UTC calendar dates so no browser zone shifts them. */
 function utcDate(day: string): Date { return new Date(`${day}T00:00:00Z`); }
-/** Every day from `from` through `to`; none while either side is unset. */
 export function daysFrom(from: string | null, to: string | null): string[] {
   if (!from || !to) return [];
   const out: string[] = [];
   const end = utcDate(to).getTime();
-  // Ten years of days at most, so a malformed range can never spin.
   for (let t = utcDate(from).getTime(); t <= end && out.length < 3660; t += 86_400_000) {
     out.push(new Date(t).toISOString().slice(0, 10));
   }
   return out;
 }
 
-/** A range preset: one of `datePresets`' keys, "custom" for days typed in. */
 export type RangeKey = string;
-/** #21: the default range, the bundle's `defaultSelectDate`. */
 export const DEFAULT_RANGE: RangeKey = "last30";
-/** #23, #24: the bundle's presets in its order, their days in `tz`. "Custom" lists the last 7 days (the bundle's
- *  `defineSelectDateArr`), read nowhere: picking it keeps the range shown (CompetitorReports). Where the bundle's Last ones and its year end yesterday, ours run through
- *  today on the shared `presetRange` (the other reports' "Last N days", so one label is one window everywhere, and
- *  today's pending sales show); this month runs from its first day to today, and the five months before are whole. */
 export function datePresets(tz: string | null): { key: RangeKey; label: string; days: [string, string] }[] {
   const today = todayISO(tz);
   const [y, m] = today.split("-").map(Number);
@@ -296,14 +221,12 @@ export function datePresets(tz: string | null): { key: RangeKey; label: string; 
   ];
 }
 
-/** #21: the range picker's `MMM D, YYYY`. */
 export function fmtRangeLabel(day: string | null): string {
   if (!day) return "…";
   return utcDate(day).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" });
 }
 export function fmtBucketLabel(day: string, p: Gran): string {
   if (p === "hour") {
-    // "Oct 14 3 PM": the slot's local wall clock, read as UTC so no browser zone shifts it.
     const t = new Date(`${day}:00Z`);
     const h = t.getUTCHours();
     return `${t.toLocaleString("en-US", { timeZone: "UTC", month: "short" })} ${t.getUTCDate()} ${h % 12 || 12} ${h < 12 ? "AM" : "PM"}`;
@@ -314,17 +237,12 @@ export function fmtBucketLabel(day: string, p: Gran): string {
   return d.toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
 }
 
-/** `partial`: a week or month bucket the range cuts short, "2 of 7 days" (the charts mark it, so its low figure does
- *  not read as a fall). */
 export interface Point { label: string; value: number; partial?: string }
-/** The days' values rolled into `p`: each day; seven days at a time from the range's first day; calendar months. With
- *  `hour` the slots are hours (`hoursOf`), each its own bucket. */
 export function rollUp(days: string[], values: number[], p: Gran): Point[] {
   if (p === "day" || p === "hour") return days.map((d, i) => ({ label: fmtBucketLabel(d, p), value: values[i] ?? 0 }));
   const out: (Point & { days: number; full: number })[] = [];
   days.forEach((d, i) => {
     const starts = p === "week" ? i % 7 === 0 : i === 0 || d.slice(0, 7) !== days[i - 1].slice(0, 7);
-    // A month's length: day 0 of the next month.
     const full = p === "week" ? 7 : new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7), 0)).getUTCDate();
     if (starts) out.push({ label: fmtBucketLabel(d, p), value: 0, days: 0, full });
     const b = out[out.length - 1];
@@ -334,26 +252,20 @@ export function rollUp(days: string[], values: number[], p: Gran): Point[] {
   return out.map(({ label, value, days: n, full }) => (n < full ? { label, value, partial: `${n} of ${full} days` } : { label, value }));
 }
 
-/* ── kind bucketing ── */
 
-/** The earnings channels' buckets. Stream sales are `other`. Chargebacks is no channel: `chargebacksCents`. */
 export type Bucket = "subscriptions" | "tips" | "posts" | "messages" | "referrals" | "other";
 export type Chan = Exclude<Bucket, "other">;
 const noBuckets = (): Record<Bucket, number> =>
   ({ subscriptions: 0, tips: 0, posts: 0, messages: 0, referrals: 0, other: 0 });
-/** Every earnings channel's money, summed. */
 export const totalOf = (b: Record<Bucket, number>): number => Object.values(b).reduce((a, c) => a + c, 0);
-/** Chargebacks' figure: the reversed reads' (`status=reversed`, dated by their sale) money, below zero. The earnings
- *  already leave reversals out, so no total counts it. */
+// Earnings already leave reversals out, so no total counts chargebacks.
 export const chargebacksCents = (qs: readonly { data?: RevResp }[], money: Money): number =>
   qs.reduce((a, q) => (q.data?.rows ?? []).reduce((b, r) => b - money(r), a), 0);
-/** The kind reads' rows' money summed by channel. */
 export function sumKinds(qs: readonly { data?: RevResp }[], money: Money): Record<Bucket, number> {
   const out = noBuckets();
   for (const q of qs) for (const r of q.data?.rows ?? []) out[bucketOf(r.kind)] += money(r);
   return out;
 }
-/** The day reads' rows (`by_kind=true`) as each day's money and each channel's, over `days`. */
 export function dailyOf(qs: readonly { data?: RevResp }[], days: string[], money: Money) {
   const total = new Map<string, number>();
   const byChan = new Map<string, Record<Bucket, number>>();
@@ -371,8 +283,6 @@ export function dailyOf(qs: readonly { data?: RevResp }[], days: string[], money
     byChan: (key: Bucket) => days.map((d) => byChan.get(d)?.[key] ?? 0),
   };
 }
-/** #75: the channels, in the capture's order, and #81: their colours on the lines, slices and legend dots. No
- *  transaction kind carries referral earnings: Referrals is OnlyFans' own read, as `referralsAsRevenue`'s rows. */
 export const CHANNELS: readonly { key: Chan; label: string; color: string }[] = [
   { key: "subscriptions", label: "Subscription", color: "#1b9bd2" },
   { key: "tips",          label: "Tips",         color: "#58a547" },
@@ -380,31 +290,23 @@ export const CHANNELS: readonly { key: Chan; label: string; color: string }[] = 
   { key: "messages",      label: "Messages",     color: "#ac72d2" },
   { key: "referrals",     label: "Referrals",    color: "#d5638d" },
 ];
-/** Chargebacks' legend dot, after the channels' (ours: no channel, no slice, no line). */
 export const CHARGEBACKS_COLOR = "#ff7c71";
-/** The Inventory's breakdown rows, which the capture lacks (its Notes): ours, in the "Earnings ledger". Gross
- *  earnings has a read, and Platform fee, VAT collected and Net earnings too while "Show net earnings" is on (the net
- *  read carries OnlyFans' own fee and VAT). */
 export const LEDGER_ROWS = ["Gross earnings", "Platform fee", "VAT collected", "Chargeback ratio", "Refunds", "Net earnings"] as const;
 
 export function bucketOf(kind: string | null): Bucket {
   if (!kind) return "other";
   if (kind === "subscription" || kind === "rebill") return "subscriptions";
-  // Paid feed-post sales land as `ppv_post` (and post-tips as `tip_post`);
-  // both are "Posts" in OF's vocab. Must precede the generic ppv→messages
-  // catch-all below, or `ppv_post` gets swallowed into Messages.
+  // Must precede the generic ppv catch-all below, or ppv_post lands in Messages.
   if (kind === "tip_post" || kind === "ppv_post") return "posts";
-  // Stream sales have no channel of their own (Chargebacks took Streams' place): Total earnings only.
   if (kind === "tip_stream" || kind === "ppv_stream") return "other";
   if (kind === "tip") return "tips";
-  if (kind === "referral") return "referrals"; // `referralsAsRevenue`'s rows
-  if (kind.startsWith("ppv")) return "messages"; // ppv (WS pump) + ppv_message
-  // Paid customs are sold in chat: Messages, as the Dashboard's Messages tile counts them (DashboardHeader CHANNEL_KINDS).
+  if (kind === "referral") return "referrals";
+  if (kind.startsWith("ppv")) return "messages";
+  // Paid customs are sold in chat: Messages.
   if (kind === "custom") return "messages";
   return "other";
 }
 
-/** Creator statistics columns as rows: a header of their titles, then a row per Creator. */
 export function creatorRows(cols: readonly StatCol[], creators: PerModelRow[], ctx: ColCtx): Cell[][] {
   return [
     ["Creator", ...cols.map((c) => c.title)],
@@ -412,17 +314,12 @@ export function creatorRows(cols: readonly StatCol[], creators: PerModelRow[], c
   ];
 }
 
-/** The export's "Display by day" (Infloww's, 05-analytics M22): a row per Creator per day of the range, its
- *  earnings and each channel's, from one revenue read per Creator (four at a time), then Chargebacks off its
- *  reversed day read. Pending sales count, as every earnings figure here. */
 export async function creatorDayRows(creators: PerModelRow[], days: string[], net: boolean,
   read: (accountId: string) => Promise<{ earned: RevResp; reversed: RevResp }>): Promise<Cell[][]> {
-  // Referrals are OnlyFans' own read, not on the revenue read: left out rather than written as $0. Other (stream
-  // sales, any unmapped kind) before Chargebacks, so Total earnings == the columns before Chargebacks.
+  // Referrals are OnlyFans' own read, not on the revenue read: left out (not $0), so Total earnings == the columns before Chargebacks.
   const chans: { key: Bucket; label: string }[] = [
     ...CHANNELS.filter((c) => c.key !== "referrals"), { key: "other", label: "Other" }];
   const reads = await mapLimit(creators, 4, (m) => read(m.account_id));
-  // The header says so: the summary's Total earnings counts referrals, this column does not.
   const rows: Cell[][] = [["Creator", "Day", "Total earnings (excl. referrals)", ...chans.map((c) => c.label), "Chargebacks"]];
   creators.forEach((m, i) => {
     const money = net ? netOf : grossOf;

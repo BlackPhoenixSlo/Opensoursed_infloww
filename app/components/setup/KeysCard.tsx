@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * KeysCard — Setup → Keys. Paste API keys and tokens here instead of editing
- * the server's .env. Saved values live on the server only (service/secrets/secrets.json)
- * and take effect immediately — no restart.
- *
- * Each field shows whether the key is currently set and where the live value
- * comes from (this UI vs the server env). The raw value is never sent back to
- * the browser; an empty field means "leave unchanged".
- */
 
 import { useSecrets, useSaveSecrets, type SecretKeyStatus } from "@/hooks/useSecrets";
 import { useKeyDraft } from "@/hooks/useKeyDraft";
@@ -22,7 +13,6 @@ export default function KeysCard() {
     useKeyDraft(save.mutateAsync, "Saved — takes effect on the next run.");
 
   const keys = data?.keys ?? {};
-  // Preserve backend (registry) order, bucket by group.
   const groups: { name: string; items: [string, SecretKeyStatus][] }[] = [];
   for (const entry of Object.entries(keys)) {
     const g = entry[1].group;

@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * AiKeyNotice — the amber "this automation cannot use its AI key" notice on an
- * automation's page.
- *
- * Background automations cannot toast, so their page asks
- * `GET /admin/ai-key-status` instead: a missing key (live presence) or the
- * key error the automation's LATEST run stopped on (a key the provider
- * rejected). The relay groups them into `notices` and writes every sentence;
- * this only renders them, with the same owner/chatter split as the toaster.
- * Nothing renders while all is well, or for kinds that call no LLM.
- */
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -38,8 +27,6 @@ export function useAiKeyStatus(accountId: string | null | undefined, kinds: stri
         `/admin/ai-key-status?account_id=${encodeURIComponent(accountId!)}&kinds=${encodeURIComponent(k)}`,
         { accountId: accountId! },
       ),
-    // A fixed key should clear the notice on the next look, not in 3 days
-    // (the app-wide staleTime) — this is one cheap read.
     staleTime: 30_000,
     refetchOnWindowFocus: true,
   });

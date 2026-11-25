@@ -1,69 +1,3 @@
-"""Auth session survives a relay outage (app/contexts/userSessionReducer.ts, 0357a072c) on the real
-path: the relay process killed and restarted (`crash_relay` / `start_relay`, same DB, port, env),
-`next dev` proxying /auth/me to it, one owner in Chromium (1440x900), `agency_inbox`. A rule
-flow, not a volume one: `--users` and `--scale` change nothing, so no latency budget; the
-outage's timings are metrics (`ms_*`).
-
-1. Signed-out browser on `/` -> the sign-in form; the seeded owner types username + password,
-   Login -> the app shell (`nav[aria-label="Main"]`). Side effects: the browser's GET /auth/me
-   200 with the owner, the auth snapshot in localStorage. Screenshots login-form, signed-in.
-2. Relay SIGKILLed; window focus + visibilitychange -> the revalidate's /auth/me fails (Next's
-   proxy answers 5xx) -> the shell stays, no sign-in form, no retry screen, snapshot kept.
-   Screenshot revalidate-relay-down.
-3. Relay restarted; focus -> /auth/me 200, shell stays. Screenshot revalidate-relay-back.
-4. Relay SIGKILLed; reload (boot with the relay down) -> the retry screen `[data-auth-unreachable]`,
-   not the sign-in form, snapshot kept; a focus there sends no /auth/me. Screenshot boot-relay-down.
-5. Relay restarted; Retry -> the shell; GET /auth/me 200 with the owner. Screenshots
-   retry-clicked (the trigger), retry-signed-in (the settled end state).
-6. Relay up: POST /auth/logout from the browser's session (another tab signing out clears the
-   shared cookie), focus -> /auth/me 200 `null` -> the sign-in form, snapshot cleared.
-   Screenshot logout-revalidate.
-7. Signed in again by the form; the browser's /auth/me answered 403 at the wire (the blocking
-   proxy; the Next server's inline read of it too) -> reload -> the sign-in form with the
-   `[data-auth-blocked]` "Proxy blocked (403)" banner (`ms_403_to_banner`: first 403, the browser's
-   or the server's, -> banner); at 390x844 no horizontal scroll, banner, field and
-   Login inside the viewport; the username typed, Retry with the 403 still on -> another 403, the
-   form never unmounted (the typed username kept); 403 lifted, Retry -> the shell (GET /auth/me 200
-   with the owner, `ms_retry_to_shell_after_403`). Screenshots blocked-1440, blocked-390 (the
-   trigger), blocked-retry-kept-390, blocked-signed-in-390, blocked-signed-in-1440 (settled).
-8. Cold reload (snapshot removed) with /auth/me AND /chatter/me held at the wire, never answered
-   (the Next server's inline reads of them held too) -> the sign-in form with the "Relay not answering" banner within ME_SLOW_MS + slack
-   (`ms_held_to_banner`: first held /auth/me -> banner), not at the 15 s abort. 8a: the username
-   typed, /auth/me answered 200 `null` while /chatter/me stays held -> the plain form, never
-   unmounted (the typed username kept), then /chatter/me let through -> still the form. 8b: cold
-   reload held again, /auth/me let through to the relay (200 with the owner) while /chatter/me
-   stays held -> the shell at once (`ms_release_to_shell`); /chatter/me let through -> the shell
-   stays. Screenshots hung-1440 (the trigger), hung-null-kept-1440, hung-released-1440,
-   hung-user-shell-1440, hung-signed-in-1440 (settled).
-
-Each step's checks FAIL on their own (with a `failed-<step>` picture) when a step cannot finish;
-step 6 reloads into a signed-in shell first, so it does not hang on what earlier steps left.
-
-Bypasses (declared): the outage is the relay's process group SIGKILLed on loopback, not a network
-partition (Next answers the browser's /auth/me 5xx instead of the browser's fetch throwing; both
-are NetErr in `probeAction`). Focus and visibilitychange are dispatched as DOM events (headless
-Chromium has no window manager). Step 6's logout clears the cookie (the relay's logout is
-stateless); it stands in for a revoked session, which the relay also answers with a 200 `null`.
-Steps 7-8 answer or hold the browser's /auth/me and /chatter/me with Playwright routes on the
-browser context: the blocking proxy and the silent relay in front of the relay are out of reach
-(a 403 from the proxy, a TCP connection that never answers). They sit on the leg to the relay
-(RELAY_URL) that the Next server's own reads take too: a document load of `/` reads /auth/me and
-/chatter/me server-side for its HTML (app/lib/inlineBoot.server.ts), so the same 403 / hold is put
-on those reads at the relay (lib/screen_bundle_relay.py `POST /__slop/server-wire`; a held one meets the
-server's INLINE_TIMEOUT_MS and the browser fetches it itself). The relay stays up behind them;
-the released requests go on to it unchanged, except 8a's /auth/me, answered 200 `null` at the
-wire (a signed-out cookie's answer, standing in for a session revoked meanwhile). Step 8 removes
-the auth snapshot first: a warm boot paints the shell from it instead of the form (a fresh
-device has none).
-
-Faults (client side, `lib/session_faults.py`): `outage-revalidate-signs-out` (the scenario's:
-`revalidateNetErr` signs out), `outage-boot-signs-out` (`bootNetErr` signs out, the old rule),
-`auth-403-as-unreachable` (a boot 403 is NetErr: the retry screen), `auth-me-waits-15s` (no
-`probeSlow`: the gate waits for the 15 s abort), `gate-waits-chatter-probe` (gateScreen asks the
-chatter probe first) and `late-answer-drops-form` (a late boot answer puts the gate back to
-waiting on the hung chatter probe); each turns only its own checks red. Each of steps 7-8's
-checks records its `parts` and the `red` ones.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -81,15 +15,15 @@ PROFILE = "agency_inbox"
 UI = True
 FAULT = "outage-revalidate-signs-out"
 VIEWPORT = (1440, 900)
-PHONE = (390, 844)  # phone portrait, step 7
-WAIT_MS = 180_000  # the first visit compiles the page in next dev; the machine may be loaded
-SNAPSHOT_KEY = "chatterly:auth-snapshot:v1"  # app/lib/authSnapshot.ts
+PHONE = (390, 844)
+WAIT_MS = 180_000  # first visit compiles the page in next dev; the machine may be loaded
+SNAPSHOT_KEY = "chatterly:auth-snapshot:v1"
 SHELL = 'nav[aria-label="Main"]'
 FORM = 'section[aria-label="Sign in"]'
 RETRY = "[data-auth-unreachable]"
 BANNER = "[data-auth-blocked]"
 ME_SLOW_MS = 3_000  # app/contexts/UserContext.tsx
-SLOW_SLACK_MS = 2_000  # the timer's render + Playwright's polling on a loaded machine
+SLOW_SLACK_MS = 2_000
 
 
 async def _until(cond, timeout_s: float) -> bool:
@@ -113,8 +47,8 @@ async def run(ctx) -> None:
         return
 
     async with ui.owner_browser(ctx, viewport=VIEWPORT) as page:
-        await page.context.clear_cookies()  # owner_browser signs in by cookie: this flow signs in by the form
-        me: list[tuple[float, int | None]] = []  # every /auth/me the page sent: (epoch s, status; None = failed)
+        await page.context.clear_cookies()
+        me: list[tuple[float, int | None]] = []
         page.on("response", lambda r: me.append((time.time(), r.status))
                 if urlsplit(r.url).path == "/auth/me" else None)
         page.on("requestfailed", lambda r: me.append((time.time(), None))
@@ -123,7 +57,6 @@ async def run(ctx) -> None:
         signed_in = {"signin_form": 0, "shell": True, "retry_screen": 0, "snapshot_user": owner["user_id"]}
 
         def since(n: int) -> list:
-            """The statuses of the /auth/me records from index n on."""
             return [st for _, st in me[n:]]
 
         async def seen() -> dict:
@@ -196,8 +129,6 @@ async def run(ctx) -> None:
 
         @contextlib.asynccontextmanager
         async def server_wire(mode, *paths: str):
-            """The same on the Next server's reads of `paths` for the HTML (403 or "hold", lib/screen_bundle_relay.py
-            `/__slop/server-wire`): the proxy / silent relay is on the leg to the relay both take."""
             for p in paths:
                 (await ctx.owner.post("/__slop/server-wire", json={"path": p, "mode": mode})).raise_for_status()
             try:
@@ -208,7 +139,6 @@ async def run(ctx) -> None:
                         await ctx.owner.post("/__slop/server-wire", json={"path": p, "mode": None})
 
         async def server_403s(t0: float) -> list[float]:
-            """When the relay answered the Next server's /auth/me 403 (epoch s) since t0."""
             reads = (await ctx.owner.get("/__slop/server-reads")).json()["reads"]
             return [r["t1"] for r in reads if r["path"] == "/auth/me" and r["status"] == 403 and r["t0"] >= t0]
 
@@ -264,7 +194,6 @@ async def run(ctx) -> None:
             kill()
             n0, t0 = len(me), time.time()
             await page.reload(wait_until="domcontentloaded", timeout=WAIT_MS)
-            # settled: the retry screen, or the sign-in form (the old rule), whichever the boot shows
             await _until(lambda: _any(page, (RETRY, FORM)), 60)
             ctx.metric("ms_reload_to_settled_relay_down", round((time.time() - t0) * 1000))
             await page.wait_for_timeout(1000)
@@ -316,12 +245,11 @@ async def run(ctx) -> None:
                 seen=s, browser_me=bme)
 
         async def signed_in_shell() -> None:
-            """The shell, signed in by the form if the boot settles on it (what step 6 leaves)."""
             if not relay_up["v"]:
                 await revive()
             await page.goto(f"{ctx.app}/", wait_until="domcontentloaded", timeout=WAIT_MS)
             await _until(lambda: _any(page, (SHELL, FORM)), WAIT_MS / 1000)
-            await page.wait_for_timeout(1500)  # a painted snapshot's shell may still turn into the form
+            await page.wait_for_timeout(1500)
             if await page.locator(FORM).count():
                 await fill_login()
             await page.locator(SHELL).first.wait_for(timeout=WAIT_MS)
@@ -329,7 +257,7 @@ async def run(ctx) -> None:
 
         async def blocked(chk) -> None:
             await signed_in_shell()
-            hits: list[float] = []  # epoch s of each 403 the "proxy" answered
+            hits: list[float] = []
 
             async def r403(route) -> None:
                 hits.append(time.time())
@@ -403,12 +331,9 @@ async def run(ctx) -> None:
             detail: dict = {"budget_ms": budget}
 
             async def held_boot(tag: str) -> None:
-                """A cold reload with /auth/me and /chatter/me held (`held`: route, epoch s, path; never
-                answered until released); the banner and the gate as they settle (`parts`, `detail`)."""
-                held.clear()  # what a former page left unanswered dies with the reload
+                held.clear()
                 await page.evaluate(f"() => localStorage.removeItem('{SNAPSHOT_KEY}')")
                 await page.reload(wait_until="domcontentloaded", timeout=WAIT_MS)
-                # long enough to see a gate that waits for the 15 s abort miss the budget, not to sit it out
                 await _until(lambda: _any(page, (BANNER, RETRY)), budget / 1000 + 5)
                 t_banner = time.time()
                 b, s = await banner(), await seen()
@@ -421,7 +346,6 @@ async def run(ctx) -> None:
                 detail[f"{tag}_banner"], detail[f"{tag}_seen"], detail[f"{tag}_ms_held_to_banner"] = b, s, ms
 
             async def release(path: str, null: bool = False) -> list:
-                """Answer the held `path` requests: 200 `null` at the wire, or let them through to the relay."""
                 out = []
                 for h in [h for h in held if h[2] == path]:
                     held.remove(h)
@@ -446,7 +370,6 @@ async def run(ctx) -> None:
                 held.append((route, time.time(), urlsplit(route.request.url).path))
             await signed_in_shell()
             try:
-                # 8a: a late signed-out answer while the chatter probe hangs: the form stays up
                 async with wire(hold, "**/auth/me", "**/chatter/me"), server_wire("hold", "/auth/me", "/chatter/me"):
                     await held_boot("a")
                     await ui.shot(ctx, page, "hung-1440")
@@ -470,7 +393,6 @@ async def run(ctx) -> None:
                     await ui.shot(ctx, page, "hung-released-1440")
                     parts["a_chatter_released_form_kept"] = k2 == plain
                     detail["a_after_null"], detail["a_after_chatter"] = k1, k2
-                # 8b: a late signed-in answer while the chatter probe hangs: the shell at once
                 async with wire(hold, "**/auth/me", "**/chatter/me"), server_wire("hold", "/auth/me", "/chatter/me"):
                     await held_boot("b")
                     n1, t0 = len(me), time.time()

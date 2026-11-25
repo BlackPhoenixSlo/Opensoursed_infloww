@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * Your Account (docs/spec/settings-tabs/phase-01-account-preferences.md): the
- * signed-in User's Username (from `GET /auth/me` through UserContext, read-only),
- * the owner's Telegram username (Infloww's settings0189), and the Agency Name
- * and picture, saved whole to the `account` Settings blob behind the Load gate.
- * The agency picture is a 96px JPEG data URL in the blob (the 64 KB cap), as a
- * Creator's Display image is (creatorProfiles.ts). The Personal picture has no
- * Relay endpoint, so it is Not wired; the Username has no rename route, so it is
- * read-only with no button. The Agency Name is read by nothing yet (ADR-0008).
- * Nothing here touches a Creator's OnlyFans profile.
- */
 
 import { Camera } from "lucide-react";
 import { useRef, useState } from "react";
@@ -26,22 +15,16 @@ import { SaveRow } from "@/components/settings/StickySaveBar";
 type AccountSettings = { agency_name: string; agency_picture?: string; telegram_username?: string };
 const DEFAULTS: AccountSettings = { agency_name: "" };
 
-/** Up to two initials: the first letter of each of the first two words. */
 function initials(text: string): string {
   const words = text.trim().split(/\s+/).filter(Boolean);
   if (!words.length) return "?";
   return words.slice(0, 2).map((w) => w[0]).join("").toUpperCase();
 }
 
-/** Infloww's 140x140 picture (radius 8, `._personal-avatar_rxwf7_192`): the stored image, else an initials box.
- *  Infloww lays an invisible file input over it and shows a photo icon on hover; ours shows the same veiled 24px
- *  camera on hover, opening the file picker. With no `upload` the upload is Not wired (ADR-0008): a disabled button
- *  titled "not wired" that never fakes an upload. */
 function Picture({ label, text, src, upload }: {
   label: string;
   text: string;
   src?: string;
-  /** The picked image as a data URL, or why it could not be read; both are required, so no error is dropped. */
   upload?: { onPick: (dataUrl: string) => void; onError: (message: string) => void };
 }) {
   const file = useRef<HTMLInputElement>(null);

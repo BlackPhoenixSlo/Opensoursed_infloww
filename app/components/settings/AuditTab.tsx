@@ -1,19 +1,5 @@
 "use client";
 
-/**
- * AuditTab — paginated view of the `actions` table.
- *
- * Each row: who (employee chip) · when · what (method + path) · target
- * + an expandable payload row; below sm one 2-line cell. Filters (one
- * reducer, auditFilters.ts): employee, creator, from/to day, and "Show
- * system writes" (the app's own perflog/error pings, hidden server-side by
- * default so pagination stays right).
- * The action column shows the server's readable label (raw method + path
- * underneath) when the action map knows the route.
- *
- * Read-only. The middleware appends; this tab just renders. No infinite
- * scroll (yet) — Load more button keeps the surface area small.
- */
 
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useReducer, useState } from "react";
@@ -37,7 +23,6 @@ const ALL_EMPLOYEES = "";
 export default function AuditTab() {
   const [f, dispatch] = useReducer(auditFiltersReducer, INITIAL_AUDIT_FILTERS);
 
-  // Keep chatter mirrors so audit rows attributed to one still resolve a name.
   const { rows: roster } = useRoster({ includeChatterMirrors: true });
   const byId = useMemo(
     () => new Map<number, Employee>(roster.map((e) => [e.id, e])),
@@ -54,7 +39,7 @@ export default function AuditTab() {
   });
 
   const rows = auditQ.data?.actions ?? [];
-  const canPaginate = rows.length === AUDIT_PAGE; // assume more if we got a full page
+  const canPaginate = rows.length === AUDIT_PAGE;
 
   return (
     <SettingsPanel title="Audit log">

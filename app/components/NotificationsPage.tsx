@@ -1,50 +1,5 @@
 "use client";
 
-/**
- * NotificationsPage — the full page at `/notifications`, reached from the top
- * bar bell's "See all" (docs/spec/phase-05-remaining-parity-gaps.md, stories
- * 40-44): "Back", "Notifications", the section "OnlyFans notifications" and
- * the bell's eight tabs. Infloww has no such web page, so it is our extra drawn
- * in Infloww's legacy page grammar (page-parity ticket 19): the 48px header
- * with a back chevron, the line tabs under it, a centred 1000px column, rows on
- * a #262626 block (`Row size="page"`), and `EmptyState` for empty, no session
- * and error.
- *
- * It reads the bell's feed (`useNotificationFeed`): the bell's tab list
- * (`FILTERS`), request (`notifPath`, `NOTIF_PAGE_SIZE` rows per Creator),
- * Creator scope, query key and its no-session, loading, error and empty
- * states. "All" is the feed merged to `NOTIF_ALL_CAP`; a single-type tab adds
- * "Load more", which reads the next page by `offset` for each Creator whose
- * last page came back full, so a Creator whose feed has ended is not read
- * again.
- *
- * Back is `router.back()`, or `/` when the page has no history to go back to
- * (opened directly or in a new tab).
- *
- * ASSUMPTION: the page opens on "All", not on the bell's saved tab
- * (`readNotifFilterId`), and does not save its own tab, so the page cannot
- * change the bell (rung 4). Overturned if the owner wants the page to open
- * where the bell was left.
- *
- * ASSUMPTION: the page shows the Relay feed only; the bell's browser-side
- * history of toasts (types OnlyFans does not list, arrivals it has not listed
- * yet) is not merged in, so the page can lack rows the bell shows, against
- * story 41's "so that both show the same notifications" (rung 5: the history
- * is per browser and has no offset to page through). Overturned if the owner
- * wants the history on the page, at least on "All".
- *
- * ASSUMPTION (evidence blocked): "Load more" is wired, not Not wired. Observed:
- * the Relay forwards `offset` to OnlyFans and keys its cache by it
- * (`service/server.py` `of_notifications`). Not observed: whether OnlyFans
- * honours `offset` (a live OnlyFans call is off limits). Overturned by a feed
- * that returns page 1 again for `offset=20`: then "Load more" is Not wired.
- *
- * "Mark all read" sends OF's mark-read for each listed live Creator not
- * cached at 0 (one write each, `useMarkAllOfNotifsRead`) and clears the bells' arrivals.
- *
- * Not wired (ADR-0008): Tips, until its OnlyFans `type` value is settled
- * (connectors ticket 31), and the gear.
- */
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -65,7 +20,6 @@ import {
   useNotificationFeed,
 } from "@/components/NotificationBell";
 
-/** Tabs shown but Not wired on this page only: Tips' `type` is unsettled. */
 const NOT_WIRED_TABS: ReadonlySet<string> = new Set(["tip"]);
 const NOT_WIRED = "not wired";
 
@@ -79,8 +33,6 @@ export default function NotificationsPage() {
   const activeAccounts = useActiveAccounts();
   const accountsLoading = useAccounts().isLoading;
   const [filter, setFilter] = useState(FILTERS[0]);
-  // Pages read per Creator on the current tab (one when absent); a tab
-  // change starts every Creator at one.
   const [pages, setPages] = useState<Record<string, number>>({});
   const pick = (id: string) => {
     const f = FILTERS.find((x) => x.id === id);
@@ -98,16 +50,14 @@ export default function NotificationsPage() {
   const targetAccountIds = feed.accountIds;
   const accountLabel = useAccountLabelMap(activeAccounts);
   const merged = pageable ? feed.rows : feed.rows.slice(0, NOTIF_ALL_CAP);
-  // Loading until the Creators answer too: with none known yet the feed reads nothing, and "No notifications" would
-  // show before the first read.
   const anyLoading = feed.loading || accountsLoading;
   const firstError = feed.error;
-  // Creators with more to read: their last page came back full.
   const lastOffset = (aid: string) => ((pages[aid] ?? 1) - 1) * NOTIF_PAGE_SIZE;
   const fullCreators = feed.reads
     .filter((r) => r.offset === lastOffset(r.accountId) && (r.count ?? 0) >= NOTIF_PAGE_SIZE)
     .map((r) => r.accountId);
   const hasMore = pageable && !anyLoading && !firstError && fullCreators.length > 0;
+  // Unverified: whether OnlyFans honours `offset`; the relay forwards it and keys its cache by it.
   const loadMore = () => setPages((prev) => {
     const next = { ...prev };
     for (const aid of fullCreators) next[aid] = (prev[aid] ?? 1) + 1;
@@ -116,7 +66,7 @@ export default function NotificationsPage() {
   const showAccountTag = targetAccountIds.length > 1;
   const { marking, markAll, status: markStatus } = useMarkAllOfNotifsRead();
   const liveIds = targetAccountIds.filter((aid) => !activeAccounts.some((a) => a.id === aid && a.session_dead_at));
-  // The arrival badges clear once every write landed, not before (a failed one leaves them).
+  // Arrival badges clear only once every write landed; a failed one leaves them.
   const markAllRead = async () => {
     if (await markAll(liveIds)) dispatchNotifCleared();
   };
@@ -152,7 +102,6 @@ export default function NotificationsPage() {
         <section className="mx-auto max-w-[1000px]">
           <h2 className="mb-2.5 text-[14px] font-semibold text-fg">OnlyFans notifications</h2>
           {targetAccountIds.length === 0 && accountsLoading ? (
-            // No Creator known yet because the Creators are still loading: the rows' places, not "No active sessions".
             <FeedStatus loading error={undefined} empty={false} size="page" />
           ) : targetAccountIds.length === 0 ? (
             <NoSessionsNote size="page" />

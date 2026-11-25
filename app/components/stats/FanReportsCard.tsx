@@ -1,23 +1,5 @@
 "use client";
 
-/**
- * FanReportsCard — Analytics > Fan reports' filter row and cards for one Creator (roadmap W5 5.6), in
- * Infloww's order (`FansReport`, bundle @13648850, page-parity 29):
- *
- *   filters      the page's range box (`range`), "Shown by" (Day / Week / Month; Hour is ruled out, the read is
- *                daily) and Gross / Net earnings.
- *   New fans     a line chart per "Shown by" bucket: All (new + renewed), Renews, New subscribers; the daily
- *                `growth` rows summed client-side, in the report time zone the relay buckets them in; per Creator
- *                and day the relay takes OF's own count (of_stats_daily) when larger, so free subs show.
- *   Total fans   Not wired: nothing stores the subscriber count per day (the route's docstring).
- *   Traffic      the window's spend by the free trial link or promotion each spender claimed; gross only.
- *   Top fans     each fan's spend in the window ranked by the picked metric; "Download report" is the same
- *                ranking as CSV. Subscriptions is our extra column. Net
- *                earnings switches Total spend to the read's net (`net_or_80_cents`); the read has no net per
- *                kind, so Tips, PPV sales and Subscriptions stay gross and say so in their heads.
- *
- * Source: GET /admin/stats/fan-report (useFanReport). Every spend counts cleared and pending sales.
- */
 
 import { useState, type ReactNode } from "react";
 
@@ -38,7 +20,6 @@ const SORTS: IfOption<FanReportSort>[] = [
   { value: "total", label: "Rank by total spend" },
   { value: "tips", label: "Rank by tips" },
   { value: "ppv", label: "Rank by PPV sales" },
-  // The relay ranks by subscription spend, not by Subscription length (Infloww's fourth ranking).
   { value: "subs", label: "Rank by subscriptions" },
 ];
 const GRANS: { value: Gran; label: string }[] = [
@@ -49,7 +30,6 @@ const BASES: IfOption<EarningsBasis>[] = [
   { value: "gross", label: "Gross earnings" },
   { value: "net", label: "Net earnings" },
 ];
-// Infloww's comparison colours (Employee reports' charts).
 const ALL_COLOR = "#3467FF";
 const RENEW_COLOR = "#2AD4AC";
 const NEW_COLOR = "#FFA15F";
@@ -57,7 +37,6 @@ const NO_NET = "No net figure: the traffic read gives gross spend only";
 const GROSS_ONLY = "Gross: the fan report has a net figure for Total spend only, none per kind";
 const TOTAL_FANS_TIP = "Not wired: no daily subscriber count is stored, so there is no history of active fans or auto-renew changes to draw.";
 
-/** Whole days since a naive-UTC ISO instant, or "—". */
 function subDays(iso: string | null): string {
   if (!iso) return "—";
   const at = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`);
@@ -68,13 +47,11 @@ function subDays(iso: string | null): string {
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/** A bucket's x label from its first day: "Oct 12", or "Oct 2026" by month (Employee reports' wording). */
 function bucketLabel(day: string, gran: Gran): string {
   const month = MONTHS[Number(day.slice(5, 7)) - 1];
   return gran === "month" ? `${month} ${day.slice(0, 4)}` : `${month} ${Number(day.slice(8, 10))}`;
 }
 
-/** The first day of `day`'s bucket: itself, its week's first day, or the 1st of its month. */
 function bucketStart(day: string, gran: Gran, weekStart: "monday" | "sunday"): string {
   if (gran === "month") return `${day.slice(0, 8)}01`;
   if (gran !== "week") return day;
@@ -83,8 +60,6 @@ function bucketStart(day: string, gran: Gran, weekStart: "monday" | "sunday"): s
   return addDays(day, -(weekStart === "sunday" ? weekday : (weekday + 6) % 7));
 }
 
-/** The New fans chart over every day from `first` to `last` (the window's days, else the rows' own span): the
- *  daily rows summed per bucket, zero where a day has none. */
 export function growthSeries(
   rows: FanGrowthRow[], gran: Gran, weekStart: "monday" | "sunday", first?: string | null, last?: string | null,
 ): { labels: string[]; lines: ChartLine[] } {
@@ -111,7 +86,6 @@ export function growthSeries(
   };
 }
 
-/** A table body's one full-width row: the loading line or antd's simple empty. */
 function TableNote({ span, loading }: { span: number; loading: boolean }) {
   return (
     <tr>
@@ -125,17 +99,12 @@ function TableNote({ span, loading }: { span: number; loading: boolean }) {
 }
 
 export default function FanReportsCard({ from, to, fromDay, toDay, accountId, timeZone = null, range }: {
-  /** The window's instants (useReportRange). */
   from: string | null;
   to: string | null;
-  /** The window's first and last calendar days, the chart's x axis; the rows' own span when absent. */
   fromDay?: string | null;
   toDay?: string | null;
-  /** The picked Creator. */
   accountId: string;
-  /** The report time zone the relay buckets `growth` in. */
   timeZone?: string | null;
-  /** The page's range box, first in the filter row. */
   range?: ReactNode;
 }) {
   const weekStart = useWeekStart();

@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * GroupMassButton — retro-tags OF-native mass blasts that the WS pump stored
- * as individual per-fan rows (mass_run_id NULL), so the list collapses them
- * into one "MASS · sent to N" summary instead of N identical "from us" rows.
- *
- * POSTs /admin/messages/detect-mass (scoped to the current model filter, or
- * every owned account when "all models" is selected), then invalidates the
- * paid-messages cache so the freshly-collapsed rows appear. Idempotent — the
- * sweep only touches rows not already tied to a run, so re-clicking is safe.
- */
 
 import { useState } from "react";
 import { Megaphone } from "lucide-react";
@@ -25,7 +15,6 @@ interface DetectResult {
 }
 
 interface Props {
-  /** Current model filter; null = every account the principal owns. */
   accountId?: string | null;
   disabled?: boolean;
 }

@@ -1,4 +1,3 @@
-"""lib/ultra_wild_relay.py's reply table and wire answer (no relay, no network)."""
 from __future__ import annotations
 
 import json
@@ -20,17 +19,17 @@ def _body(request: str, turns: int = 0, tool_answers: tuple[str, ...] = ()) -> d
 
 
 @pytest.mark.parametrize("request_, turn, kind", [
-    ("send a mass", 0, "calls"),                   # default: read-only plan
-    ("send a mass", 1, "text"),                    # then idle text
+    ("send a mass", 0, "calls"),
+    ("send a mass", 1, "text"),
     ("wild:unknown_tool go", 0, "calls"),
     ("wild:never_stops", 24, "calls"),
     ("wild:empty", 0, "text"),
     ("wild:http_500", 0, "status"),
-    ("wild:http_500", 2, "status"),                # llm_client's retries re-ask turn 0..: every one 500
+    ("wild:http_500", 2, "status"),
     ("wild:hang", 0, "hang"),
     ("wild:garbage_body", 0, "raw"),
-    ("wild:no_such_case", 0, "calls"),             # unknown case: the default
-    ("wild:send_bad", 99, "text"),                 # past a script: AFTER
+    ("wild:no_such_case", 0, "calls"),
+    ("wild:send_bad", 99, "text"),
 ])
 def test_reply_kinds(request_, turn, kind):
     assert kind in uw.plan_reply(request_, turn, WORLD)

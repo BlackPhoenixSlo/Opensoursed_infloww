@@ -1,5 +1,3 @@
-/** The Inflowwww folders editor's item viewer and the full-screen player over it: one reducer, since the player
- *  decides what Escape closes and gates the viewer's arrow keys. */
 import type { Tile } from "@/components/vault/vaultManageActions";
 
 export interface ViewerState {
@@ -16,8 +14,6 @@ export type ViewerAction =
   | { type: "escape" }
   | { type: "saved"; mediaId: number; updated: Record<string, unknown> };
 
-/** The keys of an item edit's response (`_item_edit_view`) that live in a tile's `_ai` (`_overlay`); the rest
- *  (`media_id`, `id`, `kind`, `locked_fields`) are not `_ai`'s. */
 const AI_KEYS = [
   "describe_status", "description", "video_description", "tags", "explicitness_tier", "suggested_caption",
   "suggested_script", "suggested_price_cents", "fields", "jev_picks", "jev_ai",
@@ -38,7 +34,6 @@ export function viewerReducer(s: ViewerState, a: ViewerAction): ViewerState {
     case "close":
       return INITIAL_VIEWER;
     case "escape":
-      // The player is on top: it goes first, the viewer on the next press.
       return s.play ? { ...s, play: null } : { ...s, preview: null };
     case "saved": {
       // A save's answer lands only on the item it was for: stepping on before it returns leaves the next one alone.

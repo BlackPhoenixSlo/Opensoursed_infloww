@@ -1,38 +1,10 @@
 #!/usr/bin/env python3
-"""OF settings writes behind the OF Manager mirror's settings pages.
-
-Each of_client method sends the body OF's own web client sends (build
-202610091632, app.js module 202600, per-key routing in module 289051); each
-relay route forwards it unchanged. Plain-assert, OF faked (no request leaves
-the process).
-
-  case_security_toggle_patches_the_section
-  case_watermarks_save_puts_the_section
-  case_notification_toggle_patches_notifications
-  case_story_replies_patch_story
-  case_empty_bodies_are_refused
-  case_routes_forward_the_body
-  case_users_me_writes_refuse_a_key_the_mirror_never_sends
-  case_users_me_writes_forward_the_keys_the_mirror_sends
-  case_the_allow_lists_match_the_keys_the_app_sends
-  case_every_toggle_the_mirror_saves_to_users_me_is_a_profile_key
-  case_story_route_takes_only_ofs_values
-  case_drawn_switches_and_frequency_are_allowed_and_drop_my_settings   (ticket 60)
-  case_close_all_sessions_route_calls_the_client_and_the_backstop_refuses_it   (ticket 63)
-  case_profile_images_save_and_the_upload_route_refuses_before_of   (ticket 67)
-  case_social_buttons_add_and_remove_send_the_captured_requests   (ticket 69)
-  case_things_i_like_links_create_and_delete_send_the_captured_requests   (ticket 70)
-  case_reset_stream_key_sends_the_captured_request_and_drops_my_settings   (ticket 76)
-
-Run: ./venv/bin/python service/tests/test_settings_writes.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
 
 import os  # noqa: E402
 
-# The ofm-not-yet write routes under test answer 404 until OFM_NEW_WRITES_ENABLED is on (test_ofm_new_writes.py pins that).
 os.environ["OFM_NEW_WRITES_ENABLED"] = "1"
 
 import re  # noqa: E402
@@ -47,7 +19,6 @@ API = of_client.API_BASE
 
 
 def _client():
-    """An OFClient whose every request is recorded instead of sent."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     c.user_id = "4242"
     c.sent = []
@@ -126,7 +97,6 @@ def case_routes_forward_the_body():
         server.of_patch_story_settings(server._StorySettingsBody(allowReplyFrom="subscribers"))
     finally:
         server._get_client, server._resolve_account_id, server.relay_cache.invalidate = orig
-    # every settings write may change /users/me/settings: its cached blob goes
     assert dropped == [("my_settings", "acct-1")] * 4, dropped
     assert calls == [
         ("patch_security_settings", ({"showPostsTips": False},)),
@@ -143,7 +113,6 @@ def case_routes_forward_the_body():
 
 
 def _forwarded(fn) -> list:
-    """Run `fn` with OF faked; the client calls it made."""
     calls = []
 
     class _Fake:
@@ -162,11 +131,9 @@ def _forwarded(fn) -> list:
 
 
 def case_users_me_writes_refuse_a_key_the_mirror_never_sends():
-    """S3: each users/me write forwards only the keys the OF Manager mirror sends; any other key
-    (an email, a password, a payout field…) is a 422 and nothing reaches OF."""
     for route, body in (
         (server.of_update_profile, {"about": "bio", "email": "x@example.invalid"}),
-        (server.of_update_profile, {"isPrivate": True}),  # a security-section key, not a profile one
+        (server.of_update_profile, {"isPrivate": True}),
         (server.of_patch_security_settings, {"showPostsTips": True, "twoFactor": False}),
         (server.of_patch_security_settings, {"name": "not a security key"}),
         (server.of_put_security_settings, {"hasWatermarkPhoto": True, "about": "x"}),
@@ -196,8 +163,6 @@ def case_users_me_writes_forward_the_keys_the_mirror_sends():
 
 
 def case_a_formatted_about_goes_out_with_ofs_tags_only():
-    """ticket 68: the About format button's bio (OF's strong/em and m-editor-fs__/fc__ spans) is forwarded with only OF's
-    tags and classes; a plain bio is forwarded as typed."""
     calls = _forwarded(lambda: (
         server.of_update_profile({"about": '<p><strong>Hi</strong> <img src=x onerror="a()">'
                                            '<span class="m-editor-fs__l evil">there</span></p>'}),
@@ -211,14 +176,11 @@ APP_LIB = Path(__file__).resolve().parents[2] / "app" / "lib"
 
 
 def _ts_strings(src: str, start: str, end: str) -> set[str]:
-    """The quoted strings between `start` and the next `end` in `src`."""
     body = src[src.index(start):]
     return set(re.findall(r'"([A-Za-z0-9_]+)"', body[:body.index(end)]))
 
 
 def case_the_allow_lists_match_the_keys_the_app_sends():
-    """The Relay's allow-lists follow the mirror: its SECURITY_KEYS are the security PATCH list, and
-    ProfilePatch's fields are profile keys (a key added there without the Relay's list fails here)."""
     writes = (APP_LIB / "ofMirrorSettingsWrites.ts").read_text()
     profile = (APP_LIB / "ofMirrorWrites.ts").read_text()
     security = _ts_strings(writes, "export const SECURITY_KEYS", "]);")
@@ -230,7 +192,6 @@ def case_the_allow_lists_match_the_keys_the_app_sends():
 
 
 def _settings_map_fields(page: str) -> set[str]:
-    """The string `field`s SETTINGS_MAP (app/lib/ofMirrorSettings.ts) maps on settings `page`."""
     whole = (APP_LIB / "ofMirrorSettings.ts").read_text()
     src = whole[whole.index("export const SETTINGS_MAP"):]
     key = f"  {page}:" if re.fullmatch(r"\w+", page) else f'  "{page}":'
@@ -240,16 +201,12 @@ def _settings_map_fields(page: str) -> set[str]:
     fields = set(re.findall(r'field: "(\w+)"', block))
     for listed in re.findall(r'of\("(?:me|settings)", \[(.*?)\]', block, re.S):
         fields |= set(re.findall(r'"(\w+)"', listed))
-    if "coStreaming" in block:  # the streaming radios' shared entry, declared above the map
+    if "coStreaming" in block:
         fields |= set(re.findall(r'coStreaming: SettingsEntry = \{[^}]*field: "(\w+)"', whole))
     return fields
 
 
 def case_every_toggle_the_mirror_saves_to_users_me_is_a_profile_key():
-    """settingWrite (ofMirrorSettingsWrites.ts) sends a saved toggle's field to the security PATCH when it is in
-    SECURITY_KEYS and to PATCH /users/me otherwise: every such field must pass that route's allow-list, or the
-    toggle 422s. The pages are TOGGLE_PAGES that save through settingWrite (not notifications/* by transport,
-    not story's own route)."""
     writes = (APP_LIB / "ofMirrorSettingsWrites.ts").read_text()
     listed = writes[writes.index("export const TOGGLE_PAGES"):]
     pages = set(re.findall(r'"([\w/]+)"', listed[:listed.index("]);")]))
@@ -262,7 +219,6 @@ def case_every_toggle_the_mirror_saves_to_users_me_is_a_profile_key():
         to_me |= fields - server._SECURITY_PATCH_KEYS
     assert "coStreamingRequestFrom" in _settings_map_fields("streaming")
     assert to_me and to_me <= server._PROFILE_KEYS, to_me - server._PROFILE_KEYS
-    # The profile page's fields too (its Save sends ProfilePatch to PATCH /users/me).
     assert _settings_map_fields("profile") <= server._PROFILE_KEYS
 
 
@@ -275,11 +231,7 @@ def case_story_route_takes_only_ofs_values():
 
 
 
-# ticket 60
 def case_drawn_switches_and_frequency_are_allowed_and_drop_my_settings():
-    """The Tip switch (users/me), Fully private (security) and the email Update frequency (notifications) are
-    forwarded and each drops the cached /users/me/settings blob; users/me still 422s any other new key; the app's
-    DRAWN_TOGGLES keys pass their route's allow-list."""
     calls, dropped = [], []
 
     class _Fake:
@@ -314,11 +266,7 @@ def case_drawn_switches_and_frequency_are_allowed_and_drop_my_settings():
     assert "canAcceptMessageOnlyFromFriends" in server._PROFILE_KEYS
     assert "isPrivate" in server._SECURITY_PATCH_KEYS
 
-# ticket 63
 def case_close_all_sessions_route_calls_the_client_and_the_backstop_refuses_it():
-    """Close all sessions: the client sends OF's DELETE /sessions with no body; the route calls that method and drops
-    the cached settings blob; on a real client `_denied` (not lifted, ticket 81) refuses it, the route answers the
-    Relay's 403 and nothing is sent."""
     import types
     from _of_wire import fake_wire
 
@@ -362,12 +310,7 @@ def case_close_all_sessions_route_calls_the_client_and_the_backstop_refuses_it()
     assert ("DELETE", "/api/of/v2/sessions") in routes
 
 
-# ticket 67
 def case_profile_images_save_and_the_upload_route_refuses_before_of():
-    """Edit profile's cover and avatar (capture record settings--profile-cover-avatar): the Save's PATCH /users/me takes
-    `avatar`/`header` as an upload item or "" and 422s anything else; the upload route takes only `file` + `kind`, a
-    JPEG/PNG/GIF/WebP up to 5 MB, refusing the rest before any OF call, and uploads with OF's customThumbSize and no
-    dedupe; the convert claim carries `additional[customThumbSize]` (`inferred`)."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -413,7 +356,7 @@ def case_profile_images_save_and_the_upload_route_refuses_before_of():
         r = client.post("/up", files={"file": png}, data={"kind": "avatar"})
         assert r.status_code == 200 and r.json() == item, r.text
         assert uploads == [(png[1], {"content_type": "image/png", "check_dedupe": False, "thumb_size": "avatar"})], uploads
-        for bad in (None, "ok", {"ready": False, "note": "x"}, {"ready": True, "send_with": {}}):   # a bad reply: 502
+        for bad in (None, "ok", {"ready": False, "note": "x"}, {"ready": True, "send_with": {}}):
             server._get_client = lambda bad=bad: type("_Bad", (), {"upload_media": lambda self, path, **kw: bad})()
             r = client.post("/up", files={"file": png}, data={"kind": "avatar"})
             assert r.status_code == 502, (bad, r.status_code, r.text)
@@ -429,13 +372,7 @@ def case_profile_images_save_and_the_upload_route_refuses_before_of():
     assert sent["upload_args"]["additional"] == {"user": "4242", "customThumbSize": "header"}, sent
 
 
-# ticket 69
 def case_social_buttons_add_and_remove_send_the_captured_requests():
-    """Social media buttons (capture record .scratch/ofm-not-yet/captures/settings--social-media-buttons.json): the client
-    sends OF's PUT /users/social/buttons with the body as is and DELETE /users/social/buttons/{id} with none; the add
-    route takes only {socialMedia, label, link, username} (strings, a socialMedia, a label, and either an http(s) link
-    or a username, the other "", as OF's form sends), 422 before OF otherwise; both drop the cached settings blob; the
-    read is GET /users/social/buttons; the form's providers come from GET /init, only its socialMediaProviders."""
     import json
 
     record = json.loads((Path(__file__).resolve().parents[2] / ".scratch/ofm-not-yet/captures"
@@ -457,7 +394,6 @@ def case_social_buttons_add_and_remove_send_the_captured_requests():
     assert c.sent == [("PUT", f"{API}/users/social/buttons", {"json_body": body}),
                       ("DELETE", f"{API}/users/social/buttons/7", {}),
                       ("GET", f"{API}/users/social/buttons", {})], c.sent
-    # GET /init: only socialMediaProviders leaves the Relay (init's other keys never do); no list -> [].
     providers = [{"socialMedia": "instagram", "label": "Instagram", "isLink": False, "isShowAt": False}]
     c.get_json = lambda path, **kw: c.sent.append(("GET", path, kw)) or {"socialMediaProviders": providers, "csrf": "x",
                                                                          "socialButtonsMaxLimit": 10}
@@ -500,12 +436,7 @@ def case_social_buttons_add_and_remove_send_the_captured_requests():
         assert want in routes, f"{want} missing"
 
 
-# ticket 70
 def case_things_i_like_links_create_and_delete_send_the_captured_requests():
-    """Things I Like links (capture record .scratch/ofm-not-yet/captures/settings--things-i-like-links.json): the client
-    sends OF's PUT /users/links `{link}` as is and DELETE /users/links/{id} with none; the create route takes only
-    {link} (an http(s) URL string), 422 before OF otherwise; both drop the cached settings blob; the read is GET
-    /users/links, registered ahead of the /users/{user_id_or_username} lookup."""
     import json
 
     record = json.loads((Path(__file__).resolve().parents[2] / ".scratch/ofm-not-yet/captures"
@@ -559,11 +490,7 @@ def case_things_i_like_links_create_and_delete_send_the_captured_requests():
     assert order.index(("GET", "/api/of/v2/users/links")) < order.index(("GET", "/api/of/v2/users/{user_id_or_username}"))
 
 
-# ticket 76
 def case_reset_stream_key_sends_the_captured_request_and_drops_my_settings():
-    """Reset stream key: the client sends its capture record's request (aborted at the sitting: DELETE
-    /streams/obs/key?type=<server>, no body); the route passes the shown server, refuses a body and drops the cached
-    settings blob (its re-read carries the new key)."""
     import json
 
     rec = json.loads((Path(__file__).resolve().parents[2] / "docs/of-manager/captures"

@@ -1,10 +1,3 @@
-/**
- * PerEmployeeTable, an Inflowwww extra on Employee reports (page-parity ticket 27): the per-Creator breakdown with
- * its $0 and totals-only toggles. The sales settings notice moved to the page (EmployeeReport) and the table's own
- * Export went (README Phase 2, P2-3: Chatting statistics' Export, Display by creator, writes the same lines).
- *
- * Rendered with the relay mocked at `fetch` by URL. Every name is fake.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -46,7 +39,6 @@ describe("PerEmployeeTable", () => {
     renderWithProviders(<PerEmployeeTable from="2026-10-01T00:00:00.000Z" to="2026-10-31T23:59:59.999Z" />);
     await screen.findByText("Alpha One");
     const table = screen.getByRole("table");
-    // Beta's $0 row is hidden ("Hide $0 rows" is on).
     expect(within(table).queryByText("Beta")).toBeNull();
     expect(within(table).getByText("Total (2)")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Export" })).toBeNull();

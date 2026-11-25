@@ -1,8 +1,3 @@
-"""The vault week-cache flows' break-it-once faults (scenarios/2026-11-05-vault-collect.py,
-2026-11-05-vault-thumbs.py): lib/faults.py merges `register(Fault)` into FAULTS. Check names live here and the
-scenarios import them. Each patches one product module attribute inside the relay; a missing attribute raises
-(the relay fails to boot: INFRA, never a silent no-op fault).
-"""
 from __future__ import annotations
 
 PACING = "collect_pacing"
@@ -35,7 +30,6 @@ def _need(mod, *names: str) -> None:
 
 
 def _unpaced() -> None:
-    """The collector's gap between OF calls is 0: it walks a vault as fast as OF answers."""
     import vault_collect
 
     _need(vault_collect, "GAP_S")
@@ -43,7 +37,6 @@ def _unpaced() -> None:
 
 
 def _ignores_user() -> None:
-    """The collector never sees anyone using an account (the user-lane timestamp reads as None)."""
     import vault_collect
 
     _need(vault_collect, "_user_active_at")
@@ -51,7 +44,6 @@ def _ignores_user() -> None:
 
 
 def _no_rewarm_on_switch() -> None:
-    """A proxy switch wipes the vault cache but queues no re-warm: the Creator waits for its next STALE_S pass."""
     import vault_collect
 
     _need(vault_collect, "request_rewarm")
@@ -59,8 +51,6 @@ def _no_rewarm_on_switch() -> None:
 
 
 def _thumb_keyed_by_signed_url() -> None:
-    """The permanent thumb is stored under the mirror's CURRENT signed url (sha1), not the media id: OF re-signing
-    the url (every listing) strands the stored file."""
     import hashlib
     import os
     import sqlite3
@@ -85,7 +75,6 @@ def _thumb_keyed_by_signed_url() -> None:
 
 
 def _thumb_no_resign() -> None:
-    """A dead thumb url is never re-signed through /vault/media/{id}: the by-id read answers nothing."""
     import vault_stills
 
     _need(vault_stills, "resolve_fresh", "Fresh")
@@ -97,8 +86,6 @@ def _thumb_no_resign() -> None:
 
 
 def _preview_no_resign() -> None:
-    """`/img` and `/img/scrub` never re-sign a 403'd url (service/cdn_resign: neither its listing window nor by id): a url signed for the
-    account's old proxy IP stays dead until a full re-list, the 2026-11-06 AE bug."""
     import cdn_resign
 
     _need(cdn_resign, "resign", "current")
@@ -111,8 +98,6 @@ def _preview_no_resign() -> None:
 
 
 def _range_cache_off() -> None:
-    """`/img` never caches a small clip off a Range request (img_clip's range cap 0): every <video> open of a gif
-    streams it through the account's proxy again, as before the small-clip range cache."""
     import img_clip
 
     _need(img_clip, "RANGE_CACHE_MAX_BYTES")
@@ -120,9 +105,6 @@ def _range_cache_off() -> None:
 
 
 def _folder_gate_off() -> None:
-    """The chatter folder gate answers "no restriction" on every mirror route (vault_ai_api: the listing, stills,
-    search-of, the pack picker, disputes, flags review; vault: media-stats): a restricted chatter sees, counts and
-    writes the whole vault (bug class: a route that forgot the gate, or a gate that abstains)."""
     import vault
     import vault_ai_api
 
@@ -140,19 +122,13 @@ def register(Fault) -> dict:
     return {
         "collect-unpaced": Fault(_unpaced, (PACING,)),
         "collect-ignores-user": Fault(_ignores_user, (SKIPS_BUSY,)),
-        # slop/run vault-collect --break --fault=no-rewarm-on-switch: only rewarm_after_switch goes red.
         "no-rewarm-on-switch": Fault(_no_rewarm_on_switch, (REWARM,)),
         "thumb-keyed-by-signed-url": Fault(_thumb_keyed_by_signed_url, (ROTATION,)),
-        # vault_stills.resolve_fresh is cdn_resign's by-id read too: the stale-IP previews go red with it.
         "thumb-no-resign": Fault(_thumb_no_resign, (DEAD_LINK, STALE_IP, UI_HOVER)),
         "preview-no-resign": Fault(_preview_no_resign, (STALE_IP, UI_HOVER)),
-        # slop/run vault-thumbs --break --fault=vault-chatter-folder-gate-off: both gate checks go red.
         "vault-chatter-folder-gate-off": Fault(_folder_gate_off, (RESTRICTED, SCOPED)),
-        # slop/run vault-thumbs --break --fault=gif-shown-as-still: the gif autoplay reverted (VaultVideoPreview's
-        # progressiveVideoSrc answers null for a gif again), so tile and Media details show OF's still only.
+        # next dev serves each module as a JS string (eval): quotes as \".
         "gif-shown-as-still": Fault(None, (GIF_TILES, GIF_DETAILS), browser=(
-            # next dev serves each module as a JS string (eval): quotes as \".
             (r'(m\.type !== \\?"video\\?") && m\.type !== \\?"gif\\?"', r'\1'),)),
-        # slop/run vault-thumbs --break --fault=gif-range-cache-off: each picker open re-fetches its gifs.
         "gif-range-cache-off": Fault(_range_cache_off, (GIF_CDN_ONCE,)),
     }

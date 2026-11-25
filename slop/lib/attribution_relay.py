@@ -1,33 +1,3 @@
-"""Sales attribution's part of the slop relay (lib/relay.py loads it: `OF` joins
-`_OfflineOF`'s bases, `wire` runs at the end of its `_wire`).
-
-OnlyFans' payouts ledger is faked only when a scenario writes
-`$DEMO_SHOTS_TMP/of-ledger.jsonl` (one line per ledger row: `{"account_id": ...,
-"row": <an OF /payouts/transactions row>}`, appended while the run goes on; a later
-line with the same row id is OF's newer view of that row, e.g. a status flip to
-`undo`): `transactions` (GET /api2/v2/payouts/transactions, what
-`transaction_ingest.run_one_tick` pages) answers as OF did on 2026-11-07 (measured,
-service/of_reads.py `transactions`; lib/sweep_pacing_wire.py the same): `start` /
-`end` ignored; `start_date` YYYY-MM-DD -> createdAt's date >= it, an ISO one -> empty;
-at most the latest `latest[account]` when the scenario sets it (an OF window),
-rows newest first; offset walks stop at OF's 600-row cap, while marker walks
-continue beyond it. `nextMarker` names the next page's first row timestamp; read from the file when
-the call arrives (a line still being written is skipped). No file: the read fails as
-before. Latency: none (the real ledger walk sleeps 0.4 s between pages).
-
-OF's disputes list is faked only when a scenario writes `$DEMO_SHOTS_TMP/of-chargebacks.jsonl`
-(`{"account_id": ..., "item": <a /payouts/chargebacks list item>}`, the shape measured
-2026-11-07: service/transaction_chargebacks.py docstring): `chargebacks` (GET
-/api2/v2/payouts/chargebacks) answers `{list, marker}` (marker = the request's epoch s,
-no hasMore), the Creator's items whose dispute `createdAt` date is >= `start` and <
-`end` (date-only, as the product sends; a date-only endDate is that midnight), newest
-first by it, `limit` capped at 100 (OF's), from `offset`. No file: the read fails as before.
-
-  GET  /__slop/ledger  {calls, rows_served, cb_calls: {account: n}, cb_items_served, cb_queries}
-  POST /__slop/ledger  {"latest": {account: n}}: OF's ledger window for those Creators
-       (a sale older than the latest n rows is no longer re-read by any walk)
-"""
-
 import json
 import math
 import os
@@ -43,7 +13,7 @@ _ledger = {"calls": 0, "rows_served": 0, "cb_items_served": 0}
 _cb_calls: Counter = Counter()
 _cb_queries: list = []
 _latest: dict[str, int] = {}
-_lock = threading.Lock()  # the ingest pages from a worker thread
+_lock = threading.Lock()
 
 
 def _naive(s: str | None) -> datetime | None:
@@ -64,7 +34,7 @@ def _lines(name: str, account_id: str, err: Exception) -> list[dict]:
         try:
             rec = json.loads(line)
         except ValueError:
-            continue  # the scenario is mid-write on this line
+            continue
         if str(rec.get("account_id")) == str(account_id):
             out.append(rec)
     return out
@@ -74,9 +44,9 @@ class OF:
     def transactions(self, *, limit=10, offset=0, start_date=None, marker=None, **_kw) -> dict:
         by_id: dict = {}
         for rec in _lines("of-ledger.jsonl", self.account_id, self._err):
-            by_id[rec["row"]["id"]] = rec["row"]     # the newest line of a row is OF's view of it
+            by_id[rec["row"]["id"]] = rec["row"]
         if start_date and len(str(start_date)) != 10:
-            rows = []                                # an ISO startDate: OF answers nothing
+            rows = []  # OF answers nothing for an ISO startDate  # OF answers nothing for an ISO startDate
         else:
             rows = sorted(((at, r) for r in by_id.values() if (at := _naive(r.get("createdAt"))) is not None
                            and (not start_date or at.date().isoformat() >= start_date)),

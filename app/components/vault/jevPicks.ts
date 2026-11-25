@@ -1,10 +1,3 @@
-/**
- * jevPicks — the operator's Jev answers in the vault item popup ("More info"), as `service/vault_jev_manual.py`
- * takes them (`PATCH /admin/vault-ai/items/{id}` `fields.jev`: `{key: value | null}`, null clears). The options are
- * the Jev questions' own (`vault_jev.Q[...].criteria`); the server rejects anything else with a 400
- * (`test_vault_jev_manual.case_check_options_from_jev` + `case_ts_options_match` hold this list to it).
- */
-
 const STATES = ["bare", "sexy_covered", "normal_covered", "sheer_covered", "hidden_not_worn", "not_visible"] as const;
 const YN = ["y", "n"] as const;
 
@@ -47,10 +40,8 @@ export const JEV_OPTIONS = {
 
 export type JevKey = keyof typeof JEV_OPTIONS;
 export const JEV_KEYS = Object.keys(JEV_OPTIONS) as JevKey[];
-/** The picks stored for one item (only the keys the operator set). */
 export type JevPicks = Partial<Record<JevKey, string>>;
 
-/** The popup's sections. */
 export const JEV_CONTENT: readonly JevKey[] = ["lane", "breasts", "crotch", "butt", "outfit", "toy", "people_count"];
 export const JEV_DETAILS: readonly JevKey[] = ["pose", "framing", "face_visible", "setting", "added_text",
   "penetration", "censor_edit", "watermark", "see_through", "topless", "self_touch", "legs_spread", "mirror_selfie",
@@ -61,7 +52,6 @@ export const JEV_FEET: readonly JevKey[] = ["feet_detail", "feet_focus", "soles_
 
 export const isJevKey = (k: string): k is JevKey => Object.prototype.hasOwnProperty.call(JEV_OPTIONS, k);
 
-/** `_ai.jev_picks` (the relay's projection of the stored picks), kept to known keys + options. */
 export function picksFromAi(ai: Record<string, unknown>): JevPicks {
   const raw = ai.jev_picks;
   const out: JevPicks = {};
@@ -72,8 +62,6 @@ export function picksFromAi(ai: Record<string, unknown>): JevPicks {
   return out;
 }
 
-/** What the AI's reading says for `key`: `_ai.jev_ai` (`vault_jev_manual.ai_reading` — for a picked key, the
- *  reading's own answer the server kept). null: nothing read. */
 export function aiValue(ai: Record<string, unknown>, key: JevKey): string | null {
   const reading = ai.jev_ai;
   const v = reading && typeof reading === "object" ? (reading as Record<string, unknown>)[key] : undefined;
@@ -83,8 +71,6 @@ export function aiValue(ai: Record<string, unknown>, key: JevKey): string | null
 const YN_WORD: Record<string, string> = { y: "yes", n: "no" };
 export const optionLabel = (v: string) => YN_WORD[v] ?? v.replace(/_/g, " ");
 
-/** The unset choice's label: the AI's answer it falls back to ("auto" for the lane; "None" for a feet key nothing
- *  read — display only, never stored). */
 export function unsetLabel(key: JevKey, ai: string | null): string {
   const prefix = key === "lane" ? "auto" : "AI";
   if (ai !== null) return `${prefix}: ${optionLabel(ai)}`;

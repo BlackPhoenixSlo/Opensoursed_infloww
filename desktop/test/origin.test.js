@@ -32,7 +32,7 @@ test("isAppOrigin matches the configured origin only, and denies when none is co
 test("serverOrigin sends the landing site (apex or www, either scheme) to the hosted app", () => {
   const HOSTED = "https://app.inflowwww.com";
   assert.strictEqual(serverOrigin("https://inflowwww.com"), HOSTED);
-  assert.strictEqual(serverOrigin("http://inflowwww.com"), HOSTED); // the pre-2026-10-21 default
+  assert.strictEqual(serverOrigin("http://inflowwww.com"), HOSTED);
   assert.strictEqual(serverOrigin("https://www.inflowwww.com"), HOSTED);
   assert.strictEqual(serverOrigin("http://INFLOWWWW.COM"), HOSTED);
   assert.strictEqual(serverOrigin(HOSTED), HOSTED);

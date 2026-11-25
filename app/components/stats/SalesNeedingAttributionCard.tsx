@@ -1,27 +1,5 @@
 "use client";
 
-/**
- * SalesNeedingAttributionCard — manual attribution for confirmed sales that
- * land in the per-employee view's "Unattributed" bucket.
- *
- * Broader than the old orphan-tips card: it covers BOTH standalone tips AND
- * message-linked PPVs whose scraped message carries no sender (the
- * duplicate-price cases the auto-rule deliberately leaves ambiguous — e.g. a
- * fan blasted the same $200 PPV by three chatters). Each row shows the
- * CANDIDATE chatters (the distinct 1:1 people who actually messaged that fan
- * around the sale) as one-click chips, plus a full-roster fallback. Picking one
- * POSTs to /admin/ingest/transactions/{id}/attribute; the view's COALESCE makes
- * it win, both this list and the per-employee table refetch.
- *
- * "Show assigned" (default off) reveals previously-assigned sales to reassign
- * or clear. Scoped to the page's date range and the viewer's visible accounts.
- *
- * ASSUMPTION: the card renders only for a user session (an owner, or the
- * Master), the ClockedHoursCard gate, because every control on it sends the
- * manual attribute route, which refuses a chatter 403 since ticket 34 (Sales
- * records Reassign); a chatter's Employee reports simply lack it. Rung 3.
- * Overturned if the owner grants Reassign to a role.
- */
 
 import { useMemo, useState } from "react";
 
@@ -50,6 +28,7 @@ function kindLabel(kind: string): string {
 
 export default function SalesNeedingAttributionCard({ from, to }: Props) {
   const { user } = useUser();
+  // User sessions only: the attribute route 403s a chatter.
   if (!user) return null;
   return <OwnerSalesNeedingAttribution from={from} to={to} />;
 }
@@ -58,13 +37,12 @@ function OwnerSalesNeedingAttribution({ from, to }: Props) {
   const [showAssigned, setShowAssigned] = useState(false);
   const q = useSalesNeedingAttribution({ from, to, includeAssigned: showAssigned });
 
-  // Only surface sales for models the current viewer can see (principal-aware).
   const accountsQ = useAccounts();
+  // Fail closed until the viewer's scope is known.
   const visibleIds = useMemo(
     () => new Set((accountsQ.data?.accounts ?? []).map((a) => a.id)),
     [accountsQ.data],
   );
-  // Fail closed until we know the viewer's scope.
   const rows = useMemo(
     () => (q.data?.rows ?? []).filter((r) => visibleIds.has(r.account_id)),
     [q.data, visibleIds],
@@ -177,15 +155,10 @@ function SaleRow({ row }: { row: SaleNeedingAttribution }) {
   };
   const clear = () => mut.mutate({ txId: row.id, employeeId: null });
 
-  // Candidate chip ids we render as quick-picks — dedupe against nothing;
-  // the backend already returns distinct senders, newest first.
   const candidates = row.candidate_chatters ?? [];
 
   return (
     <li className="py-2.5 flex flex-col gap-2 md:flex-row md:flex-wrap md:items-center md:gap-x-3">
-      {/* `md:contents` dissolves this wrapper at ≥768px so the three meta
-          spans stay direct flex items of the row — the desktop layout is
-          the same three children in the same order. */}
       <div className="flex items-center gap-2 md:contents">
         <span className="text-sm font-semibold tabular-nums text-fg w-auto md:w-20">
           {fmtPrice(row.amount_cents)}

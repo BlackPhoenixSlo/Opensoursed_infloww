@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * Billing: Inflowwww is self-hosted and free, so there is no plan, card or invoice (owner, 2026-11-11). Below
- * that, an optional way to support the maintainer: the direct tip link and three crypto addresses (owner,
- * 2026-11-12; Tron's base58check checksum and Solana's 32-byte length verified on transcription). The Panel
- * reads and writes nothing.
- */
 
 import { CopyButton } from "@/components/ui/CopyButton";
 import { Section, SettingsPanel } from "@/components/settings/SettingsPanel";
@@ -13,7 +7,7 @@ import { BRAND_NAME } from "@/lib/brand";
 
 const TIP_URL = "https://jackbase.me/tip";
 
-/** Coin, network, address. A coin sent on another network is lost, so the network is spelled out. */
+// A coin sent on another network is lost, so the network is spelled out.
 export const WALLETS = [
   { coin: "USDC", network: "Solana", address: "ictqMeadUmwCmkR4KbEzDPWsnDoQ7xrUgG5uuEDJFFa" },
   { coin: "USDC", network: "BNB Smart Chain (BEP20)", address: "0xe27d43ca9be4045003e2ef5e85392ad99f42b676" },

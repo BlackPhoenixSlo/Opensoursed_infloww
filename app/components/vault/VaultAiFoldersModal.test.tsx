@@ -1,8 +1,3 @@
-/**
- * VaultAiFoldersModal's build and flags-pass requests: a failed build says why and an option change keeps that
- * error; a landed build shows its result until an option changes; the flags pass shows its own error. Unchecked
- * stills only inform (the server leaves them out of safe explicit, $10 and $50), never block; zero folders does. The vault hooks are faked at the module; every name is fake.
- */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
@@ -83,7 +78,6 @@ describe("VaultAiFoldersModal", () => {
     expect(screen.getByText(/1 of them is linked to an OnlyFans list/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Create 1 folders · retire 1 linked to OnlyFans" }));
     expect(await screen.findByText(/Created 1 new/)).toBeInTheDocument();
-    // W30 F3: the apply retires only what this preview listed.
     expect(apply.mock.calls[0][1]).toMatchObject({ expectedRetire: [7, 8] });
   });
 
@@ -150,7 +144,7 @@ describe("VaultAiFoldersModal", () => {
     expect(bikini).not.toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Select all" }));
     expect(screen.getByRole("checkbox", { name: /spread/ })).toBeChecked();
-    expect(screen.queryByRole("checkbox", { name: /feet/ })).toBeNull();   // feet: the Feet pack only
+    expect(screen.queryByRole("checkbox", { name: /feet/ })).toBeNull();
     expect(screen.queryByTestId("ai-folders-feet")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "None" }));
     expect(bikini).not.toBeChecked();

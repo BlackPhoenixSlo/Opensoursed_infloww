@@ -243,7 +243,7 @@ export function liveMedia(f: Pick<MassForm, "allModels" | "attached">): VaultMed
 }
 
 export interface MassCtx {
-  /** Models the all-models fan-out would send from (compose/fanOut `fanOutTargets`). */
+  /** Accounts the send goes out from: the all-models fan-out's (compose/fanOut `fanOutTargets`), or the one sender. */
   broadcastCount: number;
   /** The text holds a listed sensitive word. */
   sensitive: boolean;
@@ -270,11 +270,7 @@ export function gifNote(f: Pick<MassForm, "allModels" | "pickedGifs">): string {
 export function validateMass(f: MassForm, ctx: MassCtx): string | null {
   if (f.gifFailures) return MASS_ALREADY_SENT;
   if (ctx.sensitive) return SENSITIVE_BLOCK_MESSAGE;
-  if (f.allModels) {
-    if (ctx.broadcastCount === 0) return noTargetsReason(f.results);
-  } else if (!f.accountId) {
-    return "Pick an account";
-  }
+  if (ctx.broadcastCount === 0) return f.allModels ? noTargetsReason(f.results) : "Pick an account";
   if (!f.text.trim() && liveMedia(f).length === 0 && f.pickedGifs.length === 0) {
     // All-models is text-only: media is no way out there.
     return f.allModels ? "Add text or a GIF" : "Add text, media, or a GIF";

@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * useAutoFollowList — the Auto-follow list's reads and its switch (Infloww's
- * Growth → Auto-follow). Stats and records come from
- * `service/auto_follow_api.py`; the switch is the account's `auto_follow` rule,
- * flipped through `/admin/automation-rules/switch` (a rule it creates follows
- * OF's recently-expired list, money gate on).
- */
 
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 

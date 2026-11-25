@@ -1,9 +1,3 @@
-/**
- * The mirror freshness alarm (roadmap 8.7): the live OF build, as
- * /admin/rev/live reports it from the relay's own OF traffic, against the
- * build the OF Manager mirror was captured from. Fixture revs are invented
- * except OF_MIRROR_BUILD itself.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen } from "@testing-library/react";
 

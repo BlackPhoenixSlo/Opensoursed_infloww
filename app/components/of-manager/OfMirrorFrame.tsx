@@ -1,22 +1,5 @@
 "use client";
 
-/**
- * One mirrored OnlyFans page (public/of-mirror/pages, built by
- * scripts/of-mirror.mjs) in a same-origin iframe, so OF's global CSS
- * never touches our shell. Links the mirror points at /of-manager/*
- * carry target="_top" (a full navigation if this script is not attached yet);
- * once the frame loads they become client-side router pushes. Every other OF
- * link is "#" and inert. Settings writes: see useOfWrites; New post: see useOfPost; Add to story: see useOfStory; OF's dark mode follows
- * our theme: see useOfTheme; with a single model the list pages show its real rows
- * (chats, a chat's thread, vault folders, user lists): see useOfData, and their post rows' like, comments and
- * own-post menu work: see useOfPostActions; My profile's own controls: see useOfProfile; the Vault page's
- * filters and folder and media writes: see useOfVault; otherwise a
- * chat or list row's page shows that example row: see useOfRow. My profile, the avatar menu, Messages, the Queue,
- * Statements' Earnings, New post, Statistics, the Vault and Release forms in All models show the first model (ScopeOverride), with a
- * "Showing <model>" line over the frame: see standInModel and useStandIn. OF's --vh and its phone bar (main.js setVHVariable,
- * WebsiteHeader's isXSMQ) are set from the frame's own size: see ofMirrorPhone. A chat's Fan insights and Scripts are the
- * chrome's (OfManagerChrome), over the frame's right edge.
- */
 
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
@@ -57,7 +40,6 @@ import { useOfTooltips } from "@/lib/ofMirrorTooltip";
 import { useOfVault } from "@/lib/ofMirrorVault";
 import { useOfWrites } from "@/lib/ofMirrorWrites";
 
-/** New post's pages (new-post/index, new-post/state-*). */
 const NEW_POST_SRC = /^\/of-mirror\/pages\/new-post\//;
 
 export function OfMirrorFrame({ src, title }: { src: string; title: string }) {
@@ -69,7 +51,6 @@ export function OfMirrorFrame({ src, title }: { src: string; title: string }) {
   );
 }
 
-/** "Showing <model>, pick a model to switch": its OF name, else its nickname. */
 function StandInHint({ accountId }: { accountId: string }) {
   const nickname = useAccountLabel(accountId);
   const name = useQuery(ofMeQuery(accountId)).data?.name || nickname;
@@ -84,40 +65,42 @@ function Frame({ src, title, standIn }: { src: string; title: string; standIn: s
   const ref = useRef<HTMLIFrameElement>(null);
   const router = useRouter();
   const { setScope } = useScope();
-  useOfChrome(ref, src); // OF's own left nav hidden, as Infloww: our sidebar navigates
+  useOfChrome(ref, src);
   useOfIdentity(ref, src);
   useOfSettings(ref, src);
   useOfWrites(ref, src);
-  useOfSettingsWrites(ref, src, standIn); // ticket 63: a Lockout control acts for a picked model only
-  useOfSubscription(ref, src); // Subscription settings: promotion, bundle, tracking and free trial link rows
-  useOfQr(ref, src); // Settings > QR code: OF's code, its two switches and Download
-  useOfLanguage(ref, src); // Settings > Display > Language: OF's client-only pick, and Display's row
-  useOfStreamBlocked(ref, src); // Settings > Streaming > Blocked users: OF's list, Block a username and a row's unblock (ticket 73)
-  useOfStreamCopy(ref, src, standIn); // Settings > Streaming: Copy link / Copy key to the clipboard (the key never in the page)
-  useOfScheduleSearch(ref, src); // ticket 84: the stream schedule form's right column search, as Home's
-  useOfGoLiveWindow(ref, src); // Go live's Start: the desktop Go live window, or Download the app (switch OF_LIVE_WINDOW_ENABLED)
-  useOfOffers(ref, src); // the promotion, bundle and free trial link dialogs, the trial links' sort and share, Stop promotion
+  useOfSettingsWrites(ref, src, standIn);
+  useOfSubscription(ref, src);
+  useOfQr(ref, src);
+  useOfLanguage(ref, src);
+  useOfStreamBlocked(ref, src);
+  useOfStreamCopy(ref, src, standIn);
+  useOfScheduleSearch(ref, src);
+  useOfGoLiveWindow(ref, src);
+  useOfOffers(ref, src);
   useOfPost(ref, src);
   useOfStory(ref, src);
-  useOfChat(ref, src); // a chat's composer and New message
-  useOfChatTools(ref, src); // a chat's header tools (rename, lists, notes) and its ⋮ menu
-  useOfMessageMenu(ref, src); // a message's ⋮ menu and the pinned page's Unpin all
+  useOfChat(ref, src);
+  useOfChatTools(ref, src);
+  useOfMessageMenu(ref, src);
   useOfRow(ref, src);
-  useOfData(ref, src); // after useOfRow: its load handler runs later, so the real rows win
-  useOfChats(ref, src); // the chat list's tabs, sort menu, search, folders, Clear messages and Mark all as read
-  useOfPinHome(ref, src); // Home's feed tabs pencil: Pin to home's lists and Sort (the pin stays read-only)
+  // after useOfRow: its load handler runs later, so the real rows win
+  useOfData(ref, src);
+  useOfChats(ref, src);
+  useOfPinHome(ref, src);
   useOfQueue(ref, src);
-  useOfNotifications(ref, src); // Notifications: Search users (?related_user=), the aside's search, the new-event button
-  useOfReleaseForms(ref, src); // Release forms: the Tag user and Release form lists, their search, Sort, row More and Invite
-  useOfMoney(ref, src); // Statements and Statistics balances, earning statistics, referral earnings, chargeback ratio
-  useOfStats(ref, src); // Statistics: the period menu, figures, tables, charts and chargeback ratio for the period picked
-  useOfTooltips(ref, src); // Statistics and Statements: OF's hover text on its "i" icons and status tips
+  useOfNotifications(ref, src);
+  useOfReleaseForms(ref, src);
+  useOfMoney(ref, src);
+  useOfStats(ref, src);
+  useOfTooltips(ref, src);
   useOfPostActions(ref, src);
-  useOfProfile(ref, src); // My profile's Story archive, Copy link, More info, Spotify and Media tabs, in place
+  useOfProfile(ref, src);
   useOfVault(ref, src);
-  useOfCollections(ref, src); // after useOfData: the list page's real user cards are there to mark
+  // after useOfData: the list page's real user cards are there to mark
+  useOfCollections(ref, src);
   const dark = useOfTheme(ref, src);
-  useOfPhone(ref, src); // OF's --vh, its phone bar below XS and a state page's open menu below SM
+  useOfPhone(ref, src);
 
   useEffect(() => {
     const frame = ref.current;
@@ -127,20 +110,15 @@ function Frame({ src, title, standIn }: { src: string; title: string; standIn: s
       const href = a?.getAttribute("href");
       if (!href) return;
       if (href === "#") return ev.preventDefault();
-      // Let modified clicks open a real tab via target="_top".
       if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
       if (href.startsWith("/of-manager/")) {
         ev.preventDefault();
-        // New post's tiles that leave it (Go live, Send message) in All models: their page opens for the model the
-        // composer shows, which becomes the selected model. Its promotion and trial link dialogs open over New post, in
-        // the scope it has.
         if (standIn && NEW_POST_SRC.test(src) && a?.closest(".b-story-item") && !href.startsWith("/of-manager/new-post")) setScope({ kind: "model", accountId: standIn });
         router.push(href);
       }
     };
     const attach = () => {
       frame.contentDocument?.addEventListener("click", onClick);
-      // The app URL's hash (AFTER_NEW_POST_PROMOTION's #promotion) is for the page in the frame, as OF's.
       if (frame.contentDocument) scrollToHash(frame.contentDocument, window.location.hash);
     };
     if (frame.contentDocument?.readyState === "complete") attach();
@@ -151,13 +129,10 @@ function Frame({ src, title, standIn }: { src: string; title: string; standIn: s
     };
   }, [src, router, standIn, setScope]);
 
-  // key: a fresh frame per page, so moving between pages adds no extra
-  // entries to the joint session history (Back stays one step per page).
-  // #161618: OF's dark --bg-color, so the frame never flashes white.
-  // One tree with or without the hint: the stand-in arriving (the model list loads) must not remount the frame.
   return (
     <div className="flex flex-col h-chat">
       {standIn && <StandInHint accountId={standIn} />}
+      {/* key: fresh frame per page, so Back stays one step per page; one tree with or without the hint, so the stand-in arriving does not remount it */}
       <iframe key={src} ref={ref} src={src} title={title} className={`block w-full flex-1 min-w-0 min-h-0 border-0 ${dark ? "bg-[#161618]" : "bg-white"}`} />
     </div>
   );

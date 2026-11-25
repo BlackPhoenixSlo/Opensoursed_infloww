@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * FullAiRevenue — the Full AI page's Revenue block body: renders `revenueView` (fullAiRevenueView.ts) over
- * `useFullAiRevenue`. Shows nothing it does not get from the view: "not live yet", or since when it is live, per Arm
- * the enrolled Fans, complete 14-day windows, $ per enrolled Fan and Fans still in window, per Route offers / bought /
- * buy rate / $, and the honesty line.
- */
 
 import { revenueView } from "@/components/automations/fullAiRevenueView";
 import { IF_TABLE } from "@/components/ui/infloww";

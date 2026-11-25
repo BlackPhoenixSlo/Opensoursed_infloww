@@ -1,30 +1,5 @@
 "use client";
 
-/**
- * Sidebar — Infloww's left navigation (docs/infloww-screens.md §1.1), drawn
- * from the nav tree in lib/nav.ts. Geometry and colours follow Infloww's
- * aside and HB menu (docs/infloww-sidebar-palette.md): 256px wide, 36px rows
- * 8px apart, 8px radius, idle text at 62% white, hover and selected on a 5.5%
- * white wash, the platform card and dividers on a 9% one.
- *
- * Groups expand on click, one at a time: opening one closes the rest. The group
- * holding the current page starts open; the user's toggle holds until the page
- * (or platform) changes, then the new page's group opens again.
- *
- * `collapsed` is Infloww's locked icon rail (`navCollapsed`, 60px): icons
- * only, the label as a tooltip. A group's icon opens its pages in a flyout
- * beside the rail on hover, as rc-menu's collapsed vertical submenu does (0.1s
- * open/close delay, `rightTop` +4px, max 400px tall), or on click or Enter for
- * touch and keyboard; Escape closes it.
- *
- * The platform selector on top (PlatformSwitcher) picks OnlyFans or Fansly;
- * the list below is that platform's pages (lib/nav `sidebarFor`).
- *
- * A `popout` item (Messages Pro) opens its own named window (`openPopout`)
- * from the row and the rail icon alike; this page does not move. Its row
- * also carries, as Infloww's, the platform's unread count (a pink chip, shown
- * at 0 too) and a button opening one more such window beside it.
- */
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -61,7 +36,6 @@ const ROW = "flex items-center gap-2 h-9 rounded-lg text-[16px] font-medium tran
 const ROW_IDLE = "text-nav-fg hover:bg-nav-hover";
 const ROW_ACTIVE = "bg-nav-hover text-nav-fg-active";
 
-/** The most specific visible href the current path sits under. */
 function activeHref(pathname: string, links: NavLink[]): string | null {
   let best: string | null = null;
   for (const { href } of links) {
@@ -84,23 +58,17 @@ export default function Sidebar({
   id?: string;
   className?: string;
   onNavigate?: () => void;
-  /** The 60px icon rail. */
   collapsed?: boolean;
 }) {
   const pathname = usePathname() ?? "/";
   const filter = {
     chatterOnly: useIsChatterOnly(), grantedPages: useGrantedPages(), flags: useFlags(),
   };
-  // The platform selector swaps the page set: its own pages, a divider, the common ones (lib/nav `sidebarFor`).
   const platform = usePlatform();
   const unread = usePlatformUnread()[platform];
-  // `hidden` links (Auto-reply, Get to know fans) are Permission pages the sidebar never draws.
   const nodes = drawnSidebar(sidebarFor(platform), filter);
   const footer = visibleLinks(SIDEBAR_FOOTER, filter);
-  // A page shown as another's tab (Sales records) lights that page's entry.
   const active = activeHref(sidebarHref(pathname, filter.grantedPages), [...flatten(nodes), ...footer]);
-  // The user's open group (label, null = all closed), kept only for the page and platform it was picked on;
-  // elsewhere the active page's group opens.
   const where = `${platform} ${active}`;
   const [choice, setChoice] = useState<{ label: string | null; where: string } | null>(null);
   const openGroup = choice?.where === where ? choice.label : undefined;
@@ -147,7 +115,6 @@ export default function Sidebar({
       </Link>
     );
     if (!l.popout) return row;
-    // The chip lets clicks through to the row; the button is a sibling, not nested in the link.
     return (
       <div key={l.href} className="relative flex flex-col">
         {row}
@@ -184,7 +151,6 @@ export default function Sidebar({
         className,
       )}
     >
-      {/* Platform: Infloww's selector (PlatformSwitcher), OnlyFans or Fansly. */}
       <PlatformSwitcher collapsed={collapsed} />
 
       <nav
@@ -228,14 +194,12 @@ export default function Sidebar({
   );
 }
 
-/** rc-menu's subMenuOpenDelay / subMenuCloseDelay. */
+// rc-menu's subMenuOpenDelay / subMenuCloseDelay.
 const FLYOUT_DELAY_MS = 100;
-/** Under the top bar and the trial banner, `--chrome-top` (Infloww keeps it
- *  under its own, `Math.max(54, …)`). */
+// Infloww keeps the flyout under its own top bar: Math.max(54, ...).
 const flyoutMinTop = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--chrome-top")) || 52;
 const FLYOUT_MAX_HEIGHT = 400;
 
-/** A group's icon in the rail; its pages open in a flyout to the right. */
 function RailGroup({ group, active, onNavigate }: { group: NavGroup; active: string | null; onNavigate?: () => void }) {
   const Icon = group.icon;
   const holdsActive = group.children.some((c) => c.href === active);
@@ -250,7 +214,6 @@ function RailGroup({ group, active, onNavigate }: { group: NavGroup; active: str
   const show = () => {
     const r = triggerRef.current?.getBoundingClientRect();
     if (!r) return;
-    // Keep the whole list on screen: shift up when it would run off the bottom.
     const want = Math.min(FLYOUT_MAX_HEIGHT, group.children.length * 44 + 8);
     const top = Math.max(flyoutMinTop(), Math.min(r.top, window.innerHeight - want - 8));
     setPos({ top, left: r.right + 4, maxHeight: Math.min(FLYOUT_MAX_HEIGHT, window.innerHeight - top - 8) });

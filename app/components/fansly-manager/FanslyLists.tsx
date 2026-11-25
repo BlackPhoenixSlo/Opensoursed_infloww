@@ -1,11 +1,5 @@
 "use client";
 
-/**
- * Fansly Manager > Lists: the creator's own Fansly lists and "Create list", over the Relay's `GET`/`POST
- * /api/of/v2/lists`, which the Fansly shim answers from Fansly's `GET /lists/account` and `POST /lists`
- * (fansly_shim.get_lists / create_list). Fansly's built-in lists (Blocked, Muted, VIP, DM allow) are not returned.
- * Rename, members and delete are not built: their Fansly requests are not captured.
- */
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";

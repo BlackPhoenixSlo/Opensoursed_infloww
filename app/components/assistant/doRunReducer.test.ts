@@ -73,7 +73,6 @@ describe("doRunReducer", () => {
       { phase: "planned", id: "a", request: "r", draft: NULL_FLOW }],
     ["a draft with an error never starts", { phase: "planned", id: "a", request: "r", draft: { ...DRAFT, error: "provider" } }, [{ type: "start" }],
       { phase: "planned", id: "a", request: "r", draft: { ...DRAFT, error: "provider" } }],
-    // rwl W30 F2: the stop's step says whether the form is left filled (doFlows.leftFilled)
     ["Stop mid-run keeps the step", running, [{ type: "step", index: 4 }, { type: "abort", reason: "Stopped" }],
       { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped", step: 4 }],
     ["a fail mid-run keeps the step", running, [{ type: "step", index: 5 }, { type: "fail", msg: "x" }],
@@ -90,7 +89,6 @@ describe("doRunReducer", () => {
       { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped", step: 0 }],
     ["Do it again from aborted", { phase: "aborted", id: "a", request: "r", draft: DRAFT, reason: "Stopped", step: 0 }, [{ type: "start" }], running],
     ["Cancel → idle", planned, [{ type: "reset" }], { phase: "idle" }],
-    // rwl W30 F8: a plan for model 1001 never runs (or refines / retries) once the focus is model 2002
     ["focus move drops a plan for another model", planned, [{ type: "focus", accountId: "2002" }, { type: "start" }], { phase: "idle" }],
     ["focus on the plan's own model keeps it", planned, [{ type: "focus", accountId: "1001" }], planned],
     ["focus move drops a draft in flight; its late answer is stale",
@@ -104,7 +102,6 @@ describe("doRunReducer", () => {
       [{ type: "focus", accountId: null }], { phase: "planned", id: "a", request: "r", draft: EXPORT }],
     ["a run already going keeps its own account (the move is noted)", running, [{ type: "focus", accountId: "2002" }],
       { ...running, focus: "2002" }],
-    // rwl W30 N1: focus moved mid-run, then the run stops → no Do it again / Try again for the old model
     ["focus moved mid-run, then Stop → idle", running, [{ type: "focus", accountId: "2002" }, { type: "abort", reason: "Stopped" },
       { type: "start" }], { phase: "idle" }],
     ["focus moved mid-run, then a fail → idle", running, [{ type: "focus", accountId: "2002" }, { type: "fail", msg: "x" },
@@ -148,7 +145,6 @@ describe("doRunReducer", () => {
       { ...exportRunning, attempt: 2 }],
     ["a new plan starts back at attempt 0", { phase: "failed", id: "a", request: "r", draft: EXPORT, msg: "x", attempt: 3 },
       [{ type: "draft", id: "n", request: "q", accountId: "1001" }, { type: "drafted", id: "n", draft: EXPORT }, { type: "start" }], { ...exportRunning, id: "n", request: "q" }],
-    // F21: a server draft id may be null — two exports of one id keep their own plan ids, so the download key differs
     ["a second export with the same server id runs as its own plan", { phase: "done", id: "a", request: "r", draft: { ...EXPORT, id: "" },
       outcome: { kind: "downloaded", file: "x.xlsx" } },
       [{ type: "draft", id: "b", request: "q", accountId: "1001" }, { type: "drafted", id: "b", draft: { ...EXPORT, id: "" } }, { type: "start" }],
@@ -157,7 +153,6 @@ describe("doRunReducer", () => {
       [{ type: "start" }, { type: "skipAnimation" }], { phase: "planned", id: "a", request: "r", draft: UNRESOLVED_EXPORT }],
     ["an export whose recipe is missing never downloads", { phase: "planned", id: "a", request: "r", draft: { ...EXPORT, slots: { ...EXPORT_SLOTS, recipe: null } } },
       [{ type: "start" }], { phase: "planned", id: "a", request: "r", draft: { ...EXPORT, slots: { ...EXPORT_SLOTS, recipe: null } } }],
-    // full_ai_config (phase 03c): one PUT, its answer ends the run — 409 / 422 too (never failed, so no re-PUT)
     ["start on a config plan → saving (the one PUT is out)", configPlanned, [{ type: "start" }], configRunning],
     ["Stop never cancels a config apply", configRunning, [{ type: "abort", reason: "Stopped" }], configRunning],
     ["configApplied 200 → done with the line and the Creator", configRunning,
@@ -180,8 +175,8 @@ describe("doRunReducer", () => {
     expect(previousOf(planned)).toBe(SLOTS);
     expect(previousOf(running)).toBeNull();
     expect(previousOf({ phase: "idle" })).toBeNull();
-    expect(previousOf({ phase: "planned", id: "a", request: "r", draft: EDIT })).toBeNull();   // an edit plan is never refined
-    expect(previousOf(configPlanned)).toBeNull();                                            // nor a config plan
+    expect(previousOf({ phase: "planned", id: "a", request: "r", draft: EDIT })).toBeNull();
+    expect(previousOf(configPlanned)).toBeNull();
   });
 });
 
@@ -216,7 +211,6 @@ describe("draftFrom", () => {
     expect(draftFrom({ ...CONFIG, slots: { ...CONFIG_SLOTS, rev: undefined } } as never, "1001").slots).toBeNull();
   });
 
-  // rwl W30 M20: one flow list + a guard, no blind cast — junk slots on a form flow read as none
   it.each<[string, unknown, unknown]>([
     ["mass_premade, string slots", "mass_premade", "junk"],
     ["mass_premade, array slots", "mass_premade", [1, 2]],

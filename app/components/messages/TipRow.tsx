@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * TipRow — one tip in the /messages > Tips tab list.
- *
- * Two attribution states:
- *   • attribution_source === "tip_message" — the tip was attached to an
- *     outbound message and that message has a sent_by_employee_id. We
- *     render the op's name in subdued text under the tip note.
- *   • attribution_source === null — standalone tip (or chat-linked but
- *     the message had no employee). Rendered as "Unattributed
- *     (standalone tip)" in dim grey so the row still shows but the lack
- *     of credit is obvious.
- *
- * The tip note (messages.body, truncated to 200 chars) is italicized;
- * empty/missing notes fall back to "(no message)" so the row never has
- * a visually empty middle line.
- */
 
 import Link from "next/link";
 
@@ -36,9 +20,6 @@ export default function TipRow({ row }: Props) {
   const note = row.tip_note ? ofPreviewText(row.tip_note) : "";
   const credited = row.attribution_source === "tip_message";
 
-  // Chat link only makes sense when we have a fan_id — standalone tips on
-  // unknown fans (no fans-table row) still have a fan_id from the tx, so
-  // this is almost always present, but we guard for safety.
   const chatHref =
     row.fan_id != null ? `/messages-pro/${row.account_id}/${row.fan_id}` : null;
 

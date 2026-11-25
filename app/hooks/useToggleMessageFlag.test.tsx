@@ -1,11 +1,3 @@
-/**
- * useToggleMessageFlag — the like/pin toggle body.
- *
- * A wrong id here likes or pins a DIFFERENT message, so: only a real message
- * id reaches the wire, the flip is optimistic and reverts on failure, and each
- * wrapper's request (method, URL, body, opts) and invalidation are pinned so
- * they cannot drift apart while sharing one body.
- */
 import { beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -51,7 +43,6 @@ beforeEach(() => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   alert = vi.spyOn(window, "alert").mockClear().mockImplementation(() => {});
 });
-// No IfConfirmHost mounted: ifAlert falls back to window.alert.
 let alert: MockInstance<typeof window.alert>;
 
 describe("useToggleMessageFlag", () => {
@@ -66,7 +57,6 @@ describe("useToggleMessageFlag", () => {
     const { result } = renderHook(() => useToggleMessageFlag(ACCT, FAN, SPEC), { wrapper });
     let done!: Promise<void>;
     act(() => { done = result.current.toggle(msg(id)); });
-    // Flipped before the wire answers.
     expect(flagOf(id, "isLiked")).toBe(true);
     expect(relayPost).toHaveBeenCalledWith(`/flag/${String(id)}`, undefined, { accountId: ACCT });
     await act(async () => { resolve(); await done; });

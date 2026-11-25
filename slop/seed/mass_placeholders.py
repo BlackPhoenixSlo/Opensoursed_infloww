@@ -1,18 +1,3 @@
-"""Mass placeholders whose OF echo never came: per Creator one closed `mass_runs` row (status
-`ok`, its body and send stamp, as `mass_queue_api._close_mass_run` leaves it, audience_filter as
-`mass_queue_api._open_mass_run` stores an explicit-fan composer send; no `recipients_json`, retired) and one
-optimistic `messages` row per recipient in the shape `attribution.write_mass_optimistic_rows` writes (message_id
-`_MASS_PLACEHOLDER_BASE + run`, `temp_id mass:<run>:<fan>`, the run, the body as stored with
-plain `\\n`, sender_name "", no employee). Prod's common case: 90.6% of stubs never get a real
-twin. Not written: the forward-only chat-preview bump (a 2-day-old send never beats the thread's
-newer history anyway).
-
-`seed(w, fans_by_aid, body_of, at)`: per Creator its recipient fan ids, `body_of(aid)` its run's
-caption, one send stamp `at` for all. Returns `{account_id: mass_run_id}` (also
-`w.data["mass_placeholders"]`).
-
-`PLACEHOLDER_BASE` / `PLACEHOLDER_CEIL`: the service's band, read off `service/attribution.py`
-(by ast: importing attribution would bind its DB engine to the checkout's DB)."""
 from __future__ import annotations
 
 import ast
@@ -35,9 +20,6 @@ PLACEHOLDER_CEIL = _attribution_const("_MASS_PLACEHOLDER_CEIL")
 
 
 def _audience(fan_ids: list[int]) -> str:
-    """mass_runs.audience_filter as `mass_queue_api._open_mass_run` stores a composer send to explicit
-    fans (`user_ids` only; same keys, same order). Not `send_mass_decide.audience_filter`: that
-    is the automation sender's wider shape, and this run is a composer send."""
     return json.dumps({"user_lists": [], "included_users": list(fan_ids), "excluded_users": [],
                        "excluded_user_lists": []})
 

@@ -1,25 +1,5 @@
 "use client";
 
-/**
- * ClockRecordsModal — Employee reports' "Clocked hours" modal for one Employee, Infloww's `ClockInModal`
- * (bundle @13123590), opened from a row's Clocked hours in ClockedHoursCard. It lists the Employee's Clock
- * events (`GET /admin/shifts/clock-events`) over an hour-precision range that defaults to the report's, newest
- * first, as Infloww's timeline lines ("Clock out at Oct 18, 2026 5:00:00 PM (2h 5min)", then "Clock in at
- * …"; an empty range reads Infloww's "No data", live w5-a), in the Agency's time zone (`useAgencyTimeZone`). Until the user picks, the query reads the report's exact
- * range, whatever the zones; the pickers show it cut to the hour. "Export" downloads the records as CSV with
- * Infloww's file name and five columns (the house's CSV over Infloww's xlsx), the group named by the card.
- *
- * Our improvement, not Infloww's: each record has "Edit" (`PATCH /admin/shifts/clock-events/{id}`, the Owner
- * edit), and an open one "Clock out now…", which sends only `out_utc`. The Relay's 409 or 422 text shows inline.
- *
- * ASSUMPTION: the range's end hour is inclusive, so "to 23:00" reads up to midnight, as an hour picker's last
- * hour reads to Infloww's user; the query sends the hour after it. Rung 5. Overturned by Infloww's own request.
- *
- * ASSUMPTION: the export names the file `Clocked_Hours_<Employee>_<from>_to_<to>.csv` with the range's
- * days (YYYY-MM-DD) and spaces in the name as "_", gives Clocked hours as decimal hours (the card's CSV) and
- * times as "YYYY-MM-DD HH:mm:ss" in the zone the header names. Rung 3 for the name and columns (bundle), rung 5
- * for the formats. Overturned by an Infloww export file.
- */
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useReducer, useState } from "react";
@@ -38,53 +18,42 @@ import {
   type ClockRecord,
 } from "@/lib/shifts";
 
-/** IfLabel's 14px T1, 8px over its field, as a column that wraps its input. */
 const LABEL = "mb-0 flex flex-col gap-2";
 const HOUR_MS = 3_600_000;
 
-/** Infloww's "MMM D, YYYY h:mm:ss A" in `tz`. */
 export function clockStamp(iso: string, tz: string): string {
   const w = zonedParts(Date.parse(iso), tz);
   return `${MONTHS[w.mo - 1]} ${w.d}, ${w.y} ${w.h % 12 || 12}:${pad(w.mi)}:${pad(w.s)} ${w.h < 12 ? "AM" : "PM"}`;
 }
 
-/** "YYYY-MM-DD HH:mm:ss" in `tz`, the export's cells. */
 function csvStamp(iso: string, tz: string): string {
   const w = zonedParts(Date.parse(iso), tz);
   return `${w.y}-${pad(w.mo)}-${pad(w.d)} ${pad(w.h)}:${pad(w.mi)}:${pad(w.s)}`;
 }
 
-/** A `datetime-local` value cut to its hour, the range picker's precision. */
 const toHour = (value: string) => value.slice(0, 13) + ":00";
 
 export default function ClockRecordsModal({ employeeId, employeeName, groupName, from, to, onClose }: {
   employeeId: number;
   employeeName: string;
-  /** The Employee's group, the export's Group column ("" for none). */
   groupName: string;
-  /** The report's range, the picker's default. */
   from: string;
   to: string;
   onClose: () => void;
 }) {
   const tz = useAgencyTimeZone();
   const exportAllowed = useActionAllowed("export");
-  // null until the user picks: the pickers show the report's range in the zone once the Applied settings load.
   const [fromInput, setFromInput] = useState<string | null>(null);
   const [toInput, setToInput] = useState<string | null>(null);
   const fromValue = fromInput ?? toHour(toZonedInput(from, tz));
   const toValue = toInput ?? toHour(toZonedInput(to, tz));
-  // An end the user has not picked reads the report's exact instant, so a zone whose offset is not whole
-  // hours from the report's does not move the default range.
   const fromIso = fromInput === null ? from : fromZonedInput(fromValue, tz);
   const toStart = toInput === null ? null : fromZonedInput(toValue, tz);
+  // toIso is exclusive: the picked end hour is inclusive, so the query sends the hour after it.
   const toIso = toInput === null ? to : toStart && new Date(new Date(toStart).getTime() + HOUR_MS).toISOString();
   const ranged = !!fromIso && !!toIso && new Date(fromIso) < new Date(toIso);
   const fromDate = new Date(fromIso ?? 0);
   const toDate = new Date(toIso ?? 0);
-  // The range's own offset, so a summer range viewed in winter still reads EDT; now's while the range is invalid.
-  // `toIso` is exclusive (the hour after the picked one), so its last instant is a ms before; the report's
-  // …59.999 end loses a ms, harmlessly.
   const now = Date.now();
   const [labelFrom, labelTo] = ranged ? [fromDate.getTime(), toDate.getTime() - 1] : [now, now];
   const zoneLabel = rangeOffsetLabel(tz, labelFrom, labelTo);
@@ -126,7 +95,6 @@ export default function ClockRecordsModal({ employeeId, employeeName, groupName,
   }
 
   return (
-    // No ×, as before: the footer's Close (and Escape) close it.
     <IfModal
       title="Clocked hours"
       width={486}
@@ -167,7 +135,6 @@ export default function ClockRecordsModal({ employeeId, employeeName, groupName,
   );
 }
 
-/** One record: Infloww's clock out line (when closed) over its clock in line, and our Edit. */
 function RecordItem({ record: r, tz }: { record: ClockRecord; tz: string }) {
   const [editing, setEditing] = useState<"edit" | "close" | null>(null);
   const tags = (
@@ -202,7 +169,6 @@ function RecordItem({ record: r, tz }: { record: ClockRecord; tz: string }) {
   );
 }
 
-/** The inline Owner edit: changed fields only; `closing` sends just `out_utc`, defaulting to this minute. */
 export function RecordEditor({ record: r, tz, closing, onDone }: {
   record: ClockRecord; tz: string; closing: boolean; onDone: () => void;
 }) {

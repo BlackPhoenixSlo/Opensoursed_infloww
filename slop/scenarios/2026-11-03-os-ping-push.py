@@ -1,68 +1,3 @@
-"""OS notification push (Web Push): the relay pushes every enabled, in-scope notice to every live
-subscription (service/push_send.py, push_decide.py, push_scope.py, push_notice.py, push_api.py;
-.scratch/os-notify-push/design.md B1 + amendments 1-2: no presence, the service worker dedupes at
-display time; push_sent persists sent tags across a restart).
-
-World: `multi_agency_big_models` (5 Agencies) with SCALES `os_ping_creators` Creators (`--creators=`).
-Devices (actors/push_device), `max(--users, 15)` of them, each a real sign-in with its own cookie
-and its own P-256 keys + auth secret: OWNER_DEVICES `POST /auth/login` per Agency owner, the rest
-Employees (`POST /admin/chatters/invite` with a Creator subset -> `/chatter/register` -> `POST
-/chatter/login`), dealt round-robin over the Agencies; with >= 2 Creators an Employee gets a strict
-subset. Each `PUT /push/subscription {endpoint: lib/push_wire /push/<dev>, keys, types, platforms}`
-as the bell sends it (lib/pushPrefs): types by TYPE_MIX (purchases+tip = the bell's default; some
-with messages; some with likes/subs; some with tip or purchases muted), one device with OnlyFans off.
-The scope / type oracle is the seed's (Creator owners, invite subsets), never the relay's.
-
-Frames enter at `POST /__slop/of-ws-frame` (server._broadcast_event, the pump's call) via
-actors/fan_dm.serial (`make=`): per Creator one frame in flight, Creators in parallel.
-1. steady: per Creator `os_ping_frames` frames, open loop at RATE frames/s per Creator (`--rate=`,
-   Creators staggered; a closed-loop burst measures the backlog's drain, not latency), kinds by KIND_MIX: plain DM, tip DM (isTip +
-   tipAmount), `purchase_notified`, `toasts` favorited / subscribed, and a `toasts` type the app
-   cannot name. LATENCY_DEVS devices answer after LATENCY_S (push_wire), the rest at once.
-2. re-offer: 429-once armed on RETRY_DEVS devices; per Creator a new purchase 3x (the 2 h feed
-   re-offer) and steady's first purchase once more.
-3. replay: an owner `/events?scope=all` stream (actors/manager) drops; a purchase per Agency-0
-   Creator; the stream reconnects with Last-Event-ID and must replay them.
-4. restart: stack.stop_relay (SIGTERM, graceful) + start_relay on the same DB; once push is back
-   with every subscription, steady's first purchase per Creator again (the feed's re-walk) and a new
-   one.
-5. prune: 410 armed on GONE_DEVS devices, then 2 purchases per Creator; then one owner device's
-   `POST /auth/logout` and another owner's `POST /auth/sessions/revoke-others` (its other device dies;
-   the revoker re-PUTs, as the bell does on its stream's reconnect), then a purchase + a tip DM per
-   Creator.
-6. UI (not --no-ui; APP_MODE prod: the service worker registers only in a production build): full
-   headless Chromium (`channel="chromium"`: the default headless shell denies notifications even when
-   granted, .scratch/os-notify-push/app-smoke.md), notifications granted, PushManager.subscribe /
-   getSubscription stubbed by an init script to push_wire's endpoint + this device's keys. A fresh
-   Agency-0 owner sign-in opens the bell, Settings tab, the OS checkbox on, Test -> PUT 200 and "Push
-   on" (shot push-test-trigger). Then a purchase frame; the plaintext the relay pushed to that
-   subscription (decrypted by push_wire) goes to the real service worker by CDP
-   `ServiceWorker.deliverPushMessage` with no window of the app open (the page on about:blank: the app
-   closed, so the worker must show it, not hand it to a focused page); getNotifications() must hold
-   its tag; back on the app, an overlay lists what the worker holds (shot push-settled). Side effect:
-   the SQL push_subscriptions row for that endpoint and the relay's push.sent counter
-   (/admin/events/stats).
-
-Checks (lib/push_faults.py): PUSH_ALL_ONCE, PUSH_SCOPE, PUSH_TYPES, PUSH_ORDER, PUSH_NO_REPUSH,
-PUSH_PRUNED_GONE, PUSH_PRUNED_DEAD, PUSH_DECRYPT, PUSH_VAPID, UI_TEST_BUTTON, UI_SW_SHOW, plus the
-stock no-5xx / no-Traceback. "Got a push" = a 2xx answer from push_wire for (device, tag). Each phase
-ends when the relay's push queues are empty (`sse.push` inbox / queued / retry_pending 0) and push_wire
-has been idle IDLE_S. Budgets: frame -> push p95 (steady; frame handed to the relay -> push_wire
-received it) <= E2E_P95_MS and `PUT /push/subscription` p95 <= PUT_P95_MS, both also vs the last
-green run (P95_VS_LAST).
-
-Bypasses (declared): the push service is lib/push_wire.py on loopback (relay env
-PUSH_ENDPOINT_HOSTS=127.0.0.1: plain http only for a listed loopback host, push_decide.endpoint_allowed);
-VAPID_SUBJECT mailto:slop@example.test; the VAPID key in the run's temp dir (lib/push_relay.py). Bulk
-world by SQL (seed/); frames through the /__slop hook, not OF's socket; `purchase_notified` comes in
-as the frame purchase_notifications would broadcast, not its 30 s feed poll. In the UI the browser's
-push-service registration (headless Chromium cannot reach FCM) is stubbed; the push event itself is
-delivered by CDP with the bytes push_wire decrypted, not by a push service. The OS notification is
-outside the page: the settled shot's overlay is the harness's rendering of getNotifications().
-KNOWN_RED: none.
-Break-it-once: push-leaks-scope (FAULT): only PUSH_SCOPE; --fault=push-forgets-sent: PUSH_NO_REPUSH;
---fault=push-keeps-gone: PUSH_PRUNED_GONE; --fault=push-ignores-types: PUSH_TYPES.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -86,9 +21,8 @@ UI = True
 APP_MODE = "prod"
 FAULT = "push-leaks-scope"
 RELAY_ENV = {"PUSH_ENDPOINT_HOSTS": "127.0.0.1", "VAPID_SUBJECT": "mailto:slop@example.test"}
-# measured: medium --users=200 --no-ui, 20261103T212009Z-2026-11-03-os-ping-push-e244 (host load 8): frame -> push
-# p95 41.4 ms (n 4733), PUT p95 94 ms; budgets ~6x / ~3x that for a shared laptop
 E2E_P95_MS = 250
+# measured at medium --users=200 --no-ui (host load 8): frame -> push p95 41.4 ms, PUT p95 94 ms; budgets ~6x / ~3x for a shared laptop
 PUT_P95_MS = 300
 P95_VS_LAST = (1.5, 100)
 P95_VS_LAST_MIN_N = 20
@@ -97,24 +31,20 @@ OWNER_DEVICES = 2
 MIN_DEVICES = 15
 FANS_PER_CREATOR = 6
 ID_BASE = 9_800_000_000_000
-# (name, types, weight): the bell's toast switches (app/lib/notifSettings defaults purchases + tip)
 TYPE_MIX = (("default", ("purchases", "tip"), 5), ("messages", ("message", "purchases", "tip"), 2),
             ("toasts", ("purchases", "tip", "subscribed", "favorited"), 1), ("tip-muted", ("purchases",), 1),
             ("purchases-muted", ("message", "tip"), 1))
-# (kind, weight) of steady frames
 KIND_MIX = (("dm", 35), ("purchase", 25), ("tip", 15), ("like", 10), ("sub", 10), ("unknown", 5))
-RATE = 1.0                # steady: frames/s per Creator, open loop (`--rate=`; 0 = closed-loop burst)
+RATE = 1.0
 LATENCY_DEVS, LATENCY_S = 2, 0.05
 RETRY_DEVS = 3
 GONE_DEVS_FRAC, GONE_DEVS_MIN = 0.05, 2
-IDLE_S = 1.0               # push_wire quiet this long (and the relay's push queues empty) = phase settled
+IDLE_S = 1.0
 SETTLE_S = 180.0
 REPLAY_WAIT_S = 15.0
 UI_WAIT_MS = 120_000
 STEP_MS = 30_000
 SW_SHOW_WAIT_S = 15.0
-# {check name: "open finding: <one line>"}: a check red on a green harness (product bug) is SKIPped
-# with its finding until the product is fixed. No fault may target one.
 KNOWN_RED: dict[str, str] = {}
 
 STUB_JS = """(() => {
@@ -169,24 +99,23 @@ def _p95(xs: list[float]) -> float | None:
 
 
 class _S:
-    """What the phases share."""
 
     def __init__(self, ctx, w, wire: PushWire) -> None:
         self.ctx, self.w, self.wire, self.owner = ctx, w, wire, ctx.owner
         self.rng = w.rng("scenario:os-ping-push")
         self.devs: list[PushDevice] = []
         self.ids = itertools.count(ID_BASE)
-        self.offers: list[dict] = []           # one per frame sent: tag, aid, tk, phase, t0 (ms), live
-        self.first: dict[str, dict] = {}       # tag -> its first offer
+        self.offers: list[dict] = []
+        self.first: dict[str, dict] = {}
         self.n_offers: Counter = Counter()
-        self.frames: dict[str, dict] = {}      # tag -> its frame (re-sent as is)
-        self.live: set[str] = set()            # device names whose subscription should be live now
-        self.armed_gone: dict[str, float] = {}  # device -> epoch s its 410 was armed
-        self.dead: dict[str, float] = {}       # device -> epoch s its session was logged out
-        self.steady_purchase: dict[str, dict] = {}  # Creator -> its first steady purchase (frame, tag)
+        self.frames: dict[str, dict] = {}
+        self.live: set[str] = set()
+        self.armed_gone: dict[str, float] = {}
+        self.dead: dict[str, float] = {}
+        self.steady_purchase: dict[str, dict] = {}
         self.by_agency: dict[int, list[str]] = {}
         self.fans: dict[str, list[dict]] = {}
-        self.phase_end: dict[str, int] = {}    # phase -> len(wire.records) when it settled
+        self.phase_end: dict[str, int] = {}
         self.replayed: dict = {}
         self.restart: dict = {}
         self.prune: dict = {}
@@ -202,7 +131,6 @@ class _S:
         self.n_offers[tag] += 1
 
 
-# ── frames ─────────────────────────────────────────────────────────────────
 def _purchase(mid: int, fan: dict, cents: int) -> dict:
     return {"purchase_notified": {"notif_id": str(mid), "fan_id": fan["id"], "message_id": mid,
                                   "amount_cents": cents, "created_at": None, "name": fan["name"]}}
@@ -214,7 +142,6 @@ def _toast(mid: int, fan: dict, typ: str, text: str) -> dict:
 
 
 def _build(kind: str, mid: int, fan: dict, aid: str, rng) -> tuple[dict, str, str | None]:
-    """(frame, the notice tag push_notice gives it, its NotifTypeKey or None)."""
     if kind == "dm":
         return fan_dm.frame(mid, fan, "slop push dm"), f"{aid}:m{mid}", "message"
     if kind == "tip":
@@ -229,9 +156,6 @@ def _build(kind: str, mid: int, fan: dict, aid: str, rng) -> tuple[dict, str, st
 
 
 async def _send(s: _S, phase: str, plan: dict[str, list], rate: float = 0) -> list[dict]:
-    """plan: Creator -> its frames in order, each `mid -> (frame, tag, type key)`; all lists one length.
-    fan_dm.serial's shape: one frame in flight per Creator, Creators in parallel; `rate` > 0: open
-    loop, that many frames/s per Creator, Creators staggered over 1/rate."""
     plan = {a: v for a, v in plan.items() if v}
     n = {len(v) for v in plan.values()}
     assert len(n) <= 1, f"{phase}: plans of unequal length {n}"
@@ -269,7 +193,6 @@ async def _push_stats(s: _S) -> dict:
 
 
 async def _settle(s: _S, phase: str) -> dict:
-    """The relay processed every frame, its push queues are empty and push_wire is idle IDLE_S."""
     await quiesce(s.owner)
     t0 = time.time()
     while True:
@@ -284,7 +207,6 @@ async def _settle(s: _S, phase: str) -> dict:
         await asyncio.sleep(0.2)
 
 
-# ── setup: devices ─────────────────────────────────────────────────────────
 async def _setup(s: _S) -> None:
     ctx, w = s.ctx, s.w
     ctx.rec.stage = "setup"
@@ -315,7 +237,6 @@ async def _setup(s: _S) -> None:
             devs.append(PushDevice(f"c{u.rsplit('c', 1)[1]}", "chatter", u, m["password"], a, frozenset(subset)))
     for i, d in enumerate(devs):
         d.types = types_of[mix[(i * 7 + ctx.seed) % len(mix)]]
-    # Fixed roles (see the phases): o1d1 OnlyFans off; o2d0 revokes o2d1; o3d0 logs out.
     s.devs = devs
     s.dev("o1d1").platforms = {"onlyfans": False, "fansly": True}
     for d in (s.dev("o2d0"), s.dev("o2d1"), s.dev("o3d0")):
@@ -350,7 +271,6 @@ async def _setup(s: _S) -> None:
                            "relay_subs": st["subs"]})
 
 
-# ── phases ─────────────────────────────────────────────────────────────────
 async def _steady(s: _S) -> dict:
     s.ctx.rec.stage = "steady"
     nframes = s.ctx.param("frames", s.w.size["os_ping_frames"])
@@ -460,7 +380,6 @@ async def _prune(s: _S) -> dict:
             for c in s.w.data["creators"]}
     await _send(s, "prune-gone", plan)
     st_gone = await _settle(s, "prune-gone")
-    # dead sessions: o3d0 logs out; o2d0 logs its other sessions out (o2d1 dies), then re-PUTs
     out, rev, other = s.dev("o3d0"), s.dev("o2d0"), s.dev("o2d1")
     s.dead[out.name] = time.time()
     r = await out.http.post("/auth/logout")
@@ -491,13 +410,12 @@ def _rows(s: _S, names: list[str]) -> dict[str, int]:
         con.close()
 
 
-# ── checks ─────────────────────────────────────────────────────────────────
 def _checks(s: _S) -> None:
     ctx, recs = s.ctx, s.wire.snapshot()
     devs = {d.name: d for d in s.devs}
-    ok_n: Counter = Counter()     # (dev, tag) -> 2xx answers
-    any_n: Counter = Counter()    # (dev, tag) -> requests
-    after: dict[str, list] = defaultdict(list)  # dev -> [(t_recv, status, tag)]
+    ok_n: Counter = Counter()
+    any_n: Counter = Counter()
+    after: dict[str, list] = defaultdict(list)
     for r in recs:
         tag = (r.get("plain") or {}).get("tag")
         if r["sub"] not in devs or tag not in s.first:
@@ -507,7 +425,6 @@ def _checks(s: _S) -> None:
             ok_n[(r["sub"], tag)] += 1
         after[r["sub"]].append((r["t_recv"], r["status"], tag))
 
-    # ALL_ONCE: every expected (dev, tag) got >= 1; a tag offered once exactly 1
     missing, dup, expected = [], [], 0
     for tag, o in s.first.items():
         for name in o["live"]:
@@ -522,7 +439,6 @@ def _checks(s: _S) -> None:
          delivered=sum(ok_n.values()), missing=len(missing), dup=len(dup), first_missing=missing[:10],
          first_dup=dup[:10], by_phase=dict(Counter(o["phase"] for o in s.first.values())))
 
-    # SCOPE / TYPES over every request (any status) the devices got
     leaks, typed, out_pairs, muted_pairs = [], [], 0, 0
     for tag, o in s.first.items():
         for name, d in devs.items():
@@ -542,11 +458,10 @@ def _checks(s: _S) -> None:
          unknown_type_frames=unknown, platform_off=[n for n, d in devs.items() if not d.platforms.get("onlyfans", True)],
          pushed=len(typed), first=typed[:10])
 
-    # ORDER: steady, per device and Creator, 2xx tags in offer order
     rank = {o["tag"]: o["i"] for o in s.offers if o["phase"] == "steady"}
     aid_of = {t: o["aid"] for t, o in s.first.items()}
     out_of_order, by_dev = [], defaultdict(list)
-    for r in recs[:s.phase_end["steady"]]:  # steady's own records: a later phase's re-push is NO_REPUSH's
+    for r in recs[:s.phase_end["steady"]]:
         by_dev[r["sub"]].append((r["t_recv"], r["status"], (r.get("plain") or {}).get("tag")))
     for name, seq in by_dev.items():
         last: dict[str, int] = {}
@@ -561,7 +476,6 @@ def _checks(s: _S) -> None:
     _chk(ctx, PUSH_ORDER, steady_n > 0 and not out_of_order, steady_pushes=steady_n,
          out_of_order=len(out_of_order), first=out_of_order[:10])
 
-    # NO_REPUSH: re-offered (reoffer, restart) and replayed tags: <= 1 per device
     watch = {t for t, n in s.n_offers.items() if n > 1} | {o["tag"] for o in s.offers if o["phase"] == "replay"}
     extra = [(dv, t, n) for (dv, t), n in ok_n.items() if t in watch and n > 1]
     replay_ok = s.replayed.get("sent", 0) > 0 and s.replayed.get("replayed") == s.replayed.get("sent")
@@ -571,14 +485,12 @@ def _checks(s: _S) -> None:
          reoffered=sum(1 for t, n in s.n_offers.items() if n > 1), replay=s.replayed,
          restart={k: v for k, v in s.restart.items() if k != "push"}, extra=len(extra), first=extra[:10])
 
-    # PRUNED_GONE: 410 -> exactly the one 410'd request, row gone
     gone_rows = _rows(s, list(s.armed_gone))
     gone_detail = {n: {"requests_after_arm": sum(1 for t, _, _ in after[n] if t >= s.armed_gone[n]),
                        "row": gone_rows[n]} for n in s.armed_gone}
     _chk(ctx, PUSH_PRUNED_GONE, bool(gone_detail) and all(v == {"requests_after_arm": 1, "row": 0}
                                                           for v in gone_detail.values()), devices=gone_detail)
 
-    # PRUNED_DEAD: logged out -> row gone, no request after
     dead_rows = _rows(s, list(s.dead))
     dead_detail = {n: {"requests_after": sum(1 for t, _, _ in after[n] if t >= s.dead[n]), "row": dead_rows[n]}
                    for n in s.dead}
@@ -588,7 +500,6 @@ def _checks(s: _S) -> None:
          devices=dead_detail, logout_row_right_after=s.prune.get("rows_right_after_logout"),
          revoker_reput=s.prune.get("revoker_reput"))
 
-    # budgets: steady frame -> push
     e2e = [r["t_recv"] * 1000 - s.first[r["plain"]["tag"]]["t0"] for r in recs[:s.phase_end["steady"]]
            if 200 <= r["status"] < 300 and (r.get("plain") or {}).get("tag") in rank]
     p95 = _p95(e2e)
@@ -605,7 +516,6 @@ def _checks(s: _S) -> None:
 
 
 def _wire_checks(s: _S) -> None:
-    """DECRYPT and VAPID over every request push_wire got, the UI's included."""
     recs = s.wire.snapshot()
     keys = ("v", "tag", "title", "body", "href", "type")
     bad_plain = []
@@ -629,7 +539,6 @@ def _wire_checks(s: _S) -> None:
             f.write(json.dumps(r, default=str) + "\n")
 
 
-# ── UI ─────────────────────────────────────────────────────────────────────
 async def _ui(s: _S) -> None:
     ctx, w = s.ctx, s.w
     ctx.rec.stage = "ui"
@@ -682,7 +591,6 @@ async def _ui(s: _S) -> None:
                 test_ok = put.status == 200 and detail["os_checkbox"] and row is not None
                 _chk(ctx, UI_TEST_BUTTON, test_ok, **detail)
 
-                # A purchase for an Agency-0 Creator: what the relay pushes to this subscription.
                 sent_before = (await _push_stats(s))["sent"]
                 aid = s.by_agency[0][0]
                 await _send(s, "ui", {aid: [_new("purchase", aid, s.fans[aid][0], s)]})
@@ -696,7 +604,6 @@ async def _ui(s: _S) -> None:
                 detail["relay_push"] = rec and {k: rec[k] for k in ("status", "plain", "headers")}
                 if rec is None:
                     raise RuntimeError(f"the relay pushed nothing for {tag} to the browser's subscription")
-                # The app closed (no window of the origin): the worker must show it.
                 await page.goto("about:blank")
                 for _ in range(50):
                     if regs:

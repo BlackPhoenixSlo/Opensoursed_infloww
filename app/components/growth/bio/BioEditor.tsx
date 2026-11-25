@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * One bio page's editor (/growth/bio-pages/<id>): the address, its custom domain (BioDomainSection), the Profile,
- * Links and Tracking URLs cards, Delete, and the live preview, sticky beside the cards from lg up and behind an
- * "Edit | Preview" switch below it. The Profile and link-dialog reducers live here, so the preview draws both drafts.
- */
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -78,7 +73,6 @@ function Notice({ title, text, onBack, onRetry, plain }: {
   );
 }
 
-/** The picked background's object URL for the dialog's thumb and the preview, revoked when it changes. */
 function useObjectUrl(file: File | null): string | null {
   const url = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
   useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
@@ -96,7 +90,6 @@ function Editor({ page, onBack, refreshError }: { page: BioPage; onBack: () => v
   const router = useRouter();
   const qc = useQueryClient();
   const deleted = useRef(false);
-  // Whether the bio service answers (the list's health probe, shared with Bio pages); unknown until it loads.
   const serving = useBioPages().data?.serving;
 
   useEffect(() => () => {

@@ -5,7 +5,7 @@ import { initialSlotsState, keptSlots, slotsReducer, type Ack, type Action, type
 
 const A = "100000001";
 const B = "100000002";
-const SNOW = "900234567890123456"; // a Fansly snowflake: past 2^53, string only
+const SNOW = "900234567890123456"; // Fansly snowflake: past 2^53, string only
 const s = (fanId: number | string, accountId = A): GroupSlot => ({ accountId, fanId });
 const range = (n: number) => Array.from({ length: n }, (_, i) => s(200000000 + i));
 const FULL = range(GROUP_SLOT_CAP);
@@ -66,8 +66,6 @@ describe("slotsReducer: actions in -> slots, acks, active out", () => {
     expect(end.active).toBe(active);
   });
 
-  // The property the sender relies on: an ack says ok exactly when the fan
-  // is in the list right after its add.
   it("every ack is ok exactly when its fan is in the list after its add", () => {
     const actions: Action[] = [
       add(1, "1"), add("1", "2"), add(SNOW, "3"), { type: "replace", slots: range(GROUP_SLOT_CAP - 1) },
@@ -161,7 +159,6 @@ describe("slotsReducer: input hygiene", () => {
   });
 });
 
-// What a tab beats with while it yields: exactly what dropHeldBy leaves.
 describe("keptSlots", () => {
   it.each<[string, GroupSlot[], GroupSlot[][], GroupSlot[]]>([
     ["drops a fan another tab holds (other id shape)", [s(1), s(SNOW)], [[s("1")]], [s(SNOW)]],

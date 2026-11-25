@@ -1,31 +1,3 @@
-"""Shift history: an Agency's weekly Shift series and 30 days of Clock events, by SQL, as the Shift
-schedule (`POST /admin/shifts`, "This shift" deletes) and the Clock (`clock-in` / `clock-out`, the
-Auto clock-out sweep) would have written them, each write with its `actions` row.
-
-The window is anchored, never read off the wall clock: [2026-10-02, 2026-11-01) UTC (WINDOW), 30 days
-in the past of every run, holding Europe/Berlin's fall-back (Sun 2026-10-25 03:00 CEST -> 02:00 CET).
-Creator i's Shifts are in TZS[i % len(TZS)]: series[0] is on the first Berlin Creator with an Employee,
-a Sunday 00:00-04:00 series across that night (a 5-hour occurrence). America/New_York's fall-back (2026-11-01 06:00 UTC) is
-after the window: its later occurrences are what a "this" / "following" write names.
-
-Slots: a Creator's week is 7 weekdays x 6 local 4-hour blocks; a series takes one block on 1-2
-weekdays, and no two series of a Creator share a (weekday, block), so no two of its occurrences overlap
-(the product refuses that with "Multiple employees per shift" off). One Employee per series, on the
-Creator it may work. RESERVED (Sunday, block 5: 20:00-24:00) is left free on every Creator for the
-scenario's live creates. The blocks never start or end inside a DST gap or fold.
-
-Clock events: 70% of the occurrences in [WINDOW start - 1 day, WINDOW end) were worked (clock-in some
-minutes either side of the start, out either side of the end; 80% on the Creator, 20% the agency-wide
-clock, `account_id` NULL; 15% closed by the Auto clock-out at last heartbeat + 10 min), plus some
-off-shift events; one Employee's events never overlap (one open event at a time). `open_n` Employees
-are still clocked in since a few hours before the window's end (open, `last_seen_utc` = when seeded): a
-heartbeating tab. Their open time inside the window is fixed (end - in), whatever the run's date.
-
-`w.data["shift_history"]`: {tz_by_creator, series[{id, account_id, employee_id, start_utc, end_utc,
-tz, repeat_days, repeat_until, cancelled_dates}] (series[0] the DST night's), events[{id, employee_id,
-account_id, in_utc, out_utc}], open_employee_ids}. `occurrences(series, lo, hi)` is the Occurrence rule,
-written here from its spec with zoneinfo alone (no product import): the scenario's oracle uses it.
-"""
 from __future__ import annotations
 
 import json
@@ -34,18 +6,17 @@ from zoneinfo import ZoneInfo
 
 from . import World, ts
 
-WINDOW = (datetime(2026, 10, 2), datetime(2026, 11, 1))   # naive UTC, [lo, hi)
-DST_NIGHT = date(2026, 10, 25)                             # Europe/Berlin falls back
+# Anchored, never the wall clock: 30 days past every run, holding Europe/Berlin's fall-back.
+WINDOW = (datetime(2026, 10, 2), datetime(2026, 11, 1))
+DST_NIGHT = date(2026, 10, 25)
 TZS = ("Europe/Berlin", "America/New_York", "Asia/Tokyo", "UTC")
 BLOCK_H = 4
 BLOCKS = 24 // BLOCK_H
-RESERVED = (7, BLOCKS - 1)                                 # Sunday 20:00-24:00 local, never seeded
+RESERVED = (7, BLOCKS - 1)
 AUTO_MIN = 10
 
 
 def to_utc(wall: datetime, tz: str) -> datetime:
-    """A local wall time -> naive UTC; fold=0 (the spec: a gap time lands after the jump, a repeated
-    time takes its first instant)."""
     return wall.replace(tzinfo=ZoneInfo(tz), fold=0).astimezone(timezone.utc).replace(tzinfo=None)
 
 
@@ -54,10 +25,6 @@ def to_wall(utc: datetime, tz: str) -> datetime:
 
 
 def occurrences(sr: dict, lo: datetime, hi: datetime) -> list[tuple[datetime, datetime]]:
-    """The series' occurrences intersecting [lo, hi), from the spec (docs/spec/phase-02): the first is
-    the stored [start, end); with repeat days, every later local date (to repeat_until inclusive) whose
-    ISO weekday is ticked, or is the start's own, gets one at the first's wall time with its wall-clock
-    length; a cancelled local date has none."""
     tz = sr["tz"]
     if not sr["repeat_days"]:
         return [(sr["start_utc"], sr["end_utc"])] if sr["start_utc"] < hi and sr["end_utc"] > lo else []
@@ -87,9 +54,6 @@ def _first_date(rng, wd: int, lo: date, hi: date) -> date:
 
 
 def seed(w: World, employees: list[dict], creators: list[dict], *, n: int, open_n: int) -> dict:
-    """`employees`: [{employee_id, account_id}] (each Mirror Employee and the one Creator it may work);
-    `n` series over the Creators (fewer if a Creator runs out of free slots); `open_n` Employees left
-    clocked in across the window's end."""
     rng = w.rng("shift_history")
     lo, hi = WINDOW
     tz_by = {c["id"]: TZS[i % len(TZS)] for i, c in enumerate(creators)}
@@ -116,7 +80,7 @@ def seed(w: World, employees: list[dict], creators: list[dict], *, n: int, open_
         sr = {"id": sid0 + len(series), "account_id": aid, "employee_id": rng.choice(by_creator[aid]),
               "start_utc": to_utc(wall, tz), "end_utc": to_utc(wall + timedelta(hours=BLOCK_H), tz), "tz": tz,
               "repeat_days": sorted(days), "repeat_until": until, "cancelled_dates": []}
-        if rng.random() < 0.3:  # "This shift" deletes: 1-2 of its dates
+        if rng.random() < 0.3:
             dates = [d for o in occurrences(sr, lo - timedelta(days=14), hi)
                      if (d := to_wall(o[0], tz).date()) != DST_NIGHT]
             sr["cancelled_dates"] = sorted(rng.sample(dates, min(len(dates), rng.randint(1, 2))))
@@ -125,7 +89,7 @@ def seed(w: World, employees: list[dict], creators: list[dict], *, n: int, open_
     series: list[dict] = []
     order = [c["id"] for c in creators if c["id"] in free]
     dst_aid = next((a for a in order if tz_by[a] == "Europe/Berlin"), None)
-    if n and dst_aid:  # series[0], the DST night: Sunday 00:00-04:00 Berlin across 2026-10-25
+    if n and dst_aid:
         free[dst_aid].remove((7, 0))
         add(dst_aid, 7, 0, date(2026, 9, 20), None)
     k = 1
@@ -141,7 +105,6 @@ def seed(w: World, employees: list[dict], creators: list[dict], *, n: int, open_
             first + timedelta(days=rng.randrange(7, 40)) if r < 0.7 else hi.date() + timedelta(days=rng.randrange(1, 30)))
         add(aid, wd, b, first, until)
 
-    # Clock events per Employee, kept disjoint (one open event at a time).
     raw: dict[int, list[tuple]] = {}
     for sr in series:
         for o_start, o_end in occurrences(sr, lo - timedelta(days=1), hi):
@@ -152,7 +115,7 @@ def seed(w: World, employees: list[dict], creators: list[dict], *, n: int, open_
             acc = sr["account_id"] if rng.random() < 0.8 else None
             raw.setdefault(sr["employee_id"], []).append(
                 (t_in, t_out, acc, sr["id"] if o_start <= t_in < o_end else None))
-    for e in employees:  # time clocked anywhere in the window, Shift or not
+    for e in employees:
         for _ in range(rng.randint(0, 2)):
             t_in = lo + timedelta(seconds=rng.randrange(int((hi - lo).total_seconds()) - 7200))
             raw.setdefault(e["employee_id"], []).append(
@@ -162,7 +125,7 @@ def seed(w: World, employees: list[dict], creators: list[dict], *, n: int, open_
     opens = sorted(rng.sample(sorted(acc_of), min(open_n, len(acc_of))))
     open_in = {emp: hi - timedelta(seconds=rng.randint(3600, 4 * 3600)) for emp in opens}
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)  # an open event's last heartbeat: just now
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     events: list[dict] = []
     ev_rows, act_rows = [], []
     for emp in sorted(raw.keys() | set(opens)):

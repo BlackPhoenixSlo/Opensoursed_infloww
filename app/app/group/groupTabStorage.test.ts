@@ -10,7 +10,7 @@ import {
 import { GROUP_HEARTBEAT_TTL_MS } from "@/lib/groupChannel";
 
 const A = "100000001";
-const SNOW = "900234567890123456"; // a Fansly snowflake: past 2^53, string only
+const SNOW = "900234567890123456";
 const s = (fanId: number | string, accountId = A): GroupSlot => ({ accountId, fanId });
 
 beforeEach(() => {
@@ -41,7 +41,6 @@ describe("takeSeedParams: consumed once", () => {
     window.history.replaceState(null, "", path);
     expect(takeSeedParams().seeds).toEqual(seeds);
     expect(window.location.pathname + window.location.search).toBe(after);
-    // A reload (or StrictMode's second mount) sees no params: nothing re-seeds.
     expect(takeSeedParams()).toEqual({ seeds: [], spawnToken: null, fresh: false });
   });
 });
@@ -62,7 +61,6 @@ describe("resolveTabId", () => {
     const id = resolveTabId(fresh);
     expect(id === stored).toBe(same);
     expect(id).not.toBe("");
-    // Whatever it answered is what the next reload answers.
     expect(resolveTabId(false)).toBe(id);
   });
 });
@@ -99,7 +97,6 @@ describe("resolveCreatedAt", () => {
   ])("%s", (_name, stored, fresh, want) => {
     if (stored !== null) sessionStorage.setItem(CREATED_AT_KEY, stored);
     expect(resolveCreatedAt(fresh, 2000)).toBe(want);
-    // Whatever it answered is what the next reload answers.
     expect(resolveCreatedAt(false, 3000)).toBe(want);
   });
 });

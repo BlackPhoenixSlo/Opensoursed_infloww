@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * One Share for Share page (Inventory §3.6; docs/spec/phase-03-share-for-share.md, UI), on Infloww's frame (`Index$7`,
- * page-parity 15): the 48px legacy header (with "Date/Time shown in UTC time zone" on Requests and S4S schedule),
- * then the 300px creator rail (`pageScene:"s4s"`: the S4S tag on opted-in creators, the count of new requests) beside
- * the section. The picked creator lives in `?creator=` (default the first) and every section shows that creator
- * only: each S4S record already names its creator's profile, so the rail is a client-side filter. Below md the rail
- * gives way to the creator select. Owner-only: a chatter reaching the route by URL gets a sentence and the page calls
- * no S4S route (the Relay 403s `/admin/s4s` anyway).
- */
 
 import { useMemo } from "react";
 
@@ -32,7 +23,6 @@ export default function S4SPage({ title, section }: { title: string; section: S4
   return (
     <div className="flex min-h-full flex-col">
       <InflowwPageHeader title={title} extra={showUtc ? <span className="hidden text-[14px] text-[#999] md:inline">{UTC_NOTE}</span> : undefined} />
-      {/* Proposal: on a phone the note gets its own line, so the title isn't cut ("S4S sched…"). */}
       {showUtc && <p className="border-b border-border px-6 py-2 text-[12px] text-[#999] md:hidden">{UTC_NOTE}</p>}
       {chatterOnly
         ? <p className="px-6 py-4 text-sm text-fg-dim">Only the agency owner manages Share for Share.</p>
@@ -50,7 +40,6 @@ function OwnerBody({ section }: { section: S4SSection }) {
   const profiles = profilesQ.data?.profiles;
   const profile = profiles?.find((p) => p.account_id === accountId) ?? null;
 
-  // The rail's marks: opted in, and the pending requests sent to each creator's profile.
   const marks = useMemo(() => {
     const out: Record<string, S4SMark> = {};
     for (const p of profiles ?? []) {
@@ -61,7 +50,6 @@ function OwnerBody({ section }: { section: S4SSection }) {
   }, [profiles, receivedQ.data]);
 
   let body;
-  // No Creator yet because the Creators are still loading: the section's rows as placeholder bars.
   if (!accountId) body = accountsLoading ? <TableSkeleton rows={6} /> : <EmptyState kind="creator" text="No creator connected yet" className="py-24" />;
   else if (section === "discover-creators") body = <DiscoverCreators from={profile} />;
   else if (section === "requests") body = <S4SRequests profile={profile} accountId={accountId} />;
@@ -69,7 +57,6 @@ function OwnerBody({ section }: { section: S4SSection }) {
   else body = <S4SSettingPanel key={accountId} query={profilesQ} profile={profile} />;
 
   return (
-    // `.h-chat` on the rail subtracts the 48px header too.
     <div className="flex flex-1" style={{ ["--shell-top" as string]: "calc(var(--chrome-top) + 48px)" }}>
       <CreatorColumn
         variant="s4s"

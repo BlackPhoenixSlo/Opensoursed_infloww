@@ -1,9 +1,5 @@
 "use client";
 
-/**
- * Collections' rows, cut from ofMirrorData (applyData draws them): the user lists, a list's users and tabs, the Fans, the post
- * labels. And New message's list rows (ofMirrorMass, ofMirrorChats' folders dialog): applyListRows, below.
- */
 
 import type { OFUserMini } from "@/lib/relay";
 import { ORDER_GROUP, showMenu, type MenuOption } from "@/lib/ofMirrorMenu";
@@ -13,20 +9,13 @@ import { formatCount } from "@/lib/ofMirrorIdentity";
 import { avatarOf } from "@/lib/ofMirrorAvatar";
 import { fill, handleOf, linkUser, make, markOpen, nameOf, ROW_MARKS, sameId, setAttr, setAvatar, setClass, setText, track, unit, userHref } from "@/lib/ofMirrorDom";
 
-/** A list's Posts tab (OF's /my/collections/user-lists/<id>/posts). */
 export const LIST_POSTS = "collections/user-lists/list/posts";
 
-/** A list's Users and Posts tabs (`?list=<id>` on both, the Posts tab's type chip `?postType=`, as OF's). */
 export const LIST_TABS: readonly string[] = ["collections/user-lists/list", LIST_POSTS];
-/** A list's Posts tab's type chips, by their text: OF's `postType` (its page) and `type` (GET /lists/<id>/posts). */
 export const POST_TYPES: Record<string, string> = { All: "", Photos: "photos", Videos: "videos", Audio: "audios", Other: "other", Locked: "locked" };
-/** The type chip `?postType=` asks for (null: All, or none OF has). */
 export const postTypeOf = (v: string | null) => (v && Object.values(POST_TYPES).includes(v) ? v : null);
-/** A list's Posts tab's feed, one of OF's pages of 10 (`offset` appended per page). */
 export const listPostsPath = (list: string, type: string | null) => `/api/of/v2/lists/${encodeURIComponent(list)}/posts?limit=10${type ? `&type=${type}` : ""}`;
-/** Fans' Expired tab: OF's subscribers of type "expired", the page's ?type= (ticket 18). */
 export const FANS_EXPIRED = "expired";
-/** Fans' (collections/user-lists/subscribers/active) cards: OF's subscribers of the tab's type, the page's ?type= (Expired: "expired", else active). */
 export const subscribersPath = (type: string | null) => `/api/of/v2/subscribers?type=${type === FANS_EXPIRED ? FANS_EXPIRED : "active"}&limit=50`;
 
 export interface UserList {
@@ -34,11 +23,9 @@ export interface UserList {
   name?: string;
   usersCount?: number;
   postsCount?: number;
-  /** OF's preview of its members (the avatar stack). */
   users?: (OFUserMini & { avatarThumbs?: { c50?: string | null; c144?: string | null } | null })[];
 }
 
-/** A post label, as GET /labels sends it (OF's `{list: [{id, name, postsCount}]}`). */
 export interface PostLabel {
   id: number | string;
   name?: string;
@@ -47,14 +34,11 @@ export interface PostLabel {
 
 const listHref = (id: number | string) => `/of-manager/collections/user-lists/list?list=${encodeURIComponent(String(id))}`;
 const labelHref = (id: number | string) => `/of-manager/collections/post-labels/archived?label=${encodeURIComponent(String(id))}`;
-/** OF's plural (vue-i18n $tc): "{COUNT} user | {COUNT} users". */
 const plural = (n: number, one: string, many: string) => `${formatCount(n)} ${n === 1 ? one : many}`;
-/** OF's UsersList wording a list's own: its line with no members, and what its second line counts (with its zero). */
 const SUBLINE: Record<string, { empty?: string; counts?: [none: string, one: string, many: string] }> = {
   recent: { empty: "No new subscribers in the last 24 hours" },
   purchased: { counts: ["No purchase", "purchase", "purchases"] },
 };
-/** A list row's subline, as OF's UsersList: "empty" (or the list's own line) with no members, else its users, then its posts when it has any (or the list's own count). */
 export function listSubline(l: UserList): string[] {
   const own = SUBLINE[String(l.id)];
   if (!l.usersCount) return [own?.empty ?? "empty"];
@@ -62,17 +46,14 @@ export function listSubline(l: UserList): string[] {
   const second = own?.counts ? (n ? plural(n, own.counts[1], own.counts[2]) : own.counts[0]) : n ? plural(n, "post", "posts") : null;
   return [plural(l.usersCount, "user", "users"), ...(second ? [second] : [])];
 }
-/** Collections' columns: their "Nothing found" (the generator's data-oi-empty) is looked up under these. */
 export const LISTS_COLUMN = ".b-user-lists__list";
 export const USERS_COLUMN = ".l-main-content.m-r-side";
 export const LABELS_COLUMN = ".b-post-labels__list";
 
-/** Hide the generator's "Nothing found" under `scope` once it has rows. */
 export function hideEmpty(doc: Document, scope: string) {
   for (const e of doc.querySelectorAll<HTMLElement>(`${scope} [data-oi-empty]`)) setAttr(doc, e, "style", `${e.getAttribute("style") ?? ""};display:none`);
 }
 
-/** A column's "Nothing found" before its rows are here: "Loading…" (`error` null), or the red "Could not load: <the Relay's text>". */
 export function applyColumnStatus(doc: Document, scope: string, error: string | null) {
   const text = doc.querySelector<HTMLElement>(`${scope} [data-oi-empty] > span`);
   if (!text) return;
@@ -86,7 +67,6 @@ export function applyColumnStatus(doc: Document, scope: string, error: string | 
   if (error !== null) text.style.color = "#ff4545";
 }
 
-/** The right column's title (the open list's or label's name), and the page's <title> after its last ":" or "›". */
 function setHeading(doc: Document, name: string) {
   const heading = doc.querySelector(".l-main-content .g-page-title > span");
   if (!heading) return;
@@ -95,7 +75,6 @@ function setHeading(doc: Document, name: string) {
   if (title) setText(doc, title, (title.textContent ?? "").replace(/[^:›]+$/, ` ${name}`));
 }
 
-/** A copy of a hidden template row (the generator's): shown. */
 const shown = (tpl: Element) => {
   const el = make(tpl);
   el.style.removeProperty("display");
@@ -104,7 +83,6 @@ const shown = (tpl: Element) => {
 
 export function applyUserLists(doc: Document, lists: UserList[], open: string | null, borrowed?: Element, img: (u: string) => string = (u) => u) {
   let rows = [...doc.querySelectorAll<HTMLElement>(`${LISTS_COLUMN} .b-rows-lists__item`)];
-  // A column captured with no list row: the borrowed (hidden) one put in.
   const wrapper = doc.querySelector(`${LISTS_COLUMN} .vue-recycle-scroller__item-wrapper`);
   if (!rows.length && borrowed && wrapper) {
     const row = doc.importNode(borrowed, true) as HTMLElement;
@@ -123,7 +101,6 @@ export function applyUserLists(doc: Document, lists: UserList[], open: string | 
     a.removeAttribute("aria-current");
     if (sameId(l.id, open)) markOpen(a);
     el.querySelector(".b-rows-lists__item__name")!.textContent = l.name ?? "";
-    // OF's avatar stack (its members' preview) between the name and the subline, when the list has members.
     el.querySelector(".b-media-set")?.remove();
     if (l.usersCount && l.users?.length) {
       const set = doc.createElement("div");
@@ -147,10 +124,6 @@ export function applyUserLists(doc: Document, lists: UserList[], open: string | 
   if (name) setHeading(doc, name);
 }
 
-/**
- * `people` as fan cards in the users column (copies of the generator's hidden card): `list` the open list (its id and
- * name on the card's list link, its query kept on the page's links), null on Fans.
- */
 export function applyListUsers(doc: Document, page: string, list: string | null, people: OFUserMini[], listName: string | null, img: (u: string) => string) {
   if (list) {
     keepQuery(doc, basePage(page), `?list=${encodeURIComponent(list)}`);
@@ -162,11 +135,10 @@ export function applyListUsers(doc: Document, page: string, list: string | null,
   const tpl = cards.find((c) => c.querySelector(".g-user-realname")) ?? cards[0];
   const clones = people.map((u) => {
     const el = shown(tpl);
-    el.dataset.oiUser = String(u.id); // the card's user, for its Lists menu (ofMirrorCollections)
+    el.dataset.oiUser = String(u.id);
     for (const x of el.querySelectorAll(".g-user-name, .g-user-realname")) x.textContent = nameOf(u);
     for (const x of el.querySelectorAll(".g-user-username")) x.textContent = `@${handleOf(u)}`;
     setAvatar(el.querySelector(".b-fans__item__header > .g-avatar"), u, img);
-    // The generator's one list link: the open list's (none on Fans).
     for (const [i, a] of [...el.querySelectorAll(".b-list-titles a")].entries()) {
       if (i > 0 || !listName || !list) a.remove();
       else {
@@ -176,20 +148,14 @@ export function applyListUsers(doc: Document, page: string, list: string | null,
       }
     }
     for (const a of el.querySelectorAll("a[href='/of-manager/messages/chat']")) a.setAttribute("href", `/of-manager/messages/chat?chat=${encodeURIComponent(String(u.id))}`);
-    // The card's avatar, name and handle (OF's profile links): the user's OF profile.
     linkUser(el.querySelectorAll(".b-fans__item__header > a.g-avatar, a.b-username, a.g-user-realname__wrapper"), userHref(u));
-    for (const x of el.querySelectorAll(".b-fans__item__list, .b-btn-collapse")) x.remove(); // the example's subscription details
+    for (const x of el.querySelectorAll(".b-fans__item__list, .b-btn-collapse")) x.remove();
     return el;
   });
   fill(doc, cards, clones, wrappers);
   if (people.length) hideEmpty(doc, USERS_COLUMN);
 }
 
-/**
- * A list's Users and Posts tabs keep the open `list` (as its row's link); the Posts tab's type chips (OF's ?postType=)
- * each link their own type of it, `type`'s chip (null: All) marked current as OF marks it. The header's Send message opens
- * New message with the list ticked (`?to=`, OF's sendlist-<list>; useOfChat ticks it).
- */
 export function applyListTabs(doc: Document, list: string, type: string | null) {
   const q = `?list=${encodeURIComponent(list)}`;
   for (const a of doc.querySelectorAll(`a[aria-label="Send message"][href^="${MASS_SEND}"]`)) setAttr(doc, a, "href", `${MASS_SEND}?to=${encodeURIComponent(list)}`);
@@ -205,7 +171,6 @@ export function applyListTabs(doc: Document, list: string, type: string | null) 
   }
 }
 
-/** Fans' tabs: on ?type=expired (`type`) Expired is current, not Active, as OF marks its tab. */
 export function applyFansTabs(doc: Document, type: string | null) {
   if (type !== FANS_EXPIRED) return;
   const tab = (sel: string, text: string) => [...doc.querySelectorAll(sel)].find((e) => e.textContent?.trim() === text);
@@ -216,7 +181,6 @@ export function applyFansTabs(doc: Document, type: string | null) {
   }
 }
 
-/** Post Labels: the Creator's labels in copies of the generator's hidden label row (name, posts count), `open` marked and titled. */
 export function applyLabels(doc: Document, labels: PostLabel[], open: string | null) {
   const rows = [...doc.querySelectorAll<HTMLElement>(`${LABELS_COLUMN} .b-rows-lists__item`)];
   if (!rows.length) return;
@@ -231,7 +195,7 @@ export function applyLabels(doc: Document, labels: PostLabel[], open: string | n
     if (l === current) markOpen(a);
     el.querySelector(".b-rows-lists__item__name")!.textContent = l.name ?? "";
     const count = el.querySelector(".b-content-inside-thumbs__item");
-    if (count) count.textContent = `${l.postsCount ?? 0} posts`; // OF's own wording, "1 posts" too
+    if (count) count.textContent = `${l.postsCount ?? 0} posts`;
     return el;
   });
   fill(doc, rows, clones);
@@ -239,27 +203,17 @@ export function applyLabels(doc: Document, labels: PostLabel[], open: string | n
   if (current?.name) setHeading(doc, current.name);
 }
 
-// New message's list rows, here and not in ofMirrorMass: ofMirrorChats reads applyListRows and sits in ofMirrorData's
-// import cycle, while ofMirrorMass reads ofMirrorChatShared's bindChatTags while it loads (MASS_DIALOGS). Inside that cycle,
-// a page entering at ofMirrorChatShared dies on the read: "Cannot access 'bindChatTags' before initialization".
 export const MASS_ROW = ".b-chats__scroller label.b-rows-lists__item";
 export const usersLabel = (n: number) => `${n} ${n === 1 ? "user" : "users"}`;
-/** OF's checkbox row: ticked, it drops `m-not-active` (its CSS shows the tick only then; `:checked` alone shows nothing). */
 export const markRow = (row: Element, on: boolean) => row.classList.toggle("m-not-active", !on);
 
-/**
- * New message's Send to rows for `lists`: the example (the generator's hidden one) cloned per list (`data-oi-list="<id>"`, its
- * name and user count, or its `sub` line, no avatars, no link, checked when picked). As OF's, a ticked row drops
- * `m-not-active` (OF's tick shows only then) and a `disabled` one (picked on the other tab) can't be ticked.
- * ofMirrorDom's restore (the unbind) undoes it. `where`: another checkbox list's rows and "Nothing found" (the chat
- * list's folders dialog), default New message's.
- */
+// Lives here, not in ofMirrorMass: ofMirrorChats sits in ofMirrorData's import cycle, and a page entering at ofMirrorChatShared dies with "Cannot access 'bindChatTags' before initialization".
 export function applyListRows(doc: Document, lists: Array<UserList & { sub?: string }>, picked: string[], where: { rows: string; empty: string } = { rows: MASS_ROW, empty: ".b-chats__scroller [data-oi-empty]" }, disabled: string[] = []): void {
   const examples = [...doc.querySelectorAll<HTMLElement>(`${where.rows}:not([data-oi-list])`)];
   if (!examples.length) return;
   const rows = lists.map((l) => {
     const row = make(examples[0]);
-    row.style.removeProperty("display"); // the generator's hidden template
+    row.style.removeProperty("display");
     row.setAttribute("data-oi-list", String(l.id));
     row.setAttribute("data-oi-wired", "");
     const box = row.querySelector<HTMLInputElement>("input[type='checkbox']");
@@ -269,7 +223,6 @@ export function applyListRows(doc: Document, lists: Array<UserList & { sub?: str
       markRow(row, box.checked);
       box.addEventListener("change", () => markRow(row, box.checked));
     }
-    // A link inside the label would open the list instead of ticking the row.
     const a = row.querySelector("a.b-rows-lists__item__text");
     if (a) {
       const div = doc.createElement("div");
@@ -284,14 +237,10 @@ export function applyListRows(doc: Document, lists: Array<UserList & { sub?: str
     if (count) count.textContent = ` ${l.sub ?? usersLabel(l.usersCount ?? 0)} `;
     return row;
   });
-  // OF's "Nothing found" (the generator's) only for no list.
   const empty = lists.length ? [...doc.querySelectorAll<HTMLElement>(where.empty)] : [];
   fill(doc, [...examples, ...empty], rows);
 }
 
-// The lists sort menu's state and order (ticket 16's folders dialog, ticket 19's Pin to home): client-side, the dialog's
-// ?fsort=&forder=.
-/** OF's lists sort fields (their captured radios' values and words). */
 export type FolderSortKey = "recent" | "name" | "people" | "custom";
 export type FolderOrder = "asc" | "desc";
 export const FOLDER_SORTS: (MenuOption & { value: FolderSortKey })[] = [
@@ -308,7 +257,6 @@ const DEFAULT_SORT: FolderSort = { sort: "custom", order: "desc" };
 const isFolderSort = (v: string | null): v is FolderSortKey => FOLDER_SORTS.some((o) => o.value === v);
 const isFolderOrder = (v: string | null): v is FolderOrder => v === "asc" || v === "desc";
 
-/** A lists dialog's sort in `params` (unknown values: Custom, Descending). */
 export function folderSortOf(params: { get(key: string): string | null }): FolderSort {
   const sort = params.get("fsort");
   const order = params.get("forder");
@@ -318,25 +266,21 @@ export function folderSortOf(params: { get(key: string): string | null }): Folde
   };
 }
 
-/** `sorted` with the Sort menu's pick (group "sort" or "order"); a value outside the menu changes nothing. */
 export function pickFolderSort(sorted: FolderSort, group: string, value: string): FolderSort {
   if (group === "sort" && isFolderSort(value)) return { ...sorted, sort: value };
   if (group === "order" && isFolderOrder(value)) return { ...sorted, order: value };
   return sorted;
 }
 
-/** OF's lists Sort menu at `anchor`, `sorted` checked; `go`: the sort with the pick. */
 export function showListSort(doc: Document, anchor: HTMLElement, sorted: FolderSort, go: (s: FolderSort) => void): void {
   showMenu(doc, anchor, [{ name: "sort", value: sorted.sort, options: FOLDER_SORTS }, ORDER_GROUP(sorted.order)], (g, v) => go(pickFolderSort(sorted, g, v)));
 }
 
-/** `href` with the dialog's sort as `?fsort=&forder=` (or `&`); the default (Custom, Descending) adds nothing. */
 export function withListSort(href: string, sorted: FolderSort): string {
   if (sorted.sort === DEFAULT_SORT.sort && sorted.order === DEFAULT_SORT.order) return href;
   return `${href}${href.includes("?") ? "&" : "?"}fsort=${sorted.sort}&forder=${sorted.order}`;
 }
 
-/** `folders` in `sort` / `order` (a new array): Recent by id, Name, People by users, Custom as given. */
 export function sortFolders<T extends { id: number | string; name?: string; usersCount?: number }>(folders: readonly T[], sort: FolderSortKey, order: FolderOrder): T[] {
   const dir = order === "asc" ? 1 : -1;
   const key = (f: T) => (sort === "recent" ? Number(f.id) || 0 : sort === "people" ? (f.usersCount ?? 0) : 0);

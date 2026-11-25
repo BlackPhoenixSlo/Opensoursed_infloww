@@ -1,6 +1,3 @@
-/** Smart Messages' status pills (Infloww #98-#102) in the theme palette, for the My Automations lists: Auto Post and
- *  Auto Mass rows (`ruleStatus`), their previous runs (`runStatus`); the form pages can adopt it. */
-
 import type { AutomationRule } from "@/hooks/useAutomations";
 import { cn } from "@/lib/utils";
 
@@ -24,7 +21,6 @@ export function StatusPill({ status, className }: { status: PillStatus; classNam
   );
 }
 
-/** A saved rule's pill: Paused while switched off; else its last run's Running / Failed, or Active. */
 export function ruleStatus(r: Pick<AutomationRule, "is_enabled" | "last_run">): PillStatus {
   if (!r.is_enabled) return { label: "Paused", tone: "warn", hint: "Switched off: nothing runs until it is on." };
   const st = r.last_run?.status;
@@ -33,7 +29,6 @@ export function ruleStatus(r: Pick<AutomationRule, "is_enabled" | "last_run">): 
   return { label: "Active", tone: "ok", hint: "Runs on its schedule." };
 }
 
-/** One previous run's pill: Done / Failed / Running, any other status (skipped…) as itself, capitalised. */
 export function runStatus(status: string): PillStatus {
   if (status === "ok") return { label: "Done", tone: "ok" };
   if (status === "error") return { label: "Failed", tone: "err" };

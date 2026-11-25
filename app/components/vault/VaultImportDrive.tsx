@@ -1,13 +1,5 @@
 "use client";
 
-/**
- * The vault import's Google Drive section: an Inflowwww extra (Infloww's upload
- * area has no link import, growth-vault-pro#106), closed, after the card's three
- * steps, and only on a server with the Google Drive API key: without one it
- * renders nothing (Settings → AI keys holds the key and says what it is for).
- * The links themselves belong to the card, which sends them with Start import;
- * this owns the read-only preview of what they would import.
- */
 
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
@@ -18,7 +10,6 @@ import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { relay } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
-/** One file a Drive link would import, from the relay's read-only listing. */
 interface DriveListed {
   name: string;
   size: number | null;
@@ -27,14 +18,12 @@ interface DriveListed {
   reason: string | null;
 }
 
-/** What the pasted links listed, and the links they were listed for. */
 interface Listing {
   links: string;
   files: DriveListed[];
   maxFiles: number | null;
 }
 
-/** "N to import", capped at the run's file limit, which the import enforces. */
 function importCount(importable: number, maxFiles: number | null): string {
   if (maxFiles != null && importable > maxFiles) return `${importable} to import (first ${maxFiles} this run)`;
   return `${importable} to import`;
@@ -46,7 +35,6 @@ export default function VaultImportDrive({
   onLinks,
   disabled,
 }: {
-  /** The server has the Google Drive API key; false (also while the status read is pending) draws nothing. */
   configured: boolean;
   links: string;
   onLinks: (v: string) => void;
@@ -56,11 +44,8 @@ export default function VaultImportDrive({
   const ctx = { accountId };
   const trimmed = links.trim();
   const [listing, setListing] = useState<Listing | null>(null);
-  // A preview of OTHER links (edited since, or sent and cleared) is no preview.
   const listed = listing && listing.links === trimmed ? listing : null;
 
-  // What the pasted links would import, and the hashtags each file gets from
-  // its folder. Read-only on the relay — nothing moves.
   const listDrive = useMutation({
     mutationFn: async (raw: string): Promise<Listing> => {
       const files: DriveListed[] = [];
@@ -88,8 +73,6 @@ export default function VaultImportDrive({
   if (!configured) return null;
   const importable = listed?.files.filter((f) => f.importable).length ?? 0;
   const skipped = (listed?.files.length ?? 0) - importable;
-  // `<details>` keeps the box mounted, so typed links survive a collapse. Drive
-  // files skip step 3: the relay tags each with the folder it sits in.
   return (
     <details>
 

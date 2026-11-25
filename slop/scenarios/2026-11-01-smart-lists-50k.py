@@ -1,68 +1,3 @@
-"""Smart Lists at 50k fans per big Creator: preview / save / resolve agree with an independent SQL oracle,
-a fan on two Creators is judged on each Creator's own facts, the active-list cap holds under an activation
-storm (and a freed slot is reusable), and a name is taken exactly once under a create race.
-
-World: `multi_agency_big_models` (Agency 0, the owner, holds 3 big Creators: big_fans_per_creator fans each,
-2k / 10k / 50k at small / medium / huge, plus 2 normal ones), its threads, the ledger (seed/earnings.py) and
-seed/smart_list_facts.py (last message columns from the threads; 4 bound fans per Creator on and just past
-LO / HI; `whale_fans` tagged and `whale_fans` expired fans per Creator; 4 shared fans per Creator pair).
-
-Flow, all as the owner (one signed-in session; each phase opens its own connection pool on it with
-ctx.owner.share), real routes only:
-1. Oracle: one unit per (owner Creator x ROWS row): 5 x 18 units, run by min(--users, units) concurrent
-   owner tasks (90 at --users=200). ROWS: one row per operator (> >= < <= == !=, each threshold on LO or HI
-   so a bound fan sits exactly on it), money `between [LO, HI]`, v1 lifetime `between` (fans on 999 /
-   12000), date within_last / more_than / between, tag has / not_has, status == / != (expired fans),
-   AND, OR, an empty result. A unit: POST /admin/smart-lists (a blank draft), PATCH it to the row's name
-   and rules, then POST /admin/smart-lists/preview and GET /{id}/resolve, then GET /admin/smart-lists. The
-   harness SQL oracle (`_oracle`, raw fans + transactions, that Creator only) runs at the preview's start
-   and after the resolve; if the two answers differ (a fan's day count crossed a threshold mid-unit), the
-   preview + resolve is retried, up to 3 times.
-   Checks: preview.count == len(resolve) == oracle with the same fan set, every row matches some fan on
-   some Creator except `empty`, and at least one (Creator pair, row) where the oracle answers a shared fan
-   differently on the pair's two Creators (ORACLE). The oracle is Creator-scoped and shared fans exist, so
-   its same-set equality also covers "no other Creator's fan or facts in any resolve". Every list reads
-   back from GET /admin/smart-lists with its PATCHed name and rules (READBACK).
-2. Solo: one owner, quiet relay, `solo_n` previews of the big Creators, each with a list GET.
-3. Activation storm on Creator 3: the cap read from GET /admin/system/switches (SMART_LIST_MAX_ACTIVE,
-   default 10) by Agency 4 as master; cap + `storm_extra` fresh lists activated at once; then one active
-   list deactivated and one 409'd list activated. CAP: exactly cap 2xx, the rest 409, the DB's active
-   count (polled every 5 ms through the storm, and after) never above the cap, GET /admin/smart-lists'
-   `max_active` == cap; deactivate and the re-activate 200 and the active count is cap again.
-4. Create race on Creator 4: max(2, --users) concurrent POST /admin/smart-lists of one name. RACE: exactly
-   one 2xx, the rest 409, one row.
-5. UI (/growth/smart-lists): Presets > "Mid spenders", Preview count (screenshot `preview-trigger`),
-   Create smart list, the row searched for (`created-settled`); side effect: the smart_lists row holds the
-   preset's rules and the count the UI showed equals the oracle (UI).
-Budgets: POST /admin/smart-lists/preview p95 <= 2 s, GET /admin/smart-lists p95 <= 300 ms, any non-2xx a
-miss: on the solo calls (live; p95_vs_last_green for both) and on the oracle phase's (KNOWN_RED at a
-scale in KNOWN_RED_MIN_OWNERS with at least that many concurrent owners, else live; p95_owners in metrics).
-Load: owner task i starts at i * ramp_s / owners, takes units i, i + owners, ... and pauses think_s
-(uniform 0.5x..1.5x, from the seed) before each step. The owners' calls pass timeout=300 s (the app's
-relay.post sets none, a browser waits; lib/client.py's 30 s would turn a slow preview into a transport error).
-
-Faults (lib/smart_lists_faults.py): `smart-list-between-exclusive-bound` (FAULT; targets ORACLE),
-`smart-list-cap-read-then-write` (targets CAP), `smart-list-ledger-org-leak` (targets ORACLE),
-`smart-list-projection-drops-column` (targets ORACLE).
-KNOWN_RED {check: finding}: the two oracle-phase budgets, measured red at the scales and owner counts in
-KNOWN_RED_MIN_OWNERS ({scale: owners}) after the loader's column projection. There they are ctx.skip'ped
-(numbers kept in p95_owners) while red and FAIL as `finding_closed` once green; anywhere else they are live
-checks (green at small / 20; medium / 90 green 5 of 6 runs, red once in a host pile-up,
-20261103T091733Z-2026-11-01-smart-lists-50k-607a: preview p95 20 s, list 2.0 s, host load 15; huge / 5 green
-in its one run, 20261103T085211Z-2026-11-01-smart-lists-50k-3e3d).
-
-Bypasses (declared):
-- Bulk seeding is SQL (README); seed/smart_list_facts.py UPDATEs fans' last message columns, tags and
-  subscription status, INSERTs ledger tips and the shared fans' second fans rows (identity + subscription,
-  own lifetime): values the transcoder / fan panel / roster crawl / payouts ingest / a second subscription
-  write.
-- Agency 4 is made master by SQL (`users.is_admin = 1`, as an operator does; no API) only to read the cap
-  through GET /admin/system/switches; the owner stays a plain Agency owner.
-- No subscriber_snapshot rows: status / renew / sub dates fall back to the fan row (the product's own
-  fallback for a fan the roster crawl never saw).
-- The sync worker never runs (no supervisor in a slop stack): activate only queues its scheduled_jobs row,
-  so no list is ever `syncing` and OnlyFans is never reached (automation_relay's fake lists stay unused).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -82,12 +17,13 @@ PREVIEW_P95_MS = 2000
 LIST_P95_MS = 300
 P95_VS_LAST = (2.0, 100)
 P95_VS_LAST_MIN_N = 20
-OWNER_CREATORS = 5            # the profile's Agency 0 (UI_MODELS)
+OWNER_CREATORS = 5
 STORM_CREATOR, RACE_CREATOR = 3, 4
 RETRIES = 3
-THINK_S = 5.0                 # an owner's mean pause before each step (uniform 0.5x..1.5x, from the seed)
-RAMP_S = 30.0                 # owner i starts at i * RAMP_S / owners
-CLIENT_TIMEOUT_S = 300.0      # per oracle-phase call (lib/client.py's 30 s default would cut a slow preview)
+THINK_S = 5.0
+RAMP_S = 30.0
+# lib/client.py's 30 s default would turn a slow preview into a transport error
+CLIENT_TIMEOUT_S = 300.0
 
 CK_ORACLE, CK_CAP = F.ORACLE, F.CAP
 CK_READBACK = "every saved list reads back from GET /admin/smart-lists with its PATCHed name and rules"
@@ -100,9 +36,6 @@ CK_PREVIEW_P95 = f"p95 {PREVIEW} <= {PREVIEW_P95_MS} ms (one owner, quiet relay)
 CK_LIST_P95 = f"p95 {LIST} <= {LIST_P95_MS} ms (one owner, quiet relay)"
 CK_PREVIEW_LOAD = f"p95 {PREVIEW} <= {PREVIEW_P95_MS} ms under concurrent owners (oracle phase)"
 CK_LIST_LOAD = f"p95 {LIST} <= {LIST_P95_MS} ms under concurrent owners (oracle phase)"
-# {scale: owners}: measured red there after the projection; huge / 5 green in one run (preview p95 1.17 s,
-# list 219 ms, 20261103T085211Z-2026-11-01-smart-lists-50k-3e3d), 6..19 unmeasured; medium / 90 live: 5 of 6
-# runs green, 1 red under host load 15 (20261103T091733Z-2026-11-01-smart-lists-50k-607a).
 KNOWN_RED_MIN_OWNERS = {"huge": 20}
 _COLLAPSE = ("open finding, perf paused (owner 10-29), projection done: 50k fans per Creator, preview / resolve "
              "still collapse under concurrent owners (every fan normalised + resolved in Python per call): huge "
@@ -119,7 +52,7 @@ TIPS = "('tip','tip_post','tip_stream')"
 TOT, PPVS, TIPSS = "COALESCE(t.tot,0)", "COALESCE(t.ppv,0)", "COALESCE(t.tips,0)"
 LIFE = "COALESCE(f.lifetime_spend_cents,0)"
 SNT = "(julianday(:now)-julianday(f.last_message_sent_at))"
-RCV = "max(0, julianday(:now)-julianday(f.last_message_received_at))"   # NULL when never received
+RCV = "max(0, julianday(:now)-julianday(f.last_message_received_at))"
 SUB = "(julianday(:now)-julianday(f.subscribed_at))"
 TAG = f"(COALESCE(f.tags,'') LIKE '%\"{smart_list_facts.TAG}\"%')"
 STATUS = "LOWER(COALESCE(f.subscription_status,''))"
@@ -130,8 +63,6 @@ def _r(field, op, value) -> dict:
 
 
 def _row(rules: list[dict], pred: str, *, match: str = "all", expect: str = "some") -> dict:
-    """`pred`: the oracle's predicate over f = fans, t = that Creator's tracked ledger per fan. `expect`:
-    "some" (the row matches a fan on at least one Creator) or "none" (on no Creator)."""
     return {"rules": {"match": match, "rules": rules}, "pred": pred, "expect": expect}
 
 
@@ -188,10 +119,8 @@ def _oracle(db, aid: str, pred: str, now: str) -> set[int]:
 
 
 async def _unit(http, db, aid: str, key: str, shared: set[int], think) -> dict:
-    """One (Creator, ROWS row): save (a blank draft, PATCHed to the row), then preview + resolve (retried
-    while the oracle moves under it), then list; `think` (the owner's pause) before each step."""
     row, name, out = ROWS[key], f"slop {key} {aid}", {"aid": aid, "row": key, "tries": 0}
-    to = {"timeout": CLIENT_TIMEOUT_S}   # the app's relay.post has none: a browser waits
+    to = {"timeout": CLIENT_TIMEOUT_S}
     await think()
     made = await http.post("/admin/smart-lists", json={"account_id": aid, "name": f"{name} draft"}, **to)
     if made.status_code != 200:
@@ -225,7 +154,6 @@ async def _unit(http, db, aid: str, key: str, shared: set[int], think) -> dict:
 
 
 def _same_rules(stored: dict, sent: dict) -> bool:
-    """Stored rules are the validated form: numbers as floats, scope / timeframe filled in."""
     if stored.get("match") != sent.get("match") or len(stored.get("rules", [])) != len(sent["rules"]):
         return False
     for a, b in zip(stored["rules"], sent["rules"]):
@@ -244,7 +172,6 @@ def _same_rules(stored: dict, sent: dict) -> bool:
 
 
 async def _oracle_phase(ctx, w, creators: list[dict]) -> int:
-    """Returns the number of concurrent owners."""
     facts = w.data["smart_list_facts"]
     pairs: dict[tuple[str, str], set[int]] = {}
     for s in facts["shared"]:
@@ -261,7 +188,6 @@ async def _oracle_phase(ctx, w, creators: list[dict]) -> int:
     results: list[dict] = []
 
     async def owner(i: int):
-        """Owner task i: its share of the units (round-robin), human-paced (seeded think times)."""
         rng = w.rng(f"scenario:smart-lists:owner{i}")
 
         async def think():
@@ -271,7 +197,7 @@ async def _oracle_phase(ctx, w, creators: list[dict]) -> int:
         for aid, key in units[i::n]:
             try:
                 results.append(await _unit(http, w.db, aid, key, shared[aid], think))
-            except Exception as e:   # transport error: the stock check counts it too
+            except Exception as e:
                 results.append({"aid": aid, "row": key, "error": repr(e)[:200]})
 
     await asyncio.gather(*(owner(i) for i in range(n)))
@@ -283,8 +209,6 @@ async def _oracle_phase(ctx, w, creators: list[dict]) -> int:
     for r in results:
         by_row.setdefault(r["row"], {})[r["aid"]] = r.get("oracle")
     unexpected = [k for k, row in ROWS.items() if (row["expect"] == "some") != any(by_row.get(k, {}).values())]
-    # (Creator pair, row) where the oracle answers a shared fan differently on the two Creators: the
-    # same-set check above is only non-vacuous for "each Creator's own facts" if there is at least one
     by_unit = {(r["aid"], r["row"]): r for r in results if not r.get("error")}
     split = [(a, b, key) for (a, b), fids in pairs.items() for key in ROWS
              if (ua := by_unit.get((a, key))) and (ub := by_unit.get((b, key)))
@@ -336,7 +260,6 @@ async def _storm(ctx, w, aid: str, master) -> None:
     await poller
     await http.aclose()
     final = _q(w.db, ACTIVE_SQL, (aid,))[0][0]
-    # a freed slot is reusable: deactivate one winner, then activate one 409'd list
     on = next((i for i, c in zip(ids, codes) if c == 200), None)
     off = next((i for i, c in zip(ids, codes) if c == 409), None)
     deact = (await ctx.owner.post(f"/admin/smart-lists/{on}/deactivate")).status_code if on else None
@@ -416,8 +339,6 @@ async def _ui(ctx, w) -> None:
 
 
 async def _solo(ctx, creators: list[dict]) -> None:
-    """One owner on a quiet relay: `solo_n` previews (the big Creators in turn, ROWS in turn), each followed
-    by GET /admin/smart-lists, back to back. The live budgets read these (a non-2xx is a miss there)."""
     big = [c for c in creators if c.get("big")]
     rows = list(ROWS.values())
     for i in range(ctx.param("solo_n", 20)):
@@ -435,8 +356,6 @@ def _within(s: dict, budget: float) -> bool:
 
 
 def _budgets(ctx, owners: int) -> None:
-    """Solo: live budgets and the p95_vs_last_green keys. Owners (the oracle phase): the same budgets;
-    KNOWN_RED (skipped, numbers in p95_owners) at a KNOWN_RED_MIN_OWNERS scale with at least its owners."""
     solo, p95, n = ctx.rec.summary("solo"), {}, {}
     for route, budget, name in ((PREVIEW, PREVIEW_P95_MS, CK_PREVIEW_P95), (LIST, LIST_P95_MS, CK_LIST_P95)):
         s = solo.get(route)
@@ -456,7 +375,7 @@ def _budgets(ctx, owners: int) -> None:
             ctx.skip(name, "no samples")
         elif name not in KNOWN_RED or owners < KNOWN_RED_MIN_OWNERS.get(ctx.scale, owners + 1):
             ctx.check(name, _within(s, budget), budget=True, owners=owners, **_stats(s))
-        elif _within(s, budget):   # parked but green: the finding is closed, so its entry must go
+        elif _within(s, budget):
             ctx.check(name, False, finding_closed=f"measured green: drop {ctx.scale!r} from KNOWN_RED_MIN_OWNERS "
                       f"(and the KNOWN_RED entry once no scale is left) ({KNOWN_RED[name]})",
                       owners=owners, **_stats(s))

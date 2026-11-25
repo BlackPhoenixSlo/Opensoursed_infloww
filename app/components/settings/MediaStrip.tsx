@@ -5,8 +5,6 @@ import { proxyImage } from "@/lib/mediaUrl";
 
 type StripMedia = { id: number; type?: string; files?: SavedReply["media"][number]["files"] };
 
-/** A saved reply's media as a row of small thumbnails (first 6, then "+N"). `thumbSrc` replaces the OF-url thumb
- *  (`files`, through `proxyImage`) with another source, e.g. the local vault mirror (`mirrorThumbSrc`). */
 export function MediaStrip({
   media, accountId, thumbSrc,
 }: {

@@ -1,15 +1,11 @@
 "use client";
 
-/** ScriptsPage's two modals (growth-scripts #72, #81, #83): the tag / sequence name prompt and the script editor's
- *  frame. */
 
 import { useState, type ReactNode } from "react";
 
 import { extractError } from "@/components/settings/TemplateDraftEditor";
 import { IfButton, IfModal } from "@/components/ui/infloww";
 
-/** A tag or sequence name modal (#81, #83): title, one field, "Enter name", Cancel / OK. `onOk` may throw; its
- *  message shows under the field (e.g. "Sequence name already exists"). */
 export function NameModal({
   title, label, initial = "", maxLength, options, onOk, onClose,
 }: {
@@ -46,7 +42,6 @@ export function NameModal({
   );
   return (
     <IfModal title={title} width={520} closable={!busy} onClose={onClose} footer={footer}>
-      {/* #82: the bundle's body is `padding:24px 16px 4px`; IfModal's body is 24px all round. */}
       <div className="-mx-2 -mb-5">
         <label htmlFor="script-name-modal-input" className="block text-sm mb-1">
           {label}<span aria-hidden className="text-err ml-0.5">*</span>
@@ -74,8 +69,6 @@ export function NameModal({
   );
 }
 
-/** The script editor's frame (#72): antd's 535px modal titled "Add script" or "Edit script" around the saved-reply
- *  editor (story 25), which holds the fields, Cancel and OK. Escape and the × close it, except while saving. */
 export function ScriptEditModal({ title, saving, onClose, children }: {
   title: string;
   saving: boolean;

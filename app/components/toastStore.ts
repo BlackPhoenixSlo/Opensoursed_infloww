@@ -1,16 +1,3 @@
-/**
- * The toaster's toast stack and arrival handling (`NotificationToaster`,
- * `useNotificationDelta`): the per-account seen-id sets every SSE lane claims
- * an arrival in, the toast stack, the username → fan-id lookups, the pure
- * parsers that turn each lane's payload into one `Arrival` (`toastArrival`,
- * `dmArrival`, `purchaseArrival`, and `pushArrival` for a Web Push the service
- * worker hands a focused page), the pure gate `deliverDecision`, and an
- * arrival's two halves: `mirrorNotification` (history, always) and
- * `pingNotification` (pings, gated). The
- * state is module-level so every mounted listener and a StrictMode
- * double-mount share one copy.
- */
-
 import { useEffect, useState } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 
@@ -33,16 +20,10 @@ import {
   type NotifTypeKey,
 } from "@/lib/notifSettings";
 
-// One entry per accountId. Each set is bounded to the last MAX_SEEN_IDS
-// arrivals so it can't grow unbounded for the life of the tab — older ids
-// can't recur as dupes anyway (OF only re-pushes recent locale variants).
 export const MAX_SEEN_IDS = 500;
+// Bounded to MAX_SEEN_IDS per account; OF only re-pushes recent locale variants, so older ids can't recur.
 const seenIdsByAccount = new Map<string, Set<string>>();
 
-// Atomically claim an arrival id for an account: false = already seen (the
-// caller drops the event), true = now marked seen. THE dedup step every lane
-// (toasts / DM / purchase) runs before delivering anything. The insertion-
-// ordered Set evicts its oldest ids past MAX_SEEN_IDS.
 export function claimUnseen(aid: string, id: string): boolean {
   const seen = seenIdsByAccount.get(aid) ?? new Set<string>();
   if (seen.has(id)) return false;
@@ -58,18 +39,15 @@ export function claimUnseen(aid: string, id: string): boolean {
 
 export interface Toast {
   id: string;
-  /** The Creator the card is about; null for the app's own cards (`lib/notices`). */
   accountId: string | null;
   typeKey: NotifTypeKey | null;
   rawType: string;
-  /** Who the card is from; null for a card from no OF user (the clock's). */
   user: NotificationUser | null;
   text: string;
   createdAt: number;
   bubble: boolean;
   href: string | null;
   expiresAt: number;
-  /** A button on the card (the clock-in reminder's "Clock in"); dismisses the toast too. */
   action?: { label: string; run: () => void };
 }
 
@@ -116,8 +94,6 @@ export function useToastStack(): Toast[] {
   return toasts;
 }
 
-/** A notification's Fan into his name key, keeping a team nickname the chat
- *  list's enrichment stitched there (a notification never carries one). */
 export function seedName(
   qc: QueryClient, accountId: string, id: FanId, u: { name?: string; username?: string; avatar?: string | null },
 ): void {
@@ -130,12 +106,7 @@ export function seedName(
   }));
 }
 
-// Username → user-id cache. SSE-pushed likes carry only the @username;
-// we resolve eagerly so the toast's click target is canonical and the
-// chat popout's header renders instantly.
 const resolvedIdByUsername = new Map<string, FanId>();
-// A miss (no such user, a failed read) is cached for MISS_TTL_MS: the toasts
-// lane asks on every frame, and a blip must not stick for the tab's life.
 export const MISS_TTL_MS = 60_000;
 const missedAt = new Map<string, number>();
 const inflightLookups = new Map<string, Promise<FanId | null>>();
@@ -163,9 +134,7 @@ export async function resolveUsernameId(
         `/api/of/v2/users/${encodeURIComponent(username)}`,
         { accountId },
       );
-      // Keep the id as sent — `Number(...)` + `as number` truncated a Fansly
-      // snowflake and then seeded ["of-user", accountId, id] with it, so the
-      // cache entry was keyed off an id nothing else in the app looks up.
+      // Keep the id as sent: Number() truncated a Fansly snowflake and keyed the cache off an id nothing else looks up.
       const id = u?.id;
       if (!isValidFanId(id)) {
         missedAt.set(key, Date.now());
@@ -185,28 +154,19 @@ export async function resolveUsernameId(
   return p;
 }
 
-/** One arrival, as every SSE lane hands it to `mirrorNotification` / `pingNotification`. */
 export interface Arrival {
   id: string;
   accountId: string;
   typeKey: NotifTypeKey | null;
-  /** OF's own type string, kept verbatim for the history row. */
   rawType: string;
   user: NotificationUser;
-  /** Rendered, for the toast. */
   text: string;
-  /** Stored, for the history row — OF's lanes keep the raw HTML so the
-   *  dropdown can re-render it. Defaults to `text`. */
   historyText?: string;
   replacePairs?: Record<string, string>;
   createdMs: number;
   href: string | null;
 }
 
-/** The pings an arrival earns: the toast card to push (with the badge bump
- *  and, unfocused, the OS ping that go with it), or null for a muted one —
- *  master off, or its type's toast toggled off. A muted arrival still has its
- *  history mirrored; that is `mirrorNotification`'s, not this gate's. */
 export function deliverDecision(settings: NotifSettings, n: Arrival, now = Date.now()): Toast | null {
   if (!settings.enabled || (n.typeKey && !settings.toast[n.typeKey])) return null;
   return {
@@ -223,16 +183,7 @@ export function deliverDecision(settings: NotifSettings, n: Arrival, now = Date.
   };
 }
 
-/** One arrival's history: the bell / rail row. Every SSE lane — OF's
- *  `toasts` feed, inbound DMs, PPV unlocks — differs only in how it parses its
- *  envelope; from here on the policy lives once, in this and `pingNotification`.
- *
- *  The contract that must not drift: history is mirrored ALWAYS. A muted
- *  arrival (master off, or its type toggled off) still reaches the bell
- *  dropdown and the money rail — muting popups must not make those go deaf.
- *  The lanes run it on EVERY frame; the history dedupes by id. A push-notice
- *  never mirrors: its row would be the push's thin copy (no avatar or
- *  username), and the lane's full row then deduped away. */
+// History is mirrored ALWAYS, even for muted arrivals; muting popups must not blind the bell and money rail. A push-notice never mirrors (thin copy would dedupe away the full row).
 export function mirrorNotification(n: Arrival): void {
   appendNotifHistory({
     id: n.id,
@@ -251,9 +202,6 @@ export function mirrorNotification(n: Arrival): void {
   });
 }
 
-/** One arrival's pings: badge, toast, OS ping — GATED by `deliverDecision`.
- *  A muted arrival gets none of them (its history is `mirrorNotification`'s,
- *  regardless). Run once per claimed arrival, and for a push-notice. */
 export function pingNotification(settings: NotifSettings, n: Arrival): void {
   const toast = deliverDecision(settings, n);
   if (!toast) return;
@@ -261,18 +209,11 @@ export function pingNotification(settings: NotifSettings, n: Arrival): void {
   dispatchNotifArrived();
   pushToast(toast);
 
-  // OS ping only while this window is unfocused (a focused window shows the
-  // toast). The desktop app shows it natively and dedupes popouts by id; a
-  // browser needs the web permission already granted (lib/osNotify). With a
-  // live Web Push subscription the relay pushes it and the service worker
-  // shows it (public/sw-push.js), so the page never pings itself.
+  // OS ping only while unfocused; with a live Web Push subscription the relay/service worker pings, so the page never does.
   const focused = typeof document !== "undefined" ? document.hasFocus() : true;
   if (settings.osPing && !focused && !isPushLive()) void osNotify(noticeOf(n));
 }
 
-/** An arrival as its OS notification: the same id (tag), title, body and link
- *  the relay's push and the desktop app's stream build (service/tests/fixtures/
- *  notice_cases.json pins all three). */
 export function noticeOf(n: Arrival): OsNotifyPayload {
   return {
     id: `${n.accountId}:${n.id}`,
@@ -282,29 +223,19 @@ export function noticeOf(n: Arrival): OsNotifyPayload {
   };
 }
 
-/**
- * OF's toast payload's `user` field is the recipient (the model whose
- * post was liked), not the actor (the fan). The actor's avatar lives
- * inside the HTML `text` blob as the first <img src="…"> tag.
- */
 export function extractAvatarFromHtml(raw: string | undefined | null): string | null {
   if (!raw || typeof raw !== "string") return null;
   const m = raw.match(/<img[^>]*\bsrc=["']([^"']+)["']/i);
   return m ? m[1] : null;
 }
 
+// OF's toast `user` is the recipient (the model), not the actor; the actor's avatar is the first <img> in the HTML `text`.
 export function extractUsernameFromHtml(raw: string | undefined | null): string | null {
   if (!raw || typeof raw !== "string") return null;
   const m = raw.match(/href=["']https?:\/\/(?:www\.)?onlyfans\.com\/([A-Za-z0-9._-]+)["']/i);
   return m ? m[1] : null;
 }
 
-/** One entry of OF's `toasts` SSE array as an `Arrival`, or null for one with
- *  no id (nothing to dedupe on). The actor (fan) is, field by field:
- *  `data.relatedUser`, then OF's `data.replacements` ({RELATED_USER_*}), then
- *  `fromUser`, then the HTML text (username, avatar), then — name and
- *  username only — the recipient `user`. Only `relatedUser` / the
- *  replacements give an id; with neither, `fromUser`'s. */
 export function toastArrival(aid: string, raw: unknown, now = Date.now()): Arrival | null {
   if (!raw || typeof raw !== "object") return null;
   const t = raw as Record<string, unknown>;
@@ -381,11 +312,6 @@ export function toastArrival(aid: string, raw: unknown, now = Date.now()): Arriv
   };
 }
 
-/** A fan's inbound DM (`api2_chat_message`, resolved) as an `Arrival`. The id
- *  is namespaced "m" so a message can't collide with an OF notification id in
- *  the shared per-account seen set / toast dedup. A tip is a DM with `isTip`,
- *  its dollars in `tipAmount` (else `price`): a "tip" arrival, gated by the tip
- *  toggle. It is not seeded into the tip list: the feed's row has another id. */
 export function dmArrival(target: ChatTarget, now = Date.now()): Arrival {
   const { accountId: aid, fanId, msg, fromId } = target;
   const fromUser = (msg.fromUser ?? {}) as NotificationUser;
@@ -414,7 +340,6 @@ export function dmArrival(target: ChatTarget, now = Date.now()): Arrival {
   };
 }
 
-/** The relay's `purchase_notified` payload, once its id and fan are known good. */
 export interface PurchaseNotified {
   notif_id: string;
   fan_id: FanId;
@@ -423,10 +348,7 @@ export interface PurchaseNotified {
   name?: string | null;
 }
 
-/** A PPV unlock as an `Arrival`. The id is OF's own, unprefixed — it MUST
- *  equal the id the feed will carry for this purchase, or the rail's and the
- *  bell's dedupe fails. The payload names the payer; `cached` (his ["of-user"]
- *  entry) fills in the rest. */
+// The id is OF's own, unprefixed: it MUST equal the feed's id for this purchase or rail/bell dedupe fails.
 export function purchaseArrival(
   aid: string, p: PurchaseNotified, cached: NotificationUser | null | undefined, now = Date.now(),
 ): Arrival {
@@ -446,19 +368,11 @@ export function purchaseArrival(
     text: Number.isFinite(cents) && cents > 0
       ? `Unlocked your PPV — ${fmtPrice(cents)}`
       : "Unlocked your PPV",
-    // OF stamps these with an explicit offset ("…+00:00"); toUtcIso passes
-    // a zoned timestamp through untouched.
     createdMs: p.created_at ? Date.parse(toUtcIso(p.created_at)) || now : now,
-    // Same one-shot refresh flag the money toasts and rail rows carry — the
-    // fan just moved money, so the popout's caches are stale.
     href: notificationHref(aid, user, { refresh: true }),
   };
 }
 
-/** A Web Push the service worker handed this focused page instead of showing
- *  it (public/sw-push.js `push-notice`) as an `Arrival`, or null for one with
- *  no `<account>:<id>` tag. The id is the tag's, which is the lane's own, so a
- *  notice its SSE lane already delivered is claimed and dropped. */
 export function pushArrival(raw: unknown, now = Date.now()): Arrival | null {
   if (!raw || typeof raw !== "object") return null;
   const p = raw as PushPayload;
@@ -480,11 +394,6 @@ export function pushArrival(raw: unknown, now = Date.now()): Arrival | null {
   };
 }
 
-/** `pushArrival`, claimed and pinged like an SSE lane's arrival, for a
- *  Creator in this page's scope (`settingsFor` gives his settings, null out of
- *  scope). No history row: the lane's own frame mirrors the full one. True
- *  when this page took it, pinged now or by its lane already (the service
- *  worker's ack); false and the worker shows it itself. */
 export function deliverPushNotice(
   raw: unknown, settingsFor: (aid: string) => NotifSettings | null,
 ): boolean {

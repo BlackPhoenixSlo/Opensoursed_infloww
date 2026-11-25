@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * useStats — data hooks for /stats dashboard.
- *
- * Endpoints (all under /admin/stats/*, fronted by the Next rewrite to the
- * Python relay):
- *   • /attribution-coverage         — coverage % per account + totals
- *   • /per-employee?by_account=…    — per-op revenue rollup
- *   • /per-model                    — per-account KPI grid
- *   • /attribution-coverage/recent  — most-recent unattributed sends
- *
- * Cache policy is intentionally short (30s stale) — chatters who just
- * made a sale should see it on the next focus, not 5 minutes later.
- * Every request is tagged `X-Priority: background` so dashboard polls
- * never starve user-initiated send_message calls in the relay's
- * upstream concurrency pool.
- */
 
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -27,6 +11,7 @@ import { REFRESH_KEYS } from "@/lib/screenBundle";
 import { type FanId } from "@/lib/fanId";
 
 const CACHE = {
+  // Short so a chatter's fresh sale shows on next focus.
   staleTime: 30_000,
   gcTime: 5 * 60_000,
   refetchOnWindowFocus: true as const,
@@ -44,7 +29,6 @@ function dateParams(from: string | null, to: string | null): string {
   return s ? `?${s}` : "";
 }
 
-// ── /admin/stats/attribution-coverage ────────────────────────────────
 
 export interface CoverageAccountRow {
   account_id: string;
@@ -87,7 +71,6 @@ export function useAttributionCoverage(
   });
 }
 
-// ── /admin/stats/per-employee ────────────────────────────────────────
 
 export interface PerEmployeeRevenueByKind {
   ppv: number;
@@ -119,13 +102,9 @@ export interface EmployeeSalesPoint {
 
 export interface PerEmployeeResp {
   employees: PerEmployeeRow[];
-  /** "Shift schedule needs Time tracking on; credited by Converters." while
-   *  an Agency in scope has Shift schedule falling back, else null. */
   attribution_fallback: string | null;
 }
 
-/** `GET /admin/stats/per-employee?include_series=true`: the rows plus one point per local day of the window, whose
- *  revenue sums to the rows' (Unattributed included). */
 export interface EmployeeSalesResp extends PerEmployeeResp {
   series: EmployeeSalesPoint[];
 }
@@ -136,7 +115,6 @@ export function usePerEmployee(
   from: string | null,
   to: string | null,
   byAccount: boolean = true,
-  /** "Show employees with chatter role only": the Employees holding the built-in Chatter role. */
   chatterOnly: boolean = false,
 ) {
   return useQuery<PerEmployeeResp>({
@@ -167,7 +145,6 @@ export function usePerEmployee(
   });
 }
 
-// ── /admin/stats/chatting-stats ──────────────────────────────────────
 
 export interface ChattingStatsRow {
   employee_id: number;
@@ -191,7 +168,6 @@ export interface ChattingStatsRow {
   character_count: number;
   replies: number;
   avg_reply_seconds: number | null;
-  /** Null for a chatter: clocked time is the Timesheet's, which refuses chatters. */
   clocked_minutes: number | null;
   sales_per_clocked_hour_cents: number | null;
   messages_per_clocked_hour: number | null;
@@ -201,11 +177,9 @@ export interface ChattingStatsRow {
 export interface ChattingStatsResp {
   employees: ChattingStatsRow[];
   attribution_fallback: string | null;
-  /** With `chatter_only`: every Chatter-role Employee, active or not (owner sessions; else null). */
   chatter_ids: number[] | null;
 }
 
-/** Employee reports' Chatting statistics (roadmap W5 5.2); `chatterOnly` keeps the Chatter role's Employees. */
 export function useChattingStats(from: string | null, to: string | null, chatterOnly: boolean = false,
   enabled: boolean = true) {
   return useQuery<ChattingStatsResp>({
@@ -220,7 +194,6 @@ export function useChattingStats(from: string | null, to: string | null, chatter
   });
 }
 
-/** A chart point's figures (`start` only on the summed series). */
 export interface ChattingSeriesFigures {
   sales_cents: number;
   direct_messages_sent: number;
@@ -230,21 +203,16 @@ export interface ChattingSeriesFigures {
 }
 
 export interface ChattingSeriesPoint extends ChattingSeriesFigures {
-  /** The bucket's start, wall time in the report time zone: "YYYY-MM-DDTHH:MM". */
   start: string;
 }
 
 export interface ChattingSeriesResp {
   bucket: Gran;
-  /** Every Employee in scope summed. */
   series: ChattingSeriesPoint[];
-  /** Each Employee's points by id, the same buckets in order. */
   by_employee: Record<string, ChattingSeriesFigures[]>;
   attribution_fallback: string | null;
 }
 
-/** Employee reports' charts (roadmap W5 5.10): chatting-stats per `bucket`, summed and per Employee, one read for
- *  the Overview and Employee performance tabs. */
 export function useChattingSeries(from: string | null, to: string | null, bucket: Gran, chatterOnly: boolean = false) {
   const qs = new URLSearchParams(dateParams(from, to).replace(/^\?/, ""));
   qs.set("bucket", bucket);
@@ -256,11 +224,9 @@ export function useChattingSeries(from: string | null, to: string | null, bucket
   });
 }
 
-// ── /admin/stats/per-model ───────────────────────────────────────────
 
 export interface PerModelRevenueByKind {
   ppv: number;
-  /** Feed-post sales (ppv_post + tip_post) — broken out from ppv/tip. */
   post: number;
   tip: number;
   subscription: number;
@@ -272,36 +238,19 @@ export interface PerModelRow {
   account_id: string;
   display_name: string | null;
   revenue_by_kind: PerModelRevenueByKind;
-  /** Same 5 buckets as revenue_by_kind, but summed over rows whose
-   *  status is not yet 'cleared' (OF still settling). Surfaced inline
-   *  on each chip when > 0. */
+  // Same buckets over rows not yet 'cleared' (OF still settling); pending sales stay in totals.
   pending_by_kind: PerModelRevenueByKind;
   total_revenue_cents: number;
-  /** OnlyFans' own post-fee net over the same rows (`transactions.net_cents`); VAT is not deducted.
-   *  `net_revenue_by_kind` splits it by bucket (optional: an older relay leaves it out). `net_missing_count` counts the rows with no net figure yet, which the net total leaves out. */
   total_net_revenue_cents: number;
   net_revenue_by_kind?: PerModelRevenueByKind;
-  /** The part of each bucket above (gross, and OnlyFans' net) Creator reports' channels leave out: stream sales,
-   *  tips other than plain ones, unknown kinds (reportsMath `bucketOf`'s `other`). Optional: an older relay leaves
-   *  them out. */
   other_by_kind?: Partial<PerModelRevenueByKind>;
   net_other_by_kind?: Partial<PerModelRevenueByKind>;
   net_missing_count: number;
-  /** Sum of amount_cents where status='loading' in the window. Always
-   *  present (zero is a valid value). Renders as a dim sub-line under
-   *  total revenue when > 0. */
   pending_revenue_cents: number;
-  /** ISO-8601 timestamp; max(occurred_at + payout_pending_days) across
-   *  this account's loading rows. Null when there are no pending rows. */
   pending_clears_by: string | null;
-  /** The window's chargebacks and refunds (gross, and OnlyFans' net), dated by their sale. Optional: an older
-   *  relay leaves them out. */
   refunded_cents?: number;
   refunded_net_cents?: number;
   messages_sent: number;
-  /** With `engagement` only (Creator reports): of the Employees' own sends (no mass or automated message), the priced
-   *  ones, the fans they went to (each once per Creator), and the replies' average wait in seconds, null with none
-   *  (service/msg_stats.py). */
   ppvs_sent?: number;
   fans_chatted?: number;
   avg_reply_seconds?: number | null;
@@ -310,14 +259,9 @@ export interface PerModelRow {
   active_subs_count: number | null;
   ltv_cents: number | null;
   arpu_cents: number | null;
-  /** The fans who bought content or tipped in the window (a subscription-only fan is no spender), and their spend
-   *  over them and over their sales; null with none. */
   spenders_count: number;
   avg_spend_per_spender_cents: number | null;
   avg_spend_per_transaction_cents: number | null;
-  /** OnlyFans' Statistics over the window's UTC days through yesterday (service/of_stats_daily.py), null unless every
-   *  day is stored: Reach's profile visitors, the Subscriptions chart's Renews tab, its New tab over those visitors
-   *  (%); the fans with renew on at the last day and their share of the roster then. */
   of_visitors: number | null;
   of_renewals: number | null;
   of_new_sub_conversion_pct: number | null;
@@ -336,8 +280,6 @@ const ZERO_MODEL_KIND: PerModelRevenueByKind = {
   ppv: 0, post: 0, tip: 0, subscription: 0, rebill: 0, custom: 0,
 };
 
-/** `engagement` asks for the engagement columns too (two more message reads), which only Creator reports shows.
- *  `enabled` false holds the read (pending) until its window is known; with no window the Relay reads 30 days. */
 export function usePerModel(
   from: string | null, to: string | null,
   { engagement = false, enabled = true }: { engagement?: boolean; enabled?: boolean } = {},
@@ -355,8 +297,6 @@ export function usePerModel(
       per_model: (data.per_model ?? []).map((m) => ({
         ...m,
         revenue_by_kind: m.revenue_by_kind ?? ZERO_MODEL_KIND,
-        // Older relay builds don't return pending_by_kind — coalesce so
-        // chip rendering doesn't crash on undefined.
         pending_by_kind: m.pending_by_kind ?? ZERO_MODEL_KIND,
       })),
     }),
@@ -364,7 +304,6 @@ export function usePerModel(
   });
 }
 
-// ── /admin/stats/attribution-coverage/recent ─────────────────────────
 
 export interface UnattributedRecentRow {
   account_id: string;
@@ -392,12 +331,6 @@ export function useUnattributedRecent(limit: number = 20, enabled: boolean = fal
   });
 }
 
-// ── /admin/stats/automation-runs ─────────────────────────────────────
-//
-// Read-only audit log the automation executor writes (one row per run:
-// kind, started/completed, status ∈ {running, ok, error}, stats_json TEXT
-// verbatim, error_text). Most-recent first. Surfaced on /stats so each
-// automation's last run / status / error is visible at a glance.
 
 export interface AutomationRunRow {
   id: number;
@@ -406,7 +339,6 @@ export interface AutomationRunRow {
   started_at: string | null;
   completed_at: string | null;
   status: string;
-  /** Runner-serialized JSON TEXT, returned verbatim. May be null. */
   stats_json: string | null;
   error_text: string | null;
 }
@@ -424,13 +356,12 @@ export function useAutomationRuns(limit: number = 200) {
         BG_CTX,
       ),
     staleTime: 30_000,
-    refetchInterval: ssePoll(5 * 60_000, 60_000), // SSE: rule_run_finished invalidates
+    refetchInterval: ssePoll(5 * 60_000, 60_000),
     refetchOnWindowFocus: true,
     placeholderData: keepPreviousData,
   });
 }
 
-// ── /admin/ingest/transactions/health ────────────────────────────────
 
 export type IngestTier = "green" | "yellow" | "red";
 
@@ -445,8 +376,6 @@ export interface IngestAccountRow {
   rows_inserted_total: number;
   rows_patched_total: number;
   fully_backfilled: boolean;
-  /** Ledger full walks failed or cut short since the last completed one. > 0: tier not green; status
-   *  full_walk_failed in place of idle/ok/backfill_partial (paused/error/stalled/in-flight keep their own word). */
   full_walk_failures: number;
   minutes_since_scan: number | null;
   tier: IngestTier;
@@ -507,10 +436,7 @@ export function useIngestResume() {
   });
 }
 
-// ── /admin/ingest/transactions/{id}/attribute + /attribute ──────────────
 
-/** The attribute routes' `employee_id`: an Employee id, "no_one" (credited to nobody, roadmap W6 6.5) or null
- *  (the override cleared, so the Sales Settings rules credit the sale again). */
 export type AttributeTo = number | "no_one" | null;
 
 export function useAttributeTip() {
@@ -529,12 +455,8 @@ export function useAttributeTip() {
   });
 }
 
-/** The most sales one batch reassign takes (the Relay's `sales_amend.MAX_BATCH`). */
 export const MAX_BATCH = 500;
 
-/** The batch reassign (roadmap W6 6.5): many sales by `txIds` (Sales records' selection) or one Clock event's
- *  sales by `clockEventId` (Shift records), every sale or none. A Clock event's split sales (Shift schedule shares
- *  with other Employees) are left as they are and counted in `skipped_split`. */
 export function useBatchAttribute() {
   const qc = useQueryClient();
   return useMutation({
@@ -553,10 +475,6 @@ export function useBatchAttribute() {
   });
 }
 
-// ── /admin/ingest/transactions/sales-needing-attribution ─────────────
-// Broader than orphan-tips: ALSO surfaces message-linked orphans (PPVs whose
-// scraped message has no sender — the duplicate-price cases the auto-rule
-// leaves ambiguous), each with the candidate 1:1 chatters to pick from.
 
 export interface CandidateChatter {
   employee_id: number;
@@ -606,12 +524,6 @@ export function useSalesNeedingAttribution(opts: OrphanTipsOpts) {
   });
 }
 
-// ── Per-account OF profile (avatar + display name) ──────────────────
-//
-// /api/of/v2/users/me proxies to OF; takes X-Account-Id for scope.
-// Cached aggressively because identity rarely changes — one OF call
-// per account per ~30min. Failures swallowed so a broken session on
-// one account doesn't blank out every model card on /stats.
 
 export interface OfProfile {
   id?: number;
@@ -619,40 +531,21 @@ export interface OfProfile {
   name?: string | null;
   avatar?: string | null;
   avatarThumbs?: { c50?: string | null; c144?: string | null } | null;
-  /** OF's own truth: the model's monthly subscription price in cents,
-   *  or null if subscriptions aren't enabled. 0 ≡ free page. */
   subscribePrice?: number | null;
-  /** Convenience flag mirroring OF's profile view. True when subscribe
-   *  is free (subscribePrice == 0). */
   isFree?: boolean | null;
 }
 
 export function useAccountProfile(accountId: string | null | undefined) {
   return useQuery<OfProfile | null>({
-    // Shared with useAccountAvatar. Session expired / network blip / OF
-    // rate-limit / another Creator's body → null; the card falls back to ID.
     ...ofProfileQuery<OfProfile>(accountId),
     staleTime: 30 * 60_000,
     placeholderData: keepPreviousData,
   });
 }
 
-// ── Live OF fan counts (the REAL numbers, not our thin DB roster) ─────
-// OF's /subscriptions/count/all is ground truth for "how many fans" — the
-// same population a mass message targets. Our `fans` table only holds fans
-// we've actually chatted with (~hundreds), so per_model's transaction-
-// derived sub counts read 0 for free pages that actually have thousands of
-// fans. We pull the true count live per card (mirrors useAccountProfile).
-//
-//   subscribers.active = fans currently subscribed TO this model (the total)
-//   subscribers.all    = active + expired (everyone who ever subscribed)
-// `subscriptions.*` is the OTHER direction (creators the model follows) and
-// must NOT be used as a fan count.
 
 export interface OfSubscriberCounts {
-  /** Currently-subscribed fans — the headline "total fans" number. */
   active: number;
-  /** Ever-subscribed (active + expired + …). */
   all: number;
   expired: number;
 }
@@ -667,6 +560,7 @@ export function useOfSubscriberCounts(accountId: string | null | undefined) {
           "/api/of/v2/subscriptions/count/all",
           { accountId: accountId!, priority: "background" }, signal,
         );
+        // subscribers.* = fans of this model; subscriptions.* is the other direction, never a fan count.
         const s = r?.subscribers ?? {};
         return {
           active: Number(s.active ?? 0),
@@ -674,8 +568,6 @@ export function useOfSubscriberCounts(accountId: string | null | undefined) {
           expired: Number(s.expired ?? 0),
         };
       } catch {
-        // Session expired / rate-limit — degrade to null so the card shows
-        // "—" for this account instead of blanking the whole grid.
         return null;
       }
     },
@@ -687,14 +579,6 @@ export function useOfSubscriberCounts(accountId: string | null | undefined) {
   });
 }
 
-// New fans in a window, from OF's Statistics > Subscriptions chart
-// (/subscriptions/subscribers/chart). The response carries TWO series:
-//   • earnings   — new PAID subs (revenue-based; 0 for free pages)  ← NOT this
-//   • subscribes — new subscriber COUNT per day (free-inclusive)    ← this
-// plus a top-level `subscribers` == sum(subscribes[].count) — OF's own
-// "N Subscribers" header. We use `subscribers`, so it's correct for BOTH
-// free and paid pages (one account free = 279, one account paid = 113). `from`/`to` are
-// the dashboard's ISO window (defaults to last 30 days upstream).
 export function useOfNewFans(
   accountId: string | null | undefined,
   from: string | null,
@@ -715,8 +599,8 @@ export function useOfNewFans(
           `/api/of/v2/subscriptions/subscribers/chart?${qs.toString()}`,
           { accountId: accountId!, priority: "background" }, signal,
         );
+        // `subscribers` is OF's own header count (right for free and paid pages); `earnings` is paid-only.
         if (typeof r?.subscribers === "number") return r.subscribers;
-        // Fallback: sum the per-day subscriber-count series.
         const arr = Array.isArray(r?.subscribes) ? r.subscribes : [];
         return arr.reduce((sum, pt) => sum + Number(pt?.count ?? 0), 0);
       } catch {
@@ -731,7 +615,6 @@ export function useOfNewFans(
   });
 }
 
-// ── Per-fan user data (fan profiles + spend, read from our DB) ───
 
 export interface FanDataRow {
   account_id: string;
@@ -755,7 +638,6 @@ export interface FanDataResp {
   columns: string[];
 }
 
-/** Per-fan profile data (User data), read live from our DB, for one Creator. */
 export function usePerFanData(accountId: string, limit = 2000) {
   return useQuery<FanDataResp>({
     queryKey: ["stats", "per-fan-data", accountId, limit] as const,
@@ -769,7 +651,6 @@ export function usePerFanData(accountId: string, limit = 2000) {
   });
 }
 
-// ── /admin/stats/fan-report (Fan reports: Top fans, Traffic, New fans) ─
 
 export type FanReportSort = "total" | "tips" | "ppv" | "subs";
 
@@ -779,17 +660,14 @@ export interface TopFanRow {
   fan_name: string | null;
   username: string | null;
   total_cents: number;
-  /** OF's net, else 80% of gross where OF gave none (net_or_80). */
   net_or_80_cents: number;
   tips_cents: number;
   ppv_cents: number;
   subs_cents: number;
-  /** His current subscription's start on OF's roster; null when never crawled. */
   subscribed_at: string | null;
 }
 export interface TrafficRow {
   account_id: string;
-  /** null = spenders who claimed no stored trial link or promotion. */
   kind: "trial" | "promo" | null;
   of_id: number | null;
   name: string | null;
@@ -808,7 +686,6 @@ export interface FanReportResp {
   growth: FanGrowthRow[];
 }
 
-/** The query string `/admin/stats/fan-report` reads (the CSV link reuses it). */
 export function fanReportQuery(
   from: string | null, to: string | null, accountId: string, sort: FanReportSort,
 ): URLSearchParams {
@@ -820,7 +697,6 @@ export function fanReportQuery(
   return qs;
 }
 
-/** Fan reports over the window, for one Creator. */
 export function useFanReport(
   from: string | null, to: string | null, accountId: string, sort: FanReportSort,
 ) {
@@ -832,10 +708,7 @@ export function useFanReport(
   });
 }
 
-// ── Manual refresh ───────────────────────────────────────────────────
 
-/** Invalidate every stats query — bound to the header refresh button so
- *  a chatter who just made a sale can force the next render to be live. */
 export function useStatsRefresh() {
   const qc = useQueryClient();
   return () => {

@@ -1,8 +1,3 @@
-/**
- * ofMirrorStatsStatements, unit by unit: the chart lookup (statementsSeries), the summary rekeys, and each apply* on the
- * real mirror pages (app/public/of-mirror/pages/statistics/statements/*) with the OF-shaped fixtures
- * (app/lib/__fixtures__/of/statistics-*.json) or inline rows in OF's shapes.
- */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +21,7 @@ const squash = (s: string | null | undefined) => (s ?? "").replace(/\s+/g, " ").
 const texts = (doc: ParentNode, sel: string) => [...doc.querySelectorAll(sel)].filter(visible).map((e) => squash(e.textContent));
 const rows = (doc: ParentNode, sel: string) => [...doc.querySelectorAll(`${sel} tbody > tr`)].filter(visible).map((r) => [...r.querySelectorAll(":scope > td")].map((c) => squash(c.textContent)));
 const TZ = "Europe/Ljubljana";
-const NOW = new Date("2026-10-17T10:00:00Z"); // 12:00 in Ljubljana (UTC +02:00)
+const NOW = new Date("2026-10-17T10:00:00Z");
 const fixture = <T = unknown,>(name: string): T => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/statistics-${name}.json`), "utf8")) as T;
 const START = startOf(fixture("start-date"), TZ);
 const D30 = periodOf("d30", NOW, TZ, START);
@@ -39,13 +34,8 @@ const spec = (doc: Document, sel: string) => {
   return c ? chartSpecOf(c) : undefined;
 };
 const TYPES: EarningsType[] = ["total", "subscribes", "tips", "post", "chat_messages", "stream"];
-/** A payout request in OF's shape (Payout Requests and Referrals' rows). */
 const payout = (r: Record<string, unknown> = {}) => ({ createdAt: "2026-10-10T08:00:00+00:00", invoiceId: "61000000", amount: 50, state: "approved", ...r });
 
-/**
- * jsdom has no IntersectionObserver (and its document.defaultView is globalThis, measured): a stand-in recording what
- * moreAt observes; `fire()` scrolls it into view.
- */
 function stubIO() {
   const seen: { el: Element; fire: (isIntersecting?: boolean) => void; disconnected: boolean }[] = [];
   class IO {
@@ -97,7 +87,7 @@ describe("statementsSeries: the type tab's chart figures (OF's summary), else nu
     expect(statementsSeries({ earningsChart: fixture("earnings-chart-tips") }, "total", "all")).toBeNull();
   });
   it("null: today's Relay (`[]`), no chart, no total (a chart alone), a non-object entry; string numbers are read", () => {
-    expect(statementsSeries({ earningsChart: fixture("earnings-chart") }, "total", "all")).toBeNull(); // `[]`
+    expect(statementsSeries({ earningsChart: fixture("earnings-chart") }, "total", "all")).toBeNull();
     expect(statementsSeries({}, "total", "all")).toBeNull();
     expect(statementsSeries({ earningsChart: chartOf("total", null) }, "total", "all")).toBeNull();
     expect(statementsSeries({ earningsChart: { total: 5 } }, "total", "all")).toBeNull();
@@ -105,7 +95,6 @@ describe("statementsSeries: the type tab's chart figures (OF's summary), else nu
     expect(statementsSeries({ earningsChart: chartOf("total", "7.5", "9", "x") }, "total", "all")).toEqual({ total: 7.5, gross: 9, delta: null });
   });
   it("Messages reads `chat_messages` from the reply (the route's filter asks `messages_*`): a reply keyed `messages` is not read", () => {
-    // Inferred, unverified against OF: chartCategory (the route) maps chat_messages -> messages, chartTab here does not.
     expect(statementsSeries({ earningsChart: chartOf("messages") }, "chat_messages", "all")).toBeNull();
   });
 });
@@ -147,7 +136,7 @@ describe("rekeyFor and rekeyReferrals: the summary's figure keys", () => {
   });
   it("rekeyReferrals: with the Relay's chart, derived:ref.<f> -> referralsChart:<f>; else, or any other key, as is", () => {
     expect(rekeyReferrals(true)(inside, "derived:ref.total")).toBe("referralsChart:total");
-    expect(rekeyReferrals(true)(outside, "derived:ref.delta")).toBe("referralsChart:delta"); // no wrapper check
+    expect(rekeyReferrals(true)(outside, "derived:ref.delta")).toBe("referralsChart:delta");
     expect(rekeyReferrals(false)(inside, "derived:ref.total")).toBe("derived:ref.total");
     for (const k of ["derived:referral.total", "derived:ref", "earnings:earning.total", "referralsChart:total"]) expect(rekeyReferrals(true)(inside, k)).toBe(k);
   });
@@ -158,7 +147,6 @@ describe("applyEarningsAside: the Statements sidebar's Earnings", () => {
   const sideRows = (doc: Document) => [...doc.querySelectorAll<HTMLElement>(SIDEBAR)].filter(visible);
   const sideText = (doc: Document) => sideRows(doc).map((r) => squash(r.textContent));
   const empty = (doc: Document) => doc.querySelector<HTMLElement>("[data-oi-earnings-empty]")!;
-  /** The overview's figures per category (no phase-2 sidebar chart). */
   const overview = (e: Partial<Record<"earnings" | "fans" | "tips" | "messages" | "posts" | "streams", { total: number; delta?: number }>>): StatsData => ({
     earnings: { earning: e.earnings },
     fans: { fans: { earnings: e.fans } },
@@ -183,7 +171,6 @@ describe("applyEarningsAside: the Statements sidebar's Earnings", () => {
     expect(rs[0].querySelector(".b-elements-determinant__label")!.textContent).toBe(" Total ");
     expect(rs[2].querySelector(".b-statistics-level")!.classList.contains("m-level-down")).toBe(true);
     expect(rs[0].querySelector(".b-statistics-level")!.classList.contains("m-level-up")).toBe(true);
-    // The rows follow the template, in order; the template stays hidden.
     const tpl = doc.querySelector<HTMLElement>("[data-oi-template='earning']")!;
     expect(tpl.style.display).toBe("none");
     expect(tpl.nextElementSibling).toBe(rs[0]);
@@ -235,8 +222,8 @@ describe("applyEarningsAside: the Statements sidebar's Earnings", () => {
     const doc = load("statistics/statements/earnings");
     applyEarningsAside(doc, {
       earningsSide: {
-        total: { total: 3, delta: 0, chartAmount: pts(0, 0, 0), chartCount: pts(0, 1, 0) }, // counts only: listed
-        subscribes: { total: 3, chartAmount: pts(0, 3, 0) }, // no chartCount: out
+        total: { total: 3, delta: 0, chartAmount: pts(0, 0, 0), chartCount: pts(0, 1, 0) },
+        subscribes: { total: 3, chartAmount: pts(0, 3, 0) },
         stream: { total: 0, chartAmount: pts(0, 0, 0), chartCount: pts(0, 0, 0) },
       },
     }, D30);
@@ -250,7 +237,6 @@ describe("applyTransactions: Statements › Earnings' rows", () => {
   const tx = (t: { [K in keyof Transaction]?: unknown } & Record<string, unknown>): Transaction => ({ id: `tx${++ids}`, status: "done", ...t }) as Transaction;
   const pg = (p: Partial<PagedBody>): Partial<PagedBody> => ({ list: [], hasMore: false, loading: false, more: null, ...p });
 
-  // The date cell is OF's two adjacent inline-block spans ("Oct 12, 2026," and "11:41 am"): no text space between them.
   it("the period's rows only: date and time in the owner's zone, amount, fee, net, the description as plain text", () => {
     const doc = load("statistics/statements/earnings");
     applyTransactions(doc, [
@@ -263,7 +249,6 @@ describe("applyTransactions: Statements › Earnings' rows", () => {
       ["Oct 12, 2026,11:41 am", "$10.00", "$2.00", "$8.00", "Subscription from Fan One"],
       ["Oct 02, 2026,12:05 am", "$1,234.50", "$0.00", "$1,234.50", ""],
     ]);
-    // The generator's empty row is hidden once rows are in; the templates stay hidden.
     expect(texts(doc, `${TABLE} .empty-message`)).toEqual([]);
     expect([...doc.querySelectorAll<HTMLElement>(`${TABLE} tr[data-oi-template]`)].every((t) => t.style.display === "none")).toBe(true);
   });
@@ -283,7 +268,6 @@ describe("applyTransactions: Statements › Earnings' rows", () => {
     expect(tip(1)!.querySelector("use")!.getAttribute("href")).toBe("#icon-loading");
     expect(tip(2)!.hasAttribute("aria-label")).toBe(false);
     expect(tip(3)).toBeNull();
-    // No money: empty cells, never "$NaN".
     expect(rows(doc, TABLE)[3].slice(1, 4)).toEqual(["", "", ""]);
   });
   it("paged: OF's next page is read when the last row scrolls into view; the observer then disconnects", () => {
@@ -315,10 +299,8 @@ describe("applyTransactions: Statements › Earnings' rows", () => {
     expect(empty(pg({ hasMore: false }))).toEqual([NOT_YET]);
     expect(empty(pg({ hasMore: true, stalled: true }))).toEqual([NOT_YET]);
     expect(empty(undefined)).toEqual([NOT_YET]);
-    // A row from before the period was read: the period is complete, no rows to wait for.
     const old = [tx({ createdAt: "2026-08-01T10:00:00+00:00" })];
     expect(empty(pg({ list: old, hasMore: true }), old)).toEqual([NOT_YET]);
-    // The fixture: OF's own page (hasMore false), rows years older than the last 30 days.
     const real = fixture<{ list: Transaction[]; hasMore: boolean }>("transactions");
     expect(empty(pg({ list: real.list, hasMore: real.hasMore }), real.list)).toEqual([NOT_YET]);
   });
@@ -374,7 +356,6 @@ describe("applyPayouts: Payout Requests and Referrals' rows", () => {
     expect(trs[2].querySelector(".rejected br")).not.toBeNull();
     expect(trs[2].querySelector(".m-alert use")!.getAttribute("href")).toBe("#icon-alert");
     expect(trs[4].querySelector("td:last-child")!.childElementCount).toBe(0);
-    // Download invoice only on approved; OF's link needs a numeric invoice id.
     expect(trs.map((t) => !!t.querySelector(".download-invoice-link"))).toEqual([false, false, false, false, false, true]);
     expect(trs[5].querySelector(".download-invoice-link")!.hasAttribute("data-oi-invoice")).toBe(false);
   });
@@ -392,29 +373,21 @@ describe("applyPayouts: Payout Requests and Referrals' rows", () => {
     expect(visible(doc.querySelector("[data-oi-table='referrals']")!)).toBe(true);
   });
   it("BUG (pinned): Referrals with rows: the page's \"Not available\" text under the table stays visible", () => {
-    // BUG: see PR — applyPayouts hides `.b-statistics-page-content__wrapper .empty-message` with querySelector, i.e. the
-    // FIRST match; on Referrals that is the (already hidden) `[data-oi-referred-empty]`, so the referral payouts' own
-    // `.empty-message[data-oi-ref-earnings]` stays next to the rows (also through applyStats). Correct: once rows are in,
-    // no empty text is visible (this assertion becomes `[]`).
     const doc = load("statistics/statements/referrals/earnings");
     applyPayouts(doc, "referrals", { list: [payout()] }, D30);
     expect(texts(doc, ".empty-message[data-oi-ref-earnings]")).toEqual([NOT_YET]);
   });
   it("none in the period: the table stays hidden; no list or no table: no-op", () => {
     const doc = load("statistics/statements/payout-request");
-    applyPayouts(doc, "payouts", fixture("payout-requests"), D30); // both requests are older
+    applyPayouts(doc, "payouts", fixture("payout-requests"), D30);
     expect(doc.querySelector<HTMLElement>("[data-oi-table='payouts']")!.style.display).toBe("none");
     expect(rows(doc, "[data-oi-table='payouts']")).toEqual([]);
     applyPayouts(doc, "payouts", null, ALL);
     applyPayouts(doc, "payouts", { nope: 1 }, ALL);
-    applyPayouts(doc, "referrals", fixture("payout-requests"), ALL); // no Referrals table on this page
+    applyPayouts(doc, "referrals", fixture("payout-requests"), ALL);
     expect(doc.querySelectorAll("tbody > tr[data-oi-data]").length).toBe(0);
   });
   it("BUG (pinned): none in the period yet more to read: no \"Loading…\" appears (the loading row is looked for under a div)", () => {
-    // BUG: see PR — with no row in the period and more to read, applyPayouts passes the wrapper's `.empty-message` parent
-    // <div> to loadingRow, which only looks for `:scope > tr .empty-message > span`; the payout pages have no such <tr>,
-    // so it is a no-op and the generator's "Not available" text stays while older pages are still being read. Correct:
-    // the empty text reads "Loading…" (as applyTransactions' does) until the period is read.
     const doc = load("statistics/statements/payout-request");
     applyPayouts(doc, "payouts", { list: [payout({ createdAt: "2026-10-30T00:00:00+00:00" })], hasMore: true }, D30);
     expect(texts(doc, ".b-statistics-page-content__wrapper .empty-message")).toEqual([NOT_YET]);
@@ -453,7 +426,6 @@ describe("applyRatio: Chargebacks' \"Chargeback ratio N%\"", () => {
     expect(ratio(doc)).toBe("Chargeback ratio 3.33%");
     for (const body of [undefined, null, {}, { chargebacksRatio: null }, { chargebacksRatio: "n/a" }]) applyRatio(doc, body);
     expect(ratio(doc)).toBe("Chargeback ratio 3.33%");
-    // The tooltip's "under 1%" text is outside the swapped text: untouched.
     expect(doc.querySelector(".m-statistics-alert .g-icon-info")!.getAttribute("aria-label")).toMatch(/under 1%\.$/);
   });
 });
@@ -536,7 +508,7 @@ describe("applyStatements: the phase-2 parts per Statements page", () => {
       ["Oct 03, 2026 12:00 pm", "—", "", ""],
       ["—", "—", "$3.00", "$0.60 $2.40", "A tip"],
     ]);
-    expect(texts(doc, "[data-oi-chartbox='disputes']")).toEqual([]); // no chart read
+    expect(texts(doc, "[data-oi-chartbox='disputes']")).toEqual([]);
   });
   it("Earnings over the last 24 hours: the chart's hours in UTC (OF's), other periods in the owner's zone", () => {
     const pts = [{ date: "2026-10-16T22:00:00+00:00", count: 1 }, { date: "2026-10-16T23:00:00+00:00", count: 2 }];
@@ -546,11 +518,9 @@ describe("applyStatements: the phase-2 parts per Statements page", () => {
       return spec(doc, MAIN)!.labels;
     };
     expect(labels(H24)).toEqual(["22:00", "23:00"]);
-    expect(labels(D30)).toEqual(["0:00", "1:00"]); // Ljubljana, +02:00
+    expect(labels(D30)).toEqual(["0:00", "1:00"]);
   });
   it("Chargebacks over the last 24 hours: the chart's hours in UTC (OF's), other periods in the owner's zone", () => {
-    // 22:00Z / 23:00Z are midnight and 1 am in Ljubljana (+02:00), the next day: the fixture's T00:00Z daily points
-    // can't tell UTC from the owner's zone. The chart draws only with a row shown.
     const pts = [{ date: "2026-10-16T22:00:00+00:00", count: 1 }, { date: "2026-10-16T23:00:00+00:00", count: 2 }];
     const labels = (p: typeof D30) => {
       const doc = load("statistics/statements/disputes");
@@ -558,14 +528,13 @@ describe("applyStatements: the phase-2 parts per Statements page", () => {
       return spec(doc, "[data-oi-chartbox='disputes'] canvas.b-chart__double-line__main")!.labels;
     };
     expect(labels(H24)).toEqual(["22:00", "23:00"]);
-    expect(labels(D30)).toEqual(["0:00", "1:00"]); // Ljubljana, +02:00
+    expect(labels(D30)).toEqual(["0:00", "1:00"]);
   });
   it("Chargebacks with rows (fixture, 24 hours): OF's summary, change and chart, the last row observed", () => {
     const seen = stubIO();
     const more = vi.fn();
     const doc = load("statistics/statements/disputes");
     applyStatements(doc, "statements/disputes", { chargebacksList: { ...fixture<PagedBody>("chargebacks"), hasMore: true, loading: false, more }, chargebacksChart: fixture("chargebacks-chart") }, H24, ctx());
-    // Row dates stay in the owner's zone; a $0 payment's figures are money, not dashes.
     expect(rows(doc, "[data-oi-table='disputes']")).toEqual([
       ["Oct 03, 2026 12:00 pm", "Sep 20, 2026 12:00 pm", "$5.00", "$1.00 $4.00", "Synthetic payment description"],
       ["Oct 01, 2026 10:30 am", "Sep 18, 2026 11:15 pm", "$0.00", "$0.00 $0.00", ""],
@@ -614,7 +583,7 @@ describe("applyStatements: the phase-2 parts per Statements page", () => {
     applyStatements(doc, "statements/referrals/earnings", {}, D30, ctx({ v2: true, accountId: "7" }));
     expect([dl.disabled, dl.hasAttribute("title"), dl.hasAttribute("data-oi-wired")]).toEqual([false, false, true]);
     dl.click();
-    expect(dl.disabled).toBe(true); // while reading
+    expect(dl.disabled).toBe(true);
     expect(relayFile).toHaveBeenCalledWith("/api/of/v2/payouts/download-approved-invoice?invoiceId=61000000&isRefbonus=1", { accountId: "7" });
     await vi.waitFor(() => expect(dl.disabled).toBe(false));
     expect(created).toHaveBeenCalledWith(blob);

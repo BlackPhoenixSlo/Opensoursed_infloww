@@ -1,43 +1,3 @@
-"""Creator earnings read OnlyFans' own Statistics: the Dashboard's earnings card
-and Creator reports (Earnings summary and its growth, Earnings trends, Creator
-performance) show, for each complete UTC day and category, the larger of what
-OF's Statistics › Statements show and what the ledger holds (OF fills the days
-before a Creator was connected; it never erases a sale we recorded), the ledger
-alone for today; Employee sales stays the ledger's (attribution).
-
-The world: an Agency whose Creators were connected `connected_days` ago (the
-owner's case: the ledger has a trickle the month before and most sales since),
-with `history_days` of OF earnings (seed/earnings.py). OF's side is answered at
-its wire boundary (lib/relay.py `_OfflineOF.earnings_chart` and the Statistics
-reads); the OF Statistics job runs through `POST /__slop/of-stats-tick` (its
-hourly timer, bypassed) while `--users` owners read the reports.
-
-Invariants: before the job, a window with days before the connection says they
-are unknown (so growth shows "-", not +1,700%); every pass reads at most the
-job's chunks per Creator, the history is complete (400 days x 5 categories and
-OF's total per Creator) and then no OF read is made again; after it, the totals
-by kind, each trend day and each Creator's net equal max(OF, ledger) per UTC day
-and category (plus today's ledger), the prior window's growth is OF's too, a
-window older than the kept history says its days are unknown, Employee sales is
-unchanged; on the zero day (OF $0, the ledger one $14 PPV message per Creator,
-seed/earnings.py) every Creator keeps its $14; in the report zone
-America/Los_Angeles a PPV message at 23:30 local (06:30 UTC the next day, OF's
-next UTC day) is counted once, on its local day. UI: the Dashboard's This month
-and Creator reports' Last 30 days show those numbers, and Creator reports on
-the zero day show the $14s. Budgets: report route p95s under the crowd, and vs
-the last green run.
-Chargebacks (the tile in Streams' old slot): each Creator has two of today's
-sales reversed (seed/earnings.py `chargebacks=True`: one charged back, one
-refunded); the reversed read (`status=reversed`) sums exactly them, no earnings
-read counts them, and the Dashboard's This month, Creator reports' Last 30 days
-and both at 390px show Chargebacks as minus that net on the err token.
-Break-it-once: of-zero-erases-db-sale (OF's day replaces the ledger's, as
-shipped in f96535be0); --fault=reports-ignore-of-earnings (the ledger alone);
---fault=chargebacks-lose-sign (the tiles drop the minus).
-Screenshots: dashboard-month-{before,after}, creator-reports-30d-{before,after},
-creator-reports-zero-day-after (gross), creator-performance-zero-day-after,
-dashboard-month-390, creator-reports-30d-390.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -55,11 +15,9 @@ from slop.seed import earnings
 PROFILE = "agency_inbox"
 UI = True
 FAULT = "of-zero-erases-db-sale"
-HISTORY_DAYS = 400       # of_stats_daily._EARNINGS_HISTORY_DAYS: the job keeps this many days
-CHUNKS_PER_TICK = 4      # of_stats_daily._EARNINGS_CHUNKS_PER_TICK
-CATEGORIES = 6           # subscribes, tips, messages, post, stream, and OF's total (of_stats_daily.TOTAL)
-# Budgets (ms), per actor call, while the job runs and after: a Dashboard card's read, and Creator
-# performance's table (its engagement reads are the heavy part).
+HISTORY_DAYS = 400  # of_stats_daily._EARNINGS_HISTORY_DAYS
+CHUNKS_PER_TICK = 4  # of_stats_daily._EARNINGS_CHUNKS_PER_TICK
+CATEGORIES = 6
 P95_MS = {"GET /admin/stats/revenue": 750, "GET /admin/stats/per-model": 1500,
           "GET /admin/stats/per-employee": 750}
 P95_VS_LAST = (1.5, 150)
@@ -106,7 +64,7 @@ async def run(ctx) -> None:
             "SELECT account_id, kind, SUM(amount_cents), SUM(net_cents) FROM transactions WHERE occurred_at >= ? "
             "AND status IN ('cleared','pending') GROUP BY account_id, kind", (f"{today.isoformat()} 00:00:00",)):
         ledger_today[aid][kind] = [gross, net]
-    ledger_day = defaultdict(lambda: defaultdict(int))  # (account, UTC day) -> {category: net}
+    ledger_day = defaultdict(lambda: defaultdict(int))
     for aid, day, kind, net in con.execute(
             "SELECT account_id, date(occurred_at), kind, SUM(net_cents) FROM transactions "
             "WHERE status IN ('cleared','pending') GROUP BY 1, 2, 3"):
@@ -115,8 +73,6 @@ async def run(ctx) -> None:
     cases = w.data["earnings_cases"]
 
     def want(f_iso: str, t_iso: str) -> dict:
-        """{account_id: {kind: net}} and {day: net}: each complete UTC day in the window max(OF, ledger) per
-        category (OF's history days; the ledger's alone before it), the ledger's today."""
         lo, hi = date.fromisoformat(f_iso[:10]), date.fromisoformat(t_iso[:10])
         per, days = defaultdict(lambda: defaultdict(int)), defaultdict(int)
         d = lo
@@ -151,7 +107,6 @@ async def run(ctx) -> None:
         rows = next((v for v in body.values() if isinstance(v, list)), [])
         return sum(r.get("revenue_cents") or 0 for r in rows)
 
-    # ── Before: the ledger alone, and the OF job has not run. ─────────────────
     con = w.sql()
     stored_before = con.execute("SELECT COUNT(*) FROM of_earnings_daily").fetchone()[0]
     con.close()
@@ -165,12 +120,11 @@ async def run(ctx) -> None:
     emp_before = await employee_total(*win["month"])
     ui_before = await _ui_pass(ctx, "before", win) if ctx.app else None
 
-    # ── The OF job passes while the owners read the reports. ──────────────────
     stop = asyncio.Event()
-    ctx.rec.stage = "during-job"  # from the first owners' arrival to the job's last pass
+    ctx.rec.stage = "during-job"
     pool = ctx.owner.share(limits=max(10, ctx.users))
     readers = asyncio.create_task(reports.crowd(pool, win, ids, stop, ctx.users, seed=ctx.seed, rounds=0))
-    await asyncio.sleep(reports.THINK_S[1] / 2)  # owners have arrived and are reading
+    await asyncio.sleep(reports.THINK_S[1] / 2)
     passes = []
     for _ in range(HISTORY_DAYS // (CHUNKS_PER_TICK * 30) + 2):
         t0 = time.perf_counter()
@@ -195,7 +149,6 @@ async def run(ctx) -> None:
               last=passes[-1] if passes else None)
 
     require_same_utc_day()
-    # ── After: OF's days, the ledger's today. ─────────────────────────────────
     ctx.rec.stage = "after"
     stop = asyncio.Event()
     readers = asyncio.create_task(reports.crowd(pool, win, ids, stop, ctx.users, seed=ctx.seed + 1, rounds=2))
@@ -219,7 +172,6 @@ async def run(ctx) -> None:
             bad[k] = {"got": by_kind(after[k]), "want": exp}
     ctx.check("Dashboard and Creator reports totals by kind == max(OF, ledger) per complete day + the ledger (today)",
               not bad, wrong=bad, month=by_kind(after["month"]), range=by_kind(after["range"]))
-    # Chargebacks: the reversed read sums the seeded reversals, nothing dropped.
     seeded_cb = cases["chargebacks"]
     cb_api, cb_sql = {}, {}
     con = w.sql()
@@ -253,7 +205,6 @@ async def run(ctx) -> None:
               got=after["old"].get("history_missing_days"), want=len(ids) * 31)
     ctx.check("Employee sales stays the ledger's (unchanged by OF's history)", emp_before == emp_after,
               before=emp_before, after=emp_after)
-    # The zero day: OF charts $0 for every Creator, the ledger one $14 PPV message each.
     z = cases["zero_day"]
     zero = await rev("day", _iso(date.fromisoformat(z)), _iso(date.fromisoformat(z), True), by_kind="true")
     zero_pm = (await ctx.owner.get(f"/admin/stats/per-model?{urlencode({'from': _iso(date.fromisoformat(z)), 'to': _iso(date.fromisoformat(z), True)})}")).json()
@@ -266,13 +217,11 @@ async def run(ctx) -> None:
               day=z, per_creator=kept, want_each=cases["zero_sale_cents"], ppv=ppv)
     (ctx.out / "api-zero-day.json").write_text(json.dumps({"revenue": zero, "per_model": zero_pm}, indent=2))
 
-    # The midnight sale, in the report zone America/Los_Angeles: once, on its local day.
     m = cases["midnight"]
     zone = ZoneInfo(m["tz"])
     ld = date.fromisoformat(m["local_day"])
 
     def utc_iso(d: date, end: bool = False) -> str:
-        """Local midnight of `d` in the zone (with `end`, the last millisecond before it) as a UTC instant."""
         at = datetime.combine(d, datetime.min.time(), tzinfo=zone).astimezone(timezone.utc)
         return (at - timedelta(milliseconds=1 if end else 0)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     r = await ctx.owner.request("PUT", "/admin/settings/preferences",
@@ -341,7 +290,6 @@ async def run(ctx) -> None:
     ctx.check(UI_CHECKS[4], ui_after["zero_total"] is not None and abs(ui_after["zero_total"] - zero_api) < 1,
               ui=ui_after["zero_total"], api=zero_api, want=cases["zero_sale_cents"] * len(ids) / 100,
               day=z, shots=[ui_after["zero_shot"], ui_after["zero_table_shot"]])
-    # Whole dollars, as both surfaces print money: "-$117".
     cb_want = f"-${round(cb_api['month'] / 100):,}"
     cb_got = {"dashboard": ui_after["cb_dashboard"], "reports": ui_after["cb_reports"],
               "dashboard_390": phone["cb_dashboard"], "reports_390": phone["cb_reports"]}
@@ -376,10 +324,8 @@ async def _rendered_range(ctx, page, windows: dict, tag: str) -> list[str]:
     return shown
 
 
-# The Dashboard's Chargebacks figure, once its read answered: (text, on the err token).
 _CB_DASH = ("() => { const f = [...document.querySelectorAll('[data-control=chargebacks] [data-figure]')].pop();"
             " return f && /\\d/.test(f.textContent) ? [f.textContent.trim(), f.classList.contains('text-err')] : null; }")
-# Creator reports' Chargebacks summary tile: (value, on the err token).
 _CB_REPORTS = ("() => { const g = document.querySelector('[role=group][aria-label=\"Chargebacks\"]');"
                " const dd = g && g.querySelector('dd'); return dd && /\\d/.test(dd.textContent)"
                " ? [dd.textContent.trim(), (dd.getAttribute('style') || '').includes('--color-err')] : null; }")
@@ -393,8 +339,6 @@ async def _cb_read(page, js: str) -> list | None:
 
 
 async def _ui_phone(ctx, windows: dict) -> dict:
-    """The Dashboard (This month) and Creator reports (its default Last 30 days, today in it) at 390px: their
-    Chargebacks figures, screenshots with the tile in view."""
     out: dict = {"shots": []}
     async with ui.owner_browser(ctx, viewport=(390, 844)) as page:
         await page.goto(f"{ctx.app}/?window=month", wait_until="domcontentloaded")
@@ -427,8 +371,6 @@ async def _ui_pass(ctx, tag: str, windows: dict, zero_day: str | None = None, ch
         out["dashboard_shot"] = await ui.shot(ctx, page, f"dashboard-month-{tag}")
         out["dashboard_total"] = _dollars(await total.inner_text())
 
-        # PR #383 made 30 days the default. Observe both reads before navigation;
-        # choosing the already-selected preset need not issue a fresh cached request.
         def revenue_window(response, key):
             q = parse_qs(urlsplit(response.url).query)
             return ("/admin/stats/revenue" in response.url and response.status == 200
@@ -454,7 +396,6 @@ async def _ui_pass(ctx, tag: str, windows: dict, zero_day: str | None = None, ch
         out["reports_total"] = _dollars(await dds.nth(0).inner_text())
         out["reports_growth"] = (await dds.nth(1).inner_text()).strip()
         if zero_day:
-            # The zero day alone (Custom: From, then To), its Total earnings and Creator performance.
             await page.get_by_role("button", name="Date range").first.click()
             await page.get_by_label("From date").fill(zero_day)
             async with page.expect_response(lambda r: "/admin/stats/revenue" in r.url and "group_by=kind" in r.url
@@ -462,7 +403,6 @@ async def _ui_pass(ctx, tag: str, windows: dict, zero_day: str | None = None, ch
                                             timeout=60_000):
                 await page.get_by_label("To date").fill(zero_day)
             await page.keyboard.press("Escape")
-            # PR #380 replaced the net switch with Earnings basis; still assert the gross read.
             async with page.expect_response(
                     lambda r: "/admin/stats/revenue" in r.url and r.status == 200
                     and parse_qs(urlsplit(r.url).query).get("group_by") == ["kind"]

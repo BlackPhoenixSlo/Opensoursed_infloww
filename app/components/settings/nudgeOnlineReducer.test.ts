@@ -12,14 +12,11 @@ const B = "100000002";
 const SLOTS = { default: { morning_1: { text: ["hi {name}"], image: [5] } } };
 const EFF: NudgeConfig = { enabled: true, delay_minutes: 4, slots: SLOTS };
 
-// The clock (ms): a config cached before the save, the save's start (savedAt = Infinity until it
-// settles) and settle, a refetch after it.
 const STALE = 100;
 const SAVE_AT = 200;
 const SETTLED = 300;
 const FRESH = 400;
 
-/** "save" = what the tab's save() dispatches: saveStart with the draft's config. */
 type Step = NudgeOnlineAction | "save";
 const run = (steps: Step[], from = initialNudgeOnlineState): NudgeOnlineState =>
   steps.reduce<NudgeOnlineState>((s, a) => nudgeOnlineReducer(s,
@@ -28,7 +25,6 @@ type Settle = Extract<NudgeOnlineAction, { type: "saveOk" | "saveErr" }>;
 const okFor = (accountId: string): Settle => ({ type: "saveOk", accountId, at: SETTLED });
 const errFor = (accountId: string, msg = "boom"): Settle => ({ type: "saveErr", msg, accountId, at: SETTLED });
 const OK_A = okFor(A);
-/** The config query's data landing (`fetchedAt` = its dataUpdatedAt; `pending` = a save PUT in flight). */
 const hy = (eff: NudgeConfig, accountId: string | null = A, fetchedAt = FRESH, pending = false,
   draft: KeptDraft | null = null): NudgeOnlineAction =>
   ({ type: "hydrate", eff, accountId, fetchedAt, pending, draft });
@@ -56,7 +52,6 @@ describe("hydrate", () => {
     expect(refetched.slots).toEqual(edited.slots);
     expect(refetched.jsonDraft).toBe(edited.jsonDraft);
     expect(hasUnsavedEdits(refetched)).toBe(true);
-    // …while `base` follows the server, so the roll-out gate compares to it.
     expect(refetched.base?.delay_minutes).toBe(6);
   });
 
@@ -88,12 +83,11 @@ describe("hydrate", () => {
 
 describe("hydrate with a kept draft (a tab closed mid-edit / mid-save)", () => {
   const DRAFT: NudgeConfig = { ...EFF, delay_minutes: 9 };
-  const MOVED: NudgeConfig = { ...EFF, jitter_minutes: 7 }; // the server, changed elsewhere since the draft
+  const MOVED: NudgeConfig = { ...EFF, jitter_minutes: 7 };
   const first = (eff: NudgeConfig, draft: KeptDraft | null, pending = false) =>
     run([to(A), hy(eff, A, FRESH, pending, draft)]);
 
   it.each<[string, NudgeConfig, KeptDraft, NudgeConfig, NudgeOnlineState["restored"]]>([
-    // [name, server, kept draft, form shown, restored]
     ["equal to the server (the PUT landed, its ack was lost) → dropped", DRAFT, { draft: DRAFT, base: EFF }, DRAFT, null],
     ["equal ignoring key order / absent slots → dropped", { delay_minutes: 4, enabled: true },
       { draft: { enabled: true, delay_minutes: 4, slots: {} }, base: EFF }, { delay_minutes: 4, enabled: true }, null],
@@ -104,7 +98,6 @@ describe("hydrate with a kept draft (a tab closed mid-edit / mid-save)", () => {
     expect(buildConfig(s)).toEqual({ ...shown, slots: shown.slots ?? {} });
     expect(s.restored).toEqual(restored);
     expect(s.base).toEqual(server);
-    // Restored = dirty: Save is live and a refetch keeps it; never saved by itself.
     expect(isDirty(s)).toBe(restored !== null);
     expect(s.saving).toBeNull();
   });
@@ -137,11 +130,9 @@ describe("hydrate with a kept draft (a tab closed mid-edit / mid-save)", () => {
     const clean = loaded();
     const again = nudgeOnlineReducer(clean, hy(MOVED, A, FRESH, false, { draft: DRAFT, base: EFF }));
     expect([buildConfig(again), again.base, again.restored]).toEqual([MOVED, MOVED, null]);
-    // …also after a discard: the form is loaded, the draft dropped.
     const discarded = run([{ type: "discardDraft" }], first(EFF, { draft: DRAFT, base: EFF }));
     const after = nudgeOnlineReducer(discarded, hy(EFF, A, FRESH + 1, false, { draft: DRAFT, base: EFF }));
     expect([buildConfig(after), after.restored]).toEqual([EFF, null]);
-    // The pick is a first fill again: B's kept draft is read.
     const onB = run([to(B), hy(EFF, B, FRESH, false, { draft: DRAFT, base: EFF })], clean);
     expect([onB.form.delay_minutes, onB.restored]).toEqual([9, { moved: false }]);
   });
@@ -175,7 +166,6 @@ describe("keptDraft (what the tab stashes)", () => {
 describe("account", () => {
   const lines: Step[] = [{ type: "runMsg", msg: "ran" }, { type: "previewErr", msg: "bad" }];
 
-  // No hydrate after the pick: B's config GET failed (or is still loading).
   it.each<[string, Step[]]>([
     ["a save in flight", ["save", ...lines]],
     ["a failed save", ["save", errFor(A), ...lines]],
@@ -262,8 +252,8 @@ describe("account switch mid-save", () => {
     const s = run([
       ...away, OK_A,
       to(A),
-      hy(EFF, A, STALE), // A's stale cache first: ignored
-      hy({ ...EFF, delay_minutes: 9 }, A), // then its refetch
+      hy(EFF, A, STALE),
+      hy({ ...EFF, delay_minutes: 9 }, A),
     ], loaded());
     expect(s.save).toBeNull();
     expect(s.form.delay_minutes).toBe(9);
@@ -284,11 +274,10 @@ describe("account switch mid-save", () => {
 
 describe("a config from before the save (preSaveConfig)", () => {
   const PUT1: NudgeConfig = { ...EFF, delay_minutes: 9 };
-  /** A: Delay 9 saved; the picker goes to B and back while the PUT is in flight. */
   const aba: Step[] = [
     { type: "field", k: "delay_minutes", v: 9 }, "save",
     to(B), hy({ delay_minutes: 1 }, B), to(A),
-    hy(EFF, A, STALE, true), // A's cached pre-PUT config while the PUT is pending
+    hy(EFF, A, STALE, true),
   ];
   type Want = { seeded: false } | { seeded: true; delay: number | undefined; jitter?: number; dirty: boolean };
 

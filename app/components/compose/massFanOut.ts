@@ -1,12 +1,3 @@
-/**
- * massFanOut — one round of the Mass composer's all-models broadcast, pure
- * but for the injected `post` (useMassSend's relay POST; slop's node run its
- * fetch): the same text-only body (massMessageReducer `buildMassBody`) from
- * each target in turn (compose/fanOut `fanOutTargets`: the included models
- * without a success), its progress and results dispatched to the form.
- * Resolves to the round's results.
- */
-
 import type { Dispatch } from "react";
 
 import { fanOutTargets, runFanOut, type FanOutResult } from "./fanOut";
@@ -14,7 +5,6 @@ import { buildMassBody, type MassAction, type MassForm } from "./massMessageRedu
 
 export async function massFanOutRound(
   form: MassForm,
-  /** The included models, chip order. */
   includedIds: string[],
   online: boolean,
   post: (accountId: string, body: Record<string, unknown>) => Promise<unknown>,

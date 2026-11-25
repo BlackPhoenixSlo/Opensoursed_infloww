@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * CotagSection — the co-performer tag knobs (media_cotag): which co-creator
- * automated media sends @-tag, or no one, and "Always tag videos". CotagForm
- * loads it for Settings › Co-creator tag (CotagTab) and hands the tab its Save (the
- * account-config PUT, `account_ai_config.cotag_*`: every media send of the creator),
- * which the tab puts in its Panel header.
- *
- * "Tag a co-creator, which one, or no one" (ticket 85). The co-creator can be
- * any OnlyFans creator: typing searches OF's creators (performers-search, the
- * share dialog's username autocomplete) and a result is the pick, stored as its
- * handle. At send time media_cotag resolves that handle through the account's
- * tagged-friend list, the only ids OF accepts in a message/post tag, so a
- * creator who hasn't accepted the tag yet goes untagged there (logged, never a
- * lost send); a story's @handle overlay needs no list. "No co-creator tag" is
- * the default and hands the form ''. The server stores an own handle as no tag.
- */
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -32,7 +16,6 @@ export interface CotagPatch {
   cotag_username?: string;
 }
 
-/** One row of OF's performers-search. */
 interface FoundCreator {
   id: number | string;
   name?: string | null;
@@ -44,7 +27,6 @@ const DEBOUNCE_MS = 250;
 export default function CotagSection({ accountId, tagVideos, username, onChange }: {
   accountId: string | null;
   tagVideos: boolean;
-  /** Stored handle, no '@'. null / '' = No co-creator tag. */
   username: string | null;
   onChange: (patch: CotagPatch) => void;
 }) {
@@ -137,9 +119,6 @@ export default function CotagSection({ accountId, tagVideos, username, onChange 
   );
 }
 
-/** Loads the creator's config and hands `children` the Save control and the form: Save sends the stored config
- *  back with only the co-tag keys changed (the PUT replaces what it holds, so the rest of the creator's settings
- *  keep theirs). Mount it keyed by the creator, so unsaved edits never carry over to another. */
 export function CotagForm({ accountId, children }: {
   accountId: string;
   children: (save: SaveControl, form: ReactNode) => ReactNode;
@@ -149,6 +128,7 @@ export function CotagForm({ accountId, children }: {
   const [patch, setPatch] = useState<CotagPatch>({});
   const cfg = cfgQ.data?.config;
   const save: SaveControl = {
+    // The PUT replaces the stored config: send it back with only the co-tag keys changed.
     onSave: () => { if (cfg) saveM.mutate({ ...cfg, ...patch }, { onSuccess: () => setPatch({}) }); },
     saving: saveM.isPending,
     canSave: !!cfg && Object.keys(patch).length > 0,
@@ -159,7 +139,6 @@ export function CotagForm({ accountId, children }: {
   if (!cfgQ.data?.config) {
     form = cfgQ.isError
       ? <p className="text-sm text-err">{(cfgQ.error as Error)?.message || "Could not load the co-creator tag."}</p>
-      // The config read in flight: the form's places as placeholder bars, not a blank card.
       : cfgQ.isLoading
         ? <div role="status" aria-label="Loading" className="space-y-3"><Skeleton className="h-4 w-40" /><Skeleton className="h-10 w-full" /></div>
         : null;

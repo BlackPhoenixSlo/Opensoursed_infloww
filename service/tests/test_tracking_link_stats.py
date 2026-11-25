@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""Raw redirect-click stats and their real public/owner routes.
-
-STATS_CLOCK_SHIFT_DAYS shifts the shared write/read clock to check date-boundary stability.
-"""
 import _harness
 _harness.bootstrap()
 
@@ -124,7 +120,7 @@ def case_verified_only_after_pass():
     assert _anon.get(f"/t/{slug}", follow_redirects=False).status_code == 302
     patched = _owner.patch(f"/admin/tracking-links/{lid}", json={"bot_check": True})
     assert patched.status_code == 200, patched.text
-    assert _anon.get(f"/t/{slug}", follow_redirects=False).status_code == 302  # keys unset
+    assert _anon.get(f"/t/{slug}", follow_redirects=False).status_code == 302
     assert analytics(lid).json()["totals"]["verified_clicks"] == 0, analytics(lid).json()
     assert summary().json()["verified_clicks"] == before_verified, summary().json()
     with turnstile():
@@ -151,7 +147,6 @@ def case_zone_and_tenancy():
     try:
         lid, _ = link()
         day = NOW.astimezone(timezone.utc).date() - timedelta(days=1)
-        # 18:15Z = 23:45 IST; 18:45Z = 00:15 IST on the next day.
         at = datetime.combine(day, datetime.min.time()).replace(tzinfo=timezone.utc)
         seed(lid, at + timedelta(hours=18, minutes=15), app="instagram", ref="x")
         seed(lid, at + timedelta(hours=18, minutes=45), app="", ref="")
@@ -166,8 +161,6 @@ def case_zone_and_tenancy():
 
 
 def case_last_microsecond_of_a_day_stays_on_that_day():
-    # A click written with microseconds (the redirect writes utcnow()) at 23:59:59.999999: unixepoch() rounds it
-    # into the next day, outside the report's days; the reads must floor it to its own second.
     lid, _ = link()
     day = NOW.date()
     sql("INSERT INTO tracking_clicks (tracking_link_id, clicked_at) VALUES (:lid, :at)", lid=lid,
@@ -194,7 +187,6 @@ def case_old_rows_chunks_idempotent():
 
 
 def case_old_rows_scan_seeks_only_unclassified_rows():
-    """The boot classifier's chunk read walks the partial index of NULL-ref rows, not the whole click table."""
     plan = " | ".join(str(r[-1]) for r in sql(
         "EXPLAIN QUERY PLAN SELECT id, user_agent, referer FROM tracking_clicks "
         "WHERE ref IS NULL AND id>:last ORDER BY id LIMIT :chunk", last=0, chunk=10))
@@ -202,7 +194,6 @@ def case_old_rows_scan_seeks_only_unclassified_rows():
 
 
 def case_stats_reads_share_one_lane():
-    """Owner stats reads queue on TRACKING_STATS_READ, so a burst never holds more pooled connections than its cap."""
     import server
     lid, _ = link()
     seen = {"now": 0, "max": 0}

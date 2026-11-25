@@ -1,7 +1,3 @@
-/**
- * reportQuery — the report window + model + employee every /admin report list sends, and the three builders on top
- * of it pinned to the exact strings they sent before it was shared. Every identifier is invented.
- */
 import { describe, expect, it } from "vitest";
 
 import { reportQuery } from "@/hooks/reportQuery";
@@ -18,7 +14,6 @@ describe("reportQuery", () => {
     ["empties omitted", { from: "", to: "", account_id: "", employee_id: null }, ""],
     ["nulls omitted", NONE, ""],
     ["undefined model + employee omitted", { from: "2026-10-01", to: "2026-10-02" }, "from=2026-10-01&to=2026-10-02"],
-    // No "all" sentinel: the filters send null for All models, so a literal "all" goes on the wire as given.
     ["\"all\" account sent as given", { ...NONE, account_id: "all" }, "account_id=all"],
     ["employee only", { ...NONE, employee_id: 5 }, "employee_id=5"],
     ["employee 0 kept", { ...NONE, employee_id: 0 }, "employee_id=0"],

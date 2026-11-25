@@ -1,67 +1,5 @@
 "use client";
 
-/**
- * NotificationBell — top-nav bell with a tab-local counter.
- *
- * Badge model (simplified):
- *   • Starts at 0 on every tab load / reload.
- *   • Bumps +1 on every `chatterly:notif-arrived` window event
- *     (dispatched by the toaster on each SSE arrival).
- *   • Resets to 0 when the bell is opened, when the user clicks a row
- *     in the dropdown, or when a toast is clicked elsewhere
- *     (`chatterly:notif-cleared` event).
- *
- * Popouts each maintain their own counter — no localStorage sync, no
- * cross-tab math. The previous baseline + pending-SSE machinery was
- * dropped along with the badge complexity that motivated it.
- *
- * The dropdown's list view still queries OF (when open) and merges with
- * the localStorage history mirror so types OF drops (likes etc.) still
- * show up.
- *
- * The top bar's bell is the header's only one, as Infloww's
- * (`HeaderNotification`: a 36px filled tile with `Bell01Line`). Its panel has
- * "OnlyFans" and "Settings" tabs (NotifSettingsPane). For the owner TopBar
- * passes `agency`, the agency notification centre (`AgencyNotifications`):
- * an "Agency" tab joins them (opened when only it has something new), its kind
- * switches join Settings, and the badge adds its unread count to the arrivals.
- *
- * `variant="messages-pro"` is Messages Pro's "Notifications" Fan List button
- * (docs/spec/phase-01-window-chrome-tabs.md, Notifications): the Clone's
- * green button, the same panel and filters opened inside the Fan List pane,
- * and as its badge the scoped Creator's OnlyFans count (`all` from
- * `/api/of/v2/users/notifications/count`, messages.js:2931-2944) in place of
- * the arrival counter. The badge is hidden at zero and on a failed read, and
- * is read again when the scope changes and when the panel closes. Under All
- * Models it is the live Creators' counts already cached (no read), and the
- * panel has "Mark all read" (`useMarkAllOfNotifsRead`; opening sends nothing).
- * The default `"topbar"` is unchanged.
- *
- * Both variants, scoped to one live Creator: the OnlyFans list first coming on
- * screen in an open sends OF's mark-read once (`useMarkOfNotifsRead`, as OF
- * web on opening its notifications), so OF's count (this button's badge, the
- * Creator tab's) drops to what OF answers; a failed write leaves it. Any
- * viewer of the list sends it, chatters too: it reaches no fan, like a chat's
- * mark-read.
- * The top bar reaches this module on every route, so the variant's Geometry
- * comes from its Messages-Pro-only caller through `classNames`
- * (docs/spec/phase-06-geometry-pass.md, Interfaces, Shared modules).
- *
- * In that variant a row about a known Fan (one with a Fan id) hands the Fan
- * to `onOpenFan`: the page adds or reuses the Fan's Fan tab and opens its
- * Thread. When the Fan tabs are full the Thread still opens and the panel
- * says "Fan tab limit reached (100)" until the button is next pressed. The
- * top bar's rows and the /notifications page's open the Fan the same way in
- * the Messages Pro window (lib/notificationLink).
- *
- * Also only in that variant, a message notification about a known Fan has a
- * "Reply" field (story 39). Opening it mounts that Fan's message hook and
- * closing it unmounts it. Send posts the text alone through the Composer's
- * send hook (`useSendMessage`) to that Fan's chat as the notification's
- * Creator: on success the field clears and reads "Sent", on failure the text
- * stays, the hook's reason shows and the failed bubble is dropped from the
- * Fan's messages, so the field is the one place the reply is retried.
- */
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
@@ -104,12 +42,9 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { type BellPane, initialBellState, notificationBellReducer, ofListOnScreen, OPEN_AGENCY_EVENT } from "./notificationBellReducer";
 import { NOTIF_PAGE_SIZE, fmtTime, notifPath, parseList, renderText } from "@/lib/notifText";
 
-/** The bell's tabs, shared with the full Notifications page
- *  (`components/NotificationsPage.tsx`), which reads the same request. */
 export type Filter = {
   id: string;
   label: string;
-  /** OF `type=` value, or null for "All" (omit param). */
   type: string | null;
 };
 export const FILTERS: Filter[] = [
@@ -132,49 +67,29 @@ export interface NotificationItem {
   user?: NotificationUser;
   fromUser?: NotificationUser;
   replacePairs?: Record<string, string>;
-  /** Who has answered this message's fan since ("" unknown); see `markNotifHistoryResponded`. */
   respondedBy?: string;
   [k: string]: unknown;
 }
 
-/** A feed row tagged with its Creator and its time (0 when undated). */
 export interface MergedItem {
   n: NotificationItem;
   accountId: string;
   ts: number;
 }
 
-/** The cap on the merged list the bell shows, and the full page's "All". */
 export const NOTIF_ALL_CAP = 50;
 
 export { NOTIF_PAGE_SIZE, notifPath, parseList } from "@/lib/notifText";
 
 const NO_IDS: readonly string[] = [];
-/** The bell's list keys, for the lease-gain refetch (lib/ofReadGate.ts). */
 const LIST_ROOTS = ["notif-list"] as const;
 
-/** One feed read: its Creator, its offset and how many rows it returned
- *  (undefined until it has data). */
 export interface NotificationFeedRead {
   accountId: string;
   offset: number;
   count: number | undefined;
 }
 
-/**
- * The bell's feed, shared with the full Notifications page: the Creator scope
- * (the scoped Creator, else every active Creator), one read per Creator and
- * page (`pages[accountId]`, default 1, from offset 0 in steps of
- * `NOTIF_PAGE_SIZE`), and the rows newest first, tagged with their Creator.
- * A row a Creator's earlier page already returned is dropped. Offset 0 keeps
- * the key `["notif-list", accountId, type]` that the Money rail and the
- * toaster's invalidation share; a later page appends its offset.
- *
- * `gated` (the bell): no Dead-session Creator, and an unleased Creator's reads
- * follow the rail's gate as on-screen reads (lib/ofReadGate.ts `onScreenGate`):
- * read once when the list opens, armed or not, then served until its next
- * `creator_warmed`.
- */
 export function useNotificationFeed(
   type: string | null,
   enabled: boolean,
@@ -204,9 +119,7 @@ export function useNotificationFeed(
     })),
   });
 
-  // Stable signature of the fetched data — the query array itself is a fresh
-  // reference every render, so the memo below keys off the per-query update
-  // timestamps (which change only when the underlying data does) instead.
+  // the query array is a fresh reference every render; per-query update timestamps change only with the data
   const dataSig = queries.map((q) => q.dataUpdatedAt).join(",");
   const targetSig = `${type}:` + targets.map((t) => `${t.aid}@${t.offset}`).join(",");
 
@@ -241,17 +154,14 @@ export function useNotificationFeed(
     reads,
     loading: enabled && queries.some((q) => q.isLoading),
     error: queries.find((q) => q.error)?.error as Error | undefined,
-    /** Re-reads every failed page. */
     refetch: () => { for (const q of queries) if (q.error) void q.refetch(); },
   };
 }
 
-/** The bell's dense look, or the full Notifications page's (ticket 19). */
 export type NotifSize = "bell" | "page";
 
 const NO_SESSIONS = "No active sessions. Capture one in Manage creators to see notifications.";
 
-/** The feed's place-holder when no Creator has a session. */
 export function NoSessionsNote({ size = "bell" }: { size?: NotifSize }) {
   if (size === "page") {
     return (
@@ -265,7 +175,6 @@ export function NoSessionsNote({ size = "bell" }: { size?: NotifSize }) {
   return <div className="p-4 text-xs text-fg-dim">{NO_SESSIONS}</div>;
 }
 
-/** The feed's loading, error and empty states; `onRetry` is the page's error Retry. */
 export function FeedStatus({ loading, error, empty, size = "bell", onRetry }: {
   loading: boolean;
   error: Error | undefined;
@@ -305,12 +214,8 @@ export function FeedStatus({ loading, error, empty, size = "bell", onRetry }: {
   );
 }
 
-/** Messages Pro's opener for a notification's Fan: what `useFanTabs().open`
- *  answered, or null when no tab could be written (Employee unresolved). */
 export type OpenNotificationFan = (tab: FanTab) => "opened" | "exists" | "full" | null;
 
-/** The Messages Pro variant's Geometry, from its caller: the button, its
- *  icon, its count badge and the panel. Colours and layout stay here. */
 export interface NotificationBellClassNames {
   button: string;
   icon: string;
@@ -318,33 +223,23 @@ export interface NotificationBellClassNames {
   panel: string;
 }
 
-/** The top bar bell's second feed, the owner's agency notification centre
- *  (`AgencyNotifications`): its unread count, added to the badge, its
- *  panel, the "Agency" tab's body, and its kind switches, shown in the
- *  Settings tab. */
 export interface BellAgencyTab {
   unread: number;
   panel: ReactNode;
   settings: ReactNode;
 }
 
-/** The top bar's bell, or Messages Pro's "Notifications" button, which
- *  always comes with its Geometry. */
 export type NotificationBellProps =
   | {
       variant?: "topbar";
-      /** The owner's: the panel gets an "Agency" tab (and its switches in Settings). */
       agency?: BellAgencyTab;
     }
   | {
       variant: "messages-pro";
-      /** Opens a row's Fan in a Fan tab. */
       onOpenFan?: OpenNotificationFan;
-      /** The variant's Geometry. */
       classNames: NotificationBellClassNames;
     };
 
-/** The panel's tabs: OnlyFans, the owner's Agency (with its unread count), and Settings. */
 function paneTabs(agency: BellAgencyTab | undefined): (readonly [BellPane, string, number])[] {
   return [
     ["of", "OnlyFans", 0],
@@ -354,22 +249,15 @@ function paneTabs(agency: BellAgencyTab | undefined): (readonly [BellPane, strin
 }
 
 export function NotificationBell(props: NotificationBellProps = {}) {
-  /** The Messages Pro variant's props, or null for the top bar. */
   const proProps = props.variant === "messages-pro" ? props : null;
   const pro = proProps !== null;
   const agency = props.variant === "messages-pro" ? undefined : props.agency;
-  // The panel, its tab (OnlyFans, the owner's Agency, or Settings), the arrivals
-  // badge and the Fan-tabs-full note: notificationBellReducer.
   const [bell, dispatch] = useReducer(notificationBellReducer, initialBellState);
-  // The Agency tab is the owner's; it goes away only when the viewer stops
-  // being owner (user not loaded yet, or a chatter): back to OnlyFans before
-  // this render draws the panel.
   if (!agency && bell.pane === "agency") dispatch({ type: "pane", pane: "of" });
   const { open, pane, tabsFull } = bell;
   const { accountId } = useScope();
   const activeAccounts = useActiveAccounts();
-  // Restore the last-used filter chip. Safe against hydration mismatch:
-  // the dropdown (the only place `filter` renders) is closed at SSR time.
+  // safe against hydration mismatch: the dropdown (only reader of `filter`) is closed at SSR time
   const [filter, setFilter] = useState<Filter>(() => {
     const id = readNotifFilterId();
     return FILTERS.find((f) => f.id === id) ?? FILTERS[0];
@@ -383,12 +271,9 @@ export function NotificationBell(props: NotificationBellProps = {}) {
   const ref = useRef<HTMLDivElement | null>(null);
   const { settings } = useNotificationSettings();
 
-  // List — fan-out, merged client-side. Enabled only when the panel is
-  // open so we don't spam OF on idle pages.
   const feed = useNotificationFeed(filter.type, ofListOnScreen(bell), undefined, true);
   const targetAccountIds = feed.accountIds;
 
-  // The consent banner's "View": open on the Agency tab (only where there is one).
   const hasAgency = !!agency;
   useEffect(() => {
     if (!hasAgency) return;
@@ -397,8 +282,6 @@ export function NotificationBell(props: NotificationBellProps = {}) {
     return () => window.removeEventListener(OPEN_AGENCY_EVENT, onOpenAgency);
   }, [hasAgency]);
 
-  // Badge counter — bump on every arrival (unless the OnlyFans list is on
-  // screen), reset on every cleared event.
   useEffect(() => {
     const onArrived = () => dispatch({ type: "arrived" });
     const onCleared = () => dispatch({ type: "cleared" });
@@ -410,9 +293,6 @@ export function NotificationBell(props: NotificationBellProps = {}) {
     };
   }, []);
 
-  // Messages Pro: the scoped Creator's OnlyFans count. Not read by the top
-  // bar, nor under All Models (the count is per Creator).
-  // A Dead-session Creator's count is not read.
   const countAccountId = pro && !activeAccounts.some((a) => a.id === accountId && a.session_dead_at) ? accountId : null;
   const { count: scopedCount, refetch: refetchCount } = useOfNotifCount(countAccountId);
   const allModels = pro && !accountId;
@@ -422,26 +302,22 @@ export function NotificationBell(props: NotificationBellProps = {}) {
   const proCount = allModels ? allModelsCount : scopedCount;
   const { marking, markAll, status: markStatus } = useMarkAllOfNotifsRead();
 
-  // OF's mark-read, once per open (the reducer's `markRead`), for a scoped live Creator, once the list it acks
-  // answered and is on screen (a failed or pending list, or a bell closed or on another tab before it landed, stays
-  // "due": nothing was shown to be read).
+  // a Dead-session Creator is not read
   const markAccountId = accountId && !activeAccounts.some((a) => a.id === accountId && a.session_dead_at)
     ? accountId : null;
   const markOfNotifsRead = useMarkOfNotifsRead();
   const listShown = ofListOnScreen(bell) && !feed.loading && !feed.error && feed.reads.some((r) => r.count !== undefined);
   useEffect(() => {
+    // OF mark-read once per open, only after the list it acks is answered and on screen
     if (bell.markRead !== "due" || !listShown) return;
     dispatch({ type: "markReadSent" });
     if (markAccountId) void markOfNotifsRead(markAccountId);
   }, [bell.markRead, listShown, markAccountId, markOfNotifsRead]);
 
-  // Opening the bell counts as "seen everything" (the reducer zeroes this
-  // bell; the event, any other one).
   const openPanel = () => {
     dispatch({ type: "open", agencyUnread: agency?.unread ?? 0 });
     dispatchNotifCleared();
   };
-  // Every close of an open panel: Messages Pro reads its count again.
   const closePanel = useCallback(() => {
     dispatch({ type: "close" });
     if (countAccountId) void refetchCount();
@@ -462,8 +338,6 @@ export function NotificationBell(props: NotificationBellProps = {}) {
     };
   }, [open, closePanel]);
 
-  // Re-render when localStorage toast history changes (SSE pushes new
-  // entries to it; popouts share via the storage event).
   const [historyTick, bumpHistory] = useState(0);
   useEffect(() => {
     if (!open) return;
@@ -479,7 +353,6 @@ export function NotificationBell(props: NotificationBellProps = {}) {
     };
   }, [open]);
 
-  // The feed's rows plus the localStorage toast history it has not listed.
   const merged = useMemo<MergedItem[]>(() => {
     const acc: MergedItem[] = [...feed.rows];
     const seenIds = new Set<string>();
@@ -509,7 +382,6 @@ export function NotificationBell(props: NotificationBellProps = {}) {
     }
     acc.sort((a, b) => b.ts - a.ts);
     return acc.slice(0, NOTIF_ALL_CAP);
-    // historyTick re-reads the localStorage history.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feed.rows, targetAccountIds, filter.id, historyTick]);
 
@@ -517,12 +389,9 @@ export function NotificationBell(props: NotificationBellProps = {}) {
   const firstError = feed.error;
   const showAccountTag = targetAccountIds.length > 1;
   const accountLabel = useAccountLabelMap(activeAccounts);
-  // The top bar badge: unseen arrivals plus the owner's unread agency ones.
   const total = bell.arrivals + (agency?.unread ?? 0);
 
   return (
-    // Messages Pro: an equal share of the Fan List buttons row, whose
-    // `relative` the panel opens against.
     <div className={pro ? "flex flex-1" : "relative"} ref={ref}>
       {proProps ? (
         <button
@@ -531,20 +400,14 @@ export function NotificationBell(props: NotificationBellProps = {}) {
           className={cn(proProps.classNames.button, "relative flex flex-1 items-center justify-center bg-[var(--inf-online,var(--color-ok))] text-white hover:opacity-90")}
         >
           <Bell aria-hidden className={proProps.classNames.icon} />
-          {/* The space keeps the badge a word of its own in the button's name. */}
           Notifications{" "}
           {proCount > 0 && (
             <span className={cn(proProps.classNames.badge, "absolute grid place-items-center border-white/70 bg-[var(--inf-online,var(--color-ok))] text-white")}>{proCount}</span>
           )}
         </button>
       ) : (
-      // Infloww's `HeaderNotification`: the 36px filled tile, `Bell01Line`,
-      // and the count as a pink `HBChip signal="stop"` inside the tile, 8px
-      // after the bell (index.9f50f370.js). Our count is the arrivals since
-      // the bell was last opened plus the owner's unread agency notifications.
       <button
         type="button"
-        // Opens on Agency when only it has something new (the reducer).
         onClick={togglePanel}
         className={cn(HEADER_TILE, "px-2")}
         title="Notifications"
@@ -588,7 +451,6 @@ export function NotificationBell(props: NotificationBellProps = {}) {
           {pane === "settings" ? (
             <NotifSettingsPane agency={agency?.settings} />
           ) : pane === "agency" ? (
-            // A row that links into the app (e.g. a 2FA row's Browserbase login) closes the panel.
             <div className="flex-1 overflow-y-auto"
               onClick={(e) => { if ((e.target as Element).closest("a[href]")) closePanel(); }}>{agency?.panel}</div>
           ) : targetAccountIds.length === 0 ? (
@@ -626,9 +488,6 @@ export function NotificationBell(props: NotificationBellProps = {}) {
                 )}
                 {allModels && markStatus && <span role="status" className="shrink-0 text-[11px] text-err">{markStatus}</span>}
               </div>
-              {/* Money-rail rescue hatch — the bell is mounted everywhere, so
-                  it hosts the rail's un-hide control. Renders null when the
-                  rail isn't hidden on the current surface. */}
               <MoneyRailRestoreButton />
               {pushHintShown(settings, push) && (
                 <button
@@ -659,8 +518,6 @@ export function NotificationBell(props: NotificationBellProps = {}) {
               </div>
             </>
           )}
-          {/* The top bar's way to the full page (story 44); Messages Pro's
-              signed-off panel is unchanged. */}
           {!pro && pane === "of" && (
             <Link
               href="/notifications"
@@ -676,18 +533,14 @@ export function NotificationBell(props: NotificationBellProps = {}) {
   );
 }
 
-/** One notification row, also the full Notifications page's. */
 export function Row({
   n, accountId, accountLabel, reply, onOpenFan, size = "bell",
 }: {
   n: NotificationItem;
   accountId: string;
   accountLabel: string | null;
-  /** `page`: the full page's 60px row (36px avatar, 14px text, 12px #999 meta). */
   size?: NotifSize;
-  /** Messages Pro: a message notification about a known Fan gets "Reply". */
   reply?: boolean;
-  /** Set in Messages Pro: a row with a Fan id opens the Fan here. */
   onOpenFan?: (tab: FanTab) => void;
 }) {
   const user = n.user || n.fromUser || {};
@@ -736,10 +589,8 @@ export function Row({
   const fanId: FanId | undefined = user.id;
   const name = user.name || user.username || `fan ${fanId}`;
   const replyable = reply && fanId != null && mapOfTypeToKey(n.type) === "message";
-  // Answered since (Infloww's "has responded"): that line replaces Reply.
   const responded = typeof n.respondedBy === "string" ? n.respondedBy : null;
   const footed = replyable || responded != null;
-  // With a Reply field under it, the divider moves to the row and its field.
   const divider = page ? "border-b border-border last:border-b-0" : "border-b border-border/60 last:border-b-0";
   const cls = page
     ? cn("min-h-[60px] px-4 py-3 flex items-start gap-3 hover:bg-bg-elev-2", !footed && divider)
@@ -750,7 +601,6 @@ export function Row({
       className={cn(cls, "w-full text-left")}
       onClick={() => {
         dispatchNotifCleared();
-        // The tab's name as the Chat header falls back to it.
         onOpenFan({ accountId, fanId, name });
       }}
     >
@@ -779,23 +629,17 @@ export function Row({
           <span className="font-medium text-fg">{responded || "A teammate"}</span> has responded
         </div>
       ) : fanId != null && (
-        // Keyed by its Fan: a list keyed by index (an id-less row) can hand this Row another Fan's props, and the
-        // line typed for one Fan must never go to another.
+        // keyed by Fan: an index-keyed row could hand this one another Fan's props and send a typed line to the wrong Fan
         <QuickReply key={`${accountId}:${fanId}:${n.id ?? ""}`} accountId={accountId} fanId={fanId} name={name} />
       )}
     </div>
   );
 }
 
-/** The quick-reply field and the Fan's message + send hooks behind it: out of the shell's first load (the bell is in
- *  every page's top bar), fetched once a reply-able row shows. */
 const quickReplyField = lazyModule(() => import("./NotificationQuickReply"));
 
-/** A message notification's "Reply" toggle; the field, and with it the Fan's
- *  message hook, is mounted only while open. */
 function QuickReply({ accountId, fanId, name }: { accountId: string; fanId: FanId; name: string }) {
   const [open, setOpen] = useState(false);
-  // Fetched once a reply-able row is on screen, so a "Reply" tap finds it in.
   const field = useLazyModule(quickReplyField);
   return (
     <div className="pr-3 pb-2 pl-12">

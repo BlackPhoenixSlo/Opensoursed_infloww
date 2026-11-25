@@ -1,9 +1,3 @@
-/**
- * Infloww's composer guards in the Messages Pro Composer (gap 04 P7 and M27):
- * a price above free and under $3 reads "Minimum $3 USD or free" above the
- * input and holds Send, and a second send at once within 3 s stays in the
- * composer with OF's reason.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

@@ -1,8 +1,3 @@
-/**
- * The S4S settings page (docs/spec/phase-03-share-for-share.md, Testing Decisions, seam 2; page-parity 15), for one
- * creator, rendered with the relay mocked at `fetch` by URL, so every save assertion is an assertion about the wire.
- * Fixture names and ids are invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -10,7 +5,6 @@ import { jsonRes, renderWithProviders } from "@/test-utils";
 import S4SSettingPanel, { PARTNER_PROFILE_LINE } from "@/components/s4s/S4SSettingPanel";
 import { useS4SProfiles, type S4SProfile, type S4SProfiles } from "@/lib/s4s";
 
-/** The vault picker stubbed to a list of the ids it was opened with and one confirm of `pick.ids`. */
 const pick = vi.hoisted(() => ({ ids: [] as number[] }));
 vi.mock("@/components/chat/VaultPicker", () => ({
   VaultPicker: ({ open, initialSelectedIds, onConfirm }: {
@@ -57,7 +51,6 @@ beforeEach(() => {
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     if (url === "/admin/s4s/profiles" && method === "GET") return jsonRes(profiles);
     if (url === "/admin/s4s/profiles/7000001" && method === "PUT") {
-      // The server keeps the write: the refetch after it sees the new values.
       profiles = { ...profiles, profiles: profiles.profiles.map((p) => (p.account_id === "7000001" ? { ...p, ...body } : p)) };
       return jsonRes({ ...FRESH, profile_id: 9, ...body });
     }
@@ -80,7 +73,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** The page as S4SPage mounts it: the profiles query, and the rail's creator. */
 function Harness({ id }: { id: string }) {
   const q = useS4SProfiles();
   return <S4SSettingPanel query={q} profile={q.data?.profiles.find((p) => p.account_id === id) ?? null} />;
@@ -155,7 +147,6 @@ describe("S4SSettingPanel", () => {
       "src", "https://thumbs.onlyfans.com/public/files/thumbs/c144/one/avatar.jpg");
     for (const label of ["Display name", "@username", "Avatar URL"]) expect(within(page).queryByLabelText(label)).toBeNull();
     expect(within(page).getByText(PARTNER_PROFILE_LINE)).toBeInTheDocument();
-    // No Save left on the page: everything saves as it changes.
     expect(within(page).queryAllByRole("button", { name: "Save" })).toHaveLength(0);
   });
 
@@ -180,7 +171,6 @@ describe("S4SSettingPanel", () => {
 
     pick.ids = [601, 602, 603, 604, 605, 606];
     fireEvent.click(within(screen.getByRole("dialog", { name: "Create post" })).getByRole("button", { name: "Add from Vault (0/5)" }));
-    // The picker stands in for the pop-up while it is open.
     expect(screen.queryByRole("dialog", { name: "Create post" })).toBeNull();
     expect(screen.getByText("picked:")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Confirm pick" }));

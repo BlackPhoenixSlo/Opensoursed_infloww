@@ -1,33 +1,3 @@
-"""OnlyFans tracking links' part of the slop relay (lib/relay.py loads it: `OF` joins `_OfflineOF`'s
-bases, `wire` runs at the end of its `_wire`). scenarios/2026-11-01-tracking-links-clicks.py uses it.
-
-OnlyFans' /campaigns side is faked only when a scenario writes `$DEMO_SHOTS_TMP/of-campaigns.json`
-(seed/tracking_campaigns.py): `{"latency_s": s, "accounts": {account_id: [OF /campaigns rows, OF's
-order]}, "claimers": {"<campaign id>": [{id, name, username}, ...]}}`. Without it every method below
-raises the client build's error, as `_OfflineOF.__getattr__` would for a method it lacks.
-
-  tracking_links(limit, offset, with_deleted)  GET /api2/v2/campaigns: the Creator's rows (deleted ones
-                                only with `with_deleted`) paged by offset / limit, `hasMore`; bare: the
-                                first 10 (OF's default page). Rows created this run come first.
-  campaign_claimers(id, limit, offset)         GET /api2/v2/campaigns/{id}/claimers: the link's fans
-                                paged, `hasMore`; a link with none answers an empty list.
-  create_tracking_link(name, code)             POST /api2/v2/campaigns: a new row (0 transitions, 0
-                                subscribers, createdAt now), answered as OF's bare campaign dict.
-Each call waits `latency_s` (a guess at OF's latency); the reads are counted per Creator / per link.
-
-  GET /__slop/tracking-calls  {campaigns: {account: n}, claimers: {"account:campaign": [offset, ...]}}:
-                               what OnlyFans received, in order.
-
-Cloudflare Turnstile's siteverify (custom redirect links' "Bot check before redirect") is faked at its
-wire: when the relay has TURNSTILE_SECRET_KEY (a scenario's RELAY_ENV) and no TURNSTILE_VERIFY_URL,
-`wire` points the product's TURNSTILE_VERIFY_URL env seam (read per call by turnstile.verify_url) at
-
-  POST /__slop/fake/turnstile-siteverify  Cloudflare's form body (secret, response, remoteip) -> {success}:
-                               success iff the secret is the relay's and the token starts with "pass-"
-                               (TURNSTILE_LATENCY_S a call, a guess at Cloudflare's).
-  GET  /__slop/turnstile-calls {n, bad_secret, no_remoteip, tokens: {token: n}}: what Cloudflare received.
-"""
-
 import json
 import os
 import threading
@@ -37,11 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 CREATED_ID_BASE = 990_000_000
-TURNSTILE_LATENCY_S = 0.03   # a guess at Cloudflare's siteverify latency
-_lock = threading.Lock()  # the product calls OF from worker threads (asyncio.to_thread)
+TURNSTILE_LATENCY_S = 0.03
+_lock = threading.Lock()
 _calls: dict = {"campaigns": defaultdict(int), "claimers": defaultdict(list)}
-_world: dict = {}   # of-campaigns.json, read on the first call that finds it
-_created: dict[str, list[dict]] = defaultdict(list)   # account -> rows created this run, newest first
+_world: dict = {}
+_created: dict[str, list[dict]] = defaultdict(list)
 _turnstile: dict = {"n": 0, "bad_secret": 0, "no_remoteip": 0, "tokens": defaultdict(int)}
 
 
@@ -57,7 +27,6 @@ def _data() -> dict | None:
 
 class OF:
     def _tracking_answer(self) -> dict:
-        """The world, after OF's latency; the client build's error without one."""
         d = _data()
         if d is None:
             raise self._err

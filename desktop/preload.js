@@ -1,20 +1,5 @@
 "use strict";
 
-// Preload for the REMOTE page (the hosted your-host.example.com UI).
-//
-// Least privilege: the remotely-served UI gets NO bridge into Node, the
-// filesystem, or arbitrary IPC. We expose only a static, read-only version
-// object (for a future shell↔UI handshake), AND — because the hosted Setup page
-// can't know it's running inside the desktop app — we inject one native button
-// that starts the OnlyFans capture flow. Its click handler lives here in the
-// isolated preload world and calls a single no-argument IPC that just opens a
-// login window (no data crosses, and the main process still checks the sender
-// origin). One more narrow call: `notify({id, title, body, href})` hands four
-// strings to the main process, which shows a native notification (lib/notify.js
-// validates them; the web Notification permission never reached "granted" in
-// packaged builds, cause unconfirmed). And `openGoLive(creatorId)`: one id in,
-// {ok, signIn?, error?} out (main.js shell:open-go-live). Badge and navigation hardening live in
-// the main process, not here.
 
 const { contextBridge, ipcRenderer } = require("electron");
 
@@ -26,11 +11,11 @@ function readShellVersion() {
 const str = (v) => (typeof v === "string" ? v : "");
 
 try {
+  // Least privilege: the remote page gets no Node/fs/arbitrary IPC, only narrow fixed calls; secrets never cross (Go live passes only the Creator id).
   contextBridge.exposeInMainWorld("fasttShell", Object.freeze({
     isDesktop: true,
     platform: process.platform,
     version: readShellVersion(),
-    // Resolves true when the OS notification was shown.
     notify: (n) =>
       ipcRenderer.invoke("shell:notify", {
         id: str(n && n.id),
@@ -38,21 +23,12 @@ try {
         body: str(n && n.body),
         href: str(n && n.href),
       }),
-    // Go live (ticket 127): only the Creator id crosses; the main process reads
-    // the session from the Relay itself, so no secret ever reaches this page.
-    // Resolves {ok, signIn?, error?}.
     openGoLive: (creatorId) => ipcRenderer.invoke("shell:open-go-live", String(creatorId == null ? "" : creatorId)),
   }));
 } catch (err) {
   console.error("[preload] bridge failed:", err && err.message);
 }
 
-// ── Native "Connect OnlyFans" button injected into the hosted UI ─────────────
-// So the account-capture flow is discoverable ON the page, not only in the macOS
-// menu bar. On the Setup page it sits INLINE next to the "Install Chrome
-// Extension" button (where you'd expect it); elsewhere it floats bottom-left.
-// The click handler runs in this isolated preload context — never exposed to the
-// page's own JavaScript.
 const CONNECT_ID = "infloww-rea-connect-of";
 
 function makeConnectButton() {
@@ -91,10 +67,8 @@ function extensionAnchor() {
 function syncConnectButton() {
   try {
     if (!document.body) return;
-    const anchor = extensionAnchor(); // present ONLY on the Setup page
+    const anchor = extensionAnchor();
     const existing = document.getElementById(CONNECT_ID);
-    // Button lives ONLY on Setup, inline next to the extension button. Off Setup,
-    // remove it (the Account menu is still available everywhere).
     if (!anchor) {
       if (existing) existing.remove();
       return;
@@ -116,5 +90,4 @@ if (document.readyState === "loading") {
 } else {
   syncConnectButton();
 }
-// Re-assert after SPA route changes (navigating to/from Setup moves the button).
 setInterval(syncConnectButton, 2000);

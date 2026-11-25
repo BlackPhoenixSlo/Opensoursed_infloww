@@ -1,9 +1,3 @@
-/**
- * Full AI Chat's "Who Full AI answers when Live": the Fans row and dialog. The top "Fans & Following" row only reads the
- * pick: Include while no list is included, Neither once one is; picking Include there clears the includes (excludes
- * stay). Save goes to the audience write (`putAudience`), Live or not; no list = every Fan, Live too (no warning);
- * a failure shows above Save.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 

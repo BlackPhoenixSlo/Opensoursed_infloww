@@ -8,7 +8,6 @@ describe("summarize", () => {
   it.each<[string, Kind, Record<string, unknown>, string | null]>([
     ["empty", "auto_posts", {}, null],
     ["other kind's list", "auto_posts", { messages: [{ text: "x" }] }, null],
-    // One Auto Post reads its price, then "deletes after Nh" when set; a legacy list keeps its count.
     ["one free post", "auto_posts", { posts: [{ text: " Hello " }] }, "Free · Hello"],
     ["one paid post", "auto_posts", { posts: [{ texts: ["Hey", "Yo"], price: 12 }] }, "$12 · Hey"],
     ["auto-delete", "auto_posts", { posts: [{ text: "Hi", hours_to_live: 6 }] }, "Free · Hi · deletes after 6h"],
@@ -17,29 +16,23 @@ describe("summarize", () => {
     ["reposts and a texts pool", "auto_posts", { posts: [{ texts: ["A", "B"], hours_to_live: 6 }, {}], resend_count: 2 },
       "2 posts · reposts ×2 · A"],
     ["a messages list on a post rule is no hours read", "mass_premade", { messages: [{ text: "Hi", hours_to_live: 6 }] }, "Free · Hi"],
-    // One Auto Mass message reads its price: "Free · …" / "$12 · …"; a legacy list keeps its count.
     ["one free message", "mass_premade", { messages: [{ text: "Hi" }] }, "Free · Hi"],
     ["one paid message", "mass_premade", { messages: [{ texts: ["Hey", "Yo"], price: 12 }] }, "$12 · Hey"],
     ["cents price", "mass_premade", { messages: [{ text: "Hi", price: 9.99 }] }, "$9.99 · Hi"],
     ["price 0 is free", "mass_premade", { messages: [{ price: 0 }] }, "Free"],
-    // The backend charges a numeric string (`price or 0` → OF): never "Free".
     ["a string price charges", "mass_premade", { messages: [{ text: "Hi", price: "12" }] }, "$12 · Hi"],
-    // The audience as the chips name it; online only is a filter, not an audience.
     ["audience + chat skip", "mass_premade", { messages: [{ text: "caption", price: 12, user_lists: ["fans", "following"],
       online_only: true, exclude_last_chat_hours: 1 }] }, "$12 · caption · All fans + Following · online only · skips chatted 1h"],
     ["Following + an included custom list", "mass_premade", { messages: [{ text: "caption", user_lists: ["following", "42"] }] },
       "Free · caption · Following + 1 list"],
     ["excluded lists and auto-unsend", "mass_premade", { messages: [{ text: "Hi", user_lists: ["fans", "1", "2"],
       excluded_user_lists: ["3"], unsend_after_hours: 8 }] }, "Free · Hi · All fans + 2 lists · excl. 1 list · unsends after 8h"],
-    // Auto Mass reads resend_count per message (mass_premade.py), Auto Post per list (auto_posts.py).
     ["mass resends per message", "mass_premade", { messages: [{ text: "A", resend_count: 2, resend_after_hours: 24 }] },
       "Free · resends ×2 · A"],
     ["mass ignores a top-level resend_count", "mass_premade", { messages: [{ text: "A" }], resend_count: 2 }, "Free · A"],
-    // R6: the audience keys only Raw JSON sets are read too, never dropped from the line.
     ["Raw JSON audience keys", "mass_premade", { messages: [{ text: "Hi", included_users: [1, 2], list_ids: [7],
       filters: { online: 1, min_spent: 5 }, excluded_users: [3], exclude_list_ids: [8, 9] }] },
       "Free · Hi · 2 fans + 1 DB list · online only · filters · excl. 2 DB lists + 1 fan"],
-    // fan_ids is never forwarded (mass_premade `_SEND_KEYS`): not read as fans.
     ["fan_ids and the chatted-with / unread includes", "mass_premade", { messages: [{ text: "Hi", fan_ids: [1],
       recent_chat_hours: 24, unread_limit: 5 }] }, "Free · Hi · chatted 24h + 5 unread"],
     ["[null]", "mass_premade", { messages: [null] }, "Free"],
@@ -61,7 +54,6 @@ describe("samePayload", () => {
   });
 });
 
-// The full table (every key the form doesn't hold) is ruleEditorForm.test.ts "form view only on a lossless round trip".
 describe("formHoldReason", () => {
   it.each<[string, Kind, Record<string, unknown>, FormHoldReason | null]>([
     ["empty", "mass_premade", {}, null],
@@ -78,9 +70,7 @@ describe("formHoldReason", () => {
     ["filters", "mass_premade", { messages: [{ text: "a", user_lists: ["fans"], filters: { online: 1 } }] }, "settings"],
     ["[null]", "mass_premade", { messages: [null] }, "settings"],
     ["only the other kind's list", "mass_premade", { posts: [{ text: "a" }, { text: "b" }] }, "settings"],
-    // Auto Mass reads resends per message: a top-level one is a key the form doesn't hold, not a timer.
     ["a top-level resend_count on a mass", "mass_premade", { messages: [{ text: "a" }], resend_count: 2 }, "settings"],
-    // Auto Post: one post; an older list, its repost cycle (list-level) or a per-post delay → Raw JSON.
     ["empty post rule", "auto_posts", {}, null],
     ["one post", "auto_posts", { posts: [{ text: "a", price: 12, hours_to_live: 6, preview_media_files: [1] }] }, null],
     ["two posts", "auto_posts", { posts: [{ text: "a" }, { text: "b" }] }, "multi"],

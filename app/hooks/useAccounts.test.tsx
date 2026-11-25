@@ -1,19 +1,3 @@
-/**
- * useAccounts — per-principal cache isolation (cross-tenant leak fix).
- *
- * /admin/accounts returns the FULL multi-tenant registry when called
- * UNauthenticated (the dev-curl fallback). The owner query used to cache
- * under a principal-agnostic key `["accounts"]` with a 3-day staleTime, so
- * a list fetched in an unauthed window (app boot before /auth/me resolves,
- * a brief session expiry) persisted and bled into the next owner's
- * session — surfacing another owner's models in this owner's picker, then
- * 403'ing on save ("account X is not one of yours").
- *
- * The fix keys the cache by `user.user_id` and refuses to fetch until a
- * principal is known. These tests assert both guarantees: switching
- * principals never serves the previous user's cached accounts, and a null
- * user never triggers the unauthed /admin/accounts fetch.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -21,8 +5,6 @@ import { hydrate, QueryClient, QueryClientProvider } from "@tanstack/react-query
 
 vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn() } }));
 
-// useUser / useChatter are driven by mutable module-level state so each test
-// (and each rerender) can flip the active principal.
 let mockUser: { user_id: string; username: string } | null = null;
 let mockChatter: unknown = null;
 vi.mock("@/contexts/UserContext", () => ({
@@ -37,6 +19,8 @@ vi.mock("@/contexts/ChatterContext", () => ({
 import { useAccounts, useActiveAccounts, useOfManagerAccounts, useWatcherAccounts } from "@/hooks/useAccounts";
 import { useCreatorFreshness } from "@/hooks/useCreatorFreshness";
 import { relay } from "@/lib/relay";
+import { useAccountPlatform, useCan } from "@/hooks/useCan";
+import { PLATFORMS } from "@/lib/platform";
 const relayGet = relay.get as unknown as Mock;
 
 let client: QueryClient;
@@ -54,8 +38,6 @@ afterEach(() => { cleanup(); });
 
 describe("useAccounts principal isolation", () => {
   it("does NOT fetch /admin/accounts before a principal is known", async () => {
-    // No user, no chatter (app boot / login screen). Pre-fix this fired an
-    // unauthed /admin/accounts → full registry → poisoned cache.
     renderHook(() => useAccounts(), { wrapper });
     await new Promise((r) => setTimeout(r, 0));
     expect(relayGet).not.toHaveBeenCalled();
@@ -70,12 +52,9 @@ describe("useAccounts principal isolation", () => {
     const { result, rerender } = renderHook(() => useAccounts(), { wrapper });
     await waitFor(() => expect(result.current.data?.accounts?.[0]?.id).toBe("acct-a"));
 
-    // Flip to a different signed-in owner on the same browser/cache.
     mockUser = { user_id: "owner-B", username: "owner-b" };
     rerender();
 
-    // Must refetch under the new principal's key — not reuse owner-A's
-    // still-fresh cache entry.
     await waitFor(() => expect(result.current.data?.accounts?.[0]?.id).toBe("acct-b"));
     expect(relayGet).toHaveBeenCalledTimes(2);
   });
@@ -98,6 +77,27 @@ describe("watchers", () => {
       expect(result.current.active.map((a) => a.id)).toEqual(["c1"]);
       expect(result.current.watchers.map((a) => [a.id, a.role])).toEqual([["w1", "watcher"]]);
       expect(result.current.ofm.map((a) => a.id)).toEqual(["c1", "w1"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("a chatter's roster rows keep `platform`, and useCan on a Fansly row is false for every Capability Fansly lacks", async () => {
+    mockChatter = { id: "ch1" };
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true, json: async () => [{ ...row("c1"), platform: "fansly" }, row("c2")],
+    })));
+    const fansly = PLATFORMS.find((p) => p.key === "fansly")!;
+    try {
+      const { result } = renderHook(() => ({
+        all: useAccounts().data,
+        can: Object.fromEntries(fansly.lacks.map((cap) => [cap, useCan("c1", cap)])),
+        legacy: useAccountPlatform("c2"),
+      }), { wrapper });
+      await waitFor(() => expect(result.current.all?.accounts.length).toBe(2));
+      expect(result.current.all?.accounts.map((a) => [a.id, a.platform])).toEqual([["c1", "fansly"], ["c2", undefined]]);
+      expect(result.current.can).toEqual(Object.fromEntries(fansly.lacks.map((cap) => [cap, false])));
+      expect(result.current.legacy).toBe("onlyfans");
     } finally {
       vi.unstubAllGlobals();
     }
@@ -129,7 +129,6 @@ describe("freshness (the Shared refresher's snapshot on each row)", () => {
   it("owner rows keep `freshness` and seed the store from the network answer", async () => {
     relayGet.mockResolvedValueOnce({ accounts: [{ id: "c1", freshness: snap("c1", 2) }, { id: "c2" }], active_account_id: "c1" });
     mockUser = { user_id: "owner-A", username: "owner-a" };
-    // The reader in its own component: only the store's change re-renders it.
     const reader = renderHook(() => ({ c1: useCreatorFreshness("c1"), c2: useCreatorFreshness("c2") }), { wrapper });
     expect(reader.result.current).toEqual({ c1: null, c2: null });
     const { result } = renderHook(() => useAccounts(), { wrapper });
@@ -160,7 +159,6 @@ describe("freshness (the Shared refresher's snapshot on each row)", () => {
 
   it("never seeds from the persisted accounts copy, only from the network answer after it", async () => {
     mockUser = { user_id: "owner-A", username: "owner-a" };
-    // The persisted copy, restored as the persister does (its old dataUpdatedAt kept).
     hydrate(client, {
       mutations: [],
       queries: [{
@@ -196,7 +194,7 @@ describe("freshness (the Shared refresher's snapshot on each row)", () => {
     await waitFor(() => expect(Object.keys(store("owner-A") ?? {})).toEqual(["c1"]));
     expect(store("owner-A")?.c1).toMatchObject({ seq: 3 });
     expect(reader.result.current.c2).toBeNull();
-    await client.refetchQueries({ queryKey: ["accounts", "owner-A"] });   // Knob off + restart: no row carries it
+    await client.refetchQueries({ queryKey: ["accounts", "owner-A"] });
     await waitFor(() => expect(store("owner-A")).toEqual({}));
     expect(reader.result.current).toEqual({ c1: null, c2: null });
   });

@@ -1,4 +1,3 @@
-"""proxy_wire._pipe: one exchange per tunnel while refusing, 1xx interim answers excluded."""
 import asyncio
 import socket
 
@@ -6,7 +5,6 @@ from slop.lib import proxy_wire as pw
 
 
 async def _relay(client_chunks: list[bytes], upstream_chunks: list[bytes], refusing: bool) -> tuple[bytes, bytes]:
-    """client <-> [_pipe pair] <-> upstream over socketpairs; returns (what upstream got, what client got)."""
     c_out, p_c = socket.socketpair()
     p_u, u_out = socket.socketpair()
     cr, cw = await asyncio.open_connection(sock=p_c)
@@ -56,12 +54,12 @@ def test_100_continue_split_across_reads_keeps_the_body_while_refusing():
 
 
 def test_answered_splits():
-    assert pw._answered(b"HTTP/1.1 10") == (False, b"HTTP/1.1 10")  # may still be 100
+    assert pw._answered(b"HTTP/1.1 10") == (False, b"HTTP/1.1 10")
     assert pw._answered(b"HTTP/1.1 100 Continue\r\n") == (False, b"HTTP/1.1 100 Continue\r\n")
     assert pw._answered(b"HTTP/1.1 100 Continue\r\n\r\n") == (False, b"")
-    assert pw._answered(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n")[0]  # final answer in the same read
+    assert pw._answered(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n")[0]
     assert pw._answered(b"HTTP/1.1 101 Switching")[0] and pw._answered(b"HTTP/1.1 200")[0]
-    assert pw._answered(b"\x16\x03\x01\x02\x00")[0]  # TLS bytes: the answer at once, as before
+    assert pw._answered(b"\x16\x03\x01\x02\x00")[0]
 
 
 def test_second_request_closes_the_tunnel_only_while_refusing():
@@ -73,8 +71,6 @@ def test_second_request_closes_the_tunnel_only_while_refusing():
 
 
 def test_websocket_tunnels_through_the_wire():
-    """service/of_ws.py dials a socks5-bound Creator's socket with websockets' `proxy=`; python-socks 2.5.1 raised
-    there (its asyncio backend needs async-timeout; no `local_addr`, which websockets 16 passes): no pump came up."""
     import websockets
     from websockets.asyncio.client import connect
 

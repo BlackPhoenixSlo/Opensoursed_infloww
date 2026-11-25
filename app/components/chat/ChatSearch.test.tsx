@@ -2,8 +2,13 @@
  * ChatSearch's Esc: it closes Find and spends the key (`preventDefault`), so
  * a page acting on an Esc nothing took (e.g. leaving a mode) stays put.
  */
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+const platform = vi.hoisted(() => ({ current: "onlyfans" as "onlyfans" | "fansly" }));
+vi.mock("@/hooks/useCan", async () => {
+  const { can } = await import("@/lib/platform");
+  return { useCan: (_: unknown, cap: Parameters<typeof can>[1]) => can(platform.current, cap) };
+});
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn() } }));
 
@@ -62,5 +67,25 @@ describe("ChatSearch when an older page fails", () => {
     await waitFor(() => expect(screen.getByText("Couldn’t load older messages to reach that match.")).toBeTruthy());
     expect(screen.queryByText("Loading context…")).toBeNull();
     expect(props.onPick).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatSearch on a Fansly Creator", () => {
+  afterEach(() => {
+    platform.current = "onlyfans";
+    vi.useRealTimers();
+  });
+
+  it("sends no search request", () => {
+    platform.current = "fansly";
+    vi.useFakeTimers();
+    vi.mocked(relay.get).mockClear();
+    render(
+      <ChatSearch accountId="a" fanId={1 as FanId} messages={[]} ownerUserId={null}
+        hasOlder={false} loadingOlder={false} onLoadOlder={vi.fn()} onPick={vi.fn()} onClose={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByPlaceholderText("Search this conversation…"), { target: { value: "hey" } });
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(relay.get).not.toHaveBeenCalled();
   });
 });

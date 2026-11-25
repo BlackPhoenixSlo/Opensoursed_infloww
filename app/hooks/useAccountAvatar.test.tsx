@@ -1,14 +1,3 @@
-/**
- * useAccountAvatar — a Creator's picture is only ever its own.
- *
- * On AE the Manage creators table showed one Creator's (Wren's) OF avatar on
- * every row. A `/users/me` body names whose profile it is (`id` = the OF user
- * id = our account id), so a row keeps a body only when that id is its own:
- * any other body (a shared cache entry, a fallback to the active account)
- * paints the initial instead of someone else's face. The table and the
- * dashboard cards read one entry per Creator (`["of-profile", id]`), so one
- * request serves both.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";

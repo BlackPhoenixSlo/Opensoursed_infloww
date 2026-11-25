@@ -1,5 +1,3 @@
-"""Scenario 2a badge-load-elsewhere's checks over synthetic traces: each passes on the right behaviour and fails on
-the broken one it guards (the CAUGHT side, without a relay)."""
 import copy
 import importlib
 from collections import Counter
@@ -92,19 +90,19 @@ def _break(name):
 
 
 @pytest.mark.parametrize("broken, check", [
-    ("dot_p95", m.DOT_FLIP_P95_UNDER_8S),            # every elsewhere flip > 8 s late
-    ("dot_max", m.DOT_FLIP_MAX_UNDER_30S),           # a read never reaches the dot (a later DM shows 1 at 40 s)
-    ("final_red", m.FINAL_EQUALS_TRUTH),             # Red circle off truth after the full settle
-    ("final_dot", m.FINAL_EQUALS_TRUTH),             # a fan's dot off truth after the lean settle
-    ("gap", m.READS_GAP_5S),                         # two reads 3 s apart
-    ("flight", m.READS_SINGLE_FLIGHT),               # two reads in flight at once
-    ("pages", m.READS_MAX_2_PAGES),                  # a third page
-    ("stale", m.STALE_READ_NEVER_CLEARS),            # {X, 0} after X's DM, even though a later read heals it
-    ("stale_end", m.STALE_READ_NEVER_CLEARS),        # X not unread at the race end
-    ("lean_gap", m.LEAN_GAP_15S),                    # lean reads 8 s apart
-    ("lean_halve", m.LEAN_READS_HALVE),              # lean reads at the full leg's rate
-    ("off_call", m.OFF_ZERO_READS),                  # a filter=unread call with BADGE_READS=off
-    ("off_red", m.OFF_ZERO_READS),                   # Red circle off truth at the off leg's end
+    ("dot_p95", m.DOT_FLIP_P95_UNDER_8S),
+    ("dot_max", m.DOT_FLIP_MAX_UNDER_30S),
+    ("final_red", m.FINAL_EQUALS_TRUTH),
+    ("final_dot", m.FINAL_EQUALS_TRUTH),
+    ("gap", m.READS_GAP_5S),
+    ("flight", m.READS_SINGLE_FLIGHT),
+    ("pages", m.READS_MAX_2_PAGES),
+    ("stale", m.STALE_READ_NEVER_CLEARS),
+    ("stale_end", m.STALE_READ_NEVER_CLEARS),
+    ("lean_gap", m.LEAN_GAP_15S),
+    ("lean_halve", m.LEAN_READS_HALVE),
+    ("off_call", m.OFF_ZERO_READS),
+    ("off_red", m.OFF_ZERO_READS),
 ])
 def test_each_check_fails_on_its_broken_trace(broken, check):
     ok, detail = _judge(_break(broken))[check]

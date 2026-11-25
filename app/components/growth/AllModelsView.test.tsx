@@ -1,8 +1,3 @@
-/**
- * Growth > Scripts' All models matrix: a row's "Share to all" reads its first holder's list through the list query
- * (the Scripts page's, fetched fresh) and copies that entry's scripts to every other
- * Creator, showing the copy's counts; a failed share shows its error. `@/lib/relay` mocked, a fresh QueryClient.
- */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
@@ -60,7 +55,6 @@ describe("AllModelsView", () => {
       from_account_ids: ["b"], to_account_ids: [], all_creators: true, ids: [7, 8],
     });
     expect(screen.getByLabelText("Share result")).toHaveTextContent(/Shared “Night” to all creators.*4 scripts copied, 2 skipped/);
-    // Once done the row is free again; a re-share copies the same ids.
     shareNight();
     await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
     expect(post.mock.calls[1]).toEqual(post.mock.calls[0]);
@@ -71,7 +65,7 @@ describe("AllModelsView", () => {
     const queryClient = makeTestQueryClient();
     const { queryKey } = savedRepliesQuery("b");
     queryClient.setQueryDefaults(queryKey, { gcTime: Infinity });
-    queryClient.setQueryData(queryKey, [LIST_B[0]]);  // the Scripts page's list, a step since added
+    queryClient.setQueryData(queryKey, [LIST_B[0]]);
     renderWithProviders(<AllModelsView accounts={ACCOUNTS} />, queryClient);
     await screen.findByRole("row", { name: /Night/ });
     shareNight();

@@ -1,42 +1,7 @@
 #!/usr/bin/env python3
-"""
-On/off WIRING checkpoint for send_welcome, send_followup, welcome_chatter_for_info.
-
-Each case drives the SAME route coroutine the UI hits, reads the persisted key
-back, then runs the real supervisor pass (`_drain_due_jobs_once`) or the real
-W7 dispatch (`webhook_dispatch.on_inbound_message`) and checks whether the
-automation ran / was enqueued. The automation bodies are replaced by a recorder
-in the registry, so "ran" means "the executor dispatched it" — nothing sends.
-
-UI → API → key:
-  send_welcome    BrainPanel.saveWelcome  → POST /admin/automation-rules (create)
-                                           / PATCH /admin/automation-rules/{id}
-  send_followup   BrainPanel.saveFollowup → same two routes
-  welcome_chatter_for_info  ScriptsTab AutomationSwitchCard
-                                         → POST /admin/automation-rules/switch
-  key: automation_rules.is_enabled; runtime gate: _materialize_due_rules.
-
-  case_send_welcome_patch_gates_materializer / case_send_followup_...:
-      create (enabled) → PATCH off → persisted False → drain runs nothing;
-      PATCH on → drain runs it once.
-  case_info_switch_gates_periodic_sweep:
-      switch on/off flips the row; the periodic sweep follows it.
-  case_info_realtime_enqueues_when_rule_on:
-      positive control — W7 inbound with the rule ON enqueues a fan-scoped job.
-  case_info_realtime_does_not_enqueue_when_rule_off  (was a BUG, fixed):
-      W7 gates on webhook_config_json.enabled only; `_classify_kind` returns
-      welcome_chatter_for_info without ever reading its rule.
-  case_info_queued_realtime_job_dropped_after_switch_off  (was a BUG, fixed):
-      a real-time job queued while ON still runs after the switch goes OFF.
-  case_send_welcome_queued_job_dropped_after_patch_off  (was a BUG, fixed):
-      a materialized job still pending (in-flight lock / retry backoff) runs
-      after the rule is PATCHed off — run_once never re-checks the rule.
-
-Run: ./venv/bin/python service/tests/test_wiring_welcome.py  (exit 0 = pass)
-"""
 from __future__ import annotations
 
-import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback footgun)
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -45,8 +10,6 @@ import json  # noqa: E402
 import os  # noqa: E402
 import sys  # noqa: E402
 
-# The route coroutines are driven directly with no signed-in principal; the
-# fail-closed gate's documented escape hatch (precedent: test_account_config_api).
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 
 from sqlalchemy import select  # noqa: E402
@@ -63,7 +26,6 @@ from db.models import Account, AccountAiConfig, AutomationRule, ScheduledJob  # 
 KINDS = ("send_welcome", "send_followup", "welcome_chatter_for_info")
 INFO = "welcome_chatter_for_info"
 
-# ── Recorder in place of the real automation bodies (no OF, no LLM) ─────
 reg.load_automation_plugins()
 CALLS: list[tuple[str, str, dict]] = []
 
@@ -81,9 +43,6 @@ for _k in KINDS:
 
 
 def _require(cond: bool, msg: str) -> None:
-    """A PRECONDITION inside a case. SystemExit is not caught by
-    `_harness.run`, so a broken setup aborts the suite loudly instead of being
-    filed as an ordinary assertion failure."""
     if not cond:
         print(f"[FAIL] precondition: {msg}")
         sys.exit(1)
@@ -93,7 +52,6 @@ def _ran(aid: str, kind: str) -> list[dict]:
     return [p for a, k, p in CALLS if a == aid and k == kind]
 
 
-# ── Helpers ──────────────────────────────────────────────────────────
 
 async def _seed(aid: str, *, webhook: bool = False) -> None:
     async with get_session() as s:
@@ -105,7 +63,6 @@ async def _seed(aid: str, *, webhook: bool = False) -> None:
 
 
 async def _drain() -> None:
-    """One real supervisor pass, then wait for the detached runs it spawned."""
     ax._run_sem = None
     ax._bulk_sem = None
     await ax._drain_due_jobs_once()
@@ -137,7 +94,6 @@ async def _patch_gates_materializer(aid: str, kind: str, payload: dict) -> None:
     rid = out["id"]
     assert (await _rules(aid, kind))[0].is_enabled is True
 
-    # OFF (the panel's "Enabled" unticked + Save → PATCH is_enabled=false)
     out = await update_rule(rid, RulePatch(is_enabled=False))
     assert out["is_enabled"] is False
     assert (await _rules(aid, kind))[0].is_enabled is False, "OFF not persisted"
@@ -145,7 +101,6 @@ async def _patch_gates_materializer(aid: str, kind: str, payload: dict) -> None:
     assert _ran(aid, kind) == [], f"{kind} ran while its rule is OFF"
     assert await _pending(aid, kind) == [], f"{kind} job enqueued while OFF"
 
-    # ON
     await update_rule(rid, RulePatch(is_enabled=True))
     assert (await _rules(aid, kind))[0].is_enabled is True, "ON not persisted"
     await _drain()
@@ -155,7 +110,6 @@ async def _patch_gates_materializer(aid: str, kind: str, payload: dict) -> None:
         assert runs[0].get(k) == v, f"rule payload {k} not carried to the run"
 
 
-# ── Cases ────────────────────────────────────────────────────────────
 
 async def case_send_welcome_patch_gates_materializer():
     await _patch_gates_materializer("wire_welcome", "send_welcome",

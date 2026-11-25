@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""The chat upload and the vault import send OnlyFans the SAME convert claim.
-
-Messages Pro's "upload from computer" (POST /api/of/v2/upload) failed every
-time with convert's 400 "Invalid input." while the bytes reached S3. Cause
-(VERIFIED LIVE 2026-10-16): signed/create now answers with its OWN `key`
-(`upload/<userId>/...`, where the bytes land) and an `uploadToken`, and convert
-refuses a claim that names our client-built key or omits `file[uploadToken]`.
-
-Both paths now build the claim in one place (`_claim_uploaded`). These cases
-pin the multipart body convert receives, field by field and in order, for the
-chat route, `upload_claim`, and the vault's claim retry — image, single-part
-video and multipart video. OF is faked: no request leaves the process.
-
-  case_image_chat_and_vault_send_the_same_claim
-  case_video_chat_and_vault_send_the_same_claim
-  case_multipart_video_chat_and_vault_send_the_same_claim
-  case_claim_retry_sends_the_same_claim
-  case_signed_create_and_finish_carry_user_prefix
-
-Run: ./venv/bin/python service/tests/test_upload_convert_claim.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 _harness.bootstrap()
@@ -47,7 +26,6 @@ CLAIM = {"processId": "p1", "host": "convert1.onlyfans.com", "extra": "x",
 
 
 class _Mime:
-    """Stands in for curl_cffi.CurlMime: keeps the parts in order."""
 
     def __init__(self):
         self.parts = []
@@ -63,12 +41,11 @@ def _resp(*, etag=None, body=None, status=200):
 
 
 def _server_key(our_key: str) -> str:
-    # What OF does to the key: the creator id spliced in after `upload/`.
+    # OF splices the creator id in after `upload/`
     return our_key.replace("upload/", "upload/4242/", 1)
 
 
 class _Fake:
-    """Everything upload_media touches on the wire, recorded."""
 
     def __init__(self, *, convert_fails: list | None = None):
         self.convert_bodies: list[list] = []
@@ -92,7 +69,7 @@ class _Fake:
         if url.endswith("/upload/signed/create"):
             key = _server_key(json_body["key"])
             s3 = f"https://of2transcoder.s3-accelerate.amazonaws.com/{key}"
-            out = {"key": key, "getUrl": f"https://upload.onlyfans.com/{key[7:]}",
+            out = {"key": key, "getUrl": f"https://upload.onlyfans.com/{key[7:]}",  # getUrl is upload.onlyfans.com now: Location comes from part 1's putUrl, never getUrl
                    "uploadToken": TOKEN}
             if json_body["parts"] > 1:
                 out.update(uploadId="U1", keys=[
@@ -128,7 +105,6 @@ class _PartSession:
 
 
 def _with_fakes(fn):
-    """Swap curl_cffi's CurlMime and the per-part session for recorders."""
     saved = (curl_cffi.CurlMime, of_client.requests)
     curl_cffi.CurlMime = _Mime
     of_client.requests = SimpleNamespace(Session=_PartSession)
@@ -146,7 +122,6 @@ vault_cache.invalidate = _no_invalidate
 
 
 def _chat_body(name: str, data: bytes, ct: str) -> list:
-    """The convert body the Messages Pro composer's upload produces."""
     fake = _Fake()
     server._get_client = lambda *a, **k: fake.client()
     f = UploadFile(io.BytesIO(data), filename=name, headers=Headers({"content-type": ct}))
@@ -159,7 +134,6 @@ def _chat_body(name: str, data: bytes, ct: str) -> list:
 
 
 def _vault_body(name: str, data: bytes) -> list:
-    """The convert body upload_claim produces for the same file."""
     fake = _Fake()
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / name
@@ -171,7 +145,6 @@ def _vault_body(name: str, data: bytes) -> list:
 
 
 def _normalised(body: list) -> list:
-    """The key's <uuid>/<random> segment is fresh per upload; nothing else is."""
     out = []
     for name, value in body:
         if name in ("file[Key]", "file[Location]"):
@@ -209,15 +182,11 @@ def case_video_chat_and_vault_send_the_same_claim():
 
 
 def case_multipart_video_chat_and_vault_send_the_same_claim():
-    # Over one 5 MiB part: per-part PUTs, signed/finish, and Location from
-    # part 1's putUrl — never getUrl, which is upload.onlyfans.com now.
     data = os.urandom(of_client._PART_SIZE + 1024)
     _assert_same("long.mp4", data, "video/mp4", "assembled-2")
 
 
 def case_claim_retry_sends_the_same_claim():
-    # A hung claim is retried by upload_claim on bytes already in S3; the
-    # retry must name the same key and token as the first attempt.
     fake = _Fake(convert_fails=[RuntimeError("Operation timed out"),
                                 RuntimeError("Operation timed out")])
     with tempfile.TemporaryDirectory() as td:
@@ -240,7 +209,6 @@ def case_signed_create_and_finish_carry_user_prefix():
     (create_url, create), (finish_url, finish) = fake.json_posts
     assert create_url.endswith("/upload/signed/create") and create["userPrefix"] == "upload", create
     assert finish_url.endswith("/upload/signed/finish") and finish["userPrefix"] == "upload", finish
-    # signed/finish names OF's key, not ours.
     assert finish["key"] == _server_key(create["key"]), (create, finish)
 
 

@@ -7,7 +7,6 @@ const run = (acts: GifLoopAction["type"][], s: GifLoopState = GIF_LOOP_INIT) =>
 
 describe("gifLoopReducer", () => {
   it.each<[string, GifLoopAction["type"][], GifLoopState, boolean, boolean]>([
-    // name, actions, state, mounted, visible
     ["initial: mounted for the observer, no src, still shown", [], { attached: false, playing: false, failed: false }, true, false],
     ["first on screen: src on, still until it plays", ["attach"], { attached: true, playing: false, failed: false }, true, false],
     ["playing: video over the still", ["attach", "playing"], { attached: true, playing: true, failed: false }, true, true],
@@ -35,7 +34,6 @@ describe("gifLoopReducer", () => {
 });
 
 describe("gifSlots", () => {
-  // Steps on tiles a..e: "+x" acquire, "-x" release. Want: who was granted (now or later) in order, held, queued.
   it.each<[string, string[], string[], number, number]>([
     ["under the cap: every ask granted now", ["+a", "+b"], ["a", "b"], 2, 0],
     ["over the cap: the rest queue", ["+a", "+b", "+c", "+d", "+e"], ["a", "b", "c"], 3, 2],

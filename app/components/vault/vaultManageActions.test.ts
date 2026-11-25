@@ -53,7 +53,6 @@ describe("describe Max", () => {
   });
 });
 
-/** A busy line backed by a plain variable, like the panel's ref; `seen` is every value it was set to. */
 function deps(selected: number[] = [1, 2]) {
   let line = "";
   const seen: string[] = [];
@@ -73,8 +72,6 @@ function deps(selected: number[] = [1, 2]) {
 
 const tile = { id: 7, type: "photo" } as Tile;
 
-// Collect's poll refreshes the grid once the run has news. A restricted chatter gets null totals (whole-vault), so
-// "seen > 0" alone never fired for it: the grid stayed stale after Collect.
 describe("collectHasNews", () => {
   const run = (total_seen: number | null, phase: string | null, status = "running") =>
     ({ id: 1, status, phase, total_seen, upserted: total_seen, pages_done: total_seen, error: null,
@@ -93,8 +90,6 @@ describe("collectHasNews", () => {
   });
 });
 
-// The poll refreshes the grid once: on news, else on its last poll (a restricted chatter's vault still paging OF
-// after the window has no news it can see, and its grid would stay stale).
 describe("onCollect", () => {
   const run = (total_seen: number | null, phase: string) =>
     ({ id: 1, status: "running", phase, total_seen, upserted: null, pages_done: null, error: null,
@@ -121,8 +116,6 @@ describe("onCollect", () => {
   });
 });
 
-// The paused Collect's prompt: one call to the answer's endpoint, then the summary (polled while held) is re-read;
-// a 409 (already answered) is swallowed and still re-reads it.
 describe("onCollectAnswer", () => {
   it.each<["continue" | "stop", boolean]>([["continue", true], ["stop", true], ["continue", false]])(
     "%s (endpoint ok: %s)", async (answer, ok) => {
@@ -137,7 +130,6 @@ describe("onCollectAnswer", () => {
     });
 });
 
-/** A describe that answers only when told to, so two calls can overlap. */
 function heldDescribe() {
   const release: (() => void)[] = [];
   h.describeMedia.mockImplementation(
@@ -153,8 +145,6 @@ beforeEach(() => {
   h.createOfFolder.mockReset().mockResolvedValue({});
 });
 
-// Describe is a paid LLM call: a second press while one is in flight must not buy a second answer. The panel's
-// buttons are `disabled={!!busy}`, but that only lands on the next render; the busy line is read synchronously.
 describe("a describe while busy fires nothing", () => {
   type Fire = (d: ReturnType<typeof deps>["d"]) => Promise<void>[];
   it.each<[string, Fire]>([

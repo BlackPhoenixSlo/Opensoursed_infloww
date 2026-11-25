@@ -1,15 +1,5 @@
 "use client";
 
-/**
- * TopTippersCard — right-rail leaderboard, visible on BOTH the PPV and
- * Tips tabs. Reads /admin/top-tippers; clicks bind the parent page's
- * fan_query filter so the list below filters to that fan.
- *
- * Single-page query (server caps at limit=100, we use 20). Window-focus
- * refetch is ON via the hook — a leaderboard feels live without manual
- * refresh. "Export CSV" downloads every tipper in the window, not just the
- * top 20 (`/admin/top-tippers?format=csv`).
- */
 
 import CsvExportButton from "@/components/messages/CsvExportButton";
 import { Card } from "@/components/ui/primitives";
@@ -22,10 +12,7 @@ import {
 } from "@/hooks/useTopTippers";
 
 interface Props extends UseTopTippersParams {
-  /** Called when the user clicks a row. Parent should set its fan_query
-   *  to the chosen username so the list below filters. */
   onSelectFan?: (username: string) => void;
-  /** Free-form label shown under the title (e.g. "last 30 days"). */
   windowLabel?: string;
 }
 

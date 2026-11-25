@@ -24,7 +24,6 @@ import {
   type SettingsWrite,
 } from "./ofMirrorSettingsWrites";
 
-/** The captured page `settings/<page>` as the frame's document. */
 const load = (page: string) => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/settings/${page}.html`), "utf8");
   return document;
@@ -33,7 +32,6 @@ const input = (id: string) => document.getElementById(id) as HTMLInputElement;
 const noteText = () => document.getElementById("oi-note")?.textContent ?? null;
 const toastText = () => document.querySelector("#oi-toast .toast__text")?.textContent ?? null;
 const flush = () => new Promise((r) => setTimeout(r, 0));
-/** A click on the control's label, as an operator toggles OF's switches (the browser fires change on the input). */
 const toggle = (id: string) => (document.querySelector(`label[for='${id}']`) as HTMLElement).click();
 
 let unbinds: (() => void)[] = [];
@@ -42,7 +40,6 @@ afterEach(() => {
   unbinds = [];
 });
 
-/** Bind both write layers on `settings/<page>`, as the frame does; returns the recorded settings writes. */
 function bind(page: string, opts: { data?: object; me?: object; fail?: string; confirm?: boolean; scope?: "all"; standIn?: boolean; newWrites?: boolean } = {}) {
   const doc = load(page);
   const sent: SettingsWrite[] = [];
@@ -137,11 +134,11 @@ describe("toggleWrite", () => {
     });
 
     load("notifications/webpush");
-    expect(toggleWrite("notifications/webpush", input("push-notifications"), {})).toBeNull(); // the browser's permission
+    expect(toggleWrite("notifications/webpush", input("push-notifications"), {})).toBeNull();
     load("security/watermarks");
-    expect(toggleWrite("security/watermarks", input("hasWatermarkPhoto"), {})).toBeNull(); // its Save sends it
+    expect(toggleWrite("security/watermarks", input("hasWatermarkPhoto"), {})).toBeNull();
     load("profile");
-    expect(toggleWrite("profile", input("input-location"), {})).toBeNull(); // ofMirrorWrites' Save
+    expect(toggleWrite("profile", input("input-location"), {})).toBeNull();
   });
 });
 
@@ -204,14 +201,13 @@ describe("watermarks Save", () => {
     load("security/watermarks");
     input("hasWatermarkPhoto").checked = true;
     input("hasWatermarkVideo").checked = false;
-    // A blank field is sent blank, as OF's save(): OF then uses its default text. No position before users/me's.
     expect(collectWatermarks(document)).toEqual({ hasWatermarkPhoto: true, hasWatermarkVideo: false, watermarkText: "" });
-    document.querySelector<HTMLInputElement>("input[name='watermark_position']")!.value = "bottom_right"; // as applySettings sets it
+    document.querySelector<HTMLInputElement>("input[name='watermark_position']")!.value = "bottom_right";
     expect(collectWatermarks(document)).toMatchObject({ watermarkPosition: "bottom_right" });
     input("input-watermark-text").value = "Synthetic";
     expect(collectWatermarks(document)).toMatchObject({ watermarkText: "Synthetic" });
     input("hasWatermarkPhoto").checked = false;
-    expect(collectWatermarks(document)).not.toHaveProperty("watermarkText"); // OF drops it with no watermark on
+    expect(collectWatermarks(document)).not.toHaveProperty("watermarkText");
   });
 
   it("turns Save on after a change and PUTs the security section", async () => {
@@ -219,7 +215,7 @@ describe("watermarks Save", () => {
     const save = [...document.querySelectorAll<HTMLButtonElement>("form .g-btn__wrapper button")].find((b) => b.textContent!.trim() === "Save")!;
     expect(save.disabled).toBe(true);
     toggle("hasWatermarkVideo");
-    expect(noteText()).toBeNull(); // not ofMirrorWrites' read-only note
+    expect(noteText()).toBeNull();
     expect(save.disabled).toBe(false);
     save.click();
     await flush();
@@ -277,10 +273,8 @@ describe("subscription price", () => {
   });
 });
 
-// ticket 60
 describe("drawn switches and email Update frequency", () => {
   const NOTIF = "/api/of/v2/users/settings/notifications";
-  /** `settings/<page>` with its extras drawn from `data`, then both write layers bound. */
   function drawn(page: string, data: object, opts: { fail?: string; scope?: "all" } = {}) {
     const r = bind(page, { ...opts, data });
     applySettings(document, page, data as never);
@@ -292,7 +286,7 @@ describe("drawn switches and email Update frequency", () => {
   const menuRows = () => [...document.querySelectorAll<HTMLElement>("#oi-menu [data-oi-group]")];
   const email = (on: boolean, hours: number | false) => ({
     settings: { isEmailNotificationsEnabled: true },
-    "notifications:email": [{ items: [{ code: "new_likes_digest", isEnabled: on, value: on ? hours : 0 }] }], // the fixture's shape
+    "notifications:email": [{ items: [{ code: "new_likes_digest", isEnabled: on, value: on ? hours : 0 }] }],
   });
 
   it.each([
@@ -322,9 +316,9 @@ describe("drawn switches and email Update frequency", () => {
 
   it("switch off (OFM_NEW_WRITES_ENABLED unset): the drawn Fully private stays Not yet, never marked Wired, sends nothing (live 2026-11-21)", () => {
     const data = { me: { isPerformer: true, isAdultContent: false }, settings: { isPrivate: false } };
-    const { sent } = bind("security", { data, newWrites: false }); // bound first, as live: Show activity status is Wired
+    const { sent } = bind("security", { data, newWrites: false });
     applySettings(document, "security", data as never);
-    applyPageExtras(document, "security", data as never, false); // the drawn row is its clone
+    applyPageExtras(document, "security", data as never, false);
     const el = input("setting_isPrivate");
     expect([el.hasAttribute("data-oi-wired"), el.disabled, el.title]).toEqual([false, true, NOT_YET]);
     toggle("setting_isPrivate");
@@ -414,7 +408,6 @@ describe("drawn switches and email Update frequency", () => {
   });
 });
 
-// ticket 63
 describe("Close all sessions (account/sessions)", () => {
   const button = () =>
     [...document.querySelectorAll<HTMLButtonElement>("#content button")].find((b) => b.textContent?.trim() === "Close all sessions")!;
@@ -426,7 +419,6 @@ describe("Close all sessions (account/sessions)", () => {
     bind("account/sessions");
     applyPageExtras(document, "account/sessions", { sessions: [] }, true);
     expect([button().disabled, button().hasAttribute("data-oi-wired"), button().title]).toEqual([false, true, NOT_YET]);
-    // every other Account control stays disabled
     expect([...document.querySelectorAll<HTMLButtonElement>("#content button")].filter((b) => b !== button() && !b.disabled)).toEqual([]);
   });
 
@@ -489,7 +481,6 @@ describe("Close all sessions (account/sessions)", () => {
   });
 });
 
-// ticket 66
 describe("Block by country and Block by IP (Lockout writes)", () => {
   const COUNTRIES = [
     { code: "AQ", name: "Antarctica" },
@@ -634,7 +625,6 @@ describe("Block by country and Block by IP (Lockout writes)", () => {
   });
 });
 
-// ticket 76
 describe("Reset stream key (streaming)", () => {
   const button = () =>
     [...document.querySelectorAll<HTMLButtonElement>("#content button")].find((b) => b.textContent?.trim() === "Reset")!;

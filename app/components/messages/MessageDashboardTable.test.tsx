@@ -1,15 +1,9 @@
-/**
- * MessageDashboardTable — Infloww's eleven columns in order and the cell rules a type check cannot see: a mass
- * summary's "N fans" and "N of M", "--" for no reply time, a recorded purchase (pending, uncleared, included) as
- * bought, and Unsend only where `canOfferUnsend`. Every identifier is invented.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, within } from "@testing-library/react";
 
 vi.mock("@/hooks/useAccounts", () => ({
   useAccounts: () => ({ data: { accounts: [] } }),
 }));
-// Unsend reads the role's Function permission; an owner may.
 vi.mock("@/components/shell/useGrantedPages", () => ({ useActionAllowed: () => true }));
 
 import { renderWithProviders } from "@/test-utils";
@@ -143,7 +137,6 @@ describe("MessageDashboardTable", () => {
     const { rerender } = renderWithProviders(table(false));
     rerender(table(true));
     rerender(table(false));
-    // The sentinel now on the page is the one observed.
     const live = observed.at(-1)!;
     expect(live.isConnected).toBe(true);
     fire([{ isIntersecting: true, target: live } as unknown as IntersectionObserverEntry], {} as IntersectionObserver);

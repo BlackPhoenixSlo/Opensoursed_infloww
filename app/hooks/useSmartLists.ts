@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * useSmartLists — data layer for Smart Lists (saved dynamic fan segments).
- *
- * Reads/writes smart_lists via the relay's /admin/smart-lists/* routes. A
- * Smart List is a named rules object (`{match, rules[]}`) resolved server-side
- * into a fan-id set — reused as a mass-message audience (include/exclude),
- * previewed live in the builder, and (when active) synced to a real OnlyFans
- * user list by the relay's smart_list_sync worker.
- */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -18,13 +9,11 @@ import { type FanId } from "@/lib/fanId";
 const KEY = "smart-lists";
 
 export type SmartField =
-  // v2 (Infloww's Smart lists conditions)
   | "total_spend" | "ppv_spend" | "tips_spend" | "subscription_spend"
   | "highest_spend" | "last_spend_amount" | "last_purchase_at"
   | "last_message_sent_at" | "sub_start" | "expires_at" | "resubscribed_at"
   | "idle_days"
   | "status" | "renew"
-  // v1
   | "lifetime_spend" | "recent_spend" | "last_active_days" | "tag";
 export type SmartOp =
   | ">" | ">=" | "<" | "<=" | "==" | "!=" | "between"
@@ -37,9 +26,9 @@ export interface SmartRule {
   field: SmartField;
   op: SmartOp;
   value: number | string | [number, number];
-  days?: number;               // recent_spend window
-  scope?: SmartScope;          // spend + last purchase
-  timeframe?: SmartTimeframe;  // spend
+  days?: number;
+  scope?: SmartScope;
+  timeframe?: SmartTimeframe;
 }
 
 export interface SmartRules {
@@ -54,7 +43,6 @@ export interface SmartList {
   rules: SmartRules;
   created_at: string | null;
   updated_at: string | null;
-  // OnlyFans sync (smart_list_sync)
   is_active: boolean;
   of_list_id: number | null;
   sync_state: "syncing" | "ok" | "pending" | "error" | null;
@@ -77,7 +65,6 @@ export interface SmartPreview {
 
 interface ListsPage { lists: SmartList[]; max_active: number }
 
-/** One cache entry per account for GET /admin/smart-lists; both hooks read it. */
 function listsQuery(accountId: string | null) {
   return {
     queryKey: [KEY, accountId],
@@ -97,8 +84,6 @@ export function useSmartLists(accountId: string | null) {
   });
 }
 
-/** The Smart Lists page: the lists plus the active-list quota. Polls while an
- *  active list is syncing or has work left, so its state settles on screen. */
 export function useSmartListsPage(accountId: string | null) {
   return useQuery({
     ...listsQuery(accountId),
@@ -128,7 +113,6 @@ export function useUpdateSmartList(accountId: string | null) {
   });
 }
 
-/** Delete a list; `deleteOfList` also deletes the OnlyFans list it synced to. */
 export function useDeleteSmartList(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, { id: number; deleteOfList: boolean }>({
@@ -138,7 +122,6 @@ export function useDeleteSmartList(accountId: string | null) {
   });
 }
 
-/** Start (true) or stop (false) syncing a list to an OnlyFans user list. */
 export function useSetSmartListActive(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<SmartList, Error, { id: number; active: boolean }>({
@@ -157,15 +140,11 @@ export function usePreviewSmartList(accountId: string | null) {
   });
 }
 
-/** Expand a saved list to its current matching fan-id set — the mass composer
- *  calls this to turn an include/exclude chip into explicit userIds. */
 export async function resolveSmartList(id: number): Promise<number[]> {
   const r = await relay.get<{ fan_ids: number[] }>(`/admin/smart-lists/${id}/resolve`);
   return r.fan_ids ?? [];
 }
 
-/** Several picked lists as one de-duped fan-id array ([] for none, no call) —
- *  the mass composer's include / exclude Smart Lists at send time. */
 export async function resolveSmartLists(ids: ReadonlySet<number>): Promise<number[]> {
   if (ids.size === 0) return [];
   const arrays = await Promise.all([...ids].map((id) => resolveSmartList(id)));

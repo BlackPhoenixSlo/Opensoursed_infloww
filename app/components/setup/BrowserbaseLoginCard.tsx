@@ -1,34 +1,5 @@
 "use client";
 
-/**
- * BrowserbaseLoginCard — the Add creator flow's Browser login (backend: service/remote_login.py).
- *
- * The operator types the creator's OnlyFans email + password. POST /admin/login/remote/start (backend "browserbase")
- * opens a Browserbase Chromium on Browserbase's own network (its managed proxies) and fills in OnlyFans' login form.
- * When OnlyFans shows a Cloudflare / captcha check, the operator solves it in Browserbase's live view (embedded below
- * while the job runs, and one tap away full screen); nothing solves it automatically. When OnlyFans asks for the 2FA
- * code, the card shows a code field: POST /admin/login/remote/{id}/otp hands it to the job, which types it into
- * OnlyFans' own field; a code OnlyFans does not take (within the relay's wait) comes back as rejected and the field asks again. The live
- * view stays up as the fallback (the code can be typed there too). No extension is needed, so
- * this is how a creator is linked from a phone. The proxy is automatic: a new login sends no proxy choice, so the
- * relay binds its own default (the Inflowwww proxy pool's tier-aware pick when it has one, else none) unless the
- * account is already on a proxy, which it keeps; a row's re-login (`keepProxy`) sends "none", which binds nothing.
- * On success the relay saves the session through the paste-curl pipeline and binds that proxy, so this card only
- * reports (the job names the proxy the account ended on) and hands the account on.
- *
- * Inside the modal (`IfModal footerSlot`) its start button sits in the modal's footer (EditorFooter), only while
- * `active` (the other sign-in shown: the card stays mounted, so a running job still links).
- *
- * The password is sent once and cleared from state; the polled status carries no secrets. While the job runs the form
- * is replaced by its progress and the live view, and `onBusy` hears it (useReportBusy). Any failure ends the job with the error
- * shown here; a job the relay no longer knows (404: it restarted, or the job expired) ends as "lost". A status read
- * that fails otherwise (5xx, network) shows its error under Stop login and the poll goes on; failing for
- * POLL_GIVE_UP_MS straight it stops, and the card says so with Stop login and Try again (polls again). The card is never
- * blank while a job runs, also before its first status.
- *
- * Unmounting the card (the modal closed, Back, the other sign-in linking) stops a job that is still running, also one
- * whose start answers after the unmount: nothing else could stop it, and it would still link and bind an account.
- */
 
 import { accountSessionCaptured } from "@/lib/accountSession";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -46,19 +17,14 @@ import { BRAND_NAME } from "@/lib/brand";
 
 export type { RemoteLoginStatus };
 
-/** The email + password form: the footer's start button submits it. */
 const BB_FORM_ID = "browser-login-form";
 
-/** The status poll's 404: the relay no longer has the job. */
 const LOST = "the relay lost this login (it restarted, or the login expired). Try again.";
 const isLost = (e: unknown) => e instanceof RelayError && e.status === 404;
-/** How long status reads may fail in a row (not 404) before the poll stops. */
 export const POLL_GIVE_UP_MS = 30_000;
-/** The poll's last error once it gave up (its message is the last read's). */
 class PollGaveUp extends Error {}
 const gaveUp = (e: unknown) => e instanceof PollGaveUp;
 
-/** What a finished job left the account on. */
 function attachedText(s: RemoteLoginStatus) {
   if (s.proxy === "infloww") return `The ${BRAND_NAME} proxy is attached for all later traffic.`;
   if (s.proxy === "custom") return `Proxy ${s.proxy_label} is attached for all later traffic.`;
@@ -68,11 +34,8 @@ function attachedText(s: RemoteLoginStatus) {
 export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", keepProxy = false, active = true, onBusy }: {
   onLinked?: (accountId: string) => void;
   initialNickname?: string;
-  /** A row's re-login: bind nothing, so the account keeps the proxy it is on. Else the relay's automatic proxy. */
   keepProxy?: boolean;
-  /** Shown (the start button in the footer); false while the other sign-in is. */
   active?: boolean;
-  /** Hears whether a job is running (false again on unmount). */
   onBusy?: (running: boolean) => void;
 }) {
   const qc = useQueryClient();
@@ -83,20 +46,16 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
   const linkedRef = useRef<string | null>(null);
   const liveRef = useRef<HTMLDivElement | null>(null);
   const mountedRef = useRef(false);
-  /** The job to stop on unmount: set once started, cleared once it ends. */
   const runningJobRef = useRef<string | null>(null);
-  /** When status reads started failing in a row (not 404); null after a good read. */
   const failingSinceRef = useRef<number | null>(null);
 
   const startM = useMutation<RemoteLoginStatus, RelayError, void>({
     mutationFn: async () => {
       const job = await relay.post<RemoteLoginStatus>("/admin/login/remote/start", {
         email: email.trim(), password, backend: "browserbase",
-        // No choice: the relay's default (its proxy pool when it has one, else none; an account's binding stays).
         proxy: keepProxy ? "none" : undefined,
         nickname: initialNickname.trim() || undefined,
       });
-      // The card went away while the start was in flight: nobody can stop this job, so stop it now.
       if (!mountedRef.current) relay.post(`${jobPath(job.id)}/cancel`).catch(() => {});
       else runningJobRef.current = job.id;
       return job;
@@ -124,8 +83,6 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
       }
     },
     enabled: !!jobId,
-    // A 404 is final (a relay restart, or the job expired): no retry, the poll stops and the form comes back. Reads
-    // failing for POLL_GIVE_UP_MS straight stop the poll too (Try again resumes it).
     retry: (n, e) => !isLost(e) && !gaveUp(e) && n < 3,
     // eslint-disable-next-line local/no-fixed-polling -- remote-login job has no SSE event; stops when the job ends
     refetchInterval: (q) => (isLost(q.state.error) || gaveUp(q.state.error) || (q.state.data && TERMINAL.has(q.state.data.state)) ? false : 1500),
@@ -133,7 +90,6 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
   const status = statusQ.data;
   const lost = isLost(statusQ.error);
   const stalled = gaveUp(statusQ.error);
-  /** A status read failing (not 404): shown while the job is still counted as running. */
   const readErr = statusQ.isError && !lost ? statusQ.error.message : null;
   const running = !!jobId && !lost && !(status && TERMINAL.has(status.state));
 
@@ -141,11 +97,11 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
     runningJobRef.current = running ? jobId : null;
   }, [running, jobId]);
   useReportBusy(running, onBusy);
-  // Unmount only (no deps): stop a job still running.
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      // Nothing else could stop a job still running here; it would still link and bind an account.
       const id = runningJobRef.current;
       if (id) relay.post(`${jobPath(id)}/cancel`).catch(() => {});
     };
@@ -165,12 +121,11 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
     if (liveUrl) liveRef.current?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
   }, [liveUrl]);
 
-  /** Polls again after the poll gave up. */
   const resume = () => { failingSinceRef.current = null; void statusQ.refetch(); };
   const cancel = () => {
     if (!jobId) return;
     const stop = relay.post(`${jobPath(jobId)}/cancel`).catch(() => {});
-    if (stalled) void stop.then(resume); // the poll is off: read the stop back
+    if (stalled) void stop.then(resume);
   };
 
   const canStart = email.trim() !== "" && password !== "" && !startM.isPending && !running;
@@ -242,7 +197,6 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
           {status?.state === "otp" && <OtpCodeForm jobId={status.id} message={status.message} inputId="bb-otp" />}
           {liveUrl ? (
             <div ref={liveRef} className="space-y-2">
-              {/* Touch inside an iframe is awkward on a phone: the full-screen page is one tap away. */}
               <a
                 href={liveUrl} target="_blank" rel="noopener noreferrer"
                 className="flex h-8 w-full items-center justify-center rounded-md border border-border px-[15px] text-[14px] text-fg hover:border-accent hover:text-accent md:inline-flex md:w-auto"

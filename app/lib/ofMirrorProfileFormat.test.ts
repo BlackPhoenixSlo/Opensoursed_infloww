@@ -10,7 +10,6 @@ const BIO = "[data-placeholder='Bio']";
 const PANEL = "[data-oi-about-format]";
 const load = () => {
   document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/${PAGE}.html`), "utf8");
-  // jsdom has no editing commands: bold wraps the selection in <b>, as a browser does.
   document.execCommand = vi.fn((name: string) => {
     if (name !== "bold") return true;
     document.getSelection()!.getRangeAt(0).surroundContents(document.createElement("b"));
@@ -29,7 +28,6 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 const bio = (d: Document) => d.querySelector<HTMLElement>(BIO)!;
 const save = (d: Document) => d.querySelector<HTMLButtonElement>(".g-btn__wrapper button[type='submit']")!;
 const tool = (d: Document, label: string) => d.querySelector<HTMLElement>(`${PANEL} [aria-label='${label}']`)!;
-/** The Bio's text `from`..`to` of its first paragraph selected, as a drag does. */
 const select = (d: Document, from: number, to: number) => {
   const text = bio(d).querySelector("p")!.firstChild!;
   const r = d.createRange();
@@ -74,7 +72,7 @@ describe("Edit profile's About format button (ticket 68)", () => {
     expect(btn.getAttribute("aria-expanded")).toBe("false");
     btn.click();
     expect([panel.style.display, btn.getAttribute("aria-expanded")]).toEqual(["", "true"]);
-    expect(noteOf(d)).toBeNull(); // not the click fallback's Read-only note
+    expect(noteOf(d)).toBeNull();
     tool(d, "Close Formatting Panel").click();
     expect(panel.style.display).toBe("none");
     btn.click();
@@ -95,7 +93,7 @@ describe("Edit profile's About format button (ticket 68)", () => {
     tool(d, "Bold").click();
     expect(bio(d).innerHTML).toBe("<p><strong>Welcome</strong> to my page.</p>");
     expect(save(d).disabled).toBe(false);
-    expect(h.saveProfile).not.toHaveBeenCalled(); // the button and its tools send nothing
+    expect(h.saveProfile).not.toHaveBeenCalled();
     save(d).click();
     await flush();
     expect(h.saveProfile).toHaveBeenCalledExactlyOnceWith({ about: "<p><strong>Welcome</strong> to my page.</p>" });
@@ -144,6 +142,6 @@ describe("Edit profile's About format button (ticket 68)", () => {
     applyIdentity(d, { id: 1, username: "alphaone", name: "Alpha", about: '<p><strong>Hi</strong> <img src=x onerror=alert(1)>there</p>' } as never);
     expect(bio(d).innerHTML).toBe("<p><strong>Hi</strong> there</p>");
     applyIdentity(d, { id: 1, username: "alphaone", name: "Alpha", about: "<p>Plain bio</p>" } as never);
-    expect(bio(d).textContent).toContain("Hi"); // a plain bio leaves the editor to the text swap (no markup rewrite)
+    expect(bio(d).textContent).toContain("Hi");
   });
 });

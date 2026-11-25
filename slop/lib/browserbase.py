@@ -1,42 +1,3 @@
-"""The outside world of the served Browserbase login (service/remote_login.py),
-on loopback: Browserbase's REST API, the remote Chromium it hands out, and
-OnlyFans' website. The relay's own code runs unchanged against it; the relay
-hook `POST /__slop/browserbase` (lib/relay.py) points it here.
-
-  Browserbase API  plain HTTP, `/v1/...` in Browserbase's shapes: create a
-                   session (one fresh local Chromium per session, own profile,
-                   CDP on a loopback port; `connectUrl` is its ws URL), the
-                   session's debug URLs (the live view), release (the Chromium
-                   is stopped). Every call is recorded.
-  Live view        `/live/<sid>`: a page that shows the session's Chromium tab
-                   (a CDP screenshot every second). Bypass, declared: not
-                   Browserbase's interactive devtools page.
-  The Chromium     Playwright's own Chromium, headless, `--host-resolver-rules`
-                   maps onlyfans.com to the fake site and every other host to
-                   NOTFOUND (nothing leaves the machine); the self-signed
-                   certificate is accepted with `--ignore-certificate-errors`.
-  OnlyFans' site   HTTPS on loopback, served for onlyfans.com: the login form
-                   (rendered by script after load, as OF's is; "Signing in…"
-                   for SIGNIN_MS after LOG IN), its 2FA prompt
-                   (`input[name="code"]` in its own form with its own VERIFY
-                   button, after a stale hidden code input and a decoy form
-                   whose "Back to login" is the page's first submit button; a
-                   sent code shows "Verifying…" with no field for VERIFY_MS,
-                   then a wrong one re-renders the prompt with an error; an
-                   `autosubmit` account's field sends its form itself on the
-                   last digit), a hidden reCAPTCHA frame (and a hidden
-                   `.cf-turnstile`) on every one of those pages, served by the
-                   site itself at `/recaptcha/api2/bframe`, `auth_id` set once the right code is in, and
-                   /my/chats/, whose page makes one signed /api2/v2/ request and
-                   loads OF's signing module (webpack 89668) through
-                   `webpackChunkof_vue` with a minimal stand-in for webpack's
-                   module call; the login extension's interceptor (injected by
-                   the relay, unchanged) captures both. Bypass, declared: the
-                   signing material is synthetic (`signing()`): a 2313.js with
-                   32 checksum terms and the sign it implies; OF's CDN serves
-                   that chunk at `/static/prod/f/<rev>/2313.js` on the API
-                   server (the relay's chunk URL is pointed there).
-"""
 from __future__ import annotations
 
 import json
@@ -56,9 +17,6 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def signing(uid: str, rev: str, time_ms: int) -> dict:
-    """Synthetic OF signing material: a 2313.js whose 32 checksum terms
-    `of_signer.derive_rules_from_chunk` reads, the rules behind it, and the
-    sign of GET /api2/v2/users/me at `time_ms` under those rules."""
     if str(ROOT / "service") not in sys.path:
         sys.path.insert(0, str(ROOT / "service"))
     import of_signer
@@ -75,10 +33,6 @@ def signing(uid: str, rev: str, time_ms: int) -> dict:
 
 
 def paste_curl(uid: str, rev: str, sess: str = "recaptured") -> str:
-    """The Creator's browser's signed /users/me, as DevTools copies it (the login
-    extension's x-relay-static-param included), under `signing`'s synthetic
-    material (the chunk lib/of_wire.py serves): what the Add creator flow's
-    paste-curl step posts to /admin/session/bootstrap."""
     s = signing(uid, rev, int(time.time() * 1000))
     h = {"user-id": uid, "x-bc": s["x_bc"], "x-of-rev": rev, "sign": s["sign"], "time": s["time"],
          "user-agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -151,8 +105,8 @@ function showOtp(err, autosubmit) {
 if (document.cookie.includes("auth_id=")) app.innerHTML = "<h1>OnlyFans</h1><p>Home (signed in)</p>";
 else setTimeout(showLogin, 400);  // OF renders its form after load
 </script></body></html>"""
-SIGNIN_MS = 2500  # LOG IN -> the 2FA prompt
-VERIFY_MS = 1500  # a sent code -> OF's answer (the prompt again, or signed in)
+SIGNIN_MS = 2500
+VERIFY_MS = 1500
 _RECAPTCHA_HTML = "<!doctype html><html><body>reCAPTCHA challenge (slop, never shown)</body></html>"
 
 _CHATS_HTML = """<!doctype html><html><head><title>Chats | OnlyFans</title></head><body><h1>Chats</h1><script>
@@ -177,30 +131,26 @@ body{margin:0;background:#111;color:#bbb;font:12px Helvetica}img{width:100%%;dis
 
 
 class World:
-    """Fake Browserbase + fake OnlyFans for one scenario run. `accounts` maps
-    each OnlyFans email to its user id; every account has `password` and takes
-    the 2FA code `otp`. `chromium`: the browser binary (Playwright's)."""
 
     def __init__(self, tmp: Path, *, accounts: dict[str, str], otp: str, password: str, chromium: str,
                  autosubmit: frozenset[str] = frozenset(), rev: str = "202610251200-slop"):
         self.tmp = Path(tmp) / "browserbase"
         self.tmp.mkdir(parents=True, exist_ok=True)
         self.accounts, self.otp, self.password, self.chromium = accounts, otp, password, chromium
-        self.autosubmit = autosubmit  # emails whose 2FA field sends its form itself on the last digit
+        self.autosubmit = autosubmit
         now = int(time.time() * 1000)
         self.signs = {uid: signing(uid, rev, now) for uid in accounts.values()}
-        self.chunk = next(iter(self.signs.values()))["chunk"]  # one rev, one chunk
-        self.calls: list[tuple[str, str]] = []        # Browserbase API: (method, path)
-        self.logins: list[dict] = []                  # OF login form posts: {email, password_ok}
-        self.otp_tries: list[str] = []                # codes OF's 2FA prompt received, in order
-        self.otp_sends: list[dict] = []               # each of them: {uid, code, via: click | enter | auto}
-        self.decoys = 0                               # sends of the 2FA page's decoy first form
-        self.captcha_frames = 0                       # loads of the hidden reCAPTCHA frame
-        self.sessions: dict[str, dict] = {}           # sid -> {proc, cdp, dir, released}
+        self.chunk = next(iter(self.signs.values()))["chunk"]
+        self.calls: list[tuple[str, str]] = []
+        self.logins: list[dict] = []
+        self.otp_tries: list[str] = []
+        self.otp_sends: list[dict] = []
+        self.decoys = 0
+        self.captcha_frames = 0
+        self.sessions: dict[str, dict] = {}
         self._lock = threading.Lock()
         self._servers: list[HTTPServer] = []
 
-    # ── lifecycle ──
     def __enter__(self) -> "World":
         cert, key = self.tmp / "of-cert.pem", self.tmp / "of-key.pem"
         subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key),
@@ -227,7 +177,6 @@ class World:
             s.shutdown()
             s.server_close()
 
-    # ── the remote browser ──
     def _launch(self) -> dict:
         sid = f"slopbb{len(self.sessions) + 1:02d}"
         cdp, d = _free_port(), Path(tempfile.mkdtemp(prefix=f"{sid}-", dir=self.tmp))
@@ -263,7 +212,6 @@ class World:
         shutil.rmtree(s["dir"], ignore_errors=True)
 
     def _screenshot(self, sid: str) -> bytes | None:
-        """The session's first tab, as a PNG (CDP Page.captureScreenshot on its own socket)."""
         from websockets.sync.client import connect
         import base64
         s = self.sessions.get(sid)
@@ -280,7 +228,6 @@ class World:
                 if msg.get("id") == 1:
                     return base64.b64decode(msg["result"]["data"])
 
-    # ── HTTP handlers ──
     def _api_handler(self):
         world = self
 

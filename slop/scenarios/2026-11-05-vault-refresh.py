@@ -1,99 +1,3 @@
-"""Vault Refresh: Vault Pro's Refresh shows what was made on OnlyFans since the page loaded, and the chat Vault
-picker reloads itself when its top thumbnails come back broken (expired signed urls).
-
-World: `agency_pool` (7 Creators small, 10 medium); OnlyFans' vaults are lib/vault_wire.py's (deterministic from
---seed; `N_MIRROR` media per UI mirror Creator, `N_LIVE` per picker Creator, `N_LOAD` per load Creator) and
-`seed/vault_week` + `seed/vault_cache` write what the relay holds of them by SQL: Creators 0, 1 and the load
-Creators (4+) have a collected mirror (`vault_week.mirror`, an `auto:done` run) and the relay's folder list cached
-2 h ago. Creators 2, 3 have the background collector's walk paused after its hot set (`vault_week.hot_paused`,
-fetched SIGN_TTL_S + 1 h ago, so every thumb url in it expired 1 h ago): the folder list, every folder's page 0 and
-All's pages 0 and 24 cached under the picker's keys, those media in the mirror, the run `running` at `auto:all:0`.
-That mirror is live but not `complete`, so the picker reads the live listing (VaultPicker's vaultWholeSource) and
-gets the cached page 1, while POST /admin/vault-ai/sync (vault_ingest.has_live_mirror) pages OF. OnlyFans is lib/of_wire.py +
-lib/vault_wire.py (`OF_WIRE`: every Creator's session from seed/of_sessions, so the relay's real OFClient reads the
-vault there); its CDN is lib/img_relay.py armed with every thumb, serving real pictures.
-
-UI (small run, Chromium):
-  A. Vault Pro's Refresh, desktop on Creator 0 and phone portrait (390x844, touch) on Creator 1: /growth/vault-pro
-     settles on the mirror's grid and the cached rail; then a folder and K_NEW media in it are made on OnlyFans (the
-     wire's state); screenshot vault-refresh-<dev>-trigger; Refresh; the rail shows the new folder (phone: an option
-     of the folder select, then picked there) and the grid's first tiles are the new media; screenshot
-     vault-refresh-<dev>-settled. Checks REFRESH_FOLDER, REFRESH_MEDIA,
-     REFRESH_WIRE (one POST /admin/vault-ai/sync per click, 200 with mirror and new == K_NEW; OF got a folder list
-     and an offset-0 newest-first media read after the click; the relay's cached folder list (LISTS_KEY) fetched
-     after the click). Then OF's vault listing fails (of_wire `fail`, 500) and Refresh again: REFRESH_FAIL_SHOWN, the
-     sync's statuses kept (`sent`), Vault Pro's status line says "Couldn't reach OnlyFans, showing saved vault" and the grid keeps
-     its tiles; screenshot vault-refresh-<dev>-fail.
-  B. The picker, desktop on Creator 2 and phone on Creator 3: a Fan's chat in Messages Pro, Vault; page 1 comes from
-     the relay's cache (the hot set's copy), its thumbs 403 at the CDN. The open's revalidate (`revalidate=1`,
-     fetch-diet 17) finds the copy older than VAULT_PICKER_REVALIDATE_S, so it reads OF and re-caches page 1;
-     same ids, so the picker keeps its page. The picker's thumb reload (its trigger: a page-1 `revalidate=1` read
-     after the open's, or under the pre-17 reload an invalidate) is held in the page until screenshot
-     picker-thumbs-<dev>-trigger (the broken top tiles), then let through; it joins the open's in-flight read or finds
-     the young copy. Both page-1 revalidations wait for the broken-thumb screenshot, so the open cannot heal
-     some tiles before that initial sample. Once the top tiles drew, picker-thumbs-<dev>-settled. THUMBS_RELOAD: before, every top tile
-     unloaded; one reload (page-1 revalidate reads - 1 + invalidates == 1); after, every top tile drawn
-     (naturalWidth > 0); the CDN answered each top tile's path 403 then 200; exactly one OF page-1 read for the open;
-     the relay's cached page 1 (DB) refetched after the open, every thumb's Policy in the future. Then the picker's Refresh POST is held in
-     the page: its button becomes disabled and aria-busy, five more clicks produce no POST; let through, the button
-     settles. Then OF's vault media read fails (of_wire `fail`, 500) and Refresh again: the sync reaches OF, OF
-     answers 500 (fake.calls), the relay answers 502 and the picker shows "Couldn't reach OnlyFans, showing saved
-     vault". Screenshots picker-refresh-<dev>-trigger, -settled, -failure-settled.
-     PICKER_FAILURE: pending (disabled + aria-busy), one POST for the burst, settled; one failure POST answered
-     502, OF's 500 on that Creator's media read recorded, the note shown.
-
-  C. "All media", after A's Refresh (desktop and phone, same pages): ALL_COUNTS: the row's per-type counts == OF's
-     `all` (lib/vault_wire.py: the whole vault, the new media included) == what the browser's GET
-     /api/of/v2/vault/lists got, and under All media exactly the zero types' chips are off. ALL_TAP: a folder tapped
-     (grid == that folder's newest), then "All media" (grid == the vault's newest, first tile in the viewport), then
-     "All media" again (unchanged); on the phone the rail is the folder select, so the counts are its All media
-     option's and the picks are made in it. Screenshots vault-allmedia-<dev>-trigger (folder picked, All media's
-     counts), -settled (All media's grid), -again.
-  D. Search, after C (desktop and phone, same pages): K_SEARCH old media get a PPV caption on OnlyFans holding
-     SEARCH_TERM (VaultWire.caption), a term the mirror's text lacks; the term is typed in the Caption search with
-     POST /admin/vault-ai/search-of held in the page (Playwright route, continued unchanged). SEARCH_PENDING: while
-     held the empty grid spins "Searching OnlyFans…", and from typing to the filled grid "No data" never shows in
-     the grid (a MutationObserver: the grid's EmptyState). Screenshot vault-search-<dev>-trigger; let through; SEARCH_FILLS: search-of
-     200 with exactly those ids, the grid then exactly them newest first, the spinner gone, of_terms holds the term
-     on each (DB). Screenshot vault-search-<dev>-settled.
-  E. The picker's open revalidate, desktop on Creator 2 and phone on Creator 3: the relay caches page 1 and the
-     folder list on `refresh=1` reads of every page (the real routes), OPEN_AGE_S pass (older than VAULT_PICKER_REVALIDATE_S), then a
-     folder and K_NEW media in it are made on OnlyFans. A Fan's chat, Vault: the picker paints the cached page (no
-     new media; click to first tile within PICKER_PAINT_MS) while its revalidate read is held in the page,
-     screenshot picker-open-<dev>-open; let through, the new media become the grid's first tiles and the new folder
-     an option, no Refresh pressed, screenshot picker-open-<dev>-settled; scrolled to the end, the whole grid is OF's
-     listing, id for id (the relay dropped the view's older pages when page 1 changed, so pages 2+ are re-read at the
-     new offsets: nothing dropped, nothing twice). A second owner opens the picker in a fresh browser context (no
-     hold): scrolled to the end, its whole grid is OF's listing too (the relay's shared cache, not the first tab,
-     was fixed), screenshot picker-open-<dev>-second. Then SHARED_N concurrent
-     `revalidate=1` reads on the real route (OPEN_AGE_S after the open: one OF read; right after that: none), and
-     the OF call counter's file (lib/of_call_stats.py). Check PICKER_OPEN_FRESH.
-
-Load (stage `sync`, also --no-ui): K_LOAD new media in a new folder made on OnlyFans for each load Creator, then
-`--users` owner sessions press Refresh at once (POST /admin/vault-ai/sync, round-robin over the load Creators, a
-seeded 0-SYNC_JITTER_S start). SYNC_LOAD: every POST 200 with mirror; each load Creator's live mirror == OF's media,
-id for id, with OF's folder membership. SYNC_COALESCED: at least five concurrent presses per load Creator start at most two OF media walks. Budget: p95 POST
-/admin/vault-ai/sync <= SYNC_P95_MS, and vs the last green run.
-
-Bypasses (declared): the mirror, the relay's cached listings and the run rows are SQL (no Collect or collector
-walk ran); OnlyFans is lib/of_wire.py + lib/vault_wire.py (each vault call waits OF_VAULT_LATENCY_S, a guess; the listing signs its
-thumbs per answer) and its CDN a fake in the relay process (lib/img_relay.py: PNGs, CDN_LATENCY_S, a guess); "made on
-OnlyFans" is the wire's state changed (VaultWire.add). The Creator is
-pre-picked in localStorage (`vault.accountId`, a returning owner) and Vault Pro's tours marked seen. Only
-/api/of/v2/vault/lists and /media are let through in the browser; every other /api/of/ read stays held. B's page-1
-revalidations and its first Refresh POST are held in the page (Playwright route, then continued unchanged) for the
-trigger screenshots and the click burst (milliseconds otherwise). In E the
-open revalidate is held for the open screenshot. VAULT_PICKER_REVALIDATE_S is 5 s (prod 300) so E's "copy older than
-the gate" is seconds of real time, not SQL-dated rows (an invalidate's RAM mark in vault_cache would hide those). The
-load's sessions share one owner login (`ctx.owner.share`).
-Break-it-once: vault-refresh-cache-only (FAULT, client: the pre-fix Refresh; REFRESH_FOLDER, REFRESH_MEDIA,
-REFRESH_WIRE, REFRESH_FAIL_SHOWN, PICKER_FAILURE), vault-search-no-spinner (client: "No data" while OF's search
-runs; SEARCH_PENDING), vault-refresh-fail-silent (client: a failed sync reads as ok; REFRESH_FAIL_SHOWN),
-vault-thumbs-no-auto-refresh (client; THUMBS_RELOAD), vault-all-media-no-counts (client: the list's `all`
-dropped; ALL_COUNTS), vault-sync-no-coalesce (relay; SYNC_COALESCED; run with
---no-ui), picker-open-cache-only (relay: the open revalidate is served the cached copy; PICKER_OPEN_FRESH, and
-THUMBS_RELOAD: the thumb reload reads through the same gate).
-"""
 from __future__ import annotations
 
 import asyncio
@@ -115,8 +19,6 @@ from slop.lib.vault_refresh_faults import (ALL_COUNTS, ALL_TAP, PICKER_FAILURE, 
 from slop.seed import of_sessions, vault_cache, vault_week
 
 def _flag_report():
-    """scripts/proxy-health/flag_report.py (not a package; it imports its siblings), loaded by path: its
-    FLAG_CANDIDATES name the Caller kinds."""
     import importlib.util
     import sys
     from pathlib import Path
@@ -134,30 +36,26 @@ def _flag_report():
 
 PROFILE = "agency_pool"
 UI = True
-OF_WIRE = True  # the vault's OnlyFans reads go to lib/of_wire.py through the relay's real OFClient
-# lib/vault_collect_relay.py: the vault still stores in the run's temp dir; the background collector stays off (it
-# would walk these vaults and change the mirror under the checks).
-# OF_CALL_STATS_FLUSH_S: the OF call counter's file every 1 s (prod 30), read by PICKER_OPEN_FRESH.
-# VAULT_PICKER_REVALIDATE_S: the picker's open revalidate gate, 5 s (prod 300) so E waits seconds, not minutes.
+OF_WIRE = True
 PICKER_REVALIDATE_S = 5
 RELAY_ENV = {"VAULT_COLLECT_ENABLED": "0", "SLOP_VAULT_STILLS": "1", "OF_CALL_STATS_FLUSH_S": "1",
              "VAULT_PICKER_REVALIDATE_S": str(PICKER_REVALIDATE_S)}
 FAULT = "vault-refresh-cache-only"
-N_MIRROR = 40          # media per UI mirror Creator
-N_LIVE = 80            # media per picker Creator: 4 pages (B: pages 1 and 2 cached by the hot set; E: + K_NEW, all re-read)
-N_LOAD = 200           # media per load Creator before the change
-K_NEW = 5              # media made on OF during a UI refresh
-K_LOAD = 150           # media made on OF per load Creator: a sync reads 2 pages new + 1 page known
-TOP = 6                # the picker's top tiles checked (two rows on a phone)
+N_MIRROR = 40
+N_LIVE = 80
+N_LOAD = 200
+K_NEW = 5
+K_LOAD = 150
+TOP = 6
 CDN_LATENCY_S = 0.05
-OF_VAULT_LATENCY_S = 0.15   # each OF vault call (a guess)
+OF_VAULT_LATENCY_S = 0.15
 SYNC_JITTER_S = 0.3
 SYNC_TIMEOUT_S = 120
 SYNC_P95_MS = 5000
-OPEN_AGE_S = PICKER_REVALIDATE_S + 1   # the relay's copy at a picker open: older than the gate, inside its TTL
-PICKER_PAINT_MS = 5000  # Vault click to the cached page's first tile, the revalidate held (next dev, Chromium)
-SHARED_N = 5           # concurrent opens of one Creator's picker
-VAULT_KINDS = set(_flag_report().FLAG_CANDIDATES["vault_on_open_only"]["on_demand"])   # the vault routes' Caller kinds
+OPEN_AGE_S = PICKER_REVALIDATE_S + 1
+PICKER_PAINT_MS = 5000
+SHARED_N = 5
+VAULT_KINDS = set(_flag_report().FLAG_CANDIDATES["vault_on_open_only"]["on_demand"])
 P95_VS_LAST = (1.5, 500)
 P95_VS_LAST_MIN_N = 5
 SYNC_PATH = "/admin/vault-ai/sync"
@@ -167,10 +65,10 @@ LISTS_PATH = "/api/of/v2/vault/lists"
 MEDIA_PATH = "/api/of/v2/vault/media"
 INVALIDATE_PATH = "/admin/vault/cache/invalidate"
 OF_MEDIA_ROUTE = "GET /api2/v2/vault/media"
-FAIL_NOTE = "Couldn't reach OnlyFans, showing saved vault"   # VaultManagePanel's refreshNote
+FAIL_NOTE = "Couldn't reach OnlyFans, showing saved vault"
 SEARCH_PATH = "/admin/vault-ai/search-of"
-SEARCH_TERM = "zebra leggings"   # only OF's search knows it (a PPV caption); no mirror text holds it
-SEARCHING = "Searching OnlyFans…"   # VaultManagePanel's empty grid while OF's own search runs
+SEARCH_TERM = "zebra leggings"
+SEARCHING = "Searching OnlyFans…"
 K_SEARCH = 3
 DESKTOP, PHONE = (1440, 900), (390, 844)
 WAIT_MS = 120_000
@@ -183,16 +81,12 @@ def _of_mark(ctx) -> int:
 
 
 def _failed_of_media(ctx, aid: str, since: int) -> int:
-    """OF's vault media reads of `aid` answered 500 since `since` (an index into fake.calls, which records the
-    `fail` answers; vault_calls never sees them)."""
     with ctx.of_wire.lock:
         calls = list(ctx.of_wire.calls[since:])
     return sum(1 for c in calls if c["account"] == aid and c["route"] == OF_MEDIA_ROUTE and c["status"] == 500)
 
 
 def _of_calls(ctx, since: int = 0) -> list[dict]:
-    """OnlyFans' vault listing calls since `since` (vault_wire's record), in arrival order: {account, op, status,
-    offset, sort, list}."""
     with ctx.of_wire.lock:
         calls = list(ctx.of_wire.vault_calls[since:])
     return [{"account": c["account"], "op": c["route"], "status": c["status"],
@@ -219,7 +113,6 @@ def _seed_world(w, wire, mirror: list[str], live: list[str]) -> None:
                                   {"list": wire.vault(aid)["folders"], "hasMore": False,
                                    "all": wire.all_counts(aid)}, fetched)
     con.close()
-    # The picker Creators: the hot set OF signed SIGN_TTL_S + 1 h ago, so its thumbs expired an hour ago.
     hot_at = w.now - timedelta(seconds=SIGN_TTL_S + 3600)
     vault_week.hot_paused(w, wire, live, at=hot_at,
                           exp=int(hot_at.replace(tzinfo=timezone.utc).timestamp()) + SIGN_TTL_S)
@@ -231,7 +124,7 @@ async def run(ctx) -> None:
     aids = [c["id"] for c in creators]
     mirror_ui, live_ui, load = aids[:2], aids[2:4], aids[4:]
     n = {**{a: N_MIRROR for a in mirror_ui}, **{a: N_LIVE for a in live_ui}, **{a: N_LOAD for a in load}}
-    of_sessions.seed(w, creators)  # a real OFClient per Creator, talking to lib/of_wire.py
+    of_sessions.seed(w, creators)
     vw = VaultWire(ctx.of_wire, seed=ctx.seed, items=N_LOAD, sizes=n)
     _seed_world(w, vw, [*mirror_ui, *load], live_ui)
     await arm_run(ctx.owner, ctx.stack.tmp, vw.assets(aids), CDN_LATENCY_S, pictures=True)
@@ -262,7 +155,6 @@ async def run(ctx) -> None:
     await _load(ctx, w, vw, load, made_on_of)
 
 
-# ── A: Vault Pro's Refresh ─────────────────────────────────────────
 
 async def _refresh_ui(ctx, w, vw, aid: str, dev: str, made_on_of) -> dict:
     name = f"Made on OF {dev}"
@@ -272,7 +164,6 @@ async def _refresh_ui(ctx, w, vw, aid: str, dev: str, made_on_of) -> dict:
         await page.context.add_init_script(TOURS_SEEN + f"localStorage.setItem('vault.accountId', '{aid}');")
         tiles = page.locator("section [title^='#']")
         lists_bodies: list[dict] = []
-        # The folder in the rail: on a phone the rail is the folder select, so an option "<name> · <counts>".
         sel = page.get_by_role("combobox", name="Folder")
         shown = "attached" if dev == "phone" else "visible"
 
@@ -313,13 +204,13 @@ async def _refresh_ui(ctx, w, vw, aid: str, dev: str, made_on_of) -> dict:
                 await page.wait_for_timeout(1500)
                 got["grid"] = [int(t.split(" ", 1)[0][1:]) for t in
                                await tiles.evaluate_all("els => els.map(e => e.getAttribute('title'))")][:K_NEW + 3]
-                if dev == "phone":  # the new folder is pickable in the select (the settled shot shows it picked)
+                if dev == "phone":
                     await sel.select_option(str(folder["id"]))
                     await page.wait_for_timeout(800)
                 got["settled_shot"] = await ui.shot(ctx, page, f"vault-refresh-{dev}-settled")
                 got["of_calls"] = _of_calls(ctx, c0)
             got["sent"] = [{"url": s["url"], "status": s["status"]} for s in sent]
-        try:  # its own step: after the Refresh, so OF's `all` includes the media made since
+        try:
             got["all_media"] = await _all_media(ctx, page, vw, aid, dev, tiles, lists_bodies)
         except Exception as e:  # noqa: BLE001 — the check reports it
             got["all_media"] = {"error": f"{type(e).__name__}: {e}"[:600]}
@@ -327,11 +218,11 @@ async def _refresh_ui(ctx, w, vw, aid: str, dev: str, made_on_of) -> dict:
                 got["all_media"]["failed_shot"] = await ui.shot(ctx, page, f"failed-vault-allmedia-{dev}")
             except Exception:  # noqa: BLE001
                 pass
-        try:  # its own step: a Refresh that failed above still has to say so here
+        try:
             got["fail"] = await _refresh_fails(ctx, page, aid, dev, tiles)
         except Exception as e:  # noqa: BLE001 — the check reports it
             got["fail"] = {"error": f"{type(e).__name__}: {e}"[:600]}
-        try:  # its own step, on the grid as the owner left it
+        try:
             got["search"] = await _search(ctx, page, vw, aid, dev, tiles)
         except Exception as e:  # noqa: BLE001 — the check reports it
             got["search"] = {**got.get("search", {}), "error": f"{type(e).__name__}: {e}"[:600]}
@@ -368,7 +259,6 @@ _GRID_STATE = """() => {
           first_top: r ? Math.round(r.top) : null, vh: innerHeight, scroll_y: Math.round(scrollY)};
 }"""
 _ROW_COUNTS = "b => Object.fromEntries([...b.querySelectorAll('[title]')].map(e => [e.getAttribute('title'), e.textContent]))"
-# The phone's folder select: the All media option's "All media · 7 photos · 2 GIFs" as {kind: "n"}, as _ROW_COUNTS.
 _OPTION_COUNTS = ("s => Object.fromEntries([...s.querySelector('option[value=\"\"]').textContent.split(' · ').slice(1)]"
                   ".map(p => p.split(' ')).filter(p => p.length === 2)"
                   ".map(([n, w]) => [w.toLowerCase().replace(/s$/, ''), n]))")
@@ -376,7 +266,6 @@ CHIPS = {"photo": "Photo", "video": "Video", "gif": "GIF", "audio": "Audio"}
 
 
 async def _grid_until(page, want: list[int]) -> dict:
-    """The grid's state once its first tiles are `want` (or at SETTLE_MS, as it is)."""
     deadline = time.time() + SETTLE_MS / 1000
     while True:
         st = await page.evaluate(_GRID_STATE)
@@ -386,15 +275,11 @@ async def _grid_until(page, want: list[int]) -> dict:
 
 
 async def _all_media(ctx, page, vw, aid: str, dev: str, tiles, lists_bodies: list[dict]) -> dict:
-    """The "All media" row: its counts against OF's `all` (and what the browser got), the chips under it; then a
-    folder tapped, "All media" tapped (the grid back to the whole vault, in view), and tapped again. On a phone the
-    rail is the folder select: its All media option's counts, and picks in it."""
     out: dict = {"want_all": vw.all_counts(aid)}
     f0 = vw.vault(aid)["folders"][0]
     if dev == "phone":
         sel = page.get_by_role("combobox", name="Folder")
         await sel.scroll_into_view_if_needed(timeout=5000)
-        # From All media: the Refresh leg left the new folder picked, and the chips follow the picked folder (#58).
         await sel.select_option("")
         await page.wait_for_timeout(800)
         all_row = sel
@@ -436,7 +321,6 @@ async def _all_media(ctx, page, vw, aid: str, dev: str, tiles, lists_bodies: lis
     await page.wait_for_timeout(500)
     out["all"] = await page.evaluate(_GRID_STATE)
     out["settled_shot"] = await ui.shot(ctx, page, f"vault-allmedia-{dev}-settled")
-    # Again, with All media already the pick.
     await pick_all()
     await page.wait_for_timeout(800)
     out["again"] = await page.evaluate(_GRID_STATE)
@@ -473,14 +357,11 @@ def _check_all_media(ctx, runs: list[dict]) -> None:
 
 
 async def _refresh_fails(ctx, page, aid: str, dev: str, tiles) -> dict:
-    """OF's vault listing answers 500 (of_wire `fail`) while Refresh is pressed again: what the owner sees."""
     out: dict = {"tiles_before": await tiles.count()}
     with ctx.of_wire.lock:
         ctx.of_wire.fail.add((aid, OF_MEDIA_ROUTE))
     try:
         with recorded(page, "POST", SYNC_PATH) as sent:
-            # Any vault-ai POST: the press's answer, so the note waited for below is this press's, not an earlier
-            # failure's still on screen (the press hides it while pending).
             async with page.expect_response(lambda r: "/admin/vault-ai/" in r.url and r.request.method == "POST",
                                             timeout=SETTLE_MS):
                 await page.get_by_role("button", name="Refresh", exact=True).click(timeout=10_000)
@@ -500,7 +381,6 @@ async def _refresh_fails(ctx, page, aid: str, dev: str, tiles) -> dict:
     return out
 
 
-# ── D: a caption search only OnlyFans answers ──────────────────────
 
 _WATCH_NO_DATA = """() => {
   window.__slopNoData = 0;
@@ -515,8 +395,7 @@ _STOP_NO_DATA = "() => { window.__slopNoDataObs && window.__slopNoDataObs.discon
 
 
 async def _search(ctx, page, vw, aid: str, dev: str, tiles) -> dict:
-    """SEARCH_TERM typed in the Caption search; OF's own search (POST search-of) held in the page, then let through."""
-    hits = [m["id"] for m in vw.vault(aid)["media"][-K_SEARCH:]]   # old media, newest first; in the mirror
+    hits = [m["id"] for m in vw.vault(aid)["media"][-K_SEARCH:]]
     out: dict = {"hits": hits}
     vw.caption(aid, hits, f"New {SEARCH_TERM} set, unlock it 💕")
     entered, release = asyncio.Event(), asyncio.Event()
@@ -538,7 +417,7 @@ async def _search(ctx, page, vw, aid: str, dev: str, tiles) -> dict:
             await searching.first.wait_for(timeout=SETTLE_MS)
         except Exception as e:  # noqa: BLE001 — recorded below; the check reports it
             out["pending_error"] = type(e).__name__
-        await page.wait_for_timeout(1500)   # held: the state stands
+        await page.wait_for_timeout(1500)
         out["pending_spinner"] = await searching.count()
         out["pending_tiles"] = await tiles.count()
         out["trigger_shot"] = await ui.shot(ctx, page, f"vault-search-{dev}-trigger")
@@ -625,7 +504,6 @@ def _check_refresh(ctx, w, runs: list[dict]) -> None:
               shots=[f.get("shot") for f in fails])
 
 
-# ── B: the picker's broken thumbs ──────────────────────────────────
 
 _TILE_STATE = """([ids]) => ids.map(id => {
   const d = document.querySelector('[role=dialog][aria-label="Vault picker"]');
@@ -653,8 +531,6 @@ async def _picker_ui(ctx, w, vw, aid: str, dev: str) -> dict:
             await route.continue_()
 
         async def hold_reload(route):
-            """Wait for the reload, then release both reads after the broken-thumb sample.
-            The open now replaces same-ID payloads and can heal tiles before the reload returns."""
             page1_rv.append(time.time())
             if len(page1_rv) > 1:
                 held.set()
@@ -665,14 +541,14 @@ async def _picker_ui(ctx, w, vw, aid: str, dev: str) -> dict:
         await page.route(lambda u: _is_revalidate(u) and parse_qs(urlsplit(u).query).get("offset") == ["0"],
                          hold_reload)
         with recorded(page, "GET", MEDIA_PATH) as reads:
-            async with captured(ctx, page, got, f"failed-picker-thumbs-{dev}"):   # an error lands in got["error"]
+            async with captured(ctx, page, got, f"failed-picker-thumbs-{dev}"):
                 try:
                     await page.goto(f"{ctx.app}/messages-pro/{aid}/{fan}", wait_until="domcontentloaded",
                                     timeout=WAIT_MS)
                     await page.get_by_role("button", name="Vault", exact=True).first.wait_for(timeout=WAIT_MS)
                     c0 = _of_mark(ctx)
                     await open_vault_picker(page, ctx, aid, fan, timeout=WAIT_MS, navigate=False)
-                    try:   # no reload (the thumbs fault) is a measured outcome, not a browser failure
+                    try:
                         await asyncio.wait_for(held.wait(), SETTLE_MS / 1000)
                     except asyncio.TimeoutError:
                         got["reload_seen"] = False
@@ -686,7 +562,7 @@ async def _picker_ui(ctx, w, vw, aid: str, dev: str) -> dict:
                         if all(x[2] for x in got["after"]):
                             break
                         await asyncio.sleep(0.25)
-                    await page.wait_for_timeout(3000)   # a loop would show a second reload here
+                    await page.wait_for_timeout(3000)
                     got["after"] = await page.evaluate(_TILE_STATE, [top])
                     got["settled_shot"] = await ui.shot(ctx, page, f"picker-thumbs-{dev}-settled")
                     got["of_page1_reads"] = sum(1 for c in _of_calls(ctx, c0)
@@ -708,9 +584,7 @@ async def _picker_ui(ctx, w, vw, aid: str, dev: str) -> dict:
                              "min_exp_ahead_s": round(min(_exp(m["files"]["thumb"]["url"]) for m in body["list"])
                                                       - time.time())}
             got["refresh"] = await _picker_refresh(ctx, page, aid, dev)
-            # Let the grid's last thumb loads land before the context closes: a tab closed mid-/img is a client
-            # disconnect the relay's middleware logs as a Traceback (under the thumb faults the failure's reload is
-            # where fresh urls first arrive, so loads are in flight right then).
+            # let the last thumb loads land before the context closes: a tab closed mid-/img is a client disconnect the relay logs as a Traceback
             await page.wait_for_timeout(1500)
         got["page1_revalidates"], got["invalidates"] = len(page1_rv), len(inv)
     keys = {f"{HOST}{cdn_path(aid, m, 'thumb')}": m for m in top}
@@ -723,7 +597,6 @@ async def _picker_ui(ctx, w, vw, aid: str, dev: str) -> dict:
 
 
 def _utc_epoch_floor(t: float) -> float:
-    """`t` (epoch) as the naive-UTC wall clock the DB stores, read back the way the check reads `fetched_at`."""
     return datetime.utcfromtimestamp(int(t) - 1).timestamp()
 
 
@@ -760,8 +633,6 @@ def _check_picker(ctx, w, runs: list[dict]) -> None:
 
 
 async def _picker_refresh(ctx, page, aid: str, dev: str) -> dict:
-    """The picker's Refresh: its first sync POST held in the page while the button is checked and clicked five more
-    times, then let through; then a Refresh while OF's vault media read fails (of_wire `fail`, 500)."""
     out: dict = {}
     button = page.get_by_role("dialog", name="Vault picker").get_by_role("button", name="refresh", exact=True)
     entered, release = asyncio.Event(), asyncio.Event()
@@ -775,7 +646,7 @@ async def _picker_refresh(ctx, page, aid: str, dev: str) -> dict:
 
     sync_match = lambda u: urlsplit(u).path == SYNC_PATH  # noqa: E731
     await page.route(sync_match, hold_sync)
-    async with captured(ctx, page, out, f"failed-picker-refresh-{dev}"):   # an error lands in out["error"]
+    async with captured(ctx, page, out, f"failed-picker-refresh-{dev}"):
         try:
             await button.click(timeout=SETTLE_MS)
             await asyncio.wait_for(entered.wait(), SETTLE_MS / 1000)
@@ -798,7 +669,6 @@ async def _picker_refresh(ctx, page, aid: str, dev: str) -> dict:
         out["settled"] = not await button.is_disabled()
         out["settled_shot"] = await ui.shot(ctx, page, f"picker-refresh-{dev}-settled")
         await page.unroute(sync_match, hold_sync)
-        # The sync reaches OF (the Creator's mirror is live); OF's media read answers 500 at the OF wire.
         with ctx.of_wire.lock:
             c_fail = len(ctx.of_wire.calls)
             ctx.of_wire.fail.add((aid, OF_MEDIA_ROUTE))
@@ -819,9 +689,7 @@ async def _picker_refresh(ctx, page, aid: str, dev: str) -> dict:
     return out
 
 
-# ── E: the picker's open revalidate ────────────────────────────────
 
-# Every tile of the picker's grid in order, by the id in its thumb url (null: a tile showing its placeholder).
 _TILES = """() => {
   const d = document.querySelector('[role=dialog][aria-label="Vault picker"]');
   return [...(d ? d.querySelectorAll('button[title$="double-click to attach"]') : [])].map((b) => {
@@ -833,9 +701,8 @@ _TILES = """() => {
   });
 }"""
 
-_GRID = f"() => ({_TILES})().filter((id) => id !== null)"   # the grid's drawn ids, in order
+_GRID = f"() => ({_TILES})().filter((id) => id !== null)"
 
-# Scroll the picker's grid to its end (the infinite-scroll sentinel loads the next page).
 _SCROLL_END = """() => {
   const d = document.querySelector('[role=dialog][aria-label="Vault picker"]');
   let el = d && d.querySelector('button[title$="double-click to attach"]');
@@ -846,19 +713,17 @@ _SCROLL_END = """() => {
 
 
 async def _load_all(page, n: int) -> list:
-    """Scroll the picker's grid until it holds `n` drawn tiles (or SETTLE_MS pass); its tiles then (see _TILES)."""
     deadline = time.time() + SETTLE_MS / 1000
     tiles = await page.evaluate(_TILES)
     while time.time() < deadline and not (len(tiles) >= n and None not in tiles):
         await page.evaluate(_SCROLL_END)
         await asyncio.sleep(0.3)
         tiles = await page.evaluate(_TILES)
-    await page.wait_for_timeout(1500)   # a late page or a restart would show here
+    await page.wait_for_timeout(1500)
     return await page.evaluate(_TILES)
 
 
 def _is_revalidate(u: str) -> bool:
-    """The picker's open revalidate of a media page (app/hooks/useVaultMedia.ts revalidateVaultMediaFirstPage)."""
     p = urlsplit(u)
     return p.path == MEDIA_PATH and "revalidate=1" in p.query
 
@@ -915,7 +780,7 @@ async def _open_fresh_ui(ctx, w, vw, aid: str, dev: str, made_on_of) -> dict:
                 got["listing"] = listing
                 got["folder_option"] = await option.count()
                 got["settled_grid"] = (await page.evaluate(_TILES))[:K_NEW + 3]
-                try:   # the shot shows the new tiles drawn; the check reads the grid, not this wait
+                try:
                     await page.wait_for_function(f"(ids) => ({_TILE_STATE})([ids]).every((x) => x[2])",
                                                  arg=got["news"], timeout=5000)
                 except Exception:  # noqa: BLE001
@@ -940,7 +805,6 @@ async def _open_fresh_ui(ctx, w, vw, aid: str, dev: str, made_on_of) -> dict:
 
 
 async def _second_opener(ctx, aid: str, fan: str, dev: str, vp, touch: bool, n: int) -> dict:
-    """Another owner opens the picker in a fresh browser context, nothing held: its whole grid, scrolled to the end."""
     out: dict = {}
     async with ui.owner_browser(ctx, viewport=vp, through=(LISTS_PATH, MEDIA_PATH), touch=touch) as page:
         try:
@@ -965,16 +829,12 @@ FOLDERS_URL = f"{LISTS_PATH}?view=main&limit=50&offset=0"
 
 
 async def _prefill(ctx, aid: str, n: int) -> list[int]:
-    """A picker read of every page of `n` media and the folders on the real routes, `refresh=1`: OF answers and the
-    relay caches them all, whatever B left in that cache (under B's faults, a page with expired thumbs)."""
     urls = [PAGE1_URL.replace("&offset=0&", f"&offset={o}&") for o in range(0, n, vault_cache.PICKER_PAGE)]
     rs = [await ctx.owner.get(f"{u}&refresh=1", headers={"X-Account-Id": aid}) for u in (*urls, FOLDERS_URL)]
     return [r.status_code for r in rs]
 
 
 async def _shared_gate(ctx, aid: str) -> dict:
-    """SHARED_N concurrent opens of one Creator's picker on the real route: on the copy the open left, OPEN_AGE_S
-    later (old: one OF read), then on the copy that read just made (young: none)."""
     url = f"{PAGE1_URL}&revalidate=1"
     out: dict = {}
     for leg in ("old", "young"):
@@ -1048,7 +908,6 @@ async def _check_open_fresh(ctx, runs: list[dict]) -> None:
                       (g.get("second") or {}).get("shot")] for g in runs])
 
 
-# ── load: many owners pressing Refresh at once ─────────────────────
 
 async def _load(ctx, w, vw, load: list[str], made_on_of) -> None:
     ctx.rec.stage = "sync"
@@ -1081,7 +940,7 @@ async def _load(ctx, w, vw, load: list[str], made_on_of) -> None:
     presses = {a: sum(1 for x in res if x[0] == a) for a in load}
     media_pages = {a: sum(1 for c in calls if c["account"] == a and c["op"] == "media") for a in load}
     reads = {a: sum(1 for c in calls if c["account"] == a and c["op"] == "media"
-                    and c["offset"] == 0) for a in load}  # one newest-first walk starts at offset zero
+                    and c["offset"] == 0) for a in load}
     con = w.sql()
     try:
         held = {a: {m: sorted(json.loads(of or "[]")) for m, of in con.execute(

@@ -12,10 +12,12 @@
  *     seed history is prepended, deduped, preserving oldest→newest order;
  *   • a no-op fold returns the SAME reference so observers aren't notified.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { mapRows, mergeSeedIntoMessages } from "@/hooks/useChatMessagesLocal";
-import type { OFMessage } from "@/lib/relay";
+vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn() } }));
+
+import { fetchOlderSeed, mapRows, mergeSeedIntoMessages } from "@/hooks/useChatMessagesLocal";
+import { relay, type OFMessage } from "@/lib/relay";
 
 function msg(over: Partial<OFMessage> & { id: number | string }): OFMessage {
   return {

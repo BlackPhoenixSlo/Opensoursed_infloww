@@ -1,18 +1,5 @@
 #!/usr/bin/env python3
-"""Share for Share's Relay router and storage (docs/spec/phase-03-share-for-share.md, tickets 15 and 16).
-
-The seam is the Relay over HTTP with real session cookies from the shared
-two-Agency fixture (`/auth/login`, `/chatter/login`): every assertion is on a
-status code, a response body or the rows an endpoint leaves behind. The
-Discovery cases (ticket 16, ADR-0011) seed extra Creators and a third Agency
-in the database, then drive them in and out of Discovery over HTTP. Two
-storage cases close the file: Alembic's own CLI cycles the S4S migration on
-the harness's temp database (`-x url=`, never the `alembic.ini` default), and
-the `init_db()` catch-up rebuilds the four S4S tables after they are dropped.
-
-Run: ./venv/bin/python service/tests/test_s4s_api.py   (exit 0 = green)
-"""
-import _harness  # MUST be first — binds a throwaway temp DB before any db import
+import _harness  # MUST be first: binds temp DB
 
 _harness.bootstrap()
 
@@ -40,7 +27,6 @@ from db.models import Account, S4SPost, S4SProfile, User, UserAccount  # noqa: E
 IDS = fx.seed_two_agencies()
 A = IDS["creator_a"]
 B = IDS["creator_b"]
-# An avatar as OnlyFans serves it (public, unsigned): the only kind a profile keeps.
 ALPHA_AVATAR = "https://thumbs.onlyfans.com/public/files/thumbs/c144/alpha/avatar.jpg"
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -52,7 +38,6 @@ _PARTIAL_UNIQUE = {"uq_s4s_posts_primary": "WHERE is_primary",
 
 
 def _every_route(client, account_id: str = A) -> list:
-    # 401 and 403 come before 404 and 400, so an id that may not exist is fine here.
     p = f"/admin/s4s/profiles/{account_id}"
     return [
         ("GET /admin/s4s/profiles", client.get("/admin/s4s/profiles")),
@@ -65,7 +50,6 @@ def _every_route(client, account_id: str = A) -> list:
     ]
 
 
-# ── Sessions: 401, 403 ───────────────────────────────────────────────
 
 def case_signed_out_is_401_on_every_route_with_and_without_anonymous_admin():
     anon = _harness.make_client()
@@ -84,11 +68,10 @@ def case_chatter_is_403_on_every_route():
     assert count(S4SProfile) == 0 and count(S4SPost) == 0, "a chatter wrote S4S rows"
 
 
-# ── Profiles ─────────────────────────────────────────────────────────
 
 def case_profiles_list_only_own_creators_opted_out_with_defaults_and_the_read_writes_no_row():
     body = _profiles(fx.login_owner("agency_a_owner"))
-    assert body["live_posting"] is True, body  # on by default
+    assert body["live_posting"] is True, body
     assert body["profiles"] == [{
         "account_id": A, "profile_id": None, "opted_in": False, "discovery_visible": True,
         "daily_limit": 1, "display_name": "creator_a", "username": "creator_a", "avatar_url": None,
@@ -122,7 +105,6 @@ def case_put_upserts_the_profile_and_writes_one_audit_row_per_change():
         "username": "fixture_alpha", "avatar_url": ALPHA_AVATAR}, got
     assert r.json() == got, (r.json(), got)
 
-    # A second, partial PUT updates the same row and leaves the other fields.
     r = owner_a.put(f"/admin/s4s/profiles/{A}", json={"daily_limit": 3, "discovery_visible": True})
     assert r.status_code == 200, f"second PUT: {r.status_code} {r.text}"
     again = _profile(owner_a, A)
@@ -150,16 +132,13 @@ def case_the_display_fields_are_the_creators_onlyfans_profile_and_cannot_be_type
         assert r.status_code == 400 and "unknown field" in r.text, f"{body!r}: {r.status_code} {r.text}"
     assert _profile(owner_a, A) == before
 
-    # A list reads OnlyFans again and keeps the new copy: what Discovery shows.
     _of_profile(A, "Alpha Renamed", "alpha_renamed")
     got = _profile(owner_a, A)
     assert (got["display_name"], got["username"], got["avatar_url"]) == ("Alpha Renamed", "alpha_renamed", None), got
-    # No name on OnlyFans reads as the @username; an avatar off OnlyFans' hosts is never kept.
     OF_ME[A] = {"name": "", "username": "alpha_bare", "avatar": "https://example.invalid/x.png"}
     got = _profile(owner_a, A)
     assert (got["display_name"], got["username"], got["avatar_url"]) == ("alpha_bare", "alpha_bare", None), got
 
-    # OnlyFans unreadable: the stored copy stays, less an avatar an owner once typed.
     _of_profile(A, "Fixture Alpha", "fixture_alpha", ALPHA_AVATAR)
     assert _profile(owner_a, A)["avatar_url"] == ALPHA_AVATAR
     OF_ME.pop(A)
@@ -198,14 +177,12 @@ def case_opting_out_a_creator_with_no_requests_or_slots_succeeds():
     assert json.loads(audit_rows("s4s.profile_update")[-1].payload_json)["opted_in"] is False
 
 
-# ── S4S posts ────────────────────────────────────────────────────────
 
 def case_posts_create_edit_delete_and_move_the_primary_mark():
     owner_a = fx.login_owner("agency_a_owner")
     assert _profile(owner_a, A)["posts"] == [], "setup: Creator A has no post"
     one = _new_post(owner_a, A, "First promo text")
     two = _new_post(owner_a, A, "Second promo text")
-    # Made while the Creator had no Primary post, the first is its Primary post; the second is not.
     assert one == {"id": one["id"], "caption": "First promo text", "is_primary": True, "media": []}, one
     assert two["is_primary"] is False, two
     assert [p["id"] for p in _profile(owner_a, A)["posts"]] == [one["id"], two["id"]]
@@ -224,7 +201,6 @@ def case_posts_create_edit_delete_and_move_the_primary_mark():
     assert r.status_code == 200, f"delete: {r.status_code} {r.text}"
     assert _profile(owner_a, A)["posts"] == [{"id": two["id"], "caption": "Edited promo", "is_primary": True, "media": []}]
 
-    # With the Primary post deleted, the next post made takes the mark.
     r = owner_a.delete(f"/admin/s4s/profiles/{A}/posts/{two['id']}")
     assert r.status_code == 200, f"delete primary: {r.status_code} {r.text}"
     three = _new_post(owner_a, A, "Third promo text")
@@ -260,8 +236,6 @@ def case_at_most_one_primary_post_per_creator_holds_at_the_database():
 
 
 def _assert_one_primary_per_creator(conn) -> None:
-    """Behaviour, not just a name: a second Primary post for one Creator is
-    refused, a Primary post on another Creator is not."""
     try:
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("insert into s4s_posts (account_id, caption, is_primary) values ('9000001', 'p', 1)")
@@ -278,7 +252,6 @@ def _assert_one_primary_per_creator(conn) -> None:
         conn.close()
 
 
-# ── Isolation ────────────────────────────────────────────────────────
 
 def case_owner_a_naming_creator_b_is_403_and_a_post_of_another_creator_is_404():
     owner_a = fx.login_owner("agency_a_owner")
@@ -287,7 +260,7 @@ def case_owner_a_naming_creator_b_is_403_and_a_post_of_another_creator_is_404():
     b_before = _profile(owner_b, B)
     for label, r in _every_route(owner_a, B):
         if label.startswith("GET"):
-            continue  # names no Creator
+            continue
         assert r.status_code == 403, f"{label} on Creator B as owner A: {r.status_code} {r.text}"
     for verb in ("patch", "delete", "post"):
         path = f"/admin/s4s/profiles/{A}/posts/{b_post['id']}" + ("/primary" if verb == "post" else "")
@@ -308,7 +281,6 @@ def case_the_master_acts_as_an_owner():
     assert json.loads(row.payload_json)["agency_user_id"] == IDS["agency_master"], row.payload_json
 
 
-# ── Discovery (ticket 16, ADR-0011) ──────────────────────────────────
 
 _PROJECTION = {"profile_id", "display_name", "username", "avatar_url", "primary_caption", "primary_media",
                "daily_limit", "opted_in", "own_agency"}
@@ -347,10 +319,8 @@ def case_discovery_lists_both_agencies_opted_in_creators_projection_only_own_fla
             "avatar_url": None, "primary_caption": b_caption, "primary_media": [], "daily_limit": 2,
             "opted_in": True}
 
-    # Sorted by display name, ignoring case: "beta fixture" before "Fixture Alpha".
     assert _discover(owner_a) == [{**beta, "own_agency": False}, {**alpha, "own_agency": True}]
     assert _discover(owner_b) == [{**beta, "own_agency": True}, {**alpha, "own_agency": False}]
-    # The Master sees the same projection, never more, and owns neither.
     assert _discover(fx.login_owner("agency_master")) == [{**beta, "own_agency": False},
                                                           {**alpha, "own_agency": False}]
 
@@ -455,8 +425,6 @@ def case_a_creator_with_no_nickname_cannot_opt_in_until_onlyfans_is_read():
 
 
 def case_discovery_lists_the_owners_other_creators_beside_other_agencies():
-    """The rail's creator finds its own Agency's other listed Creators, not
-    only other Agencies' (the app leaves out the rail's own card)."""
     owner_a = fx.login_owner("agency_a_owner")
     own = {i["display_name"]: i["own_agency"] for i in _discover(owner_a)}
     assert own["Fixture Alpha"] is True and own["Fixture Nameless"] is True, own
@@ -469,19 +437,15 @@ def case_a_creator_with_posts_always_has_a_primary_post():
     owner_a = fx.login_owner("agency_a_owner")
     owner_b = fx.login_owner("agency_b_owner")
 
-    # Deleting the Primary post moves the mark to the oldest post left.
     one, two, three = (_new_post(owner_a, own, f"Own promo {i}") for i in (1, 2, 3))
     assert [one["is_primary"], two["is_primary"], three["is_primary"]] == [True, False, False]
     r = owner_a.post(f"/admin/s4s/profiles/{own}/posts/{three['id']}/primary")
     assert r.status_code == 200, r.text
     assert owner_a.delete(f"/admin/s4s/profiles/{own}/posts/{three['id']}").status_code == 200
     assert {p["id"]: p["is_primary"] for p in _profile(owner_a, own)["posts"]} == {one["id"]: True, two["id"]: False}
-    # Deleting a post that is not Primary leaves the mark where it is.
     assert owner_a.delete(f"/admin/s4s/profiles/{own}/posts/{two['id']}").status_code == 200
     assert [p["is_primary"] for p in _profile(owner_a, own)["posts"]] == [True]
 
-    # Rows left with posts but no Primary post (made before the rule): the
-    # profiles read marks the oldest, and so does Discovery for another Agency's.
     conn = sqlite3.connect(_harness.DB_PATH)
     try:
         conn.execute("update s4s_posts set is_primary = 0 where account_id = ?", (own,))
@@ -499,7 +463,6 @@ def case_a_creator_with_posts_always_has_a_primary_post():
         ("Other oldest", True), ("Other newer", False)]
 
 
-# ── Storage ──────────────────────────────────────────────────────────
 
 def _schema(path) -> tuple[set[str], dict[str, str]]:
     conn = sqlite3.connect(path)
@@ -539,8 +502,6 @@ def _load_s4s_migration():
 
 
 def _alembic(*args: str) -> str:
-    """Alembic's CLI on the harness's temp database only: `-x url=` names the
-    harness file (env.py's first source), never the alembic.ini default."""
     db = Path(_harness.DB_PATH)
     assert db.parent == Path(tempfile.gettempdir()) and db.name.startswith("chatterly_test_"), db
     url = f"sqlite:///{db}"
@@ -550,7 +511,7 @@ def _alembic(*args: str) -> str:
         cwd=_REPO, env=env, capture_output=True, text=True, timeout=300,
     )
     assert r.returncode == 0, f"alembic {' '.join(args)}: {r.returncode}\n{r.stdout}\n{r.stderr}"
-    if args[0] not in ("heads", "history"):  # neither opens the database
+    if args[0] not in ("heads", "history"):
         assert f"using DB URL: {url}  (source: -x url=)" in r.stderr, r.stderr
     return r.stdout
 
@@ -558,22 +519,10 @@ def _alembic(*args: str) -> str:
 def case_alembic_cycles_the_s4s_migration_on_the_harness_database_only():
     mod = _load_s4s_migration()
     heads = [line for line in _alembic("heads").splitlines() if line.strip()]
-    # One head, which is S4S or a revision chained on top of it (0069 Sales
-    # records and 0070 Employee groups landed after; their downgrade passes
-    # back through S4S). The `history` listing must still carry S4S.
     assert len(heads) == 1, heads
     assert mod.revision in _alembic("history"), mod.revision
 
-    # ASSUMPTION: the harness file is first stamped at the S4S migration's own
-    # `down_revision`, so only the revisions from S4S up run on it. init_db()
-    # builds it with create_all and stamps it 0001_initial, and the older
-    # migrations do not replay on that. Observed 2026-10-16 on a fresh
-    # init_db() harness file, `-x url=` only: `upgrade head` from 0001_initial
-    # stops at its first step, "Running upgrade 0001_initial ->
-    # 0002_saved_replies", with "sqlite3.OperationalError: table
-    # saved_replies already exists" (versions/20260519_0001_saved_replies.py
-    # line 27). Rung 5 for stamping at down_revision. Overturned if the older
-    # migrations become replayable on a create_all database.
+# init_db stamps 0001_initial and older migrations do not replay on a create_all DB
     _alembic("stamp", mod.down_revision)
     _alembic("upgrade", "head")
     before, _ = _schema(_harness.DB_PATH)
@@ -581,9 +530,6 @@ def case_alembic_cycles_the_s4s_migration_on_the_harness_database_only():
 
     _alembic("downgrade", mod.down_revision)
     after, indexes = _schema(_harness.DB_PATH)
-    # Later migrations chained on top (0069, 0070) are undone by the same
-    # downgrade and their tables join the removed set, so S4S's four are a
-    # subset of it rather than the whole of it.
     assert set(_TABLES) <= before - after, f"downgrade removed {before - after}"
     assert after <= before, after - before
     assert not set(_PARTIAL_UNIQUE) & set(indexes), indexes
@@ -610,7 +556,6 @@ def case_init_db_brings_the_dropped_tables_back_with_their_partial_unique_indexe
     asyncio.run(init_db())
 
     _assert_s4s_schema(_harness.DB_PATH)
-    # The router works on the rebuilt tables.
     owner_a = fx.login_owner("agency_a_owner")
     assert _profile(owner_a, A)["profile_id"] is None
     _new_post(owner_a, A, "After the rebuild")

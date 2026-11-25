@@ -20,9 +20,10 @@
  * Infloww's Fansly sign-in (`FanslyLogin`, index.9f50f370.js @12411710)
  * words its failures `creators0187` (the bind failed), `creators0416` (the
  * account info read failed, @12412209) and `creators0310` (no Fansly sign-in
- * yet); ours maps a blob that is not a signed-in session to the last, a relay
- * refusal to the first, and a session whose profile read came back empty to
- * the second. Inside the Add creator flow (`formId`) the flow's footer Done
+ * yet); ours maps a blob that is not a signed-in session to the last, the
+ * relay's 400 (the token does not prove the account) to the second and any
+ * other refusal (409: the id is another Platform's Creator) to the first.
+ * Inside the Add creator flow (`formId`) the flow's footer Done
  * submits it, as Infloww's Done does, and the card draws no button of its own.
  *
  * Deliberately simpler than the OF card — no proxy/static_param/onboard
@@ -61,10 +62,11 @@ interface FanslySessionBody {
 
 /** Inside the Add creator flow, `onLinked` hears the new account, the flow's Nickname comes in as
  *  `initialNickname`, and `formId` lets the flow's Done submit it. */
-export default function FanslyPasteSessionCard({ onLinked, initialNickname = "", formId }: {
+export default function FanslyPasteSessionCard({ onLinked, initialNickname = "", formId, expectedAccountId }: {
   onLinked?: (accountId: string) => void;
   initialNickname?: string;
   formId?: string;
+  expectedAccountId?: string;
 } = {}) {
   const qc = useQueryClient();
   const [blob, setBlob] = useState("");
@@ -110,6 +112,16 @@ export default function FanslyPasteSessionCard({ onLinked, initialNickname = "",
       return;
     }
 
+    if (expectedAccountId && String(accountId) !== expectedAccountId) {
+      setResult({
+        ok: false,
+        text:
+          `${FANSLY_T.loginFailed}\n\nThis session is Fansly account ${accountId}, not ${expectedAccountId}. ` +
+          "Copy the session from that account's Fansly tab, then paste again.",
+      });
+      return;
+    }
+
     // Every id must reach the backend as a string (it types them str; a raw
     // number 422s, as we learned).
     const asId = (v: unknown): string | null =>
@@ -135,8 +147,6 @@ export default function FanslyPasteSessionCard({ onLinked, initialNickname = "",
           `✓ Connected Fansly account ${data.account_id}` +
           (data.name ? ` (${data.name})` : "") +
           `\nPlatform: ${data.platform}` +
-          // The relay keeps a session whose me() failed and answers name null.
-          (data.name ? "" : `\n${FANSLY_T.accountInfoError}`) +
           `\n\nOpen the inbox — it now reads from Fansly.`,
       });
       setBlob("");
@@ -147,11 +157,12 @@ export default function FanslyPasteSessionCard({ onLinked, initialNickname = "",
       if (data.account_id) onLinked?.(data.account_id);
     } catch (err) {
       const e = err as RelayError;
+      const detail = (e.body as { detail?: unknown } | null)?.detail;
       setResult({
         ok: false,
         text:
-          `${FANSLY_T.loginFailed}\n\n${e.status} FAILED\n\n` +
-          (typeof e.body === "string" ? e.body : JSON.stringify(e.body, null, 2)),
+          `${e.status === 400 ? FANSLY_T.accountInfoError : FANSLY_T.loginFailed}\n\n${e.status} FAILED\n\n` +
+          (typeof e.body === "string" ? e.body : typeof detail === "string" ? detail : JSON.stringify(e.body, null, 2)),
       });
     }
   }

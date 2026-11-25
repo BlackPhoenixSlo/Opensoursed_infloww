@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""Central sign-rule refresh (roadmap 2.17, service/sign_rules.py).
-
-Sign rules belong to an OF build, so one capture at the live build refreshes
-every account on an older one. Pins: the donor is the freshest session at the
-live build whose rules reproduce its own samples and that OF has answered with
-a 2xx since the capture (OFClient stamps `signed_ok_at` once and asks for a
-refresh), never one whose static_param was typed into the override box; every
-other OnlyFans account
-on another build takes the donor's build and rules (cookies untouched) and its
-pooled client is evicted (its old 2xx stamp dropped); with no verified donor
-nothing changes; a session
-on a newer build (by the build id's time prefix, else by capture time) is
-never walked back; a stale-build capture still takes the new rules; a session
-that took copied rules is never itself a donor; Fansly accounts are left alone; a
-new build seen by live_rev triggers a refresh; and the background refresh is
-off until server startup enables it, then single-flight (any number of
-triggers during a run queue exactly one more).
-
-No network: sessions are temp files, samples are computed with of_signer.
-
-Run:  ./venv/bin/python service/tests/test_sign_rules_refresh.py
-"""
 import _harness  # noqa: F401 — MUST be first (binds temp DB before engine import)
 
 import json  # noqa: E402
@@ -112,7 +90,6 @@ def case_spreads_live_build_rules_to_older_accounts():
     assert "2" not in client_pool._POOL, "the stale account's pooled client is evicted"
     assert _read(donor)["signing"]["rules"] == _rules(1), "the donor is untouched"
     assert sign_rules.last()["updated"] == ["2"]
-    # The copied rules sign: the new session is a valid OFClient session.
     of_signer.sign("https://onlyfans.com/api2/v2/chats", "2", s["signing"]["rules"])
 
 
@@ -168,19 +145,18 @@ def case_no_stamp_when_the_file_rules_changed_under_the_client():
     sp = _account("7", OLD, _rules(7), "20261001T100000Z", signed_ok=False)
     from of_client import OFClient, update_session_file
     c = OFClient.from_session_file(sp, proxies=None)
-    update_session_file(sp, lambda d: d["signing"].update(rules=_rules(8)))  # a refresh copied new rules
+    update_session_file(sp, lambda d: d["signing"].update(rules=_rules(8)))
     c._note_signed_ok("https://onlyfans.com/api2/v2/users/me", type("R", (), {"status_code": 200})())
     assert "signed_ok_at" not in _read(sp)["signing"], "the 2xx proved the old rules"
 
 
 def case_unknown_live_build_changes_nothing():
     _fresh_dirs()
-    out = sign_rules.refresh("test")   # no sessions: the cold seed finds no build
+    out = sign_rules.refresh("test")
     assert out["skipped"] == "live build unknown", out
 
 
 def case_never_walks_rules_back():
-    # OF flips back to the older build mid-rollout: an account on the newer one keeps it.
     _fresh_dirs()
     _account("1", OLD, _rules(1), "20261019T100000Z")
     newer = _account("2", NEW, _rules(2), "20261018T100000Z")
@@ -192,7 +168,6 @@ def case_never_walks_rules_back():
 
 
 def case_stale_tab_capture_still_takes_the_new_build():
-    # Captured after the donor, but from a tab still on the old build.
     _fresh_dirs()
     _account("1", NEW, _rules(1), "20261019T100000Z")
     stale = _account("2", OLD, _rules(2), "20261020T100000Z")
@@ -221,8 +196,6 @@ def case_copied_rules_never_donate():
     _account("2", OLD, _rules(2), "20261001T100000Z")
     _live(NEW)
     sign_rules.refresh("test")
-    # Account 2 now reads build NEW but its samples are from OLD. Remove the
-    # real donor's session: nothing at NEW verifies any more.
     (account_registry.account_dir("1") / "latest.json").unlink()
     out = sign_rules.refresh("test")
     assert out["donor"] is None, out
@@ -246,7 +219,7 @@ def case_new_build_triggers_refresh():
     sign_rules.request_refresh = lambda reason: seen.append(reason) or True
     try:
         live_rev.note(OLD, source="test")
-        live_rev.note(OLD, source="test")   # same build: no second trigger
+        live_rev.note(OLD, source="test")
         live_rev.note(NEW, source="test")
     finally:
         sign_rules.request_refresh = real
