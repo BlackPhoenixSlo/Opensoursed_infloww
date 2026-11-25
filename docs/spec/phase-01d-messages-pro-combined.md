@@ -56,7 +56,7 @@ ASSUMPTION: with scope All and no pick, the composer starts on OnlyFans (rung 3,
 - **Filters.** Tips, Unread with tips, Priority and folder filters need `filter_tips`, `filter_priority` and `filter_folders` (1c). The Pinned filter needs `pin_message`, because the Shim maps only `unread` (`fansly_shim.py:1160-1182`); 1c hides the Pinned chip without `pin_message`, so this covers a filter already active or set by URL. When the filter's Capability is absent for a Creator's Platform, `useChatList` skips the read for that Creator and contributes no rows. This holds in the All-scope fan-out and in the single-Creator read, where it returns an empty page. Chip visibility stays 1c's rule.
 - **Badge.** `PlatformLogo` goes beside a non-OnlyFans Creator's name on the Creator tab and the picker row, in the phone scope select, and in the composer's account picker and chips. Not on Fan rows or the Thread header (ADR-0057 ASSUMPTION).
 - **Post button.** New post lives in OF Manager, an OnlyFans route, so the route-driven switch makes the switch OnlyFans on arrival (`platformOfPath`). `useOfManagerAccounts` and `OneCreator` read `usePlatformAccounts` instead of `useActiveAccounts`, so the creator column, the phone select and the stand-in pick list only OnlyFans Creators. A `?account=` naming a Creator outside that list is not applied. Watchers stay as today.
-- **Fake Fansly Creator.** 1c owns her (Nova Reyes, `--fansly`, account `950839700124344320`, Fan `950839700124344321`, message ids from `950839700124344400`, 18 digits, past 2^53, Shim-shaped fixtures, 21/20 doctor). 1d adds, under the same flag, her chats and messages in SQLite for the cold inbox seed and the local history seed, and a grant to the seeded chatter login. The doctor count is unchanged.
+- **Fake Fansly Creator.** 1c owns her (Nova Reyes, `--fansly`, account `900839700124344320`, Fan `900839700124344321`, message ids from `900839700124344400`, 18 digits, past 2^53, Shim-shaped fixtures, 21/20 doctor). 1d adds, under the same flag, her chats and messages in SQLite for the cold inbox seed and the local history seed, and a grant to the seeded chatter login. The doctor count is unchanged.
 
 ## Testing Decisions
 Seams, highest first. Tests check what a user or caller sees, never internals.
@@ -83,7 +83,7 @@ set -euo pipefail
 scripts/run-tests.sh
 ! grep -rn 'getPlatform() === "fansly"' app/hooks app/components app/lib --include='*.ts' --include='*.tsx'
 D=scripts/verify-app/drive.py
-A=950839700124344320 F=950839700124344321
+A=900839700124344320 F=900839700124344321
 nice -n 10 $D up --fansly && $D doctor
 $D goto /messages-pro && $D wait --text "Nova" && $D screenshot --path combined.png
 $D screenshot --phone --path combined-phone.png

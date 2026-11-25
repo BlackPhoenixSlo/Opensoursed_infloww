@@ -86,7 +86,7 @@ Session scope: the chatter roster gains `platform` in this Phase (a one-field Re
 
   It fails on zero parsed rows, so a format change cannot pass it vacuously. It joins `scripts/run-tests.sh` through the `service/tests` glob.
 - **Fansly card.** On success the card shows the id and the name when present, and drops the `accountInfoError` line for `name: null` (1a no longer keeps a session whose `me()` failed). A 400 (identity unproven) shows `FANSLY_T.accountInfoError` and a 409 (the id is another Platform's Creator) `FANSLY_T.loginFailed`, each with the Relay's `detail`; the card's error path already renders status and body. With `expectedAccountId` set (the Fansly row's relink entry, `AccountsTable.tsx:607-612`, passes it through `onLinkAt`), a blob whose `accountId` differs is refused in the card with no request.
-- **Seed.** The verify-app dataset gains one Fansly Creator behind an opt-in flag: `drive.py up --fansly` seeds a 21st Creator, "Nova Reyes", meta `platform: "fansly"`, account id `950839700124344320`, one Fan `950839700124344321`, message ids from `950839700124344400` up (all 18 digits, past 2^53), and fixture answers in the Shim's shape (string ids) for her `/api/of/*` reads (chat list, Thread messages, vault). Doctor expects 21 Creators with the flag and 20 without (`drive.py:244` today checks 20). Without the flag the stack is today's. Phase 1d adds only SQLite chats and messages for her and a grant to the seeded chatter, under the same flag.
+- **Seed.** The verify-app dataset gains one Fansly Creator behind an opt-in flag: `drive.py up --fansly` seeds a 21st Creator, "Nova Reyes", meta `platform: "fansly"`, account id `900839700124344320`, one Fan `900839700124344321`, message ids from `900839700124344400` up (all 18 digits, past 2^53), and fixture answers in the Shim's shape (string ids) for her `/api/of/*` reads (chat list, Thread messages, vault). Doctor expects 21 Creators with the flag and 20 without (`drive.py:244` today checks 20). Without the flag the stack is today's. Phase 1d adds only SQLite chats and messages for her and a grant to the seeded chatter, under the same flag.
 
 ## Testing Decisions
 Seams, highest first:
@@ -130,7 +130,7 @@ D=scripts/verify-app/drive.py
 cnt() { $D reads --match "$1" | venv/bin/python -c 'import json,sys; print(json.load(sys.stdin)["count"])'; }
 nice -n 10 $D up --fansly && $D doctor
 $D login --as owner
-FFAN=950839700124344321   # the seeded Fansly Fan (Seed)
+FFAN=900839700124344321   # the seeded Fansly Fan (Seed)
 # manual: switch Platform to Fansly, open Nova Reyes's Thread in Messages Pro; open bubble, actions, avatar menus and the template picker
 $D screenshot --path fansly-thread.png && $D screenshot --phone --path fansly-thread-phone.png && $D snapshot --path fansly-thread.yml
 [ "$(cnt "/chats/$FFAN/messages")" -gt 0 ] || { echo "Fansly Thread never opened"; exit 1; }
@@ -170,7 +170,7 @@ $D down
 ASSUMPTION: `filter_tips`, `filter_priority` and `filter_folders` are app-only in the Drift test beside `rich_text`, because they back `list_chats` arguments and `chat_folders`'s unmarked empty stub, not markable methods, and mapping `filter_folders`→`chat_folders` would need a marker 1b does not add (rung 5). Known blind spot: the test cannot tell when the Shim starts honouring these filters, so the table may hide a working filter. Overturned if the Shim grows per-filter markers or 1b marks `chat_folders`.
 ASSUMPTION: 1c owns the verify-app seed's Fansly Creator (ids, fixtures, `--fansly`, 21/20 doctor) and 1d only adds her SQLite chats and the chatter grant, though the plan lists the seed under 1d, because 1c lands first and ticket 02's gating proof needs her (coordinator ruling on shared ownership, rung 5). Overturned if 1d lands first; then 1d builds this seed unchanged.
 ASSUMPTION: the seed sits behind the opt-in `--fansly` flag rather than always on (rung 4: default off leaves every other verify-app recipe and the 20-Creator doctor untouched); overturned if the owner wants her in every stack, then the doctor expects 21.
-ASSUMPTION: the seed ids `950839700124344320` / `…321` / `…400` and the name "Nova Reyes" are a coin flip (rung 6), moved from 1d; overturned by nothing that matters beyond staying 18 digits and past 2^53.
+ASSUMPTION: the seed ids `900839700124344320` / `…321` / `…400` and the name "Nova Reyes" are a coin flip (rung 6), moved from 1d; overturned by nothing that matters beyond staying 18 digits and past 2^53.
 ASSUMPTION: the chatter roster `platform` field, the one `massSenders(accounts, platform)` helper, the single `useOfRichAllowed` rule and the Fansly card wording and relink check are this Phase's (coordinator ruling on shared ownership, rung 5); overturned if the owner reassigns them, then 1d takes the lines verbatim.
 ASSUMPTION: the chatter roster reads Platform through `accounts.get_platform`, which already defaults to OnlyFans (rung 3), moved from 1d; overturned if 1a's registry exposes a different per-account read, which then replaces it.
 ASSUMPTION: opening the seeded Thread keeps her 18-digit string Fan id (1d's exact-id fixes are cursors, head-settled, the cold seed and list-add, none on the open path; rung 5, unmeasured); overturned if the `/chats/$FFAN/messages` check reads 0, then 1d's exact-id slice, which can run in parallel, lands before this proof.
