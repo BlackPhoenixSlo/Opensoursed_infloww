@@ -3,6 +3,7 @@
 
   scripts/comment_budget.py [--report [DIR]] [--json]   totals per top-level dir (default)
   scripts/comment_budget.py --check           fail if any file grew, a new file has comments, or a file is unparsed
+  scripts/comment_budget.py --check --changed-only   same, scanning only files changed since the merge base
   scripts/comment_budget.py --lower [PATH...] shrink budgets to current counts (never raises), drop deleted files
   scripts/comment_budget.py --allow FILE --reason "..."   raise FILE's budget to its count
   scripts/comment_budget.py --rebaseline      initialize scripts/comment-budget.json (--force to replace)
@@ -166,12 +167,15 @@ def main() -> int:
     ap.add_argument("--reason")
     ap.add_argument("--force", action="store_true", help="replace an existing baseline with --rebaseline")
     ap.add_argument("--json", action="store_true", help="with --report: per-file counts as JSON")
+    ap.add_argument("--changed-only", action="store_true", help="with --check: skip files unchanged since the merge base")
     a = ap.parse_args()
     if a.reason and not a.allow:
         ap.error("--reason needs --allow")
 
     if a.force and not a.rebaseline:
         ap.error("--force needs --rebaseline")
+    if a.changed_only and not a.check:
+        ap.error("--changed-only needs --check")
     exists = BUDGET.exists()
     budget = load_budget()
 
@@ -212,7 +216,11 @@ def main() -> int:
             print(f"comment budget: cannot resolve merge base of HEAD and {ref!r}", file=sys.stderr)
             return 1
 
-    c, scans, errors = counts(tracked(untracked=True))
+    paths = tracked(untracked=True)
+    if a.changed_only and base_rev:
+        keep = _changed_paths(base_rev).keys() | (set(paths) - set(tracked()))
+        paths = [p for p in paths if p in keep]
+    c, scans, errors = counts(paths)
 
     if a.check:
         fails = []

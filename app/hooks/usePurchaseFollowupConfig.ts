@@ -37,7 +37,7 @@ export function useSavePurchaseFollowupConfig(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<{ account_id: string; config: PurchaseFollowupConfig }, Error, Partial<PurchaseFollowupConfig>>({
     mutationFn: (config) =>
-      relay.put(`/admin/purchase-followup-config`, { account_id: accountId, config }),
+      relay.put(`/admin/purchase-followup-config`, { account_id: accountId, config }, { cellAccountId: accountId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: [KEY, accountId] });
       qc.invalidateQueries({ queryKey: ["automation-rules", accountId] });

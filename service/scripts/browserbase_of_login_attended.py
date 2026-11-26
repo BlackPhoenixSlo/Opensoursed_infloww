@@ -11,6 +11,7 @@ if str(_SERVICE) not in sys.path:
     sys.path.insert(0, str(_SERVICE))
 
 import remote_login as rl  # noqa: E402
+import remote_login_onlyfans as ofl  # noqa: E402
 
 # under Browserbase's 300 s default session lifetime
 POLL_WINDOW_S = 270
@@ -40,24 +41,24 @@ def main() -> int:
             try:
                 ctx = browser.contexts[0]
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                err = rl.open_of(page)
+                err = rl.open_site(page, ofl.HOME)
                 if err:
                     print(f"\n==> NAVIGATION FAILED: {rl.scrub(err, password)}", flush=True)
                     return 1
                 print("[*] typing credentials ...", flush=True)
-                rl._type_credentials(page, email, password)
+                rl._type_credentials(page, email, password, ofl)
                 deadline = time.time() + POLL_WINDOW_S
                 last = None
                 while time.time() < deadline:
-                    if rl._auth_id(ctx):
+                    if ofl.auth_id(ctx):
                         names = sorted({c.get("name") for c in ctx.cookies() if c.get("name")})
                         print("\n==> LOGIN: SUCCESS (auth_id cookie set)", flush=True)
                         print(f"[*] cookie names: {', '.join(names)}", flush=True)
                         print("[*] (not persisted)", flush=True)
                         return 0
-                    if rl._detect_challenge(page):
+                    if rl.detect_challenge(page):
                         state = "CHALLENGE — solve it in the live view"
-                    elif rl._detect_otp(page):
+                    elif rl._detect_otp(page, ofl):
                         state = "OTP — enter the 2FA code in the live view"
                     else:
                         state = "waiting for OnlyFans ..."

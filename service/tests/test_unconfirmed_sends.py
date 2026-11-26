@@ -551,4 +551,125 @@ def case_http_wiring():
         os.environ.pop("ALLOW_ANONYMOUS_ADMIN", None)
 
 
+def _cells_on(*aids: str):
+    import contextlib
+    import os
+    import send_ops
+
+    @contextlib.contextmanager
+    def on():
+        os.environ.update(OI_CELL_MAP="/nonexistent/placement.json",
+                          OI_ACCOUNTS=",".join(f"onlyfans:{a}" for a in aids))
+        send_ops.install(f"sqlite:///{_harness.DB_PATH}")
+        try:
+            yield send_ops
+        finally:
+            os.environ.pop("OI_CELL_MAP", None)
+            os.environ.pop("OI_ACCOUNTS", None)
+    return on()
+
+
+def _op(send_ops, aid: str, op: str, kind: str, target: str, state: str = "uncertain") -> None:
+    import sqlite3
+    with sqlite3.connect(str(_harness.DB_PATH)) as c:
+        c.execute("INSERT INTO send_ops (account, op_id, kind, target, digest, state, attempts, created_at,"
+                  " updated_at) VALUES (?,?,?,?,'d',?,1,'2026-11-26 10:00:00.000','2026-11-26 10:00:00.000')",
+                  (aid, op, kind, target, state))
+
+
+async def _resolve(aid: str, op: str, outcome: str, *, as_=None) -> int:
+    tok = _owner(*(as_ or (aid,)))
+    try:
+        return await _status(usa.resolve_unconfirmed_send(account_id=aid,
+                                                          body=usa.ResolveBody(op_id=op, outcome=outcome)))
+    finally:
+        auth._request_user.reset(tok)
+
+
+def _audit(aid: str, op: str):
+    import sqlite3
+    with sqlite3.connect(str(_harness.DB_PATH)) as c:
+        return c.execute("SELECT state, resolved_by, resolved_at FROM send_ops WHERE account=? AND op_id=?",
+                         (aid, op)).fetchone()
+
+
+async def case_cell_mode_lists_every_uncertain_op_kind_with_its_link_and_no_retry():
+    aid, other = "acc_us_cell", "acc_us_cell_other"
+    mr = await _funnel_run(aid)
+    await _marked(mr, 61, unconfirmed_at=OLD + timedelta(seconds=5))
+    with _cells_on(aid) as so:
+        _op(so, aid, "op-composer", "composer", "62")
+        _op(so, aid, "op-mass", "mass_job", "mass:7")
+        _op(so, aid, "op-sched", "scheduled_send", "63")
+        _op(so, aid, "op-sent", "composer", "64", state="sent")
+        _op(so, other, "op-foreign", "composer", "65")
+        rows = await _get(aid)
+    ops = sorted((r["kind"], r["fan_id"], r["link"], r["since"]) for r in rows if "op_id" in r)
+    assert ops == [("composer", "62", "chat", "2026-11-26T10:00:00Z"),
+                   ("mass_job", "mass:7", "queue", "2026-11-26T10:00:00Z"),
+                   ("scheduled_send", "63", "chat", "2026-11-26T10:00:00Z")], ops
+    assert all(r["retry_allowed"] is False and r["state"] == "UNCONFIRMED" for r in rows), rows
+    assert [r["fan_id"] for r in rows if "op_id" not in r] == ["61"], "the funnel marker stays listed"
+
+
+async def case_cell_mode_resolve_both_ways_is_audited_and_owner_scoped():
+    aid = "acc_us_cell_resolve"
+    with _cells_on(aid) as so:
+        _op(so, aid, "op-a", "composer", "71")
+        _op(so, aid, "op-b", "composer", "72")
+        assert await _resolve(aid, "op-a", "was_sent", as_=("someone_else",)) == 403
+        assert _audit(aid, "op-a") == ("uncertain", None, None)
+        assert await _resolve(aid, "op-a", "was_sent") == 200
+        assert await _resolve(aid, "op-b", "not_sent") == 200
+        assert await _resolve(aid, "op-a", "not_sent") == 404, "a marked op is not marked again"
+        assert await _resolve(aid, "op-missing", "was_sent") == 404
+        rows = await _get(aid)
+    a, b = _audit(aid, "op-a"), _audit(aid, "op-b")
+    assert a[:2] == ("resolved_sent", "user:once_owner") and a[2], a
+    assert b[:2] == ("resolved_not_sent", "user:once_owner") and b[2], b
+    assert not [r for r in rows if "op_id" in r], rows
+
+
+async def case_cell_mode_retry_is_off_before_any_settle_or_clear():
+    aid = "acc_us_cell_retry"
+    mr = await _funnel_run(aid)
+    await _marked(mr, 81, unconfirmed_at=OLD + timedelta(seconds=5))
+    calls = []
+    real = (a11.settle_landed, a11.retry_clear)
+
+    async def settle(*a, **k):
+        calls.append("settle")
+        return await real[0](*a, **k)
+
+    async def clear(*a, **k):
+        calls.append("clear")
+        return await real[1](*a, **k)
+    a11.settle_landed, a11.retry_clear = settle, clear
+    try:
+        with _cells_on(aid):
+            tok = _owner(aid)
+            try:
+                await usa.retry_unconfirmed_send(account_id=aid, body=usa.RetryBody(
+                    kind="funnel", fan_id=81, mass_run_id=mr, since=OLD.isoformat() + "Z"))
+                raise AssertionError("retry must refuse in Cell mode")
+            except HTTPException as e:
+                assert (e.status_code, e.detail) == (409, {"error": "retry_off_cell_mode"}), e.detail
+            finally:
+                auth._request_user.reset(tok)
+            assert await _status(_retry(aid, kind="funnel", fan_id=81, mass_run_id=mr, as_=("x",))) == 403
+    finally:
+        a11.settle_landed, a11.retry_clear = real
+    assert calls == [], calls
+    st = await _row(mr, 81)
+    assert st.sending_at == OLD and st.unconfirmed_at is not None, "marker untouched"
+
+
+async def case_env_unset_rows_have_no_retry_flag():
+    aid = "acc_us_env_unset"
+    mr = await _funnel_run(aid)
+    await _marked(mr, 91, unconfirmed_at=OLD + timedelta(seconds=5))
+    rows = await _get(aid)
+    assert rows and all("retry_allowed" not in r and "op_id" not in r for r in rows), rows
+
+
 _harness.run()

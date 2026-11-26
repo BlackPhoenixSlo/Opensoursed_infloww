@@ -1,60 +1,40 @@
 "use client";
 
 
-import { useMemo } from "react";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback } from "react";
+import { useMutation, useQueries, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
 import {
-  splitInboxKey, splitInboxQueryOptions, type SplitInboxConfig, type SplitInboxResponse,
+  splitInboxKey, splitInboxQueryOptions, type SplitInboxConfig, type SplitInboxEdits, type SplitInboxResponse,
+  type SplitRead,
 } from "@/lib/splitInbox";
 
-function putSplitInbox(accountId: string | null, config: SplitInboxConfig) {
-  return relay.put<SplitInboxResponse>("/admin/split-inbox", { account_id: accountId, config });
+export type SplitReadState = SplitRead & { fetching: boolean; failed: boolean };
+
+function readOf(r: UseQueryResult<SplitInboxResponse>): SplitReadState {
+  const myGroup = r.data?.my_group ?? null;
+  const state = { myGroup, fetching: r.isFetching, failed: r.isError };
+  const config = r.data?.config;
+  if (config) return { status: "success", config, ...state };
+  return { status: r.isError ? "error" : "pending", ...state };
 }
 
-export function useSplitInbox(accountId: string | null) {
+export function useSplitInboxes(accountIds: readonly string[], { refetchOnMount }: { refetchOnMount?: "always" } = {}) {
   const qc = useQueryClient();
-  const query = useQuery(splitInboxQueryOptions(accountId));
-  const save = useMutation<SplitInboxResponse, Error, SplitInboxConfig>({
-    mutationFn: (config) => putSplitInbox(accountId, config),
-    onSuccess: () => qc.invalidateQueries({ queryKey: splitInboxKey(accountId) }),
-  });
-  return { config: query.data?.config ?? null, myGroup: query.data?.my_group ?? null, query, save };
-}
-
-const toStored = (results: { data?: SplitInboxResponse; error: Error | null }[]) => ({
-  configs: results.map((r) => r.data?.config ?? null),
-  error: results.find((r) => r.error && !r.data)?.error ?? null,
-});
-
-export function useSplitInboxes(accountIds: readonly string[], nameOf: (id: string) => string) {
-  const qc = useQueryClient();
-  const { configs, error } = useQueries({
-    queries: accountIds.map((id) => splitInboxQueryOptions(id)), combine: toStored,
-  });
-  const stored = useMemo(
-    () => (configs.every((c) => c) ? new Map(accountIds.map((id, i) => [id, configs[i]!] as const)) : null),
-    [accountIds, configs],
+  const combine = useCallback(
+    (results: UseQueryResult<SplitInboxResponse>[]): ReadonlyMap<string, SplitReadState> =>
+      new Map(results.map((r, i) => [accountIds[i], readOf(r)])),
+    [accountIds],
   );
-  const save = useMutation<void, Error, Map<string, SplitInboxConfig>>({
-    mutationFn: async (payloads) => {
-      const ids = [...payloads.keys()];
-      const results = await Promise.allSettled([...payloads].map(([id, config]) => putSplitInbox(id, config)));
-      const failed = results.flatMap((result, i) => result.status === "rejected"
-        ? [{ id: ids[i], reason: result.reason as unknown }]
-        : []);
-      if (!failed.length) return;
-      const saved = results.length - failed.length;
-      const first = failed[0].reason;
-      throw new Error(
-        `Not saved for ${failed.map(({ id }) => nameOf(id)).join(", ")}` +
-        `${first instanceof Error ? `: ${first.message}` : ""}.` +
-        (saved ? ` ${saved} model${saved === 1 ? "" : "s"} saved.` : ""),
-      );
-    },
-    onSettled: (_d, _e, payloads) =>
-      Promise.all([...payloads.keys()].map((id) => qc.invalidateQueries({ queryKey: splitInboxKey(id) }))),
+  const splits = useQueries({
+    queries: accountIds.map((id) => ({ ...splitInboxQueryOptions(id), ...(refetchOnMount && { refetchOnMount }) })),
+    combine,
   });
-  return { stored, error, save };
+  const save = useMutation<{ configs: Record<string, SplitInboxConfig> }, Error, SplitInboxEdits>({
+    mutationFn: (edits) => relay.patch("/admin/split-inbox", edits),
+    onSettled: (_d, _e, edits) =>
+      Promise.all(edits.account_ids.map((id) => qc.invalidateQueries({ queryKey: splitInboxKey(id) }))),
+  });
+  return { splits, save };
 }

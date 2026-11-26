@@ -12,6 +12,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field
 
 import mass_queue_decide
+import send_ops
 from automations.send_mass_decide import audience_filter_json, echoed_of
 from relay_host import (
     get_client as _get_client,
@@ -250,20 +251,38 @@ async def of_send_or_schedule_mass(
         refuse_if_platform_lacks(aid, "schedule_mass_message", "scheduled mass message")
     else:
         refuse_if_platform_lacks(aid, "send_mass_message", "mass message")
+    claim = None
+    if anchor := send_ops.anchor(request):
+        import accounts
+        platform, kind = accounts.get_platform(aid), "manual_mass_schedule" if body.is_later() else "manual_mass_send"
+        claim = send_ops.begin(platform, aid, send_ops.op_id(platform, aid, kind, "mass", anchor,
+                                                             send_ops.part(request.headers)),
+                               kind, "mass", send_ops.digest(body.model_dump()))
+        if isinstance(claim, send_ops.Sent):
+            return claim.result
     key = _send_key(aid, body)
-    _reserve_send(key)
     try:
-        result = await _send_or_schedule_mass(request, body, key)
-    except BaseException:
+        _reserve_send(key)
+    except HTTPException:
+        if claim is not None:
+            claim.abort()
+        raise
+    try:
+        result = await _send_or_schedule_mass(request, body, key, claim)
+    except BaseException as e:
         if _send_keys.get(key, 0.0) is None:
             del _send_keys[key]
+        if claim is not None and isinstance(e, Exception):
+            claim.abort()
         raise
     _send_keys.pop(key, None)
+    if claim is not None:
+        claim.done(result)
     return result
 
 
 async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
-                                 _key: tuple[str, str]):
+                                 _key: tuple[str, str], claim: send_ops.Claim | None = None):
     _asked_ids = len(dict.fromkeys(body.user_ids))
     _thresholds = body.has_thresholds()
     _online_now = bool(body.online_only or (body.filters or {}).get("online"))
@@ -373,7 +392,9 @@ async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
             post, extra = client.send_mass_message, dict(included_users=body.user_ids)
         _send_keys[_key] = time.monotonic()
         try:
-            result = await of_write_with_retry(lambda: _proxy(lambda: post(**shared, **extra), client=client))
+            def wire():
+                return of_write_with_retry(lambda: _proxy(lambda: post(**shared, **extra), client=client))
+            result = await (claim.awire(wire) if claim is not None else wire())
         except Exception as e:
             from automations.send_mass_message import close_run_if_unsent
             from of_write import _may_have_sent

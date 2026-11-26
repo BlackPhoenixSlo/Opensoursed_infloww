@@ -3,7 +3,7 @@ import { useLayoutEffect } from "react";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-vi.mock("@/lib/events", () => ({ eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {} } }));
+vi.mock("@/lib/events", () => ({ eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {}, onStreamState: () => () => {} } }));
 const nav = vi.hoisted(() => ({ path: "/of-manager/home", search: "" }));
 vi.mock("next/navigation", () => ({ usePathname: () => nav.path, useSearchParams: () => new URLSearchParams(nav.search) }));
 vi.mock("@/components/chat/FanDrawer", () => ({

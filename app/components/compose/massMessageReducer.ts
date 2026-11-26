@@ -46,6 +46,7 @@ export interface MassForm extends AudienceState, FanOutState {
   minTipped: string;
   subscribedOverDays: string;
   expiredOverDays: string;
+  opId: string | null;
 }
 
 export interface GifFailure {
@@ -75,6 +76,7 @@ export type MassAction =
   | { type: "addGif"; gif: PickedGif }
   | { type: "removeGif"; id: string }
   | { type: "gifSendsFailed"; failed: GifFailure[] }
+  | { type: "opMinted"; id: string }
   | FanOutAction;
 
 export function fieldAction<K extends MassField>(
@@ -115,6 +117,7 @@ export function initMassForm(accountId: string | null = null, platform: Platform
     minTipped: "",
     subscribedOverDays: "",
     expiredOverDays: "",
+    opId: null,
   };
 }
 
@@ -136,8 +139,13 @@ export function massMessageReducer(s: MassForm, a: MassAction): MassForm {
   switch (a.type) {
     case "progress":
     case "results":
-    case "discardResults":
       return fanOutReducer(s, a);
+    case "discardResults": {
+      const next = fanOutReducer(s, a);
+      return next === s ? s : { ...next, opId: null };
+    }
+    case "opMinted":
+      return { ...s, opId: a.id };
     case "launchPlatform": {
       const next = !fanOutLocked(s) && a.platform !== "unknown" && a.platform !== null
         ? onPlatform(s, a.platform) : s;
@@ -148,6 +156,13 @@ export function massMessageReducer(s: MassForm, a: MassAction): MassForm {
   }
   // A round in flight, or a model that sent: content is locked so a paid broadcast can't be re-sent altered
   if (fanOutLocked(s)) return s;
+  const next = editReducer(s, a);
+  const sameSend = next === s || next.opId === null || (a.type === "field" && a.k === "gifPickerOpen")
+    || (a.type === "addGif" && next.pickedGifs === s.pickedGifs);
+  return sameSend ? next : { ...next, opId: null };
+}
+
+function editReducer(s: MassForm, a: MassAction): MassForm {
   switch (a.type) {
     case "field":
       return s[a.k] === a.v ? s : { ...s, [a.k]: a.v };
@@ -182,6 +197,7 @@ export function massMessageReducer(s: MassForm, a: MassAction): MassForm {
     case "removeGif":
       return { ...s, pickedGifs: s.pickedGifs.filter((g) => g.id !== a.id) };
   }
+  return s;
 }
 
 export function effectivePrice(f: Pick<MassForm, "allModels" | "price">): number {

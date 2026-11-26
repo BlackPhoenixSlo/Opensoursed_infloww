@@ -3,8 +3,11 @@
 
 import { replaceEqualDeep, useQuery } from "@tanstack/react-query";
 
+import { cellMode } from "@/lib/cellFlag";
 import { relay, type OFChatItem } from "@/lib/relay";
 import { chatRowKey } from "@/lib/chatsCache";
+import { CELL_PAINT_MS, cellToken, mergeCellRows, ROSTER_WAIT_MS, type CellMap } from "@/lib/cellInbox";
+import { useCellMap } from "@/lib/cellMap";
 
 interface RecentChatsResp {
   list: OFChatItem[];
@@ -29,19 +32,34 @@ export function shareSeedList(prev: unknown, next: unknown): unknown {
   return same ? p : { ...n, list };
 }
 
+async function cellsSeed(m: CellMap, qs: URLSearchParams, limit: number): Promise<RecentChatsResp> {
+  const granted = new Set(m.accounts.map((a) => a.account_id));
+  const answered = new Map<string, OFChatItem[]>();
+  const all = Promise.allSettled(m.cells.map((cell) =>
+    relay.get<RecentChatsResp>(`/admin/chats/recent?${qs}`, { cellId: cell }, AbortSignal.timeout(CELL_PAINT_MS))
+      .then((r) => { if (Array.isArray(r?.list)) answered.set(cell, r.list); })));
+  await Promise.race([all, new Promise((r) => setTimeout(r, ROSTER_WAIT_MS))]);
+  const lists = m.cells.map((c) => answered.get(c) ?? []);
+  const list = mergeCellRows(lists).filter((c) => granted.has(c.__accountId ?? "")).slice(0, limit);
+  return { list, source: "cells" };
+}
+
 export function useRecentChatsLocal(opts: {
   enabled?: boolean;
   limit?: number;
   accountId?: string | null;
 } = {}): { rows: OFChatItem[]; isLoading: boolean } {
   const { enabled = true, limit = 25, accountId = null } = opts;
+  const cells = cellMode();
+  const m = useCellMap();
   const q = useQuery<RecentChatsResp>({
-    queryKey: ["chats-local-seed", limit, accountId],
-    enabled,
+    queryKey: cells ? ["chats-local-seed", limit, accountId, m ? cellToken(m) : ""] : ["chats-local-seed", limit, accountId],
+    enabled: enabled && (!cells || !!m),
     queryFn: () => {
       const qs = new URLSearchParams();
       qs.set("limit", String(limit));
       if (accountId) qs.set("account_id", accountId);
+      if (cells && m && !accountId) return cellsSeed(m, qs, limit);
       return relay.get<RecentChatsResp>(`/admin/chats/recent?${qs.toString()}`);
     },
     staleTime: 5 * 60 * 1000,

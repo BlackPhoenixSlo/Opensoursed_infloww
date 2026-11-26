@@ -23,6 +23,7 @@ export interface StashedFile {
 
 export interface StashEntry {
   input: SendInput;
+  opId: string;
   files: StashedFile[];
 }
 

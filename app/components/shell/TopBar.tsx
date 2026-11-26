@@ -40,6 +40,7 @@ import { AgencyFeed, AgencyKindSwitches, useAgencyUnread } from "@/components/Ag
 import { ErrorBadge } from "@/components/ErrorBadge";
 import ClockButton from "@/components/shifts/ClockButton";
 import { ConsentBanner } from "@/components/shell/ConsentBanner";
+import { LiveH2Banner } from "@/components/LiveH2Banner";
 import { FreeTrialBadge, FreeTrialBanner } from "@/components/shell/FreeTrial";
 import { Globe04Line, InfoCircleLine, SidebarLine, SidebarSolid } from "@/components/shell/inflowwIcons";
 import { HEADER_TILE, HEADER_TILE_ICON } from "@/components/shell/headerTile";
@@ -92,6 +93,7 @@ export default function TopBar({
       </header>
       <FreeTrialBanner />
       <ConsentBanner />
+      <LiveH2Banner />
     </div>
   );
 }

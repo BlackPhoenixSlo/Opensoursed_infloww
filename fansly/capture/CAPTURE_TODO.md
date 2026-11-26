@@ -27,7 +27,7 @@ Unblocks: typing indicator, W7 realtime dispatch, notification push, tip trigger
 | 1.7 | notification push | ⛔ | **Not producible on this account.** Every notification type requires a THIRD PARTY to act on us (follow us, like, tip, buy, subscribe) — verified: our own follow generated notifications for THEM, and `/notifications` gained no row. 0 followers, 0 subscribers, so none can be manufactured. **Substantially answered anyway**: notification-bearing events push per-service as ServiceEvents, and `notification type == serviceId×1000 + eventType` — observed on both sides for follows (WS `serviceId:3 type:2/3` ↔ notification 3002/3003). See RECIPES. |
 | 1.8 | subscribe / room-join frames | ✅ | **No subscribe/join frame exists.** After `t:1` auth the client sends only `p` keepalives, yet receives events for a group it never named → the socket is a per-account firehose. Relay needs no per-group subscription tracking. Also: duplicate frames are normal (same ackCommand 4x in 3s) — dedupe on (serviceId, type, messageIds). |
 | 1.9 | ping cadence + reconnect/resume | ✅ | **CAPTURED run-20260901-1953.** Reconnect = ~1.5s delay, then a FULL re-auth (`t:1` with the same token); `session.id` constant, `websocketSessionId` newly minted each connect and never echoed back → **no resume protocol**, a plain retry loop is correct. Ping cadence **CORRECTED**: not 25.0s — measured 20–45s across 4 runs, consistent with an idle timer reset by other traffic. Implement as unconditional `p` every ≤20s. |
-| 1.10 | tip / purchase push | ⛔ | **Requires spending real money.** A tip or purchase cannot be manufactured without a charge, and the loop is forbidden from spending. Predicted shape from the namespace rule: tip = `serviceId:7 type:1`, media purchase = `serviceId:2 type:7|8`. Unconfirmed. |
+| 1.10 | tip / purchase push | ⛔ | Media purchase push ✅ OBSERVED 2026-09-02 (`serviceId 2 type 7` order + `6/3` wallet tx + `9/1` 2007 row, RECIPES PPV section). Tip push (7001) still unobserved: the 2026-11-26 proof purchases were blocked — the fan card form needs a billing address the owner had not supplied (§6.7–6.9). |
 
 ## 2. Read state (closes the 🟡 mark-read row)
 
@@ -49,20 +49,20 @@ body + response, write the recipe into `RECIPES.md`. Group by what they unblock.
 | 3.3 | `unsend_message` | ✅ | ✅ **CAPTURED run-20260901-2004.** `POST /api/v1/message/delete` `{"messageId":"..."}` → `{success:true, response:{...,deletedAt}}`. One call; the confirm dialog is client-side. Broadcast as `serviceId:5 type:10` with the full message. **Gotcha found: mixed timestamp units on ONE object** — `createdAt`/`deletedAt` in SECONDS, `interactions[].deliveredAt` in MILLISECONDS, and `createdAt` is float on the WS but int on REST. Normalise per-field. |
 | 3.4 | `follow_user`, `unfollow_user`, `like_post`, `like_message`, `resubscribe_user`, `recent_expired_subscribers` | ⛔ | 4 of 6 captured (follow_user ✅, unfollow_user ✅, like_message ✅). `like_post` needs a post WITH media, which needs a vault upload that CANNOT be deleted (§3.11) — permanent litter on the user's account for a minor row. `resubscribe_user` + `recent_expired_subscribers` need expired subscriptions; this account has 0 subscribers and 0 expired. Terminal without a populated account. |
 | 3.5 | `iter_online_subscribers` | ⛔ | Mechanism identified and fields proven (`lastSeenAt` recency, NOT `statusId` — a dormant control account also reports `statusId:1`). Cannot be exercised: `/subscribers` returns `{totalActive:0,totalExpired:0,total:0}`, so there are no subscribers to iterate. Terminal without a populated account. |
-| 3.6 | `send_mass_message` | ⛔ | Endpoint family found (`POST /message/broadcast`; `GET /message/broadcast/scheduled` confirmed 200). The composer is NOT reachable on this account — three UI surfaces checked — presumably gated on having subscribers (0 here). The send BODY cannot be captured without actually blasting, which is forbidden. Terminal without a subscriber-bearing account. |
+| 3.6 | `send_mass_message` | ✅ | ✅ **run fansly-creator-1126.** Audience = type-3 group with a list recipient (`POST /group`, idempotent per audience), send = `POST /message/broadcast` (same body as `/message`) → `response:"broadcast sent"`. Scheduled send, queue read, cancel and history (`/message/broadcast/stats`) all captured on a list holding only the test fan. RECIPES "Capture session 1126". |
 | 3.7 | `create_post` | ✅ | **CAPTURED run-20260901-2049.** `POST /api/v1/post` with `{content,fypFlags,inReplyTo,quotedPostId,attachments,scheduledFor,expiresAt,postReplyPermissionFlags,pinned,wallIds,pinWallIds}`. `wallIds` is REQUIRED (the profile wall id, from the account's `walls`). `scheduledFor:0` = post now; non-zero schedules it. Test post created and DELETED (verified gone). |
 | 3.8 | `post_story_from_url` | ⛔ | Read/delete/view/order endpoints known (`/stories`, `/stories/order`, `/mediastories`, `/mediastory/delete`, `/mediastory/view`); **no create path exists in the client bundle**, and no story composer is reachable on web (the profile "+ New" is Create New Album). Story creation appears to be mobile-app-only. The media-upload prerequisite IS now solved (§3.11), so this needs the create call observed from the mobile client. |
 | 3.9 | `delete_post`, `delete_story` | ⛔ | `delete_post` ✅ (`POST /post/{id}/delete`, no body). `delete_story` cannot be captured because no story can be CREATED on web (§3.8) — nothing to delete. `/mediastory/delete` is the known path. |
-| 3.10 | `cancel_scheduled` | ✅ | ✅ **CAPTURED run-20260901-2049** (post lane). Schedule via the normal create with a non-zero `scheduledFor`, which is **MILLISECONDS** (readback: "Will send on Tuesday, Sep 8, 2026"). `GET /api/v1/post/scheduled` → `{scheduledPosts:[{postId,accountId,status,postTemplate,scheduledFor}]}`. Cancel = `POST /api/v1/post/scheduled/{postId}/cancel` (no body) → status 3. Verified queue 1→0. ⚠️ `POST /post/{id}/delete` on a SCHEDULED post 422s `{code:99,'error getting post'}` — a queued post is not a post. **Third distinct delete shape** (message=body, post=path/delete, scheduled=path/cancel). Mass lane: `/message/broadcast/scheduled` read confirmed (§3.6); its cancel not captured (cannot create a broadcast on this account). |
+| 3.10 | `cancel_scheduled` | ✅ | ✅ Post lane: run-20260901-2049 — `POST /post/scheduled/{postId}/cancel`, `scheduledFor` ms, ⚠️ `/post/{id}/delete` on a queued post 422s. **Mass lane ✅ run fansly-creator-1126**: `POST /message/broadcast/scheduled/<id>/cancel` (no body) → row `status:3`, queue 1→0, no socket frame. Distinct path from the post lane. |
 | 3.11 | `hide_vault_media`, `vault_media_lookup_hash` | ⛔ | **MEDIA UPLOAD ✅ FULLY CAPTURED** — the project's biggest gap, see RECIPES. `hide_vault_media` is terminal: **no vault-delete endpoint exists in the client**. `/vault/albums/media/delete` only UNLINKS from an album (verified — media remained), and `/account/media/{id}/delete` wants an accountMedia GRANT id, not a vault mediaId. `vault_media_lookup_hash` has no counterpart either. ⚠️ vault uploads appear PERMANENT — an operational constraint for any relay media send. Leftover: `zz-capture-test.jpeg` in the vault. |
-| 3.12 | `create_promo` | ⛔ | Endpoint found (`POST /api/v1/subscriptions/promotions` via `editPlanPromotion`). Cannot be exercised: a promo is a discount ON a subscription plan and `account.subscriptionTiers` is EMPTY. Capturing it requires creating a subscription tier — configuring the user's monetization and pricing — which is outside a capture session's remit. Needs the user to set up a tier. |
+| 3.12 | `create_promo` | ✅ | ✅ **run fansly-creator-1126.** `POST /subscriptions/promotions {id:"",description,planId,status:1,duration,maxUses,uses:0,price,startsAt,endsAt}` → promo with id. UI floor $3.00; server rewrites `duration` to the plan cycle (7→30). Promo `900999000000085664` live on the $5 plan until 2026-12-03. |
 
 ## 4. Earnings / sales row shape
 
 | # | item | status | note |
 |---|---|---|---|
 | 4.1 | endpoints located | ✅ | `GET /api/v1/account/wallets/earnings/stats?before&after&limit&offset` and `/monthlystats?before&after`. Supersedes the seven 404'd probes in the parity doc. |
-| 4.2 | populated row shape | ⛔ | **Requires real revenue.** `GET /account/wallets/earnings/{stats,monthlystats}` are confirmed live (§4.1) but return `totalGross:0` / `[]` because this account has never earned. A populated row shape cannot be produced without a real transaction, and the loop cannot spend. |
+| 4.2 | populated row shape | ✅ | ✅ **2026-11-26, read-only.** After the 2026-09-02 $3 PPV: `earnings/stats` → per-type-per-day rows `{type:2110,totalGross:3000,totalNet:2400,accountId,timestamp}`; `monthlystats` → a rolling-30-day row (`year:0,month:0`) then per-month rows. Fixture `fansly/fixtures/earnings.json`. |
 
 ## 5. Native features worth knowing before we rebuild them
 
@@ -83,21 +83,21 @@ request and frame recorded into `RECIPES.md`:
 
 | # | action | closes | status |
 |---|---|---|---|
-| 6.1 | open a list's members | `list_users_in` (Smart list sync stays off until it is built) | ⬜ |
-| 6.2 | rename a list | `rename_list` | ⬜ |
-| 6.3 | delete a list (a trusted click on the row `···` menu, §3.1's gap) | `delete_list` | ⬜ |
-| 6.4 | block, then unblock, the fan account | `block_user`, `unblock_user` | ⬜ |
-| 6.5 | search for the fan by username | `search_users` | ⬜ |
-| 6.6 | schedule one broadcast to a list holding only the fan account, read the queue and broadcast history, then cancel it | `schedule_mass_message`, `scheduled_messages`, `queued_message`, `edit_queued_message`, `mass_message_history`, `engagement_messages`, and the unconfirmed `send_mass_message` path; also the broadcast cancel shape `cancel_scheduled` lacks (its post-endpoint hazard) | ⬜ |
+| 6.1 | open a list's members | `list_users_in` (Smart list sync stays off until it is built) | ✅ fansly-creator-1126: `GET /lists/itemsnew?listId=` → bare ids |
+| 6.2 | rename a list | `rename_list` | ✅ fansly-creator-1126: `POST /lists/edit` whole list object |
+| 6.3 | delete a list (a trusted click on the row `···` menu, §3.1's gap) | `delete_list` | ✅ fansly-creator-1126: `POST /lists/remove {listId}` |
+| 6.4 | block, then unblock, the fan account | `block_user`, `unblock_user` | ✅ fansly-creator-1126: `POST /account/ignore` flags 2/0; block severs the follow |
+| 6.5 | search for the fan by username | `search_users` | ✅ fansly-creator-1126: `GET /account/search` — creators only, fans not found |
+| 6.6 | schedule one broadcast to a list holding only the fan account, read the queue and broadcast history, then cancel it | `schedule_mass_message`, `scheduled_messages`, `queued_message`, `edit_queued_message`, `mass_message_history`, `engagement_messages`, and the unconfirmed `send_mass_message` path; also the broadcast cancel shape `cancel_scheduled` lacks (its post-endpoint hazard) | ✅ fansly-creator-1126: schedule/queue/history/cancel captured, body via in-page fetch |
 
 **Proof purchases** — fan account to creator account, creator side recorded
 before and after (notification row, socket frames, wallet frame):
 
 | # | purchase | proves | status |
 |---|---|---|---|
-| 6.7 | chat PPV | 2007 still carries `accountMediaPrice` (the Banking set); net and fee from the wallet frame | ⬜ |
-| 6.8 | paid subscription, not a gift code | the paid-sub code (15006 or 15016) and its price key; once it lapses, `recent_expired_subscribers` and `resubscribe_user` | ⬜ |
-| 6.9 | chat tip | 7001's price key, and the unit of a message's `totalTipAmount` | ⬜ |
+| 6.7 | chat PPV | 2007 still carries `accountMediaPrice` (the Banking set); net and fee from the wallet frame | ⬜ blocked 2026-11-26: Add-card form needs a billing address (not in env; two requests timed out). $0 spent. |
+| 6.8 | paid subscription, not a gift code | the paid-sub code (15006 or 15016) and its price key; once it lapses, `recent_expired_subscribers` and `resubscribe_user` | ⬜ blocked 2026-11-26: Add-card form needs a billing address (not in env; two requests timed out). $0 spent. |
+| 6.9 | chat tip | 7001's price key, and the unit of a message's `totalTipAmount` | ⬜ blocked 2026-11-26: Add-card form needs a billing address (not in env; two requests timed out). $0 spent. |
 
 ## Done condition
 Every row ✅ or ⛔. §1.10 and §4.2 may end ⛔ ("needs a real money event, not

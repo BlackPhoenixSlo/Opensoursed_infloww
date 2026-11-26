@@ -82,7 +82,7 @@ export function useAutoFollowSwitch() {
   return useMutation<{ action: string }, Error, { accountId: string; enable: boolean }>({
     mutationFn: ({ accountId, enable }) =>
       relay.post<{ action: string }>("/admin/automation-rules/switch",
-        { account_id: accountId, kind: "auto_follow", enable }),
+        { account_id: accountId, kind: "auto_follow", enable }, { cellAccountId: accountId }),
     onSuccess: (_r, { accountId }) => {
       qc.invalidateQueries({ queryKey: [STATS] });
       qc.invalidateQueries({ queryKey: ["automation-rules", accountId] });

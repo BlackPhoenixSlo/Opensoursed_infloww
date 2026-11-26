@@ -47,6 +47,26 @@ def case_hold_prunes_on_write():
     assert list(h._held) == ["new"], h._held
 
 
+def case_deep_page_refused_table():
+    for limit in (10, 20, 25, 50):
+        edge = chats_page.AUTO_PAGES * limit
+        for offset, intent, want in (
+            (0, None, False), (edge - 1, None, False), (edge - 1, "auto", False),
+            (edge, None, True), (edge, "auto", True), (edge, "", True), (edge + limit, None, True),
+            (edge, "explicit", False), (edge, "EXPLICIT", False), (edge, " Explicit ", False),
+        ):
+            got = chats_page.deep_page_refused(offset, limit, intent)
+            assert got is want, (limit, offset, intent, got)
+
+
+def case_list_caller_and_intent_table():
+    for raw, want in ((None, "-"), ("", "-"), ("scroll", "scroll"), ("LoadMore", "loadmore"),
+                      (" replay ", "replay"), ("auto", "auto"), ("bogus", "other")):
+        assert chats_page.list_caller(raw) == want, (raw, chats_page.list_caller(raw))
+    for raw, want in ((None, "-"), ("explicit", "explicit"), ("EXPLICIT", "explicit"), ("yes", "-")):
+        assert chats_page.list_intent(raw) == want, raw
+
+
 class _Resp:
     def __init__(self, status: int, text: str):
         self.status_code, self.text = status, text

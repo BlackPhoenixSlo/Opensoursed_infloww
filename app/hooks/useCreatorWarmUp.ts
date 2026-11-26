@@ -2,31 +2,37 @@
 
 
 import { useCallback, useEffect, useRef } from "react";
-import { useQueryClient, type Query } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 
-import { prefetchModelChatList } from "@/hooks/useChatList";
+import { prefetchModelChatList, refreshChatHead } from "@/hooks/useChatList";
+import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { useRosterCountActions } from "@/hooks/useRosterCounts";
 
 export const HOVER_INTENT_MS = 250;
 
-// Refetching a list mid next-page would cancel that page and leave the list a page short.
-export function warmUpMayRefetch(q: Query): boolean {
-  return !(q.state.fetchStatus !== "idle" && q.state.fetchMeta?.fetchMore);
+const warming = new Map<string, Promise<void>>();
+
+export function coalesceWarmUp(id: string, run: () => Promise<void>): Promise<void> {
+  const had = warming.get(id);
+  if (had) return had;
+  const p = run().catch(() => {}).finally(() => warming.delete(id));
+  warming.set(id, p);
+  return p;
 }
 
 export function useCreatorWarmUp() {
   const { refreshOne } = useRosterCountActions();
   const qc = useQueryClient();
+  const accounts = usePlatformAccounts();
 
   const warm = useCallback(
     (accountId: string) => {
-      // Invalidate after the bust resolves so the list snaps to the exact rows the badge counted (warm relay hit, no extra OF read).
+      const account = accounts.find((a) => a.id === accountId);
       void prefetchModelChatList(qc, accountId);
-      void refreshOne(accountId).then(() =>
-        qc.invalidateQueries({ queryKey: ["chats", "model", accountId], predicate: warmUpMayRefetch }),
-      );
+      void coalesceWarmUp(`model:${accountId}`, () =>
+        refreshOne(accountId).then(() => account && refreshChatHead(qc, { kind: "model", accountId }, [account])));
     },
-    [refreshOne, qc],
+    [refreshOne, qc, accounts],
   );
 
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

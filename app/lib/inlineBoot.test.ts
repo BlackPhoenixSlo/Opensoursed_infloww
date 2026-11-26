@@ -22,6 +22,15 @@ describe("inlinePaths: what the browser would fetch first, per document", () => 
     expect(inlinePaths(path, jar(entry))).toEqual(want);
   });
 
+  it.each(["/messages-pro", "/"])("cell mode %s: control's two probes only, never a bundle", (path) => {
+    vi.stubEnv("OI_CELL_MAP", "/cells/placement.json");
+    try {
+      expect(inlinePaths(path, jar(undefined, "all"))).toEqual(["/auth/me", "/chatter/me"]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("Messages Pro, one Creator saved in scope (its cookie): the probes only, no agency-wide inbox bundle", () => {
     expect(inlinePaths("/messages-pro", jar(undefined, "model"))).toEqual(["/auth/me", "/chatter/me"]);
     expect(inlinePaths("/messages-pro", jar(undefined, "all"))).toEqual(["/auth/me", "/chatter/me", "/admin/screens/inbox?cursor=0"]);

@@ -188,9 +188,12 @@ export function useMassQueueProgress(accountIds: string[], daysBack: number, lim
         .catch(() => undefined)
         .then(() => qc.invalidateQueries({ queryKey: [KEY_PREFIX, got.accountId] }));
     });
-    const clear = () => setInFlight((m) => (m.size ? new Map() : m));
-    const offResync = eventBus.on("resync", clear);
-    const offState = eventBus.onStateChange((connected) => { if (!connected) clear(); });
+    const clear = (accounts: readonly string[] | null) => setInFlight((m) => {
+      const next = new Map([...m].filter(([, q]) => accounts !== null && !accounts.includes(q.accountId)));
+      return next.size === m.size ? m : next;
+    });
+    const offResync = eventBus.on("resync", (env) => clear(Array.isArray(env.accounts) ? env.accounts.map(String) : null));
+    const offState = eventBus.onStreamState((c) => { if (!c.connected) clear(c.accounts); });
     return () => {
       offUpdate();
       offFinish();

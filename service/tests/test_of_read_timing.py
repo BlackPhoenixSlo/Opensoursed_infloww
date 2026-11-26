@@ -92,7 +92,7 @@ server.log.addHandler(LINES)
 server.log.setLevel(logging.INFO)
 
 _FIELDS = ("route", "account", "chat", "prio", "status", "of_calls", "lane_wait_ms",
-           "signed_wait_ms", "of_ms", "post_ms", "total_ms")
+           "signed_wait_ms", "of_ms", "post_ms", "total_ms", "caller", "intent", "offset", "limit", "upstream")
 
 
 def _parse(line: str) -> dict[str, str]:
@@ -146,6 +146,71 @@ def case_each_timed_route_logs_one_line_with_every_field():
         assert int(kv["of_ms"]) >= 40, ln
         assert int(kv["total_ms"]) >= int(kv["of_ms"]), ln
     assert _parse(LINES.lines[0])["chat"] == "77" and _parse(LINES.lines[1])["chat"] == "-"
+    for i in (0, 2, 3):
+        kv = _parse(LINES.lines[i])
+        assert (kv["caller"], kv["intent"], kv["offset"], kv["limit"], kv["upstream"]) == ("-",) * 5, kv
+
+
+def case_chats_line_carries_caller_intent_offset_limit():
+    for headers, caller, intent in (({}, "-", "-"), ({"X-List-Caller": "Scroll"}, "scroll", "-"),
+                                    ({"X-List-Caller": "bogus", "X-List-Intent": "EXPLICIT"}, "other", "explicit")):
+        _fresh()
+        _get("/api/of/v2/chats?limit=20&offset=40", **headers)
+        kv = _parse(LINES.lines[-1])
+        assert (kv["caller"], kv["intent"], kv["offset"], kv["limit"], kv["upstream"]) == (
+            caller, intent, "40", "20", "-"), (headers, kv)
+
+
+def case_a_deep_page_without_intent_is_refused_before_of():
+    for limit in (20, 25):
+        fake = _fresh()
+        deep = 4 * limit
+        r = OWNER_A.get(f"/api/of/v2/chats?limit={limit}&offset={deep}",
+                        headers={"X-Account-Id": A, "X-List-Caller": "replay", "X-List-Intent": "auto"})
+        assert r.status_code == 428 and r.json()["detail"] == "Reload the page to load older chats.", r.text
+        assert fake.gets("/api2/v2/chats") == 0 and not relay_cache._cache, (fake.calls, relay_cache._cache)
+        kv = _parse(LINES.lines[-1])
+        assert (kv["status"], kv["of_calls"], kv["caller"], kv["offset"], kv["limit"]) == (
+            "428", "0", "replay", str(deep), str(limit)), kv
+        _get(f"/api/of/v2/chats?limit={limit}&offset={deep - 1}")
+        _get(f"/api/of/v2/chats?limit={limit}&offset={deep}", **{"X-List-Intent": "explicit"})
+        assert fake.gets("/api2/v2/chats") == 2, fake.calls
+        assert _parse(LINES.lines[-1])["intent"] == "explicit"
+
+
+def case_a_search_deep_page_is_still_refused():
+    fake = _fresh()
+    r = OWNER_A.get("/api/of/v2/chats?limit=25&offset=100&query=anna",
+                    headers={"X-Account-Id": A, "X-List-Caller": "search"})
+    assert r.status_code == 428 and fake.gets("/api2/v2/chats") == 0, r.text
+
+
+def case_only_chat_list_reads_get_the_short_gate_budget():
+    import of_pacing
+    _fresh()
+    seen: list[tuple[str, float | None]] = []
+    real = of_pacing.absorb_429
+
+    def spy(aid, call, **kw):
+        seen.append((kw.get("send_deadline"), of_pacing._READ_BUDGET.get()))
+        return real(aid, call, **kw)
+    of_pacing.absorb_429 = spy
+    try:
+        _get("/api/of/v2/chats?limit=10")
+        _get("/api/of/v2/chats/77/messages")
+    finally:
+        of_pacing.absorb_429 = real
+    assert seen == [(None, of_pacing.LIST_READ_BUDGET_S), (None, None)], seen
+
+
+def case_upstream_status_names_the_of_answer():
+    fake = _fresh()
+    fake.client._signed_slots = None
+    fake.client._http_call = lambda method, url, json_body=None: _Resp(url, 401, {"error": "dead"})
+    r = OWNER_A.get("/api/of/v2/chats?limit=10", headers={"X-Account-Id": A, "X-List-Caller": "poll"})
+    assert r.status_code == 502, r.text
+    kv = _parse(LINES.lines[-1])
+    assert (kv["status"], kv["upstream"], kv["caller"]) == ("502", "401", "poll"), kv
 
 
 def case_a_held_lane_slot_is_lane_wait_not_of_time():

@@ -55,6 +55,7 @@ import automation_executor as ax
 import dm_rate
 import read_flip
 import run_slot
+import send_ops
 from env_knob import env_float
 from attribution import write_outbound_attribution
 from automations import (
@@ -360,9 +361,13 @@ async def _attribute(account_id: str, fan_id: int, mid: int, body: str, created_
 
 async def _dm(client, look: Look, text: str, **kw) -> dict:
     """One DM on OF; writes its own `messages` row with OF's text and time (attributed)."""
-    res = await ax.of_write_paced(look.account_id, lambda: client.send_message(look.fan_id, text, **kw),
-                                  send_purpose=SEND_PURPOSE, tries=1, dm=True,
-                                  min_gap_s=WRITE_GAP_S, before_write=look.before_write)
+    turn = f"{MODE}:{look.row['trigger_key']}"
+    res = await ax.of_write_paced(
+        look.account_id,
+        lambda: send_ops.automated_sync(look.account_id, "full_ai_live", look.fan_id, turn,
+                                        lambda: client.send_message(look.fan_id, text, **kw), part=look.index),
+        send_purpose=SEND_PURPOSE, tries=1, dm=True,
+        min_gap_s=WRITE_GAP_S, before_write=look.before_write)
     mid = res.get("id") if isinstance(res, dict) else None
     ok = bool(mid) and await _attribute(look.account_id, look.fan_id, int(mid), str(res.get("text") or text),
                                         ax._parse_iso(res.get("createdAt")) or datetime.utcnow())

@@ -181,7 +181,7 @@ async def case_fansly_pump_builds_the_backend_live_connection():
 def _third_backend(drops: list):
     mod = types.ModuleType("third_backend")
     mod.drop = lambda aid=None: drops.append(("third", aid))
-    return platforms.Platform("third", "Third", "third_session.json", mod, frozenset())
+    return platforms.Platform("third", "Third", "third_session.json", mod, frozenset(), "remote_login_third")
 
 
 class _Retirable:
@@ -368,7 +368,7 @@ def _one_flag_platform(key: str, lacks, client: _ProbeClient, *, free_follow: bo
     mod.get_client = lambda aid: client
     mod.drop = lambda aid=None: None
     return platforms.Platform(key, key.title(), f"{key}_session.json", mod, frozenset(lacks),
-                              free_follow=free_follow)
+                              f"remote_login_{key}", free_follow=free_follow)
 
 
 def _login():

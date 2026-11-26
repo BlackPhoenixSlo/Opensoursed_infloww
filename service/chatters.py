@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 import account_health
 import accounts as account_registry
+import cell_mode
 import chatter_identity_cache as identity_cache
 import events
 import platforms
@@ -42,7 +43,7 @@ from db.models import (
 from auth import (
     USERNAME_RE,
     RESERVED_USERNAMES,
-    _cookie_secure,
+    cookie_secure,
     _normalize_username,
     _validate_password,
 )
@@ -84,7 +85,7 @@ class ChatterIdentity:
         self.display_name = display_name
         self.color = color
         self.owner_user_ids = owner_user_ids
-        self.account_ids = account_ids
+        self.account_ids = cell_mode.clamp(account_ids)
 
 
 _request_chatter: ContextVar["ChatterIdentity | None"] = ContextVar(
@@ -115,14 +116,17 @@ def parse_cookie_issued(value: str) -> tuple[str, int] | None:
 
 
 def _set_session_cookie(response: Response, chatter_id: str) -> None:
+    from auth import _ACTOR
     response.set_cookie(
         COOKIE_NAME,
         _make_cookie(chatter_id),
         max_age=COOKIE_MAX_AGE_SECONDS,
         httponly=True,
         samesite="lax",
-        secure=_cookie_secure(),
+        secure=cookie_secure(),
     )
+    if _ACTOR is not None:
+        _ACTOR.clear(response)
 
 
 def _clear_session_cookie(response: Response) -> None:
@@ -683,7 +687,8 @@ def _chatter_allowed_admin(path: str, method: str) -> bool:
 
 async def chatter_session_middleware(request: Request, call_next):
     _request_chatter.set(None)
-    cookie = request.cookies.get(COOKIE_NAME)
+    from auth import _ACTOR
+    cookie = None if _ACTOR is not None and _ACTOR.DATA else request.cookies.get(COOKIE_NAME)
     expired = False
     if cookie:
         parsed = parse_cookie_issued(cookie)
@@ -691,6 +696,12 @@ async def chatter_session_middleware(request: Request, call_next):
             identity, expired = await _session_identity(*parsed)
             if identity is not None:
                 _request_chatter.set(identity)
+    claims = getattr(request.state, "oi_actor", None) if _ACTOR is not None else None
+    if claims is not None and claims.kind == "chatter" and _request_chatter.get() is None:
+        identity = await _ACTOR.chatter_identity(claims)
+        if identity is None and (refused := _ACTOR.refused(request.url.path, "actor_revoked")):
+            return refused
+        _request_chatter.set(identity)
 
     # User cookie wins for /admin/*: the gate only applies when no owner is signed in.
     from auth import get_request_user as _get_user_local

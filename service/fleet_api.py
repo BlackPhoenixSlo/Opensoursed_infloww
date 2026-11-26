@@ -29,14 +29,17 @@ def enabled() -> bool:
     return len(_SECRET) >= _MIN_SECRET
 
 
+def secret_ok(given: str | None) -> bool:
+    return len(_SECRET) >= _MIN_SECRET and bool(given) and hmac.compare_digest(given.encode(), _SECRET.encode())
+
+
 @router.get(PATH)
 async def whois(
     x_fleet_secret: Annotated[str | None, Header()] = None,
     x_fleet_username: Annotated[str, Header()] = "",
 ) -> JSONResponse:
     """`{exists}` for an owner's or a chatter's username; 403 without the secret."""
-    given = (x_fleet_secret or "").encode("utf-8")
-    if not x_fleet_secret or not hmac.compare_digest(given, _SECRET.encode("utf-8")):
+    if not secret_ok(x_fleet_secret):
         return JSONResponse({"detail": "forbidden"}, status_code=403, headers=_NO_STORE)
     # Username rides in a header, not `?username=`: query strings reach the access log and every shard sees every sign-in attempt (a password typed into the name field would leak). Never log it or take a sign-in throttle token.
     username = unquote(x_fleet_username)

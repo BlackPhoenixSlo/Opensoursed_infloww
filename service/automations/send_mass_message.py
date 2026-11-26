@@ -20,6 +20,8 @@ from automations._pools import int_list
 from of_client import proxy_refused
 from of_write import _may_have_sent
 import platforms
+import send_ops
+from job_queue import send_anchor
 from side_effect_gate import PLATFORM_LACKS_PREFIX
 from automations._wordfilter import (
     banned_hit_summary, filter_banned, load_banned_words,
@@ -28,6 +30,14 @@ from db.engine import get_session
 from db.models import (MASS_RUN_FAILED, MASS_RUN_OK, MASS_RUN_REFUSED, MASS_RUN_RUNNING,
                        FunnelAccountMedia, ListMember, MassMessageFunnel, MassRun, ScheduledJob)
 from event_transcoder import _parse_iso, _to_cents
+
+_OP_KIND = {"mass_premade": "mass_premade"}
+
+
+def _op_kind_anchor(attr_kind: str, attr_ref, payload: dict) -> tuple[str, str]:
+    kind = _OP_KIND.get(attr_kind, "mass_job")
+    return kind, send_anchor(payload)
+
 
 log = logging.getLogger("of-relay.automation.send_mass_message")
 RUN_REFUSED = "refused"   # a mass_runs status: the proxy refused its POST
@@ -291,6 +301,7 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
         audience_filter = smd.audience_filter(p, ref=attr_ref, fence=fence_attached,
                                               auto_exclude=auto_lid)
         mass_run_id = 0
+        op_kind, op_anchor = _op_kind_anchor(attr_kind, attr_ref, payload)
 
         # Minted right before the POST: a run row means handed to OF, never still waiting on the write gap.
         async def _mint() -> None:
@@ -313,18 +324,19 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
         try:
             result = await ax.of_write_paced(
                 account_id,
-                lambda: client.send_mass_message(
-                    text=text,
-                    user_lists=list(p.user_lists),
-                    included_users=p.recipients,
-                    excluded_users=sorted(p.excl_set),
-                    excluded_user_lists=list(p.excluded_user_lists),
-                    price=p.price,
-                    media_files=p.media_files,
-                    previews=p.previews,
-                    filters=p.filters,
-                    online_only=p.online_only,
-                ),
+                lambda: send_ops.automated_sync(
+                    account_id, op_kind, "mass", op_anchor, lambda: client.send_mass_message(
+                        text=text,
+                        user_lists=list(p.user_lists),
+                        included_users=p.recipients,
+                        excluded_users=sorted(p.excl_set),
+                        excluded_user_lists=list(p.excluded_user_lists),
+                        price=p.price,
+                        media_files=p.media_files,
+                        previews=p.previews,
+                        filters=p.filters,
+                        online_only=p.online_only,
+                    ), body={"text": text, "price": p.price, "media_files": p.media_files}),
                 send_purpose="fenced",
                 before_write=_mint,
             )

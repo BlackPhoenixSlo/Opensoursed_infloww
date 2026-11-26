@@ -1067,7 +1067,7 @@ describe("the Messages Pro page", () => {
     expect(sends[0]).toEqual([
       THREAD_OF_FAN_FOUR,
       { text: "Fixture quick reply", locked_text: false, price: 0, media_files: [] },
-      { accountId: OTHER_ACCOUNT_ID, employeeId: 300000001 },
+      { accountId: OTHER_ACCOUNT_ID, employeeId: 300000001, opId: expect.any(String) },
     ]);
     expect(threadText()).toBeNull();
     expect(fanTabNames()).toEqual([]);

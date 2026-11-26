@@ -16,19 +16,27 @@ import {
 
 import { useScope, type Scope } from "@/contexts/ScopeContext";
 import { eventBus } from "@/lib/events";
-import { relay, relayFocus, type OFChatItem, type OFChatsResp, type OFUserMini } from "@/lib/relay";
+import { cellMode } from "@/lib/cellFlag";
+import { isDeepRefused, isRateLimited, relay, relayFocus, type OFChatItem, type OFChatsResp, type OFUserMini, type AccountMeta } from "@/lib/relay";
+import { askCells, cellBundle, cellScopeToken, currentCellMap, useCellMap } from "@/lib/cellMap";
+import { bundleChats, compareCellChats, mergeCellRows, spliceHead, tokenOf, type CellMap } from "@/lib/cellInbox";
+import { resyncAction } from "@/lib/cellBusReducer";
 import { fanIdFromParam, type FanId } from "@/lib/fanId";
 import { CHATS_PAGE } from "@/lib/screenBundle";
 import {
-  chatRowKey, commitChatPages, compareChats, completeUnreadView, decodeChatsKey, isLiveView, localSeq, type StampedPage, type UnreadView,
+  chatRowKey, commitChatPages, compareChats, completeUnreadView, decodeChatsKey, isLiveView, localSeq, replayCachedPage,
+  type StampedPage, type UnreadView,
 } from "@/lib/chatsCache";
 import { relayNow, relayOffsetKnown } from "@/lib/ageClock";
 import { platformHonours, type ChatListFilter } from "@/lib/chatFilters";
-import { accountPlatform } from "@/lib/platform";
+import { accountPlatform, type Platform } from "@/lib/platform";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 import { useAccounts, usePlatformAccounts } from "./useAccounts";
 import { useAccountPlatform } from "./useCan";
 import { avatarThumb, mergeOFUserName, ofUserNameKey, type OFUserName } from "./useOFUser";
+import {
+  initialLoadMore, listCaller, loadMoreReducer, mayAutoPage, pendingFor, startedBy, type Busy, type ListCaller, type LoadMoreAction, type Pending,
+} from "./chatListLoadMore";
 
 const PAGE_SIZE = CHATS_PAGE;
 
@@ -45,6 +53,7 @@ export function shareChatPages(prev: unknown, next: unknown): unknown {
     if (pg === was) return was;
     let same = !!was && was.hasMore === pg.hasMore && was.session === pg.session && was.scanned === pg.scanned &&
       !was.partial === !pg.partial &&
+      replaceEqualDeep(was.splitVersions, pg.splitVersions) === was.splitVersions &&
       replaceEqualDeep(was.missing, pg.missing) === was.missing &&
       replaceEqualDeep(was.moreAccounts, pg.moreAccounts) === was.moreAccounts &&
       was.rows.length === pg.rows.length;
@@ -260,12 +269,12 @@ export function listPaintKey(
   return `chat.list:${scopeKey}:${filter ?? ""}:${listId ?? ""}:${query ?? ""}`;
 }
 
-type ScannedChatsResponse = OFChatsResp & { scanned?: number };
+type ScannedChatsResponse = OFChatsResp & { scanned?: number; split_version?: string };
 
 function readChatPage(resp: ScannedChatsResponse, accountId: string, qc: QueryClient) {
   const rows = normalizeChats(resp, accountId);
   void enrichWithUsers(rows, accountId, qc).catch(() => {});
-  return { rows, hasMore: !!resp.hasMore, scanned: resp.scanned ?? rows.length };
+  return { rows, hasMore: !!resp.hasMore, scanned: resp.scanned ?? rows.length, splitVersion: resp.split_version };
 }
 
 async function fetchPage(
@@ -278,11 +287,13 @@ async function fetchPage(
   limit: number,
   qc: QueryClient,
   // `priority` is explicit, never ambient: untagged calls default to 'user' relay-side and eat a reserved per-account user slot.
-  { refresh = false, priority = "user", order = "recent", signal }: {
+  { refresh = false, priority = "user", order = "recent", signal, caller = "auto", intent }: {
     refresh?: boolean;
     priority?: "user" | "background";
     order?: ChatListOrder;
     signal?: AbortSignal;
+    caller?: ListCaller;
+    intent?: "explicit";
   },
 ): Promise<StampedPage> {
   const qs = new URLSearchParams();
@@ -294,6 +305,7 @@ async function fetchPage(
   if (listId) qs.set("list_id", listId);
   if (query) qs.set("query", query);
   const path = `/api/of/v2/chats?${qs.toString()}`;
+  const tag = { caller, ...(intent ? { intent } : {}) };
   const stamp = { session: SESSION, askedAt: relayNow(), askedSeq: localSeq(), ...(relayOffsetKnown() ? {} : { askedAtGuess: true as const }) };
   if (readFrom.length === 0) return { rows: [], hasMore: false, moreAccounts: [], scanned: 0, ...stamp };
 
@@ -311,36 +323,58 @@ async function fetchPage(
     const [accountId] = readFrom;
     try {
       const resp = await relay.get<ScannedChatsResponse>(
-        path, { accountId, priority }, signal, { refresh },
+        path, { accountId, priority, ...tag }, signal, { refresh },
       );
       const page = readChatPage(resp, accountId, qc);
-      perfDelivered(opId, "chat.list", { count: page.rows.length, hasMore: page.hasMore });
-      return { ...page, rows: page.rows.sort(sort), moreAccounts: page.hasMore ? [accountId] : [], ...stamp };
+      const { rows, hasMore, scanned, splitVersion } = page;
+      perfDelivered(opId, "chat.list", { count: rows.length, hasMore });
+      return {
+        rows: rows.sort(sort), hasMore, moreAccounts: hasMore ? [accountId] : [], scanned, ...stamp,
+        ...(splitVersion ? { splitVersions: { [accountId]: splitVersion } } : {}),
+      };
     } catch (err) {
       perfError(opId, "chat.list", { message: (err as Error)?.message });
       throw err;
     }
   }
 
+  const cells = cellMode() ? currentCellMap() : null;
+  if (cells) {
+    const bundle = !filter && !listId && !query && order === "recent" && limit === PAGE_SIZE && !refresh;
+    const page = await fetchCellsPage(cells, readFrom, offset, path, qc, { bundle, refresh, priority, order, signal, tag });
+    perfDelivered(opId, "chat.list", {
+      count: page.rows.length, hasMore: page.hasMore, accountCount: readFrom.length, failed: page.missing?.length ?? 0,
+    });
+    return { ...page, ...stamp };
+  }
+
   const focus = relayFocus();
   const results = await Promise.allSettled(
     readFrom.map(async (accountId) => {
       const r = await relay.get<ScannedChatsResponse>(
-        path, { accountId, priority: accountId === focus ? priority : "background" }, signal, { refresh },
+        path, { accountId, priority: accountId === focus ? priority : "background", ...tag }, signal, { refresh },
       );
       return readChatPage(r, accountId, qc);
     }),
   );
   signal?.throwIfAborted();
+  const refused = results.find((r): r is PromiseRejectedResult =>
+    r.status === "rejected" && (isDeepRefused(r.reason) || (offset > 0 && isRateLimited(r.reason))));
+  if (refused) {
+    perfError(opId, "chat.list", { message: (refused.reason as Error)?.message });
+    throw refused.reason;
+  }
   const merged: OFChatItem[] = [];
   let scanned = 0;
   const moreAccounts: string[] = [];
   const missing: string[] = [];
+  const splitVersions: [string, string][] = [];
   results.forEach((r, i) => {
     if (r.status === "fulfilled") {
       merged.push(...r.value.rows);
       scanned += r.value.scanned;
       if (r.value.hasMore) moreAccounts.push(readFrom[i]);
+      if (r.value.splitVersion) splitVersions.push([readFrom[i], r.value.splitVersion]);
     } else {
       missing.push(readFrom[i]);
     }
@@ -352,7 +386,51 @@ async function fetchPage(
   });
   return {
     rows: merged.sort(sort), hasMore: anyMore, moreAccounts, scanned, ...stamp,
+    ...(splitVersions.length ? { splitVersions: Object.fromEntries(splitVersions) } : {}),
     ...(failed ? { partial: true, missing } : {}),
+  };
+}
+
+type CellPart = { accountId: string; rows: OFChatItem[]; hasMore: boolean; scanned: number };
+
+async function fetchCellsPage(
+  m: CellMap, readFrom: readonly string[], offset: number, path: string, qc: QueryClient,
+  { bundle, refresh, priority, order, signal, tag }: {
+    bundle: boolean; refresh: boolean; priority: "user" | "background"; order: ChatListOrder; signal?: AbortSignal;
+    tag: { caller: ListCaller; intent?: "explicit" };
+  },
+): Promise<Omit<StampedPage, "session" | "askedAt" | "askedSeq">> {
+  const focus = relayFocus();
+  let refused: unknown = null;
+  const results = await askCells<CellPart[]>(m, readFrom, signal, async ({ cell, accounts, signal: s }) => {
+    if (bundle) {
+      const b = bundleChats(await cellBundle(m, cell, accounts, offset, s, tag.caller));
+      const parts = b.chats.map((c) => ({ accountId: c.accountId, ...readChatPage(c.body as ScannedChatsResponse, c.accountId, qc) }));
+      return { value: parts, partial: [...new Set([...b.partial, ...b.failed])] };
+    }
+    const settled = await Promise.allSettled(accounts.map(async (accountId) => ({
+      accountId,
+      ...readChatPage(await relay.get<ScannedChatsResponse>(
+        path, { accountId, priority: accountId === focus ? priority : "background", ...tag }, s, { refresh },
+      ), accountId, qc),
+    })));
+    s.throwIfAborted();
+    const deep = settled.find((r): r is PromiseRejectedResult => r.status === "rejected" && isDeepRefused(r.reason));
+    if (deep) refused ??= deep.reason;
+    return {
+      value: settled.flatMap((r) => r.status === "fulfilled" ? [r.value] : []),
+      partial: accounts.filter((_, i) => settled[i].status === "rejected"),
+    };
+  });
+  signal?.throwIfAborted();
+  if (refused) throw refused;
+  const parts = results.flatMap((r) => r.ok ? r.value : []);
+  const missing = [...new Set(results.flatMap((r) => r.ok ? r.partial : r.accounts))];
+  const sort = order === "old" ? (a: OFChatItem, b: OFChatItem) => compareCellChats(b, a) : compareCellChats;
+  const moreAccounts = parts.filter((p) => p.hasMore).map((p) => p.accountId);
+  return {
+    rows: mergeCellRows(parts.map((p) => p.rows), sort), hasMore: moreAccounts.length > 0, moreAccounts,
+    scanned: parts.reduce((n, p) => n + p.scanned, 0), ...(missing.length ? { partial: true, missing } : {}),
   };
 }
 
@@ -363,15 +441,16 @@ export function prefetchModelChatList(
 ): Promise<void> {
   if (!accountId) return Promise.resolve();
   const scope = { kind: "model", accountId } as const;
-  const queryKey = ["chats", "model", accountId, null, null, null, limit] as const;
+  const queryKey = chatsQueryKey("model", chatListAccountKey(scope, []), { limit });
   return qc.prefetchInfiniteQuery({
     queryKey,
     initialPageParam: 0,
-    queryFn: ({ pageParam }) =>
-      fetchPage(
-        scope, [accountId], (pageParam as number) ?? 0, null, null, null, limit, qc,
-        { priority: "background" },
-      ),
+    queryFn: ({ pageParam }) => {
+      const offset = (pageParam as number) ?? 0;
+      const kept = replayCachedPage(qc.getQueryState<InfiniteData<StampedPage>>(queryKey), offset, limit);
+      if (kept) return kept;
+      return fetchPage(scope, [accountId], offset, null, null, null, limit, qc, { priority: "background", caller: "prefetch" });
+    },
     // MUST mirror useChatList's infinite-query config: same key, a missing getNextPageParam fails the list to load.
     getNextPageParam: (lastPage: StampedPage, allPages: StampedPage[]) =>
       lastPage.hasMore ? allPages.length * limit : undefined,
@@ -380,11 +459,91 @@ export function prefetchModelChatList(
   });
 }
 
+function withHead(prev: InfiniteData<StampedPage> | undefined, head: StampedPage): InfiniteData<StampedPage> | undefined {
+  if (!prev?.pages?.length) return prev;
+  if ((prev.pages[0].askedSeq ?? -Infinity) > (head.askedSeq ?? -Infinity)) return prev;
+  return { ...prev, pages: [head, ...prev.pages.slice(1)] };
+}
+
+function untilIdle(qc: QueryClient, hash: string): Promise<void> {
+  return new Promise((resolve) => {
+    const check = () => {
+      const fetchStatus = qc.getQueryCache().get(hash)?.state.fetchStatus;
+      if (fetchStatus && fetchStatus !== "idle") return;
+      off();
+      resolve();
+    };
+    const off = qc.getQueryCache().subscribe((e) => { if (e.query.queryHash === hash) check(); });
+    check();
+  });
+}
+
+type ChatAccount = Pick<AccountMeta, "id" | "platform">;
+
+function readFromIds(
+  scope: Scope, accountIds: readonly string[], platformOf: (accountId: string) => Platform | null,
+  filter: ChatListParams["filter"], listId: ChatListParams["listId"],
+): string[] {
+  return (scope.kind === "model" ? [scope.accountId] : accountIds)
+    .filter((id) => platformHonours(platformOf(id), filter, listId));
+}
+
+export async function refreshChatHead(
+  qc: QueryClient, scope: Scope, accounts: readonly ChatAccount[],
+): Promise<void> {
+  const prefix = ["chats", scope.kind, chatListAccountKey(scope, accounts)];
+  const matches = qc.getQueryCache().findAll({ queryKey: prefix });
+  const platforms = new Map(accounts.map((a) => [a.id, accountPlatform(a)]));
+  const platformOf = (id: string) => platforms.get(id) ?? null;
+  await Promise.allSettled(matches.map(async (query) => {
+    const { queryKey: key, queryHash } = query;
+    await untilIdle(qc, queryHash);
+    if (qc.getQueryCache().get(queryHash) !== query) return;
+    if (!query.getObserversCount()) return query.invalidate();
+    const { filter, listId, query: search, limit, order, gated } = decodeChatsKey(key);
+    if (!(query.state.data as InfiniteData<StampedPage> | undefined)?.pages?.length || gated) return;
+    const ids = readFromIds(scope, accounts.map((a) => a.id), platformOf, filter, listId);
+    if (!ids.length) return;
+    const head = await fetchPage(
+      scope, ids, 0, filter, listId, search, limit, qc,
+      { priority: "user", order, caller: "warmup" },
+    );
+    qc.setQueryData<InfiniteData<StampedPage>>(key, (prev) => withHead(prev, head));
+  }));
+}
+
+type HeadUpdate = (prev: InfiniteData<StampedPage> | undefined) => InfiniteData<StampedPage> | undefined;
+
+function spliceInto(ids: readonly string[], head: StampedPage, order: ChatListOrder): HeadUpdate {
+  const sort = order === "old" ? (a: OFChatItem, b: OFChatItem) => compareCellChats(b, a) : compareCellChats;
+  return (prev) => prev?.pages?.length
+    ? { ...prev, pages: [spliceHead(prev.pages[0], head, new Set(ids), sort), ...prev.pages.slice(1)] }
+    : prev;
+}
+
+export async function spliceCellHeads(
+  qc: QueryClient, accounts: ReadonlySet<string>, placed: ReadonlySet<string>,
+): Promise<void> {
+  await Promise.allSettled(qc.getQueryCache().findAll({ queryKey: ["chats", "all"] }).map(async (query) => {
+    if (resyncAction(query.queryKey, accounts, placed) !== "splice") return;
+    const k = decodeChatsKey(query.queryKey);
+    const ids = k.accountKey.split(",").filter((id) => accounts.has(id));
+    if (!ids.length) return;
+    if (!k.unfiltered || !query.getObserversCount()) return query.invalidate();
+    await untilIdle(qc, query.queryHash);
+    if (!(query.state.data as InfiniteData<StampedPage> | undefined)?.pages?.length) return;
+    const head = await fetchPage({ kind: "all" }, ids, 0, null, null, null, k.limit, qc,
+      { priority: "background", order: k.order, caller: "warmup" });
+    qc.setQueryData<InfiniteData<StampedPage>>(query.queryKey, spliceInto(ids, head, k.order));
+  }));
+}
+
 // Head page only, not refetchInterval: that re-walks every loaded page (a multi-account fan-out each), ~27% of inbox list traffic.
 function useHeadPagePoll(args: {
   enabled: boolean;
   queryKey: QueryKey;
-  fetchHead: () => Promise<StampedPage>;
+  fetchHead: () => Promise<HeadUpdate>;
+  live: () => boolean;
 }) {
   const qc = useQueryClient();
   const latest = useRef(args);
@@ -411,13 +570,9 @@ function useHeadPagePoll(args: {
         return;
       }
       try {
-        const head = await fetchHead();
+        const update = await fetchHead();
         if (cancelled) return;
-        qc.setQueryData<InfiniteData<StampedPage>>(key, (prev) => {
-          if (!prev?.pages?.length) return prev;
-          if ((prev.pages[0].askedSeq ?? -Infinity) > (head.askedSeq ?? -Infinity)) return prev;
-          return { ...prev, pages: [head, ...prev.pages.slice(1)] };
-        });
+        qc.setQueryData<InfiniteData<StampedPage>>(key, update);
       } catch {
       }
     };
@@ -426,7 +581,7 @@ function useHeadPagePoll(args: {
     const delay = () => headPollDelay({
       paused: eventBus.isPaused(),
       hidden: typeof document !== "undefined" && document.hidden,
-      connected: eventBus.isConnected(),
+      connected: latest.current.live(),
       idlePoll,
     });
     const schedule = (immediate = false) => {
@@ -477,7 +632,9 @@ function useHeadPagePoll(args: {
 }
 
 export function chatListAccountKey(scope: Scope, accounts: ReadonlyArray<{ id: string }>): string {
-  return scope.kind === "model" ? scope.accountId : accounts.map((a) => a.id).sort().join(",");
+  const key = scope.kind === "model" ? scope.accountId : accounts.map((a) => a.id).sort().join(",");
+  const token = cellScopeToken();
+  return token ? `${key},${token}` : key;
 }
 
 export function chatsQueryKey(
@@ -499,10 +656,15 @@ export function useChatList(params: ChatListParams = {}) {
   const qc = useQueryClient();
   const { filter, listId, query, limit = PAGE_SIZE, order = "recent", enabled: wanted = true } = params;
   const rosterPlatforms = useMemo(() => new Map(knownAccounts?.map((a) => [a.id, accountPlatform(a)])), [knownAccounts]);
-  const honours = useCallback((accountId: string | undefined) => platformHonours(
-    scope.kind === "model" ? scopedPlatform : rosterPlatforms.get(accountId ?? "") ?? null, filter, listId,
-  ), [scope.kind, scopedPlatform, rosterPlatforms, filter, listId]);
-  const readFrom = (scope.kind === "model" ? [scope.accountId] : accounts.map((a) => a.id)).filter(honours);
+  const platformOf = useCallback((accountId: string) =>
+    scope.kind === "model" ? scopedPlatform : rosterPlatforms.get(accountId) ?? null, [scope.kind, scopedPlatform, rosterPlatforms]);
+  const honours = useCallback((accountId: string | undefined) =>
+    platformHonours(platformOf(accountId ?? ""), filter, listId), [platformOf, filter, listId]);
+  const cellMap = useCellMap();
+  const waitCells = cellMode() && !cellMap;
+  const placed = useMemo(() => cellMap ? new Set(cellMap.accounts.map((a) => a.account_id)) : null, [cellMap]);
+  const readFrom = readFromIds(scope, accounts.map((a) => a.id), platformOf, filter, listId)
+    .filter((id) => !placed || placed.has(id));
   const gated = scope.kind === "model" && readFrom.length === 0;
 
   const eligibleFallbackRows = useCallback((rows: OFChatItem[]) => {
@@ -517,9 +679,18 @@ export function useChatList(params: ChatListParams = {}) {
   const queryKey = chatsQueryKey(scope.kind, accountKey, { filter, listId, query, limit, order, gated });
 
   const refreshOnceRef = useRef(false);
+  const keyHash = hashKey(queryKey);
+  const keyRef = useRef(keyHash);
+  keyRef.current = keyHash;
+  const loadMoreState = useRef(initialLoadMore(keyHash));
+  const step = (a: LoadMoreAction): Pending | null => {
+    const prev = loadMoreReducer(loadMoreState.current, { type: "reset", key: keyRef.current });
+    loadMoreState.current = loadMoreReducer(prev, a);
+    return startedBy(prev, loadMoreState.current);
+  };
 
   const enabled =
-    wanted && (scope.kind === "model" ? !!scope.accountId : accounts.length > 0);
+    wanted && !waitCells && (scope.kind === "model" ? !!scope.accountId : accounts.length > 0);
 
   const q = useInfiniteQuery<StampedPage>({
     queryKey,
@@ -530,11 +701,22 @@ export function useChatList(params: ChatListParams = {}) {
       lastPage.hasMore ? allPages.length * limit : undefined,
     queryFn: (ctx) => {
       const offset = (ctx.pageParam as number) ?? 0;
+      const state = qc.getQueryState<InfiniteData<StampedPage>>(ctx.queryKey);
+      const fetchMore = !!state?.fetchMeta?.fetchMore;
+      const kept = replayCachedPage(state, offset, limit);
+      if (kept) return kept;
+      const lm = loadMoreState.current;
+      const pending = fetchMore && lm.key === hashKey(ctx.queryKey) ? pendingFor(lm, offset) : null;
+      if (pending && pending === lm.pending) loadMoreState.current = loadMoreReducer(lm, { type: "taken", pending, offset });
       const bypass = refreshOnceRef.current && offset === 0;
+      const caller = listCaller({
+        fetchMore, pending: pending?.caller ?? null, refresh: refreshOnceRef.current && !fetchMore,
+        cached: !!state?.data?.pages?.length, offset, query: !!query,
+      });
       return fetchPage(
         scope, readFrom, offset, filter, listId, query, limit, qc,
         // Only a search may read ctx.signal: React Query cancels a fetch whose signal was read once its key loses its last observer, dropping a next page in flight.
-        { refresh: bypass, order, signal: query ? ctx.signal : undefined },
+        { refresh: bypass, order, signal: query ? ctx.signal : undefined, caller, intent: pending?.explicit ? "explicit" : undefined },
       );
     },
     staleTime: 30_000,
@@ -545,7 +727,8 @@ export function useChatList(params: ChatListParams = {}) {
       const sameScope =
         prevKey?.[0] === scopeKey[0] &&
         prevKey[1] === scopeKey[1] &&
-        (scope.kind !== "model" || prevKey[2] === scopeKey[2]);
+        (scope.kind !== "model" || prevKey[2] === scopeKey[2]) &&
+        tokenOf(String(prevKey[2] ?? "")) === tokenOf(accountKey);
       const previous = sameScope ? keepPreviousData(prev) : undefined;
       if (!previous) return previous;
       const pages = previous.pages.map((page) => {
@@ -557,13 +740,21 @@ export function useChatList(params: ChatListParams = {}) {
     structuralSharing: commitChatPages(qc, queryKey, shareChatPages),
   });
 
-  const fetchHead = () =>
-    fetchPage(
-      scope, readFrom, 0, filter, listId, query, limit, qc,
-      { priority: "background", order },
-    );
+  const headOf = (ids: readonly string[]) => fetchPage(
+    scope, ids, 0, filter, listId, query, limit, qc,
+    { priority: "background", order, caller: "poll" },
+  );
+  const fetchHead = async (): Promise<HeadUpdate> => {
+    const down = cellMap ? readFrom.filter((id) => !eventBus.isConnected(id)) : [];
+    if (!down.length || down.length === readFrom.length) {
+      const head = await headOf(readFrom);
+      return (prev) => withHead(prev, head);
+    }
+    return spliceInto(down, await headOf(down), order);
+  };
+  const live = () => (cellMap ? readFrom.every((id) => eventBus.isConnected(id)) : eventBus.isConnected());
 
-  useHeadPagePoll({ enabled, queryKey, fetchHead });
+  useHeadPagePoll({ enabled, queryKey, fetchHead, live });
 
   const rows = useMemo(() => {
     const out: OFChatItem[] = [];
@@ -581,6 +772,29 @@ export function useChatList(params: ChatListParams = {}) {
 
   const fetchedLive = enabled && !q.isPlaceholderData && q.data?.pages[0]?.session === SESSION;
 
+  const nextPage = (p: Pending) =>
+    q.fetchNextPage({ cancelRefetch: false }).finally(() => step({ type: "taken", pending: p }));
+
+  const loadMore = (caller: ListCaller, visibleRows?: number): Promise<unknown> => {
+    const state = qc.getQueryState<InfiniteData<StampedPage>>(queryKey);
+    const busy: Busy = !state || state.fetchStatus === "idle" ? "idle" : state.fetchMeta?.fetchMore ? "next" : "walk";
+    const started = step({
+      type: "request", caller, busy, hasMore: !!q.hasNextPage, failed: state?.status === "error",
+      mayAuto: mayAutoPage({ pagesLoaded: state?.data?.pages?.length ?? 0, visibleRows: visibleRows ?? rows.length }),
+    });
+    if (started) return nextPage(started);
+    return busy === "next" ? q.fetchNextPage({ cancelRefetch: false }) : Promise.resolve();
+  };
+
+  const settledRef = useRef<() => void>(() => {});
+  settledRef.current = () => {
+    const started = step({ type: "settled", ok: !q.isError, hasMore: !!q.hasNextPage });
+    if (started) void nextPage(started);
+  };
+  useEffect(() => {
+    if (!q.isFetching) settledRef.current();
+  }, [q.isFetching, keyHash]);
+
   const refresh = useCallback(() => {
     refreshOnceRef.current = true;
     return q.refetch().finally(() => {
@@ -594,7 +808,7 @@ export function useChatList(params: ChatListParams = {}) {
     pages: q.data?.pages.map((p) => p.rows),
     hasMore: !!q.hasNextPage,
     scanned: q.data?.pages.reduce((sum, p) => sum + (p.scanned ?? p.rows.length), 0) ?? 0,
-    loadMore: () => q.fetchNextPage(),
+    loadMore,
     isFetchingMore: q.isFetchingNextPage,
     refresh,
     fetchedLive,

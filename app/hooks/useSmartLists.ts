@@ -99,7 +99,7 @@ export function useCreateSmartList(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<SmartList, Error, { name: string; rules: SmartRules }>({
     mutationFn: (body) =>
-      relay.post<SmartList>("/admin/smart-lists", { account_id: accountId, ...body }),
+      relay.post<SmartList>("/admin/smart-lists", { account_id: accountId, ...body }, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }
@@ -108,7 +108,7 @@ export function useUpdateSmartList(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<SmartList, Error, { id: number; name?: string; rules?: SmartRules }>({
     mutationFn: ({ id, ...patch }) =>
-      relay.patch<SmartList>(`/admin/smart-lists/${id}`, patch),
+      relay.patch<SmartList>(`/admin/smart-lists/${id}`, patch, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }
@@ -117,7 +117,7 @@ export function useDeleteSmartList(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, { id: number; deleteOfList: boolean }>({
     mutationFn: ({ id, deleteOfList }) =>
-      relay.delete(`/admin/smart-lists/${id}${deleteOfList ? "?delete_of_list=true" : ""}`),
+      relay.delete(`/admin/smart-lists/${id}${deleteOfList ? "?delete_of_list=true" : ""}`, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }
@@ -126,7 +126,7 @@ export function useSetSmartListActive(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<SmartList, Error, { id: number; active: boolean }>({
     mutationFn: ({ id, active }) =>
-      relay.post<SmartList>(`/admin/smart-lists/${id}/${active ? "activate" : "deactivate"}`, {}),
+      relay.post<SmartList>(`/admin/smart-lists/${id}/${active ? "activate" : "deactivate"}`, {}, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }
@@ -136,17 +136,17 @@ export function usePreviewSmartList(accountId: string | null) {
     mutationFn: (rules) =>
       relay.post<SmartPreview>("/admin/smart-lists/preview", {
         account_id: accountId, rules,
-      }),
+      }, { cellAccountId: accountId }),
   });
 }
 
-export async function resolveSmartList(id: number): Promise<number[]> {
-  const r = await relay.get<{ fan_ids: number[] }>(`/admin/smart-lists/${id}/resolve`);
+export async function resolveSmartList(id: number, accountId: string): Promise<number[]> {
+  const r = await relay.get<{ fan_ids: number[] }>(`/admin/smart-lists/${id}/resolve`, { cellAccountId: accountId });
   return r.fan_ids ?? [];
 }
 
-export async function resolveSmartLists(ids: ReadonlySet<number>): Promise<number[]> {
+export async function resolveSmartLists(ids: ReadonlySet<number>, accountId: string): Promise<number[]> {
   if (ids.size === 0) return [];
-  const arrays = await Promise.all([...ids].map((id) => resolveSmartList(id)));
+  const arrays = await Promise.all([...ids].map((id) => resolveSmartList(id, accountId)));
   return Array.from(new Set(arrays.flat()));
 }

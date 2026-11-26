@@ -18,7 +18,7 @@ These are separate edits, each owned by a step below:
 
 `service/platforms.py`:
 
-- `Platform(key, label, session_file, backend, lacks, free_follow=False)`, frozen
+- `Platform(key, label, session_file, backend, lacks, login, free_follow=False)`, frozen; `login` names the Browserbase login driver module (`"remote_login_<key>"`, the `LoginDriver` Protocol in `service/remote_login.py`), imported on first use
 - `Lack`, a `str` Enum, value == name: `REFERRALS`, `WALL_MEDIA`, `SERVER_SCHEDULE`, `NEAR_SCHEDULE_MEDIA`, `HISTORY_UNREAD_GATE`, `UNREAD_TOTAL`, `SHARED_REFRESH`
 - `ONLYFANS`, `FANSLY`; `ALL`, `KEYS`, `SESSION_FILES`
 - `get(key)` (unknown or `None` → `ONLYFANS`), `for_account(aid)`, `backends()`

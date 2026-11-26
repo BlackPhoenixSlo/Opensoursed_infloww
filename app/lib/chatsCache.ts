@@ -1,40 +1,57 @@
-import type { InfiniteData, QueryClient } from "@tanstack/react-query";
+import { replaceEqualDeep, type InfiniteData, type QueryClient, type QueryState } from "@tanstack/react-query";
 
+import { CHAT_AUTO_PAGES_MAX } from "@/hooks/chatListLoadMore";
+import type { ChatListFilter } from "@/lib/chatFilters";
 import { patchQueryData } from "@/lib/cacheWrite";
 import { isUnreadChat } from "@/lib/chatUnread";
 import type { OFChatItem } from "@/lib/relay";
 import { compareFanIds, sameUserId, type FanId } from "@/lib/fanId";
 import { toUtcIso } from "@/lib/threadCache";
+import { compareCellChats, tokenOf } from "@/lib/cellInbox";
 
-export interface ChatPage { rows: OFChatItem[]; hasMore: boolean }
+export interface ChatPage {
+  rows: OFChatItem[];
+  hasMore: boolean;
+  splitVersions?: Record<string, string>;
+}
 export type ChatPages = InfiniteData<ChatPage>;
+
+export function replayCachedPage<T>(state: QueryState<InfiniteData<T>> | undefined, offset: number, limit: number): T | undefined {
+  const data = state?.data;
+  if (state?.fetchMeta?.fetchMore || !data?.pages || offset < CHAT_AUTO_PAGES_MAX * limit) return undefined;
+  const i = data.pageParams.indexOf(offset);
+  return i < 0 ? undefined : data.pages[i];
+}
 
 export interface ChatsKey {
   scopeKind: unknown;
   accountKey: string;
-  filter: unknown;
-  listId: unknown;
-  query: unknown;
-  order: unknown;
+  filter: ChatListFilter | null;
+  listId: string | null;
+  query: string | null;
+  limit: number;
+  order: "old" | "recent";
+  gated: boolean;
   unfiltered: boolean;
 }
 
 export function decodeChatsKey(key: readonly unknown[]): ChatsKey {
-  const filter = key[3] ?? null;
-  const listId = key[4] ?? null;
-  const query = key[5] ?? null;
+  const filter = (key[3] ?? null) as ChatsKey["filter"];
+  const listId = key[4] == null ? null : String(key[4]);
+  const query = typeof key[5] === "string" ? key[5] : null;
   return {
     scopeKind: key[1],
     accountKey: String(key[2] ?? ""),
-    filter, listId, query, order: key[7] ?? "recent",
+    filter, listId, query,
+    limit: key[6] as number,
+    order: key[7] === "old" ? "old" : "recent",
+    gated: key[8] === true,
     unfiltered: filter === null && listId === null && query === null,
   };
 }
 
 export function keyHoldsAccount(k: ChatsKey, accountId: string): boolean {
-  return k.scopeKind === "model"
-    ? k.accountKey === accountId
-    : k.accountKey.split(",").includes(accountId);
+  return k.accountKey.split(",").includes(accountId);
 }
 
 export function isLiveView(key: ChatsKey): boolean {
@@ -202,6 +219,10 @@ export function applyReply<T extends ChatPages | undefined>(
 }
 
 export interface UnreadView { rows: OFChatItem[]; asOf: number }
+
+export function chatAccountOf(chat: OFChatItem, singleAccountId: string | null): string | null {
+  return chat.__accountId ?? singleAccountId;
+}
 
 export function chatRowKey(c: OFChatItem): string {
   return `${c.__accountId ?? ""}:${c.withUser?.id}`;
@@ -452,7 +473,7 @@ function keepMissingCreatorRows(prev: ChatPages, next: ChatPages) {
 }
 
 function keepLiveRows(
-  page: StampedPage, shown: ReadonlyMap<string, OFChatItem>, view: ReturnType<typeof decodeChatsKey>, head: boolean,
+  page: StampedPage, shown: ReadonlyMap<string, OFChatItem>, view: ChatsKey, head: boolean, headAuthoritative: boolean,
 ) {
   const floor = (page.askedAt ?? Date.now()) - LIVE_ROW_MS;
   const live = (c: OFChatItem) => lastMessageMs(c) >= floor;
@@ -462,7 +483,7 @@ function keepLiveRows(
     if (String(was.lastMessage?.id) === String(c.lastMessage?.id)) return c;
     return was;
   });
-  if (!head) return { rows };
+  if (!head || headAuthoritative) return { rows };
 
   const tails = new Map(page.rows.map((row) => [row.__accountId ?? "", lastMessageMs(row)]));
   const moreAccounts = new Set(page.moreAccounts ?? (page.hasMore ? view.accountKey.split(",") : []));
@@ -474,19 +495,54 @@ function keepLiveRows(
   return { rows, keepOnHead };
 }
 
+function reconcileReplayTail<T extends ChatPages>(prev: ChatPages, next: T, view: ChatsKey): T {
+  const cap = CHAT_AUTO_PAGES_MAX;
+
+  const sort = chatSort(view);
+  const tails = new Map(next.pages[cap - 1].rows.map((row) => [row.__accountId, row]));
+  const inNext = new Set(next.pages.flatMap((page) => page.rows.map(chatRowKey)));
+  const displaced = prev.pages.flatMap((page) => page.rows).filter((row) => {
+    const tail = tails.get(row.__accountId);
+    const key = chatRowKey(row);
+    if (inNext.has(key)) return false;
+    inNext.add(key);
+    return !!tail && sort(row, tail) > 0;
+  });
+  if (!displaced.length) return next;
+  const pages = next.pages.slice();
+  pages[cap] = { ...pages[cap], rows: [...pages[cap].rows, ...displaced].sort(sort) };
+  return { ...next, pages };
+}
+
+function chatSort(view: ChatsKey) {
+  const cmp = tokenOf(view.accountKey) ? compareCellChats : compareChats;
+  return view.order === "old" ? (a: OFChatItem, b: OFChatItem) => cmp(b, a) : cmp;
+}
+
 export function preserveChatRows<T extends ChatPages | undefined>(
-  key: readonly unknown[], prev: ChatPages | undefined, next: T, fresh: (p: ChatPage) => boolean,
+  key: readonly unknown[], prev: ChatPages | undefined, incoming: T, fresh: (i: number) => boolean,
 ): T {
-  if (!prev?.pages?.length || !next?.pages?.length) return next;
+  if (!prev?.pages?.length || !incoming?.pages?.length) return incoming;
+  const view = decodeChatsKey(key);
+  const cap = CHAT_AUTO_PAGES_MAX;
+  const replay = incoming.pages.length > cap && !fresh(cap) && incoming.pages.slice(0, cap).every((_, i) => fresh(i));
+  const freshVersions = incoming.pages[0].splitVersions;
+  const splitChanged = replay && [...prev.pages, ...incoming.pages].some((page) =>
+    replaceEqualDeep(freshVersions, page.splitVersions) !== freshVersions);
+  const trim = replay && (!view.unfiltered || splitChanged);
+  const next = trim
+    ? { ...incoming, pages: incoming.pages.slice(0, cap), pageParams: incoming.pageParams.slice(0, cap) }
+    : replay ? reconcileReplayTail(prev, incoming, view) : incoming;
+  if (splitChanged) return next;
   const shown = new Map<string, OFChatItem>();
   for (const p of prev.pages) for (const c of p.rows) if (!shown.has(chatRowKey(c))) shown.set(chatRowKey(c), c);
   const inNext = new Set(next.pages.flatMap((p) => p.rows.map(chatRowKey)));
-  const view = decodeChatsKey(key);
-  const sort = view.order === "old" ? (a: OFChatItem, b: OFChatItem) => compareChats(b, a) : compareChats;
+  const sort = chatSort(view);
   const missing = keepMissingCreatorRows(prev, next);
+  const headAuthoritative = trim;
   const pages = (next.pages as StampedPage[]).map((page, i) => {
-    if (!fresh(page)) return page;
-    const { rows, keepOnHead } = keepLiveRows(page, shown, view, i === 0);
+    if (!fresh(i)) return page;
+    const { rows, keepOnHead } = keepLiveRows(page, shown, view, i === 0, headAuthoritative);
     const failed = missing[i];
     const kept = (prev.pages[i]?.rows ?? []).filter((c) =>
       !inNext.has(chatRowKey(c)) && (failed?.fromMissingCreator(c) || keepOnHead?.(c)));
@@ -506,8 +562,13 @@ export function preserveChatRows<T extends ChatPages | undefined>(
 // Every chats query, prefetch too, must set this as structuralSharing (a query keeps its last fetch's options), or an in-flight read undoes a live write.
 export function commitChatPages(qc: QueryClient, key: readonly unknown[], share: (prev: unknown, next: unknown) => unknown) {
   return (prev: unknown, next: unknown): unknown => {
+    const before = prev as ChatPages | undefined;
+    const incoming = next as ChatPages | undefined;
     const replayed = replayJournal(qc, key, next) as ChatPages | undefined;
-    const kept = preserveChatRows(key, prev as ChatPages | undefined, replayed, (p) => !seen.has(p));
+    const kept = preserveChatRows(key, before, replayed, (i) => {
+      const page = incoming?.pages[i];
+      return !!page && page !== before?.pages[i] && !seen.has(page);
+    });
     const out = share(prev, kept) as ChatPages | undefined;
     for (const p of out?.pages ?? []) seen.set(p, lastSeq);
     return out;

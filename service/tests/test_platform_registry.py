@@ -76,7 +76,7 @@ def case_every_platform_lacking_server_schedule_has_a_backend():
 
 _SERVICE = Path(__file__).resolve().parents[1]
 ALLOWED = {
-    "platforms.py", "accounts.py", "fansly_backend.py", "fansly_revenue.py",
+    "platforms.py", "accounts.py", "fansly_backend.py", "fansly_revenue.py", "remote_login_fansly.py",
     "accounts_admin_api.py",
     "automations/_outbound_guard.py",
 }

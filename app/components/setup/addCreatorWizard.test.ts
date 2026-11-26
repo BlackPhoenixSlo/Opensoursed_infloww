@@ -23,7 +23,7 @@ const START = { type: "submitStart" } as const;
 const OK = { type: "submitOk" } as const;
 const ERR = { type: "submitErr" } as const;
 const LINKED = { type: "linked", accountId: "of-1", account: ACCOUNT, platform: "onlyfans" } as const;
-const IDLE = { login: false, extension: false, proxy: false };
+const IDLE = { login: false, extension: false, paste: false, proxy: false };
 const method = (value: "browser" | "extension") => ({ type: "setField", field: "method", value }) as const;
 const platform = (value: "onlyfans" | "fansly") => ({ type: "setField", field: "platform", value }) as const;
 
@@ -37,7 +37,9 @@ describe("initialWizard", () => {
     ["Link another (has Fansly)", { linkAnother: { creator: BELLA, linked: ["fansly"] } }, "onlyfans", "browser", false],
     ["recovery, OnlyFans, Browser login", { recovery: "onlyfans", method: "browser" }, "onlyfans", "browser", true],
     ["recovery, OnlyFans, Extension", { recovery: "onlyfans", method: "extension" }, "onlyfans", "extension", true],
-    ["recovery, Fansly (method ignored)", { recovery: "fansly", method: "browser" }, "fansly", "extension", true],
+    ["recovery, Fansly, Browser login", { recovery: "fansly", method: "browser" }, "fansly", "browser", true],
+    ["recovery, Fansly, paste session", { recovery: "fansly", method: "extension" }, "fansly", "extension", true],
+    ["recovery, Fansly, no method: the paste session", { recovery: "fansly" }, "fansly", "extension", true],
   ])("%s: existing creators start at sign-in", (_, props, plat, m, recovery) => {
     const s = initialWizard(props);
     expect(s.step).toEqual(LOGIN);
@@ -64,7 +66,7 @@ describe("initialWizard", () => {
     ["Link another", { linkAnother: { creator: BELLA, linked: ["onlyfans"] } }, false],
     ["recovery", { recovery: "onlyfans" }, false],
   ])("fresh: %s → %s", (_, props, fresh) => {
-    expect(initialWizard(props)).toMatchObject({ fresh, busy: { login: false, extension: false, proxy: false } });
+    expect(initialWizard(props)).toMatchObject({ fresh, busy: IDLE });
   });
 });
 
@@ -106,7 +108,8 @@ describe("method (the two choices)", () => {
   it.each<[string, WizardState, "browser" | "extension", "browser" | "extension"]>([
     ["Browser login to Extension", on(LOGIN), "extension", "extension"],
     ["Extension back to Browser login", on(LOGIN, { method: "extension" }), "browser", "browser"],
-    ["Fansly: Browser login refused", on(LOGIN, { platform: "fansly", method: "extension" }), "browser", "extension"],
+    ["Fansly: paste session to Browser login", on(LOGIN, { platform: "fansly", method: "extension" }), "browser", "browser"],
+    ["Fansly: Browser login back to the paste session", on(LOGIN, { platform: "fansly", method: "browser" }), "extension", "extension"],
     ["off the sign-in: refused", on(ACC, { method: "browser" }), "extension", "browser"],
   ])("%s", (_, s, value, expected) => {
     expect(run(s, method(value)).method).toBe(expected);
@@ -139,7 +142,7 @@ describe("platform (the small Fansly link)", () => {
 
 describe("linked", () => {
   it("from the sign-in", () => {
-    expect(run(on(LOGIN, { busy: { login: true, extension: true, proxy: false } }), LINKED))
+    expect(run(on(LOGIN, { busy: { ...IDLE, login: true, extension: true, paste: true } }), LINKED))
       .toMatchObject({ step: { kind: "linked", accountId: "of-1" }, busy: IDLE });
   });
   it.each<[string, WizardState]>([
@@ -154,10 +157,13 @@ describe("linked", () => {
   it("carries the account and its details, not busy", () => {
     expect(run(on(LOGIN), LINKED).step).toEqual({ kind: "linked", accountId: "of-1", account: ACCOUNT, busy: false });
   });
-  it("takes the platform of the sign-in that linked (a Browser login finishing after a swap to Fansly)", () => {
+  it.each([platform("onlyfans"), method("extension")])("keeps the active Fansly browser sign-in when asked to switch $field", (action) => {
+    const s = run(on(LOGIN, { platform: "fansly", method: "browser" }), { type: "busy", source: "login", value: true });
+    expect(wizardReducer(s, action)).toBe(s);
+  });
+  it("refuses a completion from another platform", () => {
     const s = run(on(LOGIN), platform("fansly"));
-    expect(s.platform).toBe("fansly");
-    expect(run(s, LINKED)).toMatchObject({ platform: "onlyfans", step: { kind: "linked", accountId: "of-1" } });
+    expect(wizardReducer(s, LINKED)).toBe(s);
   });
   it("a save running keeps its account", () => {
     expect(run(on(ACC_SAVING), LINKED).step).toBe(ACC_SAVING);
@@ -209,6 +215,7 @@ describe("account details + Done", () => {
     expect(run(on(LOGIN), field).step).toEqual(LOGIN);
   });
   it.each<[string, WizardState, boolean]>([
+    ["sign-in, Fansly paste pending", on(LOGIN, { busy: { ...IDLE, paste: true } }), false],
     ["linked", on(ACC), true],
     ["linked, the proxy editor working", on(ACC, { busy: { ...IDLE, proxy: true } }), false],
     ["saving", on(ACC_SAVING), false],
@@ -237,6 +244,7 @@ describe("account details + Done", () => {
     ["details", on({ kind: "details" }), true],
     ["sign-in, a Browser login running (unmount stops it)", on(LOGIN, { busy: { ...IDLE, login: true } }), true],
     ["sign-in, the Extension capturing or waiting on Retry / Continue", on(LOGIN, { busy: { ...IDLE, extension: true } }), false],
+    ["sign-in, Fansly paste pending", on(LOGIN, { busy: { ...IDLE, paste: true } }), false],
     ["linked", on(ACC), true],
     ["linked, the proxy editor working", on(ACC, { busy: { ...IDLE, proxy: true } }), false],
   ])("canClose: %s", (_, s, ok) => {
@@ -247,7 +255,7 @@ describe("account details + Done", () => {
     expect(wizardReducer(s, START)).toBe(s);
     expect(run(s, { type: "busy", source: "proxy", value: false }, START).step).toEqual(ACC_SAVING);
   });
-  it.each(["login", "extension", "proxy"] as const)("busy %s: one source changes, an unchanged value is refused", (source) => {
+  it.each(["login", "extension", "paste", "proxy"] as const)("busy %s: one source changes, an unchanged value is refused", (source) => {
     const s = on(LOGIN);
     expect(wizardReducer(s, { type: "busy", source, value: false })).toBe(s);
     expect(wizardReducer(s, { type: "busy", source, value: true }).busy).toEqual({ ...IDLE, [source]: true });
@@ -288,7 +296,7 @@ describe("useWizardReducer", () => {
     const { result } = renderHook(() => useWizardReducer({ recovery: "fansly" }));
     const before = result.current[0];
     let took = true;
-    act(() => { took = result.current[1](method("browser")); });
+    act(() => { took = result.current[1](method("extension")); });
     expect(took).toBe(false);
     expect(result.current[0]).toBe(before);
   });

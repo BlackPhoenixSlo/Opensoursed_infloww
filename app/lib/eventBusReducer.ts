@@ -83,11 +83,12 @@ export function isConnected(s: BusState, ready: number | null, now: number): boo
   return ready === OPEN && now - s.lastEventAt < STALE_MS;
 }
 
-export function eventsUrl(scope: Scope, token: string | null, lastEventId: string): string {
+export function eventsUrl(scope: Scope, token: string | null, lastEventId: string, cell?: string): string {
     // lease=1: this app renews its own View lease; the relay leases all Creators for an unmarked (legacy) stream
   const qs = new URLSearchParams({ scope, lease: "1" });
   if (token) qs.set("t", token);
   if (lastEventId) qs.set("last_event_id", lastEventId);
+  if (cell) qs.set("cell", cell);
   return `/events?${qs.toString()}`;
 }
 

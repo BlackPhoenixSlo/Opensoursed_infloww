@@ -3,7 +3,7 @@
 split_inbox_api — the Split Inbox store on account_ai_config.split_inbox_json
 (ADR-0004; docs/spec/phase-02-fan-list-pane.md, Contracts).
 
-Drives GET/PUT /admin/split-inbox over HTTP through the harness client against
+Drives GET/PUT/PATCH /admin/split-inbox over HTTP through the harness client against
 the temp DB, so router registration and the session middleware are exercised.
 Cookie cases follow test_chatter_auth.py: an owner, one Creator of hers, and a
 chatter linked to her. Covers the unset default, an owner's round trip, the
@@ -32,7 +32,9 @@ from datetime import datetime  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from db.engine import get_session, init_db  # noqa: E402
-from db.models import Account, AccountAiConfig, Chatter, ChatterUser, User, UserAccount  # noqa: E402
+from db.models import (  # noqa: E402
+    Account, AccountAiConfig, Chatter, ChatterAccountAccess, ChatterUser, User, UserAccount,
+)
 import relay_cache  # noqa: E402
 import split_inbox  # noqa: E402
 
@@ -41,20 +43,33 @@ import server  # noqa: E402 — already imported by make_client; fresh clients b
 from _pre_enforcement import seed_pre_enforcement_install  # noqa: E402
 
 ACCOUNT = "acct_split_owner"
+ACCOUNT2 = "acct_split_owner2"
+FOREIGN = "acct_split_foreign"
+NEW = "acct_split_new"
+OWN = "acct_split_own"
 PASSWORD = "secretpw"
 UNSET = {"group_count": 1, "assignments": {}, "chatter_groups": {}}
 CHATTER_ID = uuid.uuid4().hex
 CHATTER2_ID = uuid.uuid4().hex
+OWNER_ID = uuid.uuid4().hex
+STRANGER_ID = uuid.uuid4().hex
 
 
 async def _seed() -> None:
-    owner = uuid.uuid4().hex
+    owner = OWNER_ID
     chatter = CHATTER_ID
     now = datetime.utcnow()
     async with get_session() as s:
         s.add(User(id=owner, username="splitowner", password=PASSWORD))
         s.add(Account(id=ACCOUNT, nickname="split model", color="#aaaaaa"))
         s.add(UserAccount(user_id=owner, account_id=ACCOUNT))
+        s.add(Account(id=ACCOUNT2, nickname="split model two", color="#aaaaaa"))
+        s.add(UserAccount(user_id=owner, account_id=ACCOUNT2))
+        for aid in (NEW, OWN):
+            s.add(Account(id=aid, nickname=aid, color="#aaaaaa"))
+            s.add(UserAccount(user_id=owner, account_id=aid))
+        s.add(User(id=STRANGER_ID, username="splitstranger", password=PASSWORD))
+        s.add(Account(id=FOREIGN, nickname="someone else's model", color="#aaaaaa"))
         s.add(Chatter(id=chatter, username="splitchatter", password=PASSWORD,
                       display_name="Splitchatter", created_at=now, last_seen_at=now))
         s.add(Chatter(id=CHATTER2_ID, username="splitchatter2", password=PASSWORD,
@@ -91,9 +106,9 @@ def _put(c: TestClient, config):
     return c.put("/admin/split-inbox", json={"account_id": ACCOUNT, "config": config})
 
 
-async def _stored() -> str | None:
+async def _stored(account_id: str = ACCOUNT) -> str | None:
     async with get_session() as s:
-        row = await s.get(AccountAiConfig, ACCOUNT)
+        row = await s.get(AccountAiConfig, account_id)
     return None if row is None else row.split_inbox_json
 
 
@@ -200,8 +215,8 @@ def _chats_page(*_a, **_k):
     return {"list": [{"withUser": {"id": i}} for i in (300, 301, 302, 303)], "hasMore": True, "asked_at": 0}
 
 
-def _fans(c: TestClient) -> tuple[list[int], bool]:
-    r = c.get("/api/of/v2/chats?limit=4&offset=0", headers={"X-Account-Id": ACCOUNT})
+def _fans(c: TestClient, account_id: str = ACCOUNT) -> tuple[list[int], bool]:
+    r = c.get("/api/of/v2/chats?limit=4&offset=0", headers={"X-Account-Id": account_id})
     assert r.status_code == 200, (r.status_code, r.text)
     assert r.json()["scanned"] == 4, r.json()
     return [row["withUser"]["id"] for row in r.json()["list"]], r.json()["hasMore"]
@@ -239,7 +254,17 @@ def case_a_bound_chatter_sees_only_its_group_on_chats_and_owner_sees_all():
         dual = _owner()
         dual.post("/chatter/login", json={"username": "splitchatter", "password": PASSWORD})
         assert _fans(dual)[0] == [300, 301, 302, 303], "a User cookie wins (DA-1)"
+        path, headers = "/api/of/v2/chats?limit=4&offset=0", {"X-Account-Id": ACCOUNT}
+        version = chatter.get(path, headers=headers).json().get("split_version")
+        assert version, "a bound chatter's page carries its split version"
+        assert chatter.get(path, headers=headers).json()["split_version"] == version
+        assert "split_version" not in owner.get(path, headers=headers).json()
+        assert _put(owner, {"group_count": 2, "assignments": {}, "chatter_groups": {CHATTER_ID: 2}}).status_code == 200
+        changed = chatter.get(path, headers=headers).json()
+        assert changed.get("split_version") and changed["split_version"] != version
+        assert [row["withUser"]["id"] for row in changed["list"]] == [301, 303]
         _put(owner, {"group_count": 1, "assignments": {}, "chatter_groups": {}})
+        assert "split_version" not in chatter.get(path, headers=headers).json()
         assert _fans(chatter)[0] == [300, 301, 302, 303], "an unsplit Creator is unfiltered at once"
     finally:
         server._assemble_chats_page, server._get_client = real_page, real_client
@@ -488,6 +513,404 @@ async def case_concurrent_puts_publish_in_commit_order():
         assert stored["group_count"] == 3, stored
         cached = split_inbox.heal(ACCOUNT, split_inbox.unset(), since=-1)
         assert cached == stored, (cached, stored)
+
+
+
+def _patch(c: TestClient, **body):
+    return c.patch("/admin/split-inbox", json=body)
+
+
+def _put_to(c: TestClient, account_id: str, config: dict):
+    r = c.put("/admin/split-inbox", json={"account_id": account_id, "config": config})
+    assert r.status_code == 200, (r.status_code, r.text)
+
+
+def _all_stored() -> list[str | None]:
+    return [asyncio.run(_stored(aid)) for aid in (ACCOUNT, ACCOUNT2, FOREIGN)]
+
+
+def case_patch_merges_only_the_edits_into_each_stored_config():
+    owner = _owner()
+    _put_to(owner, ACCOUNT, {"group_count": 3, "assignments": {"701": 2, "702": 3},
+                             "chatter_groups": {CHATTER_ID: 1, CHATTER2_ID: 2}})
+    r = _patch(owner, account_ids=[ACCOUNT], chatter_groups={CHATTER2_ID: None, "c9": 3}, assignments={"703": 1})
+    assert r.status_code == 200, (r.status_code, r.text)
+    want = {"group_count": 3, "assignments": {"701": 2, "702": 3, "703": 1},
+            "chatter_groups": {CHATTER_ID: 1}}
+    assert r.json() == {"configs": {ACCOUNT: want}}, r.json()
+    assert json.loads(asyncio.run(_stored())) == want
+    assert _get(owner).json()["config"] == want
+    assert split_inbox.bound_cached(CHATTER_ID, ACCOUNT) and not split_inbox.bound_cached(CHATTER2_ID, ACCOUNT)
+    _put_to(owner, ACCOUNT, UNSET)
+
+
+def case_patch_count_for_every_account_drops_only_what_falls_out_of_range():
+    owner = _owner()
+    _put_to(owner, ACCOUNT, {"group_count": 3, "assignments": {"701": 2, "702": 3}, "chatter_groups": {CHATTER_ID: 3}})
+    _put_to(owner, ACCOUNT2, {"group_count": 2, "assignments": {"801": 2}, "chatter_groups": {CHATTER_ID: 1}})
+    r = _patch(owner, account_ids=[ACCOUNT, ACCOUNT2], group_count=2, chatter_groups={CHATTER2_ID: 2})
+    assert r.status_code == 200, (r.status_code, r.text)
+    want = {
+        ACCOUNT: {"group_count": 2, "assignments": {"701": 2}, "chatter_groups": {CHATTER2_ID: 2}},
+        ACCOUNT2: {"group_count": 2, "assignments": {"801": 2}, "chatter_groups": {CHATTER_ID: 1, CHATTER2_ID: 2}},
+    }
+    assert r.json() == {"configs": want}, r.json()
+    assert {aid: json.loads(asyncio.run(_stored(aid))) for aid in want} == want
+    for aid in want:
+        _put_to(owner, aid, UNSET)
+
+
+def case_a_refused_patch_writes_nothing():
+    owner = _owner()
+    _put_to(owner, ACCOUNT, {"group_count": 2, "assignments": {"701": 2}, "chatter_groups": {}})
+    before = _all_stored()
+    for body, status in (
+        ({"account_ids": [ACCOUNT, ACCOUNT2], "assignments": {"701": 1}}, 422),
+        ({"account_ids": [], "group_count": 2}, 422),
+        ({"account_ids": [""], "group_count": 2}, 422),
+        ({"account_ids": [ACCOUNT], "group_count": 0}, 422),
+        ({"account_ids": [ACCOUNT], "group_count": True}, 422),
+        ({"account_ids": [ACCOUNT], "chatter_groups": {CHATTER_ID: "2"}}, 422),
+        ({"account_ids": [ACCOUNT], "chatter_groups": [1]}, 422),
+        ({"account_ids": [ACCOUNT], "assignments": {"701": None}}, 422),
+        ({"account_ids": [ACCOUNT], "chatter_groups": {CHATTER_ID: 0}}, 422),
+        ({"account_ids": [ACCOUNT], "assignments": {"701": -1}}, 422),
+        ({"account_ids": [ACCOUNT], "assignments": {"701": 10}}, 422),
+        ({"account_ids": [ACCOUNT, FOREIGN], "group_count": 3}, 403),
+    ):
+        r = _patch(owner, **body)
+        assert r.status_code == status, (body, r.status_code, r.text)
+    r = _patch(_chatter(), account_ids=[ACCOUNT], group_count=3)
+    assert r.status_code == 403, ("a chatter cannot change the split", r.status_code, r.text)
+    assert _patch(TestClient(server.app), account_ids=[ACCOUNT], group_count=3).status_code == 401
+    assert _all_stored() == before, "a refused edit must not write"
+    _put_to(owner, ACCOUNT, UNSET)
+
+
+def case_a_stale_group_above_the_effective_count_is_409_and_writes_nothing():
+    owner = _owner()
+    _put_to(owner, ACCOUNT, {"group_count": 2, "assignments": {"701": 2}, "chatter_groups": {CHATTER_ID: 2}})
+    _put_to(owner, ACCOUNT2, {"group_count": 3, "assignments": {}, "chatter_groups": {}})
+    before, gens = _all_stored(), [split_inbox.generation(a) for a in (ACCOUNT, ACCOUNT2)]
+    for body in (
+        {"account_ids": [ACCOUNT], "chatter_groups": {CHATTER_ID: 3}},
+        {"account_ids": [ACCOUNT], "assignments": {"701": 3}},
+        {"account_ids": [ACCOUNT], "group_count": 2, "chatter_groups": {CHATTER2_ID: 3}},
+        {"account_ids": [ACCOUNT2, ACCOUNT], "chatter_groups": {CHATTER2_ID: 3}},
+    ):
+        r = _patch(owner, **body)
+        assert r.status_code == 409 and "Inbox 3" in r.json()["detail"], (body, r.status_code, r.text)
+    assert _all_stored() == before, "a stale edit must not write"
+    assert [split_inbox.generation(a) for a in (ACCOUNT, ACCOUNT2)] == gens, "nor publish"
+    assert split_inbox.bound_cached(CHATTER_ID, ACCOUNT), "the valid Inbox 2 binding stays"
+    r = _patch(owner, account_ids=[ACCOUNT], group_count=3, chatter_groups={CHATTER_ID: 3})
+    assert r.status_code == 200 and r.json()["configs"][ACCOUNT]["chatter_groups"] == {CHATTER_ID: 3}, r.text
+    for aid in (ACCOUNT, ACCOUNT2):
+        _put_to(owner, aid, UNSET)
+
+
+def case_a_binding_lands_only_on_models_the_chatter_is_granted():
+    async def restrict(on: bool):
+        async with get_session() as s:
+            if on:
+                s.add(ChatterAccountAccess(chatter_id=CHATTER2_ID, user_id=OWNER_ID, account_id=ACCOUNT))
+            else:
+                await s.delete(await s.get(ChatterAccountAccess, (CHATTER2_ID, OWNER_ID, ACCOUNT)))
+
+    owner = _owner()
+    asyncio.run(restrict(True))
+    try:
+        _put_to(owner, ACCOUNT2, {"group_count": 2, "assignments": {}, "chatter_groups": {CHATTER2_ID: 1}})
+        r = _patch(owner, account_ids=[ACCOUNT, ACCOUNT2], group_count=2,
+                   chatter_groups={CHATTER_ID: 2, CHATTER2_ID: 2})
+        assert r.status_code == 200, (r.status_code, r.text)
+        got = {aid: cfg["chatter_groups"] for aid, cfg in r.json()["configs"].items()}
+        assert got == {ACCOUNT: {CHATTER_ID: 2, CHATTER2_ID: 2}, ACCOUNT2: {CHATTER_ID: 2, CHATTER2_ID: 1}}, got
+        r = _patch(owner, account_ids=[ACCOUNT, ACCOUNT2], chatter_groups={CHATTER2_ID: None})
+        assert r.status_code == 200, (r.status_code, r.text)
+        got = {aid: cfg["chatter_groups"] for aid, cfg in r.json()["configs"].items()}
+        assert got == {ACCOUNT: {CHATTER_ID: 2}, ACCOUNT2: {CHATTER_ID: 2}}, "an unbind clears a hidden lock too"
+    finally:
+        asyncio.run(restrict(False))
+        for aid in (ACCOUNT, ACCOUNT2):
+            _put_to(owner, aid, UNSET)
+
+
+async def _restrict_chatter2_to_account(on: bool) -> None:
+    async with get_session() as s:
+        if on:
+            s.add(ChatterAccountAccess(chatter_id=CHATTER2_ID, user_id=OWNER_ID, account_id=ACCOUNT))
+        else:
+            await s.delete(await s.get(ChatterAccountAccess, (CHATTER2_ID, OWNER_ID, ACCOUNT)))
+
+
+async def _drop_default_and_rows() -> None:
+    from sqlalchemy import delete
+    from db.models import UserSetting
+    async with get_session() as s:
+        await s.execute(delete(UserSetting).where(UserSetting.tab == split_inbox.DEFAULT_TAB))
+        await s.execute(delete(AccountAiConfig).where(AccountAiConfig.account_id.in_([NEW, OWN])))
+    for aid in (NEW, OWN):
+        split_inbox._configs.pop(aid, None)
+    await split_inbox.default_changed(OWNER_ID)
+
+
+def _config_of(c: TestClient, account_id: str) -> dict:
+    r = c.get(f"/admin/split-inbox?account_id={account_id}")
+    assert r.status_code == 200, (r.status_code, r.text)
+    return r.json()
+
+
+def case_an_all_models_save_is_the_default_for_a_creator_without_its_own_split():
+    owner = _owner()
+    for aid in (ACCOUNT, ACCOUNT2):
+        _put_to(owner, aid, UNSET)
+    _put_to(owner, OWN, {"group_count": 2, "assignments": {}, "chatter_groups": {}})
+    asyncio.run(split_inbox.warm([NEW]))
+    assert not split_inbox.bound_cached(CHATTER_ID, NEW), split_inbox._configs.get(NEW)
+    asyncio.run(_restrict_chatter2_to_account(True))
+    real_page, real_client = server._assemble_chats_page, server._get_client
+    real_get = server.account_registry.get_account
+    try:
+        r = _patch(owner, account_ids=[ACCOUNT, ACCOUNT2], group_count=3,
+                   chatter_groups={CHATTER_ID: 2, CHATTER2_ID: 3}, as_default=True)
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert asyncio.run(_stored(NEW)) is None, "the default is not copied onto the new Creator"
+        assert split_inbox.bound_cached(CHATTER_ID, NEW), "a cached inherited split refreshes on save"
+        assert _config_of(owner, NEW)["config"] == {
+            "group_count": 3, "assignments": {}, "chatter_groups": {CHATTER_ID: 2, CHATTER2_ID: 3},
+        }, "chatter2's binding rides along unused until it is granted the new Creator"
+        assert _config_of(_chatter(), NEW)["my_group"] == 2
+        assert _config_of(owner, OWN)["config"] == {"group_count": 2, "assignments": {}, "chatter_groups": {}}
+
+        server._assemble_chats_page, server._get_client = _chats_page, lambda: None
+        server.account_registry.get_account = lambda aid: {"id": aid} if aid == NEW else real_get(aid)
+        relay_cache.invalidate("list_chats", NEW)
+        assert _fans(_chatter(), NEW)[0] == [301], "box 2 of 3 = id mod 3 == 1"
+        assert _fans(owner, NEW)[0] == [300, 301, 302, 303]
+
+        for body in ({"account_ids": [ACCOUNT], "group_count": 2, "chatter_groups": {CHATTER_ID: 1}},
+                     {"account_ids": [ACCOUNT, ACCOUNT2], "chatter_groups": {CHATTER_ID: 1}}):
+            r = _patch(owner, **body)
+            assert r.status_code == 200, (body, r.status_code, r.text)
+        assert _config_of(owner, NEW)["config"]["chatter_groups"] == {CHATTER_ID: 2, CHATTER2_ID: 3}, \
+            "an edit without as_default leaves the default alone"
+
+        r = _patch(owner, account_ids=[ACCOUNT, ACCOUNT2], chatter_groups={CHATTER_ID: None}, as_default=True)
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert _config_of(owner, NEW)["config"] == {"group_count": 3, "assignments": {}, "chatter_groups": {}}
+        assert not split_inbox.bound_cached(CHATTER_ID, NEW), split_inbox._configs.get(NEW)
+    finally:
+        server._assemble_chats_page, server._get_client = real_page, real_client
+        server.account_registry.get_account = real_get
+        relay_cache.invalidate("list_chats", NEW)
+        asyncio.run(_restrict_chatter2_to_account(False))
+        asyncio.run(_drop_default_and_rows())
+        for aid in (ACCOUNT, ACCOUNT2):
+            _put_to(owner, aid, UNSET)
+
+
+def case_a_default_save_takes_the_split_every_target_now_shares():
+    owner = _owner()
+    _put_to(owner, ACCOUNT, {"group_count": 2, "assignments": {}, "chatter_groups": {CHATTER_ID: 1, CHATTER2_ID: 2}})
+    _put_to(owner, ACCOUNT2, {"group_count": 2, "assignments": {}, "chatter_groups": {CHATTER_ID: 1, CHATTER2_ID: 1}})
+    try:
+        r = _patch(owner, account_ids=[ACCOUNT, ACCOUNT2], group_count=2, as_default=True)
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert _config_of(owner, NEW)["config"] == {
+            "group_count": 2, "assignments": {}, "chatter_groups": {CHATTER_ID: 1},
+        }, "an untouched shared binding lands in the default; a differing one does not"
+        r = _patch(owner, account_ids=[ACCOUNT, ACCOUNT2], chatter_groups={CHATTER2_ID: 2}, as_default=True)
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert _config_of(owner, NEW)["config"] == {
+            "group_count": 2, "assignments": {}, "chatter_groups": {CHATTER_ID: 1, CHATTER2_ID: 2},
+        }
+        _put_to(owner, NEW, {"group_count": 4, "assignments": {}, "chatter_groups": {}})
+        r = _patch(owner, account_ids=[ACCOUNT, ACCOUNT2], group_count=3, as_default=True)
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert _config_of(owner, NEW)["config"]["group_count"] == 4, "its own save wins over the default"
+    finally:
+        asyncio.run(_drop_default_and_rows())
+        for aid in (ACCOUNT, ACCOUNT2):
+            _put_to(owner, aid, UNSET)
+
+
+def case_a_grant_given_after_the_default_applies_its_binding_at_once():
+    owner = _owner()
+    access = lambda ids: owner.put(f"/admin/chatters/{CHATTER2_ID}/account-access", json={"account_ids": ids})
+    for aid in (ACCOUNT, ACCOUNT2):
+        _put_to(owner, aid, UNSET)
+    real_page, real_client = server._assemble_chats_page, server._get_client
+    real_get = server.account_registry.get_account
+    try:
+        assert access([ACCOUNT]).status_code == 200
+        r = _patch(owner, account_ids=[ACCOUNT, ACCOUNT2], group_count=3,
+                   chatter_groups={CHATTER2_ID: 3}, as_default=True)
+        assert r.status_code == 200, (r.status_code, r.text)
+        asyncio.run(split_inbox.warm([NEW]))
+        assert access([ACCOUNT, NEW]).status_code == 200
+        server._assemble_chats_page, server._get_client = _chats_page, lambda: None
+        server.account_registry.get_account = lambda aid: {"id": aid} if aid == NEW else real_get(aid)
+        relay_cache.invalidate("list_chats", NEW)
+        assert _fans(_chatter("splitchatter2"), NEW)[0] == [302], "box 3 of 3 = id mod 3 == 2"
+    finally:
+        server._assemble_chats_page, server._get_client = real_page, real_client
+        server.account_registry.get_account = real_get
+        relay_cache.invalidate("list_chats", NEW)
+        access([])
+        asyncio.run(_drop_default_and_rows())
+        for aid in (ACCOUNT, ACCOUNT2):
+            _put_to(owner, aid, UNSET)
+
+
+
+async def _link_stranger(on: bool) -> None:
+    from sqlalchemy import delete
+    async with get_session() as s:
+        if on:
+            s.add_all([UserAccount(user_id=STRANGER_ID, account_id=aid) for aid in (NEW, FOREIGN)])
+        else:
+            await s.execute(delete(UserAccount).where(UserAccount.user_id == STRANGER_ID))
+            await s.execute(delete(AccountAiConfig).where(AccountAiConfig.account_id == FOREIGN))
+    split_inbox._configs.pop(FOREIGN, None)
+
+
+def case_a_co_owned_creator_inherits_only_a_default_its_owners_agree_on():
+    import events
+    owner = _owner()
+    for aid in (ACCOUNT, ACCOUNT2):
+        _put_to(owner, aid, UNSET)
+    asyncio.run(_link_stranger(True))
+    stranger = TestClient(server.app)
+    assert stranger.post("/auth/login", json={"username": "splitstranger", "password": PASSWORD}).status_code == 200
+    sub = events._Sub("all", frozenset({NEW}), frozenset(), chatter=CHATTER_ID)
+    even = {"api2_chat_message": {"fromUser": {"id": 300}}, "__account_id": NEW}
+    try:
+        r = _patch(owner, account_ids=[ACCOUNT, ACCOUNT2], group_count=2,
+                   chatter_groups={CHATTER_ID: 2}, as_default=True)
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert _config_of(owner, NEW)["config"]["chatter_groups"] == {CHATTER_ID: 2}, "only one owner has a default"
+        assert events._for(sub, even) is None, "even id: box 1, not this chatter's"
+
+        r = _patch(stranger, account_ids=[FOREIGN], group_count=2, as_default=True)
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert _config_of(owner, NEW)["config"] == UNSET, "the owners' defaults differ: no split"
+        assert events._for(sub, even) is not None, "the stranger's save refreshed the cached split"
+
+        r = _patch(owner, account_ids=[ACCOUNT, ACCOUNT2], chatter_groups={CHATTER_ID: None}, as_default=True)
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert _config_of(owner, NEW)["config"] == {"group_count": 2, "assignments": {}, "chatter_groups": {}}, \
+            "equal defaults are inherited"
+    finally:
+        asyncio.run(_link_stranger(False))
+        asyncio.run(_drop_default_and_rows())
+        for aid in (ACCOUNT, ACCOUNT2):
+            _put_to(owner, aid, UNSET)
+
+
+def case_a_failed_cache_refresh_does_not_fail_the_committed_save():
+    owner = _owner()
+    real = split_inbox.default_changed
+
+    async def broken(owner_id):
+        raise RuntimeError("refresh down")
+    split_inbox.default_changed = broken
+    try:
+        r = _patch(owner, account_ids=[ACCOUNT, ACCOUNT2], group_count=2, as_default=True)
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert json.loads(asyncio.run(_stored(ACCOUNT)))["group_count"] == 2
+    finally:
+        split_inbox.default_changed = real
+        asyncio.run(_drop_default_and_rows())
+        for aid in (ACCOUNT, ACCOUNT2):
+            _put_to(owner, aid, UNSET)
+
+
+
+async def case_unrelated_owner_refresh_does_not_cancel_an_inherited_refresh():
+    from db.models import UserSetting
+
+    async with get_session() as s:
+        s.add(UserSetting(user_id=OWNER_ID, tab=split_inbox.DEFAULT_TAB,
+                          config_json=json.dumps({**UNSET, "group_count": 3})))
+    split_inbox.remember(NEW, UNSET, inherited=True)
+    read, resume = asyncio.Event(), asyncio.Event()
+    real = split_inbox.resolve
+
+    async def paused(s, ids):
+        result = await real(s, ids)
+        if NEW in ids:
+            read.set()
+            await resume.wait()
+        return result
+
+    split_inbox.resolve = paused
+    refresh = asyncio.create_task(split_inbox.default_changed(OWNER_ID))
+    try:
+        await asyncio.wait_for(read.wait(), timeout=5)
+        await split_inbox.default_changed(STRANGER_ID)
+        resume.set()
+        await refresh
+        assert (await split_inbox.config(NEW))["group_count"] == 3
+    finally:
+        resume.set()
+        await asyncio.gather(refresh, return_exceptions=True)
+        split_inbox.resolve = real
+        await _drop_default_and_rows()
+
+
+async def case_failed_inherited_refresh_evicts_cached_default():
+    split_inbox.remember(NEW, {**UNSET, "group_count": 3}, inherited=True)
+    real = split_inbox.resolve
+
+    async def broken(s, ids):
+        raise RuntimeError("refresh down")
+
+    split_inbox.resolve = broken
+    try:
+        try:
+            await split_inbox.default_changed(OWNER_ID)
+        except RuntimeError as exc:
+            assert str(exc) == "refresh down"
+        else:
+            raise AssertionError("expected refresh failure")
+        assert NEW not in split_inbox._configs
+    finally:
+        split_inbox.resolve = real
+        await _drop_default_and_rows()
+
+
+
+def case_grant_to_a_second_owner_refreshes_the_cached_inherited_split():
+    import os
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from unittest.mock import patch
+    from db.models import UserSetting
+
+    async def defaults():
+        async with get_session() as s:
+            for uid, n in ((OWNER_ID, 2), (STRANGER_ID, 3)):
+                s.add(UserSetting(user_id=uid, tab=split_inbox.DEFAULT_TAB,
+                                  config_json=json.dumps({**UNSET, "group_count": n})))
+
+    asyncio.run(defaults())
+    split_inbox._configs.pop(NEW, None)
+    assert asyncio.run(split_inbox.config(NEW))["group_count"] == 2
+    try:
+        with TemporaryDirectory() as tmp, patch.object(server.account_registry, "ACCOUNTS_DIR", Path(tmp)):
+            server.account_registry.save_meta(NEW, {"id": NEW})
+            r = _owner().post(f"/admin/users/{STRANGER_ID}/accounts",
+                              json={"account_id": NEW, "admin_password": os.environ["ADMIN_PASSWORD"]})
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert asyncio.run(split_inbox.config(NEW)) == UNSET
+        r = _owner().request("DELETE", f"/admin/users/{STRANGER_ID}/accounts/{NEW}",
+                             json={"admin_password": os.environ["ADMIN_PASSWORD"]})
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert asyncio.run(split_inbox.config(NEW))["group_count"] == 2, "revoking the co-owner restores the cached default"
+    finally:
+        asyncio.run(_link_stranger(False))
+        asyncio.run(_drop_default_and_rows())
 
 
 _harness.run()

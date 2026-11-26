@@ -30,6 +30,11 @@ from pydantic import BaseModel, Field, field_validator
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+_CELLS = bool(os.environ.get("OI_CELL_MAP"))
+if _CELLS:
+    import cell_mode  # noqa: E402
+    cell_mode.boot_check()
+
 from isotime import parse_iso  # noqa: E402
 
 import accounts as account_registry  # noqa: E402
@@ -98,6 +103,7 @@ import stats_file  # noqa: E402  # lane-stats file: path, read, tmp + os.replace
 import relay_coalesce  # noqa: E402  # in-flight dedup for idempotent OF GETs (Stage B-2)
 from bg_lane import BgLane, BgLease  # noqa: E402  # a Creator's background sub-cap, loop + threads
 import relay_hooks  # noqa: E402
+import send_tripwire  # noqa: E402
 import side_effect_gate  # noqa: E402
 import read_flip  # noqa: E402  # what follows a landed read flip (routes + automations)
 import chats_page  # noqa: E402  # one logical page of OF /chats
@@ -106,7 +112,7 @@ from lists import router as _lists_router  # noqa: E402
 from automation_rules_api import router as _automation_rules_router  # noqa: E402
 from translate_api import router as _translate_router  # noqa: E402
 from funnels_api import router as _funnels_router  # noqa: E402
-from unconfirmed_sends_api import router as _unconfirmed_sends_router  # noqa: E402
+from unconfirmed_sends_api import cell_router as _unconfirmed_cell_router, router as _unconfirmed_sends_router  # noqa: E402
 from nudge_config_api import router as _nudge_config_router  # noqa: E402
 from purchase_followup_config_api import router as _purchase_followup_config_router  # noqa: E402
 from auto_follow_api import router as _auto_follow_router  # noqa: E402
@@ -236,9 +242,13 @@ def _sync_proxy_pool() -> None:
     log.info("Inflowwww proxy pool: %d proxies, %d account(s) re-picked, %d left without one",
              r["size"], r["rebound"], r["dropped"])
 
-app = FastAPI(title="OF Relay", version="0.1.0")
+app = FastAPI(title="OF Relay", version="0.1.0",
+              dependencies=[Depends(cell_mode.route_guard)] if _CELLS else None,
+              **({"docs_url": None, "redoc_url": None, "openapi_url": None} if _CELLS else {}))
+if _CELLS:
+    app.add_middleware(cell_mode.FaninTags)
 
-# Registered FIRST (innermost): the hook chain re-streams bodies in chunks, so GZip behind it could not see a small body whole and `minimum_size` would stop applying.
+# Registered FIRST (innermost but cell mode's FaninTags): the hook chain re-streams bodies in chunks, so GZip behind it could not see a small body whole and `minimum_size` would stop applying.
 app.add_middleware(
     GZipMiddleware,
     minimum_size=1024,
@@ -328,6 +338,8 @@ app.include_router(_automation_rules_router)
 app.include_router(_translate_router)
 app.include_router(_funnels_router)
 app.include_router(_unconfirmed_sends_router)
+if _CELLS:
+    app.include_router(_unconfirmed_cell_router)
 app.include_router(_nudge_config_router)
 app.include_router(_purchase_followup_config_router)
 app.include_router(_auto_follow_router)
@@ -378,6 +390,16 @@ app.include_router(_auth_admin_router)
 app.include_router(_auth_impersonate_router)
 if fleet_api.enabled():
     app.include_router(fleet_api.router)
+if _CELLS:
+    import actor_token  # noqa: E402
+    import cell_hold  # noqa: E402
+    app.include_router(cell_hold.router)
+if _CELLS and os.environ.get("OI_CELL_ROLE") == "control":
+    import agency_copy  # noqa: E402
+    import creator_reservations  # noqa: E402
+    app.include_router(agency_copy.router)
+    app.include_router(creator_reservations.router)
+    app.include_router(actor_token.router())
 app.include_router(_chatters_router)
 app.include_router(_chatters_admin_router)
 app.include_router(_smart_lists_router)
@@ -453,6 +475,8 @@ async def _account_isolation_middleware(request: Request, call_next):
             return await call_next(request)
         if mcp_api.anonymous_surface(request.method, path):
             return await call_next(request)
+        if _CELLS and (refusal := actor_token.refused(path, "actor_missing")):
+            return refusal
         return Response("sign in required", status_code=401)
 
     candidates: set[str] = set()
@@ -570,6 +594,8 @@ async def _share_token_gate(request: Request, call_next):
         return await call_next(request)
     if request.cookies.get(_AUTH_COOKIE_NAME) or request.cookies.get(_CHATTER_COOKIE_NAME):
         return await call_next(request)
+    if _CELLS and request.cookies.get(actor_token.COOKIE):
+        return await call_next(request)
     if _owner_tokens.bearer(request.headers.get("authorization")):
         return await call_next(request)
     if request.query_params.get("t") == share_token:
@@ -579,6 +605,8 @@ async def _share_token_gate(request: Request, call_next):
             max_age=7 * 24 * 3600, httponly=True, samesite="lax",
         )
         return resp
+    if _CELLS and (refusal := actor_token.refused(request.url.path, "actor_missing")):
+        return refusal
     # `no-store` on the refusal: a cached 401 would outlive the token that fixes it.
     return Response("unauthorized — link missing or expired", status_code=401,
                     headers={"Cache-Control": "no-store"})
@@ -700,6 +728,9 @@ class _CutShortStreams:
 
 
 app.add_middleware(_CutShortStreams)
+if _CELLS:
+    app.add_middleware(cell_mode.CellGenHeader)
+    app.add_exception_handler(proxy_registry.NoProxyRefused, cell_mode.no_proxy_refused)
 
 
 @_http_hooks.add
@@ -922,6 +953,8 @@ def _start_account_pump(account_id: str) -> None:
 
 
 def _do_start_account_pump(account_id: str) -> None:
+    if _CELLS and str(account_id) not in cell_mode.owned_ids():
+        return
     task = _account_pumps.get(account_id)
     if task and not task.done():
         return
@@ -1022,6 +1055,8 @@ async def _pump_supervisor() -> None:
 async def _reconcile_pumps() -> None:
     off = await account_health.deactivated_ids()
     with_session = [a["id"] for a in account_registry.list_accounts() if a.get("has_session")]
+    if _CELLS:
+        with_session = cell_mode.owned_only(with_session)
     parked = set(await account_health.dead_session_map())
     done = {aid: t.done() for aid, t in _account_pumps.items()}
     now = _time_mod.monotonic()
@@ -1146,6 +1181,36 @@ async def _start_event_pumps() -> None:
         _spawn_bg(tracking_stats.classify_old_rows_background(sync_database_url()), "tracking-click-classify")
     except Exception:
         log.exception("db_init failed — relay will run but SSE/inbox writes will error")
+    if _CELLS:
+        log.info("Cells: %s data_gen %d", os.environ["OI_CELL_ID"], cell_mode.install_meta(sync_database_url()))
+        import send_ops
+        log.info("Cells: %d open Send claims turned uncertain at boot", send_ops.install(sync_database_url()))
+        import cell_hold
+        await cell_hold.boot(sync_database_url())
+        if os.environ["OI_CELL_ROLE"] == "control":
+            import creator_reservations
+            creator_reservations.install(sync_database_url())
+        import agency_copy
+        role = os.environ["OI_CELL_ROLE"]
+        log.info("Cells: agency copy %s triggers %s", role, agency_copy.install(sync_database_url(), role))
+        if role == "control":
+            import employees
+            try:
+                log.info("Cells: agency rows backfilled for %d owner(s)", await employees.backfill_agency_rows())
+            except Exception:
+                log.exception("Cells: AGENCY ROW BACKFILL FAILED: an owner or chatter without a Mirror Employee"
+                              " gets 503 on data Cells")
+        if role == "data":
+            from db.engine import engine as _db_engine
+            agency_copy.log_read_only_hits(_db_engine.sync_engine)
+            age = agency_copy.load_confirmed(agency_copy.db_path(sync_database_url()))
+            log.info("Cells: grant age %s (max %.0f s)", "none (no confirmed copy)" if age is None else f"{age:.0f} s",
+                     agency_copy.max_grant_age_s())
+            _spawn_bg(agency_copy.watch_grant_age(), "grant-age-watch")
+            if os.environ.get("OI_CELL_CONTROL_URL"):
+                _spawn_bg(agency_copy.poll_forever(agency_copy.db_path(sync_database_url())), "agency-copy-poll")
+            else:
+                log.error("Cells: OI_CELL_CONTROL_URL unset: this data Cell never receives the Agency copy")
 
     import runtime_switches
     try:
@@ -1165,7 +1230,7 @@ async def _start_event_pumps() -> None:
 
     try:
         from seeds.funnels import seed_defaults_once
-        added = await seed_defaults_once()
+        added = [] if _CELLS and os.environ["OI_CELL_ROLE"] == "data" else await seed_defaults_once()
         if added:
             log.info("default funnels added: %s", ", ".join(added))
     except Exception:
@@ -1232,8 +1297,9 @@ async def _start_event_pumps() -> None:
 
     sign_rules.enable_background()
 
-    _spawn_bg(_periodic("clock-in missed", notifications_api.TICK_S, notifications_api.tick,
-                        first_after_s=60), "clock-in-missed")
+    if not _CELLS or cell_mode.runs_job("clock-in-missed"):
+        _spawn_bg(_periodic("clock-in missed", notifications_api.TICK_S, notifications_api.tick,
+                            first_after_s=60), "clock-in-missed")
 
     import link_prewarm
     _spawn_bg(_periodic(
@@ -1535,6 +1601,9 @@ def _sync_and_link_after_bootstrap(account_id: str) -> None:
 
 
 def post_bootstrap_hooks(account_id: str):
+    if _CELLS and os.environ["OI_CELL_ROLE"] == "data":
+        import creator_reservations
+        creator_reservations.activate(account_id)
     _invalidate_client(account_id)
     _kick_clear_session_dead(account_id)
     c = _load_client(account_id)
@@ -1852,6 +1921,11 @@ def _current_priority() -> str:
     return (req.headers.get("x-priority") or "user").lower()
 
 
+def _list_header(name: str) -> str | None:
+    req = _request_ctx.get()
+    return req.headers.get(name) if req is not None else None
+
+
 _bg_reads_aid: ContextVar[str | None] = ContextVar("bg_reads_aid", default=None)
 
 
@@ -1981,6 +2055,9 @@ def _proxy(call, *, client: OFClient | None = None, send: bool = False, started:
         return _attempt()
     except of_pacing.SendDispatchExpired as e:
         raise HTTPException(status_code=504, detail="Send window expired before dispatch.") from e
+    except send_tripwire.SendBudgetSpent as e:
+        raise HTTPException(status_code=502, detail={"upstream_status": "send_budget_spent",
+                                                     "upstream_body": str(e)}) from e
     except OFDeactivatedError as e:
         raise HTTPException(status_code=409, detail=_DEACTIVATED_DETAIL) from e
     except OFSessionRetired as e:
@@ -2047,10 +2124,13 @@ def _of_read_timing(route: str, aid: str | None, chat_id: int | None = None):
         pass
     token = READ_TIMING.set(t)
     status: Any = 200
+    upstream: Any = "-"
     try:
         yield t
     except HTTPException as e:
         status = e.status_code
+        if isinstance(e.detail, dict) and e.detail.get("upstream_status") is not None:
+            upstream = e.detail["upstream_status"]
         raise
     except BaseException:
         status = "error"
@@ -2063,12 +2143,14 @@ def _of_read_timing(route: str, aid: str | None, chat_id: int | None = None):
             post0 = t.get("_post_t0")
             log.info(
                 "of_read_timing route=%s account=%s chat=%s prio=%s status=%s of_calls=%d "
-                "lane_wait_ms=%d signed_wait_ms=%d of_ms=%d post_ms=%d total_ms=%d",
+                "lane_wait_ms=%d signed_wait_ms=%d of_ms=%d post_ms=%d total_ms=%d "
+                "caller=%s intent=%s offset=%s limit=%s upstream=%s",
                 route, aid or "-", chat_id if chat_id is not None else "-", _current_priority(),
                 status, int(t.get("of_calls", 0)), ms(max(t.get("lane_wait_s", 0.0), t["_admit_s"])),
                 ms(t.get("signed_wait_s", 0.0)),
                 ms(max(0.0, t.get("call_s", 0.0) - t.get("signed_wait_s", 0.0))),
                 ms(end - post0) if post0 is not None else 0, ms(end - t["_t0"]),
+                t.get("caller", "-"), t.get("intent", "-"), t.get("offset", "-"), t.get("limit", "-"), upstream,
             )
         except Exception:  # noqa: BLE001 — a timing line must never fail a read
             pass
@@ -2318,43 +2400,50 @@ async def admin_chats_recent(
     from db.models import Chat as _Chat, Fan as _Fan
     from sqlalchemy import select
     account_ids = clamp_account_filter(account_id)
-    async with get_session() as s:
-        stmt = (
-            select(_Chat, _Fan)
-            .join(_Fan, (_Fan.account_id == _Chat.account_id) & (_Fan.fan_id == _Chat.fan_id), isouter=True)
-            .where(_Chat.hidden_locally == False)  # noqa: E712
-            .order_by(_Chat.last_message_at.desc().nullslast())
-            .limit(limit)
-        )
-        if account_ids is not None:
-            if not account_ids:
-                return {"list": [], "source": "local-db"}
-            stmt = stmt.where(_Chat.account_id.in_(account_ids))
-        rows = (await s.execute(stmt)).all()
-        out: list[dict[str, Any]] = []
-        for chat, fan in rows:
-            out.append({
-                "__accountId": chat.account_id,
-                "withUser": {
-                    "id": js_safe_id(chat.fan_id),
-                    "name": fan.of_display_name if fan else None,
-                    "username": fan.of_username if fan else None,
-                    "avatar": fan.avatar_url if fan else None,
-                },
-                "lastMessage": {
-                    "id": js_safe_id(chat.last_message_id),
-                    "text": chat.last_message_preview or "",
-                    "createdAt": chat.last_message_at.isoformat() + "Z" if chat.last_message_at else None,
-                } if chat.last_message_id else None,
-                "hasUnread": (chat.unread_count or 0) > 0,
-                "unreadMessagesCount": chat.unread_count or 0,
-                "isMutedNotifications": bool(fan.is_muted) if fan else False,
-            })
+    if account_ids is not None and not account_ids:
+        return {"list": [], "source": "local-db"}
     chatter_id = split_inbox.acting_chatter_id()
+    stmt = (
+        select(_Chat.account_id, _Chat.fan_id, _Chat.last_message_id, _Chat.last_message_at,
+               _Chat.last_message_preview, _Chat.unread_count, _Fan.of_display_name, _Fan.of_username,
+               _Fan.avatar_url, _Fan.is_muted)
+        .join(_Fan, (_Fan.account_id == _Chat.account_id) & (_Fan.fan_id == _Chat.fan_id), isouter=True)
+        .where(_Chat.hidden_locally == False)  # noqa: E712
+        .order_by(_Chat.last_message_at.desc().nullslast())
+        .limit(limit)
+    )
+    sig = None
+    if account_ids is not None:
+        stmt = stmt.where(_Chat.account_id.in_(account_ids))
+        if chatter_id is not None:
+            await split_inbox.warm(account_ids)
+            scope = split_inbox.sql_scope(chatter_id, account_ids, _Chat.account_id, _Chat.fan_id)
+            if scope is not None:
+                expr, sig = scope
+                stmt = stmt.where(expr)
+
+    async def _read() -> list[dict[str, Any]]:
+        async with get_session() as s:
+            rows = (await s.execute(stmt)).all()
+        return [{
+            "__accountId": r.account_id,
+            "withUser": {"id": js_safe_id(r.fan_id), "name": r.of_display_name,
+                         "username": r.of_username, "avatar": r.avatar_url},
+            "lastMessage": {
+                "id": js_safe_id(r.last_message_id), "text": r.last_message_preview or "",
+                "createdAt": r.last_message_at.isoformat() + "Z" if r.last_message_at else None,
+            } if r.last_message_id else None,
+            "hasUnread": (r.unread_count or 0) > 0,
+            "unreadMessagesCount": r.unread_count or 0,
+            "isMutedNotifications": bool(r.is_muted),
+        } for r in rows]
+
+    key = ("chats_recent", limit, None if account_ids is None else tuple(sorted(account_ids)), sig)
+    rows = await relay_coalesce.coalesce(key, _read)
     if chatter_id is not None:
-        keeps = {aid: await split_inbox.filter_for(chatter_id, aid) for aid in {r["__accountId"] for r in out}}
-        out = [r for r in out if (k := keeps[r["__accountId"]]) is None or k(r["withUser"]["id"])]
-    return {"list": out, "source": "local-db"}
+        keeps = {aid: await split_inbox.filter_for(chatter_id, aid) for aid in {r["__accountId"] for r in rows}}
+        rows = [r for r in rows if (keep := keeps[r["__accountId"]]) is None or keep(r["withUser"]["id"])]
+    return {"list": rows, "source": "local-db"}
 
 
 app.include_router(img_api.router)
@@ -2542,12 +2631,14 @@ async def list_chats(
             return value
         async def _upstream():
             try:
-                return await asyncio.to_thread(_proxy, _read)
+                with of_pacing.read_budget(of_pacing.LIST_READ_BUDGET_S):
+                    return await asyncio.to_thread(_proxy, _read)
             except HTTPException as e:
                 wait = of_pacing.retry_after(e)
                 if wait is not None:
                     secs = _CHATS_429_HOLD.hold(coalesce_key, e, wait)
-                    log.info("list_chats 429 hold account=%s offset=%s for %.1fs", aid, offset, secs)
+                    log.info("list_chats 429 hold account=%s offset=%s caller=%s for %.1fs", aid, offset,
+                             chats_page.list_caller(_list_header("x-list-caller")), secs)
                 raise
         value = await relay_coalesce.coalesce(coalesce_key, _upstream)
         # Reconcile the local `chats` mirror from a FRESH OF read only: a cached value is a stale SWR window or WS-patched, not OF's read state.
@@ -2561,7 +2652,11 @@ async def list_chats(
                 )
         return value
     held_before = accounts_admin_api.held_window(aid) if is_badge_window else None
-    with _of_read_timing("chats", aid):
+    with _of_read_timing("chats", aid) as t:
+        t.update(caller=chats_page.list_caller(_list_header("x-list-caller")),
+                 intent=chats_page.list_intent(_list_header("x-list-intent")), offset=offset, limit=limit)
+        if chats_page.deep_page_refused(offset, limit, t["intent"]):
+            raise HTTPException(status_code=428, detail=chats_page.DEEP_REFUSED_DETAIL)
         resp, _ = await _cached_or_held_on_429(
             "list_chats", aid, (limit, offset, order, filter, list_id, q),
             ttl_seconds=_LIST_CHATS_TTL, fetcher=_fetch, bypass=refresh,
@@ -2804,6 +2899,8 @@ def _pins_cache_ttl_s() -> float:
 
 
 def _proxy_message_write(fn: Callable[[], Any]) -> Any:
+    import send_ops
+    send_ops.check_permit()
     try:
         return _proxy(fn)
     finally:
@@ -3078,8 +3175,20 @@ async def send_message(
         return _proxy(lambda: _get_client().post_message(prepared_chat_id, path, payload, retry_plan),
                       send=retry_plan is None, started=started)
 
+    anchor = request.headers.get("x-op-id") if _CELLS else None
+    import send_ops
     try:
-        result = await asyncio.to_thread(send)
+        if anchor:
+            platform = account_registry.get_platform(account_id)
+            result, replay = await asyncio.to_thread(
+                send_ops.dispatch, platform, account_id,
+                send_ops.op_id(platform, account_id, "composer", str(chat_id), anchor),
+                "composer", str(chat_id), send_ops.digest(body.model_dump()), send)
+            if replay:
+                return result
+        else:
+            send_ops.check_permit()
+            result = await asyncio.to_thread(send)
     except HTTPException as e:
         relay_hooks.fire_send_failed(account_id, int(chat_id), e)
         raise
@@ -3880,7 +3989,15 @@ def of_schedules(
 @app.put("/api/of/v2/schedules/{schedule_id}/publish")
 def of_publish_schedule(schedule_id: int):
     """Publish a queue item now (OF Manager's queue "Post now" / "Message now")."""
-    return _proxy(lambda: _get_client().publish_schedule(schedule_id))
+    def send():
+        return _proxy(lambda: _get_client().publish_schedule(schedule_id))
+    if not _CELLS:
+        return send()
+    import send_ops
+    aid = _current_aid()
+    name, sid = account_registry.get_platform(aid), str(schedule_id)
+    return send_ops.dispatch(name, aid, send_ops.op_id(name, aid, "publish_now", sid, sid), "publish_now", sid,
+                             send_ops.digest({"schedule_id": sid}), send).result
 
 # OF's ledger lands hours late (measured 209/560/628 min after occurred_at), so a 60 s entry bought no freshness; fresh payments arrive via the WS / purchases feed.
 _LEDGER_TTL_S = 900
@@ -5037,13 +5154,22 @@ async def of_schedule_message(chat_id: int, request: Request,
             raise HTTPException(status_code=400, detail=str(e)) from e
         return await _enqueue_scheduled(request, account_id, body, fan_id=chat_id,
                                         run_at_iso=body.scheduled_date, giphy_id=None)
-    return await asyncio.to_thread(_proxy, lambda: _get_client().schedule_message(
-        chat_id, text=body.text, scheduled_date=body.scheduled_date,
-        price=body.price, locked_text=body.locked_text, media_files=body.media_files,
-        previews=body.previews,
-        tagged_users=body.tagged_users,
-        auto_tag=False,
-    ))
+    def send():
+        return _proxy(lambda: _get_client().schedule_message(
+            chat_id, text=body.text, scheduled_date=body.scheduled_date,
+            price=body.price, locked_text=body.locked_text, media_files=body.media_files,
+            previews=body.previews,
+            tagged_users=body.tagged_users,
+            auto_tag=False,
+        ))
+    if anchor := request.headers.get("x-op-id") if _CELLS else None:
+        import send_ops
+        name = account_registry.get_platform(account_id)
+        return (await asyncio.to_thread(
+            send_ops.dispatch, name, account_id,
+            send_ops.op_id(name, account_id, "native_schedule", str(chat_id), anchor),
+            "native_schedule", str(chat_id), send_ops.digest(body.model_dump()), send)).result
+    return await asyncio.to_thread(send)
 
 
 
@@ -5083,7 +5209,7 @@ async def _enqueue_scheduled(request: Request, account_id: str,
         account_id, "scheduled_send",
         payload=payload, run_at=run_at, created_by_employee_id=employee_id,
     )
-    return {"job_id": job_id, "fan_id": fan_id, "run_at": run_at.isoformat() + "Z"}
+    return {"job_id": job_id, "fan_id": js_safe_id(fan_id), "run_at": run_at.isoformat() + "Z"}
 
 
 @app.post("/api/of/v2/scheduled-sends")
@@ -5138,7 +5264,7 @@ async def list_scheduled_sends(request: Request, fan_id: int | None = None):
         out.append({
             "job_id": r.id,
             "kind": "scheduled_send",
-            "fan_id": row_fan,
+            "fan_id": js_safe_id(row_fan),
             "run_at": (r.run_at.isoformat() + "Z") if r.run_at else None,
             "status": r.status,
             "text": p.get("text") or "",
@@ -5598,6 +5724,11 @@ async def sse_events(
     before that and leases the session's Creators while open (view_lease "Legacy tabs").
     """
     granted_at = _sse_ring_seq()
+    claims = None
+    if _CELLS:
+        claims = getattr(request.state, "oi_actor", None)
+        if stale := actor_token.stream_refusal(claims):
+            return stale
     accounts = _require_actor_account_ids()
     if scope.startswith("model:") and accounts is not None and scope[len("model:"):] not in accounts:
         raise HTTPException(status_code=403, detail="not your account")
@@ -5613,7 +5744,8 @@ async def sse_events(
     body = sse_stream(request, scope, accounts=accounts, agencies=agencies,
                       last_event_id=request.headers.get("last-event-id") or last_event_id,
                       tab=is_app_tab(lease, request.headers.get("referer")), readable=readable,
-                      granted_at=granted_at, chatter=chatter.id if chatter is not None else None)
+                      granted_at=granted_at, chatter=chatter.id if chatter is not None else None,
+                      expires_at=claims.exp if claims is not None else None)
     import view_lease
     legacy = view_lease.legacy_stream_ids(lease, request.headers.get("referer"), accounts,
                                           account_registry.is_watcher)

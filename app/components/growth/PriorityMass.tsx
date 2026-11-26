@@ -77,7 +77,7 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
   const listsFailed = !!accountId && !lists && !isFetching;
 
   const send = useMutation({
-    mutationFn: () => relay.post<PriorityMassRun>(ROUTE, buildPayload(form)),
+    mutationFn: () => relay.post<PriorityMassRun>(ROUTE, buildPayload(form), { cellAccountId: accountId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: runsKey(accountId) });
       onClose();
@@ -216,8 +216,8 @@ export function PriorityMassRuns() {
     queryFn: () => relay.get<RunsResp>(`${ROUTE}?account_id=${encodeURIComponent(accountId!)}`),
   });
   const act = useMutation({
-    mutationFn: ({ id, verb }: { id: number; verb: "cancel" | "resume" }) =>
-      relay.post<PriorityMassRun>(`${ROUTE}/${id}/${verb}`),
+    mutationFn: ({ id, verb, accountId }: { id: number; verb: "cancel" | "resume"; accountId: string }) =>
+      relay.post<PriorityMassRun>(`${ROUTE}/${id}/${verb}`, undefined, { cellAccountId: accountId }),
     onSettled: () => qc.invalidateQueries({ queryKey: runsKey(accountId) }),
   });
   const runs = q.data?.runs ?? [];
@@ -244,11 +244,11 @@ export function PriorityMassRuns() {
                   <span className="ml-auto flex gap-2">
                     {live && r.stalled && (
                       <IfButton disabled={act.isPending}
-                        onClick={() => act.mutate({ id: r.id, verb: "resume" })}>Resume</IfButton>
+                        onClick={() => act.mutate({ id: r.id, verb: "resume", accountId: r.account_id })}>Resume</IfButton>
                     )}
                     {live && (
                       <IfButton disabled={act.isPending}
-                        onClick={() => act.mutate({ id: r.id, verb: "cancel" })}>Cancel</IfButton>
+                        onClick={() => act.mutate({ id: r.id, verb: "cancel", accountId: r.account_id })}>Cancel</IfButton>
                     )}
                   </span>
                 </div>

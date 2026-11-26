@@ -3,7 +3,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider, focusManager, useQuery } from "@tanstack/react-query";
 
-vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn() }, relayFocus: () => null }));
+vi.mock("@/lib/relay", async (orig) => ({ ...(await orig<typeof import("@/lib/relay")>()), relay: { get: vi.fn() }, relayFocus: () => null }));
 vi.mock("@/lib/perfLog", () => ({
   perfOpId: () => "op-test",
   perfLog: vi.fn(),
@@ -55,14 +55,15 @@ vi.mock("@/hooks/useServerScheduledSends", () => ({
 }));
 
 import {
-  IDLE_POLL_MS, chatsQueryKey, headPollDelay, shareChatPages, useCachedChatPages, useChatList, type ChatListFilter,
+  IDLE_POLL_MS, chatsQueryKey, headPollDelay, prefetchModelChatList, refreshChatHead, shareChatPages, useCachedChatPages,
+  useChatList, type ChatListFilter,
 } from "@/hooks/useChatList";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
 import { flipCachedReadState } from "@/hooks/useAccountStateEvents";
 import { applyCachedReply } from "@/hooks/useInboxRealtime";
 import { patchChatListAfterSend } from "@/hooks/useSendMessage";
 import { setRelayOffset } from "@/lib/ageClock";
-import { relay, type OFChatItem } from "@/lib/relay";
+import { RelayError, chatListRetry, relay, type OFChatItem } from "@/lib/relay";
 import { PLATFORM_KEY, resetPlatformForTests, setPlatform } from "@/lib/platform";
 const relayGet = relay.get as unknown as Mock;
 
@@ -167,8 +168,8 @@ async function renderThreePages(params: Parameters<typeof useChatList>[0] = {}) 
   };
   const h = renderHook(() => useChatList(params), { wrapper });
   await until("page 0", () => h.result.current.data.length === 2);
-  await act(async () => { await h.result.current.loadMore(); });
-  await act(async () => { await h.result.current.loadMore(); });
+  await act(async () => { await h.result.current.loadMore("auto"); });
+  await act(async () => { await h.result.current.loadMore("auto"); });
   await until("pages 0-2", () => h.result.current.data.length === 5);
   relayGet.mockClear();
   return h;
@@ -345,7 +346,7 @@ describe("useChatList periodic refresh", () => {
     expect(chatCalls().map((c) => c.offset)).toEqual([0]);
     await until("head page spliced", () => h.result.current.data[0]?.withUser.id === 11);
     relayGet.mockClear();
-    await act(async () => { await h.result.current.loadMore(); });
+    await act(async () => { await h.result.current.loadMore("auto"); });
     await until("page 3", () => h.result.current.data.some((c) => c.withUser.id === 5));
 
     expect(chatCalls().map((c) => c.offset)).toEqual([75]);
@@ -362,7 +363,7 @@ describe("useChatList periodic refresh", () => {
     };
     const h = renderHook(() => useChatList(), { wrapper });
     await until("3 accounts x page 0", () => h.result.current.data.length === 3);
-    await act(async () => { await h.result.current.loadMore(); });
+    await act(async () => { await h.result.current.loadMore("auto"); });
     await until("3 accounts x 2 pages", () => h.result.current.data.length === 6);
     relayGet.mockClear();
 
@@ -484,7 +485,7 @@ describe("useChatList head poll x useInboxRealtime", () => {
       throw new Error(`unexpected offset ${offset}`);
     };
     relayGet.mockClear();
-    await act(async () => { await h.result.current.loadMore(); });
+    await act(async () => { await h.result.current.loadMore("auto"); });
     expect(chatCalls().map((c) => c.offset)).toEqual([75]);
   });
 
@@ -511,7 +512,7 @@ describe("useChatList head poll x useInboxRealtime", () => {
     });
     const h = renderHook(() => useChatList({ filter: "unread" }), { wrapper });
     await until("page 0", () => h.result.current.hasMore);
-    await act(async () => { await h.result.current.loadMore(); });
+    await act(async () => { await h.result.current.loadMore("auto"); });
     await until("page 1", () => h.result.current.data.some((c) => c.withUser.id === 45));
     const initial = serve;
     relayGet.mockClear();
@@ -522,7 +523,7 @@ describe("useChatList head poll x useInboxRealtime", () => {
     await act(async () => { await h.result.current.refresh(); });
     await until("paging ends after the partial refresh", () => !h.result.current.hasMore);
     expect(chatCalls().map((c) => c.offset)).toEqual([0, 0]);
-    await act(async () => { await h.result.current.loadMore(); });
+    await act(async () => { await h.result.current.loadMore("auto"); });
     expect(chatCalls().map((c) => c.offset)).toEqual([0, 0]);
     expect(h.result.current.data.some((c) => c.withUser.id === 45)).toBe(true);
   });
@@ -628,7 +629,7 @@ describe("useChatList: a filter a Creator's Platform cannot honour reads nothing
 
     act(() => { client.setQueryData(["chatter", "self", "accounts"], [{ account_id: "acct-a", platform: "onlyfans" }]); });
     await until("OnlyFans rows", () => h.result.current.data.length === 1);
-    expect(sent()).toEqual([["/api/of/v2/chats?limit=25&offset=0&order=recent&filter=pinned", { accountId: "acct-a", priority: "user" }]]);
+    expect(sent()).toEqual([["/api/of/v2/chats?limit=25&offset=0&order=recent&filter=pinned", { accountId: "acct-a", priority: "user", caller: "mount" }]]);
     expect(client.getQueryData(["chats", "model", "acct-a", "pinned", null, null, 25])).toBeDefined();
   });
 
@@ -636,7 +637,7 @@ describe("useChatList: a filter a Creator's Platform cannot honour reads nothing
     client.setQueryData(["chatter", "self", "accounts"], [{ account_id: "acct-a" }]);
     const h = renderHook(() => useChatList({ filter: "pinned" }), { wrapper });
     await settle();
-    expect(sent()).toEqual([["/api/of/v2/chats?limit=25&offset=0&order=recent&filter=pinned", { accountId: "acct-a", priority: "user" }]]);
+    expect(sent()).toEqual([["/api/of/v2/chats?limit=25&offset=0&order=recent&filter=pinned", { accountId: "acct-a", priority: "user", caller: "mount" }]]);
     expect(client.getQueryData(["chats", "model", "acct-a", "pinned", null, null, 25])).toBeDefined();
     expect(h.result.current.data.map((c) => c.withUser.id)).toEqual([1]);
   });
@@ -660,7 +661,7 @@ describe("useChatList: a filter a Creator's Platform cannot honour reads nothing
     const qs = new URLSearchParams({ limit: "25", offset: "0", order: "recent" });
     if (filter) qs.set("filter", filter);
     if (listId) qs.set("list_id", listId);
-    expect(sent()).toEqual([[`/api/of/v2/chats?${qs.toString()}`, { accountId: "acct-a", priority: "user" }]]);
+    expect(sent()).toEqual([[`/api/of/v2/chats?${qs.toString()}`, { accountId: "acct-a", priority: "user", caller: "mount" }]]);
     expect(client.getQueryData(chatsQueryKey("model", "acct-a", { filter, listId }))).toBeDefined();
   });
 
@@ -673,7 +674,7 @@ describe("useChatList: a filter a Creator's Platform cannot honour reads nothing
       : { list: [row(4, "2026-08-25T09:00:00Z")], hasMore: false };
     const h = renderHook(() => useChatList({ filter, listId }), { wrapper });
     await until("page 0", () => h.result.current.data.length === 1);
-    await act(async () => { await h.result.current.loadMore(); });
+    await act(async () => { await h.result.current.loadMore("auto"); });
     await until("page 1", () => h.result.current.data.length === 2);
     relayGet.mockClear();
 
@@ -746,7 +747,7 @@ describe("useChatList: a filter a Creator's Platform cannot honour reads nothing
     const qs = new URLSearchParams({ limit: "25", offset: "0", order: "recent" });
     if (filter) qs.set("filter", filter);
     if (listId) qs.set("list_id", listId);
-    expect(sent()).toEqual([[`/api/of/v2/chats?${qs.toString()}`, { accountId: "acct-a", priority: "user" }]]);
+    expect(sent()).toEqual([[`/api/of/v2/chats?${qs.toString()}`, { accountId: "acct-a", priority: "user", caller: "mount" }]]);
     expect(h.result.current.data.map((c) => [c.__accountId, c.withUser.id])).toEqual([["acct-a", 1]]);
   });
 });
@@ -1018,7 +1019,7 @@ async function renderTwoPages() {
     : { list: [unreadRow(8, "2026-08-25T08:00:00Z"), row(7, "2026-08-25T07:00:00Z")], hasMore: false };
   const h = renderHook(() => useChatList(), { wrapper });
   await until("page 0", () => h.result.current.data.length === 2);
-  await act(async () => { await h.result.current.loadMore(); });
+  await act(async () => { await h.result.current.loadMore("auto"); });
   await until("pages 0-1", () => h.result.current.data.length === 4);
   return h;
 }
@@ -1053,7 +1054,7 @@ describe("useChatList commit: a read started before a live write never undoes it
     await until("page 0", () => h.result.current.data.length === 2);
     const srv = manualServe();
     let done = false;
-    void h.result.current.loadMore().finally(() => { done = true; });
+    void h.result.current.loadMore("auto").finally(() => { done = true; });
     await until("page 1 asked", () => srv.asked(25));
     act(() => flipCachedReadState(client, "acct-a", { fanId: 10, unread: false, at: null }));
     srv.answer(25, [row(8, "2026-08-25T08:00:00Z")], false);
@@ -1146,5 +1147,262 @@ describe("useCachedChatPages: another list's entry, subscribed without an observ
     act(() => { client.setQueryData(key, { pages: [{ rows: [], hasMore: false, moreAccounts: [], scanned: 0 }], pageParams: [0] }); });
     expect(h.result.current?.pages[0]).toMatchObject({ rows: [] });
     expect(relayGet).not.toHaveBeenCalled();
+  });
+});
+
+describe("chat-list paging budget, replay cap and caller tags (chatlist-429 01-05)", () => {
+  type Served = { list: OFChatItem[]; hasMore: boolean; split_version?: string };
+  const tagged = () => relayGet.mock.calls
+    .filter((c) => String(c[0]).startsWith("/api/of/v2/chats"))
+    .map((c) => {
+      const ctx = (c[1] ?? {}) as { accountId?: string; caller?: string; intent?: string };
+      return { offset: Number(new URLSearchParams(String(c[0]).split("?")[1]).get("offset")), caller: ctx.caller, intent: ctx.intent };
+    });
+  const at = (offset: number, ids: number[], hasMore = true): Served => ({
+    list: ids.map((id, i) => row(id, `2026-08-25T${String(23 - Math.floor(offset / 25)).padStart(2, "0")}:${String(59 - i).padStart(2, "0")}:00Z`)),
+    hasMore,
+  });
+  function cache(pages: number[][], updatedAt = Date.now() - 60_000) {
+    client.setQueryData(MODEL_KEY, {
+      pages: pages.map((ids) => ({
+        rows: at(0, ids).list.map((c) => ({ ...c, __accountId: "acct-a" })), hasMore: true, moreAccounts: ["acct-a"], scanned: ids.length,
+      })),
+      pageParams: pages.map((_, i) => i * 25),
+    }, { updatedAt });
+  }
+  const SIX = [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12]];
+
+  it("a stale 6-page list re-reads only offsets 0-75; pages 5-6 come from the cache", async () => {
+    cache(SIX);
+    serve = (_a, offset) => at(offset, [offset + 100, offset + 101]);
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("walk landed", () => h.result.current.data[0]?.withUser.id === 100 && !h.result.current.isFetching);
+    expect(tagged()).toEqual([0, 25, 50, 75].map((offset) => ({ offset, caller: "replay", intent: undefined })));
+    expect(h.result.current.pages?.length).toBe(6);
+    expect(h.result.current.data.slice(-4).map((c) => c.withUser.id)).toEqual([9, 10, 11, 12]);
+  });
+
+  it.each([["old", "new"], [undefined, "new"], ["old", undefined], ["same", "same"]])(
+    "replays a split inbox tail only when its version agrees (%s → %s)", async (cachedVersion, freshVersion) => {
+      const cachedRows = new Map([
+        [0, row(7, new Date(Date.now() - 60_000).toISOString())],
+        [3, row(8, "2026-08-25T20:58:00Z")],
+        [4, row(9, "2026-08-25T19:59:00Z")],
+      ]);
+      client.setQueryData(MODEL_KEY, {
+        pages: SIX.map((_, i) => {
+          const cached = cachedRows.get(i);
+          return {
+            rows: cached ? [{ ...cached, __accountId: "acct-a" }] : [],
+            hasMore: true, moreAccounts: ["acct-a"], scanned: 2,
+            splitVersions: cachedVersion ? { "acct-a": cachedVersion } : undefined,
+          };
+        }),
+        pageParams: SIX.map((_, i) => i * 25),
+      }, { updatedAt: Date.now() - 60_000 });
+      serve = (_a, offset) => ({ ...at(offset, [offset + 100]), split_version: freshVersion });
+      const h = renderHook(() => useChatList(), { wrapper });
+      await until("walk landed", () => h.result.current.data.some((c) => c.withUser.id === 100) && !h.result.current.isFetching);
+      const equal = cachedVersion === freshVersion;
+      expect(h.result.current.pages).toHaveLength(equal ? 6 : 4);
+      const cachedIds = h.result.current.data.map((c) => c.withUser.id).filter((id) => Number(id) < 100);
+      expect(cachedIds).toEqual(equal ? [7, 8, 9] : []);
+      expect(h.result.current.hasMore).toBe(true);
+      expect(tagged().map((c) => c.offset)).toEqual([0, 25, 50, 75]);
+    },
+  );
+
+  it("a rank shift between fresh page 1 and cached page 5 shows that fan once, from the fresh page", async () => {
+    cache(SIX);
+    serve = (_a, offset) => (offset === 0 ? at(0, [9, 1]) : at(offset, [offset + 100]));
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("walk landed", () => h.result.current.data[0]?.withUser.id === 9 && !h.result.current.isFetching);
+    const ids = h.result.current.data.map((c) => c.withUser.id);
+    expect(ids.filter((id) => id === 9)).toHaveLength(1);
+    expect(ids).toEqual([9, 1, 125, 150, 175, 10, 11, 12]);
+    expect(h.result.current.pages?.[4].map((c) => c.withUser.id)).toEqual([9, 10]);
+  });
+
+  it.each([1, 3])("keeps every cached row after a head shift of %i", async (shift) => {
+    const original = Array.from({ length: 150 }, (_, i) => i + 1);
+    const inserted = Array.from({ length: shift }, (_, i) => 151 + i);
+    const ranked = [...inserted, ...original];
+    const page = (ids: number[]) => ids.map((id) => row(id, new Date(Date.UTC(2026, 7, 25) - ranked.indexOf(id) * 60_000).toISOString()));
+    client.setQueryData(MODEL_KEY, {
+      pages: Array.from({ length: 6 }, (_, i) => ({
+        rows: page(original.slice(i * 25, (i + 1) * 25)).map((c) => ({ ...c, __accountId: "acct-a" })),
+        hasMore: true, moreAccounts: ["acct-a"], scanned: 25,
+      })),
+      pageParams: [0, 25, 50, 75, 100, 125],
+    }, { updatedAt: Date.now() - 60_000 });
+    serve = (_a, offset) => ({ list: page(ranked.slice(offset, offset + 25)), hasMore: true });
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("walk landed", () => h.result.current.data[0]?.withUser.id === 151 && !h.result.current.isFetching);
+    expect(h.result.current.data.map((c) => c.withUser.id)).toEqual(ranked);
+    expect(tagged().map((c) => c.offset)).toEqual([0, 25, 50, 75]);
+  });
+
+  it("drops replayed Unread pages and restores deep paging by explicit request", async () => {
+    const key = chatsQueryKey("model", "acct-a", { filter: "unread" });
+    const recent = new Date(Date.now() - 60_000).toISOString();
+    client.setQueryData(key, {
+      pages: SIX.map((ids) => ({
+        rows: ids.map((id) => ({ ...row(id, recent), __accountId: "acct-a", unreadMessagesCount: 1 })),
+        hasMore: true, moreAccounts: ["acct-a"], scanned: ids.length,
+      })),
+      pageParams: [0, 25, 50, 75, 100, 125],
+    }, { updatedAt: Date.now() - 60_000 });
+    serve = (_a, offset) => at(offset, [offset + 100]);
+    const h = renderHook(() => useChatList({ filter: "unread" }), { wrapper });
+    await until("walk landed", () => h.result.current.data[0]?.withUser.id === 100 && !h.result.current.isFetching);
+    expect(h.result.current.data.map((c) => c.withUser.id)).toEqual([100, 125, 150, 175]);
+    expect(tagged().map((c) => c.offset)).toEqual([0, 25, 50, 75]);
+    expect(h.result.current.hasMore).toBe(true);
+    await act(async () => { await h.result.current.loadMore("loadmore"); });
+    expect(tagged().at(-1)).toEqual({ offset: 100, caller: "loadmore", intent: "explicit" });
+  });
+
+  it("the hover prefetch of the same stale 6-page list re-reads only offsets 0-75, tagged prefetch", async () => {
+    cache(SIX);
+    serve = (_a, offset) => at(offset, [offset + 100]);
+    await act(async () => { await prefetchModelChatList(client, "acct-a"); });
+    expect(tagged()).toEqual([0, 25, 50, 75].map((offset) => ({ offset, caller: "prefetch", intent: undefined })));
+    expect((client.getQueryData(MODEL_KEY) as { pages: unknown[] }).pages).toHaveLength(6);
+  });
+
+  it("two loadMore in one tick: one offset-25 request, tagged by the call that started it", async () => {
+    serve = (_a, offset) => at(offset, [offset + 1]);
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("page 0", () => h.result.current.data.length === 1 && !h.result.current.isFetching);
+    relayGet.mockClear();
+    await act(async () => {
+      void h.result.current.loadMore("autofill");
+      void h.result.current.loadMore("loadmore");
+    });
+    await until("page 1", () => h.result.current.data.length === 2);
+    expect(tagged()).toEqual([{ offset: 25, caller: "autofill", intent: undefined }]);
+  });
+
+  it("a click during a 3-page replay: 0, 25, 50 once each, then exactly one 75 with explicit intent", async () => {
+    cache([[1], [2], [3]]);
+    const gates: Array<() => void> = [];
+    serve = (_a, offset) => new Promise((r) => gates.push(() => r(at(offset, [offset + 100])))) as unknown as Served;
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("walk out", () => tagged().length === 1);
+    await act(async () => { void h.result.current.loadMore("loadmore"); void h.result.current.loadMore("scroll"); });
+    for (let i = 0; i < 4; i++) {
+      await until(`read ${i}`, () => gates.length > 0);
+      await act(async () => gates.shift()!());
+    }
+    await until("page 4", () => h.result.current.pages?.length === 4 && !h.result.current.isFetching);
+    await settle(10);
+    expect(tagged()).toEqual([
+      ...[0, 25, 50].map((offset) => ({ offset, caller: "replay", intent: undefined })),
+      { offset: 75, caller: "loadmore", intent: "explicit" },
+    ]);
+  });
+
+  it("past the automatic budget only a click or a fresh scroll pages, one page each", async () => {
+    cache([[1], [2], [3], [4]], Date.now());
+    serve = (_a, offset) => at(offset, [offset + 100]);
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("restored", () => h.result.current.pages?.length === 4);
+    for (const caller of ["autofill", "fill", "search", "auto"] as const) {
+      await act(async () => { await h.result.current.loadMore(caller, 0); });
+    }
+    expect(tagged()).toEqual([]);
+    await act(async () => { await h.result.current.loadMore("loadmore", 0); });
+    expect(tagged()).toEqual([{ offset: 100, caller: "loadmore", intent: "explicit" }]);
+    await act(async () => { await h.result.current.loadMore("autofill", 0); });
+    expect(tagged()).toHaveLength(1);
+  });
+
+  it("a clicked deep page that fails once is retried with the same explicit intent", async () => {
+    client.setQueryDefaults(["chats"], { retry: chatListRetry, retryDelay: 0 });
+    focusManager.setFocused(true);
+    cache([[1], [2], [3], [4]], Date.now());
+    let failed = false;
+    serve = (_a, offset) => {
+      if (offset === 100 && !failed) { failed = true; throw new RelayError(502, { detail: "upstream 500" }); }
+      return at(offset, [offset + 100]);
+    };
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("restored", () => h.result.current.pages?.length === 4);
+    await act(async () => { void h.result.current.loadMore("loadmore", 0); });
+    await until("page 5", () => h.result.current.pages?.length === 5);
+    focusManager.setFocused(undefined);
+    expect(tagged()).toEqual([0, 1].map(() => ({ offset: 100, caller: "loadmore", intent: "explicit" })));
+  });
+
+  it.each<[number, number, boolean]>([[1, 25, true], [2, 7, true], [2, 8, false], [3, 0, true]])(
+    "automatic paging with %i pages and %i rows on screen: asks the next page %s", async (pages, visible, asks) => {
+      cache(Array.from({ length: pages }, (_, i) => [i + 1]), Date.now());
+      serve = (_a, offset) => at(offset, [offset + 100]);
+      const h = renderHook(() => useChatList(), { wrapper });
+      await until("restored", () => h.result.current.pages?.length === pages);
+      await act(async () => { await h.result.current.loadMore("autofill", visible); });
+      expect(tagged().length).toBe(asks ? 1 : 0);
+    },
+  );
+
+  it.each([428, 429])("All Models: a %i from one Creator fails the page; nothing partial is committed and paging stays open", async (status) => {
+    mockScope = { kind: "all" };
+    mockAccounts = [{ id: "acct-a" }, { id: "acct-b" }];
+    serve = (aid, offset) => {
+      if (offset > 0 && aid === "acct-b") throw new RelayError(status, {});
+      return { list: [{ ...row(aid === "acct-a" ? 10 + offset : 20 + offset, "2026-08-25T10:00:00Z"), __accountId: aid } as OFChatItem], hasMore: offset === 0 };
+    };
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("page 0", () => h.result.current.data.length === 2 && !h.result.current.isFetching);
+    await act(async () => { await h.result.current.loadMore("loadmore").catch(() => {}); });
+    await until("failed", () => h.result.current.isError);
+    expect(h.result.current.pages?.length).toBe(1);
+    expect(h.result.current.hasMore).toBe(true);
+  });
+
+  it("a cold mount is tagged mount, the head poll poll", async () => {
+    serve = (_a, offset) => at(offset, [1], false);
+    renderHook(() => useChatList(), { wrapper });
+    await until("page 0", () => tagged().length === 1);
+    await settle(POLL_MS);
+    await until("poll", () => tagged().length === 2);
+    expect(tagged().map((c) => c.caller)).toEqual(["mount", "poll"]);
+  });
+
+  it("warm-up refreshes each populated view head with its own request parameters", async () => {
+    cache([[1], [2]], Date.now());
+    const filtered = chatsQueryKey("model", "acct-a", { filter: "unread", limit: 20, order: "old" });
+    client.setQueryData(filtered, client.getQueryData(MODEL_KEY));
+    const inactive = Array.from({ length: 30 }, (_, i) => chatsQueryKey("model", "acct-a", { query: `search-${i}` }));
+    for (const key of inactive) client.setQueryData(key, client.getQueryData(MODEL_KEY));
+    renderHook(() => useChatList(), { wrapper });
+    renderHook(() => useChatList({ filter: "unread", limit: 20, order: "old" }), { wrapper });
+    await refreshChatHead(client, { kind: "model", accountId: "acct-a" }, [{ id: "acct-a" }]);
+    expect(chatCalls()).toEqual([
+      expect.objectContaining({ offset: 0, filter: null }),
+      expect.objectContaining({ offset: 0, filter: "unread" }),
+    ]);
+    expect(relayGet.mock.calls[1][0]).toContain("limit=20&offset=0&order=old");
+    expect(inactive.every((key) => client.getQueryState(key)?.isInvalidated)).toBe(true);
+    expect((client.getQueryData(filtered) as { pages: unknown[] }).pages).toHaveLength(2);
+  });
+
+  it("the warm-up head refresh waits for a walk already out, then reads offset 0 once, tagged warmup", async () => {
+    cache([[1], [2]]);
+    const gates: Array<() => void> = [];
+    serve = (_a, offset) => new Promise((r) => gates.push(() => r(at(offset, [offset + 100])))) as unknown as Served;
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("walk out", () => tagged().length === 1);
+    let done = false;
+    void refreshChatHead(client, { kind: "model", accountId: "acct-a" }, [{ id: "acct-a" }]).then(() => { done = true; });
+    await act(async () => gates.shift()!());
+    await until("read 25", () => gates.length > 0);
+    expect(tagged().filter((c) => c.caller === "warmup")).toEqual([]);
+    serve = (_a, offset) => at(offset, [999]);
+    await act(async () => gates.shift()!());
+    await until("head refreshed", () => done);
+    await settle();
+    expect(tagged().map((c) => [c.offset, c.caller])).toEqual([[0, "replay"], [25, "replay"], [0, "warmup"]]);
+    expect(h.result.current.data.map((c) => c.withUser.id)).toEqual([999, 125]);
   });
 });

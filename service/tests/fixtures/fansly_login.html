@@ -1,0 +1,93 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fansly (local fake)</title>
+<style>
+  .btn, .tab { display: inline-block; padding: 6px 12px; cursor: pointer; border: 1px solid #888; }
+  label, input { display: block; margin: 4px 0; }
+  #age-gate { position: fixed; inset: 0; background: rgba(0,0,0,.8); z-index: 10; }
+  #cookies { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; z-index: 11; }
+</style>
+</head>
+<body>
+<div id="age-gate"><p>Adult Content Warning</p><div class="btn" id="age-leave">Leave</div> <div class="btn" id="age-enter">Enter</div></div>
+<div id="cookies">We use cookies <div class="btn" id="ck-essential">Essential Only</div> <div class="btn">Accept All</div></div>
+<header><div class="btn" id="nav-login">Login</div></header>
+
+<div id="modal" hidden>
+  <div class="tabs"><div class="tab" id="tab-signup">Sign up now</div> | <div class="tab" id="tab-login">Login</div></div>
+
+  <div id="pane-signup">
+    <label>Email <input type="email" name="email"></label>
+    <label>Username <input type="text" name="username"></label>
+    <label>Password <input type="password" name="password"></label>
+    <div class="btn">Join Fansly</div>
+  </div>
+
+  <div id="pane-login" hidden>
+    <label for="login-user">Username or email</label>
+    <input id="login-user" type="text">
+    <label for="login-pw">Password</label>
+    <input id="login-pw" type="password">
+    <a href="#forgot">Forgot password?</a>
+    <div class="btn" id="sign-in">Sign In</div>
+    <div id="login-err" role="alert"></div>
+  </div>
+
+  <form id="pane-otp" hidden>
+    <p>Two-factor authentication: enter the code from your app</p>
+    <input name="code" autocomplete="one-time-code" inputmode="numeric">
+    <button type="submit">Verify</button>
+    <div id="otp-err" role="alert"></div>
+  </form>
+</div>
+
+<main id="home" hidden>Welcome back</main>
+
+<script>
+  const CFG = __CFG__;
+  const $ = (id) => document.getElementById(id);
+  const show = (id, on) => { $(id).hidden = !on; };
+  const tab = (login) => { show("pane-login", login); show("pane-signup", !login); };
+
+  $("age-enter").onclick = () => $("age-gate").remove();
+  if (CFG.blockedGate) $("age-enter").style.pointerEvents = "none";
+  $("ck-essential").onclick = () => $("cookies").remove();
+  $("nav-login").onclick = () => { show("modal", true); tab(false); };
+  $("tab-login").onclick = () => tab(true);
+  $("tab-signup").onclick = () => tab(false);
+  if (CFG.preopened) { show("modal", true); tab(true); }
+
+  function finish() {
+    localStorage.setItem("session_active_session",
+      '{"id":' + CFG.sessionId + ',"accountId":' + CFG.accountId + ',"deviceId":null,'
+      + '"token":"' + CFG.token + '","metadata":"{}"}');
+    localStorage.setItem("device_device_id", JSON.stringify(CFG.deviceId));
+    show("modal", false);
+    show("home", true);
+  }
+
+  $("sign-in").onclick = () => {
+    if ($("age-gate") || $("cookies")) {
+      $("login-err").textContent = "Invalid login: gates still active.";
+      return;
+    }
+    if ($("login-user").value !== CFG.user || $("login-pw").value !== CFG.password) {
+      $("login-err").textContent = "Invalid username or password.";
+      return;
+    }
+    if (CFG.otp) { show("pane-login", false); show("pane-otp", true); return; }
+    finish();
+  };
+
+  $("pane-otp").onsubmit = (e) => {
+    e.preventDefault();
+    const field = $("pane-otp").elements.code;
+    if (field.value === CFG.otp) { finish(); return; }
+    field.value = "";
+    $("otp-err").textContent = "That code is not right.";
+  };
+</script>
+</body>
+</html>

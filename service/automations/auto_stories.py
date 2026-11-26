@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timedelta
 
 import automation_executor as ax
+import send_tripwire
 import media_cotag
 import platforms
 from side_effect_gate import PLATFORM_LACKS_PREFIX
@@ -55,6 +56,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     if platforms.refusal_for_account(account_id, "post_story_from_url"):
         return {"status": "skipped", "reason": f"{PLATFORM_LACKS_PREFIX}post_story_from_url"}
     payload = payload or {}
+    if not payload.get("dry_run"):
+        send_tripwire.check("create_story")
 
     folder_id = payload.get("media_folder_id")
     if folder_id is None:

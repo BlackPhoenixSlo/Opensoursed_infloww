@@ -100,5 +100,33 @@ them; `service/.env.example` lists every variable with empty values.
 After it's up, open the URL and connect an OnlyFans account by capturing your
 session with the Chrome extension in `loginExtensionMulti/` (see its README).
 
+## Phone alerts when the server is in trouble (Telegram)
+
+A small watchdog runs on the server every 3 minutes and messages you only when
+something changes: site down, container unhealthy, disk filling, CPU throttled
+by the host, and again when it recovers. Run these from your laptop (repo
+checked out, root SSH to the server works):
+
+1. In Telegram, talk to **@BotFather**, send `/newbot`, copy the token it gives you.
+2. Install the watchdog (put your own site and container names):
+   ```bash
+   scripts/watchdog.sh root@<server-ip> install --url https://you.duckdns.org/
+   ```
+   Leave out `--containers "a b"` to watch every container running right now.
+3. Connect Telegram:
+   ```bash
+   scripts/watchdog.sh root@<server-ip> telegram
+   ```
+   Paste the token and wait for the prompt. Open your new bot, press **Start**
+   and send it `hi`. Confirm the chat shown in the terminal to send a
+   Telegram test alert. It prints `✅ delivered` or `❌ not delivered`.
+
+Run `scripts/watchdog.sh root@<server-ip> status` to see the probe settings,
+masked channel settings, and last five alert log lines. Use `… test` to test
+all configured channels and `… install --url …` to change what is watched.
+WhatsApp (`… whatsapp`) and a JSON webhook (`… webhook`, requires `jq` on the
+server) each test their own channel during setup.
+Settings live in `/root/fastt/watchdog.env` on the server.
+
 Two boxes (a primary plus a backup/standby, with hourly backups, a daily Google
 Drive copy, a boot fence, and failover/failback steps): see [`docs/two-box.md`](../docs/two-box.md).

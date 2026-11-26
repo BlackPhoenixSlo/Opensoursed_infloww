@@ -28,11 +28,12 @@ interface FanslySessionBody {
   make_active?: boolean;
 }
 
-export default function FanslyPasteSessionCard({ onLinked, initialNickname = "", formId, expectedAccountId }: {
+export default function FanslyPasteSessionCard({ onLinked, initialNickname = "", formId, expectedAccountId, onBusy }: {
   onLinked?: (accountId: string) => void;
   initialNickname?: string;
   formId?: string;
   expectedAccountId?: string;
+  onBusy?: (busy: boolean) => void;
 } = {}) {
   const qc = useQueryClient();
   const [blob, setBlob] = useState("");
@@ -100,6 +101,7 @@ export default function FanslyPasteSessionCard({ onLinked, initialNickname = "",
     };
     if (nickname.trim()) body.nickname = nickname.trim();
 
+    onBusy?.(true);
     try {
       const data = await connectM.mutateAsync(body);
       setResult({
@@ -123,6 +125,8 @@ export default function FanslyPasteSessionCard({ onLinked, initialNickname = "",
           `${e.status === 400 ? FANSLY_T.accountInfoError : FANSLY_T.loginFailed}\n\n${e.status} FAILED\n\n` +
           (typeof e.body === "string" ? e.body : typeof detail === "string" ? detail : JSON.stringify(e.body, null, 2)),
       });
+    } finally {
+      onBusy?.(false);
     }
   }
 

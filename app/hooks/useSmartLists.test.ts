@@ -15,12 +15,12 @@ afterEach(() => getSpy.mockReset());
 describe("resolveSmartLists", () => {
   it("resolves each list once and de-dupes across them", async () => {
     getSpy.mockImplementation(async (path: string) => ({ fan_ids: RESOLVE_MAP[path] ?? [] }));
-    expect(await resolveSmartLists(new Set([1, 2]))).toEqual([10, 11, 12, 13]);
+    expect(await resolveSmartLists(new Set([1, 2]), "7")).toEqual([10, 11, 12, 13]);
     expect(getSpy.mock.calls.map(([p]) => p).sort()).toEqual(Object.keys(RESOLVE_MAP));
   });
 
   it("short-circuits the empty set", async () => {
-    expect(await resolveSmartLists(new Set())).toEqual([]);
+    expect(await resolveSmartLists(new Set(), "7")).toEqual([]);
     expect(getSpy).not.toHaveBeenCalled();
   });
 });

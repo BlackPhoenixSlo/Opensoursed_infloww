@@ -955,6 +955,9 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                      tagged_users: Any = None, giphy_id: str | None = None,
                      auto_tag: bool = False, _broadcast: bool = False,
                      **_ignored: Any) -> dict:
+        if _os.environ.get("OI_CELL_MAP"):
+            import send_tripwire
+            send_tripwire.check("fansly.send_message")
         if not _broadcast:
             text = _guard_outbound(text)
         # A broadcast group id is freshly minted and in no DM listing: take it as-is
@@ -1713,6 +1716,9 @@ class FanslyShimClient(VaultMixin, FanslyClient):
 
     def create_post(self, text: str = "", *, media_files: Any = None,
                     scheduled_for: Any = None, **_ignored: Any) -> dict:
+        if _os.environ.get("OI_CELL_MAP"):
+            import send_tripwire
+            send_tripwire.check("fansly.create_post")
         # scheduledFor is MILLISECONDS here (seconds in the message lane): a seconds value reads as 1970 and posts immediately
         text = _guard_outbound(text)
         wall_id = self._main_wall_id()
@@ -1881,6 +1887,9 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                           exclude_lists: Any = None, tier_id: Any = None,
                           confirm_live_broadcast: bool = False,
                           **_ignored: Any) -> dict:
+        if _os.environ.get("OI_CELL_MAP"):
+            import send_tripwire
+            send_tripwire.check("fansly.send_mass_message")
         include_lists = [i for i in (include_lists or []) if i]
         exclude_lists = [i for i in (exclude_lists or []) if i]
         if not confirm_live_broadcast:

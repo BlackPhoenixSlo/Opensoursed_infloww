@@ -67,7 +67,7 @@ export function useSaveLifecycleMessageConfig(accountId: string | null, kind: Li
   const qc = useQueryClient();
   return useMutation<{ account_id: string; config: LifecycleMessageConfig }, Error, Partial<LifecycleMessageConfig>>({
     mutationFn: (config) =>
-      relay.put(`/admin/lifecycle-message-config`, { account_id: accountId, kind, config }),
+      relay.put(`/admin/lifecycle-message-config`, { account_id: accountId, kind, config }, { cellAccountId: accountId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: [KEY, accountId, kind] });
       qc.invalidateQueries({ queryKey: ["automation-rules", accountId] });

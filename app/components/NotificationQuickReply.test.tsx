@@ -59,7 +59,7 @@ describe("QuickReplyField", () => {
   const failOnce = (text: string) => {
     const failure = { reason: "Fan blocked you" };
     send.mockImplementationOnce(async () => {
-      sendStash.set(-1, { input: { text }, files: [] });
+      sendStash.set(-1, { input: { text }, opId: "op", files: [] });
       return { tempId: -1, failure, settled: Promise.resolve({ sent: false, failure }) };
     });
   };

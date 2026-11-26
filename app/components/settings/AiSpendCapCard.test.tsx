@@ -44,7 +44,7 @@ describe("AiSpendCapCard", () => {
     fireEvent.click(saveBtn());
     await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(1));
     expect(relayPut.mock.calls[0]).toEqual(["/admin/account-config",
-      { account_id: "acc1", config: { ...CONFIG, daily_cost_cap_cents: 550 } }]);
+      { account_id: "acc1", config: { ...CONFIG, daily_cost_cap_cents: 550 } }, { cellAccountId: "acc1" }]);
   });
 
   it("refuses more than 2 decimals and over $100, and says 0 pauses paid model calls, not TypeSafe", async () => {

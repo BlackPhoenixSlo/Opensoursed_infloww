@@ -1,3 +1,5 @@
+import type { ListCaller } from "@/hooks/chatListLoadMore";
+import { cellMode } from "@/lib/cellFlag";
 import { resolveShareToken } from "@/lib/shareToken";
 import { admissible, initialSchedule, scheduleReducer, type Action as ScheduleAction } from "@/lib/relaySchedule";
 import { takeInline } from "@/lib/inlineBoot";
@@ -5,6 +7,8 @@ import {
   abortable, prefetchScreen, screenJoin, screenRead, screenSettled,
 } from "@/lib/screenBundle";
 import { withQuery, type Screen } from "@/lib/screenKey";
+import { accountOf, routeOf } from "@/lib/cellRoute";
+import { fetchRenewing } from "@/lib/actorRenew";
 import type { GiphyResponse } from "./relayTypes";
 export type * from "./relayTypes";
 export { SALARY_FREQUENCIES, toChoice } from "./relayTypes";
@@ -66,9 +70,15 @@ export interface RelayContext {
   shareToken?: string | null;
   employeeId?: number | null;
   accountId?: string | null;
+  cellAccountId?: string | null;
+  cellId?: string | null;
   priority?: "user" | "background";
   unqueued?: boolean;
   maxAge?: number;
+  caller?: ListCaller;
+  intent?: "explicit";
+  opId?: string;
+  opPart?: number;
 }
 
 
@@ -88,7 +98,13 @@ function buildHeaders(init?: RequestInit, ctx?: RelayContext): Headers {
   if (!headers.has("Accept")) headers.set("Accept", "application/json");
   if (ctx?.employeeId != null) headers.set("X-Employee-Id", String(ctx.employeeId));
   if (ctx?.accountId) headers.set("X-Account-Id", String(ctx.accountId));
+  if (ctx?.cellAccountId && !ctx.accountId && cellMode()) headers.set("X-Account-Id", ctx.cellAccountId);
+  if (ctx?.cellId) headers.set("X-Cell-Id", ctx.cellId);
   if (ctx?.priority === "background") headers.set("X-Priority", "background");
+  if (ctx?.caller) headers.set("X-List-Caller", ctx.caller);
+  if (ctx?.intent) headers.set("X-List-Intent", ctx.intent);
+  if (ctx?.opId) headers.set("X-Op-Id", ctx.opId);
+  if (ctx?.opId && ctx.opPart) headers.set("X-Op-Part", String(ctx.opPart));
   // FormData: the browser must set Content-Type itself for the multipart boundary.
   if (init?.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
@@ -155,6 +171,51 @@ export function isRateLimited(error: unknown): boolean {
   return error instanceof RelayError && (error.status === 429 || error.upstreamStatus === 429);
 }
 
+export function isDeepRefused(error: unknown): boolean {
+  return error instanceof RelayError && error.status === 428;
+}
+
+export function chatListRetry(failures: number, error: unknown): boolean {
+  return failures < 1 && !isDeepRefused(error) && !isRateLimited(error);
+}
+
+export const STALE_CELL_GEN_EVENT = "infloww:stale-cell-gen";
+
+export { cellMode };
+
+const cellGens = new Map<string, string>();
+
+export function resetCellGens(): void {
+  cellGens.clear();
+}
+
+function routed(url: string, headers: Headers, method: string): string | null {
+  const account = accountOf(url, headers);
+  if (cellMode() && routeOf(url, headers) === null) {
+    throw new RelayError(400, { detail: { error: "account_required", path: url } },
+      `account_required: ${method} ${url.split("?")[0]} names no Creator or Cell`);
+  }
+  const gen = account && method !== "GET" && method !== "HEAD" ? cellGens.get(account) : undefined;
+  if (gen && !headers.has("X-Cell-Gen")) headers.set("X-Cell-Gen", gen);
+  return account;
+}
+
+async function cellAware<T>(account: string | null, r: Response): Promise<T> {
+  const gen = r.headers.get("X-Cell-Gen");
+  if (account && gen) cellGens.set(account, gen);
+  try {
+    return await parseResponse<T>(r);
+  } catch (e) {
+    const d = (e as RelayError).body as { detail?: { error?: unknown } } | null;
+    if (account && e instanceof RelayError && e.status === 409 && d?.detail?.error === "stale_cell_gen") {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent<{ accountId: string }>(STALE_CELL_GEN_EVENT, { detail: { accountId: account } }));
+      }
+    }
+    throw e;
+  }
+}
+
 let schedule = initialSchedule;
 let nextJobId = 1;
 const admitted = new Map<number, () => void>();
@@ -214,14 +275,15 @@ export async function request<T = unknown>(
 ): Promise<T> {
   const url = buildUrl(path, ctx, opts);
   const headers = buildHeaders(init, ctx);
+  const method = (init?.method ?? "GET").toUpperCase();
+  const account = routed(url, headers, method);
   // Creator-scoped calls share a URL, and Chrome's per-URL cache lock serialises parallel GETs (measured 20 calls: 4.2 s vs 0.29 s); no-store skips the lock.
   const scoped = headers.has("X-Account-Id");
   const cache = scoped ? "no-store" : undefined;
-  const method = (init?.method ?? "GET").toUpperCase();
   const local = method === "GET" && !headers.has("X-Employee-Id");
-  const read = local ? screenRead(url, ctx?.accountId ?? null) : null;
+  const read = local && ctx?.intent !== "explicit" && !cellMode() ? screenRead(url, ctx?.accountId ?? null) : null;
   if (read) {
-    const o = await screenJoin(read, bundleGet, init?.signal);
+    const o = await screenJoin(read, (p, ms) => bundleGet(p, ms, ctx?.caller), init?.signal);
     if (o.kind === "body") return o.body as T;
     if (o.kind === "error") {
       return parseResponse<T>(new Response(JSON.stringify({ detail: o.detail }), { status: o.status }));
@@ -236,30 +298,38 @@ export async function request<T = unknown>(
   const release = bgRead ? await admitBackground(ctx?.accountId ?? null, init?.signal, read != null) : null;
   try {
     const priority = FETCH_PRIORITY ? { priority: background ? "low" : "high" } as RequestInit : undefined;
-    return await parseResponse<T>(await fetch(url, { cache, ...priority, ...init, headers, credentials: "same-origin" }));
+    const send = cellMode() ? fetchRenewing : fetch;
+    return await cellAware<T>(account, await send(url, { cache, ...priority, ...init, headers, credentials: "same-origin" }));
   } finally {
     release?.();
   }
 }
 
-function bundleGet(p: string, timeoutMs: number): Promise<unknown> {
+function bundleGet(p: string, timeoutMs: number, caller?: ListCaller): Promise<unknown> {
   const f = relayFocus();
-  return request(f ? withQuery(p, { focus: f }) : p, { method: "GET", signal: AbortSignal.timeout(timeoutMs) }).then(
+  return request(
+    f ? withQuery(p, { focus: f }) : p, { method: "GET", signal: AbortSignal.timeout(timeoutMs) }, { caller },
+  ).then(
     (body) => { dispatchSchedule({ type: "reserve", on: false }); return body; },
     (e: unknown) => { dispatchSchedule({ type: "reserve", on: true }); throw e; },
   );
 }
 
 export function prefetchScreenBundle(s: Screen): Promise<unknown> {
+  if (cellMode() && s.kind !== "chat") return Promise.resolve(null);
   return prefetchScreen(s, bundleGet);
 }
 
 export async function relayFile(path: string, ctx?: RelayContext, body?: unknown): Promise<{ blob: Blob; name: string | null }> {
   const init: RequestInit = body === undefined ? {} : { method: "POST", body: JSON.stringify(body) };
-  const r = await fetch(buildUrl(path, ctx), {
-    ...init, headers: buildHeaders({ ...init, headers: { Accept: "*/*" } }, ctx), credentials: "same-origin",
-  });
-  if (!r.ok) return parseResponse<never>(r);
+  const url = buildUrl(path, ctx);
+  const headers = buildHeaders({ ...init, headers: { Accept: "*/*" } }, ctx);
+  const account = routed(url, headers, init.method ?? "GET");
+  const send = cellMode() ? fetchRenewing : fetch;
+  const r = await send(url, { ...init, headers, credentials: "same-origin" });
+  if (!r.ok) return cellAware<never>(account, r);
+  const gen = r.headers.get("X-Cell-Gen");
+  if (account && gen) cellGens.set(account, gen);
   if (/json/i.test(r.headers.get("content-type") ?? "")) throw new RelayError(r.status, await r.text(), "no file in the answer");
   const name = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(r.headers.get("content-disposition") ?? "")?.[1] ?? null;
   return { blob: await r.blob(), name: name && decodeURIComponent(name) };

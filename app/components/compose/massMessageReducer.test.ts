@@ -450,3 +450,24 @@ it("records a resolved launch without reseeding the same sender", () => {
     type: "seedExclude", accountId: "saved", listId: "exclude",
   }).excludes.size).toBe(0);
 });
+
+describe("one op id per broadcast", () => {
+  const gif = { id: "g1", title: "g" } as MassForm["pickedGifs"][number];
+  const minted = run(initMassForm("a"), { type: "field", k: "text", v: "hi" }, { type: "addGif", gif },
+    { type: "opMinted", id: "op1" });
+  it.each<[string, MassAction[], string | null]>([
+    ["kept when the GIF picker opens", [{ type: "field", k: "gifPickerOpen", v: true }], "op1"],
+    ["kept when the same GIF is picked again", [{ type: "addGif", gif }], "op1"],
+    ["kept on a no-op field", [{ type: "field", k: "text", v: "hi" }], "op1"],
+    ["new op after the text changes", [{ type: "field", k: "text", v: "hey" }], null],
+    ["new op after a GIF is removed", [{ type: "removeGif", id: "g1" }], null],
+    ["new op after the audience changes", [{ type: "toggleInclude", id: "fans" }], null],
+  ])("%s", (_n, actions, want) => {
+    expect(run(minted, ...actions).opId).toBe(want);
+  });
+  it("a locked form keeps its op", () => {
+    const locked = run(minted, { type: "results", v: [{ accountId: "a", ok: true }] });
+    expect(run(locked, { type: "field", k: "text", v: "changed" }).opId).toBe("op1");
+    expect(run(locked, { type: "discardResults" }).opId).toBeNull();
+  });
+});

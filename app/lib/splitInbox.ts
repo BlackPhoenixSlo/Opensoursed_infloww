@@ -48,10 +48,20 @@ export const splitInboxQueryOptions = (accountId: string | null) =>
     refetchOnWindowFocus: false,
   });
 
+export interface SplitInboxEdits {
+  account_ids: string[];
+  group_count?: number;
+  chatter_groups?: Record<string, number | null>;
+  assignments?: Record<string, number>;
+  as_default?: boolean;
+}
+
 export type InboxSplit =
   | { status: "pending" }
   | { status: "error" }
   | { status: "success"; config: SplitInboxConfig };
+
+export type SplitRead = InboxSplit & { myGroup: number | null };
 
 export type InboxVerdict = "in" | "out" | "held";
 
@@ -62,7 +72,7 @@ export interface InboxGate {
 }
 
 export function inboxGate(
-  picks: Readonly<Record<string, number>>,
+  picks: Readonly<Record<string, number | null>>,
   splits: ReadonlyMap<string, InboxSplit>,
 ): InboxGate {
   const pending = new Set<string>();
@@ -78,15 +88,10 @@ export function inboxGate(
     if (!Object.hasOwn(picks, aid)) return "in";
     const config = configs.get(aid);
     if (!config) return "held";
-    return groupOf(fanId, config) === picks[aid] ? "in" : "out";
+    const group = picks[aid];
+    return group != null && groupOf(fanId, config) === group ? "in" : "out";
   };
   return { of, pending, failed };
-}
-
-export interface ScopeSplit {
-  config: SplitInboxConfig | null;
-  myGroup: number | null;
-  failed?: boolean;
 }
 
 export interface InboxScope {
@@ -98,27 +103,22 @@ export interface InboxScope {
   failed: ReadonlySet<string>;
 }
 
-export function inboxScope(splits: ReadonlyMap<string, ScopeSplit>, picked: number | null): InboxScope {
-  const all = [...splits.values()];
-  const loaded = all.flatMap((s) => (s.config ? [s.config] : []));
+export function inboxScope(splits: ReadonlyMap<string, SplitRead>, picked: number | null): InboxScope {
+  const loaded = [...splits.values()].flatMap((s) => (s.status === "success" ? [s.config] : []));
   const groupCount = Math.max(1, ...loaded.map((c) => c.group_count));
-  const locks = all.map((s) => lockedGroup(s.config, s.myGroup));
-  const locked = locks.length > 0 && locks.every((g) => g != null && g === locks[0]) ? locks[0] : null;
+  const locks = [...splits].map(([aid, s]) =>
+    [aid, lockedGroup(s.status === "success" ? s.config : null, s.myGroup)] as const);
+  const first = locks[0]?.[1] ?? null;
+  const locked = locks.every(([, g]) => g === first) ? first : null;
   const selected = locked ?? picked;
-  const picks: Record<string, number> = {};
-  const reads = new Map<string, InboxSplit>();
-  const conflicts = new Set<string>();
-  for (const [aid, split] of splits) {
-    const lock = lockedGroup(split.config, split.myGroup);
-    if (selected != null && lock != null && lock !== selected) conflicts.add(aid);
+  const picks: Record<string, number | null> = {};
+  for (const [aid, lock] of locks) {
     const group = selected ?? lock;
-    if (group != null) picks[aid] = group;
-    reads.set(aid, split.config
-      ? { status: "success", config: split.config }
-      : { status: split.failed ? "error" : "pending" });
+    if (group != null) picks[aid] = lock == null || lock === group ? group : null;
   }
-  const gate = inboxGate(picks, reads);
-  const of = Object.keys(picks).length === 0 ? null : (aid: string, fanId: FanId) =>
-    !conflicts.has(aid) && (picked == null || reads.has(aid)) && gate.of(aid, fanId) === "in";
-  return { groupCount, locked, of, allLoaded: loaded.length === all.length, pending: gate.pending, failed: gate.failed };
+  const gate = inboxGate(picks, splits);
+  const of = Object.keys(picks).length === 0
+    ? null
+    : (aid: string, fanId: FanId) => splits.has(aid) && gate.of(aid, fanId) === "in";
+  return { groupCount, locked, of, allLoaded: loaded.length === splits.size, pending: gate.pending, failed: gate.failed };
 }

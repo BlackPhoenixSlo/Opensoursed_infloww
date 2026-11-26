@@ -9,15 +9,20 @@ import { relay, RelayError } from "@/lib/relay";
 import { EditorFooter } from "@/components/ui/ifModal";
 import { IfButton, IfHelp, IfInput, IfLabel } from "@/components/ui/infloww";
 import {
-  jobPath, STATE_TEXT, TERMINAL, type RemoteLoginStatus,
+  jobPath, stateText, TERMINAL, type RemoteLoginStatus,
 } from "@/components/setup/remoteLogin";
 import { OtpCodeForm } from "@/components/setup/RemoteLoginOtp";
 import { useReportBusy } from "@/components/setup/useReportBusy";
 import { BRAND_NAME } from "@/lib/brand";
+import { DEFAULT_PLATFORM, PLATFORM_NAME, type Platform } from "@/lib/platform";
 
 export type { RemoteLoginStatus };
 
 const BB_FORM_ID = "browser-login-form";
+const LOGIN_ID: Record<Platform, { label: string; type: "email" | "text"; bindsProxy: boolean }> = {
+  onlyfans: { label: "email", type: "email", bindsProxy: true },
+  fansly: { label: "username or email", type: "text", bindsProxy: false },
+};
 
 const LOST = "the relay lost this login (it restarted, or the login expired). Try again.";
 const isLost = (e: unknown) => e instanceof RelayError && e.status === 404;
@@ -31,13 +36,22 @@ function attachedText(s: RemoteLoginStatus) {
   return "No proxy was attached.";
 }
 
-export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", keepProxy = false, active = true, onBusy }: {
+export default function BrowserbaseLoginCard({
+  onLinked, initialNickname = "", keepProxy = false, active = true, onBusy, platform = DEFAULT_PLATFORM, expectedAccountId,
+}: {
   onLinked?: (accountId: string) => void;
   initialNickname?: string;
   keepProxy?: boolean;
   active?: boolean;
   onBusy?: (running: boolean) => void;
+  platform?: Platform;
+  expectedAccountId?: string;
 }) {
+  const site = PLATFORM_NAME[platform];
+  const loginId = LOGIN_ID[platform];
+  const isDefault = platform === DEFAULT_PLATFORM;
+  const ids = isDefault ? "bb" : `bb-${platform}`;
+  const formId = isDefault ? BB_FORM_ID : `${BB_FORM_ID}-${platform}`;
   const qc = useQueryClient();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -53,6 +67,8 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
     mutationFn: async () => {
       const job = await relay.post<RemoteLoginStatus>("/admin/login/remote/start", {
         email: email.trim(), password, backend: "browserbase",
+        platform: isDefault ? undefined : platform,
+        ...(expectedAccountId === undefined ? {} : { expected_account_id: expectedAccountId }),
         proxy: keepProxy ? "none" : undefined,
         nickname: initialNickname.trim() || undefined,
       });
@@ -66,7 +82,10 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
       failingSinceRef.current = null;
       setJobId(job.id);
     },
-    onError: (e) => setErr(`Couldn't start the login: ${e.message}`),
+    onError: (e) => {
+      setErr(`Couldn't start the login: ${e.message}`);
+      onBusy?.(false);
+    },
   });
 
   const statusQ = useQuery<RemoteLoginStatus>({
@@ -96,7 +115,7 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
   useEffect(() => {
     runningJobRef.current = running ? jobId : null;
   }, [running, jobId]);
-  useReportBusy(running, onBusy);
+  useReportBusy(startM.isPending || running, onBusy);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -135,27 +154,27 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
   return (
     <div className="space-y-4">
       <IfHelp className="mt-0 text-[14px] leading-[22px]">
-        {keepProxy ? "Keeps its current proxy." : "Proxy assigned automatically (an account already on one keeps it). You can add yours after linking."}
+        {!loginId.bindsProxy ? `${site} traffic after login uses the server IP.` : keepProxy ? "Keeps its current proxy." : "Proxy assigned automatically (an account already on one keeps it). You can add yours after linking."}
       </IfHelp>
 
       {!running && !done && (
         <form
-          id={BB_FORM_ID} className="space-y-4"
-          onSubmit={(e) => { e.preventDefault(); if (canStart) startM.mutate(); }}
+          id={formId} className="space-y-4"
+          onSubmit={(e) => { e.preventDefault(); if (active && canStart) { onBusy?.(true); startM.mutate(); } }}
         >
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             <div>
-              <IfLabel htmlFor="bb-email">OnlyFans email</IfLabel>
+              <IfLabel htmlFor={`${ids}-email`}>{`${site} ${loginId.label}`}</IfLabel>
               <IfInput
-                id="bb-email" type="email" inputMode="email" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                id={`${ids}-email`} type={loginId.type} inputMode="email" autoCapitalize="none" autoCorrect="off" spellCheck={false}
                 value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="off" placeholder="creator@example.com"
                 className="w-full"
               />
             </div>
             <div>
-              <IfLabel htmlFor="bb-password">OnlyFans password</IfLabel>
+              <IfLabel htmlFor={`${ids}-password`}>{site} password</IfLabel>
               <IfInput
-                id="bb-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                id={`${ids}-password`} type="password" value={password} onChange={(e) => setPassword(e.target.value)}
                 autoComplete="new-password" className="w-full"
               />
             </div>
@@ -170,7 +189,7 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
 
           {active && (
             <EditorFooter>
-              <IfButton type="submit" form={BB_FORM_ID} variant="primary" disabled={!canStart}>{startLabel}</IfButton>
+              <IfButton type="submit" form={formId} variant="primary" disabled={!canStart}>{startLabel}</IfButton>
             </EditorFooter>
           )}
         </form>
@@ -180,7 +199,7 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
         <div className="space-y-3 text-sm">
           <div className="flex items-start justify-between gap-3">
             <p role="status" className="text-fg">
-              {status ? STATE_TEXT[status.state] ?? status.message : "Waiting for the login's first status…"}
+              {status ? stateText(site)[status.state] ?? status.message : "Waiting for the login's first status…"}
             </p>
             <IfButton onClick={cancel}>Stop login</IfButton>
           </div>
@@ -194,7 +213,7 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
               {stalled && <IfButton onClick={resume}>Try again</IfButton>}
             </div>
           )}
-          {status?.state === "otp" && <OtpCodeForm jobId={status.id} message={status.message} inputId="bb-otp" />}
+          {status?.state === "otp" && <OtpCodeForm jobId={status.id} message={status.message} inputId={`${ids}-otp`} site={site} />}
           {liveUrl ? (
             <div ref={liveRef} className="space-y-2">
               <a
@@ -220,7 +239,7 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", k
 
       {done && status && (
         <div className="space-y-3 text-sm">
-          <p className="text-ok">Account {status.account_id} added. {attachedText(status)}</p>
+          <p className="text-ok">Account {status.account_id} added. {loginId.bindsProxy ? attachedText(status) : "Later traffic uses the server IP."}</p>
         </div>
       )}
     </div>

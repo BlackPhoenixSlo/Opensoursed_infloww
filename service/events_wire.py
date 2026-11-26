@@ -52,6 +52,12 @@ def head(eid: str) -> bytes:
     return f"{_id_line(eid)}\n".encode("utf-8")
 
 
+def resync(cell: dict | None, accounts: list[str]) -> bytes:
+    if cell is None:
+        return RESYNC
+    return f"event: resync\ndata: {json.dumps({'accounts': accounts, **cell})}\n\n".encode("utf-8")
+
+
 def ping(ts: float, fresh: dict[str, int] | None = None, badge: dict[str, int] | None = None) -> bytes:
     data: dict = {"ts": ts}
     if fresh is not None:

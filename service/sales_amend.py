@@ -41,7 +41,17 @@ def parse_employee(payload: dict[str, Any]) -> int | None:
     return employee_id
 
 
-async def reassign(s, ctx, tx_ids: list[int], employee_id: int | None) -> list[Any]:
+def parse_account(payload: dict[str, Any]) -> str | None:
+    raw = payload.get("account_id")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw:
+        raise HTTPException(status_code=400, detail="account_id must be a Creator id string")
+    return raw
+
+
+async def reassign(s, ctx, tx_ids: list[int], employee_id: int | None,
+                   account_id: str | None = None) -> list[Any]:
 
     t = Transaction
     found = {r.id: r for r in (await s.execute(
@@ -51,7 +61,8 @@ async def reassign(s, ctx, tx_ids: list[int], employee_id: int | None) -> list[A
         .where(t.id.in_(tx_ids))
     )).all()}
     owned = _actor_account_ids() or ()
-    if any(tid not in found or found[tid].account_id not in owned for tid in tx_ids):
+    if any(tid not in found or found[tid].account_id not in owned
+           or (account_id is not None and found[tid].account_id != account_id) for tid in tx_ids):
         raise HTTPException(status_code=404, detail="sale not found")
 
     if employee_id not in (None, NO_ONE):
@@ -107,6 +118,7 @@ async def reassign_batch(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
     ctx = await owner_context(None, "only the agency owner reassigns a sale")
     employee_id = parse_employee(payload)
+    account_id = parse_account(payload)
     has_ids, has_event = "tx_ids" in payload, "clock_event_id" in payload
     if has_ids == has_event:
         raise HTTPException(status_code=400, detail="send tx_ids or clock_event_id")
@@ -126,7 +138,7 @@ async def reassign_batch(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
                 raise HTTPException(status_code=400, detail=f"tx_ids: 1 to {MAX_BATCH} sale ids")
             tx_ids = list(dict.fromkeys(raw))
         if tx_ids:
-            await reassign(s, ctx, tx_ids, employee_id)
+            await reassign(s, ctx, tx_ids, employee_id, None if has_event else account_id)
     return {"updated": len(tx_ids), "attributed_employee_id": employee_id, "tx_ids": tx_ids,
             "skipped_split": len(split)}
 
@@ -143,15 +155,19 @@ async def reassign_one(tx_id: int, payload: dict[str, Any] = Body(...)) -> dict[
     34): an owner session or the Master only (a chatter 403, even under Role
     enforcement; no session 401); a sale outside the caller's Creators is
     404; an Employee outside the sale's Agency (an owner of its Creator, and
-    the caller's own Agency for an owner session) is 400. The write adds one
+    the caller's own Agency for an owner session) is 400. A body `account_id`
+    (both routes, not with `clock_event_id`) scopes the ids to that Creator, as
+    tx ids are per-Cell and two Cells can share one: another Creator's sale is
+    404. The write adds one
     `sales.reassign` action in the same commit (`reassign`); the audit
     middleware's generic row is still written, and Sales records' "Assigned
     by" reads only `sales.reassign` rows."""
 
     ctx = await owner_context(None, "only the agency owner reassigns a sale")
     employee_id = parse_employee(payload)
+    account_id = parse_account(payload)
     async with get_session() as s:
-        [tx] = await reassign(s, ctx, [tx_id], employee_id)
+        [tx] = await reassign(s, ctx, [tx_id], employee_id, account_id)
     log.info("admin_ingest_tx_attribute tx=%d employee=%s kind=%s account=%s amount=%d",
              tx_id, employee_id, tx.kind, tx.account_id, tx.amount_cents)
     return {

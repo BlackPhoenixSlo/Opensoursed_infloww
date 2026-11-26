@@ -5,11 +5,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { useSendMessage } from "@/hooks/useSendMessage";
 import { rosterCountsKey, resetRosterCountsModuleState } from "@/hooks/useRosterCounts";
-import { relay, type OFChatItem } from "@/lib/relay";
+import { relay, RelayError, type OFChatItem, type VaultMedia } from "@/lib/relay";
+import { sendStash } from "@/lib/sendStash";
+import { UNCERTAIN_REASON } from "@/lib/sendFailure";
 
 vi.mock("@/lib/relay", () => ({
   relay: { get: vi.fn(), post: vi.fn(() => Promise.resolve({ id: 999, media: [] })) },
-  RelayError: class RelayError extends Error {},
+  RelayError: class RelayError extends Error {
+    constructor(public status = 0, public body: unknown = null) { super(`relay ${status}`); }
+  },
 }));
 vi.mock("@/lib/events", () => ({
   eventBus: { isConnected: () => false, onStateChange: () => () => {} },
@@ -220,5 +224,94 @@ describe("useSendMessage scheduled-send failure surfacing", () => {
         });
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("useSendMessage sends one X-Op-Id per action", () => {
+  const msgPosts = () => vi.mocked(relay.post).mock.calls.filter(([p]) => String(p) === `/api/of/v2/chats/${FAN}/messages`);
+  const opIds = () => msgPosts().map(([, , ctx]) => ctx?.opId);
+  const render = (handle = stubHandle()) => renderHook(
+    () => useSendMessage({ accountId: ACCT, fanId: FAN, fromUserId: 100, fromUserName: "you", hookHandle: handle }),
+    { wrapper },
+  ).result;
+
+  it("mints the id before the upload lands and the POST after it carries that id", async () => {
+    let land!: (m: VaultMedia[]) => void;
+    const done = new Promise<VaultMedia[]>((r) => { land = r; });
+    const file = new File(["x"], "a.jpg", { type: "image/jpeg" });
+    const result = render();
+    let tempId = 0;
+    await act(async () => {
+      tempId = (await result.current.send({ text: "pic", uploads: [{ file, previewUrl: null, done, cancel: () => {} }] }))!.tempId;
+    });
+    const minted = sendStash.get(tempId)?.opId;
+    expect(minted).toMatch(/^[0-9a-f-]{36}$/);
+    expect(msgPosts()).toHaveLength(0);
+    await act(async () => { land([{ id: 5, type: "photo", files: null }]); await done; });
+    await act(async () => { await Promise.resolve(); });
+    expect(opIds()).toEqual([minted]);
+  });
+
+  it("two sends carry two different ids", async () => {
+    const result = render();
+    await act(async () => { await result.current.send({ text: "one" }); });
+    await act(async () => { await result.current.send({ text: "two" }); });
+    const [a, b] = opIds();
+    expect(a).toBeTruthy();
+    expect(b).toBeTruthy();
+    expect(a).not.toBe(b);
+  });
+
+  it("bubble Retry after a definite failure resubmits the same id", async () => {
+    const result = render();
+    vi.mocked(relay.post).mockRejectedValueOnce(new RelayError(400, { detail: { message: "no" } }));
+    let tempId = 0;
+    await act(async () => { tempId = (await result.current.send({ text: "again" }))!.tempId; });
+    await act(async () => { await result.current.retry(tempId); });
+    const [first, second] = opIds();
+    expect(first).toBeTruthy();
+    expect(second).toBe(first);
+  });
+
+  it.each([
+    ["a 502 the relay marked uncertain", () => new RelayError(502, { detail: { upstream_status: 502, op_state: "uncertain" } })],
+    ["a resubmit the relay answers op_uncertain", () => new RelayError(409, { detail: { error: "op_uncertain", op_id: "x" } })],
+  ])("%s: one POST, shown as uncertain, never re-sent", async (_label, err) => {
+    vi.useFakeTimers();
+    try {
+      const handle = stubHandle();
+      const result = render(handle);
+      vi.mocked(relay.post).mockRejectedValueOnce(err());
+      let failure: unknown;
+      await act(async () => { failure = (await result.current.send({ text: "maybe" }))!.failure; });
+      expect(failure).toEqual({ reason: UNCERTAIN_REASON, uncertain: true });
+      expect(handle.failLocal).toHaveBeenCalledWith(expect.any(Number), expect.objectContaining({ uncertain: true }));
+      await act(async () => { await vi.runAllTimersAsync(); });
+      expect(msgPosts()).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("native schedule op ids", () => {
+  const schedPosts = () => vi.mocked(relay.post).mock.calls
+    .filter(([p]) => String(p) === `/api/of/v2/chats/${FAN}/messages/scheduled`).map(([, , ctx]) => ctx?.opId);
+  const at = new Date(Date.now() + 60 * 60_000).toISOString();
+
+  it("a resubmit of the same schedule after a failure reuses the op; the next schedule gets a new one", async () => {
+    const { result } = renderHook(
+      () => useSendMessage({ accountId: ACCT, fanId: FAN, fromUserId: 100, fromUserName: "you", hookHandle: stubHandle() }),
+      { wrapper },
+    );
+    vi.mocked(relay.post).mockRejectedValueOnce(new Error("timeout"));
+    await expect(act(() => result.current.send({ text: "later", scheduledAt: at }))).rejects.toThrow();
+    await act(async () => { await result.current.send({ text: "later", scheduledAt: at }); });
+    await act(async () => { await result.current.send({ text: "later", scheduledAt: at }); });
+    const [a, b, c] = schedPosts();
+    expect(a).toMatch(/^[0-9a-f-]{36}$/);
+    expect(b).toBe(a);
+    expect(c).toBeTruthy();
+    expect(c).not.toBe(a);
   });
 });

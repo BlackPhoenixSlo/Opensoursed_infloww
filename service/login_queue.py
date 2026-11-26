@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+import platforms
 import remote_login
 from login_paste import LOGINS_PAGE
 
@@ -138,7 +139,8 @@ async def _one(q: Queue, e: Entry) -> None:
     try:
         job = remote_login.start_login(
             email=e.email, password=password or "", principal=q.owner, proxy=q.proxy, proxy_label="",
-            proxy_defaulted=True, nickname=None, make_active=True, backend=remote_login.BACKEND_BROWSERBASE)
+            proxy_defaulted=True, nickname=None, make_active=True, backend=remote_login.BACKEND_BROWSERBASE,
+            platform=platforms.ONLYFANS.key)
     except Exception as ex:
         e.state, e.message = remote_login.STATE_ERROR, remote_login.scrub(str(ex), password)
         await _notice(q, e)

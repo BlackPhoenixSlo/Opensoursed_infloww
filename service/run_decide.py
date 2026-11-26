@@ -93,6 +93,7 @@ ONE_SHOT_KINDS: frozenset[str] = frozenset({"scheduled_send", "mass_premade", "s
 
 MAY_HAVE_SENT = "may have sent"
 ORPHAN_REASON = f"interrupted, {MAY_HAVE_SENT}"
+RESTORE_REASON = f"{MAY_HAVE_SENT} (restore)"
 _PARK_REASON: dict[WriteState, str] = {
     "accepted": f"{MAY_HAVE_SENT}: OnlyFans took the send, then the run failed; not resent",
     "unanswered": f"{MAY_HAVE_SENT}: the OnlyFans send got no answer; not resent",

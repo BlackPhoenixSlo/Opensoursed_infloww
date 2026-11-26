@@ -19,7 +19,7 @@
     drive.py of-writes                                  POST/PUT/DELETE the app sent to /api/of/* (never left the box)
     drive.py sse [--type TYPE] [--json ENVELOPE]         queue a mocked Relay event for the next /events connection
     drive.py inbox-msg --account <id> --text "x"        a live message lands in the Relay's chats window
-    drive.py reads [--match vault/lists]                GET /api/of/v2/chats (or /api/* urls containing --match) sent
+    drive.py reads [--match vault/lists]                chat and inbox bundle GETs sent (--match filters recorded URLs)
     drive.py visibility hidden|visible                  emulated tab hide/return
     drive.py down                                       stop what `up` started; evidence stays
 
@@ -44,7 +44,7 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 SHOTS = ROOT / "scripts/demo-shots"
@@ -404,9 +404,13 @@ def daemon(rid: str):
             of_writes.append({"t": datetime.now(timezone.utc).isoformat(timespec="seconds"), "method": request.method,
                               "path": "/" + path, "account": request.headers.get("x-account-id"),
                               "body": (request.post_data or "")[:4000]})
-        elif path.startswith("api/"):
+        elif request.method == "GET" and (path.startswith("api/") or path == "admin/screens/inbox"):
+            bundle = ({"cursor": parse_qs(urlsplit(request.url).query).get("cursor", ["0"])[0]}
+                      if path == "admin/screens/inbox" else {})
             reads.append({"t": datetime.now(timezone.utc).isoformat(timespec="seconds"), "path": path,
-                          "url": request.url.split("/", 3)[-1], "account": request.headers.get("x-account-id")})
+                          "url": request.url.split("/", 3)[-1], "account": request.headers.get("x-account-id"),
+                          "caller": request.headers.get("x-list-caller"), "intent": request.headers.get("x-list-intent"),
+                          **bundle})
         return plain_handle(route, request)
     pw = sync_playwright().start()
     browser = pw.chromium.launch(args=LAUNCH_ARGS)
@@ -571,8 +575,8 @@ def daemon(rid: str):
             return {"ok": True, "fan": r["withUser"]["id"], "text": q["text"]}
         if cmd == "reads":
             m = q.get("match")
-            hits = [{"t": r["t"], "url": r["url"], "account": r["account"]} for r in reads
-                    if (m in r["url"] if m else r["path"].startswith("api/of/v2/chats") and r["path"].rstrip("/").endswith("chats"))]
+            hits = [{k: v for k, v in r.items() if k != "path"} for r in reads
+                    if (m in r["url"] if m else r["path"].rstrip("/") in ("api/of/v2/chats", "admin/screens/inbox"))]
             return {"ok": True, "count": len(hits), "reads": hits[-q.get("last", 50):]}
         if cmd == "visibility":
             # headless Chromium never hides a page on its own
@@ -689,8 +693,7 @@ def main():
     p.add_argument("--account", required=True)
     p.add_argument("--text", required=True)
     p.add_argument("--nth", type=int, default=None)
-    p = sp("reads", cmd_browser, "GET /api/of/v2/chats the page sent, with times (the list's poll rate); --match: "
-           "every GET /api/* url containing it, query included")
+    p = sp("reads", cmd_browser, "chat and inbox bundle GETs with times; --match filters recorded URLs")
     p.add_argument("--last", type=int, default=50)
     p.add_argument("--match")
     sp("visibility", cmd_browser, "emulate tab hide/return (visibilitychange; focus on visible)"

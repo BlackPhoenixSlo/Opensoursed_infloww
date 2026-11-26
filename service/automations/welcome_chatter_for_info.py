@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import random
 from collections import Counter
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ import automation_executor as ax
 import dm_rate
 import read_flip
 import run_slot
+import send_ops
 import llm_client
 from . import _daylog
 from . import _language
@@ -686,6 +688,7 @@ async def _graduate(client, account_id: str, fan_id: int, f: Fan) -> None:
 _CLOSING_PPV_DEFAULT_TEXT = (
     "loved getting to know u 🙈 made u a lil something, open it when ur alone 😘")
 _CLOSING_PPV_DEFAULT_PRICE_CENTS = 1000
+_CLOSING_KIND = "welcome_closing_ppv"
 _FAN_MESSAGES_MIN, _FAN_MESSAGES_MAX = 3, 100
 _RULE_SETTING_KEYS = ("max_fan_messages", "closing_ppv_text",
                       "closing_ppv_media_ids", "closing_ppv_price_cents")
@@ -737,19 +740,41 @@ async def _load_rule_settings(account_id: str, payload: dict) -> dict:
     return {**{k: steps[k] for k in _RULE_SETTING_KEYS if k in steps}, **own}
 
 
+async def _set_close_anchor(account_id: str, fan_id: int, at: datetime | None) -> None:
+    async with get_session() as s:
+        await s.execute(
+            sqlite_insert(Fan)
+            .values(account_id=str(account_id), fan_id=int(fan_id), gather_close_sending_at=at)
+            .on_conflict_do_update(index_elements=["account_id", "fan_id"],
+                                   set_={"gather_close_sending_at": at})
+        )
+
+
+async def _dispatch_closing_ppv(account_id: str, fan_id: int, ppv: _ClosingPPV,
+                                anchor: datetime, send) -> dict:
+    import accounts
+    platform = accounts.get_platform(account_id)
+    body = {"text": ppv.text, "media_ids": list(ppv.media_ids), "price_cents": ppv.price_cents}
+    result, _ = await asyncio.to_thread(
+        send_ops.dispatch, platform, account_id,
+        send_ops.op_id(platform, account_id, _CLOSING_KIND, str(fan_id), anchor.isoformat()),
+        _CLOSING_KIND, str(fan_id), send_ops.digest(body), send)
+    return result
+
+
 async def _send_closing_ppv(client, account_id: str, fan_id: int,
                             ppv: _ClosingPPV, *, dry_run: bool) -> str:
     """Send the closing PPV to one fan. The caller holds the fan lease. Returns
     "sent", "dry_run" (would send), "already" (he had it — once per fan, stamped
-    on `fans.gather_close_at`), "owned" (he owns some of the media) or "failed".
+    on `fans.gather_close_at`), "owned" (he owns some of the media), "uncertain"
+    (an earlier attempt may have gone out: never resent) or "failed".
     Never raises: a failure must not block the graduation that follows."""
     try:
         async with get_session() as s:
-            stamped = (await s.execute(
-                select(Fan.gather_close_at).where(
+            stamped, anchor = (await s.execute(
+                select(Fan.gather_close_at, Fan.gather_close_sending_at).where(
                     Fan.account_id == str(account_id), Fan.fan_id == int(fan_id))
-            )).scalar_one_or_none()
-        # Once per fan: gather_close_at is stamped right after the send is on the wire, so a second closing PPV can never go out.
+            )).one_or_none() or (None, None)
         if stamped is not None:
             return "already"
         # Never to a fan who already owns any of the media.
@@ -760,11 +785,34 @@ async def _send_closing_ppv(client, account_id: str, fan_id: int,
             return "owned"
         if dry_run:
             return "dry_run"
+        cells = bool(os.environ.get("OI_CELL_MAP"))
+        if anchor is not None and not cells:
+            log.warning("welcome_chatter_for_info closing PPV may already be out (started %s, never "
+                        "stamped): not resent account=%s fan=%s", anchor, account_id, fan_id)
+            return "uncertain"
         await dm_rate.turn(account_id)
-        result = await asyncio.to_thread(
-            lambda: client.send_message(fan_id, ppv.text,
-                                        media_files=list(ppv.media_ids),
-                                        price=ppv.price_cents / 100))
+        if anchor is None:
+            anchor = datetime.utcnow()
+            await _set_close_anchor(account_id, fan_id, anchor)
+
+        def send():
+            return client.send_message(fan_id, ppv.text, media_files=list(ppv.media_ids),
+                                       price=ppv.price_cents / 100)
+        try:
+            if cells:
+                result = await _dispatch_closing_ppv(account_id, fan_id, ppv, anchor, send)
+            else:
+                result = await asyncio.to_thread(send)
+        except send_ops.SendRefused as e:
+            if e.detail.get("error") in ("op_uncertain", "op_pending", "op_conflict"):
+                log.warning("welcome_chatter_for_info closing PPV op %s: not resent account=%s fan=%s",
+                            e.detail.get("error"), account_id, fan_id)
+                return "uncertain"
+            raise
+        except Exception as e:
+            if send_ops.pre_wire(e):
+                await _set_close_anchor(account_id, fan_id, None)
+            raise
         msg_id = result.get("id") if isinstance(result, dict) else None
         if not msg_id:
             log.warning("welcome_chatter_for_info closing PPV returned no id "
@@ -776,10 +824,10 @@ async def _send_closing_ppv(client, account_id: str, fan_id: int,
             await s.execute(
                 sqlite_insert(Fan)
                 .values(account_id=str(account_id), fan_id=int(fan_id),
-                        gather_close_at=now, updated_at=now)
+                        gather_close_at=now, gather_close_sending_at=None, updated_at=now)
                 .on_conflict_do_update(
                     index_elements=["account_id", "fan_id"],
-                    set_={"gather_close_at": now, "updated_at": now},
+                    set_={"gather_close_at": now, "gather_close_sending_at": None, "updated_at": now},
                 )
             )
         await write_outbound_attribution(
@@ -1028,7 +1076,7 @@ async def _load_run_config(account_id: str, payload: dict, knobs: _PayloadKnobs,
 
 TurnKind = Literal["sent", "dry_run", "cooldown", "locked", "closing_cut", "closing_preview",
                    "graduated", "generate_failed", "empty", "echo", "banned", "send_failed",
-                   "no_id", "sticker_failed"]
+                   "no_id", "sticker_failed", "no_anchor"]
 
 
 @dataclass
@@ -1370,6 +1418,9 @@ async def _turn(cfg: _RunConfig, c: _Candidate, fan_row: Fan | None,
             if not await _close_with_ppv(t):
                 await _skip_and_collect(account_id, fan_id, "too_long")
                 t.out.newly_skiplisted += 1
+            return t.out
+        if send_ops.cells():
+            t.out.kind = "no_anchor"
             return t.out
         await _turn_fill_facts(t)
         asked = wcfi_decide.asked_topics(t.f)

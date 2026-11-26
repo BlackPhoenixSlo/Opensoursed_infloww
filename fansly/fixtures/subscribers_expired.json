@@ -1,0 +1,7 @@
+{
+  "_source": "RECIPES.md 'Capture session 1126' (expired row) — real shape, synthetic ids",
+  "stats": {"totalActive": 0, "totalExpired": 1, "total": 1},
+  "subscriptions": [
+    {"id": "900000000000000101", "historyId": "900000000000000102", "subscriberId": "900000000000000002", "subscriptionTierId": "900000000000000103", "subscriptionTierName": "Tier", "subscriptionTierColor": "#46A7F8", "planId": "900000000000000104", "promoId": null, "giftCodeId": null, "paymentMethodId": "0", "status": 5, "price": 0, "renewPrice": 5000, "renewCorrelationId": "900000000000000102", "autoRenew": 0, "billingCycle": 30, "duration": 7, "renewDate": 1788335065000, "version": 5, "createdAt": 1788335065000, "updatedAt": 1788939886000, "endsAt": 1788939865000, "promoPrice": null, "promoDuration": null, "promoStatus": null, "promoStartsAt": null, "promoEndsAt": null}
+  ]
+}

@@ -92,7 +92,7 @@ function JsonConfigModal({
 
   const save = useMutation({
     mutationFn: (config: unknown) =>
-      relay.put(path, { account_id: accountId, config }),
+      relay.put(path, { account_id: accountId, config }, { cellAccountId: accountId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKey(accountId) });
       qc.invalidateQueries({ queryKey: ["raw-json-config", surface, accountId] });

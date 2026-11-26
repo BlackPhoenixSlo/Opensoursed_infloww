@@ -13,6 +13,10 @@ import { ofUserFullKey, type OFUser } from "@/hooks/useOFUser";
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { APPLIED_SETTINGS_KEY } from "@/lib/appliedSettings";
 import { invalidateVaultQueries } from "@/lib/vaultInvalidation";
+import { resyncAction } from "@/lib/cellBusReducer";
+import { cellMode } from "@/lib/cellFlag";
+import { currentCellMap } from "@/lib/cellMap";
+import { spliceCellHeads } from "@/hooks/useChatList";
 import { armRead } from "@/lib/ofReadGate";
 import { creatorFreshnessKey, dispatchCreatorFreshness } from "@/hooks/useCreatorFreshness";
 import { badgeBehind, type CreatorFreshnessState } from "@/lib/creatorFreshness";
@@ -149,6 +153,8 @@ export function flipCachedRestrict(qc: QueryClient, accountId: string, flip: Res
 
 const ACCOUNTS_LISTS: QueryKey[] = [["accounts"], ["chatter", "self", "accounts"]];
 
+const placedAccounts = () => new Set(currentCellMap()?.accounts.map((a) => a.account_id));
+
 const SSE_POLLED: QueryKey[] = [
   ["scheduled-sends"], ["automation-rules"], ["stats", "automation-runs"],
   ["app-errors", "recent"], ["roster-counts"], ["full-ai-today"],
@@ -247,15 +253,46 @@ export function useAccountStateEvents(): void {
     }));
 
     const resync = throttle(() => void invalidateVaultQueries(qc), RESYNC_MIN_MS);
-    offs.push(eventBus.on("resync", resync.call), resync.cancel);
+    let cellResynced = new Set<string>();
+    let controlResynced = false;
+    const cellResync = throttle(() => {
+      const placed = placedAccounts();
+      const accounts = cellResynced;
+      const control = controlResynced;
+      cellResynced = new Set();
+      controlResynced = false;
+      const hit = (q: Query) => (control && resyncAction(q.queryKey, new Set(), placed) === "invalidate")
+        || (accounts.size > 0 && resyncAction(q.queryKey, accounts, placed) === "invalidate");
+      void invalidateVaultQueries(qc, { predicate: hit });
+      if (accounts.size) void spliceCellHeads(qc, accounts, placed);
+    }, RESYNC_MIN_MS);
+    offs.push(eventBus.on("resync", (e: EventEnvelope) => {
+      if (!Array.isArray(e.accounts)) return resync.call();
+      if (!e.accounts.length) controlResynced = true;
+      for (const id of e.accounts) cellResynced.add(String(id));
+      cellResync.call();
+    }), resync.cancel, cellResync.cancel);
 
     const sale = throttle(
       () => void qc.invalidateQueries({ predicate: (q) => refetchedOnSale(q.queryKey) }), SALES_MIN_MS);
     offs.push(eventBus.on("transaction_recorded", sale.call), sale.cancel);
 
+    const was = new Map<string, boolean>();
+    offs.push(eventBus.onStreamState(({ connected, accounts }) => {
+      if (accounts === null) return;
+      const id = accounts.join(",");
+      const placed = placedAccounts();
+      const named = new Set(accounts);
+      const mine = (roots: QueryKey[]) => (q: Query) => roots.some((r) => r.every((p, i) => q.queryKey[i] === p))
+        && resyncAction(q.queryKey, named, placed) === "invalidate";
+      if (was.get(id) && !connected && !eventBus.isPaused()) void qc.invalidateQueries({ predicate: mine(SSE_POLLED) });
+      was.set(id, connected);
+    }));
+
     let wasConnected = false;
     let dropped = false;
     offs.push(eventBus.onStateChange((connected) => {
+      if (cellMode()) return;
       if (wasConnected && !connected && !eventBus.isPaused()) {
         invalidate(SSE_POLLED);
         dropped = true;

@@ -58,7 +58,7 @@ export function useSaveStyleConfig(accountId: string | null) {
     StyleConfig
   >({
     mutationFn: (config) =>
-      relay.put(`/admin/style-config`, { account_id: accountId, config }),
+      relay.put(`/admin/style-config`, { account_id: accountId, config }, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }

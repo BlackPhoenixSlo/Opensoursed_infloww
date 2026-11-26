@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import threading
 from pathlib import Path
@@ -21,6 +22,8 @@ from fansly_ws import FanslyWebSocket  # noqa: E402
 
 if TYPE_CHECKING:
     from fansly_revenue import TickResult
+
+log = logging.getLogger("of-relay")
 
 Shim = FanslyShimClient
 
@@ -64,6 +67,71 @@ def identify(session: dict) -> tuple[dict, dict]:
         client.ensure_device_id()
         fetched = {"device_id": s.device_id, "device_id_ts": s.device_id_ts}
     return client.me(), {**session, **fetched}
+
+
+class SessionRefused(ValueError):
+    pass
+
+
+def session_blob(*, token: str, session_id: str | None, account_id: str, device_id: str | None,
+                 user_agent: str, accept_language: str | None = None,
+                 check_key: str | None = None) -> dict:
+    return {
+        "token": token,
+        "id": session_id,
+        "accountId": account_id,
+        "device_id": device_id,
+        "user_agent": user_agent,
+        "accept_language": accept_language or "en-US,en;q=0.9",
+        "check_key": check_key,
+    }
+
+
+def prove(session: dict) -> tuple[dict, dict]:
+    import platforms
+
+    account_id = str(session.get("accountId") or "")
+    account_registry.account_dir(account_id)
+    account_registry.ensure_platform(account_id, platforms.FANSLY.key)
+    try:
+        me, session = identify(session)
+    except Exception as e:  # noqa: BLE001 — any failure means the token is not proven
+        why = f"{type(e).__name__}: {e}"
+        token = session.get("token")
+        if token:
+            why = why.replace(token, "***")
+        log.warning("fansly session for %s not proven: %s", account_id, why)
+        raise SessionRefused(f"Fansly did not accept this session: {why}") from None
+    me_id = str(me.get("id") or "")
+    if me_id != account_id:
+        raise SessionRefused(
+            f"this session signs in as Fansly account {me_id or '(none)'}, not {account_id}")
+    account_registry.ensure_platform(account_id, platforms.FANSLY.key)
+    return me, session
+
+
+def save(session: dict, me: dict, *, nickname: str | None, make_active: bool) -> Path:
+    import platforms
+
+    account_id = str(session["accountId"])
+    name = me.get("name") or me.get("username")
+    adir = account_registry.account_dir(account_id)
+    adir.mkdir(parents=True, exist_ok=True)
+    session_file = adir / SESSION_FILENAME
+    session_file.write_text(json.dumps(session, indent=2) + "\n")
+    try:
+        session_file.chmod(0o600)
+    except OSError:
+        pass
+    account_registry.upsert_account(
+        account_id,
+        platform=platforms.FANSLY.key,
+        name=name,
+        nickname=nickname or name or f"Fansly {account_id}",
+    )
+    if make_active:
+        account_registry.set_active_account_id(account_id)
+    return session_file
 
 
 def drop(account_id: str | None = None) -> None:

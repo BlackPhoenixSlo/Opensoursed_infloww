@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import threading
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ SESSIONS_DIR = HERE / "sessions"
 ACCOUNTS_DIR = SESSIONS_DIR / "accounts"
 ACTIVE_FILE = SESSIONS_DIR / "active.json"
 MIGRATED_MARKER = SESSIONS_DIR / ".migrated"
+_CELLS = bool(os.environ.get("OI_CELL_MAP"))
 
 _lock = threading.Lock()
 
@@ -277,6 +279,9 @@ class PlatformCollision(Exception):
 
 def ensure_platform(account_id: str, key: str) -> None:
     import platforms
+    if _CELLS:
+        import creator_reservations
+        creator_reservations.admit(account_id, key)
     adir = _account_path(account_id)
     if adir is None or not adir.is_dir():
         return

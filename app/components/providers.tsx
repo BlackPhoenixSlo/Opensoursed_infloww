@@ -22,7 +22,7 @@ import { listenNotificationClicks } from "@/lib/webPush";
 import { createIdbPersister, LEGACY_LOCALSTORAGE_KEY, persistQueryClientLazily } from "@/lib/rqPersister";
 import { onScreenRefreshed } from "@/lib/screenBundle";
 import { THREAD_KEEP, trimThread } from "@/lib/threadCache";
-import type { OFMessage } from "@/lib/relay";
+import { STALE_CELL_GEN_EVENT, chatListRetry, type OFMessage } from "@/lib/relay";
 
 // Bump when the persisted cache shape changes, else old snapshots render as garbage.
 const CACHE_BUSTER = "v3.4";
@@ -74,20 +74,24 @@ function DropWatcherScope() {
 
 export default function Providers({ children }: { children: React.ReactNode }) {
   // lazy init: StrictMode would re-create the client every render and lose in-flight cache
-  const [queryClient] = useState(() => new QueryClient({
-    defaultOptions: {
-      queries: {
-        // chatters re-open tabs across days; per-query overrides where freshness matters
-        staleTime: 3 * 24 * 60 * 60 * 1000,
-        gcTime:    7 * 24 * 60 * 60 * 1000,
-        refetchOnWindowFocus: false,
-        retry: 1,
+  const [queryClient] = useState(() => {
+    const qc = new QueryClient({
+      defaultOptions: {
+        queries: {
+          // chatters re-open tabs across days; per-query overrides where freshness matters
+          staleTime: 3 * 24 * 60 * 60 * 1000,
+          gcTime:    7 * 24 * 60 * 60 * 1000,
+          refetchOnWindowFocus: false,
+          retry: 1,
+        },
+        mutations: {
+          retry: 0,
+        },
       },
-      mutations: {
-        retry: 0,
-      },
-    },
-  }));
+    });
+    qc.setQueryDefaults(["chats"], { retry: chatListRetry });
+    return qc;
+  });
 
   // true until the IndexedDB restore ends: otherwise queries race it and refetch what is already persisted
   const [isRestoring, setIsRestoring] = useState(true);
@@ -101,6 +105,12 @@ export default function Providers({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => onScreenRefreshed((queryKey) => { void queryClient.invalidateQueries({ queryKey }); }), [queryClient]);
+
+  useEffect(() => {
+    const refetch = () => { void queryClient.invalidateQueries({ refetchType: "active" }); };
+    window.addEventListener(STALE_CELL_GEN_EVENT, refetch);
+    return () => window.removeEventListener(STALE_CELL_GEN_EVENT, refetch);
+  }, [queryClient]);
 
   useEffect(() => {
     if (typeof window === "undefined") {

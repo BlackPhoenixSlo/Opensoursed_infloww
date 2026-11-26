@@ -30,7 +30,16 @@ runs; `solveCaptchas` is always false. Once logged in, the login extension's own
 saved by `session_bootstrap.from_request` and `server.post_bootstrap_hooks`, the
 paste-curl path.
 
-- `proxy`: `"infloww"` binds with `proxy_health.assign_pool` and `"custom"` (+ `proxy_label`)
+- `platform`: the Platform key (default OnlyFans). The bulk login queue supports OnlyFans only.
+  Each Platform's driver (`Platform.login`: `service/remote_login_onlyfans.py`,
+  `service/remote_login_fansly.py`) opens and fills its site's form, spots its 2FA prompt, says when
+  it is logged in and captures the session; `remote_login.py` runs the shared loop (live view, OTP,
+  OnlyFans proxy binding, scrubbing). Fansly logs in at fansly.com (Login tab, Sign In) and reads the session
+  from localStorage (the `fansly/fansly_client.py` `BROWSER_CONSOLE_SNIPPET` fields + the page UA); it is proven and saved by
+  `fansly_backend.prove` / `save`, the same calls as `POST /admin/session/fansly`, and the token is
+  scrubbed like the password. Later Fansly traffic uses the server IP.
+
+- `proxy` (OnlyFans): `"infloww"` binds with `proxy_health.assign_pool` and `"custom"` (+ `proxy_label`)
   with `proxies.assign_account`, the registry calls behind `POST /admin/proxy-pool/assign`
   and `/admin/proxies/assign` that Paste cURL's attach step makes; `"none"` binds nothing
   (a row's re-login sends it, so the account keeps its proxy). Omitted: `"custom"` when
@@ -41,7 +50,7 @@ paste-curl path.
 - Needs `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` in the relay's env (503
   without them), on a plan that includes proxies.
 - The login itself runs on Browserbase's network; our proxy is never sent to
-  Browserbase (the owner's call). It is attached to the account before the session is
+  Browserbase (the owner's call). For OnlyFans it is attached to the account before the session is
   saved, so all later traffic for the account egresses through it, as with an
   extension-captured login. (Sending our proxy as Browserbase's external proxy was dropped: IPRoyal ISP
   proxies that work from the relay answer Browserbase's connect with 403.)

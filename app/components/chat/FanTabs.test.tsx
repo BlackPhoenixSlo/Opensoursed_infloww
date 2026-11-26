@@ -6,7 +6,7 @@ vi.mock("@/lib/relay", async (orig) =>
   (await import("./composerTestHarness")).mockRelayModule(await orig()));
 vi.mock("@/lib/events", async (orig) => ({
   ...(await orig<typeof import("@/lib/events")>()),
-  eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {} },
+  eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {}, onStreamState: () => () => {} },
 }));
 type FixtureEmployee = { id: number; display_name: string; color: null; is_active: true };
 const session = vi.hoisted(() => ({

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import tempfile
 import threading
@@ -24,6 +25,7 @@ import of_pacing
 import proxy_health
 import account_health
 import proxies as proxy_registry
+import send_tripwire
 from of_managed_session import ManagedSession
 from of_cookie_events import apply_cookie_events, cookie_from_row, response_cookie_events
 from of_origin import IMPERSONATE, OF_API_ORIGIN, OF_WEB_ORIGIN
@@ -86,9 +88,20 @@ def proxy_refused(exc: BaseException) -> bool:
     while e is not None and id(e) not in seen:
         seen.add(id(e))
         if isinstance(e, requests.exceptions.ProxyError):
-            return True
+            return not os.environ.get("OI_CELL_MAP") or before_tunnel(e)
         e = e.__cause__
     return False
+
+
+_TUNNEL_REFUSED = re.compile(r"CONNECT tunnel failed, response \d{3}")
+
+
+# A Send claim's second attempt: only a proxy that answered CONNECT with a refusal, an unresolvable proxy or a refused TCP connect proves nothing reached OF.
+def before_tunnel(exc: BaseException) -> bool:
+    code = getattr(exc, "code", None)
+    if isinstance(exc, requests.exceptions.ProxyError):
+        return code == CurlECode.COULDNT_RESOLVE_PROXY or bool(_TUNNEL_REFUSED.search(str(exc)))
+    return isinstance(exc, requests.exceptions.ConnectionError) and code == CurlECode.COULDNT_CONNECT
 
 
 ExcKind = Literal["proxy", "couldnt_connect", "connection"]
@@ -416,6 +429,8 @@ class _Transport:
             if isinstance(eg, proxy_registry.Refuse):
                 log_of.warning("client_egress_refused account=%s reason=%s", account_id, eg.reason)
                 raise proxy_registry.EgressRefused(eg.reason)
+            if proxy_registry.CELLS and isinstance(eg, proxy_registry.Direct):
+                raise proxy_registry.no_proxy(account_id, "client")
             p = eg.entry if isinstance(eg, proxy_registry.Proxy) else None
             if p is not None:
                 kw["proxies"] = proxy_registry.proxies_dict_for_requests(p)
@@ -547,6 +562,8 @@ class _Transport:
             log_of.error("denied account=%s method=%s url=%s (%s)",
                          self.account_id, method, _short_path(url), reason)
             raise OFDeniedError(f"refused: {method} {_short_path(url)} ({reason})")
+        if proxy_registry.CELLS:
+            self._require_proxy("call")
         # A deactivated Creator gets no OF write from any route or job; reads stay open for the owner's history.
         if method != "GET" and not (method == "DELETE" and _CARRIER_REMOVAL.get()):
             import account_health
@@ -554,6 +571,9 @@ class _Transport:
                 log_of.warning("deactivated account=%s method=%s url=%s refused",
                                self.account_id, method, _short_path(url))
                 raise OFDeactivatedError(f"refused: {method} {_short_path(url)} (Creator deactivated)")
+        if proxy_registry.CELLS and method != "GET" and send_tripwire.budget() is None:
+            import cell_hold
+            cell_hold.refuse_writes()
         # DC proxies sporadically 403 on CONNECT then work again; retries reuse the SAME self.http session (sticky IP, no rotation).
         policy = INTERACTIVE_RETRY if method == "GET" and INTERACTIVE_READ.get() else FULL_RETRY
         try:
@@ -570,8 +590,12 @@ class _Transport:
                 # back-off pause, telemetry, signing): a refusal sends nothing.
                 if check is not None and (why := check()):
                     raise OFDispatchRefused(why)
-                return self.http.request(method, url, json=json_body,
-                                         headers=headers, timeout=self.timeout_s)
+                budget = send_tripwire.budget()
+                if budget is None:
+                    return self.http.request(method, url, json=json_body,
+                                             headers=headers, timeout=self.timeout_s)
+                return budget.leave(lambda: self.http.request(method, url, json=json_body, headers=headers,
+                                                              timeout=self.timeout_s), before_tunnel)
             with self._signed_slot():
                 # The x-hash warmup runs its own _proxy_retry here, never nested in the one below.
                 self._ensure_x_hash(policy=policy)
@@ -646,7 +670,14 @@ class _Transport:
         finally:
             proxy_health.attempt_end(label, refused)
 
+    def _require_proxy(self, where: str) -> None:
+        if not self.proxy_url:
+            raise proxy_registry.no_proxy(self.account_id, where)
+        proxy_registry.require_proxy(self.account_id, where, self.session_path.name if self.session_path else None)
+
     def _proxy_retry(self, fn, *, what: str = "", policy: RetryPolicy = FULL_RETRY):
+        if proxy_registry.CELLS:
+            self._require_proxy(what or "call")
         tries = policy.tries
         for attempt in range(tries):
             try:

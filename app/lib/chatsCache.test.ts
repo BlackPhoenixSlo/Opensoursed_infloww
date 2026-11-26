@@ -52,8 +52,9 @@ describe("decodeChatsKey / keyHoldsAccount / viewAdmits", () => {
     if (key[3] !== null) expect(viewAdmits(decodeChatsKey(key), row("a1", 1))).toBe(false);
   });
   it("reads every position", () => {
-    expect(decodeChatsKey(["chats", "model", 7, "pinned", 3, "q", 30])).toEqual({
-      scopeKind: "model", accountKey: "7", filter: "pinned", listId: 3, query: "q", order: "recent", unfiltered: false,
+    expect(decodeChatsKey(["chats", "model", 7, "pinned", 3, "q", 30, "old", true])).toEqual({
+      scopeKind: "model", accountKey: "7", filter: "pinned", listId: "3", query: "q", limit: 30,
+      order: "old", gated: true, unfiltered: false,
     });
   });
 });
@@ -601,6 +602,15 @@ describe("keepLiveRows: a read never takes back what the list shows", () => {
         pages.map(({ hasMore, scanned }) => ({ hasMore, scanned })),
       );
     });
+  });
+
+  it.each<[string, number, string[][]]>([
+    ["exactly four fresh pages: kept on the head", 4, [["a1:1:m9", "a1:2:m2"], [], [], []]],
+    ["four fresh pages before a cached fifth: the tail is cut and the head is authoritative", 5, [["a1:2:m2"], [], [], []]],
+  ])("the Unread list lacking a live unread row, %s", (_n, loaded, want) => {
+    const prev = data(page([row("a1", 1, 9, at(1), 1)]), ...Array.from({ length: loaded - 1 }, () => page([])));
+    const next = data(page([row("a1", 2, 2, at(5))]), page([]), page([]), page([]), ...prev.pages.slice(4));
+    expect(show(preserveChatRows(UNREAD, prev, next, (i) => i < 4))).toEqual(want);
   });
 
   it("leaves a page that is not a fresh read alone, and returns the SAME data when nothing changes", () => {

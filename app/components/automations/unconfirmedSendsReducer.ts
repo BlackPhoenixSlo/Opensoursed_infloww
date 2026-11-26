@@ -13,15 +13,31 @@ export interface UnconfirmedRow {
   state: UnconfirmedState;
   // A hint, not proof: the first untagged outbound message to this fan since the mark.
   hint?: { message_id: string; at: string; text: string } | null;
+  retry_allowed?: boolean;
 }
 
-export type Op = "retry" | "dismiss";
+export interface OpRow {
+  kind: string;
+  op_id: string;
+  fan_id: string;
+  since: string;
+  state: "UNCONFIRMED";
+  retry_allowed: false;
+  link: "chat" | "queue";
+}
 
-export interface UnconfirmedView extends UnconfirmedRow {
+export type ListedRow = UnconfirmedRow | OpRow;
+export type Outcome = "was_sent" | "not_sent";
+export type Op = "retry" | "dismiss" | Outcome;
+
+export type UnconfirmedView = ListedRow & {
   key: string;
   pending: Op | null;
   error: string | null;
-}
+};
+
+export const isOpRow = (r: ListedRow): r is OpRow => "op_id" in r;
+export const showsRetry = (r: ListedRow): boolean => !isOpRow(r) && r.retry_allowed !== false;
 
 export interface RowOverlay {
   pending: Op | null;
@@ -41,8 +57,8 @@ export type Action =
 
 export const initialOverlay: Overlay = {};
 
-export function rowKey(r: Pick<UnconfirmedRow, "kind" | "fan_id" | "mass_run_id">): string {
-  return `${r.kind}:${r.fan_id}:${r.mass_run_id ?? ""}`;
+export function rowKey(r: Pick<UnconfirmedRow, "kind" | "fan_id" | "mass_run_id"> | OpRow): string {
+  return "op_id" in r ? `op:${r.op_id}` : `${r.kind}:${r.fan_id}:${r.mass_run_id ?? ""}`;
 }
 
 export type RetryOutcome = "drop" | "error";
@@ -66,10 +82,41 @@ export function buildDismissPayload(r: UnconfirmedRow): ReturnType<typeof buildR
   return r.hint ? { ...base, hint_message_id: r.hint.message_id } : base;
 }
 
+export function buildResolvePayload(r: OpRow, outcome: Outcome): { op_id: string; outcome: Outcome } {
+  return { op_id: r.op_id, outcome };
+}
+
+export function resolveQuestion(r: OpRow, outcome: Outcome): string {
+  const what = r.link === "queue" ? "this queued send" : `this send to fan ${r.fan_id}`;
+  return outcome === "was_sent"
+    ? `Mark ${what} as sent?\n\nOnly do this if you checked and it went out. Automations to this fan start again.`
+    : `Mark ${what} as not sent?\n\nIt is not resent: send a new message yourself if it should go out. `
+      + "Automations to this fan start again.";
+}
+
 export function dismissQuestion(r: UnconfirmedRow): string {
   return `Mark ${r.step_label} to fan ${r.fan_id} as sent?\n\n`
     + "It will be treated as sent: the funnel moves on and this step is not sent again. "
     + "Only do this if you checked the chat and the fan got it.";
+}
+
+export interface UnconfirmedRequest {
+  path: "retry" | "dismiss" | "resolve";
+  body: object;
+  confirm: { question: string; label: string } | null;
+}
+
+export function buildRequest(r: ListedRow, op: Op): UnconfirmedRequest | null {
+  if (isOpRow(r)) {
+    if (op !== "was_sent" && op !== "not_sent") return null;
+    return { path: "resolve", body: buildResolvePayload(r, op),
+      confirm: { question: resolveQuestion(r, op), label: op === "was_sent" ? "Was sent" : "Not sent" } };
+  }
+  if (op === "retry") return showsRetry(r) ? { path: "retry", body: buildRetryPayload(r), confirm: null } : null;
+  if (op === "dismiss") {
+    return { path: "dismiss", body: buildDismissPayload(r), confirm: { question: dismissQuestion(r), label: "It went through" } };
+  }
+  return null;
 }
 
 export function hintLine(r: UnconfirmedRow, time: (iso: string) => string): string | null {
@@ -78,14 +125,14 @@ export function hintLine(r: UnconfirmedRow, time: (iso: string) => string): stri
   return `Sent to this fan at ${time(r.hint.at)}: ${text || "(no text)"}`;
 }
 
-export function viewRows(rows: UnconfirmedRow[] | undefined, o: Overlay): UnconfirmedView[] {
+export function viewRows(rows: ListedRow[] | undefined, o: Overlay): UnconfirmedView[] {
   return (rows ?? []).map((r) => {
     const key = rowKey(r);
     return { ...r, key, pending: o[key]?.pending ?? null, error: o[key]?.error ?? null };
   });
 }
 
-export function settleRows(rows: UnconfirmedRow[] | undefined, key: string, out: RetryOutcome): UnconfirmedRow[] | undefined {
+export function settleRows(rows: ListedRow[] | undefined, key: string, out: RetryOutcome): ListedRow[] | undefined {
   if (!rows || out === "error") return rows;
   return rows.filter((r) => rowKey(r) !== key);
 }
@@ -102,7 +149,7 @@ export function unconfirmedSendsReducer(o: Overlay, a: Action): Overlay {
       return o[a.key]?.pending ? o : { ...o, [a.key]: { pending: a.op, error: null } };
     case "done": {
       if (retryOutcome(a.result.status) !== "error") return without(o, a.key);
-      const failed = a.op === "retry" ? "Retry failed" : "Couldn't mark it as sent";
+      const failed = a.op === "retry" ? "Retry failed" : a.op === "not_sent" ? "Couldn't mark it as not sent" : "Couldn't mark it as sent";
       return { ...o, [a.key]: { pending: null, error: a.result.message || `${failed} (HTTP ${a.result.status})` } };
     }
   }

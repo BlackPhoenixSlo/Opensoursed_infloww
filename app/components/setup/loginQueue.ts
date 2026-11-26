@@ -1,5 +1,6 @@
 import { loginCount } from "@/lib/loginPaste";
-import { STATE_TEXT, TERMINAL, type RemoteLoginState } from "@/components/setup/remoteLogin";
+import { stateText, TERMINAL, type RemoteLoginState } from "@/components/setup/remoteLogin";
+import { DEFAULT_PLATFORM, PLATFORM_NAME } from "@/lib/platform";
 
 export type EntryState = "waiting" | RemoteLoginState;
 
@@ -108,6 +109,9 @@ export const isPolling = (s: LoginQueue): boolean =>
 export const pollEvery = (data: QueueView | undefined, lost: boolean): number | false =>
   lost || (data !== undefined && !stillGoing(data)) ? false : POLL_MS;
 
+export const QUEUE_SITE = PLATFORM_NAME[DEFAULT_PLATFORM];
+const QUEUE_STATE_TEXT = stateText(QUEUE_SITE);
+
 export function entryNote(e: QueueEntry, interrupted: boolean): string {
   const open = e.state !== "done" && e.state !== "error" && e.state !== "cancelled";
   if (interrupted && open) return "Not finished. Paste it again.";
@@ -116,7 +120,7 @@ export function entryNote(e: QueueEntry, interrupted: boolean): string {
     case "done": return e.account_id ? `Logged in (account ${e.account_id})` : "Logged in";
     case "error": return `Not logged in: ${e.message || "failed"}`;
     case "cancelled": return "Cancelled";
-    default: return STATE_TEXT[e.state] ?? e.message;
+    default: return QUEUE_STATE_TEXT[e.state] ?? e.message;
   }
 }
 

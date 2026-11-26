@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const { relayGet, relayPost, scope } = vi.hoisted(() => ({
@@ -20,6 +20,11 @@ vi.mock("@/contexts/ScopeContext", () => ({
   useEventScopeOverride: () => {},
   useDropWatcherScope: () => {},
 }));
+vi.mock("@/hooks/useAccounts", async (original) => ({
+  ...await original<typeof import("@/hooks/useAccounts")>(),
+  useAccounts: () => ({ data: { accounts: [{ id: scope.accountId }] } }),
+  usePlatformAccounts: () => [{ id: scope.accountId }],
+}));
 vi.mock("@/contexts/UserContext", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/contexts/UserContext")>();
   const value = { user: { user_id: "u-owner", username: "owner" }, loading: false, logout: vi.fn() };
@@ -36,6 +41,8 @@ vi.mock("@/contexts/EmployeeContext", async (importOriginal) => {
   return { ...actual, useEmployee: () => value };
 });
 
+import { chatsQueryKey } from "@/hooks/useChatList";
+import { CHATS } from "./ofMirrorData.fixtures";
 import { useOfData } from "./ofMirrorData";
 import { NOTIFICATION_COUNTS, NOTIFICATIONS } from "./ofMirrorFeedsNotifications";
 import { NOTIF_READ_PATH } from "@/hooks/useOfNotifCount";
@@ -100,5 +107,53 @@ describe("OF Manager notifications page: OF's mark-read", () => {
     renderHook(() => useOfData(frame, PAGE("notifications/index")), { wrapper: ({ children }) => <QueryClientProvider client={(client = new QueryClient())}>{children}</QueryClientProvider> });
     await flush();
     expect(writes()).toHaveLength(0);
+  });
+});
+
+describe("OF Manager chat paging", () => {
+  it.each(["pointerdown", "wheel"])("loads one deep page per %s gesture across page renders", async (type) => {
+    const iframe = document.body.appendChild(document.createElement("iframe"));
+    const doc = iframe.contentDocument!;
+    doc.body.innerHTML = '<div class="b-chats__scroller"><div class="b-chats__item"></div></div>';
+    const box = doc.querySelector<HTMLElement>(".b-chats__scroller")!;
+    box.checkVisibility = () => true;
+    const key = chatsQueryKey("model", "1", { limit: 20 });
+    client.setQueryData(key, {
+      pages: [0, 20, 40, 60].map((offset) => ({ rows: [{ ...CHATS[0], withUser: { id: offset + 1 } }],
+        moreAccounts: ["1"], hasMore: true, scanned: 20 })),
+      pageParams: [0, 20, 40, 60],
+    });
+    const reads = () => relayGet.mock.calls.filter(([p]) => String(p).startsWith("/api/of/v2/chats?"));
+    relayGet.mockImplementation(async (path: string) => {
+      const offset = Number(new URLSearchParams(path.split("?")[1]).get("offset"));
+      return { list: [{ ...CHATS[0], withUser: { id: offset + 1 } }], hasMore: true };
+    });
+    const send = () => box.dispatchEvent(type === "wheel"
+      ? new WheelEvent("wheel", { deltaY: 10, bubbles: true })
+      : new MouseEvent("pointerdown", { bubbles: true }));
+    let now = 1000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    try {
+      renderHook(() => useOfData({ current: iframe }, PAGE("messages/index")), { wrapper });
+      act(() => { iframe.dispatchEvent(new Event("load")); });
+      await waitFor(() => expect(box.querySelectorAll("[data-oi-chat]")).toHaveLength(4));
+      expect(reads()).toHaveLength(0);
+      act(() => {
+        send();
+        if (type === "pointerdown") box.dispatchEvent(new Event("scroll"));
+      });
+      await waitFor(() => expect(box.querySelectorAll("[data-oi-chat]")).toHaveLength(5));
+      expect(reads()).toHaveLength(1);
+      expect(reads()[0][1]).toMatchObject({ caller: "scroll", intent: "explicit" });
+      if (type === "wheel") {
+        now += 150;
+        act(() => { send(); });
+        expect(reads()).toHaveLength(1);
+      }
+    } finally {
+      cleanup();
+      iframe.remove();
+      clock.mockRestore();
+    }
   });
 });

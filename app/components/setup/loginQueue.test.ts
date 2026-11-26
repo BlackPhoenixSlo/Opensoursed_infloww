@@ -5,7 +5,9 @@ import {
   lookForQueue, MAX_PASTE, parseStored, POLL_MS, pollEvery, storedOf, type Action, type BadLine, type LoginQueue,
   type QueueEntry, type QueueView,
 } from "./loginQueue";
-import { STATE_TEXT } from "./remoteLogin";
+import { stateText } from "./remoteLogin";
+
+const STATE_TEXT = stateText("OnlyFans");
 
 const entry = (email: string, state: QueueEntry["state"], over: Partial<QueueEntry> = {}): QueueEntry => ({
   email, state, job_id: null, message: "", live_view_url: null, account_id: null, ...over,

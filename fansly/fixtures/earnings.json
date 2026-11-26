@@ -1,0 +1,10 @@
+{
+  "_source": "RECIPES.md 'Capture session 1126' — real shapes, synthetic ids",
+  "stats": [
+    {"type": 2110, "totalGross": 3000, "totalNet": 2400, "accountId": "900000000000000001", "timestamp": 1788307200000}
+  ],
+  "monthlystats": [
+    {"year": 0, "month": 0, "totalGross": 0, "totalNet": 0, "before": 1795719042409, "after": 1793127042409, "topPercent": 96.5, "maxTopPercent": 100, "brackets": null},
+    {"timestamp": 1788220800000, "accountId": "900000000000000001", "totalGross": 3000, "totalNet": 2400, "year": 2026, "month": 9, "before": 1790812799999, "after": 1788220800000, "topPercent": 82.7, "maxTopPercent": 100, "brackets": null}
+  ]
+}

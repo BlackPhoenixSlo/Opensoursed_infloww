@@ -1,4 +1,4 @@
-{"openapi_sha1": "e2c5d3325656861fdc1579562ec4bbb6043c3099",
+{"openapi_sha1": "a351c7861d5c7e346017338837c446e0cf2330f5",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -85,6 +85,7 @@
   ["POST", "/admin/priority-mass/runs/{run_id}/resume", "resume_run"],
   ["GET", "/admin/split-inbox", "get_split_inbox"],
   ["PUT", "/admin/split-inbox", "put_split_inbox"],
+  ["PATCH", "/admin/split-inbox", "patch_split_inbox"],
   ["GET", "/lanes-panel/config", "get_lane_config"],
   ["POST", "/lanes-panel/config", "set_lane_config"],
   ["GET", "/lanes-panel/restart", "restart_status"],

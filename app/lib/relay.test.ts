@@ -2,11 +2,12 @@ import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  API_KEY_ERROR_EVENT, ApiKeyError, RelayError, describeLoadError, isRateLimited, prefetchScreenBundle,
-  relay, request,
+  API_KEY_ERROR_EVENT, ApiKeyError, RelayError, STALE_CELL_GEN_EVENT, chatListRetry, describeLoadError, isDeepRefused,
+  isRateLimited, prefetchScreenBundle, relay, relayFile, request, resetCellGens,
   type ApiKeyErrorPayload,
 } from "@/lib/relay";
 import { resetInline, seedInline } from "@/lib/inlineBoot";
+import { ACTOR_RENEW_MS, resetActorRenewal } from "@/lib/actorRenew";
 import { BUNDLE_TIMEOUT_MS, resetScreenBundles, useScreen } from "@/lib/screenBundle";
 import { bundlePath, type Screen } from "@/lib/screenKey";
 
@@ -263,6 +264,52 @@ describe("request › a failed screen bundle's reads keep a slot (slop fan-list-
 });
 
 
+describe("chat-list caller and intent", () => {
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); resetScreenBundles(); });
+  const CHATS = "/api/of/v2/chats?limit=25&offset=100&order=recent";
+  const sentWith = () => {
+    const sent: Array<{ path: string; caller: string | null; intent: string | null }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      const h = new Headers(init.headers);
+      sent.push({ path: url.split("?")[0], caller: h.get("X-List-Caller"), intent: h.get("X-List-Intent") });
+      return new Response(url.startsWith("/admin/screens/") ? '{"answers":[]}' : '{"list":[],"hasMore":false}');
+    }));
+    return sent;
+  };
+
+  it.each<[string, Parameters<typeof relay.get>[1], string | null, string | null]>([
+    ["untagged", { accountId: "a" }, null, null],
+    ["caller only", { accountId: "a", caller: "autofill" }, "autofill", null],
+    ["caller and explicit intent", { accountId: "a", caller: "loadmore", intent: "explicit" }, "loadmore", "explicit"],
+  ])("headers: %s", async (_n, ctx, caller, intent) => {
+    const sent = sentWith();
+    await relay.get(CHATS, ctx);
+    expect(sent).toEqual([{ path: "/api/of/v2/chats", caller, intent }]);
+  });
+
+  it("an explicit read skips the screen bundle; an automatic one starts it, and the bundle carries its caller", async () => {
+    const sent = sentWith();
+    renderHook(() => useScreen(INBOX));
+    await relay.get(CHATS, { accountId: "a", caller: "scroll", intent: "explicit" });
+    expect(sent).toEqual([{ path: "/api/of/v2/chats", caller: "scroll", intent: "explicit" }]);
+    sent.length = 0;
+    await relay.get(CHATS, { accountId: "a", caller: "replay" });
+    expect(sent[0]).toEqual({ path: "/admin/screens/inbox", caller: "replay", intent: null });
+  });
+
+  const refused = new RelayError(428, { detail: "Reload the page to load older chats." });
+  const busy = new RelayError(502, { detail: { upstream_status: 429, upstream_body: "busy" } });
+  it.each<[string, unknown, number, boolean, boolean]>([
+    ["428 refused", refused, 0, true, false],
+    ["429 busy", busy, 0, false, false],
+    ["other error, first failure", new RelayError(502, {}), 0, false, true],
+    ["other error, second failure", new RelayError(502, {}), 1, false, false],
+  ])("%s: deep refused %s, retried %s", (_n, e, failures, deep, retried) => {
+    expect(isDeepRefused(e)).toBe(deep);
+    expect(chatListRetry(failures, e)).toBe(retried);
+  });
+});
+
 describe("request › background queue", () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -296,5 +343,151 @@ describe("request › background queue", () => {
       ac.abort();
       await Promise.all(calls);
     }
+  });
+});
+
+describe("cell mode", () => {
+  const meta = () => {
+    const m = document.createElement("meta");
+    m.name = "oi-cells";
+    document.head.append(m);
+  };
+  const answer = (gen: string | null, status = 200, body: unknown = {}) =>
+    vi.fn(async (_u: string, _i: RequestInit) => new Response(JSON.stringify(body), {
+      status, headers: gen ? { "X-Cell-Gen": gen } : {},
+    }));
+  const relayCalls = (f: ReturnType<typeof answer>) => f.mock.calls.filter((c) => !c[0].startsWith("/auth/actor"));
+  afterEach(() => {
+    document.head.querySelectorAll('meta[name="oi-cells"]').forEach((m) => m.remove());
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    resetCellGens();
+    resetActorRenewal();
+  });
+
+  const byUrl = (routes: Record<string, number[]>) => vi.fn(async (u: string, _i: RequestInit) => {
+    const key = Object.keys(routes).find((k) => u.startsWith(k))!;
+    const status = routes[key].length > 1 ? routes[key].shift()! : routes[key][0];
+    return new Response(JSON.stringify(status === 200 ? {} : { detail: { error: "actor_stale" } }), { status });
+  });
+  const urls = (f: ReturnType<typeof byUrl>) => f.mock.calls.map((c) => c[0].split("?")[0]);
+
+  it("a 401 renews oi_actor on control once, then retries the call", async () => {
+    meta();
+    const f = byUrl({ "/auth/actor": [200], "/admin/chats/recent": [401, 200] });
+    vi.stubGlobal("fetch", f);
+    await relay.get("/admin/chats/recent?account_id=900539700124344320");
+    expect(urls(f)).toEqual(["/auth/actor", "/admin/chats/recent", "/auth/actor", "/admin/chats/recent"]);
+    expect(f.mock.calls[2][1]).toMatchObject({ method: "POST", credentials: "same-origin" });
+  });
+
+  it("parallel 401s share one renewal; a failed renewal returns the 401 without a retry", async () => {
+    meta();
+    const f = byUrl({ "/auth/actor": [200], "/admin/chats/recent": [401, 401, 200] });
+    vi.stubGlobal("fetch", f);
+    await Promise.all([relay.get("/admin/chats/recent?account_id=1"), relay.get("/admin/chats/recent?account_id=2")]);
+    expect(urls(f).filter((u) => u === "/auth/actor")).toHaveLength(2);
+    const g = byUrl({ "/auth/actor": [401], "/admin/chats/recent": [401] });
+    vi.stubGlobal("fetch", g);
+    await expect(relay.get("/admin/chats/recent?account_id=1")).rejects.toMatchObject({ status: 401 });
+    expect(urls(g)).toEqual(["/admin/chats/recent", "/auth/actor"]);
+    const h = byUrl({ "/auth/me": [401] });
+    vi.stubGlobal("fetch", h);
+    await expect(relay.get("/auth/me")).rejects.toMatchObject({ status: 401 });
+    expect(urls(h)).toEqual(["/auth/me"]);
+  });
+
+  it("mints before the first cell-mode call of a page, then renews every 5 min", async () => {
+    vi.useFakeTimers();
+    meta();
+    const f = byUrl({ "/auth/actor": [200], "/admin/chats/recent": [200] });
+    vi.stubGlobal("fetch", f);
+    await relay.get("/admin/chats/recent?account_id=1");
+    await relay.get("/admin/chats/recent?account_id=2");
+    await vi.advanceTimersByTimeAsync(ACTOR_RENEW_MS - 1);
+    expect(urls(f)).toEqual(["/auth/actor", "/admin/chats/recent", "/admin/chats/recent"]);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(ACTOR_RENEW_MS);
+    expect(urls(f)).toEqual(["/auth/actor", "/admin/chats/recent", "/admin/chats/recent", "/auth/actor", "/auth/actor"]);
+  });
+
+  it("env unset: a 401 is returned as is, no renewal, no timer", async () => {
+    vi.useFakeTimers();
+    const f = byUrl({ "/auth/actor": [200], "/admin/chats/recent": [401] });
+    vi.stubGlobal("fetch", f);
+    await expect(relay.get("/admin/chats/recent?account_id=1")).rejects.toMatchObject({ status: 401 });
+    await vi.advanceTimersByTimeAsync(ACTOR_RENEW_MS * 2);
+    expect(urls(f)).toEqual(["/admin/chats/recent"]);
+  });
+
+  it("refuses an unclassified call that names no Creator, before any fetch", async () => {
+    meta();
+    const f = answer(null);
+    vi.stubGlobal("fetch", f);
+    await expect(relay.post("/admin/mass-messages/1/cancel")).rejects.toMatchObject({
+      status: 400, body: { detail: { error: "account_required" } },
+    });
+    await expect(relay.get("/api/of/v2/users/me")).rejects.toMatchObject({ status: 400 });
+    await expect(relayFile("/admin/reports/run", undefined, {})).rejects.toMatchObject({ status: 400 });
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it("lets control, account-named, cell-named and app calls through", async () => {
+    meta();
+    const f = answer(null);
+    vi.stubGlobal("fetch", f);
+    await relay.get("/auth/me");
+    await relay.post("/admin/mass-messages/1/cancel", undefined, { accountId: "900539700124344321" });
+    await relay.get("/admin/screens/inbox", { cellId: "s02" });
+    await relay.get("/api/assistant");
+    expect(relayCalls(f)).toHaveLength(4);
+    expect(new Headers(relayCalls(f)[2][1].headers).get("X-Cell-Id")).toBe("s02");
+  });
+
+  it("echoes the Creator's X-Cell-Gen on writes only, per Creator", async () => {
+    meta();
+    const f = answer("3");
+    vi.stubGlobal("fetch", f);
+    await relay.get("/api/of/v2/users/me", { accountId: "900539700124344320" });
+    await relay.post("/admin/messages/900539700124344320/x", {});
+    await relay.get("/api/of/v2/users/me", { accountId: "900539700124344320" });
+    await relay.post("/admin/messages/900539700124344321/x", {});
+    const sent = relayCalls(f).map((c) => new Headers(c[1].headers).get("X-Cell-Gen"));
+    expect(sent).toEqual([null, "3", null, null]);
+  });
+
+  it("409 stale_cell_gen asks the view to refetch and adopts the Cell's generation", async () => {
+    meta();
+    vi.stubGlobal("fetch", answer("1"));
+    await relay.get("/admin/accounts/42");
+    vi.stubGlobal("fetch", answer("2", 409, { detail: { error: "stale_cell_gen", cell_gen: 2 } }));
+    const heard = vi.fn();
+    window.addEventListener(STALE_CELL_GEN_EVENT, heard);
+    await expect(relay.post("/admin/accounts/42/x", {})).rejects.toMatchObject({ status: 409 });
+    window.removeEventListener(STALE_CELL_GEN_EVENT, heard);
+    expect(heard).toHaveBeenCalledTimes(1);
+    expect((heard.mock.calls[0][0] as CustomEvent).detail).toEqual({ accountId: "42" });
+    const f = answer("2");
+    vi.stubGlobal("fetch", f);
+    await relay.post("/admin/accounts/42/x", {});
+    expect(new Headers(relayCalls(f)[0][1].headers).get("X-Cell-Gen")).toBe("2");
+  });
+
+  it("cellAccountId names the Creator only in cell mode", async () => {
+    const f = answer(null);
+    vi.stubGlobal("fetch", f);
+    await relay.post("/admin/promotions/7", {}, { cellAccountId: "900539700124344321" });
+    meta();
+    await relay.post("/admin/promotions/7", {}, { cellAccountId: "900539700124344321" });
+    expect(relayCalls(f).map((c) => new Headers(c[1].headers).get("X-Account-Id"))).toEqual([null, "900539700124344321"]);
+  });
+
+  it("env unset: no refusal, no echo (as main)", async () => {
+    const f = answer(null);
+    vi.stubGlobal("fetch", f);
+    await relay.post("/admin/mass-messages/1/cancel");
+    await relay.post("/admin/accounts/42/x", {});
+    expect(f).toHaveBeenCalledTimes(2);
+    expect(f.mock.calls.every((c) => !new Headers(c[1].headers).has("X-Cell-Gen"))).toBe(true);
   });
 });

@@ -1,4 +1,4 @@
-import { relay } from "@/lib/relay";
+import { cellMode, relay } from "@/lib/relay";
 import { SELECTED_SOURCE, sortedIds, type LeaseBody } from "@/lib/viewLeaseState";
 
 export const VIEW_LEASE_RENEW_MS = 20_000;
@@ -27,8 +27,16 @@ export interface LeaseAnswer {
   warm: "started" | "reused" | "none";
 }
 
-export function postLease(body: LeaseBody): Promise<LeaseAnswer> {
-  return relay.post<LeaseAnswer>("/admin/view-lease", body);
+export async function postLease(body: LeaseBody): Promise<LeaseAnswer> {
+  if (!cellMode()) return relay.post<LeaseAnswer>("/admin/view-lease", body);
+  const ids = [...new Set([...body.account_ids, ...(body.selected ? [body.selected] : [])])];
+  const answers = await Promise.all(ids.map((accountId) => relay.post<LeaseAnswer>("/admin/view-lease", body, { accountId })));
+  const warms = answers.map((a) => a.warm);
+  return {
+    leased: [...new Set(answers.flatMap((a) => a.leased))],
+    ttl_s: answers[0]?.ttl_s ?? 0,
+    warm: warms.includes("started") ? "started" : warms.includes("reused") ? "reused" : "none",
+  };
 }
 
 

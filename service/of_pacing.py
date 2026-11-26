@@ -26,7 +26,7 @@ payouts 11), none to a click. The walks paged as fast as OF answered.
       OF's 429 closes the Creator's gate. After a cooldown, one probe goes:
       sends first, then reads, then walk pages, oldest first within each class.
       A successful probe opens the gate and spaces out queued requests.
-      Reads have READ_BUDGET_S to wait. Sends pass an absolute dispatch deadline.
+      Reads have READ_BUDGET_S to wait (read_budget(s): s). Sends pass an absolute dispatch deadline.
   upstream(exc) / allow_s(text) / asked_wait(header, allow)
       The one reader of OF's answer behind an exception: (status, body, Retry-After header);
       "Please allow N seconds" as N, uncapped; OF's asked wait (the header first, else the
@@ -81,6 +81,7 @@ Limits, as built (kept on purpose):
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import itertools
@@ -104,6 +105,7 @@ RETRY_DEFAULT_S = 1.0  # a 429 whose text names no wait
 RETRY_MAX_S = 10.0
 COOLDOWNS_S = (3.0, 5.0, 8.0, 13.0, 21.0, 34.0)  # owner: the gate's cooldown per 429 in a row
 READ_BUDGET_S = 45.0
+LIST_READ_BUDGET_S = 3.0  # owner: a chat-list read waits <= 5 s total (gate + chats_page in-page retry)
 SEND_BUDGET_S = 55.0  # leaves room for the OF POST before Cloudflare's origin deadline
 MAX_READ_WAITERS = 16
 RETRY_HEADER_MAX_S = 120.0
@@ -121,6 +123,7 @@ class _Walk:
 
 
 _WALK: ContextVar[_Walk | None] = ContextVar("of_pacing_walk", default=None)
+_READ_BUDGET: ContextVar[float | None] = ContextVar("of_pacing_read_budget", default=None)
 _lock = threading.Lock()
 _next_at: dict[str, float] = {}
 _last_user: dict[str, float] = {}
@@ -335,6 +338,15 @@ def _gate_call(
                     g.probing = False
 
 
+@contextlib.contextmanager
+def read_budget(secs: float):
+    tok = _READ_BUDGET.set(secs)
+    try:
+        yield
+    finally:
+        _READ_BUDGET.reset(tok)
+
+
 class SendDispatchExpired(Exception):
     pass
 
@@ -350,7 +362,8 @@ def absorb_429(account_id: Any, call: Callable[[], Any], *,
     send = send_deadline is not None
     me = (0 if send else 1, next(_tickets))
     t0 = clock()
-    deadline = send_deadline if send_deadline is not None else t0 + READ_BUDGET_S
+    budget = _READ_BUDGET.get()
+    deadline = send_deadline if send else t0 + (READ_BUDGET_S if budget is None else budget)
     own: BaseException | None = None
     try:
         while True:

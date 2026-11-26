@@ -17,7 +17,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { relay, type AccountMeta, type OFChatItem } from "@/lib/relay";
+import { RelayError, relay, type AccountMeta, type OFChatItem } from "@/lib/relay";
 import { UNREAD_VIEW_MAX_AGE_MS } from "@/lib/chatsCache";
 import { AllPlatformsContext, PLATFORM_KEY, resetPlatformForTests, setPlatform } from "@/lib/platform";
 import { renderWithProviders, settled } from "@/test-utils";
@@ -186,9 +186,12 @@ function serveSplit(group_count: number, assignments: Record<string, number>) {
 function serveSavableSplit(group_count: number, assignments: Record<string, number>) {
   let stored = { group_count, assignments };
   routeRelay("/admin/split-inbox?", () => ({ account_id: ACCOUNT_ID, config: stored }));
-  return vi.mocked(relay.put).mockReset().mockImplementation(async (_path, body) => {
-    stored = (body as { config: typeof stored }).config;
-    return { account_id: ACCOUNT_ID, config: stored };
+  return vi.mocked(relay.patch).mockReset().mockImplementation(async (_path, body) => {
+    const edits = body as { group_count?: number; assignments?: Record<string, number> };
+    const group_count = edits.group_count ?? stored.group_count;
+    const merged = { ...stored.assignments, ...edits.assignments };
+    stored = { group_count, assignments: Object.fromEntries(Object.entries(merged).filter(([, g]) => g <= group_count)) };
+    return { configs: { [ACCOUNT_ID]: stored } };
   });
 }
 async function saveSplit(user: ReturnType<typeof userEvent.setup>) {
@@ -686,6 +689,20 @@ describe("FanList", () => {
     await vi.waitFor(() => expect(chatRequests()).toEqual([
       ["/api/of/v2/chats?limit=25&offset=0&order=recent&query=Two", { refresh: false }],
     ]));
+  });
+
+  it("the refresh icon also re-reads the Split Inbox config, so a chatter's new binding filters the refreshed rows", async () => {
+    const user = userEvent.setup();
+    serveChats(CHATS);
+    renderFanList();
+    await rowOf("Fixture Fan Three");
+    const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    try {
+      await user.click(within(filterRow()).getByRole("button", { name: "Refresh inbox" }));
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["split-inbox", ACCOUNT_ID], exact: true });
+    } finally {
+      invalidate.mockRestore();
+    }
   });
 
   it("the refresh icon re-reads the roster counts once the refreshed list is in, so the badges follow it", async () => {
@@ -1460,8 +1477,7 @@ describe("FanList", () => {
     const sentinel = (observerStub.mock.results.at(-1)!.value as { observe: { mock: { calls: unknown[][] } } })
       .observe.mock.calls[0][0] as HTMLElement;
     const scroller = sentinel.parentElement!;
-    Object.defineProperty(scroller, "scrollTop", { configurable: true, value: 40 });
-    fireEvent.scroll(scroller);
+    fireEvent.wheel(scroller, { deltaY: 40 });
     reachEnd();
     await vi.waitFor(() => expect(pagedOn()).not.toEqual([]));
 
@@ -1900,7 +1916,7 @@ describe("FanList", () => {
   });
 
   it("an owner moves Fan One to \"Inbox 2\" and saves; \"Inbox 2\" then shows Fan One, and \"Inbox 1\" does not", async () => {
-    const put = serveSavableSplit(2, { [FANS[0].id]: 1, [FANS[1].id]: 2, [FANS[2].id]: 2 });
+    const patch = serveSavableSplit(2, { [FANS[0].id]: 1, [FANS[1].id]: 2, [FANS[2].id]: 2 });
     serveChats(CHATS);
     const user = userEvent.setup();
     renderFanList();
@@ -1912,10 +1928,9 @@ describe("FanList", () => {
       .toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]);
     await user.selectOptions(within(reassign).getByRole("combobox", { name: "Fixture Fan One" }), "Inbox 2");
     await saveSplit(user);
-    expect(put).toHaveBeenCalledTimes(1);
-    expect(put).toHaveBeenCalledWith("/admin/split-inbox", {
-      account_id: ACCOUNT_ID,
-      config: { group_count: 2, assignments: { [FANS[0].id]: 2, [FANS[1].id]: 2, [FANS[2].id]: 2 }, chatter_groups: {} },
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledWith("/admin/split-inbox", {
+      account_ids: [ACCOUNT_ID], assignments: { [FANS[0].id]: 2 },
     });
 
     await chooseInbox(user, "Inbox 2");
@@ -1926,7 +1941,7 @@ describe("FanList", () => {
   });
 
   it("with \"Inbox 3\" selected, saving a count of 2 returns the selector to \"All inboxes\", and \"Inbox 1\" and \"Inbox 2\" between them show every loaded Fan exactly once", async () => {
-    const put = serveSavableSplit(3, { [FANS[0].id]: 1, [FANS[1].id]: 2, [FANS[2].id]: 3 });
+    const patch = serveSavableSplit(3, { [FANS[0].id]: 1, [FANS[1].id]: 2, [FANS[2].id]: 3 });
     serveChats(CHATS);
     const user = userEvent.setup();
     renderFanList();
@@ -1938,10 +1953,7 @@ describe("FanList", () => {
     const dialog = await screen.findByRole("dialog", { name: "Split Inbox settings" });
     await user.selectOptions(await within(dialog).findByRole("combobox", { name: "Choose the number of groups" }), "2");
     await saveSplit(user);
-    expect(put).toHaveBeenCalledWith("/admin/split-inbox", {
-      account_id: ACCOUNT_ID,
-      config: { group_count: 2, assignments: { [FANS[0].id]: 1, [FANS[1].id]: 2 }, chatter_groups: {} },
-    });
+    expect(patch).toHaveBeenCalledWith("/admin/split-inbox", { account_ids: [ACCOUNT_ID], group_count: 2 });
 
     await vi.waitFor(() => expect(within(filterRow()).getByRole("button", { name: "All inboxes" })).toBeInTheDocument());
     await vi.waitFor(() => expect(shownFans()).toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]));
@@ -1980,7 +1992,7 @@ describe("FanList", () => {
   });
 
   it("once a saved count of 2 has reset \"Inbox 3\" to \"All inboxes\", saving 3 again leaves the selector on \"All inboxes\"", async () => {
-    const put = serveSavableSplit(3, { [FANS[0].id]: 1, [FANS[1].id]: 2, [FANS[2].id]: 3 });
+    const patch = serveSavableSplit(3, { [FANS[0].id]: 1, [FANS[1].id]: 2, [FANS[2].id]: 3 });
     serveChats(CHATS);
     const user = userEvent.setup();
     renderFanList();
@@ -1997,7 +2009,7 @@ describe("FanList", () => {
     await saveCount("Inbox 3", "2");
     await vi.waitFor(() => expect(within(filterRow()).getByRole("button", { name: "All inboxes" })).toBeInTheDocument());
     await saveCount("All inboxes", "3");
-    expect(put).toHaveBeenCalledTimes(2);
+    expect(patch).toHaveBeenCalledTimes(2);
     await user.click(within(filterRow()).getByRole("button", { name: "All inboxes" }));
     await within(screen.getByRole("region", { name: "Inboxes" })).findByRole("button", { name: "Inbox 3" });
     await user.keyboard("{Escape}");
@@ -2123,6 +2135,136 @@ describe("FanList", () => {
       await expectRow(FANS[1].name, "and me", 2);
       expect(screen.queryByText("wrong inbox")).not.toBeInTheDocument();
       expect(rowOrder()).toEqual(["Fixture Fan Two", "Fixture Fan Three", "Fixture Fan One"]);
+    });
+  });
+
+  describe("chat-list paging budget (chatlist-429)", () => {
+    const pagedFan = (offset: number) => answered(
+      { id: 300000000 + offset, name: `Paged Fan ${offset}`, username: `pagedfan${offset}` }, 60 + offset,
+    );
+    const offsetOf = (path: string) => Number(new URLSearchParams(path.split("?")[1]).get("offset"));
+    const nextPages = () => relayGet.mock.calls
+      .filter(([path]) => path.startsWith("/api/of/v2/chats?") && offsetOf(path) > 0)
+      .map(([path, ctx]) => [offsetOf(path), ctx?.caller, ctx?.intent]);
+    const reachEnd = () => {
+      const [cb] = observerStub.mock.calls.at(-1) as unknown as [IntersectionObserverCallback];
+      act(() => cb([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+    };
+    const scroller = () => ((observerStub.mock.results.at(-1)!.value as { observe: { mock: { calls: unknown[][] } } })
+      .observe.mock.calls[0][0] as HTMLElement).parentElement!;
+    let clock = 0;
+    const scrollDown = () => {
+      const now = vi.spyOn(performance, "now").mockReturnValue(clock += 10_000);
+      fireEvent.wheel(scroller(), { deltaY: 40 });
+      now.mockRestore();
+    };
+    const pause = () => act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+
+    it("one scroll gesture buys one page; a scroll event without user input (scrollIntoView, layout) buys none", async () => {
+      routeRelay("/api/of/v2/chats?", (path) => ({ list: [pagedFan(offsetOf(path))], hasMore: true }));
+      renderFanList();
+      await screen.findByText("Paged Fan 0");
+      reachEnd();
+      await pause();
+      expect(nextPages()).toEqual([]);
+
+      Object.defineProperty(scroller(), "scrollTop", { configurable: true, value: 40 });
+      fireEvent.scroll(scroller());
+      reachEnd();
+      await pause();
+      expect(nextPages()).toEqual([]);
+
+      scrollDown();
+      reachEnd();
+      await screen.findByText("Paged Fan 25");
+      reachEnd();
+      await pause();
+      expect(nextPages()).toEqual([[25, "scroll", "explicit"]]);
+
+      scrollDown();
+      reachEnd();
+      await screen.findByText("Paged Fan 50");
+      expect(nextPages()).toEqual([[25, "scroll", "explicit"], [50, "scroll", "explicit"]]);
+    });
+
+    it("a scroll to the end during a replay walk asks exactly one next page, after the walk lands", async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const cachedPage = (offset: number) => ({
+        rows: [{ ...pagedFan(offset), __accountId: ACCOUNT_ID }], hasMore: true, moreAccounts: [ACCOUNT_ID], scanned: 1,
+      });
+      client.setQueryData(["chats", "model", ACCOUNT_ID, null, null, null, 25], {
+        pages: [0, 25].map(cachedPage), pageParams: [0, 25],
+      }, { updatedAt: Date.now() - 60_000 });
+      const gates: Array<() => void> = [];
+      routeRelay("/api/of/v2/chats?", (path) => {
+        const page = { list: [pagedFan(offsetOf(path))], hasMore: true };
+        return offsetOf(path) < 50 ? new Promise((r) => gates.push(() => r(page))) : page;
+      });
+      renderWithProviders(<FanList selected={null} onSelect={vi.fn()} />, client);
+      await screen.findByText("Paged Fan 25");
+      await vi.waitFor(() => expect(gates).toHaveLength(1));
+      scrollDown();
+      reachEnd();
+      await act(async () => gates.shift()!());
+      await vi.waitFor(() => expect(gates).toHaveLength(1));
+      reachEnd();
+      await act(async () => gates.shift()!());
+      await pause();
+      expect(nextPages()).toEqual([[25, "replay", undefined]]);
+      reachEnd();
+      await screen.findByText("Paged Fan 50");
+      reachEnd();
+      await pause();
+      expect(nextPages()).toEqual([[25, "replay", undefined], [50, "scroll", "explicit"]]);
+    });
+
+    it("a refused deep page keeps the rows and shows a reload line, not the error banner", async () => {
+      routeRelay("/api/of/v2/chats?", (path) => {
+        if (offsetOf(path) > 0) throw new RelayError(428, { detail: "Reload the page to load older chats." }, "Reload the page to load older chats.");
+        return { list: CHATS, hasMore: true };
+      });
+      const user = userEvent.setup();
+      renderFanList();
+      await rowOf("Fixture Fan Three");
+      await user.click(screen.getByRole("button", { name: "Load more conversations" }));
+
+      expect(await screen.findByText("Reload to load older chats.")).toBeInTheDocument();
+      expect(screen.queryByText(/Couldn't refresh/)).not.toBeInTheDocument();
+      expect(shownFans()).toHaveLength(3);
+      expect(nextPages()).toEqual([[25, "loadmore", "explicit"]]);
+    });
+
+    it("a busy OnlyFans on a next page keeps the rows and says try again", async () => {
+      routeRelay("/api/of/v2/chats?", (path) => {
+        if (offsetOf(path) > 0) throw new RelayError(502, { detail: { upstream_status: 429, upstream_body: "busy" } });
+        return { list: CHATS, hasMore: true };
+      });
+      const user = userEvent.setup();
+      renderFanList();
+      await rowOf("Fixture Fan Three");
+      await user.click(screen.getByRole("button", { name: "Load more conversations" }));
+
+      expect(await screen.findByText("OnlyFans is busy, try again.")).toBeInTheDocument();
+      expect(shownFans()).toHaveLength(3);
+      expect(screen.getByRole("button", { name: "Load more conversations" })).toBeInTheDocument();
+    });
+
+    it("Owe reply with no match after the scan cap offers one page per click", async () => {
+      routeRelay("/api/of/v2/chats?", (path) => {
+        const offset = offsetOf(path);
+        return { list: offset === 0 ? CHATS.slice(2) : [{ ...CHATS[2], withUser: { ...CHATS[2].withUser, id: 310000000 + offset } }], hasMore: true };
+      });
+      const user = userEvent.setup();
+      renderFanList();
+      await rowOf("Fixture Fan Three");
+      await user.click(screen.getByRole("button", { name: /^Owe reply/ }));
+
+      const more = await screen.findByRole("button", { name: /0 owed · keep scanning/ });
+      expect(nextPages().map(([o, c]) => [o, c])).toEqual([[25, "fill"], [50, "fill"], [75, "fill"]]);
+      await user.click(more);
+      await screen.findByRole("button", { name: /scanned 5 · 0 owed · keep scanning/ });
+      await pause();
+      expect(nextPages().slice(3)).toEqual([[100, "loadmore", "explicit"]]);
     });
   });
 });

@@ -228,3 +228,27 @@ def test_rebaseline_needs_force_to_replace_manifest(repo):
     assert budget.read_bytes() == before
     assert run(repo, "comment_budget.py", "--rebaseline", "--force").returncode == 0
     assert budget.read_bytes() != before
+
+
+def test_changed_only_skips_unchanged_files(repo, monkeypatch):
+    import json
+    commit(repo, {"a.py": PY, "b.py": PY})
+    assert run(repo, "comment_budget.py", "--rebaseline").returncode == 0
+    budget = repo / "scripts" / "comment-budget.json"
+    manifest = json.loads(budget.read_text())
+    manifest["files"]["src/b.py"] -= 1
+    budget.write_text(json.dumps(manifest))
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+    git(repo, "branch", "-f", "base")
+    monkeypatch.setenv("COMMENT_BASE", "base")
+    assert run(repo, "comment_budget.py", "--check").returncode == 1
+    assert run(repo, "comment_budget.py", "--check", "--changed-only").returncode == 0
+    write(repo, "new.py", "# note\nx = 1\n")
+    r = run(repo, "comment_budget.py", "--check", "--changed-only")
+    assert r.returncode == 1 and "src/new.py" in r.stderr and "src/b.py" not in r.stderr, r.stderr
+    (repo / "src" / "new.py").unlink()
+    commit(repo, {"a.py": PY + "# extra\n"})
+    r = run(repo, "comment_budget.py", "--check", "--changed-only")
+    assert r.returncode == 1 and "src/a.py" in r.stderr and "src/b.py" not in r.stderr, r.stderr
+    assert run(repo, "comment_budget.py", "--report", "--changed-only").returncode == 2

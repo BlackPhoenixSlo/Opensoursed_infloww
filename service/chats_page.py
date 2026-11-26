@@ -16,6 +16,27 @@ _sleep = time.sleep
 HOLD_MIN_S = 1.0
 HOLD_MAX_S = 5.0
 
+AUTO_PAGES = 4
+LIST_CALLERS = frozenset({"mount", "replay", "warmup", "prefetch", "poll", "autofill", "fill", "scroll",
+                          "loadmore", "search", "refresh", "auto"})
+DEEP_REFUSED_DETAIL = "Reload the page to load older chats."
+
+
+def list_caller(raw: str | None) -> str:
+    if not raw:
+        return "-"
+    v = raw.strip().lower()
+    return v if v in LIST_CALLERS else "other"
+
+
+def list_intent(raw: str | None) -> str:
+    return "explicit" if (raw or "").strip().lower() == "explicit" else "-"
+
+
+# Owner: page 5+ of a chat list loads only on a click/scroll for that page; unattended deep reads tripped OF 429s.
+def deep_page_refused(offset: int, limit: int, intent: str | None) -> bool:
+    return offset >= AUTO_PAGES * limit and list_intent(intent) != "explicit"
+
 
 # A page that ended in 429 is not cached, so every re-ask hit OF again: hold the 429 per page key for OF's asked wait.
 class ThrottleHold:

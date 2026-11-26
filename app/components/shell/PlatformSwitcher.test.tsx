@@ -29,7 +29,7 @@ let counts: Record<string, { unread: number; owe_reply: number }> = {};
 vi.mock("@/hooks/useRosterCounts", () => ({ useRosterCounts: () => counts }));
 vi.mock("@/lib/appliedSettings", () => ({ useAppliedSettings: () => ({ data: undefined }) }));
 // ScopeProvider pushes its scope to the SSE bus.
-vi.mock("@/lib/events", () => ({ eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {} } }));
+vi.mock("@/lib/events", () => ({ eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {}, onStreamState: () => () => {} } }));
 
 import PlatformGate, { LOAD_FAILED_LINE, PlatformSync } from "@/components/shell/PlatformGate";
 import PlatformSwitcher, { platformUnread } from "@/components/shell/PlatformSwitcher";

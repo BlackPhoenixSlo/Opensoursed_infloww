@@ -17,11 +17,11 @@ export interface RemoteLoginStatus {
 }
 
 export const TERMINAL = new Set(["done", "error", "cancelled"]);
-export const STATE_TEXT: Record<string, string> = {
+export const stateText = (site: string): Record<string, string> => ({
   starting: "Starting the remote browser (about 10 to 20 seconds)…",
-  typing: "Entering the email and password on OnlyFans…",
-  challenge: "OnlyFans is showing a verification check. Solve it in the live view.",
-  otp: "OnlyFans is asking for the 2FA code. Enter it below (or in the live view).",
+  typing: `Entering the email and password on ${site}…`,
+  challenge: `${site} is showing a verification check. Solve it in the live view.`,
+  otp: `${site} is asking for the 2FA code. Enter it below (or in the live view).`,
   capturing: "Signed in. Saving the session…",
-};
+});
 export const jobPath = (id: string) => `/admin/login/remote/${encodeURIComponent(id)}`;

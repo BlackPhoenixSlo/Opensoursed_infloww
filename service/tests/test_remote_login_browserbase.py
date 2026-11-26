@@ -23,6 +23,8 @@ import employees  # noqa: E402
 import proxies as proxy_registry  # noqa: E402
 import proxy_health  # noqa: E402
 import remote_login as rl  # noqa: E402
+import remote_login_onlyfans as ofl  # noqa: E402
+from remote_login_decide import STATE_CHALLENGE  # noqa: E402
 
 _TMP = Path(tempfile.gettempdir()) / f"bb_login_test_{uuid.uuid4().hex}"
 _TMP.mkdir(parents=True, exist_ok=True)
@@ -31,6 +33,8 @@ proxy_registry.REGISTRY_PATH.write_text(json.dumps({"proxies": []}))
 
 PROXY_PW = "pr0xyPW"
 OF_PW = "hunter2-of"
+OTP_ASK = "OnlyFans asks for the 2FA code — enter it here or in the live view"
+OTP_REJECTED = "OnlyFans didn't accept that code (or hasn't answered yet) — try again"
 _ENV = ("BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID")
 
 
@@ -45,7 +49,7 @@ def _set_env(key="bb_test_key", project="proj-xyz"):
 def _job(**kw):
     now = time.time()
     base = dict(id=uuid.uuid4().hex, email="e@x.com", principal=None,
-                created_at=now, expires_at=now + rl.JOB_WINDOW_S)
+                created_at=now, expires_at=now + rl.JOB_WINDOW_S, platform="onlyfans")
     base.update(kw)
     return rl.RemoteLoginJob(**base)
 
@@ -62,7 +66,7 @@ def case_backend_selector():
     import inspect
     assert inspect.signature(rl.start_login).parameters["backend"].default == rl.BACKEND_LOCAL
     _set_env()
-    kw = dict(email="a@b", password="p", principal=None)
+    kw = dict(email="a@b", password="p", principal=None, platform="onlyfans")
     _raises(rl.BackendUnavailable, rl.start_login, **kw)
     _raises(ValueError, rl.start_login, **kw, backend="nope")
 
@@ -74,9 +78,9 @@ def case_env_and_proxy_fail_loud():
     assert "BROWSERBASE_PROJECT_ID" in str(_raises(RuntimeError, rl._bb_create_session))
     _set_env()
     _raises(ValueError, rl.start_login, email="a@b", password="p", proxy=rl.PROXY_CUSTOM,
-            proxy_label="", principal=None, backend=rl.BACKEND_BROWSERBASE)
+            proxy_label="", principal=None, backend=rl.BACKEND_BROWSERBASE, platform="onlyfans")
     _raises(ValueError, rl.start_login, email="a@b", password="p", proxy="bogus",
-            principal=None, backend=rl.BACKEND_BROWSERBASE)
+            principal=None, backend=rl.BACKEND_BROWSERBASE, platform="onlyfans")
     assert not rl._jobs, "no job may be registered by a refused start"
 
 
@@ -246,7 +250,7 @@ def case_managed_login_binds_proxy():
     assert "proxy_fallback" not in seen["live"]
     assert job.message == "session captured; proxy hu-1 attached for all later traffic", job.message
     assert order == [("bind", "hu-1", "777"), ("persist", "777", None), ("hooks", "777")], order
-    assert _GOTOS == [f"s1 {rl.OF_HOME}"], _GOTOS
+    assert _GOTOS == [f"s1 {ofl.HOME}"], _GOTOS
     creates = [b for m, u, b in calls if (m, u) == ("POST", f"{_BB}/sessions")]
     assert creates == [{"projectId": "proj-xyz", "proxies": True,
                         "browserSettings": {"solveCaptchas": False,
@@ -326,7 +330,7 @@ def case_request_from_capture():
                        "time": "1700000000000", "user-agent": None},
            "rules": {"static_param": "SP", "start": "1", "end": None}}
     cookies = [{"name": "auth_id", "value": "123", "domain": ".onlyfans.com", "path": "/"}]
-    parsed = rl._request_from_capture(cap, cookies, "UA/1")
+    parsed = ofl.request_from_capture(cap, cookies, "UA/1")
     h = parsed["headers"]
     assert h["user-id"] == "123" and h["user-agent"] == "UA/1"
     assert h["x-relay-static-param"] == "SP" and h["x-relay-sign-start"] == "1"
@@ -504,10 +508,10 @@ class _FormPage:
     def __init__(self, **email_kw):
         self.log = []
         self.fields = {
-            rl._EMAIL_FIELD: _Field(self.log, "email", **email_kw),
-            rl._PASSWORD_FIELD: _Field(self.log, "password"),
-            rl._SUBMIT_BUTTON: _Field(self.log, "submit"),
-            rl._COOKIE_ONLY_NECESSARY: _Field(self.log, "only-necessary-cookies"),
+            ofl._EMAIL_FIELD: _Field(self.log, "email", **email_kw),
+            ofl._PASSWORD_FIELD: _Field(self.log, "password"),
+            ofl._SUBMIT_BUTTON: _Field(self.log, "submit"),
+            ofl._COOKIE_ONLY_NECESSARY: _Field(self.log, "only-necessary-cookies"),
         }
 
     def locator(self, sel):
@@ -540,25 +544,25 @@ class _Frame:
 
 def case_form_waited_filled_verified():
     page = _FormPage()
-    rl._type_credentials(page, "a@b.com", OF_PW)
+    rl._type_credentials(page, "a@b.com", OF_PW, ofl)
     assert page.log == [
         ("wait", "email", rl.FORM_WAIT_S * 1000),
         ("click", "only-necessary-cookies"),
         ("fill", "email"), ("fill", "password"),
         ("click", "submit"),
     ], page.log
-    assert page.fields[rl._EMAIL_FIELD].value == "a@b.com"
-    assert page.fields[rl._PASSWORD_FIELD].value == OF_PW
+    assert page.fields[ofl._EMAIL_FIELD].value == "a@b.com"
+    assert page.fields[ofl._PASSWORD_FIELD].value == OF_PW
     page = _FormPage()
-    page.fields[rl._COOKIE_ONLY_NECESSARY].visible = False
-    rl.fill_login_form(page, "a@b.com", OF_PW)
+    page.fields[ofl._COOKIE_ONLY_NECESSARY].visible = False
+    ofl.fill_login_form(page, "a@b.com", OF_PW)
     assert ("click", "only-necessary-cookies") not in page.log, page.log
 
 
 def case_swallowed_fill_is_retyped():
     page = _FormPage(swallow=1)
-    rl.fill_login_form(page, "a@b.com", OF_PW)
-    assert page.fields[rl._EMAIL_FIELD].value == "a@b.com"
+    ofl.fill_login_form(page, "a@b.com", OF_PW)
+    assert page.fields[ofl._EMAIL_FIELD].value == "a@b.com"
     assert [e for e in page.log if e[1] == "email"][-1] == ("type", "email"), page.log
 
 
@@ -589,7 +593,7 @@ def case_form_never_appears_fails_fast():
 
 def case_field_never_takes_value_fails():
     page = _FormPage(swallow=99)
-    e = _raises(rl.LoginFormError, rl.fill_login_form, page, "a@b.com", OF_PW)
+    e = _raises(rl.LoginFormError, ofl.fill_login_form, page, "a@b.com", OF_PW)
     assert "email field" in str(e) and "a@b.com" not in str(e), e
     attempts = [x for x in page.log if x[1] == "email" and x[0] in ("fill", "type")]
     assert len(attempts) == rl.FILL_ATTEMPTS, page.log
@@ -709,7 +713,7 @@ class _OtpField(_Field):
     def locator(self, sel):
         if sel == "xpath=ancestor::form":
             return self
-        assert sel == rl._OTP_SUBMIT_BUTTON, sel
+        assert sel == ofl.OTP_SUBMIT_BUTTON, sel
         return _OtpVerify(self)
 
     def press(self, key, timeout=None):
@@ -743,7 +747,7 @@ class _OtpPage(_FormPage):
         super().__init__()
         self.signed_in = False
         self.otp_tries = []
-        self.fields[rl._OTP_FIELD] = _OtpField(self)
+        self.fields[ofl.OTP_FIELD] = _OtpField(self)
 
     hide_prompt = False
 
@@ -822,7 +826,7 @@ def _until(cond, timeout=10.0):
 
 def case_otp_code_signs_in():
     def _steps(jid, page, statuses):
-        assert statuses[-1]["state"] == rl.STATE_OTP and statuses[-1]["message"] == rl.OTP_ASK, statuses[-1]
+        assert statuses[-1]["state"] == rl.STATE_OTP and statuses[-1]["message"] == OTP_ASK, statuses[-1]
         r = client.post(f"/admin/login/remote/{jid}/otp", json={"code": f" {GOOD_OTP[:3]} {GOOD_OTP[3:]} "})
         assert r.status_code == 200, r.text
         statuses.append(r.json())
@@ -848,7 +852,7 @@ def case_otp_wrong_code_retries():
         assert r.status_code == 200 and r.json()["message"] == rl.OTP_CHECKING, r.text
         r = client.post(f"/admin/login/remote/{jid}/otp", json={"code": "111111"})
         assert r.status_code == 409 and "already being checked" in r.text and "111111" not in r.text, r.text
-        _until(lambda: job.message == rl.OTP_REJECTED)
+        _until(lambda: job.message == OTP_REJECTED)
         statuses.append(client.get(f"/admin/login/remote/{jid}").json())
         assert statuses[-1]["state"] == rl.STATE_OTP, statuses[-1]
         assert not page.signed_in
@@ -861,7 +865,7 @@ def case_otp_wrong_code_retries():
         rl.OTP_VERIFY_S = orig
     assert job.state == rl.STATE_DONE, (job.state, job.error)
     assert page.otp_tries == ["000000", GOOD_OTP], page.otp_tries
-    assert any(s["message"] == rl.OTP_REJECTED and s["state"] == rl.STATE_OTP for s in statuses), statuses
+    assert any(s["message"] == OTP_REJECTED and s["state"] == rl.STATE_OTP for s in statuses), statuses
     blob = json.dumps(statuses) + "\n".join(lines)
     assert "000000" not in blob and GOOD_OTP not in blob
 
@@ -878,7 +882,7 @@ def case_otp_prompt_back_within_verify_window():
             page.hide_prompt = True
             if gap_captcha:
                 page.frames = [main, _Frame("https://www.google.com/recaptcha/api2/anchor?k=x", parent=main)]
-            _until(lambda: job.state == (rl.STATE_CHALLENGE if gap_captcha else rl.STATE_TYPING))
+            _until(lambda: job.state == (STATE_CHALLENGE if gap_captcha else rl.STATE_TYPING))
             seen.append(job.public())
             page.hide_prompt = False
             _until(lambda: job.state == rl.STATE_OTP, timeout=3)
@@ -886,8 +890,8 @@ def case_otp_prompt_back_within_verify_window():
             assert client.post(f"/admin/login/remote/{jid}/otp", json={"code": GOOD_OTP}).status_code == 200
 
         job, page, lines, statuses = _otp_login(_steps)
-        assert seen[0]["state"] == (rl.STATE_CHALLENGE if gap_captcha else rl.STATE_TYPING), seen
-        assert seen[1]["state"] == rl.STATE_OTP and seen[1]["message"] == rl.OTP_REJECTED, (gap_captcha, seen)
+        assert seen[0]["state"] == (STATE_CHALLENGE if gap_captcha else rl.STATE_TYPING), seen
+        assert seen[1]["state"] == rl.STATE_OTP and seen[1]["message"] == OTP_REJECTED, (gap_captcha, seen)
         assert job.state == rl.STATE_DONE and page.otp_tries == ["000000", GOOD_OTP], (job.state, page.otp_tries)
 
 
@@ -940,7 +944,7 @@ def case_enter_otp_one_attempt_cancel_and_form_scope():
     def page_with(field):
         page = _FormPage()
         field.log = page.log
-        page.fields[rl._OTP_FIELD] = field
+        page.fields[ofl.OTP_FIELD] = field
         return page
 
     job = _job(state=rl.STATE_OTP, expires_at=time.time() + 600)
@@ -949,17 +953,17 @@ def case_enter_otp_one_attempt_cancel_and_form_scope():
     assert rl._enter_otp(job, page, GOOD_OTP) is False
     assert page.log == [("fill", "otp")], page.log
     assert set(field.timeouts) == {rl.OTP_STEP_TIMEOUT_MS}, field.timeouts
-    assert rl._OTP_SUBMIT_BUTTON.endswith(":visible"), rl._OTP_SUBMIT_BUTTON
+    assert ofl.OTP_SUBMIT_BUTTON.endswith(":visible"), ofl.OTP_SUBMIT_BUTTON
     field = _OtpFormField([])
     page = page_with(field)
     assert rl._enter_otp(job, page, GOOD_OTP) is True
-    assert page.log == [("fill", "otp"), ("locator", "xpath=ancestor::form"), ("locator", rl._OTP_SUBMIT_BUTTON),
+    assert page.log == [("fill", "otp"), ("locator", "xpath=ancestor::form"), ("locator", ofl.OTP_SUBMIT_BUTTON),
                         ("click", "otp-form-submit")], page.log
     assert ("click", "submit") not in page.log
     field = _OtpFormField([], button=False)
     page = page_with(field)
     assert rl._enter_otp(job, page, GOOD_OTP) is True
-    assert page.log == [("fill", "otp"), ("locator", "xpath=ancestor::form"), ("locator", rl._OTP_SUBMIT_BUTTON),
+    assert page.log == [("fill", "otp"), ("locator", "xpath=ancestor::form"), ("locator", ofl.OTP_SUBMIT_BUTTON),
                         ("press", "otp", "Enter")], page.log
     assert ("click", "submit") not in page.log
     field = _OtpFormField([], click_fails=True)
@@ -989,15 +993,15 @@ def case_challenge_only_visible():
     main = _Frame("https://onlyfans.com/")
     hidden = _Frame("https://www.google.com/recaptcha/api2/bframe?k=x", parent=main, visible=False)
     page.frames = [main, hidden]
-    assert rl._detect_challenge(page) is False, "a hidden reCAPTCHA frame is no challenge"
+    assert rl.detect_challenge(page) is False, "a hidden reCAPTCHA frame is no challenge"
     page.frames = [main, _Frame("https://www.google.com/recaptcha/api2/anchor?k=x", parent=main)]
-    assert rl._detect_challenge(page) is True, "a visible reCAPTCHA frame is a challenge"
+    assert rl.detect_challenge(page) is True, "a visible reCAPTCHA frame is a challenge"
     page.frames = [main, hidden, _Frame("https://challenges.cloudflare.com/cdn-cgi/x", parent=hidden)]
-    assert rl._detect_challenge(page) is False, "a frame inside a hidden frame is not on screen"
+    assert rl.detect_challenge(page) is False, "a frame inside a hidden frame is not on screen"
     page.frames = [main, _Frame("https://js.hcaptcha.com/x", parent=main, detached=True)]
-    assert rl._detect_challenge(page) is False, "a detached frame is not on screen"
+    assert rl.detect_challenge(page) is False, "a detached frame is not on screen"
     page.frames = [_Frame("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/x")]
-    assert rl._detect_challenge(page) is True, "the page itself on a challenge URL is a challenge"
+    assert rl.detect_challenge(page) is True, "the page itself on a challenge URL is a challenge"
     handles = [h for f in (main, hidden) for h in f.handles]
     assert handles and all(h.disposed for h in handles), [h.disposed for h in handles]
 
@@ -1010,7 +1014,7 @@ def case_otp_prompt_beside_a_captcha_frame():
         page.frames = [main, frame]
 
         def _steps(jid, _page, statuses):
-            assert statuses[-1]["state"] == rl.STATE_OTP and statuses[-1]["message"] == rl.OTP_ASK, statuses[-1]
+            assert statuses[-1]["state"] == rl.STATE_OTP and statuses[-1]["message"] == OTP_ASK, statuses[-1]
             r = client.post(f"/admin/login/remote/{jid}/otp", json={"code": GOOD_OTP})
             assert r.status_code == 200, r.text
 
@@ -1033,7 +1037,7 @@ def case_otp_every_code_scrubbed_then_forgotten():
     job = _job(state=rl.STATE_OTP)
     job.submit_otp(first)
     assert job.take_otp() == first
-    job.otp_retry(rl.OTP_REJECTED)
+    job.otp_retry(OTP_REJECTED)
     job.submit_otp(second)
     assert job.take_otp() == second
     tap = _LogTap()
@@ -1094,15 +1098,15 @@ def case_api_otp_expired_job_is_404():
 
 def case_otp_only_a_visible_field():
     page = _FormPage()
-    page.fields[rl._OTP_FIELD] = _Field(page.log, "otp", visible=False)
-    page.query_selector = lambda sel: page.fields[rl._OTP_FIELD]
-    assert rl._detect_otp(page) is False, "a hidden code input is no 2FA prompt"
-    page.fields[rl._OTP_FIELD].visible = True
-    assert rl._detect_otp(page) is True
-    del page.fields[rl._OTP_FIELD]
-    assert rl._detect_otp(page) is False
-    parts = rl._OTP_FIELD.split(", ")
-    assert len(parts) == len(rl._OTP_SELECTORS) and all(p.endswith(":visible") for p in parts), rl._OTP_FIELD
+    page.fields[ofl.OTP_FIELD] = _Field(page.log, "otp", visible=False)
+    page.query_selector = lambda sel: page.fields[ofl.OTP_FIELD]
+    assert rl._detect_otp(page, ofl) is False, "a hidden code input is no 2FA prompt"
+    page.fields[ofl.OTP_FIELD].visible = True
+    assert rl._detect_otp(page, ofl) is True
+    del page.fields[ofl.OTP_FIELD]
+    assert rl._detect_otp(page, ofl) is False
+    parts = ofl.OTP_FIELD.split(", ")
+    assert len(parts) == len(ofl._OTP_SELECTORS) and all(p.endswith(":visible") for p in parts), ofl.OTP_FIELD
 
 
 def case_otp_code_spaces_and_dashes():
@@ -1192,11 +1196,11 @@ def case_api_otp_gates():
         assert r.status_code == 409 and "already being checked" in r.text and "135791" not in r.text, r.text
         assert mine.take_otp() == GOOD_OTP and mine.take_otp() is None
         assert otp(mine.id, "135791").status_code == 409, "still being checked after the worker took it"
-        mine.otp_retry(rl.OTP_REJECTED)
+        mine.otp_retry(OTP_REJECTED)
         assert otp(mine.id, "135791").status_code == 200
         mine.set_state(rl.STATE_TYPING)
         assert mine._otp_code is None and not mine._otp_busy
-        mine.set_state(rl.STATE_OTP, rl.OTP_ASK)
+        mine.set_state(rl.STATE_OTP, OTP_ASK)
         assert otp(mine.id, GOOD_OTP).status_code == 200
         mine.fail("boom")
         assert mine._otp_code is None and not mine._otp_busy

@@ -347,7 +347,7 @@ def _challenge_counts_hidden_frames() -> None:
         except Exception:  # noqa: BLE001
             return False
 
-    remote_login._detect_challenge = detect_any_frame
+    remote_login.detect_challenge = detect_any_frame
 
 
 def _runtime_switch_env_bypass() -> None:

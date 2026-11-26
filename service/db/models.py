@@ -269,6 +269,7 @@ class Fan(Base):
     customs_cleared_at: Mapped[datetime | None] = mapped_column(DateTime)
     # Once-per-fan receipt for the closing PPV, stamped right after the send is on the wire; set means never send another.
     gather_close_at: Mapped[datetime | None] = mapped_column(DateTime)
+    gather_close_sending_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     tags: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     custom_fields: Mapped[str] = mapped_column(Text, nullable=False, default="{}")

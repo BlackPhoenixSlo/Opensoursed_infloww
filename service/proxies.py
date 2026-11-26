@@ -120,6 +120,26 @@ def egress(reg: Registry, account_id: str, session_filename: str | None = None) 
     return Direct()
 
 
+CELLS = bool(os.environ.get("OI_CELL_MAP"))
+
+
+class NoProxyRefused(Exception):
+    def __init__(self, account_id: str, where: str):
+        super().__init__(f"Creator {account_id} has no proxy: a Cell never reaches the platform direct ({where})")
+        self.account_id = str(account_id)
+        self.where = where
+
+
+def no_proxy(account_id: str, where: str) -> NoProxyRefused:
+    log.warning("no_proxy_refused account=%s at=%s", account_id, where)
+    return NoProxyRefused(account_id, where)
+
+
+def require_proxy(account_id: str, where: str, session_filename: str | None = None) -> None:
+    if not isinstance(egress(registry(), str(account_id), session_filename), Proxy):
+        raise no_proxy(account_id, where)
+
+
 def save(data: dict[str, Any]) -> None:
     # Write in place (same inode): proxies.json is bind-mounted as a single file, where a temp-file rename fails (EXDEV/EBUSY).
     global _last_good_text, _gen

@@ -254,6 +254,18 @@ describe("MessageList refused-attachment marking", () => {
     expect(container.textContent).toContain("remove 2 of 4");
   });
 
+  it("an unknown outcome offers no retry, only discard", () => {
+    const unsure = failedSend(0, [], { _failedUncertain: true, _failedReason: "May have sent — check the chat before sending again" });
+    const { container, rerender } = renderWithProviders(
+      <MessageList {...baseProps} messages={[failedSend(0, [])]} ownerUserId={555} onDiscard={() => {}} />,
+    );
+    expect(container.textContent).toContain("failed — retry");
+    rerender(<MessageList {...baseProps} messages={[unsure]} ownerUserId={555} onDiscard={() => {}} />);
+    expect(container.textContent).not.toContain("retry");
+    expect(container.textContent).toContain("May have sent");
+    expect(container.querySelector("[aria-label='Discard message']")).not.toBeNull();
+  });
+
   it("never claims a count it cannot point at", () => {
     const stray = failedSend(2, [], { _failedMediaIds: [999999999] });
     const { container } = renderWithProviders(

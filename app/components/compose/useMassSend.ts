@@ -2,6 +2,7 @@ import type { Dispatch } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { resolveSmartLists } from "@/hooks/useSmartLists";
+import { newOpId } from "@/lib/opId";
 import { relay } from "@/lib/relay";
 import { recordSchedule } from "@/lib/scheduleHistory";
 
@@ -24,21 +25,21 @@ export function useMassSend({
   const qc = useQueryClient();
   const { allModels, schedule, smartInclude, smartExclude, pickedGifs } = form;
 
-  async function post(forAccountId: string, body: Record<string, unknown>) {
+  async function post(forAccountId: string, body: Record<string, unknown>, opId: string, opPart = 0) {
     if (!isEligible(forAccountId)) throw new Error("Creator is no longer eligible to broadcast");
     const resp = await relay.post(
       "/api/of/v2/messages/queue",
       body,
-      { accountId: forAccountId, employeeId },
+      { accountId: forAccountId, employeeId, opId, opPart },
     );
     if (schedule) recordSchedule(forAccountId, schedule);
     return resp;
   }
 
-  async function resolveSegments(): Promise<MassResolved> {
+  async function resolveSegments(aid: string): Promise<MassResolved> {
     const [userIds, excludeUserIds] = await Promise.all([
-      resolveSmartLists(smartInclude),
-      resolveSmartLists(smartExclude),
+      resolveSmartLists(smartInclude, aid),
+      resolveSmartLists(smartExclude, aid),
     ]);
     // A segment matching nobody must stop the send: the body would equal no segment at all and "message my whales" would reach everyone.
     if (smartInclude.size > 0 && userIds.length === 0) {
@@ -53,20 +54,23 @@ export function useMassSend({
   return useMutation({
     mutationFn: async (targets: string[]): Promise<boolean> => {
       if (invalid) throw new Error(invalid);
+      const opId = form.opId ?? newOpId();
+      if (opId !== form.opId) dispatch({ type: "opMinted", id: opId });
 
       if (allModels) {
-        const round = await massFanOutRound(form, targets, online, post, dispatch);
+        const round = await massFanOutRound(form, targets, online, (id, body) => post(id, body, opId), dispatch);
         return round.every((r) => r.ok);
       }
 
       const aid = targets[0];
-      const resolved = await resolveSegments();
-      await post(aid, buildMassBody(form, online, resolved));
+      const resolved = await resolveSegments(aid);
+      await post(aid, buildMassBody(form, online, resolved), opId);
       // The main send landed: a GIF failure must spend the form, not re-arm Broadcast and repeat the paid broadcast.
       const failed: GifFailure[] = [];
-      for (const g of pickedGifs.slice(1)) {
+      for (const [i, g] of pickedGifs.entries()) {
+        if (i === 0) continue;
         try {
-          await post(aid, buildMassBody(gifOnlyForm(form, g), online, resolved));
+          await post(aid, buildMassBody(gifOnlyForm(form, g), online, resolved), opId, i);
         } catch (e) {
           failed.push({ id: g.id, title: g.title, error: (e as Error).message });
         }

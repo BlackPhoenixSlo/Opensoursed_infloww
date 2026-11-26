@@ -388,3 +388,52 @@ describe("BrowserbaseLoginCard", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't start the login: BROWSERBASE_API_KEY is not set");
   });
 });
+
+describe("BrowserbaseLoginCard, Fansly", () => {
+  function startFansly(onLinked = vi.fn()) {
+    render(<BrowserbaseLoginCard platform="fansly" onLinked={onLinked} />, { wrapper });
+    fireEvent.change(screen.getByLabelText("Fansly username or email"), { target: { value: "creator_name" } });
+    fireEvent.change(screen.getByLabelText("Fansly password"), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start browser login" }));
+    return onLinked;
+  }
+
+  it("names Fansly, takes a username, and sends the Platform", async () => {
+    render(<BrowserbaseLoginCard platform="fansly" />, { wrapper });
+    expect(screen.getByText("Fansly traffic after login uses the server IP.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("OnlyFans email")).toBeNull();
+    expect(screen.getByLabelText("Fansly username or email")).toHaveAttribute("type", "text");
+    cleanup();
+    startFansly();
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/start", {
+      email: "creator_name", password: "pw", backend: "browserbase", platform: "fansly", proxy: undefined, nickname: undefined,
+    }));
+  });
+
+  it("an OnlyFans card sends no Platform", async () => {
+    start();
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/start", expect.anything()));
+    expect(relayPost.mock.calls[0][1]).not.toHaveProperty("platform", expect.anything());
+  });
+
+  it("reads Fansly through the states and the 2FA prompt", async () => {
+    current = job({ state: "challenge", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    startFansly();
+    expect(await screen.findByText("Fansly is showing a verification check. Solve it in the live view.")).toBeInTheDocument();
+    current = job({ state: "otp", message: "Fansly didn't accept that code (or hasn't answered yet) — try again", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    await act(async () => { await client.refetchQueries({ queryKey: ["remote-login", "job1"] }); });
+    expect(await screen.findByText("Fansly is asking for the 2FA code. Enter it below (or in the live view).")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Fansly didn't accept that code (or hasn't answered yet). Check it and try again.");
+    fireEvent.change(screen.getByLabelText("2FA code"), { target: { value: "123456" } });
+    relayPost.mockImplementation(() => Promise.resolve(job({ state: "otp", message: "checking the 2FA code" })));
+    fireEvent.click(screen.getByRole("button", { name: "Submit code" }));
+    expect(await screen.findByText("Checking the code with Fansly…")).toBeInTheDocument();
+  });
+
+  it("hands the Fansly account on once done", async () => {
+    current = job({ state: "done", account_id: "900539700124344320", proxy: "none", proxy_label: "" });
+    const onLinked = startFansly();
+    expect(await screen.findByText("Account 900539700124344320 added. Later traffic uses the server IP.")).toBeInTheDocument();
+    await waitFor(() => expect(onLinked).toHaveBeenCalledWith("900539700124344320"));
+  });
+});

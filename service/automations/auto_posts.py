@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 import account_page
 import automation_executor as ax
+import send_tripwire
 from automation_registry import register
 from automations._pools import has_media_source, pick_media, pick_text
 from db.engine import get_session
@@ -78,6 +79,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "resend_count": int(payload.get("resend_count") or 0),
         }
 
+    send_tripwire.check("create_post")
     spec = posts[0] if isinstance(posts[0], dict) else {}
     rest = posts[1:]
 

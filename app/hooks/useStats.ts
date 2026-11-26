@@ -6,7 +6,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import type { Gran } from "@/components/stats/chart";
 import { ssePoll } from "@/lib/events";
 import { ofProfileQuery } from "@/hooks/useAccountAvatar";
-import { relay, type RelayContext } from "@/lib/relay";
+import { cellMode, relay, type RelayContext } from "@/lib/relay";
 import { REFRESH_KEYS } from "@/lib/screenBundle";
 import { type FanId } from "@/lib/fanId";
 
@@ -442,12 +442,18 @@ export type AttributeTo = number | "no_one" | null;
 export function useAttributeTip() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ txId, employeeId }: { txId: number; employeeId: AttributeTo }) =>
-      relay.post(
-        `/admin/ingest/transactions/${txId}/attribute`,
-        { employee_id: employeeId },
-        BG_CTX,
-      ),
+    mutationFn: ({ txId, employeeId, accountId }: { txId: number; employeeId: AttributeTo; accountId: string }) =>
+      cellMode()
+        ? relay.post(
+          `/admin/ingest/transactions/${txId}/attribute`,
+          { employee_id: employeeId, account_id: accountId },
+          { ...BG_CTX, accountId },
+        )
+        : relay.post(
+          `/admin/ingest/transactions/${txId}/attribute`,
+          { employee_id: employeeId },
+          BG_CTX,
+        ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["stats", "orphan-tips"] });
       qc.invalidateQueries({ queryKey: ["stats"] });
@@ -457,17 +463,51 @@ export function useAttributeTip() {
 
 export const MAX_BATCH = 500;
 
+export interface SaleRef {
+  txId: number;
+  accountId: string;
+}
+
+interface BatchAttributeResp {
+  updated: number;
+  attributed_employee_id: number | null;
+  tx_ids: number[];
+  skipped_split: number;
+}
+
+const BATCH_ROUTE = "/admin/ingest/transactions/attribute";
+
+export async function postBatchAttribute(
+  { employeeId, sales, clockEventId }: { employeeId: AttributeTo; sales?: SaleRef[]; clockEventId?: number },
+): Promise<BatchAttributeResp> {
+  if (clockEventId != null) {
+    return relay.post<BatchAttributeResp>(BATCH_ROUTE, { employee_id: employeeId, clock_event_id: clockEventId }, BG_CTX);
+  }
+  const refs = sales ?? [];
+  if (!cellMode()) {
+    return relay.post<BatchAttributeResp>(
+      BATCH_ROUTE, { employee_id: employeeId, tx_ids: [...new Set(refs.map((r) => r.txId))] }, BG_CTX);
+  }
+  const byAccount = new Map<string, number[]>();
+  for (const r of refs) {
+    const ids = byAccount.get(r.accountId) ?? [];
+    if (!ids.includes(r.txId)) ids.push(r.txId);
+    byAccount.set(r.accountId, ids);
+  }
+  const answers = await Promise.all([...byAccount].map(([accountId, txIds]) => relay.post<BatchAttributeResp>(
+    BATCH_ROUTE, { employee_id: employeeId, tx_ids: txIds, account_id: accountId }, { ...BG_CTX, accountId })));
+  return {
+    updated: answers.reduce((n, a) => n + a.updated, 0),
+    attributed_employee_id: answers[0]?.attributed_employee_id ?? null,
+    tx_ids: answers.flatMap((a) => a.tx_ids),
+    skipped_split: answers.reduce((n, a) => n + a.skipped_split, 0),
+  };
+}
+
 export function useBatchAttribute() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ employeeId, txIds, clockEventId }:
-      { employeeId: AttributeTo; txIds?: number[]; clockEventId?: number }) =>
-      relay.post<{ updated: number; attributed_employee_id: number | null; tx_ids: number[]; skipped_split: number }>(
-        "/admin/ingest/transactions/attribute",
-        clockEventId != null ? { employee_id: employeeId, clock_event_id: clockEventId }
-          : { employee_id: employeeId, tx_ids: txIds },
-        BG_CTX,
-      ),
+    mutationFn: postBatchAttribute,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["stats"] });
       qc.invalidateQueries({ queryKey: ["shifts"] });

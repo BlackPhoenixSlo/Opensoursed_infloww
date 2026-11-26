@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildDismissPayload, buildRetryPayload, canAct, dismissQuestion, hintLine, initialOverlay, retryOutcome, rowKey, settleRows, unconfirmedSendsReducer as reduce,
+  buildDismissPayload, buildRequest, buildRetryPayload, canAct, dismissQuestion, hintLine, initialOverlay, retryOutcome, rowKey, settleRows, unconfirmedSendsReducer as reduce,
   viewRows, type Overlay, type UnconfirmedRow,
 } from "@/components/automations/unconfirmedSendsReducer";
 
@@ -159,5 +159,27 @@ describe("It went through (dismiss)", () => {
     o = reduce(o, { type: "done", op: "dismiss", key: rowKey(A), result: { status: 200 } });
     expect(o).toEqual({});
     expect(settleRows(ROWS, rowKey(A), "drop")!.map(rowKey)).toEqual([rowKey(B), rowKey(C)]);
+  });
+});
+
+describe("buildRequest", () => {
+  const OP = { kind: "composer", op_id: "op-9", fan_id: "5", since: "x", state: "UNCONFIRMED", retry_allowed: false, link: "chat" } as const;
+  it.each([
+    ["marked retry (env unset)", A, "retry", "retry"],
+    ["marked retry with retry_allowed:false", { ...A, retry_allowed: false }, "retry", null],
+    ["marked dismiss with retry_allowed:false", { ...A, retry_allowed: false }, "dismiss", "dismiss"],
+    ["marked row resolve", A, "was_sent", null],
+    ["op was_sent", OP, "was_sent", "resolve"],
+    ["op not_sent", OP, "not_sent", "resolve"],
+    ["op retry", OP, "retry", null],
+    ["op dismiss", OP, "dismiss", null],
+  ] as const)("%s → %s", (_n, r, op, path) => {
+    expect(buildRequest(r, op)?.path ?? null).toBe(path);
+  });
+  it("op body is op_id + outcome; marked retry has no confirm, dismiss does", () => {
+    expect(buildRequest(OP, "not_sent")?.body).toEqual({ op_id: "op-9", outcome: "not_sent" });
+    expect(buildRequest(A, "retry")?.confirm).toBeNull();
+    expect(buildRequest(A, "dismiss")?.confirm?.label).toBe("It went through");
+    expect(rowKey(OP)).toBe("op:op-9");
   });
 });

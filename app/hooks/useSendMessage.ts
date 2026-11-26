@@ -1,7 +1,7 @@
 "use client";
 
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { relay, RelayError, type OFMedia, type OFMessage, type SendMessageBody, type VaultMedia } from "@/lib/relay";
@@ -12,6 +12,7 @@ import { parseSendFailure, type SendFailure } from "@/lib/sendFailure";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { uploadErrorText, uploadToVault, type PendingUpload } from "@/hooks/useComposerUploads";
 import { sendStash, type SendInput, type StashEntry } from "@/lib/sendStash";
+import { newOpId } from "@/lib/opId";
 
 import { useChatMessages } from "./useChatMessages";
 import { scheduledSendsKey } from "./useServerScheduledSends";
@@ -33,6 +34,7 @@ export interface SendOutcome {
 let nextTempId = -1;
 
 let nextPlaceholderId = -1_000_000_000;
+
 
 function placeholderMedia(file: File, previewUrl: string | null): VaultMedia {
   return {
@@ -112,14 +114,14 @@ export function useSendMessage(opts: UseSendMessageOpts) {
 
   const doSend = useCallback(
     async (
-      tempId: number, body: SendMessageBody, capturedAccountId: string, capturedFanId: FanId,
+      tempId: number, body: SendMessageBody, opId: string, capturedAccountId: string, capturedFanId: FanId,
     ): Promise<SendFailure | null> => {
       setInflight((n) => n + 1);
       try {
         const server = await relay.post<OFMessage>(
           `/api/of/v2/chats/${capturedFanId}/messages`,
           body,
-          { accountId: capturedAccountId, employeeId },
+          { accountId: capturedAccountId, employeeId, opId },
         );
         reconcileLocal(tempId, server);
         recordVaultSends(qc, capturedAccountId, capturedFanId, server, body.price ?? 0);
@@ -189,7 +191,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
         dropLocal(tempId);
         appendLocal(optimisticMessage(tempId, entry.input, attached.map(vaultToOFMedia), false));
       }
-      const failure = await doSend(tempId, buildBody(entry.input, attached), capturedAccountId, capturedFanId);
+      const failure = await doSend(tempId, buildBody(entry.input, attached), entry.opId, capturedAccountId, capturedFanId);
       return failure ? { sent: false, failure } : { sent: true };
     },
     [appendLocal, dropLocal, failLocal, doSend, optimisticMessage],
@@ -202,6 +204,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
       const tempId = nextTempId--;
       const entry: StashEntry = {
         input: rest,
+        opId: newOpId(),
         files: uploads.map((u) => ({ file: u.file, previewUrl: u.previewUrl, cancel: u.cancel })),
       };
       sendStash.set(tempId, entry);
@@ -226,6 +229,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
     [fromUserId, fromUserName, appendLocal, sendAfterUploads, optimisticMessage, qc],
   );
 
+  const scheduleOp = useRef<{ key: string; opId: string } | null>(null);
   const schedule = useCallback(
     async (input: SendOpts, scheduledAt: string, accountId: string, fanId: FanId): Promise<void> => {
       if (input.uploads?.length) throw new Error("Wait for the upload to finish before scheduling");
@@ -274,11 +278,14 @@ export function useSendMessage(opts: UseSendMessageOpts) {
           scheduledBody.tagged_users = input.taggedUsers;
         }
         if (input.giphyId) scheduledBody.giphy_id = input.giphyId;
+        const key = JSON.stringify([accountId, fanId, scheduledBody]);
+        if (scheduleOp.current?.key !== key) scheduleOp.current = { key, opId: newOpId() };
         await relay.post(
           `/api/of/v2/chats/${fanId}/messages/scheduled`,
           scheduledBody,
-          { accountId, employeeId },
+          { accountId, employeeId, opId: scheduleOp.current.opId },
         );
+        scheduleOp.current = null;
       } catch (err) {
         console.warn("[schedule] failed", err);
         throw err;
@@ -370,7 +377,7 @@ function recordVaultSends(
       media_ids: mediaIds,
       message_id: Number.isFinite(msgId) && msgId > 0 ? msgId : null,
       price_cents: Math.max(0, Math.round((priceDollars || 0) * 100)),
-    })
+    }, { cellAccountId: accountId })
     .then(() => {
       qc.invalidateQueries({ queryKey: ["vault-history", accountId, fanId] });
     })

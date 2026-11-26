@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import send_tripwire
+
 
 class SendsMixin:
 
@@ -58,6 +60,7 @@ class SendsMixin:
         return self.post_message(*self.prepare_message(chat_id, text, **kwargs))
 
     def post_message(self, chat_id: str | int, path: str, body: dict, retry_plan: _CoTagRetry | None) -> dict:
+        send_tripwire.check("post_message")
         import sends_inflight
         account_id = getattr(self, "account_id", None)
         pending = sends_inflight.begin(account_id, chat_id)
@@ -388,6 +391,7 @@ class SendsMixin:
                          previews: list[int] | None = None,
                          tagged_users: list[int] | None = None,
                          auto_tag: bool = True) -> Any:
+        send_tripwire.check("schedule_message")
         body = {
             "text": of_text(text),
             "lockedText": locked_text,
@@ -417,6 +421,7 @@ class SendsMixin:
                               filters: dict | None = None,
                               online_only: bool = False,
                               auto_tag: bool = True) -> Any:
+        send_tripwire.check("schedule_mass_message")
         # Date or save_for_later is required: a body with neither could send at once.
         if not scheduled_date and not save_for_later:
             raise ValueError("schedule_mass_message needs scheduled_date or save_for_later")
@@ -492,6 +497,7 @@ class SendsMixin:
 
     # Send the schedule item's own `id`, not its entity's.
     def publish_schedule(self, schedule_id: int) -> Any:
+        send_tripwire.check("publish_schedule")
         return self.put_json(f"{API_BASE}/schedules/{schedule_id}/publish")
 
     def send_mass_message(self, text: str, *,
@@ -509,6 +515,7 @@ class SendsMixin:
                           filters: dict | None = None,
                           online_only: bool = False,
                           auto_tag: bool = True) -> Any:
+        send_tripwire.check("send_mass_message")
         text = _guard_outbound(text)
         merged_filters = dict(filters) if filters else {}
         if online_only:
@@ -555,6 +562,7 @@ class SendsMixin:
                     tagged_users: list[int] | None = None,
                     giphy_id: str | None = None,
                     auto_tag: bool = True) -> Any:
+        send_tripwire.check("create_post")
         text = _guard_outbound(text)
         body = self._post_body(
             text, media_files=media_files, price=price, previews=previews,
@@ -799,6 +807,7 @@ class SendsMixin:
                      caption: str | None = None,
                      mention: str | None = None,
                      question: str | None = None) -> Any:
+        send_tripwire.check("create_story")
         body: dict = {
             "mediaFiles": media_files,
             "rfTag": [],

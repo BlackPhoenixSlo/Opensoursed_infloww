@@ -10,7 +10,7 @@ import { IfButton, IfHelp, IfLabel, IfTextArea } from "@/components/ui/infloww";
 import { OtpCodeForm } from "@/components/setup/RemoteLoginOtp";
 import {
   badLinesOf, buildPayload, canSubmit, entriesOf, entryNote, INITIAL, isPolling, isRunning, loginQueueReducer,
-  lookForQueue, MAX_PASTE, parseStored, pollEvery, storedOf, type BadLine, type QueueView,
+  lookForQueue, MAX_PASTE, parseStored, pollEvery, QUEUE_SITE, storedOf, type BadLine, type QueueView,
 } from "@/components/setup/loginQueue";
 
 export const LOGIN_QUEUE_KEY = "chatterly:login_queue";
@@ -157,7 +157,7 @@ export default function LoginQueueCard({ linkedQueueId = null }: { linkedQueueId
                   {entryNote(e, s.interrupted)}
                 </p>
                 {!s.interrupted && e.state === "otp" && e.job_id && (
-                  <OtpCodeForm jobId={e.job_id} message={e.message} inputId={`otp-${e.job_id}`} />
+                  <OtpCodeForm jobId={e.job_id} message={e.message} inputId={`otp-${e.job_id}`} site={QUEUE_SITE} />
                 )}
                 {!s.interrupted && e.live_view_url && (
                   <a href={e.live_view_url} target="_blank" rel="noopener noreferrer"

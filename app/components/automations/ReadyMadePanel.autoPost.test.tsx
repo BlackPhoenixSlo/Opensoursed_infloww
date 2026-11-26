@@ -101,7 +101,7 @@ describe("Auto Post (ReadyMadePanel only=auto_posts)", () => {
     expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Run now", "Edit", "Resume", "Delete"]);
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Resume" }));
     expect(screen.queryByRole("menu")).toBeNull();
-    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/automation-rules/2", { is_enabled: true }));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/automation-rules/2", { is_enabled: true }, { cellAccountId: "acc-a" }));
 
     fireEvent.click(screen.getByRole("button", { name: "More actions for Morning feed" }));
     expect(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Pause" })).toBeTruthy();
@@ -136,7 +136,7 @@ describe("Auto Post (ReadyMadePanel only=auto_posts)", () => {
     fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
     dialog = screen.getByRole("dialog", { name: 'Delete "Morning feed"?' });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/automation-rules/1"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/automation-rules/1", { cellAccountId: "acc-a" }));
     expect(confirm).not.toHaveBeenCalled();
   });
 

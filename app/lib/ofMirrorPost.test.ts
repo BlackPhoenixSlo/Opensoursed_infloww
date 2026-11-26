@@ -1786,6 +1786,9 @@ describe("Edit post (the Queue's row menu): New post saves the queued post in pl
 
   it("the schedule dialog shows and reads the Agency zone's wall clock", () => {
     const s = memoryStorage();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-20T12:00:00Z"));
+    onTestFinished(() => { vi.useRealTimers(); });
     saveDraft(s, "1", { ...empty(), text: "x", posted_at: "2026-11-26T02:14:00+00:00", edit_id: "2433845504" });
     const { d, unbind } = bindBoth("state-schedule", s, edited(), { zone: "America/Los_Angeles" });
     expect(d.querySelector(".vdatetime-popup__tab.time")!.textContent).toBe("6:14 PM");

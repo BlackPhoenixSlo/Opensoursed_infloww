@@ -26,6 +26,12 @@ else
   echo "no comment budget in this repo; skipped"
 fi
 
+echo "──────── Cell scope ────────"
+"$CPY" "$ROOT/scripts/cell_scope_check.py" || fail=1
+
+echo "──────── Scripts (scripts/tests) ────────"
+"$CPY" -m pytest -q "$ROOT/scripts/tests/test_alerting.py" "$ROOT/scripts/tests/test_dm_peak_rates.py" || fail=1
+
 echo "──────── Backend (service/tests/*.py) ────────"
 if [ ! -x "$PY" ]; then
   echo "✗ venv python not found at $PY"; fail=1

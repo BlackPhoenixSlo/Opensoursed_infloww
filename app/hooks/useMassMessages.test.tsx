@@ -13,13 +13,14 @@ vi.mock("@/lib/events", () => ({
       handlers.get(type)!.add(fn);
       return () => handlers.get(type)?.delete(fn);
     },
-    onStateChange(fn: (connected: boolean) => void) {
-      stateListeners.add(fn);
-      return () => stateListeners.delete(fn);
+    onStreamState(fn: StreamFn) {
+      streamListeners.add(fn);
+      return () => streamListeners.delete(fn);
     },
   },
 }));
-const stateListeners = new Set<(connected: boolean) => void>();
+type StreamFn = (c: { connected: boolean; accounts: readonly string[] | null }) => void;
+const streamListeners = new Set<StreamFn>();
 const fire = (type: string, env: Record<string, unknown>) =>
   act(() => handlers.get(type)?.forEach((fn) => fn(env)));
 
@@ -104,7 +105,26 @@ describe("useMassQueueProgress", () => {
     fire("resync", {});
     expect(result.current).toEqual([]);
     fire("chat_queue_update", { __account_id: "acct-1", chat_queue_update: { id: 11 } });
-    act(() => stateListeners.forEach((fn) => fn(false)));
+    act(() => streamListeners.forEach((fn) => fn({ connected: false, accounts: null })));
     expect(result.current).toEqual([]);
+  });
+
+  it("a Cell's resync or drop clears only its Creators' queues", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    const { result } = renderHook(() => useMassQueueProgress(["a1", "b1"], 30), { wrapper });
+    const both = () => {
+      fire("chat_queue_update", { __account_id: "a1", chat_queue_update: { id: 1 } });
+      fire("chat_queue_update", { __account_id: "b1", chat_queue_update: { id: 2 } });
+    };
+    both();
+    fire("resync", { accounts: ["b1"], cell: "s02", data_gen: 3 });
+    expect(result.current).toEqual([{ queueId: 1, accountId: "a1" }]);
+    both();
+    act(() => streamListeners.forEach((fn) => fn({ connected: false, accounts: ["a1"] })));
+    expect(result.current).toEqual([{ queueId: 2, accountId: "b1" }]);
+    act(() => streamListeners.forEach((fn) => fn({ connected: true, accounts: ["b1"] })));
+    expect(result.current).toEqual([{ queueId: 2, accountId: "b1" }]);
   });
 });

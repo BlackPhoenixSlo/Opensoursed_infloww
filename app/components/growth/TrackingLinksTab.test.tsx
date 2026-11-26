@@ -370,7 +370,7 @@ describe("the Create tracking link pop-up", () => {
     fireEvent.change(within(dlg).getByRole("textbox", { name: "Tracking link name" }), { target: { value: "New link" } });
     fireEvent.click(within(dlg).getByRole("button", { name: "Save" }));
     await waitFor(() =>
-      expect(relayPost).toHaveBeenCalledWith("/admin/of-tracking-links", { account_id: B.id, name: "New link" }),
+      expect(relayPost).toHaveBeenCalledWith("/admin/of-tracking-links", { account_id: B.id, name: "New link" }, { cellAccountId: "1000002" }),
     );
     expect(relayPost).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -420,7 +420,7 @@ describe("the Create tracking link pop-up", () => {
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/of-tracking-links", {
       account_id: A.id, name: "Reddit May", promo_cost: 40, source: "Reddit", tags: ["may"], list_id: "900002",
       list_name: "Whales",
-    }));
+    }, { cellAccountId: "1000001" }));
     expect(relayPost).toHaveBeenCalledTimes(1);
     expect(relayPut).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -722,7 +722,7 @@ describe("our notes and extras", () => {
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
     await waitFor(() => expect(within(dlg).getByRole("alert").textContent).toBe(detail));
     expect(relayPost).toHaveBeenCalledWith("/admin/tracking-links",
-      expect.objectContaining({ name: "Bad", target_url: "javascript:alert(1)" }));
+      expect.objectContaining({ name: "Bad", target_url: "javascript:alert(1)" }), { cellAccountId: "1000001" });
   });
 
   it("shows a failed Bot check toggle's error by its row", async () => {
@@ -738,7 +738,7 @@ describe("our notes and extras", () => {
     const section = await redirectSection();
     fireEvent.click(within(section).getByRole("checkbox", { name: "Bot check for Redirect one" }));
     await waitFor(() => expect(within(section).getByRole("alert").textContent).toBe("relay 500"));
-    expect(relayPatch).toHaveBeenCalledWith("/admin/tracking-links/7", { bot_check: true });
+    expect(relayPatch).toHaveBeenCalledWith("/admin/tracking-links/7", { bot_check: true }, { cellAccountId: "1000001" });
   });
 
   it("draws no \"Confirm the link once\" note: the URL is built as OnlyFans' own Copy-link builds it", async () => {
@@ -1310,7 +1310,7 @@ describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
     expect(relayPut).toHaveBeenCalledWith("/admin/link-meta", {
       account_id: A.id, kind: "campaign", of_id: 1, promo_cost: 1250.5, source: "Reddit", tags: ["spring", "bio"],
       list_id: "900001", list_name: "VIP",
-    });
+    }, { cellAccountId: "1000001" });
     expect(relayPost).not.toHaveBeenCalled();
   });
 
@@ -1351,7 +1351,7 @@ describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
     fireEvent.click(within(dlg).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(relayPut).toHaveBeenCalledWith("/admin/link-meta", expect.objectContaining({
       of_id: 1, list_id: null, list_name: null,
-    })));
+    }), { cellAccountId: "1000001" }));
   });
 
   it("fills Avg CPC, Avg CPS and Avg ROI pooled over the links with a Promo cost, net or gross", async () => {

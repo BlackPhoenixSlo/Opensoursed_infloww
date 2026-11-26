@@ -148,12 +148,12 @@ function SaleRow({ row }: { row: SaleNeedingAttribution }) {
     : null;
 
   const assignTo = (eid: number) =>
-    mut.mutate({ txId: row.id, employeeId: eid }, { onSuccess: () => setSelected("") });
+    mut.mutate({ txId: row.id, accountId: row.account_id, employeeId: eid }, { onSuccess: () => setSelected("") });
   const assignFromSelect = () => {
     if (selected === "") return;
     assignTo(Number(selected));
   };
-  const clear = () => mut.mutate({ txId: row.id, employeeId: null });
+  const clear = () => mut.mutate({ txId: row.id, accountId: row.account_id, employeeId: null });
 
   const candidates = row.candidate_chatters ?? [];
 

@@ -10,6 +10,7 @@ if str(_SERVICE) not in sys.path:
     sys.path.insert(0, str(_SERVICE))
 
 import remote_login as rl  # noqa: E402
+import remote_login_onlyfans as ofl  # noqa: E402
 
 SETTLE_S = 6
 
@@ -49,15 +50,15 @@ def main() -> int:
                 context = browser.contexts[0]
                 page = context.pages[0] if context.pages else context.new_page()
                 print(f"[*] browser egress IP: {_egress_ip(page)}")
-                print(f"[*] navigating to {rl.OF_HOME} over CDP ...")
-                err = rl.open_of(page)
+                print(f"[*] navigating to {ofl.HOME} over CDP ...")
+                err = rl.open_site(page, ofl.HOME)
                 if err:
                     print(f"[x] {err}")
                     verdict = "NAVIGATION FAILED"
                     return 1
                 time.sleep(SETTLE_S)
-                challenge = rl._detect_challenge(page)
-                email = page.query_selector(rl._EMAIL_FIELD) is not None
+                challenge = rl.detect_challenge(page)
+                email = page.query_selector(ofl._EMAIL_FIELD) is not None
                 blank = _body_is_blank(page)
                 print(f"[*] detect_challenge={challenge}  email_input={email}  body_blank={blank}")
                 if email and not challenge:

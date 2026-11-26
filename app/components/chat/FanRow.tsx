@@ -42,7 +42,7 @@ export const FanRow = memo(function FanRow({
   chat: c, accountId, profile, totalSpendCents, subscriptionStatus, expiredAt, lastPurchase, lastPpvPurchase,
   subscribedAt,
   selected: isSelected, oweDot, account, now,
-  onSelect, schedulePrefetch, cancelPrefetch, prefetchNow, selectedRowRef, picked, onTogglePick,
+  onSelect, schedulePrefetch, cancelPrefetch, prefetchNow, selectedRowRef, picked, onTogglePick, stale,
 }: {
   chat: OFChatItem;
   accountId: string;
@@ -64,6 +64,7 @@ export const FanRow = memo(function FanRow({
   selectedRowRef: (el: HTMLButtonElement | null) => void;
   picked?: boolean;
   onTogglePick?: (chat: OFChatItem) => void;
+  stale?: boolean;
 }) {
   const fanName = fanNameOf(c, profile);
   const avatarUrl = proxyImage(c.withUser.avatar || profile?.avatar || null, accountId);
@@ -87,6 +88,7 @@ export const FanRow = memo(function FanRow({
       <button
         type="button"
         data-chat-row
+        data-stale={stale || undefined}
         aria-current={isSelected ? "true" : undefined}
         aria-pressed={onTogglePick ? !!picked : undefined}
         ref={isSelected ? selectedRowRef : undefined}
@@ -108,6 +110,7 @@ export const FanRow = memo(function FanRow({
         className={cn(
           G.row,
           "group relative flex w-full text-left items-start hover:bg-bg-elev-1 transition-colors",
+          stale && "opacity-50 grayscale",
           // 96px is G.row's fixed height, so the scrollbar never jumps as off-screen rows skip layout.
           "[content-visibility:auto] [contain-intrinsic-size:auto_96px]",
           "after:bg-[color:var(--inf-rule,color-mix(in_oklab,var(--color-border)_40%,transparent))]",

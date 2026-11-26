@@ -214,6 +214,17 @@ def case_owner_inbox_is_the_per_creator_routes_in_one_call():
 
 
 
+def case_a_deep_inbox_bundle_cannot_forward_explicit_intent():
+    for headers in ({"X-List-Caller": "replay"}, {"X-List-Intent": "explicit"}):
+        _use(a1=FakeOF(A1), a2=FakeOF(A2))
+        r = OWNER_A.get("/admin/screens/inbox", params={"cursor": 100}, headers=headers)
+        assert r.status_code == 200, r.text
+        got = _view(r.json())
+        refused = {e["accountId"] for e in got["errors"] if e["read"] == "chats" and e["status"] == 428}
+        assert refused == {A1, A2} and "chats" not in got, got
+        assert not any(name == "chats" for _, name in CALLS), CALLS
+
+
 def case_the_inbox_skips_only_a_fansly_creator_whatever_the_platform_key():
     saved = account_registry.load_meta(A2)
     try:

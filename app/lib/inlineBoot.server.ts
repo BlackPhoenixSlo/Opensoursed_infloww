@@ -9,6 +9,7 @@ export function inlinePaths(pathAndSearch: string | null, cookie: CookieRead): s
   if (!pathAndSearch) return [];
   const { pathname } = new URL(pathAndSearch, "http://x");
   if (!BOOTED.has(pathname)) return [];
+  if (process.env.OI_CELL_MAP) return ["/auth/me", "/chatter/me"].map(inlineKey);
   const s = bootScreen(pathAndSearch, cookie);
   return ["/auth/me", "/chatter/me", ...(pathname === "/" ? ["/admin/settings/applied"] : []), ...(s ? [bundlePath(s)] : [])]
     .map(inlineKey);

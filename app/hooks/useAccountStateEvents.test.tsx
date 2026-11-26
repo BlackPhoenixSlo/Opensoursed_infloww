@@ -20,7 +20,21 @@ vi.mock("@/lib/events", () => ({
       fn(false);
       return () => stateListeners.delete(fn);
     },
+    onStreamState(fn: StreamFn) {
+      streamListeners.add(fn);
+      return () => streamListeners.delete(fn);
+    },
   },
+}));
+type StreamFn = (c: { connected: boolean; accounts: readonly string[] | null }) => void;
+const streamListeners = new Set<StreamFn>();
+let cells = false;
+vi.mock("@/lib/cellFlag", () => ({ cellMode: () => cells }));
+vi.mock("@/lib/cellMap", async (orig) => ({
+  ...(await orig<object>()),
+  currentCellMap: () => (cells ? {
+    accounts: [{ platform: "onlyfans", account_id: "10", cell: "s01" }, { platform: "onlyfans", account_id: "20", cell: "s02" }],
+  } : null),
 }));
 
 let mockUser: { user_id: string; username: string } | null = null;
@@ -60,7 +74,9 @@ function mount(qc = makeTestQueryClient()) {
 }
 
 describe("useAccountStateEvents", () => {
-  beforeEach(() => { vi.useFakeTimers(); handlers.clear(); stateListeners.clear(); paused = false; });
+  beforeEach(() => {
+    vi.useFakeTimers(); handlers.clear(); stateListeners.clear(); streamListeners.clear(); paused = false; cells = false;
+  });
   afterEach(() => { vi.useRealTimers(); });
 
   it("refetches everything on resync now, and once more at the window's end for later ones", () => {
@@ -368,6 +384,56 @@ describe("useAccountStateEvents", () => {
     act(() => { for (const fn of stateListeners) fn(false); });
     act(() => { for (const fn of stateListeners) fn(true); });
     expect(roster()).toBe(4);
+  });
+
+  describe("Cells", () => {
+    const CACHED = [["chat-messages", "20", "5"], ["chat-messages", "10", "5"], ["roster-counts"], ["scheduled-sends", "20"],
+      ["scheduled-sends", "10"], ["scheduled-sends"]];
+    const hit = (qc: QueryClient, spy: { mock: { calls: unknown[][] } }) => {
+      const preds = spy.mock.calls.map(([f]) => (f as { predicate?: (q: unknown) => boolean }).predicate).filter(Boolean);
+      return qc.getQueryCache().findAll().filter((q) => preds.some((p) => p!(q))).map((q) => q.queryKey);
+    };
+    const seeded = () => {
+      cells = true;
+      const qc = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity, retry: false } } });
+      for (const k of CACHED) qc.setQueryData(k, 1);
+      return qc;
+    };
+
+    it("a Cell's resync refetches only its Creators' reads", () => {
+      const qc = seeded();
+      const { spy } = mount(qc);
+      emit("resync", { accounts: ["20"], cell: "s02", data_gen: 3 });
+      expect(hit(qc, spy)).toEqual([["chat-messages", "20", "5"], ["scheduled-sends", "20"]]);
+    });
+
+    it("two Cells resyncing inside the window both refetch at its end", () => {
+      const qc = seeded();
+      const { spy } = mount(qc);
+      emit("resync", { accounts: ["20"], cell: "s02" });
+      spy.mockClear();
+      emit("resync", { accounts: ["10"], cell: "s01" });
+      expect(hit(qc, spy)).toEqual([]);
+      act(() => { vi.advanceTimersByTime(RESYNC_MIN_MS); });
+      expect(hit(qc, spy)).toEqual([["chat-messages", "10", "5"], ["scheduled-sends", "10"]]);
+    });
+
+    it("control's resync refetches agency reads only", () => {
+      const qc = seeded();
+      const { spy } = mount(qc);
+      emit("resync", { accounts: [], cell: "c0" });
+      expect(hit(qc, spy)).toEqual([["roster-counts"], ["scheduled-sends"]]);
+    });
+
+    it("a Cell's drop re-arms only its Creators' polled reads; the no-Cell drop path stays off", () => {
+      const qc = seeded();
+      const { spy } = mount(qc);
+      act(() => { for (const fn of stateListeners) fn(true); });
+      act(() => { for (const fn of streamListeners) fn({ connected: true, accounts: ["20"] }); });
+      act(() => { for (const fn of streamListeners) fn({ connected: false, accounts: ["20"] }); });
+      act(() => { for (const fn of stateListeners) fn(false); });
+      expect(hit(qc, spy)).toEqual([["scheduled-sends", "20"]]);
+    });
   });
 
   it("chat_read_changed flips the fan's row in every cached list holding the Creator, All Models included; no read", () => {

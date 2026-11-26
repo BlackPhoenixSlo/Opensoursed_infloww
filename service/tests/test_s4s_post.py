@@ -7,6 +7,8 @@ import asyncio  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 from sqlalchemy import delete, select, update  # noqa: E402
 
@@ -17,7 +19,8 @@ from _s4s_fixtures import IDS, audit_rows, db, list_in_discovery, profile, seed_
 from automation_executor import run_once  # noqa: E402
 from automation_registry import get_automation, load_automation_plugins  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import S4SSlot, ScheduledJob, User, UserAccount  # noqa: E402
+from db.models import AutomationRun, Post, S4SSlot, ScheduledJob, User, UserAccount  # noqa: E402
+from of_sends import SendsMixin  # noqa: E402
 
 A = IDS["creator_a"]
 B = IDS["creator_b"]
@@ -241,6 +244,52 @@ def case_the_executor_runs_the_job_accept_queued_and_marks_it_done():
     assert state(mine.id) == ("posted", None)
     (job,) = rows(ScheduledJob, id=mine.job_id)
     assert job.status == "done", job.status
+
+
+def case_cell_publication_jobs_fail_once_before_media_work():
+    mine = booked(A, B, 4)[B]
+    db(update(ScheduledJob).where(ScheduledJob.id == mine.job_id).values(run_at=datetime.utcnow() - timedelta(seconds=1)))
+    wire = []
+
+    class Client(SendsMixin):
+        timeout_s = 1
+        user_id = "999"
+
+        def vault_media_by_id(self, media_id):
+            wire.append("vault")
+            return {"files": {"full": {"url": "http://127.0.0.1/fixture.jpg"}}}
+
+        def _proxy_retry(self, request, **kwargs):
+            wire.append("download")
+            return SimpleNamespace(ok=True, content=b"fixture", headers={})
+
+        def upload_media(self, *args, **kwargs):
+            wire.append("upload")
+            return {"ready": True, "send_with": [{"processId": "fixture"}]}
+
+        def post_json(self, *args, **kwargs):
+            raise AssertionError("publication reached the wire")
+
+    async def tick():
+        post = await ax.enqueue_job(B, "auto_posts", payload={"posts": [{"text": "fixture"}]})
+        story = await ax.enqueue_job(B, "auto_stories", payload={"media_files": [1]})
+        for kind in ("auto_posts", "auto_stories", "s4s_post"):
+            await run_once(B, kind)
+        return post, story
+
+    previous_posts = len(rows(Post, account_id=B))
+    ax._write_gates.clear()
+    with patch.object(ax, "_make_client", return_value=Client()), patch.dict(os.environ, {
+        FLAG: "1", "OI_CELL_MAP": "/nonexistent/placement.json",
+        "OI_CELL_ROLE": "data", "OI_ACCOUNTS": f"onlyfans:{B}",
+    }):
+        post, story = asyncio.run(tick())
+    jobs = [rows(ScheduledJob, id=jid)[0] for jid in (post, story, mine.job_id)]
+    runs = [rows(AutomationRun, account_id=B, kind=job.kind)[-1] for job in jobs]
+    observed = [(job.kind, job.status, run.status, job.last_error) for job, run in zip(jobs, runs)]
+    assert len(rows(Post, account_id=B)) == previous_posts and state(mine.id)[0] == "failed"
+    assert all(job == run == "error" and "unclaimed_send" in error
+               for _, job, run, error in observed) and not wire, (observed, wire)
 
 
 def case_a_slot_runs_only_on_its_posters_account():

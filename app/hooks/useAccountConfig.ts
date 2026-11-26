@@ -92,7 +92,7 @@ export function useSaveAccountConfig(accountId: string | null, { cap = false }: 
     mutationFn: (config) => {
       const { daily_cost_cap_cents, ...rest } = config;
       return relay.put("/admin/account-config",
-        { account_id: accountId, config: cap ? { ...rest, daily_cost_cap_cents } : rest });
+        { account_id: accountId, config: cap ? { ...rest, daily_cost_cap_cents } : rest }, { cellAccountId: accountId });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["account-config", accountId] });

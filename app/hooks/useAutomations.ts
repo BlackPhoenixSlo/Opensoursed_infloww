@@ -131,7 +131,7 @@ export function useCreateRule(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<AutomationRule, Error, RuleDraft>({
     mutationFn: (draft) =>
-      relay.post<AutomationRule>("/admin/automation-rules", draft),
+      relay.post<AutomationRule>("/admin/automation-rules", draft, { cellAccountId: draft.account_id }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }
@@ -140,7 +140,7 @@ export function useUpdateRule(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<AutomationRule, Error, { id: number } & RulePatch>({
     mutationFn: ({ id, ...patch }) =>
-      relay.patch<AutomationRule>(`/admin/automation-rules/${id}`, patch),
+      relay.patch<AutomationRule>(`/admin/automation-rules/${id}`, patch, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }
@@ -149,8 +149,8 @@ export function useSaveRule(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<AutomationRule, Error, { id: number; patch: RulePatch } | { create: RuleDraft }>({
     mutationFn: (req) => "create" in req
-      ? relay.post<AutomationRule>("/admin/automation-rules", req.create)
-      : relay.patch<AutomationRule>(`/admin/automation-rules/${req.id}`, req.patch),
+      ? relay.post<AutomationRule>("/admin/automation-rules", req.create, { cellAccountId: req.create.account_id })
+      : relay.patch<AutomationRule>(`/admin/automation-rules/${req.id}`, req.patch, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }
@@ -162,7 +162,7 @@ export function useSwitchKind(accountId: string | null) {
   >({
     mutationFn: ({ kind, enable }) =>
       relay.post("/admin/automation-rules/switch",
-        { account_id: accountId, kind, enable }),
+        { account_id: accountId, kind, enable }, { cellAccountId: accountId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: [KEY, accountId] });
       qc.resetQueries({ queryKey: ["lifecycle-message-config", accountId] });
@@ -174,7 +174,7 @@ export function useSwitchKind(accountId: string | null) {
 export function useDeleteRule(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, number>({
-    mutationFn: (id) => relay.delete(`/admin/automation-rules/${id}`),
+    mutationFn: (id) => relay.delete(`/admin/automation-rules/${id}`, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }
@@ -187,7 +187,7 @@ export function useRunRuleNow(accountId: string | null) {
     number
   >({
     mutationFn: (id) =>
-      relay.post(`/admin/automation-rules/${id}/run-now`, {}),
+      relay.post(`/admin/automation-rules/${id}/run-now`, {}, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }

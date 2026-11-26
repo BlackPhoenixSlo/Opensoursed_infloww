@@ -67,7 +67,7 @@ export function useSwitchAutoreply(accountId: string) {
       const fresh = await readAutoreplyConfigFresh(qc, accountId);
       const config = switchPayload(fresh.defaults ?? {}, fresh.config ?? {}, on);
       if (!config) throw new Error("pick who gets replies (folders or new fans) and Save first");
-      return relay.put(`/admin/autoreply-config`, { account_id: accountId, config });
+      return relay.put(`/admin/autoreply-config`, { account_id: accountId, config }, { cellAccountId: accountId });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
@@ -81,7 +81,7 @@ export function useSaveAutoreplyConfig(accountId: string | null) {
     AutoreplyConfig
   >({
     mutationFn: (config) =>
-      relay.put(`/admin/autoreply-config`, { account_id: accountId, config }),
+      relay.put(`/admin/autoreply-config`, { account_id: accountId, config }, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }

@@ -125,12 +125,13 @@ async def _public(runs: list[PriorityMassRun]) -> list[dict[str, Any]]:
     return out
 
 
-async def _get_run(run_id: int) -> PriorityMassRun:
+async def _get_run(run_id: int, request: Request | None = None) -> PriorityMassRun:
+    scope = request.headers.get("x-account-id") if request is not None else None
     async with get_session() as s:
         row = await s.get(PriorityMassRun, int(run_id))
         if row is not None:
             s.expunge(row)
-    if row is None:
+    if row is None or (scope and row.account_id != scope):
         raise HTTPException(404, "no such run")
     assert_account_owned(row.account_id)
     return row
@@ -190,8 +191,8 @@ async def list_runs(account_id: str = Query(...)) -> dict[str, Any]:
 
 
 @router.post("/runs/{run_id}/cancel")
-async def cancel_run(run_id: int) -> dict[str, Any]:
-    row = await _get_run(run_id)
+async def cancel_run(run_id: int, request: Request) -> dict[str, Any]:
+    row = await _get_run(run_id, request)
     if not await pm._set_status(row.id, pm.CANCELLED):
         raise HTTPException(409, f"the run is {row.status}")
     async with get_session() as s:
@@ -200,12 +201,12 @@ async def cancel_run(run_id: int) -> dict[str, Any]:
             PriorityMassRecipient.status == pm.PENDING,
         ).values(status=pm.SKIPPED, reason="cancelled", updated_at=datetime.utcnow()))
     log.info("priority_mass_cancelled run=%s account=%s", row.id, row.account_id)
-    return (await _public([await _get_run(run_id)]))[0]
+    return (await _public([await _get_run(run_id, request)]))[0]
 
 
 @router.post("/runs/{run_id}/resume")
-async def resume_run(run_id: int) -> dict[str, Any]:
-    row = await _get_run(run_id)
+async def resume_run(run_id: int, request: Request) -> dict[str, Any]:
+    row = await _get_run(run_id, request)
     if row.status not in pm.LIVE:
         raise HTTPException(409, f"the run is {row.status}")
     await pm.ensure_leg(row.account_id, row.id, include_running=True)

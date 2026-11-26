@@ -21,6 +21,7 @@ vi.mock("@/lib/events", async (orig) => ({
   eventBus: {
     setScope: vi.fn(), on: () => () => {},
     onStateChange: (fn: (up: boolean) => void) => { fn(bus.connected); return () => {}; },
+    onStreamState: () => () => {},
   },
 }));
 // The signed-in principal: an owner, unless a case signs in a chatter only;
@@ -212,15 +213,19 @@ describe("CreatorTabs", () => {
     expect(max).toHaveAttribute("aria-selected", "false");
   });
 
-  it("picking a tab prefetches that Creator's Fan List and refreshes its unread count", async () => {
-    renderStrip();
+  it("picking a tab prefetches its Fan List and marks the unobserved list stale after refreshing unread counts", async () => {
+    const { queryClient } = renderStrip();
+    queryClient.setQueryDefaults(["chats"], { gcTime: Infinity });
     const amy = await screen.findByRole("tab", { name: "Amy Creator 9+ unread" });
     expect(fanListReads(AMY)).toHaveLength(0);
 
     await userEvent.click(amy);
-    await vi.waitFor(() => expect(fanListReads(AMY)).toHaveLength(1));
     await vi.waitFor(() =>
       expect(relayGet.mock.calls.map(([p]) => p)).toContain(`/admin/accounts/roster-counts?bust=${AMY}`));
+    await vi.waitFor(() => expect(queryClient.getQueryCache().find({
+      queryKey: ["chats", "model", AMY], exact: false,
+    })?.state.isInvalidated).toBe(true));
+    expect(fanListReads(AMY).map(([, ctx]) => ctx?.caller)).toEqual(["prefetch"]);
   });
 
   it("hovering a tab for 250ms prefetches that Creator's Fan List; a shorter hover does not", async () => {
@@ -241,7 +246,7 @@ describe("CreatorTabs", () => {
     await act(() => vi.advanceTimersByTimeAsync(249));
     expect(fanListReads(ZED)).toHaveLength(0);
     await act(() => vi.advanceTimersByTimeAsync(1));
-    expect(fanListReads(ZED)).toHaveLength(1);
+    expect(fanListReads(ZED).map(([, ctx]) => ctx?.caller)).toEqual(["prefetch"]);
     expect(fanListReads(MAX)).toHaveLength(0);
     // Hovering does not switch the Creator.
     expect(scopeText()).toBe("all");

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseSendFailure } from "./sendFailure";
+import { PAUSED_REASON, parseSendFailure, UNCERTAIN_REASON } from "./sendFailure";
 
 function relayBody(upstream: unknown) {
   return { detail: { upstream_status: 400, upstream_body: JSON.stringify(upstream) } };
@@ -74,5 +74,22 @@ describe("parseSendFailure", () => {
     const junk = { error: { payload: { removeFromInputMediaIds: [3468787295, "nope", null, 0] } } };
     expect(parseSendFailure(relayBody(junk)).refusedMediaIds).toEqual([3468787295]);
   });
-});
 
+  it.each([
+    ["the relay lost the outcome", { detail: { upstream_status: 504, op_state: "uncertain" } }],
+    ["a resubmit of an unknown op", { detail: { error: "op_uncertain", op_id: "a" } }],
+    ["a resubmit while the first is in flight", { detail: { error: "op_pending", op_id: "a" } }],
+  ])("marks %s as uncertain", (_label, body) => {
+    expect(parseSendFailure(body)).toEqual({ reason: UNCERTAIN_REASON, uncertain: true });
+  });
+
+  it("writes_paused is Sending paused: not uncertain, no retry flag beyond paused", () => {
+    expect(parseSendFailure({ detail: { error: "writes_paused" } })).toEqual({ reason: PAUSED_REASON, paused: true });
+    expect(PAUSED_REASON).toMatch(/^Nothing went out/);
+  });
+
+  it("a definite refusal is not uncertain", () => {
+    expect(parseSendFailure(relayBody(OF_400)).uncertain).toBeUndefined();
+    expect(parseSendFailure({ detail: { error: "stale_cell_gen" } }).uncertain).toBeUndefined();
+  });
+});

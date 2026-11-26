@@ -263,7 +263,7 @@ kbd {
 
 /* ── The Gatekeeper moment — the page's real payload ── */
 .gk { display: grid; gap: 0; grid-template-columns: minmax(0, 250px) minmax(0, 1fr); align-items: stretch; }
-@media (max-width: 620px) { .gk { grid-template-columns: 1fr; } }
+@media (max-width: 620px) { .gk { grid-template-columns: minmax(0, 1fr); } }
 
 .gk-dialog {
   background: var(--surface-alt);

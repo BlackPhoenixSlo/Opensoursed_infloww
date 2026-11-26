@@ -6,8 +6,8 @@ afterEach(() => clearSendStash());
 
 describe("sendStash delivered", () => {
   it("sent is delivered; discarded is not", () => {
-    sendStash.set(-1, { input: { text: "a" }, files: [] });
-    sendStash.set(-2, { input: { text: "b" }, files: [] });
+    sendStash.set(-1, { input: { text: "a" }, opId: "op", files: [] });
+    sendStash.set(-2, { input: { text: "b" }, opId: "op", files: [] });
     sendStash.sent(-1);
     sendStash.discard(-2);
     expect([sendStash.delivered(-1), sendStash.delivered(-2)]).toEqual([true, false]);

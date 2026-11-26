@@ -518,15 +518,20 @@ describe("/creators — Add creator: Browser login first, Extension second", () 
     expect(within(dialog()).queryByText("Inflowwww proxy")).toBeNull();
   });
 
-  it("the Fansly link swaps to the Fansly paste session: Browser login off, Done beside Cancel", async () => {
+  it("the Fansly link swaps to the Fansly paste session, Done beside Cancel, with Fansly's Browser login on offer", async () => {
     renderWithProviders(<Page />);
     await open();
     enterLogin();
     fireEvent.click(btn("Link a Fansly account instead"));
     expect(within(dialog()).getAllByRole("region").map((s) => s.getAttribute("aria-label"))).toEqual(["Fansly paste session"]);
-    expect(choice("Browser login")).toBeDisabled();
+    expect(choice("Browser login")).toBeEnabled();
     expect(choice("Extension")).toBeChecked();
     expect(btn("Done")).toBeInTheDocument();
+    fireEvent.click(choice("Browser login"));
+    expect(within(dialog()).getAllByRole("region").map((s) => s.getAttribute("aria-label"))).toEqual(["Fansly browser login"]);
+    expect(within(dialog()).getByLabelText("Fansly username or email")).toBeInTheDocument();
+    expect(btn("Start browser login")).toBeDisabled();
+    expect(within(dialog()).queryByRole("button", { name: "Done" })).toBeNull();
     fireEvent.click(btn("Link an OnlyFans account instead"));
     expect(choice("Browser login")).toBeChecked();
     expect(within(dialog()).getByRole("region", { name: "Browserbase login" })).toBeInTheDocument();

@@ -441,6 +441,23 @@ def case_late_429_extends_cooldown_without_climbing():
     assert g.cool_until == clock.t + 60 > cool and (g.step, g.epoch) == (step, epoch), vars(g)
 
 
+def case_list_read_budget_bounds_a_closed_gate():
+    for budget, calls, want, slept in ((of_pacing.LIST_READ_BUDGET_S, 1, _E429, [2.0]),
+                                       (None, 2, "ok", [2.0, 5.0])):
+        _knobs()
+        clock = _Clock()
+        of_pacing._gates["a1"] = of_pacing._Gate(closed=True, cool_until=clock.t + 2, step=1, last_429=_E429())
+        if budget is None:
+            got = _absorb([_E429(), "ok"], clock)
+        else:
+            with of_pacing.read_budget(budget):
+                got = _absorb([_E429(), "ok"], clock)
+        assert (got, clock.slept) == ((calls, want), slept), (budget, got, clock.slept)
+        if budget is not None:
+            assert clock.t - 1000.0 <= budget, clock.t
+    assert of_pacing.READ_BUDGET_S == 45.0 and of_pacing._READ_BUDGET.get() is None
+
+
 def case_read_waiter_cap():
     _knobs()
     clock = _Clock()

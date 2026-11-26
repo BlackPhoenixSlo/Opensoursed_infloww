@@ -39,8 +39,8 @@ export function useDeleteSavedReplies(accountId: string | null) {
   });
 }
 
-export function markScriptSent(id: number): Promise<unknown> {
-  return relay.post("/admin/saved-replies/sent", { id }).catch(() => undefined);
+export function markScriptSent(id: number, accountId: string | null): Promise<unknown> {
+  return relay.post("/admin/saved-replies/sent", { id }, { cellAccountId: accountId }).catch(() => undefined);
 }
 
 export function savedRepliesQuery(accountId: string | null) {
@@ -114,7 +114,7 @@ export function useUpdateSavedReply(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<SavedReply, Error, { id: number } & SavedReplyDraft>({
     mutationFn: ({ id, ...draft }) =>
-      relay.put<SavedReply>(`/admin/saved-replies/${id}`, toWire(draft)),
+      relay.put<SavedReply>(`/admin/saved-replies/${id}`, toWire(draft), { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }
@@ -122,7 +122,7 @@ export function useUpdateSavedReply(accountId: string | null) {
 export function useDeleteSavedReply(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, number>({
-    mutationFn: (id) => relay.delete(`/admin/saved-replies/${id}`),
+    mutationFn: (id) => relay.delete(`/admin/saved-replies/${id}`, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
   });
 }

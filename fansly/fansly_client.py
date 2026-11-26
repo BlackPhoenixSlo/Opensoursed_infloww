@@ -68,6 +68,9 @@ fansly-session-id header) and `accountId` (us). Nothing else is needed.
 """
 
 
+NOT_DELIVERIES = frozenset({"/account/media"})
+
+
 class FanslyAPIError(Exception):
     """Non-2xx, or a 200 whose envelope says success:false."""
 
@@ -216,14 +219,20 @@ class FanslyClient:
                 print(f"[dry-run] body: {json.dumps(json_body)}")
             return None
 
-        response = self.http.request(
-            method,
-            url,
-            params={**NGSW_PARAMS, **(params or {})},
-            json=json_body,
-            headers=self._headers(api_path, signed=signed, body=json_body is not None),
-            timeout=self.timeout,
-        )
+        def request():
+            return self.http.request(
+                method,
+                url,
+                params={**NGSW_PARAMS, **(params or {})},
+                json=json_body,
+                headers=self._headers(api_path, signed=signed, body=json_body is not None),
+                timeout=self.timeout,
+            )
+        tripwire = sys.modules.get("send_tripwire") if method != "GET" and path not in NOT_DELIVERIES else None
+        budget = tripwire.budget() if tripwire is not None else None
+        if method != "GET" and budget is None and (hold := sys.modules.get("cell_hold")) is not None:
+            hold.refuse_writes()
+        response = request() if budget is None else budget.leave(request, lambda _e: False)
 
         try:
             payload = response.json()

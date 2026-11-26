@@ -5,8 +5,10 @@ import logging
 from datetime import datetime
 
 import automation_executor as ax
+import send_ops
 from attribution import write_outbound_attribution
 from automation_registry import register
+from job_queue import send_anchor
 
 log = logging.getLogger("of-relay.automation.scheduled_send")
 
@@ -43,7 +45,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     client = await asyncio.to_thread(ax._make_client, account_id)
     result = await ax.of_write_paced(
         account_id,
-        lambda: client.send_message(
+        lambda: send_ops.automated_sync(account_id, _KIND, fan_id, send_anchor(payload), lambda: client.send_message(
             fan_id,
             text,
             price=price,
@@ -54,7 +56,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             giphy_id=giphy_id,
             # Keys on who composed, not who fired: a deferred composer send must not name a co-performer the operator never picked.
             auto_tag=(purpose != "manual"),
-        ),
+        ), body=payload),
         send_purpose=purpose,
         # An automation run waits for a DM-rate slot; an operator run never does.
         dm=True,

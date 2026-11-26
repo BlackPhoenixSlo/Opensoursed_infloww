@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CARD_W, layout, ranks, type Box, type LayoutEdge } from "./aiRulesLayout";
 import {
-  aiRulesReducer, fitView, INITIAL, MAX_K, MIN_K, zoomAt, type AiRulesState, type Rules, type View,
+  aiRulesReducer, fitView, formatDefault, INITIAL, MAX_K, MIN_K, zoomAt, type AiRulesState, type Rules, type View,
 } from "./aiRulesView";
 
 const toDiagram = (v: View, px: number, py: number) => ({ x: (px - v.x) / v.k, y: (py - v.y) / v.k });
@@ -136,4 +136,17 @@ describe("layout", () => {
     const l = layout(ids(2), ["a", "b", "c"].map((x) => E("n0", "n1", x)), "tb");
     expect(new Set(l.edges.map((e) => e.path)).size).toBe(3);
   });
+});
+
+describe("formatDefault", () => {
+  it.each<[unknown, string]>([
+    [true, "true"],
+    [15, "15"],
+    [null, "null"],
+    [[], "[]"],
+    [{}, "{}"],
+    [["a", "b"], "[a, b]"],
+    [{ include: [], exclude: [] }, "{include: [], exclude: []}"],
+    [{ after_live: [0, 5, 15], then_every: 15 }, "{after_live: [0, 5, 15], then_every: 15}"],
+  ])("%j → %s", (v, out) => expect(formatDefault(v)).toBe(out));
 });

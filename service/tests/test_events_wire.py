@@ -52,6 +52,12 @@ def test_sse_out(frames, wire):
     assert ew.sse_out(frames) == wire
 
 
+def test_resync_names_its_cell_creators_only_in_cell_mode():
+    assert ew.resync(None, ["1"]) == ew.RESYNC
+    wire = ew.resync({"cell": "s02", "data_gen": 3}, ["11", "12"])
+    assert wire == b'event: resync\ndata: {"accounts": ["11", "12"], "cell": "s02", "data_gen": 3}\n\n'
+
+
 def test_single_frame_is_sse_frame():
     f = frame(DM, "e1.5")
     assert ew.sse_out([f]) == ew.sse_frame(f)

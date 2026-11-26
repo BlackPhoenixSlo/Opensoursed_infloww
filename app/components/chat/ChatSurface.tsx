@@ -323,7 +323,7 @@ export function ChatSurface({
           account_id: accountId,
           fan_id: fanId,
           items,
-        })
+        }, { cellAccountId: accountId })
       .then(async (resp) => {
         if ((resp?.inserted ?? 0) === 0 && (resp?.updated ?? 0) === 0) return;
         if (!(await setVaultHistory(qc, accountId, fanId, resp?.history))) {

@@ -1177,3 +1177,194 @@ _Avoid_: combined window, unified inbox, mixed inbox, all-platforms mode
 - **Platform badge** (`PlatformLogo` beside a non-OnlyFans Creator's name on Creator tabs, pickers and the composer; never on Fan rows): ADR-0057
 - **Seen-code counter** (per-tick count of unbanked codes actually seen, not a static list): `service/fansly_revenue.py`
 - **Platform recipe** (the 11 steps a new Platform takes, owner's action order, Trap list of fields whose names lie): the recipe doc beside `docs/platforms.md`
+
+### Cell mode
+
+ASSUMPTION: the agency-scale-out plan's "model" is the glossary's Creator and its "chatter" an Employee holding the chatter role (rung 3, the entries above); overturned if the owner wants "model" in Cell-mode copy.
+
+**Cell mode**:
+The optional way to run one Agency's Creators across several Boxes, each Cell a Relay copy with its own SQLite (ADR-0058). It is on only when `OI_CELL_MAP` is set; unset means today's single Box with no new code path. Owner and installer copy say "Cells"; chatters never see the word.
+_Avoid_: Ultra (the help bot), fleet mode, shard mode, scale-out, multi-box, split mode
+
+**Cell**:
+One Relay copy with its own SQLite holding some of one Agency's Creators (8–15, up to 50 small ones), named by `OI_CELL_ID`. A Cell that is not the Control cell is a data cell.
+_Avoid_: shard (fleet.py's whole-Agency copy), node, partition, pod, group (Creator subgroups), team (chatter teams)
+
+**Control cell**:
+The one Cell per Agency that owns sign-in and every agency-scope write (Employees, grants, settings, shifts, clock, payroll, Creator reservations) and publishes the Agency copy (ADR-0064). It is never carved.
+_Avoid_: control plane, master (the Master role), primary, hub, gateway
+
+**Box**:
+One provider VM in Cell mode, running Caddy and 2 Cells (3 once a measured run allows, never 4). One empty spare Box is always kept for Failover.
+_Avoid_: server (the Deployment's avoid list), host, VPS, node, shard
+
+**Witness box**:
+The small server, on another provider than the Cells, that alone writes Placement and runs every Planned move, Failover and Carve (ADR-0059). It holds fleet.py, `fleet.toml`, the Witness journal, secrets and the fleet SSH key, and never a Cell, database, Creator session or public listener.
+_Avoid_: Control cell, Conductor (Release 3's), controller, bastion, arbiter
+
+**Witness journal**:
+One append-only file per Planned move, Failover or Carve on the Witness box, one line per step. `resume` re-runs the first step not marked done; past the rollback boundary recovery only goes forward.
+_Avoid_: cutover journal, Rollout journal (Script fill's), log, ops file
+
+**Placement**:
+The published map of which Cell owns each Creator, keyed `platform:account_id`, with each Cell's Box, Owner epoch and state (live, moving, down). fleet.py renders it as `placement.json` from `fleet.toml` and pushes it to every Box; a Cell takes its own Creators from `OI_ACCOUNTS`, never from Placement.
+_Avoid_: cell map (`OI_CELL_MAP` is only the switch), fleet.json, routing table, shard map
+
+**Placement generation**:
+The number that goes up by one with every Placement change. A Box refuses a lower one, or the same one with different bytes; rollback means publishing a higher one.
+_Avoid_: version, revision (etcd's, Release 3), Owner epoch, Data generation
+
+**Owner epoch**:
+The number in the backup bucket saying which Box may run a Cell. A Cell whose own epoch is below it is stale, and a second Box writing the same epoch is refused.
+_Avoid_: generation, term, fencing token, `.fenced` marker (it only means a stop was tried)
+
+**Fence**:
+Typed, unexpired proof that a Cell's old Box can no longer reach a Platform: a confirmed stop of the VM id in Placement (power fence), or every proxy the Cell can use revoked (proxy fence, unavailable until a drill proves it). No takeover without one; SSH silence is never one (ADR-0063).
+_Avoid_: Host fence (promo creates, ADR-0041), shutdown, kill, STONITH, drain
+
+**Egress gate**:
+The host firewall block on a Cell's outbound traffic, loaded before docker can start, which `oi-cell-open` lifts only when the bucket's Owner epoch equals the Cell's and names this Box.
+_Avoid_: epoch gate (today's fail-open boot check), firewall (alone), egress-closed boot
+
+**Data generation**:
+A per-Cell number (`data_gen`) that goes up only on a restore not proven byte-identical. It travels as `X-Cell-Gen`; a write carrying an older one gets 409 and the app re-reads. A Planned move leaves it alone.
+_Avoid_: cell gen, Placement generation, Owner epoch
+
+**Owned Creator**:
+A Creator listed in a Cell's `OI_ACCOUNTS` env. Pumps, jobs, reads and sends act only on these (`cell_owned()`); anything else gets Not owner.
+_Avoid_: local account, cell account, assigned model
+
+**Not owner**:
+A Cell's `409 not_owner` answer to any read, write or send for a Creator it does not own, each account inside a bundle included. The app greys that Creator and never retries.
+_Avoid_: 404, wrong cell, misroute, empty result
+
+**Creator reservation**:
+The Control cell's agency-wide row (`creator_reservations`) holding one Creator id for one Platform and one Cell, taken before any session or proxy file is written; another Cell or Platform gets 409.
+_Avoid_: claim (the Send claim), lock, account registry, Placement
+
+**Agency copy**:
+The read-only copy of agency-scope tables (people, grants, settings, captions and the like) each data cell pulls from the Control cell, replaced whole per changed section. Write-block triggers refuse any local write to them.
+_Avoid_: replica, mirror (the Mirror Employee), sync, agency cache, snapshot (its wire form)
+
+**Grant age**:
+How long since the Control cell last confirmed a Cell's Agency copy is current. Past the max grant age (15 min, env knob) the Cell refuses chatter requests and ends their live streams.
+_Avoid_: staleness, TTL, lease
+ASSUMPTION: past the max, owners and automations keep running (ticket 07) though ticket 08 says the Cell refuses everything, owner API keys included; overturned by the front-door spec.
+
+**Actor token**:
+The short-lived (≤15 min) Ed25519-signed `oi_actor` cookie the Control cell mints at sign-in, naming Agency, Employee or owner, impersonation and grant generation. Cells hold only the public key, so they check it and never mint one.
+_Avoid_: session cookie, JWT, `SESSION_SECRET` (the rejected shared secret), fleet token (`FLEET_SECRET`)
+
+**Front door**:
+Caddy on the Agency's front Boxes, rendered from local Placement, sending each request to its Cell by explicit account (header, query or path), or to the Control cell by allowlist, and answering 400 `account_required` otherwise (ADR-0061). There is no gateway service.
+_Avoid_: gateway (the rejected service; also the separate gateway repo), router, load balancer, edge, proxy (OnlyFans proxies)
+
+**Cross-cell read**:
+A read that spans Cells (All inbox, stats, sales, payroll), merged from each Cell's answer with every row tagged by account and a `partial` flag naming Cells that did not answer.
+_Avoid_: fan-in (`cell_scope.json`'s `fanin` value only; clashes with Fan), aggregate, federated query
+ASSUMPTION: "Cross-cell read" over the plan's "fan-in" because Fan is a person here (rung 5); overturned if specs must mirror the JSON value.
+
+**Cell scope**:
+`service/cell_scope.json`: one row per route, table, file and job saying who owns it (model, agency, cross-cell, cell-local, public or closed) and why. In Cell mode a route with no row is refused (default closed).
+_Avoid_: ownership map (`service/ownership.py` is something else), inventory, allowlist
+
+**Feature table**:
+The owner-signed list, built from Cell scope, of every route, job and send kind as works, partial or off in Release 1. Release 1's preflight checks live rules and links against it.
+_Avoid_: feature flags, Platform table (Capabilities), scope list
+
+**Send op**:
+One intended upstream send, named by its Op ID: sha256 of platform, Creator, send kind, target, Send anchor and part. Every Cell-mode send runs through `send_ops.dispatch()` (ADR-0060).
+_Avoid_: op (alone; Witness journal entries are ops too), request id, idempotency key, job, message
+
+**Send anchor**:
+The value saved before a send that its Op ID is built from: an app-minted `X-Op-Id`, a stored job UUID, the triggering inbound message id, a rule's original occurrence. A send kind without one is refused in Cell mode.
+_Avoid_: key, seed, nonce
+
+**Send claim**:
+The `send_ops` row a Cell commits in its own SQLite before the upstream call. One claim allows one wire attempt; if it cannot be written the send is refused, with no fallback.
+_Avoid_: Claims (a promo's), lock, reservation (Creator reservation), send marker, inflight guard
+
+**Send tripwire**:
+The check in each client send method that, in Cell mode, raises `unclaimed_send` before any network call when no Send claim is in context. Until `dispatch()` exists it refuses every send.
+_Avoid_: guard, assert, Side-effect gate (Capabilities)
+
+**Unconfirmed send**:
+A Send op whose outcome is unknown (`send_ops` state `uncertain`). It is listed on Unconfirmed sends for a person to mark sent or not sent; automated sends to that Fan wait, and Retry is off in Cell mode.
+_Avoid_: uncertain send, outcome unknown, may-have-sent, failed send, Unconfirmed offer (Full AI's)
+ASSUMPTION: "Unconfirmed" (house word: `unconfirmed_sends_api.py`, `UnconfirmedSends.tsx`, Unconfirmed offer; rung 3) over the plan's "uncertain"; overturned if specs must name the row state.
+
+**Cell hold**:
+A saved row in a Cell's own SQLite (`cell_holds`) that pauses that Cell's automations, or all its writes, across restarts; refused work gets `cell_held`. Three reasons: a lossy restore (per Creator, automations, a person releases it), a Planned move or Entry cut (whole Cell, automations, fleet clears it once live), a Carve (whole Cell, every write, fleet clears it). It copies with the DB.
+_Avoid_: restore hold or move pause as separate things, freeze, lock, Hold (the capacity campaign's), Unconfirmed send (one Fan's wait), Send permit (Release 3's pause)
+
+**Planned move**:
+Moving one whole Cell to another Box: pause automations, stop, checkpoint, hash a fixed file list, copy Box to Box, verify, start. Lossless, about 90 s grey (g), and the Data generation stays.
+_Avoid_: migration, transfer, relocate, Failover, Carve, split
+
+**Failover**:
+Bringing a dead Box's Cells back on the spare Box from backup after a confirmed Fence. Lossy by up to the backup lag, so it bumps the Data generation; in Release 1 a paged human starts it with the exact command.
+_Avoid_: proxy failover (ADR-0030), Planned move, takeover (its fence-and-promote step), DNS repoint
+
+**Restore manifest**:
+The record (v2) tying a Cell's file snapshot to its database restore point: Cell, Owner epoch, Data generation, code SHA, DB position, and a hash for every session, proxy, secret and media file. A mismatch stops the restore.
+_Avoid_: backup index, snapshot, manifest v1
+
+**Own data**:
+The tables and columns only Inflowwww holds, which no Platform read can rebuild (notes, rules, jobs, runs, claims, attribution). Drills checksum it per Creator.
+_Avoid_: user data, local data, app data
+
+**Session-folder quarantine**:
+Moving every non-owned Creator's whole `sessions/accounts/<id>/` folder out of a cloned Cell before it boots, so the clone cannot act as that Creator. Removing only `SESSION_FILES` is not enough.
+_Avoid_: prune (carve-prune deletes DB rows), session cleanup, `latest.json` removal
+
+**Carve**:
+Release 2's cut of one running data cell into two: clone it, apply Session-folder quarantine to each half, bump both Owner epochs (ADR-0062). Never a merge; never the Control cell.
+_Avoid_: split (Split Inbox), shard, partition, merge, move
+
+**Entry cut**:
+The one-time, stopped, N-way clone of today's single Box into N data cells plus a Control cell, with Session-folder quarantine. One-way: there is no merge back.
+_Avoid_: migration, Carve, onboarding, cutover, initial split
+
+**Peak chatters (P)**:
+The most Employees active at once on one Agency's Creators in its busiest 15 minutes over 4 weeks (200 until measured). The Go/no-go gate and every load target are multiples of it.
+_Avoid_: concurrent users, CCU, load, seats
+
+**Cell budget**:
+The chatters at once (C) and inbound DMs per minute (D) one Cell is measured to carry, planned at 70%. A Creator too big for any Cell gets one alone.
+_Avoid_: capacity, cell size, quota
+
+**Hot cell**:
+A Cell over budget at peak for 3 back-to-back 5-minute windows (CPU, pool waits, slow routes, slow inbox, send or login). In Release 1 the fix is a printed Planned move a human applies.
+_Avoid_: overloaded shard, busy cell
+
+**Go/no-go gate**:
+Phase 0's measurement that decides whether Cell mode is built: one Relay carrying 200 Creators at 1.25×P in 3 of 3 runs defers it; building needs one Box to miss and two Cells to carry more per Relay.
+_Avoid_: calibrate verdict (the fleet ladder's), capacity test
+
+**Release 1, 2, 3**:
+Cell mode's owner-facing steps. Release 1: one Agency across Boxes, Planned moves, a paged human for Box death. Release 2: Carve. Release 3: etcd, so Failover runs without waking the owner.
+_Avoid_: v1/v2/v3 (alone), phase (the plan's build steps), MP phases (multi-platform's)
+
+**Conductor**:
+Release 3's automatic Failover process on the Witness box plus 2 voter Boxes, acting only after its etcd lease expires and a power-off is confirmed.
+_Avoid_: Control cell, orchestrator, controller
+
+**Box lease**:
+Release 3's etcd lease each Box's lease agent (`oi-lease`) keeps alive (30 s, renewed every 5 s). While it holds, the agent refreshes each of its Cells' Send permits; a Box whose lease is gone and whose probe has failed 2 min may be failed over.
+_Avoid_: View lease (a Creator on screen), lease (alone), heartbeat, Grant age
+
+**Send permit**:
+Release 3's short-lived local file per Cell (`/run/oi/<cell>/send_permit`, tmpfs, never under `data/`) that says this Box may send now. Missing, unreadable, naming another Box or past `until` (15 s) means paused. Cells read it and never talk to etcd; claims stay Send claims (ADR-0060).
+_Avoid_: Send claim, Owner epoch, token, Cell hold
+
+**Sending paused**:
+The `writes_paused` (503) refusal a Cell gives fan sends and message writes while its Send permit is not valid. The app shows "Sending paused" with no Retry; automation jobs treat it as not run yet.
+_Avoid_: `claim_failed`, `cell_held`, Not owner, outage
+
+- **`OI_CELL_MAP`** (the switch, naming Placement's file), **`OI_CELL_ID`**, **`OI_ACCOUNTS`** (avoid: `FLEET_*`, the installer and one-Agency-per-shard login; `OI_SHARD`): ticket 01, ADR-0059
+- **`X-Cell-Gen`** (carries Data generation), **`X-Op-Id`** (app-minted Send anchor), **`X-Account-Id`** (Front door routing key): ADR-0061
+- **Grant generation** (bumped when the Agency copy's grants change; live streams re-check it): ADR-0064
+- **Readiness** (every Owned Creator's session logs in once through its proxy; `/livez` is liveness only): ticket 03, 10
+- **Kill matrix** (every send kind × kill after claim, after accept, after row update; ≤1 accept per Send op, 0 duplicates): ADR-0060
+- **Acceptance run** (local 3 data cells + Control cell + Caddy + app + FakeOF + MinIO + power stub, real login, then env unset; avoid: smoke, which is the N/N+1 one): ticket 12
+- **N/N+1 rule** (formats only gain fields, readers ship before writers, Control cell upgrades last, `min_cell_proto` in Placement): ticket 12

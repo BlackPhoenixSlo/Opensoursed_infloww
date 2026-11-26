@@ -29,6 +29,7 @@ export default defineConfig({
     setupFiles: ["./vitest.setup.ts"],
     exclude: ["node_modules/**", ".next/**"],
     passWithNoTests: true,
+    maxWorkers: 6,
     // include lives in the projects: extends: true concatenates arrays, so a root include would pull every file into slow-jsdom too.
     projects: [
       { extends: true, test: { name: "default", include: ["**/*.test.{ts,tsx}"], exclude: SLOW_JSDOM } },

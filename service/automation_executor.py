@@ -9,7 +9,7 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any, Awaitable, Callable, assert_never
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, func, or_, select, update
 
 from db.engine import get_session
 from db.models import (
@@ -40,6 +40,7 @@ import lane_config
 import run_slot
 import dispatch_plan
 import run_decide
+import send_ops
 from of_coerce import cents_or_zero as _to_cents, strip_tags as _strip_html  # noqa: F401 — ax._to_cents / ax._strip_html importers
 from fan_lease import (  # noqa: F401 — re-exports
     _FAN_COOLDOWN_S,
@@ -81,6 +82,7 @@ from job_queue import (  # noqa: F401 — re-exports
     _mark_job_failure,
     _open_run,
     _park_failed_job,
+    _release_job,
     cancel_jobs_missed_while_off,
     current_rule_id,
     enabled_rule_id,
@@ -89,6 +91,13 @@ from job_queue import (  # noqa: F401 — re-exports
     rule_is_live,
     rule_last_fired_at,
 )
+
+import cell_hold
+import cell_mode
+import send_ops
+from send_tripwire import UnclaimedSend
+
+_CELLS = bool(os.environ.get("OI_CELL_MAP"))
 
 log = logging.getLogger("of-relay.automation")
 
@@ -107,6 +116,7 @@ _OPERATOR_KINDS: frozenset[str] = frozenset({
 })
 _FULL_AI_PER_CREATOR = 4
 _PER_FAN_KINDS: frozenset[str] = frozenset({"full_ai_chat"})
+_UNANCHORED_KINDS = frozenset({"autoreply", "send_followup", "nudge_online_fire", "purchase_followup"})
 
 
 def _per_fan_caps() -> dict[str, int]:
@@ -259,13 +269,15 @@ async def _due_job_pairs() -> list[dispatch_plan.Pair]:
                 .where(
                     ScheduledJob.status == "pending",
                     ScheduledJob.run_at <= now,
+                    *(_owned_only(ScheduledJob.account_id) if _CELLS else ()),
                 )
                 .group_by(ScheduledJob.account_id, ScheduledJob.kind, fan)
             )
         ).all()
+    held = cell_hold.held_ids() if _CELLS else frozenset()
     return [dispatch_plan.Pair(r[0], r[1], bool(r[2]) and canonical_kind(r[1]) in _OPERATOR_KINDS,
                                _epoch(r[3]), r[4])
-            for r in rows if r[0] not in off]
+            for r in rows if r[0] not in off and str(r[0]) not in held]
 
 
 def _epoch(dt: datetime | str) -> float:
@@ -304,7 +316,7 @@ async def _pair_busy(s, rule: AutomationRule, now: datetime) -> dispatch_plan.Bu
     ).scalar_one_or_none()
 
 
-async def _materialize_due_rules() -> int:
+async def _materialize_due_rules(park: frozenset[str] = frozenset()) -> int:
     load_automation_plugins()
     now = datetime.utcnow()
     enqueued = 0
@@ -314,9 +326,16 @@ async def _materialize_due_rules() -> int:
     async with get_session() as s:
         rules = (
             await s.execute(
-                select(AutomationRule).where(AutomationRule.is_enabled.is_(True))
+                select(AutomationRule).where(
+                    AutomationRule.is_enabled.is_(True),
+                    *(_owned_only(AutomationRule.account_id) if _CELLS else ()),
+                )
             )
         ).scalars().all()
+        if _CELLS:
+            held = cell_hold.held_ids()
+            rules = [r for r in rules
+                     if (str(r.account_id) in park if park else str(r.account_id) not in held)]
 
         for rule in rules:
             if get_automation(rule.kind) is None:
@@ -407,7 +426,8 @@ async def _materialize_due_rules() -> int:
                     kind=canonical_kind(rule.kind),
                     payload_json=rule.steps_json or "{}",
                     run_at=now,
-                    status="pending",
+                    status="error" if park else "pending",
+                    last_error=run_decide.RESTORE_REASON if park else None,
                     rule_id=rule.id,
                 )
             )
@@ -461,6 +481,8 @@ def _log_session_dead_skip(account_id: str, kind: str) -> None:
 async def _probe_dead_sessions() -> None:
     try:
         aids = await account_health.due_probe_ids(_SESSION_PROBE_INTERVAL_S)
+        if _CELLS:
+            aids = cell_mode.owned_only(aids)
         for aid in aids:
             await account_health.stamp_probe(aid)
             try:
@@ -513,6 +535,10 @@ async def run_once(
         await _finalize_run(run_id, status, None, err, job_id=job_id, job_status=job_status)
         return {"status": "error", "reason": "unknown_kind", "run_id": run_id}
 
+    if kind in _UNANCHORED_KINDS and send_ops.cells():
+        log.info("automation_no_anchor account=%s kind=%s: refused in Cell mode", account_id, kind)
+        return {"status": "skipped", "reason": "no_anchor"}
+
     lock = _run_locks[dispatch_plan.run_key(account_id, kind, fan, () if fan is ANY_FAN else _PER_FAN_KINDS)]
     if lock.locked():
         return {"status": "skipped", "reason": "in_flight"}
@@ -529,9 +555,14 @@ async def run_once(
     except Exception:
         log.warning("deactivated_check_failed account=%s", account_id, exc_info=True)
 
+    if _CELLS and (hold := cell_hold.held(account_id)) is not None:
+        return {"status": "skipped", "reason": "cell_held", "why": hold.why}
+
     if lock.locked():
         return {"status": "skipped", "reason": "in_flight"}
     async with lock:
+        if send_ops.paused():
+            return {"status": "skipped", "reason": "writes_paused"}
         rule_id: int | None = None
         if payload is None and job_id is None:
             claimed = await _claim_due_job(account_id, kind, fan=fan)
@@ -610,6 +641,10 @@ async def run_once(
                                 job_id=job_id, job_status=job_status)
             raise
         except Exception as e:
+            if send_ops.is_paused_refusal(e) and write.state == "none":
+                await _release_job(job_id)
+                await _finalize_run(run_id, "skipped", {"reason": "writes_paused"}, None)
+                return {"status": "skipped", "reason": "writes_paused", "run_id": run_id, "job_id": job_id}
             err = repr(e)[:2000]
             log.warning(
                 "automation_run_failed account=%s kind=%s run_id=%s",
@@ -628,7 +663,10 @@ async def run_once(
                     log.warning("mark_session_dead_failed account=%s", account_id, exc_info=True)
             status, job_status, err = run_decide.outcome(
                 "exception", None, err, once=once, wrote=write.state)
-            _log_parked(job_status, account_id, kind, run_id, job_id, write.state)
+            if isinstance(e, UnclaimedSend) and write.state == "none":
+                job_status = "error"
+            else:
+                _log_parked(job_status, account_id, kind, run_id, job_id, write.state)
             refused = run_decide.defers_refusal(kind, proxy_refused(e), write.state)
             await _finalize_run(run_id, status, None, err, job_id=job_id,
                                 job_status=job_status, refused=refused)
@@ -649,9 +687,28 @@ def _log_parked(job_status: str, account_id: str, kind: str, run_id: int,
 
 
 
+def _owned_only(col) -> tuple:
+    owned = cell_mode.owned_set()
+    return () if owned is None else (col.in_(sorted(owned)),)
+
+
+async def park_restore(account_ids: list[str]) -> int:
+    now = datetime.utcnow()
+    async with get_session() as s:
+        parked = (await s.execute(
+            update(ScheduledJob)
+            .where(ScheduledJob.account_id.in_(account_ids), ScheduledJob.status.in_(("pending", "running")),
+                   ScheduledJob.run_at <= now,
+                   or_(ScheduledJob.kind.in_(run_decide.one_shot_family()), ScheduledJob.rule_id.is_not(None)))
+            .values(status="error", last_error=run_decide.RESTORE_REASON)
+        )).rowcount
+    return parked + await _materialize_due_rules(park=frozenset(account_ids))
+
+
 async def _interrupt_orphan_mass_runs(s, now: datetime) -> list[int]:
     ids = list((await s.execute(
-        select(MassRun.id).where(MassRun.status == MASS_RUN_RUNNING).order_by(MassRun.id))).scalars())
+        select(MassRun.id).where(MassRun.status == MASS_RUN_RUNNING, *_owned_only(MassRun.account_id))
+        .order_by(MassRun.id))).scalars())
     if ids:
         await s.execute(update(MassRun).where(MassRun.id.in_(ids), MassRun.status == MASS_RUN_RUNNING)
                         .values(status=MASS_RUN_INTERRUPTED, completed_at=now))
@@ -660,17 +717,17 @@ async def _interrupt_orphan_mass_runs(s, now: datetime) -> list[int]:
 
 async def _reconcile_orphans() -> None:
     now = datetime.utcnow()
-    running = ScheduledJob.status == "running"
+    running = (ScheduledJob.status == "running", *_owned_only(ScheduledJob.account_id))
     async with get_session() as s:
         parked = await s.execute(
             update(ScheduledJob)
-            .where(running, ScheduledJob.kind.in_(run_decide.one_shot_family()))
+            .where(*running, ScheduledJob.kind.in_(run_decide.one_shot_family()))
             .values(status="error", last_error=run_decide.ORPHAN_REASON)
         )
-        jobs = await s.execute(update(ScheduledJob).where(running).values(status="pending"))
+        jobs = await s.execute(update(ScheduledJob).where(*running).values(status="pending"))
         runs = await s.execute(
             update(AutomationRun)
-            .where(AutomationRun.status == "running")
+            .where(AutomationRun.status == "running", *_owned_only(AutomationRun.account_id))
             .values(status="error", completed_at=now,
                     error_text="interrupted (relay restart)")
         )
@@ -685,7 +742,7 @@ async def _active_models() -> int:
     off = select(AccountHealth.account_id).where(AccountHealth.deactivated_at.is_not(None))
     async with get_session() as s:
         return int((await s.execute(
-            select(func.count()).select_from(Account).where(Account.id.not_in(off))
+            select(func.count()).select_from(Account).where(Account.id.not_in(off), *_owned_only(Account.id))
         )).scalar_one())
 
 
@@ -712,6 +769,8 @@ async def _size_bulk_slots(pool: run_slot.SlotPool) -> None:
 
 
 async def _drain_due_jobs_once() -> None:
+    if send_ops.paused():
+        return
     try:
         await _materialize_due_rules()
     except Exception:

@@ -9,12 +9,13 @@ import { IfButton, IfInput, IfLabel } from "@/components/ui/infloww";
 import { jobPath, type RemoteLoginStatus } from "@/components/setup/remoteLogin";
 
 const OTP_CHECKING = "checking the 2FA code";
-const OTP_REJECTED = "OnlyFans didn't accept that code";
 const OTP_NOT_TYPED = "couldn't type the 2FA code";
 const OTP_CODE = /^\d{6,8}$/;
 const otpInput = (raw: string) => raw.replace(/[\s-]/g, "");
 
-export function OtpCodeForm({ jobId, message, inputId }: { jobId: string; message: string; inputId: string }) {
+export function OtpCodeForm({ jobId, message, inputId, site }: {
+  jobId: string; message: string; inputId: string; site: string;
+}) {
   const qc = useQueryClient();
   const [otp, setOtp] = useState("");
   const [otpErr, setOtpErr] = useState<string | null>(null);
@@ -33,7 +34,7 @@ export function OtpCodeForm({ jobId, message, inputId }: { jobId: string; messag
     onError: (e) => setOtpErr(`Couldn't send the code: ${e.message}`),
   });
   const otpChecking = message === OTP_CHECKING;
-  const otpRejected = message.startsWith(OTP_REJECTED);
+  const otpRejected = message.startsWith(`${site} didn't accept that code`);
   const otpNotTyped = message.startsWith(OTP_NOT_TYPED);
   const otpLocked = otpM.isPending || otpChecking;
 
@@ -54,15 +55,15 @@ export function OtpCodeForm({ jobId, message, inputId }: { jobId: string; messag
           {otpM.isPending ? "Sending…" : "Submit code"}
         </IfButton>
       </div>
-      {otpChecking && <p className="text-xs text-muted">Checking the code with OnlyFans…</p>}
+      {otpChecking && <p className="text-xs text-muted">Checking the code with {site}…</p>}
       {otpRejected && (
         <div role="alert" className="text-err text-sm">
-          OnlyFans didn&apos;t accept that code (or hasn&apos;t answered yet). Check it and try again.
+          {site} didn&apos;t accept that code (or hasn&apos;t answered yet). Check it and try again.
         </div>
       )}
       {otpNotTyped && (
         <div role="alert" className="text-err text-sm">
-          The code couldn&apos;t be typed into OnlyFans. Try again, or type it in the live view.
+          The code couldn&apos;t be typed into {site}. Try again, or type it in the live view.
         </div>
       )}
       {otpErr && <div role="alert" className="text-err text-sm whitespace-pre-wrap">{otpErr}</div>}

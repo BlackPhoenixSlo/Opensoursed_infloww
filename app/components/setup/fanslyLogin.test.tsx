@@ -91,6 +91,47 @@ describe("Add creator, Fansly sign-in", () => {
     expect(await within(dialog()).findByText(FANSLY_T.accountInfoError)).toBeInTheDocument();
   });
 
+  it("Browser login signs in to Fansly through the remote login and links the account", async () => {
+    relayPost.mockImplementation((path: string) => Promise.resolve(path === "/admin/login/remote/start"
+      ? { id: "fj1", backend: "browserbase", state: "starting", message: "", error: null, account_id: null, session_file: null,
+          proxy: "none", proxy_label: "", live_view_url: null, expires_at: 0 }
+      : {}));
+    relayGet.mockImplementation((path: string) => {
+      if (path === "/api/of/v2/users/me") return me();
+      if (path === "/admin/login/remote/fj1") {
+        return Promise.resolve({ id: "fj1", backend: "browserbase", state: "done", message: "", error: null, account_id: "fy-1",
+          session_file: "fansly_session.json", proxy: "none", proxy_label: "", live_view_url: null, expires_at: 0 });
+      }
+      if (path === "/admin/accounts") return Promise.resolve({ accounts, active_account_id: null });
+      return Promise.resolve({});
+    });
+    renderWithProviders(<AddCreatorModal extInstalled={null} at="fanslyBrowser" expectedAccountId="fy-1" onClose={() => {}} />);
+    const region = within(dialog()).getByRole("region", { name: "Fansly browser login" });
+    expect(within(dialog()).queryByRole("region", { name: "Browserbase login" })).toBeNull();
+    expect(within(dialog()).queryByRole("button", { name: "Done" })).toBeNull();
+    fireEvent.change(within(region).getByLabelText("Fansly username or email"), { target: { value: "fiona" } });
+    fireEvent.change(within(region).getByLabelText("Fansly password"), { target: { value: "pw" } });
+    fireEvent.click(btn("Start browser login"));
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/start", expect.objectContaining({
+      email: "fiona", platform: "fansly", backend: "browserbase", proxy: "none", expected_account_id: "fy-1",
+    })));
+    expect(await within(dialog()).findByText("fansly.com/fiona")).toBeInTheDocument();
+  });
+
+  it("locks switches at submit and unlocks after an immediate refusal", async () => {
+    relayPost.mockRejectedValue(new RelayError(503, null, "offline"));
+    renderWithProviders(
+      <AddCreatorModal extInstalled={null} onClose={() => {}} linkAnother={{ creator: { name: "Fiona", gender: "" }, linked: [] }} />,
+    );
+    fireEvent.change(within(dialog()).getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
+    fireEvent.change(within(dialog()).getByLabelText("OnlyFans password"), { target: { value: "pw" } });
+    expect(btn("Link a Fansly account instead")).toBeEnabled();
+    fireEvent.click(btn("Start browser login"));
+    expect(within(dialog()).queryByRole("button", { name: "Link a Fansly account instead" })).toBeNull();
+    expect(await within(dialog()).findByText("Couldn't start the login: offline")).toBeInTheDocument();
+    expect(await within(dialog()).findByRole("button", { name: "Link a Fansly account instead" })).toBeEnabled();
+  });
+
   it("offers no Fansly sign-in once the Creator has a Fansly account (creators0408)", () => {
     renderWithProviders(
       <AddCreatorModal extInstalled={null} onClose={() => {}} linkAnother={{ creator: { name: "Fiona", gender: "" }, linked: ["fansly"] }} />,
@@ -98,6 +139,7 @@ describe("Add creator, Fansly sign-in", () => {
     expect(within(dialog()).getByRole("region", { name: "Browserbase login" })).toBeInTheDocument();
     expect(within(dialog()).queryByRole("button", { name: /Link a Fansly account/ })).toBeNull();
     expect(within(dialog()).queryByRole("region", { name: "Fansly paste session" })).toBeNull();
+    expect(within(dialog()).queryByRole("region", { name: "Fansly browser login" })).toBeNull();
   });
 });
 

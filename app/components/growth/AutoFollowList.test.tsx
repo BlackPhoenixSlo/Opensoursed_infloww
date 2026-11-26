@@ -105,7 +105,7 @@ describe("AutoFollowList", () => {
     await waitFor(() => expect(sw.getAttribute("aria-checked")).toBe("true"));
     fireEvent.click(sw);
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith(
-      "/admin/automation-rules/switch", { account_id: "a1", kind: "auto_follow", enable: false }));
+      "/admin/automation-rules/switch", { account_id: "a1", kind: "auto_follow", enable: false }, { cellAccountId: "a1" }));
     expect(screen.queryByText("Details")).toBeNull();
   });
 

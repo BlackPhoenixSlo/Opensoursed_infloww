@@ -98,8 +98,8 @@ export function useChatMessages({
   const qc = useQueryClient();
   const ridesPrefetch = prefetchWindowMs !== undefined;
 
-  const [sseConnected, setSseConnected] = useState(() => eventBus.isConnected());
-  useEffect(() => eventBus.onStateChange(setSseConnected), []);
+  const [sseConnected, setSseConnected] = useState(() => eventBus.isConnected(accountId ?? undefined));
+  useEffect(() => eventBus.onStateChange(setSseConnected, accountId ?? undefined), [accountId]);
 
   // Load-older cursor prefers the lowest id FETCHED this mount over the cache minimum: a cached block below a gap would skip the unfetched middle for good
   const oldestCursorRef = useRef<FanId | null>(null);

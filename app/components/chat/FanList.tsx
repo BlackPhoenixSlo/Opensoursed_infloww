@@ -24,6 +24,7 @@ import { prefetchChatMessages } from "@/hooks/useChatMessages";
 import { fetchAllVaultLists } from "@/hooks/useVaultMedia";
 import { ofUserNameKey, useOFUserNameMap, type OFUserName } from "@/hooks/useOFUser";
 import { useRecentChatsLocal } from "@/hooks/useRecentChatsLocal";
+import { useGreyAccounts } from "@/lib/cellMap";
 import { perfPaintOnce } from "@/lib/perfLog";
 import { fromThisPage, useAccountLabel, useAccounts, usePlatformAccounts } from "@/hooks/useAccounts";
 import { useCreatorFreshnessState } from "@/hooks/useCreatorFreshness";
@@ -45,9 +46,11 @@ import { accountPlatform, can, useFallbackPlatform } from "@/lib/platform";
 import { ofMeQuery } from "@/lib/ofMe";
 import { CHATS_PAGE } from "@/lib/screenBundle";
 import { cn } from "@/lib/utils";
-import { badgeUnreadView, chatRowKey, UNREAD_VIEW_MAX_AGE_MS, type UnreadView } from "@/lib/chatsCache";
+import { splitInboxKey } from "@/lib/splitInbox";
+import { badgeUnreadView, chatAccountOf, chatRowKey, UNREAD_VIEW_MAX_AGE_MS, type UnreadView } from "@/lib/chatsCache";
 import { relayNow } from "@/lib/ageClock";
-import { describeLoadError, isRateLimited, relay, setRelayFocus, type OFChatItem } from "@/lib/relay";
+import { describeLoadError, isDeepRefused, isRateLimited, relay, setRelayFocus, type OFChatItem } from "@/lib/relay";
+import { INTENT_EVENTS, scrollGesture, type IntentEvent, type ListCaller } from "@/hooks/chatListLoadMore";
 import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId, lastMessageFromFan } from "@/lib/fanId";
 import { excludedFromBadges, isUnreadChat } from "@/lib/chatUnread";
@@ -59,7 +62,7 @@ import { FanListHeader } from "./FanListHeader";
 import { FanListEmpty, FanListSkeleton, LoadMoreConversations, ShowMoreRows } from "./FanListStates";
 import { FanRow, fanNameOf } from "./FanRow";
 import {
-  canAutofill, initialPaging, isCapped, pagingReducer, pagingView,
+  initialPaging, pagingReducer, pagingView,
 } from "./fanListPaging";
 import { attentionCount, chipCountsWithUnreadView, sortFanRows } from "./fanListSort";
 import { FolderPicker } from "./FolderPicker";
@@ -67,7 +70,7 @@ import { SplitInbox } from "./SplitInbox";
 import { isFanOnline } from "./isFanOnline";
 import { totalSpendOf } from "./totalSpend";
 import { useFanListMarkRead } from "./useFanListMarkRead";
-import { chatAccountOf, useInboxGroup } from "./useInboxGroup";
+import { useInboxGroup } from "./useInboxGroup";
 import { badgeReady, badgeUnread, todaysUnread, totalsOn, unreadBadgeSources, type AccountsAnswer } from "./unreadBadge";
 import { BRAND_NAME } from "@/lib/brand";
 
@@ -149,7 +152,7 @@ export function FanList({
     [scope, accounts],
   );
   // The Split Inbox group chosen in "All inboxes"; session state per Creator set.
-  const inbox = useInboxGroup(shownCreators, singleAcctId);
+  const inbox = useInboxGroup(shownCreators);
   const pinnedFolders = useChatFolders(foldersReady ? singleAcctId : null).data ?? [];
   // The pencil ("Pin lists as chips") shows once the Creator has any OF list (mj:3067); same fetch.
   const hasLists = !!useAllChatFolders(foldersReady ? singleAcctId : null).data?.length;
@@ -306,17 +309,10 @@ export function FanList({
     query: query || null,
   });
 
-  // useChatList returns a fresh object literal (with a fresh `loadMore`
-  // arrow) every render, so depending on the whole `q` in effects would
-  // tear down + rebuild the IntersectionObserver and re-run the owe-reply /
-  // autofill loaders on every re-render (SSE patches, spend/activity
-  // arrivals, sort recomputes). Keep a ref to the latest `q` and expose a
-  // STABLE loadMore that reads through it, so those effects can depend on
-  // the specific primitives they use (q.hasMore / q.isFetchingMore) plus a
-  // stable callback instead of the unstable object.
   const qRef = useRef(q);
   qRef.current = q;
-  const loadMore = useCallback(() => qRef.current.loadMore(), []);
+  const visibleRowsRef = useRef(0);
+  const loadMore = useCallback((caller: ListCaller) => qRef.current.loadMore(caller, visibleRowsRef.current), []);
 
   const accountById = useMemo(() => {
     const m = new Map<string, { color?: string | null; nickname?: string | null }>();
@@ -550,8 +546,8 @@ export function FanList({
   const profileMap = useOFUserNameMap();
   // Every loaded Fan, for the Split Inbox dialog's reassign list, named as their rows are.
   const splitFans = useMemo(() => (q.data ?? []).map((c) => ({
-    id: c.withUser.id, name: fanNameOf(c, profileMap.get(chatRowKey(c))),
-  })), [q.data, profileMap]);
+    id: c.withUser.id, name: fanNameOf(c, profileMap.get(chatRowKey(c))), accountId: chatAccountOf(c, singleAcctId),
+  })), [q.data, profileMap, singleAcctId]);
 
   // The rows on screen: the sorted rows, narrowed to online Fans while
   // `onlineOnly` is on.
@@ -559,6 +555,7 @@ export function FanList({
     if (!onlineOnly) return sortedDisplayRows;
     return sortedDisplayRows.filter((c) => isFanOnline(c, profileMap.get(chatRowKey(c)), onlineIds));
   }, [onlineOnly, sortedDisplayRows, profileMap, onlineIds]);
+  visibleRowsRef.current = shownRows.length;
   // Warm the top unread threads in the order on screen (sort mode, Online
   // Fans). A spend sort re-orders as spend and activity land: warm the
   // order once both have landed, not each step on the way (a refetch does not
@@ -592,6 +589,7 @@ export function FanList({
       qc.removeQueries({ queryKey: ["vault-media", aid] });
       qc.removeQueries({ queryKey: ["vault-lists", aid] });
       qc.removeQueries({ queryKey: ["wall-media", aid] });
+      void qc.invalidateQueries({ queryKey: splitInboxKey(aid), exact: true });
     }
     // Use `refresh()` (not `refetch()`) so the next /chats
     // call carries `?refresh=1` and bypasses the Stage C
@@ -635,9 +633,6 @@ export function FanList({
     }
   }, [sortedDisplayRows, qc]);
 
-  // True when we've paginated up to the cap with no active search.
-  const capped = isCapped(paging, allRows.length, query);
-
   // Owe-reply and a Split Inbox group: keep loading more pages until we
   // either fill the target (5–8 filtered rows on screen) or scan-cap hits
   // (100 raw rows). OF has no native "fan sent last" or group filter, so we
@@ -646,34 +641,22 @@ export function FanList({
   const oweReplyMatches = oweReplyActive ? rows.length : 0;
   useEffect(() => {
     if (fillDone) return;
-    if (q.isFetchingMore) return;
-    loadMore();
-  }, [fillDone, rows.length, q.scanned, q.isFetchingMore, loadMore]);
+    if (q.isFetching) return;
+    loadMore("fill");
+  }, [fillDone, rows.length, q.scanned, q.isFetching, loadMore]);
 
-  // Auto-load more pages only after the user has actually scrolled the
-  // panel. Without this gate, an empty/short panel keeps the sentinel in
-  // view from the start, so the IntersectionObserver chains loadMore()
-  // calls before the user has done anything — burning quota and pulling
-  // hundreds of /users/list batches for fans they may never see.
-  // Page 1 (~25 rows) loads automatically via useInfiniteQuery; further
-  // pages only auto-load once the user starts scrolling.
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const { userScrolled } = paging;
-  // Bounded auto-fill: if first paint doesn't overflow the scroller (small
-  // inbox, or unified mode where one account returns few rows), the IO
-  // sentinel sits inside the viewport forever but `userScrolled` never
-  // flips, so load-more never fires. `canAutofill` caps the bursts per list
-  // (reset with the rest of the paging budget).
-  const autofillLeft = canAutofill(paging);
   useEffect(() => {
     const el = sentinelRef.current;
     const root = el?.parentElement;
     if (!root) return;
-    const onScroll = () => {
-      if (root.scrollTop > 0) dispatchPaging({ type: "scrolled" });
+    const fresh = scrollGesture();
+    const onIntent = (e: Event) => {
+      if (fresh(e as IntentEvent, performance.now())) dispatchPaging({ type: "scrolled" });
     };
-    root.addEventListener("scroll", onScroll, { passive: true });
-    return () => root.removeEventListener("scroll", onScroll);
+    for (const k of INTENT_EVENTS) root.addEventListener(k, onIntent, { passive: true });
+    return () => { for (const k of INTENT_EVENTS) root.removeEventListener(k, onIntent); };
   }, []);
   useEffect(() => {
     const el = sentinelRef.current;
@@ -681,17 +664,18 @@ export function FanList({
     const io = new IntersectionObserver(
       (entries) => {
         if (!entries.some((e) => e.isIntersecting)) return;
-        if (!qRef.current.hasMore || qRef.current.isFetchingMore) return;
-        if (capped) return;
+        if (!qRef.current.hasMore || qRef.current.isFetching) return;
         // Loaded rows still wait behind "Show N more": no page past them.
         if (hiddenRowsRef.current > 0) return;
         // Owe-reply and a group have their own bounded walk and intentionally
-        // pre-scan without waiting for user scroll. Search also bypasses the
-        // gate — typing a name implies "keep scanning for matches." Default
-        // mode requires an explicit scroll signal before chaining pages.
+        // pre-scan without waiting for user scroll, as a search does, within
+        // the automatic page budget. One scroll buys one page past it.
         if (fillExhausted) return;
-        if (!fillActive && !query && !userScrolled) return;
-        loadMore();
+        if (userScrolled) {
+          dispatchPaging({ type: "scrollUsed" });
+          loadMore("scroll");
+        } else if (fillActive) loadMore("fill");
+        else if (query) loadMore("search");
       },
       // rootMargin: 0 means "only fire when the sentinel is actually in
       // the viewport," not 200px before. Combined with the userScrolled
@@ -700,12 +684,8 @@ export function FanList({
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [loadMore, capped, fillExhausted, fillActive, userScrolled, query]);
+  }, [loadMore, fillExhausted, fillActive, userScrolled, query, q.isFetching]);
 
-  // Auto-fill until the panel overflows. Pairs with the userScrolled gate
-  // on the IO observer: once content is taller than the viewport, scroll
-  // takes over and this effect stops firing. Hard-capped at 10 bursts so
-  // a truly small inbox or a stuck `hasMore` can't burn quota.
   // Gated on `q.isSuccess && !isFromSeed`: while the cold-start seed is
   // visible, the scroller may already overflow with placeholder rows
   // which would falsely terminate the autofill check, OR — worse — the
@@ -713,10 +693,8 @@ export function FanList({
   // loop loadMore against an empty result. Re-runs once seed dissolves.
   useEffect(() => {
     if (!q.isSuccess || isFromSeed) return;
-    if (!q.hasMore || q.isFetchingMore) return;
-    if (capped) return;
+    if (!q.hasMore || q.isFetching) return;
     if (fillExhausted) return;
-    if (!autofillLeft) return;
     const scroller = sentinelRef.current?.parentElement;
     if (!scroller) return;
     // Tab not visible or panel not mounted yet — clientHeight will be 0
@@ -724,11 +702,10 @@ export function FanList({
     if (scroller.offsetParent === null || scroller.clientHeight === 0) return;
     const id = requestAnimationFrame(() => {
       if (scroller.scrollHeight > scroller.clientHeight + 80) return;
-      dispatchPaging({ type: "autofilled" });
-      loadMore();
+      loadMore("autofill");
     });
     return () => cancelAnimationFrame(id);
-  }, [rows.length, q.hasMore, q.isFetchingMore, q.isSuccess, isFromSeed, capped, fillExhausted, autofillLeft, loadMore]);
+  }, [rows.length, q.hasMore, q.isFetching, q.isSuccess, isFromSeed, fillExhausted, loadMore]);
 
   // The rows' time column is measured from this render, to the minute: the
   // column and the badges read no finer, and a clock that moved every render
@@ -740,6 +717,8 @@ export function FanList({
     for (const [id, acc] of accountById) m.set(id, { color: acc.color || "#666", name: acc.nickname || id });
     return m;
   }, [accountById]);
+  const grey = useGreyAccounts();
+  const greyCreators = useMemo(() => [...grey].map((id) => accountChips.get(id)?.name ?? id).sort(), [grey, accountChips]);
   const togglePick = useCallback((c: OFChatItem) => setPicks((prev) => {
     const next = new Set(prev);
     if (!next.delete(chatRowKey(c))) next.add(chatRowKey(c));
@@ -747,18 +726,14 @@ export function FanList({
   }), []);
 
   // "Load more conversations" ends the list while more chats exist and
-  // nothing is loading. At the cap a click extends the cap by a step;
-  // below it, more chats exist but the panel isn't tall enough to scroll
-  // (small/minimized window, few rows, or the autofill burst cap was hit),
-  // so the IO sentinel never re-fires, and a click pulls the next page so
-  // the tail is always reachable without a scrollbar. Owe reply keeps its
-  // own scan line.
+  // nothing is loading: one click, one page, past the automatic budget too.
+  // Owe reply keeps its own scan line.
   const loadMoreClick =
     oweReplyActive || q.isFetchingMore || (q.isFetching && rows.length > 0) || !q.hasMore
       ? null
-      : capped
-        ? () => dispatchPaging({ type: "extendCap", loaded: allRows.length })
-        : () => q.loadMore();
+      : () => void loadMore("loadmore");
+  // Rows stay on screen: a refused deep page or a busy OnlyFans is a line under them, not the error banner.
+  const softError = q.isError && rows.length > 0 && (isDeepRefused(q.error) || isRateLimited(q.error));
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-[var(--inf-pane,var(--color-panel))]">
@@ -818,7 +793,7 @@ export function FanList({
       </div>
       {shownCreators.length > 0 && (
         <SplitInbox
-          accountIds={shownCreators} open={splitInboxOpen} onClose={() => setSplitInboxOpen(false)} fans={splitFans}
+          accountIds={shownCreators} scope={scope.kind} open={splitInboxOpen} onClose={() => setSplitInboxOpen(false)} fans={splitFans}
         />
       )}
       {pickerOpen && singleAcctId && (
@@ -834,13 +809,18 @@ export function FanList({
           q.isFetching && q.isPlaceholderData && "opacity-60",
         )}
       >
-        {q.isError && !(isRateLimited(q.error) && rows.length > 0) && (
+        {q.isError && !softError && (
           <div className="p-4 text-xs text-err">
             {describeLoadError(q.error as Error)}
           </div>
         )}
         {inbox.failed.size > 0 && (
           <p role="alert" className="p-4 text-xs text-err">Could not load inbox groups for {inbox.failed.size} {inbox.failed.size === 1 ? "model" : "models"}.</p>
+        )}
+        {greyCreators.length > 0 && (
+          <p role="status" data-cells-partial className="px-4 py-2 text-xs text-warn">
+            Not loaded right now: {greyCreators.join(", ")}. Their chats may be out of date.
+          </p>
         )}
         {inbox.pending.size > 0 && (
           <p role="status" className="p-4 text-xs text-fg-dim">Loading inbox groups…</p>
@@ -884,9 +864,15 @@ export function FanList({
               selectedRowRef={revealSelectedRow}
               picked={picks?.has(chatRowKey(c))}
               onTogglePick={picks ? togglePick : undefined}
+              stale={grey.has(accountId)}
             />
           );
         })}
+        {softError && !q.isFetching && (
+          <p role="status" className="px-4 pt-2 text-xs text-fg-dim">
+            {isDeepRefused(q.error) ? "Reload to load older chats." : "OnlyFans is busy, try again."}
+          </p>
+        )}
         <div
           ref={sentinelRef}
           className={cn(!loadMoreClick && hiddenRows === 0 && cn(MP.ours.FanList.sentinel, "flex items-center justify-center text-fg-dim text-center"))}
@@ -898,18 +884,18 @@ export function FanList({
             : oweReplyActive
             ? (q.isFetchingMore
                 ? `Scanning… ${oweReplyMatches} found in ${oweReplyScanned}`
-                : oweReplyMatches === 0
-                  ? `No replies needed in last ${oweReplyScanned} chats.`
-                  : scanCapped && q.hasMore
-                    ? (
-                      <button
-                        type="button"
-                        onClick={() => q.loadMore()}
-                        className={cn(MP.ours.FanList.keepScanning, "text-[var(--inf-accent-text,var(--color-accent))] underline underline-offset-2 md:no-underline md:underline-offset-auto md:hover:underline inline-flex items-center")}
-                      >
-                        scanned {oweReplyScanned} · {oweReplyMatches} owed · keep scanning
-                      </button>
-                    )
+                : fillDone && q.hasMore && !q.isFetching
+                  ? (
+                    <button
+                      type="button"
+                      onClick={() => void loadMore("loadmore")}
+                      className={cn(MP.ours.FanList.keepScanning, "text-[var(--inf-accent-text,var(--color-accent))] underline underline-offset-2 md:no-underline md:underline-offset-auto md:hover:underline inline-flex items-center")}
+                    >
+                      scanned {oweReplyScanned} · {oweReplyMatches} owed · keep scanning
+                    </button>
+                  )
+                  : oweReplyMatches === 0
+                    ? `No replies needed in last ${oweReplyScanned} chats.`
                     : !q.hasMore
                       ? `${oweReplyMatches} owed · scanned all ${oweReplyScanned}`
                       : "")

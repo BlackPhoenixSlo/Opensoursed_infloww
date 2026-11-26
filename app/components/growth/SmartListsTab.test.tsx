@@ -82,7 +82,7 @@ describe("SmartListsTab", () => {
       account_id: "a1", name: "Big spenders",
       rules: { match: "all", rules: [
         { field: "lifetime_spend", op: ">=", value: 10000 }, { field: "lifetime_spend", op: ">=", value: 10000 }] },
-    }));
+    }, { cellAccountId: "a1" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
@@ -101,7 +101,7 @@ describe("SmartListsTab", () => {
     const dlg = screen.getByRole("dialog", { name: "Delete smart list?" });
     expect(del).not.toHaveBeenCalled();
     fireEvent.click(within(dlg).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/smart-lists/1"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/smart-lists/1", { cellAccountId: "a1" }));
   });
 
   it("Sync starts the OnlyFans sync; a synced row shows its members and can delete the OnlyFans list too", async () => {
@@ -113,7 +113,7 @@ describe("SmartListsTab", () => {
     mount();
     await screen.findByText("Whales");
     fireEvent.click(screen.getByRole("button", { name: "Sync Whales" }));
-    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/smart-lists/1/activate", {}));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/smart-lists/1/activate", {}, { cellAccountId: "a1" }));
     const synced = within(screen.getByText("Active only").closest("tr")!).getAllByRole("cell");
     expect(synced[3].textContent).toBe("42");
     expect(within(synced[0]).getByText("synced")).toBeTruthy();
@@ -121,7 +121,7 @@ describe("SmartListsTab", () => {
     const dlg = screen.getByRole("dialog", { name: "Delete smart list?" });
     fireEvent.click(within(dlg).getByLabelText("Also delete the OnlyFans list"));
     fireEvent.click(within(dlg).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/smart-lists/2?delete_of_list=true"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/smart-lists/2?delete_of_list=true", { cellAccountId: "a1" }));
   });
 
   it("a preset card pre-fills the Create smart list dialog", async () => {

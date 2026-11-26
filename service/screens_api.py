@@ -76,6 +76,8 @@ def _inner_request(outer: Request, path: str, query: dict[str, Any], aid: str | 
         pri = "background"
     if pri:
         headers.append((b"x-priority", pri.encode()))
+    if caller := outer.headers.get("x-list-caller"):
+        headers.append((b"x-list-caller", caller.encode()))
     q = {k: v for k, v in query.items() if v is not None}
     scope = {k: v for k, v in outer.scope.items() if k in ("app", "server", "client", "scheme", "root_path",
                                                              "http_version", "state")}

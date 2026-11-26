@@ -9,13 +9,13 @@ from typing import Any, NamedTuple
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, desc, func, select
+from sqlalchemy import delete, desc, func, select, text
 
 import events
 from account_security import clear_two_factor_values, link_login, revoke_if_unlinked, revoke_sessions
 from db.engine import get_session
 from db.models import (
-    Action, Chatter, ChatterAccountAccess, ChatterUser, Employee, EmployeeAccountAccess, EmployeeGroup,
+    Action, Chatter, ChatterAccountAccess, ChatterUser, Employee, EmployeeAccountAccess, EmployeeGroup, User,
     UserAccount,
 )
 from auth import get_request_user
@@ -33,6 +33,24 @@ from settings_schema import BUILT_IN_ROLE_IDS
 log = logging.getLogger("of-relay.employees")
 
 router = APIRouter()
+
+CELL_ROLE = os.environ.get("OI_CELL_ROLE") if os.environ.get("OI_CELL_MAP") else None
+FLOOR_MSG = "employee_floor_pending"
+
+
+def _floor_refusal() -> HTTPException:
+    return HTTPException(status_code=503, detail={
+        "error": FLOOR_MSG,
+        "message": "control was restored: no Employee is created until every Cell reports its highest Employee id",
+    })
+
+
+async def _refuse_while_floor_pending() -> None:
+    if CELL_ROLE != "control":
+        return
+    async with get_session() as s:
+        if (await s.execute(text("SELECT pending FROM employee_floor"))).scalar() == 1:
+            raise _floor_refusal()
 
 # Counts ACTIVE rows only: soft-deleted employees stay for audit history; 0/unset disables the cap.
 def _max_employees() -> int:
@@ -281,7 +299,13 @@ async def create_employee(body: _EmployeeCreateBody = Body(...)) -> dict[str, An
             user_id=user.id if user is not None else None,
         )
         s.add(e)
-        await s.flush()
+        from sqlalchemy.exc import IntegrityError
+        try:
+            await s.flush()
+        except IntegrityError as exc:
+            if FLOOR_MSG in str(exc):
+                raise _floor_refusal() from None
+            raise
         return _brief(e)
 
 
@@ -476,10 +500,10 @@ class EmployeeSetup(BaseModel):
 
 
 async def _held_role_ids(owner_id: str) -> set[str]:
-    from settings_api import _read_blob, ensure_role_presets
+    from settings_api import read_blob, ensure_role_presets
     await ensure_role_presets(owner_id)
     async with get_session() as s:
-        blob = await _read_blob(s, owner_id, "roles")
+        blob = await read_blob(s, owner_id, "roles")
     roles = blob.get("roles") if isinstance(blob.get("roles"), list) else []
     return {r["id"] for r in roles if isinstance(r, dict) and isinstance(r.get("id"), str)} | (BUILT_IN_ROLE_IDS - {"owner"})
 
@@ -520,12 +544,12 @@ async def apply_employee_setup(owner_id: str, employee_id: int, setup: dict[str,
             await _replace_login_access(s, e.chatter_id, owner_id, setup["account_ids"] or [])
             events.on_commit(s, "assignment_changed", agency=owner_id)
     if "role_id" in setup:
-        from settings_api import _read_blob, _write_blob
+        from settings_api import read_blob, write_blob
         async with get_session() as s:
-            blob = await _read_blob(s, owner_id, "roles")
+            blob = await read_blob(s, owner_id, "roles")
             assignments = dict(blob.get("assignments") or {})
             assignments[str(employee_id)] = setup["role_id"] or "chatter"
-            await _write_blob(s, owner_id, "roles", {"version": 1, **blob, "assignments": assignments})
+            await write_blob(s, owner_id, "roles", {"version": 1, **blob, "assignments": assignments})
             events.on_commit(s, "permissions_changed", agency=owner_id)
 
 
@@ -569,6 +593,7 @@ async def create_employee_login(body: _CreateLoginBody = Body(...)) -> dict[str,
     _validate_username(username)
     _validate_password(body.password)
     setup = await validate_employee_setup(user.id, body.given())
+    await _refuse_while_floor_pending()
     now = datetime.utcnow()
     import uuid
     cid = uuid.uuid4().hex
@@ -892,6 +917,26 @@ async def get_owner_employee_id(user) -> int | None:
     )
 
 
+async def seed_agency_rows(user) -> None:
+    from settings_api import _login_employee_ids, ensure_role_presets, give_role_to_unroled
+    await get_owner_employee_id(user)
+    await _ensure_login_mirrors(user.id)
+    await ensure_role_presets(user.id)
+    async with get_session() as s:
+        logins = await _login_employee_ids(s, user.id)
+    await give_role_to_unroled(user.id, logins)
+
+
+async def backfill_agency_rows() -> int:
+    from settings_api import migrate_role_enforcement_once
+    await migrate_role_enforcement_once()
+    async with get_session() as s:
+        owners = (await s.execute(select(User.id, User.username).order_by(User.id))).all()
+    for owner in owners:
+        await seed_agency_rows(owner)
+    return len(owners)
+
+
 async def find_owner_employee_id(s, user) -> int | None:
     return (await s.execute(select(Employee.id).where(
         Employee.chatter_id == f"{OWNER_KEY_PREFIX}{user.id}", Employee.user_id == user.id,
@@ -920,6 +965,10 @@ async def get_or_create_mirror_employee(
             existing = await mirror_id(s, chatter_id, owner_user_id)
             if existing is not None:
                 return existing
+            if CELL_ROLE == "data":
+                log.warning("chatter→emp: no Mirror Employee for chatter=%s owner=%s on this data Cell; "
+                            "only control writes it", chatter_id, owner_user_id)
+                return None
 
             from sqlalchemy.exc import IntegrityError
             new_row = Employee(
@@ -940,8 +989,12 @@ async def get_or_create_mirror_employee(
                     new_row.display_name,
                 )
                 created = new_row.id
-            except IntegrityError:
+            except IntegrityError as exc:
                 await s.rollback()
+                if FLOOR_MSG in str(exc):
+                    log.warning("chatter→emp: Mirror Employee not created (chatter=%s owner=%s): %s",
+                                chatter_id, owner_user_id, FLOOR_MSG)
+                    return None
                 existing = await mirror_id(s, chatter_id, owner_user_id)
                 if existing is None:
                     log.error(

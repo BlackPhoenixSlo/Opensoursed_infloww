@@ -14,7 +14,7 @@ import { useLoadMoreSentinel } from "@/hooks/useLoadMoreSentinel";
 import { useReportRange } from "@/hooks/useReportRange";
 import { useRoster } from "@/hooks/useRoster";
 import { reassignChoices, attributeTo, type ReassignEmployee } from "@/components/analytics/ReassignOptions";
-import { MAX_BATCH, useAttributeTip, useBatchAttribute } from "@/hooks/useStats";
+import { MAX_BATCH, useAttributeTip, useBatchAttribute, type SaleRef } from "@/hooks/useStats";
 import { groupsInTreeOrder, useEmployeeGroups } from "@/lib/employeeGroups";
 import { fmtPrice } from "@/lib/format";
 import { relay } from "@/lib/relay";
@@ -130,19 +130,22 @@ function fmtWhen(iso: string, timeZone: string | null): string {
 const CELL = cn(IF_TABLE.td, "whitespace-nowrap py-2 h-12");
 const HEAD = cn(IF_TABLE.th, IF_TABLE.thDivider);
 
-function BatchReassign({ txIds, employees, capped, onDone }: {
-  txIds: number[]; employees: ReassignEmployee[]; capped: boolean; onDone: () => void;
+const saleRef = (r: SalesRecord): SaleRef => ({ txId: r.tx_id, accountId: r.account_id });
+const sameSale = (a: SaleRef) => (b: SaleRef) => a.txId === b.txId && a.accountId === b.accountId;
+
+function BatchReassign({ sales, employees, capped, onDone }: {
+  sales: SaleRef[]; employees: ReassignEmployee[]; capped: boolean; onDone: () => void;
 }) {
   const [choice, setChoice] = useState("");
   const batch = useBatchAttribute();
   const save = () => batch.mutate(
-    { employeeId: attributeTo(choice), txIds },
+    { employeeId: attributeTo(choice), sales },
     { onSuccess: () => { setChoice(""); onDone(); } },
   );
   return (
     <div role="group" aria-label="Batch reassign" className="flex flex-wrap items-center gap-2 py-2 text-[14px]">
       <span className="font-medium text-fg">
-        {`${txIds.length} sales record${txIds.length === 1 ? "" : "s"} selected`}
+        {`${sales.length} sales record${sales.length === 1 ? "" : "s"} selected`}
       </span>
       <IfSelect aria-label="Reassign selected to" value={choice} onChange={setChoice} searchable
         options={reassignChoices(employees, true)} placeholder="Choose an employee" className="w-[200px]" />
@@ -156,7 +159,7 @@ function BatchReassign({ txIds, employees, capped, onDone }: {
   );
 }
 
-function ReassignCell({ txId, employees }: { txId: number; employees: ReassignEmployee[] }) {
+function ReassignCell({ txId, accountId, employees }: { txId: number; accountId: string; employees: ReassignEmployee[] }) {
   const [open, setOpen] = useState(false);
   const [choice, setChoice] = useState("");
   const attribute = useAttributeTip();
@@ -164,7 +167,7 @@ function ReassignCell({ txId, employees }: { txId: number; employees: ReassignEm
     return <IfButton onClick={() => { setChoice(""); setOpen(true); }}>Reassign</IfButton>;
   }
   const save = () => attribute.mutate(
-    { txId, employeeId: attributeTo(choice) },
+    { txId, accountId, employeeId: attributeTo(choice) },
     { onSuccess: () => setOpen(false) },
   );
   return (
@@ -193,9 +196,10 @@ export default function SalesRecords() {
   const [assigned, setAssigned] = useState("");
 
   const qs = filterQuery({ from: fromIso, to: toIso, accountId, employeeId, kind, assigned });
-  const [picked, setPicked] = useState<{ query: string; ids: number[] }>({ query: "", ids: [] });
+  const [picked, setPicked] = useState<{ query: string; ids: SaleRef[] }>({ query: "", ids: [] });
   const selected = picked.query === qs.toString() ? picked.ids : [];
-  const select = (ids: number[]) => setPicked({ query: qs.toString(), ids });
+  const select = (ids: SaleRef[]) => setPicked({ query: qs.toString(), ids });
+  const isPicked = (ref: SaleRef) => selected.some(sameSale(ref));
   const csvQuery = new URLSearchParams(qs);
   csvQuery.set("format", "csv");
 
@@ -220,9 +224,9 @@ export default function SalesRecords() {
     enabled: ready,
   });
   const rows = pages.data?.pages.flatMap((p) => p.rows) ?? [];
-  const loadedIds = [...new Set(rows.map((r) => r.tx_id))];
+  const loadedIds = [...new Map(rows.map((r): [string, SaleRef] => [`${r.account_id}:${r.tx_id}`, saleRef(r)])).values()];
   const pickable = loadedIds.slice(0, MAX_BATCH);
-  const allPicked = pickable.length > 0 && pickable.every((id) => selected.includes(id));
+  const allPicked = pickable.length > 0 && pickable.every(isPicked);
   const full = selected.length >= MAX_BATCH;
 
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = pages;
@@ -272,10 +276,10 @@ export default function SalesRecords() {
                   {user && (
                     <td className={CELL}>
                       <input type="checkbox" aria-label={`Select sale ${r.tx_id}`} className="accent-accent"
-                        checked={selected.includes(r.tx_id)}
-                        disabled={full && !selected.includes(r.tx_id)}
-                        onChange={() => select(selected.includes(r.tx_id)
-                          ? selected.filter((id) => id !== r.tx_id) : [...selected, r.tx_id])} />
+                        checked={isPicked(saleRef(r))}
+                        disabled={full && !isPicked(saleRef(r))}
+                        onChange={() => select(isPicked(saleRef(r))
+                          ? selected.filter((p) => !sameSale(p)(saleRef(r))) : [...selected, saleRef(r)])} />
                     </td>
                   )}
                   <td className={cn(CELL, "tabular-nums")}>{fmtWhen(r.occurred_at, reportTz)}</td>
@@ -298,7 +302,7 @@ export default function SalesRecords() {
                   </td>
                   {user && (
                     <td className={cn(CELL, IF_TABLE.fixedRight, IF_TABLE.unpinPhone)}>
-                      <ReassignCell txId={r.tx_id} employees={pickers} />
+                      <ReassignCell txId={r.tx_id} accountId={r.account_id} employees={pickers} />
                     </td>
                   )}
                 </tr>
@@ -352,7 +356,7 @@ export default function SalesRecords() {
 
       <section aria-label="Sales records">
         {user && selected.length > 0 && (
-          <BatchReassign txIds={selected} employees={pickers} onDone={() => select([])}
+          <BatchReassign sales={selected} employees={pickers} onDone={() => select([])}
             capped={full && loadedIds.length > selected.length} />
         )}
         {body}

@@ -76,7 +76,7 @@ function Section({
         account_id: r.account_id,
         fan_id: r.fan_id,
         at,
-      });
+      }, { cellAccountId: r.account_id });
       dispatch({ type: "brief", seq, brief: res });
     } catch (e) {
       dispatch({
@@ -359,7 +359,7 @@ export default function CustomsTab() {
         await relay.post("/admin/customs/clear", {
           account_id: r.account_id,
           fan_id: r.fan_id,
-        });
+        }, { cellAccountId: r.account_id });
         setRows((prev) =>
           (prev || []).filter(
             (x) => !(x.account_id === r.account_id && x.fan_id === r.fan_id),

@@ -598,7 +598,7 @@ def case_capture_on_fansly_creator_fails_job_before_proxy_bind():
 
     now = time.time()
     job = rl.RemoteLoginJob(id=uuid.uuid4().hex, email="e@x.com", principal=None,
-                            created_at=now, expires_at=now + rl.JOB_WINDOW_S)
+                            created_at=now, expires_at=now + rl.JOB_WINDOW_S, platform="onlyfans")
     with _patched(rl, _browserbase_backend=_backend, bind_proxy=lambda j, a: calls.append(("bind", a))), \
             _patched(session_bootstrap, from_request=lambda *a, **k: calls.append("persist")), \
             _patched(server, post_bootstrap_hooks=lambda a: calls.append(("hooks", a))):

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  groupOf, inboxGate, inboxScope, lockedGroup, splitInboxKey, type InboxSplit, type ScopeSplit,
+  groupOf, inboxGate, inboxScope, lockedGroup, splitInboxKey, type InboxSplit, type SplitRead,
 } from "./splitInbox";
 
 const config = { group_count: 2, assignments: { f1: 1, f2: 2, f3: 1 } };
@@ -9,7 +9,7 @@ const FANS: [string, string][] = [["a", "f1"], ["a", "f2"], ["a", "f3"], ["b", "
 const ok: InboxSplit = { status: "success", config };
 
 describe("inboxGate", () => {
-  it.each<[string, Record<string, number>, [string, InboxSplit][], {
+  it.each<[string, Record<string, number | null>, [string, InboxSplit][], {
     in: string[]; out?: string[]; pending?: string[]; failed?: string[];
   }]>([
     ["no pick serves every Fan", {}, [], { in: FANS.map(([a, f]) => `${a}:${f}`) }],
@@ -22,6 +22,8 @@ describe("inboxGate", () => {
     ["split read failed: held, Creator failed", { a: 1 }, [["a", { status: "error" }]],
       { in: ["b:f1", "b:f2"], failed: ["a"] }],
     ["pick above the count: every Fan out", { a: 3 }, [["a", ok]],
+      { in: ["b:f1", "b:f2"], out: ["a:f1", "a:f2", "a:f3"] }],
+    ["no group (lock conflict): every Fan out", { a: null }, [["a", ok]],
       { in: ["b:f1", "b:f2"], out: ["a:f1", "a:f2", "a:f3"] }],
   ])("%s", (_name, picks, splits, want) => {
     const gate = inboxGate(picks, new Map(splits));
@@ -103,24 +105,26 @@ it("one cache key for every reader", () => {
 
 describe("inboxScope", () => {
   const b = { group_count: 3, assignments: { f1: 3, f2: 1 } };
-  const loaded = (cfg: typeof config | typeof b, myGroup: number | null = null): ScopeSplit => ({ config: cfg, myGroup });
-  const none: ScopeSplit = { config: null, myGroup: null };
+  const loaded = (cfg: typeof config | typeof b, myGroup: number | null = null): SplitRead =>
+    ({ status: "success", config: cfg, myGroup });
+  const none: SplitRead = { status: "pending", myGroup: null };
   it("reports pending and failed Creators while filtering a picked group", () => {
-    const scope = inboxScope(new Map([["a", loaded(config)], ["b", none], ["c", { ...none, failed: true }]]), 1);
+    const scope = inboxScope(new Map([["a", loaded(config)], ["b", none], ["c", { status: "error", myGroup: null }]]), 1);
     expect([...scope.pending]).toEqual(["b"]);
     expect([...scope.failed]).toEqual(["c"]);
     expect(scope.of?.("b", "f1")).toBe(false);
     expect(scope.of?.("c", "f1")).toBe(false);
   });
 
-  it.each<[string, [string, ScopeSplit][], number | null, {
+  it.each<[string, [string, SplitRead][], number | null, {
     count: number; locked: number | null; in: string[] | "no filter"; allLoaded: boolean;
   }]>([
     ["no Creators", [], null, { count: 1, locked: null, in: "no filter", allLoaded: true }],
     ["one Creator, no pick", [["a", loaded(config)]], null, { count: 2, locked: null, in: "no filter", allLoaded: true }],
-    ["one Creator, group 2", [["a", loaded(config)]], 2, { count: 2, locked: null, in: ["a:f2"], allLoaded: true }],
-    ["one Creator locked", [["a", loaded(config, 1)]], null,
-      { count: 2, locked: 1, in: ["a:f1", "a:f3", "b:f1", "b:f2"], allLoaded: true }],
+    ["one Creator, group 2: rows of a Creator outside the scope are out", [["a", loaded(config)]], 2,
+      { count: 2, locked: null, in: ["a:f2"], allLoaded: true }],
+    ["one Creator locked: rows of a Creator outside the scope are out", [["a", loaded(config, 1)]], null,
+      { count: 2, locked: 1, in: ["a:f1", "a:f3"], allLoaded: true }],
     ["count is the largest", [["a", loaded(config)], ["b", loaded(b)]], null,
       { count: 3, locked: null, in: "no filter", allLoaded: true }],
     ["group 1 of each Creator", [["a", loaded(config)], ["b", loaded(b)]], 1,

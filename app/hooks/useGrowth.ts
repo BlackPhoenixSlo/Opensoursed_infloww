@@ -87,7 +87,7 @@ export function useCreateTrialLink(accountId: string | null) {
     } & Partial<LinkMetaPayload>
   >({
     mutationFn: (body) =>
-      relay.post<TrialLink>("/admin/trial-links", { account_id: accountId, ...body }),
+      relay.post<TrialLink>("/admin/trial-links", { account_id: accountId, ...body }, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [TRIAL_KEY, accountId] }),
   });
 }
@@ -95,7 +95,7 @@ export function useCreateTrialLink(accountId: string | null) {
 export function useDeleteTrialLink(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, number>({
-    mutationFn: (id) => relay.delete(`/admin/trial-links/${id}`),
+    mutationFn: (id) => relay.delete(`/admin/trial-links/${id}`, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [TRIAL_KEY, accountId] }),
   });
 }
@@ -165,7 +165,7 @@ export function useCreateTrackingLink(accountId: string | null) {
     TrackingLink, Error, { name: string; target_url: string; slug?: string; bot_check?: boolean }
   >({
     mutationFn: (body) =>
-      relay.post<TrackingLink>("/admin/tracking-links", { account_id: accountId, ...body }),
+      relay.post<TrackingLink>("/admin/tracking-links", { account_id: accountId, ...body }, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [TRACK_KEY, accountId] }),
   });
 }
@@ -173,7 +173,7 @@ export function useCreateTrackingLink(accountId: string | null) {
 export function useUpdateTrackingLink(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<TrackingLink, Error, { id: number; bot_check: boolean }>({
-    mutationFn: ({ id, ...body }) => relay.patch<TrackingLink>(`/admin/tracking-links/${id}`, body),
+    mutationFn: ({ id, ...body }) => relay.patch<TrackingLink>(`/admin/tracking-links/${id}`, body, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [TRACK_KEY, accountId] }),
   });
 }
@@ -181,7 +181,7 @@ export function useUpdateTrackingLink(accountId: string | null) {
 export function useDeleteTrackingLink(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, number>({
-    mutationFn: (id) => relay.delete(`/admin/tracking-links/${id}`),
+    mutationFn: (id) => relay.delete(`/admin/tracking-links/${id}`, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [TRACK_KEY, accountId] }),
   });
 }
@@ -318,7 +318,7 @@ export function useCreateOfTrackingLink(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<OfTrackingLink, Error, CreateOfTrackingLinkBody>({
     mutationFn: (body) =>
-      relay.post<OfTrackingLink>("/admin/of-tracking-links", { account_id: accountId, ...body }),
+      relay.post<OfTrackingLink>("/admin/of-tracking-links", { account_id: accountId, ...body }, { cellAccountId: accountId }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [OF_TRACK_KEY, accountId] }),
   });
 }
@@ -380,7 +380,7 @@ export function usePromoList(accountId: string | null) {
 export function useSavePromoList(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<PromoListSetting, Error, PromoListSetting>({
-    mutationFn: (body) => relay.put<PromoListSetting>("/admin/promo-list", { account_id: accountId, ...body }),
+    mutationFn: (body) => relay.put<PromoListSetting>("/admin/promo-list", { account_id: accountId, ...body }, { cellAccountId: accountId }),
     onSuccess: (saved) => qc.setQueryData([PROMO_LIST_KEY, accountId], saved),
   });
 }
@@ -418,7 +418,7 @@ export function useCreatePromotion(accountId: string | null) {
     }
   >({
     mutationFn: (body) =>
-      relay.post<PromoCreated>("/admin/promotions", { account_id: accountId, ...body }),
+      relay.post<PromoCreated>("/admin/promotions", { account_id: accountId, ...body }, { cellAccountId: accountId }),
     onSuccess: () => invalidatePromos(qc, accountId),
     onError: (e) => { if (e instanceof RelayError && landed(e.body)) void invalidatePromos(qc, accountId); },
   });
@@ -427,7 +427,7 @@ export function useCreatePromotion(accountId: string | null) {
 export function useDeletePromotion(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, number>({
-    mutationFn: (id) => relay.delete(`/admin/promotions/${id}`),
+    mutationFn: (id) => relay.delete(`/admin/promotions/${id}`, { cellAccountId: accountId }),
     onSettled: () => invalidatePromos(qc, accountId),
   });
 }
@@ -443,7 +443,7 @@ export function useSetPromoAutoReactivate(accountId: string | null) {
     { id: number; auto_reactivate: boolean; preempt: boolean }, Error,
     { id: number; auto_reactivate?: boolean; recreate_limit?: number; preempt?: boolean }
   >({
-    mutationFn: ({ id, ...body }) => relay.patch(`/admin/promotions/${id}`, body),
+    mutationFn: ({ id, ...body }) => relay.patch(`/admin/promotions/${id}`, body, { cellAccountId: accountId }),
     onSuccess: () => invalidatePromos(qc, accountId),
   });
 }
@@ -453,7 +453,7 @@ export function useFinishPromotion(accountId: string | null) {
   return useMutation<unknown, Error, Pick<PromoCampaign, "id" | "of_promo_id" | "auto_reactivate">>({
     mutationFn: async (c) => {
       if (c.of_promo_id == null) throw new Error("This campaign is not linked to an OnlyFans promotion");
-      if (c.id != null && c.auto_reactivate) await relay.patch(`/admin/promotions/${c.id}`, { auto_reactivate: false });
+      if (c.id != null && c.auto_reactivate) await relay.patch(`/admin/promotions/${c.id}`, { auto_reactivate: false }, { cellAccountId: accountId });
       return relay.post(`/api/of/v2/promotions/${c.of_promo_id}/finish`, undefined, { accountId });
     },
     onSettled: () => Promise.all([
@@ -530,7 +530,7 @@ export interface LinkMetaBody {
 export function useSaveLinkMeta(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, LinkMetaBody>({
-    mutationFn: (body) => relay.put("/admin/link-meta", { account_id: accountId, ...body }),
+    mutationFn: (body) => relay.put("/admin/link-meta", { account_id: accountId, ...body }, { cellAccountId: accountId }),
     onSuccess: (_r, body) =>
       qc.invalidateQueries({ queryKey: [body.kind === "trial" ? TRIAL_KEY : OF_TRACK_KEY, accountId], exact: true }),
   });
@@ -547,7 +547,7 @@ export interface LinkMetaBatchBody {
 export function useSaveLinkMetaBatch(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<unknown, Error, LinkMetaBatchBody>({
-    mutationFn: (body) => relay.put("/admin/link-meta/batch", { account_id: accountId, ...body }),
+    mutationFn: (body) => relay.put("/admin/link-meta/batch", { account_id: accountId, ...body }, { cellAccountId: accountId }),
     onSuccess: (_r, body) =>
       qc.invalidateQueries({ queryKey: [body.kind === "trial" ? TRIAL_KEY : OF_TRACK_KEY, accountId], exact: true }),
   });
@@ -582,7 +582,7 @@ export function useLinkShares(accountId: string | null, kind: EditableKind) {
 export function useCreateLinkShare(accountId: string | null) {
   const qc = useQueryClient();
   return useMutation<LinkShare, Error, { kind: EditableKind; name: string; of_ids: number[]; include_earnings: boolean }>({
-    mutationFn: (body) => relay.post<LinkShare>("/admin/link-shares", { account_id: accountId, ...body }),
+    mutationFn: (body) => relay.post<LinkShare>("/admin/link-shares", { account_id: accountId, ...body }, { cellAccountId: accountId }),
     onSuccess: async (_r, body) => {
       // A share's rows fill from the owner's links reads: refetch now so a new share gets rows sooner, then list the shares.
       await qc.refetchQueries({

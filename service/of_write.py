@@ -13,6 +13,7 @@ import dm_rate
 import run_slot
 from write_gate import WriteGate
 import run_decide
+from send_tripwire import UnclaimedSend
 
 log = logging.getLogger("of-relay.automation")
 
@@ -106,7 +107,7 @@ def _may_have_sent(e: BaseException) -> bool:
     for _ in range(32):
         if current is None:
             break
-        if proxy_refused(current) or isinstance(current, OFDeniedError):
+        if proxy_refused(current) or isinstance(current, (OFDeniedError, UnclaimedSend)):
             return False
         if isinstance(current, curl_exc.ConnectionError) and getattr(current, "code", None) == CurlECode.COULDNT_CONNECT:
             return False

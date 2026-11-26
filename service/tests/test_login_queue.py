@@ -68,8 +68,8 @@ class _FakeStart:
             raise rl.RemoteLoginConflict(f"busy for {kw['email']} ({kw['password']})")
         now = time.time()
         job = rl.RemoteLoginJob(id=uuid.uuid4().hex, email=kw["email"], principal=kw["principal"],
-                                created_at=now, expires_at=now + rl.JOB_WINDOW_S, proxy=kw["proxy"],
-                                backend=kw["backend"])
+                                created_at=now, expires_at=now + rl.JOB_WINDOW_S, platform=kw["platform"],
+                                proxy=kw["proxy"], backend=kw["backend"])
         job.live_view_url = "https://bb.example/live/1"
         rl._jobs[job.id] = job
         self.jobs.append(job)
@@ -160,6 +160,22 @@ async def case_default_proxy_pool() -> None:
     finally:
         proxy_registry.pool_entries = saved  # type: ignore[assignment]
     assert START.calls[0]["proxy"] == rl.PROXY_INFLOWWW, START.calls
+
+
+async def case_queue_only_starts_onlyfans() -> None:
+    async with _client() as c:
+        for sent in ({}, {"platform": "onlyfans"}):
+            START.reset()
+            r = await c.post(Q, json={"text": "a@x.com:pw1", **sent}, headers=COOKIE_A)
+            assert r.status_code == 200, r.text
+            await _until(lambda: len(START.jobs) == 1)
+            START.jobs[0].set_state(rl.STATE_DONE)
+            await _until(lambda: _queue().finished)
+            assert START.calls[0]["platform"] == "onlyfans", (sent, START.calls)
+        for value in ("fansly", "myspace", "", None, False, 0, [], {}):
+            r = await c.post(Q, json={"text": "a@x.com:pw1", "platform": value}, headers=COOKIE_A)
+            assert r.status_code == 400 and "pw1" not in r.text, r.text
+        assert len(START.calls) == 1
 
 
 async def case_otp_surfaced() -> None:

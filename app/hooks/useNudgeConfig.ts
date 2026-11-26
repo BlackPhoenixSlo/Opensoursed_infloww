@@ -82,7 +82,7 @@ export function useSaveNudgeConfig() {
         draft: vars.config, base: effectiveConfig(qc.getQueryData<NudgeConfigResponse>([KEY, vars.account_id])),
         at: Date.now(),
       });
-      return relay.put(`/admin/nudge-config`, vars);
+      return relay.put(`/admin/nudge-config`, vars, { cellAccountId: vars.account_id });
     },
     // Draft ack lives on the mutation, not mutate(): it must run after unmount; the stash drops only if still this PUT's.
     onSuccess: (echo, vars) => {
@@ -135,7 +135,7 @@ export function useNudgePreview() {
     Error,
     NudgeConfigWrite & { fan_id?: FanId | null; hour?: number | null; weekday?: string | null }
   >({
-    mutationFn: (vars) => relay.post(`/admin/nudge-config/preview`, vars),
+    mutationFn: (vars) => relay.post(`/admin/nudge-config/preview`, vars, { cellAccountId: vars.account_id }),
   });
 }
 

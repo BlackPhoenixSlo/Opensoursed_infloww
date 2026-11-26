@@ -17,6 +17,7 @@ import { nextFeedOffset, pageRows, POSTS_PAGE, rowsOf, uniqueRows } from "@/lib/
 import { chatsQuery, chatsRequest, chatsView } from "@/lib/ofMirrorChats";
 import { fanIdFromParam } from "@/lib/fanId";
 import { useChatList } from "@/hooks/useChatList";
+import { INTENT_EVENTS, scrollGesture, type IntentEvent, type ListCaller } from "@/hooks/chatListLoadMore";
 import { UNREAD_PREFETCH_TIERS, useUnreadMessagesPrefetch } from "@/hooks/useUnreadMessagesPrefetch";
 import { useChatMessages } from "@/hooks/useChatMessages";
 import { useChatPinned } from "@/hooks/useChatPinned";
@@ -259,7 +260,7 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const statementsStatus = stmt ? feedStatus(stmt, need ? template : null) : undefined;
   const data = useMemo<MirrorData>(() => {
     // eslint-disable-next-line react-hooks/refs -- by design, as before mirrorDataOf: known's users are read as the memo runs; the loader reads its ref only when the chat list asks for more
-    return mirrorDataOf({ chat, list, label, parts, listQuery, chatList, loadMoreChats: () => void loadMoreChats.current(), pageIds, partners, knownUsers: known.current.users, detail, isPinnedPage, pinned, thread, isGallery, gTab, gallery, vault, vaultSearch, vaultPage, vaultMedia, vaultPages, vaultRead, lists, members, listPostRows, listPosts, need, template, postType, subscribers, fansType, labels, postRows, me, posts, ofMeStatus, photos, videos, ofMe, highlights, bookmarks, queue, zone, notifications, relatedUser, notificationCounts, newTags, pastStreams, transactions, payouts, referrals, statementsStatus, homeRows, home, meId, myStories, stories, streams, authorPages, promotions, events });
+    return mirrorDataOf({ chat, list, label, parts, listQuery, chatList, loadMoreChats: () => void loadMoreChats.current("auto"), pageIds, partners, knownUsers: known.current.users, detail, isPinnedPage, pinned, thread, isGallery, gTab, gallery, vault, vaultSearch, vaultPage, vaultMedia, vaultPages, vaultRead, lists, members, listPostRows, listPosts, need, template, postType, subscribers, fansType, labels, postRows, me, posts, ofMeStatus, photos, videos, ofMe, highlights, bookmarks, queue, zone, notifications, relatedUser, notificationCounts, newTags, pastStreams, transactions, payouts, referrals, statementsStatus, homeRows, home, meId, myStories, stories, streams, authorPages, promotions, events });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- partnersKey and authorsKey stand for partners and authorPages (new arrays each render)
   }, [chat, list, label, postType, listPosts.data, listPosts.error, listPosts.isPending, listPosts.isFetchingNextPage, listPosts.isFetchNextPageError, listPosts.hasNextPage, listPosts.fetchNextPage, parts, chatList.pages, chatList.isPending, chatList.isPlaceholderData, chatList.isError, chatList.error, chatList.isFetchingMore, chatList.hasMore, partnersKey, listQuery, detail.data, thread.data, isPinnedPage, pinned.data, isGallery, gTab, gallery.data, gallery.isPlaceholderData, gallery.isError, gallery.error, gallery.isPending, gallery.isFetchingNextPage, gallery.hasNextPage, gallery.isFetchNextPageError, vault.data, vaultSearch, vaultPage, vaultMedia.data, vaultPages.data, vaultRead.error, vaultRead.isPending, lists.data, lists.error, lists.isPending, members.data, members.error, members.isPending, subscribers.data, subscribers.error, subscribers.isPending, fansType, labels.data, labels.error, labels.isPending, postRows, posts.error, posts.isPending, posts.isFetchingNextPage, posts.isFetchNextPageError, posts.hasNextPage, posts.fetchNextPage, photos.data, photos.error, photos.isPending, videos.data, videos.error, videos.isPending, highlights.data, ofMeStatus, bookmarks.data, queue.data, zone, notifications.data, notifications.error, relatedUser, notificationCounts.data, newTags, pastStreams.data, transactions.data, transactions.isFetchingNextPage, transactions.isFetchNextPageError, transactions.error, transactions.hasNextPage, transactions.fetchNextPage, payouts.data, referrals.data, statementsStatus, homeRows, home.error, home.isPending, home.isFetchingNextPage, home.isFetchNextPageError, home.hasNextPage, home.fetchNextPage, stories.data, streams.data, myStories.data, authorsKey, promotions.data, ofMe, meId, events.data, need, template.data, template.error]);
 
@@ -341,35 +342,64 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
     };
   }, [frameRef, src, vaultPage, data, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
+  const chatGesture = useRef<{ doc: Document | null; view: string; fresh: ReturnType<typeof scrollGesture>; armed: boolean } | null>(null);
+  const gestureView = JSON.stringify([src, accountId, listQuery]);
   const chatsNext = isChats && !!accountId && chatList.hasMore && !chatList.isFetchingMore && !partnersPending;
   useEffect(() => {
     const frame = frameRef.current;
-    if (!frame || !chatsNext) return;
-    const check = () => {
+    if (!frame || !isChats || !accountId) return;
+    const check = (caller: ListCaller): boolean => {
       const d = frame.contentDocument;
       const win = d?.defaultView;
       const box = d?.querySelector<HTMLElement>(".b-chats__scroller");
       const rows = box?.querySelectorAll<HTMLElement>("[data-oi-chat]");
       const last = rows?.[rows.length - 1];
-      if (!win || !box || !last || !box.checkVisibility?.()) return;
+      if (!win || !box || !last || !box.checkVisibility?.()) return false;
       const clips = /(auto|scroll)/.test(win.getComputedStyle(box).overflowY);
       const end = Math.min(win.innerHeight, clips ? box.getBoundingClientRect().bottom : win.innerHeight);
-      if (last.getBoundingClientRect().bottom - end <= CHATS_MORE_PX) void loadMoreChats.current();
+      if (last.getBoundingClientRect().bottom - end > CHATS_MORE_PX) return false;
+      void loadMoreChats.current(caller);
+      return true;
+    };
+    const onScroll = () => {
+      const gesture = chatGesture.current;
+      if (chatsNext && gesture?.armed && check("scroll")) gesture.armed = false;
+    };
+    const onIntent = (e: Event) => {
+      const target = e.target as Element | null;
+      if (!target?.closest?.(".b-chats__scroller")) return;
+      const gesture = chatGesture.current;
+      if (gesture?.fresh(e as IntentEvent, performance.now())) gesture.armed = true;
+      onScroll();
+    };
+    const onPointerDown = (e: Event) => {
+      const target = e.target as Element | null;
+      const gesture = chatGesture.current;
+      if (gesture && target?.matches?.(".b-chats__scroller")) gesture.armed = true;
     };
     let doc: Document | null = null;
+    const listen = (d: Document | null, on: boolean) => {
+      const f = on ? "addEventListener" : "removeEventListener";
+      d?.[f]("scroll", onScroll, true);
+      d?.[f]("pointerdown", onPointerDown, true);
+      for (const k of INTENT_EVENTS) d?.[f](k, onIntent, true);
+    };
     const attach = () => {
-      doc?.removeEventListener("scroll", check, true);
+      listen(doc, false);
       doc = frame.contentDocument;
-      doc?.addEventListener("scroll", check, true);
-      check();
+      if (chatGesture.current?.doc !== doc || chatGesture.current.view !== gestureView) {
+        chatGesture.current = { doc, view: gestureView, fresh: scrollGesture(), armed: false };
+      }
+      listen(doc, true);
+      if (chatsNext) check("autofill");
     };
     if (frame.contentDocument?.readyState === "complete") attach();
     frame.addEventListener("load", attach);
     return () => {
       frame.removeEventListener("load", attach);
-      doc?.removeEventListener("scroll", check, true);
+      listen(doc, false);
     };
-  }, [frameRef, src, chatsNext, data]);
+  }, [frameRef, isChats, accountId, gestureView, chatsNext, data]);
 
   const { hasOlder, isLoadingOlder, loadOlder, olderFailed } = thread;
   const olderNext = parts.includes("thread") && !isPinnedPage && !!chat && !!accountId && hasOlder && !isLoadingOlder;

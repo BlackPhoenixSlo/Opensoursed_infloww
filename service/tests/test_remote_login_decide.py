@@ -5,11 +5,26 @@ import _harness
 _harness.bootstrap()
 
 import remote_login  # noqa: E402
-from remote_login_decide import (CHALLENGE_MSG, OTP_ASK, OTP_NOT_TYPED, OTP_REJECTED, OTP_VERIFY_S,  # noqa: E402
-                                 STATE_CHALLENGE, STATE_OTP, STATE_TYPING, TYPING_MSG, AskAgain, Cancel,
-                                 Drive, Expire, Idle, LoggedIn, Poll, Show, Typed, TypeCode, login_step)
+import remote_login_decide as decide  # noqa: E402
+from remote_login_decide import (CHALLENGE_MSG, OTP_NOT_TYPED, OTP_VERIFY_S,  # noqa: E402
+                                 STATE_CHALLENGE, STATE_OTP, STATE_TYPING, AskAgain, Cancel,
+                                 Drive, Expire, Idle, LoggedIn, Poll, Show, Typed, TypeCode)
 
 T = 1000.0
+OTP_ASK = "OnlyFans asks for the 2FA code — enter it here or in the live view"
+OTP_REJECTED = "OnlyFans didn't accept that code (or hasn't answered yet) — try again"
+TYPING_MSG = "waiting for OnlyFans"
+
+
+def login_step(st, ev, *a):
+    return decide.login_step(st, ev, *a, site="OnlyFans")
+
+
+def case_site_names_the_platform() -> None:
+    assert decide.login_step(Drive(), Poll(T, otp=True, shown=STATE_TYPING), site="Fansly") == \
+        (Drive(), Show(STATE_OTP, "Fansly asks for the 2FA code — enter it here or in the live view"))
+    assert decide.login_step(Drive(), Poll(T, shown="starting"), site="Fansly") == \
+        (Drive(), Show(STATE_TYPING, "waiting for Fansly"))
 
 
 def case_terminal_signals_win() -> None:
@@ -20,6 +35,11 @@ def case_terminal_signals_win() -> None:
             (Poll(T, uid="7", otp=True, code="123456", challenge=True), LoggedIn("7")),
         ]:
             assert login_step(st, ev) == (st, eff), (st, ev)
+
+
+def case_refused_login_is_a_terminal_effect() -> None:
+    _, effect = login_step(Drive(), Poll(T, refused="Invalid password", challenge=True))
+    assert effect == decide.Fail("OnlyFans refused the login: Invalid password")
 
 
 def case_otp_prompt() -> None:

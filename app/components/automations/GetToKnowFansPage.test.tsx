@@ -69,7 +69,7 @@ describe("Get to know fans", () => {
     await waitFor(() => expect(relayPut).toHaveBeenCalled());
     expect(relayPut.mock.calls[0]).toEqual(["/admin/account-config", {
       account_id: ACC, config: { persona: "Ella.", model_notes: "Name: Mia\nAge: \nFrom: " },
-    }]);
+    }, { cellAccountId: "8000186" }]);
   });
 
   it("the rule form's Save is the one row after its card (the slop scenario's locator), never Model info's", async () => {
@@ -130,7 +130,7 @@ describe("Get to know fans", () => {
     relayPut.mockResolvedValue({ account_id: ACC, config: {} });
     fireEvent.click(save);
     await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(2));
-    expect(relayPut.mock.calls[1]).toEqual(["/admin/style-config", { account_id: ACC, config: { [KIND]: false } }]);
+    expect(relayPut.mock.calls[1]).toEqual(["/admin/style-config", { account_id: ACC, config: { [KIND]: false } }, { cellAccountId: "8000186" }]);
     expect(await screen.findByText("Saved")).toBeInTheDocument();
   });
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Literal
 
@@ -18,6 +19,7 @@ _AUTO_FUNNEL = "/growth/auto-funnel"
 _SENDERS = {"funnel": rmf, "followup": sf}
 
 router = APIRouter()
+cell_router = APIRouter()
 
 
 async def _guard(account_id: str) -> None:
@@ -31,6 +33,22 @@ def _row_state(marker, now: datetime) -> str:
     return smd.marker_state(marker.sending_at, marker.unconfirmed_at, smd.BOOT_TS, now)
 
 
+def _cells() -> bool:
+    return bool(os.environ.get("OI_CELL_MAP"))
+
+
+def _retry_allowed() -> bool:
+    return not _cells()
+
+
+def _op_rows(account_id: str) -> list[dict[str, Any]]:
+    import send_ops
+    return [{"kind": r["kind"], "op_id": r["op_id"], "fan_id": r["target"],
+             "since": iso_z(parse_iso(r["created_at"])), "state": smd.UNCONFIRMED, "retry_allowed": False,
+             "link": "queue" if r["kind"] in send_ops.QUEUE else "chat"}
+            for r in send_ops.uncertain(account_id)]
+
+
 async def _hint(account_id: str, m: dict) -> dict | None:
     if m["sending_at"] is None:
         return None
@@ -39,18 +57,25 @@ async def _hint(account_id: str, m: dict) -> dict | None:
                                      "text": (hit[2] or "")[:60]}
 
 
-@router.get("/admin/unconfirmed-sends")
-async def list_unconfirmed_sends(account_id: str = Query(...)) -> dict[str, Any]:
-    await _guard(account_id)
+async def _marked_rows(account_id: str) -> list[dict[str, Any]]:
     now = datetime.utcnow()
-    return {"rows": [
+    return [
         {"kind": kind, "fan_id": str(m["fan_id"]), "mass_run_id": m["mass_run_id"],
          "step": m["step"], "step_label": f"STEP {m['step']}", "since": iso_z(m["sending_at"]),
          "last_error": m["last_error"],
          "state": smd.marker_state(m["sending_at"], m["unconfirmed_at"], smd.BOOT_TS, now),
          "hint": await _hint(account_id, m)}
         for kind, sender in _SENDERS.items() for m in await sender.marked_sends(account_id)
-    ]}
+    ]
+
+
+@router.get("/admin/unconfirmed-sends")
+async def list_unconfirmed_sends(account_id: str = Query(...)) -> dict[str, Any]:
+    await _guard(account_id)
+    rows = await _marked_rows(account_id)
+    if not _cells():
+        return {"rows": rows}
+    return {"rows": [*({**r, "retry_allowed": _retry_allowed()} for r in rows), *_op_rows(account_id)]}
 
 
 class RetryBody(BaseModel):
@@ -84,6 +109,9 @@ async def _row_of(account_id: str, body: RetryBody):
 @router.post("/admin/unconfirmed-sends/retry")
 async def retry_unconfirmed_send(account_id: str = Query(...),
                                  body: RetryBody = Body(...)) -> dict[str, Any]:
+    if not _retry_allowed():
+        await _guard(account_id)
+        raise HTTPException(409, {"error": "retry_off_cell_mode"})
     since = _since(body)
     sender, key = await _row_of(account_id, body)
     now = datetime.utcnow()
@@ -124,3 +152,21 @@ async def dismiss_unconfirmed_send(account_id: str = Query(...),
     if state == smd.NONE:
         raise HTTPException(409, "this row changed since it was listed: refresh")
     raise HTTPException(409, "still sending")
+
+
+class ResolveBody(BaseModel):
+    op_id: str
+    outcome: Literal["was_sent", "not_sent"]
+
+
+@cell_router.post("/admin/unconfirmed-sends/resolve")
+async def resolve_unconfirmed_send(account_id: str = Query(...),
+                                   body: ResolveBody = Body(...)) -> dict[str, Any]:
+    await _guard(account_id)
+    import send_ops
+    from chatters import current_actor
+    actor = current_actor()
+    by = "unknown" if actor is None else f"{actor.kind}:{actor.username}"
+    if not send_ops.resolve(account_id, body.op_id, body.outcome == "was_sent", by):
+        raise HTTPException(404, "no such row for this Creator")
+    return {"status": body.outcome}

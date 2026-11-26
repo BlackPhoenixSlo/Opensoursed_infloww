@@ -310,7 +310,7 @@ describe("AutoReplyPage", () => {
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
     expect(put.mock.calls[0]).toEqual(["/admin/autoreply-config", {
       account_id: "acc-a", config: { enabled: false, quiet_hours_json: [2, 7], list_ids: [], silence_min_minutes: 7 },
-    }]);
+    }, { cellAccountId: "acc-a" }]);
     expect(within(bar).getByText("Off")).toBeInTheDocument();
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled());

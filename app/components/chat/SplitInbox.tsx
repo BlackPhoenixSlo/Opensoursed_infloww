@@ -1,34 +1,36 @@
 "use client";
 
 
-import { useId, useMemo, useReducer } from "react";
+import type { Scope } from "@/contexts/ScopeContext";
+import { useId, useMemo, useReducer, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { IfButton } from "@/components/ui/infloww";
 import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { useRoster } from "@/hooks/useRoster";
-import { useSplitInbox, useSplitInboxes } from "@/hooks/useSplitInbox";
+import { useSplitInboxes } from "@/hooks/useSplitInbox";
 import type { FanId } from "@/lib/fanId";
-import { groupOf, type SplitInboxConfig } from "@/lib/splitInbox";
 import { MP } from "@/lib/messagesPro";
+import { RelayError } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { useInflowwPalette } from "./InflowwPalette";
 import {
-  allChatterGroupOf, allowedGroups, buildPayloads, GROUP_COUNTS, initialAllForm, scopeChatters, selectedGroupCount,
-  shownGroupCount, splitInboxAllFormReducer,
-} from "./splitInboxAllForm";
-import { buildPayload, chatterGroupOf, initForm, splitInboxFormReducer } from "./splitInboxForm";
+  allowedGroups, buildEdits, chatterGroupOf, fanGroupOf, GROUP_COUNTS, initialForm, scopeChatters, shownGroupCount,
+  splitInboxFormReducer, widestGroupCount, type Stored,
+} from "./splitInboxForm";
 
 const SELECT_CLASS = cn(MP.fanList.splitSelect, "border-border bg-bg-elev-1 text-fg");
 
 export interface SplitInboxFan {
   id: FanId;
   name: string;
+  accountId: string | null;
 }
 
 export function SplitInbox({
-  accountIds, open, onClose, fans,
+  accountIds, scope, open, onClose, fans,
 }: {
   accountIds: readonly string[];
+  scope: Scope["kind"];
   open: boolean;
   onClose: () => void;
   fans: SplitInboxFan[];
@@ -44,9 +46,7 @@ export function SplitInbox({
           style={palette}
         >
           <Dialog.Title className="mb-4 text-base font-semibold">Split Inbox settings</Dialog.Title>
-          {accountIds.length === 1
-            ? <SplitInboxBody accountId={accountIds[0]} onClose={onClose} fans={fans} />
-            : <SplitInboxAllBody accountIds={accountIds} onClose={onClose} />}
+          <SplitInboxBody accountIds={accountIds} scope={scope} onClose={onClose} fans={fans} />
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -54,120 +54,66 @@ export function SplitInbox({
 }
 
 function SplitInboxBody({
-  accountId, onClose, fans,
-}: { accountId: string; onClose: () => void; fans: SplitInboxFan[] }) {
-  const { config, query, save } = useSplitInbox(accountId);
-  if (config) return <SplitInboxForm accountId={accountId} stored={config} save={save} onClose={onClose} fans={fans} />;
-  if (query.isError) {
-    return <p role="alert" className="text-sm text-err">{query.error.message}</p>;
+  accountIds, scope, onClose, fans,
+}: { accountIds: readonly string[]; scope: Scope["kind"]; onClose: () => void; fans: SplitInboxFan[] }) {
+  const accounts = usePlatformAccounts();
+  const [{ targets, targetScope }] = useState(() => ({ targets: accountIds, targetScope: scope }));
+  const { splits, save } = useSplitInboxes(targets, { refetchOnMount: "always" });
+  const [stored, setStored] = useState<Stored | null>(null);
+  const [round, setRound] = useState(0);
+  const reads = [...splits];
+  const fresh = reads.length > 0 && reads.every(([, r]) => r.status === "success" && !r.fetching && !r.failed);
+  if (!stored && fresh) {
+    setStored(new Map(reads.flatMap(([id, r]) => (r.status === "success" ? [[id, r.config] as const] : []))));
+  }
+  if (stored) {
+    const reload = () => {
+      setStored(null);
+      setRound((r) => r + 1);
+    };
+    return <SplitInboxForm key={round} stored={stored} scope={targetScope} save={save} onClose={onClose} onStale={reload} fans={fans} />;
+  }
+  const failed = reads.flatMap(([id, r]) => (!r.fetching && r.failed ? [id] : []));
+  if (failed.length) {
+    const names = failed.map((id) => accounts.find((a) => a.id === id)?.nickname || id);
+    return <p role="alert" className="text-sm text-err">Could not load Split Inbox settings for {names.join(", ")}.</p>;
   }
   return <p className="text-sm text-fg-dim">Loading…</p>;
 }
 
 function SplitInboxForm({
-  accountId, stored, save, onClose, fans,
+  stored, scope, save, onClose, onStale, fans,
 }: {
-  accountId: string;
-  stored: SplitInboxConfig;
-  save: ReturnType<typeof useSplitInbox>["save"];
-  onClose: () => void;
-  fans: SplitInboxFan[];
-}) {
-  const [form, dispatch] = useReducer(splitInboxFormReducer, stored, initForm);
-  const { rows: roster } = useRoster({ includeDisabled: false });
-  const chatters = useMemo(
-    () => scopeChatters(roster, [accountId]),
-    [roster, accountId],
-  );
-  const headingId = useId();
-  const reassignId = useId();
-  const { groupCount } = form;
-  const draft = { group_count: groupCount, assignments: form.assignments };
-  const groups = GROUP_COUNTS.slice(0, groupCount);
-  const submit = () => save.mutate(buildPayload(form), { onSuccess: onClose });
-  return (
-    <>
-      <section aria-labelledby={headingId} className="flex flex-col gap-2">
-        <h3 id={headingId} className="text-sm font-medium">Choose the number of groups</h3>
-        <select
-          aria-labelledby={headingId}
-          value={groupCount}
-          onChange={(e) => dispatch({ type: "count", n: Number(e.target.value) })}
-          disabled={save.isPending}
-          className={SELECT_CLASS}
-        >
-          {GROUP_COUNTS.map((n) => <option key={n} value={n}>{n}</option>)}
-        </select>
-      </section>
-      {groupCount > 1 && (
-        <section aria-labelledby={reassignId} className="mt-4 flex flex-col gap-2">
-          <h3 id={reassignId} className="text-sm font-medium">Reassign fans to different groups</h3>
-          <ul className="max-h-64 overflow-y-auto flex flex-col gap-2">
-            {fans.map((f) => (
-              <li key={String(f.id)} className="flex items-center justify-between gap-3">
-                <span className="min-w-0 truncate text-sm">{f.name}</span>
-                <select
-                  aria-label={f.name}
-                  value={groupOf(f.id, draft)}
-                  onChange={(e) => dispatch({ type: "moveFan", fanId: String(f.id), group: Number(e.target.value) })}
-                  disabled={save.isPending}
-                  className={SELECT_CLASS}
-                >
-                  {groups.map((n) => <option key={n} value={n}>Inbox {n}</option>)}
-                </select>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-      {groupCount > 1 && (
-        <ChatterGroupsSection
-          rows={chatters.map((c) => ({ ...c, value: chatterGroupOf(form, c.id), groups }))}
-          disabled={save.isPending}
-          onBind={(chatterId, group) => dispatch({ type: "bindChatter", chatterId, group })}
-        />
-      )}
-      {save.isError && (
-        <p role="alert" className="mt-3 text-sm text-err">{save.error.message}</p>
-      )}
-      <div className="mt-5 flex justify-end gap-2">
-        <Dialog.Close asChild>
-          <IfButton>Cancel</IfButton>
-        </Dialog.Close>
-        <IfButton variant="primary" onClick={submit} disabled={save.isPending}>
-          {save.isPending ? "Saving…" : "Save"}
-        </IfButton>
-      </div>
-    </>
-  );
-}
-
-function SplitInboxAllBody({ accountIds, onClose }: { accountIds: readonly string[]; onClose: () => void }) {
-  const accounts = usePlatformAccounts();
-  const { stored, error, save } = useSplitInboxes(accountIds, (id) => accounts.find((a) => a.id === id)?.nickname || id);
-  if (error) return <p role="alert" className="text-sm text-err">{error.message}</p>;
-  if (stored) return <SplitInboxAllForm accountIds={accountIds} stored={stored} save={save} onClose={onClose} />;
-  return <p className="text-sm text-fg-dim">Loading…</p>;
-}
-
-function SplitInboxAllForm({
-  accountIds, stored, save, onClose,
-}: {
-  accountIds: readonly string[];
-  stored: ReadonlyMap<string, SplitInboxConfig>;
+  stored: Stored;
+  scope: Scope["kind"];
   save: ReturnType<typeof useSplitInboxes>["save"];
   onClose: () => void;
+  onStale: () => void;
+  fans: SplitInboxFan[];
 }) {
-  const [form, dispatch] = useReducer(splitInboxAllFormReducer, initialAllForm);
+  const [form, dispatch] = useReducer(splitInboxFormReducer, initialForm);
   const { rows: roster } = useRoster({ includeDisabled: false });
+  const accountIds = useMemo(() => [...stored.keys()], [stored]);
   const chatters = useMemo(() => scopeChatters(roster, accountIds), [roster, accountIds]);
   const headingId = useId();
-  const groupCount = selectedGroupCount(form, stored);
-  const maxGroupCount = shownGroupCount(form, stored);
-  const submit = () => save.mutate(buildPayloads(form, stored, chatters), { onSuccess: onClose });
+  const reassignId = useId();
+  const model = scope === "model" ? stored.get(accountIds[0]) : undefined;
+  const groupCount = shownGroupCount(form, stored);
+  const widest = widestGroupCount(form, stored);
+  const groups = GROUP_COUNTS.slice(0, widest);
+  const submit = () => {
+    const edits = buildEdits(form, accountIds, scope);
+    if (edits) {
+      save.mutate(edits, {
+        onSuccess: onClose,
+        onError: (e) => { if (e instanceof RelayError && e.status === 409) onStale(); },
+      });
+    }
+    else onClose();
+  };
   return (
     <>
-      <p className="-mt-3 mb-4 text-sm text-fg-dim">Applies to all {accountIds.length} models</p>
+      {scope === "all" && <p className="-mt-3 mb-4 text-sm text-fg-dim">Applies to {accountIds.length === 1 ? "this model" : `all ${accountIds.length} models`} and new ones</p>}
       <section aria-labelledby={headingId} className="flex flex-col gap-2">
         <h3 id={headingId} className="text-sm font-medium">Choose the number of groups</h3>
         <select
@@ -180,14 +126,33 @@ function SplitInboxAllForm({
           {groupCount == null && <option value="" disabled>Mixed</option>}
           {GROUP_COUNTS.map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
-        {maxGroupCount > 1 && <p className="text-xs text-fg-dim">Move single fans from a model&apos;s own tab.</p>}
+        {scope === "all" && widest > 1 && <p className="text-xs text-fg-dim">Move single fans from a model&apos;s own tab.</p>}
       </section>
-      {maxGroupCount > 1 && (
+      {model && widest > 1 && (
+        <section aria-labelledby={reassignId} className="mt-4 flex flex-col gap-2">
+          <h3 id={reassignId} className="text-sm font-medium">Reassign fans to different groups</h3>
+          <ul className="max-h-64 overflow-y-auto flex flex-col gap-2">
+            {fans.filter((f) => f.accountId === accountIds[0]).map((f) => (
+              <li key={String(f.id)} className="flex items-center justify-between gap-3">
+                <span className="min-w-0 truncate text-sm">{f.name}</span>
+                <select
+                  aria-label={f.name}
+                  value={fanGroupOf(form, model, f.id)}
+                  onChange={(e) => dispatch({ type: "moveFan", fanId: String(f.id), group: Number(e.target.value) })}
+                  disabled={save.isPending}
+                  className={SELECT_CLASS}
+                >
+                  {groups.map((n) => <option key={n} value={n}>Inbox {n}</option>)}
+                </select>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {widest > 1 && (
         <ChatterGroupsSection
           rows={chatters.map((c) => ({
-            ...c,
-            value: allChatterGroupOf(form, stored, c),
-            groups: allowedGroups(form, stored, c),
+            ...c, value: chatterGroupOf(form, stored, c), groups: allowedGroups(form, stored, c),
           }))}
           disabled={save.isPending}
           onBind={(chatterId, group) => dispatch({ type: "bindChatter", chatterId, group })}

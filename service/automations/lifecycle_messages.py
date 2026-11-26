@@ -12,6 +12,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax
 import of_pacing
+import send_ops
 import smart_message_extras as extras
 from attribution import write_outbound_attribution
 from audiences import _page_all_checked
@@ -21,7 +22,7 @@ from automations._fan_notes import substitute_placeholders, template_fan_name
 from automations._knobs import coerce_ids
 from automations._outbound_guard import apply_word_restriction
 from automations._send_failure import (
-    is_unreachable_fan_error, quarantine_if_undeliverable, schedule_recheck_rejected_media,
+    SendOutcome, is_unreachable_fan_error, quarantine_if_undeliverable, schedule_recheck_rejected_media,
     send_dropping_bad_media_sync, skip_unreachable_fan,
 )
 from automations._skiplist import (
@@ -458,7 +459,9 @@ async def run_follow_up(account_id: str, kind: str, job: dict, *,
             substitute_placeholders(steps[0]["text"], fan, name=template_fan_name(fan)))
         try:
             result = await ax.of_write_paced(
-                account_id, lambda: client.send_message(fid, text, media_files=[]),
+                account_id, lambda: send_ops.automated_sync(
+                    account_id, "lifecycle", fid, f"{kind}:{key}",
+                    lambda: client.send_message(fid, text, media_files=[]), body={"text": text}),
                 send_purpose=_SEND_PURPOSE, dm=True)
         except Exception as exc:  # noqa: BLE001
             if ax.is_rate_limited(exc):
@@ -648,8 +651,10 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
             try:
                 outcome = await ax.of_write_paced(
                     account_id,
-                    lambda f=int(fid), t=text, m=fan_media, p=fan_price: send_dropping_bad_media_sync(
-                        client, f, t, m, price_cents=p, log=log),
+                    lambda f=int(fid), t=text, m=fan_media, p=fan_price, k=key: send_ops.automated_sync(
+                        account_id, "lifecycle_initial", f, f"{kind}:{k}",
+                        lambda: send_dropping_bad_media_sync(client, f, t, m, price_cents=p, log=log),
+                        revive=lambda r: SendOutcome(*r)),
                     send_purpose=_SEND_PURPOSE, dm=True)
             except Exception as exc:  # noqa: BLE001
                 if kind == EXPIRED and is_unreachable_fan_error(exc):

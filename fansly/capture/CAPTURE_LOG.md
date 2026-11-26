@@ -664,3 +664,26 @@ RECIPES.md — the wire format the shim work should read.
 CAPTURE_TODO.md — 30 rows, every one ✅ or ⛔ with evidence.
 CAPTURE_LOG.md — this file, append-only.
 out/run-*/ — raw ws.jsonl + http.jsonl per run (gitignored, holds live tokens).
+
+## 2026-11-26 — Phase 1b capture session (creator :9231, fan :9232)
+
+Runs `out/fansly-creator-1126/`, `out/fansly-fan-1126/` (gitignored).
+Free actions done: §6.1–6.6 (list members/rename/delete, block+unblock,
+mute+unmute, username search, broadcast schedule→queue→history→cancel), plus
+3.12 promo, locked-text create+send, settings/alert-settings reads, and 4.2
+populated earnings (read-only, from the 09-02 sale). Shapes in RECIPES
+"Capture session 1126".
+
+Proof purchases (§6.7–6.9): **not run, $0 spent.** The owner put a test card
+in `~/relay-state/local.env`, but Fansly's Add-card form also requires a
+billing street/city/state/zip, which is not stored anywhere; two
+`request_secret` asks (one per field, then one combined) timed out. Rows 1.10
+(tip half) and 6.7–6.9 stay open on that alone.
+
+Found: block silently unfollows (socket `3/3` + `9/3`); search never returns
+fans; promo `duration` is overwritten by the server; promo floor $3; list
+delete is a fourth delete convention (`/lists/remove {listId}`).
+
+Left on the account: promo `900999000000085664` ($3, ends 2026-12-03); locked
+text story `900999000000022624` + its $1 message to the fan; broadcast list
+`900999000000022112` (fan only) and its group. `zz-capture-tmp` list removed.

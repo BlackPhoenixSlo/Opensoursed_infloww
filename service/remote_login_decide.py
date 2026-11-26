@@ -7,11 +7,21 @@ STATE_TYPING = "typing"
 STATE_CHALLENGE = "challenge"
 STATE_OTP = "otp"
 OTP_VERIFY_S = 15
-OTP_ASK = "OnlyFans asks for the 2FA code — enter it here or in the live view"
-OTP_REJECTED = "OnlyFans didn't accept that code (or hasn't answered yet) — try again"
 OTP_NOT_TYPED = "couldn't type the 2FA code — try again or type it in the live view"
 CHALLENGE_MSG = "human verification required — solve it in the live view"
-TYPING_MSG = "waiting for OnlyFans"
+
+
+def otp_ask(site: str) -> str:
+    return f"{site} asks for the 2FA code — enter it here or in the live view"
+
+
+def otp_rejected(site: str) -> str:
+    return f"{site} didn't accept that code (or hasn't answered yet) — try again"
+
+
+def typing_msg(site: str) -> str:
+    return f"waiting for {site}"
+
 
 
 @dataclass(frozen=True)
@@ -29,6 +39,7 @@ class Poll:
     code: Optional[str] = None
     challenge: bool = False
     shown: str = ""
+    refused: str | None = None
 
 
 @dataclass(frozen=True)
@@ -53,6 +64,11 @@ class LoggedIn:
 
 
 @dataclass(frozen=True)
+class Fail:
+    message: str
+
+
+@dataclass(frozen=True)
 class TypeCode:
     code: str
 
@@ -74,10 +90,10 @@ class Idle:
 
 
 Event = Union[Poll, Typed]
-Effect = Union[Cancel, Expire, LoggedIn, TypeCode, Show, AskAgain, Idle]
+Effect = Union[Cancel, Expire, LoggedIn, Fail, TypeCode, Show, AskAgain, Idle]
 
 
-def login_step(state: Drive, ev: Event, verify_s: float = OTP_VERIFY_S) -> tuple[Drive, Effect]:
+def login_step(state: Drive, ev: Event, verify_s: float = OTP_VERIFY_S, *, site: str) -> tuple[Drive, Effect]:
     if isinstance(ev, Typed):
         return (Drive(ev.at), Idle()) if ev.ok else (Drive(None), AskAgain(OTP_NOT_TYPED))
     if ev.cancel:
@@ -93,12 +109,14 @@ def login_step(state: Drive, ev: Event, verify_s: float = OTP_VERIFY_S) -> tuple
         # The prompt is (back) on screen.
         if ev.shown != STATE_OTP:
             lately = sent is not None and ev.now - sent < verify_s
-            return Drive(None), Show(STATE_OTP, OTP_REJECTED if lately else OTP_ASK)
+            return Drive(None), Show(STATE_OTP, otp_rejected(site) if lately else otp_ask(site))
         if sent is not None and ev.now - sent >= verify_s:
-            return Drive(None), AskAgain(OTP_REJECTED)
+            return Drive(None), AskAgain(otp_rejected(site))
         return state, Idle()
+    if ev.refused:
+        return state, Fail(f"{site} refused the login: {ev.refused}")
     if ev.challenge:
         return state, Show(STATE_CHALLENGE, CHALLENGE_MSG)
     if ev.shown != STATE_TYPING:
-        return state, Show(STATE_TYPING, TYPING_MSG)
+        return state, Show(STATE_TYPING, typing_msg(site))
     return state, Idle()

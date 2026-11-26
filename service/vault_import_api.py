@@ -238,16 +238,25 @@ async def of_vault_upload_batch(
         return _hop(of_write_paced(aid, thunk, send_purpose="not_fan_dm", operator=True),
                     _VAULT_WRITE_GATE_TIMEOUT_S)
 
-    def _fan_send_gate(thunk):
+    def _fan_send_gate(thunk, part: int):
         async def _send():
             await relay_host.reject_if_resale(aid, fan["id"], relay_host.send_message_body(text=""))
             def send():
                 before_send_at = read_flip.now_ms()
-                return before_send_at, thunk()
+                if not os.environ.get("OI_CELL_MAP"):
+                    return before_send_at, thunk(), False
+                import accounts
+                import send_ops
+                name, target = accounts.get_platform(aid), str(fan["id"])
+                result, replay = send_ops.dispatch(
+                    name, aid, send_ops.op_id(name, aid, "vault_send", target, run_id, part), "vault_send", target,
+                    send_ops.digest({"run_id": run_id, "part": part, "fan": target}), thunk)
+                return before_send_at, result, replay
 
-            before_send_at, result = await of_write_paced(aid, send, send_purpose="manual", operator=True)
-            await relay_host.record_fan_send(aid, fan["id"], result, employee_id=employee_id, price=0,
-                                             before_send_at=before_send_at)
+            before_send_at, result, replay = await of_write_paced(aid, send, send_purpose="manual", operator=True)
+            if not replay:
+                await relay_host.record_fan_send(aid, fan["id"], result, employee_id=employee_id, price=0,
+                                                 before_send_at=before_send_at)
             return result
         return _hop(_send(), _VAULT_WRITE_GATE_TIMEOUT_S)
 

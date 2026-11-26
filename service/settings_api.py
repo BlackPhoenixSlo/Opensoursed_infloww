@@ -43,7 +43,7 @@ def _loads(raw: str | None) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
-async def _read_blob(s, user_id: str, tab: str) -> dict[str, Any]:
+async def read_blob(s, user_id: str, tab: str) -> dict[str, Any]:
     if tab in VERSIONED_SETTINGS_TABS:
         return blob_at(await _versions(s, user_id, tab), datetime.utcnow())
     row = await s.get(UserSetting, (user_id, tab))
@@ -138,9 +138,9 @@ async def ensure_role_presets(agency_user_id: str) -> None:
     async with get_session() as s:
         if await s.get(UserSetting, (agency_user_id, _PRESETS_MARKER)) is not None:
             return
-        config = await _read_blob(s, agency_user_id, "roles")
-        await _write_blob(s, agency_user_id, "roles", _with_presets(config))
-        await _write_blob(s, agency_user_id, _PRESETS_MARKER, {"seeded": True})
+        config = await read_blob(s, agency_user_id, "roles")
+        await write_blob(s, agency_user_id, "roles", _with_presets(config))
+        await write_blob(s, agency_user_id, _PRESETS_MARKER, {"seeded": True})
 
 
 _ENFORCE_DEFAULT_MIGRATION = "20261019_roles_enforce_default"
@@ -169,7 +169,7 @@ async def give_role_to_unroled(agency_user_id: str, employee_ids: list[int]) -> 
     async with get_session() as s:
         blob, n = _with_roles_for(await applied_blob(s, agency_user_id, "roles"), employee_ids, DEFAULT_LOGIN_ROLE)
         if n:
-            await _write_blob(s, agency_user_id, "roles", blob)
+            await write_blob(s, agency_user_id, "roles", blob)
             events.on_commit(s, "permissions_changed", agency=agency_user_id)
     return n
 
@@ -193,7 +193,7 @@ async def migrate_role_enforcement_once() -> int:
                 continue
             blob, n = _with_roles_for(blob, logins[agency], "admin")
             if n:
-                await _write_blob(s, agency, "roles", blob)
+                await write_blob(s, agency, "roles", blob)
             assigned += n
     async with get_session() as s:
         await s.execute(text("INSERT INTO data_migrations (name) VALUES (:n)"), marker)
@@ -210,7 +210,7 @@ async def migrate_bookmarks_page_once() -> int:
     widened = 0
     for agency in sorted(agencies):
         async with get_session() as s:
-            blob = await _read_blob(s, agency, "roles")
+            blob = await read_blob(s, agency, "roles")
             roles = blob.get("roles")
             n = 0
             for role in roles if isinstance(roles, list) else []:
@@ -219,14 +219,14 @@ async def migrate_bookmarks_page_once() -> int:
                     perms[_BOOKMARKS] = True
                     n += 1
             if n:
-                await _write_blob(s, agency, "roles", blob)
+                await write_blob(s, agency, "roles", blob)
             widened += n
     async with get_session() as s:
         await s.execute(text("INSERT INTO data_migrations (name) VALUES (:n)"), marker)
     return widened
 
 
-async def _write_blob(s, user_id: str, tab: str, blob: dict[str, Any]) -> None:
+async def write_blob(s, user_id: str, tab: str, blob: dict[str, Any]) -> None:
     now = datetime.utcnow()
     payload = json.dumps(blob)
     await s.execute(
@@ -239,7 +239,7 @@ async def _write_blob(s, user_id: str, tab: str, blob: dict[str, Any]) -> None:
 
 
 async def applied_blob(s, agency_user_id: str, tab: str) -> dict[str, Any]:
-    blob, _ = parse_blob(tab, await _read_blob(s, agency_user_id, tab))
+    blob, _ = parse_blob(tab, await read_blob(s, agency_user_id, tab))
     return blob
 
 
@@ -340,7 +340,7 @@ async def get_settings(tab: str) -> dict[str, Any]:
 
 
 async def _answer(s, user_id: str, tab: str) -> dict[str, Any]:
-    out: dict[str, Any] = {"tab": tab, "config": await _read_blob(s, user_id, tab)}
+    out: dict[str, Any] = {"tab": tab, "config": await read_blob(s, user_id, tab)}
     if tab in VERSIONED_SETTINGS_TABS:
         out["history"] = await _history(s, user_id, tab)
     return out
@@ -376,5 +376,5 @@ async def put_settings(tab: str, request: Request, effective_from: str | None = 
             await applied_blob(s, user.id, tab)
         ).get("require_2fa") is not True:
             await revoke_unenrolled_employees(s, user.id)
-        await _write_blob(s, user.id, tab, blob)
+        await write_blob(s, user.id, tab, blob)
     return {"tab": tab, "config": blob}

@@ -779,7 +779,7 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
         question: "what's yours?", follow_back: true, follow_back_gate: true, message: "Hey {name}, welcome in!",
         ...EXTRAS_DEFAULTS, delay_range: null,
       },
-    }]]));
+    }, { cellAccountId: "acc-1" }]]));
     expect(callsTo(relayPatch, TOGGLE)).toEqual([]);
 
     await act(async () => { fireEvent.click(within(e.dialog).getByRole("button", { name: "Close" })); });
@@ -1113,7 +1113,7 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
         follow_back: true, follow_back_gate: true, question: "what's yours?", gif_id: "", message: "",
         ...EXTRAS_DEFAULTS, delay_range: [2, 5],
       },
-    }]]));
+    }, { cellAccountId: "acc-2" }]]));
   });
 });
 
@@ -1330,7 +1330,7 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
     relayPost.mockResolvedValue({ action: "parked" });
     await cancelRow(triggerLabels[5]);
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith(
-      SWITCH, { account_id: A.id, kind: "resubscribe_message", enable: false }));
+      SWITCH, { account_id: A.id, kind: "resubscribe_message", enable: false }, { cellAccountId: "acc-1" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 

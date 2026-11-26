@@ -109,7 +109,7 @@ const CHUNK_ERROR_BOOT_SCRIPT = `
 
 export const dynamic = "force-dynamic";
 
-const SESSION_COOKIES = ["chatterly_session", "chatterly_chatter_session"];
+const SESSION_COOKIES = ["chatterly_session", "chatterly_chatter_session", ...(process.env.OI_CELL_MAP ? ["oi_actor"] : [])];
 
 export default async function RootLayout({
   children,
@@ -127,6 +127,7 @@ export default async function RootLayout({
   return (
     <html lang="en" className={ui.variable} suppressHydrationWarning>
       <body className="min-h-dvh bg-bg text-fg antialiased" suppressHydrationWarning>
+        {process.env.OI_CELL_MAP ? <meta name="oi-cells" content="1" /> : null}
         {/* Boot scripts sit in <body>: App Router's <head> can drop inline scripts in dev. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: SHELL_BOOT_SCRIPT }} />

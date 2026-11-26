@@ -90,7 +90,7 @@ describe("PromotionTab", () => {
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions", {
       account_id: "a1", name: "Fall", discount: 30, subscribe_counts: 0, subscribe_days: 14, finish_days: 14,
       message: "", promo_type: ["all", "expired"], auto_reactivate: true, expect_taken_from: 1, preempt: false,
-    }));
+    }, { cellAccountId: "a1" }));
     expect(window.confirm).not.toHaveBeenCalled();
   });
 
@@ -105,7 +105,7 @@ describe("PromotionTab", () => {
     expect(dlg.querySelector("[data-takeover]")).toBeNull();
     fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
-    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions", expect.objectContaining({ name: "Week", auto_reactivate: false })));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions", expect.objectContaining({ name: "Week", auto_reactivate: false }), { cellAccountId: "a1" }));
     expect(post.mock.calls[0][1]).not.toHaveProperty("recreate_limit");
     expect(post.mock.calls[0][1]).not.toHaveProperty("expect_taken_from");
     expect(post.mock.calls[0][1]).not.toHaveProperty("preempt");
@@ -128,7 +128,7 @@ describe("PromotionTab", () => {
     fireEvent.click(tick);
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions",
-      expect.objectContaining({ auto_reactivate: true, preempt: false })));
+      expect.objectContaining({ auto_reactivate: true, preempt: false }), { cellAccountId: "a1" }));
   });
 
   it.each<[string, string]>([["under 10", "5 subscribers"], ["unlimited", "No limits"]])(
@@ -147,7 +147,7 @@ describe("PromotionTab", () => {
       expect(hint.className).toContain("break-words");
       fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
       await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions",
-        expect.objectContaining({ auto_reactivate: true, preempt: false })));
+        expect.objectContaining({ auto_reactivate: true, preempt: false }), { cellAccountId: "a1" }));
     });
 
   it("a Free trial ticked offers a full-width Re-create limit (No limit default), names the campaign it takes from, and confirms after", async () => {
@@ -168,7 +168,7 @@ describe("PromotionTab", () => {
     expect(line.className).toContain("break-words");
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions", expect.objectContaining({
-      auto_reactivate: true, recreate_limit: 5, expect_taken_from: 1 })));
+      auto_reactivate: true, recreate_limit: 5, expect_taken_from: 1 }), { cellAccountId: "a1" }));
     expect(await screen.findByText("Created. Took Keep running from “Live week”.")).toBeTruthy();
   });
 
@@ -187,7 +187,7 @@ describe("PromotionTab", () => {
     fireEvent.change(within(dlg).getByPlaceholderText("e.g. Summer free week"), { target: { value: "Week" } });
     fireEvent.click(within(dlg).getByLabelText("First-month discount"));
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
-    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions", expect.objectContaining({ expect_taken_from: 1 })));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/promotions", expect.objectContaining({ expect_taken_from: 1 }), { cellAccountId: "a1" }));
   });
 
   it("a Free trial with unlimited claims can't keep running: refused before any create", async () => {
@@ -217,7 +217,7 @@ describe("PromotionTab", () => {
     expect((await within(dlg).findByRole("alert")).textContent).toBe(message);
     expect(dlg.querySelector("[data-takeover]")!.textContent).toBe("Keep running moves from “Other” to this promotion.");
     fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
-    await waitFor(() => expect(post).toHaveBeenLastCalledWith("/admin/promotions", expect.objectContaining({ expect_taken_from: 9 })));
+    await waitFor(() => expect(post).toHaveBeenLastCalledWith("/admin/promotions", expect.objectContaining({ expect_taken_from: 9 }), { cellAccountId: "a1" }));
     expect(post.mock.calls[0][1]).toMatchObject({ expect_taken_from: 1 });
   });
 
@@ -267,7 +267,7 @@ describe("PromotionTab", () => {
     expect((await within(dlg).findByRole("alert")).textContent).toBe(message);
     fireEvent.click(within(dlg).getByRole("button", { name: "It did not go through — create anyway" }));
     await waitFor(() => expect(post).toHaveBeenLastCalledWith("/admin/promotions",
-      expect.objectContaining({ name: "Week", resolve_open: 7 })));
+      expect.objectContaining({ name: "Week", resolve_open: 7 }), { cellAccountId: "a1" }));
     expect(post.mock.calls[0][1]).not.toHaveProperty("resolve_open");
   });
 
@@ -299,7 +299,7 @@ describe("PromotionTab", () => {
     await screen.findByText("Old one");
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/promotions/2"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/promotions/2", { cellAccountId: "a1" }));
     expect(await screen.findByText(message)).toBeTruthy();
   });
 
@@ -327,7 +327,7 @@ describe("PromotionTab", () => {
     expect(post).not.toHaveBeenCalled();
     fireEvent.click(within(dlg).getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/api/of/v2/promotions/501/finish", undefined, { accountId: "a1" }));
-    expect(patch).toHaveBeenCalledWith("/admin/promotions/1", { auto_reactivate: false });
+    expect(patch).toHaveBeenCalledWith("/admin/promotions/1", { auto_reactivate: false }, { cellAccountId: "a1" });
     expect(patch.mock.invocationCallOrder[0]).toBeLessThan(post.mock.invocationCallOrder[0]);
   });
 
@@ -377,7 +377,7 @@ describe("PromotionTab", () => {
     mount(<PromotionTab accountId="a1" />);
     await screen.findByText("Live week");
     fireEvent.click(screen.getByRole("checkbox", { name: /Keep running/ }));
-    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/promotions/1", { auto_reactivate: false }));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/promotions/1", { auto_reactivate: false }, { cellAccountId: "a1" }));
     expect(post).not.toHaveBeenCalledWith("/admin/automation-rules", expect.anything());
   });
 
@@ -390,7 +390,7 @@ describe("PromotionTab", () => {
     mount(<PromotionTab accountId="a1" />);
     const row = (await screen.findByText("Other")).closest("tr")!;
     fireEvent.click(within(row).getByRole("checkbox", { name: /Keep running/ }));
-    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/promotions/3", { auto_reactivate: true }));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/promotions/3", { auto_reactivate: true }, { cellAccountId: "a1" }));
     const alert = await within(row).findByRole("alert");
     expect(alert.textContent).toBe(message);
     expect(alert.className).toContain("break-words");
@@ -406,7 +406,7 @@ describe("PromotionTab", () => {
     expect(tick.checked).toBe(true);
     expect(tick.closest("label")!.className).toContain("min-h-11");
     fireEvent.click(tick);
-    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/promotions/1", { preempt: false }));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("/admin/promotions/1", { preempt: false }, { cellAccountId: "a1" }));
   });
 
   it.each<[string, Record<string, unknown>]>([
@@ -447,7 +447,7 @@ describe("PromotionTab", () => {
     expect((await within(dlg).findByRole("alert")).textContent).toBe("Set an Offer limit first.");
     fireEvent.click(within(dlg).getByRole("button", { name: "Keep running" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Keep running" })).toBeNull());
-    expect(patch).toHaveBeenLastCalledWith("/admin/promotions/4", { auto_reactivate: true, recreate_limit: 2 });
+    expect(patch).toHaveBeenLastCalledWith("/admin/promotions/4", { auto_reactivate: true, recreate_limit: 2 }, { cellAccountId: "a1" });
   });
 
   it("ticking a Free trial row with No limit (the default) PATCHes no recreate_limit: indefinite", async () => {
@@ -461,7 +461,7 @@ describe("PromotionTab", () => {
     expect(within(dlg).getByRole("combobox", { name: "Re-create limit" }).textContent).toContain("No limit");
     fireEvent.click(within(dlg).getByRole("button", { name: "Keep running" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Keep running" })).toBeNull());
-    expect(patch).toHaveBeenLastCalledWith("/admin/promotions/4", { auto_reactivate: true });
+    expect(patch).toHaveBeenLastCalledWith("/admin/promotions/4", { auto_reactivate: true }, { cellAccountId: "a1" });
   });
 });
 
@@ -512,7 +512,7 @@ describe("Profile promotion's Add fans to list", () => {
         "when the figures are next read from OnlyFans, about every hour. Fans already added stay in it.");
     choose(select(), "Whales");
     await waitFor(() => expect(put).toHaveBeenCalledWith("/admin/promo-list",
-      { account_id: "a1", enabled: true, list_id: "800002", list_name: "Whales" }));
+      { account_id: "a1", enabled: true, list_id: "800002", list_name: "Whales" }, { cellAccountId: "a1" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("true"));
     expect(select().textContent).toContain("Whales");
@@ -531,7 +531,7 @@ describe("Profile promotion's Add fans to list", () => {
     choose(select(), "Whales");
     answer("Modify list?", "Confirm");
     await waitFor(() => expect(put).toHaveBeenCalledWith("/admin/promo-list",
-      { account_id: "a1", enabled: true, list_id: "800002", list_name: "Whales" }));
+      { account_id: "a1", enabled: true, list_id: "800002", list_name: "Whales" }, { cellAccountId: "a1" }));
   });
 
   it("asks Delete the list? before None or switching off; Cancel leaves it on", async () => {
@@ -546,17 +546,17 @@ describe("Profile promotion's Add fans to list", () => {
     fireEvent.click(toggle());
     answer("Delete the list?", "Confirm");
     await waitFor(() => expect(put).toHaveBeenCalledWith("/admin/promo-list",
-      { account_id: "a1", enabled: false, list_id: "800001", list_name: "VIP" }));
+      { account_id: "a1", enabled: false, list_id: "800001", list_name: "VIP" }, { cellAccountId: "a1" }));
     await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("false"));
     fireEvent.click(toggle());
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(put).toHaveBeenLastCalledWith("/admin/promo-list",
-      { account_id: "a1", enabled: true, list_id: "800001", list_name: "VIP" }));
+      { account_id: "a1", enabled: true, list_id: "800001", list_name: "VIP" }, { cellAccountId: "a1" }));
     await waitFor(() => expect(toggle().getAttribute("aria-checked")).toBe("true"));
     choose(select(), "None");
     answer("Delete the list?", "Confirm");
     await waitFor(() => expect(put).toHaveBeenLastCalledWith("/admin/promo-list",
-      { account_id: "a1", enabled: false, list_id: null, list_name: null }));
+      { account_id: "a1", enabled: false, list_id: null, list_name: null }, { cellAccountId: "a1" }));
   });
 
   it("another list keeps the switch off when it was off; a first pick from None turns it on", async () => {
@@ -566,7 +566,7 @@ describe("Profile promotion's Add fans to list", () => {
     choose(select(), "Whales");
     answer("Modify list?", "Confirm");
     await waitFor(() => expect(put).toHaveBeenCalledWith("/admin/promo-list",
-      { account_id: "a1", enabled: false, list_id: "800002", list_name: "Whales" }));
+      { account_id: "a1", enabled: false, list_id: "800002", list_name: "Whales" }, { cellAccountId: "a1" }));
     await waitFor(() => expect(select().textContent).toContain("Whales"));
     expect(toggle().getAttribute("aria-checked")).toBe("false");
   });
@@ -588,7 +588,7 @@ describe("Profile promotion's Add fans to list", () => {
     await waitFor(() => expect(optionsOf(select())).toContain(long));
     choose(select(), long);
     await waitFor(() => expect(put).toHaveBeenCalledWith("/admin/promo-list",
-      { account_id: "a1", enabled: true, list_id: "800003", list_name: long.slice(0, 64) }));
+      { account_id: "a1", enabled: true, list_id: "800003", list_name: long.slice(0, 64) }, { cellAccountId: "a1" }));
     expect(long.length).toBeGreaterThan(64);
   });
 

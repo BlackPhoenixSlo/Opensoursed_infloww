@@ -142,7 +142,7 @@ describe("Auto Story (AutoStoriesTab)", () => {
 
     fireEvent.click(sw);
     await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
-    expect(patch.mock.calls[0]).toEqual(["/admin/automation-rules/7", { is_enabled: false }]);
+    expect(patch.mock.calls[0]).toEqual(["/admin/automation-rules/7", { is_enabled: false }, { cellAccountId: "acc-a" }]);
     await waitFor(() => expect(within(bar).getByText("Off")).toBeTruthy());
 
     const dupe = screen.getByRole("switch", { name: "Remove the re-uploaded copy from the vault" });
@@ -186,7 +186,7 @@ describe("Auto Story (AutoStoriesTab)", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
     const dialog = screen.getByRole("dialog", { name: "Delete this automation?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/automation-rules/7"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/automation-rules/7", { cellAccountId: "acc-a" }));
     expect(confirm).not.toHaveBeenCalled();
   });
 });

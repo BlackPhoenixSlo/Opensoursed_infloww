@@ -15,7 +15,7 @@ const router = { push: vi.fn(), replace: vi.fn() };
 vi.mock("next/navigation", () => ({ useRouter: () => router, useSearchParams: () => new URLSearchParams() }));
 vi.mock("@/contexts/UserContext", () => { const v = () => ({ user: { user_id: "owner-1" } }); return { useUser: v, useOptionalUser: v }; });
 vi.mock("@/contexts/ChatterContext", () => { const v = () => ({ chatter: null }); return { useChatter: v, useOptionalChatter: v }; });
-vi.mock("@/lib/events", () => ({ eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {} } }));
+vi.mock("@/lib/events", () => ({ eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {}, onStreamState: () => () => {} } }));
 
 const MODEL = "7";
 const VAULT_SRC = "/of-mirror/pages/messages/send/state-vault.html";

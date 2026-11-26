@@ -956,3 +956,139 @@ further `ws error` lines in two hours). Failure mode is an intermittent
 `CONNECT tunnel failed, response 403` from the proxy (~10 % of calls),
 absorbed by `_proxy_retry`. Nothing to fix in this repo; if it worsens, it is
 a proxy-vendor ticket, not a code change.
+
+## Capture session 1126 (2026-11-26) — Phase 1b free actions
+
+Creator `founder` on CDP :9231 (run `fansly-creator-1126`), fan `fantester`
+on :9232 (run `fansly-fan-1126`). **M** = measured on the wire from a UI click;
+**W** = measured wire, body built by us via in-page fetch (same token, same
+origin); **I** = inferred. No money moved: the proof purchases are blocked (see
+CAPTURE_TODO §6).
+
+### Lists (§6.1–6.3) — M
+
+```
+GET  /lists/itemsnew?listId=<id>&limit=50&sortMode=3
+     → [{id:<accountId>, sortId, listId, type:1, metadata:""}]
+POST /lists/edit   {id, accountId, pos:null, type:1, label:<new>}  → the list
+POST /lists/remove {listId}                                         → response:null
+```
+Members come back as bare ids; resolve them with `/account?ids=`. Delete is
+`/lists/remove` with `listId` — a fourth delete convention (§3.10 lists three).
+`zz-capture-tmp` (§3.1 leftover) is now renamed and removed.
+
+### Block / mute (§6.4) — M
+
+One endpoint, a bitmask: `POST /account/ignore {ignoredId, ignoreFlags}` → echo
+`{accountId, ignoredId, ignoreFlags}`. **1 = mute, 2 = block, 0 = clear.**
+Creator socket: `serviceId 11 type 1 {data:{accountId, ignoredId, ignoreFlags}}`
+on every change. **Block also severs the follow**: the same second the socket
+sent `3/3 follow` (unfollow) and `9/3` deleting the 3003 row. Unblock does not
+restore it; the fan re-followed with `POST /account/<creator>/followers` (no
+body) → `{followerId, accountId, id, accountSortOrder:1}` (fan run, M).
+Read: `GET /ignore?noAggregation=true` → `{ignoring:[], accounts:[]}`.
+
+### Username search (§6.5) — M
+
+`GET /account/search?query=<q>&limit=25&offset=0` → list of full account
+objects. Our two test accounts are **not returned** (`[]`); a public creator
+query returns rows — search covers discoverable creators only, so
+`search_users` cannot find a fan by username. The page also fires
+`GET /search/mediaoffersuggestiontags?query=` (tags, ignorable).
+
+### Broadcast schedule / queue / history / cancel (§6.6) — W
+
+The audience is a type-3 group whose recipient is a list:
+```
+POST /group {"type":3,"groupFlags":32,"groupFlagsMetadata":"",
+  "users":[{"userId":<creator>,"permissionFlags":65535}],
+  "recipients":[{"recipientId":<listId>,"type":30000}],
+  "lastMessage":null,"userSettings":null}
+```
+**Idempotent per audience**: a repeat returned the existing group id. Then
+```
+POST /message/broadcast {"type":1,"attachments":[],"likes":[],"content",
+  "groupId":<group>,"scheduledFor":<ms>,"inReplyTo":null}  → response:"broadcast sent"
+GET  /message/broadcast/scheduled
+  → {scheduledBroadcastMessages:[{id,groupId,accountId,status:1,
+     messageTemplate:<json string, incl. scheduledFor ms + gatewayMetadata>,
+     version,scheduledFor}], groups:[<full group>]}
+POST /message/broadcast/scheduled/<id>/cancel   (no body) → the row, status:3
+GET  /message/broadcast/stats?before=0&limit=24
+  → {messages:[{id,type:3,content,groupId,senderId,correlationId,createdAt(s),
+     attachments,stats:{total,delivered,read},totalTipAmount}],
+     accountMedia,accountMediaBundles,tips,tipGoals}
+GET  /message/broadcast/stats/deleted?before=&limit=   (same shape)
+```
+Paging: `before` = last message id. Cancel emitted no socket frame; the fan got
+nothing and the queue read `[]` after. `scheduledFor` is **ms** here,
+`createdAt` in stats is **s**. Edit of a queued broadcast: no client call found
+(I: cancel + re-create).
+
+### Subscription promotion (§3.12) — M
+
+Plans/Promos → plan chip "Promotion" → Create Promotion → Save:
+```
+POST /subscriptions/promotions
+{"id":"","description","planId","status":1,"duration":7,"maxUses":1,"uses":0,
+ "price":3000,"startsAt":<ms>,"endsAt":<ms>}
+→ {id, description, planId, status:1, duration:30, maxUses:1, uses:0,
+   price:3000, startsAt, endsAt, useAmounts:1, accountId}
+```
+UI floor **$3.00** ("cannot be less than $3.00"); "Start right away" sets
+`startsAt` = now. The server **rewrote `duration` 7 → 30** (the plan's billing
+cycle); length is set by `startsAt`/`endsAt`, not `duration`. A promo is the
+first payment only, then renews at plan price. Live: promo `900999000000085664`,
+$3, ends 2026-12-03.
+
+### Locked text — M
+
+A paywalled text is a story:
+```
+POST /stories {"title":"","description":"","content",
+  "permissions":{"permissionFlags":[{"type":0,"flags":1,"price":1000,
+   "metadata":"{\"1\":\"{\\\"price\\\":1000}\"}"}]}}
+→ [{authorId,title,description,content,permissions:{permissionFlags:[{id,
+    storyId,type,flags,price,metadata,validAfter,validBefore}]},id,whitelist:[]}]
+```
+sent as a message attachment `{"contentId":<storyId>,"contentType":32001,"pos":0}`
+on `POST /message`. Unlock options: pay / follow / subscribe / tipped, combinable
+with AND/OR. Purchase (32007) not captured.
+
+### Earnings, populated (§4.2) — M
+
+Read now that the account has one sale (the 2026-09-02 $3 PPV):
+```
+GET /account/wallets/earnings/stats?before=&after=&limit=10&offset=0
+→ [{type:2110, totalGross:3000, totalNet:2400, accountId, timestamp:<day start ms UTC>}]
+GET /account/wallets/earnings/monthlystats?before=&after=
+→ [{year:0, month:0, totalGross, totalNet, before:<now ms>, after:<now-30d ms>,
+    topPercent, maxTopPercent:100, brackets:null},                 ← rolling 30 days
+   {timestamp, accountId, totalGross:3000, totalNet:2400, year:2026, month:9,
+    before, after, topPercent, maxTopPercent, brackets:null}]       ← per month
+```
+`stats` is one row **per transaction type per day** (2110 = media purchase,
+matching the 6/3 wallet frame); net = gross × 0.8. `monthlystats[0]` is a
+rolling window, not a month — skip `year:0`. Fixture: `fansly/fixtures/earnings.json`.
+
+### Subscribers, expired row — M
+
+`GET /subscribers?limit=&offset=` → `{stats:{totalActive:0,totalExpired:1,total:1},
+subscriptions:[{..., status:5, autoRenew:0, giftCodeId:null, paymentMethodId:"0",
+price:0, renewPrice:5000, version:5, endsAt, promoPrice:null, ...}]}`.
+**Expired = `status:5`** (active was 3). The `status=` filter works on that
+code: `status=3,4,5` returns the row, `status=4` and `status=3,4` return `[]`
+while `stats.totalExpired` still says 1. `giftCodeId` reads null after expiry although the sub came
+from a gift code. Fixture: `fansly/fixtures/subscribers_expired.json`.
+
+### Reads seen on the way — M
+
+- `GET /notifications/alertsettings` labels give the creator-side code list:
+  5001 messages, 15001 sub purchases, 15002 renews, 15003 gift-link purchases,
+  2001 media, 2002 bundles, 2003 media likes, 1001 replies, 1002 post likes,
+  7001 tips, 3001 followers, 45001 stream live, 32001 locked text,
+  45012 stream tickets. These are *alert setting* ids; feed rows use the
+  §5.2 codes (e.g. 2007, 15006/15016).
+- `GET /account/settings` → `{accountId, categories:[{name, inputs:[{type,name,data}]}]}`;
+  `GET /settings?categoryIds=…` → `[{accountId,categoryId,keyId,value,metadata}]`.
+- Saved replies / message templates: none in the web bundle.

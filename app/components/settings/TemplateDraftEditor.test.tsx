@@ -83,7 +83,7 @@ describe("TemplateDraftEditor", () => {
       script_step: 2,
       tags: ["warm"],
       notes: "note",
-    });
+    }, { cellAccountId: "acc-a" });
     expect(post).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByText("Edit saved reply")).toBeNull());
   });

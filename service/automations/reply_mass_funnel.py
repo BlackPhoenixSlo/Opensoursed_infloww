@@ -128,6 +128,7 @@ import automation_executor as ax  # _make_client / _parse_iso / _to_cents / leas
 import dm_rate
 import of_write                    # _may_have_sent, read at call time
 import run_slot
+import send_ops
 import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from automation_registry import register
@@ -803,7 +804,7 @@ class _Attempt:
 async def _send_step(
     client, account_id: str, fan_id: int, mass_run_id: int, step: dict,
     texts: list[str], is_ppv: bool,
-    *, attempt: _Attempt, media: list[int] | None = None, previews: list[int] | None = None,
+    *, attempt: _Attempt, anchor: str, media: list[int] | None = None, previews: list[int] | None = None,
     typing_wpm: float = 0.0, typing_indicator: bool = False,
     strip_emoji_on: bool = False,
 ) -> None:
@@ -851,7 +852,10 @@ async def _send_step(
             # Send once: the marker is committed before OF can take anything.
             attempt.marked_at = await smst.mark(FunnelState, _keys(mass_run_id, fan_id),
                                                 vars(attempt.facts))
-        result = await asyncio.to_thread(client.send_message, fan_id, text, **kwargs)
+        body = None if _is_generated(step) else {"text": text, **kwargs}
+        result = await asyncio.to_thread(lambda: send_ops.automated_sync(
+            account_id, "funnel", fan_id, anchor,
+            lambda: client.send_message(fan_id, text, **kwargs), part=i, body=body))
         attempt.returned += 1
         msg_id = result.get("id") if isinstance(result, dict) else None
         if not msg_id:
@@ -1090,7 +1094,8 @@ async def _send_once(t: _Tick, f: _Funnel, cs: FunnelState, entry: fd.Entry,
     attempt = _Attempt(facts)
     try:
         await _send_step(t.client, t.account_id, fan_id, f.a.mass_run_id, step, texts, is_ppv,
-                         attempt=attempt, media=media, previews=previews,
+                         attempt=attempt, anchor=f"{f.a.mass_run_id}:{fan_id}:{c}:{entry.hops}",
+                         media=media, previews=previews,
                          typing_wpm=t.typing_wpm, typing_indicator=t.typing_indicator,
                          strip_emoji_on=t.strip_emoji_on)
     except run_slot.SlotLost as e:

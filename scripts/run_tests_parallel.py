@@ -3,16 +3,22 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import json
 import os
 import signal
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-SERIAL: dict[str, str] = {}
+SERIAL: dict[str, str] = {
+    "test_chats_recent_stall.py": "times a 100-load herd against a relay subprocess; parallel neighbours skew it",
+}
+CELL_PROBE_DIR = Path(__file__).resolve().parents[1] / "service" / "tests" / "_cell_probe"
+RUN_FILE = "_run.json"
 
 
 _LIVE: set[subprocess.Popen] = set()
@@ -20,6 +26,8 @@ _LIVE: set[subprocess.Popen] = set()
 
 def _run(py: str, path: Path, timeout: float, pytest: bool = False) -> tuple[int, float, bytes, bool]:
     env = {**os.environ, "PYTHONFAULTHANDLER": "1", "PYTHONUNBUFFERED": "1"}
+    if env.get("CELL_PROBE"):
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(CELL_PROBE_DIR), env.get("PYTHONPATH"))))
     t0 = time.monotonic()
     cmd = [py, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(path)] if pytest else [py, str(path)]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -48,6 +56,10 @@ def _run(py: str, path: Path, timeout: float, pytest: bool = False) -> tuple[int
     return p.returncode, time.monotonic() - t0, b"".join(out), timed_out
 
 
+def discover_scripts(directory: Path) -> list[Path]:
+    return sorted(directory.glob("test_*.py"))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("tests_dir", type=Path)
@@ -62,11 +74,22 @@ def main() -> int:
     pat = a.pattern
     if pat and not any(c in pat for c in "*?["):
         pat = f"*{pat}*"
-    scripts = sorted(p for p in a.tests_dir.glob("test_*.py") if not pat or fnmatch.fnmatch(p.name, pat))
+    scripts = [p for p in discover_scripts(a.tests_dir) if not pat or fnmatch.fnmatch(p.name, pat)]
     if not scripts:
         print(f"✗ no {a.tests_dir}/test_*.py matches {a.pattern!r}")
         return 1
     py = sys.executable
+    if os.environ.get("CELL_PROBE"):
+        out = os.environ.get("CELL_PROBE_OUT")
+        if not out:
+            print("✗ CELL_PROBE set without CELL_PROBE_OUT")
+            return 1
+        Path(out).mkdir(parents=True, exist_ok=True)
+        (Path(out) / "_rc.tsv").unlink(missing_ok=True)
+        (Path(out) / RUN_FILE).write_text(json.dumps({"mode": os.environ["CELL_PROBE"].strip(), "run_id": uuid.uuid4().hex}))
+        for stale in Path(out).glob("*.jsonl"):
+            stale.unlink()
+        (Path(out) / "_scripts.txt").write_text("".join(s.stem + "\n" for s in scripts))
     par = [s for s in scripts if s.name not in SERIAL]
     ser = [s for s in scripts if s.name in SERIAL]
     print(f"{len(scripts)} scripts: {len(par)} at -j {a.j}, {len(ser)} serial, timeout {a.timeout:.0f} s")
@@ -125,6 +148,9 @@ def main() -> int:
     print(f"──── {a.slowest} slowest ────")
     for s in slow:
         print(f"  {results[s][1]:7.1f} s  {s.name}")
+    if os.environ.get("CELL_PROBE"):
+        (Path(os.environ["CELL_PROBE_OUT"]) / "_rc.tsv").write_text("".join(
+            f"{'TIMEOUT' if results[s][3] else results[s][0]}\t{s.stem}\n" for s in order))
     if a.times:
         a.times.write_text("".join(
             f"{results[s][1]:.1f}\t{'TIMEOUT' if results[s][3] else 'PASS' if results[s][0] == 0 else 'FAIL'}\t{s.name}\n"

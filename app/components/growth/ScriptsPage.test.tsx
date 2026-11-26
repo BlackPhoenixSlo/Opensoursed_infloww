@@ -350,7 +350,7 @@ describe("the saved replies are the scripts", () => {
   it("a row's delete calls the saved-replies delete route", async () => {
     await mount();
     fireEvent.click(within(rows()[0]).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/saved-replies/1"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/saved-replies/1", { cellAccountId: "acc-a" }));
   });
 
   it("Expand scripts lifts the two-line clamp on the script text", async () => {

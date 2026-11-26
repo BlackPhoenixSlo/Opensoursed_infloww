@@ -521,7 +521,7 @@ def start(account_id: str, *, client, gate=None,
     if state is None or str(state.get("account_id")) != aid:
         raise RuntimeError(f"vault run {run_id} is not a live run for this account")
     state["status"] = "running"
-    up = _Uploader(state, client, gate, send_gate or gate, limits)
+    up = _Uploader(state, client, gate, send_gate, limits)
 
     try:
         items = _collect(state, local_paths or [], drive_links or [],
@@ -604,7 +604,8 @@ class _Uploader:
 
     def _send(self, batch: list[_Staged]) -> None:
         (staged,) = batch
-        _send(self.state, staged, self.client, self.send_gate)
+        gate, part = self.send_gate, next(i for i, it in enumerate(self.state["items"]) if it is staged.item)
+        _send(self.state, staged, self.client, (lambda thunk: gate(thunk, part)) if gate else self.gate)
 
     def _carry(self, batch: list[_Staged]) -> None:
         if self.limits.pace_s and self._carried_at is not None:
@@ -1150,6 +1151,8 @@ def _sweep_scheduled(client, account_id: str,
 
 
 def sweep(client_for: Callable[[str], Any], *, keep_hours: int = 48) -> dict:
+    import cell_hold
+    cell_hold.refuse_writes()
     fixed, failed, removed = 0, 0, 0
     cutoff = time.time() - keep_hours * 3600
     scan: set[str] = set()

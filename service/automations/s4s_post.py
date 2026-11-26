@@ -9,6 +9,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 import automation_executor as ax
+import send_tripwire
 from automation_registry import register
 from automations import auto_posts
 from db.engine import get_session
@@ -151,6 +152,11 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
             return {"status": "skipped", "reason": "claimed_elsewhere", "slot_id": slot_id}
         text = _advertised(slot.text)
 
+    try:
+        send_tripwire.check("create_post")
+    except send_tripwire.UnclaimedSend as e:
+        await _fail(slot, repr(e), agency)
+        raise
     item: dict = {"text": text, "hours_to_live": HOURS_TO_LIVE}
     if vault_ids:
         claims = await _copy(str(account_id), slot.partner_account_id, vault_ids)

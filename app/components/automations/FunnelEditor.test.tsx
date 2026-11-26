@@ -110,7 +110,7 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     fireEvent.click(sw);
     await waitFor(() => expect(post).toHaveBeenCalledWith(
       "/admin/automation-rules",
-      expect.objectContaining({ account_id: "acc-a", kind: "reply_mass_funnel", every_seconds: 120, is_enabled: true }),
+      expect.objectContaining({ account_id: "acc-a", kind: "reply_mass_funnel", every_seconds: 120, is_enabled: true }), { cellAccountId: "acc-a" }
     ));
   });
 

@@ -28,6 +28,6 @@ describe("useSaveAccountConfig", () => {
     relayPut.mockResolvedValue({ account_id: "acc1", config: CONFIG });
     const { result } = renderHook(() => useSaveAccountConfig("acc1", opts), { wrapper });
     await result.current.mutateAsync(CONFIG);
-    expect(relayPut.mock.calls[0]).toEqual(["/admin/account-config", { account_id: "acc1", config: sent }]);
+    expect(relayPut.mock.calls[0]).toEqual(["/admin/account-config", { account_id: "acc1", config: sent }, { cellAccountId: "acc1" }]);
   });
 });

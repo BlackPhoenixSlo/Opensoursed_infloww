@@ -8,7 +8,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import LinkedCreatorProxy from "./LinkedCreatorProxy";
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
 import {
-  buildAccountPayload, canBack, canClose, canNext, canPickPlatform, profileName, useWizardReducer, type Method,
+  buildAccountPayload, canBack, canClose, canNext, canPickPlatform, signInBusy, profileName, useWizardReducer, type Method,
   type BusySource, type WizardState,
 } from "@/components/setup/addCreatorWizard";
 import { PLATFORMS, PLATFORM_NAME, type Platform } from "@/lib/platform";
@@ -30,12 +30,13 @@ import { cn } from "@/lib/utils";
 
 export const DESKTOP_ONLY_LINE = "The extension and keys are desktop-only. On a phone, link a creator with Browser login.";
 const MOBILE_PASTE_LINE = "The extension needs desktop Chrome. On a phone, use Browser login.";
-const MOBILE_FANSLY_LINE = "The Fansly paste session is desktop-only.";
+const MOBILE_FANSLY_LINE = "The Fansly paste session is desktop-only. On a phone, use Browser login.";
 
 const SECTIONS = {
   paste: { id: "add-creator-paste-curl", name: "Extension", platform: "onlyfans", method: "extension" },
   browserbase: { id: "add-creator-browserbase", name: "Browserbase login", platform: "onlyfans", method: "browser" },
   fansly: { id: "add-creator-fansly", name: "Fansly paste session", platform: "fansly", method: "extension" },
+  fanslyBrowser: { id: "add-creator-fansly-browser", name: "Fansly browser login", platform: "fansly", method: "browser" },
 } as const;
 export type SectionKey = keyof typeof SECTIONS;
 
@@ -66,20 +67,18 @@ function MethodChoice({ state, onChange }: { state: WizardState; onChange: (m: M
   return (
     <div role="radiogroup" aria-label="Login method" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       {METHODS.map(({ method, title, sub, icon: Icon, tag }) => {
-        const off = fansly && method === "browser";
         const on = state.method === method;
         return (
           <label
-            key={method} title={off ? "Browser login is for OnlyFans accounts" : undefined}
+            key={method}
             className={cn(
               "flex cursor-pointer flex-col gap-1.5 rounded-lg border p-4 transition-colors",
               "has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent/40",
               on ? "border-accent bg-accent/10" : "border-border hover:border-accent",
-              off && "cursor-not-allowed opacity-40 hover:border-border",
             )}
           >
             <input
-              type="radio" name="login-method" value={method} checked={on} disabled={off}
+              type="radio" name="login-method" value={method} checked={on} disabled={signInBusy(state)}
               onChange={() => onChange(method)} className="sr-only"
             />
             <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[16px] font-semibold text-fg">
@@ -117,7 +116,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   const ofName = profileName(meQ.data);
   const reportBusy = useMemo(() => {
     const to = (source: BusySource) => (value: boolean) => { dispatch({ type: "busy", source, value }); };
-    return { login: to("login"), extension: to("extension"), proxy: to("proxy") };
+    return { login: to("login"), extension: to("extension"), paste: to("paste"), proxy: to("proxy") };
   }, [dispatch]);
   useEffect(() => {
     if (linkedId && ofName) dispatch({ type: "profile", accountId: linkedId, name: ofName });
@@ -151,14 +150,14 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   const close = () => { if (closable) onClose(); };
   const cancel = <IfButton onClick={close} disabled={!closable}>{T.cancel}</IfButton>;
 
-  // Both OF sign-ins stay mounted (`hidden`, never conditionally rendered): unmounting BrowserbaseLoginCard cancels its running job.
+  // A Platform's sign-ins stay mounted (`hidden`, never conditionally rendered): unmounting BrowserbaseLoginCard cancels its running job.
   const loginCards: Record<Platform, ReactNode> = {
     onlyfans: (
       <>
         <Section k="browserbase" hidden={!of || method !== "browser"}>
           <BrowserbaseLoginCard
             onLinked={linked("onlyfans")} initialNickname={nickname} keepProxy={recovery} active={of && method === "browser"}
-            onBusy={reportBusy.login}
+            onBusy={reportBusy.login} expectedAccountId={expectedAccountId}
           />
           {!recovery && (
             <Link href={LOGINS_PAGE} className="mt-3 inline-block text-sm text-accent hover:text-accent-hover">
@@ -177,15 +176,26 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
         </Section>
       </>
     ),
-    fansly: platform === "fansly" && (
-      <Section k="fansly">
-        <p className="md:hidden text-sm text-muted">{MOBILE_FANSLY_LINE}</p>
-        <div className="hidden md:block">
-          <FanslyPasteSessionCard
-            onLinked={linked("fansly")} initialNickname={nickname} formId={FANSLY_FORM_ID} expectedAccountId={expectedAccountId}
+    fansly: (
+      <>
+        <Section k="fanslyBrowser" hidden={of || method !== "browser"}>
+          <BrowserbaseLoginCard
+            platform="fansly" onLinked={linked("fansly")} initialNickname={nickname} keepProxy={recovery}
+            active={!of && method === "browser"} onBusy={reportBusy.login} expectedAccountId={expectedAccountId}
           />
-        </div>
-      </Section>
+        </Section>
+        {platform === "fansly" && (
+          <Section k="fansly" hidden={method !== "extension"}>
+            <p className="md:hidden text-sm text-muted">{MOBILE_FANSLY_LINE}</p>
+            <div className="hidden md:block">
+              <FanslyPasteSessionCard
+                onLinked={linked("fansly")} initialNickname={nickname} formId={FANSLY_FORM_ID} expectedAccountId={expectedAccountId}
+                onBusy={reportBusy.paste}
+              />
+            </div>
+          </Section>
+        )}
+      </>
     ),
   };
 
@@ -264,7 +274,9 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
         <>
           {cancel}
           {canBack(state) && <IfButton onClick={() => dispatch({ type: "back" })}>{T.back}</IfButton>}
-          {!of && <IfButton variant="primary" type="submit" form={FANSLY_FORM_ID} className="max-md:hidden">{T.done}</IfButton>}
+          {!of && method === "extension" && (
+            <IfButton variant="primary" type="submit" form={FANSLY_FORM_ID} className="max-md:hidden">{T.done}</IfButton>
+          )}
         </>
       );
       break;
@@ -305,7 +317,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   }
 
   return (
-    <IfModal title={title} width={600} onClose={close} closable={closable} footer={footer} footerSlot={step.kind === "login" && of}>
+    <IfModal title={title} width={600} onClose={close} closable={closable} footer={footer} footerSlot={step.kind === "login" && (of || method === "browser")}>
       {body}
     </IfModal>
   );

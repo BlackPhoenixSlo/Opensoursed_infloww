@@ -146,7 +146,7 @@ describe("TrialLinksTab Create", () => {
     fireEvent.click(within(dlg).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/trial-links", {
       account_id: "a1", name: "Reddit", subscribe_counts: 50, expire_days: 0, subscribe_days: 30,
-    }));
+    }, { cellAccountId: "a1" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
@@ -158,7 +158,7 @@ describe("TrialLinksTab Create", () => {
     expect(post).toHaveBeenCalledWith("/admin/trial-links", {
       account_id: "a1", name: "Reddit May", subscribe_counts: 10, expire_days: 7, subscribe_days: 7,
       promo_cost: 40, source: "Reddit", tags: ["may"], list_id: "800002", list_name: "Whales",
-    });
+    }, { cellAccountId: "a1" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
@@ -192,7 +192,7 @@ describe("TrialLinksTab Create", () => {
     fireEvent.click(within(dlg).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/trial-links", {
       account_id: "a1", name: "Plain", subscribe_counts: 10, expire_days: 7, subscribe_days: 7,
-    }));
+    }, { cellAccountId: "a1" }));
   });
 });
 
@@ -251,7 +251,7 @@ describe("TrialLinksTab figures, filters, Edit, Details and Delete", () => {
     await waitFor(() => expect(put).toHaveBeenCalledWith("/admin/link-meta", {
       account_id: "a1", kind: "trial", of_id: 9002, promo_cost: 19.9, source: "Twitter", tags: ["fall"],
       list_id: null, list_name: null,
-    }));
+    }, { cellAccountId: "a1" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
@@ -273,7 +273,7 @@ describe("TrialLinksTab figures, filters, Edit, Details and Delete", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /Delete/ }));
     const dlg = screen.getByRole("dialog", { name: "Delete free trial link, Reddit 7-day?" });
     fireEvent.click(within(dlg).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/trial-links/7"));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/admin/trial-links/7", { cellAccountId: "a1" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
@@ -296,7 +296,7 @@ describe("TrialLinksTab figures, filters, Edit, Details and Delete", () => {
     fireEvent.click(within(dlg).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(put).toHaveBeenCalledWith("/admin/link-meta/batch", {
       account_id: "a1", kind: "trial", of_ids: [9002], source: "Reddit",
-    }));
+    }, { cellAccountId: "a1" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect((screen.getByRole("button", { name: "Batch edit" }) as HTMLButtonElement).disabled).toBe(true);
   });
@@ -318,6 +318,6 @@ describe("TrialLinksTab figures, filters, Edit, Details and Delete", () => {
     fireEvent.click(within(dlg).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/link-shares", {
       account_id: "a1", kind: "trial", name: "For Bob", of_ids: [9002], include_earnings: true,
-    }));
+    }, { cellAccountId: "a1" }));
   });
 });

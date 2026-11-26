@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
+import cell_mode
 import events
 import login_throttle
 import owner_tokens
@@ -29,6 +30,7 @@ from agency_scope import agency_account_ids
 from db.engine import get_session
 import session_stamps
 import signed_cookie
+import split_inbox
 from session_stamps import now_ms, session_verdict
 from db.models import (
     User,
@@ -45,6 +47,10 @@ LAST_SEEN_TOUCH_S = 300
 # Short-lived so a forgotten "view as" session can't persist; 1h is plenty for a support call.
 IMPERSONATE_COOKIE_NAME = "chatterly_impersonate"
 IMPERSONATE_TTL_SECONDS = 60 * 60
+
+_ACTOR = None
+if os.environ.get("OI_CELL_MAP"):
+    import actor_token as _ACTOR
 
 USERNAME_RE = re.compile(r"^[a-z0-9_.-]{3,32}$")
 RESERVED_USERNAMES = frozenset({"admin", "root", "system", "chatterly", "founder"})
@@ -65,7 +71,7 @@ class AuthedUser:
     ):
         self.id = id_
         self.username = username
-        self.account_ids = account_ids
+        self.account_ids = cell_mode.clamp(account_ids)
         self.is_admin = is_admin
 
 
@@ -192,6 +198,7 @@ def clamp_account_filter(account_id: str | None) -> list[str] | None:
         if ids is not None and account_id not in ids:
             raise HTTPException(status_code=403, detail="not your account")
         return [account_id]
+    ids = cell_mode.read_scope(ids)
     if ids is None:
         return None
     return list(ids)
@@ -258,7 +265,7 @@ def _validate_password(password: str) -> None:
         raise HTTPException(status_code=400, detail="password too long")
 
 
-def _cookie_secure() -> bool:
+def cookie_secure() -> bool:
     return os.environ.get("SESSION_COOKIE_SECURE", "").lower() in {"1", "true", "yes"}
 
 
@@ -269,8 +276,10 @@ def _set_session_cookie(response: Response, user_id: str) -> None:
         max_age=COOKIE_MAX_AGE_SECONDS,
         httponly=True,
         samesite="lax",
-        secure=_cookie_secure(),
+        secure=cookie_secure(),
     )
+    if _ACTOR is not None:
+        _ACTOR.clear(response)
 
 
 def _clear_session_cookie(response: Response) -> None:
@@ -286,17 +295,23 @@ def _set_impersonate_cookie(
         max_age=IMPERSONATE_TTL_SECONDS,
         httponly=True,
         samesite="lax",
-        secure=_cookie_secure(),
+        secure=cookie_secure(),
     )
+    if _ACTOR is not None:
+        _ACTOR.clear(response)
 
 
 def _clear_impersonate_cookie(response: Response) -> None:
     response.delete_cookie(IMPERSONATE_COOKIE_NAME, samesite="lax")
+    if _ACTOR is not None:
+        _ACTOR.clear(response)
 
 
 def clear_all_principal_cookies(response: Response) -> None:
     response.delete_cookie(COOKIE_NAME, samesite="lax")
     response.delete_cookie(IMPERSONATE_COOKIE_NAME, samesite="lax")
+    if _ACTOR is not None:
+        _ACTOR.clear(response)
     try:
         from chatters import COOKIE_NAME as _CHATTER_COOKIE_NAME
         response.delete_cookie(_CHATTER_COOKIE_NAME, samesite="lax")
@@ -356,6 +371,13 @@ async def register(request: Request, response: Response, body: RegisterBody = Bo
             await s.flush()
         except IntegrityError:
             raise HTTPException(status_code=409, detail="username already taken")
+    if os.environ.get("OI_CELL_MAP") and os.environ.get("OI_CELL_ROLE") == "control":
+        from types import SimpleNamespace
+        from employees import seed_agency_rows
+        try:
+            await seed_agency_rows(SimpleNamespace(id=new_id, username=username))
+        except Exception:
+            log.exception("Cells: owner %s has no Mirror Employee or role presets until the next start", new_id)
 
     _set_session_cookie(response, new_id)
     return AuthResp(user_id=new_id, username=username, created_at=_utc(datetime.utcnow()))
@@ -500,6 +522,27 @@ async def _apply_impersonation(imp_cookie: str | None, s, row: User, now: dateti
     return False
 
 
+async def apply_actor(s, claims) -> bool:
+    rows = {r.id: r for r in (await s.execute(select(User).where(User.id.in_({claims.id, claims.eff_id})))).scalars()}
+    real, eff = rows.get(claims.id), rows.get(claims.eff_id)
+    if real is None or eff is None or session_stamps.session_revoked(claims.iat * 1000, real.sessions_valid_after):
+        return False
+    is_admin = bool(getattr(eff, "is_admin", False))
+    _request_user.set(AuthedUser(eff.id, eff.username, await account_ids_for(s, eff.id, is_admin), is_admin))
+    if claims.ro:
+        _impersonation.set(Impersonation(real.id, real.username, eff.id, eff.username))
+    return True
+
+
+def impersonation_expires(request: Request) -> int | None:
+    parsed = _parse_impersonate_cookie(request.cookies.get(IMPERSONATE_COOKIE_NAME) or "")
+    if not parsed:
+        return None
+    # The cookie's clock is naive utcnow().timestamp(); carry only the time left onto the epoch clock.
+    left = parsed[2] + IMPERSONATE_TTL_SECONDS - int(datetime.utcnow().timestamp())
+    return int(datetime.now(timezone.utc).timestamp()) + left
+
+
 async def _token_request(request: Request, call_next, token: str):
     if any(h.decode() in request.headers for h in token_auth.STRIPPED):
         raise RuntimeError("bearer request still carries a cookie: token_auth.StripCookieIdentities missing")
@@ -526,10 +569,14 @@ async def session_middleware(request: Request, call_next):
     _request_user.set(None)
     _impersonation.set(None)
     _request_token.set(None)
+    if _ACTOR is not None and (aged := _ACTOR.aged_refusal(request)):
+        return aged
     token = owner_tokens.bearer(request.headers.get("authorization"))
     if token is not None:
         return await _token_request(request, call_next, token)
-    clears = await _resolve_session(request)
+    clears = _CookieClears() if _ACTOR is not None and _ACTOR.DATA else await _resolve_session(request)
+    if _ACTOR is not None and _request_user.get() is None and (refused := await _ACTOR.resolve(request)):
+        return refused
 
     if session_stamps.blocks_write(
         request.method, request.url.path, _impersonation.get() is not None,
@@ -730,6 +777,7 @@ async def admin_grant_user_account(
             events.on_commit(s, "assignment_changed", agency=user_id)
         except IntegrityError:
             await s.rollback()
+    await split_inbox.owner_link_changed(body.account_id)
     return {"ok": True, "user_id": user_id, "account_id": body.account_id}
 
 
@@ -754,6 +802,7 @@ async def admin_revoke_user_account(
                 detail=f"user {user_id!r} does not hold account {account_id!r}",
             )
         events.on_commit(s, "assignment_changed", agency=user_id)
+    await split_inbox.owner_link_changed(account_id)
     return {"ok": True, "user_id": user_id, "account_id": account_id}
 
 

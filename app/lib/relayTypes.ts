@@ -185,6 +185,8 @@ export interface OFMessage {
   _failed?: boolean;
   _failedReason?: string;
   _failedMediaIds?: number[];
+  _failedUncertain?: boolean;
+  _failedPaused?: boolean;
   _tempId?: number;
   _isFutureScheduled?: boolean;
   _fireAt?: string;

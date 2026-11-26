@@ -33,6 +33,7 @@ app/.next/
 app/.turbo/
 
 # capture artefacts that don't belong in the runtime image
+service/tests/_cell_probe/
 service/sessions/
 service/data/
 service/bio_files/

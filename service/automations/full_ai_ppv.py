@@ -8,9 +8,10 @@ from typing import Any, NamedTuple
 from sqlalchemy import select, update
 
 import automation_executor as ax
+import send_ops
 from attribution import write_outbound_attribution
 from automations._send_failure import (
-    is_media_rejected_error, is_unreachable_fan_error, schedule_recheck_rejected_media,
+    SendOutcome, is_media_rejected_error, is_unreachable_fan_error, schedule_recheck_rejected_media,
     send_dropping_bad_media, skip_unreachable_fan,
 )
 from automations._ppv_readback import sent_ppv
@@ -100,12 +101,17 @@ async def send_priced(client: Any, *, row_id: int, account_id: str, fan_id: int,
 
     if cents > 0:
         def post():
-            return client.send_message(fan_id, text, price=cents / 100, media_files=media,
-                                       previews=previews), True
+            return send_ops.automated_sync(
+                account_id, "full_ai_ppv", fan_id, row_id,
+                lambda: client.send_message(fan_id, text, price=cents / 100, media_files=media,
+                                            previews=previews)), True
     else:
         async def post():
-            return tuple(await send_dropping_bad_media(
-                client, fan_id, text, media, log=log, send_purpose=send_purpose, price_cents=0))
+            return tuple(await send_ops.automated(
+                account_id, "full_ai_ppv", fan_id, row_id,
+                lambda: send_dropping_bad_media(client, fan_id, text, media, log=log,
+                                                send_purpose=send_purpose, price_cents=0),
+                revive=lambda r: SendOutcome(*r)))
 
     try:
         result, landed = await ax.of_write_paced(account_id, post, send_purpose=send_purpose, tries=1,

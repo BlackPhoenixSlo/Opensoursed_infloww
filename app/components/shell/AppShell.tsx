@@ -58,6 +58,7 @@ import { FreeTrialExpiredModal } from "@/components/shell/FreeTrial";
 import PlatformGate, { PlatformSync } from "@/components/shell/PlatformGate";
 import Sidebar from "@/components/shell/Sidebar";
 import TopBar from "@/components/shell/TopBar";
+import { LiveH2Banner, useLiveBlocked } from "@/components/LiveH2Banner";
 import { ClockHeartbeat } from "@/components/shifts/ClockButton";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useExitGhost } from "@/hooks/useExitGhost";
@@ -81,6 +82,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const drawerRef = useRef<HTMLDivElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
   const popout = isPopoutRoute(pathname);
+  const liveBlocked = useLiveBlocked();
   useSwipe(null, {
     enabled: !docked && !popout && !drawerShown, dir: "right", onSwipe: () => dispatchDrawer({ type: "open", path: pathname }),
     edgeGuard: OS_EDGE_PX, ignoreWhile: OPEN_DIALOG,
@@ -93,7 +95,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   if (popout) {
     return (
-      <main className="messages-pro-viewport min-w-0" style={{ ["--shell-top" as string]: "0px" }}>
+      <main className="messages-pro-viewport min-w-0" style={{ ["--shell-top" as string]: liveBlocked ? "56px" : "0px" }}>
+        <LiveH2Banner className="mt-2" />
         <LeaveDesktopMainWindow pathname={pathname} />
         <ClockHeartbeat />
         <AllPlatformsContext value>

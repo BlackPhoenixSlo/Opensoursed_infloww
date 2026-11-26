@@ -6,7 +6,7 @@ import { relay } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { layout } from "./aiRulesLayout";
 import {
-  aiRulesReducer, DETAIL_K, INITIAL, orientationFor,
+  aiRulesReducer, DETAIL_K, formatDefault, INITIAL, orientationFor,
   type Action, type RuleBlock, type RuleNode, type Rules,
 } from "./aiRulesView";
 
@@ -233,7 +233,7 @@ function Drawer({ node, onClose }: { node: RuleNode; onClose: () => void }) {
           <p className="mt-1 text-[13px] text-fg-dim">{node.summary}</p>
           {node.flags.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1">
-              {node.flags.map((f) => <Chip key={f.key}>{f.label} · {f.key} · default {String(f.default)}</Chip>)}
+              {node.flags.map((f) => <Chip key={f.key}>{f.label} · {f.key} · default {formatDefault(f.default)}</Chip>)}
             </div>
           )}
         </div>

@@ -4,11 +4,12 @@ import importlib.util
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictStr
 
 import auth
 import login_paste
 import login_queue
+import platforms
 import proxies as proxy_registry
 import remote_login
 from brand import BRAND_NAME
@@ -24,7 +25,8 @@ class _StartBody(BaseModel):
     proxy: str = Field("", description=(
         '"infloww" (Inflowwww proxy), "none" (server IP) or "custom" (proxy_label); bound to the account after the '
         'login. Default: "custom" when proxy_label is given, else the Inflowwww proxy when the relay has one, else none; '
-        'either default leaves a custom proxy the account is on bound, and the job reports that proxy'))
+        'either default leaves a custom proxy the account is on bound, and the job reports that proxy. '
+        'Fansly accepts only an omitted proxy or "none"'))
     proxy_label: str = Field("", description="Registry label of a custom proxy")
     nickname: str | None = None
     make_active: bool = True
@@ -32,6 +34,8 @@ class _StartBody(BaseModel):
         remote_login.BACKEND_LOCAL,
         description='"local" (not available in this build) or "browserbase"',
     )
+    platform: StrictStr = Field(platforms.ONLYFANS.key, description="The Platform key to sign in to")
+    expected_account_id: StrictStr | None = None
 
 
 def _principal() -> str | None:
@@ -67,6 +71,12 @@ def _resolve_proxy(choice: str, label: str) -> tuple[str, str]:
     return choice, ""
 
 
+def _login_platform(key: str) -> str:
+    if key not in platforms.KEYS:
+        raise HTTPException(status_code=400, detail=f"unknown platform (expected one of {platforms.KEYS})")
+    return key
+
+
 def _require_playwright() -> None:
     if importlib.util.find_spec("playwright") is None:
         raise HTTPException(status_code=501, detail=(
@@ -80,18 +90,26 @@ def remote_login_start(body: _StartBody = Body(...)) -> dict[str, Any]:
     if body.backend not in remote_login.BACKENDS:
         raise HTTPException(status_code=400, detail=(
             f"unknown backend {body.backend!r} (expected one of {remote_login.BACKENDS})"))
+    platform = _login_platform(body.platform)
     if body.backend == remote_login.BACKEND_BROWSERBASE:
         _require_playwright()
 
-    proxy, label = _resolve_proxy(body.proxy, body.proxy_label)
+    proxy_defaulted = not body.proxy and not body.proxy_label
+    if platforms.get(platform).bind_login_proxy:
+        proxy, label = _resolve_proxy(body.proxy, body.proxy_label)
+    else:
+        if (body.proxy_label or "proxy" in body.model_fields_set) and body.proxy != remote_login.PROXY_NONE:
+            raise HTTPException(status_code=400, detail=f"{platform} does not support login proxies")
+        proxy, label, proxy_defaulted = remote_login.PROXY_NONE, "", False
     try:
         job = remote_login.start_login(
             email=body.email.strip(), password=body.password,
             proxy=proxy, proxy_label=label,
             # No choice sent: the relay's default, which keeps a custom proxy the account is already on.
-            proxy_defaulted=not body.proxy and not body.proxy_label,
+            proxy_defaulted=proxy_defaulted,
             principal=_principal(), nickname=(body.nickname or "").strip() or None,
-            make_active=body.make_active, backend=body.backend,
+            make_active=body.make_active, backend=body.backend, platform=platform,
+            expected_account_id=body.expected_account_id,
         )
     except remote_login.BackendUnavailable as e:
         raise HTTPException(status_code=501, detail=str(e))
@@ -125,6 +143,8 @@ async def remote_login_queue(body: Any = Body(None)) -> dict[str, Any]:
     text = body.get("text") if isinstance(body, dict) else None
     if not isinstance(text, str):
         raise HTTPException(status_code=400, detail='the body is {"text": "<email:password per line>"}')
+    if body.get("platform", platforms.ONLYFANS.key) != platforms.ONLYFANS.key:
+        raise HTTPException(status_code=400, detail="the login queue only supports OnlyFans")
     if len(text) > MAX_PASTE:
         raise HTTPException(status_code=413, detail=f"paste over {MAX_PASTE // 1024} KB")
     logins, bad = login_paste.parse(text)

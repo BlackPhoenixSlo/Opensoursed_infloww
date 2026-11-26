@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from contextvars import ContextVar
 from datetime import datetime, timedelta
 from typing import NamedTuple, assert_never
@@ -16,6 +17,7 @@ from proxies import scrub_pool_secrets
 from automation_registry import canonical_kind, kind_family
 import events
 import run_decide
+import send_ops
 
 log = logging.getLogger("of-relay.automation")
 
@@ -82,6 +84,8 @@ async def enqueue_job(
     created_by_employee_id: int | None = None,
     session: AsyncSession | None = None,
 ) -> int:
+    if send_ops.cells() and canonical_kind(kind) in run_decide.ONE_SHOT_KINDS:
+        payload = {**(payload or {}), "send_anchor": uuid.uuid4().hex}
     job = ScheduledJob(
         account_id=account_id,
         kind=canonical_kind(kind),
@@ -153,6 +157,13 @@ _current_job_id: ContextVar[int | None] = ContextVar("_current_job_id", default=
 
 def current_job_id() -> int | None:
     return _current_job_id.get()
+
+
+def send_anchor(payload: dict) -> str:
+    if payload.get("send_anchor"):
+        return str(payload["send_anchor"])
+    jid = _current_job_id.get()
+    return f"job:{jid}" if jid is not None else ""
 
 
 JOB_CANCELLED = "cancelled"
@@ -241,6 +252,18 @@ async def cancel_jobs_missed_while_off(account_id: str, deactivated_at: datetime
 async def _mark_job(job_id: int, status: str, last_error: str | None) -> None:
     async with get_session() as s:
         await _write_job(s, job_id, status, last_error)
+
+
+async def _release_job(job_id: int | None) -> None:
+    if job_id is None:
+        return
+    async with get_session() as s:
+        job = await s.get(ScheduledJob, job_id)
+        if job is None:  # pragma: no cover
+            return
+        job.status = "pending"
+        job.attempts = max(0, (job.attempts or 0) - 1)
+        _announce_scheduled_send(s, job)
 
 
 async def _write_job(s, job_id: int, status: str, last_error: str | None) -> None:

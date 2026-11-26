@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 import re
 from datetime import timedelta
@@ -11,6 +12,7 @@ from dataset import MANAGER, SLOTS, Dataset, asset, iso
 PURCHASE_KINDS = {"ppv_message": "message", "custom": "message", "ppv_post": "post", "ppv_stream": "stream"}
 TIP_KINDS = {"tip", "tip_post", "tip_stream"}
 EMPTY = {"list": [], "hasMore": False}
+SPARSE_CHATS_TO = int(os.environ.get("DEMO_SPARSE_CHATS_TO") or 0)
 
 
 class AssetRef(str):
@@ -82,6 +84,11 @@ class Fixtures:
                 msg.update(isTip=True, text=f"I sent you a ${m['tip'] / 100:.2f} tip ❤️", price=0)
             out.append(msg)
         return out
+
+    def _sparse_chats(self, account_id: str, offset: int, limit: int) -> dict[str, Any]:
+        rows = self.chats(account_id)
+        page = rows[:3] if offset == 0 else rows[3 + offset // limit - 1:3 + offset // limit]
+        return {"list": page, "hasMore": offset + limit <= SPARSE_CHATS_TO}
 
     def chats(self, account_id: str) -> list[dict[str, Any]]:
         if account_id in self._chats:
@@ -190,6 +197,8 @@ class Fixtures:
                     and (s["subscribed_at"] >= self.d.now - timedelta(days=30)))
             return {"subscribers": n, "subscribes": [], "earnings": []}
         if path == "/api/of/v2/chats":
+            if SPARSE_CHATS_TO and not (one("query") or one("list_id") or one("filter")):
+                return self._sparse_chats(c["id"], int(one("offset") or 0), int(one("limit") or 25))
             if (one("offset") or "0") != "0" or one("query") or one("list_id"):
                 return {"list": [], "hasMore": False}
             rows = self.chats(c["id"])

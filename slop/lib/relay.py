@@ -709,11 +709,11 @@ def _wire(app) -> None:
     employees._AUDIT_SKIP_PREFIXES = (*employees._AUDIT_SKIP_PREFIXES, "/__slop/")
     inner = event_transcoder.transcode
 
-    async def counted(event):
+    async def counted(event, *a, **k):
         o = {"wrote": False, "raised": False}
         token = _outcome.set(o)
         try:
-            return await inner(event)
+            return await inner(event, *a, **k)
         finally:
             _outcome.reset(token)
             _stats["processed"] += 1

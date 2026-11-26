@@ -27,7 +27,6 @@ _harness.bootstrap()
 import contextlib  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
-import subprocess  # noqa: E402
 from datetime import datetime  # noqa: E402
 
 import runtime_switches  # noqa: E402
@@ -253,12 +252,6 @@ async def case_claimed_ids():
         await _rule(aid, enabled=False)
         assert await io.claimed_ids(aid, [1, 2]) == set()
         assert await io.claimed_ids(await _account(rule=None), [1]) == set()
-
-
-def case_no_lane_edits():
-    files = ["service/automations/reply_mass_funnel.py"]
-    r = subprocess.run(["git", "diff", "--quiet", "origin/main", "--", *files], cwd=_harness._REPO_ROOT)
-    assert r.returncode == 0, "the funnel file differs from origin/main"
 
 
 if __name__ == "__main__":

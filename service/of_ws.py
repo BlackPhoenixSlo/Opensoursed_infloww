@@ -9,6 +9,7 @@ from typing import AsyncIterator, Callable
 import websockets
 
 import of_ws_decide
+import proxies as proxy_registry
 from of_client import OFClient
 
 log = logging.getLogger("of-ws")
@@ -74,6 +75,10 @@ class OFWebSocket:
                 await asyncio.to_thread(self._refresh_auth, client)
                 assert self._ws_url and self._token
                 proxy_url = getattr(client, "proxy_url", None) or None
+                if proxy_registry.CELLS:
+                    if not proxy_url:
+                        raise proxy_registry.no_proxy(self._account_id(client), "ws")
+                    proxy_registry.require_proxy(self._account_id(client), "ws")
                 if proxy_url:
                     log.info("connecting account=%s %s via proxy %s",
                              self._account_id(client), self._ws_url, self._proxy_desc(client))
@@ -137,7 +142,7 @@ class OFWebSocket:
                             stop_waiter.cancel()
                         if recv_task is not None and not recv_task.done():
                             recv_task.cancel()
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, proxy_registry.NoProxyRefused):
                 raise
             except Exception as e:
                 ev = of_ws_decide.Failed(

@@ -213,7 +213,7 @@ export function Composer({
     advanceScript?.(!!sent?.failure);
     const replyId = sentReplyId(refused.draft);
     if (replyId != null && sent && !args.scheduledAt) {
-      void sent.settled.then((ended) => (ended.sent ? markScriptSent(replyId) : undefined));
+      void sent.settled.then((ended) => (ended.sent ? markScriptSent(replyId, accountId) : undefined));
     }
     const sendGifs = async () => {
       for (const g of trailingGifs) await onSend({ text: "", giphyId: g.id });

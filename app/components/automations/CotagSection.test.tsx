@@ -115,7 +115,7 @@ describe("CotagSection", () => {
     fireEvent.click(save);
     await waitFor(() => expect(relayPut).toHaveBeenCalledTimes(1));
     expect(relayPut.mock.calls[0]).toEqual(["/admin/account-config",
-      { account_id: ACC, config: { ...config, cotag_username: "coone" } }]);
+      { account_id: ACC, config: { ...config, cotag_username: "coone" } }, { cellAccountId: "900001" }]);
     expect(await screen.findByText("Saved ✓")).toBeTruthy();
   });
 });

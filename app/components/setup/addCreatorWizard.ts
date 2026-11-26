@@ -24,8 +24,8 @@ export interface WizardState {
   busy: Record<BusySource, boolean>;
 }
 
-export type BusySource = "login" | "extension" | "proxy";
-const IDLE: Record<BusySource, boolean> = { login: false, extension: false, proxy: false };
+export type BusySource = "login" | "extension" | "paste" | "proxy";
+const IDLE: Record<BusySource, boolean> = { login: false, extension: false, paste: false, proxy: false };
 
 export type WizardAction =
   | { type: "detailsNext" }
@@ -41,6 +41,8 @@ export type WizardAction =
   | { type: "submitOk" }
   | { type: "submitErr" }
   | { type: "busy"; source: BusySource; value: boolean };
+
+const defaultMethod = (p: Platform): Method => (p === "fansly" ? "extension" : "browser");
 
 export function initialWizard({ recovery, method, draft, linkAnother }: {
   recovery?: Platform;
@@ -59,7 +61,7 @@ export function initialWizard({ recovery, method, draft, linkAnother }: {
     draftId: draft?.id,
     taken,
     platform,
-    method: platform === "fansly" ? "extension" : method ?? "browser",
+    method: method ?? defaultMethod(platform),
     busy: IDLE,
   };
 }
@@ -68,14 +70,15 @@ export function canNext(s: WizardState): boolean {
   return s.step.kind === "linked" && !s.step.busy && !s.busy.proxy;
 }
 
-export const canBack = (s: WizardState): boolean =>
-  s.step.kind === "platform" || (s.step.kind === "login" && s.fresh && !s.busy.login && !s.busy.extension);
+export const signInBusy = (s: WizardState): boolean => s.busy.login || s.busy.extension || s.busy.paste;
 
-// Not closable while Extension capture/attach or proxy Connect runs: those relay calls would go on unseen.
-export const canClose = (s: WizardState): boolean => !s.busy.extension && !s.busy.proxy;
+export const canBack = (s: WizardState): boolean =>
+  s.step.kind === "platform" || (s.step.kind === "login" && s.fresh && !signInBusy(s));
+
+export const canClose = (s: WizardState): boolean => !s.busy.extension && !s.busy.paste && !s.busy.proxy;
 
 export const canPickPlatform = (s: WizardState, p: Platform): boolean =>
-  (s.step.kind === "login" || s.step.kind === "platform") && !s.recovery && !s.taken.includes(p);
+  (s.step.kind === "login" || s.step.kind === "platform") && !signInBusy(s) && !s.recovery && !s.taken.includes(p);
 
 const go = (state: WizardState, step: WizardStep): WizardState => ({ ...state, step });
 const saving = (step: WizardStep): step is LinkedStep => step.kind === "linked" && step.busy;
@@ -84,11 +87,11 @@ function setField(state: WizardState, action: Extract<WizardAction, { type: "set
   const { step } = state;
   switch (action.field) {
     case "method":
-      if (step.kind !== "login" || state.platform === "fansly" || state.method === action.value) return state;
+      if (step.kind !== "login" || signInBusy(state) || state.method === action.value) return state;
       return { ...state, method: action.value };
     case "platform":
       if (state.platform === action.value || !canPickPlatform(state, action.value)) return state;
-      return { ...state, platform: action.value, method: action.value === "fansly" ? "extension" : "browser" };
+      return { ...state, platform: action.value, method: defaultMethod(action.value) };
     case "account":
       return step.kind === "linked" && !step.busy ? go(state, { ...step, account: action.value }) : state;
   }
@@ -109,9 +112,9 @@ export function wizardReducer(state: WizardState, action: WizardAction): WizardS
     case "setField":
       return setField(state, action);
     case "linked":
-      if (step.kind !== "login") return state;
+      if (step.kind !== "login" || state.platform !== action.platform) return state;
       return {
-        ...state, platform: action.platform, busy: { ...state.busy, login: false, extension: false },
+        ...state, busy: { ...state.busy, login: false, extension: false, paste: false },
         step: { kind: "linked", accountId: action.accountId, account: action.account, busy: false },
       };
     case "profile":

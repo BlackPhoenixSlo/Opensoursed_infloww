@@ -15,6 +15,33 @@ DIR="${DIR:-$HOME/openinflowwww}"
 say() { printf '\n\033[36m▸ %s\033[0m\n' "$*"; }
 die() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# Files only: with no marker and no Cell this must print and call nothing (unset = byte-identical to before).
+cell_mode_gate() {
+  local root=/opt/oi mark cells="" d
+  mark="$root/CELL-MODE"
+  for d in "$root" "$root/shards"; do
+    if [ -e "$d" ] || [ -L "$d" ]; then
+      [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || die "refused: cannot inspect $d"
+    fi
+  done
+  for d in "$root"/shards/*/; do
+    [ -d "$d" ] || continue
+    [ -r "$d" ] && [ -x "$d" ] || die "refused: cannot inspect ${d%/}"
+    if [ -f "$d"override.yml ]; then
+      cells="$cells $(basename "$d")"
+    fi
+  done
+  if [ -e "$mark" ] && [ -n "$cells" ]; then
+    die "refused: cell-mode marker $mark ($(head -c 200 "$mark" | tr '\n' ' ')); deploy Cells with: deploy/fleet/fleet.py deploy <box>"
+  elif [ -e "$mark" ]; then
+    die "refused (mixed): cell-mode marker $mark but no Cell under $root/shards; a human checks the box, then fleet.py deploy or removes the marker"
+  elif [ -n "$cells" ]; then
+    die "refused (mixed): Cells$cells under $root/shards but no marker $mark; deploy with: deploy/fleet/fleet.py deploy <box>"
+  fi
+}
+cell_mode_gate
+[ "${1:-}" = "--cell-mode-check" ] && { echo "cell-mode check: clear"; exit 0; }
+
 SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 gen_secret() { openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 

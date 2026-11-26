@@ -284,7 +284,7 @@ describe("NudgeOnlineTab's footer status", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Run now" }));
     await waitFor(() => expect(within(footerStatus()).getByText(/Ran one detector pass/)).toBeTruthy());
     expect(screen.getByText("Loading…")).toBeTruthy();
-    expect(relay.post).toHaveBeenCalledWith("/admin/automation-rules/7/run-now", {});
+    expect(relay.post).toHaveBeenCalledWith("/admin/automation-rules/7/run-now", {}, { cellAccountId: "123456789" });
   });
 });
 

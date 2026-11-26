@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+import os
 import time as _time_mod
 from typing import Any, Callable
 
@@ -43,6 +43,10 @@ from relay_host import stop_account_pump as _stop_account_pump
 log = logging.getLogger("of-relay")
 
 router = APIRouter()
+
+_CELLS = bool(os.environ.get("OI_CELL_MAP"))
+if _CELLS:
+    import cell_mode
 
 
 
@@ -162,62 +166,22 @@ def bootstrap_fansly_session(body: _FanslySessionBody = Body(...)) -> dict[str, 
     the meta gets platform="fansly" + the creator's display name, and the same
     post_bootstrap_hooks the OF path runs evict, reload and restart the pump."""
     import fansly_backend
-    import platforms
 
     account_id = str(body.accountId)
-    session = {
-        "token": body.token,
-        "id": body.id,
-        "accountId": account_id,
-        "device_id": body.device_id,
-        "user_agent": body.user_agent,
-        "accept_language": body.accept_language or "en-US,en;q=0.9",
-        "check_key": body.check_key,
-    }
-
+    session = fansly_backend.session_blob(
+        token=body.token, session_id=body.id, account_id=account_id, device_id=body.device_id,
+        user_agent=body.user_agent, accept_language=body.accept_language, check_key=body.check_key,
+    )
     try:
-        adir = account_registry.account_dir(account_id)
+        me, session = fansly_backend.prove(session)
     except account_registry.NotAnAccountId as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-    def _refuse_collision() -> None:
-        try:
-            account_registry.ensure_platform(account_id, platforms.FANSLY.key)
-        except account_registry.PlatformCollision as e:
-            raise HTTPException(status_code=409, detail=str(e))
-
-    _refuse_collision()
-    try:
-        me, session = fansly_backend.identify(session)
-    except Exception as e:  # noqa: BLE001 — any failure means the token is not proven
-        why = f"{type(e).__name__}: {e}"
-        if body.token:  # client errors can carry request headers
-            why = why.replace(body.token, "***")
-        log.warning("fansly session for %s not proven: %s", account_id, why)
-        raise HTTPException(status_code=400, detail=f"Fansly did not accept this session: {why}")
-    me_id = str(me.get("id") or "")
-    if me_id != account_id:
-        raise HTTPException(status_code=400, detail=(
-            f"this session signs in as Fansly account {me_id or '(none)'}, not {account_id}"))
-    _refuse_collision()
-
+    except account_registry.PlatformCollision as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except fansly_backend.SessionRefused as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    fansly_backend.save(session, me, nickname=body.nickname, make_active=body.make_active)
     name = me.get("name") or me.get("username")
-    adir.mkdir(parents=True, exist_ok=True)
-    session_file = adir / fansly_backend.SESSION_FILENAME
-    session_file.write_text(json.dumps(session, indent=2) + "\n")
-    try:
-        session_file.chmod(0o600)
-    except OSError:
-        pass
-
-    account_registry.upsert_account(
-        account_id,
-        platform=platforms.FANSLY.key,
-        name=name,
-        nickname=body.nickname or name or f"Fansly {account_id}",
-    )
-    if body.make_active:
-        account_registry.set_active_account_id(account_id)
 
     post_bootstrap_hooks(account_id)
 
@@ -668,6 +632,8 @@ async def admin_view_lease(body: _ViewLeaseBody = Body(...)) -> dict[str, Any]:
     kind, who, order = principal
     pid = str(who.id)
     allowed = set(order)
+    if _CELLS:
+        allowed &= cell_mode.owned_ids()
 
     def ok(a: str | None) -> bool:
         return a is not None and a in allowed and not account_registry.is_watcher(a)

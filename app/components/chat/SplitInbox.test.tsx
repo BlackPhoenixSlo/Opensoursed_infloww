@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -7,7 +8,7 @@ import { RelayError } from "@/lib/relay";
 import { renderWithProviders } from "@/test-utils";
 import { SplitInbox } from "./SplitInbox";
 
-const relayMock = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn() }));
+const relayMock = vi.hoisted(() => ({ get: vi.fn(), patch: vi.fn() }));
 vi.mock("@/lib/relay", async (orig) => ({
   ...(await orig<typeof import("@/lib/relay")>()),
   relay: relayMock,
@@ -31,15 +32,15 @@ const ROSTER = [
 ];
 const STORED = { group_count: 3, assignments: { "200000001": 2 } };
 const FANS = [
-  { id: 200000001, name: "Fixture Fan One" },
-  { id: 200000002, name: "Fixture Fan Two" },
-  { id: 200000003, name: "Fixture Fan Three" },
+  { id: 200000001, name: "Fixture Fan One", accountId: ACCOUNT_ID },
+  { id: 200000002, name: "Fixture Fan Two", accountId: ACCOUNT_ID },
+  { id: 200000003, name: "Fixture Fan Three", accountId: ACCOUNT_ID },
 ];
 let stored: { group_count: number; assignments: Record<string, number>; chatter_groups?: Record<string, number> } = STORED;
 
 function Host() {
   const [open, setOpen] = useState(true);
-  return <SplitInbox accountIds={[ACCOUNT_ID]} open={open} onClose={() => setOpen(false)} fans={FANS} />;
+  return <SplitInbox scope="model" accountIds={[ACCOUNT_ID]} open={open} onClose={() => setOpen(false)} fans={FANS} />;
 }
 
 const dialog = () => screen.queryByRole("dialog", { name: "Split Inbox settings" });
@@ -66,6 +67,19 @@ afterEach(() => {
 });
 
 describe("SplitInbox", () => {
+  it("All Models with one Creator saves the default and hides per-fan moves", async () => {
+    const user = userEvent.setup();
+    relayMock.patch.mockResolvedValue({ configs: {} });
+    renderWithProviders(<SplitInbox scope="all" accountIds={[ACCOUNT_ID]} open onClose={() => {}} fans={FANS} />);
+    await user.selectOptions(await countSelect(), "2");
+    expect(screen.getByText("Applies to this model and new ones")).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Reassign fans to different groups" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(relayMock.patch).toHaveBeenCalledWith("/admin/split-inbox", {
+      account_ids: [ACCOUNT_ID], group_count: 2, as_default: true,
+    });
+  });
+
   it("the count select offers exactly 1 to 9 and starts at the stored count", async () => {
     renderWithProviders(<Host />);
     const select = await countSelect();
@@ -75,27 +89,31 @@ describe("SplitInbox", () => {
     expect(select).toHaveValue("3");
   });
 
-  it("Save PUTs {group_count, assignments} once, carrying the stored moves, and closes the dialog", async () => {
+  it("Save PATCHes only the edited count once and closes the dialog", async () => {
     const user = userEvent.setup();
-    relayMock.put.mockResolvedValue({
-      account_id: ACCOUNT_ID, config: { group_count: 5, assignments: { "200000001": 2 } },
-    });
+    relayMock.patch.mockResolvedValue({ configs: {} });
     renderWithProviders(<Host />);
     await user.selectOptions(await countSelect(), "5");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(relayMock.put).toHaveBeenCalledTimes(1);
-    expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
-      account_id: ACCOUNT_ID,
-      config: { group_count: 5, assignments: { "200000001": 2 }, chatter_groups: {} },
-    });
+    expect(relayMock.patch).toHaveBeenCalledTimes(1);
+    expect(relayMock.patch).toHaveBeenCalledWith("/admin/split-inbox", { account_ids: [ACCOUNT_ID], group_count: 5 });
     await vi.waitFor(() => expect(dialog()).not.toBeInTheDocument());
   });
 
-  it("a failed PUT keeps the dialog open and shows the relay's error", async () => {
+  it("opens on a fresh read, not the cached split another device has since changed", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["split-inbox", ACCOUNT_ID], { account_id: ACCOUNT_ID, config: { group_count: 2, assignments: {} } });
+    renderWithProviders(<Host />, client);
+    expect(screen.queryByRole("combobox", { name: "Choose the number of groups" })).not.toBeInTheDocument();
+    expect(await countSelect()).toHaveValue("3");
+  });
+
+  it("a failed PATCH keeps the dialog open with the relay's error, and Save again resends the same edits", async () => {
     const user = userEvent.setup();
-    relayMock.put.mockRejectedValue(
-      new RelayError(403, null, "owner-only endpoint — chatter sessions cannot perform this action"));
+    relayMock.patch
+      .mockRejectedValueOnce(new RelayError(403, null, "owner-only endpoint — chatter sessions cannot perform this action"))
+      .mockResolvedValueOnce({ configs: {} });
     renderWithProviders(<Host />);
     await user.selectOptions(await countSelect(), "2");
     await user.click(screen.getByRole("button", { name: "Save" }));
@@ -103,13 +121,57 @@ describe("SplitInbox", () => {
     expect(await screen.findByRole("alert"))
       .toHaveTextContent("owner-only endpoint — chatter sessions cannot perform this action");
     expect(dialog()).toBeInTheDocument();
+    await vi.waitFor(() => expect(relayMock.get).toHaveBeenCalledTimes(2));
     expect(await countSelect()).toHaveValue("2");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(relayMock.patch.mock.calls).toEqual([
+      ["/admin/split-inbox", { account_ids: [ACCOUNT_ID], group_count: 2 }],
+      ["/admin/split-inbox", { account_ids: [ACCOUNT_ID], group_count: 2 }],
+    ]);
+    await vi.waitFor(() => expect(dialog()).not.toBeInTheDocument());
   });
 
-  it("reassigning one Fan changes only that Fan's entry in the PUT body", async () => {
+  it("a 409 shows the relay's error and reloads the form on the current split, so Save again uses it", async () => {
     const user = userEvent.setup();
-    relayMock.put.mockImplementation((_path: string, body: { config: unknown }) =>
-      Promise.resolve({ account_id: ACCOUNT_ID, ...body }));
+    rosterMock.rows = ROSTER;
+    const conflict = "Split Inbox changed elsewhere: Inbox 3 no longer exists. Review the settings and save again.";
+    relayMock.patch.mockRejectedValueOnce(new RelayError(409, null, conflict)).mockResolvedValueOnce({ configs: {} });
+    renderWithProviders(<Host />);
+    await countSelect();
+    const chatterB = () => within(screen.getByRole("region", { name: "Chatters" }))
+      .getByRole("combobox", { name: "Fixture Chatter B" });
+    await user.selectOptions(chatterB(), "Inbox 3");
+    await user.selectOptions(fanSelect("Fixture Fan Two"), "Inbox 3");
+    stored = { group_count: 2, assignments: {} };
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(conflict);
+    await vi.waitFor(() => expect(screen.getByRole("combobox", { name: "Choose the number of groups" })).toHaveValue("2"));
+    expect(optionsOf(chatterB())).toEqual(["All", "Inbox 1", "Inbox 2"]);
+    expect(chatterB()).toHaveValue("");
+    await user.selectOptions(chatterB(), "Inbox 2");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(relayMock.patch.mock.calls).toEqual([
+      ["/admin/split-inbox", { account_ids: [ACCOUNT_ID], chatter_groups: { "c-b": 3 }, assignments: { "200000002": 3 } }],
+      ["/admin/split-inbox", { account_ids: [ACCOUNT_ID], chatter_groups: { "c-b": 2 } }],
+    ]);
+    await vi.waitFor(() => expect(dialog()).not.toBeInTheDocument());
+  });
+
+  it("switching to another model while open lists only the opened model's Fans", async () => {
+    const OTHER_ID = "100000009";
+    const other = [{ id: 200000009, name: "Fixture Fan Nine", accountId: OTHER_ID }];
+    const host = (ids: string[], fans: typeof FANS) => <SplitInbox scope={ids.length === 1 ? "model" : "all"} accountIds={ids} open onClose={() => {}} fans={fans} />;
+    const { rerender } = renderWithProviders(host([ACCOUNT_ID], FANS));
+    await countSelect();
+    rerender(host([OTHER_ID], [...other, ...FANS.slice(0, 1)]));
+    const region = screen.getByRole("region", { name: "Reassign fans to different groups" });
+    expect(within(region).getAllByRole("combobox").map((s) => s.getAttribute("aria-label"))).toEqual(["Fixture Fan One"]);
+  });
+
+  it("reassigning one Fan sends only that Fan's move", async () => {
+    const user = userEvent.setup();
+    relayMock.patch.mockResolvedValue({ configs: {} });
     renderWithProviders(<Host />);
     const count = await countSelect();
     await user.selectOptions(count, "1");
@@ -128,37 +190,31 @@ describe("SplitInbox", () => {
     expect(fanSelect("Fixture Fan Two")).toHaveValue(moveTo);
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(relayMock.put).toHaveBeenCalledTimes(1);
-    expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
-      account_id: ACCOUNT_ID,
-      config: { group_count: 4, assignments: { "200000001": 2, "200000002": Number(moveTo) }, chatter_groups: {} },
+    expect(relayMock.patch).toHaveBeenCalledTimes(1);
+    expect(relayMock.patch).toHaveBeenCalledWith("/admin/split-inbox", {
+      account_ids: [ACCOUNT_ID], group_count: 4, assignments: { "200000002": Number(moveTo) },
     });
     await vi.waitFor(() => expect(dialog()).not.toBeInTheDocument());
   });
 
-  it("lowering N drops the out-of-range assignments from the PUT body and keeps the in-range ones", async () => {
+  it("lowering N narrows each Fan's choices to the new count and sends just the count", async () => {
     const user = userEvent.setup();
     stored = { group_count: 3, assignments: { "200000001": 2, "200000002": 3 } };
-    relayMock.put.mockImplementation((_path: string, body: { config: unknown }) =>
-      Promise.resolve({ account_id: ACCOUNT_ID, ...body }));
+    relayMock.patch.mockResolvedValue({ configs: {} });
     renderWithProviders(<Host />);
     await user.selectOptions(await countSelect(), "2");
     expect(optionsOf(fanSelect("Fixture Fan Two"))).toEqual(["Inbox 1", "Inbox 2"]);
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(relayMock.put).toHaveBeenCalledTimes(1);
-    expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
-      account_id: ACCOUNT_ID,
-      config: { group_count: 2, assignments: { "200000001": 2 }, chatter_groups: {} },
-    });
+    expect(relayMock.patch).toHaveBeenCalledTimes(1);
+    expect(relayMock.patch).toHaveBeenCalledWith("/admin/split-inbox", { account_ids: [ACCOUNT_ID], group_count: 2 });
   });
 
-  it("lists the chatters who see this Creator; binding one PUTs chatter_groups, \"All\" unbinds", async () => {
+  it("lists the chatters who see this Creator; binding one sends it, \"All\" sends an unbind", async () => {
     const user = userEvent.setup();
     rosterMock.rows = ROSTER;
     stored = { ...STORED, chatter_groups: { "c-b": 3 } };
-    relayMock.put.mockImplementation((_path: string, body: { config: unknown }) =>
-      Promise.resolve({ account_id: ACCOUNT_ID, ...body }));
+    relayMock.patch.mockResolvedValue({ configs: {} });
     renderWithProviders(<Host />);
     await countSelect();
     const region = screen.getByRole("region", { name: "Chatters" });
@@ -174,9 +230,8 @@ describe("SplitInbox", () => {
     await user.selectOptions(b, "All");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
-      account_id: ACCOUNT_ID,
-      config: { group_count: 3, assignments: { "200000001": 2 }, chatter_groups: { "c-a": 1 } },
+    expect(relayMock.patch).toHaveBeenCalledWith("/admin/split-inbox", {
+      account_ids: [ACCOUNT_ID], chatter_groups: { "c-a": 1, "c-b": null },
     });
   });
 
@@ -186,7 +241,7 @@ describe("SplitInbox", () => {
     let splits: Record<string, typeof stored>;
     function AllHost() {
       const [open, setOpen] = useState(true);
-      return <SplitInbox accountIds={IDS} open={open} onClose={() => setOpen(false)} fans={FANS} />;
+      return <SplitInbox scope="all" accountIds={IDS} open={open} onClose={() => setOpen(false)} fans={FANS} />;
     }
     beforeEach(() => {
       splits = {
@@ -204,7 +259,7 @@ describe("SplitInbox", () => {
       renderWithProviders(<AllHost />);
       const count = await countSelect();
       expect(count).toHaveValue("");
-      expect(screen.getByText("Applies to all 2 models")).toBeInTheDocument();
+      expect(screen.getByText("Applies to all 2 models and new ones")).toBeInTheDocument();
       expect(screen.getByText("Move single fans from a model's own tab.")).toBeInTheDocument();
       expect(screen.queryByRole("region", { name: "Reassign fans to different groups" })).not.toBeInTheDocument();
       const region = screen.getByRole("region", { name: "Chatters" });
@@ -218,21 +273,19 @@ describe("SplitInbox", () => {
       expect(within(region).getByRole("combobox", { name: "Fixture Chatter X" })).toHaveValue("1");
     });
 
-    it("closes on no-op Save without a PUT", async () => {
+    it("closes on no-op Save without a PATCH", async () => {
       const user = userEvent.setup();
-      relayMock.put.mockResolvedValue({});
       renderWithProviders(<AllHost />);
       await countSelect();
       await user.click(screen.getByRole("button", { name: "Save" }));
       await vi.waitFor(() => expect(dialog()).not.toBeInTheDocument());
-      expect(relayMock.put).not.toHaveBeenCalled();
+      expect(relayMock.patch).not.toHaveBeenCalled();
     });
 
-    it("Save PUTs once per Creator, each keeping its own moves, and closes", async () => {
+    it("Save sends one PATCH for every Creator carrying only the edits, and closes", async () => {
       const user = userEvent.setup();
       rosterMock.rows = ROSTER;
-      relayMock.put.mockImplementation((_path: string, body: { account_id: string; config: unknown }) =>
-        Promise.resolve(body));
+      relayMock.patch.mockResolvedValue({ configs: {} });
       renderWithProviders(<AllHost />);
       await user.selectOptions(await countSelect(), "2");
       await user.selectOptions(
@@ -241,33 +294,48 @@ describe("SplitInbox", () => {
       );
       await user.click(screen.getByRole("button", { name: "Save" }));
 
-      expect(relayMock.put).toHaveBeenCalledTimes(2);
-      expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
-        account_id: ACCOUNT_ID,
-        config: { group_count: 2, assignments: { "200000001": 2 }, chatter_groups: { "c-a": 1, "c-b": 2 } },
-      });
-      expect(relayMock.put).toHaveBeenCalledWith("/admin/split-inbox", {
-        account_id: OTHER_ID,
-        config: { group_count: 2, assignments: {}, chatter_groups: { "c-a": 2, "c-x": 1 } },
-      });
+      expect(relayMock.patch.mock.calls).toEqual([
+        ["/admin/split-inbox", { account_ids: IDS, group_count: 2, chatter_groups: { "c-b": 2 }, as_default: true }],
+      ]);
       await vi.waitFor(() => expect(dialog()).not.toBeInTheDocument());
     });
 
-    it.each([false, true])("failed PUTs name affected Creators (all failed: %s)", async (allFailed) => {
+    it("a Creator joining while the dialog is open is not a save target", async () => {
       const user = userEvent.setup();
-      relayMock.put.mockImplementation((_path: string, body: { account_id: string; config: unknown }) =>
-        allFailed || body.account_id === OTHER_ID ? Promise.reject(new RelayError(502, null, "upstream down")) : Promise.resolve(body));
+      const LATE = "100000005";
+      splits[LATE] = { group_count: 4, assignments: { "200000004": 4 } };
+      relayMock.patch.mockResolvedValue({ configs: {} });
+      const host = (ids: string[]) => <SplitInbox scope={ids.length === 1 ? "model" : "all"} accountIds={ids} open onClose={() => {}} fans={FANS} />;
+      const { rerender } = renderWithProviders(host(IDS));
+      await countSelect();
+      rerender(host([...IDS, LATE]));
+      expect(screen.getByText("Applies to all 2 models and new ones")).toBeInTheDocument();
+      await user.selectOptions(await countSelect(), "2");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+
+      expect(relayMock.patch.mock.calls).toEqual([["/admin/split-inbox", { account_ids: IDS, group_count: 2, as_default: true }]]);
+    });
+
+    it("a failed save keeps the dialog open with the relay's error and the picked count", async () => {
+      const user = userEvent.setup();
+      relayMock.patch.mockRejectedValue(new RelayError(502, null, "upstream down"));
       renderWithProviders(<AllHost />);
       await user.selectOptions(await countSelect(), "4");
       await user.click(screen.getByRole("button", { name: "Save" }));
 
-      const alert = await screen.findByRole("alert");
-      expect(alert).toHaveTextContent(/Not saved for .*Fixture Creator Nine: upstream down\./);
-      expect(alert).toHaveTextContent(/upstream down\.$|upstream down\. 1 model saved\.$/);
-      expect(alert.textContent?.includes("1 model saved.")).toBe(!allFailed);
-      expect(relayMock.put).toHaveBeenCalledTimes(2);
+      expect(await screen.findByRole("alert")).toHaveTextContent("upstream down");
+      expect(relayMock.patch).toHaveBeenCalledTimes(1);
       expect(dialog()).toBeInTheDocument();
       expect(await countSelect()).toHaveValue("4");
+    });
+
+    it("a failed read names the Creator and offers no form", async () => {
+      delete splits[OTHER_ID];
+      renderWithProviders(<AllHost />);
+      expect(await screen.findByRole("alert"))
+        .toHaveTextContent("Could not load Split Inbox settings for Fixture Creator Nine.");
+      expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("combobox", { name: "Choose the number of groups" })).not.toBeInTheDocument();
     });
   });
 });

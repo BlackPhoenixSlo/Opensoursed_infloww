@@ -64,7 +64,7 @@ class _Batch(list):
 
 class _Sub:
     __slots__ = ("q", "scope", "accounts", "agencies", "lost", "batching",
-                 "st", "open", "batches", "coalesced", "tab", "readable", "ended", "chatter")
+                 "st", "open", "batches", "coalesced", "tab", "readable", "ended", "chatter", "cut")
 
     def __init__(self, scope: str, accounts: frozenset[str] | None,
                  agencies: frozenset[str], tab: bool = False,
@@ -78,6 +78,7 @@ class _Sub:
         self.chatter = chatter
         self.lost = False
         self.ended = False
+        self.cut = False
         self.batching = False
         self.st = ed.Stream(rate_at=time.monotonic())
         self.open: _Batch | None = None
@@ -103,6 +104,11 @@ _closing = False
 def close_streams() -> None:
     global _closing
     _closing = True
+
+
+def cut_streams() -> None:
+    for sub in list(_subs.values()):
+        sub.cut = True
 
 
 # OF re-sends typing every ~2-3 s; one push per window is enough
@@ -254,11 +260,30 @@ async def announce_transaction(
         log.debug("transaction_recorded broadcast failed", exc_info=True)
 
 
+def _cell_stamp() -> dict | None:
+    if not os.environ.get("OI_CELL_MAP"):
+        return None
+    import cell_mode
+    return {"cell": os.environ.get("OI_CELL_ID", ""), "data_gen": cell_mode.data_gen()}
+
+
+def _resync(sub: _Sub) -> bytes:
+    cell = _cell_stamp()
+    if cell is None:
+        return ew.RESYNC
+    import cell_mode
+    owned = cell_mode.read_scope(sub.accounts)
+    one = sub.scope[len("model:"):] if sub.scope.startswith("model:") else None
+    return ew.resync(cell, [one] if one is not None and one in owned else sorted(owned))
+
+
 def _fanout(event: dict) -> int:
     global _ring
     if ed.first_key(event) not in ed.SSE_TYPES:
         return 0
     frame = ew.Frame(event)
+    if cell := _cell_stamp():
+        frame.update(cell)
     frame.t = time.monotonic()
     _ring = ed.decide_ring(_ring, ed.Published(frame))
     frame.eid = ed.head_id(_ring)
@@ -467,6 +492,7 @@ async def sse_stream(
     request: Request, scope: str, *, accounts: frozenset[str] | None = None,
     agencies: frozenset[str] = frozenset(), last_event_id: str | None = None, tab: bool = False,
     readable: frozenset[str] | None = None, granted_at: int | None = None, chatter: str | None = None,
+    expires_at: int | None = None,
 ) -> AsyncIterator[bytes]:
     import shared_refresher
     fresh_on = shared_refresher.ENABLED
@@ -477,26 +503,34 @@ async def sse_stream(
                        sees_any=lambda key: ed.sees(sub.scope, sub.accounts, key, any_scope=True),
                        project=lambda frame: _for(sub, frame))
     q = sub.q
+
+    def expired() -> bool:
+        return expires_at is not None and time.time() >= expires_at
+
     try:
+        if expired():
+            return
         if granted_at is not None and ed.ended_since(_ring, granted_at, lambda f: _wants(sub, f)):
             return
         yield ew.CONNECTED
         if fresh_on:
             yield _ping(sub, shared_refresher)
         for e in replay:
+            if expired():
+                return
             if isinstance(e, ed.Resync):
-                yield ew.RESYNC
+                yield _resync(sub)
             elif isinstance(e, ed.Emit):
                 yield ew.sse_out(e.frames)
             elif isinstance(e, ed.Head):
                 yield ew.head(e.eid)
         last_beat = time.monotonic()
         while True:
-            if _closing or await request.is_disconnected() or (sub.ended and q.empty()):
+            if expired() or _closing or sub.cut or await request.is_disconnected() or (sub.ended and q.empty()):
                 return
             if sub.lost:
                 sub.lost = False
-                yield ew.RESYNC
+                yield _resync(sub)
             if fresh_on and time.monotonic() - last_beat >= _HEARTBEAT_S:
                 yield _ping(sub, shared_refresher)
                 last_beat = time.monotonic()
@@ -519,6 +553,8 @@ async def sse_stream(
                 sub.batches += 1
             else:
                 frames = [event]
+            if expired():
+                return
             yield ew.sse_out(frames)
             sent = time.monotonic()
             if not fresh_on:

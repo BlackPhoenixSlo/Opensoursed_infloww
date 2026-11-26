@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select, update
 
 import automation_executor as ax
+import send_ops
 from attribution import write_outbound_attribution
 from automation_registry import register
 from automations._common import (
@@ -285,9 +286,11 @@ async def _leg(run: PriorityMassRun) -> dict:
             try:
                 result = await ax.of_write_paced(
                     aid,
-                    lambda f=int(fid), t=text: client.send_message(
-                        f, t, price=price, locked_text=bool(run.locked_text and price),
-                        media_files=media, previews=previews or None),
+                    lambda f=int(fid), t=text: send_ops.automated_sync(
+                        aid, KIND, f, f"{rid}:{f}", lambda: client.send_message(
+                            f, t, price=price, locked_text=bool(run.locked_text and price),
+                            media_files=media, previews=previews or None),
+                        body={"text": t, "price": price, "media": media, "previews": previews}),
                     send_purpose=_SEND_PURPOSE, tries=1, dm=True)
             except Exception as exc:  # noqa: BLE001
                 if await skip_unreachable_fan(aid, fid, exc, log=log):

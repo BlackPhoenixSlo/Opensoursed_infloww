@@ -42,7 +42,8 @@ function parsePeers(raw: string | undefined): Peer[] {
 
 const FLEET_SECRET = process.env.FLEET_SECRET ?? "";
 const FRONT = httpOrigin(process.env.FLEET_FRONT_ORIGIN);
-const PEERS = parsePeers(process.env.FLEET_PEERS);
+// Cells: sign-in lives on control alone; data cells hold read-only copies of every login, so a peer lookup would read "workspace".
+const PEERS = process.env.OI_CELL_MAP ? [] : parsePeers(process.env.FLEET_PEERS);
 const OPEN = httpOrigin(process.env.FLEET_OPEN);
 if (PEERS.length && FLEET_SECRET.length < 32) console.error("site-auth: FLEET_PEERS set but FLEET_SECRET < 32 chars; every lookup will fail");
 

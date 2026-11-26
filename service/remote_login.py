@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextvars
+import importlib
 import json
 import logging
 import os
@@ -14,18 +15,15 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from brand import BRAND_NAME
+import platforms
 import remote_login_decide as decide
 from relay_host import live_server
-from remote_login_decide import (OTP_ASK, OTP_NOT_TYPED, OTP_REJECTED, OTP_VERIFY_S,  # noqa: F401
-                                 STATE_CHALLENGE, STATE_OTP, STATE_TYPING)
+from remote_login_decide import OTP_VERIFY_S, STATE_OTP, STATE_TYPING
 
 log = logging.getLogger("of-relay.remote-login")
-
-HERE = Path(__file__).resolve().parent
-INTERCEPTOR_PATH = HERE.parent / "loginExtensionMulti" / "interceptor.js"
 
 BACKEND_LOCAL = "local"
 BACKEND_BROWSERBASE = "browserbase"
@@ -40,9 +38,6 @@ BROWSERBASE_API = "https://api.browserbase.com/v1"
 BB_HTTP_TIMEOUT_S = 30
 BB_VIEWPORT = {"width": 1280, "height": 800}
 
-
-OF_HOME = "https://onlyfans.com/"
-OF_CHATS = "https://onlyfans.com/my/chats/"
 NAV_TIMEOUT_MS = 45_000
 
 # Browserbase sessions last 300 s: stop short so the job ends with our own error, not a dropped CDP socket.
@@ -60,43 +55,29 @@ STATE_ERROR = "error"
 STATE_CANCELLED = "cancelled"
 _TERMINAL = {STATE_DONE, STATE_ERROR, STATE_CANCELLED}
 
-# OF renders the login form via JS after domcontentloaded (often late on BB proxies): wait for the fields, never look up once.
+# Sites render the login form via JS after domcontentloaded (often late on BB proxies): wait for the fields, never look up once.
 FORM_WAIT_S = 30
 FIELD_TIMEOUT_MS = 5_000
 FILL_ATTEMPTS = 3
-_EMAIL_FIELD = 'input[name="email"], input[type="email"], input[autocomplete="username"]'
-_PASSWORD_FIELD = 'input[name="password"], input[type="password"]'
-_SUBMIT_BUTTON = 'button[type="submit"]'
-_OTP_SUBMIT_BUTTON = f"{_SUBMIT_BUTTON}:visible"
-_COOKIE_ONLY_NECESSARY = 'button:has-text("Only necessary cookies")'
-_OTP_SELECTORS = (
-    'input[name="code"]', 'input[autocomplete="one-time-code"]',
-    'input[name="otp"]',
-)
-_OTP_FIELD = ", ".join(f"{s}:visible" for s in _OTP_SELECTORS)
 OTP_CODE_RE = re.compile(r"\d{6,8}")
 OTP_STEP_TIMEOUT_MS = 2_000
 OTP_CHECKING = "checking the 2FA code"
 
-_CAPTURE_LISTENER_JS = r"""
-(function () {
-  window.addEventListener("message", function (e) {
-    try {
-      if (e.source !== window || !e.data || e.data.__chatterly_capture !== true) return;
-      var p = e.data.payload || {}, prev = window.__relayCapture || {};
-      var pr = prev.rules || {}, nr = p.rules || {};
-      window.__relayCapture = {
-        url: p.url, headers: p.headers || {},
-        rules: {
-          static_param: nr.static_param || pr.static_param || null,
-          start: nr.start || pr.start || null,
-          end: nr.end || pr.end || null,
-        },
-      };
-    } catch (_) {}
-  });
-})();
-"""
+
+class LoginDriver(Protocol):
+    SITE: str
+    HOME: str
+    OTP_FIELD: str
+    OTP_SUBMIT_BUTTON: str
+
+    def init_scripts(self) -> tuple[str, ...]: ...
+    def fill_login_form(self, page, email: str, password: str, *, wait_s: float = FORM_WAIT_S) -> None: ...
+    def submit_login_form(self, page) -> None: ...
+    def login_error(self, page) -> str | None: ...
+    def logged_in(self, page, context) -> str | None: ...
+    def capture(self, job: RemoteLoginJob, page, context) -> tuple[str, Any]: ...
+    def claim(self, captured: Any) -> Any: ...
+    def save(self, job: RemoteLoginJob, claimed: Any) -> Path: ...
 
 
 class BackendUnavailable(RuntimeError):
@@ -130,12 +111,14 @@ class RemoteLoginJob:
     principal: str | None
     created_at: float
     expires_at: float
+    platform: str
     proxy: str = PROXY_INFLOWWW
     proxy_label: str = ""
     proxy_defaulted: bool = False
     backend: str = BACKEND_BROWSERBASE
     nickname: str | None = None
     make_active: bool = True
+    expected_account_id: str | None = None
     state: str = STATE_STARTING
     message: str = ""
     error: str | None = None
@@ -149,6 +132,11 @@ class RemoteLoginJob:
     _otp_code: str | None = field(default=None, repr=False)
     _otp_busy: bool = field(default=False, repr=False)
     _otp_seen: set[str] = field(default_factory=set, repr=False)
+    _hidden: set[str] = field(default_factory=set, repr=False)
+    login: LoginDriver = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        self.login = driver(self.platform)
 
     def set_state(self, state: str, message: str = "") -> None:
         with self._lock:
@@ -195,14 +183,19 @@ class RemoteLoginJob:
             self.state, self.message = STATE_OTP, message
             self._otp_code, self._otp_busy = None, False
 
-    def otp_codes(self) -> tuple[str, ...]:
+    def hide(self, *secrets: str | None) -> None:
         with self._lock:
-            return tuple(self._otp_seen)
+            self._hidden.update(x for x in secrets if x)
 
-    def forget_otp(self) -> None:
+    def secrets(self) -> tuple[str, ...]:
+        with self._lock:
+            return (*self._otp_seen, *self._hidden)
+
+    def forget_secrets(self) -> None:
         with self._lock:
             self._otp_code, self._otp_busy = None, False
             self._otp_seen.clear()
+            self._hidden.clear()
 
     def take_otp(self) -> str | None:
         with self._lock:
@@ -243,14 +236,26 @@ def get_job(job_id: str) -> RemoteLoginJob | None:
         return _jobs.get(job_id)
 
 
+def running() -> int:
+    with _jobs_lock:
+        return sum(not j.is_terminal() for j in _jobs.values())
+
+
+def driver(platform: str) -> LoginDriver:
+    p = platforms.get(platform)
+    if p.key != platform:
+        raise ValueError(f"unknown platform {platform!r} (expected one of {platforms.KEYS})")
+    return importlib.import_module(p.login)
+
+
 def _register(job: RemoteLoginJob) -> None:
-    key = job.email.strip().lower()
+    key = (job.platform, job.email.strip().lower())
     with _jobs_lock:
         _gc_locked()
         for j in _jobs.values():
-            if not j.is_terminal() and j.email.strip().lower() == key:
+            if not j.is_terminal() and (j.platform, j.email.strip().lower()) == key:
                 raise RemoteLoginConflict(
-                    "a login is already running for this OnlyFans email — cancel it first")
+                    f"a login is already running for this {job.login.SITE} email — cancel it first")
         _jobs[job.id] = job
 
 
@@ -259,7 +264,10 @@ def start_login(*, email: str, password: str, principal: str | None,
                 proxy: str = PROXY_INFLOWWW, proxy_label: str = "",
                 proxy_defaulted: bool = False,
                 nickname: str | None = None, make_active: bool = True,
-                backend: str = BACKEND_LOCAL) -> RemoteLoginJob:
+                backend: str = BACKEND_LOCAL, platform: str,
+                expected_account_id: str | None = None) -> RemoteLoginJob:
+    import cell_hold
+    cell_hold.refuse_writes()
     if backend not in BACKENDS:
         raise ValueError(f"unknown backend {backend!r} (expected one of {BACKENDS})")
     if backend == BACKEND_LOCAL:
@@ -272,15 +280,16 @@ def start_login(*, email: str, password: str, principal: str | None,
         raise ValueError(f"unknown proxy choice {proxy!r} (expected one of {PROXY_CHOICES})")
     if proxy == PROXY_CUSTOM and not proxy_label:
         raise ValueError("a custom proxy needs its label")
-    bb_env()
     now = time.time()
     job = RemoteLoginJob(
         id=uuid.uuid4().hex, email=email, principal=principal,
         proxy=proxy, proxy_label=proxy_label if proxy == PROXY_CUSTOM else "",
         proxy_defaulted=proxy_defaulted,
         created_at=now, expires_at=now + JOB_WINDOW_S, backend=backend,
-        nickname=nickname, make_active=make_active, message="starting browser",
+        nickname=nickname, make_active=make_active, platform=platform, message="starting browser",
+        expected_account_id=expected_account_id,
     )
+    bb_env()
     _register(job)
     ctx = contextvars.copy_context()
     threading.Thread(
@@ -298,7 +307,7 @@ def cancel(job: RemoteLoginJob) -> None:
 def _run_login(job: RemoteLoginJob, password: str) -> None:
     def _body(page, context) -> None:
         job.set_state(STATE_TYPING, "entering credentials")
-        _type_credentials(page, job.email, password)
+        _type_credentials(page, job.email, password, job.login)
         _drive_until_logged_in(job, page, context)
         _capture_and_persist(job, page, context)
 
@@ -313,13 +322,13 @@ def _serve(job: RemoteLoginJob, *, secrets: tuple[str | None, ...],
     except _Cancelled:
         job.set_state(STATE_CANCELLED, "cancelled")
     except Exception as e:  # noqa: BLE001
-        msg = scrub(f"{type(e).__name__}: {e}", *secrets, *job.otp_codes())
+        msg = scrub(f"{type(e).__name__}: {e}", *secrets, *job.secrets())
         log.warning("remote login %s failed: %s", job.id, msg)
         job.fail(msg)
     finally:
         if not job.is_terminal():
             job.fail("login ended without capturing a session")
-        job.forget_otp()
+        job.forget_secrets()
 
 
 @contextmanager
@@ -328,11 +337,7 @@ def _browserbase_backend(job: RemoteLoginJob):
 
     session = _bb_create_session()
     with sync_playwright() as p, _bb_connected(job, p, session) as (context, page):
-        err = open_of(page)
-        if err:
-            raise RuntimeError(f"couldn't open OnlyFans in the remote browser: {err}")
-        job.set_state(STATE_STARTING, "browser ready" if job.live_view_url else
-                      "browser ready (live view unavailable — challenges cannot be solved)")
+        _open_site(job, context, page)
         yield context, page
 
 
@@ -346,8 +351,6 @@ def _bb_connected(job: RemoteLoginJob, p, session: dict[str, Any]):
         browser = p.chromium.connect_over_cdp(session["connectUrl"])
         try:
             context = browser.contexts[0]
-            context.add_init_script(_CAPTURE_LISTENER_JS)
-            context.add_init_script(INTERCEPTOR_PATH.read_text(encoding="utf-8"))
             page = context.pages[0] if context.pages else context.new_page()
             yield context, page
         finally:
@@ -359,9 +362,20 @@ def _bb_connected(job: RemoteLoginJob, p, session: dict[str, Any]):
         _bb_release(sid)
 
 
-def open_of(page) -> str | None:
+def _open_site(job: RemoteLoginJob, context, page) -> None:
+    login = job.login
+    for js in login.init_scripts():
+        context.add_init_script(js)
+    err = open_site(page, login.HOME)
+    if err:
+        raise RuntimeError(f"couldn't open {login.SITE} in the remote browser: {err}")
+    job.set_state(STATE_STARTING, "browser ready" if job.live_view_url else
+                  "browser ready (live view unavailable — challenges cannot be solved)")
+
+
+def open_site(page, url: str) -> str | None:
     try:
-        page.goto(OF_HOME, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+        page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
     except Exception as e:  # noqa: BLE001
         return (str(e).splitlines() or [type(e).__name__])[0]
     return None
@@ -442,7 +456,7 @@ def _bb_release(session_id: str | None) -> None:
 
 
 
-def _goto(page, url: str, wait_until: str = "domcontentloaded") -> None:
+def goto(page, url: str, wait_until: str = "domcontentloaded") -> None:
     try:
         page.goto(url, wait_until=wait_until, timeout=NAV_TIMEOUT_MS)
     except Exception as e:  # noqa: BLE001 — a slow load; inspect the page anyway
@@ -453,34 +467,28 @@ class LoginFormError(RuntimeError):
     pass
 
 
-def _type_credentials(page, email: str, password: str) -> None:
-    fill_login_form(page, email, password)
-    submit_login_form(page)
+def _type_credentials(page, email: str, password: str, login: LoginDriver) -> None:
+    login.fill_login_form(page, email, password)
+    login.submit_login_form(page)
 
 
-def fill_login_form(page, email: str, password: str, *, wait_s: float = FORM_WAIT_S) -> None:
-    em = page.locator(_EMAIL_FIELD).first
-    pw = page.locator(_PASSWORD_FIELD).first
+def form_missing(page, site: str, wait_s: float) -> LoginFormError:
+    why = " (a human-verification challenge is on screen)" if detect_challenge(page) else ""
+    return LoginFormError(f"the {site} login form did not appear within {wait_s:.0f}s{why}")
+
+
+def await_form(page, field, site: str, wait_s: float) -> None:
     try:
-        em.wait_for(state="visible", timeout=int(wait_s * 1000))
+        field.wait_for(state="visible", timeout=int(wait_s * 1000))
     except Exception:  # noqa: BLE001
-        why = " (a human-verification challenge is on screen)" if _detect_challenge(page) else ""
-        raise LoginFormError(f"the OnlyFans login form did not appear within {wait_s:.0f}s{why}") from None
-    _dismiss_cookie_banner(page)
-    _fill_verified(em, email, "email")
-    _fill_verified(pw, password, "password")
+        raise form_missing(page, site, wait_s) from None
 
 
-def _dismiss_cookie_banner(page) -> None:
-    try:
-        btn = page.locator(_COOKIE_ONLY_NECESSARY).first
-        if btn.is_visible():
-            btn.click(timeout=FIELD_TIMEOUT_MS)
-    except Exception:  # noqa: BLE001
-        pass
+def _possessive(site: str) -> str:
+    return f"{site}'" if site.endswith("s") else f"{site}'s"
 
 
-def _fill_verified(field, value: str, what: str) -> None:
+def fill_verified(field, value: str, what: str, site: str) -> None:
     for attempt in range(FILL_ATTEMPTS):
         try:
             if attempt == 0:
@@ -492,24 +500,12 @@ def _fill_verified(field, value: str, what: str) -> None:
             if field.input_value(timeout=FIELD_TIMEOUT_MS) == value:
                 return
         except Exception as e:  # noqa: BLE001 — Playwright's message echoes the value
-            log.info("filling the OnlyFans %s field, attempt %d: %s",
-                     what, attempt + 1, type(e).__name__)
-    raise LoginFormError(f"couldn't fill the OnlyFans {what} field — the login form did not take it")
+            log.info("filling the %s %s field, attempt %d: %s",
+                     site, what, attempt + 1, type(e).__name__)
+    raise LoginFormError(f"couldn't fill the {site} {what} field — the login form did not take it")
 
 
-def submit_login_form(page) -> None:
-    try:
-        page.locator(_SUBMIT_BUTTON).first.click(timeout=FIELD_TIMEOUT_MS)
-        return
-    except Exception as e:  # noqa: BLE001
-        log.info("clicking OnlyFans' LOG IN failed: %s", type(e).__name__)
-    try:
-        page.locator(_PASSWORD_FIELD).first.press("Enter", timeout=FIELD_TIMEOUT_MS)
-    except Exception as e:  # noqa: BLE001
-        log.info("pressing Enter in OnlyFans' password field failed: %s", type(e).__name__)
-
-
-def _detect_challenge(page) -> bool:
+def detect_challenge(page) -> bool:
     try:
         if page.evaluate(
             """() => {
@@ -553,31 +549,26 @@ def _frame_on_screen(frame) -> bool:
     return True
 
 
-def _detect_otp(page) -> bool:
+def visible(page, target: str | Callable[[Any], Any]) -> bool:
     try:
-        return bool(page.locator(_OTP_FIELD).first.is_visible())
+        found = page.locator(target) if isinstance(target, str) else target(page)
+        return bool(found.first.is_visible())
     except Exception:  # noqa: BLE001
         return False
 
 
-def _auth_id(context) -> str | None:
-    try:
-        for c in context.cookies(["https://onlyfans.com"]):
-            if c.get("name") == "auth_id" and c.get("value"):
-                return c["value"]
-    except Exception:  # noqa: BLE001
-        pass
-    return None
+def _detect_otp(page, login: LoginDriver) -> bool:
+    return visible(page, login.OTP_FIELD)
 
 
-def _check(job: RemoteLoginJob, reserve_s: float = 0) -> None:
+def check(job: RemoteLoginJob, reserve_s: float = 0) -> None:
     if job._cancel.is_set():
         raise _Cancelled()
     if time.time() > job.expires_at - reserve_s:
         raise TimeoutError(TIMED_OUT)
 
 
-def _wait(page, seconds: float) -> None:
+def wait(page, seconds: float) -> None:
     try:
         page.wait_for_timeout(int(seconds * 1000))
     except Exception:  # noqa: BLE001
@@ -585,108 +576,80 @@ def _wait(page, seconds: float) -> None:
 
 
 def _enter_otp(job: RemoteLoginJob, page, code: str) -> bool:
-    field = page.locator(_OTP_FIELD).first
+    login = job.login
+    site = _possessive(login.SITE)
+    field = page.locator(login.OTP_FIELD).first
     try:
         field.fill(code, timeout=OTP_STEP_TIMEOUT_MS)
     except Exception as e:  # noqa: BLE001 — Playwright's message echoes the value
-        log.info("filling OnlyFans' 2FA field failed: %s", type(e).__name__)
+        log.info("filling %s 2FA field failed: %s", site, type(e).__name__)
         return False
-    if not _detect_otp(page):
+    if not _detect_otp(page, login):
         return True
     try:
         if field.input_value(timeout=OTP_STEP_TIMEOUT_MS) != code:
             return False
     except Exception as e:  # noqa: BLE001
-        log.info("reading OnlyFans' 2FA field failed: %s", type(e).__name__)
-        return not _detect_otp(page)
-    _check(job, CAPTURE_RESERVE_S)
+        log.info("reading %s 2FA field failed: %s", site, type(e).__name__)
+        return not _detect_otp(page, login)
+    check(job, CAPTURE_RESERVE_S)
     try:
-        button = field.locator("xpath=ancestor::form").locator(_OTP_SUBMIT_BUTTON).first
+        button = field.locator("xpath=ancestor::form").locator(login.OTP_SUBMIT_BUTTON).first
         if button.count():
             button.click(timeout=OTP_STEP_TIMEOUT_MS)
             return True
     except Exception as e:  # noqa: BLE001
-        log.info("clicking OnlyFans' 2FA submit button failed: %s", type(e).__name__)
-    if not _detect_otp(page):
+        log.info("clicking %s 2FA submit button failed: %s", site, type(e).__name__)
+    if not _detect_otp(page, login):
         return True
-    _check(job, CAPTURE_RESERVE_S)
+    check(job, CAPTURE_RESERVE_S)
     try:
         field.press("Enter", timeout=OTP_STEP_TIMEOUT_MS)
     except Exception as e:  # noqa: BLE001
-        log.info("sending OnlyFans' 2FA code failed: %s", type(e).__name__)
+        log.info("sending %s 2FA code failed: %s", site, type(e).__name__)
         return False
     return True
 
 
 def _drive_until_logged_in(job: RemoteLoginJob, page, context) -> str:
+    site = job.login.SITE
     state = decide.Drive()
     while True:
-        state, eff = decide.login_step(state, _poll(job, page, context), OTP_VERIFY_S)
+        state, eff = decide.login_step(state, _poll(job, page, context), OTP_VERIFY_S, site=site)
         if isinstance(eff, decide.TypeCode):
             state, eff = decide.login_step(
-                state, decide.Typed(_enter_otp(job, page, eff.code), time.time()), OTP_VERIFY_S)
+                state, decide.Typed(_enter_otp(job, page, eff.code), time.time()), OTP_VERIFY_S, site=site)
         if isinstance(eff, decide.Cancel):
             raise _Cancelled()
         if isinstance(eff, decide.Expire):
             raise TimeoutError(TIMED_OUT)
+        if isinstance(eff, decide.Fail):
+            raise LoginFormError(eff.message)
         if isinstance(eff, decide.LoggedIn):
             return eff.uid
         if isinstance(eff, decide.Show):
             job.set_state(eff.state, eff.message)
         elif isinstance(eff, decide.AskAgain):
             job.otp_retry(eff.message)
-        _wait(page, POLL_S)
+        wait(page, POLL_S)
 
 
 def _poll(job: RemoteLoginJob, page, context) -> decide.Poll:
+    login = job.login
     now = time.time()
     if job._cancel.is_set():
         return decide.Poll(now, cancel=True)
     if now > job.expires_at - CAPTURE_RESERVE_S:
         return decide.Poll(now, expired=True)
-    uid = _auth_id(context)
+    uid = login.logged_in(page, context)
     if uid:
         return decide.Poll(now, uid=uid)
-    if _detect_otp(page):
+    if _detect_otp(page, login):
         return decide.Poll(now, otp=True, code=job.take_otp(), shown=job.state)
-    return decide.Poll(now, challenge=_detect_challenge(page), shown=job.state)
-
-
-def _read_capture(page) -> dict[str, Any] | None:
-    try:
-        return page.evaluate("() => window.__relayCapture || null")
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _wait_for_capture(job: RemoteLoginJob, page) -> dict[str, Any]:
-    required = ("user-id", "x-bc", "x-of-rev", "sign", "time")
-    deadline = time.time() + CAPTURE_WAIT_S
-    cap = None
-    while time.time() < deadline:
-        _check(job)
-        cap = _read_capture(page)
-        hdrs = (cap or {}).get("headers") or {}
-        if all(hdrs.get(k) for k in required) and ((cap or {}).get("rules") or {}).get("static_param"):
-            return cap
-        _wait(page, POLL_S)
-    hdrs = (cap or {}).get("headers") or {}
-    if not all(hdrs.get(k) for k in required):
-        raise RuntimeError("logged in, but the chats page never fired a signed request — try again")
-    return cap
-
-
-def _request_from_capture(cap: dict[str, Any], cookies: list[dict], user_agent: str) -> dict[str, Any]:
-    h = cap.get("headers") or {}
-    rules = cap.get("rules") or {}
-    headers = {k: str(h[k]) for k in ("user-id", "x-bc", "x-of-rev", "sign", "time") if h.get(k)}
-    headers["user-agent"] = str(h.get("user-agent") or user_agent)
-    for key, hdr in (("static_param", "x-relay-static-param"), ("start", "x-relay-sign-start"),
-                     ("end", "x-relay-sign-end")):
-        if rules.get(key):
-            headers[hdr] = str(rules[key])
-    return {"url": cap.get("url") or "https://onlyfans.com/api2/v2/users/me",
-            "method": "GET", "headers": headers, "cookies": cookies, "data": None}
+    refused = login.login_error(page)
+    if refused:
+        return decide.Poll(now, refused=refused)
+    return decide.Poll(now, challenge=detect_challenge(page), shown=job.state)
 
 
 def bind_proxy(job: RemoteLoginJob, account_id: str) -> None:
@@ -714,41 +677,31 @@ def proxy_text(job: RemoteLoginJob) -> str:
 
 
 def _capture_and_persist(job: RemoteLoginJob, page, context) -> None:
-    import accounts as account_registry
-    import platforms
-    import session_bootstrap
-
+    login = job.login
     job.set_state(STATE_CAPTURING, "capturing session")
-    _goto(page, OF_CHATS)
-    cap = _wait_for_capture(job, page)
-    cookies = context.cookies(["https://onlyfans.com"])
-    try:
-        ua = page.evaluate("() => navigator.userAgent")
-    except Exception:  # noqa: BLE001
-        ua = ""
-    parsed = _request_from_capture(cap, cookies, ua)
-    uid = parsed["headers"]["user-id"]
+    uid, captured = login.capture(job, page, context)
+    if job.expected_account_id is not None and uid != job.expected_account_id:
+        raise LoginFormError(f"{login.SITE} signed in as account {uid}; expected account {job.expected_account_id}")
+    claimed = login.claim(captured)
+    check(job)
+    if job.proxy_defaulted or job.proxy != PROXY_NONE:
+        try:
+            bind_proxy(job, uid)
+        except Exception as e:  # noqa: BLE001
+            import proxies as proxy_registry
+            why = proxy_registry.scrub_pool_secrets(str(e))
+            raise RuntimeError(
+                f"binding {proxy_text(job)} failed ({why}); nothing was saved (one egress)") from e
 
-    account_registry.ensure_platform(uid, platforms.ONLYFANS.key)
-    try:
-        bind_proxy(job, uid)
-    except Exception as e:  # noqa: BLE001
-        import proxies as proxy_registry
-        why = proxy_registry.scrub_pool_secrets(str(e))
-        raise RuntimeError(
-            f"binding {proxy_text(job)} failed ({why}); nothing was saved (one egress)") from e
-
-    try:
-        path = session_bootstrap.from_request(
-            parsed, nickname=job.nickname, make_active=job.make_active)
-    except session_bootstrap.CurlParseError as e:
-        raise RuntimeError(f"logged in, but the session could not be built: {e}") from None
+    path = login.save(job, claimed)
     aid = path.parent.name
     with job._lock:
         job.account_id = aid
         job.session_file = path.name
 
     live_server().post_bootstrap_hooks(aid)
-    job.set_state(STATE_DONE, (
-        "session captured; no proxy attached (server IP)" if job.proxy == PROXY_NONE
-        else f"session captured; {proxy_text(job)} attached for all later traffic"))
+    if job.proxy == PROXY_NONE:
+        message = "session captured; no proxy attached (server IP)"
+    else:
+        message = f"session captured; {proxy_text(job)} attached for all later traffic"
+    job.set_state(STATE_DONE, message)

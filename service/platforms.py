@@ -26,12 +26,14 @@ class Platform:
     session_file: str
     backend: ModuleType | None
     lacks: frozenset[Lack]
+    login: str
     free_follow: bool = False
+    bind_login_proxy: bool = True
 
 
-ONLYFANS = Platform("onlyfans", "OF", "latest.json", None, frozenset())
+ONLYFANS = Platform("onlyfans", "OF", "latest.json", None, frozenset(), login="remote_login_onlyfans")
 FANSLY = Platform("fansly", "Fansly", fansly_backend.SESSION_FILENAME, fansly_backend,
-                  frozenset(Lack), free_follow=True)
+                  frozenset(Lack), login="remote_login_fansly", free_follow=True, bind_login_proxy=False)
 
 ALL: tuple[Platform, ...] = (ONLYFANS, FANSLY)
 KEYS: tuple[str, ...] = tuple(p.key for p in ALL)

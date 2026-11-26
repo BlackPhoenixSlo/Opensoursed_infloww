@@ -97,6 +97,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     send_payload["text"] = text
     send_payload["media_files"] = media
     send_payload["automation_kind"] = "mass_premade"
+    if payload.get("send_anchor"):
+        send_payload["send_anchor"] = payload["send_anchor"]
     res = await send_mass_run(account_id, send_payload, run_id=run_id)
 
     if res.get("status") not in (None, "ok"):

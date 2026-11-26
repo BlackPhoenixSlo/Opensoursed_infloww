@@ -18,12 +18,13 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import automation_executor as ax
 import dm_rate
 import run_slot
+import send_ops
 import smart_message_extras as extras
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
 from ._knobs import bool_knob, test_mode
-from ._send_failure import send_dropping_bad_media, skip_unreachable_fan
+from ._send_failure import SendOutcome, send_dropping_bad_media, skip_unreachable_fan
 from ._skiplist import load_hard_skip_ids
 from ._style_flags import load_strip_emojis, load_voice_blocks
 from ._typing_hold import (hold_with_typing, load_typing_indicator, load_typing_wpm,
@@ -369,15 +370,19 @@ async def _send_bubble(ctx: _RunCtx, sub: dict, idx: int, part: str,
                        gid: str | None, media_ids: list[int],
                        price_cents: int) -> _Sent | None:
     fan_id = sub["id"]
+    anchor = f"welcome:{fan_id}"
     try:
         if gid:
             await dm_rate.turn(ctx.account_id)
-            result = await asyncio.to_thread(
-                lambda g=gid: ctx.client.send_message(fan_id, "", giphy_id=g))
+            result = await asyncio.to_thread(lambda g=gid: send_ops.automated_sync(
+                ctx.account_id, "send_welcome", fan_id, anchor,
+                lambda: ctx.client.send_message(fan_id, "", giphy_id=g), part=idx))
             return _Sent(result, False)
-        outcome = await send_dropping_bad_media(
-            ctx.client, fan_id, part, media_ids,
-            log=log, send_purpose="gated", price_cents=price_cents)
+        outcome = await send_ops.automated(
+            ctx.account_id, "send_welcome", fan_id, anchor,
+            lambda: send_dropping_bad_media(ctx.client, fan_id, part, media_ids, log=log,
+                                            send_purpose="gated", price_cents=price_cents),
+            part=idx, revive=lambda r: SendOutcome(*r))
         return _Sent(outcome.result, outcome.media_landed)
     except Exception as e:
         # Permanent unreachable (deleted/blocked): claim welcome_sent so the sweep never regenerates a welcome for a fan we can't reach.

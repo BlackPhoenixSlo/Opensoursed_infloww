@@ -63,6 +63,8 @@ export function failMsg(prev: OFMessage[], tempId: number, failure?: SendFailure
           _pending: false,
           _failedReason: failure?.reason,
           _failedMediaIds: failure?.refusedMediaIds,
+          _failedUncertain: failure?.uncertain,
+          _failedPaused: failure?.paused,
         }
       : m,
   );

@@ -120,3 +120,12 @@ export function aiRulesReducer(s: AiRulesState, a: Action): AiRulesState {
 export function orientationFor(w: number): "tb" | "lr" {
   return w > 0 && w < 768 ? "tb" : "lr";
 }
+
+export function formatDefault(v: unknown): string {
+  if (Array.isArray(v)) return v.length ? `[${v.map(formatDefault).join(", ")}]` : "[]";
+  if (v !== null && typeof v === "object") {
+    const e = Object.entries(v);
+    return e.length ? `{${e.map(([k, x]) => `${k}: ${formatDefault(x)}`).join(", ")}}` : "{}";
+  }
+  return String(v);
+}

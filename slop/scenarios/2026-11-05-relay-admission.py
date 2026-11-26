@@ -190,7 +190,8 @@ async def run(ctx) -> None:
             live["issued"] += 1
             try:
                 r = await http.get(f"/api/of/v2/chats?limit=10&offset={o}&refresh=1",
-                                   headers={"X-Account-Id": aid, "X-Priority": "background"})
+                                   headers={"X-Account-Id": aid, "X-Priority": "background",
+                                            "X-List-Intent": "explicit"})
                 st = r.status_code
             except Exception:  # noqa: BLE001
                 st = 599

@@ -497,7 +497,7 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
     try:
         stack = Stack(ui=ui, fault=fault, logdir=out, profile=args.profile, shards=shards,
                       apps=tuple(getattr(mod, "APPS", ())) or (tuple(getattr(mod, "UI_APPS", ())) if ui else ()),
-                      boxes=getattr(mod, "BOXES", None),
+                      boxes=mod.boxes_for(params) if hasattr(mod, "boxes_for") else getattr(mod, "BOXES", None),
                       shards_per_box=getattr(mod, "SHARDS_PER_BOX", None),
                       app_mode=getattr(mod, "APP_MODE", "dev"),
                       sidecars=getattr(mod, "SIDECARS", {}))

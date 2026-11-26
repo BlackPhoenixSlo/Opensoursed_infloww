@@ -166,14 +166,18 @@ def case_fan_send_uses_the_fan_gate():
     def gate(thunk):
         return thunk()
 
-    def send_gate(thunk):
+    parts: list[int] = []
+
+    def send_gate(thunk, part):
+        parts.append(part)
         return thunk()
 
     with tempfile.TemporaryDirectory() as td:
         c = _Client()
         _run("57", client=c, local_paths=_files(Path(td), "a.jpg"), fan_id=31337,
              gate=gate, send_gate=send_gate, list_id=7)
-        assert c.calls[0]["gate"] is send_gate, "the fan DM went through the carrier gate"
+        c.calls[0]["gate"](lambda: None)
+        assert parts == [0], "the fan DM went through the carrier gate, or without its item index"
         assert c.filed == [(7, (701,))]
         c = _Client()
         _run("57", client=c, local_paths=_files(Path(td), "b.jpg"),
