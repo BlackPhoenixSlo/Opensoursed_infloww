@@ -25,22 +25,23 @@ account_registry.MIGRATED_MARKER = Path(_TMP.name) / ".migrated"
 _harness.make_client()
 import server  # noqa: E402
 
-FANSLY, LEGACY = "900539700124344320", "312110001"
+FANSLY, LEGACY, UNKNOWN = "900539700124344320", "312110001", "312110002"
 
 account_registry.save_meta(FANSLY, {"id": FANSLY, "nickname": "Nova", "platform": "fansly"})
 account_registry.save_meta(LEGACY, {"id": LEGACY, "nickname": "Ava"})
+account_registry.save_meta(UNKNOWN, {"id": UNKNOWN, "nickname": "Mo", "platform": "myspace"})
 
 
 async def _setup() -> None:
     async with get_session() as s:
         boss = User(id=uuid.uuid4().hex, username="boss", password="pw")
         s.add(boss)
-        s.add_all([Account(id=a, nickname=a) for a in (FANSLY, LEGACY)])
+        s.add_all([Account(id=a, nickname=a) for a in (FANSLY, LEGACY, UNKNOWN)])
         cid = uuid.uuid4().hex
         s.add(Chatter(id=cid, username="chat", password="pw", display_name="Chat",
                       created_at=datetime.utcnow(), last_seen_at=datetime.utcnow()))
         await s.flush()
-        s.add_all([UserAccount(user_id=boss.id, account_id=a) for a in (FANSLY, LEGACY)])
+        s.add_all([UserAccount(user_id=boss.id, account_id=a) for a in (FANSLY, LEGACY, UNKNOWN)])
         s.add(ChatterUser(chatter_id=cid, user_id=boss.id, created_at=datetime.utcnow()))
 
 
@@ -54,7 +55,7 @@ def case_chatter_roster_carries_each_creators_platform():
     r = c.get("/chatter/me/accounts")
     assert r.status_code == 200, (r.status_code, r.text[:200])
     got = {a["account_id"]: a.get("platform") for a in r.json()}
-    assert got == {FANSLY: "fansly", LEGACY: "onlyfans"}, got
+    assert got == {FANSLY: "fansly", LEGACY: "onlyfans", UNKNOWN: "myspace"}, got
 
 
 if __name__ == "__main__":

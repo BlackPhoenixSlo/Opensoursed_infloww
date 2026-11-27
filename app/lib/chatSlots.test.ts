@@ -21,7 +21,7 @@ describe("plugin slots", () => {
     const hrefs = g && isGroup(g) ? g.children.map((c) => c.href) : [];
     expect(hrefs[0]).toBe("/growth/plugin-first");
     expect(hrefs.at(-1)).toBe("/growth/plugin-last");
-    expect(hrefs).toHaveLength(7);
+    expect(hrefs).toHaveLength(9);
     expect(CHATTER_OPT_IN_PAGES.has("/growth/plugin-first")).toBe(true);
     expect(findNavLink("/lost")).toBeUndefined();
   });

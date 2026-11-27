@@ -1,8 +1,9 @@
 import { cleanup, renderHook } from "@testing-library/react";
+import { resetCellFlagForTests } from "@/lib/cellFlag";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  API_KEY_ERROR_EVENT, ApiKeyError, RelayError, STALE_CELL_GEN_EVENT, chatListRetry, describeLoadError, isDeepRefused,
+  nextGen, API_KEY_ERROR_EVENT, ApiKeyError, RelayError, STALE_CELL_GEN_EVENT, chatListRetry, describeLoadError, isDeepRefused,
   isRateLimited, prefetchScreenBundle, relay, relayFile, request, resetCellGens,
   type ApiKeyErrorPayload,
 } from "@/lib/relay";
@@ -351,14 +352,16 @@ describe("cell mode", () => {
     const m = document.createElement("meta");
     m.name = "oi-cells";
     document.head.append(m);
+    resetCellFlagForTests();
   };
   const answer = (gen: string | null, status = 200, body: unknown = {}) =>
     vi.fn(async (_u: string, _i: RequestInit) => new Response(JSON.stringify(body), {
       status, headers: gen ? { "X-Cell-Gen": gen } : {},
     }));
-  const relayCalls = (f: ReturnType<typeof answer>) => f.mock.calls.filter((c) => !c[0].startsWith("/auth/actor"));
+  const relayCalls = (f: ReturnType<typeof answer>) => f.mock.calls.filter((c) => !c[0].startsWith("/auth/actor") && !c[0].startsWith("/auth/cells"));
   afterEach(() => {
     document.head.querySelectorAll('meta[name="oi-cells"]').forEach((m) => m.remove());
+    resetCellFlagForTests();
     vi.unstubAllGlobals();
     vi.useRealTimers();
     resetCellGens();
@@ -389,8 +392,11 @@ describe("cell mode", () => {
     expect(urls(f).filter((u) => u === "/auth/actor")).toHaveLength(2);
     const g = byUrl({ "/auth/actor": [401], "/admin/chats/recent": [401] });
     vi.stubGlobal("fetch", g);
+    const heard = vi.fn();
+    window.addEventListener(STALE_CELL_GEN_EVENT, heard, { once: true });
     await expect(relay.get("/admin/chats/recent?account_id=1")).rejects.toMatchObject({ status: 401 });
     expect(urls(g)).toEqual(["/admin/chats/recent", "/auth/actor"]);
+    expect(heard.mock.calls[0]?.[0].detail).toMatchObject({ reason: "actor_stale" });
     const h = byUrl({ "/auth/me": [401] });
     vi.stubGlobal("fetch", h);
     await expect(relay.get("/auth/me")).rejects.toMatchObject({ status: 401 });
@@ -456,21 +462,44 @@ describe("cell mode", () => {
     expect(sent).toEqual([null, "3", null, null]);
   });
 
-  it("409 stale_cell_gen asks the view to refetch and adopts the Cell's generation", async () => {
+  it("keeps the generation of the read that supplied mutation ids", async () => {
     meta();
     vi.stubGlobal("fetch", answer("1"));
     await relay.get("/admin/accounts/42");
+    vi.stubGlobal("fetch", answer("2"));
+    await relay.get("/admin/accounts/42");
+    const write = answer("2");
+    vi.stubGlobal("fetch", write);
+    await relay.post("/admin/accounts/42/x", {});
+    expect(new Headers(relayCalls(write)[0][1].headers).get("X-Cell-Gen")).toBe("1");
+  });
+
+  it("409 stale_cell_gen asks the view to refetch and adopts the Cell's generation", async () => {
+    meta();
+    vi.stubGlobal("fetch", answer("3"));
+    await relay.get("/admin/accounts/42");
     vi.stubGlobal("fetch", answer("2", 409, { detail: { error: "stale_cell_gen", cell_gen: 2 } }));
+    const old = Promise.withResolvers<Response>();
+    const stale = vi.mocked(fetch);
+    stale.mockReturnValueOnce(old.promise);
+    const beforeFence = relay.get("/admin/accounts/42");
     const heard = vi.fn();
     window.addEventListener(STALE_CELL_GEN_EVENT, heard);
     await expect(relay.post("/admin/accounts/42/x", {})).rejects.toMatchObject({ status: 409 });
     window.removeEventListener(STALE_CELL_GEN_EVENT, heard);
     expect(heard).toHaveBeenCalledTimes(1);
-    expect((heard.mock.calls[0][0] as CustomEvent).detail).toEqual({ accountId: "42" });
+    expect((heard.mock.calls[0][0] as CustomEvent).detail).toEqual({ accountId: "42", reason: "stale" });
     const f = answer("2");
     vi.stubGlobal("fetch", f);
+    old.resolve(await answer("3")("", {}));
+    await beforeFence;
+    await expect(relay.post("/admin/accounts/42/x", {})).rejects.toMatchObject({ status: 409, body: { detail: { error: "stale_cell_gen" } } });
+    expect(f).not.toHaveBeenCalled();
+    await relay.get("/admin/accounts/43");
+    await expect(relay.post("/admin/accounts/42/x", {})).rejects.toMatchObject({ status: 409 });
+    await relay.get("/admin/accounts/42");
     await relay.post("/admin/accounts/42/x", {});
-    expect(new Headers(relayCalls(f)[0][1].headers).get("X-Cell-Gen")).toBe("2");
+    expect(new Headers(relayCalls(f).at(-1)![1].headers).get("X-Cell-Gen")).toBe("2");
   });
 
   it("cellAccountId names the Creator only in cell mode", async () => {
@@ -482,6 +511,18 @@ describe("cell mode", () => {
     expect(relayCalls(f).map((c) => new Headers(c[1].headers).get("X-Account-Id"))).toEqual([null, "900539700124344321"]);
   });
 
+  it("resolves the Cell flag once across single-box requests", async () => {
+    vi.stubGlobal("fetch", answer(null));
+    const lookup = vi.spyOn(document, "querySelector");
+    try {
+      await relay.get("/admin/accounts/42");
+      await relay.get("/admin/accounts/42");
+      expect(lookup.mock.calls.filter(([selector]) => selector === 'meta[name="oi-cells"]')).toHaveLength(1);
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
   it("env unset: no refusal, no echo (as main)", async () => {
     const f = answer(null);
     vi.stubGlobal("fetch", f);
@@ -490,4 +531,14 @@ describe("cell mode", () => {
     expect(f).toHaveBeenCalledTimes(2);
     expect(f.mock.calls.every((c) => !new Headers(c[1].headers).has("X-Cell-Gen"))).toBe(true);
   });
+});
+
+it.each([
+  [undefined, "3", "ok", "3"],
+  ["3", "4", "ok", "3"],
+  ["3", "3", "stale", "3"],
+  ["3", "2", "stale", "2"],
+  ["3", null, "stale", undefined],
+] as const)("nextGen(%s, %s, %s) returns %s", (known, header, phase, expected) => {
+  expect(nextGen(known, header, phase)).toBe(expected);
 });

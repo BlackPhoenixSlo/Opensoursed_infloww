@@ -1,7 +1,8 @@
 "use client";
 
 
-import { useEffect, useMemo, type RefObject } from "react";
+import { sendKey, withRetainedOp, type RetainedOps } from "@/lib/opId";
+import { useEffect, useMemo, useRef, type RefObject } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useScope } from "@/contexts/ScopeContext";
@@ -406,6 +407,7 @@ const CHAT_DIALOGS: Record<string, ChatDialog> = {
 const pageOf = (src: string) => /^\/of-mirror\/pages\/(messages\/(?:chat|send)(?:\/state-[^/]+)?)\.html$/.exec(src)?.[1] ?? "";
 
 export function useOfChat(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
+  const sendOp = useRef<RetainedOps | null>(null);
   const { accountId } = useScope();
   const router = useRouter();
   const qc = useQueryClient();
@@ -465,7 +467,13 @@ export function useOfChat(frameRef: RefObject<HTMLIFrameElement | null>, src: st
     const enc = chat ? encodeURIComponent(chat) : "";
     const handlers: ChatHandlers | null = accountId
       ? {
-          send: (path, body) => relay.post(path, body, { accountId }).then((r) => (refresh(), r)),
+          send: async (path, body) => {
+            const result = await withRetainedOp(sendOp, sendKey(accountId, path, body), (opId) =>
+              relay.post(path, body, { accountId, opId }),
+            );
+            refresh();
+            return result;
+          },
           put: (path, body) => relay.put(path, body, { accountId }).then((r) => (refresh(), r)),
           upload: (file) => relay.uploadFile<VaultUploadResp>("/api/of/v2/upload", file, "file", { accountId }),
           gifs: (query) => (query ? gifSearch(query, 24, 0, { accountId }) : gifTrending(24, 0, { accountId })).then((r) => r.data ?? []),

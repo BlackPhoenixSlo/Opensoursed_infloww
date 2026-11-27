@@ -2,15 +2,16 @@ import { notifyManager } from "@tanstack/react-query";
 
 import {
   type BusEffect, type BusInput, type BusState, type Decision, type EventEnvelope, type Queued, type Scope,
-  decide, eventsUrl, follow, initialBusState, isConnected, RETRY_MIN_MS,
+  decide, eventsUrl, follow, initialBusState, isConnected,
 } from "./eventBusReducer";
 import {
   accountLive, allLive, blocked, cellBusReducer, downAccounts, INITIAL_CELL_BUS, liveChanges, protoOf, streamDiff,
-  type CellBusState, type Proto,
+  INITIAL_MAP_LOAD, mapLoadReducer, type CellBusState, type Proto,
 } from "./cellBusReducer";
 import { cellMode } from "./cellFlag";
 import { currentCellMap, loadCellMap, onCellMap, setStreamGrey } from "./cellMap";
 import type { CellMap } from "./cellInbox";
+import { RelayError } from "./relay";
 import { resolveShareToken } from "./shareToken";
 import { serverOffset, setRelayOffset } from "./ageClock";
 
@@ -38,7 +39,9 @@ class Stream {
   private staleCheckTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
 
-  constructor(private host: Host, readonly cell: string | undefined, private clock: boolean) {}
+  constructor(private host: Host, readonly cell: string | undefined, private clock: boolean, private savedCursor = "") {
+    if (savedCursor) this.state = { ...initialBusState, lastEventId: savedCursor };
+  }
 
   connected(): boolean {
     return isConnected(this.state, this.ready(), Date.now());
@@ -70,7 +73,8 @@ class Stream {
   private perform(fx: BusEffect) {
     switch (fx.type) {
       case "Open":
-        this.open(eventsUrl(fx.scope, resolveShareToken(), fx.lastEventId, this.cell), fx.gen);
+        this.open(eventsUrl(fx.scope, resolveShareToken(), fx.lastEventId || this.savedCursor, this.cell), fx.gen);
+        this.savedCursor = "";
         return;
       case "Close":
         this.es?.close();
@@ -179,12 +183,14 @@ function pageProto(): Proto {
 class EventBus implements Host {
   byType = new Map<string, Set<Listener>>();
   private streams = new Map<string, Stream>();
+  private cursors = new Map<string, string>();
   private scope: Scope | null = null;
   private paused = false;
   private cells: CellBusState = INITIAL_CELL_BUS;
   private map: CellMap | null = null;
   private watching = false;
   private mapRetry: ReturnType<typeof setTimeout> | null = null;
+  private mapLoad = INITIAL_MAP_LOAD;
   private stateListeners = new Set<{ fn: StateFn; account?: string }>();
   private streamListeners = new Set<(c: StreamChange) => void>();
   private blockedListeners = new Set<() => void>();
@@ -221,6 +227,7 @@ class EventBus implements Host {
       this.legacy().send({ type: "SetScope", scope });
       return;
     }
+    this.resetMapLoad();
     if (!this.watching) {
       this.watching = true;
       onCellMap(() => { if (currentCellMap() !== this.map) this.replan(); });
@@ -286,27 +293,48 @@ class EventBus implements Host {
     return p && this.streams.get(p.cell);
   }
 
+  private resetMapLoad() {
+    if (this.mapRetry) clearTimeout(this.mapRetry);
+    this.mapRetry = null;
+    this.mapLoad = mapLoadReducer(this.mapLoad, "reset");
+  }
+
   private replan() {
     if (!this.scope) return;
     const m = currentCellMap();
     if (!m) {
-      loadCellMap().catch(() => {
-        if (this.mapRetry) return;
-        this.mapRetry = setTimeout(() => { this.mapRetry = null; this.replan(); }, RETRY_MIN_MS);
+      if (this.mapLoad.phase !== "ready") return;
+      const loading = this.mapLoad = mapLoadReducer(this.mapLoad, "start");
+      void loadCellMap().catch((error: unknown) => {
+        if (this.mapLoad !== loading) return;
+        const denied = error instanceof RelayError && (error.status === 401 || error.status === 403);
+        this.mapLoad = mapLoadReducer(loading, denied ? "denied" : "failed");
+        if (this.mapLoad.phase !== "waiting") return;
+        this.mapRetry = setTimeout(() => {
+          this.mapRetry = null;
+          this.mapLoad = mapLoadReducer(this.mapLoad, "retry");
+          this.replan();
+        }, this.mapLoad.delay);
       });
       return;
     }
+    this.resetMapLoad();
+    const sameGrant = this.map?.actor === m.actor && this.map.grant_gen === m.grant_gen;
+    if (!sameGrant) this.cursors.clear();
     this.map = m;
     const prev = this.cells;
     this.cells = cellBusReducer(prev, { type: "Plan", map: m, scope: this.scope, proto: pageProto() });
     const diff = streamDiff(prev.planned, this.cells.planned);
     for (const cell of diff.close) {
-      this.streams.get(cell)?.dispose();
+      const stream = this.streams.get(cell);
+      if (sameGrant && stream?.state.lastEventId) this.cursors.set(cell, stream.state.lastEventId);
+      stream?.dispose();
       this.streams.delete(cell);
     }
     for (const p of diff.rescope) this.streams.get(p.cell)?.send({ type: "SetScope", scope: p.scope });
     for (const p of diff.open) {
-      const s = new Stream(this, p.cell, p.cell === m.control);
+      const s = new Stream(this, p.cell, p.cell === m.control, this.cursors.get(p.cell));
+      this.cursors.delete(p.cell);
       this.streams.set(p.cell, s);
       if (this.paused) s.send({ type: "Pause" });
       s.send({ type: "SetScope", scope: p.scope });
@@ -320,7 +348,6 @@ class EventBus implements Host {
     if (blocked(prev) !== blocked(next)) for (const fn of this.blockedListeners) fn();
     setStreamGrey(downAccounts(next));
     const changes = liveChanges(prev, next);
-    if (!changes.length) return;
     const was = allLive(prev);
     const now = allLive(next);
     for (const { fn, account } of this.stateListeners) {
@@ -328,8 +355,7 @@ class EventBus implements Host {
         if (was !== now) notify(fn, now);
         continue;
       }
-      const hit = changes.find((c) => c.accounts.includes(account));
-      if (hit) notify(fn, hit.live);
+      if (accountLive(prev, account) !== accountLive(next, account)) notify(fn, accountLive(next, account));
     }
     for (const c of changes) for (const fn of this.streamListeners) safe2(fn, { connected: c.live, accounts: c.accounts });
   }

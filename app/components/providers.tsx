@@ -107,7 +107,10 @@ export default function Providers({ children }: { children: React.ReactNode }) {
   useEffect(() => onScreenRefreshed((queryKey) => { void queryClient.invalidateQueries({ queryKey }); }), [queryClient]);
 
   useEffect(() => {
-    const refetch = () => { void queryClient.invalidateQueries({ refetchType: "active" }); };
+    const refetch = (event: Event) => {
+      const reason = (event as CustomEvent).detail?.reason;
+      if (!reason || reason === "stale") void queryClient.invalidateQueries({ refetchType: "active" });
+    };
     window.addEventListener(STALE_CELL_GEN_EVENT, refetch);
     return () => window.removeEventListener(STALE_CELL_GEN_EVENT, refetch);
   }, [queryClient]);

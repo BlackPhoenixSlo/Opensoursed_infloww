@@ -1,3 +1,4 @@
+import { sendKey, withRetainedOp } from "@/lib/opId";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -294,10 +295,26 @@ describe("useSendMessage sends one X-Op-Id per action", () => {
   });
 });
 
-describe("native schedule op ids", () => {
+it("clears a reconciled optimistic bubble without inventing a receipt", async () => {
+  const hookHandle = stubHandle();
+  const { result } = renderHook(
+    () => useSendMessage({ accountId: ACCT, fanId: FAN, fromUserId: 100, fromUserName: "you", hookHandle }),
+    { wrapper },
+  );
+  vi.mocked(relay.post).mockResolvedValueOnce({ status: "reconciled" });
+  await act(async () => { await result.current.send({ text: "already delivered" }); });
+  expect(hookHandle.dropLocal).toHaveBeenCalledOnce();
+  expect(hookHandle.reconcileLocal).not.toHaveBeenCalled();
+  expect(hookHandle.failLocal).not.toHaveBeenCalled();
+});
+
+describe.each([
+  ["native", `/api/of/v2/chats/${FAN}/messages/scheduled`, 60],
+  ["near-term", "/api/of/v2/scheduled-sends", 5],
+] as const)("%s schedule op ids", (_kind, path, delay) => {
   const schedPosts = () => vi.mocked(relay.post).mock.calls
-    .filter(([p]) => String(p) === `/api/of/v2/chats/${FAN}/messages/scheduled`).map(([, , ctx]) => ctx?.opId);
-  const at = new Date(Date.now() + 60 * 60_000).toISOString();
+    .filter(([p]) => p === path).map(([, , ctx]) => ctx?.opId);
+  const at = new Date(Date.now() + delay * 60_000).toISOString();
 
   it("a resubmit of the same schedule after a failure reuses the op; the next schedule gets a new one", async () => {
     const { result } = renderHook(
@@ -314,4 +331,42 @@ describe("native schedule op ids", () => {
     expect(c).toBeTruthy();
     expect(c).not.toBe(a);
   });
+});
+
+
+it("retries a lost native schedule response on the native route after the cutoff", async () => {
+  const now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+  try {
+    const { result } = renderHook(
+      () => useSendMessage({ accountId: ACCT, fanId: FAN, fromUserId: 100, fromUserName: "you", hookHandle: stubHandle() }),
+      { wrapper },
+    );
+    const draft = { text: "later", scheduledAt: new Date(now + 16 * 60_000).toISOString() };
+    vi.mocked(relay.post).mockRejectedValueOnce(new Error("timeout"));
+    await expect(act(() => result.current.send(draft))).rejects.toThrow("timeout");
+    clock.mockReturnValue(now + 2 * 60_000);
+    await act(async () => { await result.current.send(draft); });
+    const [first, retry] = vi.mocked(relay.post).mock.calls;
+    expect(first[0]).toBe(`/api/of/v2/chats/${FAN}/messages/scheduled`);
+    expect(retry).toEqual(first);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+it("retains the mirror send op when another chat sends before retry", async () => {
+  const ops = { current: null };
+  const pathA = "/api/of/v2/chats/1/messages";
+  const pathB = "/api/of/v2/chats/2/messages";
+  const body = { text: "same draft" };
+  const submit = (path: string) => withRetainedOp(ops, sendKey(ACCT, path, body), (opId) =>
+    relay.post(path, body, { accountId: ACCT, opId }));
+  vi.mocked(relay.post).mockRejectedValueOnce(new Error("timeout"));
+  await expect(submit(pathA)).rejects.toThrow("timeout");
+  await submit(pathB);
+  await submit(pathA);
+  const [first, other, retry] = vi.mocked(relay.post).mock.calls;
+  expect(other[2]?.opId).not.toBe(first[2]?.opId);
+  expect(retry).toEqual(first);
 });

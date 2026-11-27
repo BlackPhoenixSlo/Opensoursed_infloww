@@ -114,6 +114,7 @@ def save(session: dict, me: dict, *, nickname: str | None, make_active: bool) ->
     import platforms
 
     account_id = str(session["accountId"])
+    platforms.require_account(account_id)
     name = me.get("name") or me.get("username")
     adir = account_registry.account_dir(account_id)
     adir.mkdir(parents=True, exist_ok=True)

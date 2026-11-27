@@ -60,6 +60,7 @@ def failures(caps: list[str], rows: list[tuple[str, frozenset[str]]], registry) 
     lacks = dict(rows)
     if lacks.get("onlyfans"):
         out.append(f"onlyfans lacks {sorted(lacks['onlyfans'])}")
+    out += [f"{p.key}: no Backend module" for p in registry if p.key != "onlyfans" and p.backend is None]
     checked = [p for p in registry if p.backend is not None and p.key in lacks]
     if not checked:
         out.append("no registered Backend module has a table row")
@@ -144,6 +145,18 @@ def case_unlisted_capability_fails():
 def case_table_keys_differ_from_registry_fails():
     got = failures(_ALL_CAPS, [*_rows(_ALL_CAPS), ("other", frozenset())], _registry(_AllRefused))
     assert got == ["table keys ['fake', 'onlyfans', 'other'] != registry keys ['fake', 'onlyfans']"], got
+
+
+def case_registry_key_missing_from_table_fails():
+    registry = (*_registry(_AllRefused), SimpleNamespace(key="other", backend=SimpleNamespace(Shim=_AllRefused)))
+    got = failures(_ALL_CAPS, _rows(_ALL_CAPS), registry)
+    assert got == ["table keys ['fake', 'onlyfans'] != registry keys ['fake', 'onlyfans', 'other']"], got
+
+
+def case_non_onlyfans_platform_without_backend_fails():
+    registry = (*_registry(_AllRefused), SimpleNamespace(key="other", backend=None))
+    got = failures(_ALL_CAPS, [*_rows(_ALL_CAPS), ("other", frozenset())], registry)
+    assert got == ["other: no Backend module"], got
 
 
 def case_onlyfans_lacking_fails():

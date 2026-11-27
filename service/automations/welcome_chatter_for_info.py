@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import random
 from collections import Counter
 from dataclasses import dataclass
@@ -768,7 +767,7 @@ async def _send_closing_ppv(client, account_id: str, fan_id: int,
     "sent", "dry_run" (would send), "already" (he had it — once per fan, stamped
     on `fans.gather_close_at`), "owned" (he owns some of the media), "uncertain"
     (an earlier attempt may have gone out: never resent) or "failed".
-    Never raises: a failure must not block the graduation that follows."""
+    Cell send refusals propagate so held fans can stay in the lane."""
     try:
         async with get_session() as s:
             stamped, anchor = (await s.execute(
@@ -785,7 +784,7 @@ async def _send_closing_ppv(client, account_id: str, fan_id: int,
             return "owned"
         if dry_run:
             return "dry_run"
-        cells = bool(os.environ.get("OI_CELL_MAP"))
+        cells = send_ops.cells()
         if anchor is not None and not cells:
             log.warning("welcome_chatter_for_info closing PPV may already be out (started %s, never "
                         "stamped): not resent account=%s fan=%s", anchor, account_id, fan_id)
@@ -803,18 +802,13 @@ async def _send_closing_ppv(client, account_id: str, fan_id: int,
                 result = await _dispatch_closing_ppv(account_id, fan_id, ppv, anchor, send)
             else:
                 result = await asyncio.to_thread(send)
-        except send_ops.SendRefused as e:
-            if e.detail.get("error") in ("op_uncertain", "op_pending", "op_conflict"):
-                log.warning("welcome_chatter_for_info closing PPV op %s: not resent account=%s fan=%s",
-                            e.detail.get("error"), account_id, fan_id)
-                return "uncertain"
-            raise
         except Exception as e:
-            if send_ops.pre_wire(e):
+            from of_write import _may_have_sent
+            if not cells and (send_ops.pre_wire(e) or not _may_have_sent(e)):
                 await _set_close_anchor(account_id, fan_id, None)
             raise
         msg_id = result.get("id") if isinstance(result, dict) else None
-        if not msg_id:
+        if not msg_id and not send_ops.is_reconciled(result):
             log.warning("welcome_chatter_for_info closing PPV returned no id "
                         "account=%s fan=%s", account_id, fan_id)
             return "failed"
@@ -830,6 +824,8 @@ async def _send_closing_ppv(client, account_id: str, fan_id: int,
                     set_={"gather_close_at": now, "gather_close_sending_at": None, "updated_at": now},
                 )
             )
+        if send_ops.is_reconciled(result):
+            return "already"
         await write_outbound_attribution(
             account_id=account_id,
             fan_id=int(fan_id),
@@ -845,7 +841,9 @@ async def _send_closing_ppv(client, account_id: str, fan_id: int,
                  "media=%d price_cents=%d", account_id, fan_id,
                  len(ppv.media_ids), ppv.price_cents)
         return "sent"
-    except Exception:
+    except Exception as e:
+        if send_ops.refusal_reason(e):
+            raise
         log.warning("welcome_chatter_for_info closing PPV failed account=%s fan=%s",
                     account_id, fan_id, exc_info=True)
         return "failed"
@@ -1557,6 +1555,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         except llm_client.LLMKeyError as e:
             key_error = llm_client.key_error_payload(e)
             break
+        except Exception as e:
+            if reason := send_ops.skip_fan(e):
+                skips[reason] += 1
+                continue
+            raise
         _fold(tally, skips, out)
 
     return {

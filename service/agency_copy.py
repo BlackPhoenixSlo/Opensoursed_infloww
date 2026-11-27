@@ -11,6 +11,8 @@ import sqlite3
 import sys
 import time
 import types
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
@@ -75,6 +77,7 @@ READ_ONLY_MSG = "agency_copy_read_only:"
 FLOOR_MSG = "employee_floor_pending"
 FLOOR_NAME = "(employee id floor)"
 GRANT_AGE_MSG = "grant_age_exceeded"
+MISSING = "agency_copy_missing_owners"
 _held: tuple[float | None, int | None] = (None, None)
 
 
@@ -174,17 +177,26 @@ _placement: tuple[tuple[int, int] | None, list[str]] = (None, [])
 
 
 def placement_data_cells() -> list[str]:
+    from cell_mode import read_placement
+
     global _placement
     st = os.stat(os.environ["OI_CELL_MAP"])
     if _placement[0] != (st.st_mtime_ns, st.st_size):
-        with open(os.environ["OI_CELL_MAP"], "rb") as fh:
-            cells = json.loads(fh.read())["cells"]
+        cells = read_placement()["cells"]
         _placement = ((st.st_mtime_ns, st.st_size), sorted(c for c, v in cells.items() if v.get("role") == "data"))
     return _placement[1]
 
 
+def is_floor_error(exc: Exception) -> bool:
+    return FLOOR_MSG in str(getattr(exc, "orig", exc))
+
+
+def _floor_pending(db: sqlite3.Connection) -> bool:
+    return db.execute("SELECT pending FROM employee_floor").fetchone()[0] == 1
+
+
 def _maybe_floor(db: sqlite3.Connection) -> int | None:
-    if db.execute("SELECT pending FROM employee_floor").fetchone()[0] != 1:
+    if not _floor_pending(db):
         return None
     got = dict(db.execute("SELECT cell, max_emp FROM employee_floor_reports WHERE epoch = ?", (_current(db)[0],)))
     waiting = [c for c in placement_data_cells() if c not in got]
@@ -205,8 +217,13 @@ def _maybe_floor(db: sqlite3.Connection) -> int | None:
 
 def report_max_emp(path: str, cell: str, max_emp: int) -> int | None:
     with contextlib.closing(_connect(path)) as db:
+        if not _floor_pending(db):
+            return None
         db.execute("BEGIN IMMEDIATE")
         try:
+            if not _floor_pending(db):
+                db.execute("ROLLBACK")
+                return None
             db.execute("INSERT INTO employee_floor_reports (cell, epoch, max_emp, reported_at) VALUES (?, ?, ?, ?)"
                        " ON CONFLICT (cell) DO UPDATE SET max_emp = CASE WHEN epoch = excluded.epoch"
                        " THEN MAX(max_emp, excluded.max_emp) ELSE excluded.max_emp END, epoch = excluded.epoch,"
@@ -236,6 +253,7 @@ def install(sync_url: str, role: str) -> dict[str, int]:
                 db.execute("CREATE TABLE IF NOT EXISTS agency_copy_gate (open INTEGER)")
                 db.execute("INSERT INTO agency_copy_gate SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM agency_copy_gate)")
                 _sections_table(db)
+                db.execute(f"CREATE TABLE IF NOT EXISTS {MISSING} (user_id TEXT PRIMARY KEY, since TEXT NOT NULL)")
                 n = {"dropped_version": _sync(db, _VER, {}), "dropped_floor": _sync(db, _FLOOR, {}),
                      "read_only": _sync(db, _RO, read_only_triggers(db))}
             db.execute("COMMIT")
@@ -343,7 +361,8 @@ async def _snapshot(path: str) -> dict[str, Any]:
     cur = await _version(path)
     if _snap.get("key") != cur[:2]:
         async with _one_snapshot_build:
-            if _snap.get("key") != cur[:2]:
+            key = _snap.get("key")
+            if key is None or key[0] != cur[0] or key[1] < cur[1]:
                 snap = await asyncio.to_thread(read_snapshot, path)
                 _snap.clear()
                 _snap.update(snap, key=(snap["epoch"], snap["version"]))
@@ -362,16 +381,21 @@ def _keys() -> dict[str, str]:
     return out
 
 
-def _caller(authorization: str | None) -> str | None:
-    token = (authorization or "").removeprefix("Bearer ").strip()
+def matching_digest(token: str, digests: Iterable[str]) -> str | None:
     if not token:
         return None
-    got = hashlib.sha256(token.encode()).hexdigest()
+    got = hashlib.sha256(token.encode()).hexdigest().encode()
     hit = None
-    for cell, digest in _keys().items():
-        if hmac.compare_digest(got, digest):
-            hit = cell
+    for digest in digests:
+        if hmac.compare_digest(got, digest.strip().lower().encode()):
+            hit = digest
     return hit
+
+
+def caller(authorization: str | None) -> str | None:
+    token = (authorization or "").removeprefix("Bearer ").strip()
+    by_digest = {digest: cell for cell, digest in _keys().items()}
+    return by_digest.get(matching_digest(token, by_digest))
 
 
 def _parse_since(since: str) -> tuple[int, int] | None:
@@ -422,7 +446,7 @@ async def agency_copy(since: str = "0.0", have: str = "", hold: Annotated[float,
                       max_emp: Annotated[int | None, Query(ge=0)] = None, accept: int = FORMAT, full: bool = False,
                       authorization: Annotated[str | None, Header()] = None):
     no_store = {"Cache-Control": "no-store"}
-    cell = _caller(authorization)
+    cell = caller(authorization)
     if cell is None:
         return JSONResponse({"detail": "forbidden"}, status_code=403, headers=no_store)
     mine = _parse_since(since)
@@ -483,6 +507,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
 
 
+def _mark_missing(db: sqlite3.Connection, doc: dict, changes: dict) -> None:
+    at = f"{doc['epoch']}.{doc['version']}"
+    changes["owners_missing"] = [uid for uid in sorted(set(changes.get("owners_missing", ()))) if db.execute(
+        f"INSERT INTO {MISSING} (user_id, since) VALUES (?, ?) ON CONFLICT DO NOTHING", (uid, at)).rowcount]
+
+
+def _log_missing(doc: dict, result: dict) -> None:
+    for uid in result.get("owners_missing", ()):
+        log.warning("agency_copy_owner_missing owner=%s copy=%s.%s: Control no longer lists this owner;"
+                    " kept its rows, access denied until a copy lists it again", uid, doc["epoch"], doc["version"])
+
+
+async def owner_missing(s, ids) -> bool:
+    from sqlalchemy import bindparam, text
+    q = text(f"SELECT 1 FROM {MISSING} WHERE user_id IN :ids LIMIT 1").bindparams(bindparam("ids", expanding=True))
+    return (await s.execute(q, {"ids": sorted(ids)})).first() is not None
+
+
 def _apply_section(db: sqlite3.Connection, t: str, rows: list[dict], refs, changes: dict, scope=None) -> None:
     local_cols = set(_columns(db, t))
     cols = [c for c in FIELDS[t] if c in local_cols]
@@ -498,6 +540,11 @@ def _apply_section(db: sqlite3.Connection, t: str, rows: list[dict], refs, chang
         new = {r["id"]: tuple(r.get(c) for c in cols_r) for r in rows}
         changes.setdefault("revoked", []).extend(
             (t, pid) for pid, was in old.items() if pid not in new or new[pid] != was)
+    if t == "users":
+        # Owner decision keep-and-deny: an older Control's copy never deletes an owner (CASCADE takes Cell rows).
+        db.executemany(f"DELETE FROM {MISSING} WHERE user_id = ?", [(r["id"],) for r in rows])
+        changes.setdefault("owners_missing", []).extend(k[0] for k in gone)
+        gone = []
     where = " AND ".join(f'"{k}" IS ?' for k in pk)
     for key in gone:
         pinned = any(db.execute(f'SELECT 1 FROM "{src_t}" WHERE "{src}" IN (SELECT "{dst}" FROM "{t}" WHERE {where})'
@@ -575,6 +622,7 @@ def _apply2(db: sqlite3.Connection, doc: dict, mine: dict, repair: bool) -> dict
             elif n in COPIED:
                 _apply_section(db, n, sections[n]["rows"], refs, changes)
                 touched.add(n)
+        _mark_missing(db, doc, changes)
         db.executemany("DELETE FROM agency_copy_sections WHERE name = ?", [(n,) for n in sorted(drop)])
         db.executemany("INSERT INTO agency_copy_sections (name, sha256) VALUES (?, ?) ON CONFLICT (name)"
                        " DO UPDATE SET sha256 = excluded.sha256", [(n, sections[n]["sha256"]) for n in changed])
@@ -615,6 +663,7 @@ def apply(path: str, doc: dict, repair: bool = False) -> dict[str, Any]:
             refs = _local_no_action_refs(db)
             for t in changed:
                 _apply_section(db, t, sections[t]["rows"], refs, changes)
+            _mark_missing(db, doc, changes)
             db.executemany("DELETE FROM agency_copy_sections WHERE name = ?",
                            [(n,) for n in sorted(set(mine["section_sha"]) - set(sections))])
             db.executemany("INSERT INTO agency_copy_sections (name, sha256) VALUES (?, ?) ON CONFLICT (name)"
@@ -703,27 +752,44 @@ def grant_gen(path: str) -> int | None:
         return meta(db)["grant_gen"]
 
 
-async def _after_apply(path: str, result: dict) -> None:
+def _notify_apply(path: str, changed: set[str], revoked: set[tuple[str, str]]) -> None:
+    import chatter_identity_cache
     import events
-    changed = set(result["tables"])
-    with contextlib.closing(_connect(path)) as db:
-        owners = [r[0] for r in db.execute("SELECT id FROM users")]
-    if changed & (set(GRANT_ANY) | set(GRANT_REVOKE) | {"employees", "employee_groups", "shifts"}):
+    grants = changed & (set(GRANT_ANY) | set(GRANT_REVOKE) | {"employees", "employee_groups", "shifts"})
+    if grants or revoked:
+        chatter_identity_cache.invalidate()
+    for t, pid in revoked:
+        events.publish_state("sessions_revoked", agency=events.sessions_audience(t[:-1], pid))
+    if grants:
+        try:
+            owners = _owners(path)
+        except Exception:
+            log.exception("Agency copy committed; grant cache cleared but permissions_changed not published")
+            return
         for owner in owners:
             events.publish_state("permissions_changed", agency=owner)
             events.publish_state("assignment_changed", agency=owner)
-    for t, pid in result.get("revoked", ()):
-        events.publish_state("sessions_revoked", agency=events.sessions_audience(t[:-1], pid))
+
+
+def _owners(path: str) -> list[str]:
+    with contextlib.closing(_connect(path)) as db:
+        return [r[0] for r in db.execute("SELECT id FROM users")]
+
+
+async def _reload_runtime(path: str, changed: set[str]) -> None:
     if "user_settings" in changed:
         import split_inbox
-        for owner in owners:
+        for owner in _owners(path):
             with contextlib.suppress(Exception):
                 await split_inbox.default_changed(owner)
+        changed.remove("user_settings")
     if "runtime_switches" in changed:
         import runtime_switches
         await runtime_switches.load()
+        changed.remove("runtime_switches")
     if "push_subscriptions" in changed:
         await _reload_push(path)
+        changed.remove("push_subscriptions")
 
 
 async def _reload_push(path: str) -> None:
@@ -745,15 +811,45 @@ def _said(names: list[str]) -> str:
     return ",".join(names) if len(names) <= 8 else f"{len(names)} sections ({','.join(names[:3])},...)"
 
 
-async def _applied(path: str, doc: dict, result: dict) -> None:
+@dataclass
+class _RuntimeReload:
+    tables: set[str] = field(default_factory=set)
+    next_at: float = 0.0
+    delay: float = 0.5
+
+    def add(self, result: dict) -> None:
+        self.tables.update({"user_settings", "runtime_switches", "push_subscriptions"}.intersection(result["tables"]))
+
+    async def run_due(self, path: str) -> None:
+        if not self.tables or time.monotonic() < self.next_at:
+            return
+        try:
+            await _reload_runtime(path, self.tables)
+        except Exception:
+            log.exception("Agency copy committed; runtime reload failed and will retry in %.1fs", self.delay)
+            self.next_at = time.monotonic() + self.delay
+            self.delay = min(self.delay * 2, 5.0)
+        else:
+            self.next_at, self.delay = 0.0, 0.5
+
+    def hold_cap(self) -> float:
+        cap = min(HOLD_S, max_grant_age_s() / 4)
+        if self.tables:
+            return min(cap, max(0.0, self.next_at - time.monotonic()))
+        return cap
+
+
+def _applied(path: str, doc: dict, result: dict, pending: _RuntimeReload, previous_epoch: int | None) -> None:
     if not result["applied"]:
         return
+    pending.add(result)
+    _log_missing(doc, result)
+    _notify_apply(path, set(result["tables"]), result.get("revoked", set()))
     log.info("agency copy %s.%s applied (grant_gen %s): %s", doc["epoch"], doc["version"], doc["grant_gen"],
              _said(result["changed"]) or "no section changed")
-    try:
-        await _after_apply(path, result)
-    except Exception:
-        log.exception("agency copy applied but clearing caches failed")
+    if previous_epoch is not None and doc["epoch"] > previous_epoch:
+        import creator_reservations
+        creator_reservations.reseed_activations()
 
 
 async def poll_forever(path: str) -> None:
@@ -762,14 +858,16 @@ async def poll_forever(path: str) -> None:
     key = os.environ.get("OI_CELL_COPY_KEY", "")
     backoff = 0.5
     full, repaired = False, None
+    pending = _RuntimeReload()
     async with httpx.AsyncClient(timeout=HOLD_S + 15, headers={"Authorization": f"Bearer {key}"}) as client:
         while True:
+            await pending.run_due(path)
             try:
                 mine, max_emp = await asyncio.to_thread(lambda: (meta_at(path), max_employee_id(path)))
                 since = f"{mine['epoch'] or 0}.{mine['version'] or 0}"
                 have = ",".join(f"{t}:{s}" for t, s in sorted(mine["section_sha"].items()) if t in FIELDS)
                 params = {"since": since, "have": have, "max_emp": max_emp, "accept": FORMAT2,
-                          "hold": min(HOLD_S, max_grant_age_s() / 4)}
+                          "hold": pending.hold_cap()}
                 if full:
                     params |= {"full": 1, "hold": 0}
                 r = await client.get(url, params=params)
@@ -780,14 +878,14 @@ async def poll_forever(path: str) -> None:
                 if was_full and doc.get("format") == FORMAT2:
                     result = await asyncio.to_thread(apply, path, doc, True)
                     repaired = at
-                    await _applied(path, doc, result)
+                    _applied(path, doc, result, pending, mine["epoch"])
                     if result.get("root_ok") is False:
                         log.error("AGENCY COPY ROOT MISMATCH after a full copy at %s.%s; not confirmed", *at)
                 elif at == (mine["epoch"], mine["version"]):
                     bad = not await asyncio.to_thread(confirm, path, doc) and doc.get("format") == FORMAT2
                 elif newer(doc, mine):
                     result = await asyncio.to_thread(apply, path, doc)
-                    await _applied(path, doc, result)
+                    _applied(path, doc, result, pending, mine["epoch"])
                     bad = result.get("root_ok") is False
                 else:
                     log.warning("agency copy: control answered older %s.%s than ours %s; kept ours",

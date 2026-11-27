@@ -1,0 +1,8 @@
+# The tracker ships off in every tree, and learns the Removal service's brand at runtime
+
+**Status: proposed** (2026-11-27, `.scratch/leak-tracker/goal.md` Phases 1 and 4; tickets 03, 06; nothing built yet).
+
+Private main replays to the public repo, which feeds app.inflowwww.com, self-hosted installs, the demo and Twin, while the Removal service is a private paid business. We decided one generic client lives in the shared product tree, off on every target behind the four Tracker gates (an `off_only` Deployment switch after `service/runtime_switches.py:122-154`, the active Agency's `leak_tracker` flag, a Tracker key, the Team Leader role), each checked server-side on every route. Git holds no brand, domain, private repo names or paths, host rules, search keys or real handles: copy says "removal service", and the brand and `contact_url` come from `GET /v1/me`, so without them there is no Removal offer. `leak-check.sh` gains rules for the brand, its domain, the private leak-stack repo names and paths, and the Tracker key prefix; the demo gets a fixture-only Demo tracker held by a zero-egress test. We chose this because a private-only overlay would fork the client per target and be stripped on every public-sync, while generic copy is the reversible default: naming the brand later is one edit, unnaming it after a public push is not possible. The cost: the page reads blander than a branded one, and every public-sync relies on the new leak-check rules.
+
+ASSUMPTION: the owner may want the brand in the public repo; generic copy stays until the owner says so. Overturned by that owner call; falls on copy only.
+ASSUMPTION: app.inflowwww.com turns on only by the owner's flip, and Twin stays off until the owner signs off its integration and Removal offer.

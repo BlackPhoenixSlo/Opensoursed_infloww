@@ -266,6 +266,57 @@ _Avoid_: dry run, Shadow mode (Full AI Chat's), fake proof, Live proof
 A sign-in or connect control (Google, X, Spotify in OF settings and My profile, MetaMask and NFT) that opens OnlyFans's own page for the operator rather than linking anything inside Inflowwww; a Live proof makes no live link.
 _Avoid_: redirect, connect flow, Deep link (Messages Pro's chat link)
 
+### Fansly Manager mirror
+
+**Fansly Manager**:
+The app's Fansly creator area under `/fansly-manager/`, holding Fansly mirror pages and the four Built pages, each nav child behind the `fansly_manager` flag.
+_Avoid_: Fansly OF Manager, Fansly dashboard, Creator Dashboard (Fansly's own section of that name)
+
+**Fansly mirror**:
+The scrubbed static copy of the Fansly creator web UI that `scripts/fansly-mirror.mjs` generates into `app/public/fansly-mirror/` and the Fansly Manager shows in a same-origin frame; the OF mirror's sibling with its own generator (ADR-0066). Mirror page and State page (ADR-0006) mean the same for it.
+_Avoid_: Fansly clone, Fansly copy, Fansly Manager (the whole area, Built pages included), OF mirror (OnlyFans's)
+
+**Built page**:
+One of the four hand-built Fansly Manager pages (Scheduled, Lists, Notifications, Earning Statistics) that read and write real Relay data; it keeps its exact URL and nav slot over the Fansly mirror's copy of that landing until the copy has its rows and writes.
+_Avoid_: legacy page, native page, old page, React page
+
+**Mirror capture**:
+One read-only run through every planned Fansly page and State in the owner's signed-in creator Chrome, saving each whole rendered document, its meta and a screenshot outside the repo, with the Capture gate armed throughout. It is the only input the Fansly generator reads.
+_Avoid_: Capture session (records requests for a Platform recipe), Request capture (one OnlyFans control's), capture on its own, scrape, crawl
+
+**Capture manifest**:
+A Mirror capture's `manifest.json`: every route and State it saved, with opener, settled selector and bundle hash, plus the session's own creator and fan identities. The generator publishes only when every entry produced a page.
+_Avoid_: index, inventory, sitemap
+
+**On-open write**:
+A write Fansly sends only because a page or State was opened, with no click on Save: message ack, notifications ack, presence status, impression log, story view.
+_Avoid_: auto-write, background write, side request
+
+**Capture gate**:
+The browser-wide process (`fansly/capture/gate.py`) that, during a Mirror capture, lets only GET, HEAD and OPTIONS reach any host, answers each known On-open write locally, and fails any other request and halts the run (ADR-0065).
+_Avoid_: proxy, firewall, egress filter, recorder (`record.py`, which drops redirected POSTs)
+
+**Gate audit**:
+The check after a Mirror capture that passes only with no non-GET continued in the Capture gate's log, no outbound socket frame after arming, and every Fansly group's unread count unchanged; a failed audit feeds nothing to the generator.
+_Avoid_: unread total check (`/message/unread.total` lies), smoke test
+
+**Leak guard**:
+A mirror generator's fail-hard check, re-run by `--check`, that no Mirror page carries live data: no email, IP, long digit run, real host, identity or money, and every URL sink resolving to `#`, the Manager's own path or a mirrored static asset. The Fansly mirror's must also fail on a planted-leak fixture.
+_Avoid_: scrubber (removes leaks; the guard proves none are left), lint, Mirror check (renders pages in a browser)
+
+**Identity swap**:
+The frame's runtime replacement of the generator's identity placeholders (`yourmodel`, `Your Model`, `data-oi-avatar`, `data-oi-banner`) with the selected Creator's name, handle, avatar and banner from the Relay's `/users/me`.
+_Avoid_: personalisation, templating, re-skin
+
+**Stand-in Creator**:
+The Creator whose identity a Mirror page shows in All-Creators scope. The OF mirror's is the first Creator with a live session, else the first Creator (`standInPick`); the Fansly mirror's is the first live Fansly Creator only, never a Watcher, and its pages then show the stand-in hint.
+_Avoid_: default model, fallback Creator, first model
+ASSUMPTION: coined from the All-Creators scope entry's "stand-in first Creator" (rung 3); overturned if the owner wants the code's "stand-in model".
+
+**Never-public path**:
+A path that `NEVER_PATHS` in `.claude/skills/public-sync/leak-check.sh` matches under the public and strip profiles: replay skips it as "never public" and the whole-tree gate rejects a tree holding it. `app/public/client-brand/` and `app/public/fansly-mirror` are two; `app/public/of-mirror` is not, despite its NOTICE (ADR-0067).
+_Avoid_: private path, excluded path, filtered path, OPS path (one source list inside it)
+
 ### Settings layout
 
 - **Settings tab**, **Settings header**, **Tab area**, **Tab list**, **Panel**, **Panel header**, **Panel section** (avoid: section on its own): `docs/spec/settings-tabs/phase-00-shell-tokens-blob.md`
@@ -1105,7 +1156,7 @@ _Avoid_: Badge reads switch, per-user flag, header flag, kill switch on its own
 ### Platforms
 
 **Platform**:
-A creator site whose Creators Inflowwww runs, OnlyFans or Fansly today, named by one lower-case key. A Creator has exactly one; a missing or unknown key reads as OnlyFans.
+A creator site whose Creators Inflowwww runs, OnlyFans or Fansly today, named by one lower-case key. A Creator has exactly one; a missing key reads as OnlyFans, a non-empty unregistered one is an Unknown platform (ADR-0068).
 _Avoid_: site, network, provider, backend; surface (`docs/platforms.md`'s web, phone and desktop)
 ASSUMPTION: "Platform" over the plan's "site" because Infloww's own sidebar says platform (`app/components/shell/PlatformSwitcher.tsx`) and the code already has `PLATFORMS` (rung 3); `docs/platforms.md` keeps its older surface meaning until renamed; overturned if the owner wants "site".
 
@@ -1142,7 +1193,7 @@ A Shim method its Platform probably has but no Capture session has recorded yet;
 _Avoid_: Unsupported method (settled for good), stub, pending
 
 **Side-effect gate**:
-The check that stops a caller of an Unsupported or Blocked method before it sends, claims or writes local state. Hiding a control is never the only guard (ADR-0056).
+The check that stops a caller of an Unsupported, Blocked or Live-check method, or of a refused Branch, before it sends, claims or writes local state. Hiding a control is never the only guard (ADR-0056).
 _Avoid_: fake success, skip-as-sent, soft fail, hiding
 
 **Banking set**:
@@ -1177,6 +1228,115 @@ _Avoid_: combined window, unified inbox, mixed inbox, all-platforms mode
 - **Platform badge** (`PlatformLogo` beside a non-OnlyFans Creator's name on Creator tabs, pickers and the composer; never on Fan rows): ADR-0057
 - **Seen-code counter** (per-tick count of unbanked codes actually seen, not a static list): `service/fansly_revenue.py`
 - **Platform recipe** (the 11 steps a new Platform takes, owner's action order, Trap list of fields whose names lie): the recipe doc beside `docs/platforms.md`
+- **Lacks flags for Fansly money and lifecycle** (`TIP_LEDGER`, `PURCHASE_LINKAGE`; `RENEWAL_STATE`, `LAPSE_DETECTION`, `RETURN_DETECTION`, kept separate so lifting one never opens another; avoid: Lack member, Capability): `service/platforms.py`, `.scratch/multi-platform-p2/issues/05`, `06`
+- **Fansly Manager** (the static copy of Fansly's creator UI, owned by the mirror thread on `feat/fansly-mirror`; avoid: OF Manager, mirror on its own): `~/oi-fansly-mirror/.scratch/fansly-manager-mirror/`
+
+### Platform evidence and gates
+
+**Unknown platform**:
+A Creator whose stored Platform key is a non-empty string no registry entry has. Dispatch refuses it with `platform_unknown:` and loads no client; a missing key is OnlyFans, never this (ADR-0068).
+_Avoid_: fallback Platform, default Platform, OnlyFans (that is a missing key)
+
+**Grade**:
+The evidence behind one Platform action as a Provenance and a Coverage, taken from its weakest input: a write whose audience comes from a single-row read is single-row.
+_Avoid_: confidence, evidence level, single-row as a Provenance, Triage mark (the triage scorecard's), Matrix status
+
+**Provenance**:
+How an action's request was seen: M (a UI click on the wire), W (a body we sent, on the wire), I (inferred) or B (read only from the JS bundle).
+_Avoid_: source, bundle-derived as "captured", verified
+
+**Coverage**:
+Which cases of an action a capture showed, such as one gift-code row or one earnings type. A case outside it is unobserved, whatever its Provenance.
+_Avoid_: sample size, Grade (the pair), Branch (a code path)
+
+**Unseen value**:
+A field value no capture showed. It maps to unknown or skip, never to a real bucket: an unmapped Fansly notification code stays `fansly:<n>` and never banks.
+_Avoid_: default, other, fallback bucket
+
+**Reversible write**:
+A Platform write with a captured undo and no Fan-visible effect, such as list add or rename.
+_Avoid_: safe write, Narrowed write (the OF Manager's)
+
+**Fan-facing write**:
+A Platform write a Fan can see or that cannot be undone: any send, broadcast, scheduled broadcast, cancel, block, unblock or list delete. A read that changes state is a write.
+_Avoid_: irreversible write, dangerous write, Critical control (the OF Manager's)
+
+**Evidence bar**:
+The rule that an action's Grade and its kind (read, Reversible write, Fan-facing write, money) decide whether it is built, a Live-check method, Blocked or refused (ADR-0069).
+_Avoid_: proof bar (the tests a PR must show), threshold, gate
+
+**Stateful fake**:
+The in-memory, no-network Fansly stand-in that answers the captured requests and keeps state, so a test can compare exact request bodies, read back, repeat and undo. It is the only offline proof a write accepts.
+_Avoid_: mock, recorder (the gate tests' send override), Nova (the demo FixtureShim, which raises on every non-GET)
+
+**Platform marker**:
+One of the Shim's neutral decorators, `platform_unsupported`, `platform_blocked` or `platform_live_check`, that make a method Unsupported, Blocked or a Live-check method (ADR-0068). No marker carries a Platform's name.
+_Avoid_: `fansly_unsupported`, `fansly_blocked`, stub, `returns=` success stand-in
+
+**Live-check method**:
+A Shim method built from M or W evidence for a Fan-facing write, marked `platform_live_check`, that refuses unless a Live-check grant names its Creator, method and audience. Until its Lift the Drift test counts it as lacking and the parity doc shows it as 🔬.
+_Avoid_: pending, beta, half-built, Blocked method (no evidence yet)
+
+**Live-check grant**:
+One `<aid>:<method>[:<target id>]` entry in the default-off `PLATFORM_LIVE_CHECK` env var, matched by `side_effect_gate.live_check` at the caller against the exact effective audience: one named Fan, or one list whose Complete read holds only him (ADR-0070).
+_Avoid_: grant on its own (Employee grants, Fansly purchase grants), toggle, allowlist, `confirm_live_broadcast` (folded into it)
+
+**Live check**:
+The owner's one run of a Live-check method under a Live-check grant through the real Relay route or automation, from his Fansly Creator `founder` to his fan account `fantester`, seen fan side in that browser and Creator side in the persisted row. Its pass is what lifts the method.
+_Avoid_: owner check, live test, smoke, Live proof (the OF Manager's), Proof purchase (money)
+ASSUMPTION: "Live check" over the plan's "owner check" (11, 14), which names the same run; rung 3 (00's term, ADR-0070). Overturned if the owner keeps two words; then "owner check" is a Live check after deploy.
+
+**Lift**:
+Moving a Blocked or Live-check method, a Branch or a Lacks flag to built once its evidence lands, always in its own follow-up PR. A Live-check method's PR 1 builds it off, the owner runs the Live check, PR 2 records the pass and drops the grant requirement.
+_Avoid_: unblock (the Shim's `unblock_user`), unlock (the Unlock set), enable, go live
+
+**Lift table**:
+The `## Lift table` section of `fansly/FANSLY_PARITY_STATUS.md`: one row per refusal reason, with where it refuses, its Grade, what lifts it, the owner's action and the follow-up PR. `fansly/test_lift_table.py` holds its reasons equal to the Platform markers, Lacks flags and the Verdict table's `gated:` reasons.
+_Avoid_: unblock list, gate table, Parity table (Messages Pro's)
+
+**Branch**:
+One path through an automation kind or Shim method that gates and the Verdict table judge on its own: unsend's mass and chat sides, a profile push or local write, a broadcast's single include list or its exclusions, a media post. A refused Branch reads `platform_lacks:<method>:<branch>`.
+_Avoid_: lane (a **Lane** is a 1:1 automation), path, case (Coverage's)
+ASSUMPTION: the Verdict table's third key is a Branch, though issue 12 writes `KIND_VERDICTS[platform][kind][lane]`, because **Lane** is taken (rung 3); overturned if the owner renames Lane, then the code key may stay `lane`.
+
+**Platform refusal**:
+A run or route stopped by a Platform gap before any side effect, stored as `skipped` with a `platform_lacks:<lack>[:<branch>]` or `platform_unknown:` reason (a route answers 501). Acceptance reads the persisted run outcome, not the response.
+_Avoid_: skip, error, fake success, `audience_unresolved` (persists ok)
+
+**Declared no-op**:
+A Branch that legitimately does nothing, such as a disabled rule, an empty audience or no anchor, named with its reason in the Verdict table. A run doing nothing that is neither this nor a Platform refusal is a fake success.
+_Avoid_: noop on its own, empty ok, Platform refusal
+
+**Verdict table**:
+`KIND_VERDICTS` in `service/tests/test_platform_kind_verdicts.py`: one Verdict per Platform, registered automation kind and Branch, run on the real Shim over the Stateful fake with OnlyFans as control. The parity doc links it, never copies it.
+_Avoid_: parity sweep table (stale, lists unregistered kinds), Parity matrix, audit
+
+**Verdict**:
+A Verdict table cell: `same` (does what OnlyFans does), `gated:<reason>` (a Platform refusal), `noop:<reason>` (a Declared no-op) or `owner:NN` (a ticket still owns it; final acceptance fails on one).
+_Avoid_: status, Grade, Matrix status
+
+**Send refusal**:
+The pure caller-side check `send_refusal(platform, payload)` that refuses a payload part the Platform lacks, such as co-performer tags or locked text, before any claim or DM group creation. The Backend's `check_sendable` stays the later backstop.
+_Avoid_: `tags_refusal` (folded into it), `check_sendable`, send check (the Backend module's)
+
+**Audience refusal**:
+The typed `AudienceRefusal` an audience raises when a list is unknown, not a Complete read, or a built-in the Platform lacks ("following"). It never folds into an empty or unresolved audience.
+_Avoid_: `audience_unresolved`, empty audience (a Declared no-op), `AudienceUnknown`
+
+**Complete read**:
+A list or roster read the Shim marks complete only on proof: `hasMore:false` on a list page, or distinct active ids equal to `stats.totalActive` on subscribers. A membership-driven write (list delete, sync, cleanup, broadcast) acts only on one.
+_Avoid_: short page, full list, Complete Unread list (the Unread list's)
+
+**Native welcome**:
+Fansly's own welcome rule (`/message/automated`), which Fansly fires itself and Inflowwww cannot read. With it on, a Fan can get both it and our welcome, so the Fansly welcome editor warns instead of refusing.
+_Avoid_: OF welcome (`after_of_welcome`), Fansly welcome, auto-welcome
+
+- **Rules refusal** (`rules_refusal`: smart-list money, renew and return rules refused per row and at `/resolve`), **remove-first capacity** (≤49 members): `.scratch/multi-platform-p2/issues/04`
+- **Branch refusal** (`side_effect_gate.branch_refusal` over a method's `platform_blocked_branches`): `.scratch/multi-platform-p2/issues/03`
+- **Broadcast branch refusal** (`broadcast_branch_refusal`: only one numeric include list, text only), **Contact-guard intersection** (Complete read of that list ∩ contact-guard exclusions must be empty, else refuse with the count): `.scratch/multi-platform-p2/issues/14`
+- **P1–P4** (the four Proof purchases and what each lifts): `.scratch/multi-platform-p2/issues/06`
+- **Dummy Platform** (test-only third key that must fail the Drift test and the every-row-has-a-Backend check): `.scratch/multi-platform-p2/issues/09`
+- **Triage scorecard**, **Triage mark** (O seen logged out, D public doc, OC owner-confirmed, P pending, U unknown; training knowledge is a note, never a mark; avoid: Grade): `docs/platform-triage.md`
 
 ### Cell mode
 
@@ -1368,3 +1528,171 @@ _Avoid_: `claim_failed`, `cell_held`, Not owner, outage
 - **Kill matrix** (every send kind × kill after claim, after accept, after row update; ≤1 accept per Send op, 0 duplicates): ADR-0060
 - **Acceptance run** (local 3 data cells + Control cell + Caddy + app + FakeOF + MinIO + power stub, real login, then env unset; avoid: smoke, which is the N/N+1 one): ticket 12
 - **N/N+1 rule** (formats only gain fields, readers ship before writers, Control cell upgrades last, `min_cell_proto` in Placement): ticket 12
+
+### Leak tracker
+
+Copy, docs and code in git never name the Removal service's brand, domain or private repos; the brand arrives at runtime (ADR-0069).
+
+**Leak tracker**:
+The Creators page `/creators/leaks` and its Relay routes, a thin client that shows each Leak watch's Leaks as read from the Tracker API (ADR-0068). It holds no scraper, host rules or search keys.
+_Avoid_: leak scan, leak search (the Quick scan), leak monitor, Leak gate (deploy-all's `leak-check.sh` of a pushed tree)
+
+**Removal service**:
+The owner's paid leak-removal business and its server, which runs the Tracker API, every Daily scan and the Notice feed, and alone holds Leak history (ADR-0068).
+_Avoid_: the brand name in git, engine, scanner, sidecar, vendor, provider (a `tenant_keys` id)
+
+**Tracker API**:
+The Removal service's tenant-scoped `/v1/` API (`me`, creators, leaks, watches) the Relay calls with a Tracker key in a header.
+_Avoid_: partner API, the Quick scan's `?key=` (it keeps its query key)
+
+**Quick scan**:
+The Removal service's existing one-off public search for a handle, used only to seed a new Leak watch's first Leaks.
+_Avoid_: free scan, scan now, Daily scan
+ASSUMPTION: "Quick scan" over the plan's "free scan" because "free" reads as price next to the Removal offer (rung 5); overturned if specs must mirror the service's own name.
+
+**Tracker tenant**:
+The Removal service's stable record for one Agency (`tenant_id`), which owns that Agency's watches, caps and spend; Tracker keys rotate under it and a revoke ends access without deleting it.
+_Avoid_: tenant on its own (Agency and Deployment both avoid it), client (a Removal client), account
+ASSUMPTION: the service's `tenant_id` keeps its name only as "Tracker tenant", since Agency's entry avoids "tenant" (rung 3); overturned if the owner wants plain "tenant" for the service side.
+
+**Tracker key**:
+An Agency's secret for the Tracker API, in `tenant_keys` under provider `leak_tracker`, outside the LLM provider list, set on an owner-only card. There is no house-key fallback.
+_Avoid_: API key, partner key, LLM key, Ingest key
+
+**Tracker gates**:
+The four checks every Leak tracker route passes server-side, answering 404 when any fails: the Deployment switch (`LEAK_TRACKER_URL` plus `off_only` `LEAK_TRACKER_ENABLED`), the active Agency's `leak_tracker` flag (never through the `all` merge), a Tracker key, and the Team Leader role.
+_Avoid_: feature flag alone, Leak gate, Capability (the Platform table's)
+
+**Leak watch**:
+One Agency's tracking of one Creator: the CRM's `leak_watch` row keyed (agency_user_id, account_id) holding its Leak identity, matched by the service's `watch_id` per (Tracker tenant, CRM account).
+_Avoid_: watch on its own (Watch check, Watcher), subscription, tracked creator, monitor
+
+**Leak identity**:
+What a Leak watch searches for: Platform plus handle (verified from a live session, or typed and unverified), a display name that only confirms, up to 5 manual aliases, and optional Instagram and X.
+_Avoid_: profile, S4S profile, search terms
+
+**Paused watch**:
+A Leak watch the CRM reports as paused (Agency flag off, Creator toggle off, or account deactivated): no new scans, every row kept, the page still readable. Hitting a cap never pauses one.
+_Avoid_: pause reasons (cut), Cell hold, disabled, off
+
+**Leak watch tombstone**:
+The `leak_watch_tombstone` row (watch_id, agency_user_id, account_id, tenant_id, requested_at, attempts, last_error) the CRM writes before dropping a Leak watch, which a Relay job retries as `DELETE /v1/watches/{watch_id}` until a 2xx (ADR-0071); an agency-user delete lands them first.
+_Avoid_: soft delete, cascade, unlink (the Agency grant's)
+
+**Leak**:
+One confirmed URL key (`url_key`) found for one Creator of one Agency, unique per (Agency, Creator, key); two Agencies tracking one Creator have separate Leaks.
+_Avoid_: finding, hit (a search result before admission), result, link, Leak gate
+
+**Pending hit**:
+A title-only search result waiting on the Leak judge; hidden from the page and never a Leak until judged real.
+_Avoid_: unconfirmed Leak, Unconfirmed send (Cell mode's), candidate
+
+**Leak judge**:
+The model check that decides whether a Pending hit is the Creator, asking Jev first, then DeepSeek.
+_Avoid_: judge on its own, classifier, Jev (one model it asks)
+
+**Leak site**:
+The registrable domain a Leak lives on; sibling domains are never merged.
+_Avoid_: host, mirror (the OF Manager mirror, Mirror Employee), site on its own (Platform's avoid list), domain
+
+**Leak kind**:
+What a Leak's URL is: `page`, `mega`, `telegram`, `file_host` or `media` (a Google image or video, linked to its landing-page Leak). Mega, Telegram and file-host Leaks are link-only and never probed.
+_Avoid_: kind on its own (rule and notification kinds), type
+
+**Leak source**:
+How a scan found a Leak: `google_web`, `google_images`, `google_videos`, `site_search` or `mega_index`. A Leak keeps every Leak source it was found by.
+_Avoid_: source on its own, Leak lane, channel (a Notice's)
+
+**Daily scan**:
+One Removal service pass per Leak watch per UTC day: Origin probes, the Mega lookup, the listing recheck and one Google fresh pass.
+_Avoid_: check, run, re-check, sweep, baseline (Baseline run), Quick scan
+
+**Weekly slot**:
+The one weekday per Leak watch, the least-loaded at enable, for the full Google pass (at most 31 loads) and the registry crawl.
+_Avoid_: hash slot, Run slot, S4S slot, weekly scan
+
+**Leak lane**:
+One kind of work a Daily scan or Weekly slot does (Origin probe, Mega lookup, listing recheck, Google fresh pass, full Google pass, registry crawl), each with its own last success and next attempt.
+_Avoid_: Lane on its own (Full AI Chat's automation), discovery lane (Discovery is S4S's, ADR-0011), Leak source
+ASSUMPTION: "Leak lane" over the plan's bare "lane" and "discovery lanes", both already taken (rung 3, the Lane and Discovery entries); overturned if specs need another word.
+
+**Origin probe**:
+A plain HTTP fetch of a known Leak's URL that updates its Probe state and, on a change, its Origin status.
+_Avoid_: check, ping, recovery probe ladder (an expired session's)
+
+**Probe state**:
+The one rolling row per Leak (`probe_state`: last probe time, `last_live_at`, consecutive dead count, last status, `first_dead`, `flaps`, and `dead_since`, the first dead probe of the current dead run) that routine Origin probes overwrite; never part of the Leak event log (ADR-0070).
+_Avoid_: probe log, probe history
+
+**Origin status**:
+Whether a Leak's URL still serves: `live`, `blocked`, `gone` or `unknown`. `gone` needs a 404, 410 or removal page on 2 Origin probes in a row.
+_Avoid_: availability, alive, removed, Blocked method (a Shim's)
+
+**Google visibility**:
+Whether the last scan that ran a Leak's query saw it in Google; a query that did not run leaves it unknown, never missing.
+_Avoid_: indexed, delisted (only a Notice outcome sets that)
+
+**Leak pill**:
+The one state a Leak row shows: Live, Cached (gone at origin, still in Google), Gone, Listed (link-only, still listed) or Not checked yet.
+_Avoid_: status (Origin status), badge (Platform badge, Came back), chip
+
+**Came back**:
+The event badge on a Leak whose Origin status turned live again after gone; counted apart from New today, never a Leak pill.
+_Avoid_: reappeared, regression, relapse
+
+**Leak event log**:
+The append-only per-Leak history (`seen`, origin-status change, `google_seen`, `notice`, `notice_outcome`) that every derived date and count is computed from (ADR-0070). `scan_partial` is watch-scoped, so it lives outside it, as an append-only `lane_day` row.
+_Avoid_: history table, audit log, Witness journal, probe log
+
+**New today**:
+A Leak whose `first_seen_at` falls on today's UTC day, finished scan or not; a Leak watch's first Leaks read "Found on first scan" instead.
+_Avoid_: new since yesterday, latest scan, fresh
+
+**Visible Leak**:
+A confirmed Leak still live at origin or still in Google.
+_Avoid_: active Leak, open Leak, Live promo
+
+**Load reservation**:
+The Removal service's atomic hold, taken before each paid call, against the global daily load cap, the Tracker tenant's monthly load allowance and its Creator cap. Over a cap discovery waits and probes run.
+_Avoid_: reservation on its own (Creator reservation), budget (Cell budget), quota, Model-call cap
+
+**Notice**:
+A removal request filed outside the CRM through one channel (`site`, `host`, `google_dmca`, `google_outdated`), known only from a confirmed send.
+_Avoid_: takedown, DMCA (one channel), filing, Fill notice (Script fill's toast)
+
+**Notice outcome**:
+A later decision on a Notice, stored as its own event; the only source of Delisted.
+_Avoid_: status, result
+
+**Notice feed**:
+The daily push of confirmed sends and decisions from the owner's laptop exporter to the Removal service with the Ingest key, replaying every ledger each run (ADR-0072).
+_Avoid_: notice sync, import, pull, Notifications panel
+
+**Service status**:
+Whether a Creator of an Agency is a Removal client: `none`, `pending`, `active`, `former` or `unknown`, set by the owner in the service and never inferred from Notices.
+_Avoid_: client flag, subscription, entitlement, Offer outcome
+
+**Removal track**:
+A Creator's Notice side of the page: Gone after notice, Gone with no notice on file, Delisted, and live N days after notice, always as counts.
+_Avoid_: removal rate, success rate, pipeline, compliance
+
+**Gone after notice**:
+A noticed Leak whose first dead Origin probe came after its first Notice; each Leak counts once.
+_Avoid_: removed by us, taken down, gone on its own (the rest are "Gone, no notice on file")
+
+**Delisted**:
+A Leak Google dropped by its own decision, known only from an imported Notice outcome; a Google miss never sets it.
+_Avoid_: deindexed, missing from Google, Cached
+
+**Removal offer**:
+The one drill-in card offering the Removal service's help, shown only to Owner or Admin for Service status `none`, `former` or (with a fresh Notice feed) `unknown`.
+_Avoid_: Offer (Full AI Chat's PPV), upsell, pitch, banner, ad
+
+- **Removal client** (a Creator the Removal service works for), **Removal client mapping** (the owner's two CLI maps, source-tool client → Removal client → Agency + Creator; never by handle), **withheld** (an event of an unlinked or ignored source client: counted, never stored, since Notices for non-clients are not kept): tickets 09, 10
+- **Ingest key** (the owner's own key for the Notice feed, never a Tracker key), **stale banner** (shown over counts when the last ingest is over 48 h old): ticket 09
+- **Strong alias** (5+ characters, queried alone), **weak alias** (4 characters, only beside the handle): ticket 05
+- **Waitlist** (a new Leak watch refused because its projected peak day passes the global cap), **`scan_partial`** (a cap made discovery wait; a watch-scoped `lane_day` row, not a Leak event), **`coverage_reduced`** (the day's Google load failed): ticket 04
+- **Today strip** (header counts across Creators), **Leak roster** (one row per Leak watch; avoid roster alone, Roster count), **drill-in** (one Creator's side panel, a full sheet on phone): ticket 08
+- **`leak_daily` row** (one agency-bell row per UTC day with news, a dated snapshot, owner only; avoid: digest, alert): ticket 07
+- **Demo tracker** (the demo's fixture-only Tracker API, held by a zero-egress test), **consent attestation** (the required checkbox at enable): tickets 03, 10
+- **Purge** (30 days after a delete request, Phase 1's daily job; or after a tenant offboard, Phase 4; backups roll off within 30 more): ADR-0071

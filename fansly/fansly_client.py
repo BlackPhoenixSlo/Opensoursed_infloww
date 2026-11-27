@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -68,7 +69,7 @@ fansly-session-id header) and `accountId` (us). Nothing else is needed.
 """
 
 
-NOT_DELIVERIES = frozenset({"/account/media"})
+DELIVERIES = frozenset({"/message", "/message/broadcast"})
 
 
 class FanslyAPIError(Exception):
@@ -228,11 +229,11 @@ class FanslyClient:
                 headers=self._headers(api_path, signed=signed, body=json_body is not None),
                 timeout=self.timeout,
             )
-        tripwire = sys.modules.get("send_tripwire") if method != "GET" and path not in NOT_DELIVERIES else None
-        budget = tripwire.budget() if tripwire is not None else None
-        if method != "GET" and budget is None and (hold := sys.modules.get("cell_hold")) is not None:
-            hold.refuse_writes()
-        response = request() if budget is None else budget.leave(request, lambda _e: False)
+        if method != "GET" and os.environ.get("OI_CELL_MAP"):
+            import send_tripwire
+            response = send_tripwire.leave(request, delivery=method == "POST" and path in DELIVERIES)
+        else:
+            response = request()
 
         try:
             payload = response.json()

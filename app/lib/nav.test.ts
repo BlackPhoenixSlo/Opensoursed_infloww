@@ -47,8 +47,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       "Vault Pro",
       "Growth: Smart Messages / Smart lists / Auto-follow / Scripts / Profile promotion / Free trial links / Tracking links / Redirect links / Bio pages / Sensitive words",
       "Share for Share: Discover creators / Requests / S4S schedule / S4S settings",
-      "My Automations: Auto Mass / Auto Post / Auto Story / Auto Funnel / Gen-Info",
-      "Full AI Chat",
+      "My Automations: Auto Mass / Auto Post / Auto Story / Auto Funnel / Gen-Info / Full AI Chat",
       "—",
       "Creators: Manage creators / Custom proxy",
       "Employees: Manage employees / Shift schedule",
@@ -72,7 +71,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     expect(CHATTER_OPT_IN_PAGES.has("/growth/auto-reply")).toBe(true);
     for (const href of ["/growth/get-to-know-fans", "/full-ai-chatter", "/ai-rules"]) expect(CHATTER_OPT_IN_PAGES.has(href)).toBe(false);
     expect(sidebarHref("/ai-rules")).toBe("/full-ai-chatter");
-    expect(outline(drawnSidebar(SIDEBAR, { chatterOnly: false, grantedPages: new Set(["/ai-rules"]) }))).toEqual(["AI rules", "—"]);
+    expect(outline(drawnSidebar(SIDEBAR, { chatterOnly: false, grantedPages: new Set(["/ai-rules"]) }))).toEqual(["My Automations: AI rules", "—"]);
   });
 
   it("My Automations has the automation pages in the requested order; the hidden My AI Chatter group the AI chat lanes", () => {
@@ -86,6 +85,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       ["Auto Story", "/growth/auto-story"],
       ["Auto Funnel", "/growth/auto-funnel"],
       ["Gen-Info", "/growth/gen-info"],
+      ["Full AI Chat", "/full-ai-chatter"],
     ] });
     expect(group("My AI Chatter")).toEqual({ optIn: true, children: [
       ["Auto-reply", "/growth/auto-reply"],
@@ -93,7 +93,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     ] });
   });
 
-  it("Full AI Chat is an owner-only top-level Permission page of its own, not opt-in", () => {
+  it("Full AI Chat is an owner-only Permission page under My Automations, not opt-in", () => {
     expect(findNavLink("/full-ai-chatter")).toMatchObject({ label: "Full AI Chat", chatterHidden: true });
     expect(PERMISSION_PAGES.has("/full-ai-chatter")).toBe(true);
     expect(CHATTER_OPT_IN_PAGES.has("/full-ai-chatter")).toBe(false);
@@ -141,7 +141,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     expect(automations(true, { pages: ["/messages-pro"], opt_in: ["/growth/auto-mass"] }))
       .toEqual(["My Automations: Auto Mass", ""]);
     expect(automations(false, { pages: null })).toEqual([
-      "My Automations: Auto Mass / Auto Post / Auto Story / Auto Funnel / Gen-Info",
+      "My Automations: Auto Mass / Auto Post / Auto Story / Auto Funnel / Gen-Info / Full AI Chat",
       "My AI Chatter: Auto-reply / Get to know fans",
     ]);
     const off = sessionGrantedPages(true, { pages: null, opt_in: [] });

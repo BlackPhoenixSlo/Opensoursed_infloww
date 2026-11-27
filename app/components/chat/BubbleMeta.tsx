@@ -109,15 +109,13 @@ export function BubbleStatusRow({ msg, side, scheduled, pending, failed, onRetry
         <>
           {msg._failedUncertain ? (
             <span className="text-err">not confirmed</span>
-          ) : msg._failedPaused ? (
-            <span className="text-err">Sending paused</span>
           ) : (
             <button
               type="button"
               onClick={() => msg._tempId != null && onRetry(msg._tempId)}
               className="text-err hover:underline"
             >
-              failed — retry
+              {msg._failedPaused ? "Sending paused — retry" : "failed — retry"}
             </button>
           )}
           {msg._failedReason && (

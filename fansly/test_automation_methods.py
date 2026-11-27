@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 
 from fansly_client import FanslyAPIError, FanslySession
-from fansly_shim import FanslyShimClient
+from fansly_shim import FanslyShimClient, FanslyUnsupported
 
 US = "700237824869654528"
 FAN = "900108301660352512"
@@ -210,9 +210,15 @@ def main() -> int:
     check(out == {"list": [{"id": LIST, "name": "vip"}], "hasMore": False},
           f"get_lists must return OF's list page: {out}")
 
+    for name in ("pin_message", "unpin_message", "mark_chat_unread"):
+        c, calls = _client()
+        try:
+            got = getattr(c, name)(MSG, FAN)
+        except FanslyUnsupported:
+            got = "raised"
+        check(got == "raised", f"{name} must raise, not answer {got!r}")
+        check(not calls, f"{name} must never touch the network: {calls}")
     expected = {
-        "pin_message": {"success": True},
-        "unpin_message": {"success": True},
         "get_pinned_messages": [],
         "hide_vault_media": {"success": False},
         "vault_media_lookup_hash": None,
@@ -225,11 +231,11 @@ def main() -> int:
         check(got == want, f"{name} must return {want!r}, got {got!r}")
         check(not calls, f"{name} must never touch the network: {calls}")
         check(getattr(getattr(FanslyShimClient, name),
-                      "fansly_unsupported", None),
-              f"{name} must carry the fansly_unsupported marker")
+                      "platform_unsupported", None),
+              f"{name} must carry the platform_unsupported marker")
     c, _ = _client()
-    c.pin_message(MSG)["success"] = "mutated"
-    check(c.pin_message(MSG) == {"success": True},
+    c.hide_vault_media(MSG)["success"] = "mutated"
+    check(c.hide_vault_media(MSG) == {"success": False},
           "a no-op's return value must be fresh per call")
 
     c, calls = _client()

@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { resetCellFlagForTests } from "@/lib/cellFlag";
 import { chatListAccountKey } from "@/hooks/useChatList";
-import { relay } from "./relay";
-import { askCells, currentCellMap, forgetCellMap, loadCellMap } from "./cellMap";
-import { fetchAccounts } from "./ownerAccounts";
+import { QueryClient } from "@tanstack/react-query";
+import { relay, STALE_CELL_GEN_EVENT } from "./relay";
+import { askCells, currentCellMap, forgetCellMap, loadCellMap, refreshCellMap } from "./cellMap";
+import { fetchAccounts, ownerAccountsQuery, type AccountsResp } from "./ownerAccounts";
 import type { CellMap } from "./cellInbox";
 
 const MAP: CellMap = {
@@ -50,6 +52,7 @@ describe("cell-mode roster", () => {
     const meta = document.createElement("meta");
     meta.name = "oi-cells";
     document.head.appendChild(meta);
+    resetCellFlagForTests();
     vi.useFakeTimers({ toFake: ["setTimeout"] });
     try {
       vi.spyOn(relay, "get").mockImplementation(((path: string, ctx?: { cellId?: string }) => {
@@ -60,10 +63,107 @@ describe("cell-mode roster", () => {
       const got = fetchAccounts();
       await vi.advanceTimersByTimeAsync(1_000);
       const r = await got;
-      expect(r.accounts.map((a) => [a.id, a.nickname ?? null, a.has_session])).toEqual([["10", "Ten", true], ["20", null, true]]);
+      expect(r.accounts).toEqual([
+        expect.objectContaining({ id: "10", nickname: "Ten", has_session: true }),
+        { id: "20", platform: "onlyfans", is_active: true, proxy_down: true, rosterPending: true },
+      ]);
     } finally {
       vi.useRealTimers();
       meta.remove();
+      resetCellFlagForTests();
     }
   });
+});
+
+it("reloads once and keeps the prior grants when the control Cell fails", async () => {
+  const get = vi.spyOn(relay, "get").mockResolvedValueOnce(MAP).mockRejectedValueOnce(new Error("offline"));
+  await loadCellMap();
+  const reload = refreshCellMap();
+  expect(refreshCellMap()).toBe(reload);
+  await expect(reload).rejects.toThrow("offline");
+  expect(currentCellMap()).toBe(MAP);
+  const revoked = { ...MAP, grant_gen: 5, accounts: [] };
+  get.mockResolvedValueOnce(revoked);
+  await expect(refreshCellMap()).resolves.toBe(revoked);
+  expect(currentCellMap()).toBe(revoked);
+});
+
+it("dedupes refresh events from relay failures", async () => {
+  const get = vi.spyOn(relay, "get").mockResolvedValue(MAP);
+  const moved = { ...MAP, placement_gen: 3 };
+  await loadCellMap();
+  const pending = Promise.withResolvers<CellMap>();
+  get.mockReturnValueOnce(pending.promise);
+  for (const reason of ["stale", "not_owner", "actor_stale"]) {
+    window.dispatchEvent(new CustomEvent(STALE_CELL_GEN_EVENT, { detail: { reason } }));
+  }
+  expect(get).toHaveBeenCalledTimes(2);
+  pending.resolve(moved);
+  await expect(refreshCellMap()).resolves.toBe(moved);
+  expect(currentCellMap()).toBe(moved);
+});
+
+it("keeps the cached roster after the paint deadline, then publishes the late answer", async () => {
+  const meta = document.createElement("meta");
+  meta.name = "oi-cells";
+  document.head.appendChild(meta);
+  resetCellFlagForTests();
+  const client = new QueryClient();
+  const options = ownerAccountsQuery("u1");
+  const late = Promise.withResolvers<unknown>();
+  vi.useFakeTimers({ toFake: ["setTimeout"] });
+  try {
+    vi.spyOn(relay, "get").mockImplementation(async (path, ctx) => {
+      if (path === "/auth/cells") return MAP as never;
+      if (ctx?.cellId === "s02") return { accounts: [{ id: "10", nickname: "Ten" }] } as never;
+      return late.promise as Promise<never>;
+    });
+    const first = client.fetchQuery(options);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect((await first).accounts.map((a) => a.nickname)).toEqual(["Ten", undefined]);
+    late.resolve({ accounts: [{ id: "20", nickname: "Twenty" }] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getQueryData<AccountsResp>(options.queryKey)?.accounts.map((a) => a.nickname))
+      .toEqual(["Ten", "Twenty"]);
+    vi.mocked(relay.get).mockRejectedValue(new Error("offline"));
+    const next = await client.fetchQuery({ ...options, staleTime: 0 });
+    expect(next.accounts.map((a) => a.nickname)).toEqual(["Ten", "Twenty"]);
+  } finally {
+    client.clear();
+    vi.useRealTimers();
+    meta.remove();
+    resetCellFlagForTests();
+  }
+});
+
+it("backs off sequential routing failures and lets stale generation bypass once", async () => {
+  vi.useFakeTimers();
+  try {
+    const get = vi.spyOn(relay, "get").mockResolvedValue(MAP);
+    const signal = (reason: string) => window.dispatchEvent(new CustomEvent(STALE_CELL_GEN_EVENT, { detail: { reason } }));
+    await loadCellMap();
+    signal("stale");
+    await refreshCellMap();
+    expect(get).toHaveBeenCalledTimes(2);
+    signal("stale");
+    signal("not_owner");
+    signal("not_owner");
+    expect(get).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(get).toHaveBeenCalledTimes(3);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("aborts a stalled map read and permits a later refresh", async () => {
+  const nativeTimeout = AbortSignal.timeout.bind(AbortSignal);
+  vi.spyOn(AbortSignal, "timeout").mockImplementation(() => nativeTimeout(10));
+  const get = vi.spyOn(relay, "get").mockImplementationOnce((_path, _ctx, signal) => new Promise((_resolve, reject) => {
+    if (!signal) return reject(new Error("missing deadline"));
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  })).mockResolvedValue(MAP);
+  await expect(loadCellMap()).rejects.toMatchObject({ name: "TimeoutError" });
+  await expect(refreshCellMap()).resolves.toBe(MAP);
+  expect(get).toHaveBeenCalledTimes(2);
 });

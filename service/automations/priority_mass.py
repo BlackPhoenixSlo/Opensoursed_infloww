@@ -293,6 +293,12 @@ async def _leg(run: PriorityMassRun) -> dict:
                         body={"text": t, "price": price, "media": media, "previews": previews}),
                     send_purpose=_SEND_PURPOSE, tries=1, dm=True)
             except Exception as exc:  # noqa: BLE001
+                if reason := send_ops.refusal_reason(exc):
+                    await _set_recipient(rid, fid, PENDING)
+                    stats["deferred"] += 1
+                    delay_s = _DEFER_S
+                    send_ops.skip_fan(exc, reason=reason)
+                    continue
                 if await skip_unreachable_fan(aid, fid, exc, log=log):
                     await _set_recipient(rid, fid, SKIPPED, reason="unreachable")
                     stats["skipped"] += 1
@@ -320,6 +326,10 @@ async def _leg(run: PriorityMassRun) -> dict:
                     stats["unknown"] += 1
                 log.warning("priority_mass send failed run=%s account=%s fan=%s",
                             rid, aid, fid, exc_info=True)
+                continue
+            if send_ops.is_reconciled(result):
+                await _set_recipient(rid, fid, SENT)
+                stats["sent"] += 1
                 continue
             msg_id = result.get("id") if isinstance(result, dict) else None
             if not msg_id:

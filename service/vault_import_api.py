@@ -243,10 +243,10 @@ async def of_vault_upload_batch(
             await relay_host.reject_if_resale(aid, fan["id"], relay_host.send_message_body(text=""))
             def send():
                 before_send_at = read_flip.now_ms()
-                if not os.environ.get("OI_CELL_MAP"):
+                import send_ops
+                if not send_ops.cells():
                     return before_send_at, thunk(), False
                 import accounts
-                import send_ops
                 name, target = accounts.get_platform(aid), str(fan["id"])
                 result, replay = send_ops.dispatch(
                     name, aid, send_ops.op_id(name, aid, "vault_send", target, run_id, part), "vault_send", target,

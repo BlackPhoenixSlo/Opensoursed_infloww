@@ -135,3 +135,10 @@ describe("spliceHead", () => {
     expect(out.missing).toEqual(["20"]);
   });
 });
+
+it("keeps a missing Creator at its cursor while healthy Creators advance", async () => {
+  const { nextCellCursors } = await import("./cellInbox");
+  expect(nextCellCursors({
+    rows: [], hasMore: true, moreAccounts: ["10", "20"], scanned: 1, missing: ["20"],
+  }, 50, 10)).toEqual({ "10": 60, "20": 50 });
+});

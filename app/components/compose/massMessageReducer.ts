@@ -1,3 +1,4 @@
+import { sendKey } from "@/lib/opId";
 import { SENSITIVE_BLOCK_MESSAGE } from "@/lib/sensitiveWords";
 import { previewIdsFor, textBoxReducer, wireMedia, type TextBoxAction } from "@/lib/composeDraft";
 import { isOfHtml, OF_TEXT_MAX, ofPlainText, TEXT_TOO_LONG } from "@/lib/ofRichText";
@@ -157,9 +158,13 @@ export function massMessageReducer(s: MassForm, a: MassAction): MassForm {
   // A round in flight, or a model that sent: content is locked so a paid broadcast can't be re-sent altered
   if (fanOutLocked(s)) return s;
   const next = editReducer(s, a);
-  const sameSend = next === s || next.opId === null || (a.type === "field" && a.k === "gifPickerOpen")
-    || (a.type === "addGif" && next.pickedGifs === s.pickedGifs);
-  return sameSend ? next : { ...next, opId: null };
+  if (next === s || next.opId === null || massSendKey(next) === massSendKey(s)) return next;
+  return { ...next, opId: null };
+}
+
+function massSendKey(f: MassForm): string {
+  return sendKey(f.accountId, f.allModels, [...f.smartInclude], [...f.smartExclude],
+    f.pickedGifs.slice(1).map((gif) => gif.id), buildMassBody(f, true));
 }
 
 function editReducer(s: MassForm, a: MassAction): MassForm {

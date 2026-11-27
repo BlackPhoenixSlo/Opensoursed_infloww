@@ -292,7 +292,7 @@ describe("AppShell on Messages Pro: a window of its own (ADR-0002)", () => {
     fireEvent.click(group("My Automations"));
     expect(group("My Automations")).toHaveAttribute("aria-expanded", "true");
     expect(group("Growth")).toHaveAttribute("aria-expanded", "false");
-    // Full AI Chat is a top-level link; the My AI Chatter group and AI rules are not drawn (owner 11-15).
+    // Full AI Chat is a My Automations link; the My AI Chatter group and AI rules are not drawn (owner 11-15).
     expect(screen.getByRole("link", { name: "Full AI Chat" })).toHaveAttribute("href", "/full-ai-chatter");
     expect(screen.queryByRole("button", { name: "My AI Chatter" })).toBeNull();
     for (const name of ["Auto-reply", "Get to know fans", "AI rules"]) expect(screen.queryByRole("link", { name })).toBeNull();

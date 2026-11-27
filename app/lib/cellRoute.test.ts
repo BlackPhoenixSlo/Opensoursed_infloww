@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { ACCOUNT_PATH_RES, CONTROL_PATHS, RELAY_PATHS, accountOf, routeOf } from "@/lib/cellRoute";
+import { ACCOUNT_PATH_RES, CONTROL_PATHS, CONTROL_WRITES, RELAY_PATHS, accountOf, routeOf } from "@/lib/cellRoute";
 
 const FLEET = readFileSync(resolve(__dirname, "../../deploy/fleet/fleet.py"), "utf8");
 
@@ -16,6 +16,14 @@ describe("mirror of the Front door in fleet.py", () => {
   it("control and relay paths match", () => {
     expect([...CONTROL_PATHS]).toEqual(pyTuple("CONTROL_PATHS"));
     expect([...RELAY_PATHS]).toEqual(pyTuple("RELAY_PATHS"));
+  });
+  it("matches fleet control writes by method and path", () => {
+    const { routes } = JSON.parse(readFileSync(resolve(__dirname, "../../service/cell_scope.json"), "utf8"));
+    expect([...CONTROL_WRITES]).toEqual(Object.keys(routes).filter((key) =>
+      routes[key].scope === "agency" && !/^(GET|HEAD|OPTIONS) /.test(key)));
+    expect(routeOf("/admin/users/42/accounts", h(), "POST")).toBe("control");
+    expect(routeOf("/admin/users/42/accounts", h(), "GET")).toBeNull();
+    expect(routeOf("/admin/my-llm-keys", h(), "PUT")).toBe("control");
   });
   it("account path regexes match", () => {
     const body = /^ACCOUNT_PATH_RES = \(([\s\S]*?)\n\)\n/m.exec(FLEET)?.[1] ?? "";

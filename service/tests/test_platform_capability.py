@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import platforms
-from side_effect_gate import classify
+from side_effect_gate import LIVE_CHECK_LANES, classify
 from of_client import OFClient
 
 SERVICE = Path(__file__).resolve().parents[1]
@@ -85,8 +85,10 @@ def case_every_backend_shim_holds_the_surface():
             kinds.setdefault(verdict(shim, name), []).append(name)
         route_misses = [n for n in kinds.get("missing", []) if n in routes]
         other_misses = [n for n in kinds.get("missing", []) if n not in routes]
+        live = set(kinds.get("live_check", [])) | LIVE_CHECK_LANES
         print(f"{module.__name__}: {len(surface)} names, {len(routes)} route-reached; "
-              + ", ".join(f"{k} {len(v)}" for k, v in sorted(kinds.items()))
+              + ", ".join(f"{k} {len(v)}" for k, v in sorted(kinds.items()) if k != "live_check")
+              + f"; live_check {len(live)}"
               + f"; route misses {len(route_misses)}, other misses {len(other_misses)}")
         for name in kinds.get("blocked", []):
             print(f"    Blocked {name}: {classify(shim, name)[1]}")

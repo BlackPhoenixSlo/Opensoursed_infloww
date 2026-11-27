@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -127,6 +128,12 @@ async def _public(runs: list[PriorityMassRun]) -> list[dict[str, Any]]:
 
 async def _get_run(run_id: int, request: Request | None = None) -> PriorityMassRun:
     scope = request.headers.get("x-account-id") if request is not None else None
+    if request is not None and os.environ.get("OI_CELL_MAP"):
+        from cell_mode import route_creator
+
+        scope = await route_creator(request)
+        if not scope:
+            raise HTTPException(400, detail={"error": "account_required"})
     async with get_session() as s:
         row = await s.get(PriorityMassRun, int(run_id))
         if row is not None:
@@ -142,6 +149,11 @@ async def create_run(request: Request) -> dict[str, Any]:
     body = await json_object(request, 422)
     v = _validate(body)
     aid = v["account_id"]
+    if os.environ.get("OI_CELL_MAP"):
+        from cell_mode import route_creator
+
+        if await route_creator(request) != aid:
+            raise HTTPException(400, detail={"error": "account_conflict"})
     assert_account_owned(aid)
     if v["text"]:
         if sensitive_hits(v["text"], await _sensitive_words(aid)):

@@ -1,4 +1,7 @@
-import { cellMode, relay } from "@/lib/relay";
+import { cellMode } from "@/lib/cellFlag";
+import { groupByCell, type CellMap } from "@/lib/cellInbox";
+import { loadCellMap } from "@/lib/cellMap";
+import { relay } from "@/lib/relay";
 import { SELECTED_SOURCE, sortedIds, type LeaseBody } from "@/lib/viewLeaseState";
 
 export const VIEW_LEASE_RENEW_MS = 20_000;
@@ -27,10 +30,61 @@ export interface LeaseAnswer {
   warm: "started" | "reused" | "none";
 }
 
+interface CellLeaseState {
+  opening: boolean;
+  opened: Set<string>;
+  held: Set<string>;
+  flight?: Promise<LeaseAnswer>;
+}
+
+const cellLeases = new Map<string, CellLeaseState>();
+
 export async function postLease(body: LeaseBody): Promise<LeaseAnswer> {
   if (!cellMode()) return relay.post<LeaseAnswer>("/admin/view-lease", body);
-  const ids = [...new Set([...body.account_ids, ...(body.selected ? [body.selected] : [])])];
-  const answers = await Promise.all(ids.map((accountId) => relay.post<LeaseAnswer>("/admin/view-lease", body, { accountId })));
+  const map = await loadCellMap();
+  const key = JSON.stringify([map.actor, body.tab]);
+  let state = cellLeases.get(key);
+  if (!state) {
+    state = { opening: false, opened: new Set(), held: new Set() };
+    cellLeases.set(key, state);
+  }
+  const previous = state.flight;
+  const pending = previous
+    ? previous.catch(() => {}).then(() => postCellLease(body, state, map))
+    : postCellLease(body, state, map);
+  state.flight = pending;
+  try {
+    return await pending;
+  } finally {
+    if (state.flight === pending) delete state.flight;
+  }
+}
+
+async function postCellLease(body: LeaseBody, state: CellLeaseState, map: CellMap): Promise<LeaseAnswer> {
+  state.opening ||= body.opened;
+  const held = new Set(body.account_ids);
+  const ids = [...held, ...(body.selected && !held.has(body.selected) ? [body.selected] : [])];
+  const groups = new Map(groupByCell(ids, map));
+  const granted = new Set(map.accounts.map((a) => a.cell));
+  const cells = new Set([
+    ...[...granted].filter((cell) => state.opening && !state.opened.has(cell)),
+    ...groups.keys(), ...state.held,
+  ]);
+  const settled = await Promise.allSettled([...cells].map(async (cellId) => {
+    const accounts = groups.get(cellId) ?? [];
+    const opened = state.opening && granted.has(cellId) && !state.opened.has(cellId);
+    if (accounts.length) state.held.add(cellId);
+    const answer = await relay.post<LeaseAnswer>("/admin/view-lease", {
+      ...body, opened, account_ids: accounts.filter((id) => held.has(id)),
+      selected: body.selected && accounts.includes(body.selected) ? body.selected : null,
+    }, { cellId }, AbortSignal.timeout(5_000));
+    if (opened) state.opened.add(cellId);
+    if (!accounts.length) state.held.delete(cellId);
+    return answer;
+  }));
+  const answers = settled.flatMap((r) => r.status === "fulfilled" ? [r.value] : []);
+  const failure = settled.find((r) => r.status === "rejected");
+  if (!answers.length && failure) throw failure.reason;
   const warms = answers.map((a) => a.warm);
   return {
     leased: [...new Set(answers.flatMap((a) => a.leased))],

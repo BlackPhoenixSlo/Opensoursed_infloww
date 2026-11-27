@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Full AI Chat (ours; owner only, a top-level sidebar link, same /full-ai-chatter address). The header's "AI rules"
+ * Full AI Chat (ours; owner only, a My Automations sidebar link, same /full-ai-chatter address). The header's "AI rules"
  * opens the Full AI Turn diagram (`AiRulesDiagram`, also at /ai-rules) in a near full-screen popup. A settings column
  * (`FullAiSettings`: Make draft live / Roll back / JSON over the draft config on top, then Mode, LLM keys, reply speed, Human
  * style, GIFs, Sell); beside it (under it on a phone: the column comes first) one row with the persona editor

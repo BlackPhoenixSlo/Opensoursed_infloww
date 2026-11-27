@@ -227,9 +227,9 @@ def _platform(aid, key):
             accounts.save_meta(aid, saved)
 
 
-def case_only_a_fansly_creator_is_refused_whatever_the_key():
+def case_only_an_onlyfans_creator_goes_live():
     owner = fx.login_owner("agency_a_owner")
-    for key, want in ((None, 200), ("onlyfans", 200), ("myspace", 200), ("fansly", 409)):
+    for key, want in ((None, 200), ("onlyfans", 200), (" OnlyFans ", 200), ("myspace", 409), ("fansly", 409)):
         with _switch("1"), _platform(A, key):
             r = _post(owner, A)
         assert r.status_code == want, (key, r.status_code, r.text)

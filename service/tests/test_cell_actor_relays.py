@@ -85,29 +85,48 @@ def _cells():
             "s02": {"OI_ACCOUNTS": f"onlyfans:{NOVA_A},onlyfans:{NOVA_B}", "OI_CELL_COPY_KEY": KEY,
                     "OI_CELL_CONTROL_URL": f"http://127.0.0.1:{ports['s01']}", "OI_CELL_ACTOR_PUBKEY": pub,
                     "SHARE_TOKEN": SHARE}}
-        procs = []
-        try:
-            for sid, role in (("s01", "control"), ("s02", "data")):
-                procs.append(_boot(root, sid, role, placement, extra[sid], ports[sid]))
+        roles = {"s01": "control", "s02": "data"}
+        procs = {}
+
+        def up(sid: str) -> None:
+            procs[sid] = _boot(root, sid, roles[sid], placement, extra[sid], ports[sid])
+
+        def live(sid: str) -> None:
             deadline = time.monotonic() + 240
-            for (p, _log), sid in zip(procs, ports):
-                while True:
-                    assert p.poll() is None, (root / sid / "relay.log").read_text()[-3000:]
-                    with contextlib.suppress(OSError):
-                        if _ask_h(ports[sid], "GET", "/livez")[0] == 200:
-                            break
-                    assert time.monotonic() < deadline, "relay never answered /livez"
-                    time.sleep(0.5)
-            yield ports, {sid: str(root / sid / "relay.db") for sid in ports}, root, placement
+            while True:
+                assert procs[sid][0].poll() is None, (root / sid / "relay.log").read_text()[-3000:]
+                with contextlib.suppress(OSError):
+                    if _ask_h(ports[sid], "GET", "/livez")[0] == 200:
+                        return
+                assert time.monotonic() < deadline, "relay never answered /livez"
+                time.sleep(0.5)
+
+        def stop(sid: str) -> None:
+            p, log = procs.pop(sid)
+            p.terminate()
+            try:
+                p.wait(30)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+            log.close()
+
+        def restart(sid: str, between):
+            stop(sid)
+            got = between()
+            up(sid)
+            live(sid)
+            return got
+
+        try:
+            for sid in roles:
+                up(sid)
+            for sid in roles:
+                live(sid)
+            yield ports, {sid: str(root / sid / "relay.db") for sid in ports}, root, placement, restart
         finally:
-            for p, log in procs:
-                p.terminate()
-                try:
-                    p.wait(30)
-                except subprocess.TimeoutExpired:
-                    p.kill()
-                    p.wait()
-                log.close()
+            for sid in list(procs):
+                stop(sid)
 
 
 def _cookies(headers_list) -> dict[str, str]:
@@ -173,7 +192,7 @@ def _claims(tok: str) -> dict:
 
 
 def case_one_sign_in_on_control_reads_on_the_data_cell() -> None:
-    with _cells() as (port, db, root, placement):
+    with _cells() as (port, db, root, placement, _restart):
         ctl, cell = port["s01"], port["s02"]
         st, h, raw = _ask_h(ctl, "POST", "/auth/register", body={"username": "acmeowner", "password": "Owner-Pw-77"})
         assert st == 200, (st, raw[:300])
@@ -193,6 +212,28 @@ def case_one_sign_in_on_control_reads_on_the_data_cell() -> None:
         cl = _claims(tok)
         assert cl["kind"] == "user" and cl["id"] == owner == cl["eff_id"] and cl["ro"] is False, cl
         assert cl["agency"] == "acme" and cl["exp"] - cl["iat"] <= 900 and cl["ggen"] == gen, cl
+        with contextlib.closing(sqlite3.connect(db["s02"], timeout=30)) as c, c:
+            c.execute(
+                "INSERT INTO priority_mass_runs (id, account_id, status, text, media_json, previews_json, "
+                "price_cents, locked_text, audience_json, created_at) VALUES (41, ?, 'running', '', '[]', "
+                "'[]', 0, 0, '{}', CURRENT_TIMESTAMP)", (NOVA_B,))
+            c.execute(
+                "INSERT INTO transactions (id, account_id, kind, amount_cents, currency, occurred_at, ingested_at) "
+                "VALUES (42, ?, 'tip', 100, 'USD', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (NOVA_B,))
+        headers = _jar(oi_actor=tok)
+        scoped_sale = f"/admin/ingest/transactions/42/attribute?account_id={NOVA_A}"
+        st, _h, raw = _ask_h(cell, "POST", scoped_sale, headers, {"employee_id": "no_one"})
+        assert st == 404, (st, raw[:300])
+        scoped_run = f"/admin/priority-mass/runs/41/cancel?account_id={NOVA_A}"
+        st, _h, raw = _ask_h(cell, "POST", scoped_run, headers)
+        assert st == 404, (st, raw[:300])
+        st, _h, raw = _ask_h(cell, "POST", f"/admin/priority-mass/runs?account_id={NOVA_A}", headers,
+                             {"account_id": NOVA_B, "text": "scoped create", "user_lists": ["fans"]})
+        assert (st, _err(raw)) == (400, "account_conflict"), (st, raw[:300])
+        assert _q(db["s02"], "SELECT id FROM priority_mass_runs") == [(41,)]
+        assert _q(db["s02"], "SELECT id FROM scheduled_jobs WHERE kind = 'priority_mass'") == []
+        assert _q(db["s02"], "SELECT status FROM priority_mass_runs WHERE id=41") == [("running",)]
+        assert _q(db["s02"], "SELECT attributed_employee_id FROM transactions WHERE id=42") == [(None,)]
         assert _read(cell, tok) == (200, None), _read(cell, tok)
         st, _h, raw = _ask_h(ctl, "GET", "/auth/me", _jar(oi_actor=tok))
         assert st == 200 and json.loads(raw) is None, ("Control requires a user session", st, raw[:200])
@@ -245,7 +286,7 @@ def case_one_sign_in_on_control_reads_on_the_data_cell() -> None:
 
 
 def case_chatter_and_impersonation_tokens() -> None:
-    with _cells() as (port, db, root, placement):
+    with _cells() as (port, db, root, placement, _restart):
         ctl, cell = port["s01"], port["s02"]
         st, h, raw = _ask_h(ctl, "POST", "/auth/register", body={"username": "acmeowner", "password": "Owner-Pw-77"})
         owner, session = json.loads(raw)["user_id"], _set_cookies(h)["chatterly_session"]
@@ -285,6 +326,14 @@ def case_chatter_and_impersonation_tokens() -> None:
         got = json.loads(raw)
         assert st == 200 and got["actor"] == f"user:{owner}" and got["cells"] == ["s02"], (st, raw[:300])
         assert sorted(a["account_id"] for a in got["accounts"]) == sorted([NOVA_A, NOVA_B]), got
+        doc = json.loads(placement.read_bytes())
+        doc["accounts"][f"fansly:{NOVA_B}"] = doc["accounts"].pop(f"onlyfans:{NOVA_B}")
+        placement.write_text(json.dumps(doc))
+        st, _h, raw = _ask_h(ctl, "GET", "/auth/cells", _jar(chatterly_session=session))
+        assert st == 200, (st, raw[:300])
+        assert {"platform": "fansly", "account_id": NOVA_B, "cell": "s02"} in json.loads(raw)["accounts"]
+        doc["accounts"][f"onlyfans:{NOVA_B}"] = doc["accounts"].pop(f"fansly:{NOVA_B}")
+        placement.write_text(json.dumps(doc))
         assert _ask_h(ctl, "GET", "/auth/cells")[0] == 401
         assert _ask_h(cell, "GET", "/auth/cells", _jar(oi_actor=ctok))[0] == 404, "a data Cell must not answer"
         st, h, _raw = _ask_h(ctl, "POST", "/chatter/logout", _jar(chatterly_chatter_session=chatter, oi_actor=ctok))
@@ -305,6 +354,78 @@ def case_chatter_and_impersonation_tokens() -> None:
         st, h, _raw = _ask_h(ctl, "DELETE", "/admin/impersonate", _jar(chatterly_session=founder,
                                                                          chatterly_impersonate=imp))
         assert st == 200 and _set_cookies(h).get("oi_actor") == '""', "impersonate stop left the read-only token"
+
+
+def _backup(src: str, dst: str) -> None:
+    with contextlib.closing(sqlite3.connect(src, timeout=30)) as a, contextlib.closing(sqlite3.connect(dst)) as b:
+        a.backup(b)
+
+
+def _restore_control(db: str, backup: str) -> int:
+    for tail in ("-wal", "-shm"):
+        Path(db + tail).unlink(missing_ok=True)
+    _backup(backup, db)
+    out = subprocess.run([sys.executable, "agency_copy.py", "--bump-epoch", db], cwd=SERVICE, check=True,
+                         capture_output=True, text=True).stdout
+    return int(out.split()[-1])
+
+
+def _sse_status(cell: int, tok: str) -> int:
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{cell}/events",
+                                                           headers=_jar(oi_actor=tok)), timeout=5) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def case_older_control_restore_keeps_owner_rows_and_denies_access() -> None:
+    with _cells() as (port, db, root, placement, restart):
+        ctl, cell = port["s01"], port["s02"]
+        old, newer = str(root / "control-old.db"), str(root / "control-newer.db")
+        _backup(db["s01"], old)
+        st, h, raw = _ask_h(ctl, "POST", "/auth/register", body={"username": "lateowner", "password": "Owner-Pw-77"})
+        assert st == 200, (st, raw[:300])
+        owner, session = json.loads(raw)["user_id"], _set_cookies(h)["chatterly_session"]
+        with contextlib.closing(sqlite3.connect(db["s01"], timeout=30)) as c, c:
+            c.execute("INSERT INTO accounts (id, is_active_default) VALUES (?, 1)", (NOVA_A,))
+            c.execute("INSERT INTO user_accounts (user_id, account_id) VALUES (?, ?)", (owner, NOVA_A))
+        gen = _q(db["s01"], "SELECT grant_gen FROM agency_copy_version")[0][0]
+        _wait(lambda: _q(db["s02"], "SELECT grant_gen FROM cell_meta")[0][0] == gen)
+        with contextlib.closing(sqlite3.connect(db["s02"], timeout=30)) as c, c:
+            c.execute("INSERT INTO agency_notifications (agency_user_id, kind, text, created_at)"
+                      " VALUES (?, 'creator', 'Nova expired', '2026-11-27')", (owner,))
+        tok = _renew(ctl, {"chatterly_session": session})
+        assert _read(cell, tok) == (200, None) and _sse_status(cell, tok) == 200
+        _backup(db["s01"], newer)
+
+        epoch = restart("s01", lambda: _restore_control(db["s01"], old))
+        _wait(lambda: _q(db["s02"], "SELECT copy_epoch FROM cell_meta")[0][0] == epoch, 30)
+        assert _q(db["s01"], "SELECT 1 FROM users WHERE id = ?", (owner,)) == [], "restore kept the owner"
+        assert _q(db["s02"], "SELECT username FROM users WHERE id = ?", (owner,)) == [("lateowner",)]
+        assert _q(db["s02"], "SELECT text FROM agency_notifications WHERE agency_user_id = ?", (owner,)) == [
+            ("Nova expired",)], "Cell-local CASCADE child deleted by the older copy"
+        assert _q(db["s02"], "SELECT user_id FROM agency_copy_missing_owners") == [(owner,)]
+        assert _read(cell, tok) == (401, "actor_revoked"), _read(cell, tok)
+        assert _sse_status(cell, tok) == 401
+        st, h, _raw = _ask_h(cell, "POST", "/auth/sign-in", body={"username": "lateowner", "password": "Owner-Pw-77"})
+        assert st != 200 and not _set_cookies(h), ("signed in on the data Cell", st)
+        st, h, _raw = _ask_h(ctl, "POST", "/auth/sign-in", body={"username": "lateowner", "password": "Owner-Pw-77"})
+        assert st != 200 and not _set_cookies(h).get("chatterly_session"), ("signed in on the restored Control", st)
+        lines = [ln for ln in (root / "s02/relay.log").read_text().splitlines() if "agency_copy_owner_missing" in ln]
+        assert len(lines) == 1 and f"owner={owner} copy={epoch}." in lines[0], lines
+
+        epoch = restart("s01", lambda: _restore_control(db["s01"], newer))
+        _wait(lambda: _q(db["s02"], "SELECT copy_epoch FROM cell_meta")[0][0] == epoch, 30)
+        assert _q(db["s02"], "SELECT user_id FROM agency_copy_missing_owners") == []
+        assert _read(cell, tok) == (200, None), _read(cell, tok)
+        assert _sse_status(cell, tok) == 200
+        assert _q(db["s02"], "SELECT text FROM agency_notifications WHERE agency_user_id = ?", (owner,)) == [
+            ("Nova expired",)]
+        lines = [ln for ln in (root / "s02/relay.log").read_text().splitlines() if "agency_copy_owner_missing" in ln]
+        assert len(lines) == 1, lines
 
 
 def case_data_cell_holding_the_private_key_refuses_to_start() -> None:

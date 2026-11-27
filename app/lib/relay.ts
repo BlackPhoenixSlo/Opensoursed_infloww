@@ -93,12 +93,12 @@ function buildUrl(path: string, ctx?: RelayContext, opts?: { refresh?: boolean }
   return url.pathname + url.search;
 }
 
-function buildHeaders(init?: RequestInit, ctx?: RelayContext): Headers {
+function buildHeaders(cells: boolean, init?: RequestInit, ctx?: RelayContext): Headers {
   const headers = new Headers(init?.headers);
   if (!headers.has("Accept")) headers.set("Accept", "application/json");
   if (ctx?.employeeId != null) headers.set("X-Employee-Id", String(ctx.employeeId));
   if (ctx?.accountId) headers.set("X-Account-Id", String(ctx.accountId));
-  if (ctx?.cellAccountId && !ctx.accountId && cellMode()) headers.set("X-Account-Id", ctx.cellAccountId);
+  if (cells && ctx?.cellAccountId && !ctx.accountId) headers.set("X-Account-Id", ctx.cellAccountId);
   if (ctx?.cellId) headers.set("X-Cell-Id", ctx.cellId);
   if (ctx?.priority === "background") headers.set("X-Priority", "background");
   if (ctx?.caller) headers.set("X-List-Caller", ctx.caller);
@@ -181,36 +181,62 @@ export function chatListRetry(failures: number, error: unknown): boolean {
 
 export const STALE_CELL_GEN_EVENT = "infloww:stale-cell-gen";
 
-export { cellMode };
-
 const cellGens = new Map<string, string>();
+const fenced = new Map<string, RelayError>();
 
 export function resetCellGens(): void {
   cellGens.clear();
+  fenced.clear();
 }
 
-function routed(url: string, headers: Headers, method: string): string | null {
+function routed(url: string, headers: Headers, method: string, cells: boolean): string | null {
   const account = accountOf(url, headers);
-  if (cellMode() && routeOf(url, headers) === null) {
+  if (cells && routeOf(url, headers, method) === null) {
     throw new RelayError(400, { detail: { error: "account_required", path: url } },
       `account_required: ${method} ${url.split("?")[0]} names no Creator or Cell`);
   }
-  const gen = account && method !== "GET" && method !== "HEAD" ? cellGens.get(account) : undefined;
+  const write = method !== "GET" && method !== "HEAD";
+  const fence = cells && account && write ? fenced.get(account) : undefined;
+  if (fence) throw fence;
+  const gen = account && write ? cellGens.get(account) : undefined;
   if (gen && !headers.has("X-Cell-Gen")) headers.set("X-Cell-Gen", gen);
   return account;
 }
 
-async function cellAware<T>(account: string | null, r: Response): Promise<T> {
-  const gen = r.headers.get("X-Cell-Gen");
-  if (account && gen) cellGens.set(account, gen);
+export function nextGen(known: string | undefined, header: string | null, phase: "ok" | "stale"): string | undefined {
+  return phase === "stale" ? header || undefined : known ?? (header || undefined);
+}
+
+function learnCellGen(account: string | null, r: Response, cells: boolean, phase: "ok" | "stale" = "ok"): void {
+  if (!account) return;
+  const header = r.headers.get("X-Cell-Gen");
+  const gen = nextGen(cells ? cellGens.get(account) : undefined, header, phase);
+  if (gen) cellGens.set(account, gen);
+  else if (phase === "stale") cellGens.delete(account);
+}
+
+async function cellAware<T>(url: string, account: string | null, r: Response, cells: boolean, readFence?: RelayError): Promise<T> {
+  if (!cells) learnCellGen(account, r, cells);
   try {
-    return await parseResponse<T>(r);
+    const value = await parseResponse<T>(r);
+    if (cells) learnCellGen(account, r, cells);
+    if (account && readFence && fenced.get(account) === readFence) fenced.delete(account);
+    return value;
   } catch (e) {
-    const d = (e as RelayError).body as { detail?: { error?: unknown } } | null;
-    if (account && e instanceof RelayError && e.status === 409 && d?.detail?.error === "stale_cell_gen") {
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent<{ accountId: string }>(STALE_CELL_GEN_EVENT, { detail: { accountId: account } }));
-      }
+    if (!(e instanceof RelayError)) throw e;
+    const d = e.body as { detail?: { error?: unknown } } | null;
+    const error = d?.detail?.error;
+    const stale = e.status === 409 && error === "stale_cell_gen";
+    const reason = stale ? "stale" : e.status === 409 && error === "not_owner" ? "not_owner"
+      : e.status === 401 && error === "actor_stale" && !url.startsWith("/auth/") ? "actor_stale" : null;
+    if (cells && stale && account) {
+      fenced.set(account, e);
+      learnCellGen(account, r, cells, "stale");
+    }
+    if (typeof window !== "undefined" && ((cells && reason) || (stale && account))) {
+      window.dispatchEvent(new CustomEvent(STALE_CELL_GEN_EVENT, {
+        detail: cells ? { accountId: account, reason } : { accountId: account },
+      }));
     }
     throw e;
   }
@@ -274,14 +300,16 @@ export async function request<T = unknown>(
   opts?: { refresh?: boolean },
 ): Promise<T> {
   const url = buildUrl(path, ctx, opts);
-  const headers = buildHeaders(init, ctx);
+  const cells = cellMode();
+  const headers = buildHeaders(cells, init, ctx);
   const method = (init?.method ?? "GET").toUpperCase();
-  const account = routed(url, headers, method);
+  const account = routed(url, headers, method, cells);
+  const readFence = cells && account && method === "GET" ? fenced.get(account) : undefined;
   // Creator-scoped calls share a URL, and Chrome's per-URL cache lock serialises parallel GETs (measured 20 calls: 4.2 s vs 0.29 s); no-store skips the lock.
   const scoped = headers.has("X-Account-Id");
   const cache = scoped ? "no-store" : undefined;
   const local = method === "GET" && !headers.has("X-Employee-Id");
-  const read = local && ctx?.intent !== "explicit" && !cellMode() ? screenRead(url, ctx?.accountId ?? null) : null;
+  const read = local && ctx?.intent !== "explicit" && !cells ? screenRead(url, ctx?.accountId ?? null) : null;
   if (read) {
     const o = await screenJoin(read, (p, ms) => bundleGet(p, ms, ctx?.caller), init?.signal);
     if (o.kind === "body") return o.body as T;
@@ -298,8 +326,8 @@ export async function request<T = unknown>(
   const release = bgRead ? await admitBackground(ctx?.accountId ?? null, init?.signal, read != null) : null;
   try {
     const priority = FETCH_PRIORITY ? { priority: background ? "low" : "high" } as RequestInit : undefined;
-    const send = cellMode() ? fetchRenewing : fetch;
-    return await cellAware<T>(account, await send(url, { cache, ...priority, ...init, headers, credentials: "same-origin" }));
+    const send = cells ? fetchRenewing : fetch;
+    return await cellAware<T>(url, account, await send(url, { cache, ...priority, ...init, headers, credentials: "same-origin" }), cells, readFence);
   } finally {
     release?.();
   }
@@ -323,13 +351,13 @@ export function prefetchScreenBundle(s: Screen): Promise<unknown> {
 export async function relayFile(path: string, ctx?: RelayContext, body?: unknown): Promise<{ blob: Blob; name: string | null }> {
   const init: RequestInit = body === undefined ? {} : { method: "POST", body: JSON.stringify(body) };
   const url = buildUrl(path, ctx);
-  const headers = buildHeaders({ ...init, headers: { Accept: "*/*" } }, ctx);
-  const account = routed(url, headers, init.method ?? "GET");
-  const send = cellMode() ? fetchRenewing : fetch;
+  const cells = cellMode();
+  const headers = buildHeaders(cells, { ...init, headers: { Accept: "*/*" } }, ctx);
+  const account = routed(url, headers, init.method ?? "GET", cells);
+  const send = cells ? fetchRenewing : fetch;
   const r = await send(url, { ...init, headers, credentials: "same-origin" });
-  if (!r.ok) return cellAware<never>(account, r);
-  const gen = r.headers.get("X-Cell-Gen");
-  if (account && gen) cellGens.set(account, gen);
+  if (!r.ok) return cellAware<never>(url, account, r, cells);
+  learnCellGen(account, r, cells);
   if (/json/i.test(r.headers.get("content-type") ?? "")) throw new RelayError(r.status, await r.text(), "no file in the answer");
   const name = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(r.headers.get("content-disposition") ?? "")?.[1] ?? null;
   return { blob: await r.blob(), name: name && decodeURIComponent(name) };

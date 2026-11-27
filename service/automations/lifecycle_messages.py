@@ -22,7 +22,8 @@ from automations._fan_notes import substitute_placeholders, template_fan_name
 from automations._knobs import coerce_ids
 from automations._outbound_guard import apply_word_restriction
 from automations._send_failure import (
-    SendOutcome, is_unreachable_fan_error, quarantine_if_undeliverable, schedule_recheck_rejected_media,
+    revive_outcome,
+    is_unreachable_fan_error, quarantine_if_undeliverable, schedule_recheck_rejected_media,
     send_dropping_bad_media_sync, skip_unreachable_fan,
 )
 from automations._skiplist import (
@@ -464,6 +465,9 @@ async def run_follow_up(account_id: str, kind: str, job: dict, *,
                     lambda: client.send_message(fid, text, media_files=[]), body={"text": text}),
                 send_purpose=_SEND_PURPOSE, dm=True)
         except Exception as exc:  # noqa: BLE001
+            if send_ops.refusal_reason(exc):
+                await _release(account_id, kind, fid, key)
+                raise
             if ax.is_rate_limited(exc):
                 await _release(account_id, kind, fid, key)
             if kind == EXPIRED and is_unreachable_fan_error(exc):
@@ -474,17 +478,18 @@ async def run_follow_up(account_id: str, kind: str, job: dict, *,
                         exc_info=True)
             return {"status": "error", "reason": "send_failed", "sent": 0}
         msg_id = result.get("id") if isinstance(result, dict) else None
-        if not msg_id:
+        if not msg_id and not send_ops.is_reconciled(result):
             await quarantine_if_undeliverable(client, account_id, fid, log=log)
             return {"status": "ok", "follow_up": True, "sent": 0, "no_id": 1}
         try:
-            await write_outbound_attribution(
-                account_id=account_id, fan_id=fid, message_id=int(msg_id),
-                sent_by_employee_id=None, automation_kind=attribution_kind or kind,
-                body=str(result.get("text") or text), price_cents=0,
-                created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
-                emit_live=True,
-            )
+            if msg_id:
+                await write_outbound_attribution(
+                    account_id=account_id, fan_id=fid, message_id=int(msg_id),
+                    sent_by_employee_id=None, automation_kind=attribution_kind or kind,
+                    body=str(result.get("text") or text), price_cents=0,
+                    created_at=ax._parse_iso(result.get("createdAt")) or datetime.utcnow(),
+                    emit_live=True,
+                )
             await _rest(account_id, fid)
             await schedule_follow_ups(account_id, kind, fid, steps[1:], anchor,
                                       event=event, step=step + 1)
@@ -654,9 +659,13 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
                     lambda f=int(fid), t=text, m=fan_media, p=fan_price, k=key: send_ops.automated_sync(
                         account_id, "lifecycle_initial", f, f"{kind}:{k}",
                         lambda: send_dropping_bad_media_sync(client, f, t, m, price_cents=p, log=log),
-                        revive=lambda r: SendOutcome(*r)),
+                        revive=revive_outcome),
                     send_purpose=_SEND_PURPOSE, dm=True)
             except Exception as exc:  # noqa: BLE001
+                if reason := send_ops.refusal_reason(exc):
+                    await _release(account_id, kind, fid, key)
+                    send_ops.skip_fan(exc, reason=reason)
+                    continue
                 if kind == EXPIRED and is_unreachable_fan_error(exc):
                     refused += 1
                     log.info("%s refused account=%s fan=%s event=%s",
@@ -672,6 +681,10 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
                             kind, account_id, fid, key, exc_info=True)
                 continue
             result = outcome.result
+            if send_ops.is_reconciled(result):
+                await _mark_sent(account_id, kind, fid, key, idx)
+                sent += 1
+                continue
             if fan_media and not outcome.media_landed:
                 schedule_recheck_rejected_media(account_id, client, fan_media, log=log)
             msg_id = result.get("id") if isinstance(result, dict) else None

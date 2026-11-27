@@ -11,6 +11,9 @@ FEATURES = ROOT / "service" / "cell_features.json"
 PAGE = ROOT / "docs" / "cell-mode" / "release-1-features.md"
 SEND_KINDS = ROOT / "service" / "tests" / "test_send_ops_kill.golden.json"
 
+APP_CALLS = ROOT / "app" / "lib" / "relayCallSites.ledger.json"
+UNROUTED = "Agency calls without a front-door route"
+
 STATES = ("off", "partial", "works")
 MEMBERS = ("routes", "jobs", "send_kinds")
 FEATURE_KEYS = {"state", "why", *MEMBERS}
@@ -32,6 +35,7 @@ CROSS_READS = "Reads across every Creator"
 KEPT_CROSS_READS = {"GET /admin/accounts", "GET /admin/chats/recent", "GET /admin/screens/inbox"}
 
 RULES: list[tuple[str, str | None, str, list[str], list[str], list[str]]] = [
+    (UNROUTED, "off", "Some agency tools require a front-door route before they can work in cell mode.", [], [], []),
     ("Public tracking links (/t/...)", "off",
      "Fans who tap a tracking link get an error page. Links need an agency-wide id first.",
      ["/t"], ["tracking-click-classify"], []),
@@ -112,10 +116,10 @@ RULES: list[tuple[str, str | None, str, list[str], list[str], list[str]]] = [
     ("Proxies", None, "The proxy list is off (see Reads across every Creator); edits work, a down Cell's Creators show as missing.",
      ["/admin/proxies", "/admin/proxy-pool"], ["proxy-health-probe"], []),
     ("Connect a Creator (sessions)", None,
-     "Fansly session import names several Creators: a down Cell's Creators are marked missing.",
+     "Fansly session import is refused in Cell mode because the platform is not admitted.",
      ["/admin/session", "/admin/reload-session", "/admin/accounts", "/api/of/v2/sessions", "/api/of/live-window",
       "POST /fleet/reservations", "POST /api/cell/reservations/handoff"],
-     ["pump-supervisor"], []),
+     ["pump-supervisor", "reservation-activation-retry"], []),
     ("Chat with a fan", None, "Works per Creator, as today.",
      ["/api/of/v2/chats", "/api/of/v2/messages/{message_id}", "/admin/messages/{account_id}", "/admin/screens/chat",
       "/admin/fans", "/api/of/v2/giphy", "/api/of/v2/labels", "/api/of/v2/automation-restrict",
@@ -139,7 +143,8 @@ RULES: list[tuple[str, str | None, str, list[str], list[str], list[str]]] = [
     ("Full AI", None, "Works per Creator. Only the rules list across all Creators is off.", ["/admin/full-ai"],
      ["automation:full_ai_chat", "full-ai-catchup-boot"], ["full_ai_live", "full_ai_ppv"]),
     ("Automation rules", None, "Works per Creator, as today.",
-     ["/admin/automation-rules", "/admin/automation", "/admin/system/automations", "/admin/system/runs"],
+     ["/admin/automation-rules", "/admin/automation", "/admin/system/automations", "/admin/system/runs",
+      "POST /admin/cell-holds/release"],
      ["automation-exec", "automation:apply_profiles", "automation:gen_info", "automation:process_old_fans",
       "automation:scrape_chats", "automation:scrape_fan"], []),
     ("Smart lists and OF lists", None, "Works per Creator, as today.", ["/admin/smart-lists", "/api/of/v2/lists"],
@@ -241,6 +246,7 @@ def draft(scope: dict, kinds: list[str], old: dict | None) -> tuple[dict, list[s
     for name in [*rules, *[n for n in old_f if n not in rules]]:
         state, why = (rules[name][1], rules[name][2]) if name in rules else (old_f[name]["state"], old_f[name]["why"])
         features[name] = {"state": state, "why": why, "routes": [], "jobs": [], "send_kinds": []}
+    features[UNROUTED]["calls"] = sorted(k for k, e in json.loads(APP_CALLS.read_text()).items() if e.get("state") == "off")
     placed = {(k, m): n for n, f in old_f.items() for k in MEMBERS for m in f.get(k, [])}
     unplaced = []
     for kind, names in universe(scope, kinds).items():
@@ -278,7 +284,7 @@ def check(doc: dict, scope: dict, scope_sha: str, kinds: list[str], page: str | 
     feats = doc.get("features", {})
     homes: dict[tuple[str, str], list[str]] = {}
     for name, f in feats.items():
-        if set(f) != FEATURE_KEYS:
+        if set(f) != (FEATURE_KEYS | {"calls"} if name == UNROUTED else FEATURE_KEYS):
             out.append(f"invalid: feature {name!r} keys {sorted(f)}")
             continue
         if f["state"] not in STATES:
@@ -327,6 +333,8 @@ def render(doc: dict) -> str:
             lines += [head, ""]
         for n, f in by[state]:
             lines += [f"**{n}**", f["why"], ""]
+            if n == UNROUTED:
+                lines += [f"{len(f.get('calls', []))} app call sites are marked off.", ""]
     lines += [f"## Works as today ({len(by['works'])})", ""]
     lines += [f"- {n}" for n, _ in by["works"]]
     lines += [

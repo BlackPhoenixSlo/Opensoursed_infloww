@@ -28,7 +28,7 @@ CONTROL = frozenset({
     "push_sent", "accounts", "proxies",
 })
 CONTROL_PREFIX = "bio_"
-CELL_MODE_ONLY_JOBS = frozenset({"agency-copy-poll", "grant-age-watch"})
+CELL_MODE_ONLY_JOBS = frozenset({"agency-copy-poll", "grant-age-watch", "reservation-activation-retry"})
 LOCAL_BUT_REQUIRED = frozenset({"actions", "agency_notifications"})
 MODES = ("block", "record")
 OPS = ("INSERT", "UPDATE", "DELETE")

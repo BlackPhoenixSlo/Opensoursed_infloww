@@ -32,6 +32,7 @@ OWNED_S02 = (NEW, PEND, NOPROXY, HELD, TAKE, FANSLY, DOWN)
 KEYS = {"s02": "cell-s02-reservation-credential-0123456789", "s03": "cell-s03-reservation-credential-0123456789"}
 GOOD_REV, MISSING_REV = "rsv-rev", "rsv-missing-rev"
 FLEET = "cell-fleet-handoff-credential-0123456789"
+HANDOFF_KEY = "control-only-handoff-credential-0123456789"
 HANDOFF = "/api/cell/reservations/handoff"
 
 
@@ -142,8 +143,8 @@ class _Relay:
             "label": "dead-loopback", "scheme": "http", "host": "127.0.0.1", "port": _port(),
             "assigned_account_ids": list(aids)}]}))
 
-    def bootstrap(self, aid: str, rev: str = GOOD_REV):
-        return _ask(self.port, "POST", "/admin/session/bootstrap",
+    def bootstrap(self, aid: str, rev: str = GOOD_REV, headers: dict | None = None):
+        return _ask(self.port, "POST", "/admin/session/bootstrap", headers,
                     body={"mode": "paste-curl", "curl": paste_curl(aid, rev), "make_active": False})
 
 
@@ -159,18 +160,24 @@ def _cells():
                       "s02": {"box": "b1", "epoch": 1, "relay": "y", "role": "data", "state": "live"},
                       "s03": {"box": "b1", "epoch": 1, "relay": "z", "role": "data", "state": "live"}},
             "accounts": {f"onlyfans:{a}": "s02" for a in OWNED_S02}}))
+        import actor_token
+
+        pub = actor_token.new_key(root / "actor")
         ctl_port = _port()
         digests = ",".join(f"{c}:{hashlib.sha256(k.encode()).hexdigest()}" for c, k in KEYS.items())
         relays = {
             "s01": _Relay(root, "s01", "control", placement, origin, {"OI_ACCOUNTS": "", "OI_CELL_COPY_KEYS": digests,
-                                                                     "FLEET_SECRET": FLEET},
+                                                                     "FLEET_SECRET": FLEET,
+                                                                     "OI_CELL_ACTOR_KEY_FILE": str(root / "actor/actor_ed25519.pem"),
+                                                                     "OI_CELL_HANDOFF_KEYS": hashlib.sha256(
+                                                                         HANDOFF_KEY.encode()).hexdigest()},
                           ctl_port),
             "s02": _Relay(root, "s02", "data", placement, origin, {
                 "OI_ACCOUNTS": ",".join(f"onlyfans:{a}" for a in OWNED_S02), "OI_CELL_COPY_KEY": KEYS["s02"],
-                "OI_CELL_CONTROL_URL": f"http://127.0.0.1:{ctl_port}"}, _port()),
+                "OI_CELL_ACTOR_PUBKEY": pub, "OI_CELL_CONTROL_URL": f"http://127.0.0.1:{ctl_port}"}, _port()),
             "s03": _Relay(root, "s03", "data", placement, origin, {
                 "OI_ACCOUNTS": f"onlyfans:{NEW}", "OI_CELL_COPY_KEY": KEYS["s03"],
-                "OI_CELL_CONTROL_URL": f"http://127.0.0.1:{ctl_port}"}, _port())}
+                "OI_CELL_ACTOR_PUBKEY": pub, "OI_CELL_CONTROL_URL": f"http://127.0.0.1:{ctl_port}"}, _port())}
         relays["s02"].bind(NEW, TAKE)
         try:
             for r in relays.values():
@@ -205,38 +212,38 @@ def _all(db: Path):
 
 
 def _handoff_on_relay(ctl: _Relay, s02: _Relay) -> None:
-    fleet = {"Authorization": f"Bearer {FLEET}"}
+    handoff = {"Authorization": f"Bearer {HANDOFF_KEY}"}
     body = {"op": "carve-7", "from_cell": "s02", "to_cell": "s04",
             "accounts": [f"onlyfans:{NEW}", f"onlyfans:{TAKE}"], "expect_placement_gen": 1}
-    assert _ask(s02.port, "POST", HANDOFF, fleet, body)[0] == 404, "a data cell must not take a hand-off"
-    for creds in ({}, {"Authorization": f"Bearer {KEYS['s02']}"}):
+    assert _ask(s02.port, "POST", HANDOFF, handoff, body)[0] == 404, "a data cell must not take a hand-off"
+    for creds in ({}, {"Authorization": f"Bearer {FLEET}"}, {"Authorization": f"Bearer {KEYS['s02']}"}):
         assert _ask(ctl.port, "POST", HANDOFF, creds, body)[0] == 403, creds
     for bad in ({"expect_placement_gen": "1"}, {"accounts": [NEW]}, {"accounts": []}, {"op": ""},
                 {"accounts": [f"onlyfans:{NEW}", f"onlyfans:{NEW}"]}, {"accounts": [f"myspace:{NEW}"]},
                 {"to_cell": "s02"}, {"accounts": [int(NEW)]}):
-        assert _ask(ctl.port, "POST", HANDOFF, fleet, {**body, **bad})[0] == 422, bad
+        assert _ask(ctl.port, "POST", HANDOFF, handoff, {**body, **bad})[0] == 422, bad
 
     before = _all(ctl.db)
-    st, raw = _ask(ctl.port, "POST", HANDOFF, fleet, {**body, "accounts": [*body["accounts"], f"onlyfans:{HELD}"]})
+    st, raw = _ask(ctl.port, "POST", HANDOFF, handoff, {**body, "accounts": [*body["accounts"], f"onlyfans:{HELD}"]})
     assert st == 409 and _detail(raw) == {"error": "not_held_by_source", "account": f"onlyfans:{HELD}",
                                           "platform": "fansly", "cell": "s02", "state": "active"}, (st, raw)
-    st, raw = _ask(ctl.port, "POST", HANDOFF, fleet, {**body, "expect_placement_gen": 2})
+    st, raw = _ask(ctl.port, "POST", HANDOFF, handoff, {**body, "expect_placement_gen": 2})
     assert st == 409 and _detail(raw) == {"error": "placement_gen_mismatch", "expected": 2, "have": 1}, (st, raw)
     assert _all(ctl.db) == before, "a refused hand-off changed a reservation"
 
     payload = json.dumps(body).encode()
     with socket.create_connection(("127.0.0.1", ctl.port), timeout=10) as sock:
-        sock.sendall(f"POST {HANDOFF} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {FLEET}\r\n"
+        sock.sendall(f"POST {HANDOFF} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {HANDOFF_KEY}\r\n"
                      f"Content-Type: application/json\r\nContent-Length: {len(payload)}\r\n\r\n".encode() + payload)
     deadline = time.monotonic() + 30
     while _row(ctl, NEW)[1] != "s04" or _row(ctl, TAKE)[1] != "s04":
         assert time.monotonic() < deadline, "the hand-off whose reply was dropped never committed"
         time.sleep(0.2)
     after = _all(ctl.db)
-    st, raw = _ask(ctl.port, "POST", HANDOFF, fleet, body)
+    st, raw = _ask(ctl.port, "POST", HANDOFF, handoff, body)
     assert st == 200 and json.loads(raw) == {"op": "carve-7", "to_cell": "s04", "status": "already_applied",
                                              "accounts": sorted(body["accounts"])}, (st, raw)
-    st, raw = _ask(ctl.port, "POST", HANDOFF, fleet, {**body, "accounts": [f"onlyfans:{NEW}"]})
+    st, raw = _ask(ctl.port, "POST", HANDOFF, handoff, {**body, "accounts": [f"onlyfans:{NEW}"]})
     assert st == 409 and _detail(raw) == {"error": "op_batch_mismatch", "op": "carve-7"}, (st, raw)
     assert _all(ctl.db) == after
     assert "Cells: reservation hand-off carve-7 s02 -> s04 (200)" in ctl.text()
@@ -263,15 +270,36 @@ def case_reservations_over_three_relays() -> None:
         assert t0 + 14 * 60 < expires < time.time() + 16 * 60, expires
         assert not (s02.accounts / PEND).exists(), "the reservation is taken before any session write"
 
-        st, raw = s02.bootstrap(NEW)
+        owner_req = urllib.request.Request(
+            f"http://127.0.0.1:{ctl.port}/auth/register",
+            data=json.dumps({"username": "reservationowner", "password": "reservation-owner-123"}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        with urllib.request.urlopen(owner_req, timeout=20) as response:
+            owner = json.load(response)["user_id"]
+            cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+        deadline = time.monotonic() + 30
+        while not _q(s02.db, "SELECT id FROM users WHERE id = ?", (owner,)):
+            assert time.monotonic() < deadline, "data Cell never copied the owner"
+            time.sleep(0.2)
+
+        mint = urllib.request.Request(f"http://127.0.0.1:{ctl.port}/auth/actor", method="POST",
+                                      headers={"Cookie": cookie})
+        with urllib.request.urlopen(mint, timeout=20) as response:
+            actor = response.headers["Set-Cookie"].split(";", 1)[0]
+        assert actor.startswith("oi_actor=")
+        st, raw = s02.bootstrap(NEW, headers={"Cookie": actor})
         assert st == 200, (st, raw[:500])
+        assert not _q(s02.db, "SELECT * FROM user_accounts WHERE user_id = ? AND account_id = ?", (owner, NEW))
+        assert "bootstrap sync+link failed" not in s02.text()
+        assert s02.text().count("bootstrap owner grants come from Control") == 1
         assert json.loads(raw)["account_id"] == NEW
         assert _row(ctl, NEW) == ("onlyfans", "s02", "active", None), _row(ctl, NEW)
         st, raw = s02.bootstrap(NEW)
         assert st == 200 and _row(ctl, NEW) == ("onlyfans", "s02", "active", None), (st, raw[:300])
 
         st, raw = s03.bootstrap(NEW)
-        assert st == 409 and _detail(raw) == {"error": "lives_in_cell", "cell": "s02", "account_id": NEW}, (st, raw)
+        assert st == 409 and _detail(raw) == {"error": "not_owner", "account_id": NEW}, (st, raw)
         assert not (s03.accounts / NEW).exists(), "a refused admission wrote an account dir"
         assert not s03.proxies.exists() or NEW not in s03.proxies.read_text(), "a refused admission bound a proxy"
         assert _row(ctl, NEW)[1] == "s02"
@@ -378,8 +406,10 @@ def case_handoff_on_a_control_sqlite() -> None:
                                          "platform": "onlyfans", "cell": "s04", "state": "active"}), \
             "a moved Creator is no longer the source's"
         assert _all(db) == committed, "a replay or refusal wrote twice"
+        assert go("op-3", [a], frm="s04", to="s06")[0] == 200
+        assert go("op-1", [a, b, c]) == (200, {**ok, "status": "already_applied"})
 
-        assert cr.reserve(str(db), "s04", "onlyfans", a, "active", now=now)[0] == 200
+        assert cr.reserve(str(db), "s06", "onlyfans", a, "active", now=now)[0] == 200
         assert cr.reserve(str(db), "s02", "onlyfans", b, "active", now=now)[1]["error"] == "lives_in_cell"
 
 
@@ -482,6 +512,50 @@ def case_ws_and_cached_client_refused_in_cell_mode() -> None:
         assert calls == [], "the socket was opened"
 
 
+def case_ws_opens_with_session_proxy() -> None:
+    from of_client import OFClient
+    from of_ws import OFWebSocket
+    import proxies
+
+    with _in_process(cells=True) as (tmp, _calls):
+        path = _session(tmp, NOPROXY)
+        proxies.REGISTRY_PATH.write_text(json.dumps({"proxies": [{
+            "label": "session-bound", "scheme": "http", "host": "127.0.0.1", "port": _port(),
+            "assigned_session": path.name}]}))
+        client = OFClient.from_session_file(path)
+        ws = OFWebSocket(lambda: client)
+
+        def refresh(_client):
+            ws._ws_url, ws._token = "ws://127.0.0.1:9/", "tok"
+
+        class Socket:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                pass
+
+            async def send(self, _msg):
+                pass
+
+            async def recv(self):
+                return '{"connected": true}'
+
+        def connect(_url, **kwargs):
+            assert kwargs["proxy"] == client.proxy_url
+            return Socket()
+
+        ws._refresh_auth = refresh
+        import of_ws
+        of_ws.websockets.connect = connect
+
+        async def first():
+            async with contextlib.aclosing(ws.events()) as stream:
+                assert await anext(stream) == {"connected": True}
+
+        asyncio.run(asyncio.wait_for(first(), 3))
+
+
 def case_non_onlyfans_refused_at_admission() -> None:
     import accounts
     from fastapi import HTTPException
@@ -549,6 +623,182 @@ def case_env_unset_behaves_as_main() -> None:
     paths = {getattr(r, "path", None) for r in server.app.routes}
     assert "/fleet/reservations" not in paths and HANDOFF not in paths
     assert proxies.NoProxyRefused not in server.app.exception_handlers
+
+
+def case_handoff_requires_control_only_key() -> None:
+    import creator_reservations as reservations
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from unittest.mock import patch
+
+    with contextlib.ExitStack() as patches:
+        import fleet_api
+
+        fleet_key = "fleet-shared-credential-1234567890"
+        handoff_key = "control-only-credential-1234567890"
+        copy_key = "cell-copy-credential-1234567890"
+        patches.enter_context(patch.object(fleet_api, "_SECRET", fleet_key))
+        patches.enter_context(patch.dict(os.environ, {"FLEET_SECRET": fleet_key}))
+        patches.enter_context(patch.dict(os.environ, {"OI_CELL_COPY_KEYS": f"s02:{hashlib.sha256(copy_key.encode()).hexdigest()}"}))
+        app = FastAPI()
+        app.include_router(reservations.router)
+        client = TestClient(app)
+        body = {"op": "", "from_cell": "s02", "to_cell": "s03", "accounts": [], "expect_placement_gen": 1}
+
+        def post(key):
+            return client.post("/api/cell/reservations/handoff", json=body,
+                               headers={"Authorization": f"Bearer {key}"}).status_code
+
+        assert post(fleet_key) == 403
+        assert post(handoff_key) == 403
+        patches.enter_context(patch.dict(os.environ, {"OI_CELL_HANDOFF_KEYS": hashlib.sha256(handoff_key.encode()).hexdigest()}))
+        assert post(copy_key) == 403
+        assert post(handoff_key) == 422
+        digests = ",".join(hashlib.sha256(k.encode()).hexdigest() for k in (fleet_key, copy_key, handoff_key))
+        patches.enter_context(patch.dict(os.environ, {"OI_CELL_HANDOFF_KEYS": digests}))
+        assert post(fleet_key) == 403
+        assert post(copy_key) == 403
+
+
+def case_handoff_receipt_survives_later_move() -> None:
+    import creator_reservations as reservations
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        path = str(tmp_path / "control.db")
+        reservations.install(f"sqlite:///{path}")
+        ids = [("onlyfans", "001"), ("onlyfans", "002")]
+        for platform, account in ids:
+            assert reservations.reserve(path, "source", platform, account, "active")[0] == 200
+        assert reservations.handoff(path, "first", "source", "middle", ids, 1, 1)[0] == 200
+        assert reservations.handoff(path, "second", "middle", "end", ids[:1], 2, 2)[0] == 200
+        status, reply = reservations.handoff(path, "first", "source", "middle", ids, 1, 2)
+        assert (status, reply["status"]) == (200, "already_applied")
+        with sqlite3.connect(path) as db:
+            db.execute("DROP TABLE creator_handoff_ops")
+        reservations.install(f"sqlite:///{path}")
+        status, reply = reservations.handoff(path, "first", "source", "middle", ids, 1, 2)
+        assert (status, reply["status"]) == (200, "already_applied")
+
+
+def case_reservation_route_checks_exact_placement_and_platform() -> None:
+    import creator_reservations as reservations
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from unittest.mock import patch
+
+    with contextlib.ExitStack() as patches, tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        placement = tmp_path / "placement.json"
+        placement.write_text(json.dumps({"accounts": {
+            "onlyfans:001": "s02", "onlyfans:002": "s03", "fansly:001": "s02",
+        }}))
+        patches.enter_context(patch.dict(os.environ, {"OI_CELL_MAP": str(placement)}))
+        key = "test-copy-key"
+        patches.enter_context(patch.dict(os.environ, {"OI_CELL_COPY_KEYS": f"s02:{hashlib.sha256(key.encode()).hexdigest()}"}))
+
+        path = str(tmp_path / "control.db")
+        url = f"sqlite:///{path}"
+        patches.enter_context(patch("db.engine.sync_database_url", return_value=url))
+        reservations.install(url)
+        app = FastAPI()
+        app.include_router(reservations.router)
+
+        def post(platform, account):
+            return TestClient(app).post("/fleet/reservations", headers={"Authorization": f"Bearer {key}"},
+                                        json={"creator_id": account, "platform": platform, "state": "active"})
+
+        for platform, account, error in (("onlyfans", "002", "not_owner"), ("onlyfans", "1", "not_owner"),
+                                          ("fansly", "001", "platform_not_admitted")):
+            reply = post(platform, account)
+            assert reply.status_code == 403
+            assert reply.json()["detail"]["error"] == error
+        assert post("onlyfans", "001").status_code == 200
+        with sqlite3.connect(path) as db:
+            assert db.execute("SELECT account_id, cell FROM creator_reservations").fetchall() == [("001", "s02")]
+
+
+def case_activation_reasserts_healthy_creators_while_one_is_unreadable() -> None:
+    import creator_reservations as reservations
+    from unittest.mock import patch
+
+    with contextlib.ExitStack() as patches, tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        import accounts
+        import httpx
+
+        patches.enter_context(patch.object(accounts, "ACCOUNTS_DIR", tmp_path / "accounts"))
+        for aid in ("001", "002", "003"):
+            directory = accounts.ACCOUNTS_DIR / aid
+            directory.mkdir(parents=True)
+            (directory / "session.json").write_text("{}")
+            (directory / "latest.json").write_text('{"session":"session.json"}')
+        patches.enter_context(patch.dict(os.environ, {"OI_ACCOUNTS": "onlyfans:001,onlyfans:002"}))
+        patches.enter_context(patch.dict(os.environ, {"OI_CELL_CONTROL_URL": "http://127.0.0.1:1"}))
+        broken = accounts.ACCOUNTS_DIR / "001" / "latest.json"
+        broken.write_bytes(b"\xff")
+        calls = []
+        done, repaired = threading.Event(), threading.Event()
+
+        def send(_url, *, json, **_kwargs):
+            account = json["creator_id"]
+            calls.append((account, json["state"]))
+            if account == "002" and calls.count(("002", "active")) == 1:
+                return httpx.Response(503)
+            if account == "002":
+                done.set()
+            if account == "001":
+                repaired.set()
+            return httpx.Response(200, json={"state": "active"})
+
+        patches.enter_context(patch.object(httpx, "post", send))
+
+        async def exercise():
+            task = asyncio.create_task(reservations.retry_activations())
+            try:
+                assert await asyncio.to_thread(done.wait, 4), "unreadable Creator blocked healthy activation"
+                broken.write_text('{"session":"session.json"}')
+                assert await asyncio.to_thread(repaired.wait, 4)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+        asyncio.run(exercise())
+        assert calls.count(("001", "active")) == 1
+        assert calls.count(("002", "active")) == 2
+        assert len(calls) == 3
+
+
+def case_cached_client_rechecks_proxy_after_backoff() -> None:
+    from unittest.mock import patch
+
+    import of_client
+    import proxies
+
+    with _in_process(cells=True) as (tmp, _):
+        _bind(tmp, NOPROXY)
+        client = of_client.OFClient.from_session_file(_session(tmp, NOPROXY))
+        calls = []
+
+        def send():
+            calls.append("attempt")
+            if len(calls) == 1:
+                raise of_client.requests.exceptions.ProxyError("temporary failure")
+
+        def unbind(_pause):
+            (tmp / "proxies.json").write_text(json.dumps({"proxies": []}))
+
+        with patch.object(of_client.time, "sleep", unbind):
+            try:
+                client._proxy_retry(send, what="upload")
+            except proxies.NoProxyRefused:
+                pass
+            else:
+                raise AssertionError("retried with an unbound proxy")
+        assert calls == ["attempt"]
 
 
 _harness.run()

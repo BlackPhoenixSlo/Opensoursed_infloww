@@ -89,7 +89,7 @@ describe("PermissionEditor", () => {
       tabs.find((t) => t.tab === tab)!.groups.find((g) => g.title === title)!.pages.map((p) => p.href);
     expect(pages("Growth", "Growth")).toEqual([...childHrefs("Growth"), "/growth/fake"]);
     expect(pages("Operations", "General")).toEqual([
-      "/", "/messages-pro", "/growth/vault-pro", "/full-ai-chatter", "/ai-rules", "/fake-top",
+      "/", "/messages-pro", "/growth/vault-pro", "/fake-top",
     ]);
   });
 

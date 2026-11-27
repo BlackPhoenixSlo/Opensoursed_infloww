@@ -54,6 +54,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import automation_executor as ax
 import dm_rate
 import read_flip
+import run_decide
 import run_slot
 import send_ops
 from env_knob import env_float
@@ -132,6 +133,16 @@ def due(config: dict, dm) -> datetime:
     return dm.created_at + timedelta(seconds=full_ai_test.hold(config, str(dm.message_id)))
 
 
+def _restore_parked(aid, fan, mid):
+    payload = ScheduledJob.payload_json
+    return select(ScheduledJob.id).where(
+        ScheduledJob.account_id == aid, ScheduledJob.kind == KIND, ScheduledJob.status == "error",
+        ScheduledJob.last_error == run_decide.RESTORE_REASON,
+        ax._json_field(payload, "only_fan_ids[0]") == fan,
+        ax._json_field(payload, "anchor") == mid,
+    ).exists()
+
+
 async def enqueue(account_id: str, fan_id: int, message_id: int, rule_id: int, *,
                   not_before: datetime | None = None) -> bool:
     from webhook_dispatch import _FULL_AI_PENDING_S, _imminent_pending_job
@@ -140,6 +151,8 @@ async def enqueue(account_id: str, fan_id: int, message_id: int, rule_id: int, *
         return False
     cfg = (await full_ai_turn.stored_config(aid))["checkpoint"]
     async with get_session() as s:
+        if send_ops.cells() and await s.scalar(select(_restore_parked(aid, fan, mid))):
+            return False
         dm = await s.get(Message, (aid, fan, mid))
     if dm is None:
         log.warning("full_ai_live_enqueue_no_dm account=%s fan=%s msg=%s", aid, fan, mid)
@@ -203,6 +216,8 @@ async def load(account_id: str, fan_id: int, client) -> full_ai_turn.TurnFacts |
             return None
         run_cut, turn = runs[-1]
         anchor = turn[-1]
+        if send_ops.cells() and await s.scalar(select(_restore_parked(aid, fan, anchor.message_id))):
+            return None
         if (await s.execute(select(AiDecision.id).where(
                 AiDecision.account_id == aid, AiDecision.fan_id == fan, AiDecision.mode == MODE,
                 AiDecision.trigger_key == str(anchor.message_id)))).first() is not None:
@@ -314,7 +329,7 @@ async def _write_facts(s, account_id: str, fan_id: int, updates: dict[str, str])
 class _Run:
     """One job's send state, shared by its `send` and `record`."""
     taken: bool = False                   # the reserve found another run's row: send nothing, write nothing
-    lost: run_slot.SlotLost | None = None  # lost the slot after >= 1 bubble: re-raise once recorded
+    lost: Exception | None = None  # an interruption after a bubble lands is raised after recording
     landed: int = 0                       # bubbles on OF (the job's finally rests the Fan when > 0)
 
 
@@ -340,6 +355,11 @@ async def _reserve(row: dict, anchor: Message) -> int | None:
     return rid
 
 
+async def _unreserve(row: dict) -> None:
+    async with get_session() as s:
+        await s.execute(delete(AiDecision).where(AiDecision.id == row["id"]))
+
+
 async def _row_id(row: dict) -> int:
     async with get_session() as s:
         return int((await s.execute(select(AiDecision.id).where(
@@ -359,7 +379,7 @@ async def _attribute(account_id: str, fan_id: int, mid: int, body: str, created_
     return True
 
 
-async def _dm(client, look: Look, text: str, **kw) -> dict:
+async def _dm(client, look: Look, text: str, **kw) -> dict | send_ops.Reconciled:
     """One DM on OF; writes its own `messages` row with OF's text and time (attributed)."""
     turn = f"{MODE}:{look.row['trigger_key']}"
     res = await ax.of_write_paced(
@@ -368,6 +388,8 @@ async def _dm(client, look: Look, text: str, **kw) -> dict:
                                         lambda: client.send_message(look.fan_id, text, **kw), part=look.index),
         send_purpose=SEND_PURPOSE, tries=1, dm=True,
         min_gap_s=WRITE_GAP_S, before_write=look.before_write)
+    if send_ops.is_reconciled(res):
+        return send_ops.RECONCILED
     mid = res.get("id") if isinstance(res, dict) else None
     ok = bool(mid) and await _attribute(look.account_id, look.fan_id, int(mid), str(res.get("text") or text),
                                         ax._parse_iso(res.get("createdAt")) or datetime.utcnow())
@@ -439,6 +461,8 @@ def _io(account_id: str, fan_id: int, anchor: Message, client, state: _Run,
         if gif:
             row["reply_json"]["parts"].append(gif)
         reply, landed, unknown, stop = row["reply_json"], 0, False, None
+        ppv = next((part for part in reply["parts"] if "ppv" in part), None)
+        ppv_reconciled = False
         wpm = await load_typing_wpm(aid) if config.get("typing_sign") else None
         frame = bool(config.get("typing_notification")) and await load_typing_indicator(aid)
 
@@ -493,10 +517,23 @@ def _io(account_id: str, fan_id: int, anchor: Message, client, state: _Run,
                 break
             except Exception as e:  # noqa: BLE001 — stop the Turn, never retry a send
                 dm_rate.release(aid)           # frees only an unused place (nothing reached OF)
+                if send_ops.refusal_reason(e) == "cell_held":
+                    if not landed:
+                        await _unreserve(row)
+                        raise
+                    reply["cut"] = {"check": "cell_held", "reason": "cell_held", "index": i}
+                    state.lost = e
+                    break
                 await skip_unreachable_fan(aid, fan, e, log=log)
                 log.warning("full_ai_live send failed account=%s fan=%s", aid, fan, exc_info=True)
                 reply["cut"] = {"check": "send_error", "reason": type(e).__name__, "index": i}
                 break
+            if send_ops.is_reconciled(res):
+                if part is ppv:
+                    ppv_reconciled = True
+                landed += 1
+                state.landed = landed
+                continue
             if res.get("offer_dropped"):       # its sender already cleared the Offer columns
                 reply["offer_dropped"] = res["offer_dropped"]
             # May be on OF: never retried, Offer columns kept.
@@ -524,8 +561,7 @@ def _io(account_id: str, fan_id: int, anchor: Message, client, state: _Run,
                 reply["cut"] = {"check": check, "reason": reason, "index": i}
             else:
                 reply["stood_down"] = {"check": check, "reason": reason, "index": i}
-        ppv = next((p for p in reply["parts"] if "ppv" in p), None)
-        missed = "message_id" not in ppv if ppv is not None else not landed
+        missed = not (ppv.get("message_id") or ppv_reconciled) if ppv is not None else not landed
         if (missed and not unknown and "offer_dropped" not in reply
                 and any(row.get(c) is not None for c in full_ai_ppv.OFFER_COLS)):
             await _drop_offer(row, "send" if stop is None else stop[1] if stop[0] == "offer_valid" else "stood_down")
@@ -588,7 +624,7 @@ async def _over_message_id(account_id: str, row: dict) -> int | None:
     return int(mid) if mid is not None else None
 
 
-async def send_ppv(client, look) -> dict:
+async def send_ppv(client, look) -> dict | send_ops.Reconciled:
     b, row = look.bubble, look.row
     over = await _over_message_id(look.account_id, row)
     out = {"id": None, "attributed": False, "offer_dropped": None, "unknown": False}
@@ -601,6 +637,8 @@ async def send_ppv(client, look) -> dict:
         log.warning("full_ai_live ppv raised account=%s fan=%s row=%s", look.account_id, look.fan_id,
                     row["id"], exc_info=True)
         return {**out, "id": e.message_id} if e.message_id else {**out, "unknown": True}
+    if send_ops.is_reconciled(sent):
+        return send_ops.RECONCILED
     if sent.outcome == full_ai_ppv.SENT:
         return {**out, "id": sent.message_id, "attributed": True}
     if sent.outcome == full_ai_ppv.CLEAR:
@@ -673,9 +711,10 @@ async def _queue_ends(aid: str, rule_id: int, now: datetime, fans, since: dateti
                                 order_by=(Message.created_at.desc(), Message.message_id.desc())).label("rn")
     ends = select(Message.fan_id, Message.message_id, Message.created_at, Message.direction, rn).where(
         *chat, Message.fan_id.in_(fans)).subquery()
+    unparked = (~_restore_parked(aid, ends.c.fan_id, ends.c.message_id),) if send_ops.cells() else ()
     async with get_session() as s:
         rows = (await s.execute(select(ends.c.fan_id, ends.c.message_id, ends.c.created_at).where(
-            ends.c.rn == 1, ends.c.direction == "in", ends.c.created_at >= since)
+            ends.c.rn == 1, ends.c.direction == "in", ends.c.created_at >= since, *unparked)
             .order_by(ends.c.created_at, ends.c.message_id))).all()
         done = {(int(f), k) for f, k in (await s.execute(select(AiDecision.fan_id, AiDecision.trigger_key).where(
             AiDecision.account_id == aid, AiDecision.mode == MODE,

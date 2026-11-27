@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Literal, assert_never
 
 from automation_registry import canonical_kind, kind_family
-from side_effect_gate import PLATFORM_LACKS_PREFIX
+from side_effect_gate import PLATFORM_LACKS_PREFIX, PLATFORM_UNKNOWN_PREFIX
 
 JOB_RETRY = "retry"
 FOLLOWUP_MARK = "_followup"
@@ -141,8 +141,11 @@ def outcome(kind: RunKind, guard_status: str | None, err: str | None = None, *,
         case "ok" | "words_blocked":
             if guard_status == "skipped":
                 return "skipped", "done", "sensitive_words"
-            if isinstance(plugin_reason, str) and plugin_reason.startswith(PLATFORM_LACKS_PREFIX):
+            if isinstance(plugin_reason, str) and plugin_reason.startswith(
+                    (PLATFORM_LACKS_PREFIX, PLATFORM_UNKNOWN_PREFIX)):
                 return "skipped", "done", plugin_reason
+            if plugin_reason == "fan_held":
+                return "skipped", "done", "fan_held"
             return (guard_status if guard_status is not None else "ok"), "done", err
         case "cancelled" | "exception":
             if not once:

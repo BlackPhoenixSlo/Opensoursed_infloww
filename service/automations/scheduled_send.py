@@ -5,10 +5,13 @@ import logging
 from datetime import datetime
 
 import automation_executor as ax
+import media_cotag
+import platforms
 import send_ops
 from attribution import write_outbound_attribution
 from automation_registry import register
 from job_queue import send_anchor
+from side_effect_gate import send_refusal
 
 log = logging.getLogger("of-relay.automation.scheduled_send")
 
@@ -26,6 +29,14 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         log.info("scheduled_send empty account=%s fan=%s — skip", account_id, fan_id)
         return {"status": "skipped", "reason": "empty", "fan_id": fan_id}
 
+    auto_tag = str(payload.get("send_purpose") or "") != "manual"
+    platform = platforms.for_account(account_id)
+    would_cotag = bool(platform.backend and auto_tag and media_cotag.would_cotag(account_id, media_files))
+    refused = send_refusal(platform, payload, would_cotag=would_cotag)
+    if refused:
+        log.info("scheduled_send refused account=%s fan=%s (%s)", account_id, fan_id, refused)
+        return {"status": "skipped", "reason": refused, "fan_id": fan_id}
+
     price = float(payload.get("price") or 0)
     locked_text = bool(payload.get("locked_text"))
     previews = payload.get("previews") or []
@@ -40,7 +51,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         log.info("scheduled_send audience-blocked account=%s fan=%s (%s)",
                  account_id, fan_id, why)
         return {"status": "skipped", "reason": f"audience:{why}", "fan_id": fan_id}
-    purpose = "manual" if str(payload.get("send_purpose") or "") == "manual" else "gated"
+    purpose = "gated" if auto_tag else "manual"
 
     client = await asyncio.to_thread(ax._make_client, account_id)
     result = await ax.of_write_paced(
@@ -55,7 +66,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             tagged_users=tagged_users,
             giphy_id=giphy_id,
             # Keys on who composed, not who fired: a deferred composer send must not name a co-performer the operator never picked.
-            auto_tag=(purpose != "manual"),
+            auto_tag=auto_tag,
         ), body=payload),
         send_purpose=purpose,
         # An automation run waits for a DM-rate slot; an operator run never does.

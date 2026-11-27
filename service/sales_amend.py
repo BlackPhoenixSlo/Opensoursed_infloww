@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 from sqlalchemy import select, update
 
 from attribution_backfill import REVENUE_KINDS, TRACKED_STATUSES
@@ -48,6 +49,18 @@ def parse_account(payload: dict[str, Any]) -> str | None:
     if not isinstance(raw, str) or not raw:
         raise HTTPException(status_code=400, detail="account_id must be a Creator id string")
     return raw
+
+
+async def _attribution_scope(request: Request, payload: dict, cells: bool) -> str | None:
+    account_id = parse_account(payload)
+    if not cells:
+        return account_id
+    from cell_mode import route_creator
+
+    creator = await route_creator(request) or account_id
+    if not creator:
+        raise HTTPException(400, detail={"error": "account_required"})
+    return creator
 
 
 async def reassign(s, ctx, tx_ids: list[int], employee_id: int | None,
@@ -96,7 +109,7 @@ async def reassign(s, ctx, tx_ids: list[int], employee_id: int | None,
 
 
 @router.post("/admin/ingest/transactions/attribute")
-async def reassign_batch(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def reassign_batch(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     """Reassign many sales at once: `tx_ids` (Sales records' batch select) or
     one Clock event's sales (`clock_event_id`, Shift records), to an
     Employee, "no_one" or null (see the module docstring). The Auto
@@ -118,7 +131,8 @@ async def reassign_batch(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
     ctx = await owner_context(None, "only the agency owner reassigns a sale")
     employee_id = parse_employee(payload)
-    account_id = parse_account(payload)
+    cells = bool(os.environ.get("OI_CELL_MAP"))
+    account_id = await _attribution_scope(request, payload, cells)
     has_ids, has_event = "tx_ids" in payload, "clock_event_id" in payload
     if has_ids == has_event:
         raise HTTPException(status_code=400, detail="send tx_ids or clock_event_id")
@@ -138,13 +152,14 @@ async def reassign_batch(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
                 raise HTTPException(status_code=400, detail=f"tx_ids: 1 to {MAX_BATCH} sale ids")
             tx_ids = list(dict.fromkeys(raw))
         if tx_ids:
-            await reassign(s, ctx, tx_ids, employee_id, None if has_event else account_id)
+            scope = None if has_event and not cells else account_id
+            await reassign(s, ctx, tx_ids, employee_id, scope)
     return {"updated": len(tx_ids), "attributed_employee_id": employee_id, "tx_ids": tx_ids,
             "skipped_split": len(split)}
 
 
 @router.post("/admin/ingest/transactions/{tx_id}/attribute")
-async def reassign_one(tx_id: int, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def reassign_one(tx_id: int, request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     """Manually assign, set to "No one", or clear the employee one sale
     counts toward (Sales records' Reassign, the orphan lists). Pass
     `{"employee_id": <int>}` to assign, `{"employee_id": "no_one"}` for "No
@@ -165,7 +180,8 @@ async def reassign_one(tx_id: int, payload: dict[str, Any] = Body(...)) -> dict[
 
     ctx = await owner_context(None, "only the agency owner reassigns a sale")
     employee_id = parse_employee(payload)
-    account_id = parse_account(payload)
+    cells = bool(os.environ.get("OI_CELL_MAP"))
+    account_id = await _attribution_scope(request, payload, cells)
     async with get_session() as s:
         [tx] = await reassign(s, ctx, [tx_id], employee_id, account_id)
     log.info("admin_ingest_tx_attribute tx=%d employee=%s kind=%s account=%s amount=%d",

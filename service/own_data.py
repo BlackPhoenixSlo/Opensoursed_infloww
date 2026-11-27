@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import sqlite3
@@ -34,6 +35,9 @@ TABLES = {
     "agency_copy_sections": ("",
         "",
         "name sha256"),
+    "agency_copy_missing_owners": ("",
+        "",
+        "user_id since"),
     "agency_copy_version": ("",
         "",
         "epoch version grant_gen"),
@@ -117,6 +121,7 @@ TABLES = {
     "cell_holds": ("",
         "",
         "id scope platform account why blocks op set_by set_at released_by released_at"),
+    "creator_handoff_ops": ("", "", "op batch"),
     "creator_reservations": ("",
         "",
         "account_id platform cell state expires_at handoff_op handoff_batch"),
@@ -543,10 +548,22 @@ def _table_query(con, table, link, own, live, bare):
     return sql, args, len(exprs), len(key), [table, key, values]
 
 
-def checksums(db_path, accounts=None) -> dict[str, str]:
+def _account_key(aid: str, session_accounts: Path | None) -> str:
+    platform = None
+    if session_accounts is not None and Path(aid).name == aid and aid not in (".", ".."):
+        try:
+            meta = json.loads((session_accounts / aid / "meta.json").read_text())
+            platform = meta.get("platform") if isinstance(meta, dict) else None
+        except (OSError, ValueError):
+            pass
+    return f"{platform if isinstance(platform, str) and platform else '?'}:{aid}"
+
+
+def checksums(db_path, accounts=None, *, session_accounts: Path | None = None) -> dict[str, str]:
+    db_path = Path(db_path).resolve()
     asked = None if accounts is None else {str(a): _bare(str(a)) for a in accounts}
     bare = None if asked is None else set(asked.values())
-    con = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None)
+    con = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True, isolation_level=None)
     sums: dict[str, list] = {}
     try:
         con.execute("BEGIN")
@@ -579,7 +596,7 @@ def checksums(db_path, accounts=None) -> dict[str, str]:
         con.close()
     empty = hashlib.sha256().hexdigest()
     if asked is None:
-        return {a: sums[a][0].hexdigest() for a in sorted(sums)}
+        return {_account_key(a, session_accounts): sums[a][0].hexdigest() for a in sorted(sums)}
     return {a: sums[b][0].hexdigest() if b in sums else empty for a, b in asked.items()}
 
 
@@ -588,8 +605,13 @@ def checksum(db_path, account: str) -> str:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) >= 2 and argv[0] == "checksum":
-        print(json.dumps(checksums(argv[1], argv[2:] or None), sort_keys=True))
+    if argv and argv[0] == "checksum":
+        parser = argparse.ArgumentParser(prog="own_data.py checksum")
+        parser.add_argument("db")
+        parser.add_argument("accounts", nargs="*")
+        parser.add_argument("--sessions", type=Path)
+        args = parser.parse_intermixed_args(argv[1:])
+        print(json.dumps(checksums(args.db, args.accounts or None, session_accounts=args.sessions), sort_keys=True))
         return 0
     if len(argv) == 2 and argv[0] == "unclassified":
         con = sqlite3.connect(Path(argv[1]).resolve().as_uri() + "?mode=ro", uri=True)
@@ -600,7 +622,7 @@ def main(argv: list[str]) -> int:
         for name in missing:
             print(name)
         return 1 if missing else 0
-    print("usage: own_data.py checksum <db> [account ...] | unclassified <db>", file=sys.stderr)
+    print("usage: own_data.py checksum <db> [--sessions <dir>] [account ...] | unclassified <db>", file=sys.stderr)
     return 2
 
 

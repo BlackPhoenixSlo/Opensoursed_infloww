@@ -225,10 +225,11 @@ def case_a_deep_inbox_bundle_cannot_forward_explicit_intent():
         assert not any(name == "chats" for _, name in CALLS), CALLS
 
 
-def case_the_inbox_skips_only_a_fansly_creator_whatever_the_platform_key():
+def case_the_inbox_lists_only_onlyfans_creators():
     saved = account_registry.load_meta(A2)
     try:
-        for key, listed in ((None, True), ("onlyfans", True), ("myspace", True), ("fansly", False)):
+        for key, listed in ((None, True), ("onlyfans", True), (" OnlyFans ", True), ("myspace", False),
+                            ("fansly", False)):
             meta = {k: v for k, v in saved.items() if k != "platform"}
             if key is not None:
                 meta["platform"] = key

@@ -299,3 +299,18 @@ describe("usePlatformAccounts (the Platform switch's Creators; every Platform's 
     expect(renderHook(read, { wrapper: allPlatforms }).result.current).toEqual({ rich: true, mass: true });
   });
 });
+
+it("includes a pending Cell roster row only in inbox reads", () => {
+  mockUser = { user_id: "owner-A", username: "owner-a" };
+  client.setQueryData(["accounts", "owner-A"], { accounts: [
+    { id: "10", platform: "onlyfans", is_active: true, has_session: true },
+    { id: "20", platform: "onlyfans", is_active: true, proxy_down: true, rosterPending: true },
+    { id: "30", platform: "onlyfans", is_active: true, has_session: false },
+  ] });
+  const { result } = renderHook(() => ({
+    active: useActiveAccounts(),
+    inbox: usePlatformAccounts("onlyfans", true),
+  }), { wrapper });
+  expect(result.current.inbox.map((a) => [a.id, a.has_session])).toEqual([["10", true], ["20", undefined]]);
+  expect(result.current.active.map((a) => a.id)).toEqual(["10"]);
+});

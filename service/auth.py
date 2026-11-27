@@ -371,11 +371,10 @@ async def register(request: Request, response: Response, body: RegisterBody = Bo
             await s.flush()
         except IntegrityError:
             raise HTTPException(status_code=409, detail="username already taken")
-    if os.environ.get("OI_CELL_MAP") and os.environ.get("OI_CELL_ROLE") == "control":
-        from types import SimpleNamespace
+    if cell_mode.is_control():
         from employees import seed_agency_rows
         try:
-            await seed_agency_rows(SimpleNamespace(id=new_id, username=username))
+            await seed_agency_rows(new_id, username)
         except Exception:
             log.exception("Cells: owner %s has no Mirror Employee or role presets until the next start", new_id)
 
@@ -526,6 +525,9 @@ async def apply_actor(s, claims) -> bool:
     rows = {r.id: r for r in (await s.execute(select(User).where(User.id.in_({claims.id, claims.eff_id})))).scalars()}
     real, eff = rows.get(claims.id), rows.get(claims.eff_id)
     if real is None or eff is None or session_stamps.session_revoked(claims.iat * 1000, real.sessions_valid_after):
+        return False
+    import agency_copy
+    if await agency_copy.owner_missing(s, {real.id, eff.id}):
         return False
     is_admin = bool(getattr(eff, "is_admin", False))
     _request_user.set(AuthedUser(eff.id, eff.username, await account_ids_for(s, eff.id, is_admin), is_admin))

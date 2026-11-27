@@ -74,6 +74,7 @@ LOCAL_TABLES = {"alembic_version", "data_migrations", "cell_meta"}
 
 JOBS = {
     "agency-copy-poll": ("cell_local", "none", "data Cell long-polls control for the Agency copy; writes only copied tables and cell_meta"),
+    "reservation-activation-retry": ("cell_local", "registry", "reasserts active reservations for connected Creators owned by this data Cell"),
     "grant-age-watch": ("cell_local", "none", "data Cell past its Grant age ends open streams; reads only memory"),
     "pump-supervisor": ("model", "registry", "one WS pump per Creator with a session dir"),
     "tx-ingest-supervisor": ("model", "db", "per-Creator ledger ingest"),
@@ -374,7 +375,7 @@ def _auth(path: str, unauth: set[str]) -> str:
         return "share"
     if path.startswith("/chatter/"):
         return "chatter"
-    if path.startswith(("/admin/mcp", "/fleet", "/admin/fleet")):
+    if path.startswith(("/admin/mcp", "/fleet", "/admin/fleet", "/api/cell/reservations/")):
         return "bearer"
     if re.search(r"/(sign-in|oauth|register|invite)(/|$)", path):
         return "public"

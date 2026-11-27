@@ -581,7 +581,8 @@ async def _resolve(aid: str, op: str, outcome: str, *, as_=None) -> int:
     tok = _owner(*(as_ or (aid,)))
     try:
         return await _status(usa.resolve_unconfirmed_send(account_id=aid,
-                                                          body=usa.ResolveBody(op_id=op, outcome=outcome)))
+                                                          body=usa.ResolveBody(op_id=op, outcome=outcome,
+                                                                               updated_at="2026-11-26 10:00:00.000")))
     finally:
         auth._request_user.reset(tok)
 
@@ -628,6 +629,107 @@ async def case_cell_mode_resolve_both_ways_is_audited_and_owner_scoped():
     assert a[:2] == ("resolved_sent", "user:once_owner") and a[2], a
     assert b[:2] == ("resolved_not_sent", "user:once_owner") and b[2], b
     assert not [r for r in rows if "op_id" in r], rows
+
+
+async def case_cell_mode_composer_access_is_independent_of_funnel_opt_in():
+    from unittest.mock import patch
+
+    aid = "acc_us_composer"
+    denied = HTTPException(403, "composer denied")
+    with _cells_on(aid) as so:
+        _op(so, aid, "op-composer", "composer", "42")
+        with patch.object(usa, "opt_in_refusal", return_value="funnel disabled"):
+            answer = await _get(aid)
+            assert [row["op_id"] for row in answer] == ["op-composer"], answer
+            with patch.object(usa, "route_refusal", return_value=(denied, [])):
+                token = _owner(aid)
+                try:
+                    assert await _status(usa.list_unconfirmed_sends(aid)) == 403
+                finally:
+                    auth._request_user.reset(token)
+            assert await _resolve(aid, "op-composer", "was_sent") == 200
+
+
+async def case_cell_role_middleware_enforces_resolve_for_the_requested_creator():
+    from starlette.requests import Request
+    from starlette.responses import Response
+    from unittest.mock import AsyncMock, patch
+
+    import permissions
+    import server
+
+    aid = "acc_us_resolve_role"
+    call_next = AsyncMock(return_value=Response())
+    resolve_path = "/admin/unconfirmed-sends/resolve"
+    list_path = "/admin/unconfirmed-sends"
+    request = Request({"type": "http", "method": "POST", "path": resolve_path,
+                       "query_string": f"account_id={aid}".encode(), "headers": []})
+    with _cells_on(aid):
+        refusal = HTTPException(403, "send permission denied")
+        policy = AsyncMock(return_value=(refusal, []))
+        with patch.object(permissions, "route_refusal", policy):
+            response = await permissions.role_enforcement_middleware(request, call_next)
+        assert response.status_code == 403
+        assert policy.await_args.args[:4] == (("/messages-pro",), "POST", resolve_path, [aid])
+        call_next.assert_not_called()
+        assert permissions.role_enforcement_middleware in server._http_hooks.hooks
+        assert permissions.route_pages(list_path, "GET") == ("/messages-pro", "/growth/auto-funnel")
+    assert permissions.route_pages(list_path, "GET") == ("/growth/auto-funnel",)
+
+
+async def case_unconfirmed_route_permissions_by_role_and_mode():
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    import permissions as policy
+
+    aid = "acc_us_role_table"
+    composer, funnel = policy.COMPOSER_PAGE, "/growth/auto-funnel"
+    base = policy.UNCONFIRMED_SENDS
+    routes = (("GET", base), ("POST", policy.RESOLVE_SEND),
+              ("POST", f"{base}/retry"), ("POST", f"{base}/dismiss"))
+    for cell_mode in (False, True):
+        with _cells_on(aid) if cell_mode else nullcontext():
+            for role, grants, legacy, cell in (
+                ("owner", (), (200, 200, 200, 200), (200, 200, 200, 200)),
+                ("both", (composer, funnel), (200, 200, 200, 200), (200, 200, 200, 200)),
+                ("composer", (composer,), (403, 403, 403, 403), (200, 200, 403, 403)),
+                ("funnel", (funnel,), (200, 200, 200, 200), (200, 403, 200, 200)),
+                ("ungranted", (), (403, 403, 403, 403), (403, 403, 403, 403)),
+                ("disabled", (composer, funnel), (403, 403, 403, 403), (403, 403, 403, 403)),
+                ("enforcement_off", (), (403, 403, 403, 403), (200, 200, 403, 403)),
+            ):
+                blob = {"enforce": role != "enforcement_off", "assignments": {"1": role},
+                        "roles": [{"id": role, "permissions": dict.fromkeys(grants, True),
+                                   "disabled": role == "disabled"}]}
+                ctx = policy.AgencyContext("agency", 1, role == "owner", False)
+
+                async def opt_in_refusal(pages, account_id):
+                    assert account_id == aid
+                    if not policy.opt_in_granted(ctx, blob).intersection(pages):
+                        return policy.denied_detail(pages)
+
+                async def next_route(_):
+                    return Response()
+
+                with (patch.object(policy, "agency_chatter", return_value=SimpleNamespace(owner_user_ids=())),
+                      patch.object(policy, "_enforcing_roles", return_value={"agency": blob}
+                                   if policy.enforced(blob) else None),
+                      patch.object(policy, "agency_contexts", return_value=[ctx]),
+                      patch.object(policy, "opt_in_refusal", side_effect=opt_in_refusal)):
+                    for (method, path), status in zip(routes, cell if cell_mode else legacy, strict=True):
+                        req = Request({"type": "http", "method": method, "path": path,
+                                       "query_string": f"account_id={aid}".encode(), "headers": []})
+                        response = await policy.role_enforcement_middleware(req, next_route)
+                        assert response.status_code == status, (cell_mode, role, path, response.status_code)
+            if cell_mode:
+                with patch.object(policy, "_writers", wraps=policy._writers) as writers:
+                    assert policy.route_pages(policy.RESOLVE_SEND, "POST") == (composer,)
+                    writers.assert_called_once_with(policy.RESOLVE_SEND, (composer,))
 
 
 async def case_cell_mode_retry_is_off_before_any_settle_or_clear():

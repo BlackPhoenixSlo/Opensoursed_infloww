@@ -11,7 +11,8 @@ import automation_executor as ax
 import send_ops
 from attribution import write_outbound_attribution
 from automations._send_failure import (
-    SendOutcome, is_media_rejected_error, is_unreachable_fan_error, schedule_recheck_rejected_media,
+    revive_outcome,
+    is_media_rejected_error, is_unreachable_fan_error, schedule_recheck_rejected_media,
     send_dropping_bad_media, skip_unreachable_fan,
 )
 from automations._ppv_readback import sent_ppv
@@ -56,7 +57,7 @@ def send_outcome(msg_id, exc: BaseException | None, readback_id) -> tuple[str, s
 
 async def send_priced(client: Any, *, row_id: int, account_id: str, fan_id: int, text: str,
                       ppv: dict, over_message_id: int | None = None, send_purpose: str,
-                      min_gap_s: float, before_write=None) -> Sent:
+                      min_gap_s: float, before_write=None) -> Sent | send_ops.Reconciled:
     """Send `text` as row `row_id`'s Offer (`ppv` = `{ref, price_cents, media, previews}`) and
     land the row (module doc). Price > 0: one `client.send_message` locked at the price, the
     previews free among the media; never a text-only retry. Price 0 (Free item):
@@ -77,6 +78,9 @@ async def send_priced(client: Any, *, row_id: int, account_id: str, fan_id: int,
     if row.offer_message_id is not None:
         return Sent(SENT, int(row.offer_message_id), None)
     if row.offer_attempt_at is not None:
+        if send_ops.cells() and await asyncio.to_thread(
+                send_ops.reconciled, str(account_id), "full_ai_ppv", str(fan_id), str(row_id)):
+            return send_ops.RECONCILED
         log.warning("full_ai_ppv_already_attempted account=%s fan=%s row=%s", account_id, fan_id, row_id)
         return Sent(UNCONFIRMED, None, None)
     cents = int(ppv["price_cents"])
@@ -111,7 +115,7 @@ async def send_priced(client: Any, *, row_id: int, account_id: str, fan_id: int,
                 account_id, "full_ai_ppv", fan_id, row_id,
                 lambda: send_dropping_bad_media(client, fan_id, text, media, log=log,
                                                 send_purpose=send_purpose, price_cents=0),
-                revive=lambda r: SendOutcome(*r)))
+                revive=revive_outcome))
 
     try:
         result, landed = await ax.of_write_paced(account_id, post, send_purpose=send_purpose, tries=1,
@@ -120,7 +124,7 @@ async def send_priced(client: Any, *, row_id: int, account_id: str, fan_id: int,
         log.warning("full_ai_ppv_already_attempted account=%s fan=%s row=%s", account_id, fan_id, row_id)
         return Sent(UNCONFIRMED, None, None)
     except Exception as e:      # noqa: BLE001 — every raise after the claim is classified below
-        if not attempted:
+        if not attempted or send_ops.refusal_reason(e) == "cell_held":
             raise
         exc = e
     msg_id = result.get("id") if isinstance(result, dict) else None
@@ -135,7 +139,9 @@ async def send_priced(client: Any, *, row_id: int, account_id: str, fan_id: int,
 
 
 async def _land(client, *, row_id, account_id, fan_id, text, cents, media, since, result, msg_id, exc,
-                landed, over_message_id) -> Sent:
+                landed, over_message_id) -> Sent | send_ops.Reconciled:
+    if send_ops.is_reconciled(result):
+        return send_ops.RECONCILED
     direct = bool(msg_id) and exc is None
     outcome, dropped = send_outcome(msg_id, exc, None)
     if outcome == UNCONFIRMED and exc is not None and not ax._may_have_sent(exc):

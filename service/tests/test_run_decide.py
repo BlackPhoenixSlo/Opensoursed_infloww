@@ -123,6 +123,8 @@ def case_platform_outcome_table():
     rows = [
         ("ok", None, lack, ("skipped", "done", lack)),
         ("ok", None, "no_targets", ("ok", "done", None)),
+        ("ok", None, "fan_held", ("skipped", "done", "fan_held")),
+        ("ok", "skipped", "fan_held", ("skipped", "done", "sensitive_words")),
         ("ok", None, 7, ("ok", "done", None)),
         ("ok", "skipped", lack, ("skipped", "done", "sensitive_words")),
         ("words_blocked", "skipped", None, ("skipped", "done", "sensitive_words")),

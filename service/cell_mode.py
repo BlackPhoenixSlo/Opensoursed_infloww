@@ -19,12 +19,16 @@ def _refuse(msg: str) -> None:
     raise SystemExit(f"Cells: refusing to start: {msg}")
 
 
+def read_placement() -> dict:
+    with open(os.environ["OI_CELL_MAP"], "rb") as fh:
+        return json.load(fh)
+
+
 def boot_check() -> None:
     path = os.environ.get("OI_CELL_MAP", "")
     try:
-        with open(path, "rb") as fh:
-            doc = json.loads(fh.read())
-    except (OSError, ValueError) as e:
+        doc = read_placement()
+    except (KeyError, OSError, ValueError) as e:
         _refuse(f"OI_CELL_MAP {path} is unreadable ({e})")
     proto = doc.get("min_cell_proto") if isinstance(doc, dict) else None
     if (not isinstance(doc, dict) or doc.get("schema") != 1 or not isinstance(doc.get("cells"), dict)
@@ -39,9 +43,9 @@ def boot_check() -> None:
     cell = doc["cells"].get(cell_id)
     if not isinstance(cell, dict):
         _refuse(f"Cell {cell_id} is not in {path}")
-    role = os.environ.get("OI_CELL_ROLE", "")
-    if role != cell.get("role"):
-        _refuse(f"OI_CELL_ROLE={role!r} but Placement gives Cell {cell_id} role {cell.get('role')!r}")
+    local_role = role() or ""
+    if local_role != cell.get("role"):
+        _refuse(f"OI_CELL_ROLE={local_role!r} but Placement gives Cell {cell_id} role {cell.get('role')!r}")
     if proto > CELL_PROTO:
         _refuse(f"Placement needs min_cell_proto {proto}; this Relay speaks {CELL_PROTO}")
     try:
@@ -68,8 +72,12 @@ def scope_rows() -> dict:
     return _scope()["routes"]
 
 
+def role() -> str | None:
+    return os.environ.get("OI_CELL_ROLE") if os.environ.get("OI_CELL_MAP") else None
+
+
 def is_control() -> bool:
-    return os.environ.get("OI_CELL_ROLE") == "control"
+    return role() == "control"
 
 
 def runs_job(name: str) -> bool:
@@ -125,8 +133,8 @@ def install_meta(sync_url: str) -> int:
     return _data_gen
 
 
-def _refusal(status: int, error: str, **extra) -> HTTPException:
-    return HTTPException(status_code=status, detail={"error": error, **extra})
+def refusal(status_code: int, error: str, **extra) -> HTTPException:
+    return HTTPException(status_code=status_code, detail={"error": error, **extra})
 
 
 async def _body_account(conn: HTTPConnection) -> str | None:
@@ -152,6 +160,13 @@ def _route_key(conn: HTTPConnection) -> str | None:
     return f"{'WS' if conn.scope['type'] == 'websocket' else conn.scope['method']} {path}"
 
 
+async def route_creator(conn: HTTPConnection) -> str | None:
+    query = conn.query_params
+    path_account = conn.path_params.get("account_id") if _route_key(conn) else None
+    return (conn.headers.get("x-account-id") or query.get("account_id") or query.get("account")
+            or path_account or await _body_account(conn))
+
+
 _FANIN_KEY = "oi_cell_fanin"
 
 
@@ -160,9 +175,9 @@ def _scope_check(conn: HTTPConnection) -> str:
     row = scope_rows().get(key) if key else None
     scope = row.get("scope") if isinstance(row, dict) else None
     if scope in (None, "closed") or (scope == "fanin" and key not in FANIN):
-        raise _refusal(403, "cell_scope_closed", route=key)
+        raise refusal(403, "cell_scope_closed", route=key)
     if scope == "agency" and conn.scope.get("method", "GET") not in _SAFE and not is_control():
-        raise _refusal(403, "agency_write_on_data_cell", route=key)
+        raise refusal(403, "agency_write_on_data_cell", route=key)
     if scope == "fanin":
         conn.scope.setdefault("state", {})[_FANIN_KEY] = key
     return scope
@@ -172,27 +187,28 @@ async def route_guard(conn: HTTPConnection) -> None:
     scope = _scope_check(conn)
     if conn.scope["type"] == "http" and conn.scope["method"] not in _SAFE:
         import cell_hold
-        cell_hold.refuse_writes()
+        from starlette.concurrency import run_in_threadpool
+        await run_in_threadpool(cell_hold.refuse_writes)
     q = conn.query_params
     named = {v for v in (conn.headers.get("x-account-id"), q.get("account_id"), q.get("account"),
                          conn.path_params.get("account_id"), await _body_account(conn)) if v}
     if len(named) > 1:
-        raise _refusal(400, "account_conflict", accounts=sorted(named))
+        raise refusal(400, "account_conflict", accounts=sorted(named))
     expect = conn.headers.get("x-cell-expect")
     if expect is not None and expect != f"{os.environ.get('OI_CELL_ID', '')}.{os.environ.get('OI_EPOCH', '')}":
-        raise _refusal(409, "not_owner", expected=expect)
+        raise refusal(409, "not_owner", expected=expect)
     named |= {a.strip() for a in q.get("accounts", "").split(",") if a.strip()}
     if not named:
         return
     if scope != "agency" or not is_control():
         ids = owned_ids()
         if stray := sorted(a for a in named if a not in ids):
-            raise _refusal(409, "not_owner", accounts=stray)
+            raise refusal(409, "not_owner", accounts=stray)
     conn.scope.setdefault("state", {})[_STATE_KEY] = _data_gen
     gen = conn.headers.get("x-cell-gen")
     if gen is not None and getattr(conn, "method", "GET") not in _SAFE and (
             not gen.isdigit() or _data_gen is None or int(gen) < _data_gen):
-        raise _refusal(409, "stale_cell_gen", cell_gen=_data_gen)
+        raise refusal(409, "stale_cell_gen", cell_gen=_data_gen)
 
 
 async def no_proxy_refused(request, exc) -> JSONResponse:  # noqa: ANN001
@@ -212,7 +228,11 @@ class CellGenHeader:
             if msg["type"] == "http.response.start" and state.get(_STATE_KEY) is not None:
                 msg["headers"] = [*msg.get("headers", []), (b"x-cell-gen", str(state[_STATE_KEY]).encode())]
             await send(msg)
-        await self.app(scope, receive, stamp)
+        if scope["method"] in _SAFE:
+            return await self.app(scope, receive, stamp)
+        from cell_hold import writing
+        with writing():
+            await self.app(scope, receive, stamp)
 
 
 def _owned_platforms() -> dict[str, str]:

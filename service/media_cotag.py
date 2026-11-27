@@ -232,13 +232,13 @@ def tag_user_id(client) -> int | None:
     return found
 
 
+def would_cotag(account_id: Any, media_files: Any) -> bool:
+    return bool(enabled() and media_files and str(account_id or "")
+                and needs_cotag(str(account_id), media_files))
+
+
 def cotags_for(client, media_files: Any) -> list[int]:
-    if not enabled() or not media_files:
-        return []
-    account_id = str(getattr(client, "account_id", "") or "")
-    if not account_id:
-        return []
-    if not needs_cotag(account_id, media_files):
+    if not would_cotag(getattr(client, "account_id", ""), media_files):
         return []
     uid = tag_user_id(client)
     return [uid] if uid is not None else []

@@ -5,6 +5,7 @@ import _harness
 import contextlib  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
+import os
 import sqlite3  # noqa: E402
 import tempfile  # noqa: E402
 import threading  # noqa: E402
@@ -311,7 +312,8 @@ async def case_changed_grant_section_clears_caches() -> None:
                    " 'https://fcm.googleapis.com/x', 'k', 'a', 'user', 'u1', 1, '[]', '{}', '2026', '2026')")
     gen = chatter_identity_cache.generation()
     res = ac.apply(cell, _doc(ctl))
-    await ac._after_apply(cell, res)
+    ac._notify_apply(cell, set(res["tables"]), set(res.get("revoked", ())))
+    await ac._reload_runtime(cell, set(res["tables"]))
     assert chatter_identity_cache.generation() > gen, "grant change did not drop the identity cache"
     assert "p1" in push_send._subs, "copied push subscription not loaded"
     with contextlib.closing(_db(ctl)) as db:
@@ -319,7 +321,8 @@ async def case_changed_grant_section_clears_caches() -> None:
         db.execute("UPDATE employees SET display_name = 'Z'")
     gen = chatter_identity_cache.generation()
     res = ac.apply(cell, _doc(ctl, ac.meta_at(cell)["section_sha"]))
-    await ac._after_apply(cell, res)
+    ac._notify_apply(cell, set(res["tables"]), set(res.get("revoked", ())))
+    await ac._reload_runtime(cell, set(res["tables"]))
     assert "p1" not in push_send._subs
     assert chatter_identity_cache.generation() > gen
 
@@ -483,7 +486,6 @@ def case_format2_unknown_table_kept_by_sha_only() -> None:
 
 
 def case_format1_answer_unchanged_and_format2_waits_for_every_cell() -> None:
-    import os
     ctl = _people_control("ctl-f2-gate")
     snap = ac.read_snapshot(ctl)
     assert json.loads(ac.answer(snap, {}))["format"] == 1 and "root_sha" not in json.loads(ac.answer(snap, {}))
@@ -510,6 +512,69 @@ def case_format1_answer_unchanged_and_format2_waits_for_every_cell() -> None:
             os.environ["OI_CELL_MAP"] = saved
 
 
+def _restore(ctl: str, backup: str) -> None:
+    with contextlib.closing(sqlite3.connect(backup)) as src, contextlib.closing(sqlite3.connect(ctl)) as dst:
+        src.backup(dst)
+    ac.bump_epoch(ctl)
+
+
+def _missing(cell: str) -> list:
+    with contextlib.closing(_db(cell)) as db:
+        return db.execute(f"SELECT user_id FROM {ac.MISSING}").fetchall()
+
+
+def case_older_control_keeps_missing_owner_and_its_cell_rows() -> None:
+    for fmt in (1, 2):
+        ctl, cell = _people_control(f"ctl-old-{fmt}"), _fresh(f"cell-old-{fmt}", "data")
+        old = str(_TMP / f"ctl-old-{fmt}-backup.db")
+        with contextlib.closing(sqlite3.connect(ctl)) as src, contextlib.closing(sqlite3.connect(old)) as dst:
+            src.backup(dst)
+        with contextlib.closing(_db(ctl)) as db:
+            db.execute("INSERT INTO users (id, username, password, created_at, last_seen_at, is_admin) VALUES"
+                       " ('u2', 'late', 'p', '2026-01-01', '2026-01-01', 0)")
+            db.execute("INSERT INTO user_accounts VALUES ('u2', ?, '2026-01-01')", (BIG_ACC,))
+        snap = lambda: _doc(ctl) if fmt == 1 else _doc2(ac.read_snapshot(ctl))  # noqa: E731
+        ac.apply(cell, snap())
+        with contextlib.closing(_db(cell)) as db:
+            db.execute("INSERT INTO agency_notifications (agency_user_id, kind, text, created_at)"
+                       " VALUES ('u2', 'creator', 'Nova expired', '2026-01-01')")
+        _restore(ctl, old)
+        doc = snap()
+        res = ac.apply(cell, doc)
+        assert res["applied"] and res["owners_missing"] == ["u2"] and ("users", "u2") in res["revoked"], res
+        with contextlib.closing(_db(cell)) as db:
+            assert db.execute("SELECT username FROM users WHERE id = 'u2'").fetchall() == [("late",)], fmt
+            assert db.execute("SELECT text FROM agency_notifications WHERE agency_user_id = 'u2'"
+                              ).fetchall() == [("Nova expired",)], "Cell-local CASCADE child deleted"
+            assert db.execute("SELECT 1 FROM user_accounts WHERE user_id = 'u2'").fetchall() == []
+        assert _missing(cell) == [("u2",)] and res.get("root_ok", True), res
+        lines = []
+        handler = logging.Handler()
+        handler.emit = lambda r: lines.append(r.getMessage())
+        ac.log.addHandler(handler)
+        try:
+            ac._log_missing(doc, res)
+            with contextlib.closing(_db(ctl)) as db:
+                db.execute("UPDATE employees SET display_name = 'Anna' WHERE id = 7")
+            again = ac.apply(cell, snap())
+            ac._log_missing(doc, again)
+        finally:
+            ac.log.removeHandler(handler)
+        assert again["applied"] and again["owners_missing"] == [], again
+        assert lines == [f"agency_copy_owner_missing owner=u2 copy={doc['epoch']}.{doc['version']}: Control no"
+                         " longer lists this owner; kept its rows, access denied until a copy lists it again"], lines
+        with contextlib.closing(_db(ctl)) as db:
+            db.execute("INSERT INTO users (id, username, password, created_at, last_seen_at, is_admin) VALUES"
+                       " ('u2', 'late', 'p', '2026-01-01', '2026-01-01', 0)")
+        back = ac.apply(cell, snap())
+        assert back["applied"] and back["owners_missing"] == [] and _missing(cell) == [], back
+        with contextlib.closing(_db(cell)) as db:
+            assert db.execute("SELECT COUNT(*) FROM agency_notifications WHERE agency_user_id = 'u2'"
+                              ).fetchone() == (1,)
+        if fmt == 2:
+            _synced(ctl, cell)
+
+
 def case_installer_moves_section_sha_into_its_table() -> None:
     ctl, cell = _seeded_control("ctl-mig"), _fresh("cell-mig", "data")
     ac.apply(cell, _doc(ctl))
@@ -528,6 +593,271 @@ def case_env_unset_installs_nothing() -> None:
         names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE name LIKE 'cell_copy_%'"
                                           " OR name LIKE 'agency_copy_%'")}
     assert not names, names
+
+
+def case_snapshot_waiters_reuse_newer_build() -> None:
+    from unittest.mock import patch
+
+    with contextlib.ExitStack() as patches:
+        import asyncio
+
+        started = threading.Event()
+        release = threading.Event()
+        all_sampled = None
+        sampled = builds = 0
+
+        async def version(_path):
+            nonlocal sampled
+            sampled += 1
+            if sampled == 5:
+                all_sampled.set()
+            return 1, 1, 1
+
+        def snapshot(_path):
+            nonlocal builds
+            builds += 1
+            started.set()
+            assert release.wait(5)
+            return {"epoch": 1, "version": 2, "shas2": {}}
+
+        patches.enter_context(patch.object(ac, "_version", version))
+        patches.enter_context(patch.object(ac, "read_snapshot", snapshot))
+        patches.enter_context(patch.object(ac, "_snap", {}))
+        patches.enter_context(patch.object(ac, "_hist", {}))
+
+        async def burst():
+            nonlocal all_sampled
+            all_sampled = asyncio.Event()
+            patches.enter_context(patch.object(ac, "_one_snapshot_build", asyncio.Lock()))
+            tasks = [asyncio.create_task(ac._snapshot("local")) for _ in range(5)]
+            try:
+                assert await asyncio.to_thread(started.wait, 5)
+                await asyncio.wait_for(all_sampled.wait(), 5)
+            finally:
+                release.set()
+            return await asyncio.gather(*tasks)
+
+        assert all(s["version"] == 2 for s in asyncio.run(burst()))
+        assert builds == 1
+
+
+def case_poll_retries_runtime_reload_while_confirming_copy() -> None:
+    from unittest.mock import patch
+
+    with contextlib.ExitStack() as patches:
+        import asyncio
+
+        import httpx
+
+        import runtime_switches
+        from importlib import import_module
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        path = _fresh("runtime-reload", "data")
+        patches.enter_context(patch.dict(os.environ, {"OI_CELL_CONTROL_URL": "http://127.0.0.1:1"}))
+        patches.enter_context(patch.dict(os.environ, {"OI_ACCOUNTS": ""}))
+        switch = "FULL_AI_CHAT_OFF"
+        patches.enter_context(patch.dict(os.environ, {switch: "0"}))
+        patches.enter_context(patch.object(ac, "_held", ac._held))
+        patches.enter_context(patch.object(runtime_switches, "_overrides", {}))
+        doc = {"format": 1, "epoch": 1, "version": 1, "grant_gen": 1, "sections": {
+            "runtime_switches": {"sha256": "sha", "rows": [{"name": switch, "value_json": "true",
+                                                            "updated_at": "2026-01-01", "updated_by": None}]},
+        }}
+        reads = 0
+        confirmed_after_failure = False
+        load_rows = runtime_switches._read_rows
+
+        async def read_rows():
+            nonlocal reads
+            reads += 1
+            if reads == 1:
+                raise OSError("temporary load failure")
+            result = await load_rows()
+            loaded.set()
+            return result
+
+        async def get(_self, url, *, params):
+            nonlocal confirmed_after_failure
+            if reads == 1:
+                confirmed_after_failure = ac.meta_at(path)["confirmed_at"] is not None
+                assert not runtime_switches.value(switch)
+            await asyncio.sleep(min(params["hold"], 0.05))
+            return httpx.Response(200, json=doc, request=httpx.Request("GET", url))
+
+        patches.enter_context(patch.object(runtime_switches, "_read_rows", read_rows))
+        patches.enter_context(patch.object(httpx.AsyncClient, "get", get))
+
+        async def exercise():
+            nonlocal loaded
+            loaded = asyncio.Event()
+            engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+            try:
+                with patch.object(import_module("db.engine"), "get_session", async_sessionmaker(engine)):
+                    task = asyncio.create_task(ac.poll_forever(path))
+                    try:
+                        await asyncio.wait_for(loaded.wait(), 3)
+                        assert runtime_switches.value(switch) is True
+                    finally:
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+            finally:
+                await engine.dispose()
+
+        loaded = None
+        asyncio.run(exercise())
+        assert reads == 2
+        assert confirmed_after_failure
+
+
+async def case_poll_revokes_cached_actor_during_reload_backoff() -> None:
+    import asyncio
+    from unittest.mock import patch
+
+    import actor_token
+    import chatters
+    import httpx
+    import runtime_switches
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    ctl, cell = _seeded_control("ctl-revoke-backoff"), _fresh("cell-revoke-backoff", "data")
+    with contextlib.closing(_db(ctl)) as db:
+        db.execute("INSERT INTO runtime_switches (name, value_json, updated_at) VALUES ('FULL_AI_CHAT_OFF', 'true', '2026')")
+    first = _doc(ctl)
+    with contextlib.closing(_db(ctl)) as db:
+        db.execute("UPDATE chatters SET is_active = 0 WHERE id = 'c1'")
+    second = _doc(ctl, {name: sec["sha256"] for name, sec in first["sections"].items()})
+    assert second["grant_gen"] > first["grant_gen"]
+    checked = asyncio.Event()
+    claims = actor_token.Claims("u1", "chatter", "c1", "c1", False, 1, 2, second["grant_gen"])
+
+    async def get(_self, url, *, params):
+        held = ac.meta_at(cell)["grant_gen"]
+        if held == first["grant_gen"]:
+            assert await actor_token.chatter_identity(claims) is not None
+        if held == second["grant_gen"]:
+            checked.set()
+            await asyncio.Future()
+        return httpx.Response(200, json=first if held is None else second, request=httpx.Request("GET", url))
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{cell}")
+    try:
+        with (patch.dict(os.environ, {"OI_CELL_CONTROL_URL": "http://127.0.0.1:1", "OI_ACCOUNTS": ""}),
+              patch.object(chatters, "get_session", async_sessionmaker(engine)),
+              patch.object(httpx.AsyncClient, "get", get),
+              patch.object(runtime_switches, "load", side_effect=OSError("temporary load failure")) as load):
+            task = asyncio.create_task(ac.poll_forever(cell))
+            try:
+                await asyncio.wait_for(checked.wait(), 3)
+                assert load.await_count == 1
+                assert await actor_token.chatter_identity(claims) is None, "revoked actor kept cached identity"
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+    finally:
+        await engine.dispose()
+
+
+async def case_poll_revokes_cached_actor_when_owner_read_fails() -> None:
+    import asyncio
+    from unittest.mock import patch
+
+    import actor_token
+    import chatters
+    import httpx
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    ctl, cell = _seeded_control("ctl-revoke-owners"), _fresh("cell-revoke-owners", "data")
+    with contextlib.closing(_db(ctl)) as db:
+        db.execute("INSERT INTO runtime_switches (name, value_json, updated_at) VALUES ('FULL_AI_CHAT_OFF', 'true', '2026')")
+    first = _doc(ctl)
+    with contextlib.closing(_db(ctl)) as db:
+        db.execute("UPDATE chatters SET is_active = 0 WHERE id = 'c1'")
+    second = _doc(ctl, {name: sec["sha256"] for name, sec in first["sections"].items()})
+    assert second["grant_gen"] > first["grant_gen"]
+    checked = asyncio.Event()
+    claims = actor_token.Claims("u1", "chatter", "c1", "c1", False, 1, 2, second["grant_gen"])
+
+    async def get(_self, url, *, params):
+        held = ac.meta_at(cell)["grant_gen"]
+        if held == first["grant_gen"]:
+            assert await actor_token.chatter_identity(claims) is not None
+        if held == second["grant_gen"]:
+            checked.set()
+            await asyncio.Future()
+        return httpx.Response(200, json=first if held is None else second, request=httpx.Request("GET", url))
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{cell}")
+    try:
+        with (patch.dict(os.environ, {"OI_CELL_CONTROL_URL": "http://127.0.0.1:1", "OI_ACCOUNTS": ""}),
+              patch.object(chatters, "get_session", async_sessionmaker(engine)),
+              patch.object(httpx.AsyncClient, "get", get),
+              patch.object(ac, "_owners", side_effect=sqlite3.OperationalError("database is locked"))):
+            task = asyncio.create_task(ac.poll_forever(cell))
+            try:
+                await asyncio.wait_for(checked.wait(), 3)
+                assert await actor_token.chatter_identity(claims) is None, "revoked actor kept cached identity"
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+    finally:
+        await engine.dispose()
+
+
+async def case_poll_new_control_epoch_reasserts_connected_reservations() -> None:
+    import asyncio
+    from unittest.mock import patch
+
+    import accounts
+    import creator_reservations as reservations
+    import httpx
+
+    ctl, cell = _fresh("ctl-activation-epoch", "control"), _fresh("cell-activation-epoch", "data")
+    ac.apply(cell, _doc(ctl))
+    ac.bump_epoch(ctl)
+    fresh = _doc(ctl)
+    directory = _TMP / "activation-epoch-sessions" / BIG_ACC
+    directory.mkdir(parents=True)
+    (directory / "session.json").write_text("{}")
+    (directory / "latest.json").write_text('{"session":"session.json"}')
+    initial_claim = threading.Event()
+    reasserted = threading.Event()
+
+    def send(_url, *, json, **_kwargs):
+        assert json["creator_id"] == BIG_ACC and json["state"] == "active"
+        if ac.meta_at(cell)["epoch"] == fresh["epoch"]:
+            reasserted.set()
+        else:
+            initial_claim.set()
+        return httpx.Response(200, json={"state": "active"})
+
+    async def get(_self, url, *, params):
+        if params["since"] == f'{fresh["epoch"]}.{fresh["version"]}':
+            await asyncio.Future()
+        return httpx.Response(200, json=fresh, request=httpx.Request("GET", url))
+
+    with (patch.dict(os.environ, {"OI_CELL_CONTROL_URL": "http://127.0.0.1:1", "OI_ACCOUNTS": f"onlyfans:{BIG_ACC}"}),
+          patch.object(accounts, "ACCOUNTS_DIR", directory.parent),
+          patch.object(httpx, "post", send),
+          patch.object(httpx.AsyncClient, "get", get)):
+        retry = asyncio.create_task(reservations.retry_activations())
+        try:
+            assert await asyncio.to_thread(initial_claim.wait, 3)
+            async with asyncio.timeout(3):
+                while True:
+                    with reservations._activation_lock:
+                        if not reservations._pending_activation:
+                            break
+                    await asyncio.sleep(0.01)
+            poll = asyncio.create_task(ac.poll_forever(cell))
+            try:
+                assert await asyncio.to_thread(reasserted.wait, 4), "Control epoch advanced without re-claiming"
+            finally:
+                poll.cancel()
+                await asyncio.gather(poll, return_exceptions=True)
+        finally:
+            retry.cancel()
+            await asyncio.gather(retry, return_exceptions=True)
 
 
 _harness.run()

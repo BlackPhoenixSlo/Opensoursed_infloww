@@ -163,7 +163,7 @@ describe("It went through (dismiss)", () => {
 });
 
 describe("buildRequest", () => {
-  const OP = { kind: "composer", op_id: "op-9", fan_id: "5", since: "x", state: "UNCONFIRMED", retry_allowed: false, link: "chat" } as const;
+  const OP = { kind: "composer", op_id: "op-9", updated_at: "stamp-1", fan_id: "5", since: "x", state: "UNCONFIRMED", retry_allowed: false, link: "chat" } as const;
   it.each([
     ["marked retry (env unset)", A, "retry", "retry"],
     ["marked retry with retry_allowed:false", { ...A, retry_allowed: false }, "retry", null],
@@ -176,10 +176,10 @@ describe("buildRequest", () => {
   ] as const)("%s → %s", (_n, r, op, path) => {
     expect(buildRequest(r, op)?.path ?? null).toBe(path);
   });
-  it("op body is op_id + outcome; marked retry has no confirm, dismiss does", () => {
-    expect(buildRequest(OP, "not_sent")?.body).toEqual({ op_id: "op-9", outcome: "not_sent" });
+  it("op body includes the listed attempt token", () => {
+    expect(buildRequest(OP, "not_sent")?.body).toEqual({ op_id: "op-9", updated_at: "stamp-1", outcome: "not_sent" });
     expect(buildRequest(A, "retry")?.confirm).toBeNull();
     expect(buildRequest(A, "dismiss")?.confirm?.label).toBe("It went through");
-    expect(rowKey(OP)).toBe("op:op-9");
+    expect(rowKey(OP)).not.toBe(rowKey({ ...OP, updated_at: "stamp-2" }));
   });
 });

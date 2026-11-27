@@ -10,6 +10,7 @@ from pathlib import Path  # noqa: E402
 _harness.bootstrap()
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "fansly"))
 
+import send_ops  # noqa: E402
 import send_tripwire  # noqa: E402
 from fansly_shim import FanslyShimClient  # noqa: E402
 from of_client import OFClient  # noqa: E402
@@ -79,7 +80,7 @@ def case_each_method_refuses_before_the_wire():
 
 def case_a_claim_or_env_unset_lets_the_send_reach_the_wire():
     with _Cells(True):
-        token = send_tripwire.claim.set(send_tripwire.Budget("op-1"))
+        token = send_tripwire.claim.set(send_tripwire.Budget("op-1", send_ops.check_permit))
         try:
             c = _client("publish_schedule")
             METHODS["publish_schedule"](c)
@@ -104,24 +105,29 @@ def case_fansly_claim_spends_one_attempt_on_deliveries_only():
         c.wire.append((method, url.split("/api/v1")[-1]))
         return types.SimpleNamespace(status_code=200, json=lambda: {"success": True, "response": {"id": "1"}})
     c.http = types.SimpleNamespace(request=request)
-    budget = send_tripwire.Budget("op-f")
-    token = send_tripwire.claim.set(budget)
-    try:
-        c._request("POST", "/account/media", json_body={})
-        c._request("POST", "/message", json_body={})
+    budget = send_tripwire.Budget("op-f", send_ops.check_permit)
+    with _Cells(True):
+        token = send_tripwire.claim.set(budget)
         try:
+            c._request("POST", "/account/media", json_body={})
+            c._request("POST", "/group", json_body={})
             c._request("POST", "/message", json_body={})
-        except send_tripwire.SendBudgetSpent:
-            pass
-        else:
-            raise AssertionError("second delivery under one claim reached the wire")
-    finally:
-        send_tripwire.claim.reset(token)
-    assert [p for _m, p in c.wire] == ["/account/media", "/message"] and budget.sent == 1, (c.wire, budget.sent)
+            try:
+                c._request("POST", "/message", json_body={})
+            except send_tripwire.SendBudgetSpent:
+                pass
+            else:
+                raise AssertionError("second delivery under one claim reached the wire")
+        finally:
+            send_tripwire.claim.reset(token)
+    assert [p for _m, p in c.wire] == ["/account/media", "/group", "/message"] and budget.sent == 1, (c.wire, budget.sent)
 
 
 def case_refusal_counts_as_not_sent():
     assert _may_have_sent(send_tripwire.UnclaimedSend("post_message")) is False
+    for reason in ("writes_paused", "cell_held", "not_owner", "claim_failed", "capability", "fan_held", "op_pending"):
+        refusal = send_ops.SendRefused(409, reason)
+        assert not _may_have_sent(refusal) and send_ops.refusal_reason(refusal) == reason
 
 
 _harness.run()

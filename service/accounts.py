@@ -250,6 +250,7 @@ def upsert_account(account_id: str, *,
                    platform: str | None = None,
                    name: str | None = None,
                    role: str | None = None) -> dict[str, Any]:
+    import platforms
     existing = load_meta(account_id) or {}
     meta = {
         "id": account_id,
@@ -264,6 +265,7 @@ def upsert_account(account_id: str, *,
     kept_role = existing.get("role") if role is None else role
     if kept_role:
         meta["role"] = kept_role
+    meta["platform"] = platforms.require(meta["platform"]).key
     save_meta(account_id, meta)
     return meta
 
@@ -279,15 +281,19 @@ class PlatformCollision(Exception):
 
 def ensure_platform(account_id: str, key: str) -> None:
     import platforms
+    wanted = platforms.require(key)
+    meta = load_meta(account_id)
+    meta_platform = platforms.get(meta.get("platform")) if meta is not None else None
+    if isinstance(meta_platform, platforms.UnknownPlatform):
+        raise PlatformCollision(
+            f"account {account_id} has the unknown Platform key {meta_platform.key!r}; "
+            f"a {wanted.label} session can't be linked to it until the key is fixed")
     if _CELLS:
         import creator_reservations
-        creator_reservations.admit(account_id, key)
+        creator_reservations.admit(account_id, wanted.key)
     adir = _account_path(account_id)
     if adir is None or not adir.is_dir():
         return
-    meta = load_meta(account_id)
-    meta_platform = platforms.get(meta.get("platform")) if meta is not None else None
-    wanted = platforms.get(key)
     for held in platforms.ALL:
         if held is wanted:
             continue

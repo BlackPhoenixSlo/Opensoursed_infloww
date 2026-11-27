@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from db.models import (
 )
 import of_pacing
 import of_paging
+from send_tripwire import CellHeld
 from fans import _NON_REVENUE_STATUSES
 
 log = logging.getLogger("of-relay.audiences")
@@ -588,6 +590,8 @@ def _reconcile_exclude_list_blocking(client, list_id, members: set[int], ids: se
     for uid in stale:
         try:
             client.remove_user_from_list(list_id, uid)
+        except CellHeld:
+            raise
         except Exception:  # noqa: BLE001 — a stale member we can't drop is harmless
             log.warning("auto_exclude remove failed account-list=%s uid=%s", list_id, uid)
             continue
@@ -757,6 +761,7 @@ async def ensure_exclude_list(
     ids: Iterable[int],
     *,
     client=None,
+    claim=None,
 ) -> int | None:
     idset = {int(x) for x in (ids or set())}
     if not idset:
@@ -766,7 +771,8 @@ async def ensure_exclude_list(
         import automation_executor as ax
         c = await asyncio.to_thread(ax._make_client, account_id)
     aid = str(account_id)
-    list_id, refresh = await asyncio.to_thread(_ensure_exclude_blocking, aid, c, idset)
+    with claim.preparing() if claim is not None else contextlib.nullcontext():
+        list_id, refresh = await asyncio.to_thread(_ensure_exclude_blocking, aid, c, idset)
     if refresh:
         _schedule_auto_exclude_refresh(aid, c)
     log.info("auto_exclude synced account=%s list=%s ids=%d",

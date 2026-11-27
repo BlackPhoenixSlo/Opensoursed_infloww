@@ -179,10 +179,15 @@ def case_check_is_red_on_a_stale_or_invalid_row():
 def case_regenerate_keeps_decided_fields():
     doc = json.loads(json.dumps(_DOC))
     doc["routes"]["GET /livez"] |= {"scope": "public", "why": "owner: Front door answers it"}
+    handoff = "POST /api/cell/reservations/handoff"
+    doc["routes"][handoff]["why"] = "owner: Control-only reservation handoff"
     out = _copy(doc)
     rc, log = _run("--out", str(out))
     assert rc == 0, log[-2000:]
-    assert json.loads(out.read_text())["routes"]["GET /livez"]["why"] == "owner: Front door answers it"
+    routes = json.loads(out.read_text())["routes"]
+    assert routes["GET /livez"]["why"] == "owner: Front door answers it"
+    assert routes[handoff]["why"] == doc["routes"][handoff]["why"]
+    assert routes[handoff]["auth"] == "bearer"
 
 
 def case_only_cell_mode_reads_cell_scope():

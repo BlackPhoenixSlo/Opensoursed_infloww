@@ -16,10 +16,11 @@ export interface ChatPage {
 }
 export type ChatPages = InfiniteData<ChatPage>;
 
-export function replayCachedPage<T>(state: QueryState<InfiniteData<T>> | undefined, offset: number, limit: number): T | undefined {
+export function replayCachedPage<T>(state: QueryState<InfiniteData<T>> | undefined, offset: number, limit: number, pageParam: unknown = offset): T | undefined {
   const data = state?.data;
   if (state?.fetchMeta?.fetchMore || !data?.pages || offset < CHAT_AUTO_PAGES_MAX * limit) return undefined;
-  const i = data.pageParams.indexOf(offset);
+  const i = typeof pageParam === "number" ? data.pageParams.indexOf(pageParam)
+    : data.pageParams.findIndex((saved) => replaceEqualDeep(saved, pageParam) === saved);
   return i < 0 ? undefined : data.pages[i];
 }
 
@@ -249,6 +250,7 @@ export interface StampedPage extends ChatPage {
   askedSeq?: number;
   partial?: boolean;
   missing?: string[];
+  cellCursors?: Record<string, number>;
   moreAccounts: string[];
   scanned: number;
 }

@@ -12,7 +12,7 @@ import { parseSendFailure, type SendFailure } from "@/lib/sendFailure";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { uploadErrorText, uploadToVault, type PendingUpload } from "@/hooks/useComposerUploads";
 import { sendStash, type SendInput, type StashEntry } from "@/lib/sendStash";
-import { newOpId } from "@/lib/opId";
+import { newOpId, sendKey, withRetainedOp, type RetainedOps } from "@/lib/opId";
 
 import { useChatMessages } from "./useChatMessages";
 import { scheduledSendsKey } from "./useServerScheduledSends";
@@ -118,13 +118,19 @@ export function useSendMessage(opts: UseSendMessageOpts) {
     ): Promise<SendFailure | null> => {
       setInflight((n) => n + 1);
       try {
-        const server = await relay.post<OFMessage>(
+        const server = await relay.post<OFMessage | { status: "reconciled" }>(
           `/api/of/v2/chats/${capturedFanId}/messages`,
           body,
           { accountId: capturedAccountId, employeeId, opId },
         );
-        reconcileLocal(tempId, server);
-        recordVaultSends(qc, capturedAccountId, capturedFanId, server, body.price ?? 0);
+        if (!("id" in server)) {
+          if (server.status !== "reconciled") throw new Error("Message send returned no receipt");
+          dropLocal(tempId);
+          void qc.invalidateQueries({ queryKey: ["messages", capturedAccountId, capturedFanId] });
+        } else {
+          reconcileLocal(tempId, server);
+          recordVaultSends(qc, capturedAccountId, capturedFanId, server, body.price ?? 0);
+        }
         qc.invalidateQueries({ queryKey: ["msg-attribution", capturedAccountId, capturedFanId] });
         sendStash.sent(tempId);
         return null;
@@ -144,7 +150,7 @@ export function useSendMessage(opts: UseSendMessageOpts) {
         setInflight((n) => n - 1);
       }
     },
-    [failLocal, reconcileLocal, qc, employeeId],
+    [dropLocal, failLocal, reconcileLocal, qc, employeeId],
   );
 
   const optimisticMessage = useCallback(
@@ -229,67 +235,42 @@ export function useSendMessage(opts: UseSendMessageOpts) {
     [fromUserId, fromUserName, appendLocal, sendAfterUploads, optimisticMessage, qc],
   );
 
-  const scheduleOp = useRef<{ key: string; opId: string } | null>(null);
+  const scheduleOp = useRef<RetainedOps | null>(null);
   const schedule = useCallback(
     async (input: SendOpts, scheduledAt: string, accountId: string, fanId: FanId): Promise<void> => {
       if (input.uploads?.length) throw new Error("Wait for the upload to finish before scheduling");
       const fireAt = new Date(scheduledAt).getTime();
       const delay = fireAt - Date.now();
-      if (delay > 0 && delay <= EXECUTOR_MAX_MINUTES * 60_000) {
-        const attached = input.attached ?? [];
+      const localPath = "/api/of/v2/scheduled-sends";
+      const path = delay > 0 && delay <= EXECUTOR_MAX_MINUTES * 60_000
+        ? localPath : `/api/of/v2/chats/${fanId}/messages/scheduled`;
+      const body = {
+        text: input.text,
+        locked_text: input.lockedText ?? false,
+        price: input.price ?? 0,
+        media_files: (input.attached ?? []).map((m) => m._claim ?? m.id),
+      };
+      const previews = body.price > 0 ? input.previews ?? [] : [];
+      const taggedUsers = input.taggedUsers ?? [];
+      const key = sendKey(accountId, fanId, scheduledAt, body, previews, taggedUsers, input.giphyId);
+      await withRetainedOp(scheduleOp, key, async (opId, retainedPath) => {
+        const local = retainedPath === localPath;
+        const scheduledBody = local ? {
+          ...body, fan_id: fanId, run_at: scheduledAt, previews, tagged_users: taggedUsers, giphy_id: input.giphyId,
+        } : {
+          ...body, scheduled_date: scheduledAt,
+          ...(previews.length ? { previews } : {}),
+          ...(taggedUsers.length ? { tagged_users: taggedUsers } : {}),
+          ...(input.giphyId ? { giphy_id: input.giphyId } : {}),
+        };
         try {
-          await relay.post(
-            `/api/of/v2/scheduled-sends`,
-            {
-              fan_id: fanId,
-              run_at: scheduledAt,
-              text: input.text,
-              price: input.price ?? 0,
-              locked_text: input.lockedText ?? false,
-              media_files: attached.map((m) => m._claim ?? m.id),
-              previews:
-                input.previews && (input.price ?? 0) > 0 ? input.previews : [],
-              tagged_users: input.taggedUsers ?? [],
-              giphy_id: input.giphyId,
-            },
-            { accountId, employeeId },
-          );
-          qc.invalidateQueries({ queryKey: scheduledSendsKey(accountId, fanId) });
+          await relay.post(retainedPath, scheduledBody, { accountId, employeeId, opId });
         } catch (err) {
-          // Rethrow: a scheduled send has no bubble to turn red, so swallowing showed "Scheduled" for a message the relay refused.
-          console.warn("[schedule] near-term enqueue failed", err);
+          console.warn(local ? "[schedule] near-term enqueue failed" : "[schedule] failed", err);
           throw err;
         }
-        return;
-      }
-      const attached = input.attached ?? [];
-      try {
-        const scheduledBody: Record<string, unknown> = {
-          text: input.text,
-          locked_text: input.lockedText ?? false,
-          price: input.price ?? 0,
-          media_files: attached.map((m) => m._claim ?? m.id),
-          scheduled_date: scheduledAt,
-        };
-        if (input.previews && input.previews.length > 0 && (input.price ?? 0) > 0) {
-          scheduledBody.previews = input.previews;
-        }
-        if (input.taggedUsers && input.taggedUsers.length > 0) {
-          scheduledBody.tagged_users = input.taggedUsers;
-        }
-        if (input.giphyId) scheduledBody.giphy_id = input.giphyId;
-        const key = JSON.stringify([accountId, fanId, scheduledBody]);
-        if (scheduleOp.current?.key !== key) scheduleOp.current = { key, opId: newOpId() };
-        await relay.post(
-          `/api/of/v2/chats/${fanId}/messages/scheduled`,
-          scheduledBody,
-          { accountId, employeeId, opId: scheduleOp.current.opId },
-        );
-        scheduleOp.current = null;
-      } catch (err) {
-        console.warn("[schedule] failed", err);
-        throw err;
-      }
+        if (local) qc.invalidateQueries({ queryKey: scheduledSendsKey(accountId, fanId) });
+      }, path);
     },
     [qc, employeeId],
   );

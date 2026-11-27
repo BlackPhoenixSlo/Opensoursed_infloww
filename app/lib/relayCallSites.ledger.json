@@ -1,50 +1,26 @@
 {
-  "app/admin/manage/page.tsx delete /admin/users/1": {
-    "class": "agency",
-    "why": "Master user admin"
-  },
-  "app/admin/manage/page.tsx delete /admin/users/1/accounts/1": {
-    "class": "agency",
-    "why": "Master user admin"
-  },
   "app/admin/manage/page.tsx get /admin/users": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Master user admin"
   },
   "app/admin/manage/page.tsx get /admin/users/1/accounts": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Master user admin"
   },
   "app/admin/manage/page.tsx get /admin/users/llm-key-status": {
-    "class": "agency",
-    "why": "Master user admin"
-  },
-  "app/admin/manage/page.tsx post /admin/users/1/accounts": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Master user admin"
   },
   "components/AgencyNotifications.tsx get /admin/agency-notifications?limit=30": {
-    "class": "agency",
-    "why": "Agency notification feed"
-  },
-  "components/AgencyNotifications.tsx post /admin/agency-notifications/1/dismiss": {
-    "class": "agency",
-    "why": "Agency notification feed"
-  },
-  "components/AgencyNotifications.tsx post /admin/agency-notifications/dismiss-all": {
-    "class": "agency",
-    "why": "Agency notification feed"
-  },
-  "components/AgencyNotifications.tsx post /admin/agency-notifications/read-all | /admin/agency-notifications/1/read": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency notification feed"
   },
   "components/ErrorBadge.tsx delete /admin/errors?since_hours=24": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency error log"
   },
   "components/ErrorBadge.tsx get /admin/errors?since_hours=24&limit=50": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency error log"
   },
   "components/analytics/SalesRecords.tsx get /admin/stats/sales-records?": {
@@ -56,7 +32,7 @@
     "why": "report export spans the picked Creators"
   },
   "components/assistant/AssistantWidget.tsx get /admin/assistant/history?limit=1": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "assistant chat history is per login"
   },
   "components/assistant/MarkerCards.tsx get path": {
@@ -64,32 +40,16 @@
     "why": "metricPath: one Creator via ?account_id or all of them"
   },
   "components/automations/AiRulesPage.tsx get /admin/full-ai/rules?mode=test": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "static Full AI rule graph"
   },
   "components/employees/EmployeeModals.tsx post req.path": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "employee writes (control paths)"
   },
   "components/employees/EmployeeModals.tsx put req.path": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "employee writes (control paths)"
-  },
-  "components/growth/SensitiveWordsPage.tsx post /admin/sensitive-words/add": {
-    "class": "agency",
-    "why": "sensitive words list is the Agency's"
-  },
-  "components/growth/SensitiveWordsPage.tsx post /admin/sensitive-words/delete": {
-    "class": "agency",
-    "why": "sensitive words list is the Agency's"
-  },
-  "components/growth/SensitiveWordsPage.tsx post /admin/sensitive-words/update": {
-    "class": "agency",
-    "why": "sensitive words list is the Agency's"
-  },
-  "components/growth/SensitiveWordsPage.tsx uploadFile /admin/sensitive-words/import": {
-    "class": "agency",
-    "why": "sensitive words list is the Agency's"
   },
   "components/home/CompetitorReports.tsx get /admin/stats/revenue?": {
     "class": "cross",
@@ -116,7 +76,7 @@
     "why": "account_id optional: all Creators when absent"
   },
   "components/settings/AuditTab.tsx get /admin/audit?1": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency audit log"
   },
   "components/settings/JsonConfigModal.tsx get `${path}?account_id=${encodeURIComponent(accountId)}`": {
@@ -124,159 +84,147 @@
     "why": "path from SURFACES; ?account_id names the Creator"
   },
   "components/settings/SystemTab.tsx get /admin/system/automations": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Relay system switches and runs"
   },
   "components/settings/SystemTab.tsx get /admin/system/runs?1": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Relay system switches and runs"
   },
   "components/settings/SystemTab.tsx get /admin/system/switches": {
-    "class": "agency",
-    "why": "Relay system switches and runs"
-  },
-  "components/settings/SystemTab.tsx put /admin/system/switches/1": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Relay system switches and runs"
   },
   "components/setup/AccountsTable.tsx post /admin/accounts/active": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency's default Creator pick"
   },
   "components/setup/AddProxyModal.tsx post /admin/proxies/bulk": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/AgencyKeysForm.tsx get /admin/users/1/llm-keys": {
-    "class": "agency",
-    "why": "Agency LLM keys"
-  },
-  "components/setup/AgencyKeysForm.tsx put /admin/users/1/llm-keys": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency LLM keys"
   },
   "components/setup/BrowserbaseLoginCard.tsx get jobPath(jobId!)": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "login/session capture: Creator not placed yet"
   },
   "components/setup/BrowserbaseLoginCard.tsx post /admin/login/remote/start": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "login/session capture: Creator not placed yet"
   },
   "components/setup/BrowserbaseLoginCard.tsx post `${jobPath(id)}/cancel`": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "login/session capture: Creator not placed yet"
   },
   "components/setup/BrowserbaseLoginCard.tsx post `${jobPath(job.id)}/cancel`": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "login/session capture: Creator not placed yet"
   },
   "components/setup/BrowserbaseLoginCard.tsx post `${jobPath(jobId)}/cancel`": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "login/session capture: Creator not placed yet"
   },
   "components/setup/FanslyPasteSessionCard.tsx post /admin/session/fansly": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "login/session capture: Creator not placed yet"
   },
   "components/setup/LoginQueueCard.tsx get /admin/login/remote/queue": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "login/session capture: Creator not placed yet"
   },
   "components/setup/LoginQueueCard.tsx get /admin/login/remote/queue/1": {
-    "class": "agency",
-    "why": "login/session capture: Creator not placed yet"
-  },
-  "components/setup/LoginQueueCard.tsx post /admin/login/remote/queue": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "login/session capture: Creator not placed yet"
   },
   "components/setup/LoginQueueCard.tsx post /admin/login/remote/queue/1/cancel": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "login/session capture: Creator not placed yet"
   },
   "components/setup/ManagedAgencyKeysCard.tsx get /admin/users/llm-key-status": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency LLM keys"
   },
   "components/setup/MirrorFreshnessBanner.tsx get /admin/rev/live": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Relay build rev"
   },
   "components/setup/PasteCurlCard.tsx post /admin/session/bootstrap": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "login/session capture: Creator not placed yet"
   },
   "components/setup/ProxiesTable.tsx delete /admin/proxies/1": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/ProxiesTable.tsx get /admin/proxies": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/ProxiesTable.tsx post /admin/proxies": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/ProxiesTable.tsx post /admin/proxies/1/test": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/ProxiesTable.tsx post /admin/proxies/1/unbind": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/ProxiesTable.tsx post /admin/proxies/assign": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/RemoteLoginOtp.tsx post `${jobPath(jobId)}/otp`": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "login/session capture: Creator not placed yet"
   },
   "components/setup/creatorFlow.tsx get /admin/proxies": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/creatorFlow.tsx post /admin/proxies/1/test": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/linkedProxyRun.ts delete /admin/proxies/1": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/linkedProxyRun.ts get /admin/proxies": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/linkedProxyRun.ts post /admin/proxies": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/linkedProxyRun.ts post /admin/proxies/1/test": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/proxyApi.ts get /admin/proxies": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/proxyApi.ts post /admin/proxies/1/unbind": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/proxyApi.ts post /admin/proxies/assign": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/proxyApi.ts post /admin/proxy-pool/assign": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/setup/proxyApi.ts post /admin/proxy-pool/unbind": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency proxy pool"
   },
   "components/stats/employeeExport.ts get /admin/stats/chatting-stats?": {
@@ -288,19 +236,15 @@
     "why": "employee stats across Creators"
   },
   "components/ultra/ReportDownload.tsx file /admin/reports/files/1": {
-    "class": "agency",
-    "why": "Ultra plans and report files are per login"
-  },
-  "components/ultra/ultraStart.ts post /admin/ultra/plans": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Ultra plans and report files are per login"
   },
   "components/ultra/useUltraPlan.ts get /admin/ultra/plans/1": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Ultra plans and report files are per login"
   },
   "components/ultra/useUltraPlan.ts post /admin/ultra/plans/1/1": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Ultra plans and report files are per login"
   },
   "hooks/useAutoFollowList.ts get /admin/auto-follow/stats?tz=1": {
@@ -308,127 +252,35 @@
     "why": "auto-follow stats for every Creator"
   },
   "hooks/useAutomations.ts get /admin/automation-kinds": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "static automation kind catalog"
   },
-  "hooks/useBioPages.ts delete /admin/bio-pages/1": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts delete /admin/bio-pages/1/avatar": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts delete /admin/bio-pages/1/background": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts delete /admin/bio-pages/1/domain": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts delete /admin/bio-pages/1/links/1": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts delete /admin/bio-pages/1/links/1/background": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
   "hooks/useBioPages.ts get /admin/bio-pages": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "bio pages are the Agency's; a page's Creator is stored server-side"
   },
   "hooks/useBioPages.ts get /admin/bio-pages/1": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts patch /admin/bio-pages/1": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts patch /admin/bio-pages/1/links/1": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts post /admin/bio-pages": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts post /admin/bio-pages/1/avatar/vault": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts post /admin/bio-pages/1/background/vault": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts post /admin/bio-pages/1/domain/check": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts post /admin/bio-pages/1/links": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts post /admin/bio-pages/1/links/1/background/vault": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts put /admin/bio-pages/1/domain": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts put /admin/bio-pages/1/links/order": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts uploadFile /admin/bio-pages/1/avatar": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts uploadFile /admin/bio-pages/1/background": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useBioPages.ts uploadFile /admin/bio-pages/1/links/1/background": {
-    "class": "agency",
-    "why": "bio pages are the Agency's; a page's Creator is stored server-side"
-  },
-  "hooks/useFunnels.ts delete /admin/funnels/1": {
-    "class": "agency",
-    "why": "funnel text is Agency-wide; ?account_id only adds stats"
   },
   "hooks/useFunnels.ts get /admin/funnels/1": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "funnel text is Agency-wide; ?account_id only adds stats"
   },
   "hooks/useFunnels.ts get /admin/funnels?account_id=1 | /admin/funnels": {
-    "class": "agency",
-    "why": "funnel text is Agency-wide; ?account_id only adds stats"
-  },
-  "hooks/useFunnels.ts post /admin/funnels": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "funnel text is Agency-wide; ?account_id only adds stats"
   },
   "hooks/useFunnels.ts put /admin/funnels/1": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "funnel text is Agency-wide; ?account_id only adds stats"
   },
   "hooks/useNudgeConfig.ts put /admin/nudge-config/bulk": {
     "class": "cross",
     "why": "bulk apply to many Creators"
   },
-  "hooks/useOwnerTokens.ts delete /admin/owner-tokens/1": {
-    "class": "agency",
-    "why": "owner API tokens"
-  },
   "hooks/useOwnerTokens.ts get /admin/owner-tokens": {
-    "class": "agency",
-    "why": "owner API tokens"
-  },
-  "hooks/useOwnerTokens.ts post /admin/owner-tokens": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "owner API tokens"
   },
   "hooks/usePaidMessages.ts get /admin/paid-messages?1": {
@@ -460,11 +312,11 @@
     "why": "scripts across Creators"
   },
   "hooks/useSecrets.ts get /admin/secrets": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency secrets / LLM keys"
   },
   "hooks/useSecrets.ts put /admin/secrets": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency secrets / LLM keys"
   },
   "hooks/useSplitInbox.ts patch /admin/split-inbox": {
@@ -516,11 +368,7 @@
     "why": "env-unset branch (or clock event, cross-Cell); cell mode sends (account_id, tx_id) per Creator"
   },
   "hooks/useTenantKeys.ts get /admin/my-llm-keys": {
-    "class": "agency",
-    "why": "Agency secrets / LLM keys"
-  },
-  "hooks/useTenantKeys.ts put /admin/my-llm-keys": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency secrets / LLM keys"
   },
   "hooks/useTipsList.ts get /admin/tips-list?1": {
@@ -536,15 +384,11 @@
     "why": "fetchAllVaultLists(ctx): callers pass { accountId }"
   },
   "lib/creatorProfiles.ts get /admin/settings/account": {
-    "class": "agency",
-    "why": "Agency settings blob"
-  },
-  "lib/creatorProfiles.ts put /admin/settings/account": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency settings blob"
   },
   "lib/errorReporter.ts post /admin/errors": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency error log; Creator rides in the body when known"
   },
   "lib/ofMirrorCollections.ts get /api/of/v2/users/1": {
@@ -560,7 +404,7 @@
     "why": "relaySwitchQuery: accountId optional, Agency-wide probe when absent"
   },
   "lib/ownerAccounts.ts get /admin/accounts": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "the login's Creator list"
   },
   "lib/relay.ts get /api/of/v2/giphy/proxy/gifs/search?q=1&limit=1&offset=1": {
@@ -620,19 +464,15 @@
     "why": "S4S marketplace spans Creators and Agencies"
   },
   "lib/sensitiveWords.ts get /admin/sensitive-words?account_id=1 | /admin/sensitive-words": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency list; ?account_id only when a Creator is in view"
   },
   "lib/settingsBlob.ts get /admin/settings/1": {
-    "class": "agency",
-    "why": "Agency settings blob"
-  },
-  "lib/settingsBlob.ts put /admin/settings/1?effective_from=1 | /admin/settings/1": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "Agency settings blob"
   },
   "lib/shifts.ts get path": {
-    "class": "agency",
+    "class": "agency", "state": "off",
     "why": "shifts (control paths)"
   },
   "lib/vaultImport.ts uploadForm /api/of/v2/vault/upload/batch": {

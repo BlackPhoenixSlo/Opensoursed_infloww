@@ -11,25 +11,50 @@ import accounts  # noqa: E402
 import fansly_backend  # noqa: E402
 import platforms  # noqa: E402
 
-LACK_NAMES = {"REFERRALS", "WALL_MEDIA", "SERVER_SCHEDULE", "NEAR_SCHEDULE_MEDIA",
-              "HISTORY_UNREAD_GATE", "UNREAD_TOTAL", "SHARED_REFRESH"}
+LACK_REASONS = {
+    "REFERRALS": "platform_lacks:referrals",
+    "WALL_MEDIA": "platform_lacks:wall_media",
+    "SERVER_SCHEDULE": "platform_lacks:server_schedule",
+    "NEAR_SCHEDULE_MEDIA": "platform_lacks:near_schedule_media",
+    "HISTORY_UNREAD_GATE": "platform_lacks:history_unread_gate",
+    "UNREAD_TOTAL": "platform_lacks:unread_total",
+    "SHARED_REFRESH": "platform_lacks:shared_refresh",
+    "TIP_LEDGER": "platform_lacks:tip_ledger",
+    "PURCHASE_LINKAGE": "platform_lacks:purchase_linkage",
+    "RENEWAL_STATE": "platform_lacks:renewal_state",
+    "LAPSE_DETECTION": "platform_lacks:lapse_detection",
+    "RETURN_DETECTION": "platform_lacks:return_detection",
+}
 
 
-def case_get_resolves_every_key():
-    for key, want in [(None, platforms.ONLYFANS), ("", platforms.ONLYFANS),
-                      ("onlyfans", platforms.ONLYFANS), ("fansly", platforms.FANSLY),
-                      ("myspace", platforms.ONLYFANS), (["onlyfans"], platforms.ONLYFANS),
-                      ({"key": "fansly"}, platforms.ONLYFANS), (42, platforms.ONLYFANS)]:
-        assert platforms.get(key) is want, (key, platforms.get(key))
+def case_get_and_require_resolve_every_key():
+    for key, want in [(None, platforms.ONLYFANS), ("", platforms.ONLYFANS), ("  ", platforms.ONLYFANS),
+                      ("onlyfans", platforms.ONLYFANS), ("OnlyFans", platforms.ONLYFANS),
+                      (" onlyfans ", platforms.ONLYFANS), ("fansly", platforms.FANSLY),
+                      (["onlyfans"], platforms.ONLYFANS), ({"key": "fansly"}, platforms.ONLYFANS),
+                      (42, platforms.ONLYFANS)]:
+        assert platforms.get(key) is want and platforms.require(key) is want, (key, platforms.get(key))
+    unknown = platforms.get("myspace")
+    assert isinstance(unknown, platforms.UnknownPlatform) and unknown not in platforms.ALL, unknown
+    assert (unknown.key, unknown.label, unknown.backend, unknown.lacks) == (
+        "myspace", "Unknown platform", None, frozenset(platforms.Lack)), unknown
+    try:
+        platforms.require("myspace")
+    except ValueError as e:
+        assert isinstance(e, platforms.UnknownPlatformKey) and str(e) == "platform_unknown:myspace", e
+    else:
+        raise AssertionError("require('myspace') must raise")
 
 
 def case_for_account_reads_get_platform_at_call_time():
     orig = accounts.get_platform
     try:
         for key, want in [(None, platforms.ONLYFANS), ("onlyfans", platforms.ONLYFANS),
-                          ("fansly", platforms.FANSLY), ("myspace", platforms.ONLYFANS)]:
+                          ("fansly", platforms.FANSLY), ("myspace", platforms.UnknownPlatform("myspace"))]:
             accounts.get_platform = lambda aid, k=key: k
-            assert platforms.for_account("acc_1") is want, (key, platforms.for_account("acc_1"))
+            assert platforms.for_account("acc_1") == want, (key, platforms.for_account("acc_1"))
+        for name in ("send_message", "get_chats", "no_such_method"):
+            assert platforms.refusal_for_account("acc_1", name) == "platform_unknown:myspace", name
     finally:
         accounts.get_platform = orig
 
@@ -57,21 +82,20 @@ def case_every_backend_exposes_the_contract():
 
 
 def case_lack_values_equal_names():
-    assert {m.name for m in platforms.Lack} == LACK_NAMES, [m.name for m in platforms.Lack]
+    assert {m.name for m in platforms.Lack} == set(LACK_REASONS), [m.name for m in platforms.Lack]
     for m in platforms.Lack:
         assert m.value == m.name and m == m.name, m
     assert platforms.ONLYFANS.lacks == frozenset()
     assert platforms.FANSLY.lacks == frozenset(platforms.Lack), platforms.FANSLY.lacks
 
 
+def case_lack_reason_is_lower_case_platform_lacks():
+    for m in platforms.Lack:
+        assert platforms.lack_reason(m) == LACK_REASONS[m.name], (m, platforms.lack_reason(m))
+
+
 def case_free_follow_only_on_fansly():
     assert [p.key for p in platforms.ALL if p.free_follow] == ["fansly"]
-
-
-def case_every_platform_lacking_server_schedule_has_a_backend():
-    no_backend = [p.key for p in platforms.ALL
-                  if platforms.Lack.SERVER_SCHEDULE in p.lacks and p.backend is None]
-    assert no_backend == [], f"the long-delay schedule route calls backend.check_sendable for these: {no_backend}"
 
 
 _SERVICE = Path(__file__).resolve().parents[1]
@@ -90,13 +114,24 @@ def _is_get_platform_call(n: ast.AST) -> bool:
             or (isinstance(f, ast.Attribute) and f.attr == "get_platform"))
 
 
+def _entry_names(p: platforms.Platform) -> list[str]:
+    return [n for n, v in vars(platforms).items() if v is p and n.isupper()]
+
+
+def _probes() -> tuple[set[str], set[str]]:
+    others = [p for p in platforms.ALL if p is not platforms.ONLYFANS]
+    words = {w.lower() for p in others for w in (p.key, p.label)}
+    return words, {n for p in others for n in _entry_names(p)}
+
+
 def scan(source: str) -> list[int]:
+    words, names = _probes()
     hits: set[int] = set()
     for n in ast.walk(ast.parse(source)):
-        if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value.lower() == "fansly":
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value.lower() in words:
             hits.add(n.lineno)
-        elif ((isinstance(n, ast.Name) and n.id == "FANSLY")
-              or (isinstance(n, ast.Attribute) and n.attr == "FANSLY")):
+        elif ((isinstance(n, ast.Name) and n.id in names)
+              or (isinstance(n, ast.Attribute) and n.attr in names)):
             hits.add(n.lineno)
         elif isinstance(n, ast.Compare) and any(
                 _is_get_platform_call(o) for o in (n.left, *n.comparators)):
@@ -143,6 +178,34 @@ def case_scan_catches_offenders():
     ]
     for src, want in cases:
         assert scan(src) == want, (src, scan(src), want)
+
+
+def case_scan_derives_probes_from_every_non_onlyfans_platform():
+    others = [p for p in platforms.ALL if p is not platforms.ONLYFANS]
+    assert others, platforms.ALL
+    for p in others:
+        names = _entry_names(p)
+        assert names, p.key
+        probes = [f'x = 1\nif meta.get("platform") == "{p.key}":\n    pass',
+                  f'k = "{p.key.upper()}"', f'k = "{p.label}"',
+                  *(f"p = {n}" for n in names), *(f"p = platforms.{n}" for n in names)]
+        for src in probes:
+            assert scan(src), (p.key, src)
+
+
+def case_scan_covers_a_platform_added_to_the_registry():
+    myspace = platforms.Platform("myspace", "MySpace", "myspace_session.json", fansly_backend,
+                                 frozenset(), login="remote_login_myspace")
+    orig = platforms.ALL
+    platforms.MYSPACE = myspace
+    platforms.ALL = (*orig, myspace)
+    try:
+        assert scan('if meta.get("platform") == "myspace":\n    pass') == [1]
+        assert scan('k = "MySpace"') == [1] and scan("p = platforms.MYSPACE") == [1]
+    finally:
+        platforms.ALL = orig
+        del platforms.MYSPACE
+    assert scan('if meta.get("platform") == "myspace":\n    pass') == []
 
 
 def case_scan_tree_skips_tests_and_allowlist():

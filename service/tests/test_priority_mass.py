@@ -571,7 +571,8 @@ def case_the_create_route_validates_refuses_sensitive_words_and_repeats():
     r = OWNER_A.post(ROUTE, json=_body(text="add me on snap   CHAT"))
     assert r.status_code == 422 and "check the contents" in r.text, r.text
     assert OWNER_B.post(ROUTE, json=_body()).status_code == 403
-    r = OWNER_A.post(ROUTE, json=_body(media_files=[5], price=9.5, previews=[5]))
+    r = OWNER_A.post(ROUTE, json=_body(media_files=[5], price=9.5, previews=[5]),
+                     headers={"X-Account-Id": IDS["creator_b"]})
     assert r.status_code == 200, r.text
     run = r.json()
     assert run["status"] == pm.RESOLVING and run["price"] == 9.5 and not run["stalled"], run

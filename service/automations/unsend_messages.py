@@ -11,12 +11,15 @@ from sqlalchemy import and_, func, or_, select, update
 import automation_executor as ax
 from automation_registry import register
 from db.engine import get_session
-from db.models import Action, MassBroadcastCache, MassRun, Message, Post
+from db.models import Action, MassBroadcastCache, MassRun, Message, Post, ScheduledJob
 from messages import (
     _queue_body_and_stamp, mark_mass_runs_unsent, mark_queue_copies_unsent,
     mark_unsent,
 )
 import platforms
+import send_ops
+from job_queue import current_job_id
+from send_tripwire import CellHeld
 from side_effect_gate import PLATFORM_LACKS_PREFIX
 
 UNSENT_REASON = "automation:unsend_messages"
@@ -81,6 +84,8 @@ def _norm_targets(raw: object) -> list[dict]:
                         int(t["mass_run_id"]) if t.get("mass_run_id") is not None else None
                     ),
                 })
+                if t.get("from_cache") and send_ops.cells():
+                    out[-1]["from_cache"] = True
             elif t.get("message_id") is not None and t.get("fan_id") is not None:
                 out.append({
                     "kind": "chat",
@@ -521,7 +526,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     failed = 0
     rows_flipped = 0
     failed_posts: list[dict] = []
-    for t in targets:
+    for i, t in enumerate(targets):
         try:
             if t["kind"] == "mass":
                 await asyncio.to_thread(client.cancel_scheduled, t["queue_id"])
@@ -569,6 +574,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             await _write_action(account_id, t, flipped)
             unsent += 1
             rows_flipped += flipped
+        except CellHeld:
+            if i and (job_id := current_job_id()) is not None:
+                remaining = [{"hide_upload": target} if target["kind"] == "hide_upload" else target
+                             for target in targets[i:]]
+                async with get_session() as s:
+                    await s.execute(update(ScheduledJob)
+                                    .where(ScheduledJob.id == job_id, ScheduledJob.status == "running")
+                                    .values(payload_json=json.dumps({**payload, "targets": remaining})))
+            await _retry_failed_posts(account_id, failed_posts, payload)
+            raise
         except Exception:
             failed += 1
             if t["kind"] == "post":

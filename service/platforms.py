@@ -6,7 +6,7 @@ from types import ModuleType
 
 import accounts
 import fansly_backend
-from side_effect_gate import refusal
+from side_effect_gate import PLATFORM_LACKS_PREFIX, PLATFORM_UNKNOWN_PREFIX, refusal
 
 
 class Lack(str, Enum):
@@ -17,6 +17,15 @@ class Lack(str, Enum):
     HISTORY_UNREAD_GATE = "HISTORY_UNREAD_GATE"
     UNREAD_TOTAL = "UNREAD_TOTAL"
     SHARED_REFRESH = "SHARED_REFRESH"
+    TIP_LEDGER = "TIP_LEDGER"
+    PURCHASE_LINKAGE = "PURCHASE_LINKAGE"
+    RENEWAL_STATE = "RENEWAL_STATE"
+    LAPSE_DETECTION = "LAPSE_DETECTION"
+    RETURN_DETECTION = "RETURN_DETECTION"
+
+
+def lack_reason(lack: Lack) -> str:
+    return f"{PLATFORM_LACKS_PREFIX}{lack.value.lower()}"
 
 
 @dataclass(frozen=True)
@@ -31,6 +40,26 @@ class Platform:
     bind_login_proxy: bool = True
 
 
+@dataclass(frozen=True)
+class UnknownPlatform(Platform):
+    label: str = "Unknown platform"
+    session_file: str = ""
+    backend: ModuleType | None = None
+    lacks: frozenset[Lack] = frozenset(Lack)
+    login: str = ""
+
+
+class UnknownPlatformKey(ValueError):
+    def __init__(self, key: str):
+        self.key = key
+        self.reason = unknown_reason(key)
+        super().__init__(self.reason)
+
+
+def unknown_reason(key: str) -> str:
+    return f"{PLATFORM_UNKNOWN_PREFIX}{key}"
+
+
 ONLYFANS = Platform("onlyfans", "OF", "latest.json", None, frozenset(), login="remote_login_onlyfans")
 FANSLY = Platform("fansly", "Fansly", fansly_backend.SESSION_FILENAME, fansly_backend,
                   frozenset(Lack), login="remote_login_fansly", free_follow=True, bind_login_proxy=False)
@@ -43,16 +72,39 @@ _BY_KEY = {p.key: p for p in ALL}
 
 
 def get(key: object) -> Platform:
-    return _BY_KEY.get(key, ONLYFANS) if isinstance(key, str) else ONLYFANS
+    if not isinstance(key, str) or not (norm := key.strip().lower()):
+        return ONLYFANS
+    return _BY_KEY.get(norm) or UnknownPlatform(key)
+
+
+def _known(p: Platform) -> Platform:
+    if isinstance(p, UnknownPlatform):
+        raise UnknownPlatformKey(p.key)
+    return p
+
+
+def require(key: object) -> Platform:
+    return _known(get(key))
 
 
 def for_account(aid: str) -> Platform:
     return get(accounts.get_platform(aid))
 
 
+def require_account(aid: str) -> Platform:
+    return _known(for_account(aid))
+
+
+def unknown_refusal(aid: str) -> str | None:
+    p = for_account(aid)
+    return unknown_reason(p.key) if isinstance(p, UnknownPlatform) else None
+
+
 def refusal_for_account(aid: str, name: str) -> str | None:
-    backend = for_account(aid).backend
-    return None if backend is None else refusal(backend.Shim, name)
+    if reason := unknown_refusal(aid):
+        return reason
+    p = for_account(aid)
+    return None if p.backend is None else refusal(p.backend.Shim, name)
 
 
 def backends() -> tuple[ModuleType, ...]:

@@ -114,7 +114,7 @@ import platforms  # noqa: E402
 import remote_login as rl  # noqa: E402
 import server  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import User  # noqa: E402
+from db.models import Account, User, UserAccount  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 assert account_registry.ACCOUNTS_DIR == ROOT / "accounts", "server import moved the accounts dir"
@@ -122,9 +122,18 @@ assert account_registry.ACCOUNTS_DIR == ROOT / "accounts", "server import moved 
 OWNER = "ingest_owner"
 
 
+OWNER_ID = uuid.uuid4().hex
+
+
 async def _seed_owner() -> None:
     async with get_session() as s:
-        s.add(User(id=uuid.uuid4().hex, username=OWNER, password="pw"))
+        s.add(User(id=OWNER_ID, username=OWNER, password="pw"))
+
+
+async def _grant_owner(aid: str) -> None:
+    async with get_session() as s:
+        s.add(Account(id=aid, nickname="Mo", color="#aaaaaa"))
+        s.add(UserAccount(user_id=OWNER_ID, account_id=aid))
 
 
 asyncio.run(_seed_owner())
@@ -332,19 +341,83 @@ def case_fansly_on_default_platform_meta_is_409_untouched():
     _wipe()
     client = _owner()
     results = []
-    for aid, meta in (("5400003", {"platform": "myspace"}),
-                      ("5400004", {"platform": ["onlyfans"]}),
+    for aid, meta in (("5400004", {"platform": ["onlyfans"]}),
                       ("5400005", {"platform": {"key": "fansly"}}),
                       ("5400006", {"platform": None}),
                       ("5400007", {})):
         _seed(aid, {"meta.json": json.dumps(meta)})
-        assert platforms.for_account(aid) is platforms.ONLYFANS
+        assert platforms.for_account(aid) is platforms.ONLYFANS, platforms.for_account(aid)
         before = _tree()
         with _patched(fansly_backend, identify=lambda s: ({"id": aid, "name": "Fan"}, s)), \
                 _patched(server, post_bootstrap_hooks=lambda *_: None):
             response = client.post("/admin/session/fansly", json=_blob(aid))
         results.append((response.status_code, _tree() == before))
-    assert results == [(409, True)] * 5, results
+    assert results == [(409, True)] * 4, results
+
+
+@contextlib.contextmanager
+def _cells_on():
+    import creator_reservations
+    admitted: list[tuple[str, str]] = []
+    with _patched(account_registry, _CELLS=True), \
+            _patched(creator_reservations, admit=lambda aid, key: admitted.append((aid, key))):
+        yield admitted
+
+
+def case_unknown_key_on_a_fresh_id_reserves_and_writes_nothing():
+    _wipe()
+    aid = "5410001"
+    with _cells_on() as admitted:
+        for call in (lambda: account_registry.ensure_platform(aid, "myspace"),
+                     lambda: account_registry.upsert_account(aid, platform="myspace")):
+            try:
+                call()
+            except platforms.UnknownPlatformKey as e:
+                assert e.reason == "platform_unknown:myspace", e.reason
+            else:
+                raise AssertionError("an unknown key was accepted")
+        assert admitted == [], admitted
+        assert _tree() == {}, _tree()
+
+        for n, (key, want) in enumerate((("onlyfans", platforms.ONLYFANS), ("OnlyFans", platforms.ONLYFANS),
+                                         ("fansly", platforms.FANSLY), (" Fansly ", platforms.FANSLY))):
+            fresh = f"54200{n:02d}"
+            account_registry.ensure_platform(fresh, key)
+            account_registry.upsert_account(fresh, platform=key)
+            assert platforms.for_account(fresh) is want, (key, platforms.for_account(fresh))
+            assert json.loads(_tree()[f"accounts/{fresh}/meta.json"][0])["platform"] == want.key, (key, _tree())
+        assert admitted == [(f"54200{n:02d}", k) for n, k in enumerate(("onlyfans", "onlyfans", "fansly",
+                                                                          "fansly"))], admitted
+
+
+def case_stored_unknown_key_relinked_as_fansly_with_cells_on_is_409_untouched():
+    _wipe()
+    aid = "5410002"
+    _seed(aid, {"meta.json": json.dumps({"id": aid, "nickname": "Mo", "platform": "myspace"})})
+    before = _tree()
+    with _cells_on() as admitted, _patched(fansly_backend, identify=_no_identify):
+        r = _owner().post("/admin/session/fansly", json=_blob(aid))
+        assert r.status_code == 409, (r.status_code, r.text)
+        assert "myspace" in r.json()["detail"], r.text
+        try:
+            fansly_backend.save(_blob(aid), {"id": aid, "name": "Fan"}, nickname=None, make_active=True)
+        except platforms.UnknownPlatformKey:
+            pass
+        else:
+            raise AssertionError("a Fansly credential was saved over an unknown key")
+        assert admitted == [], admitted
+    assert _tree() == before, "the unknown-key account's files changed"
+
+
+def case_rename_on_unknown_key_account_is_501_untouched():
+    _wipe()
+    aid = "5410003"
+    _seed(aid, {"meta.json": json.dumps({"id": aid, "nickname": "Mo", "platform": "myspace"})})
+    asyncio.run(_grant_owner(aid))
+    before = _tree()
+    r = _owner().patch(f"/admin/accounts/{aid}", json={"nickname": "New", "color": "#123456"})
+    assert (r.status_code, r.text) == (501, '{"detail":"platform_unknown:myspace"}'), (r.status_code, r.text)
+    assert _tree() == before, "the unknown-key account's files changed"
 
 
 def case_non_object_meta_dispatches_as_onlyfans():
@@ -543,14 +616,14 @@ def case_ensure_platform_passes_and_raises_by_table():
     _seed("6000012", {"meta.json": "{not json"})
     _seed("6000013", {"meta.json": '{"platform": ["onlyfans"]}'})
     before = _tree()
-    for aid in ("6999999", "6000001", "6000002", "6000003", "6000004", "6000005", "6000011", "6000012",
+    for aid in ("6999999", "6000001", "6000003", "6000004", "6000005", "6000011", "6000012",
                 "6000013", ".."):
         account_registry.ensure_platform(aid, of)
     for aid in ("6999999", "6000006", "6000007", "6000008", "6000012"):
         account_registry.ensure_platform(aid, fan)
     accepted = []
     for aid, key in (("6000006", of), ("6000007", of), ("6000008", of), ("6000009", of),
-                     ("6000010", of), ("6000010", fan), ("6000011", fan),
+                     ("6000010", of), ("6000010", fan), ("6000011", fan), ("6000002", of),
                      ("6000001", fan), ("6000002", fan), ("6000003", fan), ("6000004", fan), ("6000005", fan),
                      ("6000009", fan), ("6000013", fan)):
         try:

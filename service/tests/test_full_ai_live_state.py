@@ -122,6 +122,20 @@ async def case_dies_before_any_send():
     assert len(await out_rows(aid, fan)) == _n(row) >= 2 and await leases(aid) == []
 
 
+async def case_first_bubble_hold_releases_turn():
+    from send_ops import SendRefused
+
+    aid, fan, mid = "fa_st_hold", 621, 9401
+    rid = await seed_live(aid)
+    await dm(aid, fan, mid)
+    refusal = SendRefused(409, "cell_held", why="carve")
+    res, w = await _run(aid, fan, mid, rid, of=LiveOF(_kill_at(1, refusal)))
+    assert res is refusal and not w.of.sent, res
+    assert await live_rows(aid) == [] and await leases(aid) == []
+    res, w = await _run(aid, fan, mid, rid)
+    assert res["row_status"] == "sent" and w.of.sent, res
+
+
 async def case_two_runs_one_turn_key():
     aid, fan, mid = "fa_st_race", 603, 8301
     rid = await seed_live(aid)
@@ -358,6 +372,28 @@ async def case_drain_slot_released_on_raise_and_cancel():
     finally:
         ax._draining = False
     assert (out["waited"], out["left"]) == (0, 0) and out["s"] < 1, out
+
+
+async def case_restore_parked_anchor_cannot_enqueue_or_load():
+    from unittest.mock import patch
+    import run_decide
+
+    aid, fan, mid = "fa_st_restore", 634, 9111
+    rid = await seed_live(aid)
+    await dm(aid, fan, mid)
+    await ax.enqueue_job(aid, KIND, payload=payload(fan, mid, rid))
+    await ax.park_restore([aid], datetime.utcnow())
+    async with get_session() as s:
+        assert (await s.scalar(select(ScheduledJob.last_error).where(
+            ScheduledJob.account_id == aid))) == run_decide.RESTORE_REASON
+    with patch.dict(os.environ, {"OI_CELL_MAP": "/nonexistent/placement.json"}), world() as w:
+        turn = await full_ai_live.load(aid, fan, w.of)
+        caught_up = await full_ai_live.catchup_queue(
+            aid, [fan], max_age_s=600, cap=1, late=set(), not_before=datetime.utcnow())
+        assert (turn is None, caught_up) == (True, {"swept": 0, "queued": 0})
+        assert not await full_ai_live.enqueue(aid, fan, mid, rid)
+        await dm(aid, fan, mid + 1, "new inbound", ago_s=0)
+        assert await full_ai_live.enqueue(aid, fan, mid + 1, rid)
 
 
 _harness.run()

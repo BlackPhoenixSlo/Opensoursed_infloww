@@ -19,7 +19,9 @@ from db.models import (
     UserAccount,
 )
 from auth import get_request_user
+from agency_copy import FLOOR_MSG, is_floor_error
 import audit_labels
+from cell_mode import role
 from agency_scope import agency_account_ids
 from agency_context import (  # noqa: F401
     AgencyContext, _chatter_agency_for_creator, agency_context, agency_contexts, owner_context,
@@ -34,10 +36,6 @@ log = logging.getLogger("of-relay.employees")
 
 router = APIRouter()
 
-CELL_ROLE = os.environ.get("OI_CELL_ROLE") if os.environ.get("OI_CELL_MAP") else None
-FLOOR_MSG = "employee_floor_pending"
-
-
 def _floor_refusal() -> HTTPException:
     return HTTPException(status_code=503, detail={
         "error": FLOOR_MSG,
@@ -46,7 +44,7 @@ def _floor_refusal() -> HTTPException:
 
 
 async def _refuse_while_floor_pending() -> None:
-    if CELL_ROLE != "control":
+    if role() != "control":
         return
     async with get_session() as s:
         if (await s.execute(text("SELECT pending FROM employee_floor"))).scalar() == 1:
@@ -303,7 +301,7 @@ async def create_employee(body: _EmployeeCreateBody = Body(...)) -> dict[str, An
         try:
             await s.flush()
         except IntegrityError as exc:
-            if FLOOR_MSG in str(exc):
+            if is_floor_error(exc):
                 raise _floor_refusal() from None
             raise
         return _brief(e)
@@ -911,20 +909,24 @@ def is_login(e: Employee) -> bool:
 
 
 async def get_owner_employee_id(user) -> int | None:
+    return await _ensure_owner_employee(user.id, getattr(user, "username", None))
+
+
+async def _ensure_owner_employee(owner_id: str, username: str | None) -> int | None:
     return await get_or_create_mirror_employee(
-        f"{OWNER_KEY_PREFIX}{user.id}", user.id,
-        display_name=getattr(user, "username", None) or "Owner", color=None,
+        f"{OWNER_KEY_PREFIX}{owner_id}", owner_id, display_name=username or "Owner", color=None,
     )
 
 
-async def seed_agency_rows(user) -> None:
+async def seed_agency_rows(owner_id: str, username: str | None) -> None:
     from settings_api import _login_employee_ids, ensure_role_presets, give_role_to_unroled
-    await get_owner_employee_id(user)
-    await _ensure_login_mirrors(user.id)
-    await ensure_role_presets(user.id)
+
+    await _ensure_owner_employee(owner_id, username)
+    await _ensure_login_mirrors(owner_id)
+    await ensure_role_presets(owner_id)
     async with get_session() as s:
-        logins = await _login_employee_ids(s, user.id)
-    await give_role_to_unroled(user.id, logins)
+        logins = await _login_employee_ids(s, owner_id)
+    await give_role_to_unroled(owner_id, logins)
 
 
 async def backfill_agency_rows() -> int:
@@ -932,8 +934,8 @@ async def backfill_agency_rows() -> int:
     await migrate_role_enforcement_once()
     async with get_session() as s:
         owners = (await s.execute(select(User.id, User.username).order_by(User.id))).all()
-    for owner in owners:
-        await seed_agency_rows(owner)
+    for owner_id, username in owners:
+        await seed_agency_rows(owner_id, username)
     return len(owners)
 
 
@@ -965,7 +967,7 @@ async def get_or_create_mirror_employee(
             existing = await mirror_id(s, chatter_id, owner_user_id)
             if existing is not None:
                 return existing
-            if CELL_ROLE == "data":
+            if role() == "data":
                 log.warning("chatter→emp: no Mirror Employee for chatter=%s owner=%s on this data Cell; "
                             "only control writes it", chatter_id, owner_user_id)
                 return None
@@ -991,7 +993,7 @@ async def get_or_create_mirror_employee(
                 created = new_row.id
             except IntegrityError as exc:
                 await s.rollback()
-                if FLOOR_MSG in str(exc):
+                if is_floor_error(exc):
                     log.warning("chatter→emp: Mirror Employee not created (chatter=%s owner=%s): %s",
                                 chatter_id, owner_user_id, FLOOR_MSG)
                     return None

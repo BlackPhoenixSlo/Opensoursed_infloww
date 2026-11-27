@@ -904,7 +904,11 @@ def _send(state: dict, staged: _Staged, client, gate) -> None:
         if isinstance(e, of_client.FanSendRefused):
             item["error"] = str(e)
             raise
-        if isinstance(e, _MAYBE_WRITTEN):
+        from send_ops import cells, is_uncertain
+        if cells() and (is_uncertain(e) or isinstance(e, _MAYBE_WRITTEN)):
+            item.update(status="uncertain", message_write_pending=True,
+                        error="Send unconfirmed. Check the chat before re-importing this file.")
+        elif isinstance(e, _MAYBE_WRITTEN):
             # Same lost race as a carrier's, but the write was a chat message: nothing will publish to the feed, so no carrier alarm.
             item.update(message_write_pending=True,
                         error="timed out waiting to send — the message to the "
@@ -1151,8 +1155,9 @@ def _sweep_scheduled(client, account_id: str,
 
 
 def sweep(client_for: Callable[[str], Any], *, keep_hours: int = 48) -> dict:
-    import cell_hold
-    cell_hold.refuse_writes()
+    if os.environ.get("OI_CELL_MAP"):
+        from cell_hold import refuse_writes
+        refuse_writes()
     fixed, failed, removed = 0, 0, 0
     cutoff = time.time() - keep_hours * 3600
     scan: set[str] = set()

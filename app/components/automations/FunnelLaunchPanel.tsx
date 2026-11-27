@@ -1,7 +1,7 @@
 "use client";
 
 
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Play, X } from "lucide-react";
 
@@ -11,6 +11,7 @@ import { SYSTEM_AUDIENCES, useFanLists } from "@/components/audience/fanLists";
 import {
   MASS_EXCLUDE_LIST_NAME, audienceError, audienceReducer, buildAudiencePayload, initAudience, massExcludeListId,
 } from "@/components/audience/audienceReducer";
+import { sendKey, withRetainedOp, type RetainedOps } from "@/lib/opId";
 import { relay } from "@/lib/relay";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -31,6 +32,7 @@ export function FunnelLaunchPanel({
   followUpsOn: boolean;
   onClose: () => void;
 }) {
+  const launchOp = useRef<RetainedOps | null>(null);
   const { current: currentEmployee } = useEmployee();
   const qc = useQueryClient();
   const accounts = useActiveAccounts();
@@ -85,9 +87,10 @@ export function FunnelLaunchPanel({
       if (unsendHours.trim() !== "" && Number.isFinite(uh) && uh > 0) {
         body.unsend_after_hours = uh;
       }
-      return relay.post<{ _skipped_already_answered?: number }>(
-        "/api/of/v2/messages/queue", body,
-        { accountId, employeeId: currentEmployee?.id },
+      return withRetainedOp(launchOp, sendKey(accountId, body), (opId) =>
+        relay.post<{ _skipped_already_answered?: number }>(
+          "/api/of/v2/messages/queue", body, { accountId, employeeId: currentEmployee?.id, opId },
+        ),
       );
     },
     onSuccess: (resp) => {

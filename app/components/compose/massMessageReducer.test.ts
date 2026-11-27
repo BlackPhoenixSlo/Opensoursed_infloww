@@ -459,6 +459,7 @@ describe("one op id per broadcast", () => {
     ["kept when the GIF picker opens", [{ type: "field", k: "gifPickerOpen", v: true }], "op1"],
     ["kept when the same GIF is picked again", [{ type: "addGif", gif }], "op1"],
     ["kept on a no-op field", [{ type: "field", k: "text", v: "hi" }], "op1"],
+    ["kept when trimming leaves the same payload", [{ type: "field", k: "text", v: " hi " }], "op1"],
     ["new op after the text changes", [{ type: "field", k: "text", v: "hey" }], null],
     ["new op after a GIF is removed", [{ type: "removeGif", id: "g1" }], null],
     ["new op after the audience changes", [{ type: "toggleInclude", id: "fans" }], null],

@@ -272,7 +272,15 @@ def router() -> APIRouter:
         async with get_session() as s:
             gen = int(await grant_gen(s) or 0)
             if user is not None:
-                granted, restricted = [("onlyfans", a) for a in sorted(user.account_ids)], False
+                from accounts import get_platform
+                placed_platforms: dict[str, list[str]] = {}
+                for key in placed:
+                    platform, sep, aid = key.partition(":")
+                    if sep and aid in user.account_ids:
+                        placed_platforms.setdefault(aid, []).append(platform)
+                granted = [(platforms[0] if len(platforms) == 1 else get_platform(aid), aid)
+                           for aid, platforms in sorted(placed_platforms.items())]
+                restricted = False
                 actor = f"user:{user.id}"
             else:
                 granted = [(a.platform, a.account_id) for a in await chatters._flat_accounts_for(chatter)]

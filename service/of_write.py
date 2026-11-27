@@ -13,7 +13,7 @@ import dm_rate
 import run_slot
 from write_gate import WriteGate
 import run_decide
-from send_tripwire import UnclaimedSend
+from send_tripwire import CellHeld, UnclaimedSend
 
 log = logging.getLogger("of-relay.automation")
 
@@ -55,6 +55,10 @@ _write_gates: dict[str, WriteGate] = {}
 
 # The current run's OF writes, read by run_once when the run fails (send once: run_decide.outcome); a child task's write still marks it.
 _RUN_WRITE: ContextVar[run_decide.RunWrites | None] = ContextVar("_run_write", default=None)
+
+
+def in_run() -> bool:
+    return _RUN_WRITE.get() is not None
 
 
 def _write_gate(account_id: str) -> WriteGate:
@@ -107,7 +111,7 @@ def _may_have_sent(e: BaseException) -> bool:
     for _ in range(32):
         if current is None:
             break
-        if proxy_refused(current) or isinstance(current, (OFDeniedError, UnclaimedSend)):
+        if proxy_refused(current) or isinstance(current, (OFDeniedError, UnclaimedSend, CellHeld)):
             return False
         if isinstance(current, curl_exc.ConnectionError) and getattr(current, "code", None) == CurlECode.COULDNT_CONNECT:
             return False

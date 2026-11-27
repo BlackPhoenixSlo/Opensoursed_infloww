@@ -179,7 +179,7 @@ def case_wrong_secret_or_id_is_404():
     _use()
     share = _create().json()
     sid, secret = _key(share).split(".", 1)
-    for key in (f"{sid}.{secret[:-1]}x", f"{int(sid) + 1000}.{secret}", sid, f"{sid}.", f".{secret}", "abc.def",
+    for key in (f"{sid}.{secret[:-1]}{'y' if secret.endswith('x') else 'x'}", f"{int(sid) + 1000}.{secret}", sid, f"{sid}.", f".{secret}", "abc.def",
                 f"{sid}.{secret}é", f"².{secret}", f"{sid}².{secret}"):
         r = _anon.get(f"/share/{key}/data")
         assert r.status_code == 404, (key, r.status_code, r.text)

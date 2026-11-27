@@ -7,6 +7,7 @@ import InlineBoot from "@/components/InlineBoot";
 import AuthGate from "@/components/auth/AuthGate";
 import AppShell from "@/components/shell/AppShell";
 import { ImpersonationBanner } from "@/components/ImpersonationBanner";
+import { ShadowBanner } from "@/components/ShadowBanner";
 import { NotificationToaster } from "@/components/NotificationToaster";
 import { IfConfirmHost } from "@/components/ui/ifConfirm";
 import { IdleOverlay } from "@/components/IdleOverlay";
@@ -135,6 +136,7 @@ export default async function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: PINCH_BLOCK_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: CHUNK_ERROR_BOOT_SCRIPT }} />
         <InlineBoot data={inline} />
+        {process.env.OI_SHADOW_COPY_AT ? <ShadowBanner copiedAt={process.env.OI_SHADOW_COPY_AT} /> : null}
         <Providers>
           <AuthGate signedIn={signedIn}>
             <PageCreatorProvider>

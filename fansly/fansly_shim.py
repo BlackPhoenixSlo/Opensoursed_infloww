@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy as _copy
 import functools as _functools
 import time
 import json as _json
@@ -7,9 +8,10 @@ import os as _os
 import sys
 import threading
 from collections import OrderedDict
-from collections.abc import Set as AbstractSet
+from collections.abc import Mapping, Set as AbstractSet
 import logging
 from concurrent.futures import ThreadPoolExecutor, wait
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, TypedDict
 
@@ -51,33 +53,56 @@ class FanslyBlocked(FanslyAPIError):
 _BROADCAST_UNCONFIRMED = "broadcast shape is bundle-derived; sends only with confirm_live_broadcast"
 
 
-def fansly_unsupported(reason: str, returns: Any = _RAISE):
-    def decorate(fn):
-        @_functools.wraps(fn)
-        def wrapper(*_args: Any, **_kwargs: Any) -> Any:
-            if fn.__name__ not in _UNSUPPORTED_LOGGED:
-                _UNSUPPORTED_LOGGED.add(fn.__name__)
-                log.info("fansly: %s is a no-op — %s", fn.__name__, reason)
-            if returns is _RAISE:
-                raise FanslyUnsupported(f"{fn.__name__}: {reason}")
-            return returns() if callable(returns) else returns
-        wrapper.fansly_unsupported = reason
-        return wrapper
-    return decorate
+marker_calls: ContextVar[list[str] | None] = ContextVar("marker_calls", default=None)
 
 
-def fansly_blocked(reason: str, returns: Any = _RAISE):
+def _record_marker_call(name: str) -> None:
+    calls = marker_calls.get()
+    if calls is not None:
+        calls.append(name)
+
+
+def _check_returns(returns: Any) -> None:
+    if returns is _RAISE:
+        return
+    if callable(returns):
+        raise TypeError(f"marker returns= must be a plain value, not callable {returns!r}")
+    if isinstance(returns, Mapping) and returns.get("success"):
+        raise TypeError(f"marker returns= must not report a success: {returns!r}")
+
+
+def _refusing_marker(attr: str, error_cls: type[FanslyAPIError], log_fn, phrase: str):
+    def marker(reason: str, returns: Any = _RAISE):
+        _check_returns(returns)
+
+        def decorate(fn):
+            @_functools.wraps(fn)
+            def wrapper(*_args: Any, **_kwargs: Any) -> Any:
+                _record_marker_call(fn.__name__)
+                if fn.__name__ not in _UNSUPPORTED_LOGGED:
+                    _UNSUPPORTED_LOGGED.add(fn.__name__)
+                    log_fn("fansly: %s %s — %s", fn.__name__, phrase, reason)
+                if returns is _RAISE:
+                    raise error_cls(f"{fn.__name__}: {reason}")
+                return _copy.deepcopy(returns)
+            setattr(wrapper, attr, reason)
+            return wrapper
+        return decorate
+    marker.__name__ = marker.__qualname__ = attr
+    return marker
+
+
+platform_unsupported = _refusing_marker("platform_unsupported", FanslyUnsupported, log.info, "is a no-op")
+platform_blocked = _refusing_marker("platform_blocked", FanslyBlocked, log.warning, "is not wired yet")
+
+
+def platform_live_check(reason: str):
     def decorate(fn):
         @_functools.wraps(fn)
-        def wrapper(*_args: Any, **_kwargs: Any) -> Any:
-            if fn.__name__ not in _UNSUPPORTED_LOGGED:
-                _UNSUPPORTED_LOGGED.add(fn.__name__)
-                log.warning("fansly: %s is not wired yet — %s",
-                            fn.__name__, reason)
-            if returns is _RAISE:
-                raise FanslyBlocked(f"{fn.__name__}: {reason}")
-            return returns() if callable(returns) else returns
-        wrapper.fansly_blocked = reason
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            _record_marker_call(fn.__name__)
+            return fn(*args, **kwargs)
+        wrapper.platform_live_check = reason
         return wrapper
     return decorate
 
@@ -119,7 +144,7 @@ def vault_ids_of(media_files: Any) -> list[str]:
 
 
 def check_sendable(*, media_files: Any = None, price: Any = 0,
-                   previews: Any = None, locked_text: Any = None) -> None:
+                   previews: Any = None) -> None:
     # Single source for these rules: the relay's schedule route asks it too, so a bad send fails at schedule time, not hours later
     vault_ids = vault_ids_of(media_files)
     price_usd = float(price or 0)
@@ -138,12 +163,6 @@ def check_sendable(*, media_files: Any = None, price: Any = 0,
             "Every attachment is marked as a free preview, so a paid send "
             "would deliver all of it for nothing. Leave at least one "
             "attachment locked, or send it free."
-        )
-    # Message text is always visible on Fansly: OF's text lock has no wire field
-    if locked_text:
-        raise FanslyAPIError(
-            "Fansly always shows the message text — only the media locks. "
-            "Send without 'lock text', or move the tease into the media."
         )
 
 
@@ -725,7 +744,12 @@ class PurchaseFeed(TypedDict):
 
 
 class FanslyShimClient(VaultMixin, FanslyClient):
+    SEND_REFUSALS = {"tagged_users": "platform_lacks:tagged_users",
+                     "locked_text": "platform_lacks:locked_text"}
 
+    @classmethod
+    def send_refusal(cls, asked: Mapping[str, Any]) -> str | None:
+        return next((r for f, r in cls.SEND_REFUSALS.items() if asked.get(f)), None)
 
     @property
     def user_id(self) -> str:
@@ -960,11 +984,12 @@ class FanslyShimClient(VaultMixin, FanslyClient):
             send_tripwire.check("fansly.send_message")
         if not _broadcast:
             text = _guard_outbound(text)
+        if refused := self.send_refusal({"tagged_users": tagged_users, "locked_text": locked_text}):
+            raise FanslyUnsupported(f"send_message: {refused}")
+        media_files = list(media_files or [])
+        check_sendable(media_files=media_files, price=price, previews=previews)
         # A broadcast group id is freshly minted and in no DM listing: take it as-is
         group_id = str(chat_id) if _broadcast else self._group_for_send(chat_id)
-        media_files = list(media_files or [])
-        check_sendable(media_files=media_files, price=price,
-                       previews=previews, locked_text=locked_text)
         vault_ids = vault_ids_of(media_files)
         price_usd = float(price or 0)
         content = text or ""
@@ -1091,9 +1116,15 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                 last: Exception | None = None
                 for _attempt in range(3):
                     try:
-                        put = sess.put(part["uploadUrl"], data=chunk,
-                                       headers={"ngsw-bypass": "true"},
-                                       timeout=max(float(self.timeout), 300.0))
+                        def upload():
+                            return sess.put(part["uploadUrl"], data=chunk, headers={"ngsw-bypass": "true"},
+                                            timeout=max(float(self.timeout), 300.0))
+
+                        if _os.environ.get("OI_CELL_MAP"):
+                            import send_tripwire
+                            put = send_tripwire.leave(upload)
+                        else:
+                            put = upload()
                         if not put.ok:
                             raise FanslyAPIError(
                                 f"S3 PUT part {idx} failed: {put.status_code} "
@@ -1460,7 +1491,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
 
 
     # OF's get_pinned_messages returns the ROWS, not an envelope: a {"list": []} would hand callers the string "list"
-    @fansly_unsupported("Fansly has no message pinning", returns=list)
+    @platform_unsupported("Fansly has no message pinning", returns=[])
     def get_pinned_messages(self, *_a: Any, **_k: Any) -> list: ...
 
     def schedules(self, **_ignored: Any) -> dict:
@@ -1540,8 +1571,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         return {"success": True}
 
     # Fansly's Mark as Unread is client-side only (no server unread state): 501 instead of a success the next read takes back
-    @fansly_unsupported("Fansly has no server-side unread state",
-                        returns=lambda: {"success": True})
+    @platform_unsupported("Fansly has no server-side unread state")
     def mark_chat_unread(self, *_a: Any, **_k: Any) -> dict: ...
 
     # Caps threads acked per mark-all so an upstream misread can mis-ack at most this many
@@ -1808,35 +1838,33 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                 "hasMore": False}
 
 
-    @fansly_unsupported("Fansly has no message pinning",
-                        returns=lambda: {"success": True})
+    @platform_unsupported("Fansly has no message pinning")
     def pin_message(self, *_a: Any, **_k: Any) -> dict: ...
 
-    @fansly_unsupported("Fansly has no message pinning",
-                        returns=lambda: {"success": True})
+    @platform_unsupported("Fansly has no message pinning")
     def unpin_message(self, *_a: Any, **_k: Any) -> dict: ...
 
-    @fansly_unsupported("Fansly vault media cannot be deleted",
-                        returns=lambda: {"success": False})
+    @platform_unsupported("Fansly vault media cannot be deleted",
+                          returns={"success": False})
     def hide_vault_media(self, *_a: Any, **_k: Any) -> dict: ...
 
-    @fansly_unsupported("Fansly has no vault hash lookup", returns=None)
+    @platform_unsupported("Fansly has no vault hash lookup", returns=None)
     def vault_media_lookup_hash(self, *_a: Any, **_k: Any) -> None: ...
 
-    @fansly_unsupported("Fansly stories cannot be created from the web API",
-                        returns=lambda: {"success": False})
+    @platform_unsupported("Fansly stories cannot be created from the web API",
+                          returns={"success": False})
     def post_story_from_url(self, *_a: Any, **_k: Any) -> dict: ...
 
-    @fansly_unsupported("Fansly stories are not creatable, so none exist",
-                        returns=lambda: {"success": False})
+    @platform_unsupported("Fansly stories are not creatable, so none exist",
+                          returns={"success": False})
     def delete_story(self, *_a: Any, **_k: Any) -> dict: ...
 
 
-    @fansly_unsupported(
+    @platform_unsupported(
         "Fansly reports subscriber TOTALS only, with no per-day series; "
         "synthesising one would be invented analytics",
-        returns=lambda: {"subscribers": 0, "subscribes": [], "earnings": [],
-                         "total": 0, "delta": 0})
+        returns={"subscribers": 0, "subscribes": [], "earnings": [],
+                 "total": 0, "delta": 0})
     def subscribers_chart(self, *_a: Any, **_k: Any) -> dict: ...
 
 
@@ -1887,6 +1915,7 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                           exclude_lists: Any = None, tier_id: Any = None,
                           confirm_live_broadcast: bool = False,
                           **_ignored: Any) -> dict:
+        _record_marker_call("send_mass_message")
         if _os.environ.get("OI_CELL_MAP"):
             import send_tripwire
             send_tripwire.check("fansly.send_mass_message")
@@ -1907,13 +1936,13 @@ class FanslyShimClient(VaultMixin, FanslyClient):
         return {"success": True, "groupId": group_id,
                 "id": str(created.get("id")) if created.get("id") else None}
 
-    send_mass_message.fansly_blocked = _BROADCAST_UNCONFIRMED
+    send_mass_message.platform_blocked = _BROADCAST_UNCONFIRMED
 
-    @fansly_blocked("needs an expired subscription to capture",
-                    returns=lambda: {"list": [], "hasMore": False})
+    @platform_blocked("needs an expired subscription to capture",
+                      returns={"list": [], "hasMore": False})
     def recent_expired_subscribers(self, *_a: Any, **_k: Any) -> dict: ...
 
-    @fansly_blocked("resubscribe moves money — needs a payment method")
+    @platform_blocked("resubscribe moves money — needs a payment method")
     def resubscribe_user(self, *_a: Any, **_k: Any) -> dict: ...
 
     def delete_promo(self, promo_id: str | int, **_ignored: Any) -> dict:
@@ -1968,15 +1997,15 @@ class FanslyShimClient(VaultMixin, FanslyClient):
                                if created.get("code") else None},
         }
 
-    @fansly_blocked("post likes are out of go-live scope (YAGNI)",
-                    returns=lambda: {"success": False, "skipped": "not-wired"})
+    @platform_blocked("post likes are out of go-live scope (YAGNI)",
+                      returns={"success": False, "skipped": "not-wired"})
     def like_post(self, *_a: Any, **_k: Any) -> dict: ...
 
-    @fansly_unsupported("Fansly has no server-side message template store", returns=None)
+    @platform_unsupported("Fansly has no server-side message template store", returns=None)
     def message_templates(self, *_a: Any, **_k: Any) -> None: ...
 
-    @fansly_unsupported("Fansly has no OnlyFans settings object; the follow-rule mirror waits for a paid-subscribe capture",
-                        returns=None)
+    @platform_unsupported("Fansly has no OnlyFans settings object; the follow-rule mirror waits for a paid-subscribe capture",
+                          returns=None)
     def my_settings(self, *_a: Any, **_k: Any) -> None: ...
 
     def _group_for_send(self, chat_id: str | int) -> str:
@@ -2097,7 +2126,7 @@ UNBUILT: dict[str, tuple[str, str]] = {
 def _marked(name: str, verdict: str, reason: str):
     def stub(self, *_a: Any, **_k: Any) -> Any: ...
     stub.__name__ = stub.__qualname__ = name
-    return (fansly_blocked if verdict == _BLOCKED else fansly_unsupported)(reason)(stub)
+    return (platform_blocked if verdict == _BLOCKED else platform_unsupported)(reason)(stub)
 
 
 for _name, (_verdict, _reason) in UNBUILT.items():

@@ -76,9 +76,7 @@ class OFWebSocket:
                 assert self._ws_url and self._token
                 proxy_url = getattr(client, "proxy_url", None) or None
                 if proxy_registry.CELLS:
-                    if not proxy_url:
-                        raise proxy_registry.no_proxy(self._account_id(client), "ws")
-                    proxy_registry.require_proxy(self._account_id(client), "ws")
+                    OFClient.require_proxy(client, "ws")
                 if proxy_url:
                     log.info("connecting account=%s %s via proxy %s",
                              self._account_id(client), self._ws_url, self._proxy_desc(client))

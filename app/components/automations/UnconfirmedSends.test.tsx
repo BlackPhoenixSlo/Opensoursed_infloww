@@ -101,7 +101,7 @@ describe("UnconfirmedSends · Retry", () => {
 });
 
 const OP: OpRow = {
-  kind: "composer", op_id: "op-1", fan_id: "42", since: "2026-11-26T10:00:00Z", state: "UNCONFIRMED",
+  kind: "composer", op_id: "op-1", updated_at: "2026-11-26 10:00:00.123", fan_id: "42", since: "2026-11-26T10:00:00Z", state: "UNCONFIRMED",
   retry_allowed: false, link: "chat",
 };
 
@@ -111,7 +111,7 @@ describe("UnconfirmedSends · Cell mode (retry_allowed:false)", () => {
     const row = await mount();
     expect(row.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(row.getByRole("button", { name: "It went through" })).toBeTruthy();
-    expect(screen.getByTestId("unconfirmed-sends").textContent).toMatch(/To resend, write a new message/);
+    expect(screen.getByTestId("unconfirmed-sends").textContent).toMatch(/Marking it Not sent allows another attempt/);
   });
 
   it("an op row shows its chat link and Was sent / Not sent, never Retry", async () => {
@@ -140,9 +140,9 @@ describe("UnconfirmedSends · Cell mode (retry_allowed:false)", () => {
       relay.post.mockImplementation(async () => { rows = []; return { status: outcome }; });
       const row = await mount();
       await click(row.getByRole("button", { name: label }));
-      expect(confirm.mock.calls.at(-1)?.[0]).toMatch(/Automations to this fan start again/);
+      expect(confirm.mock.calls.at(-1)?.[0]).toMatch(outcome === "not_sent" ? /tried again/ : /checked and it went out/);
       expect(relay.post).toHaveBeenCalledWith(
-        "/admin/unconfirmed-sends/resolve?account_id=acc1", { op_id: "op-1", outcome }, { accountId: "acc1" },
+        "/admin/unconfirmed-sends/resolve?account_id=acc1", { op_id: "op-1", updated_at: "2026-11-26 10:00:00.123", outcome }, { accountId: "acc1" },
       );
       expect(screen.queryByTestId("unconfirmed-send-row")).toBeNull();
     },

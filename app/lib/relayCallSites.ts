@@ -207,6 +207,11 @@ function walk(dir: string, out: string[]): void {
   }
 }
 
+function httpMethodOf(method: string, hasBody: boolean): string {
+  if (method === "file") return hasBody ? "POST" : "GET";
+  return method.startsWith("upload") ? "POST" : method.toUpperCase();
+}
+
 export function scanCallSites(root: string): CallSite[] {
   const all: string[] = [];
   walk(root, all);
@@ -231,7 +236,7 @@ export function scanCallSites(root: string): CallSite[] {
           const ctx = r.ctx(n.arguments[method === "file" ? 1 : CTX_ARG[method]]);
           const none = new Headers();
           const verdict = ctx === "named" ? "routed" : paths === null ? "dynamic"
-            : paths.every((p) => routeOf(p, none) !== null) ? "routed" : ctx === "opaque" ? "ctx" : "unrouted";
+            : paths.every((p) => routeOf(p, none, httpMethodOf(method, !!n.arguments[2])) !== null) ? "routed" : ctx === "opaque" ? "ctx" : "unrouted";
           sites.push({
             file: relative(root, file), line: src.getLineAndCharacterOfPosition(n.getStart()).line + 1, method,
             path: paths ? paths.join(" | ") : n.arguments[0].getText(src).replace(/\s+/g, " "), verdict,

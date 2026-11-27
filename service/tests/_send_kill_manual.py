@@ -5,12 +5,12 @@ import contextlib
 import io
 import json
 import sqlite3
-import types
 from unittest.mock import patch
 
 from fastapi import HTTPException
 
 import _harness
+import _send_kill_cell as cell
 from _send_kill import Killed, _durable_send_state
 from _send_kill_cell import AID, FakeHttp, accept, cells, client, err, restart as cell_restart, status
 
@@ -21,24 +21,8 @@ _sids = iter(range(5001, 6000))
 Check = tuple[str, bool, dict]
 
 
-def _req(headers: dict):
-    return types.SimpleNamespace(method="POST", query_params={}, state=types.SimpleNamespace(),
-                                 headers={"x-account-id": AID, **headers})
-
-
 def _op_headers(anchor: str | None, part: int) -> dict:
     return {**({"x-op-id": anchor} if anchor else {}), **({"x-op-part": str(part)} if part else {})}
-
-
-@contextlib.contextmanager
-def _route(req, http: FakeHttp):
-    import server
-    tok = server._request_ctx.set(req)
-    try:
-        with patch.object(server, "_load_client", return_value=_vault_client(http)):
-            yield
-    finally:
-        server._request_ctx.reset(tok)
 
 
 def _vault_client(http: FakeHttp):
@@ -62,8 +46,8 @@ async def send(kind: str, http: FakeHttp, target: int, anchor: str | None, *, pa
                text: str = "hello all", unsend: int | None = None):
     import mass_queue_api as mq
     import server
-    req = _req(_op_headers(anchor, part))
-    with _route(req, http):
+    req = cell.request(_op_headers(anchor, part))
+    with cell.route(req, _vault_client(http)):
         if kind in ("manual_mass_send", "manual_mass_schedule"):
             body = mq._MassScheduleBody(text=text, user_ids=[target], unsend_after_hours=unsend,
                                         scheduled_date=LATER if kind == "manual_mass_schedule" else None)
@@ -350,6 +334,15 @@ async def kill(kind: str, point: str) -> list[Check]:
     accepts = len(http.accepts) + len(again.accepts)
     out.append((f"{kind} kill {point}: after restart {want}; ≤1 accept for the op", ok and accepts <= 1,
                 {"row_after_restart": after, "resubmit": answer, "accepts": accepts, "resubmit_calls": again.calls}))
+    if point == "accepted" and kind != "vault_send":
+        import send_ops
+        target_key = "mass" if kind.startswith("manual_mass") else str(target)
+        op = send_ops.op_id("onlyfans", AID, kind, target_key, anchor_of(kind, target, anchor))
+        resolved = send_ops.resolve(AID, op, True, "owner")
+        replay = await send(kind, again, target, anchor)
+        out.append((f"{kind}: confirmed-sent replay returns JSON null without another send",
+                    resolved and replay == (200, None) and not wire_calls(again),
+                    {"resolved": resolved, "replay": replay, "calls": again.calls}))
     return out
 
 

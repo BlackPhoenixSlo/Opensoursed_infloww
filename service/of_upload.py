@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor as _Pool
 from pathlib import Path
 from typing import Any, NamedTuple
 
+import send_tripwire
+
 
 # DO NOT CHANGE: the vault dedupe key is the S3 multipart ETag, a function of part size; changing it silently voids every /vault/media/hash lookup. Throughput comes from _PART_CONCURRENCY.
 _PART_SIZE = 5 * 1024 * 1024
@@ -153,7 +155,7 @@ class UploadMixin:
             mp.addpart(name="watermark[position]", data=watermark_position)
 
         url = "https://convert.onlyfans.com/file/upload"
-        r = self._proxy_retry(lambda: self.http.post(
+        r = self._proxy_retry(lambda: send_tripwire.leave(lambda: self.http.post(
             url, multipart=mp,
             headers={
                 "Origin": "https://onlyfans.com",
@@ -165,7 +167,7 @@ class UploadMixin:
                 "User-Agent": self.user_agent,
             },
             timeout=timeout_s or max(self.timeout_s, 60),
-        ), what="convert-upload")
+        )), what="convert-upload")
         if not r.ok:
             raise OFAPIError(f"convert register failed: {r.status_code} {r.text[:400]}", response=r)
         return r.json()
@@ -238,11 +240,11 @@ class UploadMixin:
 
         # Stays proxied (a direct PUT from the relay's shared IP links accounts); the presigned key is fixed, so a retry is idempotent.
         def _put(url: str, body: bytes) -> str:
-            r = self._proxy_retry(lambda: self.http.put(
+            r = self._proxy_retry(lambda: send_tripwire.leave(lambda: self.http.put(
                 url, data=body,
                 headers={"Content-Type": ct},
                 timeout=max(self.timeout_s, 300),
-            ), what="s3-upload")
+            )), what="s3-upload")
             if not r.ok:
                 raise OFAPIError(f"S3 PUT failed: {r.status_code} {r.text[:300]}", response=r)
             tag = (r.headers.get("etag") or "").strip('"')
@@ -271,9 +273,9 @@ class UploadMixin:
                     last: Exception | None = None
                     for _ in range(3):
                         try:
-                            r = sess.put(by_part[n], data=chunk,
-                                         headers={"Content-Type": ct},
-                                         timeout=max(self.timeout_s, 300))
+                            r = send_tripwire.leave(lambda: sess.put(by_part[n], data=chunk,
+                                                              headers={"Content-Type": ct},
+                                                              timeout=max(self.timeout_s, 300)))
                             if not r.ok:
                                 raise OFAPIError(
                                     f"S3 PUT part {n} failed: {r.status_code} {r.text[:200]}",

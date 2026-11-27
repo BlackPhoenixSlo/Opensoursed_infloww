@@ -47,10 +47,10 @@ def _reserve_send(key: tuple[str, str]) -> None:
 
 
 @contextlib.asynccontextmanager
-async def _exclude_list_held(account_id: str, excluded_users: list[int]):
+async def _exclude_list_held(account_id: str, excluded_users: list[int], claim: send_ops.Claim | None):
     from audiences import broadcast_lock, ensure_exclude_list
     async with broadcast_lock(account_id):
-        yield await ensure_exclude_list(account_id, excluded_users, client=_get_client())
+        yield await ensure_exclude_list(account_id, excluded_users, client=_get_client(), claim=claim)
 
 
 async def _open_mass_run(
@@ -259,7 +259,7 @@ async def of_send_or_schedule_mass(
                                                              send_ops.part(request.headers)),
                                kind, "mass", send_ops.digest(body.model_dump()))
         if isinstance(claim, send_ops.Sent):
-            return claim.result
+            return send_ops.manual_json(claim.result)
     key = _send_key(aid, body)
     try:
         _reserve_send(key)
@@ -350,7 +350,7 @@ async def _send_or_schedule_mass(request: Request, body: _MassScheduleBody,
         raise HTTPException(422, mass_queue_decide.nobody_left_refusal(_asked_ids, _listed_out))
     # OF has no excludedUsers field (silently dropped): mirror ids into the Auto_Exclude list, synced under broadcast_lock held through the POST.
     _later = body.is_later()
-    _held = (_exclude_list_held(_aid, body.excluded_users) if mass_queue_decide.needs_exclude_list(
+    _held = (_exclude_list_held(_aid, body.excluded_users, claim) if mass_queue_decide.needs_exclude_list(
         body.excluded_users, body.user_lists, body.online_only, body.filters) else contextlib.nullcontext())
     async with _held as auto_lid:
         if auto_lid is not None and auto_lid not in (body.excluded_user_lists or []):

@@ -1759,6 +1759,9 @@ describe("Edit post (the Queue's row menu): New post saves the queued post in pl
 
   it("an edit that changes only the date: Post sends PUT /posts/{id} (the captured shape), not a new post, and goes back to the Queue", async () => {
     const s = memoryStorage();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-20T12:00:00Z"));
+    onTestFinished(() => { vi.useRealTimers(); });
     const want = requests.reschedulePost.relay!;
     expect(Object.keys(requests.reschedulePost.of.body)).toEqual(expect.arrayContaining(["isScheduled", "scheduledDate", "text"]));
     saveDraft(s, "1", { ...empty(), text: "Synthetic scheduled post 1", posted_at: want.body.posted_at as string, edit_id: "2433845504" });

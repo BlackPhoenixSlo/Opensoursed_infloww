@@ -393,7 +393,7 @@ async def case_of_welcome_off_sends_its_own_greeting_then_marks():
 
 
 def _spy_exclude_list(fake) -> None:
-    async def record(account_id, ids, *, client=None):
+    async def record(account_id, ids, *, client=None, claim=None):
         fake.calls.append(("exclude_list", tuple(sorted(ids))))
         return 4343
 
@@ -610,13 +610,15 @@ async def _assert_terminal_refusal(aid, kind, payload, reason):
 
 
 async def case_fansly_story_job_skips_before_media_lookup():
+    assert getattr(FanslyShimClient.post_story_from_url, "platform_unsupported", None)
     aid = "8803802"
     await _account(aid)
     account_registry.save_meta(aid, {"platform": "fansly"})
     with patch.object(ax, "_make_client", side_effect=AssertionError("client loaded")) as load:
-        await _assert_terminal_refusal(aid, "auto_stories", {"media_files": [901]},
-                                       "platform_lacks:post_story_from_url")
+        stats = await _assert_terminal_refusal(aid, "auto_stories", {"media_files": [901]},
+                                               "platform_lacks:post_story_from_url")
         load.assert_not_called()
+    assert stats["reason"] == "platform_lacks:post_story_from_url", stats
 
 
 async def case_of_word_guard_skip_keeps_plugin_return_precedence():

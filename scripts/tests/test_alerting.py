@@ -884,3 +884,12 @@ def test_age_alert_failed_delivery_retries(cell):
     assert sent == 3
     checks(e, 200)
     assert len((tmp / "curl.log").read_text().splitlines()) == sent
+
+
+def test_corrupt_backup_baseline_is_reset_and_alerted_once(cell):
+    e, tmp, p = cell
+    p["seen"].write_text("broken\n")
+    checks(e)
+    assert p["seen"].read_text().strip() == str(NOW)
+    checks(e)
+    assert log(tmp).count(f"[warn] Shard {SH} backup age baseline unreadable") == 1

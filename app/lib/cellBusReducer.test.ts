@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { CellMap } from "./cellInbox";
 import {
   accountLive, allLive, blocked, cellBusReducer, downAccounts, INITIAL_CELL_BUS, liveChanges, planStreams, protoOf,
-  resyncAction, streamDiff, type CellBusAction, type CellBusState,
+  mapLoadReducer, resyncAction, streamDiff, type CellBusAction, type CellBusState,
 } from "./cellBusReducer";
 
 const MAP: CellMap = {
@@ -90,6 +90,14 @@ describe("cellBusReducer", () => {
   });
 });
 
+it("disconnects removed Creators and connects Creators placed on live control", () => {
+  const before = run([plan(), live("c0"), live("s01"), live("s02")]);
+  const moved = { ...MAP, accounts: MAP.accounts.map((a) => a.account_id === "10" ? { ...a, cell: "c0" } : a) };
+  const next = run([{ type: "Plan", map: moved, scope: "model:10", proto: "ok" }], before);
+  expect(accountLive(next, "10")).toBe(true);
+  expect(liveChanges(before, next)).toContainEqual({ cell: "s02", live: false, accounts: ["20"] });
+});
+
 describe("streamDiff", () => {
   const all = planStreams(MAP, "all");
   it("scope all → model:20 closes s01, rescopes s02", () => {
@@ -108,11 +116,32 @@ describe("resyncAction", () => {
     ["merged inbox names both Cells, s02 resynced → splice", ["chats", "list", "10,11,20", "@t"], ["20"], "splice"],
     ["merged inbox fully in resynced Cell → invalidate", ["chats", "list", "10,11", "@t"], ["10", "11"], "invalidate"],
     ["one Creator's thread in resynced Cell", ["chat-messages", "20", "5"], ["20"], "invalidate"],
+    ["fan id equal to a Creator id does not select the thread", ["messages", "10", "20"], ["20"], "skip"],
     ["other Cell's thread survives", ["chat-messages", "10", "5"], ["20"], "skip"],
     ["object key part", ["mass-messages", { accountId: "20" }], ["20"], "invalidate"],
     ["agency key on a Cell resync is kept", ["roster-counts"], ["20"], "skip"],
     ["control resync refetches agency keys", ["roster-counts"], [], "invalidate"],
     ["control resync leaves Cell data", ["chat-messages", "10", "5"], [], "skip"],
+    ["unknown family falls back to invalidation", ["unknown", "10", { accountId: "20" }], ["20"], "invalidate"],
     ["numeric account in key", ["vault", 20], ["20"], "invalidate"],
   ])("%s", (_n, key, accounts, want) => expect(resyncAction(key, new Set(accounts), placed)).toBe(want));
+});
+
+it.each<[
+  Parameters<typeof mapLoadReducer>[0], Parameters<typeof mapLoadReducer>[1], ReturnType<typeof mapLoadReducer>,
+]>([
+  [{ phase: "ready", delay: 5_000 }, "start", { phase: "loading", delay: 5_000 }],
+  [{ phase: "loading", delay: 5_000 }, "denied", { phase: "denied" }],
+  [{ phase: "loading", delay: 5_000 }, "failed", { phase: "waiting", delay: 5_000 }],
+  [{ phase: "waiting", delay: 5_000 }, "retry", { phase: "ready", delay: 10_000 }],
+  [{ phase: "waiting", delay: 40_000 }, "retry", { phase: "ready", delay: 60_000 }],
+  [{ phase: "denied" }, "start", { phase: "denied" }],
+  [{ phase: "denied" }, "reset", { phase: "ready", delay: 5_000 }],
+  [{ phase: "waiting", delay: 40_000 }, "reset", { phase: "ready", delay: 5_000 }],
+])("map load %j + %s becomes %j", (state, action, expected) => {
+  expect(mapLoadReducer(state, action)).toEqual(expected);
+});
+
+it("retries a missing tail before invalidating a fully affected inbox", () => {
+  expect(resyncAction(["chats", "all", "10"], new Set(["10"]), new Set(["10"]), true)).toBe("retryTail");
 });

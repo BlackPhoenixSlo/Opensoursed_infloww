@@ -11,6 +11,7 @@ from chatters import get_request_chatter
 from db.engine import get_session
 from employee_groups_api import subtree_employee_ids
 from employees import AgencyContext, agency_contexts, remember_chatter_employee
+from send_ops import cells
 from settings_schema import (  # noqa: F401 (REVENUE_CARD_KEYS: this module's API too)
     BUILT_IN_ROLE_DEFAULTS, BUILT_IN_ROLE_IDS, CARD_KEYS, DASHBOARD_CARDS, REVENUE_CARD_KEYS,
 )
@@ -144,6 +145,8 @@ _STATS_REPORT = ("/admin/ingest/transactions",)
 _BATCH_REASSIGN = "/admin/ingest/transactions/attribute"
 _SUBS_CHART = "/api/of/v2/subscriptions/subscribers/chart"
 
+COMPOSER_PAGE = "/messages-pro"
+
 PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "/": ("Dashboard", (
         "/admin/stats/revenue", "/admin/stats/per-model", "/admin/stats/per-employee", "/admin/stats/referrals",
@@ -229,7 +232,7 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
         "/api/of/v2/messages/templates", _ME)),
     "/analytics/sales-records": ("Sales records", ("/admin/stats/sales-records", _BATCH_REASSIGN)),
     # saved-replies/sent: the Composer counts a send that rode a script (Scripts' orange send box).
-    "/messages-pro": ("Messages Pro", (
+    COMPOSER_PAGE: ("Messages Pro", (
         *_MASS, "/admin/account-config", "/admin/saved-replies/sent",
         "/admin/chats", "/admin/copilot", "/admin/do-not-mass", "/admin/messages",
         "/admin/paid-messages", "/admin/split-inbox", "/admin/translate", "/admin/vault/sends",
@@ -357,14 +360,24 @@ def _matches(prefix: str, path: str) -> bool:
     return path == prefix or path.startswith(prefix + "/")
 
 
-def _route_table() -> list[tuple[str, tuple[str, ...]]]:
-    pages: dict[str, list[str]] = {}
+UNCONFIRMED_SENDS = "/admin/unconfirmed-sends"
+RESOLVE_SEND = f"{UNCONFIRMED_SENDS}/resolve"
+_CELL_PAGE_GRANTS = {
+    COMPOSER_PAGE: ((UNCONFIRMED_SENDS, "GET"), (RESOLVE_SEND, "POST")),
+    "/growth/auto-funnel": ((UNCONFIRMED_SENDS, "GET"),),
+}
+
+
+def _route_table() -> list[tuple[str, str | None, tuple[str, ...]]]:
+    pages: dict[tuple[str, str | None], list[str]] = {}
     for href, (_, prefixes) in PAGE_MAP.items():
         for prefix in prefixes:
-            pages.setdefault(prefix, []).append(href)
-    rows = [(p, tuple(dict.fromkeys(h))) for p, h in pages.items()]
-    rows += [(p, ()) for p in UNMAPPED]
-    return sorted(rows, key=lambda row: len(row[0]), reverse=True)
+            pages.setdefault((prefix, None), []).append(href)
+        for route in _CELL_PAGE_GRANTS.get(href, ()):
+            pages.setdefault(route, []).append(href)
+    rows = [(p, method, tuple(dict.fromkeys(h))) for (p, method), h in pages.items()]
+    rows += [(p, None, ()) for p in UNMAPPED]
+    return sorted(rows, key=lambda row: (len(row[0]), row[1] is not None), reverse=True)
 
 
 _ROUTES = _route_table()
@@ -381,7 +394,7 @@ def _writers(prefix: str, pages: tuple[str, ...]) -> tuple[str, ...]:
 
 
 # a read-only grant must leave a writer page for the prefix: () would let every write through
-for _prefix, _pages in _ROUTES:
+for _prefix, _, _pages in _ROUTES:
     assert not _pages or _writers(_prefix, _pages), f"{_prefix}: every page granting it is read-only (READ_ONLY_GRANTS)"
 
 _OF_SETTINGS = "/of-manager/settings"
@@ -393,11 +406,16 @@ def _account_write(path: str, method: str) -> bool:
 
 
 def route_pages(path: str, method: str) -> tuple[str, ...] | None:
+    method = method.upper()
     if _account_write(path, method):
         return (_OF_SETTINGS,)
-    for prefix, pages in _ROUTES:
-        if _matches(prefix, path):
-            if method.upper() in _READS:
+    for prefix, cell_method, pages in _ROUTES:
+        if cell_method is None:
+            matches = _matches(prefix, path)
+        else:
+            matches = path == prefix and method == cell_method and cells()
+        if matches:
+            if method in _READS:
                 return pages
             return _writers(prefix, pages)  # a write drops the read-only grants
     return None

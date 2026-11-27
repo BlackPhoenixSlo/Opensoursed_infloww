@@ -6,7 +6,8 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import type { Gran } from "@/components/stats/chart";
 import { ssePoll } from "@/lib/events";
 import { ofProfileQuery } from "@/hooks/useAccountAvatar";
-import { cellMode, relay, type RelayContext } from "@/lib/relay";
+import { cellMode } from "@/lib/cellFlag";
+import { RelayError, relay, type RelayContext } from "@/lib/relay";
 import { REFRESH_KEYS } from "@/lib/screenBundle";
 import { type FanId } from "@/lib/fanId";
 
@@ -442,18 +443,14 @@ export type AttributeTo = number | "no_one" | null;
 export function useAttributeTip() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ txId, employeeId, accountId }: { txId: number; employeeId: AttributeTo; accountId: string }) =>
-      cellMode()
-        ? relay.post(
-          `/admin/ingest/transactions/${txId}/attribute`,
-          { employee_id: employeeId, account_id: accountId },
-          { ...BG_CTX, accountId },
-        )
-        : relay.post(
-          `/admin/ingest/transactions/${txId}/attribute`,
-          { employee_id: employeeId },
-          BG_CTX,
-        ),
+    mutationFn: ({ txId, employeeId, accountId }: { txId: number; employeeId: AttributeTo; accountId: string }) => {
+      const cells = cellMode();
+      return relay.post(
+        `/admin/ingest/transactions/${txId}/attribute`,
+        { employee_id: employeeId, ...(cells ? { account_id: accountId } : {}) },
+        cells ? { ...BG_CTX, accountId } : BG_CTX,
+      );
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["stats", "orphan-tips"] });
       qc.invalidateQueries({ queryKey: ["stats"] });
@@ -481,6 +478,7 @@ export async function postBatchAttribute(
   { employeeId, sales, clockEventId }: { employeeId: AttributeTo; sales?: SaleRef[]; clockEventId?: number },
 ): Promise<BatchAttributeResp> {
   if (clockEventId != null) {
+    if (cellMode()) throw new RelayError(400, null, "Clock-event sales reassignment is off in cell mode");
     return relay.post<BatchAttributeResp>(BATCH_ROUTE, { employee_id: employeeId, clock_event_id: clockEventId }, BG_CTX);
   }
   const refs = sales ?? [];

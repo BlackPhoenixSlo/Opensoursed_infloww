@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Any, Literal
 
@@ -13,7 +12,8 @@ from automations import send_followup as sf
 from automations import send_marker_decide as smd
 from automations import send_marker_store as smst
 from isotime import iso_z, parse_iso
-from permissions import require_opt_in_page
+from permissions import COMPOSER_PAGE, RESOLVE_SEND, UNCONFIRMED_SENDS, opt_in_refusal, require_opt_in_page, route_refusal
+from send_ops import cells
 
 _AUTO_FUNNEL = "/growth/auto-funnel"
 _SENDERS = {"funnel": rmf, "followup": sf}
@@ -33,18 +33,11 @@ def _row_state(marker, now: datetime) -> str:
     return smd.marker_state(marker.sending_at, marker.unconfirmed_at, smd.BOOT_TS, now)
 
 
-def _cells() -> bool:
-    return bool(os.environ.get("OI_CELL_MAP"))
-
-
-def _retry_allowed() -> bool:
-    return not _cells()
-
-
 def _op_rows(account_id: str) -> list[dict[str, Any]]:
     import send_ops
     return [{"kind": r["kind"], "op_id": r["op_id"], "fan_id": r["target"],
-             "since": iso_z(parse_iso(r["created_at"])), "state": smd.UNCONFIRMED, "retry_allowed": False,
+             "since": iso_z(parse_iso(r["created_at"])), "updated_at": r["updated_at"],
+             "state": smd.UNCONFIRMED, "retry_allowed": False,
              "link": "queue" if r["kind"] in send_ops.QUEUE else "chat"}
             for r in send_ops.uncertain(account_id)]
 
@@ -69,13 +62,28 @@ async def _marked_rows(account_id: str) -> list[dict[str, Any]]:
     ]
 
 
-@router.get("/admin/unconfirmed-sends")
+@router.get(UNCONFIRMED_SENDS)
 async def list_unconfirmed_sends(account_id: str = Query(...)) -> dict[str, Any]:
-    await _guard(account_id)
-    rows = await _marked_rows(account_id)
-    if not _cells():
-        return {"rows": rows}
-    return {"rows": [*({**r, "retry_allowed": _retry_allowed()} for r in rows), *_op_rows(account_id)]}
+    if not cells():
+        await _guard(account_id)
+        return {"rows": await _marked_rows(account_id)}
+    assert_account_owned(account_id)
+    legacy_denied = await opt_in_refusal((_AUTO_FUNNEL,), account_id)
+    composer_denied, _ = await route_refusal((COMPOSER_PAGE,), "GET", UNCONFIRMED_SENDS, [account_id])
+    if legacy_denied is not None and composer_denied is not None:
+        raise composer_denied
+    rows = []
+    if legacy_denied is None:
+        rows.extend({**r, "retry_allowed": False} for r in await _marked_rows(account_id))
+    if composer_denied is None:
+        rows.extend(_op_rows(account_id))
+    import cell_hold
+    import cell_mode
+    from starlette.concurrency import run_in_threadpool
+
+    platform = cell_mode._owned_platforms().get(account_id)
+    restore_holds = await run_in_threadpool(cell_hold.restore_holds, platform, account_id) if platform else []
+    return {"rows": rows, "restore_holds": [h._asdict() for h in restore_holds]}
 
 
 class RetryBody(BaseModel):
@@ -109,7 +117,7 @@ async def _row_of(account_id: str, body: RetryBody):
 @router.post("/admin/unconfirmed-sends/retry")
 async def retry_unconfirmed_send(account_id: str = Query(...),
                                  body: RetryBody = Body(...)) -> dict[str, Any]:
-    if not _retry_allowed():
+    if cells():
         await _guard(account_id)
         raise HTTPException(409, {"error": "retry_off_cell_mode"})
     since = _since(body)
@@ -156,17 +164,20 @@ async def dismiss_unconfirmed_send(account_id: str = Query(...),
 
 class ResolveBody(BaseModel):
     op_id: str
+    updated_at: str
     outcome: Literal["was_sent", "not_sent"]
 
 
-@cell_router.post("/admin/unconfirmed-sends/resolve")
+@cell_router.post(RESOLVE_SEND)
 async def resolve_unconfirmed_send(account_id: str = Query(...),
                                    body: ResolveBody = Body(...)) -> dict[str, Any]:
-    await _guard(account_id)
+    assert_account_owned(account_id)
     import send_ops
     from chatters import current_actor
     actor = current_actor()
     by = "unknown" if actor is None else f"{actor.kind}:{actor.username}"
-    if not send_ops.resolve(account_id, body.op_id, body.outcome == "was_sent", by):
+    if not send_ops.resolve(account_id, body.op_id, body.outcome == "was_sent", by, updated_at=body.updated_at):
+        if any(row["op_id"] == body.op_id for row in send_ops.uncertain(account_id)):
+            raise HTTPException(409, "this row changed since it was listed: refresh")
         raise HTTPException(404, "no such row for this Creator")
     return {"status": body.outcome}

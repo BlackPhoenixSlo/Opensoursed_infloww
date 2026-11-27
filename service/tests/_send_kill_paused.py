@@ -42,17 +42,10 @@ BAD: dict[str, str | dict | None] = {
 
 @contextlib.contextmanager
 def permit_env(on: bool = True):
-    saved = {k: os.environ.pop(k, None) for k in ("OI_CELL_SEND_PERMIT", "OI_CELL_INSTANCE")}
-    if on:
-        os.environ.update(OI_CELL_SEND_PERMIT=PERMIT, OI_CELL_INSTANCE="b1:2")
-    try:
-        with cell.cells():
-            yield
-    finally:
-        for k, v in saved.items():
-            os.environ.pop(k, None)
-            if v is not None:
-                os.environ[k] = v
+    keys = ("OI_CELL_SEND_PERMIT", "OI_CELL_INSTANCE")
+    values = dict(zip(keys, (PERMIT, "b1:2"))) if on else {}
+    with cell.environment(*(() if on else keys), **values), cell.cells():
+        yield
 
 
 def _like(http: cell.FakeHttp) -> str:
@@ -77,23 +70,32 @@ async def _seed_job(aid: str) -> None:
                            run_at=datetime.utcnow() - timedelta(minutes=1)))
 
 
-def _plugin(http: cell.FakeHttp, fan: int, before=None):
+def _plugin(http: cell.FakeHttp, fan: int, before=None, after=None, anchor="j1"):
     import send_ops
 
     async def fn(account_id, payload, *, run_id=None):
         if before:
             before()
         c = cell.client(http)
+        import automation_executor as ax
+
+        def send():
+            return send_ops.dispatch(
+                "onlyfans", account_id, send_ops.op_id("onlyfans", account_id, KIND, str(fan), anchor),
+                KIND, str(fan), send_ops.digest({"anchor": "j1"}), lambda: c.send_message(fan, "hi"))
+
         with patch.dict(send_ops.CAPABILITY, {KIND: "send_message"}):
-            send_ops.dispatch("onlyfans", account_id, send_ops.op_id("onlyfans", account_id, KIND, str(fan), "j1"),
-                              KIND, str(fan), send_ops.digest({"anchor": "j1"}), lambda: c.send_message(fan, "hi"))
+            await ax.of_write_paced(account_id, send, send_purpose="manual", min_gap_s=0, tries=1)
+        if after:
+            after()
         return {"sent": 1}
     return fn
 
 
 async def _run(fn) -> dict:
     import automation_executor as ax
-    with patch.object(ax, "get_automation", lambda k: fn if k == KIND else None):
+    with patch.object(ax, "get_automation", lambda k: fn if k == KIND else None), \
+            patch.object(ax.run_decide, "sends_once", lambda k: k == KIND):
         return await ax.run_once(AID, KIND)
 
 
@@ -121,12 +123,45 @@ async def composer() -> list[cell.Check]:
         r = cell.row(fan, f"fresh-{fan}")
         out.append(("fresh permit: composer goes out once, sent row", st == 200 and len(http.accepts) == 1
                     and r is not None and r["state"] == "sent", {"status": st, "row": r, "calls": http.calls}))
+    with permit_env():
+        import server
+        write_permit(BAD["expired"])
+        http = cell.FakeHttp()
+        req = cell.request({})
+        with cell.route(req, cell.client(http)):
+            try:
+                await server.of_schedule_message(next(cell._fans), req,
+                                                 server._ScheduleMessageBody(text="later", scheduled_date="2000-01-01T12:00:00Z"))
+            except HTTPException as e:
+                st, body = e.status_code, e.detail
+            else:
+                st, body = 200, {}
+        out.append(("unanchored native schedule honors lapsed permit",
+                    (st, cell.err(body)) == (503, "writes_paused") and not http.calls,
+                    {"answer": [st, body], "calls": http.calls}))
     with permit_env(on=False):
         write_permit(None)
         fan, http = next(cell._fans), cell.FakeHttp()
         st, _ = await cell.post(http, fan, f"unset-{fan}")
         out.append(("env unset: no permit check, send goes out with no file", st == 200 and len(http.accepts) == 1,
                     {"status": st, "calls": http.calls}))
+    with permit_env():
+        write_permit(fresh())
+        from of_client import OFClient
+        prepare = OFClient.prepare_message
+
+        def lapse(client, *args, **kwargs):
+            result = prepare(client, *args, **kwargs)
+            write_permit(BAD["expired"])
+            return result
+
+        fan, http = next(cell._fans), cell.FakeHttp()
+        with patch.object(OFClient, "prepare_message", lapse):
+            st, body = await cell.post(http, fan, "permit-lapsed-after-claim")
+        r = cell.row(fan, "permit-lapsed-after-claim")
+        out.append(("permit lapses after claim: 503 writes_paused, refused row, zero wire calls",
+                    (st, cell.err(body)) == (503, "writes_paused") and r["state"] == "refused" and not http.calls,
+                    {"answer": [st, body], "row": r, "calls": http.calls}))
     return out
 
 
@@ -143,7 +178,7 @@ async def automation() -> list[cell.Check]:
         write_permit(BAD["expired"])
         drained: list = []
 
-        async def spy():
+        async def spy(*_, **__):
             drained.append(1)
             return []
         with patch.object(ax, "_due_job_pairs", spy), patch.object(ax, "_materialize_due_rules", spy):
@@ -157,9 +192,11 @@ async def automation() -> list[cell.Check]:
         write_permit(BAD["expired"])
         h0 = cell.FakeHttp()
         r0 = await _run(_plugin(h0, fan))
-        out.append(("lapsed permit: run_once skipped writes_paused before claim; job pending, attempts 0",
-                    r0.get("reason") == "writes_paused" and _job(AID) == ("pending", 0) and not h0.calls,
-                    {"run": r0, "job": _job(AID), "calls": h0.calls}))
+        stored = db_row("SELECT status FROM automation_runs WHERE id=?", (r0.get("run_id"),))
+        out.append(("lapsed permit: no skip row before claim; job pending, attempts 0",
+                    r0.get("reason") == "writes_paused" and "run_id" not in r0 and stored is None
+                    and _job(AID) == ("pending", 0) and not h0.calls,
+                    {"run": r0, "job": _job(AID), "calls": h0.calls, "stored": stored}))
 
         write_permit(fresh())
         h1 = cell.FakeHttp()
@@ -176,8 +213,33 @@ async def automation() -> list[cell.Check]:
                     r2.get("status") == "ok" and _job(AID) == ("done", 1) and len(h2.accepts) == 1
                     and r3.get("reason") == "no_job", {"run": r2, "again": r3, "job": _job(AID),
                                                         "calls": h2.calls}))
+
+        def refused():
+            import send_ops
+            raise send_ops.SendRefused(503, "writes_paused")
+
+        await _seed_job(AID)
+        h3 = cell.FakeHttp()
+        r4 = await _run(_plugin(h3, next(cell._fans), after=refused, anchor="partial"))
+        out.append(("refusal after partial delivery parks the job",
+                    r4.get("status") == "error" and _job(AID) == ("error", 1) and len(h3.accepts) == 1,
+                    {"run": r4, "job": _job(AID), "calls": h3.calls}))
     return out
 
 
 async def run() -> list[cell.Check]:
     return [*await composer(), *await automation()]
+
+
+async def case_single_box_ignores_leftover_permit():
+    import server
+
+    await cell._seed()
+    write_permit(None)
+    req = cell.request({"x-op-id": "single-box-leftover-permit"})
+    http = cell.FakeHttp()
+    with cell.cells(on=False), cell.environment(OI_CELL_SEND_PERMIT=PERMIT, OI_CELL_INSTANCE="b1:2"):
+        with cell.route(req, cell.client(http)):
+            await server.of_schedule_message(next(cell._fans), req, server._ScheduleMessageBody(
+                text="later", scheduled_date="2099-01-01T12:00:00Z"))
+    assert len(http.accepts) == 1, http.calls

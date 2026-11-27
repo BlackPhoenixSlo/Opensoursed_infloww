@@ -175,8 +175,8 @@ def main(argv: list[str]) -> int:
          "a paid send with no media (the tease would go out FREE)"),
         ({"media_files": [{"processId": "x", "host": "h"}]},
          "an OF fresh-upload claim (only upload_media's vault id is sendable)"),
-        ({"media_files": [MEDIA], "price": 10, "locked_text": True},
-         "locked_text on a paid send (Fansly always shows text)"),
+        ({"media_files": [MEDIA], "locked_text": True},
+         "locked_text (Fansly always shows text)"),
         ({"media_files": ["AAA", "BBB"], "price": 10,
           "previews": ["AAA", "BBB"]},
          "a paid send whose every attachment is a free preview (the fan would "
@@ -199,8 +199,6 @@ def main(argv: list[str]) -> int:
          "paid media with a 1-of-2 teaser"),
         ({"media_files": [1, 2], "price": 20, "previews": [9]}, True,
          "a preview id not among the attachments is ignored, not fatal"),
-        ({"media_files": [1], "price": 0, "locked_text": True}, True,
-         "locked_text on a FREE send is meaningless, not an error"),
         ({"media_files": [], "price": 20}, False, "paid with no media"),
         ({"media_files": [1, 2], "price": 20, "previews": [1, 2]}, False,
          "paid with EVERY attachment previewed"),
@@ -215,8 +213,6 @@ def main(argv: list[str]) -> int:
         ({"media_files": [{"mediaId": MEDIA}], "price": 20,
           "previews": [MEDIA]}, False,
          "paid + every attachment previewed, even when dict-shaped"),
-        ({"media_files": [1], "price": 20, "locked_text": True}, False,
-         "locked_text on a PAID send"),
     ]:
         try:
             check_sendable(**kwargs)

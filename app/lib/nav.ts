@@ -5,7 +5,7 @@
  * Labels are VERBATIM from docs/infloww-screens.md §1.1 (sidebar) and §3.10
  * (settings tabs); routes follow §2. The one deliberate deviation from Infloww
  * are ours (VISION.md): the "My Automations" group (Auto Mass, Auto Post,
- * Auto Story, Auto Funnel, Gen-Info), the "Full AI Chat" page, the "My AI
+ * Auto Story, Auto Funnel, Gen-Info, Full AI Chat), the "My AI
  * Chatter" group (Auto-reply, Get to know fans: `hidden`, so a Permission group
  * the sidebar never draws). A plugin may add links to a group (lib/chatSlots.ts
  * `navLinks`).
@@ -195,12 +195,12 @@ export const ONLYFANS_NAV: NavNode[] = withSlotLinks([
       { label: "Auto Story", href: "/growth/auto-story" },
       { label: "Auto Funnel", href: "/growth/auto-funnel" },
       { label: "Gen-Info", href: "/growth/gen-info" },
+      // Owner-only, so outside the opt-in set (service/permissions.py OPT_IN_PAGES).
+      { label: "Full AI Chat", href: "/full-ai-chatter", chatterHidden: true, notOptIn: true },
+      // The Full AI Turn as a read-only zoomable diagram, a popup on Full AI Chat (owner 11-15).
+      { label: "AI rules", href: "/ai-rules", chatterHidden: true, notOptIn: true, tabOf: "/full-ai-chatter" },
     ],
   },
-  // Full AI Chat: Shadow switch + the owner's Test chat. Owner-only: nothing a chatter operates.
-  { label: "Full AI Chat", href: "/full-ai-chatter", icon: Bot, chatterHidden: true },
-  // AI rules: the Full AI Turn as a read-only zoomable diagram, a popup on Full AI Chat (owner 11-15).
-  { label: "AI rules", href: "/ai-rules", icon: Bot, chatterHidden: true, tabOf: "/full-ai-chatter" },
   // Ours: the AI chat lanes, opt-in for a chatter like My Automations. Out of the sidebar (owner 11-15),
   // still Permission pages with their routes and gates.
   {

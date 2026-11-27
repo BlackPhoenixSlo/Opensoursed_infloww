@@ -326,6 +326,11 @@ async def _sweep_stop_handler(request, exc):  # noqa: ANN001
 
 app.add_exception_handler(_report_recipe.RecipeError, _report_recipe_api.refused)
 
+
+@app.exception_handler(platforms.UnknownPlatformKey)
+async def _unknown_platform_key_handler(request, exc):  # noqa: ANN001
+    return JSONResponse(status_code=501, content={"detail": exc.reason})
+
 app.include_router(_employees_router)
 app.include_router(_fans_router)
 app.include_router(_fan_insights_router)
@@ -394,7 +399,7 @@ if _CELLS:
     import actor_token  # noqa: E402
     import cell_hold  # noqa: E402
     app.include_router(cell_hold.router)
-if _CELLS and os.environ.get("OI_CELL_ROLE") == "control":
+if _CELLS and cell_mode.is_control():
     import agency_copy  # noqa: E402
     import creator_reservations  # noqa: E402
     app.include_router(agency_copy.router)
@@ -578,7 +583,7 @@ _PUBLIC_PREFIXES = ("/auth/", "/chatter/", "/t/", "/share/")
 @_http_hooks.add
 async def _share_token_gate(request: Request, call_next):
     share_token = _effective_share_token()
-    if not share_token:
+    if not share_token or (_CELLS and request.url.path == "/api/cell/hold"):
         return await call_next(request)
     if request.url.path == "/health" or request.url.path == "/livez":
         return await call_next(request)
@@ -731,6 +736,7 @@ app.add_middleware(_CutShortStreams)
 if _CELLS:
     app.add_middleware(cell_mode.CellGenHeader)
     app.add_exception_handler(proxy_registry.NoProxyRefused, cell_mode.no_proxy_refused)
+    app.add_exception_handler(cell_hold.CellHeld, cell_hold.refused)
 
 
 @_http_hooks.add
@@ -902,6 +908,9 @@ async def _ws_pump_for_account(account_id: str) -> bool:
             meta = account_registry.get_account(account_id) or {}
             nickname = meta.get("nickname") or account_id
             color = meta.get("color")
+            if unknown := platforms.unknown_refusal(account_id):
+                log.info("ws-pump[%s]: parked, %s", account_id, unknown)
+                return True
             platform = platforms.for_account(account_id)
             if platform.backend is not None:
                 ws = platform.backend.ws(_load_client(account_id))
@@ -1187,11 +1196,11 @@ async def _start_event_pumps() -> None:
         log.info("Cells: %d open Send claims turned uncertain at boot", send_ops.install(sync_database_url()))
         import cell_hold
         await cell_hold.boot(sync_database_url())
-        if os.environ["OI_CELL_ROLE"] == "control":
-            import creator_reservations
-            creator_reservations.install(sync_database_url())
         import agency_copy
-        role = os.environ["OI_CELL_ROLE"]
+        import creator_reservations
+        role = cell_mode.role()
+        if role == "control":
+            creator_reservations.install(sync_database_url())
         log.info("Cells: agency copy %s triggers %s", role, agency_copy.install(sync_database_url(), role))
         if role == "control":
             import employees
@@ -1201,6 +1210,7 @@ async def _start_event_pumps() -> None:
                 log.exception("Cells: AGENCY ROW BACKFILL FAILED: an owner or chatter without a Mirror Employee"
                               " gets 503 on data Cells")
         if role == "data":
+            log.info("Cells: bootstrap owner grants come from Control")
             from db.engine import engine as _db_engine
             agency_copy.log_read_only_hits(_db_engine.sync_engine)
             age = agency_copy.load_confirmed(agency_copy.db_path(sync_database_url()))
@@ -1209,6 +1219,7 @@ async def _start_event_pumps() -> None:
             _spawn_bg(agency_copy.watch_grant_age(), "grant-age-watch")
             if os.environ.get("OI_CELL_CONTROL_URL"):
                 _spawn_bg(agency_copy.poll_forever(agency_copy.db_path(sync_database_url())), "agency-copy-poll")
+                _spawn_bg(creator_reservations.retry_activations(), "reservation-activation-retry")
             else:
                 log.error("Cells: OI_CELL_CONTROL_URL unset: this data Cell never receives the Agency copy")
 
@@ -1230,7 +1241,7 @@ async def _start_event_pumps() -> None:
 
     try:
         from seeds.funnels import seed_defaults_once
-        added = [] if _CELLS and os.environ["OI_CELL_ROLE"] == "data" else await seed_defaults_once()
+        added = [] if _CELLS and cell_mode.role() == "data" else await seed_defaults_once()
         if added:
             log.info("default funnels added: %s", ", ".join(added))
     except Exception:
@@ -1425,7 +1436,7 @@ _proxy_clients: ContextVar[list[OFClient] | None] = ContextVar("proxy_clients", 
 
 def _load_client(account_id: str) -> OFClient:
     try:
-        backend = platforms.for_account(account_id).backend
+        backend = platforms.require_account(account_id).backend
         if backend is not None:
             return backend.get_client(account_id)
         c = client_pool.get(account_id)
@@ -1433,6 +1444,8 @@ def _load_client(account_id: str) -> OFClient:
         if seen is not None:
             seen.append(c)
         return c
+    except platforms.UnknownPlatformKey as e:
+        raise HTTPException(status_code=501, detail=e.reason) from None
     except (FileNotFoundError, ValueError, KeyError) as e:
         error, message = next(v for t, v in (
             (FileNotFoundError, ("no_session", str(e))),
@@ -1584,7 +1597,7 @@ def _sync_and_link_after_bootstrap(account_id: str) -> None:
 
     async def _run() -> None:
         await _sync_db_from_disk()
-        if user is None:
+        if user is None or (_CELLS and cell_mode.role() == "data"):
             return
         await ensure_user_account_link(user.id, account_id)
         user.account_ids = frozenset(user.account_ids | {account_id})  # type: ignore[misc]
@@ -1601,7 +1614,7 @@ def _sync_and_link_after_bootstrap(account_id: str) -> None:
 
 
 def post_bootstrap_hooks(account_id: str):
-    if _CELLS and os.environ["OI_CELL_ROLE"] == "data":
+    if _CELLS and cell_mode.role() == "data":
         import creator_reservations
         creator_reservations.activate(account_id)
     _invalidate_client(account_id)
@@ -3098,6 +3111,13 @@ _RESALE_MESSAGES = {
 }
 
 
+def _refuse_send(account_id: str, body: BaseModel) -> platforms.Platform:
+    platform = platforms.for_account(account_id)
+    if reason := side_effect_gate.send_refusal(platform, body.model_dump()):
+        raise HTTPException(status_code=501, detail=reason)
+    return platform
+
+
 async def _reject_if_resale(account_id: str, fan_id: int, body: SendMessageBody) -> None:
     if body.price <= 0:
         return
@@ -3143,6 +3163,7 @@ async def send_message(
     of outbound rows."""
     started = _time_mod.monotonic()
     account_id = _resolve_account_id(request)
+    _refuse_send(account_id, body)
     # Read BEFORE _proxy: its lambda has no request scope.
     from employees import resolve_outbound_employee_id
     employee_id = await resolve_outbound_employee_id(request, account_id)
@@ -3175,8 +3196,8 @@ async def send_message(
         return _proxy(lambda: _get_client().post_message(prepared_chat_id, path, payload, retry_plan),
                       send=retry_plan is None, started=started)
 
-    anchor = request.headers.get("x-op-id") if _CELLS else None
     import send_ops
+    anchor = send_ops.anchor(request)
     try:
         if anchor:
             platform = account_registry.get_platform(account_id)
@@ -3185,7 +3206,7 @@ async def send_message(
                 send_ops.op_id(platform, account_id, "composer", str(chat_id), anchor),
                 "composer", str(chat_id), send_ops.digest(body.model_dump()), send)
             if replay:
-                return result
+                return send_ops.manual_json(result, explicit_reconciliation=True)
         else:
             send_ops.check_permit()
             result = await asyncio.to_thread(send)
@@ -3996,8 +4017,9 @@ def of_publish_schedule(schedule_id: int):
     import send_ops
     aid = _current_aid()
     name, sid = account_registry.get_platform(aid), str(schedule_id)
-    return send_ops.dispatch(name, aid, send_ops.op_id(name, aid, "publish_now", sid, sid), "publish_now", sid,
-                             send_ops.digest({"schedule_id": sid}), send).result
+    result = send_ops.dispatch(name, aid, send_ops.op_id(name, aid, "publish_now", sid, sid), "publish_now", sid,
+                               send_ops.digest({"schedule_id": sid}), send).result
+    return send_ops.manual_json(result)
 
 # OF's ledger lands hours late (measured 209/560/628 min after occurred_at), so a 60 s entry bought no freshness; fresh payments arrive via the WS / purchases feed.
 _LEDGER_TTL_S = 900
@@ -5144,12 +5166,12 @@ async def of_schedule_message(chat_id: int, request: Request,
     the ≤15-min route uses, fired through the shim's real `send_message`). The OF
     path is untouched."""
     account_id = _resolve_account_id(request)
-    platform = platforms.for_account(account_id)
+    platform = _refuse_send(account_id, body)
     if platforms.Lack.SERVER_SCHEDULE in platform.lacks:
         # Delegated to check_sendable, never re-implemented: hand copies drifted and re-opened the hole where a send fails silently at fire time.
         try:
             platform.backend.check_sendable(media_files=body.media_files, price=body.price,
-                                            previews=body.previews, locked_text=body.locked_text)
+                                            previews=body.previews)
         except platform.backend.APIError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return await _enqueue_scheduled(request, account_id, body, fan_id=chat_id,
@@ -5162,13 +5184,15 @@ async def of_schedule_message(chat_id: int, request: Request,
             tagged_users=body.tagged_users,
             auto_tag=False,
         ))
-    if anchor := request.headers.get("x-op-id") if _CELLS else None:
-        import send_ops
+    import send_ops
+    if anchor := send_ops.anchor(request):
         name = account_registry.get_platform(account_id)
-        return (await asyncio.to_thread(
+        outcome = await asyncio.to_thread(
             send_ops.dispatch, name, account_id,
             send_ops.op_id(name, account_id, "native_schedule", str(chat_id), anchor),
-            "native_schedule", str(chat_id), send_ops.digest(body.model_dump()), send)).result
+            "native_schedule", str(chat_id), send_ops.digest(body.model_dump()), send)
+        return send_ops.manual_json(outcome.result)
+    send_ops.check_permit()
     return await asyncio.to_thread(send)
 
 
@@ -5189,6 +5213,7 @@ async def _enqueue_scheduled(request: Request, account_id: str,
                              fan_id: int, run_at_iso: str, giphy_id: str | None) -> dict[str, Any]:
     from employees import resolve_outbound_employee_id
     from automation_executor import enqueue_job
+    from send_ops import anchor
 
     employee_id = await resolve_outbound_employee_id(request, account_id)
     run_at = _run_at_naive_utc(run_at_iso)
@@ -5207,7 +5232,7 @@ async def _enqueue_scheduled(request: Request, account_id: str,
     }
     job_id = await enqueue_job(
         account_id, "scheduled_send",
-        payload=payload, run_at=run_at, created_by_employee_id=employee_id,
+        payload=payload, run_at=run_at, created_by_employee_id=employee_id, op_anchor=anchor(request),
     )
     return {"job_id": job_id, "fan_id": js_safe_id(fan_id), "run_at": run_at.isoformat() + "Z"}
 
@@ -5219,7 +5244,7 @@ async def create_scheduled_send(request: Request, body: _ScheduledSendBody = Bod
     `scheduled_jobs` row the executor will fire at `run_at`."""
     account_id = _resolve_account_id(request)
     # Fail here while the chatter still sees the composer: the shim refuses PPV price and media at FIRE time, into a retry loop nobody sees.
-    p = platforms.for_account(account_id)
+    p = _refuse_send(account_id, body)
     if platforms.Lack.NEAR_SCHEDULE_MEDIA in p.lacks and (body.media_files or body.price > 0):
         raise HTTPException(
             status_code=400,

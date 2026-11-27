@@ -1,7 +1,7 @@
 import type { QueryKey } from "@tanstack/react-query";
 
 import type { CellMap } from "@/lib/cellInbox";
-import type { Scope } from "@/lib/eventBusReducer";
+import { RETRY_MAX_MS, RETRY_MIN_MS, type Scope } from "@/lib/eventBusReducer";
 
 export type Proto = "ok" | "h1" | "unknown";
 
@@ -14,7 +14,7 @@ export function protoOf(nextHop: string | null | undefined): Proto {
 export interface Planned { cell: string; scope: Scope; accounts: readonly string[] }
 
 export function planStreams(m: CellMap, scope: Scope): Planned[] {
-  const out: Planned[] = m.control ? [{ cell: m.control, scope: "all", accounts: [] }] : [];
+  const out: Planned[] = m.control ? [{ cell: m.control, scope: "all", accounts: m.accounts.filter((a) => a.cell === m.control).map((a) => a.account_id) }] : [];
   const one = scope.startsWith("model:") ? scope.slice("model:".length) : null;
   for (const cell of [...m.cells].sort()) {
     if (cell === m.control) continue;
@@ -78,35 +78,76 @@ export interface LiveChange { cell: string; live: boolean; accounts: readonly st
 
 export function liveChanges(prev: CellBusState, next: CellBusState): LiveChange[] {
   const out: LiveChange[] = [];
+  for (const p of prev.planned) {
+    const kept = next.planned.find((n) => n.cell === p.cell);
+    const removed = p.accounts.filter((id) => !kept?.accounts.includes(id));
+    if (prev.live[p.cell] && (removed.length || !kept)) out.push({ cell: p.cell, live: false, accounts: removed });
+  }
   for (const p of next.planned) {
     const now = next.live[p.cell];
-    if (now !== undefined && now !== prev.live[p.cell]) out.push({ cell: p.cell, live: now, accounts: p.accounts });
+    if (now === undefined) continue;
+    const prior = prev.planned.find((x) => x.cell === p.cell);
+    if (now !== prev.live[p.cell]) out.push({ cell: p.cell, live: now, accounts: p.accounts });
+    else if (now) {
+      const added = p.accounts.filter((id) => !prior?.accounts.includes(id));
+      if (added.length) out.push({ cell: p.cell, live: true, accounts: added });
+    }
   }
   return out;
 }
 
-export type ResyncAction = "skip" | "invalidate" | "splice";
+export type ResyncAction = "skip" | "invalidate" | "splice" | "retryTail";
 
-function keyAccounts(key: QueryKey): string[] {
-  const out: string[] = [];
-  const add = (v: unknown) => {
-    if (typeof v === "number") out.push(String(v));
-    else if (typeof v === "string") out.push(...v.split(","));
-  };
-  for (const part of key) {
-    if (part && typeof part === "object" && !Array.isArray(part)) Object.values(part).forEach(add);
-    else add(part);
-  }
-  return out;
+const ACCOUNT_ROOTS = new Set<unknown>([
+  "chat-messages", "messages", "mass-messages", "vault", "scheduled-sends", "automation-rules",
+  "full-ai-today", "of-notif-count", "notif-list", "automation-restrict",
+]);
+
+function keyAccounts(key: QueryKey): string[] | null {
+  if (key[0] === "chats") return typeof key[2] === "string" ? key[2].split(",") : [];
+  let candidate = key[1];
+  if (key[0] === "accounts" || key[0] === "roster-counts") return [];
+  if (key[0] === "chats-local-seed") candidate = key[2];
+  if (key[0] === "chatter") candidate = key[1] === "folder-access" ? key[2] : undefined;
+  if (key[0] === "stats") {
+    if (key[1] === "per-fan-data") candidate = key[2];
+    else if (key[1] === "coverage" || key[1] === "fan-report" || key[1] === "referrals") candidate = key[4];
+    else if (key[1] === "sales-records" && typeof key[2] === "string") {
+      candidate = new URLSearchParams(key[2]).get("account_id");
+    } else if (key[1] === "automation-runs") candidate = undefined;
+    else return null;
+  } else if (key[0] !== "chats-local-seed" && key[0] !== "chatter" && !ACCOUNT_ROOTS.has(key[0])) return null;
+  const account = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+    ? (candidate as { accountId?: unknown }).accountId : candidate;
+  return typeof account === "string" || typeof account === "number" ? [String(account)] : [];
 }
 
 // accounts empty = control's resync: refetch what names no placed Creator (agency reads), leave every Cell's alone.
 export function resyncAction(
-  key: QueryKey, accounts: ReadonlySet<string>, placed: ReadonlySet<string>,
+  key: QueryKey, accounts: ReadonlySet<string>, placed: ReadonlySet<string>, retryTail = false,
 ): ResyncAction {
-  const named = keyAccounts(key).filter((id) => placed.has(id));
+  const ids = keyAccounts(key);
+  if (ids === null) return "invalidate";
+  const named = ids.filter((id) => placed.has(id));
   if (!accounts.size) return named.length ? "skip" : "invalidate";
   const hit = named.filter((id) => accounts.has(id));
   if (!hit.length) return "skip";
+  if (key[0] === "chats" && retryTail) return "retryTail";
   return key[0] === "chats" && hit.length < named.length ? "splice" : "invalidate";
+}
+
+export type MapLoad = { phase: "ready" | "loading" | "waiting"; delay: number } | { phase: "denied" };
+export const INITIAL_MAP_LOAD: MapLoad = { phase: "ready", delay: RETRY_MIN_MS };
+
+type MapLoadAction = "reset" | "start" | "failed" | "denied" | "retry";
+
+export function mapLoadReducer(state: MapLoad, action: MapLoadAction): MapLoad {
+  if (action === "reset") return INITIAL_MAP_LOAD;
+  if (state.phase === "ready" && action === "start") return { ...state, phase: "loading" };
+  if (state.phase === "loading" && action === "denied") return { phase: "denied" };
+  if (state.phase === "loading" && action === "failed") return { ...state, phase: "waiting" };
+  if (state.phase === "waiting" && action === "retry") {
+    return { phase: "ready", delay: Math.min(state.delay * 2, RETRY_MAX_MS) };
+  }
+  return state;
 }

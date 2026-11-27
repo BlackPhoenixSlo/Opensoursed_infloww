@@ -21,7 +21,8 @@ These are separate edits, each owned by a step below:
 - `Platform(key, label, session_file, backend, lacks, login, free_follow=False)`, frozen; `login` names the Browserbase login driver module (`"remote_login_<key>"`, the `LoginDriver` Protocol in `service/remote_login.py`), imported on first use
 - `Lack`, a `str` Enum, value == name: `REFERRALS`, `WALL_MEDIA`, `SERVER_SCHEDULE`, `NEAR_SCHEDULE_MEDIA`, `HISTORY_UNREAD_GATE`, `UNREAD_TOTAL`, `SHARED_REFRESH`
 - `ONLYFANS`, `FANSLY`; `ALL`, `KEYS`, `SESSION_FILES`
-- `get(key)` (unknown or `None` → `ONLYFANS`), `for_account(aid)`, `backends()`
+- `get(key)` strips and lower-cases first: missing, `None` or empty → `ONLYFANS`; a registered key → its entry; any other string → `UnknownPlatform(key)` (label "Unknown platform", no Backend module, every Lack, outside `ALL`). `require(key)` / `require_account(aid)` raise `UnknownPlatformKey` (a `ValueError`) where `get` would answer Unknown; `for_account(aid)`, `backends()`
+- An Unknown platform account refuses every name with `platform_unknown:<key>` (`refusal_for_account`): client loads build nothing (`client_pool.get`, the executor's client factory, the Relay's client loader answering 501), and `run_once` finalises the claimed job skipped with that reason without calling the kind
 
 A caller reads `p = platforms.for_account(aid)` and runs today's OnlyFans code when `p.backend is None` or the Lack is absent. Never compare a Platform key outside the registry's files. The source scan (`scan()` in `service/tests/test_platform_registry.py`) only catches the keys and entry names it lists, Fansly's today, so it covers a new Platform only once step 6 extends it.
 
@@ -91,9 +92,9 @@ Fields whose names lie. Fansly's cost was here, not in the build. Each site's re
 
 ## Copy vs import
 
-- **Copy:** the `fansly/` layout (client, signer, Shim, websocket, capture tooling) and `service/fansly_backend.py` as the Backend module template, plus the Unsupported / Blocked method markers (`fansly_unsupported` / `fansly_blocked` in `fansly/fansly_shim.py`) until they move to neutral names. One whole Shim per Platform; never split into shared parts (ADR-0053).
+- **Copy:** the `fansly/` layout (client, signer, Shim, websocket, capture tooling) and `service/fansly_backend.py` as the Backend module template, plus the Platform markers (`platform_unsupported` / `platform_blocked` / `platform_live_check` in `fansly/fansly_shim.py`; a `returns=` may not be callable or report a success). One whole Shim per Platform; never split into shared parts (ADR-0053).
 - **Import:** `service/of_shapes.py` readers, the outbound word guard (`_guard_outbound` in `service/of_client.py`; Fansly's local copy also flattens its HTML and stays local).
 
 ## Parked until site #2's capture
 
-Signer, socket envelope, money codes, its Lacks flags, account-id prefixing, popup layout, neutral names for the Unsupported / Blocked markers. Decide each from that site's capture, not from Fansly's.
+Signer, socket envelope, money codes, its Lacks flags, account-id prefixing, popup layout. Decide each from that site's capture, not from Fansly's.

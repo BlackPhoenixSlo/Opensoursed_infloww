@@ -28,8 +28,9 @@ Check = cell.Check
 
 class _WireHttp:
 
-    def __init__(self, wire: sk.Wire):
+    def __init__(self, wire: sk.Wire, at_accept=None):
         self.wire = wire
+        self.at_accept = at_accept
         self.sends: list[str | None] = []
 
     def request(self, method, url, json=None, headers=None, timeout=None):
@@ -38,6 +39,8 @@ class _WireHttp:
             return cell.Resp(200, {}, url)
         budget = send_tripwire.budget()
         self.sends.append(budget.op_id if budget else None)
+        if self.at_accept and self.wire.armed and self.wire.cut == "accepted":
+            self.at_accept()
         return cell.Resp(200, self.wire.hit(f"{method} {url.split('/api2/v2')[-1]}", json), url)
 
     def get(self, url, headers=None, timeout=None):
@@ -103,7 +106,7 @@ async def run(kind: str, cut: str) -> dict:
     aid = f"sa_{kind}_{cut}"
     at_kill: dict = {}
     wire = sk.Wire(cut, lambda: at_kill.setdefault("ops", ops(aid)) is not None)
-    http = _WireHttp(wire)
+    http = _WireHttp(wire, lambda: at_kill.setdefault("ops", ops(aid)))
     seen: list = []
     refusals: list = []
 
@@ -125,8 +128,6 @@ async def run(kind: str, cut: str) -> dict:
         ctx = await d.setup(aid, wire)
         await step(d.first, probe_update=cut == "after_update" and callable(d.post_update))
         first = {"ops": ops(aid), "killed_at": wire.killed_at, "accepts": len(wire.accepts)}
-        if cut == "accepted" and wire.killed_at == "accepted":
-            at_kill["ops"] = first["ops"]
         cell.restart()
         await sk.restart(aid)
         restarted = ops(aid)
@@ -189,14 +190,23 @@ def _table_matches() -> list[Check]:
     import sys
     from pathlib import Path
     import send_ops
+    from automation_registry import load_automation_plugins, registered_kinds
+
+    load_automation_plugins()
+    unknown_executors = send_ops.ANCHORLESS_EXECUTORS.difference(registered_kinds())
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
     import cell_features
     table = json.loads(cell_features.FEATURES.read_text())
     off = {k for f in table["features"].values() if f["state"] == "off" for k in f["send_kinds"]}
-    return [("gap kinds = send_ops.NO_ANCHOR ⊆ Feature table ANCHORLESS, each listed off",
+    return [("all anchored automation kinds have an explicit capability",
+             set(ANCHORED) <= send_ops.CAPABILITY.keys(),
+             {"missing": sorted(set(ANCHORED) - send_ops.CAPABILITY.keys())}),
+            ("gap kinds match send_ops.NO_ANCHOR and are listed off",
              set(GAPS) == send_ops.NO_ANCHOR and set(GAPS) <= set(cell_features.ANCHORLESS) <= off,
              {"no_anchor": sorted(send_ops.NO_ANCHOR), "anchorless": sorted(cell_features.ANCHORLESS),
-              "off": sorted(off)})]
+              "off": sorted(off)}),
+            ("anchorless executor kinds are registered", not unknown_executors,
+             {"unknown": sorted(unknown_executors)})]
 
 
 async def run_all(kinds=ANCHORED, gaps=GAPS) -> list[Check]:
@@ -220,7 +230,6 @@ class _Every:
 
 def _mutant(name: str):
     import uuid
-    import automation_executor as ax
     import send_ops
     from automations import welcome_chatter_for_info as wcfi
     real_op = send_ops._automated_op
@@ -231,7 +240,7 @@ def _mutant(name: str):
         return cell._patches((send_ops, "_automated_op", fresh), (send_ops, "MANUAL", _Every()))
     if name == "unfenced":
         return cell._patches((send_ops, "MANUAL", _Every()))
-    return cell._patches((send_ops, "NO_ANCHOR", frozenset()), (ax, "_UNANCHORED_KINDS", frozenset()),
+    return cell._patches((send_ops, "NO_ANCHOR", frozenset()), (send_ops, "ANCHORLESS_EXECUTORS", frozenset()),
                          (wcfi, "send_ops", SimpleNamespace(cells=lambda: False)))
 
 

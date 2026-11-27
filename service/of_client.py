@@ -562,8 +562,6 @@ class _Transport:
             log_of.error("denied account=%s method=%s url=%s (%s)",
                          self.account_id, method, _short_path(url), reason)
             raise OFDeniedError(f"refused: {method} {_short_path(url)} ({reason})")
-        if proxy_registry.CELLS:
-            self._require_proxy("call")
         # A deactivated Creator gets no OF write from any route or job; reads stay open for the owner's history.
         if method != "GET" and not (method == "DELETE" and _CARRIER_REMOVAL.get()):
             import account_health
@@ -571,9 +569,6 @@ class _Transport:
                 log_of.warning("deactivated account=%s method=%s url=%s refused",
                                self.account_id, method, _short_path(url))
                 raise OFDeactivatedError(f"refused: {method} {_short_path(url)} (Creator deactivated)")
-        if proxy_registry.CELLS and method != "GET" and send_tripwire.budget() is None:
-            import cell_hold
-            cell_hold.refuse_writes()
         # DC proxies sporadically 403 on CONNECT then work again; retries reuse the SAME self.http session (sticky IP, no rotation).
         policy = INTERACTIVE_RETRY if method == "GET" and INTERACTIVE_READ.get() else FULL_RETRY
         try:
@@ -590,12 +585,10 @@ class _Transport:
                 # back-off pause, telemetry, signing): a refusal sends nothing.
                 if check is not None and (why := check()):
                     raise OFDispatchRefused(why)
-                budget = send_tripwire.budget()
-                if budget is None:
-                    return self.http.request(method, url, json=json_body,
-                                             headers=headers, timeout=self.timeout_s)
-                return budget.leave(lambda: self.http.request(method, url, json=json_body, headers=headers,
-                                                              timeout=self.timeout_s), before_tunnel)
+                return send_tripwire.leave(
+                    lambda: self.http.request(method, url, json=json_body, headers=headers, timeout=self.timeout_s),
+                    delivery=True, before_tunnel=before_tunnel,
+                )
             with self._signed_slot():
                 # The x-hash warmup runs its own _proxy_retry here, never nested in the one below.
                 self._ensure_x_hash(policy=policy)
@@ -670,16 +663,16 @@ class _Transport:
         finally:
             proxy_health.attempt_end(label, refused)
 
-    def _require_proxy(self, where: str) -> None:
+    def require_proxy(self, where: str) -> None:
         if not self.proxy_url:
             raise proxy_registry.no_proxy(self.account_id, where)
         proxy_registry.require_proxy(self.account_id, where, self.session_path.name if self.session_path else None)
 
     def _proxy_retry(self, fn, *, what: str = "", policy: RetryPolicy = FULL_RETRY):
-        if proxy_registry.CELLS:
-            self._require_proxy(what or "call")
         tries = policy.tries
         for attempt in range(tries):
+            if proxy_registry.CELLS:
+                self.require_proxy("call")
             try:
                 return self._attempt(fn)
             # ProxyError is not a ConnectionError in curl_cffi (siblings), so this one clause dispatches like two ordered ones.

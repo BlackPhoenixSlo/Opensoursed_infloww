@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import NamedTuple
 
 import dm_rate
+from send_ops import RECONCILED, Reconciled, is_reconciled
 from db.engine import get_session
 from db.models import Fan, SkipList, VaultItem
 from sqlalchemy import select
@@ -136,8 +137,14 @@ def schedule_recheck_rejected_media(account_id, client, media_ids, *, log=log) -
 
 class SendOutcome(NamedTuple):
 
-    result: dict | None
+    result: dict | Reconciled | None
     media_landed: bool
+
+
+def revive_outcome(saved) -> SendOutcome:
+    if is_reconciled(saved):
+        return SendOutcome(RECONCILED, False)
+    return SendOutcome(*(saved or (None, False)))
 
 
 def _price_kw(media: list, price_cents: int) -> dict:

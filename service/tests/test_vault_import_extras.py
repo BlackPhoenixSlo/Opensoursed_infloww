@@ -267,6 +267,25 @@ def case_fan_send_poll_is_bounded():
     assert len(s.reads) == 2
 
 
+def case_cell_fan_send_timeout_is_reported_as_uncertain():
+    from fastapi import HTTPException
+    from unittest.mock import patch
+
+    class Client:
+        def __init__(self, error):
+            self.error = error
+
+        def materialize_via_message(self, *_args, **_kwargs):
+            raise self.error
+
+    with patch.dict(os.environ, {"OI_CELL_MAP": "/nonexistent/placement.json"}):
+        for error in (FuturesTimeout("reply lost"), HTTPException(502, {"op_state": "uncertain"})):
+            item = {"name": "clip.mp4"}
+            stage = vault_upload._Staged(item, of_client.UploadClaim(media={"processId": "p"}), None)
+            vault_upload._send({"fan_id": 42}, stage, Client(error), None)
+            assert item["status"] == "uncertain" and item["message_write_pending"], item
+
+
 def case_fan_refusal_is_recognised():
     class _Resp:
         status_code, text = 400, '{"error":{"message":"Cannot send message to this user"}}'

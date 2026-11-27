@@ -93,7 +93,7 @@ def test_a_platform_without_unread_publishes_nothing():
     class _Fansly(_Client):
         def mark_chat_unread(self, *_a):
             return {"success": True}
-        mark_chat_unread.fansly_unsupported = "no unread flag on Fansly"
+        mark_chat_unread.platform_unsupported = "no unread flag on Fansly"
     pub, raised = _run(server.of_mark_chat_unread, FAN, client=_Fansly())
     assert raised is not None and raised.status_code == 501 and pub == [], (raised, pub)
 

@@ -14,7 +14,7 @@ from pathlib import Path  # noqa: E402
 
 import accounts as account_registry  # noqa: E402
 
-_TMP = tempfile.TemporaryDirectory(prefix="fansly_unsupported_")
+_TMP = tempfile.TemporaryDirectory(prefix="platform_unsupported_")
 account_registry.SESSIONS_DIR = Path(_TMP.name)
 account_registry.ACCOUNTS_DIR = Path(_TMP.name) / "accounts"
 account_registry.ACTIVE_FILE = Path(_TMP.name) / "active.json"
@@ -25,6 +25,8 @@ import server  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Fan, User, UserAccount  # noqa: E402
 from fansly_client import FanslySession  # noqa: E402
+import fansly_shim  # noqa: E402
+import side_effect_gate  # noqa: E402
 from fansly_shim import FanslyShimClient  # noqa: E402
 from side_effect_gate import refusal  # noqa: E402
 
@@ -106,10 +108,50 @@ async def case_of_client_still_reaches_the_writes():
         assert _local == [(_AID, FAN, 1)], _local
 
 
-def case_shim_methods_carry_the_marker():
-    for name in ("pin_message", "unpin_message", "mark_chat_unread"):
-        assert getattr(getattr(FanslyShimClient, name), "fansly_unsupported", None), name
-        assert getattr(_shim, name)(77, FAN) == {"success": True}, name
+def case_fansly_pin_unpin_unread_routes_refuse_even_past_the_gate():
+    _on("fansly")
+    _local.clear()
+    with (patch.object(side_effect_gate, "refusal", return_value=None),
+          patch.object(side_effect_gate, "refuse_if_platform_lacks")):
+        for method, path in (("POST", f"/api/of/v2/messages/77/pin/user/{FAN}"),
+                             ("DELETE", f"/api/of/v2/messages/77/pin/user/{FAN}"),
+                             ("DELETE", f"/api/of/v2/chats/{FAN}/mark-as-read")):
+            r = _call(method, path, _shim)
+            assert r.status_code == 501, (method, path, r.status_code, r.text)
+    assert _local == [], _local
+
+
+def case_returns_that_fakes_a_write_raises_at_import():
+    for marker in (fansly_shim.platform_unsupported, fansly_shim.platform_blocked):
+        for bad in (list, lambda: {"success": False}, {"success": True}, {"success": 1}):
+            try:
+                marker("r", returns=bad)
+            except TypeError:
+                continue
+            raise AssertionError(f"{marker.__name__} accepted returns={bad!r}")
+        for ok in (None, [], {"success": False}, {"list": [], "hasMore": False}):
+            marker("r", returns=ok)(lambda self: None)
+
+
+def case_marker_recorder_records_marked_calls_only_when_set():
+    def calls():
+        _shim.hide_vault_media([1])
+        try:
+            _shim.send_mass_message("hi")
+        except fansly_shim.FanslyBlocked:
+            pass
+
+    calls()
+    seen: list[str] = []
+    token = fansly_shim.marker_calls.set(seen)
+    try:
+        calls()
+    finally:
+        fansly_shim.marker_calls.reset(token)
+    assert seen == ["hide_vault_media", "send_mass_message"], seen
+    calls()
+    assert seen == ["hide_vault_media", "send_mass_message"], seen
+    assert fansly_shim.marker_calls.get() is None
 
 
 

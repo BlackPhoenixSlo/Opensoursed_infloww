@@ -81,8 +81,9 @@ def case_real_schema_is_fully_classified_and_matches_cell_scope_tables():
     assert own_data.unclassified(con) == [], own_data.unclassified(con)
     live = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite%'")}
     con.close()
-    runtime = {"cell_meta", "agency_copy_gate", "agency_copy_sections", "agency_copy_version", "creator_reservations",
-               "send_ops", "cell_holds", "employee_floor", "employee_floor_reports"}
+    runtime = {"cell_meta", "agency_copy_gate", "agency_copy_sections", "agency_copy_missing_owners",
+               "agency_copy_version", "creator_reservations", "creator_handoff_ops", "send_ops", "cell_holds",
+               "employee_floor", "employee_floor_reports"}
     assert set(own_data.TABLES) == live | runtime and live == set(_SCOPE), set(own_data.TABLES) ^ live ^ set(_SCOPE)
     for t, (_, own, other) in own_data.TABLES.items():
         assert not set(own.split()) & set(other.split()), t
@@ -128,7 +129,7 @@ def case_checksum_equal_on_byte_copy():
     copy = path.with_name("copy.sqlite")
     shutil.copyfile(path, copy)
     a = _sums(path)
-    assert set(a) == {A, B, BIG}, a
+    assert set(a) == {f"?:{a}" for a in (A, B, BIG)}, a
     assert a == _sums(copy) and len(set(a.values())) == 3, a
 
 
@@ -142,8 +143,8 @@ def case_own_change_moves_only_that_account():
                       ("UPDATE messages SET automation_kind = 'mass' WHERE account_id = ?", (A,))]:
         _edit(path, sql, *args)
         now = _sums(path)
-        assert now[A] != base[A], sql
-        assert now[B] == base[B] and now[BIG] == base[BIG], sql
+        assert now[f"?:{A}"] != base[f"?:{A}"], sql
+        assert now[f"?:{B}"] == base[f"?:{B}"] and now[f"?:{BIG}"] == base[f"?:{BIG}"], sql
         base = now
 
 
@@ -153,11 +154,11 @@ def case_other_accounts_and_not_own_columns_leave_a_unchanged():
     _edit(path, "UPDATE fans SET notes = 'b changed' WHERE account_id = ?", B)
     _edit(path, "UPDATE skip_list SET reason = 'b changed' WHERE account_id = ?", B)
     mid = _sums(path)
-    assert mid[A] == base[A] and mid[B] != base[B]
+    assert mid[f"?:{A}"] == base[f"?:{A}"] and mid[f"?:{B}"] != base[f"?:{B}"]
     _edit(path, "UPDATE fans SET of_username = 'new', lifetime_spend_cents = 99 WHERE account_id = ?", A)
     _edit(path, "UPDATE messages SET body = 'edited', is_paid = 1 WHERE account_id = ?", A)
     _edit(path, "UPDATE chats SET unread_count = 5 WHERE account_id = ?", A)
-    assert _sums(path)[A] == base[A]
+    assert _sums(path)[f"?:{A}"] == base[f"?:{A}"]
 
 
 def case_pair_row_counts_for_both_sides():
@@ -165,7 +166,7 @@ def case_pair_row_counts_for_both_sides():
     base = _sums(path)
     _edit(path, "UPDATE s4s_requests SET status = 'accepted'")
     now = _sums(path)
-    assert now[A] != base[A] and now[B] != base[B] and now[BIG] == base[BIG]
+    assert now[f"?:{A}"] != base[f"?:{A}"] and now[f"?:{B}"] != base[f"?:{B}"] and now[f"?:{BIG}"] == base[f"?:{BIG}"]
 
 
 def case_one_read_snapshot_ignores_a_concurrent_writer():
@@ -193,7 +194,7 @@ def case_one_read_snapshot_ignores_a_concurrent_writer():
     finally:
         own_data.sqlite3.connect = real
     assert during == before, "a write between table reads leaked into the result"
-    assert _sums(path)[A] != before[A], "the racing write did land"
+    assert _sums(path)[f"?:{A}"] != before[f"?:{A}"], "the racing write did land"
     assert stmts[0] == "BEGIN" and stmts[-1] == "ROLLBACK", (stmts[0], stmts[-1])
     assert stmts.count("BEGIN") == 1 and not any(s.startswith(("INSERT", "UPDATE", "DELETE")) for s in stmts)
 
@@ -203,13 +204,28 @@ def case_big_id_round_trips_as_string_through_cli():
     rc, out, err = _cli("checksum", path)
     assert rc == 0, err
     full = json.loads(out)
-    assert BIG in full and full == _sums(path), out
+    assert f"?:{BIG}" in full and full == _sums(path), out
     assert out == json.dumps(full, sort_keys=True) + "\n"
     rc, out, err = _cli("checksum", path, f"of:{BIG}", A)
     assert rc == 0, err
-    assert json.loads(out) == {f"of:{BIG}": full[BIG], A: full[A]}, out
-    assert own_data.checksum(path, BIG) == full[BIG]
+    assert json.loads(out) == {f"of:{BIG}": full[f"?:{BIG}"], A: full[f"?:{A}"]}, out
+    assert own_data.checksum(path, BIG) == full[f"?:{BIG}"]
     assert _cli("bogus")[0] == 2
+
+
+def case_checksum_uses_platform_from_session_metadata():
+    path = _seeded()
+    sessions = path.parent / "accounts"
+    (sessions / BIG).mkdir(parents=True)
+    (sessions / BIG / "meta.json").write_text(json.dumps({"platform": "fansly"}))
+    (sessions / A).mkdir()
+    (sessions / A / "meta.json").write_text("{invalid")
+    sums = own_data.checksums(path, session_accounts=sessions)
+    rc, out, err = _cli("checksum", path, "--sessions", sessions)
+    assert rc == 0, err
+    assert json.loads(out) == sums
+    assert set(sums) == {f"fansly:{BIG}", f"?:{A}", f"?:{B}"}
+    assert sums[f"fansly:{BIG}"] == own_data.checksum(path, BIG)
 
 
 def case_older_db_missing_tables_and_columns_is_skipped():
@@ -217,7 +233,7 @@ def case_older_db_missing_tables_and_columns_is_skipped():
     _edit(path, "DROP TABLE skip_list")
     _edit(path, "ALTER TABLE fans DROP COLUMN notes")
     _edit(path, "DROP TABLE lists")
-    assert set(_sums(path)) == {A, B, BIG}
+    assert set(_sums(path)) == {f"?:{a}" for a in (A, B, BIG)}
 
 
 def case_own_linkage_agrees_with_cell_scope():

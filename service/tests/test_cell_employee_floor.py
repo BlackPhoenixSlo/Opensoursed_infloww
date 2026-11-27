@@ -8,10 +8,12 @@ import os  # noqa: E402
 import sqlite3  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 _harness.bootstrap()
 
 import agency_copy as ac  # noqa: E402
+import cell_mode  # noqa: E402
 import employees  # noqa: E402
 
 _TMP = Path(tempfile.mkdtemp(prefix="cell-floor-"))
@@ -172,12 +174,9 @@ async def case_data_cell_mirror_miss_writes_nothing() -> None:
     from sqlalchemy import text
     async with get_session() as s:
         before = (await s.execute(text("SELECT COUNT(*) FROM employees"))).scalar()
-    employees.CELL_ROLE = "data"
-    try:
+    with _placement("s02"), patch.dict(os.environ, OI_CELL_ROLE="data"):
         got = await employees.get_or_create_mirror_employee("nobody-chatter", "nobody-owner",
                                                             display_name="X", color=None)
-    finally:
-        employees.CELL_ROLE = None
     assert got is None
     async with get_session() as s:
         assert (await s.execute(text("SELECT COUNT(*) FROM employees"))).scalar() == before
@@ -208,7 +207,8 @@ async def case_backfill_writes_owner_mirror_login_mirror_role_and_presets() -> N
 
 def case_env_unset_installs_nothing() -> None:
     assert "OI_CELL_MAP" not in os.environ
-    assert employees.CELL_ROLE is None
+    with patch.dict(os.environ, OI_CELL_ROLE="data"):
+        assert cell_mode.role() is None
     with contextlib.closing(_db(str(_harness.DB_PATH))) as db:
         names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE name LIKE 'cell_floor_%'"
                                           " OR name LIKE 'employee_floor%' OR name LIKE 'agency_copy_%'")}
@@ -218,6 +218,21 @@ def case_env_unset_installs_nothing() -> None:
 async def case_env_unset_mirror_miss_inserts_as_main() -> None:
     got = await employees.get_or_create_mirror_employee("unset-chatter", "bf-owner", display_name="U", color=None)
     assert isinstance(got, int), got
+
+
+def case_floor_report_skips_write_lock_when_clear() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        path = str(tmp_path / "floor.db")
+        with sqlite3.connect(path) as db:
+            ac._floor_tables(db)
+            db.execute("INSERT INTO employee_floor_reports VALUES ('s02', 1, 10, 'before')")
+            db.execute("CREATE TABLE agency_copy_version (epoch, version, grant_gen)")
+            db.execute("INSERT INTO agency_copy_version VALUES (1, 1, 1)")
+        assert ac.report_max_emp(path, "s02", 99) is None
+        with sqlite3.connect(path) as db:
+            assert db.execute("SELECT max_emp, reported_at FROM employee_floor_reports").fetchall() == [(10, "before")]
 
 
 _harness.run()

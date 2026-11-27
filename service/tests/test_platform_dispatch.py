@@ -7,30 +7,42 @@ _harness.bootstrap()
 
 import asyncio  # noqa: E402
 import contextlib  # noqa: E402
+import json  # noqa: E402
 import logging  # noqa: E402
+import sqlite3  # noqa: E402
+import sys  # noqa: E402
 import tempfile  # noqa: E402
 import types  # noqa: E402
 import uuid  # noqa: E402
 from itertools import count  # noqa: E402
 from pathlib import Path  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 import accounts  # noqa: E402
 import automation_executor  # noqa: E402
+import automation_registry  # noqa: E402
 import client_pool  # noqa: E402
 import fansly_backend  # noqa: E402
 from fansly_revenue import TickResult  # noqa: E402
 import of_ws  # noqa: E402
 import platforms  # noqa: E402
 import purchase_poll  # noqa: E402
+import side_effect_gate  # noqa: E402
 import transaction_ingest  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import Account, User, UserAccount  # noqa: E402
+from db.models import Account, AutomationRun, ScheduledJob, User, UserAccount  # noqa: E402
+from of_client import OFClient  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "proxy-health"))
+import watch as wt  # noqa: E402
 
 http = _harness.make_client()
 import server  # noqa: E402
 
 AID = "acc_dispatch"
-OF_METAS = (None, {"platform": "onlyfans"}, {"platform": "myspace"})
+OF_METAS = (None, {"platform": "onlyfans"}, {"platform": " OnlyFans "})
+UNKNOWN = {"platform": "myspace"}
+UNKNOWN_AID = "acc_unknown"
 
 accounts.get_account = lambda aid: {"id": aid} if aid == AID else None
 
@@ -38,7 +50,7 @@ accounts.get_account = lambda aid: {"id": aid} if aid == AID else None
 async def _owner() -> None:
     async with get_session() as s:
         boss = User(id=uuid.uuid4().hex, username="boss", password="pw")
-        s.add_all([boss, Account(id=AID, nickname=AID)])
+        s.add_all([boss, Account(id=AID, nickname=AID), Account(id=UNKNOWN_AID, nickname=UNKNOWN_AID)])
         await s.flush()
         s.add(UserAccount(user_id=boss.id, account_id=AID))
 
@@ -100,6 +112,65 @@ def case_fansly_client_loads_come_from_the_backend_module():
         assert server._load_client(AID) is shim
         assert automation_executor._make_client(AID) is shim
     assert asked == [AID, AID], asked
+
+
+@contextlib.contextmanager
+def _unknown_account():
+    with _meta(UNKNOWN), _patched(fansly_backend, get_client=_no_backend_client), \
+            patch.object(OFClient, "from_account", side_effect=AssertionError("OnlyFans client built")) as build:
+        yield
+    build.assert_not_called()
+
+
+def case_unknown_platform_client_loads_refuse_and_build_nothing():
+    with _unknown_account():
+        for load in (client_pool.get, automation_executor._make_client):
+            try:
+                load(AID)
+            except platforms.UnknownPlatformKey as e:
+                assert e.reason == "platform_unknown:myspace", (load, e.reason)
+            else:
+                raise AssertionError(f"{load} built a client for an Unknown platform account")
+    assert AID not in client_pool._POOL
+
+
+def case_unknown_platform_route_answers_501():
+    _login()
+    with _unknown_account():
+        r = http.delete("/api/of/v2/messages/900544249226047488", headers={"X-Account-Id": AID})
+    assert r.status_code == 501 and r.json()["detail"] == "platform_unknown:myspace", (r.status_code, r.text)
+
+
+async def case_unknown_platform_job_is_skipped_without_running_the_kind():
+    ran: list[str] = []
+
+    @automation_registry.register("unknown_platform_probe")
+    async def _probe(aid, payload, *, run_id):
+        ran.append(aid)
+        return {}
+
+    with _unknown_account():
+        job_id = await automation_executor.enqueue_job(UNKNOWN_AID, "unknown_platform_probe")
+        result = await automation_executor.run_once(UNKNOWN_AID, "unknown_platform_probe")
+    assert result == {"status": "skipped", "reason": "platform_unknown:myspace",
+                      "run_id": result["run_id"], "job_id": job_id}, result
+    assert ran == [], ran
+    async with get_session() as s:
+        run = await s.get(AutomationRun, result["run_id"])
+        job = await s.get(ScheduledJob, job_id)
+    assert (run.status, json.loads(run.stats_json)["reason"]) == ("skipped", "platform_unknown:myspace"), run.stats_json
+    assert job.status == "done", job.status
+    ro = sqlite3.connect(f"file:{_harness.DB_PATH}?mode=ro", uri=True)
+    try:
+        sql, params = wt.WATCH_SQL["platform_refusals"]
+        rows = ro.execute(sql, {**params, "since": "-60 minutes"}).fetchall()
+    finally:
+        ro.close()
+    assert (wt.PLATFORM_UNKNOWN, wt.PLATFORM_LACKS) == (side_effect_gate.PLATFORM_UNKNOWN_PREFIX,
+                                                        side_effect_gate.PLATFORM_LACKS_PREFIX)
+    assert rows == [("platform_unknown:myspace", UNKNOWN_AID, 1)], rows
+    verdict = wt.WATCH_CHECKS["platform_refusals"].fn(types.SimpleNamespace(rows=lambda key: rows))
+    assert verdict == ("alert", f"platform_unknown 1 (myspace): {UNKNOWN_AID}, 0 platform_lacks"), verdict
 
 
 class _Stop(asyncio.CancelledError):
@@ -319,7 +390,6 @@ import shared_refresher  # noqa: E402
 import unread_total  # noqa: E402
 import view_lease  # noqa: E402
 from automations import auto_follow, scrape_chats  # noqa: E402
-from db.models import ScheduledJob  # noqa: E402
 
 Lack = platforms.Lack
 RUN_AT = "2030-01-01T00:00:00Z"
@@ -365,6 +435,7 @@ def _one_flag_platform(key: str, lacks, client: _ProbeClient, *, free_follow: bo
     mod = types.ModuleType(f"{key}_backend")
     mod.APIError = type("APIError", (Exception,), {})
     mod.check_sendable = lambda **kw: None
+    mod.Shim = type("Shim", (), {"send_refusal": staticmethod(lambda asked: None)})
     mod.get_client = lambda aid: client
     mod.drop = lambda aid=None: None
     return platforms.Platform(key, key.title(), f"{key}_session.json", mod, frozenset(lacks),
@@ -474,6 +545,8 @@ PROBES = {
     Lack.NEAR_SCHEDULE_MEDIA: _near_schedule_media_on,
     Lack.SERVER_SCHEDULE: _server_schedule_on,
 }
+UNCONSUMED = frozenset({Lack.TIP_LEDGER, Lack.PURCHASE_LINKAGE, Lack.RENEWAL_STATE,
+                        Lack.LAPSE_DETECTION, Lack.RETURN_DETECTION})
 
 
 async def _probe_all(client: _ProbeClient) -> dict:
@@ -481,7 +554,7 @@ async def _probe_all(client: _ProbeClient) -> dict:
 
 
 async def case_onlyfans_keeps_every_policy_and_fansly_lacks_every_one():
-    assert set(PROBES) == set(Lack)
+    assert set(PROBES) == set(Lack) - UNCONSUMED
     client = _ProbeClient()
     with _patched(client_pool, get=lambda aid: client), \
             _patched(fansly_backend, get_client=lambda aid: client):
@@ -553,7 +626,7 @@ async def case_long_schedule_checks_the_fansly_send_before_enqueue():
         r = _post("/api/of/v2/chats/7/messages/scheduled", body)
     assert r.status_code == 200, (r.status_code, r.text)
     assert order == ["check", "enqueue"], order
-    assert checked == [{"media_files": [11], "price": 5, "previews": [11], "locked_text": False}], checked
+    assert checked == [{"media_files": [11], "price": 5, "previews": [11]}], checked
 
     before = await _scheduled_rows()
     with _fansly():

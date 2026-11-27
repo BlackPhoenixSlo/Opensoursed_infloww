@@ -1,0 +1,204 @@
+# Phase 02b — Lists
+
+**Objective.** On Fansly, every list-backed lane (smart-list sync, priority_mass, auto_follow, managed promos, buyer-list cleanup, block) either runs on a Complete read with Grade-backed writes or stops as a Platform refusal with zero writes, and only then are `list_users_in` and `rename_list` built and `delete_list` / `block_user` made Live-check methods (`unblock_user` stays Blocked).
+
+## Problem Statement
+On Fansly a Creator's custom lists are read through one 50-row page with no reliable "more" signal, and today the Shim refuses `list_users_in` outright. That refusal is the only thing keeping several lanes safe: once the method is lifted, a smart-list sync would push money or renewal rules the Platform cannot compute, add before it removes and overflow a list, a priority_mass run would freeze half an audience and send to it, auto_follow would quietly treat "no expired fans" as success, a buyer-list cleanup would show "0 fans affected" for a list it never counted, and a managed promo would create a giftcode of a type the owner never chose. The subscribers roster treats every non-active status as expired and pages by offset, so a short roster reads as complete. Block and list delete are Fan-facing and irreversible enough that a wrong audience hurts a real Fan. Nothing in the verdict table or parity doc says which of these is same, gated or a no-op.
+
+## Solution
+Gates land first, then the lift, in one PR. Each list-backed lane asks one question before it claims, groups or writes: is this audience a Complete read, and can this Platform compute these rules? If not, the run stops as a stored `skipped` with a `platform_lacks:` reason and a route answers 501, with the exact provider-call and row deltas proven against the Stateful fake and an OnlyFans control showing nothing changed there. Smart-list sync on Fansly checks capacity before it creates, removes before it adds, spends only slots its confirmed removals freed, and never exceeds 49 members. priority_mass on Fansly refuses at admission, on resume and again in every runner leg unless a `fan=` grant names the Proof fan and the frozen post-exclusion, post-cap recipients are exactly that fan, for every branch including "fans". Every other `list_member_ids` caller that keeps a partial read (the autoreply folder) refuses an incomplete Fansly read. After the gates, `list_users_in` and `rename_list` are built on the observed endpoints, and `delete_list` (grant `list=`) and `block_user` (grant `fan=`) run only under a default-off Live-check grant naming the target; `unblock_user` stays Blocked until a populated `/ignore` fixture exists. The subscribers roster tells active from expired by status and flags itself incomplete when the count does not match, so every consumer keeps its old snapshot instead of trusting a partial one.
+
+## User Stories
+1. As the owner, I want every list-backed lane gated before `list_users_in` is built, so that lifting the read can never turn into a partial-audience write.
+2. As a developer, I want the Shim to declare `platform_list_page = 50`, so that the Relay knows this Platform reads a list in one fixed page without a key comparison.
+3. As a developer, I want `list_users_in` on Fansly to call `GET /lists/itemsnew?listId=<id>&limit=50&sortMode=3` once and return `{"list":[{"id":str}],"hasMore":len==50}`, so that the Relay gets the OnlyFans list shape from the observed endpoint.
+4. As a developer, I want `list_users_in` to refuse built-in list keys, `limit≠50`, `offset>0`, any `query`, any row whose `type≠1` and any row whose `id` is not a numeric string, so that no caller reads a page the Platform was never observed to serve.
+5. As a developer, I want a list read on Fansly to be complete only when `hasMore` is false and every row yielded a valid id, and never fetch a second page, so that a 50-row read or a dropped malformed member can't pass as the whole list.
+6. As a developer, I want `_ResumableLists` to forward `platform_list_page` from the wrapped client, so that the resumable wrapper doesn't hide the page limit.
+7. As the owner, I want OnlyFans list paging (100-row pages, tail-repeat and usersCount completion) unchanged, so that the paying path is untouched.
+8. As a developer, I want an unknown or gone Fansly list (absent from `GET /lists/account`) to surface as Blocked, so that a missing list never reads as an empty one.
+9. As a developer, I want one typed `AudienceRefusal(reason)` raised for include and exclude audiences alike, so that every caller refuses on the same exception and stores its reason.
+10. As a developer, I want a pure `audience_refusal(account_id, user_lists, excluded)` that returns `platform_lacks:following` for the "following" broadcast list on a Platform that lacks it, so that admission and the runner share one check.
+11. As a developer, I want `rename_list` on Fansly to `POST /lists/edit {id, accountId, pos:null, type:1, label}` and raise if the echoed label differs, so that a rename that didn't take never reads as ok.
+12. As a developer, I want `rename_list` built without a Live check, so that an M-observed Reversible write merges as ADR-0069 allows.
+13. As a developer, I want the smart-list sync preflight over `SYNC_METHODS` to run before the stale-syncing recovery and the tombstone path, so that a refused Platform never flips a row to error or deletes a list.
+14. As a developer, I want the same `SYNC_METHODS` preflight in the smart-list create, update and activate routes, so that a route refuses with 501 before it stores anything.
+15. As the owner, I want a pure `rules_refusal(platform, rules)` that maps each rule field to the Lack that blocks it, so that a smart list never syncs a rule the Platform can't compute.
+16. As the owner, I want money fields (`_LEDGER_MONEY`, lifetime_spend, recent_spend, last_purchase_at, idle_days) refused as `platform_lacks:tip_ledger`, `renew` as `platform_lacks:renewal_state` and `resubscribed_at` as `platform_lacks:return_detection`, so that each refusal names the real missing fact.
+17. As the owner, I want `tag`, `last_active_days` and `last_message_sent_at` rules allowed on Fansly, so that chat-based smart lists keep working.
+18. As a developer, I want `rules_refusal` to run in create, update, activate, preview, `/resolve` and the sync runner, so that no entry point skips it.
+19. As a developer, I want a sync run where every row is refused to store `skipped` with `platform_lacks:<lack>`, so that run_decide reports it as a Platform refusal, not an error.
+20. As a developer, I want a mixed run to store `ok` with `stats_json.reason="partial:platform_lacks:<lack>"` and `refused_rows`, leaving refused rows untouched, so that good rows still sync and the gap stays visible.
+21. As a developer, I want sync on Fansly to remove before it adds, check each remove's echoed command, and add only into slots that confirmed removals freed (adds ≤ 49 − (current − confirmed removes)), so that a failed removal can never push the list to 50.
+22. As a developer, I want a row whose target exceeds 49 to error before create, rename or any write, so that capacity (≤49 members) holds from the first request.
+23. As a developer, I want an interrupted or partly failed remove-first sync to resume without double writes, so that a crash or a failed remove between removes and adds leaves a ≤49 list the next sync still reads.
+24. As the owner, I want smart-list delete with `delete_of_list=true` on Fansly to refuse 501 before the DELETING tombstone unless the grant names the list, so that no list is deleted without a Live-check grant.
+25. As a developer, I want BigInteger list ids unchanged, so that Fansly ids keep fitting the existing columns.
+26. As the owner, I want `delete_list` (`POST /lists/remove {listId}` → null) to be a Live-check method with grant `<aid>:delete_list:list=<id>`, so that a list delete happens only on a list the owner named.
+27. As the owner, I want `delete_list` allowed only when the list's Complete read holds no member outside the `fan=` targets granted on that Creator (empty or the Proof fan only), so that the Live check can't remove a list that holds real Fans.
+28. As a developer, I want `live_check` for `delete_list` at the relay route and the smart-list tombstone, so that every caller is gated before any request.
+29. As the owner, I want `block_user` to `POST /account/ignore {ignoredId, ignoreFlags: 2}` under grant `<aid>:block_user:fan=<id>`, and `unblock_user` left Blocked until a populated `/ignore` read is captured, so that no code ships that can only refuse itself.
+30. As a developer, I want block to require a known-state precondition from `GET /ignore?noAggregation=true`, so that a write never runs against an unknown block state.
+31. As a developer, I want `live_check` for block at the route before any request, so that no grant means zero requests.
+32. As a chatter, I want the app to keep block in lacks, so that no UI offers block on Fansly in this Phase.
+33. As the owner, I want managed promos on Fansly to refuse `platform_lacks:promotion_type` with 501 in both manual create routes before `reserve_manual`, and in `promo_create_guard.reserve` as a backstop that `_refused` maps to 501 (not its default 409), so that no giftcode of an unchosen type is created.
+34. As a developer, I want the Shim's `create_promo` to raise on `type≠new`, on `finish_days` and on `subscribe_counts==0`, so that a direct caller can't create a promo with dropped fields.
+35. As the owner, I want auto_follow runs with the `expired` source to refuse `platform_lacks:recent_expired_subscribers` before pool resolution, so that "no expired fans" is never treated as success.
+36. As a developer, I want auto_follow's `_resolve_smart_list` to call `rules_refusal` itself and `_merge_pools` to re-raise that refusal instead of skipping the source, so that a refused saved rule stops the run as `skipped` and never lets a mixed pool (e.g. with `all_stored`) write.
+37. As the owner, I want priority_mass admission and `/resume` on Fansly to run `audience_refusal`, `send_refusal` and grant presence (`live_check_targets(aid,"priority_mass")` non-empty) for every branch before the campaign row, job or `ensure_leg`, so that a refused run creates zero rows or legs and answers 501.
+38. As a developer, I want the priority_mass runner (queued, resumed and RUNNING legs) to repeat those checks before lease, resolution, stale-claim repair and claim, so that a grant revoked after admission still stops the run.
+39. As the owner, I want `_freeze` to call exact `live_check(aid,"priority_mass",ListAudience(list_id, claimed, complete))` on the post-exclusion, post-cap `claimed` set before RUNNING and recipient rows, and every RUNNING leg to re-check it on the persisted recipient fan ids before the stale-claim update, so that any Fansly priority_mass send reaches only the granted Proof fan even with a valid grant and wrong persisted recipients.
+40. As a developer, I want a runner refusal to persist the job as skipped with no campaign mutation, so that the run row isn't rewritten by a refusal.
+41. As the owner, I want priority_mass to "fans" on Fansly to need the same `fan=` grant as a custom list, so that no ungranted Fansly fan-out exists before the owner's proof (the ungranted lift is a follow-up PR).
+42. As a developer, I want the Shim's `subscribers()` to read active as status==3 and expired as status==5, and treat any other status as incomplete, so that a pending or unknown status never lands in the expired roster.
+43. As a developer, I want the active roster complete only when distinct valid active ids == `stats.totalActive`, and expired always incomplete, so that a short read can't pass as the whole roster.
+44. As a developer, I want `subscribers()` to answer `hasMore = incomplete or offset + len(page) < len(fans)`, so that `_refresh_roster` keeps the old snapshot on an incomplete roster and still pages a complete multi-page one.
+45. As a developer, I want every roster consumer, including the online adapter, to check the flag itself, and `nudge_online` to turn the online adapter's refusal into a stored `skipped` / `platform_lacks:subscribers:incomplete` before any `_upsert_last_seen` or enqueue, so that `iter_online_subscribers` can't drop `hasMore` and serve a partial roster.
+46. As a developer, I want the unread `subscribedOnData.renew` key dropped and raw autoRenew kept in the `fanslySubscription` passthrough, so that no consumer reads a renewal fact the Platform doesn't give.
+47. As the owner, I want buyer-list cleanup with a missing `usersCount` to report None and `fans_affected` "unknown", so that an uncounted list never shows 0.
+48. As a developer, I want the Capability scanner to see `_platform_call(...)` and direct `c.create_promo`, so that the counts include every caller.
+49. As a developer, I want the Capability counts to move `list_users_in` and `rename_list` to built, `delete_list`, `block_user` to Live-check methods and `priority_mass` to a Live-check lane (count 3), with `unblock_user` still Blocked, so that the parity doc grades match the code.
+50. As a developer, I want parity rows for the list read, rename, delete, block, promo and subscribers sections to carry Provenance and Coverage, so that each claim names its evidence.
+51. As a developer, I want Verdict rows: sync chat rules `same`, money/sub `gated:<lack>`, mixed `partial`, tombstone `gated:delete_list`; priority_mass every Fansly branch without a grant `gated:priority_mass`, following `gated:following`, so that the verdict table records every lane decision.
+52. As a developer, I want KIND_VERDICTS and lift-table rows to land in the same PR as the lanes they describe, so that the drift test can't go stale.
+53. As a developer, I want each refusal proven with run_once tests showing persisted skipped/platform_lacks and exact provider-call and row deltas, plus an OnlyFans control, so that the proof bar of ticket 11 holds.
+54. As a developer, I want no grant to mean zero requests, and a grant with a denied audience to mean membership GETs only and zero writes, so that the request rule is proven per lane.
+55. As the owner, I want the Live checks for delete_list, block and priority_mass run on a local relay after merge, so that owner checks never block a merge.
+56. As a developer, I want the autoreply folder reader to return None (reply to nobody, `folder_error="platform_lacks:list_users_in:incomplete"`) when a client with `platform_list_page` reads a folder incomplete, so that the lift can't open partial-audience autoreplies; OnlyFans keeps its backstop behaviour.
+57. As a developer, I want every `list_member_ids` / `list_users_in` caller listed in the PR with its Fansly outcome (refuses on incomplete, or unreachable until its Phase), so that the lift opens no lane nobody gated.
+
+## Implementation Decisions
+- **Owns.** Fansly Shim (list read/rename/delete/block, subscribers, promo), Platform registry (one new Lack), `side_effect_gate` (`priority_mass` added to 02a's `LIVE_CHECK_LANES`) and its callers, audiences, autoreply folder reader, nudge_online, of_paging, smart_list_rules, smart_list_sync, smart_lists_api, priority_mass and priority_mass_api, auto_follow, promo_create_guard and promotions_api, server list/block routes, the Capability scanner test, KIND_VERDICTS rows, lift table, parity doc rows and the verdict table.
+- **Interfaces.**
+  - Fansly Shim: class attribute `platform_list_page = 50`. Built `list_users_in(list_id, limit=50, offset=0)` and `rename_list(list_id, label)`. Live-check-bound `delete_list(list_id)`, `block_user(user_id)`; `unblock_user` keeps its `platform_blocked` marker. `subscribers()` returns `hasMore` as incomplete OR offset paging not exhausted. `iter_online_subscribers` raises the Shim's refusal when the active roster is incomplete. `remove_user_from_list` raises unless the echo holds the type-2 command for that id. `create_promo` rejects unsupported kwargs instead of swallowing them.
+  - side_effect_gate: 02a's grant API unchanged (`ListAudience`, `live_check_targets`, `live_check`, `is_live_check_name`); 02b only adds `"priority_mass"` to `LIVE_CHECK_LANES`. delete_list callers pass `ListAudience(list_id, members, complete)` under a `list=` grant; block passes `frozenset({fan})`; priority_mass passes `ListAudience(<include list id or None>, claimed, complete)` under a `fan=` grant.
+  - audiences: `AudienceRefusal(AudienceUnknown)` with `.reason`; pure `audience_refusal(account_id, user_lists, excluded) -> str | None`. `roster_audience_blocking` raises `AudienceRefusal` for Platform causes only; its OnlyFans backstop still returns None.
+  - of_paging: `list_member_ids` honours `platform_list_page` (one page, complete iff hasMore false and every row yielded a valid int id, no `get_list` size check, `_ResumableLists` forwards the attribute).
+  - smart_list_rules: pure `rules_refusal(platform, rules) -> str | None` returning the first `platform_lacks:<lack>`.
+  - smart_list_sync: `SYNC_METHODS` preflight first, per-row `rules_refusal`; when `platform_list_page` is set: capacity before create/rename, remove-first, adds bounded by confirmed removals, one add command per POST.
+  - Platform registry: `Lack.PROMOTION_TYPE` added beside the five 02a members.
+- **Schema.** None — reasons live in existing `status`/`stats_json` columns; no migration.
+- **Contracts.**
+  - Refusal reasons: `platform_lacks:list_users_in:incomplete`, `platform_lacks:list_users_in:unknown_list`, `platform_lacks:subscribers:incomplete`, `platform_lacks:subscribers:paid_start`, `platform_lacks:following`, `platform_lacks:tip_ledger`, `platform_lacks:renewal_state`, `platform_lacks:return_detection`, `platform_lacks:lapse_detection`, `platform_lacks:promotion_type`, `platform_lacks:recent_expired_subscribers`, `platform_lacks:delete_list`, `platform_lacks:block_user`, `platform_lacks:priority_mass`.
+  - Mixed sync: `{"status":"ok","stats_json":{"reason":"partial:platform_lacks:<lack>","refused_rows":[<smart list id>...]}}`.
+  - Routes refuse with 501 through `raise_if_refused`; stored runs read `skipped` and run_decide maps them to ("skipped","done",reason).
+  - Live-check grants (02a grammar): `<aid>:delete_list:list=<id>`, `<aid>:block_user:fan=<id>`, `<aid>:priority_mass:fan=<id>`, all from 02a's default-off `PLATFORM_LIVE_CHECK`.
+  - Buyer-list cleanup report: per-list `usersCount: int | None`, total `fans_affected: int | "unknown"`.
+- **Order inside the PR.** Commit 1 gates (side_effect_gate list-bound/presence/lanes, AudienceRefusal, audience_refusal, rules_refusal, sync preflight and capacity, priority_mass admission, resume and runner, auto_follow expired source and smart-list refusal, autoreply folder refusal, nudge_online refusal, promo_type gate). Commit 2 Live-check wiring for delete_list and block. Commit 3 the Shim lift of list_users_in, rename_list and `platform_list_page`. Commit 4 05 C roster completeness and L4, L5 cleanup, S8 scanner, parity/lift/verdict rows. The PR is the only one editing platforms.py, server.py or fansly_shim.py while it is open; mirror log read before Shim edits, sha sent after merge.
+- **Gate placement.** Every caller orders: grant presence first (`live_check_targets` non-empty, zero requests without a grant), then the membership GET, then the exact `live_check` with the Complete read as audience, then the write.
+- **Grant targets.** Only `delete_list` is list-bound (`list=`, 01 Answer item 4: the owner names the list). priority_mass and block are fan-bound (`fan=`): the exact check compares the Complete audience with the named Proof fan, so a one-member list holding a real Fan refuses. For delete_list, `live_check` also requires the Complete read's members ⊆ the union of `fan=` targets granted on that aid (any method), so an empty disposable list or one holding only the Proof fan passes and any real Fan refuses.
+ASSUMPTION: delete_list member pin = members ⊆ granted `fan=` targets (coordinator D9, rung 4: binds member identity without a second grammar); overturned if the owner wants a combined `list=<id>,fan=<id>` grant.
+- **priority_mass on Fansly (D3).** Every branch ("fans", custom include, with or without exclusions) needs a `fan=` grant; the exact check passes only when `claimed` (post-exclusion, post-cap) is Complete and equals `{fan}`. Without it the run refuses `platform_lacks:priority_mass`. "following" refuses first as `platform_lacks:following`. OnlyFans is unchanged. Lifting the ungranted "fans" branch is a follow-up PR after the owner's pass.
+- **AudienceRefusal** subclasses AudienceUnknown so existing catchers already refuse with zero sends. It is raised when the client has `platform_list_page` or a client error carries a `reason` starting with `platform_lacks:`; plain OnlyFans crawl failures keep returning None and `audience_unresolved`.
+ASSUMPTION: AudienceRefusal subclasses AudienceUnknown (rung 3: existing catchers); overturned if a catcher must tell the two apart and cannot via isinstance order.
+- **rules_refusal** is an allow-list keyed on the Platform's `lacks`. tag, last_active_days and last_message_sent_at pass. Fields the ticket did not name: `status` (`expired` = a fan seen dropping off the roster) → `lapse_detection`; `expires_at` (Shim `endsAt`, the scheduled end, which renewal moves and paid renewal is unobserved) → `renewal_state`; `sub_start` (`createdAt`, observed on a gift row only; paid start is 06 P2a) → `platform_lacks:subscribers:paid_start`, a KIND_VERDICTS `gated:` reason with its own lift-table row. On OnlyFans `lacks` is empty, so it always returns None.
+ASSUMPTION: unlisted subscription fields refuse (rung 4: refuse over allow), status/expires_at under the Lack their value depends on and sub_start under its own branch reason (rung 5: no new Lack); overturned if 02c or 06 P2a shows Fansly supplies them.
+- **Remove-first and capacity** key on `platform_list_page`, with capacity = page − 1 (49). Target > 49 errors before create or rename. Removes run first, each echo-checked; adds are capped at 49 − (current − confirmed removes) and sent one command per POST (only the single-command body is observed, `RECIPES.md:490-503`). A failed remove shrinks the add budget and leaves the row `pending`.
+ASSUMPTION: capacity derives from page size rather than its own attribute (rung 5); overturned if a Platform's list cap and page differ.
+ASSUMPTION: one add command per POST on Fansly (rung 4, multi-command body unobserved); overturned by a captured multi-command echo.
+- **Gone list in sync on Fansly**: the row stays `error`, with no recreate, because recreate would be an unproven create on a list the owner may have deleted on purpose.
+ASSUMPTION: no recreate on Fansly (rung 4); overturned by an owner request to auto-recreate.
+- **SYNC_METHODS** = list_users_in, add_users_to_lists, remove_user_from_list, create_list. It excludes delete_list, which keeps its own live_check at the tombstone.
+ASSUMPTION: delete_list kept out of SYNC_METHODS (rung 5) so a missing delete grant doesn't block ordinary sync; overturned if ticket 01 S2 is read to include it.
+- **priority_mass admission and `/resume`** on Fansly require `live_check_targets(aid,"priority_mass")` to be non-empty (02a's presence probe, zero requests).
+- **priority_mass runner refusal** leaves the run row's status as is (RESOLVING or RUNNING) and marks only the job skipped, per "no campaign mutation" (04 item 6). A run left live shows as stalled; `/resume` refuses it 501 before `ensure_leg`, so it cannot send.
+ASSUMPTION: run row status untouched on runner refusal (rung 2 text, reading ambiguous); overturned if the UI needs a terminal run status.
+- **unblock_user stays Blocked (D3).** No unblock code is built in 02b. The block Live check runs: block via Relay → owner captures the populated `/ignore` read → owner undoes in Fansly's UI and the fan re-follows. A follow-up PR adds that fixture, builds unblock and marks it `platform_live_check`.
+- **iter_online_subscribers** raises on an incomplete roster rather than returning a partial list; `nudge_online` catches it before any state write and returns the skipped reason (exceptions in a kind store `error`, only a returned `platform_lacks:` reason stores `skipped`, `run_decide.py:144`).
+ASSUMPTION: raise over empty (rung 4: loud over silent); overturned if 02c rebuilds online presence another way.
+- **List-read caller inventory.** `audience_include` autofence exclude lists, `audiences` refresh and smart_list_sync already refuse a truncated read; autofence's broadcast lane is 02f's and stays behind the mass-write gate; the autoreply folder reader is the one keep-partial branch and refuses on `platform_list_page` clients.
+ASSUMPTION: autofence is unreachable on Fansly until 02f lifts broadcast sends (rung 1 to be confirmed by the inventory test); overturned if the inventory finds a Fansly path, then it gets the same capacity rule.
+- **promotion_type gate** goes in both manual create routes (promotions_api create and the raw `/api/of/v2/promotions`) as a 501 before `reserve_manual`, and at the start of `promo_create_guard.reserve` as a backstop returning `Refused("platform_lacks:promotion_type")`, which `_refused` maps to 501 instead of its default 409; promo_reactivate's earlier writes and its refusal reason stay 02c's.
+02b adds `Lack.PROMOTION_TYPE`; 02a ships only the five members named in its Interfaces.
+- **Mixed sync verdict** is a gated row asserting the `partial:` stats reason.
+ASSUMPTION: "partial" encoded as gated:<lack> plus the stats assertion (rung 5) since the verdict grammar has no partial form; overturned if 12 adds one.
+
+## Testing Decisions
+Three seams, all existing:
+1. **KIND_VERDICTS run_once harness** (02a's `test_platform_kind_verdicts`): real Fansly Shim over the Stateful fake, through `automation_executor.run_once` on queued jobs (never the plugin `run()` directly, as today's `test_smart_list_sync` does), with an OnlyFans control per row. It drives smart_list_sync, priority_mass (queued, resumed, RUNNING legs), auto_follow (refused saved rule beside `all_stored`), autoreply (incomplete folder) and nudge_online (incomplete roster), and asserts persisted status/reason, terminal job state, exact request bodies and business-row deltas. Cases: denial, mixed sync, failed removal at 49, interruption after removes, revoked grant, valid grant with wrong persisted recipients, resumed leg. It covers the request rule (no grant → zero requests; grant + denied audience → membership GETs only). promo_reactivate asserts only zero promo creates; buyer-list cleanup is a CLI, so its `report()` / `delete()` are called directly.
+2. **Relay route tests** in the `test_fansly_unsupported_writes` style: smart_lists_api create/update/activate/preview/resolve/delete, priority_mass_api create/resume, both promo create routes (promotions_api and raw), server list rename/delete/block/unblock/members. Each asserts 501 + reason + zero rows on Fansly and today's answer on OnlyFans.
+3. **Shim shape tests** on `_source` fixtures (`test_shim_shapes`, `test_har_replay`): list_users_in shape and refusals incl. a malformed id row, rename echo mismatch, remove echo check, `/lists/remove` null, `/account/ignore` flags, subscribers status split, completeness and offset paging over a multi-page complete roster, dropped renew key, create_promo raises. Stateful-fake read-back, repeat and undo for rename and list membership.
+Pure tables for `audience_refusal`, `rules_refusal` and the 02a grant API over 02b's audiences (`list=` delete, `fan=` block and priority_mass, a one-member list holding a non-Proof fan refusing priority_mass) sit beside them in the smart-list rule, audience and 02a Live-check tests; malformed membership (Proof fan + an unreadable id) must refuse delete authorization. The Capability test (`test_platform_capability`, `test_fansly_capability`) and lift-table drift test (`fansly/test_lift_table`) gate counts and rows.
+Prior art: `test_fansly_automation_gates`, `test_fansly_unsupported_writes`, `test_smart_list_sync`, `test_priority_mass`, `test_of_paging`, `test_promo_create_guard`, `fansly/test_shim_shapes`.
+
+## Acceptance
+```sh
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+for t in service/tests/test_platform_kind_verdicts.py service/tests/test_live_check.py \
+         service/tests/test_autoreply.py service/tests/test_nudge_online.py service/tests/test_fansly_automation_gates.py \
+         service/tests/test_fansly_unsupported_writes.py service/tests/test_platform_capability.py \
+         service/tests/test_smart_list_sync.py service/tests/test_smart_lists.py service/tests/test_smart_list_rules.py \
+         service/tests/test_priority_mass.py service/tests/test_auto_follow.py \
+         service/tests/test_of_paging.py service/tests/test_promotions.py service/tests/test_promo_create_guard.py \
+         fansly/test_shim_shapes.py fansly/test_har_replay.py fansly/test_fansly_capability.py fansly/test_lift_table.py; do
+  nice -n 10 venv/bin/python "$t" || exit 1
+done
+grep -q 'platform_list_page = 50' fansly/fansly_shim.py
+nice -n 10 venv/bin/python -c "import sys; sys.path.insert(0,'fansly'); import fansly_shim as s; assert not {'list_users_in','rename_list'} & set(s.UNBUILT), s.UNBUILT.keys()"
+grep -q 'class AudienceRefusal(AudienceUnknown)' service/audiences.py
+grep -q 'def rules_refusal' service/smart_list_rules.py
+grep -q 'PROMOTION_TYPE' service/platforms.py
+grep -q 'LIVE_CHECK_LANES.*priority_mass' service/side_effect_gate.py
+nice -n 10 venv/bin/python scripts/comment_budget.py --check
+test "$(nice -n 10 venv/bin/alembic -c service/db/migrations/alembic.ini heads | grep -c head)" = 1
+nice -n 10 scripts/run-tests.sh
+(cd app && nice -n 10 pnpm test:run)
+# manual: on a local relay, PLATFORM_LIVE_CHECK=<aid>:delete_list:list=<id>, delete a list holding only the Proof fan; confirm gone in Fansly.
+# manual: PLATFORM_LIVE_CHECK=<aid>:block_user:fan=<proof fan id>, block the Proof fan via Relay; confirm in Fansly; capture the populated /ignore read; undo in Fansly's UI; fan re-follows.
+# manual: PLATFORM_LIVE_CHECK=<aid>:priority_mass:fan=<proof fan id>, run priority_mass to a custom list holding only the Proof fan; confirm one message.
+```
+
+## Depends on
+- **02a** — `side_effect_gate.live_check` and default-off `PLATFORM_LIVE_CHECK`; `platform_live_check`, `platform_unsupported`, `platform_blocked` markers; shared `send_refusal`; Shim validate-before-group; the KIND_VERDICTS harness and Stateful fake; Capability counts and the parity grade column; the Lack members TIP_LEDGER, PURCHASE_LINKAGE, RENEWAL_STATE, LAPSE_DETECTION, RETURN_DETECTION; WATCH checks and the lift-table drift test; the grant API `live_check_targets`, `live_check`, `ListAudience`, `is_live_check_name`, `LIVE_CHECK_LANES`. 02b changes none of it beyond adding `priority_mass` to `LIVE_CHECK_LANES`.
+- Linear PR order (D8): 02a-1 → 02a-2 → **02b** → 02c → 02d → 02e → 02f → 02h → 02g.
+
+## Out of Scope
+- 01 S6 — 02a's.
+- `search_users`, `recent_expired_subscribers` and locked text — stay Blocked as decided; 02b only refuses their callers.
+- Broadcast mass lanes — ticket 14, Phase 02f.
+- Lifecycle sweeps (05 A) and the promo_reactivate refusal reason (03) — Phase 02c.
+- App UI and a block toggle — UI PRs are 02d, 02e, 02g; the app keeps block in lacks.
+- Collections route limit (members route default 20 ≤50) — unchanged; the Shim refuses limit≠50, so the route 501s on Fansly.
+- P2c empty-roster fix — not in this Phase's tickets.
+- `unblock_user` build and Live check — follow-up PR after a populated `/ignore` capture (D3).
+- Ungranted priority_mass "fans" on Fansly — follow-up lift PR after the owner's pass (D3).
+- Migrations — no schema change needed.
+- Slop runs — 11 rules: no slop for 02b.
+- Deploy — only after 02h; Live checks run on a local relay.
+
+## Further Notes
+ASSUMPTION: a list page under 50 rows is complete (map Assumption, rung 2); overturned by a capture showing a short page with more rows.
+ASSUMPTION: `/lists/account` returns every list in one response, so absence = unknown list (map Assumption, rung 2); overturned by a paged capture.
+ASSUMPTION: `stats.totalActive` counts the same rows `subscribers()` returns (map Assumption, rung 2); overturned if counts disagree on a known-complete roster. A paid multi-tier roster where it counts subscriptions, not distinct fans, makes distinct ids < total and fails closed (incomplete).
+ASSUMPTION: block's known-state precondition accepts only the observed empty `/ignore` body (rung 4); overturned by a populated fixture.
+
+## Review
+Reviewer: codex (blind + draft), 2026-11-27
+- Blind · alternatives (hold membership writes / bounded sync / paging seam) — **reject**: holding sync contradicts 04 Answer item 4 (sync runs on Fansly); bounded 49 sync, list-bound delete grant and the paging seam are already the design; >50 paging stays Fog.
+- Blind · bind grant on every priority_mass entry — **accept**: `_freeze` claims after exclusions + cap (`priority_mass.py:170-180`), `_leg` repairs stale claims first (`:203-209`), `/resume` enqueues unchecked (`priority_mass_api.py:207-213`); stories 37-39 + decision "priority_mass custom lists" rewritten, exclusions trigger the gate.
+- Blind · capacity before create/rename, confirmed removals, single adds — **accept**: sync checks `_MAX_MEMBERS=19_000` only, adds before removes in 100-chunks (`smart_list_sync.py:22-23,147-175`), remove discards echo (`fansly_shim.py:1785-1791`); stories 21-23 + remove-first decision rewritten.
+- Blind · gate rule consumers (field mappings, auto_follow, online adapter) — **partial**: auto_follow bypass (`auto_follow.py:118-130,166-187`) and nudge_online state writes (`nudge_online.py:465-504`) accepted (stories 36, 45); mappings kept refusing but renamed: status→lapse_detection, expires_at→renewal_state with the endsAt reason, sub_start→`subscribers:paid_start` (`smart_lists_api.py:226-234` reads them from roster dates).
+- Blind · unblock lacks an observed eligible input — **accept**: only empty `/ignore` read (`RECIPES.md:980-989`); Live-check sequence with capture + re-follow written into decision "unblock_user" and Acceptance.
+- Blind · proof seam through run_once with real Shim — **accept**: existing tests call `run()` directly (`test_smart_list_sync.py`); Testing seam 1 now runs queued jobs through `run_once` with the listed cases.
+- Blind · falsifiers + malformed membership — **partial**: malformed ids accepted (`of_paging.py:28-38` drops bad ids, completeness kept; stories 4-5, of_paging interface); short-first-page falsifier is already the Further Notes ASSUMPTION; multi-tier `totalActive` fails closed, noted on that ASSUMPTION, no design change.
+- Draft · priority_mass needs a grant API 02a lacks — **accept**: 02a `live_check` needs an audience, target-less entries are inert, non-Shim names fall to `refusal_for_account` (`phase-02a-mp2-primitives.md:59,66`; `platforms.py:54-56` refuses a missing attr); added `ListAudience`, `live_check_granted`, `LIVE_CHECK_LANES`, grant `<aid>:priority_mass:<list id>`.
+- Draft · priority_mass bypasses exact binding — **accept**: same evidence and rewrite as the blind grant finding; test "valid grant + wrong persisted recipients" added.
+- Draft · paging lift opens partial-audience autoreplies — **accept**: folder reader keeps truncated ids (`autoreply.py:154-158`); story 56 + caller inventory (story 57, decision) added.
+- Draft · remove-first alone can strand a list — **accept**: same as blind capacity finding; failed-removal-at-49 case added to seam 1.
+- Draft · malformed membership can authorize deletion — **accept**: story 27 now "exactly one valid member", pure test for Proof fan + unreadable id refusing delete.
+- Draft · roster completeness replaces pagination — **accept**: offset paging is real (`fansly_shim.py:1442-1443`); story 44 + Shim interface now `hasMore = incomplete or offset not exhausted`, multi-page shape test.
+- Draft · auto_follow bypasses /resolve; invented mappings — **partial**: bypass accepted (story 36, Further Notes ASSUMPTION dropped); mappings handled as in the blind consumers line.
+- Draft · promo and cleanup proof targets wrong — **accept**: `_refused` defaults to 409 (`promotions_api.py:207-213`), raw route shares `reserve_manual` (`server.py:4851-4861`); promotion_type decision, story 33 and seams 1-2 rewritten; promo_reactivate early refusal left to 02c.
+- Draft · unblock owner check missing — **accept**: same rewrite as the blind unblock line.
+- Draft · Acceptance can exit green after failure; strip patch omitted — **accept**: post-loop greps were unchecked; `set -euo pipefail` and `git apply --check` of `service__platforms.py.patch` added.
+
+Plan review (six hats + coordinator D1–D8), 2026-11-27:
+- White · four grant shapes, split target, `LIVE_CHECK_LANES` vs a stand-in attribute — **accept**: 02a owns one API (D1); `live_check_granted` removed, every caller uses `live_check_targets` / `live_check` / `ListAudience`; targets `fan=` except `delete_list` `list=`; 02b only adds `priority_mass` to the lane set.
+- Red · "if 02a lacks" ASSUMPTIONs — **accept**: the `Lack.PROMOTION_TYPE` ASSUMPTION is now a fact (02a ships five members); Depends on cites 02a's names.
+- Black · a list-named grant reaches a real Fan via a one-member read — **partial**: priority_mass and block are `fan=` with audience == `{fan}` (D1, D3), closing it for every send; `delete_list` keeps `list=` (01 Answer item 4) plus the one-valid-member caller check, member identity bound by D9 (members ⊆ granted `fan=` targets).
+- Green · one grant shape — **accept**: as White.
+- Green · leave `unblock_user` Blocked — **accept**: D3; story 29, decision and Acceptance rewritten, build moved to Out of Scope.
+- Blue · cite 02a's names, delete the ASSUMPTIONs — **accept**: as White and Red.
+- Coordinator D3 · priority_mass "fans" ungranted on Fansly — **accept**: every Fansly branch needs a `fan=` grant (story 41, decision); the ungranted lift is a follow-up PR. Supersedes the draft line "priority_mass needs a grant API 02a lacks".
+Counts (plan review): accept 6 · partial 1 · reject 0 · needs-human 1.

@@ -22,6 +22,7 @@ from of_write import _may_have_sent
 import platforms
 import send_ops
 from job_queue import send_anchor
+from send_tripwire import CellHeld
 from side_effect_gate import PLATFORM_LACKS_PREFIX
 from automations._wordfilter import (
     banned_hit_summary, filter_banned, load_banned_words,
@@ -268,6 +269,11 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
     auto_lid = None
     # OF has no excludedUsers field for list/online audiences (silently dropped); excludes ride in the Auto_Exclude list via excludedLists, so sync+mint+send hold one per-account lock.
     async with broadcast_lock(account_id):
+        if send_ops.cells() and p.recipients:
+            held = await asyncio.to_thread(send_ops.held_targets, account_id)
+            p = replace(p, recipients=[fan for fan in p.recipients if str(fan) not in held])
+            if not p.recipients and not p.user_lists:
+                return {"status": "skipped", "reason": "fan_held"}
         if audience_pol.mode != "off" and is_list_audience:
             try:
                 fence_ids = await _audiences.audience_fence_for_broadcast(
@@ -287,6 +293,8 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
             try:
                 auto_lid = await ensure_exclude_list(
                     account_id, set(p.excl_set), client=client)
+            except CellHeld:
+                raise
             except Exception as e:
                 # A proxy refusal is raised so the job waits it out; any other failure fails closed (no guard = the over-send bug), nothing minted yet.
                 if proxy_refused(e):

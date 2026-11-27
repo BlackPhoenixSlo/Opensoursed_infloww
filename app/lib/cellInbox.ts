@@ -83,6 +83,10 @@ export function compareCellChats(a: OFChatItem, b: OFChatItem): number {
   return compareFanIds(a.__accountId, b.__accountId) || compareFanIds(a.withUser?.id, b.withUser?.id);
 }
 
+export function cellSort(order: "old" | "recent") {
+  return order === "old" ? (a: OFChatItem, b: OFChatItem) => compareCellChats(b, a) : compareCellChats;
+}
+
 export function mergeCellRows(lists: readonly (readonly OFChatItem[])[], sort = compareCellChats): OFChatItem[] {
   const seen = new Map<string, OFChatItem>();
   for (const list of lists) for (const c of list) {
@@ -108,24 +112,48 @@ export function bundleChats(body: unknown): { chats: BundleChats[]; failed: stri
 }
 
 export interface HeadPage {
+  cellCursors?: Record<string, number>;
   rows: OFChatItem[]; hasMore: boolean; moreAccounts: string[]; scanned: number; partial?: boolean; missing?: string[];
 }
 
-export function spliceHead<P extends HeadPage>(
-  page0: P, head: HeadPage, ids: ReadonlySet<string>, sort = compareCellChats,
+export function nextCellCursors(page: HeadPage, cursor: number, limit: number, cursors?: Record<string, number>): Record<string, number> {
+  const missing = new Set(page.missing);
+  return Object.fromEntries(page.moreAccounts.map((id) => [id, (cursors?.[id] ?? cursor) + (missing.has(id) ? 0 : limit)]));
+}
+
+function splicePage<P extends HeadPage>(
+  page0: P, head: HeadPage, ids: ReadonlySet<string>, sort: typeof compareCellChats, keepRows: boolean,
 ): P {
   const others = (list: readonly string[] | undefined) => (list ?? []).filter((id) => !ids.has(id));
-  const moreAccounts = [...others(page0.moreAccounts), ...head.moreAccounts];
+  const moreAccounts = [...new Set([...others(page0.moreAccounts), ...head.moreAccounts,
+    ...page0.moreAccounts.filter((id) => head.missing?.includes(id))])];
   const missing = [...others(page0.missing), ...(head.missing ?? [])];
   const failed = new Set(head.missing);
   const { partial: _p, missing: _m, ...rest } = page0;
+  const cursors = page0.cellCursors || head.cellCursors ? {
+    ...Object.fromEntries(Object.entries(page0.cellCursors ?? {}).filter(([id]) => !ids.has(id) || failed.has(id))),
+    ...Object.fromEntries(Object.entries(head.cellCursors ?? {}).filter(([id]) => !failed.has(id) || page0.cellCursors?.[id] === undefined)),
+  } : undefined;
   return {
     ...rest,
+    ...(cursors ? { cellCursors: cursors } : {}),
     rows: mergeCellRows([head.rows, page0.rows.filter((r) => {
       const id = r.__accountId ?? "";
-      return !ids.has(id) || failed.has(id);
+      return keepRows || !ids.has(id) || failed.has(id);
     })], sort),
     hasMore: moreAccounts.length > 0, moreAccounts,
     ...(missing.length ? { partial: true, missing } : {}),
   } as P;
+}
+
+export function spliceHead<P extends HeadPage>(
+  page: P, head: HeadPage, ids: ReadonlySet<string>, sort = compareCellChats,
+): P {
+  return splicePage(page, head, ids, sort, false);
+}
+
+export function retryTail<P extends HeadPage>(
+  page: P, retry: HeadPage, ids: ReadonlySet<string>, sort = compareCellChats,
+): P {
+  return splicePage(page, retry, ids, sort, true);
 }

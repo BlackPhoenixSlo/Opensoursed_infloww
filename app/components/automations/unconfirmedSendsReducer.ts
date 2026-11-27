@@ -19,6 +19,7 @@ export interface UnconfirmedRow {
 export interface OpRow {
   kind: string;
   op_id: string;
+  updated_at: string;
   fan_id: string;
   since: string;
   state: "UNCONFIRMED";
@@ -58,7 +59,7 @@ export type Action =
 export const initialOverlay: Overlay = {};
 
 export function rowKey(r: Pick<UnconfirmedRow, "kind" | "fan_id" | "mass_run_id"> | OpRow): string {
-  return "op_id" in r ? `op:${r.op_id}` : `${r.kind}:${r.fan_id}:${r.mass_run_id ?? ""}`;
+  return "op_id" in r ? `op:${r.op_id}:${r.updated_at}` : `${r.kind}:${r.fan_id}:${r.mass_run_id ?? ""}`;
 }
 
 export type RetryOutcome = "drop" | "error";
@@ -82,16 +83,15 @@ export function buildDismissPayload(r: UnconfirmedRow): ReturnType<typeof buildR
   return r.hint ? { ...base, hint_message_id: r.hint.message_id } : base;
 }
 
-export function buildResolvePayload(r: OpRow, outcome: Outcome): { op_id: string; outcome: Outcome } {
-  return { op_id: r.op_id, outcome };
+export function buildResolvePayload(r: OpRow, outcome: Outcome): { op_id: string; updated_at: string; outcome: Outcome } {
+  return { op_id: r.op_id, updated_at: r.updated_at, outcome };
 }
 
 export function resolveQuestion(r: OpRow, outcome: Outcome): string {
   const what = r.link === "queue" ? "this queued send" : `this send to fan ${r.fan_id}`;
   return outcome === "was_sent"
-    ? `Mark ${what} as sent?\n\nOnly do this if you checked and it went out. Automations to this fan start again.`
-    : `Mark ${what} as not sent?\n\nIt is not resent: send a new message yourself if it should go out. `
-      + "Automations to this fan start again.";
+    ? `Mark ${what} as sent?\n\nOnly do this if you checked and it went out.`
+    : `Mark ${what} as not sent?\n\nThis releases the hold and allows the same send to be tried again.`;
 }
 
 export function dismissQuestion(r: UnconfirmedRow): string {

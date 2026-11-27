@@ -73,15 +73,11 @@ def client(http: FakeHttp):
 
 
 @contextlib.contextmanager
-def cells(on: bool = True, accounts: str = f"onlyfans:{AID}", epoch: str = "1"):
-    import server
-    keys = ("OI_CELL_MAP", "OI_ACCOUNTS", "OI_EPOCH")
-    saved = {k: os.environ.pop(k, None) for k in keys}
-    if on:
-        os.environ.update(OI_CELL_MAP="/nonexistent/placement.json", OI_ACCOUNTS=accounts, OI_EPOCH=epoch)
+def environment(*keys: str, **values: str):
+    saved = {k: os.environ.pop(k, None) for k in (*keys, *values)}
     try:
-        with patch.object(server, "_CELLS", on):
-            yield
+        os.environ.update(values)
+        yield
     finally:
         for k, v in saved.items():
             os.environ.pop(k, None)
@@ -89,18 +85,39 @@ def cells(on: bool = True, accounts: str = f"onlyfans:{AID}", epoch: str = "1"):
                 os.environ[k] = v
 
 
-async def post(http: FakeHttp, fan: int, op: str | None, text: str = "hi from the composer"):
+@contextlib.contextmanager
+def cells(on: bool = True, accounts: str = f"onlyfans:{AID}", epoch: str = "1"):
     import server
-    req = types.SimpleNamespace(method="POST", query_params={}, state=types.SimpleNamespace(),
-                                headers={"x-account-id": AID, **({"x-op-id": op} if op else {})})
+    keys = ("OI_CELL_MAP", "OI_ACCOUNTS", "OI_EPOCH")
+    values = dict(zip(keys, ("/nonexistent/placement.json", accounts, epoch))) if on else {}
+    with environment(*(k for k in keys if k not in values), **values), patch.object(server, "_CELLS", on):
+        yield
+
+
+def request(headers: dict):
+    return types.SimpleNamespace(method="POST", query_params={}, state=types.SimpleNamespace(),
+                                 headers={"x-account-id": AID, **headers})
+
+
+@contextlib.contextmanager
+def route(req, of):
+    import server
     tok = server._request_ctx.set(req)
     try:
-        with patch.object(server, "_load_client", return_value=client(http)):
-            return 200, await server.send_message(req, fan, server.SendMessageBody(text=text))
-    except HTTPException as e:
-        return e.status_code, e.detail
+        with patch.object(server, "_load_client", return_value=of):
+            yield
     finally:
         server._request_ctx.reset(tok)
+
+
+async def post(http: FakeHttp, fan: int, op: str | None, text: str = "hi from the composer"):
+    import server
+    req = request({"x-op-id": op} if op else {})
+    with route(req, client(http)):
+        try:
+            return 200, await server.send_message(req, fan, server.SendMessageBody(text=text))
+        except HTTPException as e:
+            return e.status_code, e.detail
 
 
 def op_of(fan: int, anchor: str) -> str:
@@ -352,8 +369,8 @@ async def kill(point: str) -> list[Check]:
     if point == "after_claim":
         before = len(http.calls)
         st, body = await post(http, fan, anchor)
-        out.append(("kill after_claim: resubmit before restart → op_pending, 0 wire calls",
-                    (st, err(body)) == (409, "op_pending") and len(http.calls) == before and not http.accepts,
+        out.append(("kill after_claim: resubmit before restart → op_uncertain, 0 wire calls",
+                    (st, err(body)) == (409, "op_uncertain") and len(http.calls) == before and not http.accepts,
                     {"answer": [st, body], "calls": http.calls}))
     restart()
     after = row(fan, anchor)
@@ -397,16 +414,28 @@ def _patches(*targets):
         yield
 
 
+def _retry_on():
+    import _send_kill_held
+    import unconfirmed_sends_api
+
+    retry = _send_kill_held.retry
+
+    async def enabled(fan):
+        with patch.object(unconfirmed_sends_api, "cells", return_value=False):
+            return await retry(fan)
+
+    return _patches((_send_kill_held, "retry", enabled))
+
+
 def _mutant(name: str):
     import of_client
     import send_tripwire
-    import unconfirmed_sends_api
     return {
         "tripwire_bypass": lambda: _patches((send_tripwire, "check", lambda method: None)),
         "claim_after_wire": _late_claim,
         "retry_unknown": lambda: _patches((of_client, "before_tunnel", lambda e: True)),
         "transport_retry": lambda: _patches((send_tripwire, "budget", lambda: None)),
-        "retry_on": lambda: _patches((unconfirmed_sends_api, "_retry_allowed", lambda: True)),
+        "retry_on": _retry_on,
     }[name]()
 
 

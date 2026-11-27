@@ -7,7 +7,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta
 from typing import NamedTuple, assert_never
 
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import write_telemetry
@@ -83,12 +83,18 @@ async def enqueue_job(
     rule_id: int | None = None,
     created_by_employee_id: int | None = None,
     session: AsyncSession | None = None,
+    op_anchor: str | None = None,
 ) -> int:
-    if send_ops.cells() and canonical_kind(kind) in run_decide.ONE_SHOT_KINDS:
-        payload = {**(payload or {}), "send_anchor": uuid.uuid4().hex}
+    kind = canonical_kind(kind)
+    anchored = send_ops.cells() and kind in run_decide.ONE_SHOT_KINDS
+    if anchored:
+        payload = {**(payload or {}), "send_anchor": op_anchor or uuid.uuid4().hex}
+        if op_anchor:
+            return await _enqueue_anchored(account_id, kind, payload, op_anchor,
+                                           run_at or datetime.utcnow(), rule_id, created_by_employee_id, session)
     job = ScheduledJob(
         account_id=account_id,
-        kind=canonical_kind(kind),
+        kind=kind,
         payload_json=json.dumps(payload or {}, default=str),
         run_at=run_at or datetime.utcnow(),
         status="pending",
@@ -105,6 +111,38 @@ async def enqueue_job(
         await s.flush()
         _announce_scheduled_send(s, job)
         return job.id
+
+
+async def _enqueue_anchored(account_id: str, kind: str, payload: dict, anchor: str, run_at: datetime,
+                            rule_id: int | None, employee_id: int | None, session: AsyncSession | None) -> int:
+    if session is None:
+        async with get_session() as s:
+            return await _enqueue_anchored(account_id, kind, payload, anchor, run_at, rule_id, employee_id, s)
+    job = ScheduledJob.__table__
+    saved_anchor = case((func.json_valid(job.c.payload_json),
+                         func.json_extract(job.c.payload_json, "$.send_anchor")), else_=None)
+    parked = and_(job.c.status == "error", job.c.last_error == run_decide.RESTORE_REASON)
+    existing = select(job.c.id, parked).where(
+        job.c.account_id == account_id, job.c.kind == kind, saved_anchor == anchor,
+        or_(job.c.status.in_(("pending", "running")), parked),
+    ).order_by(parked.desc(), job.c.id).limit(1)
+    values = {
+        "account_id": account_id, "kind": kind, "payload_json": json.dumps(payload, default=str),
+        "run_at": run_at, "status": "pending", "rule_id": rule_id, "created_by_employee_id": employee_id,
+    }
+    insert = job.insert().from_select(
+        list(values), select(*(literal(value, type_=job.c[name].type) for name, value in values.items()))
+        .where(~existing.exists()),
+    ).returning(job.c.id)
+    await session.flush()
+    job_id = (await session.execute(insert)).scalar_one_or_none()
+    if job_id is None:
+        job_id, restore_parked = (await session.execute(existing)).one()
+        if restore_parked:
+            raise send_ops.SendRefused(409, "restore_parked", job_id=job_id, reason=run_decide.RESTORE_REASON)
+        return job_id
+    _announce_scheduled_send(session, ScheduledJob(id=job_id, account_id=account_id, kind=kind))
+    return job_id
 
 
 # A backlog of queued follow-up steps must not starve the rule firing: they never hold back its next run.

@@ -67,22 +67,28 @@ def _fresh() -> tuple[FakeHttp, int]:
 
 async def _seed() -> dict[str, int]:
     from db.engine import get_session
-    from db.models import Account, AutomationRule, ScheduledJob, User, UserAccount
+    from db.models import Account, AccountAiConfig, AutomationRule, Chatter, ChatterUser, ScheduledJob, User, UserAccount
     now = datetime.utcnow()
     past, future = now - timedelta(minutes=5), now + timedelta(hours=1)
     async with get_session() as s:
         for aid in (AID, AID2):
             if await s.get(Account, aid) is None:
                 s.add(Account(id=aid, nickname=aid))
-        s.add(User(id="u_hold", username=OWNER, password=OWNER))
+        s.add(User(id="u_hold", username=OWNER, password=OWNER, is_admin=True))
+        s.add(Chatter(id="c_hold", username="hold_chatter", password="hold_chatter", display_name="Hold chatter"))
         await s.flush()
+        s.add(ChatterUser(chatter_id="c_hold", user_id="u_hold"))
         s.add_all(UserAccount(user_id="u_hold", account_id=aid) for aid in (AID, AID2))
-        rule = AutomationRule(account_id=AID, name=KIND, kind=KIND, trigger_json=json.dumps({"every_seconds": 60}),
+        s.add(AccountAiConfig(account_id=AID, utc_offset=0))
+        rule = AutomationRule(account_id=AID, name=KIND, kind=KIND, trigger_json=json.dumps({"every_seconds": 60, "tz_offset_minutes": 0}),
+                              quiet_hours_json=json.dumps([0, 24]),
                               steps_json="{}", is_enabled=True)
         s.add(rule)
         await s.flush()
         jobs = {
             "due_one_shot": ScheduledJob(account_id=AID, kind="scheduled_send", payload_json="{}", run_at=past),
+            "tagged_full_ai": ScheduledJob(account_id=AID, kind="full_ai_chat", run_at=past,
+                                            payload_json=json.dumps({"_rule_id": rule.id})),
             "running_mass": ScheduledJob(account_id=AID, kind="mass_premade", payload_json="{}", run_at=past,
                                          status="running"),
             "due_rule": ScheduledJob(account_id=AID, kind=KIND, payload_json="{}", run_at=past, rule_id=rule.id,
@@ -132,8 +138,8 @@ async def env_unset() -> list[Check]:
     http, _ = _fresh()
     boom = AssertionError("cell_hold touched with the env unset")
     with cells(on=False), _executor(False) as ax, \
-            patch.object(cell_hold, "held", side_effect=boom), patch.object(cell_hold, "held_ids", side_effect=boom), \
-            patch.object(cell_hold, "active", side_effect=boom):
+            patch.object(cell_hold, "held", side_effect=boom), patch.object(cell_hold, "holds", side_effect=boom), \
+            patch.object(cell_hold, "blocking", side_effect=boom):
         got = await ax.run_once(AID, KIND, payload={"n": 0})
         pairs = await ax._due_job_pairs()
     return [("env unset: executor never consults cell_hold; automation sends 1 accept, no cell_holds table",
@@ -142,6 +148,7 @@ async def env_unset() -> list[Check]:
 
 
 async def restore(tmp: Path) -> list[Check]:
+    import actor_token
     import cell_hold
     import cell_mode
     import run_decide
@@ -150,7 +157,7 @@ async def restore(tmp: Path) -> list[Check]:
     import system_admin_api
     out: list[Check] = []
     ids = await _seed()
-    with cells(accounts=ACCOUNTS), _executor(True) as ax:
+    with cells(accounts=ACCOUNTS), _executor(True) as ax, patch.object(server, "actor_token", actor_token, create=True):
         restored = await _boot()
         out.append(("same Data generation on boot → no hold", restored == [] and not cell_hold.holds(),
                     {"restored": restored, "holds": _holds()}))
@@ -174,7 +181,7 @@ async def restore(tmp: Path) -> list[Check]:
         occ = [r for r in _rule_jobs(ids["rule"]) if r[0] != ids["due_rule"]]
         out.append(("due one-shot, running, rule job and the recurring occurrence due at boot parked 'may have "
                     "sent (restore)' on every Creator; future job stays pending",
-                    all(jobs[ids[k]] == parked for k in ("due_one_shot", "running_mass", "due_rule", "due_other"))
+                    all(jobs[ids[k]] == parked for k in ("due_one_shot", "tagged_full_ai", "running_mass", "due_rule", "due_other"))
                     and jobs[ids["future_one_shot"]] == ("pending", None)
                     and len(occ) == 1 and occ[0][1:] == parked, {"jobs": jobs, "occurrences": occ}))
         listed = await system_admin_api.system_runs(limit=500, kind=None, account_id=AID, status="error")
@@ -187,6 +194,10 @@ async def restore(tmp: Path) -> list[Check]:
         tick = await ax.run_once(AID, KIND, payload={"n": 1})
         pairs = await ax._due_job_pairs()
         mat = await ax._materialize_due_rules()
+        notes = _db("SELECT stats_json FROM automation_runs WHERE account_id=? AND status='skipped'"
+                    " AND json_extract(stats_json, '$.reason')='cell_held'", (AID,))
+        out.append(("repeated held ticks leave one skipped Cell-held run",
+                    len(notes) == 1 and json.loads(notes[0][0]).get("reason") == "cell_held", {"runs": notes}))
         out.append(("held Creator: automated tick refused cell_held, 0 transport calls; due pairs + rule "
                     "materialisation skip it",
                     (tick.get("status"), tick.get("reason"), tick.get("why")) == ("skipped", "cell_held", "restore")
@@ -209,8 +220,8 @@ async def restore(tmp: Path) -> list[Check]:
                     try:
                         send_ops.dispatch("onlyfans", AID, op, "composer", str(fan), "d", lambda: http.calls.append(1))
                         order.append("sent")
-                    except send_ops.SendRefused as e:
-                        order.append(err(e.detail))
+                    except (send_ops.SendRefused, cell_hold.CellHeld) as e:
+                        order.append(send_ops.refusal_reason(e))
         finally:
             _RUN_WRITE.reset(tok)
         claim = _db("SELECT 1 FROM send_ops WHERE account=? AND op_id=?", (AID, op))
@@ -229,17 +240,30 @@ async def restore(tmp: Path) -> list[Check]:
             server.app.include_router(cell_hold.router)
         before = _db("SELECT COUNT(*) FROM actions WHERE action='POST /admin/cell-holds/release'")[0][0]
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://t") as c:
+            anonymous = await c.post("/admin/cell-holds/release", params={"account_id": AID})
+            chatter_login = await c.post("/chatter/login",
+                                         json={"username": "hold_chatter", "password": "hold_chatter"})
+            chatter_release = await c.post("/admin/cell-holds/release", params={"account_id": AID})
+            c.cookies.clear()
             login = await c.post("/auth/login", json={"username": OWNER, "password": OWNER})
+            unconfirmed = await c.get("/admin/unconfirmed-sends", params={"account_id": AID})
+            stale = await c.post("/admin/cell-holds/release", params={"account_id": AID, "op": "old"})
             r = await c.post("/admin/cell-holds/release", params={"account_id": AID})
             stray = await c.post("/admin/cell-holds/release", params={"account_id": "1"})
+        out.append(("unconfirmed sends list includes the Creator's open restore hold",
+                    unconfirmed.status_code == 200
+                    and [h["op"] for h in unconfirmed.json().get("restore_holds", [])] == [rows[0][5]],
+                    {"status": unconfirmed.status_code, "body": unconfirmed.text}))
         audit = _db("SELECT account_id FROM actions WHERE action='POST /admin/cell-holds/release'")[before:]
         released = _db("SELECT released_by FROM cell_holds WHERE account=? AND released_at IS NOT NULL", (AID,))
         out.append(("release one Creator via route: audited (actions row + released_by), other Creator still held",
-                    login.status_code == r.status_code == 200 and r.json() == {"released": 1, "held": None} and audit == [(AID,)]
-                    and len(released) == 1 and released[0][0] and cell_hold.held(AID2) is not None
+                    login.status_code == r.status_code == 200 and r.json() == {"released": 1, "held": None} and audit[-1:] == [(AID,)] and anonymous.status_code in (401, 403)
+                    and chatter_login.status_code == 200 and chatter_release.status_code == 403
+                    and stale.status_code == 200 and stale.json()["released"] == 0
+                    and released == [(f"user:u_hold:{OWNER}",)] and cell_hold.held(AID2) is not None
                     and cell_hold.held(AID) is None and stray.status_code in (403, 409),
                     {"status": r.status_code, "body": r.text, "audit": audit, "released": released,
-                     "stray": [stray.status_code, stray.text]}))
+                     "stray": [stray.status_code, stray.text], "chatter": [chatter_login.status_code, chatter_release.status_code]}))
 
         from db.engine import get_session
         from db.models import ScheduledJob
@@ -255,7 +279,7 @@ async def restore(tmp: Path) -> list[Check]:
                     sent.get("status") == "ok" and len(http.accepts) == 1
                     and _db("SELECT state FROM send_ops WHERE account=? AND op_id=?", (AID, send_ops.op_id(
                         "onlyfans", AID, "composer", str(fan), f"probe-{sent.get('run_id')}"))) == [("sent",)]
-                    and all(after[ids[k]] == parked for k in ("due_one_shot", "running_mass", "due_rule", "due_other"))
+                    and all(after[ids[k]] == parked for k in ("due_one_shot", "tagged_full_ai", "running_mass", "due_rule", "due_other"))
                     and other.get("reason") == "cell_held",
                     {"sent": sent, "other": other, "accepts": len(http.accepts), "jobs": after}))
     return out

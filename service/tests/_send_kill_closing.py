@@ -114,14 +114,32 @@ async def kill(point: str) -> list[kc.Check]:
     out.append((f"closing PPV kill {point}: rerun {want}; 0 more accepts", ok and accepts <= 1,
                 {"op": _op(aid, fan), "fan": _fan(aid, fan), "accepts": accepts, "rerun_calls": again.calls,
                  "out": _out_rows(aid, fan)}))
+    if point == "accepted":
+        op_id, = db_row("SELECT op_id FROM send_ops WHERE account=? AND kind=?", (aid, KIND))
+        resolved = send_ops.resolve(aid, op_id, True, "test")
+        replay = kc.FakeHttp()
+        await _tick(aid, replay)
+        out.append(("closing PPV marked sent: stamps completion without a receipt or new delivery",
+                    resolved and _fan(aid, fan) == (1, 0) and not replay.calls and not _out_rows(aid, fan),
+                    {"fan": _fan(aid, fan), "calls": replay.calls}))
     return out
 
 
 async def env_unset_failures() -> list[kc.Check]:
     out: list[kc.Check] = []
     import of_pacing
+    def lost_after_refusal(*_):
+        try:
+            try:
+                raise of_pacing.SendDispatchExpired()
+            except of_pacing.SendDispatchExpired:
+                raise TimeoutError("response lost during fallback")
+        except TimeoutError as exc:
+            raise RuntimeError("transport failed") from exc
+
     for name, step, anchor in (("known refusal before the wire", kc.raises(of_pacing.SendDispatchExpired()), 0),
-                               ("OF 4xx (no wire budget to prove it)", kc.status(400), 1),
+                               ("OF 4xx", kc.status(400), 0),
+                               ("timeout with implicit refusal context", lost_after_refusal, 1),
                                ("unknown outcome (timeout)", kc.raises(TimeoutError("read timed out")), 1)):
         aid, fan = await _setup()
         http = kc.FakeHttp(step)

@@ -15,7 +15,7 @@ import { APPLIED_SETTINGS_KEY } from "@/lib/appliedSettings";
 import { invalidateVaultQueries } from "@/lib/vaultInvalidation";
 import { resyncAction } from "@/lib/cellBusReducer";
 import { cellMode } from "@/lib/cellFlag";
-import { currentCellMap } from "@/lib/cellMap";
+import { cellScopeToken, refreshCellMap, currentCellMap, onCellMap } from "@/lib/cellMap";
 import { spliceCellHeads } from "@/hooks/useChatList";
 import { armRead } from "@/lib/ofReadGate";
 import { creatorFreshnessKey, dispatchCreatorFreshness } from "@/hooks/useCreatorFreshness";
@@ -34,7 +34,6 @@ const KEYS: Record<string, (aid: string | undefined, body: Body) => QueryKey[]> 
   account_active: () => [["accounts"], ["chatter"]],
   proxy_switched: () => [["proxies"], ["accounts"]],
   permissions_changed: () => [APPLIED_SETTINGS_KEY],
-  assignment_changed: () => [["accounts"], ["chatter"], ["employees"]],
   scheduled_send_changed: (aid) => [byAccount("scheduled-sends", aid)],
   rule_run_finished: (aid, b) => [
     byAccount("automation-rules", aid),
@@ -204,6 +203,22 @@ export function useAccountStateEvents(): void {
       }),
     );
 
+    offs.push(eventBus.on("assignment_changed", () => {
+      const assigned = () => invalidate([["accounts"], ["chatter"], ["employees"]]);
+      if (cellMode()) void refreshCellMap().then(assigned, assigned);
+      else assigned();
+    }));
+
+    if (cellMode()) {
+      let token = cellScopeToken();
+      offs.push(onCellMap(() => {
+        const next = cellScopeToken();
+        if (next === token) return;
+        token = next;
+        invalidate([["accounts"], ["chatter", "self", "accounts"]]);
+      }));
+    }
+
     const cache = qc.getQueryCache();
     const warmPending = new Map<string, { queryKey: QueryKey; must: boolean }>();
     let warmTimer: ReturnType<typeof setTimeout> | null = null;
@@ -262,13 +277,17 @@ export function useAccountStateEvents(): void {
       cellResynced = new Set();
       controlResynced = false;
       const hit = (q: Query) => (control && resyncAction(q.queryKey, new Set(), placed) === "invalidate")
-        || (accounts.size > 0 && resyncAction(q.queryKey, accounts, placed) === "invalidate");
+        || (accounts.size > 0 && !(q.queryKey[0] === "chats" && q.queryKey[1] === "all")
+          && resyncAction(q.queryKey, accounts, placed) === "invalidate");
       void invalidateVaultQueries(qc, { predicate: hit });
       if (accounts.size) void spliceCellHeads(qc, accounts, placed);
     }, RESYNC_MIN_MS);
     offs.push(eventBus.on("resync", (e: EventEnvelope) => {
       if (!Array.isArray(e.accounts)) return resync.call();
-      if (!e.accounts.length) controlResynced = true;
+      if (cellMode() && e.accounts.some((id) => !placedAccounts().has(String(id)))) {
+        void refreshCellMap().then(() => invalidate([["accounts"]]), () => {});
+      }
+      if (!e.accounts.length || e.cell === currentCellMap()?.control) controlResynced = true;
       for (const id of e.accounts) cellResynced.add(String(id));
       cellResync.call();
     }), resync.cancel, cellResync.cancel);

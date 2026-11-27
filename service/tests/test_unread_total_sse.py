@@ -1071,6 +1071,7 @@ async def case_grey_reasons():
                 assert down["grey"] == "socket_down" and down["n"] == 5 and down["v"] == folded["v"] + 1, down
                 assert pub[-1]["creator_refreshed"]["live"] == "down", pub
             pub.clear()
+            time.sleep(0.002)
             with _live(time.monotonic()):
                 await _tick()
                 assert _totals(pub) == [down] and pub[-1]["creator_refreshed"]["live"] == "up", pub

@@ -7,9 +7,9 @@ import os
 import time
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Awaitable, Callable, assert_never
+from typing import Any, Awaitable, Callable, TYPE_CHECKING, assert_never
 
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import case, func, literal, or_, select, text, update
 
 from db.engine import get_session
 from db.models import (
@@ -92,9 +92,10 @@ from job_queue import (  # noqa: F401 — re-exports
     rule_last_fired_at,
 )
 
-import cell_hold
+if TYPE_CHECKING:
+    import cell_hold
+
 import cell_mode
-import send_ops
 from send_tripwire import UnclaimedSend
 
 _CELLS = bool(os.environ.get("OI_CELL_MAP"))
@@ -116,7 +117,6 @@ _OPERATOR_KINDS: frozenset[str] = frozenset({
 })
 _FULL_AI_PER_CREATOR = 4
 _PER_FAN_KINDS: frozenset[str] = frozenset({"full_ai_chat"})
-_UNANCHORED_KINDS = frozenset({"autoreply", "send_followup", "nudge_online_fire", "purchase_followup"})
 
 
 def _per_fan_caps() -> dict[str, int]:
@@ -236,6 +236,10 @@ async def _join_inflight_runs() -> None:
 _run_locks: dict[tuple, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
+def runs_inflight() -> int:
+    return sum(lock.locked() for lock in _run_locks.values())
+
+
 
 from isotime import parse_iso as _parse_iso  # noqa: E402 — OF ISO 8601 → naive UTC (callers use ax._parse_iso)
 
@@ -254,7 +258,54 @@ def _media_ids(media: list | None) -> list[int]:
 
 
 
-async def _due_job_pairs() -> list[dispatch_plan.Pair]:
+_CELL_HELD = "cell_held"
+_HoldNotes = dict[str, tuple[str, "cell_hold.Hold"]]
+
+
+def _json_field(stats_json, field):
+    return case((func.json_valid(stats_json), func.json_extract(stats_json, f"$.{field}")))
+
+
+def _is_hold_note(run):
+    return (run.status == "skipped") & (_json_field(run.stats_json, "reason") == _CELL_HELD) & (
+        _json_field(run.stats_json, "hold_id").is_not(None))
+
+
+async def _record_hold_notes(notes: _HoldNotes) -> None:
+    if not notes:
+        return
+    run = AutomationRun.__table__
+    now = datetime.utcnow()
+    async with get_session() as s:
+        for account_id, (kind, hold) in notes.items():
+            noted = select(run.c.id).where(run.c.account_id == account_id, _is_hold_note(run.c),
+                                          _json_field(run.c.stats_json, "hold_id") == hold.id)
+            stats = json.dumps({"reason": _CELL_HELD, "why": hold.why, "hold_id": hold.id})
+            values = dict(account_id=account_id, kind=canonical_kind(kind), status="skipped",
+                          started_at=now, completed_at=now, stats_json=stats)
+            await s.execute(run.insert().from_select(list(values), select(*(
+                literal(value, type_=run.c[key].type) for key, value in values.items()
+            )).where(~noted.exists())))
+
+
+def _held_accounts(pairs, notes: _HoldNotes | None) -> set[str]:
+    import cell_hold
+
+    rows = cell_hold.holds()
+    if not rows:
+        return set()
+    owned = cell_mode._owned_platforms()
+    held = set()
+    for aid, kind in pairs:
+        aid = str(aid)
+        if aid not in held and aid in owned and (hold := cell_hold.blocking(rows, owned[aid], aid, True)):
+            held.add(aid)
+            if notes is not None:
+                notes.setdefault(aid, (kind, hold))
+    return held
+
+
+async def _due_job_pairs(notes: _HoldNotes | None = None) -> list[dispatch_plan.Pair]:
     now = datetime.utcnow()
     off = await account_health.deactivated_ids()
     auto_emp = await _automation_employee()
@@ -274,7 +325,7 @@ async def _due_job_pairs() -> list[dispatch_plan.Pair]:
                 .group_by(ScheduledJob.account_id, ScheduledJob.kind, fan)
             )
         ).all()
-    held = cell_hold.held_ids() if _CELLS else frozenset()
+        held = _held_accounts(((r[0], r[1]) for r in rows), notes) if _CELLS else frozenset()
     return [dispatch_plan.Pair(r[0], r[1], bool(r[2]) and canonical_kind(r[1]) in _OPERATOR_KINDS,
                                _epoch(r[3]), r[4])
             for r in rows if r[0] not in off and str(r[0]) not in held]
@@ -316,7 +367,16 @@ async def _pair_busy(s, rule: AutomationRule, now: datetime) -> dispatch_plan.Bu
     ).scalar_one_or_none()
 
 
-async def _materialize_due_rules(park: frozenset[str] = frozenset()) -> int:
+def _rule_trigger(rule: AutomationRule) -> dispatch_plan.Trigger | None:
+    try:
+        trigger = json.loads(rule.trigger_json or "{}")
+    except (TypeError, ValueError):
+        log.warning("automation_rule_bad_trigger rule_id=%s", rule.id)
+        return None
+    return dispatch_plan.parse_trigger(trigger) if isinstance(trigger, dict) else None
+
+
+async def _materialize_due_rules(notes: _HoldNotes | None = None) -> int:
     load_automation_plugins()
     now = datetime.utcnow()
     enqueued = 0
@@ -332,12 +392,10 @@ async def _materialize_due_rules(park: frozenset[str] = frozenset()) -> int:
                 )
             )
         ).scalars().all()
-        if _CELLS:
-            held = cell_hold.held_ids()
-            rules = [r for r in rules
-                     if (str(r.account_id) in park if park else str(r.account_id) not in held)]
-
+        held = _held_accounts(((r.account_id, r.kind) for r in rules), notes) if _CELLS else frozenset()
         for rule in rules:
+            if str(rule.account_id) in held:
+                continue
             if get_automation(rule.kind) is None:
                 failed = rule.kind in failed_plugins()
                 if (rule.id, rule.kind) not in _UNKNOWN_RULE_WARNED:
@@ -357,12 +415,7 @@ async def _materialize_due_rules(park: frozenset[str] = frozenset()) -> int:
                         )
                 if not failed:
                     continue
-            try:
-                trigger = json.loads(rule.trigger_json or "{}")
-            except Exception:
-                log.warning("automation_rule_bad_trigger rule_id=%s", rule.id)
-                continue
-            trig = dispatch_plan.parse_trigger(trigger)
+            trig = _rule_trigger(rule)
             if trig is None:
                 continue
 
@@ -373,6 +426,7 @@ async def _materialize_due_rules(park: frozenset[str] = frozenset()) -> int:
 
             run_count = None
             if trig.max_runs is not None:
+                cadence_runs = (func.coalesce(_is_hold_note(AutomationRun), False).is_(False),) if _CELLS else ()
                 run_count = (
                     await s.execute(
                         select(func.count())
@@ -380,6 +434,7 @@ async def _materialize_due_rules(park: frozenset[str] = frozenset()) -> int:
                         .where(
                             AutomationRun.account_id == rule.account_id,
                             AutomationRun.kind == canonical_kind(rule.kind),
+                            *cadence_runs,
                         )
                     )
                 ).scalar_one()
@@ -426,8 +481,7 @@ async def _materialize_due_rules(park: frozenset[str] = frozenset()) -> int:
                     kind=canonical_kind(rule.kind),
                     payload_json=rule.steps_json or "{}",
                     run_at=now,
-                    status="error" if park else "pending",
-                    last_error=run_decide.RESTORE_REASON if park else None,
+                    status="pending",
                     rule_id=rule.id,
                 )
             )
@@ -440,7 +494,7 @@ async def _materialize_due_rules(park: frozenset[str] = frozenset()) -> int:
 
 
 def _make_client(account_id: str) -> OFClient:
-    backend = platforms.for_account(account_id).backend
+    backend = platforms.require_account(account_id).backend
     if backend is not None:
         return backend.get_client(account_id)
     return client_pool.get(account_id)
@@ -535,10 +589,6 @@ async def run_once(
         await _finalize_run(run_id, status, None, err, job_id=job_id, job_status=job_status)
         return {"status": "error", "reason": "unknown_kind", "run_id": run_id}
 
-    if kind in _UNANCHORED_KINDS and send_ops.cells():
-        log.info("automation_no_anchor account=%s kind=%s: refused in Cell mode", account_id, kind)
-        return {"status": "skipped", "reason": "no_anchor"}
-
     lock = _run_locks[dispatch_plan.run_key(account_id, kind, fan, () if fan is ANY_FAN else _PER_FAN_KINDS)]
     if lock.locked():
         return {"status": "skipped", "reason": "in_flight"}
@@ -555,14 +605,35 @@ async def run_once(
     except Exception:
         log.warning("deactivated_check_failed account=%s", account_id, exc_info=True)
 
-    if _CELLS and (hold := cell_hold.held(account_id)) is not None:
-        return {"status": "skipped", "reason": "cell_held", "why": hold.why}
+    if _CELLS:
+        import cell_hold
+        if (hold := cell_hold.held(account_id)) is not None:
+            if job_id is not None:
+                await _release_job(job_id)
+            await _record_hold_notes({str(account_id): (kind, hold)})
+            return {"status": "skipped", "reason": _CELL_HELD, "why": hold.why}
 
     if lock.locked():
         return {"status": "skipped", "reason": "in_flight"}
     async with lock:
         if send_ops.paused():
-            return {"status": "skipped", "reason": "writes_paused"}
+            result = {"status": "skipped", "reason": "writes_paused"}
+            if job_id is None:
+                return result
+            await _release_job(job_id)
+            run_id = await _open_run(account_id, kind)
+            await _finalize_run(run_id, "skipped", {"reason": "writes_paused"}, None)
+            return {**result, "run_id": run_id}
+        if send_ops.cells() and kind in send_ops.ANCHORLESS_EXECUTORS:
+            if payload is None and job_id is None:
+                claimed = await _claim_due_job(account_id, kind, fan=fan)
+                job_id = claimed.id if claimed is not None else None
+            result = {"status": "skipped", "reason": "no_anchor"}
+            if job_id is None:
+                return result
+            run_id = await _open_run(account_id, kind)
+            await _finalize_run(run_id, "skipped", {"reason": "no_anchor"}, None, job_id=job_id)
+            return {**result, "run_id": run_id}
         rule_id: int | None = None
         if payload is None and job_id is None:
             claimed = await _claim_due_job(account_id, kind, fan=fan)
@@ -591,6 +662,13 @@ async def run_once(
         payload = payload or {}
 
         run_id = await _open_run(account_id, kind)
+        if unknown := platforms.unknown_refusal(account_id):
+            status, job_status, reason = run_decide.outcome("ok", None, plugin_reason=unknown)
+            stats = {"status": status, "reason": reason}
+            await _finalize_run(run_id, status, stats, None, job_id=job_id, job_status=job_status)
+            log.info("automation_run_skipped account=%s kind=%s run_id=%s job=%s reason=%s",
+                     account_id, kind, run_id, job_id, reason)
+            return {**stats, "run_id": run_id, "job_id": job_id}
         t0 = time.monotonic()
         rule_token = _current_rule_id.set(rule_id)
         job_token = _current_job_id.set(job_id)
@@ -615,12 +693,12 @@ async def run_once(
                 guard_status = guard.run_status()
             status, job_status, skip_reason = run_decide.outcome(
                 ran, guard_status, plugin_reason=stats.get("reason"))
-            platform_skipped = status == "skipped" and guard_status != "skipped"
-            if platform_skipped:
+            plugin_skipped = status == "skipped" and guard_status != "skipped"
+            if plugin_skipped:
                 stats.update(status="skipped", reason=skip_reason)
             await _finalize_run(run_id, status, stats, None, job_id=job_id, job_status=job_status)
             if status == "skipped":
-                if not platform_skipped:
+                if not plugin_skipped:
                     log.info("automation_run_skipped account=%s kind=%s run_id=%s job=%s "
                              "blocked word(s) %r", account_id, kind, run_id, job_id, guard.hits)
                     return {"status": "skipped", "reason": "sensitive_words",
@@ -641,10 +719,11 @@ async def run_once(
                                 job_id=job_id, job_status=job_status)
             raise
         except Exception as e:
-            if send_ops.is_paused_refusal(e) and write.state == "none":
+            if ((reason := send_ops.refusal_reason(e) if _CELLS or write.state == "none" else None)
+                    and (write.state == "none" or reason == _CELL_HELD)):
                 await _release_job(job_id)
-                await _finalize_run(run_id, "skipped", {"reason": "writes_paused"}, None)
-                return {"status": "skipped", "reason": "writes_paused", "run_id": run_id, "job_id": job_id}
+                await _finalize_run(run_id, "skipped", {"reason": reason}, None)
+                return {"status": "skipped", "reason": reason, "run_id": run_id, "job_id": job_id}
             err = repr(e)[:2000]
             log.warning(
                 "automation_run_failed account=%s kind=%s run_id=%s",
@@ -692,17 +771,34 @@ def _owned_only(col) -> tuple:
     return () if owned is None else (col.in_(sorted(owned)),)
 
 
-async def park_restore(account_ids: list[str]) -> int:
-    now = datetime.utcnow()
+async def park_restore(account_ids: list[str], cutoff: datetime, *, data_gen: int | None = None) -> int:
     async with get_session() as s:
         parked = (await s.execute(
             update(ScheduledJob)
             .where(ScheduledJob.account_id.in_(account_ids), ScheduledJob.status.in_(("pending", "running")),
-                   ScheduledJob.run_at <= now,
-                   or_(ScheduledJob.kind.in_(run_decide.one_shot_family()), ScheduledJob.rule_id.is_not(None)))
+                   ScheduledJob.run_at <= cutoff,
+                   or_(ScheduledJob.kind.in_(run_decide.one_shot_family()), ScheduledJob.rule_id.is_not(None),
+                       _json_field(ScheduledJob.payload_json, "_rule_id").is_not(None)))
             .values(status="error", last_error=run_decide.RESTORE_REASON)
         )).rowcount
-    return parked + await _materialize_due_rules(park=frozenset(account_ids))
+        rules = (await s.execute(select(AutomationRule).where(
+            AutomationRule.is_enabled.is_(True), AutomationRule.account_id.in_(account_ids),
+        ))).scalars().all()
+        for rule in rules:
+            trigger = _rule_trigger(rule)
+            if trigger is None:
+                continue
+            last_fired = await rule_last_fired_at(s, rule.id)
+            due = dispatch_plan.next_due(trigger, last_fired, cutoff, run_count=0)
+            if due is None or due > cutoff:
+                continue
+            s.add(ScheduledJob(account_id=rule.account_id, kind=canonical_kind(rule.kind),
+                               payload_json=rule.steps_json or "{}", run_at=due, created_at=cutoff,
+                               rule_id=rule.id, status="error", last_error=run_decide.RESTORE_REASON))
+            parked += 1
+        if data_gen is not None:
+            await s.execute(text("UPDATE cell_meta SET last_data_gen=:gen"), {"gen": data_gen})
+    return parked
 
 
 async def _interrupt_orphan_mass_runs(s, now: datetime) -> list[int]:
@@ -771,8 +867,9 @@ async def _size_bulk_slots(pool: run_slot.SlotPool) -> None:
 async def _drain_due_jobs_once() -> None:
     if send_ops.paused():
         return
+    notes: _HoldNotes = {}
     try:
-        await _materialize_due_rules()
+        await _materialize_due_rules(notes)
     except Exception:
         log.warning("automation_rule_materialize_failed", exc_info=True)
     try:
@@ -784,7 +881,9 @@ async def _drain_due_jobs_once() -> None:
     if _session_probe_task is None or _session_probe_task.done():
         _session_probe_task = asyncio.create_task(_probe_dead_sessions())
 
-    pairs = await _due_job_pairs()
+    pairs = await _due_job_pairs(notes)
+    if notes:
+        await _record_hold_notes(notes)
     if not pairs:
         return
 

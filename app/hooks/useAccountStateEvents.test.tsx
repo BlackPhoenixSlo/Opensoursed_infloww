@@ -29,9 +29,11 @@ vi.mock("@/lib/events", () => ({
 type StreamFn = (c: { connected: boolean; accounts: readonly string[] | null }) => void;
 const streamListeners = new Set<StreamFn>();
 let cells = false;
+const refresh = vi.fn();
 vi.mock("@/lib/cellFlag", () => ({ cellMode: () => cells }));
 vi.mock("@/lib/cellMap", async (orig) => ({
   ...(await orig<object>()),
+  refreshCellMap: () => refresh(),
   currentCellMap: () => (cells ? {
     accounts: [{ platform: "onlyfans", account_id: "10", cell: "s01" }, { platform: "onlyfans", account_id: "20", cell: "s02" }],
   } : null),
@@ -78,6 +80,15 @@ describe("useAccountStateEvents", () => {
     vi.useFakeTimers(); handlers.clear(); stateListeners.clear(); streamListeners.clear(); paused = false; cells = false;
   });
   afterEach(() => { vi.useRealTimers(); });
+
+  it("invalidates assignments even when the Cell map fails to reload", async () => {
+    cells = true;
+    refresh.mockRejectedValueOnce(new Error("offline"));
+    const { keys } = mount();
+    emit("assignment_changed");
+    await act(async () => {});
+    expect(keys()).toEqual([["accounts"], ["chatter"], ["employees"]]);
+  });
 
   it("refetches everything on resync now, and once more at the window's end for later ones", () => {
     const { keys } = mount();

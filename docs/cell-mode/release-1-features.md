@@ -4,9 +4,14 @@ Draft. Not signed yet.
 
 Release 1 splits the agency's Creators across several Relays (Cells).
 Most of the app works as today.
-17 parts are switched off and 9 work with a gap.
+19 parts are switched off and 9 work with a gap.
 
-## Switched off (17)
+## Switched off (19)
+
+**Agency calls without a front-door route**
+Some agency tools require a front-door route before they can work in cell mode.
+
+66 app call sites are marked off.
 
 **Public tracking links (/t/...)**
 Fans who tap a tracking link get an error page. Links need an agency-wide id first.
@@ -59,6 +64,9 @@ Off until checked (Phase 1): image proxy, Full AI content prep, standard vault f
 **API docs pages**
 The relay's /docs pages are off in cell mode.
 
+**Clock-event sales reassignment**
+Reassignment by Clock event is off because its sales can span Cells. Sales selected by Creator can still be reassigned.
+
 ## Works with a gap (9)
 
 **Creator list (roster)**
@@ -83,7 +91,7 @@ Profiles work. Publishing promo posts is refused in Cell mode until feed posts h
 The proxy list is off (see Reads across every Creator); edits work, a down Cell's Creators show as missing.
 
 **Connect a Creator (sessions)**
-Fansly session import names several Creators: a down Cell's Creators are marked missing.
+Fansly session import is refused in Cell mode because the platform is not admitted.
 
 **Relay health and housekeeping**
 Per-Relay tools. Perf log upload names several Creators: a down Cell's Creators are marked missing.
@@ -121,13 +129,18 @@ Per-Relay tools. Perf log upload names several Creators: a down Cell's Creators 
 
 Say "yes, Release 1 features signed" in the build chat.
 We record your name, the date and the table's fingerprint
-(short form: `b1a872b60fc6f7d1`).
+(short form: `d4a4e783ab28053b`).
 Any change to the table needs a new yes.
 
 ## What is in each part
 
 Generated from `service/cell_features.json` by
 `scripts/cell_scope_scan.py --features`. Do not edit by hand.
+
+<details><summary>Agency calls without a front-door route (off; no members)</summary>
+
+
+</details>
 
 <details><summary>Public tracking links (/t/...) (off; 2 routes, 1 job)</summary>
 
@@ -322,6 +335,11 @@ Generated from `service/cell_features.json` by
 
 </details>
 
+<details><summary>Clock-event sales reassignment (off; no members)</summary>
+
+
+</details>
+
 <details><summary>Creator list (roster) (partial; 1 route)</summary>
 
 - `GET /admin/accounts`
@@ -420,7 +438,7 @@ Generated from `service/cell_features.json` by
 
 </details>
 
-<details><summary>Connect a Creator (sessions) (partial; 13 routes, 1 job)</summary>
+<details><summary>Connect a Creator (sessions) (partial; 13 routes, 2 jobs)</summary>
 
 - `DELETE /admin/accounts/{account_id}`
 - `DELETE /api/of/v2/sessions`
@@ -436,6 +454,7 @@ Generated from `service/cell_features.json` by
 - `POST /api/of/live-window/session`
 - `POST /fleet/reservations`
 - `pump-supervisor`
+- `reservation-activation-retry`
 
 </details>
 

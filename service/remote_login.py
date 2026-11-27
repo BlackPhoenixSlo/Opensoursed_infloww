@@ -242,10 +242,9 @@ def running() -> int:
 
 
 def driver(platform: str) -> LoginDriver:
-    p = platforms.get(platform)
-    if p.key != platform:
+    if platform not in platforms.KEYS:
         raise ValueError(f"unknown platform {platform!r} (expected one of {platforms.KEYS})")
-    return importlib.import_module(p.login)
+    return importlib.import_module(platforms.get(platform).login)
 
 
 def _register(job: RemoteLoginJob) -> None:
@@ -266,8 +265,6 @@ def start_login(*, email: str, password: str, principal: str | None,
                 nickname: str | None = None, make_active: bool = True,
                 backend: str = BACKEND_LOCAL, platform: str,
                 expected_account_id: str | None = None) -> RemoteLoginJob:
-    import cell_hold
-    cell_hold.refuse_writes()
     if backend not in BACKENDS:
         raise ValueError(f"unknown backend {backend!r} (expected one of {BACKENDS})")
     if backend == BACKEND_LOCAL:
@@ -289,8 +286,16 @@ def start_login(*, email: str, password: str, principal: str | None,
         nickname=nickname, make_active=make_active, platform=platform, message="starting browser",
         expected_account_id=expected_account_id,
     )
-    bb_env()
     _register(job)
+    try:
+        if os.environ.get("OI_CELL_MAP"):
+            from cell_hold import refuse_writes
+            refuse_writes()
+        bb_env()
+    except BaseException:
+        with _jobs_lock:
+            _jobs.pop(job.id, None)
+        raise
     ctx = contextvars.copy_context()
     threading.Thread(
         target=ctx.run, args=(_run_login, job, password),

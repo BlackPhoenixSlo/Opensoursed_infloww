@@ -119,18 +119,18 @@ export function useOfManagerAccounts(): AccountMeta[] {
   return useMemo(() => [...creators, ...watchers.filter(ofManagerWatcher)], [creators, watchers]);
 }
 
-export function useActiveAccounts(): AccountMeta[] {
+export function useActiveAccounts(includePending = false): AccountMeta[] {
   const q = useAccounts();
   const all = q.data?.accounts;
   return useMemo(
-    () => (all ?? []).filter((a) => a.has_session && a.is_active),
-    [all],
+    () => (all ?? []).filter((a) => a.is_active && (a.has_session || (includePending && a.rosterPending))),
+    [all, includePending],
   );
 }
 
 // Platform-selector surfaces only: global listeners (toaster, bell, money rail, inbox realtime) read useActiveAccounts so a Fansly shell still hears OnlyFans.
-export function usePlatformAccounts(on?: Platform): AccountMeta[] {
-  const accounts = useActiveAccounts();
+export function usePlatformAccounts(on?: Platform, includePending = false): AccountMeta[] {
+  const accounts = useActiveAccounts(includePending);
   const platform = usePlatform();
   const all = useContext(AllPlatformsContext) && on === undefined;
   const selected = on ?? platform;

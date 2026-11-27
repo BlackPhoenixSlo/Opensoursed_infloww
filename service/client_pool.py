@@ -22,6 +22,7 @@ def get(account_id: str) -> OFClient:
         # Re-check: another thread may have built it while we waited. A failed build is not cached.
         c = _POOL.get(account_id)
         if c is None:
+            platforms.require_account(account_id)
             c = _POOL[account_id] = OFClient.from_account(account_id)
             log.info("OFClient ready (account=%s user_id=%s rev=%s)",
                      account_id, c.user_id, c.x_of_rev)

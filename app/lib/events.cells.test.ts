@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { RelayError } from "./relay";
 import type { CellMap } from "./cellInbox";
 
 const MAP: CellMap = {
@@ -10,9 +11,12 @@ const MAP: CellMap = {
   ],
 };
 const grey = vi.fn();
+let map: CellMap | null;
+const load = vi.fn();
+vi.mock("./relay", () => ({ RelayError: class extends Error { constructor(public status: number) { super(); } } }));
 vi.mock("./cellFlag", () => ({ cellMode: () => true }));
 vi.mock("./cellMap", () => ({
-  currentCellMap: () => MAP, loadCellMap: () => Promise.resolve(MAP), onCellMap: () => () => {},
+  currentCellMap: () => map, loadCellMap: () => load(), onCellMap: () => () => {},
   setStreamGrey: (ids: ReadonlySet<string>) => grey([...ids]),
 }));
 
@@ -41,6 +45,8 @@ beforeEach(() => {
   vi.resetModules();
   FakeEventSource.all = [];
   grey.mockClear();
+  map = MAP;
+  load.mockReset().mockResolvedValue(MAP);
   vi.stubGlobal("EventSource", FakeEventSource);
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -110,6 +116,17 @@ describe("one stream per Cell", () => {
     ]);
   });
 
+  it("resumes a Cell cursor after leaving and returning to All", async () => {
+    const bus = await started();
+    of("s01").emit("toasts", "e1.7");
+    bus.setScope("model:20");
+    vi.advanceTimersByTime(50);
+    expect(of("s01")).toBeUndefined();
+    bus.setScope("all");
+    vi.advanceTimersByTime(50);
+    expect(of("s01").url).toBe("/events?scope=all&lease=1&last_event_id=e1.7&cell=s01");
+  });
+
   it("events from every Cell reach the same listeners", async () => {
     const bus = await started();
     const got: string[] = [];
@@ -129,4 +146,27 @@ describe("one stream per Cell", () => {
     expect(bus.liveBlocked()).toBe(true);
     expect(bus.isConnected("10")).toBe(false);
   });
+});
+
+it("backs off repeated map failures and stops after forbidden", async () => {
+  map = null;
+  load.mockRejectedValueOnce(new RelayError(503, null, "")).mockRejectedValueOnce(new RelayError(503, null, ""))
+    .mockRejectedValue(new RelayError(403, null, ""));
+  await started();
+  expect(load).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(load).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(load).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(load).toHaveBeenCalledTimes(3);
+});
+
+it("retries a forbidden map after the scope is set again", async () => {
+  map = null;
+  load.mockRejectedValueOnce(new RelayError(403, null, ""));
+  const bus = await started();
+  await vi.advanceTimersByTimeAsync(0);
+  bus.setScope("all");
+  expect(load).toHaveBeenCalledTimes(2);
 });

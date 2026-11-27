@@ -1,3 +1,10 @@
+let enabled: boolean | undefined;
+
 export function cellMode(): boolean {
-  return typeof document !== "undefined" && document.querySelector('meta[name="oi-cells"]') != null;
+  if (typeof document === "undefined") return false;
+  return enabled ??= document.querySelector('meta[name="oi-cells"]') != null;
+}
+
+export function resetCellFlagForTests(): void {
+  enabled = undefined;
 }
